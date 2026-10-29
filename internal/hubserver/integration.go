@@ -11,10 +11,14 @@ import (
 	"github.com/labstack/echo/v4"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/projecticon"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type ProjectIntegration struct {
+	Icon                      *projecticon.Icon     `json:"project_icon"`
+	AgingEnabled              bool                  `json:"aging_enabled"`
+	Name                      string                `json:"name"`
 	DuplicateChallenge        bool                  `json:"duplicate_challenge"`
 	ArchiveCompletedAfterDays *int                  `json:"archive_completed_after_days"`
 	ArchiveCancelledAfterDays *int                  `json:"archive_cancelled_after_days"`
@@ -64,16 +68,21 @@ func (s *Service) githubRequestCounts(c echo.Context) error {
 func readProjectIntegration(ctx context.Context, query nativeQueryer, scope nativeScope) (ProjectIntegration, error) {
 	var result ProjectIntegration
 	var states string
-	err := query.QueryRowContext(ctx, `SELECT p.profile, p.integration_revision, p.github_intake, p.github_projection,
-p.github_repository_enabled, COALESCE(r.github_owner || '/' || r.github_name, ''), COALESCE(r.id, 0), p.checkout_repository, p.states_json, p.workflow_source, p.workflow_source_revision, p.workflow_markdown, p.archive_completed_after_days, p.archive_cancelled_after_days, p.duplicate_challenge
-FROM projects p LEFT JOIN repositories r ON r.id = p.repository_id WHERE p.organization_id = ? AND p.id = ?`, scope.organization, scope.project).Scan(
-		&result.Profile, &result.Revision, &result.Intake, &result.Projection, &result.RepositoryEnabled, &result.Repository, &result.RepositoryID, &result.CheckoutRepository, &states, &result.WorkflowSource, &result.WorkflowSourceRevision, &result.WorkflowMarkdown, &result.ArchiveCompletedAfterDays, &result.ArchiveCancelledAfterDays, &result.DuplicateChallenge)
+	err := query.QueryRowContext(ctx, `SELECT p.name, p.profile, p.integration_revision, p.github_intake, p.github_projection,
+p.github_repository_enabled, COALESCE(r.github_owner || '/' || r.github_name, ''), COALESCE(r.id, 0), p.checkout_repository, p.states_json, p.workflow_source, p.workflow_source_revision, p.workflow_markdown, p.archive_completed_after_days, p.archive_cancelled_after_days, p.duplicate_challenge, p.aging_enabled
+FROM projects p LEFT JOIN repositories r ON r.id = p.repository_id WHERE p.organization_id = ? AND p.id = ? AND p.deleted_at IS NULL`, scope.organization, scope.project).Scan(
+		&result.Name, &result.Profile, &result.Revision, &result.Intake, &result.Projection, &result.RepositoryEnabled, &result.Repository, &result.RepositoryID, &result.CheckoutRepository, &states, &result.WorkflowSource, &result.WorkflowSourceRevision, &result.WorkflowMarkdown, &result.ArchiveCompletedAfterDays, &result.ArchiveCancelledAfterDays, &result.DuplicateChallenge, &result.AgingEnabled)
 	if err != nil {
 		return result, err
 	}
 	if err := json.Unmarshal([]byte(states), &result.States); err != nil {
 		return result, err
 	}
+	icon, err := readProjectIcon(ctx, query, scope)
+	if err != nil {
+		return result, err
+	}
+	result.Icon = projectIconOverride(icon)
 	result.ManualImportEnabled = result.Intake == "manual"
 	if result.Profile == "native" && (result.Repository != "" || result.CheckoutRepository != "") {
 		result.Intake = "automatic"
@@ -113,18 +122,10 @@ func (s *Service) projectIntegration(ctx context.Context, query nativeQueryer, s
 		return result, err
 	}
 	if result.CheckoutRepository != "" {
-		var reported int
-		now := time.Now().UTC()
-		err := query.QueryRowContext(ctx, `SELECT count(*) FROM runner_checkout_repositories cr
-JOIN runner_identities r ON r.id=cr.runner_id AND r.organization_id=?
-JOIN api_tokens t ON t.id=r.token_id AND t.revoked_at IS NULL AND (t.expires_at IS NULL OR julianday(t.expires_at)>julianday(?))
-JOIN token_grants g ON g.token_id=t.id AND g.organization_id=? AND g.project_id=cr.project_id
-WHERE cr.project_id=? AND lower(cr.repository)=lower(?) AND r.state='active' AND julianday(cr.reported_at)>julianday(?)`,
-			scope.organization, formatHubTime(now), scope.organization, scope.project, result.CheckoutRepository, formatHubTime(now.Add(-5*time.Minute))).Scan(&reported)
+		result.CheckoutVerified, err = verifiedProjectCheckout(ctx, query, scope, result.CheckoutRepository, time.Now().UTC())
 		if err != nil {
 			return result, err
 		}
-		result.CheckoutVerified = reported > 0
 	}
 	available := !s.config.GitHubDisabled && s.config.ReconcileBackend != nil
 	result.GitHubTransportAvailable = &available
@@ -144,6 +145,7 @@ WHERE cr.project_id=? AND lower(cr.repository)=lower(?) AND r.state='active' AND
 }
 
 type updateProjectIntegrationRequest struct {
+	AgingEnabled              *bool           `json:"aging_enabled,omitempty"`
 	DuplicateChallenge        *bool           `json:"duplicate_challenge,omitempty"`
 	ArchiveCompletedAfterDays json.RawMessage `json:"archive_completed_after_days,omitempty"`
 	ArchiveCancelledAfterDays json.RawMessage `json:"archive_cancelled_after_days,omitempty"`
@@ -159,7 +161,7 @@ type updateProjectIntegrationRequest struct {
 func (s *Service) updateProjectIntegration(c echo.Context) error {
 	var request updateProjectIntegrationRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	scope := nativeRequestScope(c)
 	scope.requireHostedAdmin = true
@@ -179,7 +181,7 @@ func (s *Service) updateProjectIntegrationOperation(request updateProjectIntegra
 		automaticIntake := current.Profile == "native" && (current.Repository != "" || current.CheckoutRepository != "")
 		preserveIntake := automaticIntake && request.Intake == ""
 		if (!preserveIntake && request.Intake != "disabled" && request.Intake != "manual") || (request.Projection != "disabled" && request.Projection != "summary") {
-			return nil, nativeInvalid("Intake must be disabled or manual; projection must be disabled or summary")
+			return nil, nativePublicInvalid("Intake must be disabled or manual; projection must be disabled or summary")
 		}
 		completed, err := archivePeriod(request.ArchiveCompletedAfterDays, current.ArchiveCompletedAfterDays)
 		if err != nil {
@@ -193,23 +195,27 @@ func (s *Service) updateProjectIntegrationOperation(request updateProjectIntegra
 		if current.ManualImportEnabled {
 			currentIntake = "manual"
 		}
+		agingEnabled := current.AgingEnabled
+		if request.AgingEnabled != nil {
+			agingEnabled = *request.AgingEnabled
+		}
 		duplicateChallenge := current.DuplicateChallenge
 		if request.DuplicateChallenge != nil {
 			duplicateChallenge = *request.DuplicateChallenge
 		}
-		archiveSettingsSupplied := request.DuplicateChallenge != nil || len(request.ArchiveCompletedAfterDays) != 0 || len(request.ArchiveCancelledAfterDays) != 0
+		archiveSettingsSupplied := request.AgingEnabled != nil || request.DuplicateChallenge != nil || len(request.ArchiveCompletedAfterDays) != 0 || len(request.ArchiveCancelledAfterDays) != 0
 		integrationChanged := request.States != nil || request.WorkflowMarkdown != nil || (!preserveIntake && request.Intake != currentIntake) || request.Projection != current.Projection || request.RepositoryEnabled != current.RepositoryEnabled
 		if archiveSettingsSupplied && !integrationChanged {
-			if _, err := tx.ExecContext(ctx, "UPDATE projects SET integration_revision=integration_revision+1, archive_completed_after_days=?, archive_cancelled_after_days=?, duplicate_challenge=? WHERE organization_id=? AND id=?", completed, cancelled, duplicateChallenge, scope.organization, scope.project); err != nil {
+			if _, err := tx.ExecContext(ctx, "UPDATE projects SET integration_revision=integration_revision+1, archive_completed_after_days=?, archive_cancelled_after_days=?, duplicate_challenge=?, aging_enabled=? WHERE organization_id=? AND id=?", completed, cancelled, duplicateChallenge, agingEnabled, scope.organization, scope.project); err != nil {
 				return nil, err
 			}
 			return readProjectIntegration(ctx, tx, scope)
 		}
 		if current.RepositoryID == 0 && ((!preserveIntake && request.Intake != "disabled" && !automaticIntake) || request.Projection != "disabled" || request.RepositoryEnabled) {
-			return nil, nativeInvalid("Attach a GitHub repository before enabling intake, summaries or repository integration")
+			return nil, nativePublicInvalid("Attach a GitHub repository before enabling intake, summaries or repository integration")
 		}
 		if current.Profile == "github_compatible" && request.Projection != "disabled" {
-			return nil, nativeInvalid("Summary projection requires native authority; use explicit cutover first")
+			return nil, nativePublicInvalid("Summary projection requires native authority; use explicit cutover first")
 		}
 		if err := requireIntegrationIdle(ctx, tx, scope, now); err != nil {
 			return nil, err
@@ -252,7 +258,7 @@ func (s *Service) updateProjectIntegrationOperation(request updateProjectIntegra
 				return nil, err
 			}
 		}
-		_, err = tx.ExecContext(ctx, `UPDATE projects SET integration_revision = integration_revision + 1, github_intake = COALESCE(NULLIF(?, ''), github_intake), github_projection = ?, github_repository_enabled = ?, archive_completed_after_days = ?, archive_cancelled_after_days = ?, duplicate_challenge = ? WHERE id = ?`, request.Intake, request.Projection, request.RepositoryEnabled, completed, cancelled, duplicateChallenge, scope.project)
+		_, err = tx.ExecContext(ctx, `UPDATE projects SET integration_revision = integration_revision + 1, github_intake = COALESCE(NULLIF(?, ''), github_intake), github_projection = ?, github_repository_enabled = ?, archive_completed_after_days = ?, archive_cancelled_after_days = ?, duplicate_challenge = ?, aging_enabled = ? WHERE id = ?`, request.Intake, request.Projection, request.RepositoryEnabled, completed, cancelled, duplicateChallenge, agingEnabled, scope.project)
 		if err != nil {
 			return nil, err
 		}
@@ -269,13 +275,13 @@ func archivePeriod(raw json.RawMessage, current *int) (*int, error) {
 	}
 	var days *int
 	if err := json.Unmarshal(raw, &days); err != nil {
-		return nil, nativeInvalid("Archive period must be 7, 14, 30, 60, 90 days or null")
+		return nil, nativePublicInvalid("Archive period must be 7, 14, 30, 60, 90 days or null")
 	}
 	if days != nil {
 		switch *days {
 		case 7, 14, 30, 60, 90:
 		default:
-			return nil, nativeInvalid("Archive period must be 7, 14, 30, 60, 90 days or null")
+			return nil, nativePublicInvalid("Archive period must be 7, 14, 30, 60, 90 days or null")
 		}
 	}
 	return days, nil
@@ -290,17 +296,57 @@ func requireIntegrationIdle(ctx context.Context, tx *sql.Tx, scope nativeScope, 
 		return err
 	}
 	if active != 0 {
-		return nativeInvalid("Finish active leases and processing GitHub writes before changing integration authority")
+		return nativePublicInvalid("Finish active leases and processing GitHub writes before changing integration authority")
 	}
 	return nil
 }
 
 func supersedeDisallowedOutbox(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) error {
-	_, err := tx.ExecContext(ctx, `UPDATE github_outbox SET status = 'superseded', completed_at = ?, updated_at = ?
-WHERE issue_id IN (SELECT i.id FROM issues i JOIN projects p ON p.id = i.project_id WHERE p.id = ? AND
-((p.profile = 'native' AND (mutation_kind = 'workflow_label' OR (mutation_kind = 'workpad' AND ((p.github_projection = 'disabled' AND COALESCE(json_extract(desired_json, '$.issue_number'), 0) = 0) OR COALESCE(json_extract(desired_json, '$.summary'), 0) = 0)))) OR (mutation_kind = 'merge_pull_request' AND p.github_repository_enabled = 0)))
-AND status IN ('pending', 'retrying')`, formatOutboxTime(now), formatOutboxTime(now), scope.project)
-	return err
+	rows, err := tx.QueryContext(ctx, `SELECT o.id,o.desired_json,o.desired_issue_number,o.desired_summary,p.github_projection FROM github_outbox o JOIN issues i ON i.id=o.issue_id JOIN projects p ON p.id=i.project_id WHERE p.id=? AND p.profile='native' AND o.mutation_kind='workpad' AND o.status IN ('pending','retrying') AND (o.desired_issue_number IS NULL OR o.desired_summary IS NULL)`, scope.project)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var legacy []int64
+	for rows.Next() {
+		var id int64
+		var raw, projection string
+		var number sql.NullInt64
+		var summary sql.NullBool
+		if err := rows.Scan(&id, &raw, &number, &summary, &projection); err != nil {
+			return err
+		}
+		fields, err := evaluatedHostedImportFields(ctx, tx, "github_outbox", raw)
+		if err != nil {
+			return err
+		}
+		value := fields.outbox
+		if number.Valid {
+			value.IssueNumber = int(number.Int64)
+		}
+		if summary.Valid {
+			value.Summary = summary.Bool
+		}
+		if (projection == "disabled" && value.IssueNumber == 0) || !value.Summary {
+			legacy = append(legacy, id)
+		}
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE github_outbox SET status='superseded',completed_at=?,updated_at=?
+WHERE issue_id IN (SELECT i.id FROM issues i JOIN projects p ON p.id=i.project_id WHERE p.id=? AND
+((p.profile='native' AND (mutation_kind='workflow_label' OR (mutation_kind='workpad' AND ((p.github_projection='disabled' AND desired_issue_number=0) OR desired_summary=0)))) OR (mutation_kind='merge_pull_request' AND p.github_repository_enabled=0)))
+AND status IN ('pending','retrying')`, formatOutboxTime(now), formatOutboxTime(now), scope.project)
+	if err != nil {
+		return err
+	}
+	for _, id := range legacy {
+		if _, err := tx.ExecContext(ctx, `UPDATE github_outbox SET status='superseded',completed_at=?,updated_at=? WHERE id=? AND status IN ('pending','retrying')`, formatOutboxTime(now), formatOutboxTime(now), id); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func repositoryOwnership(ctx context.Context, query nativeQueryer, id int64) (string, bool, error) {
@@ -314,9 +360,16 @@ func repositoryOwnership(ctx context.Context, query nativeQueryer, id int64) (st
 }
 
 func (s *Service) registerIntegrationRoutes(e *echo.Echo) {
+	if s.config.Hosted == nil {
+		operator := s.requireAPIScope(apiScopeOperator)
+		e.GET(hostedOrganizationBase+"/model-selection", s.getOrganizationModelSelection, operator)
+		e.PUT(hostedOrganizationBase+"/model-selection", s.updateOrganizationModelSelection, operator)
+	}
 	e.GET("/api/v2/github/requests", s.githubRequestCounts, s.requireInstanceAdmin())
 	e.GET(nativeBase+"/model-selection", s.getCloudModelSelection, s.requireNativeScope(apiScopeWorker, apiScopeOperator))
 	e.PUT(nativeBase+"/model-selection", s.updateCloudModelSelection, s.requireNativeScope(apiScopeOperator, apiScopeAdmin))
+	e.GET(nativeBase+"/content-settings", s.getCloudContentSettings, s.requireNativeScope(apiScopeWorker, apiScopeOperator))
+	e.PUT(nativeBase+"/content-settings", s.updateCloudContentSettings, s.requireNativeScope(apiScopeOperator, apiScopeAdmin))
 	read := s.requireNativeScope(apiScopeWorker, apiScopeOperator)
 	operator := s.requireNativeScope(apiScopeOperator)
 	admin := s.requireNativeScope(apiScopeAdmin)

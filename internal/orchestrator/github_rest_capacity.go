@@ -26,10 +26,9 @@ const (
 	workflowActionGitHubRESTBudgetRecovery   = "github_rest_budget_recovery"
 	githubRESTBudgetWaitingReason            = "github_rest_budget_wait"
 	githubRESTBudgetObservationPendingReason = "github_rest_budget_observation_pending"
-	githubRESTBudgetRearmConsumedReason      = "github_rest_budget_rearm_consumed"
-	repeatedFailureCircuitBreakerCause       = "repeated_failure_circuit_breaker"
-	githubRESTBudgetProbeRetryInterval       = time.Minute
-	legacyGitHubRESTBudgetStageUpdateSkew    = 10 * time.Second
+
+	githubRESTBudgetProbeRetryInterval    = time.Minute
+	legacyGitHubRESTBudgetStageUpdateSkew = 10 * time.Second
 )
 
 var githubRESTCapacityScope = backendcapacity.Scope{
@@ -259,6 +258,9 @@ func (o *Orchestrator) handleGitHubRESTCapacityCompletion(
 	} else if !active || event.Err == nil || !o.dispatchPlanner().githubRESTDependent(running.Issue) {
 		return false
 	}
+	if !o.nativeWorkflow() {
+		o.releaseTerminalAttemptClaim(ctx, state, running.Issue, event.CompletedAt)
+	}
 	if !o.nativeWorkflow() || !mergeWorkerIssue(running.Issue) {
 		running = o.restoreBackendCapacityIssueState(ctx, state, running, event.CompletedAt)
 	}
@@ -318,7 +320,7 @@ func (o *Orchestrator) handleGitHubRESTCapacityCompletion(
 		state,
 		running.Issue,
 		running.WorkProductPushed,
-		terminalAttemptRetryLimitCause,
+		workAttemptErrorRunner,
 		attemptCompleted,
 		running.Mode,
 		running.DiffStats,
@@ -576,149 +578,6 @@ func githubRESTBudgetEvidenceFromMessage(message string) (githubRESTBudgetEviden
 	return evidence, evidence.Reserve > 0
 }
 
-func (o *Orchestrator) githubRESTBudgetParkEvidence(state *State, err error, targetState string) (githubRESTBudgetEvidence, bool) {
-	evidence, ok := githubRESTBudgetEvidenceFromError(err)
-	if !ok {
-		return githubRESTBudgetEvidence{}, false
-	}
-	evidence.TargetState = o.repeatedFailureRecoveryTarget(targetState)
-	if current, currentOK := currentGitHubRESTBudget(state, evidence); currentOK {
-		evidence.Limit = current.Limit
-		if evidence.ResetAt.IsZero() {
-			evidence.ResetAt = current.ResetAt
-		}
-		evidence.ObservedAt = current.ObservedAt
-		evidence.CredentialIdentity = current.CredentialIdentity
-		if current.Consumer != "" {
-			evidence.Consumer = current.Consumer
-		}
-	}
-	return evidence, true
-}
-
-func applyGitHubRESTBudgetEvidence(metadata *workflowLaneBlockedRecoveryMetadata, evidence githubRESTBudgetEvidence) {
-	if metadata == nil {
-		return
-	}
-	metadata.ResourceKind = githubRESTCapacityKind
-	metadata.ResourceConsumer = strings.TrimSpace(evidence.Consumer)
-	metadata.ResourceCredential = strings.TrimSpace(evidence.CredentialIdentity)
-	metadata.ResourceRemaining = evidence.Remaining
-	metadata.ResourceLimit = evidence.Limit
-	metadata.ResourceReserve = evidence.Reserve
-	metadata.ResourceResetAt = githubRESTBudgetTimeValue(evidence.ResetAt)
-	metadata.ResourceObservedAt = githubRESTBudgetTimeValue(evidence.ObservedAt)
-}
-
-func githubRESTBudgetTimeValue(value time.Time) string {
-	if value.IsZero() {
-		return ""
-	}
-	return value.UTC().Format(time.RFC3339)
-}
-
-func githubRESTBudgetEvidenceFromMetadata(park workflowLaneBlockedRecoveryMetadata) (githubRESTBudgetEvidence, bool) {
-	if strings.TrimSpace(park.ResourceKind) != githubRESTCapacityKind || park.ResourceReserve <= 0 {
-		return githubRESTBudgetEvidence{}, false
-	}
-	resetAt := githubRESTBudgetMetadataTime(park.ResourceResetAt)
-	observedAt := githubRESTBudgetMetadataTime(park.ResourceObservedAt)
-	return githubRESTBudgetEvidence{
-		Consumer:           strings.TrimSpace(park.ResourceConsumer),
-		CredentialIdentity: strings.TrimSpace(park.ResourceCredential),
-		Remaining:          park.ResourceRemaining,
-		Limit:              park.ResourceLimit,
-		Reserve:            park.ResourceReserve,
-		ResetAt:            resetAt,
-		ObservedAt:         observedAt,
-		TargetState:        strings.TrimSpace(park.TargetState),
-	}, true
-}
-
-func githubRESTBudgetMetadataTime(value string) time.Time {
-	parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(value))
-	if err != nil {
-		return time.Time{}
-	}
-	return parsed
-}
-
-func (o *Orchestrator) repeatedFailureGitHubRESTBudgetEvidence(
-	ctx context.Context,
-	issue connector.Issue,
-	park workflowLaneBlockedRecoveryMetadata,
-) (githubRESTBudgetEvidence, bool) {
-	if strings.TrimSpace(park.Cause) != repeatedFailureCircuitBreakerCause {
-		return githubRESTBudgetEvidence{}, false
-	}
-	if evidence, ok := githubRESTBudgetEvidenceFromMetadata(park); ok {
-		evidence.TargetState = o.repeatedFailureRecoveryTarget(evidence.TargetState)
-		return evidence, true
-	}
-	if o == nil || o.workAttempts == nil {
-		return githubRESTBudgetEvidence{}, false
-	}
-	attempts, err := o.workAttempts.ListRecentTerminalWorkAttempts(ctx, store.WorkAttemptHistoryQuery{
-		ProjectID:  strings.TrimSpace(o.cfg.Project.ID),
-		IssueID:    strings.TrimSpace(issue.ID),
-		Identifier: strings.TrimSpace(issue.Identifier),
-		IssueURL:   strings.TrimSpace(issue.URL),
-		Limit:      repeatedFailureThreshold,
-	})
-	if err != nil {
-		if o.logger != nil {
-			o.logger.Warn("repeated failure REST budget evidence unavailable", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
-		}
-		return githubRESTBudgetEvidence{}, false
-	}
-	if len(attempts) < repeatedFailureThreshold {
-		return githubRESTBudgetEvidence{}, false
-	}
-	var evidence githubRESTBudgetEvidence
-	for index, attempt := range attempts[:repeatedFailureThreshold] {
-		candidate, ok := githubRESTBudgetEvidenceFromMessage(attempt.ErrorMessage)
-		if !ok {
-			return githubRESTBudgetEvidence{}, false
-		}
-		if index == 0 {
-			evidence = candidate
-			evidence.TargetState = o.repeatedFailureRecoveryTarget(attempt.Lane)
-		}
-	}
-	return evidence, true
-}
-
-func (o *Orchestrator) currentLegacyRepeatedFailureGitHubRESTBudgetPark(
-	ctx context.Context,
-	issue connector.Issue,
-) (workflowLaneBlockedRecoveryMetadata, bool) {
-	entry, ok := o.latestWorkflowLaneEntry(ctx, issue)
-	if !ok ||
-		normalizeState(entry.Event.PhaseName) != normalizeState(blockedStatusState) ||
-		entry.Metadata.BlockedRecovery == nil ||
-		issue.StageUpdatedAt == nil ||
-		issue.StageUpdatedAt.IsZero() ||
-		entry.Event.StartedAt.IsZero() ||
-		entry.Event.StartedAt.Before(issue.StageUpdatedAt.Add(-legacyGitHubRESTBudgetStageUpdateSkew)) {
-		return workflowLaneBlockedRecoveryMetadata{}, false
-	}
-	park := *entry.Metadata.BlockedRecovery
-	if !strings.EqualFold(strings.TrimSpace(park.Owner), blockedRecoveryOwnerOrchestrator) ||
-		strings.TrimSpace(park.Cause) != repeatedFailureCircuitBreakerCause ||
-		strings.TrimSpace(park.Predicate) != blockedRecoveryPredicateFingerprintChange ||
-		strings.TrimSpace(park.ResourceKind) != "" {
-		return workflowLaneBlockedRecoveryMetadata{}, false
-	}
-	evidence, ok := o.repeatedFailureGitHubRESTBudgetEvidence(ctx, issue, park)
-	if !ok {
-		return workflowLaneBlockedRecoveryMetadata{}, false
-	}
-	park.Predicate = blockedRecoveryPredicateGitHubRESTBudget
-	park.TargetState = o.repeatedFailureRecoveryTarget(evidence.TargetState)
-	applyGitHubRESTBudgetEvidence(&park, evidence)
-	return park, true
-}
-
 func currentGitHubRESTBudget(state *State, match githubRESTBudgetEvidence) (githubRESTBudgetEvidence, bool) {
 	if state == nil || state.RateLimits == nil {
 		return githubRESTBudgetEvidence{}, false
@@ -758,173 +617,6 @@ func currentGitHubRESTBudget(state *State, match githubRESTBudgetEvidence) (gith
 		}
 	}
 	return current, current.Limit > 0
-}
-
-func (o *Orchestrator) probeGitHubRESTBudgetPark(
-	ctx context.Context,
-	state *State,
-	issue connector.Issue,
-	evidence githubRESTBudgetEvidence,
-	now time.Time,
-) {
-	if o == nil || o.githubRESTBudgetProber == nil || !evidence.ResetAt.IsZero() && evidence.ResetAt.After(now) {
-		return
-	}
-	key := strings.TrimSpace(evidence.Consumer) + "\x00" + strings.TrimSpace(evidence.CredentialIdentity)
-	if o.githubRESTBudgetProbes == nil {
-		o.githubRESTBudgetProbes = map[string]time.Time{}
-	}
-	if next := o.githubRESTBudgetProbes[key]; next.After(now) {
-		return
-	}
-	o.githubRESTBudgetProbes[key] = now.Add(githubRESTBudgetProbeRetryInterval)
-	budget, supported, err := o.githubRESTBudgetProber.ProbeGitHubRESTBudget(ctx, issue)
-	if err != nil {
-		if o.logger != nil {
-			o.logger.Warn("GitHub REST budget recovery probe failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
-		}
-		return
-	}
-	if !supported || !gitHubRESTBudgetMatchesEvidence(budget, evidence) {
-		return
-	}
-	if state.RateLimits == nil {
-		state.RateLimits = &telemetry.RateLimits{}
-	}
-	state.RateLimits.GitHubRESTBudgets = mergeRESTBudgets(state.RateLimits.GitHubRESTBudgets, []telemetry.RESTBudget{budget})
-}
-
-func gitHubRESTBudgetMatchesEvidence(budget telemetry.RESTBudget, evidence githubRESTBudgetEvidence) bool {
-	consumer := strings.TrimSpace(budget.Consumer)
-	if consumer == "" {
-		consumer = telemetry.RESTConsumerOrchestrator
-	}
-	if evidence.Consumer != "" && consumer != evidence.Consumer {
-		return false
-	}
-	if evidence.CredentialIdentity != "" && strings.TrimSpace(budget.CredentialIdentity) != evidence.CredentialIdentity {
-		return false
-	}
-	return evidence.CredentialIdentity != "" || evidence.Consumer != "" || budget.MinRemainingReserve == evidence.Reserve
-}
-
-func (o *Orchestrator) repeatedFailureRecoveryTarget(candidate string) string {
-	candidate = strings.TrimSpace(candidate)
-	if candidate == "" || normalizeState(candidate) == normalizeState(blockedStatusState) || stateIn(candidate, o.cfg.TerminalStates) {
-		return "Todo"
-	}
-	return candidate
-}
-
-func (o *Orchestrator) reconcileRepeatedFailureGitHubRESTBudgetPark(
-	ctx context.Context,
-	state *State,
-	issue connector.Issue,
-	park workflowLaneBlockedRecoveryMetadata,
-	now time.Time,
-) (bool, bool) {
-	evidence, ok := o.repeatedFailureGitHubRESTBudgetEvidence(ctx, issue, park)
-	if !ok {
-		return false, false
-	}
-	park.Predicate = blockedRecoveryPredicateGitHubRESTBudget
-	park.TargetState = o.repeatedFailureRecoveryTarget(evidence.TargetState)
-	applyGitHubRESTBudgetEvidence(&park, evidence)
-	blockedAt := workflowLaneFallbackAt(issue)
-	if entry, exists := state.Blocked[strings.TrimSpace(issue.ID)]; exists && !entry.BlockedAt.IsZero() {
-		blockedAt = entry.BlockedAt
-	}
-	current, observed := currentGitHubRESTBudget(state, evidence)
-	if observed {
-		evidence.Consumer = current.Consumer
-		evidence.CredentialIdentity = current.CredentialIdentity
-		if evidence.ResetAt.IsZero() {
-			evidence.ResetAt = current.ResetAt
-		}
-		applyGitHubRESTBudgetEvidence(&park, evidence)
-	}
-	if !observed || current.ObservedAt.IsZero() || !current.ObservedAt.After(blockedAt) || current.ResetAt.IsZero() || !current.ResetAt.After(now) {
-		o.probeGitHubRESTBudgetPark(ctx, state, issue, evidence, now)
-		current, observed = currentGitHubRESTBudget(state, evidence)
-	}
-	if !observed || current.ObservedAt.IsZero() || !current.ObservedAt.After(blockedAt) || current.ResetAt.IsZero() || !current.ResetAt.After(now) {
-		o.recordBlockedRecoveryDecision(ctx, state, issue, "defer", githubRESTBudgetObservationPendingReason, &park, "")
-		o.setGitHubRESTBudgetParkSurface(state, issue.ID, githubRESTBudgetStatusMessage("waiting for a fresh observation", evidence))
-		return true, false
-	}
-	applyGitHubRESTBudgetEvidence(&park, current)
-	if current.Remaining <= evidence.Reserve {
-		o.recordBlockedRecoveryDecision(ctx, state, issue, "defer", githubRESTBudgetWaitingReason, &park, "")
-		o.setGitHubRESTBudgetParkSurface(state, issue.ID, githubRESTBudgetStatusMessage("waiting for capacity", current))
-		return true, false
-	}
-	signature := githubRESTBudgetRecoverySignature(current, evidence.Reserve)
-	if _, consumed := o.workflowTimelineActionSignature(ctx, issue, workflowActionGitHubRESTBudgetRecovery, signature); consumed {
-		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", githubRESTBudgetRearmConsumedReason, &park, signature)
-		o.setGitHubRESTBudgetParkSurface(state, issue.ID, githubRESTBudgetStatusMessage("capacity recovered; automatic re-arm already used for this reset window", current))
-		return true, false
-	}
-	targetState := o.repeatedFailureRecoveryTarget(evidence.TargetState)
-	metadata := workflowLaneMetadataWithActionSignature(workflowLaneMetadata{}, workflowActionGitHubRESTBudgetRecovery, signature)
-	if err := o.updateIssueStateByIDStrictWithMetadata(ctx, state, issue.ID, issue, targetState, now, workflowActionGitHubRESTBudgetRecovery, metadata); err != nil {
-		o.recordBlockedRecoveryDecision(ctx, state, issue, "defer", "transition_failed", &park, signature)
-		o.setGitHubRESTBudgetParkSurface(state, issue.ID, githubRESTBudgetStatusMessage("capacity recovered; lane transition failed", current))
-		return true, false
-	}
-	if o.connector != nil {
-		comment := fmt.Sprintf(
-			"GitHub REST capacity recovered. Detent moved %s from %s back to %s.\n\n- consumer: %s\n- credential_identity: %s\n- remaining: %d / %d\n- worker reserve: %d\n- reset_at: %s\n- exhaustion_episode: %s",
-			issueLabel(issue), strings.TrimSpace(issue.State), targetState,
-			strings.TrimSpace(current.Consumer), strings.TrimSpace(current.CredentialIdentity), current.Remaining, current.Limit, evidence.Reserve,
-			current.ResetAt.UTC().Format(time.RFC3339), signature,
-		)
-		if err := o.connector.CreateComment(ctx, issue.ID, comment); err != nil && o.logger != nil {
-			o.logger.Warn("GitHub REST budget recovery comment failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
-		}
-	}
-	delete(state.Blocked, issue.ID)
-	o.logBlockedRecoveryDecision(issue, "transition", "github_rest_budget_recovered", &park, signature)
-	return true, true
-}
-
-func githubRESTBudgetRecoverySignature(current githubRESTBudgetEvidence, reserve int64) string {
-	return fmt.Sprintf(
-		"consumer=%s;credential_identity=%s;reset_at=%s;reserve=%d",
-		strings.TrimSpace(current.Consumer),
-		strings.TrimSpace(current.CredentialIdentity),
-		current.ResetAt.UTC().Format(time.RFC3339),
-		reserve,
-	)
-}
-
-func githubRESTBudgetStatusMessage(status string, budget githubRESTBudgetEvidence) string {
-	message := fmt.Sprintf("transient GitHub REST budget %s: remaining=%d", strings.TrimSpace(status), budget.Remaining)
-	if budget.Limit > 0 {
-		message += "/" + strconv.FormatInt(budget.Limit, 10)
-	}
-	message += " reserve=" + strconv.FormatInt(budget.Reserve, 10)
-	if budget.Consumer != "" {
-		message += " consumer=" + strings.TrimSpace(budget.Consumer)
-	}
-	if budget.CredentialIdentity != "" {
-		message += " credential_identity=" + strings.TrimSpace(budget.CredentialIdentity)
-	}
-	if !budget.ResetAt.IsZero() {
-		message += " reset_at=" + budget.ResetAt.UTC().Format(time.RFC3339)
-	}
-	return message
-}
-
-func (o *Orchestrator) setGitHubRESTBudgetParkSurface(state *State, issueID string, reason string) {
-	if state == nil {
-		return
-	}
-	entry, ok := state.Blocked[strings.TrimSpace(issueID)]
-	if !ok {
-		return
-	}
-	entry.Reason = strings.TrimSpace(reason)
-	state.Blocked[strings.TrimSpace(issueID)] = entry
 }
 
 func githubRESTEvidenceRetryAt(evidence githubRESTBudgetEvidence, now time.Time) time.Time {

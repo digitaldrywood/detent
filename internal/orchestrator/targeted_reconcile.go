@@ -69,7 +69,9 @@ func (o *Orchestrator) applyTargetedReconcile(
 	o.updateTargetedIssueEntries(state, issue)
 
 	if normalizeState(issue.State) == normalizeState(blockedStatusState) {
-		o.setBlockedStatusIssue(ctx, state, issue, now)
+		if !o.recoverCauseBlockedIssue(ctx, state, issue, now) {
+			o.setBlockedStatusIssue(ctx, state, issue, now)
+		}
 	} else {
 		clearBlockedStatusIssue(state, issue)
 	}

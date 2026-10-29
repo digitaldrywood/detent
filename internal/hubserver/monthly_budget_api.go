@@ -33,11 +33,11 @@ func (s *Service) getMonthlyBudget(c echo.Context) error {
 func (s *Service) updateMonthlyBudget(c echo.Context) error {
 	var request monthlyBudgetRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	scope := nativeRequestScope(c)
 	if !canManageProjectSecrets(scope.credential) {
-		return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "forbidden", Message: "Monthly budgets require owner or admin access"})
+		return s.refusedAPIError(c, http.StatusForbidden, "forbidden", "Monthly budgets require owner or admin access", apiErrorResponse{Code: "forbidden", Message: "Monthly budgets require owner or admin access"})
 	}
 	scope.requireHostedAdmin = true
 	c.Set("native_scope", scope)
@@ -52,7 +52,7 @@ func (s *Service) updateMonthlyBudget(c echo.Context) error {
 func updateMonthlyBudgetOperation(request monthlyBudgetRequest) func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error) {
 	return func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		if err := request.Policy.Validate(); err != nil {
-			return nil, nativeInvalid(err.Error())
+			return nil, nativePublicInvalid(err.Error())
 		}
 		current, err := readMonthlyBudgetSettings(ctx, tx, scope)
 		if err != nil {

@@ -42,6 +42,8 @@ func TestMain(m *testing.M) {
 		os.Exit(runWorkflowGitParentHelper())
 	case "descendant":
 		os.Exit(runWorkflowGitDescendantHelper())
+	case "blocking":
+		os.Exit(runBlockingWorkflowGitHelper())
 	default:
 		os.Exit(m.Run())
 	}
@@ -252,7 +254,7 @@ func TestLoadWorkflowUsesSplitDefinitionFromConfiguredGitRef(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repo, "WORKFLOW.md"), []byte("from split ref\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile(WORKFLOW.md) error = %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(repo, "detent.yaml"), []byte("schema: 1\ntracker:\n  kind: memory\npolling:\n  interval_ms: 90000\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(repo, "detent.yaml"), []byte("schema: 1\ntracker:\n  kind: hub_native\npolling:\n  interval_ms: 90000\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile(detent.yaml) error = %v", err)
 	}
 	runWorkflowSourceGit(t, repo, "add", "WORKFLOW.md", "detent.yaml")
@@ -281,62 +283,6 @@ func TestLoadWorkflowUsesSplitDefinitionFromConfiguredGitRef(t *testing.T) {
 	}
 	if workflow.Definition.Revision == "" || workflow.Definition.Revision == workflow.SourceHash {
 		t.Fatalf("Revision = %q, want git commit revision", workflow.Definition.Revision)
-	}
-}
-
-func TestLoadWorkflowUsesAdmissionEffortGuidanceFromConfiguredGitRef(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process lifecycle integration")
-	}
-
-	t.Parallel()
-
-	repo := initWorkflowSourceRepo(t)
-	workflowPrompt := "## Admission Criteria\n\n- **Alignment** — ready.\n"
-	config := `schema: 1
-tracker:
-  kind: memory
-backlog_admission:
-  enabled: true
-  sources:
-    states: [Backlog]
-  target_state: Todo
-  criteria_section: Admission Criteria
-  require_effort: true
-  effort_file: AGENTS.md
-  effort_section: Issue Effort Selection
-`
-	agents := "## Issue Effort Selection\n\n- `medium` — small.\n- `high` — standard.\n"
-	for fileName, content := range map[string]string{
-		"WORKFLOW.md": workflowPrompt,
-		"detent.yaml": config,
-		"AGENTS.md":   agents,
-	} {
-		if err := os.WriteFile(filepath.Join(repo, fileName), []byte(content), 0o644); err != nil {
-			t.Fatalf("WriteFile(%s) error = %v", fileName, err)
-		}
-	}
-	runWorkflowSourceGit(t, repo, "add", "WORKFLOW.md", "detent.yaml", "AGENTS.md")
-	runWorkflowSourceGit(t, repo, "commit", "-m", "configure admission effort source")
-	updateWorkflowSourceRef(t, repo, "origin/main", "HEAD")
-	if err := os.WriteFile(filepath.Join(repo, "AGENTS.md"), []byte("working tree guidance\n"), 0o644); err != nil {
-		t.Fatalf("WriteFile(AGENTS.md) error = %v", err)
-	}
-
-	workflow, err := LoadWorkflow(globalconfig.Project{
-		Workflow:    "WORKFLOW.md",
-		WorkflowRef: "origin/main",
-		Workdir:     repo,
-	})
-	if err != nil {
-		t.Fatalf("LoadWorkflow() error = %v", err)
-	}
-	rubric, err := workflowconfig.ResolveWorkflowAdmissionEffortRubric(workflow)
-	if err != nil {
-		t.Fatalf("ResolveWorkflowAdmissionEffortRubric() error = %v", err)
-	}
-	if len(rubric.Efforts) != 2 || rubric.Efforts[0] != "medium" || strings.Contains(workflow.AgentsPrompt, "working tree guidance") {
-		t.Fatalf("rubric = %#v agents prompt = %q, want configured-ref AGENTS.md", rubric, workflow.AgentsPrompt)
 	}
 }
 
@@ -502,7 +448,7 @@ func TestWorkflowWatchersUseReloadedHostBackends(t *testing.T) {
 			if ref != "" {
 				path = workflowconfig.LocalWorkflowPath(path)
 			}
-			raw := "---\ntracker:\n  kind: memory\nagents:\n  routes:\n    - name: new-default\n      backend: new-backend\n      default: true\n---\nupdated\n"
+			raw := "---\ntracker:\n  kind: hub_native\nagents:\n  routes:\n    - name: new-default\n      backend: new-backend\n      default: true\n---\nupdated\n"
 			if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
 				t.Fatal(err)
 			}
@@ -640,7 +586,7 @@ func initWorkflowSourceRepo(t *testing.T) string {
 func writeWorkflowSourceFile(t *testing.T, path string, prompt string) {
 	t.Helper()
 
-	content := "---\ntracker:\n  kind: memory\n---\n" + prompt + "\n"
+	content := "---\ntracker:\n  kind: hub_native\n---\n" + prompt + "\n"
 	temporaryPath := path + ".tmp"
 	if err := os.WriteFile(temporaryPath, []byte(content), 0o644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
@@ -927,7 +873,7 @@ func TestGitRefWorkflowWatcherReconcilesOverlayDeletion(t *testing.T) {
 					if err := os.WriteFile(filepath.Join(repo, "WORKFLOW.md"), []byte("shared\n"), 0o600); err != nil {
 						t.Fatal(err)
 					}
-					if err := os.WriteFile(filepath.Join(repo, "detent.yaml"), []byte("schema: 1\ntracker:\n  kind: memory\n"), 0o600); err != nil {
+					if err := os.WriteFile(filepath.Join(repo, "detent.yaml"), []byte("schema: 1\ntracker:\n  kind: hub_native\n"), 0o600); err != nil {
 						t.Fatal(err)
 					}
 					runWorkflowSourceGit(t, repo, "add", "detent.yaml")
@@ -941,9 +887,9 @@ func TestGitRefWorkflowWatcherReconcilesOverlayDeletion(t *testing.T) {
 				}
 				localPath := filepath.Join(repo, overlay)
 				for _, prompt := range []string{"created", "edited"} {
-					content := "---\ntracker:\n  kind: memory\n---\n" + prompt + "\n"
+					content := "---\ntracker:\n  kind: hub_native\n---\n" + prompt + "\n"
 					if overlay == "detent.local.yaml" {
-						content = "schema: 1\ntracker:\n  kind: memory\n"
+						content = "schema: 1\ntracker:\n  kind: hub_native\n"
 					}
 					if err := os.WriteFile(localPath, []byte(content), 0o600); err != nil {
 						t.Fatal(err)
@@ -1047,4 +993,67 @@ func TestWorkflowLoadFailureClassification(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRunWorkflowGitCancellation(t *testing.T) {
+	binDir := installWorkflowGitHelper(t)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv(workflowGitHelperModeEnv, "blocking")
+	for _, cancelProbe := range []bool{false, true} {
+		t.Run(strconv.FormatBool(cancelProbe), func(t *testing.T) {
+			listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer listener.Close()
+			if err := listener.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv(workflowGitHelperAddressEnv, listener.Addr().String())
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			results := make(chan error, 1)
+			go func() {
+				_, err := runWorkflowGit(ctx, binDir, "ls-remote", "origin", "HEAD")
+				results <- err
+			}()
+			connection, err := listener.AcceptTCP()
+			if err != nil {
+				cancel()
+				<-results
+				t.Fatal(err)
+			}
+			if cancelProbe {
+				cancel()
+			}
+			if cancelProbe {
+				err = <-results
+			}
+			if closeErr := connection.Close(); closeErr != nil {
+				t.Fatal(closeErr)
+			}
+			if !cancelProbe {
+				err = <-results
+			}
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) || errors.Is(err, context.Canceled) != cancelProbe {
+				t.Fatalf("git cancellation=%v error=%v", cancelProbe, err)
+			}
+			if cancelProbe && runtime.GOOS != "windows" && exitErr.Exited() {
+				t.Fatalf("expected killed git process, got %v", exitErr)
+			}
+		})
+	}
+}
+
+func runBlockingWorkflowGitHelper() int {
+	connection, err := net.Dial("tcp", os.Getenv(workflowGitHelperAddressEnv))
+	if err != nil {
+		return 2
+	}
+	defer connection.Close()
+	if _, err := io.Copy(io.Discard, connection); err != nil {
+		return 3
+	}
+	return 23
 }

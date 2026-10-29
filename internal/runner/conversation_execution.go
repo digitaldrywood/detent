@@ -43,7 +43,7 @@ const (
 	ConversationItemStatus = "status"
 )
 
-// Turn preference values (decisions section 14). They mirror the hub's
+// Turn preference values. They mirror the hub's
 // vocabulary; "auto" means the run keeps the selection it made itself.
 const (
 	ConversationPreferenceAuto = "auto"
@@ -142,7 +142,7 @@ type ConversationSession interface {
 	// of those messages so they can be reported delivered once a turn starts.
 	PendingPrompt() (text string, keys []string)
 	// PendingAttachments are the files attached to those queued messages,
-	// already fetched, for the first turn's provider input (section 17.1).
+	// already fetched, for the first turn's provider input.
 	PendingAttachments() []AgentAttachment
 	// Control returns the per-turn control object wired to the session's
 	// command queue. Every control the hub hands over is answered with a

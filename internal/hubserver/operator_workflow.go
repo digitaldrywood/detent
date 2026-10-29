@@ -100,7 +100,7 @@ func (e nativeOperatorExecutor) workflowTransition(ctx context.Context, call ope
 	outcome := "failed"
 	defer func() { e.service.hubChangeAudit(ctx, action.Mutation, outcome) }()
 	mutationContext := mutation.WithContext(ctx, action.Mutation)
-	transition := tracker.Transition{Mutation: tracker.MutationForContext(mutationContext, request.RequestID), ExpectedRevision: tracker.Revision(request.ExpectedRevision), State: request.TargetState, Reason: "user_requested"}
+	transition := tracker.Transition{Mutation: tracker.MutationForContext(mutationContext, request.RequestID), ExpectedRevision: tracker.Revision(request.ExpectedRevision), State: request.TargetState, Reason: "user_requested", ReasonDetail: request.ReasonDetail}
 	replay, found, err := e.service.nativeCommandReplay(mutationContext, scope, nativeOperation(scope, "POST", "/work-items/"+request.Identifier+"/workflow"), transition.IdempotencyKey, transition)
 	if err != nil {
 		return operatortool.Result{}, hubSafeChangeError(err)
@@ -153,7 +153,7 @@ func (e nativeOperatorExecutor) executeWorkflowTransition(ctx context.Context, a
 		return workflowExecutionFailure(err)
 	}
 	ctx = mutation.WithContext(ctx, m)
-	raw, err := e.service.transitionNativeIssueCommand(ctx, scope, request.Identifier, tracker.Transition{Mutation: tracker.MutationForContext(ctx, request.RequestID), ExpectedRevision: tracker.Revision(request.ExpectedRevision), State: request.TargetState, Reason: "user_requested"})
+	raw, err := e.service.transitionNativeIssueCommand(ctx, scope, request.Identifier, tracker.Transition{Mutation: tracker.MutationForContext(ctx, request.RequestID), ExpectedRevision: tracker.Revision(request.ExpectedRevision), State: request.TargetState, Reason: "user_requested", ReasonDetail: request.ReasonDetail})
 	if err != nil {
 		return workflowExecutionFailure(err)
 	}
@@ -166,6 +166,11 @@ func (e nativeOperatorExecutor) executeWorkflowTransition(ctx context.Context, a
 
 func workflowExecutionFailure(err error) (chat.ActionExecution, error) {
 	safe := hubSafeChangeError(err)
+	if errors.Is(safe, mutation.ErrConflict) {
+		if conflict := operatorNativeConflict(err); conflict != nil {
+			safe = conflict
+		}
+	}
 	message := safe.Error()
 	var refusal *operatortool.RequestError
 	if errors.As(safe, &refusal) {
@@ -179,7 +184,7 @@ func workflowExecutionFailure(err error) (chat.ActionExecution, error) {
 		switch {
 		case failure.status == http.StatusUnprocessableEntity && failure.Code == "transition_not_allowed":
 			message = "Workflow transition is not allowed"
-			safe = operatortool.ErrInvalidArguments
+			safe = &operatortool.RequestError{Code: failure.Code, Message: message}
 		case failure.status == http.StatusConflict && failure.Code == "revision_conflict":
 			message = "Resource has changed"
 		}

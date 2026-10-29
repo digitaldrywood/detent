@@ -51,8 +51,8 @@ if (typeof globalThis.PointerEvent === "undefined") {
   globalThis.PointerEvent = globalThis.MouseEvent as unknown as typeof PointerEvent;
 }
 
-async function renderSettings() {
-  const router = makeRouter(createMemoryHistory({ initialEntries: ["/settings/integrations?project=proj_alpha"] }));
+async function renderSettings(tab = "workflow") {
+  const router = makeRouter(createMemoryHistory({ initialEntries: [`/settings/projects/proj_alpha/${tab}`] }));
   await router.load();
   await act(async () => {
     render(
@@ -83,10 +83,9 @@ describe("repository policy after setup", () => {
       }
       return response;
     });
-    const router = await renderSettings();
-    const importLink = await screen.findByRole("link", { name: "GitHub issue import in project setup" }, httpWait);
+    const router = await renderSettings("repository");
+    const importLink = await screen.findByRole("link", { name: "Import issues" }, httpWait);
     expect(importLink.getAttribute("href")).toBe("/projects/proj_alpha/setup");
-    await screen.findByText("Configuration reported", {}, httpWait);
     if (ready) {
       expect(screen.queryByText(/setup steps? left/)).toBeNull();
       expect(screen.queryByRole("button", { name: "Finish setup" })).toBeNull();
@@ -114,8 +113,8 @@ describe("repository policy after setup", () => {
       }
       return response;
     });
-    await renderSettings();
-    await screen.findByRole("heading", { name: "New issues" }, httpWait);
+    await renderSettings(workflow ? "workflow" : "repository");
+    if (!workflow) await screen.findByRole("heading", { name: "New issues" }, httpWait);
     expect(screen.queryByRole("combobox", { name: "Intake" })).toBeNull();
     if (workflow) {
       const definition = await screen.findByRole("textbox", { name: "Workflow definition" }, httpWait);
@@ -127,7 +126,7 @@ describe("repository policy after setup", () => {
       } else {
         fireEvent.click(screen.getByRole("switch", { name: "Pull requests" }));
       }
-      fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
     }
     await waitFor(() => {
       const save = requests.mock.calls.find(([url, init]) => init?.method === "PUT" && String(url).endsWith("/onboarding/integration"));
@@ -157,7 +156,7 @@ describe("repository policy after setup", () => {
     }
     const requests = vi.spyOn(globalThis, "fetch");
     await renderSettings();
-    expect(await screen.findByText("Configuration reported", {}, httpWait)).toBeTruthy();
+    expect(await screen.findByText("Reported", {}, httpWait)).toBeTruthy();
     expect(screen.queryByRole("button", { name: /Approve|Paste policy/ })).toBeNull();
     expect(screen.queryByText(/Work is blocked until|waiting for a new policy/)).toBeNull();
     expect(requests.mock.calls.some(([url, init]) => init?.method === "PUT" && String(url).endsWith("/onboarding/policy"))).toBe(false);
@@ -168,7 +167,7 @@ describe("repository policy after setup", () => {
 describe("navigationTarget", () => {
   it.each([
     { to: "/settings/runners", want: { to: "/settings/runners" } },
-    { to: "/settings/integrations?project=proj_alpha", want: { to: "/settings/integrations", search: { project: "proj_alpha" } } },
+    { to: "/work?project=proj_alpha", want: { to: "/work", search: { project: "proj_alpha" } } },
     { to: "/work?a=1&b=two%20words", want: { to: "/work", search: { a: "1", b: "two words" } } },
   ])("splits $to", ({ to, want }) => {
     expect(navigationTarget(to)).toEqual(want);

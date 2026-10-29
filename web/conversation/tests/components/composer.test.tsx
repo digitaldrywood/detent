@@ -4,7 +4,8 @@ import { ClientContext } from "../../src/app/client.ts";
 import type { ConversationClient } from "../../src/runtime/bootstrap.ts";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import React from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { Blob as NodeBlob } from "node:buffer";
 
 import { DEFAULT_TURN_PREFERENCES } from "../../src/contracts/index.ts";
 import { Composer } from "../../src/app/components/Composer.tsx";
@@ -17,7 +18,7 @@ function setup(overrides: Partial<React.ComponentProps<typeof Composer>> = {}) {
   const onChange = vi.fn();
   const onStop = vi.fn();
   const onPreferencesChange = vi.fn();
-  render(
+  const component = (changes: Partial<React.ComponentProps<typeof Composer>> = {}) => (
     <Composer
       value="Hello"
       onChange={onChange}
@@ -28,9 +29,13 @@ function setup(overrides: Partial<React.ComponentProps<typeof Composer>> = {}) {
       preferences={DEFAULT_TURN_PREFERENCES}
       onPreferencesChange={onPreferencesChange}
       {...overrides}
-    />,
+      {...changes}
+    />
   );
+  const view = render(component());
   return {
+    update: (changes: Partial<React.ComponentProps<typeof Composer>>) => view.rerender(component(changes)),
+    unmount: view.unmount,
     onSend,
     onChange,
     onStop,
@@ -194,7 +199,7 @@ describe("Composer", () => {
     expect(onChange).toHaveBeenLastCalledWith("one\ntwo\nthree");
   });
 
-  // §10.11: the reader keeps the transcript and loses the keystrokes.
+  // The reader keeps the transcript and loses the keystrokes.
   it("disables the textarea and states why when the viewer cannot write", () => {
     const { onSend, textarea } = setup({
       disabled: true,
@@ -266,4 +271,236 @@ it("requires a click to apply a slash proposal even when automatic chat confirma
     localStorage.removeItem(`${preference}:slash`);
     fetch.mockRestore();
   }
+});
+
+describe("Composer voice input", () => {
+  const stopTrack = vi.fn();
+  const track = { enabled: true, stop: stopTrack };
+  const stream = { getTracks: () => [track], getAudioTracks: () => [track] };
+  const getUserMedia = vi.fn();
+  const recognitions: FakeRecognition[] = [];
+  const workers: FakeWorker[] = [];
+  let failModel = false;
+  let silent = false;
+  let delayModel = false;
+
+  class FakeRecognition {
+    onstart: (() => void) | null = null;
+    onend: (() => void) | null = null;
+    onerror: ((event: { error: string }) => void) | null = null;
+    onresult: ((event: { results: { isFinal: boolean; 0: { transcript: string } }[] }) => void) | null = null;
+    abort = vi.fn();
+    stop = vi.fn();
+    constructor() { recognitions.push(this); }
+    start() { this.onstart?.(); }
+    result(text: string, isFinal = false) { this.onresult?.({ results: [{ isFinal, 0: { transcript: text } }] }); }
+  }
+
+  class FakeWorker {
+    onmessage: ((event: { data: { type: string; text?: string } }) => void) | null = null;
+    onerror: (() => void) | null = null;
+    terminate = vi.fn();
+    postMessage = vi.fn((data: { audio?: Float32Array }) => {
+      if (delayModel && !data.audio) return;
+      queueMicrotask(() => this.onmessage?.({ data: failModel ? { type: "error" } :
+        data.audio ? { type: "result", text: "Local transcript" } : { type: "ready" } }));
+    });
+    constructor() { workers.push(this); }
+  }
+
+  class FakeAudioContext {
+    state = "running";
+    resume = async () => {};
+    close = vi.fn(async () => { this.state = "closed"; });
+    createMediaStreamSource = () => ({ connect: vi.fn() });
+    createAnalyser = () => ({ fftSize: 256, getFloatTimeDomainData: (data: Float32Array) => data.fill(0.1) });
+    decodeAudioData = async () => ({ duration: 1 });
+  }
+
+  class FakeRecorder {
+    state = "inactive";
+    mimeType = "audio/webm";
+    ondataavailable: ((event: { data: Blob }) => void) | null = null;
+    onstop: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+    start() { this.state = "recording"; }
+    stop() {
+      this.state = "inactive";
+      this.ondataavailable?.({ data: new Blob(["audio"]) });
+      this.onstop?.();
+    }
+  }
+
+  beforeEach(() => {
+    getUserMedia.mockReset().mockResolvedValue(stream);
+    stopTrack.mockReset();
+    recognitions.length = 0;
+    workers.length = 0;
+    failModel = false;
+    silent = false;
+    delayModel = false;
+    localStorage.removeItem("detent.voice-model-downloaded");
+    vi.stubGlobal("AudioContext", FakeAudioContext);
+    vi.stubGlobal("SpeechRecognition", FakeRecognition);
+    vi.stubGlobal("webkitSpeechRecognition", undefined);
+    vi.stubGlobal("Worker", FakeWorker);
+    vi.stubGlobal("MediaRecorder", FakeRecorder);
+    vi.stubGlobal("Blob", NodeBlob);
+    vi.stubGlobal("OfflineAudioContext", class {
+      destination = {};
+      createBufferSource = () => ({ buffer: null, connect: vi.fn(), start: vi.fn() });
+      startRendering = async () => ({ getChannelData: () => new Float32Array(16000).fill(silent ? 0 : 0.1) });
+    });
+    Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: { getUserMedia } });
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    delete (navigator as unknown as { mediaDevices?: unknown }).mediaDevices;
+    localStorage.removeItem("detent.voice-model-downloaded");
+  });
+
+  async function start() {
+    fireEvent.click(screen.getByRole("button", { name: "Start voice input" }));
+    await screen.findByRole("button", { name: "Stop recording" });
+  }
+
+  it.each(["standard", "WebKit on iOS"])("requests the microphone only on click, previews speech and preserves edits without sending with %s recognition", async (browser) => {
+    if (browser !== "standard") {
+      vi.stubGlobal("SpeechRecognition", undefined);
+      vi.stubGlobal("webkitSpeechRecognition", FakeRecognition);
+    }
+    if (browser === "WebKit on iOS") vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Mozilla/5.0 (iPhone) AppleWebKit Safari");
+    const { onChange, onSend, textarea, update } = setup();
+    expect(getUserMedia).not.toHaveBeenCalled();
+    await start();
+    expect(getUserMedia).toHaveBeenCalledOnce();
+    expect(recognitions).toHaveLength(1);
+    expect(workers).toHaveLength(0);
+    expect(screen.getByText("Recording")).toBeTruthy();
+    expect(screen.getByText("0:00")).toBeTruthy();
+    expect(screen.getByRole<HTMLButtonElement>("button", { name: "Finish voice input before sending" }).disabled).toBe(true);
+    act(() => recognitions[0]!.result("Review this"));
+    expect(screen.getByText("Review this").className).toContain("text-muted-foreground");
+    expect(onChange).not.toHaveBeenCalled();
+    update({ value: "Edited draft" });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(onSend).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Stop recording" }));
+    expect(stopTrack).toHaveBeenCalled();
+    expect(recognitions[0]!.stop).toHaveBeenCalledOnce();
+    act(() => {
+      recognitions[0]!.result("Review this.", true);
+      recognitions[0]!.onend?.();
+    });
+    expect(onChange).toHaveBeenLastCalledWith("Edited draft Review this.");
+    expect(onSend).not.toHaveBeenCalled();
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(onSend).toHaveBeenCalledOnce();
+  });
+
+  it.each(["permission", "no speech"])("leaves typing and sending usable after %s", async (failure) => {
+    if (failure === "permission") getUserMedia.mockRejectedValue(new DOMException("denied", "NotAllowedError"));
+    const { onSend, onChange, textarea } = setup();
+    fireEvent.click(screen.getByRole("button", { name: "Start voice input" }));
+    if (failure === "no speech") {
+      await screen.findByText("Recording");
+      act(() => recognitions[0]!.onerror?.({ error: "no-speech" }));
+    }
+    expect((await screen.findByRole("alert")).textContent).toContain(failure === "permission" ? "Microphone access is blocked" : "No speech detected");
+    await typeInComposer(textarea, " typed");
+    expect(onChange).toHaveBeenCalled();
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(onSend).toHaveBeenCalledOnce();
+  });
+
+  it.each(["unsupported", "native failure"])("transcribes locally for %s and downloads only on first use", async (browser) => {
+    if (browser === "unsupported") vi.stubGlobal("SpeechRecognition", undefined);
+    const { onChange, onSend } = setup();
+    fireEvent.click(screen.getByRole("button", { name: "Start voice input" }));
+    if (browser === "native failure") {
+      await screen.findByText("Recording");
+      act(() => recognitions[0]!.onerror?.({ error: "network" }));
+    }
+    await screen.findByRole("button", { name: "Stop recording" });
+    fireEvent.click(screen.getByRole("button", { name: "Stop recording" }));
+    await waitFor(() => expect(onChange).toHaveBeenCalledWith("Hello Local transcript"));
+    expect(onSend).not.toHaveBeenCalled();
+    expect(workers[0]!.postMessage.mock.calls[1]![0].audio).toBeInstanceOf(Float32Array);
+    expect(stopTrack).toHaveBeenCalled();
+    expect(localStorage.getItem("detent.voice-model-downloaded")).toBe("true");
+    await start();
+    expect(workers).toHaveLength(1);
+    expect(screen.queryByText(/Downloading the speech model/)).toBeNull();
+  });
+
+  it("reports a failed model download and permits a later retry", async () => {
+    vi.stubGlobal("SpeechRecognition", undefined);
+    failModel = true;
+    const { textarea, onSend } = setup();
+    fireEvent.click(screen.getByRole("button", { name: "Start voice input" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("speech model could not load");
+    expect(stopTrack).toHaveBeenCalled();
+    await screen.findByRole("button", { name: "Start voice input" });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(onSend).toHaveBeenCalledOnce();
+    failModel = false;
+    await start();
+    expect(workers).toHaveLength(2);
+  });
+
+  it("shows the first-use download notice and lets the user cancel preparation", async () => {
+    vi.stubGlobal("SpeechRecognition", undefined);
+    delayModel = true;
+    setup();
+    fireEvent.click(screen.getByRole("button", { name: "Start voice input" }));
+    await screen.findByText(/Downloading the speech model/);
+    expect(track.enabled).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Cancel voice input" }));
+    expect(stopTrack).toHaveBeenCalled();
+    await act(async () => { workers[0]!.onmessage?.({ data: { type: "ready" } }); });
+    expect(screen.queryByText("Recording")).toBeNull();
+    expect(screen.getByRole("button", { name: "Start voice input" })).toBeTruthy();
+  });
+
+  it("rejects silent fallback audio instead of inserting a Whisper hallucination", async () => {
+    vi.stubGlobal("SpeechRecognition", undefined);
+    silent = true;
+    const { onChange } = setup();
+    await start();
+    fireEvent.click(screen.getByRole("button", { name: "Stop recording" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("No speech detected");
+    expect(onChange).not.toHaveBeenCalled();
+    expect(workers[0]!.postMessage).toHaveBeenCalledOnce();
+  });
+
+  it.each(["unmount", "disabled", "hidden"])("releases capture and ignores late results on %s", async (reason) => {
+    const { unmount, update, onChange } = setup();
+    await start();
+    const lateResult = recognitions[0]!.onresult;
+    if (reason === "unmount") unmount();
+    if (reason === "disabled") update({ disabled: true });
+    if (reason === "hidden") {
+      vi.spyOn(document, "hidden", "get").mockReturnValue(true);
+      act(() => document.dispatchEvent(new Event("visibilitychange")));
+    }
+    expect(stopTrack).toHaveBeenCalled();
+    expect(recognitions[0]!.abort).toHaveBeenCalled();
+    act(() => lateResult?.({ results: [{ isFinal: true, 0: { transcript: "late words" } }] }));
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("stops a microphone granted after capture was cancelled", async () => {
+    let grant!: (value: typeof stream) => void;
+    getUserMedia.mockReturnValue(new Promise((resolve) => { grant = resolve; }));
+    const { onChange } = setup();
+    fireEvent.click(screen.getByRole("button", { name: "Start voice input" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel voice input" }));
+    await act(async () => { grant(stream); });
+    expect(stopTrack).toHaveBeenCalledOnce();
+    expect(recognitions).toHaveLength(0);
+    expect(onChange).not.toHaveBeenCalled();
+  });
 });

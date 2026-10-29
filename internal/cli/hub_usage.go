@@ -13,7 +13,7 @@ import (
 )
 
 // The `usage:` section of the hosted configuration file is the hub's price
-// table (decisions section 17.5). Cost on the usage report is an estimate:
+// table. Cost on the usage report is an estimate:
 // what a runner priced its own turn at, or, when it priced nothing, what
 // this table says a million tokens of that model costs.
 

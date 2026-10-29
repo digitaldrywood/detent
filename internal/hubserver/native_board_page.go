@@ -18,6 +18,16 @@ func nativeBoardFilter(scope nativeScope, params url.Values, lanes bool) (string
 	var where strings.Builder
 	where.WriteString("b.organization_id=? AND b.project_id=?")
 	args := []any{scope.organization, scope.project}
+	for _, bound := range []struct{ name, operator string }{{"completed_from", ">="}, {"completed_to", "<"}} {
+		if value := params.Get(bound.name); value != "" {
+			at, err := time.Parse(time.RFC3339Nano, value)
+			if err != nil {
+				return "", nil, nativePublicInvalid("Completion window bounds must be RFC3339 timestamps")
+			}
+			where.WriteString(" AND b.closed_at<>'' AND b.closed_at" + bound.operator + "?")
+			args = append(args, nativeBoardTime(at))
+		}
+	}
 	if scope.credential.HostedRole == "reporter" {
 		where.WriteString(" AND b.work_item_id IN (SELECT i.native_id FROM issues i WHERE i.organization_id=b.organization_id AND i.project_id=b.project_id AND ")
 		visibility, visibilityArgs := scope.issueVisibilitySQL("i")
@@ -29,7 +39,7 @@ func nativeBoardFilter(scope nativeScope, params url.Values, lanes bool) (string
 		return "", nil, err
 	}
 	if createdBy != "" {
-		where.WriteString(" AND json_extract(b.record_json, '$.issue.actor.principal_id') = ?")
+		where.WriteString(" AND " + nativeBoardFact("actor_principal_id") + " = ?")
 		args = append(args, createdBy)
 	}
 	switch params.Get("archived") {
@@ -39,7 +49,7 @@ func nativeBoardFilter(scope nativeScope, params url.Values, lanes bool) (string
 		where.WriteString(" AND b.archived=1")
 	case "all":
 	default:
-		return "", nil, nativeInvalid("archived must be true, false or all")
+		return "", nil, nativePublicInvalid("archived must be true, false or all")
 	}
 	if lanes {
 		switch params.Get("open") {
@@ -49,16 +59,16 @@ func nativeBoardFilter(scope nativeScope, params url.Values, lanes bool) (string
 		case "false":
 			where.WriteString(" AND b.terminal=1")
 		default:
-			return "", nil, nativeInvalid("open must be true or false")
+			return "", nil, nativePublicInvalid("open must be true or false")
 		}
 	}
 	for _, filter := range []struct{ name, clause string }{
-		{"type", "json_extract(b.record_json,'$.issue.type')=?"},
-		{"verification", "json_extract(b.record_json,'$.issue.verification.state')=?"},
+		{"type", nativeBoardFact("issue_type") + "=?"},
+		{"verification", nativeBoardFact("verification_state") + "=?"},
 		{"state", "b.state=?"},
-		{"label", "EXISTS(SELECT 1 FROM json_each(b.record_json,'$.issue.labels') WHERE value=?)"},
-		{"assignee", "EXISTS(SELECT 1 FROM json_each(b.record_json,'$.issue.assignees') WHERE value=?)"},
-		{"priority", "CAST(json_extract(b.record_json,'$.issue.priority') AS TEXT)=?"},
+		{"label", "EXISTS(SELECT 1 FROM native_board_filter_values WHERE work_item_id=b.work_item_id AND kind='label' AND value=?)"},
+		{"assignee", "EXISTS(SELECT 1 FROM native_board_filter_values WHERE work_item_id=b.work_item_id AND kind='assignee' AND value=?)"},
+		{"priority", "CAST(" + nativeBoardFact("priority") + " AS TEXT)=?"},
 	} {
 		if filter.name == "state" && !lanes {
 			continue
@@ -97,7 +107,11 @@ func readNativeBoardSummary(ctx context.Context, q nativeQueryer, scope nativeSc
 	if !filtered {
 		statement = "SELECT state,total,running FROM native_board_counts b WHERE " + where + " AND total>0"
 	}
-	rows, err := q.QueryContext(ctx, statement, args...)
+	pageQuery, pageErr := prepareNativePageStatement(ctx, q, scope, "", statement)
+	if pageErr != nil {
+		return nil, pageErr
+	}
+	rows, err := pageQuery.QueryContext(ctx, statement, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -128,7 +142,11 @@ func readNativeBoardSummary(ctx context.Context, q nativeQueryer, scope nativeSc
 	if err != nil {
 		return nil, err
 	}
-	windows, err := readNativeShippedWindows(ctx, q, scope, closedWhere, closedArgs, now)
+	closedQuery, err := prepareNativePageStatement(ctx, pageQuery, scope, "", closedWhere)
+	if err != nil {
+		return nil, err
+	}
+	windows, err := readNativeShippedWindows(ctx, closedQuery, scope, closedWhere, closedArgs, now)
 	if err != nil {
 		return nil, err
 	}
@@ -144,10 +162,10 @@ func (s *Service) readBoardIssues(ctx context.Context, scope nativeScope, params
 		return page, err
 	}
 	if params.Get("include") != "board" || params.Has("fingerprint") {
-		return page, nativeInvalid("board cannot include other projections or fingerprints")
+		return page, nativePublicInvalid("board cannot include other projections or fingerprints")
 	}
 	if sort := params.Get("sort"); sort != "" && sort != "closed" {
-		return page, nativeInvalid("sort supports closed")
+		return page, nativePublicInvalid("sort supports closed")
 	}
 	pageParams := params
 	requestedLimit, limitErr := strconv.Atoi(params.Get("limit"))
@@ -174,6 +192,7 @@ func (s *Service) readBoardIssues(ctx context.Context, scope nativeScope, params
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return page, err
 	}
+	page.ChangeSequence = page.Sequence
 	page.Work, err = readNativeBoardSummary(ctx, tx, scope, params, s.config.now())
 	if err != nil {
 		return page, err
@@ -260,8 +279,12 @@ func (s *Service) readBoardIssues(ctx context.Context, scope nativeScope, params
 		}
 	}
 	args = append(args, limit+1)
-	statement := strings.Join([]string{"SELECT b.record_json," + nativeActorDisplayName("json_extract(b.record_json, '$.issue.actor.principal_id')", "b.organization_id") + ",b.lane_rank,b.state,b.priority_rank,b.activity_missing,b.activity_at,b.identifier,b.closed_at" + searchColumns + " FROM " + from + " WHERE", where, "ORDER BY", order, "LIMIT ?"}, " ")
-	rows, err := tx.QueryContext(ctx, statement, args...)
+	statement := strings.Join([]string{"SELECT b.record_json," + nativeActorDisplayName(nativeBoardFact("actor_principal_id"), "b.organization_id") + ",b.lane_rank,b.state,b.priority_rank,b.activity_missing,b.activity_at,b.identifier,b.closed_at" + searchColumns + " FROM " + from + " WHERE", where, "ORDER BY", order, "LIMIT ?"}, " ")
+	pageQuery, err := prepareNativePageStatement(ctx, tx, scope, "", statement)
+	if err != nil {
+		return page, err
+	}
+	rows, err := pageQuery.QueryContext(ctx, statement, args...)
 	if err != nil {
 		return page, err
 	}

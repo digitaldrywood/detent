@@ -1,7 +1,6 @@
 package hubserver
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -14,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -115,7 +115,7 @@ func TestReportsShippedPopulation(t *testing.T) {
 		}
 	}
 	for prefix, owner := range map[string]string{"attempt_browser_usage_1_%": ids["reclosed"], "attempt_browser_usage_2_%": ids["cancelled"]} {
-		if _, err := tx.ExecContext(t.Context(), "UPDATE native_attempts SET work_item_id=? WHERE id LIKE ?", owner, prefix); err != nil {
+		if _, err := tx.ExecContext(t.Context(), "UPDATE native_attempts SET report_projection_version=NULL,work_item_id=? WHERE id LIKE ?", owner, prefix); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -128,12 +128,14 @@ func TestReportsShippedPopulation(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := tx.ExecContext(t.Context(), "UPDATE native_attempts SET status='failed',started_at=?,updated_at=? WHERE id='attempt_browser_usage_2_1'", formatHubTime(priorAt.Add(-time.Hour)), formatHubTime(priorAt)); err != nil {
+	if _, err := tx.ExecContext(t.Context(), "UPDATE native_attempts SET report_projection_version=NULL,status='failed',started_at=?,updated_at=? WHERE id='attempt_browser_usage_2_1'", formatHubTime(priorAt.Add(-time.Hour)), formatHubTime(priorAt)); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.service.database.commit(t.Context(), tx); err != nil {
 		t.Fatal(err)
 	}
+	drainTestNativeClosedTimes(t, f.service)
+	drainTestNativeBoard(t, f.service)
 	drainTestAnalytics(t, f.service)
 	var priorCost float64
 	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT sum(cost_estimate) FROM attempt_usage WHERE period>=? AND period<?", w.From.Add(-48*time.Hour).Format(usagePeriodLayout), w.From.Format(usagePeriodLayout)).Scan(&priorCost); err != nil || priorCost == 0 {
@@ -276,7 +278,7 @@ func TestReportsFirstTryHistory(t *testing.T) {
 		{name: "unknown earlier merge cannot imply first try", role: "merge"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET data_json=json_remove(data_json,'$.runtime')"); err != nil {
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET report_projection_version=NULL,data_json=json_remove(data_json,'$.runtime')"); err != nil {
 				t.Fatal(err)
 			}
 			for _, entry := range []struct {
@@ -288,7 +290,7 @@ func TestReportsFirstTryHistory(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE native_attempts SET started_at=?,data_json=json_set(data_json,'$.runtime.identity.role',?,'$.runtime.landing',json(?)) WHERE id=?`, formatHubTime(entry.at), entry.role, string(raw), entry.id); err != nil {
+				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE native_attempts SET report_projection_version=NULL,started_at=?,data_json=json_set(data_json,'$.runtime.identity.role',?,'$.runtime.landing',json(?)) WHERE id=?`, formatHubTime(entry.at), entry.role, string(raw), entry.id); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -297,9 +299,7 @@ func TestReportsFirstTryHistory(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer held.Rollback()
-			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-			defer cancel()
-			got, available, err := f.service.reportsFirstTry(ctx, scope, report)
+			got, available, err := f.service.reportsFirstTry(testenv.WaitContext(t, t.Context()), scope, report)
 			if err != nil {
 				t.Fatal(err)
 			}

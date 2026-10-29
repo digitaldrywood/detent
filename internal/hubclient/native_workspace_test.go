@@ -18,7 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
-// The workspace worker endpoints (decisions section 18.1). Every call carries
+// The workspace worker endpoints. Every call carries
 // the workspace owner tuple, and the one refusal a session acts on is
 // stale_execution: it means this runner no longer owns the workspace and must
 // stop serving it.
@@ -554,7 +554,7 @@ func TestWorkspaceClaimerRunIdentifier(t *testing.T) {
 	}
 }
 
-// The action run report (decisions section 18.12). It is how a
+// The action run report. It is how a
 // run-on-worktree-creation run becomes a row: nobody asked for it, so nothing
 // else would ever write one.
 func TestReportWorkspaceActionRunCarriesTheTupleAndAnswersTheRun(t *testing.T) {

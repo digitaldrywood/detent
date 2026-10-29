@@ -85,10 +85,10 @@ func checkDoctorHistoricalThroughput(
 
 	concurrencyCheck := doctorConcurrencyCheck(throughputName, projectID, configuredConcurrency, report, pressure)
 	redispatchCheck := doctorCheck{
-		Name:            redispatchName,
-		Status:          doctorOK,
-		Detail:          fmt.Sprintf("no issue was dispatched %d or more times in the last 24h", doctorRedispatchThreshold),
-		RedispatchLoops: redispatches,
+		Name:                redispatchName,
+		Status:              doctorOK,
+		Detail:              fmt.Sprintf("no issue was dispatched %d or more times in the last 24h", doctorRedispatchThreshold),
+		RecompletionSources: redispatches,
 	}
 	if len(redispatches) > 0 {
 		latest := redispatches[0]

@@ -19,7 +19,7 @@ export const primaryServerKeybindingsAtom = Atom.make<ResolvedKeybindingsConfig>
 export interface EnvironmentCapabilities {
   /**
    * True. Detent settles conversations and the sidebar's Settled shelf is
-   * that group (decisions.md §13.9, §14).
+   * that group.
    */
   readonly threadSettlement: boolean;
   /** False: no snooze endpoint, so the clock button and shelf never appear. */
@@ -77,15 +77,15 @@ export const environmentServerConfigsAtom = Atom.make<ReadonlyMap<EnvironmentId,
 // Cursor" or "Reveal in Finder".
 //
 // None of it exists here. A Detent reader is in a browser tab and the checkout
-// is on the customer's runner, reachable only over the hub's relay
-// (decisions.md §1, §18); there is no machine whose editors this client could
+// is on the customer's runner, reachable only over the hub's relay;
+// there is no machine whose editors this client could
 // enumerate, and nothing it could launch if there were.
 //
 // So the config is null. That is not a stub: null is the value upstream's own
 // components take before a connection is prepared, and every reader of it
 // here is written as `serverConfig?.availableEditors ?? []` or
 // `serverConfig?.shellRevealInFileManager === true`. The menu items resolve to
-// their disabled branch with the reason, which is what section 16 asks for.
+// their disabled branch with the reason, which is what the frontend's governing rule asks for.
 // ---------------------------------------------------------------------------
 
 export interface MarkdownServerConfig {

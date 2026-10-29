@@ -7,7 +7,7 @@ import { RightPanelTabs } from "../../components/RightPanelTabs.tsx";
 import { RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY } from "../../rightPanelLayout.ts";
 import { useMediaQuery } from "../../hooks/useMediaQuery.ts";
 import { detentKeybindings, resolveShortcutCommand, shortcutLabelForCommand } from "../adapters/keybindings.ts";
-import { useRightPanel, type RightPanelSurface } from "../adapters/rightPanel.ts";
+import { type RightPanelController, type RightPanelSurface } from "../adapters/rightPanel.ts";
 import { usePanelAnimationSettings } from "../../panelAnimations.ts";
 import { HUB_ENVIRONMENT_ID } from "../../contracts/index.ts";
 import type { CollaborationEvent, NativeAttempt } from "../../contracts/work.ts";
@@ -42,28 +42,26 @@ const TERMINAL_SURFACE: RightPanelSurface = {
 };
 
 /**
- * What the runner has to report before it may claim this workspace
- * (decisions.md §18.1, §18.12).
+ * What the runner has to report before it may claim this workspace.
  *
- * Both capabilities, always, and one workspace serves both surfaces. §18.12
+ * Both capabilities, always, and one workspace serves both surfaces. The project actions contract
  * fixes `requires: ["files", "exec"]` as what "a client asks for when running
  * an action is the reason it wants a worktree", and asking for both up front
  * is what keeps a reader who opened Files and then ran an action from needing
  * a second worktree — which would cost a second slot against the
  * organization's and the person's caps for one issue. `terminal` is still not
  * here: it would additionally need the grant's `runners` flag and an
- * owner-only isolation choice (§18.3), and this client has no terminal view.
+ * owner-only isolation choice, and this client has no terminal view.
  */
 const WORKSPACE_REQUIRES: readonly string[] = ["files", "exec"];
 
 /**
- * What the runner has to report when a terminal is the reason for the worktree
- * (decisions.md §18.1, §18.3).
+ * What the runner has to report when a terminal is the reason for the worktree.
  *
  * It is a second list rather than a widening of the first, and that is the
  * whole point of `requires`. A workspace asking for `terminal` needs the
  * grant's `runners` flag at creation and is refused outright where
- * `workspaces.terminal.enabled` is off (§18.3), so a panel that asked for it
+ * `workspaces.terminal.enabled` is off, so a panel that asked for it
  * unconditionally would refuse every reader who only wanted to look at files.
  * `files` rides along because the client reuses one workspace for every
  * surface and `Satisfies` is exact: a terminal-only workspace could not serve
@@ -72,7 +70,7 @@ const WORKSPACE_REQUIRES: readonly string[] = ["files", "exec"];
 const TERMINAL_WORKSPACE_REQUIRES: readonly string[] = ["files", "exec", "terminal"];
 
 /**
- * The linked conversation, as the panel's own surface (decisions.md §19.3).
+ * The linked conversation, as the panel's own surface.
  *
  * The content is passed in rather than imported: the conversation view is
  * mounted by the route (`src/app/work/IssuePage.tsx`), which already owns the
@@ -102,15 +100,15 @@ export interface RightPanelWorkspace {
   /** Opens the Conversation surface. A no-op where there is no conversation. */
   readonly openConversation: () => void;
   readonly conversationAvailable: boolean;
-  /** Opens the Files surface (decisions.md §18.4). */
+  /** Opens the Files surface. */
   readonly openFiles: () => void;
   readonly filesAvailable: boolean;
-  /** Opens the Output surface (decisions.md §18.12). */
+  /** Opens the Output surface. */
   readonly openOutput: () => void;
   readonly outputAvailable: boolean;
-  /** Opens the Terminal surface (decisions.md §18.3). */
+  /** Opens the Terminal surface. */
   readonly openTerminal: () => void;
-  /** Opens another shell on it. §18.2: its own stream, its own PTY. */
+  /** Opens another shell on it. The relay protocol: its own stream, its own PTY. */
   readonly newTerminal: () => void;
   /**
    * Closes the shell in front of the reader, and answers false when there was
@@ -122,7 +120,7 @@ export interface RightPanelWorkspace {
   /** Why the Terminal surface is unavailable, or null when it is not. */
   readonly terminalBlockedReason: string | null;
   /**
-   * Runs one project action (decisions.md §18.12): opens the Output surface,
+   * Runs one project action: opens the Output surface,
    * asks for a workspace if there is not one yet, records the run and follows
    * its exec stream. A no-op where there is no issue to open a worktree for.
    */
@@ -135,16 +133,16 @@ export interface RightPanelWorkspace {
 }
 
 export function useRightPanelWorkspace(input: {
+  readonly panel: RightPanelController;
   /** One panel per conversation or issue. */
   readonly scopeKey: string;
-  /** The issue the live surfaces read, and the workspace's own scope (§18.1). */
+  /** The issue the live surfaces read, and the workspace's own scope. */
   readonly projectId?: string | null;
   readonly workItemId?: string | null;
-  /** The Files surface's project crumb (§18.4). */
+  /** The Files surface's project crumb. */
   readonly projectName?: string;
   /**
-   * The reader's authority on this project, for the Terminal card's reason
-   * (decisions.md §18.3).
+   * The reader's authority on this project, for the Terminal card's reason.
    *
    * The terminal is the one surface whose gate the client has to be able to
    * state: the hub refuses it with `forbidden`, which is one code covering
@@ -167,14 +165,14 @@ export function useRightPanelWorkspace(input: {
   readonly title?: string;
 }): RightPanelWorkspace {
   const client = useClient();
-  const panel = useRightPanel(input.workItemId ?? input.scopeKey);
+  const panel = input.panel;
   const shouldUseSheet = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
   const { active: panelAnimationsActive, durationMs: panelAnimationDurationMs } =
     usePanelAnimationSettings();
 
   // Always openable: Detent either has a diff to draw — a stored attempt diff
-  // (§18.5) or the round's change version — or names the reason it has none,
-  // and §16 keeps the surface present either way rather than removing the tab.
+  // or the round's change version — or names the reason it has none,
+  // and the frontend's governing rule keeps the surface present either way rather than removing the tab.
   const diffAvailable = true;
   const pullRequestAvailable = input.surfaces.pullRequest !== null;
 
@@ -253,7 +251,7 @@ export function useRightPanelWorkspace(input: {
   const activeSurface =
     panel.surfaces.find((surface) => surface.id === panel.activeSurfaceId) ?? null;
 
-  // The Files surface, and the workspace behind it (decisions.md §18.1, §18.4).
+  // The Files surface, and the workspace behind it.
   //
   // The workspace is requested only once a file surface is actually open. It
   // costs a runner slot and counts against the organization's and the person's
@@ -275,7 +273,7 @@ export function useRightPanelWorkspace(input: {
   const filesOpen = panel.surfaces.some(
     (surface) => surface.kind === "files" || surface.kind === "file",
   );
-  // Running an action asks for a worktree too (decisions.md §18.12), and it
+  // Running an action asks for a worktree too, and it
   // asks *before* there is a surface open on it — the reader pressed a header
   // button, not a tab. `runRequested` is that ask, and it stays true for the
   // life of the panel: a workspace released the moment a run finished would be
@@ -284,7 +282,7 @@ export function useRightPanelWorkspace(input: {
   // The Terminal tab is the third reason to want a worktree, and it is the one
   // that changes what the workspace has to be: a terminal workspace asks for
   // the terminal capability in `requires`, which the claim gate matches and
-  // which §18.3 gates behind the runner grant. Opening the tab is what asks,
+  // which the terminal contract gates behind the runner grant. Opening the tab is what asks,
   // for the reason the Files tab is: a panel merely able to show a shell must
   // not spend a runner slot on one.
   const terminalOpen = panel.surfaces.some((surface) => surface.kind === "terminal");
@@ -297,7 +295,7 @@ export function useRightPanelWorkspace(input: {
   });
   const { resolvedTheme } = useTheme();
   // What the surfaces' waiting sentences name: the runner that claimed it, and
-  // the times the request timeout is derived from (§18.1).
+  // the times the request timeout is derived from.
   const workspaceResource = workspace.workspace;
   const filesAvailable = filesLaunchable &&
     (workspaceResource === null || workspaceResource.capabilities?.files === true);
@@ -314,7 +312,7 @@ export function useRightPanelWorkspace(input: {
   );
 
   // One relay per live workspace. A new workspace id is a new socket; closing
-  // the surface closes it, because §18.1 only resets the idle timer on
+  // the surface closes it, because the workspace session contract only resets the idle timer on
   // person-originated frames and a socket nobody is reading is not one.
   const workspaceLive = workspace.state !== null && isWorkspaceLive(workspace.state);
   const relayUrl = workspace.relayUrl;
@@ -328,13 +326,13 @@ export function useRightPanelWorkspace(input: {
     return () => relay.close();
   }, [relay]);
 
-  // The action runs this panel is following (decisions.md §18.12). The hook
+  // The action runs this panel is following. The hook
   // owns both halves — the exec stream for a run this tab started, and the
   // project event stream for one it did not — because a run outlives the
   // surface that watched it start.
   // The recorded runs are read back only while the Output surface is on the
   // panel: that is the one place they are drawn, and a run the hub recorded
-  // with nobody watching (§18.12) is invisible without them.
+  // with nobody watching is invisible without them.
   const outputOpen = panel.surfaces.some((surface) => surface.kind === "output");
   const runs = useActionRuns({
     projectId,
@@ -344,7 +342,7 @@ export function useRightPanelWorkspace(input: {
     mintTicket,
     showRecorded: outputOpen,
   });
-  // The shells this panel is holding (decisions.md §18.3). They open when the
+  // The shells this panel is holding. They open when the
   // tab does and close with the workspace: a PTY whose workspace has ended is
   // a shell nobody can reach, and the runner kills it regardless.
   const terminals = useTerminals({
@@ -583,7 +581,7 @@ export function useRightPanelWorkspace(input: {
     filesAvailable,
     pullRequestAvailable,
     // The same condition as Files: the Output surface needs a worktree, and a
-    // worktree belongs to an issue (§18.1).
+    // worktree belongs to an issue.
     outputAvailable: filesAvailable,
     liveAgentCount: input.surfaces.agents.liveCount,
   } as const;

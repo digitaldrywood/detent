@@ -1,8 +1,15 @@
 # Self-hosted Hub operations
 
-One customer-controlled Linux host or ordinary VM, one Hub process, and local
+The standalone local board is retired. To move an existing board's data to a
+Hub, see the [local board to local Hub migration runbook](hub-local-migration.md)
+for backups, pilot cutover, import prerequisites and rollback before replacing its service.
+For a Hub and runners on one Mac, follow the
+[macOS/launchd guide](#macos-with-launchd).
+
+One customer-controlled macOS or Linux host, one Hub process, and local
 durable storage are the supported deployment described here. Use the released
-Detent binary and systemd, with a TLS reverse proxy. This is single-host operation
+Detent binary with launchd or systemd. A same-machine runner can use loopback;
+remote access requires TLS. This is single-host operation
 with explicit downtime for maintenance; there is no active-active replication,
 automatic failover, or high availability guarantee. Never share a live SQLite
 file over NFS/SMB, mount it into runners, or run a second owner against it.
@@ -11,20 +18,19 @@ Self-hosted Detent is free. No WorkOS, Stripe, Detent Cloud account,
 `cloud.detent.build` callback, Detent subscription or purchased infrastructure is
 required. Operators choose authentication, including WorkOS/custom/generic/local
 options; selecting WorkOS must never enable Detent billing. An external auth
-provider may have its own connectivity/account requirements. The currently
-supported Hub bearer deployment below has no such dependency. Shared-site mode
-and self-hosted WorkOS configuration separation are design targets documented in
-[the deployment examples](examples/hub/README.md), not new flags in this runbook.
-The native-only example disables GitHub transport.
+provider may have its own connectivity/account requirements. The Hub bearer
+deployment below has no such dependency. The native-only example disables GitHub
+transport.
 Durable artifacts are optional; local-only artifact availability depends on
 retaining the runner and its workspace.
 
 ## Install one host
 
-Select a reviewed release version and architecture from the existing
-[release distribution](release.md). Verify the archive/package checksum before
-installation and keep that version's binary, checksum and deployment files for
-recovery. Linux packages install `/usr/bin/detent`; archive installations must
+Select a release version and architecture from the
+[GitHub releases](https://github.com/digitaldrywood/detent/releases). Verify the
+archive/package against the signed checksums as described in
+[Verify release binaries](#verify-release-binaries) before installation, and keep
+that version's binary, checksum and deployment files for recovery. Linux packages install `/usr/bin/detent`; archive installations must
 install the executable at that path or adjust the example unit. Do not use an
 unversioned download URL for an upgrade. The release includes this runbook and
 the [Hub unit](examples/hub/detent-hub.service) and
@@ -62,14 +68,227 @@ sudo systemctl status detent-hub
 ```
 
 These commands operate on the example installation only. Use this dedicated
-Hub unit for `hub serve`. The Hub has no source checkouts, agent login
-sessions or execution workspaces on this host. Do not expose the backend port
+Hub unit for `hub serve`. Keep Hub data separate from runner source checkouts,
+agent login sessions and execution workspaces, even on a shared host.
+Do not expose the backend port
 by relying on `--trusted-proxy` alone: that flag declares trust, it does not
 create TLS or configure a firewall. Alternatively use `--tls-cert` and
 `--tls-key` with an explicit public listen address. Do not log Authorization
 headers or request/response bodies at the proxy. Keep private keys readable
 only by the TLS owner. The API continues to enforce scoped bearer auth behind
 the proxy; arbitrary identity headers are not an authentication integration.
+
+### Verify release binaries
+
+Each release publishes `detent_<version>_checksums.txt`, its minisign signature
+`detent_<version>_checksums.txt.minisig` and a keyless cosign bundle
+`detent_<version>_checksums.txt.sigstore.json`. The checksums cover the platform
+archives, Linux packages and the prepared source archive
+`detent_<version>_source.tar.gz`. The self-updater verifies the minisign
+signature with its pinned key. To verify a manual download, fetch the checksums,
+bundle and archives from the same release and use cosign v3 with the exact tag
+you intend to trust:
+
+```sh
+tag=v1.2.3
+checksums="detent_${tag#v}_checksums.txt"
+cosign verify-blob \
+  --bundle "$checksums.sigstore.json" \
+  --certificate-identity "https://github.com/digitaldrywood/detent/.github/workflows/release.yml@refs/tags/$tag" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+  "$checksums"
+sha256sum --check --ignore-missing "$checksums"
+```
+
+On macOS, compare `shasum -a 256 <archive>` with that archive's entry instead of
+`sha256sum`. Trust the workflow and tag identity above, not an identity copied
+from an unverified certificate.
+
+macOS binaries are signed with a Developer ID Application certificate and
+notarized. Inspect an extracted binary with:
+
+```sh
+codesign -dv --verbose=4 ./detent
+codesign --verify --strict ./detent
+```
+
+Expect `Identifier=build.detent.detent`, a Developer ID Application authority
+for Drywood Creek Consulting, Inc., a secure timestamp and the `runtime` flag.
+Successive signed releases keep that identity, so macOS permission grants
+survive an in-place upgrade; replacing an older ad-hoc signed binary may require
+one new grant. Windows executables are not code-signed and may trigger
+SmartScreen.
+
+## Single-machine Hub and runner
+
+The Hub and runner can share one macOS or Linux machine. The Hub owns its
+private database; the runner talks to it over `http://127.0.0.1:7777` and never
+opens that database. Run them under separate OS accounts. Runner workloads must
+not be able to read Hub credentials or read or modify Hub state, backups, logs
+or service configuration. Modes `0700` and `0600` protect files from other users,
+but do not isolate processes sharing a UID. Keep the runner account
+unprivileged, without sudo access to the Hub account or its files; do not share
+Hub administrator credentials with it. Use `--isolation-tier sandbox` for runner
+registration on this shared host.
+
+Loopback HTTP needs no reverse proxy for this setup. Keep
+the listen address on loopback; use the TLS setup above before allowing remote
+clients. This bearer-authenticated setup does not require a hosted login provider.
+
+### macOS with launchd
+
+Install and verify the selected release as described in
+[Verify release binaries](#verify-release-binaries).
+The [Hub LaunchAgent example](examples/hub/com.digitaldrywood.detent.hub.plist)
+uses `/usr/local/bin/detent`; replace that absolute executable path if your
+installation uses another location, such as `/opt/homebrew/bin/detent`.
+Through macOS Users & Groups, create a dedicated standard account for the Hub,
+separate from the runner account. Log in to that Hub account and run the
+following in its session. During maintenance, use the account named in each
+step; `$HOME` and `id -u` must refer to that account:
+
+```sh
+umask 077
+mkdir -p "$HOME/Library/Application Support/Detent Hub" "$HOME/Library/Logs/Detent Hub" "$HOME/Library/LaunchAgents"
+chmod 700 "$HOME/Library/Application Support/Detent Hub" "$HOME/Library/Logs/Detent Hub"
+openssl rand -hex 32 > "$HOME/Library/Application Support/Detent Hub/admin-token"
+chmod 600 "$HOME/Library/Application Support/Detent Hub/admin-token"
+cp docs/examples/hub/com.digitaldrywood.detent.hub.plist "$HOME/Library/LaunchAgents/com.digitaldrywood.detent.hub.plist"
+```
+
+Generate the token only for a new installation; preserve it on subsequent
+installs. Keep a separate private secret-manager copy. Edit the copied plist,
+replacing every `/Users/example` with the Hub account's absolute home path and
+adjusting the binary path. Use an executable installed by the administrator in
+a location the runner cannot modify. launchd does not expand `~` or `$HOME` in
+argument or log paths.
+The shell wrapper reads `admin-token` relative to its user's `$HOME`, exports
+`DETENT_HUB_ADMIN_TOKEN`, then replaces itself with `detent hub serve`. The
+credential never appears in the plist or process arguments. Do not enable shell
+tracing. The decimal `Umask` value 63 is octal `077`.
+
+```sh
+plutil -lint "$HOME/Library/LaunchAgents/com.digitaldrywood.detent.hub.plist"
+launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.digitaldrywood.detent.hub.plist"
+launchctl print "gui/$(id -u)/com.digitaldrywood.detent.hub"
+```
+
+This LaunchAgent starts at login and stays available while that user session
+exists; it is not a system LaunchDaemon. Keep the session available for local
+work: use Fast User Switching to enter the runner account without logging out
+the Hub account. stdout and stderr go to the private
+`~/Library/Logs/Detent Hub/` directory;
+include these files in your log rotation policy. The Hub database and sidecars
+live in `~/Library/Application Support/Detent Hub/`, outside runner workspaces.
+
+As the Hub administrator, create the organization/project, grant project access
+and obtain a one-use enrollment using [runner onboarding](#enroll-a-runner-without-the-web-app).
+Deliver only that enrollment credential to the separate runner account through
+private secret storage. In the runner account's session, use the
+[register command](hub-api.md#register-a-runner-with-one-command) with
+your local organization URL, for example
+`http://127.0.0.1:7777/organizations/org_example`, and `--service`. Use the
+enrollment credential, never the Hub admin token, for runner registration.
+Registration installs the existing `com.digitaldrywood.detent.runner`
+LaunchAgent in the runner account, with its own config, identity, workspace root
+and logs. Keep those paths in the runner account's home; do not copy Hub files
+there or grant that account access to the Hub's private directories. The Hub
+label is `com.digitaldrywood.detent.hub`, separate from the runner's
+`com.digitaldrywood.detent.runner`. Start the Hub before enrolling or starting
+the runner; there is no
+launchd dependency ordering between these jobs. Approve the project's trusted
+repository/workflow policy before dispatching work.
+
+For offline backups, drain active runner work while the Hub is still available,
+then remove the runner job in the runner account's session:
+
+```sh
+launchctl bootout "gui/$(id -u)/com.digitaldrywood.detent.runner"
+```
+
+Switch to the still-logged-in Hub account for the following
+maintenance commands. Remove the Hub job from that account's launchd domain so
+`KeepAlive` cannot restart it:
+
+```sh
+launchctl bootout "gui/$(id -u)/com.digitaldrywood.detent.hub"
+mkdir -p "$HOME/Library/Application Support/Detent Hub/backups"
+detent hub backup --database "$HOME/Library/Application Support/Detent Hub/hub.db" --output "$HOME/Library/Application Support/Detent Hub/backups/snapshot-unique.db"
+launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.digitaldrywood.detent.hub.plist"
+detent hub verify --database "$HOME/Library/Application Support/Detent Hub/backups/snapshot-unique.db"
+```
+
+Wait for the Hub process to exit before running backup. Choose a new snapshot
+filename each time; backup refuses an existing output. Restart the Hub even if
+backup fails, then switch back to the runner account and reload its LaunchAgent:
+
+```sh
+launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.digitaldrywood.detent.runner.plist"
+```
+
+Keep snapshots and secret-manager copies in storage inaccessible to the runner account.
+Follow [backup and export](#backup-and-export) for custody and retention; never
+copy live SQLite files or delete the ownership lock to bypass a running owner.
+
+### Linux with both systemd units
+
+Install the [Hub unit](examples/hub/detent-hub.service) and private credentials
+file using [Install one host](#install-one-host). For a loopback-only setup,
+omit Caddy, DNS and inbound HTTPS configuration. Keep `--listen 127.0.0.1:7777`.
+The system Hub runs as `detent-hub`, reads the root-only environment file, and
+writes only its own `/var/lib/detent-hub/` state. Logs are in
+`sudo journalctl -u detent-hub`.
+
+As the regular runner user, use the same onboarding and local organization URL
+as on macOS and register with `--service`. This installs the separate user unit
+`detent.runner.service`; it does not replace `detent-hub.service`. A runner
+registered with a non-default `--config` path gets a unit name with a
+path-derived suffix. Runner credentials and checkouts stay under that user's
+runner configuration and workspace root. If the runner must survive logout,
+have an OS administrator enable lingering with
+`sudo loginctl enable-linger USERNAME`.
+Inspect it with `systemctl --user status detent.runner.service` and
+`journalctl --user -u detent.runner.service`.
+
+For backups, drain work while the Hub is online, stop the runner with
+`systemctl --user stop detent.runner.service`, then follow the stopped-owner
+[backup commands](#backup-and-export). `sudo systemctl stop detent-hub` suppresses
+the unit's automatic restart during maintenance. Restart the Hub even if backup
+fails, then start the runner with `systemctl --user start detent.runner.service`.
+Neither platform needs shared Hub/runner database access or changes to runner
+placement or installation configuration.
+
+## Open the web app without WorkOS
+
+`detent hub serve` serves the existing web app when `--hosted-config` is
+omitted. No WorkOS credentials or separate app flag are needed. For local use,
+start it with a private database and the administrator token environment
+variable described above:
+
+```sh
+detent hub serve --database ./hub.db --github-disabled
+```
+
+The default listener is `127.0.0.1:7777`. Open
+`http://127.0.0.1:7777/work` in a private browser window. In the browser's HTTP
+authentication prompt, use `operator` as the username and the Hub administrator
+token as the password. The app uses the database's local organization and its
+projects. Board, project settings and runner enrollment use the existing app
+screens and APIs. Browser access requires an unrestricted administrator token;
+scoped operator and worker tokens remain API/MCP credentials. Bearer-token API
+and MCP access continue to work without a browser.
+
+Cloud billing, hosted API keys, member invitations and email notifications are
+not shown on a self-hosted Hub. Manage bearer credentials through the token API
+described below. There is no browser sign-out control for HTTP authentication.
+
+The browser caches HTTP authentication for its session; close the private window
+to clear it. Revoking or rotating a token takes effect on subsequent requests.
+Keep tokens out of URLs. Remote access still requires TLS or a trusted TLS
+reverse proxy as described above; do not transmit this password over public
+HTTP. Browser writes require a matching Origin, so a reverse proxy must preserve
+the public Host and provide the original HTTPS scheme when `--trusted-proxy`
+is used. A Hub using `--hosted-config` retains its hosted authentication flow.
 
 ## Durable paths and outbound access
 
@@ -92,13 +311,164 @@ their own outbound access. These are customer-selected endpoints, not Detent
 Cloud dependencies. Artifact service outbound access is limited to the selected
 Hub and object store (plus any explicitly selected credential provider).
 
-For GitHub compatibility, remove `--github-disabled` only after configuring
-GitHub credentials for the dedicated service user and, if used, a webhook HMAC
-secret through the existing CLI environment options. Allow GitHub API traffic
-and the separately selected Git transport. Follow [GitHub profiles](github-profiles.md)
-for import, cutover and native GitHub intake. Hosted deployments use the product
-App credentials described there; Cloud comments remain private. The example service's `ProtectHome` means interactive login
-files in a human home directory are deliberately unavailable.
+For GitHub integration, choose one of the modes below. Allow GitHub API traffic
+from whichever process owns intake and the separately selected Git transport
+from runners. Cloud discussion comments remain private; they are never mirrored
+to GitHub.
+
+## GitHub modes
+
+These modes use existing Hub flags and environment variables; no additional
+configuration keys or token scopes are required. The example service keeps
+GitHub disabled by default. Hub credentials and runner credentials are separate.
+
+| Mode | Use when | GitHub credentials on the Hub |
+| --- | --- | --- |
+| Hub disabled, runner fallback | Native-only operation or runner-owned intake and PR landing | None |
+| Hub CLI fallback | An interactive Hub or a service with an explicitly provisioned CLI login | The Hub process's existing `gh` login |
+| Operator-owned GitHub App | A service needs independent GitHub access and optional webhook intake | App ID, private key and, for webhooks, a shared secret |
+
+### Enable manual intake
+
+Before selective intake or historical import, an administrator must enable manual
+import on the project. Read
+`GET /api/v2/organizations/{organization}/projects/{project}/integration`, then
+`PUT` to the same URL with a fresh `idempotency_key`, `expected_revision` set to
+the returned decimal-string `revision`, and `intake: "manual"`. Include the
+current `projection` and `repository_enabled` values to preserve those settings.
+
+Confirm `manual_import_enabled: true` in the response. A bound native project
+still reports `intake: "automatic"` for webhook intake; that value alone does
+not enable manual import. Enabling manual import does not disable webhooks.
+
+### Hub disabled: runner fallback
+
+Keep `--github-disabled` in the service's `detent hub serve` command. It bypasses
+Hub credential lookup and disables Hub import, outbox, reconciliation and webhook
+verification, even if App variables are present. Pure native work needs no
+GitHub repository or login.
+
+For a native project that uses GitHub, associate the runner's matching checkout,
+[enable manual intake](#enable-manual-intake), and use
+[selective onboarding issue intake](hub-api.md#selective-onboarding-issue-intake).
+An enrolled runner with access to that repository supplies its existing `gh`
+credentials when Hub transport is unavailable; `runner_id` can select it.
+PR landing continues through the configured runner GitHub integration and its
+existing credentials and repository protections. Disabling Hub GitHub transport
+does not disable that runner integration or bypass required reviews/checks.
+Intake is explicitly requested, not an idle poll for new native issues; Hub
+GitHub outbox writes are unavailable in this mode.
+
+### Hub CLI fallback
+
+Remove `--github-disabled` and leave both `DETENT_HUB_GITHUB_APP_ID` and
+`DETENT_HUB_GITHUB_APP_PRIVATE_KEY` unset. On self-hosted startup the Hub runs
+`gh auth token` and uses the returned token for its import, outbox and periodic
+reconciliation clients. The `gh` executable must be on the Hub process's PATH,
+and its login must be accessible to that process. Failure to resolve a token
+fails startup. This mode reuses an existing login; it does not require a new PAT
+or additional scopes.
+
+An interactive login as a human does not provision the `detent-hub` service
+user. The example unit has `ProtectHome=true`, so credentials under a human home
+directory are unavailable, and a service may also lack the interactive user's
+keyring session. If using this mode in a service, provision an existing authorized
+CLI credential/configuration for the service identity in its accessible private
+state, without weakening `ProtectHome` or copying a human's home directory.
+Otherwise choose runner fallback or the App mode. Without a webhook secret the
+webhook endpoint is unavailable; outbound polling is described below.
+
+### Operator-owned GitHub App
+
+Register your own App using GitHub's [registration guide](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/registering-a-github-app).
+You can own it under a personal account and install it on selected repositories
+you control; organization administration is not a prerequisite for self-hosting.
+An organization installation remains subject to that organization's existing App
+approval policy. The hosted `detent-cloud` App and its Cloud webhook remain
+unchanged; a self-hosted Hub uses its own App and origin.
+
+Use the existing Detent App repository permissions: **Issues** and **Pull
+requests** read/write; **Contents**, **Checks**, **Commit statuses** and
+**Metadata** read-only. No organization permissions or user OAuth token are
+needed for Hub intake. Install the App on the repositories bound to the Hub's
+projects, for example `example-org/example-project`. Generate an RSA private
+key in the App settings and deliver these values through private service secret
+storage (such as the existing root-only `credentials.env`):
+
+| Environment variable | Value |
+| --- | --- |
+| `DETENT_HUB_GITHUB_APP_ID` | Numeric App ID, not its client ID or installation ID |
+| `DETENT_HUB_GITHUB_APP_PRIVATE_KEY` | PEM private key contents, not a filename; literal `\n` escapes are also accepted |
+| `DETENT_HUB_GITHUB_WEBHOOK_SECRET` | High-entropy shared webhook secret, identical to the App's configured secret |
+| `DETENT_HUB_GITHUB_APP_CLIENT_ID` | App client ID for optional Cloud repository discovery |
+| `DETENT_HUB_GITHUB_APP_CLIENT_SECRET` | App client secret for optional Cloud repository discovery |
+
+For optional Connect GitHub in Cloud project setup, provide both client values
+to Cloud entry along with the App credentials. Register
+`https://<cloud-origin>/auth/github/callback` as an App callback URL and its
+Setup URL, including redirects on installation updates. The picker opens the
+App installation account chooser, then authorizes the user with PKCE and returns
+to the same project setup step and runner. Other installation links keep their
+existing behavior. Tokens are encrypted per user in Cloud entry, never passed to
+runners or browsers, and can be revoked from account OAuth grants. Expired tokens
+require reconnecting. Without a connection, repository reads make no GitHub calls.
+
+Remove `--github-disabled` from the service command. Both App ID and private key
+must be nonempty to select App transport; setting only one falls back to the
+CLI mode. The Hub resolves repository installations and refreshes installation
+tokens itself; no installation-ID variable is needed. Keep secrets out of shell
+arguments, source control and logs. The Hub reads the webhook secret from
+`DETENT_HUB_GITHUB_WEBHOOK_SECRET` by default; `--github-webhook-secret-env`
+selects a different environment variable name, not the secret value.
+
+In the App settings, activate webhooks, keep SSL verification enabled, set the
+same secret, and subscribe to **Issues** (`issues`) and **Issue comment**
+(`issue_comment`). Set the webhook URL to your reachable HTTPS origin followed
+by `/api/v1/webhooks/github`, for example
+`https://hub.example.com/api/v1/webhooks/github`. The self-hosted Hub verifies
+the GitHub HMAC signature itself. Bound native projects receive new issues in
+Triage; later source updates follow the ownership rules in GitHub profiles.
+
+### Webhook reachability and operation without webhooks
+
+GitHub cannot deliver to a loopback-only Hub. A public HTTPS reverse proxy or
+operator-managed HTTPS tunnel must forward the webhook path to the Hub, preserving
+the request body and GitHub signature/delivery/event headers. Use the existing
+[Caddy example](examples/hub/Caddyfile) or equivalent; keep the backend bound with
+`--listen 127.0.0.1:7777` and add `--trusted-proxy` when the proxy terminates TLS.
+That flag does not create a tunnel, TLS or firewall rules. Keep the backend
+private and the other API routes protected by scoped bearer authentication;
+GitHub webhook requests authenticate with their signature, not a Hub API token.
+
+To stay loopback-only, leave the App webhook inactive and omit the webhook
+secret. With either Hub CLI or App credentials, compatibility projects still
+receive periodic issue reconciliation: `--reconcile-interval` defaults to 10
+minutes, and `--full-repair-interval` to 24 hours, with a full repair at startup.
+These existing outbound reads need no inbound endpoint. Native projects skip
+issue reconciliation: it does **not** discover new native GitHub issues.
+Without reachable webhooks, [enable manual intake](#enable-manual-intake) before
+periodically requesting the existing selective intake operation linked above
+(using the Hub transport or runner fallback), or use explicit historical import
+with Hub credentials. There is no built-in periodic native issue-intake poll;
+automatic new-issue intake requires reachable webhooks.
+
+### Historical import
+
+Historical import uses Hub GitHub credentials and the project's scoped v2 URL.
+`POST .../projects/{project}/imports` with an `idempotency_key` and
+`issue_number` returns a durable `import_id`; starting the same source issue
+again returns the existing job. Each
+`POST .../imports/{import_id}/advance` with the returned `expected_revision`
+retrieves one page and persists its records and cursor in one transaction.
+`GET .../imports/{import_id}` recovers state after a lost reply, and
+`GET .../imports/{import_id}/records?limit=100` pages the retained source records.
+Network failures keep the cursor and return `status: partial` with a retry time.
+`stage: finished` describes traversal of the GitHub API surfaces, not complete
+history: inspect `gaps`, because GitHub does not return deleted comments or
+inaccessible activity to every credential. Missing authors and dates stay
+unavailable rather than being attributed to the importing actor. Imported
+issues are not claimable until traversal finishes and imported dependencies
+resolve.
 
 ## Authentication, projects and runners
 
@@ -113,39 +483,228 @@ grants through `/api/v2/tokens/{id}/grants`. Use individual operator credentials
 so author IDs remain attributable. Generic scoped bearer authentication works
 without hosted identity; do not assume an OIDC proxy can mint Hub credentials.
 
-Follow [Hub API enrollment](hub-api.md#scoped-runner-onboarding) for exact
-JSON requests and [repository policy](config.md#repository-policy-with-hub-execution)
-for approval. The supported sequence is:
+Create the organization/project and its workflow states as administrator before
+enrolling a runner. Approve the trusted repository/workflow descriptor through
+[repository policy](config.md#repository-policy-with-hub-execution). A runner
+cannot grant itself tags or repository access. An exact offline host stays
+queued; tags constrain routing and do not grant authority. Logical runners
+sharing a host share its capacity.
 
-1. Create the organization/project and its workflow states as administrator.
-2. On each runner run `detent hub runner init --hub-url https://hub.example.com --identity-file /private/runner/identity.json`.
-   Give the generated binding IDs to the administrator. Never copy one runner's
-   identity file to another machine.
-3. Create a one-use enrollment for those exact IDs, project grants and required
-   operations. Deliver it privately and run `detent hub runner enroll` with the
-   corresponding identity file, Hub URL and enrollment environment variable.
-4. Configure `client.hub_url`, `identity_file`, `organization_id` and
-   `native_projects` on each runner. Keep backend/provider login on that runner.
-5. Approve the trusted repository/workflow descriptor with `detent hub policy`.
-   Configure required tags or exact runner/machine IDs in repository policy;
-   set administrator-owned runner tags, project access and capacity through
-   `detent hub runner`. A runner cannot grant itself tags or repository access.
-6. Check two distinct runners against their selectors before enabling real work.
-   An exact offline host stays queued; tags are routing constraints and do not
-   grant authority. Logical runners sharing a host share its capacity.
+Configure required tags or exact runner/machine IDs in repository policy. Set
+administrator-owned runner tags, project access and capacity through
+`update_runner_routing` or
+`PUT /api/v2/organizations/{org}/runners/{runner}/routing`, as documented in
+[runner routing](hub-api.md#named-runners-host-capacity-and-eligibility).
 
-Enrollment grants last at most 900 seconds. Enrolled credentials last 24 hours
-from enrollment/renewal; renew before expiry through the supported runner CLI.
-Revocation is permanent for that identity. After expiry/revocation or migration,
-initialize a fresh binding and have an administrator enroll it, then update exact
-ID selectors and approve the resulting policy. Preserve old principal rows for
-history; never reactivate them by editing SQLite. See `detent hub runner --help`
-for renewal, rotation, revocation, routing and fleet inspection commands.
+### Enroll a runner without the web app
+
+Use the released binary on the runner host. No Cloud account or Enroll dialog is
+needed. Substitute your Hub URL, organization and project IDs in these examples.
+
+1. As an instance administrator, send an authenticated
+   `POST /api/v2/organizations/org_example/runner-enrollments` to your Hub with
+   this exact JSON body, replacing the project ID:
+
+   ```json
+   {
+     "project_ids": ["prj_example"],
+     "operations": ["read", "claim", "heartbeat", "events", "collaborate"],
+     "ttl_seconds": 300
+   }
+   ```
+
+   Omit `runner_id` and `machine_id`: this is token-first enrollment, binding
+   fresh host-generated IDs on redemption. The response contains `id`, `token`
+   and `expires_at`, with `Cache-Control: no-store`. The token is usable once
+   within 300 seconds; the supported TTL range is 1–900 seconds.
+
+   Alternatively, connect an authorized MCP client to this self-hosted Hub
+   using [API & MCP setup](api-mcp-setup.md), and call
+   `create_runner_enrollment` with these arguments (use a fresh `request_id`
+   for each new enrollment):
+
+   ```json
+   {
+     "project_id": "prj_example",
+     "request_id": "enroll-build-host-1",
+     "enrollment": {
+       "project_ids": ["prj_example"],
+       "operations": ["read", "claim", "heartbeat", "events", "collaborate"],
+       "ttl_seconds": 300
+     }
+   }
+   ```
+
+   Use a private originating connection and deliver the returned token through
+   private secret storage. Keep tokens out of transcripts, logs, repositories
+   and issue reports. The MCP token is returned only to its originating connection.
+
+2. On the runner host, load that token from private secret storage into the
+   environment variable `DETENT_RUNNER_ENROLLMENT_TOKEN`. Do not put its value
+   in shell history or any command-line argument. Run:
+
+   ```sh
+   detent hub runner register \
+     --url https://hub.example.com \
+     --organization org_example \
+     --name 'Build host' \
+     --capacity 1 \
+     --isolation-tier sandbox \
+     --config "$HOME/.config/detent-runner/global.yaml" \
+     --workspace-root "$HOME/detent-runner"
+   unset DETENT_RUNNER_ENROLLMENT_TOKEN
+   ```
+
+   Choose an absolute private `--config` path outside repositories and execution
+   workspaces. Registration stores the host identity in `identity.json` beside
+   that config. Never copy it to another host. Choose a `--workspace-root` owned
+   by this runner for managed checkouts; the example paths are also the defaults.
+   Registration writes the Hub connection and identity configuration, and fetches
+   allowed project routing from the Hub. Keep provider login on the runner; model
+   selection comes from organization/project settings. Use `native-trusted`
+   instead of `sandbox` only for full agent access on a dedicated machine.
+
+3. Start the runner with the config you just created:
+
+   ```sh
+   detent --config "$HOME/.config/detent-runner/global.yaml" --headless
+   ```
+
+   For a background service, use `detent hub runner register --service` with the
+   same flags instead; it installs and starts the runner service. Use only one
+   running owner of this config. Keep the `runner_id` and `machine_id` printed
+   by registration for inspection and any exact policy selectors.
+
+4. From your authorized MCP client, call `runner_project_diagnostics`:
+
+   ```json
+   {"project_id":"prj_example","runner_id":"runner_example"}
+   ```
+
+   Replace `runner_example` with the returned runner ID. Inspect its connection,
+   project setup and local admission observations, including observation times
+   and unavailable fields. An offline runner or missing setup is not verified
+   readiness; correct the reported setup or policy problem and read again.
+   Selecting the runner explicitly avoids ambiguity when several runners report.
+
+### Dedicated runner account
+
+On macOS and Linux, use a dedicated standard OS account to keep worker skill,
+MCP and credential discovery separate from your personal account. Create that
+account once per machine, with its own home directory. Do not link its provider
+configuration or credentials to your personal home.
+
+On Linux, an administrator can create the account and keep its systemd user
+manager available after logout:
+
+```sh
+sudo useradd --create-home --shell /bin/bash detent-runner
+sudo loginctl enable-linger detent-runner
+```
+
+On macOS, create a standard account in System Settings, sign into it, and keep
+that login session active. The runner uses that account's LaunchAgent in
+`gui/UID`; it is not a system LaunchDaemon and does not start before login.
+
+Sign into the dedicated account to install its toolchain and provider CLIs.
+Run `gh auth login`, `codex login` and `npx playwright install chromium` there
+as needed, along with any other provider's login. Playwright, npm and Go keep
+their normal caches in that account and share them across its runs. Provider
+authentication stays local to that account; no personal credentials are copied.
+
+Install the Detent binary in a location both accounts can execute, such as
+`/usr/local/bin/detent`. From your administrator account, load the one-use token
+into `DETENT_RUNNER_ENROLLMENT_TOKEN` through private secret storage, authorize
+sudo, and register:
+
+```sh
+sudo -v
+detent hub runner register \
+  --url https://hub.example.com \
+  --organization org_example \
+  --name 'Dedicated runner' \
+  --isolation-tier sandbox \
+  --service --service-user detent-runner
+unset DETENT_RUNNER_ENROLLMENT_TOKEN
+```
+
+`--service-user` requires an existing non-root account and `--service`. It uses
+noninteractive sudo, so your sudo policy must permit switching to that account
+without another password prompt. Registration, identity creation, setup probes
+and service installation all run as the dedicated account. Default config and
+workspace paths are relative to its home; any explicit `--config` and
+`--workspace-root` must also be private paths owned by that account. Enrollment
+passes the token over stdin, never in the delegated command's arguments.
+
+The delegated process starts with a clean environment and the target account's
+`HOME`, `USER` and `LOGNAME`. Its PATH includes that account's `.local/bin`,
+`.npm-global/bin` and `bin`, standard system directories, and `/opt/homebrew/bin`
+on macOS. Linux also selects the account's `/run/user/UID` service bus. Personal
+`CODEX_HOME`, XDG paths, MCP settings, credentials and cache overrides from the
+calling shell are not forwarded. Shell profiles are not loaded. For custom
+toolchain paths or explicit environment overrides, sign into the dedicated
+account and use ordinary `detent hub runner register --service` there.
+
+Workers retain the dedicated account's native home and caches, use isolated
+provider profiles, and discover project skills from the repository's
+`.agents/skills`. Existing single-user installations continue to use their
+current account and disable its personal `.agents/skills` at every Codex launch.
+Service management and logs remain scoped to the account that owns the runner;
+run status, restart and update commands from that account.
+
+### Credential lapse and re-enrollment
+
+Enrolled credentials last 24 hours from enrollment or renewal. The runner
+renews its credential during normal operation. After a host has been offline
+past that window, restart it with its existing config: renewal permits elapsed
+expiry while the identity and grants remain valid. Revocation is permanent;
+renewal cannot restore revoked authority.
+
+If renewal is refused, or you are migrating to a new host, have an administrator
+create a fresh one-use enrollment as above. Register with a new private config
+directory (for example, `$HOME/.config/detent-runner-replacement/global.yaml`)
+and an unused workspace root, supplying the token through
+`DETENT_RUNNER_ENROLLMENT_TOKEN` again. New paths generate a fresh identity;
+rerunning registration against the old identity cannot take over its reserved
+IDs. Stop the old runner before starting its replacement, update any exact
+runner/machine selectors and approve the resulting policy. Verify the new ID
+with `runner_project_diagnostics`. Preserve old principal rows for history;
+never reactivate them by editing SQLite.
+
+See [Hub API enrollment](hub-api.md#scoped-runner-onboarding) for the separate
+`init`/`enroll` flow when IDs must be bound before token creation. Use
+`detent hub runner renew` and `detent hub runner rotate` for credential
+maintenance. Administrators revoke identities with `revoke_runner_identity`;
+see [runner renewal, rotation and revocation](hub-api.md#runner-renewal-rotation-and-revocation)
+for credential lifecycle details. For routing and fleet inspection, use
+`list_runner_routing` or `GET /api/v2/organizations/{org}/runners`; see
+[runner routing](hub-api.md#named-runners-host-capacity-and-eligibility).
+
+## Model selection
+
+Set the organization default once through `GET`/`PUT`
+`/api/v2/organizations/{org}/model-selection`, or MCP
+`get_organization_model_selection` / `update_organization_model_selection`,
+using an organization-wide operator or administrator bearer token. Project
+grants do not authorize organization settings. Project settings at
+`/api/v2/organizations/{org}/projects/{prj}/model-selection` override individual
+fields; setting the project `selection` to null restores organization
+inheritance. See [the Hub API](hub-api.md#scoped-runner-onboarding) for request
+fields and the corresponding project MCP tools.
+
+An unconfigured self-hosted Hub uses the same seeded organization defaults as
+a hosted Hub: Codex Sol (`gpt-6.1-sol`) at `high` for normal and complex work,
+Codex Astra (`gpt-6-astra`) at `low` for planning and `medium` for validation,
+and Astra at `medium` for `complexity:very-complex` work. Per-issue effort
+remains clamped to the stage ceiling. Runners receive the effective selection
+from the Hub; runner-local `global.agents.model_selection` in `global.yaml` is
+ignored, and model selection does not belong in repository `detent.yaml`.
 
 ## Optional durable artifacts
 
-Use the existing [artifact deployment](artifacts-deployment.md) and its systemd,
-Caddy and S3-compatible configuration examples. It is an independently available
+The [artifact examples](examples/artifacts/) contain a systemd unit, Caddy
+configuration and S3-compatible `service.json`. The artifact service
+(`detent artifacts --artifact-config PATH serve`) is an independently available
 authorization/download process with a durable catalog/outbox and a private object
 store. Execution runners may be disposable; the artifact process, catalog and
 bucket are not. Keep them outside runner workspaces. No AWS compute, hosted
@@ -159,6 +718,37 @@ Configure a dedicated scoped publisher credential, project service binding and
 finite retention/capacity policy. Runners receive no bucket credentials. Omitting
 durable configuration remains truthful local-only operation.
 
+Example IDs, hosts, buckets and limits in `service.json` are placeholders, not
+plan allowances. Validation requires `deletion_record_seconds` to exceed
+`backup_seconds` plus `abandoned_upload_seconds`. The publisher token is read
+from the environment variable named by `publish_token_env`
+(`DETENT_ARTIFACT_PUBLISHER_TOKEN` in the example, supplied through the unit's
+private `credentials.env`). Bucket credentials come from the standard AWS SDK
+credential chain of the artifact process, never from Hub or runner configuration.
+
+| Provider | `endpoint` | `region` | Addressing |
+| --- | --- | --- | --- |
+| AWS S3 | Empty (SDK resolves it) | Actual bucket region | `path_style: false` |
+| DigitalOcean Spaces | Regional origin, such as `https://nyc3.digitaloceanspaces.com` | `us-east-1` | `path_style: false` |
+| Tigris | `https://t3.storage.dev` | `auto` | Provider-supported style |
+
+`verify-storage` writes an opaque probe object under `detent-probe/`, checks that
+conditional create rejects replacement, round-trips exact bytes, deletes it and
+confirms absence. It fails closed with `unsupported_capability`,
+`checksum_mismatch` or `storage_unreachable`; `serve` repeats the probe.
+`require_versioning: true` additionally requires real version IDs and
+version-pinned reads and deletes. The service never changes bucket settings.
+
+The catalog is private to its service. `detent artifacts --artifact-config PATH usage` (logical
+retained and reserved bytes) and `detent artifacts --artifact-config PATH backup --output PATH`
+refuse to open a running catalog, so stop only the artifact service for them;
+downloads are unavailable meanwhile. A catalog backup does not contain bucket
+bytes: back up provider object versions separately, and keep the newest
+`{artifact}/deleted` markers outside rollbackable object backups. The service
+enforces live, abandoned-upload and deletion-record expiry; your backup system
+owns backup expiry. `usage` is not a provider invoice; provider requests, egress
+and storage are billed by the provider.
+
 ## Backup and export
 
 `detent hub backup` is also the supported full-instance collaboration export.
@@ -170,11 +760,41 @@ unsupported. Raw artifacts, TLS files, runner workspaces and provider credential
 are separate backups. Treat snapshots as sensitive customer data even though
 Hub bearer credentials are stored as hashes.
 
-Drain runners and stop the Hub before CLI maintenance. `backup` and `verify`
-acquire its ownership lock and fail if another owner is running. They check
+For routine backups without an outage, an instance administrator can ask the
+running self-hosted Hub to write a snapshot through its authenticated admin API.
+Create a private backup directory writable by the Hub service user, then send
+an absolute path on the **Hub host** (not the HTTP client's machine):
+
+```sh
+sudo -u detent-hub install -d -m 0700 /var/lib/detent-hub/backups
+curl --fail-with-body --request POST 'http://127.0.0.1:7777/api/v2/admin/backup' \
+  --header "Authorization: Bearer $DETENT_HUB_ADMIN_TOKEN" \
+  --header 'Content-Type: application/json' \
+  --data '{"output":"/var/lib/detent-hub/backups/<unique-snapshot>.db"}'
+sudo -u detent-hub /usr/bin/detent hub verify --database '/var/lib/detent-hub/backups/<unique-snapshot>.db'
+```
+
+Use HTTPS when calling through the reverse proxy. Only an unscoped instance
+administrator credential can create a backup; project credentials and runners
+cannot. The endpoint is unavailable on hosted Cloud Hubs. Success returns
+`204 No Content`; neither snapshot bytes nor the output path appear in the
+response body, including errors. A lost HTTP response does not establish whether
+the snapshot completed; inspect and verify the destination before repeating.
+
+The snapshot uses SQLite's online backup API on a dedicated reader connection
+with a fixed read transaction. It contains all writes committed when that read
+snapshot begins; later commits remain on the live Hub. Writes continue during
+the copy without holding the Hub writer connection. A long snapshot retains
+its WAL read position, so allow disk space for concurrent writes. The new file
+has `0600` permissions, existing destinations are never replaced, and failed or
+cancelled copies remove their incomplete output. Wait for successful completion
+before verifying or copying the file. No snapshot download endpoint is provided.
+
+Offline CLI maintenance remains supported. Drain runners and stop the Hub
+before using `hub backup` against its database. `backup` and `verify` acquire
+the source's ownership lock and fail if another owner is running. They check
 identity, integrity, foreign keys and supported schema without upgrading the
-source. The existing service-owned `Service.Backup` API remains available for
-embedded online snapshots; no unauthenticated backup-download endpoint is added.
+source.
 
 ```sh
 sudo systemctl stop detent-hub
@@ -184,16 +804,14 @@ sudo -u detent-hub /usr/bin/detent hub verify --database '/var/lib/detent-hub/ba
 sudo systemctl start detent-hub
 ```
 
-The running Hub holds its database in SQLite exclusive locking mode, so
-WAL-shipping replicators such as Litestream cannot attach to `hub.db` and fail
-with `database is locked`. Do not weaken the lock to enable them. For routine
-off-host copies, schedule a script (for example from a root-owned systemd timer
-at a quiet hour) that stops the Hub, runs `hub backup`, and starts the Hub again
-immediately, restarting it even when the backup fails. Only then run `hub verify`
-against the detached snapshot, compress it and upload that file to encrypted
-object storage. The Hub is unavailable while `hub backup` checks and copies the
-database, which grows with database size and storage speed; drain runners or
-choose a window where that outage cannot outlast active leases.
+The running Hub uses WAL with normal SQLite locking, while its application
+ownership lock prevents a second Hub from opening the database. This preserves
+live WAL replication such as Cloud's Litestream setup. For routine off-host
+copies, schedule the online admin operation, verify the detached snapshot,
+compress it and upload that file to encrypted object storage. Offline backups
+still make the Hub unavailable while checking and copying the database; restart
+it even when that backup fails and choose an outage window that cannot outlast
+active leases.
 
 Replace angle-bracket placeholders before execution. Backup output must not
 exist and must differ from the source. Copy only the completed snapshot to the
@@ -293,19 +911,6 @@ problems first.
 Never manually advance the schema table or run the unrelated runner-store
 `make db-migrate` against a Hub database.
 
-The deployment/release owner must verify a normal production restart after
-integration. Record the finalized Change head, deployed binary version, stop time
-and first authenticated HTTPS-ready time; measure the entire unavailable interval
-and require it to be below one renewal interval. Start a real runner session
-before deployment and retain its work-item, machine, lease, fencing token, session,
-run and attempt identifiers. After deployment, confirm renewal and successful
-`run.finished` under those same identifiers, with one attempt and no replacement
-dispatch. Keep credentials and content out of this evidence. A local reopen test
-does not establish production deploy timing. The restricted staging deploy script
-and production host integration are operator-owned, outside this source checkout;
-their preparation/restart ordering must follow this procedure before claiming
-production acceptance.
-
 Schema 19 repairs the two formerly valid schema-18 branches. Migration 18 remains
 `00018_change_viewed_files.sql`; onboarding moves to
 `00019_project_onboarding.sql`. The forward-only, transactional migration creates
@@ -328,8 +933,7 @@ database for diagnosis. Use the newer compatible binary, or restore the
 pre-upgrade snapshot into a new path with a binary supporting that snapshot.
 Switch the unit's database path only after validation. Never point an older binary
 at the upgraded live file. Pre-upgrade backups retain the old schema because
-offline backup does not migrate it. Recovery commands are available beginning
-with the release that packages this runbook; keep that recovery binary too.
+offline backup does not migrate it. Keep the recovery binary with the snapshot.
 
 Prefer identical release versions across Hub and runners. Rolling overlap is
 supported only where `/api/v2/capabilities` and the runner agree on protocol major
@@ -371,7 +975,8 @@ Webhook raw payloads have the existing configurable retention (default 7 days);
 typed collaboration/projection records are separate retained data. Artifact
 policy enforces live/abandoned-upload/deletion-marker lifetimes; its backup system
 owns object/catalog backup expiration. Deletion-marker retention must outlive
-artifact backups plus abandoned uploads. See [artifact retention](artifacts-deployment.md#retention-and-accounting).
+artifact backups plus abandoned uploads; see
+[Optional durable artifacts](#optional-durable-artifacts).
 
 ## Diagnostics
 
@@ -388,25 +993,12 @@ do not paste bearer headers or content into diagnostic reports.
 | GitHub compatibility/projection failure | `/api/v1/outbox/health`, `/api/v1/repositories/freshness`, `/health` and GitHub profile; distinguish disabled transport, missing permissions, rate budget, stale projection, conflict and dead-letter/operator action before retrying |
 | Startup/schema failure | systemd exit status and private journal, `hub verify` while stopped; check local disk, permissions, ownership and binary/schema versions; do not remove an active lock |
 
-## Reproduce the validation fixture
-
-Build `tmp/detent` with `make build` and run
-`python3 scripts/hub-smoke.py tmp/detent`. The fixture installs a binary into an
-empty private directory, uses ephemeral loopback ports, verifies bootstrap,
-restart, export/verify/import and revoked-source authentication, and cleans up
-only its own child processes/files. No real credentials are used.
-
-For Linux/container validation, cross-build the binary and Hub test executable
-for the container architecture, copy them and the smoke script into a fixture
-directory, then run a Python-capable Linux image with `--network none`, a read-only
-fixture mount and private writable temp storage. Run the smoke script plus the
-Hub recovery/routing/protocol tests there. No production deployment or paid
-resources are needed. The required repository gate remains `make check`.
-
 ## Project Sprites credentials
 
-Owners and admins can set, replace or remove a project's Sprites organization
-token in project settings under Execution. The API is
+Owners and admins set, replace or remove the organization's Sprites token under
+**Settings > Integrations**, and an optional per-project override on the
+project's **Runners** settings tab. The APIs are
+`/api/v2/organizations/{organization}/secrets/fly_sprites_token` and
 `/api/v2/organizations/{organization}/projects/{project}/secrets/fly_sprites_token`:
 GET returns only presence, organization slug and master key version; PUT accepts
 `{"token":"..."}`; DELETE removes Detent's copy. Hosted requests require the
@@ -433,16 +1025,16 @@ and public organization metadata. Backups must keep the corresponding master
 keys separately. Losing the keys loses access to stored credentials; possession
 of both a database backup and its keys exposes those credentials.
 
-For rotation, stop the Hub, add a new version to `DETENT_HUB_SECRET_KEYS` while
-retaining all old versions, and select the new `DETENT_HUB_SECRET_KEY_VERSION`.
-Run `detent hub secrets rotate --database /var/lib/detent/hub.db`. The existing
-database ownership lock refuses rotation against a running Hub. Rotation
-atomically re-wraps data keys and records the local operator identity; ciphertext
-and value nonces remain unchanged. Repeating rotation at that version is a no-op.
-Restart with the new active version; remove old keys only after every relevant
-database is rotated, keeping them in separate archival storage for old backups.
-A failed rotation rolls back every row. No master key is written to disk by this
-command.
+To rotate the master key, add the new version to `DETENT_HUB_SECRET_KEYS` while
+retaining the old versions, set `DETENT_HUB_SECRET_KEY_VERSION` to it, and
+restart the Hub; it rewraps stored secrets under the active key after restart.
+`detent hub secrets status --database PATH` checks stored secrets against the
+environment keyring without writing and reports configured, missing and
+retirable versions. It exits 0 once rotation is complete, 3 while it is
+incomplete and 2 when the proposed keyring fails preflight; retire old versions
+only after exit 0. Rotating master keys does not
+replace a provider credential that may have been exposed: revoke and replace
+that credential at its source.
 
 Setting a token validates `GET https://api.sprites.dev/v1/sprites` with Bearer
 authentication. Redirects are refused and provider errors/bodies are never echoed.

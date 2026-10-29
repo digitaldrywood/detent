@@ -11,18 +11,18 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/provenance"
+	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 const defaultWorkflowMetricsProjectID = "default"
 
 const (
-	workflowActionBlockedRecovery          = "blocked_recovery"
-	workflowActionBlockedRecoveryExhausted = "blocked_recovery_exhausted"
-	workflowActionPlanReviewRework         = "plan_review_rework"
-	workflowActionReworkBreakerAutoUnpark  = "rework_breaker_auto_unpark"
-	blockedCauseStatusUnrecorded           = "unrecorded"
+	workflowActionPlanReviewRework        = "plan_review_rework"
+	workflowActionReworkBreakerAutoUnpark = "rework_breaker_auto_unpark"
+	blockedCauseStatusUnrecorded          = "unrecorded"
 )
 
 type WorkflowMetricsRecorder interface {
@@ -38,6 +38,7 @@ type WorkflowMetricsMetadataUpdater interface {
 }
 
 type workflowLaneMetadata struct {
+	HumanAction           string                                     `json:"human_action,omitempty"`
 	ReasonDetail          string                                     `json:"reason_detail,omitempty"`
 	DeliveryTimeSource    string                                     `json:"delivery_time_source,omitempty"`
 	TerminalOutcome       string                                     `json:"terminal_outcome,omitempty"`
@@ -77,34 +78,34 @@ type workflowLaneReworkBreakerMetadata struct {
 }
 
 type workflowLaneBlockedRecoveryMetadata struct {
-	Owner                   string `json:"owner,omitempty"`
-	Cause                   string `json:"cause,omitempty"`
-	Predicate               string `json:"predicate,omitempty"`
-	CauseFingerprint        string `json:"cause_fingerprint,omitempty"`
-	CauseFingerprintVersion int    `json:"cause_fingerprint_version,omitempty"`
-	TargetState             string `json:"target_state,omitempty"`
-	RunMode                 string `json:"run_mode,omitempty"`
-	IntentResumable         bool   `json:"intent_resumable,omitempty"`
-	Resumable               bool   `json:"resumable,omitempty"`
-	Reachability            string `json:"reachability,omitempty"`
-	HoldReason              string `json:"hold_reason,omitempty"`
-	OperatorRemedy          string `json:"operator_remedy,omitempty"`
-	ResourceKind            string `json:"resource_kind,omitempty"`
-	ResourceConsumer        string `json:"resource_consumer,omitempty"`
-	ResourceCredential      string `json:"resource_credential,omitempty"`
-	ResourceRemaining       int64  `json:"resource_remaining,omitempty"`
-	ResourceLimit           int64  `json:"resource_limit,omitempty"`
-	ResourceReserve         int64  `json:"resource_reserve,omitempty"`
-	ResourceResetAt         string `json:"resource_reset_at,omitempty"`
-	ResourceObservedAt      string `json:"resource_observed_at,omitempty"`
-	ResumeAt                string `json:"resume_at,omitempty"`
-	LifetimeSessions        int64  `json:"lifetime_sessions,omitempty"`
-	LifetimeTokens          int64  `json:"lifetime_tokens,omitempty"`
-	LifetimeSessionLimit    int64  `json:"lifetime_session_limit,omitempty"`
-	LifetimeTokenLimit      int64  `json:"lifetime_token_limit,omitempty"`
-	WorkAttemptID           int64  `json:"work_attempt_id,omitempty"`
-	AttemptNumber           int    `json:"attempt_number,omitempty"`
-	AttemptError            string `json:"attempt_error,omitempty"`
+	Owner                   string    `json:"owner,omitempty"`
+	SourceRevision          string    `json:"source_revision,omitempty"`
+	ExpiresAt               time.Time `json:"expires_at,omitzero"`
+	Cause                   string    `json:"cause,omitempty"`
+	Predicate               string    `json:"predicate,omitempty"`
+	CauseFingerprint        string    `json:"cause_fingerprint,omitempty"`
+	CauseFingerprintVersion int       `json:"cause_fingerprint_version,omitempty"`
+	TargetState             string    `json:"target_state,omitempty"`
+	RunMode                 string    `json:"run_mode,omitempty"`
+	IntentResumable         bool      `json:"intent_resumable,omitempty"`
+	Resumable               bool      `json:"resumable,omitempty"`
+	Reachability            string    `json:"reachability,omitempty"`
+	HoldReason              string    `json:"hold_reason,omitempty"`
+	OperatorRemedy          string    `json:"operator_remedy,omitempty"`
+	ResourceKind            string    `json:"resource_kind,omitempty"`
+	ResourceConsumer        string    `json:"resource_consumer,omitempty"`
+	ResourceCredential      string    `json:"resource_credential,omitempty"`
+	ResourceRemaining       int64     `json:"resource_remaining,omitempty"`
+	ResourceLimit           int64     `json:"resource_limit,omitempty"`
+	ResourceReserve         int64     `json:"resource_reserve,omitempty"`
+	ResourceResetAt         string    `json:"resource_reset_at,omitempty"`
+	ResourceObservedAt      string    `json:"resource_observed_at,omitempty"`
+	ResumeAt                string    `json:"resume_at,omitempty"`
+	WorkAttemptID           int64     `json:"work_attempt_id,omitempty"`
+	AttemptNumber           int       `json:"attempt_number,omitempty"`
+	AttemptError            string    `json:"attempt_error,omitempty"`
+
+	StaleRework *staleReworkEvidence `json:"stale_rework,omitempty"`
 }
 
 func (m workflowLaneBlockedRecoveryMetadata) intentResumable() bool {
@@ -182,7 +183,11 @@ func (o *Orchestrator) updateIssueStateByIDWithMetadataMode(
 	strict bool,
 ) error {
 	unlock := o.lockLaneWrites()
-	defer unlock()
+	var trackerWriteErr error
+	defer func() {
+		unlock()
+		o.discardUnavailableCompletedClaim(ctx, state, issueID, trackerWriteErr)
+	}()
 	if reason != string(AutoPromoteReasonOperationalCompletion) &&
 		(reason != string(AutoPromoteReasonReady) || gate.Effective(o.cfg.AutoPromote.Gate).Kind != gate.KindArtifact) &&
 		normalizeState(targetState) == normalizeState(doneStateName(o.cfg.TerminalStates)) && issue.PullRequest != nil && normalizePullRequestState(issue.PullRequest.State) == "merged" {
@@ -197,7 +202,22 @@ func (o *Orchestrator) updateIssueStateByIDWithMetadataMode(
 	}
 	if !o.nativeWorkflow() && !o.cfg.AutoPromote.humanReviewEnabled() && !autoPromoteOptoutLabel(issue, normalizeAutoPromoteConfig(o.cfg.AutoPromote)) &&
 		normalizeState(targetState) == normalizeState(normalizeAutoPromoteConfig(o.cfg.AutoPromote).SourceState) {
-		targetState = blockedStatusState
+		targetState = o.nonReviewDecisionTargetState(issue, normalizeAutoPromoteConfig(o.cfg.AutoPromote).ReworkState)
+	}
+	if metadata.BlockedRecovery != nil {
+		if err := metadata.BlockedRecovery.validate(issue, time.Now()); err != nil {
+			return err
+		}
+	}
+	if normalizeState(targetState) == normalizeState(blockedStatusState) && reason != string(store.WorkAttemptTerminalOperatorStopped) && reason != "operator_move" {
+		action := explicitHumanAction(issue)
+		if signal, ok := workpad.SignalFromComment(metadata.ReasonDetail, "", ""); ok && signal != nil && signal.Invalid == nil {
+			action = signal.HumanAction
+		}
+		if strings.TrimSpace(action) == "" {
+			return errors.New("Blocked requires an explicit typed human action or operator stop")
+		}
+		metadata.HumanAction = strings.TrimSpace(action)
 	}
 	if strings.TrimSpace(issue.ID) == "" {
 		issue.ID = issueID
@@ -227,15 +247,7 @@ func (o *Orchestrator) updateIssueStateByIDWithMetadataMode(
 	if err != nil {
 		return err
 	}
-	park := newTrackerRecoveryPark(targetState, metadata)
-	if err := o.publishTrackerRecoveryPark(ctx, issueID, park); err != nil {
-		return errors.Join(err, o.resolveLaneWrite(ctx, write, "failed"))
-	}
 	if err := o.writeTrackerLane(ctx, issueID, targetState, metadata); err != nil {
-		var parkErr error
-		if errors.Is(err, connector.ErrStateUpdateBlocked) {
-			parkErr = o.finishTrackerRecoveryPark(ctx, issueID, park, "cancelled")
-		}
 		if errors.Is(err, connector.ErrStateUpdateBlocked) && !strict {
 			if receiptErr := o.resolveLaneWrite(ctx, write, "blocked"); receiptErr != nil {
 				return receiptErr
@@ -243,13 +255,16 @@ func (o *Orchestrator) updateIssueStateByIDWithMetadataMode(
 			if o.logger != nil {
 				o.logger.Debug("skip blocked issue state update", "issue_id", issueID, "target_state", targetState, "error", err)
 			}
-			return parkErr
+			return nil
 		}
 		result := "uncertain"
 		if errors.Is(err, connector.ErrStateUpdateBlocked) {
 			result = "blocked"
+		} else if errors.Is(err, runpkg.ErrExecutionAuthorityUnavailable) {
+			result = "failed"
+			trackerWriteErr = err
 		}
-		return errors.Join(err, parkErr, o.resolveLaneWrite(ctx, write, result))
+		return errors.Join(err, o.resolveLaneWrite(ctx, write, result))
 	}
 	transitionAt := at
 	if normalizeState(issue.State) != normalizeState(targetState) {
@@ -275,7 +290,6 @@ func (o *Orchestrator) updateIssueStateByIDWithMetadataMode(
 		issue.ID = issueID
 	}
 	o.recordLaneTransition(ctx, issue, targetState, at, reason, metadata)
-	receiptErr = errors.Join(receiptErr, o.finishTrackerRecoveryPark(ctx, issueID, park, "applied"))
 	return receiptErr
 }
 
@@ -940,4 +954,38 @@ func workflowLanePullRequestMetadataFromIssue(issue connector.Issue) *workflowLa
 		return nil
 	}
 	return &metadata
+}
+
+func (m workflowLaneBlockedRecoveryMetadata) validate(issue connector.Issue, now time.Time) error {
+	if strings.TrimSpace(m.Owner) == "" || strings.TrimSpace(m.SourceRevision) == "" || m.ExpiresAt.IsZero() {
+		return errors.New("stored hold requires owner, source revision, and expiry")
+	}
+	if m.SourceRevision != holdSourceRevision(issue) || !m.ExpiresAt.After(now) {
+		return errors.New("stored hold has stale source revision or expiry")
+	}
+	return nil
+}
+
+func holdSourceRevision(issue connector.Issue) string {
+	data, err := json.Marshal(struct {
+		ID               string
+		State            string
+		Description      string
+		UpdatedAt        *time.Time
+		Revision         string
+		Head             string
+		TrackerUpdatedAt *time.Time
+		Signal           *workpad.Signal
+	}{issue.ID, issue.State, issue.Description, issue.StageUpdatedAt, issue.Metadata["hub_revision"], firstNonBlank(issue.PRHeadSHA, workflowLanePullRequestHead(issue)), issue.UpdatedAt, issue.WorkpadSignal})
+	if err != nil {
+		return ""
+	}
+	return workpad.ContentHash(string(data))
+}
+
+func workflowLanePullRequestHead(issue connector.Issue) string {
+	if issue.PullRequest != nil {
+		return issue.PullRequest.HeadSHA
+	}
+	return ""
 }

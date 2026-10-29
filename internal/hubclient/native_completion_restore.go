@@ -15,6 +15,8 @@ import (
 )
 
 type nativeCompletionState struct {
+	MergeResolution          bool                           `json:"merge_resolution,omitempty"`
+	Observations             []tracker.NativeRunEvent       `json:"observations,omitempty"`
 	Publication              *tracker.NativePRPublication   `json:"publication,omitempty"`
 	Lease                    tracker.NativeLease            `json:"lease"`
 	Data                     tracker.NativeRunData          `json:"data"`
@@ -32,23 +34,29 @@ type nativeCompletionState struct {
 	PreparedMessage          string                         `json:"prepared_message"`
 	PreparedDisposition      *tracker.NativeDisposition     `json:"prepared_disposition,omitempty"`
 	PreparedFinalization     *tracker.NativeFinalization    `json:"prepared_finalization,omitempty"`
+	PreparedLanding          *runner.NativeLanding          `json:"prepared_landing,omitempty"`
 	PreparedFailure          *tracker.NativeTerminalFailure `json:"prepared_failure,omitempty"`
 }
 
 func (e *nativeExecution) CompletionState() json.RawMessage {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	var landing *runner.NativeLanding
+	if e.change != nil {
+		landing = e.change.Landing
+	}
 	data, err := json.Marshal(nativeCompletionState{
-		Publication: e.publication,
-		Lease:       e.claim.lease, Data: e.data, Pending: e.pending,
+		Publication: e.publication, Observations: e.observations,
+		Lease: e.claim.lease, Data: e.data, Pending: e.pending,
 		Diff: e.lastDiff, StoredSeq: e.storedSeq,
 		WorktreeState: e.worktreeState, WorktreeHead: e.worktreeHead,
 		Repository: e.repository, ConversationContinuation: e.conversationContinuation,
 		SourceRequired: e.sourceRequired, RetainedSource: e.retainedSource,
-		RecoveredSource: e.recoveredSource,
+		RecoveredSource: e.recoveredSource, MergeResolution: e.mergeResolution,
 		PreparedOutcome: e.preparedOutcome, PreparedMessage: e.preparedMessage,
 		PreparedDisposition:  e.preparedDisposition,
 		PreparedFinalization: e.preparedFinalization(), PreparedFailure: e.preparedFailure,
+		PreparedLanding: landing,
 	})
 	if err != nil {
 		return nil
@@ -68,6 +76,12 @@ func (s *Scheduler) RestoreCompletion(ctx context.Context, request orchestrator.
 	if len(saved) != 0 {
 		if err := json.Unmarshal(saved, &state); err != nil {
 			return orchestrator.Claimed{}, errors.Join(runner.ErrExecutionAuthorityUnavailable, err)
+		}
+		if landing := state.PreparedLanding; landing != nil {
+			f := state.PreparedFinalization
+			if f == nil || landing.ChangeID != f.ChangeID || landing.VersionID != f.VersionID || landing.HeadSHA != f.HeadSHA {
+				return orchestrator.Claimed{}, runner.ErrExecutionAuthorityUnavailable
+			}
 		}
 	} else {
 		fence, err := strconv.ParseInt(issue.Metadata["hub_fencing_token"], 10, 64)
@@ -97,6 +111,7 @@ func (s *Scheduler) RestoreCompletion(ctx context.Context, request orchestrator.
 		if !sameCompletionRun(data, state.Data) {
 			return orchestrator.Claimed{}, runner.ErrExecutionAuthorityUnavailable
 		}
+		claim.execution.RetainCompletion()
 		if err := claim.execution.Validate(ctx); err != nil {
 			return orchestrator.Claimed{}, err
 		}
@@ -160,13 +175,13 @@ func (s *Scheduler) RestoreCompletion(ctx context.Context, request orchestrator.
 	}
 	claim = nativeClaim{source: source, lease: renewed, recovery: recovery, deadline: nativeLeaseDeadline(started, renewed)}
 	execution := &nativeExecution{
-		publication: state.Publication,
-		scheduler:   s, claim: claim, data: state.Data, pending: state.Pending,
+		publication: state.Publication, observations: state.Observations,
+		scheduler: s, claim: claim, data: state.Data, pending: state.Pending,
 		lastDiff: state.Diff, storedSeq: state.StoredSeq,
 		worktreeState: state.WorktreeState, worktreeHead: state.WorktreeHead,
 		sourceRequired: state.SourceRequired, retainedSource: state.RetainedSource,
-		recoveredSource: state.RecoveredSource,
-		repository:      state.Repository, conversationContinuation: state.ConversationContinuation,
+		recoveredSource: state.RecoveredSource, mergeResolution: state.MergeResolution,
+		repository: state.Repository, conversationContinuation: state.ConversationContinuation,
 		role: state.Data.Identity.Role, preparedOutcome: state.PreparedOutcome,
 		preparedMessage: state.PreparedMessage, preparedDisposition: state.PreparedDisposition,
 		preparedFailure: state.Data.TerminalFailure,
@@ -176,6 +191,7 @@ func (s *Scheduler) RestoreCompletion(ctx context.Context, request orchestrator.
 	}
 	if finalization := state.PreparedFinalization; finalization != nil {
 		execution.change = &runner.NativeChange{
+			Landing: state.PreparedLanding,
 			Changed: finalization.Changed, Files: finalization.Files,
 			ChangeID: finalization.ChangeID, VersionID: finalization.VersionID,
 			BaseSHA: finalization.BaseSHA, HeadSHA: finalization.HeadSHA,
@@ -186,6 +202,7 @@ func (s *Scheduler) RestoreCompletion(ctx context.Context, request orchestrator.
 		execution.finalizationSource = finalization.SourceVersion
 		execution.finalizationAttempt = finalization.SourceAttemptID
 	}
+	execution.RetainCompletion()
 	claim.execution = execution
 	s.mu.Lock()
 	if _, exists := s.nativeClaims[issue.ID]; exists {

@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	maxFrameBytes      = operatortool.MaxArgumentBytes + 64*1024
+	maxFrameBytes      = operatortool.ProjectIconArgumentBytes + 64*1024
 	codeParseError     = -32700
 	codeInvalidRequest = -32600
 	codeMethodNotFound = -32601
@@ -151,6 +151,7 @@ type session struct {
 	mu              sync.Mutex
 	state           lifecycleState
 	protocolVersion string
+	clientName      string
 	bridgeOpened    bool
 	active          map[string]*activeRequest
 	calls           sync.WaitGroup
@@ -240,6 +241,14 @@ func (s *session) handle(ctx context.Context, line []byte) error {
 	case "ping":
 		return s.writeVersionResult(message.ID, version, message.Method, map[string]any{})
 	case "tools/list", "tools/call":
+		client := meta.Client
+		if !meta.Modern {
+			s.mu.Lock()
+			client = s.clientName
+			s.mu.Unlock()
+		}
+		connection := operatortool.CurrentConnection(ctx)
+		ctx = operatortool.BindConnection(ctx, connection.ID, client)
 		if meta.Modern {
 			if err := s.ensureBridge(ctx, meta.Client); err != nil {
 				if message.Method == "tools/call" {
@@ -312,6 +321,7 @@ func (s *session) initialize(ctx context.Context, message request) error {
 	}
 	s.state = stateInitialized
 	s.protocolVersion = negotiated
+	s.clientName = params.ClientInfo.Name
 	s.mu.Unlock()
 
 	return s.writeResult(message.ID, map[string]any{
@@ -402,13 +412,17 @@ func (s *session) startToolCall(parent context.Context, key string, message requ
 		return s.writeError(message.ID, codeInvalidParams, "Invalid tools/call parameters", nil)
 	}
 	params.Name = strings.TrimSpace(params.Name)
-	if _, ok := operatortool.Lookup(params.Name); !ok {
+	_, known := operatortool.Lookup(params.Name)
+	if scoped, ok := s.executor.(*ConnectionExecutor); ok {
+		known = scoped.hasTool(params.Name)
+	}
+	if !known {
 		return s.writeError(message.ID, codeInvalidParams, "Unknown tool", nil)
 	}
 	if len(params.Arguments) == 0 {
 		params.Arguments = json.RawMessage(`{}`)
 	}
-	if !isJSONObject(params.Arguments) || len(params.Arguments) > operatortool.MaxArgumentBytes {
+	if !isJSONObject(params.Arguments) || len(params.Arguments) > operatortool.ArgumentByteLimit(params.Name) {
 		return s.writeError(message.ID, codeInvalidParams, "Tool arguments must be a JSON object within the size limit", nil)
 	}
 
@@ -633,7 +647,7 @@ func safeToolError(err error) string {
 	if errors.Is(err, explain.ErrNotFound) {
 		return "work item not found in this project"
 	}
-	for _, safe := range []error{operatortool.ErrProjectScopeRequired, operatortool.ErrAccessDenied, operatortool.ErrInvalidArguments, mutation.ErrConflict, mutation.ErrUncertain} {
+	for _, safe := range []error{operatortool.ErrProjectScopeRequired, operatortool.ErrAccessDenied, operatortool.ErrProviderUnavailable, operatortool.ErrInvalidArguments, mutation.ErrConflict, mutation.ErrUncertain} {
 		if errors.Is(err, safe) {
 			return safe.Error()
 		}
@@ -677,6 +691,8 @@ func failedToolCallResult(protocolVersion string, err error) toolCallResult {
 	var export *operatortool.WorkBulkExportItemError
 	var detail any
 	switch {
+	case errors.Is(err, operatortool.ErrProviderUnavailable):
+		detail = &operatortool.RequestError{Code: "provider_unavailable", Message: operatortool.ErrProviderUnavailable.Error()}
 	case errors.As(err, &export):
 		detail = export
 	case errors.Is(err, operatortool.ErrResultTooLarge):

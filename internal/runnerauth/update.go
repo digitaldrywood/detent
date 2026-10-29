@@ -9,6 +9,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"golang.org/x/mod/semver"
 )
 
 var updateCommit = regexp.MustCompile(`^[a-fA-F0-9]{7,64}$`)
@@ -64,9 +66,16 @@ func (r UpdateRequest) Validate() error {
 	return nil
 }
 
+type UpdateFailure struct {
+	Request       UpdateRequest `json:"request"`
+	FailureReason string        `json:"failure_reason"`
+	ObservedAt    time.Time     `json:"observed_at"`
+}
+
 type UpdateReceipt struct {
 	ExecutionArtifact bool           `json:"execution_artifact,omitempty"`
 	DrainReason       string         `json:"drain_reason,omitempty"`
+	PreviousFailure   *UpdateFailure `json:"previous_failure,omitempty"`
 	FailureReason     string         `json:"failure_reason,omitempty"`
 	Running           *BuildEvidence `json:"running,omitempty"`
 	VerifiedTarget    *BuildEvidence `json:"verified_target,omitempty"`
@@ -76,7 +85,22 @@ type UpdateReceipt struct {
 	ObservedAt        time.Time      `json:"observed_at"`
 }
 
+func (r *UpdateReceipt) RetainPreviousFailure(previous *UpdateReceipt) {
+	if r == nil || r.PreviousFailure != nil || previous == nil {
+		return
+	}
+	if previous.Request.ID != r.Request.ID && previous.FailureReason != "" {
+		r.PreviousFailure = &UpdateFailure{Request: previous.Request, FailureReason: previous.FailureReason, ObservedAt: previous.ObservedAt}
+	} else if previous.PreviousFailure != nil {
+		failure := *previous.PreviousFailure
+		r.PreviousFailure = &failure
+	}
+}
+
 func (r UpdateReceipt) Validate() error {
+	if previous := r.PreviousFailure; previous != nil && (previous.Request.Validate() != nil || previous.FailureReason == "" || len(previous.FailureReason) > 512 || previous.ObservedAt.IsZero()) {
+		return errors.New("invalid previous update failure")
+	}
 	if len(r.DrainReason) > 512 || len(r.FailureReason) > 512 || r.Request.Validate() != nil || r.ObservedAt.IsZero() || !slices.Contains([]string{"applying", "draining", "refused", "uncertain", "applied", "restart_requested", "running"}, r.Status) {
 		return errors.New("invalid update receipt")
 	}
@@ -86,13 +110,22 @@ func (r UpdateReceipt) Validate() error {
 	if r.VerifiedTarget != nil && (r.VerifiedTarget.Validate() != nil || !r.VerifiedTarget.VerifiedRelease || r.VerifiedTarget.Version != r.Request.Version) {
 		return errors.New("invalid verified update target")
 	}
-	if r.Applied != nil && (r.Applied.Validate() != nil || r.Applied.Version != r.Request.Version) || slices.Contains([]string{"applied", "restart_requested", "running"}, r.Status) && r.Applied == nil {
+	if r.Applied != nil && (r.Applied.Validate() != nil || strings.TrimPrefix(r.Applied.Version, "v") != strings.TrimPrefix(r.Request.Version, "v") && !r.AdvancedFollowHubRelease()) || slices.Contains([]string{"applied", "restart_requested", "running"}, r.Status) && r.Applied == nil {
 		return errors.New("update receipt requires applied build evidence")
 	}
 	if r.ExecutionArtifact && (r.Applied == nil || !r.Applied.VerifiedRelease || r.VerifiedTarget != nil) {
 		return errors.New("execution artifact receipt requires a verified applied release")
 	}
 	return nil
+}
+
+func (r UpdateReceipt) AdvancedFollowHubRelease() bool {
+	if !r.Request.FollowHub || r.Applied == nil || !r.Applied.VerifiedRelease || r.VerifiedTarget != nil {
+		return false
+	}
+	requested := "v" + strings.TrimPrefix(r.Request.Version, "v")
+	applied := "v" + strings.TrimPrefix(r.Applied.Version, "v")
+	return semver.IsValid(requested) && semver.IsValid(applied) && semver.Compare(applied, requested) > 0
 }
 
 func (r UpdateReceipt) ExecutionReady() bool {
@@ -172,6 +205,9 @@ func (r Runner) UpdateView(now time.Time) UpdateView {
 		view.Status = "requested"
 		if r.Update.Receipt != nil && r.Update.Receipt.Request == *r.UpdateRequest {
 			view.Status = r.Update.Receipt.Status
+			if view.Status == "refused" && r.Update.Running.VerifiedRelease && strings.TrimPrefix(r.Update.Running.Version, "v") == strings.TrimPrefix(r.UpdateRequest.Version, "v") {
+				view.Status = "running"
+			}
 			if r.Update.Receipt.Running != nil && !r.Update.Running.Matches(*r.Update.Receipt.Running) {
 				view.Status = "drifted"
 			}

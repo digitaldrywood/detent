@@ -17,12 +17,16 @@ import (
 )
 
 func nativeIssueContract(ctx context.Context, q nativeQueryer, scope nativeScope) (config.IssueContract, error) {
-	approval, err := readProjectPolicy(ctx, q, string(scope.organization)+"/"+string(scope.project))
+	approval, _, err := readProjectPolicy(ctx, q, string(scope.organization)+"/"+string(scope.project))
 	if err != nil {
-		var nativeErr *nativeError
-		if !errors.As(err, &nativeErr) || nativeErr.Code != "policy_mismatch" {
+		return config.IssueContract{}, err
+	}
+	if approval.Policy.Authored != nil && len(approval.Policy.Authored.Files) > 0 {
+		workflow, err := projectPolicyWorkflow(ctx, string(scope.organization)+"/"+string(scope.project), approval.Policy)
+		if err != nil {
 			return config.IssueContract{}, err
 		}
+		return config.ResolveIssueContract(workflow.SharedPrompt)
 	}
 	return config.ResolvePolicyIssueContract(approval.Policy)
 }
@@ -40,14 +44,14 @@ func nativeContractIssue(issue tracker.NativeIssue) connector.Issue {
 }
 
 func nativeIssueContractConfig(ctx context.Context, q nativeQueryer, scope nativeScope) (config.Config, error) {
-	approval, err := readProjectPolicy(ctx, q, string(scope.organization)+"/"+string(scope.project))
-	if errors.Is(err, errNoApprovedRepositoryPolicy) {
-		return config.Default(), nil
-	}
+	approval, found, err := readProjectPolicy(ctx, q, string(scope.organization)+"/"+string(scope.project))
 	if err != nil {
 		return config.Config{}, err
 	}
-	workflow, err := config.ApplyNativePolicy(config.Workflow{Config: config.Default()}, approval.Policy)
+	if !found {
+		return config.Default(), nil
+	}
+	workflow, err := projectPolicyWorkflow(ctx, string(scope.organization)+"/"+string(scope.project), approval.Policy)
 	if err != nil {
 		return config.Config{}, policyMismatch(err.Error())
 	}
@@ -83,6 +87,11 @@ func evaluateNativeIssueContract(ctx context.Context, q nativeQueryer, scope nat
 	contract, err := nativeIssueContract(ctx, q, scope)
 	if err != nil {
 		return nativeContractEvaluation{}, err
+	}
+	if valid, err := releaseDeliveryContractCurrent(ctx, q, scope, issue, contract); err != nil {
+		return nativeContractEvaluation{}, err
+	} else if !valid {
+		return nativeContractEvaluation{ReasonCode: "issue_contract_unsatisfied", Reason: "The verified release delivery contract changed; current approved policy and exact associated delivery are required"}, nil
 	}
 	evaluation := contract.Evaluate(nativeContractIssue(issue))
 	var reasons []string
@@ -187,8 +196,8 @@ func (s *Service) observeImportedScheduledRepair(ctx context.Context, scope nati
 	if snapshot.Provenance.Provider != "github" || snapshot.Provenance.AuthorID != "github-actions[bot]" || strings.Contains(strings.ToLower(snapshot.Body), "detent:no-dispatch") || s.config.ImportBackend == nil {
 		return result
 	}
-	approval, err := readProjectPolicy(ctx, s.database.reader, string(scope.organization)+"/"+string(scope.project))
-	if err != nil || approval.Policy.Authored == nil {
+	approval, found, err := readProjectPolicy(ctx, s.database.reader, string(scope.organization)+"/"+string(scope.project))
+	if err != nil || !found || approval.Policy.Authored == nil {
 		return result
 	}
 	contract, err := config.ResolvePolicyIssueContract(approval.Policy)
@@ -206,10 +215,10 @@ func (s *Service) observeImportedScheduledRepair(ctx context.Context, scope nati
 	_, sourceRepository, _, err := tracker.ParseGitHubIssueURL(snapshot.URL)
 	repository, repoErr := policyRepository(ctx, s.database.reader, string(scope.organization)+"/"+string(scope.project))
 	result.importReason = "Scheduled CI import requires a verified failed job from the configured repository CI workflow"
-	if err != nil || repoErr != nil || len(evidence) != 1 || !strings.EqualFold(repository, sourceRepository) || !strings.EqualFold(repository, evidence[0].Repository) || origin.Source != evidence[0].RunURL {
+	if err != nil || repoErr != nil || len(evidence) != 1 || !strings.EqualFold(repository, sourceRepository) || !strings.EqualFold(repository, evidence[0].Repository) || !scheduledRepairOriginMatches(origin.Source, evidence[0]) {
 		return result
 	}
-	workflow, branch, authorized := contract.ScheduledImportWorkflow()
+	workflow, branch, _, authorized := contract.ScheduledImportWorkflow()
 	if !authorized {
 		return result
 	}
@@ -223,15 +232,15 @@ func (s *Service) observeImportedScheduledRepair(ctx context.Context, scope nati
 
 func (s *Service) observeScheduledRepair(ctx context.Context, scope nativeScope, request tracker.CreateIssue) *nativeScheduledRepair {
 	origin, machine := issueorigin.Parse(request.Body)
-	if string(scope.project) != issueorigin.DetentCloudProjectID || !machine || origin.Kind != "doctor" || origin.Instance != "github-actions" || scope.credential.Scope == apiScopeWorker || request.GitHubIssueURL != "" || request.Provenance != nil || s.config.ImportBackend == nil {
+	if !machine || origin.Kind != "doctor" || origin.Instance != "github-actions" || scope.credential.Scope == apiScopeWorker || request.GitHubIssueURL != "" || request.Provenance != nil || s.config.ImportBackend == nil {
 		return nil
 	}
 	evidence := gate.ParseScheduledEvidence(request.Body)
-	if len(evidence) != 1 || evidence[0].RunURL != origin.Source {
+	if len(evidence) != 1 || !scheduledRepairOriginMatches(origin.Source, evidence[0]) {
 		return nil
 	}
-	approval, err := readProjectPolicy(ctx, s.database.reader, string(scope.organization)+"/"+string(scope.project))
-	if err != nil || approval.Policy.Authored == nil {
+	approval, found, err := readProjectPolicy(ctx, s.database.reader, string(scope.organization)+"/"+string(scope.project))
+	if err != nil || !found || approval.Policy.Authored == nil {
 		return nil
 	}
 	contract, err := config.ResolvePolicyIssueContract(approval.Policy)
@@ -239,10 +248,14 @@ func (s *Service) observeScheduledRepair(ctx context.Context, scope nativeScope,
 		return nil
 	}
 	repository, err := policyRepository(ctx, s.database.reader, string(scope.organization)+"/"+string(scope.project))
-	if err != nil || !strings.EqualFold(repository, "digitaldrywood/detent") || !strings.EqualFold(repository, evidence[0].Repository) {
+	if err != nil || !strings.EqualFold(repository, evidence[0].Repository) {
 		return nil
 	}
-	page, err := s.config.ImportBackend.FetchImportPage(ctx, GitHubImportRequest{Profile: "native", Repository: evidence[0].Repository, Stage: "scheduled", Scheduled: &evidence[0]})
+	workflow, branch, _, authorized := contract.ScheduledRepairWorkflow()
+	if !authorized {
+		return nil
+	}
+	page, err := s.config.ImportBackend.FetchImportPage(ctx, GitHubImportRequest{Profile: "native", Repository: repository, Stage: "scheduled", Scheduled: &evidence[0], ScheduledWorkflow: workflow, ScheduledBranch: branch})
 	if err != nil || page.Scheduled == nil {
 		return nil
 	}
@@ -257,16 +270,20 @@ func applyScheduledRepairContract(ctx context.Context, q nativeQueryer, scope na
 	if verified.importURL != "" {
 		verified.importReason = "Scheduled CI import authorization changed before creation or Todo is not dispatchable"
 	}
-	approval, err := readProjectPolicy(ctx, q, string(scope.organization)+"/"+string(scope.project))
-	if err != nil || approval.Policy.ID != verified.policyID || approval.Policy.Authored == nil {
+	approval, found, err := readProjectPolicy(ctx, q, string(scope.organization)+"/"+string(scope.project))
+	if err != nil || !found || approval.Policy.ID != verified.policyID || approval.Policy.Authored == nil {
 		return
 	}
 	repository, err := policyRepository(ctx, q, string(scope.organization)+"/"+string(scope.project))
-	if err != nil || (verified.importURL == "" && !strings.EqualFold(repository, "digitaldrywood/detent")) || !strings.EqualFold(repository, verified.evidence.Repository) {
+	if err != nil || !strings.EqualFold(repository, verified.evidence.Repository) {
 		return
 	}
 	contract, err := config.ResolvePolicyIssueContract(approval.Policy)
 	if err != nil {
+		return
+	}
+	_, _, priority, authorized := contract.ScheduledRepairWorkflow()
+	if !authorized {
 		return
 	}
 	body := contract.ScheduledRepairBody()
@@ -280,13 +297,30 @@ func applyScheduledRepairContract(ctx context.Context, q nativeQueryer, scope na
 		return
 	}
 	origin, ok := issueorigin.Parse(issue.Body)
-	if !ok || origin.Kind != "doctor" || origin.Instance != "github-actions" || origin.Source != verified.evidence.RunURL {
+	if !ok || origin.Kind != "doctor" || origin.Instance != "github-actions" || !scheduledRepairOriginMatches(origin.Source, verified.evidence) {
 		return
 	}
+	project, err := readNativeProject(ctx, q, scope)
+	if err != nil {
+		return
+	}
+	eligible := false
+	for _, state := range project.States {
+		eligible = eligible || state.Name == "Todo" && state.Dispatchable && !state.Terminal && !state.OperatorOnly
+	}
+	if !eligible {
+		return
+	}
+	issue.State, issue.Priority = "Todo", new(priority)
 	verified.importReason = ""
 	issue.IssueContract.ConfirmedSections = config.IssueContractSectionDigests(body)
 	issue.IssueContract.RecordedAt = now
 	body += fmt.Sprintf("\n\n## Verified CI occurrence\nRun: %s\nJob: %s\nTested commit: %s\nApproved policy: %s", verified.evidence.RunURL, verified.evidence.JobURL, verified.evidence.HeadSHA, verified.policyID)
 	body += "\n\n## Diagnostic evidence (untrusted)\n\n> " + strings.ReplaceAll(html.EscapeString(strings.ReplaceAll(issue.Body, "\r", "")), "\n", "\n> ")
 	issue.Body = issueorigin.Stamp(body, origin) + verified.evidence.Stamp()
+}
+
+func scheduledRepairOriginMatches(source string, evidence gate.ScheduledEvidence) bool {
+	runURL := "https://github.com/" + evidence.Repository + "/actions/runs/" + evidence.RunID
+	return source == runURL || source == runURL+"/attempts/"+evidence.RunAttempt
 }

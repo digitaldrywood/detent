@@ -29,12 +29,24 @@ const runtimeUpdateDrainPollInterval = 500 * time.Millisecond
 var ErrRuntimeUpdateDrainTimeout = errors.New("automatic update runtime drain timed out")
 
 type RestartRequest struct {
-	mu     sync.RWMutex
-	binary string
+	mu           sync.RWMutex
+	binary       string
+	execute      func(context.Context, string) error
+	control      *controllerConnection
+	reserve      func() func()
+	retire       func()
+	artifactRoot string
 }
 
 func NewRestartRequest() *RestartRequest {
 	return &RestartRequest{}
+}
+
+func NewProcessRestartRequest(execute func(string) error) *RestartRequest {
+	if execute == nil {
+		return &RestartRequest{}
+	}
+	return &RestartRequest{execute: func(_ context.Context, binary string) error { return execute(binary) }}
 }
 
 func (r *RestartRequest) Binary() string {
@@ -56,6 +68,7 @@ func (r *RestartRequest) set(binary string) {
 }
 
 func newRuntimeUpdateScheduler(
+	ctx context.Context,
 	cfg BootConfig,
 	logger *slog.Logger,
 	reserveIdle func(context.Context) (func(), bool),
@@ -74,7 +87,7 @@ func newRuntimeUpdateScheduler(
 		ReserveDrain:     reserveDrain,
 		Logger:           logger,
 		StatePath:        runtimeUpdateStatePath(cfg),
-		RunningBuild:     runnerRunningBuild(cfg.Build, cfg.Version),
+		RunningBuild:     runnerRunningBuild(ctx, cfg.Build, cfg.Version),
 		ApplyOptions: detentupdate.ApplyOptions{
 			Preflight:         candidateStartupPreflight(cfg),
 			RecoveryStatePath: detentupdate.RecoveryStatePath(cfg.Global.Path),
@@ -110,9 +123,16 @@ func newRuntimeUpdateScheduler(
 		if !ok {
 			return nil, errors.New("worker release service is unavailable")
 		}
-		schedulerConfig.WorkerArtifacts, err = detentupdate.NewWorkerArtifacts(service, filepath.Join(filepath.Dir(schedulerConfig.StatePath), "workers"))
+		artifactRoot := filepath.Join(filepath.Dir(schedulerConfig.StatePath), "workers")
+		if cfg.Restart != nil && cfg.Restart.control != nil {
+			artifactRoot = filepath.Join(artifactRoot, fmt.Sprintf("controller-%d", os.Getpid()))
+		}
+		schedulerConfig.WorkerArtifacts, err = detentupdate.NewWorkerArtifacts(service, artifactRoot)
 		if err != nil {
 			return nil, err
+		}
+		if cfg.Restart != nil && cfg.Restart.control != nil {
+			cfg.Restart.artifactRoot = artifactRoot
 		}
 		schedulerConfig.WorkerPreflight = workerProtocolPreflight
 	}
@@ -121,10 +141,67 @@ func newRuntimeUpdateScheduler(
 			if strings.TrimSpace(binary) == "" {
 				binary = executable
 			}
-			return requestUpdateRestart(cfg.Shutdown, cfg.Restart, binary)
+			accepted, err := requestRuntimeUpdateRestart(ctx, cfg.Shutdown, cfg.Restart, binary, reserveIdle)
+			if err != nil {
+				restartLogger := logger
+				if restartLogger == nil {
+					restartLogger = slog.Default()
+				}
+				restartLogger.Error("restart applied controller update failed", "error", err)
+			}
+			return accepted
 		}
 	}
 	return detentupdate.NewScheduler(schedulerConfig)
+}
+
+func requestRuntimeUpdateRestart(ctx context.Context, controller *ShutdownController, restart *RestartRequest, binary string, reserveIdle func(context.Context) (func(), bool)) (bool, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if restart == nil || strings.TrimSpace(binary) == "" {
+		return false, nil
+	}
+	if restart.execute == nil {
+		return requestUpdateRestart(controller, restart, binary), nil
+	}
+	if restart.control != nil {
+		if restart.reserve == nil {
+			return false, errors.New("controller handoff reservation is unavailable")
+		}
+		release := restart.reserve()
+		accepted, err := controller.executeUpdateRestart(ctx, func(ctx context.Context) error {
+			return restart.execute(ctx, binary)
+		}, func() {
+			restart.control.retired.Store(true)
+			if restart.retire != nil {
+				restart.retire()
+			}
+			if !controller.shutdownRequested.Load() {
+				controller.updateRestart.Store(true)
+				controller.shutdownRequested.Store(true)
+				controller.request(ShutdownRequestDrain)
+			}
+		})
+		if !accepted {
+			release()
+		}
+		return accepted, err
+	}
+	if reserveIdle == nil {
+		return false, nil
+	}
+	release, idle := reserveIdle(ctx)
+	if release != nil {
+		defer release()
+	}
+	if !idle {
+		return false, nil
+	}
+	return controller.executeUpdateRestart(ctx, func(ctx context.Context) error { return restart.execute(ctx, binary) }, nil)
 }
 
 func runtimeUpdateIdle(ctx context.Context, registry *project.Registry) bool {
@@ -277,10 +354,11 @@ func requestUpdateRestart(controller *ShutdownController, restart *RestartReques
 	}
 	return controller.RequestDrainIfIdle(func() {
 		restart.set(binary)
+		controller.updateRestart.Store(true)
 	})
 }
 
-func runnerRunningBuild(info buildinfo.Info, version string) runnerauth.BuildEvidence {
+func runnerRunningBuild(ctx context.Context, info buildinfo.Info, version string) runnerauth.BuildEvidence {
 	if info.Version == "" {
 		info.Version = version
 	}
@@ -314,6 +392,11 @@ func runnerRunningBuild(info buildinfo.Info, version string) runnerauth.BuildEvi
 	}
 	if patched {
 		build.Source = "private_patched_source"
+	} else if err == nil {
+		build.VerifiedRelease = detentupdate.InstalledReleaseVerified(ctx, detentupdate.DetectionOptions{ExecutablePath: path, CurrentVersion: info.Version, GOOS: runtime.GOOS, GOARCH: runtime.GOARCH}, info.Commit, build.SHA256)
+		if build.VerifiedRelease {
+			build.Source = "release"
+		}
 	}
 	return build
 }

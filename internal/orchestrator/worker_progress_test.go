@@ -31,11 +31,11 @@ func TestWorkerProgressCheckpointPersistence(t *testing.T) {
 			base := store.WorkAttemptHeartbeat{AttemptID: running.WorkAttemptID, HeartbeatAt: now, LeaseExpiresAt: now.Add(time.Minute)}
 			progress := newWorkerProgress(running, base, attempts, 4096)
 			running.progress = progress
-			update := runpkg.UsageUpdate{LastCommand: "go test ./...", SessionID: "session", LastMessage: "tests running", DispatchLoopStart: &runpkg.DispatchLoopStartSnapshot{WorkspaceDiffAvailable: true}}
+			update := runpkg.UsageUpdate{LastCommand: "go test ./...", SessionID: "session", LastMessage: "tests running", CompletionSourceStart: &runpkg.CompletionSourceStartSnapshot{WorkspaceDiffAvailable: true}}
 			if err := progress.observe(t.Context(), update); !errors.Is(err, tt.err) {
 				t.Fatalf("observe() = %v, want %v", err, tt.err)
 			}
-			if got := running.withProgress(); got.DispatchLoopStart.Persisted != (tt.err == nil) || got.LastMessage != update.LastMessage || got.LastCommand != update.LastCommand {
+			if got := running.withProgress(); got.CompletionSourceStart.Persisted != (tt.err == nil) || got.LastMessage != update.LastMessage || got.LastCommand != update.LastCommand {
 				t.Fatalf("progress = %#v", got)
 			}
 			if got := progress.persisted.Load(); (got != nil) != (tt.err == nil) {
@@ -45,7 +45,7 @@ func TestWorkerProgressCheckpointPersistence(t *testing.T) {
 			if tt.err != nil && !errors.Is(tt.err, store.ErrNotFound) {
 				wantWrites = 2
 			}
-			if len(attempts.heartbeats) != wantWrites || !strings.Contains(attempts.heartbeats[0].WorkerMetadataJSON, "dispatch_loop_start") {
+			if len(attempts.heartbeats) != wantWrites || !strings.Contains(attempts.heartbeats[0].WorkerMetadataJSON, "completion_source") {
 				t.Fatalf("checkpoint heartbeats = %#v", attempts.heartbeats)
 			}
 			progress.close()
@@ -153,11 +153,11 @@ func TestWorkerProgressCheckpointCancellationAndRetirement(t *testing.T) {
 				defer cancel()
 				done := make(chan error, 1)
 				go func() {
-					done <- progress.observe(ctx, runpkg.UsageUpdate{LastMessage: "checkpoint", DispatchLoopStart: &runpkg.DispatchLoopStartSnapshot{}})
+					done <- progress.observe(ctx, runpkg.UsageUpdate{LastMessage: "checkpoint", CompletionSourceStart: &runpkg.CompletionSourceStartSnapshot{}})
 				}()
 				<-attempts.started
 				inFlight := progress.latest.Load()
-				if inFlight.LastMessage != "checkpoint" || inFlight.DispatchLoopStart.Persisted {
+				if inFlight.LastMessage != "checkpoint" || inFlight.CompletionSourceStart.Persisted {
 					t.Fatalf("in-flight checkpoint = %#v", inFlight)
 				}
 				retired := make(chan struct{})
@@ -177,7 +177,7 @@ func TestWorkerProgressCheckpointCancellationAndRetirement(t *testing.T) {
 					t.Fatalf("checkpoint = %v", err)
 				}
 				<-retired
-				if inFlight.DispatchLoopStart.Persisted || progress.latest.Load().DispatchLoopStart.Persisted == cancelCheckpoint {
+				if inFlight.CompletionSourceStart.Persisted || progress.latest.Load().CompletionSourceStart.Persisted == cancelCheckpoint {
 					t.Fatal("checkpoint persistence mutated an earlier snapshot or published the wrong outcome")
 				}
 			})

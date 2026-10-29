@@ -47,7 +47,9 @@ func TestHealthRatePersistedObservations(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 10, 6, 18, 0, 0, 0, time.UTC)
 	f := newNativeFixture(t, nil, "", "health-rate-observations")
+	addHealthBacklog(t, f)
 	other := newNativeFixture(t, f.service, f.project.OrganizationID, "health-rate-other")
+	addHealthBacklog(t, other)
 	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim)
 	r.enroll(t)
 	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
@@ -85,6 +87,7 @@ func TestHealthRatePersistedObservations(t *testing.T) {
 	for i := range 5 {
 		seedHealthRateAttempt(t, tx, scope, storm, string(r.binding.MachineID), "failed", tracker.NativeRunData{TerminalFailure: &tracker.NativeTerminalFailure{Error: fmt.Sprintf("protocol count %d failed", i)}}, now.Add(-time.Duration(i+1)*time.Minute), 1.25)
 	}
+	seedHealthRateAttempt(t, tx, scope, storm, string(r.binding.MachineID), "cancelled", tracker.NativeRunData{TerminalFailure: &tracker.NativeTerminalFailure{Error: "attempt lease was released before the attempt finished; release reason: cancelled", ErrorClass: "lease_released", Stage: "lease_release"}}, now.Add(-30*time.Second), 1)
 	conflict := create("single landing conflict", now.Add(-time.Hour))
 	seedHealthRateAttempt(t, tx, scope, conflict, string(r.binding.MachineID), "interrupted", tracker.NativeRunData{}, now.Add(-33*time.Minute), 0)
 	seedHealthRateAttempt(t, tx, scope, conflict, string(r.binding.MachineID), "succeeded", tracker.NativeRunData{}, now.Add(-2*time.Minute), 6.00108)

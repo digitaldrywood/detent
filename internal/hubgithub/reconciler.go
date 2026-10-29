@@ -91,7 +91,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, request hubserver.ReconcileR
 		snapshot.PullRequests = append(snapshot.PullRequests, source)
 	}
 	if !request.SkipRepository {
-		if err := r.hydratePullRequestDetails(ctx, repositoryRESTPath(repository.Owner.Login, repository.Name), request.Mode, request.Hydrations, &snapshot); err != nil {
+		if err := r.hydratePullRequestDetails(ctx, repositoryRESTPath(repository.Owner.Login, repository.Name), request.Mode, request.Since, request.Hydrations, &snapshot); err != nil {
 			return hubserver.ReconcileSnapshot{}, err
 		}
 	}
@@ -103,7 +103,7 @@ type pullRequestDetailNeed struct {
 	reviews bool
 }
 
-func (r *Reconciler) hydratePullRequestDetails(ctx context.Context, repositoryPath string, mode hubserver.ReconcileMode, hydrations []hubserver.HydrationRequest, snapshot *hubserver.ReconcileSnapshot) error {
+func (r *Reconciler) hydratePullRequestDetails(ctx context.Context, repositoryPath string, mode hubserver.ReconcileMode, since *time.Time, hydrations []hubserver.HydrationRequest, snapshot *hubserver.ReconcileSnapshot) error {
 	needs := make(map[int]pullRequestDetailNeed)
 	commitChecks := make(map[string]struct{})
 	for _, hydration := range hydrations {
@@ -133,6 +133,14 @@ func (r *Reconciler) hydratePullRequestDetails(ctx context.Context, repositoryPa
 			if headSHA := strings.TrimSpace(hydration.HeadSHA); headSHA != "" {
 				commitChecks[headSHA] = struct{}{}
 			}
+		}
+	}
+	for _, pullRequest := range snapshot.PullRequests {
+		if pullRequest.MergedAt.IsZero() || pullRequest.MergedBy != "" || mode == hubserver.ReconcileIncremental && since != nil && pullRequest.UpdatedAt.Before(*since) {
+			continue
+		}
+		if _, requested := needs[pullRequest.Number]; !requested {
+			needs[pullRequest.Number] = pullRequestDetailNeed{}
 		}
 	}
 	if mode == hubserver.ReconcileFullRepair {
@@ -308,6 +316,9 @@ func (i reconcileIssue) source() hubserver.IssueSource {
 }
 
 type reconcilePullRequest struct {
+	MergeSHA       string    `json:"merge_commit_sha"`
+	MergedAt       time.Time `json:"merged_at"`
+	MergedBy       restActor `json:"merged_by"`
 	ID             int64     `json:"id"`
 	NodeID         string    `json:"node_id"`
 	Number         int       `json:"number"`
@@ -456,6 +467,7 @@ func (p reconcilePullRequest) source() hubserver.PullRequestSource {
 		Title: p.Title, URL: p.HTMLURL, State: p.State, Draft: p.Draft,
 		HeadRef: p.Head.Ref, HeadSHA: p.Head.SHA, BaseRef: p.Base.Ref, BaseSHA: p.Base.SHA,
 		CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt,
+		MergeSHA: p.MergeSHA, MergedAt: p.MergedAt, MergedBy: p.MergedBy.Login,
 	}
 }
 

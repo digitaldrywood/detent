@@ -166,6 +166,9 @@ func (l *LocalGit) checkWorkspaceSessionCommits(ctx context.Context, path string
 // deliveredCleanupHead consolidates recorded native landings and freshly
 // verified merged PR delivery. Only the exact delivered head is disposable.
 func deliveredCleanupHead(issue Issue) string {
+	if issue.ReviewVersionID != "" && validLandingHead(issue.cleanupPublishedReviewHead) {
+		return issue.cleanupPublishedReviewHead
+	}
 	if issue.Terminal && strings.TrimSpace(issue.CleanupDeliveredHeadSHA) != "" {
 		return strings.TrimSpace(issue.CleanupDeliveredHeadSHA)
 	}

@@ -58,7 +58,6 @@ func TestHubPolicyInspectWarnsOnNativeGitHubSteps(t *testing.T) {
 		wantPark    bool
 	}{
 		{name: "native", kind: workflowconfig.TrackerHubNative, want: true},
-		{name: "memory", kind: workflowconfig.TrackerMemory},
 		{name: "four lane workflow has both completion paths", kind: workflowconfig.TrackerHubNative, workflow: "---\ntracker:\n  kind: hub_native\n  lanes:\n    - name: Human Review\n      role: holding\n    - name: Todo\n      role: active\n    - name: In Progress\n      role: active\n    - name: Done\n      role: terminal\nagent:\n  stop_run:\n    target_state: Human Review\nserver:\n  kanban:\n    allowed_transitions:\n      Todo: [In Progress, Human Review, Done]\n      In Progress: [Todo, Human Review, Done]\n      Human Review: [In Progress, Done]\n      Done: [Todo]\n---\nComplete the issue.\n", wantLanding: false, wantPark: false},
 		{name: "missing terminal transitions warn before approval", kind: workflowconfig.TrackerHubNative, workflow: "---\ntracker:\n  kind: hub_native\n  lanes:\n    - name: Human Review\n      role: holding\n    - name: Todo\n      role: active\n    - name: In Progress\n      role: active\n    - name: Done\n      role: terminal\nagent:\n  stop_run:\n    target_state: Human Review\nserver:\n  kanban:\n    allowed_transitions:\n      Todo: [In Progress, Human Review]\n      In Progress: [Todo, Human Review]\n      Human Review: [In Progress, Done]\n      Done: [Todo]\n---\nComplete the issue.\n", wantLanding: true, wantPark: false},
 		{name: "missing park transitions warn before approval", kind: workflowconfig.TrackerHubNative, workflow: "---\ntracker:\n  kind: hub_native\n  lanes:\n    - name: Human Review\n      role: holding\n    - name: Todo\n      role: active\n    - name: In Progress\n      role: active\n    - name: Done\n      role: terminal\nagent:\n  stop_run:\n    target_state: Human Review\nserver:\n  kanban:\n    allowed_transitions:\n      Todo: [In Progress, Done]\n      In Progress: [Todo, Done]\n      Human Review: [In Progress, Done]\n      Done: [Todo]\n---\nComplete the issue.\n", wantLanding: false, wantPark: true},
@@ -80,7 +79,7 @@ func TestHubPolicyInspectWarnsOnNativeGitHubSteps(t *testing.T) {
 				t.Fatal(err)
 			}
 			cfg.Projects = []globalconfig.Project{{ID: "orders", Workflow: workflowPath, Workdir: root, Weight: 1}}
-			if err := globalconfig.Write(configPath, cfg); err != nil {
+			if err := writeLocalConfigurationFile(configPath, cfg); err != nil {
 				t.Fatal(err)
 			}
 			cmd := newHubPolicyCommand(func(string) string { return "" })

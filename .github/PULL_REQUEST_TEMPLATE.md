@@ -1,20 +1,11 @@
-## Summary
+## Release pick
 
--
+Pull requests are used only for release-branch picks; see [Release](../WORKFLOW.md#release).
 
-Selected tracker reference: link the native Cloud work item or GitHub issue
-that owns this change. Use `Fixes #N` only for a GitHub-tracked issue.
+- Develop commit picked with `-x`:
+- Native work item:
 
-Deployment or release blockers follow the [High-priority reporting
-contract](../AGENTS.md#deployment-and-release-failure-reporting).
-
-Invariants touched: none, or affected INV IDs. Only a change to an invariant's
-rule or its enforcing check edits `docs/invariants.md`; link that edit when
-applicable. Record per-change rationale, evidence and verification in this
-Change/PR description or issue comments through the authorized tracker owner.
-Under [INV-16](../docs/invariants.md#inv-16--the-tracker-database-is-the-only-shared-knowledge-channel),
-never append them to shared repository files or use repository notebooks for
-handoff between issues or runs; no repository file is append-only by convention.
+Invariants touched: none, or affected INV IDs. Per-change rationale and evidence belong in this description or the work item, never in repository files ([INV-16](../docs/invariants.md#inv-16--the-tracker-database-is-the-only-shared-knowledge-channel)).
 
 ## UI Surface Contract
 
@@ -26,8 +17,4 @@ Adds visible UI? If yes, link the human-authored issue that names the surface or
 
 ## Test Plan
 
-- Record the focused diagnostics or browser verification performed, their
-  results, and any remaining evidence gaps. State when diagnostics were not run.
-- Follow [repository validation](../AGENTS.md#validation): ordinary submission
-  and merge do not wait for a full suite, coverage percentage, fuzz duration,
-  local status, or scheduled run.
+- Validation already recorded for the develop commit, and any pick-specific conflict resolution checks.

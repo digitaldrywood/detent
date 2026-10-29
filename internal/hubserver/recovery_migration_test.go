@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"bytes"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -62,6 +63,10 @@ func TestRecoveryInterruptedMigration(t *testing.T) {
 			if !errors.As(err, &exitErr) || exitErr.ExitCode() != 23 {
 				t.Fatalf("interruption helper: %v: %s", err, output)
 			}
+			sourceBefore, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
 			verified, err := VerifyDatabase(t.Context(), path)
 			if err != nil || verified.SchemaVersion != 15 {
 				t.Fatalf("interrupted migration did not roll back: %+v, %v", verified, err)
@@ -74,9 +79,21 @@ func TestRecoveryInterruptedMigration(t *testing.T) {
 			if err != nil || verified.SchemaVersion != 15 {
 				t.Fatalf("backup migrated the source: %+v, %v", verified, err)
 			}
+			sourceAfter, err := os.ReadFile(path)
+			if err != nil || !bytes.Equal(sourceBefore, sourceAfter) {
+				t.Fatalf("verify or backup changed legacy source: %v", err)
+			}
+			backupBefore, err := os.ReadFile(backup)
+			if err != nil {
+				t.Fatal(err)
+			}
 			restored := filepath.Join(t.TempDir(), "restored.db")
 			if _, err := RestoreDatabase(t.Context(), backup, restored, []byte(recoveryTestToken)); err != nil {
 				t.Fatal(err)
+			}
+			backupAfter, err := os.ReadFile(backup)
+			if err != nil || !bytes.Equal(backupBefore, backupAfter) {
+				t.Fatalf("restore changed source: %v", err)
 			}
 			verified, err = VerifyDatabase(t.Context(), restored)
 			if err != nil || verified.SchemaVersion != supportedSchemaVersion(t) {

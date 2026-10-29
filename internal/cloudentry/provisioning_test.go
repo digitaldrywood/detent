@@ -32,16 +32,17 @@ import (
 const provisioningFixtureTimeout = 2 * time.Minute
 
 type processLauncher struct {
-	billing    func() *hubserver.HostedBillingConfig
-	plans      *hubserver.HostedPlansConfig
-	provider   *fakeProvider
-	key        ed25519.PrivateKey
-	mu         sync.Mutex
-	running    map[string]func()
-	failures   map[string]error
-	transports map[string]*http.Transport
-	useUnix    bool
-	starts     int
+	databaseTemplate string
+	billing          func() *hubserver.HostedBillingConfig
+	plans            *hubserver.HostedPlansConfig
+	provider         *fakeProvider
+	key              ed25519.PrivateKey
+	mu               sync.Mutex
+	running          map[string]func()
+	failures         map[string]error
+	transports       map[string]*http.Transport
+	useUnix          bool
+	starts           int
 }
 
 func (l *processLauncher) Start(_ context.Context, spec TenantSpec) error {
@@ -52,6 +53,9 @@ func (l *processLauncher) Start(_ context.Context, spec TenantSpec) error {
 	}
 	public, err := cloudassert.ParsePublicKey(spec.PublicKey)
 	if err != nil {
+		return err
+	}
+	if err := copyTenantDatabaseTemplate(l.databaseTemplate, filepath.Join(spec.Directory, "hub.db")); err != nil {
 		return err
 	}
 	config := hubserver.Config{
@@ -197,7 +201,7 @@ func newProvisioningFixtureWith(t *testing.T, maxTenants int, mutate func(*Alloc
 	for _, user := range []string{"member", "eve", "fay"} {
 		f.provider.users["user_"+user] = user + "@example.test"
 	}
-	f.launcher = &processLauncher{provider: f.provider, key: f.key, running: map[string]func(){}, transports: map[string]*http.Transport{}, useUnix: socketFixtureFits(root)}
+	f.launcher = &processLauncher{databaseTemplate: hubDatabasePath(t), provider: f.provider, key: f.key, plans: capacityPlans(), running: map[string]func(){}, transports: map[string]*http.Transport{}, useUnix: socketFixtureFits(root)}
 	if configure != nil {
 		configure(f)
 	}

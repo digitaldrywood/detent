@@ -57,6 +57,7 @@ func TestSlackFindingDelivery(t *testing.T) {
 			now := time.Date(2026, 10, 6, 18, 0, 0, 0, time.UTC)
 			configureTestSlack(t, f, &now, !test.unset)
 			finding := newHealthFinding("runner_heartbeat_gap", "instance", kind, subject, "Runner heartbeat is behind.", "Check the runner connection.", []string{string(f.project.ID)}, healthEvidence{})
+			finding.ConditionSince = now.Add(-48 * time.Hour)
 			setSlugs := func(organization, project string) {
 				t.Helper()
 				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE organizations SET slug=? WHERE id=?", organization, f.project.OrganizationID); err != nil {
@@ -207,7 +208,7 @@ func TestSlackFindingDelivery(t *testing.T) {
 			if len(calls) != want {
 				t.Fatalf("later occurrence calls=%d want %d", len(calls), want)
 			}
-			if enabled && (!strings.Contains(calls[0], "Opened") || !strings.Contains(calls[1], "Resolved") || !strings.Contains(calls[1], "Duration: 2m0s")) {
+			if enabled && (!strings.Contains(calls[0], "Opened") || !strings.Contains(calls[0], "Age: 48h0m0s") || !strings.Contains(calls[1], "Resolved") || !strings.Contains(calls[1], "Duration: 48h2m0s")) {
 				t.Fatalf("messages=%v", calls)
 			}
 		})
@@ -319,16 +320,12 @@ func TestSlackSecretRotation(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg.SecretKeys = secretTestKeys(t, "2", "1", "2")
-	count, err := RotateProjectSecrets(t.Context(), cfg, "operator:test")
-	if err != nil || count != 1 {
-		t.Fatalf("rotation=%d %v", count, err)
-	}
-	cfg.SecretKeys = secretTestKeys(t, "2", "2")
 	service, err := Open(t.Context(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer service.Close()
+	service.rewrapSecrets(t.Context())
 	value, err := service.readSlackWebhook(t.Context(), f.project.OrganizationID, "test")
 	if err != nil || string(value) != slackTestWebhook {
 		t.Fatalf("rotated secret unavailable: %v", err)
@@ -346,7 +343,7 @@ func TestSlackSecretRotation(t *testing.T) {
 	if err := service.database.db.QueryRowContext(t.Context(), "SELECT actor,event,key_version FROM organization_secret_audit WHERE event='rotate'").Scan(&actor, &event, &version); err != nil {
 		t.Fatal(err)
 	}
-	if actor != "operator:test" || event != "rotate" || version != 2 {
+	if actor != "system:rewrap" || event != "rotate" || version != 2 {
 		t.Fatal("incorrect rotation audit")
 	}
 }

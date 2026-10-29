@@ -139,6 +139,10 @@ func (s *Service) hostedReports(c echo.Context) error {
 	}
 	params := c.QueryParams()
 	project := params.Get("project")
+	scope := params.Get("scope")
+	if scope != "" && (scope != "organization" || project != reportsAllProjects) {
+		return s.nativeAPIError(c, nativePublicInvalid("Organization report scope requires all projects"))
+	}
 	selected, found, err := s.reportsReadableProjects(ctx, credential, project)
 	if err != nil {
 		return s.usageCredentialError(c, err)
@@ -156,7 +160,23 @@ func (s *Service) hostedReports(c echo.Context) error {
 	}
 	compare := params.Get("compare")
 	if compare != "" && compare != "prior" && compare != "off" {
-		return s.nativeAPIError(c, nativeInvalid("compare must be prior or off"))
+		return s.nativeAPIError(c, nativePublicInvalid("compare must be prior or off"))
+	}
+	if scope == "organization" {
+		if !w.From.Equal(w.From.Truncate(time.Hour)) || !w.To.Equal(w.To.Truncate(time.Hour)) {
+			return s.nativeAPIError(c, nativePublicInvalid("Organization report windows use complete UTC hours"))
+		}
+		projectFilter := reportsQueryValues(params, "projects")
+		if len(projectFilter) > reportsMaxFilterValues || len(strings.Join(projectFilter, "\x00")) > 4096 {
+			return s.nativeAPIError(c, nativePublicInvalid("Report project filter accepts at most 32 values"))
+		}
+		selected = filterProductivityProjects(selected, projectFilter)
+		report, err := s.readOrganizationProductivity(ctx, selected, w, filter)
+		if err != nil {
+			s.config.Logger.Warn("read organization reports", "error", err)
+			return s.hostedJSONError(c, http.StatusServiceUnavailable, "Reports are temporarily unavailable")
+		}
+		return c.JSON(http.StatusOK, report)
 	}
 	var report hostedReportsReport
 	if project == reportsAllProjects {
@@ -178,8 +198,6 @@ func (s *Service) hostedReports(c echo.Context) error {
 	return c.JSON(http.StatusOK, report)
 }
 
-// readOrganizationReport reads every project's report, a few at a time under
-// one deadline, and combines them into organization totals.
 func (s *Service) readOrganizationReport(ctx context.Context, credential apiCredential, projects []string, w operatortool.AnalyticsWindow, filter reportsFilter) (hostedReportsReport, error) {
 	ctx, cancel := context.WithTimeout(ctx, reportsAllProjectsTime)
 	defer cancel()
@@ -238,7 +256,10 @@ func (s *Service) hostedReportOptions(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	ctx = reporterReadContext(ctx, nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), credential: credential})
+	ctx, reporterErr := prepareReporterReadContext(ctx, s.database.reader, nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), credential: credential})
+	if reporterErr != nil {
+		return s.nativeAPIError(c, reporterErr)
+	}
 	facets, err := s.readReportsFacets(ctx, projects, w)
 	if err != nil {
 		s.config.Logger.Warn("read report options", "error", err)
@@ -251,7 +272,10 @@ func (s *Service) hostedReportOptions(c echo.Context) error {
 // project the credential cannot read returns false.
 func (s *Service) readProjectReport(ctx context.Context, credential apiCredential, project string, w operatortool.AnalyticsWindow, filter reportsFilter) (hostedReportsReport, bool, error) {
 	scope := nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), project: tracker.ProjectID(project), credential: credential}
-	ctx = reporterReadContext(ctx, scope)
+	ctx, reporterErr := prepareReporterReadContext(ctx, s.database.reader, scope)
+	if reporterErr != nil {
+		return hostedReportsReport{}, false, reporterErr
+	}
 	ctx, err := withReportsScope(ctx, scope, filter, w.From.Add(-w.To.Sub(w.From)), w.To)
 	if err != nil {
 		return hostedReportsReport{}, false, err
@@ -318,6 +342,11 @@ func (s *Service) readHostedReportsFrom(ctx context.Context, analytics nativeAna
 	if err != nil {
 		return out, err
 	}
+	q, err = prepareReportsQuery(ctx, q, scope, "report_attempts", "report_events")
+	if err != nil {
+		return out, err
+	}
+
 	states, err := analyticsResidenceStates(ctx, q, scope)
 	if err != nil {
 		return out, err
@@ -738,7 +767,11 @@ func (s *Service) readReportsPrior(ctx context.Context, q nativeQueryer, scope n
 	if err != nil {
 		return err
 	}
-	if err := q.QueryRowContext(ctx, `SELECT count(*) FROM native_attempts a WHERE a.organization_id=? AND a.project_id=? AND julianday(a.started_at)<julianday(?) AND julianday(a.updated_at)>=julianday(?) AND julianday(a.updated_at)<julianday(?)`+scoped, append([]any{scope.organization, scope.project, formatHubTime(prior.To), formatHubTime(prior.From), formatHubTime(prior.To)}, scopedArgs...)...).Scan(&attempts); err != nil {
+	attemptSource := "native_attempts"
+	if ownership, ok := reportsScopeFrom(ctx); ok && ownership.attempts.attempts() {
+		attemptSource = analyticsAttemptsInStartedOrder(q)
+	}
+	if err := q.QueryRowContext(ctx, `SELECT count(*) FROM `+attemptSource+` a WHERE a.organization_id=? AND a.project_id=? AND a.updated_at>=? AND a.updated_at<? AND julianday(a.started_at)<julianday(?) AND julianday(a.updated_at)>=julianday(?) AND julianday(a.updated_at)<julianday(?)`+scoped, append([]any{scope.organization, scope.project, prior.From.UTC().Add(-24 * time.Hour).Format(time.DateOnly), prior.To.UTC().Add(48 * time.Hour).Format(time.DateOnly), formatHubTime(prior.To), formatHubTime(prior.From), formatHubTime(prior.To)}, scopedArgs...)...).Scan(&attempts); err != nil {
 		return fmt.Errorf("read prior attempts: %w", err)
 	}
 	failures, partial, err := readNativeFailures(ctx, q, scope, "", &prior)
@@ -816,6 +849,10 @@ func (s *Service) reportsFirstTryCounts(ctx context.Context, q nativeQueryer, sc
 // landing receipts of the merge attempts its work item started by the time
 // it landed, in start order.
 func readLandingAttemptReceipts(ctx context.Context, q nativeQueryer, scope nativeScope, landings []nativeAnalyticsLanding) ([][]string, error) {
+	q, prepareErr := prepareReportsQuery(ctx, q, scope, "report_attempts")
+	if prepareErr != nil {
+		return nil, prepareErr
+	}
 	type landed struct {
 		WorkItemID string `json:"work_item_id"`
 		LandedAt   string `json:"landed_at"`
@@ -828,9 +865,9 @@ func readLandingAttemptReceipts(ctx context.Context, q nativeQueryer, scope nati
 	if err != nil {
 		return nil, err
 	}
-	rows, err := q.QueryContext(ctx, `SELECT l.key,a.started_at,a.id,coalesce(json_extract(a.data_json,'$.runtime.landing'),'null') FROM json_each(?) l
-CROSS JOIN native_attempts a ON a.organization_id=? AND a.project_id=? AND a.work_item_id=json_extract(l.value,'$.work_item_id') AND julianday(+a.started_at)<=julianday(json_extract(l.value,'$.landed_at'))
-AND (json_extract(a.data_json,'$.runtime.identity.role')='merge' OR json_extract(a.data_json,'$.runtime.landing') IS NOT NULL)`, encoded, scope.organization, scope.project)
+	rows, err := q.QueryContext(ctx, `SELECT l.key,a.started_at,a.id,a.data_json FROM json_each(?) l
+CROSS JOIN report_attempts a ON a.organization_id=? AND a.project_id=? AND a.work_item_id=json_extract(l.value,'$.work_item_id') AND julianday(+a.started_at)<=julianday(json_extract(l.value,'$.landed_at'))
+AND (a.role='merge' OR a.has_landing_receipt=1)`, encoded, scope.organization, scope.project)
 	if err != nil {
 		return nil, err
 	}
@@ -841,6 +878,18 @@ AND (json_extract(a.data_json,'$.runtime.identity.role')='merge' OR json_extract
 		var landing int
 		var r receipt
 		if err := rows.Scan(&landing, &r.started, &r.id, &r.raw); err != nil {
+			return nil, err
+		}
+		var data tracker.NativeRunData
+		if err := decodeActivityRun(ctx, q, r.raw, &data); err != nil {
+			return nil, err
+		}
+		var landingReceipt *tracker.NativeLandingReceipt
+		if data.Runtime != nil {
+			landingReceipt = data.Runtime.Landing
+		}
+		r.raw, err = marshalNative(landingReceipt)
+		if err != nil {
 			return nil, err
 		}
 		found[landing] = append(found[landing], r)

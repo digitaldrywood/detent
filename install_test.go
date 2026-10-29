@@ -13,7 +13,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -28,8 +27,6 @@ import (
 	"testing"
 	"time"
 
-	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
-	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/testenv"
 )
 
@@ -692,7 +689,7 @@ chmod 755 "$5"
 	}
 }
 
-func TestFreshInstallBootsOnboardingWizardAndRunsSubcommands(t *testing.T) {
+func TestFreshInstallExposesRunnerEnrollment(t *testing.T) {
 	if testing.Short() {
 		t.Skip("git subprocess integration")
 	}
@@ -724,28 +721,12 @@ func TestFreshInstallBootsOnboardingWizardAndRunsSubcommands(t *testing.T) {
 	assertInstalledVersionMetadata(t, binary, root, env)
 
 	home := filepath.Join(tmp, "home")
-	workdir := filepath.Join(tmp, "fresh")
-	if err := os.MkdirAll(workdir, 0o755); err != nil {
-		t.Fatalf("MkdirAll(workdir) error = %v", err)
-	}
 	serverEnv := append(os.Environ(),
 		"HOME="+home,
 		"CONFIG_HOME="+filepath.Join(home, ".detent"),
 	)
-	port := reservePort(t)
-	stop := startDetentServer(t, binary, workdir, serverEnv, port)
-	waitForOnboardingHealth(t, port)
-	onboarding := readURL(t, fmt.Sprintf("http://127.0.0.1:%d/onboarding", port))
-	if !strings.Contains(onboarding, "Detent onboarding") {
-		t.Fatalf("onboarding page missing wizard heading:\n%s", onboarding)
-	}
-	css := readURL(t, fmt.Sprintf("http://127.0.0.1:%d/static/css/output.css", port))
-	if !strings.Contains(css, "tailwindcss") {
-		t.Fatalf("static CSS missing Tailwind marker:\n%s", css)
-	}
-	stop()
 
-	runInstalledSubcommands(t, binary, tmp, serverEnv)
+	assertInstalledEnrollmentCommand(t, binary, tmp, serverEnv)
 }
 
 func isolatedInstallCheckout(t *testing.T, source string, checkout string) string {
@@ -1424,207 +1405,17 @@ func TestTerminateInstallerProcessGroup(t *testing.T) {
 	}
 }
 
-func reservePort(t *testing.T) int {
+func assertInstalledEnrollmentCommand(t *testing.T, binary string, root string, env []string) {
 	t.Helper()
 
-	var listenConfig net.ListenConfig
-	listener, err := listenConfig.Listen(t.Context(), "tcp", "127.0.0.1:0")
+	stdout, stderr, err := runDetentCommandOutput(t, binary, root, env, "hub", "runner", "register", "--help")
 	if err != nil {
-		t.Fatalf("Listen() error = %v", err)
+		t.Fatalf("installed runner enrollment help: %v\nstderr:\n%s", err, stderr)
 	}
-	defer listener.Close()
-
-	addr, ok := listener.Addr().(*net.TCPAddr)
-	if !ok {
-		t.Fatalf("listener address = %T, want *net.TCPAddr", listener.Addr())
-	}
-	return addr.Port
-}
-
-func startDetentServer(t *testing.T, binary string, workdir string, env []string, port int) func() {
-	t.Helper()
-
-	cmd := exec.CommandContext(t.Context(), binary, "--host", "127.0.0.1", "--port", strconv.Itoa(port))
-	cmd.Dir = workdir
-	cmd.Env = env
-
-	var stdout strings.Builder
-	var stderr strings.Builder
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
-
-	done := make(chan error, 1)
-	go func() {
-		done <- cmd.Wait()
-	}()
-
-	var once sync.Once
-	stop := func() {
-		t.Helper()
-
-		once.Do(func() {
-			if cmd.Process != nil {
-				_ = cmd.Process.Signal(syscall.SIGTERM)
-			}
-			select {
-			case err := <-done:
-				if err != nil {
-					t.Fatalf("detent shutdown error = %v\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())
-				}
-			case <-time.After(2 * time.Second):
-				if cmd.Process != nil {
-					_ = cmd.Process.Kill()
-				}
-				t.Fatalf("timed out waiting for detent shutdown\nstdout:\n%s\nstderr:\n%s", stdout.String(), stderr.String())
-			}
-		})
-	}
-	t.Cleanup(stop)
-
-	return stop
-}
-
-func waitForOnboardingHealth(t *testing.T, port int) {
-	t.Helper()
-
-	url := fmt.Sprintf("http://127.0.0.1:%d/health", port)
-	deadline := time.NewTimer(5 * time.Second)
-	defer deadline.Stop()
-	tick := time.NewTicker(25 * time.Millisecond)
-	defer tick.Stop()
-
-	for {
-		body, err := tryReadURL(url)
-		if err == nil && strings.Contains(body, `"mode":"onboarding"`) {
-			return
+	for _, want := range []string{"--url", "--token", "--config", "--workspace-root", "--service"} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("installed runner enrollment help missing %q:\n%s", want, stdout)
 		}
-		select {
-		case <-deadline.C:
-			t.Fatalf("health endpoint did not report onboarding mode at %s", url)
-		case <-tick.C:
-		}
-	}
-}
-
-func readURL(t *testing.T, url string) string {
-	t.Helper()
-
-	deadline := time.NewTimer(5 * time.Second)
-	defer deadline.Stop()
-	tick := time.NewTicker(25 * time.Millisecond)
-	defer tick.Stop()
-
-	var lastErr error
-	for {
-		body, err := tryReadURL(url)
-		if err == nil {
-			return body
-		}
-		lastErr = err
-		select {
-		case <-deadline.C:
-			t.Fatalf("GET %s error = %v", url, lastErr)
-		case <-tick.C:
-		}
-	}
-}
-
-func tryReadURL(url string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return "", err
-	}
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("status = %d body = %s", resp.StatusCode, raw)
-	}
-	return string(raw), nil
-}
-
-func runInstalledSubcommands(t *testing.T, binary string, root string, env []string) {
-	t.Helper()
-
-	workdir := filepath.Join(root, "subcommands")
-	projectDir := filepath.Join(workdir, "project")
-	if err := os.MkdirAll(projectDir, 0o755); err != nil {
-		t.Fatalf("MkdirAll(projectDir) error = %v", err)
-	}
-	workflowPath := filepath.Join(projectDir, "WORKFLOW.md")
-	if err := os.WriteFile(workflowPath, []byte(gateWorkflowContent()), 0o600); err != nil {
-		t.Fatalf("WriteFile(workflow) error = %v", err)
-	}
-	configPath := filepath.Join(workdir, "global.yaml")
-
-	runDetentCommand(t, binary, workdir, env, "--config", configPath, "init")
-	runDetentCommand(t, binary, workdir, env,
-		"--config", configPath,
-		"add-project",
-		"--id", "detent",
-		"--workflow", workflowPath,
-		"--workdir", projectDir,
-		"--weight", "2",
-		"--priority", "4",
-	)
-	assertInstalledProject(t, configPath, func(project globalconfig.Project) {
-		if project.ID != "detent" || project.Workflow != workflowPath || project.Workdir != projectDir {
-			t.Fatalf("project = %#v, want installed detent project", project)
-		}
-		if project.Weight != 1 || project.Priority != 0 {
-			t.Fatalf("project scheduling = weight %d priority %d, want 1/0", project.Weight, project.Priority)
-		}
-	})
-
-	runDetentCommand(t, binary, workdir, env, "--config", configPath, "pause", "detent", "--reason", "integration test")
-	assertInstalledProject(t, configPath, func(project globalconfig.Project) {
-		if !project.Paused {
-			t.Fatal("project Paused = false, want true")
-		}
-	})
-
-	runDetentCommand(t, binary, workdir, env, "--config", configPath, "unpause", "detent")
-	assertInstalledProject(t, configPath, func(project globalconfig.Project) {
-		if project.Paused {
-			t.Fatal("project Paused = true, want false")
-		}
-	})
-
-	runDetentCommand(t, binary, workdir, env, "--config", configPath, "promote", "detent", "--priority", "1")
-	assertInstalledProject(t, configPath, func(project globalconfig.Project) {
-		if project.Priority != 0 {
-			t.Fatalf("project Priority = %d, want 0", project.Priority)
-		}
-	})
-
-	runDetentCommand(t, binary, workdir, env, "--config", configPath, "remove-project", "detent")
-	cfg := readInstalledConfiguration(t, configPath)
-	if len(cfg.Projects) != 0 {
-		t.Fatalf("Projects = %#v, want none", cfg.Projects)
-	}
-}
-
-func runDetentCommand(t *testing.T, binary string, workdir string, env []string, args ...string) {
-	t.Helper()
-
-	stdout, stderr, err := runDetentCommandOutput(t, binary, workdir, env, args...)
-	if err != nil {
-		t.Fatalf("detent %v error = %v\nstdout:\n%s\nstderr:\n%s", args, err, stdout, stderr)
 	}
 }
 
@@ -1703,46 +1494,4 @@ func gitOutput(t *testing.T, root string, args ...string) (string, bool) {
 		return "", false
 	}
 	return strings.TrimSpace(string(out)), true
-}
-
-func assertInstalledProject(t *testing.T, configPath string, check func(globalconfig.Project)) {
-	t.Helper()
-
-	cfg := readInstalledConfiguration(t, configPath)
-	if len(cfg.Projects) != 1 {
-		t.Fatalf("Projects length = %d, want 1", len(cfg.Projects))
-	}
-	check(cfg.Projects[0])
-}
-
-func readInstalledConfiguration(t *testing.T, configPath string) globalconfig.Config {
-	t.Helper()
-
-	cfg, err := globalconfig.Read(configPath)
-	if err != nil {
-		t.Fatalf("Read() error = %v", err)
-	}
-	settings, err := store.Open(t.Context(), store.Config{Path: filepath.Join(filepath.Dir(configPath), "detent.db")})
-	if err != nil {
-		t.Fatalf("Open() error = %v", err)
-	}
-	defer func() {
-		if err := settings.Close(); err != nil {
-			t.Errorf("Close() error = %v", err)
-		}
-	}()
-	cfg, err = settings.LocalConfiguration(t.Context(), cfg)
-	if err != nil {
-		t.Fatalf("LocalConfiguration() error = %v", err)
-	}
-	return cfg
-}
-
-func gateWorkflowContent() string {
-	return `---
-tracker:
-  kind: memory
----
-Gate prompt.
-`
 }

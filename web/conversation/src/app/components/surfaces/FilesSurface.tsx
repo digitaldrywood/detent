@@ -1,4 +1,4 @@
-// The right panel's Files surface (decisions.md §18.4).
+// The right panel's Files surface.
 //
 // Upstream: `components/files/FilePreviewPanel.tsx`, the read-only half of it.
 // The layout is theirs — breadcrumbs and toggles in a 40px sub-header, the
@@ -7,10 +7,10 @@
 // `Virtualizer` for the code, with the same options the diff view passes;
 // `FileBreadcrumbs.tsx` above it; `FileBrowserPanel.tsx` (Pierre's tree)
 // beside it. Editing, media players, "open in" and the browser preview are
-// theirs too and are left out: §18.4 puts writes out of scope for this slice
+// theirs too and are left out: the Files contract puts writes out of scope for this slice
 // and the runner serves files, not a dev server.
 //
-// What §18.4 adds to their surface is the workspace in front of it (§18.1):
+// What the Files contract adds to their surface is the workspace in front of it:
 // what a reader sees while it comes up, what they are told when it does not,
 // a denied entry that is never read, and a read the runner refused.
 import { File, Virtualizer } from "@pierre/diffs/react";
@@ -169,7 +169,7 @@ interface Opened {
   readonly loading: boolean;
   readonly content: ContentPayload | null;
   readonly error: RelayError | null;
-  /** A denylisted entry is never read at all (§18.4), only reported. */
+  /** A denylisted entry is never read at all, only reported. */
   readonly denied: boolean;
 }
 
@@ -204,7 +204,7 @@ function FileView({
   if (content === null) {
     return <EmptyState testId="files-view-empty">Select a file to read it.</EmptyState>;
   }
-  // An image is shown rather than decoded: §18.2 base64s binary payloads, and
+  // An image is shown rather than decoded: the relay protocol base64s binary payloads, and
   // `filePreview.ts` is the vendored classifier for which paths those are.
   if (isWorkspaceImagePreviewPath(opened.path) || mediaKindFromPath(opened.path) === "image") {
     const mime = content.mime.length > 0 ? content.mime : "application/octet-stream";
@@ -475,7 +475,7 @@ export function FilesSurface({
       </WorkspaceStateShell>
     );
   }
-  // Every state that is not serving files is words (§18.1); the skeleton is
+  // Every state that is not serving files is words; the skeleton is
   // kept for `starting` alone, which `describeWorkspaceStatus` decides.
   const status = describeWorkspaceStatus({
     state,

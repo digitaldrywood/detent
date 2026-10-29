@@ -31,6 +31,14 @@ func (s *Service) organizationHome(organization Organization) string {
 	return s.legacyOrganizationHome(organization.ID)
 }
 
+func (s *Service) organizationRoleHome(organization Organization, role string) string {
+	home := s.organizationHome(organization)
+	if role == "reporter" && s.clientBuilt() {
+		return strings.TrimSuffix(home, "/work") + "/reporter"
+	}
+	return home
+}
+
 func (s *Service) legacyOrganizationHome(id string) string {
 	if s.clientBuilt() {
 		return "/organizations/" + id + "/work"

@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"time"
@@ -20,8 +19,8 @@ type analyticsCapacitySample struct {
 	Valid     bool
 }
 
-func refreshAnalyticsClaims(ctx context.Context, tx *sql.Tx, scope nativeScope, id string, through int64) error {
-	rows, err := tx.QueryContext(ctx, `SELECT e.id,e.data_json,e.recorded_at,coalesce(p.data_json,'null'),coalesce(p.type,''),coalesce(p.recorded_at,'') FROM collaboration_events e LEFT JOIN collaboration_events p ON p.organization_id=e.organization_id AND p.project_id=e.project_id AND p.work_item_id=e.work_item_id AND p.sequence=e.sequence-1 WHERE e.organization_id=? AND e.project_id=? AND e.work_item_id=? AND e.sequence>? AND e.type='scheduler.decision' AND json_extract(e.data_json,'$.decision.source')='native_claim' AND json_extract(e.data_json,'$.decision.outcome')='claimed'`, scope.organization, scope.project, id, through)
+func refreshAnalyticsClaims(ctx context.Context, tx projectionQuery, scope nativeScope, id string, through int64, before ...int64) error {
+	rows, err := tx.QueryContext(ctx, `SELECT e.id,e.data_json,e.recorded_at,coalesce(p.data_json,'null'),coalesce(p.type,''),coalesce(p.recorded_at,'') FROM collaboration_events e LEFT JOIN collaboration_events p ON p.organization_id=e.organization_id AND p.project_id=e.project_id AND p.work_item_id=e.work_item_id AND p.sequence=e.sequence-1 WHERE e.organization_id=? AND e.project_id=? AND e.work_item_id=? AND e.sequence>? AND e.sequence<=? AND e.type='scheduler.decision' AND e.scheduler_source='native_claim' AND e.scheduler_outcome='claimed'`, scope.organization, scope.project, id, through, projectionUpper(before))
 	if err != nil {
 		return err
 	}
@@ -55,7 +54,7 @@ func refreshAnalyticsClaims(ctx context.Context, tx *sql.Tx, scope nativeScope, 
 		if err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO analytics_hourly_rollups VALUES(?,?,?,'capacity_claim',?,1,?) ON CONFLICT DO NOTHING`, scope.organization, scope.project, sample.At.Truncate(time.Hour).Unix(), sample.ID, string(raw)); err != nil {
+		if err := writeAnalyticsSample(ctx, tx, string(scope.organization), string(scope.project), sample.At.Truncate(time.Hour).Unix(), "capacity_claim", sample.ID, 1, string(raw)); err != nil {
 			return err
 		}
 		if !sample.Valid {
@@ -63,7 +62,7 @@ func refreshAnalyticsClaims(ctx context.Context, tx *sql.Tx, scope nativeScope, 
 		}
 		for hour := sample.Start.Truncate(time.Hour); hour.Before(sample.At); hour = hour.Add(time.Hour) {
 			seconds := minTime(sample.At, hour.Add(time.Hour)).Sub(maxTime(sample.Start, hour)).Seconds()
-			if _, err := tx.ExecContext(ctx, `INSERT INTO analytics_hourly_rollups VALUES(?,?,?,'capacity_wait',?,?,?) ON CONFLICT DO NOTHING`, scope.organization, scope.project, hour.Unix(), sample.ID, seconds, string(raw)); err != nil {
+			if err := writeAnalyticsSample(ctx, tx, string(scope.organization), string(scope.project), hour.Unix(), "capacity_wait", sample.ID, seconds, string(raw)); err != nil {
 				return err
 			}
 		}
@@ -73,7 +72,7 @@ func refreshAnalyticsClaims(ctx context.Context, tx *sql.Tx, scope nativeScope, 
 
 func projectAnalyticsCapacityRollups(ctx context.Context, q nativeQueryer, scope nativeScope, out *nativeAnalyticsProject) error {
 	queue := nativeAnalyticsCapacityWait{Source: "native_scheduler_decisions", Coverage: "recorded_provider_capacity_wait_to_claim; claimed_in_window; clipped_to_window", Partial: true}
-	rows, err := queryAnalyticsPopulation(ctx, q, "capacity", `SELECT data_json FROM analytics_hourly_rollups INDEXED BY analytics_capacity_order WHERE organization_id=? AND project_id=? AND metric='capacity_claim' AND json_extract(data_json,'$.AtNS')>=? AND json_extract(data_json,'$.AtNS')<? ORDER BY json_extract(data_json,'$.At'),dimension LIMIT ? OFFSET ?`, scope.organization, scope.project, out.Window.From.UnixNano(), out.Window.To.UnixNano())
+	rows, err := queryAnalyticsPopulation(ctx, q, "capacity", `SELECT data_json FROM analytics_hourly_rollups INDEXED BY analytics_capacity_order WHERE organization_id=? AND project_id=? AND metric='capacity_claim' AND sample_ns>=? AND sample_ns<? ORDER BY sample_at,dimension LIMIT ? OFFSET ?`, scope.organization, scope.project, out.Window.From.UnixNano(), out.Window.To.UnixNano())
 	if err != nil {
 		return err
 	}
@@ -122,7 +121,7 @@ func projectAnalyticsCapacityRollups(ctx context.Context, q nativeQueryer, scope
 	if err != nil {
 		return err
 	}
-	totals, err := q.QueryContext(ctx, `SELECT b.key,sum(CASE WHEN r.hour*1000000000>=json_extract(b.value,'$.FromNS') AND (r.hour+3600)*1000000000<=json_extract(b.value,'$.ToNS') THEN r.value ELSE max(0,min((r.hour+3600)*1000000000,json_extract(b.value,'$.ToNS'),json_extract(r.data_json,'$.AtNS'))-max(r.hour*1000000000,json_extract(b.value,'$.FromNS'),json_extract(r.data_json,'$.StartNS')))/1000000000.0 END) FROM json_each(?) b JOIN analytics_hourly_rollups r ON r.organization_id=? AND r.project_id=? AND r.metric='capacity_wait' AND r.dimension IN (SELECT value FROM json_each(?)) AND r.hour*1000000000<json_extract(b.value,'$.ToNS') AND (r.hour+3600)*1000000000>json_extract(b.value,'$.FromNS') GROUP BY b.key ORDER BY b.key`, string(encodedBuckets), scope.organization, scope.project, string(encoded))
+	totals, err := q.QueryContext(ctx, `SELECT b.key,sum(CASE WHEN r.hour*1000000000>=json_extract(b.value,'$.FromNS') AND (r.hour+3600)*1000000000<=json_extract(b.value,'$.ToNS') THEN r.value ELSE max(0,min((r.hour+3600)*1000000000,json_extract(b.value,'$.ToNS'),r.sample_ns)-max(r.hour*1000000000,json_extract(b.value,'$.FromNS'),r.sample_start_ns))/1000000000.0 END) FROM json_each(?) b JOIN analytics_hourly_rollups r ON r.organization_id=? AND r.project_id=? AND r.metric='capacity_wait' AND r.dimension IN (SELECT value FROM json_each(?)) AND r.hour*1000000000<json_extract(b.value,'$.ToNS') AND (r.hour+3600)*1000000000>json_extract(b.value,'$.FromNS') GROUP BY b.key ORDER BY b.key`, string(encodedBuckets), scope.organization, scope.project, string(encoded))
 	if err != nil {
 		return err
 	}
@@ -139,8 +138,11 @@ func projectAnalyticsCapacityRollups(ctx context.Context, q nativeQueryer, scope
 		return err
 	}
 	out.ProviderCapacityWait = queue
-	out.SourceAt = maxTime(out.SourceAt, queue.SourceAt)
-	if queue.IntervalsObserved == 0 {
+	if err := addAnalyticsCapacityHours(ctx, q, scope, out); err != nil {
+		return err
+	}
+	out.SourceAt = maxTime(out.SourceAt, out.ProviderCapacityWait.SourceAt)
+	if out.ProviderCapacityWait.IntervalsObserved == 0 {
 		out.Unavailable = append(out.Unavailable, "provider_capacity_wait")
 	}
 	return nil

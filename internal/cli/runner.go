@@ -26,11 +26,13 @@ import (
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/observability"
+	"github.com/digitaldrywood/detent/internal/opencode"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/piagent"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/projectcolor"
+	"github.com/digitaldrywood/detent/internal/providercapacity"
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/serviceapi"
@@ -135,7 +137,11 @@ func withRunnerFactoryWithProjectTokens(
 			PrepareProject(context.Context, string) error
 		}); ok {
 			if err := preparation.PrepareProject(ctx, cfg.ID); err != nil {
-				return nil, errors.Join(project.ErrProjectDefinition, connector.NewRetryableError(err.Error()))
+				message := err.Error()
+				if errors.Is(err, providercapacity.ErrCatalogUnavailable) {
+					message = project.ProviderStartupFailed + ": " + message
+				}
+				return nil, errors.Join(project.ErrProjectDefinition, connector.NewRetryableError(message))
 			}
 		}
 		workflow, err := project.LoadWorkflowContext(ctx, cfg)
@@ -468,6 +474,16 @@ func buildAgentBackend(backend workflowconfig.AgentBackend) (runnerpkg.AgentBack
 
 func buildAgentBackendWithIsolation(backend workflowconfig.AgentBackend, policies ...func() (isolation.Policy, error)) (runnerpkg.AgentBackend, error) {
 	switch backend.Kind {
+	case workflowconfig.AgentBackendOpenCode:
+		cfg := backend.OpenCodeOptions()
+		return opencode.NewAgentBackend(opencode.Options{
+			BackendID:       backend.ID,
+			IsolationPolicy: firstIsolationPolicy(policies),
+			CommandFactory: func(ctx context.Context, args []string) *exec.Cmd {
+				return buildClaudeCommandFromConfig(ctx, backend.Command, cfg.Shell, args)
+			},
+			TurnTimeout: durationFromMillis(cfg.TurnTimeoutMS), StallTimeout: durationFromMillis(cfg.StallTimeoutMS),
+		})
 	case workflowconfig.AgentBackendCodex:
 		return buildCodexAgentBackend(backend.Command, backend.CodexOptions(), policies...)
 	case workflowconfig.AgentBackendPiAgent:
@@ -484,11 +500,12 @@ func buildAgentBackendWithIsolation(backend workflowconfig.AgentBackend, policie
 	case workflowconfig.AgentBackendClaudeCode:
 		return buildClaudeAgentBackend(backend.Command, backend.ClaudeCodeOptions(), policies...)
 	default:
-		return nil, fmt.Errorf("unsupported agent backend kind %q; supported kinds: %s, %s, %s",
+		return nil, fmt.Errorf("unsupported agent backend kind %q; supported kinds: %s, %s, %s, %s",
 			backend.Kind,
 			workflowconfig.AgentBackendCodex,
 			workflowconfig.AgentBackendClaudeCode,
 			workflowconfig.AgentBackendPiAgent,
+			workflowconfig.AgentBackendOpenCode,
 		)
 	}
 }
@@ -524,25 +541,9 @@ func buildCodexAgentBackend(command string, cfg workflowconfig.CodexOptions, pol
 	if command == "" {
 		return nil, errors.New("codex command is required")
 	}
-	serviceCommand, err := prepareCodexCommandForRuntime(command)
+	factory, serviceCommand, err := newCodexTransportFactory(command, cfg.Shell, prepareCodexCommandForRuntime)
 	if err != nil {
-		return nil, fmt.Errorf("prepare Codex service profile: %w", err)
-	}
-	command = serviceCommand.Command
-	if len(serviceCommand.OmittedSkills) > 0 {
-		slog.Warn(
-			"launchd Codex profile omitted skills in macOS privacy-protected locations",
-			"skills", strings.Join(serviceCommand.OmittedSkills, ","),
-		)
-	}
-
-	factory, err := codex.NewLocalTransportFactory(func(ctx context.Context) *exec.Cmd {
-		cmd := buildCodexCommandFromConfig(ctx, command, cfg.Shell)
-		procgroup.SetEnvironment(cmd, procgroup.Environment{Variables: serviceCommand.Environment})
-		return cmd
-	})
-	if err != nil {
-		return nil, fmt.Errorf("create codex transport factory: %w", err)
+		return nil, err
 	}
 
 	opts := []codex.AppServerOption{codex.WithThreadPreparation(func(ctx context.Context, threadID string) error {
@@ -568,6 +569,27 @@ func buildCodexAgentBackend(command string, cfg workflowconfig.CodexOptions, pol
 	return backend, nil
 }
 
+func newCodexTransportFactory(command string, shell string, prepare func(string) (codexServiceCommand, error)) (*codex.LocalTransportFactory, codexServiceCommand, error) {
+	serviceCommand, err := prepare(command)
+	if err != nil {
+		return nil, codexServiceCommand{}, fmt.Errorf("prepare Codex service profile: %w", err)
+	}
+	factory, err := codex.NewLocalTransportFactory(func(ctx context.Context) *exec.Cmd {
+		cmd := buildCodexCommandFromConfig(ctx, serviceCommand.Command, shell)
+		procgroup.SetEnvironment(cmd, procgroup.Environment{Variables: serviceCommand.Environment})
+		return cmd
+	}, codex.WithLaunchPreparation(func(context.Context) error {
+		if _, err := prepare(command); err != nil {
+			return fmt.Errorf("prepare Codex worker profile: %w", err)
+		}
+		return nil
+	}))
+	if err != nil {
+		return nil, codexServiceCommand{}, fmt.Errorf("create codex transport factory: %w", err)
+	}
+	return factory, serviceCommand, nil
+}
+
 func buildCodexCommand(ctx context.Context, cfg workflowconfig.Config) *exec.Cmd {
 	return buildCodexCommandFromConfig(ctx, cfg.Codex.Command, cfg.Codex.Shell)
 }
@@ -585,7 +607,7 @@ func buildCodexCommandFromConfig(ctx context.Context, command string, shell stri
 // default collaboration mode only behind this flag, and a model that is told
 // to ask a question without the tool answers "I'll wait for your answer"
 // instead. Only a turn bound to a live conversation has a human to answer, so
-// only its app-server process gets the feature (decisions section 5).
+// only its app-server process gets the feature.
 const codexQuestionFeature = "default_mode_request_user_input"
 
 // withCodexQuestionFeature appends the feature to an app-server command that
@@ -1318,7 +1340,6 @@ func mergeSnapshot(current, next telemetry.Snapshot) telemetry.Snapshot {
 	current.CIUnavailable = append(current.CIUnavailable, next.CIUnavailable...)
 	current.BackendOutages = append(current.BackendOutages, next.BackendOutages...)
 	current.FailureBreakers = append(current.FailureBreakers, next.FailureBreakers...)
-	current.DispatchLoops = append(current.DispatchLoops, next.DispatchLoops...)
 	current.DispatchRecoveries = append(current.DispatchRecoveries, next.DispatchRecoveries...)
 	current.LaneSignalWarnings = append(current.LaneSignalWarnings, next.LaneSignalWarnings...)
 	current.StalenessWarnings = append(current.StalenessWarnings, next.StalenessWarnings...)
@@ -1816,11 +1837,6 @@ func stampSnapshotProjectID(snapshot telemetry.Snapshot) telemetry.Snapshot {
 	for i := range snapshot.FailureBreakers {
 		if strings.TrimSpace(snapshot.FailureBreakers[i].ProjectID) == "" {
 			snapshot.FailureBreakers[i].ProjectID = projectID
-		}
-	}
-	for i := range snapshot.DispatchLoops {
-		if strings.TrimSpace(snapshot.DispatchLoops[i].ProjectID) == "" {
-			snapshot.DispatchLoops[i].ProjectID = projectID
 		}
 	}
 	for i := range snapshot.DispatchRecoveries {

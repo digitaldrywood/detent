@@ -22,7 +22,7 @@ import (
 // The September 12 fifth dogfood defect, from the runner's side: nothing on the
 // workspace path renewed the hub lease, so a Files session lived exactly one
 // lease_ttl_seconds from the claim and then reported revoked to the person.
-// Section 18.1 puts the renewal on the heartbeat, which means the session's own
+// The workspace session contract puts the renewal on the heartbeat, which means the session's own
 // heartbeat loop is what keeps the lease alive and no second call is involved.
 //
 // This is tested against a real HTTP hub rather than the scripted one: what has
@@ -288,12 +288,21 @@ func TestSessionStopsWhenTheHubLeaseIsGone(t *testing.T) {
 	go func() { finished <- session.Run(ctx) }()
 	select {
 	case err := <-finished:
-		// The first heartbeat is the ready report, which is refused, so Run
-		// reports the stale lease rather than pretending it opened.
-		if !errors.Is(err, hubclient.ErrStaleWorkspace) {
-			t.Fatalf("the session returned %v, want a stale workspace", err)
+		if err != nil && !errors.Is(err, hubclient.ErrStaleWorkspace) && !errors.Is(err, context.Canceled) {
+			t.Fatalf("the session returned %v after lease loss", err)
 		}
 	case <-time.After(20 * time.Second):
 		t.Fatal("the session kept serving a workspace whose lease the hub refused")
+	}
+	if _, lapsed, _ := hub.report(); !lapsed {
+		t.Fatal("the session stopped without the hub refusing its lease")
+	}
+	if !worktree.wasReleased() {
+		t.Fatal("the session did not release the worktree after lease loss")
+	}
+	select {
+	case <-hub.sockets:
+		t.Fatal("the session opened a relay after lease loss")
+	default:
 	}
 }

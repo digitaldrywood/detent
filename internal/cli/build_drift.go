@@ -62,7 +62,7 @@ func runRuntimeBuildDriftMonitor(
 					"running_commit", buildinfo.ShortCommit(runningBuild.Commit),
 					"installed_version", installedBuild.Version,
 					"installed_commit", buildinfo.ShortCommit(installedBuild.Commit),
-					"remediation", "detent start --restart",
+					"remediation", "restart the runner service",
 				)
 			}
 			driftDetected = true

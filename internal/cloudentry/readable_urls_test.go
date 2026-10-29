@@ -126,6 +126,26 @@ func TestSharedEntryReadableIssueURLs(t *testing.T) {
 	if member := alice.do(http.MethodGet, "/alpha/work", nil, html); member.StatusCode == http.StatusSeeOther {
 		t.Fatalf("member navigation=%+v", member)
 	}
+	accountOnly := newBrowser(t, f.service.Handler())
+	accountOnly.login("/organizations", "user_alice:")
+	nonMember := newBrowser(t, f.service.Handler())
+	nonMember.login("/organizations", "user_bob:")
+	for _, test := range []struct{ path, returnPath string }{
+		{"/alpha", "/organizations/org_alpha/work"},
+		{"/alpha/", "/organizations/org_alpha/work"},
+		{"/alpha/settings", "/organizations/org_alpha/settings"},
+	} {
+		response := accountOnly.do(http.MethodGet, test.path, nil, html)
+		want := "/auth/oidc/start?" + url.Values{"organization": {"org_alpha"}, "return": {test.returnPath}}.Encode()
+		if response.StatusCode != http.StatusSeeOther || response.Header.Get("Location") != want {
+			t.Fatalf("account-only member %s=%+v want %s", test.path, response, want)
+		}
+		denied := nonMember.do(http.MethodGet, test.path, nil, html)
+		absent := nonMember.do(http.MethodGet, "/missing"+strings.TrimPrefix(test.path, "/alpha"), nil, html)
+		if denied.StatusCode != http.StatusNotFound || denied.Body != absent.Body || denied.Header.Get("Location") != "" {
+			t.Fatalf("non-member %s=%+v missing=%+v", test.path, denied, absent)
+		}
+	}
 	for _, path := range []string{"/alpha", "/alpha/"} {
 		denied, _ := anonymous.get(path)
 		absent, _ := anonymous.get("/missing" + strings.TrimPrefix(path, "/alpha"))

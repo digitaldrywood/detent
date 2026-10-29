@@ -108,6 +108,7 @@ func (c *SSHCallbacks) handleLandingBatch(ctx context.Context, method string, ar
 		if err != nil {
 			return nil, err
 		}
+		request.Options.ChangeID = target.ChangeID
 		request.Validate = func(ctx context.Context) error {
 			if err := c.execution.Validate(ctx); err != nil {
 				return err

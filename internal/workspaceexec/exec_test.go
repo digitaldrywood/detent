@@ -7,13 +7,17 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 	"unicode/utf8"
 
+	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
@@ -283,57 +287,85 @@ func TestRunNamesTheSignalThatKilledTheCommand(t *testing.T) {
 // lease loss" requirement: a command that started a build or a server must not
 // leave it running in the worktree, and killing only the shell would.
 func TestRunKillsTheWholeProcessGroup(t *testing.T) {
-	if testing.Short() {
-		t.Skip("real process or filesystem integration")
-	}
-
 	t.Parallel()
 	requirePOSIXShell(t)
 
-	service, root := newService(t)
-	witness := filepath.Join(root, "witness")
-	started := make(chan struct{})
+	service, _ := newService(t)
+	started := make(chan int, 1)
 	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-
-	var once bool
-	emit := func(workspacesession.ExecOutput) error {
-		if !once {
-			once = true
-			close(started)
+	waitCtx := testenv.WaitContext(t, t.Context())
+	var output string
+	emit := func(span workspacesession.ExecOutput) error {
+		data := []byte(span.Data)
+		if span.Encoding != "" {
+			var err error
+			data, err = base64.StdEncoding.DecodeString(span.Data)
+			if err != nil {
+				return err
+			}
+		}
+		output += string(data)
+		if line, _, ok := strings.Cut(output, "\n"); ok {
+			pid, err := strconv.Atoi(line)
+			if err != nil {
+				return err
+			}
+			started <- pid
 		}
 		return nil
 	}
-	// The grandchild outlives its parent shell on purpose: it is the process a
-	// kill aimed at the shell alone would leave behind, and the file it would
-	// write is the proof.
-	command := "sh -c 'sleep 2; : > " + witness + "' & printf started\n; sleep 5"
-	done := make(chan error, 1)
+	command := `mkfifo gate; sh -c 'printf "%s\n" "$$"; exec >/dev/null 2>&1; exec cat gate' & wait`
+	done := make(chan struct{})
+	var runErr error
 	go func() {
-		_, err := service.Run(ctx, command, emit)
-		done <- err
+		_, runErr = service.Run(ctx, command, emit)
+		close(done)
+	}()
+	var identity procgroup.Identity
+	defer func() {
+		cancel()
+		if identity.PID != 0 {
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			defer cleanupCancel()
+			if _, err := procgroup.Terminate(cleanupCtx, identity, procgroup.DefaultTerminationGrace); err != nil {
+				t.Errorf("clean up child process group: %v", err)
+			}
+		}
+		<-done
 	}()
 
+	var pid int
 	select {
-	case <-started:
-	case <-time.After(20 * time.Second):
-		t.Fatal("the command never produced output")
+	case pid = <-started:
+	case <-done:
+		t.Fatalf("command exited before child readiness: %v", runErr)
+	case <-waitCtx.Done():
+		t.Fatal("child never became ready")
+	}
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer process.Release()
+	identity, err = procgroup.Inspect(&exec.Cmd{Process: process})
+	if err != nil {
+		t.Fatal(err)
 	}
 	cancel()
 	select {
-	case err := <-done:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("run answered %v, want the caller's own cancellation", err)
+	case <-done:
+		if !errors.Is(runErr, context.Canceled) {
+			t.Fatalf("run answered %v, want the caller's own cancellation", runErr)
 		}
-	case <-time.After(20 * time.Second):
+	case <-waitCtx.Done():
 		t.Fatal("the run did not end when its context was cancelled")
 	}
-
-	// Past the grandchild's own sleep: if the group had survived, the witness
-	// would exist by now.
-	time.Sleep(3 * time.Second)
-	if _, err := os.Stat(witness); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("stat witness = %v, want the whole process group to have died", err)
+	observations, err := procgroup.Observe([]procgroup.Identity{identity})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observations[0].Alive {
+		t.Fatal("child process group survived cancellation")
 	}
 }
 
@@ -371,8 +403,8 @@ func TestRunBase64EncodesASpanThatIsNotText(t *testing.T) {
 	}
 }
 
-// TestRunScrubsInheritedCredentials is a courtesy and not a boundary (section
-// 18.3): the command runs as the runner account and can still reach whatever
+// TestRunScrubsInheritedCredentials is a courtesy and not a boundary:
+// the command runs as the runner account and can still reach whatever
 // that account can reach. What it must not inherit is a token the runner
 // process merely happened to be started with.
 func TestRunScrubsInheritedCredentials(t *testing.T) {

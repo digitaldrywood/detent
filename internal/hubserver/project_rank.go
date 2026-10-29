@@ -21,14 +21,37 @@ func readOrganizationProjectRank(ctx context.Context, db nativeQueryer, organiza
 	return projectsettings.ReadActiveRank(ctx, db, organization)
 }
 
+func (s *Service) readReadableOrganizationProjectRank(ctx context.Context, db nativeQueryer, credential apiCredential) (organizationProjectRank, error) {
+	organization := tracker.OrganizationID(s.appOrganizationID())
+	value := organizationProjectRank{ProjectIDs: []tracker.ProjectID{}}
+	if err := db.QueryRowContext(ctx, "SELECT scheduling_revision FROM organizations WHERE id = ?", organization).Scan(&value.Revision); err != nil {
+		return value, err
+	}
+	condition, args := credential.projectGrantSQL("p.organization_id", "p.id")
+	args = append([]any{organization}, args...)
+	rows, err := db.QueryContext(ctx, "SELECT p.id FROM projects p WHERE p.organization_id = ? AND p.deleted_at IS NULL AND ("+condition+") ORDER BY p.scheduling_rank, p.created_at, p.id", args...)
+	if err != nil {
+		return value, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id tracker.ProjectID
+		if err := rows.Scan(&id); err != nil {
+			return value, err
+		}
+		value.ProjectIDs = append(value.ProjectIDs, id)
+	}
+	return value, rows.Err()
+}
+
 func (s *Service) hostedProjectRank(c echo.Context) error {
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 	defer cancel()
-	_, err := s.hostedAdministrator(c)
+	credential, _, err := s.appCredential(c)
 	if err != nil {
 		return s.hostedAPIError(c, err)
 	}
-	value, err := readOrganizationProjectRank(ctx, s.database.reader, tracker.OrganizationID(s.config.Hosted.OrganizationID))
+	value, err := s.readReadableOrganizationProjectRank(ctx, s.database.reader, credential)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -36,13 +59,13 @@ func (s *Service) hostedProjectRank(c echo.Context) error {
 }
 
 func (s *Service) updateHostedProjectRank(c echo.Context) error {
-	credential, err := s.hostedAdministrator(c)
+	credential, err := s.appAdministrator(c)
 	if err != nil {
 		return s.hostedAPIError(c, err)
 	}
 	var change projectRankChange
 	if err := decodeAPIJSON(c, &change); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	value, err := s.updateOrganizationProjectRankCommand(c.Request().Context(), credential, change)
 	if err != nil {
@@ -52,15 +75,22 @@ func (s *Service) updateHostedProjectRank(c echo.Context) error {
 }
 
 func (s *Service) updateOrganizationProjectRankCommand(ctx context.Context, credential apiCredential, change projectRankChange) (any, error) {
-	scope := nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), credential: credential, requireHostedAdmin: true}
+	scope := nativeScope{organization: tracker.OrganizationID(s.appOrganizationID()), credential: credential, requireHostedAdmin: true}
 	return s.runnerAdminTransaction(ctx, scope, false, func(ctx context.Context, tx *sql.Tx, _ time.Time) (any, error) {
-		value, err := projectsettings.UpdateActiveRank(ctx, tx, scope.organization, change)
+		readable, err := s.readReadableOrganizationProjectRank(ctx, tx, credential)
+		if err != nil {
+			return nil, err
+		}
+		value, err := projectsettings.UpdateActiveRank(ctx, tx, scope.organization, change, readable.ProjectIDs)
 		if errors.Is(err, projectsettings.ErrConflict) {
 			return nil, nativeConflict(tracker.Revision(value.Revision))
 		}
 		if errors.Is(err, projectsettings.ErrInvalid) {
-			return nil, nativeInvalid("Rank must include every organization project once")
+			return nil, nativePublicInvalid("Order must include every readable project once")
 		}
-		return value, err
+		if err != nil {
+			return nil, err
+		}
+		return s.readReadableOrganizationProjectRank(ctx, tx, credential)
 	})
 }

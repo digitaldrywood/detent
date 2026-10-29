@@ -3,6 +3,9 @@ package hubclient
 import (
 	"cmp"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -80,11 +83,16 @@ func (c *NativeClient) runtimeChange(ctx context.Context, item tracker.NativeWor
 	for _, section := range []string{"versions", "reviews", "checks", "discussion"} {
 		page, ok := first.Read.Sections[section]
 		seen := map[string]bool{}
+		var record []byte
+		var identity tracker.NativeRecoveryPage
 		for {
 			if !ok {
 				return tracker.ChangeDetail{}, fmt.Errorf("%w: bounded Change section is missing", ErrUnavailable)
 			}
 			if page.Complete {
+				if len(record) != 0 {
+					return tracker.ChangeDetail{}, fmt.Errorf("%w: retained Change review is incomplete", ErrUnavailable)
+				}
 				break
 			}
 			if page.NextCursor == "" || seen[page.NextCursor] {
@@ -97,6 +105,26 @@ func (c *NativeClient) runtimeChange(ctx context.Context, item tracker.NativeWor
 			}
 			if next.Detail.Change.CurrentVersion != detail.Change.CurrentVersion {
 				return tracker.ChangeDetail{}, fmt.Errorf("%w: bounded Change head changed during traversal", ErrUnavailable)
+			}
+			if fragment := next.Fragment; fragment != nil {
+				if len(record) == 0 {
+					identity = *fragment
+				}
+				if section != "reviews" || fragment.Section != section || fragment.OrganizationID != c.organization || fragment.ProjectID != c.project || fragment.WorkItemID != item || fragment.VersionID != first.Read.VersionID || fragment.RecordID == "" || fragment.Offset != int64(len(record)) || len(fragment.Data) == 0 || len(fragment.Data) > 64<<10 || fragment.TotalBytes <= fragment.Offset || int64(len(fragment.Data)) > fragment.TotalBytes-fragment.Offset || len(fragment.SHA256) != 64 || fragment.RecordID != identity.RecordID || fragment.VersionID != identity.VersionID || fragment.TotalBytes != identity.TotalBytes || fragment.SHA256 != identity.SHA256 || len(next.Detail.Reviews) != 0 {
+					return tracker.ChangeDetail{}, fmt.Errorf("%w: retained Change review fragment is invalid", ErrUnavailable)
+				}
+				record = append(record, fragment.Data...)
+				if int64(len(record)) == fragment.TotalBytes {
+					digest := sha256.Sum256(record)
+					var review tracker.ChangeReview
+					if hex.EncodeToString(digest[:]) != fragment.SHA256 || json.Unmarshal(record, &review) != nil || review.ID == "" || review.VersionID != fragment.VersionID || slices.ContainsFunc(detail.Reviews, func(previous tracker.ChangeReview) bool { return previous.ID == review.ID }) {
+						return tracker.ChangeDetail{}, fmt.Errorf("%w: retained Change review digest or identity is invalid", ErrUnavailable)
+					}
+					next.Detail.Reviews = append(next.Detail.Reviews, review)
+					record = nil
+				}
+			} else if len(record) != 0 {
+				return tracker.ChangeDetail{}, fmt.Errorf("%w: retained Change review fragment is missing", ErrUnavailable)
 			}
 			switch section {
 			case "versions":
@@ -256,5 +284,15 @@ func (c *NativeClient) AssociateReleasePick(ctx context.Context, item tracker.Na
 		return result, err
 	}
 	err = c.client.request(ctx, http.MethodPost, c.base()+path+"/release-pick", request, &result)
+	return result, err
+}
+
+func (c *NativeClient) PublishReleasePick(ctx context.Context, item tracker.NativeWorkItemID, request tracker.PublishReleasePick) (tracker.ReleasePickPublication, error) {
+	var result tracker.ReleasePickPublication
+	path, err := nativeItemPath(item)
+	if err != nil {
+		return result, err
+	}
+	err = c.client.request(ctx, http.MethodPost, c.base()+path+"/release-pick/publication", request, &result)
 	return result, err
 }

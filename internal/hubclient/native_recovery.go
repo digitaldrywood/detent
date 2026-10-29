@@ -22,7 +22,11 @@ func (c *NativeClient) blockerPage(ctx context.Context, id tracker.NativeWorkIte
 	if err != nil {
 		return err
 	}
-	params := url.Values{"view": {"blockers"}, "limit": {"100"}, "cursor": {cursor}}
+	view := "blockers"
+	if kind == "attempts" {
+		view = "recorded_blockers"
+	}
+	params := url.Values{"view": {view}, "limit": {"100"}, "cursor": {cursor}}
 	return c.client.request(ctx, http.MethodGet, c.base()+path+"/"+kind+"?"+params.Encode(), nil, target)
 }
 

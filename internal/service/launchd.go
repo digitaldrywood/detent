@@ -35,7 +35,7 @@ func (m *launchdManager) Info() ManagerInfo {
 }
 
 func (m *launchdManager) Definition() Definition {
-	stdout, stderr := serviceLogPaths(m.cfg)
+	stdout, stderr := LogPaths(m.cfg)
 	return Definition{Path: m.path, Content: launchdPlist(m.cfg), StandardOutPath: stdout, StandardErrorPath: stderr}
 }
 
@@ -126,7 +126,7 @@ func (m *launchdManager) target() string {
 }
 
 func launchdPlist(cfg Config) string {
-	stdout, stderr := serviceLogPaths(cfg)
+	stdout, stderr := LogPaths(cfg)
 	escape := func(value string) string {
 		return html.EscapeString(value)
 	}

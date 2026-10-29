@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 
 	"github.com/digitaldrywood/detent/internal/chat"
@@ -21,16 +22,44 @@ func coordinatorAgent(model string) string {
 // stored, never from the submitted action, so a client cannot relabel who
 // acted.
 func (s *Service) coordinatorProposalAgent(ctx context.Context, action chat.Action) (string, error) {
-	var agent sql.NullString
-	err := s.database.reader.QueryRowContext(ctx, `SELECT json_extract(data_json, '$.operator_action.action.agent') FROM conversation_messages
-WHERE conversation_id=? AND json_extract(data_json, '$.operator_action.action.id')=? ORDER BY rowid DESC LIMIT 1`, action.ConversationID, action.ID).Scan(&agent)
-	if errors.Is(err, sql.ErrNoRows) || err == nil && agent.String == "" {
-		return coordinatorAgentName, nil
-	}
+	rows, err := s.database.reader.QueryContext(ctx, `SELECT operator_action_agent,operator_action_id,query_metadata_version,data_json FROM conversation_messages WHERE conversation_id=? AND (operator_action_id=? OR query_metadata_version=0) ORDER BY rowid DESC LIMIT ?`, action.ConversationID, action.ID, storageConversionRows+1)
 	if err != nil {
 		return "", err
 	}
-	return agent.String, nil
+	defer rows.Close()
+	processed := 0
+	for rows.Next() {
+		processed++
+		if processed > storageConversionRows {
+			return "", errors.New("conversation action metadata conversion is pending")
+		}
+		var agent, id sql.NullString
+		var version int
+		var raw string
+		if err := rows.Scan(&agent, &id, &version, &raw); err != nil {
+			return "", err
+		}
+		if version == 0 {
+			var data queryMessageData
+			if err := json.Unmarshal([]byte(raw), &data); err != nil {
+				return "", err
+			}
+			if data.OperatorAction == nil || data.OperatorAction.Action == nil || data.OperatorAction.Action.ID == nil || *data.OperatorAction.Action.ID != action.ID {
+				continue
+			}
+			if data.OperatorAction.Action.Agent != nil {
+				agent.String = *data.OperatorAction.Action.Agent
+			}
+		}
+		if agent.String == "" {
+			return coordinatorAgentName, nil
+		}
+		return agent.String, nil
+	}
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+	return coordinatorAgentName, nil
 }
 
 // withCoordinatorAgent attributes application writes made under ctx to the

@@ -6,11 +6,14 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -27,10 +30,12 @@ func TestNativeRestorableCheckpoint(t *testing.T) {
 		attempts []tracker.NativeAttempt
 		current  *workspace.ChangeSource
 		want     bool
+		transfer string
 	}{
 		{name: "no prior attempt"},
 		{name: "local-only checkpoint", attempts: []tracker.NativeAttempt{{NativeRunData: tracker.NativeRunData{AttemptID: "a"}, Checkpoint: &tracker.NativeCheckpoint{Storage: "local_only", WorktreeState: "dirty"}}}},
 		{name: "pushed checkpoint", attempts: []tracker.NativeAttempt{{NativeRunData: tracker.NativeRunData{AttemptID: "a"}, Checkpoint: pushed()}}, want: true},
+		{name: "explicit transfer supersedes a later dirty checkpoint", transfer: "version_selected", attempts: []tracker.NativeAttempt{{NativeRunData: tracker.NativeRunData{AttemptID: "v"}}, {NativeRunData: tracker.NativeRunData{AttemptID: "a"}, Checkpoint: pushed()}}, current: &workspace.ChangeSource{Version: tracker.ChangeVersion{ChangeVersionInput: tracker.ChangeVersionInput{AttemptID: "v"}}}},
 		{name: "pushed after its Change version", attempts: []tracker.NativeAttempt{{NativeRunData: tracker.NativeRunData{AttemptID: "v"}}, {NativeRunData: tracker.NativeRunData{AttemptID: "a"}, Checkpoint: pushed()}}, current: &workspace.ChangeSource{Version: tracker.ChangeVersion{ChangeVersionInput: tracker.ChangeVersionInput{AttemptID: "v"}}}, want: true},
 		{name: "newer Change version supersedes it", attempts: []tracker.NativeAttempt{{NativeRunData: tracker.NativeRunData{AttemptID: "a"}, Checkpoint: pushed()}, {NativeRunData: tracker.NativeRunData{AttemptID: "v"}}}, current: &workspace.ChangeSource{Version: tracker.ChangeVersion{ChangeVersionInput: tracker.ChangeVersionInput{AttemptID: "v"}}}},
 		{name: "uncertain publication stays with reconciliation", attempts: []tracker.NativeAttempt{{NativeRunData: tracker.NativeRunData{AttemptID: "a"}, Checkpoint: func() *tracker.NativeCheckpoint {
@@ -41,7 +46,7 @@ func TestNativeRestorableCheckpoint(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			got := nativeRestorableCheckpoint(tracker.NativeRecovery{Attempts: test.attempts}, test.current)
+			got := nativeRestorableCheckpoint(tracker.NativeRecovery{Attempts: test.attempts, SourceVersionID: test.transfer}, test.current)
 			if (got != nil) != test.want {
 				t.Fatalf("restorable = %#v, want %t", got, test.want)
 			}
@@ -52,15 +57,94 @@ func TestNativeRestorableCheckpoint(t *testing.T) {
 	}
 }
 
+func TestIncorporationRefusalRestoresPublishedSource(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name       string
+		gitRef     bool
+		retained   bool
+		dirty      bool
+		uncertain  bool
+		stale      bool
+		wantFresh  bool
+		wantPushed bool
+	}{
+		{name: "clean integration git checkpoint yields to published source", gitRef: true, wantFresh: true},
+		{name: "clean local integration checkpoint yields to published source", wantFresh: true},
+		{name: "retained clean integration workspace yields to published source", gitRef: true, retained: true, wantFresh: true},
+		{name: "dirty checkpoint preserves unpublished edits", gitRef: true, dirty: true, wantPushed: true},
+		{name: "uncertain publication retains custody", gitRef: true, uncertain: true},
+		{name: "different version cannot redirect recovery", gitRef: true, stale: true, wantPushed: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			checkpoint := &tracker.NativeCheckpoint{Storage: "local_only", Availability: "available", Resume: "fresh_checkout", WorktreeState: "clean", HeadSHA: "integration", ExternalEffect: "none", EffectState: "none"}
+			if test.gitRef {
+				remoteCheckpoint(checkpoint)
+				checkpoint.HeadSHA = "integration"
+			}
+			if test.dirty {
+				checkpoint.WorktreeState = "dirty"
+			}
+			if test.uncertain {
+				checkpoint.ExternalEffect, checkpoint.EffectState = "git_push", "ambiguous"
+			}
+			ref := &tracker.NativeChangeReference{ChangeID: "change", VersionID: "version", HeadSHA: "published"}
+			if test.stale {
+				ref.VersionID = "previous"
+			}
+			recovery := tracker.NativeRecovery{Lease: tracker.NativeLease{MachineID: "machine"}, Attempts: []tracker.NativeAttempt{{
+				NativeRunData: tracker.NativeRunData{MachineID: "machine", Finalization: &tracker.NativeFinalization{ChangeID: ref.ChangeID, VersionID: ref.VersionID, HeadSHA: ref.HeadSHA, SourceVersion: ref}},
+				Checkpoint:    checkpoint,
+			}}}
+			backend := existingWorkspaceBackend{err: workspace.ErrMissingWorkspace}
+			if test.retained {
+				backend.err = nil
+			}
+			issue := workspace.Issue{Source: &workspace.ChangeSource{Version: tracker.ChangeVersion{ID: "version", ChangeID: "change", ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: "published"}}}}
+			restoreRunWorkspaceCheckpoint(RunRequest{Execution: &testExecution{recovery: recovery}}, backend, &issue, false)
+			if issue.FreshCheckout != test.wantFresh || (issue.Checkpoint != nil) != test.wantPushed {
+				t.Fatalf("recovery replayed integration checkpoint: fresh=%t checkpoint=%+v", issue.FreshCheckout, issue.Checkpoint)
+			}
+		})
+	}
+}
+
+type checkpointFinalizingWorkspace struct {
+	*wipExecutionWorkspace
+	onFinalize func() error
+	unchanged  bool
+}
+
+func (w *checkpointFinalizingWorkspace) PushCheckpointRef(ctx context.Context, info workspace.Info, issue workspace.Issue, previous workspace.CheckpointRef, validate func(context.Context) error) (workspace.CheckpointRef, bool, error) {
+	if w.unchanged {
+		return previous, false, validate(ctx)
+	}
+	return w.wipExecutionWorkspace.PushCheckpointRef(ctx, info, issue, previous, validate)
+}
+
+func (w *checkpointFinalizingWorkspace) FinalizeNativeWork(ctx context.Context, _ workspace.Info, _ workspace.Issue, validate func(context.Context) error) (string, error) {
+	if err := w.onFinalize(); err != nil {
+		return "", err
+	}
+	return "", validate(ctx)
+}
+
 func TestCheckpointRefsPushAfterCompletedTurn(t *testing.T) {
 	t.Parallel()
-	backend := &wipExecutionWorkspace{retainedExecutionWorkspace: retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{recoveryStates: []workspace.RecoveryState{{TrackedPaths: []string{"work.go"}}}}}}
+	backend := &checkpointFinalizingWorkspace{wipExecutionWorkspace: &wipExecutionWorkspace{retainedExecutionWorkspace: retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{recoveryStates: []workspace.RecoveryState{{TrackedPaths: []string{"work.go"}}}}}}}
 	recorded := make(chan tracker.NativeCheckpoint, 1)
 	execution := &testExecution{onCheckpoint: func(c tracker.NativeCheckpoint) { recorded <- c }}
-	r := &Runner{workspace: backend, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	r := &Runner{workspace: backend, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), afterRunTimeout: time.Second}
 	refs := newCheckpointRefs(backend, execution, workspace.Info{}, workspace.Issue{}, nil)
 	req := RunRequest{Execution: execution, Issue: connector.Issue{ID: "work"}}
 	r.startCheckpointRefs(t.Context(), refs, req, backend)
+	stopped := false
+	stop := refs.stop
+	refs.stop = func() {
+		stop()
+		stopped = true
+	}
 	defer refs.halt()
 	refs.requestPush()
 	select {
@@ -68,8 +152,118 @@ func TestCheckpointRefsPushAfterCompletedTurn(t *testing.T) {
 		if !checkpoint.GitRef() || checkpoint.CommitSHA != strings.Repeat("c", 40) || checkpoint.WorktreeState != "dirty" {
 			t.Fatalf("recorded checkpoint = %#v", checkpoint)
 		}
-	case <-time.After(10 * time.Second):
+	case <-testenv.WaitContext(t, t.Context()).Done():
 		t.Fatal("completed turn did not push a checkpoint")
+	}
+	finalized := false
+	backend.onFinalize = func() error {
+		if !stopped {
+			return errors.New("host finalization overlapped the turn checkpoint publisher")
+		}
+		finalized = true
+		return nil
+	}
+	req.checkpointRefs, req.finalizeNativeWork = refs, true
+	if _, err := r.prepareExecutionCompletion(t.Context(), req, backend, workspace.Info{}, workspace.Issue{}, AgentResume{}, true); err != nil {
+		t.Fatal(err)
+	}
+	if !finalized {
+		t.Fatal("completed turn did not finalize its source")
+	}
+}
+
+type checkpointCaptureWorkspace struct {
+	*workspace.LocalGit
+	afterCapture func()
+}
+
+func (w *checkpointCaptureWorkspace) RecoveryState(ctx context.Context, info workspace.Info, issue workspace.Issue) (workspace.RecoveryState, error) {
+	state, err := w.LocalGit.RecoveryState(ctx, info, issue)
+	if w.afterCapture != nil {
+		change := w.afterCapture
+		w.afterCapture = nil
+		change()
+	}
+	return state, err
+}
+
+func TestCheckpointRefsCaptureUnchangedSnapshot(t *testing.T) {
+	isolateAttemptDiffGitConfig(t)
+	for _, test := range []struct {
+		name               string
+		staged             bool
+		changeAfterCapture bool
+	}{
+		{name: "worktree to index"},
+		{name: "index to worktree", staged: true},
+		{name: "different content after capture", changeAfterCapture: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			source := initRunnerSourceRepo(t)
+			remote := filepath.Join(t.TempDir(), "origin.git")
+			runRunnerGit(t, source, "init", "--bare", remote)
+			runRunnerGit(t, source, "remote", "add", "origin", remote)
+			runRunnerGit(t, source, "push", "-u", "origin", "main")
+			local, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: filepath.Dir(source), SourceRoot: source})
+			if err != nil {
+				t.Fatal(err)
+			}
+			backend := &checkpointCaptureWorkspace{LocalGit: local}
+			info := workspace.Info{Path: source, Branch: "main"}
+			issue := workspace.Issue{ID: "work", Identifier: "work", BaseRef: "origin/main"}
+			write := func(content string) {
+				t.Helper()
+				if err := os.WriteFile(filepath.Join(source, "README.md"), []byte(content), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			write("edited\n")
+			if test.staged {
+				runRunnerGit(t, source, "add", "README.md")
+			}
+			execution := &retryStepExecution{finalizingTestExecution: &finalizingTestExecution{}}
+			r := &Runner{workspace: backend, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), now: time.Now}
+			refs := newCheckpointRefs(backend, execution, info, issue, nil)
+			req := RunRequest{Execution: execution, checkpointRefs: refs}
+			if !r.pushCheckpointRef(t.Context(), refs, req, "turn_completed") {
+				t.Fatal("turn did not publish its checkpoint")
+			}
+			published, captured := refs.last, *refs.captured
+			if test.staged {
+				runRunnerGit(t, source, "restore", "--staged", "README.md")
+			} else {
+				runRunnerGit(t, source, "add", "README.md")
+			}
+			state, err := backend.RecoveryState(t.Context(), info, issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if state.WorkspaceFingerprint == captured.WorkspaceDigest {
+				t.Fatal("staging did not change recovery fingerprint")
+			}
+			if r.pushCheckpointRef(t.Context(), refs, req, "turn_completed") {
+				t.Fatal("equivalent tree published another checkpoint")
+			}
+			if refs.last != published || refs.captured.WorkspaceDigest != state.WorkspaceFingerprint {
+				t.Fatal("no-op did not retain publication and refresh captured state")
+			}
+			if test.changeAfterCapture {
+				backend.afterCapture = func() { write("different content\n") }
+			}
+			err = r.recordAgentStep(t.Context(), req, backend, info, issue, "complete")
+			if test.changeAfterCapture {
+				if !errors.Is(err, ErrNativeRecoveryRequired) || len(execution.steps) != 0 {
+					t.Fatalf("changed source: steps=%+v err=%v", execution.steps, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(execution.steps) != 1 || execution.steps[0].Source.WorkspaceDigest != state.WorkspaceFingerprint || execution.steps[0].Source.CommitSHA != published.CommitSHA || execution.steps[0].Source.TreeSHA != published.TreeSHA {
+				t.Fatalf("completed turn lost current fingerprint or published snapshot: %+v", execution.steps)
+			}
+		})
 	}
 }
 
@@ -157,6 +351,8 @@ func TestCheckpointRefCoversChangeSource(t *testing.T) {
 	pushed := &tracker.NativeCheckpoint{Resume: "fresh_checkout", WorktreeState: "dirty", ExternalEffect: "none", EffectState: "none"}
 	remoteCheckpoint(pushed)
 	withRef := tracker.NativeRecovery{Attempts: []tracker.NativeAttempt{{NativeRunData: tracker.NativeRunData{AttemptID: "a"}, Checkpoint: pushed}}}
+	transferred := withRef
+	transferred.SourceVersionID = "version_selected"
 	localOnly := tracker.NativeRecovery{Attempts: []tracker.NativeAttempt{{NativeRunData: tracker.NativeRunData{AttemptID: "a"}, Checkpoint: &tracker.NativeCheckpoint{Storage: "local_only", WorktreeState: "dirty"}}}}
 	missing := fmt.Errorf("%w: missing Hub bundle", ErrNativeRecoveryRequired)
 	for _, test := range []struct {
@@ -168,6 +364,7 @@ func TestCheckpointRefCoversChangeSource(t *testing.T) {
 		want     bool
 	}{
 		{name: "missing source with pushed checkpoint", err: missing, recovery: withRef, want: true},
+		{name: "transfer cannot substitute checkpoint for missing source", err: missing, recovery: transferred},
 		{name: "missing source with local checkpoint", err: missing, recovery: localOnly},
 		{name: "landing needs the Change source", err: missing, recovery: withRef, landing: true},
 		{name: "fresh checkout ignores checkpoints", err: missing, recovery: withRef, fresh: true},

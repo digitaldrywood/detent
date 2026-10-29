@@ -1,10 +1,13 @@
 package hubserver
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -17,6 +20,8 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -256,6 +261,117 @@ func TestNativeIssueOrganizationLookup(t *testing.T) {
 	}
 }
 
+func TestNativeRunnerVersionErrorResponse(t *testing.T) {
+	t.Parallel()
+	for _, hosted := range []bool{false, true} {
+		t.Run(fmt.Sprintf("hosted=%t", hosted), func(t *testing.T) {
+			t.Parallel()
+			service := &Service{config: Config{Logger: discardLogger()}}
+			if hosted {
+				service.config.Hosted = &HostedConfig{}
+			}
+			recorded := httptest.NewRecorder()
+			context := echo.New().NewContext(httptest.NewRequest(http.MethodPost, "/claim", nil), recorded)
+			if err := service.nativeAPIError(context, fmt.Errorf("private-context: %w", runnerVersionError("0.117.56", "0.117.55"))); err != nil {
+				t.Fatal(err)
+			}
+			failure := requireNativeCode(t, recorded, http.StatusUpgradeRequired, "unavailable")
+			if failure.Message != "Too old to take work, needs 0.117.56" {
+				t.Fatalf("claim refusal = %#v", failure)
+			}
+		})
+	}
+}
+
+func TestNativeAPIError(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, code, reason, level string
+		err                       error
+		status                    int
+	}{
+		{"validation", "invalid_request", "This runner has active work. Drain it and wait for its leases to finish or expire before removing it.", "WARN", &nativeError{Code: "invalid_request", Message: "This runner has active work. Drain it and wait for its leases to finish or expire before removing it.", status: http.StatusUnprocessableEntity, publicMessage: true}, http.StatusUnprocessableEntity},
+		{"key refusal", "scope_required", "Write access is required", "WARN", &apikey.Refusal{Code: "scope_required", Message: "Write access is required"}, http.StatusForbidden},
+		{"access denied", "access_denied", "operator access is unavailable", "WARN", operatortool.ErrAccessDenied, http.StatusForbidden},
+		{"expired session", "access_denied", "Access is no longer available", "WARN", auth.ErrInvalidSession, http.StatusForbidden},
+		{"allowance", "allowance_exhausted", "Hosted active_runners allowance reached (2 of 2). Existing data, reading, export and billing remain available.", "WARN", &hostedLimitError{Resource: "active_runners", Allowance: 2, Consumption: 2}, http.StatusTooManyRequests},
+		{"request refusal", "invalid_request", "A project is required", "WARN", &operatortool.RequestError{Code: "invalid_request", Message: "A project is required"}, http.StatusUnprocessableEntity},
+		{"private validation", "invalid_request", "Unprocessable Entity: invalid request", "WARN", nativeInvalid("private-context"), http.StatusUnprocessableEntity},
+		{"publication rejection", "invalid_request", "publication rejected: category=version_validation field=source [private error text omitted]", "WARN", nativeRejection(nativeInvalid("private-context"), "version_validation", "source"), http.StatusUnprocessableEntity},
+		{"lease conflict", "lease_conflict", "Work item is already leased", "WARN", tracker.ErrLeaseConflict, http.StatusConflict},
+		{"invalid claim", "invalid_request", "Request is invalid", "WARN", tracker.ErrInvalidClaimRequest, http.StatusUnprocessableEntity},
+		{"revision conflict", "revision_conflict", "Resource has changed", "WARN", nativeConflict(7), http.StatusConflict},
+		{"not found", "not_found", "Resource was not found", "", sql.ErrNoRows, http.StatusNotFound},
+		{"internal error", "native_operation_failed", "Native operation could not be completed", "ERROR", errors.New("database unavailable"), http.StatusInternalServerError},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			for _, hosted := range []bool{false, true} {
+				t.Run(fmt.Sprintf("hosted=%t", hosted), func(t *testing.T) {
+					var logs bytes.Buffer
+					var handler slog.Handler = slog.NewJSONHandler(&logs, nil)
+					if hosted {
+						handler = hostedLogHandler{output: handler}
+					}
+					service := &Service{config: Config{Logger: slog.New(handler)}}
+					if hosted {
+						service.config.Hosted = &HostedConfig{}
+					}
+					recorded := httptest.NewRecorder()
+					request := httptest.NewRequest(http.MethodDelete, "/private-target?token=query-secret", strings.NewReader("body-secret"))
+					request.Header.Set("Authorization", "Bearer header-secret")
+					c := echo.New().NewContext(request, recorded)
+					c.SetPath(nativeBase + "/runners/:runner")
+					c.SetParamNames("organization", "project", "runner")
+					c.SetParamValues("private-organization", "private-project", "runner_example")
+					c.Set("native_scope", nativeScope{organization: "org_example", project: "prj_example"})
+					if err := service.nativeAPIError(c, fmt.Errorf("private-context: %w", test.err)); err != nil {
+						t.Fatal(err)
+					}
+					failure := requireNativeCode(t, recorded, test.status, test.code)
+					wantReason := test.reason
+					if test.name == "private validation" && !hosted {
+						wantReason = "private-context"
+					}
+					if failure.Message != wantReason {
+						t.Fatalf("reason = %q, want %q", failure.Message, test.reason)
+					}
+					if test.name == "publication rejection" && failure.Details["rejection"] == nil {
+						t.Fatalf("missing publication rejection details: %s", recorded.Body.String())
+					}
+					if test.level == "" {
+						if logs.Len() != 0 {
+							t.Fatalf("unexpected logs: %s", &logs)
+						}
+						return
+					}
+					var entry map[string]any
+					if err := json.Unmarshal(bytes.TrimSpace(logs.Bytes()), &entry); err != nil {
+						t.Fatalf("expected exactly one JSON log entry: %v: %s", err, &logs)
+					}
+					if entry["level"] != test.level || entry["error"] == nil {
+						t.Fatalf("log = %#v", entry)
+					}
+					if test.level == "WARN" {
+						for key, want := range map[string]any{"refusal_code": test.code, "reason": test.reason, "route": nativeBase + "/runners/:runner", "organization_id": "org_example", "project_id": "prj_example", "method": http.MethodDelete} {
+							if entry[key] != want {
+								t.Errorf("log %s = %v, want %v", key, entry[key], want)
+							}
+						}
+						for _, private := range []string{"private-context", "private-target", "query-secret", "header-secret", "body-secret", "private-organization", "private-project"} {
+							if strings.Contains(logs.String(), private) || (test.name != "private validation" || hosted) && strings.Contains(recorded.Body.String(), private) {
+								t.Fatalf("private context escaped: %s", private)
+							}
+						}
+					}
+					if test.name == "revision conflict" && !hosted && failure.CurrentRevision != 7 {
+						t.Fatalf("current revision = %d, want 7", failure.CurrentRevision)
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestNativeWorkflowRefusalCode(t *testing.T) {
 	for _, hosted := range []bool{false, true} {
 		name := "local"
@@ -280,13 +396,22 @@ func TestNativeWorkflowRefusalCode(t *testing.T) {
 			}
 			recorded := httptest.NewRecorder()
 			context := echo.New().NewContext(httptest.NewRequest(http.MethodPost, "/workflow", nil), recorded)
-			service := &Service{config: Config{Hosted: &HostedConfig{}}}
-			if err := service.nativeAPIError(context, &nativeError{Code: failure.Code, Message: failure.Message, status: http.StatusUnprocessableEntity}); err != nil {
+			service := &Service{config: Config{Hosted: &HostedConfig{}, Logger: discardLogger()}}
+			if err := service.nativeAPIError(context, &nativeError{Code: failure.Code, Message: failure.Message, status: http.StatusUnprocessableEntity, publicMessage: true}); err != nil {
 				t.Fatal(err)
 			}
 			redacted := requireNativeCode(t, recorded, http.StatusUnprocessableEntity, "transition_not_allowed")
-			if redacted.Message != "The requested operation is unavailable" {
+			if redacted.Message != "Workflow transition is not allowed" {
 				t.Fatalf("hosted message = %q", redacted.Message)
+			}
+			recorded = httptest.NewRecorder()
+			context = echo.New().NewContext(httptest.NewRequest(http.MethodPost, "/work-items", nil), recorded)
+			if err := service.nativeAPIError(context, validateNativeIssueIntake(t.Context(), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, tracker.CreateIssue{State: "Triage"})); err != nil {
+				t.Fatal(err)
+			}
+			public := requireNativeCode(t, recorded, http.StatusUnprocessableEntity, "invalid_request")
+			if public.Message != "Triage is reserved for linked GitHub issue intake" {
+				t.Fatalf("hosted lane message = %q", public.Message)
 			}
 		})
 	}
@@ -493,7 +618,7 @@ func TestNativeIssueMutationConcurrencyAndHistory(t *testing.T) {
 			if !after.LastActivityAt.Equal(before.LastActivityAt) || !after.UpdatedAt.Equal(before.UpdatedAt) {
 				t.Fatalf("older event changed activity %s -> %s or updated %s -> %s", before.LastActivityAt, after.LastActivityAt, before.UpdatedAt, after.UpdatedAt)
 			}
-			title := "Older edit"
+			title := "Older edit " + formatHubTime(stamp)
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPatch, path, f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "older-edit-" + formatHubTime(stamp)}, ExpectedRevision: after.Revision, Title: &title}), http.StatusOK)
 			edited := readWorkItem(t, f.nativeFixture, f.issue.WorkItemID, "")
 			if !edited.LastActivityAt.Equal(latest) || !edited.UpdatedAt.Equal(stamp) {
@@ -712,6 +837,7 @@ func TestNativeDependencyReadPermissions(t *testing.T) {
 	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET blocked_reason=?,blocked_reason_basis=? WHERE native_id=?", "Private dependency details.", dependencyBasis([]string{string(blocker.WorkItemID)}), issue.WorkItemID); err != nil {
 		t.Fatal(err)
 	}
+	drainTestNativeBoard(t, f.service)
 	for _, test := range []struct {
 		name, suffix string
 	}{
@@ -792,6 +918,43 @@ func TestNativeDependenciesAndTransitions(t *testing.T) {
 		})
 	}
 	for _, test := range []struct {
+		name, operation, relationship string
+		target                        tracker.NativeWorkItemID
+		changed                       bool
+	}{
+		{"duplicate dependency", "add", "dependency", b.WorkItemID, false},
+		{"absent dependency", "remove", "dependency", c.WorkItemID, false},
+		{"new related issue", "add", "related", b.WorkItemID, true},
+		{"duplicate related issue", "add", "related", b.WorkItemID, false},
+		{"absent related issue", "remove", "related", c.WorkItemID, false},
+		{"remove related issue", "remove", "related", b.WorkItemID, true},
+		{"removed related issue", "remove", "related", b.WorkItemID, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			current := readWorkItem(t, f, a.WorkItemID, "")
+			var beforeVersions, beforeEvents int
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM collaboration_versions WHERE work_item_id=?),(SELECT count(*) FROM collaboration_events WHERE work_item_id=?)", a.WorkItemID, a.WorkItemID).Scan(&beforeVersions, &beforeEvents); err != nil {
+				t.Fatal(err)
+			}
+			request := tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: test.name}, ExpectedRevision: current.Revision, RelatedWorkItemID: test.target, Operation: test.operation, RelationshipType: test.relationship}
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(a.WorkItemID)+"/dependencies", f.token, request)
+			requireNativeStatus(t, response, http.StatusOK)
+			var after tracker.NativeIssue
+			decodeHubResponse(t, response, &after)
+			increment := 0
+			if test.changed {
+				increment = 1
+			}
+			var versions, events int
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM collaboration_versions WHERE work_item_id=?),(SELECT count(*) FROM collaboration_events WHERE work_item_id=?)", a.WorkItemID, a.WorkItemID).Scan(&versions, &events); err != nil {
+				t.Fatal(err)
+			}
+			if after.Revision != current.Revision+tracker.Revision(increment) || versions != beforeVersions+increment || events != beforeEvents+increment {
+				t.Fatalf("relationship revision=%d/%d versions=%d/%d events=%d/%d", after.Revision, current.Revision, versions, beforeVersions, events, beforeEvents)
+			}
+		})
+	}
+	for _, test := range []struct {
 		name, state, reason, detail string
 		want                        int
 	}{
@@ -833,4 +996,64 @@ func createNativeFixtureIssueTx(ctx context.Context, tx *sql.Tx, scope nativeSco
 		request.Body += issueContractTestSections
 	}
 	return createNativeIssueTx(ctx, tx, scope, request, now)
+}
+
+func TestNativeNewestIssuePages(t *testing.T) {
+	t.Parallel()
+	f := newDefaultNativeFixture(t, Config{})
+	for _, name := range []string{"first", "second"} {
+		issue := f.create(t, name)
+		path := f.base + "/work-items/" + string(issue.WorkItemID)
+		for index := range 3 {
+			response := performHubAPIRequest(t, f.service, http.MethodPost, path+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("%s-comment-%d", name, index)}, Body: fmt.Sprintf("comment %d", index)})
+			requireNativeStatus(t, response, http.StatusOK)
+		}
+		for _, list := range []string{"history", "comments"} {
+			t.Run(name+"/"+list, func(t *testing.T) {
+				params := url.Values{"direction": {"newest"}, "limit": {"1"}}
+				if list == "history" {
+					params.Set("view", "timeline")
+				}
+				previous := int64(1<<63 - 1)
+				seen := make(map[int64]bool)
+				for {
+					response := performHubAPIRequest(t, f.service, http.MethodGet, path+"/"+list+"?"+params.Encode(), f.token, nil)
+					requireNativeStatus(t, response, http.StatusOK)
+					var page struct {
+						Items []struct {
+							Sequence          int64 `json:"sequence,string"`
+							AggregateSequence int64 `json:"aggregate_sequence,string"`
+						} `json:"items"`
+						NextCursor string `json:"next_cursor"`
+					}
+					decodeHubResponse(t, response, &page)
+					if len(page.Items) != 1 {
+						t.Fatalf("page length = %d", len(page.Items))
+					}
+					sequence := page.Items[0].Sequence
+					if list == "history" {
+						sequence = page.Items[0].AggregateSequence
+					}
+					if sequence >= previous || seen[sequence] {
+						t.Fatalf("non-descending sequence %d after %d", sequence, previous)
+					}
+					seen[sequence], previous = true, sequence
+					if page.NextCursor == "" {
+						break
+					}
+					params.Set("cursor", page.NextCursor)
+					wrong := params.Encode()
+					wrong = strings.Replace(wrong, "direction=newest", "direction=oldest", 1)
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"/"+list+"?"+wrong, f.token, nil), http.StatusUnprocessableEntity)
+				}
+				want := 3
+				if list == "history" {
+					want++
+				}
+				if len(seen) != want {
+					t.Fatalf("received %d records, want %d", len(seen), want)
+				}
+			})
+		}
+	}
 }

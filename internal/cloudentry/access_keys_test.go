@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
+	"github.com/digitaldrywood/detent/internal/mcp"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
@@ -411,8 +414,15 @@ func TestAccessKeyOrganizationControls(t *testing.T) {
 	defer db.Close()
 	for _, event := range []string{"key_call", "organization_key_policy_denied", "organization_key_blocked", "personal_key_blocked"} {
 		var count int
-		if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_audit WHERE event=? AND mutation_json LIKE ?", event, "%"+key.ID+"%").Scan(&count); err != nil || count == 0 {
-			t.Fatalf("missing target audit %s count=%d err=%v", event, count, err)
+		if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_audit WHERE event=? AND mutation_json LIKE ?", event, "%"+key.ID+"%").Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if event == "key_call" {
+			if count != 0 {
+				t.Fatalf("successful reads wrote %d target audit rows", count)
+			}
+		} else if count == 0 {
+			t.Fatalf("missing target audit %s", event)
 		}
 	}
 	notices := attachmentRequest(t, owner, http.MethodGet, "/api/cloud/account/key-notifications", nil, nil)
@@ -491,6 +501,82 @@ func TestAccessKeyScopeAndServiceLifetime(t *testing.T) {
 	}
 	if result, failed := serviceCall("list_projects", map[string]any{"organization_id": "org_alpha"}); !failed || !strings.Contains(string(result), "key_inactive") {
 		t.Fatalf("revoked service key=%s failed=%v", result, failed)
+	}
+}
+
+func TestKeyTenantCallAssertionLifetimeAfterUsage(t *testing.T) {
+	t.Parallel()
+	f := newEntryFixture(t)
+	owner := newBrowser(t, f.service.Handler())
+	owner.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
+	key := createTestAccessKey(t, owner, "selected", []keyOrganization{{OrganizationID: "org_alpha", ProjectContext: apikey.ProjectContext{Access: "all"}}}, "org_alpha")
+	organization, err := f.service.registry.Organization(t.Context(), "org_alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
+	for _, test := range []struct {
+		name       string
+		delay      time.Duration
+		expires    time.Duration
+		wantExpiry time.Duration
+		wantError  bool
+	}{
+		{name: "immediate delivery", wantExpiry: 20 * time.Second},
+		{name: "usage recording outlasts assertion", delay: 21 * time.Second, wantExpiry: 41 * time.Second},
+		{name: "key expiry caps assertion", delay: 21 * time.Second, expires: 30 * time.Second, wantExpiry: 30 * time.Second},
+		{name: "key expires during usage recording", delay: 21 * time.Second, expires: 20 * time.Second, wantError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			now := start
+			sent := 0
+			if _, err := f.service.auth.store.db.ExecContext(t.Context(), "UPDATE access_key_organizations SET last_used_at=NULL WHERE key_id=? AND organization_id=?", key.ID, organization.ID); err != nil {
+				t.Fatal(err)
+			}
+			service := &Service{config: f.service.config, auth: f.service.auth}
+			service.config.now = func() time.Time {
+				var used sql.NullString
+				if err := f.service.auth.store.db.QueryRowContext(t.Context(), "SELECT last_used_at FROM access_key_organizations WHERE key_id=? AND organization_id=?", key.ID, organization.ID).Scan(&used); err != nil && !errors.Is(err, sql.ErrNoRows) {
+					t.Fatal(err)
+				}
+				if used.Valid {
+					now = start.Add(test.delay)
+				}
+				return now
+			}
+			credential := key
+			credential.ExpiresAt = nil
+			if test.expires != 0 {
+				expires := start.Add(test.expires)
+				credential.ExpiresAt = &expires
+			}
+			service.config.transport = func(Organization) (http.RoundTripper, error) {
+				return runtimeTransport(func(request *http.Request) (*http.Response, error) {
+					sent++
+					body, err := io.ReadAll(request.Body)
+					if err != nil {
+						return nil, err
+					}
+					verifier := &cloudassert.Verifier{PublicKeys: f.fixtures["org_alpha"].config.Hosted.SharedEntry.PublicKeys, Issuer: "entry", Audience: "org_alpha", Generation: 1, Now: service.config.now}
+					claims, err := verifier.Verify(request.Header.Get(cloudassert.Header), request.Method, request.URL.RequestURI(), body)
+					if err != nil {
+						return nil, err
+					}
+					if !claims.IssuedAt.Equal(now) || !claims.ExpiresAt.Equal(start.Add(test.wantExpiry)) || claims.Key.ID != key.ID {
+						t.Fatalf("assertion issued=%s expires=%s key=%s", claims.IssuedAt, claims.ExpiresAt, claims.Key.ID)
+					}
+					return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{}`))}, nil
+				}), nil
+			}
+			_, err := service.keyTenantCall(t.Context(), credential, organization, "/internal/v1/keys/call", map[string]string{"name": operatortool.AddComment})
+			if test.wantError {
+				if !errors.Is(err, cloudassert.ErrInvalid) || sent != 0 {
+					t.Fatalf("expired key call error=%v sent=%d", err, sent)
+				}
+			} else if err != nil || sent != 1 {
+				t.Fatalf("key call error=%v sent=%d", err, sent)
+			}
+		})
 	}
 }
 
@@ -698,6 +784,279 @@ func TestAccessKeyMemberSettingsIsolation(t *testing.T) {
 		response := attachmentRequest(t, member, test.method, "/api/cloud/account/api-keys/"+other.ID+test.path, strings.NewReader(`{}`), map[string]string{"Content-Type": "application/json", "Origin": testPublicURL})
 		if response.Code != http.StatusNotFound {
 			t.Fatalf("other owner's key mutation=%d", response.Code)
+		}
+	}
+}
+
+func TestAccessKeyMCPPreservesMoveItemRequestErrors(t *testing.T) {
+	f := newEntryFixture(t)
+	const org = "org_alpha"
+	if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE organizations SET managed=1 WHERE id=?", org); err != nil {
+		t.Fatal(err)
+	}
+	organization, err := f.service.registry.Organization(t.Context(), org)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.fixtures[org].config.Hosted.SharedEntry.ResolveKey = func(ctx context.Context, origin entryauthority.Origin) (cloudassert.Claims, error) {
+		return f.service.resolveTenantKey(ctx, organization, origin)
+	}
+	owner := newBrowser(t, f.service.Handler())
+	owner.login("/organizations", "user_alice:")
+	key := createTestAccessKey(t, owner, "global", nil, "")
+	client := newBrowser(t, f.service.Handler())
+	call := func(name string, arguments map[string]any) (json.RawMessage, json.RawMessage, bool) {
+		t.Helper()
+		raw, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": map[string]any{"name": name, "arguments": arguments, "_meta": map[string]any{"io.modelcontextprotocol/protocolVersion": mcp.ProtocolVersion, "io.modelcontextprotocol/clientCapabilities": map[string]any{}, "io.modelcontextprotocol/clientInfo": map[string]string{"name": "move-errors", "version": "1"}}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		response := attachmentRequest(t, client, http.MethodPost, "/mcp", bytes.NewReader(raw), map[string]string{"Content-Type": "application/json", "Authorization": "Bearer " + key.Token, "Mcp-Protocol-Version": mcp.ProtocolVersion, "Mcp-Method": "tools/call", "Mcp-Name": name})
+		var frame struct {
+			Result struct {
+				IsError    bool            `json:"isError"`
+				Structured json.RawMessage `json:"structuredContent"`
+				Content    []struct {
+					Text string `json:"text"`
+				} `json:"content"`
+			} `json:"result"`
+		}
+		if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &frame) != nil || len(frame.Result.Content) != 1 {
+			t.Fatalf("%s response=%d %s", name, response.Code, response.Body.String())
+		}
+		return json.RawMessage(frame.Result.Content[0].Text), frame.Result.Structured, frame.Result.IsError
+	}
+	listed, _, failed := call("list_projects", map[string]any{"organization_id": org})
+	var projects struct {
+		Data struct {
+			Projects []struct {
+				ID string `json:"project_id"`
+			} `json:"projects"`
+		} `json:"data"`
+	}
+	if failed || json.Unmarshal(listed, &projects) != nil || len(projects.Data.Projects) == 0 {
+		t.Fatalf("projects=%s failed=%v", listed, failed)
+	}
+	project := projects.Data.Projects[0].ID
+	approveEntryFixturePolicy(t, owner, org, project)
+	created, _, failed := call(operatortool.FileIssue, map[string]any{"organization_id": org, "project_id": project, "request_id": "move-errors-create", "title": "Move error reporting", "description": issueContractTestSections})
+	var issue struct {
+		Data struct {
+			Number   int    `json:"number"`
+			Revision string `json:"revision"`
+		} `json:"data"`
+	}
+	if failed || json.Unmarshal(created, &issue) != nil || issue.Data.Number == 0 || issue.Data.Revision == "" {
+		t.Fatalf("file issue=%s failed=%v", created, failed)
+	}
+	for _, test := range []struct {
+		name, code, message string
+		arguments           map[string]any
+	}{
+		{"numeric revision", "invalid_request", "expected_revision: must be a string", map[string]any{"target_state": "Done", "expected_revision": 1}},
+		{"graph", "transition_not_allowed", "Workflow transition is not allowed", map[string]any{"target_state": "Missing lane", "expected_revision": issue.Data.Revision}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			arguments := map[string]any{"organization_id": org, "project_id": project, "identifier": strconv.Itoa(issue.Data.Number), "request_id": "move-errors-" + strings.ReplaceAll(test.name, " ", "-")}
+			for name, value := range test.arguments {
+				arguments[name] = value
+			}
+			text, structured, failed := call(operatortool.MoveItem, arguments)
+			var got operatortool.RequestError
+			if !failed || len(structured) == 0 || json.Unmarshal(structured, &got) != nil {
+				t.Fatalf("move text=%s structured=%s failed=%v", text, structured, failed)
+			}
+			if got.Code != test.code || got.Message != test.message {
+				t.Fatalf("move error=%+v want code=%q message=%q", got, test.code, test.message)
+			}
+		})
+	}
+}
+
+func TestAccessKeyMutationAuditResponses(t *testing.T) {
+	for _, transport := range []string{"HTTP", "MCP"} {
+		for _, failure := range []string{"none", "post-handler audit", "pre-handler audit", "service"} {
+			if transport == "HTTP" && failure == "service" {
+				continue
+			}
+			t.Run(transport+"/"+failure, func(t *testing.T) {
+				f := newEntryFixture(t)
+				const org = "org_alpha"
+				if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE organizations SET managed=1 WHERE id=?", org); err != nil {
+					t.Fatal(err)
+				}
+				organization, err := f.service.registry.Organization(t.Context(), org)
+				if err != nil {
+					t.Fatal(err)
+				}
+				f.fixtures[org].config.Hosted.SharedEntry.ResolveKey = func(ctx context.Context, origin entryauthority.Origin) (cloudassert.Claims, error) {
+					return f.service.resolveTenantKey(ctx, organization, origin)
+				}
+				owner := newBrowser(t, f.service.Handler())
+				owner.login("/organizations", "user_alice:")
+				client := newBrowser(t, f.service.Handler())
+				db, err := sql.Open("sqlite", storeDSN(f.fixtures[org].path))
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer db.Close()
+				var project string
+				if err := db.QueryRowContext(t.Context(), "SELECT id FROM projects WHERE profile='native'").Scan(&project); err != nil {
+					t.Fatal(err)
+				}
+				key := createTestAccessKey(t, owner, "selected", []keyOrganization{{OrganizationID: org, ProjectContext: apikey.ProjectContext{Access: "selected", Projects: []string{project}}}}, "")
+				call := entryMCPClient(t, client, key.Token, mcp.ProtocolVersion, "/mcp")
+				approveEntryFixturePolicy(t, owner, org, project)
+				if _, err := db.ExecContext(t.Context(), "UPDATE projects SET duplicate_challenge=0 WHERE id=?", project); err != nil {
+					t.Fatal(err)
+				}
+				var items [2]string
+				for i := range items {
+					created, failed := call(operatortool.FileIssue, map[string]any{"organization_id": org, "project_id": project, "request_id": fmt.Sprintf("audit-seed-%d", i), "title": fmt.Sprintf("Audit seed %d", i), "description": issueContractTestSections})
+					var result struct {
+						Data struct {
+							ID string `json:"work_item_id"`
+						} `json:"data"`
+					}
+					if failed || json.Unmarshal(created, &result) != nil || result.Data.ID == "" {
+						t.Fatalf("seed creation=%s failed=%v", created, failed)
+					}
+					items[i] = result.Data.ID
+				}
+				switch failure {
+				case "post-handler audit":
+					_, err = db.ExecContext(t.Context(), `CREATE TRIGGER reject_key_audit BEFORE UPDATE ON hosted_audit WHEN NEW.event='key_call' AND OLD.status=200 AND NEW.status=200 BEGIN SELECT RAISE(ABORT,'audit unavailable'); END`)
+				case "pre-handler audit":
+					_, err = db.ExecContext(t.Context(), `CREATE TRIGGER reject_key_audit BEFORE INSERT ON hosted_audit WHEN NEW.event='key_call' BEGIN SELECT RAISE(ABORT,'audit unavailable'); END`)
+				case "service":
+					f.service.config.transport = func(Organization) (http.RoundTripper, error) {
+						return nil, errors.New("backend failure secret sentinel")
+					}
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				base := "/api/v2/organizations/" + org + "/projects/" + project + "/work-items"
+				if failure != "service" {
+					for _, name := range []string{operatortool.WorkList, operatortool.WorkItem} {
+						arguments := map[string]any{"organization_id": org, "project_id": project}
+						if name == operatortool.WorkItem {
+							arguments["reference"] = items[0]
+						}
+						result, failed := call(name, arguments)
+						if failed || !json.Valid(result) {
+							t.Fatalf("read %s=%s failed=%v", name, result, failed)
+						}
+					}
+				}
+				for _, operation := range []struct {
+					name, path, countSQL string
+					arguments, body      map[string]any
+				}{
+					{operatortool.FileIssue, base, "SELECT count(*) FROM issues WHERE title='Audited create'", map[string]any{"title": "Audited create", "description": issueContractTestSections}, map[string]any{"title": "Audited create", "body": issueContractTestSections}},
+					{operatortool.AddComment, base + "/" + items[0] + "/comments", "SELECT count(*) FROM native_comments WHERE body='Audited comment'", map[string]any{"identifier": items[0], "body": "Audited comment"}, map[string]any{"body": "Audited comment"}},
+					{operatortool.SetDependency, base + "/" + items[0] + "/dependencies", "SELECT count(*) FROM issue_dependencies", map[string]any{"identifier": items[0], "related": items[1], "operation": "add", "expected_revision": "1"}, map[string]any{"related_work_item_id": items[1], "operation": "add", "expected_revision": "1"}},
+				} {
+					t.Run(operation.name, func(t *testing.T) {
+						wantFailure := failure == "pre-handler audit" || failure == "service"
+						for range 2 {
+							if transport == "MCP" {
+								operation.arguments["organization_id"], operation.arguments["project_id"], operation.arguments["request_id"] = org, project, "audit-"+operation.name
+								result, failed := call(operation.name, operation.arguments)
+								if failed != wantFailure {
+									t.Errorf("result=%s failed=%v want failure=%v", result, failed, wantFailure)
+								}
+								if !wantFailure && !json.Valid(result) {
+									t.Errorf("invalid result=%s", result)
+								}
+								if failure == "service" && (!strings.Contains(string(result), "service_unavailable") || strings.Contains(string(result), "secret sentinel")) {
+									t.Errorf("unsafe or incorrect service failure=%s", result)
+								}
+								if failure == "pre-handler audit" && !strings.Contains(string(result), "audit_unavailable") {
+									t.Errorf("incorrect audit refusal=%s", result)
+								}
+							} else {
+								operation.body["idempotency_key"] = "audit-" + operation.name
+								response := attachmentRequest(t, client, http.MethodPost, operation.path, jsonBody(t, operation.body), map[string]string{"Content-Type": "application/json", "Authorization": "Bearer " + key.Token})
+								wantStatus := http.StatusOK
+								if wantFailure {
+									wantStatus = http.StatusInternalServerError
+								}
+								if response.Code != wantStatus || !json.Valid(response.Body.Bytes()) {
+									t.Errorf("response=%d %s want status=%d and one JSON document", response.Code, response.Body.String(), wantStatus)
+								}
+							}
+							var count int
+							wantCount := 1
+							if wantFailure {
+								wantCount = 0
+							}
+							if err := db.QueryRowContext(t.Context(), operation.countSQL).Scan(&count); err != nil || count != wantCount {
+								t.Fatalf("mutations=%d want=%d error=%v", count, wantCount, err)
+							}
+						}
+					})
+				}
+				if failure == "service" {
+					return
+				}
+				other, err := sql.Open("sqlite", storeDSN(f.fixtures["org_beta"].path))
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer other.Close()
+				var otherProject string
+				if err := other.QueryRowContext(t.Context(), "SELECT id FROM projects WHERE profile='native'").Scan(&otherProject); err != nil {
+					t.Fatal(err)
+				}
+				for _, denial := range []string{"cross-project", "invalid key", "revoked key"} {
+					t.Run(denial, func(t *testing.T) {
+						token, targetProject, wantStatus := key.Token, project, http.StatusUnauthorized
+						switch denial {
+						case "cross-project":
+							targetProject, wantStatus = otherProject, http.StatusForbidden
+							if failure == "pre-handler audit" {
+								wantStatus = http.StatusInternalServerError
+							}
+						case "invalid key":
+							token += "invalid"
+						case "revoked key":
+							wantStatus = http.StatusForbidden
+							revoked := attachmentRequest(t, owner, http.MethodDelete, "/api/cloud/account/api-keys/"+key.ID, nil, nil)
+							if revoked.Code != http.StatusNoContent {
+								t.Fatalf("revoke=%d %s", revoked.Code, revoked.Body.String())
+							}
+						}
+						var raw []byte
+						if transport == "MCP" {
+							deniedCall := entryMCPClient(t, client, token, mcp.ProtocolVersion, "/mcp")
+							result, failed := deniedCall(operatortool.AddComment, map[string]any{"organization_id": org, "project_id": targetProject, "identifier": items[0], "request_id": denial, "body": "Forbidden comment"})
+							if !failed {
+								t.Fatalf("unauthorized call succeeded: %s", result)
+							}
+							raw = result
+						} else {
+							response := attachmentRequest(t, client, http.MethodPost, "/api/v2/organizations/"+org+"/projects/"+targetProject+"/work-items/"+items[0]+"/comments", jsonBody(t, map[string]any{"idempotency_key": denial, "body": "Forbidden comment"}), map[string]string{"Content-Type": "application/json", "Authorization": "Bearer " + token})
+							if response.Code != wantStatus || !json.Valid(response.Body.Bytes()) {
+								t.Fatalf("unauthorized response=%d %s want=%d", response.Code, response.Body.String(), wantStatus)
+							}
+							raw = response.Body.Bytes()
+						}
+						for _, secret := range []string{key.Token, "Beta secret project", "Forbidden comment"} {
+							if strings.Contains(string(raw), secret) {
+								t.Fatal("refusal exposed credential or project content")
+							}
+						}
+						var count int
+						if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM native_comments WHERE body='Forbidden comment'").Scan(&count); err != nil || count != 0 {
+							t.Fatalf("unauthorized comments=%d error=%v", count, err)
+						}
+						if err := other.QueryRowContext(t.Context(), "SELECT count(*) FROM native_comments").Scan(&count); err != nil || count != 0 {
+							t.Fatalf("other project comments=%d error=%v", count, err)
+						}
+					})
+				}
+			})
 		}
 	}
 }

@@ -67,8 +67,9 @@ func TestHealthRateSignals(t *testing.T) {
 	for _, test := range []struct {
 		name, signal, severity string
 		fire, silent           func(*healthRateProject)
+		absolute               bool
 	}{
-		{"same signature count", "retry_storm", "attention", func(p *healthRateProject) { retry(p, 10*time.Minute, 5) }, func(p *healthRateProject) { retry(p, 10*time.Minute, 4) }},
+		{"same signature count", "retry_storm", "attention", func(p *healthRateProject) { retry(p, 10*time.Minute, 5) }, func(p *healthRateProject) { retry(p, 10*time.Minute, 4) }, true},
 		{"retry ratio both windows", "retry_storm", "attention", func(p *healthRateProject) {
 			mixedRetry(p)
 			p.Attempts = append(p.Attempts, healthRateAttempt{ID: "success", Item: "active", Status: "succeeded", At: now.Add(-5 * time.Minute)})
@@ -78,7 +79,7 @@ func TestHealthRateSignals(t *testing.T) {
 				p.Attempts = append(p.Attempts, healthRateAttempt{Item: "active", Status: "succeeded", At: now.Add(-2 * time.Hour)})
 			}
 			p.Attempts = append(p.Attempts, healthRateAttempt{Item: "active", Status: "succeeded", At: now.Add(-5 * time.Minute)})
-		}},
+		}, false},
 		{"recovery reason count", "recovery_loop", "attention", func(p *healthRateProject) {
 			for i := range 3 {
 				p.Attempts = append(p.Attempts, healthRateAttempt{ID: fmt.Sprint("recovery-", i), Item: "active", Recovery: "checkpoint_unavailable", At: now.Add(-10 * time.Minute)})
@@ -87,28 +88,28 @@ func TestHealthRateSignals(t *testing.T) {
 			for i := range 3 {
 				p.Attempts = append(p.Attempts, healthRateAttempt{Item: "active", Recovery: fmt.Sprint("reason-", i), At: now.Add(-10 * time.Minute)})
 			}
-		}},
+		}, false},
 		{"stalled heartbeat", "stalled_active_item", "attention", func(p *healthRateProject) {
 			p.Timelines = append(p.Timelines, analyticsResidenceTimeline{issue: analyticsResidenceIssue{id: "active"}, state: "In Progress", entered: now.Add(-3 * time.Hour)})
 		}, func(p *healthRateProject) {
 			p.Timelines = append(p.Timelines, analyticsResidenceTimeline{issue: analyticsResidenceIssue{id: "active"}, state: "In Progress", entered: now.Add(-3 * time.Hour)})
 			p.Attempts = append(p.Attempts, healthRateAttempt{ID: "alive", Item: "active", Heartbeat: now.Add(-time.Minute)})
-		}},
-		{"conflict both windows", "conflict_burn", "watch", func(p *healthRateProject) { conflict(p, 10*time.Minute, 10, 3); conflict(p, 2*time.Hour, 10, 3) }, func(p *healthRateProject) { conflict(p, 10*time.Minute, 10, 3); conflict(p, 2*time.Hour, 30, 0) }},
-		{"queue both windows", "capacity_starvation", "watch", func(p *healthRateProject) { queue(p, 2*time.Hour, time.Hour) }, func(p *healthRateProject) { queue(p, 2*time.Hour, time.Minute) }},
+		}, true},
+		{"conflict both windows", "conflict_burn", "watch", func(p *healthRateProject) { conflict(p, 10*time.Minute, 10, 3); conflict(p, 2*time.Hour, 10, 3) }, func(p *healthRateProject) { conflict(p, 10*time.Minute, 10, 3); conflict(p, 2*time.Hour, 30, 0) }, false},
+		{"queue both windows", "capacity_starvation", "watch", func(p *healthRateProject) { queue(p, 2*time.Hour, time.Hour) }, func(p *healthRateProject) { queue(p, 2*time.Hour, time.Minute) }, false},
 		{"cost median and dollar floor", "cost_anomaly", "watch", func(p *healthRateProject) {
 			p.Timelines = append(p.Timelines, analyticsResidenceTimeline{issue: analyticsResidenceIssue{id: "expensive"}, state: "Todo"})
 			p.Costs["expensive"] = healthItemCost{Cost: 30, Known: true}
 		}, func(p *healthRateProject) {
 			p.Timelines = append(p.Timelines, analyticsResidenceTimeline{issue: analyticsResidenceIssue{id: "expensive"}})
 			p.Costs["expensive"] = healthItemCost{Cost: 25, Known: true}
-		}},
+		}, false},
 		{"throughput same weekday hours", "throughput_collapse", "watch", func(p *healthRateProject) { p.Candidates = 1 }, func(p *healthRateProject) {
 			p.Candidates = 1
 			for range 24 {
 				p.Attempts = append(p.Attempts, healthRateAttempt{Landed: true, LandingAt: now.Add(-2 * time.Hour)})
 			}
-		}},
+		}, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -138,8 +139,11 @@ func TestHealthRateSignals(t *testing.T) {
 			noBaseline := p
 			noBaseline.Attempts = slices.DeleteFunc(slices.Clone(p.Attempts), func(a healthRateAttempt) bool { return a.At.Before(now.Add(-healthLongWindow)) })
 			noBaseline.Timelines = slices.DeleteFunc(slices.Clone(p.Timelines), func(t analyticsResidenceTimeline) bool { return len(t.done) > 0 })
-			if slices.Contains(healthRateSignals(now, noBaseline), test.signal) {
-				t.Fatalf("missing baseline fired %s", test.signal)
+			floor := slices.ContainsFunc(evaluateHealthRates(now, []healthRateProject{noBaseline}), func(f healthFinding) bool {
+				return f.Signal == test.signal && f.Evidence.Reason == healthAbsoluteFloor
+			})
+			if fired := slices.Contains(healthRateSignals(now, noBaseline), test.signal); fired != test.absolute || fired != floor {
+				t.Fatalf("missing baseline fired %s=%v floor=%v want %v", test.signal, fired, floor, test.absolute)
 			}
 			gaps := healthBaselineGaps(noBaseline, buildHealthRateBaseline(now, noBaseline))
 			if !slices.ContainsFunc(gaps, func(g healthBaselineUnavailable) bool { return g.Signal == test.signal }) {
@@ -292,6 +296,47 @@ func TestHealthRateBoundaries(t *testing.T) {
 		}, false},
 		{"throughput short recovered", "throughput_collapse", func(p *healthRateProject) { p.Candidates = 1; landing(p, now.Add(-time.Minute), 2, 0) }, false},
 		{"throughput no ready work", "throughput_collapse", func(p *healthRateProject) {}, false},
+		{"retry ceiling above usual repeated failures", "retry_storm", func(p *healthRateProject) {
+			for _, a := range slices.Clone(p.Attempts[:24]) {
+				for range healthRetryCeiling {
+					p.Attempts = append(p.Attempts, healthRateAttempt{Item: a.Item, Status: "failed", Signature: "failure", At: a.At})
+				}
+			}
+			failing(p, now.Add(-time.Minute), healthRetryCeiling)
+		}, true},
+		{"retry floor without history", "retry_storm", func(p *healthRateProject) {
+			*p = healthRateProject{ID: "project"}
+			failing(p, now.Add(-time.Minute), healthRetryCount)
+		}, true},
+		{"retry floor below count without history", "retry_storm", func(p *healthRateProject) {
+			*p = healthRateProject{ID: "project"}
+			failing(p, now.Add(-time.Minute), healthRetryCount-1)
+		}, false},
+		{"stall floor without history", "stalled_active_item", func(p *healthRateProject) {
+			*p = healthRateProject{ID: "project"}
+			stalled(p, healthStallMinimum+time.Nanosecond)
+		}, true},
+		{"stall floor exact minimum without history", "stalled_active_item", func(p *healthRateProject) {
+			*p = healthRateProject{ID: "project"}
+			stalled(p, healthStallMinimum)
+		}, false},
+		{"throughput floor waiting work without landings", "throughput_collapse", func(p *healthRateProject) {
+			*p = healthRateProject{ID: "project"}
+			p.Timelines = append(p.Timelines, analyticsResidenceTimeline{issue: analyticsResidenceIssue{id: "gated"}, state: "Todo", entered: now.Add(-healthLongWindow)})
+		}, true},
+		{"throughput floor recent waiting work", "throughput_collapse", func(p *healthRateProject) {
+			*p = healthRateProject{ID: "project"}
+			p.Timelines = append(p.Timelines, analyticsResidenceTimeline{issue: analyticsResidenceIssue{id: "gated"}, state: "Todo", entered: now.Add(-healthLongWindow + time.Nanosecond)})
+		}, false},
+		{"throughput floor parked work", "throughput_collapse", func(p *healthRateProject) {
+			*p = healthRateProject{ID: "project"}
+			p.Timelines = append(p.Timelines, analyticsResidenceTimeline{issue: analyticsResidenceIssue{id: "held"}, state: "Blocked", entered: now.Add(-24 * time.Hour)})
+		}, false},
+		{"throughput floor recent landing", "throughput_collapse", func(p *healthRateProject) {
+			*p = healthRateProject{ID: "project"}
+			p.Timelines = append(p.Timelines, analyticsResidenceTimeline{issue: analyticsResidenceIssue{id: "gated"}, state: "Todo", entered: now.Add(-24 * time.Hour)})
+			landing(p, now.Add(-time.Hour), 1, 0)
+		}, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -306,7 +351,7 @@ func TestHealthRateBoundaries(t *testing.T) {
 		p := healthRateFixture(now)
 		p.Attempts = slices.Clone(p.Attempts[:19])
 		p.Timelines = p.Timelines[:19]
-		failing(&p, now.Add(-time.Minute), 5)
+		failing(&p, now.Add(-time.Minute), healthRetryCount-1)
 		b := buildHealthRateBaseline(now, p)
 		if gaps := healthBaselineGaps(p, b); len(gaps) != 9 || len(evaluateHealthRates(now, []healthRateProject{p})) != 0 {
 			t.Fatalf("nineteen samples not silent: %+v", gaps)

@@ -1,6 +1,6 @@
 // Composes the conversation editor, attachments, pending questions, and turn controls.
 // Commands and delivery state come from the hub adapters.
-import { PaperclipIcon, PlugZapIcon, XIcon } from "lucide-react";
+import { HeadphonesIcon, MicIcon, PaperclipIcon, PlugZapIcon, SquareIcon, Volume2Icon, XIcon } from "lucide-react";
 import React from "react";
 
 import type { ServerProviderSkill } from "../../contracts/ui.ts";
@@ -68,10 +68,17 @@ import {
   type SlashMenuKey,
 } from "./ComposerPromptEditor.tsx";
 import { SlashCommandMenu, slashOptionId } from "./SlashCommandMenu.tsx";
+import { useHandsFreeConversation } from "../hooks/useHandsFreeConversation.ts";
+import { useVoiceInput } from "./useVoiceInput.ts";
+
+import type { ConversationSpeech } from "../hooks/useConversationSpeech.ts";
+import { ComposerControl, ComposerControlIcon } from "../../components/chat/ComposerControl.tsx";
 
 export type ComposerBannerEntry = ComposerBannerStackItem | ComposerBannerStackContent;
 
 export interface ComposerProps {
+  readonly speech?: ConversationSpeech;
+  readonly onVoiceSend?: (text: string) => Promise<void> | void;
   readonly value: string;
   readonly onChange: (value: string) => void;
   readonly onSend: () => void;
@@ -91,13 +98,12 @@ export interface ComposerProps {
    * True where there is nothing to draft: a viewer who cannot write, or a
    * settled chat. A blocked reason on its own leaves the editor usable,
    * because a lost connection is temporary and the draft is worth keeping; a
-   * reader who may never send is not offered the keystrokes at all
-   * (decisions.md §10.11, §10.12).
+   * reader who may never send is not offered the keystrokes at all.
    */
   readonly disabled?: boolean;
   readonly autoFocus?: boolean;
   readonly label?: string;
-  /** The turn preferences the three footer pickers show (§13.14, §14). */
+  /** The turn preferences the three footer pickers show. */
   readonly preferences: TurnPreferences;
   /** The options the bootstrap publishes for them. */
   readonly preferenceChoices?: PreferenceChoices | undefined;
@@ -168,11 +174,25 @@ export function Composer(props: ComposerProps): React.ReactElement {
   const attachingBlocked = attachControl === "none" || (attachments === undefined && props.onFiles === undefined) || disabled;
   const fileInput = React.useRef<HTMLInputElement>(null);
   const formRef = React.useRef<HTMLFormElement>(null);
+  const handsFreeUnavailable = disabled || props.blockedReason != null || props.pendingQuestion != null ||
+    props.value.trim().length > 0 || staged.length > 0 || props.uploadingFiles === true || attachments?.uploading === true;
+  const handsFree = useHandsFreeConversation({
+    speech: props.speech,
+    unavailable: handsFreeUnavailable,
+    sending: props.sending,
+    streaming: props.streaming,
+    onSend: props.onVoiceSend,
+  });
+  const voice = useVoiceInput(handsFree.active || disabled || props.sending || props.pendingQuestion != null, (text) => {
+    const separator = props.value.length > 0 && !/\s$/.test(props.value) ? " " : "";
+    props.onChange(`${props.value}${separator}${text}`);
+  });
   // A draft with a staged file is sendable: the first send uploads it.
   const hasContent = props.value.trim().length > 0 || staged.length > 0;
   const canSend =
     hasContent &&
     !props.sending &&
+    !voice.busy &&
     props.blockedReason == null &&
     !disabled &&
     props.uploadingFiles !== true &&
@@ -189,9 +209,28 @@ export function Composer(props: ComposerProps): React.ReactElement {
   const banners = React.useMemo(() => {
     const rail = props.banners ?? NO_BANNERS;
     const reason = props.blockedReason;
-    if (disabled || reason == null || reason.length === 0) return rail;
+    const notices: ComposerBannerEntry[] = [...rail];
+    if (handsFree.error) notices.push({ id: "composer-hands-free", variant: "error", content: (
+      <ComposerBanner.Row role="alert">
+        <ComposerBanner.Icon><MicIcon /></ComposerBanner.Icon>
+        <ComposerBanner.Content>{handsFree.error}</ComposerBanner.Content>
+      </ComposerBanner.Row>
+    ) });
+    if (voice.error || voice.notice) notices.push({
+      id: "composer-voice",
+      variant: voice.error ? "error" : "info",
+      content: (
+        <ComposerBanner.Row role={voice.error ? "alert" : "status"}>
+          <ComposerBanner.Icon><MicIcon /></ComposerBanner.Icon>
+          <ComposerBanner.Content className="whitespace-normal break-words">
+            <span className="min-w-0">{voice.error ?? voice.notice}</span>
+          </ComposerBanner.Content>
+        </ComposerBanner.Row>
+      ),
+    });
+    if (disabled || reason == null || reason.length === 0) return notices;
     return [
-      ...rail,
+      ...notices,
       {
         id: "composer-blocked",
         variant: "warning" as const,
@@ -200,7 +239,7 @@ export function Composer(props: ComposerProps): React.ReactElement {
         title: reason,
       },
     ];
-  }, [disabled, props.banners, props.blockedReason]);
+  }, [disabled, props.banners, props.blockedReason, voice.error, voice.notice, handsFree.error]);
 
   const [footerWidth, setFooterWidth] = React.useState<number | null>(null);
   React.useEffect(() => {
@@ -265,7 +304,7 @@ export function Composer(props: ComposerProps): React.ReactElement {
       resetComposerScrollGesture(gesture);
     };
   }, [scrollElement]);
-  const controlsHidden = scrollCollapsed;
+  const controlsHidden = scrollCollapsed && !handsFree.active;
 
   const historyEntries = React.useMemo(
     () => buildComposerPromptHistoryEntries(props.history ?? NO_HISTORY),
@@ -398,6 +437,7 @@ export function Composer(props: ComposerProps): React.ReactElement {
   const highlightedCommand = slashMatches[highlighted];
 
   const submit = () => {
+    if (voice.busy) return;
     if (pending !== null) {
       pending.onAdvance();
       return;
@@ -480,7 +520,7 @@ export function Composer(props: ComposerProps): React.ReactElement {
                   <ComposerBanner.Attachment>
                     <ComposerBanner.Root data-chat-composer-top-drawer="true" variant="info">
                       {/* Once the question has a winner the options go, because
-                          there is nothing left to choose (decisions.md §5);
+                          there is nothing left to choose;
                           the receipt below stays, because the reader is still
                           owed the answer to "did mine land?". */}
                       {pending.lockedSentence !== null ? null : (
@@ -686,6 +726,29 @@ export function Composer(props: ComposerProps): React.ReactElement {
                     )}
 
                     {props.promptContext}
+                    {handsFree.status ? (
+                      <div className="mb-2 flex min-w-0 items-center gap-2 text-muted-foreground text-xs" role="status">
+                        <HeadphonesIcon className="size-4 shrink-0" aria-hidden="true" />
+                        {handsFree.status}
+                      </div>
+                    ) : null}
+                    {voice.busy ? (
+                      <div className="mb-2 flex min-w-0 items-center gap-2 text-muted-foreground text-xs">
+                        {voice.phase === "recording" ? (
+                          <>
+                            <span className="size-2 shrink-0 rounded-full bg-destructive" aria-hidden="true" />
+                            <span role="status">Recording</span>
+                            <span className="flex h-4 items-center gap-0.5" aria-hidden="true">
+                              {[0.5, 0.8, 1, 0.7, 0.4].map((height, index) => (
+                                <span key={index} className="w-0.5 rounded-full bg-destructive" style={{ height: `${Math.max(2, voice.level * height * 16)}px` }} />
+                              ))}
+                            </span>
+                            <span role="timer" aria-live="off" className="font-mono tabular-nums">{Math.floor(voice.seconds / 60)}:{String(voice.seconds % 60).padStart(2, "0")}</span>
+                          </>
+                        ) : <span role="status">{voice.phase === "transcribing" ? "Transcribing…" : "Preparing voice input…"}</span>}
+                      </div>
+                    ) : null}
+                    {voice.transcript ? <p className="mb-2 whitespace-pre-wrap break-words text-muted-foreground text-sm">{voice.transcript}</p> : null}
                     <ComposerPromptEditor
                       {...(props.editorRef === undefined ? {} : { editorRef: props.editorRef })}
                       className={props.promptClassName}
@@ -728,22 +791,43 @@ export function Composer(props: ComposerProps): React.ReactElement {
                       data-testid="composer-scope-chips"
                       aria-hidden={controlsHidden || undefined}
                       className={cn(
-                        "-m-1 -ms-3.5 flex min-w-0 flex-1 items-center gap-1 overflow-x-auto p-1 ps-3.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
+                        "-m-1 -ms-3.5 flex min-w-0 flex-1 items-center gap-1 p-1 ps-3.5",
                         controlsHidden && "invisible",
                       )}
                     >
-                      {props.footerLeading}
-                      {footerControls === "none" ? null : (
-                        <ComposerPreferenceControls
-                          preferences={props.preferences}
-                          choices={props.preferenceChoices}
-                          onChange={props.onPreferencesChange}
-                          disabled={disabled}
-                          hidden={controlsHidden}
+                      <div
+                        role="group"
+                        aria-label="Turn preferences"
+                        tabIndex={disabled ? 0 : undefined}
+                        className="flex min-w-0 items-center gap-1 overflow-x-auto focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+                      >
+                        {props.footerLeading}
+                        {footerControls === "none" ? null : (
+                          <ComposerPreferenceControls
+                            preferences={props.preferences}
+                            choices={props.preferenceChoices}
+                            onChange={props.onPreferencesChange}
+                            disabled={disabled}
+                            hidden={controlsHidden}
+                            size={compactFooter ? "xs" : "sm"}
+                            openRequest={pickerRequest}
+                          />
+                        )}
+                      </div>
+                      {props.speech?.supported ? (
+                        <ComposerControl
+                          type="button"
+                          className={cn("shrink-0", controlsHidden && "invisible")}
                           size={compactFooter ? "xs" : "sm"}
-                          openRequest={pickerRequest}
-                        />
-                      )}
+                          aria-pressed={props.speech.enabled}
+                          data-pressed={props.speech.enabled ? "" : undefined}
+                          disabled={handsFree.active}
+                          onClick={props.speech.toggle}
+                        >
+                          <ComposerControlIcon icon={Volume2Icon} size={compactFooter ? "xs" : "sm"} />
+                          Voice
+                        </ComposerControl>
+                      ) : null}
                     </div>
 
                     <div
@@ -822,6 +906,38 @@ export function Composer(props: ComposerProps): React.ReactElement {
                           </Tooltip>
                         </>
                       )}
+                      {handsFree.supported ? (
+                        <Tooltip>
+                          <TooltipTrigger render={
+                            <Button type="button" variant="ghost" size="icon-sm"
+                              disabled={!handsFree.active && (handsFreeUnavailable || voice.busy || props.sending)}
+                              aria-label={handsFree.active ? "End hands-free voice" : "Start hands-free voice"}
+                              aria-pressed={handsFree.active}
+                              onPointerDown={(event) => event.preventDefault()}
+                              onClick={handsFree.toggle} />
+                          }>
+                            {handsFree.active ? <SquareIcon /> : <HeadphonesIcon />}
+                          </TooltipTrigger>
+                          <TooltipPopup>{handsFree.active ? "End hands-free voice" : "Hands-free voice"}</TooltipPopup>
+                        </Tooltip>
+                      ) : null}
+                      <Tooltip>
+                        <TooltipTrigger render={
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon-sm"
+                            disabled={handsFree.active || disabled || props.sending || pending !== null}
+                            aria-label={voice.phase === "recording" ? "Stop recording" : voice.busy ? "Cancel voice input" : "Start voice input"}
+                            aria-pressed={voice.busy}
+                            onPointerDown={(event) => event.preventDefault()}
+                            onClick={voice.toggle}
+                          />
+                        }>
+                          {voice.busy ? <SquareIcon /> : <MicIcon />}
+                        </TooltipTrigger>
+                        <TooltipPopup>{voice.busy ? "Stop voice input" : "Voice input"}</TooltipPopup>
+                      </Tooltip>
                       <ComposerPrimaryActions
                         compact={compactActions}
                         sendLabel={props.sendLabel}
@@ -834,6 +950,8 @@ export function Composer(props: ComposerProps): React.ReactElement {
                         sendDisabledReason={
                           disabled
                             ? (props.blockedReason ?? "Sending is unavailable")
+                            : voice.busy
+                              ? "Finish voice input before sending"
                             : attachments?.uploading === true || props.uploadingFiles === true
                               ? "Waiting for the upload to finish"
                               : (props.blockedReason ?? null)

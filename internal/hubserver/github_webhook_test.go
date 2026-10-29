@@ -477,6 +477,7 @@ func TestGitHubWebhookSourceOrderingConverges(t *testing.T) {
 	t.Parallel()
 
 	older := completeIssueWebhookPayload(t, "Older title", "2026-09-02T11:00:00Z")
+	older = strings.ReplaceAll(strings.ReplaceAll(older, `"feature"`, `"removed-label"`), `"example-user"`, `"removed-user"`)
 	newer := completeIssueWebhookPayload(t, "Newer title", "2026-09-02T12:00:00Z")
 	tests := []struct {
 		name     string
@@ -500,6 +501,25 @@ func TestGitHubWebhookSourceOrderingConverges(t *testing.T) {
 			got := readIssueProjectionSnapshot(t, service)
 			if got.Title != "Newer title" || got.AuthorID != "octocat" || got.SourceUpdatedAt != "2026-09-02T12:00:00.000000000Z" {
 				t.Fatalf("projection = %#v, want newer source", got)
+			}
+			rows, err := service.database.reader.QueryContext(t.Context(), "SELECT kind || ':' || value FROM issue_filter_values ORDER BY kind,value")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer rows.Close()
+			var values []string
+			for rows.Next() {
+				var value string
+				if err := rows.Scan(&value); err != nil {
+					t.Fatal(err)
+				}
+				values = append(values, value)
+			}
+			if err := rows.Err(); err != nil {
+				t.Fatal(err)
+			}
+			if got := strings.Join(values, ","); got != "assignee:example-user,label:detent:todo,label:feature" {
+				t.Fatalf("filter values=%s", got)
 			}
 			if index == 0 {
 				want = got
@@ -661,33 +681,72 @@ func TestGitHubWebhookTargetsChecksWithoutRepositoryRefresh(t *testing.T) {
 func TestGitHubWebhookUpdatesPullRequestWithoutClearingSummaries(t *testing.T) {
 	t.Parallel()
 
-	service := openWebhookTestService(t, filepath.Join(t.TempDir(), "hub.db"), time.Now, true)
-	initial := completePullRequestWebhookPayload(t, "Initial PR", "2026-09-02T11:00:00Z")
-	response := sendSignedWebhookRequest(t, service, "pr-initial", "pull_request", initial)
-	if response.Code != http.StatusAccepted {
-		t.Fatalf("initial status = %d body = %s", response.Code, response.Body.String())
-	}
-	if _, err := service.database.db.ExecContext(t.Context(), `
+	for _, initiallyMerged := range []bool{false, true} {
+		t.Run(fmt.Sprintf("initially merged %t", initiallyMerged), func(t *testing.T) {
+			t.Parallel()
+			withLanding := func(payload string) string {
+				var body map[string]any
+				if err := json.Unmarshal([]byte(payload), &body); err != nil {
+					t.Fatal(err)
+				}
+				pull := body["pull_request"].(map[string]any)
+				pull["state"] = "closed"
+				pull["merged_at"] = "2026-09-02T11:00:00Z"
+				pull["merge_commit_sha"] = strings.Repeat("e", 40)
+				pull["merged_by"] = map[string]string{"login": "example-operator"}
+				raw, err := json.Marshal(body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return string(raw)
+			}
+
+			service := openWebhookTestService(t, filepath.Join(t.TempDir(), "hub.db"), time.Now, true)
+			assertLanding := func() {
+				var commit, actor, mergedAt string
+				if err := service.database.db.QueryRowContext(t.Context(), "SELECT merge_sha, merged_at, merged_by FROM pull_requests").Scan(&commit, &mergedAt, &actor); err != nil {
+					t.Fatal(err)
+				}
+				if commit != strings.Repeat("e", 40) || mergedAt != "2026-09-02T11:00:00.000000000Z" || actor != "example-operator" {
+					t.Fatalf("landing = %q %q %q", commit, mergedAt, actor)
+				}
+			}
+			initial := completePullRequestWebhookPayload(t, "Initial PR", "2026-09-02T11:00:00Z")
+			if initiallyMerged {
+				initial = withLanding(initial)
+			}
+			response := sendSignedWebhookRequest(t, service, "pr-initial", "pull_request", initial)
+			if response.Code != http.StatusAccepted {
+				t.Fatalf("initial status = %d body = %s", response.Code, response.Body.String())
+			}
+			if initiallyMerged {
+				assertLanding()
+			}
+			if _, err := service.database.db.ExecContext(t.Context(), `
 		UPDATE pull_requests
 		SET checks_summary_json = '{"total":2}', reviews_summary_json = '{"approvals":1}'
 	`); err != nil {
-		t.Fatalf("seed pull request summaries: %v", err)
-	}
-	updated := completePullRequestWebhookPayload(t, "Updated PR", "2026-09-02T12:00:00Z")
-	response = sendSignedWebhookRequest(t, service, "pr-updated", "pull_request", updated)
-	if response.Code != http.StatusAccepted {
-		t.Fatalf("updated status = %d body = %s", response.Code, response.Body.String())
-	}
-	var title string
-	var checks string
-	var reviews string
-	if err := service.database.db.QueryRowContext(t.Context(), `
+				t.Fatalf("seed pull request summaries: %v", err)
+			}
+			updated := completePullRequestWebhookPayload(t, "Updated PR", "2026-09-02T12:00:00Z")
+			response = sendSignedWebhookRequest(t, service, "pr-updated", "pull_request", withLanding(updated))
+			if response.Code != http.StatusAccepted {
+				t.Fatalf("updated status = %d body = %s", response.Code, response.Body.String())
+			}
+			var title string
+			var checks string
+			var reviews string
+			if err := service.database.db.QueryRowContext(t.Context(), `
 		SELECT title, checks_summary_json, reviews_summary_json FROM pull_requests
 	`).Scan(&title, &checks, &reviews); err != nil {
-		t.Fatalf("read pull request projection: %v", err)
-	}
-	if title != "Updated PR" || checks != `{"total":2}` || reviews != `{"approvals":1}` {
-		t.Fatalf("pull request = title %q checks %s reviews %s, want updated base with preserved summaries", title, checks, reviews)
+				t.Fatalf("read pull request projection: %v", err)
+			}
+			if title != "Updated PR" || checks != `{"total":2}` || reviews != `{"approvals":1}` {
+				t.Fatalf("pull request = title %q checks %s reviews %s, want updated base with preserved summaries", title, checks, reviews)
+			}
+
+			assertLanding()
+		})
 	}
 }
 

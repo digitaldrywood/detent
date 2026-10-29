@@ -585,7 +585,7 @@ func TestRunDoctorFailsRejectedPinnedRouteModelWithoutChangingModelChoice(t *tes
 		workflowPath := filepath.Join(dir, "WORKFLOW.md")
 		if err := os.WriteFile(workflowPath, []byte(`---
 tracker:
-  kind: memory
+  kind: hub_native
 workspace:
   source_root: `+dir+`
 agents:
@@ -676,7 +676,7 @@ func TestCheckDoctorRouteModelsFailsRejectedBackendCommandPin(t *testing.T) {
 
 	workflow, err := workflowconfig.ParseWorkflow([]byte(`---
 tracker:
-  kind: memory
+  kind: hub_native
 agents:
   backends:
     - id: codex-main
@@ -720,7 +720,7 @@ func TestCheckDoctorRouteModelsProbesRoleBackendCommandPins(t *testing.T) {
 
 	workflow, err := workflowconfig.ParseWorkflow([]byte(`---
 tracker:
-  kind: memory
+  kind: hub_native
 agents:
   backends:
     - id: codex-code
@@ -1077,12 +1077,8 @@ func TestCheckDoctorProjects(t *testing.T) {
 	}
 	disabledBudgetWorkflow := validDoctorWorkflow(sourceRoot)
 	disabledBudgetWorkflow.Budget = parsedDisabledBudget.Config.Budget
-	omittedBudgetWorkflow := validDoctorWorkflow(sourceRoot)
-	omittedBudgetWorkflow.Budget = workflowconfig.Default().Budget
 	disabledProgressWorkflow := validDoctorWorkflow(sourceRoot)
 	disabledProgressWorkflow.Budget.BillingMode = workflowconfig.BillingModeSubscription
-	disabledProgressWorkflow.Agent.NoProgressTokenLimit = 0
-	disabledProgressWorkflow.Agent.NoProgressSpendLimitUSD = 0
 
 	tests := []struct {
 		name       string
@@ -1122,17 +1118,8 @@ func TestCheckDoctorProjects(t *testing.T) {
 				{ID: "alpha", Workflow: "WORKFLOW.md"},
 			},
 			workflow:   workflowconfig.Workflow{Config: disabledBudgetWorkflow},
-			wantStatus: []doctorStatus{doctorOK, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
-			wantDetail: []string{"is valid", "WORKFLOW.md", "estimated instruction load", "incomplete evidence", "runtime store unavailable", "runtime store unavailable", "not a GitHub tracker", "advisory:", "subscription billing is the default", "no user-level Codex instruction files", "effective cross-session progress brake", "recovery.terminal_attempt_retry_limit=3", "budget.enabled=false disables configured caps", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "enforced by internal/invariants", "no lane evidence to measure", "no Detent-owned cache roots", "is a git worktree", "contain no detent-agent guidance", "loaded=0; dropped=0"},
-		},
-		{
-			name: "inherited spend breaker warns about billing ambiguity",
-			projects: []globalconfig.Project{
-				{ID: "alpha", Workflow: "WORKFLOW.md"},
-			},
-			workflow:   workflowconfig.Workflow{Config: omittedBudgetWorkflow},
-			wantStatus: []doctorStatus{doctorOK, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
-			wantDetail: []string{"is valid", "WORKFLOW.md", "estimated instruction load", "incomplete evidence", "runtime store unavailable", "runtime store unavailable", "not a GitHub tracker", "advisory:", "subscription billing is the default", "no user-level Codex instruction files", "effective cross-session progress brake", "recovery.terminal_attempt_retry_limit=3", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "enforced by internal/invariants", "no lane evidence to measure", "no Detent-owned cache roots", "is a git worktree", "contain no detent-agent guidance", "loaded=0; dropped=0"},
+			wantStatus: []doctorStatus{doctorOK, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
+			wantDetail: []string{"is valid", "WORKFLOW.md", "estimated instruction load", "incomplete evidence", "runtime store unavailable", "runtime store unavailable", "not a GitHub tracker", "advisory:", "no user-level Codex instruction files", "budget.enabled=false disables configured caps", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "enforced by internal/invariants", "no lane evidence to measure", "no Detent-owned cache roots", "is a git worktree", "contains no detent-agent guidance", "loaded=0; dropped=0"},
 		},
 		{
 			name: "source repo missing",
@@ -1141,17 +1128,8 @@ func TestCheckDoctorProjects(t *testing.T) {
 			},
 			workflow:   workflowconfig.Workflow{Config: validDoctorWorkflow(sourceRoot)},
 			gitErr:     errors.New("not a git worktree"),
-			wantStatus: []doctorStatus{doctorOK, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorFail, doctorOK, doctorWarn},
-			wantDetail: []string{"is valid", "WORKFLOW.md", "estimated instruction load", "incomplete evidence", "runtime store unavailable", "runtime store unavailable", "not a GitHub tracker", "advisory:", "configuration footgun:", "no user-level Codex instruction files", "effective cross-session progress brake", "recovery.terminal_attempt_retry_limit=3", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "enforced by internal/invariants", "no lane evidence to measure", "no Detent-owned cache roots", "not a git worktree", "skipped because source repository is unavailable locally", "skipped because source repository is unavailable locally"},
-		},
-		{
-			name: "all progress brakes disabled",
-			projects: []globalconfig.Project{
-				{ID: "alpha", Workflow: "WORKFLOW.md"},
-			},
-			workflow:   workflowconfig.Workflow{Config: disabledProgressWorkflow},
-			wantStatus: []doctorStatus{doctorOK, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorOK, doctorOK, doctorWarn, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
-			wantDetail: []string{"is valid", "WORKFLOW.md", "estimated instruction load", "incomplete evidence", "runtime store unavailable", "runtime store unavailable", "not a GitHub tracker", "advisory:", "billing_mode=subscription", "no user-level Codex instruction files", "no effective cross-session progress brake", "recovery.terminal_attempt_retry_limit=3", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "enforced by internal/invariants", "no lane evidence to measure", "no Detent-owned cache roots", "is a git worktree", "contain no detent-agent guidance", "loaded=0; dropped=0"},
+			wantStatus: []doctorStatus{doctorOK, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorFail, doctorOK, doctorWarn},
+			wantDetail: []string{"is valid", "WORKFLOW.md", "estimated instruction load", "incomplete evidence", "runtime store unavailable", "runtime store unavailable", "not a GitHub tracker", "advisory:", "no user-level Codex instruction files", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "enforced by internal/invariants", "no lane evidence to measure", "no Detent-owned cache roots", "not a git worktree", "skipped because source repository is unavailable locally", "skipped because source repository is unavailable locally"},
 		},
 		{
 			name: "workflow and source repo valid",
@@ -1159,8 +1137,8 @@ func TestCheckDoctorProjects(t *testing.T) {
 				{ID: "alpha", Workflow: "WORKFLOW.md"},
 			},
 			workflow:   workflowconfig.Workflow{Config: validDoctorWorkflow(sourceRoot)},
-			wantStatus: []doctorStatus{doctorOK, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
-			wantDetail: []string{"is valid", "WORKFLOW.md", "estimated instruction load", "incomplete evidence", "runtime store unavailable", "runtime store unavailable", "not a GitHub tracker", "advisory:", "configuration footgun:", "no user-level Codex instruction files", "effective cross-session progress brake", "recovery.terminal_attempt_retry_limit=3", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "enforced by internal/invariants", "no lane evidence to measure", "no Detent-owned cache roots", "is a git worktree", "contain no detent-agent guidance", "loaded=0; dropped=0"},
+			wantStatus: []doctorStatus{doctorOK, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
+			wantDetail: []string{"is valid", "WORKFLOW.md", "estimated instruction load", "incomplete evidence", "runtime store unavailable", "runtime store unavailable", "not a GitHub tracker", "advisory:", "no user-level Codex instruction files", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "enforced by internal/invariants", "no lane evidence to measure", "no Detent-owned cache roots", "is a git worktree", "contains no detent-agent guidance", "loaded=0; dropped=0"},
 		},
 	}
 
@@ -1191,12 +1169,13 @@ func TestCheckDoctorProjects(t *testing.T) {
 					return tt.gitErr
 				},
 			}, RuntimeSecret{}, false)
-			for i, check := range got {
-				if check.Name == "Project alpha Human Review policy" {
-					got = append(got[:i], got[i+1:]...)
-					break
+			checks := got[:0]
+			for _, check := range got {
+				if check.Name != "Project alpha Human Review policy" && check.Name != "Project alpha native workflow instructions" {
+					checks = append(checks, check)
 				}
 			}
+			got = checks
 			if len(got) != len(tt.wantStatus) {
 				t.Fatalf("len(checks) = %d, want %d", len(got), len(tt.wantStatus))
 			}
@@ -1289,12 +1268,6 @@ func TestCheckDoctorBillingMode(t *testing.T) {
 			wantDetail: "subscription billing is the default",
 		},
 		{
-			name:       "undeclared spend breaker warns that USD is inert",
-			spendLimit: 3,
-			wantOK:     true,
-			wantDetail: "subscription billing is the default",
-		},
-		{
 			name: "undeclared mode without USD controls does not warn",
 		},
 		{
@@ -1311,13 +1284,6 @@ func TestCheckDoctorBillingMode(t *testing.T) {
 			wantDetail: "budget.enabled=true",
 		},
 		{
-			name:       "subscription spend breaker warns that enforcement is advisory",
-			budget:     workflowconfig.Budget{BillingMode: workflowconfig.BillingModeSubscription},
-			spendLimit: 3,
-			wantOK:     true,
-			wantDetail: "agent.no_progress_spend_limit_usd=3",
-		},
-		{
 			name:   "subscription without USD controls does not warn",
 			budget: workflowconfig.Budget{BillingMode: workflowconfig.BillingModeSubscription},
 		},
@@ -1329,7 +1295,6 @@ func TestCheckDoctorBillingMode(t *testing.T) {
 
 			got, ok := checkDoctorBillingMode("detent", workflowconfig.Config{
 				Budget: tt.budget,
-				Agent:  workflowconfig.Agent{NoProgressSpendLimitUSD: tt.spendLimit},
 			}, true)
 			if ok != tt.wantOK {
 				t.Fatalf("checkDoctorBillingMode() ok = %t, want %t: %#v", ok, tt.wantOK, got)
@@ -1338,7 +1303,7 @@ func TestCheckDoctorBillingMode(t *testing.T) {
 				t.Fatalf("checkDoctorBillingMode() = %#v, want warning containing %q", got, tt.wantDetail)
 			}
 			if tt.name == "declared metered mode warns for subscription auth" {
-				for _, want := range []string{"budget.per_day_max_usd", "budget.per_issue_max_usd", "agent.no_progress_spend_limit_usd", "budget.enabled=false does not disarm", "billing_mode: subscription"} {
+				for _, want := range []string{"budget.per_day_max_usd", "budget.per_issue_max_usd", "billing_mode: subscription"} {
 					if !strings.Contains(got.Detail+" "+got.Hint, want) {
 						t.Fatalf("checkDoctorBillingMode() = %#v, want %q", got, want)
 					}
@@ -1399,7 +1364,7 @@ func TestCheckDoctorMeteredBillingAuth(t *testing.T) {
 			name:       "flat subscription warns with every armed brake",
 			account:    codex.Account{Type: "chatgpt", PlanType: "plus"},
 			wantStatus: doctorWarn,
-			wantDetail: []string{"subscription auth", "backend codex-wrapper", `command "codex-wrapper app-server"`, "budget.per_day_max_usd", "budget.per_issue_max_usd", "agent.no_progress_spend_limit_usd", "budget.enabled=false does not disarm", "billing_mode: subscription"},
+			wantDetail: []string{"subscription auth", "backend codex-wrapper", `command "codex-wrapper app-server"`, "budget.per_day_max_usd", "budget.per_issue_max_usd", "billing_mode: subscription"},
 		},
 		{
 			name:       "API key preserves metered enforcement",
@@ -1485,65 +1450,6 @@ func TestCheckDoctorMeteredBillingAuthSkipsUnroutedCodexBackend(t *testing.T) {
 	}
 }
 
-func TestCheckDoctorProgressBrake(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name       string
-		budget     workflowconfig.Budget
-		tokenLimit int64
-		spendLimit float64
-		wantStatus doctorStatus
-		wantDetail string
-	}{
-		{
-			name:       "subscription token brake remains effective",
-			budget:     workflowconfig.Budget{BillingMode: workflowconfig.BillingModeSubscription},
-			tokenLimit: 25_000_000,
-			spendLimit: 3,
-			wantStatus: doctorOK,
-			wantDetail: "tokens=25000000; USD=3 is inert",
-		},
-		{
-			name:       "metered reports both effective brakes",
-			budget:     workflowconfig.Budget{BillingMode: workflowconfig.BillingModeMetered},
-			tokenLimit: 25_000_000,
-			spendLimit: 3,
-			wantStatus: doctorOK,
-			wantDetail: "tokens=25000000, USD=3",
-		},
-		{
-			name:       "metered USD brake is effective by itself",
-			budget:     workflowconfig.Budget{BillingMode: workflowconfig.BillingModeMetered},
-			spendLimit: 3,
-			wantStatus: doctorOK,
-			wantDetail: "USD=3",
-		},
-		{
-			name:       "all brakes disabled warns",
-			budget:     workflowconfig.Budget{BillingMode: workflowconfig.BillingModeSubscription},
-			wantStatus: doctorWarn,
-			wantDetail: "no effective cross-session progress brake",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			got := checkDoctorProgressBrake("detent", workflowconfig.Config{
-				Budget: tt.budget,
-				Agent: workflowconfig.Agent{
-					NoProgressTokenLimit:    tt.tokenLimit,
-					NoProgressSpendLimitUSD: tt.spendLimit,
-				},
-			})
-			if got.Status != tt.wantStatus || !strings.Contains(got.Detail, tt.wantDetail) {
-				t.Fatalf("checkDoctorProgressBrake() = %#v, want %s containing %q", got, tt.wantStatus, tt.wantDetail)
-			}
-		})
-	}
-}
-
 func TestCheckDoctorIssueEffortGuidance(t *testing.T) {
 	t.Parallel()
 
@@ -1557,35 +1463,29 @@ func TestCheckDoctorIssueEffortGuidance(t *testing.T) {
 		wantHint    string
 	}{
 		{
-			name:       "agents guidance passes",
-			files:      map[string]string{"AGENTS.md": "Use a detent-agent block for every issue."},
+			name:       "workflow guidance passes case insensitively",
+			files:      map[string]string{"WORKFLOW.md": "Choose effort with a DETENT-AGENT block."},
 			wantStatus: doctorOK,
-			wantDetail: "AGENTS.md mentions detent-agent effort guidance",
+			wantDetail: "WORKFLOW.md mentions detent-agent effort guidance",
 		},
 		{
-			name:       "claude guidance passes case insensitively",
-			files:      map[string]string{"AGENTS.md": "No overrides documented.", "CLAUDE.md": "Choose effort with a DETENT-AGENT block."},
-			wantStatus: doctorOK,
-			wantDetail: "CLAUDE.md mentions detent-agent effort guidance",
-		},
-		{
-			name:       "docs without guidance warn",
-			files:      map[string]string{"AGENTS.md": "General agent instructions.", "CLAUDE.md": "General Claude instructions."},
+			name:       "agent docs are not workflow guidance",
+			files:      map[string]string{"WORKFLOW.md": "General workflow.", "AGENTS.md": "Use a detent-agent block.", "CLAUDE.md": "Use a detent-agent block."},
 			wantStatus: doctorWarn,
-			wantDetail: "contain no detent-agent guidance",
+			wantDetail: "contains no detent-agent guidance",
 			wantHint:   "docs/admission.md#issue-effort-selection",
 		},
 		{
 			name:       "missing docs warn",
 			wantStatus: doctorWarn,
-			wantDetail: "contain no detent-agent guidance",
+			wantDetail: "contains no detent-agent guidance",
 			wantHint:   "effort-selection rubric",
 		},
 		{
 			name:        "unreadable agent doc skips",
-			directories: []string{"AGENTS.md"},
+			directories: []string{"WORKFLOW.md"},
 			wantStatus:  doctorOK,
-			wantDetail:  "skipped because AGENTS.md could not be read",
+			wantDetail:  "skipped because WORKFLOW.md could not be read",
 		},
 		{
 			name:        "missing source repo skips",
@@ -1708,11 +1608,10 @@ func TestCheckDoctorProjectSkills(t *testing.T) {
 			name: "disabled reports configuration without reading files",
 			configure: func(_ *testing.T, _ string, cfg *workflowconfig.Skills) {
 				cfg.Enabled = false
-				cfg.Creation.Enabled = false
 			},
 			available:  true,
 			wantStatus: doctorOK,
-			wantDetail: []string{"enabled=false", "creation_enabled=false", "max_drafts_per_run=1", "loaded=0", "dropped=0"},
+			wantDetail: []string{"enabled=false", "loaded=0", "dropped=0"},
 		},
 		{
 			name: "healthy directory reports loaded count",
@@ -2900,6 +2799,11 @@ func TestCheckDoctorBlockedRecovery(t *testing.T) {
 		MergeableState: "dirty",
 	}
 	humanOnly.BlockerReason = "Waiting on explicit human approval."
+	humanOnly.WorkpadSignal = &workpad.Signal{
+		Source:      workpad.SourceStructured,
+		Status:      workpad.StatusBlocked,
+		HumanAction: "Approve the work",
+	}
 	manualPRNumber := 429
 	manual := doctorDependencyIssue("issue-manual", nil)
 	manual.PRNumber = &manualPRNumber
@@ -2934,12 +2838,13 @@ func TestCheckDoctorBlockedRecovery(t *testing.T) {
 			t.Fatalf("check missing %q:\nDetail: %s\nHint: %s", want, got.Detail, got.Hint)
 		}
 	}
-	for _, excluded := range []string{"issue-human"} {
-		if strings.Contains(got.Detail, excluded) {
-			t.Fatalf("Detail = %q, want %q omitted from condition diagnostics", got.Detail, excluded)
-		}
+	if len(got.BlockedRecoveryCandidates) != 1 || got.BlockedRecoveryCandidates[0].IssueID != recoverable.ID {
+		t.Fatalf("BlockedRecoveryCandidates = %#v, want only %q", got.BlockedRecoveryCandidates, recoverable.ID)
 	}
-	if !strings.Contains(got.Detail, "issue-manual") || len(got.BlockedWithoutRecovery) != 1 {
+	if len(got.PermanentlyHeldRecoveries) != 1 || got.PermanentlyHeldRecoveries[0].IssueID != humanOnly.ID {
+		t.Fatalf("human hold diagnostics = %#v", got.PermanentlyHeldRecoveries)
+	}
+	if !strings.Contains(got.Detail, manual.ID) || len(got.BlockedWithoutRecovery) != 1 || got.BlockedWithoutRecovery[0].IssueID != manual.ID || got.BlockedWithoutRecovery[0].Reason != "no_recovery_predicate" {
 		t.Fatalf("relation-less diagnostics = %#v; detail = %q", got.BlockedWithoutRecovery, got.Detail)
 	}
 	if !stringSliceContains(fake.verifyStates, "Blocked") || !stringSliceContains(fake.verifyStates, "Rework") {
@@ -3349,7 +3254,6 @@ func TestDoctorWorkflowDetailReportsPinnedModelAndSessionGuard(t *testing.T) {
 	cfg.Agent.MaxSessionContextMultiplier = 4
 	cfg.Agent.MaxTurnDurationMS = 900000
 	cfg.Agent.MaxSessionDurationMS = 3600000
-	cfg.Agent.NoProgressTimeoutMS = 1800000
 	cfg.Agent.MergeWorkerMaxDurationMS = 7200000
 
 	got := doctorWorkflowDetail("WORKFLOW.md", globalconfig.Project{}, cfg)
@@ -3449,16 +3353,38 @@ func TestCheckDoctorLocalWorkflowOverlay(t *testing.T) {
 	}
 }
 
-func TestDefaultGitTracked(t *testing.T) {
+func TestDefaultGitWorkspaceChecks(t *testing.T) {
 	if testing.Short() {
 		t.Skip("real Git integration")
 	}
 
 	t.Parallel()
 
-	repo := t.TempDir()
+	repo := filepath.Join(t.TempDir(), "example project; echo injected")
+	if err := os.Mkdir(repo, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	if err := runDoctorCommandInDir(context.Background(), ".", nil, "git", "-C", repo, "init"); err != nil {
 		t.Fatalf("git init error = %v", err)
+	}
+	bare := t.TempDir()
+	if err := runDoctorCommandInDir(t.Context(), ".", nil, "git", "init", "--bare", bare); err != nil {
+		t.Fatalf("git init --bare error = %v", err)
+	}
+	for _, tt := range []struct {
+		name string
+		path string
+		want bool
+	}{
+		{name: "literal checkout path", path: repo, want: true},
+		{name: "bare repository", path: bare},
+		{name: "missing directory", path: filepath.Join(repo, "missing")},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := defaultGitWorkTree(t.Context(), tt.path); (err == nil) != tt.want {
+				t.Fatalf("defaultGitWorkTree() error = %v, want success %t", err, tt.want)
+			}
+		})
 	}
 	path := filepath.Join(repo, "WORKFLOW.local.md")
 	if err := os.WriteFile(path, []byte("---\n---\nlocal\n"), 0o600); err != nil {
@@ -3578,95 +3504,6 @@ func TestCheckDoctorProjectsExpandsSourceRootBeforeGit(t *testing.T) {
 	}
 }
 
-func TestRunDoctorUsesReadOnlyWriteChecksByDefaultForExistingConfiguredProject(t *testing.T) {
-	t.Parallel()
-
-	// This tests readiness configuration, not elapsed time. Keep suite scheduling
-	// and filesystem work from consuming the doctor inactivity timeout.
-	synctest.Test(t, func(t *testing.T) {
-		workflow := validDoctorWorkflow("/repo")
-		workflow.Tracker.Kind = workflowconfig.TrackerGitHub
-		workflow.Tracker.GitHubStatusSource = workflowconfig.GitHubStatusSourceLabel
-		workflow.Tracker.Repository = "digitaldrywood/detent"
-		workflow.Tracker.StatusLabelPrefix = "detent:"
-		workflow.Tracker.ActiveStates = []string{"Todo", "In Progress"}
-		workflow.Tracker.ObservedStates = []string{"Human Review", "Blocked"}
-		workflow.Tracker.TerminalStates = []string{"Done"}
-		workflow.Tracker.WriteProbeIssue = "digitaldrywood/detent#1"
-		workflow.Server.Kanban.Mode = workflowconfig.KanbanModeIntegration
-
-		configPath := filepath.Join(t.TempDir(), "global.yaml")
-		global := globalconfig.Config{
-			Path:       configPath,
-			APIVersion: globalconfig.APIVersion,
-			Kind:       globalconfig.Kind,
-			Global: globalconfig.Settings{
-				MaxConcurrentAgents: 1,
-				Scheduling:          globalconfig.SchedulingWeighted,
-			},
-			Projects: []globalconfig.Project{{
-				ID:       "existing",
-				Workflow: "WORKFLOW.md",
-				Workdir:  "/repo",
-				Weight:   1,
-			}},
-		}
-		deps := successfulDoctorDeps()
-		deps.loadWorkflow = func(string) (workflowconfig.Workflow, error) {
-			return workflowconfig.Workflow{Config: workflow}, nil
-		}
-		deps.gitRemoteURL = func(context.Context, string) (string, error) {
-			return "https://github.com/digitaldrywood/detent.git", nil
-		}
-		// Branch-policy checks precede readiness; keep them off the real GitHub API.
-		deps.githubBranchPolicy = func(context.Context, workflowconfig.Config, string) (ghconnector.BranchMergePolicy, error) {
-			return ghconnector.BranchMergePolicy{}, nil
-		}
-
-		deps.autoPromoteConnector = func(workflowconfig.Config) (doctorAutoPromoteConnector, error) {
-			return &fakeDoctorAutoPromoteConnector{}, nil
-		}
-		// Buffer the single capture so a timed-out doctor run cannot leave the stub blocked.
-		readinessCh := make(chan ghconnector.ReadinessConfig, 1)
-		deps.githubReadiness = func(_ context.Context, _ ghconnector.Config, readiness ghconnector.ReadinessConfig) ([]ghconnector.ReadinessCheck, error) {
-			readinessCh <- readiness
-			return []ghconnector.ReadinessCheck{{
-				Name:   "GitHub issue write permission digitaldrywood/detent",
-				Status: ghconnector.ReadinessOK,
-				Detail: "repository permission push permits issue writes",
-			}}, nil
-		}
-
-		report := runDoctor(context.Background(), doctorConfig{
-			ConfigPath:   configPath,
-			Output:       io.Discard,
-			CheckTimeout: time.Second,
-			Flags: runtimeFlags{
-				Port: runtimeIntFlag{Value: 0, Set: true},
-			},
-		}, successfulDoctorOptionsWithConfig(configPath, global), deps)
-
-		var gotReadiness ghconnector.ReadinessConfig
-		select {
-		case gotReadiness = <-readinessCh:
-		default:
-			t.Fatal("GitHub readiness check did not capture its configuration")
-		}
-		if !doctorGitHubReadinessRequiresWrites(gotReadiness) {
-			t.Fatalf("readiness write requirements = %#v, want default doctor to retain read-only write checks", gotReadiness)
-		}
-		if gotReadiness.AllowWriteProbes {
-			t.Fatalf("AllowWriteProbes = true, want default doctor to avoid mutation probes")
-		}
-		assertDoctorCheck(t, report, "Project existing GitHub issue write permission digitaldrywood/detent", doctorOK, "repository permission push")
-		for _, check := range report.Checks {
-			if check.Name == "Project existing GitHub write probes" {
-				t.Fatalf("checks include legacy write-probe warning: %#v", check)
-			}
-		}
-	})
-}
-
 func TestRunDoctorWithProjectScopeSkipsUnrelatedProjectFailures(t *testing.T) {
 	t.Parallel()
 
@@ -3718,109 +3555,6 @@ func TestRunDoctorWithProjectScopeSkipsUnrelatedProjectFailures(t *testing.T) {
 	output := newDoctorOutputReport(report)
 	if output.Scope.SelectedProject != "alpha" || !slices.Equal(output.Scope.SkippedProjects, []string{"beta"}) {
 		t.Fatalf("JSON scope = %#v, want selected alpha and skipped beta", output.Scope)
-	}
-}
-
-func TestCheckDoctorConfigWithProjectScopeValidatesOnlySelectedPaths(t *testing.T) {
-	t.Parallel()
-
-	root := t.TempDir()
-	alphaWorkdir := filepath.Join(root, "alpha")
-	if err := os.MkdirAll(alphaWorkdir, 0o755); err != nil {
-		t.Fatalf("MkdirAll() error = %v", err)
-	}
-	alphaWorkflow := filepath.Join(alphaWorkdir, "WORKFLOW.md")
-	if err := os.WriteFile(alphaWorkflow, []byte("Alpha workflow.\n"), 0o600); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
-	}
-	configPath := filepath.Join(root, "global.yaml")
-	raw := strings.Join([]string{
-		"apiVersion: detent/v1",
-		"kind: GlobalConfig",
-		"global:",
-		"  max_concurrent_agents: 1",
-		"  scheduling: weighted",
-		"projects:",
-		"  - id: alpha",
-		"    workflow: " + alphaWorkflow,
-		"    workdir: " + alphaWorkdir,
-		"    weight: 1",
-		"    priority: 0",
-		"  - id: beta",
-		"    workflow: " + filepath.Join(root, "missing-beta", "WORKFLOW.md"),
-		"    workdir: " + filepath.Join(root, "missing-beta"),
-		"    weight: 1",
-		"    priority: 0",
-		"",
-	}, "\n")
-	if err := os.WriteFile(configPath, []byte(raw), 0o600); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
-	}
-
-	opts := defaultOptions()
-	opts.resolvePath = func(string) (globalconfig.PathResolution, error) {
-		return globalconfig.PathResolution{Path: configPath, Rule: globalconfig.PathRuleFlag}, nil
-	}
-	tests := []struct {
-		name        string
-		projectID   string
-		wantStatus  doctorStatus
-		wantSkipped []string
-	}{
-		{
-			name:        "skip unrelated missing paths",
-			projectID:   "alpha",
-			wantStatus:  doctorOK,
-			wantSkipped: []string{"beta"},
-		},
-		{
-			name:        "reject selected missing paths",
-			projectID:   "beta",
-			wantStatus:  doctorFail,
-			wantSkipped: []string{"alpha"},
-		},
-		{
-			name:       "reject unscoped missing paths",
-			wantStatus: doctorFail,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			resolution, global, scope, scopeCheck, check := checkDoctorConfig(t.Context(), configPath, tt.projectID, opts)
-			if resolution.Path != configPath || resolution.Rule != globalconfig.PathRuleFlag {
-				t.Fatalf("resolution = %#v, want explicit config path %q", resolution, configPath)
-			}
-			if check.Status != tt.wantStatus {
-				t.Fatalf("config check = %#v, want status %s", check, tt.wantStatus)
-			}
-			if scope.SelectedProject != tt.projectID || !slices.Equal(scope.SkippedProjects, tt.wantSkipped) {
-				t.Fatalf("scope = %#v, want selected %q and skipped %v", scope, tt.projectID, tt.wantSkipped)
-			}
-			if scopeCheck != nil {
-				t.Fatalf("scope check = %#v, want nil", scopeCheck)
-			}
-			if tt.wantStatus == doctorFail {
-				if global != nil {
-					t.Fatalf("global = %#v, want nil for invalid paths", global)
-				}
-				if !strings.Contains(check.Detail, "workdir: path does not exist") {
-					t.Errorf("Detail = %q, want missing workdir error", check.Detail)
-				}
-				if strings.Contains(check.Detail, "workflow: path does not exist") {
-					t.Errorf("Detail = %q, want missing workflow preserved for diagnosis", check.Detail)
-				}
-				return
-			}
-			if global == nil || len(global.Projects) != 1 {
-				t.Fatalf("global = %#v, want only the selected project", global)
-			}
-			project := global.Projects[0]
-			if project.ID != "alpha" || project.Workflow != alphaWorkflow || project.Workdir != alphaWorkdir {
-				t.Fatalf("project = %#v, want alpha with its validated workflow and workdir", project)
-			}
-		})
 	}
 }
 
@@ -4027,7 +3761,7 @@ func TestDoctorCommandProjectFlagScopesJSONReport(t *testing.T) {
 	}
 }
 
-func TestDoctorCommandAllowWriteProbesFlagEnablesWriteReadiness(t *testing.T) {
+func TestDoctorCommandAllowWriteProbesKeepsNativeTrackerReadOnly(t *testing.T) {
 	if testing.Short() {
 		t.Skip("live service, profiling, or filesystem watcher integration")
 	}
@@ -4035,12 +3769,11 @@ func TestDoctorCommandAllowWriteProbesFlagEnablesWriteReadiness(t *testing.T) {
 	t.Parallel()
 
 	workflow := validDoctorWorkflow("/repo")
-	workflow.Tracker.Kind = workflowconfig.TrackerGitHub
 	workflow.Tracker.GitHubStatusSource = workflowconfig.GitHubStatusSourceLabel
-	workflow.Tracker.Repository = "digitaldrywood/detent"
+	workflow.Tracker.Repository = "example-org/example-project"
 	workflow.Tracker.StatusLabelPrefix = "detent:"
 	workflow.Tracker.ActiveStates = []string{"Todo", "In Progress"}
-	workflow.Tracker.WriteProbeIssue = "digitaldrywood/detent#1"
+	workflow.Tracker.WriteProbeIssue = "example-org/example-project#1"
 	workflow.Server.Kanban.Mode = workflowconfig.KanbanModeIntegration
 
 	configPath := filepath.Join(t.TempDir(), "global.yaml")
@@ -4064,20 +3797,14 @@ func TestDoctorCommandAllowWriteProbesFlagEnablesWriteReadiness(t *testing.T) {
 		return workflowconfig.Workflow{Config: workflow}, nil
 	}
 	deps.gitRemoteURL = func(context.Context, string) (string, error) {
-		return "https://github.com/digitaldrywood/detent.git", nil
+		return "https://github.com/example-org/example-project.git", nil
 	}
 	deps.autoPromoteConnector = func(workflowconfig.Config) (doctorAutoPromoteConnector, error) {
 		return &fakeDoctorAutoPromoteConnector{}, nil
 	}
-	// Buffer the single capture so a timed-out doctor run cannot leave the stub blocked.
-	readinessCh := make(chan ghconnector.ReadinessConfig, 1)
-	deps.githubReadiness = func(_ context.Context, _ ghconnector.Config, readiness ghconnector.ReadinessConfig) ([]ghconnector.ReadinessCheck, error) {
-		readinessCh <- readiness
-		return []ghconnector.ReadinessCheck{{
-			Name:   "GitHub status label update",
-			Status: ghconnector.ReadinessOK,
-			Detail: "write probe requested",
-		}}, nil
+	deps.githubReadiness = func(context.Context, ghconnector.Config, ghconnector.ReadinessConfig) ([]ghconnector.ReadinessCheck, error) {
+		t.Error("native tracker must not run retired GitHub tracker write probes")
+		return nil, nil
 	}
 
 	configFlag := configPath
@@ -4094,17 +3821,8 @@ func TestDoctorCommandAllowWriteProbesFlagEnablesWriteReadiness(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute() error = %v\n%s", err, stdout.String())
 	}
-	var gotReadiness ghconnector.ReadinessConfig
-	select {
-	case gotReadiness = <-readinessCh:
-	default:
-		t.Fatal("GitHub readiness check did not capture its configuration")
-	}
-	if !gotReadiness.RequireLabelStatusWrite || !gotReadiness.RequireIssueComments {
-		t.Fatalf("readiness write requirements = %#v, want write probes enabled by flag", gotReadiness)
-	}
-	if !gotReadiness.AllowWriteProbes {
-		t.Fatalf("AllowWriteProbes = false, want write probes enabled by flag")
+	if !strings.Contains(stdout.String(), "Project existing workflow") {
+		t.Fatalf("native project workflow check missing: %s", stdout.String())
 	}
 }
 
@@ -4171,158 +3889,29 @@ func TestDoctorChecksSuppressConnectorLogsFromProgress(t *testing.T) {
 	}
 }
 
-func TestCheckDoctorProjectBuildsGitHubReadinessInventory(t *testing.T) {
+func TestCheckDoctorProjectSkipsGitHubTrackerReadinessForNative(t *testing.T) {
 	if testing.Short() {
 		t.Skip("live service, profiling, or filesystem watcher integration")
 	}
 
 	t.Parallel()
-
 	workflow := validDoctorWorkflow("/repo")
-	workflow.Tracker.Kind = workflowconfig.TrackerGitHub
-	workflow.Tracker.ProjectSlug = "PVT_1"
-	workflow.Tracker.ActiveStates = []string{"Todo", "In Progress", "Merging"}
-	workflow.Tracker.ObservedStates = []string{"Backlog", "Human Review", "Blocked"}
-	workflow.Tracker.TerminalStates = []string{"Done", "Cancelled"}
-	workflow.Tracker.WriteProbeIssue = "digitaldrywood/detent#1"
-	workflow.Tracker.Claims = workflowconfig.Claims{
-		Enabled:          true,
-		LeaseField:       "Detent Lease",
-		TTLSeconds:       300,
-		HeartbeatSeconds: 60,
+	workflow.Deliverable.GitHubPullRequest = true
+	deps := successfulDoctorDeps()
+	deps.loadWorkflow = func(string) (workflowconfig.Workflow, error) {
+		return workflowconfig.Workflow{Config: workflow}, nil
 	}
-	workflow.Identity = workflowconfig.Identity{
-		Name:          "release-captain",
-		OwnershipMode: workflowconfig.IdentityOwnershipField,
-		OwnerField:    "Owner",
+	deps.githubReadiness = func(context.Context, ghconnector.Config, ghconnector.ReadinessConfig) ([]ghconnector.ReadinessCheck, error) {
+		t.Error("native tracker must not request retired GitHub issue or project permissions")
+		return nil, nil
 	}
-	var gotConnector ghconnector.Config
-	var gotReadiness ghconnector.ReadinessConfig
-
-	checks := checkDoctorProject(context.Background(), globalconfig.Project{
-		ID:       "alpha",
-		Workflow: "WORKFLOW.md",
-	}, doctorDeps{
-		loadWorkflow: func(string) (workflowconfig.Workflow, error) {
-			return workflowconfig.Workflow{Config: workflow}, nil
-		},
-		gitWorkTree: func(context.Context, string) error {
-			return nil
-		},
-		gitWorktrees: func(context.Context, string) ([]doctorGitWorktree, error) {
-			return nil, nil
-		},
-		gitRemoteURL: func(context.Context, string) (string, error) {
-			return "git@github.com:digitaldrywood/detent.git", nil
-		},
-		githubReadiness: func(_ context.Context, connectorCfg ghconnector.Config, readinessCfg ghconnector.ReadinessConfig) ([]ghconnector.ReadinessCheck, error) {
-			gotConnector = connectorCfg
-			gotReadiness = readinessCfg
-			return []ghconnector.ReadinessCheck{{Name: "GitHub auth path", Status: ghconnector.ReadinessOK, Detail: readinessCfg.AuthPath}}, nil
-		},
-	}, RuntimeSecret{Value: "token", Source: "github_token", ResolvedVia: "gh"}, true)
-
-	if gotConnector.APIKey != "token" {
-		t.Fatalf("connector APIKey = %q, want injected runtime token", gotConnector.APIKey)
-	}
-	if gotConnector.ProjectSlug != "PVT_1" {
-		t.Fatalf("connector ProjectSlug = %q, want PVT_1", gotConnector.ProjectSlug)
-	}
-	if gotReadiness.AuthPath != "gh-resolved token" {
-		t.Fatalf("AuthPath = %q, want gh-resolved token", gotReadiness.AuthPath)
-	}
-	if gotReadiness.WriteProbeIssue != "digitaldrywood/detent#1" {
-		t.Fatalf("WriteProbeIssue = %q, want configured probe", gotReadiness.WriteProbeIssue)
-	}
-	if len(gotReadiness.Repositories) != 1 || gotReadiness.Repositories[0] != "digitaldrywood/detent" {
-		t.Fatalf("Repositories = %#v, want digitaldrywood/detent", gotReadiness.Repositories)
-	}
-	if !gotReadiness.RequireProjectStatusWrite || !gotReadiness.RequireIssueComments || gotReadiness.RequireAssigneeWrite || !gotReadiness.RequireIssueClose {
-		t.Fatalf("write/read requirements = %#v", gotReadiness)
-	}
-	if !gotReadiness.RequireIssueCommentsRead || !gotReadiness.RequireDependencyMetadataRead || !gotReadiness.RequireIssueChildrenRead || !gotReadiness.RequireIssueParentsRead {
-		t.Fatalf("issue read requirements = %#v", gotReadiness)
-	}
-	if !gotReadiness.RequirePullRequestRead || !gotReadiness.RequirePullRequestReviews || !gotReadiness.RequirePullRequestChecks {
-		t.Fatalf("pull request read requirements = %#v", gotReadiness)
-	}
-	if len(gotReadiness.ProjectFieldWrites) != 2 {
-		t.Fatalf("ProjectFieldWrites = %#v, want lease and owner fields", gotReadiness.ProjectFieldWrites)
-	}
-	for _, want := range []string{"Todo", "Human Review", "Done"} {
-		if !stringSliceContains(gotReadiness.StatusStates, want) {
-			t.Fatalf("StatusStates = %#v, want %q", gotReadiness.StatusStates, want)
+	checks := checkDoctorProject(t.Context(), globalconfig.Project{ID: "alpha", Workflow: "WORKFLOW.md"}, deps, RuntimeSecret{Value: "token", Source: "github_token", ResolvedVia: "gh"}, true)
+	for _, check := range checks {
+		if strings.Contains(check.Name, "GitHub readiness") {
+			t.Fatalf("retired GitHub tracker readiness check: %#v", check)
 		}
 	}
-	if len(checks) < 3 || checks[len(checks)-1].Status != doctorOK {
-		t.Fatalf("checks = %#v, want readiness OK check appended", checks)
-	}
-}
-
-func TestCheckDoctorProjectBuildsGitHubIssueFieldReadinessInventory(t *testing.T) {
-	if testing.Short() {
-		t.Skip("live service, profiling, or filesystem watcher integration")
-	}
-
-	t.Parallel()
-
-	workflow := validDoctorWorkflow("/repo")
-	workflow.Tracker.Kind = workflowconfig.TrackerGitHub
-	workflow.Tracker.GitHubStatusSource = workflowconfig.GitHubStatusSourceIssueField
-	workflow.Tracker.ProjectSlug = ""
-	workflow.Tracker.Repository = "digitaldrywood/detent"
-	workflow.Tracker.StatusField = "Status"
-	workflow.Tracker.ActiveStates = []string{"Todo", "In Progress"}
-	workflow.Tracker.ObservedStates = []string{"Backlog", "Human Review", "Blocked"}
-	workflow.Tracker.TerminalStates = []string{"Done", "Cancelled"}
-	workflow.Tracker.WriteProbeIssue = "digitaldrywood/detent#1"
-	var gotConnector ghconnector.Config
-	var gotReadiness ghconnector.ReadinessConfig
-
-	checks := checkDoctorProject(context.Background(), globalconfig.Project{
-		ID:       "alpha",
-		Workflow: "WORKFLOW.md",
-	}, doctorDeps{
-		loadWorkflow: func(string) (workflowconfig.Workflow, error) {
-			return workflowconfig.Workflow{Config: workflow}, nil
-		},
-		gitWorkTree: func(context.Context, string) error {
-			return nil
-		},
-		gitRemoteURL: func(context.Context, string) (string, error) {
-			return "git@github.com:digitaldrywood/detent.git", nil
-		},
-		githubReadiness: func(_ context.Context, connectorCfg ghconnector.Config, readinessCfg ghconnector.ReadinessConfig) ([]ghconnector.ReadinessCheck, error) {
-			gotConnector = connectorCfg
-			gotReadiness = readinessCfg
-			return []ghconnector.ReadinessCheck{{Name: "GitHub issue field access", Status: ghconnector.ReadinessOK, Detail: "read Status"}}, nil
-		},
-	}, RuntimeSecret{Value: "token", Source: "github_token", ResolvedVia: "gh"}, true)
-
-	if gotConnector.ProjectSlug != "" {
-		t.Fatalf("connector ProjectSlug = %q, want empty in issue_field mode", gotConnector.ProjectSlug)
-	}
-	if gotConnector.Repository != "digitaldrywood/detent" {
-		t.Fatalf("connector Repository = %q, want digitaldrywood/detent", gotConnector.Repository)
-	}
-	if gotConnector.GitHubStatusSource != workflowconfig.GitHubStatusSourceIssueField {
-		t.Fatalf("connector GitHubStatusSource = %q, want issue_field", gotConnector.GitHubStatusSource)
-	}
-	if gotReadiness.RequireProjectRead || gotReadiness.RequireProjectStatusWrite {
-		t.Fatalf("project requirements = %#v, want no ProjectV2 requirements in issue_field mode", gotReadiness)
-	}
-	if !gotReadiness.RequireIssueFieldRead || !gotReadiness.RequireIssueFieldStatusWrite {
-		t.Fatalf("issue-field requirements = %#v, want issue-field read and status write", gotReadiness)
-	}
-	if !gotReadiness.RequireIssueComments {
-		t.Fatalf("RequireIssueComments = false, want comment write probe for integration-capable workflow")
-	}
-	if len(gotReadiness.Repositories) != 1 || gotReadiness.Repositories[0] != "digitaldrywood/detent" {
-		t.Fatalf("Repositories = %#v, want digitaldrywood/detent", gotReadiness.Repositories)
-	}
-	if len(checks) < 3 || checks[len(checks)-1].Status != doctorOK {
-		t.Fatalf("checks = %#v, want readiness OK check appended", checks)
-	}
+	assertDoctorCheck(t, doctorReport{Checks: checks}, "Project alpha workflow", doctorOK, "WORKFLOW.md is valid")
 }
 
 func TestDoctorGitHubReadinessRequiresKanbanIntegrationWrites(t *testing.T) {
@@ -4614,7 +4203,7 @@ func TestCheckDoctorDetentServiceReportsBuildDrift(t *testing.T) {
 			installed:  buildinfo.Info{Version: "v1.2.3", Commit: "abcdef123456"},
 			wantStatus: doctorWarn,
 			wantDetail: "differs from installed executable build",
-			wantHint:   "detent start --restart",
+			wantHint:   "Restart the runner service",
 		},
 	}
 
@@ -5084,56 +4673,6 @@ func TestCheckDoctorDailyBudgetAccuracy(t *testing.T) {
 	}
 }
 
-func TestDoctorGitHubLocalReadinessUsesLocalStatusMode(t *testing.T) {
-	t.Parallel()
-
-	workflow := validDoctorWorkflow("/repo")
-	workflow.Tracker.Kind = workflowconfig.TrackerGitHubLocal
-	workflow.Tracker.Repository = "digitaldrywood/detent"
-	workflow.Tracker.LocalSQLite.Path = ".detent/work-items.db"
-	workflow.Tracker.ActiveStates = []string{"Todo", "In Progress"}
-	workflow.Tracker.ObservedStates = []string{"Blocked", "Human Review"}
-	workflow.Tracker.TerminalStates = []string{"Done"}
-
-	got := doctorGitHubReadinessConfig(context.Background(), globalconfig.Project{Workdir: "/repo"}, workflow, doctorDeps{}, RuntimeSecret{}, "/repo")
-	if !got.LocalStatusMode {
-		t.Fatalf("LocalStatusMode = false, want true")
-	}
-	if got.RequireProjectRead || got.RequireProjectStatusWrite || got.RequireIssueFieldStatusWrite || got.RequireLabelStatusWrite || got.RequireIssueComments {
-		t.Fatalf("write/status requirements = %#v, want local-only status mode", got)
-	}
-	if !got.RequireIssueCommentsRead || !got.RequireDependencyMetadataRead || !got.RequirePullRequestRead || !got.RequirePullRequestReviews || !got.RequirePullRequestChecks {
-		t.Fatalf("read requirements = %#v, want GitHub issue/PR/check reads", got)
-	}
-	if len(got.Repositories) != 1 || got.Repositories[0] != "digitaldrywood/detent" {
-		t.Fatalf("Repositories = %#v, want digitaldrywood/detent", got.Repositories)
-	}
-}
-
-func TestCheckDoctorLocalSQLiteTrackerResolvesProjectRelativePath(t *testing.T) {
-	t.Parallel()
-
-	workdir := t.TempDir()
-	cfg := workflowconfig.Default()
-	cfg.Tracker.Kind = workflowconfig.TrackerLocalSQLite
-	cfg.Tracker.LocalSQLite.Path = ".detent/work-items.db"
-
-	var opened string
-	got := checkDoctorLocalSQLiteTracker(context.Background(), "video", globalconfig.Project{Workdir: workdir}, cfg, doctorDeps{
-		openSQLite: func(_ context.Context, path string) (doctorStore, error) {
-			opened = path
-			return fakeDoctorStore{}, nil
-		},
-	})
-	if got.Status != doctorOK {
-		t.Fatalf("Status = %s, want %s: %#v", got.Status, doctorOK, got)
-	}
-	want := filepath.Join(workdir, ".detent", "work-items.db")
-	if opened != want {
-		t.Fatalf("opened path = %q, want %q", opened, want)
-	}
-}
-
 func TestCheckDoctorFilesystemWorkspaceValidatesRootAndOutput(t *testing.T) {
 	t.Parallel()
 
@@ -5167,34 +4706,6 @@ func TestDoctorSQLitePingErrorWrapsPingAndCloseErrors(t *testing.T) {
 	}
 	if !errors.Is(err, closeErr) {
 		t.Fatalf("doctorSQLitePingError() error = %v, want close error in chain", err)
-	}
-}
-
-func TestDoctorWorkflowSpendBreakerDetail(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name        string
-		billingMode string
-		tokenLimit  int64
-		spendLimit  float64
-		want        string
-	}{
-		{name: "disabled", want: "progress-breaker=no_progress_token_limit=disabled, no_progress_spend_limit_usd=disabled"},
-		{name: "subscription", billingMode: workflowconfig.BillingModeSubscription, tokenLimit: 25_000_000, spendLimit: 7.5, want: "progress-breaker=no_progress_token_limit=25000000, no_progress_spend_limit_usd=7.50 (inert)"},
-		{name: "metered", billingMode: workflowconfig.BillingModeMetered, tokenLimit: 25_000_000, spendLimit: 7.5, want: "progress-breaker=no_progress_token_limit=25000000, no_progress_spend_limit_usd=7.50"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			cfg := workflowconfig.Config{}
-			cfg.Budget.BillingMode = tt.billingMode
-			cfg.Agent.NoProgressTokenLimit = tt.tokenLimit
-			cfg.Agent.NoProgressSpendLimitUSD = tt.spendLimit
-			if got := doctorWorkflowSpendBreakerDetail(cfg); got != tt.want {
-				t.Fatalf("doctorWorkflowSpendBreakerDetail() = %q, want %q", got, tt.want)
-			}
-		})
 	}
 }
 
@@ -5333,7 +4844,7 @@ func TestCheckDoctorWorkflowDriftReportsStaleLiveConfig(t *testing.T) {
 
 	dir := t.TempDir()
 	workflowPath := filepath.Join(dir, "WORKFLOW.md")
-	if err := os.WriteFile(workflowPath, []byte("---\ntracker:\n  kind: memory\n---\ncurrent\n"), 0o600); err != nil {
+	if err := os.WriteFile(workflowPath, []byte("---\ntracker:\n  kind: hub_native\n---\ncurrent\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 	loadedAt := time.Date(2026, 7, 12, 14, 0, 0, 0, time.UTC)
@@ -6270,270 +5781,6 @@ func TestRunDoctorCheckFreezesProgressBeforeCancellation(t *testing.T) {
 	}
 }
 
-func TestDoctorProjectCheckJobRenewsTimeoutForConnectorProgress(t *testing.T) {
-	t.Parallel()
-
-	workflow := validDoctorDependencyWorkflow(false)
-	workflow.Workspace.Root = t.TempDir()
-
-	const responses = 3
-	connectorStarted := make(chan struct{})
-	requestProgress := make(chan struct{})
-	progressReported := make(chan struct{})
-	advance := make(chan struct{})
-	var reportProgress sync.Once
-	projectConnector := &fakeDoctorAutoPromoteConnector{
-		fetchIssuesByStatesLimit: func(ctx context.Context, _ []string, _ int) ([]connector.Issue, error) {
-			var progressErr error
-			reportProgress.Do(func() {
-				close(connectorStarted)
-				for range responses {
-					select {
-					case <-ctx.Done():
-						progressErr = ctx.Err()
-						return
-					case <-requestProgress:
-					}
-					connector.ReportProgress(ctx)
-					progressReported <- struct{}{}
-					select {
-					case <-ctx.Done():
-						progressErr = ctx.Err()
-						return
-					case <-advance:
-					}
-				}
-			})
-			return nil, progressErr
-		},
-	}
-	jobs := doctorProjectCheckJobs(globalconfig.Config{
-		Projects: []globalconfig.Project{{ID: "alpha", Workflow: "WORKFLOW.md"}},
-	}, doctorDeps{
-		// Project progress must not wait for a scan of the host toolchain caches.
-		cacheCapacityBytes: func(string) (uint64, error) { return 1 << 50, nil },
-		inspectCaches: func(context.Context) toolcache.Report {
-			return toolcache.Report{BuildPath: "/cache/build", ModulePath: "/cache/modules"}
-		},
-		loadWorkflow: func(string) (workflowconfig.Workflow, error) {
-			return workflowconfig.Workflow{Config: workflow}, nil
-		},
-		gitWorkTree: func(context.Context, string) error {
-			return nil
-		},
-		gitRemoteURL: func(context.Context, string) (string, error) {
-			return "https://github.com/digitaldrywood/detent", nil
-		},
-		autoPromoteConnector: func(workflowconfig.Config) (doctorAutoPromoteConnector, error) {
-			return projectConnector, nil
-		},
-		githubReadiness: func(context.Context, ghconnector.Config, ghconnector.ReadinessConfig) ([]ghconnector.ReadinessCheck, error) {
-			return nil, nil
-		},
-		githubBranchPolicy: func(context.Context, workflowconfig.Config, string) (ghconnector.BranchMergePolicy, error) {
-			return ghconnector.BranchMergePolicy{Branch: "main"}, nil
-		},
-		githubMergeSettings: func(context.Context, workflowconfig.Config, string) (ghconnector.RepositoryMergeSettings, error) {
-			return ghconnector.RepositoryMergeSettings{AllowSquashMerge: true}, nil
-		},
-	}, RuntimeSecret{Value: "token", Source: "github_token"}, false, doctorWorkflowDefaultTokenThreshold)
-	if len(jobs) != 2 {
-		t.Fatalf("jobs len = %d, want 2", len(jobs))
-	}
-
-	checksDone := make(chan []doctorCheck, 1)
-	go func() {
-		checksDone <- jobs[1].Run(context.Background())
-	}()
-	stuck := time.NewTimer(doctorTestSafetyTimeout)
-	defer stuck.Stop()
-	select {
-	case <-connectorStarted:
-	case <-stuck.C:
-		t.Fatal("timed out waiting for connector check")
-	}
-	for {
-		select {
-		case <-jobs[1].Progress:
-		default:
-			goto progressDrained
-		}
-	}
-
-progressDrained:
-	for range responses {
-		requestProgress <- struct{}{}
-		select {
-		case <-progressReported:
-		case <-stuck.C:
-			t.Fatal("timed out waiting for connector progress report")
-		}
-		select {
-		case <-jobs[1].Progress:
-		case <-stuck.C:
-			t.Fatal("timed out waiting for connector progress signal")
-		}
-		advance <- struct{}{}
-	}
-
-	var checks []doctorCheck
-	select {
-	case checks = <-checksDone:
-	case <-stuck.C:
-		t.Fatal("timed out waiting for completed project checks")
-	}
-
-	for _, name := range []string{"Project alpha dependency auto-unblock", "Project alpha blocked recovery"} {
-		var found bool
-		for _, check := range checks {
-			if check.Name == name {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Fatalf("checks = %#v, want completed %s check", checks, name)
-		}
-	}
-	for _, check := range checks {
-		if check.Status == doctorFail && strings.Contains(check.Detail, "timed out") {
-			t.Fatalf("checks = %#v, want connector progress to renew timeout", checks)
-		}
-	}
-}
-
-func TestDoctorProjectCheckJobTimeoutPreservesCompletedChecks(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name            string
-		current         string
-		lastCompleted   string
-		blockOverlay    bool
-		blockDependency bool
-	}{
-		{name: "GitHub readiness", current: "GitHub readiness", lastCompleted: "Project alpha skills"},
-		{name: "local workflow overlay", current: "local workflow overlay", lastCompleted: "Project alpha capabilities", blockOverlay: true},
-		{name: "dependency auto-unblock", current: "dependency auto-unblock", lastCompleted: "Project alpha INV-4 queue is the merge path", blockDependency: true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			workflow := validDoctorDependencyWorkflow(false)
-			workflow.Workspace.Root = t.TempDir()
-			releaseBlockedCheck := make(chan struct{})
-			blockedCheckStarted := make(chan struct{})
-			var blockedCheckOnce sync.Once
-			markBlockedCheckStarted := func() {
-				blockedCheckOnce.Do(func() {
-					close(blockedCheckStarted)
-				})
-			}
-			t.Cleanup(func() {
-				close(releaseBlockedCheck)
-			})
-			loadedWorkflow := workflowconfig.Workflow{Config: workflow}
-			if tt.blockOverlay {
-				loadedWorkflow.Overlay.Path = filepath.Join(workflow.Workspace.Root, "WORKFLOW.local.md")
-			}
-			jobs := doctorProjectCheckJobs(globalconfig.Config{
-				Projects: []globalconfig.Project{{ID: "alpha", Workflow: "WORKFLOW.md"}},
-			}, doctorDeps{
-				// Only the explicitly blocked stage should consume the timeout.
-				cacheCapacityBytes: func(string) (uint64, error) { return 1 << 50, nil },
-				inspectCaches: func(context.Context) toolcache.Report {
-					return toolcache.Report{BuildPath: "/cache/build", ModulePath: "/cache/modules"}
-				},
-				loadWorkflow: func(string) (workflowconfig.Workflow, error) {
-					return loadedWorkflow, nil
-				},
-				gitTracked: func(context.Context, string) (bool, error) {
-					if tt.blockOverlay {
-						markBlockedCheckStarted()
-						<-releaseBlockedCheck
-					}
-					return false, nil
-				},
-				gitWorkTree: func(context.Context, string) error {
-					return nil
-				},
-				gitRemoteURL: func(context.Context, string) (string, error) {
-					return "https://github.com/digitaldrywood/detent", nil
-				},
-				autoPromoteConnector: func(workflowconfig.Config) (doctorAutoPromoteConnector, error) {
-					projectConnector := &fakeDoctorAutoPromoteConnector{}
-					if tt.blockDependency {
-						projectConnector.fetchIssuesByStatesLimit = func(context.Context, []string, int) ([]connector.Issue, error) {
-							markBlockedCheckStarted()
-							<-releaseBlockedCheck
-							return nil, nil
-						}
-					}
-					return projectConnector, nil
-				},
-				githubReadiness: func(context.Context, ghconnector.Config, ghconnector.ReadinessConfig) ([]ghconnector.ReadinessCheck, error) {
-					if !tt.blockOverlay {
-						if !tt.blockDependency {
-							markBlockedCheckStarted()
-						}
-						<-releaseBlockedCheck
-					}
-					return nil, nil
-				},
-				githubBranchPolicy: func(context.Context, workflowconfig.Config, string) (ghconnector.BranchMergePolicy, error) {
-					return ghconnector.BranchMergePolicy{Branch: "main"}, nil
-				},
-				githubMergeSettings: func(context.Context, workflowconfig.Config, string) (ghconnector.RepositoryMergeSettings, error) {
-					return ghconnector.RepositoryMergeSettings{AllowSquashMerge: true}, nil
-				},
-			}, RuntimeSecret{Value: "token", Source: "github_token"}, false, doctorWorkflowDefaultTokenThreshold)
-			if len(jobs) != 2 {
-				t.Fatalf("jobs len = %d, want 2", len(jobs))
-			}
-
-			timer := &controlledDoctorCheckTimer{deadline: make(chan time.Time)}
-			checksDone := make(chan []doctorCheck, 1)
-			go func() {
-				checksDone <- runDoctorCheckWithTimer(context.Background(), jobs[1], 20*time.Millisecond, timer)
-			}()
-			stuck := time.NewTimer(doctorTestSafetyTimeout)
-			defer stuck.Stop()
-			select {
-			case <-blockedCheckStarted:
-			case <-stuck.C:
-				t.Fatalf("timed out waiting for blocked %s check", tt.current)
-			}
-			timer.Expire()
-
-			var checks []doctorCheck
-			select {
-			case checks = <-checksDone:
-			case <-stuck.C:
-				t.Fatal("timed out waiting for controlled doctor timeout")
-			}
-
-			if len(checks) < 2 {
-				t.Fatalf("checks = %#v, want completed checks followed by timeout", checks)
-			}
-			completedChecks := checks[:len(checks)-1]
-			if got := completedChecks[0].Name; got != "Project alpha workflow" {
-				t.Fatalf("first completed check = %q, want Project alpha workflow", got)
-			}
-			if got := completedChecks[len(completedChecks)-1].Name; got != tt.lastCompleted {
-				t.Fatalf("last completed check = %q, want %q", got, tt.lastCompleted)
-			}
-			timeoutCheck := checks[len(checks)-1]
-			for _, want := range []string{"Project alpha checks", "timed out after 20ms", "while running Project alpha " + tt.current} {
-				if !strings.Contains(timeoutCheck.Name+" "+timeoutCheck.Detail, want) {
-					t.Fatalf("timeout check = %#v, want containing %q", timeoutCheck, want)
-				}
-			}
-		})
-	}
-}
-
 func TestDoctorNormalizedTimeoutDefaultsToLiveReadinessBudget(t *testing.T) {
 	t.Parallel()
 
@@ -6560,7 +5807,7 @@ func TestDoctorNormalizedTimeoutDefaultsToLiveReadinessBudget(t *testing.T) {
 
 func validDoctorWorkflow(sourceRoot string) workflowconfig.Config {
 	cfg := workflowconfig.Default()
-	cfg.Tracker.Kind = workflowconfig.TrackerMemory
+	cfg.Tracker.Kind = workflowconfig.TrackerHubNative
 	cfg.Workspace.Root = sourceRoot
 	cfg.Budget.BillingMode = workflowconfig.BillingModeMetered
 	cfg.Budget.Enabled = true
@@ -6836,7 +6083,8 @@ func assertDoctorMissingCheck(t *testing.T, report doctorReport, name string) {
 
 func successfulDoctorDeps() doctorDeps {
 	return doctorDeps{
-		cacheCapacityBytes: func(string) (uint64, error) { return 1 << 50, nil },
+		gitLandingCredential: func(context.Context, string) error { return nil },
+		cacheCapacityBytes:   func(string) (uint64, error) { return 1 << 50, nil },
 		inspectCaches: func(context.Context) toolcache.Report {
 			return toolcache.Report{BuildPath: "/cache/build", ModulePath: "/cache/modules"}
 		},

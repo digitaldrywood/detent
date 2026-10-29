@@ -58,6 +58,7 @@ func (p Policy) NormalizedForCapacity(capacity uint64) Policy {
 }
 
 var cacheEntryName = regexp.MustCompile(`^[0-9a-f]{64}-[ad]$`)
+var cacheStagingName = regexp.MustCompile(`^[0-9a-f]{64}-[ad]\.[A-Z2-7]{26}$`)
 var cacheShardName = regexp.MustCompile(`^[0-9a-f]{2}$`)
 
 func Trim(ctx context.Context, root string, policy Policy, now time.Time) (int64, error) {
@@ -128,7 +129,7 @@ func trim(ctx context.Context, root string, policy Policy, now time.Time, report
 		if walkErr != nil {
 			return walkErr
 		}
-		candidate := path.Dir(path.Dir(name)) == "." && cacheShardName.MatchString(path.Base(path.Dir(name))) && cacheEntryName.MatchString(entry.Name())
+		candidate := path.Dir(path.Dir(name)) == "." && cacheShardName.MatchString(path.Base(path.Dir(name))) && (cacheEntryName.MatchString(entry.Name()) || managed && !entry.IsDir() && cacheStagingName.MatchString(entry.Name()))
 		if entry.IsDir() {
 			if name == "." || path.Dir(name) == "." && cacheShardName.MatchString(entry.Name()) {
 				return nil
@@ -165,7 +166,17 @@ func trim(ctx context.Context, root string, policy Policy, now time.Time, report
 	if err != nil {
 		return reclaimed, err
 	}
+	report.RetainedBytes = total
 	if managed {
+		if policy.reclaimBytes > 0 {
+			retained := total
+			for _, candidate := range candidates {
+				if candidate.modified.Before(now.Add(-policy.MaxAge)) {
+					retained -= candidate.bytes
+				}
+			}
+			policy.MaxBytes = min(policy.MaxBytes, max(1, retained-policy.reclaimBytes))
+		}
 		slices.SortFunc(candidates, func(a, b trimEntry) int { return a.modified.Compare(b.modified) })
 	}
 	stamp := now.UTC().Format(time.RFC3339Nano)
@@ -195,6 +206,18 @@ func trim(ctx context.Context, root string, policy Policy, now time.Time, report
 		if current.IsDir() != candidate.directory || !current.IsDir() && !current.Mode().IsRegular() || !current.ModTime().Equal(candidate.modified) {
 			continue
 		}
+		if managed && !candidate.directory {
+			pinned, err := cacheEntryPinned(cache, candidate.name)
+			if os.IsNotExist(err) {
+				continue
+			}
+			if err != nil {
+				return reclaimed, err
+			}
+			if pinned {
+				continue
+			}
+		}
 		if candidate.directory {
 			err = cache.RemoveAll(candidate.name)
 		} else {
@@ -210,6 +233,7 @@ func trim(ctx context.Context, root string, policy Policy, now time.Time, report
 		}
 		reclaimed += candidate.bytes
 		total -= candidate.bytes
+		report.RetainedBytes = total
 	}
 	total -= previousMarkerBytes
 	data := metadata(total + int64(len(metadata(0))))

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -38,6 +39,7 @@ func TestValidatorReadsPublishedAttachments(t *testing.T) {
 		denied      bool
 		unsupported bool
 		text        bool
+		json        bool
 		offset      int64
 		invalidUTF8 bool
 		oversized   bool
@@ -51,6 +53,8 @@ func TestValidatorReadsPublishedAttachments(t *testing.T) {
 		{name: "later read denied", denied: true},
 		{name: "backend cannot display images", unsupported: true},
 		{name: "bootstrap installation partial recovery and full rerun text log", text: true, unsupported: true},
+		{name: "small JSON needs supported publication", text: true, json: true},
+		{name: "JSON chunk still needs supported publication", text: true, json: true, offset: 16},
 		{name: "text digest mismatch", text: true, corrupt: true},
 		{name: "partial text read denied", text: true, denied: true},
 		{name: "unread text prefix", text: true, offset: 16},
@@ -78,8 +82,14 @@ func TestValidatorReadsPublishedAttachments(t *testing.T) {
 				if test.invalidUTF8 {
 					content[0] = 0xff
 				}
+				if test.json {
+					content = []byte(`{"source":"baseline-head","command":"go test -run TestExample","output":"failed"}`)
+				}
 				digest := sha256.Sum256(content)
 				metadata.Name, metadata.ContentType = "bootstrap.log", "text/plain"
+				if test.json {
+					metadata.Name, metadata.ContentType = "diagnostic.json", "application/json"
+				}
 				metadata.Size, metadata.SHA256 = int64(len(content)), hex.EncodeToString(digest[:])
 				metadata.Width, metadata.Height = 0, 0
 			}
@@ -125,19 +135,39 @@ func TestValidatorReadsPublishedAttachments(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if test.offset != 0 || test.unsupported && !test.text {
+			if test.offset != 0 && !test.json || test.unsupported && !test.text {
 				if calls != 1 || result.ImageURL != "" || len(reader.evidence()) != 0 {
 					t.Fatal("text-only backend claimed visual evidence")
 				}
 				return
 			}
 			reads := reader.evidence()
+			if test.json {
+				var observed struct {
+					Metadata        attachment.Metadata  `json:"metadata"`
+					InspectionError string               `json:"inspection_error"`
+					ReadReceipt     *gate.AttachmentRead `json:"read_receipt"`
+				}
+				if err := json.Unmarshal([]byte(result.Content), &observed); err != nil {
+					t.Fatal(err)
+				}
+				if !result.Success || calls != 1 || len(reads) != 0 || observed.ReadReceipt != nil || result.ImageURL != "" || !reflect.DeepEqual(observed.Metadata, metadata) || len(result.Content) > 4096 || strings.Contains(result.Content, "content_base64") {
+					t.Fatalf("unsupported JSON supplied inspection evidence or lost metadata: %+v", result)
+				}
+				for _, required := range []string{"application/json", "text/plain", "32768", "ordered", "SHA-256", "no read_receipt"} {
+					if !strings.Contains(observed.InspectionError, required) {
+						t.Fatalf("unsupported JSON lacks actionable guidance %q: %s", required, observed.InspectionError)
+					}
+				}
+				return
+			}
 			if test.truncated {
 				var observed struct {
-					Metadata    attachment.Metadata  `json:"metadata"`
-					Content     string               `json:"content"`
-					Truncated   bool                 `json:"truncated"`
-					ReadReceipt *gate.AttachmentRead `json:"read_receipt"`
+					Metadata        attachment.Metadata  `json:"metadata"`
+					Content         string               `json:"content"`
+					Truncated       bool                 `json:"truncated"`
+					ReadReceipt     *gate.AttachmentRead `json:"read_receipt"`
+					InspectionError string               `json:"inspection_error"`
 				}
 				if err := json.Unmarshal([]byte(result.Content), &observed); err != nil {
 					t.Fatal(err)
@@ -148,6 +178,11 @@ func TestValidatorReadsPublishedAttachments(t *testing.T) {
 				}
 				if !observed.Truncated || len(observed.Content) != wantBytes || observed.Content != string(content[:wantBytes]) || len(result.Content) > operatortool.AttachmentContentBytes+4096 || observed.Metadata.SHA256 != metadata.SHA256 || observed.ReadReceipt != nil || len(reads) != 0 || result.ImageURL != "" {
 					t.Fatalf("truncated text was unbounded or supplied evidence: bytes=%d truncated=%v reads=%v", len(result.Content), observed.Truncated, reads)
+				}
+				for _, required := range []string{"32768", "text/plain", "ordered", "byte ranges", "no read_receipt"} {
+					if !strings.Contains(observed.InspectionError, required) {
+						t.Fatalf("truncated text lacks actionable guidance %q: %s", required, observed.InspectionError)
+					}
 				}
 				validation := gate.ValidatorResult{HeadSHA: "review-head", AttachmentReads: reads, CriteriaEvidence: []gate.CriterionEvidence{{Criterion: "Full log inspected", Kind: gate.EvidenceAttachment, Reference: metadata.Name, ReceiptIDs: []string{"attachment:" + metadata.ID + ":" + metadata.SHA256}, HeadSHA: "review-head", TreeSHA: "review-tree", Behavior: "Claimed complete log inspection"}}}
 				gate.NormalizeCriterionEvidence(&validation, []string{"Full log inspected"}, "review-tree")
@@ -273,6 +308,14 @@ func (*attachmentValidatorExecution) ValidatorVersion(context.Context) (NativeVa
 		Version:  &tracker.ChangeVersion{ID: "version_example", ChangeVersionInput: tracker.ChangeVersionInput{Repository: "example-org/example-project", HeadSHA: "head", BaseSHA: "base", Validation: &gate.CommandResult{TreeSHA: "tree"}}, Policy: policy.Descriptor{Gates: policy.Gates{Validator: true}}},
 		Diff:     &connector.ValidationDiff{Repository: "example-org/example-project", HeadSHA: "head", BaseSHA: "base", Digest: "digest", Patch: "diff --git a/page.go b/page.go\n+page\n"},
 	}, nil
+}
+
+func (*attachmentValidatorExecution) SetChangeSource(func(context.Context, string, string) (tracker.ChangeSourceCapture, error)) {
+}
+
+func (e *attachmentValidatorExecution) RecoverChangeSource(ctx context.Context) (workspace.ChangeSource, error) {
+	input, err := e.ValidatorVersion(ctx)
+	return workspace.ChangeSource{Version: *input.Version}, err
 }
 
 func (e *attachmentValidatorExecution) RecordValidator(_ context.Context, result gate.ValidatorResult) error {

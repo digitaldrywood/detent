@@ -5,7 +5,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -14,11 +16,14 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/labstack/echo/v4"
+
 	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/genkitbackend"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/skills"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -100,7 +105,7 @@ func (b *fakeCoordinatorBackend) waitStarted(t *testing.T) {
 	t.Helper()
 	select {
 	case <-b.started:
-	case <-time.After(5 * time.Second):
+	case <-testenv.WaitContext(t, t.Context()).Done():
 		t.Fatal("turn did not start")
 	}
 }
@@ -131,10 +136,14 @@ type coordinatorFixture struct {
 	organization  tracker.OrganizationID
 }
 
-func newCoordinatorFixture(t *testing.T, name string) *coordinatorFixture {
+func newCoordinatorFixture(t *testing.T, name string, contents ...*conversationContentFixture) *coordinatorFixture {
 	t.Helper()
 	backend := newFakeCoordinatorBackend()
-	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), GitHubDisabled: true, Conversation: &ConversationConfig{Enabled: true, Backend: backend, Workspace: t.TempDir()}})
+	config := Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), GitHubDisabled: true, Conversation: &ConversationConfig{Enabled: true, Backend: backend, Workspace: t.TempDir()}}
+	if len(contents) > 0 {
+		config.Conversation.ArchiveContents = contents[0]
+	}
+	service := openTestService(t, config)
 	var organization tracker.OrganizationID
 	if err := service.database.db.QueryRowContext(t.Context(), "SELECT id FROM organizations WHERE local = 1").Scan(&organization); err != nil {
 		t.Fatal(err)
@@ -266,14 +275,12 @@ func (f *coordinatorFixture) events(t *testing.T, id string) []conversation.Even
 
 func waitUntil(t *testing.T, what string, condition func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
+	testenv.WaitUntil(t, t.Context(), func() error {
 		if condition() {
-			return
+			return nil
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for %s", what)
+		return fmt.Errorf("timed out waiting for %s", what)
+	})
 }
 
 // lastReply returns the newest assistant text message.
@@ -348,7 +355,7 @@ func TestConversationCoordinatorReportsUsage(t *testing.T) {
 			usage.Tokens.OutputTokens != 10 || usage.Tokens.ReasoningOutputTokens != 3 || usage.Outcome != conversation.DeliveryCompleted {
 			t.Fatalf("usage = %+v", usage)
 		}
-	case <-time.After(5 * time.Second):
+	case <-testenv.WaitContext(t, t.Context()).Done():
 		t.Fatal("usage was not reported")
 	}
 }
@@ -642,9 +649,7 @@ func TestConversationCoordinatorStop(t *testing.T) {
 			f.backend.waitStarted(t)
 			done := make(chan error, 1)
 			go func() {
-				ctx, cancel := context.WithTimeout(t.Context(), 12*time.Second)
-				defer cancel()
-				done <- f.service.Shutdown(ctx)
+				done <- f.service.Shutdown(testenv.WaitContext(t, t.Context()))
 			}()
 			waitUntil(t, "coordinator draining", func() bool {
 				c := f.coordinator().(*conversationTurnCoordinator)
@@ -664,7 +669,7 @@ func TestConversationCoordinatorStop(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-			case <-time.After(12 * time.Second):
+			case <-testenv.WaitContext(t, t.Context()).Done():
 				t.Fatal("Shutdown() did not return")
 			}
 			wantAssistant, wantUser, wantExecution := conversation.DeliveryFailed, conversation.DeliveryFailed, conversation.ExecutionFailed
@@ -702,7 +707,7 @@ func TestConversationCoordinatorStop(t *testing.T) {
 			}
 			select {
 			case <-backendDone:
-			case <-time.After(time.Second):
+			case <-testenv.WaitContext(t, t.Context()).Done():
 				t.Fatal("test backend did not exit")
 			}
 			if !test.finish {
@@ -732,7 +737,7 @@ func TestConversationCoordinatorStop(t *testing.T) {
 // TestConversationCoordinatorIgnoresLinked proves the hub-side coordinator
 // leaves a linked conversation to its runner. Settled is deliberately not a
 // second case: a settled conversation with a pending message is woken by the
-// message itself, so the coordinator still owes it a turn (section 14).
+// message itself, so the coordinator still owes it a turn.
 func TestConversationCoordinatorIgnoresLinked(t *testing.T) {
 	t.Parallel()
 	f := newCoordinatorFixture(t, "ignored")
@@ -1026,99 +1031,153 @@ func TestConversationCoordinatorProposeIssue(t *testing.T) {
 
 func TestConversationCoordinatorToolMessagesFromUpdates(t *testing.T) {
 	t.Parallel()
-	for _, test := range []struct {
-		name        string
-		before      string
-		after       []string
-		toolUpdates bool
-		toolCalls   int
-		want        string
-	}{
-		{name: "tool updates before text", after: []string{"done"}, toolUpdates: true, want: "done"},
-		{name: "text around tool updates", before: "Checking.", after: []string{"All ", "done."}, toolUpdates: true, want: "Checking.\n\nAll done."},
-		{name: "text around Luna tool call", before: "All 6 children will be created in Blocked, matching #32.", after: []string{"Children 1 and 2 can run in parallel. ", "The parent waits for all children."}, toolCalls: 1, want: "All 6 children will be created in Blocked, matching #32.\n\nChildren 1 and 2 can run in parallel. The parent waits for all children."},
-		{name: "consecutive tool calls", before: "Checking.", after: []string{"Done."}, toolCalls: 2, want: "Checking.\n\nDone."},
-		{name: "tool call without preceding text", after: []string{"Done."}, toolCalls: 1, want: "Done."},
-		{name: "tool call without following text", before: "Checking.", toolCalls: 1, want: "Checking."},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			f := newCoordinatorFixture(t, "toolmessages")
-			f.backend.setRun(func(ctx context.Context, _ int, handle runner.AgentToolHandler, onUpdate runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
-				updates := []runner.AgentUpdate{
-					{Type: runner.AgentUpdateTurnStarted, ThreadID: "thread-early"},
-					{Type: runner.AgentUpdateMessageDelta, Delta: test.before},
-				}
-				if test.toolUpdates {
-					updates = append(updates,
-						runner.AgentUpdate{Type: runner.AgentUpdateToolStarted, ItemID: "item-1", Tool: "shell", Command: "git status " + strings.Repeat("x", 1000)},
-						runner.AgentUpdate{Type: runner.AgentUpdateToolCompleted, ItemID: "item-1", Tool: "shell", Status: "completed"},
-					)
-				}
-				for _, update := range updates {
-					if err := onUpdate(update); err != nil {
-						return runner.AgentTurnResult{}, err
+	for _, external := range []bool{false, true} {
+		t.Run("external="+strconv.FormatBool(external), func(t *testing.T) {
+			for _, test := range []struct {
+				name           string
+				before         string
+				after          []string
+				toolUpdates    bool
+				toolCalls      int
+				want           string
+				longCompletion bool
+			}{
+				{name: "longer tool completion", after: []string{"done"}, toolUpdates: true, longCompletion: true, want: "done"},
+				{name: "tool updates before text", after: []string{"done"}, toolUpdates: true, want: "done"},
+				{name: "text around tool updates", before: "Checking.", after: []string{"All ", "done."}, toolUpdates: true, want: "Checking.\n\nAll done."},
+				{name: "text around Luna tool call", before: "All 6 children will be created in Blocked, matching #32.", after: []string{"Children 1 and 2 can run in parallel. ", "The parent waits for all children."}, toolCalls: 1, want: "All 6 children will be created in Blocked, matching #32.\n\nChildren 1 and 2 can run in parallel. The parent waits for all children."},
+				{name: "consecutive tool calls", before: "Checking.", after: []string{"Done."}, toolCalls: 2, want: "Checking.\n\nDone."},
+				{name: "tool call without preceding text", after: []string{"Done."}, toolCalls: 1, want: "Done."},
+				{name: "tool call without following text", before: "Checking.", toolCalls: 1, want: "Checking."},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					t.Parallel()
+					var contents []*conversationContentFixture
+					if external {
+						contents = append(contents, &conversationContentFixture{})
 					}
-				}
-				for range test.toolCalls {
-					result, err := handle(ctx, runner.AgentToolCall{Name: "load_split_issue_skill", Arguments: json.RawMessage(`{}`)})
-					if err != nil {
-						return runner.AgentTurnResult{}, err
+					f := newCoordinatorFixture(t, "toolmessages", contents...)
+					f.backend.setRun(func(ctx context.Context, _ int, handle runner.AgentToolHandler, onUpdate runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
+						updates := []runner.AgentUpdate{
+							{Type: runner.AgentUpdateTurnStarted, ThreadID: "thread-early"},
+							{Type: runner.AgentUpdateMessageDelta, Delta: test.before},
+						}
+						if test.toolUpdates {
+							command, status := "git status "+strings.Repeat("x", 1000), "completed"
+							if test.longCompletion {
+								command, status = "pwd", "completed with detailed output"
+							}
+							updates = append(updates,
+								runner.AgentUpdate{Type: runner.AgentUpdateToolStarted, ItemID: "item-1", Tool: "shell", Command: command},
+								runner.AgentUpdate{Type: runner.AgentUpdateToolCompleted, ItemID: "item-1", Tool: "shell", Status: status},
+							)
+						}
+						for _, update := range updates {
+							if err := onUpdate(update); err != nil {
+								return runner.AgentTurnResult{}, err
+							}
+						}
+						for range test.toolCalls {
+							result, err := handle(ctx, runner.AgentToolCall{Name: "load_split_issue_skill", Arguments: json.RawMessage(`{}`)})
+							if err != nil {
+								return runner.AgentTurnResult{}, err
+							}
+							if !result.Success {
+								return runner.AgentTurnResult{}, errors.New(result.Content)
+							}
+						}
+						for _, delta := range test.after {
+							if err := onUpdate(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, Delta: delta}); err != nil {
+								return runner.AgentTurnResult{}, err
+							}
+						}
+						return runner.AgentTurnResult{ThreadID: "thread-early"}, nil
+					})
+					record := f.seed(t, "tools", nil)
+					f.say(t, &record, "check")
+					assistant := f.waitAssistant(t, record.ID, conversation.DeliveryCompleted)
+					if assistant.Text != test.want {
+						t.Fatalf("assistant text = %q, want %q", assistant.Text, test.want)
 					}
-					if !result.Success {
-						return runner.AgentTurnResult{}, errors.New(result.Content)
+					var streamed strings.Builder
+					for _, event := range f.events(t, record.ID) {
+						if event.Type != conversation.EventMessageDelta {
+							continue
+						}
+						var body struct {
+							MessageID string `json:"message_id"`
+							Text      string `json:"text"`
+						}
+						if err := json.Unmarshal(event.Data, &body); err != nil {
+							t.Fatal(err)
+						}
+						if body.MessageID == assistant.ID {
+							streamed.WriteString(body.Text)
+						}
 					}
-				}
-				for _, delta := range test.after {
-					if err := onUpdate(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, Delta: delta}); err != nil {
-						return runner.AgentTurnResult{}, err
+					if streamed.String() != test.want {
+						t.Fatalf("streamed text = %q, want %q", streamed.String(), test.want)
 					}
-				}
-				return runner.AgentTurnResult{ThreadID: "thread-early"}, nil
-			})
-			record := f.seed(t, "tools", nil)
-			f.say(t, &record, "check")
-			assistant := f.waitAssistant(t, record.ID, conversation.DeliveryCompleted)
-			if assistant.Text != test.want {
-				t.Fatalf("assistant text = %q, want %q", assistant.Text, test.want)
-			}
-			var streamed strings.Builder
-			for _, event := range f.events(t, record.ID) {
-				if event.Type != conversation.EventMessageDelta {
-					continue
-				}
-				var body struct {
-					MessageID string `json:"message_id"`
-					Text      string `json:"text"`
-				}
-				if err := json.Unmarshal(event.Data, &body); err != nil {
-					t.Fatal(err)
-				}
-				if body.MessageID == assistant.ID {
-					streamed.WriteString(body.Text)
-				}
-			}
-			if streamed.String() != test.want {
-				t.Fatalf("streamed text = %q, want %q", streamed.String(), test.want)
-			}
-			var tools []conversationMessageRecord
-			for _, message := range f.messages(t, record.ID) {
-				if message.Kind == conversation.MessageTool {
-					tools = append(tools, message)
-				}
-			}
-			if test.toolUpdates {
-				if len(tools) != 1 || tools[0].Role != conversation.RoleSystem || tools[0].Delivery != conversation.DeliveryCompleted || !strings.Contains(tools[0].Text, "shell") {
-					t.Fatalf("tool messages = %#v, want one completed system tool message", tools)
-				}
-				if len([]rune(tools[0].Text)) > 500 {
-					t.Fatalf("tool summary length = %d, want at most 500 runes", len([]rune(tools[0].Text)))
-				}
-			} else if len(tools) != 0 {
-				t.Fatalf("tool messages = %#v, want none without tool updates", tools)
-			}
-			if got := f.conversation(t, record.ID).ProviderThreadID; got != "thread-early" {
-				t.Fatalf("thread id = %q, want persisted from the turn update", got)
+					var tools []conversationMessageRecord
+					for _, message := range f.messages(t, record.ID) {
+						if message.Kind == conversation.MessageTool {
+							tools = append(tools, message)
+						}
+					}
+					if test.toolUpdates {
+						if len(tools) != 1 || tools[0].Role != conversation.RoleSystem || tools[0].Delivery != conversation.DeliveryCompleted || !strings.Contains(tools[0].Text, "shell") {
+							t.Fatalf("tool messages = %#v, want one completed system tool message", tools)
+						}
+						if external && tools[0].ContentID == "" {
+							t.Fatal("tool content was retained inline")
+						}
+						acceptedText := ""
+						updatedText := ""
+						var acceptedData, updatedData map[string]string
+						for _, event := range f.events(t, record.ID) {
+							if event.Type == conversation.EventMessageAccepted || event.Type == conversation.EventMessageUpdated {
+								var message struct {
+									ID   string
+									Text string
+									Data map[string]string
+								}
+								if err := json.Unmarshal(event.Data, &message); err != nil {
+									t.Fatal(err)
+								}
+								if message.ID == tools[0].ID {
+									if event.Type == conversation.EventMessageAccepted {
+										acceptedText = message.Text
+										acceptedData = message.Data
+									} else {
+										updatedText = message.Text
+										updatedData = message.Data
+									}
+								}
+							}
+						}
+						wantAccepted, wantUpdated, wantStatus := "Running shell: git status "+strings.Repeat("x", 474)+"…", "Finished shell: completed", "completed"
+						if test.longCompletion {
+							wantAccepted, wantUpdated, wantStatus = "Running shell: pwd", "Finished shell: completed with detailed output", "completed with detailed output"
+						}
+						if acceptedText != wantAccepted || updatedText != wantUpdated || acceptedData["status"] != "" || updatedData["status"] != wantStatus || acceptedData["tool"] != "shell" || updatedData["tool"] != "shell" || acceptedData["item_id"] != "item-1" || updatedData["item_id"] != "item-1" {
+							t.Fatalf("immutable tool revisions changed: %q %+v -> %q %+v", acceptedText, acceptedData, updatedText, updatedData)
+						}
+						output := httptest.NewRecorder()
+						stream := &conversationStream{response: echo.NewResponse(output, echo.New())}
+						head := f.conversation(t, record.ID).EventSeq
+						if cursor, err := stream.replay(t.Context(), f.conversations.store, f.service.database.reader, record.ID, 0, head); err != nil || cursor != head || !strings.Contains(output.Body.String(), wantAccepted) || !strings.Contains(output.Body.String(), wantUpdated) {
+							t.Fatalf("SSE tool replay: cursor=%d head=%d error=%v", cursor, head, err)
+						}
+						if len([]rune(tools[0].Text)) > 500 {
+							t.Fatalf("tool summary length = %d, want at most 500 runes", len([]rune(tools[0].Text)))
+						}
+					} else if len(tools) != 0 {
+						t.Fatalf("tool messages = %#v, want none without tool updates", tools)
+					}
+					if got := f.conversation(t, record.ID).ProviderThreadID; got != "thread-early" {
+						t.Fatalf("thread id = %q, want persisted from the turn update", got)
+					}
+				})
 			}
 		})
 	}
@@ -1163,7 +1222,7 @@ func TestConversationReconcileLeavesHubCoordinatorTurns(t *testing.T) {
 // TestConversationRetryOnTheHubCoordinatorPath covers the other half of the
 // retry command: with a hub-side coordinator and no linked issue the message
 // goes back to `saved`, which is the delivery that coordinator reads, and the
-// receipt for the retry key says so (decisions section 10.3).
+// receipt for the retry key says so.
 func TestConversationRetryOnTheHubCoordinatorPath(t *testing.T) {
 	t.Parallel()
 	f := newCoordinatorFixture(t, "retry")
@@ -1190,7 +1249,7 @@ func TestConversationRetryOnTheHubCoordinatorPath(t *testing.T) {
 // TestConversationCoordinatorHonoursPreferences proves the transitional
 // hub-side coordinator applies the conversation's explicit turn preferences
 // to its own turn, and that read-only stays true whatever access says: a
-// coordinator turn never changes anything (decisions section 14).
+// coordinator turn never changes anything.
 func TestConversationCoordinatorHonoursPreferences(t *testing.T) {
 	t.Parallel()
 	f := newCoordinatorFixture(t, "preferences")
@@ -1244,7 +1303,7 @@ func TestConversationCoordinatorUsesLunaForLegacyPreferences(t *testing.T) {
 		{name: "revoked choice", hosted: true, granted: true, revoked: true, model: "gpt-6-astra", effort: "high", wantModel: "gpt-6-astra", wantEffort: "high"},
 		{name: "ungranted unknown", hosted: true, model: "unknown-model", wantFailure: "not one of the available choices"},
 		{name: "granted unknown", hosted: true, granted: true, model: "unknown-model", wantFailure: "not one of the available choices"},
-		{name: "granted without execution", hosted: true, granted: true, free: true, model: "gpt-6-astra", wantFailure: "Upgrade"},
+		{name: "granted on Free", hosted: true, granted: true, free: true, model: "gpt-6-astra", effort: "high", wantModel: "gpt-6-astra", wantEffort: "high"},
 		{name: "granted with exhausted credits", hosted: true, granted: true, credits: true, model: "gpt-6-astra", wantFailure: "AI credits are exhausted"},
 		{name: "complimentary credits resume Luna", hosted: true, credits: true, adjust: true, wantModel: genkitbackend.Model, wantEffort: "low"},
 		{name: "granted with purchased credits", hosted: true, granted: true, free: true, credits: true, balance: 1000000, model: "gpt-6-astra", effort: "high", wantModel: "gpt-6-astra", wantEffort: "high"},
@@ -1336,7 +1395,7 @@ func TestConversationCoordinatorUsesLunaForLegacyPreferences(t *testing.T) {
 					if usage.Provider != "codex" || usage.Model != test.wantModel || usage.TurnID != reply.ID || usage.Tokens.InputTokens != 20 {
 						t.Fatalf("chosen backend usage = %#v", usage)
 					}
-				case <-time.After(5 * time.Second):
+				case <-testenv.WaitContext(t, t.Context()).Done():
 					t.Fatal("chosen backend usage was not reported")
 				}
 			}
@@ -1791,6 +1850,7 @@ func TestConversationCoordinatorRefusesWritesOnceLinked(t *testing.T) {
 func TestCoordinatorFreeRefusesLuna(t *testing.T) {
 	for _, test := range []struct {
 		name         string
+		included     bool
 		credits      bool
 		balance      int64
 		owner        bool
@@ -1799,7 +1859,8 @@ func TestCoordinatorFreeRefusesLuna(t *testing.T) {
 		wantCalls    int
 		want, hidden string
 	}{
-		{name: "Free without credits", want: "Upgrade", hidden: "Auto-fund"},
+		{name: "Free without credit accounting", wantCalls: 1},
+		{name: "included credits permit chat", included: true, credits: true, wantCalls: 1},
 		{name: "purchased credits permit chat", credits: true, balance: 1000000, wantCalls: 1},
 		{name: "marked-up turn overruns then refuses", credits: true, balance: 120000, overrun: true, wantBalance: -30000, wantCalls: 1},
 		{name: "exact charged balance exhausts then refuses", credits: true, balance: 150000, overrun: true, wantBalance: 0, wantCalls: 1},
@@ -1810,7 +1871,8 @@ func TestCoordinatorFreeRefusesLuna(t *testing.T) {
 			f := newCoordinatorFixture(t, "free-chat")
 			d := f.service.database
 			d.hostedOrganization = f.organization
-			if err := d.configureHostedPlans(t.Context(), &HostedConfig{}); err != nil {
+			plans := capacityHostedPlans()
+			if err := d.configureHostedPlans(t.Context(), &HostedConfig{Plans: &plans}); err != nil {
 				t.Fatal(err)
 			}
 			f.conversations.config.Model = "gpt-6-luna"
@@ -1826,6 +1888,10 @@ func TestCoordinatorFreeRefusesLuna(t *testing.T) {
 				if _, err := d.db.ExecContext(t.Context(), "INSERT INTO hosted_members(user_id,email,membership_id,role,principal_id,created_at,updated_at) VALUES('user_credit','credit@example.test','member_credit',?,?,?,?)", role, f.owner, formatHubTime(d.now()), formatHubTime(d.now())); err != nil {
 					t.Fatal(err)
 				}
+			}
+			if test.included {
+				now := d.now()
+				setIncludedCreditSubscription(t, d, f.organization, now.Add(-time.Hour), now.Add(time.Hour), now.Add(time.Hour), PlanReference{ID: "team", Version: 2})
 			}
 			record := f.seed(t, "Free chat", nil)
 			f.say(t, &record, "Can you explain this project?")

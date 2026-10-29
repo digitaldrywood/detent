@@ -16,7 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
-// requirePTY skips a test on a build with no pseudo-terminal. Section 18.3 is
+// requirePTY skips a test on a build with no pseudo-terminal. The terminal contract is
 // written in terms Windows does not have, so the surface is a port there rather
 // than a build tag, and a test that asserted otherwise would be asserting
 // something the platform cannot do.
@@ -313,7 +313,7 @@ func TestTerminalRefusedOutputLeavesTheShellRunning(t *testing.T) {
 	}
 	t.Cleanup(terminal.Close)
 
-	// A refused span means the reader's connection has gone. Section 18.2 gives
+	// A refused span means the reader's connection has gone. The relay protocol gives
 	// them 60 seconds to come back, so the shell must survive it: killing here
 	// would make the resume window a promise the runner does not keep.
 	sink.refuseSpans(errors.New("the person's connection has gone"))

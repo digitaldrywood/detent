@@ -13,7 +13,7 @@ import (
 )
 
 // The runner computes the stored attempt diff from its worktree against the
-// attempt's base (decisions section 18.5), and a diff it cannot compute is a
+// attempt's base, and a diff it cannot compute is a
 // warning rather than a failed run.
 
 func attemptDiffRunner() *Runner {

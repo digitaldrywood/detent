@@ -53,7 +53,12 @@ func attachmentEvidenceRequest(c echo.Context) (*attachment.EvidenceRequest, boo
 }
 
 func (s *Service) registerAttachmentRoutes(e *echo.Echo) {
+	e.GET("/organizations/:organization/api/v2/logo-image", s.readOrganizationLogoImage)
+	for _, base := range []string{"/organizations/:organization/api/v2/attachments", "/api/v2/organizations/:organization/attachments"} {
+		e.GET(base+"/:attachment", s.readAttachment)
+	}
 	for _, base := range []string{"/organizations/:organization/api/v2/projects/:project/attachments", "/api/v2/organizations/:organization/projects/:project/attachments"} {
+		s.registerArchiveRoutes(e, base)
 		e.POST(base, s.uploadAttachment)
 		e.POST(strings.TrimSuffix(base, "/attachments")+"/attempts/:attempt/evidence", s.uploadAttachment)
 		e.GET(base+"/:attachment", s.readAttachment)
@@ -72,10 +77,19 @@ func attachmentNotFound(c echo.Context) error {
 }
 
 func (s *Service) attachmentCall(c echo.Context, organization Organization, method, suffix string, payload any) (int, []byte, error) {
-	if !safeID(c.Param("project")) {
+	if c.Param("project") != "" && !safeID(c.Param("project")) {
 		return http.StatusNotFound, nil, nil
 	}
 	path := "/api/v2/organizations/" + organization.ID + "/projects/" + c.Param("project") + "/attachment-metadata" + suffix
+	if c.Param("project") == "" {
+		if method != http.MethodGet {
+			return http.StatusNotFound, nil, nil
+		}
+		path = "/api/v2/organizations/" + organization.ID + "/attachment-metadata" + suffix
+		if suffix == "/current-logo" {
+			path = "/api/v2/organizations/" + organization.ID + "/logo-metadata"
+		}
+	}
 	if c.Param("attempt") != "" && method == http.MethodPost {
 		if !safeID(c.Param("attempt")) {
 			return http.StatusNotFound, nil, nil
@@ -263,8 +277,8 @@ func (s *Service) storeAttachment(c echo.Context, organization Organization, pri
 	if err != nil {
 		return attachmentError(c, http.StatusBadRequest, "invalid_attachment", "Invalid attempt evidence authority")
 	}
-	s.attachmentMu.RLock()
-	defer s.attachmentMu.RUnlock()
+	unlock := s.attachmentLocks.lock(organization.ID, false)
+	defer unlock()
 	current, err := s.readyOrganization(c.Request().Context(), organization.ID)
 	if err != nil || current.Generation != organization.Generation {
 		return attachmentNotFound(c)
@@ -402,6 +416,29 @@ func (s *Service) readAttachment(c echo.Context) error {
 	if err != nil || status != http.StatusOK {
 		return attachmentCallError(c, status, raw, err, true)
 	}
+	return s.streamAttachment(c, organization, record)
+}
+
+func (s *Service) readOrganizationLogoImage(c echo.Context) error {
+	if s.attachments == nil {
+		return attachmentNotFound(c)
+	}
+	organization, err := s.readyOrganization(c.Request().Context(), c.Param("organization"))
+	if err != nil {
+		return attachmentNotFound(c)
+	}
+	status, raw, err := s.attachmentCall(c, organization, http.MethodGet, "/current-logo", nil)
+	if err != nil || status != http.StatusOK {
+		return attachmentCallError(c, status, raw, err, true)
+	}
+	var record attachment.Metadata
+	if json.Unmarshal(raw, &record) != nil || record.ProjectID != "" || record.DeletedAt != nil || record.Validate() != nil || record.AuthorizedPrincipal == "" {
+		return attachmentNotFound(c)
+	}
+	return s.streamAttachment(c, organization, record)
+}
+
+func (s *Service) streamAttachment(c echo.Context, organization Organization, record attachment.Metadata) error {
 	body, err := s.openAttachment(c.Request().Context(), organization, record)
 	if errors.Is(err, errAttachmentReadAudit) {
 		return attachmentError(c, http.StatusServiceUnavailable, "audit_unavailable", "Attachment audit is unavailable")
@@ -414,6 +451,9 @@ func (s *Service) readAttachment(c echo.Context) error {
 	header.Set("X-Content-Type-Options", "nosniff")
 	header.Set("Content-Security-Policy", "default-src 'none'; sandbox")
 	header.Set("Cache-Control", "private, max-age=300")
+	if c.Path() == "/organizations/:organization/api/v2/logo-image" {
+		header.Set("Cache-Control", "private, no-store")
+	}
 	header.Set("Cross-Origin-Resource-Policy", "same-origin")
 	disposition := "attachment"
 	if strings.HasPrefix(record.ContentType, "image/") {
@@ -441,8 +481,8 @@ func (s *Service) closeAttachmentBody(body io.ReadCloser, id string) {
 }
 
 func (s *Service) deleteAttachment(c echo.Context) error {
-	s.attachmentMu.RLock()
-	defer s.attachmentMu.RUnlock()
+	unlock := s.attachmentLocks.lock(c.Param("organization"), false)
+	defer unlock()
 	if s.attachments == nil {
 		return attachmentNotFound(c)
 	}
@@ -522,8 +562,6 @@ func (s *Service) sweepAttachments(ctx context.Context) {
 }
 
 func (s *Service) sweepOrganizationAttachments(ctx context.Context, organization Organization) error {
-	s.attachmentMu.RLock()
-	defer s.attachmentMu.RUnlock()
 	status, raw, err := s.serviceCall(ctx, organization, "/internal/v1/attachments/expired", struct{}{}, nil)
 	if err != nil {
 		return err
@@ -536,51 +574,92 @@ func (s *Service) sweepOrganizationAttachments(ctx context.Context, organization
 		return err
 	}
 	for _, record := range records {
-		if err := s.removeAttachment(ctx, organization, record, "entry"); err != nil {
+		unlock := s.attachmentLocks.lock(organization.ID, true)
+		err := s.removeAttachment(ctx, organization, record, "entry")
+		unlock()
+		if err != nil {
 			return err
 		}
 	}
-	if err := s.sweepDiffBodyOrphans(ctx, organization); err != nil {
-		return err
+	for _, objects := range []struct{ prefix, endpoint string }{
+		{"attachments/", "/internal/v1/attachments/exists"},
+		{"attempt-diffs/", "/internal/v1/diff-bodies/exists"},
+		{"blobs/sha256/", "/internal/v1/attachments/exists"},
+	} {
+		if err := s.sweepAttachmentOrphans(ctx, organization, objects.prefix, objects.endpoint); err != nil {
+			return err
+		}
 	}
+	return nil
+}
+
+func (s *Service) sweepAttachmentOrphans(ctx context.Context, organization Organization, namespace, endpoint string) error {
 	prefix, err := attachment.OrganizationPrefix(organization.ID)
 	if err != nil {
 		return err
 	}
-	prefix += "attachments/"
+	prefix += namespace
 	return s.attachments.Walk(ctx, prefix, func(object attachment.Object) error {
 		if object.CreatedAt.After(s.config.now().Add(-attachment.OrphanTTL)) {
 			return nil
 		}
-		id := strings.TrimPrefix(object.Key, prefix)
-		key, err := attachment.Key(organization.ID, id)
-		if err != nil || key != object.Key {
-			return attachment.ErrInvalid
+		input := map[string]string{"key": object.Key}
+		if namespace == "attachments/" {
+			id := strings.TrimPrefix(object.Key, prefix)
+			key, err := attachment.Key(organization.ID, id)
+			if err != nil || key != object.Key {
+				return attachment.ErrInvalid
+			}
+			input = map[string]string{"id": id}
 		}
-		status, raw, err := s.serviceCall(ctx, organization, "/internal/v1/attachments/exists", map[string]string{"id": id}, nil)
+		referenced, err := s.attachmentObjectExists(ctx, organization, endpoint, input)
 		if err != nil {
 			return err
 		}
-		if status != http.StatusOK {
-			return errors.New("attachment existence metadata unavailable")
+		if referenced {
+			return nil
 		}
-		var result struct {
-			Exists *bool `json:"exists"`
-		}
-		if err := json.Unmarshal(raw, &result); err != nil {
+		unlock := s.attachmentLocks.lock(organization.ID, true)
+		defer unlock()
+		current, found, err := s.attachments.Stat(ctx, object.Key)
+		if err != nil {
 			return err
 		}
-		if result.Exists == nil {
-			return errors.New("attachment existence metadata missing")
+		if !found || current.CreatedAt.After(s.config.now().Add(-attachment.OrphanTTL)) {
+			return nil
 		}
-		if *result.Exists {
+		exists, err := s.attachmentObjectExists(ctx, organization, endpoint, input)
+		if err != nil {
+			return err
+		}
+		if exists {
 			return nil
 		}
 		if err := s.auth.audit(ctx, "entry", organization.ID, "attachment_deleted"); err != nil {
 			return err
 		}
-		return s.attachments.Delete(ctx, key)
+		return s.attachments.Delete(ctx, object.Key)
 	})
+}
+
+func (s *Service) attachmentObjectExists(ctx context.Context, organization Organization, endpoint string, input map[string]string) (bool, error) {
+	status, raw, err := s.serviceCall(ctx, organization, endpoint, input, nil)
+	if err != nil {
+		return false, err
+	}
+	if status != http.StatusOK {
+		return false, errors.New("attachment existence metadata unavailable")
+	}
+	var result struct {
+		Exists *bool `json:"exists"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return false, err
+	}
+	if result.Exists == nil {
+		return false, errors.New("attachment existence metadata missing")
+	}
+	return *result.Exists, nil
 }
 
 func attachmentUploadResponse(c echo.Context, organization string, status int, raw []byte) error {

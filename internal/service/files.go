@@ -4,11 +4,19 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 )
 
-func serviceLogPaths(cfg Config) (string, string) {
+func LogPaths(cfg Config) (string, string) {
+	if cfg.GOOS == "windows" && strings.Contains(cfg.ConfigPath+cfg.HomeDir, `\`) {
+		root := path.Dir(strings.ReplaceAll(cfg.ConfigPath, `\`, "/"))
+		if strings.TrimSpace(cfg.ConfigPath) == "" {
+			root = path.Join(strings.ReplaceAll(cfg.HomeDir, `\`, "/"), ".config", "detent-runner")
+		}
+		return strings.ReplaceAll(path.Join(root, "logs", "service.out.log"), "/", `\`), strings.ReplaceAll(path.Join(root, "logs", "service.err.log"), "/", `\`)
+	}
 	root := filepath.Dir(cfg.ConfigPath)
 	if strings.TrimSpace(cfg.ConfigPath) == "" {
 		root = filepath.Join(cfg.HomeDir, ".config", "detent-runner")

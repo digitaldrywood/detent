@@ -36,6 +36,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/testenv"
+	"github.com/digitaldrywood/detent/internal/testutil/fakehubscheduling"
+	"github.com/digitaldrywood/detent/internal/testutil/projectfixture"
 	"github.com/digitaldrywood/detent/internal/toolcache"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/tui"
@@ -114,9 +116,27 @@ func TestStartRunningPublishesEnrolledUpdateSupport(t *testing.T) {
 			if err := globalconfig.Write(cfg.Global.Path, cfg.Global, globalconfig.WithMissingProjectPaths()); err != nil {
 				t.Fatal(err)
 			}
+			home := t.TempDir()
+			for _, profile := range []string{workerCodexProfileDir, launchdCodexProfileDir} {
+				writeCodexLogFixture(t, home, profile, time.Now())
+			}
 			ctx, cancel := context.WithCancel(t.Context())
+			entered := make(chan struct{})
+			pruned := make(chan error, 1)
 			done := make(chan error, 1)
-			go func() { done <- startRunning(ctx, cfg) }()
+			go func() {
+				done <- startRunningWithDependencies(ctx, cfg, startRunningDependencies{
+					startupMaintenance: func(ctx context.Context, _ globalconfig.Config, _ store.Store) func() {
+						return func() {
+							pruned <- pruneCodexLogs(ctx, home, time.Now(), codexLogSizeLimit, func(ctx context.Context) (bool, error) {
+								close(entered)
+								<-ctx.Done()
+								return false, ctx.Err()
+							})
+						}
+					},
+				})
+			}()
 			t.Cleanup(func() {
 				cancel()
 				select {
@@ -127,7 +147,20 @@ func TestStartRunningPublishesEnrolledUpdateSupport(t *testing.T) {
 				case <-time.After(10 * time.Second):
 					t.Error("headless runtime did not stop")
 				}
+				select {
+				case err := <-pruned:
+					if !errors.Is(err, context.Canceled) {
+						t.Errorf("retention result = %v, want cancellation", err)
+					}
+				default:
+					t.Error("headless runtime did not join retention")
+				}
 			})
+			select {
+			case <-entered:
+			case <-time.After(10 * time.Second):
+				t.Fatal("owned log maintenance did not start")
+			}
 			select {
 			case observed := <-observations:
 				if observed == nil || !observed.Supported || observed.Validate() != nil {
@@ -155,6 +188,11 @@ func TestMain(m *testing.M) {
 	}
 	if err := testenv.ClearGitEnvironment(); err != nil {
 		panic(err)
+	}
+	for key, value := range map[string]string{"GIT_CONFIG_GLOBAL": os.DevNull, "GIT_CONFIG_NOSYSTEM": "1"} {
+		if err := os.Setenv(key, value); err != nil {
+			panic(err)
+		}
 	}
 	for _, name := range []string{serviceapi.AddressEnvironment, serviceapi.TokenEnvironment, serviceapi.DispositionTokenEnvironment} {
 		if err := os.Unsetenv(name); err != nil {
@@ -581,46 +619,6 @@ func TestTerminalDashboardError(t *testing.T) {
 				t.Fatalf("terminalDashboardError() = %v, want %v", got, tt.want)
 			}
 		})
-	}
-}
-
-func TestResolveBootConfigUsesWorkflowRefForServerHost(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process lifecycle integration")
-	}
-
-	repo := initRuntimeWorkflowRepo(t)
-	writeBootHostWorkflow(t, filepath.Join(repo, "WORKFLOW.md"), "127.0.0.8")
-	commitRuntimeWorkflowRepo(t, repo, "initial workflow")
-	updateRuntimeWorkflowRef(t, repo, "origin/main", "HEAD")
-	writeBootHostWorkflow(t, filepath.Join(repo, "WORKFLOW.md"), "127.0.0.9")
-
-	configPath := filepath.Join(t.TempDir(), "global.yaml")
-	cfg, err := globalconfig.DefaultAt(configPath)
-	if err != nil {
-		t.Fatalf("DefaultAt() error = %v", err)
-	}
-	cfg.Projects = []globalconfig.Project{
-		{
-			ID:          "detent",
-			Workflow:    "WORKFLOW.md",
-			WorkflowRef: "origin/main",
-			Workdir:     repo,
-			Weight:      1,
-			Priority:    0,
-		},
-	}
-	if err := globalconfig.Write(configPath, cfg); err != nil {
-		t.Fatalf("Write() error = %v", err)
-	}
-
-	got, err := resolveBootConfig(context.Background(), configPath, "", runtimeFlags{}, defaultOptions())
-	if err != nil {
-		t.Fatalf("resolveBootConfig() error = %v", err)
-	}
-
-	if got.Host != "127.0.0.8" {
-		t.Fatalf("Host = %q, want ref-backed host", got.Host)
 	}
 }
 
@@ -1184,15 +1182,19 @@ func TestStartRunningUsesWorkflowKanbanModeForFleetActions(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		done <- startRunning(ctx, BootConfig{
-			Mode:   BootModeRunning,
-			Global: global,
-			Host:   "127.0.0.1",
-			Port:   &port,
-			Output: output,
+			Mode:       BootModeRunning,
+			Global:     global,
+			Host:       "127.0.0.1",
+			Port:       &port,
+			Output:     output,
+			Scheduling: &fakehubscheduling.Source{Connector: bootProvisioningConnector{}},
 		})
 	}()
 
 	baseURL := waitForBootDashboardURL(t, output, done)
+	waitForDashboardCondition(t, baseURL+"/health", done, "startup ready", func(body string) bool {
+		return strings.Contains(body, `"ready":true`)
+	})
 	waitForDashboard(t, baseURL+"/kanban", done)
 	status, body := postDashboardForm(t, baseURL+"/api/v1/kanban/move", done, url.Values{
 		"issue_id":      {"issue-1"},
@@ -1250,7 +1252,7 @@ func TestStartRunningPublishesStartupSnapshotBeforeProjectStartCompletes(t *test
 			Host:   "127.0.0.1",
 			Port:   &port,
 			Output: output,
-			ConnectorFactory: func(workflowconfig.Config) (connector.Connector, error) {
+			Scheduling: &fakehubscheduling.Source{Factory: func(string) (connector.Connector, bool) {
 				return bootProvisioningConnector{
 					provision: func(ctx context.Context) error {
 						provisionStartedOnce.Do(func() {
@@ -1263,8 +1265,8 @@ func TestStartRunningPublishesStartupSnapshotBeforeProjectStartCompletes(t *test
 							return nil
 						}
 					},
-				}, nil
-			},
+				}, true
+			}},
 		})
 	}()
 
@@ -1309,7 +1311,7 @@ func TestStartRunningPublishesStartupSnapshotBeforeProjectStartCompletes(t *test
 
 	close(provisionRelease)
 	healthBody = []byte(waitForDashboard(t, baseURL+"/health", done))
-	for _, want := range []string{`"status":"ok"`, `"ready":true`, `"lifecycle":"ready"`} {
+	for _, want := range []string{`"status":"ok"`, `"ready":true`, `"lifecycle":"ready"`, `"connector":"configured"`, `"connector":"boot"`} {
 		if !strings.Contains(string(healthBody), want) {
 			t.Fatalf("ready health response missing %q:\n%s", want, healthBody)
 		}
@@ -1378,7 +1380,7 @@ func TestStartRunningSurvivesTransientConnectorProvisioningFailure(t *testing.T)
 					Host:   "127.0.0.1",
 					Port:   &port,
 					Output: output,
-					ConnectorFactory: func(workflowconfig.Config) (connector.Connector, error) {
+					Scheduling: &fakehubscheduling.Source{Factory: func(string) (connector.Connector, bool) {
 						return bootProvisioningConnector{
 							provision: func(ctx context.Context) error {
 								failed := false
@@ -1392,8 +1394,8 @@ func TestStartRunningSurvivesTransientConnectorProvisioningFailure(t *testing.T)
 								<-ctx.Done()
 								return ctx.Err()
 							},
-						}, nil
-					},
+						}, true
+					}},
 				}, startRunningDependencies{
 					snapshotNow: func() time.Time {
 						select {
@@ -1512,11 +1514,12 @@ func TestStartRunningHotReloadsLocalConfigurationProjects(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		done <- startRunning(ctx, BootConfig{
-			Mode:   BootModeRunning,
-			Global: global,
-			Host:   "127.0.0.1",
-			Port:   &port,
-			Output: output,
+			Mode:       BootModeRunning,
+			Global:     global,
+			Host:       "127.0.0.1",
+			Port:       &port,
+			Output:     output,
+			Scheduling: &fakehubscheduling.Source{Connector: bootProvisioningConnector{}},
 		})
 	}()
 
@@ -1612,7 +1615,7 @@ func TestStartRunningReconcilesLocalConfigurationChangedBeforeWatcherStarts(t *t
 			Host:   "127.0.0.1",
 			Port:   &port,
 			Output: output,
-			ConnectorFactory: func(workflowconfig.Config) (connector.Connector, error) {
+			Scheduling: &fakehubscheduling.Source{Factory: func(string) (connector.Connector, bool) {
 				return bootProvisioningConnector{
 					provision: func(ctx context.Context) error {
 						provisionStartedOnce.Do(func() {
@@ -1625,8 +1628,8 @@ func TestStartRunningReconcilesLocalConfigurationChangedBeforeWatcherStarts(t *t
 							return nil
 						}
 					},
-				}, nil
-			},
+				}, true
+			}},
 		})
 	}()
 
@@ -2188,7 +2191,7 @@ func createBootProjectFiles(t *testing.T) bootProjectFiles {
 	workflow := filepath.Join(workdir, "WORKFLOW.md")
 	if err := os.WriteFile(workflow, []byte(`---
 tracker:
-  kind: memory
+  kind: hub_native
 ---
 Test workflow prompt.
 `), 0o600); err != nil {
@@ -2205,32 +2208,13 @@ func writeBootKanbanWorkflow(t *testing.T, path string, mode string) {
 
 	content := `---
 tracker:
-  kind: memory
+  kind: hub_native
   lanes: [{name: Backlog, role: holding}, {name: Blocked, role: holding}, {name: Ready, role: active}, {name: Doing, role: active}, {name: Done, role: terminal}]
 server:
   kanban:
     mode: ` + mode + `
-agent:
-  auto_promote:
-    no_progress_limit: 0
 ---
 Test workflow prompt.
-`
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
-	}
-}
-
-func writeBootHostWorkflow(t *testing.T, path string, host string) {
-	t.Helper()
-
-	content := `---
-tracker:
-  kind: memory
-server:
-  host: ` + host + `
----
-Boot workflow.
 `
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
@@ -2314,7 +2298,7 @@ func (m terminalDashboardQuitModel) Update(tea.Msg) (tea.Model, tea.Cmd) {
 func writeBootLocalProjects(t *testing.T, path string, projects []globalconfig.Project) {
 	t.Helper()
 
-	cfg, err := readLocalConfigurationFile(path)
+	cfg, err := readLocalConfigurationFile(t.Context(), path)
 	if err != nil {
 		t.Fatalf("readLocalConfigurationFile() error = %v", err)
 	}
@@ -2327,20 +2311,14 @@ func writeBootLocalProjects(t *testing.T, path string, projects []globalconfig.P
 func writeBootGlobalConfig(t *testing.T, path string, projects []globalconfig.Project) {
 	t.Helper()
 
-	cfg := globalconfig.Config{
-		Path:       path,
-		APIVersion: globalconfig.APIVersion,
-		Kind:       globalconfig.Kind,
-		Global: globalconfig.Settings{
-			MaxConcurrentAgents: 8,
-			Scheduling:          globalconfig.SchedulingWeighted,
-			FairShare:           map[string]any{"half_life": "1h"},
-			Startup:             map[string]any{"jitter_seconds": 0, "max_spawn_per_second": 1},
-		},
-		Projects: projects,
+	cfg, err := globalconfig.DefaultAt(path)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if err := globalconfig.Write(path, cfg); err != nil {
-		t.Fatalf("Write() error = %v", err)
+	cfg.Global.MaxConcurrentAgents = 8
+	cfg.Projects = projects
+	if err := writeLocalConfigurationFile(path, cfg); err != nil {
+		t.Fatalf("writeLocalConfigurationFile() error = %v", err)
 	}
 }
 
@@ -2348,8 +2326,8 @@ func newRefreshProject(t *testing.T, id string) *projectpkg.Project {
 	t.Helper()
 
 	cfg := workflowconfig.Default()
-	cfg.Tracker.Kind = workflowconfig.TrackerMemory
-	project, err := projectpkg.New(projectpkg.Config{
+	cfg.Tracker.Kind = workflowconfig.TrackerHubNative
+	project, err := projectfixture.New(projectpkg.Config{
 		Project: globalconfig.Project{
 			ID:      id,
 			Workdir: t.TempDir(),
@@ -2358,7 +2336,7 @@ func newRefreshProject(t *testing.T, id string) *projectpkg.Project {
 		Workflow: workflowconfig.Workflow{Config: cfg, Prompt: "Test workflow prompt."},
 	}, projectpkg.Dependencies{})
 	if err != nil {
-		t.Fatalf("project.New() error = %v", err)
+		t.Fatalf("projectfixture.New() error = %v", err)
 	}
 	return project
 }

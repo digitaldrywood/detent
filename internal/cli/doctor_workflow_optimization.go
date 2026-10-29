@@ -40,7 +40,7 @@ const (
 	doctorWorkflowRulePinnedRouteModelRejected       = "pinned_route_model_rejected"
 	doctorWorkflowRulePinnedWorkerModelStale         = "pinned_worker_model_stale"
 	doctorWorkflowRuleSessionMultiplierKills         = "session_multiplier_ceiling_kills"
-	doctorWorkflowRuleSpendProgressBelowMedian       = "spend_progress_below_median_session_cost"
+	doctorWorkflowRuleCompletionEvidenceBelowMedian  = "spend_progress_below_median_session_cost"
 	doctorWorkflowRuleNoSessionTokenBrake            = "no_session_token_brake"
 	doctorWorkflowRuleBudgetEstimateDrift            = "budget_estimate_drift"
 	doctorWorkflowRuleSchedulerSkipRate              = "scheduler_skip_rate"
@@ -95,18 +95,7 @@ type doctorWorkflowOptimizationProjectReport struct {
 	SessionGuard   doctorWorkflowSessionGuard        `json:"session_guard"`
 	OrphanRecovery doctorOrphanRecoveryConfig        `json:"orphan_recovery"`
 	Metrics        doctorWorkflowOptimizationMetrics `json:"metrics"`
-	Retro          doctorWorkflowRetroStatus         `json:"retro"`
 	Error          string                            `json:"error,omitempty"`
-}
-
-type doctorWorkflowRetroStatus struct {
-	Enabled       bool       `json:"enabled"`
-	LastRun       *time.Time `json:"last_run,omitempty"`
-	Trigger       string     `json:"trigger,omitempty"`
-	Findings      int64      `json:"findings"`
-	FiledIssues   int64      `json:"filed_issues"`
-	UpdatedIssues int64      `json:"updated_issues"`
-	Error         string     `json:"error,omitempty"`
 }
 
 type doctorWorkflowModelChoice struct {
@@ -428,10 +417,6 @@ func doctorWorkflowOptimization(
 		if err != nil {
 			return doctorWorkflowOptimizationReport{}, err
 		}
-		retroStatus, err := doctorWorkflowRetroStatusForProject(ctx, db, projectID, workflow.Config.Retro.Enabled)
-		if err != nil {
-			return doctorWorkflowOptimizationReport{}, err
-		}
 		report.Projects = append(report.Projects, doctorWorkflowOptimizationProjectReport{
 			ProjectID:      projectID,
 			WorkflowPath:   workflowPath,
@@ -439,7 +424,6 @@ func doctorWorkflowOptimization(
 			SessionGuard:   doctorWorkflowSessionGuardConfig(workflow.Config),
 			OrphanRecovery: doctorOrphanRecoveryConfig{ResumeOrphanedSessions: workflow.Config.Agent.ResumeOrphanedSessions, ExperimentalThreadResume: workflow.Config.Agent.ExperimentalThreadResume},
 			Metrics:        metrics,
-			Retro:          retroStatus,
 		})
 		analyzedProjects = append(analyzedProjects, doctorWorkflowAnalyzedProject{
 			projectID:    projectID,
@@ -455,7 +439,7 @@ func doctorWorkflowOptimization(
 		}
 		report.Proposals = append(report.Proposals, proposals...)
 		if options.ProposeIssues {
-			created, err := createDoctorWorkflowImprovementProposalIssues(ctx, projectID, workflow.Config, deps, proposals)
+			created, err := createDoctorWorkflowImprovementProposalIssues(ctx, cfg, projectID, workflow.Config, deps, proposals)
 			if err != nil {
 				return doctorWorkflowOptimizationReport{}, err
 			}
@@ -472,7 +456,7 @@ func doctorWorkflowOptimization(
 			proposals := doctorWorkflowProposalsForFindings(project.projectID, []doctorWorkflowOptimizationFinding{finding}, options.ProposalThreshold)
 			report.Proposals = append(report.Proposals, proposals...)
 			if options.ProposeIssues {
-				created, err := createDoctorWorkflowImprovementProposalIssues(ctx, project.projectID, project.config, deps, proposals)
+				created, err := createDoctorWorkflowImprovementProposalIssues(ctx, cfg, project.projectID, project.config, deps, proposals)
 				if err != nil {
 					return doctorWorkflowOptimizationReport{}, err
 				}
@@ -507,34 +491,6 @@ func doctorWorkflowOptimization(
 		report.Diff = doctorWorkflowOptimizationDiff(report)
 	}
 	return report, nil
-}
-
-func doctorWorkflowRetroStatusForProject(ctx context.Context, db doctorTelemetryStore, projectID string, enabled bool) (doctorWorkflowRetroStatus, error) {
-	status := doctorWorkflowRetroStatus{Enabled: enabled}
-	var completedAt string
-	err := db.QueryRowContext(ctx, `
-SELECT completed_at, trigger, findings_count, filed_count, updated_count, COALESCE(error, '')
-FROM retro_runs
-WHERE project_id = ?
-ORDER BY completed_at DESC, id DESC
-LIMIT 1`, strings.TrimSpace(projectID)).Scan(
-		&completedAt, &status.Trigger, &status.Findings, &status.FiledIssues, &status.UpdatedIssues, &status.Error,
-	)
-	if errors.Is(err, sql.ErrNoRows) {
-		return status, nil
-	}
-	if err != nil && strings.Contains(strings.ToLower(err.Error()), "no such table: retro_runs") {
-		return status, nil
-	}
-	if err != nil {
-		return doctorWorkflowRetroStatus{}, fmt.Errorf("read retro status for project %s: %w", projectID, err)
-	}
-	lastRun, err := doctorWorkflowSessionTimestamp(completedAt)
-	if err != nil {
-		return doctorWorkflowRetroStatus{}, err
-	}
-	status.LastRun = &lastRun
-	return status, nil
 }
 
 func doctorWorkflowReviewFlowBoundary(project globalconfig.Project, now time.Time) (time.Time, string) {
@@ -954,60 +910,6 @@ func doctorWorkflowMedianSessionCostUSDByEffort(costs map[string][]float64) map[
 	return medians
 }
 
-func doctorWorkflowSpendProgressLimitFinding(
-	projectID string,
-	workflowPath string,
-	cfg workflowconfig.Config,
-	medianCostByEffort map[string]float64,
-) (doctorWorkflowOptimizationFinding, bool) {
-	configuredLimit := cfg.Agent.NoProgressSpendLimitUSD
-	if cfg.Budget.EffectiveBillingMode() != workflowconfig.BillingModeMetered ||
-		configuredLimit <= 0 ||
-		len(medianCostByEffort) == 0 {
-		return doctorWorkflowOptimizationFinding{}, false
-	}
-	efforts := make([]string, 0, len(medianCostByEffort))
-	for effort := range medianCostByEffort {
-		efforts = append(efforts, effort)
-	}
-	slices.Sort(efforts)
-	offendingMedians := map[string]float64{}
-	effectiveLimits := map[string]float64{}
-	details := make([]string, 0, len(efforts))
-	recommendedBase := configuredLimit
-	for _, effort := range efforts {
-		median := medianCostByEffort[effort]
-		effective := workflowconfig.EffectiveNoProgressSpendLimitUSD(configuredLimit, effort)
-		if median <= 0 || effective >= median {
-			continue
-		}
-		offendingMedians[effort] = median
-		effectiveLimits[effort] = effective
-		details = append(details, fmt.Sprintf("%s (%s < %s)", effort, budget.FormatUSD(effective), budget.FormatUSD(median)))
-		candidate := median * 1.5 / workflowconfig.NoProgressSpendLimitMultiplier(effort)
-		recommendedBase = math.Max(recommendedBase, candidate)
-	}
-	if len(offendingMedians) == 0 {
-		return doctorWorkflowOptimizationFinding{}, false
-	}
-	recommendedBase = math.Ceil(recommendedBase*100) / 100
-	return doctorWorkflowFinding(
-		projectID,
-		workflowPath,
-		doctorWorkflowRuleSpendProgressBelowMedian,
-		"Notional USD progress breaker is below observed session value",
-		"effective notional USD breaker limit is below observed p50 per-session notional USD for effort tier(s): "+strings.Join(details, ", "),
-		0,
-		map[string]any{
-			"configured_base_limit_usd":             configuredLimit,
-			"effective_limit_usd_by_effort":         effectiveLimits,
-			"observed_p50_session_cost_by_effort":   offendingMedians,
-			"recommended_retry_cost_headroom_ratio": 1.5,
-		},
-		doctorWorkflowOptimizationPatch{Path: "agent.no_progress_spend_limit_usd", Value: recommendedBase},
-	), true
-}
-
 func doctorWorkflowSessionGuardTelemetry(ctx context.Context, db doctorTelemetryStore, projectID string) ([]doctorWorkflowSessionGuardIncident, error) {
 	rows, err := db.QueryContext(ctx, `
 SELECT
@@ -1356,9 +1258,6 @@ func doctorWorkflowOptimizationFindings(
 			},
 			patches...,
 		))
-	}
-	if finding, ok := doctorWorkflowSpendProgressLimitFinding(projectID, workflowPath, cfg, metrics.MedianSessionCostUSDByEffort); ok {
-		findings = append(findings, finding)
 	}
 	if incidents := doctorWorkflowRepeatedSessionGuardIncidents(metrics.SessionMultiplierKills); len(incidents) > 0 {
 		attemptCounts := make(map[string]int64, len(incidents))
@@ -1997,7 +1896,7 @@ func doctorWorkflowEstimatedImpact(findings []doctorWorkflowOptimizationFinding)
 }
 
 func writeDoctorWorkflowOptimizationPretty(out io.Writer, report doctorWorkflowOptimizationReport) error {
-	if out == nil || len(report.Findings) == 0 && len(report.Proposals) == 0 && len(report.CreatedProposalIssues) == 0 && strings.TrimSpace(report.Diff) == "" && len(report.Written) == 0 && !doctorReportHasOrphanRecovery(report) && !doctorWorkflowHasRetroStatus(report.Projects) {
+	if out == nil || len(report.Findings) == 0 && len(report.Proposals) == 0 && len(report.CreatedProposalIssues) == 0 && strings.TrimSpace(report.Diff) == "" && len(report.Written) == 0 && !doctorReportHasOrphanRecovery(report) {
 		return nil
 	}
 	if _, err := fmt.Fprintln(out); err != nil {
@@ -2018,22 +1917,8 @@ func writeDoctorWorkflowOptimizationPretty(out io.Writer, report doctorWorkflowO
 				return err
 			}
 		}
-		lastRun := "never"
-		if project.Retro.LastRun != nil {
-			lastRun = project.Retro.LastRun.UTC().Format(time.RFC3339)
-		}
-		if _, err := fmt.Fprintf(out, "Retro %s: enabled=%t last_run=%s findings=%d filed_issues=%d updated_issues=%d", project.ProjectID, project.Retro.Enabled, lastRun, project.Retro.Findings, project.Retro.FiledIssues, project.Retro.UpdatedIssues); err != nil {
-			return err
-		}
-		if project.Retro.Error != "" {
-			if _, err := fmt.Fprintf(out, " error=%s", project.Retro.Error); err != nil {
-				return err
-			}
-		}
-		if _, err := fmt.Fprintln(out); err != nil {
-			return err
-		}
 	}
+
 	for index, finding := range report.Findings {
 		if _, err := fmt.Fprintf(out, "%d. [%s] %s", index+1, finding.RuleID, finding.Title); err != nil {
 			return err
@@ -2152,10 +2037,6 @@ func doctorReportHasOrphanRecovery(report doctorWorkflowOptimizationReport) bool
 		}
 	}
 	return false
-}
-
-func doctorWorkflowHasRetroStatus(projects []doctorWorkflowOptimizationProjectReport) bool {
-	return len(projects) > 0
 }
 
 func doctorWorkflowEvidenceLine(evidence map[string]any) string {

@@ -2,24 +2,23 @@
 
 [Back to README](../README.md#documentation)
 
-Use Todo for genuine software dependency waiting and preserve existing PR phases.
+This page describes how Detent decides that work is waiting on another issue, on a person, or on nothing at all.
 
-## Human action
+## Hub dependency relations
 
-Finish independent technical work and authorized fallbacks first. If a person
-must make a product decision or perform a physical action, record a concrete
-`human_action` in the Workpad `detent-status` block with `status: blocked`.
-Detent routes the card to Blocked, where the board shows "Needs you". Keep any
-existing PR intact. A reply authorizes only what it says; retain separate
-authorization for sends, publishing, deployment, charges, and destructive
-actions. Instance and infrastructure failures stay attributed to the instance.
+Native Cloud projects record dependencies as Hub relations, created with `detent hub issue dependency`, the `set_dependency` MCP tool, `POST /api/v1/work-items/{id}/dependencies` or the v2 `POST /api/v2/organizations/{org}/projects/{project}/work-items/{item}/dependencies` route. The Hub offers a `Todo` item to runners only when every blocker it depends on is in a terminal workflow state. The item stays in `Todo` while it waits; it does not move to `Blocked`.
 
-Do not create synthetic human-prerequisite issues, labels, or dependency edges.
-Intentional standalone human tasks remain non-executable.
+Each project has a `require_dependencies` setting that defaults to true. Setting it false disables dependency gating for that project. For native projects the Hub relation is the only dependency source: `Depends on:` or `Blocked by:` lines in an issue body are not read.
 
-When the action is done, an authorized project member records what was decided
-or done in a **newer** `## Codex Workpad` comment on the original issue. Clear
-`human_action` in its structured block. If no other blocker remains, use:
+## Body dependency lines (GitHub-tracked projects)
+
+For projects with `tracker.kind: github`, Detent also reads a machine-readable dependency line such as `Depends on: #123` or `Blocked by: owner/repo#123` in the issue description and merges it with GitHub's native blocked-by relations. Declarations read only the leading comma/and-separated reference list (legacy semicolon separators also work). The first sentence terminator (`.`, `!`, or `?`), other prose, or the end of the line ends the declaration. Periods inside repository names and URLs remain part of the reference. `none`, `n/a`, and `-` explicitly declare no dependencies, even when issue references follow. For example, `Depends on: none. Order: #2, #3` declares no blockers, while `Depends on: #2 and #3 — see #9 for context` declares only #2 and #3. Fenced examples never add blockers.
+
+## Human action and Blocked
+
+`Blocked` holds only work that waits on a person: a Workpad `detent-status` block with `status: blocked` and a concrete `human_action` (a question or a permission request), or an explicit operator stop. The board shows such a card as "Needs you". Machine failures, refused or unaccepted versions and infrastructure failures never enter `Blocked`; they return to a dispatchable lane through the retry owner with capped backoff, and infrastructure failures stay attributed to the instance.
+
+A human action is cleared by an authorized project member posting a **newer** `## Codex Workpad` comment whose structured block clears `human_action`, for example:
 
 ```detent-status
 schema: 1
@@ -28,42 +27,19 @@ blockers: []
 human_action: null
 ```
 
-Detent recognizes an authorized Workpad update made after the Blocked entry
-and moves the issue through its existing recorded-blocker recovery to Todo or
-Rework. An ordinary reply alone does not clear the Workpad. If other blockers
-remain, keep them in the newer blocked Workpad; Detent retains their normal
-dependency or predicate checks. Do not move the tracker lane by hand.
+Detent recognizes an authorized Workpad update made after the Blocked entry and returns the issue to its recorded executable lane. An ordinary reply does not clear the Workpad. The orchestrator is the only writer of lane state.
 
-### Convert an older generated question prerequisite
+On every recovery read, an item in `Blocked` without a current human action or operator stop is treated as a machine failure and sent back through the retry owner. Historical reason codes, fingerprints and retry counts do not hold it in `Blocked`.
 
-An upgrade can leave a generated `detent-human` issue linked to executable
-work. The removed question-migration endpoint cannot convert it. For each
-affected dependent, first inspect the generated source and confirm that it is
-an unresolved generated question, not a software dependency or an intentional
-standalone human task. Record the unresolved decision as a concrete blocked
-Workpad `human_action` on the dependent, preserving unrelated blockers and its
-PR. Then remove the generated source from the dependent's `Depends on:` or
-`Blocked by:` line and from any native tracker dependency relation. Detent
-keeps the dependent in Blocked with "Needs you" until the action is cleared as
-above. Repeat for every dependent before retiring the generated source as not
-planned, with a link to the dependents; retain the source and its comments as
-history. Already completed dependents stay completed. Never treat closing the
-source as approval of the decision or permission for an external action.
+## Typed Workpad blockers
 
-## Dependency configuration
-
-Workpad blockers may declare live evidence directly. Each typed blocker names
-an `owner`, a `predicate`, and a `recheck_interval` or `expires_at`. Detent
-re-evaluates these records on every blocked-lane tick and clears the park when
-all predicates are false. The supported predicate types are `issue_state`,
-`pull_request_state`, `check_presence`, `budget_capacity`, and
-`config_fingerprint`.
+Workpad blockers may declare live evidence. Each typed blocker names an `owner`, a `predicate`, and a `recheck_interval` or `expires_at`. The supported predicate types are `issue_state`, `pull_request_state`, `check_presence`, `budget_capacity`, and `config_fingerprint`.
 
 ```detent-status
 schema: 1
 status: blocked
 blockers:
-  - ref: "owner/repo#123"
+  - ref: "example-org/example-project#123"
     reason: "waiting for the dependency to close"
     owner: orchestrator
     predicate:
@@ -73,75 +49,23 @@ blockers:
 human_action: null
 ```
 
-Free-text blocker entries remain valid for compatibility, but Detent marks
-them unverifiable, surfaces their owner and age, and never clears them
-automatically. An expired predicate that still holds is also unverifiable;
-orchestrator-owned unverifiable parks are escalated for operator attention.
+During blocked recovery, orchestrator-owned `issue_state` blockers defer recovery while their predicate holds. Free-text blocker entries remain valid for compatibility but are unverifiable, and an expired predicate that still holds is also unverifiable; neither keeps work in `Blocked` without a human action.
 
-- **Keep the issue in `Todo`.** Record the dependency as a Hub dependency
-  relation with `detent hub issue dependency` or
-  `POST /api/v1/work-items/{id}/dependencies`. The Hub offers `Todo` work to
-  runners only when it is dependency-ready; a resolved dependency has a
-  terminal workflow state. `require_dependencies` defaults to true; setting it
-  false disables that readiness gating for the project. This is the default
-  behavior and needs no extra configuration.
-  Detent also reads a machine-readable dependency line such as
-  `Depends on: #123` or `Blocked by: owner/repo#123` in the issue description.
-  Declarations read only the leading comma/and-separated reference list (legacy
-  semicolon separators also work). The first sentence terminator (`.`, `!`, or
-  `?`), other prose, or the end of the line ends the declaration. Periods inside
-  repository names and URLs remain part of the reference. `none`, `n/a`, and `-`
-  explicitly declare no dependencies, even when issue references follow. For
-  example, `Depends on: none. Order: #2, #3` declares no blockers, while
-  `Depends on: #2 and #3 — see #9 for context` declares only #2 and #3.
-  The same rules apply to `Blocked by:`.
-- **Legacy dependency waiting in `Blocked`.** Enable `tracker.dependency_auto_unblock` when
-  your team wants dependency-waiting issues to sit in a waiting column. Detent
-  only moves issues that have explicit `Depends on:` or `Blocked by:` references.
-  When all blockers are terminal, closed, or have a merged linked PR under the
-  configured `readiness` rule, Detent moves the issue to `target_state` and
-  posts an audit comment. Without
-  `tracker.dependency_auto_unblock.enabled: true`, a `Blocked` issue is observed
-  for display but will not be moved back to `Todo`. Human blockers without
-  explicit dependency references stay blocked.
-- **Queue fixable blockers automatically.** Enable
-  `tracker.blocker_auto_promote` alongside dependency auto-unblock when a
-  dependency-waiting issue should pull same-repository blockers out of inactive
-  states such as `Backlog`, `Blocked`, or `Human Review`. Detent promotes only
-  resolved, same-repository blockers to the configured `target_state`, respects
-  current local agent capacity, and posts an audit comment on the promoted
-  blocker. Agents that move work to `Blocked` because of another tracked issue
-  or pull request must ensure the issue body contains a machine-readable
-  `Blocked by:` or `Depends on:` line; Workpad mentions alone are not a durable
-  dependency contract.
-- **Recover explicit PR-maintenance parks.** Enable `tracker.blocked_recovery`
-  only when structured PR-maintenance parks should move work to the configured
-  repair lane. The worker that intentionally creates such a park must set
-  `reason_code: merge_conflict`, `stale_base`, or `missing_current_head_ci` in
-  its blocked `detent-status` block; Detent persists that code on the lane
-  entry. Recovery also requires the corresponding PR condition to still hold
-  and a new diff-fingerprint/base-OID pair. Issue descriptions, manual status
-  moves, and other prose do not authorize recovery. Keep this disabled on
-  boards where `Blocked` is also used for deliberate operator parking.
+## Tracker dependency settings
 
-If a runner runs under a systemd user service, verify the service PATH
-resolves every command used by project hooks and validation gates;
-`detent doctor` checks Detent's direct dependencies, not repo-specific
-bootstrap tools.
+These `tracker` settings remain in the configuration schema (see [Configuration](config.md)):
 
-Keep systemd's default `KillMode=control-group` for the runner service. Detent
-starts each Codex and Claude worker in its own process group without leaving the
-service cgroup, so its persisted worker registry can terminate stale process
-groups on shutdown or startup while systemd remains the final cleanup backstop.
-Do not wrap worker commands in launchers that double-fork or explicitly move
-children into another cgroup.
+- `tracker.dependency_auto_unblock` moves issues with explicit dependency references out of its `source_states` (default `Blocked`) to `target_state` (default `Todo`) once every blocker satisfies the `readiness` rule, and posts an audit comment. Enabling it requires `Rework` in the active states.
+- `tracker.blocker_auto_promote` promotes resolved same-repository blockers of a dependency-waiting issue out of `blocker_states` (default `Backlog`, `Blocked`, `Human Review`) to `target_state` (default `Todo`), within current local agent capacity.
+- `tracker.blocked_recovery` routes items carrying a persisted `reason_code` of `merge_conflict`, `stale_base` or `missing_current_head_ci` to its `target_state` (default `Rework`), which must be an active state when enabled. It reads reason codes from older Workpads for compatibility.
 
-On shared Linux hosts, add `MemoryHigh` and `MemoryMax` to
-`detent.runner.service` as defense in depth. Size both for the aggregate
-orchestrator and worker footprint,
-leave capacity for unrelated workloads, and keep `MemoryMax` above
-`MemoryHigh`. For example, a 32 GiB host reserved partly for other work could
-use this user-service drop-in as a starting point:
+## Runner host process limits
+
+On Linux hosts that run the runner as a systemd user service, the service PATH must resolve every command used by project hooks and validation gates; `detent doctor` checks Detent's direct dependencies, not repository-specific bootstrap tools.
+
+Detent starts each Codex and Claude worker in its own process group without leaving the service cgroup, so its persisted worker registry can terminate stale process groups on shutdown or startup while systemd's default `KillMode=control-group` remains the final cleanup backstop. Launchers that double-fork or move children into another cgroup defeat that cleanup.
+
+`MemoryHigh` and `MemoryMax` on `detent.runner.service` add host-level protection on shared machines. Both cover the aggregate orchestrator and worker footprint, and `MemoryMax` must be above `MemoryHigh`. For example, a 32 GiB host reserved partly for other work could use this user-service drop-in:
 
 ```ini
 [Service]
@@ -149,10 +73,4 @@ MemoryHigh=24G
 MemoryMax=28G
 ```
 
-Create the drop-in with `systemctl --user edit detent.runner.service`, then run
-`systemctl --user daemon-reload` and restart the service during an approved
-maintenance window. Verify the effective values with
-`systemctl --user show detent.runner.service -p MemoryHigh -p MemoryMax`.
-These cgroup limits protect the host if Detent's per-agent RSS ceiling fails; they do not
-replace the per-agent ceiling or memory, IO, and CPU pressure admission
-controls.
+Create the drop-in with `systemctl --user edit detent.runner.service`, run `systemctl --user daemon-reload`, and restart the service. `systemctl --user show detent.runner.service -p MemoryHigh -p MemoryMax` shows the effective values. These cgroup limits do not replace the per-agent RSS ceiling or the memory, IO, and CPU pressure admission controls.

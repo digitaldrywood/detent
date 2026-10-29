@@ -51,6 +51,7 @@ func (e hubOperatorExecutor) ListTools(ctx context.Context) ([]operatortool.Defi
 	return out, nil
 }
 func (e hubOperatorExecutor) Execute(ctx context.Context, call operatortool.Call) (result operatortool.Result, resultErr error) {
+	ctx = e.service.freshRunDetailContext(ctx)
 	s := e.service
 	if call.Name == operatortool.ConnectionInfo || call.Name == operatortool.ActionResult {
 		if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead}); err != nil {
@@ -225,6 +226,9 @@ func hubChangeResult(value any) (operatortool.Result, error) {
 	return operatortool.Result{Content: raw}, nil
 }
 func hubSafeChangeError(err error) error {
+	if errors.Is(operatorAuthorizationError(err), operatortool.ErrProviderUnavailable) {
+		return operatortool.ErrProviderUnavailable
+	}
 	if errors.Is(err, operatortool.ErrAccessDenied) || errors.Is(err, sql.ErrNoRows) {
 		return operatortool.ErrAccessDenied
 	}
@@ -239,6 +243,9 @@ func hubSafeChangeError(err error) error {
 		return mutation.ErrUncertain
 	}
 	if errors.As(err, &failure) {
+		if failure.Code == "invalid_request" && failure.publicMessage {
+			return &operatortool.RequestError{Code: failure.Code, Message: failure.Message}
+		}
 		if failure.Code == "idempotency_conflict" {
 			return mutation.ErrConflict
 		}

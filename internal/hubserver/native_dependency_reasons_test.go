@@ -28,6 +28,7 @@ func TestNativeDependencyReasonCAS(t *testing.T) {
 		t.Fatalf("dependency summaries: %+v %+v", current.Blockers, neighbor.Dependents)
 	}
 	path := f.base + "/work-items/" + string(dependent.WorkItemID) + "/dependency-reasons"
+	drainTestNativeBoard(t, f.service)
 	var beforeSequence int64
 	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT MAX(sequence) FROM native_board_deltas").Scan(&beforeSequence); err != nil {
 		t.Fatal(err)
@@ -76,11 +77,13 @@ func TestNativeDependencyReasonCAS(t *testing.T) {
 	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT MAX(sequence) FROM native_board_deltas").Scan(&afterSequence); err != nil || afterSequence != beforeSequence {
 		t.Fatalf("reason write synchronously projected cards: before=%d after=%d err=%v", beforeSequence, afterSequence, err)
 	}
+	var cursor string
 	for remaining := 1; remaining >= 0; remaining-- {
-		more, err := f.service.database.drainNativeBoardDirty(t.Context(), f.service.config.now())
+		more, id, err := f.service.database.drainNativeBoardDirtyAfter(t.Context(), f.service.config.now(), cursor)
 		if err != nil || !more {
 			t.Fatalf("background card refresh: more=%v err=%v", more, err)
 		}
+		cursor = id
 		dirty, err := nativePageIDs(t.Context(), f.service.database.reader, "SELECT work_item_id FROM native_board_dirty")
 		if err != nil || len(dirty) != remaining {
 			t.Fatalf("background transaction refreshed more than one item: dirty=%v err=%v", dirty, err)

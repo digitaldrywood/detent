@@ -6,14 +6,59 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
 )
+
+type claimCleanupScheduling struct {
+	hubSchedulingSource
+	forgotten []string
+}
+
+func (s *claimCleanupScheduling) ForgetClaim(issueID string) {
+	s.forgotten = append(s.forgotten, issueID)
+}
+
+func TestClaimLostHeartbeatPreservesCompletionOwner(t *testing.T) {
+	for _, deferred := range []bool{false, true} {
+		t.Run(strconv.FormatBool(deferred), func(t *testing.T) {
+			cfg := normalizeConfig(claimTestConfig("worker", "worker"))
+			state := newState(cfg)
+			issue := claimTestIssue("issue-claim-cleanup")
+			cancelled := false
+			running := Running{Issue: issue, cancel: func() { cancelled = true }}
+			state.Claimed[issue.ID] = Claimed{Issue: issue}
+			if deferred {
+				state.deferredCompletions[issue.ID] = deferredCompletion{Running: running, Result: runpkg.RunResult{FinalMessage: "finished"}}
+				state.Retry[issue.ID] = Retry{Issue: issue, CompletionDeferred: true}
+			} else {
+				state.Running[issue.ID] = running
+			}
+			source := &claimCleanupScheduling{}
+			manager := newHeartbeatManager(cfg, nil, nil, time.Now, nil)
+			manager.targets[issue.ID] = heartbeatTarget{issueID: issue.ID, sequence: 1}
+			o := &Orchestrator{cfg: cfg, scheduling: source, heartbeats: manager}
+			o.handleHeartbeatResult(&state, heartbeatResult{issueID: issue.ID, sequence: 1, claimOwnerLost: true})
+			if len(source.forgotten) != 1 || source.forgotten[0] != issue.ID || manager.current(issue.ID, 1) {
+				t.Fatal("lost claim did not retire its scheduler and heartbeat ownership")
+			}
+			if deferred {
+				if record, ok := state.deferredCompletions[issue.ID]; !ok || record.Result.FinalMessage != "finished" || !state.Retry[issue.ID].CompletionDeferred || cancelled {
+					t.Fatal("claim loss discarded the deferred completion owner")
+				}
+			} else if !cancelled || len(state.Running) != 0 || len(state.Claimed) != 0 {
+				t.Fatal("claim loss retained the active worker")
+			}
+		})
+	}
+}
 
 func TestHeartbeatManagerRenewsWithoutSchedulerLoop(t *testing.T) {
 	initial := time.Now().UTC().Add(-time.Minute)

@@ -404,6 +404,7 @@ func TestLandNativeChange(t *testing.T) {
 	failedHeadGate := headGate
 	failedHeadGate.ExitCode, failedHeadGate.Output = 1, "lint-error-sentinel"
 	target := NativeLandingTarget{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Method: "merge", Title: "Add a sign-in link", Number: 2}
+	target.ReviewDispositions = []tracker.ReviewDisposition{{HeadSHA: head, ThreadID: "T1", Disposition: "fixed", Evidence: "source.go:17 and regression passes"}}
 	githubTarget := target
 	githubTarget.Repository, githubTarget.GitHubPullRequest = "https://github.com/digitaldrywood/detent", true
 	githubTarget.SourceIssues = []tracker.ExternalReference{
@@ -435,7 +436,7 @@ func TestLandNativeChange(t *testing.T) {
 			wantOutput: RunOutputNativeLanded, wantRecorded: 1, wantGitHub: true, wantMessage: wantMessage + "\n\nCloses acme/orders#12\nCloses digitaldrywood/detent#3410"},
 		{name: "opted-in project uses GitHub PR landing", stub: landingStub{target: NativeLandingTarget{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: head, Method: "merge", Repository: "https://github.com/example/repo", GitHubPullRequest: true}}, backend: landingBackend{result: workspace.LandResult{MergeSHA: merge, BaseRef: "main", Method: "merge", Rebased: true}},
 			wantOutput: RunOutputNativeLanded, wantRecorded: 1, wantGitHub: true, wantMessage: "Land " + head + "\n\nChange Request change_1, round 0, head " + head + "."},
-		{name: "release PR retains its recorded base", stub: landingStub{target: NativeLandingTarget{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: head, Method: "merge", Repository: "https://github.com/example-org/example-project", GitHubPullRequest: true, BaseRef: "release/v1.2", SourceMergeSHA: strings.Repeat("a", 40)}}, backend: landingBackend{result: workspace.LandResult{MergeSHA: merge, BaseRef: "main", Method: "merge", Rebased: true}}, wantOutput: RunOutputNativeLanded, wantRecorded: 1, wantGitHub: true},
+		{name: "release PR retains its recorded base", stub: landingStub{target: NativeLandingTarget{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: head, Method: "merge", Repository: "https://github.com/example-org/example-project", GitHubPullRequest: true, BaseRef: "release/v1.2", BaseSHA: strings.Repeat("e", 40), SourceMergeSHA: strings.Repeat("a", 40)}}, backend: landingBackend{result: workspace.LandResult{MergeSHA: merge, BaseRef: "main", Method: "merge", Rebased: true}}, wantOutput: RunOutputNativeLanded, wantRecorded: 1, wantGitHub: true},
 		{name: "quota retains reviewed identity and actual metrics", stub: landingStub{target: NativeLandingTarget{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: head, Method: "merge", Repository: "https://github.com/example/repo", GitHubPullRequest: true}}, backend: landingBackend{githubRequest: true}, wantErr: "github rate limited", quota: true},
 		{name: "an unreceipted reviewed head is validated before it lands", stub: landingStub{target: target}, backend: landingBackend{headReceipt: &headGate, result: workspace.LandResult{MergeSHA: merge, BaseRef: "main", Method: "merge", Path: "clean_push"}},
 			wantOutput: RunOutputNativeLanded, wantRecorded: 1},
@@ -518,11 +519,11 @@ func TestLandNativeChange(t *testing.T) {
 				t.Fatalf("result = %#v", result)
 			}
 			if backend.result.Gate.Command != "" {
-				if result.NativeLanding.Gate == nil || *result.NativeLanding.Gate != backend.result.Gate {
+				if result.NativeLanding.Gate == nil || !reflect.DeepEqual(*result.NativeLanding.Gate, backend.result.Gate) {
 					t.Fatalf("landing lost gate command evidence: %#v", result.NativeLanding)
 				}
 				for _, recorded := range stub.recorded {
-					if recorded.Gate == nil || *recorded.Gate != backend.result.Gate {
+					if recorded.Gate == nil || !reflect.DeepEqual(*recorded.Gate, backend.result.Gate) {
 						t.Fatalf("published landing lost gate: %#v", recorded)
 					}
 				}
@@ -530,12 +531,19 @@ func TestLandNativeChange(t *testing.T) {
 			if receipt := backend.headReceipt; receipt != nil {
 				wantReceipt := *receipt
 				wantReceipt.Stage = test.wantHeadStage
+				if receipt.ExitCode != 0 {
+					wantReceipt.Attribution = "unknown"
+					wantReceipt.Findings = []gate.Finding{{Attribution: "unknown", Body: "Command failed", CheckCommand: receipt.Command}}
+				}
 				if result.NativeLanding.Gate == nil || !reflect.DeepEqual(*result.NativeLanding.Gate, wantReceipt) || receipt.ExitCode == 0 && (backend.received.Validation == nil || !reflect.DeepEqual(*backend.received.Validation, *receipt)) || receipt.ExitCode != 0 && backend.received.HeadSHA != "" {
 					t.Fatalf("unreceipted head validation = landing %#v, options %#v", result.NativeLanding, backend.received)
 				}
 			}
 			if result.NativeLanding.Rebased != backend.result.Rebased {
 				t.Fatalf("landing lost retry evidence: %#v", result.NativeLanding)
+			}
+			if backend.received.HeadSHA != "" && !reflect.DeepEqual(backend.received.ReviewDispositions, stub.target.ReviewDispositions) {
+				t.Fatalf("landing lost recorded review dispositions: %+v", backend.received.ReviewDispositions)
 			}
 			if !reflect.DeepEqual(result.NativeLanding.CI, backend.result.CI) || backend.githubCalled && (!slices.Equal(backend.received.RequiredStatusChecks, []string{"Full CI"}) || backend.received.CITriggerLabel != "run-full-ci" || backend.received.CITriggerLabelStagger != 15*time.Second) {
 				t.Fatalf("native CI policy or receipt was lost: options=%+v landing=%+v", backend.received, result.NativeLanding)
@@ -547,6 +555,16 @@ func TestLandNativeChange(t *testing.T) {
 			}
 			if backend.received.HeadSHA != "" && stub.target.SourceMergeSHA != "" && !strings.Contains(backend.received.Message, "(cherry picked from commit "+stub.target.SourceMergeSHA+")") {
 				t.Fatalf("release squash lost source provenance: %q", backend.received.Message)
+			}
+			expectedBase := ""
+			if stub.target.SourceMergeSHA != "" {
+				expectedBase = stub.target.BaseSHA
+			}
+			if backend.received.ExpectedBaseSHA != "" && backend.received.Authorize == nil {
+				t.Fatal("release landing lost active execution authority")
+			}
+			if backend.received.HeadSHA != "" && backend.received.ExpectedBaseSHA != expectedBase {
+				t.Fatalf("landing lost reviewed release base: %+v", backend.received)
 			}
 			if backend.received.HeadSHA != "" && backend.received.TargetBranch != stub.target.BaseRef {
 				t.Fatalf("landing lost target branch: %+v", backend.received)
@@ -570,7 +588,7 @@ func TestLandNativeChange(t *testing.T) {
 				t.Fatalf("PR message = %q, want %q", backend.received.Message, test.wantMessage)
 			}
 			if test.wantRecorded == 1 {
-				if backend.received.ValidationCommand != "make check" || backend.received.HeadSHA != head || backend.received.Method != "merge" || !backend.received.PushAttemptBranch || (!test.wantGitHub && (!strings.Contains(backend.received.Message, "Add a sign-in link") || !strings.Contains(backend.received.Message, "round 2"))) {
+				if backend.received.ChangeID != target.ChangeID || backend.received.ValidationCommand != "make check" || backend.received.HeadSHA != head || backend.received.Method != "merge" || !backend.received.PushAttemptBranch || (!test.wantGitHub && (!strings.Contains(backend.received.Message, "Add a sign-in link") || !strings.Contains(backend.received.Message, "round 2"))) {
 					t.Fatalf("land options = %#v", backend.received)
 				}
 				if stub.recorded[0].MergeSHA != merge || stub.recorded[0].BaseRef != "main" || stub.recorded[0].ChangeID != "change_1" {
@@ -689,7 +707,7 @@ func TestLandNativeChangeKeepsAnUnreportedLanding(t *testing.T) {
 			}
 			var logs bytes.Buffer
 			r := &Runner{workflow: config.Workflow{Config: config.Config{Gate: gate.Config{Run: "git status --porcelain"}}}, logger: slog.New(slog.NewTextHandler(&logs, nil))}
-			result, err := r.landNativeChange(t.Context(), RunRequest{}, &stub, backend, info, issue, workerGitHubPolicy{}, nil)
+			result, err := r.landNativeChange(t.Context(), RunRequest{Execution: &testExecution{}}, &stub, backend, info, issue, workerGitHubPolicy{}, nil)
 			if cleanupErr := backend.CleanupLanding(t.Context(), info, issue); cleanupErr != nil {
 				t.Fatal(cleanupErr)
 			}
@@ -713,7 +731,7 @@ func TestLandNativeChangeKeepsAnUnreportedLanding(t *testing.T) {
 					t.Fatal(err)
 				}
 				previousRequests := requests
-				result, err = r.landNativeChange(t.Context(), RunRequest{}, &stub, backend, info, issue, workerGitHubPolicy{}, nil)
+				result, err = r.landNativeChange(t.Context(), RunRequest{Execution: &testExecution{}}, &stub, backend, info, issue, workerGitHubPolicy{}, nil)
 				if requests != previousRequests {
 					t.Fatalf("second landing called the forge: requests=%d want=%d", requests, previousRequests)
 				}
@@ -767,6 +785,60 @@ func (e *landingRunExecution) ObserveLanding(_ context.Context, landing NativeLa
 
 func (e *landingRunExecution) Guard(ctx context.Context) (context.Context, func(), error) {
 	return ctx, func() { e.stopped = true }, nil
+}
+
+func TestNativeReviewConversationsCleared(t *testing.T) {
+	const head = "1111111111111111111111111111111111111111"
+	refusal := workspace.ReviewConversationsRefusalText + " Address each finding in Rework, then resolve its conversation with evidence of the fix or dismissal.\n- example-bot on app.go:3: P2 finding"
+	refused := func(version string) tracker.NativeRecovery {
+		return tracker.NativeRecovery{
+			Change:   &tracker.NativeChangeReference{ChangeID: "change_current", VersionID: "version_current", HeadSHA: head},
+			Attempts: []tracker.NativeAttempt{{NativeRunData: tracker.NativeRunData{Runtime: &tracker.NativeRuntimeObservation{Landing: &tracker.NativeLandingReceipt{ChangeID: "change_current", VersionID: version, HeadSHA: head, RefusalKind: workspace.LandRefusalProtected}}}}},
+			History:  []tracker.CollaborationEvent{{Type: "workflow.transitioned", Data: tracker.CollaborationData{FromState: "Merging", ToState: "Rework", ReasonDetail: refusal}}},
+		}
+	}
+	current := &NativeChange{Changed: true, ChangeID: "change_current", VersionID: "version_current", HeadSHA: head}
+	for _, test := range []struct {
+		name       string
+		recovery   tracker.NativeRecovery
+		change     *NativeChange
+		unresolved bool
+		readFails  bool
+		want       bool
+		wantErr    bool
+		wantReads  int
+	}{
+		{name: "conversations resolved on GitHub clear the refusal", recovery: refused("version_current"), change: current, want: true, wantReads: 1},
+		{name: "an unresolved conversation keeps the refusal", recovery: refused("version_current"), change: current, unresolved: true, wantReads: 1},
+		{name: "a failed read is an error, not an unresolved answer", recovery: refused("version_current"), change: current, readFails: true, wantErr: true, wantReads: 1},
+		{name: "a newly published version does not wait on GitHub", recovery: refused("version_current"), change: &NativeChange{Changed: true, ChangeID: "change_current", VersionID: "version_next", HeadSHA: strings.Repeat("2", 40)}},
+		{name: "a refusal of another version is not consulted", recovery: refused("version_old"), change: current},
+		{name: "work without a review refusal reads nothing", recovery: tracker.NativeRecovery{}, change: current},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			execution := &landingRunExecution{testExecution: testExecution{recovery: test.recovery}, landingStub: landingStub{target: NativeLandingTarget{ChangeID: "change_current", VersionID: "version_current", Repository: "https://github.com/example/repo", HeadSHA: head, BaseRef: "develop", GitHubPullRequest: true, External: &tracker.ChangeExternalReference{Provider: "github", ID: "7", URL: "https://github.com/example/repo/pull/7"}}}}
+			r := &Runner{workflow: config.Workflow{Config: config.Config{Tracker: config.Tracker{Kind: config.TrackerHubNative}, Worker: config.Worker{GitHubToken: "worker-test-token"}}}}
+			reads := 0
+			originalClient := http.DefaultClient
+			http.DefaultClient = &http.Client{Transport: nativeExecutionTransport(func(req *http.Request) (*http.Response, error) {
+				reads++
+				if test.readFails {
+					return &http.Response{StatusCode: http.StatusBadGateway, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"message":"bad gateway"}`))}, nil
+				}
+				nodes := ""
+				if test.unresolved {
+					nodes = `{"id":"T1","isResolved":false,"comments":{"nodes":[{"body":"P2 finding","author":{"__typename":"Bot","login":"example-bot"}}]}}`
+				}
+				body := fmt.Sprintf(`{"data":{"repository":{"pullRequest":{"number":7,"headRefOid":%q,"baseRefName":"develop","headRepository":{"nameWithOwner":"example/repo"},"repository":{"nameWithOwner":"example/repo"},"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[%s]}}}}}`, head, nodes)
+				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+			})}
+			t.Cleanup(func() { http.DefaultClient = originalClient })
+			got, err := r.nativeReviewConversationsCleared(t.Context(), RunRequest{Execution: execution, Mode: RunModeImplement, Issue: connector.Issue{ID: "wi_current", State: "Rework"}}, test.change)
+			if got != test.want || (err != nil) != test.wantErr || reads != test.wantReads {
+				t.Fatalf("cleared = %t, error = %v after %d GitHub reads; want %t, error %t after %d", got, err, reads, test.want, test.wantErr, test.wantReads)
+			}
+		})
+	}
 }
 
 func TestNativeReviewThreadTools(t *testing.T) {
@@ -907,6 +979,16 @@ func TestNativeReviewThreadTools(t *testing.T) {
 	}
 }
 
+type completionLandingExecution struct {
+	landingRunExecution
+	failure *tracker.NativeTerminalFailure
+}
+
+func (e *completionLandingExecution) PrepareFinish(_ context.Context, _, _ string, failure *tracker.NativeTerminalFailure) error {
+	e.failure = failure
+	return nil
+}
+
 func TestNativeLandingAdmissionAndQuotaOutcomes(t *testing.T) {
 	originalClient := http.DefaultClient
 	http.DefaultClient = &http.Client{Transport: nativeExecutionTransport(func(req *http.Request) (*http.Response, error) {
@@ -926,26 +1008,45 @@ func TestNativeLandingAdmissionAndQuotaOutcomes(t *testing.T) {
 	cfg.Tracker.Kind = config.TrackerGitHub
 	cfg.Tracker.Endpoint = "https://native-finish.test/graphql"
 	for _, test := range []struct {
-		name      string
-		admission error
-		waiting   bool
+		name        string
+		admission   error
+		waiting     bool
+		pushRefusal string
+		deferred    bool
 	}{
 		{name: "GitHub quota remains a capacity error"},
 		{name: "project capacity becomes successful landing wait", admission: &workspace.LandRefusal{Reason: "Project landing capacity is full"}, waiting: true},
 		{name: "unreviewed source remains a nonwaiting refusal", admission: &workspace.LandRefusal{Kind: workspace.LandRefusalNothing, Reason: "Current Change version is not ready for native landing"}},
+		{name: "permission denied retains push evidence", pushRefusal: workspace.LandRefusalProtected},
+		{name: "deferred permission denied retains push evidence", pushRefusal: workspace.LandRefusalProtected, deferred: true},
+		{name: "moved base retains push evidence", pushRefusal: workspace.LandRefusalBaseMoved},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			execution := &landingRunExecution{startErr: test.admission, landingStub: landingStub{target: NativeLandingTarget{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Method: "squash", Repository: "https://github.com/example/repo", GitHubPullRequest: true}}}
-			backend := &landingBackend{Backend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}}, err: quota}
+			execution := &completionLandingExecution{landingRunExecution: landingRunExecution{startErr: test.admission, landingStub: landingStub{target: NativeLandingTarget{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Method: "squash", Repository: "https://github.com/example/repo", GitHubPullRequest: test.pushRefusal == ""}}}}
+			backend := &validationLandingBackend{landingBackend{Backend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}, recoveryStates: []workspace.RecoveryState{{HeadSHA: head}}}, err: quota}}
+			if test.pushRefusal != "" {
+				token := "gh" + "p_" + strings.Repeat("x", 36)
+				backend.err = fmt.Errorf("%w: %w", &workspace.LandRefusal{Kind: test.pushRefusal, Reason: "the base branch refused the push"}, &workspace.CommandError{Command: "git", Args: []string{"push", "origin", "HEAD:refs/heads/develop"}, Err: errors.New("exit status 128"), Output: "Permission denied token=" + token})
+			}
 			r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: cfg}, Workspace: backend, AgentBackend: &fakeCodexClient{}})
 			if err != nil {
 				t.Fatal(err)
 			}
-			result, err := r.Run(t.Context(), RunRequest{Issue: connector.Issue{ID: "native", State: "Merging"}, Mode: RunModeMerge, Execution: execution})
+			result, err := r.Run(t.Context(), RunRequest{Issue: connector.Issue{ID: "native", State: "Merging"}, Mode: RunModeMerge, Execution: execution, DeferExecutionFinish: test.deferred})
 			if result.RuntimeIdentity.Role != RoleMerge || result.RuntimeIdentity.BackendKind != "git" || result.RuntimeIdentity.ResolvedModel.Value != "none" {
 				t.Fatalf("native landing result identity = %#v", result.RuntimeIdentity)
 			}
-			if test.admission != nil {
+			if test.pushRefusal != "" {
+				if err != nil || result.FinalState != FinalStateCompleted || result.Output != RunOutputNativeLandingRefused || result.NativeLanding == nil || result.NativeLanding.RefusalKind != test.pushRefusal || result.NativeLanding.Landed {
+					t.Fatalf("push refusal changed: result=%#v err=%v", result, err)
+				}
+				if !execution.stopped || !test.deferred && execution.finish != "succeeded" || test.deferred && execution.finish != "" {
+					t.Fatalf("push refusal completion changed: stopped=%t finish=%q", execution.stopped, execution.finish)
+				}
+				if execution.failure == nil || execution.failure.ErrorClass != "git_push" || execution.failure.Summary != "Permission denied [redacted]" || strings.Contains(execution.failure.Error, strings.Repeat("x", 36)) {
+					t.Fatalf("completion lost sanitized push diagnostics: %#v", execution.failure)
+				}
+			} else if test.admission != nil {
 				if err != nil || execution.finish != "succeeded" || !execution.stopped || result.NativeLanding == nil || result.NativeLanding.HeadSHA != head || result.NativeLanding.Landed || result.NativeLanding.Waiting != test.waiting || backend.githubCalled {
 					t.Fatalf("admission did not preserve healthy wait/refusal: result%#v, execution%#v, error%v", result, execution, err)
 				}

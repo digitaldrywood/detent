@@ -18,7 +18,7 @@ func TestIssueCardHistory(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			db := openParkTestStore(t, filepath.Join(t.TempDir(), "cards.db"))
+			db := openHistoryTestStore(t, filepath.Join(t.TempDir(), "cards.db"))
 			day := time.Date(2026, 9, 14, 0, 0, 0, 0, time.UTC)
 			for i := range tt.count {
 				_, err := db.db.ExecContext(t.Context(), `INSERT INTO work_attempts(project_id,issue_id,worker_type,status,started_at) VALUES ('p','i','codex','running',?)`, day.Add(time.Duration(i)*time.Second).Format(time.RFC3339Nano))
@@ -76,7 +76,7 @@ func TestIssueCardHistoryLatestTransition(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			db := openParkTestStore(t, filepath.Join(t.TempDir(), "cards.db"))
+			db := openHistoryTestStore(t, filepath.Join(t.TempDir(), "cards.db"))
 			at := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
 			_, err := db.db.ExecContext(t.Context(), `INSERT INTO lane_ledger(project_id,issue_id,from_state,to_state,reason,written_at,result) VALUES ('p','i','In Progress','Rework','merge_conflict',?,'applied')`, at.Format(time.RFC3339Nano))
 			if err != nil {
@@ -112,7 +112,7 @@ func TestCardHistoryAliases(t *testing.T) {
 		{"empty", IssueIdentity{ProjectID: "p"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			db := openParkTestStore(t, filepath.Join(t.TempDir(), "cards.db"))
+			db := openHistoryTestStore(t, filepath.Join(t.TempDir(), "cards.db"))
 			at := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
 			for _, query := range []string{
 				`INSERT INTO work_attempts(project_id,identifier,issue_url,worker_type,status,started_at) VALUES ('p','o/r#1','https://example/1','codex','running',?)`,

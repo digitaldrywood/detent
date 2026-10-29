@@ -34,7 +34,7 @@ func TestRunnerSelectedSessionLimits(t *testing.T) {
 					name = mode + "/" + stop + "/override"
 				}
 				t.Run(name, func(t *testing.T) {
-					cfg := config.Config{Agent: config.Agent{MaxSessionDurationMS: 60000, MaxSessionTokens: 100, MaxTurnDurationMS: 30000, MaxTurns: 7, NoProgressTimeoutMS: 45000}}
+					cfg := config.Config{Agent: config.Agent{MaxSessionDurationMS: 60000, MaxSessionTokens: 100, MaxTurnDurationMS: 30000, MaxTurns: 7}}
 					cfg.Agents.ModelSelection = config.ModelSelection{Preset: new("sol_first")}
 					level := config.ModelSelectionDefaults{}
 					wantDuration, wantTokens := 60000, int64(100)

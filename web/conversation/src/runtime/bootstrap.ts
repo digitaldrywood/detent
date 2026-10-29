@@ -69,8 +69,8 @@ export interface ClientOptions {
 
 /**
  * The extended payload from the last `loadBootstrap`, where the hub served
- * one. `/app/bootstrap` is a superset of `/chat/bootstrap`
- * (decisions.md §12, "Serving"): the same object decodes through both schemas,
+ * one. `/app/bootstrap` is a superset of `/chat/bootstrap`:
+ * the same object decodes through both schemas,
  * so the account screens read the wider view of the payload the shell already
  * fetched rather than asking for it a second time. It is `null` against a hub
  * that still serves only the chat payload.
@@ -88,7 +88,7 @@ const decodeAccount = Schema.decodeUnknownOption(AccountBootstrap);
  * A bootstrap the hub refused. The status and the decoded body travel with it
  * because the two routes that render without a session need them: `/login`
  * treats 401 and 403 as the expected state, and `/support` reads the
- * organization out of a 403 body where the hub names one (decisions.md §12).
+ * organization out of a 403 body where the hub names one.
  */
 export class BootstrapRefused extends Error {
   readonly status: number;
@@ -140,7 +140,7 @@ export interface SendMessageInput {
   readonly text: string;
   /**
    * Ids of attachments already uploaded against this conversation and not yet
-   * sent (decisions.md §17.1). Omitted where there are none, so a message
+   * sent. Omitted where there are none, so a message
    * without files is the same command it always was.
    */
   readonly attachments?: readonly string[];
@@ -150,7 +150,7 @@ export interface SendMessageInput {
 export interface RetryMessageInput {
   readonly projectId: string;
   readonly conversationId: string;
-  /** A new key every time: a retry is its own command (decisions.md §10.3). */
+  /** A new key every time: a retry is its own command. */
   readonly key: string;
   readonly messageId: string;
 }
@@ -255,7 +255,7 @@ export function makeClient(options: ClientOptions) {
   /**
    * Sends a command with an optimistic entry that only ever resolves through
    * the receipt. A request that never produced an outcome leaves the entry as
-   * `unknown`; nothing here retries it (decisions.md §5, delivery ladder).
+   * `unknown`; nothing here retries it.
    */
   const dispatch = (
     projectId: string,
@@ -317,7 +317,7 @@ export function makeClient(options: ClientOptions) {
    * outcome was established, and is never resent on its own. A
    * `stale_execution` failure raises the notice and re-reads the snapshot; it
    * never re-aims the control at the attempt that replaced the one the user
-   * was looking at (decisions.md §2).
+   * was looking at.
    */
   const dispatchControl = (
     projectId: string,
@@ -460,7 +460,7 @@ export function makeClient(options: ClientOptions) {
         null,
       ),
     /**
-     * Re-queues one message the hub already stored (decisions.md §10.3). It is
+     * Re-queues one message the hub already stored. It is
      * a command of its own: a new key every time, naming the message, and the
      * hub sets that same message back to `queued` (or `saved`) and emits
      * `message.updated`. Nothing is duplicated, so this never creates a second
@@ -530,7 +530,7 @@ export function makeClient(options: ClientOptions) {
             ),
           ),
     /**
-     * The composer's model, effort and access pickers (decisions.md §13.14).
+     * The composer's model, effort and access pickers.
      * The updated conversation is merged into the open detail and forwarded to
      * the sidebar, so a picker changes what the next turn runs under without a
      * refresh.

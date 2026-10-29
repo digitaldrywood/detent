@@ -578,8 +578,9 @@ func TestFleetAllClearLine(t *testing.T) {
 	blockedAt := data.Snapshot.GeneratedAt.Add(-time.Minute)
 	data.Snapshot.Blocked = []telemetry.Blocked{
 		{
-			Issue:     telemetry.Issue{Identifier: "detent#92", ProjectID: "detent"},
-			Error:     "needs approval",
+			Issue:          telemetry.Issue{Identifier: "detent#92", ProjectID: "detent"},
+			Error:          "needs approval",
+			RecoveryReason: "human_action", NeedsHumanAttention: true,
 			BlockedAt: &blockedAt,
 		},
 	}

@@ -12,12 +12,13 @@ func TestContinuation(t *testing.T) {
 		name, output string
 		wantErr      bool
 	}{
-		{"resolved", `{"verdict":"pass","summary":"fixed","findings":[{"id":"auth","severity":"p1","body":"authorization added","status":"resolved"}]}`, false},
-		{"unresolved", `{"verdict":"fail","summary":"still present","findings":[{"id":"auth","severity":"p1","body":"authorization missing","status":"unresolved"}]}`, false},
+		{"resolved", `{"verdict":"pass","summary":"fixed","findings":[{"id":"auth","certainty":"confirmed","severity":"p1","body":"authorization added","status":"resolved"}]}`, false},
+		{"unresolved", `{"verdict":"fail","summary":"still present","findings":[{"id":"auth","certainty":"confirmed","severity":"p1","body":"authorization missing","status":"unresolved"}]}`, false},
 		{"omitted", `{"verdict":"pass","summary":"fixed","findings":[]}`, true},
-		{"no status", `{"verdict":"fail","summary":"still present","findings":[{"id":"auth","severity":"p1","body":"authorization missing"}]}`, true},
-		{"downgraded", `{"verdict":"fail","summary":"still present","findings":[{"id":"auth","severity":"p3","body":"authorization missing","status":"unresolved"}]}`, true},
-		{"invalid status", `{"verdict":"pass","summary":"fixed","findings":[{"id":"auth","severity":"p1","body":"authorization added","status":"ignored"}]}`, true},
+		{"no status", `{"verdict":"fail","summary":"still present","findings":[{"id":"auth","certainty":"confirmed","severity":"p1","body":"authorization missing"}]}`, true},
+		{"downgraded", `{"verdict":"fail","summary":"still present","findings":[{"id":"auth","certainty":"confirmed","severity":"p3","body":"authorization missing","status":"unresolved"}]}`, true},
+		{"unresolved prior cannot become uncertain", `{"verdict":"undetermined","summary":"missing context","findings":[{"id":"auth","certainty":"undetermined","body":"unavailable","unresolved_fact":"Caller context","status":"unresolved"}]}`, true},
+		{"invalid status", `{"verdict":"pass","summary":"fixed","findings":[{"id":"auth","certainty":"confirmed","severity":"p1","body":"authorization added","status":"ignored"}]}`, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			result, err := ParseOutput(tt.output)
@@ -53,6 +54,32 @@ func TestFullAuditCannotResolveFindings(t *testing.T) {
 			err := ValidateContinuation(nil, Result{Findings: []Finding{{Status: status}}})
 			if (err != nil) != (status == "resolved") {
 				t.Fatalf("error = %v", err)
+			}
+		})
+	}
+}
+
+func TestPriorFindingWithoutContextStaysBlocking(t *testing.T) {
+	t.Parallel()
+	prior := Finding{ID: "auth", Certainty: CertaintyConfirmed, Severity: "p1", Body: "Cross-tenant access", Path: "auth.go", Status: "unresolved"}
+	snapshot := Snapshot{Repository: "owner/repository", IssueID: "issue", BaseSHA: "base", HeadSHA: "head", Diff: "diff --git a/readme b/readme\n+documentation", Previous: &PreviousAudit{HeadSHA: "previous", Findings: []Finding{prior}}}
+	for _, tt := range []struct {
+		name    string
+		finding Finding
+		invalid bool
+	}{
+		{name: "carry forward without touched file", finding: prior},
+		{name: "cannot resolve without context", finding: Finding{ID: "auth", Certainty: CertaintyConfirmed, Severity: "p1", Status: "resolved", Body: "Assumed fixed"}, invalid: true},
+		{name: "cannot reject without context", finding: Finding{ID: "auth", Certainty: CertaintyDisproved, Status: "rejected", Body: "Assumed false positive"}, invalid: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			result := Result{Verdict: VerdictFail, Findings: []Finding{tt.finding}}
+			err := ValidateSnapshotContinuation(snapshot, result)
+			if (err != nil) != tt.invalid {
+				t.Fatalf("continuation error=%v", err)
+			}
+			if !tt.invalid && len(unresolvedFindings(result.Findings, nil, "", []string{"p1", "p2"})) != 1 {
+				t.Fatal("unresolved prior p1 stopped blocking")
 			}
 		})
 	}

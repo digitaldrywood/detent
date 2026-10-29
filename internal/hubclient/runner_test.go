@@ -1,6 +1,7 @@
 package hubclient
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -27,6 +28,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/skills"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -48,12 +50,16 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 	})
 	var dropRotation atomic.Bool
 	var pauseRotation atomic.Bool
+	var credentialRenewals atomic.Int32
 	var policyStatus atomic.Int64
 	rotationEntered, rotationResume := make(chan struct{}), make(chan struct{})
 	var resumeRotation sync.Once
 	transport := executionRoundTrip(func(r *http.Request) (*http.Response, error) {
 		if r.URL.Host != "runner-hub.example.test" {
 			return nil, errors.New("unexpected runner Hub destination")
+		}
+		if r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/runners/") && strings.HasSuffix(r.URL.Path, "/renew") {
+			credentialRenewals.Add(1)
 		}
 		if r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/leases/") && strings.HasSuffix(r.URL.Path, "/renew") {
 			if status := policyStatus.Load(); status != 0 {
@@ -103,7 +109,10 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 	}
 	organization := organizations.Items[0].ID
 	var project tracker.NativeProject
-	if err := admin.request(t.Context(), http.MethodPost, "/api/v2/organizations/"+string(organization)+"/projects", map[string]any{"name": "runners", "idempotency_key": "runners", "states": []tracker.NativeState{{Name: "Todo", Dispatchable: true}}}, &project); err != nil {
+	if err := admin.request(t.Context(), http.MethodPost, "/api/v2/organizations/"+string(organization)+"/projects", map[string]any{"name": "runners", "idempotency_key": "runners", "require_dependencies": true, "states": []tracker.NativeState{
+		{Name: "Todo", Dispatchable: true, Transitions: []string{"Blocked"}},
+		{Name: "Blocked", Transitions: []string{"Todo"}},
+	}}, &project); err != nil {
 		t.Fatal(err)
 	}
 	path := filepath.Join(t.TempDir(), "private", "identity.json")
@@ -438,12 +447,61 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	file.Identity.ExpiresAt = time.Now().Add(time.Minute)
-	if err := runnerauth.Save(path, file); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := native.Project(t.Context()); err != nil {
-		t.Fatal(err)
+	for _, test := range []struct {
+		name      string
+		expiresIn time.Duration
+	}{
+		{name: "near expiry", expiresIn: time.Minute},
+		{name: "expired", expiresIn: -time.Minute},
+	} {
+		t.Run("concurrent credential renewal "+test.name, func(t *testing.T) {
+			file.Identity.ExpiresAt = time.Now().Add(test.expiresIn)
+			if err := runnerauth.Save(path, file); err != nil {
+				t.Fatal(err)
+			}
+			lockPath := path + ".lock"
+			old := time.Unix(946684800, 0)
+			if err := os.Chtimes(lockPath, old, old); err != nil {
+				t.Fatal(err)
+			}
+			before, err := os.Stat(lockPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			initialRenewals := credentialRenewals.Load()
+			var wg sync.WaitGroup
+			start := make(chan struct{})
+			for range 8 {
+				concurrent, err := New(Config{URL: hubURL, IdentityFile: path, HTTPClient: httpClient})
+				if err != nil {
+					t.Fatal(err)
+				}
+				concurrentNative, err := concurrent.Native(organization, project.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				wg.Go(func() {
+					<-start
+					got, err := concurrentNative.Project(t.Context())
+					if err != nil || got.ID != project.ID {
+						t.Errorf("concurrent renewed project read: %+v, %v", got, err)
+					}
+				})
+			}
+			close(start)
+			wg.Wait()
+			if got := credentialRenewals.Load() - initialRenewals; got != 1 {
+				t.Fatalf("concurrent credential renewals = %d, want 1", got)
+			}
+			after, err := os.Stat(lockPath)
+			if err != nil || after.ModTime().Equal(before.ModTime()) {
+				t.Fatalf("credential renewal did not persist lock ownership: %v", err)
+			}
+			persisted, err := runnerauth.Load(path)
+			if err != nil || !persisted.Identity.ExpiresAt.After(file.Identity.ExpiresAt.Add(time.Hour)) {
+				t.Fatalf("concurrent credential renewal not persisted: %v", err)
+			}
+		})
 	}
 	renewed, err := runnerauth.Load(path)
 	if err != nil || !renewed.Identity.ExpiresAt.After(file.Identity.ExpiresAt.Add(time.Hour)) {
@@ -558,7 +616,49 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 		t.Fatalf("incomplete interruption replaced reconnect authority: old=%+v new=%+v", retained, resumedLease)
 	}
 	t.Log("genuine incomplete interruption retained its original lease/fence on reconnect")
-	if err := native.Release(t.Context(), retained, "cancelled"); err != nil {
+	resumedExecution := resumedScheduler.RunExecution(string(issue.WorkItemID))
+	if resumedExecution == nil {
+		t.Fatal("resumed claim has no native execution")
+	}
+	if err := resumedExecution.Start(t.Context(), tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	current, err := adminNative.Issue(t.Context(), issue.WorkItemID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	held, err := adminNative.Transition(t.Context(), issue.WorkItemID, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, State: "Blocked", Reason: "user_requested"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prerequisite, err := adminNative.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Unfinished prerequisite", Body: "Create the inventory schema and migrate existing storage.", State: "Blocked"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	held, err = adminNative.Dependency(t.Context(), issue.WorkItemID, tracker.DependencyMutation{Mutation: nativeMutationKey(), ExpectedRevision: held.Revision, RelatedWorkItemID: prerequisite.WorkItemID, Operation: "add"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	heldScheduler, err := NewScheduler(restarted, SchedulerConfig{OrganizationID: organization, NativeProjects: map[string]tracker.ProjectID{"native": project.ID}, Machine: machine, HeartbeatInterval: 30 * time.Second, LeaseTTL: 90 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	heldCandidates, err := heldScheduler.FetchCandidateIssues(t.Context(), orchestrator.SchedulingRequest{ProjectID: "native", Policy: descriptor})
+	if err != nil || len(heldCandidates) != 0 {
+		t.Fatalf("operator hold recovered as runnable: candidates=%+v error=%v", heldCandidates, err)
+	}
+	current, err = adminNative.Issue(t.Context(), issue.WorkItemID)
+	if err != nil || current.State != "Blocked" || current.Revision != held.Revision || current.DependencyReady {
+		t.Fatalf("recovery changed the operator hold: %+v, %v", current, err)
+	}
+	if _, err := native.Renew(t.Context(), retained, 90); !nativeLeaseLost(err) {
+		t.Fatalf("recovery retained the held lease: %v", err)
+	}
+	heldRecovery, err := adminNative.Recovery(t.Context(), issue.WorkItemID)
+	if err != nil || len(heldRecovery.Attempts) != 1 || heldRecovery.Attempts[0].Outcome != "cancelled" || heldRecovery.Attempts[0].ClaimReleasedAt == nil {
+		t.Fatalf("recovery retained a running attempt: %+v, %v", heldRecovery.Attempts, err)
+	}
+	if _, err := adminNative.Transition(t.Context(), issue.WorkItemID, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, State: "Todo", Reason: "user_requested"}); err != nil {
 		t.Fatal(err)
 	}
 	for _, test := range []struct {
@@ -667,7 +767,7 @@ func TestIsolationProbeDoesNotHoldSchedulerMutex(t *testing.T) {
 		}
 		close(entered)
 		deadline, ok := ctx.Deadline()
-		if !ok || time.Until(deadline) > 5*time.Second {
+		if !ok || time.Until(deadline) > time.Minute {
 			t.Error("probe has no bounded aggregate deadline")
 		}
 		select {
@@ -676,22 +776,25 @@ func TestIsolationProbeDoesNotHoldSchedulerMutex(t *testing.T) {
 		}
 		return isolation.Report{}, nil
 	}}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- scheduler.ensureNativeMachine(t.Context(), &NativeConnector{client: native}) }()
+	go func() { done <- scheduler.ensureNativeMachine(ctx, &NativeConnector{client: native}) }()
 	<-entered
 	acquired := make(chan struct{})
 	go func() { scheduler.mu.Lock(); close(acquired); scheduler.mu.Unlock() }()
 	select {
 	case <-acquired:
-	case <-time.After(time.Second):
+	case <-testenv.WaitContext(t, t.Context()).Done():
 		t.Fatal("probe blocked scheduler mutex")
 	}
+	cancel()
 	select {
 	case err := <-done:
-		if err != nil {
+		if err != nil && !errors.Is(err, context.Canceled) {
 			t.Fatal(err)
 		}
-	case <-time.After(6 * time.Second):
+	case <-testenv.WaitContext(t, t.Context()).Done():
 		t.Fatal("probe exceeded aggregate deadline")
 	}
 	if held.Load() {
@@ -730,6 +833,8 @@ func TestBlockedMachineReportDoesNotSerializeLeaseRenewal(t *testing.T) {
 			w.WriteHeader(http.StatusNoContent)
 		case strings.HasSuffix(r.URL.Path, "/validate"):
 			_ = json.NewEncoder(w).Encode(runnerauth.Runner{})
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/work-items/wi_example"):
+			_ = json.NewEncoder(w).Encode(tracker.NativeIssue{SchedulingEligible: new(true)})
 		case strings.HasSuffix(r.URL.Path, "/renew"):
 			var mutation tracker.NativeLeaseMutation
 			if err := json.NewDecoder(r.Body).Decode(&mutation); err != nil {
@@ -737,6 +842,15 @@ func TestBlockedMachineReportDoesNotSerializeLeaseRenewal(t *testing.T) {
 			}
 			now := time.Now().UTC()
 			_ = json.NewEncoder(w).Encode(tracker.NativeLease{ID: "lease", PolicyID: approved.ID, FencingToken: mutation.FencingToken, ServerTime: now, ExpiresAt: now.Add(time.Minute)})
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/prj_free/leases/lease/release"):
+			var mutation tracker.NativeLeaseMutation
+			if err := json.NewDecoder(r.Body).Decode(&mutation); err != nil {
+				t.Error(err)
+			}
+			if mutation.FencingToken != 1 || mutation.Reason != "cancelled" || !mutation.CancelAttempt {
+				t.Errorf("release mutation = %+v", mutation)
+			}
+			w.WriteHeader(http.StatusNoContent)
 		default:
 			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
@@ -744,7 +858,7 @@ func TestBlockedMachineReportDoesNotSerializeLeaseRenewal(t *testing.T) {
 	}))
 	defer server.Close()
 	defer releaseOnce.Do(func() { close(release) })
-	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+	ctx, cancel := context.WithCancel(testenv.WaitContext(t, t.Context()))
 	defer cancel()
 	client, err := New(Config{URL: server.URL, TokenSource: func() string { return "test-token" }})
 	if err != nil {
@@ -763,7 +877,7 @@ func TestBlockedMachineReportDoesNotSerializeLeaseRenewal(t *testing.T) {
 	scheduler.nativeHeartbeats["prj_free"] = time.Now().Add(time.Hour)
 	free := scheduler.nativeProjects["free"]
 	install := func(id, policyID string, token tracker.FencingToken) nativeClaim {
-		claim := nativeClaim{source: free, lease: tracker.NativeLease{ID: "lease", PolicyID: policyID, FencingToken: token}}
+		claim := nativeClaim{source: free, lease: tracker.NativeLease{ID: "lease", WorkItemID: "wi_example", PolicyID: policyID, FencingToken: token}}
 		scheduler.mu.Lock()
 		defer scheduler.mu.Unlock()
 		scheduler.nativeClaims[id] = claim
@@ -960,6 +1074,96 @@ func TestRunnerAvailabilityHeartbeatAndClaim(t *testing.T) {
 	}
 }
 
+func TestUnchangedCredentialReadLeavesLockMetadataUnwritten(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name     string
+		clients  int
+		lockFile bool
+	}{
+		{name: "repeated requests", clients: 1, lockFile: true},
+		{name: "concurrent clients", clients: 8, lockFile: true},
+		{name: "missing lock file", clients: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), "private", "identity.json")
+			file, err := runnerauth.Initialize(path, "https://hub.example.test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			file.Identity.OrganizationID = "org_example"
+			file.Identity.Operations = []string{runnerauth.Read}
+			file.Identity.ExpiresAt = time.Now().Add(runnerauth.CredentialTTL)
+			if err := runnerauth.Save(path, file); err != nil {
+				t.Fatal(err)
+			}
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			lockPath := path + ".lock"
+			var lockInfo os.FileInfo
+			if test.lockFile {
+				if err := os.WriteFile(lockPath, nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				old := time.Unix(946684800, 0)
+				if err := os.Chtimes(lockPath, old, old); err != nil {
+					t.Fatal(err)
+				}
+				lockInfo, err = os.Stat(lockPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			var requests atomic.Int32
+			transport := executionRoundTrip(func(r *http.Request) (*http.Response, error) {
+				if r.Method != http.MethodGet || r.URL.Path != "/api/v2/organizations/org_example/projects/prj_example" || r.Header.Get("Authorization") != "Bearer "+file.Credential {
+					t.Errorf("unexpected authenticated project request: %s %s", r.Method, r.URL.Path)
+				}
+				requests.Add(1)
+				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"project_id":"prj_example","organization_id":"org_example"}`))}, nil
+			})
+			var wg sync.WaitGroup
+			for range test.clients {
+				client, err := New(Config{URL: file.HubURL, IdentityFile: path, HTTPClient: &http.Client{Transport: transport}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				native, err := client.Native("org_example", "prj_example")
+				if err != nil {
+					t.Fatal(err)
+				}
+				wg.Go(func() {
+					for range 3 {
+						project, err := native.Project(t.Context())
+						if err != nil || project.ID != "prj_example" || project.OrganizationID != "org_example" {
+							t.Errorf("authenticated project read: %+v, %v", project, err)
+						}
+					}
+				})
+			}
+			wg.Wait()
+			if got := requests.Load(); got != int32(test.clients*3) {
+				t.Fatalf("authenticated requests = %d, want %d", got, test.clients*3)
+			}
+			after, err := os.ReadFile(path)
+			if err != nil || !bytes.Equal(before, after) {
+				t.Fatalf("unchanged credential read modified the identity: %v", err)
+			}
+			afterLock, err := os.Stat(lockPath)
+			if !test.lockFile {
+				if !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("unchanged credential read created a persistent lock file: %v", err)
+				}
+			} else if err != nil || !os.SameFile(lockInfo, afterLock) || !afterLock.ModTime().Equal(lockInfo.ModTime()) {
+				t.Fatalf("a GET using an unchanged valid credential rewrote persistent lock metadata: %v", err)
+			}
+		})
+	}
+}
+
 func TestLockIdentityFileSerializesCallersInOneProcess(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "identity.json")
 	for _, test := range []struct {
@@ -1007,7 +1211,15 @@ func TestLockIdentityFileSerializesCallersInOneProcess(t *testing.T) {
 }
 
 func TestLockIdentityFileRefusesHeldFile(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "identity.json")
+	path := filepath.Join(t.TempDir(), "private", "identity.json")
+	file, err := runnerauth.Initialize(path, "https://hub.example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := New(Config{URL: file.HubURL, IdentityFile: path})
+	if err != nil {
+		t.Fatal(err)
+	}
 	held, err := instancelock.Acquire(path + ".lock")
 	if err != nil {
 		t.Fatal(err)
@@ -1016,11 +1228,179 @@ func TestLockIdentityFileRefusesHeldFile(t *testing.T) {
 	if _, err := lockIdentityFile(path); !errors.Is(err, instancelock.ErrHeld) {
 		t.Fatalf("lockIdentityFile() error = %v, want ErrHeld", err)
 	}
+	for _, test := range []struct {
+		name    string
+		expired bool
+		pending bool
+		refresh bool
+	}{
+		{name: "unchanged read"},
+		{name: "expired credential", expired: true},
+		{name: "pending rotation", pending: true},
+		{name: "identity refresh", refresh: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			file.Identity.ExpiresAt = time.Now().Add(runnerauth.CredentialTTL)
+			if test.expired {
+				file.Identity.ExpiresAt = time.Now().Add(-time.Minute)
+			}
+			file.PendingCredential = ""
+			if test.pending {
+				file.PendingCredential = file.Credential
+			}
+			if err := runnerauth.Save(path, file); err != nil {
+				t.Fatal(err)
+			}
+			got, err := client.runnerCredential(t.Context(), test.refresh)
+			if test.expired || test.pending || test.refresh {
+				if !errors.Is(err, instancelock.ErrHeld) {
+					t.Fatalf("credential mutation bypassed the writer lock: %v", err)
+				}
+			} else if err != nil || got.Credential != file.Credential {
+				t.Fatalf("unchanged credential read required a writer lock: %v", err)
+			}
+		})
+	}
 	release, err := lockIdentityFile(filepath.Join(t.TempDir(), "other.json"))
 	if err != nil {
 		t.Fatalf("lockIdentityFile(other) error = %v", err)
 	}
 	if err := release(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRunnerReaderReconcilesAtomicRotation(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name      string
+		pending   bool
+		protected bool
+		expired   bool
+		wrongHost bool
+		wantErr   string
+	}{
+		{name: "pending credential accepted", pending: true},
+		{name: "rotation persisted"},
+		{name: "pending rotation during protected read", pending: true, protected: true},
+		{name: "persisted rotation during protected read", protected: true},
+		{name: "expired rotation during protected read", protected: true, expired: true, wantErr: "expired"},
+		{name: "Hub binding changed during protected read", protected: true, wrongHost: true, wantErr: "binding cannot be replaced"},
+		{name: "expired Hub response", expired: true, wantErr: "expired"},
+		{name: "Hub binding changed", wrongHost: true, wantErr: "binding cannot be replaced"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), "private", "identity.json")
+			file, err := runnerauth.Initialize(path, "https://hub.example.test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			file.Identity.OrganizationID = "org_example"
+			file.Identity.Operations = []string{runnerauth.Read}
+			file.Identity.ExpiresAt = time.Now().Add(runnerauth.CredentialTTL)
+			if err := runnerauth.Save(path, file); err != nil {
+				t.Fatal(err)
+			}
+			replacement, err := runnerauth.Initialize(filepath.Join(t.TempDir(), "private", "replacement.json"), file.HubURL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			calls, protectedCalls := 0, 0
+			var rotated []byte
+			transport := executionRoundTrip(func(r *http.Request) (*http.Response, error) {
+				calls++
+				if r.Method != http.MethodGet {
+					t.Fatalf("reader attempted %s", r.Method)
+				}
+				status := http.StatusOK
+				body := `{"code":"unauthorized"}`
+				protected := strings.Contains(r.URL.Path, "/projects/")
+				if protected {
+					protectedCalls++
+				}
+				if tt.protected && calls == 1 {
+					raw, err := json.Marshal(file.Identity)
+					return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(raw))}, err
+				}
+				if !tt.protected && calls == 1 || tt.protected && protectedCalls == 1 && protected {
+					release, err := lockIdentityFile(path)
+					if err != nil {
+						return nil, err
+					}
+					file.PendingCredential = replacement.Credential
+					if !tt.pending {
+						file.Credential, file.PendingCredential = replacement.Credential, ""
+					}
+					if err := errors.Join(runnerauth.Save(path, file), release()); err != nil {
+						return nil, err
+					}
+					rotated, err = os.ReadFile(path)
+					if err != nil {
+						return nil, err
+					}
+					if tt.wrongHost {
+						file.HubURL = "https://other.example.test"
+						rotated, err = json.Marshal(file)
+						if err != nil {
+							return nil, err
+						}
+						if err := os.WriteFile(path, rotated, 0600); err != nil {
+							return nil, err
+						}
+					}
+
+					status = http.StatusUnauthorized
+				} else {
+					if r.Header.Get("Authorization") != "Bearer "+replacement.Credential {
+						t.Fatal("reader did not use the rotated credential")
+					}
+					identity := file.Identity
+					if tt.expired {
+						identity.ExpiresAt = time.Now().Add(-time.Hour)
+					}
+					raw, err := json.Marshal(identity)
+					if protected {
+						raw, err = json.Marshal(tracker.NativeProject{ID: "prj_example", OrganizationID: "org_example"})
+					}
+					if err != nil {
+						return nil, err
+					}
+					body = string(raw)
+				}
+				return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+			})
+			client, err := NewRunnerReader(Config{URL: file.HubURL, IdentityFile: path, HTTPClient: &http.Client{Transport: transport}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tt.protected {
+				native, nativeErr := client.Native("org_example", "prj_example")
+				if nativeErr != nil {
+					t.Fatal(nativeErr)
+				}
+				remote, readErr := native.Project(t.Context())
+				err = readErr
+				if tt.wantErr == "" && (err != nil || remote.ID != "prj_example" || remote.OrganizationID != "org_example") {
+					t.Fatalf("protected project = %+v, %v", remote, err)
+				}
+			} else {
+				var identity runnerauth.Identity
+				identity, err = client.RunnerIdentity(t.Context())
+				if tt.wantErr == "" && identity.Binding != file.Identity.Binding {
+					t.Fatalf("reader identity = %+v, want binding %+v", identity, file.Identity.Binding)
+				}
+			}
+			if tt.wantErr == "" && err != nil || tt.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tt.wantErr)) {
+				t.Fatalf("reader error = %v; want %q", err, tt.wantErr)
+			}
+			if !tt.protected && calls > 2 || calls > 4 || protectedCalls > 2 {
+				t.Fatalf("reader requests = %d, want at most two credential reads", calls)
+			}
+			after, err := os.ReadFile(path)
+			if err != nil || string(after) != string(rotated) {
+				t.Fatalf("reader overwrote rotation: %v", err)
+			}
+		})
 	}
 }

@@ -62,6 +62,7 @@ const planLabels: Record<string, string> = {
   starter: "Starter",
   team: "Team",
   growth: "Growth",
+  scale: "Scale",
   business: "Business",
   enterprise: "Enterprise",
 };

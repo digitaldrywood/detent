@@ -23,7 +23,7 @@ func coordinatorSpriteTools() []runner.AgentTool {
 		coordinatorTool("get_sprite_pool", "Read this organization's Sprites token metadata, pool bounds, bootstrap state, runner_setup_declared (null means unknown) and runner connection/provider readiness. Enrollment alone is not readiness.", empty),
 		coordinatorTool("promote_sprites_token", "Preview making the first existing project Sprites token the organization default. Preserves every project override. Organization owner/admin only; requires explicit user approval. No token values are accepted or returned.", empty),
 		coordinatorTool("set_sprites_token", "Get the secure Sprites connector link for setting or replacing this organization's write-only Sprites token. The user enters the token there, never in chat or tool arguments.", empty),
-		coordinatorTool("set_sprite_pool", "Preview Full access (native-trusted) pool settings, floor/ceiling and optional customer bootstrap steps. Sprite pools cannot select Sandbox. Preserve existing bootstrap and isolation tier when omitted. Never include credentials in bootstrap; use customer-owned login/setup. Requires current owner/admin authority; the client controls confirmation; saving starts the existing pool lifecycle.", `{"type":"object","required":["min_runners","max_runners"],"properties":{"min_runners":{"type":"integer","minimum":0},"max_runners":{"type":"integer","minimum":0},"idle_seconds":{"type":"integer","minimum":30,"maximum":86400},"bootstrap":{"type":"string","maxLength":12000},"isolation_tier":{"type":"string","enum":["native-trusted"]}},"additionalProperties":false}`),
+		coordinatorTool("set_sprite_pool", "Preview Full access (native-trusted) pool settings, floor/ceiling and optional customer bootstrap steps. Sprite pools cannot select Sandbox. Preserve existing bootstrap, isolation tier and share_idle_capacity when omitted. Only set share_idle_capacity true when the user explicitly authorizes spending idle project Sprite capacity on other granted projects. Never include credentials in bootstrap; use customer-owned login/setup. Requires current owner/admin authority; the client controls confirmation; saving starts the existing pool lifecycle.", `{"type":"object","required":["min_runners","max_runners"],"properties":{"min_runners":{"type":"integer","minimum":0},"max_runners":{"type":"integer","minimum":0},"idle_seconds":{"type":"integer","minimum":30,"maximum":86400},"bootstrap":{"type":"string","maxLength":12000},"isolation_tier":{"type":"string","enum":["native-trusted"]},"share_idle_capacity":{"type":"boolean"}},"additionalProperties":false}`),
 		coordinatorTool("scale_up_sprite_pool", "Preview a scale-up or retry through the existing pool lifecycle, within the saved floor and ceiling. Set a floor of one for the first runner on an empty organization. Requires current owner/admin authority; the client controls confirmation.", empty),
 		coordinatorTool("get_sprite_bootstrap_log", "Read the last Sprite bootstrap progress log tail, including failed/deleted members, and retry guidance. Logs contain known progress only.", empty),
 	}
@@ -38,11 +38,12 @@ func coordinatorSpriteMutation(name string) bool {
 }
 
 type coordinatorSpriteArguments struct {
-	IsolationTier *string `json:"isolation_tier,omitempty"`
-	MinRunners    *int    `json:"min_runners,omitempty"`
-	MaxRunners    *int    `json:"max_runners,omitempty"`
-	IdleSeconds   *int    `json:"idle_seconds,omitempty"`
-	Bootstrap     *string `json:"bootstrap,omitempty"`
+	ShareIdleCapacity *bool   `json:"share_idle_capacity,omitempty"`
+	IsolationTier     *string `json:"isolation_tier,omitempty"`
+	MinRunners        *int    `json:"min_runners,omitempty"`
+	MaxRunners        *int    `json:"max_runners,omitempty"`
+	IdleSeconds       *int    `json:"idle_seconds,omitempty"`
+	Bootstrap         *string `json:"bootstrap,omitempty"`
 }
 
 type coordinatorSpriteChange struct {
@@ -51,6 +52,9 @@ type coordinatorSpriteChange struct {
 }
 
 func (args coordinatorSpriteArguments) apply(settings *spritePoolSettings) {
+	if args.ShareIdleCapacity != nil {
+		settings.ShareIdleCapacity = *args.ShareIdleCapacity
+	}
 	if args.IsolationTier != nil {
 		settings.IsolationTier = *args.IsolationTier
 	}
@@ -143,7 +147,7 @@ func (t *coordinatorToolset) spriteTool(ctx context.Context, record conversation
 	if call.Name == "set_sprite_pool" {
 		args.apply(&settings)
 	} else if settings.Revision == 0 || settings.MaxRunners == 0 {
-		return nil, nativeInvalid("Configure and enable the Sprite pool with set_sprite_pool before scaling up")
+		return nil, nativePublicInvalid("Configure and enable the Sprite pool with set_sprite_pool before scaling up")
 	}
 	if call.Name == "scale_up_sprite_pool" {
 		if _, err := s.spritePoolAuthority(ctx, s.database.reader, scope); err != nil {
@@ -157,7 +161,7 @@ func (t *coordinatorToolset) spriteTool(ctx context.Context, record conversation
 	if err != nil {
 		return nil, err
 	}
-	action := chat.Action{ConversationID: record.ID, Kind: chat.ActionKind(call.Name), ProjectID: string(record.ProjectID), Title: strings.ReplaceAll(call.Name, "_", " "), Description: fmt.Sprintf("Sprite pool access %s, floor %d, ceiling %d, idle threshold %d seconds (revision %d). Customer setup runs inside new Sprites; Fly usage is billed to your organization.", settings.IsolationTier, settings.MinRunners, settings.MaxRunners, settings.IdleSeconds, settings.Revision), Arguments: raw, Material: true}
+	action := chat.Action{ConversationID: record.ID, Kind: chat.ActionKind(call.Name), ProjectID: string(record.ProjectID), Title: strings.ReplaceAll(call.Name, "_", " "), Description: fmt.Sprintf("Sprite pool access %s, floor %d, ceiling %d, idle threshold %d seconds (revision %d). Customer setup runs inside new Sprites; Fly usage is billed to your organization. Share idle project capacity: %t.", settings.IsolationTier, settings.MinRunners, settings.MaxRunners, settings.IdleSeconds, settings.Revision, settings.ShareIdleCapacity), Arguments: raw, Material: true}
 	return t.submitCoordinatorAction(ctx, record, call, action)
 }
 
@@ -181,14 +185,14 @@ func (s *Service) validateCoordinatorSpriteChange(ctx context.Context, scope nat
 	}
 	if settings.MaxRunners > 0 {
 		if s.config.SecretKeys == nil || s.config.Hosted == nil {
-			return nativeInvalid("Sprite pools require hosted configuration and the organization secret store")
+			return nativePublicInvalid("Sprite pools require hosted configuration and the organization secret store")
 		}
 		status, err := readSecretStatus(ctx, s.database.reader, scope)
 		if err != nil {
 			return err
 		}
 		if !status.Present {
-			return nativeInvalid("Set the Sprites organization token through set_sprites_token before enabling the pool")
+			return nativePublicInvalid("Set the Sprites organization token through set_sprites_token before enabling the pool")
 		}
 	}
 	return nil
@@ -206,24 +210,36 @@ func (s *Service) executeCoordinatorSpriteAction(ctx context.Context, action cha
 	if err := validateSpritePoolAccess(change.Input.IsolationTier); err != nil {
 		return chat.ActionExecution{}, coordinatorActionError(err)
 	}
-	view, err := s.readSpritePool(ctx, scope)
-	if err != nil {
-		return chat.ActionExecution{}, coordinatorActionError(err)
-	}
-	if view.Revision != change.Revision {
-		return chat.ActionExecution{}, coordinatorActionError(nativeConflict(tracker.Revision(view.Revision)))
-	}
-	settings := view.spritePoolSettings
-	change.Input.apply(&settings)
-	if string(action.Kind) == "scale_up_sprite_pool" && (settings.Revision == 0 || settings.MaxRunners == 0) {
-		return chat.ActionExecution{}, operatortool.ErrInvalidArguments
-	}
-	if err := s.validateCoordinatorSpriteChange(ctx, scope, settings); err != nil {
-		return chat.ActionExecution{}, coordinatorActionError(err)
-	}
 	if string(action.Kind) == "set_sprite_pool" {
-		err = s.updateSpritePool(ctx, scope, settings, change.Input.IsolationTier)
+		err = s.executeSpritePoolSettingsCommand(ctx, scope, tracker.MutationForContext(ctx, action.RequestID), change, func(ctx context.Context, tx *sql.Tx, scope nativeScope) (spritePoolSettings, *string, error) {
+			settings, err := readSpritePoolSettings(ctx, tx, scope)
+			if err != nil {
+				return settings, nil, err
+			}
+			change.Input.apply(&settings)
+			settings.Revision = change.Revision
+			if err := s.validateCoordinatorSpriteChange(ctx, scope, settings); err != nil {
+				return settings, nil, err
+			}
+			return settings, change.Input.IsolationTier, nil
+		})
 	} else {
+		var view spritePoolView
+		view, err = s.readSpritePool(ctx, scope)
+		if err != nil {
+			return chat.ActionExecution{}, coordinatorActionError(err)
+		}
+		if view.Revision != change.Revision {
+			return chat.ActionExecution{}, coordinatorActionError(nativeConflict(tracker.Revision(view.Revision)))
+		}
+		settings := view.spritePoolSettings
+		change.Input.apply(&settings)
+		if string(action.Kind) == "scale_up_sprite_pool" && (settings.Revision == 0 || settings.MaxRunners == 0) {
+			return chat.ActionExecution{}, operatortool.ErrInvalidArguments
+		}
+		if err := s.validateCoordinatorSpriteChange(ctx, scope, settings); err != nil {
+			return chat.ActionExecution{}, coordinatorActionError(err)
+		}
 		err = s.secretMutation(ctx, scope, func(tx *sql.Tx) error {
 			if err := requireCredentialAuthority(ctx, tx, scope.credential, s.config.now()); err != nil {
 				return err
@@ -266,10 +282,16 @@ func (s *Service) coordinatorSpritePoolStatus(ctx context.Context, scope nativeS
 			validation = "Sprites organization token validated"
 		}
 	}
+	if err := s.describeSpritePoolMembers(ctx, scope, view.Members); err != nil {
+		return nil, err
+	}
 	members := make([]map[string]any, 0, len(view.Members))
 	connected := 0
 	for _, member := range view.Members {
-		item := map[string]any{"name": member.Name, "state": member.State, "runner_id": member.RunnerID, "connected": false, "provider_readiness": "unavailable"}
+		item := map[string]any{"name": member.Name, "state": member.State, "status": member.Status, "runner_id": member.RunnerID, "connected": false, "provider_readiness": "unavailable"}
+		if len(member.WaitingFor) > 0 {
+			item["waiting_for"] = member.WaitingFor
+		}
 		if member.RunnerID != "" && member.State == "enrolled" {
 			r, err := readRunnerWithClock(ctx, s.database.reader, scope.organization, member.RunnerID, s.config.now)
 			if err != nil {
@@ -305,7 +327,7 @@ func (s *Service) coordinatorSpritePoolStatus(ctx context.Context, scope nativeS
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"runner_setup_declared": declared, "token": secret, "token_validation": validation, "connector_url": connector, "isolation_tier": view.IsolationTier, "isolation_tier_unavailable_reason": view.IsolationTierUnavailableReason, "min_runners": view.MinRunners, "max_runners": view.MaxRunners, "idle_seconds": view.IdleSeconds, "revision": view.Revision, "bootstrap_configured": strings.TrimSpace(view.Bootstrap) != "", "connected_runners": connected, "members": members, "login_guide": "https://github.com/digitaldrywood/detent/blob/develop/docs/sprite-runners.md#6-sign-in-to-your-agents"}, nil
+	return map[string]any{"share_idle_capacity": view.ShareIdleCapacity, "runner_setup_declared": declared, "token": secret, "token_validation": validation, "connector_url": connector, "isolation_tier": view.IsolationTier, "isolation_tier_unavailable_reason": view.IsolationTierUnavailableReason, "min_runners": view.MinRunners, "max_runners": view.MaxRunners, "idle_seconds": view.IdleSeconds, "revision": view.Revision, "bootstrap_configured": strings.TrimSpace(view.Bootstrap) != "", "connected_runners": connected, "members": members, "login_guide": "https://github.com/digitaldrywood/detent/blob/develop/docs/sprite-runners.md#6-sign-in-to-your-agents"}, nil
 }
 
 func (s *Service) projectRunnerSetupDeclaration(ctx context.Context, scope nativeScope) (*bool, error) {

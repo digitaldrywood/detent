@@ -25,7 +25,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-// The hosted organization API (decisions section 12): the JSON the client's
+// The hosted organization API: the JSON the client's
 // organization, member and fleet screens read and write. requireAPIScope cannot carry these routes:
 // in hosted mode it rejects session credentials outside the native project
 // base, so each handler authenticates the hosted session itself. The shared
@@ -36,13 +36,20 @@ const hostedOrganizationBase = "/api/v2/organizations/:organization"
 
 func (s *Service) registerHostedOrganizationRoutes(e *echo.Echo) {
 	session := s.hostedSessionOnly
+	e.POST(hostedOrganizationBase+"/widget-token", s.hostedWidgetToken, session)
 	e.GET(hostedOrganizationBase+"/release-notes", s.releaseNotesAPI, session)
 	e.PUT(hostedOrganizationBase+"/release-notes/seen", s.releaseNotesAPI, session)
 	administration := s.hostedAdministrationSession
 	e.GET(hostedOrganizationBase+"/issue-notification-preference", s.issueNotificationPreference, session)
 	e.PUT(hostedOrganizationBase+"/issue-notification-preference", s.issueNotificationPreference, session)
+	e.GET(hostedOrganizationBase+"/daily-summary-preference", s.dailySummaryPreference, session)
+	e.PUT(hostedOrganizationBase+"/daily-summary-preference", s.dailySummaryPreference, session)
 	e.GET(hostedOrganizationBase+"/name", s.hostedOrganizationName, session)
 	e.PUT(hostedOrganizationBase+"/name", s.renameHostedOrganization, session)
+	e.GET(hostedOrganizationBase+"/logo", s.getOrganizationLogo, session)
+	e.PUT(hostedOrganizationBase+"/logo", s.setOrganizationLogo, administration)
+	e.GET(hostedOrganizationBase+"/attachment-metadata/:attachment", s.getOrganizationLogoAttachment, session)
+	e.GET(hostedOrganizationBase+"/logo-metadata", s.getCurrentOrganizationLogoAttachment, session)
 	e.GET(hostedOrganizationBase+"/secrets/:kind", s.organizationSpritesScope(s.projectSecretMetadata), session)
 	e.PUT(hostedOrganizationBase+"/secrets/:kind", s.organizationSpritesScope(s.setProjectSecret), administration)
 	e.DELETE(hostedOrganizationBase+"/secrets/:kind", s.organizationSpritesScope(s.removeProjectSecret), administration)
@@ -58,6 +65,12 @@ func (s *Service) registerHostedOrganizationRoutes(e *echo.Echo) {
 		e.PUT(path, s.workViewPreference, session)
 		e.DELETE(path, s.workViewPreference, session)
 	}
+	e.GET(hostedOrganizationBase+"/work-views", s.savedWorkViews, session)
+	e.POST(hostedOrganizationBase+"/work-views", s.savedWorkViews, session)
+	e.GET(hostedOrganizationBase+"/work-views/:view", s.savedWorkViews, session)
+	e.PUT(hostedOrganizationBase+"/work-views/:view", s.savedWorkViews, session)
+	e.DELETE(hostedOrganizationBase+"/work-views/:view", s.savedWorkViews, session)
+	e.PUT(hostedOrganizationBase+"/work-views/:view/favorite", s.savedWorkViews, session)
 	e.GET(hostedOrganizationBase+"/integrations/slack", s.getSlackIntegration, session)
 	e.PUT(hostedOrganizationBase+"/integrations/slack", s.setSlackIntegration, administration)
 	e.POST(hostedOrganizationBase+"/integrations/slack/test", s.testSlackIntegration, administration)
@@ -103,7 +116,7 @@ func (s *Service) hostedSessionOnly(next echo.HandlerFunc) echo.HandlerFunc {
 			if c.Path() == hostedOrganizationBase+"/projects" && c.Request().Method == http.MethodGet {
 				return s.entryKeyProjects(c)
 			}
-			return c.JSON(http.StatusForbidden, apikey.Refusal{Code: "session_required", Message: "This endpoint requires a hosted browser session"})
+			return s.refusedAPIError(c, http.StatusForbidden, "session_required", "This endpoint requires a hosted browser session", apikey.Refusal{Code: "session_required", Message: "This endpoint requires a hosted browser session"})
 		}
 		if c.Request().Header.Get(echo.HeaderAuthorization) != "" {
 			return s.hostedJSONError(c, http.StatusForbidden, "This endpoint authenticates a hosted session")
@@ -122,12 +135,12 @@ func (r hostedIdempotent) validate(required bool) error {
 	key := strings.TrimSpace(r.IdempotencyKey)
 	if key == "" {
 		if required {
-			return nativeInvalid("An idempotency key of at most 128 bytes is required")
+			return nativePublicInvalid("An idempotency key of at most 128 bytes is required")
 		}
 		return nil
 	}
 	if len(r.IdempotencyKey) > 128 {
-		return nativeInvalid("An idempotency key of at most 128 bytes is required")
+		return nativePublicInvalid("An idempotency key of at most 128 bytes is required")
 	}
 	return nil
 }
@@ -334,7 +347,7 @@ func (s *Service) editHostedInvitationJSON(c echo.Context) error {
 		Grants []hostedMemberGrant `json:"grants"`
 	}
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	if err := request.validate(false); err != nil {
 		return s.nativeAPIError(c, err)
@@ -358,7 +371,7 @@ func (s *Service) inviteHostedMemberJSON(c echo.Context) error {
 		Grants []hostedMemberGrant `json:"grants"`
 	}
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	if err := request.validate(true); err != nil {
 		return s.nativeAPIError(c, err)
@@ -377,7 +390,7 @@ func (s *Service) inviteHostedMemberJSON(c echo.Context) error {
 		case errors.Is(err, mutation.ErrConflict):
 			return s.nativeAPIError(c, &nativeError{Code: "idempotency_conflict", Message: mutation.ErrConflict.Error(), status: http.StatusConflict})
 		case errors.Is(err, mutation.ErrUncertain):
-			return c.JSON(http.StatusConflict, apiErrorResponse{Code: "idempotency_in_progress", Message: mutation.ErrUncertain.Error()})
+			return s.refusedAPIError(c, http.StatusConflict, "idempotency_in_progress", mutation.ErrUncertain.Error(), apiErrorResponse{Code: "idempotency_in_progress", Message: mutation.ErrUncertain.Error()})
 		case errors.Is(err, operatortool.ErrInvalidArguments):
 			return s.hostedJSONError(c, http.StatusUnprocessableEntity, "Enter the customer's email address")
 		case errors.As(err, &limit):
@@ -428,7 +441,7 @@ func (s *Service) claimHostedOperation(ctx context.Context, command hostedComman
 	if err != nil {
 		return false, nil, err
 	}
-	result, err := s.database.db.ExecContext(ctx, `INSERT INTO native_commands (organization_id,actor_id,operation,command_key,request_hash,response_json,created_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT DO NOTHING`, s.commandOrganization(ctx, command), command.actor, command.operation, command.key, hash, hostedPendingCommand, formatHubTime(s.config.now()))
+	result, err := s.database.db.ExecContext(ctx, `INSERT INTO native_commands (organization_id,actor_id,operation,command_key,request_hash,response_json,created_at,response_pending,response_request_id) VALUES(?,?,?,?,?,?,?,1,'') ON CONFLICT DO NOTHING`, s.commandOrganization(ctx, command), command.actor, command.operation, command.key, hash, hostedPendingCommand, formatHubTime(s.config.now()))
 	if err != nil {
 		return false, nil, err
 	}
@@ -459,7 +472,7 @@ func (s *Service) claimHostedCommand(c echo.Context, command hostedCommand, stat
 		return false, s.nativeAPIError(c, &nativeError{Code: "idempotency_conflict", Message: mutation.ErrConflict.Error(), status: http.StatusConflict})
 	}
 	if errors.Is(err, mutation.ErrUncertain) {
-		return false, c.JSON(http.StatusConflict, apiErrorResponse{Code: "idempotency_in_progress", Message: mutation.ErrUncertain.Error()})
+		return false, s.refusedAPIError(c, http.StatusConflict, "idempotency_in_progress", mutation.ErrUncertain.Error(), apiErrorResponse{Code: "idempotency_in_progress", Message: mutation.ErrUncertain.Error()})
 	}
 	if err != nil {
 		return false, s.nativeAPIError(c, err)
@@ -478,7 +491,11 @@ func (s *Service) completeHostedOperation(ctx context.Context, command hostedCom
 	}
 	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 	defer cancel()
-	result, err := s.database.db.ExecContext(persistCtx, `UPDATE native_commands SET response_json=? WHERE organization_id=? AND actor_id=? AND operation=? AND command_key=? AND response_json=?`, response, s.commandOrganization(ctx, command), command.actor, command.operation, command.key, hostedPendingCommand)
+	pending, request, err := commandResponseFacts(response)
+	if err != nil {
+		return nil, err
+	}
+	result, err := s.database.db.ExecContext(persistCtx, `UPDATE native_commands SET response_json=?,response_pending=?,response_request_id=? WHERE organization_id=? AND actor_id=? AND operation=? AND command_key=? AND response_json=?`, response, pending, request, s.commandOrganization(ctx, command), command.actor, command.operation, command.key, hostedPendingCommand)
 	if err != nil {
 		return nil, err
 	}
@@ -523,7 +540,7 @@ func (s *Service) changeHostedRoleJSON(c echo.Context) error {
 		Role string `json:"role"`
 	}
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	if err := request.validate(false); err != nil {
 		return s.nativeAPIError(c, err)
@@ -551,7 +568,7 @@ func (s *Service) changeHostedGrantJSON(c echo.Context) error {
 		Revoke    bool   `json:"revoke"`
 	}
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	if err := request.validate(false); err != nil {
 		return s.nativeAPIError(c, err)
@@ -584,7 +601,7 @@ func (s *Service) hostedMemberByID(ctx context.Context, credential apiCredential
 // listHostedProjects answers GET /projects with the readable projects and the
 // onboarding readiness each project screen opens with.
 func (s *Service) listHostedProjects(c echo.Context) error {
-	credential, _, err := s.hostedCredential(c.Request().Context(), c)
+	credential, _, err := s.appCredential(c)
 	if err != nil {
 		return s.hostedAPIError(c, err)
 	}
@@ -593,7 +610,7 @@ func (s *Service) listHostedProjects(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	setups, err := s.projectOnboardingBatch(ctx, tracker.OrganizationID(s.config.Hosted.OrganizationID), readable)
+	setups, err := s.projectOnboardingBatch(ctx, tracker.OrganizationID(s.appOrganizationID()), readable)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -634,7 +651,7 @@ func (s *Service) createHostedProjectJSON(c echo.Context) error {
 		States      []tracker.NativeState `json:"states,omitempty"`
 	}
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	if err := request.validate(true); err != nil {
 		return s.nativeAPIError(c, err)
@@ -675,14 +692,14 @@ func (s *Service) createHostedProjectJSON(c echo.Context) error {
 
 // hostedJSONError answers a hosted API failure with the native error shape.
 func (s *Service) hostedJSONError(c echo.Context, status int, message string) error {
-	return c.JSON(status, apiErrorResponse{Code: hostedErrorCode(status), Message: message})
+	return s.refusedAPIError(c, status, hostedErrorCode(status), message, apiErrorResponse{Code: hostedErrorCode(status), Message: message})
 }
 
 func (s *Service) revokeHostedInvitationJSON(c echo.Context) error {
 	var request hostedIdempotent
 	if c.Request().ContentLength != 0 {
 		if err := decodeAPIJSON(c, &request); err != nil {
-			return invalidAPIRequest(c, err)
+			return s.invalidAPIRequest(c, err)
 		}
 	}
 	if err := request.validate(false); err != nil {
@@ -703,7 +720,7 @@ func (s *Service) revokeHostedInvitationJSON(c echo.Context) error {
 func (s *Service) resendHostedInvitationJSON(c echo.Context) error {
 	var request hostedIdempotent
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	if err := request.validate(false); err != nil {
 		return s.nativeAPIError(c, err)
@@ -725,13 +742,13 @@ func (s *Service) resendHostedInvitationJSON(c echo.Context) error {
 	return c.NoContent(http.StatusNoContent)
 }
 
-// hostedAPIError maps a credential failure onto the section 12 error shape.
+// hostedAPIError maps a credential failure onto the hosted JSON API error shape.
 func (s *Service) hostedAPIError(c echo.Context, err error) error {
 	if errors.Is(err, auth.ErrInvalidSession) {
 		return c.JSON(http.StatusUnauthorized, apiErrorResponse{Code: "unauthorized", Message: "A hosted session is required"})
 	}
 	if errors.Is(err, auth.ErrHostedIdentity) {
-		return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "forbidden", Message: "This account has no access to this organization"})
+		return s.refusedAPIError(c, http.StatusForbidden, "forbidden", "This account has no access to this organization", apiErrorResponse{Code: "forbidden", Message: "This account has no access to this organization"})
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return s.nativeAPIError(c, nativeNotFound())

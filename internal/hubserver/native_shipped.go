@@ -99,7 +99,7 @@ func nativeShippedWindow(value string) (string, error) {
 	case "", nativeDefaultShippedWindow, "48h", "14d", "all":
 		return nativeDefaultShippedWindow, nil
 	default:
-		return "", nativeInvalid("completed_window supports 1h,24h,7d")
+		return "", nativePublicInvalid("completed_window supports 1h,24h,7d")
 	}
 }
 
@@ -183,7 +183,11 @@ func readProjectSpend(ctx context.Context, q nativeQueryer, scope nativeScope, f
 		return 0, 0, err
 	}
 	if scoped != "" {
-		statement += ` AND attempt_id IN (SELECT a.id FROM native_attempts a WHERE a.organization_id=? AND a.project_id=?` + scoped + `)`
+		q, err = prepareReportsQuery(ctx, q, scope, "report_attempts")
+		if err != nil {
+			return 0, 0, err
+		}
+		statement += ` AND attempt_id IN (SELECT a.id FROM report_attempts a WHERE a.organization_id=? AND a.project_id=?` + scoped + `)`
 		args = append(append(args, scope.organization, scope.project), scopedArgs...)
 	}
 	if err := q.QueryRowContext(ctx, statement, args...).Scan(&cost, &rows); err != nil {

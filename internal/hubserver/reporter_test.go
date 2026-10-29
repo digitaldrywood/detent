@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +12,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/labstack/echo/v4"
+
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
@@ -18,9 +21,11 @@ import (
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/releaseaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -113,6 +118,7 @@ func TestReporterNativeCommands(t *testing.T) {
 			attachmentResponse := request(u, http.MethodPost, f.base+"/attachment-metadata", record)
 			requireNativeStatus(t, attachmentResponse, http.StatusCreated)
 			decodeHubResponse(t, attachmentResponse, &record)
+			operatorSQL(t, f.hostedSecurityFixture, "UPDATE projects SET require_visual_attachments=1 WHERE id=?", f.project)
 			for _, issueType := range []string{"", "question"} {
 				refused := request(u, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "missing-type-" + issueType}, Title: "Tester report", Type: issueType})
 				requireNativeStatus(t, refused, http.StatusUnprocessableEntity)
@@ -122,9 +128,9 @@ func TestReporterNativeCommands(t *testing.T) {
 					t.Fatalf("failure=%#v", failure)
 				}
 			}
-			var own tracker.NativeIssue
+			var own, sharedVisualIssue tracker.NativeIssue
 			for i, state := range []string{"", "Todo", "Backlog", "Cancelled", "Triage", "Missing"} {
-				draft := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("file-%d", i)}, Type: []string{"bug", "change_request"}[i%2], Title: "Tester report", Body: reporterTestBody([]string{"bug", "change_request"}[i%2]) + "\n![Screenshot](attachment:" + record.ID + ")", State: state}
+				draft := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("file-%d", i)}, Type: []string{"bug", "change_request"}[i%2], Title: "Tester report", Body: reporterTestBody([]string{"bug", "change_request"}[i%2]) + "\nScreenshot: https://example.test/preview ![Screenshot](attachment:" + record.ID + ")", State: state}
 				r := request(u, http.MethodPost, f.base+"/work-items", draft)
 				wantStatus := http.StatusOK
 				if i > 0 {
@@ -145,17 +151,33 @@ func TestReporterNativeCommands(t *testing.T) {
 					requireNativeStatus(t, r, http.StatusOK)
 				}
 				decodeHubResponse(t, r, &own)
+				if i == 0 {
+					sharedVisualIssue = own
+				}
 				if own.State != "Triage" || own.Type != []string{"bug", "change_request"}[i%2] {
 					t.Fatalf("requested %q: state=%s", state, own.State)
 				}
 			}
 			operatorSQL(t, f.hostedSecurityFixture, "UPDATE projects SET duplicate_challenge=0 WHERE id=?", f.project)
+			hiddenImage := record
+			hiddenImage.ID = conversation.NewAttachmentID()
+			requireNativeStatus(t, request(member, http.MethodPost, f.base+"/attachment-metadata", hiddenImage), http.StatusCreated)
+			requireNativeStatus(t, request(u, http.MethodPost, f.base+"/work-items/"+string(own.WorkItemID)+"/comments", tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "unreadable-visual"}, Body: "https://figma.com/design/example " + hiddenImage.Markdown("org_security")}), http.StatusUnprocessableEntity)
+			operatorSQL(t, f.hostedSecurityFixture, "UPDATE issues SET actor_kind=NULL,actor_principal_id=NULL WHERE project_id=?", f.project)
 			attachmentResponse = request(u, http.MethodGet, f.base+"/attachment-metadata/"+record.ID, nil)
 			requireNativeStatus(t, attachmentResponse, http.StatusOK)
 			var fetched attachment.Metadata
 			decodeHubResponse(t, attachmentResponse, &fetched)
 			if fetched.ContentType != "image/png" || len(fetched.ReferencedBy) != 6 {
 				t.Fatalf("attachment=%#v", fetched)
+			}
+			requireNativeStatus(t, request(member, http.MethodPost, f.base+"/attachment-metadata/"+hiddenImage.ID+"/reference", map[string]any{"work_item_id": sharedVisualIssue.WorkItemID}), http.StatusNoContent)
+			requireNativeStatus(t, request(u, http.MethodPost, f.base+"/work-items/"+string(sharedVisualIssue.WorkItemID)+"/comments", tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "readable-legacy-visual"}, Body: "https://figma.com/design/example " + hiddenImage.Markdown("org_security")}), http.StatusOK)
+			attachmentResponse = request(u, http.MethodGet, f.base+"/attachment-metadata/"+hiddenImage.ID, nil)
+			requireNativeStatus(t, attachmentResponse, http.StatusOK)
+			decodeHubResponse(t, attachmentResponse, &fetched)
+			if len(fetched.ReferencedBy) != 2 {
+				t.Fatalf("shared legacy attachment references=%v", fetched.ReferencedBy)
 			}
 			requireNativeStatus(t, request(u, http.MethodPost, f.base+"/attachment-metadata/"+record.ID+"/reference", map[string]any{"work_item_id": own.WorkItemID}), http.StatusNoContent)
 			requireNativeStatus(t, request(u, http.MethodDelete, f.base+"/attachment-metadata/"+record.ID, nil), http.StatusForbidden)
@@ -205,11 +227,68 @@ func TestReporterNativeCommands(t *testing.T) {
 			decodeHubResponse(t, r, &comment)
 			r = request(u, http.MethodPatch, commentPath+"/"+comment.ID, tracker.UpdateComment{Mutation: tracker.Mutation{IdempotencyKey: "edit-own"}, ExpectedRevision: comment.Revision, Body: "Updated observation"})
 			requireNativeStatus(t, r, http.StatusOK)
+			original := comment
+			decodeHubResponse(t, r, &comment)
+			if comment.Body != "Updated observation" || comment.Actor != original.Actor || !comment.CreatedAt.Equal(original.CreatedAt) || comment.EditedBy == nil || comment.Revision != 2 {
+				t.Fatalf("edited comment=%#v", comment)
+			}
+			for _, actor := range []hostedSecurityUser{member, owner} {
+				want := http.StatusForbidden
+				if test.transport == "key" && actor.identity.Subject == owner.identity.Subject {
+					want = http.StatusNotFound
+				}
+				for _, deleted := range []bool{false, true} {
+					r = request(actor, http.MethodPatch, commentPath+"/"+comment.ID, tracker.UpdateComment{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("deny-%s-%t", actor.identity.Subject, deleted)}, ExpectedRevision: comment.Revision, Body: "Replacement", Deleted: deleted})
+					requireNativeStatus(t, r, want)
+				}
+			}
+			parent := comment
+			parent.Body = "Updated observation\n![Screenshot](attachment:" + record.ID + ")"
+			r = request(u, http.MethodPatch, commentPath+"/"+parent.ID, tracker.UpdateComment{Mutation: tracker.Mutation{IdempotencyKey: "attach-comment"}, ExpectedRevision: parent.Revision, Body: parent.Body})
+			requireNativeStatus(t, r, http.StatusOK)
+			decodeHubResponse(t, r, &parent)
 			r = request(member, http.MethodPost, commentPath, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "member-comment"}, Body: "Operator observation"})
 			requireNativeStatus(t, r, http.StatusOK)
 			decodeHubResponse(t, r, &comment)
 			r = request(u, http.MethodPatch, commentPath+"/"+comment.ID, tracker.UpdateComment{Mutation: tracker.Mutation{IdempotencyKey: "edit-other"}, ExpectedRevision: comment.Revision, Body: "Replacement"})
 			requireNativeStatus(t, r, http.StatusForbidden)
+			r = request(u, http.MethodPatch, commentPath+"/"+comment.ID, tracker.UpdateComment{Mutation: tracker.Mutation{IdempotencyKey: "delete-other"}, ExpectedRevision: comment.Revision, Deleted: true})
+			requireNativeStatus(t, r, http.StatusForbidden)
+			r = request(u, http.MethodPatch, commentPath+"/"+parent.ID, tracker.UpdateComment{Mutation: tracker.Mutation{IdempotencyKey: "stale-delete"}, ExpectedRevision: 1, Deleted: true})
+			requireNativeStatus(t, r, http.StatusConflict)
+			deletion := tracker.UpdateComment{Mutation: tracker.Mutation{IdempotencyKey: "delete-own"}, ExpectedRevision: parent.Revision, Deleted: true}
+			for range 2 {
+				r = request(u, http.MethodPatch, commentPath+"/"+parent.ID, deletion)
+				requireNativeStatus(t, r, http.StatusOK)
+				var deleted tracker.NativeComment
+				decodeHubResponse(t, r, &deleted)
+				if !deleted.Deleted || deleted.Body != "" || deleted.Actor != parent.Actor || !deleted.CreatedAt.Equal(parent.CreatedAt) || deleted.Revision != parent.Revision+1 {
+					t.Fatalf("deleted comment=%#v", deleted)
+				}
+			}
+			for _, actor := range []hostedSecurityUser{u, member} {
+				r = request(actor, http.MethodGet, commentPath, nil)
+				requireNativeStatus(t, r, http.StatusOK)
+				var comments tracker.Page[tracker.NativeComment]
+				decodeHubResponse(t, r, &comments)
+				if len(comments.Items) != 2 || !comments.Items[0].Deleted || comments.Items[0].Body != "" || comments.Items[1].Body != "Operator observation" {
+					t.Fatalf("discussion=%#v", comments.Items)
+				}
+			}
+			r = request(u, http.MethodPatch, commentPath+"/"+parent.ID, tracker.UpdateComment{Mutation: tracker.Mutation{IdempotencyKey: "edit-deleted"}, ExpectedRevision: parent.Revision + 1, Body: "Restored"})
+			requireNativeStatus(t, r, http.StatusUnprocessableEntity)
+			var snapshot tracker.NativeComment
+			var encoded string
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT record_json FROM collaboration_versions WHERE record_id=? AND revision=?", parent.ID, parent.Revision).Scan(&encoded); err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal([]byte(encoded), &snapshot); err != nil || snapshot.Body != parent.Body || snapshot.Deleted {
+				t.Fatalf("revision=%#v, error=%v", snapshot, err)
+			}
+			var references int
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM attachment_references WHERE attachment_id=? AND comment_id=?", record.ID, parent.ID).Scan(&references); err != nil || references != 1 {
+				t.Fatalf("attachment references=%d, error=%v", references, err)
+			}
 			for _, suffix := range []string{"", "/comments", "/history"} {
 				r := request(u, http.MethodGet, f.base+"/work-items/"+string(other.WorkItemID)+suffix, nil)
 				requireNativeStatus(t, r, http.StatusNotFound)
@@ -217,6 +296,58 @@ func TestReporterNativeCommands(t *testing.T) {
 			for _, test := range []struct{ method, suffix string }{{http.MethodPost, "/dependencies"}, {http.MethodPost, "/restore"}, {http.MethodPost, "/archive"}} {
 				r := request(u, test.method, f.base+"/work-items/"+string(other.WorkItemID)+test.suffix, map[string]any{"idempotency_key": "denied"})
 				requireNativeStatus(t, r, http.StatusForbidden)
+			}
+			auditBytes, checkpoint, err := releaseaudit.SnapshotBytes(releaseaudit.Snapshot{
+				Identity: releaseaudit.Identity{ProjectID: string(f.project), Repository: "example-org/example-project", Commit: strings.Repeat("a", 40), ReleaseSeries: "release/v1.0", RunID: "run", Attempt: "1", JobID: "audit", RunURL: "https://example.test/runs/1"},
+				Sequence: 1, Status: "incomplete", BundleCommit: releaseaudit.BundleCommit, BundleDigest: releaseaudit.BundleDigest,
+				Allowance: releaseaudit.Allowance{Invocations: 20}, Ledger: []byte(`[]`),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			auditPart := attachment.Metadata{ID: conversation.NewAttachmentID(), Name: "audit.txt", ContentType: "text/plain", Size: int64(len(auditBytes)), SHA256: artifact.Digest(auditBytes)}
+			requireNativeStatus(t, request(member, http.MethodPost, f.base+"/attachment-metadata", auditPart), http.StatusCreated)
+			checkpoint.Parts = []releaseaudit.Part{{AttachmentID: auditPart.ID, Index: 0, Bytes: len(auditBytes), Digest: auditPart.SHA256}}
+			operatorSQL(t, f.hostedSecurityFixture, "UPDATE projects SET checkout_repository=? WHERE id=?", checkpoint.Identity.Repository, f.project)
+			auditRequest := struct {
+				tracker.Mutation
+				releaseaudit.Checkpoint
+			}{tracker.Mutation{IdempotencyKey: "release-audit"}, checkpoint}
+			requireNativeStatus(t, request(member, http.MethodPost, f.base+"/release-audits", auditRequest), http.StatusOK)
+			for _, access := range []struct {
+				method, suffix string
+				body           any
+			}{
+				{http.MethodGet, "/release-audits", nil},
+				{http.MethodGet, "/release-audits/" + checkpoint.ID, nil},
+				{http.MethodPost, "/release-audits", auditRequest},
+				{http.MethodGet, "/attachment-metadata/" + auditPart.ID, nil},
+			} {
+				t.Run(access.method+access.suffix, func(t *testing.T) {
+					requireNativeStatus(t, request(u, access.method, f.base+access.suffix, access.body), http.StatusNotFound)
+					requireNativeStatus(t, request(member, access.method, f.base+access.suffix, access.body), http.StatusOK)
+				})
+			}
+			attachmentContexts := make(chan context.Context, 1)
+			f.service.echo.GET("/release-audit-attachment-test", func(c echo.Context) error {
+				attachmentContexts <- operatortool.BindConnection(c.Request().Context(), "audit-attachment", "test")
+				return c.NoContent(http.StatusOK)
+			}, f.service.operatorAuthority)
+			requireNativeStatus(t, request(u, http.MethodGet, "/organizations/org_security/release-audit-attachment-test", nil), http.StatusOK)
+			attachmentContext := <-attachmentContexts
+			executor := hostedOperatorExecutor{f.service}
+			if err := executor.OpenConnection(attachmentContext); err != nil {
+				t.Fatal(err)
+			}
+			for _, name := range []string{operatortool.ReadAttachmentMetadata, operatortool.ReadAttachment} {
+				raw, err := json.Marshal(map[string]string{"project_id": string(f.project), "attachment_id": auditPart.ID})
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, err = executor.Execute(attachmentContext, operatortool.Call{Name: name, Arguments: raw})
+				if !errors.Is(err, explain.ErrNotFound) {
+					t.Fatalf("%s release audit evidence: %v", name, err)
+				}
 			}
 			operatorSQL(t, f.hostedSecurityFixture, "DELETE FROM hosted_project_grants WHERE user_id=?", u.identity.Subject)
 			requireNativeStatus(t, request(u, http.MethodGet, f.base+"/work-items", nil), http.StatusNotFound)
@@ -672,23 +803,38 @@ func TestNativeProjectCreationWorkflowBounds(t *testing.T) {
 }
 
 func TestReporterWorkflowTemplates(t *testing.T) {
+	const repairBody = "## Acceptance criteria\nRepair the verified failure.\n\n## Must not break\nPreserve authority.\n\n## How we know it worked\nRun make check-land.\n\n## Invariants touched\nPreserve INV-3.\n\n## Safety regression\nPreserve regression tables."
+	const repairDefinition = "## Issue Contract\n- Acceptance criteria\n- Must not break\n- How we know it worked\n- Invariants touched\n- Safety regression\n## Scheduled CI repair contract\nNew verified GitHub Actions CI repair reports from `.github/workflows/verify.yaml` on `release/v2.0` enter Todo with Urgent priority.\n"
 	for _, test := range []struct {
 		name, prompt, body string
 		want               config.ReporterContracts
 		required           []string
+		repair             bool
+		shortContract      bool
 	}{
-		{"default", "", reporterBugSections, config.ReporterContracts{"bug": {"Steps to reproduce", "Expected", "Actual", "Where", "Environment"}, "change_request": {"Current behavior", "Desired behavior", "Why"}}, nil},
-		{"override", "## Issue Contract\n- Finish\n- Preserve\n- Prove\n\n## Reporter Contract\n### bug\n- Reproduction\n- Outcome\n### change_request\n- Motivation", "## Reproduction\nOpen settings.\n## Outcome\nSaving fails.", config.ReporterContracts{"bug": {"Reproduction", "Outcome"}, "change_request": {"Motivation"}}, []string{"Finish", "Preserve", "Prove"}},
-		{"engineering overlap", "## Reporter Contract\n### bug\n- Acceptance criteria\n- Must not break\n- How we know it worked", issueContractTestSections, config.ReporterContracts{"bug": {"Acceptance criteria", "Must not break", "How we know it worked"}, "change_request": {"Current behavior", "Desired behavior", "Why"}}, nil},
+		{"default", "", reporterBugSections, config.ReporterContracts{"bug": {"Steps to reproduce", "Expected", "Actual", "Where", "Environment"}, "change_request": {"Current behavior", "Desired behavior", "Why"}}, nil, false, false},
+		{"override", "## Issue Contract\n- Finish\n- Preserve\n- Prove\n\n## Reporter Contract\n### bug\n- Reproduction\n- Outcome\n### change_request\n- Motivation", "## Reproduction\nOpen settings.\n## Outcome\nSaving fails.", config.ReporterContracts{"bug": {"Reproduction", "Outcome"}, "change_request": {"Motivation"}}, []string{"Finish", "Preserve", "Prove"}, false, false},
+		{"engineering overlap", "## Reporter Contract\n### bug\n- Acceptance criteria\n- Must not break\n- How we know it worked", issueContractTestSections, config.ReporterContracts{"bug": {"Acceptance criteria", "Must not break", "How we know it worked"}, "change_request": {"Current behavior", "Desired behavior", "Why"}}, nil, false, false},
+		{"scheduled repair discovery", repairDefinition + strings.ReplaceAll(repairBody, "## ", "### "), reporterBugSections, config.ReporterContracts{"bug": {"Steps to reproduce", "Expected", "Actual", "Where", "Environment"}, "change_request": {"Current behavior", "Desired behavior", "Why"}}, []string{"Acceptance criteria", "Must not break", "How we know it worked", "Invariants touched", "Safety regression"}, true, false},
+		{"scheduled three-section release family", repairDefinition + strings.ReplaceAll(repairBody, "## ", "### "), reporterBugSections, config.ReporterContracts{"bug": {"Steps to reproduce", "Expected", "Actual", "Where", "Environment"}, "change_request": {"Current behavior", "Desired behavior", "Why"}}, nil, true, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			prompt := test.prompt
+			expectedRepairBody, branch := repairBody, "release/v2.0"
+			if test.shortContract {
+				expectedRepairBody, _, _ = strings.Cut(repairBody, "\n\n## Invariants touched")
+				prompt = strings.Replace(repairDefinition, "- Invariants touched\n- Safety regression\n", "", 1) + strings.ReplaceAll(expectedRepairBody, "## ", "### ")
+				prompt = strings.Replace(prompt, "`release/v2.0`", "`release/v*`", 1)
+				prompt = strings.Replace(prompt, "Urgent priority", "High priority", 1)
+				branch = "release/v*"
+			}
 			required := test.required
 			if required == nil {
 				required = []string{"Acceptance criteria", "Must not break", "How we know it worked"}
 			}
 			f, ctx := newHostedKeyMCPFixture(t, "dedicated", "reporter")
 			definition, err := config.ParseProjectDefinition(config.ProjectDefinitionSources{
-				Workflow:  []byte(test.prompt),
+				Workflow:  []byte(prompt),
 				Config:    []byte("schema: 1\ntracker:\n  kind: hub_native\n  lanes:\n    - {name: Todo, role: active}\n    - {name: In Progress, role: active}\n    - {name: Blocked, role: holding}\n    - {name: Done, role: terminal}\n"),
 				HasConfig: true, ConfigPath: "detent.yaml",
 			})
@@ -699,6 +845,11 @@ func TestReporterWorkflowTemplates(t *testing.T) {
 			descriptor, err := config.ResolvePolicy(definition)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if test.repair {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET checkout_repository='example-org/example-project', github_repository_enabled=0 WHERE id=?", f.project); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if _, err := f.service.database.approvePolicy(t.Context(), "org_security/"+string(f.project), "test-owner", policy.Change{ExpectedID: hubTestPolicy().ID, Policy: descriptor}); err != nil {
 				t.Fatal(err)
@@ -715,9 +866,7 @@ func TestReporterWorkflowTemplates(t *testing.T) {
 			var read struct {
 				Data struct {
 					Templates     config.ReporterContracts `json:"reporter_templates"`
-					IssueContract struct {
-						RequiredSections []string `json:"required_sections"`
-					} `json:"issue_contract"`
+					IssueContract nativeWorkIssueContract  `json:"issue_contract"`
 				} `json:"data"`
 			}
 			if err := json.Unmarshal(result.Content, &read); err != nil || !reflect.DeepEqual(read.Data.Templates, test.want) {
@@ -725,6 +874,18 @@ func TestReporterWorkflowTemplates(t *testing.T) {
 			}
 			if !reflect.DeepEqual(read.Data.IssueContract.RequiredSections, required) {
 				t.Fatalf("work_config required sections=%v, want %v", read.Data.IssueContract.RequiredSections, required)
+			}
+			if test.repair {
+				priority := 0
+				if test.shortContract {
+					priority = 1
+				}
+				want := &nativeWorkScheduledRepair{PolicyID: descriptor.ID, Repository: "example-org/example-project", Workflow: ".github/workflows/verify.yaml", Branches: []string{branch}, Body: expectedRepairBody, EvidenceSchema: 1, Priority: priority}
+				if !reflect.DeepEqual(read.Data.IssueContract.ScheduledRepair, want) {
+					t.Fatalf("scheduled repair=%+v want=%+v", read.Data.IssueContract.ScheduledRepair, want)
+				}
+			} else if read.Data.IssueContract.ScheduledRepair != nil {
+				t.Fatalf("unapproved scheduled repair=%+v", read.Data.IssueContract.ScheduledRepair)
 			}
 			response := f.request(t, f.user, http.MethodGet, f.base, nil)
 			requireNativeStatus(t, response, http.StatusOK)

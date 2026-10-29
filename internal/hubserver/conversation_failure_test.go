@@ -138,7 +138,7 @@ func TestConversationReplacedLeaseKeepsControlsOnTheirOwnAttempt(t *testing.T) {
 		t.Fatalf("execution after release = %#v", record.Execution)
 	}
 	// A control that was handed to the worker is never replayed, whatever
-	// its kind (decisions section 10.3).
+	// its kind.
 	requireConversationDelivery(t, f, answer, "answer-a", conversation.DeliveryUnknown)
 	requireConversationDelivery(t, f, steer, "steer-a", conversation.DeliveryUnknown)
 	// A control accepted after the release was never handed out, so it is
@@ -194,8 +194,8 @@ func TestConversationReplacedLeaseKeepsControlsOnTheirOwnAttempt(t *testing.T) {
 // worker polls. Delivering it afterwards is the deliberate rule, not an
 // oversight: acceptance is durable and the audit records who sent it, so the
 // hub does not try to recall a control the provider may already have seen.
-// The actor's later requests and streams are denied instead
-// (decisions section 10.16). Worker-token revocation is the other half of
+// The actor's later requests and streams are denied instead.
+// Worker-token revocation is the other half of
 // that rule and still refuses the write; see
 // TestConversationRevokedWorkerToken.
 func TestConversationRevokedActorMidFlight(t *testing.T) {
@@ -250,7 +250,7 @@ func TestConversationRevokedActorMidFlight(t *testing.T) {
 
 // TestConversationRevokedWorkerToken covers losing the runner's own
 // credential mid-flight. Unlike operator revocation, which leaves an already
-// accepted control on its way (decisions section 10.16), a revoked worker
+// accepted control on its way, a revoked worker
 // token refuses the write outright: the worker endpoints stop accepting its
 // calls at once, and because it can no longer renew, the lease expires and
 // reconcile settles the execution the same way lease loss does.
@@ -293,7 +293,7 @@ func TestConversationRevokedWorkerToken(t *testing.T) {
 		}
 		requireConversationDelivery(t, f, answer, "answer-1", conversation.DeliveryUnknown)
 		// The text control had already been handed to the worker, so it is
-		// unknown rather than re-queued (decisions section 10.3).
+		// unknown rather than re-queued.
 		requireConversationDelivery(t, f, text, "text-1", conversation.DeliveryUnknown)
 		if got := f.questions(t)[0].Status; got != conversation.QuestionExpired {
 			t.Fatalf("question status = %q, want expired", got)
@@ -1054,8 +1054,7 @@ func TestConversationWorkerRestartDeliversQueuedControlOnce(t *testing.T) {
 
 // requireConversationTranscriptNotice asserts the conversation carries
 // exactly one transcript hand-off notice with the contract's copy and that
-// the count it names matches the transcript that was actually handed over
-// (decisions section 10.4).
+// the count it names matches the transcript that was actually handed over.
 func requireConversationTranscriptNotice(t *testing.T, f *conversationWorkerFixture) {
 	t.Helper()
 	notices := make([]conversationMessageRecord, 0, 1)
@@ -1079,7 +1078,7 @@ func requireConversationTranscriptNotice(t *testing.T, f *conversationWorkerFixt
 // replaces automatic replay: a control the hub could not establish goes back
 // on the ladder under its own message id, the next attempt receives it
 // exactly once, a delivered message cannot be retried, and a replayed retry
-// key answers with the stored receipt (decisions section 10.3).
+// key answers with the stored receipt.
 func TestConversationRetryReQueuesOneMessage(t *testing.T) {
 	t.Parallel()
 	f := newConversationWorkerFixture(t)

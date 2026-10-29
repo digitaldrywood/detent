@@ -67,13 +67,14 @@ func (s *RunnerSetup) Prepare(ctx context.Context, cfg globalconfig.Project) (er
 	if err != nil {
 		return err
 	}
-	digest := sha256.Sum256(append([]byte(hooks.Shell+"\x00"), content...))
+	digest := sha256.Sum256(append([]byte(hooks.Shell+"\x00"+filepath.Clean(cfg.Workdir)+"\x00"), content...))
 	hash := hex.EncodeToString(digest[:])
 	previous, err := s.store.ProjectRunnerSetupHash(ctx, s.runnerID, cfg.ID)
 	if err != nil {
 		return err
 	}
-	if previous == hash {
+	marker := runnerSetupMarker(cfg.Workdir)
+	if previous == hash && runnerSetupMarkerMatches(marker, hash) {
 		return nil
 	}
 	if err := s.store.SetProjectRunnerSetupHash(ctx, s.runnerID, cfg.ID, ""); err != nil {
@@ -87,17 +88,42 @@ func (s *RunnerSetup) Prepare(ctx context.Context, cfg globalconfig.Project) (er
 	cmd.Env = os.Environ()
 	cmd.WaitDelay = time.Second
 	s.logger.Info("running runner project setup", "runner_id", s.runnerID, "project_id", cfg.ID, "script", hooks.RunnerSetup, "content_hash", hash)
-	if err := cmd.Run(); err != nil {
+	err = procgroup.Start(cmd)
+	if err == nil {
+		err = procgroup.Wait(cmd)
+	}
+	if err != nil {
 		if setupCtx.Err() != nil {
 			err = setupCtx.Err()
 		}
 		return fmt.Errorf("runner project setup %s: %w", hooks.RunnerSetup, err)
+	}
+	if marker != "" {
+		if err := os.WriteFile(marker, []byte(hash), 0o600); err != nil {
+			return fmt.Errorf("record runner project setup in checkout: %w", err)
+		}
 	}
 	if err := s.store.SetProjectRunnerSetupHash(ctx, s.runnerID, cfg.ID, hash); err != nil {
 		return err
 	}
 	s.logger.Info("runner project setup completed", "runner_id", s.runnerID, "project_id", cfg.ID, "content_hash", hash)
 	return nil
+}
+
+func runnerSetupMarker(workdir string) string {
+	gitDir := filepath.Join(workdir, ".git")
+	if info, err := os.Stat(gitDir); err != nil || !info.IsDir() {
+		return ""
+	}
+	return filepath.Join(gitDir, "detent-runner-setup")
+}
+
+func runnerSetupMarkerMatches(marker string, hash string) bool {
+	if marker == "" {
+		return true
+	}
+	recorded, err := os.ReadFile(marker)
+	return err == nil && string(recorded) == hash
 }
 
 func runnerSetupContent(ctx context.Context, cfg globalconfig.Project, script, revision string) ([]byte, error) {

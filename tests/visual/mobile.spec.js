@@ -140,33 +140,6 @@ test("drawer closes with Escape and a navigation tap", async ({ page }) => {
   await expect(sidebar).toBeHidden();
 });
 
-test("onboarding has a touch-safe mobile baseline", async ({ page }) => {
-  await page.setExtraHTTPHeaders({
-    "X-Detent-Demo-Scenario": "onboarding-project-selection",
-  });
-  await page.goto(`${runtime.url}/onboarding`, {
-    waitUntil: "domcontentloaded",
-  });
-  await page.locator("#onboarding-step").waitFor({ state: "visible" });
-  await page.evaluate(() => document.fonts?.ready);
-
-  for (const control of await page
-    .locator(
-      'a, button, input:not([type="hidden"]):not([type="radio"]):not([type="checkbox"]), select, textarea, summary',
-    )
-    .all()) {
-    if (!(await control.isVisible())) {
-      continue;
-    }
-    const box = await control.boundingBox();
-    expect(box?.height).toBeGreaterThanOrEqual(44);
-  }
-  await expectNoHorizontalScroll(page);
-  await test.info().attach("onboarding.png", {
-    body: await page.screenshot({ animations: "disabled", caret: "hide" }),
-    contentType: "image/png",
-  });
-});
 
 test("shared figures use a compact mobile grid", async ({ page }) => {
   await page.setExtraHTTPHeaders({

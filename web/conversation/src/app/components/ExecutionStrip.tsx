@@ -39,7 +39,7 @@ export interface ExecutionStripProps {
   /**
    * A viewer who cannot write, or an archived chat. Controls are not rendered
    * at all rather than rendered disabled: a disabled button reads as "not yet"
-   * and this reader is never going to press it (decisions.md §10.11, §10.12).
+   * and this reader is never going to press it.
    */
   readonly readOnly?: boolean;
 }
@@ -137,8 +137,8 @@ export function ExecutionStrip(props: ExecutionStripProps): React.ReactElement {
 
       {/* Transcript recovery is visible: this attempt was handed the last few
           messages rather than the provider thread, and a reader who assumed
-          the earlier context was there would read the answer wrong
-          (decisions.md §10.4). */}
+          the earlier context was there would read the answer wrong.
+         */}
       {execution.resume === "transcript" ? (
         <p
           className="ps-1 pe-2 font-normal text-muted-foreground/70 text-xs"

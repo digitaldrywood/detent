@@ -9,6 +9,7 @@
     "build:gallery": "vite build --config vite.gallery.config.ts --mode gallery",
     "preview:gallery": "vite preview --config vite.gallery.config.ts --mode gallery --outDir dist-gallery",
     "typecheck": "tsc --noEmit",
+    "generate:project-icons": "node --import tsx scripts/project-icons.ts",
     "test": "vitest run",
     "design:catalog": "node --import tsx scripts/design-catalog.ts",
     "design:catalog:check": "node --import tsx scripts/design-catalog.ts --check",
@@ -23,12 +24,17 @@
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
     "@effect/atom-react": "4.0.0-rc.112",
+    "@huggingface/transformers": "4.3.1",
     "@legendapp/list": "^3.3.5",
     "@lexical/react": "^0.41.0",
     "@pierre/diffs": "^1.3.0-beta.10",
     "@pierre/trees": "^1.0.0-beta.6",
+    "@radix-ui/themes": "^3.3.0",
+    "@ricky0123/vad-web": "0.0.31",
     "@tanstack/react-pacer": "^0.23.0",
+    "@tanstack/react-query": "^5.104.5",
     "@tanstack/react-router": "^1.132.0",
+    "@workos-inc/widgets": "^1.20.1",
     "@xterm/addon-fit": "0.10.0",
     "@xterm/xterm": "5.5.0",
     "class-variance-authority": "^0.7.1",
@@ -39,6 +45,7 @@
     "mdast-util-directive": "^3.1.0",
     "micromark-extension-directive": "^4.0.0",
     "morphicons": "^1.7.1",
+    "onnxruntime-web": "1.31.0-dev.20260914-8d85527a0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "react-markdown": "^10.1.0",
@@ -49,6 +56,7 @@
     "zustand": "^5.0.15"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.0",
     "@tailwindcss/vite": "^4.0.0",
     "@testing-library/dom": "^10.4.0",
     "@testing-library/react": "^16.3.0",
@@ -63,5 +71,10 @@
     "typescript": "^5.9.0",
     "vite": "^7.1.0",
     "vitest": "^3.2.0"
+  },
+  "overrides": {
+    "@ricky0123/vad-web": {
+      "onnxruntime-web": "$onnxruntime-web"
+    }
   }
 }

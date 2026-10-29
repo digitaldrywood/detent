@@ -81,6 +81,9 @@ func pilotReviewVersions(t *testing.T, f *browserHostedFixture) []pilotReviewVer
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/reviews", runner.Credential, validator), http.StatusOK)
 		finish := start
 		finish.Type, finish.IdempotencyKey, finish.Data.Sequence, finish.Data.Outcome = "run.finished", "finish", 2, "succeeded"
+		if human {
+			finish.Data.Disposition = &tracker.NativeDisposition{Status: "blocked", HumanAction: true}
+		}
 		item := base + "/work-items/" + string(issue.WorkItemID)
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, item+"/events", runner.Credential, finish), http.StatusOK)
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, base+"/leases/"+string(lease.ID)+"/release", runner.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)

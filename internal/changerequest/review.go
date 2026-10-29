@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -49,8 +50,32 @@ func ValidateArtifacts(artifacts []tracker.ChangeArtifact) error {
 		return errors.New("at most 64 artifact references are permitted")
 	}
 	for _, artifact := range artifacts {
-		if !slices.Contains([]string{"code", "manifest", "diff", "test", "log", "checkpoint", "artifact"}, artifact.Kind) || !ValidReference(artifact.URI) || !ValidHash(artifact.SHA256, 64) || !slices.Contains([]string{"unverified", "available", "missing", "inaccessible"}, artifact.Availability) {
+		_, uploaded := attachment.URIReference(artifact.URI, "", "")
+		if !slices.Contains([]string{"code", "manifest", "diff", "test", "log", "checkpoint", "artifact"}, artifact.Kind) || (!ValidReference(artifact.URI) && !uploaded) || !ValidHash(artifact.SHA256, 64) || !slices.Contains([]string{"unverified", "available", "missing", "inaccessible"}, artifact.Availability) {
 			return errors.New("artifacts require a typed location without credentials, SHA-256 digest, and availability")
+		}
+	}
+	return nil
+}
+
+func ValidateVisualArtifacts(artifacts []tracker.ChangeArtifact, organization, project string, resolve func(string) (attachment.Metadata, error)) error {
+	for i, artifact := range artifacts {
+		_, uploaded := attachment.URIReference(artifact.URI, "", "")
+		if !uploaded && !attachment.IsVisualURI(artifact.URI) {
+			continue
+		}
+		refusal := &attachment.VisualReferenceError{Block: i + 1}
+		reference, ok := attachment.URIReference(artifact.URI, organization, project)
+		if !ok {
+			return refusal
+		}
+		metadata, err := resolve(reference.ID)
+		if err != nil {
+			return err
+		}
+		visual := metadata.ContentType == "image/png" || metadata.ContentType == "image/jpeg" || metadata.ContentType == "application/pdf"
+		if metadata.ID != reference.ID || metadata.ProjectID != project || metadata.DeletedAt != nil || metadata.Validate() != nil || metadata.SHA256 != artifact.SHA256 || artifact.Availability != "available" || artifact.Kind == "artifact" && !visual {
+			return refusal
 		}
 	}
 	return nil
@@ -101,6 +126,50 @@ func Summarize(detail tracker.ChangeDetail, policyID, reviewPolicyID string, now
 
 func SummarizeCurrentVersion(detail tracker.ChangeDetail, policyID, reviewPolicyID string, now time.Time, priorApproval bool) tracker.ChangeSummary {
 	return summarize(detail, policyID, reviewPolicyID, now, priorApproval)
+}
+
+func CurrentPolicyIdentities(version *tracker.ChangeVersion, approved policy.Descriptor, rules tracker.ChangeReviewPolicy) (string, string) {
+	policyID, reviewID := approved.ID, rules.ID
+	if version == nil {
+		return policyID, reviewID
+	}
+	if version.Policy.Gates.LandingMode == gate.LandingRollingBarrier {
+		return "", reviewID
+	}
+	rules.PolicyID = policyID
+	if version.PolicyID != version.Policy.ID || version.ReviewPolicy.ID == "" ||
+		policyID != "" && reviewID == "" || ValidatePolicy(rules, approved) != nil {
+		return policyID, reviewID
+	}
+	if policyID != "" && !gatesSatisfied(version.Policy.Gates, approved.Gates) ||
+		rules.RequireReview && !version.ReviewPolicy.RequireReview {
+		return policyID, reviewID
+	}
+	for _, check := range rules.RequiredChecks {
+		if !slices.ContainsFunc(version.ReviewPolicy.RequiredChecks, func(prior tracker.ChangeCheckSpec) bool {
+			return prior.Name == check.Name && prior.PrincipalID == check.PrincipalID &&
+				prior.WorkflowID == check.WorkflowID && prior.WorkflowSHA256 == check.WorkflowSHA256 &&
+				prior.Source == check.Source && prior.MaxAgeSeconds <= check.MaxAgeSeconds
+		}) {
+			return policyID, reviewID
+		}
+	}
+	return version.PolicyID, version.ReviewPolicy.ID
+}
+
+func gatesSatisfied(version, current policy.Gates) bool {
+	if current.Validator && !version.Validator || current.SecurityAudit && !version.SecurityAudit ||
+		current.HumanReview && !version.HumanReview || current.PlanEnabled && !version.PlanEnabled ||
+		current.GitHubPullRequest && !version.GitHubPullRequest ||
+		current.AutomatedReview == gate.AutomatedReviewRequired && version.AutomatedReview != gate.AutomatedReviewRequired {
+		return false
+	}
+	if current.Kind != "" && current.Kind != version.Kind ||
+		current.LandingCommandDigest != "" && current.LandingCommandDigest != version.LandingCommandDigest ||
+		current.GitHubCIDigest != "" && current.GitHubCIDigest != version.GitHubCIDigest {
+		return false
+	}
+	return !current.PlanEnabled || current.PlanReview == "" || current.PlanReview == version.PlanReview || current.PlanReview == gate.PlanReviewBoth
 }
 
 func summarize(detail tracker.ChangeDetail, policyID, reviewPolicyID string, now time.Time, priorApproval bool) tracker.ChangeSummary {
@@ -238,6 +307,7 @@ func ReviewState(detail tracker.ChangeDetail, versionID, headSHA string) connect
 	if !result.Current {
 		return result
 	}
+	result.RepairPending = len(IndependentRepairDependencies(detail)) != 0
 	result.ChangesRequested = detail.Summary.NativeReview == "changes_requested"
 	for _, version := range detail.Versions {
 		if version.ID != versionID {
@@ -258,14 +328,14 @@ func ReviewState(detail tracker.ChangeDetail, versionID, headSHA string) connect
 		}
 		switch {
 		case review.ImplementationReview != nil:
-			sourceRework = review.ImplementationReview.Verdict == "rework"
+			sourceRework = review.ImplementationReview.Verdict != gate.ValidatorVerdictPass
 		case review.Validator != nil:
-			validatorRework = review.Validator.Verdict == "rework"
+			validatorRework = review.Validator.Verdict != gate.ValidatorVerdictPass
 		case review.SecurityAudit != nil:
 			auditRework = auditRework || review.Decision == "changes_requested"
 		}
 	}
 	result.ChangesRequested = result.ChangesRequested || sourceRework || validatorRework || auditRework
-	result.Reviewed = detail.Summary.Status == "reviewed" && !result.ChangesRequested
+	result.Reviewed = (detail.Summary.Status == "reviewed" || detail.Summary.Status == "landed") && !result.ChangesRequested
 	return result
 }

@@ -58,7 +58,7 @@ func TestRunRuntimeBuildDriftMonitor(t *testing.T) {
 		{
 			name:      "stale running build warns with remediation",
 			installed: buildinfo.Info{Version: "v1.2.4", Commit: "123456abcdef"},
-			wantLog:   "detent start --restart",
+			wantLog:   "restart the runner service",
 		},
 		{
 			name:    "read failure is visible",

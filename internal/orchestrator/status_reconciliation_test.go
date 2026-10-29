@@ -174,9 +174,7 @@ func TestCompletionTransitionClosesIssue(t *testing.T) {
 		{name: "operational close failure", operational: true, closeError: true},
 		{name: "merged PR close failure", closeError: true},
 		{name: "stale merged PR", path: "merged"},
-		{name: "stale operational completion", operational: true, path: "merging"},
 		{name: "stale merged PR close failure", path: "merged", closeError: true},
-		{name: "stale operational close failure", operational: true, path: "merging", closeError: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -197,8 +195,6 @@ func TestCompletionTransitionClosesIssue(t *testing.T) {
 			switch tt.path {
 			case "merged":
 				applied = orch.applyStaleMergedPullRequestDecision(t.Context(), &state, issue, AutoPromoteSummaryFromIssue(issue), decision, "Done", time.Now())
-			case "merging":
-				applied = orch.applyStaleMergingPullRequestDecision(t.Context(), &state, issue, staleMergingPullRequestDecision{targetState: "Done", reason: string(decision.Reason)}, time.Now())
 			default:
 				_, applied = orch.applyAutoPromoteDecisionWithTarget(t.Context(), &state, issue, AutoPromoteSummaryFromIssue(issue), decision, "Done", time.Now())
 			}
@@ -339,11 +335,11 @@ func TestTickKeepsObservedBlockedIssueWhenMergedPullRequestHydrationUnavailable(
 
 	orch.tick(context.Background(), &state, now)
 
-	if len(tracker.updates) != 0 {
-		t.Fatalf("updates = %#v, want none for observed Blocked issue with stale merged PR hydration", tracker.updates)
+	if len(tracker.updates) != 1 || tracker.updates[0].state == "Done" || tracker.updates[0].state == "Blocked" {
+		t.Fatalf("stale merged PR must retry without fabricating delivery: %+v", tracker.updates)
 	}
-	if len(tracker.comments) != 0 {
-		t.Fatalf("comments = %#v, want none", tracker.comments)
+	if _, ok := state.Retry[issue.ID]; !ok {
+		t.Fatal("stale merged PR lost retry")
 	}
 }
 

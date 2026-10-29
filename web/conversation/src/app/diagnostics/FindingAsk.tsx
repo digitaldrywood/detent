@@ -2,6 +2,7 @@ import React from "react";
 import type { DiagnosticFinding } from "../../contracts/diagnostics.ts";
 import type { BootstrapProject } from "../../contracts/conversation.ts";
 import { useIssueSurfaces } from "../adapters/surfaces.ts";
+import { useRightPanel } from "../adapters/rightPanel.ts";
 import { useRightPanelWorkspace } from "../components/RightPanel.tsx";
 import { IssueAskPanel, useIssueAsk } from "../work/IssueAsk.tsx";
 
@@ -33,6 +34,7 @@ export function FindingAskWorkspace({
   const ask = useIssueAsk(project.id, null, findingContext(finding, project));
   const surfaces = useIssueSurfaces(null, null);
   const workspace = useRightPanelWorkspace({
+    panel: useRightPanel(`finding:${project.id}:${finding.id}`),
     scopeKey: `finding:${project.id}:${finding.id}`,
     projectId: project.id,
     projectName: project.name,

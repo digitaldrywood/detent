@@ -6,16 +6,24 @@ import (
 )
 
 type AnalyticsRequest struct {
-	PopulationCursor string `json:"population_cursor,omitempty"`
-	ProjectID        string `json:"project_id,omitempty"`
-	Limit            int    `json:"limit,omitempty"`
-	Offset           int    `json:"offset,omitempty"`
-	RowOffset        int    `json:"row_offset,omitempty"`
-	Window           string `json:"window,omitempty"`
-	Bucket           string `json:"bucket,omitempty"`
-	From             string `json:"from,omitempty"`
-	To               string `json:"to,omitempty"`
-	Timezone         string `json:"tz,omitempty"`
+	Scope            string   `json:"scope,omitempty"`
+	Range            string   `json:"range,omitempty"`
+	Projects         []string `json:"projects,omitempty"`
+	Labels           []string `json:"labels,omitempty"`
+	Priorities       []string `json:"priorities,omitempty"`
+	Types            []string `json:"types,omitempty"`
+	FiledBy          []string `json:"filed_by,omitempty"`
+	Runners          []string `json:"runners,omitempty"`
+	PopulationCursor string   `json:"population_cursor,omitempty"`
+	ProjectID        string   `json:"project_id,omitempty"`
+	Limit            int      `json:"limit,omitempty"`
+	Offset           int      `json:"offset,omitempty"`
+	RowOffset        int      `json:"row_offset,omitempty"`
+	Window           string   `json:"window,omitempty"`
+	Bucket           string   `json:"bucket,omitempty"`
+	From             string   `json:"from,omitempty"`
+	To               string   `json:"to,omitempty"`
+	Timezone         string   `json:"tz,omitempty"`
 }
 
 type AnalyticsWindow struct {
@@ -25,13 +33,20 @@ type AnalyticsWindow struct {
 }
 
 type AnalyticsDuration struct {
-	Count      int     `json:"count"`
-	Seconds    float64 `json:"seconds"`
-	P50Seconds float64 `json:"p50_seconds"`
-	P90Seconds float64 `json:"p90_seconds"`
+	Histogram  []AnalyticsDurationBucket `json:"-"`
+	Count      int                       `json:"count"`
+	Seconds    float64                   `json:"seconds"`
+	P50Seconds float64                   `json:"p50_seconds"`
+	P90Seconds float64                   `json:"p90_seconds"`
 	// Samples are the sorted values behind the quantiles, kept so that
 	// durations read separately can be combined exactly.
 	Samples []float64 `json:"-"`
+}
+
+type AnalyticsDurationBucket struct {
+	Count   int
+	Minimum float64
+	Maximum float64
 }
 
 type AnalyticsLaneDuration struct {
@@ -100,6 +115,22 @@ func DecodeAnalytics(name string, raw json.RawMessage, now time.Time) (Analytics
 	if ValidateFleetArguments(name, raw) != nil || DecodeArguments(raw, &r) != nil {
 		return r, w, ErrInvalidArguments
 	}
+	organization := name == Reports && r.Scope == "organization"
+	if organization {
+		w.To = now.UTC().Truncate(time.Hour)
+		w.From = w.To.Add(-7 * 24 * time.Hour)
+	}
+	if name == Reports && r.Range != "" {
+		hours := map[string]int{"24h": 24, "7d": 168, "30d": 720, "90d": 2160}[r.Range]
+		if hours == 0 || r.From != "" || r.To != "" {
+			return r, w, ErrInvalidArguments
+		}
+		w.To = now.UTC().Truncate(time.Hour)
+		w.From = w.To.Add(-time.Duration(hours) * time.Hour)
+		if hours == 24 {
+			w.Bucket = time.Hour
+		}
+	}
 	if r.Limit == 0 {
 		r.Limit = DefaultItemLimit
 	}
@@ -128,6 +159,15 @@ func DecodeAnalytics(name string, raw json.RawMessage, now time.Time) (Analytics
 		}
 		if err != nil {
 			return r, w, ErrInvalidArguments
+		}
+	}
+	if organization {
+		if !w.From.Equal(w.From.Truncate(time.Hour)) || !w.To.Equal(w.To.Truncate(time.Hour)) {
+			return r, w, ErrInvalidArguments
+		}
+		w.Bucket = time.Hour
+		if w.To.Sub(w.From) >= 6*24*time.Hour {
+			w.Bucket = 24 * time.Hour
 		}
 	}
 	if r.Bucket != "" {

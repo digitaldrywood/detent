@@ -1057,6 +1057,7 @@ const work: Record<string, GalleryDoc> = {
         minHeight: 260,
         render: () => <IssueComposer canWrite onComment={async () => undefined} />,
       },
+      { id: "simple", title: "Reporter comment composer", render: () => <IssueComposer variant="simple" canWrite onComment={async () => undefined} /> },
       { id: "reader", title: "Unavailable to a reader", render: () => <IssueComposer canWrite={false} onComment={async () => undefined} /> },
     ],
   },

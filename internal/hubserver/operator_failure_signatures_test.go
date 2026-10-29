@@ -152,23 +152,25 @@ func TestNativeFailureSignatureReads(t *testing.T) {
 	for _, test := range []struct {
 		name, status, want, class string
 		data                      tracker.NativeRunData
+		malformedPhases           bool
 	}{
-		{"recorded error", "failed", "count <n> failed", "attempt", tracker.NativeRunData{TerminalFailure: &tracker.NativeTerminalFailure{Error: "count 123 failed\nprivate details"}}},
-		{"execution error precedes finalization", "failed", "provider failed", "infrastructure", tracker.NativeRunData{TerminalFailure: &tracker.NativeTerminalFailure{Error: "provider failed", ErrorClass: "protocol"}, Finalization: &tracker.NativeFinalization{Error: "publish failed"}}},
-		{"source finalization gate", "failed", "source finalization gate failed: exit status 1", "attempt", tracker.NativeRunData{Runtime: &tracker.NativeRuntimeObservation{Phase: "completed", Validation: &gate.CommandResult{Stage: gate.StageSourceFinalization, Command: "go test ./internal/example", HeadSHA: strings.Repeat("a", 40), TreeSHA: strings.Repeat("b", 40), ExitCode: 1, DurationNS: 1}}}},
-		{"landing gate", "succeeded", "landing gate failed: exit status 1", "merge", tracker.NativeRunData{Runtime: &tracker.NativeRuntimeObservation{Landing: &tracker.NativeLandingReceipt{GateFailed: true, Gate: &gate.CommandResult{Stage: gate.StageLanding, Command: "make check-land", HeadSHA: strings.Repeat("a", 40), TreeSHA: strings.Repeat("b", 40), ExitCode: 1}, ObservedAt: now}}}},
-		{"issue configuration before provider", "failed", "agent override rejected", "attempt", tracker.NativeRunData{TerminalFailure: &tracker.NativeTerminalFailure{Error: "agent override rejected", ErrorClass: "issue_configuration", Stage: "pre_provider"}}},
-		{"unknown before provider", "failed", "unknown setup error", "attempt", tracker.NativeRunData{TerminalFailure: &tracker.NativeTerminalFailure{Error: "unknown setup error", Stage: "pre_provider"}}},
-		{"source recovery after provider", "failed", "native checkpoint requires recovery: source changed", "attempt", tracker.NativeRunData{TerminalFailure: &tracker.NativeTerminalFailure{Error: "native checkpoint requires recovery: source changed", ErrorClass: "source_recovery"}}},
-		{"workspace", "failed", "workspace hook failed", "infrastructure", tracker.NativeRunData{TerminalFailure: &tracker.NativeTerminalFailure{Error: "workspace hook failed", ErrorClass: "workspace_hook"}}},
-		{"protocol", "interrupted", "provider request failed", "infrastructure", tracker.NativeRunData{TerminalFailure: &tracker.NativeTerminalFailure{Error: "provider request failed", ErrorClass: "protocol"}, Runtime: &tracker.NativeRuntimeObservation{Phase: "completed", Validation: &gate.CommandResult{Stage: gate.StageSourceFinalization, Command: "go test example", HeadSHA: strings.Repeat("a", 40), TreeSHA: strings.Repeat("b", 40), ExitCode: 1, DurationNS: 1}}}},
-		{"historical metadata", "failed", "codex turn/start input_too_large: provider error", "attempt", tracker.NativeRunData{TerminalFailure: &tracker.NativeTerminalFailure{Provider: "codex", Operation: "turn/start", ProviderCode: "input_too_large", Summary: "provider error"}}},
-		{"finalization", "failed", "local_checkpoint_changed: count <n> changed", "attempt", tracker.NativeRunData{Finalization: &tracker.NativeFinalization{VersionCode: "local_checkpoint_changed", VersionError: "count 142 changed"}}},
-		{"conflict", "succeeded", "landing refused: conflict", "merge", tracker.NativeRunData{Runtime: &tracker.NativeRuntimeObservation{Landing: &tracker.NativeLandingReceipt{RefusalKind: "conflict", ObservedAt: now}}}},
-		{"base protected", "failed", "landing refused: base_protected", "merge", tracker.NativeRunData{Runtime: &tracker.NativeRuntimeObservation{Landing: &tracker.NativeLandingReceipt{RefusalKind: "base_protected", ObservedAt: now}}}},
-		{"successful landing", "succeeded", "", "", tracker.NativeRunData{Runtime: &tracker.NativeRuntimeObservation{Landing: &tracker.NativeLandingReceipt{Landed: true, RefusalKind: "conflict", ObservedAt: now}}}},
-		{"cancelled", "cancelled", "", "", tracker.NativeRunData{}},
-		{"missing error", "failed", "attempt failed: recorded error unavailable", "attempt", tracker.NativeRunData{}},
+		{"recorded error", "failed", "count <n> failed", "attempt", tracker.NativeRunData{TerminalFailure: &tracker.NativeTerminalFailure{Error: "count 123 failed\nprivate details"}}, false},
+		{"malformed phases preserve recorded error", "failed", "count <n> failed", "attempt", tracker.NativeRunData{TerminalFailure: &tracker.NativeTerminalFailure{Error: "count 123 failed\nprivate details"}}, true},
+		{"execution error precedes finalization", "failed", "provider failed", "infrastructure", tracker.NativeRunData{TerminalFailure: &tracker.NativeTerminalFailure{Error: "provider failed", ErrorClass: "protocol"}, Finalization: &tracker.NativeFinalization{Error: "publish failed"}}, false},
+		{"source finalization gate", "failed", "source finalization gate failed: exit status 1", "attempt", tracker.NativeRunData{Runtime: &tracker.NativeRuntimeObservation{Phase: "completed", Validation: &gate.CommandResult{Stage: gate.StageSourceFinalization, Command: "go test ./internal/example", HeadSHA: strings.Repeat("a", 40), TreeSHA: strings.Repeat("b", 40), ExitCode: 1, DurationNS: 1}}}, false},
+		{"landing gate", "succeeded", "landing gate failed: exit status 1", "merge", tracker.NativeRunData{Runtime: &tracker.NativeRuntimeObservation{Landing: &tracker.NativeLandingReceipt{GateFailed: true, Gate: &gate.CommandResult{Stage: gate.StageLanding, Command: "make check-land", HeadSHA: strings.Repeat("a", 40), TreeSHA: strings.Repeat("b", 40), ExitCode: 1}, ObservedAt: now}}}, false},
+		{"issue configuration before provider", "failed", "agent override rejected", "attempt", tracker.NativeRunData{TerminalFailure: &tracker.NativeTerminalFailure{Error: "agent override rejected", ErrorClass: "issue_configuration", Stage: "pre_provider"}}, false},
+		{"unknown before provider", "failed", "unknown setup error", "attempt", tracker.NativeRunData{TerminalFailure: &tracker.NativeTerminalFailure{Error: "unknown setup error", Stage: "pre_provider"}}, false},
+		{"source recovery after provider", "failed", "native checkpoint requires recovery: source changed", "attempt", tracker.NativeRunData{TerminalFailure: &tracker.NativeTerminalFailure{Error: "native checkpoint requires recovery: source changed", ErrorClass: "source_recovery"}}, false},
+		{"workspace", "failed", "workspace hook failed", "infrastructure", tracker.NativeRunData{TerminalFailure: &tracker.NativeTerminalFailure{Error: "workspace hook failed", ErrorClass: "workspace_hook"}}, false},
+		{"protocol", "interrupted", "provider request failed", "infrastructure", tracker.NativeRunData{TerminalFailure: &tracker.NativeTerminalFailure{Error: "provider request failed", ErrorClass: "protocol"}, Runtime: &tracker.NativeRuntimeObservation{Phase: "completed", Validation: &gate.CommandResult{Stage: gate.StageSourceFinalization, Command: "go test example", HeadSHA: strings.Repeat("a", 40), TreeSHA: strings.Repeat("b", 40), ExitCode: 1, DurationNS: 1}}}, false},
+		{"historical metadata", "failed", "codex turn/start input_too_large: provider error", "attempt", tracker.NativeRunData{TerminalFailure: &tracker.NativeTerminalFailure{Provider: "codex", Operation: "turn/start", ProviderCode: "input_too_large", Summary: "provider error"}}, false},
+		{"finalization", "failed", "local_checkpoint_changed: count <n> changed", "attempt", tracker.NativeRunData{Finalization: &tracker.NativeFinalization{VersionCode: "local_checkpoint_changed", VersionError: "count 142 changed"}}, false},
+		{"conflict", "succeeded", "landing refused: conflict", "merge", tracker.NativeRunData{Runtime: &tracker.NativeRuntimeObservation{Landing: &tracker.NativeLandingReceipt{RefusalKind: "conflict", ObservedAt: now}}}, false},
+		{"base protected", "failed", "landing refused: base_protected", "merge", tracker.NativeRunData{Runtime: &tracker.NativeRuntimeObservation{Landing: &tracker.NativeLandingReceipt{RefusalKind: "base_protected", ObservedAt: now}}}, false},
+		{"successful landing", "succeeded", "", "", tracker.NativeRunData{Runtime: &tracker.NativeRuntimeObservation{Landing: &tracker.NativeLandingReceipt{Landed: true, RefusalKind: "conflict", ObservedAt: now}}}, false},
+		{"cancelled", "cancelled", "", "", tracker.NativeRunData{}, false},
+		{"missing error", "failed", "attempt failed: recorded error unavailable", "attempt", tracker.NativeRunData{}, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if test.data.Runtime != nil && test.data.Runtime.Validation != nil {
@@ -180,8 +182,13 @@ func TestNativeFailureSignatureReads(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET status=?,data_json=?,started_at=?,updated_at=? WHERE id=?", test.status, string(raw), formatHubTime(now.Add(-3*time.Minute)), formatHubTime(now), start.Data.AttemptID); err != nil {
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET report_projection_version=NULL,status=?,data_json=?,started_at=?,updated_at=? WHERE id=?", test.status, string(raw), formatHubTime(now.Add(-3*time.Minute)), formatHubTime(now), start.Data.AttemptID); err != nil {
 				t.Fatal(err)
+			}
+			if test.malformedPhases {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET report_projection_version=NULL,data_json=json_set(data_json,'$.runtime.phases',?) WHERE id=?", "malformed", start.Data.AttemptID); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT OR REPLACE INTO attempt_usage(attempt_id,organization_id,project_id,period,provider,model,input,cached_input,output,cost_estimate,updated_at) VALUES(?,?,?,?,?,?,100,50,20,0.5,?)`, start.Data.AttemptID, scope.organization, scope.project, formatHubTime(now.Add(-2*time.Hour)), "codex", "test", formatHubTime(now)); err != nil {
 				t.Fatal(err)
@@ -246,7 +253,7 @@ func TestNativeFailureSignatureReads(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET status='failed',data_json=?,updated_at=? WHERE id=?", string(raw), formatHubTime(updated), start.Data.AttemptID); err != nil {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET report_projection_version=NULL,status='failed',data_json=?,updated_at=? WHERE id=?", string(raw), formatHubTime(updated), start.Data.AttemptID); err != nil {
 					t.Fatal(err)
 				}
 				failures, partial, err := readNativeFailures(t.Context(), f.service.database.db, scope, "", &w)
@@ -255,7 +262,7 @@ func TestNativeFailureSignatureReads(t *testing.T) {
 				}
 			})
 		}
-		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET data_json='{}',updated_at=? WHERE id=?", formatHubTime(now), start.Data.AttemptID); err != nil {
+		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET report_projection_version=NULL,data_json='{}',updated_at=? WHERE id=?", formatHubTime(now), start.Data.AttemptID); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -267,7 +274,7 @@ func TestNativeFailureSignatureReads(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer tx.Rollback()
-			if _, err := tx.ExecContext(t.Context(), `UPDATE native_attempts SET data_json=json_set(data_json,'$.terminal_failure',json('{"error":"count 1 failed"}')) WHERE id=?`, start.Data.AttemptID); err != nil {
+			if _, err := tx.ExecContext(t.Context(), `UPDATE native_attempts SET report_projection_version=1,report_failed_at=strftime('%Y-%m-%dT%H:%M:%f000000Z',updated_at),data_json=json_set(data_json,'$.terminal_failure',json('{"error":"count 1 failed"}')) WHERE id=?`, start.Data.AttemptID); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := tx.ExecContext(t.Context(), `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<?)
@@ -276,8 +283,8 @@ SELECT 'lease_signature_'||i,l.issue_id,l.machine_id,'session_signature_'||i,l.e
 FROM n CROSS JOIN leases l WHERE l.lease_id=?`, count-1, lease.ID); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := tx.ExecContext(t.Context(), `INSERT INTO native_attempts(id,organization_id,project_id,work_item_id,lease_id,fencing_token,run_id,sequence,status,data_json,started_at,updated_at)
-SELECT 'attempt_signature_'||l.fencing_token,a.organization_id,a.project_id,a.work_item_id,l.lease_id,l.fencing_token,'run_signature_'||l.fencing_token,1,'failed',a.data_json,a.started_at,a.updated_at
+			if _, err := tx.ExecContext(t.Context(), `INSERT INTO native_attempts(id,organization_id,project_id,work_item_id,lease_id,fencing_token,run_id,sequence,status,data_json,started_at,updated_at,report_projection_version,report_failed_at)
+SELECT 'attempt_signature_'||l.fencing_token,a.organization_id,a.project_id,a.work_item_id,l.lease_id,l.fencing_token,'run_signature_'||l.fencing_token,1,'failed',a.data_json,a.started_at,a.updated_at,1,a.report_failed_at
 FROM native_attempts a CROSS JOIN leases l WHERE a.id=? AND l.lease_id LIKE 'lease_signature_%'`, start.Data.AttemptID); err != nil {
 				t.Fatal(err)
 			}

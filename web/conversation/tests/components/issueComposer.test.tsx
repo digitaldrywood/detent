@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// The issue page's composer (decisions.md §19.5).
+// The issue page's composer.
 //
 // What is asserted here is the shape Michael asked for: the issue page's
 // composer is a tracker's comment box and nothing else. There is no runner
@@ -30,6 +30,18 @@ function setup(overrides: Partial<React.ComponentProps<typeof IssueComposer>> = 
 }
 
 describe("the issue composer", () => {
+  it.each(["saved", "failed"])("sends a plain reporter comment and preserves failed drafts (%s)", async (outcome) => {
+    const onComment = vi.fn(async (_body: string) => { if (outcome === "failed") throw new Error("Could not save comment"); });
+    setup({ variant: "simple", onComment });
+    const editor = screen.getByRole("textbox", { name: "Reply or add details" }) as HTMLTextAreaElement;
+    fireEvent.change(editor, { target: { value: "Extra details" } });
+    fireEvent.click(screen.getByRole("button", { name: "Comment" }));
+    await waitFor(() => expect(onComment).toHaveBeenCalledWith("Extra details"));
+    if (outcome === "failed") {
+      expect((await screen.findByRole("alert")).textContent).toBe("Could not save comment");
+      expect(editor.value).toBe("Extra details");
+    } else await waitFor(() => expect(editor.value).toBe(""));
+  });
   it.each(["drop", "attach"])("accepts %s files in the shared issue body editor", async (gesture) => {
     const nativeForm = await new Response("", { headers: { "Content-Type": "application/x-www-form-urlencoded" } }).formData();
     vi.stubGlobal("FormData", nativeForm.constructor);

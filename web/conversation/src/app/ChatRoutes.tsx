@@ -5,6 +5,7 @@ import { AsyncResult } from "effect/unstable/reactivity";
 import React from "react";
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
 
+import { followCreatedConversation, useConversationSpeech } from "./hooks/useConversationSpeech.ts";
 import { chatSlashCommands } from "./adapters/chatPrompts.ts";
 
 import type {
@@ -94,6 +95,7 @@ function generalChatPreferences(preferences: TurnPreferences, choices: Preferenc
   };
 }
 export function NewChat({ projectId }: { projectId?: string }): React.ReactElement {
+  const speech = useConversationSpeech("draft");
   const client = useClient();
   const shell = useShell();
   const navigate = useNavigate();
@@ -127,7 +129,7 @@ export function NewChat({ projectId }: { projectId?: string }): React.ReactEleme
   const project = client.bootstrap.projects.find((candidate) => candidate.id === active);
   usePageTitle("Chat", projectId === undefined ? undefined : project?.name);
   // No runner able to take coordinator turns is enrolled here. The message is
-  // still accepted and still queues (decisions.md §9.1), so the send stays
+  // still accepted and still queues, so the send stays
   // available and the note says what will happen instead of what is forbidden.
   const coordinator = projectCoordinatorAvailable(client.bootstrap, active);
 
@@ -142,10 +144,10 @@ export function NewChat({ projectId }: { projectId?: string }): React.ReactEleme
   );
   const commandKey = React.useRef(newCommandKey());
   // Files dropped on the draft wait as staged chips; they upload against the
-  // conversation the first send creates (decisions.md §17.1).
+  // conversation the first send creates.
   const attachments = useComposerAttachments(client, { projectId: active, conversationId: null });
   // The create key outlives this component. `POST /conversations` is
-  // idempotent by actor and key (decisions.md §10.2), so the key is written to
+  // idempotent by actor and key, so the key is written to
   // the outbox before the request and only cleared once the hub answers: a
   // reload mid-flight finds it and retries the same create rather than opening
   // a second conversation.
@@ -166,6 +168,7 @@ export function NewChat({ projectId }: { projectId?: string }): React.ReactEleme
   };
 
   const send = async (prompt?: string) => {
+    speech.prepareToSend();
     const messageText = prompt ?? draft;
     if (project === undefined || (subjectId !== null && subject === null)) return;
     if (project.can_write === false) {
@@ -222,6 +225,7 @@ export function NewChat({ projectId }: { projectId?: string }): React.ReactEleme
       attachments.clear();
     }
     setSending(false);
+    followCreatedConversation(result.success.conversation.id);
     client.drafts.writeOutbox(scope, null);
     client.drafts.writeDraft(scope, "");
     commandKey.current = newCommandKey();
@@ -278,6 +282,7 @@ export function NewChat({ projectId }: { projectId?: string }): React.ReactEleme
             </div>
           )}
           <Composer
+            speech={speech}
             value={draft}
             onChange={onChange}
             onSend={() => void send()}
@@ -393,7 +398,7 @@ export function ConversationRoute(): React.ReactElement {
   );
   usePageTitle(conversation?.title ? `Chat: ${conversation.title}` : "Chat", project?.name);
   // A linked conversation is not a page of its own any more: the issue is the
-  // page and the conversation is a surface on it (decisions.md §19.4). The
+  // page and the conversation is a surface on it. The
   // redirect carries `?panel=conversation`, so the reader lands on the issue
   // with the chat already open beside it. An unlinked chat keeps this page.
   const linkedWorkItem = conversation?.work_item_id ?? null;
@@ -462,6 +467,7 @@ export function ConversationView({
 
   const value = Option.getOrUndefined(AsyncResult.value(state));
   const detail = value === undefined ? undefined : Option.getOrUndefined(value.data);
+  const speech = useConversationSpeech(conversationId, detail);
 
   const scope = {
     accountKey: accountKey(client),
@@ -490,7 +496,7 @@ export function ConversationView({
   const jumpToLatest = React.useCallback(() => {
     timelineList.current?.scrollToEnd({ animated: true });
   }, []);
-  // The files staged for the next message (decisions.md §17.1). The whole chat
+  // The files staged for the next message. The whole chat
   // surface drops into it and the composer's paperclip picks into it.
   const attachments = useComposerAttachments(client, { projectId, conversationId });
 
@@ -511,9 +517,10 @@ export function ConversationView({
   }, []);
 
   const send = async (prompt?: string) => {
+    speech.prepareToSend();
     const messageText = prompt ?? draft;
     const files = attachments.ids;
-    // A message is text, files, or both (decisions.md §17.1): a drop with no
+    // A message is text, files, or both: a drop with no
     // sentence is still something to send.
     if (messageText.trim().length === 0 && files.length === 0) return;
     if (attachments.uploading) return;
@@ -537,7 +544,7 @@ export function ConversationView({
     attachments.clear();
   };
 
-  // Retrying a message never sends a second one (decisions.md §10.3): where the
+  // Retrying a message never sends a second one: where the
   // hub named the message, this is a `retry` command carrying a new key and
   // that message id; where it did not, the identical `message` command goes
   // back under its original key, `expected` included.
@@ -750,7 +757,7 @@ export function ConversationView({
 
   const execution = detail.conversation.execution;
   const linked = detail.conversation.work_item_id !== null;
-  // A settled chat is not a closed one (decisions.md §13.9): it settles
+  // A settled chat is not a closed one: it settles
   // because nothing has happened for a while and it unsettles the moment
   // something does, so the composer stays open and sending is what unsettles
   // it. The one reason to close the composer is a reader who may never send.
@@ -762,7 +769,7 @@ export function ConversationView({
   const closed = !canWrite;
   // Stopping a linked attempt is an `interrupt` aimed at that attempt; stopping
   // an unlinked chat is `cancel`, which the hub delivers as an interrupt to the
-  // runner holding the coordinator work item (decisions.md §9.1). One call
+  // runner holding the coordinator work item. One call
   // site, so the composer's stop and the strip's Stop can never diverge.
   const stop = () =>
     void sendControl({
@@ -825,7 +832,7 @@ export function ConversationView({
             // moment its work item exists. It gets the chat vocabulary and one
             // control — Stop — and never a model, provider, cost or key
             // choice: the turn runs on the customer's runner with that
-            // runner's own login (decisions.md §1).
+            // runner's own login.
             execution: {
               execution,
               surface: "chat" as const,
@@ -864,6 +871,7 @@ export function ConversationView({
 
         <div className="flex min-h-0 flex-1 flex-col" ref={thread}>
           <Timeline
+            speech={speech}
             detail={detail}
             listRef={timelineList}
             onIsAtEndChange={setFollowing}
@@ -968,12 +976,14 @@ export function ConversationView({
               />
             ) : null}
             <Composer
+              speech={speech}
               value={draft}
               onChange={(next) => {
                 setDraft(next);
                 client.drafts.writeDraft(scope, next);
               }}
               onSend={() => void send()}
+              onVoiceSend={(text) => send(text)}
               {...(closed ? {} : { onStop: stop })}
               attachments={attachments}
               sending={sending}

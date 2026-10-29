@@ -30,6 +30,8 @@ export interface PersistedUiState {
   projectOrderCwds?: string[];
   defaultAdvertisedEndpointKey?: string | null;
   sidebarProjectScopeKey?: string | null;
+  sidebarProjectWorkingSetKeys?: string[];
+  sidebarProjectScopesByAccount?: Record<string, { keys: string[]; focus: string | null }>;
   threadChangedFilesExpansionVersion?: number;
   threadChangedFilesExpandedById?: Record<string, Record<string, boolean>>;
   pullRequestMergeMethod?: string;
@@ -42,6 +44,9 @@ export interface UiProjectState {
   // projects". Lives here so routes that unmount the sidebar (Settings)
   // cannot reset the filter.
   sidebarProjectScopeKey: string | null;
+  sidebarProjectWorkingSetKeys: string[];
+  sidebarProjectScopesByAccount: Record<string, { keys: string[]; focus: string | null }>;
+  sidebarProjectScopeAccountKey: string | null;
 }
 
 export interface UiThreadState {
@@ -64,6 +69,9 @@ const initialState: UiState = {
   projectExpandedById: {},
   projectOrder: [],
   sidebarProjectScopeKey: null,
+  sidebarProjectWorkingSetKeys: [],
+  sidebarProjectScopesByAccount: {},
+  sidebarProjectScopeAccountKey: null,
   threadLastVisitedAtById: {},
   threadChangedFilesExpandedById: {},
   defaultAdvertisedEndpointKey: null,
@@ -147,6 +155,17 @@ export function parsePersistedState(parsed: PersistedUiState): UiState {
       ? sanitizeStringArray(parsed.projectOrderCwds).map(legacyProjectCwdPreferenceKey)
       : sanitizeStringArray(parsed.projectOrder);
 
+  const legacyFocus = sanitizeOptionalKey(parsed.sidebarProjectScopeKey);
+  const keys = parsed.sidebarProjectWorkingSetKeys === undefined
+    ? (legacyFocus === null ? [] : [legacyFocus])
+    : sanitizeStringArray(parsed.sidebarProjectWorkingSetKeys);
+  const focus = legacyFocus !== null && keys.includes(legacyFocus) ? legacyFocus : null;
+  const scopes = Object.fromEntries(Object.entries(parsed.sidebarProjectScopesByAccount ?? {}).flatMap(([account, value]) => {
+    if (!value || typeof value !== "object") return [];
+    const keys = sanitizeStringArray(value.keys);
+    const focus = sanitizeOptionalKey(value.focus);
+    return [[account, { keys, focus: focus !== null && keys.includes(focus) ? focus : null }]];
+  }));
   return {
     projectExpandedById,
     projectOrder,
@@ -156,7 +175,10 @@ export function parsePersistedState(parsed: PersistedUiState): UiState {
         ? sanitizePersistedThreadChangedFilesExpanded(parsed.threadChangedFilesExpandedById)
         : {},
     defaultAdvertisedEndpointKey: sanitizeOptionalKey(parsed.defaultAdvertisedEndpointKey),
-    sidebarProjectScopeKey: sanitizeOptionalKey(parsed.sidebarProjectScopeKey),
+    sidebarProjectScopeKey: focus,
+    sidebarProjectWorkingSetKeys: keys,
+    sidebarProjectScopesByAccount: scopes,
+    sidebarProjectScopeAccountKey: null,
     pullRequestMergeMethod: isPullRequestMergeMethod(parsed.pullRequestMergeMethod)
       ? parsed.pullRequestMergeMethod
       : initialState.pullRequestMergeMethod,
@@ -231,6 +253,8 @@ export function persistState(state: UiState): void {
         threadLastVisitedAtById: state.threadLastVisitedAtById,
         defaultAdvertisedEndpointKey: state.defaultAdvertisedEndpointKey,
         sidebarProjectScopeKey: state.sidebarProjectScopeKey,
+        sidebarProjectWorkingSetKeys: state.sidebarProjectWorkingSetKeys,
+        sidebarProjectScopesByAccount: state.sidebarProjectScopesByAccount,
         threadChangedFilesExpansionVersion: THREAD_CHANGED_FILES_EXPANSION_VERSION,
         threadChangedFilesExpandedById: state.threadChangedFilesExpandedById,
         pullRequestMergeMethod: state.pullRequestMergeMethod,
@@ -331,15 +355,39 @@ export function setDefaultAdvertisedEndpointKey(state: UiState, key: string | nu
   };
 }
 
-export function setSidebarProjectScopeKey(state: UiState, projectKey: string | null): UiState {
-  const nextKey = sanitizeOptionalKey(projectKey);
-  if (state.sidebarProjectScopeKey === nextKey) {
-    return state;
-  }
+function withProjectScope(state: UiState, keys: string[], focus: string | null): UiState {
   return {
     ...state,
-    sidebarProjectScopeKey: nextKey,
+    sidebarProjectWorkingSetKeys: keys,
+    sidebarProjectScopeKey: focus,
+    sidebarProjectScopesByAccount: state.sidebarProjectScopeAccountKey === null ? state.sidebarProjectScopesByAccount : {
+      ...state.sidebarProjectScopesByAccount,
+      [state.sidebarProjectScopeAccountKey]: { keys, focus },
+    },
   };
+}
+
+export function activateSidebarProjectScope(state: UiState, accountKey: string): UiState {
+  if (state.sidebarProjectScopeAccountKey === accountKey) return state;
+  const stored = state.sidebarProjectScopesByAccount[accountKey];
+  const legacy = Object.keys(state.sidebarProjectScopesByAccount).length === 0;
+  return withProjectScope({ ...state, sidebarProjectScopeAccountKey: accountKey },
+    stored?.keys ?? (legacy ? state.sidebarProjectWorkingSetKeys : []),
+    stored?.focus ?? (legacy ? state.sidebarProjectScopeKey : null));
+}
+
+export function setSidebarProjectScopeKey(state: UiState, projectKey: string | null): UiState {
+  const nextKey = sanitizeOptionalKey(projectKey);
+  if (state.sidebarProjectScopeKey === nextKey) return state;
+  const keys = nextKey !== null && !state.sidebarProjectWorkingSetKeys.includes(nextKey)
+    ? [...state.sidebarProjectWorkingSetKeys, nextKey] : state.sidebarProjectWorkingSetKeys;
+  return withProjectScope(state, keys, nextKey);
+}
+
+export function setSidebarProjectWorkingSetKeys(state: UiState, input: readonly string[]): UiState {
+  const keys = sanitizeStringArray(input);
+  const focus = state.sidebarProjectScopeKey;
+  return withProjectScope(state, keys, focus !== null && keys.includes(focus) ? focus : null);
 }
 
 function setPullRequestMergeMethod(state: UiState, method: PullRequestMergeMethod): UiState {
@@ -431,6 +479,7 @@ interface UiStateStore extends UiState {
   setThreadChangedFilesExpanded: (threadId: string, turnId: string, expanded: boolean) => void;
   setDefaultAdvertisedEndpointKey: (key: string | null) => void;
   setSidebarProjectScopeKey: (projectKey: string | null) => void;
+  setSidebarProjectWorkingSetKeys: (keys: readonly string[]) => void;
   setPullRequestMergeMethod: (method: PullRequestMergeMethod) => void;
   setProjectExpanded: (projectIds: string | readonly string[], expanded: boolean) => void;
   reorderProjects: (
@@ -455,6 +504,13 @@ export const useUiStateStore = create<UiStateStore>((set) => ({
     const sidebar = readSidebarData();
     const project = sidebar?.projects.find((candidate) => sidebarProjectScopeKey(candidate) === projectKey);
     if (projectKey === null || project !== undefined) sidebar?.onProjectChange(project?.id ?? "");
+  },
+  setSidebarProjectWorkingSetKeys: (keys) => {
+    set((state) => setSidebarProjectWorkingSetKeys(state, keys));
+    const state = useUiStateStore.getState();
+    const sidebar = readSidebarData();
+    const project = sidebar?.projects.find((candidate) => sidebarProjectScopeKey(candidate) === state.sidebarProjectScopeKey);
+    sidebar?.onProjectChange(project?.id ?? "");
   },
   setPullRequestMergeMethod: (method) => set((state) => setPullRequestMergeMethod(state, method)),
   setProjectExpanded: (projectIds, expanded) =>

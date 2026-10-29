@@ -7,14 +7,15 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/project"
+	"github.com/digitaldrywood/detent/internal/testutil/projectfixture"
 )
 
 func TestManagerReloadsLocalIntakeWithoutRestart(t *testing.T) {
 	global := globalconfig.Config{Projects: []globalconfig.Project{{ID: "alpha", Weight: 1}, {ID: "beta", Weight: 1, LocalIntakeEnabled: new(true)}}}
 	created := 0
-	manager, err := project.NewManager(project.ManagerConfigFromGlobal(global), project.ManagerDependencies{ProjectFactory: func(cfg globalconfig.Project) (*project.Project, error) {
+	manager, err := projectfixture.NewManager(project.ManagerConfigFromGlobal(global), project.ManagerDependencies{ProjectFactory: func(cfg globalconfig.Project) (*project.Project, error) {
 		created++
-		return project.New(project.Config{Project: cfg, Workflow: workflowconfig.Workflow{Config: workflowConfig("memory")}}, project.Dependencies{Runner: blockingRunner{}})
+		return projectfixture.New(project.Config{Project: cfg, Workflow: workflowconfig.Workflow{Config: workflowConfig(workflowconfig.TrackerHubNative)}}, project.Dependencies{Runner: blockingRunner{}})
 	}})
 	if err != nil {
 		t.Fatal(err)

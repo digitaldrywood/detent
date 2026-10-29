@@ -45,6 +45,7 @@ SELECT ?,x*2-?,'review',?,json_object('review_id',?||x,'version_id',?,'decision'
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
+	projectTestChangeColumns(t, f.service)
 	w := operatortool.AnalyticsWindow{From: now.Add(-time.Hour), To: now, Bucket: time.Hour}
 	for _, test := range []struct {
 		offset, count int
@@ -211,7 +212,7 @@ func TestQualityEscapeApplicationAndRead(t *testing.T) {
 	suiteEscape := tracker.QualityEscape{OccurrenceID: scheduled.OccurrenceKey, Kind: "scheduled_failure", ObservedAt: now.Add(-20 * time.Minute), Cause: "infrastructure", InstanceID: "github-actions", EvidenceReference: scheduled.RunURL, EvidenceQuote: "Backend startup failed", BasisQuote: "Backend startup failed"}
 	request := tracker.DiscussChange{Mutation: tracker.Mutation{IdempotencyKey: "unrecorded-scheduled"}, VersionID: version.ID, Body: "Infrastructure assessment", Escape: &suiteEscape}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/discussion", f.token, request), http.StatusUnprocessableEntity)
-	body := issueorigin.Stamp("Backend startup failed"+scheduled.Stamp(), issueorigin.Origin{Kind: "doctor", Instance: "github-actions", Source: scheduled.RunURL, Fingerprint: strings.Repeat("a", 64)})
+	body := issueorigin.Stamp("Backend startup failed"+scheduled.Stamp(), issueorigin.Origin{Kind: "doctor", Instance: "github-actions", Source: strings.TrimSuffix(scheduled.RunURL, "/attempts/1"), Fingerprint: strings.Repeat("a", 64)})
 	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET body=? WHERE native_id=?", body, f.issue.WorkItemID); err != nil {
 		t.Fatal(err)
 	}

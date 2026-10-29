@@ -53,6 +53,9 @@ func (o *Orchestrator) tickManual(ctx context.Context, state *State, request man
 }
 
 func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now time.Time, manual *manualRefreshRequest) {
+	if o.trimHostCache != nil {
+		o.startWorkspaceCleanup(ctx, state, now)
+	}
 	ctx = connector.WithRESTFanoutBudget(ctx, "refresh")
 	o.beginGlobalProjectCycle()
 	defer o.endGlobalProjectCycle()
@@ -217,15 +220,6 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 		o.reconcileClosedCompletedIssueStatuses(ctx, state, transitions.issues, now),
 	)
 	if fetched.statusOK {
-		// Capacity recovery can establish an instance outage from tracker
-		// evidence, and blocker promotion can affect current dependencies.
-		// Preserve both admission authorities before dispatch.
-		timing.step("recover_backend_capacity_blocked_issues")
-		fetched = filterReconciledTickIssues(
-			state,
-			fetched,
-			o.recoverBackendCapacityBlockedIssues(ctx, state, fetched.status, now),
-		)
 		timing.step("auto_promote_blocker_issues")
 		fetched = filterReconciledTickIssues(
 			state,
@@ -244,12 +238,6 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 			state,
 			fetched,
 			autoPromoted.transitioned,
-		)
-		timing.step("operator_restore_stuck_merging")
-		fetched = filterReconciledTickIssues(
-			state,
-			fetched,
-			o.operatorRestoreStuckMerging(ctx, state, fetched.status, now),
 		)
 		timing.step("operator_merge_wedged_pull_requests")
 		fetched = filterReconciledTickIssues(
@@ -318,11 +306,11 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 	// but let unrelated approved work start before provider/history fanout.
 	timing.next("blocked_maintenance")
 	if fetched.statusOK {
-		timing.step("operator_return_retired_parks")
+		timing.step("recover_blocked_issues")
 		fetched = filterReconciledTickIssues(
 			state,
 			fetched,
-			o.operatorReturnRetiredParks(ctx, state, fetched.status, now),
+			o.recoverBlockedIssues(ctx, state, fetched.status, now),
 		)
 		timing.step("operator_clear_closed_dependencies")
 		dependencyIssues := fetched.status
@@ -377,7 +365,7 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 		o.markRefreshSucceeded(state, now)
 	}
 	state.Pipeline = overlayIssueStateSnapshots(state.Pipeline, state.tickTransitions.pipeline)
-	if refreshOK && !reserve.degraded {
+	if o.trimHostCache == nil && refreshOK && !reserve.degraded {
 		timing.next("workspace_cleanup")
 		o.startWorkspaceCleanup(ctx, state, now)
 	}
@@ -498,12 +486,29 @@ func (o *Orchestrator) fetchTickIssues(
 	now time.Time,
 	reserve githubBudgetReserveDecision,
 	timing *refreshTiming,
-) (tickFetchedIssues, bool) {
+) (fetched tickFetchedIssues, ok bool) {
+	if o.scheduling == nil {
+		discoveryCtx, finish := o.beginDispatchDiscovery(ctx)
+		defer finish()
+		ctx = discoveryCtx
+		if ctx.Err() != nil {
+			return tickFetchedIssues{}, false
+		}
+	}
+
 	if scanner, ok := o.connector.(connector.RefreshScanSerializer); ok {
 		timing.step("wait_for_scan")
 		finishWait := o.tickWatchdog.excludeScanWait()
-		release, err := scanner.BeginRefreshScan(ctx)
+		scanCtx, finishScan := o.beginDispatchDiscovery(ctx)
+		defer finishScan()
+		release, err := scanner.BeginRefreshScan(scanCtx)
 		wait := finishWait()
+		if scanCtx.Err() != nil {
+			if release != nil {
+				release()
+			}
+			return tickFetchedIssues{}, false
+		}
 		if timing != nil {
 			timing.phases = append(timing.phases, "tracker_scan_wait_duration", wait)
 		}
@@ -526,6 +531,14 @@ func (o *Orchestrator) fetchTickIssues(
 
 	timing.step("fetch_candidates")
 	candidateIssues, err := o.fetchCandidateIssuesForTick(ctx, state)
+	defer func(claimCtx context.Context) {
+		if !ok {
+			o.releaseDeferredSchedulingClaims(claimCtx, state, candidateIssues)
+		}
+	}(ctx)
+	if ctx.Err() != nil {
+		return tickFetchedIssues{}, false
+	}
 	if err != nil {
 		o.logger.Warn("fetch candidate issues failed", "error", err)
 		recordRefreshSourceFailure(state, telemetry.RefreshSourceCandidates, err, now)
@@ -540,7 +553,7 @@ func (o *Orchestrator) fetchTickIssues(
 		o.recordTrackerReadSuccess(state, telemetry.RefreshSourceCandidates, now)
 	}
 
-	fetched := tickFetchedIssues{
+	fetched = tickFetchedIssues{
 		candidates: cloneIssues(candidateIssues),
 	}
 	if len(observedStates) == 0 && !canRefresh {
@@ -557,9 +570,17 @@ func (o *Orchestrator) fetchTickIssues(
 		)
 		return fetched, true
 	}
+	if o.scheduling != nil {
+		discoveryCtx, finish := o.beginDispatchDiscovery(ctx)
+		defer finish()
+		ctx = discoveryCtx
+	}
 	if !canRefresh && !tickHasActiveWork(state, candidateIssues) {
 		timing.step("probe_observed_work")
 		exists, probeErr := o.observedWorkExists(ctx, observedStates)
+		if ctx.Err() != nil {
+			return tickFetchedIssues{}, false
+		}
 		if probeErr != nil {
 			o.logger.Warn("fetch observed status probe failed", "error", probeErr)
 			recordRefreshSourceFailure(state, telemetry.RefreshSourceStatuses, probeErr, now)
@@ -591,6 +612,9 @@ func (o *Orchestrator) fetchTickIssues(
 	} else {
 		statusIssues, statusErr = o.fetchObservedIssuesByStates(ctx, observedStates)
 	}
+	if ctx.Err() != nil {
+		return tickFetchedIssues{}, false
+	}
 	if statusErr != nil {
 		o.logger.Warn("fetch observed status issues failed", "error", statusErr)
 		recordRefreshSourceFailure(state, telemetry.RefreshSourceStatuses, statusErr, now)
@@ -604,6 +628,9 @@ func (o *Orchestrator) fetchTickIssues(
 	fetched.statusOK = true
 	timing.step("hydrate_plan_comments")
 	if err := o.hydratePlanIssueComments(ctx, &fetched); err != nil {
+		if ctx.Err() != nil {
+			return tickFetchedIssues{}, false
+		}
 		recordRefreshSourceFailure(state, telemetry.RefreshSourceStatuses, err, now)
 		o.observeTrackerReadFailure(state, telemetry.RefreshSourceStatuses, err, now)
 		markRefreshError(state, "fetch plan issue comments failed: "+err.Error(), now)
@@ -632,6 +659,9 @@ func (o *Orchestrator) fetchCombinedTickIssues(
 		observedStates,
 		o.refreshFilterHint(),
 	)
+	if ctx.Err() != nil {
+		return tickFetchedIssues{}, false
+	}
 	if result.CandidateError != nil {
 		err := result.CandidateError
 		o.logger.Warn("fetch candidate issues failed", "error", err)
@@ -664,6 +694,9 @@ func (o *Orchestrator) fetchCombinedTickIssues(
 	fetched.statusOK = true
 	timing.step("hydrate_plan_comments")
 	if err := o.hydratePlanIssueComments(ctx, &fetched); err != nil {
+		if ctx.Err() != nil {
+			return tickFetchedIssues{}, false
+		}
 		recordRefreshSourceFailure(state, telemetry.RefreshSourceStatuses, err, now)
 		o.observeTrackerReadFailure(state, telemetry.RefreshSourceStatuses, err, now)
 		markRefreshError(state, "fetch plan issue comments failed: "+err.Error(), now)
@@ -685,8 +718,27 @@ func (o *Orchestrator) fetchCandidateIssuesForTick(ctx context.Context, state *S
 	if len(states) == 0 {
 		return []connector.Issue{}, nil
 	}
+	filter := o.authorizationFilterHint()
+	if o.nativeWorkflow() {
+		var err error
+		filter, err = selector.NativeFilterHint(o.cfg.Authorization, o.cfg.SelectorContext)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if o.scheduling != nil {
+		if storage, ok := o.scheduling.(interface{ WorkspaceStorageConstraint(context.Context) string }); ok && storage.WorkspaceStorageConstraint(ctx) != "" {
+			now := time.Now()
+			if o.now != nil {
+				now = o.now()
+			}
+			o.reclaimWorkspaceStorage(ctx, state, now)
+			if constraint := storage.WorkspaceStorageConstraint(ctx); constraint != "" {
+				o.logger.Warn("runner host storage limits capacity", "reason", constraint)
+			}
+		}
 		request := SchedulingRequest{
+			BeginDiscovery:          o.beginDispatchDiscovery,
 			LandingCapacity:         o.cfg.NativeLandingCapacity,
 			DispatchPriorityByState: append([]string(nil), o.cfg.DispatchPriorityByState...),
 			DispatchPriorityByLabel: append([]string(nil), o.cfg.DispatchPriorityByLabel...),
@@ -697,7 +749,7 @@ func (o *Orchestrator) fetchCandidateIssuesForTick(ctx context.Context, state *S
 			ProjectID:               o.cfg.Project.ID,
 			Repository:              o.cfg.SchedulingRepository,
 			WorkflowStates:          states,
-			Filter:                  o.authorizationFilterHint(),
+			Filter:                  filter,
 		}
 		request.NativeLandingBatch = o.nativeWorkflow() && !o.cfg.Policy.Gates.GitHubPullRequest
 		if request.NativeLandingBatch {
@@ -767,6 +819,7 @@ func (o *Orchestrator) fetchCandidateIssuesForTick(ctx context.Context, state *S
 				}
 			}
 
+			o.observeHostPressure(ctx, state, now)
 			if state.MemoryPressure.DispatchHeld || state.IOPressure.DispatchHeld || state.CPUPressure.DispatchHeld {
 				observedReason, observedPredicate = dispatchSkipLocalSlotUnavailable, "host_pressure"
 				// The dispatch stage would refuse this candidate under the host
@@ -829,7 +882,7 @@ func (o *Orchestrator) fetchCandidateIssuesForTick(ctx context.Context, state *S
 		return o.scheduling.FetchCandidateIssues(ctx, request)
 	}
 	if fetcher, ok := o.connector.(connector.CandidateIssuesFilterFetcher); ok {
-		return fetcher.FetchCandidateIssuesByStatesWithFilter(ctx, states, o.authorizationFilterHint())
+		return fetcher.FetchCandidateIssuesByStatesWithFilter(ctx, states, filter)
 	}
 	if fetcher, ok := o.connector.(connector.CandidateIssuesByStatesFetcher); ok {
 		return fetcher.FetchCandidateIssuesByStates(ctx, states)
@@ -856,6 +909,14 @@ func (o *Orchestrator) NativeAdmissionContext() (tracker.NativeAdmissionContext,
 
 func (o *Orchestrator) snapshotNativeAdmission(state *State) {
 	filter := o.authorizationFilterHint()
+	if o.nativeWorkflow() {
+		var err error
+		filter, err = selector.NativeFilterHint(o.cfg.Authorization, o.cfg.SelectorContext)
+		if err != nil {
+			state.nativeAdmission = nil
+			return
+		}
+	}
 	now := time.Now()
 	if o.now != nil {
 		now = o.now()

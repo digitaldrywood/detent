@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/testenv"
 )
 
 func TestChangeWorkflowStateCommitsStateAndOutboxAtomically(t *testing.T) {
@@ -360,12 +362,10 @@ func TestServiceCloseCancelsAndDrainsOutboxWorker(t *testing.T) {
 
 func waitForOutboxShutdownStage(t *testing.T, done <-chan struct{}, stage string) {
 	t.Helper()
-	// SQLite shutdown involves OS I/O; this bounds deadlocks, not expected latency.
-	timer := time.NewTimer(30 * time.Second)
-	defer timer.Stop()
+	bound := testenv.WaitContext(t, context.Background())
 	select {
 	case <-done:
-	case <-timer.C:
+	case <-bound.Done():
 		stacks := make([]byte, 1<<20)
 		t.Fatalf("outbox shutdown stalled at %s:\n%s", stage, stacks[:runtime.Stack(stacks, true)])
 	}

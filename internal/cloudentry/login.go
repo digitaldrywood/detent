@@ -31,7 +31,7 @@ func validReturnPath(path, organization string) bool {
 		return false
 	}
 	if organization == "" {
-		return path == "/organizations" || path == platformPath
+		return path == "/organizations" || path == platformPath || strings.HasPrefix(path, "/oauth/consent/") && safeID(strings.TrimPrefix(path, "/oauth/consent/"))
 	}
 	prefix := "/organizations/" + organization
 	return (path == prefix || strings.HasPrefix(path, prefix+"/")) && !strings.HasSuffix(path, "/logout")
@@ -193,7 +193,7 @@ func (s *Service) completeLogin(c echo.Context) error {
 		if callback.Reason != "" {
 			return s.loginDenied(c, http.StatusForbidden, "This account cannot open the selected organization", callback)
 		}
-	} else if identity.Hosted.OrganizationID != "" && transaction.InvitationToken == "" && !s.platformIdentity(ctx, identity.Email, *identity.Hosted) {
+	} else if identity.Hosted.OrganizationID != "" && transaction.InvitationToken == "" {
 		organization, err = s.registry.ByProvider(ctx, identity.Hosted.OrganizationID)
 		if err != nil && !errors.Is(err, ErrOrganizationNotFound) {
 			callback.Reason, callback.Err = "organization_unavailable", err
@@ -246,11 +246,28 @@ func (s *Service) completeLogin(c echo.Context) error {
 		}
 		return c.Redirect(http.StatusSeeOther, "/auth/oidc/start?"+url.Values{"organization": {invited.ID}, "return": {s.legacyOrganizationHome(invited.ID)}}.Encode())
 	}
+	home := s.organizationHome(organization)
+	if organization.ID != "" && s.clientBuilt() && (transaction.ReturnPath == "" || transaction.ReturnPath == "/organizations" || transaction.ReturnPath == home || transaction.ReturnPath == s.legacyOrganizationHome(organization.ID)) {
+		memberships, err := s.config.Provider.Memberships(ctx, identity.Subject, organization.ProviderID)
+		if err != nil {
+			callback.Reason, callback.Err = "membership_unavailable", err
+			return s.loginDenied(c, http.StatusServiceUnavailable, "Sign-in is temporarily unavailable", callback)
+		}
+		for _, membership := range memberships {
+			if membership.UserID == identity.Subject && membership.OrganizationID == organization.ProviderID && membership.Status == "active" {
+				home = s.organizationRoleHome(organization, membership.Role.Slug)
+				break
+			}
+		}
+	}
 	switch {
 	case organization.ID != "" && (transaction.ReturnPath == "" || transaction.ReturnPath == "/organizations"):
-		return c.Redirect(http.StatusSeeOther, s.organizationHome(organization))
+		return c.Redirect(http.StatusSeeOther, home)
 	case transaction.ReturnPath != "":
 		target := transaction.ReturnPath
+		if organization.ID != "" && home != s.organizationHome(organization) && (target == s.organizationHome(organization) || target == s.legacyOrganizationHome(organization.ID)) {
+			target = home
+		}
 		if transaction.Organization != "" && target == "/organizations/"+transaction.Organization+"/organization/billing" {
 			organization, err := s.registry.Organization(ctx, transaction.Organization)
 			if err != nil {
@@ -312,7 +329,7 @@ func (s *Service) establishSession(c echo.Context, identity auth.Identity) (acco
 	if _, err := s.auth.store.db.ExecContext(ctx, "UPDATE sessions SET expires_at = ? WHERE token_hash = ?", formatTime(s.config.now().Add(sessionLifetime)), hash); err != nil {
 		return accountSession{}, err
 	}
-	if err := s.auth.audit(ctx, identity.Subject, "", "session_started"); err != nil {
+	if err := s.recordSignIn(ctx, identity); err != nil {
 		return accountSession{}, err
 	}
 	s.setCookie(c, "session", token, s.config.now().Add(sessionLifetime))
@@ -358,11 +375,12 @@ func (s *Service) logout(c echo.Context) error {
 }
 
 type organizationChoice struct {
-	ID    string `json:"id"`
-	Name  string `json:"name"`
-	URL   string `json:"url"`
-	State string `json:"state,omitempty"`
-	Role  string `json:"role,omitempty"`
+	LogoURL string `json:"logo_url,omitempty"`
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	URL     string `json:"url"`
+	State   string `json:"state,omitempty"`
+	Role    string `json:"role,omitempty"`
 }
 
 func (s *Service) organizationChoices(ctx context.Context, session accountSession) ([]organizationChoice, error) {
@@ -384,7 +402,7 @@ func (s *Service) organizationChoices(ctx context.Context, session accountSessio
 		if err != nil {
 			return nil, err
 		}
-		result = append(result, organizationChoice{ID: organization.ID, Name: organization.Name, URL: s.organizationHome(organization), Role: membership.Role.Slug})
+		result = append(result, organizationChoice{ID: organization.ID, Name: organization.Name, URL: s.organizationRoleHome(organization, membership.Role.Slug), Role: membership.Role.Slug, LogoURL: "/organizations/" + organization.ID + "/api/v2/logo-image"})
 	}
 	return result, nil
 }

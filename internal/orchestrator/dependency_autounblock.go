@@ -111,10 +111,6 @@ func (o *Orchestrator) autoUnblockDependencyIssues(
 		if issueID == "" {
 			continue
 		}
-		if stickyReason := o.issueStickyBlockReason(ctx, state, issue); stickyReason != "" {
-			o.logDependencyAutoUnblockDecision(issue, "hold", stickyReason, nil, "")
-			continue
-		}
 		hydrated, ok, err := o.hydrateDependencyAutoUnblockIssue(ctx, issue, cfg.SourceStates)
 		if err != nil {
 			o.recordDependencyAutoUnblockError(state, issue, err, now)
@@ -141,19 +137,7 @@ func (o *Orchestrator) autoUnblockDependencyIssues(
 			o.logDependencyAutoUnblockDecision(hydrated, "hold", "operator_stop", nil, "")
 			continue
 		}
-		if park, ok := o.currentBlockedRecoveryPark(ctx, state, hydrated); ok && strings.TrimSpace(park.Cause) != "" {
-			o.logDependencyAutoUnblockDecision(hydrated, "hold", "blocked_cause_recovery", nil, "")
-			continue
-		}
-		if stickyReason := o.issueStickyBlockReason(ctx, state, hydrated); stickyReason != "" {
-			o.logDependencyAutoUnblockDecision(hydrated, "hold", stickyReason, nil, "")
-			continue
-		}
 		if len(hydrated.BlockedBy) == 0 {
-			continue
-		}
-		if reason := o.trackerRecoveryParkCommentsHold(hydrated, hydrated.Comments); reason != "" {
-			o.logDependencyAutoUnblockDecision(hydrated, "hold", reason, nil, "")
 			continue
 		}
 		o.logDependencyProseOnly(hydrated)
@@ -176,16 +160,6 @@ func (o *Orchestrator) autoUnblockDependencyIssues(
 			continue
 		}
 		blockerSignature := dependencyAutoUnblockBlockerSignature(blockers, cfg, o.cfg.TerminalStates)
-		if o.dependencyAutoUnblockAlreadyConsumed(ctx, state, hydrated, blockerSignature) {
-			action := "skip"
-			reason := "blocker_set_already_consumed"
-			if dependencyBlockersTerminal(blockers, o.cfg.TerminalStates) {
-				action = "error"
-				reason = "terminal_blocker_set_already_consumed"
-			}
-			o.logDependencyAutoUnblockDecision(hydrated, action, reason, blockers, "")
-			continue
-		}
 		targetState := dependencyAutoUnblockTargetState(state, hydrated, cfg.TargetState)
 		if !o.applyDependencyAutoUnblock(ctx, state, hydrated, blockers, blockerSignature, targetState, now) {
 			o.logDependencyAutoUnblockDecision(hydrated, "skip", "transition_failed", blockers, targetState)
@@ -348,10 +322,10 @@ func (o *Orchestrator) applyBlockerAutoPromote(
 	targetState string,
 	now time.Time,
 ) bool {
-	if connector.NonExecutableReason(blocker) != "" || o.issueHasStickyBlockReason(ctx, state, blocker) || o.currentBlockedOperatorStop(ctx, state, blocker) {
+	if connector.NonExecutableReason(blocker) != "" || o.currentBlockedOperatorStop(ctx, state, blocker) {
 		return false
 	}
-	if park, ok := o.currentBlockedRecoveryPark(ctx, state, blocker); ok && strings.TrimSpace(park.Cause) != "" {
+	if o.currentBlockedHumanIntent(ctx, state, blocker) {
 		return false
 	}
 	issueID := strings.TrimSpace(blocker.ID)
@@ -944,16 +918,6 @@ func dependencyBlockersMatchingRefs(blockers []dependencyBlocker, refs []connect
 	return filtered
 }
 
-func dependencyBlockersNotReady(blockers []dependencyBlocker, cfg DependencyAutoUnblockConfig, terminalStates []string) []dependencyBlocker {
-	filtered := make([]dependencyBlocker, 0, len(blockers))
-	for _, blocker := range blockers {
-		if !dependencyBlockerReady(blocker, cfg, terminalStates) {
-			filtered = append(filtered, blocker)
-		}
-	}
-	return filtered
-}
-
 func dependencyBlockersTerminal(blockers []dependencyBlocker, terminalStates []string) bool {
 	if len(blockers) == 0 {
 		return false
@@ -1166,132 +1130,11 @@ func dependencyRefLabels(refs []connector.BlockedRef) []string {
 	return labels
 }
 
-func (o *Orchestrator) issueHasStickyBlockReason(ctx context.Context, state *State, issue connector.Issue) bool {
-	return o.issueStickyBlockReason(ctx, state, issue) != ""
-}
-
-func (o *Orchestrator) issueStickyBlockReason(ctx context.Context, state *State, issue connector.Issue) string {
-	issueID := strings.TrimSpace(issue.ID)
-	if state != nil && issueID != "" {
-		if blocked, ok := state.Blocked[issueID]; ok &&
-			blockedEntryMatchesCurrent(issue, blocked.BlockedAt) &&
-			stickyBlockReason(blocked.Reason) {
-			return strings.TrimSpace(blocked.Reason)
-		}
-	}
-	entry, ok := o.latestWorkflowLaneEntry(ctx, issue)
-	if !ok {
-		if stickyBlockReason(issue.BlockerReason) {
-			return strings.TrimSpace(issue.BlockerReason)
-		}
-		return ""
-	}
-	if normalizeState(entry.Event.PhaseName) != normalizeState(blockedStatusState) ||
-		!workflowLaneEntryMatchesCurrent(issue, entry.Event) {
-		return ""
-	}
-	if stickyBlockReason(entry.Event.Reason) {
-		return strings.TrimSpace(entry.Event.Reason)
-	}
-	if stickyBlockReason(issue.BlockerReason) {
-		return strings.TrimSpace(issue.BlockerReason)
-	}
-	return ""
-}
-
 func blockedEntryMatchesCurrent(issue connector.Issue, enteredAt time.Time) bool {
 	if issue.StageUpdatedAt == nil || issue.StageUpdatedAt.IsZero() || enteredAt.IsZero() {
 		return true
 	}
 	return !enteredAt.Before(issue.StageUpdatedAt.Add(-reworkBreakerStageUpdateSkew))
-}
-
-func stickyBlockReason(reason string) bool {
-	reason = strings.ToLower(strings.TrimSpace(reason))
-	if strings.HasPrefix(reason, tokenCeilingBlockedReasonPrefix) ||
-		strings.HasPrefix(reason, repeatedFailureBlockedReasonPrefix) ||
-		strings.HasPrefix(reason, lifetimeLimitBlockedReasonPrefix) ||
-		strings.HasPrefix(reason, artifactGateConvergenceBlockedReasonPrefix) ||
-		strings.HasPrefix(reason, mergeWorkerRetryExhaustedReason) {
-		return true
-	}
-	switch reason {
-	case "rework_limit",
-		attemptAllowanceExhaustedReason,
-		"workpad_blocker",
-		string(AutoPromoteReasonMergeRevocationLimit),
-		noProgressLimitReason,
-		dispatchLoopDetectedReason,
-		lifetimeLimitReason,
-		spendProgressReason,
-		repeatedFailureCircuitBreakerCause,
-		"workpad_blocked_unactioned",
-		"circuit_breaker",
-		"token_ceiling_circuit_breaker",
-		deliverableConfigurationFailureCause,
-		budgetProjectionCeilingFailureCause,
-		artifactGateConvergenceReason,
-		terminalAttemptRetryLimitCause,
-		workspacePreparationRetryLimitCause:
-		return true
-	default:
-		return false
-	}
-}
-
-func (o *Orchestrator) dependencyAutoUnblockAlreadyConsumed(
-	ctx context.Context,
-	state *State,
-	issue connector.Issue,
-	blockerSet string,
-) bool {
-	blockerSet = strings.TrimSpace(blockerSet)
-	if blockerSet == "" {
-		return false
-	}
-	issueID := strings.TrimSpace(issue.ID)
-	if state != nil && issueID != "" {
-		if record, ok := state.DependencyAutoUnblocks[issueID]; ok &&
-			record.BlockerSet == blockerSet &&
-			dependencyAutoUnblockConsumptionCurrent(issue, record.UnblockedAt) {
-			return true
-		}
-	}
-	return o.workflowTimelineHasDependencyAutoUnblock(ctx, issue, blockerSet)
-}
-
-func (o *Orchestrator) workflowTimelineHasDependencyAutoUnblock(
-	ctx context.Context,
-	issue connector.Issue,
-	blockerSet string,
-) bool {
-	timeline, ok := o.issueWorkflowTimeline(ctx, issue)
-	if !ok {
-		return false
-	}
-	for _, event := range timeline.Events {
-		if event.PhaseType != store.WorkflowPhaseTypeLane ||
-			!strings.EqualFold(strings.TrimSpace(event.Status), "entered") ||
-			!strings.EqualFold(strings.TrimSpace(event.Reason), "dependency_auto_unblock") ||
-			!dependencyAutoUnblockConsumptionCurrent(issue, event.StartedAt) {
-			continue
-		}
-		metadata, ok := workflowLaneMetadataFromJSON(event.MetadataJSON)
-		if !ok || metadata.DependencyAutoUnblock == nil {
-			continue
-		}
-		if strings.TrimSpace(metadata.DependencyAutoUnblock.BlockerSet) == blockerSet {
-			return true
-		}
-	}
-	return false
-}
-
-func dependencyAutoUnblockConsumptionCurrent(issue connector.Issue, unblockedAt time.Time) bool {
-	if issue.StageUpdatedAt == nil || issue.StageUpdatedAt.IsZero() || unblockedAt.IsZero() {
-		return true
-	}
-	return !unblockedAt.Before(issue.StageUpdatedAt.UTC())
 }
 
 type workflowTimelineMetadataMatch struct {
@@ -1309,28 +1152,6 @@ func (o *Orchestrator) workflowTimelineLaneActionSignature(
 	return o.workflowTimelineLaneMetadataMatch(ctx, issue, reason, func(metadata workflowLaneMetadata) bool {
 		return workflowLaneMetadataHasActionSignature(metadata, action, signature)
 	})
-}
-
-func (o *Orchestrator) workflowTimelineActionSignature(
-	ctx context.Context,
-	issue connector.Issue,
-	action string,
-	signature string,
-) (workflowTimelineMetadataMatch, bool) {
-	timeline, ok := o.issueWorkflowTimeline(ctx, issue)
-	if !ok {
-		return workflowTimelineMetadataMatch{}, false
-	}
-	for _, event := range timeline.Events {
-		metadata, ok := workflowLaneMetadataFromJSON(event.MetadataJSON)
-		if !ok {
-			continue
-		}
-		if workflowLaneMetadataHasActionSignature(metadata, action, signature) {
-			return workflowTimelineMetadataMatch{Event: event, Metadata: metadata}, true
-		}
-	}
-	return workflowTimelineMetadataMatch{}, false
 }
 
 func (o *Orchestrator) latestWorkflowLaneEntry(

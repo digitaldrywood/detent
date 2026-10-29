@@ -35,6 +35,10 @@ func TestContentSecurityPolicy(t *testing.T) {
 		source    string
 		allowed   bool
 	}{
+		{name: "WorkOS widgets connect", directive: "connect-src", source: "https://api.workos.com", allowed: true},
+		{name: "WorkOS avatars load", directive: "img-src", source: "https://workoscdn.com", allowed: true},
+		{name: "scripts never evaluate strings", directive: "script-src", source: "'unsafe-eval'", allowed: false},
+		{name: "connections never use wildcard hosts", directive: "connect-src", source: "*", allowed: false},
 		{name: "scripts never run inline", directive: "script-src", source: "'unsafe-inline'", allowed: false},
 		{name: "style elements come only from the bundle", directive: "style-src", source: "'unsafe-inline'", allowed: false},
 		{name: "the bundle's own stylesheets load", directive: "style-src", source: "'self'", allowed: true},

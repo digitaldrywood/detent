@@ -32,7 +32,7 @@ func TestProjectReadiness(t *testing.T) {
 		{name: "customer configured", policy: true, doctor: true, provider: true, runner: true, binding: true, artifacts: "customer", want: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			p := Project{Progress: Progress{Repository: "existing", Doctor: tt.doctor, Provider: tt.provider, Artifacts: tt.artifacts}}
+			p := Project{Repository: "example-org/example-project", Progress: Progress{Repository: "existing", Doctor: tt.doctor, Provider: tt.provider, Artifacts: tt.artifacts}}
 			if tt.policy {
 				p.Policy = &policy.Approval{}
 			}
@@ -90,26 +90,27 @@ func TestRunnerFirstObservedReadiness(t *testing.T) {
 		{"missing sign in", "online", "passed", "passed", "failed", true, false, ""},
 		{"successful checks", "online", "passed", "passed", "passed", true, true, ""},
 		{"doctor warnings", "online", "passed", "warning", "passed", true, true, ""},
-		{"offline evidence", "offline", "passed", "passed", "passed", false, false, ""},
+		{"expired identity", "expired", "passed", "passed", "passed", false, false, ""},
+		{"offline evidence", "offline", "passed", "passed", "passed", true, false, ""},
 		{"project access denied", "online", "passed", "passed", "passed", false, false, "project_access_denied"},
 		{"runner full", "online", "passed", "passed", "passed", true, true, "runner_capacity"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			p := Project{Progress: Progress{Doctor: true, Provider: true, Artifacts: "local"}, Runners: []runnerauth.Eligibility{{Runner: runnerauth.Runner{Routing: runnerauth.Routing{State: "active"}, Health: tt.health}, LocalChecks: &runnerauth.LocalChecks{Checkout: tt.checkout, Doctor: tt.doctor, Provider: tt.provider}}}}
+			p := Project{Repository: "example-org/example-project", Progress: Progress{Doctor: true, Provider: true, Artifacts: "local"}, Policy: &policy.Approval{}, Runners: []runnerauth.Eligibility{{Runner: runnerauth.Runner{Routing: runnerauth.Routing{State: "active"}, Health: tt.health}, LocalChecks: &runnerauth.LocalChecks{Checkout: tt.checkout, Doctor: tt.doctor, Provider: tt.provider}}}}
 			if tt.exclusion != "" {
 				p.Runners[0].Exclusions = []runnerauth.Exclusion{{Code: tt.exclusion}}
 			}
 			for range 2 {
 				p.Evaluate()
-				if p.Steps[0].Name != "Execution runner" || (p.Steps[0].State == "ready") != tt.enrolled || (p.Steps[1].State == "ready") != tt.validated || p.Steps[2].Name != "Repository configuration" || p.Ready {
+				if p.Steps[0].Name != "Runner" || (p.Steps[0].State == "ready") != tt.enrolled || (p.Steps[2].State == "ready") != tt.validated || p.Steps[1].Name != "Repository" {
 					t.Fatalf("setup = %+v", p)
 				}
 			}
 		})
 	}
-	p := Project{Progress: Progress{Doctor: true, Provider: true}, Runners: []runnerauth.Eligibility{{Runner: runnerauth.Runner{Health: "online", Routing: runnerauth.Routing{State: "active"}}}}}
+	p := Project{Repository: "example-org/example-project", Progress: Progress{Doctor: true, Provider: true}, Runners: []runnerauth.Eligibility{{Runner: runnerauth.Runner{Health: "online", Routing: runnerauth.Routing{State: "active"}}}}}
 	p.Evaluate()
-	if p.Steps[1].State == "ready" {
+	if p.Steps[2].State == "ready" {
 		t.Fatal("browser attestations became observed evidence")
 	}
 }

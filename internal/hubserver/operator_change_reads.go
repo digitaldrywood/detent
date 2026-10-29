@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
+	"strconv"
 
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/mutation"
@@ -14,6 +15,8 @@ import (
 )
 
 type changeReadCursor struct {
+	Offset  int64  `json:"offset,omitempty"`
+	Digest  string `json:"digest,omitempty"`
 	Change  string `json:"change"`
 	Head    string `json:"head"`
 	Version string `json:"version"`
@@ -27,10 +30,15 @@ func readBoundedChange(ctx context.Context, query nativeQueryer, scope nativeSco
 	if err != nil {
 		return result, err
 	}
+	query, err = archiveQuery(ctx, query, args.ItemID, "change", args.ChangeID, 0)
+	if err != nil {
+		return result, err
+	}
+	result.Archive = nativeArchiveDescriptor(ctx)
 	selection := changeReadCursor{Change: change.ID, Head: change.CurrentVersion, Version: args.VersionID, Section: args.Section}
 	if args.Cursor != "" {
 		raw, err := base64.RawURLEncoding.DecodeString(args.Cursor)
-		if err != nil || operatortool.DecodeArguments(raw, &selection) != nil || selection.After < 0 || selection.Through < selection.After || selection.Change != change.ID || selection.Version == "" && change.CurrentVersion != "" || !validChangeReadSection(selection.Section) || selection.Section == "current" || args.Section != "" && args.Section != selection.Section || args.VersionID != "" && args.VersionID != selection.Version {
+		if err != nil || operatortool.DecodeArguments(raw, &selection) != nil || selection.Offset < 0 || selection.Offset > 0 && (selection.Section != "reviews" || len(selection.Digest) != 64) || selection.After < 0 || selection.Through < selection.After || selection.Change != change.ID || selection.Version == "" && change.CurrentVersion != "" || !validChangeReadSection(selection.Section) || selection.Section == "current" || args.Section != "" && args.Section != selection.Section || args.VersionID != "" && args.VersionID != selection.Version {
 			return result, operatortool.ErrInvalidArguments
 		}
 		if selection.Head != change.CurrentVersion {
@@ -81,7 +89,7 @@ func readBoundedChange(ctx context.Context, query nativeQueryer, scope nativeSco
 		cursor := selection
 		cursor.Section = section
 		if args.Cursor == "" || section != selection.Section {
-			cursor.After = 0
+			cursor.After, cursor.Offset, cursor.Digest = 0, 0, ""
 			if section == "versions" {
 				err = query.QueryRowContext(ctx, "SELECT COALESCE(MAX(number), 0) FROM change_versions WHERE change_id=?", change.ID).Scan(&cursor.Through)
 			} else {
@@ -162,11 +170,19 @@ func readChangeSection(ctx context.Context, query nativeQueryer, args operatorto
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return operatortool.ChangeReadPage{}, err
 	}
+	if cursor.Offset > 0 && len(records) == 0 {
+		return operatortool.ChangeReadPage{}, mutation.ErrConflict
+	}
 	used := 0
 	for i, row := range records {
 		if omitHistory || i == changeLimit(args) {
 			break
 		}
+		resolved, err := resolveStorageJSON(ctx, row.raw)
+		if err != nil {
+			return operatortool.ChangeReadPage{}, err
+		}
+		row.raw = resolved
 		detail := result.Detail
 		before := *detail
 		previous, err := json.Marshal(result)
@@ -196,6 +212,13 @@ func readChangeSection(ctx context.Context, query nativeQueryer, args operatorto
 			if err := json.Unmarshal(row.raw, &review); err != nil {
 				return operatortool.ChangeReadPage{}, err
 			}
+			if err := hydrateChangeRecord(ctx, query, &review); err != nil {
+				return operatortool.ChangeReadPage{}, err
+			}
+			row.raw, err = json.Marshal(review)
+			if err != nil {
+				return operatortool.ChangeReadPage{}, err
+			}
 			review.Validator = boundedChangeReviewResult(review.Validator)
 			review.ImplementationReview = boundedChangeReviewResult(review.ImplementationReview)
 			detail.Reviews = append(detail.Reviews, review)
@@ -217,12 +240,30 @@ func readChangeSection(ctx context.Context, query nativeQueryer, args operatorto
 			return operatortool.ChangeReadPage{}, err
 		}
 		size := len(encoded) - len(previous)
-		if used+size > budget {
+		if used+size > budget || cursor.Offset > 0 {
 			*detail = before
-			if size > operatortool.MaxResultBytes && i == 0 {
-				return operatortool.ChangeReadPage{}, operatortool.ChangeRecordTooLarge()
-			}
-			if single && i == 0 {
+			if single && i == 0 && cursor.Section == "reviews" {
+				fragment := &tracker.NativeRecoveryPage{NativeReference: tracker.NativeReference{OrganizationID: detail.Change.OrganizationID, ProjectID: detail.Change.ProjectID, WorkItemID: detail.Change.WorkItemID}, Section: cursor.Section, RecordID: strconv.FormatInt(row.sequence, 10), VersionID: cursor.Version}
+				if err := recoveryRecordFragment(fragment, row.raw, cursor.Offset, cursor.Digest); err != nil {
+					return operatortool.ChangeReadPage{}, err
+				}
+				result.Fragment = fragment
+				encoded, err := json.Marshal(result)
+				if err != nil {
+					return operatortool.ChangeReadPage{}, err
+				}
+				if excess := len(encoded) + 512 - operatortool.MaxResultBytes; excess > 0 {
+					keep := len(fragment.Data) - (excess+3)*3/4
+					if keep <= 0 {
+						return operatortool.ChangeReadPage{}, operatortool.ChangeRecordTooLarge()
+					}
+					fragment.Data = fragment.Data[:keep]
+				}
+				cursor.Offset, cursor.Digest = fragment.Offset+int64(len(fragment.Data)), fragment.SHA256
+				if cursor.Offset == fragment.TotalBytes {
+					cursor.After, cursor.Offset, cursor.Digest = row.sequence, 0, ""
+				}
+			} else if single && i == 0 || size > operatortool.MaxResultBytes && i == 0 && cursor.Section != "reviews" {
 				return operatortool.ChangeReadPage{}, operatortool.ChangeRecordTooLarge()
 			}
 			break

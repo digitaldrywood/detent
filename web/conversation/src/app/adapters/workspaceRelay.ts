@@ -1,5 +1,5 @@
 /**
- * The channels §18.2 defines, plus `exec` (§18.12) and `git` (§18.13).
+ * The channels the relay protocol defines, plus `exec` and `git`.
  *
  * `files` and `git` are implemented by this module's request/response client,
  * because both are one request answered by one frame. `exec` is implemented
@@ -26,7 +26,7 @@ export const RELAY_ERROR_CODES = [
   "overflow",
   "workspace_closed",
   "read_only",
-  // §18.12: git itself refused. The only code that carries `stderr`, because
+  // Git itself refused. The only code that carries `stderr`, because
   // a failed push is only actionable with the tool's own words.
   "git_failed",
 ] as const;
@@ -51,7 +51,7 @@ export class RelayError extends Error {
   /** The request `seq` the hub named, where it named one. */
   readonly requestSeq: number | null;
   /**
-   * The tool's own standard error, on a `git_failed` (§18.12), else null.
+   * The tool's own standard error, on a `git_failed`, else null.
    *
    * Carried rather than folded into `message` because the two are read
    * differently: `message` is the sentence for the reader, and this is the
@@ -111,7 +111,7 @@ export function relayErrorMessage(code: string): string {
     case "git_failed":
       return "The runner's version control refused the command.";
     case "already_running":
-      // §18.12: the hub handed this run to the runner itself, because nobody
+      // The hub handed this run to the runner itself, because nobody
       // opened the exec channel for it in time. It is running; the surface
       // reads it back from the run rather than starting it again.
       return "This run is already being executed; its output is read back from the run.";
@@ -206,7 +206,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * awkward part of a wire format is reassembly across boundaries, and it should
  * be testable by calling a method with a string.
  *
- * §18.2 says a payload over 256 KB arrives as `chunk {part, parts, data}`
+ * The relay protocol says a payload over 256 KB arrives as `chunk {part, parts, data}`
  * frames "the receiver reassembles", and stops there: it does not say what
  * type the reassembled frame has. Two rules cover it, in this order. If the
  * chunk payload names one (`type`), that wins. Otherwise the type is inferred
@@ -262,7 +262,7 @@ export class RelayFrameAssembler {
       return [];
     }
     this.groups.delete(key);
-    // Parts are reassembled in index order, not arrival order: §18.2 numbers
+    // Parts are reassembled in index order, not arrival order: the relay protocol numbers
     // them so a receiver does not have to trust the ordering of the socket.
     let joined = "";
     for (let index = 1; index <= parts; index += 1) joined += group.received.get(index) ?? "";
@@ -286,7 +286,7 @@ export class RelayFrameAssembler {
 }
 
 /**
- * Which answer a reassembled payload is, from the fields §18.4 and §18.12 give
+ * Which answer a reassembled payload is, from the fields the Files contract and the project actions contract give
  * it.
  *
  * The channel has to be asked, because the two channels disagree about one
@@ -303,7 +303,7 @@ export function inferChunkedType(payload: unknown, channel?: string): string {
     // else on the channel is big enough to be chunked: an `opened` is two
     // numbers and an `exit` is one. Without this branch a chunked span would
     // fall through to the files rules and be reassembled as `content`, which
-    // is the same collision §18.12 had to name for `exec`.
+    // is the same collision the project actions contract had to name for `exec`.
     if (!isRecord(payload)) return "output";
     if (typeof payload.code === "string") return "error";
     return "output";
@@ -397,11 +397,11 @@ export interface WorkspaceRelay {
   /**
    * Asks the runner to watch a path.
    *
-   * Returns nothing on purpose. §18.4 answers a `watch` with `changed` frames
+   * Returns nothing on purpose. The Files contract answers a `watch` with `changed` frames
    * or with an `unsupported` error and names no acknowledgement, so there is
    * no event a promise could honestly settle on — a runner that supports
    * watching and sees no change is indistinguishable from one that is slow.
-   * `onUnavailable` is the cue §18.4 does name: the client falls back to
+   * `onUnavailable` is the cue the Files contract does name: the client falls back to
    * refreshing on focus.
    */
   watch(
@@ -410,7 +410,7 @@ export interface WorkspaceRelay {
     onUnavailable?: (error: RelayError) => void,
   ): void;
 
-  // The git channel (§18.12). Three requests, three answers, no streaming
+  // The git channel. Three requests, three answers, no streaming
   // state of their own: each is one round trip on a stream allocated exactly
   // the way a files request allocates one.
   gitStatus(): Promise<GitStatusPayload>;
@@ -421,7 +421,7 @@ export interface WorkspaceRelay {
   readonly state: RelayState;
 }
 
-/** §18.2's ack cadence: whichever of the two comes first. */
+/** The relay protocol's ack cadence: whichever of the two comes first. */
 const ACK_THRESHOLD = 32;
 const ACK_INTERVAL_MS = 1_000;
 
@@ -455,7 +455,7 @@ export function createWorkspaceRelay(options: WorkspaceRelayOptions): WorkspaceR
   let streamId: string | null = null;
   /** True between sending the first request and learning the stream id. */
   let allocating = false;
-  /** Outbound `seq`, per §18.2 per stream per direction, from 1. */
+  /** Outbound `seq`, per the relay protocol per stream per direction, from 1. */
   let outboundSeq = 0;
   /** The highest inbound `seq` seen, which is what `resume` replays from. */
   let inboundSeq = 0;
@@ -521,7 +521,7 @@ export function createWorkspaceRelay(options: WorkspaceRelayOptions): WorkspaceR
       drainQueue();
       return;
     }
-    // The hub names the failing request's `seq` where it can (§18.4). Where it
+    // The hub names the failing request's `seq` where it can. Where it
     // cannot, the error falls to the oldest request that is actually waiting
     // for an answer — never to a `watch`, which has none to wait for.
     const index =
@@ -539,7 +539,7 @@ export function createWorkspaceRelay(options: WorkspaceRelayOptions): WorkspaceR
   /**
    * The stream is gone for good. Everything waiting is failed and the client
    * goes back to having no stream, so the next request allocates a fresh one
-   * rather than resuming a stream the hub has already forgotten (§18.2).
+   * rather than resuming a stream the hub has already forgotten.
    */
   function restart(error: RelayError): void {
     streamId = null;
@@ -555,7 +555,7 @@ export function createWorkspaceRelay(options: WorkspaceRelayOptions): WorkspaceR
 
   function onFrame(frame: RelayFrame): void {
     if (frame.channel !== channel) return;
-    // The first answer names the stream every later request reuses (§18.2).
+    // The first answer names the stream every later request reuses.
     if (streamId === null && frame.stream !== undefined) {
       streamId = frame.stream;
       allocating = false;
@@ -604,7 +604,7 @@ export function createWorkspaceRelay(options: WorkspaceRelayOptions): WorkspaceR
         settleError(frame.payload);
         return;
       default:
-        // §18.2: an unknown type is dropped rather than acted on.
+        // An unknown type is dropped rather than acted on.
         return;
     }
   }
@@ -635,7 +635,7 @@ export function createWorkspaceRelay(options: WorkspaceRelayOptions): WorkspaceR
           onOpen: () => {
             state = "open";
             if (resumeStream !== null) {
-              // A reconnect resumes rather than re-opens: §18.2 gives 60
+              // A reconnect resumes rather than re-opens: the relay protocol gives 60
               // seconds and a replay buffer, and re-listing every open
               // directory would be both slower and visibly different.
               resuming = true;
@@ -687,7 +687,7 @@ export function createWorkspaceRelay(options: WorkspaceRelayOptions): WorkspaceR
   interface RequestOptions {
     /**
      * Settle the promise as soon as the frame is on the wire. For `watch`,
-     * which §18.4 gives no acknowledgement to: there is nothing to wait for,
+     * which the Files contract gives no acknowledgement to: there is nothing to wait for,
      * and a failure arrives later through `onError` instead.
      */
     readonly resolveOnSend?: boolean;
@@ -724,7 +724,7 @@ export function createWorkspaceRelay(options: WorkspaceRelayOptions): WorkspaceR
           JSON.stringify({
             channel,
             // The very first request carries no `stream`: the hub allocates
-            // one and names it on the answer (§18.2).
+            // one and names it on the answer.
             ...(streamId === null ? {} : { stream: streamId }),
             type,
             seq,
@@ -763,7 +763,7 @@ export function createWorkspaceRelay(options: WorkspaceRelayOptions): WorkspaceR
       }),
     gitStatus: () => request<GitStatusPayload>("status", "status", {}),
     gitCommit: (message) => request<GitCommittedPayload>("commit", "committed", { message }),
-    // No payload: §18.12's push takes none. The branch and its remote are the
+    // No payload: the project actions contract's push takes none. The branch and its remote are the
     // worktree's own, and naming them here would let a client push somewhere
     // the status it just read does not describe.
     gitPush: () => request<GitPushedPayload>("push", "pushed", {}),
@@ -772,7 +772,7 @@ export function createWorkspaceRelay(options: WorkspaceRelayOptions): WorkspaceR
       void request<void>("watch", "watched", { path }, {
         resolveOnSend: true,
         onError: (error) => {
-          // §18.4: an `unsupported` answer is the cue to stop expecting
+          // An `unsupported` answer is the cue to stop expecting
           // `changed` frames and refresh on focus instead.
           watchers.delete(onChanged);
           onUnavailable?.(error);
@@ -796,7 +796,7 @@ export function createWorkspaceRelay(options: WorkspaceRelayOptions): WorkspaceR
   };
 }
 
-/** Decodes a `content` payload to text, honouring §18.2's base64 encoding. */
+/** Decodes a `content` payload to text, honouring the relay protocol's base64 encoding. */
 export function decodeContent(payload: ContentPayload): string {
   if (payload.encoding !== "base64") return payload.data;
   try {

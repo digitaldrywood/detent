@@ -94,18 +94,18 @@ func (c IssueContract) ScheduledRepairBody() string {
 	if err != nil {
 		return ""
 	}
-	names := []string{"Acceptance criteria", "Must not break", "How we know it worked", "Invariants touched", "Safety regression"}
-	if len(c.Sections) != len(names) {
-		return ""
+	names := c.Sections
+	if len(names) == 0 {
+		names = DefaultIssueContract().Sections
 	}
 	sections := issueContractSections(template)
-	if len(sections) != len(names) {
+	if len(sections) != len(names) || len(markdownHeadings(template)) != len(names) {
 		return ""
 	}
 	var body strings.Builder
-	for i, name := range names {
+	for _, name := range names {
 		key := issueContractSectionKey(name)
-		if issueContractSectionKey(c.Sections[i]) != key || sections[key] == "" {
+		if sections[key] == "" {
 			return ""
 		}
 		fmt.Fprintf(&body, "## %s\n%s\n\n", name, sections[key])
@@ -114,28 +114,46 @@ func (c IssueContract) ScheduledRepairBody() string {
 }
 
 func (c IssueContract) ScheduledImportBody() string {
-	if _, _, authorized := c.ScheduledImportWorkflow(); !authorized {
+	if _, _, _, authorized := c.ScheduledImportWorkflow(); !authorized {
 		return ""
 	}
 	return c.ScheduledRepairBody()
 }
 
-var scheduledImportWorkflow = regexp.MustCompile("^New verified GitHub Actions CI repair reports from `(\\.github/workflows/[A-Za-z0-9_-][A-Za-z0-9_.-]*\\.ya?ml)` on `([A-Za-z0-9_][A-Za-z0-9_./-]*)` enter Todo with Urgent priority\\.$")
+var scheduledImportWorkflow = regexp.MustCompile("^New verified GitHub Actions CI repair reports from `(\\.github/workflows/[A-Za-z0-9_-][A-Za-z0-9_.-]*\\.ya?ml)` on `(release/v\\*|[A-Za-z0-9_][A-Za-z0-9_./-]*)` enter Todo with (Urgent|High) priority\\.$")
 
-func (c IssueContract) ScheduledImportWorkflow() (string, string, bool) {
+func (c IssueContract) ScheduledRepairWorkflow() (string, string, int, bool) {
+	if c.ScheduledRepairBody() == "" {
+		return "", "", 0, false
+	}
+	return c.scheduledWorkflow(true)
+}
+
+func (c IssueContract) ScheduledImportWorkflow() (string, string, int, bool) {
+	return c.scheduledWorkflow(false)
+}
+
+func (c IssueContract) scheduledWorkflow(allowLegacy bool) (string, string, int, bool) {
 	_, template, err := resolveAdmissionSection(c.Context, "Scheduled CI repair contract", "scheduled repair", BacklogAdmissionEffortFileWorkflow)
 	if err != nil {
-		return "", "", false
+		return "", "", 0, false
 	}
 	preamble, _, _ := strings.Cut(template, "### ")
 	preamble = strings.TrimSpace(preamble)
-	if preamble == "New verified GitHub Actions CI repair reports enter Todo with Urgent priority." {
-		return ".github/workflows/ci.yml", "", true
+	if preamble == "New verified GitHub Actions CI repair reports enter Todo with Urgent priority." || allowLegacy && preamble == "" {
+		return ".github/workflows/ci.yml", "", 0, true
+	}
+	if preamble == "New verified GitHub Actions CI repair reports enter Todo with High priority." {
+		return ".github/workflows/ci.yml", "", 1, true
 	}
 	if match := scheduledImportWorkflow.FindStringSubmatch(preamble); len(match) > 0 {
-		return match[1], match[2], true
+		priority := 0
+		if match[3] == "High" {
+			priority = 1
+		}
+		return match[1], match[2], priority, true
 	}
-	return "", "", false
+	return "", "", 0, false
 }
 
 func IssueContractSectionDigests(body string) map[string]string {
@@ -247,6 +265,25 @@ func issueContractSectionKey(section string) string {
 	return strings.ToLower(strings.TrimSuffix(strings.TrimSpace(section), ":"))
 }
 
+func (c IssueContract) RequiresHumanConfirmation() bool {
+	_, text, err := resolveAdmissionSection(c.Context, "Issue Contract", "issue contract", BacklogAdmissionEffortFileWorkflow)
+	if err != nil {
+		return true
+	}
+	inFence := false
+	for line := range strings.SplitSeq(text, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "```") || strings.HasPrefix(line, "~~~") {
+			inFence = !inFence
+			continue
+		}
+		if !inFence && line == "Agent-authored criteria do not require human confirmation." {
+			return false
+		}
+	}
+	return true
+}
+
 func (c IssueContract) Evaluate(issue connector.Issue) IssueContractEvaluation {
 	if len(c.Sections) == 0 {
 		c.Sections = DefaultIssueContract().Sections
@@ -256,10 +293,14 @@ func (c IssueContract) Evaluate(issue connector.Issue) IssueContractEvaluation {
 	_, machineOrigin := issueorigin.Parse(issue.Description)
 	machine := machineOrigin || strings.HasSuffix(strings.ToLower(issue.AuthorID), "[bot]")
 	result := IssueContractEvaluation{}
+	requiresConfirmation := c.RequiresHumanConfirmation()
 	for _, section := range c.Sections {
 		key := issueContractSectionKey(section)
 		if sections[key] == "" {
 			result.Missing = append(result.Missing, section)
+			continue
+		}
+		if !requiresConfirmation {
 			continue
 		}
 		if issue.IssueContract != nil {

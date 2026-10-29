@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"testing/synctest"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/attachment"
@@ -384,185 +385,188 @@ func exerciseAttachmentMCPOperations(t *testing.T, f entryFixture, store *spaces
 
 func TestAttachmentEntryKeyUploads(t *testing.T) {
 	t.Parallel()
-	f := newEntryFixture(t)
-	store := newSpacesFixture(t, false)
-	storage, err := attachment.NewStorage(t.Context(), store.config(), store.transport)
-	if err != nil {
-		t.Fatal(err)
-	}
-	f.service.attachments = storage
-	owner := newBrowser(t, f.service.Handler())
-	owner.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
-	project := attachmentProject(t, owner, "org_alpha")
-	approveEntryFixturePolicy(t, owner, "org_alpha", project)
-	anonymous := newBrowser(t, f.service.Handler())
-	var pixels bytes.Buffer
-	if err := png.Encode(&pixels, image.NewRGBA(image.Rect(0, 0, 2, 2))); err != nil {
-		t.Fatal(err)
-	}
-	organizations := []keyOrganization{{OrganizationID: "org_alpha", ProjectContext: apikey.ProjectContext{Access: "project", Projects: []string{project}}}}
-	personal := createTestAccessKey(t, owner, "global", nil, "")
-	scopedPersonal := createTestAccessKey(t, owner, "project", organizations, "")
-	service := createTestAccessKey(t, owner, "selected", organizations, "org_alpha")
-	readOnlyService := createTestAccessKey(t, owner, "selected", organizations, "org_alpha")
-	_, page := owner.get("/organizations/org_alpha/organization")
-	other := owner.do(http.MethodPost, "/organizations/org_alpha/projects", url.Values{"name": {"Other evidence project"}, "grant_access": {"true"}, "csrf": {csrfFrom(t, page)}}, nil)
-	if other.StatusCode != http.StatusSeeOther {
-		t.Fatalf("other project=%d", other.StatusCode)
-	}
-	otherProject := strings.TrimPrefix(other.Header.Get("Location"), "/organizations/org_alpha/projects/")
-	otherOrganizations := []keyOrganization{{OrganizationID: "org_alpha", ProjectContext: apikey.ProjectContext{Access: "project", Projects: []string{otherProject}}}}
-	otherPersonal := createTestAccessKey(t, owner, "project", otherOrganizations, "")
-	otherService := createTestAccessKey(t, owner, "selected", otherOrganizations, "org_alpha")
-	readOnly := createTestAccessKey(t, owner, "project", organizations, "")
-	if _, err := f.service.auth.store.db.ExecContext(t.Context(), "UPDATE access_keys SET permission='read' WHERE id IN (?,?)", readOnly.ID, readOnlyService.ID); err != nil {
-		t.Fatal(err)
-	}
-	for _, credential := range []struct {
-		name   string
-		key    accessKey
-		denied bool
-	}{
-		{"personal global", personal, false},
-		{"personal project", scopedPersonal, false},
-		{"service", service, false},
-		{"read only personal", readOnly, true},
-		{"read only service", readOnlyService, true},
-		{"other project personal", otherPersonal, true},
-		{"other project service", otherService, true},
-	} {
-		for _, route := range []string{"multi-org MCP", "per-org MCP", "CLI root", "CLI per-org", "header API"} {
-			t.Run(credential.name+"/"+route, func(t *testing.T) {
-				requestID := strings.ReplaceAll(credential.name+"-"+route, " ", "-")
-				before := len(store.requests())
-				var uploaded attachment.Metadata
-				var uploadErr error
-				var failed bool
-				switch route {
-				case "multi-org MCP", "per-org MCP":
-					path := "/organizations/org_alpha/mcp"
-					args := map[string]any{"project_id": project, "request_id": requestID, "name": "evidence.png", "content_type": "image/png", "content_base64": base64.StdEncoding.EncodeToString(pixels.Bytes())}
-					if route == "multi-org MCP" {
-						path = "/mcp"
-						args["organization_id"] = "org_alpha"
-					}
-					call := entryMCPClient(t, anonymous, credential.key.Token, mcp.ProtocolVersion, path)
-					raw, refused := call(operatortool.UploadAttachment, args)
-					failed = refused
-					if !failed {
-						uploadErr = json.Unmarshal(raw, &uploaded)
-					}
-				case "header API":
-					response := attachmentRequest(t, anonymous, http.MethodPost, "/api/v2/projects/"+project+"/attachments", bytes.NewReader(pixels.Bytes()), map[string]string{"Authorization": "Bearer " + credential.key.Token, "X-Detent-Organization": "org_alpha", "Content-Type": "image/png", "X-Attachment-Name": "evidence.png"})
-					failed = response.Code != http.StatusCreated
-					if !failed {
-						uploadErr = json.Unmarshal(response.Body.Bytes(), &uploaded)
-					}
-				default:
-					base := testPublicURL
-					if route == "CLI per-org" {
-						base += "/organizations/org_alpha"
-					}
-					client, err := hubclient.New(hubclient.Config{URL: base, TokenSource: func() string { return credential.key.Token }, HTTPClient: &http.Client{Transport: handlerTransport{handler: f.service.Handler()}}})
-					if err != nil {
-						t.Fatal(err)
-					}
-					native, err := client.Native("org_alpha", tracker.ProjectID(project))
-					if err != nil {
-						t.Fatal(err)
-					}
-					uploaded, uploadErr = native.UploadAttachment(t.Context(), bytes.NewReader(pixels.Bytes()), "evidence.png", "image/png")
-					failed = uploadErr != nil
-				}
-				if credential.denied {
-					if !failed || len(store.requests()) != before {
-						t.Fatalf("unauthorized upload refused=%v storage requests=%d want=%d", failed, len(store.requests()), before)
-					}
-					return
-				}
-				if failed || uploadErr != nil || uploaded.ID == "" || uploaded.Reference != uploaded.Markdown("org_alpha") || uploaded.Validate() != nil {
-					t.Fatalf("upload failed=%v err=%v metadata=%+v", failed, uploadErr, uploaded)
-				}
-				objectKey, err := attachment.Key("org_alpha", uploaded.ID)
-				if err != nil {
-					t.Fatal(err)
-				}
-				store.mu.Lock()
-				stored := bytes.Equal(store.objects[objectKey].content, pixels.Bytes())
-				store.mu.Unlock()
-				if !stored {
-					t.Fatal("uploaded object does not contain the PNG")
-				}
-				readCall := attachmentMCPClient(t, anonymous, credential.key.Token, mcp.ProtocolVersion)
-				readArguments := map[string]any{"project_id": project, "attachment_id": uploaded.ID}
-				if route == "multi-org MCP" {
-					readCall = entryMCPClient(t, anonymous, credential.key.Token, mcp.ProtocolVersion, "/mcp")
-					readArguments["organization_id"] = "org_alpha"
-				}
-				for _, name := range []string{operatortool.ReadAttachmentMetadata, operatortool.ReadAttachment} {
-					raw, refused := readCall(name, readArguments)
-					var result struct {
-						ID            string              `json:"id"`
-						Metadata      attachment.Metadata `json:"metadata"`
-						ContentBase64 string              `json:"content_base64"`
-					}
-					if refused || json.Unmarshal(raw, &result) != nil {
-						t.Fatalf("%s=%s refused=%v", name, raw, refused)
-					}
-					if name == operatortool.ReadAttachmentMetadata && result.ID != uploaded.ID || name == operatortool.ReadAttachment && (result.Metadata.ID != uploaded.ID || result.ContentBase64 != base64.StdEncoding.EncodeToString(pixels.Bytes())) {
-						t.Fatalf("%s returned different attachment content: %s", name, raw)
-					}
-				}
-				call := entryMCPClient(t, anonymous, credential.key.Token, mcp.ProtocolVersion, "/mcp")
-				draft := map[string]any{"organization_id": "org_alpha", "project_id": project, "request_id": requestID + "-issue", "title": "Attachment evidence", "description": uploaded.Reference + "\n\n" + issueContractTestSections}
-				raw, failed := call(operatortool.FileIssue, draft)
-				var challenge struct {
-					Data nativeDuplicateFixture `json:"data"`
-				}
-				if failed || json.Unmarshal(raw, &challenge) != nil {
-					t.Fatalf("file fixture=%s failed=%v", raw, failed)
-				}
-				if challenge.Data.ChallengeToken != "" {
-					var numbers []int
-					for _, match := range challenge.Data.PossibleDuplicates {
-						numbers = append(numbers, match.Number)
-					}
-					draft["challenge_token"], draft["not_duplicate_of"] = challenge.Data.ChallengeToken, numbers
-					raw, failed = call(operatortool.FileIssue, draft)
-				}
-				var issue struct {
-					Data tracker.NativeIssue `json:"data"`
-				}
-				if failed || json.Unmarshal(raw, &issue) != nil || issue.Data.WorkItemID == "" || issue.Data.Body != uploaded.Reference+"\n\n"+issueContractTestSections {
-					t.Fatalf("file_issue=%s failed=%v", raw, failed)
-				}
-				raw, failed = call(operatortool.AddComment, map[string]any{"organization_id": "org_alpha", "project_id": project, "request_id": requestID + "-comment", "identifier": string(issue.Data.WorkItemID), "body": uploaded.Reference})
-				var comment struct {
-					Data tracker.NativeComment `json:"data"`
-				}
-				if failed || json.Unmarshal(raw, &comment) != nil || comment.Data.Body != uploaded.Reference {
-					t.Fatalf("add_comment=%s failed=%v", raw, failed)
-				}
-				for _, body := range []string{issue.Data.Body, comment.Data.Body} {
-					refs := attachment.References(body, "org_alpha", project)
-					found := false
-					for _, ref := range refs {
-						if ref.ID != uploaded.ID || !ref.Image {
-							continue
-						}
-						read := attachmentRequest(t, owner, http.MethodGet, ref.URL, nil, nil)
-						if read.Code != http.StatusOK || !bytes.Equal(read.Body.Bytes(), pixels.Bytes()) {
-							t.Fatalf("embedded PNG read=%d", read.Code)
-						}
-						found = true
-					}
-					if !found {
-						t.Fatalf("missing image reference in %s", body)
-					}
-				}
-			})
+	synctest.Test(t, func(t *testing.T) {
+		f := newEntryFixture(t)
+		store := newSpacesFixture(t, false)
+		storage, err := attachment.NewStorage(t.Context(), store.config(), store.transport)
+		if err != nil {
+			t.Fatal(err)
 		}
-	}
+		f.service.attachments = storage
+		owner := newBrowser(t, f.service.Handler())
+		owner.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
+		project := attachmentProject(t, owner, "org_alpha")
+		approveEntryFixturePolicy(t, owner, "org_alpha", project)
+		anonymous := newBrowser(t, f.service.Handler())
+		var pixels bytes.Buffer
+		if err := png.Encode(&pixels, image.NewRGBA(image.Rect(0, 0, 2, 2))); err != nil {
+			t.Fatal(err)
+		}
+		organizations := []keyOrganization{{OrganizationID: "org_alpha", ProjectContext: apikey.ProjectContext{Access: "project", Projects: []string{project}}}}
+		personal := createTestAccessKey(t, owner, "global", nil, "")
+		scopedPersonal := createTestAccessKey(t, owner, "project", organizations, "")
+		service := createTestAccessKey(t, owner, "selected", organizations, "org_alpha")
+		readOnlyService := createTestAccessKey(t, owner, "selected", organizations, "org_alpha")
+		_, page := owner.get("/organizations/org_alpha/organization")
+		other := owner.do(http.MethodPost, "/organizations/org_alpha/projects", url.Values{"name": {"Other evidence project"}, "grant_access": {"true"}, "csrf": {csrfFrom(t, page)}}, nil)
+		if other.StatusCode != http.StatusSeeOther {
+			t.Fatalf("other project=%d", other.StatusCode)
+		}
+		otherProject := strings.TrimPrefix(other.Header.Get("Location"), "/organizations/org_alpha/projects/")
+		otherOrganizations := []keyOrganization{{OrganizationID: "org_alpha", ProjectContext: apikey.ProjectContext{Access: "project", Projects: []string{otherProject}}}}
+		otherPersonal := createTestAccessKey(t, owner, "project", otherOrganizations, "")
+		otherService := createTestAccessKey(t, owner, "selected", otherOrganizations, "org_alpha")
+		readOnly := createTestAccessKey(t, owner, "project", organizations, "")
+		if _, err := f.service.auth.store.db.ExecContext(t.Context(), "UPDATE access_keys SET permission='read' WHERE id IN (?,?)", readOnly.ID, readOnlyService.ID); err != nil {
+			t.Fatal(err)
+		}
+		for _, credential := range []struct {
+			name   string
+			key    accessKey
+			denied bool
+		}{
+			{"personal global", personal, false},
+			{"personal project", scopedPersonal, false},
+			{"service", service, false},
+			{"read only personal", readOnly, true},
+			{"read only service", readOnlyService, true},
+			{"other project personal", otherPersonal, true},
+			{"other project service", otherService, true},
+		} {
+			for _, route := range []string{"multi-org MCP", "per-org MCP", "CLI root", "CLI per-org", "header API"} {
+				t.Logf("credential=%s route=%s", credential.name, route)
+				func() {
+					requestID := strings.ReplaceAll(credential.name+"-"+route, " ", "-")
+					before := len(store.requests())
+					var uploaded attachment.Metadata
+					var uploadErr error
+					var failed bool
+					switch route {
+					case "multi-org MCP", "per-org MCP":
+						path := "/organizations/org_alpha/mcp"
+						args := map[string]any{"project_id": project, "request_id": requestID, "name": "evidence.png", "content_type": "image/png", "content_base64": base64.StdEncoding.EncodeToString(pixels.Bytes())}
+						if route == "multi-org MCP" {
+							path = "/mcp"
+							args["organization_id"] = "org_alpha"
+						}
+						call := entryMCPClient(t, anonymous, credential.key.Token, mcp.ProtocolVersion, path)
+						raw, refused := call(operatortool.UploadAttachment, args)
+						failed = refused
+						if !failed {
+							uploadErr = json.Unmarshal(raw, &uploaded)
+						}
+					case "header API":
+						response := attachmentRequest(t, anonymous, http.MethodPost, "/api/v2/projects/"+project+"/attachments", bytes.NewReader(pixels.Bytes()), map[string]string{"Authorization": "Bearer " + credential.key.Token, "X-Detent-Organization": "org_alpha", "Content-Type": "image/png", "X-Attachment-Name": "evidence.png"})
+						failed = response.Code != http.StatusCreated
+						if !failed {
+							uploadErr = json.Unmarshal(response.Body.Bytes(), &uploaded)
+						}
+					default:
+						base := testPublicURL
+						if route == "CLI per-org" {
+							base += "/organizations/org_alpha"
+						}
+						client, err := hubclient.New(hubclient.Config{URL: base, TokenSource: func() string { return credential.key.Token }, HTTPClient: &http.Client{Transport: handlerTransport{handler: f.service.Handler()}}})
+						if err != nil {
+							t.Fatal(err)
+						}
+						native, err := client.Native("org_alpha", tracker.ProjectID(project))
+						if err != nil {
+							t.Fatal(err)
+						}
+						uploaded, uploadErr = native.UploadAttachment(t.Context(), bytes.NewReader(pixels.Bytes()), "evidence.png", "image/png")
+						failed = uploadErr != nil
+					}
+					if credential.denied {
+						if !failed || len(store.requests()) != before {
+							t.Fatalf("unauthorized upload refused=%v storage requests=%d want=%d", failed, len(store.requests()), before)
+						}
+						return
+					}
+					if failed || uploadErr != nil || uploaded.ID == "" || uploaded.Reference != uploaded.Markdown("org_alpha") || uploaded.Validate() != nil {
+						t.Fatalf("upload failed=%v err=%v metadata=%+v", failed, uploadErr, uploaded)
+					}
+					objectKey, err := attachment.Key("org_alpha", uploaded.ID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					store.mu.Lock()
+					stored := bytes.Equal(store.objects[objectKey].content, pixels.Bytes())
+					store.mu.Unlock()
+					if !stored {
+						t.Fatal("uploaded object does not contain the PNG")
+					}
+					readCall := attachmentMCPClient(t, anonymous, credential.key.Token, mcp.ProtocolVersion)
+					readArguments := map[string]any{"project_id": project, "attachment_id": uploaded.ID}
+					if route == "multi-org MCP" {
+						readCall = entryMCPClient(t, anonymous, credential.key.Token, mcp.ProtocolVersion, "/mcp")
+						readArguments["organization_id"] = "org_alpha"
+					}
+					for _, name := range []string{operatortool.ReadAttachmentMetadata, operatortool.ReadAttachment} {
+						raw, refused := readCall(name, readArguments)
+						var result struct {
+							ID            string              `json:"id"`
+							Metadata      attachment.Metadata `json:"metadata"`
+							ContentBase64 string              `json:"content_base64"`
+						}
+						if refused || json.Unmarshal(raw, &result) != nil {
+							t.Fatalf("%s=%s refused=%v", name, raw, refused)
+						}
+						if name == operatortool.ReadAttachmentMetadata && result.ID != uploaded.ID || name == operatortool.ReadAttachment && (result.Metadata.ID != uploaded.ID || result.ContentBase64 != base64.StdEncoding.EncodeToString(pixels.Bytes())) {
+							t.Fatalf("%s returned different attachment content: %s", name, raw)
+						}
+					}
+					call := entryMCPClient(t, anonymous, credential.key.Token, mcp.ProtocolVersion, "/mcp")
+					draft := map[string]any{"organization_id": "org_alpha", "project_id": project, "request_id": requestID + "-issue", "title": "Attachment evidence", "description": uploaded.Reference + "\n\n" + issueContractTestSections}
+					raw, failed := call(operatortool.FileIssue, draft)
+					var challenge struct {
+						Data nativeDuplicateFixture `json:"data"`
+					}
+					if failed || json.Unmarshal(raw, &challenge) != nil {
+						t.Fatalf("file fixture=%s failed=%v", raw, failed)
+					}
+					if challenge.Data.ChallengeToken != "" {
+						var numbers []int
+						for _, match := range challenge.Data.PossibleDuplicates {
+							numbers = append(numbers, match.Number)
+						}
+						draft["challenge_token"], draft["not_duplicate_of"] = challenge.Data.ChallengeToken, numbers
+						raw, failed = call(operatortool.FileIssue, draft)
+					}
+					var issue struct {
+						Data tracker.NativeIssue `json:"data"`
+					}
+					if failed || json.Unmarshal(raw, &issue) != nil || issue.Data.WorkItemID == "" || issue.Data.Body != uploaded.Reference+"\n\n"+issueContractTestSections {
+						t.Fatalf("file_issue=%s failed=%v", raw, failed)
+					}
+					raw, failed = call(operatortool.AddComment, map[string]any{"organization_id": "org_alpha", "project_id": project, "request_id": requestID + "-comment", "identifier": string(issue.Data.WorkItemID), "body": uploaded.Reference})
+					var comment struct {
+						Data tracker.NativeComment `json:"data"`
+					}
+					if failed || json.Unmarshal(raw, &comment) != nil || comment.Data.Body != uploaded.Reference {
+						t.Fatalf("add_comment=%s failed=%v", raw, failed)
+					}
+					for _, body := range []string{issue.Data.Body, comment.Data.Body} {
+						refs := attachment.References(body, "org_alpha", project)
+						found := false
+						for _, ref := range refs {
+							if ref.ID != uploaded.ID || !ref.Image {
+								continue
+							}
+							read := attachmentRequest(t, owner, http.MethodGet, ref.URL, nil, nil)
+							if read.Code != http.StatusOK || !bytes.Equal(read.Body.Bytes(), pixels.Bytes()) {
+								t.Fatalf("embedded PNG read=%d", read.Code)
+							}
+							found = true
+						}
+						if !found {
+							t.Fatalf("missing image reference in %s", body)
+						}
+					}
+				}()
+			}
+		}
+	})
 }
 
 func TestReporterAttachmentMCPRoundTrip(t *testing.T) {

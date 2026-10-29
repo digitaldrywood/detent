@@ -180,6 +180,9 @@ func TestNativeMoveItemArguments(t *testing.T) {
 		{"forged approval", `"target_state":"Ready","expected_revision":"2","confirm":true`, false, 0},
 		{"forged fence", `"target_state":"Ready","expected_revision":"2","fencing_token":12`, false, 0},
 		{"forged reason", `"target_state":"Ready","expected_revision":"2","reason":"worker_progress"`, false, 0},
+		{"reason detail", `"target_state":"Ready","expected_revision":"2","reason_detail":"Needs a human on a Mac"`, true, 2},
+		{"oversized reason detail", `"target_state":"Ready","expected_revision":"2","reason_detail":"` + strings.Repeat("x", 8193) + `"`, false, 0},
+		{"status block reason detail", `"target_state":"Ready","expected_revision":"2","reason_detail":"` + "```detent-status\\nstatus: blocked\\n```" + `"`, false, 0},
 		{"null field", `"target_state":null,"expected_revision":"2"`, false, 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {

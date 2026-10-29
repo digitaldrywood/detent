@@ -1,7 +1,10 @@
 package runtimeoutput
 
 import (
+	"fmt"
+	"math"
 	"regexp"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -55,34 +58,142 @@ func Truncate(value string, maxBytes int) Text {
 	return buffer.Text()
 }
 
-var diagnosticFailure = regexp.MustCompile(`(?m)^[\t ]*(?:panic:|fatal error:|--- FAIL:|FAIL(?:[\t ]|$)|WARNING: DATA RACE|AssertionError:)`)
+var diagnosticFailure = regexp.MustCompile(`(?m)^[\t ]*(?:` +
+	`panic:|fatal error:|--- FAIL:|FAIL(?:[\t ]|$)|WARNING: DATA RACE|AssertionError:|` +
+	`MIGRATION ORDERING CONFLICT DETECTED!|g?make(?:\[[0-9]+\])?:[\t ]+\*\*\*|` +
+	`[^\n]*check-fast-stage[^\n]*exit_status=[1-9][0-9]*(?:\b|$)|` +
+	`(?i:[^\n]*\berror(?:[\t ]+TS[0-9]+)?:|ERROR in\b|[^\n]*\[ERROR\]|` +
+	`(?:Type|Syntax|Reference|Range)Error:|npm (?:ERR!|error\b)|(?:pnpm )?ERR_PNPM_[A-Z_]+|ELIFECYCLE\b|` +
+	`[^\n]*(?:build|transform|compilation) failed\b|Failed to compile\b))`)
 
-// Diagnostic preserves the first failure and the command tail within a byte
-// budget. Both command capture and public receipts use it so an earlier bound
-// cannot discard the failure before a smaller public projection sees it.
+var diagnosticSummary = regexp.MustCompile(`^[\t ]*(?:--- FAIL|FAIL\t|panic:|fatal error:|test timed out|[^\s:]+:[0-9]+:[0-9]+:)`)
+
 func Diagnostic(value string, maxBytes int) (string, bool) {
 	value = ansi.Strip(strings.ToValidUTF8(value, "�"))
 	if maxBytes <= 0 || len(value) <= maxBytes {
 		return value, false
 	}
+	lines := strings.SplitAfter(value, "\n")
+	var failures []int
+	selected := make([]bool, len(lines))
+	timeout, running := false, false
+	previouslyDropped := 0
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if count, ok := strings.CutSuffix(strings.TrimPrefix(trimmed, "["), " failure lines dropped]"); ok && strings.HasPrefix(trimmed, "[") {
+			if n, err := strconv.Atoi(count); err == nil && n > 0 && n <= math.MaxInt-previouslyDropped-len(lines) {
+				previouslyDropped += n
+				selected[i] = true
+				continue
+			}
+		}
+		if running && (trimmed == "" || (line[0] != '\t' && line[0] != ' ')) {
+			running = false
+		}
+		if timeout && trimmed == "running tests:" {
+			running = true
+			timeout = false
+		}
+		if diagnosticSummary.MatchString(line) || diagnosticFailure.MatchString(line) || running {
+			if !strings.HasSuffix(line, "\n") {
+				lines[i] += "\n"
+			}
+			failures = append(failures, i)
+			selected[i] = true
+		}
+		if strings.Contains(line, "test timed out") {
+			timeout = true
+		}
+	}
+	if len(failures) == 0 {
+		return diagnosticContext(value, maxBytes), true
+	}
+	const marker = "[earlier output truncated]\n"
+	notice := ""
+	if previouslyDropped > 0 {
+		notice = fmt.Sprintf("[%d failure lines dropped]\n", previouslyDropped)
+	}
+	budget := maxBytes - len(marker) - len(notice)
+	total := 0
+	for _, i := range failures {
+		total += len(lines[i])
+	}
+	var output strings.Builder
+	if total > budget {
+		reserve := len(fmt.Sprintf("[%d failure lines dropped]\n", len(failures)+previouslyDropped))
+		remaining := maxBytes - reserve
+		dropped := previouslyDropped
+		for _, i := range failures {
+			if len(lines[i]) > remaining {
+				dropped++
+				continue
+			}
+			output.WriteString(lines[i])
+			remaining -= len(lines[i])
+		}
+		fmt.Fprintf(&output, "[%d failure lines dropped]\n", dropped)
+		return validPrefix(output.String(), maxBytes), true
+	}
+	for _, i := range failures {
+		output.WriteString(lines[i])
+	}
+	output.WriteString(notice)
+	output.WriteString(marker)
+	remaining := maxBytes - output.Len()
+	contextBudget := remaining / 2
+	perFailure := contextBudget / len(failures)
+	for _, i := range failures {
+		start, end := max(0, i-2), min(len(lines), i+8)
+		if i == failures[0] {
+			end = len(lines)
+		}
+		var context strings.Builder
+		for j := start; j < end && context.Len() < perFailure; j++ {
+			if !selected[j] {
+				if len(lines[j]) > perFailure-context.Len() {
+					break
+				}
+				context.WriteString(lines[j])
+			}
+		}
+		output.WriteString(context.String())
+	}
+	var tail strings.Builder
+	for i, line := range lines {
+		if !selected[i] {
+			tail.WriteString(line)
+		}
+	}
+	output.WriteString(validSuffix(tail.String(), maxBytes-output.Len()))
+	return output.String(), true
+}
+
+func diagnosticContext(value string, maxBytes int) string {
 	const earlier = "[earlier output truncated]\n"
 	const omitted = "\n[intervening output truncated]\n"
 	if maxBytes <= len(earlier)+len(omitted) {
-		return validSuffix(value, maxBytes), true
+		return validSuffix(value, maxBytes)
 	}
 	prefix := earlier
 	if failure := diagnosticFailure.FindStringIndex(value); failure != nil {
 		start := failure[0]
+		for range 2 {
+			previous := strings.LastIndexByte(value[:max(0, start-1)], '\n') + 1
+			if failure[0]-previous > min(512, maxBytes/8) {
+				break
+			}
+			start = previous
+		}
 		if start == 0 {
 			prefix = ""
 		}
 		if len(value)-start <= maxBytes-len(prefix) {
-			return prefix + value[start:], true
+			return prefix + validSuffix(value, maxBytes-len(prefix))
 		}
 		prefixLimit := (maxBytes - len(prefix) - len(omitted)) / 2
 		prefix += validPrefix(value[start:], prefixLimit) + omitted
 	}
-	return prefix + validSuffix(value, maxBytes-len(prefix)), true
+	return prefix + validSuffix(value, maxBytes-len(prefix))
 }
 
 func (p Policy) Apply(value string) Text {

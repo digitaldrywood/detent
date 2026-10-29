@@ -91,6 +91,7 @@ func TestWorkspaceOperatorFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	root := t.TempDir()
+	laneGit(t, root, "init", "-q", ".")
 	for _, directory := range []string{"empty", "pages"} {
 		if err := os.Mkdir(filepath.Join(root, directory), 0700); err != nil {
 			t.Fatal(err)

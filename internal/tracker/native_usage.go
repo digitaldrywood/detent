@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// Per-attempt usage (decisions section 17.5). A runner reports what a turn
+// Per-attempt usage. A runner reports what a turn
 // spent; the execution accumulates the attempt's running total and the hub
 // stores it per day, provider and model.
 

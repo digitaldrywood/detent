@@ -186,7 +186,7 @@ export function shouldOpenPullRequestExternally(
  * renders to do what it already does: follow its `href` in a new tab, to the
  * change on its own host. That is the same answer `useOpenPrLink` above gives,
  * and the same one upstream gives for a repository nothing here is checked out
- * from (decisions.md §16, §18.6).
+ * from.
  *
  * The parsers are still live: the copied file uses them to decide whether a
  * link *is* a change request, which is what decorates it and offers to link it

@@ -26,7 +26,7 @@ import {
 } from "../../contracts/diagnostics.ts";
 import { useAccountApi, useAccountBootstrap } from "../account/context.ts";
 import { getQueryData, scopeOf, setQueryData, useQuery } from "../lib/queryCache.ts";
-import { DIAGNOSTICS_STALE_MS, diagnosticsKey, readDiagnostics } from "./diagnosticsQuery.ts";
+import { DIAGNOSTICS_STALE_MS, diagnosticsKey, readDiagnostics, diagnosticsFleetKey, readDiagnosticsFleet, diagnosticsUpdatesKey, readDiagnosticsUpdates } from "./diagnosticsQuery.ts";
 import { usePageTitle } from "../pageTitle.ts";
 import { useHealthFindings } from "./healthFindings.tsx";
 import { CapacityChart } from "./CapacityChart.tsx";
@@ -70,7 +70,6 @@ export function DiagnosticsRoute(): React.ReactElement {
   const bootstrap = useAccountBootstrap();
   const sharedFindings = useHealthFindings();
   const [range, setRange] = useState<Window>("24h");
-  const [revision, setRevision] = useState(0);
   const [askedFinding, setAskedFinding] = useState<DiagnosticFinding | null>(null);
   const [askFocusRequest, setAskFocusRequest] = useState(0);
   const projects = React.useMemo(() => (bootstrap?.projects ?? [])
@@ -79,6 +78,8 @@ export function DiagnosticsRoute(): React.ReactElement {
   const projectsKey = projects.join(",");
   const reportQuery = useQuery(diagnosticsKey(api, range), readDiagnostics(api, range),
     { staleTime: DIAGNOSTICS_STALE_MS, keepPreviousIn: String(scopeOf(api)) });
+  const fleetQuery = useQuery(diagnosticsFleetKey(api), readDiagnosticsFleet(api), { staleTime: DIAGNOSTICS_STALE_MS });
+  const updatesQuery = useQuery(diagnosticsUpdatesKey(api), readDiagnosticsUpdates(api), { staleTime: DIAGNOSTICS_STALE_MS });
   const findingsKey = React.useMemo(() => ["diagnostics-findings", scopeOf(api), projectsKey] as const, [api, projectsKey]);
   const [findings, setFindings] = useState<{ readonly key: typeof findingsKey; readonly value: FindingsState }>(() =>
     ({ key: findingsKey, value: getQueryData<FindingsState>(findingsKey) ?? EMPTY_FINDINGS }));
@@ -86,35 +87,29 @@ export function DiagnosticsRoute(): React.ReactElement {
     if (findings.key === findingsKey && findings.value !== EMPTY_FINDINGS) setQueryData(findingsKey, findings.value);
   }, [findings, findingsKey]);
   const findingsState = findings.key === findingsKey ? findings.value : getQueryData<FindingsState>(findingsKey) ?? EMPTY_FINDINGS;
-  const readScope = `${projectsKey}:${revision}`;
-  const previousScope = React.useRef("");
   useEffect(() => {
     const read = sharedFindings.read;
     if (read === null && !sharedFindings.error) return;
-    const live = previousScope.current === readScope;
-    previousScope.current = readScope;
     const nativeProjects = new Set(projects);
     const rows = (read === null ? [] : findingsFromRead(read)).filter((finding) => nativeProjects.has(finding.subject.project_id ?? ""));
     setFindings((previous) => {
       const prior = previous.key === findingsKey ? previous.value : EMPTY_FINDINGS;
       if (sharedFindings.error && read === null) return { key: findingsKey, value: { ...prior, findingsError: "Unable to refresh findings. Any findings below are from the last successful read." } };
-      const updates = new Map(rows.map((finding) => [finding.id, finding]));
-      const retained = live || sharedFindings.error ? (prior.findings ?? []).map((finding) => updates.get(finding.id) ?? finding) : [];
-      const ids = new Set(retained.map((finding) => finding.id));
       return { key: findingsKey, value: {
-        findings: read?.last_tick_at == null ? null : [...retained, ...rows.filter((finding) => finding.resolved_at == null && !ids.has(finding.id))],
+        findings: read?.last_tick_at == null ? null : rows.filter((finding) => finding.resolved_at == null),
         detectorTick: read?.last_tick_at ?? null,
         findingsError: sharedFindings.error ? "Unable to refresh findings. Any findings below are from the last successful read." : null,
       } };
     });
-  }, [sharedFindings.read, sharedFindings.error, findingsKey, readScope, projects]);
+  }, [sharedFindings.read, sharedFindings.error, findingsKey, projects]);
 
   const state = {
-    report: reportQuery.data?.report ?? null,
-    runners: reportQuery.data?.runners ?? null,
-    appUpdates: reportQuery.data?.appUpdates ?? null,
+    report: reportQuery.data ?? null,
+    runners: fleetQuery.data?.runners ?? null,
+    appUpdates: updatesQuery.data ?? null,
     ...findingsState,
     pending: reportQuery.pending,
+    fleetPending: fleetQuery.pending,
     error: reportQuery.error !== null && reportQuery.data === undefined ? "Diagnostics are temporarily unavailable." : null,
   };
   const projectFor = (finding: DiagnosticFinding) =>
@@ -125,13 +120,13 @@ export function DiagnosticsRoute(): React.ReactElement {
       {...state}
       scope={bootstrap?.organization.name ?? "This organization"}
       projects={bootstrap?.projects ?? []}
-      canManage={bootstrap?.actor.can_manage ?? false}
       range={range}
       onRangeChange={setRange}
       onRefresh={() => {
         void reportQuery.refresh();
+        void fleetQuery.refresh();
+        void updatesQuery.refresh();
         sharedFindings.refresh();
-        setRevision((value) => value + 1);
       }}
       onAsk={(finding) => {
         setAskedFinding(finding);
@@ -182,20 +177,19 @@ export function DiagnosticsView({
   findings: findingRows = report?.findings ?? null,
   detectorTick = report?.detector_tick ?? null,
   pending,
+  fleetPending = false,
   error,
   scope,
   range,
   onRangeChange,
   onRefresh,
   projects = [],
-  canManage = false,
   findingsError = null,
   onAsk,
   canAsk,
   panelControls,
 }: {
   readonly projects?: readonly AccountProject[];
-  readonly canManage?: boolean;
   readonly findingsError?: string | null;
   readonly report: DiagnosticsReport | null;
   readonly appUpdates?: UpdatesReport | null;
@@ -203,6 +197,7 @@ export function DiagnosticsView({
   readonly findings?: readonly DiagnosticFinding[] | null;
   readonly detectorTick?: string | null;
   readonly pending: boolean;
+  readonly fleetPending?: boolean;
   readonly error: string | null;
   readonly scope: string;
   readonly range: Window;
@@ -212,8 +207,8 @@ export function DiagnosticsView({
   readonly canAsk?: (finding: DiagnosticFinding) => boolean;
   readonly panelControls?: React.ReactNode;
 }): React.ReactElement {
-  const findings = findingRows === null ? null : orderedFindings(findingRows);
-  const problems = runnerFindings(runners ?? [], projects, canManage);
+  const findings = findingRows === null ? null : orderedFindings(findingRows.filter((finding) => finding.resolved_at == null));
+  const problems = runnerFindings(runners ?? [], projects);
   const refusals = report?.refused;
   const totalRefused = refusals?.reduce((sum, row) => sum + row.count, 0);
   const conflictRefused =
@@ -262,6 +257,7 @@ export function DiagnosticsView({
       </WorkspacePageHeader>
       <ScrollArea className="min-h-0 flex-1">
         <WorkspacePageContainer width="wide">
+          {runners !== null ? <CapacityPanel runners={runners} appUpdates={appUpdates} /> : !fleetPending ? <Section title="Capacity right now"><Unavailable>Runner capacity is unavailable. Refresh to try again.</Unavailable></Section> : null}
           {pending ? (
             <div
               aria-label="Loading diagnostics"
@@ -273,7 +269,6 @@ export function DiagnosticsView({
             </div>
           ) : (
             <>
-              {runners === null ? <Section title="Capacity right now"><Unavailable>Runner capacity is unavailable. Refresh to try again.</Unavailable></Section> : <CapacityPanel runners={runners} appUpdates={appUpdates} />}
               <Section title="Needs attention">
                 {findingsError ? <Unavailable>{findingsError}</Unavailable> : null}
                 {problems.length > 0 ? <div className="divide-y divide-border">
@@ -286,7 +281,7 @@ export function DiagnosticsView({
                       <p className="text-sm font-medium">{problem.summary}</p>
                       <p className="text-xs text-muted-foreground">{problem.impact}</p>
                     </div>
-                    <div className="min-w-0">{problem.destination ? <Button variant="outline" size="sm" render={<Link to={problem.destination} />}>{problem.action}</Button> : <p className="text-xs text-muted-foreground">{problem.action}</p>}</div>
+                    <div className="min-w-0"><p className="text-xs text-muted-foreground">{problem.action}</p></div>
                   </article>)}
                 </div> : null}
                 {findings === null ? (

@@ -1,5 +1,5 @@
-// The arithmetic between a `listed` frame and Pierre's tree (decisions.md
-// §18.4): which paths a listing contributes, which directories an expansion
+// The arithmetic between a `listed` frame and Pierre's tree:
+// which paths a listing contributes, which directories an expansion
 // obliges the feed to list next, and which chains draw flattened.
 import { describe, expect, it } from "vitest";
 

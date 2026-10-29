@@ -16,6 +16,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
@@ -86,7 +87,7 @@ func TestNativeStateRefreshOversizedIssuePages(t *testing.T) {
 
 func TestNativeRefreshOversizedAttemptDetails(t *testing.T) {
 	t.Parallel()
-	for _, mode := range []string{"observed states", "epic IDs", "attempt read denied"} {
+	for _, mode := range []string{"observed states", "epic IDs", "attempt read denied", "attempt authority oversized"} {
 		t.Run(mode, func(t *testing.T) {
 			t.Parallel()
 			now := time.Now().UTC()
@@ -114,7 +115,14 @@ func TestNativeRefreshOversizedAttemptDetails(t *testing.T) {
 						w.WriteHeader(http.StatusForbidden)
 						return
 					}
-					if r.URL.Query().Get("view") != "blockers" {
+					if mode == "attempt authority oversized" {
+						w.WriteHeader(http.StatusUnprocessableEntity)
+						if err := json.NewEncoder(w).Encode(map[string]string{"code": "attempt_record_too_large", "message": "Work item wi_test attempt attempt_3 exceeds the 65536-byte page limit"}); err != nil {
+							t.Error(err)
+						}
+						return
+					}
+					if r.URL.Query().Get("view") != "recorded_blockers" {
 						_, _ = w.Write(full)
 						return
 					}
@@ -171,9 +179,15 @@ func TestNativeRefreshOversizedAttemptDetails(t *testing.T) {
 			} else {
 				issues, err = c.FetchIssueStatesByIDs(t.Context(), []string{"wi_test"})
 			}
-			if mode == "attempt read denied" {
+			if mode == "attempt read denied" || mode == "attempt authority oversized" {
 				if err == nil || len(issues) != 0 {
 					t.Fatal("read denial became successful observation")
+				}
+				if !strings.Contains(err.Error(), "prj_test#8") || !strings.Contains(err.Error(), "wi_test") {
+					t.Fatalf("refresh warning lost item identity: %v", err)
+				}
+				if mode == "attempt authority oversized" && !strings.Contains(err.Error(), "attempt_3") {
+					t.Fatalf("refresh warning lost attempt identity: %v", err)
 				}
 				return
 			}
@@ -186,6 +200,82 @@ func TestNativeRefreshOversizedAttemptDetails(t *testing.T) {
 			}
 			t.Logf("full attempt payload=%d bytes; refresh preserved operator hold", len(full))
 		})
+	}
+}
+
+func TestNativeRefreshOversizedRecordedAttempt(t *testing.T) {
+	t.Parallel()
+	h := newNativeChangeHubTransport(t, "In Review", []tracker.NativeState{
+		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress"}},
+		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Blocked", "In Review"}},
+		{Name: "Blocked", Transitions: []string{"In Progress"}},
+		{Name: "In Review", Transitions: []string{"Done", "In Progress"}},
+		{Name: "Done", Terminal: true},
+	}, true)
+	issue := h.createInProgress(t, "Oversized attempt")
+	h.claim(t, issue.ID)
+	owner := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+	if err := owner.Start(t.Context(), tracker.NativeExecutionIdentity{Role: "code", Backend: "codex", Model: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	finished := owner.data
+	finished.Sequence++
+	finished.Outcome = "succeeded"
+	finished.CompletionBody = strings.Repeat("<", 64<<10)
+	finished.Disposition = &tracker.NativeDisposition{Status: workpad.StatusBlocked, HumanAction: true, FinalSummary: "Operator approval required"}
+	item := tracker.NativeWorkItemID(issue.ID)
+	if err := h.native.AppendEvent(t.Context(), item, tracker.NativeRunEvent{Mutation: nativeMutationKey(), Type: "run.finished", SchemaVersion: 1, Data: finished}); err != nil {
+		t.Fatal(err)
+	}
+	current, err := h.native.Issue(t.Context(), item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutation := nativeMutationKey()
+	mutation.LeaseID, mutation.FencingToken = finished.LeaseID, finished.FencingToken
+	if _, err := h.native.Transition(t.Context(), item, tracker.Transition{Mutation: mutation, ExpectedRevision: current.Revision, State: "Blocked", Reason: "worker_progress"}); err != nil {
+		t.Fatal(err)
+	}
+	other := h.createInProgress(t, "Unaffected item")
+	if err := h.connector.UpdateIssueState(t.Context(), other.ID, "Blocked"); err != nil {
+		t.Fatal(err)
+	}
+	ready := h.createInProgress(t, "Ready work")
+	issues, err := h.connector.FetchIssuesByStates(t.Context(), []string{"Blocked", "In Progress"})
+	if err != nil || len(issues) != 3 {
+		t.Fatalf("observed-state refresh: items=%d error=%v", len(issues), err)
+	}
+	for _, got := range issues {
+		switch got.ID {
+		case issue.ID:
+			if got.State != "Blocked" || got.WorkpadSignal == nil || got.WorkpadSignal.HumanAction != "Operator approval required" || got.Metadata["hub_disposition_attempt_id"] != finished.AttemptID || got.Metadata["hub_disposition_return_state"] != "In Progress" {
+				t.Fatalf("refresh lost recorded authority: %+v", got)
+			}
+		case other.ID:
+			if got.State != "Blocked" || got.WorkpadSignal != nil || got.Description != other.Description {
+				t.Fatalf("neighbor changed during refresh: %+v", got)
+			}
+		case ready.ID:
+			if got.State != "In Progress" || got.WorkpadSignal != nil {
+				t.Fatalf("ready item changed during refresh: %+v", got)
+			}
+		default:
+			t.Fatalf("unexpected item %s", got.ID)
+		}
+	}
+	evidence, err := h.admin.RuntimeEvidence(t.Context(), item, "")
+	if err != nil || evidence.CurrentLease == nil || evidence.CurrentLease.ID != finished.LeaseID || evidence.Attempt == nil || evidence.Attempt.AttemptID != finished.AttemptID || evidence.Attempt.FencingToken != finished.FencingToken || !evidence.Attempt.Current {
+		t.Fatalf("refresh lost active execution: %+v error=%v", evidence, err)
+	}
+	if candidates := h.candidates(t); len(candidates) != 0 {
+		t.Fatalf("refresh double-dispatched a held lease: %+v", candidates)
+	}
+	if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); err != nil {
+		t.Fatal(err)
+	}
+	candidates := h.candidates(t)
+	if len(candidates) != 1 || candidates[0].ID != ready.ID {
+		t.Fatalf("oversized attempt changed claim eligibility: %+v", candidates)
 	}
 }
 
@@ -402,6 +492,53 @@ func TestNativeRecoveryMixedHubVersions(t *testing.T) {
 				if reads.Load() != before+1 {
 					t.Fatal("mixed-version recovery retried unsupported data")
 				}
+			}
+		})
+	}
+}
+
+func TestNativeStateIDsAvoidProjectRefresh(t *testing.T) {
+	for _, archived := range []int{0, 10000} {
+		t.Run(strconv.Itoa(archived), func(t *testing.T) {
+			items := make(map[string]tracker.NativeIssue, archived+2)
+			for index := range archived {
+				id := fmt.Sprintf("wi_archived%d", index)
+				items[id] = tracker.NativeIssue{NativeReference: tracker.NativeReference{WorkItemID: tracker.NativeWorkItemID(id)}, State: "Done"}
+			}
+			for _, id := range []string{"wi_one", "wi_two"} {
+				items[id] = tracker.NativeIssue{NativeReference: tracker.NativeReference{WorkItemID: tracker.NativeWorkItemID(id)}, State: "In Progress"}
+			}
+			reads := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				reads++
+				id := strings.TrimPrefix(r.URL.Path, "/api/v2/organizations/org_test/projects/prj_test/work-items/")
+				if id != "wi_one" && id != "wi_two" {
+					t.Errorf("unbounded request with %d archived items: %s", archived, r.URL)
+					http.Error(w, "project list unavailable", http.StatusGatewayTimeout)
+					return
+				}
+				_ = json.NewEncoder(w).Encode(items[id])
+			}))
+			defer server.Close()
+			client, err := New(Config{URL: server.URL, TokenSource: func() string { return "test" }, HTTPClient: server.Client()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			native, err := client.Native("org_test", "prj_test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			native.applyHeartbeatChanges(&runnerauth.HeartbeatChanges{Cursor: "reset", Reset: true})
+			c, err := NewNativeConnector(native)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := c.FetchIssueStatesByIDs(t.Context(), []string{"wi_one", "wi_two"})
+			if err != nil || len(got) != 2 || reads != 2 {
+				t.Fatalf("items=%d reads=%d error=%v", len(got), reads, err)
+			}
+			if got[0].ID != "wi_one" || got[1].ID != "wi_two" {
+				t.Fatalf("unexpected IDs: %+v", got)
 			}
 		})
 	}

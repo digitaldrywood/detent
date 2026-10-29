@@ -14,6 +14,36 @@ import (
 var ErrConflict = errors.New("settings revision changed")
 var ErrInvalid = errors.New("invalid settings")
 
+type Content struct {
+	Revision                 tracker.Revision `json:"revision,string"`
+	RequireVisualAttachments bool             `json:"require_visual_attachments"`
+}
+
+type ContentChange struct {
+	ExpectedRevision         tracker.Revision `json:"expected_revision,string"`
+	RequireVisualAttachments bool             `json:"require_visual_attachments"`
+}
+
+func ReadContent(ctx context.Context, db Queryer, organization tracker.OrganizationID, project tracker.ProjectID) (Content, error) {
+	var value Content
+	err := db.QueryRowContext(ctx, "SELECT content_settings_revision, require_visual_attachments FROM projects WHERE organization_id=? AND id=?", organization, project).Scan(&value.Revision, &value.RequireVisualAttachments)
+	return value, err
+}
+
+func UpdateContent(ctx context.Context, tx *sql.Tx, organization tracker.OrganizationID, project tracker.ProjectID, change ContentChange) (Content, error) {
+	current, err := ReadContent(ctx, tx, organization, project)
+	if err != nil {
+		return current, err
+	}
+	if current.Revision != change.ExpectedRevision {
+		return current, ErrConflict
+	}
+	if _, err := tx.ExecContext(ctx, "UPDATE projects SET require_visual_attachments=?, content_settings_revision=content_settings_revision+1 WHERE organization_id=? AND id=?", change.RequireVisualAttachments, organization, project); err != nil {
+		return current, err
+	}
+	return ReadContent(ctx, tx, organization, project)
+}
+
 type Queryer interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
@@ -62,14 +92,14 @@ func readRank(ctx context.Context, db Queryer, organization tracker.Organization
 }
 
 func UpdateRank(ctx context.Context, tx *sql.Tx, organization tracker.OrganizationID, change RankChange) (Rank, error) {
-	return updateRank(ctx, tx, organization, change, false)
+	return updateRank(ctx, tx, organization, change, false, nil)
 }
 
-func UpdateActiveRank(ctx context.Context, tx *sql.Tx, organization tracker.OrganizationID, change RankChange) (Rank, error) {
-	return updateRank(ctx, tx, organization, change, true)
+func UpdateActiveRank(ctx context.Context, tx *sql.Tx, organization tracker.OrganizationID, change RankChange, readable []tracker.ProjectID) (Rank, error) {
+	return updateRank(ctx, tx, organization, change, true, readable)
 }
 
-func updateRank(ctx context.Context, tx *sql.Tx, organization tracker.OrganizationID, change RankChange, activeOnly bool) (Rank, error) {
+func updateRank(ctx context.Context, tx *sql.Tx, organization tracker.OrganizationID, change RankChange, activeOnly bool, readable []tracker.ProjectID) (Rank, error) {
 	current, err := readRank(ctx, tx, organization, activeOnly)
 	if err != nil {
 		return current, err
@@ -77,20 +107,35 @@ func updateRank(ctx context.Context, tx *sql.Tx, organization tracker.Organizati
 	if current.Revision != change.ExpectedRevision {
 		return current, ErrConflict
 	}
-	if len(change.ProjectIDs) != len(current.ProjectIDs) {
+	if !activeOnly {
+		readable = current.ProjectIDs
+	}
+	if len(change.ProjectIDs) != len(readable) {
 		return current, ErrInvalid
 	}
-	allowed := map[tracker.ProjectID]bool{}
-	for _, id := range current.ProjectIDs {
+	allowed := make(map[tracker.ProjectID]bool, len(readable))
+	for _, id := range readable {
 		allowed[id] = true
 	}
+	seen := make(map[tracker.ProjectID]bool, len(readable))
 	for _, id := range change.ProjectIDs {
-		if !allowed[id] {
+		if !allowed[id] || seen[id] {
 			return current, ErrInvalid
 		}
-		delete(allowed, id)
+		seen[id] = true
 	}
-	for rank, id := range change.ProjectIDs {
+	merged := append([]tracker.ProjectID(nil), current.ProjectIDs...)
+	next := 0
+	for i, id := range merged {
+		if allowed[id] {
+			merged[i] = change.ProjectIDs[next]
+			next++
+		}
+	}
+	if next != len(readable) {
+		return current, ErrInvalid
+	}
+	for rank, id := range merged {
 		if _, err := tx.ExecContext(ctx, "UPDATE projects SET scheduling_rank = ? WHERE organization_id = ? AND id = ?", rank, organization, id); err != nil {
 			return current, err
 		}

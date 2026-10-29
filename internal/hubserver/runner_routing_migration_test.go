@@ -128,6 +128,14 @@ FROM runner_identities r JOIN lease_runners lr ON lr.runner_id = r.id WHERE lr.l
 	if runner != binding.RunnerID || machine != string(binding.MachineID) || name != "Original name" || state != "active" || tags != "[]" || capacity != 2 || events != 1 {
 		t.Fatal("migration changed identity, routing defaults, ownership or audit history")
 	}
+	var overrides int
+	if err := service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM runner_project_capacity_limits").Scan(&overrides); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := readRunnerRoutingSnapshot(t.Context(), service.database.db, organization, binding.RunnerID, service.config.now())
+	if err != nil || overrides != 0 || len(snapshot.Routing.ProjectCapacityLimits) != 0 || snapshot.Routing.CapacityLimit != 2 {
+		t.Fatalf("legacy project capacity migration=%+v overrides=%d error=%v", snapshot, overrides, err)
+	}
 	var grants, retiredFields int
 	if err := service.database.db.QueryRowContext(t.Context(), `SELECT count(*) FROM token_grants WHERE token_id = 'seed-runner'`).Scan(&grants); err != nil {
 		t.Fatal(err)

@@ -128,15 +128,15 @@ function pad(index: number): string {
   return index.toString(16).padStart(32, "0");
 }
 
-// --- Workspace sessions (decisions.md §18.1–§18.4, §18.13) ------------------
+// --- Workspace sessions ------------------
 //
 // One open workspace per issue, already `ready`, claimed by the mock hub's
-// online runner. The relay behind it is a real WebSocket speaking §18.2's JSON
+// online runner. The relay behind it is a real WebSocket speaking the relay protocol's JSON
 // frames, so the Files, Terminal and header git surfaces have something live
 // to talk to. Nothing here is a runner: the worktree is a fixed table and the
 // shell is a line echo.
 
-/** The relayed capabilities (§18.1); diff and preview are never reported. */
+/** The relayed capabilities; diff and preview are never reported. */
 const RELAYED_CAPABILITIES = ["exec", "files", "git", "terminal"];
 
 /** The mock hub's online runner (`SEED_RUNNERS[0]` in `mock-hub.ts`). */
@@ -352,7 +352,7 @@ export interface WorkMock {
     readBody: () => Promise<Record<string, unknown>>;
   }) => Promise<boolean>;
   /**
-   * The workspace relay socket (§18.2). Returns true when it took the
+   * The workspace relay socket. Returns true when it took the
    * upgrade, which it does only for `.../workspaces/:id/relay` with a ticket
    * it minted; anything else is the caller's to refuse.
    */
@@ -372,6 +372,7 @@ export function createWorkMock(options: {
 }): WorkMock {
   const now = new Date("2026-09-09T12:00:00Z").getTime();
   let issues: MockIssue[] = [];
+  const savedViews = new Map<string, Record<string, unknown>>();
   const terminalEntries = new Map<string, string>();
   let pagination = false;
   let revoked = false;
@@ -699,7 +700,7 @@ export function createWorkMock(options: {
     };
   }
 
-  // One attempt's stored diff (§18.5): a small real patch, so the review page
+  // One attempt's stored diff: a small real patch, so the review page
   // has files to draw. The head is the attempt's, as the runner posts it.
   function attemptDiff(issue: MockIssue): Record<string, unknown> {
     const head = `a41f0c2${pad(issue.number).slice(0, 33)}`;
@@ -824,7 +825,7 @@ export function createWorkMock(options: {
   }
 
   /**
-   * One relay frame from the person side (§18.2), answered the way a runner
+   * One relay frame from the person side, answered the way a runner
    * behind the hub would. The first frame on a stream carries no `stream`;
    * the answer names the one allocated for it.
    */
@@ -930,7 +931,7 @@ export function createWorkMock(options: {
           return;
         }
         case "watch":
-          // §18.4 names no acknowledgement for a watch, and a fixed worktree
+          // The Files contract names no acknowledgement for a watch, and a fixed worktree
           // never changes, so there is nothing to send.
           return;
         default:
@@ -1011,7 +1012,7 @@ export function createWorkMock(options: {
       }
     }
 
-    // `exec` (§18.12) and anything newer: the mock runner reports it can run
+    // `exec` and anything newer: the mock runner reports it can run
     // project actions, but has none to run.
     refuse("unsupported");
   }
@@ -1059,7 +1060,7 @@ export function createWorkMock(options: {
       const workspace = workspaces.find(
         (candidate) => candidate.id === workspaceId && candidate.project_id === projectId,
       );
-      // Single use and bound to the workspace that minted it (§18.2).
+      // Single use and bound to the workspace that minted it.
       if (workspace === undefined || relayTickets.get(ticket) !== workspaceId) {
         socket.end("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
         return true;
@@ -1073,6 +1074,22 @@ export function createWorkMock(options: {
     },
     async handle({ response, url, method, readBody }) {
       const path = url.pathname;
+      const viewsBase = `${options.apiBase}/work-views`;
+      if (path === viewsBase || path.startsWith(`${viewsBase}/`)) {
+        const [id, action] = path.slice(viewsBase.length + 1).split("/");
+        const current = id ? savedViews.get(id) : undefined;
+        if (id && !current) { json(response, 404, { code: "not_found", message: "View not found" }); return true; }
+        if (method === "GET") json(response, 200, id ? current : { views: [...savedViews.values()] });
+        else if (method === "DELETE") { savedViews.delete(id!); response.writeHead(204).end(); }
+        else {
+          const body = await readBody();
+          const viewId = id || `view_${savedViews.size + 1}`;
+          const view = action === "favorite" ? { ...current, favorite: body.favorite } : { ...body, id: viewId, owner_id: "usr_mock", can_edit: true };
+          savedViews.set(viewId, view);
+          json(response, 200, view);
+        }
+        return true;
+      }
       const preferenceScope = path === `${options.apiBase}/work-view-preference` ? "" :
         path.startsWith(`${base}/`) && path.endsWith("/work-view-preference") ? path.slice(base.length + 1, -"/work-view-preference".length) : null;
       if (preferenceScope !== null) {
@@ -1228,7 +1245,7 @@ export function createWorkMock(options: {
         return true;
       }
 
-      // Workspace sessions (§18.1, §18.2): list, create, read, close, and the
+      // Workspace sessions: list, create, read, close, and the
       // relay ticket the socket above is opened with.
       if (segments[1] === "workspaces") {
         const scopedWorkspaces = workspaces.filter((workspace) => workspace.project_id === projectId);
@@ -1336,7 +1353,7 @@ export function createWorkMock(options: {
         return true;
       }
 
-      // Project actions (§18.12): the header's action picker and the panel's
+      // Project actions: the header's action picker and the panel's
       // Output surface read the list. The mock project has none configured.
       if (segments[1] === "actions" && segments.length === 2 && method === "GET") {
         json(response, 200, { items: [] });
@@ -1348,7 +1365,7 @@ export function createWorkMock(options: {
       const scoped = issues.filter((issue) => issue.project_id === projectId);
 
       if (segments.length === 2 && method === "GET") {
-        const problem = validateQuery(url, ["type", "state", "label", "assignee", "priority", "include", "archived", "q", "completed_window", "open", "sort", "created_by"], ["type", "state", "label", "assignee", "priority"]);
+        const problem = validateQuery(url, ["type", "state", "label", "assignee", "priority", "include", "archived", "q", "completed_window", "completed_from", "completed_to", "open", "sort", "created_by"], ["type", "state", "label", "assignee", "priority"]);
         if (problem !== null) {
           invalid(response, problem);
           return true;
@@ -1370,7 +1387,7 @@ export function createWorkMock(options: {
         const boardIncluded = url.searchParams.get("include") === "board";
         const limit = Math.min(Number(url.searchParams.get("limit") ?? "50"), boardIncluded ? 2000 : 200);
         const q = url.searchParams.get("q")?.trim().toLowerCase() ?? "";
-        const cursorScope = JSON.stringify([projectId, state, type, label, assignee, priority, q, createdBy, url.searchParams.get("archived"), completedWindow, url.searchParams.get("open"), url.searchParams.get("sort")]);
+        const cursorScope = JSON.stringify([projectId, state, type, label, assignee, priority, q, createdBy, url.searchParams.get("archived"), completedWindow, url.searchParams.get("completed_from"), url.searchParams.get("completed_to"), url.searchParams.get("open"), url.searchParams.get("sort")]);
         let after = Number(url.searchParams.get("cursor") ?? "0");
         if (pagination && url.searchParams.has("cursor")) {
           try {
@@ -1383,6 +1400,8 @@ export function createWorkMock(options: {
           }
         }
         const baseFiltered = scoped
+          .filter((issue) => !url.searchParams.has("completed_from") || Date.parse(terminalEntries.get(issue.work_item_id) ?? "") >= Date.parse(url.searchParams.get("completed_from")!))
+          .filter((issue) => !url.searchParams.has("completed_to") || Date.parse(terminalEntries.get(issue.work_item_id) ?? "") < Date.parse(url.searchParams.get("completed_to")!))
           .filter(() => url.searchParams.get("archived") !== "true")
           .filter((issue) => filer === null || issue.actor.principal_id === filer)
           .filter((issue) => type.length === 0 || issue.type !== undefined && type.includes(issue.type))
@@ -1459,7 +1478,7 @@ export function createWorkMock(options: {
         return true;
       }
       const action = segments[3];
-      // Pull requests (§18.6): the hub answers a list, empty when the issue
+      // Pull requests: the hub answers a list, empty when the issue
       // has none. The mock issues have no pull requests.
       if (action === "pull-requests" && segments.length === 4 && method === "GET") {
         json(response, 200, []);

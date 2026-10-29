@@ -33,6 +33,11 @@ func TestPreTurnFailuresRetryWithoutPausingProject(t *testing.T) {
 		failures []error
 	}{
 		{"protocol", []error{protocol, protocol, protocol}},
+		{"local_checkpoint_changed", []error{fmt.Errorf("%w: local_checkpoint_changed", runpkg.ErrNativeRecoveryRequired)}},
+		{"policy_mismatch", []error{fmt.Errorf("%w: policy_mismatch", runpkg.ErrNativeRecoveryRequired)}},
+		{"checkpoint_requires_recovery", []error{fmt.Errorf("%w: checkpoint_requires_recovery", runpkg.ErrNativeRecoveryRequired)}},
+		{"checkpoint_unavailable", []error{fmt.Errorf("%w: checkpoint_unavailable", runpkg.ErrNativeRecoveryRequired)}},
+		{"session_restart_required", []error{fmt.Errorf("%w: session_restart_required", runpkg.ErrNativeRecoveryRequired)}},
 		{"workspace", []error{workspace, workspace, workspace}},
 		{"startup", []error{startup, startup, startup}},
 		{"turn input refusal", []error{inputFailure, inputFailure, inputFailure}},
@@ -43,7 +48,7 @@ func TestPreTurnFailuresRetryWithoutPausingProject(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			now := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
-			cfg := normalizeConfig(Config{ActiveStates: []string{"Todo", "In Progress", "Rework"}, BlockedRecovery: BlockedRecoveryConfig{BreakerCooldown: time.Minute}})
+			cfg := normalizeConfig(Config{ActiveStates: []string{"Todo", "In Progress", "Rework"}, BlockedRecovery: BlockedRecoveryConfig{}})
 			tracker := &terminalRetryConnector{issues: map[string]connector.Issue{}}
 			o := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: &terminalRetryWorkAttemptStore{}}
 			state := newState(cfg)

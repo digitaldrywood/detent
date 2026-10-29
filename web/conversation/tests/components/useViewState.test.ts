@@ -38,6 +38,22 @@ afterEach(() => {
 });
 
 describe("Hub Work view preferences", () => {
+  it("restores a saved view and edits it without reading or overwriting default preferences", async () => {
+    vi.useFakeTimers();
+    const saved = { id: "view_one", name: "Saved", owner_id: "alice", can_edit: true, scope: "personal" as const,
+      project_id: "project", favorite: true, state: parseViewState("view=list&tab=closed&archived=true&lanes=&collapsed=&label=bug&completed=7d") };
+    const { result, rerender } = renderHook(() => useViewState("project", saved));
+    expect(result.current[0]).toEqual(saved.state);
+    act(() => { result.current[1](DEFAULT_VIEW_STATE); });
+    expect(fixture.navigate).toHaveBeenLastCalledWith({ to: ".", search: { edited: "true" }, replace: true });
+    fixture.search = "?edited=true";
+    rerender();
+    expect(result.current[0]).toEqual(DEFAULT_VIEW_STATE);
+    await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+    expect(fixture.http.getViewPreference).not.toHaveBeenCalled();
+    expect(fixture.http.setViewPreference).not.toHaveBeenCalled();
+  });
+
   it.each([
     { name: "Hub before defaults", url: "", cache: null, hub: "view=list&tab=closed&collapsed=Todo&completed=7d", first: "", final: "view=list&tab=closed&collapsed=Todo&completed=7d" },
     { name: "cache for first paint, Hub thereafter", url: "", cache: "sort=title", hub: "view=list", first: "sort=title", final: "view=list" },

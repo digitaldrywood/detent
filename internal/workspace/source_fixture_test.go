@@ -156,6 +156,9 @@ func (f seedCopyFS) ReadDir(name string) ([]fs.DirEntry, error) {
 		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".lock") {
 			continue
 		}
+		if name == ".git/hooks" && !entry.IsDir() && strings.HasSuffix(entry.Name(), ".sample") {
+			continue
+		}
 		filtered = append(filtered, entry)
 	}
 	return filtered, nil
@@ -194,6 +197,9 @@ func TestCopySourceRepoSeedTransientFiles(t *testing.T) {
 		{name: "disappearing maintenance lock", target: ".git/objects/maintenance.lock", remove: true},
 		{name: "existing index lock", target: ".git/index.lock"},
 		{name: "existing ref lock", target: ".git/refs/heads/main.lock"},
+		{name: "unused Git sample hook", target: ".git/hooks/pre-commit.sample"},
+		{name: "tracked sample file", target: "example.sample", wantCopied: true},
+		{name: "active Git hook", target: ".git/hooks/pre-commit", wantCopied: true},
 		{name: "tracked lock file", target: "dependencies.lock", wantCopied: true},
 		{name: "missing git object", target: ".git/objects/ab/object", remove: true, wantError: true},
 		{name: "missing tracked file", target: "README.md", remove: true, wantError: true},
@@ -232,7 +238,7 @@ func TestCopySourceRepoSeedTransientFiles(t *testing.T) {
 					t.Fatalf("copied file = %q, %v", data, err)
 				}
 			} else if !errors.Is(err, fs.ErrNotExist) {
-				t.Fatalf("Git lock copied: read error = %v", err)
+				t.Fatalf("excluded fixture file copied: read error = %v", err)
 			}
 		})
 	}

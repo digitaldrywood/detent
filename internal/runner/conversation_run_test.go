@@ -12,7 +12,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 	"unicode/utf8"
 
 	"github.com/digitaldrywood/detent/internal/config"
@@ -52,7 +51,7 @@ func (b *conversationAgentBackend) RunTurn(_ context.Context, req AgentTurnReque
 			b.consumed = append(b.consumed, command)
 			b.mu.Unlock()
 			command.Reply <- nil
-		case <-time.After(time.Second):
+		default:
 		}
 		if req.ConversationControl.InputRequested != nil {
 			b.inputErr = req.ConversationControl.InputRequested(AgentInputRequest{ID: "req-1", ThreadID: "thread-1", TurnID: "turn-1", Questions: json.RawMessage(`[{"id":"color","header":"Color","question":"Which color?","options":[{"label":"Blue","description":"calm"}],"isOther":true}]`)})
@@ -765,7 +764,7 @@ func TestBindConversationLogsResumeMode(t *testing.T) {
 
 // A turn started from queued messages carries their files: images as
 // provider image input and text files as one delimited data block after the
-// prompt (decisions section 17.1).
+// prompt.
 func TestConversationRunPrepareTurnCarriesPendingAttachments(t *testing.T) {
 	t.Parallel()
 	image := AgentAttachment{ID: "att_1", Name: "shot.png", MIME: "image/png", Size: 3, Content: []byte("png")}

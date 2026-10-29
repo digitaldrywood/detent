@@ -78,6 +78,9 @@ func (f *FleetClient) ProjectEligibility(ctx context.Context, project string) (r
 	if err != nil {
 		return result, err
 	}
+	if approval.Policy.ID == "" {
+		return result, errors.New("approved repository policy is unavailable")
+	}
 	result.Policy = approval.Policy
 	fleet, err := f.Fleet(ctx)
 	if err != nil {

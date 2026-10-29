@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -24,13 +25,82 @@ func TestNativeRuntimeMigrationPreservesHistory(t *testing.T) {
 	path := f.base + "/work-items/" + string(issue.WorkItemID)
 	var before tracker.Page[tracker.CollaborationEvent]
 	decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"/history", f.token, nil), &before)
-	// Exercise migration 59 alone. Current fixtures include forward-only migrations
-	// whose deployment rollback requires a binary supporting their schema version.
 	data, err := migrationFiles.ReadFile("migrations/00059_native_runtime_evidence.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
-	migrations := fstest.MapFS{"00059_native_runtime_evidence.sql": &fstest.MapFile{Data: data}}
+	columns, err := f.service.database.reader.QueryContext(t.Context(), `PRAGMA table_info(collaboration_events)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer columns.Close()
+	extras := []string{}
+	for columns.Next() {
+		var cid, notNull, primary int
+		var name, kind string
+		var defaultValue any
+		if err := columns.Scan(&cid, &name, &kind, &notNull, &defaultValue, &primary); err != nil {
+			t.Fatal(err)
+		}
+		if strings.HasPrefix(name, "change_") || strings.HasPrefix(name, "publication_") {
+			extras = append(extras, name+" "+kind)
+		}
+	}
+	if err := columns.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if len(extras) > 0 {
+		data = []byte(strings.ReplaceAll(string(data), "recorded_at TEXT NOT NULL,", "recorded_at TEXT NOT NULL,\n"+strings.Join(extras, ",\n")+","))
+	}
+
+	projection, err := migrationFiles.ReadFile("migrations/20261023234600_scheduler_projections.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	facts, err := migrationFiles.ReadFile("migrations/20261025220000_admission_claim_facts.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	analytics, err := migrationFiles.ReadFile("migrations/20261025230900_analytics_event_columns.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata, err := migrationFiles.ReadFile("migrations/20261025233000_conversation_query_columns.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	maintenance, err := migrationFiles.ReadFile("migrations/20261026041522_maintenance_without_ddl.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	archiveProjection, err := migrationFiles.ReadFile("migrations/20261026003000_archive_facts.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	healthProjection, err := migrationFiles.ReadFile("migrations/20261026090910_health_typed_fields.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	healthTransitionIndex, err := migrationFiles.ReadFile("migrations/20261027230218_health_transition_recovery_index.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reportAttempts, err := migrationFiles.ReadFile("migrations/20261028075830_report_attempt_columns.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	migrations := fstest.MapFS{
+		"20261028075830_report_attempt_columns.sql":           &fstest.MapFile{Data: reportAttempts},
+		"20261027230218_health_transition_recovery_index.sql": &fstest.MapFile{Data: healthTransitionIndex},
+		"20261026003000_archive_facts.sql":                    &fstest.MapFile{Data: archiveProjection},
+		"20261025220000_admission_claim_facts.sql":            &fstest.MapFile{Data: facts},
+		"20261026090910_health_typed_fields.sql":              &fstest.MapFile{Data: healthProjection},
+		"20261026041522_maintenance_without_ddl.sql":          &fstest.MapFile{Data: maintenance},
+		"00059_native_runtime_evidence.sql":                   &fstest.MapFile{Data: data},
+		"20261023234600_scheduler_projections.sql":            &fstest.MapFile{Data: projection},
+		"20261025230900_analytics_event_columns.sql":          &fstest.MapFile{Data: analytics},
+		"20261025233000_conversation_query_columns.sql":       &fstest.MapFile{Data: metadata},
+	}
 	const versionTable = "runtime_migration_test_version"
 	provider, err := goose.NewProvider(goose.DialectSQLite3, f.service.database.db, migrations, goose.WithDisableGlobalRegistry(true), goose.WithTableName(versionTable), goose.WithSlog(discardLogger()))
 	if err != nil {
@@ -39,9 +109,28 @@ func TestNativeRuntimeMigrationPreservesHistory(t *testing.T) {
 	if _, _, err := provider.GetVersions(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	// The fixture's event table already has migration 59's shape. Record only
-	// that migration in the isolated ledger, leaving the real schema ledger intact.
-	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO "+versionTable+" (version_id,is_applied) VALUES (59,1)"); err != nil {
+	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO "+versionTable+" (version_id,is_applied) VALUES (59,1),(20261023234600,1),(20261025220000,1),(20261025230900,1),(20261025233000,1),(20261026003000,1),(20261026041522,1),(20261026090910,1),(20261027230218,1),(20261028075830,1)"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), `DROP VIEW native_transition_facts;
+DROP INDEX IF EXISTS collaboration_events_change_unknown;
+DROP INDEX IF EXISTS collaboration_events_change_conversion;
+DROP INDEX collaboration_events_comment_actor;
+DROP INDEX collaboration_events_terminal_transition;
+DROP INDEX collaboration_events_page_unknown;
+DROP INDEX collaboration_events_transition_unknown;
+DROP INDEX daily_summary_rework_window;
+ALTER TABLE collaboration_events DROP COLUMN edited_body;
+ALTER TABLE collaboration_events DROP COLUMN edited_title;
+ALTER TABLE collaboration_events DROP COLUMN run_present;
+ALTER TABLE collaboration_events DROP COLUMN reason;
+ALTER TABLE collaboration_events DROP COLUMN to_state;
+ALTER TABLE collaboration_events DROP COLUMN from_state;
+ALTER TABLE collaboration_events DROP COLUMN event_revision;
+ALTER TABLE collaboration_events DROP COLUMN actor_principal_id;
+ALTER TABLE collaboration_events DROP COLUMN actor_kind;
+ALTER TABLE collaboration_events DROP COLUMN page_projection_ready;
+`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := provider.DownTo(t.Context(), 58); err != nil {
@@ -50,6 +139,20 @@ func TestNativeRuntimeMigrationPreservesHistory(t *testing.T) {
 	if _, err := provider.Up(t.Context()); err != nil {
 		t.Fatal(err)
 	}
+	pageMigration, err := migrationFiles.ReadFile("migrations/20261025223000_issue_page_facts.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pageSQL := string(pageMigration)
+	eventStart := strings.Index(pageSQL, "ALTER TABLE collaboration_events")
+	eventEnd := strings.Index(pageSQL, "ALTER TABLE native_board_items")
+	if _, err := f.service.database.db.ExecContext(t.Context(), pageSQL[eventStart:eventEnd]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), `CREATE VIEW native_transition_facts AS SELECT id,organization_id,project_id,work_item_id,sequence,recorded_at,from_state,to_state FROM collaboration_events WHERE type='workflow.transitioned'`); err != nil {
+		t.Fatal(err)
+	}
+
 	var after tracker.Page[tracker.CollaborationEvent]
 	decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"/history", f.token, nil), &after)
 	if len(after.Items) != 1 || len(before.Items) != 1 || after.Items[0].ID != before.Items[0].ID || after.Items[0].Actor != before.Items[0].Actor || after.Items[0].RecordedAt != before.Items[0].RecordedAt {
@@ -80,6 +183,12 @@ func TestNativeRuntimeMigrationPreservesHistory(t *testing.T) {
 	if err != nil || version != 59 {
 		t.Fatalf("failed rollback changed schema: %d %v", version, err)
 	}
+	if _, err := provider.Up(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), `CREATE INDEX daily_summary_rework_window ON collaboration_events(organization_id,project_id,work_item_id,analytics_recorded_ns,to_state) WHERE type='workflow.transitioned'`); err != nil {
+		t.Fatal(err)
+	}
 	decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"/history", f.token, nil), &after)
 	if len(after.Items) != 4 || after.Items[0].ID != before.Items[0].ID || after.Items[1].Type != "scheduler.decision" || after.Items[2].Type != "run.started" || after.Items[3].Type != "run.observed" {
 		t.Fatalf("failed rollback changed evidence: %#v", after)
@@ -90,6 +199,9 @@ func TestNativeRuntimeMigrationPreservesHistory(t *testing.T) {
 		lease := claimNativeAttempt(t, f.nativeFixture, worker, "activity-machine", "activity-session", f.issue.WorkItemID)
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/events", worker, nativeStartedEvent(lease)), http.StatusOK)
 		version := f.publishExternal(t, "activity-version")
+		if _, err := f.service.database.db.ExecContext(t.Context(), "DROP TRIGGER change_versions_linked_activity"); err != nil {
+			t.Fatal(err)
+		}
 		for _, body := range []string{"Comment", "## Codex Workpad"} {
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: body}, Body: body}), http.StatusOK)
 		}
@@ -275,10 +387,25 @@ func TestHubMigrationPreservesExistingData(t *testing.T) {
 				t.Fatal(err)
 			}
 			if _, err := db.ExecContext(t.Context(), `INSERT INTO change_requests (id, organization_id, project_id, work_item_id, record_json)
-				SELECT 'existing-change', organization_id, project_id, native_id, '{}' FROM issues WHERE id = ?`, issueID); err != nil {
+				SELECT 'existing-change', organization_id, project_id, native_id, '{"current_version_id":"existing-version"}' FROM issues WHERE id = ?`, issueID); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := db.ExecContext(t.Context(), `INSERT INTO change_versions (id, change_id, number, record_json) VALUES ('existing-version', 'existing-change', 1, '{"head_sha":"preserved"}')`); err != nil {
+			firstVersion, err := json.Marshal(tracker.ChangeVersion{ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: "preserved"}, Policy: hubTestPolicy()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.ExecContext(t.Context(), `INSERT INTO change_versions (id, change_id, number, record_json) VALUES ('existing-version', 'existing-change', 1, ?)`, string(firstVersion)); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.ExecContext(t.Context(), `INSERT INTO change_requests (id,organization_id,project_id,work_item_id,record_json)
+SELECT 'second-change',organization_id,project_id,native_id,'{"current_version_id":"second-version"}' FROM issues WHERE id=?`, issueID); err != nil {
+				t.Fatal(err)
+			}
+			secondVersion, err := json.Marshal(tracker.ChangeVersion{ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: "second-head"}, Policy: hubTestPolicy()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.ExecContext(t.Context(), `INSERT INTO change_versions(id,change_id,number,record_json) VALUES('second-version','second-change',1,?)`, string(secondVersion)); err != nil {
 				t.Fatal(err)
 			}
 			if test.version >= 17 {
@@ -296,11 +423,22 @@ func TestHubMigrationPreservesExistingData(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			if _, err := runMigrations(t.Context(), db, discardLogger()); err != nil {
+				t.Fatal(err)
+			}
+			var unknown int
+			if err := db.QueryRowContext(t.Context(), `SELECT count(*) FROM change_requests WHERE claim_version_id IS NULL AND claim_head_sha IS NULL`).Scan(&unknown); err != nil || unknown != 2 {
+				t.Fatalf("startup claim projections=%d unknown: %v", unknown, err)
+			}
 			if err := db.Close(); err != nil {
 				t.Fatal(err)
 			}
 			cfg := Config{DatabasePath: path}
 			service := openTestService(t, cfg)
+			if err := service.database.populateClaimFacts(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+
 			if !test.viewed {
 				if _, err := service.database.db.ExecContext(t.Context(), `INSERT INTO change_viewed_files (version_id, principal_id, manifest_sha256, file_sha256, viewed) VALUES ('existing-version', 'reviewer', ?, ?, 1)`, strings.Repeat("a", 64), strings.Repeat("b", 64)); err != nil {
 					t.Fatal(err)
@@ -327,7 +465,9 @@ func TestHubMigrationPreservesExistingData(t *testing.T) {
 				{"onboarding timestamp", "SELECT updated_at FROM project_onboarding", testTimestamp},
 				{"identity migration", "SELECT count(*) FROM hub_schema_version WHERE version_id = 17 AND is_applied = 1", "1"},
 				{"version 18 recorded once", "SELECT count(*) FROM hub_schema_version WHERE version_id = 18 AND is_applied = 1", "1"},
-				{"existing code version", "SELECT record_json FROM change_versions WHERE id = 'existing-version'", `{"head_sha":"preserved"}`},
+				{"existing code version", "SELECT record_json FROM change_versions WHERE id = 'existing-version'", string(firstVersion)},
+				{"first claim version", "SELECT claim_version_id||':'||claim_head_sha FROM change_requests WHERE id='existing-change'", "existing-version:preserved"},
+				{"second claim version", "SELECT claim_version_id||':'||claim_head_sha FROM change_requests WHERE id='second-change'", "second-version:second-head"},
 				{"viewed state", "SELECT viewed FROM change_viewed_files WHERE version_id = 'existing-version' AND principal_id = 'reviewer'", "1"},
 				{"hosted sessions", "SELECT count(*) FROM hosted_sessions WHERE token_hash = 'existing-session' AND email = 'reviewer@example.test'", test.hostedSessions},
 				{"foreign keys", "SELECT count(*) FROM pragma_foreign_key_check", "0"},

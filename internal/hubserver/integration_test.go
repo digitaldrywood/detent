@@ -266,6 +266,25 @@ func TestNativeProjectRepositoryBindingAndIntake(t *testing.T) {
 	if job.Stage != "edits" || !job.IntakePending {
 		t.Fatalf("pending dependency intake = %+v", job)
 	}
+	var sequence int64
+	if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT sequence FROM github_import_records WHERE import_id=? AND kind='comment' ORDER BY sequence LIMIT 1`, job.ID).Scan(&sequence); err != nil {
+		t.Fatal(err)
+	}
+	job.EditSequence = sequence - 1
+	for _, entry := range []struct {
+		external any
+		want     string
+	}{{"typed-source-node", "typed-source-node"}, {nil, "C_I_issue"}} {
+		if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE github_import_records SET provenance_external_id=? WHERE sequence=?`, entry.external, sequence); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.service.fetchImportPage(t.Context(), integration, job); err != nil {
+			t.Fatal(err)
+		}
+		if got := imports.requests[len(imports.requests)-1].SourceID; got != entry.want {
+			t.Fatalf("edit source=%s want=%s", got, entry.want)
+		}
+	}
 	imports.omitDependency = true
 	job = finishImportFixture(t, f, startImportFixture(t, f, 1, true, job.Revision))
 	r = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+job.WorkItemID, f.token, nil)
@@ -373,8 +392,10 @@ func TestGitHubImportCheckpointCutoverAndNativeIsolation(t *testing.T) {
 		initial    string
 		noPolicy   bool
 		refused    bool
+		legacy     bool
 	}{
 		{name: "complete", initial: "Todo"},
+		{name: "unknown dependency fields", initial: "Todo", legacy: true},
 		{name: "partial history", partial: true, initial: "Todo"},
 		{name: "incomplete Todo", incomplete: true, initial: "Todo", refused: true},
 		{name: "incomplete Backlog", incomplete: true, initial: "Backlog"},
@@ -409,6 +430,11 @@ func TestGitHubImportCheckpointCutoverAndNativeIsolation(t *testing.T) {
 			job = finishImportFixture(t, f, job)
 			if job.Status != "retrieved" || len(job.Gaps) == 0 {
 				t.Fatalf("retrieval must retain limitations: %+v", job)
+			}
+			if test.legacy {
+				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE github_import_records SET dependency_id=NULL,provenance_external_id=NULL`); err != nil {
+					t.Fatal(err)
+				}
 			}
 			request := CutoverRequest{Mutation: tracker.Mutation{IdempotencyKey: "preview-unresolved"}, DryRun: true, InitialState: "Todo", States: []tracker.NativeState{{Name: "Todo", Dispatchable: true, Transitions: []string{"Done"}}, {Name: "Done", Terminal: true}}}
 			receipt := cutoverFixture(t, f, request)
@@ -534,6 +560,9 @@ func TestGitHubReimportDependencySnapshot(t *testing.T) {
 			backend := &importFixtureBackend{}
 			f := newIntegrationFixture(t, backend)
 			job := finishImportFixture(t, f, startImportFixture(t, f, 1, false, 0))
+			if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE github_import_records SET current_dependency=0,dependency_id=NULL,provenance_external_id=NULL WHERE import_id=? AND kind='dependency'`, job.ID); err != nil {
+				t.Fatal(err)
+			}
 			backend.omitDependency = !retained
 			job = finishImportFixture(t, f, startImportFixture(t, f, 1, true, job.Revision))
 			request := CutoverRequest{Mutation: tracker.Mutation{IdempotencyKey: "preview-reimport"}, DryRun: true, InitialState: "Todo", States: []tracker.NativeState{{Name: "Todo", Dispatchable: true, Transitions: []string{"Done"}}, {Name: "Done", Terminal: true}}}

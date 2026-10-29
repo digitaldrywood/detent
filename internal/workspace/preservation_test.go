@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -241,6 +243,10 @@ func TestLocalGitCleanupChecksRemovalHooks(t *testing.T) {
 			if err := os.WriteFile(entry, make([]byte, 2048), 0600); err != nil {
 				t.Fatal(err)
 			}
+			pin := filepath.Join(t.TempDir(), "active-output")
+			if err := os.Link(entry, pin); err != nil {
+				t.Fatal(err)
+			}
 			ctx := cache.WithContext(t.Context())
 			reserved, registered, finished := false, false, false
 			ctx = WithValidationProcessOwner(ctx, func(processCtx context.Context, _ Info, _ Issue, _ string) (ValidationProcess, error) {
@@ -259,9 +265,16 @@ func TestLocalGitCleanupChecksRemovalHooks(t *testing.T) {
 					finished: func(gate.CommandResult, error) error { finished = true; return nil },
 				}, nil
 			})
+			shell := filepath.Join(t.TempDir(), "hook-shell")
+			probe := fmt.Sprintf(`{"GOHOSTOS":%q,"GOHOSTARCH":%q,"GOVERSION":"go1.26.0"}`, runtime.GOOS, runtime.GOARCH)
+			script := "#!/bin/sh\nif [ \"$2\" = 'go env -json' ]; then\n  printf '%s\\n' " + shellQuote(probe) + "\n  exit 0\nfi\nexec /bin/sh \"$@\"\n"
+			if err := os.WriteFile(shell, []byte(script), 0o700); err != nil {
+				t.Fatal(err)
+			}
 			backend, err := NewLocalGit(LocalGitOptions{
 				Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true,
-				Hooks: Hooks{BeforeRemove: "test \"$GOCACHE\" = " + shellQuote(cacheRoot) + " && touch " + shellQuote(trace) + " && printf 'hook work' > README.md"},
+				Logger: slog.New(slog.NewTextHandler(t.Output(), nil)),
+				Hooks:  Hooks{Shell: shell, BeforeRemove: "test \"$GOCACHE\" = " + shellQuote(cacheRoot) + " && touch " + shellQuote(trace) + " && printf 'hook work' > README.md"},
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -287,6 +300,9 @@ func TestLocalGitCleanupChecksRemovalHooks(t *testing.T) {
 			}
 			if reserved != !dirty || registered != !dirty || finished != !dirty {
 				t.Fatalf("cleanup hook ownership: reserved=%t registered=%t finished=%t dirty=%t", reserved, registered, finished, dirty)
+			}
+			if err := os.Remove(pin); err != nil {
+				t.Fatal(err)
 			}
 			if report, err := cache.Maintain(t.Context(), toolcache.Policy{MaxBytes: 1024}, time.Now()); err != nil || report.SizeEvictedBytes < 2048 || report.RetainedBytes > 1024 {
 				t.Fatalf("hook retained cache protection after cleanup: %#v, %v", report, err)

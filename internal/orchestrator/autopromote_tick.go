@@ -53,13 +53,6 @@ type autoPromoteTickResult struct {
 	dispatchCandidates []connector.Issue
 }
 
-type staleMergingPullRequestDecision struct {
-	targetState         string
-	reason              string
-	operationalEvidence string
-	workpadURL          string
-}
-
 type mergeBaseRefreshDecision struct {
 	applicable bool
 	proceed    bool
@@ -102,7 +95,6 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 			if handled, transitioned := o.parkRepeatedMergeRevocations(ctx, state, issue, now); handled {
 				if transitioned {
 					result.transitioned[issueID] = struct{}{}
-					o.clearAutoPromotedIssueDispatchMemory(state, issueID)
 				}
 				continue
 			}
@@ -352,7 +344,7 @@ func (o *Orchestrator) autoPromoteEvaluationIssues(
 			if _, running := state.Running[issueID]; running {
 				continue
 			}
-			if _, included := seen[issueID]; included || o.issueHasStickyBlockReason(ctx, state, issue) || issueBlockedByNonTerminal(issue, o.cfg.TerminalStates) {
+			if _, included := seen[issueID]; included || issueBlockedByNonTerminal(issue, o.cfg.TerminalStates) {
 				continue
 			}
 			entry, ok := o.latestWorkflowLaneEntry(ctx, issue)
@@ -678,10 +670,7 @@ func (o *Orchestrator) recentAgentTerminalAttempts(
 	if o == nil || o.workAttempts == nil {
 		return nil, nil
 	}
-	limit := normalizeAutoPromoteConfig(o.cfg.AutoPromote).NoProgressLimit + 1
-	if limit < 20 {
-		limit = 20
-	}
+	limit := 20
 	attempts, err := o.workAttempts.ListRecentTerminalWorkAttempts(ctx, store.WorkAttemptHistoryQuery{
 		ProjectID:  strings.TrimSpace(o.cfg.Project.ID),
 		IssueID:    strings.TrimSpace(issue.ID),
@@ -1274,6 +1263,9 @@ func (o *Orchestrator) reconcileStaleLinkedPullRequestIssues(
 	issues []connector.Issue,
 	now time.Time,
 ) map[string]struct{} {
+	if o.nativeWorkflow() {
+		return nil
+	}
 	transitioned := map[string]struct{}{}
 	for _, issue := range issuesInStates(issues, staleLinkedPullRequestReconciliationStates(o.cfg)) {
 		issueID := strings.TrimSpace(issue.ID)
@@ -1371,262 +1363,6 @@ func (o *Orchestrator) reconcileStaleLinkedPullRequestIssues(
 func staleLinkedPullRequestReconciliationStates(cfg Config) []string {
 	autoCfg := normalizeAutoPromoteConfig(cfg.AutoPromote)
 	return appendUniqueStates(cfg.ActiveStates, cfg.ObservedStates, []string{autoCfg.SourceState})
-}
-
-func (o *Orchestrator) reconcileStaleMergingPullRequestIssues(
-	ctx context.Context,
-	state *State,
-	issues []connector.Issue,
-	now time.Time,
-) map[string]struct{} {
-	// A hub-native project's Merging lane holds reviewed Change Requests the
-	// runner lands; there is no pull request whose state could make them
-	// stale, so this reconciliation, which reads PR state, does not apply.
-	if o.nativeWorkflow() {
-		return nil
-	}
-	transitioned := map[string]struct{}{}
-	o.recordMergeQueueEntries(state, issues, now, "tracker")
-	consumedRepositories := activeMergeWorkerRepositories(state)
-	for _, issue := range staleMergingQueueIssues(issues, o.cfg, state, now) {
-		issueID := strings.TrimSpace(issue.ID)
-		if issueID == "" {
-			continue
-		}
-		if _, deferred := state.nativeMergeQueueDeferred[issueID]; deferred {
-			continue
-		}
-		if nativeMergeQueueHasEntry(state, issue) && issue.PullRequest != nil && normalizePullRequestState(issue.PullRequest.State) == "open" {
-			continue
-		}
-		repository := nativeMergeQueueRepositoryKey(issue)
-		if issue.PullRequest != nil && issue.PullRequest.Draft {
-			var hydrated bool
-			issue, hydrated = o.hydrateAutoPromoteReviewThreads(ctx, issue)
-			if !hydrated {
-				continue
-			}
-		}
-		decision := staleMergingPullRequestDecisionForIssue(issue, o.cfg)
-		if mergeWorkerRepositoryConsumed(consumedRepositories, repository) &&
-			decision.reason != string(AutoPromoteReasonCINotGreen) && decision.reason != string(AutoPromoteReasonUnresolvedReviewThreads) {
-			continue
-		}
-		if staleMergingPullRequestDispatchActive(state, issueID) {
-			continue
-		}
-		if decision.reason == string(AutoPromoteReasonOperationalCompletion) {
-			_, completed, err := o.latestSuccessfulOperationalCompletionAttempt(ctx, issue)
-			if err != nil {
-				if o.logger != nil {
-					o.logger.Warn(
-						"stale operational completion reconciliation failed",
-						"issue_id", issueID,
-						"identifier", issue.Identifier,
-						"error", err,
-					)
-				}
-				consumedRepositories = consumeMergeWorkerRepository(consumedRepositories, repository)
-				continue
-			}
-			if !completed {
-				o.logStaleMergingPullRequestDeferred(issue, decision)
-				consumedRepositories = consumeMergeWorkerRepository(consumedRepositories, repository)
-				continue
-			}
-		}
-		if decision.reason == string(AutoPromoteReasonCINotGreen) &&
-			o.retryTransientPullRequestChecks(ctx, state, issue, now, decision.reason) {
-			consumedRepositories = consumeMergeWorkerRepository(consumedRepositories, repository)
-			continue
-		}
-		if decision.targetState == "" {
-			if strings.TrimSpace(decision.reason) != "" {
-				o.logStaleMergingPullRequestDeferred(issue, decision)
-			}
-			consumedRepositories = consumeMergeWorkerRepository(consumedRepositories, repository)
-			continue
-		}
-		if !o.applyStaleMergingPullRequestDecision(ctx, state, issue, decision, now) {
-			consumedRepositories = consumeMergeWorkerRepository(consumedRepositories, repository)
-			continue
-		}
-		transitioned[issueID] = struct{}{}
-		o.clearAutoPromotedIssueDispatchMemory(state, issueID)
-	}
-	if len(transitioned) == 0 {
-		return nil
-	}
-	return transitioned
-}
-
-func staleMergingPullRequestDecisionForIssue(issue connector.Issue, cfg Config) staleMergingPullRequestDecision {
-	if strings.TrimSpace(issue.ID) == "" {
-		return staleMergingPullRequestDecision{}
-	}
-	if closedCompletedIssueNeedsStatusReconciliation(issue, cfg.TerminalStates) {
-		return staleMergingPullRequestDecision{targetState: doneStateName(cfg.TerminalStates), reason: "issue_closed_completed"}
-	}
-	if completion, ok := operationalCompletionFromIssue(issue); ok {
-		return staleMergingPullRequestDecision{
-			targetState:         doneStateName(cfg.TerminalStates),
-			reason:              string(AutoPromoteReasonOperationalCompletion),
-			operationalEvidence: completion.evidence,
-			workpadURL:          completion.workpadURL,
-		}
-	}
-	if _, revoked := mergeApprovalLabelRevoked(issue, cfg); revoked {
-		return staleMergingPullRequestDecision{
-			targetState: normalizeAutoPromoteConfig(cfg.AutoPromote).reviewTargetState(),
-			reason:      mergeRevocationApprovalLabelRemoved,
-		}
-	}
-	pullRequest := issue.PullRequest
-	if pullRequest == nil {
-		return staleMergingPullRequestDecision{targetState: normalizeAutoPromoteConfig(cfg.AutoPromote).reviewTargetState(), reason: string(AutoPromoteReasonMissingPullRequest)}
-	}
-	pullRequestState := normalizePullRequestState(pullRequest.State)
-	if pullRequestState == "" && pullRequestHydrationBlocksProgress(pullRequest) {
-		return staleMergingPullRequestDecision{reason: string(AutoPromoteReasonPullRequestHydrationUnavailable)}
-	}
-	switch pullRequestState {
-	case "merged":
-		return staleMergingPullRequestDecision{targetState: doneStateName(cfg.TerminalStates), reason: "pull_request_merged"}
-	case "open":
-		if pullRequestHydrationBlocksProgress(pullRequest) {
-			return staleMergingPullRequestDecision{reason: string(AutoPromoteReasonPullRequestHydrationUnavailable)}
-		}
-		if _, revoked := mergeCITriggerLabelRevoked(issue, cfg); revoked {
-			return staleMergingPullRequestDecision{
-				targetState: normalizeAutoPromoteConfig(cfg.AutoPromote).reviewTargetState(),
-				reason:      mergeRevocationCITriggerLabelRemoved,
-			}
-		}
-		if pullRequest.Draft {
-			return draftMergingPullRequestDecision(issue, cfg)
-		}
-		if mergeWorkerCIFailed(pullRequest) {
-			return staleMergingPullRequestDecision{targetState: autoPromoteReworkState, reason: string(AutoPromoteReasonCINotGreen)}
-		}
-		return staleMergingPullRequestDecision{}
-	default:
-		return staleMergingPullRequestDecision{targetState: autoPromoteReworkState, reason: "pull_request_not_open"}
-	}
-}
-
-func (o *Orchestrator) applyStaleMergingPullRequestDecision(
-	ctx context.Context,
-	state *State,
-	issue connector.Issue,
-	decision staleMergingPullRequestDecision,
-	now time.Time,
-) bool {
-	issueID := strings.TrimSpace(issue.ID)
-	if err := o.updateIssueStateByID(ctx, state, issueID, issue, decision.targetState, now, decision.reason); err != nil {
-		if o.logger != nil {
-			o.logger.Warn(
-				"stale_merging_pr_reconciliation_failed",
-				"issue_id", issueID,
-				"identifier", issue.Identifier,
-				"reason", decision.reason,
-				"target_state", decision.targetState,
-				"error", err,
-			)
-		}
-		return false
-	}
-
-	body := staleMergingPullRequestComment(issue, decision)
-	body = o.completedIssueClosureComment(body, issue, decision.targetState, decision.reason)
-	if strings.TrimSpace(body) != "" {
-		if err := o.connector.CreateComment(ctx, issueID, body); err != nil && o.logger != nil {
-			o.logger.Warn(
-				"stale_merging_pr_reconciliation_comment_failed",
-				"issue_id", issueID,
-				"identifier", issue.Identifier,
-				"reason", decision.reason,
-				"target_state", decision.targetState,
-				"error", err,
-			)
-		}
-	}
-
-	o.logStaleMergingPullRequestDecision(issue, decision)
-	if decision.reason != string(AutoPromoteReasonOperationalCompletion) {
-		if normalizeState(decision.targetState) == normalizeState(doneStateName(o.cfg.TerminalStates)) {
-			o.recordMergeCompleted(state, issue, now, decision.targetState)
-		} else {
-			o.recordMergeFailed(state, issue, now, decision.reason, nil)
-		}
-	}
-	recordStateEvent(state, telemetry.ActivityEvent{
-		At:      now,
-		Event:   "stale_merging_pr_reconciled",
-		Message: "reconciled stale Merging PR for " + issueLabel(issue) + " to " + decision.targetState + ": " + decision.reason,
-	})
-	return true
-}
-
-func staleMergingPullRequestComment(issue connector.Issue, decision staleMergingPullRequestDecision) string {
-	if issue.PullRequest != nil && issue.PullRequest.Draft {
-		if handoff := mergeReworkComment(issue, decision.reason, decision.targetState); handoff != "" {
-			return handoff
-		}
-	}
-	var b strings.Builder
-	b.WriteString("Reconciled this issue from Merging to ")
-	b.WriteString(decision.targetState)
-	b.WriteString(".")
-	b.WriteString("\n\n- reason: ")
-	b.WriteString(decision.reason)
-	if evidence := strings.TrimSpace(decision.operationalEvidence); evidence != "" {
-		b.WriteString("\n- operational_evidence: ")
-		b.WriteString(evidence)
-	}
-	if url := strings.TrimSpace(decision.workpadURL); url != "" {
-		b.WriteString("\n- workpad_comment: ")
-		b.WriteString(url)
-	}
-	if issue.PullRequest != nil {
-		if url := strings.TrimSpace(issue.PullRequest.URL); url != "" {
-			b.WriteString("\n- pull request: ")
-			b.WriteString(url)
-		}
-		if mergeableState := strings.ToLower(strings.TrimSpace(issue.PullRequest.MergeableState)); mergeableState != "" {
-			b.WriteString("\n- mergeable_state: ")
-			b.WriteString(mergeableState)
-		}
-		if ciStatus := strings.TrimSpace(issue.PullRequest.CIStatus); ciStatus != "" {
-			b.WriteString("\n- ci_status: ")
-			b.WriteString(ciStatus)
-		}
-	}
-	return b.String()
-}
-
-func (o *Orchestrator) logStaleMergingPullRequestDecision(issue connector.Issue, decision staleMergingPullRequestDecision) {
-	if o.logger == nil {
-		return
-	}
-	attrs := mergeWorkerLogAttrs(issue,
-		"reason", decision.reason,
-		"target_state", decision.targetState,
-	)
-	if evidence := strings.TrimSpace(decision.operationalEvidence); evidence != "" {
-		attrs = append(attrs, "operational_evidence", evidence)
-	}
-	if url := strings.TrimSpace(decision.workpadURL); url != "" {
-		attrs = append(attrs, "workpad_comment_url", url)
-	}
-	o.logger.Info("stale_merging_pr_reconciled", attrs...)
-}
-
-func (o *Orchestrator) logStaleMergingPullRequestDeferred(issue connector.Issue, decision staleMergingPullRequestDecision) {
-	if o.logger == nil {
-		return
-	}
-	attrs := mergeWorkerLogAttrs(issue, "reason", decision.reason)
-	o.logger.Info("stale_merging_pr_reconciliation_deferred", attrs...)
 }
 
 func (o *Orchestrator) logMergeWorkerPickup(issue connector.Issue, source string, attrs ...any) {
@@ -2609,7 +2345,7 @@ func (o *Orchestrator) startValidatorStage(ctx context.Context, state *State, is
 
 	// An active run owns this head until it finishes. Avoid hydrating the PR
 	// again on every tick while that run is in progress.
-	if key := validatorStageIdentityForIssue(issue, o.cfg.AutoPromote.Gate).Key; key != "" {
+	if key := o.validatorStageIdentity(issue).Key; key != "" {
 		o.validatorMu.Lock()
 		_, running := o.validatorRuns[key]
 		o.validatorMu.Unlock()
@@ -2624,7 +2360,7 @@ func (o *Orchestrator) startValidatorStage(ctx context.Context, state *State, is
 			return
 		}
 	}
-	identity := validatorStageIdentityForIssue(issue, o.cfg.AutoPromote.Gate)
+	identity := o.validatorStageIdentity(issue)
 	if identity.Key == "" {
 		if o.logger != nil {
 			o.logger.Error(
@@ -2864,7 +2600,7 @@ func (o *Orchestrator) startValidatorStage(ctx context.Context, state *State, is
 		}
 		if _, canHydrate := o.connector.(connector.PullRequestHydrator); canHydrate {
 			if current, ok := o.hydrateValidatorStagePullRequest(ctx, issue); ok {
-				if validatorStageIdentityForIssue(current, o.cfg.AutoPromote.Gate).Key != identity.Key {
+				if o.validatorStageIdentity(current).Key != identity.Key {
 					// The reviewed diff no longer describes the PR. Let the next
 					// tick validate its current identity instead of storing a verdict.
 					o.validatorMu.Lock()
@@ -2884,7 +2620,7 @@ func (o *Orchestrator) startValidatorStage(ctx context.Context, state *State, is
 			}
 		}
 		currentIssue, currentContext := o.refreshValidatorContext(ctx, issue)
-		if !currentContext || validatorStageIdentityForIssue(currentIssue, o.cfg.AutoPromote.Gate).Key != identity.Key {
+		if !currentContext || o.validatorStageIdentity(currentIssue).Key != identity.Key {
 			o.validatorMu.Lock()
 			o.validatorTokenTotals = addTokenTotals(o.validatorTokenTotals, o.validatorRuns[identity.Key].withProgress().Tokens)
 			delete(o.validatorRuns, identity.Key)
@@ -2913,7 +2649,7 @@ func (o *Orchestrator) validatorStageResult(ctx context.Context, issue connector
 // validatorStageResultForInput consumes the current task snapshot supplied by
 // refreshValidatorContext; routing, dispatch and reporting share this lookup.
 func (o *Orchestrator) validatorStageResultForInput(ctx context.Context, issue connector.Issue) (gate.ValidatorResult, bool, bool) {
-	identity := validatorStageIdentityForIssue(issue, o.cfg.AutoPromote.Gate)
+	identity := o.validatorStageIdentity(issue)
 	if identity.Key == "" {
 		return gate.ValidatorResult{}, false, false
 	}
@@ -2937,7 +2673,7 @@ func (o *Orchestrator) validatorStageResultForInput(ctx context.Context, issue c
 }
 
 func (o *Orchestrator) markValidatorResultCommented(ctx context.Context, issue connector.Issue) {
-	identity := validatorStageIdentityForIssue(issue, o.cfg.AutoPromote.Gate)
+	identity := o.validatorStageIdentity(issue)
 	if identity.Key == "" {
 		return
 	}
@@ -2963,7 +2699,7 @@ func (o *Orchestrator) commentValidatorResult(ctx context.Context, issue connect
 	if repository == "" || number <= 0 {
 		return
 	}
-	if err := commenter.CreatePullRequestComment(ctx, repository, number, validatorResultComment(result, runpkg.ValidationContextDigest(issue, o.cfg.AutoPromote.Gate))); err != nil && o.logger != nil {
+	if err := commenter.CreatePullRequestComment(ctx, repository, number, validatorResultComment(result, o.validatorStageIdentity(issue).ContextDigest)); err != nil && o.logger != nil {
 		o.logger.Warn(
 			"validator result comment failed",
 			"issue_id", strings.TrimSpace(issue.ID),
@@ -3042,12 +2778,20 @@ type validatorStageIdentity struct {
 	PRNumber      int
 }
 
+func (o *Orchestrator) validatorStageIdentity(issue connector.Issue) validatorStageIdentity {
+	return validatorStageIdentityForWorkflow(issue, o.cfg.AutoPromote.Gate, o.cfg.AutoPromote.ValidatorWorkflow)
+}
+
 func validatorStageIdentityForIssue(issue connector.Issue, policies ...gate.Config) validatorStageIdentity {
 	var policy gate.Config
 	if len(policies) > 0 {
 		policy = policies[0]
 	}
-	digest := runpkg.ValidationContextDigest(issue, policy)
+	return validatorStageIdentityForWorkflow(issue, policy, "")
+}
+
+func validatorStageIdentityForWorkflow(issue connector.Issue, policy gate.Config, workflow string) validatorStageIdentity {
+	digest := runpkg.ValidationContextDigest(issue, policy, workflow)
 	issueID := strings.TrimSpace(issue.ID)
 	if issueID == "" {
 		return validatorStageIdentity{}
@@ -3281,11 +3025,15 @@ func storeFindingsFromGate(findings []gate.Finding) []store.ValidatorFinding {
 	out := make([]store.ValidatorFinding, 0, len(findings))
 	for _, finding := range findings {
 		out = append(out, store.ValidatorFinding{
-			Severity: finding.Severity,
-			Body:     finding.Body,
-			URL:      finding.URL,
-			Path:     finding.Path,
-			Line:     finding.Line,
+			Attribution:         finding.Attribution,
+			AttributionEvidence: finding.AttributionEvidence,
+			CheckCommand:        finding.CheckCommand,
+			CheckDiagnostic:     finding.CheckDiagnostic,
+			Severity:            finding.Severity,
+			Body:                finding.Body,
+			URL:                 finding.URL,
+			Path:                finding.Path,
+			Line:                finding.Line,
 		})
 	}
 	return out
@@ -3295,11 +3043,15 @@ func gateFindingsFromStore(findings []store.ValidatorFinding) []gate.Finding {
 	out := make([]gate.Finding, 0, len(findings))
 	for _, finding := range findings {
 		out = append(out, gate.Finding{
-			Severity: finding.Severity,
-			Body:     finding.Body,
-			URL:      finding.URL,
-			Path:     finding.Path,
-			Line:     finding.Line,
+			Attribution:         finding.Attribution,
+			AttributionEvidence: finding.AttributionEvidence,
+			CheckCommand:        finding.CheckCommand,
+			CheckDiagnostic:     finding.CheckDiagnostic,
+			Severity:            finding.Severity,
+			Body:                finding.Body,
+			URL:                 finding.URL,
+			Path:                finding.Path,
+			Line:                finding.Line,
 		})
 	}
 	return out
@@ -3500,17 +3252,15 @@ func autoPromoteCheckFailed(check connector.PullRequestCheck) bool {
 	}
 }
 
-// Non-review decisions use the configured Blocked lane unless the project or
-// issue explicitly requests human review. Preserve legacy routing without it.
 func (o *Orchestrator) nonReviewDecisionTargetState(issue connector.Issue, fallback string) string {
+	if explicitHumanAction(issue) != "" {
+		return blockedStatusState
+	}
 	cfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
 	if cfg.humanReviewEnabled() && (gate.Effective(cfg.Gate).Kind == gate.KindHumanReview || autoPromoteOptoutLabel(issue, cfg)) {
 		return fallback
 	}
-	if stateIn(blockedStatusState, o.cfg.ActiveStates) || stateIn(blockedStatusState, o.cfg.ObservedStates) {
-		return blockedStatusState
-	}
-	return fallback
+	return cfg.ReworkState
 }
 
 func autoPromoteTargetState(action AutoPromoteAction, cfg AutoPromoteConfig) string {

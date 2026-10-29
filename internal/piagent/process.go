@@ -94,7 +94,7 @@ func (b *AgentBackend) RunTurn(ctx context.Context, req runner.AgentTurnRequest,
 	defer closePipe(stderrWriter, &turnErr)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = inputReader, outputWriter, stderrWriter
 	procgroup.Configure(ctx, cmd)
-	if err := cmd.Start(); err != nil {
+	if err := procgroup.Start(cmd); err != nil {
 		return result, &infrastructureError{err: fmt.Errorf("start Pi RPC: %w", err), startup: true}
 	}
 	groupID := procgroup.GroupID(cmd)

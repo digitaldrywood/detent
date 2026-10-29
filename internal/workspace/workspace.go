@@ -25,6 +25,7 @@ import (
 
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
 	"github.com/digitaldrywood/detent/internal/toolcache"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 const (
@@ -58,7 +59,7 @@ var unsafeKeyPattern = regexp.MustCompile(`[^A-Za-z0-9._-]`)
 const autoBranchPrefix = "detent/"
 
 // workspaceSessionBranchPrefix names the auto-branch of a workspace session
-// worktree (decisions 18.1, `worktree: "fresh"`). Such a worktree serves a
+// worktree (`worktree: "fresh"`). Such a worktree serves a
 // read-only checkout of a `head_sha` somebody asked to look at; it produces no
 // commits of its own, so cleanup removes its branch rather than retaining it
 // the way it retains an attempt's branch. Keys never contain "/"
@@ -249,6 +250,11 @@ type ResidualReconciler interface {
 }
 
 type Issue struct {
+	CleanupInUse               bool
+	cleanupPublishedReviewHead string
+
+	ReviewVersionID         string
+	ReleaseDelivery         *tracker.ReleaseDelivery
 	Source                  *ChangeSource
 	Checkpoint              *CheckpointRef
 	Landing                 *LandOptions
@@ -267,8 +273,8 @@ type Issue struct {
 	PullRequestRepository   string
 	PullRequestNumber       int
 	PullRequestBranch       string
-	// WorkspaceSession marks a workspace session checkout (decisions 18.1
-	// `worktree: "fresh"`): a worktree opened so a person can look at a
+	// WorkspaceSession marks a workspace session checkout
+	// (`worktree: "fresh"`): a worktree opened so a person can look at a
 	// commit, not one an attempt commits into. It takes its own branch
 	// namespace so cleanup can tell the two apart.
 	WorkspaceSession bool
@@ -303,6 +309,8 @@ type LocalGitOptions struct {
 }
 
 type LocalGit struct {
+	cleanupInventory *cleanupInventoryScanner
+
 	commits            commitPolicy
 	uses               *workspaceUses
 	root               string
@@ -503,6 +511,9 @@ func ReconfigureBackendContext(ctx context.Context, current Backend, kind string
 		uses = previous.uses
 		if next, ok := backend.(*LocalGit); ok {
 			next.createMu = previous.createMu
+			if next.root == previous.root && next.sourceRoot == previous.sourceRoot {
+				next.cleanupInventory = previous.cleanupInventory
+			}
 		}
 	case *Filesystem:
 		uses = previous.uses
@@ -563,6 +574,7 @@ func newLocalGitContext(ctx context.Context, opts LocalGitOptions, policy *commi
 	logger.Info("runner commit policy", "identity", commits.report.Identity, "signing", commits.report.Signing)
 	return &LocalGit{
 		uses:               &workspaceUses{},
+		cleanupInventory:   &cleanupInventoryScanner{},
 		createMu:           &sync.Mutex{},
 		commits:            commits,
 		root:               root,
@@ -674,7 +686,11 @@ func issueKey(issue Issue) string {
 	if project := nativeProjectID(issue); project != "" {
 		issue.ProjectID = project
 	}
-	return legacyIssueKey(issue)
+	key := legacyIssueKey(issue)
+	if issue.ReviewVersionID != "" {
+		key += "-review-" + SafeKey(issue.ReviewVersionID)
+	}
+	return key
 }
 
 func legacyIssueKey(issue Issue) string {
@@ -702,6 +718,18 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 			return Info{}, err
 		}
 		err = l.importChangeSource(ctx, issue.Source)
+		release()
+		if err != nil {
+			return Info{}, err
+		}
+	}
+	deliveryHead := ""
+	if issue.ReleaseDelivery != nil && issue.Landing == nil {
+		release, err := l.acquireSourceOperation(ctx)
+		if err != nil {
+			return Info{}, err
+		}
+		deliveryHead, err = l.prepareReleaseDelivery(ctx, issue)
 		release()
 		if err != nil {
 			return Info{}, err
@@ -764,6 +792,12 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 		info, created, err = l.createLandingWorktree(ctx, info, issue)
 	} else {
 		head := "HEAD"
+		if issue.FreshCheckout && issue.BaseRef != "" {
+			head = issue.BaseRef
+		}
+		if deliveryHead != "" {
+			head = deliveryHead
+		}
 		if issue.Source != nil {
 			head = issue.Source.Version.HeadSHA
 		}
@@ -808,10 +842,8 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 		created = created || restored
 		info.Created = created
 	}
-	if issue.Landing != nil {
-		if err := l.recordCleanupOwnership(ctx, info, issue, true); err != nil {
-			return Info{}, err
-		}
+	if err := l.recordCleanupOwnership(ctx, info, issue, true); err != nil {
+		return Info{}, err
 	}
 
 	if created {
@@ -830,12 +862,12 @@ func (l *LocalGit) createWorktree(ctx context.Context, path string, branch strin
 	if len(sourceHead) > 0 {
 		baseRef = sourceHead[0]
 	}
+	release, err := l.acquireSourceOperation(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer release()
 	if fresh {
-		release, err := l.acquireSourceOperation(ctx)
-		if err != nil {
-			return false, err
-		}
-		defer release()
 		if err := l.releaseBranchHolders(ctx, branch, path); err != nil {
 			return false, err
 		}
@@ -873,7 +905,29 @@ func (l *LocalGit) CleanupIssue(ctx context.Context, issue Issue) (CleanupResult
 		return CleanupResult{}, err
 	}
 
-	return l.cleanupWorkspace(ctx, info, issue)
+	result, cleanupErr := l.cleanupWorkspace(ctx, info, issue)
+	if issue.ReviewVersionID != "" {
+		return result, cleanupErr
+	}
+	inventory, err := l.cleanupRecords(ctx)
+	if err != nil {
+		return result, errors.Join(cleanupErr, err)
+	}
+	for _, record := range inventory.records {
+		review := record.issue()
+		if review.ReviewVersionID == "" || review.ID != "" && review.ID != issue.ID || review.Identifier != issue.Identifier || nativeProjectID(issue) == "" && review.ProjectID != issue.ProjectID {
+			continue
+		}
+		review.Terminal = issue.Terminal
+		review.LandedHeadSHA = issue.LandedHeadSHA
+		review.CleanupDeliveredHeadSHA = issue.CleanupDeliveredHeadSHA
+		cleaned, err := l.cleanupWorkspace(ctx, Info{Path: record.Path, Key: record.Key, Branch: record.Branch}, review)
+		result.Worktrees += cleaned.Worktrees
+		result.Branches += cleaned.Branches
+		result.Processes += cleaned.Processes
+		cleanupErr = errors.Join(cleanupErr, err)
+	}
+	return result, cleanupErr
 }
 
 func (l *LocalGit) cleanupWorkspace(ctx context.Context, info Info, issue Issue) (CleanupResult, error) {
@@ -885,6 +939,13 @@ func (l *LocalGit) cleanupWorkspace(ctx context.Context, info Info, issue Issue)
 	defer release()
 	if sessionHeld(info.Path) {
 		return result, fmt.Errorf("%w: an open workspace session holds %s", ErrWorkspacePreserved, info.Path)
+	}
+	issue.cleanupPublishedReviewHead = ""
+	if issue.ReviewVersionID != "" {
+		relative := cleanupOwnershipRecordRelativePath(info.Path)
+		if record, err := l.readOwnershipRecord(relative); err == nil && l.validOwnershipRecord(ctx, relative, record) {
+			issue.cleanupPublishedReviewHead = record.ReviewHeadSHA
+		}
 	}
 	if err := l.checkWorkspaceCleanup(ctx, info, issue); err != nil {
 		return result, err
@@ -1073,6 +1134,10 @@ func (l *LocalGit) branchName(issue Issue, key string) string {
 	if issue.WorkspaceSession {
 		return workspaceSessionBranchName(key)
 	}
+	if issue.ReviewVersionID != "" {
+		digest := sha256.Sum256([]byte(l.root))
+		return fmt.Sprintf("%s%s-%x", autoBranchPrefix, strings.ToLower(key), digest[:6])
+	}
 	if strings.TrimSpace(issue.BranchName) != "" {
 		return strings.TrimSpace(issue.BranchName)
 	}
@@ -1202,8 +1267,20 @@ func (l *LocalGit) addBranchedWorktree(ctx context.Context, path string, branch 
 			return err
 		}
 		if exists {
-			if err := l.releaseBranchHolders(ctx, branch, path); err != nil {
-				return err
+			if len(sourceHead) == 0 || sourceHead[0] == "HEAD" {
+				baseRef, err := l.newBranchBaseRef(ctx)
+				if err != nil {
+					return err
+				}
+				_, err = l.runGit(ctx, "merge-base", "--is-ancestor", branch, baseRef)
+				if err == nil {
+					_, err = l.runGit(ctx, "worktree", "add", "-B", branch, path, baseRef)
+					return err
+				}
+				var commandErr *CommandError
+				if !errors.As(err, &commandErr) || commandErr.ExitCode != 1 {
+					return err
+				}
 			}
 			_, err = l.runGit(ctx, "worktree", "add", path, branch)
 			return err
@@ -1359,7 +1436,7 @@ func (l *LocalGit) newBranchStartRef(ctx context.Context, branch string) (string
 		}
 		if exists {
 			ref := "refs/remotes/" + defaultGitRemote + "/" + branch
-			if _, err := l.runGit(ctx, "fetch", defaultGitRemote, "+refs/heads/"+branch+":"+ref); err != nil {
+			if _, err := l.runGit(ctx, remoteGitArgs("fetch", defaultGitRemote, "+refs/heads/"+branch+":"+ref)...); err != nil {
 				return "", fmt.Errorf("fetch published workspace branch: %w", err)
 			}
 			return ref, nil
@@ -1383,7 +1460,7 @@ func (l *LocalGit) newBranchBaseRef(ctx context.Context) (string, error) {
 	}
 	remoteRef := defaultGitRemote + "/" + branch
 	refspec := "+refs/heads/" + branch + ":refs/remotes/" + remoteRef
-	if _, err := l.runGit(ctx, "fetch", defaultGitRemote, refspec); err != nil {
+	if _, err := l.runGit(ctx, remoteGitArgs("fetch", defaultGitRemote, refspec)...); err != nil {
 		return "", fmt.Errorf("fetch remote default branch %s: %w", remoteRef, err)
 	}
 	return remoteRef, nil
@@ -2452,7 +2529,8 @@ func runGitAt(ctx context.Context, dir string, args ...string) (string, error) {
 }
 
 func runGitAtWithEnv(ctx context.Context, dir string, env []string, args ...string) (string, error) {
-	return runGitAtWithEnvCapture(ctx, dir, env, false, args...)
+	fileOutput := len(args) >= 2 && args[0] == "worktree" && args[1] == "add"
+	return runGitAtWithEnvCapture(ctx, dir, env, fileOutput, args...)
 }
 
 func runGitAtWithEnvCapture(ctx context.Context, dir string, env []string, fileOutput bool, args ...string) (string, error) {
@@ -2473,9 +2551,7 @@ func runGitAtWithInput(ctx context.Context, dir string, env []string, fileOutput
 	var output []byte
 	var err error
 	if fileOutput {
-		// A completed identity query must not depend on an inherited output pipe
-		// closing within WaitDelay under heavy subprocess load.
-		file, createErr := os.CreateTemp("", "detent-git-common-dir-*")
+		file, createErr := os.CreateTemp("", "detent-git-output-*")
 		if createErr != nil {
 			return "", fmt.Errorf("create git output file: %w", createErr)
 		}

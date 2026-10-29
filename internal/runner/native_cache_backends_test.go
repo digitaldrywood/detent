@@ -8,13 +8,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/digitaldrywood/detent/internal/claudecode"
 	"github.com/digitaldrywood/detent/internal/codex"
 	"github.com/digitaldrywood/detent/internal/piagent"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/testenv"
 )
 
 var nativeCacheVariables = []string{"GOCACHE", "GOMODCACHE", "GOBIN", "GOLANGCI_LINT_CACHE", "GOFLAGS", "npm_config_cache", "PNPM_HOME", "YARN_CACHE_FOLDER", "CARGO_HOME", "CARGO_TARGET_DIR", "PIP_CACHE_DIR", "UV_CACHE_DIR", "PLAYWRIGHT_BROWSERS_PATH", "DOCKER_CONFIG"}
@@ -87,7 +87,7 @@ func TestINV12BackendToolchainEnvironment(t *testing.T) {
 						variables[name] = "operator-value"
 					}
 				}
-				ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+				ctx, cancel := context.WithCancel(testenv.WaitContext(t, t.Context()))
 				defer cancel()
 				_, err := backend.RunTurn(ctx, runner.AgentTurnRequest{Workspace: root, TempDir: root, Environment: procgroup.Environment{Variables: variables}}, nil)
 				if err == nil {

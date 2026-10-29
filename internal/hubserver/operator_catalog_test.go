@@ -150,7 +150,12 @@ func TestHubCatalogProviderCalls(t *testing.T) {
 							if hasRunnerTool != wantRunners {
 								t.Fatalf("runner tool visibility=%v, grants=%v", hasRunnerTool, test.runners)
 							}
-							projectTools := []string{operatortool.FileIssue, operatortool.EditItem, operatortool.CreateChange, "save_onboarding"}
+							for _, name := range []string{"list_threads", "get_thread"} {
+								if !slices.ContainsFunc(definitions, func(d operatortool.Definition) bool { return d.Name == name }) {
+									t.Fatalf("thread read tool %s is hidden", name)
+								}
+							}
+							projectTools := []string{operatortool.FileIssue, operatortool.EditItem, operatortool.CreateChange, "save_onboarding", "create_thread", "post_to_thread", "resolve_thread"}
 							if part.name == "combined with services" {
 								projectTools = append(projectTools, "create_workspace")
 							}

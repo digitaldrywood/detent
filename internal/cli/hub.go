@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"runtime"
 	"strings"
 	"time"
 
@@ -53,6 +54,7 @@ func newHubCommand(opts options) *cobra.Command {
 		return hubserver.Run(ctx, cfg)
 	}
 	cmd := newHubCommandWithRun(opts.version, opts.lookupEnv, run)
+	cmd.AddCommand(newCITriggerLabelCommand(opts))
 	for _, child := range cmd.Commands() {
 		if child.Name() == "runner" {
 			child.AddCommand(newHubRunnerRegisterCommand(opts.version, opts.lookupEnv, runnerServiceStarterFor(opts)))
@@ -62,6 +64,13 @@ func newHubCommand(opts options) *cobra.Command {
 }
 
 func runnerServiceStarterFor(opts options) runnerServiceStarter {
+	return runnerServiceStarterForOS(opts, runtime.GOOS)
+}
+
+func runnerServiceStarterForOS(opts options, goos string) runnerServiceStarter {
+	if goos != "darwin" && goos != "linux" && goos != "windows" {
+		return nil
+	}
 	return func(cmd *cobra.Command, configPath string) error {
 		host, port := "", -1
 		if flagChanged(cmd, "port") {
@@ -176,6 +185,11 @@ func newHubServeCommand(version string, lookupEnv func(string) string, run hubRu
 					}
 				}()
 				hosted.SharedEntry.ResolveKey = authority.Resolve
+				hosted.SharedEntry.ReadArchive = authority.ReadArchive
+				hosted.SharedEntry.ArchiveContents = authority
+				hosted.SharedEntry.Content = authority.Content
+				hosted.SharedEntry.RunDetails = authority
+				hosted.SharedEntry.Icons = authority
 			}
 			var conversation *hubserver.ConversationConfig
 			if hosted != nil {

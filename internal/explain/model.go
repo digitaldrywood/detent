@@ -71,6 +71,7 @@ type Query struct {
 }
 
 type IssueExplanation struct {
+	ChangeSequence   int64                          `json:"change_sequence,omitempty"`
 	FailureSignature *FailureSignature              `json:"failure_signature,omitempty"`
 	NativeRuntime    *tracker.NativeRuntimeEvidence `json:"native_runtime,omitempty"`
 	Schema           int                            `json:"schema"`
@@ -86,7 +87,6 @@ type IssueExplanation struct {
 	Sessions         Sessions                       `json:"sessions"`
 	PullRequest      *PullRequest                   `json:"pull_request,omitempty"`
 	RequiredGate     Gate                           `json:"required_gate"`
-	ParkSummary      ParkSummary                    `json:"park_summary"`
 	Reasons          []Reason                       `json:"reasons"`
 	Sources          []SourceStatus                 `json:"sources"`
 	Evidence         []EvidenceReference            `json:"evidence"`
@@ -102,29 +102,6 @@ type Reason struct {
 	Code   string `json:"code"`
 	Detail string `json:"detail"`
 	Action string `json:"action,omitempty"`
-}
-
-type ParkSummary struct {
-	AttemptCount             int64              `json:"attempt_count"`
-	ParkCount                int64              `json:"park_count"`
-	AcknowledgedParkSequence int64              `json:"acknowledged_park_sequence"`
-	AcknowledgedAt           *time.Time         `json:"acknowledged_at,omitempty"`
-	Causes                   []ParkCauseSummary `json:"causes"`
-	Tokens                   ParkTokenTotals    `json:"tokens"`
-}
-
-type ParkCauseSummary struct {
-	Cause   string    `json:"cause"`
-	Count   int64     `json:"count"`
-	FirstAt time.Time `json:"first_at"`
-	LastAt  time.Time `json:"last_at"`
-}
-
-type ParkTokenTotals struct {
-	InputTokens           int64 `json:"input_tokens"`
-	CachedInputTokens     int64 `json:"cached_input_tokens"`
-	OutputTokens          int64 `json:"output_tokens"`
-	ReasoningOutputTokens int64 `json:"reasoning_output_tokens"`
 }
 
 type Identity struct {

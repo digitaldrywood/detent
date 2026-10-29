@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -14,7 +13,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
-	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
 const (
@@ -66,67 +64,6 @@ func (o *Orchestrator) evaluateMergeRequiredCheckStreaks(
 	return streaks
 }
 
-func (o *Orchestrator) reconcilePersistentlyMissingRequiredCheckPark(
-	ctx context.Context,
-	state *State,
-	issue connector.Issue,
-	park workflowLaneBlockedRecoveryMetadata,
-	now time.Time,
-) (bool, bool) {
-	if !strings.HasPrefix(strings.TrimSpace(park.Cause), mergeWorkerPersistentMissingRequiredCheckReason) {
-		return false, false
-	}
-	if issue.PullRequest == nil || pullRequestHydrationBlocksProgress(issue.PullRequest) || pullRequestNumber(issue) <= 0 || strings.TrimSpace(issue.PullRequest.HeadSHA) == "" {
-		o.recordBlockedRecoveryDecision(ctx, state, issue, "defer", "pull_request_hydration_unavailable", &park, "")
-		return true, false
-	}
-	if len(mergeWorkerMissingRequiredChecks(issue, gate.Effective(o.cfg.AutoPromote.Gate).LocalStatus)) > 0 {
-		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "required_checks_still_missing", &park, "")
-		return true, false
-	}
-	if reason := o.mergeLaneUnavailableReason(); reason != "" {
-		o.recordBlockedRecoveryDecision(ctx, state, issue, "defer", reason, &park, "")
-		return true, false
-	}
-	signature := fmt.Sprintf("cause=%s;pr=%d;head=%s", blockedCauseHash(park.Cause), pullRequestNumber(issue), strings.TrimSpace(issue.PullRequest.HeadSHA))
-	metadata := workflowLaneMetadataWithActionSignature(workflowLaneMetadata{}, workflowActionMergeRequiredCheckParkRecovery, signature)
-	if err := o.updateIssueStateByIDStrictWithMetadata(
-		ctx,
-		state,
-		issue.ID,
-		issue,
-		autoPromoteMergingState,
-		now,
-		workflowActionMergeRequiredCheckParkRecovery,
-		metadata,
-	); err != nil {
-		o.recordBlockedRecoveryDecision(ctx, state, issue, "defer", "required_check_recovery_transition_failed", &park, signature)
-		return true, false
-	}
-	if o.connector != nil {
-		body := fmt.Sprintf(
-			"Auto-released this issue from Blocked to Merging after the current pull request head published all required checks.\n\n- cause: %s\n- pull request: %s\n- head_sha: %s",
-			strings.TrimSpace(park.Cause),
-			strings.TrimSpace(issue.PullRequest.URL),
-			strings.TrimSpace(issue.PullRequest.HeadSHA),
-		)
-		if err := o.connector.CreateComment(ctx, issue.ID, body); err != nil && o.logger != nil {
-			o.logger.Warn("required check park recovery comment failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
-		}
-	}
-	o.clearMergeRequiredCheckStreaks(ctx, issue)
-	delete(state.Blocked, issue.ID)
-	o.clearAutoPromotedIssueDispatchMemory(state, issue.ID)
-	promoted := promotedIssue(issue, autoPromoteMergingState, now)
-	o.recordMergeQueueEntered(state, promoted, now, workflowActionMergeRequiredCheckParkRecovery)
-	recordStateEvent(state, telemetry.ActivityEvent{
-		At:      now,
-		Event:   workflowActionMergeRequiredCheckParkRecovery,
-		Message: "auto-released " + issueLabel(issue) + " after required checks appeared on the current head",
-	})
-	return true, true
-}
-
 func mergeRequiredCheckConfigFingerprint(checkNames []string) string {
 	normalized := gate.NormalizeRequiredStatusChecks(checkNames)
 	sort.Strings(normalized)
@@ -158,77 +95,10 @@ func (o *Orchestrator) blockPersistentlyMissingRequiredChecks(
 	issue connector.Issue,
 	streaks []store.MergeRequiredCheckStreak,
 ) {
-	issueID := strings.TrimSpace(event.IssueID)
 	running.Issue = issue
 	reason := persistentMissingRequiredCheckReason(streaks)
-	metadata := o.newBlockedRecoveryMetadata(
-		ctx,
-		issue,
-		RunModeMerge,
-		reason,
-		blockedRecoveryPredicateManaged,
-		autoPromoteMergingState,
-		running.DiffStats,
-	)
-	metadata.BlockedRecovery.Owner = blockedRecoveryOwnerHuman
-	if err := o.updateIssueStateByIDStrictWithMetadata(
-		ctx,
-		state,
-		issueID,
-		issue,
-		blockedStatusState,
-		event.CompletedAt,
-		reason,
-		metadata,
-	); err != nil {
-		o.failProgrammaticMergeWorkerResult(ctx, state, event, running, "merge_worker_persistent_missing_required_check_block_failed", err)
-		return
-	}
-	o.clearMergeRequiredCheckStreaks(ctx, issue)
-
-	if comment := persistentMissingRequiredCheckComment(issue, streaks); comment != "" {
-		if err := o.connector.CreateComment(ctx, issueID, comment); err != nil && o.logger != nil {
-			o.logger.Warn("persistent missing required check comment failed", "issue_id", issueID, "reason", reason, "error", err)
-		}
-	}
-	o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalSuccess, nil, "", "")
-	o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "blocked", "required checks persistently missing")
-	o.logMergeWorkerFailure(issue, reason, nil)
-	o.recordMergeFailed(state, issue, event.CompletedAt, reason, nil)
-	if err := o.abandonClaim(ctx, issueID); err != nil && o.logger != nil {
-		o.logger.Warn("abandon persistent missing required check claim failed", "issue_id", issueID, "error", err)
-	}
-	delete(state.Claimed, issueID)
-	delete(state.Retry, issueID)
-	delete(state.BudgetRefusals, issueID)
-	delete(state.PriorAttempts, issueID)
-	delete(state.Completed, issueID)
-	delete(state.AutoPromoteDecisions, issueID)
-	delete(state.InstantFailures, issueID)
-	delete(state.RepeatedFailures, issueID)
-
-	blockedIssue := cloneIssue(issue)
-	blockedIssue.State = blockedStatusState
-	blockedIssue.BlockerReason = reason
-	blockedAt := event.CompletedAt.UTC()
-	blockedIssue.StageUpdatedAt = &blockedAt
-	if state.Blocked == nil {
-		state.Blocked = map[string]Blocked{}
-	}
-	state.Blocked[issueID] = Blocked{
-		Issue:          blockedIssue,
-		Reason:         reason,
-		RecoveryReason: string(BlockedRecoveryReasonHumanBlocker),
-		RecoveryTarget: autoPromoteMergingState,
-		BlockedAt:      event.CompletedAt,
-		Source:         BlockedSourceProjectStatus,
-		Recovery:       metadata.BlockedRecovery,
-	}
-	recordStateEvent(state, telemetry.ActivityEvent{
-		At:      event.CompletedAt,
-		Event:   mergeWorkerPersistentMissingRequiredCheckReason,
-		Message: "parked " + issueLabel(issue) + " after required checks remained missing: " + persistentMissingRequiredCheckNames(streaks),
-	})
+	o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "completed", reason)
+	o.retryMachineCompletion(ctx, state, event, running, nextAttempt(running.Attempt), reason)
 }
 
 func persistentMissingRequiredCheckReason(streaks []store.MergeRequiredCheckStreak) string {
@@ -244,36 +114,6 @@ func persistentMissingRequiredCheckNames(streaks []store.MergeRequiredCheckStrea
 		}
 	}
 	return strings.Join(names, ", ")
-}
-
-func persistentMissingRequiredCheckComment(issue connector.Issue, streaks []store.MergeRequiredCheckStreak) string {
-	if len(streaks) == 0 {
-		return ""
-	}
-	var body strings.Builder
-	body.WriteString("Detent parked this issue in Blocked because required checks remained missing across merge evaluations.")
-	body.WriteString("\n\n- reason: ")
-	body.WriteString(persistentMissingRequiredCheckReason(streaks))
-	body.WriteString("\n- missing_required_checks:")
-	for _, streak := range streaks {
-		body.WriteString("\n  - ")
-		body.WriteString(strings.TrimSpace(streak.CheckName))
-		body.WriteString(" (consecutive evaluations: ")
-		body.WriteString(strconv.Itoa(streak.ConsecutiveMissing))
-		body.WriteString(")")
-	}
-	if issue.PullRequest != nil {
-		if url := strings.TrimSpace(issue.PullRequest.URL); url != "" {
-			body.WriteString("\n- pull request: ")
-			body.WriteString(url)
-		}
-		if headSHA := strings.TrimSpace(issue.PullRequest.HeadSHA); headSHA != "" {
-			body.WriteString("\n- head_sha: ")
-			body.WriteString(headSHA)
-		}
-	}
-	body.WriteString("\n\nRestore or update the required-check configuration, then move the issue back to Merging.")
-	return body.String()
 }
 
 func (o *Orchestrator) clearMergeRequiredCheckStreaks(ctx context.Context, issue connector.Issue) {

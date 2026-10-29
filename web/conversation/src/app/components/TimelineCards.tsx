@@ -257,7 +257,7 @@ export function DetentTimelineRow({
           issue={cards.issue}
           // The card reports what the issue itself says, not what the
           // conversation says: an issue can be created and still be waiting
-          // for a runner to pick it up (decisions.md §9.2).
+          // for a runner to pick it up.
           runnerBound={cards.issue.runner_bound ?? false}
           onOpenIssue={onOpenIssue}
         />

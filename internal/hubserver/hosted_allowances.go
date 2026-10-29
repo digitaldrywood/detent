@@ -4,13 +4,16 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"net/http"
 	"slices"
+	"strings"
 	"time"
 )
 
 const customerContentEvent = `type NOT LIKE 'run.%' AND type <> 'scheduler.decision'`
 
-const collaborationBytesRecount = `SELECT
+const collaborationBytesLegacyRecount = `SELECT
 	(SELECT coalesce(sum(length(CAST(title AS BLOB))+length(CAST(body AS BLOB))+length(CAST(labels_json AS BLOB))+length(CAST(assignees_json AS BLOB))),0) FROM issues) +
 	(SELECT coalesce(sum(length(CAST(body AS BLOB))),0) FROM native_comments) +
 	(SELECT coalesce(sum(length(CAST(record_json AS BLOB))),0) FROM collaboration_versions) +
@@ -18,7 +21,29 @@ const collaborationBytesRecount = `SELECT
 	(SELECT coalesce(sum(length(CAST(reference_json AS BLOB))),0) FROM artifact_references) +
 	(SELECT coalesce(sum(length(bundle)),0) FROM change_sources) +
 	(SELECT coalesce(sum(length(CAST(record_json AS BLOB))),0) FROM github_import_records) +
-	(SELECT coalesce(sum(size),0) FROM attachments WHERE object_deleted_at IS NULL)`
+	(SELECT coalesce(sum(size),0) FROM attachments WHERE object_deleted_at IS NULL AND customer_owned=0)`
+
+const collaborationBytesRecount = collaborationBytesLegacyRecount + ` + (SELECT coalesce(sum(object_bytes),0) FROM change_content_objects)`
+
+func recountCollaborationBytes(ctx context.Context, tx *sql.Tx) error {
+	var exists bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='change_content_objects')`).Scan(&exists); err != nil {
+		return err
+	}
+	query := collaborationBytesLegacyRecount
+	if exists {
+		query = collaborationBytesRecount
+	}
+	var customerOwned int
+	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM pragma_table_info('attachments') WHERE name='customer_owned'").Scan(&customerOwned); err != nil {
+		return err
+	}
+	if customerOwned == 0 {
+		query = strings.ReplaceAll(query, " AND customer_owned=0", "")
+	}
+	_, err := tx.ExecContext(ctx, "UPDATE hosted_usage_counters SET value=("+query+") WHERE name='collaboration_bytes'")
+	return err
+}
 
 func (d *database) hostedConsumption(ctx context.Context, query nativeQueryer, now time.Time, metrics ...string) (map[string]int64, error) {
 	runtimePlans := d.plans()
@@ -27,16 +52,14 @@ func (d *database) hostedConsumption(ctx context.Context, query nativeQueryer, n
 		return result, nil
 	}
 	queries := map[string]string{
-		"artifact_retained_bytes": "SELECT coalesce(sum(json_extract(usage_json,'$.retained_bytes')),0) FROM hosted_artifact_usage",
-		"artifact_reserved_bytes": "SELECT coalesce(sum(json_extract(usage_json,'$.reserved_bytes')),0) FROM hosted_artifact_usage",
-		"members":                 "SELECT count(*) FROM hosted_members WHERE active = 1",
-		"projects":                "SELECT count(*) FROM projects WHERE deleted_at IS NULL",
-		"unarchived_issues":       "SELECT count(*) FROM issues i JOIN projects p ON p.id = i.project_id WHERE i.organization_id = ? AND p.deleted_at IS NULL AND p.profile = 'native' AND i.archived = 0",
-		"repositories":            "SELECT count(*) FROM repositories",
-		"registered_runners":      `SELECT (SELECT count(*) FROM runner_identities r JOIN api_tokens t ON t.id = r.token_id WHERE t.revoked_at IS NULL) + (SELECT count(*) FROM machines m JOIN api_tokens t ON t.id = m.token_id WHERE t.revoked_at IS NULL AND NOT EXISTS(SELECT 1 FROM runner_identities r WHERE r.machine_id = m.id))`,
-		"history_records":         "SELECT value FROM hosted_usage_counters WHERE name = 'history_records'",
-		"events_total":            "SELECT value FROM hosted_usage_counters WHERE name = 'events_total'",
-		"collaboration_bytes":     "SELECT value FROM hosted_usage_counters WHERE name = 'collaboration_bytes'",
+		"members":             "SELECT count(*) FROM hosted_members WHERE active = 1",
+		"projects":            "SELECT count(*) FROM projects WHERE deleted_at IS NULL",
+		"unarchived_issues":   "SELECT count(*) FROM issues i JOIN projects p ON p.id = i.project_id LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id WHERE i.organization_id = ? AND p.deleted_at IS NULL AND p.profile = 'native' AND i.archived = 0 AND coalesce(ws.terminal, 0) = 0",
+		"repositories":        "SELECT count(*) FROM repositories",
+		"registered_runners":  `SELECT (SELECT count(*) FROM runner_identities r JOIN api_tokens t ON t.id = r.token_id WHERE t.revoked_at IS NULL) + (SELECT count(*) FROM machines m JOIN api_tokens t ON t.id = m.token_id WHERE t.revoked_at IS NULL AND NOT EXISTS(SELECT 1 FROM runner_identities r WHERE r.machine_id = m.id))`,
+		"history_records":     "SELECT value FROM hosted_usage_counters WHERE name = 'history_records'",
+		"events_total":        "SELECT value FROM hosted_usage_counters WHERE name = 'events_total'",
+		"collaboration_bytes": "SELECT value FROM hosted_usage_counters WHERE name = 'collaboration_bytes'",
 	}
 	for name, statement := range queries {
 		if len(metrics) > 0 && !slices.Contains(metrics, name) {
@@ -51,6 +74,18 @@ func (d *database) hostedConsumption(ctx context.Context, query nativeQueryer, n
 			return nil, err
 		}
 		result[name] = count
+	}
+	if len(metrics) == 0 || slices.Contains(metrics, "artifact_retained_bytes") || slices.Contains(metrics, "artifact_reserved_bytes") {
+		retained, reserved, err := d.readHostedArtifactUsage(ctx, query)
+		if err != nil {
+			return nil, err
+		}
+		if len(metrics) == 0 || slices.Contains(metrics, "artifact_retained_bytes") {
+			result["artifact_retained_bytes"] = retained
+		}
+		if len(metrics) == 0 || slices.Contains(metrics, "artifact_reserved_bytes") {
+			result["artifact_reserved_bytes"] = reserved
+		}
 	}
 	for _, sample := range []struct {
 		name, statement string
@@ -143,7 +178,19 @@ func (d *database) checkHostedGrowth(ctx context.Context, tx *sql.Tx, before map
 }
 
 func (d *database) checkHostedConsumptionGrowth(ctx context.Context, tx *sql.Tx, before, after map[string]int64, now time.Time, completion bool) error {
-	entitlement, err := d.hostedEntitlement(ctx, tx, now)
+	if err := d.validateHostedConsumptionGrowth(ctx, tx, before, after, now, completion); err != nil {
+		return err
+	}
+	if ctx.Value(runnerRequestBudgetContext{}) != true {
+		if err := d.recordHostedUsage(ctx, tx, now, "api_mutations", 1); err != nil {
+			return err
+		}
+	}
+	return d.recordHostedUsage(ctx, tx, now, "ingested_events", max(int64(0), after["events_total"]-before["events_total"]))
+}
+
+func (d *database) validateHostedConsumptionGrowth(ctx context.Context, query nativeQueryer, before, after map[string]int64, now time.Time, completion bool) error {
+	entitlement, err := d.hostedEntitlement(ctx, query, now)
 	if err != nil {
 		return err
 	}
@@ -168,9 +215,6 @@ func (d *database) checkHostedConsumptionGrowth(ctx context.Context, tx *sql.Tx,
 		if !completion && sample.amount > 0 && sample.amount > entitlement.Allowances[sample.name]-after[sample.name] {
 			return &hostedLimitError{Resource: sample.name, Allowance: entitlement.Allowances[sample.name], Consumption: after[sample.name]}
 		}
-		if err := d.recordHostedUsage(ctx, tx, now, sample.name, sample.amount); err != nil {
-			return err
-		}
 	}
 	return nil
 }
@@ -180,15 +224,24 @@ func (d *database) checkHostedClaim(ctx context.Context, tx *sql.Tx, now time.Ti
 	if runtimePlans == nil {
 		return nil
 	}
-	if err := d.requireHostedFeature(ctx, tx, "native_execution", now); err != nil {
-		return err
-	}
-	if ctx.Value(runnerRequestBudgetContext{}) == true {
-		return nil
-	}
 	entitlement, err := d.hostedEntitlement(ctx, tx, now)
 	if err != nil {
 		return err
+	}
+	if !slices.Contains(entitlement.Features, "native_execution") {
+		return &hostedLimitError{Resource: "native_execution"}
+	}
+	if limit, limited := entitlement.Allowances["concurrent_work"]; limited {
+		usage, err := d.hostedConsumption(ctx, tx, now, "concurrent_work")
+		if err != nil {
+			return err
+		}
+		if usage["concurrent_work"] >= limit {
+			return &nativeError{Code: "plan_capacity", Message: fmt.Sprintf("The plan's concurrent work limit is reached (%d of %d); work stays queued until a slot frees", usage["concurrent_work"], limit), status: http.StatusConflict, publicMessage: true}
+		}
+	}
+	if ctx.Value(runnerRequestBudgetContext{}) == true {
+		return nil
 	}
 	window := now.Unix() / runtimePlans.WindowSeconds * runtimePlans.WindowSeconds
 	var used int64

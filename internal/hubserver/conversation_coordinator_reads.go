@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -235,6 +236,16 @@ func (s *Service) coordinatorProjectRunners(ctx context.Context, record conversa
 			r.Routing = &routing
 		}
 		r.Problems = slices.DeleteFunc(slices.Clone(r.Problems), func(p runnerauth.Problem) bool { return p.ProjectID != "" && p.ProjectID != string(record.ProjectID) })
+		if r.Capacity != nil {
+			capacity := *r.Capacity
+			capacity.Projects = maps.Clone(capacity.Projects)
+			for project := range capacity.Projects {
+				if project != record.ProjectID {
+					delete(capacity.Projects, project)
+				}
+			}
+			r.Capacity = &capacity
+		}
 		attached = append(attached, r)
 	}
 	scopeHostUsage(attached)

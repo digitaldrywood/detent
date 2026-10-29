@@ -15,12 +15,12 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
-// The workspace session service (decisions section 18.1). It owns the state
+// The workspace session service. It owns the state
 // machine, the limits, the dispatch association and the sweeps that make the
 // timeouts real. HTTP handlers, worker binding and the relay live in sibling
 // files.
 
-// Workspace failures, in the native error shape of section 5.
+// Workspace failures, in the native error shape of the conversation contract.
 
 // workspaceExists reports a second request on an attempt that already has an
 // open workspace. It names the existing id, because the client's next move is
@@ -29,6 +29,7 @@ func workspaceExists(id string) error {
 	return &nativeError{
 		Code: "workspace_exists", Message: "A workspace is already open on this attempt",
 		status: http.StatusConflict, Details: map[string]any{"workspace_id": id},
+		publicMessage: true,
 	}
 }
 
@@ -39,6 +40,7 @@ func workspaceLimit(scope string, limit int) error {
 	return &nativeError{
 		Code: "workspace_limit", Message: "The open workspace limit has been reached",
 		status: http.StatusUnprocessableEntity, Details: map[string]any{"scope": scope, "limit": limit},
+		publicMessage: true,
 	}
 }
 
@@ -46,7 +48,8 @@ func workspaceLimit(scope string, limit int) error {
 func workspaceUnavailable() error {
 	return &nativeError{
 		Code: "unsupported_control", Message: "Workspace sessions are not enabled on this hub",
-		status: http.StatusUnprocessableEntity,
+		status:        http.StatusUnprocessableEntity,
+		publicMessage: true,
 	}
 }
 
@@ -197,7 +200,7 @@ func (w *workspaceService) transition(ctx context.Context, tx *sql.Tx, record wo
 //
 // It takes the context of whatever committed the transition, because closing a
 // workspace's connections also writes the terminal recordings that were
-// streaming on them (section 18.3) and that write needs one. The write drops
+// streaming on them and that write needs one. The write drops
 // the cancellation and keeps the values; see finishTerminalRecordings.
 func (w *workspaceService) committed(ctx context.Context, record workspaceRecord) {
 	if w.relay == nil {
@@ -289,7 +292,7 @@ func (w *workspaceService) readWorkspaceForActor(ctx context.Context, query nati
 	return record, nil
 }
 
-// sweep enforces every deadline of section 18.1 that no request would reach on
+// sweep enforces every deadline of the workspace session contract that no request would reach on
 // its own: a request no runner claimed, two missed heartbeats, a lost lease, an
 // idle workspace, the hard lifetime cap and the re-bind grace.
 func (w *workspaceService) sweep(ctx context.Context) {
@@ -354,7 +357,7 @@ type workspaceDeadline struct {
 }
 
 // decideDeadline reports the transition a workspace is due, if any. It is pure
-// so every branch of section 18.1's timing can be tested without a database.
+// so every branch of the workspace session contract's timing can be tested without a database.
 //
 // It takes no configuration on purpose. Every bound it applies is already on
 // the record -- requested_expires_at from workspaces.request_timeout,
@@ -434,7 +437,7 @@ const workspaceIdleMark = 2 * time.Minute
 // workspaceIdleSince reports when the idle clock started: the last
 // person-originated activity, or the moment the workspace opened. Runner output
 // and watches never reset it, which is why the column is written only by the
-// relay's person side (section 18.1).
+// relay's person side.
 func workspaceIdleSince(record workspaceRecord) time.Time {
 	if record.LastActivityAt != nil {
 		return *record.LastActivityAt
@@ -489,7 +492,7 @@ func (w *workspaceService) applyDeadline(ctx context.Context, record workspaceRe
 var errWorkspaceUnchanged = errors.New("workspace changed under the sweep")
 
 // recoverOpenWorkspaces re-marks every open workspace requested on hub restart
-// and gives the original runner the re-bind grace (section 18.1). A workspace
+// and gives the original runner the re-bind grace. A workspace
 // that was still only requested keeps waiting for a runner; one that had an
 // owner keeps its tuple, because the grace exists precisely so that runner can
 // present it again.

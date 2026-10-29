@@ -116,7 +116,7 @@ function fakeApi(overrides: Partial<EntryApi> = {}): EntryApi {
     })),
     adjustPlatformAICredits: vi.fn(async () => ({ organization_id: "org_alpha", balance_micros: 0 })),
     resumePlatformTenant: vi.fn(async () => ({ next: "/platform/tenants" })),
-    platformUsers: vi.fn(async () => ({ users: [], unsearched: [] })),
+    platformUsers: vi.fn(async () => ({ ...userResults, users: [], total: 0 })),
     platformOrganizations: vi.fn(async () => organizations),
     platformAllowlist: vi.fn(async () => allowlist),
     platformMembers: vi.fn(async () => ({ members: [], revision: 1, self: { email: "admin@example.com", role: "admin" } })),
@@ -159,45 +159,76 @@ function creditApi(overrides: Partial<EntryApi> = {}): EntryApi {
 }
 
 describe("platform console", () => {
-  it("debounces URL-backed user search and rejects short queries", async () => {
+  it("lists users immediately and debounces email filters of any length", async () => {
     const search = vi.fn(async () => userResults);
     const router = await renderPlatform(fakeApi({ platformUsers: search }), "/platform/users");
-    const input = await screen.findByRole("searchbox", { name: "Search by email" });
-    const navigate = vi.spyOn(router, "navigate");
-    let allowNavigation!: (blocked: boolean) => void;
-    const pendingNavigation = new Promise<boolean>((resolve) => { allowNavigation = resolve; });
-    const unblock = router.history.block({ blockerFn: () => pendingNavigation });
-    vi.useFakeTimers();
-    fireEvent.change(input, { target: { value: "ab" } });
-    await act(async () => { await vi.advanceTimersByTimeAsync(299); });
-    expect(navigate).not.toHaveBeenCalled();
-    expect(search).not.toHaveBeenCalled();
-    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
-    expect(navigate).toHaveBeenCalledTimes(1);
-    expect(router.state.location.search).toEqual({});
-    await act(async () => { allowNavigation(false); });
-    await act(async () => { await navigate.mock.results[0]!.value; });
-    unblock();
-    expect(search).not.toHaveBeenCalled();
-    expect(router.state.location.search).toEqual({ q: "ab" });
-    fireEvent.change(input, { target: { value: "example" } });
-    await act(async () => { await vi.advanceTimersByTimeAsync(200); });
-    fireEvent.change(input, { target: { value: " example.test " } });
-    await act(async () => { await vi.advanceTimersByTimeAsync(299); });
-    expect(search).not.toHaveBeenCalled();
-    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
-    expect(navigate).toHaveBeenCalledTimes(2);
-    await act(async () => { await navigate.mock.results[1]!.value; });
-    vi.useRealTimers();
-    expect(search).toHaveBeenCalledExactlyOnceWith("example.test");
-    expect(router.state.location.search).toEqual({ q: "example.test" });
     const table = await screen.findByRole("table", { name: "Users" });
-    const member = within(table).getByRole("row", { name: /sam@example.test/ });
-    expect(member.textContent).toContain("support");
-    expect(member.textContent).toContain("2026-10-06 14:02Z");
-    expect(within(member).getByText("2")).toBeTruthy();
-    expect(within(table).getByRole("row", { name: /alex/ }).textContent).toContain("None");
+    expect(search).toHaveBeenCalledWith("", {});
+    expect(within(table).getByRole("row", { name: /sam@example.test/ }).textContent).toContain("Example Alpha, Example Beta");
+    expect(within(table).getByRole("row", { name: /alex/ }).textContent).toContain("No organization");
     expect(screen.getByText("Not searched: Slow Tenant")).toBeTruthy();
+    const input = screen.getByRole("searchbox", { name: "Search by email" });
+    vi.useFakeTimers();
+    fireEvent.change(input, { target: { value: "a" } });
+    await act(async () => { await vi.advanceTimersByTimeAsync(299); });
+    expect(search).toHaveBeenCalledTimes(1);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    vi.useRealTimers();
+    await waitFor(() => expect(search).toHaveBeenLastCalledWith("a", { q: "a" }));
+    expect(router.state.location.search).toEqual({ q: "a" });
+  });
+
+  it("sorts every header and restores filters, direction and page through history and reload", async () => {
+    const api = fakeApi({ platformUsers: vi.fn(async () => userResults) });
+    const router = await renderPlatform(api, "/platform/users");
+    await screen.findByRole("table", { name: "Users" });
+    for (const [label, field, direction] of [["User", "email", "asc"], ["Platform role", "role", "asc"], ["Organizations", "organizations", "asc"], ["Last sign-in", "last_sign_in", "desc"]]) {
+      fireEvent.click(within(screen.getByRole("columnheader", { name: label })).getByRole("button", { name: label }));
+      await waitFor(() => expect(screen.getByRole("columnheader", { name: label }).getAttribute("aria-sort")).toBe(direction === "asc" ? "ascending" : "descending"));
+      expect(router.state.location.search).toMatchObject({ sort: field, direction });
+      fireEvent.click(within(screen.getByRole("columnheader", { name: label })).getByRole("button", { name: label }));
+      await waitFor(() => expect(screen.getByRole("columnheader", { name: label }).getAttribute("aria-sort")).toBe(direction === "asc" ? "descending" : "ascending"));
+    }
+    await act(async () => { await router.navigate({ to: "/platform/users", search: { q: "sam", segment: "staff", organization: "org_alpha", role: "support", sort: "email", direction: "desc", page: 2 } } as never); });
+    const selected = router.state.location.href;
+    fireEvent.click(await screen.findByRole("link", { name: "sam@example.test" }));
+    await screen.findByRole("region", { name: "Account" });
+    await act(async () => { router.history.back(); });
+    await screen.findByRole("table", { name: "Users" });
+    expect(router.state.location.href).toBe(selected);
+    cleanup();
+    await renderPlatform(api, selected);
+    await screen.findByRole("table", { name: "Users" });
+    expect(api.platformUsers).toHaveBeenLastCalledWith("sam", { q: "sam", segment: "staff", organization: "org_alpha", role: "support", sort: "email", direction: "desc", page: 2 });
+  });
+
+  it("narrows users with every segment, organization and role control", async () => {
+    const search = vi.fn(async (_query: string, filters = {} as import("../../src/app/entry/userList.ts").UserSearch) => {
+      const users = userResults.users.filter((user) => {
+        if (filters.segment === "staff" || filters.role === "support" || filters.organization === "org_alpha") return user.email === "sam@example.test";
+        if (filters.segment === "no_organization") return user.email === "alex+test@example.test";
+        if (filters.segment === "invited") return user.invitations.length > 0;
+        return true;
+      });
+      return { ...userResults, users, total: users.length };
+    });
+    const router = await renderPlatform(fakeApi({ platformUsers: search }), "/platform/users");
+    await screen.findByRole("table", { name: "Users" });
+    const user = userEvent.setup();
+    for (const [label, segment, email] of [["Staff", "staff", "sam@example.test"], ["No organization", "no_organization", "alex+test@example.test"], ["Invited", "invited", "sam@example.test"]]) {
+      fireEvent.click(screen.getByRole("button", { name: new RegExp(`^${label} `) }));
+      await waitFor(() => expect(router.state.location.search.segment).toBe(segment));
+      await waitFor(() => expect(within(screen.getByRole("table")).getAllByRole("link").map((link) => link.textContent)).toEqual([email]));
+    }
+    fireEvent.click(screen.getByRole("button", { name: /^All / }));
+    await user.click(screen.getByRole("combobox", { name: "Organization" }));
+    await user.click(await screen.findByRole("option", { name: "Example Alpha" }));
+    await waitFor(() => expect(router.state.location.search.organization).toBe("org_alpha"));
+    await waitFor(() => expect(screen.queryByRole("link", { name: "alex+test@example.test" })).toBeNull());
+    await user.click(screen.getByRole("combobox", { name: "Platform role" }));
+    await user.click(await screen.findByRole("option", { name: "support" }));
+    await waitFor(() => expect(search).toHaveBeenLastCalledWith("", { organization: "org_alpha", role: "support" }));
+    expect(screen.getByRole("link", { name: "sam@example.test" })).toBeTruthy();
   });
 
   it("restores search and selected user on back and reload with explicit empty sections", async () => {
@@ -254,19 +285,34 @@ describe("platform console", () => {
     errors.mockRestore();
   });
 
-  it("preserves the 50-result notice and explicit empty search row", async () => {
-    const api = fakeApi({ platformUsers: vi.fn(async (query: string) => ({
+  it("pages in both directions, disables ends, and shows Empty without a table", async () => {
+    const api = fakeApi({ platformUsers: vi.fn(async (query, filters) => ({
       ...userResults,
-      users: query === "missing" ? [] : Array.from({ length: 50 }, (_, index) => ({ ...userResults.users[0]!, email: `user${index}@example.test` })),
+      total: query === "missing" ? 0 : 51,
+      page: filters?.page ?? 1,
+      users: query === "missing" ? [] : Array.from({ length: filters?.page === 2 ? 1 : 50 }, (_, index) => ({ ...userResults.users[0]!, email: `user${filters?.page === 2 ? 50 : index}@example.test`, memberships: [], last_sign_in_at: "" })),
     })) });
-    await renderPlatform(api, "/platform/users?q=example.test");
-    expect(await screen.findByText("Showing up to 50 users. Refine your search to find other users.")).toBeTruthy();
+    const router = await renderPlatform(api, "/platform/users");
+    await screen.findByText("1–50 of 51");
+    expect((screen.getByRole("button", { name: "Previous" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    await screen.findByText("51–51 of 51");
+    expect(screen.getByText("Invited to Example Co")).toBeTruthy();
+    expect(screen.getByText("Never")).toBeTruthy();
+    expect(router.state.location.search.page).toBe(2);
+    expect((screen.getByRole("button", { name: "Next" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Previous" }));
+    await screen.findByText("1–50 of 51");
     const input = screen.getByRole("searchbox");
     fireEvent.change(input, { target: { value: "missing" } });
     fireEvent.submit(input.closest("form")!);
     expect(await screen.findByText("No users match")).toBeTruthy();
-    expect(screen.getByRole("row", { name: "No users match" })).toBeTruthy();
+    expect(screen.queryByRole("table")).toBeNull();
     expect(screen.getByText("Not searched: Slow Tenant")).toBeTruthy();
+    cleanup();
+    await renderPlatform(fakeApi({ platformUsers: vi.fn(async () => ({ ...userResults, total: 0, users: [] })) }), "/platform/users");
+    expect(await screen.findByText("No users yet")).toBeTruthy();
+    expect(screen.queryByRole("table")).toBeNull();
   });
 
   it("keeps user pages staff-only and hides Staff management from non-admin staff", async () => {
@@ -284,12 +330,10 @@ describe("platform console", () => {
     let refuse!: (error: AccountError) => void;
     const search = vi.fn().mockImplementationOnce(() => new Promise<typeof userResults>((_, reject) => { refuse = reject; })).mockResolvedValue(userResults);
     const api = fakeApi({ platformUsers: search });
-    const user = userEvent.setup();
     const router = await renderPlatform(api, "/platform/users");
     const input = await screen.findByRole("searchbox", { name: "Search by email" });
-    await user.type(input, "member");
-    await waitFor(() => expect(api.platformUsers).toHaveBeenCalledExactlyOnceWith("member"));
-    expect(screen.getByRole("status", { name: "Searching users" })).toBeTruthy();
+    await waitFor(() => expect(api.platformUsers).toHaveBeenCalledExactlyOnceWith("", {}));
+    expect(screen.getByRole("status", { name: "Loading users" })).toBeTruthy();
     await act(async () => { refuse(new AccountError({ status, code: "refused", message: "Search refused" })); });
     expect((await screen.findByRole("alert")).textContent).toContain("Search refused");
     expect(screen.queryByText("No users match")).toBeNull();
@@ -299,7 +343,7 @@ describe("platform console", () => {
     fireEvent.submit(input.closest("form")!);
     await screen.findByRole("table", { name: "Users" });
     expect(search).toHaveBeenCalledTimes(2);
-    expect(search).toHaveBeenLastCalledWith("member");
+    expect(search).toHaveBeenLastCalledWith("member", { q: "member" });
     expect(router.state.location.search).toEqual({ q: "member" });
     expect(screen.queryByRole("alert")).toBeNull();
   });
@@ -927,6 +971,71 @@ describe("complimentary plans", () => {
     });
     expect(call.change.idempotency_key.length).toBeGreaterThan(0);
     await waitFor(() => expect(api.platformEntitlements).toHaveBeenCalledTimes(3));
+  });
+
+  it.each([
+    {
+      name: "a legacy grant stays offered as the current plan",
+      grant: { id: "growth", version: 1 },
+      options: ["Starter$19/mo", "Team$49/mo", "Growth$99/mo", "ScaleContact us", "Growth (legacy)Current$79/mo", "InternalContact us"],
+      other: ["Growth (legacy)", "Internal"],
+    },
+    {
+      name: "only the latest version of each plan is offered",
+      grant: null,
+      options: ["Starter$19/mo", "Team$49/mo", "Growth$99/mo", "ScaleContact us", "InternalContact us"],
+      other: ["Internal"],
+    },
+    {
+      name: "a current grant on the latest version is marked in place",
+      grant: { id: "growth", version: 2 },
+      options: ["Starter$19/mo", "Team$49/mo", "GrowthCurrent$99/mo", "ScaleContact us", "InternalContact us"],
+      other: ["Internal"],
+    },
+  ])("orders grantable plans by tier: $name", async ({ grant, options, other }) => {
+    const plan = (id: string, version: number, name: string, cents: number | undefined, slots: number, features = ["collaboration", "github_integration", "hosted_artifacts", "native_execution"]) =>
+      ({ id, version, name, ...(cents === undefined ? {} : { monthly_usd_cents: cents }), features, allowances: { concurrent_work: slots } });
+    const api = fakeApi({
+      platformOrganizations: vi.fn(async () => administrator),
+      platformEntitlements: vi.fn(async () => ({
+        ...entitlements,
+        base: { id: "free", version: 1 },
+        effective_base: { id: "free", version: 1 },
+        grants: grant === null ? [] : [{ ...entitlements.grants[0]!, plan: grant }],
+        plans: [
+          plan("internal", 1, "Internal", undefined, 50, ["collaboration", "model_choice"]),
+          plan("scale", 2, "Scale", undefined, 25),
+          plan("growth", 1, "Growth (legacy)", 7900, 8),
+          plan("growth", 2, "Growth", 9900, 10),
+          plan("team", 1, "Team (legacy)", 2900, 3),
+          plan("team", 2, "Team", 4900, 5),
+          plan("free", 1, "Free", 0, 1, ["collaboration"]),
+          plan("starter", 1, "Starter", 1900, 2),
+          ...entitlements.plans,
+        ],
+      })),
+    });
+    const user = userEvent.setup();
+    await renderPlatform(api, "/platform/tenants/org_alpha");
+    const region = await screen.findByRole("region", { name: "Plan for Alpha" });
+    fireEvent.click(await within(region).findByRole("button", { name: "Change plan" }));
+    const dialog = await screen.findByRole("dialog", { name: /^Grant / });
+    const facts = () => within(within(dialog).getByLabelText("Selected plan")).getAllByRole("definition").map((fact) => fact.textContent);
+    const features = ["Collaboration", "GitHub", "Artifact storage", "Runner work"];
+    expect(facts()).toEqual(["$19/mo", "2 runner slots", ...features]);
+    await user.click(within(dialog).getByRole("combobox", { name: "Plan" }));
+    expect((await screen.findAllByRole("option")).map((option) => option.textContent)).toEqual(options);
+    expect(within(screen.getByRole("group", { name: "Other" })).getAllByRole("option").map((option) => option.textContent?.replace(/Current|Contact us|\$\d+\/mo/g, ""))).toEqual(other);
+    await user.click(screen.getByRole("option", { name: /^Scale/ }));
+    expect(facts()).toEqual(["Contact us", "25 runner slots", ...features]);
+    if (grant?.version === 1) {
+      await user.click(within(dialog).getByRole("combobox", { name: "Plan" }));
+      await user.click(await screen.findByRole("option", { name: /^Growth \(legacy\)/ }));
+      expect(facts()).toEqual(["$79/mo", "8 runner slots", "Current plan", ...features]);
+      fireEvent.change(within(dialog).getByLabelText("Reason"), { target: { value: "extend pilot" } });
+      fireEvent.click(within(dialog).getByRole("button", { name: "Grant" }));
+      await waitFor(() => expect(vi.mocked(api.changePlatformEntitlement).mock.calls[0]![0].change).toMatchObject({ plan: { id: "growth", version: 1 } }));
+    }
   });
 
   it("grants model choice without selecting a plan and disables the control after reload", async () => {

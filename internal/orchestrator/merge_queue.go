@@ -612,6 +612,13 @@ func cloneNativeMergeQueueRemovals(removals map[string][]string) map[string][]st
 }
 
 func (o *Orchestrator) parkNativeMergeQueueBudget(ctx context.Context, state *State, issue connector.Issue, removals []string, now time.Time) {
+	issue.State = normalizeAutoPromoteConfig(o.cfg.AutoPromote).ReworkState
+	if err := o.retryMachineFailure(ctx, state, issue, nextAttempt(state.Retry[issue.ID].Attempt), now, string(AutoPromoteReasonMergeRevocationLimit), ""); err != nil {
+		if o.logger != nil {
+			o.logger.Warn("machine retry routing failed", "issue_id", issue.ID, "error", err)
+		}
+		return
+	}
 	if err := o.connector.CreateComment(ctx, issue.ID, mergeAttemptBudgetComment(issue, removals, normalizeAutoPromoteConfig(o.cfg.AutoPromote).ReworkState)); err != nil && o.logger != nil {
 		o.logger.Warn("merge attempt budget comment failed", "issue_id", strings.TrimSpace(issue.ID), "identifier", issue.Identifier, "error", err)
 	}
@@ -649,7 +656,7 @@ func mergeAttemptBudgetComment(issue connector.Issue, removals []string, target 
 			body.WriteString(url)
 		}
 	}
-	body.WriteString("\n- human_action: fix the cause of the removals, push a repaired PR head before retrying")
+	body.WriteString("\n- recovery: retry the removal cause in Rework")
 	return body.String()
 }
 

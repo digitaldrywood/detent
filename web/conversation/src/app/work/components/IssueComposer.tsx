@@ -3,7 +3,9 @@ import React from "react";
 import { DEFAULT_TURN_PREFERENCES } from "../../../contracts/index.ts";
 import type { SlashCommand } from "../../adapters/slashCommands.ts";
 import { Composer } from "../../components/Composer.tsx";
-import { useAttachmentDraft } from "./AttachmentEditor.tsx";
+import { attachmentInputHandlers, useAttachmentDraft } from "./AttachmentEditor.tsx";
+import { Textarea } from "../../../components/ui/textarea.tsx";
+import { Button } from "../../../components/ui/button.tsx";
 
 /**
  * The slash commands this page adds to the composer's own.
@@ -31,6 +33,7 @@ export function issueComposerSlashCommands(options: {
 }
 
 export interface IssueComposerProps {
+  readonly variant?: "rich" | "simple";
   readonly projectId?: string | undefined;
   /** False for a reader who may not write: the composer is unavailable. */
   readonly canWrite: boolean;
@@ -65,6 +68,12 @@ export function IssueComposer(props: IssueComposerProps): React.ReactElement {
     () => issueComposerSlashCommands({ onOpenShortcuts: onOpenShortcuts ?? null }),
     [onOpenShortcuts],
   );
+
+  if (props.variant === "simple") return <form className="space-y-2" {...attachmentInputHandlers(upload.addFiles, !props.canWrite || sending)} onSubmit={(event) => { event.preventDefault(); void send(); }}>
+    <Textarea aria-label="Reply or add details" placeholder="Reply or add details" autoGrow={false} rows={2} value={draft} disabled={!props.canWrite || sending} onChange={(event) => setDraft(event.currentTarget.value)} />
+    {[...upload.errors, ...(error === null ? [] : [error])].map((message) => <p key={message} role="alert" className="text-sm text-destructive-foreground">{message}</p>)}
+    <div className="flex justify-end"><Button type="submit" size="sm" variant="outline" disabled={!props.canWrite || sending || upload.uploading || !draft.trim()}>Comment</Button></div>
+  </form>;
 
   return (
     <Composer

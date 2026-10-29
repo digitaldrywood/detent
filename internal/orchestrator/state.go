@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"container/list"
 	"context"
 	"maps"
 	"sort"
@@ -102,6 +103,8 @@ type State struct {
 	Blocked                  map[string]Blocked
 	Completed                map[string]Completed
 	Retry                    map[string]Retry
+	orphanRetryQueue         list.List
+	orphanRetryEntries       map[string]*list.Element
 	MergeTimings             map[string]MergeTiming
 	mergeReservations        map[string]mergeReservation
 	mergeRecoveryChecked     map[string]bool
@@ -118,8 +121,6 @@ type State struct {
 	dependencyUnblockEarly   bool
 	BudgetRefusals           map[string]BudgetRefusal
 	PriorAttempts            map[string]runpkg.PriorAttempt
-	InstantFailures          map[string]InstantFailure
-	RepeatedFailures         map[string]RepeatedFailure
 	FailureBreaker           ProjectFailureBreaker
 	DispatchRecoveries       map[string]DispatchRecovery
 	StalenessWarnings        map[string]StalenessWarning
@@ -139,13 +140,14 @@ type State struct {
 	laneEntries              map[string]time.Time
 	laneProvenance           map[string]provenance.Attribution
 	dispatchModes            map[string]string
-	dispatchLoopResets       map[string]time.Time
 	planRework               map[string]struct{}
 	epicTransitionWatch      []connector.Issue
 	pendingEpicParentLookups map[string]connector.Issue
 	tickTransitions          *issueStateSnapshotTransitions
 
 	workspaceCleanupCursor string
+
+	workspaceCleanupInventoryCursor string
 }
 
 type StalenessWarning struct {
@@ -178,6 +180,7 @@ type Running struct {
 	TokenUSD                    float64
 	progress                    *workerProgress
 	Policy                      policy.Descriptor
+	ClaimPolicy                 policy.Descriptor
 	Issue                       connector.Issue
 	Attempt                     int
 	WorkAttemptID               int64
@@ -192,7 +195,7 @@ type Running struct {
 	DispatchArtifactStatus      string
 	ArtifactStatusField         string
 	DeliverableKind             string
-	DispatchLoopStart           dispatchLoopStartRecord
+	CompletionSourceStart       completionSourceStartRecord
 	StartedAt                   time.Time
 	WorkerHost                  string
 	ProcessIdentity             string
@@ -280,6 +283,7 @@ type Blocked struct {
 }
 
 type Completed struct {
+	Attempt                    int
 	Issue                      connector.Issue
 	SessionID                  string
 	StartedAt                  time.Time
@@ -318,6 +322,7 @@ type MergeTiming struct {
 }
 
 type Retry struct {
+	Policy             policy.Descriptor
 	RecoveryAttemptID  int64
 	Issue              connector.Issue
 	Attempt            int
@@ -347,28 +352,6 @@ type RetryWait struct {
 	WorkspacePRNumber     int
 	WorkspaceCreateCount  int
 	WorkspaceDestroyCount int
-}
-
-type InstantFailure struct {
-	Issue          connector.Issue
-	Error          string
-	errorKey       string
-	Count          int
-	FirstFailureAt time.Time
-	LastFailureAt  time.Time
-}
-
-// RepeatedFailure tracks consecutive worker failures of any duration for one
-// issue. Unlike InstantFailure it does not require matching error text: token
-// counts and other attempt-specific details vary between otherwise identical
-// failures, and each retry of a long-running failure spends real money.
-type RepeatedFailure struct {
-	Issue                    connector.Issue
-	Error                    string
-	Count                    int
-	GitHubRESTBudgetFailures int
-	FirstFailureAt           time.Time
-	LastFailureAt            time.Time
 }
 
 type ProjectFailureBreaker struct {
@@ -467,8 +450,7 @@ func newState(cfg Config) State {
 		DependencyAutoUnblocks:   map[string]DependencyAutoUnblockRecord{},
 		BudgetRefusals:           map[string]BudgetRefusal{},
 		PriorAttempts:            map[string]runpkg.PriorAttempt{},
-		InstantFailures:          map[string]InstantFailure{},
-		RepeatedFailures:         map[string]RepeatedFailure{},
+
 		FailureBreaker:           newProjectFailureBreaker(cfg.FailureBreaker),
 		DispatchRecoveries:       map[string]DispatchRecovery{},
 		StalenessWarnings:        map[string]StalenessWarning{},
@@ -483,7 +465,6 @@ func newState(cfg Config) State {
 		CleanupFailures:          map[string]string{},
 		laneEntries:              map[string]time.Time{},
 		laneProvenance:           map[string]provenance.Attribution{},
-		dispatchLoopResets:       map[string]time.Time{},
 		planRework:               map[string]struct{}{},
 		pendingEpicParentLookups: map[string]connector.Issue{},
 	}
@@ -538,10 +519,13 @@ func (s State) clone() State {
 
 		CandidatesMissingVsTracker: cloneIntPointer(s.CandidatesMissingVsTracker),
 
-		ManualRefresh:            cloneRefreshAttempt(s.ManualRefresh),
-		LastRunningReconcileAt:   s.LastRunningReconcileAt,
-		LastWorkspaceCleanupAt:   s.LastWorkspaceCleanupAt,
-		workspaceCleanupCursor:   s.workspaceCleanupCursor,
+		ManualRefresh:          cloneRefreshAttempt(s.ManualRefresh),
+		LastRunningReconcileAt: s.LastRunningReconcileAt,
+		LastWorkspaceCleanupAt: s.LastWorkspaceCleanupAt,
+		workspaceCleanupCursor: s.workspaceCleanupCursor,
+
+		workspaceCleanupInventoryCursor: s.workspaceCleanupInventoryCursor,
+
 		WorkspaceRetention:       append([]workspace.RetentionTotals(nil), s.WorkspaceRetention...),
 		CleanupFailures:          maps.Clone(s.CleanupFailures),
 		CleanupFailureAt:         s.CleanupFailureAt,
@@ -579,8 +563,7 @@ func (s State) clone() State {
 		dependencyUnblockEarly:   s.dependencyUnblockEarly,
 		BudgetRefusals:           make(map[string]BudgetRefusal, len(s.BudgetRefusals)),
 		PriorAttempts:            clonePriorAttempts(s.PriorAttempts),
-		InstantFailures:          make(map[string]InstantFailure, len(s.InstantFailures)),
-		RepeatedFailures:         make(map[string]RepeatedFailure, len(s.RepeatedFailures)),
+
 		FailureBreaker:           cloneProjectFailureBreaker(s.FailureBreaker),
 		DispatchRecoveries:       cloneDispatchRecoveries(s.DispatchRecoveries),
 		StalenessWarnings:        maps.Clone(s.StalenessWarnings),
@@ -600,7 +583,6 @@ func (s State) clone() State {
 		laneEntries:              maps.Clone(s.laneEntries),
 		laneProvenance:           maps.Clone(s.laneProvenance),
 		dispatchModes:            maps.Clone(s.dispatchModes),
-		dispatchLoopResets:       maps.Clone(s.dispatchLoopResets),
 		planRework:               make(map[string]struct{}, len(s.planRework)),
 		epicTransitionWatch:      cloneIssues(s.epicTransitionWatch),
 		pendingEpicParentLookups: cloneIssueMap(s.pendingEpicParentLookups),
@@ -638,14 +620,6 @@ func (s State) clone() State {
 		retry.ForgeRetry = cloneForgeRetry(retry.ForgeRetry)
 		retry.Wait.PendingChecks = append([]string(nil), retry.Wait.PendingChecks...)
 		cloned.Retry[id] = retry
-	}
-	for id, failure := range s.InstantFailures {
-		failure.Issue = cloneIssue(failure.Issue)
-		cloned.InstantFailures[id] = failure
-	}
-	for id, failure := range s.RepeatedFailures {
-		failure.Issue = cloneIssue(failure.Issue)
-		cloned.RepeatedFailures[id] = failure
 	}
 	for id, refusal := range s.BudgetRefusals {
 		refusal.Issue = cloneIssue(refusal.Issue)

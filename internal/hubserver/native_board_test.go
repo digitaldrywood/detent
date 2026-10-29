@@ -2,32 +2,288 @@ package hubserver
 
 import (
 	"bufio"
+	"bytes"
+	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"path/filepath"
 	"reflect"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+func TestNativeBoardResumedExecution(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 10, 16, 20, 0, 0, 0, time.UTC)
+	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }})
+	if err := service.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
+	type currentWork struct {
+		fixture     nativeFixture
+		runner      runnerFixture
+		issue       tracker.NativeIssue
+		worker      string
+		lease       tracker.NativeLease
+		event       tracker.NativeRunEvent
+		completedAt time.Time
+	}
+	var work []currentWork
+	for _, name := range []string{"example-project", "example-library"} {
+		f := newNativeFixture(t, service, "", name)
+		approveHubTestPolicy(t, service, f.base+"/policy", hubTestPolicy())
+		issue := f.create(t, "Resume existing work")
+		r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
+		r.enroll(t)
+		worker := f.worker(t, name+"-worker")
+		lease := claimNativeAttempt(t, f, worker, name+"-machine", name+"-previous", issue.WorkItemID)
+		start := nativeStartedEvent(lease)
+		path := f.base + "/work-items/" + string(issue.WorkItemID) + "/events"
+		requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path, worker, start), http.StatusOK)
+		finish := start
+		finish.Type, finish.IdempotencyKey, finish.Data.Sequence, finish.Data.Outcome = "run.finished", "previous-finish", 2, "succeeded"
+		requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path, worker, finish), http.StatusOK)
+		requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "released"}), http.StatusNoContent)
+		now = now.Add(time.Second)
+		lease = claimNativeAttempt(t, f, worker, name+"-machine", name+"-current", issue.WorkItemID)
+		if _, err := service.database.db.ExecContext(t.Context(), "INSERT INTO lease_runners(lease_id,runner_id) VALUES(?,?)", lease.ID, r.binding.RunnerID); err != nil {
+			t.Fatal(err)
+		}
+		work = append(work, currentWork{fixture: f, runner: r, issue: issue, worker: worker, lease: lease})
+	}
+	for _, test := range []struct {
+		name, stage string
+		live        bool
+	}{
+		{"implementing", "Implementing", true},
+		{"typed heartbeat", "Implementing", true},
+		{"unknown stage", "Running", true},
+		{"stale runtime", "", false},
+		{"wrong fence", "", false},
+		{"wrong project", "", false},
+		{"finalizing", "Finalizing", false},
+		{"claim only", "", false},
+		{"native running", "Implementing", true},
+		{"diagnostic completion", "Finalizing", false},
+		{"stale completion runtime", "", false},
+		{"stale completion snapshot", "", false},
+		{"provider completed", "", false},
+		{"native completed", "", false},
+		{"released", "", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			now = now.Add(time.Second)
+			if test.name == "stale completion runtime" {
+				now = now.Add(runnerauth.HeartbeatTimeout + time.Second)
+			}
+			for index, w := range work {
+				f, r, issue, lease := w.fixture, w.runner, w.issue, w.lease
+				if test.name == "native running" {
+					w.event = nativeStartedEvent(lease)
+					w.event.IdempotencyKey = "current-start"
+					requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", w.worker, w.event), http.StatusOK)
+					work[index].event = w.event
+				}
+				local := runnerauth.DiagnosticAttempt{Key: "local:42", IssueID: string(issue.WorkItemID), LocalAttemptID: 42, Generation: 3, Stage: "implementing", Membership: []string{"running", "durable_active", "claimed"}, LeaseRenewedAt: lease.RenewedAt, LeaseExpiresAt: lease.ExpiresAt}
+				claim := runnerauth.DiagnosticAttempt{Key: "native:attempt_current", IssueID: string(issue.WorkItemID), NativeAttemptID: "attempt_current_" + string(f.project.ID), Fence: uint64(lease.FencingToken), Membership: []string{"native_claim"}}
+				if w.event.Data.AttemptID != "" {
+					claim.NativeAttemptID = w.event.Data.AttemptID
+				}
+				if test.name == "diagnostic completion" {
+					w.completedAt = now
+					work[index].completedAt = now
+				}
+				if test.name == "diagnostic completion" || test.name == "stale completion runtime" || test.name == "stale completion snapshot" {
+					claim.ProviderCompletedAt, claim.HostOperation, claim.OperationPending = w.completedAt, "workspace.finalize_native_work", true
+				}
+				if test.name == "unknown stage" {
+					local.Stage = "unreported"
+				}
+				if test.name == "wrong fence" {
+					local.Fence = uint64(lease.FencingToken) + 1
+				}
+				if test.name == "finalizing" {
+					claim.ProviderCompletedAt, claim.HostOperation, claim.OperationPending = now, "workspace.finalize_native_work", true
+				}
+				records := []runnerauth.DiagnosticAttempt{local, claim}
+				if test.name == "claim only" {
+					records = records[1:]
+				}
+				view := runnerauth.ProjectConfiguration{ProjectID: string(f.project.ID), Authority: "local_global_configuration", Source: "cloud_workflow", ObservedAt: now, Diagnostics: &runnerauth.ProjectDiagnostics{ObservedAt: now, RuntimeObservedAt: now, Source: "runner_runtime_and_durable_attempt_owners", Records: records}}
+				if test.name == "stale runtime" {
+					view.Diagnostics.RuntimeObservedAt = now.Add(-10 * time.Minute)
+				}
+				if test.name == "stale completion runtime" || test.name == "stale completion snapshot" {
+					view.Diagnostics.RuntimeObservedAt = w.completedAt
+				}
+				if test.name == "stale completion snapshot" {
+					view.Diagnostics.ObservedAt, view.ObservedAt = w.completedAt, w.completedAt
+				}
+				if test.name == "wrong project" {
+					view.ProjectID = "prj_other"
+				}
+				if _, err := service.database.db.ExecContext(t.Context(), "DELETE FROM runner_project_observations WHERE runner_id = ?", r.binding.RunnerID); err != nil {
+					t.Fatal(err)
+				}
+				if test.name == "typed heartbeat" {
+					view.ObservedAt = now.Add(-2 * runnerauth.HeartbeatTimeout)
+					view.Diagnostics.ObservedAt, view.Diagnostics.RuntimeObservedAt = view.ObservedAt, view.ObservedAt
+				}
+				raw, err := json.Marshal(map[string]runnerauth.ProjectConfiguration{string(f.project.ID): view})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET project_configuration_json=? WHERE id=?", string(raw), r.binding.RunnerID); err != nil {
+					t.Fatal(err)
+				}
+				if test.name == "typed heartbeat" {
+					view.Diagnostics.ObservedAt, view.Diagnostics.RuntimeObservedAt = now, now
+					request := newHubAPIRequest(t, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "runner", "capacity": 2, "version": "test", "protocol_major": 2, "backend_isolation": r.redemption.BackendIsolation, "project_configuration": view})
+					response := httptest.NewRecorder()
+					timing := &requestTiming{trace: func(query string, _ []driver.NamedValue) {
+						if strings.HasPrefix(query, "UPDATE runner_identities") && strings.Contains(query, "project_configuration_json") {
+							t.Errorf("unchanged legacy snapshot updated configuration: %s", query)
+						}
+					}}
+					service.Handler().ServeHTTP(response, request.WithContext(withRequestTiming(request.Context(), timing)))
+					requireNativeStatus(t, response, http.StatusOK)
+				}
+				if test.name == "provider completed" || test.name == "native completed" {
+					path := f.base + "/work-items/" + string(issue.WorkItemID) + "/events"
+					event := w.event
+					if test.name == "provider completed" {
+						event.Type, event.IdempotencyKey, event.Data.Sequence = "run.observed", "provider-completed", 2
+						event.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "completed", HeartbeatAt: now}
+					} else {
+						event.Type, event.IdempotencyKey, event.Data.Sequence, event.Data.Outcome = "run.finished", "current-finish", 3, "succeeded"
+					}
+					requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path, w.worker, event), http.StatusOK)
+					work[index].event = event
+				}
+				mutation := tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 600, Reason: "released"}
+				endpoint, status := "/renew", http.StatusOK
+				if test.name == "released" {
+					endpoint, status = "/release", http.StatusNoContent
+				}
+				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+endpoint, w.worker, mutation), status)
+				if test.name != "typed heartbeat" && test.name != "wrong project" {
+					scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+					legacy, legacyErr := readNativeBoardExecution(t.Context(), service.database.reader, scope, string(issue.WorkItemID), nil, now)
+					tx, err := service.database.db.BeginTx(t.Context(), nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if _, err := tx.ExecContext(t.Context(), `INSERT INTO runner_project_observations(organization_id,runner_id,project_id,observed_at,diagnostics_observed_at,runtime_observed_at,snapshot_digest) VALUES(?,?,?,?,?,?,?)`, scope.organization, r.binding.RunnerID, scope.project, formatHubTime(view.ObservedAt), formatHubTime(view.Diagnostics.ObservedAt), formatHubTime(view.Diagnostics.RuntimeObservedAt), "board-fixture-"+string(f.project.ID)); err != nil {
+						tx.Rollback()
+						t.Fatal(err)
+					}
+					if err := storeRunnerBoardProjection(t.Context(), tx, scope, r.binding.RunnerID, view); err != nil {
+						tx.Rollback()
+						t.Fatal(err)
+					}
+					if err := tx.Commit(); err != nil {
+						t.Fatal(err)
+					}
+					projected, projectedErr := readNativeBoardExecution(t.Context(), service.database.reader, scope, string(issue.WorkItemID), nil, now)
+					if !reflect.DeepEqual(legacy, projected) || !errors.Is(projectedErr, legacyErr) {
+						t.Fatalf("legacy execution=%+v err=%v; projected=%+v err=%v", legacy, legacyErr, projected, projectedErr)
+					}
+				}
+				drainTestNativeBoard(t, service)
+				var rawCard string
+				if err := service.database.reader.QueryRowContext(t.Context(), "SELECT record_json FROM native_board_items WHERE work_item_id=?", issue.WorkItemID).Scan(&rawCard); err != nil {
+					t.Fatal(err)
+				}
+				var card tracker.NativeBoardCard
+				if err := json.Unmarshal([]byte(rawCard), &card); err != nil {
+					t.Fatal(err)
+				}
+				live := card.Execution != nil && card.Execution.Running
+				if live != test.live || card.StatusLine != test.stage {
+					t.Fatalf("project %s: execution=%+v status=%s", f.project.ID, card.Execution, card.StatusLine)
+				}
+				if test.live && card.Execution.ID != claim.NativeAttemptID {
+					t.Fatalf("unlinked execution=%+v", card.Execution)
+				}
+				wantAttemptStatus := "succeeded"
+				if w.event.Data.AttemptID != "" && test.name != "native completed" && test.name != "released" {
+					wantAttemptStatus = "running"
+				}
+				if card.Attempt == nil || card.Attempt.Status != wantAttemptStatus {
+					t.Fatalf("historical attempt=%+v", card.Attempt)
+				}
+				summary, err := readNativeBoardSummary(t.Context(), service.database.reader, nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{Scope: apiScopeAdmin}}, url.Values{}, now)
+				if err != nil {
+					t.Fatal(err)
+				}
+				count := 0
+				for _, lane := range summary.Lanes {
+					count += lane.Running
+				}
+				want := 0
+				if test.live {
+					want = 1
+				}
+				if count != want {
+					t.Fatalf("project %s: live=%d want %d", f.project.ID, count, want)
+				}
+			}
+			var live int
+			if err := service.database.reader.QueryRowContext(t.Context(), "SELECT sum(running) FROM native_board_items").Scan(&live); err != nil {
+				t.Fatal(err)
+			}
+			want := 0
+			if test.live {
+				want = 2
+			}
+			if live != want {
+				t.Fatalf("combined live=%d want %d", live, want)
+			}
+			var occupied int
+			if err := service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM leases WHERE released_at IS NULL AND julianday(expires_at)>julianday(?)", formatHubTime(now)).Scan(&occupied); err != nil {
+				t.Fatal(err)
+			}
+			wantOccupied := 2
+			if test.name == "released" {
+				wantOccupied = 0
+			}
+			if occupied != wantOccupied {
+				t.Fatalf("occupied=%d want %d", occupied, wantOccupied)
+			}
+		})
+	}
+}
+
 func TestNativeBoardProjectionAndReplay(t *testing.T) {
 	t.Parallel()
+	t.Run("dashboard change log", testDashboardChangeLog)
 	f := newDefaultNativeFixture(t, Config{})
+	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 	issue := f.create(t, "Pushed card")
 	other := f.create(t, "Unchanged card")
 	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{Scope: apiScopeAdmin}}
 	read := func() tracker.NativeIssuePage {
 		t.Helper()
+		drainTestNativeBoard(t, f.service)
 		response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items?include=board&state=Todo&limit=2000", f.token, nil)
 		requireNativeStatus(t, response, http.StatusOK)
 		var page tracker.NativeIssuePage
@@ -62,6 +318,7 @@ func TestNativeBoardProjectionAndReplay(t *testing.T) {
 			if response.Code < 200 || response.Code >= 300 {
 				t.Fatalf("%s: %d %s", test.name, response.Code, response.Body.String())
 			}
+			drainTestNativeBoard(t, f.service)
 			tx, err := f.service.database.reader.BeginTx(t.Context(), nil)
 			if err != nil {
 				t.Fatal(err)
@@ -171,6 +428,7 @@ SELECT ?,?,NULL,NULL FROM retained`, nativeBoardReplayLimit, scope.organization,
 			changed = changed.WithID()
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: descriptor.ID, Policy: changed}), http.StatusOK)
 			descriptor = changed
+			drainTestNativeBoard(t, f.service)
 			for _, id := range []tracker.NativeWorkItemID{history.WorkItemID, other.WorkItemID} {
 				var raw string
 				var rank int
@@ -198,7 +456,11 @@ func TestNativeBoardAttemptAndChangeDeltas(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
 	f := newChangeFixture(t, openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }}))
+	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
 	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{Scope: apiScopeAdmin}}
+	drainTestNativeBoard(t, f.service)
 	var since int64
 	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT sequence FROM native_board_sequences WHERE project_id=?", scope.project).Scan(&since); err != nil {
 		t.Fatal(err)
@@ -211,6 +473,7 @@ func TestNativeBoardAttemptAndChangeDeltas(t *testing.T) {
 	worker := f.worker(t, "board-worker")
 	assertDelta := func(t *testing.T, status string, count int, reset ...bool) {
 		t.Helper()
+		drainTestNativeBoard(t, f.service)
 		frame, err := readNativeBoardFrame(t.Context(), f.service.database.reader, scope, since)
 		if err != nil {
 			t.Fatal(err)
@@ -312,6 +575,7 @@ func TestNativeBoardAttemptAndChangeDeltas(t *testing.T) {
 			if err := f.service.maintainNativeRetention(t.Context(), now); err != nil {
 				t.Fatal(err)
 			}
+			f.service.maintainNativeBoard(t.Context())
 		}},
 		{"version", "", 2, func(t *testing.T) { version = f.publish(t, "board-version", "") }},
 		{"review", "", 2, func(t *testing.T) {
@@ -334,6 +598,65 @@ func TestNativeBoardAttemptAndChangeDeltas(t *testing.T) {
 			requireNativeStatus(t, response, http.StatusOK)
 			decodeHubResponse(t, response, &f.rules)
 		}},
+		{"historical retired operator action", "", 2, func(t *testing.T) {
+			cfg := workflowconfig.Default()
+			cfg.Tracker.Kind = workflowconfig.TrackerHubNative
+			descriptor, err := workflowconfig.ResolvePolicy(workflowconfig.Workflow{
+				Config:   cfg,
+				Authored: &policy.Authored{Version: workflowconfig.NativePolicyCanonicalizationVersion},
+				DefinitionSources: &workflowconfig.ProjectDefinitionSources{
+					Workflow: []byte("---\ntracker:\n  kind: hub_native\noperator:\n  actions: [clear_closed_dependencies, return_retired_parks]\n---\nHistorical instructions."),
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := workflowconfig.ResolveSharedPolicy(descriptor); err == nil || !strings.Contains(err.Error(), "operator.actions") {
+				t.Fatalf("new policy admission error = %v", err)
+			}
+			response := performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: hubTestPolicy().ID, Policy: descriptor})
+			requireNativeStatus(t, response, http.StatusUnprocessableEntity)
+			raw, err := json.Marshal(descriptor)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO policy_revisions(scope,policy_id,metadata_json,approved_by,approved_at) VALUES(?,?,?,?,?)", string(scope.organization)+"/"+string(scope.project), descriptor.ID, string(raw), "historical-owner", formatHubTime(now)); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), "DROP TRIGGER change_versions_immutable"); err != nil {
+				t.Fatal(err)
+			}
+			version = f.detail(t).Versions[0]
+			original, err := compactChangeVersion(version)
+			if err != nil {
+				t.Fatal(err)
+			}
+			originalPolicyID := version.PolicyID
+			ctx := t.Context()
+			t.Cleanup(func() {
+				version.PolicyID = originalPolicyID
+				if _, err := f.service.database.db.ExecContext(context.WithoutCancel(ctx), "UPDATE change_versions SET policy_revision_id=?,record_json=? WHERE id=?", originalPolicyID, original, version.ID); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.database.db.ExecContext(context.WithoutCancel(ctx), "INSERT OR IGNORE INTO native_board_dirty(work_item_id) VALUES(?)", f.issue.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+			})
+			version.PolicyID = descriptor.ID
+			record, err := compactChangeVersion(version)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE change_versions SET policy_revision_id=?,record_json=? WHERE id=?", descriptor.ID, record, version.ID); err != nil {
+				t.Fatal(err)
+			}
+			if got := f.detail(t).Versions[0].Policy; !reflect.DeepEqual(got, descriptor) {
+				t.Fatal("historical policy changed during hydration")
+			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT OR IGNORE INTO native_board_dirty(work_item_id) VALUES(?)", f.issue.WorkItemID); err != nil {
+				t.Fatal(err)
+			}
+		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			now = now.Add(time.Second)
@@ -351,6 +674,7 @@ func TestNativeBoardAttemptAndChangeDeltas(t *testing.T) {
 	var historicalChange tracker.ChangeRequest
 	decodeHubResponse(t, response, &historicalChange)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/"+historicalChange.ID+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "historical-version"}, ChangeVersionInput: changeTestInput()}), http.StatusOK)
+	drainTestNativeBoard(t, f.service)
 	for _, statement := range []string{
 		"CREATE TABLE policy_dirty_cards(work_item_id TEXT PRIMARY KEY)",
 		"CREATE TRIGGER count_change_policy_cards AFTER INSERT ON native_board_dirty BEGIN INSERT OR IGNORE INTO policy_dirty_cards VALUES(NEW.work_item_id); END",
@@ -363,7 +687,7 @@ func TestNativeBoardAttemptAndChangeDeltas(t *testing.T) {
 	instructions.SourceDigest = policy.Digest([]byte("changed instructions"))
 	instructions = instructions.WithID()
 	changed := hubTestPolicy()
-	changed.Gates.AutoPromote = true
+	changed.Gates.SecurityAudit = true
 	changed = changed.WithID()
 	for _, test := range []struct {
 		name   string
@@ -466,6 +790,7 @@ func TestHostedBoardStreamReplay(t *testing.T) {
 			t.Fatalf("related IDs=%v, want %v (granted=%v)", ids, want, granted)
 		}
 	}
+	drainTestNativeBoard(t, f.service)
 	var stored tracker.NativeBoardCard
 	var raw string
 	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT record_json FROM native_board_items WHERE work_item_id=?", item).Scan(&raw); err != nil {
@@ -493,6 +818,7 @@ func TestHostedBoardStreamReplay(t *testing.T) {
 	for index := range 2 {
 		response := f.request(t, user, http.MethodPost, f.base+"/work-items/"+string(item)+"/comments", map[string]any{"idempotency_key": fmt.Sprintf("board-stream-%d", index), "body": "Pushed activity"})
 		requireNativeStatus(t, response, http.StatusOK)
+		drainTestNativeBoard(t, f.service)
 	}
 	replay := readFrame(openHostedTestStream(t, f, user, "?board=true&since="+strconv.FormatInt(initial.Sequence, 10)))
 	if replay.Gap || len(replay.Deltas) != 2 || replay.Sequence <= initial.Sequence {
@@ -619,13 +945,14 @@ func TestNativeBoardPolicyRefreshIsolatesProjects(t *testing.T) {
 	defer tx.Rollback()
 	for _, project := range projects {
 		scope := string(project.fixture.project.OrganizationID) + "/" + string(project.fixture.project.ID)
-		if _, err := service.database.approvePolicyInTx(t.Context(), tx, scope, "test-owner", policy.Change{ExpectedID: hubTestPolicy().ID, Policy: project.policy}); err != nil {
+		if _, err := service.database.approvePolicyInTx(t.Context(), tx, scope, "test-owner", policy.Change{ExpectedID: hubTestPolicy().ID, Policy: project.policy}, policyLanding{}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if err := service.database.commit(t.Context(), tx); err != nil {
 		t.Fatal(err)
 	}
+	drainTestNativeBoard(t, service)
 	for _, project := range projects {
 		scope := nativeScope{organization: project.fixture.project.OrganizationID, project: project.fixture.project.ID, credential: apiCredential{Scope: apiScopeAdmin}}
 		page, err := service.readBoardIssues(t.Context(), scope, url.Values{"include": {"board"}})
@@ -654,15 +981,16 @@ func TestNativeBoardPolicyRefreshIsolatesProjects(t *testing.T) {
 func TestNativeBoardDependentChangesReachBlockerStream(t *testing.T) {
 	t.Parallel()
 	f := newHostedSecurityFixture(t)
+	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
 	user := f.user(t, "dependency-viewer", "member", "viewer@example.test", "write", "")
 	created := f.request(t, user, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "dependent"}, Title: "Dependent", Body: issueContractTestSections, State: "Todo"})
 	requireNativeStatus(t, created, http.StatusOK)
 	var issue tracker.NativeIssue
 	decodeHubResponse(t, created, &issue)
 	dependent, blocker := issue.WorkItemID, f.seedIssue(t, 2)
-	if err := f.service.hubTransact(t.Context(), func(*sql.Tx, time.Time) error { return nil }); err != nil {
-		t.Fatal(err)
-	}
+	drainTestNativeBoard(t, f.service)
 	response := f.request(t, user, http.MethodGet, f.base+"/work-items?include=board", nil)
 	requireNativeStatus(t, response, http.StatusOK)
 	var page tracker.NativeIssuePage
@@ -682,6 +1010,7 @@ func TestNativeBoardDependentChangesReachBlockerStream(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			requireNativeStatus(t, f.request(t, user, http.MethodPost, f.base+"/work-items/"+string(dependent)+test.path, test.body), http.StatusOK)
+			drainTestNativeBoard(t, f.service)
 			for {
 				frame := readHostedBoardFrame(t, stream)
 				if frame.Gap {
@@ -705,6 +1034,42 @@ func TestNativeBoardDependentChangesReachBlockerStream(t *testing.T) {
 	}
 }
 
+func normalizeTestDashboardWatermark(t *testing.T, before, after map[string]any) {
+	t.Helper()
+	if before == nil || after == nil {
+		t.Fatal("dashboard snapshot is not an object")
+	}
+	previous, existed := before["change_sequence"]
+	current, exists := after["change_sequence"]
+	if existed != exists {
+		t.Fatal("dashboard change sequence availability changed")
+	}
+	if !existed {
+		return
+	}
+	previousSequence, previousOK := previous.(float64)
+	currentSequence, currentOK := current.(float64)
+	if !previousOK || !currentOK || currentSequence < previousSequence {
+		t.Fatalf("dashboard change sequence regressed: %v -> %v", previous, current)
+	}
+	after["change_sequence"] = previous
+}
+
+func drainTestNativeBoard(t *testing.T, service *Service) {
+	t.Helper()
+	var cursor string
+	for {
+		more, id, err := service.database.drainNativeBoardDirtyAfter(t.Context(), service.config.now(), cursor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !more {
+			return
+		}
+		cursor = id
+	}
+}
+
 func readHostedBoardFrame(t *testing.T, scanner *bufio.Reader) tracker.NativeBoardFrame {
 	t.Helper()
 	for {
@@ -717,5 +1082,295 @@ func readHostedBoardFrame(t *testing.T, scanner *bufio.Reader) tracker.NativeBoa
 			t.Fatal(err)
 		}
 		return frame
+	}
+}
+
+func TestNativeBoardRefreshSkipsFailingCard(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name            string
+		failures        int
+		nonexpired      int
+		attemptsPerTick int
+		source          string
+	}{
+		{"65 failing cards", 65, 0, 100, "dirty"},
+		{"dirty across ticks", 7, 0, 3, "dirty"},
+		{"expired across ticks", 7, 0, 3, "expired"},
+		{"mixed across ticks", 7, 0, 3, "mixed"},
+		{"nonexpired ahead of dirty", 0, 128, 3, "dirty"},
+		{"nonexpired ahead of expired", 0, 128, 3, "expired"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newDefaultNativeFixture(t, Config{})
+			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+				t.Fatal(err)
+			}
+			issues := []tracker.NativeWorkItemID{f.create(t, "First").WorkItemID, f.create(t, "Second").WorkItemID, f.create(t, "Third").WorkItemID}
+			slices.Sort(issues)
+			drainTestNativeBoard(t, f.service)
+			broken, healthy := issues[0], issues[1:]
+			db := f.service.database.db
+			now := f.service.config.now()
+			expired := now.Add(-time.Hour).UTC().Format("2006-01-02T15:04:05.000000000Z")
+			if _, err := db.ExecContext(t.Context(), "UPDATE native_board_items SET record_json='[1]' WHERE work_item_id=?", broken); err != nil {
+				t.Fatal(err)
+			}
+			for i := range test.nonexpired {
+				expiry := ""
+				if i%2 != 0 {
+					expiry = now.Add(24 * time.Hour).UTC().Format("2006-01-02T15:04:05.000000000Z")
+				}
+				if _, err := db.ExecContext(t.Context(), `INSERT INTO native_board_items(work_item_id,organization_id,project_id,state,archived,terminal,running,lane_rank,priority_rank,activity_missing,activity_at,identifier,closed_at,expires_at,record_json) SELECT ?,organization_id,project_id,state,archived,terminal,running,lane_rank,priority_rank,activity_missing,activity_at,identifier,closed_at,?,record_json FROM native_board_items WHERE work_item_id=?`, fmt.Sprintf("wi_!%06d", i), expiry, broken); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for i := range test.failures {
+				id := fmt.Sprintf("wi_00000000000000000000000000000%03d", i)
+				if _, err := db.ExecContext(t.Context(), `INSERT INTO native_board_items(work_item_id,organization_id,project_id,state,archived,terminal,running,lane_rank,priority_rank,activity_missing,activity_at,identifier,closed_at,expires_at,record_json) SELECT ?,organization_id,project_id,state,archived,terminal,running,lane_rank,priority_rank,activity_missing,activity_at,identifier,closed_at,expires_at,record_json FROM native_board_items WHERE work_item_id=?`, id, broken); err != nil {
+					t.Fatal(err)
+				}
+				if test.source == "expired" || (test.source == "mixed" && i%2 == 0) {
+					if _, err := db.ExecContext(t.Context(), "UPDATE native_board_items SET expires_at=? WHERE work_item_id=?", expired, id); err != nil {
+						t.Fatal(err)
+					}
+				} else if _, err := db.ExecContext(t.Context(), "INSERT INTO native_board_dirty(work_item_id) VALUES(?)", id); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := db.ExecContext(t.Context(), "UPDATE native_board_items SET record_json='null' WHERE work_item_id=?", broken); err != nil {
+				t.Fatal(err)
+			}
+			healthyExpiry := expired
+			if test.nonexpired > 0 && test.source == "dirty" {
+				healthyExpiry = ""
+			}
+			for _, id := range healthy {
+				if _, err := db.ExecContext(t.Context(), "UPDATE native_board_items SET record_json='null',expires_at=? WHERE work_item_id=?", healthyExpiry, id); err != nil {
+					t.Fatal(err)
+				}
+				if test.source != "expired" {
+					if _, err := db.ExecContext(t.Context(), "INSERT INTO native_board_dirty(work_item_id) VALUES(?)", id); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			var logs bytes.Buffer
+			f.service.config.Logger = slog.New(slog.NewJSONHandler(&logs, nil))
+			step := analyticsBackfillBudget / time.Duration(test.attemptsPerTick+1)
+			f.service.config.now = func() time.Time {
+				result := now
+				now = now.Add(step)
+				return result
+			}
+			var statements []string
+			ctx := withRequestTiming(t.Context(), &requestTiming{trace: func(query string, _ []driver.NamedValue) {
+				if query != nativeBoardRetentionCandidateQuery {
+					statements = append(statements, query)
+				}
+			}})
+			ticks := (test.failures+test.nonexpired+len(issues)+test.attemptsPerTick-1)/test.attemptsPerTick + 2
+			for tick := range ticks {
+				logs.Reset()
+				statements = nil
+				f.service.maintainNativeBoard(ctx)
+				if tick == 0 && test.nonexpired > 0 {
+					if f.service.boardRefreshCursor != "wi_!000002" || len(statements) != test.attemptsPerTick+1 {
+						t.Fatalf("nonexpired discovery did not resume after three read-only steps: cursor=%q statements=%v", f.service.boardRefreshCursor, statements)
+					}
+					for _, statement := range statements {
+						if statement != nativeBoardCandidateQuery && statement != "SELECT id,organization_id,principal_id,requested_revision,scan_revision,after_thread,through_thread,partial_count FROM team_thread_unread_summaries WHERE requested_revision>completed_revision ORDER BY turn,id LIMIT 1" {
+							t.Fatalf("nonexpired discovery performed refresh work: %s", statement)
+						}
+					}
+				}
+				seen := map[string]bool{}
+				for _, line := range bytes.Split(bytes.TrimSpace(logs.Bytes()), []byte("\n")) {
+					if len(line) == 0 {
+						continue
+					}
+					var record struct {
+						Message string `json:"msg"`
+						ID      string `json:"work_item_id"`
+						Error   string `json:"error"`
+					}
+					if err := json.Unmarshal(line, &record); err != nil {
+						t.Fatal(err)
+					}
+					if record.Message != "refresh native board card" || record.ID == "" || record.Error == "" || seen[record.ID] {
+						t.Fatalf("failure was not logged once with its identity and error: %s", line)
+					}
+					seen[record.ID] = true
+				}
+				if (tick == 0 || tick == ticks-1) && len(seen) != min(test.failures, test.attemptsPerTick) {
+					t.Fatalf("tick %d attempted %d failures, want %d after resuming or wrapping", tick, len(seen), min(test.failures, test.attemptsPerTick))
+				}
+			}
+			for _, id := range healthy {
+				var raw, expiry string
+				var dirty bool
+				if err := db.QueryRowContext(t.Context(), `SELECT record_json,expires_at,EXISTS(SELECT 1 FROM native_board_dirty WHERE work_item_id=?) FROM native_board_items WHERE work_item_id=?`, id, id).Scan(&raw, &expiry, &dirty); err != nil {
+					t.Fatal(err)
+				}
+				var card *tracker.NativeBoardCard
+				if err := json.Unmarshal([]byte(raw), &card); err != nil || card == nil || card.Issue.WorkItemID != id || expiry != "" || dirty {
+					t.Errorf("healthy card %s starved after %d ticks: card=%+v expiry=%q dirty=%v err=%v", id, ticks, card, expiry, dirty, err)
+				}
+			}
+		})
+	}
+}
+
+func TestNativeBoardCandidateQueryBounded(t *testing.T) {
+	t.Parallel()
+	type candidate struct {
+		id      string
+		refresh bool
+	}
+	for _, count := range []int{2, 65, 256} {
+		t.Run(strconv.Itoa(count), func(t *testing.T) {
+			f := newDefaultNativeFixture(t, Config{})
+			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+				t.Fatal(err)
+			}
+			issue := f.create(t, "Candidate")
+			drainTestNativeBoard(t, f.service)
+			now := f.service.config.now()
+			expired := now.Add(-time.Hour).UTC().Format("2006-01-02T15:04:05.000000000Z")
+			future := now.Add(24 * time.Hour).UTC().Format("2006-01-02T15:04:05.000000000Z")
+			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			for i := range count * 2 {
+				id := fmt.Sprintf("wi_%06d", i)
+				if _, err := tx.ExecContext(t.Context(), `INSERT INTO native_board_items(work_item_id,organization_id,project_id,state,archived,terminal,running,lane_rank,priority_rank,activity_missing,activity_at,identifier,closed_at,expires_at,record_json) SELECT ?,organization_id,project_id,state,archived,terminal,running,lane_rank,priority_rank,activity_missing,activity_at,identifier,closed_at,expires_at,record_json FROM native_board_items WHERE work_item_id=?`, id, issue.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+				if i%2 == 0 {
+					if _, err := tx.ExecContext(t.Context(), "INSERT INTO native_board_dirty(work_item_id) VALUES(?)", id); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if _, err := tx.ExecContext(t.Context(), "DELETE FROM native_board_items WHERE work_item_id=?", issue.WorkItemID); err != nil {
+				t.Fatal(err)
+			}
+			if err := tx.Commit(); err != nil {
+				t.Fatal(err)
+			}
+			last := fmt.Sprintf("wi_%06d", count*2-1)
+			for _, expiry := range []struct {
+				name, value  string
+				due, tailDue bool
+			}{
+				{"absent", "", false, false},
+				{"future", future, false, false},
+				{"sparse", "", false, true},
+				{"expired", expired, true, true},
+			} {
+				t.Run(expiry.name, func(t *testing.T) {
+					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_board_items SET expires_at=?", expiry.value); err != nil {
+						t.Fatal(err)
+					}
+					if expiry.tailDue {
+						if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_board_items SET expires_at=? WHERE work_item_id=?", expired, last); err != nil {
+							t.Fatal(err)
+						}
+					}
+					for _, test := range []struct {
+						cursor string
+						want   []candidate
+						next   candidate
+					}{
+						{"", []candidate{{"wi_000000", true}, {"wi_000000", expiry.due}}, candidate{"wi_000000", true}},
+						{"wi_000000", []candidate{{"wi_000002", true}, {"wi_000001", expiry.due}}, candidate{"wi_000001", expiry.due}},
+						{"wi_000001", []candidate{{"wi_000002", true}, {"wi_000002", expiry.due}}, candidate{"wi_000002", true}},
+						{fmt.Sprintf("wi_%06d", count*2-2), []candidate{{last, expiry.tailDue}}, candidate{last, expiry.tailDue}},
+						{"wi_999999", nil, candidate{}},
+					} {
+						rows, err := f.service.database.reader.QueryContext(t.Context(), nativeBoardCandidateQuery, test.cursor, now.UTC().Format("2006-01-02T15:04:05.000000000Z"), test.cursor)
+						if err != nil {
+							t.Fatal(err)
+						}
+						defer rows.Close()
+						var got []candidate
+						for rows.Next() {
+							var row candidate
+							if err := rows.Scan(&row.id, &row.refresh); err != nil {
+								t.Fatal(err)
+							}
+							got = append(got, row)
+						}
+						if err := rows.Err(); err != nil {
+							t.Fatal(err)
+						}
+						if !slices.Equal(got, test.want) {
+							t.Fatalf("cursor %q: candidates=%v want=%v", test.cursor, got, test.want)
+						}
+						id, refresh, err := f.service.database.nextNativeBoardCandidate(t.Context(), now, test.cursor)
+						if err != nil || id != test.next.id || refresh != test.next.refresh {
+							t.Fatalf("cursor %q: next candidate=%q refresh=%v want=%+v err=%v", test.cursor, id, refresh, test.next, err)
+						}
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestNativeBoardDirtyWriterBound(t *testing.T) {
+	f := newDefaultNativeFixture(t, Config{})
+	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 3 {
+		f.create(t, fmt.Sprintf("Bounded board %d", i))
+	}
+	d := f.service.database
+	if _, err := d.db.ExecContext(t.Context(), "UPDATE issues SET title=title||' refreshed' WHERE organization_id=? AND project_id=?", f.project.OrganizationID, f.project.ID); err != nil {
+		t.Fatal(err)
+	}
+	var reads int
+	ctx := withRequestTiming(t.Context(), &requestTiming{trace: func(query string, _ []driver.NamedValue) {
+		if strings.Contains(query, "SELECT record_json FROM native_board_items") {
+			reads++
+			if d.db.Stats().InUse != 0 {
+				t.Error("board projection reads while holding the writer")
+			}
+		}
+	}})
+	var cursor string
+	for remaining := 3; remaining > 0; remaining-- {
+		var before, after int
+		if err := d.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM native_board_deltas").Scan(&before); err != nil {
+			t.Fatal(err)
+		}
+		timingCtx, timing := withWriterTiming(ctx)
+		more, id, err := d.drainNativeBoardDirtyAfter(timingCtx, f.service.config.now(), cursor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !more || id == "" || timing.txs.Load() != 1 {
+			t.Fatalf("drain more=%t id=%q transactions=%d", more, id, timing.txs.Load())
+		}
+		var dirty int
+		if err := d.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM native_board_dirty").Scan(&dirty); err != nil {
+			t.Fatal(err)
+		}
+		if dirty != remaining-1 {
+			t.Fatalf("dirty=%d want=%d: each transaction must refresh one card", dirty, remaining-1)
+		}
+		if err := d.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM native_board_deltas").Scan(&after); err != nil {
+			t.Fatal(err)
+		}
+		if after-before != 1 {
+			t.Fatalf("one board transaction published %d deltas; want one", after-before)
+		}
+		cursor = id
+	}
+	if reads != 3 {
+		t.Fatalf("projection reads=%d want=3", reads)
 	}
 }

@@ -85,7 +85,7 @@ func (e *nativeExecution) ObserveRuntime(ctx context.Context, observation tracke
 	e.diagnosticMu.Unlock()
 	defer func() {
 		if err != nil {
-			err = e.executionError(err)
+			err = e.executionError(ctx, err)
 			if nativeTransportUnavailable(err) {
 				slog.Default().Warn("native runtime observation unavailable", "work_item", e.claim.lease.WorkItemID, "error", err)
 				err = nil
@@ -190,8 +190,9 @@ func (e *nativeExecution) ObserveRuntime(ctx context.Context, observation tracke
 	if previous != nil {
 		before = runtimeEvidence(*previous)
 	}
-	publish := previous == nil || len(before.Phases) == 0 && len(current.Phases) > 0 || current.Phase != before.Phase || !reflect.DeepEqual(current.WorkerLaunch, before.WorkerLaunch) || !reflect.DeepEqual(current.Identity, before.Identity) || !reflect.DeepEqual(current.Landing, before.Landing)
-	changed := previous == nil || !reflect.DeepEqual(current, before)
+	heartbeatDue := e.runtimeHeartbeatDue(&observation)
+	publish := heartbeatDue || previous == nil || len(before.Phases) == 0 && len(current.Phases) > 0 || current.Phase != before.Phase || !reflect.DeepEqual(current.WorkerLaunch, before.WorkerLaunch) || !reflect.DeepEqual(current.Identity, before.Identity) || !reflect.DeepEqual(current.Landing, before.Landing)
+	changed := heartbeatDue || previous == nil || !reflect.DeepEqual(current, before)
 	if !changed {
 		return nil
 	}
@@ -201,6 +202,11 @@ func (e *nativeExecution) ObserveRuntime(ctx context.Context, observation tracke
 		return nil
 	}
 	return e.append(ctx, "run.observed", "", nil)
+}
+
+func (e *nativeExecution) runtimeHeartbeatDue(observation *tracker.NativeRuntimeObservation) bool {
+	return observation != nil && observation.HeartbeatAt.After(e.runtimePublishedAt) &&
+		observation.HeartbeatAt.Sub(e.runtimePublishedAt) >= e.scheduler.leaseTTL/3
 }
 
 func (e *nativeExecution) activityBoundary(at time.Time, outcome string) {
@@ -365,7 +371,13 @@ func (e *nativeExecution) StartLanding(ctx context.Context, localAttempt int64, 
 }
 
 func (e *nativeExecution) ObserveLanding(ctx context.Context, landing runner.NativeLanding) error {
-	return e.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{HeartbeatAt: time.Now().UTC(), Landing: &tracker.NativeLandingReceipt{SecurityAudit: landing.SecurityAudit, Pipeline: landing.Pipeline, PipelineDropped: landing.PipelineDropped, Waiting: landing.Waiting, Path: landing.Path, Packages: landing.Packages, CI: landing.CI, Gate: landing.Gate, ChangeID: landing.ChangeID, VersionID: landing.VersionID, HeadSHA: landing.HeadSHA, BaseSHA: landing.BaseSHA, Landed: landing.Landed, MergeSHA: landing.MergeSHA, BaseRef: landing.BaseRef, Method: landing.Method, Rebased: landing.Rebased, RefusalKind: landing.RefusalKind, Refusal: landing.RefusalKind, GateFailed: landing.GateFailed, ObservedAt: time.Now().UTC()}})
+	e.mu.Lock()
+	delivery := e.releaseDelivery
+	e.mu.Unlock()
+	if delivery != nil && delivery.DeliveredSHA != "" && landing.Landed && landing.ChangeID == "" && landing.MergeSHA == delivery.DeliveredSHA && landing.HeadSHA == delivery.SourceMergeSHA && landing.BaseRef == delivery.BaseRef {
+		return nil
+	}
+	return e.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{HeartbeatAt: time.Now().UTC(), Landing: &tracker.NativeLandingReceipt{ConflictFiles: landing.ConflictFiles, SecurityAudit: landing.SecurityAudit, Pipeline: landing.Pipeline, PipelineDropped: landing.PipelineDropped, Waiting: landing.Waiting, Path: landing.Path, Packages: landing.Packages, CI: landing.CI, Gate: landing.Gate, ChangeID: landing.ChangeID, VersionID: landing.VersionID, HeadSHA: landing.HeadSHA, BaseSHA: landing.BaseSHA, Landed: landing.Landed, MergeSHA: landing.MergeSHA, BaseRef: landing.BaseRef, Method: landing.Method, Rebased: landing.Rebased, RefusalKind: landing.RefusalKind, Refusal: landing.RefusalKind, GateFailed: landing.GateFailed, ObservedAt: time.Now().UTC()}})
 }
 
 func (e *nativeExecution) FlushRuntime(ctx context.Context) error {
@@ -386,18 +398,20 @@ func (e *nativeExecution) RecordPipelineTiming(timing gate.PipelineTiming) {
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.data.Runtime == nil {
-		e.data.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", HeartbeatAt: e.scheduler.now().UTC()}
+	observation := tracker.NativeRuntimeObservation{Phase: "implementation", HeartbeatAt: e.scheduler.now().UTC()}
+	if e.data.Runtime != nil {
+		observation = *e.data.Runtime
 	}
-	for _, previous := range e.data.Runtime.Pipeline {
+	for _, previous := range observation.Pipeline {
 		if previous.ReceiptID == timing.ReceiptID {
 			return
 		}
 	}
-	if len(e.data.Runtime.Pipeline) < 1024 {
-		e.data.Runtime.Pipeline = append(e.data.Runtime.Pipeline, timing.Public())
+	if len(observation.Pipeline) < 1024 {
+		observation.Pipeline = append(slices.Clone(observation.Pipeline), timing.Public())
 	} else {
-		e.data.Runtime.PipelineDropped++
+		observation.PipelineDropped++
 	}
+	e.data.Runtime = &observation
 	e.runtimeDirty = true
 }

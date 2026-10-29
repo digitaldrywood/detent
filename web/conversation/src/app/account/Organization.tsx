@@ -1,3 +1,4 @@
+import { useProjectSettingsDirty } from "../settings/projectSettingsDirty.ts";
 import React from "react";
 import { MoreHorizontalIcon, PlusIcon, XIcon } from "lucide-react";
 
@@ -1041,7 +1042,7 @@ export function OrganizationMembersRoute(): React.ReactElement {
   );
 }
 
-export function SlugSettings({ projectId, canManage }: { readonly projectId?: string; readonly canManage: boolean }): React.ReactElement {
+export function SlugSettings({ projectId, canManage, embedded = false }: { readonly projectId?: string; readonly canManage: boolean; readonly embedded?: boolean }): React.ReactElement {
   const api = useAccountApi();
   const shared = behindSharedEntry();
   const [current, setCurrent] = React.useState("");
@@ -1053,6 +1054,7 @@ export function SlugSettings({ projectId, canManage }: { readonly projectId?: st
     void api.slug(projectId, shared).then(({ slug }) => { if (active) { setCurrent(slug); setDraft(slug); } }).catch((error: unknown) => { if (active) setError(String(error)); });
     return () => { active = false; };
   }, [api, projectId, shared]);
+  useProjectSettingsDirty(current !== "" && draft !== current);
   async function save(): Promise<void> {
     setBusy(true); setError(null);
     try {
@@ -1061,16 +1063,16 @@ export function SlugSettings({ projectId, canManage }: { readonly projectId?: st
     } catch (error) { setError(error instanceof Error ? error.message : String(error)); }
     finally { setBusy(false); }
   }
+  const editor = <div className="flex flex-col gap-2">
+    <div className="flex min-w-0 items-center gap-2">
+      <Input size={embedded ? "sm" : "default"} aria-label={projectId === undefined ? "Organization slug" : "Project slug"} value={draft} onChange={(event) => setDraft(event.target.value)} disabled={!canManage || busy || current === ""} maxLength={80} />
+      {canManage ? <Button size="sm" disabled={busy || current === "" || draft === current} onClick={() => void save()}>{busy ? "Saving…" : "Save slug"}</Button> : null}
+    </div>
+    <ControlError message={error} />
+  </div>;
+  if (embedded) return <SettingsRow title="Project slug" help={{ label: "Project slug", text: "Earlier slugs keep redirecting to the current address." }} control={canManage ? editor : <span className="text-sm font-mono">{current}</span>} />;
   return <SettingsSection title="URL slug">
     <p className="text-sm text-muted-foreground">Earlier slugs keep redirecting to the current address.</p>
-    <SettingsRow title={projectId === undefined ? "Organization slug" : "Project slug"}>
-      <div className="flex flex-col gap-2">
-        <div className="flex items-center gap-2">
-          <Input aria-label={projectId === undefined ? "Organization slug" : "Project slug"} value={draft} onChange={(event) => setDraft(event.target.value)} disabled={!canManage || busy || current === ""} maxLength={80} />
-          {canManage ? <Button size="sm" disabled={busy || current === "" || draft === current} onClick={() => void save()}>{busy ? "Saving…" : "Save slug"}</Button> : null}
-        </div>
-        <ControlError message={error} />
-      </div>
-    </SettingsRow>
+    <SettingsRow title={projectId === undefined ? "Organization slug" : "Project slug"}>{editor}</SettingsRow>
   </SettingsSection>;
 }

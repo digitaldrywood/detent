@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -19,58 +21,12 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/connector/memory"
+	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/lessons"
-	"github.com/digitaldrywood/detent/internal/retro"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
-
-func TestDoctorWorkflowOptimizationReportsRetroStatus(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
-	t.Parallel()
-
-	paths := seedDoctorWorkflowOptimizationFixture(t)
-	ctx := context.Background()
-	backend, err := store.Open(ctx, store.Config{Backend: store.BackendSQLite, Path: paths.db})
-	if err != nil {
-		t.Fatalf("store.Open() error = %v", err)
-	}
-	completedAt := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
-	if err := backend.RecordRetroRun(ctx, retro.RunRecord{
-		ProjectID: "detent", Trigger: retro.TriggerDaily,
-		StartedAt: completedAt.Add(-time.Minute), CompletedAt: completedAt,
-		Findings: 4, Filed: 2, Updated: 1,
-	}); err != nil {
-		t.Fatalf("RecordRetroRun() error = %v", err)
-	}
-	if err := backend.Close(); err != nil {
-		t.Fatalf("Close() error = %v", err)
-	}
-
-	db, err := openDoctorSQLiteReadOnly(ctx, paths.db)
-	if err != nil {
-		t.Fatalf("openDoctorSQLiteReadOnly() error = %v", err)
-	}
-	defer db.Close()
-	status, err := doctorWorkflowRetroStatusForProject(ctx, db, "detent", true)
-	if err != nil {
-		t.Fatalf("doctorWorkflowRetroStatusForProject() error = %v", err)
-	}
-	if !status.Enabled || status.LastRun == nil || !status.LastRun.Equal(completedAt) || status.Findings != 4 || status.FiledIssues != 2 || status.UpdatedIssues != 1 {
-		t.Fatalf("retro status = %#v", status)
-	}
-
-	var output bytes.Buffer
-	if err := writeDoctorWorkflowOptimizationPretty(&output, doctorWorkflowOptimizationReport{Projects: []doctorWorkflowOptimizationProjectReport{{ProjectID: "detent", Retro: status}}}); err != nil {
-		t.Fatalf("writeDoctorWorkflowOptimizationPretty() error = %v", err)
-	}
-	if text := output.String(); !strings.Contains(text, "Retro detent: enabled=true") || !strings.Contains(text, "filed_issues=2") {
-		t.Fatalf("pretty output missing retro status:\n%s", text)
-	}
-}
 
 func TestDoctorWorkflowOptimizationFindsFixtureRules(t *testing.T) {
 	if testing.Short() {
@@ -391,7 +347,88 @@ func TestDoctorWorkflowImprovementProposalsUsesCapturedLessonThreshold(t *testin
 	}
 }
 
-func TestDoctorWorkflowOptimizationCreatesProposalIssuesWithMemoryTracker(t *testing.T) {
+func TestDoctorWorkflowOptimizationCreatesNativeProposalIssues(t *testing.T) {
+	t.Setenv("DETENT_DOCTOR_PROPOSAL_TEST_TOKEN", "fixture-token")
+	createdProjects := make(chan string, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer fixture-token" {
+			t.Error("missing scoped Hub credential")
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		prefix := "/api/v2/organizations/org_example/projects/"
+		path, ok := strings.CutPrefix(r.URL.Path, prefix)
+		if !ok {
+			t.Errorf("unexpected path %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		projectID, suffix, _ := strings.Cut(path, "/")
+		if projectID != "prj_alpha" && projectID != "prj_beta" {
+			t.Errorf("unexpected project %s", projectID)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && suffix == "":
+			_ = json.NewEncoder(w).Encode(tracker.NativeProject{ID: tracker.ProjectID(projectID), Profile: "native", States: []tracker.NativeState{{Name: "Backlog"}}})
+		case r.Method == http.MethodGet && suffix == "work-items":
+			_ = json.NewEncoder(w).Encode(tracker.Page[tracker.NativeIssue]{Items: []tracker.NativeIssue{}})
+		case r.Method == http.MethodPost && suffix == "work-items":
+			var draft tracker.CreateIssue
+			if err := json.NewDecoder(r.Body).Decode(&draft); err != nil {
+				t.Error(err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			origin, machine := issueorigin.Parse(draft.Body)
+			if !machine || origin.Kind != "doctor" || origin.Fingerprint == "" {
+				t.Errorf("missing doctor provenance: %+v", origin)
+			}
+			createdProjects <- projectID
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(tracker.NativeIssue{NativeReference: tracker.NativeReference{WorkItemID: tracker.NativeWorkItemID("wi_" + projectID), ProjectID: tracker.ProjectID(projectID)}, Title: draft.Title, Body: draft.Body, State: "Backlog"})
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	global := globalconfig.Config{Client: globalconfig.HubClient{URL: server.URL, OrganizationID: "org_example", TokenEnvironment: "DETENT_DOCTOR_PROPOSAL_TEST_TOKEN", NativeProjects: map[string]string{"alpha": "prj_alpha", "beta": "prj_beta", "invalid": "other"}}}
+	cfg := workflowconfig.Default()
+	cfg.Tracker.Kind = workflowconfig.TrackerHubNative
+	for _, projectID := range []string{"alpha", "beta"} {
+		proposal := doctorWorkflowFinalizeProposal(doctorWorkflowImprovementProposal{ProjectID: projectID, SignalKind: "doctor_finding", Pattern: "repeated-failure", Count: 2, Title: "Improve workflow", Detail: "Repeated workflow failure", SuggestedChange: "Review the workflow"})
+		deps := doctorDeps{proposalLaneWriter: func(_ context.Context, selected string, _ workflowconfig.Config, connection connector.Connector, issue connector.Issue, target string) error {
+			if selected != projectID || connection.Name() != workflowconfig.TrackerHubNative || issue.State != "Backlog" || target != "Backlog" {
+				t.Errorf("incorrect proposal authority: %s %s %+v %s", selected, connection.Name(), issue, target)
+			}
+			return nil
+		}}
+		created, err := createDoctorWorkflowImprovementProposalIssues(t.Context(), global, projectID, cfg, deps, []doctorWorkflowImprovementProposal{proposal})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(created) != 1 || created[0].IssueID != "wi_prj_"+projectID || created[0].ProjectID != projectID {
+			t.Fatalf("proposal result = %+v", created)
+		}
+		if got := <-createdProjects; got != "prj_"+projectID {
+			t.Fatalf("created in %s", got)
+		}
+	}
+	for _, projectID := range []string{"unmapped", "invalid"} {
+		if _, err := defaultDoctorProposalConnector(global, projectID, cfg); err == nil {
+			t.Fatalf("invalid project mapping %s was accepted", projectID)
+		}
+	}
+	cfg.Tracker.Kind = workflowconfig.TrackerGitHub
+	if _, err := defaultDoctorProposalConnector(global, "alpha", cfg); err == nil {
+		t.Fatal("retired tracker was accepted")
+	}
+}
+
+func TestDoctorWorkflowOptimizationCreatesProposalIssuesWithFakeHub(t *testing.T) {
 	if testing.Short() {
 		t.Skip("durable SQLite integration")
 	}
@@ -412,7 +449,17 @@ func TestDoctorWorkflowOptimizationCreatesProposalIssuesWithMemoryTracker(t *tes
 
 	global := doctorWorkflowOptimizationGlobal(paths)
 	deps := successfulDoctorDeps()
-	deps.loadWorkflow = workflowconfig.LoadWorkflow
+	deps.loadWorkflow = func(path string) (workflowconfig.Workflow, error) {
+		workflow, err := workflowconfig.LoadWorkflow(path)
+		workflow.Config.Tracker.Kind = workflowconfig.TrackerHubNative
+		workflow.Config.Tracker.APIKey = "fixture-token"
+		workflow.Config.Tracker.Repository = "example-org/example-project"
+		workflow.Config.Tracker.GitHubStatusSource = workflowconfig.GitHubStatusSourceLabel
+		return workflow, err
+	}
+	deps.proposalConnector = func(globalconfig.Config, string, workflowconfig.Config) (doctorWorkflowProposalConnector, error) {
+		return fakehub.New(fakehub.Config{Stateful: true}), nil
+	}
 	report, err := doctorWorkflowOptimization(ctx, db, paths.db, global, deps, "", doctorWorkflowOptimizationOptions{
 		ProposalThreshold: 2,
 		ProposeIssues:     true,
@@ -438,7 +485,11 @@ func TestDoctorWorkflowOptimizationContinuesWhenProposalStateUpdateBlocked(t *te
 
 	ctx := context.Background()
 	cfg := workflowconfig.Default()
-	cfg.Tracker.Kind = workflowconfig.TrackerMemory
+	cfg.Tracker.Kind = workflowconfig.TrackerHubNative
+	cfg.Tracker.APIKey = "fixture-token"
+	cfg.Tracker.ProjectSlug = "fixture-project"
+	cfg.Tracker.Repository = "example-org/example-project"
+	cfg.Tracker.GitHubStatusSource = workflowconfig.GitHubStatusSourceLabel
 	proposal := doctorWorkflowFinalizeProposal(doctorWorkflowImprovementProposal{
 		ProjectID:       "detent",
 		SignalKind:      "doctor_finding",
@@ -450,14 +501,14 @@ func TestDoctorWorkflowOptimizationContinuesWhenProposalStateUpdateBlocked(t *te
 		SuggestedChange: "Review blocked update handling.",
 	})
 	projectConnector := &blockedDoctorProposalConnector{
-		Connector: memory.New(memory.Config{Stateful: true}),
+		Connector: fakehub.New(fakehub.Config{Stateful: true}),
 	}
 	deps := successfulDoctorDeps()
-	deps.proposalConnector = func(workflowconfig.Config) (doctorWorkflowProposalConnector, error) {
+	deps.proposalConnector = func(globalconfig.Config, string, workflowconfig.Config) (doctorWorkflowProposalConnector, error) {
 		return projectConnector, nil
 	}
 
-	created, err := createDoctorWorkflowImprovementProposalIssues(ctx, "detent", cfg, deps, []doctorWorkflowImprovementProposal{proposal})
+	created, err := createDoctorWorkflowImprovementProposalIssues(ctx, globalconfig.Config{}, "detent", cfg, deps, []doctorWorkflowImprovementProposal{proposal})
 	if err != nil {
 		t.Fatalf("createDoctorWorkflowImprovementProposalIssues() error = %v", err)
 	}
@@ -474,7 +525,11 @@ func TestDoctorWorkflowOptimizationReusesProposalIssueOutsideBacklog(t *testing.
 
 	ctx := context.Background()
 	cfg := workflowconfig.Default()
-	cfg.Tracker.Kind = workflowconfig.TrackerMemory
+	cfg.Tracker.Kind = workflowconfig.TrackerHubNative
+	cfg.Tracker.APIKey = "fixture-token"
+	cfg.Tracker.ProjectSlug = "fixture-project"
+	cfg.Tracker.Repository = "example-org/example-project"
+	cfg.Tracker.GitHubStatusSource = workflowconfig.GitHubStatusSourceLabel
 	proposal := doctorWorkflowImprovementProposal{
 		ID:          "detent-self-improve-existing",
 		ProjectID:   "detent",
@@ -489,17 +544,17 @@ func TestDoctorWorkflowOptimizationReusesProposalIssueOutsideBacklog(t *testing.
 		State:       "In Progress",
 		Description: proposal.IssueBody,
 	}
-	var events []memory.Event
+	var events []fakehub.Event
 	deps := successfulDoctorDeps()
-	deps.proposalConnector = func(workflowconfig.Config) (doctorWorkflowProposalConnector, error) {
-		return memory.New(memory.Config{
+	deps.proposalConnector = func(globalconfig.Config, string, workflowconfig.Config) (doctorWorkflowProposalConnector, error) {
+		return fakehub.New(fakehub.Config{
 			Issues:    []connector.Issue{existing},
 			Stateful:  true,
-			EventSink: func(event memory.Event) { events = append(events, event) },
+			EventSink: func(event fakehub.Event) { events = append(events, event) },
 		}), nil
 	}
 
-	created, err := createDoctorWorkflowImprovementProposalIssues(ctx, "detent", cfg, deps, []doctorWorkflowImprovementProposal{proposal})
+	created, err := createDoctorWorkflowImprovementProposalIssues(ctx, globalconfig.Config{}, "detent", cfg, deps, []doctorWorkflowImprovementProposal{proposal})
 	if err != nil {
 		t.Fatalf("createDoctorWorkflowImprovementProposalIssues() error = %v", err)
 	}
@@ -510,7 +565,7 @@ func TestDoctorWorkflowOptimizationReusesProposalIssueOutsideBacklog(t *testing.
 		t.Fatalf("created proposal issue = %#v", created[0])
 	}
 	for _, event := range events {
-		if event.Kind == memory.EventKindIssueCreate {
+		if event.Kind == fakehub.EventKindIssueCreate {
 			t.Fatalf("created duplicate proposal issue event: %#v", event)
 		}
 	}
@@ -874,7 +929,9 @@ func TestDoctorWorkflowReviewFlowTelemetryRespectsCurrentWorkflowBoundary(t *tes
 			workflowPath := filepath.Join(dir, "WORKFLOW.md")
 			if err := os.WriteFile(workflowPath, []byte(`---
 tracker:
-  kind: memory
+  kind: hub_native
+  api_key: fixture-token
+  repository: example-org/example-project
 agent:
   auto_promote:
     enabled: true
@@ -1097,50 +1154,6 @@ func TestDoctorWorkflowOptimizationRunawaySessionTokensRespectsConfiguredCap(t *
 			runaway := doctorWorkflowFindingByRule(t, findings, doctorWorkflowRuleRunawaySessionTokens)
 			if got := runaway.Patch[0].Value; got != int64(40000) {
 				t.Fatalf("runaway patch value = %#v, want 40000", got)
-			}
-		})
-	}
-}
-
-func TestDoctorWorkflowOptimizationWarnsWhenSpendProgressLimitIsBelowMedianCost(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name        string
-		billingMode string
-		baseLimit   float64
-		medians     map[string]float64
-		wantFinding bool
-		wantPatch   float64
-	}{
-		{name: "xhigh effective limit below median", billingMode: workflowconfig.BillingModeMetered, baseLimit: 3, medians: map[string]float64{"xhigh": 20}, wantFinding: true, wantPatch: 5},
-		{name: "xhigh effective limit above median", billingMode: workflowconfig.BillingModeMetered, baseLimit: 3, medians: map[string]float64{"xhigh": 17}},
-		{name: "custom base covers median", billingMode: workflowconfig.BillingModeMetered, baseLimit: 4, medians: map[string]float64{"high": 11}},
-		{name: "disabled breaker does not warn", billingMode: workflowconfig.BillingModeMetered, baseLimit: 0, medians: map[string]float64{"xhigh": 20}},
-		{name: "subscription USD breaker is inert", billingMode: workflowconfig.BillingModeSubscription, baseLimit: 3, medians: map[string]float64{"xhigh": 20}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			cfg := workflowconfig.Default()
-			cfg.Budget.BillingMode = tt.billingMode
-			cfg.Agent.NoProgressSpendLimitUSD = tt.baseLimit
-			findings := doctorWorkflowOptimizationFindings("detent", "WORKFLOW.md", cfg, doctorWorkflowOptimizationMetrics{
-				MedianSessionCostUSDByEffort: tt.medians,
-			})
-			gotFinding := doctorWorkflowFindingExists(findings, doctorWorkflowRuleSpendProgressBelowMedian)
-			if gotFinding != tt.wantFinding {
-				t.Fatalf("spend-progress finding exists = %t, want %t: %#v", gotFinding, tt.wantFinding, findings)
-			}
-			if !tt.wantFinding {
-				return
-			}
-			finding := doctorWorkflowFindingByRule(t, findings, doctorWorkflowRuleSpendProgressBelowMedian)
-			if len(finding.Patch) != 1 || finding.Patch[0].Value != tt.wantPatch {
-				t.Fatalf("patch = %#v, want base limit %g", finding.Patch, tt.wantPatch)
-			}
-			if !strings.Contains(finding.Detail, "xhigh ($18.00 < $20.00)") {
-				t.Fatalf("detail = %q", finding.Detail)
 			}
 		})
 	}
@@ -1371,7 +1384,9 @@ func TestDoctorWorkflowOptimizationFlagsPinBehindObservedDefault(t *testing.T) {
 	defaultWorkflow := filepath.Join(dir, "DEFAULT_WORKFLOW.md")
 	if err := os.WriteFile(pinnedWorkflow, []byte(`---
 tracker:
-  kind: memory
+  kind: hub_native
+  api_key: fixture-token
+  repository: example-org/example-project
 agent:
   max_session_tokens: 2000000
 agents:
@@ -1387,7 +1402,9 @@ Prompt
 	}
 	if err := os.WriteFile(defaultWorkflow, []byte(`---
 tracker:
-  kind: memory
+  kind: hub_native
+  api_key: fixture-token
+  repository: example-org/example-project
 agent:
   max_session_tokens: 2000000
 ---
@@ -1688,7 +1705,9 @@ func TestDoctorWorkflowOptimizationEmptyModelTelemetryRespectsBackendCommandMode
 
 	workflow, err := workflowconfig.ParseWorkflow([]byte(`---
 tracker:
-  kind: memory
+  kind: hub_native
+  api_key: fixture-token
+  repository: example-org/example-project
 agents:
   backends:
     - id: codex-main
@@ -1729,7 +1748,9 @@ func TestDoctorWorkflowOptimizationEmptyModelTelemetryHasNoHardcodedModelPatch(t
 
 	workflow, err := workflowconfig.ParseWorkflow([]byte(`---
 tracker:
-  kind: memory
+  kind: hub_native
+  api_key: fixture-token
+  repository: example-org/example-project
 codex:
   command: codex app-server
 ---
@@ -1862,7 +1883,9 @@ func TestDoctorWorkflowDefaultRouteModelConfigSources(t *testing.T) {
 			name: "route model",
 			raw: `---
 tracker:
-  kind: memory
+  kind: hub_native
+  api_key: fixture-token
+  repository: example-org/example-project
 agents:
   backends:
     - id: codex-main
@@ -1884,7 +1907,9 @@ Prompt
 			name: "backend command config model",
 			raw: `---
 tracker:
-  kind: memory
+  kind: hub_native
+  api_key: fixture-token
+  repository: example-org/example-project
 agents:
   backends:
     - id: codex-main
@@ -1905,7 +1930,9 @@ Prompt
 			name: "backend command config model with issue field overrides",
 			raw: `---
 tracker:
-  kind: memory
+  kind: hub_native
+  api_key: fixture-token
+  repository: example-org/example-project
 agents:
   backends:
     - id: codex-main
@@ -1927,7 +1954,9 @@ Prompt
 			name: "route model field",
 			raw: `---
 tracker:
-  kind: memory
+  kind: hub_native
+  api_key: fixture-token
+  repository: example-org/example-project
 agents:
   backends:
     - id: codex-main
@@ -1948,7 +1977,9 @@ Prompt
 			name: "no model source",
 			raw: `---
 tracker:
-  kind: memory
+  kind: hub_native
+  api_key: fixture-token
+  repository: example-org/example-project
 codex:
   command: codex app-server
 ---
@@ -2003,10 +2034,8 @@ func TestDoctorWorkflowOptimizationUsesRuntimeGitHubToken(t *testing.T) {
 	workflowPath := filepath.Join(dir, "WORKFLOW.md")
 	if err := os.WriteFile(workflowPath, []byte(`---
 tracker:
-  kind: github_local
-  repository: digitaldrywood/detent
-  local_sqlite:
-    path: `+dbPath+`
+  kind: hub_native
+  repository: example-org/example-project
 ---
 Prompt
 `), 0o600); err != nil {
@@ -2062,9 +2091,7 @@ func seedDoctorWorkflowOptimizationFixture(t *testing.T) doctorWorkflowOptimizat
 	workflowPath := filepath.Join(dir, "WORKFLOW.md")
 	if err := os.WriteFile(workflowPath, []byte(`---
 tracker:
-  kind: memory
-  local_sqlite:
-    project_id: detent-local
+  kind: hub_native
   lanes:
     - name: Backlog
       role: holding
@@ -2097,7 +2124,6 @@ budget:
 agent:
   auto_promote:
     enabled: true
-    rework_limit: 0
 gate:
   kind: command
   validator:
@@ -2415,7 +2441,7 @@ func doctorWorkflowProposalBySignal(t *testing.T, proposals []doctorWorkflowImpr
 }
 
 type blockedDoctorProposalConnector struct {
-	*memory.Connector
+	*fakehub.Connector
 	updateCalls int
 }
 

@@ -16,12 +16,25 @@ project-scoped reads or `work_list` cursors to continue inventory reads.
 `eligibility_tool` (`explain_item`) for current native admission evidence,
 including human ownership, dependencies and registered-runner conditions.
 
+Native Hub operators can call `stop_run` directly with `project_id`, `request_id`,
+`identifier`, `expected_revision` (a decimal string), `lease_id`, `fencing_token`
+(an integer), and `destination` (`Blocked`, `Backlog`, `Cancelled`, or `Todo`).
+Use the current item revision and exact active lease/fence from the supported
+work-item and attempt reads. Optional `priority` uses ranks 1–4; `reason` accepts
+up to 280 bytes. The existing stop owner checks current write access,
+revision, workflow transition and lease fence atomically, preserves retained
+source, and releases only that attempt. The returned `action_id` is readable
+through `action_result`; its result records the released lease/fence and the
+item's resulting state and revision. Reuse the same `request_id` and arguments
+for a retry. This operation requires no conversation or coordinator turn and
+does not grant access to private conversations.
+
 On an enrolled runner host, discover the `local_projects` toolset on the
 runner's authenticated `/mcp` connection. `local_project_configuration` reads the actual
 local revision and redacted selected/effective policy. Its admin commands apply
 an approved policy, drain current work or detach one settled migrated
 project. They use the existing operator command API and authority and receipt owner;
-see [managed local project configuration](mcp-capabilities.md#managed-local-project-configuration-native-94)
+see [managed local project configuration](mcp-capabilities.md#managed-local-project-configuration)
 for exact revision, policy and handoff requirements. Cloud also reaches the
 enrolled runner's configuration owner through its existing heartbeat transport.
 Select `runner_id` when more than one granted
@@ -35,12 +48,87 @@ returns an explicit constraint; these calls never start or enable a board.
 Verify `registered` and `runtime_registered` through a
 fresh read after a saved removal; a command retry returns its original receipt.
 
+## Policy approval without the web app
+
+<!-- BEGIN POLICY APPROVAL RULE -->
 Repository configuration reports do not require approval before dispatch.
+Trusted workflow definitions from the bound repository's default-branch history
+apply automatically. Explicit approval is required for administrative
+configuration adoption, such as applying an external local definition or changing
+local-binding permission. Configuration identity changes do not revoke active
+leases or invalidate recovered source.
+
+On a self-hosted Hub without the web app, read `get_project_policy` and
+`get_onboarding`, then use `approve_project_policy` with the current
+`expected_policy_id` and the chosen `observed_policy_id`. The REST equivalent is
+GET and PUT on `/api/v2/organizations/{organization}/projects/{project}/policy`,
+with GET on the project's `/onboarding` for observed candidates. Approval needs
+administrator authority and preserves revision checks. Cloud owners and admins
+can continue approving in **Settings > Integrations**.
+<!-- END POLICY APPROVAL RULE -->
+
 A difference between the selected and effective configuration remains diagnostic
 information; it does not by itself block claims, revoke leases or invalidate
 recovered source. The configuration identity records what an attempt used.
 Legacy configuration-management operations remain separate from dispatch and
 still require their documented administrative authority and revisions.
+
+Use the Hub's organization-scoped MCP connection (the `projects` toolset) with
+an Admin key authorized for the project. An enrolled runner's credential reports
+configuration; it cannot approve it. No configured project list on the runner
+is needed. Use the native project ID, such as `prj_example`.
+
+1. Call `get_project_policy` with `{"project_id":"prj_example"}`. Its `data`
+   contains the current approval; copy `data.policy.policy_id` for
+   `expected_policy_id`. If it returns `policy_mismatch` because no approval
+   exists, use an empty string for first approval.
+2. Call `get_onboarding` for the same project. Inspect
+   `data.observed_policies` and the selected descriptor, source revision and
+   reporting runners. Choose its `policy.policy_id` as `observed_policy_id`.
+   Conflicting or previously approved reports are not new approval candidates;
+   resolve the configuration conflict rather than approving a stale report.
+   An empty candidate list can mean the trusted report already applied; read
+   the current policy again instead of inventing a candidate.
+3. Call `approve_project_policy` using the same project and a unique
+   `request_id`, with the following `input` (replace the example policy IDs
+   with the values just read; use `""` for `expected_policy_id` on first approval):
+
+   ```json
+   {
+     "project_id": "prj_example",
+     "request_id": "approve-shared-configuration-1",
+     "input": {
+       "expected_policy_id": "policy_current",
+       "observed_policy_id": "policy_selected"
+     }
+   }
+   ```
+
+   Omit `input.policy` when approving by reference. Alternatively, supply the
+   complete, unchanged `local_project_configuration.selected_policy` as
+   `input.policy`, preserving every field; do not reconstruct its identity.
+4. Read `get_project_policy` again to confirm the approved identity and
+   provenance. Approval and runner adoption are separate: use
+   `local_project_configuration` to inspect adoption if applying a local
+   configuration. On a revision conflict, read the current state and review
+   the candidate again before submitting a new request. Exact retries use
+   the same `request_id` and unchanged arguments.
+
+For a bearer-authenticated self-hosted Hub, use the instance administrator
+credential for REST approval. GET
+`/api/v2/organizations/{organization}/projects/{project}/policy` returns the
+approval directly (`policy.policy_id`); GET the same project's `/onboarding`
+returns `observed_policies` directly. PUT to `/policy` takes the two fields
+inside `input` above as its top-level JSON body, without the MCP envelope.
+The Hub resolves the stored descriptor and checks `expected_policy_id`
+atomically. A stale expected identity returns HTTP 409; reread before replacing
+it. On hosted Cloud, the web app uses the owner/admin
+`/onboarding/policy` route; the instance-admin `/policy` PUT is not served there.
+
+The `hub policy` CLI resolves a configured project from a global project list;
+it is not the approval path for enrolled runners. Use the API/MCP procedure
+above for a native project ID. The legacy policy-revocation operation returns
+HTTP 410; pause or drain the runner, or remove project access, to stop execution.
 
 For an external local definition without trusted repository provenance, the
 approved authored Cloud descriptor supplies shared behavior. Private overlays
@@ -53,8 +141,9 @@ restarts. `applied: true` confirms runtime adoption; `saved: false` means no loc
 configuration file was changed. Cloud readback retains the completed receipt,
 including refusal constraints, in `last_operation` after later heartbeats.
 Trusted repository definitions retain their repository authority: commit the
-intended shared files at the configured source revision and approve that
-descriptor. An authored `source_revision` digest is not a Git commit.
+intended shared files to the bound repository's default branch so the runner
+can report and apply that revision automatically. An authored `source_revision`
+digest is not a Git commit.
 
 For the existing `worker.allow_local_binding` setting, read the effective
 `allow_local_binding` and the complete `local_binding_policy` or
@@ -71,6 +160,90 @@ before changing policy. The grant
 defaults to false and includes connections to other localhost services as well
 as temporary test servers; the sandbox tier and host-service grants retain
 their existing owners.
+
+## ChatGPT and Claude custom connectors (Detent Cloud)
+
+Use `https://cloud.detent.build/mcp` with OAuth. No API key, custom header,
+client ID or client secret is needed. Detent uses dynamic client registration
+and the authorization code flow with S256 PKCE. Your normal Cloud sign-in,
+workspace membership, role, project grants and organization key policy apply.
+A reporter can file issues and use the same tools as with a personal key.
+
+Registration returns a sealed client ID without storing an unused client.
+Pending authorization lives in one encrypted browser cookie, expires after ten
+minutes, and creates no server rows. Registration bodies are limited to 64 KiB,
+with at most 20 redirect URIs and a 2,048-character client ID; the pending
+cookie is limited to 3,800 characters. Only authenticated consent stores the
+client, grant and single-use authorization code. Anonymous registration and
+pending requests therefore need no database quota or cleanup sweep.
+Registration and authorization share the existing API token-bucket limiter:
+120 requests per minute per client IP with a burst of 30. Excess requests get
+HTTP 429 with `Retry-After: 60`; tokens refill over time. Only the loopback TLS
+proxy is trusted to append `X-Forwarded-For`; client-supplied prefixes cannot
+change the caller's quota. This uses the same limiter implementation as API
+key authentication, without adding a separate throttling or cleanup mechanism.
+
+### ChatGPT
+
+1. Open ChatGPT Plugins, select the plus button, then **Add custom MCP server**.
+   In older interfaces, enable developer mode and use Settings → Apps (or
+   Connectors). Your plan and workspace policy must permit custom servers.
+2. Enter a name and `https://cloud.detent.build/mcp`, and select OAuth and
+   dynamic client registration if prompted. Leave client credentials empty.
+3. Connect, sign in to Detent with your usual WorkOS login, choose the workspace
+   to grant, review the client and return address, and select **Connect assistant**.
+4. In a conversation, enable the connector, discover its tools, select your
+   organization and project, and ask it to file an issue. Confirm the issue is
+   attributed to your account.
+
+See [OpenAI's connection steps](https://developers.openai.com/plugins/deploy/connect-chatgpt)
+and [MCP authentication guide](https://developers.openai.com/plugins/build/auth).
+The published callbacks are
+`https://chatgpt.com/connector_platform_oauth_redirect` for issuer-aware servers
+and `https://chatgpt.com/connector/oauth/{callback_id}` for callback-specific
+connections. Detent returns the issuer on authorization responses.
+
+### Claude (claude.ai or Claude Desktop)
+
+1. Open Customize → Connectors → Add → Add custom connector (Organization
+   settings → Connectors for workspace owners). Enter a name and
+   `https://cloud.detent.build/mcp` as the remote MCP URL, then continue.
+2. Choose **Sign in now** for authentication and **Register automatically**
+   for the OAuth client when those choices are shown, then add the connector.
+   No client ID or secret is required.
+3. Sign in to Detent, choose the workspace, review the client and return
+   address, and select **Connect assistant**.
+4. Enable the connector in a conversation, discover its tools and select your
+   organization and project before filing an issue. Confirm your account is
+   recorded as the author.
+
+See [Claude's custom connector setup](https://support.claude.com/en/articles/11175166-get-started-with-custom-connectors-using-remote-mcp)
+and [authentication requirements](https://claude.com/docs/connectors/building/authentication).
+Claude's hosted connector callback is `https://claude.ai/api/mcp/auth_callback`,
+including connections from Claude Desktop.
+
+### Grant lifetime and disconnecting
+
+An access token lasts one hour. Refresh tokens rotate on each use and expire
+30 days after issuance. Reusing a consumed refresh token revokes the grant.
+Rotation replaces the grant's single stored refresh credential. Sealed token
+identity and expiry preserve replay detection without retaining token history;
+expired tokens are refused without revoking a newer valid credential.
+Revoking a grant makes its next MCP request return 401, including requests
+using an existing `Mcp-Session-Id`.
+
+Signed-in owners can `GET /api/cloud/account/oauth-grants` and
+`DELETE /api/cloud/account/oauth-grants/GRANT_ID` (same-origin browser request).
+Personal-key and OAuth MCP clients can use `list_oauth_grants` and
+`revoke_oauth_grant` to list or revoke their own grants (revocation requires
+write scope). Listings include the client, workspace, connection time, last use
+and revocation time, never tokens.
+Pass a returned `next_cursor` as `cursor` to retrieve subsequent pages.
+Organizations that block personal keys or require administrator approval also
+refuse new assistant grants; ask an organization administrator about its policy.
+
+Bearer API keys remain supported for Claude Code and Codex, including their
+existing expiry, rotation, revocation and access restrictions.
 
 ## Account and organization service keys
 
@@ -215,16 +388,93 @@ there is no server confirmation mode, pending approval or approval URL. Revoked
 or expired keys fail every later call and retry. Use narrower keys to limit clients.
 
 
-## Organization URLs
+## Attachments
 
-Issue and comment attachment storage uses the authenticated organization and
-project routes described in [Cloud attachments](cloud-attachments.md).
+Issue and comment attachments are stored privately by the Cloud entry; clients never receive bucket URLs, storage credentials or presigned URLs. Dedicated and self-hosted Hubs without the entry's attachment store omit the attachment tools.
+
+Upload with `POST /organizations/ORG/api/v2/projects/PROJECT/attachments` (browser) or `POST /api/v2/organizations/ORG/projects/PROJECT/attachments` (API clients), sending one multipart `file` part or the file body with `Content-Type` and `X-Attachment-Name`. Browser mutations need the organization CSRF token in `X-CSRF-Token` and the same origin; API keys use `Authorization: Bearer`, and read keys cannot upload or delete. The response carries a random `att_` identifier and a markdown `reference`: `![name](attachment:att_<id>)` for images and `[name](attachment:att_<id>)` for other files. Embedding the reference in an issue or comment body binds it in the same transaction; a reference can be reused across items and comments in the same project. `POST .../attachments/ATTACHMENT/reference` with `work_item_id` and optional `comment_id` binds an upload explicitly.
+
+Files are limited to 20 MiB. PNG, JPEG, GIF and WebP images (up to 16 megapixels) are re-encoded to remove metadata; GIF and WebP become PNG. PDF, UTF-8 plain text, Markdown, CSV, valid JSON, `.log` console logs and `.har` network exports are stored as downloads. SVG, HTML, mismatched text and malformed images are refused. Stored bytes count toward the organization's `collaboration_bytes` allowance and remain counted until object deletion is confirmed; a quota refusal returns `allowance_exhausted`.
+
+Projects can opt in to `require_visual_attachments` through the project
+[content settings API](hub-api.md#project-content-settings). It defaults to false.
+When enabled, each external visual source in a new or changed issue title/body,
+comment body, Change title/body, Change discussion/review body or authored review
+criterion-evidence reference must share its paragraph, list item or table cell with a readable
+uploaded image or PDF from that project. Put one source in each block, for example:
+
+```markdown
+[Design reference](https://figma.com/design/example) ![Screenshot](attachment:att_<uploaded-id>)
+
+Screenshot: https://example.test/preview [Uploaded PDF](attachment:att_<uploaded-pdf-id>)
+```
+
+The canonical attachment Markdown returned by Cloud is also supported. A file
+elsewhere in the content or on another issue/comment does not satisfy a source;
+text/log uploads, deleted files, fabricated IDs and cross-project references do
+not qualify. Attachment-only content remains supported. Metadata confirms type,
+dimensions and digest, but cannot establish that the upload depicts the source.
+
+Detection parses Markdown links and images (including reference links),
+autolinks, bare HTTP(S) URLs and HTML image sources. It ignores inline and fenced
+code. External image embeds, decoded paths ending in `.png`, `.jpg`, `.jpeg`,
+`.gif`, `.webp`, `.avif` or `.svg`, exact `claude.ai` artifact paths
+(`/artifacts/…` or `/public/artifacts/…`) and exact `figma.com`/`www.figma.com`
+`design`, `file`, `board` and `proto` paths qualify. Query strings and fragments
+do not affect path detection. Arbitrary destinations qualify when introduced
+by `Screenshot:`, `Screenshots:`, `Design reference:`, `Design board:`, `Mockup:`
+or `Wireframe:`, or those exact Markdown link labels (case-insensitive, with an
+optional final colon). Ordinary documentation, PDF links, repository/PR/CI
+links, Claude chats and report context URLs do not qualify merely by being URLs.
+Unlabeled redirects and arbitrary board URLs cannot reliably be recognized;
+use an explicit label. Detent performs no network probing or semantic matching.
+
+Refused writes return HTTP 422 `invalid_request` or the same structured MCP
+refusal, naming the field and block without repeating customer content or URLs:
+“This project requires uploaded screenshots and design references. Upload the
+file to Detent and include its attachment reference beside each visual source.”
+The entire write rolls back. Metadata-only edits, unchanged content, comment
+deletion and previously accepted idempotency/provenance replays remain allowed.
+Changed fields are validated in full, including retained old visual sources.
+Changing the setting affects subsequent writes, never historical records or
+dispatch. New Change version `artifacts` and check-result `evidence` also apply
+the policy. A visual artifact uses the existing `artifact` kind and a Detent
+attachment URI (`attachment:att_<uploaded-id>` or its canonical project attachment
+path), the uploaded file's recorded SHA-256 and `availability: "available"`.
+External visual URIs are refused even beside an unrelated uploaded artifact.
+Code, diff, manifest, test, log and checkpoint artifacts keep their existing
+meaning. Ordinary repository, PR, CI and documentation identities remain valid.
+
+Accepted Change references bind transactionally to the Change's primary work
+item, using the existing attachment access and retention rules. Those bindings
+survive issue text edits and subsequent policy toggles. Only newly submitted
+fields are inspected; stored versions/reviews, source patches, raw command/log
+output, signatures and archival records are not rescanned. A reference neither
+approves a design nor records acceptance inspection.
+
+`GET .../attachments/ATTACHMENT` reads the file under current organization and project authority; other organizations, other projects and requests without a session or valid key get 404, so a copied link grants no access. `offset` and `length` query parameters return a bounded base64 chunk instead of the file. `GET .../attachments/ATTACHMENT/metadata` returns type, size, SHA-256, dimensions and `referenced_by` without object bytes. `DELETE .../attachments/ATTACHMENT` hides the attachment and deletes the object. An attachment with no remaining references is removed after seven days; referenced attachments do not expire.
+
+| MCP tool | Input and result |
+| --- | --- |
+| `upload_attachment` | `project_id`, `name`, `content_base64`, optional `content_type`; the attachment metadata and `reference`. The 64 KiB MCP argument limit allows about 44 KB of file content; larger files use the upload API or `detent attach`. |
+| `read_attachment_metadata` | `project_id`, `attachment_id`; recorded type, size, SHA-256, dimensions and `referenced_by` |
+| `read_attachment` | The same selector, optional `offset` and `length` (1 to 32,768 bytes, default 32 KiB); `metadata`, `content_base64`, `offset`, `returned_bytes`, `eof` and `max_content_bytes` |
+| `reference_attachment` | The same selector, `request_id`, `work_item_id` and optional `comment_id`; the binding receipt |
+| `delete_attachment` | The same selector and `request_id`; a receipt whose `object_deletion` is `pending` or `confirmed`, also readable through `action_result` |
+
+Reads require project read authority; binding and deletion require project write authority. `detent attach screenshot.png --project prj_example` uploads with the configured Cloud client and prints the markdown reference; `--hub-url`, `--organization` and `--token-env` select an explicit endpoint and key.
+
+Native issue agents read attachments with `read_attachment_metadata` and `read_attachment` under their execution authority, and upload workspace files with `attach_evidence` (a workspace-relative `path` and a single-line `caption`), which publishes an evidence comment through the runner's existing `events` grant. Paths outside the workspace, escaping symlinks, nonregular files, unsupported types and files over 20 MiB are refused. Native coding and rework workers also publish up to ten screenshots from `.detent/validation/` as a validation evidence comment.
+
+An organization owner can read or replace the organization's archive storage binding with `GET` or `PUT /api/cloud/organizations/ORG/archive-storage`, supplying `expected_revision`, `backend` (`hosted` or `s3`) and, for `s3`, an HTTPS `endpoint`, `region`, `bucket`, optional `prefix` and a `credential_reference`. Secret values are never sent to this API; the entry resolves them from its service environment. Existing archive references keep the binding they were written with. `GET /api/cloud/organizations/ORG/archive-deletion` returns the retained deletion receipt after organization deletion.
+
+## Organization URLs
 
 Copy the URLs shown on this page. On shared Cloud their complete shapes are:
 
 ```text
-https://app.detent.cloud/organizations/ORG/mcp
-https://app.detent.cloud/organizations/ORG/api/v2/organizations/ORG
+https://cloud.detent.build/organizations/ORG/mcp
+https://cloud.detent.build/organizations/ORG/api/v2/organizations/ORG
 ```
 
 The second URL is the direct API base. A dedicated/self-hosted organization uses
@@ -279,7 +529,7 @@ Replace the public organization/project placeholders before running:
 
 ```sh
 set +x
-DETENT_API_BASE='https://app.detent.cloud/organizations/ORG/api/v2/organizations/ORG'
+DETENT_API_BASE='https://cloud.detent.build/organizations/ORG/api/v2/organizations/ORG'
 DETENT_PROJECT_ID='YOUR_GRANTED_PROJECT_ID'
 curl --fail --silent --show-error --header "Authorization: Bearer $DETENT_API_KEY" "$DETENT_API_BASE/projects/$DETENT_PROJECT_ID"
 curl --fail --silent --show-error --header "Authorization: Bearer $DETENT_API_KEY" "$DETENT_API_BASE/projects/$DETENT_PROJECT_ID/work-items?limit=20"
@@ -294,18 +544,7 @@ the client and choose the key scope and project access accordingly. Workflow
 requests still use the application's orchestrator lane owner.
 
 
-A concise agent handoff is:
-
-> Connect directly to the copied Detent API base for this organization. Have me
-> create/select an expiring shared key on Settings → API & MCP with Read scope
-> and the required projects. Ask me to put it directly in your private secret
-> store/environment as DETENT_API_KEY, never this conversation. Send
-> Authorization: Bearer privately with no cookies or CSRF. Run the two documented
-> project/work-item GETs above for a granted project and verify the context.
-> Follow Hub API request schemas and current authorization. Configure sensitive-operation confirmation in the client;
-> authorized calls execute directly. Report success or an access error without secrets.
-
-## MCP agent handoff
+## MCP results and refusals
 
 Hosted allowance refusals are MCP tool results with `isError: true`, rather than
 transport failures. Their JSON content includes `code: "allowance_exhausted"`,
@@ -313,7 +552,7 @@ transport failures. Their JSON content includes `code: "allowance_exhausted"`,
 recovery guidance. Current MCP versions also return this as `structuredContent`.
 Inspect `billing_usage.hosted_plan_page` with owner/admin authority or
 `billing_usage.billing_export` with owner authority and resolve the affected
-allowance before submitting another business action. A refusal does not report a
+allowance. A refusal does not report a
 successful write. `policy_mismatch` directs callers to `get_project_policy` to
 refresh approved policy inputs; uncertain mutation outcomes still require resource
 inspection before retrying. Unexpected failures remain redacted as
@@ -324,17 +563,10 @@ Native `verify_fix` answers a Done issue whose `verification.state` is `pending`
 Native `file_issue` accepts `type: bug` or `type: change_request`. Reporters must provide one; other roles may omit it. `edit_item` changes the type for members, and `work_item` and `work_list` return it when set. `work_list type=change_request` filters by the stored classification independently of labels.
 
 Native `file_issue` may return `possible_duplicates` and a `challenge_token`
-without creating an issue. Review the candidates and use supported reads such
-as `work_item` and `work_comments` when needed to decide whether they concern
-the same problem. If filing is already authorized and the evidence clearly
-establishes a distinct problem, repeat `file_issue` without another human
-question, keeping the same `request_id` and content and adding the returned
-`challenge_token` and `not_duplicate_of` with the challenged issue numbers.
-For an actual duplicate, use the existing issue and comment within the caller's
-authorization. Ask the human only for genuinely ambiguous overlap, a product
-decision, or an action beyond authorization; do not automatically dismiss
-candidates. This does not grant filing or native issue-contract confirmation
-authority. See the [native filing challenge contract](hub-api.md#native-collaboration-protocol)
+without creating an issue. Repeating `file_issue` with the same `request_id` and
+content, the returned `challenge_token` and `not_duplicate_of` listing the
+challenged issue numbers creates the issue. The challenge grants no filing or
+issue-contract confirmation authority. See the [native filing challenge contract](hub-api.md#native-collaboration-protocol)
 for expiry, replay and related-history behavior.
 
 `edit_item` replaces the body with the complete reviewed text; it never truncates
@@ -353,7 +585,16 @@ for the application request contract.
 
 Native `file_issue` also accepts an optional `report_context` object with `url` (at most 2048 bytes) and `app_build`, `browser`, `os`, `viewport` and `captured_at` (at most 256 bytes each), all single-line strings. Unknown keys, oversized or non-string values are refused with `invalid_request`, and the refusal never repeats the submitted values. `work_item` returns the stored context; list and board reads omit it. A Reporter bug whose `report_context` carries `browser` and `app_build` satisfies the template's Environment section. Upload network HAR exports (`.har`) with `detent attach` or the REST attachment upload API, because `upload_attachment` accepts only about 44 KB; use `upload_attachment` for small console log exports (`.log`). Read either back with `read_attachment`.
 
-Reporter filings enter Triage and require nonempty sections. Bugs use `Steps to reproduce`, `Expected`, `Actual`, `Where` (screen or URL), and `Environment` (browser/OS and app build; use available context). Change requests use `Current behavior`, `Desired behavior`, and `Why`. Missing or empty sections return `invalid_request` with the missing headings and create no issue. `work_config` returns `reporter_templates`, a map from each type to its effective required headings. It also returns `issue_contract.required_sections`, the effective engineering headings required for executable work. Both come from the same approved project policy, including workflow overrides; callers must not substitute their own default headings. These reads do not confirm issue criteria or grant permission to dispatch. The New issue form pre-fills these headings when a type is selected.
+Acceptance validators inspect attachments through `read_attachment`, reading
+each supported attachment from offset 0 to obtain a review-bound inspection
+receipt; ordinary implementation and rework reads do not issue receipts. The
+inspection bound is 32768 bytes of UTF-8 `text/plain` per attachment, so larger
+evidence is published as ordered parts. In acceptance validation, unsupported
+MIME such as `application/json` returns `inspection_error`, and oversized text
+returns a bounded preview with `truncated: true` and `inspection_error`; neither
+supplies `read_receipt`.
+
+Reporter filings enter Triage and require nonempty sections. Bugs use `Steps to reproduce`, `Expected`, `Actual`, `Where` (screen or URL), and `Environment` (browser/OS and app build; use available context). Change requests use `Current behavior`, `Desired behavior`, and `Why`. Missing or empty sections return `invalid_request` with the missing headings and create no issue. `work_config` returns `reporter_templates`, a map from each type to its effective required headings. It also returns `issue_contract.required_sections`, the effective engineering headings required for executable work. Both come from the same approved project policy, including workflow overrides. When the approved policy delegates bounded scheduled repair, `issue_contract.scheduled_repair` also exposes its `policy_id`, configured `repository`, `workflow`, authorized `branches`, declared `priority` (0 Urgent, 1 High), generated contract `body`, and `evidence_schema`. Native reports must carry the scheduled evidence stamp and pass independent repository CI verification before that contract can be confirmed. The repair template must match the effective required sections exactly. Configured workflows may authorize an exact branch or explicitly authorize the `release/v*` family; other wildcards are refused. The legacy CI delegation retains `develop` and the `release/v*` prefix family. Origin stamps may retain the corresponding GitHub run URL without an attempt suffix; an explicit attempt must match the independently verified evidence. These reads do not confirm issue criteria or grant permission to dispatch. The New issue form pre-fills these headings when a type is selected.
 
 Projects can override either template in WORKFLOW, using the same list syntax as the engineering issue contract:
 
@@ -372,7 +613,7 @@ Projects can override either template in WORKFLOW, using the same list syntax as
 - Why
 ```
 
-An omitted type keeps its default template. Triage is exempt from the engineering issue contract; after promotion into the configured admission lane, the existing contract check requires the member-authored engineering sections and uses the existing Blocked human-action recovery when they are missing or unconfirmed. Preserve the Reporter sections as evidence.
+An omitted type keeps its default template. Triage is exempt from the engineering issue contract; after promotion into the configured admission lane, the existing contract check requires the member-authored engineering sections and moves the issue to Blocked with a human action when they are missing or unconfirmed.
 
 
 For native `file_issue` with `github_issue_url`, read `get_project_integration`
@@ -397,7 +638,7 @@ For a supported Codex Streamable HTTP client, private configuration can use:
 
 ```toml
 [mcp_servers.detent]
-url = "https://app.detent.cloud/organizations/ORG/mcp"
+url = "https://cloud.detent.build/organizations/ORG/mcp"
 bearer_token_env_var = "DETENT_API_KEY"
 ```
 
@@ -413,7 +654,7 @@ for both lifecycle examples. `tools/list` returns the complete current catalog
 by default; optional `_meta["detent/toolsets"]` selects groups. Call the
 discovered `work_list` with `{"project_id":"YOUR_GRANTED_PROJECT_ID","limit":20}`.
 Verify the result's organization/project. No browser state or OAuth login is
-required. GET/SSE returns 405; clients that require SSE/OAuth or cannot send
+required. GET/SSE returns 405; self-hosted clients that require SSE or cannot send
 private bearer headers are unsupported. Report this explicitly and stop.
 An optional GET receiving 405 is supported by the tested SDK.
 
@@ -428,73 +669,39 @@ changing the connection. These failures have different owners:
 | `MCP tool call requires approval, but approval policy is never` | Codex rejected the call before contacting Detent because this tool still requires client confirmation. The user must select an interactive session to review it. A previously saved tool-specific approval can allow later calls without a prompt; repeating the refused call or reconnecting to Detent does not approve it. |
 | A Detent response reports `403` or insufficient scope/grants | The request reached the Hub, which refused the current authority. Check the key scope, selected project and account grants through the existing Settings and connection reads. Client confirmation does not grant server permissions. |
 
-For an interactive operator session, the user can run the following from a
-project whose direnv environment already supplies the private key:
+For an interactive session, a client started from a project whose direnv
+environment supplies the key handles Codex's confirmation prompt before the MCP
+call reaches Detent:
 
 ```sh
 direnv exec . codex --no-daemon --sandbox workspace-write --ask-for-approval on-request
 ```
 
-These options are supported by Codex CLI 0.162.1; check `codex --help` for the
-installed version. `--no-daemon` runs this session separately with the current
-environment. The user handles Codex's confirmation prompt before the MCP call
-reaches Detent. An agent running under a policy that forbids approval must not
-change that policy to retry a refused operation. Noninteractive `codex exec`
-can perform permitted reads with the loaded environment, but its ability to
-read does not establish permission to execute write tools. Inspect the actual
-session settings when resuming; do not assume the original sandbox or a changed
-user request altered its confirmation policy.
-
-In that interactive session, the user can choose **Always allow** for a specific
-tool they intend to authorize on subsequent calls. Codex persists that selection
-in its user configuration, normally `~/.codex/config.toml` (or
-`$CODEX_HOME/config.toml`). For example, selecting it for `update_runner_routing`
-on the server named `detent` saves:
+`--no-daemon` runs the session separately with the current environment (Codex
+CLI 0.162.1; see `codex --help` for the installed version). Choosing **Always
+allow** for a tool persists a per-tool preference in the Codex user
+configuration, normally `~/.codex/config.toml`:
 
 ```toml
 [mcp_servers.detent.tools.update_runner_routing]
 approval_mode = "approve"
 ```
 
-The general key is `mcp_servers.detent.tools.<tool>.approval_mode`. This records
-the user's client preference for that tool; it grants no Hub role, key scope or
-project access. Keep the selection specific to the intended tool rather than
-approving every tool on the server. A fresh `codex exec` loads the user
-configuration by default and can use the saved approval even with
-`approval_policy = "never"`, since that call no longer needs a prompt. Check for
-a different `CODEX_HOME`, configuration overrides or `--ignore-user-config` if
-the preference is absent. An existing session may retain its earlier settings;
-start a separate session with the intended configuration and loaded environment
-instead of restarting a shared daemon. See the
-[Codex configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference)
-for per-tool approval settings.
+The general key is `mcp_servers.detent.tools.<tool>.approval_mode`. It records a
+client preference only and grants no Hub role, key scope or project access. A
+fresh `codex exec` loads it by default, so a saved tool approval also applies
+under `approval_policy = "never"`. See the
+[Codex configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference).
 
-After connecting, verify the selected account and organization with
-`connection_info`, then read the intended project before making an authorized
-change. Detent executes authorized writes directly and returns their result;
-there is no Detent approval URL to open or pending approval to release. Preserve
-truthful tool annotations and scoped credentials. Do not relabel writes as
-read-only, change approval settings without the user's authorization or broaden
-grants to conceal a client failure.
+`connection_info` reports the connected account and organization. Detent
+executes authorized writes directly and returns their result; there is no
+Detent approval URL or pending approval.
 See the [Codex MCP configuration reference](https://developers.openai.com/codex/mcp/)
 for client settings and [client confirmation and current authority](mcp-capabilities.md#client-confirmation-and-current-authority)
 for the server contract.
 
-A concise agent handoff is:
-
-> Configure your supported MCP client for the exact copied organization endpoint
-> using the same expiring scoped key from Settings → API & MCP. Ask me to store
-> it privately as DETENT_API_KEY; never include it in conversation, URLs, logs,
-> screenshots, diagnostics or committed configuration. Use bearer JSON POSTs
-> with no cookies, CSRF or OAuth. If your client cannot do this, say it is
-> unsupported and stop. Use the lifecycle supported by your client, discover
-> tools/list and call work_list for a project granted to that key. Verify the context
-> and report success without secrets. Use local client permissions for sensitive-operation confirmation;
-> the Hub executes authorized calls directly.
-
-The official TypeScript SDK client used for verification was
-`@modelcontextprotocol/sdk` **1.31.0**. In a private client directory containing
-that dependency, the following uses the same private environment key:
+A minimal client using the official TypeScript SDK (`@modelcontextprotocol/sdk`
+1.31.0) with the same private environment key:
 
 ```js
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -521,37 +728,7 @@ if (result.isError) throw new Error("Authorized read denied");
 await client.close();
 ```
 
-## Connection evidence and release verification
-
-Pre-merge verification on October 1, 2026 used an isolated, ephemeral HTTPS
-shared entry with a provisioned real organization tenant, a trusted fixture CA,
-a browser-created 7-day Read key and one project grant. This exercises the real
-Cloud entry/proxy/assertion, API-token authentication, membership provider,
-project read and MCP handlers. The fixture provider replaces the external
-identity service; this is not production deployment evidence.
-
-Both project and work-item GETs returned **200** with the shared key and no
-cookies or CSRF. The SDK initialized, discovered **55 tools** across all pages,
-and `work_list` returned the authorized project. The copied API prompt's actual
-curl examples also passed without browser state. Revoking the key denied the
-next API GET and MCP request on the established session. Focused tests cover
-current roles and grants, organization isolation, expiry, revocation, membership
-removal/replacement, machine rejection, redaction and current authority.
-
-Isolated Chromium verified the generated page at the existing bookmark,
-key creation/revocation, masked one-time secret, complete API/MCP URLs, both
-secret-free copied prompts, and desktop/mobile layout. Chrome DevTools was
-unavailable in this worker. Screenshots were captured after dismissing secrets.
-
-**Pending release acceptance:** Detent owns integration; the Cloud release owner
-owns deployment and a repeat against the actual canonical Cloud organization
-endpoint. After deploying the PR head, create a temporary Read key for one test
-project on this page. Run the direct reads and a supported SDK/MCP client's
-initialize/discovery/read with that same key and no browser state; record only
-status, negotiated protocol, tool count and public organization/project context.
-Verify both copy actions and key management on the deployed page. Revoke the
-key and confirm subsequent requests fail. Do not record secrets or claim this
-production check passed from the fixture result alone.
+## Connection errors
 
 For 401, check private key configuration, expiry and revocation. For 403 or a
 hidden 404, check current membership, role, key scope and project grants. Local
@@ -580,10 +757,6 @@ observe new membership or ordering. Cursor authority and one-hour expiry remain
 intact.
 Both stdio and HTTP return the same shape.
 
-Local GitHub snapshot lists use the same lane comparator, with the snapshot's
-`updated_at` as activity. Their existing offset pagination reads the current
-snapshot on each request.
-
 Summaries retain stable IDs, identifiers, URLs, revisions, title, state, priority,
 labels, assignees, timestamps and authorized dependencies/blockers. Their
 `omitted_fields` is `["body", "linked_source", "provenance",
@@ -607,6 +780,24 @@ revisions expose later edits. Reads use stored data and never refresh GitHub.
 This tool requires the same read scope and current project grants as `work_item`.
 Existing tools retain their limits and response shapes.
 
+## Publish a prepared release-pick PR
+
+The project-scoped `publish_release_pick` operator tool uses the
+[native publication contract](hub-api.md#publish-a-prepared-release-pick-pr).
+Supply the dependent `work_item_id`, current `expected_revision`, stable
+`request_id`, and `release_pick` source/repository/head/base/frozen identities
+without a PR number for initial publication. For a settled delivery that refused
+`base_moved`, supply its existing `pr_number` and the refreshed exact base/head,
+retaining its source, repository, branches and frozen SHA. The prepared branch
+must already contain exactly one `-x`
+pick of the audited, landed source fix on the frozen release base.
+
+The tool uses the existing GitHub transport and returns the exact PR identity.
+An identical retry recovers one matching open PR after a lost create response.
+It refuses stale refs, holds, conflicting PRs and unauthorized scope. It grants
+no approval or deployment authority and does not admit the issue. Associate the
+returned PR separately, then use normal native audit and landing.
+
 ## Associate an existing release-pick PR
 
 The project-scoped `associate_release_pick` MCP tool uses the supported
@@ -619,6 +810,16 @@ native Change, and preserves all holds. The existing runner captures the exact
 source, reviews, gates, and lands on the recorded frozen release branch.
 The tool does not merge or deploy. Worker completion contracts do not grant
 permission to call this operator mutation.
+
+The release coordinator handles `base_moved` by preparing the same pick on the
+current head of the same frozen release branch, verifying the existing PR through
+`publish_release_pick`, then refreshing through `associate_release_pick`. It uses
+the current delivery revision and waits for active execution to settle. Refresh
+retires the current version binding while retaining prior immutable evidence and
+returns the existing Change to source capture and fresh validation, review and
+audit. On interruption, read the association first; replay unchanged request
+identities when needed. Never retry the old tuple indefinitely or reset a release
+branch. Terminal deliveries cannot be refreshed or reopened by this path.
 
 ## Native validation evidence
 
@@ -644,9 +845,19 @@ criteria, findings, command results and receipt identities remain complete;
 section completeness describes records, not the completeness of output text.
 The canonical scoped Change HTTP GET without `view=bounded` retains the full
 stored reviews and output; exact-version reads also retain stored output.
-Records whose remaining semantic evidence exceeds the budget still return
-`change_record_too_large` without record content or passing evidence. The result
-budget remains 256 KiB.
+When a review cannot fit with its required envelope, a `section: "reviews"`
+continuation returns `fragment` using the retained recovery record format:
+scoped item, record and version identities, byte offset, total byte length,
+SHA-256 and base64-encoded canonical stored JSON. Each fragment carries at most
+64 KiB of record bytes. Follow `read.sections.reviews.next_cursor` on the same
+Change until the record is complete; verify contiguous offsets, stable identity,
+length and digest before using its review. Fragmented records retain full command
+output. Section completion describes traversal progress and never makes a partial
+record passing evidence. Change cursors retain their selected Change, version,
+head and history boundary, including for a non-latest Change on the same item.
+Other unrepresentable records or envelopes still return `change_record_too_large`
+without record content or passing evidence. Every serialized result remains
+within the existing 256 KiB budget.
 Native workers use the same projection through the Change HTTP read with
 `view=bounded` and the same section, cursor, version and limit selectors.
 
@@ -679,6 +890,37 @@ command text is redacted. Correlation grants no workflow authority, introduces
 no merge requirement and does not change any project's check policy.
 
 ## Hosted application context reads
+
+Organization productivity is available through the hosted organization
+`GET /reports?scope=organization&project=all&range=30d` read and the existing `reports` MCP tool
+with `{"scope":"organization","range":"30d"}`. Presets are `24h`, `7d`,
+`30d` and `90d`; REST custom windows use inclusive UTC `from`/`to` dates,
+and MCP accepts explicit timestamps aligned to complete UTC hours. Presets use the same
+calendar window resolution as project Reports. Both return an equal-length
+previous window. Buckets are hourly for short windows and daily for the 7d, 30d and 90d
+presets, and custom windows at least six days long.
+
+The organization result contains `current` and `previous` productivity metrics,
+`projects` with the same metrics per project, `series` and `previous_series`
+with filed/completed counts and project splits, and `filed_by`/`completed_by`
+counts for both periods. Completion cost includes lifetime usage before each
+window's end for issues currently Done whose close falls inside that window.
+Rework uses the project Reports unique-worked-issue denominator and excludes
+infrastructure returns from its numerator. Missing cost or rework denominators
+and unobserved cycle times return null rates or durations.
+
+The `labels`, `priorities`, `types`, `filed_by`, `runners` and `projects`
+filters accept arrays in MCP and repeated query parameters in REST. Dimensions
+combine with AND; values within a dimension combine with OR. Project filters
+intersect current readable grants and cannot expand access. A single MCP
+`project_id` further narrows organization scope. Omitting REST `scope` retains
+the existing Reports client response, including for `project=all`. Project-scoped
+Reports retains its existing response. Organization reads use typed background-maintained
+summaries through the reader pool; they may lag writes and never parse attempt
+payloads or replay event history on the request path. Filer kinds are `people`,
+`agents`, `automation` and `unknown`; completion attribution uses the final
+attempt's enrolled runner or the human who recorded the Done transition, with
+`unknown` retained when identity is missing.
 
 Hosted dedicated and shared connections expose `app_bootstrap_payload`,
 `app_updates`, `release_notes`, and `hosted_events` through the same adapter on HTTP and stdio.
@@ -718,59 +960,17 @@ at most 200 items and all results at most 256 KiB; an oversized complete result
 returns a safe unavailable error instead of truncation. Disabled optional services
 are explicit in bootstrap; a required unavailable service returns no application
 data or raw diagnostics. Hosted context is omitted from self-hosted and credential
-maintenance discovery. Parent #3259 generic-client and zero-pending acceptance
-remains with the parent owner.
+maintenance discovery.
 
-## Deployment MCP smoke
-
-After the origin smoke, `deploy-staging.yml` and `deploy-production.yml` run the
-MCP call pass against a dedicated smoke tenant on `staging.cloud.detent.build`
-and `cloud.detent.build`. The operator provisions, in each environment, a
-dedicated org owned by the platform account with one native throwaway project,
-and stores a key restricted to that project as the environment secret
-`DETENT_SMOKE_API_KEY`. Set the environment variable `DETENT_MCP_URL` to the
-exact MCP URL copied from that tenant's API & MCP setup. The probe refuses any
-other origin for the environment, discovers the project ID through
-`list_projects`, and refuses a key that can see more than one project. Do not
-store the key or project ID in source or issues.
-
-The project needs a permitted transition between two nondispatchable,
-nonterminal states. The probe creates one item per deployment and reuses a
-separate dependency fixture. It checks edits, comments, dependencies, movement,
-queue operations, unchanged integration settings, and archive/restore revisions.
-Provision the persistent resources using [deployment MCP fixtures](deployment-mcp-fixtures.md)
-once in each environment. The smoke discovers the conversation by title and
-the attachment, change, artifact receipt and attempt through the stable
-`MCP smoke dependency` item. Discovery reads run before their resource detail
-calls; missing fixtures produce explicit read skips with recorded reasons.
-Unsafe external and operator mutations are explicitly skipped. The two GitHub
-import reads are also skipped with a named reason: a native smoke project has
-no external tracker import.
-The operator-only `get_change`, `get_change_version` and `get_native_run` detail
-reads are skipped because they exceed the dedicated project key's authority.
-Available fixture reads run, and tool errors still fail deployment.
-`runner_project_diagnostics` selects the dependency attempt's runner explicitly,
-including when multiple runners report the project.
-`get_project_policy` accepts either an approved policy or the documented
-`policy_mismatch` refusal beginning with `No approved repository policy`;
-other refusals fail the smoke.
+## Native refusals
 
 Native projects refuse `order_item` and `set_queue_priority` with
 `invalid_request`: `Queue ordering and priority overrides require a
-GitHub-compatible project; native projects use issue priority`. These commands
-remain available for GitHub-compatible projects. A project without a cutover
-receipt returns `not_found`: `No cutover receipt exists for this project`.
-`get_change_review_policy` returns `not_found`: `No approved Change review
-policy exists for this project` until a policy is approved. Missing session
-activity returns `not_found`: `No recorded session activity exists for this
-work item and attempt` from `board_session_history`. The smoke accepts only
-these named refusals for these tools; other errors still fail deployment.
-When integration reads report automatic native intake, the unchanged-settings
-update omits `intake` to preserve it under the update contract.
-
-Tools that are known to fail are listed in `smokeKnownGaps` in
-`tools/cifailure` with their owning issue. They are reported but do not fail the
-deployment. Any other failure fails it, and so does a listed tool that starts
-passing, so the list only shrinks. An absent secret fails the smoke. Failures
-use the existing High deployment failure reporter, and the deployment artifact
-retains each tool's result.
+GitHub-compatible project; native projects use issue priority`. A project
+without a cutover receipt returns `not_found`: `No cutover receipt exists for
+this project`. `get_change_review_policy` returns `not_found`: `No approved
+Change review policy exists for this project` until a policy is approved.
+`get_project_policy` returns `policy_mismatch` beginning with `No approved
+repository policy` before the first approval. Missing session activity returns
+`not_found`: `No recorded session activity exists for this work item and
+attempt` from `board_session_history`.

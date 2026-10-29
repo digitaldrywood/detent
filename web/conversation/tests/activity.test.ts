@@ -24,6 +24,15 @@ const report = {
     outcome: "succeeded", finished_at: "2026-10-01T00:01:00Z", stage_duration_seconds: 60, workspace_ids: [], partial: false,
   }],
   typical_durations: [{ project_id: "prj_fixture", stage: "code", count: 3, seconds: 540, p50_seconds: 180, p90_seconds: 276, partial: false }],
+  running_issues: [{
+    work_item_id: "wi_fixture", number: 1, title: "Activity", project_id: "prj_fixture", project_name: "Project",
+    clock_started_at: "2026-10-01T00:00:00Z", clock_lane: "Ready", current_lane: "Build",
+    lanes: [{ name: "Ready", role: "active", seconds: 60, entries: 1, current: false }, { name: "Build", role: "active", seconds: 240, entries: 2, current: true }],
+    total_seconds: 300, worked_seconds: 200, worked_running: true,
+    worked_by_role: [{ role: "security_audit", attempts: 2, seconds: 200, running: true }],
+    runner_id: "runner_fixture", runner_ids: ["runner_fixture", "runner_previous"], partial: false,
+  }],
+  finished_issues: [], issue_typical_durations: [], issues_partial: false,
   population_limit: 1000,
   partial: false,
 };

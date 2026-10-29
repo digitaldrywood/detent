@@ -26,7 +26,7 @@ export interface TerminalSurfaceProps {
   readonly terminals: readonly TerminalHandle[];
   readonly activeId: string | null;
   readonly onSelect: (id: string) => void;
-  /** §18.2: a second terminal is its own stream and its own PTY. */
+  /** A second terminal is its own stream and its own PTY. */
   readonly onNewTerminal: () => void;
   readonly onCloseTerminal: (id: string) => void;
   readonly registerOutput: (id: string, sink: (data: string) => void) => () => void;
@@ -65,7 +65,7 @@ export function terminalStatusLabel(snapshot: TerminalSnapshot): string {
     case "open":
       return "Connected";
     case "reconnecting":
-      // §18.2 gives a dropped connection sixty seconds, and the runner keeps
+      // The relay protocol gives a dropped connection sixty seconds, and the runner keeps
       // the PTY alive exactly that long, so this is a wait rather than a loss.
       return "Reconnecting";
     case "exited":
@@ -120,7 +120,7 @@ function terminalTheme(): Record<string, string> {
  * One live terminal.
  *
  * The xterm instance is created once per terminal id and torn down with it. It
- * is deliberately not re-created on a status change: a reconnect inside §18.2's
+ * is deliberately not re-created on a status change: a reconnect inside the relay protocol's
  * window puts the person back in front of the same shell, and a screen wiped
  * and redrawn would lose the scrollback the resume exists to preserve.
  */
@@ -141,7 +141,7 @@ function TerminalView({
   // xterm is loaded when a terminal is opened rather than when the module is.
   //
   // Two reasons, and both are load-bearing. It is a renderer nobody who never
-  // opens a shell needs, and the bundle §18.11 keeps an eye on should not carry
+  // opens a shell needs, and the bundle the sequencing plan keeps an eye on should not carry
   // it on every page. And `@xterm/addon-fit` ships as a UMD bundle that reaches
   // for `self` at module scope, which does not exist outside a browser — a
   // static import therefore breaks every Node-environment test that
@@ -195,7 +195,7 @@ function TerminalView({
   }, [ready, registerOutput, terminal.id]);
 
   // Keystrokes go to the runner. `onData` already carries the bytes a terminal
-  // expects for control keys, so nothing here interprets them: §18.3 hands the
+  // expects for control keys, so nothing here interprets them: the terminal contract hands the
   // shell what the person typed.
   React.useEffect(() => {
     const xterm = view.current;
@@ -204,8 +204,8 @@ function TerminalView({
     return () => subscription.dispose();
   }, [ready, stream]);
 
-  // The window follows the container. A resize is a real ioctl on the runner
-  // (§18.3), so a program drawing to the window learns about it from SIGWINCH
+  // The window follows the container. A resize is a real ioctl on the runner,
+  // so a program drawing to the window learns about it from SIGWINCH
   // rather than from a number the client kept to itself.
   React.useEffect(() => {
     const element = host.current;
@@ -370,7 +370,7 @@ export function TerminalSurface({
           </p>
         ) : null}
         {active !== null && active.snapshot.status === "exited" ? (
-          // §18.3's `exit` shown in the surface. A shell that ended is not an
+          // The terminal contract's `exit` shown in the surface. A shell that ended is not an
           // error and not an empty screen: the scrollback stays, and this says
           // why nothing more is coming.
           <p className="px-3 pt-2 text-muted-foreground/70 text-xs" data-testid="terminal-exit">

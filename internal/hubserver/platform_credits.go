@@ -20,7 +20,7 @@ func (s *Service) platformTenantAICreditBalance(c echo.Context) error {
 	defer cancel()
 	claims, ok := hostedSharedClaims(c)
 	if !ok || claims.Kind != cloudassert.KindService {
-		return c.NoContent(http.StatusForbidden)
+		return s.hostedJSONError(c, http.StatusForbidden, "Shared service access is required to read AI credits")
 	}
 	d := s.database
 	var result struct {
@@ -65,11 +65,11 @@ func (s *Service) platformTenantAICreditBalance(c echo.Context) error {
 func (s *Service) adjustPlatformAICredits(c echo.Context) error {
 	claims, ok := hostedSharedClaims(c)
 	if !ok || claims.Kind != cloudassert.KindService || claims.Subject == "" || claims.Email == "" {
-		return c.NoContent(http.StatusForbidden)
+		return s.hostedJSONError(c, http.StatusForbidden, "Shared service identity and email are required to adjust AI credits")
 	}
 	var adjustment billing.CreditAdjustment
 	if err := decodeAPIJSON(c, &adjustment); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	balance, err := s.database.adjustAICredits(c.Request().Context(), claims.Email, adjustment)
 	if err != nil {
@@ -85,10 +85,10 @@ func (d *database) adjustAICredits(ctx context.Context, actor string, adjustment
 	}
 	adjustment.Reason = strings.TrimSpace(adjustment.Reason)
 	if !hostedSafeID(adjustment.IdempotencyKey) || adjustment.Reason == "" || len(adjustment.Reason) > 500 || actor == "" || len(actor) > 254 {
-		return 0, nativeInvalid("A command ID, actor and reason of at most 500 characters are required")
+		return 0, nativePublicInvalid("A command ID, actor and reason of at most 500 characters are required")
 	}
 	if d.aiCreditMode == "" {
-		return 0, nativeInvalid("AI credits are not configured for this organization")
+		return 0, nativePublicInvalid("AI credits are not configured for this organization")
 	}
 	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -105,7 +105,7 @@ func (d *database) adjustAICredits(ctx context.Context, actor string, adjustment
 	err = tx.QueryRowContext(ctx, "SELECT amount_micros,actor,reason FROM ai_credit_transactions WHERE organization_id=? AND mode=? AND source=?", d.hostedOrganization, d.aiCreditMode, source).Scan(&previousAmount, &previousActor, &previousReason)
 	if err == nil {
 		if previousAmount != amount || previousActor != actor || previousReason != adjustment.Reason {
-			return 0, &nativeError{status: http.StatusConflict, Code: "idempotency_conflict", Message: "That idempotency key was used for a different credit adjustment"}
+			return 0, &nativeError{status: http.StatusConflict, Code: "idempotency_conflict", Message: "That idempotency key was used for a different credit adjustment", publicMessage: true}
 		}
 		return balance, nil
 	}
@@ -113,7 +113,7 @@ func (d *database) adjustAICredits(ctx context.Context, actor string, adjustment
 		return 0, err
 	}
 	if amount > 0 && balance > math.MaxInt64-amount || amount < 0 && balance < math.MinInt64-amount {
-		return 0, nativeInvalid("The adjusted balance is out of range")
+		return 0, nativePublicInvalid("The adjusted balance is out of range")
 	}
 	if _, err := tx.ExecContext(ctx, "INSERT INTO ai_credit_transactions(organization_id,mode,source,amount_micros,kind,actor,reason,recorded_at) VALUES(?,?,?,?,'complimentary',?,?,?)", d.hostedOrganization, d.aiCreditMode, source, amount, actor, adjustment.Reason, d.now().UnixMicro()); err != nil {
 		return 0, err

@@ -12,7 +12,7 @@ import (
 )
 
 // The runner downloads what a control named, with its own token, through the
-// hub path the control carries (decisions section 17.1).
+// hub path the control carries.
 
 // attachmentHub serves the files a test names and refuses everything else,
 // the way the hub refuses an attachment the caller may not read.

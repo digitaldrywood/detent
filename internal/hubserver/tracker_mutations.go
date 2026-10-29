@@ -224,7 +224,7 @@ func (d *database) renew(ctx context.Context, request tracker.RenewRequest, poli
 	}
 	if landingCapacity > 0 {
 		if len(scopes) != 1 {
-			return tracker.Lease{}, nativeInvalid("Landing admission requires a native project lease")
+			return tracker.Lease{}, nativePublicInvalid("Landing admission requires a native project lease")
 		}
 		if err := reserveNativeLandingCapacity(ctx, tx, scopes[0], record, landingCapacity, now); err != nil {
 			return tracker.Lease{}, err
@@ -246,7 +246,11 @@ func (d *database) renew(ctx context.Context, request tracker.RenewRequest, poli
 	return leaseFromRecord(record), nil
 }
 
-func (d *database) Release(ctx context.Context, request tracker.ReleaseRequest) (resultErr error) {
+func (d *database) Release(ctx context.Context, request tracker.ReleaseRequest) error {
+	return d.releaseLease(ctx, request, false)
+}
+
+func (d *database) releaseLease(ctx context.Context, request tracker.ReleaseRequest, cancelAttempt bool, scopes ...nativeScope) (resultErr error) {
 	request, err := normalizeReleaseRequest(request)
 	if err != nil {
 		return err
@@ -278,6 +282,13 @@ func (d *database) Release(ctx context.Context, request tracker.ReleaseRequest) 
 
 	if err := releaseLeaseRow(ctx, tx, record, request.Reason, now); err != nil {
 		return err
+	}
+	if cancelAttempt {
+		for _, scope := range scopes {
+			if err := cancelNativeLeaseAttempt(ctx, tx, scope, record, now); err != nil {
+				return err
+			}
+		}
 	}
 	if err := heartbeatMachine(ctx, tx, record.session.Machine.ID, now); err != nil {
 		return err
@@ -473,7 +484,7 @@ ORDER BY l.fencing_token DESC
 LIMIT 1`, workItemID))
 }
 
-func readLeaseByID(ctx context.Context, tx *sql.Tx, leaseID tracker.LeaseID) (leaseRecord, bool, error) {
+func readLeaseByID(ctx context.Context, tx nativeQueryer, leaseID tracker.LeaseID) (leaseRecord, bool, error) {
 	return scanLeaseRecord(tx.QueryRowContext(ctx, `
 SELECT l.issue_id, l.lease_id, l.fencing_token, l.machine_id, m.hostname, m.display_name, l.session_id, l.acquired_at, l.renewed_at, l.expires_at, l.released_at
 FROM leases l
@@ -671,6 +682,18 @@ func requireRenewableLease(ctx context.Context, tx *sql.Tx, record leaseRecord, 
 		}
 	}
 	if !record.session.ExpiresAt.After(now) {
+		for _, scope := range scopes {
+			if scope.credential.Runner.RunnerID == "" {
+				continue
+			}
+			joining, err := nativeLandingCapacityKey(ctx, tx, record.session.Machine.ID, record.session.SessionID, record.issueID)
+			if err != nil {
+				return err
+			}
+			if err := validateRunnerDispatch(ctx, tx, scope, now, joining); err != nil {
+				return err
+			}
+		}
 		if err := requireLandingRenewalCapacity(ctx, tx, record.session.ID, landingCapacity, now); err != nil {
 			return err
 		}

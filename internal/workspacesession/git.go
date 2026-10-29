@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// The git channel (decisions section 18.13). Three frames, all of them about
+// The git channel. Three frames, all of them about
 // the workspace's own worktree: what state it is in, a commit, and a push.
 //
 // It is the only channel that writes, and every rule that follows from that is
@@ -29,8 +29,8 @@ const (
 	TypeGitCommit = "commit"
 	TypeGitPush   = "push"
 	// Runner → person. A status answer reuses the request's name, exactly as
-	// the files channel's stat does: the direction disambiguates, and section
-	// 18.13 names both "status".
+	// the files channel's stat does: the direction disambiguates, and the git channel contract
+	// names both "status".
 	TypeGitCommitted = "committed"
 	TypeGitPushed    = "pushed"
 )
@@ -85,7 +85,7 @@ func ValidateGitRequest(requestType string, request GitRequest) error {
 // GitStatus answers a status frame: the branch, how far it is from its
 // upstream, and how many files are dirty. It is what the header's git action
 // group enables from, so it carries no file list: naming the files would make
-// a header control a second Files surface, and section 18.5 already has one.
+// a header control a second Files surface, and the Diff contract already has one.
 type GitStatus struct {
 	Branch string `json:"branch"`
 	// Detached reports a HEAD on no branch. A commit is still possible there
@@ -110,7 +110,7 @@ type GitCommitted struct {
 	// Files is how many paths the commit carries.
 	Files int `json:"files"`
 	// Excluded names the dirty paths the denylist kept out of the commit
-	// (section 18.4, applied here as well). They are reported rather than
+	// (the Files contract, applied here as well). They are reported rather than
 	// silently dropped: a person who expected a file in the commit has to be
 	// able to see why it is not.
 	Excluded []string `json:"excluded,omitempty"`

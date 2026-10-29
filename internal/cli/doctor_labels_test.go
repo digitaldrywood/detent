@@ -27,11 +27,10 @@ func TestCheckDoctorConfiguredLabels(t *testing.T) {
 			configure: func(cfg *workflowconfig.Config) {
 				cfg.Agent.AutoPromote.OptoutLabel = "requires-human-review"
 				cfg.Agent.MaxSessionTokenOverrideLabel = "allow-large-session"
-				cfg.Agent.LifetimeLimitOverrideLabel = "allow-lifetime-limit"
 			},
-			labels:     []string{"Requires-Human-Review", "allow-large-session", "allow-lifetime-limit"},
+			labels:     []string{"Requires-Human-Review", "allow-large-session"},
 			wantStatus: doctorOK,
-			wantDetail: []string{"verified 3 configured labels", "digitaldrywood/detent"},
+			wantDetail: []string{"verified 2 configured labels", "digitaldrywood/detent"},
 			wantReads:  1,
 		},
 		{
@@ -50,7 +49,6 @@ func TestCheckDoctorConfiguredLabels(t *testing.T) {
 			configure: func(cfg *workflowconfig.Config) {
 				cfg.Agent.AutoPromote.OptoutLabel = ""
 				cfg.Agent.MaxSessionTokenOverrideLabel = ""
-				cfg.Agent.LifetimeLimitOverrideLabel = ""
 			},
 			wantStatus: doctorOK,
 			wantDetail: []string{"no escape-hatch labels are configured"},
@@ -65,9 +63,8 @@ func TestCheckDoctorConfiguredLabels(t *testing.T) {
 			wantDetail: []string{
 				`missing label "requires-human-review" referenced by agent.auto_promote.optout_label`,
 				`missing label "allow-large-session" referenced by agent.max_session_token_override_label`,
-				`missing label "allow-lifetime-limit" referenced by agent.lifetime_limit_override_label`,
 			},
-			wantHint:  []string{"gh label create", "requires-human-review", "allow-large-session", "allow-lifetime-limit"},
+			wantHint:  []string{"gh label create", "requires-human-review", "allow-large-session"},
 			wantReads: 1,
 		},
 		{
@@ -75,7 +72,6 @@ func TestCheckDoctorConfiguredLabels(t *testing.T) {
 			configure: func(cfg *workflowconfig.Config) {
 				cfg.Agent.AutoPromote.OptoutLabel = ""
 				cfg.Agent.MaxSessionTokenOverrideLabel = "allow-large-session"
-				cfg.Agent.LifetimeLimitOverrideLabel = ""
 			},
 			wantStatus: doctorWarn,
 			wantDetail: []string{"agent.max_session_token_override_label"},
@@ -144,7 +140,8 @@ func TestCheckDoctorConfiguredLabelsUsesTrackerRepository(t *testing.T) {
 	cfg := workflowconfig.Default()
 	cfg.Tracker.Kind = workflowconfig.TrackerGitHub
 	cfg.Tracker.Repository = "digitaldrywood/detent"
-	cfg.Tracker.WriteProbeIssue = "digitaldrywood/scratch#1"
+	cfg.Tracker.WriteProbeIssue = "example-org/scratch#1"
+	cfg.Agent.MaxSessionTokenOverrideLabel = "allow-large-session"
 	repositories := []string{}
 	check := checkDoctorConfiguredLabels(
 		context.Background(),
@@ -154,7 +151,7 @@ func TestCheckDoctorConfiguredLabelsUsesTrackerRepository(t *testing.T) {
 		doctorDeps{
 			githubLabels: func(_ context.Context, _ workflowconfig.Config, repository string) ([]string, error) {
 				repositories = append(repositories, repository)
-				return []string{"requires-human-review", "allow-large-session", "allow-lifetime-limit"}, nil
+				return []string{"requires-human-review", "allow-large-session"}, nil
 			},
 			gitRemoteURL: func(context.Context, string) (string, error) {
 				return "https://github.com/digitaldrywood/checkout.git", nil
@@ -184,7 +181,7 @@ func TestDoctorConfiguredLabelFixTerminatesFlagParsing(t *testing.T) {
 	}
 }
 
-func TestCheckDoctorProjectIncludesConfiguredLabelCheck(t *testing.T) {
+func TestCheckDoctorProjectSkipsTrackerLabelsForNative(t *testing.T) {
 	if testing.Short() {
 		t.Skip("live service, profiling, or filesystem watcher integration")
 	}
@@ -192,27 +189,24 @@ func TestCheckDoctorProjectIncludesConfiguredLabelCheck(t *testing.T) {
 	t.Parallel()
 
 	cfg := validDoctorWorkflow("/repo")
-	cfg.Tracker.Kind = workflowconfig.TrackerGitHub
 	cfg.Tracker.APIKey = "token"
 	cfg.Tracker.ProjectSlug = "PVT_1"
-	cfg.Tracker.Repository = "digitaldrywood/detent"
+	cfg.Tracker.Repository = "example-org/example-project"
 	cfg.Agent.AutoPromote.OptoutLabel = "requires-human-review"
 	deps := successfulDoctorDeps()
 	deps.loadWorkflow = func(string) (workflowconfig.Workflow, error) {
 		return workflowconfig.Workflow{Config: cfg}, nil
 	}
 	deps.githubLabels = func(context.Context, workflowconfig.Config, string) ([]string, error) {
-		return []string{"bug"}, nil
+		t.Error("native tracker must not read GitHub tracker labels")
+		return nil, nil
 	}
 
 	checks := checkDoctorProject(context.Background(), globalconfig.Project{ID: "detent", Workflow: "WORKFLOW.md"}, deps, RuntimeSecret{}, false)
 	for _, check := range checks {
 		if check.Name == "Project detent configured labels" {
-			if check.Status != doctorFail || !strings.Contains(check.Detail, "agent.auto_promote.optout_label") {
-				t.Fatalf("configured label check = %#v, want missing opt-out failure", check)
-			}
-			return
+			t.Fatalf("retired GitHub tracker label check: %#v", check)
 		}
 	}
-	t.Fatalf("checks = %#v, want configured label check", checks)
+	assertDoctorCheck(t, doctorReport{Checks: checks}, "Project detent workflow", doctorOK, "WORKFLOW.md is valid")
 }

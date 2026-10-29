@@ -286,7 +286,7 @@ func (o *Orchestrator) completeTrackerAvailabilityRecovery(state *State, recover
 
 func releaseTrackerUnavailableRetries(state *State, releasedAt time.Time) {
 	for issueID, retry := range state.Retry {
-		if !retry.TrackerUnavailable {
+		if !retry.TrackerUnavailable || retry.ResumeState.Orphaned && retry.RecoveryAttemptID != 0 {
 			continue
 		}
 		retry.DueAt = releasedAt
@@ -299,6 +299,9 @@ func (o *Orchestrator) handleTrackerUnavailableCompletion(ctx context.Context, s
 	availabilityErr, ok := connector.AsTrackerAvailability(event.Err)
 	if !ok || availabilityErr == nil {
 		return false
+	}
+	if !o.nativeWorkflow() {
+		o.releaseTerminalAttemptClaim(ctx, state, running.Issue, event.CompletedAt)
 	}
 	o.observeTrackerReadFailure(state, "", event.Err, event.CompletedAt)
 	message := strings.TrimSpace(event.Err.Error())

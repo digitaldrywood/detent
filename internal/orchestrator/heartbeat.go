@@ -601,6 +601,13 @@ func (o *Orchestrator) handleHeartbeatResult(state *State, result heartbeatResul
 		if o.logger != nil {
 			o.logger.Warn("claim heartbeat owner changed", "issue_id", result.issueID, "owner", o.claimOwner(), "current_owner", result.currentClaimOwner)
 		}
+		if waiting {
+			o.heartbeats.remove(result.issueID)
+			if source, ok := o.scheduling.(interface{ ForgetClaim(string) }); ok {
+				source.ForgetClaim(result.issueID)
+			}
+			return
+		}
 		o.releaseClaim(state, result.issueID)
 		return
 	}

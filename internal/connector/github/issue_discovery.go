@@ -9,15 +9,42 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-const issueDiscoveryQuery = `query($owner:String!, $repo:String!, $states:[IssueState!], $labels:[String!], $cursor:String, $snapshots:Boolean!) {
+const issueDiscoveryQuery = `query($owner:String!, $repo:String!, $states:[IssueState!], $labels:[String!], $cursor:String, $snapshots:Boolean!, $projectV2:Boolean!, $projectID:ID!) {
+ projectSource:node(id:$projectID) @include(if:$projectV2) { ... on ProjectV2 { id } }
  repository(owner:$owner, name:$repo) { nameWithOwner
  issues(first:100, after:$cursor, states:$states, labels:$labels, orderBy:{field:CREATED_AT,direction:ASC}) {
  totalCount nodes { id number url title body closed labels(first:100) { nodes { name } }
  createdAt @include(if:$snapshots) updatedAt @include(if:$snapshots) author @include(if:$snapshots) { login }
- comments(first:100) @include(if:$snapshots) { totalCount nodes { id body createdAt updatedAt author { login } } pageInfo { hasNextPage endCursor } } }
+ comments(first:100) @include(if:$snapshots) { totalCount nodes { id body createdAt updatedAt author { login } } pageInfo { hasNextPage endCursor } }
+ projectItems(first:100, includeArchived:true) @include(if:$projectV2) { ...DiscoveryProjectItems } }
  pageInfo { hasNextPage endCursor }
  } }
+}` + discoveryProjectItemsFragment
+
+const discoveryProjectItemsFragment = `
+fragment DiscoveryProjectItems on ProjectV2ItemConnection {
+ nodes { project { id } fieldValueByName(name:"Status") { ... on ProjectV2ItemFieldSingleSelectValue { name } } }
+ pageInfo { hasNextPage endCursor }
 }`
+
+const issueDiscoveryProjectQuery = `query($id:ID!, $cursor:String!) {
+ node(id:$id) { ... on Issue { projectItems(first:100, after:$cursor, includeArchived:true) { ...DiscoveryProjectItems } } }
+}` + discoveryProjectItemsFragment
+
+type discoveryProjectItems struct {
+	Nodes []struct {
+		Project struct {
+			ID string `json:"id"`
+		} `json:"project"`
+		Status *struct {
+			Name string `json:"name"`
+		} `json:"fieldValueByName"`
+	} `json:"nodes"`
+	PageInfo struct {
+		HasNext bool   `json:"hasNextPage"`
+		Cursor  string `json:"endCursor"`
+	} `json:"pageInfo"`
+}
 
 // DiscoverIssues performs one bounded page read. The caller explicitly requests
 // subsequent pages; the connector never polls or synchronizes the repository.
@@ -64,16 +91,20 @@ func FetchDiscoveryPage(ctx context.Context, client DiscoveryClient, request tra
 		labels = request.Labels
 	}
 	var response struct {
+		ProjectSource *struct {
+			ID string `json:"id"`
+		} `json:"projectSource"`
 		Repository *struct {
 			Name   string `json:"nameWithOwner"`
 			Issues struct {
 				Total int `json:"totalCount"`
 				Nodes []struct {
 					tracker.GitHubIssuePreview
-					BodyValue *string   `json:"body"`
-					CreatedAt time.Time `json:"createdAt"`
-					UpdatedAt time.Time `json:"updatedAt"`
-					Author    *struct {
+					ProjectItems *discoveryProjectItems `json:"projectItems"`
+					BodyValue    *string                `json:"body"`
+					CreatedAt    time.Time              `json:"createdAt"`
+					UpdatedAt    time.Time              `json:"updatedAt"`
+					Author       *struct {
 						Login string `json:"login"`
 					} `json:"author"`
 					Comments struct {
@@ -96,8 +127,15 @@ func FetchDiscoveryPage(ctx context.Context, client DiscoveryClient, request tra
 			} `json:"issues"`
 		} `json:"repository"`
 	}
-	if err := client.GraphQL(ctx, issueDiscoveryQuery, map[string]any{"owner": parts[0], "repo": parts[1], "states": states, "labels": labels, "cursor": cursor, "snapshots": request.Snapshots}, &response); err != nil {
+	projectID := ""
+	if request.ProjectV2 != nil {
+		projectID = request.ProjectV2.ID
+	}
+	if err := client.GraphQL(ctx, issueDiscoveryQuery, map[string]any{"owner": parts[0], "repo": parts[1], "states": states, "labels": labels, "cursor": cursor, "snapshots": request.Snapshots, "projectV2": request.ProjectV2 != nil, "projectID": projectID}, &response); err != nil {
 		return page, err
+	}
+	if request.ProjectV2 != nil && (response.ProjectSource == nil || response.ProjectSource.ID != projectID) {
+		return page, fmt.Errorf("ProjectV2 source inaccessible; verify existing GitHub read access: %w", ErrNotFound)
 	}
 	if response.Repository == nil {
 		return page, fmt.Errorf("repository issues inaccessible; verify runner GitHub read access: %w", ErrNotFound)
@@ -115,6 +153,14 @@ func FetchDiscoveryPage(ctx context.Context, client DiscoveryClient, request tra
 		}
 		seen[number] = true
 		preview := node.GitHubIssuePreview
+		preview.ProjectStatus = ""
+		if request.ProjectV2 != nil {
+			status, err := fetchDiscoveryProjectStatus(ctx, client, node.ID, projectID, node.ProjectItems)
+			if err != nil {
+				return tracker.GitHubDiscoveryPage{}, err
+			}
+			preview.ProjectStatus = status
+		}
 		if node.BodyValue != nil {
 			preview.Body = *node.BodyValue
 		}
@@ -160,4 +206,41 @@ func FetchDiscoveryPage(ctx context.Context, client DiscoveryClient, request tra
 		}
 	}
 	return page, nil
+}
+
+func fetchDiscoveryProjectStatus(ctx context.Context, client DiscoveryClient, issueID, projectID string, items *discoveryProjectItems) (string, error) {
+	seen := map[string]bool{}
+	for {
+		if items == nil {
+			return "", ErrInvalidResponse
+		}
+		for _, item := range items.Nodes {
+			if item.Project.ID == projectID {
+				if item.Status == nil {
+					return "", nil
+				}
+				return item.Status.Name, nil
+			}
+		}
+		if !items.PageInfo.HasNext {
+			return "", nil
+		}
+		cursor := items.PageInfo.Cursor
+		if cursor == "" || seen[cursor] || len(items.Nodes) == 0 {
+			return "", ErrInvalidResponse
+		}
+		seen[cursor] = true
+		var response struct {
+			Node *struct {
+				ProjectItems *discoveryProjectItems `json:"projectItems"`
+			} `json:"node"`
+		}
+		if err := client.GraphQL(ctx, issueDiscoveryProjectQuery, map[string]any{"id": issueID, "cursor": cursor}, &response); err != nil {
+			return "", err
+		}
+		if response.Node == nil {
+			return "", ErrInvalidResponse
+		}
+		items = response.Node.ProjectItems
+	}
 }

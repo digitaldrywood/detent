@@ -1,5 +1,6 @@
 import {
   CircleDotIcon,
+  EllipsisIcon,
   FileDiffIcon,
   type LucideIcon,
   MessageSquareIcon,
@@ -16,6 +17,8 @@ import {
 import React from "react";
 
 import { Button } from "../../../components/ui/button.tsx";
+import { AlertDialog, AlertDialogClose, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogPopup, AlertDialogTitle } from "../../../components/ui/alert-dialog.tsx";
+import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../../../components/ui/menu.tsx";
 import {
   Collapsible,
   CollapsiblePanel,
@@ -23,8 +26,9 @@ import {
 } from "../../../components/ui/collapsible.tsx";
 import { cn } from "../../../lib/utils.ts";
 import { Markdown } from "../../components/Markdown.tsx";
-import { attachmentInputHandlers, useAttachmentDraft } from "./AttachmentEditor.tsx";
+import { AttachmentEditor, attachmentInputHandlers, useAttachmentDraft } from "./AttachmentEditor.tsx";
 import {
+  type ActivityComment,
   type ActivityGroup,
   type ActivityIcon,
   type ActivityRow,
@@ -99,31 +103,78 @@ function CommentCard({
   posting,
   highlighted = false,
   projectId,
+  onChangeComment,
 }: {
   readonly row: ActivityRow;
   readonly onReply: ((body: string) => void | Promise<void>) | null;
   readonly posting: boolean;
   readonly highlighted?: boolean;
   readonly projectId?: string | undefined;
+  readonly onChangeComment?: ActivityFeedProps["onChangeComment"];
 }): React.ReactElement {
   const [draft, setDraft] = React.useState("");
   const upload = useAttachmentDraft(projectId ?? "", setDraft);
   const input = React.useRef<HTMLInputElement>(null);
   const [error, setError] = React.useState<string | null>(null);
   const comment = row.comment;
+  const [editing, setEditing] = React.useState(false);
+  const [editDraft, setEditDraft] = React.useState("");
+  const [editUploading, setEditUploading] = React.useState(false);
+  const [busy, setBusy] = React.useState(false);
+  const [confirmDelete, setConfirmDelete] = React.useState(false);
+  const [changeError, setChangeError] = React.useState<string | null>(null);
+  const trigger = React.useRef<HTMLButtonElement>(null);
+  const article = React.useRef<HTMLElement>(null);
+  const wasEditing = React.useRef(false);
+  React.useEffect(() => {
+    if (wasEditing.current && !editing) trigger.current?.focus();
+    wasEditing.current = editing;
+  }, [editing]);
+  const canChange = comment?.own === true && !comment.deleted && onChangeComment != null;
+  const finishEditing = () => setEditing(false);
+  const change = async (deleted: boolean) => {
+    if (comment === undefined || onChangeComment == null || !canChange || busy || (!deleted && editUploading)) return;
+    setBusy(true);
+    setChangeError(null);
+    try {
+      await onChangeComment(comment, deleted ? "" : editDraft, deleted);
+      setConfirmDelete(false);
+      finishEditing();
+    } catch (cause) {
+      setChangeError(`Could not ${deleted ? "delete" : "save"} the comment: ${cause instanceof Error ? cause.message : String(cause)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
   return (
     <li id={activityId(row)} data-citation-highlight={highlighted ? "true" : undefined} className={cn("my-1.5 rounded-md", highlighted && "bg-primary/10 ring-2 ring-primary")} data-testid="issue-comment">
-      <article className="rounded-[var(--radius)] border border-border bg-card">
+      <article ref={article} tabIndex={-1} className="rounded-[var(--radius)] border border-border bg-card">
         <div className="px-3.5 py-3">
-          <div className="flex items-center gap-2 text-[13px]">
-            <span className="font-medium text-foreground">{row.actor}</span>
-            <span className="text-muted-foreground/70">{timeLabel(row.at)}</span>
+          <div className="flex flex-wrap items-center gap-2 text-[13px]">
+            <span className="min-w-0 break-all font-medium text-foreground">{row.actor}</span>
+            <span className="text-muted-foreground/70">{timeLabel(row.at)}{comment?.edited === true && !comment.deleted ? " · edited" : ""}</span>
+            {canChange && !editing ? <Menu>
+              <MenuTrigger ref={trigger} aria-label="Comment actions" className="ml-auto inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-sm text-muted-foreground outline-none ring-ring hover:bg-accent hover:text-foreground focus-visible:ring-2">
+                <EllipsisIcon className="size-3.5" />
+              </MenuTrigger>
+              <MenuPopup align="end" sideOffset={4}>
+                <MenuItem onClick={() => { setEditDraft(comment.body); setChangeError(null); setEditing(true); }}>Edit</MenuItem>
+                <MenuItem variant="destructive" onClick={() => { setChangeError(null); setConfirmDelete(true); }}>Delete</MenuItem>
+              </MenuPopup>
+            </Menu> : null}
           </div>
           <div className="mt-2 text-sm" data-testid="issue-comment-body">
-            <Markdown source={comment?.body ?? ""} projectId={projectId} />
+            {comment?.deleted === true ? <p className="text-muted-foreground">This comment was deleted</p> : editing ? <form onSubmit={(event) => { event.preventDefault(); if (editDraft.trim() !== "") void change(false); }}>
+              <AttachmentEditor projectId={projectId ?? ""} value={editDraft} onChange={setEditDraft} onUploadingChange={setEditUploading} disabled={busy} aria-label="Edit comment" autoFocus />
+              {changeError === null ? null : <p role="alert" className="text-sm text-destructive">{changeError}</p>}
+              <div className="mt-2 flex gap-2">
+                <Button type="submit" size="xs" disabled={busy || editUploading || editDraft.trim() === ""}>Save</Button>
+                <Button type="button" size="xs" variant="ghost" disabled={busy} onClick={finishEditing}>Cancel</Button>
+              </div>
+            </form> : <Markdown source={comment?.body ?? ""} projectId={projectId} />}
           </div>
         </div>
-        {onReply === null ? null : (
+        {onReply === null || comment?.deleted === true || editing ? null : (
           <form
             {...attachmentInputHandlers(upload.addFiles, posting)}
             className="flex items-center gap-2 border-border border-t px-3 py-2"
@@ -158,6 +209,19 @@ function CommentCard({
         )}
         {[...upload.errors, ...(error === null ? [] : [error])].map((message, index) => <p key={index} role="alert" className="px-3 text-sm text-destructive">{message}</p>)}
       </article>
+      <AlertDialog open={confirmDelete} onOpenChange={(open) => { if (!busy) setConfirmDelete(open); }}>
+        <AlertDialogPopup finalFocus={() => trigger.current ?? article.current}>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete comment?</AlertDialogTitle>
+            <AlertDialogDescription>The comment will be replaced with a deleted-comment placeholder. Other comments will stay in place.</AlertDialogDescription>
+          </AlertDialogHeader>
+          {changeError === null ? null : <p role="alert" className="px-6 pb-4 text-sm text-destructive">{changeError}</p>}
+          <AlertDialogFooter>
+            <AlertDialogClose render={<Button variant="outline" disabled={busy}>Cancel</Button>} />
+            <Button variant="destructive" disabled={busy} onClick={() => void change(true)}>{busy ? "Deleting…" : "Delete"}</Button>
+          </AlertDialogFooter>
+        </AlertDialogPopup>
+      </AlertDialog>
     </li>
   );
 }
@@ -273,6 +337,8 @@ export function LiveRow(props: LiveRowProps): React.ReactElement {
 }
 
 export interface ActivityFeedProps {
+  readonly ref?: React.Ref<HTMLElement>;
+  readonly onChangeComment?: ((comment: ActivityComment, body: string, deleted: boolean) => Promise<void>) | null;
   readonly projectId?: string | undefined;
   readonly rows: readonly ActivityRow[];
   /** The live row, rendered in its own place in time. Null with no conversation. */
@@ -309,6 +375,7 @@ export function ActivityFeed(props: ActivityFeedProps): React.ReactElement {
         key={group.key}
         row={group.row}
         onReply={props.onReply}
+        onChangeComment={props.onChangeComment}
         posting={props.posting}
         highlighted={activityId(group.row) === props.highlightedId}
       />
@@ -317,7 +384,7 @@ export function ActivityFeed(props: ActivityFeedProps): React.ReactElement {
     );
 
   return (
-    <section data-testid="issue-activity">
+    <section ref={props.ref} data-testid="issue-activity">
       <h2 className="mb-1.5 font-semibold text-[15px]">Activity</h2>
       {groups.length === 0 && props.live === null ? (
         <p className="text-muted-foreground text-sm">Nothing has happened on this issue yet.</p>

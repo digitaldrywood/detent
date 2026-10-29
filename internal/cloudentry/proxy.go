@@ -289,9 +289,21 @@ func (s *Service) proxy(c echo.Context) error {
 	if request.Header.Get(echo.HeaderAuthorization) != "" {
 		hash, err := keyBearer(c)
 		if err != nil {
+			if strings.HasSuffix(request.URL.Path, "/mcp") {
+				return s.oauthChallenge(c)
+			}
 			return keyError(c, err)
 		}
-		key, err := s.activeAccessKey(ctx, hash)
+		var key accessKey
+		if strings.HasSuffix(request.URL.Path, "/mcp") {
+			key, err = s.activeMCPKey(ctx, hash)
+			_, token, _ := strings.Cut(request.Header.Get(echo.HeaderAuthorization), " ")
+			if (errors.Is(err, sql.ErrNoRows) || errors.Is(err, errNoSession)) && strings.HasPrefix(token, oauthAccessPrefix) {
+				return s.oauthChallenge(c)
+			}
+		} else {
+			key, err = s.activeAccessKey(ctx, hash)
+		}
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return keyError(c, err)
 		}
@@ -300,7 +312,7 @@ func (s *Service) proxy(c echo.Context) error {
 			if err != nil {
 				return keyError(c, err)
 			}
-			if err := s.recordKeyUse(ctx, key.ID, organization.ID); err != nil {
+			if err := s.recordCredentialUse(ctx, key, organization.ID); err != nil {
 				return keyError(c, err)
 			}
 			verification = "key"
@@ -311,7 +323,10 @@ func (s *Service) proxy(c echo.Context) error {
 		if err != nil {
 			defer s.logProxied(c, organization.ID, verification, started)
 			if c.Get("readable_url") == true {
-				return readableNotFound(c)
+				return s.readableSignIn(c, organization, status)
+			}
+			if status == http.StatusUnauthorized && strings.HasSuffix(request.URL.Path, "/mcp") {
+				return s.oauthChallenge(c)
 			}
 			return s.browserFailure(c, organization.ID, status)
 		}
@@ -412,7 +427,8 @@ func (s *Service) proxy(c echo.Context) error {
 			if !static || !tenantCachePolicy(response) {
 				response.Header.Set("Cache-Control", "no-store")
 			}
-			response.Header.Set("Content-Security-Policy", contentSecurity)
+			c.Response().Header().Set("Content-Security-Policy", s.archiveContentSecurity(c))
+			response.Header.Del("Content-Security-Policy")
 			return nil
 		},
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {

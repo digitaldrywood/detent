@@ -64,7 +64,7 @@ func checkDoctorScheduleOwnership(
 
 func defaultDoctorScheduleOwnership(ctx context.Context, cfg workflowconfig.Config) (scheduleowner.Status, error) {
 	coordinationEndpoint := ""
-	if cfg.Tracker.Kind == workflowconfig.TrackerGitHub || cfg.Tracker.Kind == workflowconfig.TrackerGitHubLocal {
+	if cfg.Tracker.Kind == workflowconfig.TrackerGitHub {
 		coordinationEndpoint = cfg.Tracker.Endpoint
 	}
 	ownership := cfg.ScheduleOwnership.Normalized(cfg.Tracker.Repository, coordinationEndpoint)

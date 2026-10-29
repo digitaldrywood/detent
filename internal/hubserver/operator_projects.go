@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/projecticon"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -33,7 +34,7 @@ func projectToolScope(name string, read bool) apikey.Scope {
 		return apikey.ScopeRead
 	}
 	switch name {
-	case "apply_local_project_policy", "resume_local_project", "drain_local_project", "detach_local_project", "command_git_hub_batch", "create_native_project", "create_hosted_project", "update_project_integration", "bind_native_repository", "cutover_project", "approve_project_policy", "revoke_project_policy", "remove_project_secret", "import_sprite_usage":
+	case "apply_local_project_policy", "resume_local_project", "drain_local_project", "detach_local_project", "command_git_hub_batch", "create_native_project", "create_hosted_project", "rename_project", "set_project_icon", "set_organization_logo", "update_project_integration", "bind_native_repository", "cutover_project", "approve_project_policy", "revoke_project_policy", "remove_project_secret", "import_sprite_usage", operatortool.UpdateSpritePool, operatortool.UpdateProjectSpriteAllocation:
 		return apikey.ScopeAdmin
 	}
 	return apikey.ScopeWrite
@@ -54,6 +55,9 @@ func (e hubProjectExecutor) ListTools(ctx context.Context) ([]operatortool.Defin
 			continue
 		}
 		requirement := operatortool.Requirement{Scope: projectToolScope(d.Name, d.Annotations.ReadOnly)}
+		if d.Name == "set_organization_logo" {
+			requirement.OrganizationWide = true
+		}
 		if d.Name == "resume_local_project" {
 			requirement.ResourceKind = "runners"
 		}
@@ -72,6 +76,7 @@ func (e hubProjectExecutor) ListTools(ctx context.Context) ([]operatortool.Defin
 	return defs, nil
 }
 func (e hubProjectExecutor) Execute(ctx context.Context, call operatortool.Call) (result operatortool.Result, resultErr error) {
+	ctx = e.service.database.policyContext(ctx)
 	d, known := operatortool.Lookup(call.Name)
 	if !known {
 		return result, operatortool.ErrUnknownTool
@@ -138,12 +143,77 @@ func (e hubProjectExecutor) Execute(ctx context.Context, call operatortool.Call)
 		}
 		e.AuditAction(ctx, chatpkg.Action{Mutation: m}, outcome)
 	}()
+	if call.Name == "rename_project" {
+		var args operatortool.RenameProjectArguments
+		if err := operatortool.DecodeProjectArguments(call.Arguments, &args); err != nil {
+			return result, err
+		}
+		if args.OrganizationID != connection.Identity.OrganizationID {
+			return result, operatortool.ErrAccessDenied
+		}
+		raw, err := json.Marshal(operatortool.ProjectRequest[operatortool.RenameProjectInput]{ProjectID: args.ProjectID, RequestID: args.RequestID, Input: operatortool.RenameProjectInput{Name: args.Name, ExpectedRevision: args.ExpectedRevision}})
+		if err != nil {
+			return result, err
+		}
+		call.Arguments = raw
+	}
+	if call.Name == "set_organization_logo" {
+		var args operatortool.SetOrganizationLogoArguments
+		if err := operatortool.DecodeProjectArguments(call.Arguments, &args); err != nil {
+			return result, err
+		}
+		if args.OrganizationID != connection.Identity.OrganizationID {
+			return result, operatortool.ErrAccessDenied
+		}
+		if args.Remove && len(args.Content) != 0 {
+			return result, operatortool.ErrInvalidArguments
+		}
+		if !args.Remove {
+			content, err := projecticon.Normalize(args.Content)
+			if err != nil {
+				return result, operatortool.ErrInvalidArguments
+			}
+			args.Content = content
+		}
+		raw, err := json.Marshal(operatortool.ProjectRequest[operatortool.SetOrganizationLogoInput]{RequestID: args.RequestID, Input: operatortool.SetOrganizationLogoInput{Content: args.Content, Remove: args.Remove, ExpectedRevision: args.ExpectedRevision}})
+		if err != nil {
+			return result, err
+		}
+		call.Arguments = raw
+	}
+
+	if call.Name == "set_project_icon" {
+		var args operatortool.SetProjectIconArguments
+		if err := operatortool.DecodeProjectArguments(call.Arguments, &args); err != nil {
+			return result, err
+		}
+		if args.OrganizationID != connection.Identity.OrganizationID {
+			return result, operatortool.ErrAccessDenied
+		}
+		if args.Icon.Kind == "image" {
+			normalized, err := projecticon.Normalize(args.Content)
+			if err != nil {
+				return result, operatortool.ErrInvalidArguments
+			}
+			args.Content = normalized
+		}
+		raw, err := json.Marshal(operatortool.ProjectRequest[operatortool.SetProjectIconInput]{ProjectID: args.ProjectID, RequestID: args.RequestID, Input: operatortool.SetProjectIconInput{Icon: args.Icon, Content: args.Content, ExpectedRevision: args.ExpectedRevision}})
+		if err != nil {
+			return result, err
+		}
+		call.Arguments = raw
+	}
+
 	var selector struct {
 		ProjectID string          `json:"project_id"`
 		RequestID string          `json:"request_id"`
 		Input     json.RawMessage `json:"input"`
 	}
-	if err := operatortool.DecodeProjectArguments(call.Arguments, &selector); err != nil {
+	selectorErr := operatortool.DecodeProjectArguments(call.Arguments, &selector)
+	if call.Name == "set_project_icon" || call.Name == "set_organization_logo" {
+		selectorErr = json.Unmarshal(call.Arguments, &selector)
+	}
+	if err := selectorErr; err != nil {
 		return result, err
 	}
 	if strings.TrimSpace(selector.RequestID) == "" {
@@ -152,7 +222,7 @@ func (e hubProjectExecutor) Execute(ctx context.Context, call operatortool.Call)
 	if len(selector.Input) == 0 || selector.Input[0] != '{' {
 		return result, &operatortool.RequestError{Code: "invalid_request", Message: "input: must be an object"}
 	}
-	if strings.TrimSpace(selector.ProjectID) == "" && call.Name != "create_native_project" && call.Name != "create_hosted_project" && !operatortool.IsOrganizationModelSelection(call.Name) {
+	if strings.TrimSpace(selector.ProjectID) == "" && call.Name != "create_native_project" && call.Name != "create_hosted_project" && !operatortool.IsOrganizationModelSelection(call.Name) && call.Name != operatortool.UpdateSpritePool && call.Name != "set_organization_logo" {
 		return result, &operatortool.RequestError{Code: "invalid_request", Message: "project_id: is required"}
 	}
 	if (call.Name == "create_native_project" || call.Name == "create_hosted_project") && selector.ProjectID != "" {
@@ -244,6 +314,11 @@ func (e hubProjectExecutor) ExecuteAction(ctx context.Context, action chatpkg.Ac
 	ctx = mutation.WithContext(ctx, action.Mutation)
 	result, err := e.command(ctx, operatortool.Call{Name: string(action.Kind), Arguments: action.Arguments}, projectCommandExecute)
 	if err != nil {
+		if action.Kind == "rename_project" || action.Kind == "set_project_icon" || action.Kind == "set_organization_logo" {
+			if conflict := operatorNativeConflict(err); conflict != nil {
+				return chatpkg.ActionExecution{}, conflict
+			}
+		}
 		return chatpkg.ActionExecution{}, projectToolError(err)
 	}
 	if err := e.authorizeCreatedProjectResult(ctx, string(action.Kind), result, chatpkg.ActionSucceeded); err != nil {
@@ -359,6 +434,57 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 			return raw, err
 		}
 		return s.importSpriteUsageCommand(ctx, scope, request)
+	case operatortool.UpdateSpritePool:
+		r, err := projectCommandInput[operatortool.SpritePoolInput](call.Arguments)
+		if err != nil {
+			return nil, err
+		}
+		if !canManageProjectSecrets(scope.credential) {
+			return nil, operatortool.ErrAccessDenied
+		}
+		if mode == projectCommandPreview {
+			return nil, nil
+		}
+		scope.project = tracker.ProjectID(r.ProjectID)
+		command := spritePoolCommand{
+			Mutation:           tracker.Mutation{IdempotencyKey: r.RequestID},
+			spritePoolSettings: spritePoolSettings{Placement: r.Input.Placement, MinRunners: r.Input.MinRunners, MaxRunners: r.Input.MaxRunners, IdleSeconds: r.Input.IdleSeconds, Revision: r.Input.Revision},
+			Bootstrap:          r.Input.Bootstrap, IsolationTier: r.Input.IsolationTier, ShareIdleCapacity: r.Input.ShareIdleCapacity,
+		}
+		if mode == projectCommandReplay {
+			scope.project, scope.requireHostedAdmin = "", true
+			raw, _, err := s.nativeCommandReplay(ctx, scope, "set_sprite_pool", r.RequestID, command)
+			return raw, err
+		}
+		view, err := s.setSpritePoolCommand(ctx, scope, command)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(view)
+	case operatortool.UpdateProjectSpriteAllocation:
+		r, err := projectCommandInput[operatortool.SpriteAllocationInput](call.Arguments)
+		if err != nil {
+			return nil, err
+		}
+		if !canManageProjectSecrets(scope.credential) {
+			return nil, operatortool.ErrAccessDenied
+		}
+		if mode == projectCommandPreview {
+			return nil, nil
+		}
+		scope.project, scope.requireHostedAdmin = tracker.ProjectID(r.ProjectID), true
+		request := projectSpriteAllocationRequest{Mutation: tracker.Mutation{IdempotencyKey: r.RequestID}, ExpectedRevision: r.Input.ExpectedRevision, DesiredCount: r.Input.DesiredCount}
+		options := nativeCommandOptions{OperationID: projectOperationID(scope, "PUT", "/sprite-pool/allocation"), Feature: "collaboration"}
+		if mode == projectCommandReplay {
+			raw, _, err := s.nativeCommandReplay(ctx, scope, options.OperationID, r.RequestID, request)
+			return raw, err
+		}
+		raw, err := s.executeNativeMutation(ctx, scope, options, request.Mutation, request, updateProjectSpriteAllocation(request))
+		if err != nil {
+			return nil, err
+		}
+		s.startSpritePoolForQueue(scope)
+		return raw, nil
 	case "create_native_project":
 		if s.config.Hosted != nil {
 			return nil, errProjectServiceUnavailable
@@ -411,6 +537,54 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 		}
 		input = request
 		operation = s.saveOnboardingOperation(request)
+	case "rename_project":
+		r, err := projectCommandInput[operatortool.RenameProjectInput](call.Arguments)
+		if err != nil {
+			return nil, err
+		}
+		projectID, requestID = r.ProjectID, r.RequestID
+		request := renameProjectRequest{Mutation: tracker.Mutation{IdempotencyKey: r.RequestID}, Name: r.Input.Name, ExpectedRevision: r.Input.ExpectedRevision}
+		input = request
+		operation = s.renameProjectOperation(request)
+	case "set_organization_logo":
+		if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeAdmin, OrganizationWide: true}); err != nil {
+			return nil, err
+		}
+		r, err := projectCommandInput[operatortool.SetOrganizationLogoInput](call.Arguments)
+		if err != nil {
+			return nil, err
+		}
+		if r.ProjectID != "" || !canManageProjectSecrets(scope.credential) {
+			return nil, operatortool.ErrAccessDenied
+		}
+		scope.project, scope.requireHostedAdmin = "", true
+		if mode == projectCommandPreview {
+			return nil, nil
+		}
+		request := setOrganizationLogoRequest{Mutation: tracker.Mutation{IdempotencyKey: r.RequestID}, Content: r.Input.Content, Remove: r.Input.Remove, ExpectedRevision: r.Input.ExpectedRevision}
+		if mode == projectCommandReplay {
+			raw, _, err := s.nativeCommandReplay(ctx, scope, organizationLogoOperationID(scope), r.RequestID, request)
+			return raw, err
+		}
+		return s.setOrganizationLogoCommand(ctx, scope, request)
+
+	case "set_project_icon":
+		r, err := projectCommandInput[operatortool.SetProjectIconInput](call.Arguments)
+		if err != nil {
+			return nil, err
+		}
+		if mode == projectCommandPreview {
+			return nil, nil
+		}
+		scope.project = tracker.ProjectID(r.ProjectID)
+		scope.requireHostedAdmin = true
+		request := setProjectIconRequest{Mutation: tracker.Mutation{IdempotencyKey: r.RequestID}, Icon: r.Input.Icon, Content: r.Input.Content, ExpectedRevision: r.Input.ExpectedRevision}
+		if mode == projectCommandReplay {
+			raw, _, err := s.nativeCommandReplay(ctx, scope, projectOperationID(scope, "PUT", "/icon"), r.RequestID, request)
+			return raw, err
+		}
+		return s.setProjectIconCommand(ctx, scope, request)
+
 	case "update_project_integration":
 		r, err := projectCommandInput[operatortool.IntegrationInput](call.Arguments)
 		if err != nil {
@@ -471,7 +645,7 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 			if err != nil {
 				return nil, err
 			}
-			return s.database.approvePolicyInTx(ctx, tx, policyScope, scope.credential.ID, policy.Change{ExpectedID: r.Input.ExpectedID, ObservedPolicyID: r.Input.ObservedPolicyID, Policy: r.Input.Policy})
+			return s.database.approvePolicyInTx(ctx, tx, policyScope, scope.credential.ID, policy.Change{ExpectedID: r.Input.ExpectedID, ObservedPolicyID: r.Input.ObservedPolicyID, Policy: r.Input.Policy}, policyLanding{})
 		}
 	case "revoke_project_policy":
 		r, err := projectCommandInput[operatortool.PolicyRevokeInput](call.Arguments)
@@ -568,6 +742,8 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 	suffix := map[string]string{"command_git_hub_batch": "/onboarding/issue-intake", "create_native_project": "", "create_hosted_project": "", "save_onboarding": "/onboarding", "update_project_integration": "/integration", "start_git_hub_import": "/imports", "cutover_project": "/integration/cutover", "approve_project_policy": "/policy", "revoke_project_policy": "/policy", "remove_project_secret": "/secrets/" + flySpritesToken, "project_native_summary": "/work-items/" + resourceID + "/projection"}[call.Name]
 	method := "POST"
 	switch call.Name {
+	case "rename_project":
+		method = "PATCH"
 	case "save_onboarding", "update_project_integration", "approve_project_policy":
 		method = "PUT"
 	case "revoke_project_policy", "remove_project_secret":

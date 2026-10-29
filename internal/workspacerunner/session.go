@@ -1,5 +1,5 @@
-// Package workspacerunner is the runner's half of a workspace session
-// (decisions sections 18.1, 18.2, 18.4 and 18.12): it claims a worktree, binds
+// Package workspacerunner is the runner's half of a workspace session:
+// it claims a worktree, binds
 // to the hub, heartbeats, holds the relay open, serves the read-only files
 // channel, runs the project's actions and serves the git channel for as long
 // as the workspace lives.
@@ -72,27 +72,27 @@ type Config struct {
 	// Shell is the shell an action's command runs through, and it is the
 	// project's configured one -- the same shell its workspace hooks already
 	// use -- rather than a guess made here. An action's command is shell syntax
-	// by construction (section 18.12), so a command an author wrote and tested
+	// by construction, so a command an author wrote and tested
 	// against their project's shell must not be handed to a different one
 	// because the runner picked the platform default. An empty value takes
 	// shell.Default(), which is the only honest answer when the project never
 	// said.
 	Shell string
-	// Reporter records project action runs with the hub (section 18.12). It is
+	// Reporter records project action runs with the hub. It is
 	// optional: a runner with no reporter still runs the actions, because the
 	// command's effect on the worktree is the point and the run row is how a
 	// person watches it happen. A nil reporter loses the watching, not the
 	// worktree.
 	Reporter ActionRunReporter
 	// Support is what this runner offers, which today is only whether it serves
-	// a terminal at all (section 18.3). The zero value serves none, so a caller
+	// a terminal at all. The zero value serves none, so a caller
 	// that has not thought about handing out a shell does not hand one out.
 	Support Support
 	// Hostname is the host this runner is on. It is reported on every
 	// heartbeat because the header's Open picker needs it: a cursor://file/…
 	// link only reaches a worktree on the reader's own machine, so the client
 	// compares this against its own host and disables the items that name
-	// somewhere else (section 18.13). It is also half the runner's committer
+	// somewhere else. It is also half the runner's committer
 	// identity, so a commit says which machine made it.
 	Hostname string
 }
@@ -100,12 +100,12 @@ type Config struct {
 // Support is what this runner has been asked and built to serve.
 //
 // It exists because the terminal is the first surface whose availability is not
-// settled by the build alone. A PTY needs a platform that has one (section
-// 18.3's contract is written in SIGHUP, process groups and controlling
+// settled by the build alone. A PTY needs a platform that has one (the terminal contract is
+// written in SIGHUP, process groups and controlling
 // terminals, which Windows does not have), and it needs a runner operator
 // willing to hand their account's shell to a person. The organization's own
-// switch is workspaces.terminal.enabled and lives on the hub, where section
-// 18.3 puts it; this is the runner's half of the same answer.
+// switch is workspaces.terminal.enabled and lives on the hub, where the terminal contract
+// puts it; this is the runner's half of the same answer.
 type Support struct {
 	// Terminal is whether this runner offers the terminal channel at all. It is
 	// ANDed with what the platform can actually do, so a caller cannot turn on
@@ -118,7 +118,7 @@ type Support struct {
 //
 // The terminal follows the platform: where a PTY exists the runner implements
 // the channel and reports it, and whether anybody may open one is the hub's
-// decision, which section 18.3 makes an organization setting rather than a
+// decision, which the terminal contract makes an organization setting rather than a
 // machine setting. A runner that wants no part of it passes a Support of its
 // own, and then the capability is never reported and the workspace is never
 // claimed for a terminal.
@@ -142,9 +142,9 @@ func (s Support) TerminalIsolation() string {
 // session, because whether the git or terminal channel can actually be served
 // is a fact about one worktree rather than about the runner.
 //
-// The files, exec, git and terminal channels are implemented (section 18.11
-// step 2: "files first, then terminal"; section 18.12's project actions;
-// section 18.13's git action group). Reporting diff or preview here would make
+// The files, exec, git and terminal channels are implemented (sequencing
+// step 2: "files first, then terminal"; the project actions; the git action
+// group). Reporting diff or preview here would make
 // the hub hand this runner workspaces it would then have to refuse frame by
 // frame, which is worse for the person than never being offered them: an
 // unclaimed workspace fails with no_runner and says so, while a claimed one
@@ -298,16 +298,15 @@ func (s *Session) Run(ctx context.Context) (resultErr error) {
 		// either: the bind is what returns the checkout instructions, so the
 		// worktree does not exist until after it.
 		//
-		// Reporting the build's answer here is also the honest one. Section
-		// 18.1 puts the "reports every capability in requires" gate on the
+		// Reporting the build's answer here is also the honest one. The workspace session contract
+		// puts the "reports every capability in requires" gate on the
 		// claim, against the runner's own heartbeat, which is a build-level
 		// report; the bind check is the same brake for the same kind of fact,
 		// and it keeps working. What narrows it to this worktree is the ready
 		// heartbeat below, which runs immediately after workspacegit.Open and
 		// before the workspace leaves starting -- so a worktree that turns out
 		// not to be a repository is reported without the capability rather
-		// than failed, and the header disables its git group with that reason
-		// (section 18.12).
+		// than failed, and the header disables its git group with that reason.
 		WorkspaceIdentity: s.config.Identity, Capabilities: s.served(),
 		Isolation: s.config.Support.TerminalIsolation(),
 	})
@@ -420,11 +419,11 @@ func (s *Session) Run(ctx context.Context) (resultErr error) {
 	}
 
 	// A runner that cannot open terminals is not a failed workspace either. The
-	// files, exec and git channels serve it perfectly well, and section 18.3
+	// files, exec and git channels serve it perfectly well, and the terminal contract
 	// says in so many words what a runner that cannot provide the level asked
 	// for does: it reports the capability it can serve and the card stays
 	// disabled with the reason. A read-only workspace opens no service at all,
-	// because a terminal is refused there whatever the runner can do (18.1).
+	// because a terminal is refused there whatever the runner can do.
 	if s.config.Support.Terminal && !bound.Checkout.ReadOnly {
 		terminal, err := workspaceterminal.New(sessionCtx, path, s.config.Shell, s.config.Support.TerminalIsolation(), s.logger)
 		if err != nil {
@@ -434,7 +433,7 @@ func (s *Session) Run(ctx context.Context) (resultErr error) {
 		}
 	}
 	// Every PTY this session opens is killed on the way out, whatever ended it.
-	// Section 18.3 lists four endings -- a close, a resume window that ran out,
+	// The terminal contract lists four endings -- a close, a resume window that ran out,
 	// a lost lease and the workspace closing -- and this is the last of them:
 	// the worktree is about to be released, and a shell still living in it
 	// would hold a directory the runner is trying to remove.
@@ -566,7 +565,7 @@ func (s *Session) capabilities() workspacesession.Capabilities {
 	// A terminal this worktree cannot actually open is not a terminal. The
 	// service is nil when the platform has none, when the operator asked for
 	// none, or when the organization requires an isolation level this runner
-	// cannot provide -- and section 18.3 is explicit that the last of those is
+	// cannot provide -- and the terminal contract is explicit that the last of those is
 	// reported as a missing capability with a reason rather than as a workspace
 	// that fails, so the card stays disabled and says why.
 	set.Terminal = set.Terminal && s.terminal != nil
@@ -602,7 +601,7 @@ func (s *Session) markStale() {
 	// fencing token: a generation that no longer owns the worktree stops
 	// touching it, and a running command is the loudest way to touch it.
 	s.cancelRuns(workspacesession.RunReasonLeaseLost)
-	// A shell is the same fact held open. Section 18.3 kills the PTY when the
+	// A shell is the same fact held open. The terminal contract kills the PTY when the
 	// lease is lost, for the reason the runs are cancelled: a person typing
 	// into a worktree this generation no longer owns is the failure the fencing
 	// token exists to prevent.
@@ -697,7 +696,7 @@ func (s *Session) serve(ctx context.Context) error {
 		// The socket is published before the read loop starts, because a PTY
 		// opened on an earlier one is still producing output and this is where
 		// it now has to go. Cancelling the resume windows in the same breath is
-		// the redial half of section 18.2: the hub still holds those streams,
+		// the redial half of the relay protocol: the hub still holds those streams,
 		// so the shells behind them are still the ones their readers were
 		// looking at.
 		s.setSocket(socket)
@@ -710,7 +709,7 @@ func (s *Session) serve(ctx context.Context) error {
 		// has nowhere to arrive and nobody asked for their writes to continue.
 		s.cancelRuns(workspacesession.RunReasonStreamClosed)
 		// A terminal is the one thing on this session that a dropped socket
-		// does not end. Section 18.2 gives 60 seconds to come back and says the
+		// does not end. The relay protocol gives 60 seconds to come back and says the
 		// runner keeps a disconnected PTY alive exactly that long, so the
 		// shells are timed rather than killed and a redial inside the window
 		// finds them still there.
@@ -769,11 +768,11 @@ func (s *Session) handle(ctx context.Context, socket *websocket.Conn, frame work
 		// The person ended this stream, and a run on it ends with them: the
 		// command was started for a reader who is no longer there, and a
 		// process that outlived its stream would keep writing to a worktree
-		// nobody is watching (section 18.12).
+		// nobody is watching.
 		s.cancelRun(frame.Stream, workspacesession.RunReasonStreamClosed)
 		// A terminal on this stream ends with it, and that covers two different
 		// arrivals: the person's own close, and the close the hub's sweep sends
-		// once a parked stream has gone unresumed for the window (section 18.2).
+		// once a parked stream has gone unresumed for the window.
 		// Neither is distinguishable from here and neither should be: in both
 		// the reader is gone for good and the shell has nobody left.
 		s.closeTerminal(frame.Stream)
@@ -833,7 +832,7 @@ func (s *Session) handleFiles(ctx context.Context, socket *websocket.Conn, frame
 	s.answer(ctx, socket, answer)
 }
 
-// handleGit answers one frame on the git channel (section 18.12).
+// handleGit answers one frame on the git channel.
 //
 // It is the only channel that writes, so it has two gates the files channel
 // does not: the checkout's own rules, and an actor the commit is authored as.
@@ -912,7 +911,7 @@ func (s *Session) handleGit(ctx context.Context, socket *websocket.Conn, frame w
 // refuseWrite reports whether a git write is allowed on this checkout, and the
 // sentence that goes with a refusal.
 //
-// Section 18.1 states two rules, and they are written out separately here even
+// The workspace session contract states two rules, and they are written out separately here even
 // though today the first implies the second. A checkout is read-only while its
 // attempt runs, and a retained attempt worktree is the model's own working copy
 // rather than a copy of it. A future checkout that separates the two -- a
@@ -932,7 +931,7 @@ func (s *Session) refuseWrite() (string, bool) {
 
 // commitAuthor reads the person a commit is authored as from the hub's stamp.
 //
-// The actor is the hub's to write and never the client's (section 18.2), which
+// The actor is the hub's to write and never the client's, which
 // is the only reason it can be trusted as an author at all: a client that could
 // name its own author could attribute a commit to anybody.
 func commitAuthor(frame workspacesession.Frame) (workspacegit.Identity, bool) {
@@ -1013,7 +1012,7 @@ func (s *Session) serveFiles(ctx context.Context, frame workspacesession.Frame, 
 		}
 		answer.Type, answer.Payload = workspacesession.TypeFilesContent, payload
 	case workspacesession.TypeFilesWatch:
-		// Watching is optional in section 18.4: a runner that cannot do it
+		// Watching is optional in the Files contract: a runner that cannot do it
 		// says so and the client refreshes on focus instead. Filesystem
 		// notification is not implemented in this slice, and claiming it
 		// would leave a reader believing a stale tree is current.
@@ -1121,7 +1120,7 @@ func (s *Session) serveExec(
 
 	// The command is the one the hub relayed with this run, and the runner has
 	// no action store of its own to check it against. What bounds it is who may
-	// write an action and where it runs, which is section 18.12's own answer to
+	// write an action and where it runs, which is the project actions contract's own answer to
 	// the same question about the hub.
 	result, err := s.exec.Run(runCtx, request.Command, emit)
 	switch {
@@ -1327,7 +1326,7 @@ func (s *Session) answer(ctx context.Context, socket *websocket.Conn, frame work
 		return
 	}
 	if len(encoded) > workspacesession.MaxFrameBytes {
-		// Chunking a payload the hub would refuse whole is section 18.2's own
+		// Chunking a payload the hub would refuse whole is the relay protocol's own
 		// answer; until the channels that produce oversized payloads exist,
 		// refusing is better than sending something the hub will drop.
 		s.answerTooLarge(ctx, socket, frame)
@@ -1376,7 +1375,7 @@ func (s *Session) currentSocket() *websocket.Conn {
 //
 // It is returned rather than swallowed so a PTY's output loop can decide what
 // to do about it, and what it decides is to stop forwarding and leave the shell
-// running: the reader has 60 seconds to come back (section 18.2), and a shell
+// running: the reader has 60 seconds to come back, and a shell
 // killed because one span had nowhere to go would make that window a lie.
 var errNoRelaySocket = errors.New("workspacerunner: no relay socket is attached")
 

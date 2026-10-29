@@ -101,7 +101,5 @@ wait is a lower bound and its final hold duration is unknown. Older events with
 no run ID cannot be attributed and are counted separately.
 
 The lock scope is one Git common directory on a host, shared by its worktrees;
-it does not serialize unrelated repositories. See
-[validation throughput reporting](../../docs/diagnosis.md#validation-lock-cost)
-for per-run records, time-weighted queue depth, and the host/day share of
-observed dispatched time. No live history is backfilled from PR descriptions.
+it does not serialize unrelated repositories. No live history is backfilled
+from PR descriptions.

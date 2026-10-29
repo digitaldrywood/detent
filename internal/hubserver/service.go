@@ -33,6 +33,7 @@ const (
 )
 
 type Service struct {
+	dashboard               *dashboardDelivery
 	releaseNotes            []releasenotes.Build
 	activityDurations       activityDurationCache
 	issuePages              nativeIssuePageCache
@@ -68,9 +69,16 @@ type Service struct {
 	spriteWakeMu            sync.Mutex
 	spriteWakes             map[spriteWakeKey]*spriteLifecyclePass
 	spriteWakeWork          sync.WaitGroup
+	secretRewrapOnce        sync.Once
+	secretRewrapReady       chan struct{}
+	secretRewrapDone        chan struct{}
 	workerCancel            context.CancelFunc
 	workerDone              chan struct{}
 	boardRefresh            chan struct{}
+	boardRefreshCursor      string
+	boardRetentionScope     nativeScope
+	lastNativeCleanup       time.Time
+	githubBatchCursor       tracker.ProjectID
 	workerStopOnce          sync.Once
 	reconcileCancel         context.CancelFunc
 	reconcileDone           chan struct{}
@@ -81,6 +89,7 @@ type Service struct {
 	closeOnce               sync.Once
 	closeErr                error
 	clientBuild             appClientBuild
+	localOrganization       string
 	workspaces              *workspaceService
 }
 
@@ -115,6 +124,7 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
+	ctx = database.policyContext(ctx)
 	database.configureRuntimePublication(cfg)
 	if err := database.checkProjectSecretKeys(ctx, cfg.SecretKeys); err != nil {
 		return nil, errors.Join(err, database.Close())
@@ -149,11 +159,22 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 		spriteWakes:        make(map[spriteWakeKey]*spriteLifecyclePass),
 		workerCancel:       workerCancel,
 		workerDone:         make(chan struct{}),
+		secretRewrapReady:  make(chan struct{}),
+		secretRewrapDone:   make(chan struct{}),
 		boardRefresh:       make(chan struct{}, 1),
 		reconcileCancel:    reconcileCancel,
 		reconcileDone:      make(chan struct{}),
 		clientBuild:        conversationClientIdentity(conversationClientFS, cfg.Version, cfg.now()),
 		pullRequests:       newPullRequestCache(),
+	}
+	workerContext = service.contentContext(workerContext)
+	reconcileContext = service.contentContext(reconcileContext)
+	if cfg.Hosted == nil {
+		if err := database.reader.QueryRowContext(ctx, "SELECT id FROM organizations WHERE local=1").Scan(&service.localOrganization); err != nil {
+			workerCancel()
+			reconcileCancel()
+			return nil, errors.Join(err, database.Close())
+		}
 	}
 	service.wakeSpriteRunnersAfter = func(scope nativeScope, result json.RawMessage) {
 		service.scheduleSpriteWake(workerContext, scope, result)
@@ -189,7 +210,7 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 			return nil, errors.Join(err, database.Close())
 		}
 	}
-	e.Use(service.measureRequests)
+	e.Use(service.measureRequests, service.policyCacheMiddleware, service.changeContentMiddleware, service.runDetailMiddleware)
 	service.registerRoutes(e)
 	if service.conversations != nil {
 		if err := service.conversations.start(ctx); err != nil {
@@ -216,6 +237,11 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 			return nil, errors.Join(err, mcpErr, database.Close())
 		}
 	}
+	if cfg.SecretKeys != nil && !cfg.CredentialMaintenance {
+		go service.runSecretRewrap(workerContext)
+	} else {
+		close(service.secretRewrapDone)
+	}
 	if cfg.CredentialMaintenance {
 		workerCancel()
 		reconcileCancel()
@@ -234,6 +260,8 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	service.startHostedBilling()
 	service.startHealthDetector()
 	service.startIssueMailer()
+	service.dashboard = newDashboardDelivery(service)
+	service.dashboard.start()
 	return service, nil
 }
 
@@ -352,7 +380,10 @@ func listenerAddressLoopback(address string) bool {
 }
 
 func (s *Service) Handler() http.Handler {
-	return s.echo
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.signalSecretRewrap()
+		s.echo.ServeHTTP(w, r)
+	})
 }
 
 func (s *Service) Serve(listener net.Listener) error {
@@ -362,7 +393,7 @@ func (s *Service) Serve(listener net.Listener) error {
 	if listener == nil {
 		return errors.New("hub listener is required")
 	}
-	err := s.echo.Server.Serve(listener)
+	err := s.echo.Server.Serve(secretRewrapListener{Listener: listener, serving: s.signalSecretRewrap})
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}
@@ -379,7 +410,7 @@ func (s *Service) ServeTLS(listener net.Listener, certificateFile string, keyFil
 	if listener == nil {
 		return errors.New("hub listener is required")
 	}
-	err := s.echo.Server.ServeTLS(listener, strings.TrimSpace(certificateFile), strings.TrimSpace(keyFile))
+	err := s.echo.Server.ServeTLS(secretRewrapListener{Listener: listener, serving: s.signalSecretRewrap}, strings.TrimSpace(certificateFile), strings.TrimSpace(keyFile))
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}
@@ -395,6 +426,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	}
 	s.ready.Store(false)
 	s.notifications.closeAll()
+	s.dashboard.stop()
 	if s.conversations != nil {
 		s.conversations.stop()
 	}
@@ -433,6 +465,7 @@ func (s *Service) CloseContext(ctx context.Context) error {
 	s.closeOnce.Do(func() {
 		s.ready.Store(false)
 		s.notifications.closeAll()
+		s.dashboard.stop()
 		var mcpErr error
 		if s.mcpHTTP != nil {
 			mcpErr = s.mcpHTTP.Shutdown(ctx)
@@ -481,6 +514,7 @@ func (s *Service) runGitHubWebhookMaintenance(ctx context.Context) {
 			s.maintainNativeBoard(ctx)
 		case <-ticker.C:
 			s.maintainNativeBoard(ctx)
+			s.maintainChangeSources(ctx)
 			now := s.config.now()
 			retryAnalytics := now.Sub(lastAnalyticsRetry) >= time.Hour
 			s.maintainAnalyticsRollups(ctx, now, retryAnalytics)
@@ -492,6 +526,9 @@ func (s *Service) runGitHubWebhookMaintenance(ctx context.Context) {
 					s.config.Logger.Warn("optimize hub database", "error", err)
 				}
 				lastOptimize = now
+			}
+			if err := s.convertLegacyStorage(ctx, now); err != nil && !errors.Is(err, context.Canceled) {
+				s.config.Logger.Warn("convert legacy storage", "error", err)
 			}
 			s.maintainGitHubWebhooks(ctx)
 			if err := s.maintainGitHubBatches(ctx); err != nil && !errors.Is(err, context.Canceled) {
@@ -510,8 +547,15 @@ func (s *Service) maintainGitHubWebhooks(ctx context.Context) {
 		s.config.Logger.Warn("purge GitHub webhook payloads", "error", err)
 	}
 	s.maintainSpritePools(ctx)
-	if err := s.maintainNativeRetention(ctx, now); err != nil && !errors.Is(err, context.Canceled) {
-		s.config.Logger.Warn("maintain native retention", "error", err)
+	var retentionErr error
+	if s.lastNativeCleanup.IsZero() || now.Sub(s.lastNativeCleanup) >= nativeCleanupInterval {
+		s.lastNativeCleanup = now
+		retentionErr = s.maintainNativeRetention(ctx, now)
+	} else {
+		retentionErr = s.maintainNativeBackfills(ctx)
+	}
+	if retentionErr != nil && !errors.Is(retentionErr, context.Canceled) {
+		s.config.Logger.Warn("maintain native retention", "error", retentionErr)
 	}
 }
 
@@ -522,6 +566,7 @@ func (s *Service) stopGitHubWebhookMaintenance() error {
 	s.workerStopOnce.Do(func() {
 		s.workerCancel()
 		<-s.workerDone
+		<-s.secretRewrapDone
 	})
 	return nil
 }

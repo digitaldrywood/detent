@@ -1,8 +1,8 @@
-// The shell's keyboard shortcuts (design inventory B.13 rule 4 and B.14).
+// The shell's keyboard shortcuts.
 //
 // Three: `/` focuses the sidebar search, `Mod+Shift+N` starts a new chat in
 // the current project context, and `c` opens the New issue dialog. The last
-// two deliberately have no button of their own — B.13 allows a shortcut to
+// two deliberately have no button of their own — a shortcut is allowed to
 // duplicate a create action, and each fires exactly the same handler as its
 // button (the compose pencil, and the board's New issue button).
 //
@@ -36,7 +36,7 @@ export const SEARCH_KEYSHORTCUTS = "/";
 /**
  * True when the event came from somewhere the reader is typing: a text field,
  * a `contenteditable` region, or a control that owns its own key handling. A
- * single-key shortcut must not steal a keystroke from any of them (B.14).
+ * single-key shortcut must not steal a keystroke from any of them.
  */
 export function isEditableTarget(target: unknown): boolean {
   if (target === null || target === undefined) return false;

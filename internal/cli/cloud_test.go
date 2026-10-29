@@ -89,7 +89,7 @@ func TestReadCloudConfig(t *testing.T) {
 		wantError  bool
 	}{
 		{name: "valid", body: base, env: map[string]string{"WORKOS_API_KEY": "sk_test", "DETENT_CLOUD_ASSERTION_KEY": seed}},
-		{name: "product App webhook", body: base, env: map[string]string{"WORKOS_API_KEY": "sk_test", "DETENT_CLOUD_ASSERTION_KEY": seed, "DETENT_HUB_GITHUB_WEBHOOK_SECRET": "webhook-secret", "DETENT_HUB_GITHUB_APP_ID": "123", "DETENT_HUB_GITHUB_APP_PRIVATE_KEY": "app-key"}},
+		{name: "product App webhook", body: base, env: map[string]string{"WORKOS_API_KEY": "sk_test", "DETENT_CLOUD_ASSERTION_KEY": seed, "DETENT_HUB_GITHUB_WEBHOOK_SECRET": "webhook-secret", "DETENT_HUB_GITHUB_APP_ID": "123", "DETENT_HUB_GITHUB_APP_PRIVATE_KEY": "app-key", "DETENT_HUB_GITHUB_APP_CLIENT_ID": "app-client", "DETENT_HUB_GITHUB_APP_CLIENT_SECRET": "app-secret"}},
 		{name: "missing signing key", body: base, env: map[string]string{"WORKOS_API_KEY": "sk_test"}, wantError: true},
 		{name: "literal secret rejected", body: base + "signing_key: " + seed + "\n", env: map[string]string{"WORKOS_API_KEY": "sk_test", "DETENT_CLOUD_ASSERTION_KEY": seed}, wantError: true},
 		{name: "attachment secret in YAML rejected", body: base + "attachments:\n  endpoint: https://nyc3.digitaloceanspaces.com\n  region: nyc3\n  bucket: private\n  access_key_id: forbidden\n", env: map[string]string{"WORKOS_API_KEY": "sk_test", "DETENT_CLOUD_ASSERTION_KEY": seed}, wantError: true},
@@ -113,6 +113,9 @@ func TestReadCloudConfig(t *testing.T) {
 			}
 			if err == nil && test.env["DETENT_HUB_GITHUB_APP_ID"] != "" && (config.GitHubApp == nil || config.GitHubApp.AppID != "123" || config.GitHubApp.PrivateKey != "app-key") {
 				t.Fatal("entry App credentials were not read from the environment")
+			}
+			if err == nil && (config.GitHubUserClientID != test.env["DETENT_HUB_GITHUB_APP_CLIENT_ID"] || config.GitHubUserClientSecret != test.env["DETENT_HUB_GITHUB_APP_CLIENT_SECRET"]) {
+				t.Fatal("entry user authorization credentials were not read from the environment")
 			}
 			if err != nil && strings.Contains(err.Error(), seed) {
 				t.Fatal("error exposes the signing key")
@@ -592,6 +595,16 @@ func TestCloudReloadValidatesFileAndPreservesLaunchIdentity(t *testing.T) {
 	config, err := readCloudConfig(path, func(name string) string { return env[name] })
 	if err != nil {
 		t.Fatal(err)
+	}
+	write(strings.Replace(body, "allocation:\n", "allocation:\n  allowed_emails: [member@example.test]\n  allowed_domains: [example.org]\n", 1))
+	allowlisted, err := config.Reload()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(config.RestartSettings, allowlisted.RestartSettings) ||
+		!reflect.DeepEqual(allowlisted.Allocation.AllowedEmails, []string{"member@example.test"}) ||
+		!reflect.DeepEqual(allowlisted.Allocation.AllowedDomains, []string{"example.org"}) {
+		t.Fatal("allowlist reload lost values or changed restart-only settings")
 	}
 	for _, invalid := range []string{body + "unknown_key: true\n", body + "---\npublic_url: https://other.example.test\n", strings.Replace(body, "connected_seconds: 90", "connected_seconds: 0", 1), strings.Replace(body, "client_id: client_example", "client_id: ''", 1)} {
 		write(invalid)

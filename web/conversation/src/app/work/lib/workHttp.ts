@@ -1,3 +1,6 @@
+import { ArchiveUnavailable } from "../../../runtime/archiveDecode.ts";
+import { invalidateArchiveAccess, resolveArchivedResponse } from "../../../runtime/archive.ts";
+import { SavedWorkView, type SavedView, type SavedViewInput } from "./savedViewSchema.ts";
 // Same-origin HTTP for the hub's native work API.
 //
 // A sibling of `runtime/rpc/http.ts` rather than an extension of it: that
@@ -152,6 +155,8 @@ export interface ListWorkItemsInput {
   readonly includeBoard?: boolean;
   readonly open?: boolean | undefined;
   readonly completedWindow?: string;
+  readonly completedFrom?: string;
+  readonly completedTo?: string;
   readonly sort?: "closed";
   readonly archived?: boolean | "all";
   readonly createdBy?: string | undefined;
@@ -160,6 +165,11 @@ export interface ListWorkItemsInput {
 export interface WorkHttp {
   readonly getSourceRecovery: (projectId: string, itemId: string) => Promise<SourceRecovery>;
   readonly transferSource: (input: { projectId: string; itemId: string; key: string; expectedRevision: string; versionId: string; destinationRunnerId: string }) => Promise<SourceRecovery>;
+  readonly listSavedViews: (signal?: AbortSignal) => Promise<{ readonly views: readonly SavedView[] }>;
+  readonly getSavedView: (id: string, signal?: AbortSignal) => Promise<SavedView>;
+  readonly saveView: (input: SavedViewInput, id?: string) => Promise<SavedView>;
+  readonly favoriteView: (id: string, favorite: boolean) => Promise<SavedView>;
+  readonly deleteView: (id: string) => Promise<void>;
   readonly getViewPreference: (projectId: string | null, signal?: AbortSignal) => Promise<{ readonly query: string | null }>;
   readonly setViewPreference: (projectId: string | null, query: string | null) => Promise<{ readonly query: string | null }>;
   readonly origin: string;
@@ -176,7 +186,7 @@ export interface WorkHttp {
   readonly listIssuePicker: (input: { readonly projectId: string; readonly q?: string; readonly cursor?: string; readonly limit?: number; readonly signal?: AbortSignal }) => Promise<IssuePickerPage>;
   readonly getWorkItem: (projectId: string, itemId: string) => Promise<NativeIssue>;
   readonly getWorkItemById: (itemId: string, signal?: AbortSignal) => Promise<NativeIssue>;
-  readonly getWorkItemConversation: (projectId: string, itemId: string) => Promise<ConversationSnapshot>;
+  readonly getWorkItemConversation: (projectId: string, itemId: string, metadata?: boolean) => Promise<ConversationSnapshot>;
   readonly patchWorkItem: (input: {
     projectId: string;
     itemId: string;
@@ -233,10 +243,11 @@ export interface WorkHttp {
     limit?: number,
     signal?: AbortSignal,
     cursor?: string,
+    direction?: "newest",
   ) => Promise<AttemptPage>;
   readonly getExplanation: (projectId: string, itemId: string) => Promise<IssueExplanation>;
   /**
-   * The latest stored diff on one issue (decisions.md §18.5), or `{diff: null}`
+   * The latest stored diff on one issue, or `{diff: null}`
    * where no attempt has posted one. Issue-addressed rather than
    * attempt-addressed so that "this issue has no diff" is an answer rather
    * than a 404 per attempt.
@@ -247,12 +258,17 @@ export interface WorkHttp {
     itemId: string;
     cursor?: string;
     limit?: number;
+    direction?: "newest";
+    signal?: AbortSignal;
+    view?: "timeline";
   }) => Promise<HistoryPage>;
   readonly listComments: (input: {
     projectId: string;
     itemId: string;
     cursor?: string;
     limit?: number;
+    direction?: "newest";
+    signal?: AbortSignal;
   }) => Promise<CommentPage>;
   /**
    * Posts one work item comment. `POST .../work-items/:item/comments` carries
@@ -266,6 +282,15 @@ export interface WorkHttp {
     key: string;
     body: string;
   }) => Promise<NativeComment>;
+  readonly updateComment: (input: {
+    projectId: string;
+    itemId: string;
+    commentId: string;
+    key: string;
+    expectedRevision: string;
+    body: string;
+    deleted?: boolean;
+  }) => Promise<NativeComment>;
   readonly listChanges: (projectId: string, itemId: string, signal?: AbortSignal) => Promise<ChangeRequestList>;
   readonly getChange: (
     projectId: string,
@@ -274,7 +299,7 @@ export interface WorkHttp {
     signal?: AbortSignal,
   ) => Promise<ChangeDetail>;
   /**
-   * One attempt's stored diff (decisions.md §18.5), attempt-addressed. A
+   * One attempt's stored diff, attempt-addressed. A
    * change version names the attempt that published it, so this is how the
    * review page shows the patch behind a round rather than whatever the
    * latest attempt on the issue posted. A 404 means that attempt never
@@ -308,7 +333,7 @@ export interface WorkHttp {
     versionId?: string;
   }) => Promise<ChangeDiscussion>;
   /**
-   * The issue's pull requests (decisions.md §18.6). A bare array like
+   * The issue's pull requests. A bare array like
    * `listChanges`, and served from a 60-second cache, so a caller that wants
    * the connector re-fetched has to ask for it — which this client does not.
    */
@@ -317,7 +342,7 @@ export interface WorkHttp {
     itemId: string,
   ) => Promise<WorkItemPullRequestList>;
   /**
-   * Opens the issue's pull request (decisions.md §18.6).
+   * Opens the issue's pull request.
    *
    * Addressed by the issue rather than by a number, because a pull request
    * that does not exist yet has none. `expectedHeadSha` is what the merge
@@ -332,7 +357,7 @@ export interface WorkHttp {
     expectedHeadSha: string;
   }) => Promise<PullRequestActionAccepted>;
 
-  // --- Workspace sessions (decisions.md §18.1, §18.2) -----------------------
+  // --- Workspace sessions -----------------------
   //
   // These live here rather than in their own client for one reason: minting a
   // relay ticket is a mutation, and `send` is the only place the `X-CSRF-Token`
@@ -355,7 +380,7 @@ export interface WorkHttp {
   }) => Promise<Workspace>;
   readonly closeWorkspace: (projectId: string, workspaceId: string) => Promise<void>;
   /**
-   * One relay ticket. Single use and 30 seconds long (§18.2), so this is
+   * One relay ticket. Single use and 30 seconds long, so this is
    * called immediately before each socket is opened and never cached.
    */
   readonly mintRelayTicket: (input: {
@@ -366,7 +391,7 @@ export interface WorkHttp {
   /** The person-side relay socket, as an absolute same-origin `ws(s):` URL. */
   readonly relayUrl: (projectId: string, workspaceId: string, ticket: string) => string;
 
-  // --- Project actions and their runs (decisions.md §18.12) -----------------
+  // --- Project actions and their runs -----------------
   //
   // Here for the same reason the workspace calls are: every one of the four
   // mutations is a mutation, and `send` is the only place the `X-CSRF-Token`
@@ -385,7 +410,7 @@ export interface WorkHttp {
     runOnWorktreeCreation?: boolean;
   }) => Promise<Action>;
   /**
-   * `expected_revision` is not optional: §18.12 writes it into the contract,
+   * `expected_revision` is not optional: the project actions contract writes it into the contract,
    * and an edit that did not carry it would silently overwrite a colleague's.
    */
   readonly updateAction: (input: {
@@ -415,7 +440,7 @@ export interface WorkHttp {
     runId: string,
   ) => Promise<ActionRun>;
   readonly listActionRuns: (projectId: string, actionId: string) => Promise<ActionRunList>;
-  /** `text/plain`, not JSON: the run's own bytes, capped at 1 MiB (§18.12). */
+  /** `text/plain`, not JSON: the run's own bytes, capped at 1 MiB. */
   readonly readActionRunOutput: (
     projectId: string,
     actionId: string,
@@ -483,7 +508,7 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
     signal?: AbortSignal,
     keepalive = false,
   ): Promise<A> {
-    const headers: Record<string, string> = { Accept: "application/json" };
+    const headers: Record<string, string> = { Accept: "application/json", "X-Detent-Archive-Read": "1" };
     if (body !== undefined) headers["Content-Type"] = "application/json";
     if (MUTATIONS.has(method)) headers["X-CSRF-Token"] = options.csrfToken;
     let response: Response;
@@ -513,9 +538,14 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
       }
     }
     if (!response.ok) {
+      if (!signal?.aborted) invalidateArchiveAccess(target, response.status);
       if (!signal?.aborted && [401, 403].includes(response.status)) options.onAuthorizationRejected?.();
-      throw errorFromBody(response.status, parsed);
+      const failure = errorFromBody(response.status, parsed);
+      if (failure.code === "archive_unavailable") throw new ArchiveUnavailable("missing section");
+      throw failure;
     }
+    const archived = typeof parsed === "object" && parsed !== null && "archive" in parsed;
+    parsed = await resolveArchivedResponse(parsed, target, doFetch, options, signal);
     try {
       const decoded = Schema.decodeUnknownSync(schema)(parsed);
       if (MUTATIONS.has(method) && schema.ast === NativeIssue.ast) {
@@ -523,6 +553,7 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
       }
       return decoded;
     } catch (cause) {
+      if (archived) throw new ArchiveUnavailable("schema mismatch");
       throw new WorkApiError({
         status: response.status,
         code: "invalid",
@@ -534,8 +565,8 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
   }
 
   /**
-   * The one read whose body is not JSON: a run's output is `text/plain`
-   * (§18.12). The failure path is still `send`'s, because a refusal is a
+   * The one read whose body is not JSON: a run's output is `text/plain`.
+   * The failure path is still `send`'s, because a refusal is a
    * native error body like every other.
    */
   async function sendText(target: string): Promise<string> {
@@ -569,6 +600,21 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
   return {
     origin: options.origin,
     apiBase: options.apiBase,
+    listSavedViews: async (signal) => {
+      const schema = Schema.Struct({ views: Schema.Array(SavedWorkView), next_cursor: Schema.optional(Schema.String) });
+      const views: SavedView[] = [];
+      let cursor: string | undefined;
+      do {
+        const page = await send(schema, "GET", url(`${options.apiBase}/work-views`, { cursor }), undefined, signal);
+        views.push(...page.views);
+        cursor = page.next_cursor;
+      } while (cursor !== undefined);
+      return { views: views.toSorted((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id)) };
+    },
+    getSavedView: (id, signal) => send(SavedWorkView, "GET", `${options.origin}${options.apiBase}/work-views/${encodeURIComponent(id)}`, undefined, signal),
+    saveView: (input, id) => send(SavedWorkView, id === undefined ? "POST" : "PUT", `${options.origin}${options.apiBase}/work-views${id === undefined ? "" : `/${encodeURIComponent(id)}`}`, input, undefined, true),
+    favoriteView: (id, favorite) => send(SavedWorkView, "PUT", `${options.origin}${options.apiBase}/work-views/${encodeURIComponent(id)}/favorite`, { favorite }, undefined, true),
+    deleteView: async (id) => { await send(Schema.Void, "DELETE", `${options.origin}${options.apiBase}/work-views/${encodeURIComponent(id)}`, undefined, undefined, true); },
     getViewPreference: (projectId, signal) => send(viewPreferenceSchema, "GET", viewPreferenceUrl(projectId), undefined, signal),
     setViewPreference: (projectId, query) => send(viewPreferenceSchema, query === null ? "DELETE" : "PUT", viewPreferenceUrl(projectId), query === null ? undefined : { query }, undefined, true),
     eventsUrl: (projectId, workspaceId, workItemId, board) =>
@@ -576,6 +622,7 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
         board: board === undefined ? undefined : "true", since: board?.since,
         created_by: board?.filters.createdBy, q: board?.filters.q || undefined, type: board?.filters.type, label: board?.filters.label, assignee: board?.filters.assignee,
         priority: board?.filters.priority, archived: board?.filters.archived === true ? "true" : undefined,
+        completed_from: board?.filters.completedFrom, completed_to: board?.filters.completedTo,
         completed_window: board?.filters.completedWindow }),
     listHealthFindings: (projectId, cursor, signal, options) => send(HealthFindingsRead, "GET", url(`${projectBase(projectId)}/health/findings`, { cursor, ...options }), undefined, signal),
     getProject: (projectId, signal) => send(NativeProject, "GET", url(projectBase(projectId)), undefined, signal),
@@ -597,6 +644,7 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
           cursor: input.cursor,
           limit: input.limit,
           completed_window: input.completedWindow,
+          completed_from: input.completedFrom, completed_to: input.completedTo,
           include: input.includeBoard === true ? "board" : input.includeWork === true ? "work" : input.includeCoordinator === true ? "coordinator" : undefined,
         }),
         undefined,
@@ -610,8 +658,8 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
       send(NativeIssue, "GET", url(itemBase(projectId, itemId))),
     getWorkItemById: (itemId, signal) =>
       send(NativeIssue, "GET", url(`${options.apiBase}/work-items/${encodeURIComponent(itemId)}`), undefined, signal),
-    getWorkItemConversation: (projectId, itemId) =>
-      send(ConversationSnapshot, "GET", url(`${itemBase(projectId, itemId)}/conversation`)),
+    getWorkItemConversation: (projectId, itemId, metadata) =>
+      send(ConversationSnapshot, "GET", url(`${itemBase(projectId, itemId)}/conversation`, metadata === true ? { metadata: "true" } : undefined)),
     listLabels: (projectId) =>
       send(NativeLabelList, "GET", url(`${projectBase(projectId)}/labels`)),
     patchWorkItem: (input) =>
@@ -653,8 +701,8 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
         related_work_item_id: input.relatedWorkItemId,
         operation: input.operation,
       }),
-    listAttempts: (projectId, itemId, limit, signal, cursor) =>
-      send(AttemptPage, "GET", url(`${itemBase(projectId, itemId)}/attempts`, { limit, cursor }), undefined, signal),
+    listAttempts: (projectId, itemId, limit, signal, cursor, direction) =>
+      send(AttemptPage, "GET", url(`${itemBase(projectId, itemId)}/attempts`, { limit, cursor, direction }), undefined, signal),
     getExplanation: (projectId, itemId) =>
       send(IssueExplanation, "GET", url(`${itemBase(projectId, itemId)}/explanation`)),
     getSourceRecovery: (projectId, itemId) =>
@@ -668,18 +716,28 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
       send(WorkItemDiff, "GET", url(`${itemBase(projectId, itemId)}/diff`)),
     listHistory: (input) =>
       send(HistoryPage, "GET", url(`${itemBase(input.projectId, input.itemId)}/history`, {
+        view: input.view,
         cursor: input.cursor,
         limit: input.limit,
-      })),
+        direction: input.direction,
+      }), undefined, input.signal),
     listComments: (input) =>
       send(CommentPage, "GET", url(`${itemBase(input.projectId, input.itemId)}/comments`, {
         cursor: input.cursor,
         limit: input.limit,
-      })),
+        direction: input.direction,
+      }), undefined, input.signal),
     createComment: (input) =>
       send(NativeComment, "POST", url(`${itemBase(input.projectId, input.itemId)}/comments`), {
         idempotency_key: input.key,
         body: input.body,
+      }),
+    updateComment: (input) =>
+      send(NativeComment, "PATCH", url(`${itemBase(input.projectId, input.itemId)}/comments/${encodeURIComponent(input.commentId)}`), {
+        idempotency_key: input.key,
+        expected_revision: input.expectedRevision,
+        body: input.body,
+        deleted: input.deleted ?? false,
       }),
     // The one native list with no envelope: a bare array, no cursor.
     listChanges: (projectId, itemId, signal) =>
@@ -814,7 +872,7 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
         url(`${actionBase(projectId, actionId)}/runs/${encodeURIComponent(runId)}/output`),
       ),
     // A WebSocket needs an absolute URL with a `ws` scheme, and the ticket is
-    // the CSRF answer for an upgrade a browser cannot put a header on (§18.2).
+    // the CSRF answer for an upgrade a browser cannot put a header on.
     relayUrl: (projectId, workspaceId, ticket) => {
       const path = `${workspaceBase(projectId, workspaceId)}/relay?ticket=${encodeURIComponent(
         ticket,

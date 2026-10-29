@@ -164,6 +164,31 @@ export function resolveTimelineIsAtEnd(state: TimelineEndState | undefined): boo
   return contentLength - scroll - scrollLength <= TIMELINE_FOLLOW_REARM_THRESHOLD_PX;
 }
 
+/**
+ * Whether a reader who sends now counts as reading the latest messages: within
+ * one viewport of the end, the same band the list's own end-follow uses.
+ */
+export function resolveTimelineIsNearEnd(state: TimelineEndState | undefined): boolean {
+  if (!state) {
+    return false;
+  }
+  const { contentLength, scroll, scrollLength } = state;
+  if (contentLength === undefined || scroll === undefined || scrollLength === undefined) {
+    return state.isAtEnd === true;
+  }
+  return contentLength - scroll - scrollLength <= Math.max(scrollLength, TIMELINE_FOLLOW_REARM_THRESHOLD_PX);
+}
+
+export function latestUserMessageRowId(rows: ReadonlyArray<MessagesTimelineRow>): string | null {
+  for (let index = rows.length - 1; index >= 0; index--) {
+    const row = rows[index];
+    if (row?.kind === "message" && row.message.role === "user") {
+      return row.message.id;
+    }
+  }
+  return null;
+}
+
 export function shouldPreserveAssistantLineBreaks(text: string): boolean {
   return /^★ Insight(?:\s|─)/mu.test(text);
 }

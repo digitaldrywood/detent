@@ -281,7 +281,7 @@ func (s *Service) admitRunnerRequest(c echo.Context, credential apiCredential) e
 		return nil
 	}
 	var capacity int
-	if err := s.database.reader.QueryRowContext(ctx, "SELECT min(r.capacity_limit,r.reported_capacity,m.capacity) FROM runner_identities r JOIN machines m ON m.id=r.machine_id WHERE r.id=? AND r.organization_id=?", credential.Runner.RunnerID, m.organization).Scan(&capacity); err != nil {
+	if err := s.database.reader.QueryRowContext(ctx, "SELECT min(r.capacity_limit,m.capacity) FROM runner_identities r JOIN machines m ON m.id=r.machine_id WHERE r.id=? AND r.organization_id=?", credential.Runner.RunnerID, m.organization).Scan(&capacity); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	projects := make([]string, 0, len(credential.Runner.ProjectIDs))
@@ -291,7 +291,7 @@ func (s *Service) admitRunnerRequest(c echo.Context, credential apiCredential) e
 	now := s.config.now().UTC()
 	if retry := m.admit(now, credential.Runner.RunnerID, c.Request().Method+" "+c.Path(), capacity, projects); retry > 0 {
 		c.Response().Header().Set("Retry-After", strconv.Itoa(retry))
-		return c.JSON(429, apiErrorResponse{Code: "runner_request_budget", Message: "Runner request budget exceeded; retry after the current minute"})
+		return s.refusedAPIError(c, http.StatusTooManyRequests, "runner_request_budget", "Runner request budget exceeded; retry after the current minute", apiErrorResponse{Code: "runner_request_budget", Message: "Runner request budget exceeded; retry after the current minute"})
 	}
 	return nil
 }

@@ -16,6 +16,10 @@ import (
 )
 
 func IsolationSettings(p isolation.Policy) (map[string]any, error) {
+	return isolationSettings(p, "")
+}
+
+func isolationSettings(p isolation.Policy, toolAddress string) (map[string]any, error) {
 	if err := p.Validate(); err != nil {
 		return nil, err
 	}
@@ -38,6 +42,9 @@ func IsolationSettings(p isolation.Policy) (map[string]any, error) {
 	sandbox["filesystem"] = map[string]any{"allowWrite": p.WritableRoots, "denyRead": []string{"~/.ssh", "~/.aws", "~/Library/Keychains", "/Library/Keychains"}, "disabled": false}
 	domains := isolation.Domains()
 	domains = append(domains, p.ExtraNetworkDomains...)
+	if toolAddress != "" {
+		domains = append(domains, toolAddress)
+	}
 	if p.AllowLocalBinding {
 		domains = append(domains, "localhost", "127.0.0.1", "::1")
 	}

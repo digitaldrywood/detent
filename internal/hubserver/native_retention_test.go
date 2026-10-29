@@ -1,11 +1,20 @@
 package hubserver
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/entryauthority"
 
 	"github.com/digitaldrywood/detent/internal/hostmetrics"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -13,9 +22,196 @@ import (
 )
 
 func TestNativeRetention(t *testing.T) {
+	t.Run("claim reviews retain each reviewer across historical backfill", func(t *testing.T) {
+		f := newChangeFixture(t, openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), retentionTimeout: frozenRetentionTimeout}))
+		if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+			t.Fatal(err)
+		}
+		first := f.publish(t, "first", "", true)
+		second := f.publish(t, "second", first.ID, true)
+		db := f.service.database
+		tx, err := db.db.BeginTx(t.Context(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback()
+		for i := range claimEvidenceLimit + 1 {
+			review := tracker.ChangeReview{VersionID: first.ID, Actor: tracker.Actor{PrincipalID: "reviewer-one"}, Decision: "commented"}
+			if i == 0 {
+				review.Decision = "changes_requested"
+			}
+			raw, err := json.Marshal(review)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := tx.ExecContext(t.Context(), `INSERT INTO change_evidence(change_id,version_id,kind,record_json) VALUES(?,?,'review',?)`, f.change.ID, first.ID, string(raw)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, version := range []string{first.ID, second.ID} {
+			for _, review := range []tracker.ChangeReview{
+				{VersionID: version, Actor: tracker.Actor{PrincipalID: "reviewer-one"}, Decision: "approved"},
+				{VersionID: version, Actor: tracker.Actor{PrincipalID: "reviewer-two"}, Decision: "changes_requested"},
+			} {
+				if err := insertChangeEvidence(t.Context(), tx, f.change.ID, version, "review", "", review); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := readClaimReviews(t.Context(), db.reader, f.change.ID, first.ID); !errors.Is(err, errClaimHintStale) {
+			t.Fatalf("unknown evidence authorized truncated history: %v", err)
+		}
+		beforeSchema := storageSchemaVersion(t, db.reader)
+		for range (claimEvidenceLimit+1)/storageConversionRows + 2 {
+			if err := db.populateClaimFacts(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, version := range []string{first.ID, second.ID} {
+			reviews, err := readClaimReviews(t.Context(), db.reader, f.change.ID, version)
+			if err != nil {
+				t.Fatal(err)
+			}
+			decisions := make(map[string]string)
+			for _, review := range reviews {
+				decisions[review.Actor.PrincipalID] = review.Decision
+			}
+			if len(reviews) != 2 || decisions["reviewer-one"] != "approved" || decisions["reviewer-two"] != "changes_requested" {
+				t.Fatalf("projected reviews lost current authority: %+v", reviews)
+			}
+		}
+		for _, update := range []struct{ actor, decision string }{{"reviewer-two", "approved"}, {"reviewer-one", "changes_requested"}} {
+			tx, err := db.db.BeginTx(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			review := tracker.ChangeReview{VersionID: first.ID, Actor: tracker.Actor{PrincipalID: update.actor}, Decision: update.decision}
+			if err := insertChangeEvidence(t.Context(), tx, f.change.ID, first.ID, "review", "", review); err != nil {
+				tx.Rollback()
+				t.Fatal(err)
+			}
+			if err := tx.Commit(); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := readClaimReviews(t.Context(), db.reader, f.change.ID, first.ID); !errors.Is(err, errClaimHintStale) {
+				t.Fatalf("new unknown review reused old projection: %v", err)
+			}
+			if err := db.populateClaimFacts(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+		}
+		reviews, err := readClaimReviews(t.Context(), db.reader, f.change.ID, first.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		decisions := make(map[string]string)
+		for _, review := range reviews {
+			decisions[review.Actor.PrincipalID] = review.Decision
+		}
+		if decisions["reviewer-one"] != "changes_requested" || decisions["reviewer-two"] != "approved" {
+			t.Fatalf("new review authority was hidden: %+v", reviews)
+		}
+		if after := storageSchemaVersion(t, db.reader); after != beforeSchema {
+			t.Fatalf("claim projection changed schema: %d -> %d", beforeSchema, after)
+		}
+		if _, err := db.db.ExecContext(t.Context(), `UPDATE change_evidence SET record_json='{}' WHERE change_id=?`, f.change.ID); err == nil {
+			t.Fatal("evidence immutability trigger was not restored")
+		}
+	})
+
+	t.Run("claim facts resume from durable unknown rows", func(t *testing.T) {
+		f := newChangeFixture(t, openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), retentionTimeout: frozenRetentionTimeout}))
+		if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+			t.Fatal(err)
+		}
+		db := f.service.database
+		for i := range claimFactsRowsPerTick*3 + 2 {
+			id := fmt.Sprintf("legacy-change-%03d", i)
+			if _, err := db.db.ExecContext(t.Context(), `INSERT INTO change_requests(id,organization_id,project_id,work_item_id,record_json) VALUES(?,?,?,?,?)`, id, f.project.OrganizationID, f.project.ID, f.issue.WorkItemID, `{}`); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := db.populateClaimFacts(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		var unknown int
+		if err := db.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM change_requests WHERE claim_version_id IS NULL`).Scan(&unknown); err != nil || unknown != claimFactsRowsPerTick*2+2 {
+			t.Fatalf("unknown=%d: %v", unknown, err)
+		}
+		for range 3 {
+			if err := db.populateClaimFacts(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := db.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM change_requests WHERE claim_version_id IS NULL`).Scan(&unknown); err != nil || unknown != 0 {
+			t.Fatalf("unknown=%d: %v", unknown, err)
+		}
+		for _, row := range []struct{ id, raw string }{
+			{"isolated-first", `{}`},
+			{"isolated-second", `{"current_version_id":42}`},
+		} {
+			if _, err := db.db.ExecContext(t.Context(), `INSERT INTO change_requests(id,organization_id,project_id,work_item_id,record_json) VALUES(?,?,?,?,?)`, row.id, f.project.OrganizationID, f.project.ID, f.issue.WorkItemID, row.raw); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := db.populateClaimFacts(t.Context()); err == nil {
+			t.Fatal("malformed claim fact did not fail")
+		}
+		var projected bool
+		if err := db.reader.QueryRowContext(t.Context(), `SELECT claim_version_id IS NOT NULL FROM change_requests WHERE id='isolated-first'`).Scan(&projected); err != nil || !projected {
+			t.Fatalf("earlier projection rolled back: projected=%v error=%v", projected, err)
+		}
+	})
+
+	t.Run("archive error preserves independent compaction", func(t *testing.T) {
+		f := newStorageArchiveFixture(t)
+		issue := f.nativeFixture.create(t, "archive failure")
+		f.transition(t, string(issue.WorkItemID), "Done", f.now.Add(-73*time.Hour))
+		archiveErr := errors.New("injected archive failure")
+		f.hook = func(entryauthority.ContentRequest) error { return archiveErr }
+		at := f.now.Add(-31 * 24 * time.Hour)
+		record := f.record(f.owner, "old conversation", at)
+		record.Status = conversation.StatusSettled
+		record.SettledAt = &at
+		record.Execution.Status = conversation.ExecutionCompleted
+		record = f.create(t, record)
+		tx := f.tx(t)
+		message := conversationMessageRecord{ConversationID: record.ID, Role: conversation.RoleAssistant, Kind: conversation.MessageText, Text: "final answer", Delivery: conversation.DeliveryCompleted, CreatedAt: at, UpdatedAt: at, Actor: conversation.Actor{Kind: conversation.ActorRunner, PrincipalID: "example-runner"}}
+		if err := f.store.appendMessage(t.Context(), tx, &message); err != nil {
+			t.Fatal(err)
+		}
+		for range 2 {
+			if _, err := f.store.appendEvent(t.Context(), tx, record.ID, conversation.EventMessageDelta, conversationDeltaBody(message.ID, 0, "fragment"), at); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := tx.ExecContext(t.Context(), `INSERT INTO analytics_hourly_rollups(organization_id,project_id,hour,metric,dimension,value,data_json) VALUES(?,?,?,'slots','example',3,'{}')`, f.project.OrganizationID, f.project.ID, at.Truncate(time.Hour).Unix()); err != nil {
+			t.Fatal(err)
+		}
+		f.commit(t, tx)
+		if err := f.service.maintainNativeRetention(t.Context(), f.now); !errors.Is(err, archiveErr) {
+			t.Fatalf("retention error=%v", err)
+		}
+		var deltas, samples, summaries int
+		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM conversation_events WHERE conversation_id=? AND type='message.delta'", record.ID).Scan(&deltas); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM analytics_hourly_rollups WHERE project_id=? AND metric='slots'", f.project.ID).Scan(&samples); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM analytics_sample_hours WHERE project_id=? AND metric='slots'", f.project.ID).Scan(&summaries); err != nil {
+			t.Fatal(err)
+		}
+		if deltas != 0 || samples != 0 || summaries != 1 {
+			t.Fatalf("deltas=%d samples=%d summaries=%d", deltas, samples, summaries)
+		}
+	})
 	t.Run("command receipts and storage accounting", func(t *testing.T) {
 		now := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
-		f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
+		f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }, retentionTimeout: frozenRetentionTimeout})
 		issue := f.create(t, "receipts")
 		var actor string
 		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT id FROM api_tokens LIMIT 1").Scan(&actor); err != nil {
@@ -82,7 +278,7 @@ func TestNativeRetention(t *testing.T) {
 	})
 	t.Run("duplicate challenges", func(t *testing.T) {
 		now := time.Date(2026, 10, 13, 18, 0, 0, 0, time.UTC)
-		f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
+		f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }, retentionTimeout: frozenRetentionTimeout})
 		other := newNativeFixture(t, f.service, f.project.OrganizationID, "other-challenges")
 		for _, project := range []tracker.NativeProject{f.project, other.project} {
 			for _, test := range []struct {
@@ -119,7 +315,7 @@ VALUES (?,?,?,?,?,?,?,?,?)`, token, project.OrganizationID, project.ID, "princip
 	})
 	t.Run("hourly host history", func(t *testing.T) {
 		now := time.Now().UTC().Truncate(time.Hour).Add(30 * time.Minute)
-		f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
+		f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }, retentionTimeout: frozenRetentionTimeout})
 		r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
 		r.enroll(t)
 		tx, err := f.service.database.db.BeginTx(t.Context(), nil)
@@ -167,11 +363,11 @@ VALUES (?,?,?,?,?,?,?,?,?)`, token, project.OrganizationID, project.ID, "princip
 
 	t.Parallel()
 	for _, test := range []struct {
-		name, state                                                                            string
-		age                                                                                    int
-		lease, expiredLease, openChange, landedChange, never, restore, terminalMove, noHistory bool
-		period                                                                                 int
-		archived                                                                               bool
+		name, state                                                                                                     string
+		age                                                                                                             int
+		lease, expiredLease, openChange, landedChange, never, restore, typedRestore, typedOpen, terminalMove, noHistory bool
+		period                                                                                                          int
+		archived                                                                                                        bool
 	}{
 		{name: "old Done", state: "Done", age: 31, archived: true},
 		{name: "recent Done", state: "Done", age: 29},
@@ -184,6 +380,8 @@ VALUES (?,?,?,?,?,?,?,?,?)`, token, project.OrganizationID, project.ID, "princip
 		{name: "landed Change", state: "Done", age: 31, openChange: true, landedChange: true, archived: true},
 		{name: "Never completed", state: "Done", age: 100, never: true},
 		{name: "Never cancelled", state: "Cancelled", age: 100, never: true},
+		{name: "typed restore resets clock", state: "Done", age: 100, typedRestore: true},
+		{name: "typed pending Change", state: "Done", age: 31, openChange: true, landedChange: true, typedOpen: true},
 		{name: "restore resets clock", state: "Done", age: 100, restore: true},
 		{name: "custom terminal", state: "Shipped", age: 31, archived: true},
 		{name: "terminal move preserves clock", state: "Shipped", age: 31, terminalMove: true, archived: true},
@@ -195,7 +393,7 @@ VALUES (?,?,?,?,?,?,?,?,?)`, token, project.OrganizationID, project.ID, "princip
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			now := time.Now().UTC()
-			f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
+			f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }, retentionTimeout: frozenRetentionTimeout})
 			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
 			issue := f.create(t, "retention")
 			if test.lease {
@@ -245,13 +443,20 @@ VALUES (?,?,?,?,?,?,?,?,?)`, token, project.OrganizationID, project.ID, "princip
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, err := tx.ExecContext(t.Context(), "INSERT INTO change_requests(id,organization_id,project_id,work_item_id,record_json) VALUES(?,?,?,?,?)", change.ID, scope.organization, scope.project, issue.WorkItemID, raw); err != nil {
+				if _, err := tx.ExecContext(t.Context(), "INSERT INTO change_requests(id,organization_id,project_id,work_item_id,record_json,claim_version_id) VALUES(?,?,?,?,?,?)", change.ID, scope.organization, scope.project, issue.WorkItemID, raw, change.CurrentVersion); err != nil {
 					t.Fatal(err)
 				}
 				if _, err := tx.ExecContext(t.Context(), "INSERT INTO change_issue_links(change_id,organization_id,project_id,work_item_id) VALUES(?,?,?,?)", change.ID, scope.organization, scope.project, issue.WorkItemID); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := tx.ExecContext(t.Context(), "INSERT INTO change_versions(id,change_id,number,record_json) VALUES(?,?,1,'{}')", change.CurrentVersion, change.ID); err != nil {
+				versionRaw, err := marshalNative(tracker.ChangeVersion{ID: change.CurrentVersion, ChangeID: change.ID, Policy: hubTestPolicy()})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := tx.ExecContext(t.Context(), "INSERT INTO change_versions(id,change_id,number,record_json) VALUES(?,?,1,?)", change.CurrentVersion, change.ID, versionRaw); err != nil {
+					t.Fatal(err)
+				}
+				if err := projectChangeColumns(t.Context(), tx, "change_requests", change.ID, raw); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -283,6 +488,19 @@ VALUES (?,?,?,?,?,?,?,?,?)`, token, project.OrganizationID, project.ID, "princip
 				}
 				issue, err = setNativeArchiveTx(t.Context(), tx, scope, string(issue.WorkItemID), issue.Revision, false, now.Add(-time.Hour))
 				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.typedOpen {
+				if _, err := tx.ExecContext(t.Context(), "UPDATE change_requests SET claim_version_id='new-version',claim_head_sha='new-head',landed_version_id='cv_retention' WHERE id='chg_retention'"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.typedRestore {
+				if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "issue.edited", tracker.CollaborationData{}, now.Add(-time.Hour)); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := tx.ExecContext(t.Context(), "UPDATE collaboration_events SET archive_operation='restore' WHERE work_item_id=? AND type='issue.edited'", issue.WorkItemID); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -333,7 +551,7 @@ VALUES (?,?,?,?,?,?,?,?,?)`, token, project.OrganizationID, project.ID, "princip
 					t.Fatal(err)
 				}
 				if test.openChange {
-					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE change_requests SET record_json=json_set(record_json,'$.landed.version_id','cv_retention') WHERE id='chg_retention'"); err != nil {
+					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE change_requests SET archive_landed_version_id='cv_retention',record_json=json_set(record_json,'$.landed.version_id','cv_retention') WHERE id='chg_retention'"); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -454,4 +672,217 @@ func TestProjectArchivePeriods(t *testing.T) {
 		}
 	}
 
+}
+
+func TestNativeStorageArchiveRetention(t *testing.T) {
+	for _, test := range []struct {
+		name, state string
+		age         time.Duration
+		want        bool
+	}{
+		{"done before", "Done", 72*time.Hour - time.Second, false},
+		{"done boundary", "Done", 72 * time.Hour, true},
+		{"done after", "Done", 72*time.Hour + time.Second, true},
+		{"cancelled before", "Cancelled", 72*time.Hour - time.Second, false},
+		{"cancelled boundary", "Cancelled", 72 * time.Hour, true},
+		{"cancelled after", "Cancelled", 73 * time.Hour, true},
+		{"open", "Todo", 96 * time.Hour, false},
+		{"not started", "Backlog", 96 * time.Hour, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			now := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
+			objects := map[string][]byte{}
+			f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }, content: func(_ context.Context, r entryauthority.ContentRequest) ([]byte, error) {
+				if r.Write {
+					objects[r.Reference.Key] = slices.Clone(r.Data)
+					return nil, nil
+				}
+				return objects[r.Reference.Key], nil
+			}})
+			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+			issue := f.create(t, "archive cutoff")
+			if test.state != "Todo" {
+				tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer tx.Rollback()
+				if test.state == "Cancelled" || test.state == "Backlog" {
+					states := append(append([]tracker.NativeState{}, f.project.States...), tracker.NativeState{Name: test.state, Terminal: test.state == "Cancelled"})
+					if err := updateNativeProjectStates(t.Context(), tx, scope, states, now); err != nil {
+						t.Fatal(err)
+					}
+				}
+				issue.State = test.state
+				issue, err = persistNativeIssue(t.Context(), tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: test.state}, now.Add(-test.age))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := tx.Commit(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := f.service.archiveClosedNativeIssues(t.Context(), now); err != nil {
+				t.Fatal(err)
+			}
+			var count int
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM issue_storage_archives WHERE work_item_id=?", issue.WorkItemID).Scan(&count); err != nil {
+				t.Fatal(err)
+			}
+			if (count == 1) != test.want {
+				t.Fatalf("archives=%d want=%v", count, test.want)
+			}
+			got := readWorkItem(t, f, issue.WorkItemID, "")
+			if got.Archived || got.Revision != issue.Revision {
+				t.Fatalf("storage archival changed board issue: %+v", got)
+			}
+			if test.want {
+				ref, err := scanAttachmentArchive(f.service.database.reader.QueryRowContext(t.Context(), `SELECT a.object_key,a.sha256,a.size,a.uncompressed_size,a.codec,a.schema_version,a.kind,a.retention_class,a.storage_binding_id,a.customer_owned FROM issue_storage_archives p JOIN attachments a ON a.id=p.attachment_id WHERE p.work_item_id=?`, issue.WorkItemID))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if ref.Validate(string(scope.organization)) != nil || artifact.Digest(objects[ref.Key]) != ref.SHA256 || int64(len(objects[ref.Key])) != ref.CompressedSize || int64(len(archiveTestBytes(t, objects[ref.Key]))) != ref.UncompressedSize {
+					t.Fatalf("invalid root pointer: %+v", ref)
+				}
+				if err := f.service.archiveClosedNativeIssues(t.Context(), now); err != nil {
+					t.Fatal(err)
+				}
+				if len(objects) != 1 {
+					t.Fatalf("repeat publication created %d objects", len(objects))
+				}
+			}
+		})
+	}
+}
+
+func TestBackgroundStorageCancellationProgress(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		archive    bool
+		aggregates int
+	}{
+		{"conversion aggregates", false, 3},
+		{"conversion rows", false, 1},
+		{"archive", true, 3},
+	} {
+		archive := test.archive
+		t.Run(test.name, func(t *testing.T) {
+			f := newStorageArchiveFixture(t)
+			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+			var issue tracker.NativeIssue
+			for index := range 3 {
+				if index < test.aggregates {
+					issue = f.nativeFixture.create(t, fmt.Sprintf("background progress %d", index))
+				}
+				if archive {
+					f.transition(t, string(issue.WorkItemID), "Done", f.now.Add(-73*time.Hour))
+				} else {
+					tx := f.tx(t)
+					if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "run.finished", tracker.CollaborationData{Run: &tracker.NativeRunData{CompletionBody: strings.Repeat("output", 2048)}}, f.now); err != nil {
+						t.Fatal(err)
+					}
+					f.commit(t, tx)
+				}
+			}
+			count := func() int {
+				t.Helper()
+				query := `SELECT count(*) FROM collaboration_events WHERE json_type(data_json,'$._storage_archive')='object'`
+				if archive {
+					query = `SELECT count(*) FROM issue_storage_archives`
+				}
+				var value int
+				if err := f.service.database.reader.QueryRowContext(t.Context(), query).Scan(&value); err != nil {
+					t.Fatal(err)
+				}
+				return value
+			}
+			run := func(ctx context.Context) error {
+				if archive {
+					return f.service.archiveClosedNativeIssues(ctx, f.now)
+				}
+				return f.service.convertLegacyStorage(ctx, f.now)
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			writes := 0
+			var first, interrupted string
+			f.hook = func(r entryauthority.ContentRequest) error {
+				if !r.Write {
+					return nil
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET name=name WHERE id=?", f.project.ID); err != nil {
+					return err
+				}
+				if archive && !strings.HasSuffix(r.Reference.Key, "/issue.json.gz") {
+					return nil
+				}
+				writes++
+				if got := count(); got != writes-1 {
+					t.Fatalf("committed units=%d before unit %d", got, writes)
+				}
+				if writes == 1 {
+					first = r.Reference.Key
+				} else {
+					interrupted = r.Reference.Key
+					cancel()
+				}
+				return nil
+			}
+			if err := run(ctx); !errors.Is(err, context.Canceled) {
+				t.Fatalf("canceled run: %v", err)
+			}
+			if got := count(); got != 1 {
+				t.Fatalf("committed progress after cancellation=%d", got)
+			}
+			resumed := 0
+			f.hook = func(r entryauthority.ContentRequest) error {
+				if !r.Write || archive && !strings.HasSuffix(r.Reference.Key, "/issue.json.gz") {
+					return nil
+				}
+				if r.Reference.Key == first {
+					t.Fatal("repeated committed unit")
+				}
+				if test.aggregates > 1 && resumed == 0 && r.Reference.Key == interrupted {
+					t.Fatal("interrupted unit starved unattempted work")
+				}
+				resumed++
+				return nil
+			}
+			f.now = f.now.Add(time.Minute)
+			if err := run(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			if got := count(); got != 3 || resumed != 2 {
+				t.Fatalf("resumed units=%d committed=%d", resumed, got)
+			}
+		})
+	}
+}
+
+func TestNativeRetentionCommitsEachIssue(t *testing.T) {
+	f := newStorageArchiveFixture(t)
+	for index := range 3 {
+		issue := f.nativeFixture.create(t, fmt.Sprintf("retention progress %d", index))
+		f.transition(t, string(issue.WorkItemID), "Done", f.now.Add(-31*24*time.Hour))
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), `CREATE TRIGGER interrupt_archive BEFORE UPDATE OF archived ON issues WHEN NEW.archived=1 AND (SELECT count(*) FROM issues WHERE archived=1)=1 BEGIN SELECT RAISE(ABORT,'interrupted archive'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.expireNativeRecords(t.Context(), f.now); err == nil {
+		t.Fatal("expected archive interruption")
+	}
+	for _, want := range []int{1, 3} {
+		if want == 3 {
+			if _, err := f.service.database.db.ExecContext(t.Context(), "DROP TRIGGER interrupt_archive"); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.service.expireNativeRecords(t.Context(), f.now); err != nil {
+				t.Fatal(err)
+			}
+		}
+		var count int
+		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE archived=1").Scan(&count); err != nil || count != want {
+			t.Fatalf("archived=%d want=%d err=%v", count, want, err)
+		}
+	}
 }

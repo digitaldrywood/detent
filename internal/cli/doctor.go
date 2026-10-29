@@ -29,6 +29,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	ghconnector "github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/healthnotify"
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/toolcache"
@@ -64,7 +65,6 @@ type doctorCheck struct {
 	BackendCapacity            []doctorBackendCapacityDiagnostic          `json:"backend_capacity,omitempty"`
 	ArtifactGateConvergence    []doctorArtifactGateConvergenceDiagnostic  `json:"artifact_gate_convergence,omitempty"`
 	ValidatorFailures          []doctorValidatorFailureDiagnostic         `json:"validator_failures,omitempty"`
-	Routines                   []doctorRoutineDiagnostic                  `json:"routines,omitempty"`
 	BacklogAdmission           *doctorAdmissionDiagnostic                 `json:"backlog_admission,omitempty"`
 	OverloadRetriesLastHour    int                                        `json:"overload_retries_last_hour,omitempty"`
 	DependencyCapabilities     []connector.DependencyCapability           `json:"dependency_capabilities,omitempty"`
@@ -79,12 +79,11 @@ type doctorCheck struct {
 	AuthorizationAttention     []doctorAuthorizationAttentionDiagnostic   `json:"authorization_attention,omitempty"`
 	OwnershipAttention         []doctorOwnershipAttentionDiagnostic       `json:"ownership_attention,omitempty"`
 	OrphanedAgentProcesses     *telemetry.OrphanedAgentProcesses          `json:"orphaned_agent_processes,omitempty"`
-	ParkReviews                []doctorParkReviewDiagnostic               `json:"park_reviews,omitempty"`
 	ProjectDefinition          *doctorProjectDefinitionDiagnostic         `json:"project_definition,omitempty"`
 	Capabilities               *doctorCapabilityReport                    `json:"capabilities,omitempty"`
 	WorkflowOptimization       doctorWorkflowOptimizationReport           `json:"-"`
 	ConcurrencyHistory         []doctorConcurrencyDiagnostic              `json:"concurrency_history,omitempty"`
-	RedispatchLoops            []doctorRedispatchDiagnostic               `json:"redispatch_loops,omitempty"`
+	RecompletionSources        []doctorRedispatchDiagnostic               `json:"redispatch_loops,omitempty"`
 }
 
 type doctorProjectDefinitionDiagnostic struct {
@@ -245,6 +244,8 @@ type doctorTelemetryStore interface {
 }
 
 type doctorDeps struct {
+	statHookShell        func(string) (os.FileInfo, error)
+	binaryEnvironment    *doctorBinaryEnvironment
 	cacheCapacityBytes   func(string) (uint64, error)
 	inspectCaches        func(context.Context) toolcache.Report
 	githubWorkflows      func(context.Context, workflowconfig.Config, string) (map[string]string, error)
@@ -271,11 +272,12 @@ type doctorDeps struct {
 	gitWorkTree          func(context.Context, string) error
 	gitWorktrees         func(context.Context, string) ([]doctorGitWorktree, error)
 	gitRemoteURL         func(context.Context, string) (string, error)
+	gitLandingCredential func(context.Context, string) error
 	gitTracked           func(context.Context, string) (bool, error)
 	workflowSourcePolicy doctorWorkflowSourcePolicyFunc
 	scheduleOwnership    doctorScheduleOwnershipProbe
 	autoPromoteConnector func(workflowconfig.Config) (doctorAutoPromoteConnector, error)
-	proposalConnector    func(workflowconfig.Config) (doctorWorkflowProposalConnector, error)
+	proposalConnector    func(globalconfig.Config, string, workflowconfig.Config) (doctorWorkflowProposalConnector, error)
 	proposalLaneWriter   func(context.Context, string, workflowconfig.Config, connector.Connector, connector.Issue, string) error
 	modelProbe           func(context.Context, doctorRouteModelProbeRequest) error
 	modelCatalogProbe    func(context.Context, workflowconfig.AgentBackend) (int, error)
@@ -384,6 +386,7 @@ func newDoctorCommandWithDeps(configPath *string, env *string, logLevel *string,
 }
 
 func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorDeps) doctorReport {
+	hostOS := runtime.GOOS
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -398,6 +401,12 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 	writeDoctorProgressDone(progressOut, configCheck)
 	report.Scope = scope
 	report.Add(configCheck)
+	if global != nil {
+		check := checkDoctorHubConnection(*global)
+		writeDoctorProgressStart(progressOut, check.Name)
+		writeDoctorProgressDone(progressOut, check)
+		report.Add(check)
+	}
 
 	if projectScopeCheck != nil {
 		writeDoctorProgressStart(progressOut, projectScopeCheck.Name)
@@ -511,6 +520,7 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 		report.Add(check)
 	}
 	binaryEnvironment := resolveDoctorBinaryEnvironment(ctx, resolution, liveBoot, deps)
+	deps.binaryEnvironment = &binaryEnvironment
 	var jobs []doctorCheckJob
 	if global != nil {
 		globalConfig := *global
@@ -553,12 +563,7 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 				})}
 			},
 		})
-		jobs = append(jobs, doctorCheckJob{
-			Name: doctorAgentPoolsCheckName,
-			Run: func(jobCtx context.Context) []doctorCheck {
-				return []doctorCheck{checkDoctorAgentPools(jobCtx, resolution, globalConfig, deps)}
-			},
-		})
+
 	}
 	jobs = append(jobs,
 		doctorCheckJob{
@@ -664,6 +669,12 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 			Name: "git binary",
 			Run: func(jobCtx context.Context) []doctorCheck {
 				return []doctorCheck{checkDoctorGit(jobCtx, deps, binaryEnvironment)}
+			},
+		},
+		doctorCheckJob{
+			Name: "Hook shell",
+			Run: func(context.Context) []doctorCheck {
+				return []doctorCheck{checkDoctorHookShell("", hostOS, deps, binaryEnvironment)}
 			},
 		},
 	)
@@ -1109,12 +1120,16 @@ func checkDoctorConfig(ctx context.Context, configPath string, projectID string,
 			Name:   "Config resolution",
 			Status: doctorFail,
 			Detail: fmt.Sprintf("%s via %s; %v", resolution.Path, resolution.Rule, err),
-			Hint:   "Run detent init or fix the global config file.",
+			Hint:   "Fix the global config file.",
 		}
 	}
 
 	if cfg.Client.IdentityFile != "" && cfg.WorkspaceRoot != "" {
-		cfg, err = resolveRunnerProjects(ctx, cfg)
+		if opts.resolveProjects != nil {
+			cfg, err = opts.resolveProjects(ctx, cfg)
+		} else {
+			cfg, err = resolveRunnerProjects(ctx, cfg)
+		}
 		if err != nil {
 			return resolution, nil, scope, nil, doctorCheck{Name: "Config resolution", Status: doctorFail, Detail: err.Error()}
 		}
@@ -1213,6 +1228,9 @@ var defaultInspectCaches = toolcache.Inspect
 
 func (d doctorDeps) withDefaults() doctorDeps {
 	defaults := defaultDoctorDeps()
+	if d.statHookShell == nil {
+		d.statHookShell = os.Stat
+	}
 	if d.inspectCaches == nil {
 		d.inspectCaches = defaultInspectCaches
 	}
@@ -1288,6 +1306,9 @@ func (d doctorDeps) withDefaults() doctorDeps {
 	if d.gitRemoteURL == nil {
 		d.gitRemoteURL = defaults.gitRemoteURL
 	}
+	if d.gitLandingCredential == nil {
+		d.gitLandingCredential = defaults.gitLandingCredential
+	}
 	if d.gitTracked == nil {
 		d.gitTracked = defaults.gitTracked
 	}
@@ -1350,11 +1371,11 @@ func defaultDoctorDeps() doctorDeps {
 		gitWorkTree:          defaultGitWorkTree,
 		gitWorktrees:         defaultDoctorGitWorktrees,
 		gitRemoteURL:         defaultGitRemoteURL,
+		gitLandingCredential: defaultDoctorLandingCredential,
 		gitTracked:           defaultGitTracked,
 		workflowSourcePolicy: defaultDoctorWorkflowSourcePolicy,
 		scheduleOwnership:    defaultDoctorScheduleOwnership,
 		autoPromoteConnector: defaultDoctorAutoPromoteConnector,
-		proposalConnector:    defaultDoctorProposalConnector,
 		modelProbe:           defaultDoctorRouteModelProbe,
 		modelCatalogProbe:    defaultDoctorBackendModelCatalogProbe,
 		executable:           os.Executable,
@@ -1605,7 +1626,9 @@ func defaultGitWorkTree(ctx context.Context, path string) error {
 	commandCtx, cancel := context.WithTimeout(ctx, doctorCommandTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(commandCtx, "git", "-C", path, "rev-parse", "--is-inside-work-tree") // #nosec G204 -- the configured path is passed as a fixed git argument without a shell.
+	cmd := exec.CommandContext(commandCtx, "git", "rev-parse", "--is-inside-work-tree")
+	cmd.Dir = path
+	procgroup.Configure(commandCtx, cmd)
 	output, err := cmd.CombinedOutput()
 	if commandCtx.Err() != nil {
 		return commandCtx.Err()

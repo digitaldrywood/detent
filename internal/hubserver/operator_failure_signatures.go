@@ -112,7 +112,7 @@ func failureFromAttempt(a tracker.NativeRunData, status string) (string, string)
 			return "landing refused: " + a.Runtime.Landing.RefusalKind, "merge"
 		}
 	}
-	if f := a.TerminalFailure; f != nil && f.Error != "" {
+	if f := a.TerminalFailure; f != nil && f.Error != "" && status != "cancelled" {
 		return f.Error, nativeFailureClass(*f)
 	}
 	if r := a.Runtime; r != nil && r.Landing != nil && r.Landing.GateFailed && r.Landing.Gate != nil {
@@ -152,31 +152,28 @@ func nativeFailureClass(f tracker.NativeTerminalFailure) string {
 	return "attempt"
 }
 
-// analyticsRollupFailures reads failed attempts from their rollups, whose
-// failed_at the projection records with the same rule as the raw read, in
-// failure order from the analytics_attempt_failed index.
 const analyticsRollupFailures = `SELECT a.id,a.work_item_id,a.status,a.started_at,a.updated_at,a.failed_at,
-json_object('terminal_failure',json_extract(a.data_json,'$.terminal_failure'),'finalization',json_extract(a.data_json,'$.finalization'),'runtime',json_object('landing',json_extract(a.data_json,'$.runtime.landing'),'validation',json_extract(a.data_json,'$.runtime.validation'))),
+a.data_json,
 (SELECT coalesce(sum(u.cost_estimate),0) FROM attempt_usage u WHERE u.organization_id=a.organization_id AND u.project_id=a.project_id AND u.attempt_id=a.id),
 (SELECT coalesce(sum(u.input+u.output),0) FROM attempt_usage u WHERE u.organization_id=a.organization_id AND u.project_id=a.project_id AND u.attempt_id=a.id)
-FROM (SELECT organization_id,project_id,dimension AS id,json_work_item_id AS work_item_id,json_extract(data_json,'$.lease_id') AS lease_id,json_extract(data_json,'$.status') AS status,
-json_started_at AS started_at,json_updated_at AS updated_at,data_json,json_extract(data_json,'$.failed_at') AS failed_at
-FROM analytics_hourly_rollups WHERE metric='attempt' AND json_extract(data_json,'$.failed_at') IS NOT NULL) a WHERE a.organization_id=? AND a.project_id=?`
+FROM (SELECT r.organization_id,r.project_id,r.dimension AS id,r.work_item_id,r.lease_id,r.status,
+r.started_at,r.updated_at,r.data_json,r.failed_at,r.failed_day,n.runner_id,n.role,n.report_requested_model,n.report_resolved_model
+FROM analytics_hourly_rollups r CROSS JOIN report_attempts n ON n.id=r.dimension AND n.organization_id=r.organization_id AND n.project_id=r.project_id WHERE r.metric='attempt' AND r.failed_at IS NOT NULL) a WHERE a.organization_id=? AND a.project_id=?`
 
 func readNativeFailures(ctx context.Context, q nativeQueryer, scope nativeScope, item string, w *operatortool.AnalyticsWindow) ([]nativeFailure, bool, error) {
-	query := `WITH failures AS (
-SELECT a.*, CASE WHEN (json_extract(data_json,'$.runtime.landing.refusal_kind') IN ('conflict','base_protected') AND coalesce(json_extract(data_json,'$.runtime.landing.landed'),0)=0) OR coalesce(json_extract(data_json,'$.runtime.landing.gate_failed'),0)=1
-THEN coalesce(nullif(json_extract(data_json,'$.runtime.landing.observed_at'),'0001-01-01T00:00:00Z'),updated_at) ELSE updated_at END AS failed_at
-FROM native_attempts a WHERE organization_id=? AND project_id=?
-AND (status IN ('failed','interrupted') OR json_extract(data_json,'$.runtime.landing.refusal_kind') IN ('conflict','base_protected') OR coalesce(json_extract(data_json,'$.runtime.landing.gate_failed'),0)=1))
-SELECT a.id,a.work_item_id,a.status,a.started_at,a.updated_at,a.failed_at,
-json_object('terminal_failure',json_extract(a.data_json,'$.terminal_failure'),'finalization',json_extract(a.data_json,'$.finalization'),'runtime',json_object('landing',json_extract(a.data_json,'$.runtime.landing'),'validation',json_extract(a.data_json,'$.runtime.validation'))),
+	q, err := prepareReportsQuery(ctx, q, scope, "report_attempts")
+	if err != nil {
+		return nil, false, err
+	}
+	query := `SELECT a.id,a.work_item_id,a.status,a.started_at,a.updated_at,a.report_failed_at,
+a.data_json,
 (SELECT coalesce(sum(u.cost_estimate),0) FROM attempt_usage u WHERE u.organization_id=a.organization_id AND u.project_id=a.project_id AND u.attempt_id=a.id),
 (SELECT coalesce(sum(u.input+u.output),0) FROM attempt_usage u WHERE u.organization_id=a.organization_id AND u.project_id=a.project_id AND u.attempt_id=a.id)
-FROM failures a WHERE 1=1`
-	failedAt := "a.failed_at"
-	if _, projected := q.(analyticsRollupReader); projected {
-		query, failedAt = analyticsRollupFailures, "json_extract(a.data_json,'$.failed_at')"
+FROM report_attempts a WHERE a.organization_id=? AND a.project_id=? AND a.report_failed_at IS NOT NULL`
+	failedAt := "a.report_failed_at"
+	_, projected := q.(analyticsRollupReader)
+	if projected {
+		query, failedAt = analyticsRollupFailures, "a.failed_day"
 	}
 	args := []any{scope.organization, scope.project}
 	if item != "" {
@@ -184,8 +181,13 @@ FROM failures a WHERE 1=1`
 		args = append(args, item)
 	}
 	if w != nil {
-		query += " AND julianday(" + failedAt + ")>=julianday(?) AND julianday(" + failedAt + ")<julianday(?)"
-		args = append(args, formatHubTime(w.From), formatHubTime(w.To))
+		if projected {
+			query += " AND " + failedAt + ">=julianday(?) AND " + failedAt + "<julianday(?)"
+			args = append(args, formatHubTime(w.From), formatHubTime(w.To))
+		} else {
+			query += " AND " + failedAt + ">=? AND " + failedAt + "<?"
+			args = append(args, changeColumnTime(w.From), changeColumnTime(w.To))
+		}
 	}
 	scoped, scopedArgs, err := reportsScopedClause(ctx, "a")
 	if err != nil {
@@ -193,7 +195,7 @@ FROM failures a WHERE 1=1`
 	}
 	query += scoped
 	args = append(args, scopedArgs...)
-	query += " ORDER BY julianday(" + failedAt + ") DESC,a.id DESC LIMIT ? OFFSET ?"
+	query += " ORDER BY " + failedAt + " DESC,a.id DESC LIMIT ? OFFSET ?"
 	rows, err := queryAnalyticsPopulation(ctx, q, "failures", query, args...)
 	if err != nil {
 		return nil, false, err
@@ -211,9 +213,25 @@ FROM failures a WHERE 1=1`
 		if err := rows.Scan(&f.attemptID, &f.workItem, &status, &from, &to, &at, &raw, &f.cost, &f.tokens); err != nil {
 			return nil, false, err
 		}
-		var data tracker.NativeRunData
-		if err := json.Unmarshal([]byte(raw), &data); err != nil {
+		var stored struct {
+			Detail          *runDetailReference            `json:"detail"`
+			TerminalFailure *tracker.NativeTerminalFailure `json:"terminal_failure"`
+			Finalization    *tracker.NativeFinalization    `json:"finalization"`
+			Runtime         *struct {
+				Landing    *tracker.NativeLandingReceipt `json:"landing"`
+				Validation *gate.CommandResult           `json:"validation"`
+			} `json:"runtime"`
+		}
+		if err := json.Unmarshal([]byte(raw), &stored); err != nil {
 			return nil, false, err
+		}
+		data := tracker.NativeRunData{TerminalFailure: stored.TerminalFailure, Finalization: stored.Finalization}
+		if stored.Detail != nil {
+			if err := decodeRunDetail(ctx, q, raw, &data); err != nil {
+				return nil, false, err
+			}
+		} else if stored.Runtime != nil {
+			data.Runtime = &tracker.NativeRuntimeObservation{Landing: stored.Runtime.Landing, Validation: stored.Runtime.Validation}
 		}
 		f.example, f.class = failureFromAttempt(data, status)
 		if f.example == "" {

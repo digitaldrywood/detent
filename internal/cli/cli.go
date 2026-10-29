@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/pause"
 	"github.com/digitaldrywood/detent/internal/project"
+	"github.com/digitaldrywood/detent/internal/service"
 )
 
 var (
@@ -29,12 +30,10 @@ var (
 )
 
 const (
-	addProjectExampleCommand = "detent add-project --id api --workflow ~/code/api/WORKFLOW.md --workdir ~/code/api"
-	configPathCommand        = "detent config path"
-	forceInitCommand         = "detent init --force"
-	ghAuthLoginCommand       = `gh auth login --scopes "repo,read:org,project"`
-	portExampleCommand       = "detent --port 0"
-	promoteExampleCommand    = "detent promote api --priority 10"
+	configPathCommand     = "detent config path"
+	ghAuthLoginCommand    = `gh auth login --scopes "repo,read:org,project"`
+	portExampleCommand    = "detent --port 0"
+	promoteExampleCommand = "detent promote api --priority 10"
 )
 
 type HintedError struct {
@@ -118,12 +117,6 @@ type Signal struct {
 	Project   globalconfig.Project
 }
 
-type initResult struct {
-	Status string `json:"status"`
-	Path   string `json:"path"`
-	Rule   string `json:"rule"`
-}
-
 type configPathResult struct {
 	Path string `json:"path"`
 	Rule string `json:"rule"`
@@ -165,12 +158,6 @@ type projectPriorityResult struct {
 	Priority int    `json:"priority"`
 }
 
-type projectRemovedResult struct {
-	Status  string `json:"status"`
-	Project string `json:"project"`
-	Removed bool   `json:"removed"`
-}
-
 type BootMode string
 
 const (
@@ -179,6 +166,8 @@ const (
 )
 
 type BootConfig struct {
+	serviceStdout    *os.File
+	serviceStderr    *os.File
 	Mode             BootMode
 	Global           globalconfig.Config
 	ConfigPathRule   globalconfig.PathRule
@@ -200,6 +189,7 @@ type BootConfig struct {
 	HardExit         func(int)
 	Runner           orchestrator.Runner
 	ConnectorFactory project.ConnectorFactory
+	Scheduling       orchestrator.SchedulingSource
 	StartupRecovery  StartupRecovery
 }
 
@@ -242,6 +232,8 @@ type ProjectManager interface {
 type Option func(*options)
 
 type options struct {
+	resolveProjects   func(context.Context, globalconfig.Config) (globalconfig.Config, error)
+	readStartup       func(string) (globalconfig.Config, error)
 	resolvePath       func(string) (globalconfig.PathResolution, error)
 	read              func(string) (globalconfig.Config, error)
 	readProject       func(string, string) (globalconfig.Config, []string, error)
@@ -432,6 +424,20 @@ detent --format json config path`),
 			if err != nil {
 				return err
 			}
+			if opts.lookupEnv(service.ManagerEnvironment) == string(service.ManagerScheduledTask) {
+				stdout, stderr, err := openScheduledTaskLogs(boot.Global.Path)
+				if err != nil {
+					return err
+				}
+				defer func() {
+					if err := errors.Join(stdout.Close(), stderr.Close()); err != nil {
+						slog.Warn("close service logs", "error", err)
+					}
+				}()
+				cmd.SetOut(stdout)
+				cmd.SetErr(stderr)
+				boot.serviceStdout, boot.serviceStderr = stdout, stderr
+			}
 			stdoutTTY := opts.stdoutTTY()
 			if opts.configureLog != nil {
 				boot.LogLevel = opts.configureLog(boot.Runtime, cmd.OutOrStdout(), cmd.ErrOrStderr(), stdoutTTY)
@@ -441,6 +447,9 @@ detent --format json config path`),
 			boot.Output = cmd.OutOrStdout()
 			boot.Shutdown = opts.shutdown
 			boot.Restart = opts.restart
+			if !boot.Global.Client.Configured() {
+				slog.Warn(standaloneDeprecation, "hint", hubMigrationHint)
+			}
 			if !shouldLaunchTerminalDashboard(boot) {
 				slog.Info("resolved global config", "path", boot.Global.Path, "rule", boot.ConfigPathRule)
 				for _, warning := range boot.Runtime.Warnings {
@@ -448,7 +457,7 @@ detent --format json config path`),
 				}
 			}
 			var recovery StartupRecovery
-			if opts.startupRecovery != nil && boot.Mode == BootModeRunning {
+			if opts.startupRecovery != nil && boot.Mode == BootModeRunning && !supervisesControllers(boot) {
 				recovery, err = opts.startupRecovery(cmd.Context(), boot)
 				if err != nil {
 					return fmt.Errorf("initialize startup recovery: %w", err)
@@ -456,7 +465,7 @@ detent --format json config path`),
 				boot.StartupRecovery = recovery
 			}
 			bootErr := opts.boot(cmd.Context(), boot)
-			if bootErr != nil && recovery != nil {
+			if bootErr != nil && recovery != nil && (boot.Restart == nil || boot.Restart.control == nil || !boot.Restart.control.retired.Load()) {
 				recovery.HandleFailure(cmd.Context(), bootErr)
 			}
 			return bootErr
@@ -474,42 +483,30 @@ detent --format json config path`),
 	cmd.PersistentFlags().BoolVar(&headless, "headless", false, "stream logs instead of launching the terminal dashboard")
 	AddFormatFlag(cmd, &format)
 	cmd.AddCommand(
-		newStartCommand(&configPath, &host, &port, opts),
-		newStatusCommand(&configPath, &host, &port, opts),
 		newLogsCommand(&configPath, opts),
-		newAuthCommand(&configPath, &host, &port, opts),
 		newDoctorCommand(&configPath, &env, &logLevel, &host, &port, opts),
 		newFixCommand(&configPath, opts),
-		newCITriggerLabelCommand(opts),
 		newDevRuntimeCommand(&host, &port, opts),
 		newHubCommand(opts),
 		newCloudCommand(opts),
 		newArtifactCommand(opts.lookupEnv),
 		newAttachCommand(opts.lookupEnv, nil),
-		newInitCommand(&configPath, opts),
-		newAddProjectCommand(&configPath, opts),
-		newRefreshProjectCommand(&configPath, opts),
 		newPauseProjectCommand(&configPath, opts),
 		newEditProjectCommand(&configPath, opts, OperationUnpauseProject, "unpause", "Unpause a project", func(project *globalconfig.Project) error {
 			clearProjectPause(project)
 			return nil
 		}),
 		newResumeProjectCommand(&configPath, opts),
-		newGitHubLocalCommand(&configPath, opts),
-		newWorkItemCommand(&configPath, opts),
 		newBudgetCommand(&configPath, opts),
 		newAuditCommand(&configPath, &host, &port, opts),
-		newKeyCommand(&configPath, opts),
 		newConfigCommand(&configPath, opts),
 		newCapacityCommand(&configPath, &host, &port, opts),
 		newExposureCommand(&configPath, opts),
 		newIssueCommand(&configPath, &host, &port, opts),
 		newMCPCommand(&configPath, &host, &port, opts),
 		newStateCommand(&configPath, &host, &port, opts),
-		newOnboardingCommand(&configPath, opts),
 		newPromoteCommand(&configPath, opts),
 		newReportCommand(&configPath, &host, &port, opts),
-		newRemoveProjectCommand(&configPath, opts),
 	)
 	cmd.SetHelpCommand(newHelpCommand(cmd, opts))
 	ConfigureExamplesFirstHelp(cmd)
@@ -522,20 +519,23 @@ detent --format json config path`),
 func defaultOptions() options {
 	return options{
 		resolvePath: globalconfig.ResolvePath,
+		readStartup: func(path string) (globalconfig.Config, error) {
+			return readLocalConfigurationSource(context.Background(), path)
+		},
 		read: func(path string) (globalconfig.Config, error) {
-			return readLocalConfigurationFile(path)
+			return readLocalConfigurationSource(context.Background(), path)
 		},
 		readProject: func(path string, projectID string) (globalconfig.Config, []string, error) {
 			return readLocalConfigurationProjectFile(path, projectID)
 		},
 		readDoctor: func(path string) (globalconfig.Config, error) {
-			return readLocalConfigurationFile(path, globalconfig.WithMissingWorkflowFiles())
+			return readLocalConfigurationFile(context.Background(), path, globalconfig.WithMissingWorkflowFiles())
 		},
 		readDoctorProject: func(path string, projectID string) (globalconfig.Config, []string, error) {
 			return readLocalConfigurationProjectFile(path, projectID, globalconfig.WithMissingWorkflowFiles())
 		},
 		readOrDefault: func(path string) (globalconfig.Config, error) {
-			cfg, err := readLocalConfigurationFile(path, globalconfig.WithProjectPathLiterals())
+			cfg, err := readLocalConfigurationFile(context.Background(), path, globalconfig.WithProjectPathLiterals())
 			if err != nil && errors.Is(err, os.ErrNotExist) {
 				return globalconfig.ReadOrDefault(path, globalconfig.WithProjectPathLiterals())
 			}
@@ -575,7 +575,7 @@ func newHelpCommand(root *cobra.Command, opts options) *cobra.Command {
 	return &cobra.Command{
 		Use:   "help [command]",
 		Short: "Show help for a command",
-		Example: strings.TrimSpace(`detent help add-project
+		Example: strings.TrimSpace(`detent help hub runner register
 detent --format json help`),
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -721,182 +721,6 @@ func writeErrorHint(out io.Writer, err error) error {
 	return writeErr
 }
 
-func newInitCommand(configPath *string, opts options) *cobra.Command {
-	var force bool
-	cmd := &cobra.Command{
-		Use:     "init",
-		Short:   "Create a default global config",
-		Example: "detent init --config ~/.config/detent/global.yaml",
-		Args:    NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			out, err := OutputForCommand(cmd)
-			if err != nil {
-				return err
-			}
-			resolution, err := resolveConfigPathResolution(*configPath, opts)
-			if err != nil {
-				return err
-			}
-			path := resolution.Path
-
-			cfg, err := globalconfig.DefaultAt(path)
-			if err != nil {
-				return err
-			}
-			path = cfg.Path
-			if err := checkInitTarget(path, force); err != nil {
-				return err
-			}
-			if err := opts.write(path, cfg); err != nil {
-				return err
-			}
-			if err := opts.signal(cmd.Context(), Signal{
-				Operation: OperationInit,
-			}); err != nil {
-				return err
-			}
-			return out.Write(nil, initResult{
-				Status: "ok",
-				Path:   path,
-				Rule:   string(resolution.Rule),
-			})
-		},
-	}
-	cmd.Flags().BoolVar(&force, "force", false, "overwrite an existing global config")
-	return cmd
-}
-
-func checkInitTarget(path string, force bool) error {
-	_, err := os.Stat(path)
-	if err == nil {
-		if !force {
-			return hintedError(
-				ErrConfigExists,
-				fmt.Sprintf("%s: %s", ErrConfigExists, path),
-				"run detent init --force to overwrite it, or edit the file reported by detent config path",
-				forceInitCommand,
-				configPathCommand,
-			)
-		}
-		if _, readErr := os.ReadFile(path); readErr != nil {
-			return fmt.Errorf("read existing global config %s: %w", path, readErr)
-		}
-		return nil
-	}
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	return fmt.Errorf("stat global config %s: %w", path, err)
-}
-
-func newAddProjectCommand(configPath *string, opts options) *cobra.Command {
-	var cfg globalconfig.Project
-	cmd := &cobra.Command{
-		Use:     "add-project",
-		Short:   "Add a project to global config",
-		Example: "detent add-project --id api --workflow ~/code/api/WORKFLOW.md --workdir ~/code/api --weight 2",
-		Args:    NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			out, err := OutputForCommand(cmd)
-			if err != nil {
-				return err
-			}
-			path, err := resolveConfigPath(*configPath, opts)
-			if err != nil {
-				return err
-			}
-			cfg.ID = strings.TrimSpace(cfg.ID)
-			cfg.WorkflowRef = strings.TrimSpace(cfg.WorkflowRef)
-			cfg.CredentialRef = strings.TrimSpace(cfg.CredentialRef)
-			cfg.PausedReason = strings.TrimSpace(cfg.PausedReason)
-			cfg.PausedUntilIssue = strings.TrimSpace(cfg.PausedUntilIssue)
-			cfg.PausedUntil = strings.TrimSpace(cfg.PausedUntil)
-			if err := validateProjectFlags(cfg); err != nil {
-				return err
-			}
-			if cfg.Paused {
-				cfg.PausedAt = time.Now().UTC().Format(time.RFC3339)
-			}
-
-			global, err := opts.readOrDefault(path)
-			if err != nil {
-				return err
-			}
-			if projectIndex(global.Projects, cfg.ID) >= 0 {
-				return projectExistsError(cfg.ID)
-			}
-
-			cfg.GlobalCache = global.Global.Cache.Normalized()
-			global.Projects = append(global.Projects, cfg)
-			if err := opts.write(path, global); err != nil {
-				return err
-			}
-			global, err = opts.readOrDefault(path)
-			if err != nil {
-				return err
-			}
-			index := projectIndex(global.Projects, cfg.ID)
-			if index < 0 {
-				return projectNotFoundError(cfg.ID, global.Projects)
-			}
-			cfg = global.Projects[index]
-			gitStatus := inspectGlobalConfigGit(cmd.Context(), path, opts.runCommand)
-			if err := opts.signal(cmd.Context(), Signal{
-				Operation: OperationAddProject,
-				ProjectID: cfg.ID,
-				Project:   cfg,
-			}); err != nil {
-				return err
-			}
-			result := newProjectResult(cfg)
-			result.GlobalConfigGitStatus = gitStatus
-			return out.Write(func(w io.Writer) error {
-				return writeProjectRegistrationPretty(w, path, result)
-			}, result)
-		},
-	}
-	cmd.Flags().StringVar(&cfg.ID, "id", "", "project id")
-	cmd.Flags().StringVar(&cfg.Workflow, "workflow", "", "project workflow path")
-	cmd.Flags().StringVar(&cfg.WorkflowRef, "workflow-ref", "", "git ref for loading the workflow")
-	cmd.Flags().StringVar(&cfg.Workdir, "workdir", "", "project worktree root")
-	cmd.Flags().IntVar(&cfg.Weight, "weight", 1, "project scheduling weight")
-	cmd.Flags().IntVar(&cfg.Priority, "priority", 0, "project dispatch priority")
-	cmd.Flags().BoolVar(&cfg.Paused, "paused", false, "add the project in a paused state")
-	cmd.Flags().StringVar(&cfg.PausedReason, "reason", "", "reason the project is paused")
-	cmd.Flags().StringVar(&cfg.PausedUntilIssue, "until-issue", "", "auto-unpause after this tracker issue closes")
-	cmd.Flags().StringVar(&cfg.PausedUntil, "until", "", "auto-unpause at this RFC 3339 timestamp")
-	cmd.Flags().StringVar(&cfg.CredentialRef, "credential-ref", "", "project credential reference")
-	return cmd
-}
-
-func validateProjectFlags(cfg globalconfig.Project) error {
-	switch {
-	case cfg.ID == "":
-		return WrapValidation(hintedError(nil, "--id is required", exampleHint(addProjectExampleCommand), addProjectExampleCommand))
-	case strings.TrimSpace(cfg.Workflow) == "":
-		return WrapValidation(hintedError(nil, "--workflow is required", exampleHint(addProjectExampleCommand), addProjectExampleCommand))
-	case strings.TrimSpace(cfg.Workdir) == "":
-		return WrapValidation(hintedError(nil, "--workdir is required", exampleHint(addProjectExampleCommand), addProjectExampleCommand))
-	case cfg.Weight <= 0:
-		command := addProjectExampleCommand + " --weight 1"
-		return WrapValidation(hintedError(nil, "--weight must be positive", exampleHint(command), command))
-	case cfg.Paused && strings.TrimSpace(cfg.PausedReason) == "":
-		command := addProjectExampleCommand + ` --paused --reason "maintenance"`
-		return WrapValidation(hintedError(nil, "--reason is required with --paused", exampleHint(command), command))
-	case !cfg.Paused && pauseMetadataConfigured(cfg):
-		return WrapValidation(errors.New("--reason, --until-issue, and --until require --paused"))
-	case strings.TrimSpace(cfg.PausedUntilIssue) != "" && strings.TrimSpace(cfg.PausedUntil) != "":
-		return WrapValidation(errors.New("--until-issue and --until are mutually exclusive"))
-	case strings.TrimSpace(cfg.PausedUntil) != "":
-		if _, err := time.Parse(time.RFC3339, strings.TrimSpace(cfg.PausedUntil)); err != nil {
-			return WrapValidation(errors.New("--until must be an RFC 3339 timestamp"))
-		}
-		return nil
-	default:
-		return nil
-	}
-}
-
 type projectEdit func(*globalconfig.Project) error
 
 type projectValidation func(context.Context, globalconfig.Config, int) error
@@ -1017,12 +841,6 @@ func activeHoursOverrideDeadline(now time.Time, duration string, until string) (
 		return time.Time{}, WrapValidation(errors.New("--until must be in the future"))
 	}
 	return parsed, nil
-}
-
-func pauseMetadataConfigured(project globalconfig.Project) bool {
-	return strings.TrimSpace(project.PausedReason) != "" ||
-		strings.TrimSpace(project.PausedUntilIssue) != "" ||
-		strings.TrimSpace(project.PausedUntil) != ""
 }
 
 func clearProjectPause(project *globalconfig.Project) {
@@ -1230,7 +1048,7 @@ func validatePauseIssueReference(ctx context.Context, cfg globalconfig.Config, p
 
 func pauseTrackerSupportsIssueReferences(kind string) bool {
 	switch strings.ToLower(strings.TrimSpace(kind)) {
-	case workflowconfig.TrackerGitHub, workflowconfig.TrackerGitHubLocal, workflowconfig.TrackerLocalSQLite, workflowconfig.TrackerMemory:
+	case workflowconfig.TrackerGitHub, workflowconfig.TrackerHubNative:
 		return true
 	default:
 		return false
@@ -1244,56 +1062,6 @@ func pauseIssueValidationError(projectID string, reference string, err error) er
 		strings.TrimSpace(reference),
 		err,
 	))
-}
-
-func newRemoveProjectCommand(configPath *string, opts options) *cobra.Command {
-	return &cobra.Command{
-		Use:     "remove-project PROJECT_ID",
-		Short:   "Remove a project from global config",
-		Example: "detent remove-project api",
-		Args:    ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			out, err := OutputForCommand(cmd)
-			if err != nil {
-				return err
-			}
-			path, err := resolveConfigPath(*configPath, opts)
-			if err != nil {
-				return err
-			}
-			cfg, err := opts.readOrDefault(path)
-			if err != nil {
-				return err
-			}
-
-			id := strings.TrimSpace(args[0])
-			index := projectIndex(cfg.Projects, id)
-			if index < 0 {
-				return projectNotFoundError(id, cfg.Projects)
-			}
-			removed := cfg.Projects[index]
-			cfg.Projects = append(cfg.Projects[:index], cfg.Projects[index+1:]...)
-			if cfg.Projects == nil {
-				cfg.Projects = []globalconfig.Project{}
-			}
-			if err := opts.write(path, cfg); err != nil {
-				return err
-			}
-
-			if err := opts.signal(cmd.Context(), Signal{
-				Operation: OperationRemoveProject,
-				ProjectID: removed.ID,
-				Project:   removed,
-			}); err != nil {
-				return err
-			}
-			return out.Write(nil, projectRemovedResult{
-				Status:  "ok",
-				Project: removed.ID,
-				Removed: true,
-			})
-		},
-	}
 }
 
 func newProjectResult(project globalconfig.Project) projectResult {
@@ -1310,23 +1078,6 @@ func newProjectResult(project globalconfig.Project) projectResult {
 		PausedUntil:      project.PausedUntil,
 		CredentialRef:    project.CredentialRef,
 	}
-}
-
-func writeProjectRegistrationPretty(w io.Writer, path string, result projectResult) error {
-	if result.GlobalConfigGitStatus == nil {
-		return nil
-	}
-	status := result.GlobalConfigGitStatus
-	lines := []string{
-		fmt.Sprintf("project %s registered in %s", result.ID, path),
-		"global_config_repository: " + status.RepositoryRoot,
-		"global_config_status: " + status.trackedStatus(),
-	}
-	if status.Dirty {
-		lines = append(lines, "warning: "+globalConfigGitDurabilityWarning(status.RepositoryRoot))
-	}
-	_, err := fmt.Fprintln(w, strings.Join(lines, "\n"))
-	return err
 }
 
 func projectEditResult(operation Operation, project globalconfig.Project) any {
@@ -1376,16 +1127,6 @@ func projectIndex(projects []globalconfig.Project, id string) int {
 	return -1
 }
 
-func projectExistsError(id string) error {
-	id = strings.TrimSpace(id)
-	return hintedError(
-		ErrProjectExists,
-		fmt.Sprintf("project %q already exists", id),
-		fmt.Sprintf("project id %q is already taken; run detent config path to inspect current projects before choosing a new --id", id),
-		configPathCommand,
-	)
-}
-
 func projectNotFoundError(id string, projects []globalconfig.Project) error {
 	id = strings.TrimSpace(id)
 	ids := projectHintIDs(projects)
@@ -1393,8 +1134,8 @@ func projectNotFoundError(id string, projects []globalconfig.Project) error {
 		return hintedError(
 			ErrProjectNotFound,
 			fmt.Sprintf("project %q not found", id),
-			"no projects are configured; run detent add-project to add one",
-			addProjectExampleCommand,
+			"no projects are configured; run detent hub runner register to enroll this runner",
+			"detent hub runner register --help",
 		)
 	}
 

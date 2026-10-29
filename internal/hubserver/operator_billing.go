@@ -87,6 +87,17 @@ func (e hostedOperatorExecutor) ListTools(ctx context.Context) ([]operatortool.D
 		return nil, err
 	}
 	definitions = append(definitions, changes...)
+	if catalog, err := operatorCatalog(ctx); err == nil && catalog.credential.HostedRole != "account" {
+		for _, definition := range operatortool.ThreadCatalog() {
+			required := apikey.ScopeRead
+			if definition.Name != "list_threads" && definition.Name != "get_thread" {
+				required = apikey.ScopeWrite
+			}
+			if _, err := e.service.authorizeCatalog(ctx, operatortool.Requirement{Scope: required, Action: definition.Name}); err == nil {
+				definitions = append(definitions, definition)
+			}
+		}
+	}
 	admin, err := e.service.administrationCatalog(ctx)
 	if err != nil {
 		return nil, err
@@ -157,6 +168,10 @@ func safeBillingError(err error) error {
 }
 
 func (e hostedOperatorExecutor) Execute(ctx context.Context, call operatortool.Call) (result operatortool.Result, err error) {
+	if operatortool.IsThreadTool(call.Name) {
+		return e.service.executeThreadTool(ctx, call)
+	}
+	ctx = e.service.freshRunDetailContext(ctx)
 	call, err = e.service.normalizeToolReferences(ctx, call)
 	if err != nil {
 		return result, err
@@ -209,7 +224,7 @@ func (e hostedOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 	if hubFleetTool(call.Name) {
 		return hubFleetExecutor(e).Execute(ctx, call)
 	}
-	if call.Name == operatortool.MoveItem || operatortool.IsAttachmentTool(call.Name) || call.Name == operatortool.FileIssue || operatortool.IsWorkTool(call.Name) || operatortool.IsWorkRead(call.Name) || call.Name == operatortool.ExplainItem {
+	if call.Name == operatortool.StopRun || call.Name == operatortool.MoveItem || operatortool.IsAttachmentTool(call.Name) || call.Name == operatortool.FileIssue || operatortool.IsWorkTool(call.Name) || operatortool.IsWorkRead(call.Name) || call.Name == operatortool.ExplainItem {
 		return nativeOperatorExecutor(e).Execute(ctx, call)
 	}
 	defer func() {
@@ -242,6 +257,12 @@ func (e hostedOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 			}
 			return (hubFleetExecutor{service: s}).actionResult(ctx, action)
 		}
+		if action.Kind == chat.ActionStopRun {
+			if _, _, _, err := (nativeOperatorExecutor{service: s}).stopRunAuthority(ctx, action.Arguments); err != nil {
+				return result, err
+			}
+			return s.hubActionResult(action)
+		}
 		if action.Kind == chat.ActionMoveItem {
 			if _, _, err := (nativeOperatorExecutor{service: s}).workflowAuthority(ctx, action.Arguments); err != nil {
 				return result, err
@@ -273,9 +294,14 @@ func (e hostedOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 	case operatortool.BillingStatus, operatortool.BillingUsage, operatortool.BillingExport, operatortool.HostedPlan, operatortool.HostedUsage:
 		kind := "billing"
 		var request operatortool.HostedUsageArguments
+		var creditPage creditPageRequest
 		if call.Name == operatortool.HostedUsage {
 			kind = ""
 			if operatortool.DecodeArguments(call.Arguments, &request) != nil || len(request.ProjectID) > 256 {
+				return result, operatortool.ErrInvalidArguments
+			}
+		} else if call.Name == operatortool.BillingStatus {
+			if operatortool.DecodeArguments(call.Arguments, &creditPage) != nil {
 				return result, operatortool.ErrInvalidArguments
 			}
 		} else if operatortool.DecodeArguments(call.Arguments, &struct{}{}) != nil {
@@ -348,7 +374,7 @@ func (e hostedOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 				Report      hostedBillingReport `json:"report"`
 			}{hex.EncodeToString(digest[:]), s.operatorDashboardURL() + s.hostedPath("/api/cloud/billing/subscription"), now, data})
 		default:
-			data, err := s.readBillingView(ctx)
+			data, err := s.readBillingView(ctx, creditPage)
 			if err != nil {
 				return result, err
 			}
@@ -557,6 +583,9 @@ func (e hostedOperatorExecutor) ExecuteAction(ctx context.Context, action chat.A
 	}
 	if action.Mutation.Source == "chat" {
 		return e.service.executeCoordinatorAction(ctx, action)
+	}
+	if action.Kind == chat.ActionStopRun {
+		return (nativeOperatorExecutor(e)).executeStopRun(ctx, action)
 	}
 	if action.Kind == chat.ActionMoveItem {
 		return (nativeOperatorExecutor(e)).executeWorkflowTransition(ctx, action)

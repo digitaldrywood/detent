@@ -16,9 +16,9 @@ func readNativeComment(ctx context.Context, query nativeQueryer, scope nativeSco
 	var comment tracker.NativeComment
 	var actor, created, updated string
 	var editor, provenance sql.NullString
-	err := query.QueryRowContext(ctx, `SELECT id, organization_id, project_id, work_item_id, revision, sequence, body, actor_json, edited_by_json, provenance_json, created_at, updated_at
+	err := query.QueryRowContext(ctx, `SELECT id, organization_id, project_id, work_item_id, revision, sequence, body, actor_json, edited_by_json, provenance_json, created_at, updated_at, deleted
 FROM native_comments WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND id = ?`, scope.organization, scope.project, itemID, commentID).Scan(
-		&comment.ID, &comment.OrganizationID, &comment.ProjectID, &comment.WorkItemID, &comment.Revision, &comment.Sequence, &comment.Body, &actor, &editor, &provenance, &created, &updated)
+		&comment.ID, &comment.OrganizationID, &comment.ProjectID, &comment.WorkItemID, &comment.Revision, &comment.Sequence, &comment.Body, &actor, &editor, &provenance, &created, &updated, &comment.Deleted)
 	if err != nil {
 		return comment, err
 	}
@@ -45,7 +45,7 @@ FROM native_comments WHERE organization_id = ? AND project_id = ? AND work_item_
 func (s *Service) createNativeComment(c echo.Context) error {
 	var request tracker.CreateComment
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	result, err := s.createNativeCommentCommand(c.Request().Context(), nativeRequestScope(c), c.Param("item"), request)
 	if err != nil {
@@ -57,6 +57,9 @@ func (s *Service) createNativeComment(c echo.Context) error {
 // insertNativeComment appends a comment by the request's actor to a native
 // issue and records it in the issue's history.
 func insertNativeComment(ctx context.Context, tx *sql.Tx, scope nativeScope, issue tracker.NativeIssue, body string, provenance *tracker.Provenance, now time.Time) (tracker.NativeComment, error) {
+	if err := validateCloudVisualReferences(ctx, tx, scope, cloudContentField{"body", body}); err != nil {
+		return tracker.NativeComment{}, err
+	}
 	comment := tracker.NativeComment{ID: newNativeID("cmt"), OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: issue.WorkItemID,
 		Revision: 1, Body: body, Actor: scope.actor(), Provenance: provenance, CreatedAt: now, UpdatedAt: now}
 	if err := tx.QueryRowContext(ctx, "SELECT event_sequence + 1 FROM issues WHERE organization_id = ? AND project_id = ? AND native_id = ?", scope.organization, scope.project, issue.WorkItemID).Scan(&comment.Sequence); err != nil {
@@ -74,7 +77,7 @@ func insertNativeComment(ctx context.Context, tx *sql.Tx, scope nativeScope, iss
 	if comment.Provenance != nil {
 		sourceKey = comment.Provenance.Provider + ":" + comment.Provenance.ExternalID
 	}
-	_, err = tx.ExecContext(ctx, "INSERT INTO native_comments (id, organization_id, project_id, work_item_id, revision, sequence, body, actor_json, provenance_json, source_key, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)", comment.ID, scope.organization, scope.project, issue.WorkItemID, comment.Sequence, comment.Body, actor, encodedProvenance, sourceKey, formatHubTime(now), formatHubTime(now))
+	_, err = tx.ExecContext(ctx, "INSERT INTO native_comments (id, organization_id, project_id, work_item_id, revision, sequence, body, actor_json, provenance_json, source_key, created_at, updated_at,actor_kind,change_actor_kind,change_edited_by_kind) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?,?,?,'')", comment.ID, scope.organization, scope.project, issue.WorkItemID, comment.Sequence, comment.Body, actor, encodedProvenance, sourceKey, formatHubTime(now), formatHubTime(now), comment.Actor.Kind, comment.Actor.Kind)
 	if err != nil {
 		return comment, err
 	}
@@ -90,7 +93,7 @@ func insertNativeComment(ctx context.Context, tx *sql.Tx, scope nativeScope, iss
 func (s *Service) updateNativeComment(c echo.Context) error {
 	var request tracker.UpdateComment
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	result, err := s.updateNativeCommentCommand(c.Request().Context(), nativeRequestScope(c), c.Param("item"), c.Param("comment"), request)
 	if err != nil {

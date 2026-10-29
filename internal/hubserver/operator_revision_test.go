@@ -12,6 +12,7 @@ import (
 
 func TestOperatorRevisionSchemaContract(t *testing.T) {
 	targets := map[string]any{
+		operatortool.StopRun:                          &operatortool.NativeStopRunArguments{},
 		operatortool.MoveItem:                         &operatortool.MoveItemArguments{},
 		operatortool.SetPriority:                      &operatortool.SetPriorityArguments{},
 		operatortool.EditItem:                         &operatortool.WorkArguments{},
@@ -21,6 +22,7 @@ func TestOperatorRevisionSchemaContract(t *testing.T) {
 		operatortool.RestoreItem:                      &operatortool.WorkArguments{},
 		operatortool.TransferItem:                     &operatortool.WorkArguments{},
 		operatortool.VerifyFix:                        &operatortool.WorkArguments{},
+		operatortool.PublishReleasePick:               &operatortool.ChangeArguments{},
 		operatortool.AssociateReleasePick:             &operatortool.ChangeArguments{},
 		operatortool.ReviewChange:                     &operatortool.ChangeArguments{},
 		operatortool.OrganizationProjectRankUpdate:    &operatoradmin.Input{},
@@ -34,10 +36,14 @@ func TestOperatorRevisionSchemaContract(t *testing.T) {
 		operatortool.UpdateOrganizationModelSelection: &operatortool.ModelSelectionInput{},
 		operatortool.UpdateProjectModelSelection:      &operatortool.ModelSelectionInput{},
 		operatortool.PlatformChangeEntitlement:        &operatortool.PlatformEntitlementArguments{},
+		"rename_project":                              &operatortool.RenameProjectArguments{},
+		"set_organization_logo":                       &operatortool.SetOrganizationLogoArguments{},
+		"set_project_icon":                            &operatortool.SetProjectIconArguments{},
 		"update_project_integration":                  &operatortool.IntegrationInput{},
 		"bind_native_repository":                      &operatortool.RepositoryInput{},
 		"start_git_hub_import":                        &operatortool.ImportStartInput{},
 		"advance_git_hub_import":                      &operatortool.ImportAdvanceInput{},
+		operatortool.UpdateProjectSpriteAllocation:    &operatortool.SpriteAllocationInput{},
 		"patch_project_action":                        &projectActionPatch{},
 		"create_project_action_run":                   &workspaceToolRequest{},
 	}

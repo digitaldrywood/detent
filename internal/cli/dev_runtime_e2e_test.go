@@ -3,11 +3,13 @@ package cli
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -15,7 +17,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/boardsnapshot"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/devruntime"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
@@ -37,7 +38,7 @@ func TestStartIsolatedRuntimeAutoPromotesFixtureAndStopsOnCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	output := &lockedBuffer{}
 	audits := make(chan isolatedAuditObservation, 1)
-	cfg := devRuntimeBootConfig(runtime, "127.0.0.1", defaultOptions(), output)
+	cfg := devRuntimeBootConfig(t.Context(), runtime, "127.0.0.1", defaultOptions(), output)
 	cfg.Runner = observedDevRuntimeRunner{audits: audits}
 	done := make(chan error, 1)
 	runtimeDone := make(chan struct{})
@@ -129,7 +130,7 @@ func TestStartIsolatedRuntimePublishesBannerBeforeSnapshotLoad(t *testing.T) {
 			runtimeDone := make(chan struct{})
 			go func() {
 				done <- startRunningWithDependencies(ctx,
-					devRuntimeBootConfig(runtime, "127.0.0.1", defaultOptions(), output),
+					devRuntimeBootConfig(t.Context(), runtime, "127.0.0.1", defaultOptions(), output),
 					startRunningDependencies{boardSnapshotStore: store})
 				close(runtimeDone)
 			}()
@@ -243,7 +244,7 @@ func TestStartKanbanDemoRendersAndAppliesSafeActions(t *testing.T) {
 	done := make(chan error, 1)
 	runtimeDone := make(chan struct{})
 	go func() {
-		done <- startRunning(ctx, devRuntimeBootConfig(runtime, "127.0.0.1", defaultOptions(), output))
+		done <- startRunning(ctx, devRuntimeBootConfig(t.Context(), runtime, "127.0.0.1", defaultOptions(), output))
 		close(runtimeDone)
 	}()
 	t.Cleanup(func() {
@@ -367,37 +368,61 @@ func TestStartKanbanDemoRendersAndAppliesSafeActions(t *testing.T) {
 	}
 }
 
+type startupTranscriptSnapshot struct {
+	store.Store
+	snapshot func(context.Context)
+}
+
+func (s startupTranscriptSnapshot) ProtectedCodexThreadIDs(ctx context.Context) ([]string, error) {
+	ids, err := s.Store.ProtectedCodexThreadIDs(ctx)
+	if err == nil {
+		s.snapshot(ctx)
+	}
+	return ids, err
+}
+
 func TestStartRunningServesWhileMaintenanceBlocked(t *testing.T) {
 	if testing.Short() {
 		t.Skip("live service, profiling, or filesystem watcher integration")
 	}
 
-	for _, outcome := range []string{"complete", "cancel", "required setup failure"} {
+	for _, outcome := range []string{"complete", "cancel", "required setup failure", "transcript cleanup"} {
 		t.Run(outcome, func(t *testing.T) {
+			complete := outcome == "complete" || outcome == "transcript cleanup"
 			runtime, err := devruntime.Build(devruntime.Config{Home: t.TempDir(), Port: 0})
 			if err != nil {
 				t.Fatal(err)
 			}
+			home := t.TempDir()
+			t.Setenv("CODEX_HOME", home)
+			maintenanceWorkflow := filepath.Join(home, "WORKFLOW.md")
+			if err := os.WriteFile(maintenanceWorkflow, []byte("---\ncodex:\n  command: codex\n---\nMaintain artifacts.\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			now := time.Now()
+			var paths, retained, expired []string
+			for _, profile := range []string{workerCodexProfileDir, launchdCodexProfileDir} {
+				paths = append(paths, writeCodexLogFixture(t, home, profile, now))
+				retained = append(retained, writeRetentionRollout(t, filepath.Join(home, profile, "sessions"), profile+"-source", "", now.Add(-40*24*time.Hour)))
+				expired = append(expired, writeRetentionRollout(t, filepath.Join(home, profile, "sessions"), profile+"-expired", "", now.Add(-40*24*time.Hour)))
+			}
 			ctx, cancel := context.WithCancel(t.Context())
 			output := &lockedBuffer{}
-			cfg := devRuntimeBootConfig(runtime, "127.0.0.1", defaultOptions(), output)
+			cfg := devRuntimeBootConfig(t.Context(), runtime, "127.0.0.1", defaultOptions(), output)
 			if outcome == "required setup failure" {
 				t.Setenv("DETENT_TEST_STARTUP_TOKEN", "")
 				cfg.Global.Client = globalconfig.HubClient{URL: "http://127.0.0.1:1", TokenEnvironment: "DETENT_TEST_STARTUP_TOKEN"}
 			}
 			registry := project.NewRegistry()
-			boardCache, err := boardsnapshot.New(boardsnapshot.Config{Path: filepath.Join(t.TempDir(), "board-snapshot.json"), MaxAge: time.Hour})
-			if err != nil {
-				t.Fatal(err)
-			}
-			cachedIssue := telemetry.Issue{ID: "cached-card", State: "Todo"}
-			if err := boardCache.Save(ctx, telemetry.Snapshot{GeneratedAt: time.Now().Add(-time.Minute), BoardIssues: []telemetry.Issue{cachedIssue}}); err != nil {
-				t.Fatal(err)
-			}
+			transcriptSnapshot := make(chan struct{})
+			transcriptRelease := make(chan struct{})
+			var transcriptOnce sync.Once
+			finishTranscripts := func() { transcriptOnce.Do(func() { close(transcriptRelease) }) }
 			entered := make(chan struct{})
 			release := make(chan struct{})
 			canceled := make(chan struct{})
 			cleanupRelease := make(chan struct{})
+			pruned := make(chan error, 1)
 			var releaseOnce, cleanupOnce sync.Once
 			unblock := func() { releaseOnce.Do(func() { close(release) }) }
 			finishCleanup := func() { cleanupOnce.Do(func() { close(cleanupRelease) }) }
@@ -406,14 +431,46 @@ func TestStartRunningServesWhileMaintenanceBlocked(t *testing.T) {
 			go func() {
 				done <- startRunningWithDependencies(ctx, cfg, startRunningDependencies{
 					managerDependencies: project.ManagerDependencies{Registry: registry},
-					boardSnapshotStore:  boardCache,
-					startupMaintenance: func(ctx context.Context, _ globalconfig.Config, _ store.Store) {
-						close(entered)
-						select {
-						case <-release:
-						case <-ctx.Done():
-							close(canceled)
-							<-cleanupRelease
+					startupMaintenance: func(ctx context.Context, maintenanceConfig globalconfig.Config, db store.Store) func() {
+						for _, profile := range []string{workerCodexProfileDir, launchdCodexProfileDir} {
+							source, err := db.StartSession(ctx, store.SessionStart{ProjectID: "retention", IssueID: profile, AgentBackendKind: "codex", ProviderThreadID: profile + "-source", StartedAt: now.Add(-40 * 24 * time.Hour)})
+							if err == nil {
+								err = db.FinishSession(ctx, source, store.SessionFinish{CompletedAt: now.Add(-39 * 24 * time.Hour)})
+							}
+							if err == nil {
+								_, err = db.StartSession(ctx, store.SessionStart{ProjectID: "retention", IssueID: profile, AgentBackendKind: "codex", ProviderThreadID: profile + "-resumed", ResumedFromSessionID: source, StartedAt: now})
+							}
+							if err != nil {
+								pruned <- err
+								return nil
+							}
+						}
+						threads := startupTranscriptSnapshot{Store: db, snapshot: func(ctx context.Context) {
+							close(transcriptSnapshot)
+							if outcome == "transcript cleanup" {
+								select {
+								case <-transcriptRelease:
+								case <-ctx.Done():
+								}
+							}
+						}}
+						maintenanceConfig.Projects = []globalconfig.Project{{ID: "retention", Workdir: home, Workflow: maintenanceWorkflow}}
+						maintainStartupCodexArtifacts(ctx, maintenanceConfig, threads)
+						return func() {
+							first := true
+							pruned <- pruneCodexLogs(ctx, home, now, codexLogSizeLimit, func(ctx context.Context) (bool, error) {
+								if first {
+									first = false
+									close(entered)
+									select {
+									case <-release:
+									case <-ctx.Done():
+										close(canceled)
+										<-cleanupRelease
+									}
+								}
+								return false, ctx.Err()
+							})
 						}
 					},
 				})
@@ -421,6 +478,7 @@ func TestStartRunningServesWhileMaintenanceBlocked(t *testing.T) {
 			}()
 			t.Cleanup(func() {
 				cancel()
+				finishTranscripts()
 				unblock()
 				finishCleanup()
 				select {
@@ -430,6 +488,44 @@ func TestStartRunningServesWhileMaintenanceBlocked(t *testing.T) {
 				}
 			})
 			dashboardURL := waitForIsolatedRuntimeURL(t, output, done)
+			if outcome == "transcript cleanup" {
+				select {
+				case <-transcriptSnapshot:
+				case <-time.After(10 * time.Second):
+					t.Fatal("transcript protection snapshot did not start")
+				}
+				client := newRuntimeHTTPClient()
+				defer client.CloseIdleConnections()
+				observation, stopObservation := context.WithTimeout(ctx, 2*time.Second)
+				defer stopObservation()
+				ticks := time.NewTicker(10 * time.Millisecond)
+				defer ticks.Stop()
+				observed := false
+				for observation.Err() == nil {
+					request, err := http.NewRequestWithContext(observation, http.MethodGet, dashboardURL+"/health", nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					response, err := client.Do(request)
+					if err == nil {
+						observed = true
+						if err := response.Body.Close(); err != nil {
+							t.Fatal(err)
+						}
+						if response.StatusCode != http.StatusServiceUnavailable || len(registry.List()) != 0 {
+							t.Fatalf("projects became available during transcript protection snapshot: health=%d projects=%d", response.StatusCode, len(registry.List()))
+						}
+					}
+					select {
+					case <-ticks.C:
+					case <-observation.Done():
+					}
+				}
+				if !observed {
+					t.Fatal("health did not respond during transcript cleanup")
+				}
+				finishTranscripts()
+			}
 			select {
 			case <-entered:
 			case err := <-done:
@@ -437,58 +533,33 @@ func TestStartRunningServesWhileMaintenanceBlocked(t *testing.T) {
 			case <-time.After(10 * time.Second):
 				t.Fatal("maintenance did not start")
 			}
-			client := &http.Client{Timeout: time.Second}
-			request, err := http.NewRequestWithContext(ctx, http.MethodGet, dashboardURL+"/health", nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			response, err := client.Do(request)
-			if err != nil {
-				t.Fatalf("health unavailable during blocked maintenance: %v", err)
-			}
-			var health struct {
-				Ready     bool   `json:"ready"`
-				Lifecycle string `json:"lifecycle"`
-			}
-			err = json.NewDecoder(response.Body).Decode(&health)
-			if closeErr := response.Body.Close(); closeErr != nil {
-				t.Fatal(closeErr)
-			}
-			if err != nil || response.StatusCode != http.StatusServiceUnavailable || health.Ready || health.Lifecycle != "starting" {
-				t.Fatalf("health during maintenance = %+v, status %d, error %v", health, response.StatusCode, err)
-			}
-			state := waitForDashboard(t, dashboardURL+"/api/v1/state", done)
-			var snapshot struct {
-				Refresh        telemetry.Refresh        `json:"refresh"`
-				LifetimeTotals telemetry.LifetimeTotals `json:"lifetime_totals"`
-				Board          struct {
-					Cards []struct {
-						IssueID string `json:"issue_id"`
-					} `json:"cards"`
-				} `json:"board"`
-			}
-			if err := json.Unmarshal([]byte(state), &snapshot); err != nil {
-				t.Fatal(err)
-			}
-			if snapshot.Refresh.ReadinessStatus() != telemetry.RefreshStatusInitializing || snapshot.Refresh.NextRefreshAt != nil || snapshot.LifetimeTotals.Available {
-				t.Fatalf("startup state manufactured observations: %s", state)
-			}
-			if len(snapshot.Board.Cards) != 1 || snapshot.Board.Cards[0].IssueID != cachedIssue.ID {
-				t.Fatalf("last-known board not served during maintenance: %s", state)
-			}
-			if got := registry.List(); len(got) != 0 {
-				t.Fatalf("projects started before setup completed: %v", got)
-			}
-			switch outcome {
-			case "complete":
-				unblock()
-				waitForDashboard(t, dashboardURL+"/health", done)
-				waitForDashboardConditionWithRefresh(t, dashboardURL, dashboardURL+"/api/v1/state", done, "authorized mock work advances", func(body string) bool {
+			if outcome != "required setup failure" {
+				healthCtx, stopHealth := context.WithTimeout(ctx, 5*time.Second)
+				defer stopHealth()
+				waitForDashboardContext(t, healthCtx, dashboardURL+"/health", done)
+				if len(registry.List()) == 0 {
+					t.Fatal("ready without starting projects")
+				}
+				waitForDashboardConditionWithRefresh(t, dashboardURL, dashboardURL+"/api/v1/state", done, "authorized mock work advances during blocked retention", func(body string) bool {
 					return boardStateCountFromBody(t, body, "Merging") == 1
 				})
-				cancel()
-			case "cancel":
-				cancel()
+			}
+			for _, path := range retained {
+				if _, err := os.Stat(path); err != nil {
+					t.Fatalf("resume source was removed: %v", err)
+				}
+			}
+			for _, path := range expired {
+				if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("transcript cleanup did not finish before project startup: %v", err)
+				}
+			}
+			if complete {
+				unblock()
+			} else {
+				if outcome == "cancel" {
+					cancel()
+				}
 				select {
 				case <-canceled:
 				case <-time.After(10 * time.Second):
@@ -500,9 +571,34 @@ func TestStartRunningServesWhileMaintenanceBlocked(t *testing.T) {
 				default:
 				}
 				finishCleanup()
-			case "required setup failure":
-				unblock()
 			}
+			select {
+			case err := <-pruned:
+				if complete && err != nil || !complete && !errors.Is(err, context.Canceled) {
+					t.Fatalf("retention result = %v", err)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("retention did not finish")
+			}
+			for _, path := range paths {
+				db, err := sql.Open("sqlite", path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var rows int
+				err = db.QueryRowContext(t.Context(), "SELECT count(*) FROM logs").Scan(&rows)
+				if err := errors.Join(err, db.Close()); err != nil {
+					t.Fatal(err)
+				}
+				want := 3
+				if complete {
+					want = 2
+				}
+				if rows != want {
+					t.Fatalf("%s: rows = %d, want %d", path, rows, want)
+				}
+			}
+			cancel()
 			select {
 			case err := <-done:
 				if outcome == "required setup failure" {
@@ -539,7 +635,7 @@ func TestStartRunningWaitsForBoardSnapshotPersistence(t *testing.T) {
 	go func() {
 		runErr = startRunningWithDependencies(
 			ctx,
-			devRuntimeBootConfig(runtime, "127.0.0.1", defaultOptions(), output),
+			devRuntimeBootConfig(t.Context(), runtime, "127.0.0.1", defaultOptions(), output),
 			startRunningDependencies{
 				boardSnapshotStore:    store,
 				boardSnapshotInterval: time.Millisecond,
@@ -607,7 +703,7 @@ func TestStartScreenshotsDemoServesScenarioManifestAndUsage(t *testing.T) {
 	output := &lockedBuffer{}
 	done := make(chan error, 1)
 	go func() {
-		done <- startRunning(ctx, devRuntimeBootConfig(runtime, "127.0.0.1", defaultOptions(), output))
+		done <- startRunning(ctx, devRuntimeBootConfig(t.Context(), runtime, "127.0.0.1", defaultOptions(), output))
 	}()
 	t.Cleanup(cancel)
 
@@ -630,11 +726,6 @@ func TestStartScreenshotsDemoServesScenarioManifestAndUsage(t *testing.T) {
 	usage := waitForDashboardHeader(t, dashboardURL+"/api/v1/usage?by=project", done, "api-usage-populated")
 	if !strings.Contains(usage, `"events":84`) || !strings.Contains(usage, `"bucket":"billing-api"`) {
 		t.Fatalf("scenario usage response missing seeded ledger data:\n%s", usage)
-	}
-
-	onboarding := waitForDashboardHeader(t, dashboardURL+"/onboarding", done, "onboarding-write-success")
-	if !strings.Contains(onboarding, "Wrote WORKFLOW.md") {
-		t.Fatalf("onboarding scenario did not render success state:\n%s", onboarding)
 	}
 
 	cancel()

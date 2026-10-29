@@ -317,9 +317,6 @@ func knownDispatchWaitReason(issue connector.Issue, state *State, dueRetries map
 	if _, running := state.Running[issue.ID]; running {
 		return dispatchSkipAlreadyRunning
 	}
-	if _, deferred := state.deferredCompletions[issue.ID]; deferred {
-		return dispatchSkipCompletionDeferred
-	}
 	if _, retry := state.Retry[issue.ID]; retry {
 		return dispatchSkipRetryPending
 	}
@@ -732,7 +729,6 @@ const (
 	dispatchSkipBlocked                   = scheduler.DecisionReasonBlocked
 	dispatchSkipBudgetCooldown            = scheduler.DecisionReasonBudgetCooldown
 	dispatchSkipBudgetHardHold            = scheduler.DecisionReasonBudgetHardHold
-	dispatchSkipLifetimeLimit             = scheduler.DecisionReasonLifetimeLimit
 	dispatchSkipLocalSlotUnavailable      = scheduler.DecisionReasonLocalSlotUnavailable
 	dispatchSkipWorkerHostUnavailable     = scheduler.DecisionReasonWorkerHostUnavailable
 	dispatchSkipProjectCapacityFull       = scheduler.DecisionReasonProjectCapacityFull
@@ -856,7 +852,7 @@ func (p dispatchPlanner) dispatchableIssueDecisionForModelRequirement(
 	if mergedPullRequestReconciliationPending(issue, p.cfg) {
 		return dispatchableDecision{reason: dispatchSkipMergedPullRequest}
 	}
-	if duplicatePullRequestWork(issue, gate.Effective(p.cfg.AutoPromote.Gate).LocalStatus) {
+	if p.duplicatePullRequestWork(issue) {
 		return dispatchableDecision{reason: dispatchSkipDuplicatePullRequest}
 	}
 	if authorization := p.authorizationDecision(issue); !authorization.Matched {
@@ -875,9 +871,6 @@ func (p dispatchPlanner) dispatchableIssueDecisionForModelRequirement(
 	if _, ok := state.Running[issue.ID]; ok {
 		return dispatchableDecision{reason: dispatchSkipAlreadyRunning}
 	}
-	if _, ok := state.deferredCompletions[issue.ID]; ok {
-		return dispatchableDecision{reason: dispatchSkipCompletionDeferred}
-	}
 	if _, ok := state.Retry[issue.ID]; ok {
 		return dispatchableDecision{reason: dispatchSkipRetryPending}
 	}
@@ -885,10 +878,6 @@ func (p dispatchPlanner) dispatchableIssueDecisionForModelRequirement(
 		return dispatchableDecision{reason: dispatchSkipAlreadyClaimed}
 	}
 	if blocked, ok := state.Blocked[issue.ID]; ok {
-		reason := strings.ToLower(strings.TrimSpace(blocked.Reason))
-		if reason == lifetimeLimitReason || strings.HasPrefix(reason, lifetimeLimitBlockedReasonPrefix) {
-			return dispatchableDecision{reason: dispatchSkipLifetimeLimit}
-		}
 		detail := strings.TrimSpace(blocked.Reason)
 		if recovery := strings.TrimSpace(blocked.RecoveryReason); recovery != "" {
 			if detail != "" {
@@ -1376,11 +1365,12 @@ func (p dispatchPlanner) retryDelay(attempt int, continuation bool) time.Duratio
 	if attempt < 1 {
 		attempt = 1
 	}
-	exponent := min(attempt-1, 30)
-
-	delay := p.cfg.FailureRetryBaseDelay * time.Duration(math.Pow(2, float64(exponent)))
-	if delay > p.cfg.MaxRetryBackoff {
-		return p.cfg.MaxRetryBackoff
+	delay := min(p.cfg.FailureRetryBaseDelay, p.cfg.MaxRetryBackoff)
+	for range min(attempt-1, 30) {
+		if delay >= p.cfg.MaxRetryBackoff-delay {
+			return p.cfg.MaxRetryBackoff
+		}
+		delay *= 2
 	}
 	return delay
 }

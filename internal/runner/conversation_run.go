@@ -72,8 +72,8 @@ func (r *Runner) bindConversation(ctx context.Context, req RunRequest, backend A
 }
 
 // conversationThreadOrigin reports the kind of turn the bound thread belongs
-// to when the session exposes it. The hub decides what a bind resumes
-// (decisions section 9.3); the origin is recorded on the run so a thread of
+// to when the session exposes it. The hub decides what a bind resumes;
+// the origin is recorded on the run so a thread of
 // another kind is visible in the log rather than only in the answer the model
 // gives.
 func conversationThreadOrigin(session ConversationSession) string {
@@ -131,8 +131,7 @@ func (c *conversationRun) prepareTurn(request AgentTurnRequest) AgentTurnRequest
 		request.Prompt = appendConversationData(request.Prompt, text)
 	}
 	// Files attached to those queued messages ride the same turn: images as
-	// provider image input, text files as a data block after the prompt
-	// (decisions section 17.1).
+	// provider image input, text files as a data block after the prompt.
 	if attachments := c.session.PendingAttachments(); len(attachments) > 0 {
 		request.Attachments = append(request.Attachments, attachments...)
 		request.Prompt = appendConversationData(request.Prompt, attachmentDataBlock(attachments))
@@ -474,8 +473,7 @@ func boundConversationBytes(value string, limit int) string {
 // to the request the run built. An explicit model or effort replaces the
 // run's own selection; "auto" leaves it alone. Access only ever tightens:
 // read_only forbids writes, and full never re-enables what the run already
-// forbade, because a routine run is read-only by its mode (decisions
-// section 14).
+// forbade, because a routine run is read-only by its mode.
 func applyConversationPreferences(request AgentTurnRequest, preferences ConversationPreferences) AgentTurnRequest {
 	if model := preferences.ModelValue(); model != "" {
 		request.Model = model

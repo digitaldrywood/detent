@@ -102,7 +102,7 @@ export function firstRunSteps(facts: FirstRunFacts): readonly FirstRunStep[] {
       id: "setup",
       title: "Finish project setup",
       description:
-        "Approve the repository policy, check the runner host, and choose where artifact history lives.",
+        "Review the reported repository configuration, check the runner host, and choose where artifact history lives.",
       actionLabel: "Finish setup",
       done: facts.setupStepsLeft === 0,
       blockedReason: !hasProject
@@ -297,7 +297,7 @@ export function FirstRunPanel({
           : "loading",
     runnerState:
       onboarding !== undefined
-        ? onboarding.steps.find((step) => step.name === "Execution runner")?.state ?? "unavailable"
+        ? onboarding.steps.find((step) => step.name === "Runner")?.state ?? "unavailable"
         : setup.error !== null && !setup.loading
           ? "unavailable"
           : "loading",

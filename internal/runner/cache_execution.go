@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gobudget"
 	"github.com/digitaldrywood/detent/internal/toolcache"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 func (r *Runner) Run(ctx context.Context, req RunRequest) (result RunResult, err error) {
@@ -40,6 +42,21 @@ func (r *Runner) ReconcileWorkspaces(ctx context.Context, activeIssues []connect
 	ctx = r.buildCache.WithContext(ctx)
 	ctx = r.withValidationProcessOwner(ctx, connector.Issue{}, 0)
 	return r.reconcileWorkspaces(ctx, activeIssues)
+}
+
+func (r *Runner) WorkspaceCleanupIssues(ctx context.Context, cursor string, limit int) ([]connector.Issue, string, error) {
+	inventory, ok := r.workspaceSnapshot().(interface {
+		CleanupIssues(context.Context, string, int) ([]workspace.Issue, string, error)
+	})
+	if !ok {
+		return nil, cursor, errors.ErrUnsupported
+	}
+	issues, next, err := inventory.CleanupIssues(ctx, cursor, limit)
+	var result []connector.Issue
+	for _, issue := range issues {
+		result = append(result, connector.Issue{ID: issue.ID, Identifier: issue.Identifier})
+	}
+	return result, next, err
 }
 
 func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (result gate.ValidatorResult, err error) {

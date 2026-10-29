@@ -3,10 +3,10 @@ package hubserver
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 
+	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -19,28 +19,43 @@ type nativeSourceCheckpoint struct {
 }
 
 func readNativeSourceCheckpoint(ctx context.Context, q nativeQueryer, scope nativeScope, item string) (nativeSourceCheckpoint, error) {
-	rows, err := q.QueryContext(ctx, `SELECT a.id,l.machine_id,COALESCE(lr.runner_id,''),COALESCE(NULLIF(r.display_name,''),m.hostname,''),a.status,l.released_at,a.checkpoint_json
+	if explanationRead(ctx) {
+		return readExplanationCheckpoint(ctx, q, scope, item)
+	}
+	var before int64 = 1<<63 - 1
+	for range claimPreparationLimit {
+		var source nativeSourceCheckpoint
+		var fence int64
+		err := q.QueryRowContext(ctx, `SELECT a.id,l.machine_id,COALESCE(lr.runner_id,''),COALESCE(NULLIF(r.display_name,''),m.hostname,''),a.status,l.released_at,a.fencing_token
 FROM native_attempts a JOIN leases l ON l.lease_id=a.lease_id LEFT JOIN lease_runners lr ON lr.lease_id=l.lease_id
 LEFT JOIN runner_identities r ON r.id=lr.runner_id AND r.organization_id=a.organization_id LEFT JOIN machines m ON m.id=l.machine_id AND m.organization_id=a.organization_id
-WHERE a.organization_id=? AND a.project_id=? AND a.work_item_id=? AND a.checkpoint_json IS NOT NULL ORDER BY a.fencing_token DESC`, scope.organization, scope.project, item)
-	if err != nil {
-		return nativeSourceCheckpoint{}, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var source nativeSourceCheckpoint
-		var raw string
-		if err := rows.Scan(&source.AttemptID, &source.MachineID, &source.RunnerID, &source.RunnerName, &source.Status, &source.Released, &raw); err != nil {
+WHERE a.organization_id=? AND a.project_id=? AND a.work_item_id=? AND (a.checkpoint_preserves_source=1 OR a.checkpoint_preserves_source IS NULL) AND a.fencing_token<? ORDER BY a.fencing_token DESC LIMIT 1`, scope.organization, scope.project, item, before).Scan(&source.AttemptID, &source.MachineID, &source.RunnerID, &source.RunnerName, &source.Status, &source.Released, &fence)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nativeSourceCheckpoint{}, nil
+		}
+		if err != nil {
 			return source, err
 		}
-		if err := json.Unmarshal([]byte(raw), &source.Checkpoint); err != nil {
+		source.Checkpoint, err = readClaimCheckpoint(ctx, q, scope, item, source.AttemptID)
+		var hydration *claimHydration
+		if errors.As(err, &hydration) {
+			return source, &claimHydration{run: func(ctx context.Context, q nativeQueryer) error {
+				_, err := readNativeSourceCheckpoint(ctx, q, scope, item)
+				if errors.Is(err, errClaimHintStale) {
+					return nil
+				}
+				return err
+			}}
+		}
+		if err != nil {
 			return source, err
 		}
 		if source.Checkpoint.PreservesSource() {
 			return source, nil
 		}
+		before = fence
 	}
-	return nativeSourceCheckpoint{}, rows.Err()
+	return nativeSourceCheckpoint{}, fmt.Errorf("claim checkpoint preparation exceeded bounded history: %w", errClaimHintStale)
 }
 
 // nativeSourceClaimAllowed never routes work by where earlier work ran
@@ -61,17 +76,17 @@ func nativeSourceClaimAllowed(ctx context.Context, q nativeQueryer, scope native
 	if checkpoint.GitRef() {
 		return true, "Checkpoint " + checkpoint.Ref + " is in the project repository; any eligible runner restores it", nil
 	}
-	change, found, err := readLatestNativeChangeRequest(ctx, q, scope, item)
+	change, found, err := readClaimChange(ctx, q, scope, item)
 	if err != nil {
 		return false, "", err
 	}
 	var version tracker.ChangeVersion
 	if found && change.CurrentVersion != "" {
-		version, err = readChangeVersion(ctx, q, change.ID, change.CurrentVersion)
+		version, err = readClaimVersion(ctx, q, change.ID, change.CurrentVersion)
 		if err != nil {
 			return false, "", err
 		}
-		stored, err := nativeChangeSourceStored(ctx, q, version)
+		stored, err := readClaimSourceStored(ctx, q, version)
 		if err != nil || stored {
 			return stored, "Verified Change source is stored on the Hub; any eligible runner restores it", err
 		}
@@ -98,9 +113,13 @@ func nativeChangeSourceStored(ctx context.Context, q nativeQueryer, version trac
 	if version.Source == nil {
 		return false, nil
 	}
-	var bundle []byte
-	err := q.QueryRowContext(ctx, "SELECT bundle FROM change_sources WHERE version_id=?", version.ID).Scan(&bundle)
-	if errors.Is(err, sql.ErrNoRows) {
+	if explanationRead(ctx) {
+		var stored bool
+		err := q.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM change_sources WHERE version_id=?)", version.ID).Scan(&stored)
+		return stored, err
+	}
+	bundle, err := readChangeSourceBundle(ctx, q, version)
+	if errors.Is(err, sql.ErrNoRows) || errors.Is(err, artifact.ErrIntegrity) {
 		return false, nil
 	}
 	if err != nil {

@@ -106,12 +106,11 @@ func (s *Service) getNativeSourceRecovery(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	approval, err := readProjectPolicy(ctx, tx, string(scope.organization)+"/"+string(scope.project))
-	var refusal *nativeError
-	if err != nil && (!errors.As(err, &refusal) || refusal.Code != "policy_mismatch") {
+	approval, found, err := readProjectPolicy(ctx, tx, string(scope.organization)+"/"+string(scope.project))
+	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	if err == nil {
+	if found {
 		runners, err := readPlacementRunners(ctx, tx, scope, s.config.now())
 		if err != nil {
 			return s.nativeAPIError(c, err)
@@ -131,7 +130,7 @@ func (s *Service) getNativeSourceRecovery(c echo.Context) error {
 func (s *Service) transferNativeSource(c echo.Context) error {
 	var request sourceTransferRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	result, err := s.transferNativeSourceCommand(c.Request().Context(), nativeRequestScope(c), c.Param("item"), request)
 	if err != nil {
@@ -160,7 +159,7 @@ func (s *Service) transferNativeSourceCommand(ctx context.Context, scope nativeS
 			if !view.Available {
 				return nil, sourceRecoveryRefusal(view.Reason)
 			}
-			approval, err := readProjectPolicy(ctx, tx, string(scope.organization)+"/"+string(scope.project))
+			approval, err := requireProjectPolicy(ctx, tx, string(scope.organization)+"/"+string(scope.project))
 			if err != nil {
 				return nil, err
 			}

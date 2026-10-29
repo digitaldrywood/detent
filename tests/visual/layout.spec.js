@@ -99,7 +99,6 @@ test("screenshots manifest includes visual gate scenarios", async ({
       "github-api-primary-exhausted",
       "diagnostics-healthy",
       "settings-project-context",
-      "onboarding-project-selection",
       "fleet-kanban-blocked-alerts",
     ]),
   );
@@ -485,7 +484,7 @@ test("boosted card explains its direct downstream count", async ({ page }) => {
   await expect(tooltip).toContainText("Prerequisite for 2 blocked issues");
 });
 
-test("board elevated blockers render one compact opt-in alert", async ({
+test("board keeps historical machine failures out of human-action alerts", async ({
   page,
 }, testInfo) => {
   await openScenario(page, {
@@ -497,13 +496,14 @@ test("board elevated blockers render one compact opt-in alert", async ({
   });
 
   const exceptions = page.locator("#board-exceptions [id^='exception-']");
-  await expect(exceptions).toHaveCount(1);
-  await expect(exceptions.first()).toContainText("Needs you");
-  await expect(exceptions.first()).not.toContainText("Needs review");
-  await expect(exceptions.first()).toContainText("after_create hook exited 2");
-  await expect(page.locator("#board-exceptions")).not.toContainText(
-    "Dependency waiting",
-  );
+  await expect(exceptions).toHaveCount(0);
+  const card = page.getByRole("button", {
+    name: /Workspace hook error needs operator input/,
+  });
+  await expect(card).toBeVisible();
+  await expect(card).not.toContainText("Needs you");
+  await card.click();
+  await expect(page.getByRole("dialog")).toContainText("after_create hook exited 2");
   await attachScreenshotEvidence(page, "board-blocked-alerts.png", testInfo);
 });
 
@@ -2116,26 +2116,6 @@ test("light theme applies through the token cascade", async ({
   await attachScreenshotEvidence(page, "board-light.png", testInfo);
 });
 
-test("onboarding project selection remains readable on narrow screens", async ({
-  page,
-}, testInfo) => {
-  await openScenario(page, {
-    runtime: screenshotsRuntime,
-    scenario: "onboarding-project-selection",
-    viewport: narrowViewport,
-  });
-
-  await expect(page.getByRole("heading", { name: "Pick project", exact: true })).toBeVisible();
-  await expect(page.getByLabel("ProjectV2 ID", { exact: true })).toHaveValue("example-org/detent-core");
-  await expect(page.getByLabel("Dispatch repository", { exact: true })).toHaveValue("example-org/detent-core");
-  await expect(page.getByRole("button", { name: "Continue", exact: true })).toBeInViewport();
-  await assertNoDocumentOverflow(page);
-  await attachScreenshotEvidence(
-    page,
-    "onboarding-project-selection.png",
-    testInfo,
-  );
-});
 
 async function openScenario(page, options) {
   const scenario = screenshotManifest.scenarios.find(

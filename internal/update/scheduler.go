@@ -68,6 +68,7 @@ type SchedulerConfig struct {
 func (s *Scheduler) WorkerArtifacts() *WorkerArtifacts { return s.cfg.WorkerArtifacts }
 
 type Scheduler struct {
+	controlRestart     *controlRestart
 	enrolledReceipt    *runnerauth.UpdateReceipt
 	enrolledStateValid bool
 	enrolledDiscovery  string
@@ -75,6 +76,10 @@ type Scheduler struct {
 	operationMu        sync.Mutex
 	mu                 sync.RWMutex
 	status             AutoStatus
+}
+
+type controlRestart struct {
+	installed Status
 }
 
 func NewScheduler(cfg SchedulerConfig) (*Scheduler, error) {
@@ -120,11 +125,12 @@ func NewScheduler(cfg SchedulerConfig) (*Scheduler, error) {
 	if err != nil {
 		cfg.Logger.Warn("load automatic update state failed", "path", cfg.StatePath, "error", err)
 	}
-	if receipt := loadedState.EnrolledReceipt; receipt != nil && receipt.FailureReason == "" && cfg.RunningBuild.Validate() == nil && receipt.Running == nil && !receipt.ExecutionReady() {
+	stateValid := err == nil && (loadedState.EnrolledReceipt == nil || !loadedState.EnrolledReceipt.AdvancedFollowHubRelease())
+	if receipt := loadedState.EnrolledReceipt; stateValid && receipt != nil && receipt.FailureReason == "" && cfg.RunningBuild.Validate() == nil && !receipt.ExecutionReady() && (receipt.Running == nil || !cfg.RunningBuild.VerifiedRelease) {
 		switch {
 		case receipt.Status == "draining" || receipt.Status == "applying":
 			receipt.FailureReason = "Update was interrupted before completion"
-		case receipt.Applied != nil && !cfg.RunningBuild.Matches(*receipt.Applied), receipt.VerifiedTarget != nil && !cfg.RunningBuild.Matches(*receipt.VerifiedTarget):
+		case receipt.Applied != nil && (!cfg.RunningBuild.VerifiedRelease || !cfg.RunningBuild.Matches(*receipt.Applied)), receipt.VerifiedTarget != nil && (!cfg.RunningBuild.VerifiedRelease || !cfg.RunningBuild.Matches(*receipt.VerifiedTarget)):
 			receipt.FailureReason = "Update did not restart into the verified build"
 		}
 		if receipt.FailureReason != "" {
@@ -154,7 +160,7 @@ func NewScheduler(cfg SchedulerConfig) (*Scheduler, error) {
 	}
 	scheduler := &Scheduler{
 		cfg:             cfg,
-		enrolledReceipt: loadedState.EnrolledReceipt, enrolledStateValid: err == nil, enrolledDiscovery: discovery,
+		enrolledReceipt: loadedState.EnrolledReceipt, enrolledStateValid: stateValid, enrolledDiscovery: discovery,
 		status: AutoStatus{
 			Enabled:            cfg.Enabled,
 			AutoApplyEnabled:   cfg.AutoApplyEnabled,
@@ -170,7 +176,7 @@ func NewScheduler(cfg SchedulerConfig) (*Scheduler, error) {
 	}
 	observation := scheduler.enrolledObservation(cfg.RunningBuild)
 	cfg.Logger.Info("enrolled runner update support", "supported", observation.Supported,
-		"state_valid", err == nil, "updater_available", cfg.Updater != nil,
+		"state_valid", stateValid, "updater_available", cfg.Updater != nil,
 		"drain_available", cfg.ReserveDrain != nil, "restart_available", cfg.RequestRestart != nil,
 		"state_path_configured", strings.TrimSpace(cfg.StatePath) != "", "running_version", cfg.RunningBuild.Version)
 	return scheduler, nil
@@ -201,7 +207,16 @@ func (s *Scheduler) PrepareWorkers(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return artifact.Release()
+	if err := artifact.Release(); err != nil {
+		return err
+	}
+	if receipt := s.enrolledObservation(s.cfg.RunningBuild).Receipt; receipt != nil && receipt.Applied != nil && receipt.Applied.VerifiedRelease {
+		opts := s.cfg.ApplyOptions
+		opts.ExpectedVersion = receipt.Applied.Version
+		opts.FromRelease = receipt.Request.FromRelease
+		s.installControlLocked(ctx, opts, receipt.Applied.Version)
+	}
+	return nil
 }
 
 func (s *Scheduler) Run(ctx context.Context) {
@@ -219,7 +234,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 			delay = pendingDelay
 		}
 		s.updateStatus(func(status *AutoStatus) {
-			if !pending {
+			if !pending && s.controlRestart == nil && status.State != "restart_requested" {
 				status.State = "scheduled"
 			}
 			status.NextCheckAt = &next
@@ -240,6 +255,26 @@ func (s *Scheduler) Run(ctx context.Context) {
 	}
 }
 
+func (s *Scheduler) checkLocked(ctx context.Context) (Status, error) {
+	checked, err := s.cfg.Updater.Check(ctx)
+	if err != nil {
+		return checked, err
+	}
+	s.mu.RLock()
+	valid := s.enrolledStateValid
+	receipt := cloneEnrolledReceipt(s.enrolledReceipt)
+	s.mu.RUnlock()
+	if !valid && receipt != nil && receipt.AdvancedFollowHubRelease() {
+		if err := verifyAdvancedEnrolledReceipt(ctx, s.cfg, receipt); err != nil {
+			return checked, err
+		}
+		s.mu.Lock()
+		s.enrolledStateValid = true
+		s.mu.Unlock()
+	}
+	return checked, nil
+}
+
 func (s *Scheduler) CheckNow(ctx context.Context) (Status, error) {
 	if s == nil || !s.cfg.Enabled {
 		return Status{}, nil
@@ -250,13 +285,25 @@ func (s *Scheduler) CheckNow(ctx context.Context) (Status, error) {
 	s.operationMu.Lock()
 	defer s.operationMu.Unlock()
 
+	if err := ctx.Err(); err != nil {
+		return Status{}, err
+	}
+	if installed, pending := s.restartBehindControlLocked(); pending {
+		checkedAt := s.cfg.Now()
+		s.updateStatus(func(status *AutoStatus) {
+			status.LastCheckAt = &checkedAt
+			status.NextCheckAt = nil
+		})
+		return installed, s.persistLastCheck(checkedAt)
+	}
+
 	s.updateStatus(func(status *AutoStatus) {
 		status.State = "checking"
 		status.NextCheckAt = nil
 		status.LastError = ""
 	})
 
-	checked, err := s.cfg.Updater.Check(ctx)
+	checked, err := s.checkLocked(ctx)
 	checkedAt := s.cfg.Now()
 	if err != nil {
 		if ctx.Err() != nil {
@@ -269,7 +316,7 @@ func (s *Scheduler) CheckNow(ctx context.Context) (Status, error) {
 		persistErr := s.recordCheckFailure(checkedAt, err)
 		return checked, fmt.Errorf("check for Detent update: %w", errors.Join(err, persistErr))
 	}
-	if !checked.UpdateAvailable {
+	if !checked.UpdateAvailable && !checked.RepairAvailable {
 		s.updateStatus(func(status *AutoStatus) {
 			status.State = "up_to_date"
 			status.LastCheckAt = &checkedAt
@@ -360,6 +407,7 @@ func (s *Scheduler) ApplyRelease(ctx context.Context, fromRelease bool) (Status,
 }
 
 func (s *Scheduler) applyRequestedLocked(ctx context.Context, opts ApplyOptions) (Status, error) {
+	opts = s.enrolledApplyOptions(opts)
 	if s.cfg.WorkerArtifacts != nil {
 		return s.applyWorkerReleaseLocked(ctx, opts)
 	}
@@ -372,7 +420,7 @@ func (s *Scheduler) applyRequestedLocked(ctx context.Context, opts ApplyOptions)
 			releaseIdle()
 		}
 	}
-	checked, err := s.cfg.Updater.Check(ctx)
+	checked, err := s.checkLocked(ctx)
 	if err != nil {
 		return Status{FailureReason: "Execution release preparation failed"}, errors.Join(err, s.recordFailure(s.cfg.Now(), err))
 	}
@@ -384,6 +432,7 @@ func (s *Scheduler) applyRequestedLocked(ctx context.Context, opts ApplyOptions)
 }
 
 func (s *Scheduler) applyWorkerReleaseLocked(ctx context.Context, opts ApplyOptions) (Status, error) {
+	opts = s.enrolledApplyOptions(opts)
 	s.updateStatus(func(status *AutoStatus) {
 		status.State = "applying"
 		status.LastError = ""
@@ -422,6 +471,9 @@ func (s *Scheduler) applyWorkerReleaseLocked(ctx context.Context, opts ApplyOpti
 			releaseIdle()
 		}
 	}
+	if installed, ok := s.installControlLocked(ctx, opts, applied.LatestVersion); ok {
+		applied = installed
+	}
 	s.updateStatus(func(status *AutoStatus) {
 		status.State = "applied"
 		status.LastAppliedVersion = applied.LatestVersion
@@ -430,7 +482,65 @@ func (s *Scheduler) applyWorkerReleaseLocked(ctx context.Context, opts ApplyOpti
 		clearPending(status)
 	})
 	s.recordEnrolledApplied(applied, true)
-	return applied, s.persistCurrentState()
+	persistErr := s.persistCurrentState()
+	s.restartBehindControlLocked()
+	return applied, persistErr
+}
+
+func (s *Scheduler) installControlLocked(ctx context.Context, opts ApplyOptions, version string) (Status, bool) {
+	comparison, err := CompareVersions(version, s.cfg.RunningBuild.Version)
+	if err != nil || comparison <= 0 {
+		return Status{}, false
+	}
+	s.mu.RLock()
+	pending := s.controlRestart
+	s.mu.RUnlock()
+	if pending != nil && pending.installed.LatestVersion == version {
+		return pending.installed, true
+	}
+	opts.AssumeYes = true
+	opts.Stdout = io.Discard
+	opts.Stderr = io.Discard
+	installed, err := s.cfg.Updater.Apply(ctx, opts)
+	if err != nil || installed.Action != ActionUpdated || installed.LatestVersion != version || !installed.VerifiedRelease || installed.BinarySHA256 == "" || installed.ReplacementPending {
+		attrs := []any{"version", version, "action", installed.Action, "installed_version", installed.LatestVersion}
+		if err != nil {
+			attrs = append(attrs, "error", err)
+		}
+		s.cfg.Logger.Warn("execution release prepared; controller binary not replaced", attrs...)
+		return Status{}, false
+	}
+	s.mu.Lock()
+	s.controlRestart = &controlRestart{installed: installed}
+	s.mu.Unlock()
+	s.cfg.Logger.Info("controller binary replaced; restart pending", "version", version)
+	return installed, true
+}
+
+func (s *Scheduler) restartBehindControlLocked() (Status, bool) {
+	s.mu.RLock()
+	pending := s.controlRestart
+	s.mu.RUnlock()
+	if pending == nil || s.cfg.RequestRestart == nil {
+		return Status{}, false
+	}
+	if !s.cfg.RequestRestart(pending.installed.Binary) {
+		s.updateStatus(func(status *AutoStatus) {
+			status.State = "applied_restart_deferred"
+			status.LastError = "Update restart request was declined"
+		})
+		s.cfg.Logger.Warn("controller restart request declined; retaining applied release for the next update tick", "version", pending.installed.LatestVersion)
+		return pending.installed, true
+	}
+	s.mu.Lock()
+	s.controlRestart = nil
+	s.mu.Unlock()
+	s.updateStatus(func(status *AutoStatus) {
+		status.State = "restart_requested"
+		status.LastError = ""
+	})
+	s.cfg.Logger.Info("controller behind applied release; restart requested", "version", pending.installed.LatestVersion)
+	return pending.installed, true
 }
 
 func (s *Scheduler) applyExceptionalWorkerUpdateLocked(ctx context.Context, opts ApplyOptions, err error) (Status, error) {
@@ -508,6 +618,7 @@ func (s *Scheduler) applyLocked(ctx context.Context, releaseIdle func()) (Status
 }
 
 func (s *Scheduler) applyWithOptionsLocked(ctx context.Context, releaseIdle func(), applyOptions ApplyOptions) (Status, error) {
+	applyOptions = s.enrolledApplyOptions(applyOptions)
 	keepIdleReserved := false
 	defer func() {
 		if !keepIdleReserved && releaseIdle != nil {
@@ -555,10 +666,16 @@ func (s *Scheduler) applyWithOptionsLocked(ctx context.Context, releaseIdle func
 			status.State = "applied_restart_deferred"
 			status.LastError = "Update restart request was declined"
 		})
+		s.mu.Lock()
+		s.controlRestart = &controlRestart{installed: applied}
+		s.mu.Unlock()
 		s.cfg.Logger.Warn("Detent update applied; restart deferred because shutdown is already in progress or restart is unavailable", "version", applied.LatestVersion)
 		applied.FailureReason = "Update restart request was declined"
 		return applied, persistErr
 	}
+	s.mu.Lock()
+	s.controlRestart = nil
+	s.mu.Unlock()
 	s.updateStatus(func(status *AutoStatus) {
 		status.State = "restart_requested"
 	})

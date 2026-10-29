@@ -12,30 +12,30 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
-// Terminal recordings (decisions section 18.3).
+// Terminal recordings.
 //
 // workspaces.terminal.record is on by default and stores each stream as an
 // asciicast v2 artifact referenced from the relay session row. The hub records
 // it from the frames it relays, exactly as it records an action run from the
-// exec frames it relays (section 18.12): it is forwarding them already, and a
+// exec frames it relays: it is forwarding them already, and a
 // recording assembled anywhere else would be a recording of something other
 // than what actually crossed the relay.
 //
 // The audience is the part that makes this its own resource rather than a
-// column. Section 18.3: "the person who ran the session plus owners and admins,
+// column. The terminal contract: "the person who ran the session plus owners and admins,
 // never the issue's readers", and "a `user`-isolation recording is readable by
 // owners only". A recording can carry what the runner account can see, which is
 // wider than the issue, so it is read through a gate of its own and never
 // through the issue's read rule.
 //
-// Two things section 18.3 asks for are not here, and both are recorded rather
+// Two things the terminal contract asks for are not here, and both are recorded rather
 // than quietly skipped. Secret scrubbing -- "known secret values from the
-// project's secret store (18.7) are scrubbed from recordings on write, best
-// effort" -- has nothing to scrub against: the secret store is section 18.7's
-// and is deferred to sequencing step 3 (section 18.11), so there is no set of
+// project's secret store are scrubbed from recordings on write, best
+// effort" -- has nothing to scrub against: the secret store is the browser preview rule's
+// and is deferred to sequencing step 3, so there is no set of
 // known values in this build. The scrub goes in when the store does, on write,
 // where the contract puts it. And the recording is capped at
-// MaxRecordingBytes with a truncated flag, which section 18.3 does not specify;
+// MaxRecordingBytes with a truncated flag, which the terminal contract does not specify;
 // a terminal has no cap on the wire and must not have one, so the cap lives on
 // the stored copy and a reader is told when the copy is shorter than the
 // session was.
@@ -55,7 +55,7 @@ type TerminalRecording struct {
 	Cols           int        `json:"cols"`
 	Rows           int        `json:"rows"`
 	// Artifact names where the bytes may be read, the way a run's
-	// output_artifact does (section 18.12). It is a path rather than the
+	// output_artifact does. It is a path rather than the
 	// document, because a listing that carried every recording whole would be a
 	// listing nobody could page.
 	Artifact  string `json:"artifact"`
@@ -189,7 +189,7 @@ WHERE workspace_id = ? AND id = ?`, workspaceID, id)
 // terminalRecordingPage bounds one listing.
 const terminalRecordingPage = 50
 
-// terminalRecordingReadable is section 18.3's audience, and it is deliberately
+// terminalRecordingReadable is the terminal contract's audience, and it is deliberately
 // narrower than the issue's.
 //
 // The person who ran the session may always read their own: they were there,

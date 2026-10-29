@@ -39,7 +39,7 @@ func TestValidateID(t *testing.T) {
 	}
 }
 
-// TestTransition covers every legal move of section 18.1 and, by exhausting
+// TestTransition covers every legal move of the workspace session contract and, by exhausting
 // the remaining pairs, every illegal one. A transition table that drifts from
 // the contract is the one way a workspace could end up held by two runners, so
 // the legal set is written out here independently of the implementation's map.

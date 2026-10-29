@@ -18,6 +18,24 @@ func TestHostedArtifactAllowanceBoundary(t *testing.T) {
 	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE artifact_services SET binding_json=json_set(binding_json,'$.mode','hosted','$.hosted_opt_in',json('true'))"); err != nil {
 		t.Fatal(err)
 	}
+	for _, test := range []struct {
+		name  string
+		mode  any
+		optIn any
+		want  int
+	}{
+		{"typed refusal overrides payload opt in", "customer", false, http.StatusForbidden},
+		{"unknown mode does not override typed refusal", nil, false, http.StatusForbidden},
+		{"typed opt in", "hosted", true, http.StatusOK},
+		{"unknown binding evaluates payload", nil, nil, http.StatusOK},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE artifact_services SET binding_mode=?,hosted_opt_in=?`, test.mode, test.optIn); err != nil {
+				t.Fatal(err)
+			}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, publisher, request), test.want)
+		})
+	}
 	response := performHubAPIRequest(t, f.service, http.MethodPost, path, publisher, request)
 	requireNativeStatus(t, response, http.StatusOK)
 	var limits artifact.Limits

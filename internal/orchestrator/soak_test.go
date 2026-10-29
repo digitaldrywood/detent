@@ -43,7 +43,6 @@ func TestSoakHistoricalNoPRIncidentReplay(t *testing.T) {
 				t.Fatalf("fixture tokens = %d, want %d", fixtureTokens, incident.ExpectedTotalTokens)
 			}
 
-			const noProgressLimit = 3
 			issue := connector.Issue{
 				ID:               strings.ReplaceAll(incident.Identifier, "/", "-"),
 				Identifier:       incident.Identifier,
@@ -55,16 +54,17 @@ func TestSoakHistoricalNoPRIncidentReplay(t *testing.T) {
 			attempts := newSoakAttemptStore()
 			cfg := normalizeConfig(Config{
 				Project:        scheduler.ProjectCandidate{ID: "gopher-ai"},
-				AutoPromote:    AutoPromoteConfig{NoProgressLimit: noProgressLimit},
+				AutoPromote:    AutoPromoteConfig{},
 				ActiveStates:   []string{"Todo", "In Progress", "Rework"},
 				ObservedStates: []string{"Blocked"},
 				TerminalStates: []string{"Done", "Cancelled"},
 			})
 			orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts}
 			state := newState(cfg)
-			breakerAttempt := 0
+			completedAttempts := 0
 
 			for index, historical := range incident.Attempts {
+				completedAttempts++
 				startedAt := mustParseSoakTime(t, historical.StartedAt)
 				completedAt := mustParseSoakTime(t, historical.CompletedAt)
 				attemptID, err := attempts.StartWorkAttempt(t.Context(), store.WorkAttemptStart{
@@ -102,107 +102,17 @@ func TestSoakHistoricalNoPRIncidentReplay(t *testing.T) {
 					},
 				})
 				if _, blocked := state.Blocked[issue.ID]; blocked {
-					breakerAttempt = index + 1
-					break
+					t.Fatalf("machine attempt %d entered Blocked", index+1)
 				}
 			}
 
-			if breakerAttempt == 0 || breakerAttempt > noProgressLimit {
-				t.Fatalf("breaker attempt = %d, want 1..%d", breakerAttempt, noProgressLimit)
+			if completedAttempts != len(incident.Attempts) {
+				t.Fatalf("completed %d attempts, want %d", completedAttempts, len(incident.Attempts))
 			}
-			if got := tracker.issueState(issue.ID); got != blockedStatusState {
-				t.Fatalf("tracker state = %q, want %q", got, blockedStatusState)
+			if got := tracker.issueState(issue.ID); got == blockedStatusState {
+				t.Fatalf("machine attempts entered %q", got)
 			}
 		})
-	}
-}
-
-func TestSoakHardPerIssueCostCeilingInvariant(t *testing.T) {
-	requireSoak(t)
-
-	const (
-		simulatedTicks       = 1_000
-		noProgressSpendLimit = 5.00
-		costPerSession       = 1.35
-		tokensPerSession     = int64(500_000)
-		maxSessions          = int64(4)
-		maxTokens            = maxSessions * tokensPerSession
-	)
-
-	startedAt := time.Date(2026, 7, 11, 16, 0, 0, 0, time.UTC)
-	clock := &soakClock{now: startedAt}
-	issue := connector.Issue{
-		ID:               "synthetic-no-progress",
-		Identifier:       "example/soak#1",
-		Title:            "Always-successful unmerged diff",
-		State:            "In Progress",
-		AssignedToWorker: true,
-		CreatedAt:        &startedAt,
-	}
-	tracker := newSoakConnector(issue)
-	attempts := newSoakAttemptStore()
-	runner := &soakSuccessRunner{
-		clock:          clock,
-		spend:          attempts,
-		costPerSession: costPerSession,
-		tokensPerRun:   tokensPerSession,
-	}
-	cfg := Config{
-		PollInterval:                  time.Minute,
-		MaxConcurrentAgents:           1,
-		BillingMode:                   "metered",
-		NoProgressSpendLimitUSD:       noProgressSpendLimit,
-		Project:                       scheduler.ProjectCandidate{ID: "soak"},
-		AutoPromote:                   AutoPromoteConfig{NoProgressLimit: 0},
-		ActiveStates:                  []string{"In Progress", "Rework"},
-		ObservedStates:                []string{"Blocked"},
-		TerminalStates:                []string{"Done", "Cancelled"},
-		ContinuationRetryDelay:        time.Minute,
-		FailureRetryBaseDelay:         time.Minute,
-		WorkspaceCleanupIdleTTL:       time.Hour,
-		WorkspaceCleanupSweepInterval: time.Hour,
-	}
-	orch, err := New(cfg, Dependencies{
-		Connector:     tracker,
-		Runner:        runner,
-		WorkAttempts:  attempts,
-		ProgressSpend: attempts,
-		Now:           clock.Now,
-	})
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-	state := newState(orch.cfg)
-
-	for range simulatedTicks {
-		now := clock.Advance(time.Minute)
-		orch.tick(t.Context(), &state, now)
-		if _, blocked := state.Blocked[issue.ID]; blocked {
-			break
-		}
-		completion := receiveSoakCompletion(t, orch.runResults)
-		orch.handleRunResult(t.Context(), &state, completion)
-		if _, blocked := state.Blocked[issue.ID]; blocked {
-			break
-		}
-	}
-
-	sessions, tokens := attempts.totals()
-	if sessions > maxSessions {
-		t.Fatalf("sessions = %d, ceiling %d", sessions, maxSessions)
-	}
-	if tokens > maxTokens {
-		t.Fatalf("tokens = %d, ceiling %d", tokens, maxTokens)
-	}
-	blocked, ok := state.Blocked[issue.ID]
-	if !ok {
-		t.Fatalf("issue did not reach Blocked after %d simulated ticks; sessions=%d tokens=%d", simulatedTicks, sessions, tokens)
-	}
-	if blocked.Reason != spendProgressReason {
-		t.Fatalf("blocked reason = %q, want %q", blocked.Reason, spendProgressReason)
-	}
-	if got := tracker.issueState(issue.ID); got != blockedStatusState {
-		t.Fatalf("tracker state = %q, want %q", got, blockedStatusState)
 	}
 }
 
@@ -544,16 +454,6 @@ func (s *soakAttemptStore) recordSpend(at time.Time, cost float64, tokens int64)
 	s.spend = append(s.spend, soakSpendEntry{at: at, cost: cost, tokens: tokens})
 }
 
-func (s *soakAttemptStore) totals() (int64, int64) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	var tokens int64
-	for _, entry := range s.spend {
-		tokens += entry.tokens
-	}
-	return int64(len(s.spend)), tokens
-}
-
 type soakSuccessRunner struct {
 	mu             sync.Mutex
 	clock          *soakClock
@@ -584,15 +484,4 @@ func (r *soakSuccessRunner) callCount() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.calls
-}
-
-func receiveSoakCompletion(t *testing.T, completions <-chan runpkg.Completion) runpkg.Completion {
-	t.Helper()
-	select {
-	case completion := <-completions:
-		return completion
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for synthetic runner completion")
-		return runpkg.Completion{}
-	}
 }

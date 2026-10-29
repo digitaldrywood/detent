@@ -311,7 +311,7 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
                       row
                     )}
                     {item.id === "organization" ? <SidebarMenuSub aria-label="Organization settings">
-                      {[{ to: "/settings/organization", label: "Overview" }, { to: "/settings/organization/members", label: "Members" }, { to: "/settings/organization/models", label: "Models" }].map((page) => (
+                      {[{ to: "/settings/organization", label: "Overview" }, { to: "/settings/organization/members", label: "Members" }, { to: "/settings/organization/models", label: "Models" }].filter((page) => !account?.self_hosted || page.to !== "/settings/organization/members").map((page) => (
                         <SidebarMenuSubItem key={page.to}>
                           <SidebarMenuSubButton className="w-full" render={<button type="button" />} isActive={pathname === page.to} aria-current={pathname === page.to ? "page" : undefined} onClick={() => handleSectionClick(page.to as SettingsPath)}>
                             <span>{page.label}</span>

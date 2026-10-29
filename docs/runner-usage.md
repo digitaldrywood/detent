@@ -1,7 +1,7 @@
 # Runner AI usage accounting
 
 Runner costs use the Hub's existing native attempt ingestion and the shared
-[monthly usage ledger](sprite-usage.md#monthly-reports-and-budgets). The
+[monthly usage ledger](#monthly-reports). The
 `runner_api`, `luna_api` and `sprite_infrastructure` buckets are distinct charges.
 No provider credentials, account invoices or private provider payloads are
 collected. Hosted-plan allowances and Luna credit balances are separate contracts.
@@ -109,3 +109,77 @@ contributes no infrastructure charge to placement budgeting; paid local runner
 AI still contributes `runner_api`. Sprite AI and infrastructure can both
 contribute because they represent separate charges. Unknown coverage remains
 unknown rather than becoming a zero or an exact provider invoice.
+
+## Sprite infrastructure usage
+
+Fly Sprite infrastructure costs are not read from Fly automatically: Fly's
+public API exposes Sprite identity and lifecycle status, not per-Sprite billed
+CPU, memory or storage quantities. An administrator imports measured or
+estimated observations instead. Detent applies no default rates and does not
+apply provider allowances, credits, taxes, foreign exchange or subscription fees.
+
+`POST /api/v2/organizations/{organization}/projects/{project}/usage/sprites`
+requires owner or administrator authority and a native `idempotency_key`. The
+body contains `observations`, a batch of 1–128 records that commits atomically.
+MCP `import_sprite_usage` takes `project_id`, `request_id` and
+`input.observations` through the same command. Each observation supplies:
+
+- `provider: fly_sprites`, `provider_account`, stable `resource_id`, optional
+  `resource_name`, `bucket: sprite_infrastructure`, `metric`, `unit`, and a
+  `source_id` naming one canonical resource/metric stream.
+- `metric` `cpu` in `CPU-hour`, or `ram`, `storage_hot` or `storage_cold` in
+  `GB-hour`. Compute and both storage tiers are separate observations.
+- Positive `revision` and half-open `from`/`to` timestamps for past usage, at
+  most 366 days, ending no later than `observed_at`.
+- Nullable `quantity` with `quantity_basis`: `measured`, `provider_reported`,
+  `estimated` or `unknown`.
+- Nullable `amount_micros`, three-letter uppercase currency and monetary
+  `basis`: `estimated`, `provider_billed` or `unknown`. A micro is a millionth of
+  the currency unit; provider-billed amounts can include negative credits.
+- Nullable integer `unit_price_micros`, `rate_source`, `rate_effective_at`,
+  `evidence_source`, `observed_at`, `fresh_until` (not before `observed_at`) and
+  `coverage`: `complete`, `partial` or `unknown`.
+
+For an estimate, supply a measured or estimated quantity and `unit_price_micros`
+with a null `amount_micros` and `basis: estimated`; the Hub multiplies and rounds
+to the nearest micro. Missing data uses null quantity/amount and unknown
+bases/coverage; an explicit measured zero is accepted, and missing data never
+becomes zero. `provider_billed` is the importer's assertion, not an invoice
+verification by Detent. Evidence fields hold only safe identifiers or public
+references, never provider tokens or invoice contents.
+
+Source-period identity is organization, provider, provider account, source ID and
+exact UTC interval. A repeated revision with identical data adds nothing; changed
+content at the same revision conflicts; a higher revision replaces the period;
+lower revisions cannot resurrect it. Overlapping periods for the same
+resource, bucket and metric are rejected, including duplicates under another
+source ID or project. To change interval boundaries, import a higher revision of
+the original observation with `voided: true` and the replacement intervals in the
+same batch; voided observations stay in history and contribute no cost.
+Observations have no foreign keys to Sprite, pool, runner or project lifecycle
+records, so removing those records never deletes costs or changes attribution.
+
+## Monthly reports
+
+Every bucket uses UTC calendar months. Project reads use
+`GET .../projects/{project}/usage/monthly?month=YYYY-MM` with project read
+authority. Organization reads use
+`GET /api/v2/organizations/{organization}/usage/monthly?month=YYYY-MM` with
+administrator authority. MCP `monthly_usage_costs` accepts `month`, `scope`
+(`project` or `organization`) and `project_id` for project scope; a missing month
+selects the current UTC month. The hosted usage report and
+`billing_usage.hosted_usage_report` also expose `monthly_costs`;
+`range=month:YYYY-MM` selects a month. Those hosted reads cover
+`readable_projects`, not the whole organization.
+
+Reports expose original source quantities, allocated quantities and amounts,
+observation time, freshness deadline, stale flags, rate and evidence sources,
+revision, coverage gaps and estimated or billed totals per bucket and currency.
+Null subtotals and empty totals are unknown, not zero, and reports never
+extrapolate beyond imported intervals. MCP responses keep complete totals and
+project breakdowns but limit source and gap details to 32 rows each;
+`source_count`, `gap_count` and `details_complete` identify omitted details, and
+the HTTP monthly read returns them all. Intervals crossing months are allocated
+by elapsed duration, with integer rounding that preserves the full source amount;
+a prorated billed source is labelled `allocated_basis: estimated` and
+`allocation: duration_prorated`.

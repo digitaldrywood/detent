@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import React from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
 import changeFixture from "../../src/contracts/fixtures/work-change-detail.json";
+import commentsFixture from "../../src/contracts/fixtures/work-comment-list.json";
 import historyFixture from "../../src/contracts/fixtures/work-history.json";
 import attemptsFixture from "../../src/contracts/fixtures/work-attempt-list.json";
 import itemFixture from "../../src/contracts/fixtures/work-item.json";
@@ -21,17 +22,21 @@ import { BoardLane } from "../../src/app/work/components/BoardLane.tsx";
 import { DependencyPanels } from "../../src/app/work/components/DependencyDetails.tsx";
 import { IssueCard, statusPill } from "../../src/app/work/components/IssueCard.tsx";
 import { DiffSurface } from "../../src/app/components/surfaces/DiffSurface.tsx";
-import { diffSource, readAttemptDiff, type DiffSource } from "../../src/app/adapters/surfaces.ts";
+import { diffSource, readAttemptDiff, useIssueSurfaces, toAttemptActivity, type DiffSource } from "../../src/app/adapters/surfaces.ts";
 import { WorkList } from "../../src/app/work/components/WorkList.tsx";
 import { WorkTopBar } from "../../src/app/work/components/WorkTopBar.tsx";
 import { WorkToolbar } from "../../src/app/work/components/WorkToolbar.tsx";
 import { CompletedCounter } from "../../src/app/work/components/CompletedCounter.tsx";
 import { LiveCounter } from "../../src/app/work/components/LiveCounter.tsx";
-import { toAttemptView, toWorkItemView, transitionsFrom } from "../../src/app/work/lib/fromWire.ts";
+import { toAttemptView, toBoardCardView, toWorkItemView, transitionsFrom } from "../../src/app/work/lib/fromWire.ts";
 import { boardStats, isBlocked, isLive, type Lane, type WorkItemView } from "../../src/app/work/lib/model.ts";
 
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider } from "@tanstack/react-router";
 import { ClientContext } from "../../src/app/client.ts";
+import { ChangesPage } from "../../src/app/work/ChangesPage.tsx";
+import * as workHooks from "../../src/app/work/lib/useWork.ts";
+import * as appHooks from "../../src/app/App.tsx";
+import * as clientHooks from "../../src/app/client.ts";
 import { WorkBoard } from "../../src/app/work/WorkBoard.tsx";
 import { IssuePage } from "../../src/app/work/IssuePage.tsx";
 import { SidebarSearchProvider } from "../../src/app/adapters/sidebarData.tsx";
@@ -787,7 +792,7 @@ describe("the Diff surface", () => {
     expect(screen.getByTestId("diff-round").textContent).toContain("a41f0c2");
   });
 
-  // §18.5. With no stored attempt diff the surface falls back to the round the
+  // With no stored attempt diff the surface falls back to the round the
   // change request published, and says which of the two it is showing — the
   // hub does serve per-file diffs now, so the old "no file list" apology would
   // be untrue.
@@ -850,7 +855,7 @@ describe("the Diff surface", () => {
   });
 });
 
-// decisions.md §18.5. Two sources feed one surface, and only one of them has
+// Two sources feed the Diff surface, and only one of them has
 // files in it. These assert the order directly rather than through a mounted
 // panel: which source wins, and what is said when neither is there.
 describe("the Diff surface's source order", () => {
@@ -985,12 +990,114 @@ async function settledWork() {
   await waitFor(() => expect(screen.getByTestId("stat-completed").closest("[aria-busy]")?.getAttribute("aria-busy")).toBe("false"));
 }
 
+describe("issue timeline pagination", () => {
+  it("reuses the page attempts in workspace surfaces without another request or false ordinals", async () => {
+    const http = {
+      getWorkItem: vi.fn(async () => itemFixture), listAttempts: vi.fn(), listChanges: vi.fn(async () => []), getWorkItemDiff: vi.fn(async () => ({ diff: null })),
+    };
+    const spy = vi.spyOn(workHooks, "useWorkHttp").mockReturnValue(http as unknown as ReturnType<typeof workHooks.useWorkHttp>);
+    function Surfaces() {
+      const surfaces = useIssueSurfaces("project", "item", ATTEMPTS, true);
+      return <div data-testid="surface-state">{surfaces.loading ? "loading" : surfaces.source.kind}</div>;
+    }
+    try {
+      render(<Surfaces />);
+      await waitFor(() => expect(http.getWorkItemDiff).toHaveBeenCalledOnce());
+      await waitFor(() => expect(screen.getByTestId("surface-state").textContent).not.toBe("loading"));
+      expect(http.listAttempts).not.toHaveBeenCalled();
+      expect(toAttemptActivity(ATTEMPTS, undefined, true).every((attempt) => attempt.attemptNumber === null)).toBe(true);
+    } finally {
+      cleanup();
+      spy.mockRestore();
+    }
+  });
+
+  it.each(["scroll", "wheel", "key", "touch", "pointer"])("loads one older page per %s intent, never on visibility", async (trigger) => {
+    const observers: { callback: IntersectionObserverCallback; target?: Element; disconnected: boolean }[] = [];
+    vi.stubGlobal("IntersectionObserver", class {
+      record: typeof observers[number];
+      constructor(callback: IntersectionObserverCallback) {
+        this.record = { callback, disconnected: false };
+        observers.push(this.record);
+      }
+      observe(target: Element) { this.record.target = target; }
+      disconnect() { this.record.disconnected = true; }
+    });
+    const calls = { history: [] as string[], attempts: [] as string[], comments: [] as string[] };
+    const fixture = await pagedWork("/work/p/proj_alpha?view=list&tab=all&completed_window=all", (fetch) => async (input, init) => {
+      const response = await fetch(input, init);
+      const url = new URL(String(input), "http://localhost");
+      const list = url.pathname.split("/").at(-1);
+      if (list === "history" || list === "attempts" || list === "comments") {
+        calls[list].push(url.searchParams.get("cursor") ?? "first");
+        expect(url.searchParams.get("direction")).toBe("newest");
+        const older = url.searchParams.has("cursor");
+        const body = list === "attempts" ? attemptsFixture : list === "comments" ? { items: older ? [{ ...commentsFixture.items[0]!, body: "An older comment loaded on demand" }] : [] } : await response.json();
+        return Response.json({ ...body, ...(older ? url.searchParams.get("cursor") === `older-${list}` ? { next_cursor: `oldest-${list}` } : {} : { next_cursor: `older-${list}` }) });
+      }
+      return response;
+    });
+    await settledWork();
+    const response = await fixture.fetch("/api/v2/organizations/org_mock/projects/proj_alpha/work-items?limit=200&completed_window=all");
+    const page = await response.json() as { items: NativeIssue[] };
+    await act(() => fixture.router.navigate({ to: "/work/i/$workItemId", params: { workItemId: page.items[0]!.work_item_id } }));
+    const activity = await screen.findByTestId("issue-activity");
+    expect(screen.queryByText("An older comment loaded on demand")).toBeNull();
+    for (const list of Object.values(calls)) expect(list).toEqual(["first"]);
+    let scroller = activity.parentElement!;
+    while (!scroller.classList.contains("overflow-y-auto")) scroller = scroller.parentElement!;
+    Object.defineProperties(scroller, { scrollTop: { value: trigger === "scroll" ? 500 : 0, configurable: true }, scrollHeight: { value: trigger === "scroll" ? 800 : 300, configurable: true }, clientHeight: { value: 300, configurable: true } });
+    const observeVisibleEnd = async () => {
+      await act(async () => {
+        for (const observer of observers.filter((entry) => !entry.disconnected)) {
+          observer.callback([{ isIntersecting: true, target: observer.target } as IntersectionObserverEntry], {} as IntersectionObserver);
+        }
+      });
+    };
+    await observeVisibleEnd();
+    for (const list of Object.values(calls)) expect(list).toEqual(["first"]);
+    const demand = () => {
+      if (trigger === "scroll") {
+        Object.defineProperty(scroller, "scrollTop", { value: 0, configurable: true });
+        fireEvent.scroll(scroller);
+        Object.defineProperty(scroller, "scrollTop", { value: 500, configurable: true });
+        fireEvent.scroll(scroller);
+      } else if (trigger === "wheel") fireEvent.wheel(scroller, { deltaY: 100 });
+      else if (trigger === "key") fireEvent.keyDown(scroller, { key: "PageDown" });
+      else if (trigger === "pointer") fireEvent.pointerDown(scroller, { pointerType: "mouse" });
+      else {
+        fireEvent.touchStart(scroller);
+        fireEvent.touchMove(scroller);
+      }
+    };
+    demand();
+    await waitFor(() => {
+      expect(calls.history).toEqual(["first", "older-history"]);
+      expect(calls.attempts).toEqual(["first", "older-attempts"]);
+      expect(calls.comments).toEqual(["first", "older-comments"]);
+    });
+    expect(await screen.findByText("An older comment loaded on demand")).toBeTruthy();
+    await observeVisibleEnd();
+    await act(async () => {
+      fireEvent.scroll(scroller);
+      if (trigger === "touch") fireEvent.touchMove(scroller);
+      if (trigger === "key") fireEvent.keyDown(scroller, { key: "PageDown", repeat: true });
+    });
+    for (const [name, list] of Object.entries(calls)) expect(list).toEqual(["first", `older-${name}`]);
+    demand();
+    await waitFor(() => {
+      for (const [name, list] of Object.entries(calls)) expect(list).toEqual(["first", `older-${name}`, `oldest-${name}`]);
+    });
+  });
+});
+
 describe("the issue effort property", () => {
   it.each([
     { name: "reported effort", effort: "high", hasAttempt: true, expected: "gpt-6.1-sol · high" },
     { name: "unreported effort", effort: undefined, hasAttempt: true, expected: "gpt-6.1-sol · effort unavailable" },
     { name: "no attempt", effort: undefined, hasAttempt: false, expected: "No effort set" },
-  ])("shows $name from the latest attempt instead of labels", async ({ effort, hasAttempt, expected }) => {
+    { name: "archived summary", effort: "high", hasAttempt: true, expected: "gpt-6.1-sol · high", archived: true },
+  ])("shows $name from the latest attempt instead of labels", async ({ effort, hasAttempt, expected, archived = false }) => {
     const fixture = await pagedWork("/work/p/proj_alpha?view=list&tab=all&completed_window=all", (fetch) => async (input, init) => {
       const response = await fetch(input, init);
       if (/\/attempts(?:\?|$)/.test(String(input))) {
@@ -1000,7 +1107,7 @@ describe("the issue effort property", () => {
       }
       if (/\/work-items\/[^/?]+$/.test(String(input))) {
         const body = await response.json();
-        return Response.json({ ...body, labels: ["effort:low"] });
+        return Response.json({ ...body, labels: ["effort:low"], ...(archived ? { archive_summary: { revision: "1", attempts: [ATTEMPTS[0], { ...ATTEMPTS.at(-1)!, identity: { role: "code", backend: "codex", model: "gpt-6.1-sol", reasoning_effort: effort } }] } } : {}) });
       }
       return response;
     });
@@ -1160,19 +1267,20 @@ describe("the cached Work read", () => {
     }
   });
 
-  it("shares concurrent base reads and shows memory cards on the first return render", async () => {
+  it.each([false, true])("shares base reads and refreshes memory cards on return (working set: %s)", async (workingSet) => {
     const fixture = workPaginationFixture();
     await fixture.control();
     let hold = false;
     let release!: () => void;
     const pending = new Promise<void>((resolve) => { release = resolve; });
+    onTestFinished(() => release());
     vi.stubGlobal("fetch", async (...args: Parameters<typeof fixture.fetch>) => {
       if (hold) await pending;
       return fixture.fetch(...args);
     });
     const snapshots: ReturnType<typeof useBoard>[] = [];
     function Probe() {
-      const board = useBoard(null, DEFAULT_VIEW_STATE);
+      const board = useBoard(null, DEFAULT_VIEW_STATE, workingSet ? ["proj_alpha", "proj_beta"] : undefined);
       snapshots.push(board);
       return <div>{board.items.length}</div>;
     }
@@ -1182,6 +1290,7 @@ describe("the cached Work read", () => {
     expect(fixture.requests.filter((request) => request.url.pathname.endsWith("/proj_alpha"))).toHaveLength(1);
     mounted.unmount();
     hold = true;
+    const requestCount = fixture.requests.length;
     const before = snapshots.length;
     render(<ClientContext.Provider value={fixture.client}><Probe /></ClientContext.Provider>);
     expect(snapshots[before]!.items.length).toBeGreaterThan(0);
@@ -1189,9 +1298,10 @@ describe("the cached Work read", () => {
     expect(snapshots[before]!.live).toBe(false);
     expect(snapshots.at(-1)!.items.length).toBeGreaterThan(0);
     await act(async () => { release(); });
+    await waitFor(() => expect(fixture.requests.length).toBeGreaterThan(requestCount));
   });
 
-  it("patches only the pushed card and performs no requests for an unchanged tick", async () => {
+  it("patches pushed cards across working-set focus without new requests or streams", async () => {
     const sources: EventTarget[] = [];
     vi.stubGlobal("EventSource", class extends EventTarget {
       readyState = 1;
@@ -1202,7 +1312,13 @@ describe("the cached Work read", () => {
     await fixture.control();
     vi.stubGlobal("fetch", fixture.fetch);
     let current!: ReturnType<typeof useBoard>;
-    function Probe() { current = useBoard(null, DEFAULT_VIEW_STATE); return <div />; }
+    let focus!: (project: string | null) => void;
+    function Probe() {
+      const [project, setProject] = React.useState<string | null>(null);
+      focus = setProject;
+      current = useBoard(project, DEFAULT_VIEW_STATE, ["proj_alpha", "proj_beta"]);
+      return <div />;
+    }
     render(<ClientContext.Provider value={fixture.client}><Probe /></ClientContext.Provider>);
     await waitFor(() => expect(current.resolved).toBe(true));
     const response = await fixture.fetch("/api/v2/organizations/org_mock/projects/proj_alpha/work-items?include=board&state=Todo");
@@ -1210,12 +1326,22 @@ describe("the cached Work read", () => {
     const card = page.cards[0];
     const unchanged = current.items.find((item) => item.id !== card.issue.work_item_id)!;
     const before = fixture.requests.length;
+    expect(sources).toHaveLength(2);
+    act(() => focus("proj_alpha"));
+    expect(current.items.every((item) => item.projectId === "proj_alpha")).toBe(true);
+    act(() => focus("proj_beta"));
+    expect(current.items.every((item) => item.projectId === "proj_beta")).toBe(true);
+    expect(fixture.requests).toHaveLength(before);
+    expect(sources).toHaveLength(2);
     const emit = (data: unknown) => act(() => sources[0]!.dispatchEvent(new MessageEvent("activity", { data: JSON.stringify(data) })));
     emit({ sequence: 0, gap: false, deltas: [] });
     expect(fixture.requests).toHaveLength(before);
     emit({ sequence: 1, gap: false, deltas: [{ sequence: 1, previous: card,
       current: { ...card, attempt: { ...ATTEMPTS[0]!, count: 4 }, issue: { ...card.issue, title: "Pushed title", revision: "900" } } }], work: page.work });
+    expect(current.items.some((item) => item.id === card.issue.work_item_id)).toBe(false);
+    act(() => focus(null));
     expect(current.items.find((item) => item.id === card.issue.work_item_id)?.title).toBe("Pushed title");
+    expect(sources).toHaveLength(2);
     expect(current.items.find((item) => item.id === card.issue.work_item_id)?.attempt?.attemptNumber).toBe(4);
     expect(current.items.find((item) => item.id === unchanged.id)).toBe(unchanged);
     expect(current.refreshing).toBe(false);
@@ -1324,7 +1450,7 @@ describe("the live Work continuation intent", () => {
     const response = await fixture.fetch("/api/v2/organizations/org_mock/projects/proj_alpha/work-items?include=board&state=Todo");
     const page = await response.json();
     const card = page.cards[0];
-    const emit = () => (order === "replay" ? sources.at(-2)! : sources[0]!).dispatchEvent(new MessageEvent("activity", { data: JSON.stringify({ sequence: 1, gap: false,
+    const emit = () => sources[0]!.dispatchEvent(new MessageEvent("activity", { data: JSON.stringify({ sequence: 1, gap: false,
       deltas: [{ sequence: 1, previous: card, current: mutation === "delete" ? null : { ...card, issue: { ...card.issue, title: "During continuation", revision: "900" } } }] }) }));
     act(() => {
       if (order === "delta-first") emit();
@@ -1808,7 +1934,7 @@ describe("the filter-first Work surface", () => {
       return fetch(input, init);
     });
     await waiting;
-    expect(sources).toHaveLength(0);
+    expect(sources).toHaveLength(2);
     expect(pendingSignal?.aborted).toBe(false);
     await act(async () => { release(); });
     await settledWork();
@@ -1829,8 +1955,8 @@ describe("the filter-first Work surface", () => {
     expect(screen.getAllByText("Queue item 1")).toHaveLength(2);
   });
 
-  it.each(["gap", "grant change", "expired session", "revoked access", "unavailable"])("checks access before reconnecting for %s", async (invalidation) => {
-    const sources: (EventTarget & { readyState: number; url: string })[] = [];
+  it.each([200, 401, 403, 503])("resumes without fetching and refreshes current access only on reset (%s)", async (status) => {
+    const sources: (EventTarget & { url: string })[] = [];
     vi.stubGlobal("EventSource", class extends EventTarget {
       readyState = 1;
       constructor(readonly url: string) { super(); sources.push(this); }
@@ -1843,46 +1969,207 @@ describe("the filter-first Work surface", () => {
       if (String(input).endsWith("/projects/proj_alpha") && accessStatus !== 200) {
         return Response.json({ code: "unauthorized", message: "Project access ended" }, { status: accessStatus });
       }
-      const response = await fixture.fetch(String(input), init);
-      if (!String(input).includes("/work-items")) return response;
-      return Response.json({ ...await response.json(), grant_version: "original-grants" });
+      return fixture.fetch(String(input), init);
     });
     let current!: ReturnType<typeof useBoard>;
     function Probe() { current = useBoard("proj_alpha", DEFAULT_VIEW_STATE); return <div />; }
     render(<ClientContext.Provider value={fixture.client}><Probe /></ClientContext.Provider>);
     await waitFor(() => expect(current.resolved).toBe(true));
-    const response = await fixture.fetch("/api/v2/organizations/org_mock/projects/proj_alpha/work-items?include=board&state=Todo");
-    const page = await response.json();
-    const card = page.cards[0];
-    act(() => sources[0]!.dispatchEvent(new MessageEvent("activity", { data: JSON.stringify({ sequence: 40, grant_version: "original-grants", gap: false, deltas: [] }) })));
+    act(() => sources[0]!.dispatchEvent(new MessageEvent("checkpoint", { data: "{}", lastEventId: "40" })));
     const before = fixture.requests.length;
-    accessStatus = invalidation === "expired session" ? 401 : invalidation === "revoked access" ? 403 : invalidation === "unavailable" ? 503 : 200;
     vi.useFakeTimers();
-    act(() => { sources[0]!.readyState = 2; sources[0]!.dispatchEvent(new Event("error")); });
-    act(() => vi.advanceTimersByTime(3000));
+    await act(async () => {
+      sources[0]!.dispatchEvent(new Event("error"));
+      await vi.advanceTimersByTimeAsync(1000);
+    });
     vi.useRealTimers();
-    if (accessStatus === 401 || accessStatus === 403) {
+    expect(sources).toHaveLength(2);
+    expect(sources[1]!.url).toContain("since=40");
+    expect(fixture.requests).toHaveLength(before);
+    accessStatus = status;
+    await act(async () => sources[1]!.dispatchEvent(new MessageEvent("reset", { data: "{}", lastEventId: "41" })));
+    if (status === 401 || status === 403) {
       await waitFor(() => expect(current.error).toBe("Access to the board is no longer available."));
       expect(current.items).toHaveLength(0);
-      expect(current.live).toBe(false);
-      vi.useFakeTimers();
-      act(() => vi.advanceTimersByTime(30_000));
-      vi.useRealTimers();
-      expect(sources).toHaveLength(1);
-      return;
+    } else {
+      await waitFor(() => expect(current.refreshing).toBe(false));
+      if (status === 503) expect(current.error).toBe("Project access ended");
+      else expect(fixture.requests.length).toBeGreaterThan(before);
     }
-    await waitFor(() => expect(sources).toHaveLength(2));
-    expect(new URL(sources[1]!.url, "http://fixture.test").searchParams.get("since")).toBe("40");
-    act(() => sources[1]!.dispatchEvent(new MessageEvent("activity", { data: JSON.stringify({ sequence: 41, gap: false,
-      deltas: [{ sequence: 41, previous: card, current: { ...card, issue: { ...card.issue, title: "Missed delta", revision: "900" } } }] }) })));
-    expect(current.items.find((item) => item.id === card.issue.work_item_id)?.title).toBe("Missed delta");
-    if (accessStatus === 503) return;
-    expect(fixture.requests.slice(before).map(({ url }) => url.pathname)).toEqual(["/api/v2/organizations/org_mock/projects/proj_alpha"]);
-    const afterReconnect = fixture.requests.length;
-    act(() => sources[1]!.dispatchEvent(new MessageEvent("activity", { data: JSON.stringify({ sequence: invalidation === "gap" ? 3000 : 41, grant_version: invalidation === "gap" ? "original-grants" : "changed-grants",
-      gap: invalidation === "gap", deltas: [] }) })));
-    await waitFor(() => expect(fixture.requests.length).toBeGreaterThan(afterReconnect));
-    await waitFor(() => expect(current.refreshing).toBe(false));
   });
 
+});
+
+
+describe("current board execution", () => {
+  it.each([
+    { stage: "implementation", running: true, label: "Implementing" },
+    { stage: "merging", running: true, label: "Merging" },
+    { stage: "finalizing", running: false, label: "Finalizing" },
+    { stage: "", running: false, label: null },
+    { stage: "unreported-stage", running: true, label: "Running" },
+    { stage: "__proto__", running: true, label: "Running" },
+    { stage: "constructor", running: true, label: "Running" },
+    { stage: "toString", running: true, label: "Running" },
+    { stage: "__proto__", running: false, label: null },
+  ])("shows $stage without attributing historical attempt identity", ({ stage, running, label }) => {
+    const view = toBoardCardView({
+      issue: { ...itemFixture, terminal: false, blockers: [] } as unknown as NativeIssue,
+      attempt: { attempt_id: "attempt_previous", count: 2, status: "succeeded", started_at: "2026-10-15T12:00:00Z",
+        identity: { role: "code", backend: "codex", model: "previous-model" } },
+      execution: { id: "runner_current/42/3", running, stage, runner_id: "runner_current", started_at: "2026-10-16T12:00:00Z", expires_at: "2026-10-16T12:01:30Z" },
+      change: null,
+    }, "example-project");
+    expect(view.attempt).toMatchObject({ id: "runner_current/42/3", running, model: null, stage, attemptNumber: 2 });
+    expect(statusPill(view)?.label ?? null).toBe(label);
+    render(<IssueCard item={view} showProject moves={[]} onOpen={vi.fn()} onMove={vi.fn()} now={NOW} />);
+    if (label !== null) expect(screen.getByText(label)).toBeTruthy();
+    expect(isLive(view)).toBe(running);
+  });
+});
+
+
+describe("the pull requests page", () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  function changeItem(id: string, review: string, overrides: Partial<WorkItemView> = {}): WorkItemView {
+    return item({
+      id, number: 21, identifier: "example-project#21", projectId: "proj_alpha", projectName: "example-project",
+      updatedAt: "2026-09-09T10:00:00Z",
+      change: { id: `change_${id}`, number: 81, title: `Change ${id}`, state: review, review, url: "https://example.test/owner/repository/pull/81" },
+      attempt: { ...toAttemptView(ATTEMPTS)!, backend: "codex" },
+      ...overrides,
+    });
+  }
+
+  function renderChanges(items: WorkItemView[], options: { projectId?: string; loading?: boolean } = {}) {
+    vi.spyOn(appHooks, "useShell").mockReturnValue({ projectId: options.projectId ?? "" } as ReturnType<typeof appHooks.useShell>);
+    vi.spyOn(clientHooks, "useClient").mockReturnValue({
+      bootstrap: { projects: [{ id: "proj_alpha", name: "example-project" }] },
+    } as unknown as ReturnType<typeof clientHooks.useClient>);
+    vi.spyOn(workHooks, "useNow").mockReturnValue(NOW);
+    const reload = vi.fn();
+    const board = vi.spyOn(workHooks, "useBoard").mockReturnValue({ items, loading: options.loading ?? false, enriched: 0, reload } as unknown as ReturnType<typeof workHooks.useBoard>);
+    const root = createRootRoute({ component: ChangesPage });
+    const router = createRouter({ routeTree: root, history: createMemoryHistory({ initialEntries: ["/"] }) });
+    const view = render(<RouterProvider router={router} />);
+    return { ...view, router, reload, board };
+  }
+
+  it("counts only open review states, filters each tab and collapses groups under All", async () => {
+    const values = [
+      changeItem("evidence_one", "needs_evidence"), changeItem("evidence_two", "needs_evidence"),
+      changeItem("policy", "stale_policy"), changeItem("reviewed", "reviewed"), changeItem("draft", "draft"),
+      changeItem("merged", "reviewed", { change: { id: "merged", number: 82, title: "Merged change", state: "merged", review: "reviewed", url: null } }),
+      changeItem("landed", "reviewed", { change: { id: "landed", number: 83, title: "Landed change", state: "landed", review: "reviewed", url: null } }),
+      changeItem("unknown", "ready"), item({ change: null }),
+    ];
+    renderChanges(values);
+    await screen.findByRole("tab", { name: "All 5" });
+    expect(screen.getByText("5 open")).not.toBeNull();
+    expect(screen.getAllByTestId("changes-row")).toHaveLength(5);
+    expect(screen.queryByText("Merged change")).toBeNull();
+    expect(screen.queryByText("Landed change")).toBeNull();
+    expect(screen.queryByText("Change unknown")).toBeNull();
+    const group = screen.getByRole("button", { name: "Needs evidence 2" });
+    expect(group.getAttribute("aria-expanded")).toBe("true");
+    fireEvent.click(group);
+    expect(group.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByRole("button", { name: "Change evidence_one" })).toBeNull();
+    expect(screen.getAllByTestId("changes-row")).toHaveLength(3);
+    const staleGroup = screen.getByRole("button", { name: "Stale policy 1" });
+    expect(staleGroup.getAttribute("aria-expanded")).toBe("true");
+    fireEvent.click(staleGroup);
+    expect(staleGroup.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByRole("button", { name: "Change policy" })).toBeNull();
+    fireEvent.click(staleGroup);
+    expect(staleGroup.getAttribute("aria-expanded")).toBe("true");
+    for (const [label, count, title] of [
+      ["Needs evidence", 2, "Change evidence_one"], ["Stale policy", 1, "Change policy"],
+      ["Reviewed", 1, "Change reviewed"], ["Draft", 1, "Change draft"],
+    ] as const) {
+      fireEvent.click(screen.getByRole("tab", { name: `${label} ${count}` }));
+      expect(screen.getAllByTestId("changes-row")).toHaveLength(count);
+      expect(screen.getByRole("button", { name: title })).not.toBeNull();
+      expect(screen.queryByRole("button", { name: "Needs evidence 2" })).toBeNull();
+    }
+    fireEvent.click(screen.getByRole("tab", { name: "All 5" }));
+    expect(screen.queryByRole("button", { name: "Change evidence_one" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Needs evidence 2" }));
+    expect(screen.getAllByTestId("changes-row")).toHaveLength(5);
+  });
+
+  it.each(["", "proj_alpha"])("renders the fixed columns, agent, PR fallback and update time in scope %s", async (projectId) => {
+    renderChanges([
+      changeItem("codex", "needs_evidence"),
+      changeItem("claude", "reviewed", { attempt: { ...toAttemptView(ATTEMPTS)!, backend: "claude" } }),
+      changeItem("draft", "draft", { attempt: null, change: { id: "draft", title: "Native draft", state: "draft", review: "draft", number: null, url: null } }),
+    ], { projectId });
+    await screen.findByRole("table");
+    expect(screen.getAllByRole("columnheader").map((head) => head.textContent)).toEqual([
+      ...(projectId === "" ? ["Project"] : []), "PR", "Title", "Issue", "Agent", "Updated",
+    ]);
+    const rows = screen.getAllByTestId("changes-row");
+    const agentColumn = projectId === "" ? 4 : 3;
+    expect(within(rows[0]!).getAllByRole("cell")[agentColumn]!.textContent).toBe("Codex");
+    expect(within(rows[1]!).getAllByRole("cell")[agentColumn]!.textContent).toBe("Claude");
+    expect(within(rows[2]!).getAllByRole("cell")[agentColumn]!.textContent).toBe("");
+    expect(within(rows[2]!).getByText("—")).not.toBeNull();
+    expect(within(rows[2]!).queryByRole("link")).toBeNull();
+    expect(within(rows[0]!).getByText("2h")).not.toBeNull();
+    expect(screen.queryByTestId("changes-scope-note")).toBeNull();
+    expect(screen.queryByRole("button", { name: /sort/i })).toBeNull();
+    expect(screen.queryByRole("columnheader", { name: /^(checks|CI|Review|Age)$/ })).toBeNull();
+  });
+
+  it("preserves title, issue and external host navigation", async () => {
+    const { router } = renderChanges([changeItem("navigation", "needs_evidence")]);
+    await screen.findByRole("button", { name: "Change navigation" });
+    const navigate = vi.spyOn(router, "navigate").mockResolvedValue(undefined);
+    const host = screen.getByRole("link", { name: "Open the pull request on the host" });
+    expect(host.getAttribute("href")).toBe("https://example.test/owner/repository/pull/81");
+    expect(host.getAttribute("rel")).toBe("noreferrer noopener");
+    fireEvent.click(screen.getByRole("button", { name: "Change navigation" }));
+    expect(navigate).toHaveBeenLastCalledWith({ to: "/work/i/$workItemId/changes/$changeId",
+      params: { workItemId: "navigation", changeId: "change_navigation" }, search: { project: "proj_alpha" } });
+    fireEvent.click(screen.getByRole("button", { name: "#21" }));
+    expect(navigate).toHaveBeenLastCalledWith({ to: "/work/i/$workItemId", params: { workItemId: "navigation" } });
+  });
+
+  it("keeps Partial details in a tooltip, reloads and explains stale policy", async () => {
+    const { reload } = renderChanges([changeItem("policy", "stale_policy")]);
+    const chip = await screen.findByTestId("connection-chip");
+    expect(chip.textContent).toBe("Partial");
+    expect(document.body.textContent).not.toContain("0 issues read");
+    fireEvent.keyDown(document, { key: "Tab" });
+    act(() => chip.focus());
+    expect(await screen.findByText("Only changes on the most recently updated unfinished issues are shown. Reload reads them again.")).not.toBeNull();
+    expect(document.body.textContent).not.toContain("0 issues read");
+    act(() => screen.getByRole("button", { name: "Stale policy 1" }).focus());
+    expect(await screen.findByText("The project's policy changed after this round was published. A new round is needed.")).not.toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Reload" }));
+    expect(reload).toHaveBeenCalledOnce();
+  });
+
+  it("shows the centered empty state with zero tab counts", async () => {
+    renderChanges([]);
+    await screen.findByText("No open pull requests");
+    expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
+      "All0", "Needs evidence0", "Stale policy0", "Reviewed0", "Draft0",
+    ]);
+    expect(screen.queryByRole("table")).toBeNull();
+    expect(screen.queryByTestId("changes-row")).toBeNull();
+  });
+
+  it("shows skeleton tabs and rows in the fixed columns while loading", async () => {
+    renderChanges([], { loading: true });
+    await screen.findByRole("status", { name: "Loading pull requests" });
+    expect(screen.getByTestId("connection-chip").textContent).toBe("Loading");
+    expect(screen.getAllByTestId("changes-skeleton-row")).toHaveLength(6);
+    expect(within(screen.getAllByTestId("changes-skeleton-row")[0]!).getAllByRole("cell")).toHaveLength(6);
+    expect(screen.getAllByRole("columnheader").map((head) => head.textContent)).toEqual(["Project", "PR", "Title", "Issue", "Agent", "Updated"]);
+    expect(screen.queryByText("No open pull requests")).toBeNull();
+    expect(screen.queryByRole("tab")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Reload" })).toBeNull();
+  });
 });

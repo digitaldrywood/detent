@@ -2,10 +2,11 @@
 
 [Back to README](../README.md#documentation)
 
-Admission criteria and the issue effort rubric are project-owned text. The
-lists below are examples; Detent has no built-in rubric.
+Admission criteria and any issue effort rubric are project-owned text in the project's shared workflow. Detent has no built-in rubric; it only enforces the required issue sections described here.
 
-The shared project workflow can define required issue sections:
+## Issue contract
+
+A project's shared workflow can name the required issue sections under an `## Issue Contract` heading, one per list item:
 
 ```markdown
 ## Issue Contract
@@ -15,42 +16,27 @@ The shared project workflow can define required issue sections:
 - How we know it worked
 ```
 
-These three sections are the default without configured contract text. Required
-sections must contain text; headings inside code fences do not count. Admission
-and Todo dispatch use one evaluator. A failure uses
-`agent.stop_run.target_state` (Blocked by default) with a structured
-`human_action` naming missing sections and drafting a fix from the issue and
-project instructions. This replaces the old completion-heading recognition.
+These three sections are the default when no contract text is configured. Section names must be nonempty and unique. A required section must contain text in the issue body; headings inside code fences do not count. Admission and `Todo` dispatch use the same evaluator.
 
-Native creation and body edits retain human confirmation of section contents.
-Machine actors and machine-origin stamps require a subsequent human body save.
-Changing criteria invalidates their confirmation; effort and origin metadata
-do not. A satisfying human edit clears the contract action, and existing
-recorded-blocker recovery returns the issue to its recorded executable lane.
-The orchestrator owns lane changes.
+When an issue in `Todo` fails the contract, Detent does not dispatch it. It moves the issue to `agent.stop_run.target_state` (`Blocked` by default) with a structured `human_action` that names the missing sections and drafts a fix from the issue and project instructions. This is a human question, so the item stays in `Blocked` until a person answers it.
 
-The native upgrade exempts issues already outside Backlog. New issues and
-existing Backlog work are checked. The local runtime persists the rollout time
-and checks new work or work entering Todo afterward.
+Section contents need human confirmation. Issues created by a human through native creation are confirmed at creation. Issues from machine actors, issues carrying a machine-origin stamp and `[bot]` authors need a later human save of the issue body. Changing a section's text invalidates its confirmation; effort and origin metadata do not. A satisfying human edit clears the contract action, and recorded-blocker recovery returns the issue to its recorded executable lane. The orchestrator owns lane changes.
 
-- **Alignment** — Does this serve a stated current priority? Do not propose a
-  candidate that maps to no stated priority.
-- **Readiness** — Is the problem actionable, with the acceptance conditions
-  needed by the agent that will implement it?
-- **Size** — Is the work bounded enough for one agent to complete?
+If the contract text contains the line `Agent-authored criteria do not require human confirmation.`, Detent skips the confirmation check and holds an issue with missing sections out of dispatch without moving it.
+
+Native `Triage` items and items marked exempt are not checked. The native upgrade exempts issues already outside `Backlog`; new issues and existing `Backlog` work are checked. The local runtime persists the rollout time and checks new work or work entering `Todo` afterward.
 
 ## Issue effort selection
 
-- `medium` — Small, mechanical, and tightly specified.
-- `high` — Standard feature or fix with ambiguity or a cross-cutting surface.
-- `xhigh` — Tricky state, concurrency, restart, or recovery semantics.
+An issue body can carry a `detent-agent` block that sets `effort` for that issue:
 
-An issue body can carry a `detent-agent` block that sets `effort` for that
-issue. Each stage clamps it to its configured ceiling; see
-[session limits by complexity level](config.md#session-limits-by-complexity-level).
-`detent doctor` warns when a project's `AGENTS.md` and `CLAUDE.md` contain no
-`detent-agent` guidance.
+```detent-agent
+schema: 1
+effort: high
+```
 
-The `backlog_admission` proposal pass reads candidates through tracker
-selectors that `tracker.kind: hub_native` does not provide, so native projects
-cannot enable it.
+Each stage clamps it to its configured ceiling; see [session limits by complexity level](config.md#session-limits-by-complexity-level). `detent doctor` reports whether the project's `WORKFLOW.md` contains a `detent-agent` effort rubric.
+
+## Backlog admission
+
+The `backlog_admission` proposal pass reads candidates through tracker selectors that `tracker.kind: hub_native` does not provide, so native projects cannot enable it.

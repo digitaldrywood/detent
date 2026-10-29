@@ -10,10 +10,13 @@ import {
 } from "@tanstack/react-router";
 import { vi } from "vitest";
 
+import { useUiStateStore } from "../../src/uiStateStore.ts";
 import ThreadSidebar from "../../src/components/Sidebar.tsx";
 import { SidebarProvider } from "../../src/components/ui/sidebar.tsx";
 import {
   publishSidebarData,
+  usePublishProjectCounts,
+  type ProjectCounts,
   SidebarDataProvider,
   type SidebarShellData,
 } from "../../src/app/adapters/sidebarData.tsx";
@@ -39,12 +42,13 @@ export interface SidebarHarness {
 /** Every shelf and override the sidebar persists, back to its first-run state. */
 export function resetSidebarState(): void {
   window.localStorage.clear();
+  useUiStateStore.setState({ sidebarProjectScopeKey: null, sidebarProjectWorkingSetKeys: [], sidebarProjectScopeAccountKey: null, sidebarProjectScopesByAccount: {} });
   useSettledOverrideStore.setState({ settledAtById: {}, unsettledAtById: {} });
 }
 
 export async function renderSidebar(
   overrides: Partial<SidebarShellData> = {},
-  options: { readonly path?: string; readonly client?: ConversationClient } = {},
+  options: { readonly path?: string; readonly client?: ConversationClient; readonly counts?: ProjectCounts } = {},
 ): Promise<SidebarHarness> {
   const onSelect = vi.fn();
   const onNewChat = vi.fn();
@@ -68,10 +72,12 @@ export async function renderSidebar(
   };
   publishSidebarData(data);
 
+  function Counts() { usePublishProjectCounts(options.counts); return null; }
   const Mounted = (): React.ReactElement => (
     <ClientContext.Provider value={options.client ?? null}>
     <ToastProvider>
       <SidebarProvider>
+        <Counts />
         <ThreadSidebar />
       </SidebarProvider>
     </ToastProvider>

@@ -32,11 +32,11 @@ func readNativeDispatchState(ctx context.Context, tx *sql.Tx, scope nativeScope,
 // nothing about the item itself changed.
 //
 // A conversation continuation is the case that forces this to be explicit. A
-// `continue` command bumps no revision, moves no lane and edits no content
-// (decisions.md section 10), so nothing a claim query can read distinguishes
+// `continue` command bumps no revision, moves no lane and edits no content,
+// so nothing a claim query can read distinguishes
 // "this item already had its answer" from "the user asked for another turn".
-// Inferring it was tried and it broke the continuation the product promises
-// (operations.md section 7), so the request is written down instead: the
+// Inferring it was tried and it broke the continuation the product promises,
+// so the request is written down instead: the
 // generation moves forward, an attempt records the generation it started
 // under, and the claim query offers the item again exactly while the request
 // is newer than the last succeeded attempt.

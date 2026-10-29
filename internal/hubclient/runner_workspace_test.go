@@ -10,8 +10,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
-// The workspace capability report on the native machine endpoints (decisions
-// section 18.1). The hub's claim gate reads what a runner reported from the row
+// The workspace capability report on the native machine endpoints.
+// The hub's claim gate reads what a runner reported from the row
 // it stamps the heartbeat on, so both register and heartbeat must carry it, and
 // a runner that reports nothing must send neither field: the hub leaves a
 // stored report alone when a request omits it.

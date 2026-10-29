@@ -5,16 +5,13 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/workspace"
-)
-
-const (
-	sessionBrakeTestWaitTimeout        = 10 * time.Second
-	sessionBrakeCompletionGuardTimeout = time.Minute
 )
 
 func TestRunnerStopsSessionBeyondMaxTurns(t *testing.T) {
@@ -127,86 +124,86 @@ func TestRunnerNormalizesProviderTurnLimitBreach(t *testing.T) {
 }
 
 func TestRunnerGateWaitOutlivesFormerNoProgressLimit(t *testing.T) {
-	if testing.Short() {
-		t.Skip("real-time lifecycle and timeout integration")
-	}
-
 	t.Parallel()
 
-	startedAt := time.Now()
-	timeout := time.Second
-	releaseGate := make(chan struct{})
-	gateStarted := make(chan struct{})
-	backend := &sessionBlockingAgentBackend{
-		started:     make(chan struct{}),
-		stopped:     make(chan struct{}),
-		release:     releaseGate,
-		gateStarted: gateStarted,
-	}
-	sessionStore := &fakeSessionStore{sessionID: 1573}
-	workspaceBackend := &fakeWorkspaceBackend{
-		info:           workspace.Info{Path: t.TempDir(), Key: "issue-no-progress"},
-		recoveryStates: []workspace.RecoveryState{{HeadSHA: "f834f32450227c1b693eadcf92bdccccb6066e4a"}},
-	}
-	runner, err := NewRunner(Dependencies{
-		Workflow: config.Workflow{
-			Config: config.Config{Agent: config.Agent{
-				MaxTurns:            20,
-				NoProgressTimeoutMS: int(timeout / time.Millisecond),
-			}},
-			Prompt: "Work",
-		},
-		Workspace:    workspaceBackend,
-		AgentBackend: backend,
-		Store:        sessionStore,
-		Now:          time.Now,
-	})
-	if err != nil {
-		t.Fatalf("NewRunner() error = %v", err)
-	}
-
-	completionCh := make(chan sessionRunCompletion, 1)
-	go func() {
-		result, runErr := runner.Run(t.Context(), RunRequest{
-			Issue: connector.Issue{
-				ID:          "issue-no-progress",
-				Identifier:  "digitaldrywood/detent#2976",
-				PullRequest: &connector.PullRequest{Number: 3052, HeadSHA: "f834f32450227c1b693eadcf92bdccccb6066e4a"},
+	synctest.Test(t, func(t *testing.T) {
+		startedAt := time.Now()
+		timeout := time.Second
+		releaseGate := make(chan struct{})
+		gateStarted := make(chan struct{})
+		backend := &sessionBlockingAgentBackend{
+			started:     make(chan struct{}),
+			stopped:     make(chan struct{}),
+			release:     releaseGate,
+			gateStarted: gateStarted,
+		}
+		sessionStore := &fakeSessionStore{sessionID: 1573}
+		workspaceBackend := &fakeWorkspaceBackend{
+			info:           workspace.Info{Path: t.TempDir(), Key: "issue-no-progress"},
+			recoveryStates: []workspace.RecoveryState{{HeadSHA: "f834f32450227c1b693eadcf92bdccccb6066e4a"}},
+		}
+		runner, err := NewRunner(Dependencies{
+			Workflow: config.Workflow{
+				Config: config.Config{Agent: config.Agent{
+					MaxTurns: 20,
+				}},
+				Prompt: "Work",
 			},
-			StartedAt:     startedAt,
-			ProgressProbe: func(context.Context) (string, error) { return "unchanged-workpad", nil },
+			Workspace:    workspaceBackend,
+			AgentBackend: backend,
+			Store:        sessionStore,
+			Now:          time.Now,
 		})
-		completionCh <- sessionRunCompletion{result: result, err: runErr}
-	}()
+		if err != nil {
+			t.Fatalf("NewRunner() error = %v", err)
+		}
+		runner.sleepInhibitor = func(context.Context, func()) (func(), error) { return func() {}, nil }
 
-	waitSessionSignal(t, backend.started, "agent backend start")
-	// The gate holder keeps this committed-head worker first in line beyond the
-	// former inactivity threshold. It may start validation when the holder exits.
-	time.Sleep(3 * timeout)
-	select {
-	case <-backend.stopped:
-		t.Fatal("live gate wait was canceled")
-	default:
-	}
-	close(releaseGate)
-	waitSessionSignal(t, gateStarted, "validation gate start")
+		completionCh := make(chan sessionRunCompletion, 1)
+		go func() {
+			result, runErr := runner.Run(t.Context(), RunRequest{
+				Issue: connector.Issue{
+					ID:          "issue-no-progress",
+					Identifier:  "digitaldrywood/detent#2976",
+					PullRequest: &connector.PullRequest{Number: 3052, HeadSHA: "f834f32450227c1b693eadcf92bdccccb6066e4a"},
+				},
+				StartedAt:     startedAt,
+				ProgressProbe: func(context.Context) (string, error) { return "unchanged-workpad", nil },
+			})
+			completionCh <- sessionRunCompletion{result: result, err: runErr}
+		}()
 
-	var completion sessionRunCompletion
-	select {
-	case completion = <-completionCh:
-	case <-time.After(sessionBrakeCompletionGuardTimeout):
-		t.Fatal("timed out waiting for gate completion")
-	}
-	result, runErr := completion.result, completion.err
-	if runErr != nil || result.FinalState != FinalStateCompleted {
-		t.Fatalf("gate completion = (%q, %v), want completed without error", result.FinalState, runErr)
-	}
-	if sessionStore.finishCalls != 1 {
-		t.Fatalf("FinishSession() calls = %d, want 1", sessionStore.finishCalls)
-	}
-	if !workspaceBackend.afterRun {
-		t.Fatal("AfterRun() was not called")
-	}
+		waitSettledSessionSignal(t, backend.started, "agent backend start")
+		// The gate holder keeps this committed-head worker first in line beyond the
+		// former inactivity threshold. It may start validation when the holder exits.
+		time.Sleep(3 * timeout)
+		synctest.Wait()
+		select {
+		case <-backend.stopped:
+			t.Fatal("live gate wait was canceled")
+		default:
+		}
+		close(releaseGate)
+		waitSettledSessionSignal(t, gateStarted, "validation gate start")
+
+		synctest.Wait()
+		var completion sessionRunCompletion
+		select {
+		case completion = <-completionCh:
+		default:
+			t.Fatal("timed out waiting for gate completion")
+		}
+		result, runErr := completion.result, completion.err
+		if runErr != nil || result.FinalState != FinalStateCompleted {
+			t.Fatalf("gate completion = (%q, %v), want completed without error", result.FinalState, runErr)
+		}
+		if sessionStore.finishCalls != 1 {
+			t.Fatalf("FinishSession() calls = %d, want 1", sessionStore.finishCalls)
+		}
+		if !workspaceBackend.afterRun {
+			t.Fatal("AfterRun() was not called")
+		}
+	})
 }
 
 func TestRunnerGateFailureReportsCommand(t *testing.T) {
@@ -239,7 +236,7 @@ func TestRunnerGateFailureReportsCommand(t *testing.T) {
 		if runErr == nil || !strings.Contains(runErr.Error(), "make check-fast: exit status 17") {
 			t.Fatalf("gate failure = %v, want failing command", runErr)
 		}
-	case <-time.After(sessionBrakeTestWaitTimeout):
+	case <-testenv.WaitContext(t, t.Context()).Done():
 		t.Fatal("timed out waiting for gate failure")
 	}
 }
@@ -329,7 +326,17 @@ func waitSessionSignal(t *testing.T, signal <-chan struct{}, name string) {
 	t.Helper()
 	select {
 	case <-signal:
-	case <-time.After(sessionBrakeTestWaitTimeout):
+	case <-testenv.WaitContext(t, t.Context()).Done():
+		t.Fatalf("timed out waiting for %s", name)
+	}
+}
+
+func waitSettledSessionSignal(t *testing.T, signal <-chan struct{}, name string) {
+	t.Helper()
+	synctest.Wait()
+	select {
+	case <-signal:
+	default:
 		t.Fatalf("timed out waiting for %s", name)
 	}
 }

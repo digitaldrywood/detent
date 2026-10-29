@@ -47,6 +47,17 @@ export const AccessKey = Schema.Struct({
   last_used_at: Schema.optional(Schema.NullOr(Schema.String)),
 });
 export type AccessKey = typeof AccessKey.Type;
+export const OAuthGrant = Schema.Struct({
+  id: Schema.String,
+  client_id: Schema.String,
+  client_name: Schema.String,
+  organization_id: Schema.String,
+  connected_at: Schema.String,
+  last_used_at: Schema.NullOr(Schema.String),
+  revoked_at: Schema.NullOr(Schema.String),
+});
+export type OAuthGrant = typeof OAuthGrant.Type;
+export const OAuthGrants = Schema.Struct({ grants: Schema.Array(OAuthGrant), next_cursor: Schema.optional(Schema.String) });
 export const CreatedAccessKey = Schema.Struct({
   ...AccessKey.fields,
   token: Schema.String,

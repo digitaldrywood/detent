@@ -58,7 +58,7 @@ export interface ComposerBannerInput {
   readonly threadError?:
     | { readonly message: string; readonly onDismiss: () => void; readonly onRetry?: () => void }
     | undefined;
-  /** The entitlement allowances, when the hub reported any (§17.5). */
+  /** The entitlement allowances, when the hub reported any. */
   readonly usageLimits?:
     | { readonly report: UsageLimitsReport; readonly onDismiss: () => void }
     | undefined;

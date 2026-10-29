@@ -2,8 +2,8 @@ import type { ApprovalRequestId, UserInputQuestion } from "./contracts/index.ts"
 
 /**
  * An approval a turn is waiting on. Detent's runner-control model has no
- * per-tool approval prompt — access is a turn preference (decisions.md §13.14,
- * §14) — so nothing here is ever non-empty; the type exists because the
+ * per-tool approval prompt — access is a turn preference
+ *  — so nothing here is ever non-empty; the type exists because the
  * copied files name it.
  */
 export interface PendingApproval {
@@ -56,7 +56,7 @@ export function isLatestTurnSettled(
 //
 // What is not copied is the reducer that *fills* them — 1,400 lines folding a
 // provider session's events into messages, tool groups and approvals. The hub
-// owns a turn's state in Detent, not the client (decisions.md §5, §9), so the
+// owns a turn's state in Detent, not the client, so the
 // client is handed finished messages instead of events to fold.
 // `src/app/adapters/timelineEntries.ts` is the replacement: it turns the
 // hub's `Message` rows into the `ChatMessage` and `WorkLogEntry` values these

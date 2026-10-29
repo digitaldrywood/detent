@@ -3,6 +3,9 @@ package runner
 import (
 	"context"
 	"errors"
+	"net"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -10,8 +13,179 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
+
+type retainedReviewExecution struct {
+	testExecution
+	source  workspace.ChangeSource
+	input   NativeValidation
+	reviews []gate.ValidatorResult
+}
+
+func (e *retainedReviewExecution) ValidatorVersion(context.Context) (NativeValidation, error) {
+	return e.input, nil
+}
+
+func (e *retainedReviewExecution) ReviewVersion(context.Context) (NativeValidation, error) {
+	return e.input, nil
+}
+
+func (e *retainedReviewExecution) RecordValidator(ctx context.Context, result gate.ValidatorResult) error {
+	if err := e.Validate(ctx); err != nil {
+		return err
+	}
+	e.reviews = append(e.reviews, result)
+	return nil
+}
+
+func (e *retainedReviewExecution) RecordReview(ctx context.Context, result gate.ValidatorResult) error {
+	return e.RecordValidator(ctx, result)
+}
+
+func (*retainedReviewExecution) SetChangeSource(func(context.Context, string, string) (tracker.ChangeSourceCapture, error)) {
+}
+
+func (e *retainedReviewExecution) RecoverChangeSource(ctx context.Context) (workspace.ChangeSource, error) {
+	return e.source, e.Validate(ctx)
+}
+
+func TestNativeReviewPreservesImplementingSource(t *testing.T) {
+	isolateAttemptDiffGitConfig(t)
+	for _, test := range []struct {
+		name        string
+		dirty       bool
+		transferred bool
+		ssh         bool
+		refusal     string
+		retry       bool
+	}{
+		{name: "clean"},
+		{name: "dirty", dirty: true},
+		{name: "transferred bundle", dirty: true, transferred: true},
+		{name: "SSH retained bundle", dirty: true, transferred: true, ssh: true},
+		{name: "missing bundle", dirty: true, refusal: "bundle"},
+		{name: "changed version", dirty: true, refusal: "version"},
+		{name: "changed head", dirty: true, refusal: "head"},
+		{name: "stale authority", dirty: true, refusal: "authority"},
+		{name: "retry retained version", dirty: true, retry: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			source := initRunnerSourceRepo(t)
+			base := strings.TrimSpace(runRunnerGit(t, source, "rev-parse", "HEAD"))
+			repository := "https://github.com/example-org/example-project"
+			runRunnerGit(t, source, "remote", "add", "origin", repository)
+			runRunnerGit(t, source, "config", "url."+source+".insteadOf", repository)
+			local, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			issue := connector.Issue{ID: "wi_example", Identifier: "prj_example#1", BranchName: "detent/implementing"}
+			implementing, err := local.Create(t.Context(), workspaceIssue(defaultProjectID, issue))
+			if err != nil {
+				t.Fatal(err)
+			}
+			published := source
+			if test.transferred {
+				published = filepath.Join(t.TempDir(), "published")
+				runRunnerGit(t, source, "clone", "--no-local", source, published)
+				runRunnerGit(t, published, "config", "user.name", "Test User")
+				runRunnerGit(t, published, "config", "user.email", "test@example.com")
+			}
+			attemptDiffFile(t, published, "README.md", "published immutable source\n")
+			runRunnerGit(t, published, "add", "README.md")
+			runRunnerGit(t, published, "commit", "-m", "published source")
+			head := strings.TrimSpace(runRunnerGit(t, published, "rev-parse", "HEAD"))
+			capture, err := workspace.CaptureChangeSource(t.Context(), published, base, head)
+			if err != nil {
+				t.Fatal(err)
+			}
+			version := tracker.ChangeVersion{ID: "version_example", ChangeID: "change_example", ChangeVersionInput: tracker.ChangeVersionInput{Repository: repository, BaseSHA: base, HeadSHA: head, Source: &capture.Source}}
+			version.Policy.Gates.Validator = true
+			version.Policy.Gates.AutomatedReview = gate.AutomatedReviewRequired
+			if test.dirty {
+				attemptDiffFile(t, implementing.Path, "README.md", "staged source\n")
+				runRunnerGit(t, implementing.Path, "add", "README.md")
+				attemptDiffFile(t, implementing.Path, "README.md", "unstaged source\n")
+				attemptDiffFile(t, implementing.Path, "untracked.txt", "untracked source\n")
+			}
+			before := []string{runRunnerGit(t, implementing.Path, "status", "--porcelain"), runRunnerGit(t, implementing.Path, "diff", "--binary"), runRunnerGit(t, implementing.Path, "diff", "--cached", "--binary")}
+			backend := &fakeCodexClient{updates: []AgentUpdate{{Type: AgentUpdateMessageDelta, Delta: `{"verdict":"pass","score":1,"summary":"Reviewed immutable source","criteria_evidence":[]}`}}}
+			r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: config.Config{Tracker: config.Tracker{Kind: config.TrackerHubNative}, Gate: gate.Config{Run: "git diff --exit-code", SecurityAudit: gate.SecurityAuditConfig{Enabled: false}, AutomatedReview: gate.AutomatedReviewRequired, Validator: gate.ValidatorConfig{Enabled: true}}, Agents: config.Agents{Backends: []config.AgentBackend{{ID: "codex", Kind: "codex", Protocol: "app-server", Command: "codex app-server"}}, Routes: []config.AgentRoute{{Name: "review", Role: RoleCode, Backend: "codex", Model: "example-model"}, {Name: "validator", Role: RoleValidator, Backend: "codex", Model: "example-model"}}}}, Prompt: "Review"}, Workspace: local, AgentBackend: backend})
+			if err != nil {
+				t.Fatal(err)
+			}
+			execution := &retainedReviewExecution{source: workspace.ChangeSource{Version: version, Bundle: capture.Bundle, Transferred: test.transferred}, input: NativeValidation{Version: &version, Diff: &connector.ValidationDiff{Repository: repository, BaseSHA: base, HeadSHA: head, Digest: capture.Source.DiffSHA256, Patch: capture.Patch}}}
+			var reviewExecution Execution = execution
+			if test.ssh {
+				left, right := net.Pipe()
+				central := NewSSHPeer(t.Context(), left, left, NewSSHCallbackHandler(RunRequest{Execution: execution}, nil, nil, nil))
+				remote := NewSSHPeer(t.Context(), right, right, nil)
+				t.Cleanup(func() { central.Close(); remote.Close(); left.Close(); right.Close() })
+				reviewExecution = &sshNativeExecution{sshExecution: &sshExecution{peer: remote}}
+			}
+			request := RunRequest{Issue: issue, Execution: reviewExecution, workspacePrepared: true}
+			if test.retry {
+				execution.validateErr = ErrExecutionAuthorityUnavailable
+				if err := r.validateNativeChange(t.Context(), request); !errors.Is(err, ErrExecutionAuthorityUnavailable) || backend.calls != 0 || len(execution.reviews) != 0 {
+					t.Fatalf("unavailable source authority reached review: err=%v calls=%d reviews=%+v", err, backend.calls, execution.reviews)
+				}
+				execution.validateErr = nil
+			}
+			switch test.refusal {
+			case "bundle":
+				execution.source.Bundle = nil
+			case "version":
+				execution.source.Version.ID = "version_other"
+			case "head":
+				execution.source.Version.HeadSHA = base
+			case "authority":
+				execution.validateErr = ErrExecutionAuthorityUnavailable
+			}
+			err = r.validateNativeChange(t.Context(), request)
+			if test.refusal != "" {
+				if err == nil || backend.calls != 0 || len(execution.reviews) != 0 {
+					t.Fatalf("unverified source reached review: err=%v calls=%d reviews=%+v", err, backend.calls, execution.reviews)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("native review of B=%s with implementing A=%s: %v", head, base, err)
+				}
+				if backend.calls != 2 || len(execution.reviews) != 2 || backend.request.Workspace == implementing.Path {
+					t.Fatalf("native reviews did not use a separate immutable workspace: calls=%d reviews=%+v path=%s", backend.calls, execution.reviews, backend.request.Workspace)
+				}
+				for _, review := range execution.reviews {
+					if review.VersionID != version.ID || review.HeadSHA != head || review.BaseSHA != base || review.Repository != repository {
+						t.Fatalf("review lost immutable identity: %+v", review)
+					}
+				}
+				if got := strings.TrimSpace(runRunnerGit(t, backend.request.Workspace, "rev-parse", "HEAD")); got != head {
+					t.Fatalf("review HEAD=%s, want B=%s", got, head)
+				}
+				if got := runRunnerGit(t, backend.request.Workspace, "status", "--porcelain"); got != "" {
+					t.Fatalf("review workspace is dirty: %s", got)
+				}
+				t.Logf("implementing A=%s preserved; reviewed immutable B=%s tree=%s", base, head, strings.TrimSpace(runRunnerGit(t, backend.request.Workspace, "rev-parse", "HEAD^{tree}")))
+			}
+			if got := strings.TrimSpace(runRunnerGit(t, implementing.Path, "rev-parse", "HEAD")); got != base {
+				t.Fatalf("implementing HEAD=%s, want A=%s", got, base)
+			}
+			after := []string{runRunnerGit(t, implementing.Path, "status", "--porcelain"), runRunnerGit(t, implementing.Path, "diff", "--binary"), runRunnerGit(t, implementing.Path, "diff", "--cached", "--binary")}
+			for i := range before {
+				if before[i] != after[i] {
+					t.Fatalf("implementing source changed: before=%q after=%q", before[i], after[i])
+				}
+			}
+			if test.dirty {
+				data, err := os.ReadFile(filepath.Join(implementing.Path, "untracked.txt"))
+				if err != nil || string(data) != "untracked source\n" {
+					t.Fatalf("untracked source changed: %q %v", data, err)
+				}
+			}
+		})
+	}
+}
 
 func TestNativeValidatorReadsPinnedSourceWithoutRemote(t *testing.T) {
 	isolateAttemptDiffGitConfig(t)

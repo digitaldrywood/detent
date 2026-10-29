@@ -50,7 +50,7 @@ function watchConsole(page) {
 async function openWork(page, route = "/work") {
   await page.goto(hub.fixture.accounts.owner, { waitUntil: "domcontentloaded" });
   await resetSavedWorkViews(page);
-  // The router's basepath is `/` now (decisions.md §11, §12): Work is served
+  // The router's basepath is `/` now: Work is served
   // at the hub's root, not under the chat prefix.
   await page.goto(new URL(route, hub.fixture.url).toString(), {
     waitUntil: "domcontentloaded",
@@ -102,8 +102,8 @@ test.describe("the work board", () => {
         && (!params.has("open") || issue.terminal === (params.get("open") === "false")));
       await route.fulfill({ json: { items, sequence: 0, total: items.length } });
     });
-    await page.route("**/projects/*/events?**", (route) => route.fulfill({
-      contentType: "text/event-stream", body: 'event: activity\ndata: {"sequence":0,"deltas":[]}\n\n',
+    await page.route(/\/projects\/[^/]+\/events(?:\?.*)?$/, (route) => route.fulfill({
+      contentType: "text/event-stream", body: 'id: 0\nevent: checkpoint\ndata: {}\n\n',
     }));
     await openWork(page, `/work/p/${hub.fixture.project_id}`);
     const todo = page.locator('[data-testid="board-lane"][data-lane="Todo"]');
@@ -277,13 +277,13 @@ test.describe("the work board", () => {
   test("moves an issue between lanes from the keyboard", async ({ page }) => {
     let sequence = 1_000_000;
     let ticks = 0;
-    await page.route("**/projects/*/events?**", (route) => {
+    await page.route(/\/projects\/[^/]+\/events(?:\?.*)?$/, (route) => {
       ticks += 1;
       sequence += 1;
       return route.fulfill({
         status: 200,
         headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-store" },
-        body: `retry: 1000\nevent: activity\ndata: ${JSON.stringify({ sequence, deltas: [] })}\n\n`,
+        body: `id: ${sequence}\nevent: checkpoint\ndata: {}\n\n`,
       });
     });
     await openWork(page, `/work/p/${hub.fixture.project_id}`);
@@ -315,7 +315,10 @@ test.describe("the work board", () => {
     });
     const reads = [];
     page.on("request", (request) => {
-      if (request.method() === "GET" && /\/work-items(?:[?]|\/[^/]+\/(?:attempts|changes))/.test(request.url())) {
+      const url = new URL(request.url());
+      const sidebarHoldingRead = url.searchParams.get("open") === "true"
+        && url.searchParams.getAll("state").join(",") === "Blocked,Human Review";
+      if (request.method() === "GET" && !sidebarHoldingRead && /\/work-items(?:[?]|\/[^/]+\/(?:attempts|changes))/.test(request.url())) {
         reads.push(request.url());
       }
     });
@@ -418,13 +421,14 @@ test.describe("the work board", () => {
     await expect(utility).toBeEnabled();
     await utility.click();
     await expect(page).toHaveURL(/\/work\/changes$/);
-    await expect(page.getByTestId("changes-scope-note")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Pull requests", exact: true })).toBeVisible();
+    await expect(page.getByRole("tablist", { name: "Review state" })).toBeVisible();
     await scan(page, "changes");
   });
 });
 
 /**
- * The issue page (decisions.md §19): the issue *is* the page and the
+ * The issue page: the issue *is* the page and the
  * conversation is a surface in the right panel, so what used to be a chat
  * under an issue card is now a Linear-shaped page with a properties sidebar,
  * an activity feed and a two-mode composer.
@@ -462,7 +466,8 @@ test.describe("the issue page", () => {
 
     await expect(page).toHaveURL(/\/local-organization\/browser-collaboration$/);
     await expect(page.getByRole("heading", { level: 1 })).toHaveText("Browser collaboration");
-    await expect(page.getByRole("combobox", { name: "Filter threads by project" })).toHaveText("Browser collaboration");
+    await expect(page.getByRole("combobox", { name: "Filter threads by project" })).toHaveText("1 of 2 projects");
+    await expect(page.getByRole("list", { name: "Project working set" }).getByRole("button", { name: "Browser collaboration", exact: true })).toHaveAttribute("aria-pressed", "true");
     const board = page.getByTestId("work-board");
     await expect(board.getByRole("button", { name: "Review the invitation flow", exact: true })).toBeVisible();
     await expect(board.getByRole("button", { name: otherTitle, exact: true })).toHaveCount(0);
@@ -495,8 +500,7 @@ test.describe("the issue page", () => {
     await expect(properties.getByTestId("issue-attempts")).toBeVisible();
     await expect(properties.getByTestId("issue-pull-request")).toBeVisible();
 
-    // Sub-issues are named and disabled with the reason, rather than missing
-    // (decisions.md §16, §19.6).
+    // Sub-issues are named and disabled with the reason, rather than missing.
     await expect(page.getByTestId("add-sub-issues")).toBeDisabled();
 
     expect(errors).toEqual([]);
@@ -571,7 +575,7 @@ test.describe("the issue page", () => {
     await expect(composer).toHaveCount(1);
 
     // With the panel open the properties sidebar yields its width and its
-    // facts move to the disclosure at the top of the column (§19.3).
+    // facts move to the disclosure at the top of the column.
     await expect(page.getByRole("complementary", { name: "Properties" })).toHaveCount(0);
 
     // The panel's composer is the conversation's own, and it sends.
@@ -611,7 +615,7 @@ test.describe("the issue page", () => {
     expect(errors).toEqual([]);
   });
 
-  // Linear's property pickers (decisions.md §19.1). Everything below is
+  // Linear's property pickers. Everything below is
   // driven the way a reader drives it: the letter that opens the picker, the
   // header that says what it changes, a row, and the fact on the column
   // afterwards. The fixture seeds the issue with no labels, no assignee and
@@ -790,11 +794,11 @@ test.describe("the issue page", () => {
 
 test("shares project scope between the sidebar and Work across reloads", async ({ page }) => {
   const errors = watchConsole(page);
-  await openWork(page, `/work/p/${hub.fixture.project_id}`);
+  await openWork(page);
   const secondProjectId = new URL(hub.fixture.private_project).pathname.split("/").at(-1);
   const projects = [
-    { id: hub.fixture.project_id, slug: "browser-collaboration", name: "Browser collaboration", title: "Completed collaboration work" },
-    { id: secondProjectId, slug: "owner-private-project", name: "Owner private project", title: "Completed private work" },
+    { id: hub.fixture.project_id, name: "Browser collaboration", title: "Completed collaboration work" },
+    { id: secondProjectId, name: "Owner private project", title: "Completed private work" },
   ];
   for (const project of projects) {
     const created = await page.evaluate(async ({ id, title }) => {
@@ -809,6 +813,10 @@ test("shares project scope between the sidebar and Work across reloads", async (
     expect(created).toBe(200);
   }
   const scope = page.getByRole("combobox", { name: "Filter threads by project" });
+  const workingSet = page.getByRole("list", { name: "Project working set" });
+  await scope.click();
+  await page.getByRole("button", { name: "Select all", exact: true }).click();
+  await page.keyboard.press("Escape");
   const closedTab = page.getByTestId("list-tab-closed");
   const closed = page.getByTestId("work-list");
   const showClosed = async () => {
@@ -819,20 +827,20 @@ test("shares project scope between the sidebar and Work across reloads", async (
     await expect(closedTab).toHaveAttribute("aria-pressed", "true");
   };
   const selectScope = async (name) => {
-    await scope.click();
-    await page.getByRole("option", { name, exact: true }).click();
+    await workingSet.getByRole("button", { name, exact: true }).click();
   };
   const expectProject = async (project) => {
-    await expect.poll(() => new URL(page.url()).pathname).toBe(`/local-organization/${project.slug}`);
     await expect(page.getByRole("heading", { level: 1 })).toHaveText(project.name);
-    await expect(scope).toHaveText(project.name);
+    await expect(scope).toHaveText("2 of 2 projects");
+    await expect(workingSet.getByRole("button", { name: project.name, exact: true })).toHaveAttribute("aria-pressed", "true");
     await showClosed();
     await expect(closedTab).toHaveText("Closed 1");
     await expect(closed.getByText(project.title, { exact: true })).toBeVisible();
     const other = projects.find((candidate) => candidate.id !== project.id);
     await expect(closed.getByText(other.title, { exact: true })).toHaveCount(0);
   };
-  await expect(scope).toHaveText(projects[0].name);
+  await selectScope(projects[0].name);
+  await expectProject(projects[0]);
   await selectScope(projects[1].name);
   await expectProject(projects[1]);
   await page.reload();
@@ -843,16 +851,23 @@ test("shares project scope between the sidebar and Work across reloads", async (
   await expectProject(projects[1]);
   await selectScope(projects[0].name);
   await expectProject(projects[0]);
+  await page.goto(new URL(`/work/p/${projects[1].id}`, hub.fixture.url).toString());
+  await expectProject(projects[1]);
+  await page.goto(new URL(`/work/p/${projects[0].id}`, hub.fixture.url).toString());
+  await expectProject(projects[0]);
   await page.goBack();
   await expectProject(projects[1]);
   await page.goForward();
   await expectProject(projects[0]);
 
-  await selectScope("All Browser organization projects");
+  await page.goto(new URL("/work", hub.fixture.url).toString());
+  await scope.click();
+  await page.getByRole("button", { name: "Clear", exact: true }).click();
+  await page.keyboard.press("Escape");
   const expectAll = async () => {
-    await expect(page).toHaveURL(/\/work(?:\?|$)/);
     await expect(page.getByRole("heading", { level: 1 })).toHaveText("All Browser organization projects");
     await expect(scope).toHaveText("All Browser organization projects");
+    await expect(workingSet.getByRole("button", { name: "All", exact: true })).toHaveAttribute("aria-pressed", "true");
     await showClosed();
     await expect(closedTab).toHaveText("Closed 2");
     for (const project of projects) {

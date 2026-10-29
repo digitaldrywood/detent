@@ -19,7 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-// Turn preferences, references and the settle sweep (decisions section 14).
+// Turn preferences, references and the settle sweep.
 
 // conversationReferenceExcerptRunes bounds the message excerpt a
 // "referenced from" entry carries, so the listing never republishes a whole
@@ -30,7 +30,7 @@ const conversationReferenceExcerptRunes = 200
 // assembled it from the enrolled runners' provider reports.
 //
 // The identifier is what capacity and dispatch match against; everything else
-// is what a runner's backend catalog said about it (decisions section 14), and
+// is what a runner's backend catalog said about it, and
 // is absent for a report that carries only identifiers.
 type conversationModel struct {
 	ID string

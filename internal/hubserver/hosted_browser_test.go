@@ -27,6 +27,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -709,6 +710,14 @@ func TestHostedBrowserProviderAccountSelection(t *testing.T) {
 const browserHostedOwnerEmail = "owner@example.test"
 
 func browserPreviewConfig(cfg *Config) {
+	if os.Getenv("DETENT_HOSTED_BROWSER_RUNNER_CAPACITY") != "" {
+		plans := pilotHostedPlans()
+		plan := plans.Plans[0]
+		plan.ID = "browser_capacity"
+		plan.Allowances["concurrent_work"] = 16
+		plans.Plans, plans.Base = []HostedPlan{plan}, plan.PlanReference
+		cfg.Hosted.Plans = &plans
+	}
 	cfg.Conversation = &ConversationConfig{Enabled: true, Backend: newFakeCoordinatorBackend(), Model: genkitbackend.Model, ReasoningEffort: "low"}
 	cfg.Usage = &UsageConfig{Currency: "USD", Prices: map[string]UsagePrice{
 		"gpt-6-astra":   {Input: 1.25, CachedInput: 0.125, Output: 10},
@@ -927,7 +936,8 @@ func TestHostedBrowserPreview(t *testing.T) {
 		f.seedCoordinatorWorkflow(t)
 	}
 	if os.Getenv("DETENT_HOSTED_BROWSER_CAPACITY") != "" {
-		if err := f.service.database.configureHostedPlans(t.Context(), &HostedConfig{}); err != nil {
+		plans := capacityHostedPlans()
+		if err := f.service.database.configureHostedPlans(t.Context(), &HostedConfig{Plans: &plans}); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE hosted_plan_assignments SET base_id='starter',base_version=1"); err != nil {
@@ -972,6 +982,11 @@ func TestHostedBrowserPreview(t *testing.T) {
 	}
 	var problemRunner runnerauth.Binding
 	var problemCredential string
+	type capacityRunner struct {
+		runnerauth.Binding
+		Credential string `json:"credential"`
+	}
+	var capacityRunners []capacityRunner
 	if os.Getenv("DETENT_HOSTED_BROWSER_RUNNER") != "" {
 		base := browserHostedOrganizationBase
 		for _, project := range []string{f.project, f.privateProject} {
@@ -980,6 +995,9 @@ func TestHostedBrowserPreview(t *testing.T) {
 			}, http.StatusOK)
 		}
 		names := []string{"Settings runner"}
+		if os.Getenv("DETENT_HOSTED_BROWSER_RUNNER_CAPACITY") != "" {
+			names = append(names, "Second settings runner")
+		}
 		if os.Getenv("DETENT_HOSTED_BROWSER_RUNNER_PROBLEMS") != "" {
 			names = append(names, "Healthy runner")
 		}
@@ -995,6 +1013,17 @@ func TestHostedBrowserPreview(t *testing.T) {
 			}
 			redemption := runnerauth.Redemption{BackendIsolation: isolation.Report{"test": {isolation.Sandbox, isolation.NativeTrusted}}, Binding: binding, Credential: credential, Hostname: "test-host", DisplayName: name, Capacity: 2, Version: "test", OS: "linux", Architecture: "arm64"}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, base+"/runner-enrollments/redeem", enrollment.Token, redemption), http.StatusCreated)
+			if os.Getenv("DETENT_HOSTED_BROWSER_RUNNER_CAPACITY") != "" {
+				capacityRunners = append(capacityRunners, capacityRunner{Binding: binding, Credential: credential})
+				stored := f.api(t, "owner", http.MethodGet, base+"/runners/"+binding.RunnerID+"/routing", nil, http.StatusOK)
+				var routing runnerauth.Runner
+				decodeHubResponse(t, stored, &routing)
+				f.api(t, "owner", http.MethodPut, base+"/machines/"+string(binding.MachineID)+"/routing", runnerauth.HostChange{ExpectedRevision: routing.HostRevision, DisplayName: name, Capacity: 8}, http.StatusOK)
+				provider := capacityReport(f.service.config.now())
+				provider.MaxConcurrent = 8
+				heartbeat := map[string]any{"display_name": name, "capacity": 2, "version": "test", "backend_isolation": redemption.BackendIsolation, "provider_reports": []any{provider}, "capacity_configuration": runnerauth.CapacityConfig{Revision: strings.Repeat("a", 64), LocalLimit: 2, ClientLimit: 2, RuntimeLimit: 2, Manageable: true, ObservedAt: f.service.config.now()}}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, base+"/projects/"+f.project+"/machines/"+string(binding.MachineID)+"/heartbeat", credential, heartbeat), http.StatusOK)
+			}
 			if name == "Settings runner" && os.Getenv("DETENT_HOSTED_BROWSER_RUNNER_PROBLEMS") != "" {
 				problemRunner, problemCredential = binding, credential
 				problem := runnerauth.NewProblem("backend_missing")
@@ -1025,8 +1054,7 @@ func TestHostedBrowserPreview(t *testing.T) {
 			cfg := f.service.config
 			handler := f.server.Config.Handler
 			address := f.server.Listener.Addr().String()
-			ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
-			defer cancel()
+			ctx := testenv.WaitContext(t, r.Context())
 			if err := f.shutdownForRestart(ctx); err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
@@ -1077,6 +1105,8 @@ func TestHostedBrowserPreview(t *testing.T) {
 		Expires           time.Time          `json:"expires"`
 		ProblemRunner     runnerauth.Binding `json:"problem_runner"`
 		ProblemCredential string             `json:"problem_credential,omitempty"`
+		CapacityRunners   []capacityRunner   `json:"capacity_runners,omitempty"`
+		PolicyID          string             `json:"policy_id"`
 	}{
 		URL: f.server.URL, Login: f.server.URL + "/login", Organization: f.server.URL + "/organization",
 		Project: f.server.URL + "/projects/" + f.project, PrivateProject: f.server.URL + "/projects/" + f.privateProject,
@@ -1084,6 +1114,7 @@ func TestHostedBrowserPreview(t *testing.T) {
 		WorkerChat: f.workerChat, WorkerItem: f.workerItem,
 		OwnerEmail: browserHostedOwnerEmail, Accounts: accounts, Stop: f.server.URL + "/__preview/stop", Expires: time.Now().Add(browserHostedPreviewLifetime),
 		ProblemRunner: problemRunner, ProblemCredential: problemCredential, Restart: restartURL,
+		CapacityRunners: capacityRunners, PolicyID: hubTestPolicy().ID,
 	}
 	encoded, err := json.MarshalIndent(fixture, "", "  ")
 	if err != nil {
@@ -1148,8 +1179,7 @@ func TestHostedBrowserPreviewRestartDrainsStreams(t *testing.T) {
 	f.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		handler.ServeHTTP(browserShutdownFrameWriter{ResponseWriter: w, done: r.Context().Done(), draining: draining}, r)
 	})
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
+	ctx := testenv.WaitContext(t, t.Context())
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, f.server.URL+browserHostedOrganizationBase+"/projects/"+f.project+"/conversations/"+f.conversation+"/events", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -1298,4 +1328,6 @@ func (f *browserHostedFixture) seedBoardDefaults(t *testing.T) {
 			}
 		}
 	}
+	drainTestNativeClosedTimes(t, f.service)
+	drainTestNativeBoard(t, f.service)
 }

@@ -7,14 +7,14 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
-// WorkspaceConfig is the `workspaces:` section of the hosted configuration
-// (decisions section 18.1). Every field is a bound: how long a request waits
+// WorkspaceConfig is the `workspaces:` section of the hosted configuration.
+// Every field is a bound: how long a request waits
 // for a runner, how long a worktree stays available after its run, how long an
 // unused workspace lives, how many may be open at once, and how much of the
 // hub process the relay may hold.
 type WorkspaceConfig struct {
 	// Enabled mounts the workspace endpoints and the relay. With it off the
-	// surfaces stay disabled with their reason (section 16) and no workspace
+	// surfaces stay disabled with their reason and no workspace
 	// work item is ever created.
 	Enabled bool
 	// RequestTimeout is workspaces.request_timeout: how long a workspace
@@ -35,7 +35,7 @@ type WorkspaceConfig struct {
 	// PlanMaxOpen is plan.workspaces.max_open: open workspaces per
 	// organization. Beyond it a request fails with workspace_limit.
 	PlanMaxOpen int
-	// PersonMaxOpen is the per-person cap. Section 18.1 fixes it at 3; it is
+	// PersonMaxOpen is the per-person cap. The workspace session contract fixes it at 3; it is
 	// a field rather than a constant so a test can reach the refusal without
 	// opening three workspaces.
 	PersonMaxOpen int
@@ -46,14 +46,14 @@ type WorkspaceConfig struct {
 	// applied on top of the fixed list both the live surface and the stored
 	// diff already share.
 	FilesDeny []string
-	// Terminal is the terminal surface's own settings (section 18.3). All three
+	// Terminal is the terminal surface's own settings. All three
 	// are live: Enabled gates the creation request and every frame, Isolation
 	// decides who may open one and what a recording's audience is, and Record
 	// decides whether the stream is stored.
 	Terminal WorkspaceTerminalConfig
 }
 
-// WorkspaceTerminalConfig is `workspaces.terminal` (decisions section 18.3).
+// WorkspaceTerminalConfig is `workspaces.terminal`.
 type WorkspaceTerminalConfig struct {
 	// Enabled is workspaces.terminal.enabled, default off; an owner turns it
 	// on.
@@ -62,21 +62,21 @@ type WorkspaceTerminalConfig struct {
 	// Record is workspaces.terminal.record, default on.
 	//
 	// It is a pointer because "absent" and "false" are different answers and a
-	// bool cannot hold both: section 18.3 makes recording on by default, so a
+	// bool cannot hold both: the terminal contract makes recording on by default, so a
 	// configuration that says nothing must record, and only one that says
 	// `record: false` must not. Read it through RecordEnabled rather than
 	// directly, so nothing has to remember which nil means.
 	Record *bool
 }
 
-// Workspace configuration defaults, all from section 18.1 and 18.2.
+// Workspace configuration defaults, all from the workspace session contract and the relay protocol.
 const (
 	defaultWorkspaceRequestTimeout = 5 * time.Minute
 	defaultWorkspaceRetainAfterRun = 30 * time.Minute
 	defaultWorkspaceIdleTimeout    = 30 * time.Minute
 	defaultWorkspaceMaxLifetime    = 4 * time.Hour
 	defaultWorkspacePlanMaxOpen    = 20
-	// defaultWorkspacePersonMaxOpen is section 18.1's "per person, 3 at a
+	// defaultWorkspacePersonMaxOpen is the workspace session contract's "per person, 3 at a
 	// time".
 	defaultWorkspacePersonMaxOpen = 3
 )
@@ -135,7 +135,7 @@ func (c WorkspaceConfig) validate() error {
 }
 
 // RecordEnabled reports whether terminal sessions are recorded. A
-// configuration that never said records, which is section 18.3's default.
+// configuration that never said records, which is the terminal contract's default.
 func (c WorkspaceTerminalConfig) RecordEnabled() bool {
 	return c.Record == nil || *c.Record
 }

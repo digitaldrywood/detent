@@ -11,7 +11,7 @@
 // resume from the cursor this client tracked, not from `Last-Event-ID`.
 
 export interface SseFrame {
-  /** Value of the `id:` field. Heartbeats carry no id (decisions.md §5). */
+  /** Value of the `id:` field. Heartbeats carry no id. */
   readonly id: string | null;
   readonly event: string;
   readonly data: string;

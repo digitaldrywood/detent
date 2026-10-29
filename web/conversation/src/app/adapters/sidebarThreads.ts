@@ -21,14 +21,12 @@ export const ISSUE_LANES: readonly IssueLane[] = ["Needs you", "Running", "Waiti
 /**
  * Which lane a conversation belongs to. A conversation whose attempt has ended
  * has no lane: it is not waiting on a runner and it is not waiting on the
- * reader. `waiting_for_runner` stands alone (A.11): a queue signal and a
+ * reader. `waiting_for_runner` stands alone: a queue signal and a
  * working runner must never share a treatment.
  */
 export function issueLane(conversation: Conversation): IssueLane | null {
   switch (conversation.execution.status) {
     case "waiting_input":
-    case "failed":
-    case "unknown":
       return "Needs you";
     case "starting":
     case "running":
@@ -37,6 +35,8 @@ export function issueLane(conversation: Conversation): IssueLane | null {
     case "waiting_for_runner":
       return "Waiting";
     case "idle":
+    case "failed":
+    case "unknown":
     case "completed":
     case "interrupted":
       return null;
@@ -146,7 +146,7 @@ function session(conversation: Conversation): OrchestrationSession {
 }
 
 export interface ThreadShellOptions {
-  /** Conversation ids the attention list names as needing the reader (B.4). */
+  /** Conversation ids the attention list names as needing the reader. */
   readonly attention?: ReadonlySet<string> | undefined;
   /** The reader's own settle / un-settle clicks (`settledOverrides.ts`). */
   readonly settledOverrides?: SettledOverrides | undefined;
@@ -181,7 +181,7 @@ export function toEnvironmentThreadShell(
     latestTurn: latestTurn(conversation),
     createdAt: conversation.created_at,
     updatedAt: conversation.updated_at,
-    // §14 removed the archived status outright; nothing is ever archived.
+    // The conversation contract removed the archived status outright; nothing is ever archived.
     archivedAt: null,
     settledOverride,
     settledAt: settled ? conversation.updated_at : null,

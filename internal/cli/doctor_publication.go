@@ -83,9 +83,6 @@ func doctorIssueFilingDestinations(cfg workflowconfig.Config) []doctorIssueFilin
 		key := strings.ToLower(repository) + "\x00" + source
 		byKey[key] = doctorIssueFilingDestination{repository: repository, source: source, allowVerbatim: allowVerbatim}
 	}
-	if cfg.Retro.Enabled {
-		add(cfg.Retro.ProductRepository, "retro.product_repository", cfg.Retro.AllowPublicCrossProjectDetails)
-	}
 	for _, backend := range cfg.AgentBackendConfigs() {
 		if backend.Kind != workflowconfig.AgentBackendCodex {
 			continue

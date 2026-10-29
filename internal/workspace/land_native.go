@@ -146,9 +146,41 @@ func (l *LocalGit) LandChanges(ctx context.Context, requests []LandRequest) []La
 				out[i].Err = fmt.Errorf("unsupported merge method %q", method)
 				continue
 			}
+			delivered, err := deliveredLanding(ctx, info.Path, request.Options, base, target, method)
+			if err != nil {
+				out[i].Err = err
+				continue
+			}
+			if delivered.MergeSHA != "" {
+				out[i].Result = delivered
+				out[i].Err = RecordLanding(ctx, info, request.Options.HeadSHA, delivered)
+				continue
+			}
 			integrationStarted := time.Now()
-			merged, err := l.combine(ctx, staging, method, request.Options.HeadSHA, stageHead, request.Options.Message)
+			if resolved := request.Options.Resolution; resolved != nil {
+				if resolved.BaseSHA != stageHead {
+					out[i].Err = &LandRefusal{Kind: LandRefusalBaseMoved, Reason: "the base changed after merge resolution", BaseSHA: stageHead}
+					continue
+				}
+				same, verifyErr := sameLandingDiff(ctx, staging, request.Options.HeadSHA, resolved.HeadSHA, stageHead)
+				if verifyErr != nil || !same {
+					out[i].Err = errors.Join(verifyErr, refuse(LandRefusalHeadMoved, "merge resolution differs from the reviewed diff"))
+					continue
+				}
+				if err := verifyLandingValidation(ctx, staging, LandOptions{ValidationCommand: request.Options.ValidationCommand, HeadSHA: resolved.HeadSHA, Validation: &resolved.Gate}); err != nil {
+					out[i].Err = err
+					continue
+				}
+			}
+			integrationHead := request.Options.HeadSHA
+			if resolved := request.Options.Resolution; resolved != nil {
+				integrationHead = resolved.HeadSHA
+			}
+			merged, err := l.combine(ctx, staging, method, integrationHead, stageHead, request.Options.Message)
 			result := LandResult{BaseBefore: stageHead, BaseRef: target, Method: method, Path: "clean_push", Pipeline: out[i].Result.Pipeline, PipelineDropped: out[i].Result.PipelineDropped}
+			if resolved := request.Options.Resolution; resolved != nil {
+				result.Rebased, result.Path, result.Gate = true, "merge_resolution", resolved.Gate
+			}
 			if receipt := request.Options.Validation; receipt != nil && request.Options.ValidationCommand != "" {
 				result.Pipeline = append(result.Pipeline, receipt.Reused("landing_validation", time.Now().UTC()).PipelineTiming("landing_validation"))
 			}
@@ -177,11 +209,14 @@ func (l *LocalGit) LandChanges(ctx context.Context, requests []LandRequest) []La
 				}
 				result.Pipeline = append(result.Pipeline, gate.Interval("rebase", rebaseStarted, time.Now(), outcome))
 				result.Rebased, result.Path = true, "rebase_short_validation"
+				if err != nil && request.Options.Native {
+					result.Path = "merge_resolution_pending"
+				}
 			}
-			if method == "rebase" && err == nil {
+			if method == "rebase" && err == nil && request.Options.Resolution == nil {
 				result.Rebased, result.Path = true, "rebase_short_validation"
 			}
-			if result.Rebased && err == nil {
+			if result.Rebased && err == nil && request.Options.Resolution == nil {
 				validationInfo := info
 				validationInfo.Path = staging
 				command, packages, scopeErr := shortLandingCommand(ctx, staging, stageHead, merged, request.Options.ValidationCommand)
@@ -189,7 +224,7 @@ func (l *LocalGit) LandChanges(ctx context.Context, requests []LandRequest) []La
 				if scopeErr != nil {
 					err = scopeErr
 				} else {
-					result.Gate, err = l.validateLanding(ctx, validationInfo, request.Issue, command, merged)
+					result.Gate, err = l.validateLanding(ctx, validationInfo, request.Issue, command, merged, stageHead)
 					if !result.Gate.StartedAt.IsZero() {
 						result.Gate.TimingStage = "landing_validation"
 						result.Pipeline = append(result.Pipeline, result.Gate.PipelineTiming("landing_validation"))
@@ -288,7 +323,9 @@ func (l *LocalGit) rebaseLanding(ctx context.Context, path, head, base, message 
 		return "", err
 	}
 	if _, err := l.runCommit(ctx, path, nil, "rebase", "--onto", base, strings.TrimSpace(fork)); err != nil {
-		return "", abandon(refuse(LandRefusalConflict, "rebasing the reviewed head conflicts: "+commandErrorOutput(err)), gitErr(ctx, path, "rebase", "--abort"))
+		files, filesErr := runGitAt(ctx, path, "diff", "--name-only", "--diff-filter=U", "-z")
+		refusal := &LandRefusal{Kind: LandRefusalConflict, Reason: "rebasing the reviewed head conflicts: " + commandErrorOutput(err), ConflictFiles: nonemptyLandingPaths(files)}
+		return "", abandon(refusal, errors.Join(filesErr, gitErr(ctx, path, "rebase", "--abort")))
 	}
 	rebased, err := runGitAt(ctx, path, "rev-parse", "HEAD")
 	if err != nil {
@@ -381,7 +418,7 @@ func auditIntegratedLanding(ctx context.Context, path, base, head string, opts L
 		return nil, errors.New("landing security audit evidence differs from the integrated change")
 	}
 	if audit.Verdict != "pass" {
-		return audit, &ValidationError{Stage: ValidationStageLanding, Err: errors.New("security audit requires Rework")}
+		return audit, &ValidationError{Stage: ValidationStageLanding, Err: fmt.Errorf("security audit requires %s", audit.Verdict)}
 	}
 	return audit, nil
 }

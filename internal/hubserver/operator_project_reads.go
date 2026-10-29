@@ -26,10 +26,10 @@ func (e hubProjectExecutor) read(ctx context.Context, call operatortool.Call) (o
 	if operatortool.DecodeProjectArguments(call.Arguments, &r) != nil {
 		return operatortool.Result{}, operatortool.ErrInvalidArguments
 	}
-	if r.ProjectID == "" && call.Name != "list_projects" && call.Name != "project_setup" {
+	if r.ProjectID == "" && call.Name != "list_projects" && call.Name != "project_setup" && call.Name != operatortool.GetSpritePool {
 		return operatortool.Result{}, operatortool.ErrInvalidArguments
 	}
-	ctx, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, ProjectID: r.ProjectID})
+	ctx, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, ProjectID: r.ProjectID, OrganizationWide: call.Name == operatortool.GetSpritePool && r.ProjectID == ""})
 	if err != nil {
 		return operatortool.Result{}, err
 	}
@@ -45,6 +45,10 @@ func (e hubProjectExecutor) read(ctx context.Context, call operatortool.Call) (o
 		value, err = s.operatorProjectList(ctx, scope, r)
 	case "get_native_project":
 		value, err = readNativeProject(ctx, s.database.reader, scope)
+	case operatortool.GetSpritePool:
+		value, err = s.spritePoolResponse(ctx, scope)
+	case operatortool.GetProjectSpriteAllocation:
+		value, err = readProjectSpriteAllocation(ctx, s.database.reader, scope)
 	case "get_onboarding":
 		value, err = s.projectOnboarding(ctx, scope)
 	case "get_git_hub_batch":
@@ -78,9 +82,10 @@ func (e hubProjectExecutor) read(ctx context.Context, call operatortool.Call) (o
 		var policyScope string
 		policyScope, err = operatorPolicyScope(ctx, s.database.reader, scope, r.RepositoryPolicy)
 		if err == nil {
-			value, err = readProjectPolicyHistory(ctx, s.database.reader, policyScope, r.Limit, r.After, false)
-			if errors.Is(err, errNoApprovedRepositoryPolicy) {
-				return operatortool.Result{}, &operatortool.ConflictError{Code: "policy_mismatch", Message: "No approved repository policy exists for this project"}
+			var approval policy.Approval
+			approval, err = readProjectPolicyHistory(ctx, s.database.reader, policyScope, r.Limit, r.After, false)
+			if err == nil {
+				value, err = s.projectPolicyRead(ctx, s.database.reader, policyScope, approval, true)
 			}
 		}
 	case "project_secret_metadata":
@@ -121,7 +126,7 @@ func (e hubProjectExecutor) read(ctx context.Context, call operatortool.Call) (o
 		Data           any                    `json:"data"`
 	}{scope.organization, scope.project, s.config.now().UTC(), value}
 	if call.Name == "get_project_policy" {
-		approval, ok := value.(policy.Approval)
+		view, ok := value.(projectPolicyRead)
 		if !ok {
 			return operatortool.Result{}, errProjectServiceUnavailable
 		}
@@ -130,7 +135,7 @@ func (e hubProjectExecutor) read(ctx context.Context, call operatortool.Call) (o
 		if err != nil {
 			return operatortool.Result{}, err
 		}
-		page.Data, err = boundedProjectPolicyHistory(approval, operatortool.MaxResultBytes-len(envelope)+2)
+		page.Data, err = boundedProjectPolicyHistory(view, operatortool.MaxResultBytes-len(envelope)+2)
 		if err != nil {
 			return operatortool.Result{}, err
 		}
@@ -138,8 +143,57 @@ func (e hubProjectExecutor) read(ctx context.Context, call operatortool.Call) (o
 	return hubProjectResult(page)
 }
 
-func boundedProjectPolicyHistory(approval policy.Approval, budget int) (policy.Approval, error) {
+func boundedProjectPolicyHistory(approval projectPolicyRead, budget int) (projectPolicyRead, error) {
 	history, next := approval.History, approval.HistoryNext
+	approval.History, approval.HistoryNext = nil, ""
+	if len(history) > 0 {
+		entry := history[0]
+		entry.PreviousDefinition, entry.Definition = nil, nil
+		approval.History = []policy.WorkflowApply{entry}
+		approval.HistoryNext = next
+		if len(history) > 1 {
+			approval.HistoryNext = strconv.FormatInt(entry.ID, 10)
+		}
+	}
+	raw, err := json.Marshal(approval)
+	if err != nil {
+		return approval, err
+	}
+	if len(raw) > budget && len(approval.ObservedPolicies) > 0 {
+		approval.ObservedPolicyDetailsOmitted = true
+		observations := make([]policy.ObservedPolicy, len(approval.ObservedPolicies))
+		for i, observed := range approval.ObservedPolicies {
+			observations[i] = observed
+			observations[i].Policy = policy.Descriptor{
+				Schema: observed.Policy.Schema, ID: observed.Policy.ID,
+				SourceRevision: observed.Policy.SourceRevision, SourceDigest: observed.Policy.SourceDigest, ConfigDigest: observed.Policy.ConfigDigest,
+			}
+		}
+		low, high := 0, len(observations)
+		for low < high {
+			count := low + (high-low+1)/2
+			approval.ObservedPolicies = observations[:count]
+			approval.ObservedPoliciesOmitted = len(observations) - count
+			raw, err = json.Marshal(approval)
+			if err != nil {
+				return approval, err
+			}
+			if len(raw) <= budget {
+				low = count
+			} else {
+				high = count - 1
+			}
+		}
+		approval.ObservedPolicies = observations[:low]
+		approval.ObservedPoliciesOmitted = len(observations) - low
+		raw, err = json.Marshal(approval)
+		if err != nil {
+			return approval, err
+		}
+	}
+	if len(raw) > budget {
+		return approval, errProjectServiceUnavailable
+	}
 	approval.History, approval.HistoryNext = nil, ""
 	for i, entry := range history {
 		entry.PreviousDefinition, entry.Definition = nil, nil

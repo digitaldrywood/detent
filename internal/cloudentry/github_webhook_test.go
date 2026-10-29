@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector/github"
-	"github.com/digitaldrywood/detent/internal/hubserver"
 )
 
 func TestSharedEntryGitHubWebhookUnavailable(t *testing.T) {
@@ -59,17 +58,9 @@ func TestSharedEntryGitHubWebhookRouting(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			f := newEntryFixture(t)
-			t.Cleanup(func() {
-				for _, fixture := range f.fixtures {
-					_ = fixture.service.Close()
-				}
-			})
 			withDatabase := func(id string, operation func(*sql.DB)) {
 				t.Helper()
 				fixture := f.fixtures[id]
-				if err := fixture.service.Close(); err != nil {
-					t.Fatal(err)
-				}
 				db, err := sql.Open("sqlite", fixture.path+"?_pragma=foreign_keys(1)")
 				if err != nil {
 					t.Fatal(err)
@@ -79,12 +70,6 @@ func TestSharedEntryGitHubWebhookRouting(t *testing.T) {
 				if err := db.Close(); err != nil {
 					t.Fatal(err)
 				}
-				fixture.service, err = hubserver.Open(t.Context(), fixture.config)
-				if err != nil {
-					t.Fatal(err)
-				}
-				f.fixtures[id] = fixture
-				f.tenants[testSocketEndpoint(strings.TrimPrefix(id, "org_")+".sock")] = fixture.service.Handler()
 			}
 			bind := func(id, binding string) {
 				t.Helper()

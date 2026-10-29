@@ -46,7 +46,7 @@ func (s *Service) CreateWebSession(ctx context.Context, record auth.SessionRecor
 	if err != nil {
 		return auth.ErrInvalidSession
 	}
-	_, err = s.database.db.ExecContext(ctx, "INSERT INTO hosted_sessions (token_hash,email,identity_json,expires_at,created_at) VALUES (?,?,?,?,?)", record.TokenHash, record.Email, string(encoded), formatHubTime(record.ExpiresAt), formatHubTime(record.CreatedAt))
+	_, err = s.database.db.ExecContext(ctx, "INSERT INTO hosted_sessions (token_hash,email,identity_json,expires_at,created_at,identity_subject) VALUES (?,?,?,?,?,?)", record.TokenHash, record.Email, string(encoded), formatHubTime(record.ExpiresAt), formatHubTime(record.CreatedAt), record.Identity.Subject)
 	return err
 }
 
@@ -72,6 +72,9 @@ func (s *Service) WebSession(ctx context.Context, hash string, now time.Time) (a
 		return auth.Session{}, err
 	}
 	current, err := s.config.Hosted.Provider.CurrentSession(ctx, *session.Identity)
+	if auth.HostedIdentityReason(err) == auth.HostedReasonProviderUnavailable {
+		return auth.Session{}, err
+	}
 	if err != nil || !current.ExpiresAt.After(now) || current.Subject != session.Identity.Subject || current.SessionID != session.Identity.SessionID || current.OrganizationID != session.Identity.OrganizationID || current.SupportActor != session.Identity.SupportActor || current.SupportReason != session.Identity.SupportReason {
 		return auth.Session{}, auth.ErrInvalidSession
 	}
@@ -119,14 +122,22 @@ func (s *Service) hostedMembership(ctx context.Context, identity *auth.HostedIde
 func (s *Service) hostedCredential(ctx context.Context, c echo.Context) (apiCredential, int, error) {
 	session, hash, err := s.hostedSession(ctx, c)
 	if err != nil {
+		if auth.HostedIdentityReason(err) == auth.HostedReasonProviderUnavailable {
+			return apiCredential{}, http.StatusServiceUnavailable, err
+		}
 		return apiCredential{}, http.StatusUnauthorized, auth.ErrInvalidSession
 	}
 	var credential apiCredential
 	var status int
-	if claims, ok := hostedSharedClaims(c); ok && claims.Kind == cloudassert.KindBrowser {
-		credential, status, err = s.hostedSharedCredential(ctx, session, hash, claims.Role)
-	} else {
-		credential, status, err = s.hostedSessionCredential(ctx, session, hash)
+	read := func() (apiCredential, int, error) {
+		if claims, ok := hostedSharedClaims(c); ok && claims.Kind == cloudassert.KindBrowser {
+			return s.hostedSharedCredential(ctx, session, hash, claims.Role)
+		}
+		return s.hostedSessionCredential(ctx, session, hash)
+	}
+	credential, status, err = read()
+	if status == http.StatusForbidden && s.completePendingHostedInvitation(ctx, session) {
+		credential, status, err = read()
 	}
 	if err == nil {
 		c.Set("hub_api_credential", credential)
@@ -160,6 +171,35 @@ func (s *Service) hostedSharedCredential(ctx context.Context, session auth.Sessi
 	return s.hostedMemberCredential(ctx, session, hash, membership)
 }
 
+// completePendingHostedInvitation finishes an invitation the provider already
+// accepted for this subject but whose tenant membership was never written, such
+// as a join interrupted between the provider acceptance and the tenant
+// transaction. A pending invitation still needs the explicit join. The
+// acceptance path re-verifies the provider invitation, subject, membership and
+// role, and its conditional update admits one acceptance, so no shared lock is
+// held across the provider calls. It reports true whenever completion was
+// attempted, since a concurrent request may have completed it first.
+func (s *Service) completePendingHostedInvitation(ctx context.Context, session auth.Session) bool {
+	if session.Identity == nil || session.Identity.SupportActor != "" || session.Email == "" || hostedEmailListed(s.config.Hosted.StaffEmails, session.Email) {
+		return false
+	}
+	readCtx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	var id string
+	err := s.database.reader.QueryRowContext(readCtx, "SELECT id FROM hosted_invitations WHERE email = ? AND organization_id = ? AND accepted_user_id = '' AND (expires_at = '' OR expires_at > ?) ORDER BY rowid DESC LIMIT 1", strings.ToLower(session.Email), s.config.Hosted.OrganizationID, s.config.now().UTC().Format(time.RFC3339)).Scan(&id)
+	cancel()
+	if err != nil {
+		return false
+	}
+	invitation, err := auth.LookupInvitationID(ctx, s.config.Hosted.Provider, id)
+	if err != nil || invitation.State != "accepted" || invitation.AcceptedUserID != session.Identity.Subject {
+		return false
+	}
+	if err := s.acceptHostedInvitationIDFor(ctx, auth.Identity{Subject: session.Identity.Subject, Email: session.Email, EmailVerified: true, Hosted: session.Identity}, id); err != nil {
+		s.config.Logger.Warn("pending invitation completion refused", "invitation", id, "error", err)
+	}
+	return true
+}
+
 // lesserHostedRole returns the less privileged of two organization roles, so
 // a downgrade recorded by the tenant applies before the entry's access token
 // carrying the older role expires.
@@ -174,6 +214,9 @@ func lesserHostedRole(a, b string) string {
 func (s *Service) hostedSessionCredential(ctx context.Context, session auth.Session, hash string) (apiCredential, int, error) {
 	membership, err := s.hostedMembership(ctx, session.Identity)
 	if err != nil {
+		if auth.HostedIdentityReason(err) == auth.HostedReasonProviderUnavailable {
+			return apiCredential{}, http.StatusServiceUnavailable, err
+		}
 		var lookup *hostedMembershipLookupError
 		if errors.As(err, &lookup) {
 			return apiCredential{}, http.StatusInternalServerError, err
@@ -262,7 +305,7 @@ func (s *Service) hostedBoundary(next echo.HandlerFunc) echo.HandlerFunc {
 			return next(c)
 		}
 		if !hostedReadRequest(c) && !bearerAPI && !strings.HasSuffix(c.Path(), "/redeem") && !s.hostedCSRFValid(c) {
-			return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "invalid_csrf", Message: "Reload the form and try again"})
+			return s.refusedAPIError(c, http.StatusForbidden, "invalid_csrf", "Reload the form and try again", apiErrorResponse{Code: "invalid_csrf", Message: "Reload the form and try again"})
 		}
 		if !hostedReadRequest(c) && !bearerAPI {
 			s.hostedMutationMu.Lock()
@@ -274,6 +317,9 @@ func (s *Service) hostedBoundary(next echo.HandlerFunc) echo.HandlerFunc {
 }
 
 func (s *Service) requireHostedProject(ctx context.Context, query nativeQueryer, scope nativeScope, write bool) error {
+	if s.config.Hosted == nil {
+		return authorizeNativeProject(ctx, query, scope)
+	}
 	if scope.credential.EntryKey != nil {
 		if !scope.credential.EntryKey.Allows(string(scope.project)) {
 			return &apikey.Refusal{Code: "key_project_denied", Message: "The project is outside this key's access context"}
@@ -315,7 +361,10 @@ func (s *Service) hostedMutationIdentity(ctx context.Context, credential apiCred
 	}
 	if credential.HostedKeyScope != "" {
 		membership, err := s.hostedMembership(ctx, credential.Hosted)
-		if err != nil || membership.ID != credential.HostedMembership {
+		if err != nil {
+			return auth.HostedIdentity{}, auth.Membership{}, err
+		}
+		if membership.ID != credential.HostedMembership {
 			return auth.HostedIdentity{}, auth.Membership{}, auth.ErrHostedIdentity
 		}
 		return *credential.Hosted, membership, nil
@@ -329,6 +378,9 @@ func (s *Service) hostedMutationIdentity(ctx context.Context, credential apiCred
 		return *credential.Hosted, membership, nil
 	}
 	identity, err := s.config.Hosted.Provider.CurrentSession(ctx, *credential.Hosted)
+	if auth.HostedIdentityReason(err) == auth.HostedReasonProviderUnavailable {
+		return auth.HostedIdentity{}, auth.Membership{}, err
+	}
 	if err != nil || !identity.ExpiresAt.After(s.config.now()) || identity.Subject != credential.Hosted.Subject || identity.SessionID != credential.Hosted.SessionID || identity.SupportActor != credential.Hosted.SupportActor || identity.SupportReason != credential.Hosted.SupportReason || identity.OrganizationID != credential.Hosted.OrganizationID {
 		return auth.HostedIdentity{}, auth.Membership{}, auth.ErrHostedIdentity
 	}
@@ -349,6 +401,9 @@ func (s *Service) recheckHostedAuthority(ctx context.Context, tx *sql.Tx, scope 
 	}
 	identity, membership, err := s.hostedMutationIdentity(ctx, scope.credential)
 	if err != nil {
+		if auth.HostedIdentityReason(err) == auth.HostedReasonProviderUnavailable {
+			return operatortool.ErrProviderUnavailable
+		}
 		return auth.ErrHostedIdentity
 	}
 	if scope.credential.EntryKey == nil || scope.credential.EntryKey.Kind != "service" {
@@ -475,6 +530,9 @@ WHERE s.token_hash = ? AND s.revoked_at IS NULL AND julianday(s.expires_at) > ju
 		}
 		return nil
 	}
+	if operatortool.IsThreadTool(scope.action) {
+		return nil
+	}
 	if membership.Role.Slug != "owner" && membership.Role.Slug != "admin" {
 		return auth.ErrHostedIdentity
 	}
@@ -568,16 +626,26 @@ func (s *Service) hostedAuditWith(ctx context.Context, exec hostedExecer, identi
 	if identity == nil {
 		return nil
 	}
-	if _, ok := mutation.FromContext(ctx); !ok {
+	if audit := entryKeyAuditFrom(ctx); audit != nil && (event == "action" || event == "administration") {
+		if _, transactional := exec.(*sql.Tx); transactional {
+			return s.auditEntryKey(ctx, exec, audit, status)
+		}
+		return nil
+	}
+	if _, ok := mutation.FromContext(ctx); !ok && status < http.StatusBadRequest {
 		switch event {
 		case "billing_viewed", "billing_exported":
-			return nil
+			if identity.SupportActor == "" {
+				return nil
+			}
 		case "action", "administration":
 			method, _, _ := strings.Cut(route, " ")
 			switch method {
 			case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
 			default:
-				return nil
+				if identity.SupportActor == "" {
+					return nil
+				}
 			}
 		}
 	}
@@ -601,7 +669,9 @@ func (s *Service) hostedAuditWith(ctx context.Context, exec hostedExecer, identi
 		}
 		summary = string(raw)
 	}
-	_, err := exec.ExecContext(ctx, `INSERT INTO hosted_audit(organization_id,session_id,actual_actor,effective_user,reason,event,route,project_id,status,started_at,expires_at,recorded_at,mutation_json)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`, s.config.Hosted.OrganizationID, identity.SessionID, actor, identity.Subject, identity.SupportReason, event, route, project, status, formatHubTime(identity.CreatedAt), formatHubTime(identity.ExpiresAt), formatHubTime(s.config.now()), summary)
+	now := s.config.now()
+	account := decodeAccountFields(event)
+	_, err := exec.ExecContext(ctx, `INSERT INTO hosted_audit(organization_id,session_id,actual_actor,effective_user,reason,event,route,project_id,status,started_at,expires_at,recorded_at,mutation_json,recorded_at_ns,account_kind,account_retry)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, s.config.Hosted.OrganizationID, identity.SessionID, actor, identity.Subject, identity.SupportReason, event, route, project, status, formatHubTime(identity.CreatedAt), formatHubTime(identity.ExpiresAt), formatHubTime(now), summary, now.UnixNano(), account.Kind, account.Retry)
 	return err
 }

@@ -46,7 +46,8 @@ func runnerUpdateReady(r runnerauth.Runner, request runnerUpdateChange, now time
 	if request.ExpectedBuildRevision != r.Update.Revision {
 		return runnerUpdateConflict(r.Revision, "The observed build revision has changed; read get_runner_update and use its current observation revision")
 	}
-	if request.Version != r.Update.AvailableVersion {
+	repair := request.Release && strings.TrimPrefix(request.Version, "v") == strings.TrimPrefix(r.Update.Running.Version, "v") && r.Update.Running.Source == "release" && !r.Update.Running.VerifiedRelease
+	if request.Version != r.Update.AvailableVersion && !repair {
 		return runnerUpdateConflict(r.Revision, "The selected version differs from the observed available version; read get_runner_update and select its available version")
 	}
 	if !request.Release && !r.Update.Pending {
@@ -83,10 +84,10 @@ func (s *Service) readRunnerUpdate(ctx context.Context, scope nativeScope, resou
 
 func (s *Service) applyRunnerUpdateCommand(ctx context.Context, scope nativeScope, resource string, request runnerUpdateChange) (any, error) {
 	if request.ExpectedRevision < 1 || request.delivery("validate", s.config.now()).Validate() != nil || strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 {
-		return nil, nativeInvalid("A selected service, observed runner/build revision, release version and idempotency key are required")
+		return nil, nativePublicInvalid("A selected service, observed runner/build revision, release version and idempotency key are required")
 	}
 	if !request.Confirm {
-		return nil, &nativeError{Code: "confirmation_required", Message: "Confirm the selected runner update and coordinated restart", status: http.StatusPreconditionRequired}
+		return nil, &nativeError{Code: "confirmation_required", Message: "Confirm the selected runner update and coordinated restart", status: http.StatusPreconditionRequired, publicMessage: true}
 	}
 	tx, err := s.database.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -132,13 +133,16 @@ func (s *Service) applyRunnerUpdateCommand(ctx context.Context, scope nativeScop
 	if _, err := tx.ExecContext(ctx, "UPDATE runner_identities SET routing_settings_json = ?, revision = revision + 1 WHERE organization_id = ? AND id = ?", settings, scope.organization, resource); err != nil {
 		return nil, err
 	}
+	if err := storeRunnerRoutingFacts(ctx, tx, resource, settings); err != nil {
+		return nil, err
+	}
 	runner.Revision++
 	view := runner.UpdateView(now)
 	raw, err = marshalNative(view)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO native_commands (organization_id, actor_id, operation, command_key, request_hash, response_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)", scope.organization, scope.credential.ID, operation, request.IdempotencyKey, hash, raw, formatHubTime(now)); err != nil {
+	if _, err := insertNativeCommandReceipt(ctx, tx, scope.organization, scope.credential.ID, operation, request.IdempotencyKey, hash, raw, formatHubTime(now)); err != nil {
 		return nil, err
 	}
 	if err := s.database.checkHostedGrowth(ctx, tx, before, now, false); err != nil {
@@ -153,7 +157,7 @@ func (s *Service) applyRunnerUpdateCommand(ctx context.Context, scope nativeScop
 func (s *Service) storeRunnerUpdateObservation(ctx context.Context, tx *sql.Tx, scope nativeScope, report *runnerauth.UpdateObservation, protocol int, version, platform, architecture string, now time.Time) error {
 	if report != nil {
 		if report.Validate() != nil || protocol != 2 || strings.TrimPrefix(report.Running.Version, "v") != strings.TrimPrefix(version, "v") || report.Running.OS != platform || report.Running.Architecture != architecture {
-			return nativeInvalid("Update observation must identify this runner's actual process and supported protocol")
+			return nativePublicInvalid("Update observation must identify this runner's actual process and supported protocol")
 		}
 		runner, err := readRunner(ctx, tx, scope.organization, scope.credential.Runner.RunnerID, now)
 		if err != nil {
@@ -168,9 +172,12 @@ func (s *Service) storeRunnerUpdateObservation(ctx context.Context, tx *sql.Tx, 
 					return err
 				}
 				if !accepted {
-					return nativeInvalid("Update receipt does not belong to this enrolled runner request")
+					report.Receipt = nil
 				}
 			}
+		}
+		if report.Receipt != nil && runner.Update != nil {
+			report.Receipt.RetainPreviousFailure(runner.Update.Receipt)
 		}
 		report.ReceivedAt = now
 	}
@@ -188,7 +195,8 @@ func (s *Service) storeRunnerUpdateObservation(ctx context.Context, tx *sql.Tx, 
 func (s *Service) followHubRunnerUpdate(ctx context.Context, tx *sql.Tx, scope nativeScope, report runnerauth.UpdateObservation, now time.Time) error {
 	version := runnerUpdateTarget(s.config.Version)
 	comparison, err := update.CompareVersions(version, report.Running.Version)
-	if version == "" || err != nil || comparison <= 0 {
+	repair := comparison == 0 && report.Running.Source == "release" && !report.Running.VerifiedRelease
+	if version == "" || err != nil || comparison < 0 || comparison == 0 && !repair {
 		return nil
 	}
 	if _, published := s.runnerPublishedReleases.Load("v" + strings.TrimPrefix(version, "v") + "/" + report.Running.OS + "/" + report.Running.Architecture); !published {
@@ -203,7 +211,8 @@ func (s *Service) followHubRunnerUpdate(ctx context.Context, tx *sql.Tx, scope n
 		return err
 	}
 	if current := settings.UpdateRequest; current != nil {
-		if current.FollowHub && current.Version == strings.TrimPrefix(version, "v") {
+		staleRefusal := repair && current.ExpectedBuildRevision != report.Revision && report.Receipt != nil && report.Receipt.Request == *current && report.Receipt.Status == "refused"
+		if current.FollowHub && current.Version == strings.TrimPrefix(version, "v") && !staleRefusal {
 			return nil
 		}
 		if !runnerUpdateSuperseded(*current, report.Receipt, version) {
@@ -226,7 +235,10 @@ func (s *Service) followHubRunnerUpdate(ctx context.Context, tx *sql.Tx, scope n
 		return err
 	}
 	_, err = tx.ExecContext(ctx, "UPDATE runner_identities SET routing_settings_json = ?, revision = revision + 1 WHERE organization_id = ? AND id = ?", raw, scope.organization, scope.credential.Runner.RunnerID)
-	return err
+	if err != nil {
+		return err
+	}
+	return storeRunnerRoutingFacts(ctx, tx, scope.credential.Runner.RunnerID, raw)
 }
 
 func (s *Service) getRunnerUpdate(c echo.Context) error {
@@ -245,7 +257,7 @@ func (s *Service) getRunnerUpdate(c echo.Context) error {
 func (s *Service) applyRunnerUpdate(c echo.Context) error {
 	var request runnerUpdateChange
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	credential, ok := c.Get("hub_api_credential").(apiCredential)
 	if !ok {

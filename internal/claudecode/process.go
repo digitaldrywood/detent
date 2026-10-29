@@ -79,7 +79,7 @@ func (b *AgentBackend) RunTurn(
 
 	procgroup.Configure(ctx, cmd)
 	startedAt := time.Now()
-	if err := cmd.Start(); err != nil {
+	if err := procgroup.Start(cmd); err != nil {
 		return runner.AgentTurnResult{}, errors.Join(
 			fmt.Errorf("start claude command: %w", err),
 			stdout.Close(),
@@ -236,7 +236,7 @@ func (b *AgentBackend) commandWithIsolation(ctx context.Context, req runner.Agen
 				}
 			}
 		}
-		settings, err := IsolationSettings(policy)
+		settings, err := isolationSettings(policy, b.toolAddress)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -258,6 +258,30 @@ func (b *AgentBackend) commandWithIsolation(ctx context.Context, req runner.Agen
 			return nil, nil, err
 		}
 		argv = append(argv, "--setting-sources", "", "--settings", string(encoded))
+	}
+	if b.toolConfig != "" {
+		var filtered []string
+		var allowed []string
+		for i := 0; i < len(argv); i++ {
+			if argv[i] == "--mcp-config" {
+				i++
+				continue
+			}
+			if argv[i] == "--strict-mcp-config" {
+				continue
+			}
+			if argv[i] == "--allowedTools" {
+				for i+1 < len(argv) && !strings.HasPrefix(argv[i+1], "--") {
+					i++
+					allowed = append(allowed, argv[i])
+				}
+				continue
+			}
+			filtered = append(filtered, argv[i])
+		}
+		argv = append(filtered, "--strict-mcp-config", "--mcp-config", b.toolConfig, "--allowedTools")
+		argv = append(argv, allowed...)
+		argv = append(argv, b.toolNames...)
 	}
 	var cmd *exec.Cmd
 	if b.options.CommandFactoryWithArgs != nil {

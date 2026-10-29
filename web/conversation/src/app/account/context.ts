@@ -3,7 +3,7 @@
 //
 // The client is memoised on the conversation client, so the screens share a
 // single instance and a CSRF token that came from the same payload the shell
-// loaded (decisions.md §12, "Serving").
+// loaded.
 import React from "react";
 
 import type { AccountBootstrap } from "../../contracts/account.ts";

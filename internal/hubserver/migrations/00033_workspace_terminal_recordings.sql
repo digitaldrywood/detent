@@ -1,7 +1,7 @@
 -- +goose Up
--- One terminal stream, recorded (decisions section 18.3).
+-- One terminal stream, recorded.
 --
--- workspaces.terminal.record is on by default and section 18.3 stores "each
+-- workspaces.terminal.record is on by default and the terminal contract stores "each
 -- stream as an asciicast v2 artifact referenced from the relay session row".
 -- Each stream, not each connection: a terminal stream is never shared, so every
 -- open is its own PTY and its own recording, and one tab that opened three
@@ -27,7 +27,7 @@ CREATE TABLE workspace_terminal_recordings (
   organization_id TEXT NOT NULL,
   project_id TEXT NOT NULL,
   -- relay_session_id is the workspace_relay_sessions row this stream belonged
-  -- to, which is the reference section 18.3 asks for. It is not a foreign key
+  -- to, which is the reference the terminal contract asks for. It is not a foreign key
   -- because the audit row is written outside the hub's transaction helper --
   -- an audit that vanished with a rolled-back write would not be an audit --
   -- and a recording must survive a torn connection for the same reason.
@@ -38,8 +38,8 @@ CREATE TABLE workspace_terminal_recordings (
   principal_id TEXT NOT NULL,
   subject TEXT NOT NULL,
   isolation TEXT NOT NULL CHECK (isolation IN ('user', 'container')),
-  -- support_reason is recorded for a support actor's session, because section
-  -- 18.3 lets one have a terminal only with a reason recorded and only at
+  -- support_reason is recorded for a support actor's session, because the terminal contract
+  -- lets one have a terminal only with a reason recorded and only at
   -- container isolation. A recording with no reason on it was not a support
   -- session's.
   support_reason TEXT NOT NULL DEFAULT '',
@@ -50,7 +50,7 @@ CREATE TABLE workspace_terminal_recordings (
   -- cast_text holds the asciicast v2 document: one JSON header line, then one JSON
   -- array per event. Input events are marked "i" and output events "o", so a
   -- reader can tell what the person typed from what the shell answered --
-  -- section 18.3 is explicit that recording cannot remove what the person
+  -- the terminal contract is explicit that recording cannot remove what the person
   -- typed, and marking it is the honest alternative to dropping it.
   cast_text TEXT NOT NULL DEFAULT '',
   cast_bytes INTEGER NOT NULL DEFAULT 0 CHECK (cast_bytes >= 0),

@@ -255,29 +255,18 @@ WHERE s.completed_at IS NOT NULL
   AND (COALESCE(s.provider_thread_id, '') != '' OR COALESCE(s.provider_session_id, '') != ''
     OR (CAST(sqlc.arg(work_attempt_id) AS INTEGER) > 0
       AND lower(trim(COALESCE(s.final_state, ''))) = 'failed'
-      AND (s.turns = 0 OR (s.turns = 1 AND CASE WHEN json_valid(w.metrics_json)
-        THEN json_type(w.metrics_json, '$.turns') = 'integer' AND json_extract(w.metrics_json, '$.turns') = 0
-        ELSE 0 END))
+      AND (s.turns = 0 OR (s.turns = 1 AND w.metrics_turns = 0))
       AND s.input_tokens = 0 AND s.cached_input_tokens = 0
       AND s.output_tokens = 0 AND s.reasoning_output_tokens = 0 AND s.total_tokens = 0))
   AND s.project_id = sqlc.arg(project_id)
   AND w.project_id = sqlc.arg(project_id)
   AND (CAST(sqlc.arg(work_attempt_id) AS INTEGER) > 0 OR (COALESCE(
-    CASE WHEN json_valid(w.worker_metadata_json)
-      THEN CAST(json_extract(w.worker_metadata_json, '$.pr_number') AS INTEGER)
-      ELSE NULL
-    END,
+    w.metadata_pr_number,
     w.pr_number,
     0
   ) = CAST(sqlc.arg(pr_number) AS INTEGER)
-  AND CASE WHEN json_valid(w.worker_metadata_json)
-    THEN CAST(COALESCE(json_extract(w.worker_metadata_json, '$.pr_head_sha'), '') AS TEXT)
-    ELSE ''
-  END = sqlc.arg(pr_head_sha)
-  AND CASE WHEN json_valid(w.worker_metadata_json)
-    THEN CAST(COALESCE(json_extract(w.worker_metadata_json, '$.pr_base_sha'), '') AS TEXT)
-    ELSE ''
-  END = sqlc.arg(pr_base_sha)))
+  AND w.metadata_pr_head_sha = sqlc.arg(pr_head_sha)
+  AND w.metadata_pr_base_sha = sqlc.arg(pr_base_sha)))
   AND COALESCE(s.agent_backend_id, '') = sqlc.arg(agent_backend_id)
   AND COALESCE(s.agent_backend_kind, '') = sqlc.arg(agent_backend_kind)
   AND COALESCE(s.agent_role, '') = sqlc.arg(agent_role)
@@ -475,7 +464,7 @@ WITH issue_sessions AS (
     AND NOT EXISTS (
       SELECT 1 FROM work_attempts AS attempt
       WHERE attempt.id = codex_sessions.work_attempt_id
-        AND (attempt.phase = 'completion_deferred' OR NOT (COALESCE(json_extract(CASE WHEN json_valid(attempt.worker_metadata_json) THEN attempt.worker_metadata_json ELSE '{}' END, '$.historical_completion_fence.excluded_from_worker_outcomes'), 0) = 0))
+        AND (attempt.phase = 'completion_deferred' OR (attempt.outcome_excluded IS NULL OR attempt.outcome_excluded != 0))
     )
 ),
 successful_issues AS (
@@ -738,7 +727,7 @@ WHERE usage_events.project_id = sqlc.arg(project_id)
     'forge_unavailable'
   )
   AND lower(trim(COALESCE(attempt.error_class, ''))) NOT LIKE 'backend_startup_%'
-  AND COALESCE(json_extract(CASE WHEN json_valid(attempt.worker_metadata_json) THEN attempt.worker_metadata_json ELSE '{}' END, '$.historical_completion_fence.excluded_from_worker_outcomes'), 0) = 0
+  AND (attempt.id IS NULL OR attempt.outcome_excluded = 0)
   AND usage_events.id IN (
     SELECT usage_by_id.id FROM usage_events AS usage_by_id
     WHERE usage_by_id.project_id = sqlc.arg(project_id)
@@ -779,8 +768,13 @@ INSERT INTO workflow_phase_events (
   total_tokens,
   model_context_window,
   endpoint_family,
-  metadata_json
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  metadata_json,
+  retry_identity,
+  input_hash,
+  correlation_id,
+  terminal_outcome,
+  projection_ready
+) VALUES (sqlc.arg(project_id), sqlc.arg(run_id), sqlc.arg(session_id), sqlc.arg(issue_id), sqlc.arg(identifier), sqlc.arg(issue_url), sqlc.arg(pr_number), sqlc.arg(phase_type), sqlc.arg(phase_name), sqlc.arg(previous_phase_name), sqlc.arg(reason), sqlc.arg(status), sqlc.arg(started_at), sqlc.arg(finished_at), sqlc.arg(duration_seconds), sqlc.arg(event_day), sqlc.arg(command_name), sqlc.arg(exit_code), sqlc.arg(turns), sqlc.arg(input_tokens), sqlc.arg(cached_input_tokens), sqlc.arg(output_tokens), sqlc.arg(reasoning_output_tokens), sqlc.arg(total_tokens), sqlc.arg(model_context_window), sqlc.arg(endpoint_family), sqlc.arg(metadata_json), sqlc.narg(retry_identity), sqlc.narg(input_hash), sqlc.narg(correlation_id), sqlc.narg(terminal_outcome), 1)
 RETURNING *;
 
 -- name: ProvenanceAttributionTrustBoundary :one
@@ -872,8 +866,19 @@ INSERT INTO work_attempts (
   detent_session_id,
   provider_session_id,
   runtime_identity_json,
-  owner_generation
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  owner_generation,
+  metadata_pr_number,
+  metadata_pr_head_sha,
+  metadata_pr_base_sha,
+  metadata_run_mode,
+  outcome_excluded,
+  forge_wait_present,
+  forge_wait_host,
+  forge_wait_error_class,
+  forge_write_completed_host,
+  metrics_turns,
+  projection_ready
+) VALUES (sqlc.arg(project_id), sqlc.arg(issue_id), sqlc.arg(identifier), sqlc.arg(issue_url), sqlc.arg(pr_number), sqlc.arg(repo), sqlc.arg(worker_type), sqlc.arg(worker_host), sqlc.arg(lane), sqlc.arg(attempt_number), sqlc.arg(status), sqlc.arg(started_at), sqlc.arg(lease_expires_at), sqlc.arg(heartbeat_at), sqlc.arg(phase), sqlc.arg(status_message), sqlc.arg(current_step), sqlc.arg(total_steps), sqlc.arg(progress_percent), sqlc.arg(current_command), sqlc.arg(wait_reason), sqlc.arg(github_rate_snapshot_json), sqlc.arg(ci_state), sqlc.arg(capacity_snapshot_json), sqlc.arg(worker_metadata_json), sqlc.arg(metrics_json), sqlc.arg(next_action), sqlc.arg(detent_session_id), sqlc.arg(provider_session_id), sqlc.arg(runtime_identity_json), sqlc.arg(owner_generation), sqlc.narg(metadata_pr_number), sqlc.narg(metadata_pr_head_sha), sqlc.narg(metadata_pr_base_sha), sqlc.narg(metadata_run_mode), sqlc.narg(outcome_excluded), sqlc.narg(forge_wait_present), sqlc.narg(forge_wait_host), sqlc.narg(forge_wait_error_class), sqlc.narg(forge_write_completed_host), sqlc.narg(metrics_turns), 1)
 RETURNING *;
 
 -- name: GetWorkAttempt :one
@@ -883,23 +888,34 @@ WHERE id = ?;
 
 -- name: UpdateWorkAttemptHeartbeat :execrows
 UPDATE work_attempts
-SET heartbeat_at = ?,
-    lease_expires_at = ?,
-    phase = ?,
-    status_message = ?,
-    current_step = ?,
-    total_steps = ?,
-    progress_percent = ?,
-    current_command = ?,
-    wait_reason = ?,
-    github_rate_snapshot_json = ?,
-    ci_state = ?,
-    capacity_snapshot_json = ?,
-    worker_metadata_json = ?,
-    metrics_json = ?,
-    next_action = ?,
-    error_class = ?,
-    error_message = ?,
+SET heartbeat_at = sqlc.arg(heartbeat_at),
+    lease_expires_at = sqlc.arg(lease_expires_at),
+    phase = sqlc.arg(phase),
+    status_message = sqlc.arg(status_message),
+    current_step = sqlc.arg(current_step),
+    total_steps = sqlc.arg(total_steps),
+    progress_percent = sqlc.arg(progress_percent),
+    current_command = sqlc.arg(current_command),
+    wait_reason = sqlc.arg(wait_reason),
+    github_rate_snapshot_json = sqlc.arg(github_rate_snapshot_json),
+    ci_state = sqlc.arg(ci_state),
+    capacity_snapshot_json = sqlc.arg(capacity_snapshot_json),
+    worker_metadata_json = sqlc.arg(worker_metadata_json),
+    metadata_pr_number = sqlc.narg(metadata_pr_number),
+    metadata_pr_head_sha = sqlc.narg(metadata_pr_head_sha),
+    metadata_pr_base_sha = sqlc.narg(metadata_pr_base_sha),
+    metadata_run_mode = sqlc.narg(metadata_run_mode),
+    outcome_excluded = sqlc.narg(outcome_excluded),
+    forge_wait_present = sqlc.narg(forge_wait_present),
+    forge_wait_host = sqlc.narg(forge_wait_host),
+    forge_wait_error_class = sqlc.narg(forge_wait_error_class),
+    forge_write_completed_host = sqlc.narg(forge_write_completed_host),
+    projection_ready = 1,
+    metrics_json = sqlc.arg(metrics_json),
+    metrics_turns = sqlc.narg(metrics_turns),
+    next_action = sqlc.arg(next_action),
+    error_class = sqlc.arg(error_class),
+    error_message = sqlc.arg(error_message),
     detent_session_id = COALESCE(sqlc.narg(detent_session_id), detent_session_id),
     provider_session_id = COALESCE(sqlc.narg(provider_session_id), provider_session_id),
     runtime_identity_json = COALESCE(NULLIF(sqlc.arg(runtime_identity_json), '{}'), runtime_identity_json)
@@ -908,22 +924,33 @@ WHERE id = sqlc.arg(work_attempt_id)
 
 -- name: CompleteWorkAttempt :execrows
 UPDATE work_attempts
-SET status = ?,
-    terminal_state = ?,
-    completed_at = ?,
-    heartbeat_at = ?,
-    lease_expires_at = ?,
-    error_class = ?,
-    error_message = ?,
-    phase = ?,
-    status_message = ?,
-    wait_reason = ?,
-    github_rate_snapshot_json = ?,
-    ci_state = ?,
-    capacity_snapshot_json = ?,
-    worker_metadata_json = ?,
-    metrics_json = ?,
-    next_action = ?,
+SET status = sqlc.arg(status),
+    terminal_state = sqlc.arg(terminal_state),
+    completed_at = sqlc.arg(completed_at),
+    heartbeat_at = sqlc.arg(heartbeat_at),
+    lease_expires_at = sqlc.arg(lease_expires_at),
+    error_class = sqlc.arg(error_class),
+    error_message = sqlc.arg(error_message),
+    phase = sqlc.arg(phase),
+    status_message = sqlc.arg(status_message),
+    wait_reason = sqlc.arg(wait_reason),
+    github_rate_snapshot_json = sqlc.arg(github_rate_snapshot_json),
+    ci_state = sqlc.arg(ci_state),
+    capacity_snapshot_json = sqlc.arg(capacity_snapshot_json),
+    worker_metadata_json = sqlc.arg(worker_metadata_json),
+    metadata_pr_number = sqlc.narg(metadata_pr_number),
+    metadata_pr_head_sha = sqlc.narg(metadata_pr_head_sha),
+    metadata_pr_base_sha = sqlc.narg(metadata_pr_base_sha),
+    metadata_run_mode = sqlc.narg(metadata_run_mode),
+    outcome_excluded = sqlc.narg(outcome_excluded),
+    forge_wait_present = sqlc.narg(forge_wait_present),
+    forge_wait_host = sqlc.narg(forge_wait_host),
+    forge_wait_error_class = sqlc.narg(forge_wait_error_class),
+    forge_write_completed_host = sqlc.narg(forge_write_completed_host),
+    projection_ready = 1,
+    metrics_json = sqlc.arg(metrics_json),
+    metrics_turns = sqlc.narg(metrics_turns),
+    next_action = sqlc.arg(next_action),
     detent_session_id = COALESCE(sqlc.narg(detent_session_id), detent_session_id),
     provider_session_id = COALESCE(sqlc.narg(provider_session_id), provider_session_id),
     runtime_identity_json = COALESCE(NULLIF(sqlc.arg(runtime_identity_json), '{}'), runtime_identity_json)
@@ -937,7 +964,17 @@ SET terminal_state = sqlc.arg(terminal_state),
     error_message = sqlc.arg(error_message),
     phase = sqlc.arg(phase),
     status_message = sqlc.arg(status_message),
-    worker_metadata_json = sqlc.arg(worker_metadata_json)
+    worker_metadata_json = sqlc.arg(worker_metadata_json),
+    metadata_pr_number = sqlc.narg(metadata_pr_number),
+    metadata_pr_head_sha = sqlc.narg(metadata_pr_head_sha),
+    metadata_pr_base_sha = sqlc.narg(metadata_pr_base_sha),
+    metadata_run_mode = sqlc.narg(metadata_run_mode),
+    outcome_excluded = sqlc.narg(outcome_excluded),
+    forge_wait_present = sqlc.narg(forge_wait_present),
+    forge_wait_host = sqlc.narg(forge_wait_host),
+    forge_wait_error_class = sqlc.narg(forge_wait_error_class),
+    forge_write_completed_host = sqlc.narg(forge_write_completed_host),
+    projection_ready = projection_ready
 WHERE id = sqlc.arg(work_attempt_id)
   AND status = 'terminal'
   AND completed_at IS NOT NULL
@@ -956,7 +993,7 @@ SELECT *
 FROM work_attempts
 WHERE completed_at IS NOT NULL
   AND status = 'terminal'
-  AND COALESCE(json_extract(CASE WHEN json_valid(worker_metadata_json) THEN worker_metadata_json ELSE '{}' END, '$.historical_completion_fence.excluded_from_worker_outcomes'), 0) = 0
+  AND outcome_excluded = 0
   AND (sqlc.arg(filter_project_id) = '' OR project_id = sqlc.arg(filter_project_id))
   AND (sqlc.arg(filter_worker_type) = '' OR worker_type = sqlc.arg(filter_worker_type))
   AND (
@@ -978,26 +1015,26 @@ WHERE waiting.project_id = sqlc.arg(project_id)
   AND waiting.terminal_state = 'capacity'
   AND waiting.error_class = 'forge_unavailable'
   AND COALESCE(TRIM(waiting.issue_id), '') != ''
-  AND json_type(CASE WHEN json_valid(waiting.worker_metadata_json) THEN waiting.worker_metadata_json ELSE '{}' END, '$.forge_wait') = 'object'
-  AND COALESCE(json_extract(CASE WHEN json_valid(waiting.worker_metadata_json) THEN waiting.worker_metadata_json ELSE '{}' END, '$.historical_completion_fence.excluded_from_worker_outcomes'), 0) = 0
+  AND waiting.forge_wait_present = 1
+  AND waiting.outcome_excluded = 0
   AND NOT EXISTS (
     SELECT 1
     FROM work_attempts AS newer
     WHERE newer.project_id = waiting.project_id
       AND newer.completed_at IS NOT NULL
       AND newer.status = 'terminal'
-      AND COALESCE(json_extract(CASE WHEN json_valid(newer.worker_metadata_json) THEN newer.worker_metadata_json ELSE '{}' END, '$.historical_completion_fence.excluded_from_worker_outcomes'), 0) = 0
+      AND newer.outcome_excluded = 0
       AND (newer.completed_at > waiting.completed_at OR (newer.completed_at = waiting.completed_at AND newer.id > waiting.id))
       AND (
-        json_extract(CASE WHEN json_valid(newer.worker_metadata_json) THEN newer.worker_metadata_json ELSE '{}' END, '$.forge_write_completed_host') =
-          json_extract(waiting.worker_metadata_json, '$.forge_wait.host')
+        newer.forge_write_completed_host =
+          waiting.forge_wait_host
         OR (
           newer.issue_id = waiting.issue_id
           AND (
-            COALESCE(json_extract(waiting.worker_metadata_json, '$.forge_wait.error_class'), '') != 'worker_github_credential_unavailable'
+            COALESCE(waiting.forge_wait_error_class, '') != 'worker_github_credential_unavailable'
             OR (
               newer.terminal_state = 'capacity' AND newer.error_class = 'forge_unavailable'
-              AND json_extract(CASE WHEN json_valid(newer.worker_metadata_json) THEN newer.worker_metadata_json ELSE '{}' END, '$.forge_wait.error_class') = 'worker_github_credential_unavailable'
+              AND newer.forge_wait_error_class = 'worker_github_credential_unavailable'
             )
           )
         )
@@ -1050,6 +1087,16 @@ UPDATE work_attempts
 SET phase = sqlc.arg(phase),
     status_message = sqlc.arg(status_message),
     worker_metadata_json = sqlc.arg(worker_metadata_json),
+    metadata_pr_number = sqlc.narg(metadata_pr_number),
+    metadata_pr_head_sha = sqlc.narg(metadata_pr_head_sha),
+    metadata_pr_base_sha = sqlc.narg(metadata_pr_base_sha),
+    metadata_run_mode = sqlc.narg(metadata_run_mode),
+    outcome_excluded = sqlc.narg(outcome_excluded),
+    forge_wait_present = sqlc.narg(forge_wait_present),
+    forge_wait_host = sqlc.narg(forge_wait_host),
+    forge_wait_error_class = sqlc.narg(forge_wait_error_class),
+    forge_write_completed_host = sqlc.narg(forge_write_completed_host),
+    projection_ready = projection_ready,
     next_action = sqlc.arg(next_action)
 WHERE id = sqlc.arg(work_attempt_id)
   AND terminal_state = 'operator_stopped';
@@ -1076,8 +1123,9 @@ SET status = ?,
 WHERE completed_at IS NULL
   AND (sqlc.arg(filter_project_id) = '' OR project_id = sqlc.arg(filter_project_id))
   AND ((lease_expires_at IS NOT NULL AND lease_expires_at <= sqlc.arg(lease_expires_at))
-       OR id IN (SELECT value FROM json_each(sqlc.arg(confirmed_gone_attempt_ids))))
-  AND lower(trim(COALESCE(phase, ''))) != 'completion_deferred'
+       OR (lease_expires_at IS NULL AND lower(trim(COALESCE(phase, ''))) = 'completion_deferred')
+       OR (lower(trim(COALESCE(phase, ''))) != 'completion_deferred'
+           AND id IN (SELECT value FROM json_each(sqlc.arg(confirmed_gone_attempt_ids)))))
   AND id NOT IN (SELECT value FROM json_each(sqlc.arg(exclude_attempt_ids)))
   AND (owner_generation IS NULL OR owner_generation NOT IN (SELECT value FROM json_each(sqlc.arg(live_foreign_generations))))
 RETURNING *;
@@ -1102,8 +1150,10 @@ INSERT INTO scheduler_decisions (
   wait_reason,
   capacity_snapshot_json,
   github_rate_snapshot_json,
-  metadata_json
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  metadata_json,
+  global_available,
+  projection_ready
+) VALUES (sqlc.arg(project_id), sqlc.arg(issue_id), sqlc.arg(identifier), sqlc.arg(issue_url), sqlc.arg(pr_number), sqlc.arg(repo), sqlc.arg(lane), sqlc.arg(queue_position), sqlc.arg(result), sqlc.arg(reason), sqlc.arg(selected), sqlc.arg(retry), sqlc.arg(attempt_number), sqlc.arg(worker_host), sqlc.arg(decision_at), sqlc.arg(wait_reason), sqlc.arg(capacity_snapshot_json), sqlc.arg(github_rate_snapshot_json), sqlc.arg(metadata_json), sqlc.narg(global_available), 1)
 RETURNING *;
 
 -- name: ListRecentSchedulerDecisions :many
@@ -1571,7 +1621,7 @@ WHERE (sqlc.arg(project_ids_json) = '' OR project_id IN (SELECT value FROM json_
   AND completed_at >= sqlc.arg(from_at)
   AND completed_at < sqlc.arg(to_at)
   AND lower(trim(COALESCE(terminal_state, ''))) IN ('failure', 'timed_out', 'no_progress', 'capacity')
-  AND COALESCE(json_extract(CASE WHEN json_valid(worker_metadata_json) THEN worker_metadata_json ELSE '{}' END, '$.historical_completion_fence.excluded_from_worker_outcomes'), 0) = 0
+  AND outcome_excluded = 0
 GROUP BY COALESCE(NULLIF(trim(error_class), ''), 'unknown')
 ORDER BY failures DESC, error_class
 LIMIT 1;
@@ -1786,7 +1836,6 @@ SELECT reason, CAST(recorded_at AS TEXT) AS recorded_at FROM (
 
 -- name: ListLocalAdmittedIssueIDs :many
 SELECT DISTINCT issue_id FROM work_attempts
-WHERE project_id = sqlc.arg(project_id) AND json_valid(worker_metadata_json)
-  AND COALESCE(json_extract(worker_metadata_json, '$.run_mode'), '') != ''
+WHERE project_id = sqlc.arg(project_id) AND metadata_run_mode != ''
   AND (owner_generation IS NULL OR owner_generation NOT IN (SELECT value FROM json_each(sqlc.arg(live_foreign_generations))))
 ORDER BY issue_id;

@@ -1,7 +1,6 @@
 package skills
 
 import (
-	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,7 +9,7 @@ import (
 	"testing"
 )
 
-func TestBuiltinSkillsMatchRepositorySources(t *testing.T) {
+func TestLoadBuiltinSkills(t *testing.T) {
 	t.Parallel()
 	result, err := LoadBuiltin()
 	if err != nil {
@@ -18,25 +17,6 @@ func TestBuiltinSkillsMatchRepositorySources(t *testing.T) {
 	}
 	if len(result.Skills) == 0 || len(result.Dropped) > 0 {
 		t.Fatalf("built-in skills = %#v", result)
-	}
-	for _, skill := range result.Skills {
-		t.Run(skill.Name, func(t *testing.T) {
-			embedded, err := builtinFiles.ReadFile(skill.BodyPath)
-			if err != nil {
-				t.Fatal(err)
-			}
-			source := filepath.Join("..", "..", DefaultPath, filepath.Base(skill.BodyPath))
-			if skill.Name == "configuration-map" {
-				source = filepath.Join("..", "..", "docs", "conversation", "configuration-map.md")
-			}
-			canonical, err := os.ReadFile(source)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !bytes.Equal(embedded, canonical) {
-				t.Fatalf("built-in skill %s differs from %s; update both copies together", skill.BodyPath, source)
-			}
-		})
 	}
 }
 

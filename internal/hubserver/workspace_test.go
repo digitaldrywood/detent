@@ -17,13 +17,13 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
-// Workspace sessions end to end (decisions section 18.1): the request and its
+// Workspace sessions end to end: the request and its
 // limits, the dispatch item the hub creates for it, the worker tuple that
 // fences it, and the deadlines that make a workspace nobody is using stop
 // costing a runner slot.
 
 // workspaceTestCapabilities is what a runner in these tests reports it can
-// serve. It deliberately excludes the terminal: section 18.3 leaves that off
+// serve. It deliberately excludes the terminal: the terminal contract leaves that off
 // until an owner turns it on, so the default fixture is the default product.
 var workspaceTestCapabilities = workspacesession.Capabilities{Files: true, Diff: true}
 
@@ -196,7 +196,7 @@ func TestWorkspaceRequestCreatesSessionAndDispatchItem(t *testing.T) {
 			t.Fatalf("session = %#v", session)
 		}
 		if len(session.Requires) != 1 || session.Requires[0] != workspacesession.CapabilityFiles {
-			t.Fatalf("requires = %v, want the section 18.1 default narrowed to what the relay serves", session.Requires)
+			t.Fatalf("requires = %v, want the workspace session contract default narrowed to what the relay serves", session.Requires)
 		}
 		if session.CreatedBy != f.ownerID || session.IdleTimeoutSeconds != int(defaultWorkspaceIdleTimeout/time.Second) {
 			t.Fatalf("session provenance = %#v", session)
@@ -321,7 +321,7 @@ func TestWorkspaceRequestRefusals(t *testing.T) {
 	})
 }
 
-// The two caps of section 18.1 are checked together and say which one was
+// The two caps of the workspace session contract are checked together and say which one was
 // reached, because "you have too many" is only actionable if it names whose.
 func TestWorkspaceOpenLimitsNameTheScopeReached(t *testing.T) {
 	t.Parallel()
@@ -437,7 +437,7 @@ func TestWorkspaceReadsFilterAndScope(t *testing.T) {
 
 // workspaceRunnerFixture adds an enrolled runner that reports the read-only
 // surfaces, which is the only kind of runner a workspace item is ever offered
-// to (section 18.1's claim gate).
+// to (the workspace session contract's claim gate).
 type workspaceRunnerFixture struct {
 	workspaceFixture
 	runner runnerFixture
@@ -446,7 +446,7 @@ type workspaceRunnerFixture struct {
 func newWorkspaceRunnerFixture(t *testing.T) *workspaceRunnerFixture {
 	t.Helper()
 	// The caps are lifted well clear of the subtests: these tests are about
-	// the owner tuple, and a refusal from section 18.1's limits would only
+	// the owner tuple, and a refusal from the workspace session contract's limits would only
 	// hide it.
 	f := newWorkspaceFixture(t, &WorkspaceConfig{Enabled: true, PersonMaxOpen: 50, PlanMaxOpen: 50})
 	r := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Collaborate, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
@@ -470,8 +470,7 @@ func (f *workspaceRunnerFixture) claim(t *testing.T, item string) tracker.Native
 		tracker.NativeClaim{PolicyID: f.policy, WorkItemID: tracker.NativeWorkItemID(item), MachineID: f.runner.binding.MachineID,
 			SessionID: newNativeID("session"), TTLSeconds: 600, ProtocolMajor: 2,
 			// The workspace lane declares the workspace capability; without it
-			// the hub's candidate query excludes workspace items entirely
-			// (decisions section 18.1).
+			// the hub's candidate query excludes workspace items entirely.
 			Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeWorkspaceCapability}})
 	requireNativeStatus(t, response, http.StatusOK)
 	var lease tracker.NativeLease
@@ -669,7 +668,7 @@ func (f *workspaceRunnerFixture) setLeaseExpiry(t *testing.T, id tracker.LeaseID
 // TestWorkspaceHeartbeatRenewsTheLease is the September 12 fifth dogfood
 // defect: nothing on the workspace path renewed the workspace lease, so a Files
 // session lived exactly one lease_ttl_seconds from the claim and then answered
-// the person revoked. Section 18.1 puts the renewal on the heartbeat itself --
+// the person revoked. The workspace session contract puts the renewal on the heartbeat itself --
 // "POST .../worker/heartbeat (renews the lease ...)" -- and it happens in the
 // same transaction as the session row, so the runner needs no second call.
 func TestWorkspaceHeartbeatRenewsTheLease(t *testing.T) {
@@ -900,7 +899,7 @@ func TestWorkspaceRequestWithNoRunnerFailsWithTheReasonOnTheResource(t *testing.
 // half of the same story: the pre-warmed workspace expires on its idle
 // timeout, and the next Files click has to be able to open another one.
 //
-// Section 18.1 refuses a second workspace only while one is open on the same
+// The workspace session contract refuses a second workspace only while one is open on the same
 // worktree -- 409 workspace_exists -- so a closed or closing predecessor must
 // not be treated as that conflict. Getting this wrong would turn a panel that
 // merely waits into one that cannot be opened again at all for the life of the
@@ -962,7 +961,7 @@ func TestWorkspaceRequestAfterThePreviousOneClosedIsAccepted(t *testing.T) {
 	}
 }
 
-// Every deadline of section 18.1 that no request would ever reach on its own.
+// Every deadline of the workspace session contract that no request would ever reach on its own.
 // decideDeadline is pure, so the whole timing contract is a table rather than
 // a set of tests that sleep.
 func TestWorkspaceDecideDeadline(t *testing.T) {
@@ -1038,7 +1037,7 @@ func TestWorkspaceDecideDeadline(t *testing.T) {
 				record := base(workspacesession.StateReady)
 				// Exactly at 90 seconds the lease is gone: the sweep reads
 				// the same window the hub renews the lease row to, so the two
-				// halves of section 18.1's timing cannot drift apart.
+				// halves of the workspace session contract's timing cannot drift apart.
 				record.LastHeartbeatAt = at(-workspacesession.LeaseTTL)
 				record.OpenedAt = at(-time.Minute)
 				return record
@@ -1129,7 +1128,7 @@ func TestWorkspaceDecideDeadline(t *testing.T) {
 // preview fixture pre-warmed a workspace session, and the real runner claimed
 // its dispatch issue through its ordinary issue lane and spent a Codex turn on
 // it. A workspace is its own work item kind and never project work, whether
-// its workspace is open or long closed (decisions section 18.1).
+// its workspace is open or long closed.
 func TestWorkspaceItemsAreNotOrdinaryWork(t *testing.T) {
 	t.Parallel()
 	f := newWorkspaceRunnerFixture(t)
@@ -1452,8 +1451,8 @@ func (f workspaceFixture) reservations(t *testing.T, lease tracker.LeaseID) int 
 // refused 409 provider_incompatible, "Work item needs local model selection
 // before a provider reservation can be claimed".
 //
-// A workspace session serves files over the relay and runs no model. Section
-// 18.1 gives its claim one slot of the runner's capacity and a workspace lease
+// A workspace session serves files over the relay and runs no model. The workspace session contract
+// gives its claim one slot of the runner's capacity and a workspace lease
 // with its own fencing token, and says nothing about a provider reservation,
 // so the provider path is not this claim's to walk.
 func TestWorkspaceClaimTakesCapacityNotAProviderReservation(t *testing.T) {
@@ -1485,7 +1484,7 @@ func TestWorkspaceClaimTakesCapacityNotAProviderReservation(t *testing.T) {
 
 	// The slot is genuinely taken. A second workspace, eligible in every other
 	// way, is refused by capacity and by nothing else: two claims cannot both
-	// be admitted against one remaining slot (decisions section 18.1).
+	// be admitted against one remaining slot.
 	second := f.opened(t, f.token, map[string]any{"work_item_id": string(f.issue.WorkItemID)})
 	failure := requireNativeCode(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims",
 		f.runner.redemption.Credential, tracker.NativeClaim{PolicyID: f.policy,

@@ -62,7 +62,7 @@ func coordinatorActionTools() []runner.AgentTool {
 	return []runner.AgentTool{
 		coordinatorTool("get_project_integration", "Read this project's integration settings and GitHub transport availability. Runner PR landing is selected by the approved repository policy.", `{"type":"object","properties":{},"additionalProperties":false}`),
 		coordinatorTool("update_project_integration", "Preview Hub integration or Cloud-owned workflow Markdown changes (lanes, transitions and dispatch). Repository-owned definitions require a reviewed source change and policy approval. This does not change the runner's approved PR landing policy. The client controls confirmation and submits the proposed call.", `{"type":"object","properties":{"workflow_markdown":{"type":"string","maxLength":131072},"repository_enabled":{"type":"boolean"},"intake":{"type":"string","enum":["disabled","manual"]},"projection":{"type":"string","enum":["disabled","summary"]}},"additionalProperties":false}`),
-		coordinatorTool("move_item", "Preview moving a native issue to a workflow state. Retry a blocked issue by moving it to Todo. Current workflow rules and revision apply; the client controls confirmation and submission.", `{"type":"object","required":["work_item_id","state"],"properties":{"work_item_id":{"type":"string"},"state":{"type":"string"}},"additionalProperties":false}`),
+		coordinatorTool("move_item", "Preview moving a native issue to a workflow state. Retry a blocked issue by moving it to Todo. When leaving Blocked after a human_action question, supply reason_detail quoting the human's chosen answer; it is recorded as an item comment and transition reason. Ask for the answer if missing. Current workflow rules and revision apply; the client controls confirmation and submission.", `{"type":"object","required":["work_item_id","state"],"properties":{"work_item_id":{"type":"string"},"state":{"type":"string"},"reason_detail":{"type":"string"}},"additionalProperties":false}`),
 		coordinatorTool("edit_item", "Preview editing an issue's title, body, labels or priority (0 urgent through 3 low). The client controls confirmation and submission.", `{"type":"object","required":["work_item_id"],"properties":{"work_item_id":{"type":"string"},"title":{"type":"string"},"body":{"type":"string"},"labels":{"type":"array","items":{"type":"string"}},"priority":{"type":"integer","minimum":0,"maximum":3}},"additionalProperties":false}`),
 		coordinatorTool(string(chat.ActionArchiveItems), "Preview archiving a set of native issues in this project. The client controls confirmation and submission. Running and Merging issues are refused. Archived issues leave the board and dispatch and can be restored.", `{"type":"object","required":["work_item_ids"],"properties":{"work_item_ids":{"type":"array","minItems":1,"maxItems":50,"uniqueItems":true,"items":{"type":"string"}}},"additionalProperties":false}`),
 		coordinatorTool("add_comment", "Preview adding an issue comment. The client controls confirmation and submits the exact comment.", `{"type":"object","required":["work_item_id","body"],"properties":{"work_item_id":{"type":"string"},"body":{"type":"string"}},"additionalProperties":false}`),
@@ -73,6 +73,7 @@ type coordinatorActionArguments struct {
 	WorkflowMarkdown  *string   `json:"workflow_markdown"`
 	WorkItemID        string    `json:"work_item_id"`
 	State             string    `json:"state"`
+	ReasonDetail      string    `json:"reason_detail"`
 	Title             *string   `json:"title"`
 	Body              *string   `json:"body"`
 	Labels            *[]string `json:"labels"`
@@ -80,6 +81,11 @@ type coordinatorActionArguments struct {
 	RepositoryEnabled *bool     `json:"repository_enabled"`
 	Intake            *string   `json:"intake"`
 	Projection        *string   `json:"projection"`
+}
+
+type coordinatorWorkArguments struct {
+	operatortool.WorkArguments
+	ReasonDetail string `json:"reason_detail,omitempty"`
 }
 
 func (t *coordinatorToolset) actionContext(ctx context.Context, record conversationRecord) (context.Context, error) {
@@ -93,6 +99,9 @@ func (t *coordinatorToolset) actionContext(ctx context.Context, record conversat
 	}
 	if json.Unmarshal(message.Data, &data) != nil || data.ConnectionID == "" {
 		return nil, operatortool.ErrAccessDenied
+	}
+	if age := t.coordinator.service.server.config.now().Sub(message.CreatedAt); age >= 0 && age <= coordinatorTurnTimeout {
+		ctx = context.WithValue(ctx, operatorAccessTimeKey{}, message.CreatedAt)
 	}
 	service := t.coordinator.service.server.operatorChat
 	if err := service.RestoreConnection(ctx, data.ConnectionID); err != nil {
@@ -146,7 +155,7 @@ func (t *coordinatorToolset) projectAction(ctx context.Context, record conversat
 	case "update_project_integration":
 		allowed = []string{"repository_enabled", "intake", "projection", "workflow_markdown"}
 	case operatortool.MoveItem:
-		allowed = []string{"work_item_id", "state"}
+		allowed = []string{"work_item_id", "state", "reason_detail"}
 	case operatortool.EditItem:
 		allowed = []string{"work_item_id", "title", "body", "labels", "priority"}
 	case operatortool.AddComment:
@@ -173,7 +182,7 @@ func (t *coordinatorToolset) projectAction(ctx context.Context, record conversat
 			return nil, operatortool.ErrInvalidArguments
 		}
 		if (args.RepositoryEnabled != nil || args.Intake != nil || args.Projection != nil) && !*current.GitHubTransportAvailable {
-			return nil, nativeInvalid("Hub GitHub integration is unavailable. Associate the runner checkout in project setup and approve the runner's repository policy with GitHub PR landing enabled.")
+			return nil, nativePublicInvalid("Hub GitHub integration is unavailable. Associate the runner checkout in project setup and approve the runner's repository policy with GitHub PR landing enabled.")
 		}
 		input := operatortool.IntegrationInput{WorkflowMarkdown: args.WorkflowMarkdown, ExpectedRevision: current.Revision, Intake: current.Intake, Projection: current.Projection, RepositoryEnabled: current.RepositoryEnabled}
 		if args.WorkflowMarkdown != nil {
@@ -231,16 +240,20 @@ func (t *coordinatorToolset) projectAction(ctx context.Context, record conversat
 			return nil, err
 		}
 		if current.Profile != "native" {
-			return nil, nativeInvalid("Chat changes require a native issue")
+			return nil, nativePublicInvalid("Chat changes require a native issue")
 		}
 		action.IssueID, action.Identifier, action.CurrentState, action.Revision = args.WorkItemID, args.WorkItemID, current.State, int64(current.Revision)
-		request := operatortool.WorkArguments{ProjectID: action.ProjectID, Identifier: args.WorkItemID, ExpectedRevision: int64(current.Revision), Title: args.Title, Body: args.Body, Labels: args.Labels, Priority: args.Priority}
+		request := coordinatorWorkArguments{WorkArguments: operatortool.WorkArguments{ProjectID: action.ProjectID, Identifier: args.WorkItemID, ExpectedRevision: int64(current.Revision), Title: args.Title, Body: args.Body, Labels: args.Labels, Priority: args.Priority}}
 		if call.Name == operatortool.MoveItem {
 			if strings.TrimSpace(args.State) == "" || len(args.State) > 256 {
 				return nil, operatortool.ErrInvalidArguments
 			}
 			action.TargetState = args.State
 			request.State = args.State
+			request.ReasonDetail = strings.TrimSpace(args.ReasonDetail)
+			if err := s.validateCoordinatorMoveAnswer(ctx, scope, current, request.State, request.ReasonDetail); err != nil {
+				return nil, err
+			}
 		} else {
 			raw, err := json.Marshal(request)
 			if err != nil {
@@ -264,6 +277,9 @@ func (t *coordinatorToolset) projectAction(ctx context.Context, record conversat
 		action.Description = fmt.Sprintf("Issue %s: %s (revision %d).", current.Title, current.State, current.Revision)
 		if call.Name == operatortool.MoveItem {
 			action.Description = fmt.Sprintf("Move %s from %s to %s.", current.Title, current.State, args.State)
+			if request.ReasonDetail != "" {
+				action.Description += "\nRecord the human's answer on the item: " + request.ReasonDetail
+			}
 		}
 	}
 	return t.submitCoordinatorAction(ctx, record, call, action)
@@ -272,6 +288,23 @@ func (t *coordinatorToolset) projectAction(ctx context.Context, record conversat
 func coordinatorActionRequestID(messageID string, call runner.AgentToolCall) string {
 	digest := sha256.Sum256([]byte(messageID + ":" + call.Name + ":" + string(call.Arguments)))
 	return "luna_" + hex.EncodeToString(digest[:])
+}
+
+func (s *Service) validateCoordinatorMoveAnswer(ctx context.Context, scope nativeScope, issue tracker.NativeIssue, target, answer string) error {
+	if !strings.EqualFold(issue.State, "Blocked") || strings.EqualFold(target, issue.State) || strings.TrimSpace(answer) != "" {
+		return nil
+	}
+	var humanAction bool
+	err := s.database.reader.QueryRowContext(ctx, `SELECT disposition_human_action
+FROM native_attempts WHERE organization_id = ? AND project_id = ? AND work_item_id = ?
+AND disposition_status = 'blocked' ORDER BY fencing_token DESC LIMIT 1`, scope.organization, scope.project, issue.WorkItemID).Scan(&humanAction)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if humanAction {
+		return &operatortool.RequestError{Code: "invalid_request", Message: "Provide the human's answer to the recorded human_action question in reason_detail before moving this item out of Blocked"}
+	}
+	return nil
 }
 
 func (t *coordinatorToolset) submitCoordinatorAction(ctx context.Context, record conversationRecord, call runner.AgentToolCall, action chat.Action) (any, error) {
@@ -386,7 +419,7 @@ func (s *Service) executeCoordinatorAction(ctx context.Context, action chat.Acti
 		}
 		return chat.ActionExecution{Message: "Issue filed.", Data: result}, nil
 	}
-	var request operatortool.WorkArguments
+	var request coordinatorWorkArguments
 	if err := operatortool.DecodeArguments(action.Arguments, &request); err != nil {
 		return chat.ActionExecution{}, err
 	}
@@ -394,12 +427,12 @@ func (s *Service) executeCoordinatorAction(ctx context.Context, action chat.Acti
 		return chat.ActionExecution{}, operatortool.ErrAccessDenied
 	}
 	if action.Kind == chat.ActionMoveItem {
-		_, err = s.transitionNativeIssueCommand(ctx, scope, request.Identifier, tracker.Transition{Mutation: tracker.MutationForContext(ctx, action.RequestID), ExpectedRevision: tracker.Revision(request.ExpectedRevision), State: request.State, Reason: "user_requested"})
+		_, err = s.transitionNativeIssueCommandWithChat(ctx, scope, request.Identifier, tracker.Transition{Mutation: tracker.MutationForContext(ctx, action.RequestID), ExpectedRevision: tracker.Revision(request.ExpectedRevision), State: request.State, Reason: "user_requested", ReasonDetail: request.ReasonDetail}, action.ConversationID)
 	} else {
 		if _, err := operatortool.DecodeWorkArguments(string(action.Kind), action.Arguments); err != nil {
 			return chat.ActionExecution{}, err
 		}
-		_, err = s.operatorNativeWork(ctx, scope, string(action.Kind), request)
+		_, err = s.operatorNativeWork(ctx, scope, string(action.Kind), request.WorkArguments)
 	}
 	if err != nil {
 		return chat.ActionExecution{}, coordinatorActionError(err)
@@ -407,6 +440,9 @@ func (s *Service) executeCoordinatorAction(ctx context.Context, action chat.Acti
 	message := "Issue updated."
 	if action.Kind == chat.ActionMoveItem {
 		message = "Moved issue to " + request.State + "."
+		if strings.TrimSpace(request.ReasonDetail) != "" {
+			message += " Recorded the human's answer on the item as a comment and transition reason."
+		}
 	} else if string(action.Kind) == operatortool.AddComment {
 		message = "Comment added."
 	}
@@ -436,7 +472,7 @@ func (s *Service) authorizeCoordinatorAction(ctx context.Context, action chat.Ac
 		return nil, operatortool.ErrAccessDenied
 	}
 	if !coordinatorHandles(record) {
-		return nil, nativeInvalid("This chat is linked; request the change in a project chat")
+		return nil, nativePublicInvalid("This chat is linked; request the change in a project chat")
 	}
 	return ctx, nil
 }
@@ -451,11 +487,17 @@ func (t *coordinatorToolset) postActionRefusal(ctx context.Context, name string,
 func coordinatorActionError(err error) error {
 	var request *operatortool.RequestError
 	if errors.As(err, &request) {
-		return errors.New(request.Message)
+		return &nativeError{Code: cmp.Or(request.Code, "invalid_request"), Message: request.Message, status: http.StatusUnprocessableEntity, publicMessage: true}
 	}
 	var conflict *operatortool.ConflictError
 	if errors.As(err, &conflict) {
-		return errors.New(conflict.Message)
+		message := conflict.Message
+		if message == "" && conflict.Code == "revision_conflict" {
+			message = fmt.Sprintf("The item changed after this was proposed; its current revision is %d. Ask for a fresh proposal.", conflict.CurrentRevision)
+		} else if message == "" {
+			message = "The item changed after this was proposed. Ask for a fresh proposal."
+		}
+		return &nativeError{Code: conflict.Code, Message: message, CurrentRevision: tracker.Revision(conflict.CurrentRevision), status: http.StatusConflict, publicMessage: true}
 	}
 	var native *nativeError
 	if errors.As(err, &native) {
@@ -475,13 +517,24 @@ func (s *Service) publishCoordinatorDecision(ctx context.Context, action chat.Ac
 	if !ok {
 		return operatortool.ErrAccessDenied
 	}
+	legacyResults, err := s.legacyCoordinatorResults(ctx, action.ConversationID, action.ID)
+	if err != nil {
+		return err
+	}
 	return coordinator.write(ctx, action.ConversationID, func(ctx context.Context, tx *sql.Tx, record *conversationRecord, now time.Time) error {
 		if string(record.ProjectID) != action.ProjectID || string(record.OrganizationID) != action.OrganizationID {
 			return operatortool.ErrAccessDenied
 		}
 		var posted bool
-		if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM conversation_messages WHERE conversation_id=? AND json_extract(data_json, '$.operator_action_result')=?)", record.ID, action.ID).Scan(&posted); err != nil {
+		if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM conversation_messages WHERE conversation_id=? AND operator_action_result=?)", record.ID, action.ID).Scan(&posted); err != nil {
 			return err
+		}
+		for _, legacy := range legacyResults {
+			var unchanged bool
+			if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM conversation_messages WHERE conversation_id=? AND id=? AND data_json=?)", record.ID, legacy.id, legacy.raw).Scan(&unchanged); err != nil {
+				return err
+			}
+			posted = posted || unchanged
 		}
 		if posted {
 			return nil
@@ -499,7 +552,7 @@ func (s *Service) publishCoordinatorDecision(ctx context.Context, action chat.Ac
 func (s *Service) postConversationAction(c echo.Context) error {
 	var action chat.Action
 	if err := decodeAPIJSON(c, &action); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	scope := nativeRequestScope(c)
 	ctx := c.Request().Context()
@@ -513,7 +566,7 @@ func (s *Service) postConversationAction(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	if (!coordinatorSettingsTool(string(action.Kind)) && !coordinatorWorkflowMutation(string(action.Kind)) && !coordinatorCatalogWrite(string(action.Kind)) && !slices.Contains([]string{operatortool.StopRun, operatortool.FileIssue, operatortool.MoveItem, operatortool.EditItem, operatortool.AddComment, "update_project_integration", "set_runner_tier", "convert_runner_scope", "promote_sprites_token", "set_sprite_pool", "scale_up_sprite_pool", string(chat.ActionIssueSplit), string(chat.ActionArchiveItems)}, string(action.Kind))) || action.ProjectID != string(scope.project) || action.RequestID == "" || len(action.RequestID) > 128 {
-		return invalidAPIRequest(c, operatortool.ErrInvalidArguments)
+		return s.invalidAPIRequest(c, operatortool.ErrInvalidArguments)
 	}
 	identity := operatortool.ConnectionIdentity(ctx)
 	action.ConversationID, action.OrganizationID = record.ID, string(scope.organization)
@@ -521,7 +574,7 @@ func (s *Service) postConversationAction(c echo.Context) error {
 	action.Mutation = mutation.Metadata{PrincipalID: identity.PrincipalID, OrganizationID: identity.OrganizationID, ProjectID: action.ProjectID, ResourceID: action.IssueID, Action: string(action.Kind), Source: "chat", CorrelationID: newNativeID("luna")}
 	action.Mutation, err = action.Mutation.Bind(action.RequestID, action.Arguments)
 	if err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	result, err := s.executeCoordinatorAction(ctx, action)
 	if err != nil {

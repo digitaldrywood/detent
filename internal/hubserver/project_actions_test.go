@@ -1,16 +1,21 @@
 package hubserver
 
 import (
+	"bytes"
+	"encoding/json"
+	"log/slog"
 	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/labstack/echo/v4"
+
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
-// Project actions end to end (decisions section 18.12): the catalogue a
+// Project actions end to end: the catalogue a
 // project authors, the bounds that keep it a menu rather than a table nobody
 // can read, and the write gate that decides who may add a command the whole
 // project runs.
@@ -64,6 +69,51 @@ func (f actionFixture) actions(t *testing.T) projectActionList {
 	var listing projectActionList
 	decodeHubResponse(t, response, &listing)
 	return listing
+}
+
+func (f actionFixture) requireRefusedAction(t *testing.T, method, actionID string, body map[string]any, reason string) {
+	t.Helper()
+	var logs bytes.Buffer
+	service := &Service{database: f.service.database, config: Config{
+		Hosted: &HostedConfig{}, Logger: slog.New(hostedLogHandler{output: slog.NewJSONHandler(&logs, nil)}), now: f.service.config.now,
+	}}
+	credential, _, err := f.service.authenticateAPIToken(t.Context(), f.token, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	filled := map[string]any{"idempotency_key": newNativeID("actkey")}
+	maps.Copy(filled, body)
+	raw, err := json.Marshal(filled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	c := echo.New().NewContext(httptest.NewRequest(method, "/actions", bytes.NewReader(raw)).WithContext(t.Context()), response)
+	c.SetPath(nativeBase + "/actions")
+	c.Set("native_scope", nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential})
+	handle := service.createProjectAction
+	if method == http.MethodPatch {
+		c.SetPath(nativeBase + "/actions/:action")
+		c.SetParamNames("action")
+		c.SetParamValues(actionID)
+		handle = service.patchProjectAction
+	}
+	if err := handle(c); err != nil {
+		t.Fatal(err)
+	}
+	failure := requireNativeCode(t, response, http.StatusUnprocessableEntity, "invalid_request")
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(logs.Bytes()), &entry); err != nil {
+		t.Fatalf("expected exactly one JSON log entry: %v: %s", err, &logs)
+	}
+	if failure.Message != reason || entry["level"] != "WARN" || entry["refusal_code"] != "invalid_request" || entry["reason"] != reason || entry["error"] != reason || entry["route"] != c.Path() {
+		t.Fatalf("refusal = %#v, log = %#v", failure, entry)
+	}
+	for _, private := range []string{"private-action-name", "private-token", "private-chord"} {
+		if strings.Contains(logs.String(), private) || strings.Contains(response.Body.String(), private) {
+			t.Fatalf("private action content escaped: %s", private)
+		}
+	}
 }
 
 // A created action carries every normalized field, starts at revision 1 and
@@ -120,45 +170,42 @@ func TestProjectActionCreateNormalizesAndRecordsProvenance(t *testing.T) {
 func TestProjectActionCreateRefusals(t *testing.T) {
 	t.Parallel()
 	f := newActionFixture(t)
+	action := f.authored(t, map[string]any{"name": "Example action", "command": "make test"})
 
 	for _, test := range []struct {
-		name string
-		body map[string]any
+		name   string
+		body   map[string]any
+		reason string
 	}{
-		{"an empty name", map[string]any{"name": "   ", "command": "go test ./..."}},
-		{"an empty command", map[string]any{"name": "Tests", "command": "  "}},
+		{"an empty name", map[string]any{"name": "   ", "command": "go test ./..."}, "workspacesession: invalid project action: a name is required"},
+		{"an empty command", map[string]any{"name": "Tests", "command": "  "}, "workspacesession: invalid project action: a command is required"},
 		{"a command past the byte bound", map[string]any{"name": "Tests",
-			"command": strings.Repeat("a", workspacesession.MaxExecCommandBytes+1)}},
+			"command": strings.Repeat("a", workspacesession.MaxExecCommandBytes+1)}, "workspacesession: invalid project action: command exceeds 4096 bytes"},
 		{"a name past the byte bound", map[string]any{"command": "go test ./...",
-			"name": strings.Repeat("n", workspacesession.MaxActionNameBytes+1)}},
-		{"an unknown icon", map[string]any{"name": "Tests", "command": "go test ./...", "icon": "rocket"}},
+			"name": strings.Repeat("n", workspacesession.MaxActionNameBytes+1)}, "workspacesession: invalid project action: name exceeds 80 bytes"},
+		{"an unknown icon", map[string]any{"name": "Tests", "command": "go test ./...", "icon": "private-token"}, "Unprocessable Entity: invalid request"},
 		{"a preview URL that is not http", map[string]any{"name": "Tests", "command": "go test ./...",
-			"preview_url": "ftp://preview.example.test"}},
+			"preview_url": "ftp://private-token.example.test"}, "workspacesession: invalid project action: preview_url must be http:// or https://"},
 		{"a preview URL past the byte bound", map[string]any{"name": "Tests", "command": "go test ./...",
-			"preview_url": "https://example.test/" + strings.Repeat("p", workspacesession.MaxActionPreviewURLBytes)}},
+			"preview_url": "https://example.test/" + strings.Repeat("p", workspacesession.MaxActionPreviewURLBytes)}, "workspacesession: invalid project action: preview_url exceeds 2048 bytes"},
 		{"a keybinding with whitespace in it", map[string]any{"name": "Tests", "command": "go test ./...",
-			"keybinding": "mod+shift t"}},
+			"keybinding": "private-chord t"}, "workspacesession: invalid project action: keybinding must be a single chord"},
 		{"a keybinding past the byte bound", map[string]any{"name": "Tests", "command": "go test ./...",
-			"keybinding": strings.Repeat("k", workspacesession.MaxActionKeybindingBytes+1)}},
+			"keybinding": strings.Repeat("k", workspacesession.MaxActionKeybindingBytes+1)}, "workspacesession: invalid project action: keybinding exceeds 64 bytes"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			requireNativeCode(t, f.postAction(t, f.token, test.body), http.StatusUnprocessableEntity, "invalid_request")
+			f.requireRefusedAction(t, http.MethodPost, "", test.body, test.reason)
+			patch := maps.Clone(test.body)
+			patch["expected_revision"] = 1
+			f.requireRefusedAction(t, http.MethodPatch, action.ID, patch, test.reason)
 		})
 	}
 
-	t.Run("a chord another action already claims is refused and the refusal names it", func(t *testing.T) {
+	t.Run("a chord another action already claims is refused without customer content", func(t *testing.T) {
 		local := newActionFixture(t)
-		local.authored(t, map[string]any{"name": "Run tests", "command": "go test ./...", "keybinding": "mod+t"})
-		response := local.postAction(t, local.token, map[string]any{
-			"name": "Run e2e", "command": "npm run e2e", "keybinding": "MOD+T"})
-		requireNativeCode(t, response, http.StatusUnprocessableEntity, "invalid_request")
-		var failure nativeError
-		decodeHubResponse(t, response, &failure)
-		// The author's next move is to change one of the two, so the answer
-		// has to say which action is holding the chord.
-		if !strings.Contains(failure.Message, "Run tests") || !strings.Contains(failure.Message, "mod+t") {
-			t.Fatalf("message = %q, want the conflicting action and chord named", failure.Message)
-		}
+		local.authored(t, map[string]any{"name": "private-action-name", "command": "go test ./...", "keybinding": "private-chord"})
+		local.requireRefusedAction(t, http.MethodPost, "", map[string]any{
+			"name": "Run example", "command": "private-token", "keybinding": "PRIVATE-CHORD"}, "The keybinding is already used by another action")
 	})
 
 	t.Run("two actions may both have no chord", func(t *testing.T) {
@@ -233,10 +280,10 @@ func TestProjectActionPatch(t *testing.T) {
 	})
 
 	t.Run("a chord another action holds is refused", func(t *testing.T) {
-		f.authored(t, map[string]any{"name": "Debug", "command": "make debug", "keybinding": "mod+d"})
+		f.authored(t, map[string]any{"name": "private-action-name", "command": "make debug", "keybinding": "private-chord"})
 		action := f.authored(t, map[string]any{"name": "Configure", "command": "make configure"})
-		requireNativeCode(t, f.patchAction(t, action.ID, map[string]any{
-			"expected_revision": 1, "keybinding": "mod+d"}), http.StatusUnprocessableEntity, "invalid_request")
+		f.requireRefusedAction(t, http.MethodPatch, action.ID, map[string]any{
+			"expected_revision": 1, "keybinding": "private-chord"}, "The keybinding is already used by another action")
 	})
 
 	t.Run("a stale expected_revision is a conflict that names the current one", func(t *testing.T) {
@@ -254,12 +301,6 @@ func TestProjectActionPatch(t *testing.T) {
 	t.Run("a non-positive expected_revision is refused rather than treated as absent", func(t *testing.T) {
 		action := f.authored(t, map[string]any{"name": "Test", "command": "make test"})
 		requireNativeCode(t, f.patchAction(t, action.ID, map[string]any{"expected_revision": 0, "name": "Test all"}),
-			http.StatusUnprocessableEntity, "invalid_request")
-	})
-
-	t.Run("a normalizer refusal reaches a patch too", func(t *testing.T) {
-		action := f.authored(t, map[string]any{"name": "Test", "command": "make test"})
-		requireNativeCode(t, f.patchAction(t, action.ID, map[string]any{"expected_revision": 1, "command": "   "}),
 			http.StatusUnprocessableEntity, "invalid_request")
 	})
 

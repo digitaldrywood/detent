@@ -1008,12 +1008,17 @@ func (s *sqliteStore) RecordAdmissionRun(ctx context.Context, record admissionmo
 	if err != nil {
 		return fmt.Errorf("encoding backlog admission malformed results: %w", err)
 	}
-	_, err = s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	result, err := tx.ExecContext(ctx, `
 INSERT INTO backlog_admission_runs (
   project_id, scheduled_for, started_at, completed_at, outcome, deferred_reason, resume_at, proposal_reason,
   candidates_found_count, candidates_count, proposed_count, skipped_json,
-  truncated_json, issues_json, malformed_json, candidate_progress_json, error
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  truncated_json, issues_json, malformed_json, candidate_progress_json, error, projection_ready
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
 		strings.TrimSpace(record.ProjectID),
 		scheduledFor,
 		startedAt,
@@ -1035,38 +1040,70 @@ INSERT INTO backlog_admission_runs (
 	if err != nil {
 		return fmt.Errorf("record backlog admission run: %w", err)
 	}
-	return nil
+	id, err := result.LastInsertId()
+	if err != nil {
+		return err
+	}
+	if err := writeAdmissionRunIssues(ctx, tx, id, record.Issues); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
-// AdmissionCandidateHistory returns the most recent evaluation of each issue.
-// Old proposal-only run records have no evaluation fingerprint and are ignored.
-// Reading the existing issues JSON keeps selection and operator evidence together.
 func (s *sqliteStore) AdmissionCandidateHistory(ctx context.Context, projectID string) (map[string]admissionmodel.IssueRecord, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT value FROM (
-  SELECT issue.value,
-         ROW_NUMBER() OVER (
-           PARTITION BY json_extract(issue.value, '$.id')
-           ORDER BY run.id DESC
-         ) AS position
-  FROM backlog_admission_runs AS run, json_each(run.issues_json) AS issue
-  WHERE run.project_id = ? AND COALESCE(json_extract(issue.value, '$.fingerprint'), '') != ''
-) WHERE position = 1`, strings.TrimSpace(projectID))
+ SELECT id,issues_json,position FROM (
+ SELECT run.id,run.issues_json,issue.position,
+ ROW_NUMBER() OVER (PARTITION BY issue.issue_id ORDER BY run.id DESC,issue.position) AS ordinal
+ FROM backlog_admission_run_issues AS issue
+ JOIN backlog_admission_runs AS run ON run.id=issue.run_id
+ WHERE run.project_id=? AND issue.fingerprint!=''
+ ) WHERE ordinal=1
+ UNION ALL
+ SELECT id,issues_json,NULL FROM (SELECT id,issues_json FROM backlog_admission_runs WHERE project_id=? AND projection_ready IS NULL ORDER BY id DESC LIMIT 129)
+ ORDER BY 1 DESC,3`, strings.TrimSpace(projectID), strings.TrimSpace(projectID))
 	if err != nil {
 		return nil, fmt.Errorf("read backlog admission candidate history: %w", err)
 	}
 	defer rows.Close()
 	history := make(map[string]admissionmodel.IssueRecord)
+	var previousID int64
+	unknown := 0
+	var issues []admissionmodel.IssueRecord
 	for rows.Next() {
+		var id int64
 		var raw string
-		if err := rows.Scan(&raw); err != nil {
+		var position sql.NullInt64
+		if err := rows.Scan(&id, &raw, &position); err != nil {
 			return nil, err
 		}
-		var issue admissionmodel.IssueRecord
-		if err := json.Unmarshal([]byte(raw), &issue); err != nil {
-			return nil, fmt.Errorf("decode backlog admission candidate history: %w", err)
+		if previousID != id {
+			issues = nil
+			if err := json.Unmarshal([]byte(raw), &issues); err != nil {
+				return nil, fmt.Errorf("decode backlog admission candidate history: %w", err)
+			}
+			previousID = id
 		}
-		history[issue.ID] = issue
+		if !position.Valid {
+			unknown++
+			if unknown == 129 {
+				return nil, errors.New("store admission projections pending maintenance")
+			}
+		}
+		selected := issues
+		if position.Valid {
+			if position.Int64 < 0 || position.Int64 >= int64(len(issues)) {
+				return nil, errors.New("invalid backlog admission issue position")
+			}
+			selected = issues[position.Int64 : position.Int64+1]
+		}
+		for _, issue := range selected {
+			if issue.Fingerprint != "" {
+				if _, ok := history[issue.ID]; !ok {
+					history[issue.ID] = issue
+				}
+			}
+		}
 	}
 	return history, rows.Err()
 }

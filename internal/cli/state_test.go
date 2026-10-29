@@ -16,12 +16,12 @@ import (
 	"time"
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
-	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/serviceapi"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 	"github.com/digitaldrywood/detent/internal/web"
 )
 
@@ -297,7 +297,7 @@ func TestStateCommandOutput(t *testing.T) {
 						t.Error(err)
 					}
 				})
-				dashboard, err := web.NewServer(web.Config{LookupEnv: func(string) string { return "" }}, web.Dependencies{Hub: snapshots, Store: backend, Registry: project.NewRegistry(), Connector: memory.New(memory.Config{})})
+				dashboard, err := web.NewServer(web.Config{LookupEnv: func(string) string { return "" }}, web.Dependencies{Hub: snapshots, Store: backend, Registry: project.NewRegistry(), Connector: fakehub.New(fakehub.Config{})})
 				if err != nil {
 					t.Fatal(err)
 				}

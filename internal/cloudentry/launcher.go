@@ -12,18 +12,24 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
 )
 
 type TenantSpec struct {
-	Organization Organization
-	Directory    string
-	Socket       string
-	PublicURL    string
-	Issuer       string
-	PublicKey    string
-	Check        func(context.Context) error
-	ResolveKey   entryauthority.Resolver
+	Organization    Organization
+	Directory       string
+	Socket          string
+	PublicURL       string
+	Issuer          string
+	PublicKey       string
+	Check           func(context.Context) error
+	ResolveKey      entryauthority.Resolver
+	ArchiveContents attachment.ArchiveContentStore
+	Content         entryauthority.ContentHandler
+	RunDetails      attachment.DetailStore
+	Icons           attachment.IconStore
+	ReadArchive     entryauthority.ArchiveReader
 }
 
 type Launcher interface {
@@ -155,7 +161,7 @@ func (l *ExecLauncher) supervise(ctx context.Context, spec TenantSpec, token str
 		var authority *entryauthority.Parent
 		var err error
 		if spec.ResolveKey != nil {
-			authority, err = entryauthority.Start(attempt, entryauthority.Binding{Issuer: spec.Issuer, Organization: spec.Organization.ID, Generation: spec.Organization.Generation}, platformCallTimeout, spec.ResolveKey)
+			authority, err = entryauthority.Start(attempt, entryauthority.Binding{Issuer: spec.Issuer, Organization: spec.Organization.ID, Generation: spec.Organization.Generation}, platformCallTimeout, spec.ResolveKey, entryauthority.Archives{Reader: spec.ReadArchive, Contents: spec.ArchiveContents, Content: spec.Content, Details: spec.RunDetails, Icons: spec.Icons})
 			if err == nil {
 				cmd.ExtraFiles = authority.Files
 				cmd.Env = append(cmd.Env, entryauthority.BootstrapEnvironment+"="+entryauthority.BootstrapVersion)

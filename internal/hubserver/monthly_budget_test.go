@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"sync"
 	"testing"
@@ -55,6 +56,7 @@ func TestMonthlyBudgetAdmission(t *testing.T) {
 		policy                             budget.MonthlyPolicy
 		allowed                            bool
 		directBeforePolicy                 bool
+		legacySprite                       bool
 	}{
 		{name: "org Sprite blocks Sprite", organization: true, sprite: true, policy: budget.MonthlyPolicy{Enabled: true, SpriteMicros: new(int64)}},
 		{name: "project Sprite allows local subscription", subscription: true, policy: budget.MonthlyPolicy{Enabled: true, SpriteMicros: new(int64)}, allowed: true},
@@ -66,11 +68,52 @@ func TestMonthlyBudgetAdmission(t *testing.T) {
 		{name: "existing direct subscription remains free", directBeforePolicy: true, subscription: true, policy: budget.MonthlyPolicy{Enabled: true, Mode: budget.HardStop, RunnerMicros: new(int64), TotalMicros: new(int64)}, allowed: true},
 		{name: "existing direct paid API is stopped", directBeforePolicy: true, policy: budget.MonthlyPolicy{Enabled: true, Mode: budget.HardStop, RunnerMicros: new(int64)}},
 		{name: "existing direct Sprite is stopped", directBeforePolicy: true, sprite: true, policy: budget.MonthlyPolicy{Enabled: true, Mode: budget.HardStop, SpriteMicros: new(int64)}},
+		{name: "unknown Sprite fact retains infrastructure refusal", sprite: true, legacySprite: true, policy: budget.MonthlyPolicy{Enabled: true, SpriteMicros: new(int64)}},
+		{name: "unknown local fact preserves subscription admission", subscription: true, legacySprite: true, policy: budget.MonthlyPolicy{Enabled: true, SpriteMicros: new(int64)}, allowed: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newDefaultNativeFixture(t, Config{})
+			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+				t.Fatal(err)
+			}
 			descriptor := monthlyPolicyFixture(t, f, test.subscription)
 			r := placementFixtureRunner(t, f, "budget-runner", "budget", test.sprite, 2, "test-model", "gpt-6.1-sol")
+			if test.legacySprite {
+				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE machines SET sprite_name=NULL,machine_facts_ready=NULL WHERE id=?`, r.binding.MachineID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			if !test.legacySprite {
+				opaque := ""
+				if !test.sprite {
+					if err := tx.QueryRowContext(t.Context(), `SELECT hostname FROM machines WHERE id=?`, r.binding.MachineID).Scan(&opaque); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if _, err := tx.ExecContext(t.Context(), `UPDATE machines SET capabilities_json=json_set(capabilities_json,'$.sprite_name',?) WHERE id=?`, opaque, r.binding.MachineID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, workspace := range []bool{false, true} {
+				exposure, err := monthlyClaimExposure(t.Context(), tx, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, r.binding.MachineID, workspace)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if exposure.SpriteInfrastructure != test.sprite || exposure.RunnerAPI != (!workspace && !test.subscription) {
+					t.Fatalf("workspace=%v legacy=%v exposure=%+v", workspace, test.legacySprite, exposure)
+				}
+			}
+			if _, err := monthlyClaimExposure(t.Context(), tx, nativeScope{organization: "other-organization", project: f.project.ID}, r.binding.MachineID, true); err == nil {
+				t.Fatal("cross-organization machine exposed budget facts")
+			}
+			if err := tx.Rollback(); err != nil {
+				t.Fatal(err)
+			}
 			setPlacementFixture(t, f, policy.Placement{Mode: "blended"}, 2)
 			issue := f.create(t, "budget issue")
 			var directLease tracker.Lease
@@ -120,7 +163,14 @@ func TestMonthlyBudgetAdmission(t *testing.T) {
 
 func TestMonthlyBudgetDrainLifecycle(t *testing.T) {
 	t.Parallel()
-	f := newDefaultNativeFixture(t, Config{})
+	now := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
+	var logs hostedLogBuffer
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("server logs:\n%s", logs.String())
+		}
+	})
+	f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }, Logger: slog.New(slog.NewTextHandler(&logs, nil))})
 	monthlyPolicyFixture(t, f, false)
 	for _, state := range []string{"In Review", "Rework", "Merging", "Blocked", "Backlog"} {
 		dispatchable := state != "Blocked" && state != "Backlog"

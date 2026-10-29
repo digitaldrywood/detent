@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -18,10 +19,13 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/connector/memory"
+	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/testenv"
+	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -609,7 +613,11 @@ func TestStartupReclaimsProcesslessWorkAttempts(t *testing.T) {
 	for _, tc := range []struct {
 		projectID, host string
 		scratchFailure  bool
+		deferred        bool
+		liveLease       bool
 	}{
+		{projectID: "deferred-live", deferred: true, liveLease: true},
+		{projectID: "deferred-expired", deferred: true},
 		{projectID: "configured"},
 		{projectID: "scratch-failure", scratchFailure: true},
 		{projectID: "removed"},
@@ -628,6 +636,29 @@ func TestStartupReclaimsProcesslessWorkAttempts(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			issue := connector.NewIssue()
+			issue.ID, issue.State = "stranded", "In Progress"
+			issue.Identifier, issue.Title = "project#2749", "Resume stranded work"
+			if tc.deferred {
+				metadata, err := json.Marshal(map[string]any{"deferred_completion": map[string]any{
+					"schema":       1,
+					"running":      orchestrator.Running{Issue: issue, WorkAttemptID: id, Attempt: 1, StartedAt: now.Add(-time.Minute)},
+					"request":      map[string]any{"project_id": projectID, "issue": issue, "work_attempt_id": id, "attempt": 1},
+					"result":       runpkg.RunResult{FinalState: runpkg.FinalStateCompleted, Tokens: runpkg.TokenTotals{TotalTokens: 37}},
+					"completed_at": now.Add(-time.Minute), "deferred_at": now.Add(-2 * time.Hour),
+				}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				expires := now.Add(-time.Minute)
+				if tc.liveLease {
+					expires = now.Add(time.Hour)
+				}
+				if err := backend.RecordWorkAttemptHeartbeat(t.Context(), store.WorkAttemptHeartbeat{AttemptID: id, HeartbeatAt: now, LeaseExpiresAt: expires, Phase: "completion_deferred", WorkerMetadataJSON: string(metadata)}); err != nil {
+					t.Fatal(err)
+				}
+			}
+
 			if tc.scratchFailure {
 				sessionID, err := backend.StartSession(t.Context(), store.SessionStart{ProjectID: projectID, IssueID: "stranded", WorkAttemptID: id, StartedAt: now.Add(-time.Hour), AgentRole: store.WorkerProcessRoleHostValidation})
 				if err != nil {
@@ -658,6 +689,48 @@ func TestStartupReclaimsProcesslessWorkAttempts(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			if tc.liveLease {
+				if attempt.Status != store.WorkAttemptStatusActive {
+					t.Fatal("startup discarded live deferred completion")
+				}
+				runner := newRestartRecoveryRunner()
+				publishedIssue := issue
+				publishedIssue.State = "Done"
+				tracker := fakehub.New(fakehub.Config{Issues: []connector.Issue{publishedIssue}, Stateful: true})
+				orch, stop := runRestartRecoveryOrchestrator(t, tracker, runner, nil, scheduler.ProjectCandidate{ID: projectID}, backend)
+				testenv.WaitUntil(t, t.Context(), func() error {
+					state, err := orch.State(t.Context())
+					if err != nil {
+						return err
+					}
+					if state.TokenTotals.TotalTokens != 37 {
+						return fmt.Errorf("published tokens = %d", state.TokenTotals.TotalTokens)
+					}
+					return nil
+				})
+				stop()
+				select {
+				case <-runner.started:
+					t.Fatal("provider redispatched during completion recovery")
+				default:
+				}
+				orch, stop = runRestartRecoveryOrchestrator(t, tracker, runner, nil, scheduler.ProjectCandidate{ID: projectID}, backend)
+				state, err := orch.State(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				stop()
+				if state.TokenTotals.TotalTokens != 0 {
+					t.Fatal("completion published again on second restart")
+				}
+				select {
+				case <-runner.started:
+					t.Fatal("provider redispatched deferred completion")
+				default:
+				}
+				return
+			}
+
 			if attempt.Status != store.WorkAttemptStatusTerminal {
 				t.Fatalf("status = %s, want terminal before project startup", attempt.Status)
 			}
@@ -668,11 +741,8 @@ func TestStartupReclaimsProcesslessWorkAttempts(t *testing.T) {
 			if len(active) != 0 {
 				t.Fatalf("active attempts = %d, want 0", len(active))
 			}
-			issue := connector.NewIssue()
-			issue.ID, issue.State = "stranded", "In Progress"
-			issue.Identifier, issue.Title = "project#2749", "Resume stranded work"
 			runner := newRestartRecoveryRunner()
-			orch, stop := runRestartRecoveryOrchestrator(t, memory.New(memory.Config{Issues: []connector.Issue{issue}}), runner, nil, scheduler.ProjectCandidate{ID: projectID}, backend)
+			orch, stop := runRestartRecoveryOrchestrator(t, fakehub.New(fakehub.Config{Issues: []connector.Issue{issue}}), runner, nil, scheduler.ProjectCandidate{ID: projectID}, backend)
 			defer stop()
 			select {
 			case <-runner.started:

@@ -15,29 +15,33 @@ func (s *Service) hostedArtifactAllowances(c echo.Context) error {
 	runtimePlans := s.database.plans()
 	credential, _, err := s.authenticateAPIRequest(c)
 	if err != nil || credential.Scope != apiScopeWorker || !credential.NativeOnly || credential.Hosted != nil || credential.Runner.RunnerID != "" || c.Request().Header.Get(echo.HeaderAuthorization) == "" {
-		return c.NoContent(http.StatusForbidden)
+		return s.hostedJSONError(c, http.StatusForbidden, "A scoped artifact publisher credential is required")
 	}
 	if runtimePlans == nil {
 		return c.NoContent(http.StatusServiceUnavailable)
 	}
 	var usage artifact.Usage
 	if err := decodeAPIJSON(c, &usage); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	ctx := c.Request().Context()
+	legacyBinding, err := legacyHostedArtifactBinding(ctx, s.database.reader, c.Param("service"), s.config.Hosted.OrganizationID, credential.ID)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
 	tx, err := s.database.db.BeginTx(ctx, nil)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	defer tx.Rollback()
 	var count int
-	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM artifact_services s JOIN token_grants g ON g.token_id=s.publisher_token_id AND g.project_id=s.project_id AND g.organization_id=s.organization_id WHERE s.id=? AND s.organization_id=? AND s.publisher_token_id=? AND json_extract(s.binding_json,'$.mode')='hosted' AND json_extract(s.binding_json,'$.hosted_opt_in')=1`, c.Param("service"), s.config.Hosted.OrganizationID, credential.ID).Scan(&count); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM artifact_services s JOIN token_grants g ON g.token_id=s.publisher_token_id AND g.project_id=s.project_id AND g.organization_id=s.organization_id WHERE s.id=? AND s.organization_id=? AND s.publisher_token_id=? AND ((s.binding_mode='hosted' AND s.hosted_opt_in=1) OR ((s.binding_mode IS NULL OR s.hosted_opt_in IS NULL) AND s.binding_json=?))`, c.Param("service"), s.config.Hosted.OrganizationID, credential.ID, legacyBinding).Scan(&count); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	if count == 0 {
-		return c.NoContent(http.StatusForbidden)
+		return s.hostedJSONError(c, http.StatusForbidden, "Artifact publisher is not bound to this service")
 	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO hosted_artifact_usage(singleton,service_id,usage_json,observed_at) VALUES(1,?,'{}',0) ON CONFLICT DO NOTHING", c.Param("service")); err != nil {
+	if _, err := tx.ExecContext(ctx, "INSERT INTO hosted_artifact_usage(singleton,service_id,usage_json,observed_at,retained_bytes,reserved_bytes) VALUES(1,?,'{}',0,0,0) ON CONFLICT DO NOTHING", c.Param("service")); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	var service string
@@ -55,18 +59,18 @@ func (s *Service) hostedArtifactAllowances(c echo.Context) error {
 	}
 	for _, amount := range []int64{usage.RetainedBytes, usage.ReservedBytes, usage.RelayBytes, usage.StorageRequests} {
 		if amount < 0 || amount > 1<<50 {
-			return s.nativeAPIError(c, nativeInvalid("Artifact usage is invalid"))
+			return s.nativeAPIError(c, nativePublicInvalid("Artifact usage is invalid"))
 		}
 	}
 	if usage.ObservedAt.After(now.Add(time.Minute)) {
-		return s.nativeAPIError(c, nativeInvalid("Artifact usage clock is invalid"))
+		return s.nativeAPIError(c, nativePublicInvalid("Artifact usage clock is invalid"))
 	}
 	if !usage.ObservedAt.IsZero() && usage.ObservedAt.UnixNano() > observed {
 		raw, err := json.Marshal(usage)
 		if err != nil {
 			return s.nativeAPIError(c, err)
 		}
-		if _, err := tx.ExecContext(ctx, "UPDATE hosted_artifact_usage SET usage_json=?,observed_at=? WHERE singleton=1", string(raw), usage.ObservedAt.UnixNano()); err != nil {
+		if _, err := tx.ExecContext(ctx, "UPDATE hosted_artifact_usage SET usage_json=?,observed_at=?,retained_bytes=?,reserved_bytes=? WHERE singleton=1", string(raw), usage.ObservedAt.UnixNano(), usage.RetainedBytes, usage.ReservedBytes); err != nil {
 			return s.nativeAPIError(c, err)
 		}
 		window := now.Unix() / runtimePlans.WindowSeconds * runtimePlans.WindowSeconds

@@ -7,22 +7,27 @@ import (
 
 func TestReportSupports(t *testing.T) {
 	for _, test := range []struct {
-		name   string
-		report Report
-		tier   string
-		want   bool
+		name, goos string
+		report     Report
+		tier       string
+		want       bool
 	}{
-		{"absent", nil, Sandbox, false},
-		{"sandbox", Report{"codex": {Sandbox, NativeTrusted}}, Sandbox, true},
-		{"mixed", Report{"codex": {Sandbox, NativeTrusted}, "claude": {NativeTrusted}}, Sandbox, false},
-		{"trusted", Report{"codex": {NativeTrusted}, "claude": {NativeTrusted}}, NativeTrusted, true},
-		{"failed backend", Report{"codex": {Sandbox}, "claude": {}}, Sandbox, false},
-		{"invalid", Report{"codex": {"container"}}, "container", false},
-		{"duplicate", Report{"codex": {Sandbox, Sandbox}}, Sandbox, false},
+		{"absent", "linux", nil, Sandbox, false},
+		{"sandbox", "linux", Report{"codex": {Sandbox, NativeTrusted}}, Sandbox, true},
+		{"mixed", "linux", Report{"codex": {Sandbox, NativeTrusted}, "claude": {NativeTrusted}}, Sandbox, false},
+		{"trusted", "linux", Report{"codex": {NativeTrusted}, "claude": {NativeTrusted}}, NativeTrusted, true},
+		{"failed backend", "linux", Report{"codex": {Sandbox}, "claude": {}}, Sandbox, false},
+		{"invalid", "linux", Report{"codex": {"container"}}, "container", false},
+		{"duplicate", "linux", Report{"codex": {Sandbox, Sandbox}}, Sandbox, false},
+		{"darwin sandbox", "darwin", Report{"codex": {Sandbox, NativeTrusted}}, Sandbox, true},
+		{"windows sandbox", "windows", Report{"codex": {Sandbox, NativeTrusted}}, Sandbox, false},
+		{"windows trusted", "windows", Report{"codex": {NativeTrusted}}, NativeTrusted, true},
+		{"legacy unspecified platform", "", Report{"codex": {Sandbox}}, Sandbox, true},
+		{"unsupported platform sandbox", "freebsd", Report{"codex": {Sandbox}}, Sandbox, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if got := test.report.Supports(test.tier); got != test.want {
-				t.Fatalf("Supports = %v, want %v", got, test.want)
+			if got := test.report.SupportsOn(test.tier, test.goos); got != test.want {
+				t.Fatalf("SupportsOn = %v, want %v", got, test.want)
 			}
 		})
 	}

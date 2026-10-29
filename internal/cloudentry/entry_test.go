@@ -1,11 +1,10 @@
 package cloudentry
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -15,6 +14,7 @@ import (
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -29,6 +29,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/buildinfo"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/testenv"
 )
 
@@ -36,6 +37,24 @@ const (
 	testPublicURL = "http://127.0.0.1:18017"
 	testAdminKey  = "detent_test_admin_token_0123456789abcdefghijklmnop"
 )
+
+const issueContractTestSections = "## Acceptance criteria\nComplete the requested work.\n## Must not break\nExisting behavior.\n## How we know it worked\nRun the project checks."
+
+func pilotPolicy() policy.Descriptor {
+	return policy.Descriptor{
+		SourceRevision: strings.Repeat("a", 40), SourceDigest: policy.Digest([]byte("source")), ConfigDigest: policy.Digest([]byte("config")),
+		Gates: policy.Gates{Kind: "command", PlanReview: "human", PlanStopDigest: policy.Digest([]byte("Plan Review")), AutomatedReview: "optional", MergeMethod: "squash"},
+	}.WithID()
+}
+
+func jsonBody(t *testing.T, value any) io.Reader {
+	t.Helper()
+	raw, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return bytes.NewReader(raw)
+}
 
 type fakeProvider struct {
 	organizations   map[string]auth.Organization
@@ -45,6 +64,7 @@ type fakeProvider struct {
 	users           map[string]string
 	sessions        map[string]auth.HostedIdentity
 	memberships     map[string]auth.Membership
+	invitationRoles map[string]string
 	invitations     map[string]auth.Invitation
 	revokeErr       error
 	revoked         []string
@@ -71,8 +91,19 @@ var hubDatabasePath = testenv.DatabaseTemplate(func(ctx context.Context, path st
 	return hubserver.Open(ctx, hubserver.Config{DatabasePath: path, GitHubDisabled: true, Logger: slog.New(slog.DiscardHandler)})
 })
 
+func copyTenantDatabaseTemplate(template, path string) error {
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	image, err := os.ReadFile(template)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, image, 0o600)
+}
+
 func newFakeProvider() *fakeProvider {
-	return &fakeProvider{users: map[string]string{}, sessions: map[string]auth.HostedIdentity{}, memberships: map[string]auth.Membership{}, invitations: map[string]auth.Invitation{}, access: map[string]fakeAccess{}, refresh: map[string]string{}}
+	return &fakeProvider{users: map[string]string{}, sessions: map[string]auth.HostedIdentity{}, memberships: map[string]auth.Membership{}, invitations: map[string]auth.Invitation{}, invitationRoles: map[string]string{}, access: map[string]fakeAccess{}, refresh: map[string]string{}}
 }
 
 // providerCalls counts the provider API calls a request can make; local
@@ -264,11 +295,12 @@ func (p *fakeProvider) CreateMembership(_ context.Context, user, organization, r
 func (*fakeProvider) SetMembershipRole(context.Context, string, string) error { return nil }
 func (*fakeProvider) RevokeMembership(context.Context, string) error          { return nil }
 
-func (p *fakeProvider) Invite(_ context.Context, organization, email, _, _ string) (auth.Invitation, error) {
+func (p *fakeProvider) Invite(_ context.Context, organization, email, role, _ string) (auth.Invitation, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	invitation := auth.Invitation{ID: "inv_" + strings.ReplaceAll(strings.Split(email, "@")[0], ".", "_"), Email: email, OrganizationID: organization, State: "pending", ExpiresAt: time.Now().Add(time.Hour)}
 	p.invitations[invitation.ID] = invitation
+	p.invitationRoles[invitation.ID] = role
 	return invitation, nil
 }
 
@@ -287,8 +319,12 @@ func (p *fakeProvider) AcceptInvitation(_ context.Context, token, user string) e
 	invitation := p.invitations[token]
 	invitation.State, invitation.AcceptedUserID = "accepted", user
 	p.invitations[token] = invitation
+	role := p.invitationRoles[token]
+	if role == "" {
+		role = "member"
+	}
 	p.mu.Unlock()
-	p.member(user, invitation.OrganizationID, "member")
+	p.member(user, invitation.OrganizationID, role)
 	return nil
 }
 
@@ -393,72 +429,55 @@ type tenantFixture struct {
 	service      *hubserver.Service
 }
 
-func originLogin(t *testing.T, handler http.Handler, provider *fakeProvider, user, organization string) string {
-	t.Helper()
-	start := httptest.NewRecorder()
-	handler.ServeHTTP(start, httptest.NewRequest(http.MethodGet, "/auth/oidc/start", nil))
-	location, _ := url.Parse(start.Header().Get("Location"))
-	request := httptest.NewRequest(http.MethodGet, "/auth/oidc/callback?"+url.Values{"code": {user + ":" + organization}, "state": {location.Query().Get("state")}}.Encode(), nil)
-	for _, cookie := range start.Result().Cookies() {
-		request.AddCookie(cookie)
-	}
-	callback := httptest.NewRecorder()
-	handler.ServeHTTP(callback, request)
-	for _, cookie := range callback.Result().Cookies() {
-		if cookie.Name == "detent_hosted_session" && cookie.Value != "" {
-			return cookie.Value
-		}
-	}
-	t.Fatalf("origin login failed: %d %s", callback.Code, callback.Body.String())
-	return ""
-}
-
-func originPost(t *testing.T, handler http.Handler, token, target string, form url.Values) {
-	t.Helper()
-	sum := sha256.Sum256([]byte("detent-hosted-csrf:" + token))
-	form.Set("csrf", hex.EncodeToString(sum[:]))
-	request := httptest.NewRequest(http.MethodPost, target, strings.NewReader(form.Encode()))
-	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	request.AddCookie(&http.Cookie{Name: "detent_hosted_session", Value: token})
-	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusSeeOther {
-		t.Fatalf("origin POST %s status = %d: %s", target, recorder.Code, recorder.Body.String())
-	}
-}
-
-func newTenant(t *testing.T, provider *fakeProvider, key ed25519.PrivateKey, id, providerID, owner, project string) (tenantFixture, http.Handler) {
+func newTenant(t *testing.T, provider *fakeProvider, key ed25519.PrivateKey, id, providerID, owner, project string, configure ...func(*hubserver.Config)) (tenantFixture, http.Handler) {
 	t.Helper()
 	path := hubDatabasePath(t)
-	hosted := func(shared bool) *hubserver.HostedConfig {
-		plans := pilotPlans()
-		plans.Plans[0].Allowances["projects"] = 10
-		config := &hubserver.HostedConfig{Plans: plans, OrganizationID: id, WorkOSOrganizationID: providerID, BootstrapSubject: owner, PublicURL: map[string]string{"org_alpha": "http://127.0.0.1:19001", "org_beta": "http://127.0.0.1:19002"}[id], Provider: provider, StaffEmails: []string{"staff@example.test", "support@example.test"}, SupportActors: []string{"support@example.test"}}
-		if shared {
-			config.PublicURL = testPublicURL
-			config.SharedEntry = &hubserver.HostedSharedEntry{Issuer: "entry", PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Generation: 1}
-		}
-		return config
-	}
+	plans := pilotPlans()
+	plans.Plans[0].Allowances["projects"] = 10
 	logger := slog.New(slog.DiscardHandler)
-	origin, err := hubserver.Open(t.Context(), hubserver.Config{DatabasePath: path, GitHubDisabled: true, Hosted: hosted(false), Logger: logger, InitialAdminToken: []byte(testAdminKey)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	token := originLogin(t, origin.Handler(), provider, owner, providerID)
-	originPost(t, origin.Handler(), token, "/projects", url.Values{"name": {project}, "grant_access": {"true"}})
-	if err := origin.Close(); err != nil {
-		t.Fatal(err)
-	}
-	fixture := tenantFixture{id: id, provider: providerID, path: path, config: hubserver.Config{DatabasePath: path, GitHubDisabled: true, Hosted: hosted(true), Logger: logger, Conversation: &hubserver.ConversationConfig{Enabled: true}}}
-	if _, err := hubserver.MigrateHostedSharedOrigin(t.Context(), fixture.config); err != nil {
-		t.Fatal(err)
+	fixture := tenantFixture{id: id, provider: providerID, path: path, config: hubserver.Config{DatabasePath: path, GitHubDisabled: true, InitialAdminToken: []byte(testAdminKey), Logger: logger, Conversation: &hubserver.ConversationConfig{Enabled: true},
+		Hosted: &hubserver.HostedConfig{Plans: plans, OrganizationID: id, WorkOSOrganizationID: providerID, BootstrapSubject: owner, PublicURL: testPublicURL, Provider: provider,
+			StaffEmails: []string{"staff@example.test", "support@example.test"}, SupportActors: []string{"support@example.test"},
+			SharedEntry: &hubserver.HostedSharedEntry{Issuer: "entry", PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Generation: 1}},
+	}}
+	for _, apply := range configure {
+		apply(&fixture.config)
 	}
 	shared, err := hubserver.Open(t.Context(), fixture.config)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = shared.Close() })
+	setup := &Service{config: Config{Issuer: "entry", SigningKey: key, now: time.Now,
+		transport: func(Organization) (http.RoundTripper, error) { return handlerTransport{shared.Handler()}, nil },
+	}}
+	organization := Organization{ID: id, ProviderID: providerID, Name: providerID, Generation: 1}
+	status, err := setup.serviceRequest(t.Context(), organization, "/internal/v1/owner/bootstrap", map[string]string{"organization_name": providerID}, func(claims *cloudassert.Claims) {
+		claims.Subject, claims.Email = owner, provider.users[owner]
+	})
+	if err != nil || status != http.StatusNoContent {
+		t.Fatalf("bootstrap owner: status=%d error=%v", status, err)
+	}
+	identity, err := provider.Exchange(t.Context(), owner+":"+providerID, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(map[string]any{"idempotency_key": "fixture-project", "name": project, "grant_access": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, err := setup.claims(organization, cloudassert.KindBrowser, http.MethodPost, "/api/v2/organizations/"+id+"/projects", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims.Subject, claims.Email, claims.ProviderOrganization, claims.ProviderSession = owner, identity.Email, providerID, identity.Hosted.SessionID
+	claims.SessionCreatedAt, claims.SessionExpiresAt = identity.Hosted.CreatedAt, identity.Hosted.ExpiresAt
+	claims.Role, claims.AccessExpiresAt = "owner", identity.Hosted.ExpiresAt
+	claims.Binding, claims.CSRF = cloudassert.AuthorizationBinding("fixture-session", id, identity.Hosted.SessionID), cloudassert.CSRFToken("fixture-csrf", id)
+	status, response, err := setup.signedCallCSRF(t.Context(), organization, claims, body, "", claims.CSRF)
+	if err != nil || status != http.StatusCreated {
+		t.Fatalf("create project: status=%d body=%s error=%v", status, response, err)
+	}
 	fixture.service = shared
 	return fixture, shared.Handler()
 }
@@ -475,7 +494,7 @@ func newEntryFixture(t *testing.T) entryFixture {
 	return newEntryFixtureWithLogger(t, slog.New(slog.DiscardHandler))
 }
 
-func newEntryFixtureWithLogger(t *testing.T, logger *slog.Logger) entryFixture {
+func newEntryFixtureWithLogger(t *testing.T, logger *slog.Logger, configure ...func(*hubserver.Config)) entryFixture {
 	t.Helper()
 	seed := make([]byte, ed25519.SeedSize)
 	seed[0] = 42
@@ -488,13 +507,13 @@ func newEntryFixtureWithLogger(t *testing.T, logger *slog.Logger) entryFixture {
 	provider.member("user_alice", "porg_alpha", "owner")
 	provider.member("user_alice", "porg_beta", "owner")
 	provider.member("user_bob", "porg_beta", "member")
-	alpha, alphaHandler := newTenant(t, provider, key, "org_alpha", "porg_alpha", "user_alice", "Alpha secret project")
-	beta, betaHandler := newTenant(t, provider, key, "org_beta", "porg_beta", "user_alice", "Beta secret project")
+	alpha, alphaHandler := newTenant(t, provider, key, "org_alpha", "porg_alpha", "user_alice", "Alpha secret project", configure...)
+	beta, betaHandler := newTenant(t, provider, key, "org_beta", "porg_beta", "user_alice", "Beta secret project", configure...)
 	tenants := map[string]http.Handler{testSocketEndpoint("alpha.sock"): alphaHandler, testSocketEndpoint("beta.sock"): betaHandler}
 	service, err := Open(t.Context(), Config{
 		Platform:  PlatformConfig{BootstrapAdminEmail: "bootstrap@example.test"},
 		PublicURL: testPublicURL, ListenAddress: "127.0.0.1:0", Issuer: "entry", SigningKey: key, Provider: provider, StaffEmails: []string{"staff@example.test", "support@example.test"}, SupportActors: []string{"support@example.test"}, StateDir: t.TempDir(),
-		Logger: logger, clientFS: fstest.MapFS{},
+		LookupEnv: func(string) string { return "" }, Logger: logger, clientFS: fstest.MapFS{},
 		transport: func(organization Organization) (http.RoundTripper, error) {
 			return handlerTransport{tenants[organization.Endpoint]}, nil
 		},
@@ -796,6 +815,23 @@ func TestSharedEntryBoundaries(t *testing.T) {
 		t.Fatalf("release health identity=%d %s", health.Code, health.Body)
 	}
 
+	for _, tt := range []struct {
+		name, method, target, location string
+		status                         int
+	}{
+		{"login alias", http.MethodGet, "/login", "/", http.StatusSeeOther},
+		{"login return", http.MethodGet, "/login?return=%2Forganizations%2Forg_alpha%2Fwork", "/?return=%2Forganizations%2Forg_alpha%2Fwork", http.StatusSeeOther},
+		{"login external return", http.MethodGet, "/login?return=https%3A%2F%2Fattacker.example.test", "/?return=https%3A%2F%2Fattacker.example.test", http.StatusSeeOther},
+		{"home head", http.MethodHead, "/", "", http.StatusOK},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			response := newBrowser(t, f.service.Handler()).do(tt.method, tt.target, nil, nil)
+			if response.StatusCode != tt.status || response.Header.Get("Location") != tt.location {
+				t.Fatalf("response = %d, location %q; want %d, %q", response.StatusCode, response.Header.Get("Location"), tt.status, tt.location)
+			}
+		})
+	}
+
 	alice := newBrowser(t, f.service.Handler())
 	alice.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
 	stranger := newBrowser(t, f.service.Handler())
@@ -812,6 +848,7 @@ func TestSharedEntryBoundaries(t *testing.T) {
 		{"dot segment", alice, "/organizations/org_alpha/../org_beta/organization", nil, http.StatusNotFound},
 		{"spoofed assertion without session", stranger, "/organizations/org_alpha/organization", map[string]string{cloudassert.Header: "forged.value", "X-Forwarded-Host": "tenant"}, http.StatusSeeOther},
 		{"bearer is not browser authority", alice, "/organizations/org_alpha/organization", map[string]string{"Authorization": "Bearer detent_invalid"}, http.StatusSeeOther},
+		{"absolute open redirect", stranger, "/auth/oidc/start?return=https%3A%2F%2Fattacker.example.test", nil, http.StatusBadRequest},
 		{"open redirect", alice, "/auth/oidc/start?return=%2F%2Fattacker.example.test", nil, http.StatusBadRequest},
 		{"cross-organization return", alice, "/auth/oidc/start?organization=org_alpha&return=%2Forganizations%2Forg_beta%2Forganization", nil, http.StatusBadRequest},
 		{"legacy unscoped route", alice, "/organization", nil, http.StatusNotFound},
@@ -921,12 +958,15 @@ func TestSharedEntryLoginTransactions(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, tt := range []struct {
-		name, query, selected, authorized, location string
-		status                                      int
-		fallback                                    bool
+		name, query, selected, authorized, location, role string
+		status                                            int
+		fallback                                          bool
 	}{
 		{name: "selected alpha", selected: "porg_alpha", authorized: "org_alpha", location: "/alpha/work", status: http.StatusSeeOther},
 		{name: "selected beta", selected: "porg_beta", authorized: "org_beta", location: "/beta/work", status: http.StatusSeeOther},
+		{name: "reporter selected", selected: "porg_alpha", authorized: "org_alpha", location: "/alpha/reporter", role: "reporter", status: http.StatusSeeOther},
+		{name: "reporter invitation return", query: "organization=org_alpha&return=/organizations/org_alpha/work", selected: "porg_alpha", authorized: "org_alpha", location: "/alpha/reporter", role: "reporter", status: http.StatusSeeOther},
+		{name: "reporter deep link", query: "organization=org_alpha&return=/organizations/org_alpha/work/i/wi_example", selected: "porg_alpha", authorized: "org_alpha", location: "/organizations/org_alpha/work/i/wi_example", role: "reporter", status: http.StatusSeeOther},
 		{name: "chooser return alpha", query: "return=/organizations", selected: "porg_alpha", authorized: "org_alpha", location: "/alpha/work", status: http.StatusSeeOther},
 		{name: "chooser return beta", query: "return=/organizations", selected: "porg_beta", authorized: "org_beta", location: "/beta/work", status: http.StatusSeeOther},
 		{name: "deep link", query: "organization=org_beta&return=/organizations/org_beta/organization", selected: "porg_beta", authorized: "org_beta", location: "/organizations/org_beta/organization", status: http.StatusSeeOther},
@@ -937,6 +977,10 @@ func TestSharedEntryLoginTransactions(t *testing.T) {
 		{name: "server rendered fallback", selected: "porg_beta", authorized: "org_beta", location: "/organizations/org_beta/organization", status: http.StatusSeeOther, fallback: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
+			if tt.role != "" {
+				f.provider.member("user_alice", tt.selected, tt.role)
+				t.Cleanup(func() { f.provider.member("user_alice", tt.selected, "owner") })
+			}
 			if tt.selected == "porg_unknown" || tt.selected == "porg_disabled" {
 				f.provider.member("user_alice", tt.selected, "owner")
 				t.Cleanup(func() { f.provider.removeMember("user_alice", tt.selected) })
@@ -1151,6 +1195,7 @@ func TestSharedEntryInvitation(t *testing.T) {
 	}{
 		{name: "new user sign-up", entryCode: 303, callbackCode: 303},
 		{name: "existing user sign-in", entryCode: 303, callbackCode: 303},
+		{name: "reporter sign-in", entryCode: 303, callbackCode: 303},
 		{name: "legacy token alias", entryCode: 303, callbackCode: 303},
 		{name: "repeated invitation starts", entryCode: 303, callbackCode: 303, starts: 3},
 		{name: "wrong account", entryCode: 303, callbackCode: 403, message: "different account at example.test"},
@@ -1165,9 +1210,16 @@ func TestSharedEntryInvitation(t *testing.T) {
 			alice := newBrowser(t, f.service.Handler())
 			alice.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
 			_, page := alice.get("/organizations/org_alpha/organization")
-			invite := alice.do(http.MethodPost, "/organizations/org_alpha/organization/invite", url.Values{"email": {"carol@example.test"}, "role": {"member"}, "csrf": {csrfFrom(t, page)}}, nil)
+			role := "member"
+			if tt.name == "reporter sign-in" {
+				role = "reporter"
+			}
+			invite := alice.do(http.MethodPost, "/organizations/org_alpha/organization/invite", url.Values{"email": {"carol@example.test"}, "role": {role}, "csrf": {csrfFrom(t, page)}}, nil)
 			if invite.StatusCode != http.StatusSeeOther {
 				t.Fatalf("invite = %d: %s", invite.StatusCode, invite.Body)
+			}
+			if role == "reporter" {
+				f.service.config.clientFS = fstest.MapFS{entryClientShell: {Data: []byte("<html><head></head><body></body></html>")}}
 			}
 			invitation := f.provider.invitations["inv_carol"]
 			switch tt.name {
@@ -1254,6 +1306,14 @@ func TestSharedEntryInvitation(t *testing.T) {
 			}
 			if !strings.HasPrefix(accepted.Header.Get("Location"), "/auth/oidc/start?organization=org_alpha") {
 				t.Fatalf("next = %s", accepted.Header.Get("Location"))
+			}
+			if role == "reporter" {
+				start, _ := browser.get(accepted.Header.Get("Location"))
+				response, _ := browser.get("/auth/oidc/callback?" + url.Values{"code": {"user_carol:porg_alpha"}, "state": {stateOf(t, start)}}.Encode())
+				if response.StatusCode != http.StatusSeeOther || response.Header.Get("Location") != "/alpha/reporter" {
+					t.Fatalf("reporter invitation destination = %d %q", response.StatusCode, response.Header.Get("Location"))
+				}
+				return
 			}
 			browser.login(accepted.Header.Get("Location"), "user_carol:porg_alpha")
 			response, body := browser.get("/organizations/org_alpha/organization")
@@ -1474,6 +1534,12 @@ func testSocketEndpoint(name string) string {
 		root = `C:\`
 	}
 	return "unix:" + filepath.Join(root, "tenants", name)
+}
+
+func capacityPlans() *hubserver.HostedPlansConfig {
+	plans := hubserver.CheckoutHostedPlans(nil)
+	plans.Base = hubserver.PlanReference{ID: "free", Version: 1}
+	return plans
 }
 
 func pilotPlans() *hubserver.HostedPlansConfig {

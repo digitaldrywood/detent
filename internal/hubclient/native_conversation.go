@@ -78,7 +78,7 @@ type ConversationBindResponse struct {
 		ThreadID string `json:"thread_id"`
 		// ThreadOrigin names the kind of turn the thread belongs to, so a
 		// runner can tell a coordinator thread from a worker one without
-		// keeping a registry of its own (decisions section 9.3).
+		// keeping a registry of its own.
 		ThreadOrigin string                               `json:"thread_origin"`
 		Transcript   []runner.ConversationTranscriptEntry `json:"transcript"`
 	} `json:"resume"`
@@ -103,7 +103,7 @@ type ConversationControl struct {
 	RequestID  string              `json:"request_id,omitempty"`
 	Answers    map[string][]string `json:"answers,omitempty"`
 	// Attachments are the files the message carries, each with the Hub path
-	// that streams it (decisions section 17.1).
+	// that streams it.
 	Attachments []ConversationAttachment `json:"attachments,omitempty"`
 	Expected    ConversationExpected     `json:"expected"`
 }
@@ -360,7 +360,7 @@ func (s *conversationSession) Continuation() bool { return s.continuation }
 func (s *conversationSession) ResumeThreadID() string { return s.resume }
 
 // ThreadOrigin reports the kind of turn the bind's thread belongs to:
-// "coordinator" or "worker" (decisions section 9.3). It is empty when the hub
+// "coordinator" or "worker". It is empty when the hub
 // did not name one.
 func (s *conversationSession) ThreadOrigin() string { return s.threadOrigin }
 

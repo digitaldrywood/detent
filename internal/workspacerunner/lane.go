@@ -14,7 +14,7 @@ import (
 )
 
 // The workspace lane: the runner's loop that claims detent:workspace items and
-// holds them open (decisions section 18.1).
+// holds them open.
 //
 // It runs beside dispatch rather than through it, and that is a design choice
 // rather than a convenience. The orchestrator's dispatcher is built around a
@@ -25,7 +25,7 @@ import (
 //
 // Capacity is still accounted for, without touching the dispatcher: a workspace
 // claim takes an ordinary lease on the workspace's own work item, and the hub's
-// machineClaimCapacity counts unreleased leases. That is exactly section 18.1's
+// machineClaimCapacity counts unreleased leases. That is exactly the workspace session contract's
 // "a workspace reserves one slot of the runner's capacity at claim", and it is
 // enforced by the same code that enforces it for a run.
 
@@ -81,10 +81,10 @@ type LaneConfig struct {
 	Reporter ActionRunReporter
 	// Hostname is the host this runner is on, reported on every workspace
 	// heartbeat so the header's Open picker can tell a worktree on the
-	// reader's own machine from one somewhere else (section 18.13).
+	// reader's own machine from one somewhere else.
 	Hostname string
 	// Support is what this runner offers beyond the channels every build
-	// serves: today, whether it hands out a terminal at all (section 18.3). It
+	// serves: today, whether it hands out a terminal at all. It
 	// is carried on the lane rather than decided per session so the capability
 	// this runner reports on its heartbeat and the one its sessions bind with
 	// are the same answer -- a lane whose sessions served a surface the
@@ -99,7 +99,7 @@ const (
 	// sessions checks whether they have been turned on.
 	defaultLaneIdlePoll = 10 * time.Minute
 	// defaultLaneMaxOpen is how many workspaces one runner holds by default.
-	// It matches the per-person limit of section 18.1: one runner serving more
+	// It matches the per-person limit of the workspace session contract: one runner serving more
 	// open worktrees than one person may open is not a case the contract
 	// contemplates.
 	defaultLaneMaxOpen = 3

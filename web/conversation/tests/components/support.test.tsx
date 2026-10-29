@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// `/support` (decisions.md §12, "Plan, billing, support"): the one screen a
+// `/support`: the one screen a
 // staff account reaches before it has any access, so it renders without the
 // bootstrap and has to find the organization somewhere else.
 import {

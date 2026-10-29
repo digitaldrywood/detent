@@ -48,7 +48,7 @@ func AdministrationCatalog() []Definition {
 		adminDefinition(OrganizationSession, "Read fresh organization/session authority without credentials.", "", "", true, false),
 		adminDefinition(OrganizationList, "List owned or joined organization contexts with fresh destinations.", `"offset":{"type":"integer","minimum":0,"maximum":100000},"limit":{"type":"integer","minimum":1,"maximum":200}`, "", true, false),
 		adminDefinition(OrganizationProjectRank, "Read the organization project scheduling order and its current revision.", "", "", true, false),
-		adminDefinition(OrganizationProjectRankUpdate, "Replace the organization project scheduling order with every project exactly once, using the current revision.", `"expected_revision":{"type":"integer","minimum":1},"project_ids":`+projects, `"expected_revision","project_ids"`, false, false),
+		adminDefinition(OrganizationProjectRankUpdate, "Reorder every readable organization project exactly once, preserving hidden project positions and using the current revision.", `"expected_revision":{"type":"integer","minimum":1},"project_ids":`+projects, `"expected_revision","project_ids"`, false, false),
 		adminDefinition(MembershipList, "Read memberships, invitations and project grants visible to the current principal.", `"offset":{"type":"integer","minimum":0,"maximum":100000},"limit":{"type":"integer","minimum":1,"maximum":200}`, "", true, false),
 		adminDefinition(CredentialList, "Read credential metadata and grants; never returns credential hashes or tokens.", `"offset":{"type":"integer","minimum":0,"maximum":100000},"limit":{"type":"integer","minimum":1,"maximum":200}`, "", true, false),
 		adminDefinition(OrganizationSwitch, "Select an owned organization and return its fresh authenticated connection destination. Reconnect there; existing grants are never transferred.", `"organization_id":`+id, `"organization_id"`, false, false),
@@ -99,7 +99,7 @@ func adminDefinition(name, description, properties, required string, readOnly, d
 
 func AdministrationScope(name string) apikey.Scope {
 	switch name {
-	case OrganizationSession, OrganizationList, ProvisioningPage, MembershipList, CredentialList:
+	case OrganizationSession, OrganizationList, ProvisioningPage, MembershipList, CredentialList, OrganizationProjectRank:
 		return apikey.ScopeRead
 	case OrganizationSwitch, InvitationAccept, SessionLogout:
 		return apikey.ScopeRead

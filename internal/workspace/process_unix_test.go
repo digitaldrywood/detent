@@ -82,6 +82,14 @@ func TestReapProcesses(t *testing.T) {
 			wantSubstring: "remained after SIGKILL",
 		},
 		{
+			name:          "final inventory discovers another survivor",
+			initial:       []int{processID},
+			waits:         [][]int{{processID}, {processID + 1}},
+			wantSignals:   []syscall.Signal{syscall.SIGTERM, syscall.SIGKILL},
+			wantReaped:    1,
+			wantSubstring: "remained after SIGKILL",
+		},
+		{
 			name:        "signal failure is preserved",
 			initial:     []int{processID},
 			waits:       [][]int{nil},

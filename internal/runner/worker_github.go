@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/config"
@@ -341,17 +342,15 @@ func newWorkerGitHubPolicy(ctx context.Context, cfg config.Config, projectID str
 	if err != nil {
 		return workerGitHubPolicy{}, err
 	}
-	graphQLEndpoint := ""
 	orchestratorCredential := ""
-	if cfg.Tracker.Kind == config.TrackerGitHub || cfg.Tracker.Kind == config.TrackerGitHubLocal {
-		graphQLEndpoint = cfg.Tracker.Endpoint
+	if cfg.Tracker.Kind == config.TrackerGitHub {
 		orchestratorCredential = cfg.Tracker.APIKey
 	}
 	orchestratorToken, err := resolveWorkerGitHubSecretReference(strings.TrimSpace(orchestratorCredential), lookupEnv)
 	if err != nil {
 		return workerGitHubPolicy{}, fmt.Errorf("resolve orchestrator github credential for worker isolation: %w", err)
 	}
-	rateLimitURL, graphQLURL, endpointIdentity, err := workerGitHubEndpoints(graphQLEndpoint)
+	rateLimitURL, graphQLURL, endpointIdentity, err := workerGitHubEndpoints(cfg)
 	if err != nil {
 		return workerGitHubPolicy{}, err
 	}
@@ -489,6 +488,7 @@ func defaultWorkerGitHubToken(ctx context.Context) (string, error) {
 		return "", errors.New("gh was not found on PATH")
 	}
 	cmd := exec.CommandContext(ctx, path, "auth", "token") // #nosec G204 -- gh path is PATH-resolved and arguments are fixed.
+	cmd.Env = hostGitHubCLIEnviron()
 	output, err := cmd.CombinedOutput()
 	if ctx.Err() != nil {
 		return "", ctx.Err()
@@ -506,8 +506,58 @@ func defaultWorkerGitHubToken(ctx context.Context) (string, error) {
 	return token, nil
 }
 
-func workerGitHubEndpoints(graphQLEndpoint string) (string, string, string, error) {
-	graphQLEndpoint = strings.TrimSpace(graphQLEndpoint)
+var hostGitHubCLIVariables = []string{"GH_CONFIG_DIR", "GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"}
+
+var hostGitHubCLI struct {
+	mu       sync.Mutex
+	captured bool
+	values   map[string]*string
+}
+
+func captureHostGitHubCLIEnvironment() {
+	hostGitHubCLI.mu.Lock()
+	defer hostGitHubCLI.mu.Unlock()
+	if hostGitHubCLI.captured {
+		return
+	}
+	hostGitHubCLI.values = make(map[string]*string, len(hostGitHubCLIVariables))
+	for _, name := range hostGitHubCLIVariables {
+		if value, ok := os.LookupEnv(name); ok {
+			hostGitHubCLI.values[name] = &value
+		} else {
+			hostGitHubCLI.values[name] = nil
+		}
+	}
+	hostGitHubCLI.captured = true
+}
+
+func hostGitHubCLIEnviron() []string {
+	hostGitHubCLI.mu.Lock()
+	defer hostGitHubCLI.mu.Unlock()
+	environ := os.Environ()
+	if !hostGitHubCLI.captured {
+		return environ
+	}
+	result := make([]string, 0, len(environ))
+	for _, entry := range environ {
+		name, _, _ := strings.Cut(entry, "=")
+		if _, overridden := hostGitHubCLI.values[name]; !overridden {
+			result = append(result, entry)
+		}
+	}
+	for _, name := range hostGitHubCLIVariables {
+		if value := hostGitHubCLI.values[name]; value != nil {
+			result = append(result, name+"="+*value)
+		}
+	}
+	return result
+}
+
+func workerGitHubEndpoints(cfg config.Config) (string, string, string, error) {
+	graphQLEndpoint := ""
+	if cfg.Tracker.Kind == config.TrackerGitHub {
+		graphQLEndpoint = strings.TrimSpace(cfg.Tracker.Endpoint)
+	}
 	if graphQLEndpoint == "" {
 		graphQLEndpoint = "https://api.github.com/graphql"
 	}

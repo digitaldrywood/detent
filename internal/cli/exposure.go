@@ -68,6 +68,10 @@ func newExposureCommandWithDeps(configPath *string, opts options, deps exposureD
 			if err != nil {
 				return err
 			}
+			global, err = resolveRunnerProjectsReadOnly(cmd.Context(), global)
+			if err != nil {
+				return err
+			}
 			report, err := scanIssueExposure(cmd.Context(), global, projectID, deps)
 			if err != nil {
 				return err

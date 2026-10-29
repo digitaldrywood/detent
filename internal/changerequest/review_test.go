@@ -170,6 +170,166 @@ func TestSummarizePolicyAndExternalAuthority(t *testing.T) {
 			t.Fatalf("external projection bypassed policy: %#v", got)
 		}
 	}
+	for _, test := range []struct {
+		name  string
+		edit  func(*tracker.ChangeVersion, *policy.Descriptor, *tracker.ChangeReviewPolicy)
+		stale bool
+	}{
+		{name: "identical requirements"},
+		{name: "validator dropped", edit: func(_ *tracker.ChangeVersion, p *policy.Descriptor, _ *tracker.ChangeReviewPolicy) {
+			p.Gates.Validator = false
+		}},
+		{name: "security audit dropped", edit: func(_ *tracker.ChangeVersion, p *policy.Descriptor, _ *tracker.ChangeReviewPolicy) {
+			p.Gates.SecurityAudit = false
+		}},
+		{name: "validator added", stale: true, edit: func(v *tracker.ChangeVersion, _ *policy.Descriptor, _ *tracker.ChangeReviewPolicy) {
+			v.Policy.Gates.Validator = false
+		}},
+		{name: "security audit added", stale: true, edit: func(v *tracker.ChangeVersion, _ *policy.Descriptor, _ *tracker.ChangeReviewPolicy) {
+			v.Policy.Gates.SecurityAudit = false
+		}},
+		{name: "required source review added", stale: true, edit: func(v *tracker.ChangeVersion, _ *policy.Descriptor, _ *tracker.ChangeReviewPolicy) {
+			v.Policy.Gates.AutomatedReview = gate.AutomatedReviewOff
+		}},
+		{name: "source review optional", edit: func(_ *tracker.ChangeVersion, p *policy.Descriptor, _ *tracker.ChangeReviewPolicy) {
+			p.Gates.AutomatedReview = gate.AutomatedReviewOptional
+		}},
+		{name: "required checks shrink", edit: func(_ *tracker.ChangeVersion, p *policy.Descriptor, r *tracker.ChangeReviewPolicy) {
+			p.Gates.RequiredChecks = 0
+			r.RequiredChecks = nil
+		}},
+		{name: "admin checks already cover increased floor", edit: func(v *tracker.ChangeVersion, _ *policy.Descriptor, _ *tracker.ChangeReviewPolicy) {
+			v.Policy.Gates.RequiredChecks = 0
+		}},
+		{name: "required check added", stale: true, edit: func(_ *tracker.ChangeVersion, p *policy.Descriptor, r *tracker.ChangeReviewPolicy) {
+			check := r.RequiredChecks[0]
+			check.Name = "additional"
+			r.RequiredChecks = append(r.RequiredChecks, check)
+			p.Gates.RequiredChecks++
+		}},
+		{name: "admin required check added", stale: true, edit: func(_ *tracker.ChangeVersion, _ *policy.Descriptor, r *tracker.ChangeReviewPolicy) {
+			check := r.RequiredChecks[0]
+			check.Name = "admin-pinned"
+			r.RequiredChecks = append(r.RequiredChecks, check)
+		}},
+		{name: "check principal changed", stale: true, edit: func(_ *tracker.ChangeVersion, _ *policy.Descriptor, r *tracker.ChangeReviewPolicy) {
+			r.RequiredChecks[0].PrincipalID = "other-ci"
+		}},
+		{name: "check workflow changed", stale: true, edit: func(_ *tracker.ChangeVersion, _ *policy.Descriptor, r *tracker.ChangeReviewPolicy) {
+			r.RequiredChecks[0].WorkflowID = "other.yml"
+		}},
+		{name: "check workflow digest changed", stale: true, edit: func(_ *tracker.ChangeVersion, _ *policy.Descriptor, r *tracker.ChangeReviewPolicy) {
+			r.RequiredChecks[0].WorkflowSHA256 = strings.Repeat("e", 64)
+		}},
+		{name: "check source changed", stale: true, edit: func(_ *tracker.ChangeVersion, _ *policy.Descriptor, r *tracker.ChangeReviewPolicy) {
+			r.RequiredChecks[0].Source = "customer"
+		}},
+		{name: "check freshness tightened", stale: true, edit: func(_ *tracker.ChangeVersion, _ *policy.Descriptor, r *tracker.ChangeReviewPolicy) {
+			r.RequiredChecks[0].MaxAgeSeconds = 60
+		}},
+		{name: "check freshness relaxed", edit: func(_ *tracker.ChangeVersion, _ *policy.Descriptor, r *tracker.ChangeReviewPolicy) {
+			r.RequiredChecks[0].MaxAgeSeconds = 7200
+		}},
+		{name: "review newly required", stale: true, edit: func(v *tracker.ChangeVersion, _ *policy.Descriptor, _ *tracker.ChangeReviewPolicy) {
+			v.ReviewPolicy.RequireReview = false
+		}},
+		{name: "review no longer required", edit: func(_ *tracker.ChangeVersion, _ *policy.Descriptor, r *tracker.ChangeReviewPolicy) {
+			r.RequireReview = false
+		}},
+		{name: "landing mode only", edit: func(_ *tracker.ChangeVersion, p *policy.Descriptor, _ *tracker.ChangeReviewPolicy) {
+			p.Gates.LandingMode = gate.LandingPerChange
+		}},
+		{name: "merge method only", edit: func(_ *tracker.ChangeVersion, p *policy.Descriptor, _ *tracker.ChangeReviewPolicy) {
+			p.Gates.MergeMethod = "rebase"
+		}},
+		{name: "human gate added", stale: true, edit: func(_ *tracker.ChangeVersion, p *policy.Descriptor, _ *tracker.ChangeReviewPolicy) {
+			p.Gates.HumanReview = true
+		}},
+		{name: "planning added", stale: true, edit: func(_ *tracker.ChangeVersion, p *policy.Descriptor, _ *tracker.ChangeReviewPolicy) {
+			p.Gates.PlanEnabled = true
+		}},
+		{name: "plan review requires human approval", stale: true, edit: func(v *tracker.ChangeVersion, p *policy.Descriptor, _ *tracker.ChangeReviewPolicy) {
+			v.Policy.Gates.PlanEnabled, v.Policy.Gates.PlanReview = true, gate.PlanReviewBoth
+			p.Gates.PlanEnabled, p.Gates.PlanReview = true, gate.PlanReviewHuman
+		}},
+		{name: "plan review requires automated approval", stale: true, edit: func(v *tracker.ChangeVersion, p *policy.Descriptor, _ *tracker.ChangeReviewPolicy) {
+			v.Policy.Gates.PlanEnabled, v.Policy.Gates.PlanReview = true, gate.PlanReviewBoth
+			p.Gates.PlanEnabled, p.Gates.PlanReview = true, gate.PlanReviewAutomated
+		}},
+		{name: "plan review accepts automated or human approval", edit: func(v *tracker.ChangeVersion, p *policy.Descriptor, _ *tracker.ChangeReviewPolicy) {
+			v.Policy.Gates.PlanEnabled, v.Policy.Gates.PlanReview = true, gate.PlanReviewAutomated
+			p.Gates.PlanEnabled, p.Gates.PlanReview = true, gate.PlanReviewBoth
+		}},
+		{name: "plan review accepts human or automated approval", edit: func(v *tracker.ChangeVersion, p *policy.Descriptor, _ *tracker.ChangeReviewPolicy) {
+			v.Policy.Gates.PlanEnabled, v.Policy.Gates.PlanReview = true, gate.PlanReviewHuman
+			p.Gates.PlanEnabled, p.Gates.PlanReview = true, gate.PlanReviewBoth
+		}},
+		{name: "external gate added", stale: true, edit: func(_ *tracker.ChangeVersion, p *policy.Descriptor, _ *tracker.ChangeReviewPolicy) {
+			p.Gates.GitHubPullRequest = true
+		}},
+		{name: "external workflow changed", stale: true, edit: func(_ *tracker.ChangeVersion, p *policy.Descriptor, _ *tracker.ChangeReviewPolicy) {
+			p.Gates.GitHubCIDigest = "changed"
+		}},
+		{name: "landing command changed", stale: true, edit: func(_ *tracker.ChangeVersion, p *policy.Descriptor, _ *tracker.ChangeReviewPolicy) {
+			p.Gates.LandingCommandDigest = "changed"
+		}},
+		{name: "gate kind changed", stale: true, edit: func(_ *tracker.ChangeVersion, p *policy.Descriptor, _ *tracker.ChangeReviewPolicy) {
+			p.Gates.Kind = gate.KindHumanReview
+		}},
+		{name: "missing approved policy", edit: func(_ *tracker.ChangeVersion, p *policy.Descriptor, _ *tracker.ChangeReviewPolicy) {
+			*p = policy.Descriptor{}
+		}},
+		{name: "missing approved policy and review policy", edit: func(_ *tracker.ChangeVersion, p *policy.Descriptor, r *tracker.ChangeReviewPolicy) {
+			*p, *r = policy.Descriptor{}, tracker.ChangeReviewPolicy{}
+		}},
+		{name: "rolling barrier version", stale: true, edit: func(v *tracker.ChangeVersion, _ *policy.Descriptor, _ *tracker.ChangeReviewPolicy) {
+			v.Policy.Gates.LandingMode = gate.LandingRollingBarrier
+		}},
+		{name: "unapproved check floor", stale: true, edit: func(_ *tracker.ChangeVersion, p *policy.Descriptor, _ *tracker.ChangeReviewPolicy) {
+			p.Gates.RequiredChecks++
+		}},
+		{name: "mismatched version snapshot", stale: true, edit: func(v *tracker.ChangeVersion, _ *policy.Descriptor, _ *tracker.ChangeReviewPolicy) {
+			v.Policy.ID = "other"
+		}},
+		{name: "missing version review policy", stale: true, edit: func(v *tracker.ChangeVersion, _ *policy.Descriptor, _ *tracker.ChangeReviewPolicy) {
+			v.ReviewPolicy.ID = ""
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			detail, now := reviewFixture()
+			detail.Change.ProjectID = "prj_example"
+			version := &detail.Versions[0]
+			version.Repository, version.BaseSHA = "https://github.com/example-org/example-project", strings.Repeat("b", 40)
+			version.Policy.ID = version.PolicyID
+			version.Policy.Gates = policy.Gates{Kind: gate.KindCommand, Validator: true, SecurityAudit: true, AutomatedReview: gate.AutomatedReviewRequired, RequiredChecks: 1, MergeMethod: "squash"}
+			version.External = &tracker.ChangeExternalReference{Provider: "github", ID: "1", URL: "https://github.com/example-org/example-project/pull/1"}
+			detail.External = &tracker.PullRequestSummary{Reviews: tracker.ReviewSummary{Decision: "approved"}, Merge: tracker.MergeSummary{Ready: true}}
+			run := securityaudit.Run{ID: 42, InvocationID: "audit", ProjectID: "prj_example", Repository: version.Repository, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA, ReviewerVersion: securityaudit.ReviewerVersion, ReviewerDigest: securityaudit.ReviewerDigest(), ExitStatus: securityaudit.ExitStatusSuccess, OutputBytes: 1, OutputDigest: securityaudit.OutputDigest("result"), WorkerPID: 1, WorkerPGID: 1, WorkerStartedAt: now, StartedAt: now, CompletedAt: now, Verdict: "pass", Summary: "No findings"}
+			detail.Reviews = append(detail.Reviews,
+				tracker.ChangeReview{VersionID: version.ID, Decision: "approved", ImplementationReview: &gate.ValidatorResult{Verdict: "pass"}},
+				tracker.ChangeReview{VersionID: version.ID, Decision: "approved", Validator: &gate.ValidatorResult{Verdict: "pass"}},
+				tracker.ChangeReview{VersionID: version.ID, Decision: "approved", SecurityAudit: &tracker.SecurityAuditReview{Verdict: "pass", Run: run}},
+			)
+			approved, rules := version.Policy, version.ReviewPolicy
+			approved.ID, rules.ID = "current-policy", "current-review"
+			rules.RequiredChecks = append([]tracker.ChangeCheckSpec(nil), rules.RequiredChecks...)
+			if test.edit != nil {
+				test.edit(version, &approved, &rules)
+			}
+			policyID, reviewID := CurrentPolicyIdentities(version, approved, rules)
+			detail.Summary = Summarize(detail, policyID, reviewID, now)
+			want := "reviewed"
+			if test.stale {
+				want = "stale_policy"
+			}
+			if detail.Summary.Status != want || detail.Summary.ExternalReview != "external_gate" {
+				t.Fatalf("summary = %#v; want %s with external gate", detail.Summary, want)
+			}
+			if state := ReviewState(detail, version.ID, version.HeadSHA); state.Current == test.stale || state.Reviewed == test.stale {
+				t.Fatalf("review state = %#v; stale = %t", state, test.stale)
+			}
+		})
+	}
 }
 
 func TestReviewPolicyPreservesRepositoryGates(t *testing.T) {
@@ -249,6 +409,11 @@ func TestArtifactMetadataBoundary(t *testing.T) {
 		valid bool
 	}{
 		{"s3://bucket/artifact", true}, {"gs://bucket/artifact", true}, {"https://customer.example/artifact", true},
+		{"attachment:att_0123456789abcdef0123456789abcdef", true},
+		{"/organizations/org_example/api/v2/projects/prj_example/attachments/att_0123456789abcdef0123456789abcdef", true},
+		{"attachment:att_fake", false},
+		{"attachment:att_0123456789abcdef0123456789abcdef?secret=value", false},
+		{"https://example.test/organizations/org_example/api/v2/projects/prj_example/attachments/att_0123456789abcdef0123456789abcdef", true},
 		{"https://customer.example/artifact?token=secret", false}, {"https://user:secret@customer.example/artifact", false},
 		{"file:///workspace/main.go", false}, {"data:text/plain,source", false}, {"https://customer.example/artifact#secret", false}, {"https://", false},
 	} {
@@ -290,12 +455,15 @@ func TestReviewState(t *testing.T) {
 			d.Versions[0].Checks = append(d.Versions[0].Checks, d.Versions[0].Checks[0])
 			d.Versions[0].Checks[1].CheckRunID = "missing-run"
 		}, want: connector.ChangeReview{Current: true, ChangesRequested: true}},
-		{name: "source review wait is evidence pending", edit: func(d *tracker.ChangeDetail) {
+		{name: "source review wait needs implementation", edit: func(d *tracker.ChangeDetail) {
 			d.Reviews = append(d.Reviews, tracker.ChangeReview{VersionID: "v1", Decision: "commented", ImplementationReview: &gate.ValidatorResult{Verdict: "wait"}})
 			d.Versions[0].Policy.Gates.AutomatedReview = gate.AutomatedReviewRequired
-		}, want: connector.ChangeReview{Current: true}},
+		}, want: connector.ChangeReview{Current: true, ChangesRequested: true}},
 		{name: "source findings need implementation", edit: func(d *tracker.ChangeDetail) {
 			d.Reviews = append(d.Reviews, tracker.ChangeReview{VersionID: "v1", Decision: "changes_requested", ImplementationReview: &gate.ValidatorResult{Verdict: "rework"}})
+		}, want: connector.ChangeReview{Current: true, ChangesRequested: true}},
+		{name: "acceptance wait needs implementation", edit: func(d *tracker.ChangeDetail) {
+			d.Reviews = append(d.Reviews, tracker.ChangeReview{VersionID: "v1", Decision: "commented", Validator: &gate.ValidatorResult{Verdict: "wait"}})
 		}, want: connector.ChangeReview{Current: true, ChangesRequested: true}},
 		{name: "acceptance findings need implementation", edit: func(d *tracker.ChangeDetail) {
 			d.Reviews = append(d.Reviews, tracker.ChangeReview{VersionID: "v1", Decision: "changes_requested", Validator: &gate.ValidatorResult{Verdict: "rework"}})
@@ -308,6 +476,9 @@ func TestReviewState(t *testing.T) {
 		}, want: connector.ChangeReview{Current: true, Reviewed: true}},
 		{name: "fresh source pass supersedes source rework", edit: func(d *tracker.ChangeDetail) {
 			d.Reviews = append(d.Reviews, tracker.ChangeReview{VersionID: "v1", Decision: "changes_requested", ImplementationReview: &gate.ValidatorResult{Verdict: "rework"}}, tracker.ChangeReview{VersionID: "v1", Decision: "approved", ImplementationReview: &gate.ValidatorResult{Verdict: "pass"}})
+		}, want: connector.ChangeReview{Current: true, Reviewed: true}},
+		{name: "landed version has completed review", edit: func(d *tracker.ChangeDetail) {
+			d.Change.Landed = &tracker.ChangeLanding{VersionID: "v1", HeadSHA: d.Versions[0].HeadSHA}
 		}, want: connector.ChangeReview{Current: true, Reviewed: true}},
 		{name: "changed head", head: strings.Repeat("b", 40)},
 		{name: "changed version", version: "old"},

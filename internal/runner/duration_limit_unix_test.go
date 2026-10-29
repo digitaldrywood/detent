@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -99,7 +100,7 @@ func TestRunnerTerminalSessionReapsEscapedWorkspaceProcess(t *testing.T) {
 
 			select {
 			case <-backend.waitDone:
-			case <-time.After(5 * time.Second):
+			case <-testenv.WaitContext(t, t.Context()).Done():
 				t.Fatal("workspace lock holder survived terminal session")
 			}
 			assertLockAvailable(t, lockPath)

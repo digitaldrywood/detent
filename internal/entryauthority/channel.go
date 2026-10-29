@@ -7,11 +7,13 @@ import (
 	"os"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 )
 
 const BootstrapEnvironment = "DETENT_INTERNAL_ENTRY_AUTHORITY"
-const BootstrapVersion = "v1:3:4"
+const BootstrapVersion = "v1:3:5"
+const contentTimeout = 15 * time.Second
 
 type Binding struct {
 	Issuer       string
@@ -68,10 +70,25 @@ func closeFiles(files ...*os.File) error {
 	return result
 }
 
+type Archives struct {
+	Reader   ArchiveReader
+	Contents attachment.ArchiveContentStore
+	Content  ContentHandler
+	Details  attachment.DetailStore
+	Icons    attachment.IconStore
+}
+
 type authorityServer struct {
-	binding Binding
-	budget  time.Duration
-	resolve func(Request) (cloudassert.Claims, error)
+	icons          attachment.IconStore
+	binding        Binding
+	budget         time.Duration
+	resolve        func(Request) (cloudassert.Claims, error)
+	contents       attachment.ArchiveContentStore
+	storeDetail    func(DetailRequest) (attachment.ArchiveReference, error)
+	readDetail     func(DetailRequest) ([]byte, error)
+	contentContext func(time.Time) (context.Context, context.CancelFunc)
+	archive        func(ArchiveRequest) (ArchiveResponse, error)
+	content        func(ContentRequest) ([]byte, error)
 }
 
 func (s *authorityServer) Handshake(binding Binding, result *Handshake) error {
@@ -101,7 +118,7 @@ type Parent struct {
 	done   chan struct{}
 }
 
-func Start(ctx context.Context, binding Binding, budget time.Duration, resolve Resolver) (*Parent, error) {
+func Start(ctx context.Context, binding Binding, budget time.Duration, resolve Resolver, archives ...Archives) (*Parent, error) {
 	parentRead, childWrite, err := os.Pipe()
 	if err != nil {
 		return nil, err
@@ -120,7 +137,56 @@ func Start(ctx context.Context, binding Binding, budget time.Duration, resolve R
 		defer end()
 		return resolve(lookup, request.Origin)
 	}
-	if err := server.RegisterName("Authority", &authorityServer{binding: binding, budget: budget, resolve: current}); err != nil {
+	authority := &authorityServer{binding: binding, budget: budget, resolve: current, contentContext: func(deadline time.Time) (context.Context, context.CancelFunc) {
+		lookup, cancel := context.WithTimeout(ctx, budget)
+		lookup, end := context.WithDeadline(lookup, deadline)
+		return lookup, func() { end(); cancel() }
+	}}
+	if len(archives) == 1 {
+		authority.contents = archives[0].Contents
+		if archives[0].Content != nil {
+			authority.content = func(request ContentRequest) ([]byte, error) {
+				lookup, cancel := context.WithDeadline(ctx, request.Deadline)
+				defer cancel()
+				lookup, stop := context.WithTimeout(lookup, contentTimeout)
+				defer stop()
+				if err := lookup.Err(); err != nil {
+					return nil, err
+				}
+				return archives[0].Content(lookup, request)
+			}
+		}
+		if archives[0].Reader != nil {
+			authority.archive = func(request ArchiveRequest) (ArchiveResponse, error) {
+				lookup, stop := context.WithTimeout(ctx, budget)
+				defer stop()
+				lookup, end := context.WithDeadline(lookup, request.Deadline)
+				defer end()
+				return archives[0].Reader(lookup, request.Reference, request.Presign)
+			}
+		}
+	}
+	if len(archives) == 1 {
+		authority.icons = archives[0].Icons
+	}
+	if len(archives) == 1 && archives[0].Details != nil {
+		details := archives[0].Details
+		authority.storeDetail = func(request DetailRequest) (attachment.ArchiveReference, error) {
+			lookup, stop := context.WithTimeout(ctx, budget)
+			defer stop()
+			lookup, end := context.WithDeadline(lookup, request.Deadline)
+			defer end()
+			return details.StoreDetail(lookup, request.Organization, request.Data)
+		}
+		authority.readDetail = func(request DetailRequest) ([]byte, error) {
+			lookup, stop := context.WithTimeout(ctx, budget)
+			defer stop()
+			lookup, end := context.WithDeadline(lookup, request.Deadline)
+			defer end()
+			return details.ReadDetail(lookup, request.Organization, request.Reference)
+		}
+	}
+	if err := server.RegisterName("Authority", authority); err != nil {
 		close(p.done)
 		return nil, errors.Join(err, p.Close())
 	}
@@ -139,8 +205,9 @@ func (p *Parent) Close() error {
 }
 
 type Client struct {
-	client *rpc.Client
-	budget time.Duration
+	organization string
+	client       *rpc.Client
+	budget       time.Duration
 }
 
 func Open(ctx context.Context, marker string, binding Binding, budget time.Duration) (*Client, error) {
@@ -152,7 +219,7 @@ func Open(ctx context.Context, marker string, binding Binding, budget time.Durat
 		return nil, err
 	}
 
-	client := &Client{client: rpc.NewClient(stream), budget: budget}
+	client := &Client{client: rpc.NewClient(stream), budget: budget, organization: binding.Organization}
 	handshake, err := callAuthority[Handshake](ctx, client, "Handshake", binding)
 	if err != nil || handshake.Binding != binding || handshake.Budget <= 0 || handshake.Budget > budget {
 		return nil, errors.Join(cloudassert.ErrInvalid, client.Close())
@@ -194,4 +261,137 @@ func (c *Client) Close() error {
 		return err
 	}
 	return nil
+}
+
+type ContentRequest struct {
+	Organization string
+	Content      []byte
+	Data         []byte
+	Write        bool
+	Reference    attachment.ArchiveReference
+	Deadline     time.Time
+}
+
+func (s *authorityServer) PublishContent(request ContentRequest, ref *attachment.ArchiveReference) error {
+	if s.contents == nil || request.Organization != s.binding.Organization || request.Deadline.IsZero() || len(request.Content) > attachment.MaxArchiveBytes {
+		return cloudassert.ErrInvalid
+	}
+	ctx, cancel := s.contentContext(request.Deadline)
+	defer cancel()
+	if ctx.Err() != nil {
+		return cloudassert.ErrInvalid
+	}
+	result, err := s.contents.PublishContent(ctx, s.binding.Organization, request.Content)
+	if err != nil {
+		return errors.New("archive publication unavailable")
+	}
+	*ref = result
+	return nil
+}
+func (s *authorityServer) ReadContent(request ContentRequest, content *[]byte) error {
+	started := time.Now()
+	if s.contents == nil || request.Organization != s.binding.Organization || request.Deadline.IsZero() || request.Reference.Validate(s.binding.Organization) != nil {
+		return cloudassert.ErrInvalid
+	}
+	ctx, cancel := s.contentContext(request.Deadline)
+	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return contentFailure(request, started, "archive content unavailable", err)
+	}
+	result, err := s.contents.ReadContent(ctx, s.binding.Organization, request.Reference)
+	if err != nil {
+		return contentFailure(request, started, "archive content unavailable", err)
+	}
+	*content = result
+	return nil
+}
+func (c *Client) PublishContent(ctx context.Context, organization string, content []byte) (attachment.ArchiveReference, error) {
+	ctx, cancel := context.WithTimeout(ctx, c.budget)
+	defer cancel()
+	deadline, _ := ctx.Deadline()
+	return callAuthority[attachment.ArchiveReference](ctx, c, "PublishContent", ContentRequest{Organization: organization, Content: content, Deadline: deadline})
+}
+func (c *Client) ReadContent(ctx context.Context, organization string, ref attachment.ArchiveReference) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, c.budget)
+	defer cancel()
+	deadline, _ := ctx.Deadline()
+	data, err := callAuthority[[]byte](ctx, c, "ReadContent", ContentRequest{Organization: organization, Reference: ref, Deadline: deadline})
+	return data, contentClientError(err)
+}
+
+type ContentHandler func(context.Context, ContentRequest) ([]byte, error)
+
+func (s *authorityServer) Content(request ContentRequest, result *[]byte) error {
+	started := time.Now()
+	if s.content == nil || request.Organization != s.binding.Organization || request.Deadline.IsZero() || len(request.Data) > attachment.MaxArchiveBytes || request.Reference.Validate(s.binding.Organization) != nil {
+		return cloudassert.ErrInvalid
+	}
+	data, err := s.content(request)
+	if err != nil {
+		return contentFailure(request, started, "immutable content unavailable", err)
+	}
+	*result = data
+	return nil
+}
+
+func (c *Client) Content(ctx context.Context, request ContentRequest) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, contentTimeout)
+	defer cancel()
+	request.Deadline, _ = ctx.Deadline()
+	client := &Client{client: c.client, budget: contentTimeout}
+	data, err := callAuthority[[]byte](ctx, client, "Content", request)
+	return data, contentClientError(err)
+}
+
+type DetailRequest struct {
+	Organization string
+	Reference    attachment.ArchiveReference
+	Data         []byte
+	Deadline     time.Time
+}
+
+func (s *authorityServer) StoreDetail(request DetailRequest, result *attachment.ArchiveReference) error {
+	if s.storeDetail == nil || request.Organization != s.binding.Organization || len(request.Data) == 0 || len(request.Data) > attachment.MaxArchiveBytes || request.Deadline.IsZero() {
+		return attachment.ErrInvalid
+	}
+	ref, err := s.storeDetail(request)
+	if err != nil {
+		return artifactDetailError()
+	}
+	*result = ref
+	return nil
+}
+
+func (s *authorityServer) ReadDetail(request DetailRequest, result *[]byte) error {
+	if s.readDetail == nil || request.Organization != s.binding.Organization || request.Reference.Validate(s.binding.Organization) != nil || request.Deadline.IsZero() {
+		return attachment.ErrInvalid
+	}
+	data, err := s.readDetail(request)
+	if err != nil {
+		return artifactDetailError()
+	}
+	*result = data
+	return nil
+}
+
+func artifactDetailError() error { return errors.New("run detail storage unavailable") }
+
+func (c *Client) StoreDetail(ctx context.Context, organization string, data []byte) (attachment.ArchiveReference, error) {
+	if organization != c.organization || len(data) == 0 || len(data) > attachment.MaxArchiveBytes {
+		return attachment.ArchiveReference{}, attachment.ErrInvalid
+	}
+	ctx, cancel := context.WithTimeout(ctx, c.budget)
+	defer cancel()
+	deadline, _ := ctx.Deadline()
+	return callAuthority[attachment.ArchiveReference](ctx, c, "StoreDetail", DetailRequest{Organization: organization, Data: data, Deadline: deadline})
+}
+
+func (c *Client) ReadDetail(ctx context.Context, organization string, ref attachment.ArchiveReference) ([]byte, error) {
+	if organization != c.organization || ref.Validate(organization) != nil {
+		return nil, attachment.ErrInvalid
+	}
+	ctx, cancel := context.WithTimeout(ctx, c.budget)
+	defer cancel()
+	deadline, _ := ctx.Deadline()
+	return callAuthority[[]byte](ctx, c, "ReadDetail", DetailRequest{Organization: organization, Reference: ref, Deadline: deadline})
 }

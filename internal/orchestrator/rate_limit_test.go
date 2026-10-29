@@ -657,8 +657,6 @@ func TestGitHubRESTAggregateDoesNotPauseDispatch(t *testing.T) {
 		{Consumer: telemetry.RESTConsumerOrchestrator, CredentialIdentity: "github-rest:shared", EndpointFamily: "repository issues", Resource: "core", Limit: 5000, Used: 279, Remaining: 4721, ResetAt: &resetAt, ObservedAt: timePointer(now)},
 		{Consumer: telemetry.RESTConsumerOrchestrator, CredentialIdentity: "github-rest:shared", EndpointFamily: "workflow runs", Resource: "core", Limit: 5000, Used: 5000, Remaining: 0, ResetAt: &workflowResetAt, ObservedAt: timePointer(now)},
 	}}
-	state.RepeatedFailures[issue.ID] = RepeatedFailure{Issue: issue, Count: 2}
-	state.InstantFailures[issue.ID] = InstantFailure{Issue: issue, Count: 2}
 	restUsage := connector.RESTRateLimitUsage{
 		HasRateLimit: true,
 		RateLimit: connector.RESTRateLimit{
@@ -687,9 +685,6 @@ func TestGitHubRESTAggregateDoesNotPauseDispatch(t *testing.T) {
 	}
 	if _, ok := activeGitHubRESTCapacityOutage(&state, now); ok {
 		t.Fatalf("BackendOutages = %#v, want no blanket GitHub REST outage", state.BackendOutages)
-	}
-	if state.RepeatedFailures[issue.ID].Count != 2 || state.InstantFailures[issue.ID].Count != 2 {
-		t.Fatalf("breakers changed: repeated=%#v instant=%#v", state.RepeatedFailures, state.InstantFailures)
 	}
 	snapshot := state.Snapshot(now)
 	if len(snapshot.BackendOutages) != 0 {
@@ -785,8 +780,6 @@ func TestWorkerGitHubRESTHeadroomCompletionDefersWithoutBreakerStrike(t *testing
 		StartedAt: now.Add(-42 * time.Second), DiffStats: DiffStats{Status: "clean"},
 	}
 	state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: now.Add(-42 * time.Second)}
-	state.InstantFailures[issue.ID] = InstantFailure{Issue: issue, Count: instantFailureThreshold - 1}
-	state.RepeatedFailures[issue.ID] = RepeatedFailure{Issue: issue, Count: repeatedFailureThreshold - 1}
 	state.FailureBreaker.Failures["existing"] = []ProjectFailure{{IssueID: "other", At: now.Add(-time.Minute)}}
 	headroomErr := errors.New("run agent turn: worker github REST budget reached reserved headroom: consumer=shared_pool credential_identity=github-rest:worker remaining=1009 reserve=1250 reset_at=2026-08-16T00:00:00Z")
 	workerBudget := telemetry.RESTBudget{
@@ -816,12 +809,6 @@ func TestWorkerGitHubRESTHeadroomCompletionDefersWithoutBreakerStrike(t *testing
 	wantRetryAt := resetAt.Add(backendCapacityResetJitter)
 	if !ok || retry.Attempt != 4 || !retry.DueAt.Equal(wantRetryAt) {
 		t.Fatalf("Retry[%q] = %#v, want same-attempt retry at %s", issue.ID, retry, wantRetryAt)
-	}
-	if got := state.InstantFailures[issue.ID].Count; got != instantFailureThreshold-1 {
-		t.Fatalf("instant failure count = %d, want unchanged", got)
-	}
-	if got := state.RepeatedFailures[issue.ID].Count; got != repeatedFailureThreshold-1 {
-		t.Fatalf("repeated failure count = %d, want unchanged", got)
 	}
 	if got := len(state.FailureBreaker.Failures["existing"]); got != 1 || state.FailureBreaker.Active() {
 		t.Fatalf("FailureBreaker = %#v, want existing evidence unchanged and inactive", state.FailureBreaker)
@@ -986,7 +973,7 @@ func TestRunCompletionDuringGitHubRESTCapacityOutageDoesNotStrikeBreakers(t *tes
 	issue := implementProgressIssueWithoutPR()
 	cfg := normalizeConfig(Config{
 		Project:                scheduler.ProjectCandidate{ID: "detent"},
-		AutoPromote:            AutoPromoteConfig{NoProgressLimit: 3},
+		AutoPromote:            AutoPromoteConfig{},
 		ActiveStates:           []string{"Todo", "In Progress"},
 		TerminalStates:         []string{"Done", "Cancelled"},
 		GitHubRESTMinReserve:   1000,
@@ -1037,9 +1024,6 @@ func TestRunCompletionDuringGitHubRESTCapacityOutageDoesNotStrikeBreakers(t *tes
 	}
 	if _, ok := state.Claimed[issue.ID]; ok {
 		t.Fatalf("Claimed[%q] present during terminal REST-capacity retry", issue.ID)
-	}
-	if len(state.RepeatedFailures) != 0 || len(state.InstantFailures) != 0 {
-		t.Fatalf("breakers = repeated %#v instant %#v, want no strikes", state.RepeatedFailures, state.InstantFailures)
 	}
 	if _, ok := state.Completed[issue.ID]; ok {
 		t.Fatalf("Completed[%q] present during capacity outage", issue.ID)

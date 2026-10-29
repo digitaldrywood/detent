@@ -19,7 +19,11 @@ type workspaceCleanupResult struct {
 // The event loop owns state; the existing reaper works only on a private copy.
 // There is at most one sweep, including retention and cache trimming, in flight.
 func (o *Orchestrator) startWorkspaceCleanup(ctx context.Context, state *State, now time.Time) {
-	if o.reaper == nil || o.workspaceCleanupCancel != nil {
+	o.startWorkspaceCleanupPass(ctx, state, now, false)
+}
+
+func (o *Orchestrator) startWorkspaceCleanupPass(ctx context.Context, state *State, now time.Time, force bool) {
+	if (o.reaper == nil && o.trimHostCache == nil) || o.workspaceCleanupCancel != nil {
 		return
 	}
 	if o.workspaceCleanupResults == nil {
@@ -27,6 +31,9 @@ func (o *Orchestrator) startWorkspaceCleanup(ctx context.Context, state *State, 
 	}
 	before := state.clone()
 	after := before.clone()
+	if force {
+		after.LastWorkspaceCleanupAt = time.Time{}
+	}
 	after.RecentEvents = nil
 	if o.quarantineWarnings == nil {
 		o.quarantineWarnings = make(map[string]struct{})
@@ -34,21 +41,55 @@ func (o *Orchestrator) startWorkspaceCleanup(ctx context.Context, state *State, 
 	worker := &Orchestrator{cfg: o.cfg, connector: o.connector, reaper: o.reaper, logger: o.logger, trimHostCache: o.trimHostCache, quarantineWarnings: o.quarantineWarnings}
 	remaining := workspaceCleanupBatchSize
 	worker.workspaceCleanupRemaining = &remaining
-	cleanupCtx, cancel := context.WithCancel(ctx)
+	budget := o.cfg.PollInterval
+	if budget <= 0 {
+		budget = defaultPollInterval
+	}
+	cleanupCtx, cancel := context.WithTimeout(ctx, budget)
 	restScope := &connector.RESTScope{ProjectID: o.cfg.Project.ID, Name: "async_workspace_cleanup"}
 	cleanupCtx = connector.WithRESTScope(cleanupCtx, restScope)
+	cleanupCtx = connector.WithRESTFanoutBudget(cleanupCtx, "workspace_cleanup")
 	cleanupCtx = workspace.WithCleanupBatch(cleanupCtx, workspaceCleanupBatchSize)
 	o.workspaceCleanupCancel = cancel
 	o.workspaceCleanupWG.Add(1)
 	go func() {
 		defer o.workspaceCleanupWG.Done()
 		defer connector.LogRESTScope(o.logger, restScope)
-		worker.reapWorkspacesIfDue(cleanupCtx, &after, now)
+		if worker.trimHostCache != nil {
+			if err := worker.trimHostCache(cleanupCtx, worker.cfg.HostCache, now); err != nil {
+				worker.logger.Warn("trim host Go cache", "error", err)
+			}
+		}
+		if cleanupCtx.Err() == nil {
+			worker.reapWorkspacesIfDue(cleanupCtx, &after, now)
+		}
 		if cleanupCtx.Err() == nil {
 			worker.reapDueWorkspacesAfterRefresh(cleanupCtx, &after, now)
 		}
 		o.workspaceCleanupResults <- workspaceCleanupResult{before: before, after: after}
 	}()
+}
+
+func (o *Orchestrator) reclaimWorkspaceStorage(ctx context.Context, state *State, now time.Time) {
+	if o.workspaceCleanupCancel == nil {
+		o.startWorkspaceCleanupPass(ctx, state, now, true)
+	}
+	if o.workspaceCleanupCancel == nil {
+		return
+	}
+	if o.trimHostCache != nil {
+		select {
+		case result := <-o.workspaceCleanupResults:
+			o.finishWorkspaceCleanup(state, result)
+		default:
+		}
+		return
+	}
+	select {
+	case result := <-o.workspaceCleanupResults:
+		o.finishWorkspaceCleanup(state, result)
+	case <-ctx.Done():
+	}
 }
 
 func (o *Orchestrator) finishWorkspaceCleanup(state *State, result workspaceCleanupResult) {
@@ -57,6 +98,7 @@ func (o *Orchestrator) finishWorkspaceCleanup(state *State, result workspaceClea
 	before, after := result.before, result.after
 	state.LastWorkspaceCleanupAt = after.LastWorkspaceCleanupAt
 	state.workspaceCleanupCursor = after.workspaceCleanupCursor
+	state.workspaceCleanupInventoryCursor = after.workspaceCleanupInventoryCursor
 	state.WorkspaceRetention = after.WorkspaceRetention
 	for id, at := range after.ReapedWorkspaces {
 		if _, existed := before.ReapedWorkspaces[id]; existed {

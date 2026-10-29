@@ -41,38 +41,50 @@ func (s *sqliteStore) StartWorkAttempt(ctx context.Context, attrs WorkAttemptSta
 		return 0, err
 	}
 
+	projection := projectAttempt(jsonObjectOrDefault(attrs.WorkerMetadataJSON), jsonObjectOrDefault(attrs.MetricsJSON))
+
 	attempt, err := s.queries.CreateWorkAttempt(ctx, sqlc.CreateWorkAttemptParams{
-		ProjectID:              projectID,
-		IssueID:                nullString(attrs.IssueID),
-		Identifier:             nullString(attrs.Identifier),
-		IssueURL:               nullString(attrs.IssueURL),
-		PrNumber:               nullOptionalInt64(attrs.PRNumber),
-		Repo:                   nullString(attrs.Repo),
-		WorkerType:             workerType,
-		WorkerHost:             nullString(attrs.WorkerHost),
-		Lane:                   nullString(attrs.Lane),
-		AttemptNumber:          int64(attemptNumber),
-		Status:                 string(WorkAttemptStatusActive),
-		StartedAt:              startedAt,
-		LeaseExpiresAt:         leaseExpiresAt,
-		HeartbeatAt:            sql.NullString{String: startedAt, Valid: true},
-		Phase:                  nullString(attrs.Phase),
-		StatusMessage:          nullString(attrs.StatusMessage),
-		CurrentStep:            nullOptionalInt64(attrs.CurrentStep),
-		TotalSteps:             nullOptionalInt64(attrs.TotalSteps),
-		ProgressPercent:        nullOptionalInt64(attrs.ProgressPercent),
-		CurrentCommand:         nullString(attrs.CurrentCommand),
-		WaitReason:             nullString(attrs.WaitReason),
-		GithubRateSnapshotJson: jsonObjectOrDefault(attrs.GitHubRateSnapshotJSON),
-		CiState:                nullString(attrs.CIState),
-		CapacitySnapshotJson:   jsonObjectOrDefault(attrs.CapacitySnapshotJSON),
-		WorkerMetadataJson:     jsonObjectOrDefault(attrs.WorkerMetadataJSON),
-		MetricsJson:            jsonObjectOrDefault(attrs.MetricsJSON),
-		NextAction:             nullString(attrs.NextAction),
-		DetentSessionID:        nullPositiveInt64(attrs.DetentSessionID),
-		ProviderSessionID:      nullString(attrs.ProviderSessionID),
-		RuntimeIdentityJson:    runtimeIdentityJSON,
-		OwnerGeneration:        s.ownerGeneration(),
+		ProjectID:               projectID,
+		IssueID:                 nullString(attrs.IssueID),
+		Identifier:              nullString(attrs.Identifier),
+		IssueURL:                nullString(attrs.IssueURL),
+		PrNumber:                nullOptionalInt64(attrs.PRNumber),
+		Repo:                    nullString(attrs.Repo),
+		WorkerType:              workerType,
+		WorkerHost:              nullString(attrs.WorkerHost),
+		Lane:                    nullString(attrs.Lane),
+		AttemptNumber:           int64(attemptNumber),
+		Status:                  string(WorkAttemptStatusActive),
+		StartedAt:               startedAt,
+		LeaseExpiresAt:          leaseExpiresAt,
+		HeartbeatAt:             sql.NullString{String: startedAt, Valid: true},
+		Phase:                   nullString(attrs.Phase),
+		StatusMessage:           nullString(attrs.StatusMessage),
+		CurrentStep:             nullOptionalInt64(attrs.CurrentStep),
+		TotalSteps:              nullOptionalInt64(attrs.TotalSteps),
+		ProgressPercent:         nullOptionalInt64(attrs.ProgressPercent),
+		CurrentCommand:          nullString(attrs.CurrentCommand),
+		WaitReason:              nullString(attrs.WaitReason),
+		GithubRateSnapshotJson:  jsonObjectOrDefault(attrs.GitHubRateSnapshotJSON),
+		CiState:                 nullString(attrs.CIState),
+		CapacitySnapshotJson:    jsonObjectOrDefault(attrs.CapacitySnapshotJSON),
+		WorkerMetadataJson:      jsonObjectOrDefault(attrs.WorkerMetadataJSON),
+		MetadataPrNumber:        projection.prNumber,
+		MetadataPrHeadSha:       projection.prHead,
+		MetadataPrBaseSha:       projection.prBase,
+		MetadataRunMode:         projection.runMode,
+		OutcomeExcluded:         projection.excluded,
+		ForgeWaitPresent:        projection.forgeWait,
+		ForgeWaitHost:           projection.forgeHost,
+		ForgeWaitErrorClass:     projection.forgeError,
+		ForgeWriteCompletedHost: projection.forgeCompleted,
+		MetricsTurns:            projection.turns,
+		MetricsJson:             jsonObjectOrDefault(attrs.MetricsJSON),
+		NextAction:              nullString(attrs.NextAction),
+		DetentSessionID:         nullPositiveInt64(attrs.DetentSessionID),
+		ProviderSessionID:       nullString(attrs.ProviderSessionID),
+		RuntimeIdentityJson:     runtimeIdentityJSON,
+		OwnerGeneration:         s.ownerGeneration(),
 	})
 	if err != nil {
 		return 0, fmt.Errorf("starting work attempt: %w", err)
@@ -97,31 +109,52 @@ func (s *sqliteStore) RecordWorkAttemptHeartbeat(ctx context.Context, attrs Work
 		return err
 	}
 
+	projection := projectAttempt(jsonObjectOrDefault(attrs.WorkerMetadataJSON), jsonObjectOrDefault(attrs.MetricsJSON))
+
 	rows, err := s.queries.UpdateWorkAttemptHeartbeat(ctx, sqlc.UpdateWorkAttemptHeartbeatParams{
-		HeartbeatAt:            heartbeatAt,
-		LeaseExpiresAt:         leaseExpiresAt,
-		Phase:                  nullString(attrs.Phase),
-		StatusMessage:          nullString(attrs.StatusMessage),
-		CurrentStep:            nullOptionalInt64(attrs.CurrentStep),
-		TotalSteps:             nullOptionalInt64(attrs.TotalSteps),
-		ProgressPercent:        nullOptionalInt64(attrs.ProgressPercent),
-		CurrentCommand:         nullString(attrs.CurrentCommand),
-		WaitReason:             nullString(attrs.WaitReason),
-		GithubRateSnapshotJson: jsonObjectOrDefault(attrs.GitHubRateSnapshotJSON),
-		CiState:                nullString(attrs.CIState),
-		CapacitySnapshotJson:   jsonObjectOrDefault(attrs.CapacitySnapshotJSON),
-		WorkerMetadataJson:     jsonObjectOrDefault(attrs.WorkerMetadataJSON),
-		MetricsJson:            jsonObjectOrDefault(attrs.MetricsJSON),
-		NextAction:             nullString(attrs.NextAction),
-		ErrorClass:             nullString(attrs.ErrorClass),
-		ErrorMessage:           nullString(attrs.ErrorMessage),
-		DetentSessionID:        nullPositiveInt64(attrs.DetentSessionID),
-		ProviderSessionID:      nullString(attrs.ProviderSessionID),
-		RuntimeIdentityJson:    runtimeIdentityJSON,
-		WorkAttemptID:          attrs.AttemptID,
+		HeartbeatAt:             heartbeatAt,
+		LeaseExpiresAt:          leaseExpiresAt,
+		Phase:                   nullString(attrs.Phase),
+		StatusMessage:           nullString(attrs.StatusMessage),
+		CurrentStep:             nullOptionalInt64(attrs.CurrentStep),
+		TotalSteps:              nullOptionalInt64(attrs.TotalSteps),
+		ProgressPercent:         nullOptionalInt64(attrs.ProgressPercent),
+		CurrentCommand:          nullString(attrs.CurrentCommand),
+		WaitReason:              nullString(attrs.WaitReason),
+		GithubRateSnapshotJson:  jsonObjectOrDefault(attrs.GitHubRateSnapshotJSON),
+		CiState:                 nullString(attrs.CIState),
+		CapacitySnapshotJson:    jsonObjectOrDefault(attrs.CapacitySnapshotJSON),
+		WorkerMetadataJson:      jsonObjectOrDefault(attrs.WorkerMetadataJSON),
+		MetadataPrNumber:        projection.prNumber,
+		MetadataPrHeadSha:       projection.prHead,
+		MetadataPrBaseSha:       projection.prBase,
+		MetadataRunMode:         projection.runMode,
+		OutcomeExcluded:         projection.excluded,
+		ForgeWaitPresent:        projection.forgeWait,
+		ForgeWaitHost:           projection.forgeHost,
+		ForgeWaitErrorClass:     projection.forgeError,
+		ForgeWriteCompletedHost: projection.forgeCompleted,
+		MetricsTurns:            projection.turns,
+		MetricsJson:             jsonObjectOrDefault(attrs.MetricsJSON),
+		NextAction:              nullString(attrs.NextAction),
+		ErrorClass:              nullString(attrs.ErrorClass),
+		ErrorMessage:            nullString(attrs.ErrorMessage),
+		DetentSessionID:         nullPositiveInt64(attrs.DetentSessionID),
+		ProviderSessionID:       nullString(attrs.ProviderSessionID),
+		RuntimeIdentityJson:     runtimeIdentityJSON,
+		WorkAttemptID:           attrs.AttemptID,
 	})
 	if err != nil {
 		return fmt.Errorf("recording work attempt heartbeat: %w", err)
+	}
+	if rows == 0 {
+		attempt, err := s.WorkAttempt(ctx, attrs.AttemptID)
+		if err != nil {
+			return err
+		}
+		if !attempt.CompletedAt.IsZero() {
+			return fmt.Errorf("%w: %d", ErrWorkAttemptTerminal, attrs.AttemptID)
+		}
 	}
 	return requireAffected(rows, "work attempt", attrs.AttemptID)
 }
@@ -163,27 +196,39 @@ func (s *sqliteStore) CompleteWorkAttempt(ctx context.Context, attrs WorkAttempt
 		queries = queries.WithTx(tx)
 	}
 
+	projection := projectAttempt(completionMetadataJSON(attrs.WorkerMetadataJSON), jsonObjectOrDefault(attrs.MetricsJSON))
+
 	rows, err := queries.CompleteWorkAttempt(ctx, sqlc.CompleteWorkAttemptParams{
-		Status:                 string(status),
-		TerminalState:          nullString(string(terminalState)),
-		CompletedAt:            sql.NullString{String: completedAt, Valid: true},
-		HeartbeatAt:            sql.NullString{String: completedAt, Valid: true},
-		LeaseExpiresAt:         sql.NullString{},
-		ErrorClass:             nullString(attrs.ErrorClass),
-		ErrorMessage:           nullString(attrs.ErrorMessage),
-		Phase:                  nullString(attrs.Phase),
-		StatusMessage:          nullString(attrs.StatusMessage),
-		WaitReason:             nullString(attrs.WaitReason),
-		GithubRateSnapshotJson: jsonObjectOrDefault(attrs.GitHubRateSnapshotJSON),
-		CiState:                nullString(attrs.CIState),
-		CapacitySnapshotJson:   jsonObjectOrDefault(attrs.CapacitySnapshotJSON),
-		WorkerMetadataJson:     completionMetadataJSON(attrs.WorkerMetadataJSON),
-		MetricsJson:            jsonObjectOrDefault(attrs.MetricsJSON),
-		NextAction:             nullString(attrs.NextAction),
-		DetentSessionID:        nullPositiveInt64(attrs.DetentSessionID),
-		ProviderSessionID:      nullString(attrs.ProviderSessionID),
-		RuntimeIdentityJson:    runtimeIdentityJSON,
-		WorkAttemptID:          attrs.AttemptID,
+		Status:                  string(status),
+		TerminalState:           nullString(string(terminalState)),
+		CompletedAt:             sql.NullString{String: completedAt, Valid: true},
+		HeartbeatAt:             sql.NullString{String: completedAt, Valid: true},
+		LeaseExpiresAt:          sql.NullString{},
+		ErrorClass:              nullString(attrs.ErrorClass),
+		ErrorMessage:            nullString(attrs.ErrorMessage),
+		Phase:                   nullString(attrs.Phase),
+		StatusMessage:           nullString(attrs.StatusMessage),
+		WaitReason:              nullString(attrs.WaitReason),
+		GithubRateSnapshotJson:  jsonObjectOrDefault(attrs.GitHubRateSnapshotJSON),
+		CiState:                 nullString(attrs.CIState),
+		CapacitySnapshotJson:    jsonObjectOrDefault(attrs.CapacitySnapshotJSON),
+		WorkerMetadataJson:      completionMetadataJSON(attrs.WorkerMetadataJSON),
+		MetadataPrNumber:        projection.prNumber,
+		MetadataPrHeadSha:       projection.prHead,
+		MetadataPrBaseSha:       projection.prBase,
+		MetadataRunMode:         projection.runMode,
+		OutcomeExcluded:         projection.excluded,
+		ForgeWaitPresent:        projection.forgeWait,
+		ForgeWaitHost:           projection.forgeHost,
+		ForgeWaitErrorClass:     projection.forgeError,
+		ForgeWriteCompletedHost: projection.forgeCompleted,
+		MetricsTurns:            projection.turns,
+		MetricsJson:             jsonObjectOrDefault(attrs.MetricsJSON),
+		NextAction:              nullString(attrs.NextAction),
+		DetentSessionID:         nullPositiveInt64(attrs.DetentSessionID),
+		ProviderSessionID:       nullString(attrs.ProviderSessionID),
+		RuntimeIdentityJson:     runtimeIdentityJSON,
+		WorkAttemptID:           attrs.AttemptID,
 	})
 	if err != nil {
 		return fmt.Errorf("completing work attempt: %w", err)
@@ -231,15 +276,26 @@ func (s *sqliteStore) UpdateTerminalWorkAttemptWait(ctx context.Context, attrs W
 	if attrs.TerminalState == "" {
 		return errors.New("terminal_state is required")
 	}
+	projection := projectAttempt(completionMetadataJSON(attrs.WorkerMetadataJSON), "{}")
+
 	rows, err := s.queries.UpdateTerminalWorkAttemptWait(ctx, sqlc.UpdateTerminalWorkAttemptWaitParams{
-		TerminalState:      nullString(string(attrs.TerminalState)),
-		ErrorClass:         nullString(attrs.ErrorClass),
-		ErrorMessage:       nullString(attrs.ErrorMessage),
-		Phase:              nullString(attrs.Phase),
-		StatusMessage:      nullString(attrs.StatusMessage),
-		WorkerMetadataJson: completionMetadataJSON(attrs.WorkerMetadataJSON),
-		WorkAttemptID:      attrs.AttemptID,
-		ExpectedErrorClass: nullString(attrs.ExpectedErrorClass),
+		TerminalState:           nullString(string(attrs.TerminalState)),
+		ErrorClass:              nullString(attrs.ErrorClass),
+		ErrorMessage:            nullString(attrs.ErrorMessage),
+		Phase:                   nullString(attrs.Phase),
+		StatusMessage:           nullString(attrs.StatusMessage),
+		WorkerMetadataJson:      completionMetadataJSON(attrs.WorkerMetadataJSON),
+		MetadataPrNumber:        projection.prNumber,
+		MetadataPrHeadSha:       projection.prHead,
+		MetadataPrBaseSha:       projection.prBase,
+		MetadataRunMode:         projection.runMode,
+		OutcomeExcluded:         projection.excluded,
+		ForgeWaitPresent:        projection.forgeWait,
+		ForgeWaitHost:           projection.forgeHost,
+		ForgeWaitErrorClass:     projection.forgeError,
+		ForgeWriteCompletedHost: projection.forgeCompleted,
+		WorkAttemptID:           attrs.AttemptID,
+		ExpectedErrorClass:      nullString(attrs.ExpectedErrorClass),
 	})
 	if err != nil {
 		return fmt.Errorf("updating terminal work attempt wait: %w", err)
@@ -279,7 +335,12 @@ func (s *sqliteStore) ListRecentTerminalWorkAttempts(ctx context.Context, query 
 	if limit <= 0 {
 		limit = 20
 	}
-	rows, err := s.queries.ListRecentTerminalWorkAttempts(ctx, sqlc.ListRecentTerminalWorkAttemptsParams{
+	queries, err := s.attemptReadQueries(ctx, strings.TrimSpace(query.ProjectID))
+	if err != nil {
+		return nil, err
+	}
+
+	rows, err := queries.ListRecentTerminalWorkAttempts(ctx, sqlc.ListRecentTerminalWorkAttemptsParams{
 		FilterProjectID:  strings.TrimSpace(query.ProjectID),
 		FilterWorkerType: strings.TrimSpace(query.WorkerType),
 		IssueID:          strings.TrimSpace(query.IssueID),
@@ -298,7 +359,12 @@ func (s *sqliteStore) ListPendingForgeAvailabilityWaits(ctx context.Context, pro
 	if projectID == "" {
 		return nil, errors.New("project_id is required")
 	}
-	rows, err := s.queries.ListPendingForgeAvailabilityWaits(ctx, projectID)
+	queries, err := s.attemptReadQueries(ctx, projectID)
+	if err != nil {
+		return nil, err
+	}
+
+	rows, err := queries.ListPendingForgeAvailabilityWaits(ctx, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("listing pending forge availability waits: %w", err)
 	}
@@ -338,12 +404,23 @@ func (s *sqliteStore) UpdateOperatorStop(ctx context.Context, attrs OperatorStop
 	if attrs.AttemptID <= 0 {
 		return ErrNotFound
 	}
+	projection := projectAttempt(attrs.WorkerMetadataJSON, "{}")
+
 	updated, err := s.queries.UpdateOperatorStop(ctx, sqlc.UpdateOperatorStopParams{
-		Phase:              nullString(attrs.Phase),
-		StatusMessage:      nullString(attrs.StatusMessage),
-		WorkerMetadataJson: attrs.WorkerMetadataJSON,
-		NextAction:         nullString(attrs.NextAction),
-		WorkAttemptID:      attrs.AttemptID,
+		Phase:                   nullString(attrs.Phase),
+		StatusMessage:           nullString(attrs.StatusMessage),
+		WorkerMetadataJson:      attrs.WorkerMetadataJSON,
+		MetadataPrNumber:        projection.prNumber,
+		MetadataPrHeadSha:       projection.prHead,
+		MetadataPrBaseSha:       projection.prBase,
+		MetadataRunMode:         projection.runMode,
+		OutcomeExcluded:         projection.excluded,
+		ForgeWaitPresent:        projection.forgeWait,
+		ForgeWaitHost:           projection.forgeHost,
+		ForgeWaitErrorClass:     projection.forgeError,
+		ForgeWriteCompletedHost: projection.forgeCompleted,
+		NextAction:              nullString(attrs.NextAction),
+		WorkAttemptID:           attrs.AttemptID,
 	})
 	if err != nil {
 		return fmt.Errorf("updating operator stop: %w", err)
@@ -460,6 +537,7 @@ func (s *sqliteStore) RecordSchedulerDecision(ctx context.Context, attrs Schedul
 		DecisionAt:             decisionAt,
 		WaitReason:             nullString(attrs.WaitReason),
 		CapacitySnapshotJson:   jsonObjectOrDefault(attrs.CapacitySnapshotJSON),
+		GlobalAvailable:        projectGlobalAvailable(attrs.CapacitySnapshotJSON),
 		GithubRateSnapshotJson: jsonObjectOrDefault(attrs.GitHubRateSnapshotJSON),
 		MetadataJson:           jsonObjectOrDefault(attrs.MetadataJSON),
 	})
@@ -816,7 +894,12 @@ func (s *sqliteStore) ListLocalAdmittedIssueIDs(ctx context.Context, projectID s
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.queries.ListLocalAdmittedIssueIDs(ctx, sqlc.ListLocalAdmittedIssueIDsParams{
+	queries, err := s.attemptReadQueries(ctx, projectID)
+	if err != nil {
+		return nil, err
+	}
+
+	rows, err := queries.ListLocalAdmittedIssueIDs(ctx, sqlc.ListLocalAdmittedIssueIDsParams{
 		ProjectID:              strings.TrimSpace(projectID),
 		LiveForeignGenerations: excluded,
 	})

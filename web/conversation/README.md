@@ -1,9 +1,7 @@
 # Detent conversation client
 
-The React application the hub serves at `/chat`. It implements the client half
-of [`docs/conversation/decisions.md`](../../docs/conversation/decisions.md) and
-follows [`docs/conversation/design-inventory.md`](../../docs/conversation/design-inventory.md)
-for screen coverage. The [Detent design system](../../docs/design-system/README.md)
+The React application the hub serves at `/chat`. It is the client of the Hub
+conversation API described in [Hub API](../../docs/hub-api.md). The [Detent design system](../../docs/design-system/README.md)
 defines shared visual rules, component selection, interaction states, and screen
 recipes and is the source of truth for them. Its
 [component catalog](./src/design-system/catalog.json) records every primitive
@@ -52,11 +50,10 @@ chunks and third-party licenses. Feature commits contain client source only.
 Staging, releases and private operators generate assets from their selected
 source before Go compilation. The prepared release source archive carries the
 same output for Go-only end-user builds; raw module downloads cannot provide
-it. See [build ownership](../../docs/development.md#conversation-assets).
+it.
 
-`app.js` begins with the MIT notice for the reused T3 Code source
-(decisions.md §10.13). It is prepended by the `detent-mit-attribution` plugin
-in `vite.config.ts`, which includes the complete license texts from
+`app.js` begins with the MIT notice for the reused T3 Code source. It is
+prepended by the `detent-mit-attribution` plugin in `vite.config.ts`, which includes the complete license texts from
 [`LICENSE.t3code`](./LICENSE.t3code) and
 [`LICENSE.pierre-diffs`](./LICENSE.pierre-diffs). Check it with
 `head -n 30 ../../static/app/conversation/app.js`.
@@ -80,7 +77,7 @@ to inject failures (`queue-full`, `unknown-outcome`, `drop-open-streams`,
 switch modes (`coordinator`, `account`). It is a development and test double,
 not a reference implementation.
 
-It implements the corrections in decisions.md §10: `POST /conversations`
+It implements the corrections from the first-slice review: `POST /conversations`
 requires a top-level `key` and is idempotent by it, the command envelope
 accepts `retry`, the conversation carries `message_count`, the execution
 carries `resume`, archive and unarchive filter the list, and `account`
@@ -90,7 +87,7 @@ mutation with `403 forbidden`.
 ### Coordinator modes
 
 Every model turn runs on a customer runner, including the coordinator turn that
-answers an unlinked chat (decisions.md §1 "Where model turns execute", §9). The
+answers an unlinked chat. The
 mock hub runs either side of that transition, so the client can be developed
 against both without a runner:
 
@@ -112,8 +109,8 @@ unlinked chat instead of an attempt on a linked issue: `start` binds `att_N`
 and streams the answer, `complete` closes it, and `complete` also posts the
 `propose_issue` card as a `role: system`, `kind: status` message when the reader
 asked for an issue — which is what a runner's `item` turn event with
-`data.proposal` becomes (decisions.md §9.3, §9.4). `cancel` goes `interrupting`
-→ `interrupted`; the client-facing kind stays `cancel` (§9.1).
+`data.proposal` becomes. `cancel` goes `interrupting`
+→ `interrupted`; the client-facing kind stays `cancel`.
 
 A linked conversation — and, in `runner` mode, an unlinked chat — gets a
 scripted runner, driven from the same control surface so every execution status
@@ -124,8 +121,8 @@ can be reached without a runner, a lease or a provider:
 | `POST /__mock/runner/<conversation>/start` | Binds a new attempt (`att_N`), moves `starting` → `running`, and streams a reply in deltas into an open assistant message |
 | `POST /__mock/runner/<conversation>/question` | Opens a question anchored to a new status message and moves to `waiting_input` |
 | `POST /__mock/runner/<conversation>/complete` | Closes the open message and moves to `completed` |
-| `POST /__mock/runner/<conversation>/start` with `{"resume": "transcript"}` | Binds as above, reports `resume: "transcript"` and appends the §10.4 status message |
-| `POST /__mock/runner/<conversation>/lose` | The worker unbound: every handed-out control becomes `unknown` and the execution with it (§10.3) |
+| `POST /__mock/runner/<conversation>/start` with `{"resume": "transcript"}` | Binds as above, reports `resume: "transcript"` and appends the transcript-recovery status message |
+| `POST /__mock/runner/<conversation>/lose` | The worker unbound: every handed-out control becomes `unknown` and the execution with it |
 
 The command endpoint follows the same script: `answer` marks the question
 answered and resumes the attempt (a second answer is `409
@@ -163,13 +160,13 @@ no runtime.
 
 ## The account screens
 
-The React application is the whole hosted frontend (decisions.md §11), so the
+The React application is the whole hosted frontend, so the
 screens that were hosted Templ pages are routes here. `routes.account.tsx`
 exports `accountRoutes(rootRoute)` — a builder rather than a tree, because a
 TanStack route binds to its parent at construction — and `router.tsx` spreads
 the result into the root's children.
 
-Since decisions.md §17.3 every one of them except the login card and the wizard
+Every one of them except the login card and the wizard
 is a section of T3's settings page, and the paths that used to be screens of
 their own are redirects into the matching section.
 
@@ -181,7 +178,7 @@ their own are redirects into the matching section.
 | `/settings/organization` | Members, roles, project grants, invitations, the switcher and the support banner | `GET /members` |
 | `/settings/projects` | The project list and New project | `GET /projects` |
 | `/settings/runners` | Provider capacity folded across the fleet, and the host cards | `GET /fleet` |
-| `/settings/integrations?project=` | The repository binding, the GitHub integration and the approved policy, one project at a time | `GET {nativeBase}/integration`, `GET {nativeBase}/policy` |
+| `/settings/projects/:project/:tab` | Project settings split across General, Repository & GitHub, Workflow, Models, Runners & Sprites, and Danger zone | `GET {nativeBase}/integration`, `GET {nativeBase}/policy` |
 | `/settings/plan` | The effective plan and its allowances | `GET /plan` |
 | `/settings/billing` | The subscription, the portal and the configured prices | `GET /billing` |
 | `/settings/keybindings` | The shortcuts this client binds | nothing |
@@ -190,7 +187,7 @@ their own are redirects into the matching section.
 | `/projects/:project/setup` | The artifact's screen 5 over the four onboarding steps | `GET {nativeBase}/onboarding` |
 | `/organization` | Redirects to `/settings/organization` |  |
 | `/fleet` | Redirects to `/settings/runners` |  |
-| `/projects/:project/settings` | Redirects to `/settings/integrations?project=` |  |
+| `/projects/:project/settings` | Redirects to `/settings/projects/:project/general` |  |
 
 The settings navigation is T3's, in the place T3 puts it: the window's
 sidebar. Their `AppSidebarLayout` swaps the thread sidebar for
@@ -203,7 +200,7 @@ section list.
 
 It carries the five T3 sections Detent Cloud does not serve — Appearance,
 SnapShots, Source Control, Connections and Archive — present and disabled
-behind a tooltip, because §16 says a T3 feature stays until Michael decides to
+behind a tooltip, because the frontend's governing rule says a T3 feature stays until Michael decides to
 pull it out. Plan and billing are the opposite case: they are not rendered at
 all for somebody who could only ever be refused them, because a section that
 can only say "you cannot see this" is noise.
@@ -211,14 +208,14 @@ can only say "you cannot see this" is noise.
 Three rules run through all of them.
 
 **The bootstrap is read once.** `/app/bootstrap` is a superset of
-`/chat/bootstrap` (§12), so `loadBootstrap` fetches the wider path, falls back
+`/chat/bootstrap`, so `loadBootstrap` fetches the wider path, falls back
 to the alias on a 404, and decodes the same payload through both schemas. The
 account screens read `client.account`; it is `null` against a hub that has not
 moved yet, and every screen treats that as "this hub cannot answer that" rather
 than inventing an actor.
 
 **Read-only means no control, not a disabled one.** A viewer sees every value
-and none of the affordances that would mutate it (§10.11). Where the hub
+and none of the affordances that would mutate it. Where the hub
 refuses anyway — a `403` or a `404` on a project the reader cannot reach — the
 screen says so in a sentence rather than showing a stack trace.
 
@@ -249,10 +246,10 @@ actually stored before they decide again.
 
 ### Contract ambiguities resolved
 
-§12 names some payloads by their Go type rather than by their JSON. Where that
+The hosted JSON API names some payloads by their Go type rather than by their JSON. Where that
 left a choice, this is what was chosen and why:
 
-- **`GET /billing` carries `prices`.** The report §12 names
+- **`GET /billing` carries `prices`.** The report the hosted JSON API names
   (`hubserver.hostedBillingReport`) has no price list; the hosted Templ page
   read the configured prices from `HostedBillingConfig` separately. "Checkout
   buttons per configured price" needs them on the payload, so `BillingReport`
@@ -284,16 +281,16 @@ left a choice, this is what was chosen and why:
 - **`version` is optional in the bootstrap.** The hosted preview does not send
   one, so the About row says the hub does not report a version rather than
   showing an empty field.
-- **The invitation form on `/login` needs a session.** §12 puts
+- **The invitation form on `/login` needs a session.** The hosted JSON API puts
   `POST /invitations/accept` under the organization API. With a session the
   card posts it and follows `next`; without one it hands the token to the
-  hub's own `/invite` route, which §12 keeps.
+  hub's own `/invite` route, which the hosted JSON API keeps.
 
 
 ## Usage
 
 `/usage` displays one hub usage report. `GET {apiBase}/usage?range=24h|7d|30d|90d&project=` answers everything
-the page draws — decisions.md §17.5 — and `src/app/usage/adapter.ts` is the
+the page draws, and `src/app/usage/adapter.ts` is the
 only Detent code in the path: it fetches, decodes against
 `src/contracts/usage.ts`, and reshapes the report into exactly the `merged`
 value T3's components already read (`costUsd`, `totalTokens`, `byProvider` as a
@@ -302,7 +299,7 @@ value T3's components already read (`costUsd`, `totalTokens`, `byProvider` as a
 Four tabs. Cost and Tokens are T3's. Limits is T3's tab over Detent's numbers:
 T3 shows each connected provider's own rate-limit windows, and what limits a
 hosted organization is its entitlement, so the report's `limits` are drawn one
-allowance per meter. Runners is the tab §17.5 adds — one row per runner for the
+allowance per meter. Runners is the tab the usage report adds — one row per runner for the
 window, with what it was busy doing, how much of its capacity that was, and
 what it cost — through the same table component as the Breakdown.
 
@@ -312,7 +309,7 @@ it.
 
 ### Usage ambiguities resolved
 
-- **A 24-hour window's buckets are instants.** §17.5 defines one `daily` array.
+- **A 24-hour window's buckets are instants.** The usage report defines one `daily` array.
   T3 keeps calendar days and rolling hours as two arrays, because its chart and
   its breakdown label them differently. The hub resolves the window, so for
   `range=24h` its `daily` entries carry an ISO instant in `day` and the adapter
@@ -321,14 +318,14 @@ it.
   map. The Tokens chart needs a token series per provider, so the adapter
   splits each period's tokens by that period's own cost share — the one
   division that keeps the chart adding up to the Totals grid.
-- **`share` is the hub's, `tokenShare` is the client's.** §17.5 sends a
+- **`share` is the hub's, `tokenShare` is the client's.** The usage report sends a
   provider's share of cost. The Tokens tab labels a share of tokens, which the
   adapter computes from the same payload rather than asking for a second field.
-- **`limits` is a map, not a list.** §17.5 writes "allowances from the
+- **`limits` is a map, not a list.** The usage report writes "allowances from the
   entitlement with used/limit", which is the shape `hubserver.HostedEntitlement`
   already has; the client sorts it by name so two reads of one window do not
   reshuffle the rows.
-- **`currency` is optional.** §17.5 writes cost as a number. The hub prices in
+- **`currency` is optional.** The usage report writes cost as a number. The hub prices in
   one currency at a time, so the field is optional and the client defaults to
   USD.
 - **Providers are named by the hub.** T3's presentation table is keyed by its
@@ -351,12 +348,12 @@ every execution status but `idle` — from the moment a coordinator work item
 exists, "is anything happening?" has an answer the reader is owed. The chat
 vocabulary never says "issue": waiting names the project a runner has to be
 enrolled in, `starting` and `running` both read "A runner is answering this
-chat", and the one control is Stop, which sends `cancel` (decisions.md §9.1).
+chat", and the one control is Stop, which sends `cancel`.
 
 **The strip offers no model, provider, cost or key choice, on either surface.**
 Every turn runs on the customer's own runner with that runner's own provider
 login or API key; the hub never holds credentials and Detent does not resell
-tokens (decisions.md §1). There is nothing here for the reader to pick, and a
+tokens. There is nothing here for the reader to pick, and a
 picker would promise a choice the product does not have.
 
 A chat that is queued, being answered, stopping or broken also takes the
@@ -365,10 +362,10 @@ about execution state, not about whether an issue exists.
 
 ## Keyboard, headings and the narrow drawer
 
-Three contracts from the design inventory are implemented in `src/app/lib/` and
+Three contracts are implemented in `src/app/lib/` and
 covered by both jsdom and browser tests, because each one fails silently:
 
-- **`drawerFocus.ts` — the narrow drawer (B.12, B.14).** Below 768px the
+- **`drawerFocus.ts` — the narrow drawer.** Below 768px the
   sidebar is off-canvas. A closed drawer is `inert` *and* `visibility: hidden`,
   not merely `translateX(-100%)`: a transform hides it from the eye and leaves
   every row a tab stop behind the transcript. Opening it moves focus to its
@@ -376,10 +373,10 @@ covered by both jsdom and browser tests, because each one fails silently:
   closes it and returns focus to the toggle. `aria-hidden` plus `hidden` is the
   fallback where `inert` is not implemented. The contract is the same with the
   slide animating and with `prefers-reduced-motion: reduce`.
-- **`shortcuts.ts` — two shortcuts, no new controls (B.13 rule 4, B.14).** `/`
+- **`shortcuts.ts` — two shortcuts, no new controls.** `/`
   focuses the sidebar search unless focus is in an editable field, and
   `Mod+Shift+N` starts a new chat in the current project context by calling the
-  same handler the compose pencil calls — B.13 allows a shortcut to duplicate
+  same handler the compose pencil calls — a shortcut is allowed to duplicate
   the one create action, not a second button. Both are advertised through
   `aria-keyshortcuts` on the controls that own them and spelled out in a
   visually hidden hint (`#dc-shortcut-hint`).
@@ -390,8 +387,7 @@ covered by both jsdom and browser tests, because each one fails silently:
   in `routes/__root.tsx` — and makes the window behind it `inert` while it is
   open. Escape closes it and returns focus to wherever it came from: the sidebar
   search box, a board row, the composer. Rows that Detent cannot serve stay on
-  the list, greyed and `aria-disabled`, rather than disappearing (decisions.md
-  §16).
+  the list, greyed and `aria-disabled`, rather than disappearing.
 - **One `h1` per route.** On a conversation route the breadcrumb's current
   segment is the heading; on the new-chat route the hero headline is, and the
   breadcrumb carries an `h2` instead — which is T3's own arrangement, their
@@ -470,8 +466,8 @@ subscription, so a leak shows up as a failing test rather than as a slow tab.
 
 ## Shared contract fixtures
 
-`src/contracts/fixtures/*.json` holds one realistic payload per resource in
-decisions.md §5. `src/contracts/fixtures.ts` binds each file to its schema and
+`src/contracts/fixtures/*.json` holds one realistic payload per conversation
+contract resource. `src/contracts/fixtures.ts` binds each file to its schema and
 `src/contracts/fixtures.test.ts` fails if a file has no binding. **The Go
 implementation is expected to decode the same files**, so this directory is a
 stable cross-language contract surface: keep the path, and add a fixture rather
@@ -489,7 +485,7 @@ discriminator inside the value it decodes.
 
 ### The account fixtures
 
-`account-*.json` covers §12: the extended bootstrap in both its plain and its
+`account-*.json` covers the hosted JSON API: the extended bootstrap in both its plain and its
 support-session shape, the members and invitations, the project list, the
 integration, the policy approval, the onboarding project and its progress
 response, the runner enrollment, the fleet in both its spending and its
@@ -498,7 +494,7 @@ these shapes, so the runtime tests do not wait on the hub.
 
 ### The usage fixtures
 
-`usage-30d.json`, `usage-24h.json` and `usage-empty.json` cover §17.5: a
+`usage-30d.json`, `usage-24h.json` and `usage-empty.json` cover the usage report: a
 realistic 30 calendar days across two providers and six models, the same
 generator's 24 rolling hours, and the organization that has run nothing. They
 are generated by `usageReport()` in `dev/mock-hub.ts` from a fixed clock and a
@@ -510,8 +506,7 @@ report.
 
 ## The Work board, the list and the issue page
 
-`src/app/work/` implements artifact screens 1 and 2 (design inventory A.1 and
-A.2) against the hub's native work API. Four routes:
+`src/app/work/` implements artifact screens 1 and 2 against the hub's native work API. Four routes:
 
 | Route | What it is |
 |---|---|
@@ -520,7 +515,7 @@ A.2) against the hub's native work API. Four routes:
 | `/work/i/:workItemId` | One issue: its description, its resources, its activity, its composer and its properties — and its conversation, in the right panel |
 | `/work/changes` | The Browse group's Pull requests destination |
 
-### The issue is the page (decisions.md §19)
+### The issue is the page
 
 The issue page is where a linked conversation now lives. Three routes say so:
 
@@ -598,7 +593,7 @@ is named at the code that works around it.
 
 | What the artifact shows | What the API has | What this client renders |
 |---|---|---|
-| A per-issue progress bar | Nothing. `NativeAttempt` has no progress field | No bar. The design inventory already records the artifact's own `.bar` rule as dead CSS (A.1); with no number behind it, a bar would be decoration |
+| A per-issue progress bar | Nothing. `NativeAttempt` has no progress field | No bar. The artifact's own `.bar` rule is dead CSS; with no number behind it, a bar would be decoration |
 | `1.2M tok` on the worker strip | No token usage anywhere on the work API | Omitted. The strip names the model, the backend, the runner and the elapsed time it computes from `updated_at - started_at` |
 | `medium · full access` on the worker strip | `identity` carries `role`, `backend` and `model` only | Omitted for the same reason |
 | `1 / 2 slots · 312 tps · $28.77 notional today` | Fleet figures; no work endpoint serves them | Replaced by what the client does know: how much of the board it read, and how many issues it could ask about a worker and a change |
@@ -693,15 +688,15 @@ Attachments, multiple runners per conversation, and any light theme. The client
 is dark-only and declares `color-scheme: dark` on its mount root; a Detent user
 in light mode gets a deliberately dark panel rather than a broken one.
 
-## Corrections from the first-slice review (decisions.md §10)
+## Corrections from the first-slice review
 
-**Creating a conversation is idempotent (§10.2).** `POST /conversations`
+**Creating a conversation is idempotent.** `POST /conversations`
 carries a top-level `key`, distinct from `first_message.key`. The new-chat
 surface writes that key to the outbox *before* the request and clears it only
 when the hub answers, so a reload in the middle of a create reuses it and the
 retry returns the stored conversation instead of opening a second one.
 
-**Retry re-queues, it never re-sends (§10.3).** A message whose delivery is
+**Retry re-queues, it never re-sends.** A message whose delivery is
 `unknown`, `failed` or `rejected` gets a Retry affordance and one sentence:
 "Retry re-queues this message once; nothing is duplicated." Pressing it sends
 `{key, kind: "retry", message_id}` with a **new** key; the hub puts that same
@@ -716,18 +711,18 @@ the byte-identical `message` command under its original key — `expected`
 included, because a payload that differs under the same key is
 `idempotency_conflict`. `PendingMessage.messageId` is what tells the two apart.
 
-**Transcript recovery is visible (§10.4).** `execution.resume` is `"thread"`,
+**Transcript recovery is visible.** `execution.resume` is `"thread"`,
 `"transcript"` or `""`. On `transcript` the strip says "This runner continued
 from a transcript of recent messages; the provider's earlier context was not
 available." The hub also appends a `role: system, kind: status` message saying
 the same thing in the history, which the transcript renders as a plain status
 row.
 
-**The audience preview counts the whole history (§10.5).** The handoff form
+**The audience preview counts the whole history.** The handoff form
 reads `conversation.message_count`, not the loaded page: "All N messages in
 this chat become readable by everyone who can read project P."
 
-**Read-only viewers (§10.11).** Where the bootstrap says `can_write: false`
+**Read-only viewers.** Where the bootstrap says `can_write: false`
 the composer is disabled and says "You can read this chat but not send
 messages", and the stop button, the execution strip's controls, the handoff
 action, the retry affordances and the conversation menu are not rendered at
@@ -735,7 +730,7 @@ all. A disabled control reads as "not yet"; this reader is never going to press
 it. Drive it in the mock with `POST /__mock/account {"mode": "read_only"}` or
 `/chat/bootstrap?account=read_only`.
 
-**Archive and unarchive (§10.12).** The top bar carries a conversation menu —
+**Archive and unarchive.** The top bar carries a conversation menu —
 a button with `aria-haspopup="menu"`, Enter or Space to open, focus on the
 first item, Escape to close and return — offering "Archive chat" or "Unarchive
 chat" against `POST .../archive|unarchive`. An archived chat leaves the sidebar
@@ -774,11 +769,11 @@ payload used to live in a component ref that the remount threw away.
 hosted hub, as `owner` and as `viewer`: the login card without a session, the
 organization page's role gating, the settings navigation in the sidebar, the
 project settings, the wizard's four steps and the fleet. It probes the hub once
-in `beforeAll` and skips any test whose §12 endpoint is not served yet, naming
+in `beforeAll` and skips any test whose hosted JSON API endpoint is not served yet, naming
 the endpoint in the skip message, so each one starts passing with the hub
 change that lands it rather than needing an edit here.
 
-`tests/visual/conversation.spec.js` runs against a real hosted hub. The §10
+`tests/visual/conversation.spec.js` runs against a real hosted hub. The first-slice correction
 assertions above are present but `test.skip`ped, each with a TODO naming the
 item, because the hosted preview fixture does not serve them yet. The contract
 they check is covered against the mock hub by `tests/corrections.test.ts` and

@@ -62,7 +62,7 @@
 
 /* Light theme. Several values are darkened from the brief's suggestions so
    every text/surface and status-tint pair holds WCAG AA — ratios are
-   documented in docs/redesign-contrast.md. */
+   documented in docs/design-system/foundations.md#contrast. */
 [data-theme="light"] {
   --color-page: #f7f8fa;
   --color-surface: #ffffff;

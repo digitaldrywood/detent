@@ -1,5 +1,5 @@
 -- +goose Up
--- Project actions and their runs (decisions section 18.12).
+-- Project actions and their runs.
 --
 -- An action is a command the project wrote down: a name, a shell command, an
 -- optional chord, and two flags. It is stored on the project rather than on an
@@ -24,7 +24,7 @@ CREATE TABLE project_actions (
   -- colleague sees has to carry the glyph the author chose.
   icon TEXT NOT NULL DEFAULT 'play',
   -- preview_url and open_preview are stored and echoed, never acted on: the
-  -- Browser surface is deferred (section 18.7), so the field is kept so an
+  -- Browser surface is deferred, so the field is kept so an
   -- action authored today does not have to be re-authored when it lands.
   preview_url TEXT NOT NULL DEFAULT '',
   open_preview INTEGER NOT NULL DEFAULT 0 CHECK (open_preview IN (0, 1)),
@@ -52,7 +52,7 @@ CREATE UNIQUE INDEX project_actions_keybinding_idx
 -- starts is visible as queued rather than absent, and the run id is what joins
 -- the relay stream to the record the hub updates from the frames it relays.
 -- output_artifact is a receipt, never the bytes: the hub stores no blobs
--- (section 18.7's artifact rule), so the output lives in the artifact service
+-- (the browser preview rule's artifact rule), so the output lives in the artifact service
 -- with the issue's read audience and this column names it.
 CREATE TABLE project_action_runs (
   id TEXT PRIMARY KEY,
@@ -79,7 +79,7 @@ CREATE TABLE project_action_runs (
   -- The hub stores these bytes itself rather than putting them through the
   -- artifact service. attempt_diffs (migration 00026) is the precedent: a
   -- bounded, already-audience-scoped text blob the hub keeps, where the exec
-  -- channel's 1 MiB cap (section 18.12) is what makes keeping it safe -- the
+  -- channel's 1 MiB cap is what makes keeping it safe -- the
   -- runner stops forwarding past the cap, so one column can never become
   -- unbounded storage. A run's output has exactly the issue's read audience
   -- the run does, so routing it through a blob store would buy a second

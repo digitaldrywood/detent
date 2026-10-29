@@ -8,7 +8,7 @@ import (
 )
 
 // openNoFollow refuses to open a final component that is a symbolic link.
-// Section 18.4 asks for it by name, and it is the half of the containment
+// The Files contract asks for it by name, and it is the half of the containment
 // argument that a check on the request string cannot make: the link can be
 // swapped in between the check and the open, and only the kernel can refuse
 // atomically.

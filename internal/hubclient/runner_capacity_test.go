@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	detentupdate "github.com/digitaldrywood/detent/internal/update"
 )
@@ -93,6 +94,7 @@ func TestRunnerCapacityHeartbeat(t *testing.T) {
 			var responseMu sync.Mutex
 			candidateEntered := make(chan struct{})
 			parentDone := make(chan struct{})
+			parentApplied := make(chan struct{})
 			candidateDone := make(chan error, 1)
 			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
@@ -163,7 +165,8 @@ func TestRunnerCapacityHeartbeat(t *testing.T) {
 						close(candidateEntered)
 						select {
 						case <-parentDone:
-						case <-time.After(time.Second):
+						case <-parentApplied:
+						case <-testenv.WaitContext(t, t.Context()).Done():
 						}
 					}
 					if test.denied {
@@ -195,6 +198,7 @@ func TestRunnerCapacityHeartbeat(t *testing.T) {
 				updateScheduler, err = detentupdate.NewScheduler(detentupdate.SchedulerConfig{
 					CheckInterval: 2 * time.Second, StatePath: filepath.Join(root, "update.json"), RunningBuild: updateReport.Running,
 					Now:            func() time.Time { return now },
+					ReserveIdle:    func(context.Context) (func(), bool) { return func() {}, true },
 					ReserveDrain:   func(context.Context) (func(), error) { return func() {}, nil },
 					RequestRestart: func(string) bool { updateRestarts++; return true },
 					Updater: heartbeatUpdater{apply: func(_ context.Context, options detentupdate.ApplyOptions) (detentupdate.Status, error) {
@@ -290,12 +294,12 @@ func TestRunnerCapacityHeartbeat(t *testing.T) {
 						}()
 						select {
 						case <-candidateEntered:
-						case <-time.After(3 * time.Second):
+						case <-testenv.WaitContext(t, t.Context()).Done():
 							t.Error("expired candidate heartbeat did not reach the Hub")
 						}
 					}
 					if test.reenterControl {
-						ctx, cancel := context.WithTimeout(ownerCtx, time.Second)
+						ctx, cancel := context.WithCancel(testenv.WaitContext(t, ownerCtx))
 						done := make(chan error, 1)
 						go func() {
 							done <- scheduler.ensureNativeMachine(ctx, scheduler.nativeProjects["native"])
@@ -315,6 +319,9 @@ func TestRunnerCapacityHeartbeat(t *testing.T) {
 					}
 					projectApplications++
 					projectReport.RequestID = desired.RequestID
+					if test.overlapControl {
+						close(parentApplied)
+					}
 				}
 				projectReport.ObservedAt = now
 				return projectReport

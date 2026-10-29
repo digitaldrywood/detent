@@ -7,11 +7,64 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
+
+func TestHTTPConnectionToolScope(t *testing.T) {
+	var calls atomic.Int64
+	executor, err := NewConnectionExecutor([]operatortool.Definition{{Name: "attach_evidence", InputSchema: json.RawMessage(`{"type":"object"}`)}}, func(_ context.Context, call operatortool.Call) (operatortool.Result, error) {
+		calls.Add(1)
+		return operatortool.Result{Content: json.RawMessage(`{"reference":"durable-evidence"}`)}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := newTestHTTPHandler(executor)
+	t.Cleanup(func() {
+		if err := handler.Shutdown(context.Background()); err != nil {
+			t.Error(err)
+		}
+	})
+	initialize := performMCPRequest(t, handler, http.MethodPost, initializeRequest, "", "worker", nil)
+	session := initialize.Header().Get(httpSessionHeader)
+	performMCPRequest(t, handler, http.MethodPost, initializedNotice, session, "worker", nil)
+	list := performMCPRequest(t, handler, http.MethodPost, `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`, session, "worker", nil)
+	var catalog struct {
+		Result struct {
+			Tools []operatortool.Definition `json:"tools"`
+		} `json:"result"`
+	}
+	if list.Code != http.StatusOK || json.Unmarshal(list.Body.Bytes(), &catalog) != nil || len(catalog.Result.Tools) != 1 || catalog.Result.Tools[0].Name != "attach_evidence" {
+		t.Fatalf("connection catalog: %d %s", list.Code, list.Body.String())
+	}
+	for _, test := range []struct {
+		name    string
+		refused bool
+	}{{"work_item", true}, {"unregistered", true}, {"attach_evidence", false}} {
+		t.Run(test.name, func(t *testing.T) {
+			before := calls.Load()
+			body, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": map[string]any{"name": test.name, "arguments": map[string]any{}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			response := performMCPRequest(t, handler, http.MethodPost, string(body), session, "worker", nil)
+			var result struct {
+				Error  json.RawMessage `json:"error"`
+				Result json.RawMessage `json:"result"`
+			}
+			if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &result) != nil || (len(result.Error) > 0) != test.refused {
+				t.Fatalf("call: %d %s", response.Code, response.Body.String())
+			}
+			if test.refused && calls.Load() != before || !test.refused && (calls.Load() != before+1 || !bytes.Contains(result.Result, []byte("durable-evidence"))) {
+				t.Fatal("connection dispatched outside its tool scope or lost its result")
+			}
+		})
+	}
+}
 
 func TestHTTPTransportUsesSharedProtocolCatalog(t *testing.T) {
 	t.Parallel()

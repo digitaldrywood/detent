@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -471,7 +472,8 @@ func TestCapacityTestPriceCompatibility(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg.Plans = nil
+	plans := capacityHostedPlans()
+	cfg.Plans = &plans
 	cfg.Billing.Prices = append(cfg.Billing.Prices, HostedBillingPrice{PriceID: "price_starter_test", Label: "Starter", Plan: PlanReference{ID: "starter", Version: 1}})
 	if err := cfg.validate(); err != nil {
 		t.Fatal(err)
@@ -500,7 +502,7 @@ func TestCapacityTestPriceCompatibility(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if entitlement.Allowances["projects"] < 20 || entitlement.Allowances["unarchived_issues"] != 2000 {
+	if _, limited := entitlement.Allowances["concurrent_work"]; limited || entitlement.Allowances["unarchived_issues"] != 10000 || !slices.Contains(entitlement.Features, "native_execution") {
 		t.Fatalf("legacy lost access: %#v", entitlement)
 	}
 	cfg.Billing.Prices[0].Plan = PlanReference{ID: "starter", Version: 1}
@@ -513,10 +515,11 @@ func TestCapacityPaidPlanChanges(t *testing.T) {
 	f, provider := newHostedBillingFixture(t)
 	d := f.service.database
 	cfg := f.service.config.Hosted
-	cfg.Plans = nil
+	plans := capacityHostedPlans()
+	cfg.Plans = &plans
 	cfg.Billing.Prices = nil
-	for _, id := range []string{"starter", "growth", "scale"} {
-		cfg.Billing.Prices = append(cfg.Billing.Prices, HostedBillingPrice{PriceID: "price_" + id, Label: id, Plan: PlanReference{ID: id, Version: 1}})
+	for _, plan := range []PlanReference{{ID: "starter", Version: 1}, {ID: "team", Version: 2}, {ID: "growth", Version: 2}} {
+		cfg.Billing.Prices = append(cfg.Billing.Prices, HostedBillingPrice{PriceID: "price_" + plan.ID, Label: plan.ID, Plan: plan})
 	}
 	if err := cfg.validate(); err != nil {
 		t.Fatal(err)
@@ -531,9 +534,9 @@ func TestCapacityPaidPlanChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, test := range []struct {
-		id               string
-		projects, issues int64
-	}{{"starter", 5, 2000}, {"growth", 25, 10000}, {"scale", 100, 50000}, {"starter", 5, 2000}, {"free", 1, 200}} {
+		id         string
+		concurrent int64
+	}{{"starter", 8}, {"team", 20}, {"growth", 50}, {"starter", 8}, {"free", 2}} {
 		t.Run(test.id, func(t *testing.T) {
 			provider.mu.Lock()
 			provider.snapshot = activeBillingSnapshot(time.Now())
@@ -549,7 +552,7 @@ func TestCapacityPaidPlanChanges(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if entitlement.EffectiveBase.ID != test.id || entitlement.Allowances["projects"] != test.projects || entitlement.Allowances["unarchived_issues"] != test.issues {
+			if _, projects := entitlement.Allowances["projects"]; projects || entitlement.EffectiveBase.ID != test.id || entitlement.Allowances["concurrent_work"] != test.concurrent || entitlement.Allowances["unarchived_issues"] != 10000 {
 				t.Fatalf("plan change=%#v", entitlement)
 			}
 			for _, path := range []string{"/organization/plan", "/organization/billing", "/api/cloud/billing"} {

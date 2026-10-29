@@ -15,10 +15,10 @@ const DAYS = ["Oct 7", "Oct 8", "Oct 9", "Oct 10", "Oct 11", "Oct 12", "Oct 13"]
 }));
 const INK = (share: number) => `color-mix(in oklab, var(--contrast-foreground) ${share}%, var(--background))`;
 
-function TabsSpecimen(): React.ReactElement {
+function TabsSpecimen({ variant = "line" }: { variant?: "line" | "segmented" }): React.ReactElement {
   const [tab, setTab] = React.useState<string>("overview");
   return (
-    <Tabs value={tab} onValueChange={(value) => setTab(String(value))} className="w-full max-w-xl">
+    <Tabs value={tab} onValueChange={(value) => setTab(String(value))} variant={variant} className="w-full max-w-xl">
       <TabsList aria-label="Report sections">
         {["Overview", "Flow", "Quality", "Cost", "Failures"].map((label) => (
           <TabsTab key={label} value={label.toLowerCase()}>
@@ -44,6 +44,7 @@ export const tabs: GalleryDoc = {
       title: "Selected, hover, focus and disabled; scrolls horizontally at 390px",
       render: () => <TabsSpecimen />,
     },
+    { id: "segmented", title: "Segmented tabs", render: () => <TabsSpecimen variant="segmented" /> },
   ],
 };
 

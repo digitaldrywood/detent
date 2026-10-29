@@ -38,7 +38,6 @@ type doctorBackendCapacityDiagnostic struct {
 	Active          bool       `json:"active"`
 	Enforced        bool       `json:"enforced"`
 	AffectedIssues  []string   `json:"affected_issues,omitempty"`
-	ParkedIssues    []string   `json:"parked_issues,omitempty"`
 }
 
 type doctorBackendCapacitySnapshot struct {

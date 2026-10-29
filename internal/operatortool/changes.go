@@ -14,6 +14,7 @@ import (
 )
 
 const (
+	PublishReleasePick        = "publish_release_pick"
 	AssociateReleasePick      = "associate_release_pick"
 	ListChanges               = "list_changes"
 	GetChange                 = "get_change"
@@ -43,6 +44,7 @@ var ErrServiceUnavailable = errors.New("change or artifact service is unavailabl
 // ChangeArguments is the typed application selector. Each tool allows only its
 // declared fields; credentials, producer provenance and leases are never input.
 type ChangeArguments struct {
+	ArchiveURL        bool                             `json:"archive_url,omitempty"`
 	ReleasePick       *tracker.ReleasePickInput        `json:"release_pick,omitempty"`
 	Escape            *tracker.QualityEscape           `json:"escape,omitempty"`
 	ProjectID         string                           `json:"project_id"`
@@ -88,6 +90,8 @@ type ChangeArguments struct {
 
 // ChangeResult contains bounded application data, never rendered HTML.
 type ChangeResult struct {
+	Archive         *tracker.ArchiveDescriptor  `json:"archive,omitempty"`
+	Fragment        *tracker.NativeRecoveryPage `json:"fragment,omitempty"`
 	ValidationAudit *tracker.ValidationAudit    `json:"validation_audit,omitempty"`
 	OrganizationID  string                      `json:"organization_id"`
 	ProjectID       string                      `json:"project_id"`
@@ -191,6 +195,7 @@ func ChangeCatalog() []Definition {
 	props["offset"] = json.RawMessage(`{"type":"integer","minimum":0,"maximum":10000}`)
 	props["cursor"] = json.RawMessage(`{"type":"string","minLength":1,"maxLength":2048}`)
 	props["section"] = json.RawMessage(`{"type":"string","enum":["current","versions","reviews","checks","discussion"]}`)
+	props["archive_url"] = json.RawMessage(`{"type":"boolean"}`)
 	props["viewed"] = json.RawMessage(`{"type":"boolean"}`)
 	props["source"] = json.RawMessage(`{"type":"string","enum":["attempt","workspace"]}`)
 	props["binding"] = json.RawMessage(`{"type":"object","required":["service_id","origin","mode","hosted_opt_in","publisher_token_id"],"properties":{"service_id":{"type":"string","minLength":1,"maxLength":256},"origin":{"type":"string","minLength":1,"maxLength":2048},"mode":{"type":"string","enum":["customer","hosted"]},"hosted_opt_in":{"type":"boolean"},"publisher_token_id":{"type":"string","minLength":1,"maxLength":256}},"additionalProperties":false}`)
@@ -201,6 +206,10 @@ func ChangeCatalog() []Definition {
 	props["policy"] = json.RawMessage(`{"type":"object","required":["policy_id","require_review","required_checks"],"properties":{"review_policy_id":{"type":"string","maxLength":256},"policy_id":{"type":"string","minLength":1,"maxLength":256},"require_review":{"type":"boolean"},"required_checks":{"type":"array","maxItems":256,"items":{"type":"object","required":["name","principal_id","workflow_id","workflow_sha256","source","max_age_seconds"],"properties":{"name":{"type":"string","minLength":1,"maxLength":256},"principal_id":{"type":"string","minLength":1,"maxLength":256},"workflow_id":{"type":"string","minLength":1,"maxLength":256},"workflow_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},"source":{"type":"string","enum":["customer","independent"]},"max_age_seconds":{"type":"integer","minimum":60,"maximum":604800}},"additionalProperties":false}}},"additionalProperties":false}`)
 	var definitions []Definition
 	add := func(name, description, required, optional string, read, material bool) {
+		switch name {
+		case GetChange, GetChangeVersion, GetNativeRun, GetAttemptDiff, GetWorkItemDiff:
+			optional += " archive_url"
+		}
 		fields := map[string]json.RawMessage{"project_id": props["project_id"]}
 		req := []string{"project_id"}
 		for _, k := range strings.Fields(required) {
@@ -209,6 +218,9 @@ func ChangeCatalog() []Definition {
 		}
 		for _, k := range strings.Fields(optional) {
 			fields[k] = props[k]
+		}
+		if name == PublishReleasePick {
+			fields["release_pick"] = json.RawMessage(strings.ReplaceAll(string(fields["release_pick"]), `"pr_number",`, ""))
 		}
 		schema, _ := json.Marshal(struct { //nolint:errcheck // Properties are fixed, valid JSON schema fragments.
 			Type       string                     `json:"type"`
@@ -227,7 +239,8 @@ func ChangeCatalog() []Definition {
 	add(ArtifactReferences, "Read artifact receipts and availability for an owned work item.", "work_item_id", "limit offset", true, false)
 	add(GetArtifactReference, "Read the exact immutable artifact receipt, including historical revisions.", "work_item_id artifact_id revision", "", true, false)
 	add(ArtifactAccess, "Authorize an exact artifact revision for download/export through existing manifest/object endpoints. Token expires within one minute; send it as Bearer, never in a URL. Replays reauthorize and mint fresh ephemeral access.", "work_item_id artifact_id revision sha256 request_id", "", false, false)
-	add(AssociateReleasePick, "Associate an existing single -x release-pick PR with an unfinished native dependent issue. Verifies the recorded develop source merge, repository, exact PR head/base and frozen source identity; preserves holds and active ownership. Opens the normal Change for runner source capture, independent review, gate and PR landing. Does not merge or deploy.", "work_item_id release_pick expected_revision request_id", "", false, true)
+	add(PublishReleasePick, "Publish or recover one verified single -x release-pick PR through the project repository transport. After base_moved, wait for execution to settle, prepare the same landed develop pick on the current head of the same frozen series, and supply the associated pr_number to verify that exact existing PR. Retain source, repository, head branch, release branch and frozen SHA; use the current issue revision. Then call associate_release_pick with the returned identities. Requires an unfinished unheld dependent delivery and an audited landed source. Fresh source capture, validation, review and audit remain mandatory; never retry the old immutable tuple, reset the release branch, approve, merge or deploy.", "work_item_id release_pick expected_revision request_id", "", false, true)
+	add(AssociateReleasePick, "Associate or refresh an existing verified single -x release-pick PR with an unfinished native dependent issue. After base_moved, call publish_release_pick for the refreshed existing PR, then associate its exact returned identities using the current revision. Refresh retains the source, PR, branches, repository and frozen SHA, requires settled execution without holds, and retires the current version while retaining immutable evidence. The existing Change returns to source capture, fresh validation, independent review and audit before landing. Does not merge or deploy.", "work_item_id release_pick expected_revision request_id", "", false, true)
 	add(CreateChange, "Create a Change Request using the existing application command, optionally linking other work items owned by this project.", "work_item_id title request_id", "body linked_issues", false, false)
 	add(PublishChangeVersion, "Publish a genuine operator-authored immutable version without a Run/Attempt. Use an empty expected_version_id for first publication. Optional source_capture metadata and base64 source_bundle use the existing HTTP source owner; complete arguments must fit 64 KiB. Reuses approved policy, artifact validation and promotion; returns the stable published version and live current Change/lane. Unverified artifacts remain unverified; external PR references do not bypass repository protection.", "work_item_id change_id expected_version_id base_sha head_sha merge_base_sha repository code policy_id request_id", "artifacts external source_capture source_bundle", false, false)
 	add(DiscussChange, "Discuss a change or record an evidence-backed escape assessment of its landed version. Human overrides require a browser session. Does not file issues or move workflow state.", "work_item_id change_id body request_id", "version_id escape", false, false)
@@ -292,7 +305,7 @@ func DecodeChangeArguments(name string, raw json.RawMessage) (ChangeArguments, e
 			}
 		}
 	}
-	if name == AssociateReleasePick && (args.ReleasePick == nil || args.ExpectedRevision < 1) {
+	if (name == AssociateReleasePick || name == PublishReleasePick) && (args.ReleasePick == nil || args.ExpectedRevision < 1) {
 		return args, ErrInvalidArguments
 	}
 	if name == PublishChangeVersion {

@@ -70,6 +70,37 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 		pullRequestUpdated bool
 	}{
 		{
+			name:               "current no-commit completion with historical PR evidence advances",
+			runningIssue:       implementProgressIssue("same-head"),
+			hydratedIssue:      implementProgressIssue("same-head"),
+			history:            []store.WorkAttempt{implementProgressHistoryAttempt(1, autoPromoteReworkSignature{PRNumber: 1070, HeadSHA: "same-head"}, store.WorkAttemptTerminalSuccess)},
+			diffStats:          DiffStats{Status: "clean", HeadSHA: "same-head"},
+			currentWorkpadBody: implementProgressStructuredWorkpad(workpad.StatusComplete, "", map[string]string{workpad.FieldCompletionAttempt: "42", workpad.FieldCompletionGeneration: "3"}),
+			generation:         3,
+			wantTerminal:       store.WorkAttemptTerminalSuccess,
+			wantReason:         "success_without_progress_check",
+			wantPreviousHead:   "same-head",
+			wantCurrentHead:    "same-head",
+			wantHydrations:     1,
+			wantReview:         true,
+		},
+		{
+			name:               "stale no-commit receipt with historical PR evidence retries",
+			runningIssue:       implementProgressIssue("same-head"),
+			hydratedIssue:      implementProgressIssue("same-head"),
+			history:            []store.WorkAttempt{implementProgressHistoryAttempt(1, autoPromoteReworkSignature{PRNumber: 1070, HeadSHA: "same-head"}, store.WorkAttemptTerminalSuccess)},
+			diffStats:          DiffStats{Status: "clean", HeadSHA: "same-head"},
+			currentWorkpadBody: implementProgressStructuredWorkpad(workpad.StatusComplete, "", map[string]string{workpad.FieldCompletionAttempt: "41", workpad.FieldCompletionGeneration: "3"}),
+			generation:         3,
+			wantTerminal:       store.WorkAttemptTerminalNoProgress,
+			wantReason:         "unchanged_signature_clean_diff",
+			wantPreviousHead:   "same-head",
+			wantCurrentHead:    "same-head",
+			wantHydrations:     1,
+			wantConsecutive:    1,
+			wantRetry:          true,
+		},
+		{
 			name:            "first attempt succeeds with linked PR",
 			runningIssue:    implementProgressIssue("same-head", "Test"),
 			hydratedIssue:   implementProgressIssue("same-head", "Test"),
@@ -179,7 +210,6 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantHydrations:   1,
 			wantConsecutive:  3,
 			wantBlocked:      true,
-			wantBlockReason:  noProgressLimitReason,
 		},
 		{
 			name:          "disabled signature limit retains unchanged classification",
@@ -221,9 +251,9 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantCurrentHead:  "same-head",
 			wantHydrations:   1,
 			wantBlocked:      true,
-			wantBlockReason:  strandedUnpushedWorkReason,
-			wantComment:      "commits_not_in_pull_request: \"abc123 fix: preserve work\"",
-			wantConsecutive:  3,
+
+			wantComment:     "commits_not_in_pull_request: \"abc123 fix: preserve work\"",
+			wantConsecutive: 3,
 		},
 		{
 			name:          "untracked file with matching pull request head is not stranded",
@@ -262,7 +292,7 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantCurrentHead: "same-head",
 			wantHydrations:  1,
 			wantBlocked:     true,
-			wantBlockReason: strandedUnpushedWorkReason,
+
 			wantComment:     "tracked_paths: \"tracked.go\"",
 			wantConsecutive: 1,
 		},
@@ -272,11 +302,11 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			hydratedIssue:   implementProgressIssue("same-head", "Test"),
 			diffStats:       DiffStats{UnpushedCommits: 1, Status: "clean"},
 			noProgressLimit: 1,
-			wantTerminal:    store.WorkAttemptTerminalSuccess,
+			wantTerminal:    store.WorkAttemptTerminalNoProgress,
 			wantReason:      "workspace_head_unavailable_for_unpushed_check",
 			wantCurrentHead: "same-head",
 			wantHydrations:  1,
-			wantReview:      true,
+			wantRetry:       true,
 		},
 		{
 			name:               "unverified pull request update counts as no progress",
@@ -284,9 +314,10 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			diffStats:          DiffStats{Status: "clean"},
 			noProgressLimit:    3,
 			pullRequestUpdated: true,
-			wantTerminal:       store.WorkAttemptTerminalSuccess,
-			wantReason:         "pull_request_created_or_updated",
+			wantTerminal:       store.WorkAttemptTerminalNoProgress,
+			wantReason:         "completed_clean_diff_without_pull_request",
 			wantRetry:          true,
+			wantConsecutive:    1,
 		},
 		{
 			name:            "first clean completion without linked PR records no progress",
@@ -504,7 +535,7 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantTerminal:    store.WorkAttemptTerminalNoProgress,
 			wantReason:      "completed_clean_diff_without_pull_request",
 			wantBlocked:     true,
-			wantBlockReason: noProgressLimitReason,
+
 			wantConsecutive: 3,
 		},
 		{
@@ -516,7 +547,7 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			},
 			diffStats:       DiffStats{UnpushedCommits: 1, Status: "clean"},
 			noProgressLimit: 3,
-			wantTerminal:    store.WorkAttemptTerminalSuccess,
+			wantTerminal:    store.WorkAttemptTerminalNoProgress,
 			wantReason:      "unpushed_remote_truth_unavailable_without_pull_request",
 			wantRetry:       true,
 		},
@@ -527,12 +558,12 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 				implementProgressNoPRHistoryAttempt(2, DiffStats{FilesChanged: 9, AddedLines: 120, RemovedLines: 30, Fingerprint: "second-diff", Status: "changed"}, "", ""),
 				implementProgressNoPRHistoryAttempt(1, DiffStats{FilesChanged: 8, AddedLines: 119, RemovedLines: 30, Fingerprint: "first-diff", Status: "changed"}, "", ""),
 			},
-			diffStats:         DiffStats{FilesChanged: 10, AddedLines: 121, RemovedLines: 30, Fingerprint: "third-diff", Status: "changed"},
-			noProgressLimit:   3,
-			wantTerminal:      store.WorkAttemptTerminalSuccess,
-			wantReason:        "workspace_diff_present_without_pull_request",
-			wantProgressKinds: []string{"workspace_diff"},
-			wantRetry:         true,
+			diffStats:       DiffStats{FilesChanged: 10, AddedLines: 121, RemovedLines: 30, Fingerprint: "third-diff", Status: "changed"},
+			noProgressLimit: 3,
+			wantTerminal:    store.WorkAttemptTerminalNoProgress,
+			wantReason:      "unchanged_workspace_diff_without_pull_request",
+			wantRetry:       true,
+			wantConsecutive: 1,
 		},
 		{
 			name:               "verifiable non-diff audit field remains in no-progress streak",
@@ -540,12 +571,12 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			history:            []store.WorkAttempt{implementProgressLegacyNoPRHistoryAttempt(1)},
 			diffStats:          DiffStats{Status: "clean"},
 			noProgressLimit:    3,
-			wantTerminal:       store.WorkAttemptTerminalSuccess,
-			wantReason:         "verifiable_non_diff_progress",
-			wantProgressKinds:  []string{"audit_artifact"},
+			wantTerminal:       store.WorkAttemptTerminalNoProgress,
+			wantReason:         "completed_clean_diff_without_pull_request",
 			wantRetry:          true,
 			runningWorkpadBody: implementProgressStructuredWorkpad("in_progress", "", nil),
 			currentWorkpadBody: implementProgressStructuredWorkpad("in_progress", "", map[string]string{"duplicate_active_email_groups": "23"}),
+			wantConsecutive:    2,
 		},
 		{
 			name:               "prose-only workpad update counts as no progress",
@@ -565,12 +596,12 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			runningIssue:       implementProgressIssueWithoutPR(),
 			diffStats:          DiffStats{FilesChanged: 1, AddedLines: 4, Fingerprint: "new-diff", Status: "changed"},
 			noProgressLimit:    3,
-			wantTerminal:       store.WorkAttemptTerminalSuccess,
-			wantReason:         "workspace_diff_and_verifiable_non_diff_progress",
-			wantProgressKinds:  []string{"workspace_diff", "audit_artifact"},
+			wantTerminal:       store.WorkAttemptTerminalNoProgress,
+			wantReason:         "unchanged_workspace_diff_without_pull_request",
 			wantRetry:          true,
 			runningWorkpadBody: implementProgressStructuredWorkpad("in_progress", "", nil),
 			currentWorkpadBody: implementProgressStructuredWorkpad("in_progress", "", map[string]string{"duplicate_active_email_groups": "23"}),
+			wantConsecutive:    1,
 		},
 		{
 			name:         "repeated blocked human action trips despite diff noise",
@@ -605,31 +636,31 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			refreshedState:     "Rework",
 		},
 		{
-			name:            "hydration failure fails open to success",
+			name:            "hydration failure retries",
 			runningIssue:    implementProgressIssue("same-head", "Test"),
 			hydratedIssue:   implementProgressIssue("same-head", "Test"),
 			hydrateErr:      errors.New("github hiccup"),
-			history:         []store.WorkAttempt{implementProgressHistoryAttempt(1, signature, store.WorkAttemptTerminalSuccess)},
+			history:         []store.WorkAttempt{implementProgressHistoryAttempt(1, signature, store.WorkAttemptTerminalNoProgress)},
 			diffStats:       DiffStats{Status: "clean"},
 			noProgressLimit: 3,
-			wantTerminal:    store.WorkAttemptTerminalSuccess,
+			wantTerminal:    store.WorkAttemptTerminalNoProgress,
 			wantReason:      "pull_request_hydration_failed",
 			wantHydrations:  1,
-			wantReview:      true,
-			wantLogContains: "implement worker progress check failed open",
+			wantRetry:       true,
+			wantLogContains: "implement worker progress evidence unavailable",
 		},
 		{
-			name:            "degraded hydration fails open to success",
+			name:            "degraded hydration retries",
 			runningIssue:    implementProgressIssue("same-head", "Test"),
 			hydratedIssue:   implementProgressIssueWithHydrationDegraded("same-head", connector.PullRequestHydrationReasonStaleCachedPullData, "Test"),
-			history:         []store.WorkAttempt{implementProgressHistoryAttempt(1, signature, store.WorkAttemptTerminalSuccess)},
+			history:         []store.WorkAttempt{implementProgressHistoryAttempt(1, signature, store.WorkAttemptTerminalNoProgress)},
 			diffStats:       DiffStats{UnpushedCommits: 1, HeadSHA: "same-head", Status: "clean"},
 			noProgressLimit: 3,
-			wantTerminal:    store.WorkAttemptTerminalSuccess,
+			wantTerminal:    store.WorkAttemptTerminalNoProgress,
 			wantReason:      "pull_request_hydration_unavailable",
 			wantHydrations:  1,
-			wantReview:      true,
-			wantLogContains: "implement worker progress check failed open",
+			wantRetry:       true,
+			wantLogContains: "implement worker progress evidence unavailable",
 		},
 		{
 			name:              "failed check delta is recorded",
@@ -638,14 +669,15 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			history:           []store.WorkAttempt{implementProgressHistoryAttempt(1, signature, store.WorkAttemptTerminalSuccess)},
 			diffStats:         DiffStats{Status: "clean"},
 			noProgressLimit:   3,
-			wantTerminal:      store.WorkAttemptTerminalSuccess,
-			wantReason:        "signature_changed",
+			wantTerminal:      store.WorkAttemptTerminalNoProgress,
+			wantReason:        "unchanged_signature_clean_diff",
 			wantPreviousHead:  "same-head",
 			wantCurrentHead:   "new-head",
 			wantHydrations:    1,
-			wantReview:        true,
+			wantRetry:         true,
 			wantFailedAdded:   []string{"Lint"},
 			wantFailedRemoved: []string{},
+			wantConsecutive:   1,
 		},
 	}
 
@@ -692,7 +724,7 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			attempts := &implementProgressAttemptStore{history: tt.history, completionErr: tt.completionErr}
 			cfg := normalizeConfig(Config{
 				Project:                scheduler.ProjectCandidate{ID: "detent"},
-				AutoPromote:            AutoPromoteConfig{NoProgressLimit: tt.noProgressLimit},
+				AutoPromote:            AutoPromoteConfig{},
 				ActiveStates:           []string{"Todo", "In Progress", "Rework", "Merging"},
 				ObservedStates:         []string{"Human Review", "Blocked"},
 				TerminalStates:         []string{"Done", "Cancelled"},
@@ -714,7 +746,7 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 				StartedAt:        base.Add(-time.Minute),
 				DiffStats:        tt.diffStats,
 				DispatchProgress: implementProgressArtifactSnapshotFromIssue(tt.runningIssue, true),
-				DispatchLoopStart: dispatchLoopTestStart(
+				CompletionSourceStart: completionSourceTestStart(
 					tt.runningIssue.State,
 					autoPromoteReworkSignatureFromIssue(tt.runningIssue, AutoPromoteSummaryFromIssue(tt.runningIssue)),
 					implementProgressDiffStatsFromDiffStats(dispatchStartDiff),
@@ -754,9 +786,6 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			if record.CurrentHeadSHA != tt.wantCurrentHead {
 				t.Fatalf("current head = %q, want %q", record.CurrentHeadSHA, tt.wantCurrentHead)
 			}
-			if record.ConsecutiveNoProgress != tt.wantConsecutive {
-				t.Fatalf("consecutive no progress = %d, want %d", record.ConsecutiveNoProgress, tt.wantConsecutive)
-			}
 			if record.BlockReason != tt.wantBlockReason {
 				t.Fatalf("block reason = %q, want %q", record.BlockReason, tt.wantBlockReason)
 			}
@@ -778,32 +807,25 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			if tracker.hydrations != tt.wantHydrations {
 				t.Fatalf("hydrations = %d, want %d", tracker.hydrations, tt.wantHydrations)
 			}
-			if _, ok := state.Blocked[tt.runningIssue.ID]; ok != tt.wantBlocked {
-				t.Fatalf("blocked present = %v, want %v", ok, tt.wantBlocked)
+			wantsHuman := tt.wantBlocked && tt.workpadHumanAction != ""
+			if _, ok := state.Blocked[tt.runningIssue.ID]; ok != wantsHuman {
+				t.Fatalf("blocked=%v, want typed human=%v", ok, wantsHuman)
 			}
 			if tt.wantBlocked {
-				if len(tracker.updates) != 1 || tracker.updates[0].state != blockedStatusState {
-					t.Fatalf("updates = %#v, want one Blocked update", tracker.updates)
-				}
-				blocked := state.Blocked[tt.runningIssue.ID]
-				if tt.wantBlockReason == noProgressLimitReason || tt.wantBlockReason == dispatchLoopDetectedReason {
-					if blocked.Recovery == nil || blocked.Recovery.Owner != blockedRecoveryOwnerHuman || blocked.Recovery.Predicate != blockedRecoveryPredicateManaged {
-						t.Fatalf("Blocked[%q].Recovery = %#v, want durable human acknowledgement", tt.runningIssue.ID, blocked.Recovery)
+				if wantsHuman {
+					if len(tracker.updates) != 1 || tracker.updates[0].state != blockedStatusState {
+						t.Fatalf("human lane updates: %+v", tracker.updates)
 					}
+					if len(tracker.comments) == 0 || !strings.Contains(tracker.comments[len(tracker.comments)-1].body, tt.workpadHumanAction) {
+						t.Fatal("human action lost from comment")
+					}
+					if _, ok := state.Retry[tt.runningIssue.ID]; ok {
+						t.Fatal("typed human action retained retry")
+					}
+				} else if _, ok := state.Retry[tt.runningIssue.ID]; !ok {
+					t.Fatal("machine progress failure lost retry")
 				}
-				wantComments := 1
-				if tt.wantBlockReason == noProgressLimitReason || tt.wantBlockReason == dispatchLoopDetectedReason || tt.wantBlockReason == "workpad_blocked_unactioned" {
-					wantComments = 3
-				}
-				if tt.refreshedState != "" && tt.refreshedState != tt.runningIssue.State {
-					wantComments++
-				}
-				if len(tracker.comments) != wantComments || !strings.Contains(tracker.comments[wantComments-1].body, tt.wantComment) {
-					t.Fatalf("comments = %#v, want comment containing %q", tracker.comments, tt.wantComment)
-				}
-				if _, ok := state.Retry[tt.runningIssue.ID]; ok {
-					t.Fatalf("Retry[%q] present after block", tt.runningIssue.ID)
-				}
+
 			} else if tt.wantReview {
 				if len(tracker.updates) != 1 || tracker.updates[0].state != autoPromoteSourceState {
 					t.Fatalf("updates = %#v, want one Human Review update", tracker.updates)
@@ -833,91 +855,182 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 	}
 }
 
-func TestHandleRunResultResetsFailureBreakersOnlyForDurableWorkProduct(t *testing.T) {
+func TestHandleRunResultResetsRetryAfterProgress(t *testing.T) {
 	t.Parallel()
 
 	base := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
 	tests := []struct {
-		name           string
-		issue          connector.Issue
-		hydrated       connector.Issue
-		refreshedState string
-		completionLane string
-		wantReset      bool
+		name            string
+		issue           connector.Issue
+		hydrated        connector.Issue
+		refreshedState  string
+		completionLane  string
+		wantReset       bool
+		history         []store.WorkAttempt
+		diff            DiffStats
+		hydrateErr      error
+		historyErr      error
+		missingStore    bool
+		missingHydrator bool
+		unfinished      bool
+		finalState      string
+		assertedUpdate  bool
+		beforeTree      string
+		artifactChurn   bool
+		nativeRepair    string
 	}{
 		{
 			name:  "yieldless completion preserves failures",
 			issue: implementProgressIssueWithoutPR(),
 		},
 		{
-			name:      "linked pull request clears failures",
+			name:      "new pull request head clears failures",
 			issue:     implementProgressIssue("head", "Test"),
-			hydrated:  implementProgressIssue("head", "Test"),
+			hydrated:  implementProgressIssue("new-head", "Test"),
+			history:   []store.WorkAttempt{implementProgressHistoryAttempt(1, autoPromoteReworkSignature{PRNumber: 1070, HeadSHA: "head", FailedChecks: []string{"Test"}}, store.WorkAttemptTerminalSuccess)},
 			wantReset: true,
 		},
 		{
-			name:           "current attempt completion lane clears failures",
+			name:           "accepted completion lane finishes without continuation",
 			issue:          implementProgressIssueWithoutPR(),
 			completionLane: "Human Review",
+			history:        []store.WorkAttempt{implementProgressLegacyNoPRHistoryAttempt(1)},
 			wantReset:      true,
 		},
 		{
-			name:           "tracker state transition clears failures",
-			issue:          implementProgressIssueWithoutPR(),
-			refreshedState: "Rework",
+			name:           "accepted completion lane with PR history finishes",
+			issue:          implementProgressIssue("head"),
+			hydrated:       implementProgressIssue("head"),
+			completionLane: "Human Review",
+			history:        []store.WorkAttempt{implementProgressHistoryAttempt(1, autoPromoteReworkSignature{PRNumber: 1070, HeadSHA: "head"}, store.WorkAttemptTerminalSuccess)},
 			wantReset:      true,
 		},
+		{
+			name:           "tracker state transition retains failures",
+			issue:          implementProgressIssueWithoutPR(),
+			refreshedState: "Rework",
+			history:        []store.WorkAttempt{implementProgressLegacyNoPRHistoryAttempt(1)},
+		},
+		{name: "new head without optional history resets", issue: implementProgressIssue("head", "Test"), hydrated: implementProgressIssue("new-head", "Test"), missingStore: true, wantReset: true},
+		{name: "new head with failing optional history resets", issue: implementProgressIssue("head", "Test"), hydrated: implementProgressIssue("new-head", "Test"), historyErr: errors.New("history unavailable"), wantReset: true},
+		{name: "asserted update without PR retains attempts", issue: implementProgressIssueWithoutPR(), assertedUpdate: true},
+		{name: "asserted update unfinished state retains attempts", issue: implementProgressIssueWithoutPR(), assertedUpdate: true, finalState: "In Progress"},
+		{name: "arbitrary audit field churn retains attempts", issue: implementProgressIssueWithoutPR(), artifactChurn: true},
+		{name: "generated dirty churn retains attempts", issue: implementProgressIssueWithoutPR(), diff: DiffStats{Status: "changed", FilesChanged: 1, Fingerprint: "generated-current"}, history: []store.WorkAttempt{{TerminalState: store.WorkAttemptTerminalSuccess, WorkerMetadataJSON: implementProgressMetadataJSONWithDiff(autoPromoteReworkSignature{}, implementProgressDiffStats{Fingerprint: "generated-previous", FilesChanged: 1, Status: "changed"}, store.WorkAttemptTerminalSuccess)}}},
+		{name: "committed tree without history resets", issue: implementProgressIssueWithoutPR(), beforeTree: "old-tree", diff: DiffStats{Status: "clean", TreeSHA: "new-tree"}, missingStore: true, wantReset: true},
+		{name: "committed tree with failing history resets", issue: implementProgressIssueWithoutPR(), beforeTree: "old-tree", diff: DiffStats{Status: "clean", TreeSHA: "new-tree"}, historyErr: errors.New("history unavailable"), wantReset: true},
+		{name: "identical linked workspace diff retains attempts", issue: implementProgressIssue("head", "Test"), hydrated: implementProgressIssue("head", "Test"), diff: DiffStats{Status: "changed", FilesChanged: 1, Fingerprint: "same-diff", HeadSHA: "head"}, history: []store.WorkAttempt{{TerminalState: store.WorkAttemptTerminalSuccess, WorkerMetadataJSON: implementProgressMetadataJSONWithDiff(autoPromoteReworkSignature{PRNumber: 1070, HeadSHA: "head", FailedChecks: []string{"Test"}}, implementProgressDiffStats{Fingerprint: "same-diff", FilesChanged: 1, Status: "changed"}, store.WorkAttemptTerminalSuccess)}}},
+		{name: "hydration failure retains attempts", issue: implementProgressIssue("head"), hydrateErr: errors.New("hydration unavailable")},
+		{name: "missing hydrator retains attempts", issue: implementProgressIssue("head"), missingHydrator: true},
+		{name: "history failure retains attempts", issue: implementProgressIssue("head"), hydrated: implementProgressIssue("head"), historyErr: errors.New("history unavailable")},
+		{name: "missing history store retains attempts", issue: implementProgressIssue("head"), hydrated: implementProgressIssue("head"), missingStore: true},
+		{name: "missing prior history retains attempts", issue: implementProgressIssue("head"), hydrated: implementProgressIssue("head")},
+		{name: "unfinished Workpad retains attempts", issue: implementProgressIssue("head"), hydrated: implementProgressIssue("head"), unfinished: true, history: []store.WorkAttempt{implementProgressHistoryAttempt(1, autoPromoteReworkSignature{PRNumber: 1070, HeadSHA: "head"}, store.WorkAttemptTerminalSuccess)}},
+		{name: "nil error failed final state retains attempts", issue: implementProgressIssueWithoutPR(), finalState: runpkg.FinalStateFailed},
+		{name: "independent repair dependency preserves attempts", issue: implementProgressIssueWithoutPR(), nativeRepair: "pending", beforeTree: "same-tree", diff: DiffStats{Status: "clean", TreeSHA: "same-tree"}},
+		{name: "completed repair without source progress preserves attempts", issue: implementProgressIssueWithoutPR(), nativeRepair: "done", beforeTree: "same-tree", diff: DiffStats{Status: "clean", TreeSHA: "same-tree"}},
+		{name: "completed repair with verified source progress resets attempts", issue: implementProgressIssueWithoutPR(), nativeRepair: "done", beforeTree: "old-tree", diff: DiffStats{Status: "clean", TreeSHA: "new-tree"}, wantReset: true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
+			if tt.nativeRepair != "" {
+				tt.issue.State = "Rework"
+			}
 			refreshed := cloneIssue(tt.issue)
 			if tt.refreshedState != "" {
 				refreshed.State = tt.refreshedState
 			}
-			tracker := &implementProgressConnector{refreshed: refreshed, hydrated: tt.hydrated}
-			attempts := &implementProgressAttemptStore{}
+			if tt.unfinished {
+				refreshed.Comments = []connector.IssueComment{{Body: implementProgressStructuredWorkpad(workpad.StatusInProgress, "Still working", nil)}}
+			}
+			if tt.artifactChurn {
+				refreshed.Comments = []connector.IssueComment{{Body: implementProgressStructuredWorkpad(workpad.StatusInProgress, "", map[string]string{"audit_counter": "changed"})}}
+			}
+			if tt.wantReset && tt.hydrated.PullRequest != nil {
+				tt.hydrated.PullRequest.Draft = true
+			}
+			tracker := &implementProgressConnector{refreshed: refreshed, hydrated: tt.hydrated, hydrateErr: tt.hydrateErr}
+			attempts := &implementProgressAttemptStore{history: tt.history, historyErr: tt.historyErr}
 			cfg := normalizeConfig(Config{
 				Project:                scheduler.ProjectCandidate{ID: "detent"},
-				AutoPromote:            AutoPromoteConfig{NoProgressLimit: 3},
+				AutoPromote:            AutoPromoteConfig{},
 				ActiveStates:           []string{"Todo", "In Progress", "Rework", "Merging"},
 				ObservedStates:         []string{"Human Review", "Blocked"},
 				TerminalStates:         []string{"Done", "Cancelled"},
 				ContinuationRetryDelay: time.Minute,
 			})
 			orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts}
+			var nativeChange *runpkg.NativeChange
+			var finalMessage string
+			if tt.nativeRepair != "" {
+				orch.cfg.AutoPromote.HumanReview = new(false)
+				orch.connector = &nativeWorkflowConnector{
+					autoPromoteTickConnector: &autoPromoteTickConnector{},
+					states:                   []connector.WorkflowState{{Name: tt.issue.State, Dispatchable: true}},
+					reviewState:              &connector.ChangeReview{Current: true, Reviewed: tt.nativeRepair == "done", ChangesRequested: tt.nativeRepair == "pending", RepairPending: tt.nativeRepair == "pending"},
+				}
+				nativeChange = &runpkg.NativeChange{Changed: true, ChangeID: "change_example", VersionID: "version_example", HeadSHA: "head"}
+				finalMessage = "```detent-status\nschema: 1\nstatus: in_progress\nblockers: []\nhuman_action: null\n```"
+			}
+			if tt.missingStore {
+				orch.workAttempts = nil
+			}
+			if tt.missingHydrator {
+				orch.connector = &backendCapacityTestConnector{}
+			}
+			diff := tt.diff
+			if !diffStatsPresent(diff) {
+				diff = DiffStats{Status: "clean"}
+			}
 			state := newState(cfg)
-			state.Running[tt.issue.ID] = Running{
-				Issue:            tt.issue,
-				Attempt:          3,
-				WorkAttemptID:    42,
-				Mode:             runpkg.RunModeImplement,
-				StartedAt:        base.Add(-time.Minute),
-				DiffStats:        DiffStats{Status: "clean"},
-				DispatchProgress: implementProgressArtifactSnapshotFromIssue(tt.issue, true),
-				CompletionLane:   tt.completionLane,
-			}
-			state.Claimed[tt.issue.ID] = Claimed{Issue: tt.issue, ClaimedAt: base.Add(-time.Minute)}
-			state.InstantFailures[tt.issue.ID] = InstantFailure{Issue: tt.issue, Count: 2}
-			state.RepeatedFailures[tt.issue.ID] = RepeatedFailure{Issue: tt.issue, Count: 2}
+			for _, attempt := range []int{3, 4} {
+				state.Running[tt.issue.ID] = Running{
+					Issue:                 tt.issue,
+					Attempt:               attempt,
+					WorkAttemptID:         42,
+					Mode:                  runpkg.RunModeImplement,
+					StartedAt:             base.Add(-time.Minute),
+					DiffStats:             diff,
+					DispatchProgress:      implementProgressArtifactSnapshotFromIssue(tt.issue, true),
+					CompletionLane:        tt.completionLane,
+					CompletionSourceStart: completionSourceStartRecord{Captured: tt.beforeTree != "", Fingerprint: completionSourceFingerprint{WorkspaceTree: tt.beforeTree}},
+				}
+				state.Claimed[tt.issue.ID] = Claimed{Issue: tt.issue, ClaimedAt: base.Add(-time.Minute)}
 
-			orch.handleRunResult(t.Context(), &state, runpkg.Completion{
-				IssueID:     tt.issue.ID,
-				CompletedAt: base,
-				Request:     runpkg.RunRequest{Mode: runpkg.RunModeImplement},
-				Result:      runpkg.RunResult{FinalState: FinalStateCompleted, DiffStats: DiffStats{Status: "clean"}},
-			})
+				orch.handleRunResult(t.Context(), &state, runpkg.Completion{
+					IssueID:     tt.issue.ID,
+					CompletedAt: base,
+					Request:     runpkg.RunRequest{Mode: runpkg.RunModeImplement},
+					Result:      runpkg.RunResult{FinalState: firstNonBlank(tt.finalState, FinalStateCompleted), DiffStats: diff, PullRequestUpdated: tt.assertedUpdate, NativeChange: nativeChange, FinalMessage: finalMessage},
+				})
 
-			_, instantPresent := state.InstantFailures[tt.issue.ID]
-			_, repeatedPresent := state.RepeatedFailures[tt.issue.ID]
-			if tt.wantReset && (instantPresent || repeatedPresent) {
-				t.Fatalf("failure breakers remain after durable work product: instant=%t repeated=%t", instantPresent, repeatedPresent)
+				if retry, ok := state.Retry[tt.issue.ID]; ok {
+					if tt.nativeRepair != "" && (len(state.Blocked) != 0 || retry.Issue.State != tt.issue.State || !retry.DueAt.After(base) || retry.DueAt.After(base.Add(cfg.MaxRetryBackoff))) {
+						t.Fatalf("repair retry lost dispatchable lane or capped backoff: retry=%+v blocked=%+v", retry, state.Blocked)
+					}
+					if !tt.wantReset && retry.Attempt != attempt+1 {
+						t.Fatalf("no-progress retry attempt = %d, want %d", retry.Attempt, attempt+1)
+					}
+					if tt.wantReset && retry.Attempt != 1 {
+						t.Fatalf("successful continuation attempt = %d, want 1", retry.Attempt)
+					}
+				} else if tt.completionLane == "" {
+					t.Fatal("completion lost required retry")
+				} else {
+					completed, ok := state.Completed[tt.issue.ID]
+					_, claimed := state.Claimed[tt.issue.ID]
+					if !ok || completed.FinalState != FinalStateCompleted || claimed || len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalSuccess {
+						t.Fatal("completion lane did not finish the accepted attempt")
+					}
+				}
+				if tt.wantReset {
+					break
+				}
 			}
-			if !tt.wantReset && (!instantPresent || !repeatedPresent) {
-				t.Fatalf("failure breakers cleared after yieldless completion: instant=%t repeated=%t", instantPresent, repeatedPresent)
-			}
+
 		})
 	}
 }
@@ -997,8 +1110,7 @@ func TestHandleRunResultAcceptsMergedNoDiffCompletion(t *testing.T) {
 	cfg := normalizeConfig(Config{
 		Project: scheduler.ProjectCandidate{ID: "detent"},
 		AutoPromote: AutoPromoteConfig{
-			Enabled:         true,
-			NoProgressLimit: 3,
+			Enabled: true,
 		},
 		ActiveStates:           []string{"Todo", "In Progress", "Rework", "Merging"},
 		ObservedStates:         []string{"Human Review", "Blocked"},
@@ -1043,9 +1155,6 @@ func TestHandleRunResultAcceptsMergedNoDiffCompletion(t *testing.T) {
 	record := implementProgressRecordFromCompletion(t, completion)
 	if record.Reason != implementMergedCompletionReason {
 		t.Fatalf("Reason = %q, want %s", record.Reason, implementMergedCompletionReason)
-	}
-	if record.ConsecutiveNoProgress != 0 {
-		t.Fatalf("ConsecutiveNoProgress = %d, want 0", record.ConsecutiveNoProgress)
 	}
 	if _, blocked := state.Blocked[runningIssue.ID]; blocked {
 		t.Fatalf("Blocked[%q] present after accepted merged completion", runningIssue.ID)
@@ -1098,7 +1207,7 @@ func TestHandleRunResultStopsCompletedGateWaitContinuations(t *testing.T) {
 			mutate: func(issue *connector.Issue, _ *Config) { issue.PullRequest.CodexReviewState = "PENDING" }},
 		{name: "validator evidence remains pending", ready: true, wantTerminal: store.WorkAttemptTerminalSuccess, wantHydrations: 2,
 			mutate: func(_ *connector.Issue, cfg *Config) { cfg.AutoPromote.Gate.Validator.Enabled = true }},
-		{name: "unknown PR authority remains held", ready: true, wantTerminal: store.WorkAttemptTerminalSuccess, wantHydrations: 1,
+		{name: "unknown PR authority retries", ready: true, wantTerminal: store.WorkAttemptTerminalNoProgress, wantHydrations: 1,
 			mutate: func(issue *connector.Issue, _ *Config) {
 				issue.PullRequest.HydrationUnavailableReason = associationUnavailable
 			}},
@@ -1108,8 +1217,8 @@ func TestHandleRunResultStopsCompletedGateWaitContinuations(t *testing.T) {
 				cfg.AutoPromote.Gate.Kind = gate.KindHumanReview
 			}},
 		{
-			name:           "initial success waits for gate without continuation",
-			wantTerminal:   store.WorkAttemptTerminalSuccess,
+			name:           "missing prior progress retries",
+			wantTerminal:   store.WorkAttemptTerminalNoProgress,
 			wantHydrations: 1,
 		},
 		{
@@ -1136,11 +1245,10 @@ func TestHandleRunResultStopsCompletedGateWaitContinuations(t *testing.T) {
 			cfg := normalizeConfig(Config{
 				Project: scheduler.ProjectCandidate{ID: "detent"},
 				AutoPromote: AutoPromoteConfig{
-					Enabled:         true,
-					QuietDuration:   0,
-					GateWaitState:   autoPromoteGateWaitSource,
-					NoProgressLimit: 1,
-					Gate:            gate.Config{Kind: gate.KindCommand},
+					Enabled:       true,
+					QuietDuration: 0,
+					GateWaitState: autoPromoteGateWaitSource,
+					Gate:          gate.Config{Kind: gate.KindCommand},
 				},
 				ActiveStates:           []string{"Todo", "In Progress", "Rework", "Merging"},
 				ObservedStates:         []string{"Human Review", "Blocked"},
@@ -1186,6 +1294,15 @@ func TestHandleRunResultStopsCompletedGateWaitContinuations(t *testing.T) {
 			}
 			if tracker.hydrations != tt.wantHydrations {
 				t.Fatalf("hydrations = %d, want %d", tracker.hydrations, tt.wantHydrations)
+			}
+			if tt.wantTerminal == store.WorkAttemptTerminalNoProgress {
+				if retry, ok := state.Retry[issue.ID]; !ok || retry.Attempt != 3 {
+					t.Fatalf("retry = %+v, want attempt 3", retry)
+				}
+				if len(tracker.updates) != 0 {
+					t.Fatalf("unknown progress changed lane: %+v", tracker.updates)
+				}
+				return
 			}
 			if _, ok := state.Completed[issue.ID]; !ok {
 				t.Fatalf("Completed[%q] missing after gate-wait completion", issue.ID)
@@ -1343,10 +1460,9 @@ func TestHandleRunResultHoldsCompletedReworkGateWait(t *testing.T) {
 			cfg := normalizeConfig(Config{
 				Project: scheduler.ProjectCandidate{ID: "detent"},
 				AutoPromote: AutoPromoteConfig{
-					Enabled:         true,
-					GateWaitState:   autoPromoteGateWaitSource,
-					NoProgressLimit: 3,
-					Gate:            gate.Config{Kind: gate.KindCommand},
+					Enabled:       true,
+					GateWaitState: autoPromoteGateWaitSource,
+					Gate:          gate.Config{Kind: gate.KindCommand},
 				},
 				ActiveStates:           []string{"Todo", "In Progress", "Rework", "Merging"},
 				ObservedStates:         []string{"Human Review", "Blocked"},
@@ -1435,7 +1551,7 @@ func TestHandleRunResultCommentsOnObservedLaneTransition(t *testing.T) {
 	attempts := &implementProgressAttemptStore{}
 	cfg := normalizeConfig(Config{
 		Project:                scheduler.ProjectCandidate{ID: "detent"},
-		AutoPromote:            AutoPromoteConfig{NoProgressLimit: 3},
+		AutoPromote:            AutoPromoteConfig{},
 		ActiveStates:           []string{"Todo", "In Progress", "Rework", "Merging"},
 		ObservedStates:         []string{"Human Review", "Blocked"},
 		TerminalStates:         []string{"Done", "Cancelled"},
@@ -1507,7 +1623,6 @@ func TestHandleRunResultReappliesCITriggerAfterWorkerPush(t *testing.T) {
 	cfg := normalizeConfig(Config{
 		Project: scheduler.ProjectCandidate{ID: "detent"},
 		AutoPromote: AutoPromoteConfig{
-			NoProgressLimit: 3,
 			Gate: gate.Config{
 				Kind:                         gate.KindCommand,
 				RequiredStatusChecks:         []string{"Test", "Checks"},
@@ -1585,7 +1700,6 @@ func TestHandleRunResultRefreshesNewPullRequestBeforeCITrigger(t *testing.T) {
 	cfg := normalizeConfig(Config{
 		Project: scheduler.ProjectCandidate{ID: "detent"},
 		AutoPromote: AutoPromoteConfig{
-			NoProgressLimit: 3,
 			Gate: gate.Config{
 				Kind:                         gate.KindCommand,
 				RequiredStatusChecks:         []string{"Test", "Checks"},
@@ -1669,7 +1783,6 @@ func TestHandleRunResultRefreshesStalePullRequestAfterHydrationFailure(t *testin
 	cfg := normalizeConfig(Config{
 		Project: scheduler.ProjectCandidate{ID: "detent"},
 		AutoPromote: AutoPromoteConfig{
-			NoProgressLimit: 3,
 			Gate: gate.Config{
 				Kind:                         gate.KindCommand,
 				RequiredStatusChecks:         []string{"Test", "Checks"},
@@ -1724,58 +1837,6 @@ func TestHandleRunResultRefreshesStalePullRequestAfterHydrationFailure(t *testin
 	}
 	if tracker.hydrations != 3 {
 		t.Fatalf("hydrations = %d, want completion hydration, push refresh, and trigger refresh", tracker.hydrations)
-	}
-}
-
-func TestStickyBlockReasonIncludesCircuitBreakers(t *testing.T) {
-	t.Parallel()
-
-	for _, reason := range []string{
-		noProgressLimitReason,
-		dispatchLoopDetectedReason,
-		terminalAttemptRetryLimitCause,
-		workspacePreparationRetryLimitCause,
-		workpadBlockedUnactionedReason,
-		"token_ceiling_circuit_breaker",
-		tokenCeilingBlockedReasonPrefix + "observed 16100000 tokens above the 16000000 max_session_tokens ceiling",
-		mergeWorkerRetryExhaustedReason,
-	} {
-		if !stickyBlockReason(reason) {
-			t.Fatalf("stickyBlockReason(%q) = false, want true", reason)
-		}
-	}
-}
-
-func TestBlockImplementProgressRequiresHumanAcknowledgement(t *testing.T) {
-	t.Parallel()
-
-	for _, reason := range []string{noProgressLimitReason, dispatchLoopDetectedReason} {
-		t.Run(reason, func(t *testing.T) {
-			t.Parallel()
-
-			tracker := &implementProgressConnector{}
-			orch := &Orchestrator{connector: tracker}
-			state := newState(normalizeConfig(Config{}))
-			issue := connector.Issue{ID: "issue-" + reason, Identifier: "digitaldrywood/detent#1943", State: "Rework"}
-			state.Claimed[issue.ID] = Claimed{Issue: issue}
-			blockedAt := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
-
-			if !orch.blockImplementProgress(t.Context(), &state, Running{Issue: issue, Mode: runpkg.RunModeImplement}, implementCompletionProgressDecision{
-				Issue:                 issue,
-				BlockReason:           reason,
-				NoProgressLimit:       3,
-				ConsecutiveNoProgress: 3,
-			}, blockedAt) {
-				t.Fatal("blockImplementProgress() = false, want true")
-			}
-			blocked := state.Blocked[issue.ID]
-			if blocked.Recovery == nil || blocked.Recovery.Owner != blockedRecoveryOwnerHuman || blocked.Recovery.Predicate != blockedRecoveryPredicateManaged {
-				t.Fatalf("Blocked[%q].Recovery = %#v, want human-owned managed park", issue.ID, blocked.Recovery)
-			}
-			if blocked.RecoveryReason == "" || !strings.Contains(blocked.RecoveryReason, "human") {
-				t.Fatalf("Blocked[%q].RecoveryReason = %q, want human acknowledgement", issue.ID, blocked.RecoveryReason)
-			}
-		})
 	}
 }
 
@@ -1983,126 +2044,19 @@ func TestCompletedReworkGateWaitProgressPreservesStrandedCommitDecision(t *testi
 	}
 }
 
-func TestImplementProgressBlockComment(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name         string
-		decision     implementCompletionProgressDecision
-		wantContains []string
-		wantAbsent   []string
-	}{
-		{
-			name: "boundary evidence",
-			decision: implementCompletionProgressDecision{
-				BlockReason:            workpadBlockedUnactionedReason,
-				NoProgressLimit:        3,
-				ConsecutiveNoProgress:  2,
-				ConsecutiveHumanAction: 3,
-				HumanAction:            "Approve release\nConfirm rollback",
-				CurrentSignature:       autoPromoteReworkSignature{PRNumber: 42, HeadSHA: "head", FailedChecks: []string{"test"}},
-				PreviousSignature:      autoPromoteReworkSignature{HeadSHA: "previous"},
-				FailedChecksAdded:      []string{"test"},
-				FailedChecksRemoved:    []string{"lint"},
-				WorkspaceDiffStats:     DiffStats{Status: "clean"},
-			},
-			wantContains: []string{"Workpad requests human action", "workpad_blocked_unactioned", "pull/42", "head", "previous", "failed_checks_added", "0 files", "> Approve release", "> Confirm rollback"},
-		},
-		{
-			name: "dispatch loop stale carry",
-			decision: implementCompletionProgressDecision{
-				BlockReason:           dispatchLoopDetectedReason,
-				NoProgressLimit:       3,
-				ConsecutiveNoProgress: 3,
-				WorkspaceDiffStats: DiffStats{
-					FilesChanged:    1,
-					AddedLines:      1,
-					RemovedLines:    1,
-					UnpushedCommits: 2,
-					HeadSHA:         "workspace-head",
-					Fingerprint:     "diff-fingerprint",
-					Status:          "changed",
-				},
-			},
-			wantContains: []string{
-				"workspace unchanged across 3 attempts",
-				"head `workspace-head`",
-				"diff fingerprint `diff-fingerprint`",
-				"identical since attempt 1",
-				"carrying 1 changed file (+1/-1), 2 unpushed commits, unchanged since attempt 1",
-			},
-			wantAbsent: []string{"workspace_diffstat", "(changed)"},
-		},
-		{
-			name: "historical dispatch loop clean workspace",
-			decision: implementCompletionProgressDecision{
-				BlockReason:           dispatchLoopDetectedReason,
-				ConsecutiveNoProgress: 3,
-				WorkspaceDiffStats:    DiffStats{Status: "clean", HeadSHA: "workspace-head"},
-			},
-			wantContains: []string{"workspace unchanged across 3 attempts", "head `workspace-head`", "identical since attempt 1"},
-			wantAbsent:   []string{"carried stale work", "diff fingerprint", "workspace evidence: unavailable"},
-		},
-		{
-			name: "historical dispatch loop fingerprint without head",
-			decision: implementCompletionProgressDecision{
-				BlockReason:           dispatchLoopDetectedReason,
-				ConsecutiveNoProgress: 3,
-				WorkspaceDiffStats: DiffStats{
-					FilesChanged: 2, AddedLines: 5, RemovedLines: 3, UnpushedCommits: 1,
-					Fingerprint: "historical-diff", Status: "changed",
-				},
-			},
-			wantContains: []string{"diff fingerprint `historical-diff`", "carrying 2 changed files (+5/-3), 1 unpushed commit, unchanged since attempt 1"},
-			wantAbsent:   []string{"head `", "workspace_diffstat", "workspace evidence: unavailable"},
-		},
-		{
-			name: "dispatch loop unavailable workspace evidence",
-			decision: implementCompletionProgressDecision{
-				BlockReason:           dispatchLoopDetectedReason,
-				NoProgressLimit:       3,
-				ConsecutiveNoProgress: 3,
-			},
-			wantContains: []string{"workspace evidence: unavailable"},
-			wantAbsent:   []string{"workspace unchanged", "identical since"},
-		},
-	}
-	issue := connector.Issue{PullRequest: &connector.PullRequest{URL: "https://github.test/pull/42"}}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			comment := implementProgressBlockComment(issue, tt.decision)
-			for _, want := range tt.wantContains {
-				if !strings.Contains(comment, want) {
-					t.Fatalf("comment missing %q:\n%s", want, comment)
-				}
-			}
-			for _, unwanted := range tt.wantAbsent {
-				if strings.Contains(comment, unwanted) {
-					t.Fatalf("comment contains misleading evidence %q:\n%s", unwanted, comment)
-				}
-			}
-		})
-	}
-	if got := implementProgressRecoveryReason(tests[0].decision); got != tests[0].decision.HumanAction {
-		t.Fatalf("implementProgressRecoveryReason() = %q, want %q", got, tests[0].decision.HumanAction)
-	}
-}
-
 func TestEvaluateImplementCompletionProgressFailureBoundaries(t *testing.T) {
 	t.Parallel()
 
 	noPR := implementProgressIssueWithoutPR()
 	var logs bytes.Buffer
 	orch := &Orchestrator{
-		cfg:          Config{AutoPromote: AutoPromoteConfig{NoProgressLimit: 3}},
+		cfg:          Config{AutoPromote: AutoPromoteConfig{}},
 		connector:    &implementProgressConnector{},
 		workAttempts: &implementProgressAttemptStore{historyErr: errors.New("history unavailable")},
 		logger:       slog.New(slog.NewTextHandler(&logs, nil)),
 	}
 	decision := orch.evaluateImplementCompletionProgress(t.Context(), Running{Issue: noPR}, FinalStateCompleted, false)
-	if decision.Reason != "attempt_history_lookup_failed" || !strings.Contains(decision.Warning, "history unavailable") || !strings.Contains(logs.String(), "history unavailable") {
+	if decision.Reason != "workspace_diffstat_unavailable_without_pull_request" || !strings.Contains(decision.Warning, "history unavailable") || !strings.Contains(logs.String(), "history unavailable") {
 		t.Fatalf("history failure decision = %#v logs = %q", decision, logs.String())
 	}
 
@@ -2128,31 +2082,28 @@ func TestEvaluateImplementCompletionProgressFailureBoundaries(t *testing.T) {
 	}
 }
 
-func TestImplementProgressArtifactKinds(t *testing.T) {
+func TestImplementProgressSourceKinds(t *testing.T) {
 	t.Parallel()
-
-	tests := []struct {
-		name     string
-		previous implementProgressArtifactSnapshot
-		current  implementProgressArtifactSnapshot
-		want     []string
+	for _, tt := range []struct {
+		name                  string
+		before, after         string
+		beforeTree, afterTree string
+		want                  string
 	}{
-		{name: "unchanged structured record", previous: implementProgressArtifactSnapshot{TrackerState: "in progress", WorkpadRead: true}, current: implementProgressArtifactSnapshot{TrackerState: "in progress", WorkpadRead: true}, want: []string{}},
-		{name: "tracker transition", previous: implementProgressArtifactSnapshot{TrackerState: "in progress"}, current: implementProgressArtifactSnapshot{TrackerState: "blocked"}, want: []string{"tracker_state_transition"}},
-		{name: "linked blocker", previous: implementProgressArtifactSnapshot{}, current: implementProgressArtifactSnapshot{NativeBlockers: []string{"blocker-id"}}, want: []string{"linked_blocker"}},
-		{name: "typed workpad predicate", previous: implementProgressArtifactSnapshot{WorkpadRead: true}, current: implementProgressArtifactSnapshot{WorkpadRead: true, WorkpadReason: "missing_current_head_ci"}, want: []string{"workpad_predicate"}},
-		{name: "completion receipt", previous: implementProgressArtifactSnapshot{WorkpadRead: true, WorkpadStatus: workpad.StatusComplete, WorkpadReceiptHash: "before"}, current: implementProgressArtifactSnapshot{WorkpadRead: true, WorkpadStatus: workpad.StatusComplete, WorkpadReceiptHash: "after"}, want: []string{"artifact_receipt"}},
-		{name: "unchanged completion receipt", previous: implementProgressArtifactSnapshot{WorkpadRead: true, WorkpadStatus: workpad.StatusComplete, WorkpadReceiptHash: "same"}, current: implementProgressArtifactSnapshot{WorkpadRead: true, WorkpadStatus: workpad.StatusComplete, WorkpadReceiptHash: "same"}, want: []string{}},
-		{name: "audit artifact", previous: implementProgressArtifactSnapshot{WorkpadRead: true}, current: implementProgressArtifactSnapshot{WorkpadRead: true, WorkpadFields: map[string]string{"duplicate_groups": "23"}}, want: []string{"audit_artifact"}},
-		{name: "completion assertion is not an audit artifact", previous: implementProgressArtifactSnapshot{WorkpadRead: true}, current: implementProgressArtifactSnapshot{WorkpadRead: true, WorkpadFields: map[string]string{workpad.FieldCompletionKind: workpad.CompletionOperational, workpad.FieldCompletionEvidence: "done"}}, want: []string{}},
-		{name: "unverified workpad is ignored", previous: implementProgressArtifactSnapshot{}, current: implementProgressArtifactSnapshot{WorkpadReason: "missing_current_head_ci", WorkpadFields: map[string]string{"duplicate_groups": "23"}}, want: []string{}},
-	}
-
-	for _, tt := range tests {
+		{name: "unchanged PR", before: "head", after: "head"},
+		{name: "head whitespace", before: " head ", after: "head"},
+		{name: "changed PR", before: "head", after: "new-head", want: "pull_request"},
+		{name: "new PR", after: "head", want: "pull_request"},
+		{name: "changed committed tree", beforeTree: "tree", afterTree: "new-tree", want: "committed_tree"},
+		{name: "same tree with new commit", before: "", beforeTree: "tree", afterTree: "tree"},
+		{name: "missing tree baseline", afterTree: "tree"},
+	} {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			if got := implementProgressArtifactKinds(tt.previous, tt.current); !reflect.DeepEqual(got, tt.want) {
-				t.Fatalf("implementProgressArtifactKinds() = %#v, want %#v", got, tt.want)
+			running := Running{CompletionSourceStart: completionSourceStartRecord{Fingerprint: completionSourceFingerprint{PRHeadSHA: tt.before, WorkspaceTree: tt.beforeTree}, LaneAvailable: true}, DiffStats: DiffStats{TreeSHA: tt.afterTree}}
+			issue := connector.Issue{PullRequest: &connector.PullRequest{HeadSHA: tt.after}}
+			got := implementProgressSourceKinds(running, issue)
+			if tt.want == "" && len(got) != 0 || tt.want != "" && (len(got) != 1 || got[0] != tt.want) {
+				t.Fatalf("source progress = %v, want %q", got, tt.want)
 			}
 		})
 	}
@@ -2316,8 +2267,8 @@ func implementProgressDependencyDeferralHistoryAttempt(id int64, identifier stri
 		TerminalState: store.WorkAttemptTerminalSuccess,
 		CompletedAt:   time.Date(2026, 8, 8, 18, int(id), 0, 0, time.UTC),
 		WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{
-			"run_mode":                   runpkg.RunModeImplement,
-			dispatchLoopStartMetadataKey: dispatchLoopTestStart("In Progress", autoPromoteReworkSignature{}, diff),
+			"run_mode":                       runpkg.RunModeImplement,
+			completionSourceStartMetadataKey: completionSourceTestStart("In Progress", autoPromoteReworkSignature{}, diff),
 			implementProgressMetadataKey: implementProgressRecord{
 				Outcome:            string(store.WorkAttemptTerminalSuccess),
 				Reason:             implementDependencyDeferralReason,
@@ -2335,7 +2286,7 @@ func implementProgressNoPRHistoryAttempt(id int64, diffStats DiffStats, humanAct
 	if strings.TrimSpace(humanAction) != "" {
 		workpadStatus = "blocked"
 	}
-	diffStats = dispatchLoopTestRunnerDiff(diffStats)
+	diffStats = completionSourceTestRunnerDiff(diffStats)
 	lane := strings.TrimSpace(trackerState)
 	if lane == "" {
 		lane = "In Progress"
@@ -2352,8 +2303,8 @@ func implementProgressNoPRHistoryAttempt(id int64, diffStats DiffStats, humanAct
 		TerminalState: store.WorkAttemptTerminalSuccess,
 		CompletedAt:   time.Date(2026, 7, 11, 12, int(id), 0, 0, time.UTC),
 		WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{
-			"run_mode":                   runpkg.RunModeImplement,
-			dispatchLoopStartMetadataKey: dispatchLoopTestStart(lane, autoPromoteReworkSignature{}, implementProgressDiffStatsFromDiffStats(diffStats)),
+			"run_mode":                       runpkg.RunModeImplement,
+			completionSourceStartMetadataKey: completionSourceTestStart(lane, autoPromoteReworkSignature{}, implementProgressDiffStatsFromDiffStats(diffStats)),
 			implementProgressMetadataKey: map[string]any{
 				"outcome":            string(store.WorkAttemptTerminalSuccess),
 				"reason":             "workspace_diff_present_without_pull_request",
@@ -2400,8 +2351,8 @@ func implementProgressMetadataJSON(signature autoPromoteReworkSignature, termina
 
 func implementProgressMetadataJSONWithDiff(signature autoPromoteReworkSignature, diff implementProgressDiffStats, terminal store.WorkAttemptTerminalState) string {
 	return marshalWorkAttemptJSON(map[string]any{
-		"run_mode":                   runpkg.RunModeImplement,
-		dispatchLoopStartMetadataKey: dispatchLoopTestStart("In Progress", signature, diff),
+		"run_mode":                       runpkg.RunModeImplement,
+		completionSourceStartMetadataKey: completionSourceTestStart("In Progress", signature, diff),
 		implementProgressMetadataKey: implementProgressRecord{
 			Outcome:            string(terminal),
 			Reason:             "test_history",

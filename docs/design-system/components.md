@@ -4,7 +4,7 @@ This document is generated from [`web/conversation/src/design-system/catalog.jso
 
 Each contract states what a component is for, how to import it, the variants its source defines, the interaction states it owns, its keyboard behaviour and what to use instead. The source file is the owner of the component's appearance and behaviour; features compose it and do not restyle it. A proposed entry names a component Detent does not have yet; listing one does not authorize building it.
 
-Catalog totals: 146 entries; by kind: 57 primitive, 82 composition, 7 surface; by status: 146 available, 0 proposed, 0 exception.
+Catalog totals: 147 entries; by kind: 57 primitive, 82 composition, 8 surface; by status: 147 available, 0 proposed, 0 exception.
 
 ## Actions
 
@@ -82,7 +82,7 @@ Single-line text entry with an associated Label; `size="compact"` in toolbars an
 - Kind: Primitive; status: available; id: `input`.
 - Import: `import { Input, InputProps } from "~/components/ui/input";`
 - Source: [src/components/ui/input.tsx](../../web/conversation/src/components/ui/input.tsx).
-- Variants: `size`: `sm`, `compact`, `default`, `lg`; `font`: `default`, `mono`.
+- Variants: `size`: `sm`, `compact`, `default`, `lg`, `touch`; `font`: `default`, `mono`.
 - States: hover, focus-visible, disabled, invalid, read-only.
 - Keyboard: Native text input editing and selection.
 - Avoid: Multi-line text (use Textarea), choices from a known list (use Select or Combobox) and search inside a popup (the Command and Combobox inputs own that).
@@ -90,7 +90,7 @@ Single-line text entry with an associated Label; `size="compact"` in toolbars an
 
 ### Textarea
 
-Multi-line form text such as descriptions and notes; it sizes to its content.
+Multi-line form text such as descriptions and notes; it sizes to its content. Set autoGrow=false when rows should control the reading area.
 
 - Kind: Primitive; status: available; id: `textarea`.
 - Import: `import { Textarea, TextareaProps } from "~/components/ui/textarea";`
@@ -226,7 +226,7 @@ One saved value from a short, known list. Use SelectButton to give a Menu or Com
 - Kind: Primitive; status: available; id: `select`.
 - Import: `import { Select, SelectTrigger, SelectButton, selectTriggerVariants, SelectValue, SelectPopup, SelectContent, SelectItem, SelectSeparator, SelectGroup, SelectGroupLabel } from "~/components/ui/select";`
 - Source: [src/components/ui/select.tsx](../../web/conversation/src/components/ui/select.tsx).
-- Variants: `variant`: `default`, `ghost`; `size`: `compact`, `default`, `lg`, `sm`, `xs`.
+- Variants: `variant`: `default`, `ghost`; `size`: `compact`, `default`, `lg`, `sm`, `xs`, `touch`.
 - States: hover, focus-visible, open, highlighted, selected, disabled, invalid.
 - Keyboard: Base UI select: Enter, Space or arrow keys open; arrow keys move; typeahead jumps; Enter selects; Escape closes and returns focus.
 - Avoid: Searchable or long lists (use Combobox) and lists of actions (use Menu).
@@ -368,12 +368,12 @@ A rich preview of a linked entity, such as a pull request link preview.
 
 ### Usage meter
 
-Plan allowance consumption with human units, remaining capacity and visible warning text at 80% and limit-reached text at 100%. Supports byte sizes, counts, record counts, duration limits, unlimited and excluded allowances. Minimum readings show a warning within 20% above a floor and error at the floor; valueText and statusText adapt the visible reading to its domain.
+Plan allowance consumption with human units, remaining capacity and visible warning text at 80% and limit-reached text at 100%. Supports byte sizes, counts, record counts, duration limits, unlimited and excluded allowances. Minimum readings show a warning within 20% above a floor and error at the floor; valueText and statusText adapt the visible reading to its domain. Included credit meters use limitTone=warning for an amber exhausted bar with neutral value and reset text.
 
 - Kind: Primitive; status: available; id: `usage-meter`.
 - Import: `import { UsageMeter, formatUsageValue, usageMeterState, UsageUnit } from "~/components/ui/usage-meter";`
 - Source: [src/components/ui/usage-meter.tsx](../../web/conversation/src/components/ui/usage-meter.tsx).
-- Variants: none.
+- Variants: `layout`: `stacked`, `row`; `limitTone`: `error`, `warning`.
 - States: normal, warning, limit reached, not included, limit only, unlimited.
 - Keyboard: Static meter with an accessible label, formatted value and description; not focusable.
 - Avoid: Indeterminate loading (use Spinner) and actions (use Button).
@@ -412,7 +412,7 @@ A short static status or count with semantic colour, paired with text so colour 
 - Kind: Primitive; status: available; id: `badge`.
 - Import: `import { Badge, badgeVariants } from "~/components/ui/badge";`
 - Source: [src/components/ui/badge.tsx](../../web/conversation/src/components/ui/badge.tsx).
-- Variants: `variant`: `default`, `secondary`, `outline`, `info`, `success`, `warning`, `error`, `destructive`, `label`; `size`: `control`, `default`, `lg`, `sm`.
+- Variants: `variant`: `default`, `secondary`, `outline`, `info`, `success`, `warning-outline`, `warning`, `error`, `destructive`, `label`; `size`: `control`, `default`, `lg`, `sm`.
 - States: none of its own.
 - Keyboard: Static by default; with `render` it can become a link or button and takes that element's keyboard behaviour.
 - Avoid: Actions (use Button) and context reference chips in the composer (use the file tag chip).
@@ -472,13 +472,13 @@ Explaining why a region has no content and offering the relevant next action. `s
 
 ### Runner status dot
 
-Runner health beside a runner name in Fleet and Activity; healthy active runners pulse green, inactive runners remain neutral.
+Runner health beside a runner name in Runners and Activity; healthy active runners pulse green, draining runners use an outlined dot, and offline runners remain neutral.
 
 - Kind: Composition; status: available; id: `runner-status-dot`.
 - Import: `import { RunnerStatusDot } from "~/components/RunnerStatusDot";`
 - Source: [src/components/RunnerStatusDot.tsx](../../web/conversation/src/components/RunnerStatusDot.tsx).
 - Variants: none.
-- States: healthy, paused, failed, needs attention, asleep, offline.
+- States: healthy, draining, paused, failed, needs attention, asleep, offline.
 - Keyboard: Static status image; the surrounding control owns keyboard behavior.
 - Avoid: Work stage or job outcome; use StageProgress for stage timing.
 
@@ -511,15 +511,15 @@ The building blocks of Detent's app sidebar: provider, rail, groups and SidebarM
 
 ### Tabs
 
-Sections of one page that share a header, such as the Reports Overview, Flow, Quality, Cost and Failures tabs. The list scrolls horizontally on narrow screens; when each tab has its own URL, select the tab from the route and navigate in `onValueChange`.
+Sections of one page that share a header, such as Reports and per-project settings. Per-project settings use line-variant Tabs, one tab per URL. The list scrolls horizontally on narrow screens; when each tab has its own URL, select the tab from the route and navigate in `onValueChange`.
 
 - Kind: Primitive; status: available; id: `tabs`.
 - Import: `import { Tabs, TabsList, TabsTab, TabsPanel } from "~/components/ui/tabs";`
 - Source: [src/components/ui/tabs.tsx](../../web/conversation/src/components/ui/tabs.tsx).
-- Variants: none.
+- Variants: `variant`: `line`, `segmented`.
 - States: selected, hover, focus-visible, disabled.
 - Keyboard: Base UI tabs: Tab enters the list, arrow keys move between tabs and select them, Home and End jump to the ends; the panel follows the list in reading order.
-- Avoid: A small set of view options inside a section (use ToggleGroup), right-panel surfaces (use Right panel tabs) and settings sections (use the settings navigation).
+- Avoid: A small set of view options inside a section (use ToggleGroup), right-panel surfaces (use Right panel tabs) and organization settings sections (use SettingsSidebarNav).
 - Related: [Toggle group](#toggle-group), [Right panel tabs](#right-panel-tabs), [Workspace page header](#workspace-page-header).
 
 ## Structure
@@ -657,7 +657,7 @@ A headline number with its label, an optional change against the prior period an
 
 ### Chart
 
-Report charts over shared categories: grouped or stacked bars, a dashed comparison line and a p50–p90 band, with a hover or keyboard readout of every series. `ChartPanel` is the titled card that holds a chart and the rows below it, `ProportionBar` one bar split into shares and `BarMeter` a horizontal bar for a ranked list. Callers pass colours from the semantic, lane or ink-mix mappings, and every series appears in a `ChartLegend`. When some categories carry an empty `shortLabel`, the axis labels only the categories with a non-empty one, such as the first hour of each day. An optional `marker` shades flagged categories without changing the scale and names them in the readout.
+Report charts over shared categories: grouped or stacked bars, a dashed comparison line and a p50–p90 band, with a hover or keyboard readout of every series. `ChartPanel` is the titled card that holds a chart and the rows below it, `ProportionBar` one bar split into shares and `BarMeter` a horizontal bar for a ranked list. Callers pass colours from the semantic, lane or ink-mix mappings, and every series appears in a `ChartLegend`. When some categories carry an empty `shortLabel`, the axis labels only the categories with a non-empty one, such as the first hour of each day. An optional `marker` shades flagged categories without changing the scale and names them in the readout. `renderReadout` appends category detail, such as counts by project, to the same hover and keyboard readout.
 
 - Kind: Primitive; status: available; id: `chart`.
 - Import: `import { Chart, ChartLegend, ChartPanel, ChartSwatch, ProportionBar, BarMeter, ChartCategory, ChartSeries, ChartLegendItem, chartTicks } from "~/components/ui/chart";`
@@ -995,6 +995,19 @@ Read-only organization activity: runners, running attempts, recent finishes and 
 - Keyboard: Tab reaches compact filters, runner chips, issue links, time toggles and stage tooltips; Select and Toggle own their keyboard behavior.
 - Avoid: Historical reports, diagnostic evidence or runner controls; use their existing surfaces.
 - Related: [Runner status dot](#runner-status-dot), [Stage progress](#stage-progress), [Workspace page header](#workspace-page-header), [Workspace page container](#workspace-page-container).
+
+### Team threads
+
+Informational organization, project and issue discussions shared by people and their local agents, with typed posts and member read cursors.
+
+- Kind: Surface; status: available; id: `team-threads`.
+- Import: `import { ThreadsRoute, ThreadFiltersBar, ThreadAgentBadge, ThreadReplyComposer } from "~/app/threads/ThreadsPage";`
+- Source: [src/app/threads/ThreadsPage.tsx](../../web/conversation/src/app/threads/ThreadsPage.tsx).
+- Variants: none.
+- States: loading, empty, error, filtered, open, resolved, new, posting.
+- Keyboard: Tab reaches filters, thread rows, scope and kind pickers, reply and status actions. Select owns its keyboard behavior.
+- Avoid: Worker instructions, issue comments or private coordinator Q&A; use their existing surfaces.
+- Related: [Workspace page header](#workspace-page-header), [Input](#input), [Textarea](#textarea), [Select](#select), [Badge](#badge), [Toggle](#toggle), [Button](#button).
 
 ## Conversation
 
@@ -1519,7 +1532,7 @@ Navigation between settings sections, built on the Sidebar primitive.
 - Variants: none.
 - States: active, hover, focus-visible.
 - Keyboard: Section links in document order.
-- Avoid: Tabs for settings sections.
+- Avoid: Tabs for organization settings sections; per-project settings use line-variant Tabs, one tab per URL, horizontally scrollable on narrow screens.
 - Related: [Settings layout](#settings-layout), [Sidebar primitive](#sidebar-primitive).
 
 ### Settings pages
@@ -1788,14 +1801,14 @@ The issue's comments, events and linked conversation in time order.
 
 ### Issue composer
 
-The issue page's composer: the shared Composer with issue-specific slash commands.
+The issue page's composer: rich uses the shared Composer with issue-specific slash commands; simple uses a text field and Comment action for the reporter view.
 
 - Kind: Composition; status: available; id: `issue-composer`.
 - Import: `import { IssueComposer, IssueComposerProps, issueComposerSlashCommands } from "~/app/work/components/IssueComposer";`
 - Source: [src/app/work/components/IssueComposer.tsx](../../web/conversation/src/app/work/components/IssueComposer.tsx).
-- Variants: none.
+- Variants: `variant`: `rich`, `simple`.
 - States: focus-visible, sending.
-- Keyboard: As Composer, with the issue page's slash commands.
+- Keyboard: Rich: as Composer, with the issue page's slash commands. Simple: Tab reaches the text field and Comment button; Enter adds a line.
 - Avoid: A separate editor for issue comments.
 - Related: [Composer](#composer), [Issue page](#issue-page).
 

@@ -12,7 +12,7 @@ import type { GitStatusPayload } from "./workspaceRelay.ts";
 import { pullRequestDetailToVcsStatus } from "./pullRequestVcs.ts";
 import { workspaceReasonSentence } from "./workspaces.ts";
 
-/** The §18.6 row as this projection needs it. `null` means the issue has none. */
+/** The pull request contract row as this projection needs it. `null` means the issue has none. */
 export interface GitStatusPullRequest {
   readonly number: number;
   readonly title: string;
@@ -43,7 +43,7 @@ export function toVcsStatus(input: ToVcsStatusInput): VcsStatusResult {
   const defaultBranch = input.defaultBranch ?? null;
   return {
     // The channel only answers at all for a worktree that is a repository:
-    // §18.13 fails a request against anything else with `unsupported`, so a
+    // The git channel contract fails a request against anything else with `unsupported`, so a
     // status frame in hand is itself the proof.
     isRepo: true,
     ...(provider === undefined ? {} : { sourceControlProvider: provider }),
@@ -72,7 +72,7 @@ export function toVcsStatus(input: ToVcsStatusInput): VcsStatusResult {
   };
 }
 
-// --- The §18.6 policy layer -------------------------------------------------
+// --- The pull request contract policy layer -------------------------------------------------
 
 export interface GitActionPolicy {
   readonly workItemId: string | null;
@@ -110,11 +110,11 @@ export function gitGroupBlockedReason(policy: GitActionPolicy): string | null {
   if (policy.workItemId === null) return GIT_POLICY_SENTENCES.noIssue;
   // 2. No grant, so no worktree may be written to.
   if (!policy.canWrite) return GIT_POLICY_SENTENCES.noWriteGrant;
-  // 3. A workspace that exists and is over. Unparaphrased, per §18.1.
+  // 3. A workspace that exists and is over. Unparaphrased, per the workspace session contract.
   if (policy.workspaceState !== null && WORKSPACE_UNUSABLE_STATES.has(policy.workspaceState)) {
     return workspaceReasonSentence(policy.workspaceState, policy.workspaceReason ?? null);
   }
-  // 4. A workspace that exists and refuses writes: §18.13 answers a write on
+  // 4. A workspace that exists and refuses writes: the git channel contract answers a write on
   //    one whose attempt is still running with `read_only`.
   if (policy.workspaceReadOnly) return GIT_POLICY_SENTENCES.readOnly;
   // 5. The request for a workspace failed outright. Already a sentence.
@@ -145,7 +145,7 @@ export function gitItemBlockedReason(
   return null;
 }
 
-/** A workspace the relay can carry frames for (§18.1's `ready` and `idle`). */
+/** A workspace the relay can carry frames for (the workspace session contract's `ready` and `idle`). */
 function isReadyEnough(state: WorkspaceState): boolean {
   return state === "ready" || state === "idle";
 }

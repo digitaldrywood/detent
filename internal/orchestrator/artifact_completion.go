@@ -4,14 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strconv"
 	"strings"
-	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
-	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
@@ -216,7 +214,7 @@ func (o *Orchestrator) evaluateArtifactGateConvergence(
 		Limit:            artifactGateConvergenceLimit,
 	}
 	record.Unchanged = strings.EqualFold(record.DispatchStatus, record.CompletionStatus)
-	if !record.Unchanged {
+	if !record.Unchanged || o.implementCompletionAccepted(running, completed, running.DiffStats) {
 		return record
 	}
 
@@ -306,112 +304,6 @@ func artifactGateConvergenceMetadata(record artifactGateConvergenceRecord) map[s
 	return map[string]any{artifactGateConvergenceMetadataKey: record}
 }
 
-func (o *Orchestrator) parkArtifactGateConvergence(
-	ctx context.Context,
-	state *State,
-	issue connector.Issue,
-	attempt int,
-	completedAt time.Time,
-	record artifactGateConvergenceRecord,
-) {
-	if state == nil {
-		return
-	}
-	issue = cloneIssue(issue)
-	metadata := o.newBlockedRecoveryMetadata(
-		ctx,
-		issue,
-		RunModeImplement,
-		artifactGateConvergenceReason,
-		blockedRecoveryPredicateFingerprintChange,
-		autoPromoteReworkState,
-		DiffStats{},
-	)
-	if err := o.updateIssueStateByIDWithMetadata(ctx, state, issue.ID, issue, blockedStatusState, completedAt, artifactGateConvergenceReason, metadata); err != nil {
-		if o.logger != nil {
-			o.logger.WarnContext(ctx, "artifact gate convergence breaker state transition failed",
-				"issue_id", issue.ID,
-				"identifier", issue.Identifier,
-				"target_state", blockedStatusState,
-				"error", err,
-			)
-		}
-	} else {
-		issue.State = blockedStatusState
-	}
-	if o.connector != nil {
-		body := artifactGateConvergenceComment(issue, attempt, record)
-		if err := o.connector.CreateComment(ctx, issue.ID, body); err != nil && o.logger != nil {
-			o.logger.WarnContext(ctx, "artifact gate convergence breaker comment failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
-		}
-	}
-	if err := o.abandonClaim(ctx, issue.ID); err != nil && o.logger != nil {
-		o.logger.WarnContext(ctx, "artifact gate convergence breaker claim release failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
-	}
-	delete(state.Claimed, issue.ID)
-	delete(state.Completed, issue.ID)
-	delete(state.Retry, issue.ID)
-	delete(state.BudgetRefusals, issue.ID)
-	delete(state.PriorAttempts, issue.ID)
-	if state.Blocked == nil {
-		state.Blocked = map[string]Blocked{}
-	}
-	state.Blocked[issue.ID] = Blocked{
-		Issue:          issue,
-		Reason:         artifactGateConvergenceBlockedReason(record),
-		RecoveryReason: "review the artifact and update the configured gate status before moving the item out of Blocked",
-		RecoveryTarget: autoPromoteReworkState,
-		BlockedAt:      completedAt,
-		Source:         BlockedSourceProjectStatus,
-		Recovery:       metadata.BlockedRecovery,
-	}
-	recordStateEvent(state, telemetry.ActivityEvent{
-		At:      completedAt,
-		Event:   artifactGateConvergenceReason,
-		Message: "parked " + issueLabel(issue) + " after repeated successful attempts left the artifact gate status unchanged",
-	})
-	if o.logger != nil {
-		o.logger.WarnContext(ctx, "artifact gate convergence breaker tripped",
-			"event", artifactGateConvergenceReason,
-			"issue_id", issue.ID,
-			"identifier", issue.Identifier,
-			"attempt", attempt,
-			"status_field", record.StatusField,
-			"status", record.CompletionStatus,
-			"consecutive_unchanged", record.ConsecutiveUnchanged,
-			"limit", record.Limit,
-			"target_state", blockedStatusState,
-		)
-	}
-}
-
-func artifactGateConvergenceBlockedReason(record artifactGateConvergenceRecord) string {
-	return artifactGateConvergenceBlockedReasonPrefix + fmt.Sprintf(
-		"%s remained %s after %d consecutive successful attempts",
-		strings.TrimSpace(record.StatusField),
-		strconv.Quote(strings.TrimSpace(record.CompletionStatus)),
-		record.ConsecutiveUnchanged,
-	)
-}
-
-func artifactGateConvergenceComment(issue connector.Issue, attempt int, record artifactGateConvergenceRecord) string {
-	var b strings.Builder
-	b.WriteString("Detent stopped redispatching this item after ")
-	b.WriteString(strconv.Itoa(record.ConsecutiveUnchanged))
-	b.WriteString(" consecutive successful attempts left the configured artifact gate status unchanged.")
-	b.WriteString("\n\nIssue parked in `")
-	b.WriteString(strings.TrimSpace(issue.State))
-	b.WriteString("`.")
-	b.WriteString("\n\n- issue: ")
-	b.WriteString(issueLabel(issue))
-	b.WriteString("\n- latest_attempt: ")
-	b.WriteString(strconv.Itoa(attempt))
-	b.WriteString("\n- status_field: `")
-	b.WriteString(strings.TrimSpace(record.StatusField))
-	b.WriteString("`")
-	b.WriteString("\n- unchanged_status: `")
-	b.WriteString(strings.TrimSpace(record.CompletionStatus))
-	b.WriteString("`")
-	b.WriteString("\n\nReview the artifact and set the configured field to the appropriate pass or wait status before moving the item out of Blocked. If further rework is required, correct the worker instructions before moving it back to Rework; another unchanged success will remain breaker-protected.")
-	return b.String()
+func (o *Orchestrator) parkArtifactGateConvergence(ctx context.Context, state *State, event runpkg.Completion, running Running) {
+	o.retryMachineCompletion(ctx, state, event, running, nextAttempt(running.Attempt), artifactGateConvergenceReason)
 }

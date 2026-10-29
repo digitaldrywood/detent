@@ -9,7 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-// The execution accumulates per-attempt usage (decisions section 17.5): a
+// The execution accumulates per-attempt usage: a
 // runner reports what one turn spent and the running total rides the next
 // run.checkpointed or run.finished.
 

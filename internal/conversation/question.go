@@ -138,7 +138,7 @@ func (q Question) MarshalJSON() ([]byte, error) {
 // ValidateAnswers requires exactly one non-empty answer set per prompt,
 // rejects answers for prompts the question does not have, and rejects a
 // value that is not one of the prompt's option labels unless the prompt
-// allows free text (decisions section 10.9).
+// allows free text.
 func ValidateAnswers(question Question, answers map[string][]string) error {
 	known := make([]string, 0, len(question.Prompts))
 	for _, prompt := range question.Prompts {

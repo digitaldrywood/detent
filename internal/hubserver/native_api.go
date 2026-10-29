@@ -9,6 +9,9 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -27,6 +30,7 @@ const nativeBase = "/api/v2/organizations/:organization/projects/:project"
 const nativeOrganizationIssuePath = "/api/v2/organizations/:organization/work-items/:item"
 
 type nativeScope struct {
+	duplicateSearch       *nativeDuplicateSearch
 	action                string
 	actionItem            string
 	actionTarget          string
@@ -37,6 +41,7 @@ type nativeScope struct {
 	project               tracker.ProjectID
 	credential            apiCredential
 	requireHostedAdmin    bool
+	importedContent       bool
 	managedRunner         string
 	managedRunnerScope    string
 	managedRunnerProjects []tracker.ProjectID
@@ -49,6 +54,7 @@ type nativeError struct {
 	Details         map[string]any   `json:"details,omitempty"`
 	status          int
 	publicMessage   bool
+	logAttributes   []any
 }
 
 func (e *nativeError) Error() string {
@@ -62,21 +68,35 @@ func nativeInvalid(message string) error {
 	return &nativeError{Code: "invalid_request", Message: message, status: http.StatusUnprocessableEntity}
 }
 
+func nativePublicInvalid(message string) error {
+	return &nativeError{Code: "invalid_request", Message: message, status: http.StatusUnprocessableEntity, publicMessage: true}
+}
+
 func nativeRejection(err error, category, field string) error {
 	var failure *nativeError
 	rejection := runnerauth.PublicationRejection{Category: category, Field: field}
 	if !errors.As(err, &failure) || failure.Code != "invalid_request" || !rejection.Valid() {
 		return err
 	}
-	return &nativeError{Code: failure.Code, Message: "The requested operation is unavailable", status: failure.status, Details: map[string]any{"rejection": rejection}}
+	result := &nativeError{Code: failure.Code, Message: rejection.DiagnosticError(), status: failure.status, Details: map[string]any{"rejection": rejection}}
+	switch category {
+	case "event_validation", "runtime_validation", "execution_validation", "usage_validation", "owner_validation", "body_decode":
+		result.Message, result.publicMessage = failure.Message, true
+	}
+	return result
 }
 
 func nativeNotFound() error {
-	return &nativeError{Code: "not_found", Message: "Resource was not found", status: http.StatusNotFound}
+	_, file, line, _ := runtime.Caller(1)
+	return &nativeError{Code: "not_found", Message: "Resource was not found", status: http.StatusNotFound, publicMessage: true, logAttributes: []any{"not_found_source", filepath.Base(file) + ":" + strconv.Itoa(line)}}
+}
+
+func nativeNotFoundAt(step string) error {
+	return &nativeError{Code: "not_found", Message: "Resource was not found", status: http.StatusNotFound, publicMessage: true, logAttributes: []any{"not_found_step", step}}
 }
 
 func nativeConflict(revision tracker.Revision) error {
-	return &nativeError{Code: "revision_conflict", Message: "Resource has changed", CurrentRevision: revision, status: http.StatusConflict}
+	return &nativeError{Code: "revision_conflict", Message: "Resource has changed", CurrentRevision: revision, status: http.StatusConflict, publicMessage: true}
 }
 
 // isNativeNotFound reports whether err is the opaque native not-found error.
@@ -90,7 +110,17 @@ func isNativeConflict(err error) bool {
 	return errors.As(err, &failure) && failure != nil && failure.Code == "revision_conflict"
 }
 
-func (s *Service) nativeAPIError(c echo.Context, err error) error {
+func (s *Service) nativeAPIError(c echo.Context, err error, attributes ...any) error {
+	var archive *nativeArchiveError
+	if errors.As(err, &archive) {
+		return c.JSON(http.StatusServiceUnavailable, struct {
+			Code    string                     `json:"code"`
+			Archive *tracker.ArchiveDescriptor `json:"archive"`
+		}{"archive_" + archive.Archive.Availability, archive.Archive})
+	}
+	if errors.Is(operatorAuthorizationError(err), operatortool.ErrProviderUnavailable) {
+		return c.JSON(http.StatusServiceUnavailable, apiErrorResponse{Code: auth.HostedReasonProviderUnavailable, Message: operatortool.ErrProviderUnavailable.Error()})
+	}
 	var export *operatortool.WorkBulkExportItemError
 	if errors.As(err, &export) {
 		s.config.Logger.Error(export.Message, append([]any{"error", err}, s.database.readTimeoutAttributes(err)...)...)
@@ -98,17 +128,18 @@ func (s *Service) nativeAPIError(c echo.Context, err error) error {
 	}
 	var refusal *apikey.Refusal
 	if errors.As(err, &refusal) {
-		return c.JSON(http.StatusForbidden, refusal)
+		return s.refusedAPIError(c, http.StatusForbidden, refusal.Code, refusal.Message, refusal)
 	}
 	if errors.Is(err, operatortool.ErrAccessDenied) {
-		return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "access_denied", Message: err.Error()})
+		message := operatortool.ErrAccessDenied.Error()
+		return s.refusedAPIError(c, http.StatusForbidden, "access_denied", message, apiErrorResponse{Code: "access_denied", Message: message})
 	}
 	if errors.Is(err, auth.ErrHostedIdentity) || errors.Is(err, auth.ErrInvalidSession) {
-		return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "access_denied", Message: "Access is no longer available"})
+		return s.refusedAPIError(c, http.StatusForbidden, "access_denied", "Access is no longer available", apiErrorResponse{Code: "access_denied", Message: "Access is no longer available"})
 	}
 	var limit *hostedLimitError
 	if errors.As(err, &limit) {
-		return c.JSON(http.StatusTooManyRequests, struct {
+		return s.refusedAPIError(c, http.StatusTooManyRequests, "allowance_exhausted", limit.Error(), struct {
 			Code    string `json:"code"`
 			Message string `json:"message"`
 			*hostedLimitError
@@ -116,36 +147,47 @@ func (s *Service) nativeAPIError(c echo.Context, err error) error {
 	}
 	var failure *nativeError
 	if errors.As(err, &failure) {
-		if s.config.Hosted != nil {
-			if failure.Code == "checkout_unavailable" || failure.publicMessage {
-				return c.JSON(failure.status, apiErrorResponse{Code: failure.Code, Message: failure.Message})
+		attributes = append(attributes, failure.logAttributes...)
+		message := failure.Message
+		if failure.status >= http.StatusBadRequest && failure.status < http.StatusInternalServerError && !failure.publicMessage && failure.Code != "checkout_unavailable" {
+			message = http.StatusText(failure.status) + ": " + strings.ReplaceAll(failure.Code, "_", " ")
+			if rejection, ok := failure.Details["rejection"].(runnerauth.PublicationRejection); ok && rejection.Valid() {
+				message = rejection.DiagnosticError()
 			}
-			if len(failure.Details) > 0 {
-				return c.JSON(failure.status, &nativeError{Code: failure.Code, Message: "The requested operation is unavailable", Details: failure.Details, status: failure.status})
-			}
-			return c.JSON(failure.status, apiErrorResponse{Code: failure.Code, Message: "The requested operation is unavailable"})
 		}
-		return c.JSON(failure.status, failure)
+		if s.config.Hosted != nil && !failure.publicMessage {
+			if failure.status >= http.StatusInternalServerError && failure.Code != "checkout_unavailable" {
+				message = "The requested operation is unavailable"
+			}
+			return s.refusedAPIError(c, failure.status, failure.Code, message, &nativeError{Code: failure.Code, Message: message, CurrentRevision: failure.CurrentRevision, Details: failure.Details, status: failure.status}, attributes...)
+		}
+		return s.refusedAPIError(c, failure.status, failure.Code, message, failure, attributes...)
+	}
+	var conflict *operatortool.ConflictError
+	if errors.As(err, &conflict) {
+		return s.refusedAPIError(c, http.StatusConflict, conflict.Code, conflict.Message, conflict)
 	}
 	if errors.Is(err, sql.ErrNoRows) {
-		return s.nativeAPIError(c, nativeNotFound())
+		return s.nativeAPIError(c, nativeNotFound(), "not_found_cause", err.Error())
 	}
 	if errors.Is(err, tracker.ErrInvalidClaimRequest) || errors.Is(err, tracker.ErrInvalidLeaseRequest) || errors.Is(err, tracker.ErrInvalidWorkEvent) || errors.Is(err, tracker.ErrInvalidCandidateQuery) {
-		return trackerAPIError(c, err)
+		return s.trackerAPIError(c, err)
 	}
 	if errors.Is(err, tracker.ErrLeaseConflict) || errors.Is(err, tracker.ErrStaleFencingToken) || errors.Is(err, tracker.ErrLeaseNotFound) || errors.Is(err, tracker.ErrMachineNotFound) || errors.Is(err, tracker.ErrWorkItemNotFound) || errors.Is(err, ErrNoClaimableWork) {
-		return trackerAPIError(c, err)
+		return s.trackerAPIError(c, err)
 	}
 	var request *operatortool.RequestError
 	if errors.As(err, &request) {
-		return c.JSON(http.StatusUnprocessableEntity, request)
+		return s.refusedAPIError(c, http.StatusUnprocessableEntity, request.Code, request.Message, request)
 	}
 	return s.internalAPIError(c, "native_operation_failed", "Native operation could not be completed", err)
 }
 
 func (s *Service) registerNativeRoutes(e *echo.Echo) {
 	s.registerOnboardingRoutes(e)
+	e.POST(nativeBase+"/local-board-import", s.importLocalBoard, s.requireNativeScope(apiScopeOperator))
 	s.registerArtifactRoutes(e)
+	s.registerReleaseAuditRoutes(e)
 	s.registerCloudAttachmentRoutes(e)
 	s.registerAttemptDiffBodyRoutes(e)
 	s.registerIntegrationRoutes(e)
@@ -175,6 +217,15 @@ func (s *Service) registerNativeRoutes(e *echo.Echo) {
 	}
 	e.POST("/api/v2/tokens/:id/grants", s.grantNativeToken, admin)
 	e.GET(nativeBase, s.getNativeProject, read)
+	e.PATCH(nativeBase, s.renameProject, s.requireNativeScope(apiScopeOperator, apiScopeAdmin))
+	e.PUT(nativeBase+"/icon", s.setProjectIcon, s.requireNativeScope(apiScopeOperator, apiScopeAdmin))
+	if s.config.Hosted == nil {
+		organization := s.requireConversationOrganization()
+		e.GET(hostedOrganizationBase+"/logo", s.getOrganizationLogo, organization)
+		e.PUT(hostedOrganizationBase+"/logo", s.setOrganizationLogo, organization)
+		e.GET(hostedOrganizationBase+"/attachment-metadata/:attachment", s.getOrganizationLogoAttachment, organization)
+		e.GET(hostedOrganizationBase+"/logo-metadata", s.getCurrentOrganizationLogoAttachment, organization)
+	}
 	e.GET(nativeBase+"/labels", s.listNativeLabels, read)
 	e.GET(nativeBase+"/work-items", s.listNativeIssues, read)
 	e.GET(nativeBase+"/work-items/export", s.exportNativeWorkItems, read)
@@ -209,8 +260,8 @@ func (s *Service) registerNativeRoutes(e *echo.Echo) {
 	e.POST(nativeBase+"/leases/:lease/release", s.releaseNativeLease, worker)
 	e.POST(nativeBase+"/machines/register", s.registerNativeMachine, worker)
 	e.POST(nativeBase+"/work-items/:item/events", s.appendNativeRunEvent, worker)
-	// Stored attempt diffs and the pull request panel (decisions section
-	// 18.5 and 18.6). The diff write is a worker endpoint fenced by the
+	// Stored attempt diffs and the pull request panel.
+	// The diff write is a worker endpoint fenced by the
 	// producer's lease; every read follows the issue's read rule.
 	e.POST(nativeBase+"/attempts/:attempt/diff", s.postAttemptDiff, worker)
 	e.POST(nativeBase+"/attempts/:attempt/diff/check", s.checkAttemptDiff, worker)
@@ -218,7 +269,9 @@ func (s *Service) registerNativeRoutes(e *echo.Echo) {
 	e.GET(nativeBase+"/work-items/:item/diff", s.getWorkItemDiff, read)
 	e.GET(nativeBase+"/work-items/:item/pull-requests", s.listWorkItemPullRequests, read)
 	e.POST(nativeBase+"/work-items/:item/release-pick", s.associateReleasePick, write)
-	// Workspace sessions (decisions section 18.1). The reads follow the
+	e.GET(nativeBase+"/work-items/:item/release-pick", s.getReleaseDeliveryStatus, read)
+	e.POST(nativeBase+"/work-items/:item/release-pick/publication", s.publishReleasePick, write)
+	// Workspace sessions. The reads follow the
 	// issue's read rule; the writes need write on the project, and a
 	// terminal in requires needs the grant's runners flag on top.
 	e.POST(nativeBase+"/workspaces", s.createWorkspace, write)
@@ -241,7 +294,7 @@ func (s *Service) registerNativeRoutes(e *echo.Echo) {
 	e.POST(nativeBase+"/actions/:action/runs", s.createProjectActionRun, write)
 	e.GET(nativeBase+"/actions/:action/runs/:run", s.getProjectActionRun, read)
 	e.GET(nativeBase+"/actions/:action/runs/:run/output", s.getProjectActionRunOutput, read)
-	// Terminal recordings (decisions section 18.3). They are mounted under the
+	// Terminal recordings. They are mounted under the
 	// project's read scope like everything else, and then narrowed again by the
 	// handler: a recording's audience is the person who ran it plus owners and
 	// admins, and a user-isolation recording's is owners alone, which is
@@ -258,7 +311,7 @@ func (s *Service) requireInstanceAdmin() echo.MiddlewareFunc {
 		return s.requireAPIScope(apiScopeAdmin)(func(c echo.Context) error {
 			credential, ok := c.Get("hub_api_credential").(apiCredential)
 			if !ok || credential.NativeOnly {
-				return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "insufficient_scope", Message: "Instance administrator is required"})
+				return s.refusedAPIError(c, http.StatusForbidden, "insufficient_scope", "Instance administrator is required", apiErrorResponse{Code: "insufficient_scope", Message: "Instance administrator is required"})
 			}
 			return next(c)
 		})
@@ -290,6 +343,8 @@ func (s *Service) requireNativeScope(roles ...apiScope) echo.MiddlewareFunc {
 				write := !hostedReadRequest(c) && !artifactReadGrantRequest(c) && !relayTicketRequest(c)
 				if write && credential.HostedRole == "reporter" {
 					switch c.Request().Method + " " + c.Path() {
+					case "POST " + nativeBase + "/release-audits":
+						return s.nativeAPIError(c, nativeNotFound())
 					case "PATCH " + nativeBase + "/work-items/:item":
 						scope.action = operatortool.EditItem
 					case "POST " + nativeBase + "/work-items":
@@ -325,6 +380,10 @@ func (s *Service) requireNativeScope(roles ...apiScope) echo.MiddlewareFunc {
 				}
 			}
 			c.Set("native_scope", scope)
+			if c.Request().Method == http.MethodGet {
+				ctx := s.archiveRequestContext(c, scope)
+				c.SetRequest(c.Request().WithContext(ctx))
+			}
 			c.Response().Header().Set("Cache-Control", "no-store")
 			if credential.Hosted != nil {
 				if err := s.hostedAudit(c.Request().Context(), credential.Hosted, "action", c.Request().Method+" "+c.Path(), string(scope.project), 0); err != nil {
@@ -415,9 +474,12 @@ func (s *Service) nativeMutation(c echo.Context, command tracker.Mutation, input
 // reports. A replay answers with the same status as the first call, so a
 // created resource stays 201 on every retry of its key.
 func (s *Service) nativeMutationStatus(c echo.Context, status int, command tracker.Mutation, input any, operation func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error)) error {
-	options := nativeCommandOptions{OperationID: c.Request().Method + " " + c.Request().URL.EscapedPath(), Item: c.Param("item"), CheckPrincipal: changeCheckRequest(c), RequireLease: c.Param("item") != "" && !strings.HasSuffix(c.Path(), "/events") && c.Path() != changeBase+"/:change/versions/:version/checks", Completion: hostedCompletionMutation(c, input), Feature: hostedMutationFeature(c)}
+	options := nativeCommandOptions{OperationID: c.Request().Method + " " + c.Request().URL.EscapedPath(), Item: c.Param("item"), ChangeID: c.Param("change"), VersionID: c.Param("version"), CheckPrincipal: changeCheckRequest(c), RequireLease: c.Param("item") != "" && !strings.HasSuffix(c.Path(), "/events") && c.Path() != changeBase+"/:change/versions/:version/checks", Completion: hostedCompletionMutation(c, input), Feature: hostedMutationFeature(c)}
 	result, err := s.executeNativeMutation(c.Request().Context(), nativeRequestScope(c), options, command, input, operation)
 	if err != nil {
+		if request, ok := input.(tracker.NativeRunEvent); ok {
+			return s.nativeRunEventError(c, request, err)
+		}
 		return s.nativeAPIError(c, err)
 	}
 	return c.JSONBlob(status, result)
@@ -426,16 +488,9 @@ func (s *Service) nativeMutationStatus(c echo.Context, status int, command track
 type nativeCommandOptions struct {
 	RunnerAdministration                     bool
 	OperationID, Item, Feature               string
+	ChangeID, VersionID                      string
 	CheckPrincipal, RequireLease, Completion bool
 	ArtifactRead                             bool
-	DeferBoardProjection                     bool
-}
-
-func (options nativeCommandOptions) commit(ctx context.Context, d *database, tx *sql.Tx) error {
-	if options.DeferBoardProjection {
-		return tx.Commit()
-	}
-	return d.commit(ctx, tx)
 }
 
 // executeNativeMutation owns the shared transaction, current native authority,
@@ -450,13 +505,23 @@ func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, 
 		ctx = mutation.WithContext(ctx, mutation.Metadata{PrincipalID: actor.PrincipalID, ActorKind: actor.Kind, ViaKey: actor.ViaKey, OrganizationID: string(scope.organization), ProjectID: string(scope.project), ResourceID: options.Item, Action: options.OperationID, Source: "api", Confirmation: "none", CorrelationID: newNativeID("api")})
 	}
 	if strings.TrimSpace(command.IdempotencyKey) == "" || len(command.IdempotencyKey) > 128 {
-		return nil, nativeInvalid("An idempotency key of at most 128 bytes is required")
+		return nil, nativePublicInvalid("An idempotency key of at most 128 bytes is required")
 	}
 	requestHash, err := nativeCommandHash(input)
 	if err != nil {
 		return nil, err
 	}
 	operationID := options.OperationID
+	preparedCtx, preparationErr := s.prepareHostedImportMutation(ctx, scope, operationID, input)
+	if preparationErr == nil {
+		ctx = preparedCtx
+	}
+	if preparationErr == nil {
+		preparedCtx, preparationErr = s.prepareChangeMutation(ctx, scope, options, command, input, requestHash)
+		if preparationErr == nil {
+			ctx = preparedCtx
+		}
+	}
 	tx, err := s.database.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -490,10 +555,13 @@ func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, 
 		return nil, err
 	}
 	if found {
-		if err := options.commit(ctx, s.database, tx); err != nil {
+		if err := s.database.commit(ctx, tx); err != nil {
 			return nil, err
 		}
 		return json.RawMessage(response), nil
+	}
+	if preparationErr != nil {
+		return nil, preparationErr
 	}
 	now, err := s.database.currentTime()
 	if err != nil {
@@ -506,6 +574,9 @@ func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, 
 		if err := requireNativeMutationLease(ctx, tx, scope, options.Item, command, now); err != nil {
 			return nil, err
 		}
+	}
+	if err := recheckChangeMutation(ctx, tx, scope, options); err != nil {
+		return nil, err
 	}
 	metrics := hostedNativeMutationMetrics(input, options.Completion)
 	before, err := s.database.hostedConsumption(ctx, tx, now, metrics...)
@@ -535,7 +606,7 @@ func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, 
 	if err != nil {
 		return nil, err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO native_commands (organization_id, actor_id, operation, command_key, request_hash, response_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, scope.organization, scope.credential.ID, operationID, command.IdempotencyKey, requestHash, response, formatHubTime(now)); err != nil {
+	if _, err := insertNativeCommandReceipt(ctx, tx, scope.organization, scope.credential.ID, operationID, command.IdempotencyKey, requestHash, response, formatHubTime(now)); err != nil {
 		return nil, err
 	}
 	if consolidateRunEvent {
@@ -558,14 +629,12 @@ func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, 
 			return nil, err
 		}
 	}
-	if err := options.commit(ctx, s.database, tx); err != nil {
+	if err := s.database.commit(ctx, tx); err != nil {
 		return nil, err
 	}
-	if options.DeferBoardProjection {
-		select {
-		case s.boardRefresh <- struct{}{}:
-		default:
-		}
+	select {
+	case s.boardRefresh <- struct{}{}:
+	default:
 	}
 	s.notifyNativeDispatch(ctx, scope, input)
 	return json.RawMessage(response), nil
@@ -614,7 +683,7 @@ func nativeCommandReceipt(ctx context.Context, query nativeQueryer, scope native
 		return "", false, err
 	}
 	if storedHash != hash {
-		return "", false, &nativeError{Code: "idempotency_conflict", Message: "Idempotency key has different content", status: http.StatusConflict}
+		return "", false, &nativeError{Code: "idempotency_conflict", Message: "Idempotency key has different content", status: http.StatusConflict, publicMessage: true}
 	}
 	return response, true, nil
 }
@@ -625,7 +694,7 @@ func (s *Service) nativeCommandReplay(ctx context.Context, scope nativeScope, op
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	if strings.TrimSpace(key) == "" || len(key) > 128 {
-		return nil, false, nativeInvalid("An idempotency key of at most 128 bytes is required")
+		return nil, false, nativePublicInvalid("An idempotency key of at most 128 bytes is required")
 	}
 	hash, err := nativeCommandHash(input)
 	if err != nil {

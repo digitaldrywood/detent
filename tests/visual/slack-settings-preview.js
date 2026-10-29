@@ -6,10 +6,12 @@ async function slackSettingsPreview() {
   const result = await build({
     entryPoints: ["tests/visual/slack-settings-preview.tsx"], bundle: true, write: false,
     format: "iife", minify: true, jsx: "automatic",
+    resolveExtensions: [".tsx", ".ts", ".jsx", ".js", ".css", ".json", ".mjs"],
     define: { "process.env.NODE_ENV": '"production"' },
     alias: {
       "~": path.resolve("web/conversation/src"),
       "lucide-react/dynamic": path.resolve("web/conversation/src/browser/lucideDynamicIcon.tsx"),
+      "lucide-react/dynamicIconImports": path.resolve("web/conversation/node_modules/lucide-react/dynamicIconImports.mjs"),
       "@pierre/diffs/utils/parsePatchFiles": path.resolve("web/conversation/node_modules/@pierre/diffs/dist/utils/parsePatchFiles.js"),
       "@pierre/diffs/types": path.resolve("web/conversation/node_modules/@pierre/diffs/dist/types.js"),
     },

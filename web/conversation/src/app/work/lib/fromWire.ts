@@ -232,10 +232,17 @@ export function toWorkItemView(
 export function toBoardCardView(card: NativeBoardCard, projectName: string): WorkItemView {
   const item = toWorkItemView(card.issue, projectName, { observations: { worker: "known", change: "known" } });
   const attempt = card.attempt;
+  const execution = card.execution;
   const change = card.change;
   const externalNumber = change?.external === undefined ? null : Number.parseInt(change.external.id, 10);
-  return { ...item, reserveWorkerSpace: attempt !== null,
-    attempt: attempt === null ? null : {
+  return { ...item, reserveWorkerSpace: attempt !== null || execution !== undefined,
+    attempt: execution !== undefined ? {
+      id: execution.id, status: execution.running ? "running" : execution.id === attempt?.attempt_id ? attempt.status : "", running: execution.running, stage: execution.stage ?? null,
+      runner: runnerDisplay(undefined, execution.runner_id ?? null),
+      backend: execution.identity?.backend ?? null, model: execution.identity?.model ?? null,
+      effort: execution.identity?.reasoning_effort || null, access: null, startedAt: execution.started_at ?? null,
+      tokens: null, progress: null, attemptNumber: attempt?.count ?? null,
+    } : attempt === null ? null : {
       id: attempt.attempt_id, status: attempt.status, running: attempt.status === "running",
       runner: runnerDisplay(undefined, attempt.runner_id ?? attempt.machine_id ?? null),
       backend: attempt.identity?.backend ?? null, model: attempt.identity?.model ?? null,

@@ -94,7 +94,7 @@
       "source": "src/components/ui/input.tsx",
       "exports": ["Input", "InputProps"],
       "variants": {
-        "size": ["sm", "compact", "default", "lg"],
+        "size": ["sm", "compact", "default", "lg", "touch"],
         "font": ["default", "mono"]
       },
       "states": ["hover", "focus-visible", "disabled", "invalid", "read-only"],
@@ -116,7 +116,7 @@
       },
       "states": ["hover", "focus-visible", "disabled", "invalid", "read-only"],
       "keyboard": "Native multi-line editing; Enter inserts a newline.",
-      "use": "Multi-line form text such as descriptions and notes; it sizes to its content.",
+      "use": "Multi-line form text such as descriptions and notes; it sizes to its content. Set autoGrow=false when rows should control the reading area.",
       "avoid": "The conversation or issue prompt: the composer's Lexical editor owns rich prompt input.",
       "related": ["input", "label", "composer"]
     },
@@ -272,7 +272,7 @@
       "exports": ["Select", "SelectTrigger", "SelectButton", "selectTriggerVariants", "SelectValue", "SelectPopup", "SelectContent", "SelectItem", "SelectSeparator", "SelectGroup", "SelectGroupLabel"],
       "variants": {
         "variant": ["default", "ghost"],
-        "size": ["compact", "default", "lg", "sm", "xs"]
+        "size": ["compact", "default", "lg", "sm", "xs", "touch"]
       },
       "states": ["hover", "focus-visible", "open", "highlighted", "selected", "disabled", "invalid"],
       "keyboard": "Base UI select: Enter, Space or arrow keys open; arrow keys move; typeahead jumps; Enter selects; Escape closes and returns focus.",
@@ -462,10 +462,10 @@
       "status": "available",
       "source": "src/components/ui/usage-meter.tsx",
       "exports": ["UsageMeter", "formatUsageValue", "usageMeterState", "UsageUnit"],
-      "variants": {},
+      "variants": { "layout": ["stacked", "row"], "limitTone": ["error", "warning"] },
       "states": ["normal", "warning", "limit reached", "not included", "limit only", "unlimited"],
       "keyboard": "Static meter with an accessible label, formatted value and description; not focusable.",
-      "use": "Plan allowance consumption with human units, remaining capacity and visible warning text at 80% and limit-reached text at 100%. Supports byte sizes, counts, record counts, duration limits, unlimited and excluded allowances. Minimum readings show a warning within 20% above a floor and error at the floor; valueText and statusText adapt the visible reading to its domain.",
+      "use": "Plan allowance consumption with human units, remaining capacity and visible warning text at 80% and limit-reached text at 100%. Supports byte sizes, counts, record counts, duration limits, unlimited and excluded allowances. Minimum readings show a warning within 20% above a floor and error at the floor; valueText and statusText adapt the visible reading to its domain. Included credit meters use limitTone=warning for an amber exhausted bar with neutral value and reset text.",
       "avoid": "Indeterminate loading (use Spinner) and actions (use Button).",
       "related": ["alert", "badge"]
     },
@@ -524,7 +524,7 @@
       "source": "src/components/ui/badge.tsx",
       "exports": ["Badge", "badgeVariants"],
       "variants": {
-        "variant": ["default", "secondary", "outline", "info", "success", "warning", "error", "destructive", "label"],
+        "variant": ["default", "secondary", "outline", "info", "success", "warning-outline", "warning", "error", "destructive", "label"],
         "size": ["control", "default", "lg", "sm"]
       },
       "states": [],
@@ -773,11 +773,11 @@
       "status": "available",
       "source": "src/components/ui/tabs.tsx",
       "exports": ["Tabs", "TabsList", "TabsTab", "TabsPanel"],
-      "variants": {},
+      "variants": { "variant": ["line", "segmented"] },
       "states": ["selected", "hover", "focus-visible", "disabled"],
       "keyboard": "Base UI tabs: Tab enters the list, arrow keys move between tabs and select them, Home and End jump to the ends; the panel follows the list in reading order.",
-      "use": "Sections of one page that share a header, such as the Reports Overview, Flow, Quality, Cost and Failures tabs. The list scrolls horizontally on narrow screens; when each tab has its own URL, select the tab from the route and navigate in `onValueChange`.",
-      "avoid": "A small set of view options inside a section (use ToggleGroup), right-panel surfaces (use Right panel tabs) and settings sections (use the settings navigation).",
+      "use": "Sections of one page that share a header, such as Reports and per-project settings. Per-project settings use line-variant Tabs, one tab per URL. The list scrolls horizontally on narrow screens; when each tab has its own URL, select the tab from the route and navigate in `onValueChange`.",
+      "avoid": "A small set of view options inside a section (use ToggleGroup), right-panel surfaces (use Right panel tabs) and organization settings sections (use SettingsSidebarNav).",
       "related": ["toggle-group", "right-panel-tabs", "workspace-page-header"]
     },
     {
@@ -808,7 +808,7 @@
       "variants": {},
       "states": ["hover", "focus-visible", "empty"],
       "keyboard": "The plot is one focus stop; Left and Right move the readout between categories and Escape clears it.",
-      "use": "Report charts over shared categories: grouped or stacked bars, a dashed comparison line and a p50–p90 band, with a hover or keyboard readout of every series. `ChartPanel` is the titled card that holds a chart and the rows below it, `ProportionBar` one bar split into shares and `BarMeter` a horizontal bar for a ranked list. Callers pass colours from the semantic, lane or ink-mix mappings, and every series appears in a `ChartLegend`. When some categories carry an empty `shortLabel`, the axis labels only the categories with a non-empty one, such as the first hour of each day. An optional `marker` shades flagged categories without changing the scale and names them in the readout.",
+      "use": "Report charts over shared categories: grouped or stacked bars, a dashed comparison line and a p50–p90 band, with a hover or keyboard readout of every series. `ChartPanel` is the titled card that holds a chart and the rows below it, `ProportionBar` one bar split into shares and `BarMeter` a horizontal bar for a ranked list. Callers pass colours from the semantic, lane or ink-mix mappings, and every series appears in a `ChartLegend`. When some categories carry an empty `shortLabel`, the axis labels only the categories with a non-empty one, such as the first hour of each day. An optional `marker` shades flagged categories without changing the scale and names them in the readout. `renderReadout` appends category detail, such as counts by project, to the same hover and keyboard readout.",
       "avoid": "Per-provider usage (use Usage provider chart), new chart palettes and tables of numbers that read better as a Table.",
       "related": ["metric-tile", "usage-provider-chart", "table"]
     },
@@ -1783,7 +1783,7 @@
       "states": ["active", "hover", "focus-visible"],
       "keyboard": "Section links in document order.",
       "use": "Navigation between settings sections, built on the Sidebar primitive.",
-      "avoid": "Tabs for settings sections.",
+      "avoid": "Tabs for organization settings sections; per-project settings use line-variant Tabs, one tab per URL, horizontally scrollable on narrow screens.",
       "related": ["settings-layout", "sidebar"]
     },
     {
@@ -2095,10 +2095,10 @@
       "status": "available",
       "source": "src/app/work/components/IssueComposer.tsx",
       "exports": ["IssueComposer", "IssueComposerProps", "issueComposerSlashCommands"],
-      "variants": {},
+      "variants": { "variant": ["rich", "simple"] },
       "states": ["focus-visible", "sending"],
-      "keyboard": "As Composer, with the issue page's slash commands.",
-      "use": "The issue page's composer: the shared Composer with issue-specific slash commands.",
+      "keyboard": "Rich: as Composer, with the issue page's slash commands. Simple: Tab reaches the text field and Comment button; Enter adds a line.",
+      "use": "The issue page's composer: rich uses the shared Composer with issue-specific slash commands; simple uses a text field and Comment action for the reporter view.",
       "avoid": "A separate editor for issue comments.",
       "related": ["composer", "issue-page"]
     },
@@ -2281,8 +2281,8 @@
       "name": "Runner status dot",
       "source": "src/components/RunnerStatusDot.tsx",
       "exports": ["RunnerStatusDot"],
-      "states": ["healthy", "paused", "failed", "needs attention", "asleep", "offline"],
-      "use": "Runner health beside a runner name in Fleet and Activity; healthy active runners pulse green, inactive runners remain neutral.",
+      "states": ["healthy", "draining", "paused", "failed", "needs attention", "asleep", "offline"],
+      "use": "Runner health beside a runner name in Runners and Activity; healthy active runners pulse green, draining runners use an outlined dot, and offline runners remain neutral.",
       "avoid": "Work stage or job outcome; use StageProgress for stage timing.",
       "kind": "composition",
       "group": "Feedback",
@@ -2320,6 +2320,21 @@
       "use": "Read-only organization activity: runners, running attempts, recent finishes and timing against server-provided typical durations.",
       "avoid": "Historical reports, diagnostic evidence or runner controls; use their existing surfaces.",
       "related": ["runner-status-dot", "stage-progress", "workspace-page-header", "workspace-page-container"]
+    },
+    {
+      "id": "team-threads",
+      "name": "Team threads",
+      "kind": "surface",
+      "group": "Workspace",
+      "status": "available",
+      "source": "src/app/threads/ThreadsPage.tsx",
+      "exports": ["ThreadsRoute", "ThreadFiltersBar", "ThreadAgentBadge", "ThreadReplyComposer"],
+      "variants": {},
+      "states": ["loading", "empty", "error", "filtered", "open", "resolved", "new", "posting"],
+      "keyboard": "Tab reaches filters, thread rows, scope and kind pickers, reply and status actions. Select owns its keyboard behavior.",
+      "use": "Informational organization, project and issue discussions shared by people and their local agents, with typed posts and member read cursors.",
+      "avoid": "Worker instructions, issue comments or private coordinator Q&A; use their existing surfaces.",
+      "related": ["workspace-page-header", "input", "textarea", "select", "badge", "toggle", "button"]
     }
   ],
   "internal": [

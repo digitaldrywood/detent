@@ -1,5 +1,4 @@
-// The client half of decisions.md §10 ("Corrections after the first-slice
-// review"), driven against the mock hub over real HTTP and a real event
+// The client half of the corrections after the first-slice review, driven against the mock hub over real HTTP and a real event
 // stream. Each test names the correction it covers.
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -72,7 +71,7 @@ async function list(
   return page;
 }
 
-describe("§10.2 creating a conversation is idempotent", () => {
+describe("creating a conversation is idempotent", () => {
   it("returns the stored response and creates one conversation when the key is reused", async () => {
     const h = await open();
     const first = await create(h, "cmd_create_once", "Why does the lock lapse?");
@@ -105,7 +104,7 @@ describe("§10.2 creating a conversation is idempotent", () => {
   });
 });
 
-describe("§10.3 retry re-queues one message", () => {
+describe("retry re-queues one message", () => {
   it("re-queues a hub-persisted message whose delivery was lost", async () => {
     const h = await open({ coordinator: "runner" });
     const created = await create(h, "cmd_retry_create", "Fix the lease renewal");
@@ -139,7 +138,7 @@ describe("§10.3 retry re-queues one message", () => {
         messageId: message.id,
       }),
     )) as Receipt | null;
-    // The receipt belongs to the retry key and reports `queued` (§10.3).
+    // The receipt belongs to the retry key and reports `queued`.
     expect(receipt?.status).toBe("queued");
     expect(receipt?.key).toBe("cmd_retry_1");
     expect(receipt?.message_id).toBe(message.id);
@@ -232,7 +231,7 @@ describe("§10.3 retry re-queues one message", () => {
   }, 20_000);
 });
 
-describe("§10.5 the conversation carries its message count", () => {
+describe("the conversation carries its message count", () => {
   it("counts the whole history, not the loaded page", async () => {
     const h = await open();
     const created = await create(h, "cmd_count_create", "One");
@@ -252,7 +251,7 @@ describe("§10.5 the conversation carries its message count", () => {
   }, 20_000);
 });
 
-describe("§10.11 a read-only viewer", () => {
+describe("a read-only viewer", () => {
   it("reports no writable project and is refused if it writes anyway", async () => {
     const h = await open({ account: "read_only" });
     expect(h.client.bootstrap.projects.every((project) => !project.can_write)).toBe(true);
@@ -267,7 +266,7 @@ describe("§10.11 a read-only viewer", () => {
   });
 });
 
-describe("§13.9 settled replaces archive", () => {
+describe("settled replaces archive", () => {
   it("has no archive endpoint left to call", async () => {
     const h = await open();
     const created = await create(h, "cmd_settle_create", "Settle me");
@@ -286,7 +285,7 @@ describe("§13.9 settled replaces archive", () => {
     if (created._tag !== "Success") throw new Error("create failed");
     const conversationId = created.success.conversation.id;
 
-    // The hub settles a conversation itself (§14); the mock exposes the same
+    // The hub settles a conversation itself; the mock exposes the same
     // transition so the shelf can be checked without waiting a day.
     await settle(h, conversationId, true);
     expect((await list(h, false)).conversations).toHaveLength(0);
@@ -300,7 +299,7 @@ describe("§13.9 settled replaces archive", () => {
   }, 20_000);
 });
 
-/** The mock's stand-in for the hub's own settle window (§14). */
+/** The mock's stand-in for the hub's own settle window. */
 async function settle(h: Harness, conversationId: string, settled: boolean): Promise<void> {
   await h.control("settle", { conversation: conversationId, settled });
 }

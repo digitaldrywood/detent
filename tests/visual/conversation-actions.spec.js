@@ -1,5 +1,4 @@
 const { test, expect } = require("@playwright/test");
-const fs = require("node:fs/promises");
 const { startHostedHub, STARTUP_TIMEOUT_MS } = require("./hosted-hub");
 
 let hub;
@@ -15,14 +14,13 @@ test.afterAll(async () => {
   await hub?.stop();
 });
 
-async function projectRead(page, suffix, fixture = hub.fixture, timeoutMs) {
-  return page.evaluate(async ({ project, suffix, timeoutMs }) => {
-    const options = timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : undefined;
-    const bootstrap = await (await fetch("/chat/bootstrap", options)).json();
-    const response = await fetch(`${bootstrap.api_base}/projects/${project}/${suffix}`, options);
+async function projectRead(page, suffix, fixture = hub.fixture) {
+  return page.evaluate(async ({ project, suffix }) => {
+    const bootstrap = await (await fetch("/chat/bootstrap")).json();
+    const response = await fetch(`${bootstrap.api_base}/projects/${project}/${suffix}`);
     if (!response.ok) throw new Error(`Project read failed: ${response.status}`);
     return response.json();
-  }, { project: fixture.project_id, suffix, timeoutMs });
+  }, { project: fixture.project_id, suffix });
 }
 
 async function askLuna(page, text) {
@@ -31,36 +29,10 @@ async function askLuna(page, text) {
   await page.getByRole("button", { name: "Send message", exact: true }).click();
 }
 
-test("workflow chat previews approval and preserves pending runner adoption", async ({ page }, testInfo) => {
+test("workflow chat approval persists across a reload", async ({ page }, testInfo) => {
   test.setTimeout(STARTUP_TIMEOUT_MS + 60_000);
   const workflowHub = await startHostedHub("conversation-workflow", {
     env: { DETENT_HOSTED_BROWSER_CHAT_WORKFLOW: "1" },
-  });
-  const streamEvents = [];
-  let droppedStreamEvents = 0;
-  const network = await page.context().newCDPSession(page);
-  await network.send("Network.enable");
-  network.on("Network.eventSourceMessageReceived", (event) => {
-    let data;
-    try {
-      data = JSON.parse(event.data);
-    } catch {
-      data = {};
-    }
-    if (streamEvents.length === 128) {
-      streamEvents.shift();
-      droppedStreamEvents++;
-    }
-    streamEvents.push({
-      observed_at: new Date().toISOString(),
-      request_id: event.requestId,
-      event_id: event.eventId,
-      event_name: event.eventName,
-      message_id: typeof data.id === "string" ? data.id : undefined,
-      message_seq: typeof data.seq === "number" ? data.seq : undefined,
-      delivery: typeof data.delivery === "string" ? data.delivery : undefined,
-      pending_reply: typeof data.text === "string" && data.text.includes("Runner application pending: true"),
-    });
   });
   try {
     const fixture = workflowHub.fixture;
@@ -69,83 +41,24 @@ test("workflow chat previews approval and preserves pending runner adoption", as
     await page.goto(`${fixture.chat}/p/${fixture.project_id}`);
     const original = await read("policy");
 
-    await askLuna(page, "Inspect workflow policy.");
-    await expect(page.getByText(/Rework dispatchable: true/).first()).toBeVisible();
-    await expect(page.getByTestId("operator-action-card")).toHaveCount(0);
-    expect((await read("policy")).policy).toEqual(original.policy);
-
     await askLuna(page, "Approve workflow policy.");
     const approval = page.getByTestId("operator-action-card").last();
+    await approval.scrollIntoViewIfNeeded();
     await expect(approval.getByText(/gates.github_pull_request: false → true/)).toBeVisible();
-    await expect(approval.getByRole("checkbox", { name: "Ask me to confirm chat changes" })).toBeChecked();
-    expect((await read("policy")).policy).toEqual(original.policy);
     await approval.screenshot({ path: testInfo.outputPath("workflow-approval-preview.png") });
     await approval.getByRole("button", { name: "Approve", exact: true }).click();
     await expect(approval.getByText("Change completed.", { exact: true })).toBeVisible();
+
+    await page.reload();
+    const persisted = page.getByTestId("operator-action-card").last();
+    await persisted.scrollIntoViewIfNeeded();
+    await expect(persisted.getByText("Change completed.", { exact: true })).toBeVisible();
     const approved = await read("policy");
+    expect(approved.policy.policy_id).not.toBe(original.policy.policy_id);
     expect(approved.policy.gates.github_pull_request).toBe(true);
     expect(approved.policy.gates.validator).toBe(true);
-    expect(approved.policy.policy_id).not.toBe(original.policy.policy_id);
-
-    await page.reload();
-    expect((await read("policy")).policy).toEqual(approved.policy);
-    await askLuna(page, "Apply workflow policy.");
-    const application = page.getByTestId("operator-action-card").last();
-    await expect(application.getByText(/Application is pending until this runner reports it applied/)).toBeVisible();
-    await application.getByRole("checkbox", { name: "Ask me to confirm chat changes" }).uncheck();
-    await expect(application.getByText("Change completed.", { exact: true })).toBeVisible();
-
-    await askLuna(page, "Inspect workflow policy again.");
-    const pending = page.getByText(/Runner application pending: true/).last();
-    await expect(pending).toBeVisible();
-    const conversation = page.url().split("/").pop();
-    await expect.poll(async () => {
-      const snapshot = await read(`conversations/${conversation}`);
-      const reply = snapshot.messages.filter((message) => message.role === "assistant").at(-1);
-      return { delivery: reply?.delivery, pending: reply?.text.includes("Runner application pending: true") };
-    }).toEqual({ delivery: "completed", pending: true });
-    await page.reload();
-    await expect(pending).toBeVisible();
-    await expect(pending).toContainText(`Approved policy: ${approved.policy.policy_id}`);
-    await expect(pending).toContainText(`Effective runner policy: ${original.policy.policy_id}`);
-    expect((await read("policy")).policy).toEqual(approved.policy);
-    await pending.screenshot({ path: testInfo.outputPath("workflow-pending-adoption.png") });
-  } catch (error) {
-    const evidence = {
-      capture_started_at: new Date().toISOString(),
-      project_id: workflowHub.fixture.project_id,
-      stream_events: streamEvents.slice(),
-      dropped_stream_events: droppedStreamEvents,
-    };
-    try {
-      evidence.conversation_id = new URL(page.url()).pathname.split("/").pop();
-      if (!evidence.conversation_id?.startsWith("conv_")) throw new Error("No active conversation in the failed journey");
-      evidence.conversation = await projectRead(page, `conversations/${evidence.conversation_id}`, workflowHub.fixture, 3_000);
-    } catch (captureError) {
-      evidence.capture_error = String(captureError);
-    }
-    evidence.capture_finished_at = new Date().toISOString();
-    try {
-      const path = testInfo.outputPath("workflow-conversation-failure.json");
-      await fs.writeFile(path, JSON.stringify(evidence, null, 2));
-      await testInfo.attach("workflow-conversation-failure", {
-        path,
-        contentType: "application/json",
-      });
-    } catch (attachmentError) {
-      console.warn("Workflow conversation failure evidence could not be attached", attachmentError);
-    }
-    throw error;
   } finally {
-    try {
-      await testInfo.attach("workflow-stream-events", {
-        body: JSON.stringify({ events: streamEvents, dropped: droppedStreamEvents }),
-        contentType: "application/json",
-      });
-      await network.detach();
-    } finally {
-      await workflowHub.stop();
-    }
+    await workflowHub.stop();
   }
 });
 

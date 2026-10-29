@@ -1,4 +1,4 @@
-// One PTY over the relay's `terminal` channel (decisions.md §18.3).
+// One PTY over the relay's `terminal` channel.
 //
 // **Why this is a third client beside `workspaceRelay.ts` and `actionRuns.ts`.**
 // `workspaceRelay.ts` is request/response: one request settles one promise, and
@@ -10,20 +10,20 @@
 //
 // A terminal is neither. It streams in both directions for as long as the
 // person is looking at it, and it is the one thing on this relay that survives
-// its socket: §18.2 gives a dropped connection sixty seconds to come back, the
+// its socket: the relay protocol gives a dropped connection sixty seconds to come back, the
 // runner keeps a disconnected PTY alive exactly that long, and a `resume
 // {stream, last_seq}` on a fresh ticket puts the person back in front of the
 // same shell with the output they missed. So this client reconnects on its own
 // — which neither of the others may do — and it is the reconnect that makes it
 // its own file rather than a mode inside one of them.
 //
-// What is shared is shared as code, the way §18.12's client shares it:
+// What is shared is shared as code, the way the project actions contract's client shares it:
 // `RelayFrameAssembler` frames and reassembles, `RelayError` and
 // `relayErrorMessage` name the failures, `webSocketTransport` is the same
-// transport seam, and §18.2's acknowledgement cadence is the same 32 frames or
+// transport seam, and the relay protocol's acknowledgement cadence is the same 32 frames or
 // one second.
 //
-// One rule of §18.2 is load-bearing here and invisible everywhere else:
+// One rule of the relay protocol is load-bearing here and invisible everywhere else:
 // person-originated frames are never replayed. A keystroke whose delivery
 // cannot be established is reported as `unknown_delivery` and dropped, so this
 // client never re-sends input across a reconnect. Re-sending it would be worse
@@ -41,20 +41,20 @@ import {
 
 const CHANNEL = "terminal";
 
-/** §18.2's ack cadence, the same two numbers every other client uses. */
+/** The relay protocol's ack cadence, the same two numbers every other client uses. */
 const ACK_THRESHOLD = 32;
 const ACK_INTERVAL_MS = 1_000;
 
 /**
  * How long to wait before redialling a dropped socket.
  *
- * It is well inside §18.2's sixty-second resume window, so a reconnect that
+ * It is well inside the relay protocol's sixty-second resume window, so a reconnect that
  * works lands with time to spare, and long enough that a hub refusing
  * connections is not hammered by every open tab at once.
  */
 const RECONNECT_DELAY_MS = 750;
 
-/** §18.3's own window defaults, for a client that has not measured yet. */
+/** The terminal contract's own window defaults, for a client that has not measured yet. */
 export const DEFAULT_COLS = 80;
 export const DEFAULT_ROWS = 24;
 
@@ -63,7 +63,7 @@ export const DEFAULT_ROWS = 24;
  *
  * `status` is the client's own vocabulary rather than the hub's, because the
  * hub has none for a terminal: a PTY is not a row anywhere. `reconnecting` is
- * the state §18.2's resume window exists for, and it is deliberately separate
+ * the state the relay protocol's resume window exists for, and it is deliberately separate
  * from `connecting` — a reader who has a shell and lost the connection is in a
  * different situation from one who never had a shell.
  */
@@ -87,7 +87,7 @@ export interface TerminalSnapshot {
 }
 
 export interface TerminalStreamOptions {
-  /** Same-origin relay path; the ticket is what a browser can carry (§18.2). */
+  /** Same-origin relay path; the ticket is what a browser can carry. */
   readonly url: (ticket: string) => string;
   readonly mintTicket: () => Promise<string>;
   readonly transport?: RelayTransport;
@@ -96,15 +96,15 @@ export interface TerminalStreamOptions {
   readonly reconnectDelayMs?: number;
   readonly cols?: number;
   readonly rows?: number;
-  /** Every span the shell wrote, decoded from §18.3's base64. */
+  /** Every span the shell wrote, decoded from the terminal contract's base64. */
   readonly onOutput: (data: string) => void;
   readonly onChange: (snapshot: TerminalSnapshot) => void;
 }
 
 export interface TerminalStream {
-  /** What the person typed. Dropped when the socket is down (§18.2). */
+  /** What the person typed. Dropped when the socket is down. */
   write(data: string): void;
-  /** The window changed. The runner turns it into a real winsize (§18.3). */
+  /** The window changed. The runner turns it into a real winsize. */
   resize(cols: number, rows: number): void;
   close(): void;
   readonly snapshot: TerminalSnapshot;
@@ -117,7 +117,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 /**
  * Decodes one `output` payload.
  *
- * §18.3 makes a terminal's output always base64, unlike the exec channel's: a
+ * The terminal contract makes a terminal's output always base64, unlike the exec channel's: a
  * PTY's bytes are text interleaved with escape sequences, and a span cut at a
  * frame boundary routinely ends inside one. A span that arrives as plain text
  * is still honoured — a hub that stopped encoding would not be a reason to show
@@ -224,7 +224,7 @@ export function createTerminalStream(options: TerminalStreamOptions): TerminalSt
    * A terminal status, written once.
    *
    * A shell that exited and a shell whose connection failed are both endings,
-   * and neither is something to reconnect out of: §18.2's window is for a
+   * and neither is something to reconnect out of: the relay protocol's window is for a
    * socket that dropped under a live PTY, not for a PTY that is gone.
    */
   function finish(next: Partial<TerminalSnapshot> & { status: "exited" | "failed" }): void {
@@ -235,7 +235,7 @@ export function createTerminalStream(options: TerminalStreamOptions): TerminalSt
     publish(next);
   }
 
-  /** The next person-bound sequence. §18.2: per stream, per direction, from 1. */
+  /** The next person-bound sequence. The relay protocol: per stream, per direction, from 1. */
   function nextSeq(): number {
     outboundSeq += 1;
     return outboundSeq;
@@ -248,8 +248,8 @@ export function createTerminalStream(options: TerminalStreamOptions): TerminalSt
 
   function onFrame(frame: RelayFrame): void {
     if (frame.channel !== CHANNEL) return;
-    // The first answer names the stream every later frame of this PTY uses
-    // (§18.2). A resume answers with the same id, so this is written once.
+    // The first answer names the stream every later frame of this PTY uses.
+    // A resume answers with the same id, so this is written once.
     if (streamId === null && frame.stream !== undefined) streamId = frame.stream;
     noteInbound(frame.seq);
     switch (frame.type) {
@@ -300,7 +300,7 @@ export function createTerminalStream(options: TerminalStreamOptions): TerminalSt
         const code = typeof payload.code === "string" ? payload.code : "invalid_frame";
         const message = typeof payload.message === "string" ? payload.message : undefined;
         if (code === "unknown_delivery") {
-          // §18.2: a person-originated frame whose delivery could not be
+          // A person-originated frame whose delivery could not be
           // established is dropped rather than replayed. The shell may already
           // have run it, so re-sending would be worse than losing it; the
           // reader sees nothing appear, which is the honest outcome.
@@ -319,7 +319,7 @@ export function createTerminalStream(options: TerminalStreamOptions): TerminalSt
         return;
       }
       default:
-        // §18.2: an unknown type is dropped rather than acted on.
+        // An unknown type is dropped rather than acted on.
         return;
     }
   }
@@ -337,7 +337,7 @@ export function createTerminalStream(options: TerminalStreamOptions): TerminalSt
           onOpen: () => {
             if (resumeStream === null) {
               // The very first frame carries no `stream`: the hub allocates
-              // one and names it on the answer (§18.2). Every `open`
+              // one and names it on the answer. Every `open`
               // allocates, because every open is its own PTY.
               opened.send(
                 JSON.stringify({
@@ -375,7 +375,7 @@ export function createTerminalStream(options: TerminalStreamOptions): TerminalSt
               finish({ status: "failed", error: detail });
               return;
             }
-            // A PTY survives its socket for sixty seconds (§18.2), so the
+            // A PTY survives its socket for sixty seconds, so the
             // reader is told it is reconnecting rather than that their shell
             // is gone.
             publish({ status: "reconnecting", error: null });
@@ -451,7 +451,7 @@ export interface TerminalsHandle {
   readonly terminals: readonly TerminalHandle[];
   readonly activeId: string | null;
   readonly select: (id: string) => void;
-  /** Opens another shell. §18.2: a second one is its own stream and its own PTY. */
+  /** Opens another shell. The relay protocol: a second one is its own stream and its own PTY. */
   readonly open: () => string;
   readonly closeTerminal: (id: string) => void;
   /**
@@ -487,7 +487,7 @@ function nextTerminalId(): string {
  *
  * It opens the first one the moment the surface is enabled and the workspace is
  * live, and it closes every one of them when the workspace goes away: a PTY
- * whose workspace has ended is a shell nobody can reach, and §18.3 kills it on
+ * whose workspace has ended is a shell nobody can reach, and the terminal contract kills it on
  * the runner regardless.
  */
 export function useTerminals(input: UseTerminalsInput): TerminalsHandle {

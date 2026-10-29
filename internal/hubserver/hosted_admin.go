@@ -83,6 +83,9 @@ func (s *Service) hostedAllUsageGrants(ctx context.Context, credential apiCreden
 }
 
 func (s *Service) hostedAllRunnerGrants(ctx context.Context, credential apiCredential) bool {
+	if s.config.Hosted == nil {
+		return credential.Scope == apiScopeAdmin && !credential.NativeOnly
+	}
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	return s.requireHostedRunnerAdministration(ctx, s.database.reader, credential) == nil
@@ -211,6 +214,10 @@ func (s *Service) revokeHostedMember(c echo.Context) error {
 }
 
 func (s *Service) revokeHostedMemberLocally(ctx context.Context, user string) (resultErr error) {
+	legacy, err := legacyHostedSessions(ctx, s.database.reader, user)
+	if err != nil {
+		return err
+	}
 	tx, err := s.database.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -227,10 +234,15 @@ func (s *Service) revokeHostedMemberLocally(ctx context.Context, user string) (r
 		{"UPDATE hosted_members SET active = 0,updated_at = ? WHERE user_id = ?", []any{formatHubTime(s.config.now()), user}},
 		{"DELETE FROM token_grants WHERE token_id = (SELECT principal_id FROM hosted_members WHERE user_id = ?)", []any{user}},
 		{"DELETE FROM hosted_project_grants WHERE user_id = ?", []any{user}},
-		{"UPDATE hosted_sessions SET revoked_at = ? WHERE json_extract(identity_json,'$.subject') = ? AND revoked_at IS NULL", []any{formatHubTime(s.config.now()), user}},
+		{"UPDATE hosted_sessions SET revoked_at = ? WHERE identity_subject = ? AND revoked_at IS NULL", []any{formatHubTime(s.config.now()), user}},
 	}
 	for _, statement := range statements {
 		if _, err := tx.ExecContext(ctx, statement.query, statement.args...); err != nil {
+			return err
+		}
+	}
+	for _, session := range legacy {
+		if _, err := tx.ExecContext(ctx, `UPDATE hosted_sessions SET revoked_at=? WHERE token_hash=? AND identity_subject IS NULL AND identity_json=? AND revoked_at IS NULL`, formatHubTime(s.config.now()), session.hash, session.raw); err != nil {
 			return err
 		}
 	}

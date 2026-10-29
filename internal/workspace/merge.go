@@ -210,7 +210,7 @@ func (l *LocalGit) restoreAfterFailedGate(ctx context.Context, info Info, origin
 }
 
 func remoteDefaultBranch(ctx context.Context, workspacePath string, remote string) (string, error) {
-	output, err := runGitAt(ctx, workspacePath, "ls-remote", "--symref", remote, "HEAD")
+	output, err := runGitAt(ctx, workspacePath, remoteGitArgs("ls-remote", "--symref", remote, "HEAD")...)
 	if err != nil {
 		return "", err
 	}
@@ -242,9 +242,19 @@ func remoteDefaultBranchHead(ctx context.Context, workspacePath string, remote s
 	return branch, head, nil
 }
 
+// remoteGitArgs prefixes a git command that reads the repository remote with
+// the GitHub CLI credential helper the runner checkout clones with, so a
+// runner service without a global git credential can still reach the remote.
+func remoteGitArgs(args ...string) []string {
+	if _, err := exec.LookPath("gh"); err != nil {
+		return args
+	}
+	return append([]string{"-c", "credential.https://github.com.helper=!gh auth git-credential"}, args...)
+}
+
 func remoteBranchHead(ctx context.Context, workspacePath string, remote string, branch string) (string, bool, error) {
 	ref := "refs/heads/" + branch
-	output, err := runGitAt(ctx, workspacePath, "ls-remote", remote, ref)
+	output, err := runGitAt(ctx, workspacePath, remoteGitArgs("ls-remote", remote, ref)...)
 	if err != nil {
 		return "", false, err
 	}
@@ -503,8 +513,8 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 	cmd.Env = hookEnv(info, issue, l.hooks.StripGitHubTokens)
 	l.applyValidationGoBudget(ctx, cmd)
 	cmd.WaitDelay = workspaceCommandWaitDelay
-	if cache := toolcache.ManagedBuildFromContext(ctx); cache != "" {
-		procgroup.SetEnvironment(cmd, procgroup.Environment{Variables: map[string]string{"GOCACHE": cache}})
+	if variables := toolcache.ManagedEnvironment(ctx); len(variables) > 0 {
+		procgroup.SetEnvironment(cmd, procgroup.Environment{Variables: variables})
 	}
 	procgroup.SetTempDir(cmd, scratch)
 	procgroup.Configure(ctx, cmd)
@@ -539,7 +549,7 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 	err = cmd.Wait()
 	result.FinishedAt = time.Now().UTC()
 	result.DurationNS = time.Since(started).Nanoseconds()
-	result.Output = output.String()
+	result.Output = tracker.RedactGateOutput(output.String())
 	if paged {
 		if err == nil {
 			result.Output, result.OutputTruncated = source.result()

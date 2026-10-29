@@ -431,3 +431,23 @@ func (e *sshNativeExecution) SetDependencyReasonGenerator(generate DependencyRea
 	defer e.sources.mu.Unlock()
 	e.sources.reasonGenerator = generate
 }
+
+type sshSourceIterationExecution struct {
+	*sshNativeExecution
+}
+
+func (e *sshSourceIterationExecution) PrepareSourceIteration(ctx context.Context, source tracker.NativeChangeReference) error {
+	return e.peer.Call(ctx, "execution.PrepareSourceIteration", nil, source)
+}
+
+func (e *sshSourceIterationExecution) SourceReview(ctx context.Context) (NativeChange, error) {
+	var result NativeChange
+	err := e.peer.Call(ctx, "execution.SourceReview", &result)
+	return result, err
+}
+
+func (e *sshNativeExecution) ReconcileReleaseDelivery(ctx context.Context, attempt int64, generation uint64) (ReleaseDeliveryResult, error) {
+	var result ReleaseDeliveryResult
+	err := e.peer.Call(ctx, "execution.ReconcileReleaseDelivery", &result, attempt, generation)
+	return result, err
+}

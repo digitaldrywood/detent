@@ -15,6 +15,8 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/cloudorigin"
 	isolationpolicy "github.com/digitaldrywood/detent/internal/isolation"
+	"github.com/digitaldrywood/detent/internal/onboarding"
+	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -24,10 +26,11 @@ import (
 )
 
 type NativeClient struct {
-	githubBatch  func(context.Context, tracker.GitHubBatchTask) error
-	client       *Client
-	organization tracker.OrganizationID
-	project      tracker.ProjectID
+	repositoryCommand repositoryCommand
+	githubBatch       func(context.Context, tracker.GitHubBatchTask) error
+	client            *Client
+	organization      tracker.OrganizationID
+	project           tracker.ProjectID
 }
 
 func (c *Client) Native(organization tracker.OrganizationID, project tracker.ProjectID) (*NativeClient, error) {
@@ -142,6 +145,14 @@ func (c *NativeClient) Project(ctx context.Context) (tracker.NativeProject, erro
 	var result tracker.NativeProject
 	err := c.client.request(ctx, http.MethodGet, c.base(), nil, &result)
 	return result, err
+}
+
+func (c *NativeClient) SetupProgress(ctx context.Context) (onboarding.Progress, error) {
+	var result struct {
+		Progress onboarding.Progress `json:"progress"`
+	}
+	err := c.client.request(ctx, http.MethodGet, c.base()+"/onboarding", nil, &result)
+	return result.Progress, err
 }
 
 func nativeItemPath(id tracker.NativeWorkItemID) (string, error) {
@@ -326,7 +337,7 @@ func (c *NativeClient) Claim(ctx context.Context, request tracker.NativeClaim) (
 	}
 	err := c.client.request(ctx, http.MethodPost, c.base()+"/claims", request, &result)
 	if err == nil && c.client.runner != nil && result.IsolationPolicy == nil {
-		return result, errors.Join(errors.New("runner claim isolation policy is unavailable"), c.Release(context.WithoutCancel(ctx), result, "work_item_hydration_failed"))
+		return result, errors.Join(fmt.Errorf("%w: runner claim isolation policy is unavailable", orchestrator.ErrSchedulingUnavailable), c.Release(context.WithoutCancel(ctx), result, "work_item_hydration_failed"))
 	}
 	var apiErr *APIError
 	if errors.As(err, &apiErr) && apiErr.Code == "no_claimable_work" {
@@ -348,14 +359,27 @@ func (c *NativeClient) Renew(ctx context.Context, lease tracker.NativeLease, ttl
 func (c *NativeClient) renew(ctx context.Context, lease tracker.NativeLease, ttl int64, landingCapacity int) (tracker.NativeLease, error) {
 	var result tracker.NativeLease
 	err := c.client.request(ctx, http.MethodPost, c.base()+"/leases/"+url.PathEscape(string(lease.ID))+"/renew", tracker.NativeLeaseMutation{LandingCapacity: landingCapacity, FencingToken: lease.FencingToken, TTLSeconds: ttl}, &result)
+	result.RunDetailBatching = lease.RunDetailBatching
 	return result, err
 }
 
 func (c *NativeClient) Release(ctx context.Context, lease tracker.NativeLease, reason string) error {
-	err := c.client.request(ctx, http.MethodPost, c.base()+"/leases/"+url.PathEscape(string(lease.ID))+"/release", tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: reason}, nil)
-	if (err == nil || claimLost(err)) && c.client.runner != nil {
-		c.client.runner.claimSlot(lease, false)
-		c.slotFreed()
+	return c.release(ctx, lease, reason, false)
+}
+
+func (c *NativeClient) release(ctx context.Context, lease tracker.NativeLease, reason string, cancelAttempt bool) error {
+	err := c.client.request(ctx, http.MethodPost, c.base()+"/leases/"+url.PathEscape(string(lease.ID))+"/release", tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: reason, CancelAttempt: cancelAttempt}, nil)
+	if err == nil || claimLost(err) {
+		key := c.base() + "/" + string(lease.WorkItemID)
+		if cached, ok := c.client.nativeLeases.Load(key); ok {
+			if current, ok := cached.(tracker.NativeLease); ok && current.ID == lease.ID && current.FencingToken == lease.FencingToken {
+				c.client.nativeLeases.CompareAndDelete(key, cached)
+			}
+		}
+		if c.client.runner != nil {
+			c.client.runner.claimSlot(lease, false)
+			c.slotFreed()
+		}
 	}
 	return err
 }

@@ -48,13 +48,22 @@ func githubMigrationSourceURL(body string) string {
 }
 
 func migrateGitHubIssueReferences(ctx context.Context, tx *sql.Tx, logger *slog.Logger) (err error) {
+	var typed bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pragma_table_info('issues') WHERE name='provenance_provider')`).Scan(&typed); err != nil {
+		return err
+	}
+	fields := "i.provenance_json,NULL,NULL"
+	predicate := "i.provenance_json IS NOT NULL OR i.github_node_id IS NOT NULL"
+	if typed {
+		fields = "CASE WHEN i.provenance_provider IS NULL OR i.provenance_external_id IS NULL THEN i.provenance_json END,i.provenance_provider,i.provenance_external_id"
+		predicate = "i.provenance_provider='github' OR i.provenance_provider IS NULL OR i.github_node_id IS NOT NULL"
+	}
 	rows, err := tx.QueryContext(ctx, `SELECT i.native_id, i.project_id, i.body, i.url,
 COALESCE(i.github_number, 0), COALESCE(r.github_owner, ''), COALESCE(r.github_name, ''),
-COALESCE(json_extract(i.provenance_json, '$.external_id'), i.github_node_id, ''), COALESCE(l.source_url, '')
+COALESCE(i.github_node_id, ''), COALESCE(l.source_url, ''), `+fields+`
 FROM issues i LEFT JOIN repositories r ON r.id = i.repository_id
 LEFT JOIN linked_issue_sources l ON l.work_item_id = i.native_id
-WHERE json_extract(i.provenance_json, '$.provider') = 'github' OR i.github_node_id IS NOT NULL
-ORDER BY i.project_id, i.native_id`)
+WHERE `+predicate+` ORDER BY i.project_id, i.native_id`)
 	if err != nil {
 		return err
 	}
@@ -66,8 +75,27 @@ ORDER BY i.project_id, i.native_id`)
 	var items []item
 	for rows.Next() {
 		var value item
-		if err := rows.Scan(&value.id, &value.project, &value.body, &value.url, &value.number, &value.owner, &value.repository, &value.nodeID, &value.linkedURL); err != nil {
+		var raw, provider, external sql.NullString
+		if err := rows.Scan(&value.id, &value.project, &value.body, &value.url, &value.number, &value.owner, &value.repository, &value.nodeID, &value.linkedURL, &raw, &provider, &external); err != nil {
 			return err
+		}
+		var provenance *tracker.Provenance
+		if raw.Valid {
+			if err := json.Unmarshal([]byte(raw.String), &provenance); err != nil {
+				return err
+			}
+		}
+		if !provider.Valid {
+			provider.String = provenanceProvider(provenance)
+		}
+		if !external.Valid {
+			external.String = provenanceExternalID(provenance)
+		}
+		if provider.String != "github" && value.nodeID == "" {
+			continue
+		}
+		if external.String != "" {
+			value.nodeID = external.String
 		}
 		refs := nativeSourceReferences(value.nodeID, value.owner, value.repository, value.number, value.linkedURL, value.url, &tracker.Provenance{Provider: "github", ExternalID: value.nodeID})
 		if refs[len(refs)-1].Number == 0 {
@@ -119,17 +147,28 @@ func importedGitHubIssueURLs(ctx context.Context, tx *sql.Tx, project, item, nod
 	rows, err := tx.QueryContext(ctx, `SELECT r.record_json FROM github_import_records r
 JOIN github_imports g ON g.id = r.import_id
 WHERE g.project_id = ? AND g.work_item_id = ? AND r.kind = 'issue'
-UNION ALL SELECT record_json FROM collaboration_versions
-WHERE project_id = ? AND work_item_id = ? AND record_id = ?`, project, item, project, item, item)
+`, project, item)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { err = errors.Join(err, rows.Close()) }()
+	var records []string
 	for rows.Next() {
 		var raw string
 		if err := rows.Scan(&raw); err != nil {
 			return nil, err
 		}
+		records = append(records, raw)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, err
+	}
+	history, err := importedNativeIssueVersions(ctx, tx, project, item)
+	if err != nil {
+		return nil, err
+	}
+	records = append(records, history...)
+	for _, raw := range records {
 		var record struct {
 			Body       string             `json:"body"`
 			Provenance tracker.Provenance `json:"provenance"`
@@ -151,4 +190,43 @@ WHERE project_id = ? AND work_item_id = ? AND record_id = ?`, project, item, pro
 		return nil, err
 	}
 	return urls, nil
+}
+
+func importedNativeIssueVersions(ctx context.Context, tx *sql.Tx, project, item string) ([]string, error) {
+	var encoded bool
+	if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM pragma_table_info('collaboration_versions') WHERE name='encoding')").Scan(&encoded); err != nil {
+		return nil, err
+	}
+	rows, err := tx.QueryContext(ctx, "SELECT organization_id, revision, record_json FROM collaboration_versions WHERE project_id=? AND work_item_id=? AND record_id=? ORDER BY revision", project, item, item)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	type version struct {
+		organization, raw string
+		revision          int64
+	}
+	var versions []version
+	for rows.Next() {
+		var value version
+		if err := rows.Scan(&value.organization, &value.revision, &value.raw); err != nil {
+			return nil, err
+		}
+		versions = append(versions, value)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, err
+	}
+	records := make([]string, 0, len(versions))
+	for _, version := range versions {
+		raw := []byte(version.raw)
+		if encoded {
+			raw, err = reconstructNativeVersion(ctx, tx, version.organization, project, item, item, version.revision)
+			if err != nil {
+				return nil, err
+			}
+		}
+		records = append(records, string(raw))
+	}
+	return records, nil
 }

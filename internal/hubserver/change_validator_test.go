@@ -1,10 +1,14 @@
 package hubserver
 
 import (
+	"context"
+	"database/sql/driver"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -12,10 +16,12 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/failureattribution"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
@@ -23,6 +29,14 @@ import (
 
 func TestChangeValidatorSessionAuthority(t *testing.T) {
 	t.Parallel()
+	attributedRework := func(r *tracker.ReviewChange) {
+		result := r.Validator
+		r.Decision, result.Verdict = "changes_requested", "rework"
+		diagnostic := "source.go:4: invalid input"
+		base := failureattribution.Observation{Command: "check-input", HeadSHA: result.BaseSHA, ExitCode: 1, Output: diagnostic, Complete: true}
+		result.Commands = []gate.CommandResult{{Command: base.Command, HeadSHA: result.HeadSHA, ExitCode: 1, Output: diagnostic, FinishedAt: time.Now(), BaseReproduction: &base}}
+		result.Findings = []gate.Finding{{Severity: "p1", Body: diagnostic, CheckCommand: base.Command, CheckDiagnostic: diagnostic}}
+	}
 	implementationReview := func(r *tracker.ReviewChange) {
 		r.ImplementationReview, r.Validator = r.Validator, nil
 	}
@@ -39,13 +53,16 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 		r.SecurityAudit.Run.HeadSHA = strings.Repeat("e", 40)
 	}
 	largeFindingIdentities := func(r *tracker.ReviewChange) {
-		for i := range 6000 {
+		for i := range 5800 {
 			r.SecurityAudit.Run.Findings = append(r.SecurityAudit.Run.Findings, securityaudit.Finding{ID: fmt.Sprintf("finding-%06d-%s", i, strings.Repeat("i", 64)), Status: "resolved", Severity: "p1", Body: "Resolved"})
 		}
 	}
 	multipleReceipts := func(r *tracker.ReviewChange) {
 		r.Validator.CriteriaEvidence[0] = gate.CriterionEvidence{Criterion: "Complete the requested work.", Kind: "receipt", Reference: "make check-app; npx playwright test", ReceiptIDs: []string{"timing_app", "timing_browser"}, Behavior: "Application and browser checks exercise the requested behavior"}
 		r.Validator.Commands = []gate.CommandResult{{ReceiptID: "timing_app", Command: "make check-app", HeadSHA: r.Validator.HeadSHA, TreeSHA: strings.Repeat("d", 40)}, {ReceiptID: "timing_browser", Command: "npx playwright test", HeadSHA: r.Validator.HeadSHA, TreeSHA: strings.Repeat("d", 40)}}
+	}
+	objectOutput := func(r *tracker.ReviewChange) {
+		r.Validator.Commands = []gate.CommandResult{{Command: "make check-land", HeadSHA: r.Validator.HeadSHA, TreeSHA: strings.Repeat("d", 40), DurationNS: 123, Output: strings.Repeat("validator output\n", 13000)}}
 	}
 	type stageCase struct {
 		mode               string
@@ -61,6 +78,31 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 		status string
 		stages *stageCase
 	}{
+		{"visual criterion paired upload", func(r *tracker.ReviewChange) {
+			r.Validator.CriteriaEvidence[0].Reference = "https://figma.com/design/example ![upload](attachment:att_0123456789abcdef0123456789abcdef)"
+		}, http.StatusOK, "reviewed", nil},
+		{"object-backed visual body refusal", func(r *tracker.ReviewChange) {
+			objectOutput(r)
+			r.Body = "https://figma.com/design/example?secret=hidden"
+		}, http.StatusUnprocessableEntity, "needs_evidence", nil},
+
+		{"visual review body refused", func(r *tracker.ReviewChange) { r.Body = "https://figma.com/design/example?secret=hidden" }, http.StatusUnprocessableEntity, "needs_evidence", nil},
+		{"visual criterion reference refused", func(r *tracker.ReviewChange) {
+			r.Validator.CriteriaEvidence[0].Reference = "https://figma.com/design/example?secret=hidden"
+		}, http.StatusUnprocessableEntity, "needs_evidence", nil},
+		{"visual discarded criterion reference refused", func(r *tracker.ReviewChange) {
+			r.Validator.CriteriaEvidence = append(r.Validator.CriteriaEvidence, gate.CriterionEvidence{Criterion: "Unrecognized criterion", Kind: "test", Reference: "https://figma.com/design/example?secret=hidden"})
+		}, http.StatusUnprocessableEntity, "needs_evidence", nil},
+		{"implementation review visual reference refused", func(r *tracker.ReviewChange) {
+			implementationReview(r)
+			r.ImplementationReview.CriteriaEvidence[0].Reference = "https://figma.com/design/example?secret=hidden"
+		}, http.StatusUnprocessableEntity, "needs_evidence", nil},
+		{"visual raw command output preserved", func(r *tracker.ReviewChange) {
+			r.Validator.Commands = []gate.CommandResult{{Command: "inspect", Output: "https://figma.com/design/example?secret=hidden"}}
+		}, http.StatusOK, "reviewed", nil},
+
+		{"attempt changes during preparation", func(_ *tracker.ReviewChange) {}, http.StatusConflict, "needs_evidence", nil},
+		{"security audit attempt changes during preparation", func(_ *tracker.ReviewChange) {}, http.StatusConflict, "needs_evidence", nil},
 		{"required acceptance before source", func(_ *tracker.ReviewChange) {}, http.StatusUnprocessableEntity, "needs_evidence", &stageCase{mode: gate.AutomatedReviewRequired}},
 		{"required acceptance after source pass", func(_ *tracker.ReviewChange) {}, http.StatusOK, "reviewed", &stageCase{mode: gate.AutomatedReviewRequired, sourceVerdicts: []string{"pass"}}},
 		{"required acceptance after source rework", func(_ *tracker.ReviewChange) {}, http.StatusUnprocessableEntity, "needs_evidence", &stageCase{mode: gate.AutomatedReviewRequired, sourceVerdicts: []string{"rework"}}},
@@ -75,6 +117,15 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 		{"implementation review is not acceptance", implementationReview, http.StatusOK, "needs_evidence", nil},
 		{"implementation review is not human approval", implementationReview, http.StatusOK, "needs_evidence", nil},
 		{"implementation review does not leave stale human approval", implementationReview, http.StatusOK, "needs_evidence", nil},
+		{"security audit undetermined lead waits for human", func(r *tracker.ReviewChange) {
+			r.SecurityAudit.Run.Verdict = securityaudit.VerdictUndetermined
+			r.SecurityAudit.Run.Findings = []securityaudit.Finding{{ID: "auth", Certainty: securityaudit.CertaintyUndetermined, Body: "Potential p2 cross-tenant access", UnresolvedFact: "Whether the caller validates tenant authorization"}}
+			r.SecurityAudit.Verdict = "wait"
+			r.Decision = "commented"
+		}, http.StatusOK, "needs_evidence", nil},
+		{"security audit rejected lead is retained and passes", func(r *tracker.ReviewChange) {
+			r.SecurityAudit.Run.Findings = []securityaudit.Finding{{ID: "auth", Certainty: securityaudit.CertaintyDisproved, Status: "rejected", Body: "Caller enforces tenant authorization"}}
+		}, http.StatusOK, "reviewed", nil},
 		{"security audit large finding identities", largeFindingIdentities, http.StatusOK, "reviewed", nil},
 		{"security audit landing large identities", func(r *tracker.ReviewChange) {
 			landingAudit(r)
@@ -99,6 +150,7 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 			r.SecurityAudit.Run.Findings = append(r.SecurityAudit.Run.Findings, securityaudit.Finding{ID: "resolved", Status: "resolved", Severity: "p1", Body: "Already addressed"})
 		}, http.StatusOK, "needs_evidence", nil},
 		{"security audit metered pass", func(_ *tracker.ReviewChange) {}, http.StatusOK, "reviewed", nil},
+		{"security audit run-detail backed pass", func(_ *tracker.ReviewChange) {}, http.StatusOK, "reviewed", nil},
 		{"security audit before required implementation review", func(_ *tracker.ReviewChange) {}, http.StatusOK, "needs_evidence", &stageCase{mode: gate.AutomatedReviewRequired}},
 		{"security audit blocking finding before required implementation review", blockingAudit, http.StatusOK, "needs_evidence", &stageCase{mode: gate.AutomatedReviewRequired}},
 		{"security audit stale head before required implementation review", func(r *tracker.ReviewChange) { r.SecurityAudit.Run.HeadSHA = "other" }, http.StatusUnprocessableEntity, "needs_evidence", &stageCase{mode: gate.AutomatedReviewRequired}},
@@ -125,6 +177,8 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 		{"security audit old reviewer", func(r *tracker.ReviewChange) { r.SecurityAudit.Run.ReviewerDigest = "other" }, http.StatusUnprocessableEntity, "needs_evidence", nil},
 		{"security audit implementing session", func(r *tracker.ReviewChange) { r.SecurityAudit.Run.ID = 41; r.SecurityAudit.SessionID = 41 }, http.StatusUnprocessableEntity, "needs_evidence", nil},
 		{"security audit backend failure", func(r *tracker.ReviewChange) { r.SecurityAudit.Run.ExitStatus = securityaudit.ExitStatusFailed }, http.StatusUnprocessableEntity, "needs_evidence", nil},
+		{"security audit reconciliation without a provider session", func(_ *tracker.ReviewChange) {}, http.StatusOK, "reviewed", nil},
+		{"security audit reconciliation reuses implementing session", func(r *tracker.ReviewChange) { r.SecurityAudit.Run.ID = 41; r.SecurityAudit.SessionID = 41 }, http.StatusUnprocessableEntity, "needs_evidence", nil},
 		{"security audit landing pass", landingAudit, http.StatusOK, "reviewed", nil},
 		{"security audit landing after configuration change", landingAudit, http.StatusOK, "reviewed", nil},
 		{"security audit landing requires merge execution", landingAudit, http.StatusUnprocessableEntity, "reviewed", nil},
@@ -153,6 +207,14 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 			r.ImplementationReview = r.Validator
 		}, http.StatusUnprocessableEntity, "needs_evidence", nil},
 		{"separate session pass", func(_ *tracker.ReviewChange) {}, http.StatusOK, "reviewed", nil},
+		{"object-backed separate session pass", objectOutput, http.StatusOK, "reviewed", nil},
+		{"object-backed another head", func(r *tracker.ReviewChange) { objectOutput(r); r.Validator.HeadSHA = r.Validator.BaseSHA }, http.StatusUnprocessableEntity, "needs_evidence", nil},
+		{"object-backed invalid decision", func(r *tracker.ReviewChange) { objectOutput(r); r.Decision = "invalid" }, http.StatusUnprocessableEntity, "needs_evidence", nil},
+		{"object-backed oversized body", func(r *tracker.ReviewChange) { objectOutput(r); r.Body = strings.Repeat("x", (64<<10)+1) }, http.StatusUnprocessableEntity, "needs_evidence", nil},
+		{"object-backed missing key", func(r *tracker.ReviewChange) { objectOutput(r); r.IdempotencyKey = "" }, http.StatusUnprocessableEntity, "needs_evidence", nil},
+		{"object-backed storage rollback", objectOutput, http.StatusInternalServerError, "needs_evidence", nil},
+		{"object-backed storage exhausted", objectOutput, http.StatusTooManyRequests, "needs_evidence", nil},
+
 		{"separate session pass with multiple receipts", multipleReceipts, http.StatusOK, "reviewed", nil},
 		{"recovered source inspection retains failed read history", func(r *tracker.ReviewChange) {
 			multipleReceipts(r)
@@ -170,11 +232,21 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 		}, http.StatusUnprocessableEntity, "needs_evidence", nil},
 		{"separate session pass with human review", func(_ *tracker.ReviewChange) {}, http.StatusOK, "needs_evidence", nil},
 		{"implementing session", func(r *tracker.ReviewChange) { r.Validator.SessionID = 41 }, http.StatusUnprocessableEntity, "needs_evidence", nil},
+		{"validator reconciliation without a provider session", func(_ *tracker.ReviewChange) {}, http.StatusOK, "reviewed", nil},
+		{"validator reconciliation reuses implementing session", func(r *tracker.ReviewChange) { r.Validator.SessionID = 41 }, http.StatusUnprocessableEntity, "needs_evidence", nil},
+		{"same machine audit session cannot validate acceptance", func(_ *tracker.ReviewChange) {}, http.StatusUnprocessableEntity, "needs_evidence", nil},
+		{"audit from another machine does not collide", func(_ *tracker.ReviewChange) {}, http.StatusOK, "reviewed", nil},
+		{"oversized acceptance body", func(r *tracker.ReviewChange) { r.Body = strings.Repeat("private-payload", 6000) }, http.StatusUnprocessableEntity, "needs_evidence", nil},
 		{"missing session", func(r *tracker.ReviewChange) { r.Validator.SessionID = 0 }, http.StatusUnprocessableEntity, "needs_evidence", nil},
 		{"another head", func(r *tracker.ReviewChange) { r.Validator.HeadSHA = r.Validator.BaseSHA }, http.StatusUnprocessableEntity, "needs_evidence", nil},
 		{"another version", func(r *tracker.ReviewChange) { r.Validator.VersionID = "version_other" }, http.StatusUnprocessableEntity, "needs_evidence", nil},
 		{"human approval from worker", func(r *tracker.ReviewChange) { r.Validator = nil }, http.StatusForbidden, "needs_evidence", nil},
 		{"verdict mismatch", func(r *tracker.ReviewChange) { r.Validator.Verdict = "rework" }, http.StatusUnprocessableEntity, "needs_evidence", nil},
+		{"Attribution independent retains rejection", attributedRework, http.StatusOK, "needs_evidence", nil},
+		{"Attribution without proof stays unknown", func(r *tracker.ReviewChange) {
+			r.Decision, r.Validator.Verdict = "changes_requested", "rework"
+			r.Validator.Findings = []gate.Finding{{Severity: "p1", Body: "untouched file failure", Path: "untouched.go", Attribution: "independent"}}
+		}, http.StatusOK, "needs_evidence", nil},
 		{"separate session rework", func(r *tracker.ReviewChange) { r.Decision, r.Validator.Verdict = "changes_requested", "rework" }, http.StatusOK, "needs_evidence", nil},
 		{"separate session wait", func(r *tracker.ReviewChange) { r.Decision, r.Validator.Verdict = "commented", "wait" }, http.StatusOK, "needs_evidence", nil},
 		{"missing evidence cannot pass", func(r *tracker.ReviewChange) { r.Validator.CriteriaEvidence = nil }, http.StatusUnprocessableEntity, "needs_evidence", nil},
@@ -191,8 +263,20 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			f := newNativeFixture(t, nil, "", "validator")
+			var service *Service
+			if strings.Contains(test.name, "run-detail backed") {
+				service = openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}})
+			}
+			f := newNativeFixture(t, service, "", "validator")
+			var objects *changeObjectFixture
+			if strings.HasPrefix(test.name, "object-backed") {
+				objects = &changeObjectFixture{}
+				f.service.config.content = objects.call
+			}
 			descriptor := hubTestPolicy()
+			if test.name == "missing session" {
+				descriptor.Gates.GitHubPullRequest = true
+			}
 			if test.stages != nil && test.stages.gateKind != "" {
 				cfg := config.Default()
 				cfg.Tracker.Kind = config.TrackerHubNative
@@ -227,6 +311,7 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 			descriptor.Gates.SecurityAudit = audit
 			implementation := strings.HasPrefix(test.name, "implementation review")
 			counterCollision := test.name == "source review from another machine does not collide" || test.name == "same machine source session cannot validate acceptance"
+			auditCollision := test.name == "same machine audit session cannot validate acceptance" || test.name == "audit from another machine does not collide"
 			if implementation || counterCollision {
 				descriptor.Gates.AutomatedReview = gate.AutomatedReviewRequired
 			}
@@ -294,10 +379,16 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 			request := tracker.ReviewChange{Mutation: mutation, ExpectedVersionID: version.ID, Decision: "approved", Validator: &gate.ValidatorResult{SessionID: 42, VersionID: version.ID, Submitted: true, Verdict: "pass", Score: .95, Repository: version.Repository, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA, DiffDigest: policy.Digest([]byte("diff"))}}
 			request.Validator.CriteriaEvidence = []gate.CriterionEvidence{{Criterion: "Complete the requested work.", Kind: "test", Reference: "change_validator_test.go:TestChangeValidatorSessionAuthority", Behavior: "A separate validator session reviews the immutable version"}}
 			acceptanceRequest := request
-			if audit {
+			var recordedAudit *tracker.SecurityAuditReview
+			if audit || auditCollision {
 				now := f.service.config.now()
 				request.SecurityAudit = &tracker.SecurityAuditReview{SessionID: 42, DiffDigest: policy.Digest([]byte("diff")), Verdict: "pass", Run: securityaudit.Run{ID: 42, InvocationID: "audit-invocation", ProjectID: string(f.project.ID), IssueID: string(issue.WorkItemID), Repository: version.Repository, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA, ReviewerVersion: securityaudit.ReviewerVersion, ReviewerDigest: securityaudit.ReviewerDigest(), AuthenticationMode: "api_key", ExitStatus: securityaudit.ExitStatusSuccess, WorkerPID: 1, WorkerPGID: 1, WorkerStartedAt: now, StartedAt: now.Add(-time.Second), CompletedAt: now, OutputBytes: 1, OutputDigest: securityaudit.OutputDigest("result"), Verdict: "pass", Summary: "No findings"}}
-				request.Validator = nil
+				recordedAudit = request.SecurityAudit
+				if audit {
+					request.Validator = nil
+				} else {
+					request.SecurityAudit = nil
+				}
 			}
 			landing := strings.HasPrefix(test.name, "security audit landing")
 			if landing {
@@ -326,6 +417,29 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 				event = merge
 				request.LeaseID, request.FencingToken = lease.ID, lease.FencingToken
 			}
+			if strings.HasPrefix(test.name, "security audit reconciliation") || strings.HasPrefix(test.name, "validator reconciliation") {
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
+				lease = claimNativeAttempt(t, f, worker, "machine", "reconcile-session", issue.WorkItemID, descriptor.ID)
+				reconcile := nativeStartedEvent(lease)
+				reconcile.IdempotencyKey = "reconcile-start"
+				reconcile.Data.Identity.Role = "code"
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", worker, reconcile), http.StatusOK)
+				event = reconcile
+				request.LeaseID, request.FencingToken = lease.ID, lease.FencingToken
+			}
+			if strings.Contains(test.name, "visual") {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET require_visual_attachments=1 WHERE id=?", f.project.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			if test.name == "visual criterion paired upload" {
+				_, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO attachments(id,organization_id,project_id,uploader,name,content_type,size,sha256,width,height,created_at) SELECT 'att_0123456789abcdef0123456789abcdef',?,?,id,'upload.png','image/png',100,?,1,1,? FROM api_tokens WHERE name='operator-validator'`, f.project.OrganizationID, f.project.ID, policy.Digest([]byte("image")), formatHubTime(time.Now()))
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+
 			test.edit(&request)
 			stageReviews := 0
 			if test.stages != nil {
@@ -356,12 +470,16 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 					stageReviews++
 				}
 			}
-			if counterCollision {
+			if counterCollision || auditCollision {
 				machine := tracker.MachineID("machine")
-				if test.name == "source review from another machine does not collide" {
+				if test.name == "source review from another machine does not collide" || test.name == "audit from another machine does not collide" {
 					machine = "other-machine"
 				}
 				sourceReview := tracker.ChangeReview{SessionMachineID: machine, ID: "review_previous_source", VersionID: version.ID, Decision: "approved", ImplementationReview: &gate.ValidatorResult{VersionID: version.ID, Repository: version.Repository, HeadSHA: version.HeadSHA, BaseSHA: version.BaseSHA, SessionID: 42, Submitted: true, Verdict: "pass", Score: 1}, Actor: tracker.Actor{Kind: "runner", PrincipalID: "previous-worker"}, CreatedAt: f.service.config.now()}
+				if auditCollision {
+					sourceReview.ImplementationReview = nil
+					sourceReview.SecurityAudit = recordedAudit
+				}
 				raw, err := marshalNative(sourceReview)
 				if err != nil {
 					t.Fatal(err)
@@ -377,11 +495,320 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 				}
 				t.Logf("authenticated audit write bytes=%d", len(raw))
 			}
-			response = performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/reviews", worker, request)
+			if test.name == "object-backed storage rollback" {
+				if _, err := f.service.database.db.ExecContext(t.Context(), `CREATE TRIGGER reject_review_storage BEFORE INSERT ON change_evidence WHEN NEW.kind='review' BEGIN SELECT RAISE(ABORT,'review storage failure'); END`); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var contentBefore int64
+			if objects != nil {
+				if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT value FROM hosted_usage_counters WHERE name='collaboration_bytes'`).Scan(&contentBefore); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.name == "object-backed storage exhausted" {
+				f.service.database.hostedOrganization = f.project.OrganizationID
+				plans := pilotHostedPlans()
+				plans.Plans[0].Allowances["collaboration_bytes"] = contentBefore
+				if err := f.service.database.configureHostedPlans(t.Context(), &HostedConfig{Plans: &plans}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if strings.HasSuffix(test.name, "attempt changes during preparation") {
+				injected := false
+				ctx := withRequestTiming(t.Context(), &requestTiming{trace: func(query string, _ []driver.NamedValue) {
+					if injected || !strings.Contains(query, "FROM change_requests c JOIN issues i") {
+						return
+					}
+					injected = true
+					var raw string
+					if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT data_json FROM native_attempts WHERE id=?", version.AttemptID).Scan(&raw); err != nil {
+						t.Fatal(err)
+					}
+					var run tracker.NativeRunData
+					if err := json.Unmarshal([]byte(raw), &run); err != nil {
+						t.Fatal(err)
+					}
+					if request.SecurityAudit != nil {
+						run.Runtime.Activity.SessionID = request.SecurityAudit.SessionID
+					} else {
+						run.Runtime.Activity.SessionID = request.Validator.SessionID
+					}
+					updated, err := json.Marshal(run)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET data_json=? WHERE id=?", string(updated), version.AttemptID); err != nil {
+						t.Fatal(err)
+					}
+				}})
+				response = httptest.NewRecorder()
+				f.service.Handler().ServeHTTP(response, newHubAPIRequest(t, http.MethodPost, path+"/versions/"+version.ID+"/reviews", worker, request).WithContext(ctx))
+				if !injected {
+					t.Fatal("concurrent session change was not injected")
+				}
+			} else if objects != nil {
+				measurement := &changeWriterMeasurement{}
+				ctx := context.WithValue(t.Context(), changeWriterMeasurementKey{}, measurement)
+				ctx = withRequestTiming(ctx, &requestTiming{writerTrace: func(_ string, _ []driver.NamedValue) {
+					measurement.statements++
+				}, writerTransaction: func(active bool) { measurement.active = active }})
+				response = httptest.NewRecorder()
+				f.service.Handler().ServeHTTP(response, newHubAPIRequest(t, http.MethodPost, path+"/versions/"+version.ID+"/reviews", worker, request).WithContext(ctx))
+				if measurement.statements > 30 || measurement.content != 0 {
+					t.Fatalf("review writer statements=%d (bound 30), content operations=%d (want 0)", measurement.statements, measurement.content)
+				}
+			} else {
+				response = performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/reviews", worker, request)
+			}
 			requireNativeStatus(t, response, test.want)
+			if strings.Contains(test.name, "visual") && test.want == http.StatusUnprocessableEntity {
+				raw := response.Body.String()
+				if !strings.Contains(raw, "requires uploaded screenshots") || strings.Contains(raw, "hidden") || strings.Contains(raw, "figma.com") {
+					t.Fatalf("unsafe visual refusal: %s", raw)
+				}
+			}
+			if test.name == "visual criterion paired upload" {
+				var bound bool
+				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT EXISTS(SELECT 1 FROM attachment_references WHERE attachment_id='att_0123456789abcdef0123456789abcdef' AND work_item_id=? AND retain_with_work_item=1)", issue.WorkItemID).Scan(&bound); err != nil || !bound {
+					t.Fatalf("review reference not bound: %v", err)
+				}
+			}
+
+			if strings.HasPrefix(test.name, "Attribution") {
+				var outcome tracker.ChangeReview
+				decodeHubResponse(t, response, &outcome)
+				want := "independent"
+				if strings.Contains(test.name, "without proof") {
+					want = "unknown"
+				}
+				if outcome.Decision != "changes_requested" || outcome.Validator.Attribution != want || len(outcome.Validator.Findings) != 1 || outcome.Validator.Findings[0].Attribution != want {
+					t.Fatalf("lost rejection attribution: %#v", outcome)
+				}
+			}
+
+			if test.name == "object-backed storage exhausted" {
+				request.IdempotencyKey += "-another-output"
+				request.Validator.Commands[0].Output += "distinct rejected output"
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/reviews", worker, request), http.StatusTooManyRequests)
+			}
+			if objects != nil && test.want != http.StatusOK {
+				var charged, registered int64
+				if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT value FROM hosted_usage_counters WHERE name='collaboration_bytes'`).Scan(&charged); err != nil {
+					t.Fatal(err)
+				}
+				if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM change_content_objects`).Scan(&registered); err != nil {
+					t.Fatal(err)
+				}
+				objects.mu.Lock()
+				stored := len(objects.objects)
+				var storedBytes int64
+				for _, data := range objects.objects {
+					storedBytes += int64(len(data))
+				}
+				objects.mu.Unlock()
+				expectedObjects := 0
+				if test.name == "object-backed storage rollback" {
+					expectedObjects = 1
+				}
+				if charged != contentBefore+storedBytes || registered != int64(expectedObjects) || stored != expectedObjects {
+					t.Fatalf("rejected review retained output: charged=%d before=%d registered=%d objects=%d", charged, contentBefore, registered, stored)
+				}
+			}
+
+			if test.name == "object-backed separate session pass" {
+				var stored tracker.ChangeReview
+				decodeHubResponse(t, response, &stored)
+				if stored.Validator == nil || len(stored.Validator.Commands) != 1 || stored.Validator.Commands[0].Output != request.Validator.Commands[0].Output {
+					t.Fatal("review publication lost command output")
+				}
+				var inline, refs int
+				if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT max(length(record_json)) FROM change_evidence WHERE kind='review'`).Scan(&inline); err != nil {
+					t.Fatal(err)
+				}
+				if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM change_command_outputs`).Scan(&refs); err != nil {
+					t.Fatal(err)
+				}
+				if inline > 2048 || refs != 1 {
+					t.Fatalf("review output remained inline: bytes=%d refs=%d", inline, refs)
+				}
+
+				objects.mu.Lock()
+				beforeObjects := len(objects.objects)
+				beforeWrites := objects.writes
+				objects.mu.Unlock()
+				var beforeBytes int64
+				if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT value FROM hosted_usage_counters WHERE name='collaboration_bytes'`).Scan(&beforeBytes); err != nil {
+					t.Fatal(err)
+				}
+				original := response.Body.String()
+				replay := performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/reviews", worker, request)
+				requireNativeStatus(t, replay, http.StatusOK)
+				if replay.Body.String() != original {
+					t.Fatal("review replay changed the accepted receipt")
+				}
+				conflict := request
+				conflict.Body = "Different payload under the accepted review key"
+				validator := *request.Validator
+				validator.Commands = append([]gate.CommandResult(nil), request.Validator.Commands...)
+				validator.Commands[0].Output = "different output"
+				conflict.Validator = &validator
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/reviews", worker, conflict), http.StatusConflict)
+				var afterBytes, afterReferences int64
+				if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT value FROM hosted_usage_counters WHERE name='collaboration_bytes'`).Scan(&afterBytes); err != nil {
+					t.Fatal(err)
+				}
+				if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM change_content_objects`).Scan(&afterReferences); err != nil {
+					t.Fatal(err)
+				}
+				objects.mu.Lock()
+				afterObjects := len(objects.objects)
+				afterWrites := objects.writes
+				objects.mu.Unlock()
+				if beforeBytes != afterBytes || beforeObjects != afterObjects || beforeWrites != afterWrites || afterReferences != 1 {
+					t.Fatal("review replay or key conflict changed stored objects or allowance")
+				}
+			}
+
+			rejectionField := map[string]string{
+				"oversized acceptance body":                              "body",
+				"missing session":                                        "validator.session_id",
+				"implementing session":                                   "validator.session_id",
+				"validator reconciliation reuses implementing session":   "validator.session_id",
+				"another head":                                           "validator.head_sha",
+				"another version":                                        "validator.version_id",
+				"verdict mismatch":                                       "decision",
+				"missing evidence cannot pass":                           "validator.criteria_evidence",
+				"restated evidence cannot pass":                          "validator.criteria_evidence",
+				"failed selected receipt cannot pass":                    "validator.criteria_evidence",
+				"required acceptance before source":                      "implementation_review",
+				"same machine source session cannot validate acceptance": "validator.session_id",
+				"same machine audit session cannot validate acceptance":  "validator.session_id",
+			}[test.name]
+			if rejectionField != "" {
+				var failure hubclient.APIError
+				decodeHubResponse(t, response, &failure)
+				want := runnerauth.PublicationRejection{Category: "acceptance_validation", Field: rejectionField}
+				if failure.Rejection == nil || *failure.Rejection != want {
+					t.Fatalf("rejection = %+v, want %+v", failure.Rejection, want)
+				}
+			}
+			auditRejectionField := map[string]string{
+				"security audit missing run":                                "run.id",
+				"security audit missing session":                            "session_id",
+				"security audit foreign issue":                              "run.issue_id",
+				"security audit foreign session":                            "session_id",
+				"security audit missing invocation":                         "run.invocation_id",
+				"security audit stale base":                                 "base_sha",
+				"security audit stale head":                                 "head_sha",
+				"security audit old reviewer":                               "run.reviewer_version",
+				"security audit backend failure":                            "run.exit_status",
+				"security audit implementing session":                       "execution_session",
+				"security audit reconciliation reuses implementing session": "execution_session",
+				"security audit landing stale version":                      "version_id",
+				"security audit landing requires merge execution":           "execution_session",
+			}[test.name]
+			if auditRejectionField != "" {
+				failure := hubclient.APIError{Status: response.Code}
+				decodeHubResponse(t, response, &failure)
+				want := runnerauth.PublicationRejection{Category: "security_audit", Field: auditRejectionField}
+				if failure.Rejection == nil || *failure.Rejection != want || failure.Error() != want.DiagnosticError() {
+					t.Fatalf("audit rejection = %+v (%v), want %+v", failure.Rejection, failure.Error(), want)
+				}
+				if terminal := failure.NativeTerminalFailure().Public(); terminal.Rejection == nil || *terminal.Rejection != want || terminal.Stage != "security_audit_publication" || terminal.Attribution != "instance" {
+					t.Fatalf("audit terminal failure = %+v", terminal)
+				}
+			}
 			field := map[string]string{"security audit missing invocation": "invocation_id", "security audit missing run": "run.id", "security audit missing session": "session_id", "security audit foreign issue": "issue_id", "security audit foreign project": "project_id", "security audit foreign session": "session_id", "security audit stale base": "base_sha", "security audit stale head": "head_sha"}[test.name]
 			if field != "" && !strings.Contains(response.Body.String(), field) {
 				t.Fatalf("missing field diagnostic = %s, want %s", response.Body.String(), field)
+			}
+			if test.name == "missing session" {
+				server := httptest.NewServer(f.service.Handler())
+				t.Cleanup(server.Close)
+				client, err := hubclient.New(hubclient.Config{URL: server.URL, TokenSource: func() string { return worker }, HTTPClient: server.Client()})
+				if err != nil {
+					t.Fatal(err)
+				}
+				native, err := client.Native(f.project.OrganizationID, f.project.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				request.IdempotencyKey = "sdk-rejection"
+				request.Body = "private-payload token=private-credential"
+				_, err = native.ReviewChange(t.Context(), issue.WorkItemID, change.ID, version.ID, request)
+				var failure *hubclient.APIError
+				if !errors.As(err, &failure) || failure.Rejection == nil || strings.Contains(err.Error(), "private-payload") || strings.Contains(err.Error(), "private-credential") {
+					t.Fatalf("unsafe or missing SDK rejection: %v", err)
+				}
+				terminal := failure.NativeTerminalFailure()
+				terminal.Error, terminal.ObservedAt = err.Error(), f.service.config.now()
+				terminal = terminal.Public()
+				finished := event
+				finished.Type, finished.IdempotencyKey, finished.Data.Sequence = "run.finished", "acceptance-failed", 2
+				finished.Data.Outcome = "failed"
+				finished.Data.TerminalFailure = &terminal
+				publication := &tracker.NativePRPublication{ChangeID: change.ID, VersionID: version.ID, Repository: version.Repository, BaseRef: "develop", Branch: "work", HeadSHA: version.HeadSHA, PolicyID: version.PolicyID, SourceVersion: tracker.NativeChangeReference{ChangeID: change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA}, SourceAttemptID: version.AttemptID, External: tracker.ChangeExternalReference{Provider: "github", ID: "7", URL: version.Repository + "/pull/7"}}
+				checkpoint := event
+				checkpoint.Type, checkpoint.IdempotencyKey, checkpoint.Data.Sequence = "run.checkpointed", "published-pr", 2
+				checkpoint.Data.Handoff = nativeTestCheckpoint()
+				checkpoint.Data.Handoff.HeadSHA = version.HeadSHA
+				checkpoint.Data.Handoff.Change = &publication.SourceVersion
+				checkpoint.Data.Handoff.ExternalEffect, checkpoint.Data.Handoff.EffectState, checkpoint.Data.Handoff.EffectID = "pr_create", "confirmed", publication.EffectID("pr_create")
+				if err := native.AppendEvent(t.Context(), issue.WorkItemID, checkpoint); err != nil {
+					t.Fatal(err)
+				}
+				finished.Data.Sequence = 3
+				if _, err := native.PostAttemptDiff(t.Context(), event.Data.AttemptID, tracker.AttemptDiffRequest{Producer: tracker.DiffProducer{Kind: tracker.DiffSourceAttempt, ID: event.Data.AttemptID, LeaseID: lease.ID, FencingToken: lease.FencingToken}, Generation: tracker.DiffGeneration{Source: tracker.DiffSourceAttempt, Seq: 3}, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA}); err != nil {
+					t.Fatal(err)
+				}
+				finished.Data.Finalization = &tracker.NativeFinalization{ObservedAt: terminal.ObservedAt, Settled: true, Changed: true, ChangeID: change.ID, VersionID: version.ID, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA, Publication: publication}
+				if err := native.AppendEvent(t.Context(), issue.WorkItemID, finished); err != nil {
+					t.Fatal(err)
+				}
+				evidence, err := native.RuntimeEvidence(t.Context(), issue.WorkItemID, event.Data.AttemptID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if evidence.Attempt == nil || evidence.Attempt.TerminalFailure == nil || evidence.Attempt.Finalization == nil {
+					t.Fatalf("missing attempt evidence: %+v", evidence)
+				}
+				receipt, err := operatortool.NativeRuntimeResult(operatortool.WorkAttemptReceipt, operatortool.WorkReadRequest{ProjectID: string(f.project.ID), Reference: string(issue.WorkItemID), NativeAttemptID: event.Data.AttemptID}, evidence)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var decoded struct {
+					Data tracker.NativeRuntimeEvidence `json:"data"`
+				}
+				if err := json.Unmarshal(receipt.Content, &decoded); err != nil {
+					t.Fatal(err)
+				}
+				evidence = decoded.Data
+				if evidence.Attempt == nil || evidence.Attempt.TerminalFailure == nil || evidence.Attempt.Finalization == nil {
+					t.Fatalf("work_attempt_receipt lost evidence: %s", receipt.Content)
+				}
+				got := evidence.Attempt.TerminalFailure
+				source := evidence.Attempt.Finalization
+				if got.Stage != "acceptance_publication" || got.Attribution != "instance" || got.Rejection == nil || *got.Rejection != *failure.Rejection || got.Error != failure.Rejection.DiagnosticError() || source.VersionID != version.ID || source.HeadSHA != version.HeadSHA || source.Publication == nil || *source.Publication != *publication || source.Error != "" {
+					t.Fatalf("publication identity or acceptance rejection lost: failure=%+v source=%+v", got, source)
+				}
+				stale := request
+				stale.IdempotencyKey, stale.FencingToken = "stale-review", request.FencingToken+1
+				refused := performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/reviews", worker, stale)
+				if refused.Code < 400 || strings.Contains(refused.Body.String(), "acceptance_validation") {
+					t.Fatalf("stale authority received acceptance details: %s", refused.Body.String())
+				}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
+				request.IdempotencyKey = "expired-review"
+				refused = performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/reviews", worker, request)
+				if refused.Code < 400 || strings.Contains(refused.Body.String(), "acceptance_validation") {
+					t.Fatalf("expired authority received acceptance details: %s", refused.Body.String())
+				}
+				other := newNativeFixture(t, f.service, f.project.OrganizationID, "other-project")
+				refused = performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/reviews", other.worker(t, "other-worker"), request)
+				if refused.Code < 400 || strings.Contains(refused.Body.String(), "acceptance_validation") {
+					t.Fatalf("another project received acceptance details: %s", refused.Body.String())
+				}
 			}
 			response = performHubAPIRequest(t, f.service, http.MethodGet, path, f.token, nil)
 			requireNativeStatus(t, response, http.StatusOK)
@@ -393,6 +820,9 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 			}
 			if detail.Summary.Status != test.status || detail.Summary.NativeReview != review {
 				t.Fatalf("validator summary = %+v, want %s", detail.Summary, test.status)
+			}
+			if auditCollision && test.want != http.StatusOK && (len(detail.Reviews) != 1 || detail.Reviews[0].Validator != nil) {
+				t.Fatalf("rejected acceptance was persisted: %+v", detail.Reviews)
 			}
 			if largeAudit {
 				server := httptest.NewServer(f.service.Handler())
@@ -470,13 +900,13 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 				stageReviews++
 				wantSession = 43
 			}
-			current, err := readCurrentChangeDetail(t.Context(), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, detail.Change, f.service.config.now())
+			current, err := readCurrentChangeDetail(f.service.contentContext(t.Context()), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, detail.Change, f.service.config.now())
 			if err != nil || current.Summary.Status != detail.Summary.Status {
 				t.Fatalf("current summary differs: %+v, %v", current.Summary, err)
 			}
 			if test.want == http.StatusOK {
 				wantReviews := 1 + stageReviews
-				if counterCollision || landing {
+				if counterCollision || auditCollision || landing {
 					wantReviews++
 				}
 				if len(detail.Reviews) != wantReviews {
@@ -710,7 +1140,7 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 				decodeHubResponse(t, response, &version)
 				response = performHubAPIRequest(t, f.service, http.MethodGet, path, f.token, nil)
 				decodeHubResponse(t, response, &detail)
-				current, err = readCurrentChangeDetail(t.Context(), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, detail.Change, f.service.config.now())
+				current, err = readCurrentChangeDetail(f.service.contentContext(t.Context()), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, detail.Change, f.service.config.now())
 				if err != nil || current.Summary.Status != "needs_evidence" || current.Summary.Status != detail.Summary.Status {
 					t.Fatalf("old validator approved new version: %+v, %v", current.Summary, err)
 				}

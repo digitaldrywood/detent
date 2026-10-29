@@ -22,7 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-// Attachments (decisions section 17.1). An upload belongs to the actor that
+// Attachments. An upload belongs to the actor that
 // made it and to one conversation. It is unsent until a message command binds
 // it, and only while it is unsent may its owner delete it or the sweep expire
 // it. Reads follow the conversation's own read rule, so an attachment is
@@ -362,7 +362,7 @@ func readConversationAttachmentUpload(c echo.Context) (conversationAttachmentUpl
 	request.Body = http.MaxBytesReader(c.Response(), request.Body, conversationAttachmentRequestBytes)
 	reader, err := request.MultipartReader()
 	if err != nil {
-		return conversationAttachmentUpload{}, nativeInvalid("A multipart upload with a file part is required")
+		return conversationAttachmentUpload{}, nativePublicInvalid("A multipart upload with a file part is required")
 	}
 	var upload conversationAttachmentUpload
 	seenFile := false
@@ -401,10 +401,10 @@ func readConversationAttachmentUpload(c echo.Context) (conversationAttachmentUpl
 		}
 	}
 	if !seenFile {
-		return conversationAttachmentUpload{}, nativeInvalid("A file part is required")
+		return conversationAttachmentUpload{}, nativePublicInvalid("A file part is required")
 	}
 	if upload.key == "" || len(upload.key) > conversation.MaxCommandKeyBytes {
-		return conversationAttachmentUpload{}, nativeInvalid(fmt.Sprintf("An idempotency key of at most %d bytes is required", conversation.MaxCommandKeyBytes))
+		return conversationAttachmentUpload{}, nativePublicInvalid(fmt.Sprintf("An idempotency key of at most %d bytes is required", conversation.MaxCommandKeyBytes))
 	}
 	return upload, nil
 }
@@ -429,7 +429,7 @@ func conversationAttachmentRefusal(part *multipart.Part, message string) error {
 }
 
 func conversationAttachmentTooLarge() error {
-	return &nativeError{Code: "invalid_request", Message: fmt.Sprintf("A file must be at most %d bytes", conversation.MaxAttachmentBytes), status: http.StatusRequestEntityTooLarge}
+	return &nativeError{Code: "invalid_request", Message: fmt.Sprintf("A file must be at most %d bytes", conversation.MaxAttachmentBytes), status: http.StatusRequestEntityTooLarge, publicMessage: true}
 }
 
 // conversationAttachmentBodyError turns a truncated or oversized body into the
@@ -439,7 +439,7 @@ func conversationAttachmentBodyError(err error) error {
 	if errors.As(err, &tooLarge) {
 		return conversationAttachmentTooLarge()
 	}
-	return nativeInvalid("The upload could not be read")
+	return nativePublicInvalid("The upload could not be read")
 }
 
 // uploadConversationAttachment implements POST
@@ -571,7 +571,7 @@ func (s *Service) commandUploadAttachment(ctx context.Context, scope nativeScope
 				return err
 			}
 			if !same {
-				return &nativeError{Code: "idempotency_conflict", Message: "Idempotency key has different content", status: http.StatusConflict}
+				return &nativeError{Code: "idempotency_conflict", Message: "Idempotency key has different content", status: http.StatusConflict, publicMessage: true}
 			}
 			stored = existing
 			return nil

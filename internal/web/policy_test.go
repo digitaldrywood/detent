@@ -32,14 +32,17 @@ func TestPolicyProvenanceInExistingDetails(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			receipt := workAttemptReceiptHTML(orchestrator.WorkAttemptRecoveryResponse{PolicyMismatch: test.mismatch, Attempt: telemetry.WorkAttempt{AttemptID: 1, WorkerMetadataJSON: string(raw)}})
+			receipt := workAttemptReceiptHTML(orchestrator.WorkAttemptRecoveryResponse{Attempt: telemetry.WorkAttempt{AttemptID: 1, WorkerMetadataJSON: string(raw)}})
 			for _, rendered := range []string{output.String(), receipt} {
 				if test.descriptor.ID != "" && (!strings.Contains(rendered, descriptor.ID) || !strings.Contains(rendered, descriptor.SourceRevision)) {
 					t.Fatal("policy provenance missing from detail")
 				}
-				if test.mismatch != "" && !strings.Contains(rendered, test.mismatch) {
-					t.Fatal("actionable mismatch missing from detail")
-				}
+			}
+			if test.mismatch != "" && !strings.Contains(output.String(), test.mismatch) {
+				t.Fatal("actionable mismatch missing from settings")
+			}
+			if strings.Contains(receipt, "Policy mismatch") || strings.Contains(receipt, "policy_mismatch") {
+				t.Fatal("recovery receipt retained policy mismatch")
 			}
 			if test.descriptor.ID == "" && (strings.Contains(output.String(), "Approved policy") || strings.Contains(receipt, "Pinned policy")) {
 				t.Fatal("empty policy added unused detail rows")

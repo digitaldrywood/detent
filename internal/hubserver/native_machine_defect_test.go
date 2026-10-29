@@ -1,7 +1,6 @@
 package hubserver
 
 import (
-	"encoding/json"
 	"net/http"
 	"reflect"
 	"strconv"
@@ -80,30 +79,43 @@ func TestNativeMachineDefectOccurrences(t *testing.T) {
 		scheduledFirst bool
 		disabled       bool
 		legacyBody     string
+		endState       string
+		newEpisode     bool
 	}{
-		{"test failure", "Gate failed:\n--- FAIL: TestHostedChangePolicyJourney (0.03s)\nFAIL github.com/digitaldrywood/detent/internal/hubserver 0.04s", "Another worker found:\n--- FAIL: TestHostedChangePolicyJourney (0.08s)\nFAIL github.com/digitaldrywood/detent/internal/hubserver 0.09s", false, "Todo", false, false, ""},
-		{"migration collision", "panic: goose: duplicate version 20261006023000 detected:\nsprite_placement.sql", "Gate blocked by duplicate migration version 20261006023000: github_references.go and sprite_placement.sql", false, "Todo", false, false, ""},
-		{"compiler diagnostic", "internal/hub/pool.go:23:4: undefined: capacity", "internal/hub/pool.go:31:2: undefined: capacity", false, "Todo", false, false, ""},
-		{"scheduled owner", "Problem: `go-test:example/hub:TestJourney`", "--- FAIL: TestJourney (0.01s)\nFAIL example/hub 0.02s", false, "Todo", true, false, ""},
-		{"other project policy", "goose: duplicate version 20261006023000 detected:", "duplicate migration version 20261006023000", true, "Backlog", false, false, ""},
-		{"disabled challenge", "internal/example/check.go:23:4: undefined: capacity", "internal/example/check.go:31:2: undefined: capacity", false, "Todo", false, true, ""},
-		{"incomplete legacy Todo", "internal/example/legacy.go:23:4: undefined: capacity", "internal/example/legacy.go:31:2: undefined: capacity", false, "Todo", false, false, "## Roadmap Summary\nRepair the failed build."},
-		{"held legacy Todo", "internal/example/held.go:23:4: undefined: capacity", "internal/example/held.go:31:2: undefined: capacity", false, "Todo", false, false, "## Roadmap Summary\nRepair the failed build.\n<!-- detent:no-dispatch -->"},
+		{"test failure", "Gate failed:\n--- FAIL: TestHostedChangePolicyJourney (0.03s)\nFAIL github.com/digitaldrywood/detent/internal/hubserver 0.04s", "Another worker found:\n--- FAIL: TestHostedChangePolicyJourney (0.08s)\nFAIL github.com/digitaldrywood/detent/internal/hubserver 0.09s", false, "Todo", false, false, "", "Done", true},
+		{"migration collision", "panic: goose: duplicate version 20261006023000 detected:\nsprite_placement.sql", "Gate blocked by duplicate migration version 20261006023000: github_references.go and sprite_placement.sql", false, "Todo", false, false, "", "Done", true},
+		{"compiler diagnostic", "internal/hub/pool.go:23:4: undefined: capacity", "internal/hub/pool.go:31:2: undefined: capacity", false, "Todo", false, false, "", "Done", true},
+		{"scheduled owner", "Problem: `go-test:example/hub:TestJourney`", "--- FAIL: TestJourney (0.01s)\nFAIL example/hub 0.02s", false, "Todo", true, false, "", "Done", true},
+		{"other project policy", "goose: duplicate version 20261006023000 detected:", "duplicate migration version 20261006023000", true, "Backlog", false, false, "", "Done", true},
+		{"disabled challenge", "internal/example/check.go:23:4: undefined: capacity", "internal/example/check.go:31:2: undefined: capacity", false, "Todo", false, true, "", "Done", true},
+		{"incomplete legacy Todo", "internal/example/legacy.go:23:4: undefined: capacity", "internal/example/legacy.go:31:2: undefined: capacity", false, "Todo", false, false, "## Roadmap Summary\nRepair the failed build.", "Done", true},
+		{"held legacy Todo", "internal/example/held.go:23:4: undefined: capacity", "internal/example/held.go:31:2: undefined: capacity", false, "Todo", false, false, "## Roadmap Summary\nRepair the failed build.\n<!-- detent:no-dispatch -->", "Done", false},
+		{"other project scheduled owner", "Problem: `go-test:example/hub:TestJourney`", "--- FAIL: TestJourney (0.01s)\nFAIL example/hub 0.02s", true, "Todo", true, false, "", "Done", true},
+		{"other project custom completion", "Problem: `go-test:example/hub:TestJourney`", "--- FAIL: TestJourney (0.01s)\nFAIL example/hub 0.02s", true, "Todo", true, false, "", "Shipped", true},
+		{"other project held custom completion", "Problem: `go-test:example/hub:TestJourney`", "--- FAIL: TestJourney (0.01s)\nFAIL example/hub 0.02s", true, "Todo", true, false, "Problem: `go-test:example/hub:TestJourney`\n## Roadmap Summary\nRepair the failed build.\n<!-- detent:no-dispatch -->", "Shipped", false},
+		{"other project cancelled", "Problem: `go-test:example/hub:TestJourney`", "--- FAIL: TestJourney (0.01s)\nFAIL example/hub 0.02s", true, "Todo", true, false, "", "Cancelled", false},
+		{"other project held", "Problem: `go-test:example/hub:TestJourney`", "--- FAIL: TestJourney (0.01s)\nFAIL example/hub 0.02s", true, "Todo", true, false, "Problem: `go-test:example/hub:TestJourney`\n## Roadmap Summary\nRepair the failed build.\n<!-- detent:no-dispatch -->", "Done", false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newDefaultNativeFixture(t, Config{})
 			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET duplicate_challenge=? WHERE id=?", !test.disabled, f.project.ID); err != nil {
 				t.Fatal(err)
 			}
-			states := append(f.project.States, tracker.NativeState{Name: "Backlog"})
-			raw, err := json.Marshal(states)
+			states := append(f.project.States, tracker.NativeState{Name: "Backlog"}, tracker.NativeState{Name: "Cancelled", Terminal: true}, tracker.NativeState{Name: "Shipped", Terminal: true})
+			for i := range states {
+				if states[i].Name == "Todo" || states[i].Name == "Backlog" {
+					states[i].Transitions = []string{"Done", "Cancelled", "Shipped"}
+				}
+			}
+			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET states_json = ? WHERE id = ?", string(raw), f.project.ID); err != nil {
+			defer tx.Rollback()
+			if err := updateNativeProjectStates(t.Context(), tx, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, states, f.service.config.now()); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO workflow_states (project_id, source_name, detent_state, terminal, dispatchable, created_at, updated_at) VALUES (?, 'Backlog', 'Backlog', 0, 0, ?, ?)", f.project.ID, formatHubTime(f.service.config.now()), formatHubTime(f.service.config.now())); err != nil {
+			if err := tx.Commit(); err != nil {
 				t.Fatal(err)
 			}
 			project := f.project.ID
@@ -127,6 +139,7 @@ func TestNativeMachineDefectOccurrences(t *testing.T) {
 			}
 			scope := nativeScope{organization: f.project.OrganizationID, project: project, credential: credential}
 			seedNativeFixturePolicy(t, f.service, string(scope.organization)+"/"+string(project))
+			base := "/api/v2/organizations/" + string(scope.organization) + "/projects/" + string(project)
 			var owner tracker.NativeIssue
 			for i, evidence := range []string{test.first, test.second} {
 				origin := issueorigin.Origin{Kind: "worker", Instance: "runner-" + strconv.Itoa(i), Source: "attempt-" + strconv.Itoa(i), Fingerprint: "invented-" + strconv.Itoa(i)}
@@ -135,17 +148,26 @@ func TestNativeMachineDefectOccurrences(t *testing.T) {
 					origin.Instance = "github-actions"
 				}
 				request := tracker.CreateIssue{Title: "Different wording " + strconv.Itoa(i), Body: issueorigin.Stamp(evidence+issueContractTestSections, origin), State: "Backlog", Priority: new(3)}
-				tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-				if err != nil {
-					t.Fatal(err)
-				}
-				issue, err := createNativeMachineIntakeTx(t.Context(), tx, scope, request, f.service.config.now(), false)
-				if err != nil {
-					_ = tx.Rollback()
-					t.Fatal(err)
-				}
-				if err := tx.Commit(); err != nil {
-					t.Fatal(err)
+				var issue tracker.NativeIssue
+				if test.scheduledFirst && i == 0 {
+					request.State = "Todo"
+					request.IdempotencyKey = "first-scheduled-failure"
+					response := performHubAPIRequest(t, f.service, http.MethodPost, base+"/work-items", testHubAdminToken, request)
+					requireNativeStatus(t, response, http.StatusOK)
+					decodeHubResponse(t, response, &issue)
+				} else {
+					tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					issue, err = createNativeMachineIntakeTx(t.Context(), tx, scope, request, f.service.config.now(), false)
+					if err != nil {
+						_ = tx.Rollback()
+						t.Fatal(err)
+					}
+					if err := tx.Commit(); err != nil {
+						t.Fatal(err)
+					}
 				}
 				if i == 0 {
 					owner = issue
@@ -177,7 +199,6 @@ func TestNativeMachineDefectOccurrences(t *testing.T) {
 			if issues != 1 || comments != 1 {
 				t.Fatalf("issues=%d comments=%d, want one issue and one occurrence", issues, comments)
 			}
-			base := "/api/v2/organizations/" + string(scope.organization) + "/projects/" + string(project)
 			fingerprint := issueorigin.DefectFingerprint(test.first)
 			response := performHubAPIRequest(t, f.service, http.MethodGet, base+"/work-items?open=true&fingerprint="+fingerprint, testHubAdminToken, nil)
 			requireNativeStatus(t, response, http.StatusOK)
@@ -211,10 +232,9 @@ func TestNativeMachineDefectOccurrences(t *testing.T) {
 					t.Fatalf("occurrence admitted incomplete issue: %+v, %v", evaluation, err)
 				}
 			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET workflow_state_id = (SELECT id FROM workflow_states WHERE project_id = ? AND detent_state = 'Done') WHERE native_id = ?", project, owner.WorkItemID); err != nil {
-				t.Fatal(err)
-			}
-			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+			response = performHubAPIRequest(t, f.service, http.MethodPost, base+"/work-items/"+string(owner.WorkItemID)+"/workflow", testHubAdminToken, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "finish-repair"}, ExpectedRevision: scheduled.Revision, State: test.endState, Reason: "user_requested"})
+			requireNativeStatus(t, response, http.StatusOK)
+			tx, err = f.service.database.db.BeginTx(t.Context(), nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -227,7 +247,7 @@ func TestNativeMachineDefectOccurrences(t *testing.T) {
 			if err := tx.Commit(); err != nil {
 				t.Fatal(err)
 			}
-			if closed.WorkItemID != owner.WorkItemID || !closed.Terminal || !closed.PublicationReused || closed.Priority == nil || *closed.Priority != 1 {
+			if closed.WorkItemID != owner.WorkItemID || closed.State != test.endState || !closed.Terminal || !closed.PublicationReused || closed.Priority == nil || *closed.Priority != 1 {
 				t.Fatalf("terminal report changed handled owner: %#v", closed)
 			}
 			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM native_comments WHERE work_item_id = ?", owner.WorkItemID).Scan(&comments); err != nil {
@@ -254,9 +274,9 @@ func TestNativeMachineDefectOccurrences(t *testing.T) {
 					t.Fatalf("scheduled replay changed result: %#v, want %#v", reported, current)
 				}
 			}
-			if test.otherProject {
-				if current.WorkItemID != owner.WorkItemID || !current.Terminal || !current.PublicationReused {
-					t.Fatalf("scheduled report changed other project policy: %#v", current)
+			if !test.newEpisode {
+				if current.WorkItemID != owner.WorkItemID || current.State != test.endState || !current.Terminal || !current.PublicationReused {
+					t.Fatalf("scheduled report overrode a hold or cancellation: %#v", current)
 				}
 			} else {
 				if current.WorkItemID == owner.WorkItemID || current.Terminal || current.PublicationReused || current.State != "Todo" || current.Priority == nil || *current.Priority != 1 || current.Body != request.Body {
@@ -286,6 +306,10 @@ func TestNativeMachineDefectOccurrences(t *testing.T) {
 			requireNativeStatus(t, response, http.StatusOK)
 			var historical tracker.NativeIssue
 			decodeHubResponse(t, response, &historical)
+			if historical.ChangeSequence < historicalBefore.ChangeSequence {
+				t.Fatal("scheduled report regressed project change sequence")
+			}
+			historicalBefore.ChangeSequence = historical.ChangeSequence
 			if !reflect.DeepEqual(historical, historicalBefore) {
 				t.Fatalf("scheduled report changed terminal history: %#v, want %#v", historical, historicalBefore)
 			}
@@ -299,7 +323,7 @@ func TestNativeMachineDefectOccurrences(t *testing.T) {
 				t.Fatal(err)
 			}
 			wantIssues := 2
-			if test.otherProject {
+			if !test.newEpisode {
 				wantIssues = 1
 			}
 			if issues != wantIssues {

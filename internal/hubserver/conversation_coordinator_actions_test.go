@@ -31,6 +31,9 @@ func TestCoordinatorProjectActions(t *testing.T) {
 
 	for _, tool := range []string{"propose_stop_run", "propose_file_issue", "propose_maintenance_issue", "propose_move_item", "propose_set_priority", "propose_backlog_admission", "update_project_integration", operatortool.MoveItem, operatortool.EditItem, operatortool.AddComment, string(chat.ActionIssueSplit), string(chat.ActionArchiveItems), "set_sprite_pool", "scale_up_sprite_pool"} {
 		outcomes := []string{"execute", "reject", "unauthorized", "revoked", "stale", "foreign issue", "expired session", "wrong role", "no write grant", "bad arguments"}
+		if tool == operatortool.MoveItem {
+			outcomes = append(outcomes, "human answer", "human empty answer", "human comment failure", "human transition failure", "human park recorded on submit", "dependency park")
+		}
 		if tool == "propose_stop_run" {
 			outcomes = append(outcomes, "replaced attempt", "expired attempt", "release failure", "routing failure", "no active attempt")
 			outcomes = append(outcomes, "stored key preview", "shared entry preview", "shared entry expired", "shared entry rotated", "shared entry absent channel", "shared entry mismatched principal", "shared entry revoked", "shared entry changed issuer", "shared entry changed generation", "shared entry no write grant", "shared entry foreign issue")
@@ -168,6 +171,21 @@ func TestCoordinatorProjectActions(t *testing.T) {
 				decodeHubResponse(t, response, &issue)
 				id := issue.WorkItemID
 				db := f.service.database.db
+				humanPark := tool == operatortool.MoveItem && strings.HasPrefix(outcome, "human ")
+				parkedMove := humanPark || tool == operatortool.MoveItem && outcome == "dependency park"
+				if parkedMove {
+					now := formatHubTime(f.service.config.now())
+					operatorSQL(t, f, `UPDATE projects SET states_json=json_insert(states_json,'$[#]',json('{"name":"Blocked","transitions":["Done"]}')) WHERE id=?`, f.project)
+					operatorSQL(t, f, "INSERT INTO workflow_states(project_id,source_name,detent_state,created_at,updated_at) VALUES (?,'Blocked','Blocked',?,?)", f.project, now, now)
+					operatorSQL(t, f, "UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='Blocked') WHERE native_id=?", f.project, id)
+					seedCoordinatorArchiveLease(t, f.service, string(id))
+					data, err := json.Marshal(tracker.NativeRunData{Disposition: &tracker.NativeDisposition{Status: "blocked", HumanAction: humanPark && outcome != "human park recorded on submit"}})
+					if err != nil {
+						t.Fatal(err)
+					}
+					operatorSQL(t, f, `INSERT INTO native_attempts(id,organization_id,project_id,work_item_id,lease_id,fencing_token,run_id,sequence,status,data_json,started_at,updated_at,disposition_status,disposition_human_action) VALUES (?, 'org_security', ?, ?, 'archive-lease', 1, ?, 1, 'succeeded', ?, ?, ?, 'blocked', ?)`, "attempt_"+string(id), f.project, id, "run_"+string(id), string(data), now, now, humanPark && outcome != "human park recorded on submit")
+					operatorSQL(t, f, "UPDATE leases SET released_at=? WHERE lease_id='archive-lease'", now)
+				}
 				if tool == "propose_stop_run" {
 					now := formatHubTime(f.service.config.now())
 					if _, err := db.ExecContext(t.Context(), `UPDATE projects SET states_json=json_insert(states_json,'$[0].transitions[#]','Blocked','$[#]',json('{"name":"Blocked","transitions":["Todo"]}')) WHERE id=?`, f.project); err != nil {
@@ -458,6 +476,11 @@ func TestCoordinatorProjectActions(t *testing.T) {
 					arguments = map[string]any{"repository_enabled": true}
 				case operatortool.MoveItem, "propose_move_item":
 					arguments["state"] = "Done"
+					if humanPark && outcome != "human empty answer" && outcome != "human park recorded on submit" {
+						arguments["reason_detail"] = "Use the recommended compatibility guarantee for default and existing configurations."
+					} else if outcome == "human empty answer" {
+						arguments["reason_detail"] = " \n "
+					}
 				case "propose_set_priority":
 					arguments["priority"] = 2
 				case "propose_file_issue", "propose_maintenance_issue":
@@ -573,6 +596,13 @@ func TestCoordinatorProjectActions(t *testing.T) {
 				if outcome == "transport unavailable" {
 					if result.Success || !strings.Contains(result.Content, "runner's repository policy") {
 						t.Fatalf("unavailable integration result: %+v", result)
+					}
+					assertCoordinatorEffect(t, f, id, tool, false)
+					return
+				}
+				if outcome == "human empty answer" {
+					if result.Success || !strings.Contains(result.Content, "human's answer") {
+						t.Fatalf("missing answer was not refused: %+v", result)
 					}
 					assertCoordinatorEffect(t, f, id, tool, false)
 					return
@@ -788,8 +818,17 @@ func TestCoordinatorProjectActions(t *testing.T) {
 						}
 					}
 				}
+				if outcome == "human comment failure" {
+					operatorSQL(t, f, "CREATE TRIGGER move_answer_failure BEFORE INSERT ON native_comments BEGIN SELECT RAISE(ABORT, 'comment failed'); END")
+				}
+				if outcome == "human transition failure" {
+					operatorSQL(t, f, "CREATE TRIGGER move_answer_failure BEFORE UPDATE OF workflow_state_id ON issues BEGIN SELECT RAISE(ABORT, 'transition failed'); END")
+				}
+				if outcome == "human park recorded on submit" {
+					operatorSQL(t, f, "UPDATE native_attempts SET disposition_human_action=1,data_json=json_set(data_json,'$.disposition.human_action',json('true')) WHERE work_item_id=?", id)
+				}
 				response = f.request(t, u, http.MethodPost, f.base+"/conversations/"+record.ID+"/actions", action)
-				changed := outcome == "full access" || outcome == "preserve access" || outcome == "execute" || outcome == "execute with manual import" || outcome == "validation then valid" || outcome == "wrong role" || outcome == "no runner grant" || outcome == "grantless project" || outcome == "stale" && tool == operatortool.AddComment
+				changed := outcome == "human answer" || outcome == "dependency park" || outcome == "full access" || outcome == "preserve access" || outcome == "execute" || outcome == "execute with manual import" || outcome == "validation then valid" || outcome == "wrong role" || outcome == "no runner grant" || outcome == "grantless project" || outcome == "stale" && tool == operatortool.AddComment
 				if changed {
 					requireNativeStatus(t, response, http.StatusOK)
 				} else if outcome == "runner grant revoked" {
@@ -797,8 +836,50 @@ func TestCoordinatorProjectActions(t *testing.T) {
 				} else if response.Code < 400 {
 					t.Fatalf("refused call=%d %s", response.Code, response.Body.String())
 				}
+				if outcome == "human park recorded on submit" && !strings.Contains(response.Body.String(), "human's answer") {
+					t.Fatalf("submission did not ask for the answer: %s", response.Body.String())
+				}
 				f.service.spriteWakeWork.Wait()
 				assertCoordinatorEffect(t, f, id, tool, changed)
+				if parkedMove {
+					if changed {
+						requireNativeStatus(t, f.request(t, u, http.MethodPost, f.base+"/conversations/"+record.ID+"/actions", action), http.StatusOK)
+					}
+					var comments, transitions int
+					var reason string
+					if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM native_comments WHERE work_item_id=?", id).Scan(&comments); err != nil {
+						t.Fatal(err)
+					}
+					if err := db.QueryRowContext(t.Context(), "SELECT count(*), COALESCE(max(json_extract(data_json,'$.reason_detail')),'') FROM collaboration_events WHERE work_item_id=? AND type='workflow.transitioned'", id).Scan(&transitions, &reason); err != nil {
+						t.Fatal(err)
+					}
+					wantTransitions, wantComments := 0, 0
+					if changed {
+						wantTransitions = 1
+					}
+					if changed && humanPark {
+						wantComments = 1
+						answer := arguments["reason_detail"].(string)
+						if reason != answer || !strings.Contains(response.Body.String(), "Recorded the human's answer") {
+							t.Fatalf("answer missing: reason=%q result=%s", reason, response.Body.String())
+						}
+						var comment tracker.NativeComment
+						var commentID string
+						if err := db.QueryRowContext(t.Context(), "SELECT id FROM native_comments WHERE work_item_id=?", id).Scan(&commentID); err != nil {
+							t.Fatal(err)
+						}
+						comment, err = readNativeComment(t.Context(), db, nativeScope{organization: "org_security", project: f.project}, string(id), commentID)
+						if err != nil || comment.Body != answer || comment.Actor.Kind != "human" || comment.Actor.PrincipalID != operatortool.ConnectionIdentity(ctx).PrincipalID || comment.Provenance == nil || comment.Provenance.Provider != "chat" || !strings.HasPrefix(comment.Provenance.ExternalID, record.ID+":") {
+							t.Fatalf("answer comment=%+v error=%v", comment, err)
+						}
+					} else if reason != "" {
+						t.Fatalf("unexpected transition answer %q", reason)
+					}
+					if comments != wantComments || transitions != wantTransitions {
+						t.Fatalf("comments=%d transitions=%d, want %d and %d", comments, transitions, wantComments, wantTransitions)
+					}
+				}
+
 				if outcome == "full access" || outcome == "preserve access" {
 					want := "sandbox"
 					if outcome == "full access" {

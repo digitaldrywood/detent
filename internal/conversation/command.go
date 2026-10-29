@@ -27,7 +27,7 @@ type Command struct {
 	Text string      `json:"text,omitempty"`
 	// Attachments names the uploads bound to a message command. The hub
 	// checks ownership, the unsent state and the total size; the envelope
-	// only checks the shape (decisions section 17.1).
+	// only checks the shape.
 	Attachments []string            `json:"attachments,omitempty"`
 	QuestionID  string              `json:"question_id,omitempty"`
 	Answers     map[string][]string `json:"answers,omitempty"`
@@ -50,7 +50,7 @@ func ValidateCommand(command Command) error {
 	switch command.Kind {
 	case CommandMessage:
 		// A message carries text, attachments, or both: a dropped file with
-		// no words is still a message (decisions section 17.1).
+		// no words is still a message.
 		if strings.TrimSpace(command.Text) == "" && len(command.Attachments) == 0 {
 			return fmt.Errorf("%w: text or attachments are required for a message", ErrInvalidCommand)
 		}

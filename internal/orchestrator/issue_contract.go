@@ -38,6 +38,9 @@ func (o *Orchestrator) enforceIssueContract(ctx context.Context, state *State, i
 	if evaluation.Satisfied() {
 		return true, nil
 	}
+	if !o.cfg.IssueContract.RequiresHumanConfirmation() {
+		return false, nil
+	}
 	action := o.cfg.IssueContract.HumanAction(issue, evaluation)
 	status := struct {
 		Schema      int               `yaml:"schema"`

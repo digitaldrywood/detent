@@ -75,9 +75,11 @@ export function FreshnessChip({
 export interface WorkTopBarProps {
   /** The leading breadcrumb segment, e.g. `Work` or the project's name. */
   readonly context: string;
-  /** The current segment. It is the route's one `h1` (B.14). */
+ readonly projectId?: string | null;
+  /** The current segment. It is the route's one `h1`. */
   readonly title: string;
   readonly titleTooltip?: string;
+  readonly scopeGroup?: boolean;
   readonly meta?: string | null;
   readonly completed?: React.ReactNode;
   /** Rendered before the identifier in the current segment, e.g. `#3363`. */
@@ -111,7 +113,7 @@ export function WorkTopBar(props: WorkTopBarProps): React.ReactElement {
         >
           <WorkspaceBreadcrumbItem className="hidden shrink sm:flex">
             <span className="inline-flex min-w-0 max-w-full items-center gap-1.5">
-              <ProjectGlyph className="size-3.5 shrink-0" projectName={props.context} />
+              <ProjectGlyph className="size-3.5 shrink-0" projectName={props.context} projectId={props.projectId} />
               <span className="max-w-40 truncate">{props.context}</span>
             </span>
           </WorkspaceBreadcrumbItem>
@@ -125,7 +127,7 @@ export function WorkTopBar(props: WorkTopBarProps): React.ReactElement {
               )}
               {props.titleTooltip ? (
                 <Tooltip>
-                  <TooltipTrigger render={<span className="min-w-0 truncate" tabIndex={0} />}>
+                  <TooltipTrigger render={<span className={cn("min-w-0 truncate", props.scopeGroup && "underline decoration-dotted underline-offset-4")} tabIndex={0} />}>
                     {props.title}
                   </TooltipTrigger>
                   <TooltipPopup role="tooltip" side="bottom" className="max-w-80">

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +17,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/failureattribution"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -23,6 +26,37 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
+
+func TestReworkPreparationOutcome(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name   string
+		status workspace.MergePrepareStatus
+		err    error
+		want   string
+	}{
+		{name: "clean", status: workspace.MergePrepareStatusClean, want: "clean"},
+		{name: "conflict", status: workspace.MergePrepareStatusConflict, want: "conflict"},
+		{name: "dirty", status: workspace.MergePrepareStatusDirty, want: "dirty"},
+		{name: "missing result", want: "rework"},
+		{name: "failed clean result", status: workspace.MergePrepareStatusClean, err: errors.New("fetch failed"), want: "rework"},
+		{name: "failed dirty result", status: workspace.MergePrepareStatusDirty, err: errors.New("lease expired"), want: "rework"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got := reworkPreparationOutcome(test.status, test.err)
+			if got != test.want {
+				t.Fatalf("pipeline outcome = %q, want %q", got, test.want)
+			}
+			execution := &readToolTestExecution{}
+			r := Runner{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+			at := time.Date(2026, time.October, 1, 0, 0, 0, 0, time.UTC)
+			r.recordPipeline(RunRequest{Execution: execution}, gate.Interval("rebase", at, at, got))
+			if len(execution.pipeline) != 1 || execution.pipeline[0].Outcome != test.want {
+				t.Fatalf("recorded pipeline lost preparation outcome: %+v", execution.pipeline)
+			}
+		})
+	}
+}
 
 type resolvingReworkAgent struct {
 	fakeCodexClient
@@ -194,13 +228,16 @@ type reworkReviewExecution struct {
 	reviews         []gate.ValidatorResult
 	acceptance      []gate.ValidatorResult
 	recordError     error
+	recoverError    error
+	failure         *tracker.NativeTerminalFailure
 	activitySession int64
+	repairTree      string
 }
 
 func (*reworkReviewExecution) SetChangeSource(func(context.Context, string, string) (tracker.ChangeSourceCapture, error)) {
 }
 func (e *reworkReviewExecution) RecoverChangeSource(context.Context) (workspace.ChangeSource, error) {
-	return e.source, nil
+	return e.source, e.recoverError
 }
 func (e *reworkReviewExecution) NativeChange() *NativeChange {
 	change := &NativeChange{Changed: true, ChangeID: e.source.Version.ChangeID, VersionID: e.source.Version.ID, HeadSHA: e.source.Version.HeadSHA}
@@ -209,6 +246,26 @@ func (e *reworkReviewExecution) NativeChange() *NativeChange {
 		change.ImplementationReview = &result
 	}
 	return change
+}
+func (e *reworkReviewExecution) FinalizeArtifacts(ctx context.Context, path string) error {
+	if err := e.reworkArtifactsExecution.FinalizeArtifacts(ctx, path); err != nil {
+		return err
+	}
+	if e.repairTree != "" {
+		diff, ok := e.diffSource(ctx)
+		if !ok {
+			return errors.New("repair diff unavailable")
+		}
+		capture, err := workspace.CaptureChangeSource(ctx, path, diff.BaseSHA, diff.HeadSHA)
+		if err != nil {
+			return err
+		}
+		e.source.Version.ID = "version_repaired"
+		e.source.Version.HeadSHA, e.source.Version.BaseSHA = diff.HeadSHA, diff.BaseSHA
+		e.source.Version.Validation = e.validation
+		e.source.Version.Source, e.source.Bundle = &capture.Source, capture.Bundle
+	}
+	return nil
 }
 func (e *reworkReviewExecution) ObserveRuntime(ctx context.Context, observation tracker.NativeRuntimeObservation) error {
 	if observation.Activity != nil {
@@ -228,13 +285,19 @@ func (e *reworkReviewExecution) ObserveRuntime(ctx context.Context, observation 
 	return e.testExecution.ObserveRuntime(ctx, observation)
 }
 func (e *reworkReviewExecution) RecordSourceValidation(_ context.Context, receipt gate.CommandResult) error {
-	if receipt.HeadSHA != e.source.Version.HeadSHA || receipt.TreeSHA != e.source.Version.Validation.TreeSHA {
+	if e.repairTree != "" {
+		if receipt.HeadSHA == "" || receipt.HeadSHA == e.source.Version.HeadSHA || receipt.TreeSHA != e.repairTree {
+			return errors.New("source validation lost the staged repair")
+		}
+	} else if receipt.HeadSHA != e.source.Version.HeadSHA || receipt.TreeSHA != e.source.Version.Validation.TreeSHA {
 		return errors.New("review source validation changed immutable source")
 	}
+	e.validation = &receipt
 	return nil
 }
-func (e *reworkReviewExecution) PrepareFinish(_ context.Context, _ string, body string, _ *tracker.NativeTerminalFailure) error {
+func (e *reworkReviewExecution) PrepareFinish(_ context.Context, _ string, body string, failure *tracker.NativeTerminalFailure) error {
 	e.body = body
+	e.failure = failure
 	return nil
 }
 func (e *reworkReviewExecution) ReviewVersion(ctx context.Context) (NativeValidation, error) {
@@ -268,6 +331,7 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 	for _, test := range []struct {
 		name                     string
 		reviewResume             string
+		independentRepair        bool
 		producerFailure          bool
 		resumeTwice              bool
 		writableResume           bool
@@ -282,6 +346,7 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 		summaryFailure           bool
 		laterFinalizationSuccess bool
 		landingRepair            *tracker.NativeLandingReceipt
+		historyRefusal           bool
 		unresolved               bool
 		staged                   bool
 		normal                   bool
@@ -304,6 +369,7 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 		{name: "resolved pause preserves later replay conflict", resolvedPause: true, pausedLaterConflict: true},
 		{name: "resolved pause retains genuine final gate failure", resolvedPause: true, failedFinalGate: true},
 		{name: "complete evidence wait resumes review only", reviewResume: "wait", staged: true},
+		{name: "IndependentFailure repair refreshes base and reviews changed source", reviewResume: "pass", reviewEvidence: "source_pass", staged: true, independentRepair: true},
 		{name: "complete operator resume in code lane only reviews", reviewResume: "pass", normal: true, staged: true},
 		{name: "complete source review and acceptance resume without coding", reviewResume: "pass", staged: true},
 		{name: "complete source producer failure preserves zero-turn version", reviewResume: "pass", staged: true, producerFailure: true},
@@ -323,6 +389,7 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 		{name: "historical completed reviews cannot displace current evidence wait", reviewResume: "wait", staged: true, reviewEvidence: "older_pair"},
 		{name: "acceptance before latest source review remains missing evidence", reviewResume: "pass", staged: true, reviewEvidence: "pre_source_pass"},
 		{name: "latest source wait supersedes old passing review pair", reviewResume: "wait", staged: true, reviewEvidence: "source_wait_after_pair"},
+		{name: "rewritten unsatisfiable acceptance resumes retained source without coding", reviewResume: "pass", staged: true, reviewEvidence: "unsatisfiable_acceptance"},
 		{name: "latest acceptance wait supersedes old passing review pair", reviewResume: "pass", staged: true, reviewEvidence: "validator_wait_after_pair"},
 		{name: "latest acceptance findings supersede old passing review pair", reviewResume: "pass", staged: true, reviewEvidence: "validator_rework_after_pair", writableResume: true},
 		{name: "current acceptance findings before source pass still code", reviewResume: "pass", staged: true, reviewEvidence: "validator_rework_before_source", writableResume: true},
@@ -332,6 +399,7 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 		{name: "failed landing CI after passing reviews still codes", reviewResume: "pass", staged: true, writableResume: true, landingRepair: &tracker.NativeLandingReceipt{CI: &tracker.NativeLandingCIReceipt{State: "failure"}}},
 		{name: "failed landing gate after passing reviews still codes", reviewResume: "pass", staged: true, writableResume: true, landingRepair: &tracker.NativeLandingReceipt{GateFailed: true}},
 		{name: "protected landing review conversations after passing reviews still code", reviewResume: "pass", staged: true, writableResume: true, landingRepair: &tracker.NativeLandingReceipt{RefusalKind: workspace.LandRefusalProtected, Refusal: workspace.ReviewConversationsRefusalText}},
+		{name: "protected landing review conversations retained in history still code", reviewResume: "pass", staged: true, writableResume: true, historyRefusal: true, landingRepair: &tracker.NativeLandingReceipt{RefusalKind: workspace.LandRefusalProtected}},
 		{name: "source version race refuses before coding", reviewResume: "pass", staged: true, sourceMismatch: true},
 		{name: "stale base refusal in code lane refreshes owned source", normal: true, staged: true, refusal: workspace.LandRefusalBaseMoved, baseRefresh: true, resume: true},
 		{name: "conflict refusal in code lane", normal: true, refusal: workspace.LandRefusalConflict},
@@ -538,12 +606,28 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 					owner.recovery.ChangeDetail.Reviews = []tracker.ChangeReview{acceptancePass, sourcePass}
 				case "source_wait_after_pair":
 					owner.recovery.ChangeDetail.Reviews = []tracker.ChangeReview{sourcePass, acceptancePass, review(true, gate.ValidatorVerdictWait, version.ID)}
+				case "unsatisfiable_acceptance":
+					acceptance := review(false, gate.ValidatorVerdictWait, version.ID)
+					acceptance.Validator.NotVerified = []string{"A real third-party client signs in against production"}
+					acceptance.Validator.CriteriaEvidence = []gate.CriterionEvidence{{Criterion: acceptance.Validator.NotVerified[0], Kind: gate.EvidenceNotVerified, UnverifiedClass: gate.CriterionUnsatisfiable}}
+					owner.recovery.ChangeDetail.Reviews = []tracker.ChangeReview{sourcePass, acceptance}
 				case "validator_wait_after_pair":
 					owner.recovery.ChangeDetail.Reviews = []tracker.ChangeReview{sourcePass, acceptancePass, review(false, gate.ValidatorVerdictWait, version.ID)}
 				case "validator_rework_after_pair":
 					owner.recovery.ChangeDetail.Reviews = []tracker.ChangeReview{sourcePass, acceptancePass, review(false, gate.ValidatorVerdictRework, version.ID)}
 				case "validator_rework_before_source":
 					owner.recovery.ChangeDetail.Reviews = []tracker.ChangeReview{review(false, gate.ValidatorVerdictRework, version.ID), sourcePass}
+				}
+				if test.independentRepair {
+					diagnostic := "source.go:4:2: independent failure"
+					command := gate.CommandResult{Command: "check-source", HeadSHA: original, ExitCode: 1, Output: diagnostic, FinishedAt: time.Unix(200, 0), BaseReproduction: &failureattribution.Observation{Command: "check-source", HeadSHA: base, ExitCode: 1, Output: diagnostic, Complete: true}}
+					failed := &gate.ValidatorResult{Verdict: "rework", BaseSHA: base, HeadSHA: original, Findings: []gate.Finding{{Severity: "p1", Body: diagnostic, CheckCommand: command.Command, CheckDiagnostic: diagnostic}}, Commands: []gate.CommandResult{command}}
+					gate.NormalizeAttribution(failed)
+					owner.recovery.ChangeDetail.Reviews = append(owner.recovery.ChangeDetail.Reviews, tracker.ChangeReview{VersionID: version.ID, Decision: "changes_requested", Validator: failed, RepairDependencies: []tracker.NativeWorkItemID{"wi_repair"}})
+					owner.recovery.ChangeDetail.Summary.NativeReview = "changes_requested"
+					owner.recovery.Issue.DependencyReady = true
+					owner.recovery.Issue.Blockers = []tracker.NativeDependency{{ID: "wi_repair", State: "Done", Terminal: true}}
+					owner.repairTree = strings.TrimSpace(runRunnerGit(t, info.Path, "merge-tree", "--write-tree", original, target))
 				}
 				if test.humanChanges {
 					owner.recovery.ChangeDetail.Summary.NativeReview = "changes_requested"
@@ -586,6 +670,10 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 						landing.CI = &ci
 					}
 					owner.recovery.Attempts = append(owner.recovery.Attempts, tracker.NativeAttempt{Status: "succeeded", NativeRunData: tracker.NativeRunData{AttemptID: "attempt_landing", RunID: "run_landing", PolicyID: descriptor.ID, Runtime: &tracker.NativeRuntimeObservation{Landing: &landing}}, Checkpoint: &checkpoint})
+					if test.historyRefusal {
+						owner.recovery.Discussion = []tracker.NativeComment{{Body: "Fix the unresolved review finding before landing again.", Actor: tracker.Actor{Kind: "human", PrincipalID: "operator"}, CreatedAt: time.Unix(300, 0)}}
+						owner.recovery.History = []tracker.CollaborationEvent{{Type: "workflow.transitioned", Data: tracker.CollaborationData{FromState: "Merging", ToState: "Rework", ReasonDetail: workspace.ReviewConversationsRefusalText}}}
+					}
 				}
 				if test.laterPartial {
 					later := owner.recovery.Attempts[0]
@@ -599,7 +687,14 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 					owner.source.Version.ID = "version_newer"
 				}
 
-				backend, err = workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "fresh-workspaces"), SourceRoot: source, AutoBranch: true})
+				freshSource := filepath.Join(t.TempDir(), "source")
+				runRunnerGit(t, source, "clone", remote, freshSource)
+				runRunnerGit(t, freshSource, "remote", "set-url", "origin", "https://github.com/example-org/example-project")
+				runRunnerGit(t, freshSource, "config", "url."+remote+".insteadOf", "https://github.com/example-org/example-project")
+				runRunnerGit(t, freshSource, "config", "user.name", "Test User")
+				runRunnerGit(t, freshSource, "config", "user.email", "test@example.com")
+				runRunnerGit(t, freshSource, "config", "commit.gpgsign", "false")
+				backend, err = workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "fresh-workspaces"), SourceRoot: freshSource, AutoBranch: true})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -623,10 +718,27 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 				}
 				request.Execution = owner
 				request.Issue.Description = "## Acceptance criteria\n- Preserve current source"
+				if test.landingRepair != nil {
+					agent.afterStage = func() {
+						owner.repairTree = strings.TrimSpace(runRunnerGit(t, agent.request.Workspace, "write-tree"))
+					}
+				}
 				result, err := r.Run(t.Context(), request)
 				if test.writableResume {
 					if agent.calls == 0 {
 						t.Fatalf("partial or genuine rework skipped coding: %v", err)
+					}
+					if test.landingRepair != nil {
+						if err != nil || result.NativeChange == nil || result.NativeChange.ReusedDispositionAttemptID != "" || owner.head == "" || owner.head == original || owner.validation == nil || owner.validation.HeadSHA != owner.head || owner.diffHead != owner.head {
+							t.Fatalf("landing repair lost finalized source: head=%s original=%s validation=%+v result=%+v error=%v", owner.head, original, owner.validation, result, err)
+						}
+						repaired := false
+						for _, file := range owner.files {
+							repaired = repaired || file.Path == "repair.md"
+						}
+						if !repaired {
+							t.Fatalf("finalized diff omitted repair: %+v", owner.files)
+						}
 					}
 					return
 				}
@@ -651,7 +763,17 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 				if agent.reviewCalls == 0 {
 					t.Fatal("source review never ran")
 				}
-				if owner.head != original || owner.body != disposition.FinalSummary || len(owner.reviews) != 1 || owner.reviews[0].Verdict != test.reviewResume {
+				if test.independentRepair {
+					if owner.head == original || owner.head == "" || owner.validation == nil || owner.validation.HeadSHA != owner.head || owner.validation.ExitCode != 0 || owner.diffHead != owner.head || result.NativeChange == nil || result.NativeChange.VersionID == version.ID || len(owner.reviews) != 1 || owner.reviews[0].HeadSHA != owner.head || owner.reviews[0].Verdict != "pass" {
+						t.Fatalf("repair resume lost rebased gate or review: head=%s validation=%+v reviews=%+v result=%+v", owner.head, owner.validation, owner.reviews, result)
+					}
+					runRunnerGit(t, agent.request.Workspace, "merge-base", "--is-ancestor", target, owner.head)
+					if owner.recovery.ChangeDetail.Reviews[0].ImplementationReview.HeadSHA != original {
+						t.Fatal("new base rewrote historical review receipt")
+					}
+					return
+				}
+				if owner.head != original || owner.body != disposition.FinalSummary || result.NativeChange == nil || result.NativeChange.ReusedDispositionAttemptID != "attempt_source" || len(owner.reviews) != 1 || owner.reviews[0].Verdict != test.reviewResume {
 					t.Fatalf("review recovery altered immutable source or provenance: head=%s body=%q reviews=%+v", owner.head, owner.body, owner.reviews)
 				}
 				if test.reviewResume != "pass" && len(owner.acceptance) != 0 {

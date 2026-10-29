@@ -1,4 +1,6 @@
+import { IssueThreads } from "../threads/IssueThreads.tsx";
 import { dependencyLabel } from "./lib/dependencies.ts";
+import { ReporterIssue } from "../reporter/ReporterIssue.tsx";
 import { DependencyPanels } from "./components/DependencyDetails.tsx";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as Option from "effect/Option";
@@ -67,7 +69,9 @@ import { useRunnerNames } from "./lib/runnerNames.ts";
 import { useNow, useWorkHttp } from "./lib/useWork.ts";
 import { newWorkKey, WorkApiError, type WorkHttp } from "./lib/workHttp.ts";
 import { invalidateQueries, scopeOf, setQueryData, useQuery } from "../lib/queryCache.ts";
-import { issueKey, readIssue, selectChangeId, type IssueData } from "./lib/issueQuery.ts";
+import { issueKey, issueProjectHint, hintIssueProject, readIssue, readOlderIssue, selectChangeId, type IssueData } from "./lib/issueQuery.ts";
+
+import { subscribeProjectQuery, eventNamesItem } from "./lib/projectEvents.ts";
 
 export { selectChangeId };
 
@@ -76,11 +80,11 @@ export function changeResourceRows(
   changes: IssueData["changes"],
   onOpen: (changeId: string) => void,
 ): ResourceRow[] {
-  return changes.map(({ record, detail, pending }) => ({
+  return changes.map(({ record, detail, pending, deferred }) => ({
     key: record.change_id,
     icon: "diff" as const,
     label: record.title,
-    detail: detail?.summary.status.replaceAll("_", " ") ?? (pending === true ? "" : "unavailable"),
+    detail: detail?.summary.status.replaceAll("_", " ") ?? (pending === true || deferred === true ? "" : "unavailable"),
     onOpen: () => onOpen(record.change_id),
   }));
 }
@@ -94,11 +98,57 @@ export function useIssue(
   error: string | null;
   loading: boolean;
   reload: () => void;
+  loadOlder: () => void;
   /** Applies an optimistic or answered issue without a round trip. */
   apply: React.Dispatch<React.SetStateAction<IssueData | null>>;
 } {
   const key = issueKey(http, workItemId, requestedChange);
-  const query = useQuery(key, readIssue(http, workItemId, requestedChange));
+  const owner = React.useMemo(() => ({ active: true, projectChanged: false, stream: null as ReturnType<typeof subscribeProjectQuery> | null,
+    controller: null as AbortController | null }), [http, workItemId, requestedChange]);
+  React.useEffect(() => {
+    owner.active = true;
+    return () => { owner.active = false; owner.controller?.abort(); owner.stream?.close(); owner.stream = null; };
+  }, [owner]);
+  const query = useQuery<IssueData | null>(key, async (signal, partial) => {
+    if (typeof globalThis.EventSource === "function" && owner.stream === null) {
+      let project = issueProjectHint(http, workItemId);
+      if (project === undefined) {
+        const head = await http.getWorkItemById(workItemId, signal);
+        project = head.project_id;
+        hintIssueProject(workItemId, project);
+      }
+      if (!owner.active || signal.aborted) throw new Error("Issue read cancelled");
+      owner.stream = subscribeProjectQuery(http, project, {
+        topics: ["work_item", "human_action", "board", "lane"],
+        accepts: (event) => event.type === "lane" || eventNamesItem(event, workItemId),
+        apply: (event) => { owner.projectChanged ||= event.type === "lane"; owner.stream?.refresh(); },
+        refresh: () => invalidateQueries(["issue", workItemId]),
+        restart: () => { owner.projectChanged = true; owner.controller?.abort(); invalidateQueries(["issue", workItemId]); },
+      });
+    }
+    const snapshot = owner.stream?.beginSnapshot();
+    const controller = new AbortController();
+    owner.controller = controller;
+    const readSignal = AbortSignal.any([signal, controller.signal]);
+    let cancel = () => {};
+    const aborted = new Promise<never>((_resolve, reject) => {
+      cancel = () => reject(new Error("Issue snapshot superseded"));
+      readSignal.addEventListener("abort", cancel, { once: true });
+      if (readSignal.aborted) cancel();
+    });
+    try {
+      const result = await Promise.race([readIssue(http, workItemId, requestedChange, owner.projectChanged, owner.stream !== null)(readSignal,
+        (next) => { if (owner.active && !readSignal.aborted && snapshot?.current() !== false) partial(next); }), aborted]);
+      if (!owner.active || snapshot?.current() === false) throw new Error("Issue snapshot superseded");
+      owner.projectChanged = false;
+      setQueryData(key, result);
+      snapshot?.complete(result?.issue.change_sequence);
+      return result;
+    } finally {
+      readSignal.removeEventListener("abort", cancel);
+      snapshot?.complete();
+    }
+  });
   const data = query.data ?? null;
   const current = React.useRef(data);
   current.current = data;
@@ -111,30 +161,19 @@ export function useIssue(
       typeof action === "function" ? action(previous ?? null) : action);
   }, []);
 
-  const projectId = data?.issue.work_item_id === workItemId ? data.issue.project_id : null;
-  React.useEffect(() => {
-    if (projectId === null || typeof globalThis.EventSource !== "function") return;
-    const source = new globalThis.EventSource(http.eventsUrl(projectId, undefined, workItemId), { withCredentials: true });
-    let previous: bigint | null = null;
-    const onActivity = (event: MessageEvent<string>) => {
-      if (!/^\d+$/.test(event.data)) return;
-      const next = BigInt(event.data);
-      const seen = previous;
-      previous = next;
-      const loaded = current.current?.history.at(-1)?.aggregate_sequence ?? "0";
-      if (next > (seen ?? BigInt(loaded))) invalidateQueries(["issue", workItemId]);
-    };
-    const onError = () => {
-      if (source.readyState === 2) reload();
-    };
-    source.addEventListener("activity", onActivity as EventListener);
-    source.addEventListener("error", onError);
-    return () => {
-      source.removeEventListener("activity", onActivity as EventListener);
-      source.removeEventListener("error", onError);
-      source.close();
-    };
-  }, [http, projectId, workItemId, reload]);
+  const paging = React.useRef(false);
+  const loadOlder = React.useCallback(() => {
+    const base = current.current;
+    if (paging.current || base === null || base.issue.work_item_id !== workItemId || !(base.attemptsCursor || base.historyCursor || base.commentsCursor)) return;
+    paging.current = true;
+    const pageKey = latestKey.current;
+    void readOlderIssue(http, base).then((next) => {
+      setQueryData<IssueData | null>(pageKey, (previous) => {
+        if (previous?.issue !== base.issue || previous.history !== base.history || previous.attempts !== base.attempts || previous.comments !== base.comments) return previous ?? null;
+        return { ...previous, attempts: next.attempts, history: next.history, comments: next.comments, attemptsCursor: next.attemptsCursor, historyCursor: next.historyCursor, commentsCursor: next.commentsCursor };
+      });
+    }).catch(() => undefined).finally(() => { paging.current = false; });
+  }, [http, workItemId]);
 
   const error = query.error === null || query.error === undefined ? null : query.error instanceof Error ? query.error.message : String(query.error);
   return {
@@ -142,6 +181,7 @@ export function useIssue(
     error,
     loading: query.pending,
     reload,
+    loadOlder,
     apply,
   };
 }
@@ -230,6 +270,11 @@ interface ConversationBridge {
 }
 
 export function IssuePage(): React.ReactElement {
+  const account = useAccountBootstrap();
+  return account?.actor.role === "reporter" ? <ReporterIssue /> : <FullIssuePage />;
+}
+
+function FullIssuePage(): React.ReactElement {
   const params = useParams({ strict: false }) as { workItemId?: string };
  const context = useRouteContext({ strict: false }) as { resolvedWorkItemId?: string };
  const workItemId = context.resolvedWorkItemId ?? params.workItemId ?? "";
@@ -247,7 +292,7 @@ export function IssuePage(): React.ReactElement {
     setResolved(undefined);
     if (projectId !== null && indexed === undefined) {
       void http
-        .getWorkItemConversation(projectId, workItemId)
+        .getWorkItemConversation(projectId, workItemId, issueState.data?.issue.archive_summary !== undefined)
         .then((snapshot) => {
           if (!cancelled) setResolved(snapshot.conversation);
         })
@@ -275,7 +320,42 @@ export function IssuePage(): React.ReactElement {
   if (linked === undefined) {
     return <IssueSurface key={workItemId} workItemId={workItemId} issueState={issueState} conversation={null} />;
   }
+  if (issueState.data?.issue.archive_summary !== undefined) return <ArchivedLinkedIssue key={linked.id} workItemId={workItemId} issueState={issueState} conversation={linked} />;
   return <LinkedIssue key={linked.id} workItemId={workItemId} issueState={issueState} conversation={linked} />;
+}
+
+function ArchivedLinkedIssue({ workItemId, issueState, conversation }: {
+  readonly workItemId: string;
+  readonly issueState: ReturnType<typeof useIssue>;
+  readonly conversation: Conversation;
+}): React.ReactElement {
+  const client = useClient();
+  const [detail, setDetail] = React.useState<ConversationDetail>();
+  const send = useAtomSet(client.sendMessage, { mode: "promise" });
+  const setPreferences = useAtomSet(client.setPreferences, { mode: "promise" });
+  const bridge: ConversationBridge = {
+    id: conversation.id, projectId: conversation.project_id, detail,
+    execution: conversation.execution, streaming: false, preferences: turnPreferences(conversation),
+    setPreferences: (preferences) => { void setPreferences({ projectId: conversation.project_id, conversationId: conversation.id, preferences }); },
+    sendToRunner: async (text) => { await send({ projectId: conversation.project_id, conversationId: conversation.id, key: newCommandKey(), text, expected: expectedOwner(conversation.execution) }); },
+    interrupt: null,
+    view: <ArchivedConversation conversation={conversation} onDetail={setDetail} />,
+  };
+  return <IssueSurface workItemId={workItemId} issueState={issueState} conversation={bridge} />;
+}
+
+function ArchivedConversation({ conversation, onDetail }: {
+  readonly conversation: Conversation;
+  readonly onDetail: (detail: ConversationDetail | undefined) => void;
+}): React.ReactElement {
+  const client = useClient();
+  const state = useAtomValue(client.conversations.stateAtom({
+    environmentId: HUB_ENVIRONMENT_ID, projectId: conversation.project_id, conversationId: conversation.id,
+  }));
+  const value = Option.getOrUndefined(AsyncResult.value(state));
+  const detail = value === undefined ? undefined : Option.getOrUndefined(value.data);
+  React.useEffect(() => { onDetail(detail); }, [detail, onDetail]);
+  return <ConversationView conversationId={conversation.id} projectId={conversation.project_id} header={false} />;
 }
 
 /** The issue page with a conversation behind it. Subscribes to its atoms. */
@@ -425,11 +505,12 @@ function IssueSurface({
   const item = React.useMemo<WorkItemView | null>(() => {
     if (data === null) return null;
     const change = data.change === null ? null : toChangeView(data.change.change, data.change);
-    return toWorkItemView(data.issue, data.project.name, {
+    const view = toWorkItemView(data.issue, data.project.name, {
       attempts: data.attempts,
       change,
       conversationId: conversation?.id ?? null,
     });
+    return data.attemptsCursor && view.attempt !== null ? { ...view, attempt: { ...view.attempt, attemptNumber: null } } : view;
   }, [conversation?.id, data]);
   usePageTitle(
     item === null ? "Issue" : `Issue ${issueNumber(item.identifier, item.number)}: ${item.title}`,
@@ -542,7 +623,9 @@ function IssueSurface({
         onClick: () => void navigate({ to: "/work/p/$projectId", params: { projectId } }),
       }}
       attempts={data?.attempts ?? []}
+      attemptsPartial={Boolean(data?.attemptsCursor)}
       history={data?.history ?? []}
+      archived={data?.issue.archive_summary !== undefined}
       askPanel={projectId === null ? null : <IssueAskPanel ask={ask} projectId={projectId} identifier={item === null ? workItemId : issueNumber(item.identifier, item.number)} title={item?.title ?? ""} canWrite={canWrite} />}
       conversationPanel={conversationPanel}
     >
@@ -568,6 +651,7 @@ function IssueSurface({
 
   return frame(
     <IssueBody
+      onLoadOlder={issueState.loadOlder}
       http={http}
       canManageRunners={project?.can_manage_runners === true}
       onTransferred={reload}
@@ -701,7 +785,7 @@ function IssueSurface({
       members={options.members}
       viewer={viewer}
       // The invitation flow is the organization settings section, which only
-      // an owner or an administrator may open (§16: the row is listed either
+      // an owner or an administrator may open (the frontend's governing rule: the row is listed either
       // way, with the reason when it cannot be taken).
       onInvite={
         account?.actor.can_manage === true
@@ -714,6 +798,17 @@ function IssueSurface({
           : "Only an owner or an administrator can invite somebody."
       }
       onComment={postComment}
+      onChangeComment={async (comment, body, deleted) => {
+        if (projectId === null || comment.revision === undefined) return;
+        try {
+          const updated = await http.updateComment({ projectId, itemId: workItemId, commentId: comment.id, key: newWorkKey("edit-comment"), expectedRevision: comment.revision, body, deleted });
+          apply((current) => current === null ? current : { ...current, comments: current.comments.map((entry) => entry.comment_id === updated.comment_id ? updated : entry) });
+          reload();
+        } catch (cause) {
+          if (cause instanceof WorkApiError && cause.conflict) reload();
+          throw cause;
+        }
+      }}
       onOpenIssue={(id) => void navigate({ to: "/work/i/$workItemId", params: { workItemId: id } })}
       onOpenConversationPage={openConversationPage}
     />,
@@ -722,6 +817,7 @@ function IssueSurface({
 }
 
 interface IssueBodyProps {
+  readonly onLoadOlder: () => void;
   readonly http: WorkHttp;
   readonly canManageRunners: boolean;
   readonly onTransferred: () => void;
@@ -752,6 +848,7 @@ interface IssueBodyProps {
   readonly onInvite: (() => void) | null;
   readonly inviteReason: string;
   readonly onComment: (body: string) => Promise<void>;
+  readonly onChangeComment: NonNullable<React.ComponentProps<typeof ActivityFeed>["onChangeComment"]>;
   readonly onOpenIssue: (workItemId: string) => void;
   readonly onOpenConversationPage: () => void;
   /** Opens any Change Request linked to this issue. */
@@ -807,6 +904,13 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
   const { data, item, conversation } = props;
   const [expanded, setExpanded] = React.useState(false);
   const highlightedId = useActivityCitation(item.id);
+  const lastScrollTop = React.useRef(0);
+  const intentConsumed = React.useRef(false);
+  const loadOlderAtEnd = (element: HTMLDivElement) => {
+    if (intentConsumed.current || element.scrollHeight - element.clientHeight - element.scrollTop > 32) return;
+    intentConsumed.current = true;
+    props.onLoadOlder();
+  };
 
   const runnerNames = useRunnerNames();
   const running = data.attempts.at(-1)?.status === "running" ? data.attempts.at(-1) : undefined;
@@ -819,6 +923,7 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
     () =>
       mergeActivity({
         history: data.history,
+        attemptsPartial: Boolean(data.attemptsCursor),
         attempts: data.attempts,
         comments: data.comments,
         runnerNames,
@@ -835,6 +940,7 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
       runnerNames,
       conversation?.detail,
       data.attempts,
+      data.attemptsCursor,
       data.comments,
       data.history,
       props.viewerPrincipalId,
@@ -857,7 +963,7 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
     running?.identity === undefined
       ? null
       : `${running.identity.backend} ${running.identity.model}`,
-    attemptCount === 0 ? null : `attempt ${attemptCount}`,
+    attemptCount === 0 ? null : data.attemptsCursor ? `${attemptCount} loaded attempts` : `attempt ${attemptCount}`,
   ]
     .filter((part): part is string => part !== null && part !== "")
     .join(" · ");
@@ -985,7 +1091,7 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
   const attempts =
     lastAttempt === undefined
       ? "No attempts yet"
-      : `${attemptCount} · attempt ${attemptCount} ${lastAttempt.status}`;
+      : data.attemptsCursor ? `${attemptCount} loaded · latest ${lastAttempt.status}` : `${attemptCount} · attempt ${attemptCount} ${lastAttempt.status}`;
 
   const properties = (
     <IssueProperties
@@ -1022,7 +1128,29 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
 
   return (
     <div className="flex min-h-0 flex-1 overflow-hidden">
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto" onScroll={(event) => {
+        const element = event.currentTarget;
+        const downward = element.scrollTop > lastScrollTop.current;
+        if (element.scrollTop < lastScrollTop.current) intentConsumed.current = false;
+        lastScrollTop.current = element.scrollTop;
+        if (downward) loadOlderAtEnd(element);
+      }} onWheel={(event) => {
+        if (event.deltaY <= 0) return;
+        intentConsumed.current = false;
+        loadOlderAtEnd(event.currentTarget);
+      }} onKeyDown={(event) => {
+        if (event.repeat || !["End", "PageDown", "ArrowDown", " "].includes(event.key)) return;
+        if (event.target instanceof HTMLElement && (event.target.isContentEditable || event.target.closest("input, textarea, button, select, [role='textbox']"))) return;
+        intentConsumed.current = false;
+        loadOlderAtEnd(event.currentTarget);
+      }} onTouchStart={() => {
+        intentConsumed.current = false;
+      }} onTouchMove={(event) => {
+        loadOlderAtEnd(event.currentTarget);
+      }} onPointerDown={(event) => {
+        intentConsumed.current = false;
+        if (event.pointerType !== "touch") loadOlderAtEnd(event.currentTarget);
+      }}>
         <div
           className={`mx-auto flex w-full flex-col gap-5 px-5 pt-7 pb-10 sm:px-10 ${
             panelOpen ? "max-w-[640px]" : "max-w-[760px]"
@@ -1056,7 +1184,7 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
           {data.project.profile === "native" ? <SourceRecoveryControls key={data.issue.work_item_id} http={props.http} projectId={data.issue.project_id} itemId={data.issue.work_item_id} revision={data.issue.revision} canManage={props.canWrite && props.canManageRunners} onTransferred={props.onTransferred} /> : null}
 
           {/* With the panel open the sidebar yields its width, so the facts it
-              carries stay reachable here (decisions.md §19.3). */}
+              carries stay reachable here. */}
           {panelOpen ? (
             <Collapsible className="rounded-[var(--radius)] border border-border bg-card">
               <CollapsibleTrigger
@@ -1131,7 +1259,7 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
 
           {data.issue.report_context === undefined ? null : <ReportContextBlock context={data.issue.report_context} />}
 
-          {/* §19.6: sub-issue creation is not in this slice, and §16 says a
+          {/* Sub-issue creation is not in this slice, and the frontend's governing rule says a
               feature stays present with its reason rather than disappearing. */}
           <Tooltip>
             <TooltipTrigger render={<span className="inline-flex w-fit" tabIndex={0} role="note" />}>
@@ -1153,8 +1281,9 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
           </Tooltip>
 
           <IssueResources rows={resources} />
+          <IssueThreads issueId={data.issue.work_item_id} />
 
-          <IssueDetailTabs native={data.project.profile === "native"} diagnostics={<IssueDiagnostics issue={data.issue} attempts={data.attempts} history={data.history} now={now} attemptsAvailable={data.attemptsAvailable} historyAvailable={data.historyAvailable} />}>
+          <IssueDetailTabs native={data.project.profile === "native"} diagnostics={<IssueDiagnostics issue={data.issue} attempts={data.attempts} history={data.history} now={now} attemptsAvailable={data.attemptsAvailable} historyAvailable={data.historyAvailable} historyPartial={Boolean(data.historyCursor) || data.historyCompacted === true} attemptsPartial={Boolean(data.attemptsCursor)} />}>
           <ActivityFeed
             projectId={data.project.project_id}
             highlightedId={highlightedId}
@@ -1162,10 +1291,11 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
             live={live}
             liveAt={liveAt}
             onReply={props.canWrite ? props.onComment : null}
+            onChangeComment={props.canWrite && data.project.profile === "native" ? props.onChangeComment : null}
             posting={props.posting}
           />
 
-          {/* Comments only (§19.5, Michael's review of September 12). The
+          {/* Comments only (the issue page rule, Michael's review of September 12). The
               runner is steered from the conversation surface the Activity
               feed's live row opens, not from a second mode on this card. */}
           <IssueComposer

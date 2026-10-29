@@ -132,7 +132,7 @@ func (s *Service) Submit(ctx context.Context, action Action) (Action, error) {
 	}
 	current.mu.Lock()
 	defer current.mu.Unlock()
-	if action.RequestID == "" || len(action.RequestID) > 128 || len(action.Arguments) > operatortool.MaxArgumentBytes {
+	if action.RequestID == "" || len(action.RequestID) > 128 || len(action.Arguments) > operatortool.ArgumentByteLimit(string(action.Kind)) {
 		return Action{}, operatortool.ErrInvalidArguments
 	}
 	var arguments bytes.Buffer

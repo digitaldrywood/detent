@@ -156,95 +156,178 @@ func linkedSnapshot() tracker.GitHubIssueSnapshot {
 
 func TestLinkedIssueIntakeAtomicAndNativeEdits(t *testing.T) {
 	t.Parallel()
-	for _, mode := range []string{"unedited", "native edits", "edit back to placeholder", "incomplete source contract"} {
-		t.Run(mode, func(t *testing.T) {
-			f := linkedFixture(t)
-			issue := pendingLinkedIssue(t, f)
-			path := f.base + "/work-items/" + string(issue.WorkItemID)
-			title, body := issue.Title, issue.Body
-			if body == "" {
-				body = nativeContractTestBody
-			}
-			if mode != "unedited" && mode != "incomplete source contract" {
-				if mode == "native edits" {
-					title, body = "Native title", "Native body"+issueContractTestSections
+	for _, mode := range []string{"unedited", "native edits", "title edit", "body edit", "edit back to placeholder", "incomplete source contract"} {
+		projections := []string{"typed", "unknown", "backfilled", "opaque differs"}
+		if mode == "incomplete source contract" {
+			projections = []string{"typed"}
+		}
+		for _, projection := range projections {
+			t.Run(mode+"/"+projection, func(t *testing.T) {
+				f := linkedFixture(t)
+				issue := pendingLinkedIssue(t, f)
+				path := f.base + "/work-items/" + string(issue.WorkItemID)
+				title, body := issue.Title, issue.Body
+				if body == "" {
+					body = nativeContractTestBody
 				}
-				r := performHubAPIRequest(t, f.service, http.MethodPatch, path, f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "edit"}, ExpectedRevision: issue.Revision, Title: &title, Body: &body})
-				requireNativeStatus(t, r, http.StatusOK)
-			}
-			worker := f.worker(t, "worker")
-			descriptor := hubTestPolicy()
-			approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker, map[string]any{"id": "runner", "hostname": "runner", "version": "test", "capacity": 1}), http.StatusOK)
-			r := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, tracker.NativeClaim{WorkItemID: issue.WorkItemID, MachineID: "runner", SessionID: "session", PolicyID: descriptor.ID, TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}})
-			requireNativeStatus(t, r, http.StatusOK)
-			var lease tracker.NativeLease
-			decodeHubResponse(t, r, &lease)
-			snapshot := linkedSnapshot()
-			if mode == "incomplete source contract" {
-				snapshot.Body = "## Roadmap Summary\nRepair the failed build."
-				request := tracker.GitHubIntake{Mutation: tracker.Mutation{IdempotencyKey: "incomplete-contract", LeaseID: lease.ID, FencingToken: lease.FencingToken}, Snapshot: snapshot}
-				response := performHubAPIRequest(t, f.service, http.MethodPost, path+"/source-intake", worker, request)
-				requireNativeStatus(t, response, http.StatusUnprocessableEntity)
-				preserved, _, err := readNativeIssue(t.Context(), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, string(issue.WorkItemID))
-				if err != nil || preserved.LinkedSource.Status != "pending" || preserved.Body != issue.Body {
-					t.Fatalf("refused intake persisted: %+v, %v", preserved, err)
+				titleOwned := mode != "unedited" && mode != "incomplete source contract" && mode != "body edit"
+				bodyOwned := mode != "unedited" && mode != "incomplete source contract" && mode != "title edit"
+				if titleOwned || bodyOwned {
+					update := tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "edit"}, ExpectedRevision: issue.Revision}
+					if titleOwned {
+						if mode != "edit back to placeholder" {
+							title = "Native title"
+						}
+						update.Title = &title
+					}
+					if bodyOwned {
+						if mode != "edit back to placeholder" {
+							body = "Native body" + issueContractTestSections
+						}
+						update.Body = &body
+					}
+					r := performHubAPIRequest(t, f.service, http.MethodPatch, path, f.token, update)
+					requireNativeStatus(t, r, http.StatusOK)
+				} else if mode == "unedited" {
+					tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer tx.Rollback()
+					scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+					if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "issue.edited", tracker.CollaborationData{Fields: []string{"labels"}}, time.Now()); err != nil {
+						t.Fatal(err)
+					}
+					if err := tx.Commit(); err != nil {
+						t.Fatal(err)
+					}
 				}
-				return
-			}
-			request := tracker.GitHubIntake{Mutation: tracker.Mutation{IdempotencyKey: "intake", LeaseID: lease.ID, FencingToken: lease.FencingToken}, Snapshot: snapshot}
-			invalid := request
-			invalid.IdempotencyKey = "invalid"
-			invalid.Snapshot.Comments = append([]tracker.GitHubIssueComment{}, snapshot.Comments...)
-			invalid.Snapshot.Comments = append(invalid.Snapshot.Comments, tracker.GitHubIssueComment{})
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/source-intake", worker, invalid), http.StatusUnprocessableEntity)
-			var count int
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM native_comments WHERE work_item_id = ?", issue.WorkItemID).Scan(&count); err != nil || count != 0 {
-				t.Fatalf("partial comments = %d, error = %v", count, err)
-			}
-			stale := request
-			stale.IdempotencyKey, stale.FencingToken = "stale", lease.FencingToken+1
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/source-intake", worker, stale), http.StatusConflict)
-			var wg sync.WaitGroup
-			responses := make(chan *httptest.ResponseRecorder, 3)
-			for i := range 3 {
-				wg.Go(func() {
-					next := request
-					next.IdempotencyKey = fmt.Sprint("retry-", i)
-					responses <- performHubAPIRequest(t, f.service, http.MethodPost, path+"/source-intake", worker, next)
-				})
-			}
-			wg.Wait()
-			close(responses)
-			for r := range responses {
+				switch projection {
+				case "unknown", "backfilled":
+					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE collaboration_events SET page_projection_ready=NULL,edited_title=NULL,edited_body=NULL WHERE work_item_id=? AND type='issue.edited'", issue.WorkItemID); err != nil {
+						t.Fatal(err)
+					}
+					if projection == "backfilled" {
+						if err := f.service.convertIssuePageFacts(t.Context()); err != nil {
+							t.Fatal(err)
+						}
+					}
+				case "opaque differs":
+					if !bodyOwned {
+						if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET body=? WHERE native_id=?", nativeContractTestBody, issue.WorkItemID); err != nil {
+							t.Fatal(err)
+						}
+					}
+					current, _, err := readNativeIssue(t.Context(), f.service.database.reader, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, string(issue.WorkItemID))
+					if err != nil {
+						t.Fatal(err)
+					}
+					title, body = current.Title, current.Body
+					titleOwned, bodyOwned = !titleOwned, !bodyOwned
+					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE collaboration_events SET edited_title=?,edited_body=? WHERE work_item_id=? AND type='issue.edited'", titleOwned, bodyOwned, issue.WorkItemID); err != nil {
+						t.Fatal(err)
+					}
+				}
+				gotTitle, gotBody, err := readNativeEditedOwnership(t.Context(), f.service.database.reader, issue.WorkItemID)
+				if err != nil || gotTitle != titleOwned || gotBody != bodyOwned {
+					t.Fatalf("ownership title=%t body=%t err=%v", gotTitle, gotBody, err)
+				}
+				worker := f.worker(t, "worker")
+				descriptor := hubTestPolicy()
+				approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker, map[string]any{"id": "runner", "hostname": "runner", "version": "test", "capacity": 1}), http.StatusOK)
+				r := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, tracker.NativeClaim{WorkItemID: issue.WorkItemID, MachineID: "runner", SessionID: "session", PolicyID: descriptor.ID, TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}})
 				requireNativeStatus(t, r, http.StatusOK)
-			}
-			r = performHubAPIRequest(t, f.service, http.MethodGet, path, f.token, nil)
-			requireNativeStatus(t, r, http.StatusOK)
-			var hydrated tracker.NativeIssue
-			decodeHubResponse(t, r, &hydrated)
-			if mode == "unedited" {
-				title, body = snapshot.Title, snapshot.Body
-			}
-			if hydrated.Title != title || hydrated.Body != body || hydrated.LinkedSource.Status != "complete" || hydrated.LinkedSource.Snapshot.Body != snapshot.Body || hydrated.Provenance.ExternalID != "I_source" {
-				t.Fatalf("hydrated = %#v", hydrated)
-			}
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM native_comments WHERE work_item_id = ?", issue.WorkItemID).Scan(&count); err != nil || count != 1 {
-				t.Fatalf("comments = %d, error = %v", count, err)
-			}
-			request.IdempotencyKey = "later-source-edit"
-			request.Snapshot.Title, request.Snapshot.Body = "Updated GitHub title", "Updated GitHub body"+issueContractTestSections
-			request.Snapshot.Provenance.UpdatedAt = snapshot.Provenance.UpdatedAt.Add(time.Second)
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/source-intake", worker, request), http.StatusOK)
-			r = performHubAPIRequest(t, f.service, http.MethodGet, path, f.token, nil)
-			requireNativeStatus(t, r, http.StatusOK)
-			decodeHubResponse(t, r, &hydrated)
-			if mode == "unedited" {
-				title, body = request.Snapshot.Title, request.Snapshot.Body
-			}
-			if hydrated.Title != title || hydrated.Body != body || hydrated.LinkedSource.Snapshot.Body != request.Snapshot.Body {
-				t.Fatalf("later GitHub edit = %#v", hydrated)
-			}
-		})
+				var lease tracker.NativeLease
+				decodeHubResponse(t, r, &lease)
+				snapshot := linkedSnapshot()
+				if mode == "incomplete source contract" {
+					snapshot.Body = "## Roadmap Summary\nRepair the failed build."
+					request := tracker.GitHubIntake{Mutation: tracker.Mutation{IdempotencyKey: "incomplete-contract", LeaseID: lease.ID, FencingToken: lease.FencingToken}, Snapshot: snapshot}
+					response := performHubAPIRequest(t, f.service, http.MethodPost, path+"/source-intake", worker, request)
+					requireNativeStatus(t, response, http.StatusUnprocessableEntity)
+					preserved, _, err := readNativeIssue(t.Context(), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, string(issue.WorkItemID))
+					if err != nil || preserved.LinkedSource.Status != "pending" || preserved.Body != issue.Body {
+						t.Fatalf("refused intake persisted: %+v, %v", preserved, err)
+					}
+					return
+				}
+				request := tracker.GitHubIntake{Mutation: tracker.Mutation{IdempotencyKey: "intake", LeaseID: lease.ID, FencingToken: lease.FencingToken}, Snapshot: snapshot}
+				invalid := request
+				invalid.IdempotencyKey = "invalid"
+				invalid.Snapshot.Comments = append([]tracker.GitHubIssueComment{}, snapshot.Comments...)
+				invalid.Snapshot.Comments = append(invalid.Snapshot.Comments, tracker.GitHubIssueComment{})
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/source-intake", worker, invalid), http.StatusUnprocessableEntity)
+				var count int
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM native_comments WHERE work_item_id = ?", issue.WorkItemID).Scan(&count); err != nil || count != 0 {
+					t.Fatalf("partial comments = %d, error = %v", count, err)
+				}
+				stale := request
+				stale.IdempotencyKey, stale.FencingToken = "stale", lease.FencingToken+1
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/source-intake", worker, stale), http.StatusConflict)
+				var wg sync.WaitGroup
+				responses := make(chan *httptest.ResponseRecorder, 3)
+				for i := range 3 {
+					wg.Go(func() {
+						next := request
+						next.IdempotencyKey = fmt.Sprint("retry-", i)
+						responses <- performHubAPIRequest(t, f.service, http.MethodPost, path+"/source-intake", worker, next)
+					})
+				}
+				wg.Wait()
+				close(responses)
+				for r := range responses {
+					requireNativeStatus(t, r, http.StatusOK)
+				}
+				r = performHubAPIRequest(t, f.service, http.MethodGet, path, f.token, nil)
+				requireNativeStatus(t, r, http.StatusOK)
+				var hydrated tracker.NativeIssue
+				decodeHubResponse(t, r, &hydrated)
+				if !titleOwned {
+					title = snapshot.Title
+				}
+				if !bodyOwned {
+					body = snapshot.Body
+				}
+				if hydrated.Title != title || hydrated.Body != body || hydrated.LinkedSource.Status != "complete" || hydrated.LinkedSource.Snapshot.Body != snapshot.Body || hydrated.Provenance.ExternalID != "I_source" {
+					t.Fatalf("hydrated = %#v", hydrated)
+				}
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM native_comments WHERE work_item_id = ?", issue.WorkItemID).Scan(&count); err != nil || count != 1 {
+					t.Fatalf("comments = %d, error = %v", count, err)
+				}
+				if projection == "unknown" {
+					if err := f.service.convertIssuePageFacts(t.Context()); err != nil {
+						t.Fatal(err)
+					}
+					var unknown int
+					if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE work_item_id=? AND type='issue.edited' AND (page_projection_ready IS NULL OR edited_title IS NULL OR edited_body IS NULL)", issue.WorkItemID).Scan(&unknown); err != nil || unknown != 0 {
+						t.Fatalf("unknown edits=%d err=%v", unknown, err)
+					}
+					gotTitle, gotBody, err := readNativeEditedOwnership(t.Context(), f.service.database.reader, issue.WorkItemID)
+					if err != nil || gotTitle != titleOwned || gotBody != bodyOwned {
+						t.Fatalf("backfilled ownership title=%t body=%t err=%v", gotTitle, gotBody, err)
+					}
+				}
+				request.IdempotencyKey = "later-source-edit"
+				request.Snapshot.Title, request.Snapshot.Body = "Updated GitHub title", "Updated GitHub body"+issueContractTestSections
+				request.Snapshot.Provenance.UpdatedAt = snapshot.Provenance.UpdatedAt.Add(time.Second)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/source-intake", worker, request), http.StatusOK)
+				r = performHubAPIRequest(t, f.service, http.MethodGet, path, f.token, nil)
+				requireNativeStatus(t, r, http.StatusOK)
+				decodeHubResponse(t, r, &hydrated)
+				if !titleOwned {
+					title = request.Snapshot.Title
+				}
+				if !bodyOwned {
+					body = request.Snapshot.Body
+				}
+				if hydrated.Title != title || hydrated.Body != body || hydrated.LinkedSource.Snapshot.Body != request.Snapshot.Body {
+					t.Fatalf("later GitHub edit = %#v", hydrated)
+				}
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE work_item_id = ? AND type = 'github.imported'", issue.WorkItemID).Scan(&count); err != nil || count != 2 {
+					t.Fatalf("import events = %d, error = %v", count, err)
+				}
+			})
+		}
 	}
 }

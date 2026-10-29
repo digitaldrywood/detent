@@ -13,11 +13,11 @@ import (
 )
 
 // hostedWorkspaceFileConfig is the optional `workspaces:` section of the hosted
-// configuration file (decisions section 18.1). Every duration is a string so a
+// configuration file. Every duration is a string so a
 // file can say "30m" rather than a bare number whose unit nobody can see.
 type hostedWorkspaceFileConfig struct {
 	// Enabled mounts the workspace endpoints and the relay. With it off the
-	// right panel's surfaces stay disabled with their reason (section 16).
+	// right panel's surfaces stay disabled with their reason.
 	Enabled bool `yaml:"enabled"`
 	// RequestTimeout is how long a workspace waits for an eligible runner
 	// before it fails with no_runner. Default 5m.
@@ -35,7 +35,7 @@ type hostedWorkspaceFileConfig struct {
 	Plan *struct {
 		MaxOpen int `yaml:"max_open"`
 	} `yaml:"plan"`
-	// PersonMaxOpen is the per-person cap. Section 18.1 fixes it at 3; the
+	// PersonMaxOpen is the per-person cap. The workspace session contract fixes it at 3; the
 	// key exists so an operator can lower it, never so one can be surprised
 	// by a higher default.
 	PersonMaxOpen int `yaml:"person_max_open"`
@@ -47,7 +47,7 @@ type hostedWorkspaceFileConfig struct {
 	Files *struct {
 		Deny []string `yaml:"deny"`
 	} `yaml:"files"`
-	// Terminal carries workspaces.terminal.* (section 18.3).
+	// Terminal carries workspaces.terminal.*.
 	Terminal *struct {
 		Enabled   bool   `yaml:"enabled"`
 		Isolation string `yaml:"isolation"`
@@ -132,7 +132,7 @@ func readWorkspaceConfig(section *hostedWorkspaceFileConfig) (hubserver.Workspac
 		config.Terminal.Enabled = section.Terminal.Enabled
 		config.Terminal.Isolation = strings.TrimSpace(section.Terminal.Isolation)
 		// The pointer is carried through rather than dereferenced: the hub's
-		// own normalization defaults a nil to on (section 18.3), so a file
+		// own normalization defaults a nil to on, so a file
 		// that says nothing and a hub built in Go that says nothing reach the
 		// same answer through the same line of code.
 		config.Terminal.Record = section.Terminal.Record

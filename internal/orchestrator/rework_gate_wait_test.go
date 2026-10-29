@@ -769,7 +769,7 @@ func TestReworkCapabilityBlockerIsBoundedWithDependentTodo(t *testing.T) {
 			issue.PullRequest.MergeableState = "dirty"
 			tracker := &implementProgressConnector{hydrated: issue, refreshed: issue}
 			attempts := &implementProgressAttemptStore{}
-			cfg := normalizeConfig(Config{ActiveStates: []string{"Todo", "In Progress", "Rework"}, TerminalStates: []string{"Done"}, AutoPromote: AutoPromoteConfig{Enabled: true, GateWaitState: autoPromoteGateWaitSource, NoProgressLimit: 3, Gate: gate.Config{Kind: gate.KindCommand}}})
+			cfg := normalizeConfig(Config{ActiveStates: []string{"Todo", "In Progress", "Rework"}, TerminalStates: []string{"Done"}, AutoPromote: AutoPromoteConfig{Enabled: true, GateWaitState: autoPromoteGateWaitSource, Gate: gate.Config{Kind: gate.KindCommand}}})
 			orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts}
 			state := newState(cfg)
 			now := time.Date(2026, 9, 5, 19, 1, 0, 0, time.UTC)
@@ -789,12 +789,22 @@ func TestReworkCapabilityBlockerIsBoundedWithDependentTodo(t *testing.T) {
 			}
 			attempts.history = append([]store.WorkAttempt{attempt}, attempts.history...)
 
-			if len(tracker.updates) == 0 || tracker.updates[len(tracker.updates)-1].state != blockedStatusState {
-				t.Fatalf("updates = %#v", tracker.updates)
+			if humanAction {
+				if len(tracker.updates) == 0 || tracker.updates[len(tracker.updates)-1].state != blockedStatusState {
+					t.Fatalf("typed human action lost Blocked: %+v", tracker.updates)
+				}
+				if len(tracker.comments) == 0 || !strings.Contains(tracker.comments[len(tracker.comments)-1].body, action) {
+					t.Fatal("human action lost")
+				}
+			} else {
+				if len(state.Blocked) != 0 {
+					t.Fatal("untyped blocker created human hold")
+				}
+				if _, ok := state.Retry[issue.ID]; !ok {
+					t.Fatal("untyped blocker lost retry")
+				}
 			}
-			if len(tracker.comments) == 0 || !strings.Contains(tracker.comments[len(tracker.comments)-1].body, action) {
-				t.Fatal("park lost recovery requirement")
-			}
+
 			child := dispatchTestIssue("child", "Todo")
 			child.BlockedBy = []connector.BlockedRef{{Identifier: issue.Identifier, State: "Blocked"}}
 			decision := orch.dispatchPlanner().dispatchableIssueDecision(child, &state, false, time.Now(), "")
@@ -822,7 +832,7 @@ func TestReworkGateWaitRejectsDirtyToDirtyEvidence(t *testing.T) {
 
 func TestInvalidReworkWaitPreservesIndependentParks(t *testing.T) {
 	t.Parallel()
-	for _, reason := range []string{spendProgressReason, dispatchLoopDetectedReason} {
+	for _, reason := range []string{"spend_since_progress_circuit_breaker", "dispatch_loop_detected"} {
 		t.Run(reason, func(t *testing.T) {
 			t.Parallel()
 			issue := reworkGateWaitTestIssue(workpad.StatusComplete)

@@ -16,6 +16,7 @@ import (
 type runnerBuildCache struct {
 	cache  *toolcache.Managed
 	root   string
+	native string
 	mu     sync.Mutex
 	report atomic.Pointer[toolcache.Report]
 }
@@ -23,7 +24,7 @@ type runnerBuildCache struct {
 var errNativeBuildCache = errors.New("runner uses the native Go build cache")
 
 func newRunnerBuildCache(ctx context.Context, cfg BootConfig) (*runnerBuildCache, error) {
-	if !cfg.Global.Client.Configured() || cfg.Global.Client.IdentityFile == "" || runtimeStoreIsMemory(runtimeStorePath(cfg)) || os.Getenv("GOCACHE") != "" {
+	if !cfg.Global.Client.Configured() || cfg.Global.Client.IdentityFile == "" || runtimeStoreIsMemory(runtimeStorePath(cfg)) || os.Getenv("GOCACHE") != "" || os.Getenv("GOCACHEPROG") != "" {
 		return nil, errNativeBuildCache
 	}
 	paths, err := toolcache.Resolve(ctx)
@@ -53,7 +54,7 @@ func newRunnerBuildCache(ctx context.Context, cfg BootConfig) (*runnerBuildCache
 	if err != nil {
 		return nil, err
 	}
-	return &runnerBuildCache{cache: cache, root: root}, nil
+	return &runnerBuildCache{cache: cache, root: root, native: paths.Build}, nil
 }
 
 func (c *runnerBuildCache) observe() *toolcache.Report {
@@ -92,12 +93,27 @@ func (c *runnerBuildCache) trimForVolume(ctx context.Context, policy toolcache.P
 	}
 	report, err := c.cache.Maintain(ctx, policy, now)
 	c.report.Store(&report)
-	if err == nil {
-		freeAfter, _, freeAfterErr := volume(c.root)
-		slog.Info("managed Go build cache maintenance", "path", c.root,
-			"retained_bytes", report.RetainedBytes, "age_expired_bytes", report.AgeExpiredBytes,
-			"size_evicted_bytes", report.SizeEvictedBytes, "pressure_reclaim_bytes", pressureReclaim, "free_bytes_before", freeBefore,
-			"free_bytes_after", freeAfter, "disk_observation_error", errors.Join(freeBeforeErr, freeAfterErr))
+	var native toolcache.Report
+	if c.native != "" {
+		var nativeErr error
+		native, nativeErr = toolcache.TrimWithReport(ctx, c.native, policy, now)
+		err = errors.Join(err, nativeErr)
 	}
+	status := "complete"
+	if report.Deferred {
+		status = "busy"
+	}
+	if err != nil {
+		status = "failed"
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		status = "cancelled"
+	}
+	freeAfter, _, freeAfterErr := volume(c.root)
+	slog.Info("managed Go build cache maintenance", "path", c.root, "status", status,
+		"retained_bytes", report.RetainedBytes, "age_expired_bytes", report.AgeExpiredBytes,
+		"size_evicted_bytes", report.SizeEvictedBytes, "native_path", c.native, "native_age_expired_bytes", native.AgeExpiredBytes,
+		"pressure_reclaim_bytes", pressureReclaim, "free_bytes_before", freeBefore,
+		"free_bytes_after", freeAfter, "disk_observation_error", errors.Join(freeBeforeErr, freeAfterErr))
 	return err
 }

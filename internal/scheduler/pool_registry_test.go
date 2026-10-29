@@ -505,6 +505,11 @@ func TestPoolRegistryPauseIncludesPoolsAddedWhilePaused(t *testing.T) {
 		[]scheduler.PoolConfig{poolConfig(scheduler.DefaultPoolName, "weighted", 1)},
 		[]scheduler.ProjectCandidate{{ID: "code"}},
 	)
+	release, allowed := registry.ReserveDispatch()
+	if !allowed {
+		t.Fatal("unpaused registry refused admission")
+	}
+	release()
 	resume := registry.PauseDispatch()
 	if err := registry.Reconfigure(
 		[]scheduler.PoolConfig{
@@ -515,10 +520,23 @@ func TestPoolRegistryPauseIncludesPoolsAddedWhilePaused(t *testing.T) {
 	); err != nil {
 		t.Fatalf("Reconfigure() error = %v", err)
 	}
+	if release, allowed := registry.ReserveDispatch(); allowed || release != nil {
+		t.Fatal("refreshed pause allowed admission")
+	}
 	assertPoolPaused(t, registry, scheduler.ProjectCandidate{ID: "code"})
 	assertPoolPaused(t, registry, scheduler.ProjectCandidate{ID: "video"})
+	operatorResume := registry.PauseDispatch()
 	resume()
 	resume()
+	if release, allowed := registry.ReserveDispatch(); allowed || release != nil {
+		t.Fatal("cleanup cleared another pause owner")
+	}
+	operatorResume()
+	release, allowed = registry.ReserveDispatch()
+	if !allowed {
+		t.Fatal("released registry refused admission")
+	}
+	release()
 	slots := acquirePoolSlots(t, registry, time.Time{},
 		scheduler.ProjectCandidate{ID: "code"},
 		scheduler.ProjectCandidate{ID: "video"},

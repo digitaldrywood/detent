@@ -21,22 +21,26 @@ type nativeAnalyticsCapacityWait struct {
 }
 
 func projectNativeAnalyticsCapacityWait(ctx context.Context, q nativeQueryer, scope nativeScope, out *nativeAnalyticsProject) error {
+	q, prepareErr := prepareReportsQuery(ctx, q, scope, "report_events")
+	if prepareErr != nil {
+		return prepareErr
+	}
 	if _, projected := q.(analyticsRollupReader); projected {
 		return projectAnalyticsCapacityRollups(ctx, q, scope, out)
 	}
 	queue := nativeAnalyticsCapacityWait{Source: "native_scheduler_decisions", Coverage: "recorded_provider_capacity_wait_to_claim; claimed_in_window; clipped_to_window", Partial: true}
 	statement := `SELECT c.data_json,c.recorded_at,
-coalesce((SELECT p.data_json FROM collaboration_events p
+coalesce((SELECT p.data_json FROM report_events p
  WHERE p.organization_id=c.organization_id AND p.project_id=c.project_id AND p.work_item_id=c.work_item_id AND p.sequence<c.sequence
  ORDER BY p.sequence DESC LIMIT 1),'null'),
-coalesce((SELECT p.type FROM collaboration_events p
+coalesce((SELECT p.type FROM report_events p
  WHERE p.organization_id=c.organization_id AND p.project_id=c.project_id AND p.work_item_id=c.work_item_id AND p.sequence<c.sequence
  ORDER BY p.sequence DESC LIMIT 1),''),
-coalesce((SELECT p.recorded_at FROM collaboration_events p
+coalesce((SELECT p.recorded_at FROM report_events p
  WHERE p.organization_id=c.organization_id AND p.project_id=c.project_id AND p.work_item_id=c.work_item_id AND p.sequence<c.sequence
  ORDER BY p.sequence DESC LIMIT 1),'')
-FROM collaboration_events c WHERE c.organization_id=? AND c.project_id=? AND c.type='scheduler.decision'
-AND json_extract(c.data_json,'$.decision.source')='native_claim' AND json_extract(c.data_json,'$.decision.outcome')='claimed'
+FROM report_events c WHERE c.organization_id=? AND c.project_id=? AND c.type='scheduler.decision'
+AND c.scheduler_source='native_claim' AND c.scheduler_outcome='claimed'
 AND julianday(c.recorded_at)>=julianday(?) AND julianday(c.recorded_at)<julianday(?)
 ORDER BY c.recorded_at,c.id LIMIT ? OFFSET ?`
 

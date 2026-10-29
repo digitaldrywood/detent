@@ -9,13 +9,13 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/digitaldrywood/detent/internal/intake"
+	"github.com/digitaldrywood/detent/internal/issuefiling"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/runner"
 )
 
 func (o *Orchestrator) attachMachineIssueTool(request *RunRequest) {
-	backend, ok := o.connector.(intake.IssueStore)
+	backend, ok := o.connector.(issuefiling.IssueStore)
 	if !ok {
 		return
 	}
@@ -84,7 +84,7 @@ func (o *Orchestrator) attachMachineIssueTool(request *RunRequest) {
 			return false
 		})
 		body := issueorigin.Stamp(input.Body, issueorigin.Origin{Kind: "worker", Source: source, Fingerprint: strings.TrimSpace(input.Fingerprint)})
-		issue, err := backend.CreateIntakeIssue(ctx, intake.IssueDraft{Title: input.Title, Body: body, Labels: labels, Priority: priority})
+		issue, err := backend.CreateIntakeIssue(ctx, issuefiling.IssueDraft{Title: input.Title, Body: body, Labels: labels, Priority: priority})
 		if err != nil {
 			return runner.AgentToolResult{Content: err.Error()}, nil
 		}

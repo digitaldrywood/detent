@@ -613,6 +613,11 @@ func TestManagedCacheConsumerLifetime(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer secondRelease()
+	legacyConsumer, err := cache.lock(t.Context(), "consumers", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer legacyConsumer.Close()
 	canceled, cancel := context.WithCancel(t.Context())
 	cancel()
 	if _, _, err := cache.Use(canceled); !errors.Is(err, context.Canceled) {
@@ -626,6 +631,19 @@ func TestManagedCacheConsumerLifetime(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(entry, make([]byte, 2048), 0600); err != nil {
+		t.Fatal(err)
+	}
+	aged := filepath.Join(root, "00", fmt.Sprintf("%064x-d", 2))
+	warm := filepath.Join(root, "00", fmt.Sprintf("%064x-d", 3))
+	for _, file := range []string{aged, warm} {
+		if err := os.WriteFile(file, []byte("reusable"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Chtimes(aged, time.Now().Add(-72*time.Hour), time.Now().Add(-72*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(warm, time.Now().Add(time.Hour), time.Now().Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	for _, lock := range []string{"admission", "consumers"} {
@@ -644,8 +662,12 @@ func TestManagedCacheConsumerLifetime(t *testing.T) {
 					cancel()
 				}
 			})
+
 			report, err := cache.Maintain(ctx, Policy{MaxBytes: 1024}, time.Now())
-			if err != nil || report.Error != "" || report.SizeEvictedBytes != 0 || report.RetainedBytes < 2048 {
+			if data, err := os.ReadFile(aged); err != nil || string(data) != "reusable" {
+				t.Fatalf("busy maintenance expired a protected entry: %q %v", data, err)
+			}
+			if err != nil || report.Error != "" || !report.Deferred || report.AgeExpiredBytes != 0 || report.SizeEvictedBytes != 0 || report.RetainedBytes < 2048 {
 				t.Fatalf("busy maintenance did not yield with its retained-size observation: %+v, %v", report, err)
 			}
 			if data, err := os.ReadFile(entry); err != nil || len(data) != 2048 {
@@ -667,16 +689,62 @@ func TestManagedCacheConsumerLifetime(t *testing.T) {
 	if err := errors.Join(thirdRelease(), secondRelease(), release()); err != nil {
 		t.Fatal(err)
 	}
+	if err := legacyConsumer.Close(); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := cache.Maintain(canceled, Policy{MaxBytes: 1024}, time.Now()); !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled maintenance: %v", err)
 	}
+	t.Run("cancel with exclusive locks", func(t *testing.T) {
+		operation, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		cancelledWithLocks := false
+		boundary := &trimSwapContext{Context: operation}
+		var cancelAtWalk func()
+		cancelAtWalk = func() {
+			exclusive := true
+			for _, lock := range []string{"admission", "consumers"} {
+				held, err := cache.tryLock(t.Context(), lock, false)
+				if held != nil {
+					held.Close()
+					exclusive = false
+				}
+				if err != nil {
+					t.Error(err)
+				}
+			}
+			if exclusive {
+				cancelledWithLocks = true
+				cancel()
+			} else {
+				boundary.swap = cancelAtWalk
+			}
+		}
+		boundary.swap = cancelAtWalk
+		report, err := cache.Maintain(boundary, Policy{MaxBytes: 1024}, time.Now())
+		if !errors.Is(err, context.Canceled) || report.Error == "" || !cancelledWithLocks {
+			t.Fatalf("cancellation: report=%+v err=%v held=%v", report, err, cancelledWithLocks)
+		}
+		for _, lock := range []string{"admission", "consumers"} {
+			held, err := cache.tryLock(t.Context(), lock, false)
+			if err != nil || held == nil {
+				t.Fatalf("cancelled maintenance retained %s: %v", lock, err)
+			}
+			if err := held.Close(); err != nil {
+				t.Fatal(err)
+			}
+		}
+	})
 	report, err := cache.Maintain(ctx, Policy{MaxBytes: 1024}, time.Now())
-	if err != nil || report.RetainedBytes > 1024 || report.SizeEvictedBytes != 2048 {
+	if err != nil || report.RetainedBytes > 1024 || report.SizeEvictedBytes != 2048 || report.AgeExpiredBytes != int64(len("reusable")) || report.Deferred {
 		t.Fatalf("idle maintenance: %+v, %v", report, err)
 	}
 	_, finalRelease, err := UseFromContext(cache.WithContext(ctx))
 	if err != nil {
 		t.Fatalf("settled maintenance retained locks: %v", err)
+	}
+	if data, err := os.ReadFile(warm); err != nil || string(data) != "reusable" {
+		t.Fatalf("retained warm entry unusable by next consumer: %q %v", data, err)
 	}
 	if err := finalRelease(); err != nil {
 		t.Fatal(err)

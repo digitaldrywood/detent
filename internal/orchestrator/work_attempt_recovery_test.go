@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -9,10 +10,11 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/connector/memory"
+	"github.com/digitaldrywood/detent/internal/policy"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 )
 
 func TestHandleWorkAttemptRecoveryAbandonsActiveAttemptAndAudits(t *testing.T) {
@@ -185,7 +187,7 @@ func TestHandleWorkAttemptRecoveryQueuesResumeRetryWhenEligible(t *testing.T) {
 		t.Fatalf("audit event = %#v, want succeeded resume audit", event)
 	}
 	state = newState(orch.cfg)
-	orch.connector = memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
+	orch.connector = fakehub.New(fakehub.Config{Issues: []connector.Issue{issue}, Stateful: true})
 	orch.cfg.Claiming.Owner = "operator"
 	orch.refillProjectSlotsExcluding(t.Context(), &state, now, issue.ID)
 	if len(state.Retry) != 0 || len(state.Running) != 0 {
@@ -201,6 +203,104 @@ func TestHandleWorkAttemptRecoveryQueuesResumeRetryWhenEligible(t *testing.T) {
 	request := receiveWorkerHostRunRequest(t, runner.started)
 	if request.Attempt != 2 || request.RecoveryAttemptID != attemptID || request.RetryMode != runpkg.RetryModeResume || request.ResumeState.DetentSessionID != sessionID || request.ResumeState.ProviderSessionID != "session-979" {
 		t.Fatalf("fresh refill lost persisted resume intent: %#v", request)
+	}
+}
+
+func TestAttemptRecoveryAfterPolicyChange(t *testing.T) {
+	t.Parallel()
+	pinned := orchestratorTestAuthoredPolicy("original workflow")
+	current := orchestratorTestAuthoredPolicy("changed workflow")
+	for _, test := range []struct {
+		name, metadata string
+		action         WorkAttemptRecoveryAction
+		resumable      bool
+	}{
+		{"changed workflow fresh retry", runningWorkAttemptMetadataJSON(Running{Policy: pinned}, nil), WorkAttemptRecoveryRetryFresh, true},
+		{"changed workflow resume retry", runningWorkAttemptMetadataJSON(Running{Policy: pinned}, nil), WorkAttemptRecoveryRetryResume, true},
+		{"missing policy", "{}", WorkAttemptRecoveryRetryFresh, false},
+		{"unreadable policy", `{"policy":"unreadable"}`, WorkAttemptRecoveryRetryFresh, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := t.Context()
+			db := openWorkAttemptRecoveryStore(t, ctx)
+			now := time.Now().UTC()
+			issue := recoveryTestIssue()
+			issue.Identifier = "example-org/example-project#979"
+			issue.URL = "https://github.com/example-org/example-project/issues/979"
+			issue.AssignedToWorker = true
+			id, err := db.StartWorkAttempt(ctx, store.WorkAttemptStart{
+				ProjectID: "detent", IssueID: issue.ID, Identifier: issue.Identifier, IssueURL: issue.URL,
+				WorkerType: "agent", WorkerHost: "local", Lane: issue.State, AttemptNumber: 1,
+				StartedAt: now.Add(-time.Minute), WorkerMetadataJSON: test.metadata,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := db.CompleteWorkAttempt(ctx, store.WorkAttemptCompletion{AttemptID: id, CompletedAt: now,
+				Status: store.WorkAttemptStatusTerminal, TerminalState: store.WorkAttemptTerminalFailure, WorkerMetadataJSON: test.metadata}); err != nil {
+				t.Fatal(err)
+			}
+			sessionID, err := db.StartSession(ctx, store.SessionStart{WorkAttemptID: id, ProjectID: "detent", IssueID: issue.ID,
+				Identifier: issue.Identifier, IssueURL: issue.URL, StartedAt: now.Add(-time.Minute), AgentBackendKind: "codex"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := db.FinishSession(ctx, sessionID, store.SessionFinish{CompletedAt: now, FinalState: "completed", ProviderThreadID: "thread-979"}); err != nil {
+				t.Fatal(err)
+			}
+			runner := newWorkerHostRunner()
+			o, err := New(Config{Project: scheduler.ProjectCandidate{ID: "detent"}, ActiveStates: []string{"Todo", "In Progress"},
+				WorkerHosts: []string{"local"}, Policy: current}, Dependencies{
+				Connector: fakehub.New(fakehub.Config{Issues: []connector.Issue{issue}, Stateful: true}),
+				Runner:    runner, WorkAttempts: db, AgentResume: db, WorkflowMetrics: db,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			state := newState(o.cfg)
+			response, err := o.handleWorkAttemptRecovery(ctx, &state, WorkAttemptRecoveryRequest{ProjectID: "detent", AttemptID: id, Action: test.action}, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !response.Queued || response.Status != "queued" || len(response.Blockers) != 0 || response.ResumeEligible != test.resumable {
+				t.Fatalf("recovery = %+v", response)
+			}
+			raw, err := json.Marshal(response)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(raw), "policy_mismatch") {
+				t.Fatalf("receipt retained policy blocker: %s", raw)
+			}
+			if !test.resumable && workAttemptRecoveryActionAvailable(response.Available, WorkAttemptRecoveryRetryResume) {
+				t.Fatal("unknown policy identity offered resume")
+			}
+			retry := state.Retry[issue.ID]
+			if !test.resumable && retry.ResumeState.DetentSessionID != 0 {
+				t.Fatal("unknown policy identity queued resume")
+			}
+			if !o.dispatchIssue(ctx, &state, issue, retry.Attempt, now, "local") {
+				t.Fatal("retry did not dispatch")
+			}
+			t.Cleanup(state.Running[issue.ID].cancel)
+			request := receiveWorkerHostRunRequest(t, runner.started)
+			if request.Policy.ID != current.ID || state.Running[issue.ID].Policy.ID != current.ID {
+				t.Fatalf("new retry policy = %q, want current %q", request.Policy.ID, current.ID)
+			}
+			persisted, err := db.WorkAttempt(ctx, request.WorkAttemptID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var metadata struct {
+				Policy policy.Descriptor `json:"policy"`
+			}
+			if err := json.Unmarshal([]byte(persisted.WorkerMetadataJSON), &metadata); err != nil {
+				t.Fatal(err)
+			}
+			if metadata.Policy.ID != current.ID {
+				t.Fatalf("persisted retry policy = %q, want %q", metadata.Policy.ID, current.ID)
+			}
+		})
 	}
 }
 
@@ -275,32 +375,34 @@ func startRecoveryWorkAttempt(
 	t.Helper()
 
 	attemptID, err := runtimeStore.StartWorkAttempt(ctx, store.WorkAttemptStart{
-		ProjectID:      "detent",
-		IssueID:        issue.ID,
-		Identifier:     issue.Identifier,
-		IssueURL:       issue.URL,
-		Repo:           issue.PRRepository,
-		WorkerType:     "agent",
-		WorkerHost:     "worker-a",
-		Lane:           issue.State,
-		AttemptNumber:  1,
-		StartedAt:      startedAt,
-		LeaseExpiresAt: startedAt.Add(10 * time.Minute),
-		Phase:          "running",
-		StatusMessage:  "worker running",
-		NextAction:     "wait",
+		ProjectID:          "detent",
+		IssueID:            issue.ID,
+		Identifier:         issue.Identifier,
+		IssueURL:           issue.URL,
+		Repo:               issue.PRRepository,
+		WorkerType:         "agent",
+		WorkerHost:         "worker-a",
+		Lane:               issue.State,
+		AttemptNumber:      1,
+		StartedAt:          startedAt,
+		LeaseExpiresAt:     startedAt.Add(10 * time.Minute),
+		Phase:              "running",
+		StatusMessage:      "worker running",
+		WorkerMetadataJSON: runningWorkAttemptMetadataJSON(Running{Policy: orchestratorTestPolicy()}, nil),
+		NextAction:         "wait",
 	})
 	if err != nil {
 		t.Fatalf("StartWorkAttempt() error = %v", err)
 	}
 	if status == store.WorkAttemptStatusTerminal {
 		if err := runtimeStore.CompleteWorkAttempt(ctx, store.WorkAttemptCompletion{
-			AttemptID:     attemptID,
-			CompletedAt:   startedAt.Add(5 * time.Minute),
-			Status:        store.WorkAttemptStatusTerminal,
-			TerminalState: terminalState,
-			Phase:         "completed",
-			StatusMessage: string(terminalState),
+			AttemptID:          attemptID,
+			CompletedAt:        startedAt.Add(5 * time.Minute),
+			Status:             store.WorkAttemptStatusTerminal,
+			TerminalState:      terminalState,
+			Phase:              "completed",
+			StatusMessage:      string(terminalState),
+			WorkerMetadataJSON: runningWorkAttemptMetadataJSON(Running{Policy: orchestratorTestPolicy()}, nil),
 		}); err != nil {
 			t.Fatalf("CompleteWorkAttempt() error = %v", err)
 		}

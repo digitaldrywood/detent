@@ -9,8 +9,25 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/onboarding"
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/projecticon"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/usagecost"
+)
+
+const ProjectIconArgumentBytes = 350 * 1024
+
+func ArgumentByteLimit(name string) int {
+	if name == "set_project_icon" || name == "set_organization_logo" {
+		return ProjectIconArgumentBytes
+	}
+	return MaxArgumentBytes
+}
+
+const (
+	GetSpritePool                 = "get_sprite_pool"
+	UpdateSpritePool              = "update_sprite_pool"
+	GetProjectSpriteAllocation    = "get_project_sprite_allocation"
+	UpdateProjectSpriteAllocation = "update_project_sprite_allocation"
 )
 
 // ProjectRequest keeps business retry identity separate from protocol IDs and
@@ -42,6 +59,56 @@ type OnboardingInput struct {
 }
 type SpriteUsageInput struct {
 	Observations []usagecost.Observation `json:"observations"`
+}
+type SpritePoolInput struct {
+	ShareIdleCapacity *bool             `json:"share_idle_capacity,omitempty"`
+	Placement         *policy.Placement `json:"placement,omitempty"`
+	Bootstrap         *string           `json:"bootstrap,omitempty"`
+	IsolationTier     *string           `json:"isolation_tier,omitempty"`
+	MinRunners        int               `json:"min_runners"`
+	MaxRunners        int               `json:"max_runners"`
+	IdleSeconds       int               `json:"idle_seconds,omitempty"`
+	Revision          int64             `json:"revision"`
+}
+type SpriteAllocationInput struct {
+	ExpectedRevision tracker.Revision `json:"expected_revision,string"`
+	DesiredCount     int              `json:"desired_count"`
+}
+type RenameProjectInput struct {
+	Name             string           `json:"name"`
+	ExpectedRevision tracker.Revision `json:"expected_revision,string"`
+}
+type RenameProjectArguments struct {
+	OrganizationID   string           `json:"organization_id"`
+	ProjectID        string           `json:"project_id"`
+	Name             string           `json:"name"`
+	ExpectedRevision tracker.Revision `json:"expected_revision,string"`
+	RequestID        string           `json:"request_id"`
+}
+type SetOrganizationLogoInput struct {
+	Content          []byte           `json:"content_base64,omitempty"`
+	Remove           bool             `json:"remove,omitempty"`
+	ExpectedRevision tracker.Revision `json:"expected_revision,string"`
+}
+type SetOrganizationLogoArguments struct {
+	OrganizationID   string           `json:"organization_id"`
+	Content          []byte           `json:"content_base64,omitempty"`
+	Remove           bool             `json:"remove,omitempty"`
+	ExpectedRevision tracker.Revision `json:"expected_revision,string"`
+	RequestID        string           `json:"request_id"`
+}
+type SetProjectIconInput struct {
+	Icon             projecticon.Icon `json:"icon"`
+	Content          []byte           `json:"content_base64,omitempty"`
+	ExpectedRevision tracker.Revision `json:"expected_revision,string"`
+}
+type SetProjectIconArguments struct {
+	OrganizationID   string           `json:"organization_id"`
+	ProjectID        string           `json:"project_id"`
+	Icon             projecticon.Icon `json:"icon"`
+	Content          []byte           `json:"content_base64,omitempty"`
+	ExpectedRevision tracker.Revision `json:"expected_revision,string"`
+	RequestID        string           `json:"request_id"`
 }
 type IntegrationInput struct {
 	DuplicateChallenge *bool                  `json:"duplicate_challenge,omitempty"`
@@ -107,12 +174,12 @@ type SummaryInput struct {
 // ProjectCatalog includes only named, typed operations. Browser setup tools
 // return navigation and requirements without accepting credentials or file paths.
 func ProjectCatalog() []Definition {
-	reads := []string{"list_projects", "get_native_project", "get_onboarding", "get_project_integration", "get_cutover_receipt", "get_git_hub_import", "list_git_hub_import_records", "get_git_hub_batch", "get_project_policy", "project_secret_metadata", "repository_freshness", "project_settings", "project_setup", "demo_setup_scenarios"}
+	reads := []string{"list_projects", "get_native_project", "get_onboarding", "get_project_integration", "get_cutover_receipt", "get_git_hub_import", "list_git_hub_import_records", "get_git_hub_batch", "get_project_policy", "project_secret_metadata", "repository_freshness", "project_settings", "project_setup", "demo_setup_scenarios", GetSpritePool, GetProjectSpriteAllocation}
 	out := make([]Definition, 0, len(reads)+14)
 	for _, name := range reads {
 		schema := projectSchema(reflect.TypeFor[ProjectReadRequest]())
 		required := []string{"project_id"}
-		if name == "list_projects" || name == "project_setup" || name == "demo_setup_scenarios" {
+		if name == "list_projects" || name == "project_setup" || name == "demo_setup_scenarios" || name == GetSpritePool {
 			required = []string{}
 		}
 		if name == "get_git_hub_import" || name == "list_git_hub_import_records" {
@@ -124,6 +191,12 @@ func ProjectCatalog() []Definition {
 			panic(err)
 		}
 		description := "Read authorized project application data: " + strings.ReplaceAll(name, "_", " ") + ". Setup returns the existing browser flow and requirements."
+		switch name {
+		case GetSpritePool:
+			description = "Read the organization Sprite pool shown in Settings: settings and revision, members with status, placement decision and runner setup. Pass project_id to read it through a project grant; omit it for an organization-wide read."
+		case GetProjectSpriteAllocation:
+			description = "Read the project's Sprite allocation: desired and allocated member counts, shortfall, provisioning failures and revision."
+		}
 		if name == "get_project_policy" {
 			description = "Read the complete approved policy and approval provenance. History contains compact apply identities, definition digests and provenance, bounded by rows and serialized bytes; pass history_next as after for the next page."
 		}
@@ -135,6 +208,9 @@ func ProjectCatalog() []Definition {
 		projectWrite[HostedProjectCreateInput]("create_hosted_project", true, false),
 		projectWrite[OnboardingInput]("save_onboarding", false, false),
 		projectWrite[IntegrationInput]("update_project_integration", true, true),
+		renameProjectDefinition(),
+		setProjectIconDefinition(),
+		setOrganizationLogoDefinition(),
 		projectWrite[RepositoryInput]("bind_native_repository", true, true),
 		projectWrite[ImportStartInput]("start_git_hub_import", true, true),
 		projectWrite[ImportAdvanceInput]("advance_git_hub_import", false, true),
@@ -145,6 +221,8 @@ func ProjectCatalog() []Definition {
 		projectWrite[SummaryInput]("project_native_summary", true, true),
 		projectWrite[struct{}]("remove_project_secret", true, false),
 		projectWrite[SpriteUsageInput]("import_sprite_usage", false, false),
+		projectWrite[SpritePoolInput](UpdateSpritePool, true, true),
+		projectWrite[SpriteAllocationInput](UpdateProjectSpriteAllocation, true, true),
 	)
 	return append(out, ModelSelectionCatalog()...)
 }
@@ -170,19 +248,29 @@ func projectWrite[T any](name string, destructive, openWorld bool) Definition {
 			properties[field] = map[string]any{"type": "string", "maxLength": 512}
 		}
 	}
-	if name == "create_native_project" || name == "create_hosted_project" {
+	if name == "create_native_project" || name == "create_hosted_project" || name == UpdateSpritePool {
 		schema["required"] = []string{"request_id", "input"}
 	}
 	raw, err := json.Marshal(schema)
 	if err != nil {
 		panic(err)
 	}
-	return Definition{Name: name, Description: "Use the shared dashboard application command: " + strings.ReplaceAll(name, "_", " ") + ". Current scoped authority is required; request_id is the business retry key.", InputSchema: raw, Annotations: Annotations{Destructive: destructive, Idempotent: true, OpenWorld: openWorld}, Meta: ToolMetadata{Toolset: "projects"}}
+	description := "Use the shared dashboard application command: " + strings.ReplaceAll(name, "_", " ") + ". Current scoped authority is required; request_id is the business retry key."
+	switch name {
+	case UpdateSpritePool:
+		description += " Saves the organization Sprite pool settings from Settings at the read revision; the pool then creates or retires Sprites toward min_runners and max_runners. Owner or admin authority is required; project_id is optional."
+	case UpdateProjectSpriteAllocation:
+		description += " Sets the project's desired Sprite count at expected_revision; the organization pool must be configured first. Owner or admin authority is required."
+	}
+	return Definition{Name: name, Description: description, InputSchema: raw, Annotations: Annotations{Destructive: destructive, Idempotent: true, OpenWorld: openWorld}, Meta: ToolMetadata{Toolset: "projects"}}
 }
 
 func projectSchema(t reflect.Type) map[string]any {
 	if t.Kind() == reflect.Pointer {
 		t = t.Elem()
+	}
+	if t == reflect.TypeFor[[]byte]() {
+		return map[string]any{"type": "string", "contentEncoding": "base64", "maxLength": 349528}
 	}
 	if t == reflect.TypeFor[json.RawMessage]() {
 		return map[string]any{}
@@ -238,6 +326,10 @@ func projectSchema(t reflect.Type) map[string]any {
 // are reached, including recursive fields that JSON schema cannot enforce alone.
 func DecodeProjectArguments(raw json.RawMessage, target any) error {
 	limit := MaxArgumentBytes
+	switch target.(type) {
+	case *SetProjectIconArguments, *ProjectRequest[SetProjectIconInput], *SetOrganizationLogoArguments, *ProjectRequest[SetOrganizationLogoInput]:
+		limit = ProjectIconArgumentBytes
+	}
 	if _, ok := target.(*ProjectRequest[IntegrationInput]); ok {
 		limit += 6 * 128 * 1024
 	}
@@ -255,6 +347,13 @@ func DecodeProjectArguments(raw json.RawMessage, target any) error {
 				return nil
 			}
 			t = t.Elem()
+		}
+		if t == reflect.TypeFor[[]byte]() {
+			text, ok := v.(string)
+			if !ok || len(text) > 349528 {
+				return invalidArgument(key, "must be base64 content of at most 256 KiB")
+			}
+			return nil
 		}
 		if t == reflect.TypeFor[json.RawMessage]() {
 			return nil
@@ -325,7 +424,7 @@ func projectStringLimit(key string) int {
 		return 128 * 1024
 	case "rate_source", "evidence_source", "resource_name":
 		return 512
-	case "prompt", "shared_prompt", "agents_prompt", "files":
+	case "prompt", "shared_prompt", "agents_prompt", "files", "bootstrap":
 		return MaxArgumentBytes
 	case "source":
 		return 1024
@@ -347,4 +446,34 @@ func schemaObject(value any) map[string]any {
 		panic("generated schema is not an object")
 	}
 	return object
+}
+
+func renameProjectDefinition() Definition {
+	schema := projectSchema(reflect.TypeFor[RenameProjectArguments]())
+	schema["required"] = []string{"organization_id", "project_id", "name", "expected_revision", "request_id"}
+	raw, err := json.Marshal(schema)
+	if err != nil {
+		panic(err)
+	}
+	return Definition{Name: "rename_project", Description: "Rename a native project display name with project-admin authority and an expected revision. The slug is preserved. request_id is the idempotency key.", InputSchema: raw, Annotations: Annotations{Idempotent: true}, Meta: ToolMetadata{Toolset: "projects"}}
+}
+
+func setProjectIconDefinition() Definition {
+	schema := projectSchema(reflect.TypeFor[SetProjectIconArguments]())
+	schema["required"] = []string{"organization_id", "project_id", "icon", "expected_revision", "request_id"}
+	raw, err := json.Marshal(schema)
+	if err != nil {
+		panic(err)
+	}
+	return Definition{Name: "set_project_icon", Description: "Choose a project icon (automatic, Lucide name and color, single emoji, or PNG/JPEG/WebP content_base64). Requires project-admin authority and the current integration expected_revision. Uploaded images are validated and re-encoded. request_id is the idempotency key.", InputSchema: raw, Annotations: Annotations{Idempotent: true}, Meta: ToolMetadata{Toolset: "projects"}}
+}
+
+func setOrganizationLogoDefinition() Definition {
+	schema := projectSchema(reflect.TypeFor[SetOrganizationLogoArguments]())
+	schema["required"] = []string{"organization_id", "expected_revision", "request_id"}
+	raw, err := json.Marshal(schema)
+	if err != nil {
+		panic(err)
+	}
+	return Definition{Name: "set_organization_logo", Description: "Upload a validated PNG/JPEG/WebP organization logo or remove it. Requires organization manage authority and the current logo expected_revision. request_id is the idempotency key.", InputSchema: raw, Annotations: Annotations{Idempotent: true}, Meta: ToolMetadata{Toolset: "projects"}}
 }

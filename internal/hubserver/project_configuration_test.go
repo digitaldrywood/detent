@@ -143,7 +143,7 @@ func TestSelectedProjectPolicyRoundTrip(t *testing.T) {
 			if approved.Status != chatpkg.ActionSucceeded {
 				t.Fatalf("selected policy approval=%+v", approved)
 			}
-			stored, err := readProjectPolicy(t.Context(), f.service.database.db, scope)
+			stored, _, err := readProjectPolicy(t.Context(), f.service.database.db, scope)
 			if err != nil || stored.Policy.ID != selected.ID {
 				t.Fatalf("approved policy=%+v %v", stored, err)
 			}

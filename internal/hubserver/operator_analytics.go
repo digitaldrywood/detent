@@ -3,7 +3,7 @@ package hubserver
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
+	"net/url"
 	"slices"
 	"sort"
 	"time"
@@ -128,6 +128,28 @@ func (s *Service) executeAnalyticsRead(ctx context.Context, call operatortool.Ca
 	if s.database == nil || s.config.Hosted == nil {
 		return operatortool.Result{}, errHubOperatorUnavailable
 	}
+	if call.Name == operatortool.Reports && r.Scope == "organization" {
+		if r.Range != "" {
+			w, err = reportsWindow(url.Values{"range": {r.Range}}, s.config.now())
+			if err != nil {
+				return operatortool.Result{}, operatortool.ErrInvalidArguments
+			}
+		}
+		projects, _, err := s.reportsReadableProjects(ctx, credential, reportsAllProjects)
+		if err != nil {
+			return operatortool.Result{}, errHubOperatorUnavailable
+		}
+		if r.ProjectID != "" {
+			projects = filterProductivityProjects(projects, []string{r.ProjectID})
+		}
+		projects = filterProductivityProjects(projects, r.Projects)
+		filter := reportsFilter{Labels: r.Labels, Priorities: r.Priorities, Types: r.Types, FiledBy: r.FiledBy, Runners: r.Runners}
+		report, err := s.readOrganizationProductivity(ctx, projects, w, filter)
+		if err != nil {
+			return operatortool.Result{}, errHubOperatorUnavailable
+		}
+		return hubOperatorResult(report)
+	}
 	if _, _, cursorErr := analyticsPagingContext(ctx, r.PopulationCursor); cursorErr != nil {
 		return operatortool.Result{}, operatortool.ErrInvalidArguments
 	}
@@ -169,7 +191,14 @@ func (s *Service) readAnalyticsReport(ctx context.Context, credential apiCredent
 }
 
 func (s *Service) readAnalyticsReportFrom(ctx context.Context, credential apiCredential, r operatortool.AnalyticsRequest, w operatortool.AnalyticsWindow, q nativeQueryer) (nativeAnalyticsReport, error) {
-	ctx = reporterReadContext(ctx, nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), credential: credential})
+	return s.readAnalyticsReportFor(ctx, credential, r, w, q, false)
+}
+
+func (s *Service) readAnalyticsReportFor(ctx context.Context, credential apiCredential, r operatortool.AnalyticsRequest, w operatortool.AnalyticsWindow, q nativeQueryer, diagnostics bool) (nativeAnalyticsReport, error) {
+	ctx, reporterErr := prepareReporterReadContext(ctx, q, nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), credential: credential})
+	if reporterErr != nil {
+		return nativeAnalyticsReport{}, reporterErr
+	}
 	_, _, pagingErr := analyticsPagingContext(ctx, r.PopulationCursor)
 	if pagingErr != nil {
 		return nativeAnalyticsReport{}, pagingErr
@@ -200,6 +229,18 @@ func (s *Service) readAnalyticsReportFrom(ctx context.Context, credential apiCre
 		projectQ, err := analyticsProjectReader(projectCtx, q, scope)
 		if err != nil {
 			return report, err
+		}
+		projectQ, err = prepareReportsQuery(projectCtx, projectQ, scope, "report_attempts", "report_events")
+		if err != nil {
+			return report, err
+		}
+		if diagnostics {
+			value, err := readNativeDiagnostics(projectCtx, projectQ, scope, r, w)
+			if err != nil {
+				return report, err
+			}
+			report.Projects = append(report.Projects, value)
+			continue
 		}
 		value, err := readNativeAnalytics(projectCtx, projectQ, scope, r, w)
 		if err != nil {
@@ -275,6 +316,10 @@ func nativeAnalyticsBucketIndex(at time.Time, w operatortool.AnalyticsWindow) in
 }
 
 func readNativeAnalytics(ctx context.Context, q nativeQueryer, scope nativeScope, r operatortool.AnalyticsRequest, w operatortool.AnalyticsWindow) (nativeAnalyticsProject, error) {
+	q, prepareErr := prepareReportsQuery(ctx, q, scope, "report_attempts", "report_events")
+	if prepareErr != nil {
+		return nativeAnalyticsProject{}, prepareErr
+	}
 	ctx, paging, pagingErr := analyticsPagingContext(ctx, r.PopulationCursor)
 	if pagingErr != nil {
 		return nativeAnalyticsProject{}, pagingErr
@@ -444,14 +489,21 @@ func readNativeAnalytics(ctx context.Context, q nativeQueryer, scope nativeScope
 }
 
 func nativeAnalyticsLandings(ctx context.Context, q nativeQueryer, scope nativeScope, w operatortool.AnalyticsWindow) ([]nativeAnalyticsLanding, error) {
+	pending, err := analyticsChangeColumnsPending(ctx, q, scope)
+	if err != nil {
+		return nil, err
+	}
+	if pending {
+		return readUnconvertedAnalyticsLandings(ctx, q, scope, w, false)
+	}
 	issues, issueArgs := reportsIssueClause(ctx, "c.work_item_id")
-	rows, err := queryAnalyticsPopulation(ctx, q, "landings", `SELECT c.id,c.work_item_id,json_extract(c.record_json,'$.landed') FROM change_requests c
-JOIN change_versions v ON v.change_id=c.id AND v.id=json_extract(c.record_json,'$.landed.version_id')
-WHERE c.organization_id=? AND c.project_id=? AND json_extract(c.record_json,'$.landed.head_sha')=json_extract(v.record_json,'$.head_sha')
-AND length(json_extract(c.record_json,'$.landed.merge_sha')) IN (40,64)
-AND julianday(json_extract(c.record_json,'$.landed.landed_at'))>=julianday(?) AND julianday(json_extract(c.record_json,'$.landed.landed_at'))<julianday(?) AND json_extract(c.record_json,'$.landed.landed_at')>=? AND json_extract(c.record_json,'$.landed.landed_at')<?
+	rows, err := queryAnalyticsPopulation(ctx, q, "landings", `SELECT c.id,c.work_item_id,c.record_json FROM change_requests c
+JOIN change_versions v ON v.change_id=c.id AND v.id=c.landed_version_id
+WHERE c.organization_id=? AND c.project_id=? AND c.landed_head_sha=v.head_sha
+AND length(c.landed_merge_sha) IN (40,64)
+AND julianday(c.landed_at)>=julianday(?) AND julianday(c.landed_at)<julianday(?) AND c.landed_at>=? AND c.landed_at<?
 `+issues+`
-ORDER BY json_extract(c.record_json,'$.landed.landed_at'),c.id LIMIT ? OFFSET ?`, append([]any{scope.organization, scope.project, formatHubTime(w.From), formatHubTime(w.To), w.From.UTC().Add(-24 * time.Hour).Format(time.DateOnly), w.To.UTC().Add(48 * time.Hour).Format(time.DateOnly)}, issueArgs...)...)
+ORDER BY c.landed_at,c.id LIMIT ? OFFSET ?`, append([]any{scope.organization, scope.project, formatHubTime(w.From), formatHubTime(w.To), w.From.UTC().Add(-24 * time.Hour).Format(time.DateOnly), w.To.UTC().Add(48 * time.Hour).Format(time.DateOnly)}, issueArgs...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -463,7 +515,7 @@ ORDER BY json_extract(c.record_json,'$.landed.landed_at'),c.id LIMIT ? OFFSET ?`
 		if err := rows.Scan(&landing.ChangeID, &landing.WorkItemID, &raw); err != nil {
 			return nil, err
 		}
-		if err := json.Unmarshal([]byte(raw), &landing.Landing); err != nil {
+		if err := decodeQualityLanding(ctx, raw, &landing.Landing); err != nil {
 			return nil, err
 		}
 		landing.Landing.Quality = nil
@@ -473,21 +525,35 @@ ORDER BY json_extract(c.record_json,'$.landed.landed_at'),c.id LIMIT ? OFFSET ?`
 }
 
 func projectNativeAnalyticsSkips(ctx context.Context, q nativeQueryer, scope nativeScope, out *nativeAnalyticsProject) error {
-	if _, rolledUp := q.(analyticsRollupReader); rolledUp && analyticsPopulationOffset(ctx, "decisions") == 0 {
-		aggregated, err := readAnalyticsSkipRollups(ctx, q, scope, out)
-		if err != nil || aggregated {
+	q, prepareErr := prepareReportsQuery(ctx, q, scope, "report_events")
+	if prepareErr != nil {
+		return prepareErr
+	}
+	if _, rolledUp := q.(analyticsRollupReader); rolledUp {
+		compacted, err := analyticsSkipSamplesCompacted(ctx, q, scope, out.Window.From)
+		if err != nil {
 			return err
+		}
+		offset := analyticsPopulationOffset(ctx, "decisions")
+		if compacted && offset != 0 {
+			return nil
+		}
+		if offset == 0 {
+			aggregated, err := readAnalyticsSkipRollups(ctx, q, scope, out, compacted)
+			if err != nil || aggregated {
+				return err
+			}
 		}
 	}
 	var rows *analyticsRows
 	var err error
 	if _, projected := q.(analyticsRollupReader); projected {
-		rows, err = queryAnalyticsPopulation(ctx, q, "decisions", `SELECT json_extract(data_json,'$.Source'),json_extract(data_json,'$.Reason'),json_extract(data_json,'$.At') FROM analytics_hourly_rollups INDEXED BY analytics_skip_order WHERE organization_id=? AND project_id=? AND metric='skip_sample' AND json_extract(data_json,'$.AtNS')>=? AND json_extract(data_json,'$.AtNS')<? ORDER BY json_extract(data_json,'$.At'),dimension LIMIT ? OFFSET ?`, scope.organization, scope.project, out.Window.From.UnixNano(), out.Window.To.UnixNano())
+		rows, err = queryAnalyticsPopulation(ctx, q, "decisions", `SELECT skip_source,skip_reason,sample_at FROM analytics_hourly_rollups INDEXED BY analytics_skip_order WHERE organization_id=? AND project_id=? AND metric='skip_sample' AND sample_ns>=? AND sample_ns<? ORDER BY sample_at,dimension LIMIT ? OFFSET ?`, scope.organization, scope.project, out.Window.From.UnixNano(), out.Window.To.UnixNano())
 	} else {
 		visibility, args := reportsIssueClause(ctx, "work_item_id")
 		args = append([]any{scope.organization, scope.project, formatHubTime(out.Window.From), formatHubTime(out.Window.To)}, args...)
-		rows, err = queryAnalyticsPopulation(ctx, q, "decisions", `SELECT coalesce(json_extract(data_json,'$.decision.source'),''), coalesce(json_extract(data_json,'$.decision.reason'),''), recorded_at
-FROM collaboration_events WHERE organization_id=? AND project_id=? AND type='scheduler.decision' AND json_extract(data_json,'$.decision.outcome')='skipped'
+		rows, err = queryAnalyticsPopulation(ctx, q, "decisions", `SELECT coalesce(scheduler_source,''), coalesce(scheduler_reason,''), recorded_at
+FROM report_events WHERE organization_id=? AND project_id=? AND type='scheduler.decision' AND scheduler_outcome='skipped'
 AND julianday(recorded_at)>=julianday(?) AND julianday(recorded_at)<julianday(?)`+visibility+` ORDER BY recorded_at,id LIMIT ? OFFSET ?`, args...)
 	}
 	if err != nil {

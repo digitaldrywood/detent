@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// The workspace lifecycle hook (decisions.md §18.1): reuse an open workspace
+// The workspace lifecycle hook: reuse an open workspace
 // rather than spend another slot, adopt the one a 409 names, and learn every
 // state after that from the project event stream rather than by polling.
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
@@ -42,7 +42,7 @@ function workspace(overrides: Partial<Workspace> = {}): Workspace {
     state: "requested",
     requires: ["files"],
     // What the runner that claimed it reported. Present on the builder because
-    // reuse now depends on it (§18.12): a workspace whose capabilities do not
+    // reuse now depends on it: a workspace whose capabilities do not
     // satisfy the caller's `requires` is not reusable, so a fixture with none
     // would be testing the refusal rather than the reuse.
     capabilities: {
@@ -84,7 +84,7 @@ class FakeEventSource {
   }
 
   emit(type: string, data: unknown): void {
-    const event = { data: JSON.stringify(data) } as MessageEvent<string>;
+    const event = { type, data: JSON.stringify(data) } as MessageEvent<string>;
     for (const listener of this.listeners.get(type) ?? []) listener(event as unknown as Event);
   }
 }
@@ -172,7 +172,7 @@ describe("useWorkspace", () => {
   it("skips a closed workspace and opens a new one, carrying `requires`", async () => {
     fetchMock.mockImplementation((_url: string, init?: RequestInit) => {
       if ((init?.method ?? "GET") === "GET") {
-        return Promise.resolve(json(200, { workspaces: [workspace({ state: "closed" })] }));
+        return Promise.resolve(json(200, { workspaces: [workspace({ revision: 5, state: "closed" })] }));
       }
       return Promise.resolve(json(201, workspace({ id: "ws_new", state: "requested" })));
     });
@@ -196,7 +196,7 @@ describe("useWorkspace", () => {
     { name: "client", props: { attemptId: "attempt_old" }, client: { ...CLIENT, http: { ...CLIENT.http, csrfToken: "other-session" } } as ConversationClient },
   ])("drops the previous workspace and ticket binding while a different $name is being acquired", async ({ props, client }) => {
     fetchMock.mockImplementation(() =>
-      Promise.resolve(json(200, { workspaces: [workspace({ state: "ready", attempt_id: "attempt_old" })] })),
+      Promise.resolve(json(200, { workspaces: [workspace({ revision: 3, state: "ready", attempt_id: "attempt_old" })] })),
     );
     const mounted = mount(<Probe attemptId="attempt_old" />);
     await waitFor(() => expect(screen.getByTestId("id").textContent).toBe("ws_1"));
@@ -258,20 +258,20 @@ describe("useWorkspace", () => {
     await waitFor(() => expect(screen.getByTestId("state").textContent).toBe("requested"));
     await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
     const source = FakeEventSource.instances[0]!;
-    expect(source.url).toContain("/projects/proj_1/events?workspace=ws_1");
+    expect(source.url).toContain("/projects/proj_1/events");
 
-    source.emit("workspace.starting", workspace({ state: "starting" }));
+    source.emit("workspace.starting", workspace({ revision: 2, state: "starting" }));
     await waitFor(() => expect(screen.getByTestId("state").textContent).toBe("starting"));
-    source.emit("workspace.ready", workspace({ state: "ready" }));
+    source.emit("workspace.ready", workspace({ revision: 3, state: "ready" }));
     await waitFor(() => expect(screen.getByTestId("state").textContent).toBe("ready"));
-    source.emit("workspace.idle", workspace({ state: "idle" }));
+    source.emit("workspace.idle", workspace({ revision: 4, state: "idle" }));
     await waitFor(() => expect(screen.getByTestId("state").textContent).toBe("idle"));
-    source.emit("workspace.closed", workspace({ state: "closed", reason: "closed_by_actor" }));
+    source.emit("workspace.closed", workspace({ revision: 5, state: "closed", reason: "closed_by_actor" }));
     await waitFor(() => expect(screen.getByTestId("state").textContent).toBe("closed"));
-    source.emit("workspace.failed", workspace({ state: "failed", reason: "no_runner" }));
+    source.emit("workspace.failed", workspace({ revision: 6, state: "failed", reason: "no_runner" }));
     await waitFor(() => expect(screen.getByTestId("reason").textContent).toBe("no_runner"));
 
-    // Not one extra read: §18.1 makes the subscription the contract.
+    // Not one extra read: the workspace session contract makes the subscription the contract.
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
@@ -432,7 +432,7 @@ describe("relayed requires", () => {
 
 describe("workspaceFromEvent", () => {
   it("keeps its own workspace and drops everything else", () => {
-    const frame = JSON.stringify(workspace({ state: "ready" }));
+    const frame = JSON.stringify(workspace({ revision: 3, state: "ready" }));
     expect(workspaceFromEvent(frame, "ws_1")?.state).toBe("ready");
     expect(workspaceFromEvent(frame, "ws_2")).toBeNull();
     expect(workspaceFromEvent("not json", "ws_1")).toBeNull();
@@ -452,7 +452,7 @@ describe("workspace state predicates", () => {
     }
   });
 
-  it("gives every §18.1 reason its own sentence", () => {
+  it("gives every workspace session contract reason its own sentence", () => {
     expect(workspaceReasonSentence("failed", "no_runner")).toContain("No runner reported");
     expect(workspaceReasonSentence("failed", "worktree_missing")).toContain("worktree");
     expect(workspaceReasonSentence("closed", "expired")).toContain("idle timeout");

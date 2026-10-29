@@ -8,7 +8,10 @@ import {
   TooltipTrigger,
 } from "../../components/ui/tooltip.tsx";
 import {
+  featureLabel,
+  grantChoices,
   planDisplayName,
+  planPrice,
   platformTime,
   readableKey,
   tenantPlanGrant,
@@ -28,6 +31,8 @@ import {
 } from "../../components/ui/dialog.tsx";
 import {
   Select,
+  SelectGroup,
+  SelectGroupLabel,
   SelectItem,
   SelectPopup,
   SelectTrigger,
@@ -135,9 +140,8 @@ export function GrantComplimentaryDialog({
   readonly trigger?: (onOpen: () => void, disabled: boolean) => React.ReactNode;
 }): React.ReactElement {
   const [open, setOpen] = React.useState(false);
-  const choices = entitlements.plans.filter(
-    (plan) => planKey(plan) !== planKey(entitlements.base),
-  );
+  const options = grantChoices(entitlements);
+  const choices = options.map((option) => option.plan);
   const [plan, setPlan] = React.useState("");
   const [expires, setExpires] = React.useState("");
   const [reason, setReason] = React.useState("");
@@ -146,6 +150,7 @@ export function GrantComplimentaryDialog({
   const change = useChange(organization.id, csrf, onChanged);
   const selected =
     choices.find((choice) => planKey(choice) === plan) ?? choices[0];
+  const selectedOption = options.find((option) => option.plan === selected);
   const prefix = `grant-${modelChoice ? "model-choice-" : ""}${organization.id}`;
 
   const reset = (next: boolean) => {
@@ -269,16 +274,46 @@ export function GrantComplimentaryDialog({
                       <SelectValue />
                     </SelectTrigger>
                     <SelectPopup>
-                      {choices.map((choice) => (
-                        <SelectItem
-                          key={planKey(choice)}
-                          value={planKey(choice)}
-                        >
-                          {planDisplayName(choice, entitlements)}
-                        </SelectItem>
-                      ))}
+                      {(["plans", "other"] as const).map((group) => {
+                        const members = options.filter(
+                          (option) => option.group === group,
+                        );
+                        return members.length === 0 ? null : (
+                          <SelectGroup key={group}>
+                            <SelectGroupLabel>
+                              {group === "plans" ? "Plans" : "Other"}
+                            </SelectGroupLabel>
+                            {members.map((option) => (
+                              <SelectItem
+                                key={planKey(option.plan)}
+                                value={planKey(option.plan)}
+                              >
+                                <span className="flex items-center gap-2">
+                                  <span className="min-w-0 flex-1 truncate">
+                                    {planDisplayName(option.plan, entitlements)}
+                                  </span>
+                                  {option.current ? (
+                                    <Badge variant="outline" size="sm">
+                                      Current
+                                    </Badge>
+                                  ) : null}
+                                  <span className="text-muted-foreground text-xs tabular-nums">
+                                    {planPrice(option.plan)}
+                                  </span>
+                                </span>
+                              </SelectItem>
+                            ))}
+                          </SelectGroup>
+                        );
+                      })}
                     </SelectPopup>
                   </Select>
+                  {selectedOption === undefined ? null : (
+                    <GrantPlanSummary
+                      plan={selectedOption.plan}
+                      current={selectedOption.current}
+                    />
+                  )}
                 </div>
               )}
               <div className="flex flex-col gap-1.5">
@@ -312,6 +347,61 @@ export function GrantComplimentaryDialog({
         </form>
       </DialogPopup>
     </Dialog>
+  );
+}
+
+function GrantPlanSummary({
+  plan,
+  current,
+}: {
+  readonly plan: EntitlementPlan;
+  readonly current: boolean;
+}): React.ReactElement {
+  const slots = plan.allowances?.concurrent_work;
+  return (
+    <dl
+      aria-label="Selected plan"
+      className="flex flex-wrap items-center gap-x-4 gap-y-1.5 pt-1 text-muted-foreground text-xs"
+    >
+      <div className="flex items-center gap-1">
+        <dt className="sr-only">Price</dt>
+        <dd className="font-medium text-foreground tabular-nums">
+          {planPrice(plan)}
+        </dd>
+      </div>
+      <div className="flex items-center gap-1">
+        <dt className="sr-only">Runner slots</dt>
+        <dd className="tabular-nums">
+          {slots === undefined
+            ? "Unlimited runner slots"
+            : `${slots.toLocaleString("en-US")} runner ${slots === 1 ? "slot" : "slots"}`}
+        </dd>
+      </div>
+      {current ? (
+        <div>
+          <dt className="sr-only">Status</dt>
+          <dd>
+            <Badge variant="outline" size="sm">
+              Current plan
+            </Badge>
+          </dd>
+        </div>
+      ) : null}
+      <div className="flex basis-full flex-wrap items-center gap-1">
+        <dt className="sr-only">Features</dt>
+        {(plan.features ?? []).length === 0 ? (
+          <dd>No features</dd>
+        ) : (
+          (plan.features ?? []).map((feature) => (
+            <dd key={feature}>
+              <Badge variant="secondary" size="sm">
+                {featureLabel(feature)}
+              </Badge>
+            </dd>
+          ))
+        )}
+      </div>
+    </dl>
   );
 }
 

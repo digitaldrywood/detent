@@ -39,7 +39,8 @@ test("invited member receives only the selected read-only project", async ({ pag
   expect(invitation).toBeTruthy();
   const invitationId = invitation.id;
 
-  await page.goto(hub.fixture.accounts.invitee);
+  const signIn = await page.request.get(hub.fixture.accounts.invitee, { maxRedirects: 0 });
+  expect(signIn.status()).toBe(303);
   await page.goto(`${hub.fixture.url}/invite?invitation_token=${encodeURIComponent(invitationId)}`);
   await expect(page).toHaveURL(`${hub.fixture.url}/organization`);
   await page.goto(`${hub.fixture.url}/settings/organization/members`);

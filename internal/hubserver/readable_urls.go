@@ -54,7 +54,7 @@ func setOrganizationSlug(ctx context.Context, tx *sql.Tx, id, slug string) error
 		return err
 	}
 	if err == nil && owner != id {
-		return nativeInvalid("This slug is already reserved")
+		return nativePublicInvalid("This slug is already reserved")
 	}
 	if _, err := tx.ExecContext(ctx, "INSERT INTO organization_slugs(slug,organization_id) VALUES(?,?) ON CONFLICT DO NOTHING", slug, id); err != nil {
 		return err
@@ -68,7 +68,7 @@ func (s *Service) syncOrganizationSlug(ctx context.Context, slug string) error {
 		return nil
 	}
 	var current string
-	if err := s.database.reader.QueryRowContext(ctx, "SELECT slug FROM organizations WHERE id=?", s.config.Hosted.OrganizationID).Scan(&current); err != nil {
+	if err := s.database.reader.QueryRowContext(ctx, "SELECT slug FROM organizations WHERE id=?", s.appOrganizationID()).Scan(&current); err != nil {
 		return err
 	}
 	if current == slug {
@@ -79,7 +79,7 @@ func (s *Service) syncOrganizationSlug(ctx context.Context, slug string) error {
 		return err
 	}
 	defer tx.Rollback()
-	if err := setOrganizationSlug(ctx, tx, s.config.Hosted.OrganizationID, slug); err != nil {
+	if err := setOrganizationSlug(ctx, tx, s.appOrganizationID(), slug); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -87,12 +87,12 @@ func (s *Service) syncOrganizationSlug(ctx context.Context, slug string) error {
 
 func (s *Service) slugSettings(c echo.Context) error {
 	ctx := c.Request().Context()
-	credential, _, err := s.hostedCredential(ctx, c)
+	credential, _, err := s.appCredential(c)
 	if err != nil {
 		return s.nativeAPIError(c, nativeNotFound())
 	}
 	project := c.Param("project")
-	scope := nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), project: tracker.ProjectID(project), credential: credential}
+	scope := nativeScope{organization: tracker.OrganizationID(s.appOrganizationID()), project: tracker.ProjectID(project), credential: credential}
 	if project != "" {
 		if err := s.requireHostedProject(ctx, s.database.reader, scope, false); err != nil {
 			return s.nativeAPIError(c, err)
@@ -113,14 +113,14 @@ func (s *Service) slugSettings(c echo.Context) error {
 		return s.nativeAPIError(c, nativeNotFound())
 	}
 	if project == "" && s.hostedShared() {
-		return s.nativeAPIError(c, nativeInvalid("Edit the organization slug through the shared entry"))
+		return s.nativeAPIError(c, nativePublicInvalid("Edit the organization slug through the shared entry"))
 	}
 	var input struct {
 		Slug         string `json:"slug"`
 		ExpectedSlug string `json:"expected_slug"`
 	}
 	if err := decodeAPIJSON(c, &input); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	if err := readableurl.Validate(input.Slug); err != nil {
 		return s.nativeAPIError(c, nativeInvalid(err.Error()))
@@ -138,7 +138,7 @@ func (s *Service) slugSettings(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	if current != input.ExpectedSlug {
-		return s.nativeAPIError(c, nativeInvalid("The slug changed; reload and try again"))
+		return s.nativeAPIError(c, nativePublicInvalid("The slug changed; reload and try again"))
 	}
 	if project == "" {
 		err = setOrganizationSlug(ctx, tx, string(scope.organization), input.Slug)
@@ -149,7 +149,7 @@ func (s *Service) slugSettings(c echo.Context) error {
 			err = nil
 		}
 		if err == nil && owner != "" && owner != project {
-			err = nativeInvalid("This slug is already reserved")
+			err = nativePublicInvalid("This slug is already reserved")
 		}
 		if err == nil {
 			_, err = tx.ExecContext(ctx, "INSERT INTO project_slugs(organization_id,slug,project_id) VALUES(?,?,?) ON CONFLICT DO NOTHING", scope.organization, input.Slug, project)
@@ -309,7 +309,7 @@ func (s *Service) canonicalBrowserLink(ctx context.Context, link string) (string
 		}
 		if slices.Contains([]string{"work", "chat", "settings", "projects", "organization", "fleet", "reports", "diagnostics", "support"}, first) {
 			var orgSlug string
-			if err := s.database.reader.QueryRowContext(ctx, "SELECT slug FROM organizations WHERE id=?", s.config.Hosted.OrganizationID).Scan(&orgSlug); err != nil {
+			if err := s.database.reader.QueryRowContext(ctx, "SELECT slug FROM organizations WHERE id=?", s.appOrganizationID()).Scan(&orgSlug); err != nil {
 				return "", err
 			}
 			path = "/" + orgSlug + localPath
@@ -330,7 +330,7 @@ func (s *Service) canonicalBrowserLink(ctx context.Context, link string) (string
 }
 
 func (s *Service) resolveReadablePage(c echo.Context) error {
-	credential, _, err := s.hostedCredential(c.Request().Context(), c)
+	credential, _, err := s.appCredential(c)
 	if err != nil {
 		return s.nativeAPIError(c, nativeNotFound())
 	}
@@ -352,11 +352,11 @@ func (s *Service) readablePage(ctx context.Context, credential apiCredential, pa
 		return "", "", "", nativeNotFound()
 	}
 	var project, projectSlug, orgSlug string
-	err := s.database.reader.QueryRowContext(ctx, `SELECT p.id,p.slug,o.slug FROM project_slugs a JOIN projects p ON p.id=a.project_id JOIN organizations o ON o.id=p.organization_id WHERE a.organization_id=? AND a.slug=?`, s.config.Hosted.OrganizationID, parts[0]).Scan(&project, &projectSlug, &orgSlug)
+	err := s.database.reader.QueryRowContext(ctx, `SELECT p.id,p.slug,o.slug FROM project_slugs a JOIN projects p ON p.id=a.project_id JOIN organizations o ON o.id=p.organization_id WHERE a.organization_id=? AND a.slug=?`, s.appOrganizationID(), parts[0]).Scan(&project, &projectSlug, &orgSlug)
 	if err != nil {
 		return "", "", "", err
 	}
-	scope := nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), project: tracker.ProjectID(project), credential: credential}
+	scope := nativeScope{organization: tracker.OrganizationID(s.appOrganizationID()), project: tracker.ProjectID(project), credential: credential}
 	if err := s.requireHostedProject(ctx, s.database.reader, scope, false); err != nil {
 		return "", "", "", err
 	}
@@ -393,7 +393,7 @@ func (s *Service) readableShellPath(c echo.Context) (string, bool, error) {
 	path := c.Request().URL.Path
 	parts := strings.Split(strings.Trim(path, "/"), "/")
 	var orgSlug string
-	if err := s.database.reader.QueryRowContext(c.Request().Context(), "SELECT slug FROM organizations WHERE id=?", s.config.Hosted.OrganizationID).Scan(&orgSlug); err != nil {
+	if err := s.database.reader.QueryRowContext(c.Request().Context(), "SELECT slug FROM organizations WHERE id=?", s.appOrganizationID()).Scan(&orgSlug); err != nil {
 		return "", false, err
 	}
 	requestedOrgSlug := ""
@@ -402,7 +402,7 @@ func (s *Service) readableShellPath(c echo.Context) (string, bool, error) {
 	}
 	if requestedOrgSlug == "" && !s.hostedShared() && len(parts) >= 2 {
 		var owner string
-		if err := s.database.reader.QueryRowContext(c.Request().Context(), "SELECT organization_id FROM organization_slugs WHERE slug=?", parts[0]).Scan(&owner); err == nil && owner == s.config.Hosted.OrganizationID {
+		if err := s.database.reader.QueryRowContext(c.Request().Context(), "SELECT organization_id FROM organization_slugs WHERE slug=?", parts[0]).Scan(&owner); err == nil && owner == s.appOrganizationID() {
 			requestedOrgSlug = parts[0]
 			path = "/" + strings.Join(parts[1:], "/")
 			parts = parts[1:]
@@ -423,17 +423,17 @@ func (s *Service) readableShellPath(c echo.Context) (string, bool, error) {
 		}
 		return "", false, nil
 	}
-	credential, _, err := s.hostedCredential(c.Request().Context(), c)
+	credential, _, err := s.appCredential(c)
 	if err != nil {
 		return "", false, nativeNotFound()
 	}
 	if legacyIssue {
 		id := parts[2]
 		var project string
-		if err := s.database.reader.QueryRowContext(c.Request().Context(), "SELECT project_id FROM issues WHERE organization_id=? AND native_id=?", s.config.Hosted.OrganizationID, id).Scan(&project); err != nil {
+		if err := s.database.reader.QueryRowContext(c.Request().Context(), "SELECT project_id FROM issues WHERE organization_id=? AND native_id=?", s.appOrganizationID(), id).Scan(&project); err != nil {
 			return "", false, err
 		}
-		scope := nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), project: tracker.ProjectID(project), credential: credential}
+		scope := nativeScope{organization: tracker.OrganizationID(s.appOrganizationID()), project: tracker.ProjectID(project), credential: credential}
 		if err := s.requireHostedProject(c.Request().Context(), s.database.reader, scope, false); err != nil {
 			return "", false, err
 		}
@@ -447,7 +447,7 @@ func (s *Service) readableShellPath(c echo.Context) (string, bool, error) {
 		return target, true, err
 	}
 	if legacyProjectIssue {
-		scope := nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), project: tracker.ProjectID(parts[1]), credential: credential}
+		scope := nativeScope{organization: tracker.OrganizationID(s.appOrganizationID()), project: tracker.ProjectID(parts[1]), credential: credential}
 		if err := s.requireHostedProject(c.Request().Context(), s.database.reader, scope, false); err != nil {
 			return "", false, err
 		}
@@ -463,7 +463,7 @@ func (s *Service) readableShellPath(c echo.Context) (string, bool, error) {
 	}
 	if legacyProject {
 		var slug string
-		if err := s.database.reader.QueryRowContext(c.Request().Context(), "SELECT slug FROM projects WHERE organization_id=? AND id=?", s.config.Hosted.OrganizationID, parts[2]).Scan(&slug); err != nil {
+		if err := s.database.reader.QueryRowContext(c.Request().Context(), "SELECT slug FROM projects WHERE organization_id=? AND id=?", s.appOrganizationID(), parts[2]).Scan(&slug); err != nil {
 			return "", false, err
 		}
 		path = "/" + slug
@@ -477,7 +477,7 @@ func (s *Service) readableShellPath(c echo.Context) (string, bool, error) {
 }
 
 func (s *Service) normalizeToolReferences(ctx context.Context, call operatortool.Call) (operatortool.Call, error) {
-	if len(call.Arguments) > operatortool.MaxArgumentBytes {
+	if len(call.Arguments) > operatortool.ArgumentByteLimit(call.Name) {
 		return call, operatortool.ErrInvalidArguments
 	}
 	var fields map[string]json.RawMessage

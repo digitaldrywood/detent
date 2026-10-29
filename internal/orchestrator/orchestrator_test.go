@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"maps"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -20,10 +21,11 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
-	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/testenv"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 const slowCIIntegrationWaitTimeout = 10 * time.Second
@@ -51,8 +53,12 @@ func TestRunDispatchesCandidateAndRecordsCompletion(t *testing.T) {
 				LimitID:   "codex",
 				LimitName: "Codex",
 			},
-			FinalState: "Human Review",
+			FinalState: orchestrator.FinalStateCompleted,
 		},
+	}
+
+	runner.onRun = func(request orchestrator.RunRequest) {
+		tracker.setCandidatePullRequest(request.Issue.ID, &connector.PullRequest{Number: 1, HeadSHA: "published-head", State: "OPEN", Draft: true})
 	}
 
 	orch := newTestOrchestrator(t, tracker, runner)
@@ -70,8 +76,8 @@ func TestRunDispatchesCandidateAndRecordsCompletion(t *testing.T) {
 	if _, ok := state.Claimed[issue.ID]; ok {
 		t.Fatalf("Claimed[%q] present after completed run", issue.ID)
 	}
-	if got := state.Completed[issue.ID].FinalState; got != "Human Review" {
-		t.Fatalf("Completed[%q].FinalState = %q, want Human Review", issue.ID, got)
+	if got := state.Completed[issue.ID].FinalState; got != orchestrator.FinalStateCompleted {
+		t.Fatalf("Completed[%q].FinalState = %q, want completed", issue.ID, got)
 	}
 	if got := state.Retry[issue.ID].Attempt; got != 1 {
 		t.Fatalf("Retry[%q].Attempt = %d, want 1", issue.ID, got)
@@ -132,12 +138,13 @@ func TestRunCompletionTransitionsLabelModeIssueToHumanReview(t *testing.T) {
 	issue.Labels = []string{"detent:todo", "bug"}
 	tracker := newFakeLabelConnector(issue)
 	runner := &staticRunner{
-		result: orchestrator.RunResult{FinalState: orchestrator.FinalStateCompleted},
+		result: orchestrator.RunResult{FinalState: orchestrator.FinalStateCompleted, DiffStats: orchestrator.DiffStats{Status: "clean"}},
 		onRun: func(request orchestrator.RunRequest) {
 			tracker.setCandidatePullRequest(request.Issue.ID, &connector.PullRequest{
 				Number:         17,
 				URL:            "https://github.com/digitaldrywood/detent/pull/17",
 				State:          "OPEN",
+				HeadSHA:        "published-head",
 				MergeableState: "clean",
 				CIStatus:       "success",
 			})
@@ -145,6 +152,7 @@ func TestRunCompletionTransitionsLabelModeIssueToHumanReview(t *testing.T) {
 	}
 
 	orch, err := orchestrator.New(orchestrator.Config{
+		Project:                scheduler.ProjectCandidate{ID: "example-project"},
 		PollInterval:           5 * time.Millisecond,
 		MaxConcurrentAgents:    1,
 		MaxRetryBackoff:        time.Hour,
@@ -195,12 +203,13 @@ func TestRunCompletionPromotesLabelModeWorkpadDirectlyToMerging(t *testing.T) {
 	tracker := newFakeLabelConnector(issue)
 	activityAt := time.Now().Add(-time.Hour)
 	runner := &staticRunner{
-		result: orchestrator.RunResult{FinalState: orchestrator.FinalStateCompleted},
+		result: orchestrator.RunResult{FinalState: orchestrator.FinalStateCompleted, DiffStats: orchestrator.DiffStats{Status: "clean"}},
 		onRun: func(request orchestrator.RunRequest) {
 			tracker.setCandidatePullRequest(request.Issue.ID, &connector.PullRequest{
 				Number:         1288,
 				URL:            "https://github.com/digitaldrywood/detent/pull/1288",
 				State:          "OPEN",
+				HeadSHA:        "published-head",
 				MergeableState: "clean",
 				CIStatus:       "success",
 				ActivityAt:     &activityAt,
@@ -212,6 +221,7 @@ func TestRunCompletionPromotesLabelModeWorkpadDirectlyToMerging(t *testing.T) {
 	}
 
 	orch, err := orchestrator.New(orchestrator.Config{
+		Project:               scheduler.ProjectCandidate{ID: "example-project"},
 		PollInterval:          5 * time.Millisecond,
 		MaxConcurrentAgents:   1,
 		MaxRetryBackoff:       time.Hour,
@@ -687,24 +697,38 @@ func TestRunReportsRunningStateWhileRunnerIsInFlight(t *testing.T) {
 	close(runner.release)
 
 	waitForState(t, orch, func(state orchestrator.State) bool {
-		_, completed := state.Completed[issue.ID]
+		_, completed := state.Retry[issue.ID]
 		return completed
 	})
 }
 
 func TestDrainStopsDispatchAndLetsRunningSessionFinish(t *testing.T) {
 	t.Parallel()
+	for _, activeState := range []string{"In Progress", "Merging"} {
+		t.Run(activeState, func(t *testing.T) { testDrainStopsDispatchAndLetsRunningSessionFinish(t, activeState) })
+	}
+}
 
-	runningIssue := testIssue("issue-running", "digitaldrywood/detent#11", "In Progress")
-	nextIssue := testIssue("issue-next", "digitaldrywood/detent#12", "Todo")
-	tracker := newFakeConnector(runningIssue, nextIssue)
+func testDrainStopsDispatchAndLetsRunningSessionFinish(t *testing.T, activeState string) {
+	runningIssue := testIssue("issue-running", "owner/repository#11", activeState)
+	if activeState == "Merging" {
+		runningIssue.PullRequest = &connector.PullRequest{Number: 11, URL: "https://github.test/owner/repository/pull/11", State: "OPEN", MergeableState: "clean", CIStatus: "success"}
+		runningIssue.PRRepository = "owner/repository"
+	}
+	nextIssue := testIssue("issue-next", "owner/repository#12", "Todo")
+	tracker := &pendingDispatchConnector{
+		fakeConnector: newFakeConnector(runningIssue, nextIssue),
+		started:       make(chan struct{}),
+		release:       make(chan struct{}),
+		passFirst:     true,
+	}
 	runner := newBlockingRunner()
 
 	orch, err := orchestrator.New(orchestrator.Config{
 		PollInterval:            5 * time.Millisecond,
 		MaxConcurrentAgents:     1,
-		DispatchPriorityByState: []string{"In Progress", "Todo"},
-		ActiveStates:            []string{"Todo", "In Progress"},
+		DispatchPriorityByState: []string{activeState, "Todo"},
+		ActiveStates:            []string{"Todo", activeState},
 		TerminalStates:          []string{"Done", "Cancelled", "Canceled", "Closed"},
 		ContinuationRetryDelay:  time.Millisecond,
 	}, orchestrator.Dependencies{
@@ -716,10 +740,17 @@ func TestDrainStopsDispatchAndLetsRunningSessionFinish(t *testing.T) {
 	}
 	stop := runOrchestrator(t, orch)
 	defer stop()
+	defer close(tracker.release)
 
 	started := receiveRunRequest(t, runner.started)
 	if started.Issue.ID != runningIssue.ID {
 		t.Fatalf("RunRequest.Issue.ID = %q, want %q", started.Issue.ID, runningIssue.ID)
+	}
+
+	select {
+	case <-tracker.started:
+	case <-time.After(time.Second):
+		t.Fatal("discovery did not block while implementation was active")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -734,6 +765,13 @@ func TestDrainStopsDispatchAndLetsRunningSessionFinish(t *testing.T) {
 	}
 	if !state.Draining {
 		t.Fatal("State().Draining = false, want true")
+	}
+
+	if _, ok := state.Running[runningIssue.ID]; !ok {
+		t.Fatal("drain cancelled the active implementation")
+	}
+	if _, ok := state.Claimed[runningIssue.ID]; !ok {
+		t.Fatal("drain dropped the active implementation claim")
 	}
 
 	close(runner.release)
@@ -761,90 +799,168 @@ func TestDrainStopsDispatchAndLetsRunningSessionFinish(t *testing.T) {
 
 func TestBeginDrainStopsPendingDispatchTick(t *testing.T) {
 	t.Parallel()
+	for _, tc := range []struct {
+		name        string
+		releaseRead bool
+		blockStates bool
+		combined    bool
+		blockScan   bool
+		native      bool
+	}{
+		{name: "released candidate read", releaseRead: true},
+		{name: "pending candidate read"},
+		{name: "released status read", releaseRead: true, blockStates: true},
+		{name: "pending status read", blockStates: true},
+		{name: "pending combined read", combined: true},
+		{name: "pending serialized scan", blockScan: true},
+		{name: "released scheduled serialized scan", blockScan: true, native: true, releaseRead: true},
+		{name: "pending scheduled serialized scan", blockScan: true, native: true},
+		{name: "released native preview", native: true, releaseRead: true},
+		{name: "pending native preview", native: true},
+		{name: "released native status read", native: true, blockStates: true, releaseRead: true},
+		{name: "pending native status read", native: true, blockStates: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			issue := testIssue("issue-pending-shutdown", "owner/repository#1546", "Merging")
+			issue.PullRequest = &connector.PullRequest{
+				Number:         1546,
+				URL:            "https://github.test/owner/repository/pull/1546",
+				State:          "OPEN",
+				MergeableState: "clean",
+				CIStatus:       "success",
+			}
+			issue.PRRepository = "owner/repository"
+			tracker := &pendingDispatchConnector{
+				fakeConnector: newFakeConnector(issue),
+				started:       make(chan struct{}),
+				release:       make(chan struct{}),
+				blockStates:   tc.blockStates,
+				combined:      tc.combined,
+				blockScan:     tc.blockScan,
+			}
+			tracker.stateIssues = []connector.Issue{issue}
+			runner := newBlockingRunner()
+			var logs bytes.Buffer
+			global := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 2}))
 
-	issue := testIssue("issue-pending-shutdown", "digitaldrywood/detent#1546", "Merging")
-	issue.PullRequest = &connector.PullRequest{
-		Number:         1546,
-		URL:            "https://github.test/digitaldrywood/detent/pull/1546",
-		State:          "OPEN",
-		MergeableState: "clean",
-		CIStatus:       "success",
-	}
-	issue.PRRepository = "digitaldrywood/detent"
-	tracker := &pendingDispatchConnector{
-		fakeConnector: newFakeConnector(issue),
-		started:       make(chan struct{}),
-		release:       make(chan struct{}),
-	}
-	tracker.stateIssues = []connector.Issue{issue}
-	runner := newBlockingRunner()
-	var logs bytes.Buffer
-	global := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 2}))
+			var scheduling orchestrator.SchedulingSource
+			if tc.native {
+				scheduling = pendingDispatchScheduling{tracker: tracker}
+			}
 
-	orch, err := orchestrator.New(orchestrator.Config{
-		PollInterval:         time.Hour,
-		MergeFastPathEnabled: true,
-		MaxConcurrentAgents:  1,
-		MaxConcurrentAgentsByState: map[string]int{
-			"Merging": 1,
-		},
-		ActiveStates:           []string{"Merging"},
-		ObservedStates:         []string{"Merging"},
-		TerminalStates:         []string{"Done", "Cancelled"},
-		ContinuationRetryDelay: time.Second,
-	}, orchestrator.Dependencies{
-		GlobalDispatchGate: global,
-		Connector:          tracker,
-		Runner:             runner,
-		Logger:             slog.New(slog.NewTextHandler(&logs, nil)),
-	})
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-	stop := runOrchestrator(t, orch)
-	defer stop()
+			orch, err := orchestrator.New(orchestrator.Config{
+				Project:              scheduler.ProjectCandidate{ID: "selected"},
+				PollInterval:         time.Hour,
+				MergeFastPathEnabled: true,
+				MaxConcurrentAgents:  1,
+				MaxConcurrentAgentsByState: map[string]int{
+					"Merging": 1,
+				},
+				ActiveStates:           []string{"Merging"},
+				ObservedStates:         []string{"Merging"},
+				TerminalStates:         []string{"Done", "Cancelled"},
+				ContinuationRetryDelay: time.Second,
+			}, orchestrator.Dependencies{
+				GlobalDispatchGate: global,
+				Scheduling:         scheduling,
+				Connector:          tracker,
+				Runner:             runner,
+				Logger:             slog.New(slog.NewTextHandler(&logs, nil)),
+			})
+			if err != nil {
+				t.Fatalf("New() error = %v", err)
+			}
+			stop := runOrchestrator(t, orch)
+			defer stop()
+			defer func() {
+				if !tc.releaseRead {
+					close(tracker.release)
+				}
+			}()
 
-	select {
-	case <-tracker.started:
-	case <-time.After(time.Second):
-		t.Fatal("dispatch tick did not reach pending tracker fetch")
-	}
+			select {
+			case <-tracker.started:
+			case <-time.After(time.Second):
+				t.Fatal("dispatch tick did not reach pending tracker fetch")
+			}
 
-	orch.BeginDrain()
-	slot, acquired, decision, err := global.TryAcquireWithDecision(t.Context(), scheduler.ProjectCandidate{ID: "unrelated"}, scheduler.SlotRequest{State: "Todo"}, time.Now())
-	if err != nil || !acquired {
-		t.Fatalf("selected drain stopped unrelated dispatch: acquired=%t decision=%+v error=%v", acquired, decision, err)
-	}
-	if err := global.Release(slot); err != nil {
-		t.Fatal(err)
-	}
-	close(tracker.release)
+			orch.BeginDrain()
+			if tc.releaseRead {
+				close(tracker.release)
+			}
+			slot, acquired, decision, err := global.TryAcquireWithDecision(t.Context(), scheduler.ProjectCandidate{ID: "unrelated"}, scheduler.SlotRequest{State: "Todo"}, time.Now())
+			if err != nil || !acquired {
+				t.Fatalf("selected drain stopped unrelated dispatch: acquired=%t decision=%+v error=%v", acquired, decision, err)
+			}
+			if err := global.Release(slot); err != nil {
+				t.Fatal(err)
+			}
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	if err := orch.Drain(ctx); err != nil {
-		t.Fatalf("Drain() error = %v", err)
-	}
+			otherIssue := testIssue("unrelated-issue", "owner/repository#2", "Todo")
+			otherRunner := newBlockingRunner()
+			other, err := orchestrator.New(orchestrator.Config{
+				Project:             scheduler.ProjectCandidate{ID: "unrelated"},
+				PollInterval:        time.Hour,
+				MaxConcurrentAgents: 1,
+				ActiveStates:        []string{"Todo"},
+				TerminalStates:      []string{"Done", "Cancelled"},
+			}, orchestrator.Dependencies{
+				GlobalDispatchGate: global,
+				Connector:          newFakeConnector(otherIssue),
+				Runner:             otherRunner,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			stopOther := runOrchestrator(t, other)
+			defer stopOther()
+			if started := receiveRunRequest(t, otherRunner.started); started.Issue.ID != otherIssue.ID {
+				t.Fatalf("unrelated dispatch = %q, want %q", started.Issue.ID, otherIssue.ID)
+			}
 
-	state, err := orch.State(ctx)
-	if err != nil {
-		t.Fatalf("State() error = %v", err)
-	}
-	if !state.Draining {
-		t.Fatal("State().Draining = false, want true")
-	}
-	if len(state.Running) != 0 {
-		t.Fatalf("State().Running = %#v, want no work started", state.Running)
-	}
-	select {
-	case request := <-runner.started:
-		t.Fatalf("unexpected dispatch after drain began = %#v", request)
-	default:
-	}
-	for _, event := range []string{"merge_worker_pickup", "merge_worker_slot_acquired"} {
-		if strings.Contains(logs.String(), event) {
-			t.Fatalf("logs contain %q after drain began:\n%s", event, logs.String())
-		}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			if err := orch.Drain(ctx); err != nil {
+				t.Fatalf("Drain() error = %v", err)
+			}
+
+			otherState, err := other.State(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if otherState.Draining || len(otherState.Running) != 1 {
+				t.Fatalf("unrelated project changed during selected drain: %#v", otherState)
+			}
+			close(otherRunner.release)
+			waitForState(t, other, func(state orchestrator.State) bool {
+				_, completed := state.Retry[otherIssue.ID]
+				return completed
+			})
+
+			state, err := orch.State(ctx)
+			if err != nil {
+				t.Fatalf("State() error = %v", err)
+			}
+			if !state.Draining {
+				t.Fatal("State().Draining = false, want true")
+			}
+			if state.LastRefreshError != "" {
+				t.Fatalf("drain cancellation recorded a tracker failure: %s", state.LastRefreshError)
+			}
+			if len(state.Running) != 0 {
+				t.Fatalf("State().Running = %#v, want no work started", state.Running)
+			}
+			select {
+			case request := <-runner.started:
+				t.Fatalf("unexpected dispatch after drain began = %#v", request)
+			default:
+			}
+			for _, event := range []string{"merge_worker_pickup", "merge_worker_slot_acquired", "fetch candidate issues failed", "fetch observed status issues failed"} {
+				if strings.Contains(logs.String(), event) {
+					t.Fatalf("logs contain %q after drain began:\n%s", event, logs.String())
+				}
+			}
+		})
 	}
 }
 
@@ -1175,12 +1291,10 @@ func TestUpdateConfigAppliesBeforeNextTick(t *testing.T) {
 	select {
 	case request := <-runner.started:
 		t.Fatalf("unexpected run before config update = %#v", request)
-	case <-time.After(25 * time.Millisecond):
+	default:
 	}
 
-	updateCtx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	if err := orch.UpdateConfig(updateCtx, orchestrator.Config{
+	if err := orch.UpdateConfig(t.Context(), orchestrator.Config{
 		PollInterval:        5 * time.Millisecond,
 		MaxConcurrentAgents: 2,
 		ActiveStates:        []string{"Todo"},
@@ -1283,12 +1397,10 @@ func TestUpdateRuntimeSwapsConnectorBeforeNextTick(t *testing.T) {
 	select {
 	case request := <-runner.started:
 		t.Fatalf("unexpected run before connector update = %#v", request)
-	case <-time.After(25 * time.Millisecond):
+	default:
 	}
 
-	updateCtx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	if err := orch.UpdateRuntime(updateCtx, orchestrator.RuntimeUpdate{
+	if err := orch.UpdateRuntime(t.Context(), orchestrator.RuntimeUpdate{
 		Config: orchestrator.Config{
 			PollInterval:        5 * time.Millisecond,
 			MaxConcurrentAgents: 1,
@@ -1444,73 +1556,6 @@ func TestRunSchedulesRetryAfterRunnerPanic(t *testing.T) {
 	}
 }
 
-func TestRunParksIssueAfterRepeatedInstantBackendFailures(t *testing.T) {
-	t.Parallel()
-
-	synctest.Test(t, func(t *testing.T) {
-		issue := testIssue("issue-instant-fail", "digitaldrywood/detent#927", "Todo")
-		tracker := &instantFailureCommentConnector{fakeConnector: newFakeConnector(issue), commented: make(chan struct{}, 1)}
-		backendBody := `{"type":"error","status":400,"error":{"type":"invalid_request_error","message":"model rejected"}}`
-		runner := &staticRunner{result: orchestrator.RunResult{TurnStarted: true}, err: instantBackendError{body: backendBody}}
-
-		orch, err := orchestrator.New(orchestrator.Config{
-			PollInterval:           time.Millisecond,
-			MaxConcurrentAgents:    1,
-			MaxRetryBackoff:        time.Millisecond,
-			FailureRetryBaseDelay:  time.Millisecond,
-			ActiveStates:           []string{"Todo", "In Progress"},
-			ObservedStates:         []string{"Blocked"},
-			TerminalStates:         []string{"Done", "Cancelled", "Canceled", "Closed"},
-			ContinuationRetryDelay: time.Second,
-		}, orchestrator.Dependencies{
-			Connector: tracker,
-			Runner:    runner,
-		})
-		if err != nil {
-			t.Fatalf("New() error = %v", err)
-		}
-		stop := runOrchestrator(t, orch)
-		defer stop()
-
-		// Wait for the breaker comment, then let the completion handler publish
-		// its blocked state. Retry timers advance in virtual time, independent of load.
-		select {
-		case <-tracker.commented:
-		case <-time.After(time.Minute): // Virtual-time guard for missing output.
-			t.Fatal("timed out waiting for failure breaker comment")
-		}
-		synctest.Wait()
-		state, err := orch.State(t.Context())
-		if err != nil {
-			t.Fatalf("State() error = %v", err)
-		}
-
-		if got := runner.calls.Load(); got != 5 {
-			t.Fatalf("runner calls = %d, want 5", got)
-		}
-		if _, ok := state.Retry[issue.ID]; ok {
-			t.Fatalf("Retry[%q] present after circuit breaker", issue.ID)
-		}
-		if _, ok := state.Claimed[issue.ID]; ok {
-			t.Fatalf("Claimed[%q] present after circuit breaker", issue.ID)
-		}
-		if !strings.Contains(state.Blocked[issue.ID].Reason, backendBody) {
-			t.Fatalf("Blocked[%q].Reason = %q, want backend body", issue.ID, state.Blocked[issue.ID].Reason)
-		}
-		updates := tracker.stateUpdateCalls()
-		if len(updates) == 0 || updates[len(updates)-1] != (stateUpdateCall{issueID: issue.ID, state: "Blocked"}) {
-			t.Fatalf("state updates = %#v, want final Blocked transition", updates)
-		}
-		comments := tracker.commentCalls()
-		if len(comments) != 1 {
-			t.Fatalf("comments = %#v, want one circuit breaker comment", comments)
-		}
-		if !strings.Contains(comments[0].body, backendBody) || !strings.Contains(comments[0].body, "stopped retrying") {
-			t.Fatalf("comment body missing backend error:\n%s", comments[0].body)
-		}
-	})
-}
-
 func TestRunPausesBackendAfterQuotaErrorWithoutBreakerStrike(t *testing.T) {
 	t.Parallel()
 
@@ -1553,12 +1598,6 @@ func TestRunPausesBackendAfterQuotaErrorWithoutBreakerStrike(t *testing.T) {
 	if got := runner.calls.Load(); got != 1 {
 		t.Fatalf("runner calls = %d, want one capacity probe", got)
 	}
-	if len(state.InstantFailures) != 0 {
-		t.Fatalf("InstantFailures = %#v, want no breaker strikes", state.InstantFailures)
-	}
-	if len(state.RepeatedFailures) != 0 {
-		t.Fatalf("RepeatedFailures = %#v, want no breaker strikes", state.RepeatedFailures)
-	}
 	if _, ok := state.Blocked[issue.ID]; ok {
 		t.Fatalf("Blocked[%q] present after quota error", issue.ID)
 	}
@@ -1590,195 +1629,6 @@ func TestRunPausesBackendAfterQuotaErrorWithoutBreakerStrike(t *testing.T) {
 	if len(updates) < 2 || updates[len(updates)-1] != (stateUpdateCall{issueID: issue.ID, state: "Todo"}) {
 		t.Fatalf("state updates = %#v, want capacity probe restored to Todo", updates)
 	}
-}
-
-func TestRunParksIssueAfterRepeatedInstantBackendFailuresTruncatesConfiguredOutput(t *testing.T) {
-	t.Parallel()
-
-	synctest.Test(t, func(t *testing.T) {
-		issue := testIssue("issue-instant-fail-truncated", "digitaldrywood/detent#978", "Todo")
-		tracker := &instantFailureCommentConnector{fakeConnector: newFakeConnector(issue), commented: make(chan struct{}, 1)}
-		backendBody := "0123456789abcdefghijklmnopqrstuvwxyz"
-		runner := &staticRunner{result: orchestrator.RunResult{TurnStarted: true}, err: instantBackendError{body: backendBody}}
-
-		orch, err := orchestrator.New(orchestrator.Config{
-			PollInterval:             time.Millisecond,
-			MaxConcurrentAgents:      1,
-			MaxRetryBackoff:          time.Millisecond,
-			FailureRetryBaseDelay:    time.Millisecond,
-			ActiveStates:             []string{"Todo", "In Progress"},
-			ObservedStates:           []string{"Blocked"},
-			TerminalStates:           []string{"Done", "Cancelled", "Canceled", "Closed"},
-			ContinuationRetryDelay:   time.Second,
-			OutputTruncationMaxBytes: len(runtimeoutput.Marker) + 10,
-		}, orchestrator.Dependencies{
-			Connector: tracker,
-			Runner:    runner,
-		})
-		if err != nil {
-			t.Fatalf("New() error = %v", err)
-		}
-		stop := runOrchestrator(t, orch)
-		defer stop()
-
-		// Wait for the output under test, then let the completion handler publish
-		// its blocked state. Virtual time advances retries without a scheduler deadline.
-		select {
-		case <-tracker.commented:
-		case <-time.After(time.Minute): // Virtual-time guard for missing output.
-			t.Fatal("timed out waiting for instant failure comment")
-		}
-		synctest.Wait()
-		state, err := orch.State(t.Context())
-		if err != nil {
-			t.Fatalf("State() error = %v", err)
-		}
-
-		wantBody := "01234" + runtimeoutput.Marker + "vwxyz"
-		reason := state.Blocked[issue.ID].Reason
-		if !strings.Contains(reason, wantBody) {
-			t.Fatalf("Blocked[%q].Reason = %q, want truncated backend body %q", issue.ID, reason, wantBody)
-		}
-		if strings.Contains(reason, backendBody) {
-			t.Fatalf("Blocked[%q].Reason included unbounded backend body: %q", issue.ID, reason)
-		}
-		comments := tracker.commentCalls()
-		if len(comments) != 1 {
-			t.Fatalf("comments = %#v, want one circuit breaker comment", comments)
-		}
-		if !strings.Contains(comments[0].body, wantBody) {
-			t.Fatalf("comment body missing truncated backend error:\n%s", comments[0].body)
-		}
-		if strings.Contains(comments[0].body, backendBody) {
-			t.Fatalf("comment body included unbounded backend error:\n%s", comments[0].body)
-		}
-	})
-}
-
-func TestRunInstantFailureCircuitBreakerComparesFullBackendErrorKey(t *testing.T) {
-	t.Parallel()
-
-	synctest.Test(t, func(t *testing.T) {
-		issue := testIssue("issue-instant-fail-key", "digitaldrywood/detent#979", "Todo")
-		tracker := &instantFailureCommentConnector{fakeConnector: newFakeConnector(issue), commented: make(chan struct{}, 1)}
-		backendBodies := []string{
-			"01234" + strings.Repeat("a", 20) + "vwxyz",
-			"01234" + strings.Repeat("b", 20) + "vwxyz",
-		}
-		runner := &staticRunner{result: orchestrator.RunResult{TurnStarted: true}}
-		runner.onRun = func(orchestrator.RunRequest) {
-			call := runner.calls.Load()
-			runner.err = instantBackendError{body: backendBodies[int(call-1)%len(backendBodies)]}
-		}
-
-		orch, err := orchestrator.New(orchestrator.Config{
-			PollInterval:             time.Millisecond,
-			MaxConcurrentAgents:      1,
-			MaxRetryBackoff:          time.Millisecond,
-			FailureRetryBaseDelay:    time.Millisecond,
-			ActiveStates:             []string{"Todo", "In Progress"},
-			ObservedStates:           []string{"Blocked"},
-			TerminalStates:           []string{"Done", "Cancelled", "Canceled", "Closed"},
-			ContinuationRetryDelay:   time.Second,
-			OutputTruncationMaxBytes: len(runtimeoutput.Marker) + 10,
-		}, orchestrator.Dependencies{
-			Connector: tracker,
-			Runner:    runner,
-		})
-		if err != nil {
-			t.Fatalf("New() error = %v", err)
-		}
-		stop := runOrchestrator(t, orch)
-		defer stop()
-
-		// Wait for the breaker comment, then let the completion handler publish
-		// its blocked state. Retry timers advance in virtual time, independent of load.
-		select {
-		case <-tracker.commented:
-		case <-time.After(time.Minute): // Virtual-time guard for missing output.
-			t.Fatal("timed out waiting for failure breaker comment")
-		}
-		synctest.Wait()
-		state, err := orch.State(t.Context())
-		if err != nil {
-			t.Fatalf("State() error = %v", err)
-		}
-
-		// Alternating backend errors must not trip the instant-failure breaker
-		// (the full error key differs each attempt even though the truncated
-		// operator text matches); the repeated-failure breaker still parks the
-		// issue after five consecutive failures regardless of error text.
-		reason := state.Blocked[issue.ID].Reason
-		if strings.HasPrefix(reason, "instant fail circuit breaker: ") {
-			t.Fatalf("Blocked[%q].Reason = %q, instant breaker tripped on alternating backend errors", issue.ID, reason)
-		}
-		if !strings.HasPrefix(reason, "repeated failure circuit breaker: ") {
-			t.Fatalf("Blocked[%q].Reason = %q, want repeated failure circuit breaker prefix", issue.ID, reason)
-		}
-		if got := runner.calls.Load(); got != 5 {
-			t.Fatalf("runner calls = %d, want 5", got)
-		}
-		comments := tracker.commentCalls()
-		if len(comments) != 1 {
-			t.Fatalf("comments = %#v, want one repeated failure comment", comments)
-		}
-		if !strings.Contains(comments[0].body, "consecutive failed attempts") {
-			t.Fatalf("comment body missing repeated failure text:\n%s", comments[0].body)
-		}
-	})
-}
-
-func TestRunParksInstantBackendFailuresInBlockedWithDefaultStates(t *testing.T) {
-	t.Parallel()
-
-	synctest.Test(t, func(t *testing.T) {
-		issue := testIssue("issue-default-instant-fail", "digitaldrywood/detent#928", "Todo")
-		tracker := newFakeConnector(issue)
-		backendBody := `{"type":"error","status":400,"error":{"type":"invalid_request_error","message":"model rejected"}}`
-		runner := &staticRunner{result: orchestrator.RunResult{TurnStarted: true}, err: instantBackendError{body: backendBody}}
-
-		orch, err := orchestrator.New(orchestrator.Config{
-			PollInterval:           time.Millisecond,
-			MaxConcurrentAgents:    1,
-			MaxRetryBackoff:        time.Millisecond,
-			FailureRetryBaseDelay:  time.Millisecond,
-			ActiveStates:           []string{"Todo", "In Progress"},
-			TerminalStates:         []string{"Done", "Cancelled", "Canceled", "Closed"},
-			ContinuationRetryDelay: time.Second,
-		}, orchestrator.Dependencies{
-			Connector: tracker,
-			Runner:    runner,
-		})
-		if err != nil {
-			t.Fatalf("New() error = %v", err)
-		}
-		stop := runOrchestrator(t, orch)
-		defer stop()
-
-		state := waitForState(t, orch, func(state orchestrator.State) bool {
-			blocked, ok := state.Blocked[issue.ID]
-			return ok && strings.Contains(blocked.Reason, backendBody)
-		})
-
-		updates := tracker.stateUpdateCalls()
-		if len(updates) == 0 || updates[len(updates)-1] != (stateUpdateCall{issueID: issue.ID, state: "Blocked"}) {
-			t.Fatalf("state updates = %#v, want final Blocked transition", updates)
-		}
-		if got := state.Blocked[issue.ID].Issue.State; got != "Blocked" {
-			t.Fatalf("Blocked[%q].Issue.State = %q, want Blocked", issue.ID, got)
-		}
-		fetchesAtBlock := tracker.fetchByStatesCalls()
-		state = waitForState(t, orch, func(state orchestrator.State) bool {
-			_, ok := state.Blocked[issue.ID]
-			return ok && tracker.fetchByStatesCalls() > fetchesAtBlock
-		})
-		if _, ok := state.Blocked[issue.ID]; !ok {
-			t.Fatalf("Blocked[%q] missing after blocked-status refresh", issue.ID)
-		}
-		if got := runner.calls.Load(); got != 5 {
-			t.Fatalf("runner calls = %d, want 5", got)
-		}
-	})
 }
 
 func TestRunRedispatchesDueRetryWithExistingClaim(t *testing.T) {
@@ -1864,7 +1714,8 @@ func TestRunTracksBlockedStatusIssuesForDisplayOnly(t *testing.T) {
 
 	candidate := testIssue("issue-ready", "digitaldrywood/detent#170", "Todo")
 	blocked := testIssue("issue-blocked-status", "digitaldrywood/detent#98", "Blocked")
-	blocked.BlockerReason = "Create public repository digitaldrywood/homebrew-tap"
+	blocked.BlockerReason = "Create the requested public repository"
+	blocked.WorkpadSignal = &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked, HumanAction: blocked.BlockerReason}
 	tracker := newFakeConnector(candidate)
 	tracker.setStateIssues(blocked)
 	runner := newBlockingRunner()
@@ -1901,7 +1752,7 @@ func TestRunTracksBlockedStatusIssuesForDisplayOnly(t *testing.T) {
 	select {
 	case request := <-runner.started:
 		t.Fatalf("unexpected display-only blocked dispatch = %#v", request)
-	case <-time.After(25 * time.Millisecond):
+	default:
 	}
 	if got := tracker.fetchByStatesCalls(); got == 0 {
 		t.Fatal("FetchIssuesByStates() calls = 0, want blocked status fetch")
@@ -2206,7 +2057,7 @@ func TestRunPublishesBoardIssuesFromCandidatesAndObservedStates(t *testing.T) {
 	}
 }
 
-func TestRunTracksStatusLabelConflictCandidateAsBlocked(t *testing.T) {
+func TestRunRetriesStatusLabelConflictCandidate(t *testing.T) {
 	t.Parallel()
 
 	conflict := testIssue("issue-conflict", "digitaldrywood/detent#606", "Blocked")
@@ -2234,24 +2085,44 @@ func TestRunTracksStatusLabelConflictCandidateAsBlocked(t *testing.T) {
 	stop := runOrchestrator(t, orch)
 	defer stop()
 
-	state := waitForState(t, orch, func(state orchestrator.State) bool {
-		_, ok := state.Blocked[conflict.ID]
-		return ok
+	var state orchestrator.State
+	testenv.WaitUntil(t, t.Context(), func() error {
+		var err error
+		state, err = orch.State(t.Context())
+		if err != nil {
+			return err
+		}
+		if len(state.SchedulerDecisions) == 0 {
+			return errors.New("awaiting unavailable-status decision")
+		}
+		return nil
 	})
+	if len(state.Blocked) != 0 || len(state.Running) != 0 {
+		t.Fatal("unavailable status created a hold or dispatched")
+	}
+	tracker.setStateIssues(conflict)
+	tracker.setFetchByStatesError(nil)
+	testenv.WaitUntil(t, t.Context(), func() error {
+		var err error
+		state, err = orch.State(t.Context())
+		if err != nil {
+			return err
+		}
+		if _, ok := state.Retry[conflict.ID]; !ok {
+			return errors.New("awaiting retry after status recovery")
+		}
+		return nil
+	})
+
 	if got := runner.calls.Load(); got != 0 {
 		t.Fatalf("runner calls = %d, want 0", got)
 	}
-	blocked := state.Blocked[conflict.ID]
-	if !strings.Contains(blocked.Reason, "multiple configured Detent status labels") {
-		t.Fatalf("blocked reason = %q, want status-label conflict", blocked.Reason)
+	if len(state.Blocked) != 0 {
+		t.Fatal("status label conflict created a human hold")
 	}
-	snapshot := state.Snapshot(time.Now())
-	if snapshot.Counts.Blocked != 1 {
-		t.Fatalf("snapshot blocked count = %d, want 1", snapshot.Counts.Blocked)
-	}
-	counts := telemetry.BoardStateCounts(snapshot)
-	if len(counts) != 1 || counts[0].State != "Blocked" || counts[0].Count != 1 {
-		t.Fatalf("board state counts = %#v, want one Blocked issue", counts)
+	retry := state.Retry[conflict.ID]
+	if !strings.Contains(retry.Error, "multiple configured Detent status labels") || retry.Issue.State != "Todo" {
+		t.Fatalf("retry = %#v, want source-lane retry with conflict diagnostic", retry)
 	}
 }
 
@@ -2295,11 +2166,10 @@ func TestRunDispatchesOperatorMovedIssue(t *testing.T) {
 		{name: "quiesced", from: "Backlog", to: "Todo", quiesced: true},
 	}
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
+		run := func(t *testing.T) {
 			issue := testIssue("issue-operator-move", "digitaldrywood/detent#1482", tt.from)
 			unrelated := testIssue("issue-unrelated-blocked", "digitaldrywood/detent#1483", "Blocked")
+			unrelated.WorkpadSignal = &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked, HumanAction: "Approve the requested scope"}
 			resident := testIssue("resident", "digitaldrywood/detent#1484", "Todo")
 			tracker := &operatorMoveConnector{fakeConnector: newFakeConnector()}
 			tracker.setStateIssues(issue, unrelated)
@@ -2329,15 +2199,36 @@ func TestRunDispatchesOperatorMovedIssue(t *testing.T) {
 			if err != nil {
 				t.Fatalf("New() error = %v", err)
 			}
-			stop := runOrchestrator(t, orch)
-			defer stop()
-
-			waitForState(t, orch, func(state orchestrator.State) bool {
-				_, unrelatedBlocked := state.Blocked[unrelated.ID]
-				return unrelatedBlocked && !state.LastRefreshAt.IsZero()
-			})
+			ctx, cancel := context.WithCancel(t.Context())
+			done := make(chan error, 1)
+			go func() { done <- orch.Run(ctx) }()
+			defer func() {
+				cancel()
+				if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
+					t.Fatalf("Run() error = %v", err)
+				}
+			}()
+			receiveRequest := func() orchestrator.RunRequest {
+				t.Helper()
+				synctest.Wait()
+				select {
+				case request := <-runner.started:
+					return request
+				default:
+					t.Fatal("runner request missing after dispatch settled")
+				}
+				return orchestrator.RunRequest{}
+			}
+			synctest.Wait()
+			initial, err := orch.State(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, unrelatedBlocked := initial.Blocked[unrelated.ID]; !unrelatedBlocked || initial.LastRefreshAt.IsZero() {
+				t.Fatalf("initial refresh did not establish blocked issue: %+v", initial.Blocked)
+			}
 			if tt.capacity {
-				if request := receiveRunRequest(t, runner.started); request.Issue.ID != resident.ID {
+				if request := receiveRequest(); request.Issue.ID != resident.ID {
 					t.Fatalf("initial RunRequest.Issue = %#v", request.Issue)
 				}
 				tracker.setCandidates(resident, issue)
@@ -2377,6 +2268,9 @@ func TestRunDispatchesOperatorMovedIssue(t *testing.T) {
 				Remove:       tt.remove,
 				Reason:       "backlog_admission",
 			}
+			if tt.to == "Blocked" {
+				move.Reason = "operator_move"
+			}
 			if tt.foreign {
 				move.Tracker = newFakeConnector(issue)
 			}
@@ -2384,20 +2278,20 @@ func TestRunDispatchesOperatorMovedIssue(t *testing.T) {
 			if !errors.Is(err, tracker.writeErr) {
 				t.Fatalf("ReconcileOperatorMove() error = %v, want %v", err, tracker.writeErr)
 			}
-			if result.Reconciled != (tt.degraded || tt.foreign || tt.remove || tt.stalledRefill) || result.BlockedCleared != (tt.degraded || tt.stalledRefill) {
+			_, wasBlocked := baseline.Blocked[issue.ID]
+			if result.Reconciled != (tt.degraded || tt.foreign || tt.remove || tt.stalledRefill) || result.BlockedCleared != (wasBlocked && (tt.degraded || tt.stalledRefill)) {
 				t.Fatalf("ReconcileOperatorMove() = %#v", result)
 			}
 			if tt.stalledRefill {
 				release := sync.OnceFunc(func() { close(tracker.refillRelease) })
 				defer release()
+				synctest.Wait()
 				select {
 				case <-tracker.refillStarted:
-				case <-time.After(slowCIIntegrationWaitTimeout):
+				default:
 					t.Fatal("move did not reach refill")
 				}
-				ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
-				state, err := orch.State(ctx)
-				cancel()
+				state, err := orch.State(t.Context())
 				if err != nil {
 					t.Fatalf("State() during stalled refill: %v", err)
 				}
@@ -2428,11 +2322,12 @@ func TestRunDispatchesOperatorMovedIssue(t *testing.T) {
 				}
 			}
 			if tt.wantDispatch {
-				request := receiveRunRequest(t, runner.started)
+				request := receiveRequest()
 				if request.Issue.ID != issue.ID || request.Issue.State != tt.to {
 					t.Fatalf("RunRequest.Issue = %#v, want moved %s issue", request.Issue, tt.to)
 				}
 			}
+			synctest.Wait()
 			state, err := orch.State(t.Context())
 			if err != nil {
 				t.Fatalf("State() error = %v", err)
@@ -2465,6 +2360,10 @@ func TestRunDispatchesOperatorMovedIssue(t *testing.T) {
 				}
 			}
 			close(runner.release)
+		}
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			synctest.Test(t, run)
 		})
 	}
 }
@@ -3071,9 +2970,34 @@ type fakeConnector struct {
 
 type pendingDispatchConnector struct {
 	*fakeConnector
-	started chan struct{}
-	release chan struct{}
-	once    sync.Once
+	passFirst   bool
+	fetches     atomic.Int64
+	blockStates bool
+	combined    bool
+	blockScan   bool
+	started     chan struct{}
+	release     chan struct{}
+	once        sync.Once
+}
+
+type pendingDispatchScheduling struct {
+	orchestrator.SchedulingSource
+	tracker *pendingDispatchConnector
+}
+
+func (s pendingDispatchScheduling) HeartbeatInterval() time.Duration { return time.Hour }
+
+func (s pendingDispatchScheduling) FetchCandidateIssues(ctx context.Context, request orchestrator.SchedulingRequest) ([]connector.Issue, error) {
+	discoveryCtx, finish := request.BeginDiscovery(ctx)
+	defer finish()
+	if s.tracker.blockStates {
+		return nil, nil
+	}
+	_, err := s.tracker.waitForRead(discoveryCtx)
+	if discoveryCtx.Err() != nil && ctx.Err() == nil {
+		return nil, nil
+	}
+	return nil, err
 }
 
 type dispatchStartBlockingConnector struct {
@@ -3095,7 +3019,45 @@ func (c *dispatchStartBlockingConnector) SetField(ctx context.Context, issueID s
 	}
 }
 
+func (c *pendingDispatchConnector) CombinedRefreshEnabled() bool {
+	return c.combined
+}
+
+func (c *pendingDispatchConnector) FetchRefreshIssues(ctx context.Context, _, states []string, _ connector.IssueFilterHint) connector.RefreshIssueResult {
+	candidates, err := c.waitForRead(ctx)
+	if err != nil {
+		return connector.RefreshIssueResult{CandidateError: err}
+	}
+	statuses, err := c.fakeConnector.FetchIssuesByStates(ctx, states)
+	return connector.RefreshIssueResult{Candidates: candidates, Statuses: statuses, StatusError: err}
+}
+
+func (c *pendingDispatchConnector) BeginRefreshScan(ctx context.Context) (func(), error) {
+	if c.blockScan {
+		if _, err := c.waitForRead(ctx); err != nil {
+			return nil, err
+		}
+	}
+	return func() {}, nil
+}
+
 func (c *pendingDispatchConnector) FetchCandidateIssues(ctx context.Context) ([]connector.Issue, error) {
+	if c.blockStates || (c.passFirst && c.fetches.Add(1) == 1) {
+		return c.fakeConnector.FetchCandidateIssues(ctx)
+	}
+	return c.waitForRead(ctx)
+}
+
+func (c *pendingDispatchConnector) FetchIssuesByStates(ctx context.Context, states []string) ([]connector.Issue, error) {
+	if c.blockStates && slices.Contains(states, "Merging") {
+		if _, err := c.waitForRead(ctx); err != nil {
+			return nil, err
+		}
+	}
+	return c.fakeConnector.FetchIssuesByStates(ctx, states)
+}
+
+func (c *pendingDispatchConnector) waitForRead(ctx context.Context) ([]connector.Issue, error) {
 	c.once.Do(func() {
 		close(c.started)
 	})
@@ -4084,19 +4046,6 @@ func cloneConnectorComments(comments []connector.IssueComment) []connector.Issue
 	return append([]connector.IssueComment(nil), comments...)
 }
 
-// instantFailureCommentConnector signals that the breaker output was recorded.
-type instantFailureCommentConnector struct {
-	*fakeConnector
-	commented chan struct{}
-}
-
-func (c *instantFailureCommentConnector) CreateComment(ctx context.Context, issueID, body string) error {
-	if err := c.fakeConnector.CreateComment(ctx, issueID, body); err != nil {
-		return err
-	}
-	select {
-	case c.commented <- struct{}{}:
-	default:
-	}
-	return nil
+func (f *fakeConnector) HydratePullRequest(_ context.Context, issue connector.Issue) (connector.Issue, error) {
+	return issue, nil
 }

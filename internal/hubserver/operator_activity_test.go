@@ -17,6 +17,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -124,7 +125,7 @@ func TestHostedActivityReads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.ExecContext(t.Context(), "UPDATE native_attempts SET data_json=json_set(data_json,'$.runtime',json(?)),updated_at=?", string(raw), formatHubTime(now.Add(-time.Minute))); err != nil {
+	if _, err := db.ExecContext(t.Context(), "UPDATE native_attempts SET data_json=json_set(data_json,'$.runtime',json(?)),updated_at=?,activity_projection_version=NULL", string(raw), formatHubTime(now.Add(-time.Minute))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -205,6 +206,10 @@ SELECT 'activity_seed_history',i.id,l.machine_id,'activity_seed_history_session'
 		}
 	}
 
+	projectTestChangeColumns(t, f.service)
+	if err := f.service.convertActivityProjections(t.Context()); err != nil {
+		t.Fatal(err)
+	}
 	beforeHistory := f.page(t, "owner", "/api/v2/organizations/org_browser_preview/activity")
 	browserHostedStatus(t, beforeHistory, http.StatusOK)
 	historyAt := formatHubTime(now.Add(-30 * 24 * time.Hour))
@@ -386,7 +391,10 @@ SELECT l.lease_id,i.organization_id,i.project_id,i.native_id,l.lease_id,l.fencin
 			}
 			for i, project := range []string{f.project, f.privateProject} {
 				id := fmt.Sprintf("attempt_browser_usage_%d_0", i)
-				if _, err := db.ExecContext(t.Context(), `UPDATE native_attempts SET status=?,started_at=?,updated_at=?,data_json=json_set(data_json,'$.runtime.identity.role',?,'$.runtime.phases',json(?),'$.runtime.phases_dropped',?) WHERE id=?`, tt.status, formatHubTime(now.Add(-time.Minute)), formatHubTime(now.Add(-time.Second)), tt.role, string(phases), tt.dropped, id); err != nil {
+				if _, err := db.ExecContext(t.Context(), `UPDATE native_attempts SET status=?,started_at=?,updated_at=?,data_json=json_set(data_json,'$.runtime.identity.role',?,'$.runtime.phases',json(?),'$.runtime.phases_dropped',?),activity_projection_version=NULL WHERE id=?`, tt.status, formatHubTime(now.Add(-time.Minute)), formatHubTime(now.Add(-time.Second)), tt.role, string(phases), tt.dropped, id); err != nil {
+					t.Fatal(err)
+				}
+				if err := f.service.convertActivityAttempt(t.Context(), id); err != nil {
 					t.Fatal(err)
 				}
 				itemScope := nativeScope{organization: scope.organization, project: tracker.ProjectID(project)}
@@ -522,9 +530,7 @@ func TestActivityPopulationCap(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer writer.Rollback()
-	ctx, cancel := context.WithTimeout(authority, 2*time.Second)
-	defer cancel()
-	result, err := f.service.executeActivityRead(ctx, operatortool.Call{Arguments: []byte(`{"limit":1}`)})
+	result, err := f.service.executeActivityRead(testenv.WaitContext(t, authority), operatortool.Call{Arguments: []byte(`{"limit":1}`)})
 	if err != nil {
 		t.Fatalf("activity read used the held writer: %v", err)
 	}

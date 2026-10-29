@@ -61,7 +61,7 @@ function fakeApi(overrides: Partial<EntryApi> = {}): EntryApi {
     platformTenant: vi.fn(async () => { throw new Error("Tenant not requested"); }),
     adjustPlatformAICredits: vi.fn(async () => ({ organization_id: "org_alpha", balance_micros: 0 })),
     resumePlatformTenant: vi.fn(async () => ({ next: "/platform/tenants" })),
-    platformUsers: vi.fn(async () => ({ users: [], unsearched: [] })),
+    platformUsers: vi.fn(async () => ({ users: [], unsearched: [], organizations: [], total: 0, total_users: 0, page: 1, page_size: 50, counts: { all: 0, staff: 0, no_organization: 0, invited: 0 } })),
     platformOrganizations: vi.fn(async () => ({ email: "", csrf: "", can_support: false, organizations: [], unavailable: [] })),
     platformAllowlist: vi.fn(async () => ({ self_service: false, allowed_emails: [], allowed_domains: [], source: { file: "", keys: [] } })),
     platformMembers: vi.fn(async () => ({ members: [], revision: 1, self: { email: "admin@example.com", role: "admin" } })),
@@ -81,6 +81,15 @@ function renderWith(api: EntryApi, element: React.ReactElement) {
 }
 
 describe("organization chooser", () => {
+  it("replaces the organization monogram with its authenticated logo, falling back when absent", async () => {
+    renderWith(fakeApi({ organizations: vi.fn(async () => ({ ...listing, organizations: [{ ...listing.organizations[0]!, logo_url: "/organizations/org_a/api/v2/logo-image" }] })) }), <OrganizationChooser onNavigate={vi.fn()} />);
+    const logo = await screen.findByRole("img", { name: "Alpha logo" });
+    expect(logo.getAttribute("src")).toBe("/organizations/org_a/api/v2/logo-image");
+    fireEvent.error(logo);
+    expect(screen.queryByRole("img", { name: "Alpha logo" })).toBeNull();
+    expect(screen.getByRole("link", { name: "Alpha" }).textContent).toContain("A");
+  });
+
   it("lists organizations as links, pending ones with their state, and the actions", async () => {
     const navigate = vi.fn();
     renderWith(fakeApi(), <OrganizationChooser onNavigate={navigate} />);
@@ -338,7 +347,7 @@ describe("entry API", () => {
     const api = makeEntryApi({
       fetch: async (url, init) => {
         calls.push({ url, init });
-        return new Response(JSON.stringify(url.startsWith("/api/cloud/platform/users?") ? { users: [], unsearched: [] } : url.startsWith("/api") ? { ...listing, platform_role: "admin" } : { next: "/next" }), { status: 200 });
+        return new Response(JSON.stringify(url.startsWith("/api/cloud/platform/users?") ? { users: [], unsearched: [], organizations: [], total: 0, total_users: 0, page: 1, page_size: 50, counts: { all: 0, staff: 0, no_organization: 0, invited: 0 } } : url.startsWith("/api") ? { ...listing, platform_role: "admin" } : { next: "/next" }), { status: 200 });
       },
     });
     expect((await api.organizations()).platform_role).toBe("admin");
@@ -352,9 +361,11 @@ describe("entry API", () => {
     expect(body.get("name")).toBe("Delta");
     expect(body.get("creation_key")).toBe("key_0123456789abcdef");
     expect(body.get("csrf")).toBe("csrf-token");
-    expect(await api.platformUsers("alex+test@example.test")).toEqual({ users: [], unsearched: [] });
+    expect(await api.platformUsers("alex+test@example.test")).toEqual({ users: [], unsearched: [], organizations: [], total: 0, total_users: 0, page: 1, page_size: 50, counts: { all: 0, staff: 0, no_organization: 0, invited: 0 } });
     expect(calls[3]!.url).toBe("/api/cloud/platform/users?q=alex%2Btest%40example.test");
     expect(calls[3]!.init?.method).toBe("GET");
+    await api.platformUsers("a", { segment: "staff", organization: "org_example", role: "support", sort: "email", direction: "desc", page: 2 });
+    expect(calls[4]!.url).toBe("/api/cloud/platform/users?q=a&segment=staff&organization=org_example&role=support&sort=email&direction=desc&page=2");
   });
 
   it.each([

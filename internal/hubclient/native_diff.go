@@ -9,7 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-// Stored attempt diffs (decisions section 18.5). The runner posts one
+// Stored attempt diffs. The runner posts one
 // generation of its worktree before the run event that references it, while it
 // still holds the lease. The producer tuple in the body is the fencing: the
 // hub validates it the way it validates a run event and refuses anything else
@@ -27,7 +27,7 @@ func nativeAttemptDiffPath(attemptID string) (string, error) {
 // A diff whose patches exceed the hub's whole-diff limit is refused with
 // diff_too_large, and a body the transport refuses first answers
 // payload_too_large; the method answers either by re-posting the same file
-// list without patches, which is what 18.5 says the producer does, so the file
+// list without patches, which is what the Diff contract says the producer does, so the file
 // list and its counts survive a change too large to store in full.
 func (c *NativeClient) PostAttemptDiff(ctx context.Context, attemptID string, request tracker.AttemptDiffRequest) (tracker.AttemptDiffReceipt, error) {
 	var receipt tracker.AttemptDiffReceipt

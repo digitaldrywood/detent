@@ -13,6 +13,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 // Stream timing. Variables rather than constants so tests can shorten them.
@@ -222,11 +223,19 @@ func (s *conversationStore) replayEvents(ctx context.Context, reader *sql.DB, id
 		return nil, err
 	}
 	defer tx.Rollback()
-	var through int64
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE((SELECT json_extract(summary_json,'$.through_sequence') FROM event_compactions WHERE aggregate_kind='conversation' AND aggregate_id=c.id AND organization_id=c.organization_id AND project_id=c.project_id),0) FROM conversations c WHERE c.id=?`, id).Scan(&through); err != nil {
+	var through sql.NullInt64
+	var raw sql.NullString
+	if err := tx.QueryRowContext(ctx, `SELECT s.through_sequence,s.summary_json FROM conversations c LEFT JOIN event_compactions s ON s.aggregate_kind='conversation' AND s.aggregate_id=c.id AND s.organization_id=c.organization_id AND s.project_id=c.project_id WHERE c.id=?`, id).Scan(&through, &raw); err != nil {
 		return nil, err
 	}
-	if after < through {
+	if !through.Valid && raw.Valid {
+		var summary tracker.EventCompaction
+		if err := json.Unmarshal([]byte(raw.String), &summary); err != nil {
+			return nil, err
+		}
+		through.Int64 = summary.ThroughSequence
+	}
+	if after < through.Int64 {
 		return nil, errConversationCursorExpired
 	}
 	return s.listEvents(ctx, tx, id, after, conversationEventPage)

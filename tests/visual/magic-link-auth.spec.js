@@ -48,7 +48,13 @@ test("magic-link login gates dashboard, API, SSE, and mobile views", async ({ br
     await page.getByRole("button", { name: "Email me a sign-in link" }).click();
     const message = await messagePromise;
     await expect(page.getByRole("heading", { name: "Check your inbox" })).toBeVisible();
-    const linkMatch = message.match(/https?:\/\/[^\s]+\/auth\/magic-link\?[^\s]+/);
+    const textPart = message.split(/\r\n--[^\r\n]+/).find((part) => /^Content-Type: text\/plain;/mi.test(part));
+    expect(textPart).toBeDefined();
+    expect(textPart).toMatch(/^Content-Transfer-Encoding: quoted-printable\r?$/mi);
+    const body = textPart.slice(textPart.indexOf("\r\n\r\n") + 4)
+      .replace(/=\r\n/g, "")
+      .replace(/=([0-9a-f]{2})/gi, (_, hex) => String.fromCharCode(Number.parseInt(hex, 16)));
+    const linkMatch = body.match(/https?:\/\/[^\s]+\/auth\/magic-link\?[^\s]+/);
     expect(linkMatch).not.toBeNull();
 
     const eventStream = page.waitForResponse((response) => {
@@ -57,6 +63,7 @@ test("magic-link login gates dashboard, API, SSE, and mobile views", async ({ br
     });
     await page.goto(linkMatch[0], { waitUntil: "domcontentloaded" });
     await expect(page).toHaveURL(`${runtime.url}${boardPath}`);
+    await expect.poll(async () => (await context.request.post(`${runtime.url}/api/v1/refresh`, { maxRedirects: 0 })).status()).toBe(202);
     await expect(page.getByRole("button", { name: /Kanban demo backlog intake/ })).toBeVisible();
     await eventStream;
 

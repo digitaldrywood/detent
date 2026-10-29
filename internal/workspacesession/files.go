@@ -11,7 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-// The files channel (decisions section 18.4). Read-only in this slice: writes
+// The files channel. Read-only in this slice: writes
 // happen through the model or the reader's own checkout.
 
 // Frame types the files channel defines. Anything else on this channel is
@@ -23,7 +23,7 @@ const (
 	TypeFilesRead  = "read"
 	TypeFilesWatch = "watch"
 	// Runner → person. A stat answer reuses the request's name: the
-	// direction disambiguates, and section 18.4 names both "stat".
+	// direction disambiguates, and the Files contract names both "stat".
 	TypeFilesListed  = "listed"
 	TypeFilesContent = "content"
 	TypeFilesChanged = "changed"
@@ -119,7 +119,7 @@ type FilesChanged struct {
 
 // ErrInvalidPath reports a path the channel refuses before it ever opens
 // anything. It is the request-string check; containment itself is enforced at
-// open time on the canonical path, not here (section 18.4).
+// open time on the canonical path, not here.
 var ErrInvalidPath = errors.New("workspacesession: invalid path")
 
 // NormalizePath turns a requested path into a clean worktree-relative path. It
@@ -234,7 +234,7 @@ func (d Denylist) Denied(relative string) bool {
 
 // DeniedDiffPath applies the same filter to a diff's path and old_path. A file
 // whose either side is denied appears with denied: true, its patch empty and
-// its counts intact, whatever its status (section 18.5).
+// its counts intact, whatever its status.
 func (d Denylist) DeniedDiffPath(newPath, oldPath string) bool {
 	return d.Denied(newPath) || (oldPath != "" && d.Denied(oldPath))
 }

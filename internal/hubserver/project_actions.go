@@ -16,7 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
-// Project actions and their runs (decisions section 18.12).
+// Project actions and their runs.
 //
 // An action is a command the project wrote down once: every conversation in
 // the project offers the same actions, and a worktree opened tomorrow runs the
@@ -75,7 +75,8 @@ type projectActionRunRequest struct {
 
 // projectActionRunList is the run listing shape.
 type projectActionRunList struct {
-	Items []workspacesession.Run `json:"items"`
+	ChangeSequence int64                  `json:"change_sequence"`
+	Items          []workspacesession.Run `json:"items"`
 }
 
 // projectActionRunReceipt answers a queued run with its id; the run itself is
@@ -84,32 +85,31 @@ type projectActionRunReceipt struct {
 	RunID string `json:"run_id"`
 }
 
-// actionKeybindingTaken reports a chord another action in the project already
-// claims. It names the conflict, because the author's next move is to change
-// one of the two rather than to retry.
-func actionKeybindingTaken(keybinding, name string) error {
-	return nativeInvalid("The keybinding " + keybinding + " is already used by " + name)
+func actionKeybindingTaken() error {
+	return nativePublicInvalid("The keybinding is already used by another action")
 }
 
 // actionRunReadOnly refuses a run on a workspace held read-only while its
 // attempt runs. A command writes into the worktree, and the worktree is the
-// one the model is editing (section 18.1's read-only rule, applied to a
+// one the model is editing (the workspace session contract's read-only rule, applied to a
 // command rather than to a terminal).
 func actionRunReadOnly() error {
 	return &nativeError{
 		Code: "read_only", Message: "A run is refused while the attempt is still using this worktree",
-		status: http.StatusConflict,
+		status:        http.StatusConflict,
+		publicMessage: true,
 	}
 }
 
 // actionRunCapabilityMissing refuses a run on a workspace whose runner does
-// not serve the exec surface. It is phrased the way section 18.1's other
+// not serve the exec surface. It is phrased the way the workspace session contract's other
 // surface refusals are: the workspace is real and readable, and this one
 // surface is not available on it.
 func actionRunCapabilityMissing() error {
 	return &nativeError{
 		Code: "capability_missing", Message: "The workspace does not serve project actions",
-		status: http.StatusConflict,
+		status:        http.StatusConflict,
+		publicMessage: true,
 	}
 }
 
@@ -129,7 +129,7 @@ func (s *Service) listProjectActions(c echo.Context) error {
 func (s *Service) createProjectAction(c echo.Context) error {
 	var request projectActionRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	value, err := s.commandCreateAction(c.Request().Context(), nativeRequestScope(c), request)
 	if err != nil {
@@ -142,7 +142,7 @@ func (s *Service) createProjectAction(c echo.Context) error {
 func (s *Service) patchProjectAction(c echo.Context) error {
 	var request projectActionPatch
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	value, err := s.commandPatchAction(c.Request().Context(), nativeRequestScope(c), c.Param("action"), request)
 	if err != nil {
@@ -167,7 +167,7 @@ func (s *Service) deleteProjectAction(c echo.Context) error {
 func (s *Service) createProjectActionRun(c echo.Context) error {
 	var request projectActionRunRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	value, err := s.commandRunAction(c.Request().Context(), nativeRequestScope(c), c.Param("action"), request)
 	if err != nil {
@@ -237,7 +237,7 @@ func (s *Service) listProjectActionRuns(c echo.Context) error {
 	}
 	limit, err := parsePageLimit(c.QueryParam("limit"))
 	if err != nil {
-		return s.nativeAPIError(c, nativeInvalid("Page limit is invalid"))
+		return s.nativeAPIError(c, nativePublicInvalid("Page limit is invalid"))
 	}
 	value, err := s.readActionRuns(c.Request().Context(), nativeRequestScope(c), c.Param("action"), limit)
 	if err != nil {
@@ -280,15 +280,15 @@ func (s *Service) readActionRunForRequest(c echo.Context) (actionRunRecord, erro
 }
 
 // sweepActionRuns fails every run left queued or running on a workspace that
-// has ended (decisions section 18.12).
+// has ended.
 //
 // The relay covers the runs it started: every path that tears a stream or a
 // connection down writes a terminal row. A run the runner started itself for
 // run_on_worktree_creation has no stream and no room entry, so the relay knows
 // nothing about it, and its whole record is the report the runner sends. A
 // crashed runner, a hub restart, or any refusal the runner does not retry
-// would leave that row running for ever -- which is the one outcome section
-// 18.12 exists to prevent, so it is swept rather than left to a retry the hub
+// would leave that row running for ever -- which is the one outcome the project actions contract
+// exists to prevent, so it is swept rather than left to a retry the hub
 // cannot see.
 //
 // It keys on the workspace's terminal state and never on a run's age. That is
@@ -351,7 +351,7 @@ func actionRunReasonFor(workspaceReason string) string {
 	return workspacesession.RunReasonWorkspaceEnd
 }
 
-// validActionRunReason reports whether value names one of section 18.12's
+// validActionRunReason reports whether value names one of the project actions contract's
 // reasons a run failed without exiting. A run that exited carries no reason:
 // its exit code is the whole story, which is why an empty reason is legal
 // everywhere this is called and is checked by the caller rather than here.
@@ -391,8 +391,7 @@ func forwardRunStatus(from, to string) bool {
 // outcome.
 var errActionRunClaimed = errors.New("the action run is already claimed")
 
-// claimActionRun hands one queued run to exactly one executor (decisions
-// section 18.12).
+// claimActionRun hands one queued run to exactly one executor.
 //
 // A queued run has two of them. A person who opens the exec channel for it is
 // the one the contract prefers, because only their stream carries the output as
@@ -448,37 +447,32 @@ func (s *Service) applyCreateProjectAction(ctx context.Context, tx *sql.Tx, scop
 	}
 	var err error
 	if record.Name, err = workspacesession.NormalizeActionName(request.Name); err != nil {
-		return nil, nativeInvalid(err.Error())
+		return nil, nativePublicInvalid(err.Error())
 	}
 	if record.Command, err = workspacesession.NormalizeActionCommand(request.Command); err != nil {
-		return nil, nativeInvalid(err.Error())
+		return nil, nativePublicInvalid(err.Error())
 	}
 	if record.Keybinding, err = workspacesession.NormalizeActionKeybinding(request.Keybinding); err != nil {
-		return nil, nativeInvalid(err.Error())
+		return nil, nativePublicInvalid(err.Error())
 	}
 	if record.Icon, err = workspacesession.NormalizeActionIcon(request.Icon); err != nil {
 		return nil, nativeInvalid(err.Error())
 	}
 	if record.PreviewURL, err = workspacesession.NormalizeActionPreviewURL(request.PreviewURL); err != nil {
-		return nil, nativeInvalid(err.Error())
+		return nil, nativePublicInvalid(err.Error())
 	}
 	count, err := countProjectActions(ctx, tx, scope)
 	if err != nil {
 		return nil, err
 	}
 	if count >= workspacesession.MaxActionsPerProject {
-		return nil, nativeInvalid("A project may hold at most " +
+		return nil, nativePublicInvalid("A project may hold at most " +
 			strconv.Itoa(workspacesession.MaxActionsPerProject) + " actions")
 	}
-	// The chord is checked here as well as by the migration's partial
-	// unique index. The check is what produces an answer the author
-	// can act on -- it names the action holding the chord -- and the
-	// index is the backstop that keeps two concurrent creates from
-	// both passing it.
-	if owner, found, err := projectActionKeybindingOwner(ctx, tx, scope, record.Keybinding, record.ID); err != nil {
+	if _, found, err := projectActionKeybindingOwner(ctx, tx, scope, record.Keybinding, record.ID); err != nil {
 		return nil, err
 	} else if found {
-		return nil, actionKeybindingTaken(record.Keybinding, owner.Name)
+		return nil, actionKeybindingTaken()
 	}
 	if err := insertProjectAction(ctx, tx, record); err != nil {
 		return nil, err
@@ -495,24 +489,24 @@ func (s *Service) applyPatchProjectAction(ctx context.Context, tx *sql.Tx, scope
 		return nil, err
 	}
 	if request.ExpectedRevision <= 0 {
-		return nil, nativeInvalid("Expected revision must be positive")
+		return nil, nativePublicInvalid("Expected revision must be positive")
 	}
 	if record.Revision != int64(request.ExpectedRevision) {
 		return nil, nativeConflict(tracker.Revision(record.Revision))
 	}
 	if request.Name != nil {
 		if record.Name, err = workspacesession.NormalizeActionName(*request.Name); err != nil {
-			return nil, nativeInvalid(err.Error())
+			return nil, nativePublicInvalid(err.Error())
 		}
 	}
 	if request.Command != nil {
 		if record.Command, err = workspacesession.NormalizeActionCommand(*request.Command); err != nil {
-			return nil, nativeInvalid(err.Error())
+			return nil, nativePublicInvalid(err.Error())
 		}
 	}
 	if request.Keybinding != nil {
 		if record.Keybinding, err = workspacesession.NormalizeActionKeybinding(*request.Keybinding); err != nil {
-			return nil, nativeInvalid(err.Error())
+			return nil, nativePublicInvalid(err.Error())
 		}
 	}
 	if request.Icon != nil {
@@ -522,7 +516,7 @@ func (s *Service) applyPatchProjectAction(ctx context.Context, tx *sql.Tx, scope
 	}
 	if request.PreviewURL != nil {
 		if record.PreviewURL, err = workspacesession.NormalizeActionPreviewURL(*request.PreviewURL); err != nil {
-			return nil, nativeInvalid(err.Error())
+			return nil, nativePublicInvalid(err.Error())
 		}
 	}
 	if request.OpenPreview != nil {
@@ -531,10 +525,10 @@ func (s *Service) applyPatchProjectAction(ctx context.Context, tx *sql.Tx, scope
 	if request.RunOnWorktreeCreation != nil {
 		record.RunOnWorktreeCreation = *request.RunOnWorktreeCreation
 	}
-	if owner, found, err := projectActionKeybindingOwner(ctx, tx, scope, record.Keybinding, record.ID); err != nil {
+	if _, found, err := projectActionKeybindingOwner(ctx, tx, scope, record.Keybinding, record.ID); err != nil {
 		return nil, err
 	} else if found {
-		return nil, actionKeybindingTaken(record.Keybinding, owner.Name)
+		return nil, actionKeybindingTaken()
 	}
 	expected := record.Revision
 	record.Revision++
@@ -575,18 +569,27 @@ func (s *Service) readActions(ctx context.Context, scope nativeScope) (json.RawM
 func (s *Service) readActionRuns(ctx context.Context, scope nativeScope, actionID string, limit int) (json.RawMessage, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
-	action, err := readProjectAction(ctx, s.database.reader, scope, actionID)
+	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	watermark, _, err := readDashboardWatermark(ctx, tx, scope)
+	if err != nil {
+		return nil, err
+	}
+	action, err := readProjectAction(ctx, tx, scope, actionID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nativeNotFound()
 	}
 	if err != nil {
 		return nil, err
 	}
-	records, err := readProjectActionRuns(ctx, s.database.reader, scope, action.ID, limit)
+	records, err := readProjectActionRuns(ctx, tx, scope, action.ID, limit)
 	if err != nil {
 		return nil, err
 	}
-	response := projectActionRunList{Items: make([]workspacesession.Run, 0, len(records))}
+	response := projectActionRunList{ChangeSequence: watermark, Items: make([]workspacesession.Run, 0, len(records))}
 	for _, record := range records {
 		response.Items = append(response.Items, record.resource())
 	}

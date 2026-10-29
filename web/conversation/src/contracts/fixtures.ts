@@ -1,12 +1,12 @@
 // The shared contract fixtures.
 //
 // Every file in `src/contracts/fixtures/` is a realistic wire payload for one
-// resource in `docs/conversation/decisions.md` §5. This table binds each file
+// resource in the Hub conversation API. This table binds each file
 // to the schema that must decode it. The Go implementation is expected to
 // decode the same files, so the directory is a stable cross-language contract
 // surface: add a fixture here and the Go test picks it up by name.
 import * as Schema from "effect/Schema";
-import { ReportsFacets, ReportsReport } from "./reports.ts";
+import { OrganizationReports, ReportsFacets, ReportsReport } from "./reports.ts";
 
 import {
   AccountBootstrap,
@@ -14,6 +14,7 @@ import {
   CheckoutResponse,
   CreateOrganizationResponse,
   FleetResponse,
+  RunnerCapacityConfiguration,
   Invitation,
   Member,
   MembersResponse,
@@ -72,6 +73,7 @@ export type FixtureSchema = Schema.Codec<any, any, never, never>;
 export const FIXTURE_SCHEMAS: Readonly<Record<string, FixtureSchema>> = {
   "account-billing.json": BillingReport,
   "diagnostics.json": DiagnosticsReport,
+  "organizationReports.json": OrganizationReports,
   "reportOptions.json": ReportsFacets,
   "reports.json": ReportsReport,
   "health-findings.json": HealthFindingsRead,
@@ -90,8 +92,10 @@ export const FIXTURE_SCHEMAS: Readonly<Record<string, FixtureSchema>> = {
   "account-organization-created.json": CreateOrganizationResponse,
   "account-plan.json": PlanReport,
   "account-policy.json": PolicyApproval,
+  "account-policy-empty.json": PolicyApproval,
   "account-projects.json": ProjectsResponse,
   "account-runner-enrollment.json": RunnerEnrollment,
+  "account-runner-capacity.json": RunnerCapacityConfiguration,
   "account-support.json": SupportResponse,
   "account-updates.json": UpdatesReport,
   "bootstrap.json": Bootstrap,

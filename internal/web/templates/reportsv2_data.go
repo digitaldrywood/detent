@@ -303,7 +303,6 @@ func reportsEfficiencyView(rollup efficiency.Rollup) reportsEfficiency {
 			{Label: "Working", Current: formatDuration(float64(current.Dwell.WorkingSeconds)), Baseline: formatDuration(float64(baseline.Dwell.WorkingSeconds))},
 			{Label: "Gate wait", Current: formatDuration(float64(current.Dwell.GateWaitSeconds)), Baseline: formatDuration(float64(baseline.Dwell.GateWaitSeconds))},
 			{Label: "Merge train", Current: formatDuration(float64(current.Dwell.MergeTrainSeconds)), Baseline: formatDuration(float64(baseline.Dwell.MergeTrainSeconds))},
-			{Label: "Parked", Current: formatDuration(float64(current.Dwell.ParkedSeconds)), Baseline: formatDuration(float64(baseline.Dwell.ParkedSeconds))},
 		},
 	}
 	if len(rollup.CacheTrend) > 0 {
@@ -378,7 +377,6 @@ func reportsDigestMetrics(day DailyDigestDayData, baseline []DailyDigestDayData)
 		reportsDigestCountMetric("dwell-working", "Lifetime working-lane dwell", day.Efficiency.Dwell.WorkingSeconds, baseline, func(value DailyDigestDayData) int64 { return value.Efficiency.Dwell.WorkingSeconds }),
 		reportsDigestCountMetric("dwell-gate", "Lifetime gate-wait dwell", day.Efficiency.Dwell.GateWaitSeconds, baseline, func(value DailyDigestDayData) int64 { return value.Efficiency.Dwell.GateWaitSeconds }),
 		reportsDigestCountMetric("dwell-merge", "Lifetime merge-train dwell", day.Efficiency.Dwell.MergeTrainSeconds, baseline, func(value DailyDigestDayData) int64 { return value.Efficiency.Dwell.MergeTrainSeconds }),
-		reportsDigestCountMetric("dwell-parked", "Lifetime parked dwell", day.Efficiency.Dwell.ParkedSeconds, baseline, func(value DailyDigestDayData) int64 { return value.Efficiency.Dwell.ParkedSeconds }),
 		reportsDigestCountMetric("dwell-unknown", "Lifetime unknown dwell", day.UnknownDwellSeconds, baseline, func(value DailyDigestDayData) int64 { return value.UnknownDwellSeconds }),
 	}
 	metrics[4].Value = fleetCompactTokens(day.TotalTokens)
@@ -404,16 +402,15 @@ func reportsDigestMetrics(day DailyDigestDayData, baseline []DailyDigestDayData)
 	metrics[12].Detail = "p90 " + formatUSD(day.Efficiency.CostPerIssueUSD.P90)
 	metrics[13].Value = formatDecimal(day.Efficiency.SessionsPerIssue)
 	metrics[14].Value = reportCacheReadFraction(day.Efficiency.FirstAttemptMergeRate)
-	for index := 16; index <= 19; index++ {
+	for index := 16; index <= 18; index++ {
 		metrics[index].Value = formatDuration(float64([]int64{
 			day.Efficiency.Dwell.WorkingSeconds,
 			day.Efficiency.Dwell.GateWaitSeconds,
 			day.Efficiency.Dwell.MergeTrainSeconds,
-			day.Efficiency.Dwell.ParkedSeconds,
 		}[index-16]))
 	}
-	metrics[20].Value = formatDuration(float64(day.UnknownDwellSeconds))
-	metrics[20].Detail = "Unclassified elapsed time · not command time"
+	metrics[19].Value = formatDuration(float64(day.UnknownDwellSeconds))
+	metrics[19].Detail = "Unclassified elapsed time · not command time"
 	for index := 11; index < len(metrics); index++ {
 		if day.Efficiency.Issues == 0 {
 			metrics[index].Value = "—"

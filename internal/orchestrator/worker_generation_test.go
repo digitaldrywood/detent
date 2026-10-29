@@ -11,9 +11,9 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/procstart"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -98,7 +98,7 @@ func TestRecoverDurableWorkAttemptsLeavesLiveForeignGenerations(t *testing.T) {
 				attempts[owner] = id
 			}
 			cfg := completionDeferralConfig()
-			orch, err := New(cfg, Dependencies{Connector: memory.New(memory.Config{}), WorkAttempts: owners.current})
+			orch, err := New(cfg, Dependencies{Connector: fakehub.New(fakehub.Config{}), WorkAttempts: owners.current})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -144,7 +144,7 @@ func TestRetentionProtectsLiveForeignGenerationWorkspaces(t *testing.T) {
 		cfg:          completionDeferralConfig(),
 		reaper:       reaper,
 		workAttempts: owners.current,
-		connector:    memory.New(memory.Config{Issues: []connector.Issue{}}),
+		connector:    fakehub.New(fakehub.Config{Issues: []connector.Issue{}}),
 		logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 	o.sweepRetention(t.Context(), &State{}, now)

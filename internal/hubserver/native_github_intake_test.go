@@ -78,10 +78,11 @@ func applyLinkedWebhook(t *testing.T, f nativeFixture, action, event string, sna
 
 func TestNativeGitHubWebhookIntake(t *testing.T) {
 	t.Parallel()
-	for _, test := range []struct{ name, body, author string }{
-		{"public reporter", "A public report", "outside-reporter"},
-		{"empty body is not a spam signal", "", "reporter"},
-		{"unavailable author retains report", "Report", ""},
+	for _, test := range []struct{ name, body, author, action, wantState string }{
+		{"public reporter", "A public report", "outside-reporter", "opened", "Triage"},
+		{"empty body is not a spam signal", "", "reporter", "opened", "Triage"},
+		{"unavailable author retains report", "Report", "", "opened", "Triage"},
+		{"closed source awaiting intake", "Closed report" + issueContractTestSections, "reporter", "closed", "Todo"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := linkedFixture(t)
@@ -89,11 +90,14 @@ func TestNativeGitHubWebhookIntake(t *testing.T) {
 			snapshot.Body, snapshot.Provenance.AuthorID = test.body, test.author
 			f.service.config.GitHubWebhookSecret = []byte(testWebhookSecret)
 			f.service.database.linkedSourceBase = "https://cloud.example"
-			payload := string(linkedWebhookPayload(t, "opened", snapshot, nil))
+			if test.action == "closed" {
+				pendingLinkedIssue(t, f)
+			}
+			payload := string(linkedWebhookPayload(t, test.action, snapshot, nil))
 			for range 2 {
 				requireNativeStatus(t, sendSignedWebhookRequest(t, f.service, "intake-delivery", "issues", payload), http.StatusAccepted)
 			}
-			applyLinkedWebhook(t, f, "opened", "issues", snapshot, nil)
+			applyLinkedWebhook(t, f, test.action, "issues", snapshot, nil)
 			var id string
 			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT native_id FROM issues WHERE project_id = ?", f.project.ID).Scan(&id); err != nil {
 				t.Fatal(err)
@@ -103,7 +107,7 @@ func TestNativeGitHubWebhookIntake(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if issue.State != "Triage" || issue.LinkedSource.Status != "complete" || issue.Body != test.body || issue.Terminal || len(issue.Assignees) != 0 {
+			if issue.State != test.wantState || issue.LinkedSource.Status != "complete" || issue.Body != test.body || issue.Terminal || len(issue.Assignees) != 0 {
 				t.Fatalf("intake = %+v", issue)
 			}
 			if test.author == "" {
@@ -117,23 +121,8 @@ func TestNativeGitHubWebhookIntake(t *testing.T) {
 				t.Fatal("manual intake created a duplicate")
 			}
 			var count int
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM github_outbox WHERE issue_id = (SELECT id FROM issues WHERE native_id = ?)", id).Scan(&count); err != nil || count != 1 {
-				t.Fatalf("linkbacks = %d, %v", count, err)
-			}
-			var desired WorkpadDesired
-			var raw string
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT desired_json FROM github_outbox").Scan(&raw); err != nil {
-				t.Fatal(err)
-			}
-			if err := json.Unmarshal([]byte(raw), &desired); err != nil {
-				t.Fatal(err)
-			}
-			if desired.Body != "Tracked in Detent: https://cloud.example/local-organization/linked/issues/1" || desired.CloseSource {
-				t.Fatalf("linkback = %+v", desired)
-			}
-			item, found, err := f.service.claimOutbox(t.Context())
-			if err != nil || !found || item.IssueNumber != 12 || item.Profile != "native" || item.RepositoryOwner != "acme" {
-				t.Fatalf("outbox source routing = %+v, %t, %v", item, found, err)
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM github_outbox").Scan(&count); err != nil || count != 0 {
+				t.Fatalf("intake outbox rows = %d, %v", count, err)
 			}
 		})
 	}
@@ -196,10 +185,27 @@ func TestNativeGitHubSourceUpdates(t *testing.T) {
 			if closes != want {
 				t.Fatalf("closes = %d, want %d", closes, want)
 			}
+			if state == "Cancelled" {
+				var raw string
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT desired_json FROM github_outbox").Scan(&raw); err != nil {
+					t.Fatal(err)
+				}
+				var desired WorkpadDesired
+				if err := json.Unmarshal([]byte(raw), &desired); err != nil {
+					t.Fatal(err)
+				}
+				if desired.Body != "Cancelled in Detent: https://cloud.example/local-organization/linked/issues/1" || !desired.CloseSource || desired.StateReason != "not_planned" {
+					t.Fatalf("cancellation summary = %+v", desired)
+				}
+				item, found, err := f.service.claimOutbox(t.Context())
+				if err != nil || !found || item.IssueNumber != 12 || item.Profile != "native" || item.RepositoryOwner != "acme" {
+					t.Fatalf("outbox source routing = %+v, %t, %v", item, found, err)
+				}
+			}
 			r := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+id+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "private"}, Body: "Private Cloud discussion"})
 			requireNativeStatus(t, r, http.StatusOK)
 			var total int
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM github_outbox").Scan(&total); err != nil || total != 1+want {
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM github_outbox").Scan(&total); err != nil || total != want {
 				t.Fatalf("Cloud discussion mirrored: %d, %v", total, err)
 			}
 		})
@@ -351,4 +357,5 @@ func (f *browserHostedFixture) seedGitHubTriage(t *testing.T) {
 	snapshot.Title = "Public GitHub report awaiting triage"
 	scope := nativeScope{organization: tracker.OrganizationID(f.service.config.Hosted.OrganizationID), project: tracker.ProjectID(f.project)}
 	applyLinkedWebhook(t, nativeFixture{service: f.service, project: tracker.NativeProject{ID: scope.project, OrganizationID: scope.organization}}, "opened", "issues", snapshot, nil)
+	drainTestNativeBoard(t, f.service)
 }

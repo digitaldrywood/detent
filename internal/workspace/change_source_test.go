@@ -97,6 +97,9 @@ func TestLocalGitChangeSourceRefusesUnverifiedRecovery(t *testing.T) {
 		previous    bool
 		absent      bool
 		corrupt     bool
+		transferred bool
+		locked      bool
+		integrated  bool
 	}{
 		{name: "additional advertised ref", edit: editBundle(bytes.Replace(capture.Bundle, []byte("\n\n"), []byte("\n"+head+" refs/heads/extra\n\n"), 1))},
 		{name: "wrong advertised head", edit: editBundle(bytes.Replace(capture.Bundle, []byte(head+" HEAD"), []byte(base+" HEAD"), 1))},
@@ -111,12 +114,19 @@ func TestLocalGitChangeSourceRefusesUnverifiedRecovery(t *testing.T) {
 		{name: "working source survives restoration", pending: "working"},
 		{name: "untracked source survives restoration", pending: "untracked"},
 		{name: "newer clean published head survives older source restoration", published: true},
+		{name: "integrated target head is preserved and restored", published: true, integrated: true},
 		{name: "superseded published source is preserved and restored", published: true, previous: true},
 		{name: "corrupt retained source preserves existing workspace", published: true, previous: true, corrupt: true},
 		{name: "superseded branch without workspace is preserved and restored", published: true, previous: true, absent: true},
 		{name: "superseded Hub-only source is preserved and restored", unpublished: true, previous: true},
 		{name: "superseded Hub-only branch without workspace is preserved and restored", unpublished: true, previous: true, absent: true},
 		{name: "unknown unpublished source survives restoration", unpublished: true},
+		{name: "transferred version refuses locked dirty custody", pending: "mixed", transferred: true, locked: true},
+		{name: "transferred version preserves mixed dirty custody", pending: "mixed", transferred: true},
+		{name: "transferred version preserves staged-only custody", pending: "index", transferred: true},
+		{name: "transferred version preserves untracked custody", pending: "untracked", transferred: true},
+		{name: "transferred version preserves unknown unpublished head", unpublished: true, transferred: true},
+		{name: "transferred version restores superseded head with custody", published: true, previous: true, transferred: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			dir := filepath.Join(t.TempDir(), "second")
@@ -128,6 +138,7 @@ func TestLocalGitChangeSourceRefusesUnverifiedRecovery(t *testing.T) {
 			}
 			metadata := capture.Source
 			retained := &ChangeSource{Version: tracker.ChangeVersion{ChangeVersionInput: tracker.ChangeVersionInput{BaseSHA: base, HeadSHA: head, Repository: repository, Source: &metadata}}, Bundle: capture.Bundle}
+			retained.Version.ID, retained.Transferred = "version_selected", test.transferred
 			if test.edit != nil {
 				test.edit(retained)
 			}
@@ -142,13 +153,19 @@ func TestLocalGitChangeSourceRefusesUnverifiedRecovery(t *testing.T) {
 				}
 				runGit(t, source, "push", "origin", head+":refs/heads/retained-work")
 				runGit(t, dir, "fetch", "origin")
-				runGit(t, info.Path, "reset", "--hard", head)
+				start, publishedRef := head, "refs/heads/published-work-"+SafeKey(test.name)
+				if test.integrated {
+					start, publishedRef = base, "refs/heads/integration-"+SafeKey(test.name)
+					issue.ProgressBaseRef = strings.TrimPrefix(publishedRef, "refs/heads/")
+					initial.ProgressBaseRef = issue.ProgressBaseRef
+				}
+				runGit(t, info.Path, "reset", "--hard", start)
 				writeFileDiffFile(t, info.Path, "source.txt", "newer completed work\n")
 				runGit(t, info.Path, "add", "source.txt")
 				runGit(t, info.Path, "-c", "user.name=Recovery Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", test.name)
 				newer := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
 				if test.published {
-					runGit(t, info.Path, "push", "origin", "HEAD:refs/heads/published-work-"+SafeKey(test.name))
+					runGit(t, info.Path, "push", "origin", "HEAD:"+publishedRef)
 					runGit(t, dir, "fetch", "origin")
 				}
 				before, err := backend.(RecoveryStateProvider).RecoveryState(t.Context(), info, initial)
@@ -165,7 +182,7 @@ func TestLocalGitChangeSourceRefusesUnverifiedRecovery(t *testing.T) {
 					runGit(t, dir, "worktree", "remove", info.Path)
 				}
 				restored, restoreErr := backend.Create(t.Context(), issue)
-				if test.previous && !test.corrupt {
+				if (test.previous || test.transferred || test.integrated) && !test.corrupt {
 					if restoreErr != nil {
 						t.Fatalf("restore superseded source: %v", restoreErr)
 					}
@@ -188,7 +205,7 @@ func TestLocalGitChangeSourceRefusesUnverifiedRecovery(t *testing.T) {
 					return
 				}
 				var refusal *LandRefusal
-				if test.unpublished && !test.corrupt {
+				if test.unpublished && !test.corrupt && !test.transferred {
 					if restoreErr != nil || restored.Created {
 						t.Fatalf("unpublished work must remain available unchanged: %+v, %v", restored, restoreErr)
 					}
@@ -284,7 +301,25 @@ func TestLocalGitChangeSourceRefusesUnverifiedRecovery(t *testing.T) {
 					runGit(t, info.Path, "add", "README.md")
 					writeFileDiffFile(t, info.Path, "README.md", wantFiles["README.md"])
 				}
-				_, restoreErr := backend.Create(t.Context(), issue)
+				if test.locked {
+					runGit(t, dir, "worktree", "lock", info.Path)
+				}
+				restored, restoreErr := backend.Create(t.Context(), issue)
+				if test.locked {
+					var refusal *LandRefusal
+					if !errors.As(restoreErr, &refusal) || refusal.Kind != LandRefusalHeadMoved || !strings.Contains(refusal.Reason, retained.Version.ID) || !strings.Contains(refusal.Reason, "source recovery") {
+						t.Fatalf("locked custody lacks an actionable refusal: %v", restoreErr)
+					}
+				} else if test.transferred {
+					if restoreErr != nil || !restored.Created || strings.TrimSpace(runGit(t, restored.Path, "rev-parse", "HEAD")) != head || runGit(t, restored.Path, "status", "--porcelain") != "" {
+						t.Fatalf("transfer did not restore clean selected source: %+v, %v", restored, restoreErr)
+					}
+					paths, err := filepath.Glob(filepath.Join(backend.(*LocalGit).root, ".detent", "quarantine", "*"))
+					if err != nil || len(paths) != 1 {
+						t.Fatalf("preserved workspaces=%v: %v", paths, err)
+					}
+					info.Path = paths[0]
+				}
 				if restoreErr != nil {
 					t.Logf("source restoration refused: %v", restoreErr)
 				}
@@ -441,4 +476,49 @@ func TestLocalGitChangeSourceRefusesUnverifiedRecovery(t *testing.T) {
 		})
 	}
 
+}
+
+// A release pick may exist only in the retained bundle on a fresh runner.
+func TestLocalGitReleaseDeliveryImportsRetainedHeadBeforeReview(t *testing.T) {
+	source := initSourceRepo(t)
+	remote := initBareRemote(t)
+	repository := "https://github.com/example/source"
+	runGit(t, source, "remote", "add", "origin", repository)
+	runGit(t, source, "config", "url."+remote+".insteadOf", repository)
+	runGit(t, source, "push", "origin", "HEAD:refs/heads/release/v1.2", "HEAD:refs/heads/main")
+	base := strings.TrimSpace(runGit(t, source, "rev-parse", "HEAD"))
+	checkpointWrite(t, source, "repair.txt", "reviewed repair\n")
+	runGit(t, source, "add", "repair.txt")
+	runGit(t, source, "commit", "-m", "release repair")
+	head := strings.TrimSpace(runGit(t, source, "rev-parse", "HEAD"))
+	capture, err := CaptureChangeSource(t.Context(), source, base, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiver := filepath.Join(t.TempDir(), "receiver")
+	runGit(t, source, "clone", "--no-local", "--branch", "release/v1.2", remote, receiver)
+	runGit(t, receiver, "remote", "set-url", "origin", repository)
+	runGit(t, receiver, "config", "url."+remote+".insteadOf", repository+".git")
+	runGit(t, receiver, "config", "--add", "url."+remote+".insteadOf", repository)
+	if _, err := runGitAt(t.Context(), receiver, "cat-file", "-e", head+"^{commit}"); err == nil {
+		t.Fatal("fixture already has retained head")
+	}
+	backend, err := NewLocalGit(LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: receiver, AutoBranch: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	issue := Issue{Identifier: "native#42", Source: &ChangeSource{Version: tracker.ChangeVersion{ChangeVersionInput: tracker.ChangeVersionInput{BaseSHA: base, HeadSHA: head, Repository: repository, Source: &capture.Source}}, Bundle: capture.Bundle}, ReleaseDelivery: &tracker.ReleaseDelivery{ReleasePickInput: tracker.ReleasePickInput{Repository: repository, PRNumber: 42, BaseRef: "release/v1.2", HeadRef: "release-pick/repair", BaseSHA: base, HeadSHA: head}}}
+	info, err := backend.Create(t.Context(), issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD")); got != head {
+		t.Fatalf("head = %s, want %s", got, head)
+	}
+	if got := readFile(t, filepath.Join(info.Path, "repair.txt")); got != "reviewed repair\n" {
+		t.Fatalf("repair = %q", got)
+	}
+	if got := strings.TrimSpace(runGit(t, remote, "rev-parse", "refs/heads/release/v1.2")); got != base {
+		t.Fatalf("release branch moved to %s", got)
+	}
 }

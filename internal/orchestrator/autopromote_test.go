@@ -17,10 +17,11 @@ func TestEvaluateAutoPromote(t *testing.T) {
 	oldActivity := now.Add(-20 * time.Minute)
 	recentActivity := now.Add(-30 * time.Second)
 	finding := AutoPromoteFinding{
-		Body: "![P1 Badge](https://example.test/p1.svg) The migration drops rows.",
-		URL:  "https://github.test/comment/p1",
-		Path: "db/migrations/example.sql",
-		Line: 7,
+		Attribution: "unknown",
+		Body:        "![P1 Badge](https://example.test/p1.svg) The migration drops rows.",
+		URL:         "https://github.test/comment/p1",
+		Path:        "db/migrations/example.sql",
+		Line:        7,
 	}
 
 	enabled := AutoPromoteConfig{

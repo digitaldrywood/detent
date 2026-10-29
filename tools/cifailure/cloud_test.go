@@ -868,3 +868,80 @@ func TestCloudDestinationAuthority(t *testing.T) {
 		})
 	}
 }
+
+func TestScheduledAttributionReplacesIntake(t *testing.T) {
+	for _, test := range []struct {
+		name                                      string
+		green, source, attributed, release, infra bool
+		wantAttempts, wantIssues                  int
+	}{
+		{name: "one landing", green: true, source: true, attributed: true, wantAttempts: 1},
+		{name: "two landings", green: true, source: true, wantAttempts: 1, wantIssues: 1},
+		{name: "no prior green", source: true, wantIssues: 1},
+		{name: "infrastructure", green: true, source: true, infra: true, wantIssues: 1},
+		{name: "release series", green: true, source: true, release: true, wantIssues: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fake := &fakeCloud{}
+			attempts := 0
+			command := func(ctx context.Context, name string, args map[string]any, result any) error {
+				if name == "attribute_scheduled_failure" {
+					attempts++
+					failure := args["scheduled_failure"].(tracker.ScheduledFailure)
+					if failure.PreviousGreenSHA != strings.Repeat("a", 40) || failure.Evidence.HeadSHA != strings.Repeat("b", 40) {
+						t.Fatal("wrong attribution range")
+					}
+					raw, _ := json.Marshal(map[string]bool{"attributed": test.attributed})
+					return json.Unmarshal(raw, result)
+				}
+				return fake.command(ctx, name, args, result)
+			}
+			destination := &cloudDestination{command: command, project: scheduledCloudProject, organization: "org", previousGreen: map[string]string{}}
+			if test.green {
+				destination.previousGreen["Coverage"] = strings.Repeat("a", 40)
+			}
+			evidence := gate.ScheduledEvidence{Schema: 1, Repository: "example-org/example-project", OccurrenceKey: strings.Repeat("a", 64), RunID: "123", RunAttempt: "1", JobID: "456", JobName: "Coverage", RunURL: "https://github.com/example-org/example-project/actions/runs/123/attempts/1", JobURL: "https://github.com/example-org/example-project/actions/jobs/456", HeadSHA: strings.Repeat("b", 40), Conclusion: "failure"}
+			body := issueorigin.Stamp("Scheduled failure", issueorigin.Origin{Kind: "doctor", Instance: "github-actions", Source: evidence.RunURL, Fingerprint: "scheduled-test"}) + evidence.Stamp()
+			if test.release {
+				evidence.Repository = scheduledEnv("GITHUB_REPOSITORY")
+				evidence.RunURL = "https://github.com/" + evidence.Repository + "/actions/runs/123/attempts/1"
+				body = issueorigin.Stamp("Scheduled failure\n"+stabilizationMarker("release/v1.2"), issueorigin.Origin{Kind: "doctor", Instance: "github-actions", Source: evidence.RunURL, Fingerprint: issueorigin.ReleaseStabilizationFingerprint("release/v1.2")}) + evidence.Stamp()
+			}
+			labels := []string{"ci-scheduled-failure"}
+			if test.infra {
+				labels = append(labels, "ci-infrastructure-failure")
+			}
+			if err := destination.file(t.Context(), "scheduled-test", "scheduled Coverage failure", body, "occurrence", labels, test.source); err != nil {
+				t.Fatal(err)
+			}
+			if attempts != test.wantAttempts || len(fake.items) != test.wantIssues {
+				t.Fatalf("attempts=%d issues=%d", attempts, len(fake.items))
+			}
+		})
+	}
+}
+
+func TestPreviousGreenJobsUsesSameJob(t *testing.T) {
+	calls := 0
+	command := func(_ context.Context, _ string, args ...string) ([]byte, error) {
+		calls++
+		switch calls {
+		case 1:
+			return []byte(strings.ReplaceAll(`{"workflow_runs":[{"id":122,"event":"schedule","head_repository":{"full_name":"example-org/example-project"},"head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},{"id":121,"event":"workflow_dispatch","head_repository":{"full_name":"example-org/example-project"},"head_sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}]}`, "example-org/example-project", scheduledEnv("GITHUB_REPOSITORY"))), nil
+		case 2:
+			return []byte(`{"total_count":2,"jobs":[{"name":"Coverage","conclusion":"failure"},{"name":"Race","conclusion":"success"}]}`), nil
+		default:
+			return []byte(`{"total_count":2,"jobs":[{"name":"Coverage","conclusion":"success"},{"name":"Race","conclusion":"success"}]}`), nil
+		}
+	}
+	getenv := func(key string) string {
+		if key == "GITHUB_RUN_ID" {
+			return "123"
+		}
+		return scheduledEnv(key)
+	}
+	got := previousGreenJobs(t.Context(), command, getenv, []job{{Name: "Coverage", Conclusion: "failure"}, {Name: "Race", Conclusion: "failure"}})
+	if got["Coverage"] != strings.Repeat("b", 40) || got["Race"] != strings.Repeat("a", 40) || calls != 3 {
+		t.Fatalf("greens=%v calls=%d", got, calls)
+	}
+}

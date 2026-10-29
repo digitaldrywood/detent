@@ -33,7 +33,7 @@ func (s *Server) snapshotCardHistory(ctx context.Context, snapshot telemetry.Sna
 			if !telemetry.ActiveIssueCard(snapshot, laneIssue) {
 				continue
 			}
-			identity := boardIssueParkIdentity(*issue)
+			identity := boardIssueIdentity(*issue)
 			if identity.ProjectID == "" {
 				identity.ProjectID = snapshot.Project.ID
 			}

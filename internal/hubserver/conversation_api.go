@@ -28,7 +28,7 @@ const (
 )
 
 // registerConversationAPIRoutes mounts the operator-facing conversation API
-// (contract section 5). Hosted sessions authenticate as operator credentials.
+// (the conversation contract). Hosted sessions authenticate as operator credentials.
 //
 // The project routes use requireConversationScope rather than
 // requireNativeScope: the native middleware turns a hosted read-only grant
@@ -54,7 +54,7 @@ func (s *Service) registerConversationAPIRoutes(e *echo.Echo) {
 	e.POST(nativeBase+"/conversations/:conversation/attachments", s.uploadConversationAttachment, scope)
 	// The download also answers a worker: the runner fetches the files the
 	// control named with its own token, so the conversation's read rule
-	// governs the bytes the provider sees (decisions section 17.1).
+	// governs the bytes the provider sees.
 	e.GET(nativeBase+"/conversations/:conversation/attachments/:attachment", s.getConversationAttachment, s.requireConversationScope(apiScopeWorker))
 	e.DELETE(nativeBase+"/conversations/:conversation/attachments/:attachment", s.deleteConversationAttachment, scope)
 }
@@ -83,6 +83,9 @@ func (s *Service) requireConversationScope(extra ...apiScope) echo.MiddlewareFun
 				return s.nativeAPIError(c, err)
 			}
 			c.Set("native_scope", scope)
+			if c.Request().Method == http.MethodGet {
+				c.SetRequest(c.Request().WithContext(s.archiveRequestContext(c, scope)))
+			}
 			c.Response().Header().Set("Cache-Control", "no-store")
 			if credential.Hosted != nil {
 				if err := s.hostedAudit(ctx, credential.Hosted, "action", c.Request().Method+" "+c.Path(), string(scope.project), 0); err != nil {
@@ -97,21 +100,19 @@ func (s *Service) requireConversationScope(extra ...apiScope) echo.MiddlewareFun
 // requireConversationOrganization authenticates an operator or admin
 // credential for the organization-level listing, which has no :project.
 // requireAPIScope cannot be reused: in hosted mode it rejects session
-// credentials outside the native project base. The organization check is
-// the hosted tenant for sessions, and at least one grant in the
-// organization for tokens (instance administrators need none).
+// credentials outside the native project base.
 func (s *Service) requireConversationOrganization() echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
 			credential, status, err := s.authenticateAPIRequest(c)
 			if err != nil {
-				return c.JSON(status, apiErrorResponse{Code: "unauthorized", Message: "Valid scoped API token is required"})
+				return s.refusedAPIError(c, status, "unauthorized", "Valid scoped API token is required", apiErrorResponse{Code: "unauthorized", Message: "Valid scoped API token is required"})
 			}
 			if s.config.Hosted != nil && credential.Hosted == nil {
 				return s.nativeAPIError(c, nativeNotFound())
 			}
 			if credential.Scope != apiScopeOperator && credential.Scope != apiScopeAdmin {
-				return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "insufficient_scope", Message: "API token scope does not permit this operation"})
+				return s.refusedAPIError(c, http.StatusForbidden, "insufficient_scope", "API token scope does not permit this operation", apiErrorResponse{Code: "insufficient_scope", Message: "API token scope does not permit this operation"})
 			}
 			ctx := c.Request().Context()
 			scope := nativeScope{organization: tracker.OrganizationID(c.Param("organization")), credential: credential}
@@ -143,7 +144,7 @@ func (s *Service) authorizeConversationOrganization(ctx context.Context, scope n
 	var count int
 	query := "SELECT count(*) FROM organizations WHERE id = ?"
 	args := []any{scope.organization}
-	if scope.credential.Scope != apiScopeAdmin || scope.credential.NativeOnly {
+	if scope.credential.Scope != apiScopeAdmin && scope.credential.Scope != apiScopeOperator || scope.credential.NativeOnly {
 		query = "SELECT count(*) FROM token_grants WHERE token_id = ? AND organization_id = ?"
 		args = []any{scope.credential.ID, scope.organization}
 	}
@@ -214,7 +215,7 @@ type conversationFirstMessage struct {
 type conversationCreateRequest struct {
 	// Key makes creation idempotent by actor and key: a retry returns the
 	// stored response and a different payload under the same key is
-	// idempotency_conflict (decisions section 10.2). first_message.key
+	// idempotency_conflict. first_message.key
 	// stays the message command key.
 	Key               string                    `json:"key"`
 	Title             string                    `json:"title"`
@@ -310,7 +311,7 @@ type conversationLinkIssue struct {
 
 // conversationLinkNext is what the user chose to do with the new issue:
 // which state it lands in, what priority it carries and whether it is
-// dispatched now or left for later (decisions section 14).
+// dispatched now or left for later.
 type conversationLinkNext struct {
 	State    string                `json:"state,omitempty"`
 	Priority *conversationPriority `json:"priority,omitempty"`
@@ -377,7 +378,7 @@ func conversationStateDispatchable(project tracker.NativeProject, name string) b
 // resolveConversationNext decides the lane and priority of the issue a
 // handoff creates. An explicit state wins; otherwise "later" parks the issue
 // in Backlog when the project has one and every other case starts it in the
-// first dispatchable state (decisions section 14).
+// first dispatchable state.
 func resolveConversationNext(project tracker.NativeProject, request conversationLinkRequest) (conversationLinkNextApplied, error) {
 	next := conversationLinkNext{}
 	if request.Next != nil {
@@ -387,7 +388,7 @@ func resolveConversationNext(project tracker.NativeProject, request conversation
 	switch dispatch {
 	case "", conversationDispatchNow, conversationDispatchLater:
 	default:
-		return conversationLinkNextApplied{}, nativeInvalid("next.dispatch must be now or later")
+		return conversationLinkNextApplied{}, nativePublicInvalid("next.dispatch must be now or later")
 	}
 	state := strings.TrimSpace(next.State)
 	if state == "" {
@@ -397,7 +398,7 @@ func resolveConversationNext(project tracker.NativeProject, request conversation
 	case state != "":
 		named, ok := conversationProjectState(project, state)
 		if !ok {
-			return conversationLinkNextApplied{}, nativeInvalid("next.state must be one of the project's workflow states")
+			return conversationLinkNextApplied{}, nativePublicInvalid("next.state must be one of the project's workflow states")
 		}
 		state = named
 	case dispatch == conversationDispatchLater:
@@ -417,7 +418,7 @@ func resolveConversationNext(project tracker.NativeProject, request conversation
 		priority = request.Issue.Priority
 	}
 	if rank := priority.rank(); rank != nil && (*rank < 0 || *rank > 3) {
-		return conversationLinkNextApplied{}, nativeInvalid("next.priority must be the numeric rank 0 to 3")
+		return conversationLinkNextApplied{}, nativePublicInvalid("next.priority must be the numeric rank 0 to 3")
 	}
 	if dispatch == "" {
 		// The applied dispatch is read from the lane the issue lands in, so
@@ -507,13 +508,13 @@ func conversationQueryInt(c echo.Context, name string) (int64, error) {
 	}
 	value, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil || value < 0 {
-		return 0, nativeInvalid("Query parameter " + name + " must be a non-negative integer")
+		return 0, nativePublicInvalid("Query parameter " + name + " must be a non-negative integer")
 	}
 	return value, nil
 }
 
 // conversationQueryTristate reads an optional boolean filter: absent lists
-// both groups, true or false restricts to one (decisions section 14).
+// both groups, true or false restricts to one.
 // present is false when the parameter was not given.
 func conversationQueryTristate(c echo.Context, name string) (value, present bool, err error) {
 	switch strings.ToLower(strings.TrimSpace(c.QueryParam(name))) {
@@ -524,18 +525,18 @@ func conversationQueryTristate(c echo.Context, name string) (value, present bool
 	case "0", "false", "no":
 		return false, true, nil
 	default:
-		return false, false, nativeInvalid("Query parameter " + name + " must be true or false")
+		return false, false, nativePublicInvalid("Query parameter " + name + " must be true or false")
 	}
 }
 
 // createConversation implements POST /conversations. The mutation is
 // idempotent by the request's top-level key through nativeMutation, which
 // also applies the hosted feature and growth checks that every native
-// mutation runs (decisions sections 10.2 and 10.10).
+// mutation runs.
 func (s *Service) createConversation(c echo.Context) error {
 	var request conversationCreateRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	value, err := s.commandCreateConversation(c.Request().Context(), nativeRequestScope(c), request)
 	if err != nil {
@@ -624,6 +625,21 @@ func (s *Service) readableConversationProjects(ctx context.Context, scope native
 }
 
 func (s *Service) getWorkItemConversation(c echo.Context) error {
+	if c.QueryParam("metadata") == "true" {
+		tx, err := s.database.reader.BeginTx(c.Request().Context(), &sql.TxOptions{ReadOnly: true})
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		defer tx.Rollback()
+		record, err := s.conversations.readLinkedConversation(c.Request().Context(), tx, nativeRequestScope(c), c.Param("item"))
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		return c.JSON(http.StatusOK, conversationSnapshot{Skills: []skills.ProviderSkill{}, Conversation: projectConversation(record), Messages: []conversationMessageResource{}, Questions: []conversation.Question{}, Cursor: record.EventSeq})
+	}
+	if handled, err := s.archiveConversationView(c); handled {
+		return err
+	}
 	value, err := s.readWorkItemConversationSnapshot(c.Request().Context(), nativeRequestScope(c), c.Param("item"))
 	if err != nil {
 		return s.nativeAPIError(c, err)
@@ -639,11 +655,14 @@ func (s *Service) readWorkItemConversationSnapshot(ctx context.Context, scope na
 // the latest message page and the pending questions are read in one
 // transaction so that the returned cursor matches the messages exactly.
 func (s *Service) getConversation(c echo.Context) error {
+	if handled, err := s.archiveConversationView(c); handled {
+		return err
+	}
 	value, err := s.readConversationSnapshot(c.Request().Context(), nativeRequestScope(c), c.Param("conversation"))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	return c.JSONBlob(http.StatusOK, value)
+	return nativeArchiveJSON(c, http.StatusOK, value)
 }
 
 // listConversationMessages implements GET /conversations/:conversation/messages.
@@ -663,14 +682,14 @@ func (s *Service) listConversationMessages(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	return c.JSONBlob(http.StatusOK, value)
+	return nativeArchiveJSON(c, http.StatusOK, value)
 }
 
 // postConversationCommand implements POST /conversations/:conversation/commands.
 func (s *Service) postConversationCommand(c echo.Context) error {
 	var command conversation.Command
 	if err := decodeAPIJSON(c, &command); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	value, err := s.commandPostConversation(c.Request().Context(), nativeRequestScope(c), c.Param("conversation"), command)
 	if err != nil {
@@ -700,7 +719,7 @@ func (c *conversationService) acceptCommand(ctx context.Context, tx *sql.Tx, sco
 	}
 	receipt := conversation.Receipt{Key: command.Key, Kind: command.Kind, Status: conversation.DeliverySaved}
 	// An accepted command is activity: a settled conversation wakes before
-	// the command is applied (decisions section 14).
+	// the command is applied.
 	if err := c.unsettle(ctx, tx, record, now); err != nil {
 		return receipt, err
 	}
@@ -873,8 +892,7 @@ func (c *conversationService) acceptCommand(ctx context.Context, tx *sql.Tx, sco
 			return receipt, err
 		}
 		// A retried message goes back on the ladder as queued; with no live
-		// attempt to hand it to, it is the next attempt's to carry
-		// (decisions section 10.3).
+		// attempt to hand it to, it is the next attempt's to carry.
 		if pending && retried.Delivery == conversation.DeliveryQueued {
 			if err := requestNativeDispatch(ctx, tx, scope, record.WorkItemID, now); err != nil {
 				return receipt, err
@@ -890,23 +908,23 @@ func (c *conversationService) acceptCommand(ctx context.Context, tx *sql.Tx, sco
 
 // retryMessage re-queues one user message the hub could not establish.
 // Nothing is duplicated: the same message id goes back on the ladder and
-// the retry key gets its own receipt (decisions section 10.3).
+// the retry key gets its own receipt.
 func (c *conversationService) retryMessage(ctx context.Context, tx *sql.Tx, scope nativeScope, record *conversationRecord, command conversation.Command, now time.Time) (conversationMessageRecord, error) {
 	messages, err := c.queryMessages(ctx, tx, conversationMessageQuery+"conversation_id = ? AND id = ?", record.ID, command.MessageID)
 	if err != nil {
 		return conversationMessageRecord{}, err
 	}
 	if len(messages) == 0 {
-		return conversationMessageRecord{}, nativeInvalid("The message to retry is not part of this conversation")
+		return conversationMessageRecord{}, nativePublicInvalid("The message to retry is not part of this conversation")
 	}
 	message := messages[0]
 	if message.Role != conversation.RoleUser {
-		return conversationMessageRecord{}, nativeInvalid("Only a message you sent can be retried")
+		return conversationMessageRecord{}, nativePublicInvalid("Only a message you sent can be retried")
 	}
 	switch message.Delivery {
 	case conversation.DeliveryUnknown, conversation.DeliveryFailed, conversation.DeliveryRejected:
 	default:
-		return conversationMessageRecord{}, nativeInvalid(fmt.Sprintf("A message with delivery %s cannot be retried", message.Delivery))
+		return conversationMessageRecord{}, nativePublicInvalid(fmt.Sprintf("A message with delivery %s cannot be retried", message.Delivery))
 	}
 	if err := c.requireQueueCapacity(ctx, tx, record.ID, command.Kind); err != nil {
 		return conversationMessageRecord{}, err
@@ -929,21 +947,20 @@ func (c *conversationService) retryMessage(ctx context.Context, tx *sql.Tx, scop
 
 // requireContinueAttempt enforces that a continue names the attempt it
 // follows. A null attempt is only honest for a conversation that never had
-// one; otherwise the client is continuing a generation it did not observe
-// (decisions section 10.8).
+// one; otherwise the client is continuing a generation it did not observe.
 func (c *conversationService) requireContinueAttempt(ctx context.Context, tx *sql.Tx, record conversationRecord, command conversation.Command) error {
 	if strings.TrimSpace(command.Expected.AttemptID) != "" {
 		return nil
 	}
 	if record.Execution.Owner.AttemptID != "" {
-		return nativeInvalid("expected.attempt_id is required to continue a conversation that has an attempt")
+		return nativePublicInvalid("expected.attempt_id is required to continue a conversation that has an attempt")
 	}
 	var attempts int
 	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM conversation_starts WHERE conversation_id = ?", record.ID).Scan(&attempts); err != nil {
 		return fmt.Errorf("count conversation attempts: %w", err)
 	}
 	if attempts > 0 {
-		return nativeInvalid("expected.attempt_id is required to continue a conversation that had an attempt")
+		return nativePublicInvalid("expected.attempt_id is required to continue a conversation that had an attempt")
 	}
 	return nil
 }
@@ -984,7 +1001,7 @@ func renderAnswer(question conversation.Question, answers map[string][]string) s
 func (s *Service) linkConversation(c echo.Context) error {
 	var request conversationLinkRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	value, err := s.commandLinkConversation(c.Request().Context(), nativeRequestScope(c), c.Param("conversation"), request)
 	if err != nil {
@@ -1032,7 +1049,7 @@ func (s *Service) changeConversation(ctx context.Context, scope nativeScope, id 
 func (s *Service) patchConversation(c echo.Context) error {
 	var request conversationPatchRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	value, err := s.commandPatchConversation(c.Request().Context(), nativeRequestScope(c), c.Param("conversation"), request)
 	if err != nil {
@@ -1044,7 +1061,7 @@ func (s *Service) patchConversation(c echo.Context) error {
 func (s *Service) commandCreateConversation(ctx context.Context, scope nativeScope, request conversationCreateRequest) (json.RawMessage, error) {
 	request.Title = strings.TrimSpace(request.Title)
 	if utf8.RuneCountInString(request.Title) > conversationTitleMaxRunes {
-		return nil, nativeInvalid(fmt.Sprintf("Title must be at most %d characters", conversationTitleMaxRunes))
+		return nil, nativePublicInvalid(fmt.Sprintf("Title must be at most %d characters", conversationTitleMaxRunes))
 	}
 	var command conversation.Command
 	if request.FirstMessage != nil {
@@ -1065,6 +1082,11 @@ func (s *Service) commandCreateConversation(ctx context.Context, scope nativeSco
 	if err := service.authorizeWrite(ctx, s.database.reader, scope, fresh); err != nil {
 		return nil, err
 	}
+	prepared, err := service.prepareCommandContents(ctx, string(scope.organization), string(scope.project), scope.credential.ID, "", command)
+	if err != nil {
+		return nil, err
+	}
+	ctx = prepared
 	var record conversationRecord
 	notify := false
 	value, err := s.executeNativeMutation(ctx, scope, nativeCommandOptions{OperationID: nativeOperation(scope, "POST", "/conversations"), Feature: "collaboration"}, tracker.Mutation{IdempotencyKey: request.Key}, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
@@ -1119,7 +1141,7 @@ func (s *Service) commandCreateConversation(ctx context.Context, scope nativeSco
 			}
 			result, err := service.acceptCommand(ctx, tx, scope, &record, command, now)
 			if err != nil {
-				service.logStaleExecution(string(command.Kind), record.ID, err)
+				err = conversationStaleExecutionError(string(command.Kind), record.ID, err)
 				return nil, err
 			}
 			if err := service.recordReceipt(ctx, tx, record.ID, record.Execution.Owner.AttemptID, result, now); err != nil {
@@ -1150,6 +1172,20 @@ func (s *Service) commandPostConversation(ctx context.Context, scope nativeScope
 		return nil, bindErr
 	}
 	service := s.conversations
+	if service.store.contents != nil {
+		current, err := service.loadConversation(ctx, s.database.reader, scope, id)
+		if err != nil {
+			return nil, err
+		}
+		if err := service.authorizeWrite(ctx, s.database.reader, scope, current); err != nil {
+			return nil, err
+		}
+		prepared, err := service.prepareCommandContents(ctx, string(scope.organization), string(scope.project), scope.credential.ID, id, command)
+		if err != nil {
+			return nil, err
+		}
+		ctx = prepared
+	}
 	var record conversationRecord
 	var receipt *conversation.Receipt
 	replay := false
@@ -1171,7 +1207,7 @@ func (s *Service) commandPostConversation(ctx context.Context, scope nativeScope
 		}
 		if stored != nil {
 			if conflict {
-				return &nativeError{Code: "idempotency_conflict", Message: "Idempotency key has different content", status: http.StatusConflict}
+				return &nativeError{Code: "idempotency_conflict", Message: "Idempotency key has different content", status: http.StatusConflict, publicMessage: true}
 			}
 			receipt, replay = stored, true
 			return nil
@@ -1188,7 +1224,7 @@ func (s *Service) commandPostConversation(ctx context.Context, scope nativeScope
 		return nil
 	})
 	if err != nil {
-		service.logStaleExecution(string(command.Kind), record.ID, err)
+		err = conversationStaleExecutionError(string(command.Kind), record.ID, err)
 		return nil, err
 	}
 	if !replay {
@@ -1234,7 +1270,7 @@ func (s *Service) commandLinkConversation(ctx context.Context, scope nativeScope
 			return nil, conversationShareRequired()
 		}
 		if record.SubjectWorkItemID != "" {
-			return nil, nativeInvalid("Issue questions cannot be linked or shared")
+			return nil, nativePublicInvalid("Issue questions cannot be linked or shared")
 		}
 		if record.WorkItemID != "" {
 			return nil, conversationAlreadyLinked(record.ID)
@@ -1254,7 +1290,7 @@ func (s *Service) commandLinkConversation(ctx context.Context, scope nativeScope
 		body += "Conversation: " + record.ID
 		// The conversation's explicit preferences travel with the issue from
 		// the first revision, so the first runner to claim it already reads
-		// them (decisions section 14).
+		// them.
 		body = conversationAgentOverrideBody(body, record.Preferences)
 		issue, err := createNativeIssueTx(ctx, tx, scope, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: request.Key}, Title: strings.TrimSpace(request.Issue.Title), Body: body, State: next.State, Labels: request.Issue.Labels, Priority: next.Priority}, now)
 		if err != nil {
@@ -1329,10 +1365,16 @@ func (s *Service) readConversationSnapshot(ctx context.Context, scope nativeScop
 }
 
 func (s *Service) readConversationSnapshotFor(ctx context.Context, scope nativeScope, id, item string, diagnoseMissing bool) (json.RawMessage, error) {
+	ctx = s.archiveContext(ctx, scope, false)
 	service := s.conversations
 	var snapshot conversationSnapshot
 	var diagnostic json.RawMessage
-	err := service.transact(ctx, func(tx *sql.Tx, now time.Time) error {
+	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	err = func(tx *sql.Tx, now time.Time) error {
 		var record conversationRecord
 		var err error
 		if item != "" {
@@ -1387,7 +1429,10 @@ func (s *Service) readConversationSnapshotFor(ctx context.Context, scope nativeS
 			snapshot.Questions = append(snapshot.Questions, question.Question)
 		}
 		return nil
-	})
+	}(tx, s.config.now())
+	if err == nil {
+		err = tx.Commit()
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -1398,18 +1443,22 @@ func (s *Service) readConversationSnapshotFor(ctx context.Context, scope nativeS
 	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(snapshot)
+	raw, err := json.Marshal(snapshot)
+	if err != nil {
+		return nil, err
+	}
+	return withNativeArchive(raw, nativeArchiveDescriptor(ctx))
 }
 
 func (s *Service) commandPatchConversation(ctx context.Context, scope nativeScope, id string, request conversationPatchRequest) (json.RawMessage, error) {
 	if request.Title == nil && request.Preferences == nil {
-		return nil, nativeInvalid("A patch must change the title, the preferences, or both")
+		return nil, nativePublicInvalid("A patch must change the title, the preferences, or both")
 	}
 	title := ""
 	if request.Title != nil {
 		title = strings.TrimSpace(*request.Title)
 		if title == "" || utf8.RuneCountInString(title) > conversationTitleMaxRunes {
-			return nil, nativeInvalid(fmt.Sprintf("Title must contain 1 to %d characters", conversationTitleMaxRunes))
+			return nil, nativePublicInvalid(fmt.Sprintf("Title must contain 1 to %d characters", conversationTitleMaxRunes))
 		}
 	}
 	return s.changeConversation(ctx, scope, id, func(ctx context.Context, tx *sql.Tx, scope nativeScope, record *conversationRecord, now time.Time) error {
@@ -1438,7 +1487,7 @@ func (s *Service) commandPatchConversation(ctx context.Context, scope nativeScop
 				}
 				if !granted || preferences.ModelValue() == "" || preferences.ModelValue() == s.conversationDefaultModel() {
 					if effort := preferences.EffortValue(); effort != "" && effort != "low" && effort != "medium" {
-						return nativeInvalid("preferences: reasoning_effort must be auto, low, or medium for general chat")
+						return nativePublicInvalid("preferences: reasoning_effort must be auto, low, or medium for general chat")
 					}
 				}
 			} else {
@@ -1454,14 +1503,20 @@ func (s *Service) commandPatchConversation(ctx context.Context, scope nativeScop
 		record.Preferences = preferences
 		// A linked conversation's preferences live in the issue body as
 		// well, so a runner that never sees the conversation still honours
-		// them (decisions section 14).
+		// them.
 		return s.conversations.writeAgentOverride(ctx, tx, scope, *record, now)
 	})
 }
 
 func (s *Service) readConversationMessages(ctx context.Context, scope nativeScope, id string, before int64, limit int) (json.RawMessage, error) {
+	ctx = s.archiveContext(ctx, scope, false)
 	var raw json.RawMessage
-	err := s.conversations.transact(ctx, func(tx *sql.Tx, _ time.Time) error {
+	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	err = func(tx *sql.Tx, _ time.Time) error {
 		record, err := s.conversations.loadConversation(ctx, tx, scope, id)
 		if err != nil {
 			return err
@@ -1474,8 +1529,14 @@ func (s *Service) readConversationMessages(ctx context.Context, scope nativeScop
 		_, page.NextCursor = conversationOlderCursor(page.Messages)
 		raw, err = json.Marshal(page)
 		return err
-	})
-	return raw, err
+	}(tx, s.config.now())
+	if err == nil {
+		err = tx.Commit()
+	}
+	if err != nil {
+		return nil, err
+	}
+	return withNativeArchive(raw, nativeArchiveDescriptor(ctx))
 }
 
 func (s *Service) readConversationsPage(ctx context.Context, scope nativeScope, filter conversationListQuery) (json.RawMessage, error) {

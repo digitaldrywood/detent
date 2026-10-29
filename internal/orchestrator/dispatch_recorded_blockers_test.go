@@ -76,16 +76,22 @@ func TestDispatchRecordedPullRequestBlocker(t *testing.T) {
 				if tracker.identifierBatches != 2 {
 					t.Fatalf("reference reads = %d, want one before and one after mutation; decisions=%+v", tracker.identifierBatches, state.SchedulerDecisions)
 				}
-				if len(tracker.updates) != 1 || tracker.updates[0].issueID != writer.ID {
+				wantWrites := 1
+				if tt.mutation == "poll" {
+					wantWrites = 0
+				}
+				if len(tracker.updates) != wantWrites || wantWrites > 0 && tracker.updates[0].issueID != writer.ID {
 					t.Fatalf("lane writes = %+v, want writer %s", tracker.updates, writer.ID)
 				}
-				if len(state.Running) != 1 || state.Running[later.ID].Issue.ID != later.ID {
-					t.Fatalf("fresh post-write predicate did not launch subsequent candidate: running=%+v decisions=%+v", state.Running, state.SchedulerDecisions)
-				}
 				if tt.mutation == "poll" {
-					if _, ok := state.Blocked[writer.ID]; !ok {
-						t.Fatal("exhausted merge worker was not blocked")
+					if len(state.Running) != 0 || !state.Retry[writer.ID].DueAt.After(now) {
+						t.Fatal("CI exhaustion bypassed retry or unresolved dependency")
 					}
+					if _, held := state.Blocked[writer.ID]; held {
+						t.Fatal("CI exhaustion created a hold")
+					}
+				} else if len(state.Running) != 1 || state.Running[later.ID].Issue.ID != later.ID {
+					t.Fatalf("fresh post-write predicate did not launch subsequent candidate: running=%+v decisions=%+v", state.Running, state.SchedulerDecisions)
 				}
 				return
 			}
@@ -435,7 +441,7 @@ func TestDispatchParkReasonRemainsVisible(t *testing.T) {
 		name, reason, recovery, want string
 	}{
 		{name: "park and recovery", reason: workpadBlockedUnactionedReason, recovery: "park_acknowledgement_required", want: workpadBlockedUnactionedReason + ": park_acknowledgement_required"},
-		{name: "park only", reason: noProgressLimitReason, want: noProgressLimitReason},
+		{name: "park only", reason: "no_progress_limit", want: "no_progress_limit"},
 		{name: "recovery only", recovery: "park_acknowledgement_required", want: "park_acknowledgement_required"},
 		{name: "legacy unknown hold"},
 	} {

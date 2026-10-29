@@ -467,12 +467,17 @@ func (s *sqliteStore) LatestAgentResumeState(ctx context.Context, attrs AgentRes
 		return AgentResumeState{}, ErrNotFound
 	}
 
-	row, err := s.queries.GetLatestAgentResumeState(ctx, sqlc.GetLatestAgentResumeStateParams{
+	queries, err := s.attemptReadQueries(ctx, attrs.ProjectID)
+	if err != nil {
+		return AgentResumeState{}, err
+	}
+
+	row, err := queries.GetLatestAgentResumeState(ctx, sqlc.GetLatestAgentResumeStateParams{
 		WorkAttemptID:    attrs.WorkAttemptID,
 		ProjectID:        nullString(attrs.ProjectID),
 		PrNumber:         attrs.PRNumber,
-		PrHeadSha:        attrs.PRHeadSHA,
-		PrBaseSha:        attrs.PRBaseSHA,
+		PrHeadSha:        sql.NullString{String: attrs.PRHeadSHA, Valid: true},
+		PrBaseSha:        sql.NullString{String: attrs.PRBaseSHA, Valid: true},
 		AgentBackendID:   nullString(attrs.AgentBackendID),
 		AgentBackendKind: nullString(attrs.AgentBackendKind),
 		AgentRole:        nullString(attrs.AgentRole),
@@ -863,7 +868,11 @@ func (s *sqliteStore) DailyDigest(ctx context.Context, windows []DailyDigestWind
 		if err != nil {
 			return nil, fmt.Errorf("reading daily digest models for %s: %w", window.Date, err)
 		}
-		failureClasses, err := s.queries.DailyDigestFailureClasses(ctx, sqlc.DailyDigestFailureClassesParams(params))
+		projectionQueries, err := s.attemptReadQueries(ctx, "")
+		if err != nil {
+			return nil, err
+		}
+		failureClasses, err := projectionQueries.DailyDigestFailureClasses(ctx, sqlc.DailyDigestFailureClassesParams(params))
 		if err != nil {
 			return nil, fmt.Errorf("reading daily digest failures for %s: %w", window.Date, err)
 		}
@@ -970,7 +979,12 @@ func (s *sqliteStore) IssueSpendSince(ctx context.Context, query IssueSpendSince
 	if err != nil {
 		return IssueSpendSince{}, err
 	}
-	row, err := s.queries.IssueSpendSince(ctx, sqlc.IssueSpendSinceParams{
+	queries, err := s.attemptReadQueries(ctx, projectID)
+	if err != nil {
+		return IssueSpendSince{}, err
+	}
+
+	row, err := queries.IssueSpendSince(ctx, sqlc.IssueSpendSinceParams{
 		ProjectID:  projectID,
 		Since:      since,
 		IssueID:    issueID,
@@ -1191,7 +1205,12 @@ func (s *sqliteStore) RecentModelTokenQuantiles(ctx context.Context, query Model
 }
 
 func (s *sqliteStore) CycleTimeReport(ctx context.Context) (CycleTimeReport, error) {
-	rows, err := s.queries.CompletedIssueCycleRows(ctx)
+	queries, err := s.attemptReadQueries(ctx, "")
+	if err != nil {
+		return CycleTimeReport{}, err
+	}
+
+	rows, err := queries.CompletedIssueCycleRows(ctx)
 	if err != nil {
 		return CycleTimeReport{}, fmt.Errorf("reading cycle time report: %w", err)
 	}

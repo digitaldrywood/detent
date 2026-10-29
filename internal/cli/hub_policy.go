@@ -138,7 +138,7 @@ func resolveHubPolicy(ctx context.Context, configPath, projectID string) (global
 	if err != nil {
 		return globalconfig.Config{}, workflowconfig.Workflow{}, policy.Descriptor{}, err
 	}
-	cfg, err := readRunnerRuntimeConfig(ctx, resolution.Path)
+	cfg, err := readLocalConfigurationFile(ctx, resolution.Path)
 	if err != nil {
 		return cfg, workflowconfig.Workflow{}, policy.Descriptor{}, err
 	}

@@ -65,7 +65,7 @@ func TestStartupRefreshKeepsStateAndWorkerProgressObservable(t *testing.T) {
 						for _, message := range []string{"workspace created", "tests running"} {
 							err := request.OnUsageUpdate(runpkg.UsageUpdate{
 								SessionID: request.Issue.ID + "-session", TurnCount: 1, LastEventAt: time.Now(), LastMessage: message,
-								DispatchLoopStart: &runpkg.DispatchLoopStartSnapshot{WorkspaceDiffAvailable: true},
+								CompletionSourceStart: &runpkg.CompletionSourceStartSnapshot{WorkspaceDiffAvailable: true},
 							})
 							if err != nil {
 								t.Fatal(err)

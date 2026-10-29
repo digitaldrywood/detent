@@ -3,16 +3,23 @@ package hubserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
+	"github.com/labstack/echo/v4"
+
 	"github.com/digitaldrywood/detent/internal/changerequest"
+	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -38,6 +45,19 @@ func TestCompatibilityPolicyUpgradeAndRevocation(t *testing.T) {
 				if state == "revoked" {
 					requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodDelete, "/api/v1/repositories/digitaldrywood/detent/policy", testHubAdminToken, map[string]string{"expected_policy_id": descriptor.ID}), http.StatusGone)
 				}
+			}
+			response := performHubAPIRequest(t, service, http.MethodGet, "/api/v1/repositories/digitaldrywood/detent/policy", testHubAdminToken, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var current struct {
+				Policy *policy.Descriptor `json:"policy"`
+			}
+			decodeHubResponse(t, response, &current)
+			if state != "legacy" {
+				if current.Policy == nil || !reflect.DeepEqual(*current.Policy, hubTestPolicy()) {
+					t.Fatalf("approved repository policy: %s", response.Body)
+				}
+			} else if current.Policy != nil || !strings.Contains(response.Body.String(), `"policy":null`) {
+				t.Fatalf("absent repository policy: %s", response.Body)
 			}
 			wantRenew, wantEvent := http.StatusOK, http.StatusCreated
 			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, "/api/v1/leases/"+string(lease.ID)+"/renew", testHubAdminToken, map[string]any{"fencing_token": lease.FencingToken, "ttl_seconds": 90}), wantRenew)
@@ -82,6 +102,23 @@ func TestProjectPolicyAuthorizationAndAtomicClaims(t *testing.T) {
 	}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, claim), http.StatusUnprocessableEntity)
 	approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
+	readExecution := func() policy.Approval {
+		t.Helper()
+		response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/policy?execution_configuration=1", worker, nil)
+		requireNativeStatus(t, response, http.StatusOK)
+		var approval policy.Approval
+		decodeHubResponse(t, response, &approval)
+		if approval.ExecutionConfiguration == nil || approval.ExecutionConfiguration.PolicyID != approval.Policy.ID {
+			t.Fatal("policy read lost execution configuration")
+		}
+		return approval
+	}
+	initialExecution := readExecution()
+	running, err := config.ApplyExecutionConfiguration(config.Workflow{Config: config.Default()}, initialExecution.Policy, initialExecution.ExecutionConfiguration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initialValues := string(initialExecution.ExecutionConfiguration.Values)
 	for _, field := range []string{"states", "workflow_markdown"} {
 		request := map[string]any{"idempotency_key": "repository-override-" + field, "expected_revision": "2", "intake": "disabled", "projection": "disabled"}
 		if field == "states" {
@@ -119,6 +156,10 @@ func TestProjectPolicyAuthorizationAndAtomicClaims(t *testing.T) {
 	pinned, err := f.service.database.leasePolicyID(t.Context(), lease.ID)
 	if err != nil || pinned != descriptor.ID {
 		t.Fatalf("approval changed existing lease policy: %s %v", pinned, err)
+	}
+	updatedExecution := readExecution()
+	if updatedExecution.ExecutionConfiguration.PolicyID != changed.ID || running.Config.Policy.ID != pinned || string(initialExecution.ExecutionConfiguration.Values) != initialValues {
+		t.Fatal("policy approval replaced a running attempt's execution configuration")
 	}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/renew", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 90}), http.StatusOK)
 	reported := descriptor
@@ -308,6 +349,7 @@ func TestConfigurationChangesPreserveLandingWork(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			drainTestNativeBoard(t, f.service)
 			var sequenceBefore, floorBefore int64
 			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT sequence,replay_floor FROM native_board_sequences WHERE organization_id=? AND project_id=?", scope.organization, scope.project).Scan(&sequenceBefore, &floorBefore); err != nil {
 				t.Fatal(err)
@@ -334,7 +376,7 @@ func TestConfigurationChangesPreserveLandingWork(t *testing.T) {
 			if succeeded && test.mutation == "" {
 				wantPolicy = next.ID
 			}
-			approval, err := readProjectPolicy(t.Context(), f.service.database.db, string(scope.organization)+"/"+string(scope.project))
+			approval, _, err := readProjectPolicy(t.Context(), f.service.database.db, string(scope.organization)+"/"+string(scope.project))
 			if err != nil || approval.Policy.ID != wantPolicy {
 				t.Fatalf("configuration = %+v, error = %v, want %s", approval, err, wantPolicy)
 			}
@@ -651,5 +693,607 @@ func clearNativeFixturePolicy(t *testing.T, f nativeFixture) {
 	}
 	if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM policy_revisions WHERE scope=? AND approved_by='fixture'", scope); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestApprovedPolicyClaimExposure(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{config.BillingModeMetered, config.BillingModeSubscription} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			f := newDefaultNativeFixture(t, Config{})
+			cfg := config.Default()
+			cfg.Tracker.Kind = config.TrackerHubNative
+			cfg.Budget.BillingMode = mode
+			cfg.Plan.Enabled = false
+			cfg.Gate.SecurityAudit.Enabled = false
+			cfg.Gate.Validator.Enabled = true
+			cfg.Runners = config.Runners{Profile: "approved", Profiles: map[string]policy.Requirements{"approved": {RequiredTags: []string{"linux"}}}}
+			descriptor, err := config.ResolvePolicy(config.Workflow{Config: cfg})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var behavior map[string]json.RawMessage
+			if err := json.Unmarshal(descriptor.Configuration.Behavior, &behavior); err != nil {
+				t.Fatal(err)
+			}
+			behavior["RetiredBehavior"] = json.RawMessage(`{"Enabled":true}`)
+			delete(behavior, "Gate")
+			descriptor.Configuration.Behavior, err = json.Marshal(behavior)
+			if err != nil {
+				t.Fatal(err)
+			}
+			descriptor.SourceRevision = strings.Repeat("b", 64)
+			descriptor = descriptor.WithID()
+			raw, err := json.Marshal(descriptor)
+			if err != nil {
+				t.Fatal(err)
+			}
+			db := f.service.database.db
+			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+			policyScope := string(scope.organization) + "/" + string(scope.project)
+			if _, err := db.ExecContext(t.Context(), "INSERT INTO policy_revisions (scope,policy_id,metadata_json,approved_by,approved_at) VALUES (?,?,?,'fixture',?)", policyScope, descriptor.ID, string(raw), formatHubTime(f.service.config.now())); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.ExecContext(t.Context(), "UPDATE project_policies SET policy_id=? WHERE scope=?", descriptor.ID, policyScope); err != nil {
+				t.Fatal(err)
+			}
+			r := placementFixtureRunner(t, f, "local-runner", "local", false, 1, "gpt-6.1-sol")
+			exposure, err := monthlyClaimExposure(t.Context(), db, scope, r.binding.MachineID, false)
+			if err != nil || exposure.SpriteInfrastructure || exposure.RunnerAPI != (mode == config.BillingModeMetered) {
+				t.Fatalf("claim exposure = %+v, error = %v", exposure, err)
+			}
+			contract, err := nativeIssueContractConfig(t.Context(), db, scope)
+			if err != nil || contract.Budget.EffectiveBillingMode() != mode || contract.Plan.Enabled || contract.Gate.SecurityAudit.Enabled != descriptor.Gates.SecurityAudit || contract.Gate.Validator.Enabled != descriptor.Gates.Validator {
+				t.Fatalf("issue contract configuration = %+v, error = %v", contract, err)
+			}
+			snapshot, err := readPlacementSnapshotWithCapacity(t.Context(), db, scope, f.service.config.now(), nil, newPlacementCapacity(), make(map[string]bool))
+			if err != nil || snapshot.resolver == nil || !reflect.DeepEqual(snapshot.Requirements, policy.Requirements{RequiredTags: []string{"linux"}}) || strings.Contains(strings.ToLower(snapshot.Reason), "approval") {
+				t.Fatalf("placement = %+v, error = %v", snapshot, err)
+			}
+			approved, found, err := readProjectPolicy(t.Context(), db, policyScope)
+			if err != nil || !found || !reflect.DeepEqual(approved.Policy, descriptor) {
+				t.Fatalf("stored policy changed: %+v, error = %v", approved, err)
+			}
+		})
+	}
+}
+
+func TestNativePolicySubmissionConsistency(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name   string
+		change func(*policy.Descriptor)
+	}{
+		{"gates", func(d *policy.Descriptor) { d.Gates.SecurityAudit = !d.Gates.SecurityAudit }},
+		{"validator", func(d *policy.Descriptor) { d.Gates.Validator = !d.Gates.Validator }},
+		{"planning", func(d *policy.Descriptor) { d.Gates.PlanEnabled = !d.Gates.PlanEnabled }},
+		{"requirements", func(d *policy.Descriptor) { d.Requirements.RequiredTags = []string{"privileged"} }},
+		{"profile", func(d *policy.Descriptor) { d.Profile = "privileged" }},
+		{"revision", func(d *policy.Descriptor) { d.SourceRevision = strings.Repeat("b", 64) }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newDefaultNativeFixture(t, Config{})
+			path := string(f.project.OrganizationID) + "/" + string(f.project.ID)
+			before, found, err := readProjectPolicy(t.Context(), f.service.database.db, path)
+			if err != nil || !found {
+				t.Fatal(err)
+			}
+			cfg := config.Default()
+			cfg.Tracker.Kind = config.TrackerHubNative
+			descriptor, err := config.ResolvePolicy(config.Workflow{Config: cfg})
+			if err != nil {
+				t.Fatal(err)
+			}
+			test.change(&descriptor)
+			descriptor = descriptor.WithID()
+			if err := descriptor.Validate(); err != nil {
+				t.Fatal(err)
+			}
+			for _, submission := range []struct {
+				method, path string
+				body         any
+			}{
+				{http.MethodPut, f.base + "/policy", policy.Change{ExpectedID: before.Policy.ID, Policy: descriptor}},
+				{http.MethodPost, f.base + "/policy/observed", policy.Observation{Descriptor: descriptor}},
+			} {
+				response := performHubAPIRequest(t, f.service, submission.method, submission.path, testHubAdminToken, submission.body)
+				requireNativeStatus(t, response, http.StatusUnprocessableEntity)
+				if !strings.Contains(response.Body.String(), "policy_mismatch") {
+					t.Fatalf("submission refused for unrelated reason: %s", response.Body.String())
+				}
+			}
+			after, found, err := readProjectPolicy(t.Context(), f.service.database.db, path)
+			if err != nil || !found || !reflect.DeepEqual(before, after) {
+				t.Fatalf("inconsistent submission changed approval: %+v, error = %v", after, err)
+			}
+			var observations int
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT COUNT(*) FROM project_observed_policies WHERE scope=?", path).Scan(&observations); err != nil {
+				t.Fatal(err)
+			}
+			if observations != 0 {
+				t.Fatalf("inconsistent observations stored: %d", observations)
+			}
+		})
+	}
+}
+
+func TestProjectPolicyCache(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name       string
+		count      int
+		otherScope bool
+		otherDB    bool
+		mutate     bool
+	}{
+		{name: "repeated authored policy decodes once", count: 1},
+		{name: "two policies in two projects stay distinct", count: 2, otherScope: true},
+		{name: "same policy in two projects stays scoped", count: 1, otherScope: true},
+		{name: "same policy in two databases stays scoped", count: 1, otherDB: true},
+		{name: "returned maps and slices are isolated", count: 1, mutate: true},
+		{name: "oldest entry evicted at fixed bound", count: projectPolicyCacheLimit + 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			workflow, err := config.ParseProjectDefinition(config.ProjectDefinitionSources{
+				ConfigPath: "detent.yaml", HasConfig: true,
+				Config:       []byte("schema: 1\ntracker:\n  kind: hub_native\n  repository: example-org/example-project\ngate:\n  run: true\n  required_status_checks: []\n"),
+				WorkflowPath: "WORKFLOW.md", Workflow: []byte("Implement the assigned issue.\n"),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			descriptor, err := config.ResolvePolicy(workflow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			decodes := 0
+			decode := func(raw string) (*config.ResolvedNativePolicy, error) {
+				decodes++
+				return decodeResolvedProjectPolicy(raw)
+			}
+			db := &database{policies: projectPolicyCache{decode: decode}}
+			ctx := db.policyContext(t.Context())
+			scope := "organization/project"
+			read := func(ctx context.Context, scope string, descriptor policy.Descriptor) policy.Descriptor {
+				t.Helper()
+				raw, err := json.Marshal(descriptor)
+				if err != nil {
+					t.Fatal(err)
+				}
+				approval, err := decodeProjectPolicy(ctx, scope, descriptor.ID, string(raw), policy.Approval{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				return approval.Policy
+			}
+			first := read(ctx, scope, descriptor)
+			applied, err := config.ApplyNativePolicy(config.Workflow{Config: config.Default()}, first)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cached, err := projectPolicyWorkflow(ctx, scope, first)
+			if err != nil || !reflect.DeepEqual(cached, applied) {
+				t.Fatalf("cached authored workflow differs from application: %v", err)
+			}
+			if test.mutate {
+				first.Authored.Files["detent.yaml"] = "changed"
+				first.Configuration.Behavior[0] = '!'
+				first.Workflow.States[0].Transitions = []string{"changed"}
+				cached.Authored.Files["WORKFLOW.md"] = "changed"
+				cached.DefinitionSources.Config[0] = '!'
+				cached.Config.Tracker.ActiveStates[0] = "changed"
+				cached.Config.Tracker.PriorityMap.Map["changed"] = 1
+				*cached.Config.Worker.AllowLocalBinding = true
+				cached.Config = cached.Config.WithWorkerDefaults(config.WorkerDefaults{AllowLocalBinding: new(false)})
+				if !cached.Config.Worker.EffectiveAllowLocalBinding() {
+					t.Fatal("copied workflow lost its project worker setting")
+				}
+			}
+			for i := 1; i < test.count; i++ {
+				if i == projectPolicyCacheLimit {
+					read(ctx, scope, descriptor)
+				}
+				other := hubTestPolicy()
+				other.SourceRevision = fmt.Sprintf("%040x", i)
+				other = other.WithID()
+				otherScope := scope
+				if test.otherScope {
+					otherScope = "organization/other-project"
+				}
+				if got := read(ctx, otherScope, other); !reflect.DeepEqual(got, other) {
+					t.Fatal("policy identities mixed")
+				}
+			}
+			if test.otherScope && test.count == 1 {
+				read(ctx, "organization/other-project", descriptor)
+			}
+			if test.otherDB {
+				other := &database{policies: projectPolicyCache{decode: decode}}
+				read(other.policyContext(t.Context()), scope, descriptor)
+			}
+			if test.count > projectPolicyCacheLimit {
+				if len(db.policies.entries) != projectPolicyCacheLimit {
+					t.Fatalf("cache entries = %d", len(db.policies.entries))
+				}
+				if _, found := db.policies.entries[projectPolicyCacheKey{scope: scope, id: descriptor.ID}]; found {
+					t.Fatal("oldest policy retained past bound")
+				}
+			}
+			if got := read(ctx, scope, descriptor); !reflect.DeepEqual(got, descriptor) {
+				t.Fatal("cached descriptor changed")
+			}
+			again, err := projectPolicyWorkflow(ctx, scope, descriptor)
+			if err != nil || !reflect.DeepEqual(again, applied) {
+				t.Fatalf("cached workflow changed after read: %v", err)
+			}
+			want := test.count
+			if test.otherDB || test.otherScope && test.count == 1 || test.count > projectPolicyCacheLimit {
+				want++
+			}
+			if decodes != want {
+				t.Fatalf("policy decodes = %d, want %d", decodes, want)
+			}
+		})
+	}
+}
+
+func TestProjectPolicyCacheConcurrentReads(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name     string
+		otherKey string
+		fail     bool
+		panic    bool
+		evict    bool
+	}{
+		{name: "same key shares one decode and independent results"},
+		{name: "unrelated warm hit completes during decode", otherKey: "warm"},
+		{name: "unrelated cold miss completes during decode", otherKey: "cold"},
+		{name: "failed decode reaches waiters and later retries", fail: true},
+		{name: "panicked decode releases waiters and later retries", panic: true},
+		{name: "eviction during decode preserves cache entries", evict: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				descriptor := hubTestPolicy()
+				descriptor.Requirements.RequiredTags = []string{"example"}
+				descriptor = descriptor.WithID()
+				raw, err := json.Marshal(descriptor)
+				if err != nil {
+					t.Fatal(err)
+				}
+				other := hubTestPolicy()
+				otherRaw, err := json.Marshal(other)
+				if err != nil {
+					t.Fatal(err)
+				}
+				started, release := make(chan struct{}), make(chan struct{})
+				resume := sync.OnceFunc(func() { close(release) })
+				var readers sync.WaitGroup
+				db := &database{}
+				t.Cleanup(func() {
+					resume()
+					synctest.Wait()
+					if t.Failed() {
+						db.policies.mu.Lock()
+						for key, pending := range db.policies.inflight {
+							select {
+							case <-pending.done:
+							default:
+								pending.err = errors.New("test cleanup released pending decode")
+								close(pending.done)
+							}
+							delete(db.policies.inflight, key)
+						}
+						db.policies.mu.Unlock()
+					}
+					readers.Wait()
+				})
+				var decodes atomic.Int32
+				decodeErr := errors.New("example decode failure")
+				const panicValue = "example private policy input"
+				db.policies.decode = func(input string) (*config.ResolvedNativePolicy, error) {
+					if input == string(raw) && decodes.Add(1) == 1 {
+						close(started)
+						<-release
+						if test.panic {
+							panic(panicValue)
+						}
+						if test.fail {
+							return nil, decodeErr
+						}
+					}
+					return decodeResolvedProjectPolicy(input)
+				}
+				ctx := db.policyContext(t.Context())
+				scope := "organization/project"
+				if test.otherKey == "warm" || test.evict {
+					if _, err := decodeProjectPolicy(ctx, scope, other.ID, string(otherRaw), policy.Approval{}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				type readResult struct {
+					approval   policy.Approval
+					err        error
+					panicValue any
+				}
+				const count = 8
+				results := make(chan readResult, count)
+				read := func() {
+					defer readers.Done()
+					defer func() {
+						if value := recover(); value != nil {
+							results <- readResult{panicValue: value}
+						}
+					}()
+					approval, err := decodeProjectPolicy(ctx, scope, descriptor.ID, string(raw), policy.Approval{})
+					results <- readResult{approval: approval, err: err}
+				}
+				readers.Add(1)
+				go read()
+				<-started
+				if !db.policies.mu.TryLock() {
+					t.Fatal("shared cache mutex held during decode")
+				}
+				db.policies.mu.Unlock()
+				for range count - 1 {
+					readers.Add(1)
+					go read()
+				}
+				if test.otherKey != "" {
+					otherResult := make(chan readResult, 1)
+					readers.Add(1)
+					go func() {
+						defer readers.Done()
+						approval, err := decodeProjectPolicy(ctx, scope, other.ID, string(otherRaw), policy.Approval{})
+						otherResult <- readResult{approval: approval, err: err}
+					}()
+					synctest.Wait()
+					select {
+					case result := <-otherResult:
+						if result.err != nil || !reflect.DeepEqual(result.approval.Policy, other) {
+							t.Fatalf("unrelated read = %+v, %v", result.approval, result.err)
+						}
+					default:
+						t.Fatal("unrelated read blocked on paused decode")
+					}
+				} else {
+					synctest.Wait()
+				}
+				if got := decodes.Load(); got != 1 {
+					t.Fatalf("paused decodes = %d, want 1", got)
+				}
+				if test.evict {
+					for i := range projectPolicyCacheLimit {
+						if _, err := decodeProjectPolicy(ctx, fmt.Sprintf("replacement/%d", i), other.ID, string(otherRaw), policy.Approval{}); err != nil {
+							t.Fatal(err)
+						}
+					}
+					if _, ok := db.policies.entries[projectPolicyCacheKey{scope: scope, id: other.ID}]; ok {
+						t.Fatal("warm entry survived eviction during decode")
+					}
+				}
+				resume()
+				synctest.Wait()
+				values := make([]policy.Descriptor, 0, count)
+				panics := 0
+				for range count {
+					var result readResult
+					select {
+					case result = <-results:
+					default:
+						t.Fatal("reader remained blocked after decode completed")
+					}
+					if result.panicValue != nil {
+						if !test.panic || result.panicValue != panicValue {
+							t.Fatalf("unexpected decoder panic: %v", result.panicValue)
+						}
+						panics++
+					} else if test.panic {
+						if result.err == nil || result.err.Error() != "decode project policy panicked" || !reflect.DeepEqual(result.approval, policy.Approval{}) {
+							t.Fatalf("panic waiter = %+v, %v", result.approval, result.err)
+						}
+					} else if test.fail {
+						if !errors.Is(result.err, decodeErr) {
+							t.Fatalf("shared decode error = %v, want %v", result.err, decodeErr)
+						}
+					} else {
+						if result.err != nil || !reflect.DeepEqual(result.approval.Policy, descriptor) {
+							t.Fatalf("concurrent read = %+v, %v", result.approval, result.err)
+						}
+						values = append(values, result.approval.Policy)
+					}
+				}
+				readers.Wait()
+				if test.panic && panics != 1 {
+					t.Fatalf("decoder panics = %d, want 1", panics)
+				}
+				if !test.fail && !test.panic {
+					values[0].Requirements.RequiredTags[0] = "changed"
+					for _, value := range values[1:] {
+						if !reflect.DeepEqual(value, descriptor) {
+							t.Fatal("concurrent results share mutable values")
+						}
+					}
+				}
+				if test.evict {
+					if len(db.policies.entries) != projectPolicyCacheLimit || len(db.policies.inflight) != 0 {
+						t.Fatal("completed decode violated cache bound or retained pending entry")
+					}
+					if _, ok := db.policies.entries[projectPolicyCacheKey{scope: scope, id: other.ID}]; ok {
+						t.Fatal("completed decode restored an evicted entry")
+					}
+					if _, ok := db.policies.entries[projectPolicyCacheKey{scope: "replacement/0", id: other.ID}]; ok {
+						t.Fatal("completed decode did not evict the oldest replacement")
+					}
+					for i := 1; i < projectPolicyCacheLimit; i++ {
+						if _, ok := db.policies.entries[projectPolicyCacheKey{scope: fmt.Sprintf("replacement/%d", i), id: other.ID}]; !ok {
+							t.Fatal("completed decode evicted a newer replacement")
+						}
+					}
+					seen := make(map[projectPolicyCacheKey]bool)
+					for _, key := range db.policies.order {
+						if _, ok := db.policies.entries[key]; !ok || seen[key] {
+							t.Fatal("eviction left stale or duplicate cache ordering")
+						}
+						seen[key] = true
+					}
+					if len(seen) != len(db.policies.entries) {
+						t.Fatal("completed decode published an orphaned cache entry")
+					}
+				}
+				for range 2 {
+					approval, err := decodeProjectPolicy(ctx, scope, descriptor.ID, string(raw), policy.Approval{})
+					if err != nil || !reflect.DeepEqual(approval.Policy, descriptor) {
+						t.Fatalf("later read = %+v, %v", approval, err)
+					}
+				}
+				want := int32(1)
+				if test.fail || test.panic {
+					want++
+				}
+				if got := decodes.Load(); got != want {
+					t.Fatalf("decodes = %d, want %d", got, want)
+				}
+			})
+		})
+	}
+}
+
+func TestProjectPolicyReadsWithoutApproval(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name     string
+		approved bool
+		large    bool
+		warm     bool
+	}{
+		{name: "no approval"},
+		{name: "approved", approved: true},
+		{name: "cached approval metadata", approved: true, warm: true},
+		{name: "cached revoked approval", warm: true},
+		{name: "no approval with large observation", large: true},
+		{name: "approved with large observation", approved: true, large: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			approved := test.approved
+			t.Parallel()
+			f := newNativeFixture(t, nil, "", "policy-read")
+			scope := string(f.project.OrganizationID) + "/" + string(f.project.ID)
+			if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM project_policies WHERE scope=?", scope); err != nil {
+				t.Fatal(err)
+			}
+			descriptor := hubTestPolicy()
+			ctx := f.service.database.policyContext(t.Context())
+			if approved || test.warm {
+				approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
+			}
+			if test.warm {
+				if _, err := requireProjectPolicy(ctx, f.service.database.reader, scope); err != nil {
+					t.Fatal(err)
+				}
+				if approved {
+					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE policy_revisions SET approved_by='updated-approver', approved_at='2026-10-27T12:00:00Z' WHERE scope=? AND policy_id=?", scope, descriptor.ID); err != nil {
+						t.Fatal(err)
+					}
+					current, err := requireProjectPolicy(ctx, f.service.database.reader, scope)
+					if err != nil || current.ApprovedBy != "updated-approver" || current.ApprovedAt != "2026-10-27T12:00:00Z" {
+						t.Fatalf("cached approval metadata: %+v, %v", current, err)
+					}
+				} else if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM project_policies WHERE scope=?", scope); err != nil {
+					t.Fatal(err)
+				}
+			}
+			candidate := descriptor
+			candidate.Gates.AutoPromote = true
+			if test.large {
+				workflow, err := config.ParseProjectDefinition(config.ProjectDefinitionSources{
+					ConfigPath: "detent.yaml", HasConfig: true,
+					Config:       []byte("schema: 1\ntracker:\n  kind: hub_native\n  repository: example-org/example-project\ngate:\n  run: true\n  required_status_checks: []\n"),
+					WorkflowPath: "WORKFLOW.md", Workflow: []byte(strings.Repeat("Implement the assigned issue.\n", operatortool.MaxResultBytes/28)),
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				candidate, err = config.ResolvePolicy(workflow)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			candidate = candidate.WithID()
+			worker := f.worker(t, "policy-reader")
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/policy/observed", worker, policy.Observation{Descriptor: candidate}), http.StatusNoContent)
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker, map[string]any{"id": "policy_read_machine", "hostname": "runner", "capacity": 1, "version": "test"}), http.StatusOK)
+			_, err := monthlyClaimExposure(ctx, f.service.database.reader, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, "policy_read_machine", false)
+			if approved && err != nil {
+				t.Fatal(err)
+			}
+			if !approved {
+				var refusal *nativeError
+				if !errors.As(err, &refusal) || refusal.Code != "policy_not_approved" {
+					t.Fatalf("unapproved claim exposure: %v", err)
+				}
+			}
+			response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/policy", f.token, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var rest struct {
+				Policy     *policy.Descriptor      `json:"policy"`
+				ApprovedBy string                  `json:"approved_by"`
+				ApprovedAt string                  `json:"approved_at"`
+				Observed   []policy.ObservedPolicy `json:"observed_policies"`
+				History    []policy.WorkflowApply  `json:"history"`
+			}
+			decodeHubResponse(t, response, &rest)
+			if approved {
+				if rest.Policy == nil || !reflect.DeepEqual(*rest.Policy, descriptor) || rest.ApprovedBy == "" || rest.ApprovedAt == "" {
+					t.Fatalf("approved payload changed: %s", response.Body)
+				}
+			} else if rest.Policy != nil || !strings.Contains(response.Body.String(), `"policy":null`) || rest.ApprovedBy != "" || rest.ApprovedAt != "" || len(rest.History) != 0 {
+				t.Fatalf("missing approval: %s", response.Body)
+			}
+			if len(rest.Observed) != 1 || !reflect.DeepEqual(rest.Observed[0].Policy, candidate) {
+				t.Fatalf("observed candidates: %s", response.Body)
+			}
+			captured := make(chan context.Context, 1)
+			f.service.echo.GET("/api/v2/organizations/:organization/policy-read-test", func(c echo.Context) error { captured <- c.Request().Context(); return c.NoContent(http.StatusOK) }, f.service.operatorAuthority)
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, "/api/v2/organizations/"+string(f.project.OrganizationID)+"/policy-read-test", testHubAdminToken, nil), http.StatusOK)
+			ctx = operatortool.BindConnection(<-captured, "policy-read", "policy fixture")
+			executor := hubProjectExecutor{f.service}
+			if err := executor.OpenConnection(ctx); err != nil {
+				t.Fatal(err)
+			}
+			for _, transport := range []string{"stdio", "http"} {
+				call := hostedContextProtocol(t, f.service, ctx, transport)
+				reply := call("tools/call", "get_project_policy", map[string]any{"project_id": string(f.project.ID)})
+				var result struct {
+					IsError    bool `json:"isError"`
+					Structured struct {
+						Data json.RawMessage `json:"data"`
+					} `json:"structuredContent"`
+				}
+				if err := json.Unmarshal(reply.Result, &result); err != nil {
+					t.Fatal(err)
+				}
+				if test.large {
+					var data projectPolicyRead
+					if result.IsError || json.Unmarshal(result.Structured.Data, &data) != nil || !data.ObservedPolicyDetailsOmitted || len(data.ObservedPolicies) != 1 || data.ObservedPolicies[0].Policy.ID != candidate.ID || len(result.Structured.Data) > operatortool.MaxResultBytes {
+						t.Fatalf("%s large policy read failed: %s", transport, reply.Result)
+					}
+					if !reflect.DeepEqual(data.Policy, rest.Policy) || !reflect.DeepEqual(data.History, rest.History) {
+						t.Fatalf("%s large observation changed approval or history", transport)
+					}
+					continue
+				}
+				var data any
+				var expected any
+				if result.IsError || json.Unmarshal(result.Structured.Data, &data) != nil || json.Unmarshal(response.Body.Bytes(), &expected) != nil || !reflect.DeepEqual(data, expected) {
+					t.Fatalf("%s policy differs from REST: %s; REST %s", transport, reply.Result, response.Body)
+				}
+			}
+		})
 	}
 }

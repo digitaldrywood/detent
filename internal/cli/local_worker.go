@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -26,7 +25,7 @@ import (
 func workerProtocolPreflight(ctx context.Context, path string) error {
 	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(probeCtx, path, SSHProbeArgument)
+	cmd := detentupdate.ReleaseCommand(probeCtx, path, SSHProbeArgument)
 	procgroup.Configure(probeCtx, cmd)
 	cmd.WaitDelay = time.Second
 	output, err := cmd.Output()
@@ -171,8 +170,8 @@ func (r *sshRunner) runLocalWorkerLaunch(ctx context.Context, request runnerpkg.
 		cancel()
 		return result, err
 	}
-	if cacheRoot := toolcache.ManagedBuildFromContext(cacheCtx); cacheRoot != "" {
-		procgroup.SetEnvironment(cmd, procgroup.Environment{Variables: map[string]string{"GOCACHE": cacheRoot}})
+	if variables := toolcache.ManagedEnvironment(cacheCtx); len(variables) > 0 {
+		procgroup.SetEnvironment(cmd, procgroup.Environment{Variables: variables})
 	}
 	procgroup.SetTempDir(cmd, scratch)
 	procgroup.Configure(processCtx, cmd)
@@ -187,10 +186,11 @@ func (r *sshRunner) runLocalWorkerLaunch(ctx context.Context, request runnerpkg.
 		return result, errors.Join(err, input.Close())
 	}
 	cmd.Stdout, cmd.Stderr = childOutput, io.Discard
-	if err := cmd.Start(); err != nil {
+	if err := procgroup.Start(cmd); err != nil {
 		cancel()
 		return result, r.hostFailure("local", errors.Join(err, input.Close(), output.Close(), childOutput.Close()))
 	}
+	groupID := procgroup.GroupID(cmd)
 	childCloseErr := childOutput.Close()
 	identity, identityErr := procgroup.Inspect(cmd)
 	callbacks := r.LocalRunCallbacks(request)
@@ -206,7 +206,7 @@ func (r *sshRunner) runLocalWorkerLaunch(ctx context.Context, request runnerpkg.
 	var groupErr error
 	go func() {
 		waitErr = cmd.Wait()
-		groupErr = errors.Join(procgroup.Cleanup(identity.GroupID), output.Close())
+		groupErr = errors.Join(procgroup.Cleanup(groupID), output.Close())
 		peer.Close()
 		close(exited)
 	}()
@@ -239,7 +239,7 @@ func (r *sshRunner) runLocalWorkerLaunch(ctx context.Context, request runnerpkg.
 			return errors.Join(closeErr, err)
 		}
 		if groupErr != nil {
-			groupErr = procgroup.Cleanup(identity.GroupID)
+			groupErr = procgroup.Cleanup(groupID)
 		}
 		if err := errors.Join(closeErr, groupErr); err != nil {
 			return err
@@ -249,9 +249,11 @@ func (r *sshRunner) runLocalWorkerLaunch(ctx context.Context, request runnerpkg.
 		}
 		return errors.Join(ownedArtifact.Release(), releaseCache())
 	}
-	deferred := false
+	var workerOwner runnerpkg.WorkerLifetimeExecution
 	defer func() {
-		if !deferred {
+		if workerOwner != nil && runErr != nil {
+			runErr = errors.Join(runErr, workerOwner.CloseWorkers(context.WithoutCancel(ctx)))
+		} else if workerOwner == nil {
 			runErr = errors.Join(runErr, closeWorker(context.WithoutCancel(ctx)))
 		}
 	}()
@@ -270,7 +272,7 @@ func (r *sshRunner) runLocalWorkerLaunch(ctx context.Context, request runnerpkg.
 		}); err != nil {
 			return result, err
 		}
-		deferred = true
+		workerOwner = owner
 	}
 	if runtime, ok := request.Execution.(runnerpkg.RuntimeExecution); ok {
 		launch := &tracker.NativeWorkerLaunch{ExecutionVersion: ownedArtifact.Status.LatestVersion, ExecutionCommit: ownedArtifact.Status.LatestCommit,
@@ -286,7 +288,7 @@ func (r *sshRunner) runLocalWorkerLaunch(ctx context.Context, request runnerpkg.
 	var response runnerpkg.SSHRunResponse
 	err = peer.Call(ctx, "run", &response, boot)
 	if err != nil {
-		return response.Result, r.hostFailure("local", fmt.Errorf("execution worker disconnected: %w", errors.Join(err, closeWorker(context.WithoutCancel(ctx)))))
+		return response.Result, r.hostFailure("local", fmt.Errorf("execution worker disconnected: %w", err))
 	}
 	responseReceived = true
 	var reviewErr *runnerpkg.NativeImplementationReviewError

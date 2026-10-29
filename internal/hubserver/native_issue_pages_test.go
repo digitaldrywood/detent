@@ -64,6 +64,9 @@ func TestNativeWorkListOrder(t *testing.T) {
 
 func TestNativeWorkListPagingDuringChanges(t *testing.T) {
 	f := newNativeFixture(t, nil, "", "changing-list")
+	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
 	original := make([]tracker.NativeIssue, 0, 12)
 	for index := range 12 {
 		issue := f.create(t, fmt.Sprintf("changing-%d", index))

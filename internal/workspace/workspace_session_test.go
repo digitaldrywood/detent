@@ -11,7 +11,7 @@ import (
 )
 
 // TestLocalGitWorkspaceSessionLifecycle covers the create/close pair for the
-// workspace session worktree of decisions 18.1 (`worktree: "fresh"`). The
+// workspace session worktree (`worktree: "fresh"`). The
 // repository deliberately has no remote in one arm: the fifth dogfood run's
 // orphan appeared exactly there, because the old preservation rule measured a
 // session worktree against remote refs it could never reach.

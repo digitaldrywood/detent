@@ -2,9 +2,11 @@ package hubserver
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -15,6 +17,10 @@ import (
 
 var errHealthReadLimit = errors.New("health observation exceeds bounded read")
 
+const (
+	permissionWaitTransitionReason = "permission_wait"
+)
+
 type healthRunnerState struct {
 	healthRunner
 	MachineID  string
@@ -23,6 +29,10 @@ type healthRunnerState struct {
 }
 
 func readHealthSnapshot(ctx context.Context, q nativeQueryer, organization tracker.OrganizationID, now time.Time) (healthSnapshot, error) {
+	return readHealthSnapshotWithContracts(ctx, q, organization, now, nil)
+}
+
+func readHealthSnapshotWithContracts(ctx context.Context, q nativeQueryer, organization tracker.OrganizationID, now time.Time, contracts *healthContractCache) (healthSnapshot, error) {
 	snapshot := healthSnapshot{}
 	runners, err := readHealthRunners(ctx, q, organization, now)
 	if err != nil {
@@ -49,31 +59,29 @@ func readHealthSnapshot(ctx context.Context, q nativeQueryer, organization track
 			return snapshot, errHealthReadLimit
 		}
 		p.Candidates = len(candidates)
+		if p.DependencyGated, p.HeldCount, p.HeldBlockers, p.HoldSince, err = readHealthDependencyHolds(ctx, q, scope); err != nil {
+			return snapshot, err
+		}
 		p.CandidateIDs = make(map[string]bool, len(candidates))
+		var revisions map[string]tracker.Revision
 		if len(candidates) > 0 {
-			raw, err := json.Marshal(candidates)
-			if err != nil {
-				return snapshot, err
-			}
-			if p.CandidateSince, err = readHealthCandidateCreation(ctx, q, string(raw), p.CandidateIDs); err != nil {
+			if p.CandidateSince, revisions, err = readHealthCandidateRevisions(ctx, q, scope, candidates, p.CandidateIDs); err != nil {
 				return snapshot, err
 			}
 		}
-		for item := range p.CandidateIDs {
-			issue, _, err := readNativeIssue(ctx, q, scope, item)
+		policyID := ""
+		if contracts != nil && len(revisions) > 0 {
+			if policyID, err = readHealthContractPolicyID(ctx, q, scope); err != nil {
+				return snapshot, err
+			}
+		}
+		for item, revision := range revisions {
+			wait, err := contracts.read(ctx, q, scope, item, revision, policyID)
 			if err != nil {
 				return snapshot, err
 			}
-			evaluation, err := evaluateNativeIssueContract(ctx, q, scope, issue)
-			if err != nil {
-				var failure *nativeError
-				if errors.As(err, &failure) && failure.Code == "policy_mismatch" {
-					continue
-				}
-				return snapshot, err
-			}
-			if evaluation.ReasonCode == "issue_contract_unsatisfied" {
-				snapshot.Waits = append(snapshot.Waits, healthWait{Item: item, Project: p.ID, Since: issue.UpdatedAt, Active: true, Reason: evaluation.Reason})
+			if wait != nil {
+				snapshot.Waits = append(snapshot.Waits, *wait)
 			}
 		}
 		fallbackReasons := []string{}
@@ -177,7 +185,7 @@ func readHealthRunners(ctx context.Context, q nativeQueryer, organization tracke
  (SELECT count(*) FROM leases l INDEXED BY health_active_host JOIN lease_runners lr ON lr.lease_id=l.lease_id WHERE l.machine_id=r.machine_id AND lr.runner_id=r.id AND l.released_at IS NULL),
  (SELECT count(*) FROM leases l INDEXED BY health_active_host JOIN lease_runners lr ON lr.lease_id=l.lease_id WHERE l.machine_id=r.machine_id AND lr.runner_id=r.id AND l.released_at IS NULL AND julianday(l.expires_at)>julianday(?)),
  (SELECT count(*) FROM leases l WHERE l.machine_id=r.machine_id AND l.released_at IS NULL AND julianday(l.expires_at)>julianday(?)),
- coalesce(json_extract(m.capabilities_json, '$.native_admission.' || r.id), '{}'), r.state
+ r.state
  FROM runner_identities r JOIN machines m ON m.id=r.machine_id JOIN api_tokens t ON t.id=r.token_id
  WHERE r.organization_id=? AND r.removed_at IS NULL AND t.revoked_at IS NULL AND (t.expires_at IS NULL OR julianday(t.expires_at)>julianday(?)) ORDER BY r.id LIMIT ?`, formatHubTime(now), formatHubTime(now), organization, formatHubTime(now), healthRunnerLimit+1)
 	if err != nil {
@@ -187,18 +195,15 @@ func readHealthRunners(ctx context.Context, q nativeQueryer, organization tracke
 	runners := []healthRunnerState{}
 	for rows.Next() {
 		var r healthRunnerState
-		var routing, heartbeat, created, admission, state string
+		var routing, heartbeat, created, state string
 		var capacity, hostCapacity, hostLeases, activeLeases int
-		if err := rows.Scan(&r.ID, &r.MachineID, &routing, &heartbeat, &created, &capacity, &hostCapacity, &r.Leases, &activeLeases, &hostLeases, &admission, &state); err != nil {
+		if err := rows.Scan(&r.ID, &r.MachineID, &routing, &heartbeat, &created, &capacity, &hostCapacity, &r.Leases, &activeLeases, &hostLeases, &state); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal([]byte(routing), &r.Routing); err != nil {
 			return nil, err
 		}
 		r.Routing.State = state
-		if err := json.Unmarshal([]byte(admission), &r.Admissions); err != nil {
-			return nil, err
-		}
 		if r.Heartbeat, err = parseTimeValue(heartbeat); err != nil {
 			return nil, err
 		}
@@ -219,6 +224,13 @@ func readHealthRunners(ctx context.Context, q nativeQueryer, organization tracke
 	}
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return nil, err
+	}
+	for i := range runners {
+		admissions, err := readHealthAdmissionFacts(ctx, q, organization, runners[i].ID, tracker.MachineID(runners[i].MachineID))
+		if err != nil {
+			return nil, err
+		}
+		runners[i].Admissions = admissions
 	}
 	for i := range runners {
 		leased, err := readHealthRunnerLeasedProjects(ctx, q, runners[i].MachineID, runners[i].ID)
@@ -250,37 +262,131 @@ type healthCycle struct {
 	Claims  int
 }
 
-func readHealthEvents(ctx context.Context, q nativeQueryer, organization tracker.OrganizationID, now time.Time, snapshot *healthSnapshot) error {
-	rows, err := q.QueryContext(ctx, `SELECT id,project_id,work_item_id,type,projection,recorded_at FROM (
- SELECT id,project_id,work_item_id,type,json_object('decision',json_extract(data_json,'$.decision')) AS projection,recorded_at,julianday(recorded_at) AS event_order
- FROM collaboration_events WHERE organization_id=? AND type='scheduler.decision'
- AND julianday(recorded_at)>=julianday(?) AND julianday(recorded_at)<=julianday(?)
+type healthTimeEvent struct {
+	id, project, item, kind, raw string
+	at                           time.Time
+}
+
+func readHealthTimeEvents(ctx context.Context, q nativeQueryer, organization tracker.OrganizationID, now time.Time) ([]healthTimeEvent, error) {
+	var complete bool
+	if err := q.QueryRowContext(ctx, `SELECT coalesce((SELECT complete FROM time_index_progress WHERE owner='health'),0)`).Scan(&complete); err != nil {
+		return nil, err
+	}
+	query := `SELECT id,project_id,work_item_id,type,
+ CASE WHEN health_projected IS NULL THEN data_json ELSE '{}' END,recorded_at,
+ scheduler_outcome,scheduler_reason,scheduler_source,scheduler_runner_id,event_landed,event_landing_at,health_projected,scheduler_present,scheduler_at,scheduler_revision
+ FROM collaboration_events WHERE organization_id=? AND
+ ((type='scheduler.decision' AND julianday(recorded_at)>=julianday(?)-1.0/86400) OR
+ (type IN ('run.finished','run.observed') AND (event_landed=1 OR health_projected IS NULL) AND julianday(recorded_at)>=julianday(?)-1.0/86400))
+ AND julianday(recorded_at)<=julianday(?)+1.0/86400 ORDER BY julianday(recorded_at),id LIMIT ?`
+	args := []any{organization, formatHubTime(now.Add(-healthInstanceWindow)), formatHubTime(now.Add(-healthHistoryWindow)), formatHubTime(now), healthReadLimit + 1}
+	if complete {
+		query = `SELECT e.id,e.project_id,e.work_item_id,t.type,
+ CASE WHEN e.health_projected IS NULL THEN e.data_json ELSE '{}' END,e.recorded_at,
+ e.scheduler_outcome,e.scheduler_reason,e.scheduler_source,e.scheduler_runner_id,e.event_landed,e.event_landing_at,e.health_projected,e.scheduler_present,e.scheduler_at,e.scheduler_revision
+ FROM (
+ SELECT event_id,type,recorded_at_ns FROM health_event_times WHERE organization_id=? AND type='scheduler.decision' AND recorded_at_ns>=? AND recorded_at_ns<=?
  UNION ALL
- SELECT id,project_id,work_item_id,type,json_object('run',json_object('runtime',json_object('landing',json_extract(data_json,'$.run.runtime.landing')))),recorded_at,julianday(recorded_at)
- FROM collaboration_events WHERE organization_id=? AND type IN ('run.finished','run.observed') AND json_extract(data_json,'$.run.runtime.landing.landed')=1
- AND julianday(recorded_at)>=julianday(?) AND julianday(recorded_at)<=julianday(?)
- ) ORDER BY event_order,id LIMIT ?`, organization, formatHubTime(now.Add(-healthInstanceWindow)), formatHubTime(now), organization, formatHubTime(now.Add(-healthHistoryWindow)), formatHubTime(now), healthReadLimit+1)
+ SELECT event_id,type,recorded_at_ns FROM health_event_times WHERE organization_id=? AND type IN ('run.finished','run.observed') AND landed=1 AND recorded_at_ns>=? AND recorded_at_ns<=?
+ ) t JOIN collaboration_events e ON e.id=t.event_id ORDER BY t.recorded_at_ns,e.id LIMIT ?`
+		args = []any{organization, now.Add(-healthInstanceWindow).UnixNano(), now.UnixNano(), organization, now.Add(-healthHistoryWindow).UnixNano(), now.UnixNano(), healthReadLimit + 1}
+	}
+	rows, err := q.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var events []healthTimeEvent
+	count := 0
+	for rows.Next() {
+		count++
+		if count > healthReadLimit {
+			return nil, errHealthReadLimit
+		}
+		var e healthTimeEvent
+		var at, raw string
+		var outcome, reason, source, runner, landingAt sql.NullString
+		var landed, present sql.NullBool
+		var decisionAt sql.NullString
+		var decisionRevision sql.NullInt64
+		var projected sql.NullInt64
+		if err := rows.Scan(&e.id, &e.project, &e.item, &e.kind, &raw, &at, &outcome, &reason, &source, &runner, &landed, &landingAt, &projected, &present, &decisionAt, &decisionRevision); err != nil {
+			return nil, err
+		}
+		var data tracker.CollaborationData
+		if !projected.Valid {
+			if err := json.Unmarshal([]byte(raw), &data); err != nil {
+				return nil, err
+			}
+		} else if e.kind == "scheduler.decision" && present.Bool {
+			data.Decision = &tracker.NativeSchedulerDecision{Outcome: outcome.String, Reason: reason.String, Source: source.String, RunnerID: runner.String, WorkItemRevision: tracker.Revision(decisionRevision.Int64)}
+			if decisionAt.String != "" {
+				data.Decision.At, err = parseTimeValue(decisionAt.String)
+				if err != nil {
+					return nil, err
+				}
+			}
+
+		} else if landed.Bool {
+			landing := &tracker.NativeLandingReceipt{Landed: true}
+			if landingAt.String != "" {
+				landing.ObservedAt, err = parseTimeValue(landingAt.String)
+				if err != nil {
+					return nil, err
+				}
+			}
+			data.Run = &tracker.NativeRunData{Runtime: &tracker.NativeRuntimeObservation{Landing: landing}}
+		}
+		if e.kind != "scheduler.decision" && (data.Run == nil || data.Run.Runtime == nil || data.Run.Runtime.Landing == nil || !data.Run.Runtime.Landing.Landed) {
+			continue
+		}
+		projection := tracker.CollaborationData{}
+		if e.kind == "scheduler.decision" {
+			projection.Decision = data.Decision
+		}
+		if e.kind != "scheduler.decision" && data.Run != nil && data.Run.Runtime != nil {
+			projection.Run = &tracker.NativeRunData{Runtime: &tracker.NativeRuntimeObservation{Landing: data.Run.Runtime.Landing}}
+		}
+		encoded, err := json.Marshal(projection)
+		if err != nil {
+			return nil, err
+		}
+		e.raw = string(encoded)
+		e.at, err = parseTimeValue(at)
+		if err != nil {
+			return nil, err
+		}
+		window := healthHistoryWindow
+		if e.kind == "scheduler.decision" {
+			window = healthInstanceWindow
+		}
+		if e.at.Before(now.Add(-window)) || e.at.After(now) {
+			continue
+		}
+		events = append(events, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	slices.SortFunc(events, func(a, b healthTimeEvent) int {
+		if order := a.at.Compare(b.at); order != 0 {
+			return order
+		}
+		return strings.Compare(a.id, b.id)
+	})
+	return events, nil
+}
+
+func readHealthEvents(ctx context.Context, q nativeQueryer, organization tracker.OrganizationID, now time.Time, snapshot *healthSnapshot) error {
+	events, err := readHealthTimeEvents(ctx, q, organization, now)
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
 	cycles := map[string]healthCycle{}
-	count := 0
-	for rows.Next() {
-		var id, project, item, kind, raw, at string
-		if err := rows.Scan(&id, &project, &item, &kind, &raw, &at); err != nil {
-			return err
-		}
-		count++
-		if count > healthReadLimit {
-			return errHealthReadLimit
-		}
+	for _, event := range events {
+		id, project, item, kind, raw, observed := event.id, event.project, event.item, event.kind, event.raw, event.at
 		var data tracker.CollaborationData
 		if err := json.Unmarshal([]byte(raw), &data); err != nil {
-			return err
-		}
-		observed, err := parseTimeValue(at)
-		if err != nil {
 			return err
 		}
 		for i := range snapshot.Projects {
@@ -315,9 +421,6 @@ func readHealthEvents(ctx context.Context, q nativeQueryer, organization tracker
 		cycle.Events = append(cycle.Events, id)
 		cycles[key] = cycle
 	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
 	for i := range snapshot.Projects {
 		p := &snapshot.Projects[i]
 		var latest healthCycle
@@ -350,9 +453,11 @@ func readHealthEvents(ctx context.Context, q nativeQueryer, organization tracker
 }
 
 func readHealthCurrentWaits(ctx context.Context, q nativeQueryer, organization tracker.OrganizationID, now time.Time, snapshot *healthSnapshot) error {
-	rows, err := q.QueryContext(ctx, `SELECT i.native_id,i.project_id,coalesce(a.id,''),coalesce(a.updated_at,''),json_object('disposition',json_extract(a.data_json,'$.disposition')),coalesce(ws.detent_state,''),
- coalesce(e.id,''),coalesce(json_extract(e.data_json,'$.reason'),''),
- coalesce(a.status='succeeded' AND json_extract(e.actor_json,'$.kind')='runner' AND json_extract(e.data_json,'$.reason')='worker_progress' AND CAST(json_extract(e.data_json,'$.revision') AS INTEGER)=i.revision AND julianday(e.recorded_at)>=julianday(a.updated_at),0)
+	rows, err := q.QueryContext(ctx, `SELECT i.native_id,i.project_id,coalesce(a.id,''),coalesce(a.updated_at,''),CASE WHEN a.health_disposition_reason IS NULL THEN coalesce(a.data_json,'{}') ELSE '{}' END,coalesce(ws.detent_state,''),
+ coalesce(e.id,''),coalesce(e.transition_reason,''),coalesce(e.transition_detail,''),coalesce(e.actor_kind,''),coalesce(e.recorded_at,''),
+ coalesce(a.status='succeeded' AND e.actor_kind='runner' AND e.transition_reason='worker_progress' AND e.transition_revision=i.revision AND julianday(e.recorded_at)>=julianday(a.updated_at),0),
+ coalesce(a.disposition_status,''),coalesce(a.disposition_human_action,0),a.health_disposition_reason,
+ CASE WHEN e.health_projected IS NULL THEN coalesce(e.data_json,'{}') ELSE '{}' END, CASE WHEN e.health_projected IS NULL THEN coalesce(e.actor_json,'{}') ELSE '{}' END,e.health_projected,coalesce(a.status,''),i.revision
  FROM issues i LEFT JOIN workflow_states ws ON ws.id=i.workflow_state_id
  LEFT JOIN native_attempts a ON a.id=(SELECT latest.id FROM native_attempts latest WHERE latest.organization_id=i.organization_id AND latest.project_id=i.project_id AND latest.work_item_id=i.native_id ORDER BY latest.fencing_token DESC LIMIT 1)
  LEFT JOIN collaboration_events e ON e.id=(SELECT latest.id FROM collaboration_events latest WHERE latest.organization_id=i.organization_id AND latest.work_item_id=i.native_id AND latest.type='workflow.transitioned' ORDER BY latest.sequence DESC LIMIT 1)
@@ -363,21 +468,57 @@ func readHealthCurrentWaits(ctx context.Context, q nativeQueryer, organization t
 	defer rows.Close()
 	count := 0
 	for rows.Next() {
-		var item, project, attempt, at, raw, state, event, reason string
-		var authoritative bool
-		if err := rows.Scan(&item, &project, &attempt, &at, &raw, &state, &event, &reason, &authoritative); err != nil {
+		var item, project, attempt, at, raw, state, event, reason, detail, actor, recorded string
+		var authoritative, humanAction bool
+		var dispositionStatus, eventRaw, actorRaw, status string
+		var dispositionReason sql.NullString
+		var eventProjected sql.NullInt64
+		var revision tracker.Revision
+		if err := rows.Scan(&item, &project, &attempt, &at, &raw, &state, &event, &reason, &detail, &actor, &recorded, &authoritative, &dispositionStatus, &humanAction, &dispositionReason, &eventRaw, &actorRaw, &eventProjected, &status, &revision); err != nil {
 			return err
 		}
 		count++
 		if count > healthReadLimit {
 			return errHealthReadLimit
 		}
-		if reason == "lifetime_limit" {
-			snapshot.Limits = append(snapshot.Limits, healthLimit{Item: item, Project: project, Event: event, Active: true})
+		if !eventProjected.Valid {
+			var data tracker.CollaborationData
+			var eventActor tracker.Actor
+			if err := json.Unmarshal([]byte(eventRaw), &data); err != nil {
+				return err
+			}
+			if err := json.Unmarshal([]byte(actorRaw), &eventActor); err != nil {
+				return err
+			}
+			reason, detail, actor = data.Reason, data.ReasonDetail, eventActor.Kind
+			authoritative = status == "succeeded" && actor == "runner" && reason == "worker_progress" && data.Revision == revision
+			if authoritative {
+				eventAt, err := parseTimeValue(recorded)
+				if err != nil {
+					return err
+				}
+				attemptAt, err := parseTimeValue(at)
+				if err != nil {
+					return err
+				}
+				authoritative = !eventAt.Before(attemptAt)
+			}
+		}
+		detail = strings.ReplaceAll(strings.TrimSpace(detail), " ", "_")
+		if actor == "runner" && (detail == permissionWaitTransitionReason || detail == "human_action") {
+			since, err := parseTimeValue(recorded)
+			if err != nil {
+				return err
+			}
+			snapshot.Waits = append(snapshot.Waits, healthWait{Item: item, Project: project, Attempt: attempt, Event: event, Since: since, Active: true})
+			continue
 		}
 		var data tracker.NativeRunData
 		if err := json.Unmarshal([]byte(raw), &data); err != nil {
 			return err
+		}
+		if dispositionReason.Valid {
+			data.Disposition = &tracker.NativeDisposition{Status: dispositionStatus, HumanAction: humanAction, ReasonCode: dispositionReason.String}
 		}
 		if data.Disposition == nil || data.Disposition.Status != "blocked" || !authoritative || !data.Disposition.HumanAction && data.Disposition.ReasonCode != "permission_wait" {
 			continue
@@ -416,28 +557,36 @@ func readHealthCurrentWaits(ctx context.Context, q nativeQueryer, organization t
 	return rows.Err()
 }
 
-func readHealthCandidateCreation(ctx context.Context, q nativeQueryer, ids string, seen map[string]bool) (time.Time, error) {
+func readHealthCandidateRevisions(ctx context.Context, q nativeQueryer, scope nativeScope, ids []tracker.WorkItemID, seen map[string]bool) (time.Time, map[string]tracker.Revision, error) {
 	var since time.Time
-	rows, err := q.QueryContext(ctx, "SELECT native_id, native_created_at FROM issues WHERE id IN (SELECT value FROM json_each(?))", ids)
+	revisions := make(map[string]tracker.Revision)
+	args := make([]any, 0, len(ids)+2)
+	args = append(args, scope.organization, scope.project)
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	rows, err := q.QueryContext(ctx, "SELECT native_id, native_created_at, revision FROM issues WHERE organization_id=? AND project_id=? AND id IN ("+placeholders(len(ids))+")", args...)
 	if err != nil {
-		return since, err
+		return since, nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var id, at string
-		if err := rows.Scan(&id, &at); err != nil {
-			return since, err
+		var revision tracker.Revision
+		if err := rows.Scan(&id, &at, &revision); err != nil {
+			return since, nil, err
 		}
 		created, err := parseTimeValue(at)
 		if err != nil {
-			return since, err
+			return since, nil, err
 		}
 		seen[id] = true
+		revisions[id] = revision
 		if since.IsZero() || created.Before(since) {
 			since = created
 		}
 	}
-	return since, errors.Join(rows.Err(), rows.Close())
+	return since, revisions, errors.Join(rows.Err(), rows.Close())
 }
 
 func readHealthRunnerLeasedProjects(ctx context.Context, q nativeQueryer, machineID, runnerID any) ([]string, error) {
@@ -458,4 +607,54 @@ func readHealthRunnerLeasedProjects(ctx context.Context, q nativeQueryer, machin
 		}
 	}
 	return projects, errors.Join(rows.Err(), rows.Close())
+}
+
+func readHealthDependencyHolds(ctx context.Context, q nativeQueryer, scope nativeScope) (int, int, []string, time.Time, error) {
+	var since time.Time
+	rows, err := q.QueryContext(ctx, `SELECT d.native_id,b.native_id,b.project_id=d.project_id,bws.dispatchable,
+ max(dep.created_at,
+  coalesce((SELECT e.recorded_at FROM collaboration_events e WHERE e.organization_id=d.organization_id AND e.work_item_id=d.native_id AND e.type='workflow.transitioned' ORDER BY e.sequence DESC LIMIT 1),d.created_at),
+  coalesce((SELECT e.recorded_at FROM collaboration_events e WHERE e.organization_id=b.organization_id AND e.work_item_id=b.native_id AND e.type='workflow.transitioned' ORDER BY e.sequence DESC LIMIT 1),b.created_at))
+ FROM issues d JOIN projects p ON p.id=d.project_id AND p.organization_id=d.organization_id AND p.require_dependencies=1
+ JOIN workflow_states dws ON dws.id=d.workflow_state_id
+ JOIN issue_dependencies dep ON dep.dependent_issue_id=d.id
+ JOIN issues b ON b.id=dep.blocker_issue_id JOIN workflow_states bws ON bws.id=b.workflow_state_id
+ WHERE d.organization_id=? AND d.project_id=? AND d.archived=0 AND dws.dispatchable=1 AND dws.terminal=0 AND bws.terminal=0
+ ORDER BY d.native_id,b.native_id LIMIT ?`, scope.organization, scope.project, healthReadLimit+1)
+	if err != nil {
+		return 0, 0, nil, since, err
+	}
+	defer rows.Close()
+	gated, held, listed := map[string]bool{}, map[string]bool{}, map[string]bool{}
+	count := 0
+	for rows.Next() {
+		var dependent, blocker, at string
+		var sameProject, dispatchable bool
+		if err := rows.Scan(&dependent, &blocker, &sameProject, &dispatchable, &at); err != nil {
+			return 0, 0, nil, since, err
+		}
+		count++
+		if count > healthReadLimit {
+			return 0, 0, nil, since, errHealthReadLimit
+		}
+		gated[dependent] = true
+		if dispatchable {
+			continue
+		}
+		held[blocker] = true
+		if sameProject {
+			listed[blocker] = true
+		}
+		gatedAt, err := parseTimeValue(at)
+		if err != nil {
+			return 0, 0, nil, since, err
+		}
+		if since.IsZero() || gatedAt.Before(since) {
+			since = gatedAt
+		}
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return 0, 0, nil, since, err
+	}
+	return len(gated), len(held), slices.Sorted(maps.Keys(listed)), since, nil
 }

@@ -1,14 +1,21 @@
 package hubserver
 
 import (
+	"context"
+	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -22,14 +29,20 @@ func TestNativeDuplicateFiling(t *testing.T) {
 		closedDays int
 		challenge  bool
 		archived   bool
+		state      string
+		failRead   bool
 	}{
-		{"matching title", true, "Runner checkout deadlocks", "Separate observed details", 0, true, false},
-		{"matching body", true, "A different symptom", "Checkout hangs during repository association", 0, true, false},
-		{"no match", true, "Invitation email rejected", "Mailbox rejects the invite address; delivery returns an SMTP rejection from the recipient domain after verification links are sent. Sender reputation, relay credentials, mailbox quota, attachments, calendar invitations, spam filtering, and address formatting each need investigation.", 0, false, false},
-		{"disabled", false, "Runner checkout deadlocks", "Checkout hangs during repository association", 0, false, false},
-		{"recent closed", true, "Runner checkout deadlocks", "Separate observed details", 29, true, false},
-		{"old closed", true, "Runner checkout deadlocks", "Separate observed details", 31, false, false},
-		{"recent archived", true, "Runner checkout deadlocks", "Separate observed details", 29, true, true},
+		{"matching title", true, "Runner checkout deadlocks", "Separate observed details", 0, true, false, "Todo", false},
+		{"default lane", true, "Runner checkout deadlocks", "Separate observed details", 0, true, false, "", false},
+		{"matching body", true, "A different symptom", "Checkout hangs during repository association", 0, true, false, "Todo", false},
+		{"no match", true, "Invitation email rejected", "Mailbox rejects the invite address; delivery returns an SMTP rejection from the recipient domain after verification links are sent. Sender reputation, relay credentials, mailbox quota, attachments, calendar invitations, spam filtering, and address formatting each need investigation.", 0, false, false, "Todo", false},
+		{"disabled", false, "Runner checkout deadlocks", "Checkout hangs during repository association", 0, false, false, "Todo", false},
+		{"recent closed", true, "Runner checkout deadlocks", "Separate observed details", 29, true, false, "Todo", false},
+		{"old closed", true, "Runner checkout deadlocks", "Separate observed details", 31, false, false, "Todo", false},
+		{"recent archived", true, "Runner checkout deadlocks", "Separate observed details", 29, true, true, "Todo", false},
+		{"recent archived body", true, "A different symptom", "Checkout hangs during repository association", 29, true, true, "Todo", false},
+		{"unlinked Triage", true, "Runner checkout deadlocks", "Separate observed details", 0, false, false, "Triage", false},
+		{"post-commit failure", true, "Runner checkout deadlocks", "Separate observed details", 0, true, false, "Todo", true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			now := time.Date(2026, 10, 13, 18, 0, 0, 0, time.UTC).AddDate(0, 0, -test.closedDays)
@@ -54,11 +67,39 @@ func TestNativeDuplicateFiling(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "filing"}, Title: test.title, Body: test.body + issueContractTestSections, State: "Todo"}
+			request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "filing"}, Title: test.title, Body: test.body + issueContractTestSections, State: test.state}
+			searchTrace := installNativeBrowserPathFault(t, f.service)
+			searchTrace.observe.Store(true)
 			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, request)
+			searchTrace.observe.Store(false)
+			if !test.enabled && (searchTrace.readerSearches.Load() != 0 || searchTrace.writerSearches.Load() != 0) {
+				t.Fatalf("disabled challenge searched: reader=%d writer=%d", searchTrace.readerSearches.Load(), searchTrace.writerSearches.Load())
+			}
 			wantStatus := http.StatusOK
 			if test.challenge {
 				wantStatus = http.StatusConflict
+			}
+			if test.state == "Triage" {
+				requireNativeStatus(t, response, http.StatusUnprocessableEntity)
+				var refusal struct {
+					apiErrorResponse
+					duplicateChallenge
+				}
+				decodeHubResponse(t, response, &refusal)
+				if refusal.Code != "invalid_request" || refusal.Message != "Triage is reserved for linked GitHub issue intake" || refusal.ChallengeToken != "" {
+					t.Fatalf("lane refusal=%s", response.Body.String())
+				}
+				var issues, challenges int
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE project_id=?", f.project.ID).Scan(&issues); err != nil {
+					t.Fatal(err)
+				}
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM native_duplicate_challenges WHERE project_id=?", f.project.ID).Scan(&challenges); err != nil {
+					t.Fatal(err)
+				}
+				if issues != 1 || challenges != 0 {
+					t.Fatalf("refused lane created issues=%d challenges=%d", issues, challenges)
+				}
+				return
 			}
 			requireNativeStatus(t, response, wantStatus)
 			var challenge duplicateChallenge
@@ -95,6 +136,11 @@ func TestNativeDuplicateFiling(t *testing.T) {
 			}
 			request.ChallengeToken = challenge.ChallengeToken
 			request.NotDuplicateOf = []int{first.Number}
+			var fault *nativeBrowserPathFault
+			if test.failRead {
+				fault = installNativeBrowserPathFault(t, f.service)
+				fault.enabled.Store(true)
+			}
 			response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, request)
 			requireNativeStatus(t, response, http.StatusOK)
 			var created tracker.NativeIssue
@@ -106,6 +152,15 @@ func TestNativeDuplicateFiling(t *testing.T) {
 			requireNativeStatus(t, replay, http.StatusOK)
 			if replay.Body.String() != response.Body.String() {
 				t.Fatal("confirmation replay changed")
+			}
+			if fault != nil {
+				if fault.failures.Load() != 2 || !slices.Contains(created.OmittedFields, "web_url") {
+					t.Fatalf("post-commit failure was not disclosed: failures=%d response=%s", fault.failures.Load(), response.Body.String())
+				}
+				fault.enabled.Store(false)
+				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE project_id=?", f.project.ID).Scan(&count); err != nil || count != 2 {
+					t.Fatalf("confirmation or replay duplicated item: count=%d err=%v", count, err)
+				}
 			}
 			ctx := changeOperatorContext(t, f.service, f.token, string(f.project.OrganizationID))
 			credential, _, err := f.service.authenticateAPIToken(t.Context(), f.token, "", "")
@@ -306,9 +361,102 @@ func TestNativeDuplicateChallengeSettings(t *testing.T) {
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/integration", testHubAdminToken, request), http.StatusConflict)
 }
 
+type nativeBrowserPathFault struct {
+	observe        atomic.Bool
+	statements     atomic.Int64
+	readerSearches atomic.Int64
+	writerSearches atomic.Int64
+	enabled        atomic.Bool
+	failures       atomic.Int64
+}
+
+type nativeBrowserPathConnector struct {
+	timedConnector
+	fault *nativeBrowserPathFault
+}
+
+func (c nativeBrowserPathConnector) Connect(ctx context.Context) (driver.Conn, error) {
+	conn, err := c.timedConnector.Connect(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &nativeBrowserPathConn{timedConn: conn.(*timedConn), fault: c.fault}, nil
+}
+
+type nativeBrowserPathConn struct {
+	*timedConn
+	fault *nativeBrowserPathFault
+}
+
+func (c *nativeBrowserPathConn) observe(query string) {
+	if !c.fault.observe.Load() {
+		return
+	}
+	if c.writer && c.inTx {
+		c.fault.statements.Add(1)
+	}
+	if strings.Contains(query, "native_work_fts") || strings.Contains(query, "group_concat(c.body") {
+		if c.writer {
+			c.fault.writerSearches.Add(1)
+		} else {
+			c.fault.readerSearches.Add(1)
+		}
+	}
+}
+
+func (c *nativeBrowserPathConn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
+	c.observe(query)
+	return c.timedConn.ExecContext(ctx, query, args)
+}
+
+func (c *nativeBrowserPathConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+	c.observe(query)
+	if !c.inTx && c.fault.enabled.Load() && strings.HasPrefix(query, "SELECT o.slug,p.slug,i.number FROM issues") {
+		c.fault.failures.Add(1)
+		return nil, errors.New("injected browser path read failure")
+	}
+	return c.timedConn.QueryContext(ctx, query, args)
+}
+
+func installNativeBrowserPathFault(t *testing.T, s *Service) *nativeBrowserPathFault {
+	t.Helper()
+	fault := &nativeBrowserPathFault{}
+	for _, target := range []struct {
+		pool   **sql.DB
+		dsn    string
+		writer bool
+	}{
+		{&s.database.db, sqliteWriterDSN(s.database.path, s.config.BusyTimeout, s.config.Hosted != nil), true},
+		{&s.database.reader, sqliteReaderDSN(s.database.path, s.config.BusyTimeout), false},
+	} {
+		original := *target.pool
+		pool := sql.OpenDB(nativeBrowserPathConnector{timedConnector: timedConnector{dsn: target.dsn, driver: original.Driver(), writer: target.writer}, fault: fault})
+		if target.writer {
+			pool.SetMaxOpenConns(1)
+		}
+		*target.pool = pool
+		t.Cleanup(func() {
+			s.tokenUseWork.Wait()
+			*target.pool = original
+			if err := pool.Close(); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	return fault
+}
+
 func TestNativeDuplicateMCP(t *testing.T) {
-	for _, transport := range []string{"stdio", "http"} {
-		t.Run(transport, func(t *testing.T) {
+	for _, test := range []struct {
+		name, transport string
+		failBrowserPath bool
+	}{
+		{"stdio", "stdio", false},
+		{"http", "http", false},
+		{"stdio post-commit failure", "stdio", true},
+		{"http post-commit failure", "http", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
 			f := newNativeFixture(t, nil, "", "duplicate-mcp")
 			first := f.create(t, "Runner checkout deadlocks")
 			for i := range 6 {
@@ -327,7 +475,7 @@ func TestNativeDuplicateMCP(t *testing.T) {
 				t.Fatal(err)
 			}
 			ctx = f.service.withOperatorCatalog(authority.BindContext(ctx), credential, string(f.project.OrganizationID))
-			protocol := hostedContextProtocol(t, f.service, ctx, transport)
+			protocol := hostedContextProtocol(t, f.service, ctx, test.transport)
 			call := func(name string, args map[string]any) json.RawMessage {
 				t.Helper()
 				args["project_id"] = f.project.ID
@@ -344,6 +492,40 @@ func TestNativeDuplicateMCP(t *testing.T) {
 				return result.Content.Data
 			}
 			args := map[string]any{"request_id": "mcp-duplicate", "title": first.Title, "description": "Private submitted description" + issueContractTestSections, "state": "Todo"}
+			args["project_id"] = f.project.ID
+			for _, test := range []struct{ name, state, body, message string }{
+				{"unlinked Triage", "Triage", "Description" + issueContractTestSections, "Triage is reserved for linked GitHub issue intake"},
+				{"unknown lane", "Unknown", "Description" + issueContractTestSections, "Workflow state does not exist"},
+				{"missing issue contract", "Todo", "Description without required sections", "Add or complete these required issue sections:"},
+				{"default lane contract", "", "Description without required sections", "Add or complete these required issue sections:"},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					args["state"], args["description"] = test.state, test.body
+					refused := protocol("tools/call", operatortool.FileIssue, args)
+					var refusal struct {
+						IsError bool `json:"isError"`
+						Content struct {
+							operatortool.RequestError
+							duplicateChallenge
+						} `json:"structuredContent"`
+					}
+					if err := json.Unmarshal(refused.Result, &refusal); err != nil || !refusal.IsError || len(refused.Error) != 0 || refusal.Content.Code != "invalid_request" || !strings.Contains(refusal.Content.Message, test.message) || refusal.Content.ChallengeToken != "" {
+						t.Fatalf("lane refusal=%s %s err=%v", refused.Result, refused.Error, err)
+					}
+					var issues, challenges int
+					if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE project_id=?", f.project.ID).Scan(&issues); err != nil {
+						t.Fatal(err)
+					}
+					if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM native_duplicate_challenges WHERE project_id=?", f.project.ID).Scan(&challenges); err != nil {
+						t.Fatal(err)
+					}
+					if issues != 7 || challenges != 0 {
+						t.Fatalf("refused lane created issues=%d challenges=%d", issues, challenges)
+					}
+				})
+			}
+			args["description"] = "Private submitted description" + issueContractTestSections
+			args["state"] = "Todo"
 			raw := call(operatortool.FileIssue, args)
 			var challenge duplicateChallenge
 			if err := json.Unmarshal(raw, &challenge); err != nil {
@@ -357,10 +539,38 @@ func TestNativeDuplicateMCP(t *testing.T) {
 				numbers = append(numbers, match.Number)
 			}
 			args["challenge_token"], args["not_duplicate_of"] = challenge.ChallengeToken, numbers
+			var fault *nativeBrowserPathFault
+			if test.failBrowserPath {
+				fault = installNativeBrowserPathFault(t, f.service)
+				fault.enabled.Store(true)
+			}
 			raw = call(operatortool.FileIssue, args)
 			var created tracker.NativeIssue
 			if err := json.Unmarshal(raw, &created); err != nil || created.WorkItemID == "" {
 				t.Fatalf("confirmation=%s: %v", raw, err)
+			}
+			if created.State != "Todo" || created.Body != args["description"] || created.Title != first.Title {
+				t.Fatalf("confirmation lost committed item: %s", raw)
+			}
+			if fault != nil {
+				if fault.failures.Load() != 1 || !slices.Contains(created.OmittedFields, "web_url") || created.WebURL != "" {
+					t.Fatalf("post-commit failure was not disclosed: failures=%d response=%s", fault.failures.Load(), raw)
+				}
+				for _, failing := range []bool{true, false} {
+					fault.enabled.Store(failing)
+					raw = call(operatortool.FileIssue, args)
+					var replay tracker.NativeIssue
+					if err := json.Unmarshal(raw, &replay); err != nil || replay.WorkItemID != created.WorkItemID || slices.Contains(replay.OmittedFields, "web_url") != failing {
+						t.Fatalf("replay after post-commit failure=%s: %v", raw, err)
+					}
+				}
+				if fault.failures.Load() != 2 {
+					t.Fatalf("replay did not exercise post-commit failure: %d", fault.failures.Load())
+				}
+			}
+			var count int
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE project_id=?", f.project.ID).Scan(&count); err != nil || count != 8 {
+				t.Fatalf("confirmation or replay duplicated item: count=%d err=%v", count, err)
 			}
 			raw = call(operatortool.WorkRelationships, map[string]any{"reference": created.WorkItemID})
 			var links struct {
@@ -388,5 +598,144 @@ func TestNativeDuplicateMCP(t *testing.T) {
 				t.Fatalf("manual relationship=%s: %v", raw, err)
 			}
 		})
+	}
+}
+
+func TestNativeDuplicateFilingHistoryBound(t *testing.T) {
+	f := newDefaultNativeFixture(t, Config{})
+	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
+	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+	first := f.create(t, "Runner checkout deadlocks")
+	fault := installNativeBrowserPathFault(t, f.service)
+	var baseline int64
+	previousSize := 0
+	for _, size := range []int{250, 500} {
+		if size > previousSize {
+			issues := seedArchiveIssues(t, f.service, scope, size-previousSize, "Todo")
+			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, issue := range issues {
+				if _, err := tx.ExecContext(t.Context(), "UPDATE issues SET title=?,body=? WHERE native_id=?", "Runner checkout", "Unrelated mailbox delivery history", issue.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+				for range 4 {
+					if _, err := insertNativeComment(t.Context(), tx, scope, issue, "Unrelated mailbox delivery history", nil, f.service.config.now()); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if err := tx.Commit(); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET duplicate_challenge=1 WHERE id=?", f.project.ID); err != nil {
+			t.Fatal(err)
+		}
+		f.service.tokenUseWork.Wait()
+		fault.statements.Store(0)
+		fault.readerSearches.Store(0)
+		fault.writerSearches.Store(0)
+		fault.observe.Store(true)
+		request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "history-" + strconv.Itoa(size)}, Title: "Runner checkout deadlocks", Body: "Checkout cannot complete" + issueContractTestSections, State: "Todo"}
+		response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, request)
+		fault.observe.Store(false)
+		requireNativeStatus(t, response, http.StatusConflict)
+		var challenge duplicateChallenge
+		decodeHubResponse(t, response, &challenge)
+		if len(challenge.PossibleDuplicates) != 5 || challenge.PossibleDuplicates[0].WorkItemID != first.WorkItemID {
+			t.Fatalf("history %d: %s", size, response.Body.String())
+		}
+		count := fault.statements.Load()
+		if previousSize == 0 {
+			baseline = count
+		}
+		if count != baseline || count == 0 || fault.readerSearches.Load() == 0 || fault.writerSearches.Load() != 0 {
+			t.Fatalf("history %d: statements=%d baseline=%d reader searches=%d writer searches=%d", size, count, baseline, fault.readerSearches.Load(), fault.writerSearches.Load())
+		}
+		t.Logf("history issues=%d comments=%d: writer statements=%d, reader searches=%d, writer searches=%d", size, size*4, count, fault.readerSearches.Load(), fault.writerSearches.Load())
+		previousSize = size
+	}
+}
+
+func TestNativeDuplicateCandidateRecheck(t *testing.T) {
+	for _, change := range []string{"new issue", "edited candidate", "archived candidate", "challenge enabled", "challenge disabled"} {
+		t.Run(change, func(t *testing.T) {
+			f := newDefaultNativeFixture(t, Config{})
+			first := f.create(t, "Runner checkout deadlocks")
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET duplicate_challenge=? WHERE id=?", change != "challenge enabled", f.project.ID); err != nil {
+				t.Fatal(err)
+			}
+			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+			request := tracker.CreateIssue{Title: first.Title, Body: first.Body, State: "Todo"}
+			search, err := prepareNativeDuplicates(t.Context(), f.service.database.reader, scope, request, f.service.config.now(), false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if change != "challenge enabled" && len(search.matches) != 1 {
+				t.Fatalf("matches=%+v", search.matches)
+			}
+			scope.duplicateSearch = search
+			switch change {
+			case "new issue":
+				seedArchiveIssues(t, f.service, scope, 1, "Todo")
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET duplicate_challenge=1 WHERE id=?", f.project.ID); err != nil {
+					t.Fatal(err)
+				}
+			case "edited candidate":
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET title='Separate mailbox failure',revision=revision+1 WHERE native_id=?", first.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+			case "archived candidate":
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET archived=1 WHERE native_id=?", first.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+			case "challenge enabled", "challenge disabled":
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET duplicate_challenge=? WHERE id=?", change == "challenge enabled", f.project.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			challenge, err := challengeNativeIssueTx(t.Context(), tx, scope, request, f.service.config.now())
+			if change == "archived candidate" || change == "challenge disabled" {
+				if err != nil || challenge.ChallengeToken != "" || len(challenge.PossibleDuplicates) != 0 {
+					t.Fatalf("challenge=%+v err=%v", challenge, err)
+				}
+			} else if !isNativeConflict(err) {
+				t.Fatalf("stale candidate err=%v", err)
+			}
+		})
+	}
+}
+
+func TestNativeMachineDuplicateCommentCandidate(t *testing.T) {
+	f := newDefaultNativeFixture(t, Config{})
+	owner := f.create(t, "Original failure")
+	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+	body := issueorigin.Stamp("Initial diagnostic", issueorigin.Origin{Kind: "worker", Fingerprint: "original-failure"})
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET body=? WHERE native_id=?", body, owner.WorkItemID); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := insertNativeComment(t.Context(), tx, scope, owner, "internal/example/pool.go:23:4: undefined: capacity", nil, f.service.config.now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	request := tracker.CreateIssue{Body: issueorigin.Stamp("internal/example/pool.go:31:2: undefined: capacity", issueorigin.Origin{Kind: "worker", Fingerprint: "later-failure"})}
+	search, err := prepareNativeDuplicates(t.Context(), f.service.database.reader, scope, request, f.service.config.now(), true)
+	if err != nil || len(search.matches) != 1 || search.matches[0].WorkItemID != owner.WorkItemID {
+		t.Fatalf("search=%+v err=%v", search, err)
 	}
 }

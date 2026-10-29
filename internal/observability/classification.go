@@ -41,7 +41,6 @@ func Dispatch(stalled bool, reason string) Class {
 	case "authorization_selector_declined",
 		"ownership_assignee_required",
 		"budget_hard_hold",
-		"lifetime_limit",
 		"tracker_unavailable",
 		"forge_unavailable",
 		"ci_unavailable",
@@ -63,8 +62,8 @@ func BackendOutage(kind string) Class {
 	return ClassFault
 }
 
-func FailureBreaker(eligibleCandidateCount *int, itemCount int, parkedItemCount int) Class {
-	if eligibleCandidateCount != nil && *eligibleCandidateCount == 0 && itemCount > 0 && itemCount == parkedItemCount {
+func FailureBreaker(eligibleCandidateCount *int) Class {
+	if eligibleCandidateCount != nil && *eligibleCandidateCount == 0 {
 		return ClassDiagnostic
 	}
 	return ClassFault

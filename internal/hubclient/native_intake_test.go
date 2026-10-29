@@ -17,14 +17,15 @@ import (
 
 	githubconnector "github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/hubserver"
-	"github.com/digitaldrywood/detent/internal/intake"
 	"github.com/digitaldrywood/detent/internal/isolation"
+	"github.com/digitaldrywood/detent/internal/issuefiling"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/scheduler"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -69,7 +70,7 @@ func TestNativeMachineIntakeAuthorityAndFingerprint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store, ok := any(conn).(intake.IssueStore)
+	store, ok := any(conn).(issuefiling.IssueStore)
 	if !ok {
 		t.Fatal("native worker has no existing machine intake owner")
 	}
@@ -100,7 +101,7 @@ func TestNativeMachineIntakeAuthorityAndFingerprint(t *testing.T) {
 	var workerRequest runner.RunRequest
 	select {
 	case workerRequest = <-worker.started:
-	case <-time.After(10 * time.Second):
+	case <-testenv.WaitContext(t, t.Context()).Done():
 		t.Fatal("native source was not dispatched")
 	}
 	if workerRequest.Issue.ID != source.ID {
@@ -148,7 +149,7 @@ func TestNativeMachineIntakeAuthorityAndFingerprint(t *testing.T) {
 		t.Fatalf("paginated match = %#v, %t, %v", found, matched, err)
 	}
 	origin := issueorigin.Origin{Kind: "worker", Source: "attempt-2", Fingerprint: "pool-live-acceptance"}
-	draft := intake.IssueDraft{Title: "Verify integrated pool", Body: issueorigin.Stamp("Second occurrence", origin), Priority: new(4)}
+	draft := issuefiling.IssueDraft{Title: "Verify integrated pool", Body: issueorigin.Stamp("Second occurrence", origin), Priority: new(4)}
 	reused, err := store.CreateIntakeIssue(ctx, draft)
 	if err != nil || !reused.Reused || reused.ID != created.ID {
 		t.Fatalf("same fingerprint = %#v, %v", reused, err)
@@ -157,7 +158,7 @@ func TestNativeMachineIntakeAuthorityAndFingerprint(t *testing.T) {
 	if err != nil || len(comments.Items) != 1 || !strings.Contains(comments.Items[0].Body, "## New machine occurrence") {
 		t.Fatalf("occurrence = %#v, %v", comments, err)
 	}
-	updated, err := store.UpdateIntakeIssue(ctx, created.ID, intake.IssueDraft{Title: "Verify deployed pool", Body: "Updated criteria", Labels: []string{"deployment"}})
+	updated, err := store.UpdateIntakeIssue(ctx, created.ID, issuefiling.IssueDraft{Title: "Verify deployed pool", Body: "Updated criteria", Labels: []string{"deployment"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -349,7 +350,7 @@ func TestNativeMachineIntakeAuthorityAndFingerprint(t *testing.T) {
 		{name: "low", rank: new(4), want: new(3)},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			draft := intake.IssueDraft{Title: test.name, Body: issueorigin.Stamp("Priority: High.", issueorigin.Origin{Kind: "worker", Fingerprint: "rank-" + test.name}), Priority: test.rank}
+			draft := issuefiling.IssueDraft{Title: test.name, Body: issueorigin.Stamp("Priority: High.", issueorigin.Origin{Kind: "worker", Fingerprint: "rank-" + test.name}), Priority: test.rank}
 			created, err := store.CreateIntakeIssue(ctx, draft)
 			if err != nil || created.Reused {
 				t.Fatalf("rank creation = %#v, %v", created, err)
@@ -383,7 +384,7 @@ func TestNativeMachineIntakeAuthorityAndFingerprint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	foreignStore, ok := any(foreignConnector).(intake.IssueStore)
+	foreignStore, ok := any(foreignConnector).(issuefiling.IssueStore)
 	if !ok {
 		t.Fatal("foreign connector lost the shared intake interface")
 	}
@@ -417,7 +418,7 @@ func TestNativeMachineIntakeAuthorityAndFingerprint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	readOnlyStore, ok := any(readOnlyConnector).(intake.IssueStore)
+	readOnlyStore, ok := any(readOnlyConnector).(issuefiling.IssueStore)
 	if !ok {
 		t.Fatal("read-only connector lost the shared intake interface")
 	}
@@ -515,15 +516,21 @@ func newPendingLinkedChangeHub(t *testing.T) (*nativeChangeHub, tracker.NativeIs
 		t.Fatal(err)
 	}
 	h.reopen(func(path string) error {
-		db, err := sql.Open("sqlite", path)
+		db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path)+"?_pragma=busy_timeout(5000)&_txlock=immediate")
 		if err != nil {
 			return err
 		}
-		if _, err := db.ExecContext(t.Context(), "UPDATE issues SET native_source_key = ? WHERE native_id = ?", "github:https://github.com/acme/orders/issues/12", issue.WorkItemID); err != nil {
+		tx, err := db.BeginTx(t.Context(), nil)
+		if err != nil {
 			return errors.Join(err, db.Close())
 		}
-		_, seedErr := db.ExecContext(t.Context(), "INSERT INTO linked_issue_sources (work_item_id, source_url, title_supplied, body_supplied) VALUES (?, ?, 0, 0)", issue.WorkItemID, "https://github.com/acme/orders/issues/12")
-		return errors.Join(seedErr, db.Close())
+		if _, err := tx.ExecContext(t.Context(), "UPDATE issues SET native_source_key = ? WHERE native_id = ?", "github:https://github.com/acme/orders/issues/12", issue.WorkItemID); err != nil {
+			return errors.Join(err, tx.Rollback(), db.Close())
+		}
+		if _, err := tx.ExecContext(t.Context(), "INSERT INTO linked_issue_sources (work_item_id, source_url, title_supplied, body_supplied) VALUES (?, ?, 0, 0)", issue.WorkItemID, "https://github.com/acme/orders/issues/12"); err != nil {
+			return errors.Join(err, tx.Rollback(), db.Close())
+		}
+		return errors.Join(tx.Commit(), db.Close())
 	})
 	issue, err = h.admin.Issue(t.Context(), issue.WorkItemID)
 	if err != nil {
@@ -638,7 +645,7 @@ func TestNativeEditsDuringSourceFetch(t *testing.T) {
 	t.Parallel()
 	h, issue := newPendingLinkedChangeHub(t)
 	started, proceed := make(chan struct{}), make(chan struct{})
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	ctx, cancel := context.WithCancel(testenv.WaitContext(t, t.Context()))
 	defer cancel()
 	h.scheduler.githubIntake = func(ctx context.Context, _ string) (tracker.GitHubIssueSnapshot, error) {
 		close(started)

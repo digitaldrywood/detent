@@ -1,11 +1,8 @@
 package workspace
 
 import (
-	"archive/tar"
-	"compress/gzip"
 	"context"
 	"errors"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -405,12 +402,12 @@ func TestRetentionCompletedWorkspace(t *testing.T) {
 		alias                     bool
 		remove                    bool
 	}{
-		{name: "expired unpushed", age: 8 * 24 * time.Hour, remove: true}, {name: "boundary", age: 7 * 24 * time.Hour, remove: true},
-		{name: "recent", age: 6 * 24 * time.Hour}, {name: "active", age: 8 * 24 * time.Hour, active: true},
-		{name: "live", age: 8 * 24 * time.Hour, live: true}, {name: "lookup failure", age: 8 * 24 * time.Hour, lookupError: true},
-		{name: "expired landing preserves Code", age: 8 * 24 * time.Hour, landing: true, remove: true},
-		{name: "active issue protects landing", age: 8 * 24 * time.Hour, landing: true, active: true},
-		{name: "active native alias protects work", age: 8 * 24 * time.Hour, active: true, alias: true},
+		{name: "expired unpushed", age: 2 * time.Hour, remove: true}, {name: "boundary", age: time.Hour, remove: true},
+		{name: "recent", age: 30 * time.Minute}, {name: "active", age: 2 * time.Hour, active: true},
+		{name: "live", age: 2 * time.Hour, live: true}, {name: "lookup failure", age: 2 * time.Hour, lookupError: true},
+		{name: "expired completion removes Code and landing", age: 2 * time.Hour, landing: true, remove: true},
+		{name: "active issue protects landing", age: 2 * time.Hour, landing: true, active: true},
+		{name: "active native alias protects work", age: 2 * time.Hour, active: true, alias: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			backend := retentionBackend(t)
@@ -424,6 +421,7 @@ func TestRetentionCompletedWorkspace(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			codePath := info.Path
 			var codeUnchanged func()
 			if test.landing {
 				remote := initBareRemote(t)
@@ -444,7 +442,6 @@ func TestRetentionCompletedWorkspace(t *testing.T) {
 			retentionFixture(t, filepath.Join(info.Path, "unique.txt"), now)
 			runGit(t, info.Path, "add", "unique.txt")
 			runGit(t, info.Path, "commit", "-m", "unpushed work")
-			head := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
 			if err := os.WriteFile(filepath.Join(info.Path, "unique.txt"), []byte("staged version\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
@@ -478,7 +475,7 @@ func TestRetentionCompletedWorkspace(t *testing.T) {
 				backend.scanWorkspacePaths = func(context.Context, string) ([]int, error) { return []int{999999}, nil }
 			}
 			total, err := backend.SweepRetention(t.Context(), request)
-			if codeUnchanged != nil {
+			if codeUnchanged != nil && !test.remove {
 				codeUnchanged()
 			}
 			if (err != nil) != test.lookupError {
@@ -491,67 +488,21 @@ func TestRetentionCompletedWorkspace(t *testing.T) {
 			if !test.remove {
 				return
 			}
-			if total.Ownership.Count != 1 || total.Ownership.Bytes == 0 {
+			wantRemoved := 1
+			if test.landing {
+				wantRemoved = 2
+				if _, err := os.Stat(codePath); !errors.Is(err, fs.ErrNotExist) {
+					t.Fatalf("completed Code workspace remains: %v", err)
+				}
+			}
+			if total.Workspaces.Count != wantRemoved || total.Workspaces.Bytes == 0 {
+				t.Fatalf("workspace removals = %+v, want %d", total.Workspaces, wantRemoved)
+			}
+			if total.Ownership.Count != wantRemoved || total.Ownership.Bytes == 0 {
 				t.Fatalf("ownership removals = %+v", total.Ownership)
 			}
-			archives, err := filepath.Glob(filepath.Join(backend.root, ".detent/retained", info.Key+"-*"))
-			if err != nil || len(archives) != 1 {
-				t.Fatalf("archives=%v err=%v", archives, err)
-			}
-			restored := filepath.Join(t.TempDir(), "restored")
-			runGit(t, backend.sourceRoot, "clone", "-c", "core.autocrlf=false", filepath.Join(archives[0], "commits.bundle"), restored)
-			if got := strings.TrimSpace(runGit(t, restored, "rev-parse", "HEAD")); got != head {
-				t.Fatalf("restored head=%s want=%s", got, head)
-			}
-			runGit(t, restored, "apply", "--cached", filepath.Join(archives[0], "staged.diff"))
-			runGit(t, restored, "apply", filepath.Join(archives[0], "working-tree.diff"))
-			if got := runGit(t, restored, "show", ":unique.txt"); got != "staged version\n" {
-				t.Fatalf("index = %q", got)
-			}
-			if got, err := os.ReadFile(filepath.Join(restored, "unique.txt")); err != nil || strings.ReplaceAll(string(got), "\r\n", "\n") != "working version\n" {
-				t.Fatalf("working file = %q, %v", got, err)
-			}
-			if _, err := os.Stat(filepath.Join(restored, "README.md")); !errors.Is(err, fs.ErrNotExist) {
-				t.Fatalf("deleted tracked file restored: %v", err)
-			}
-			file, err := os.Open(filepath.Join(archives[0], "working-tree.tar.gz"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer func() {
-				if err := file.Close(); err != nil {
-					t.Error(err)
-				}
-			}()
-			compressed, err := gzip.NewReader(file)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer func() {
-				if err := compressed.Close(); err != nil {
-					t.Error(err)
-				}
-			}()
-			reader := tar.NewReader(compressed)
-			found := false
-			for {
-				header, err := reader.Next()
-				if errors.Is(err, io.EOF) {
-					break
-				}
-				if err != nil {
-					t.Fatal(err)
-				}
-				if header.Name == "dirty.txt" {
-					data, err := io.ReadAll(reader)
-					if err != nil {
-						t.Fatal(err)
-					}
-					found = string(data) == "retained content"
-				}
-			}
-			if !found {
-				t.Fatal("untracked data missing from archive")
+			if _, err := os.Stat(filepath.Join(backend.root, ".detent/retained")); !errors.Is(err, fs.ErrNotExist) {
+				t.Fatalf("expired workspace left a local copy: %v", err)
 			}
 		})
 	}
@@ -594,46 +545,6 @@ func TestRetentionOwnership(t *testing.T) {
 	}
 }
 
-func TestRetentionArchiveFailureKeepsWorkspace(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
-	t.Parallel()
-	for _, failure := range []string{"archive destination", "unmanaged git"} {
-		t.Run(failure, func(t *testing.T) {
-			backend := retentionBackend(t)
-			issue := Issue{ID: "2681", Identifier: "repo#2681"}
-			info, err := backend.Create(t.Context(), issue)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := backend.recordCleanupOwnership(t.Context(), info, issue, true); err != nil {
-				t.Fatal(err)
-			}
-			now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
-			retentionFixture(t, filepath.Join(info.Path, "untracked.txt"), now)
-			switch failure {
-			case "archive destination":
-				retentionFixture(t, filepath.Join(backend.root, ".detent/retained"), now)
-			case "unmanaged git":
-				if err := os.Remove(filepath.Join(info.Path, ".git")); err != nil {
-					t.Fatal(err)
-				}
-			}
-			_, err = backend.SweepRetention(t.Context(), RetentionRequest{Now: now, Completed: func(context.Context, []Issue) (map[string]time.Time, error) {
-				return map[string]time.Time{issue.ID: now.Add(-8 * 24 * time.Hour)}, nil
-			}})
-			if err == nil {
-				t.Fatal("expected archive failure")
-			}
-			if data, err := os.ReadFile(filepath.Join(info.Path, "untracked.txt")); err != nil || string(data) != "retained content" {
-				t.Fatalf("original data=%q err=%v", data, err)
-			}
-		})
-	}
-}
-
 func TestRetentionRejectsRedirectedArtifacts(t *testing.T) {
 	if testing.Short() {
 		t.Skip("git subprocess integration")
@@ -664,72 +575,6 @@ func TestRetentionRejectsRedirectedArtifacts(t *testing.T) {
 	}
 }
 
-func TestRetentionRemovalFailureDeduplicatesArchives(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
-	t.Parallel()
-	for _, change := range []string{"unchanged", "modified", "partially removed"} {
-		t.Run(change, func(t *testing.T) {
-			backend := retentionBackend(t)
-			issue := Issue{ID: "2681", Identifier: "repo#2681"}
-			info, err := backend.Create(t.Context(), issue)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := backend.recordCleanupOwnership(t.Context(), info, issue, true); err != nil {
-				t.Fatal(err)
-			}
-			now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
-			retentionFixture(t, filepath.Join(info.Path, "untracked.txt"), now)
-			runGit(t, backend.sourceRoot, "worktree", "lock", info.Path)
-			request := RetentionRequest{Now: now, Completed: func(context.Context, []Issue) (map[string]time.Time, error) {
-				return map[string]time.Time{issue.ID: now.Add(-8 * 24 * time.Hour)}, nil
-			}}
-			for sweep := range 3 {
-				if change == "partially removed" && sweep == 1 {
-					if err := os.Remove(filepath.Join(info.Path, "untracked.txt")); err != nil {
-						t.Fatal(err)
-					}
-				}
-				if change == "modified" && sweep == 1 {
-					if err := os.WriteFile(filepath.Join(info.Path, "untracked.txt"), []byte("changed content"), 0o600); err != nil {
-						t.Fatal(err)
-					}
-				}
-				totals, err := backend.SweepRetention(t.Context(), request)
-				if err == nil {
-					t.Fatal("expected locked worktree removal to fail")
-				}
-				if totals.Workspaces.Count != 0 {
-					t.Fatalf("totals=%+v", totals)
-				}
-			}
-			archives, err := filepath.Glob(filepath.Join(backend.root, ".detent/retained", info.Key+"-*"))
-			want := 1
-			if change != "unchanged" {
-				want = 2
-			}
-			if err != nil || len(archives) != want {
-				t.Fatalf("archives=%v want=%d err=%v", archives, want, err)
-			}
-			for _, archive := range archives {
-				runGit(t, backend.sourceRoot, "bundle", "verify", filepath.Join(archive, "commits.bundle"))
-			}
-			runGit(t, backend.sourceRoot, "worktree", "unlock", info.Path)
-			totals, err := backend.SweepRetention(t.Context(), request)
-			if err != nil || totals.Workspaces.Count != 1 {
-				t.Fatalf("totals=%+v err=%v", totals, err)
-			}
-			archives, err = filepath.Glob(filepath.Join(backend.root, ".detent/retained", info.Key+"-*"))
-			if err != nil || len(archives) != want {
-				t.Fatalf("archives after retry=%v want=%d err=%v", archives, want, err)
-			}
-		})
-	}
-}
-
 func TestRetentionCompletedResidue(t *testing.T) {
 	if testing.Short() {
 		t.Skip("git subprocess integration")
@@ -746,7 +591,7 @@ func TestRetentionCompletedResidue(t *testing.T) {
 		wantErr  bool
 	}{
 		{name: "expired residue", age: 8 * 24 * time.Hour, remove: true},
-		{name: "recent residue", age: 6 * 24 * time.Hour},
+		{name: "recent residue", age: 30 * time.Minute},
 		{name: "foreign git workspace", foreign: true, age: 8 * 24 * time.Hour, wantErr: true},
 		{name: "checkout files remain", checkout: true, age: 8 * 24 * time.Hour, wantErr: true},
 	} {

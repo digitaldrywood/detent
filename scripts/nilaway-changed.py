@@ -20,6 +20,7 @@ def main():
     packages = packages or ["./..."]
     baseline = json.loads(BASELINE.read_text())
     allowed = {(entry["file"], entry["line"], entry["column"], entry["rule"]): entry["source_sha256"] for entry in baseline}
+    baseline_paths = {Path(entry["file"]) for entry in baseline}
     scratch = next((os.environ[key] for key in ("TMPDIR", "TMP", "TEMP") if os.environ.get(key)), None)
     if scratch is None:
         print("Set TMPDIR, TMP, or TEMP for the NilAway audit")
@@ -55,13 +56,23 @@ def main():
         if not path.is_absolute():
             path = ROOT / path
         try:
-            relative = str(path.resolve().relative_to(ROOT))
+            try:
+                relative = path.resolve().relative_to(ROOT)
+            except ValueError:
+                relative = None
+            if relative not in baseline_paths:
+                candidates = [candidate for candidate in baseline_paths if path.parts[-len(candidate.parts):] == candidate.parts]
+                if len(candidates) != 1:
+                    raise ValueError
+                relative = candidates[0]
+                path = ROOT / relative
+                relative = path.resolve().relative_to(ROOT)
             source = path.read_text().splitlines()[int(match["line"]) - 1]
         except (OSError, ValueError, IndexError):
             unexpected.append(line)
             continue
         rule = "Potential nil panic detected"
-        key = (relative, int(match["line"]), int(match["column"]), rule)
+        key = (relative.as_posix(), int(match["line"]), int(match["column"]), rule)
         digest = hashlib.sha256(source.encode()).hexdigest()
         if rule not in match["message"] or allowed.get(key) != digest:
             unexpected.append(line)

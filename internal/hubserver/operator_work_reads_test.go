@@ -1,7 +1,6 @@
 package hubserver
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -19,6 +18,8 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/mcp"
@@ -29,7 +30,11 @@ import (
 )
 
 func TestOperatorNativeWorkReadErrors(t *testing.T) {
-	f := newNativeFixture(t, nil, "", "read-errors")
+	var logs hostedLogBuffer
+	f := newDefaultNativeFixture(t, Config{Logger: slog.New(slog.NewJSONHandler(&logs, nil))})
+	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
 	fault := f.create(t, "fault item")
 	foreign := newNativeFixture(t, f.service, f.project.OrganizationID, "foreign-errors")
 	hidden := foreign.create(t, "hidden content")
@@ -58,11 +63,9 @@ func TestOperatorNativeWorkReadErrors(t *testing.T) {
 	}
 	ctx := capture(f.token)
 	broader := capture(foreign.token)
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET actor_json='[]' WHERE native_id=?", fault.WorkItemID); err != nil {
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET actor_kind=NULL,actor_principal_id=NULL,actor_json='[]' WHERE native_id=?", fault.WorkItemID); err != nil {
 		t.Fatal(err)
 	}
-	var logs bytes.Buffer
-	f.service.config.Logger = slog.New(slog.NewJSONHandler(&logs, nil))
 	for _, transport := range []string{"stdio", "http"} {
 		t.Run(transport, func(t *testing.T) {
 			for _, test := range []struct {
@@ -83,7 +86,7 @@ func TestOperatorNativeWorkReadErrors(t *testing.T) {
 					call := hostedContextProtocol(t, f.service, callCtx, transport)
 					for _, tool := range []string{operatortool.WorkItem, operatortool.WorkRuns, operatortool.WorkHistory, operatortool.WorkComments, operatortool.WorkRelationships, operatortool.ExplainItem, operatortool.BoardActivity, operatortool.ListComments} {
 						t.Run(tool, func(t *testing.T) {
-							logs.Reset()
+							before := logs.String()
 							args := map[string]any{"project_id": string(f.project.ID), "reference": test.reference}
 							if tool == operatortool.ListComments {
 								delete(args, "reference")
@@ -102,23 +105,41 @@ func TestOperatorNativeWorkReadErrors(t *testing.T) {
 							if !result.IsError || len(result.Content) != 1 || test.name != "server fault" && result.Content[0].Text != test.want {
 								t.Fatalf("tool error=%s %s, want %q", reply.Result, reply.Error, test.want)
 							}
+							var faults []json.RawMessage
+							for line := range strings.SplitSeq(strings.TrimPrefix(logs.String(), before), "\n") {
+								if line == "" {
+									continue
+								}
+								var record struct {
+									Message string `json:"msg"`
+								}
+								if err := json.Unmarshal([]byte(line), &record); err != nil {
+									t.Fatal(err)
+								}
+								if record.Message == "operator tool failed" {
+									faults = append(faults, json.RawMessage(line))
+								}
+							}
 							if test.name == "server fault" {
+								if len(faults) != 1 {
+									t.Fatalf("expected one tool fault: %s", faults)
+								}
 								var entry struct {
 									Tool          string `json:"tool"`
 									CorrelationID string `json:"correlation_id"`
 									Error         string `json:"error"`
 								}
-								if err := json.Unmarshal(logs.Bytes(), &entry); err != nil {
-									t.Fatalf("fault log=%s: %v", logs.Bytes(), err)
+								if err := json.Unmarshal(faults[0], &entry); err != nil {
+									t.Fatalf("fault log=%s: %v", faults[0], err)
 								}
 								if entry.Tool != tool || entry.CorrelationID == "" || !strings.Contains(entry.Error, "cannot unmarshal array") {
-									t.Fatalf("lost fault context: %s", logs.Bytes())
+									t.Fatalf("lost fault context: %s", faults[0])
 								}
 								if want := test.want + " (reason_code service_unavailable, correlation_id " + entry.CorrelationID + ")"; result.Content[0].Text != want {
 									t.Fatalf("tool error text = %q, want %q", result.Content[0].Text, want)
 								}
-							} else if logs.Len() != 0 {
-								t.Fatalf("expected read failure logged as server fault: %s", logs.Bytes())
+							} else if len(faults) != 0 {
+								t.Fatalf("expected read failure logged as server fault: %s", faults)
 							}
 						})
 					}
@@ -574,6 +595,152 @@ func TestOperatorNativeWorkReads(t *testing.T) {
 	if err != nil || !strings.Contains(string(result.Content), `"items":[]`) {
 		t.Fatalf("empty=%s err=%v", result.Content, err)
 	}
+	t.Run("comment byte pages", func(t *testing.T) {
+		paged := f.create(t, "bounded comment history")
+		path := f.base + "/work-items/" + string(paged.WorkItemID) + "/comments"
+		var expected []tracker.NativeComment
+		for index := range 208 {
+			body := fmt.Sprintf("comment %d", index)
+			if index >= 100 {
+				body += strings.Repeat("large comment ", 200)
+				if index%2 == 0 {
+					body += strings.Repeat("<\"\\\n🙂", 100)
+				}
+			}
+			if index == 207 {
+				body = strings.Repeat("x", 64<<10)
+			}
+			response := performHubAPIRequest(t, f.service, http.MethodPost, path, f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("bounded-comment-%d", index)}, Body: body})
+			requireNativeStatus(t, response, http.StatusOK)
+			var comment tracker.NativeComment
+			decodeHubResponse(t, response, &comment)
+			expected = append(expected, comment)
+		}
+		response := performHubAPIRequest(t, f.service, http.MethodPatch, path+"/"+expected[104].ID, f.token, tracker.UpdateComment{Mutation: tracker.Mutation{IdempotencyKey: "bounded-comment-edit"}, ExpectedRevision: expected[104].Revision, Body: expected[104].Body + " edited"})
+		requireNativeStatus(t, response, http.StatusOK)
+		decodeHubResponse(t, response, &expected[104])
+		var firstCursor string
+		protocolCtx := operatortool.BindConnection(ctx, operatortool.ConnectionIdentity(ctx).PrincipalID, "test-client")
+		for _, transport := range []string{"stdio", "http"} {
+			t.Run(transport, func(t *testing.T) {
+				protocol := hostedContextProtocol(t, f.service, protocolCtx, transport)
+				for _, mixed := range []bool{false, true} {
+					t.Run(fmt.Sprintf("mixed=%t", mixed), func(t *testing.T) {
+						arguments := map[string]any{"project_id": string(f.project.ID), "reference": string(paged.WorkItemID), "limit": 100}
+						seen, pages := 0, 0
+						for {
+							reply := protocol("tools/call", operatortool.WorkComments, arguments)
+							raw := hostedContextData(t, reply, false)
+							if len(raw) > operatortool.MaxResultBytes || len(reply.Result) > mcp.MaxHTTPResponseBytes {
+								t.Fatalf("unbounded comment result: data=%d protocol=%d", len(raw), len(reply.Result))
+							}
+							var result operatortool.WorkReadResult[tracker.Page[tracker.NativeComment]]
+							if err := json.Unmarshal(raw, &result); err != nil {
+								t.Fatal(err)
+							}
+							page := result.Data
+							if len(page.Items) == 0 || len(page.Items) > arguments["limit"].(int) || seen+len(page.Items) > len(expected) {
+								t.Fatalf("invalid page: seen=%d items=%d", seen, len(page.Items))
+							}
+							if !reflect.DeepEqual(page.Items, expected[seen:seen+len(page.Items)]) {
+								t.Fatalf("comments changed, duplicated or skipped after %d items", seen)
+							}
+							if pages == 0 {
+								if len(page.Items) != 100 || page.NextCursor == "" {
+									t.Fatal("small first page did not reach the count limit")
+								}
+								firstCursor = page.NextCursor
+							} else if pages == 1 && !mixed {
+								if len(page.Items) >= 100 || page.NextCursor == "" {
+									t.Fatal("large continuation did not respect the byte limit")
+								}
+								t.Logf("bounded continuation: items=%d bytes=%d", len(page.Items), len(raw))
+							}
+							seen += len(page.Items)
+							pages++
+							if page.NextCursor == "" {
+								break
+							}
+							arguments["cursor"] = page.NextCursor
+							if mixed && pages%2 == 1 {
+								arguments["limit"] = 20
+							} else {
+								arguments["limit"] = 100
+							}
+						}
+						if seen != len(expected) {
+							t.Fatalf("traversal returned %d of %d comments", seen, len(expected))
+						}
+					})
+				}
+			})
+		}
+		for _, test := range []struct {
+			name, reference, cursor string
+			offset                  int
+			message                 string
+		}{
+			{name: "cursor scope", reference: string(first.WorkItemID), cursor: firstCursor, message: "Cursor scope changed or expired"},
+			{name: "offset", reference: string(paged.WorkItemID), offset: 100, message: "returned next_cursor"},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				_, err := call(operatortool.WorkComments, map[string]any{"project_id": string(f.project.ID), "reference": test.reference, "cursor": test.cursor, "offset": test.offset, "limit": 100})
+				var refusal *operatortool.RequestError
+				if !errors.As(err, &refusal) || !strings.Contains(refusal.Message, test.message) {
+					t.Fatalf("comment paging refusal=%v", err)
+				}
+			})
+		}
+		oversizedBody := strings.Repeat("\x00", 64<<10)
+		t.Run("expired cursor", func(t *testing.T) {
+			now := f.service.config.now
+			expired := now().Add(2 * time.Hour)
+			f.service.config.now = func() time.Time { return expired }
+			defer func() { f.service.config.now = now }()
+			_, err := call(operatortool.WorkComments, map[string]any{"project_id": string(f.project.ID), "reference": string(paged.WorkItemID), "cursor": firstCursor, "limit": 100})
+			var refusal *operatortool.RequestError
+			if !errors.As(err, &refusal) || !strings.Contains(refusal.Message, "expired") {
+				t.Fatalf("expired comment cursor=%v", err)
+			}
+		})
+		response = performHubAPIRequest(t, f.service, http.MethodPost, path, f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "oversized-comment"}, Body: oversizedBody})
+		requireNativeStatus(t, response, http.StatusOK)
+		for _, transport := range []string{"stdio", "http"} {
+			protocol := hostedContextProtocol(t, f.service, protocolCtx, transport)
+			for _, limit := range []int{20, 100} {
+				arguments := map[string]any{"project_id": string(f.project.ID), "reference": string(paged.WorkItemID), "limit": limit}
+				seen := 0
+				for {
+					reply := protocol("tools/call", operatortool.WorkComments, arguments)
+					var result struct {
+						IsError bool `json:"isError"`
+					}
+					if err := json.Unmarshal(reply.Result, &result); err != nil {
+						t.Fatal(err)
+					}
+					if result.IsError {
+						var refusal operatortool.RequestError
+						if err := json.Unmarshal(hostedContextData(t, reply, true), &refusal); err != nil || refusal.Code != "invalid_request" || !strings.Contains(refusal.Message, "single comment") || !strings.Contains(refusal.Message, "work_bulk_export") {
+							t.Fatalf("oversized comment refusal=%s", reply.Result)
+						}
+						if seen != len(expected) {
+							t.Fatalf("oversized comment refused after %d of %d readable comments", seen, len(expected))
+						}
+						break
+					}
+					var page operatortool.WorkReadResult[tracker.Page[tracker.NativeComment]]
+					if err := json.Unmarshal(hostedContextData(t, reply, false), &page); err != nil || len(page.Data.Items) == 0 || page.Data.NextCursor == "" {
+						t.Fatal("oversized comment was omitted or stalled pagination")
+					}
+					seen += len(page.Data.Items)
+					if seen > len(expected) {
+						t.Fatal("oversized comment was returned unbounded or pagination repeated comments")
+					}
+					arguments["cursor"] = page.Data.NextCursor
+				}
+			}
+		}
+	})
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 	registered := prepareRunner(t, f, runnerauth.Read, runnerauth.Collaborate, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
 	registered.enroll(t)
@@ -1018,9 +1185,21 @@ func TestOperatorNativeWorkReads(t *testing.T) {
 					if setupOnly && (attempt.Identity != nil || attempt.Runtime.LocalAttemptID != 169 || attempt.Runtime.Generation != 28 || failure == nil || failure.Stage != "pre_provider" || failure.Attribution != "instance" || failure.Provider != "" || failure.Error != "after_create exit status 127: script not found [redacted] [redacted]" || !failure.ObservedAt.Equal(at)) {
 						t.Fatalf("MCP lost setup diagnostic or selected older provider history: %s", result.Content)
 					}
-					for _, private := range []string{"/private/source", "/private/error", "private-prompt", "private-secret", "private-rpc-data"} {
-						if strings.Contains(string(result.Content), private) {
-							t.Fatalf("MCP exposed %q", private)
+					outputs := []operatortool.Result{result}
+					if tool == operatortool.ExplainItem {
+						args["include"] = []string{"summary"}
+						compact, compactErr := call(tool, args)
+						var summary explain.IssueExplanation
+						if compactErr != nil || json.Unmarshal(compact.Content, &summary) != nil || summary.FailureSignature == nil || summary.FailureSignature.Signature != wantSignature || summary.Attempt == nil || summary.Attempt.NativeID != started.Data.AttemptID || summary.NativeRuntime != nil {
+							t.Fatalf("compact MCP lost redacted failure summary: %s error=%v", compact.Content, compactErr)
+						}
+						outputs = append(outputs, compact)
+					}
+					for _, output := range outputs {
+						for _, private := range []string{"/private/source", "/private/error", "private-prompt", "private-secret", "private-rpc-data"} {
+							if strings.Contains(string(output.Content), private) {
+								t.Fatalf("MCP exposed %q", private)
+							}
 						}
 					}
 				})
@@ -1043,4 +1222,176 @@ func TestOperatorNativeWorkReads(t *testing.T) {
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, runtimePath+"/runtime", f.token, nil), http.StatusNotFound)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, runtimePath+"/explanation", f.token, nil), http.StatusNotFound)
 
+}
+
+func TestOperatorArchivedWorkReads(t *testing.T) {
+	f := newAttemptDiffFixture(t)
+	requireNativeStatus(t, f.post(t, f.request(1, tracker.AttemptDiffFile{Path: "first.go", Status: "added", Additions: 1, Patch: "+first"}, tracker.AttemptDiffFile{Path: "second.go", Status: "added", Additions: 1, Patch: "+second"})), http.StatusAccepted)
+	at := f.service.config.now()
+	f.service.config.now = func() time.Time { return at }
+	finished := tracker.NativeRunEvent{
+		Mutation: tracker.Mutation{IdempotencyKey: newNativeID("event")}, Type: "run.finished", SchemaVersion: 1,
+		Data: tracker.NativeRunData{Sequence: 2, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "gpt-6-astra"},
+			LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken, RunID: f.run, AttemptID: f.attempt, PolicyID: f.policy, Outcome: "succeeded",
+			Runtime: &tracker.NativeRuntimeObservation{LocalAttemptID: 42, Generation: 1, Phase: "completed", HeartbeatAt: at}},
+	}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost,
+		f.base+"/work-items/"+string(f.issue.WorkItemID)+"/events", f.worker, finished), http.StatusOK)
+	ctx := changeOperatorContext(t, f.service, f.token, string(f.project.OrganizationID))
+	call := hostedContextProtocol(t, f.service, ctx, "stdio")
+	read := func(t *testing.T, name string, args map[string]any) []byte {
+		t.Helper()
+		args["project_id"] = string(f.project.ID)
+		reply := call("tools/call", name, args)
+		var result struct {
+			IsError bool `json:"isError"`
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		}
+		if json.Unmarshal(reply.Result, &result) != nil || result.IsError || len(result.Content) != 1 {
+			t.Fatalf("%s failed: %s %s", name, reply.Result, reply.Error)
+		}
+		return []byte(result.Content[0].Text)
+	}
+	item := string(f.issue.WorkItemID)
+	cases := []struct {
+		name    string
+		args    map[string]any
+		fetches int
+		hot     []byte
+	}{
+		{operatortool.WorkHistory, map[string]any{"reference": item, "limit": 1}, 1, nil},
+		{operatortool.WorkRuns, map[string]any{"reference": item}, 0, nil},
+		{operatortool.WorkAttemptReceipt, map[string]any{"reference": item, "native_attempt_id": f.attempt}, 1, nil},
+		{operatortool.WorkAttemptReceipt, map[string]any{"reference": item, "attempt_id": 42}, 1, nil},
+		{operatortool.WorkItem, map[string]any{"reference": item, "view": "recovery"}, 1, nil},
+		{operatortool.WorkVersion, map[string]any{"reference": item, "revision": 1}, 1, nil},
+		{operatortool.GetNativeRun, map[string]any{"work_item_id": item, "attempt_id": f.attempt}, 1, nil},
+		{operatortool.GetAttemptDiff, map[string]any{"work_item_id": item, "attempt_id": f.attempt, "limit": 1}, 1, nil},
+		{operatortool.GetWorkItemDiff, map[string]any{"work_item_id": item, "limit": 1}, 1, nil},
+	}
+	for i := range cases {
+		cases[i].hot = read(t, cases[i].name, cases[i].args)
+	}
+	var history struct {
+		Data tracker.Page[tracker.CollaborationEvent] `json:"data"`
+	}
+	if err := json.Unmarshal(cases[0].hot, &history); err != nil {
+		t.Fatal(err)
+	}
+	if history.Data.NextCursor == "" {
+		t.Fatal("missing pre-archive history cursor")
+	}
+	args := map[string]any{"reference": item, "limit": 1, "cursor": history.Data.NextCursor}
+	cases = append(cases, struct {
+		name    string
+		args    map[string]any
+		fetches int
+		hot     []byte
+	}{operatortool.WorkHistory, args, 1, read(t, operatortool.WorkHistory, args)})
+	var lastEvent int64
+	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT max(sequence) FROM collaboration_events WHERE work_item_id=?", item).Scan(&lastEvent); err != nil {
+		t.Fatal(err)
+	}
+	allHistory := read(t, operatortool.WorkHistory, map[string]any{"reference": item, "limit": 100})
+	historyTable := archiveTestTable(t, f.service, "collaboration_events", "work_item_id=?", item)
+	objects := map[string][]byte{}
+	for _, part := range []struct {
+		kind, subject string
+		first, last   int64
+		tables        []attachment.ArchiveTable
+	}{
+		{"run", f.attempt, 0, 0, []attachment.ArchiveTable{
+			archiveTestTable(t, f.service, "native_attempts", "id=?", f.attempt),
+			archiveTestTable(t, f.service, "native_attempt_events", "attempt_id=?", f.attempt),
+			archiveTestTable(t, f.service, "attempt_diffs", "attempt_id=?", f.attempt),
+			archiveTestTable(t, f.service, "attempt_diff_files", "diff_id IN (SELECT id FROM attempt_diffs WHERE attempt_id=?)", f.attempt),
+		}},
+		{"revision", item, 1, 1, []attachment.ArchiveTable{archiveTestTable(t, f.service, "collaboration_versions", "record_id=?", item)}},
+		{"history", item, 1, lastEvent, []attachment.ArchiveTable{historyTable}},
+	} {
+		ref, data := publishTestSection(t, f.nativeFixture, item, part.kind, part.subject, part.first, part.last, part.tables...)
+		objects[ref.Key] = data
+	}
+	for _, statement := range []string{
+		`UPDATE native_attempts SET data_json=json_remove(data_json,'$.runtime')`,
+		`DELETE FROM attempt_diff_files`,
+		`DROP TRIGGER collaboration_versions_no_delete`,
+		`DELETE FROM collaboration_versions`,
+		`DROP TRIGGER collaboration_events_no_update`,
+		`UPDATE collaboration_events SET data_json='{}' WHERE type='issue.created'`,
+	} {
+		if _, err := f.service.database.db.ExecContext(t.Context(), statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fetches := 0
+	f.service.config.ArchiveReader = func(_ context.Context, ref attachment.ArchiveReference, _ bool) (entryauthority.ArchiveResponse, error) {
+		fetches++
+		return entryauthority.ArchiveResponse{Data: objects[ref.Key]}, nil
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			fetches = 0
+			archived := read(t, test.name, test.args)
+			assertArchiveGolden(t, test.hot, archived)
+			if fetches != test.fetches {
+				t.Fatalf("section fetches=%d want %d", fetches, test.fetches)
+			}
+		})
+	}
+
+	if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM native_archive_sections WHERE work_item_id=? AND kind='history'", item); err != nil {
+		t.Fatal(err)
+	}
+	boundary := len(historyTable.Rows) / 2
+	for _, part := range []struct{ start, end int }{{0, boundary}, {boundary, len(historyTable.Rows)}} {
+		table := historyTable
+		table.Rows = table.Rows[part.start:part.end]
+		index := slices.Index(table.Columns, "sequence")
+		var first, last int64
+		if err := json.Unmarshal(table.Rows[0][index], &first); err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(table.Rows[len(table.Rows)-1][index], &last); err != nil {
+			t.Fatal(err)
+		}
+		ref, data := publishTestSection(t, f.nativeFixture, item, "history", item, first, last, table)
+		objects[ref.Key] = data
+	}
+	var want struct {
+		Data tracker.Page[tracker.CollaborationEvent] `json:"data"`
+	}
+	if err := json.Unmarshal(allHistory, &want); err != nil {
+		t.Fatal(err)
+	}
+	var events []tracker.CollaborationEvent
+	cursor := ""
+	pages := 0
+	for {
+		args := map[string]any{"reference": item, "limit": 100}
+		if cursor != "" {
+			args["cursor"] = cursor
+		}
+		fetches = 0
+		var page struct {
+			Data tracker.Page[tracker.CollaborationEvent] `json:"data"`
+		}
+		if err := json.Unmarshal(read(t, operatortool.WorkHistory, args), &page); err != nil {
+			t.Fatal(err)
+		}
+		if fetches != 1 || len(page.Data.Items) == 0 {
+			t.Fatalf("history page fetches=%d items=%d", fetches, len(page.Data.Items))
+		}
+		events = append(events, page.Data.Items...)
+		pages++
+		if page.Data.NextCursor == "" {
+			break
+		}
+		cursor = page.Data.NextCursor
+	}
+	if pages != 2 || !reflect.DeepEqual(events, want.Data.Items) {
+		t.Fatal("section pagination changed history records or anchors")
+	}
 }

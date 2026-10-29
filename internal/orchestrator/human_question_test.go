@@ -7,11 +7,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 )
 
 func TestINV14DispatchQuestionTool(t *testing.T) {
@@ -40,7 +40,7 @@ func TestINV14DispatchQuestionTool(t *testing.T) {
 				AutoPromote:         AutoPromoteConfig{Enabled: tc.enabled, PassState: tc.passState, Gate: gate.Config{Kind: tc.gateKind}},
 			})
 			worker := newWorkerHostRunner()
-			o := Orchestrator{cfg: cfg, connector: memory.New(memory.Config{}), workAttempts: openWorkAttemptRecoveryStore(t, t.Context()), supervisor: newTestSupervisor(t, worker, cfg), runResults: make(chan runner.Completion, 1)}
+			o := Orchestrator{cfg: cfg, connector: fakehub.New(fakehub.Config{}), workAttempts: openWorkAttemptRecoveryStore(t, t.Context()), supervisor: newTestSupervisor(t, worker, cfg), runResults: make(chan runner.Completion, 1)}
 			state := newState(cfg)
 			if !o.dispatchIssue(t.Context(), &state, dispatchTestIssue("issue", "Todo"), 1, time.Now(), "") {
 				t.Fatal("dispatch did not start")
@@ -95,7 +95,7 @@ func TestINV14LegacyQuestionRowDispatch(t *testing.T) {
 			}
 			cfg := normalizeConfig(Config{MaxConcurrentAgents: 1, ActiveStates: []string{"Todo"}, TerminalStates: []string{"Done"}, Project: scheduler.ProjectCandidate{ID: "detent"}, AutoPromote: AutoPromoteConfig{Enabled: true, PassState: "Merging", Gate: gate.Config{Kind: tc.gateKind}}})
 			worker := newWorkerHostRunner()
-			o := Orchestrator{cfg: cfg, connector: memory.New(memory.Config{}), workAttempts: db, supervisor: newTestSupervisor(t, worker, cfg), runResults: make(chan runner.Completion, 1)}
+			o := Orchestrator{cfg: cfg, connector: fakehub.New(fakehub.Config{}), workAttempts: db, supervisor: newTestSupervisor(t, worker, cfg), runResults: make(chan runner.Completion, 1)}
 			state := newState(cfg)
 			if !o.dispatchIssue(t.Context(), &state, dispatchTestIssue("issue", "Todo"), 1, time.Now(), "") {
 				t.Fatal("legacy unanswered question prevented dispatch")

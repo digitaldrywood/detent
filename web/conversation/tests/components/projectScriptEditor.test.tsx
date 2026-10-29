@@ -108,9 +108,9 @@ describe("the Add Action dialog", () => {
     await waitFor(() => expect(keybindingField().value).toBe(""));
   });
 
-  // §18.7: the Browser surface is snapshot-first and the live preview is
+  // The Browser surface is snapshot-first and the live preview is
   // deferred, so the switch stays present and disabled with the reason —
-  // §16's rule — rather than being cut.
+  // the frontend's governing rule — rather than being cut.
   it("disables the Open-preview switch and carries the reason", () => {
     mount();
     // The switch is disabled whatever the URL field says, which is where
@@ -122,7 +122,7 @@ describe("the Add Action dialog", () => {
 
     const reason = screen.getByText(PREVIEW_UNAVAILABLE_REASON);
     expect(toggle.getAttribute("aria-describedby")).toBe(reason.id);
-    // The URL field itself stays live: the hub stores and echoes it (§18.12).
+    // The URL field itself stays live: the hub stores and echoes it.
     expect((screen.getByLabelText("Preview URL (optional)") as HTMLInputElement).disabled).toBe(
       false,
     );
@@ -145,7 +145,7 @@ describe("the Add Action dialog", () => {
       runOnWorktreeCreate: false,
       keybinding: "mod+shift+t",
       previewUrl: "http://localhost:5173",
-      // Still false: §18.7's switch is disabled, so nothing can turn it on.
+      // Still false: the browser preview rule's switch is disabled, so nothing can turn it on.
       autoOpenPreview: false,
     });
     expect(onClose).toHaveBeenCalled();

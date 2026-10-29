@@ -13,7 +13,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	chatpkg "github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/project"
@@ -134,14 +133,6 @@ func (s *Server) workActionProposal(ctx context.Context, name string, arguments 
 			}
 		}
 	}
-	if name == operatortool.AcknowledgeParks {
-		explanation, err := s.workExplanation(ctx, request.ProjectID, target.issue.ID)
-		if err != nil {
-			return chatpkg.Action{}, err
-		}
-		// Pin the sequence the operator is acknowledging, including approval/replay.
-		action.Attempt = int(explanation.ParkSummary.ParkCount)
-	}
 	if name == operatortool.DisposeSecurityFinding {
 		if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeAdmin, ProjectID: request.ProjectID}); err != nil {
 			return chatpkg.Action{}, err
@@ -194,7 +185,7 @@ func (s *Server) executeWorkAction(ctx context.Context, action chatpkg.Action) (
 			result.CommentID = native.Comment.ID
 			result.Revision = int64(native.Comment.Revision)
 		}
-		if string(action.Kind) != operatortool.AcknowledgeParks && string(action.Kind) != operatortool.DisposeSecurityFinding {
+		if string(action.Kind) != operatortool.DisposeSecurityFinding {
 			s.requestKanbanRefresh(ctx)
 			return result, nil
 		}
@@ -219,14 +210,6 @@ func (s *Server) executeWorkAction(ctx context.Context, action chatpkg.Action) (
 		if err != nil || status != http.StatusOK {
 			return chatpkg.ActionExecution{}, errOperatorCommandUnavailable
 		}
-	case operatortool.AcknowledgeParks:
-		explanation, err := s.workExplanation(ctx, action.ProjectID, action.IssueID)
-		if err != nil || int(explanation.ParkSummary.ParkCount) != action.Attempt {
-			return chatpkg.ActionExecution{}, errOperatorCommandUnavailable
-		}
-		if _, err := s.acknowledgeIssueParks(ctx, explanation); err != nil {
-			return chatpkg.ActionExecution{}, errOperatorCommandUnavailable
-		}
 	case operatortool.DisposeSecurityFinding:
 		if _, err := s.recordSecurityDisposition(ctx, action.ProjectID, workDispositionRequest(request)); err != nil {
 			return chatpkg.ActionExecution{}, errOperatorCommandUnavailable
@@ -236,15 +219,6 @@ func (s *Server) executeWorkAction(ctx context.Context, action chatpkg.Action) (
 	}
 	s.requestKanbanRefresh(ctx)
 	return result, nil
-}
-
-func (s *Server) workExplanation(ctx context.Context, projectID, reference string) (explain.IssueExplanation, error) {
-	if s.issueExplainer == nil {
-		return explain.IssueExplanation{}, errOperatorCommandUnavailable
-	}
-	ctx, cancel := context.WithTimeout(ctx, issueExplanationTimeout)
-	defer cancel()
-	return s.issueExplainer.Explain(ctx, explain.Query{ProjectID: projectID, Reference: reference})
 }
 
 func (s *Server) executeWorkRead(ctx context.Context, call operatortool.Call) (operatortool.Result, error) {
@@ -351,7 +325,7 @@ func executeNativeWorkCommand(ctx context.Context, client *hubclient.NativeClien
 		result.Issue, err = client.Dependency(ctx, command.ID, tracker.DependencyMutation{Mutation: mutation, ExpectedRevision: command.ExpectedRevision, RelatedWorkItemID: command.Related, Operation: command.Operation})
 	case operatortool.ArchiveItem, operatortool.RestoreItem:
 		result.Issue, err = client.SetArchived(ctx, command.ID, command.ExpectedRevision, command.Kind == operatortool.ArchiveItem, mutation)
-	case operatortool.AcknowledgeParks, operatortool.DisposeSecurityFinding:
+	case operatortool.DisposeSecurityFinding:
 		// These use the dashboard runtime command, not the native tracker.
 	default:
 		return result, errors.New("native work command is unavailable")

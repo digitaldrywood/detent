@@ -13,6 +13,8 @@ Options:
   --from-source PATH     Build Detent from this checkout instead of the release
   --config PATH          Runner configuration (default: ~/.config/detent-runner/global.yaml)
   --workspace-root PATH  Project checkouts (default: ~/detent-runner)
+  --setup-manifest PATH  Reproduce this setup revision; stop before enrollment
+                         when this Sprite cannot match it
   --help                 Show this help
 
 Paste the Hub's "detent hub runner register ..." command on standard input.
@@ -21,17 +23,230 @@ without a shell, and the token reaches Detent through its environment, never
 an argument list, file or log. The host --service flag is replaced by a
 Sprite Service. When this Sprite is already registered, send empty input to
 reuse its identity. Provider login stays manual; the runner manages checkouts.
+
+Before enrollment the script records a credential-free setup revision in
+~/.local/lib/detent-sprite-runner/setup-manifest.json: platform, bootstrap
+release, pinned toolchain and allowlisted native caches. Tools this setup
+cannot reproduce are reported; declare them in the project's
+hooks.runner_setup. Provider logins and the runner identity are never part
+of it; each new Sprite signs in once in its own console.
 EOF
 }
 
 die() { printf 'sprite bootstrap: %s\n' "$*" >&2; exit 1; }
 value() { [[ $# -ge 2 && -n $2 ]] || die "missing value for $1"; }
 
+setup_manifest_tool() {
+    node - setup-manifest "$@" <<'NODE'
+const fs = require('node:fs');
+const crypto = require('node:crypto');
+const [mode, ...args] = process.argv.slice(3);
+const canonical = manifest => ({
+    schema: manifest.schema,
+    platform: manifest.platform,
+    bootstrap: manifest.bootstrap,
+    toolchain: Object.fromEntries(Object.entries(manifest.toolchain || {}).sort()),
+    caches: [...new Set(manifest.caches || [])].sort(),
+});
+const revision = manifest => crypto.createHash('sha256').update(JSON.stringify(canonical(manifest))).digest('hex');
+const read = file => {
+    const manifest = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (manifest.schema !== 1) throw new Error('unsupported setup manifest schema');
+    return manifest;
+};
+if (mode === 'configured-root') {
+    const path = require('node:path');
+    const [yamlModule, configPath, base, home] = args;
+    if (fs.existsSync(configPath)) {
+        const configured = require(yamlModule).parse(fs.readFileSync(configPath, 'utf8'))?.workspace_root ?? '';
+        if (typeof configured !== 'string') throw new Error('workspace_root must be a string');
+        if (configured === '~' || configured === '~/') console.log(path.resolve(home));
+        else if (configured.startsWith('~/')) console.log(path.resolve(home, configured.slice(2)));
+        else if (configured !== '') console.log(path.resolve(base, configured));
+    }
+} else if (mode === 'canonical') {
+    const path = require('node:path');
+    for (const candidate of args) {
+        let existing = path.resolve(candidate), rest = [];
+        while (true) {
+            try { existing = fs.realpathSync(existing); break; } catch {}
+            const parent = path.dirname(existing);
+            if (parent === existing) break;
+            rest.unshift(path.basename(existing));
+            existing = parent;
+        }
+        console.log(path.join(existing, ...rest));
+    }
+} else if (mode === 'field') {
+    const value = read(args[0])[args[1]];
+    console.log(Array.isArray(value) ? value.join(', ') : value ?? '');
+} else if (mode === 'write') {
+    const [file, platform, bootstrap, caches, ...rest] = args;
+    const split = rest.indexOf('--unreproducible');
+    const pairs = split < 0 ? rest : rest.slice(0, split);
+    const unreproducible = split < 0 ? [] : rest.slice(split + 1).sort();
+    const manifest = canonical({
+        schema: 1, platform, bootstrap,
+        toolchain: Object.fromEntries(pairs.map(pair => pair.split('=', 2))),
+        caches: caches.split(',').filter(Boolean),
+    });
+    manifest.revision = revision(manifest);
+    if (unreproducible.length) manifest.unreproducible = unreproducible;
+    fs.writeFileSync(file, JSON.stringify(manifest, null, 2) + '\n', { flag: 'wx' });
+} else if (mode === 'compare') {
+    const [expected, actual] = args.map(read);
+    const want = canonical(expected), got = canonical(actual);
+    const differences = [];
+    if (expected.revision !== revision(expected)) differences.push('revision');
+    for (const key of ['platform', 'bootstrap', 'caches']) {
+        if (JSON.stringify(want[key]) !== JSON.stringify(got[key])) differences.push(key);
+    }
+    for (const tool of new Set([...Object.keys(want.toolchain), ...Object.keys(got.toolchain)])) {
+        if (want.toolchain[tool] !== got.toolchain[tool]) differences.push(`toolchain.${tool}`);
+    }
+    if (differences.length) {
+        console.log(differences.join(', '));
+        process.exit(1);
+    }
+} else {
+    throw new Error(`unknown setup manifest mode ${mode}`);
+}
+NODE
+}
+
+check_setup_manifest() {
+    [[ -f $setup_manifest ]] || die "setup manifest not found: $setup_manifest"
+    local platform bootstrap unreproducible
+    platform=$(setup_manifest_tool field "$setup_manifest" platform) || die "setup manifest is unreadable"
+    bootstrap=$(setup_manifest_tool field "$setup_manifest" bootstrap) || die "setup manifest is unreadable"
+    unreproducible=$(setup_manifest_tool field "$setup_manifest" unreproducible) || die "setup manifest is unreadable"
+    [[ $platform == "linux/$arch" ]] || die "setup revision targets $platform; this Sprite is linux/$arch"
+    [[ $bootstrap == "$version" ]] || die "setup revision needs bootstrap $bootstrap; rerun with --version $bootstrap"
+    [[ -z $unreproducible ]] || die "setup revision lists manual customizations it cannot reproduce: $unreproducible; declare them in hooks.runner_setup"
+}
+
+setup_customizations() {
+    local entry name
+    for entry in "$bin_dir"/* "$bin_dir"/.[!.]*; do
+        [[ -e $entry || -L $entry ]] || continue
+        name=${entry##*/}
+        case $name in
+            go|gofmt|gh|rg|fd|psql|codex|claude|playwright|detent) ;;
+            *) printf 'bin/%s\n' "$name" ;;
+        esac
+    done
+    for entry in "$npm_prefix/lib/node_modules"/[!@.]* "$npm_prefix/lib/node_modules"/@*/*; do
+        [[ -d $entry ]] || continue
+        name=${entry#"$npm_prefix/lib/node_modules/"}
+        case $name in
+            @openai/codex|@anthropic-ai/claude-code|playwright|yaml) ;;
+            *) printf 'npm/%s\n' "$name" ;;
+        esac
+    done
+    [[ -z $source_root ]] || printf 'detent/source-build\n'
+}
+
+setup_path_within() {
+    local child=${1%/} parent=${2%/}
+    [[ $child == "$parent" || $child == "$parent"/* ]]
+}
+
+setup_paths_overlap() {
+    setup_path_within "$1" "$2" || setup_path_within "$2" "$1"
+}
+
+prepare_setup_cache() {
+    local name=$1 path=$2 default=$3 override=$4 marker=$5 excluded configured_root
+    local -a canonical=()
+    shift 5
+    if [[ -z $path || $name == go-build && $path == off ]]; then
+        printf '%s=disabled' "$name"
+        return
+    fi
+    [[ $path == /* ]] || die "native cache $name must be an absolute path"
+    configured_root=$(setup_manifest_tool configured-root "$npm_prefix/lib/node_modules/yaml" "$config_path" "$workspace_root" "$HOME") ||
+        die "cannot read workspace_root from $config_path"
+    mapfile -t canonical < <(setup_manifest_tool canonical "$path" "$default" \
+        "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" "$HOME"/.claude.json "${CODEX_HOME:-$HOME/.codex}" \
+        "${GH_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/gh}" "${XDG_CONFIG_HOME:-$HOME/.config}/git" \
+        "${DOCKER_CONFIG:-$HOME/.docker}" "$HOME"/.git-credentials "$HOME"/.netrc "$HOME"/.npmrc "$HOME"/.ssh \
+        "$config_path" "$identity_path" "$workspace_root" "${configured_root:-$workspace_root}")
+    [[ ${#canonical[@]} -eq 16 ]] || die "could not resolve native cache $name"
+    path=${canonical[0]}
+    for excluded in "${canonical[@]:2:12}"; do
+        if setup_paths_overlap "$path" "$excluded"; then
+            die "native cache $name overlaps a credential, identity or job location; nothing was enrolled"
+        fi
+    done
+    for excluded in "${canonical[@]:14}"; do
+        if setup_path_within "$excluded" "$path"; then
+            die "native cache $name overlaps a credential, identity or job location; nothing was enrolled"
+        elif setup_path_within "$path" "$excluded"; then
+            override=workspace
+        fi
+    done
+    if [[ ! -e $path && ! -L $path ]] || [[ -d $path && -z $(ls -A -- "$path") ]]; then
+        printf '%s=cold' "$name"
+    elif [[ ! -d $path ]]; then
+        die "native cache $name is not a directory; move it aside and rerun"
+    elif [[ -e $path/$marker ]]; then
+        printf '%s=warm' "$name"
+    elif [[ -n $override || $path != "${canonical[1]}" ]]; then
+        printf 'Native cache %s lacks its toolchain marker; operator overrides stay unmanaged\n' "$name" >&2
+        printf '%s=unmanaged' "$name"
+    elif [[ $# -eq 0 ]]; then
+        printf 'Native cache %s lacks its toolchain marker; its toolchain verifies entries and rebuilds invalid ones on use. Nothing was deleted.\n' "$name" >&2
+        printf '%s=unverified' "$name"
+    else
+        printf 'Rebuilding corrupt native cache %s\n' "$name" >&2
+        "$@" >&2 || die "could not rebuild native cache $name"
+        printf '%s=rebuilt' "$name"
+    fi
+}
+
+prepare_setup_revision() {
+    local docker_state=unavailable manifest="$lib_dir/setup-manifest.json" candidate="$scratch/setup-manifest.json" differences
+    local go_build go_modules go_build_state go_modules_state npm_cache npm_state distribution=unknown gopath_default node_version npm_version
+    local -a customizations=()
+    [[ $docker_status == skipped:* ]] || docker_state=$docker_package_version
+    if [[ -r /etc/os-release ]]; then
+        distribution=$(. /etc/os-release && printf '%s-%s' "${ID:-linux}" "${VERSION_ID:-rolling}")
+    fi
+    go_build=$(go env GOCACHE) || die "go env GOCACHE failed"
+    go_modules=$(go env GOMODCACHE) || die "go env GOMODCACHE failed"
+    gopath_default=${GOPATH:-$HOME/go}
+    go_build_state=$(prepare_setup_cache go-build "$go_build" "${XDG_CACHE_HOME:-$HOME/.cache}/go-build" "${GOCACHE:-}" README)
+    go_modules_state=$(prepare_setup_cache go-mod "$go_modules" "${gopath_default%%:*}/pkg/mod" "${GOMODCACHE:-}" cache)
+    npm_cache=$(npm config get cache) || die "npm config get cache failed"
+    npm_state=$(prepare_setup_cache npm "$npm_cache" "$HOME/.npm" "${npm_config_cache:-${NPM_CONFIG_CACHE:-}}" _cacache npm cache verify)
+    mapfile -t customizations < <(setup_customizations)
+    node_version=$(node --version) || die "node --version failed"
+    npm_version=$(npm --version) || die "npm --version failed"
+    setup_manifest_tool write "$candidate" "linux/$arch" "$version" go-build,go-mod,npm \
+        "go=$go_version" "gh=$gh_version" "rg=$rg_version" "fd=$fd_version" "psql=$psql_package_version" \
+        "codex=$codex_version" "claude=$claude_version" "playwright=$playwright_version" "yaml=$yaml_version" \
+        "docker=$docker_state" "os=$distribution" "node=${node_version#v}" "npm=$npm_version" --unreproducible "${customizations[@]}"
+    if [[ -n $setup_manifest ]]; then
+        differences=$(setup_manifest_tool compare "$setup_manifest" "$candidate") ||
+            die "this Sprite does not reproduce the setup revision ($differences); nothing was enrolled"
+        [[ ${#customizations[@]} -eq 0 ]] ||
+            die "this Sprite has manual customizations outside the setup revision: ${customizations[*]}; nothing was enrolled"
+    fi
+    install -m 644 "$candidate" "$manifest"
+    printf 'Setup revision %s recorded in %s (no credentials or runner identity).\n' "$(setup_manifest_tool field "$manifest" revision)" "$manifest"
+    printf 'Native caches (optional, rebuilt by their toolchains, never copied between Sprites): %s, %s, %s\n' "$go_build_state" "$go_modules_state" "$npm_state"
+    if [[ ${#customizations[@]} -gt 0 ]]; then
+        printf 'Manual customizations this setup cannot reproduce; declare them in the project hooks.runner_setup:\n' >&2
+        printf '  %s\n' "${customizations[@]}" >&2
+    fi
+}
+
 version=v0.117.41
 go_mod=
 source_root=
 config_path=
 workspace_root=
+setup_manifest=
 script_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -40,6 +255,7 @@ while [[ $# -gt 0 ]]; do
         --from-source) value "$@"; source_root=$2; shift 2 ;;
         --config) value "$@"; config_path=$2; shift 2 ;;
         --workspace-root) value "$@"; workspace_root=$2; shift 2 ;;
+        --setup-manifest) value "$@"; setup_manifest=$2; shift 2 ;;
         --help|-h) usage; exit 0 ;;
         *) die "unknown option: $1 (send the enrollment command on standard input)" ;;
     esac
@@ -97,6 +313,7 @@ bootstrap_exit() {
         [[ -z ${requested_workspace_root:-} ]] || printf '%q ' --workspace-root "$requested_workspace_root" >&2
         [[ -z $go_mod ]] || printf '%q ' --go-mod "$go_mod" >&2
         [[ -z $source_root ]] || printf '%q ' --from-source "$source_root" >&2
+        [[ -z $setup_manifest ]] || printf '%q ' --setup-manifest "$setup_manifest" >&2
         printf '\nPaste the complete Hub command at the hidden prompt; paste is invisible.\n' >&2
         printf 'Empty input is only for an already registered runner. If enrollment expired, create a fresh Hub command. Keep this Sprite identity and provider sign-ins.\n' >&2
     fi
@@ -149,12 +366,23 @@ fi
 unset words
 config_path=${config_path:-$HOME/.config/detent-runner/global.yaml}
 requested_workspace_root=$workspace_root
-workspace_root=${workspace_root:-$HOME/detent-runner}
-[[ $config_path == /* && $workspace_root == /* ]] || die "--config and --workspace-root must be absolute paths"
+[[ $config_path == /* && ( -z $workspace_root || $workspace_root == /* ) ]] || die "--config and --workspace-root must be absolute paths"
 identity_path="$(dirname -- "$config_path")/identity.json"
 if [[ -z $token ]] && [[ ! -f $config_path || ! -f $identity_path ]]; then
     die "no enrollment command given and $config_path is not registered yet"
 fi
+
+legacy_workspace_root=$HOME/detent-runner
+registered_now=
+local_root=
+if command -v findmnt >/dev/null; then
+    read -r local_fstype local_mount < <(findmnt -n -o FSTYPE,TARGET --mountpoint /tmp 2>/dev/null || true) || true
+    if [[ ${local_fstype:-} =~ ^(ext4|xfs|btrfs)$ && ${local_mount:-} == /* ]]; then
+        local_root=$local_mount/detent-runner
+    fi
+fi
+workspace_root=${workspace_root:-${local_root:+$local_root/work}}
+workspace_root=${workspace_root:-$legacy_workspace_root}
 
 [[ $(uname -s) == Linux ]] || die "run this script inside a Fly Sprite (Linux)"
 case $(uname -m) in
@@ -166,6 +394,46 @@ command -v sprite-env >/dev/null || die "sprite-env is missing; run inside a Fly
 for tool in curl tar sha256sum npm node apt-get apt-cache dpkg-query; do
     command -v "$tool" >/dev/null || die "$tool is required (preinstalled in fresh Sprites)"
 done
+[[ -z $setup_manifest ]] || check_setup_manifest
+local_caches=()
+link_local_cache() {
+    local native=$1 target=$local_root/cache/$2 entry
+    local_caches+=("$target")
+    if [[ -L $native ]]; then
+        [[ $(readlink -- "$native") != "$target" ]] || mkdir -p -- "$target"
+        return 0
+    fi
+    if [[ -e $native && ! -d $native ]]; then
+        printf 'Native cache %s already has content; it stays on the persistent disk.\n' "$native" >&2
+        return 0
+    fi
+    if [[ -d $native ]]; then
+        for entry in "$native"/* "$native"/.[!.]*; do
+            [[ -e $entry && ${entry##*/} != _logs ]] || continue
+            printf 'Native cache %s already has content; it stays on the persistent disk.\n' "$native" >&2
+            return 0
+        done
+        rm -rf -- "$native"
+    fi
+    mkdir -p -- "$target" "$(dirname -- "$native")"
+    ln -s -- "$target" "$native"
+}
+if [[ -n $local_root ]]; then
+    native_cache_home=${XDG_CACHE_HOME:-$HOME/.cache}
+    go_env_file=${GOENV:-${XDG_CONFIG_HOME:-$HOME/.config}/go/env}
+    if [[ -z ${GOCACHE:-} ]] && ! grep -Eqs '^GOCACHE=' "$go_env_file"; then
+        link_local_cache "$native_cache_home/go-build" go-build
+        link_local_cache "$native_cache_home/detent" detent
+    fi
+    [[ -n ${GOLANGCI_LINT_CACHE:-} ]] || link_local_cache "$native_cache_home/golangci-lint" golangci-lint
+    if [[ -z ${GOMODCACHE:-}${GOPATH:-} ]] && ! grep -Eqs '^(GOMODCACHE|GOPATH)=' "$go_env_file"; then
+        link_local_cache "$HOME/go/pkg/mod" go-mod
+    fi
+    if [[ -z ${npm_config_cache:-}${NPM_CONFIG_CACHE:-} ]] &&
+        ! grep -Eqs '^[[:space:]]*cache[[:space:]]*=' "${NPM_CONFIG_USERCONFIG:-$HOME/.npmrc}"; then
+        link_local_cache "$HOME/.npm" npm
+    fi
+fi
 
 umask 077
 bin_dir="$HOME/.local/bin"
@@ -202,6 +470,22 @@ apt_install() {
 }
 
 apt_update
+sandbox_packages=()
+for prerequisite in bubblewrap:bwrap:--version socat:socat:-V; do
+    IFS=: read -r package tool version_flag <<<"$prerequisite"
+    if ! command -v "$tool" >/dev/null || ! "$tool" "$version_flag" >/dev/null 2>&1; then
+        sandbox_packages+=("$package")
+    fi
+done
+if [[ ${#sandbox_packages[@]} -gt 0 ]]; then
+    apt_install "${sandbox_packages[@]}"
+fi
+for tool in bwrap socat; do
+    command -v "$tool" >/dev/null || die "Codex sandbox prerequisite $tool is missing from PATH after installation"
+    tool_version_flag=--version
+    [[ $tool != socat ]] || tool_version_flag=-V
+    "$tool" "$tool_version_flag" >/dev/null 2>&1 || die "Codex sandbox prerequisite $tool cannot run"
+done
 psql_package_version=
 for psql_major in 18 17; do
     psql_package="postgresql-client-$psql_major"
@@ -416,21 +700,27 @@ elif [[ $(detent --version 2>/dev/null || true) != "$version" ]] || ! grep -qxF 
 fi
 detent --version
 last_completed='Detent installed'
+prepare_setup_revision
+last_completed='setup revision recorded'
 
 if [[ -n $token ]]; then
     # A valid stored credential reuses the same runner; the token is only redeemed when it is not.
     DETENT_RUNNER_ENROLLMENT_TOKEN=$token detent hub runner register "${register_args[@]}" --config "$config_path" --workspace-root "$workspace_root"
     unset token
+    registered_now=1
 else
     printf 'Reusing the registered runner in %s\n' "$config_path"
 fi
 
 last_completed='runner registration command completed or stored identity reused; verify Hub connection'
 
-pressure_status=$(node - "$npm_prefix/lib/node_modules/yaml" "$config_path" <<'NODE'
+migrate_workspace_root=
+if [[ -n $local_root && -z $requested_workspace_root ]]; then migrate_workspace_root=$workspace_root; fi
+pressure_status=$(node - "$npm_prefix/lib/node_modules/yaml" "$config_path" "$legacy_workspace_root" "$migrate_workspace_root" <<'NODE'
 const fs = require('node:fs');
 const YAML = require(process.argv[2]);
 const configPath = process.argv[3];
+const [legacyWorkspaceRoot, migrateWorkspaceRoot] = process.argv.slice(4);
 const original = fs.readFileSync(configPath, 'utf8');
 const config = YAML.parseDocument(original);
 if (config.errors.length) throw config.errors[0];
@@ -452,6 +742,10 @@ for (const signal of ['io', 'cpu']) {
         changed = true;
     }
 }
+if (migrateWorkspaceRoot && config.get('workspace_root') === legacyWorkspaceRoot) {
+    config.set('workspace_root', migrateWorkspaceRoot);
+    changed = true;
+}
 if (changed) {
     const temporary = `${configPath}.sprite-bootstrap-${process.pid}`;
     try {
@@ -467,7 +761,9 @@ console.log(`Sprite pressure capacity: io=${config.getIn(['global', 'io', 'degra
 NODE
 )
 
-resolved_roots=$(node - "$npm_prefix/lib/node_modules/yaml" "$config_path" "$identity_path" "$workspace_root" "$requested_workspace_root" "$HOME" <<'NODE'
+resolve_base=$workspace_root
+if [[ -z $requested_workspace_root && -z $registered_now ]]; then resolve_base=$legacy_workspace_root; fi
+resolved_roots=$(node - "$npm_prefix/lib/node_modules/yaml" "$config_path" "$identity_path" "$resolve_base" "$requested_workspace_root" "$HOME" <<'NODE'
 const fs = require('node:fs');
 const path = require('node:path');
 try {
@@ -505,10 +801,17 @@ workspace_root=${resolved_roots%%$'\n'*}
 launch_dir=${resolved_roots#*$'\n'}
 
 mkdir -p "$workspace_root/.tmp" "$launch_dir"
+cpu_count=$(nproc)
+[[ $cpu_count =~ ^[1-9][0-9]*$ ]] || die "could not read the Sprite CPU count"
+make_load_limit=$((cpu_count / 4 > 0 ? cpu_count / 4 : 1))
 launcher="$lib_dir/start"
 {
     printf '#!/usr/bin/env bash\nset -euo pipefail\n'
     printf 'export HOME=%q\nexport PATH=%q\nexport TMPDIR=%q\n' "$HOME" "$PATH" "$workspace_root/.tmp"
+    printf 'export MAKEFLAGS=%q\n' "-l$make_load_limit"
+    printf 'mkdir -p --'
+    printf ' %q' "$workspace_root/.tmp" "$launch_dir" "${local_caches[@]}"
+    printf '\n'
     printf 'cd -- %q\n' "$launch_dir"
     printf 'exec %q --config %q --headless\n' "$bin_dir/detent" "$config_path"
 } > "$launcher"
@@ -517,13 +820,17 @@ chmod 700 "$launcher"
 # upgrades and finished manual setup take effect.
 existing_service=false
 if sprite-env services get detent-runner >/dev/null 2>&1; then existing_service=true; fi
-sprite-env services create detent-runner --cmd "$launcher" --dir "$launch_dir" --no-stream
+sprite-env services create detent-runner --cmd "$launcher" --dir "$HOME" --no-stream
 if [[ $existing_service == true ]]; then
     sprite-env curl -X POST 'http://sprite/v1/services/detent-runner/restart?duration=1s'
 fi
 
 last_completed='runner Service configured; verify running state'
 printf '\n%s\n' "$pressure_status"
+printf 'Sprite resource profile: %s CPUs; runner Make load limit -l%s; workers run at lower CPU priority than the runner.\n' "$cpu_count" "$make_load_limit"
+if [[ -n $local_root ]]; then
+    printf 'Local disk: checkouts in %s; native caches linked into %s.\n' "$workspace_root" "$local_root/cache"
+fi
 printf '\nManual setup still required before dispatch:\n'
 if ! claude auth status >/dev/null 2>&1; then
     printf '  Claude: run claude auth login, or configure a Sprites Anthropic connector.\n'
@@ -539,11 +846,12 @@ printf '  Each new native project checkout: %s/PROJECT_ID (use the exact prj_ ID
 printf '  The runner clones Cloud-allowed repositories and runs hooks.runner_setup; do not prepare a separate clone.\n'
 printf '  Verify Git repository access, checkout setup and reported policy provenance in the Hub; approve policy only if offered.\n'
 printf '  Re-run this script with empty input to restart the service, then route a Todo issue.\n'
-printf '  After auth and checkout changes, take a new baseline with sprite-env checkpoints create.\n'
+printf '  After auth and checkout changes, take a new recovery checkpoint with sprite-env checkpoints create.\n'
 printf '\nCreating an installation checkpoint; authentication, checkout readiness and a completed task still need verification (save the id).\n'
+printf 'It holds this runner identity: restore it only on this Sprite, never as a reusable setup.\n'
 chromium_status=$(cat "$scratch/chromium-status.txt")
 rm -rf -- "$scratch"
-sprite-env checkpoints create --comment "detent runner bootstrap $version"
+sprite-env checkpoints create --comment "detent runner bootstrap $version (recovery only)"
 last_completed='installation checkpoint created'
 printf '\nInspect service: sprite-env services get detent-runner\n'
 printf 'Restore this same Sprite: sprite-env checkpoints restore CHECKPOINT_ID\n'

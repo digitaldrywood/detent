@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/providercapacity"
@@ -24,12 +25,12 @@ func isProviderWait(err error) bool {
 
 func validateProviderCandidates(candidates []tracker.NativeCapacityCandidate) error {
 	if len(candidates) > 100 {
-		return nativeInvalid("Provider selection is limited to 100 candidates per page")
+		return nativePublicInvalid("Provider selection is limited to 100 candidates per page")
 	}
 	seen := make(map[tracker.NativeWorkItemID]bool)
 	for _, candidate := range candidates {
 		if candidate.WorkItemID == "" || candidate.Revision <= 0 || seen[candidate.WorkItemID] {
-			return nativeInvalid("Provider candidates require distinct work items and positive revisions")
+			return nativePublicInvalid("Provider candidates require distinct work items and positive revisions")
 		}
 		if err := candidate.Requirement.Validate(); err != nil {
 			return nativeInvalid(err.Error())
@@ -47,7 +48,7 @@ func updateProviderReports(ctx context.Context, tx *sql.Tx, scope nativeScope, r
 		return nativeInvalid(err.Error())
 	}
 	if len(reports) == 0 {
-		return nativeInvalid("An enabled provider reporter must retain at least one backend")
+		return nativePublicInvalid("An enabled provider reporter must retain at least one backend")
 	}
 	previous, err := readProviderReports(ctx, tx, scope.credential.Runner.RunnerID)
 	if err != nil {
@@ -125,20 +126,31 @@ func sharedProviderAccount(a, b scopedProviderAccount) bool {
 }
 
 type providerCapacitySnapshot struct {
-	groups       map[string]scopedProviderAccount
+	truncated    bool
+	groups       map[string][]scopedProviderAccount
 	reports      []scopedProviderAccount
 	reservations []scopedProviderReservation
 }
 
 func readProviderCapacitySnapshot(ctx context.Context, query nativeQueryer, organization tracker.OrganizationID, now time.Time) (providerCapacitySnapshot, error) {
 	var snapshot providerCapacitySnapshot
+	runnerBound := ""
+	if explanationRead(ctx) {
+		runnerBound = " ORDER BY r.id LIMIT 65"
+	}
 	rows, err := query.QueryContext(ctx, `SELECT r.id, r.provider_reports_json, t.created_at, t.expires_at, t.revoked_at
-FROM runner_identities r JOIN api_tokens t ON t.id = r.token_id WHERE r.organization_id = ?`, organization)
+FROM runner_identities r JOIN api_tokens t ON t.id = r.token_id WHERE r.organization_id = ?`+runnerBound, organization)
 	if err != nil {
 		return snapshot, err
 	}
 	defer rows.Close()
+	runnerCount := 0
 	for rows.Next() {
+		runnerCount++
+		if explanationRead(ctx) && runnerCount > 64 {
+			snapshot.truncated = true
+			break
+		}
 		var runnerID, raw, created string
 		var expires, revoked sql.NullString
 		var reports []providercapacity.Report
@@ -161,19 +173,61 @@ FROM runner_identities r JOIN api_tokens t ON t.id = r.token_id WHERE r.organiza
 	if err := rows.Close(); err != nil {
 		return snapshot, err
 	}
-	rows, err = query.QueryContext(ctx, `SELECT p.reservation_json, l.expires_at, l.session_id, l.machine_id, COALESCE(lr.runner_id, ''), `+nativeLandingCapacityProject+` FROM provider_reservations p JOIN leases l ON l.lease_id=p.lease_id JOIN issues i ON i.id=l.issue_id LEFT JOIN lease_runners lr ON lr.lease_id=l.lease_id `+nativeLandingCapacityJoins+` WHERE p.organization_id = ? AND l.released_at IS NULL`, organization)
+	statement := `SELECT p.reservation_json, l.expires_at, l.session_id, l.machine_id, COALESCE(lr.runner_id, ''), ` + nativeLandingCapacityProject + ` FROM provider_reservations p JOIN leases l ON l.lease_id=p.lease_id JOIN issues i ON i.id=l.issue_id LEFT JOIN lease_runners lr ON lr.lease_id=l.lease_id ` + nativeLandingCapacityJoins + ` WHERE p.organization_id = ? AND l.released_at IS NULL`
+	args := []any{organization}
+	if explanationRead(ctx) {
+		statement = `WITH candidates AS MATERIALIZED (
+SELECT l.lease_id,l.expires_at,l.session_id,l.machine_id
+FROM leases l INDEXED BY health_active_host
+WHERE l.machine_id IN (SELECT machine_id FROM runner_identities WHERE organization_id=? ORDER BY id LIMIT 65)
+AND l.released_at IS NULL AND l.expires_at>? ORDER BY l.machine_id,l.expires_at,l.lease_id LIMIT 1025
+)
+SELECT p.reservation_json,l.expires_at,l.session_id,l.machine_id,COALESCE(lr.runner_id,''),''
+FROM candidates l LEFT JOIN provider_reservations p ON p.lease_id=l.lease_id AND p.organization_id=?
+LEFT JOIN lease_runners lr ON lr.lease_id=l.lease_id`
+		args = []any{organization, formatHubTime(now), organization}
+	}
+	rows, err = query.QueryContext(ctx, statement, args...)
 	if err != nil {
 		return snapshot, err
 	}
 	defer rows.Close()
-	snapshot.groups = map[string]scopedProviderAccount{}
+	snapshot.groups = map[string][]scopedProviderAccount{}
+	type landingUsageRow struct {
+		raw                                sql.NullString
+		expiry, session, runnerID, project string
+		machine                            tracker.MachineID
+	}
+	var landingRows []landingUsageRow
+	leaseCount := 0
 	for rows.Next() {
-		var raw, expiry, session, runnerID, project string
-		var machine tracker.MachineID
-		var reservation providercapacity.Reservation
-		if err := rows.Scan(&raw, &expiry, &session, &machine, &runnerID, &project); err != nil {
+		leaseCount++
+		if explanationRead(ctx) && leaseCount > 1024 {
+			snapshot.truncated = true
+			break
+		}
+		var value landingUsageRow
+		if err := rows.Scan(&value.raw, &value.expiry, &value.session, &value.machine, &value.runnerID, &value.project); err != nil {
 			return snapshot, err
 		}
+		if !value.raw.Valid {
+			continue
+		}
+		if explanationRead(ctx) && strings.HasPrefix(value.session, "landing/") {
+			snapshot.truncated = true
+		}
+		landingRows = append(landingRows, value)
+	}
+	if err := rows.Err(); err != nil {
+		return snapshot, err
+	}
+	if err := rows.Close(); err != nil {
+		return snapshot, err
+	}
+	for _, value := range landingRows {
+		var reservation providercapacity.Reservation
+		raw, expiry, session, machine, runnerID, project := value.raw, value.expiry, value.session, value.machine, value.runnerID, value.project
+
 		end, err := parseTimeValue(expiry)
 		if err != nil {
 			return snapshot, err
@@ -181,16 +235,24 @@ FROM runner_identities r JOIN api_tokens t ON t.id = r.token_id WHERE r.organiza
 		if !end.After(now) {
 			continue
 		}
-		if err := json.Unmarshal([]byte(raw), &reservation); err != nil {
+		if err := json.Unmarshal([]byte(raw.String), &reservation); err != nil {
+			return snapshot, err
+		}
+		project, err = resolveLandingProject(ctx, query, project, false)
+		if err != nil {
 			return snapshot, err
 		}
 		if reservation.Backend == "git" && reservation.Role == "merge" {
 			group := landingCapacityKey(machine, project, session)
 			if group != "" {
-				if _, exists := snapshot.groups[group]; exists {
+				group += "/" + runnerID
+				account := scopedProviderAccount{runnerID: runnerID, Report: reservation.Report}
+				if slices.ContainsFunc(snapshot.groups[group], func(other scopedProviderAccount) bool {
+					return sharedProviderAccount(account, other)
+				}) {
 					continue
 				}
-				snapshot.groups[group] = scopedProviderAccount{runnerID: runnerID, Report: reservation.Report}
+				snapshot.groups[group] = append(snapshot.groups[group], account)
 			}
 		}
 		snapshot.reservations = append(snapshot.reservations, scopedProviderReservation{runnerID: runnerID, Reservation: reservation})
@@ -198,15 +260,15 @@ FROM runner_identities r JOIN api_tokens t ON t.id = r.token_id WHERE r.organiza
 	return snapshot, rows.Err()
 }
 
-func providerView(ctx context.Context, query nativeQueryer, organization tracker.OrganizationID, runnerID string, report providercapacity.Report, now time.Time) (providercapacity.View, error) {
+func providerView(ctx context.Context, query nativeQueryer, organization tracker.OrganizationID, runnerID string, report providercapacity.Report, now time.Time, joining ...string) (providercapacity.View, error) {
 	snapshot, err := readProviderCapacitySnapshot(ctx, query, organization, now)
 	if err != nil {
 		return providercapacity.View{}, err
 	}
-	return snapshot.view(runnerID, report, now), nil
+	return snapshot.view(runnerID, report, now, joining...), nil
 }
 
-func (snapshot providerCapacitySnapshot) view(runnerID string, report providercapacity.Report, now time.Time) providercapacity.View {
+func (snapshot providerCapacitySnapshot) view(runnerID string, report providercapacity.Report, now time.Time, joining ...string) providercapacity.View {
 	view := providercapacity.View{Report: report, State: report.State(now), Reason: "Bounded concurrency available; quota is an observation, not transferable credit"}
 	account := scopedProviderAccount{runnerID: runnerID, Report: report}
 	var freshReports []scopedProviderAccount
@@ -237,6 +299,13 @@ func (snapshot providerCapacitySnapshot) view(runnerID string, report providerca
 			}
 		}
 	}
+	if len(joining) > 0 && joining[0] != "" && report.Backend == "git" {
+		if slices.ContainsFunc(snapshot.groups[joining[0]+"/"+runnerID], func(other scopedProviderAccount) bool {
+			return sharedProviderAccount(account, other)
+		}) {
+			view.Used--
+		}
+	}
 	switch {
 	case view.State == "exhausted":
 		view.Reason = "Provider account is exhausted; wait for a fresh observation or reset hint"
@@ -263,7 +332,7 @@ func providerConcurrencyLimit(a, b int) int {
 func selectProviderCapacity(ctx context.Context, tx *sql.Tx, query claimCandidateQuery, id tracker.WorkItemID, now time.Time) (providercapacity.Reservation, bool, error) {
 	if query.NativeScope == nil || query.NativeScope.credential.Runner.RunnerID == "" {
 		if len(query.ProviderCandidates) != 0 {
-			return providercapacity.Reservation{}, false, nativeInvalid("Provider selection requires an enrolled runner")
+			return providercapacity.Reservation{}, false, nativePublicInvalid("Provider selection requires an enrolled runner")
 		}
 		return providercapacity.Reservation{}, false, nil
 	}
@@ -294,10 +363,11 @@ func selectProviderCapacity(ctx context.Context, tx *sql.Tx, query claimCandidat
 			if err != nil {
 				return providercapacity.Reservation{}, false, err
 			}
-			view := snapshot.view(query.NativeScope.credential.Runner.RunnerID, report, now)
-			if group, exists := snapshot.groups[query.LandingBatchGroup]; exists && candidate.Requirement.Backend == "git" && candidate.Requirement.Role == "merge" && sharedProviderAccount(scopedProviderAccount{runnerID: query.NativeScope.credential.Runner.RunnerID, Report: report}, group) {
-				view.Used--
+			joining := ""
+			if candidate.Requirement.Backend == "git" && candidate.Requirement.Role == "merge" {
+				joining = query.LandingBatchGroup
 			}
+			view := snapshot.view(query.NativeScope.credential.Runner.RunnerID, report, now, joining)
 			if !view.Available() {
 				return providercapacity.Reservation{}, false, providerWait("provider_capacity", view.Reason)
 			}
@@ -333,7 +403,7 @@ func readProviderReservation(ctx context.Context, query nativeQueryer, lease tra
 	return reservation, err == nil, err
 }
 
-func validateProviderAttempt(ctx context.Context, tx *sql.Tx, scope nativeScope, data tracker.NativeRunData, now time.Time) error {
+func validateProviderAttempt(ctx context.Context, tx nativeQueryer, scope nativeScope, data tracker.NativeRunData, now time.Time) error {
 	reservation, found, err := readProviderReservation(ctx, tx, data.LeaseID)
 	if err != nil || !found {
 		return err

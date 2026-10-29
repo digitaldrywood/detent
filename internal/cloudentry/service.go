@@ -28,6 +28,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/buildinfo"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/connector/github"
+	"github.com/digitaldrywood/detent/internal/hubsecrets"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/mcp"
 	"github.com/digitaldrywood/detent/internal/operatoradmin"
@@ -38,7 +39,7 @@ import (
 const (
 	assertionLifetime = 20 * time.Second
 	sessionLifetime   = 30 * 24 * time.Hour
-	contentSecurity   = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self' https://checkout.stripe.com https://billing.stripe.com https://detent.build"
+	contentSecurity   = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data: https://workoscdn.com; font-src 'self'; connect-src 'self' https://huggingface.co https://us.aws.cdn.hf.co https://api.workos.com; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self' https://checkout.stripe.com https://billing.stripe.com https://detent.build"
 )
 
 type Config struct {
@@ -54,6 +55,7 @@ type Config struct {
 	StateDir                  string
 	ListenAddress             string
 	Logger                    *slog.Logger
+	LookupEnv                 func(string) string
 	Allocation                *AllocationConfig
 	Billing                   *BillingConfig
 	ConfigPath                string
@@ -61,15 +63,19 @@ type Config struct {
 	ConfigureRuntime          func(hubserver.HostedRuntimeUpdate) func(TenantSpec) ([]byte, error)
 	Runtime                   *hubserver.HostedRuntimeUpdate
 	RestartSettings           []byte
+	ArchiveCredentials        func(context.Context, string, string) (attachment.Credentials, error)
 	Attachments               *attachment.Config
 	GitHubWebhookSecret       []byte
 	GitHubApp                 *github.InstallationTokenConfig
+	GitHubUserClientID        string
+	GitHubUserClientSecret    string
 
 	now                 func() time.Time
 	generateToken       func() (string, error)
 	transport           func(Organization) (http.RoundTripper, error)
 	clientFS            fs.FS
 	attachmentTransport http.RoundTripper
+	platformEmailSender auth.EmailSender
 
 	tenantStartTimeout time.Duration
 	platformDeadline   time.Duration
@@ -106,7 +112,9 @@ func (c Config) validate() error {
 }
 
 type Service struct {
+	notifications     *platformNotifications
 	runtime           atomic.Pointer[entryRuntime]
+	allowlist         atomic.Pointer[signupAllowlist]
 	reloadMu          sync.Mutex
 	keyMCP            *mcp.HTTPHandler
 	administration    *operatoradmin.Executor
@@ -120,11 +128,15 @@ type Service struct {
 	verified          sessionVerifications
 	refreshes         refreshLocks
 	attachments       attachment.Storage
-	attachmentMu      sync.RWMutex
+	attachmentLocks   attachmentLocks
 	attachmentSweepAt time.Time
 	diffBodySweepAt   time.Time
 	githubRoutes      githubRoutes
 
+	stopAuthReseal    context.CancelFunc
+	authResealDone    chan struct{}
+	stopOAuthBackfill context.CancelFunc
+	oauthBackfillDone chan struct{}
 	stopAllocator     context.CancelFunc
 	allocatorDone     chan struct{}
 	wake              chan struct{}
@@ -138,8 +150,18 @@ func Open(ctx context.Context, cfg Config) (result *Service, resultErr error) {
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
+	if cfg.LookupEnv == nil {
+		cfg.LookupEnv = os.Getenv
+	}
+	keys, err := hubsecrets.FromEnvironment(cfg.LookupEnv)
+	if err != nil {
+		return nil, err
+	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
+	}
+	if keys == nil {
+		cfg.Logger.Warn("Cloud entry uses legacy sealing: DETENT_HUB_SECRET_KEYS and DETENT_HUB_SECRET_KEY_VERSION are not configured")
 	}
 	if cfg.now == nil {
 		cfg.now = time.Now
@@ -166,6 +188,13 @@ func Open(ctx context.Context, cfg Config) (result *Service, resultErr error) {
 		if err != nil {
 			return nil, fmt.Errorf("configure attachments: %w", err)
 		}
+		archives, ok := attachments.(attachment.ArchiveStorage)
+		if !ok {
+			return nil, errors.New("archive storage is unavailable")
+		}
+		if err := archives.ConfigureArchiveReads(ctx, []string{strings.TrimRight(cfg.PublicURL, "/")}); err != nil {
+			cfg.Logger.Error("archive reads unavailable", "error", fmt.Errorf("configure archives: %w", err))
+		}
 	}
 	registry, err := OpenRegistry(ctx, filepath.Join(cfg.StateDir, "registry.db"))
 	if err != nil {
@@ -186,7 +215,7 @@ func Open(ctx context.Context, cfg Config) (result *Service, resultErr error) {
 	if err != nil {
 		return nil, errors.Join(err, authStorage.Close(), registry.Close())
 	}
-	service := &Service{config: cfg, registry: registry, auth: &authStore{store: authStorage, now: cfg.now, seal: seal}, secure: strings.HasPrefix(cfg.PublicURL, "https://"), closeDevelopState: closeDevelopState}
+	service := &Service{config: cfg, registry: registry, auth: &authStore{store: authStorage, now: cfg.now, seal: seal, keys: keys}, secure: strings.HasPrefix(cfg.PublicURL, "https://"), closeDevelopState: closeDevelopState}
 	service.configureRuntimeLauncher()
 	service.attachments = attachments
 	if cfg.transport == nil {
@@ -205,6 +234,11 @@ func Open(ctx context.Context, cfg Config) (result *Service, resultErr error) {
 		return nil, errors.Join(err, service.CloseContext(ctx))
 	}
 	service.startBillingWorker(ctx)
+	if err := service.startPlatformNotifications(ctx); err != nil {
+		return nil, errors.Join(err, service.CloseContext(ctx))
+	}
+	service.startOAuthClientBackfill(ctx)
+	service.startAuthReseal(ctx)
 	return service, nil
 }
 
@@ -227,6 +261,15 @@ func (s *Service) CloseContext(ctx context.Context) error {
 		keyErr = s.keyMCP.Shutdown(ctx)
 		cancel()
 	}
+	if s.stopAuthReseal != nil {
+		s.stopAuthReseal()
+		<-s.authResealDone
+	}
+	if s.stopOAuthBackfill != nil {
+		s.stopOAuthBackfill()
+		<-s.oauthBackfillDone
+	}
+	s.closePlatformNotifications()
 	s.closeBillingWorker()
 	var mcpErr error
 	if s.closePlatformMCP != nil {
@@ -303,11 +346,21 @@ func (s *Service) routes() {
 	s.registerAdministration()
 	s.registerAccessKeys()
 	s.registerKeyMCP()
+	s.registerOAuth()
+	s.registerGitHubConnection()
 	e := s.echo
 	e.Pre(s.boundary)
 	e.GET("/static/*", echo.WrapHandler(http.StripPrefix("/static/", staticasset.New(detent.StaticFS()))))
 	e.GET("/health", s.health)
 	e.GET("/", s.home)
+	e.HEAD("/", s.home)
+	e.GET("/login", func(c echo.Context) error {
+		target := "/"
+		if query := c.Request().URL.RawQuery; query != "" {
+			target += "?" + query
+		}
+		return c.Redirect(http.StatusSeeOther, target)
+	})
 	e.GET("/auth/oidc/start", s.startLogin)
 	e.GET("/auth/oidc/callback", s.completeLogin)
 	e.GET("/organizations", s.chooser)
@@ -343,11 +396,15 @@ func (s *Service) routes() {
 	e.POST("/api/v1/webhooks/github", s.githubWebhook)
 	e.GET("/invite", s.startInvitation)
 	s.registerAttachmentRoutes(e)
+	e.GET("/api/cloud/organizations/:organization/archive-storage", s.archiveStorageBinding)
+	e.PUT("/api/cloud/organizations/:organization/archive-storage", s.archiveStorageBinding)
+	e.GET("/api/cloud/organizations/:organization/archive-deletion", s.archiveDeletionReceipt)
 	e.GET("/api/cloud/organizations/:organization/slug", s.organizationSlug)
 	e.PUT("/api/cloud/organizations/:organization/slug", s.organizationSlug)
 	e.Any("/*", s.readableProxy)
 	e.Any("/organizations/:organization", s.proxy)
 	e.GET("/organizations/:organization/issue-notifications/unsubscribe", s.unsubscribeIssueEmail)
+	e.GET("/organizations/:organization/daily-summary/unsubscribe", s.unsubscribeDailySummary)
 	e.Any("/organizations/:organization/*", s.proxy)
 	e.Any("/api/v2/organizations/:organization/*", s.proxy)
 }
@@ -520,4 +577,11 @@ func (s *Service) csrfValid(c echo.Context, session accountSession, organization
 		value = c.FormValue("csrf")
 	}
 	return subtle.ConstantTimeCompare([]byte(value), []byte(cloudassert.CSRFToken(session.CSRFSecret, organization))) == 1
+}
+
+func (s *Service) contentSecurity() string {
+	if s.config.Attachments == nil {
+		return contentSecurity
+	}
+	return strings.Replace(contentSecurity, "connect-src 'self'", "connect-src 'self' "+strings.TrimRight(s.config.Attachments.Endpoint, "/"), 1)
 }

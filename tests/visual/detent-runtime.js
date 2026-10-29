@@ -91,25 +91,24 @@ async function startDetentRuntime(name, args, options = {}) {
       throw new Error(`${name} projects did not finish their first refresh: ${last}`);
     },
     async stop() {
-      if (child.exitCode !== null) {
+      if (child.exitCode !== null || child.signalCode !== null) {
         return;
-      }
-      if (options.holdStartup) {
-        child.stdin.end();
-      } else {
-        child.kill("SIGTERM");
       }
       await new Promise((resolve) => {
         const timeout = setTimeout(() => {
-          if (child.exitCode === null) {
+          if (child.exitCode === null && child.signalCode === null) {
             child.kill("SIGKILL");
           }
-          resolve();
         }, options.holdStartup ? 15_000 : 5_000);
         child.once("exit", () => {
           clearTimeout(timeout);
           resolve();
         });
+        if (options.holdStartup) {
+          child.stdin.end();
+        } else {
+          child.kill("SIGTERM");
+        }
       });
       if (options.holdStartup && child.exitCode !== 0) {
         throw new Error(`${name} preview failed: code=${child.exitCode} signal=${child.signalCode}\n${output}`);

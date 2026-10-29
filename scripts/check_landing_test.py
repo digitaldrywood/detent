@@ -123,7 +123,7 @@ class ShortLandingGateTest(unittest.TestCase):
                     else:
                         self.assertEqual(call["budget"], "1")
                         self.assertIn("TEST_PROCS=" + budget, call["args"])
-                self.assertIn("-timeout=3m", test["args"])
+                self.assertIn("-timeout=10m", test["args"])
                 self.assertEqual([arg for arg in trace[-1]["args"] if arg.startswith("./")], sorted({"./" + str(Path(path).parent) for path in paths}))
                 self.assertIn("--new-from-rev=" + self.base, trace[-1]["args"])
                 self.assertIn("assets", trace[0]["args"])

@@ -232,6 +232,7 @@ func (c *GitHubClient) Download(ctx context.Context, url string) ([]byte, error)
 }
 
 type DetectionOptions struct {
+	GOARCH         string
 	CurrentVersion string
 	ExecutablePath string
 	GOOS           string
@@ -373,6 +374,7 @@ type Status struct {
 	LatestVersion      string        `json:"latest_version,omitempty"`
 	LatestTag          string        `json:"latest_tag,omitempty"`
 	UpdateAvailable    bool          `json:"update_available"`
+	RepairAvailable    bool          `json:"repair_available,omitempty"`
 	InstallSource      InstallSource `json:"install_source"`
 	Action             Action        `json:"action"`
 	Message            string        `json:"message,omitempty"`
@@ -427,7 +429,7 @@ func (s *Service) Apply(ctx context.Context, opts ApplyOptions) (Status, error) 
 		status.FailureReason = "Update was refused"
 		return status, ErrRefused
 	}
-	if !status.UpdateAvailable {
+	if !status.UpdateAvailable && !status.RepairAvailable {
 		status.Action = ActionUpToDate
 		status.Message = fmt.Sprintf("Detent %s is up to date.", status.CurrentVersion)
 		return status, nil
@@ -532,10 +534,11 @@ func (s *Service) applyReleaseUpdate(ctx context.Context, status Status, release
 		}
 	}
 
-	status, binary, mode, err := s.prepareReleaseBinary(ctx, status, release)
+	status, prepared, err := s.prepareReleaseBinary(ctx, status, release)
 	if err != nil {
 		return status, err
 	}
+	binary, mode := prepared.binary, prepared.mode
 	identityVerifier := binaryIdentityVerifier(s.cfg.BinaryVerifier, status.LatestVersion, status.LatestCommit)
 	replacement := Replacement{
 		Target:         s.cfg.ExecutablePath,
@@ -576,20 +579,26 @@ func (s *Service) applyReleaseUpdate(ctx context.Context, status Status, release
 			return clearPendingUpdate(opts.RecoveryStatePath, status.LatestVersion)
 		}
 	}
-	installed := binary
 	replacement.AfterReplace = func(_ context.Context, target string) error {
 		if s.cfg.GOOS != "windows" {
-			installed, err = os.ReadFile(target)
-			if err != nil {
-				return fmt.Errorf("read verified installed binary: %w", err)
+			installed, err := binaryDigest(target)
+			sum := sha256.Sum256(binary)
+			if err != nil || installed != hex.EncodeToString(sum[:]) {
+				return errors.New("installed binary differs from the verified release archive")
 			}
 		}
-		sum := sha256.Sum256(installed)
-		return writeReleaseInstallLock(s.cfg.GOOS, DetectionOptions{
-			HomeDir: s.cfg.HomeDir,
-			Env:     s.cfg.Env,
-		}, target, status.LatestVersion, status.LatestCommit, hex.EncodeToString(sum[:]))
+		opts := DetectionOptions{HomeDir: s.cfg.HomeDir, Env: s.cfg.Env}
+		lockPath, ok := installLockPath(s.cfg.GOOS, opts)
+		if !ok {
+			return errors.New("resolve release install lock path: home directory is unavailable")
+		}
+		key, err := writeReleaseEvidence(lockPath, prepared.evidence, prepared.archive)
+		if err != nil {
+			return fmt.Errorf("persist signed release evidence: %w", err)
+		}
+		return writeReleaseInstallLock(s.cfg.GOOS, opts, target, status.LatestVersion, status.LatestCommit, key)
 	}
+
 	if err := ReplaceBinary(ctx, replacement); err != nil {
 		status.Action = ActionRefused
 		status.Message = err.Error()
@@ -599,60 +608,68 @@ func (s *Service) applyReleaseUpdate(ctx context.Context, status Status, release
 	if s.cfg.GOOS == "windows" {
 		status.ReplacementPending = true
 	}
-	sum := sha256.Sum256(installed)
+	sum := sha256.Sum256(binary)
 	status.BinarySHA256 = hex.EncodeToString(sum[:])
 	status.FailureReason = ""
 	status.VerifiedRelease = true
+	status.RepairAvailable = false
 	status.Action = ActionUpdated
 	status.Message = updateAppliedMessage(status, s.cfg.GOOS, releaseSwap)
 	return status, nil
 }
 
-func (s *Service) prepareReleaseBinary(ctx context.Context, status Status, release Release) (Status, []byte, os.FileMode, error) {
+type preparedRelease struct {
+	binary   []byte
+	mode     os.FileMode
+	archive  []byte
+	evidence releaseEvidence
+}
+
+func (s *Service) prepareReleaseBinary(ctx context.Context, status Status, release Release) (Status, preparedRelease, error) {
 	status.FailureReason = "Update target resolution failed"
 	assets, err := SelectReleaseAssets(release, s.cfg.GOOS, s.cfg.GOARCH)
 	if err != nil {
 		status.Action = ActionRefused
 		status.Message = err.Error()
-		return status, nil, 0, err
+		return status, preparedRelease{}, err
 	}
 	status.FailureReason = "Update download failed"
 	checksums, err := s.cfg.Client.Download(ctx, assets.Checksum.BrowserDownloadURL)
 	if err != nil {
 		status.Action = ActionRefused
 		status.Message = err.Error()
-		return status, nil, 0, err
+		return status, preparedRelease{}, err
 	}
 	checksumSignature, err := s.cfg.Client.Download(ctx, assets.ChecksumSignature.BrowserDownloadURL)
 	if err != nil {
 		status.Action = ActionRefused
 		status.Message = err.Error()
-		return status, nil, 0, err
+		return status, preparedRelease{}, err
 	}
 	status.FailureReason = "Update signature verification failed"
 	if err := s.cfg.ChecksumSignatureVerifier(ctx, checksums, checksumSignature); err != nil {
 		status.Action = ActionRefused
 		status.Message = err.Error()
-		return status, nil, 0, err
+		return status, preparedRelease{}, err
 	}
 	status.FailureReason = "Update download failed"
 	provenanceBytes, err := s.cfg.Client.Download(ctx, assets.Provenance.BrowserDownloadURL)
 	if err != nil {
 		status.Action = ActionRefused
 		status.Message = err.Error()
-		return status, nil, 0, err
+		return status, preparedRelease{}, err
 	}
 	status.FailureReason = "Update provenance verification failed"
 	if err := VerifyChecksum(checksums, assets.Provenance.Name, provenanceBytes); err != nil {
 		status.Action = ActionRefused
 		status.Message = err.Error()
-		return status, nil, 0, err
+		return status, preparedRelease{}, err
 	}
 	manifest, err := provenance.Parse(provenanceBytes, releaseRepository, release.TagName, "")
 	if err != nil {
 		status.Action = ActionRefused
 		status.Message = err.Error()
-		return status, nil, 0, err
+		return status, preparedRelease{}, err
 	}
 	status.LatestCommit = manifest.Commit
 	status.FailureReason = "Update download failed"
@@ -660,13 +677,13 @@ func (s *Service) prepareReleaseBinary(ctx context.Context, status Status, relea
 	if err != nil {
 		status.Action = ActionRefused
 		status.Message = err.Error()
-		return status, nil, 0, err
+		return status, preparedRelease{}, err
 	}
 	status.FailureReason = "Update checksum verification failed"
 	if err := VerifyChecksum(checksums, assets.Archive.Name, archive); err != nil {
 		status.Action = ActionRefused
 		status.Message = err.Error()
-		return status, nil, 0, err
+		return status, preparedRelease{}, err
 	}
 
 	status.FailureReason = "Update installation failed"
@@ -674,10 +691,10 @@ func (s *Service) prepareReleaseBinary(ctx context.Context, status Status, relea
 	if err != nil {
 		status.Action = ActionRefused
 		status.Message = err.Error()
-		return status, nil, 0, err
+		return status, preparedRelease{}, err
 	}
 	status.Asset = assets.Archive.Name
-	return status, binary, mode, nil
+	return status, preparedRelease{binary: binary, mode: mode, archive: archive, evidence: releaseEvidence{Schema: 1, ArchiveName: assets.Archive.Name, Checksums: checksums, Signature: checksumSignature, Provenance: provenanceBytes}}, nil
 }
 
 func (s *Service) plan(ctx context.Context) (Status, Release, error) {
@@ -724,6 +741,9 @@ func (s *Service) planForVersion(ctx context.Context, target string, exact bool)
 		return status, Release{}, errors.New("no eligible Detent release found")
 	}
 
+	if digest, err := binaryDigest(s.cfg.ExecutablePath); err == nil {
+		status.VerifiedRelease = InstalledReleaseVerified(ctx, DetectionOptions{CurrentVersion: s.cfg.CurrentVersion, ExecutablePath: s.cfg.ExecutablePath, GOOS: s.cfg.GOOS, GOARCH: s.cfg.GOARCH, HomeDir: s.cfg.HomeDir, Env: s.cfg.Env, EvalSymlinks: s.cfg.EvalSymlinks}, s.cfg.CurrentCommit, digest)
+	}
 	status.LatestTag = release.TagName
 	status.LatestVersion = displayVersion(release.TagName)
 	status.Critical = releaseCritical(release)
@@ -734,9 +754,13 @@ func (s *Service) planForVersion(ctx context.Context, target string, exact bool)
 		return status, Release{}, err
 	}
 	status.UpdateAvailable = cmp > 0 || exact && (cmp != 0 || err != nil)
+	status.RepairAvailable = err == nil && cmp == 0 && info.Source == InstallSourceRelease && !status.VerifiedRelease
 	if status.UpdateAvailable {
 		status.Action = ActionAvailable
 		status.Message = fmt.Sprintf("Detent %s can be updated to %s.", status.CurrentVersion, status.LatestVersion)
+	} else if status.RepairAvailable {
+		status.Action = ActionAvailable
+		status.Message = fmt.Sprintf("Detent %s is current but release verification is missing. Run detent update --yes to verify and reinstall the signed release.", status.CurrentVersion)
 	} else {
 		status.Action = ActionUpToDate
 		status.Message = fmt.Sprintf("Detent %s is up to date.", status.CurrentVersion)
@@ -758,9 +782,13 @@ func (s *Service) targetRelease(ctx context.Context, target string, exact bool) 
 		return Release{}, false, fmt.Errorf("invalid Hub update target: %w", errors.Join(err, targetErr))
 	}
 	tag := "v" + strings.TrimPrefix(target, "v")
-	if !exact && cmp <= 0 || exact && err == nil && cmp == 0 {
+	if !exact && cmp < 0 {
 		return Release{TagName: tag}, true, nil
 	}
+	return s.publishedRelease(ctx, tag)
+}
+
+func (s *Service) publishedRelease(ctx context.Context, tag string) (Release, bool, error) {
 	release, err := s.cfg.Client.GetRelease(ctx, tag)
 	if err != nil {
 		return Release{}, false, err
@@ -1197,7 +1225,7 @@ func writeWindowsUpdateScript(dir string, source string, target string, backup s
 		return "", fmt.Errorf("create windows update script: %w", err)
 	}
 	scriptPath := script.Name()
-	raw := windowsUpdateScript(source, target, backup)
+	raw := windowsUpdateScript(source, target, backup, os.Getpid(), nil)
 	if _, err := script.WriteString(raw); err != nil {
 		closeErr := script.Close()
 		removeFile(scriptPath)
@@ -1221,10 +1249,16 @@ func writeWindowsUpdateScript(dir string, source string, target string, backup s
 	return scriptPath, nil
 }
 
-func windowsUpdateScript(source string, target string, backup string) string {
+func windowsUpdateScript(source string, target string, backup string, pid int, env map[string]string) string {
 	backupStep := ""
 	if strings.TrimSpace(backup) != "" {
 		backupStep = `copy /Y "%target%" "%backup%" >nul 2>nul
+if errorlevel 1 exit /b 1
+`
+	}
+	restartStep := ""
+	if envValue(env, "DETENT_SERVICE_MANAGER") == "scheduled-task" {
+		restartStep = `powershell.exe -NoProfile -NonInteractive -Command "$ErrorActionPreference = 'Stop'; $scheduler = New-Object -ComObject 'Schedule.Service'; $scheduler.Connect(); $taskName = $env:DETENT_SERVICE_TASK; if ([string]::IsNullOrWhiteSpace($taskName)) { $taskName = 'detent.runner-' + [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value }; $task = $scheduler.GetFolder('\').GetTask($taskName); $task.Stop(0); while ($task.State -eq 2 -or $task.State -eq 4) { Start-Sleep -Milliseconds 100 }; $null = $task.Run($null)"
 if errorlevel 1 exit /b 1
 `
 	}
@@ -1233,18 +1267,20 @@ setlocal DisableDelayedExpansion
 set "source=%s"
 set "target=%s"
 set "backup=%s"
+powershell.exe -NoProfile -NonInteractive -Command "$ErrorActionPreference = 'Stop'; $old = Get-Process -Id %d -ErrorAction SilentlyContinue; if ($null -ne $old) { $old.WaitForExit() }; exit 0"
+if errorlevel 1 exit /b 1
 %sset /a attempts=0
 :retry
 move /Y "%%source%%" "%%target%%" >nul 2>nul
-if not exist "%%source%%" goto done
+if not errorlevel 1 goto done
 set /a attempts+=1
 if %%attempts%% GEQ 60 exit /b 1
 timeout /t 1 /nobreak >nul 2>nul
 goto retry
 :done
-del "%%~f0" >nul 2>nul
+%sdel "%%~f0" >nul 2>nul
 exit /b 0
-`, escapeBatchValue(source), escapeBatchValue(target), escapeBatchValue(backup), backupStep)
+`, escapeBatchValue(source), escapeBatchValue(target), escapeBatchValue(backup), pid, backupStep, restartStep)
 }
 
 func restorePreviousBinary(ctx context.Context, pending PendingUpdate, goos string) error {
@@ -1405,7 +1441,7 @@ func outputWriter(writer io.Writer) io.Writer {
 
 func updateAppliedMessage(status Status, goos string, releaseSwap bool) string {
 	if goos == "windows" {
-		return fmt.Sprintf("Updated Detent from %s to %s. The replacement will finish after Detent exits.", status.CurrentVersion, status.LatestVersion)
+		return fmt.Sprintf("Updated Detent from %s to %s. The replacement will finish after Detent exits. %s", status.CurrentVersion, status.LatestVersion, restartNote())
 	}
 	if releaseSwap {
 		return fmt.Sprintf(
@@ -1875,10 +1911,10 @@ func readInstallLockBinary(path string) (string, bool) {
 }
 
 type installLockMetadata struct {
-	binary  string
-	version string
-	commit  string
-	sha256  string
+	binary   string
+	version  string
+	commit   string
+	evidence string
 }
 
 func readInstallLock(path string) (installLockMetadata, bool) {
@@ -1900,8 +1936,8 @@ func readInstallLock(path string) (installLockMetadata, bool) {
 			metadata.version = value
 		case "commit":
 			metadata.commit = value
-		case "sha256":
-			metadata.sha256 = value
+		case "release_evidence":
+			metadata.evidence = value
 		}
 	}
 	return metadata, metadata.binary != ""
@@ -1931,12 +1967,50 @@ func InstalledReleaseVersion(opts DetectionOptions) string {
 	return ""
 }
 
-func writeReleaseInstallLock(goos string, opts DetectionOptions, binary string, version string, commit string, binarySHA256 string) error {
+func binaryDigest(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	hash := sha256.New()
+	_, readErr := io.Copy(hash, file)
+	if err := errors.Join(readErr, file.Close()); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func InstalledReleaseVerified(ctx context.Context, opts DetectionOptions, commit string, digest string) bool {
+	decoded, err := hex.DecodeString(digest)
+	if err != nil || len(decoded) != sha256.Size || len(commit) != 40 {
+		return false
+	}
+	goos := firstNonEmpty(opts.GOOS, runtime.GOOS)
+	executable := cleanPath(opts.ExecutablePath, goos)
+	realExecutable := executable
+	evalSymlinks := opts.EvalSymlinks
+	if evalSymlinks == nil {
+		evalSymlinks = filepath.EvalSymlinks
+	}
+	if real, err := evalSymlinks(opts.ExecutablePath); err == nil && strings.TrimSpace(real) != "" {
+		realExecutable = cleanPath(real, goos)
+	}
+	for _, candidate := range installLockCandidates(goos, opts) {
+		metadata, ok := readInstallLock(candidate)
+		binary := cleanPath(metadata.binary, goos)
+		if ok && (samePath(binary, executable, goos) || samePath(binary, realExecutable, goos)) && strings.TrimPrefix(metadata.version, "v") == strings.TrimPrefix(opts.CurrentVersion, "v") && metadata.commit == commit && verifyReleaseEvidence(ctx, candidate, metadata.evidence, opts, commit, digest) {
+			return true
+		}
+	}
+	return false
+}
+
+func writeReleaseInstallLock(goos string, opts DetectionOptions, binary string, version string, commit string, evidence string) error {
 	lockPath, ok := installLockPath(goos, opts)
 	if !ok {
 		return errors.New("resolve release install lock path: home directory is unavailable")
 	}
-	return writeInstallLock(lockPath, binary, version, commit, time.Now().UTC(), binarySHA256)
+	return writeInstallLock(lockPath, binary, version, commit, evidence, time.Now().UTC())
 }
 
 type installLockSnapshot struct {
@@ -1974,7 +2048,7 @@ func installLockPath(goos string, opts DetectionOptions) (string, bool) {
 	return "", false
 }
 
-func writeInstallLock(path string, binary string, version string, commit string, installedAt time.Time, binarySHA256 string) error {
+func writeInstallLock(path string, binary string, version string, commit string, evidence string, installedAt time.Time) error {
 	if strings.TrimSpace(path) == "" {
 		return errors.New("install lock path is required")
 	}
@@ -1984,10 +2058,7 @@ func writeInstallLock(path string, binary string, version string, commit string,
 	if strings.TrimSpace(commit) == "" {
 		return errors.New("install lock commit is required")
 	}
-	raw := fmt.Sprintf("binary=%s\nversion=%s\ncommit=%s\ninstalled_at=%s\n", binary, strings.TrimSpace(version), strings.TrimSpace(commit), installedAt.UTC().Format(time.RFC3339))
-	if binarySHA256 != "" {
-		raw += "sha256=" + binarySHA256 + "\n"
-	}
+	raw := fmt.Sprintf("binary=%s\nversion=%s\ncommit=%s\nrelease_evidence=%s\ninstalled_at=%s\n", binary, strings.TrimSpace(version), strings.TrimSpace(commit), evidence, installedAt.UTC().Format(time.RFC3339))
 	return writeInstallLockContents(path, raw)
 }
 

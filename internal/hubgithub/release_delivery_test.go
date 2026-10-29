@@ -13,13 +13,55 @@ import (
 )
 
 type releasePickTransportFixture struct {
-	input tracker.ReleasePickInput
-	alter string
-	pulls int
+	input        tracker.ReleasePickInput
+	alter        string
+	pulls        int
+	creates      int
+	existing     *releasePickPull
+	lostResponse bool
+	beforeRead   func()
+	priorBase    string
+	comparison   string
 }
 
-func (f *releasePickTransportFixture) REST(_ context.Context, method, path string, _ any, out any) error {
-	if method != http.MethodGet {
+func TestVerifyReleasePickRefresh(t *testing.T) {
+	for _, name := range []string{"advanced", "reset", "diverged", "same base", "different source", "different series", "different PR", "wrong patch", "branch moved"} {
+		t.Run(name, func(t *testing.T) {
+			next := tracker.ReleasePickInput{SourceIssueID: "wi_source", SourceChangeID: "change_source", Repository: "https://github.com/example-org/example-project", SourceMergeSHA: strings.Repeat("a", 40), PRNumber: 7, HeadRef: "pick/fix", HeadSHA: strings.Repeat("b", 40), BaseRef: "release/v1.2", BaseSHA: strings.Repeat("c", 40), FrozenSHA: strings.Repeat("d", 40)}
+			prior := next
+			prior.BaseSHA, prior.HeadSHA = strings.Repeat("e", 40), strings.Repeat("f", 40)
+			f := &releasePickTransportFixture{input: next, priorBase: prior.BaseSHA, comparison: "ahead", alter: name}
+			switch name {
+			case "reset":
+				f.comparison = "behind"
+			case "diverged":
+				f.comparison = "diverged"
+			case "same base":
+				next.BaseSHA = prior.BaseSHA
+			case "different source":
+				next.SourceMergeSHA = strings.Repeat("0", 40)
+			case "different series":
+				next.BaseRef = "release/v2.0"
+			case "different PR":
+				next.PRNumber++
+			}
+			err := NewReconciler(f).VerifyReleasePickRefresh(t.Context(), prior, next)
+			if name == "advanced" {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else if !errors.Is(err, hubserver.ErrReleasePickMismatch) {
+				t.Fatalf("unsafe refresh accepted: %v", err)
+			}
+			if f.creates != 0 {
+				t.Fatal("verification created a PR")
+			}
+		})
+	}
+}
+
+func (f *releasePickTransportFixture) REST(_ context.Context, method, path string, request any, out any) error {
+	if method != http.MethodGet && method != http.MethodPost {
 		return errors.New("unexpected release mutation")
 	}
 	i := f.input
@@ -31,70 +73,129 @@ func (f *releasePickTransportFixture) REST(_ context.Context, method, path strin
 	pull.Base = releasePickRef{Ref: i.BaseRef, SHA: i.BaseSHA}
 	pull.Head.Repo.FullName = repo
 	pull.Base.Repo.FullName = repo
-	switch path {
-	case root + "/pulls/7":
-		f.pulls++
-		switch f.alter {
-		case "head":
-			pull.Head.SHA = strings.Repeat("0", 40)
-		case "base":
-			pull.Base.Ref = "develop"
-		case "repository":
-			pull.Head.Repo.FullName = "owner/foreign"
-		case "draft":
-			pull.Draft = true
-		case "moved during verification":
-			if f.pulls == 2 {
-				pull.Head.SHA = strings.Repeat("0", 40)
-			}
+	if strings.HasPrefix(path, root+"/pulls?") {
+		if f.beforeRead != nil {
+			f.beforeRead()
+		}
+		response = []releasePickPull{}
+		if f.existing != nil {
+			response = []releasePickPull{*f.existing}
+		}
+		if f.alter == "ambiguous" && f.existing != nil {
+			response = []releasePickPull{*f.existing, *f.existing}
+		}
+	} else if method == http.MethodPost && path == root+"/pulls" {
+		f.creates++
+		var payload struct {
+			Body                string `json:"body"`
+			Head                string `json:"head"`
+			Base                string `json:"base"`
+			Draft               bool   `json:"draft"`
+			MaintainerCanModify bool   `json:"maintainer_can_modify"`
+		}
+		raw, err := json.Marshal(request)
+		if err != nil {
+			return err
+		}
+		if err := json.Unmarshal(raw, &payload); err != nil {
+			return err
+		}
+		if payload.Head != i.HeadRef || payload.Base != i.BaseRef || payload.Draft || payload.MaintainerCanModify {
+			return errors.New("publication widened branch authority")
+		}
+		pull.Body = payload.Body
+		f.existing = &pull
+		if f.lostResponse {
+			f.lostResponse = false
+			return errors.New("lost create response")
 		}
 		response = pull
-	case root + "/git/ref/heads/release%2Fv1.2":
-		sha := i.BaseSHA
-		if f.alter == "branch moved" {
-			sha = strings.Repeat("0", 40)
-		}
-		response = map[string]any{"object": map[string]any{"sha": sha}}
-	case root + "/compare/" + i.SourceMergeSHA + "...develop":
-		status := "ahead"
-		if f.alter == "unmerged source" {
-			status = "diverged"
-		}
-		response = map[string]string{"status": status}
-	case root + "/compare/" + i.BaseSHA + "...develop":
-		sha := i.FrozenSHA
-		if f.alter == "frozen identity" {
-			sha = strings.Repeat("0", 40)
-		}
-		response = map[string]any{"merge_base_commit": map[string]string{"sha": sha}}
-	case root + "/pulls/7/commits?per_page=2":
-		commit := map[string]any{"sha": i.HeadSHA, "parents": []map[string]string{{"sha": i.BaseSHA}}, "commit": map[string]string{"message": "Repair\n\n(cherry picked from commit " + i.SourceMergeSHA + ")"}}
-		switch f.alter {
-		case "missing trailer":
-			commit["commit"] = map[string]string{"message": "Repair"}
-		case "wrong trailer":
-			commit["commit"] = map[string]string{"message": "(cherry picked from commit " + strings.Repeat("0", 40) + ")"}
-		case "extra commit":
-			response = []any{commit, commit}
-		case "wrong parent":
-			commit["parents"] = []map[string]string{{"sha": strings.Repeat("0", 40)}}
-		}
-		if response == nil {
-			response = []any{commit}
-		}
-	case root + "/commits/" + i.SourceMergeSHA, root + "/commits/" + i.HeadSHA:
-		sha := i.SourceMergeSHA
-		patch := "@@ -1 +1 @@\n-old\n+new"
-		if path == root+"/commits/"+i.HeadSHA {
-			sha = i.HeadSHA
-			patch = "@@ -2 +2 @@\n-old\n+new"
-			if f.alter == "wrong patch" {
-				patch = "@@ -2 +2 @@\n-old\n+unrelated"
+	} else {
+		switch path {
+		case root + "/pulls/7":
+			f.pulls++
+			switch f.alter {
+			case "head":
+				pull.Head.SHA = strings.Repeat("0", 40)
+			case "base":
+				pull.Base.Ref = "develop"
+			case "repository":
+				pull.Head.Repo.FullName = "owner/foreign"
+			case "draft":
+				pull.Draft = true
+			case "moved during verification":
+				if f.pulls == 2 {
+					pull.Head.SHA = strings.Repeat("0", 40)
+				}
 			}
+			response = pull
+		case root + "/git/ref/heads/pick%2Ffix":
+			sha := i.HeadSHA
+			if f.alter == "head moved" {
+				sha = strings.Repeat("0", 40)
+			}
+			response = map[string]any{"object": map[string]string{"sha": sha}}
+		case root + "/git/ref/heads/release%2Fv1.2":
+			sha := i.BaseSHA
+			if f.alter == "branch moved" {
+				sha = strings.Repeat("0", 40)
+			}
+			response = map[string]any{"object": map[string]any{"sha": sha}}
+		case root + "/compare/" + i.SourceMergeSHA + "...develop":
+			status := "ahead"
+			if f.alter == "unmerged source" {
+				status = "diverged"
+			}
+			response = map[string]string{"status": status}
+		case root + "/compare/" + i.BaseSHA + "...develop":
+			sha := i.FrozenSHA
+			if f.alter == "frozen identity" {
+				sha = strings.Repeat("0", 40)
+			}
+			response = map[string]any{"merge_base_commit": map[string]string{"sha": sha}}
+		case root + "/compare/" + f.priorBase + "..." + i.BaseSHA:
+			response = map[string]string{"status": f.comparison}
+		case root + "/pulls/7/commits?per_page=2":
+			commit := map[string]any{"sha": i.HeadSHA, "parents": []map[string]string{{"sha": i.BaseSHA}}, "commit": map[string]string{"message": "Repair\n\n(cherry picked from commit " + i.SourceMergeSHA + ")"}}
+			switch f.alter {
+			case "missing trailer":
+				commit["commit"] = map[string]string{"message": "Repair"}
+			case "wrong trailer":
+				commit["commit"] = map[string]string{"message": "(cherry picked from commit " + strings.Repeat("0", 40) + ")"}
+			case "extra commit":
+				response = []any{commit, commit}
+			case "wrong parent":
+				commit["parents"] = []map[string]string{{"sha": strings.Repeat("0", 40)}}
+			}
+			if response == nil {
+				response = []any{commit}
+			}
+		case root + "/commits/" + i.SourceMergeSHA, root + "/commits/" + i.HeadSHA:
+			sha := i.SourceMergeSHA
+			patch := "@@ -1 +1 @@\n-old\n+new"
+			if path == root+"/commits/"+i.HeadSHA {
+				sha = i.HeadSHA
+				patch = "@@ -2 +2 @@\n-old\n+new"
+				if f.alter == "wrong patch" {
+					patch = "@@ -2 +2 @@\n-old\n+unrelated"
+				}
+			}
+			message := "Repair\n\n(cherry picked from commit " + i.SourceMergeSHA + ")"
+			parent := i.BaseSHA
+			if f.alter == "prepared missing trailer" {
+				message = "Repair"
+			}
+			if f.alter == "prepared wrong trailer" {
+				message = "Repair\n\n(cherry picked from commit " + strings.Repeat("0", 40) + ")"
+			}
+			if f.alter == "prepared wrong parent" {
+				parent = strings.Repeat("0", 40)
+			}
+			response = map[string]any{"sha": sha, "parents": []map[string]string{{"sha": parent}}, "commit": map[string]string{"message": message}, "files": []releasePickFile{{Filename: "repair.go", Status: "modified", Patch: patch}}}
+
+		default:
+			return errors.New("unexpected release verification path: " + path)
 		}
-		response = map[string]any{"sha": sha, "files": []releasePickFile{{Filename: "repair.go", Status: "modified", Patch: patch}}}
-	default:
-		return errors.New("unexpected release verification path: " + path)
 	}
 	raw, err := json.Marshal(response)
 	if err != nil {

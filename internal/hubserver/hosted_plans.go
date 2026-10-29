@@ -39,12 +39,12 @@ type HostedPlansConfig struct {
 	InvitationSeconds int64         `yaml:"invitation_seconds" json:"invitation_seconds"`
 
 	// written records that the YAML section named at least one key, so an
-	// explicitly empty plan list is an error rather than the defaults.
+	// explicitly empty plan list is an error rather than an absent catalog.
 	written bool
 }
 
 // UnmarshalYAML decodes the catalog and remembers whether the section had
-// any keys: `entitlements: {}` means the default catalog, while a section
+// any keys: `entitlements: {}` means no catalog, while a section
 // that names keys is the operator's own catalog and must validate.
 func (c *HostedPlansConfig) UnmarshalYAML(node *yaml.Node) error {
 	type plain HostedPlansConfig
@@ -109,18 +109,19 @@ type HostedGrant struct {
 }
 
 type HostedEntitlement struct {
-	Name            string           `json:"name"`
-	MonthlyUSDCents *int64           `json:"monthly_usd_cents"`
-	OrganizationID  string           `json:"organization_id"`
-	Base            PlanReference    `json:"base"`
-	EffectiveBase   PlanReference    `json:"effective_base"`
-	Source          string           `json:"source"`
-	Revision        int64            `json:"revision"`
-	Features        []string         `json:"features"`
-	Allowances      map[string]int64 `json:"allowances"`
-	Grants          []HostedGrant    `json:"grants"`
-	Usage           map[string]int64 `json:"usage"`
-	WindowEndsAt    time.Time        `json:"window_ends_at"`
+	IncludedAICreditMicros *int64           `json:"included_ai_credit_micros"`
+	Name                   string           `json:"name"`
+	MonthlyUSDCents        *int64           `json:"monthly_usd_cents"`
+	OrganizationID         string           `json:"organization_id"`
+	Base                   PlanReference    `json:"base"`
+	EffectiveBase          PlanReference    `json:"effective_base"`
+	Source                 string           `json:"source"`
+	Revision               int64            `json:"revision"`
+	Features               []string         `json:"features"`
+	Allowances             map[string]int64 `json:"allowances"`
+	Grants                 []HostedGrant    `json:"grants"`
+	Usage                  map[string]int64 `json:"usage"`
+	WindowEndsAt           time.Time        `json:"window_ends_at"`
 }
 
 func hostedAllowanceNames() []string {
@@ -144,43 +145,80 @@ func pilotHostedPlans() HostedPlansConfig {
 	}
 }
 
+type hostedTier struct {
+	PlanReference
+	name       string
+	cents      *int64
+	concurrent int64
+	storage    int64
+	offered    bool
+}
+
+const hostedOpenIssueGuard = 10000
+
+func hostedTiers() []hostedTier {
+	price := func(cents int64) *int64 { return &cents }
+	return []hostedTier{
+		{PlanReference{ID: "free", Version: 1}, "Free", price(0), 2, 1 << 30, true},
+		{PlanReference{ID: "starter", Version: 1}, "Starter", price(4900), 8, 25 << 30, true},
+		{PlanReference{ID: "team", Version: 2}, "Team", price(9900), 20, 100 << 30, true},
+		{PlanReference{ID: "growth", Version: 2}, "Growth", price(24900), 50, 250 << 30, true},
+		{PlanReference{ID: "scale", Version: 2}, "Scale", nil, 100, 1 << 30, true},
+		{PlanReference{ID: "growth", Version: 1}, "Growth", price(14900), 50, 1 << 30, false},
+		{PlanReference{ID: "scale", Version: 1}, "Scale", price(39900), 100, 1 << 30, false},
+	}
+}
+
+func hostedTierFor(ref PlanReference) (hostedTier, bool) {
+	for _, tier := range hostedTiers() {
+		if tier.PlanReference == ref {
+			return tier, true
+		}
+	}
+	return hostedTier{}, false
+}
+
+func (tier hostedTier) apply(plan HostedPlan) HostedPlan {
+	if plan.Allowances == nil {
+		plan.Allowances = make(map[string]int64)
+	}
+	plan.Allowances["unarchived_issues"], plan.Allowances["concurrent_work"] = hostedOpenIssueGuard, tier.concurrent
+	for _, name := range []string{"members", "projects", "repositories", "registered_runners", "connected_runners"} {
+		delete(plan.Allowances, name)
+	}
+	features := []string{"native_execution"}
+	if tier.ID != "free" {
+		features = append(features, "hosted_artifacts")
+	}
+	for _, feature := range features {
+		if !slices.Contains(plan.Features, feature) {
+			plan.Features = append(plan.Features, feature)
+		}
+	}
+	slices.Sort(plan.Features)
+	return plan
+}
+
 func capacityHostedPlans() HostedPlansConfig {
 	config := pilotHostedPlans()
 	legacy := config.Plans
-	config.Base = PlanReference{ID: "free", Version: 1}
+	config.Base = hostedTiers()[0].PlanReference
 	config.Plans = nil
-	for _, tier := range []struct {
-		id, name                string
-		cents, projects, issues int64
-	}{
-		{"free", "Free", 0, 1, 200},
-		{"starter", "Starter", 4900, 5, 2000},
-		{"growth", "Growth", 14900, 25, 10000},
-		{"scale", "Scale", 39900, 100, 50000},
-	} {
+	for _, tier := range hostedTiers() {
 		allowances := maps.Clone(legacy[1].Allowances)
-		allowances["projects"], allowances["unarchived_issues"] = tier.projects, tier.issues
-		allowances["collaboration_bytes"], allowances["history_records"] = 1<<30, 2000000
-		for _, name := range []string{"members", "repositories", "registered_runners", "connected_runners", "concurrent_work"} {
-			delete(allowances, name)
-		}
-		features := []string{"collaboration", "github_integration"}
-		if tier.cents > 0 {
-			features = append(features, "native_execution", "hosted_artifacts")
-		}
-		cents := tier.cents
-		config.Plans = append(config.Plans, HostedPlan{PlanReference: PlanReference{ID: tier.id, Version: 1}, Name: tier.name, MonthlyUSDCents: &cents, Features: features, Allowances: allowances})
+		allowances["collaboration_bytes"], allowances["history_records"] = tier.storage, 2000000
+		plan := tier.apply(HostedPlan{PlanReference: tier.PlanReference, Name: tier.name, MonthlyUSDCents: tier.cents, Features: []string{"collaboration", "github_integration"}, Allowances: allowances})
+		config.Plans = append(config.Plans, plan)
 	}
 	config.Plans = append(config.Plans, legacy...)
 	return config
 }
 
 func defaultHostedPlans(cfg *HostedConfig) HostedPlansConfig {
-	config := capacityHostedPlans()
 	if cfg.PlanID == "" && cfg.StorageQuotaBytes == 0 && cfg.EventQuota == 0 {
-		return config
+		return HostedPlansConfig{}
 	}
-	config = pilotHostedPlans()
+	config := pilotHostedPlans()
 	if cfg.PlanID != "" {
 		config.Plans[0].ID = cfg.PlanID
 		config.Base.ID = cfg.PlanID
@@ -214,7 +252,8 @@ func CheckoutHostedPlans(plans *HostedPlansConfig) *HostedPlansConfig {
 }
 
 func hostedCapacityPlan(ref PlanReference) bool {
-	return ref.Version == 1 && slices.Contains([]string{"free", "starter", "growth", "scale"}, ref.ID)
+	_, ok := hostedTierFor(ref)
+	return ok
 }
 
 func (c *HostedPlansConfig) IsZero() bool {
@@ -259,6 +298,9 @@ func (d *database) configureHostedPlans(ctx context.Context, cfg *HostedConfig) 
 	if !cfg.Plans.IsZero() {
 		config = *cfg.Plans
 	}
+	if config.IsZero() {
+		return nil
+	}
 	if err := config.validate(); err != nil {
 		return err
 	}
@@ -286,7 +328,7 @@ func normalizeHostedPlan(plan HostedPlan) HostedPlan {
 		plan.Allowances = make(map[string]int64)
 	}
 	for _, name := range hostedAllowanceNames() {
-		if name == "unarchived_issues" || hostedCapacityPlan(plan.PlanReference) && slices.Contains([]string{"members", "repositories", "registered_runners", "connected_runners", "concurrent_work"}, name) {
+		if name == "unarchived_issues" || name == "concurrent_work" || hostedCapacityPlan(plan.PlanReference) && slices.Contains([]string{"members", "projects", "repositories", "registered_runners", "connected_runners"}, name) {
 			continue
 		}
 		if _, exists := plan.Allowances[name]; !exists {
@@ -328,7 +370,7 @@ func (d *database) seedHostedPlans(ctx context.Context, tx *sql.Tx, config Hoste
 		if !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, "INSERT INTO hosted_plans(id,version,record_json,runtime_id) VALUES(?,?,?,?)", plan.ID, plan.Version, string(encoded), runtimeID); err != nil {
+		if _, err := tx.ExecContext(ctx, "INSERT INTO hosted_plans(id,version,record_json,runtime_id,collaboration_bytes) VALUES(?,?,?,?,?)", plan.ID, plan.Version, string(encoded), runtimeID, plan.Allowances["collaboration_bytes"]); err != nil {
 			return err
 		}
 		command := hostedPlanCommand{ID: "seed_" + uuid.NewString(), Action: "create_plan", Plan: plan.PlanReference, Definition: &plan, Reason: reason}
@@ -385,7 +427,10 @@ func (d *database) readHostedPlan(ctx context.Context, query nativeQueryer, ref 
 			plan.Allowances = make(map[string]int64)
 		}
 		if _, exists := plan.Allowances["unarchived_issues"]; !exists {
-			plan.Allowances["unarchived_issues"] = 200
+			plan.Allowances["unarchived_issues"] = hostedOpenIssueGuard
+		}
+		if tier, ok := hostedTierFor(ref); ok {
+			return tier.apply(plan), nil
 		}
 		if ref.Version == 1 && slices.Contains([]string{"pilot_free", "comp_team"}, ref.ID) {
 			var capacityRuntime string
@@ -394,11 +439,9 @@ func (d *database) readHostedPlan(ctx context.Context, query nativeQueryer, ref 
 				return plan, err
 			}
 			if err == nil && d.runtimeVisible(capacityRuntime) {
-				plan.Allowances["projects"] = max(plan.Allowances["projects"], 5)
-				plan.Allowances["unarchived_issues"] = max(plan.Allowances["unarchived_issues"], 2000)
-				plan.Allowances["collaboration_bytes"] = max(plan.Allowances["collaboration_bytes"], 1<<30)
+				plan.Allowances["unarchived_issues"] = max(plan.Allowances["unarchived_issues"], hostedOpenIssueGuard)
 				plan.Allowances["history_records"] = max(plan.Allowances["history_records"], 2000000)
-				for _, resource := range []string{"members", "repositories", "registered_runners", "connected_runners", "concurrent_work"} {
+				for _, resource := range []string{"members", "projects", "repositories", "registered_runners", "connected_runners", "concurrent_work"} {
 					delete(plan.Allowances, resource)
 				}
 				if plan.Name == "" {
@@ -441,6 +484,10 @@ func (d *database) hostedEntitlement(ctx context.Context, query nativeQueryer, n
 	}
 	result.Allowances, result.Features = base.Allowances, base.Features
 	result.Name, result.MonthlyUSDCents = base.Name, base.MonthlyUSDCents
+	result.IncludedAICreditMicros = new(int64)
+	if result.Source == "subscription" {
+		result.IncludedAICreditMicros = base.includedAICreditMicros()
+	}
 	if result.Name == "" {
 		result.Name = fmt.Sprintf("%s · version %d", base.ID, base.Version)
 	}
@@ -471,7 +518,11 @@ func (d *database) hostedEntitlement(ctx context.Context, query nativeQueryer, n
 		if err != nil {
 			return result, err
 		}
-		for _, scope := range grant.Scope {
+		scopes := grant.Scope
+		if hostedCapacityPlan(grant.Plan) {
+			scopes = append(slices.Clone(scopes), "concurrent_work", "unarchived_issues", "native_execution")
+		}
+		for _, scope := range scopes {
 			_, limited := result.Allowances[scope]
 			if value, ok := plan.Allowances[scope]; ok && limited {
 				result.Allowances[scope] = max(result.Allowances[scope], value)
@@ -482,7 +533,6 @@ func (d *database) hostedEntitlement(ctx context.Context, query nativeQueryer, n
 		}
 	}
 	delete(result.Allowances, "members")
-	delete(result.Allowances, "concurrent_work")
 	slices.Sort(result.Features)
 	result.WindowEndsAt = time.Unix((now.Unix()/runtimePlans.WindowSeconds+1)*runtimePlans.WindowSeconds, 0).UTC()
 	return result, nil
@@ -496,7 +546,7 @@ type hostedLimitError struct {
 
 func (e *hostedLimitError) Error() string {
 	if e.Resource == "native_execution" {
-		return "Free includes project and issue exploration, with no AI turns. Upgrade to a paid plan or request complimentary execution access. Model-provider charges remain separate."
+		return "The current plan does not include native execution. Choose a plan or request complimentary execution access. Model-provider charges remain separate."
 	}
 	return fmt.Sprintf("Hosted %s allowance reached (%d of %d). Existing data, reading, export and billing remain available.", e.Resource, e.Consumption, e.Allowance)
 }

@@ -14,7 +14,7 @@ export interface OpenInLocation {
    * One field more than the path, the host and the verdict, and it is needed:
    * a conversation with no issue and a workspace that has been asked for but
    * not yet claimed by a runner both report a null path and a null hostname —
-   * §18.1 fills `machine_hostname` only once a runner takes the workspace — and
+   * the workspace session contract fills `machine_hostname` only once a runner takes the workspace — and
    * they are owed different sentences. Without this the picker would tell a
    * reader who has a linked issue to link one.
    */

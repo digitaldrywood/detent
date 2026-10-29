@@ -12,7 +12,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/aidebug"
 	"github.com/digitaldrywood/detent/internal/apikey"
 	chatpkg "github.com/digitaldrywood/detent/internal/chat"
-	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -23,7 +22,7 @@ import (
 type fleetRequest = operatortool.FleetArguments
 
 func dashboardFleetTool(name string) bool {
-	return slices.Contains([]string{operatortool.InstanceHealth, operatortool.AIDebugPrompt, operatortool.Dashboard, operatortool.HealthDashboard, operatortool.DiagnosticsDashboard, operatortool.AnalyticsDashboard, operatortool.TimeSeries, operatortool.Reports, operatortool.OperationsReport, operatortool.RunnerFleet, operatortool.Refresh, operatortool.CapacityClear, operatortool.TrackerAvailabilityClear, operatortool.ForgeAvailabilityClear, operatortool.FailureBreakerCanary, operatortool.UpdateApply, operatortool.ProgressCredit, operatortool.AcknowledgeWarnings, operatortool.RecoverAttempt, operatortool.UpdateFleetRunner, operatortool.UpdateFleetHost}, name)
+	return slices.Contains([]string{operatortool.InstanceHealth, operatortool.AIDebugPrompt, operatortool.Dashboard, operatortool.HealthDashboard, operatortool.DiagnosticsDashboard, operatortool.AnalyticsDashboard, operatortool.TimeSeries, operatortool.Reports, operatortool.OperationsReport, operatortool.RunnerFleet, operatortool.Refresh, operatortool.CapacityClear, operatortool.TrackerAvailabilityClear, operatortool.ForgeAvailabilityClear, operatortool.FailureBreakerCanary, operatortool.UpdateApply, operatortool.AcknowledgeWarnings, operatortool.RecoverAttempt, operatortool.UpdateFleetRunner, operatortool.UpdateFleetHost}, name)
 }
 
 func dashboardFleetRequirement(name, projectID string) operatortool.Requirement {
@@ -32,7 +31,7 @@ func dashboardFleetRequirement(name, projectID string) operatortool.Requirement 
 	if !d.Annotations.ReadOnly {
 		scope = apikey.ScopeAdmin
 	}
-	if name == operatortool.Refresh || name == operatortool.ProgressCredit || name == operatortool.AcknowledgeWarnings || name == operatortool.RecoverAttempt {
+	if name == operatortool.Refresh || name == operatortool.AcknowledgeWarnings || name == operatortool.RecoverAttempt {
 		scope = apikey.ScopeWrite
 	}
 	r := operatortool.Requirement{Scope: scope, ProjectID: projectID}
@@ -57,8 +56,6 @@ func (s *Server) fleetToolAvailable(name string) bool {
 		return s.updateApplier != nil
 	case operatortool.RecoverAttempt:
 		return s.recovery != nil
-	case operatortool.ProgressCredit:
-		return s.store != nil && s.issueExplainer != nil
 	case operatortool.AcknowledgeWarnings:
 		return s.stalenessWarnings != nil
 	case operatortool.OperationsReport, operatortool.Reports:
@@ -296,14 +293,6 @@ func (s *Server) fleetActionProposal(ctx context.Context, name string, raw json.
 		a.IssueID = r.MachineID
 		a.Identifier = r.MachineID
 		a.ResourceURL = "/fleet/runners"
-	case operatortool.ProgressCredit:
-		explanation, err := s.issueExplainer.Explain(ctx, explain.Query{ProjectID: r.ProjectID, Reference: r.Reference})
-		if err != nil || explanation.Identity.ProjectID != r.ProjectID || explanation.Identity.IssueID == "" {
-			return a, errOperatorCommandUnavailable
-		}
-		a.IssueID = explanation.Identity.IssueID
-		a.Identifier = explanation.Identity.Identifier
-		a.ResourceURL = explanation.Identity.IssueURL
 	case operatortool.RecoverAttempt:
 		receipt, err := s.recovery.WorkAttemptReceipt(ctx, r.ProjectID, r.AttemptID)
 		if err != nil || receipt.Attempt.ProjectID != r.ProjectID || receipt.Attempt.AttemptID != r.AttemptID {
@@ -351,8 +340,6 @@ func (s *Server) executeFleetAction(ctx context.Context, a chatpkg.Action) (stri
 		value, err = s.applyOperatorUpdate(ctx, r.Release, r.FromRelease)
 	case operatortool.AcknowledgeWarnings:
 		value, err = s.acknowledgeOperatorWarnings(ctx, r.ProjectID, r.WarningIDs)
-	case operatortool.ProgressCredit:
-		value, err = s.creditOperatorProgress(ctx, explain.Identity{ProjectID: a.ProjectID, IssueID: a.IssueID, Identifier: a.Identifier, IssueURL: a.ResourceURL})
 	case operatortool.RecoverAttempt:
 		value, err = s.recovery.RecoverWorkAttempt(ctx, orchestrator.WorkAttemptRecoveryRequest{ProjectID: r.ProjectID, AttemptID: r.AttemptID, Action: orchestrator.WorkAttemptRecoveryAction(r.Action), Confirm: true, Reason: r.Reason, Operator: operatortool.ConnectionIdentity(ctx).PrincipalID})
 	case operatortool.UpdateFleetRunner:

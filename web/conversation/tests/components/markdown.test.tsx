@@ -101,7 +101,7 @@ describe("Markdown", () => {
     expect(container.querySelector("a")?.getAttribute("href")).toBe("/projects/proj_1");
   });
 
-  // A `#` in a reply must not contend with the route for the one `h1` (B.14).
+  // A `#` in a reply must not contend with the route for the one `h1`.
   it("demotes a reply's headings below the route's own", () => {
     const { container } = render(<Markdown source={"# Title\n\n## Section"} />);
     expect(container.querySelector("h1")).toBeNull();
@@ -118,7 +118,7 @@ describe("Markdown", () => {
     expect(screen.getByRole("toolbar", { name: "Code block actions" })).toBeTruthy();
   });
 
-  // §13.7 and §14: a reference the hub resolved is a link into Work, opened
+  // A reference the hub resolved is a link into Work, opened
   // in place; text with no resolved reference is left as text.
   it("links a resolved reference and leaves an unresolved one alone", () => {
     const { container } = render(

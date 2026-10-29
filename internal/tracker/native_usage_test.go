@@ -11,7 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/procgroup"
 )
 
-// Usage rides the run event data (decisions section 17.5). The field is
+// Usage rides the run event data. The field is
 // additive: a runner that reports none produces the same JSON as before.
 
 func TestNativeRunDataUsageIsOmittedWhenEmpty(t *testing.T) {

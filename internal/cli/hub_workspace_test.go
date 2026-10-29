@@ -18,7 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
-// The runner's workspace lane wiring (decisions section 18.1). A workspace is
+// The runner's workspace lane wiring. A workspace is
 // claimed only by a runner that reports the capabilities it requires, so the
 // decision to run a lane at all and the report on the heartbeat answer one
 // question and must agree.
@@ -95,8 +95,11 @@ func newWorkspaceLaneTestScheduler(t *testing.T, projects map[string]string) orc
 			_, _ = response.WriteString(`{}`)
 			return response.Result(), nil
 		}
-		response.WriteHeader(http.StatusConflict)
-		_, _ = response.WriteString(`{"code":"policy_mismatch","message":"No approved project policy"}`)
+		if request.Method == http.MethodGet && request.URL.Path == "/api/v2/organizations/org_test/projects/prj_test/policy" {
+			_, _ = response.WriteString(`{"policy":null}`)
+			return response.Result(), nil
+		}
+		response.WriteHeader(http.StatusNotFound)
 		return response.Result(), nil
 	})
 	client, err := hubclient.New(hubclient.Config{URL: "https://hub.test", TokenSource: func() string { return "test" }, HTTPClient: &http.Client{Transport: transport}})
@@ -123,7 +126,7 @@ func writeWorkspaceLaneProject(t *testing.T, projectID string) globalconfig.Proj
 	t.Helper()
 	root := t.TempDir()
 	path := filepath.Join(root, "WORKFLOW.md")
-	raw := "---\ntracker:\n  kind: github\n  github_status_source: label\n  repository: acme/" + projectID +
+	raw := "---\ntracker:\n  kind: hub_native\n  repository: acme/" + projectID +
 		"\n  api_key: test-token\nworkspace:\n  root: " + filepath.Join(root, "worktrees") + "\n---\nPrivate instructions.\n"
 	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
 		t.Fatal(err)

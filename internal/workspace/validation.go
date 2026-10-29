@@ -3,9 +3,13 @@ package workspace
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
+	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/gobudget"
 	"github.com/digitaldrywood/detent/internal/procgroup"
@@ -111,4 +115,59 @@ func (l *LocalGit) RunReviewCommand(ctx context.Context, info Info, issue Issue,
 		return result, errors.New("review command changed the reviewed head")
 	}
 	return result, l.VerifyReviewTree(ctx, normalized, issue)
+}
+
+func (l *LocalGit) RunBaseCommand(ctx context.Context, info Info, issue Issue, base, command string) (_ gate.CommandResult, err error) {
+	if !changerequest.ValidHash(base, 40) && !changerequest.ValidHash(base, 64) {
+		return gate.CommandResult{}, errors.New("base reproduction requires an exact commit")
+	}
+	scratch, err := PrepareWorkerScratch(ctx, info.Path)
+	if err != nil {
+		return gate.CommandResult{}, err
+	}
+	removeScratch := true
+	defer func() {
+		if removeScratch {
+			if cleanupErr := os.RemoveAll(scratch); cleanupErr != nil {
+				err = errors.Join(err, fmt.Errorf("remove base reproduction scratch: %w", cleanupErr))
+			}
+		}
+	}()
+	path := filepath.Join(scratch, "base")
+	if _, err := runGitAt(ctx, info.Path, "clone", "--shared", "--no-checkout", "--no-hardlinks", "--", info.Path, path); err != nil {
+		return gate.CommandResult{}, fmt.Errorf("clone base reproduction source: %w", err)
+	}
+	if _, err := runGitAt(ctx, path, "checkout", "--detach", base); err != nil {
+		return gate.CommandResult{}, fmt.Errorf("checkout reproduction base: %w", err)
+	}
+	baseInfo := info
+	baseInfo.Path = path
+	baseIssue := issue
+	baseIssue.PullRequestHeadSHA = base
+	result, err := l.runValidationCommand(ctx, baseInfo, baseIssue, command)
+	removeScratch = err == nil
+	result.HeadSHA = base
+	if err == nil {
+		current, headErr := runGitAt(ctx, path, "rev-parse", "HEAD")
+		status, treeErr := runGitAt(ctx, path, "status", "--porcelain")
+		if headErr != nil || treeErr != nil || strings.TrimSpace(current) != base || strings.TrimSpace(status) != "" {
+			err = errors.New("base reproduction changed source")
+		}
+	}
+	output, truncated := runtimeoutput.Diagnostic(result.Output, 64*1024)
+	result.Output, result.OutputTruncated = output, truncated
+	return result, err
+}
+
+func AttributeCommandFailure(result *gate.CommandResult, base string, reproduction gate.CommandResult, err error) {
+	if result.ExitCode == 0 {
+		return
+	}
+	observation := gate.CommandObservation(reproduction)
+	observation.Complete = observation.Complete && err == nil
+	result.BaseReproduction = nil
+	if reproduction.Command != "" {
+		result.BaseReproduction = &observation
+	}
+	gate.NormalizeCommandAttribution(base, result.HeadSHA, result)
 }

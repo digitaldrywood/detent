@@ -31,9 +31,14 @@ type ChangeReviewReader interface {
 }
 
 type ChangeReview struct {
+	RepairPending    bool
 	Current          bool
 	Reviewed         bool
 	ChangesRequested bool
+}
+
+func (r ChangeReview) AwaitingEvidence() bool {
+	return r.Current && !r.Reviewed && !r.ChangesRequested
 }
 
 // CompletionLane is the lane a successful run moves an item to, chosen only

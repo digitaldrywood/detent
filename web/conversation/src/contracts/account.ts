@@ -1,18 +1,27 @@
+import { ProjectIcon } from "./projectIcon.ts";
 // Wire contracts for the hosted account surface.
 //
-// These schemas are the client half of `docs/conversation/decisions.md` §12:
+// These schemas are the client half of the Hub account API:
 // the extended `/app/bootstrap` payload and the organization, project,
 // fleet, plan and billing endpoints under
 // `/api/v2/organizations/:organization`. The fixtures under
 // `src/contracts/fixtures/account-*.json` are the shared examples, bound to
 // these schemas by `fixtures.ts`, so the Go side marshals the same files.
 //
-// Where §12 writes a field as `[...]` or names a Go report rather than a JSON
+// Where the hosted JSON API writes a field as `[...]` or names a Go report rather than a JSON
 // shape, the struct below follows the Go type it names — `runnerauth.Runner`
 // for a fleet row, `hubserver.HostedEntitlement` for the plan report,
 // `hubserver.hostedBillingReport` for the billing report — and the deviations
 // are recorded in README.md ("Contract ambiguities resolved").
 import * as Schema from "effect/Schema";
+
+export const GitHubRepositories = Schema.Struct({
+  available: Schema.Boolean,
+  connected: Schema.Boolean,
+  reconnect: Schema.Boolean,
+  repositories: Schema.Array(Schema.Struct({ owner: Schema.String, name: Schema.String, private: Schema.Boolean, pushed_at: Schema.NullOr(Schema.String) })),
+});
+export type GitHubRepositories = typeof GitHubRepositories.Type;
 
 import { ChatUsage } from "./usage.ts";
 
@@ -23,12 +32,12 @@ import { ApiError } from "./conversation.ts";
 /**
  * The hosted organization roles (`auth.ValidOrganizationRole`). `owner` and
  * `admin` manage the organization; `member` writes where a grant says so;
- * `viewer` reads only (decisions.md §10.11).
+ * `viewer` reads only.
  */
 export const OrganizationRole = Schema.String;
 export type OrganizationRole = typeof OrganizationRole.Type;
 
-/** True for the two roles §12 gates the management endpoints behind. */
+/** True for the two roles the hosted JSON API gates the management endpoints behind. */
 export function canManageOrganization(role: string): boolean {
   return role === "owner" || role === "admin";
 }
@@ -48,7 +57,16 @@ export type ProjectGrant = typeof ProjectGrant.Type;
  * origin that organization is served from, which is why switching is a
  * redirect through `/auth/oidc/start` rather than a state change here.
  */
+export const OrganizationLogo = Schema.Struct({
+  image_key: Schema.optional(Schema.String),
+  image_sha256: Schema.optional(Schema.String),
+  url: Schema.optional(Schema.String),
+  revision: Schema.String,
+});
+export type OrganizationLogo = typeof OrganizationLogo.Type;
+
 export const BootstrapOrganization = Schema.Struct({
+  logo: Schema.optional(Schema.NullOr(OrganizationLogo)),
   slug: Schema.optional(Schema.String),
   role: Schema.optional(OrganizationRole),
   id: Schema.String,
@@ -64,6 +82,9 @@ export type BootstrapOrganization = typeof BootstrapOrganization.Type;
  * own grant, which a plain member can hold on some projects.
  */
 export const AccountActor = Schema.Struct({
+  first_name: Schema.optional(Schema.String),
+  last_name: Schema.optional(Schema.String),
+  profile_picture_url: Schema.optional(Schema.String),
   principal_id: Schema.String,
   subject: Schema.String,
   email: Schema.String,
@@ -96,6 +117,7 @@ export const ReporterTemplates = Schema.Struct({
 export type ReporterTemplates = typeof ReporterTemplates.Type;
 
 export const AccountProject = Schema.Struct({
+ project_icon: Schema.optional(Schema.NullOr(ProjectIcon)),
   slug: Schema.optional(Schema.String),
   id: Schema.String,
   name: Schema.String,
@@ -112,7 +134,7 @@ export type AccountProject = typeof AccountProject.Type;
 /**
  * An open support session. Its presence is what the organization banner reads:
  * somebody from Detent is acting as this organization, and the reader is
- * entitled to see who, why and until when (§12, "Plan, billing, support").
+ * entitled to see who, why and until when.
  */
 export const SupportSession = Schema.Struct({
   actor: Schema.String,
@@ -172,12 +194,14 @@ export const UpdatesReport = Schema.Struct({
 export type UpdatesReport = typeof UpdatesReport.Type;
 
 /**
- * `GET /app/bootstrap` (§12, "Serving"). It is a superset of the conversation
+ * `GET /app/bootstrap`. It is a superset of the conversation
  * client's `Bootstrap`: the same payload decodes through both, so the shell
  * loads it once.
  */
 export const AccountBootstrap = Schema.Struct({
+  self_hosted: Schema.optional(Schema.Boolean),
   organization: Schema.Struct({
+    logo: Schema.optional(Schema.NullOr(OrganizationLogo)),
     slug: Schema.optional(Schema.String),
     id: Schema.String,
     name: Schema.String,
@@ -284,6 +308,9 @@ export type SupportResponse = typeof SupportResponse.Type;
  * so recovering means re-reading, never guessing.
  */
 export const ProjectIntegration = Schema.Struct({
+ project_icon: Schema.optional(Schema.NullOr(ProjectIcon)),
+  aging_enabled: Schema.optional(Schema.Boolean),
+  name: Schema.optional(Schema.String),
   duplicate_challenge: Schema.optional(Schema.Boolean),
   archive_completed_after_days: Schema.NullOr(Schema.Number),
   archive_cancelled_after_days: Schema.NullOr(Schema.Number),
@@ -375,11 +402,33 @@ export const WorkflowApply = Schema.Struct({
 });
 export type WorkflowApply = typeof WorkflowApply.Type;
 
+/**
+ * `policy.ObservedPolicy`: a descriptor a runner resolved for the project and
+ * could not run because it differs from the approved policy.
+ */
+export const ObservedPolicy = Schema.Struct({
+  repository_source: Schema.optional(Schema.Struct({
+    repository: Schema.String,
+    commit: Schema.String,
+    default_branch: Schema.optional(Schema.String),
+    default_branch_head: Schema.optional(Schema.String),
+    default_branch_reachable: Schema.Boolean,
+  })),
+  policy: PolicyDescriptor,
+  runner_id: Schema.String,
+  runner_ids: Schema.optional(Schema.Array(Schema.String)),
+  observed_at: Schema.String,
+  conflict: Schema.optional(Schema.Boolean),
+  previously_approved: Schema.optional(Schema.Boolean),
+});
+export type ObservedPolicy = typeof ObservedPolicy.Type;
+
 /** `GET {nativeBase}/policy` (`policy.Approval`). */
 export const PolicyApproval = Schema.Struct({
   history: Schema.optional(Schema.Array(WorkflowApply)),
   history_next: Schema.optional(Schema.String),
-  policy: PolicyDescriptor,
+  policy: Schema.NullOr(PolicyDescriptor),
+  observed_policies: Schema.optional(Schema.Array(ObservedPolicy)),
   approved_by: Schema.String,
   approved_at: Schema.String,
 });
@@ -410,7 +459,7 @@ export const ARTIFACT_CHOICES = ["", "local", "customer"] as const;
 /**
  * One onboarding step. There are no step ids: `onboarding.Evaluate` names each
  * step and the name is its identity, and only two states exist. The wizard's
- * stepper reads exactly these (§12, "Projects and settings").
+ * stepper reads exactly these.
  */
 export const OnboardingStepState = Schema.Literals(["ready", "action_required"]);
 export type OnboardingStepState = typeof OnboardingStepState.Type;
@@ -424,10 +473,10 @@ export type OnboardingStep = typeof OnboardingStep.Type;
 
 /** The four steps `Evaluate()` emits, in its order. */
 export const ONBOARDING_STEPS = [
-  "Execution runner",
-  "Local validation",
-  "Repository configuration",
-  "Artifact history",
+  "Runner",
+  "Repository",
+  "Checkout",
+  "Run files",
 ] as const;
 
 export const ArtifactBinding = Schema.Struct({
@@ -453,6 +502,13 @@ export type RunnerExclusion = typeof RunnerExclusion.Type;
  */
 export const RunnerLocalChecks = Schema.Struct({
   checkout: Schema.String,
+  configuration: Schema.optional(Schema.String),
+  checkout_message: Schema.optional(Schema.String),
+  checkout_fix: Schema.optional(Schema.String),
+  checkout_at: Schema.optional(Schema.String),
+  configuration_at: Schema.optional(Schema.String),
+  doctor_at: Schema.optional(Schema.String),
+  provider_at: Schema.optional(Schema.String),
   doctor: Schema.String,
   provider: Schema.String,
   provider_kinds: Schema.optional(Schema.Array(Schema.String)),
@@ -460,6 +516,14 @@ export const RunnerLocalChecks = Schema.Struct({
 });
 
 export const RunnerEligibility = Schema.Struct({
+  repository_list: Schema.optional(Schema.NullOr(Schema.Struct({
+    request_id: Schema.String,
+    repositories: Schema.Array(Schema.Struct({ owner: Schema.String, name: Schema.String, private: Schema.Boolean, pushed_at: Schema.NullOr(Schema.String) })),
+    reason: Schema.optional(Schema.String),
+    listed_at: Schema.optional(Schema.String),
+    pending: Schema.Boolean,
+  }))),
+  other_project_count: Schema.optional(Schema.Number),
   local_checks: Schema.optional(Schema.NullOr(RunnerLocalChecks)),
   runner: Schema.Struct({
     runner_id: Schema.String,
@@ -481,29 +545,9 @@ export const RunnerEligibility = Schema.Struct({
 });
 export type RunnerEligibility = typeof RunnerEligibility.Type;
 
-/**
- * `policy.ObservedPolicy`: a descriptor a runner resolved for the project and
- * could not run because it differs from the approved policy.
- */
-export const ObservedPolicy = Schema.Struct({
-  repository_source: Schema.optional(Schema.Struct({
-    repository: Schema.String,
-    commit: Schema.String,
-    default_branch: Schema.optional(Schema.String),
-    default_branch_head: Schema.optional(Schema.String),
-    default_branch_reachable: Schema.Boolean,
-  })),
-  policy: PolicyDescriptor,
-  runner_id: Schema.String,
-  runner_ids: Schema.optional(Schema.Array(Schema.String)),
-  observed_at: Schema.String,
-  conflict: Schema.optional(Schema.Boolean),
-  previously_approved: Schema.optional(Schema.Boolean),
-});
-export type ObservedPolicy = typeof ObservedPolicy.Type;
-
 /** `GET {nativeBase}/onboarding` (`onboarding.Project`). */
 export const Onboarding = Schema.Struct({
+  repository: Schema.optional(Schema.String),
   latest_run: Schema.optional(Schema.String),
   progress: OnboardingProgress,
   policy: Schema.optional(Schema.NullOr(PolicyApproval)),
@@ -539,6 +583,7 @@ export type ProjectOnboardingSummary = typeof ProjectOnboardingSummary.Type;
 
 export const ProjectSummary = Schema.Struct({
   id: Schema.String,
+  slug: Schema.optional(Schema.String),
   name: Schema.String,
   profile: Schema.String,
   states: Schema.Array(WorkflowState),
@@ -589,6 +634,7 @@ export type RunnerLease = typeof RunnerLease.Type;
 export const RunnerAvailability = Schema.Struct({
   timezone: Schema.String,
   windows: Schema.Array(Schema.String),
+  window_slots: Schema.optional(Schema.NullOr(Schema.Record(Schema.String, Schema.Number))),
   hard_deadline: Schema.String,
 });
 export type RunnerAvailability = typeof RunnerAvailability.Type;
@@ -600,6 +646,7 @@ export const RunnerRouting = Schema.Struct({
   tags: Schema.Array(Schema.String),
   state: Schema.String,
   capacity_limit: Schema.Number,
+  project_capacity_limits: Schema.optional(Schema.NullOr(Schema.Record(Schema.String, Schema.Number))),
   project_ids: Schema.Array(Schema.String),
   isolation_tier: Schema.String,
   host_services: Schema.Array(Schema.String),
@@ -607,12 +654,38 @@ export const RunnerRouting = Schema.Struct({
 });
 export type RunnerRouting = typeof RunnerRouting.Type;
 
+export const RunnerCapacityConfiguration = Schema.Struct({
+  scope: Schema.String,
+  dispatch_constraint: Schema.String,
+  runner_id: Schema.String,
+  revision: Schema.Number,
+  desired: Schema.Number,
+  applied: Schema.NullOr(Schema.Struct({
+    revision: Schema.String, local_limit: Schema.Number, client_limit: Schema.Number,
+    runtime_limit: Schema.Number, manageable: Schema.Boolean,
+    constraint: Schema.optional(Schema.String), observed_at: Schema.String,
+  })),
+  effective: Schema.NullOr(Schema.Number),
+  status: Schema.String,
+  limits: Schema.Array(Schema.Struct({
+    owner: Schema.String, limit: Schema.NullOr(Schema.Number),
+    constraint: Schema.optional(Schema.String), observed_at: Schema.optional(Schema.String),
+    availability: Schema.optional(Schema.String),
+  })),
+  projects: Schema.optional(Schema.Record(Schema.String, Schema.Struct({
+    desired: Schema.NullOr(Schema.Number), applied: Schema.NullOr(Schema.Number),
+    effective: Schema.NullOr(Schema.Number), used: Schema.Number,
+  }))),
+});
+export type RunnerCapacityConfiguration = typeof RunnerCapacityConfiguration.Type;
+
 /**
  * One row of `GET /fleet`. `host_capacity`/`host_used` are the shared machine's
  * numbers and `capacity_limit`/`reported_capacity` the runner's own, which is
  * why the host card draws two meters rather than one.
  */
 export const FleetRunner = Schema.Struct({
+  capacity_configuration: Schema.optional(RunnerCapacityConfiguration),
   project_checkouts: Schema.optional(Schema.Record(Schema.String, Schema.Struct({ status: Schema.String, message: Schema.optional(Schema.String), fix_command: Schema.optional(Schema.String) }))),
   update: Schema.optional(Schema.Struct({
     status: Schema.String,
@@ -776,6 +849,7 @@ export type PlanGrant = typeof PlanGrant.Type;
 export const PlanReport = Schema.Struct({
   name: Schema.optional(Schema.String),
   monthly_usd_cents: Schema.optional(Schema.NullOr(Schema.Number)),
+  included_ai_credit_micros: Schema.optional(Schema.NullOr(Schema.Number)),
   organization_id: Schema.String,
   base: PlanReference,
   effective_base: PlanReference,
@@ -830,6 +904,12 @@ export const BillingPrice = Schema.Struct({
 export type BillingPrice = typeof BillingPrice.Type;
 
 export const AICredits = Schema.Struct({
+  included: Schema.optional(Schema.Struct({
+    allowance_micros: Schema.Number, used_micros: Schema.Number,
+    period_start: Schema.String, period_end: Schema.String, plan_name: Schema.String,
+  })),
+  next_cursor: Schema.optional(Schema.String),
+  total_rows: Schema.optional(Schema.Number),
   balance_micros: Schema.Number,
   auto_enabled: Schema.Boolean,
   threshold_cents: Schema.Number,
@@ -841,7 +921,8 @@ export const AICredits = Schema.Struct({
     price_id: Schema.String, label: Schema.String, usd_cents: Schema.Number,
   })),
   history: Schema.Array(Schema.Struct({
-    amount_micros: Schema.Number, kind: Schema.String, at: Schema.String,
+    included_amount_micros: Schema.optional(Schema.Number),
+    amount_micros: Schema.Number, kind: Schema.String, at: Schema.String, turns: Schema.optional(Schema.Number),
   })),
 });
 export type AICredits = typeof AICredits.Type;
@@ -851,6 +932,7 @@ export const ComparisonPlan = Schema.Struct({
   version: Schema.Number,
   name: Schema.optional(Schema.String),
   monthly_usd_cents: Schema.optional(Schema.NullOr(Schema.Number)),
+  included_ai_credit_micros: Schema.optional(Schema.NullOr(Schema.Number)),
   allowances: Schema.Record(Schema.String, Schema.Number),
   features: Schema.Array(Schema.String),
   price_id: Schema.String,
@@ -859,7 +941,14 @@ export type ComparisonPlan = typeof ComparisonPlan.Type;
 
 export const BillingUsageReport = Schema.Struct({
   organization_id: Schema.String,
-  renews_at: Schema.String,
+  effective_base: Schema.optional(PlanReference),
+  name: Schema.optional(Schema.String),
+  monthly_usd_cents: Schema.optional(Schema.NullOr(Schema.Number)),
+  included_ai_credit_micros: Schema.optional(Schema.NullOr(Schema.Number)),
+  complimentary: Schema.optional(Schema.Boolean),
+  expires_at: Schema.optional(Schema.NullOr(Schema.String)),
+  renews_at: Schema.NullOr(Schema.String),
+  cancels_at: Schema.optional(Schema.NullOr(Schema.String)),
   chat_usage: ChatUsage,
   charged_ai_micros: Schema.Number,
   ai_credits: Schema.optional(AICredits),
@@ -874,7 +963,7 @@ export type BillingUsageReport = typeof BillingUsageReport.Type;
 /**
  * `GET /billing`: `hubserver.hostedBillingReport` plus `prices`. The report
  * alone cannot render the screen — the hosted Templ page read the configured
- * prices from `HostedBillingConfig` rather than from the report — so §12's
+ * prices from `HostedBillingConfig` rather than from the report — so the hosted JSON API's
  * "checkout buttons per configured price" needs the list on the payload.
  */
 export const BillingReport = Schema.Struct({
@@ -889,7 +978,7 @@ export const BillingReport = Schema.Struct({
   pending_events: Schema.Number,
   recent_audit: Schema.optional(Schema.NullOr(Schema.Array(BillingAudit))),
   prices: Schema.Array(BillingPrice),
-  /** False while impersonating: §12 refuses billing to a support session. */
+  /** False while impersonating: the hosted JSON API refuses billing to a support session. */
   can_checkout: Schema.optional(Schema.Boolean),
   /** True once the organization has a billing customer the portal can open. */
   can_manage: Schema.optional(Schema.Boolean),
@@ -920,18 +1009,34 @@ export const decodePolicy = Schema.decodeUnknownSync(PolicyApproval);
 export { ApiError };
 
 export const SpritePool = Schema.Struct({
+  share_idle_capacity: Schema.optional(Schema.Boolean),
   min_runners: Schema.Number,
   max_runners: Schema.Number,
   idle_seconds: Schema.Number,
   bootstrap: Schema.String,
   revision: Schema.Number,
+  isolation_tier_unavailable_reason: Schema.optional(Schema.String),
+  runner_setup_declared: Schema.optional(Schema.NullOr(Schema.Boolean)),
   members: Schema.Array(Schema.Struct({
     name: Schema.String,
+    allocation_project_id: Schema.optional(Schema.String),
     state: Schema.String,
+    status: Schema.optional(Schema.String),
+    waiting_for: Schema.optional(Schema.Array(Schema.Struct({ check: Schema.String, command: Schema.String }))),
     bootstrap_log: Schema.String,
     runner_id: Schema.String,
     idle_since: Schema.String,
   })),
+});
+
+export const ProjectSpriteAllocation = Schema.Struct({
+  project_id: Schema.String,
+  managed: Schema.Boolean,
+  desired_count: Schema.Number,
+  allocated_count: Schema.Number,
+  shortfall: Schema.Number,
+  provision_failures: Schema.Number,
+  revision: Schema.String,
 });
 
 /** Provider secret presence; credentials are write-only. */
@@ -1043,3 +1148,14 @@ export const ReleaseNotesPage = Schema.Struct({
   next_cursor: Schema.optional(Schema.String),
 });
 export type ReleaseNotesPage = typeof ReleaseNotesPage.Type;
+
+export const DailySummaryPreference = Schema.Struct({
+  enabled: Schema.Boolean,
+  configured: Schema.optional(Schema.Boolean),
+  send_time: Schema.String,
+  time_zone: Schema.String,
+  days: Schema.Literals(["every_day", "weekdays"]),
+  next_send: Schema.NullOr(Schema.String),
+  recipient: Schema.String,
+});
+export type DailySummaryPreference = typeof DailySummaryPreference.Type;

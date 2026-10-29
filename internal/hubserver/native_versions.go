@@ -14,15 +14,19 @@ import (
 )
 
 func (s *Service) getNativeVersion(c echo.Context) error {
+
 	revision, err := strconv.ParseInt(c.Param("revision"), 10, 64)
 	if err != nil || revision <= 0 {
-		return s.nativeAPIError(c, nativeInvalid("Revision must be a positive decimal integer"))
+		return s.nativeAPIError(c, nativePublicInvalid("Revision must be a positive decimal integer"))
+	}
+	if handled, err := s.archiveView(c, c.Param("item"), "revision:"+c.Param("comment")+":"+c.Param("revision"), nil); handled {
+		return err
 	}
 	body, err := s.readVersion(c.Request().Context(), nativeRequestScope(c), c.Param("item"), c.Param("comment"), revision)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	return c.JSONBlob(http.StatusOK, body)
+	return nativeArchiveJSON(c, http.StatusOK, body)
 }
 
 func (s *Service) readVersion(ctx context.Context, scope nativeScope, item, comment string, revision int64) (json.RawMessage, error) {
@@ -35,15 +39,17 @@ func (s *Service) readVersion(ctx context.Context, scope nativeScope, item, comm
 	if comment != "" {
 		recordID = comment
 	}
-	var body string
-	err := s.database.reader.QueryRowContext(ctx, `SELECT record_json FROM collaboration_versions
-WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND record_id = ? AND revision = ?`, scope.organization, scope.project, item, recordID, revision).Scan(&body)
+	query, err := archiveQuery(ctx, s.database.reader, item, "revision", recordID, revision)
+	if err != nil {
+		return nil, err
+	}
+	body, err := reconstructNativeVersion(ctx, query, string(scope.organization), string(scope.project), item, recordID, revision)
 	if err != nil {
 		return nil, err
 	}
 	if recordID == item && (scope.credential.Scope != apiScopeAdmin || scope.credential.NativeOnly) {
 		var issue tracker.NativeIssue
-		if err := json.Unmarshal([]byte(body), &issue); err != nil {
+		if err := json.Unmarshal(body, &issue); err != nil {
 			return nil, err
 		}
 		for _, links := range []*[]tracker.NativeDependency{&issue.Blockers, &issue.Dependents, &issue.Related} {
@@ -75,7 +81,7 @@ WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND record_id 
 	}
 	if recordID == item {
 		var issue tracker.NativeIssue
-		if err := json.Unmarshal([]byte(body), &issue); err != nil {
+		if err := json.Unmarshal(body, &issue); err != nil {
 			return nil, err
 		}
 		issue.BlockedReason.Text, issue.UnblocksReason.Text = "", ""

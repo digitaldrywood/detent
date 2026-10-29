@@ -167,6 +167,12 @@ func normalizeWorkerHosts(hosts []string) []string {
 }
 
 func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, issues []connector.Issue, now time.Time, maintenanceIssues ...connector.Issue) {
+	defer o.releaseDeferredSchedulingClaims(context.WithoutCancel(ctx), state, issues)
+	for _, issue := range issues {
+		if stateIn(issue.State, o.cfg.ActiveStates) && !o.currentBlockedHumanIntent(ctx, state, issue) && !o.currentBlockedOperatorStop(ctx, state, issue) {
+			clearBlockedStatusIssue(state, issue)
+		}
+	}
 	o.beginGlobalProjectCycle()
 	defer o.endGlobalProjectCycle()
 	if state.Draining || o.dispatchQuiesced() {
@@ -175,6 +181,9 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 	}
 	if err := o.prepareDispatchProject(ctx); err != nil {
 		o.cancelPendingGlobalDispatches()
+		for _, issue := range issues {
+			o.recordPostSelectionDispatchRefusal(ctx, state, now, dispatchPlanDecision{Issue: issue}, dispatchIssueOutcome{reason: dispatchIssueFailureWorkerHostUnavailable, waitReason: err.Error()})
+		}
 		return
 	}
 	issues = o.localIntakeIssues(state, issues)
@@ -244,6 +253,7 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 			rescheduled.RecoveryAttemptID = retry.RecoveryAttemptID
 			rescheduled.RetryMode = retry.RetryMode
 			rescheduled.ResumeState = retry.ResumeState
+			rescheduled.Policy = retry.Policy
 			rescheduled.MergePrecheck = cloneMergePrecheck(retry.MergePrecheck)
 			rescheduled.ForgeUnavailable = retry.ForgeUnavailable
 			rescheduled.ForgeHost = retry.ForgeHost
@@ -278,17 +288,15 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 	})
 	o.reconcilePendingGlobalDispatches(issues, decisions, outcomes)
 	o.reconcileMergeControlDemand(decisions, outcomes)
-	o.releaseDeferredSchedulingClaims(ctx, state, issues)
 	o.observeProjectDispatchStatus(ctx, state, issues, decisions, outcomes, now)
 }
 
 func (o *Orchestrator) prepareDispatchCandidates(ctx context.Context, state *State, issues []connector.Issue, now time.Time) []connector.Issue {
+	issues = o.reconcileOrphanedSessionRetries(ctx, state, issues, now)
 	issues = o.localIntakeIssues(state, issues)
 	o.reconcileIssueConfigurationHolds(ctx, state, issues, now)
 	issues = o.filterIssueContracts(ctx, state, issues, now)
 	issues = o.filterImplementDependencyDeferrals(ctx, issues)
-	o.retainUnacknowledgedRecoveryParks(ctx, state, issues)
-	o.enforceLifetimeLimits(ctx, state, issues, now)
 	return issues
 }
 
@@ -379,6 +387,9 @@ func dispatchFailureRetryReason(reason string) string {
 }
 
 func (o *Orchestrator) preserveMissingDueRetry(state *State, retry Retry) bool {
+	if retry.TrackerUnavailable && retry.ResumeState.Orphaned {
+		return true
+	}
 	if normalizeState(retry.Issue.State) != normalizeState(autoPromoteMergingState) {
 		return false
 	}
@@ -459,7 +470,6 @@ func (o *Orchestrator) dispatchCandidates(ctx context.Context, state *State, iss
 	}
 	issues = o.localIntakeIssues(state, issues)
 	issues = o.filterImplementDependencyDeferrals(ctx, issues)
-	o.enforceLifetimeLimits(ctx, state, issues, now)
 	blockerCache := make(map[string]dependencyBlocker)
 	for _, issue := range issues {
 		if o.dispatchPlanner().hardAvailableSlots(state) == 0 {
@@ -645,9 +655,6 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 	defer o.finishDispatchStart()
 	if state.Draining {
 		return dispatchIssueOutcome{reason: dispatchIssueFailureDraining}
-	}
-	if _, deferred := state.deferredCompletions[issue.ID]; deferred {
-		return dispatchIssueOutcome{reason: dispatchSkipCompletionDeferred}
 	}
 	queuedRetry, retryQueued := state.Retry[issue.ID]
 	if retryState != nil {
@@ -854,17 +861,13 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 
 	issue = cloneIssue(claimedIssue)
 	priorAttempt := state.PriorAttempts[issue.ID]
-	if !priorAttemptPresent(priorAttempt) {
-		if breakerAttempt, ok := o.spendProgressPriorAttempt(runCtx, issue); ok {
-			priorAttempt = breakerAttempt
-		}
-	}
-	dispatchLoopStart := newDispatchLoopStartRecord(issue, runMode)
+	completionSourceStart := newCompletionSourceStartRecord(issue, runMode)
 	if (runMode == runpkg.RunModeImplement || runMode == runpkg.RunModeMerge && !mergeWorkerIssue(issue)) && issue.PullRequest != nil {
-		dispatchLoopStart.PRDiffFingerprint = o.implementCompletionDiffFingerprint(runCtx, issue)
-		dispatchLoopStart.PRMergeableState = issue.PullRequest.MergeableState
+		completionSourceStart.PRDiffFingerprint = o.implementCompletionDiffFingerprint(runCtx, issue)
+		completionSourceStart.PRMergeableState = issue.PullRequest.MergeableState
 	}
-	workAttemptID, ok := o.startDurableWorkAttempt(runCtx, state, issue, attempt, now, workerHost, runMode, dispatchLoopStart)
+	attemptPolicy := o.dispatchAttemptPolicy(queuedRetry, workerHost)
+	workAttemptID, ok := o.startDurableWorkAttempt(runCtx, state, issue, attempt, now, workerHost, runMode, completionSourceStart, attemptPolicy)
 	if ok {
 		if state.localAdmitted == nil {
 			state.localAdmitted = map[string]struct{}{}
@@ -907,13 +910,13 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 			}
 			o.releaseGlobalDispatchSlot(globalSlot)
 			o.completeDurableWorkAttempt(ctx, state, Running{
-				Issue:             issue,
-				Attempt:           attempt,
-				WorkAttemptID:     workAttemptID,
-				Mode:              runMode,
-				DispatchLoopStart: dispatchLoopStart,
-				StartedAt:         now,
-				WorkerHost:        workerHost,
+				Issue:                 issue,
+				Attempt:               attempt,
+				WorkAttemptID:         workAttemptID,
+				Mode:                  runMode,
+				CompletionSourceStart: completionSourceStart,
+				StartedAt:             now,
+				WorkerHost:            workerHost,
 			}, now, store.WorkAttemptTerminalFailure, workAttemptErrorStartTransition, err.Error(), "starting", "start state transition failed")
 			o.logWorkerLifecycle(issue, "worker_capacity_released",
 				telemetry.WorkAttemptIDKey, workAttemptID,
@@ -1010,7 +1013,7 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 		}
 	}
 	if runMode == runpkg.RunModeImplement {
-		dispatchProgress.PullRequestDiffFingerprint = dispatchLoopStart.PRDiffFingerprint
+		dispatchProgress.PullRequestDiffFingerprint = completionSourceStart.PRDiffFingerprint
 	}
 	reserveCredentialCanaryForDispatch(state, issue.ID, now)
 	generation := o.workerGeneration.Add(1)
@@ -1018,7 +1021,8 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 		Issue:                  issue,
 		Attempt:                attempt,
 		WorkAttemptID:          workAttemptID,
-		Policy:                 o.cfg.Policy,
+		Policy:                 attemptPolicy,
+		ClaimPolicy:            o.cfg.Policy,
 		Generation:             generation,
 		Mode:                   runMode,
 		DispatchSourceState:    dispatchStartSourceState,
@@ -1029,7 +1033,7 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 		DispatchArtifactStatus: strings.TrimSpace(dispatchArtifactStatus),
 		ArtifactStatusField:    strings.TrimSpace(artifactStatusField),
 		DeliverableKind:        o.cfg.DeliverableKind,
-		DispatchLoopStart:      dispatchLoopStart,
+		CompletionSourceStart:  completionSourceStart,
 		StartedAt:              now,
 		WorkerHost:             workerHost,
 		CapacityScope:          capacityScope,
@@ -1056,7 +1060,7 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 
 	reservation := reserveMergeCandidate(state, issue, now)
 	request := RunRequest{
-		Policy:              o.cfg.Policy,
+		Policy:              attemptPolicy,
 		ProjectID:           strings.TrimSpace(o.cfg.Project.ID),
 		Issue:               issue,
 		Attempt:             attempt,
@@ -1096,9 +1100,6 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 			request.RetryMode = runpkg.RetryModeFresh
 			request.ResumeState = store.AgentResumeState{}
 		}
-	}
-	if priorAttempt.ExplainBeforeRetry {
-		delete(state.PriorAttempts, issue.ID)
 	}
 	o.logMergeWorkerAttempt(issue, attempt, workerHost)
 	o.logWorkerLifecycle(issue, "worker_attempt_started",
@@ -1186,6 +1187,17 @@ func (o *Orchestrator) dispatchMode(ctx context.Context, state *State, issue con
 	cfg := gate.EffectivePlan(o.cfg.Plan)
 	if !cfg.Enabled {
 		return runpkg.RunModeImplement
+	}
+	if implementProgressLinkedPullRequest(issue) {
+		return runpkg.RunModeImplement
+	}
+	if source, ok := o.scheduling.(interface{ RunExecution(string) runpkg.Execution }); ok {
+		if execution := source.RunExecution(issue.ID); execution != nil {
+			recovery := execution.Recovery()
+			if recovery.Change != nil && recovery.Change.VersionID != "" {
+				return runpkg.RunModeImplement
+			}
+		}
 	}
 	switch normalizeState(issue.State) {
 	case "todo":
@@ -1388,7 +1400,7 @@ func (o *Orchestrator) usageUpdateHandler(
 				return err
 			}
 		}
-		if update.DispatchLoopStart != nil && progress == nil {
+		if update.CompletionSourceStart != nil && progress == nil {
 			applied := make(chan struct{})
 			select {
 			case <-ctx.Done():
@@ -1486,7 +1498,7 @@ func validCandidate(issue connector.Issue) bool {
 		issue.AssignedToWorker
 }
 
-func duplicatePullRequestWork(issue connector.Issue, localStatus string) bool {
+func (p dispatchPlanner) duplicatePullRequestWork(issue connector.Issue) bool {
 	if issue.PullRequest == nil {
 		return false
 	}
@@ -1494,7 +1506,7 @@ func duplicatePullRequestWork(issue connector.Issue, localStatus string) bool {
 	case "merged":
 		return !staleMergedPullRequestHasFailedCIEvidence(issue.PullRequest, staleMergedPullRequestSummaryFromIssue(issue))
 	case "open":
-		return normalizeState(issue.State) == "todo" && !issue.PullRequest.HasMissingLocalStatus(localStatus)
+		return !p.nativeWorkflow && normalizeState(issue.State) == "todo" && !issue.PullRequest.HasMissingLocalStatus(gate.Effective(p.cfg.AutoPromote.Gate).LocalStatus)
 	default:
 		return false
 	}

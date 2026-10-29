@@ -10,6 +10,7 @@ import (
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/project"
+	"github.com/digitaldrywood/detent/internal/testutil/projectfixture"
 )
 
 func TestManagerReconcileHotAppliesGlobalRateWindowPacing(t *testing.T) {
@@ -18,17 +19,17 @@ func TestManagerReconcileHotAppliesGlobalRateWindowPacing(t *testing.T) {
 	initialPacing := workflowconfig.DefaultRateWindowPacing()
 	initial := globalconfig.Project{ID: "alpha", Weight: 1, GlobalRateWindowPacing: initialPacing}
 	created := 0
-	manager, err := project.NewManager(project.ManagerConfig{Projects: []globalconfig.Project{initial}}, project.ManagerDependencies{
+	manager, err := projectfixture.NewManager(project.ManagerConfig{Projects: []globalconfig.Project{initial}}, project.ManagerDependencies{
 		ProjectFactory: func(cfg globalconfig.Project) (*project.Project, error) {
 			created++
-			workflow := workflowconfig.Workflow{Config: workflowConfig("memory"), SourceHash: policy.Digest([]byte("approved workflow"))}
+			workflow := workflowconfig.Workflow{Config: workflowConfig(workflowconfig.TrackerHubNative), SourceHash: policy.Digest([]byte("approved workflow"))}
 			workflow.Definition.Revision = strings.Repeat("a", 40)
 			approved, err := project.ResolvePolicy(cfg, workflow)
 			if err != nil {
 				return nil, err
 			}
 			workflow.Config.Policy = approved
-			return project.New(project.Config{Project: cfg, Workflow: workflow}, project.Dependencies{Runner: blockingRunner{}})
+			return projectfixture.New(project.Config{Project: cfg, Workflow: workflow}, project.Dependencies{Runner: blockingRunner{}})
 		},
 	})
 	if err != nil {

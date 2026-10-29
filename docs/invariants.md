@@ -1,7 +1,7 @@
 # Repository invariants
 
 These rules apply to all repository changes. Follow the
-[validation policy](../AGENTS.md#validation). Only a change to an invariant's
+[validation policy](../WORKFLOW.md#validation). Only a change to an invariant's
 rule or its enforcing check edits this document. Identify affected INV IDs in
 the Change/PR description; put per-change rationale, evidence and verification
 there or in issue comments, as required by INV-16. A passing check does not
@@ -13,6 +13,9 @@ detail that changes with ordinary feature work (how a path verifies, retries,
 routes or formats) belongs in the named tests and in package documentation,
 never here. A change that edits this document without changing a rule or an
 enforcing check fails review.
+
+INV numbers are permanent identifiers. A retired invariant keeps its number as
+a retired entry; numbers are never reused or renumbered.
 
 **Checks:** `make check-invariants` runs the exact behavioral tests in
 [policy.json](../invariants/policy.json) through
@@ -30,29 +33,33 @@ The orchestrator is the only writer of tracker lane state. Workers report
 outcomes through the selected tracker's completion contract; they never write
 lane labels, status fields or approval comments. Native workers report through
 the authenticated final outcome, and the host owns publication and lane writes.
+The lane ledger owns state transitions; connector adapters forward them
+without deciding, and raw HTTP tracker writes must not bypass that boundary.
 
-An ephemeral execution process never owns a second claim, renewal or completion
-writer. Its controller retains the fenced execution, local store and worker
-cleanup through acknowledged outcome publication and lease release. Worker
-exit alone never frees execution capacity. Local process journals cross the
-worker protocol only for sessions opened by that worker's channel; remote
-process identities never enter the local reaper.
+Execution ownership is a fenced, renewed lease held by one controller through
+outcome publication and lease release. Worker exit alone never frees capacity.
+Expiry returns the item to claim eligibility under current source custody and
+human intent; no recovery park or park-clearing sweep owns that return.
 
-The lane ledger owns `UpdateIssueState` and state-field `SetIssueField` calls.
-Enumerated connector adapters implement or forward those operations without
-deciding transitions. Admission uses the injected orchestrator writer. Raw
-HTTP tracker writes must not bypass this ownership boundary.
+Blocked has a closed list of causes: an explicit human question or permission
+request with a typed `human_action`, or an explicit operator stop. Machine
+failures, including validation, missing checks, delivery and retry exhaustion,
+retry in a dispatchable lane through the existing retry owner and never
+synthesize a human prerequisite. Derived hold metadata requires an owner,
+source revision and expiry; wiping it and recomputing must produce the same
+dispatch decision.
 
 For native projects, a supplied repository workflow definition owns the state
-and transition model through trusted repository configuration reports. Applying
-the resolved model is atomic and rejects removal of occupied states. Cloud Markdown authoring is available only without repository
-definition authority; UI, API and MCP cannot independently override a repository-controlled
-workflow. Definition authority does not transfer issue-move ownership.
+and transition model; UI, API and MCP cannot override a repository-controlled
+workflow, and definition authority does not transfer issue-move ownership.
 
-Orphaned provider-session resumes use the new dispatch's durable attempt ID
-and generation in their completion handoff. Resume selection rejects an
-orphaned request missing either value before starting a turn; the ordinary
-retry starts a fresh attempt.
+**Lease enforcement:** `TestRetainedWorkAttemptsExpireOnTick` and
+`TestHubSchedulingReadinessBeforeClaim` in `internal/orchestrator` and `TestTimeoutWorkAttemptsProcessEvidence` and
+`TestStartupTimeoutWorkAttemptsScope` in `internal/store`.
+
+**Closed-list enforcement:** `TestBlockedRecoveryRecomputesDispatchWithoutDerivedHolds`
+and `TestStoredHoldRequiresProvenance` in `internal/orchestrator`, plus the
+lane writer's typed-intent and metadata validation.
 
 **Enforcement:** `TestRepositorySources` in `internal/invariants`;
 `TestAdmissionRequiresLedgerWriter` in `internal/admission`. Review rejects
@@ -80,12 +87,16 @@ an unrelated hook failure cannot inherit that classification.
 
 Native landing conflicts and failed landing commands are source refusals, not
 infrastructure failures or shipped work. Landing refusal destinations belong
-to the workflow owner: conflicts and command gate failures prefer configured
+to the workflow owner: conflicts, moved heads and command gate failures prefer configured
 Rework, other refusals prefer the configured review lane, and terminal,
 operator-only and self-transitions are excluded. Recovery and Rework resume
 only from a verified preserved source checkpoint; unknown changes and
 unavailable authority are refusals, never checkpoint rewrites or relaxed
-comparisons. Human and permission holds retain their authority.
+comparisons. Human and permission holds retain their authority. Pre-provider checkpoint
+and recovery refusals, including changed local checkpoints and policy mismatches,
+retry through the existing instance owner with capped backoff. They never
+write Blocked or consume an issue failure allowance. Unavailable execution
+authority still forbids lane writes; retry never relaxes source verification.
 
 **Enforcement:** `TestPreTurnFailuresRetryWithoutPausingProject`,
 `TestObservedLanePreTurnFailureRemainsInstanceOwned`,
@@ -97,7 +108,11 @@ comparisons. Human and permission holds retain their authority.
 `TestNativeLandingRunCompletion` and `TestNativeChangeRunCompletion`
 in `internal/orchestrator`;
 `TestNativeExecutionSettlesFinishedRun` in `internal/hubclient`;
-`TestClaimCandidatesRequireUnansweredWorkItem` in `internal/hubserver`;
+`TestClaimCandidatesRequireUnansweredWorkItem`,
+`TestClaimCandidatesRetryInstancePreProviderFailures` and
+`TestHealthRunnerSetupFindings` in `internal/hubserver`;
+`TestLocalGitCreateReadsPublishedBranchWithRepositoryCredential` in
+`internal/workspace`;
 `TestNativeExecutionLandsReviewedVersion` in `internal/hubclient`;
 `TestNativeRunnerOpensChangeAndLeavesDispatch` in `internal/hubclient`;
 `TestLocalGitLandChangeViaGitHub` in `internal/workspace`;
@@ -122,10 +137,20 @@ Renaming a mechanism or updating a snapshot does not establish removal or
 consolidation. Provider messages, operator reasons and decision helpers remain
 review boundaries.
 
-The complete-diff security audit uses bounded turns within the existing audit
-session and deadline. Its host-owned aggregation requires every deterministic
-source range and retains all unresolved findings; chunking does not introduce
-another recovery or capacity mechanism or exempt any changed content.
+Machine failures have one retry owner. Per-issue failure, progress, spend,
+dispatch-loop, token-ceiling and workspace retry brakes are consolidated into
+it; machine failures stay dispatchable with growing attempts and capped
+jittered backoff. A retry resumes at the first step whose receipt is no
+longer valid for the current source, policy and review state; it never repeats
+a step whose receipt is still valid. A rejected review, gate or audit result with any change-caused or unknown
+finding, or new human feedback, returns work to implementation on the same
+source. An outcome proven entirely independent of the change waits on typed
+repair dependencies in a dispatchable lane, then resumes through this same
+retry owner at the first invalid receipt.
+Only verified changed source resets the attempt count.
+Spending limits belong to the existing budget policy, not to retry brakes;
+historical brake metadata never vetoes the next attempt, and explicit human
+action and operator stops retain their authority.
 
 **Enforcement:** `TestRepositorySources` and `TestSourceViolations` in
 `internal/invariants`; `TestChunkCoverage`, `TestLargeAuditAggregation` and
@@ -133,22 +158,22 @@ another recovery or capacity mechanism or exempt any changed content.
 `TestRunnerChunkedAudit` in `internal/runner`. Review verifies removal or
 consolidation.
 
+**Retry enforcement:** `TestMachineFailuresUseRetryOwner`,
+`TestMachineRetrySurvivesStoreRestart`, `TestDerivedHoldDispatchEquivalence`,
+`TestHandleRunResultResetsRetryAfterProgress`, and
+`TestBackendCapacityHelperBoundaries` and
+`TestPruneBudgetRefusalsReevaluatesDailyCap` in `internal/orchestrator`.
+`FuzzSafetyCriticalOrchestratorBoundaries` retains completion-evidence,
+capacity resume arithmetic, capped backoff, dispatch ordering and priority-only
+real-capacity acquisition coverage. The retired-symbol checks prevent restoring
+the deleted per-issue brake owners.
+
 ## INV-4 — Native merge queue
 
 Merges go through the repository's merge queue when one exists. Without a
 queue, Detent uses its serialized merge worker. Other repositories retain
-their chosen settings.
-
-Queue ownership belongs to the current PR head. Only completed success, skipped
-and neutral checks qualify for queue admission, subject to provider-required
-contexts; skipped checks are not passed-test evidence. Unresolved review
-threads require queue withdrawal before the configured Rework handoff, and a
-withdrawal failure never prevents a lane write to Done. Queue removal is
-counted once per distinct removal and PR head: the first permits readmission,
-the second on the same head routes to Rework, the count survives restart, and
-a repaired head starts fresh. After a verified native landing merge, the
-landing owner closes earlier open landing pull requests for the same item only
-when the pull head matches the SHA encoded in its landing branch.
+their chosen settings. Queue ownership belongs to the current PR head, and
+Detent never bypasses a configured queue with a programmatic merge.
 
 **Enforcement:** `TestDelegateNativeMergeQueueIssuesEnqueuesGreenTrainWithoutWorkerDispatch`,
 `TestDelegateNativeMergeQueueIssuesCachesQueueEntries`,
@@ -164,150 +189,79 @@ is present; live queue settings require operator inspection.
 
 ## INV-5 — Local pull-request validation and scheduled release evidence
 
-This repository starts no validation workflow from `pull_request`,
-`pull_request_target` or `merge_group`, and requires no branch status check.
-The sole event exception is `.github/workflows/cla.yml`: its single job runs
-only `contributor-assistant/github-action` without checking out or executing
-PR code, and owns signature records on the unprotected `cla-signatures` branch.
+This repository requires no branch status check. The only PR validation is
+`.github/workflows/ci.yml` on `pull_request`: its existing Linux `verify-fast`
+job checks the PR merge commit with Windows amd64/arm64 cross-builds and amd64
+vet. No other job, Windows VM or landing gate runs on PR events, and no
+validation workflow starts from `pull_request_target` or `merge_group`. The
+other event exception is `.github/workflows/cla.yml`, which runs only
+`contributor-assistant/github-action` without checking out or executing PR code.
 
-Source completion runs `make check-land` and fixes failures before submission.
-The finalized immutable native version carries its successful command receipt
-for the exact reviewed head and tree. Native direct landing verifies that receipt,
-squashes clean Changes in queue order onto one staging head, and pushes the
-batch without repeating validation or calling a GitHub API. A conflicting
-member leaves the clean batch and retries by rebasing; in `per_landing` mode the rebased tree
-runs build, short Go tests for touched packages, and lint of touched files.
-The receipt records the landing path and tested packages. A moved base repeats
-the clean-squash decision on the new head. GitHub PR landing stays behind its
-project policy opt-in and retains its configured validation and native checks.
-This repository configures `make check-landing` for the combined GitHub landing
-tree: build, short tests for touched packages and dependents, and lint of changed
-Go files. Module changes widen validation. Source completion still runs the
-full `make check-land` gate.
-A failed per-landing command returns to configured Rework with the failing output. The project publishes no local status and sets
-`gate.required_status_checks: []` and `gate.automated_review: "off"`; ordinary
-merge waits for no additional CI producer or scheduled validation, while
-reported failed CI, native base-branch requirements and reported P1 findings
-remain authoritative. Diagnostics support concurrent worktrees without a shared
-validation lock. Other projects retain their configured policies.
+Each Change passes the finalization gate (`make check-landing`) on its own
+reviewed head before landing. Develop accepts integration risk between Changes
+that merge cleanly: a clean batch lands without revalidating the combined tree,
+the hourly full suite on pinned `develop` commits detects integration failures,
+and scheduled reporting owns their repair. Ordinary landing waits for no
+additional CI producer or scheduled validation.
 
-Source completion checks repository source and workflow invariants and verifies
-that behavioral test references exist without duplicate package groups. The
-full behavioral invariant manifest executes only in the scheduled suite.
-Full browser, integration, race, coverage, fuzz, NilAway and generated-output validation
-run in the full suite: hourly on pinned `develop` commits, and on every push
-or dispatch to `release/*`. Develop receives one full suite per SHA across
-scheduled and manual runs. Develop preflight skips completed non-cancelled
-runs regardless of conclusion; manual `force: true` or a non-`none` `fail_job`
-runs it again. The finalizer reports skipped scheduled activity without
-publishing green validation or release evidence. Release runs always validate
-their event SHA, independently of
-develop and other release branches. Release evidence is the green full suite
-on the release branch head, never develop evidence reused after cherry-picks.
-Successful develop validation publishes `develop-full-ci`. Release validation
-publishes `scheduled-full-ci` only when creating new immutable release evidence.
-On a release branch, the finalizer verifies the validated SHA is still the branch head, creates
-an annotated `vX.Y.Z` provenance tag within that branch's `release/vX.Y` series,
-and dispatches the existing release workflow. Green develop commits select
-future cuts but do not publish stable tags. Cuts are weekly by default or
-operator-dispatched. Automatic cuts proceed only when no cut, release
-validation, signed build or deployment is active and
-no successful production deployment and smoke completed within one cadence
-derived from the cut workflow's UTC cron. Explicit manual SHA cuts remain
-available within that window and bypass frozen-series admission. Actions history
-and remote release heads own admission; API failures are errors. Outside the
-cadence window, an unfinished current or newer frozen series defers automatic
-cuts until its head has a successful stable-tag production deployment and both
-smokes. Older series superseded by a later successful production series do not
-defer newer uncovered source.
-Automatic source selection uses the newest green develop ancestor
-not already covered by a release series or stable tag, or unreleased develop tip
-if none exists; it succeeds without cutting when develop is already covered.
-Explicit covered sources remain errors. Picks are develop-to-release only, with
-`-x` provenance and a PR.
-All release API calls belong to operators and GitHub Actions, never Detent
-runners. Develop landing does not wait for release stabilization. Release
-deploys staging, runs its smoke, then deploys production and runs its smoke;
-a failed smoke stops promotion. Operators promote the validated tag tree to
-`main` through a reviewed PR. A commit already tagged in that series receives no
-new stable tag or replacement status. A retry authenticates the original tag
-evidence, refuses superseded evidence, and resumes dispatch only when no release
-run exists for that tag. Every release, including operator recovery, starts from
-a frozen develop snapshot on a release branch. Fixes land on develop first and
-are cherry-picked with `-x` through release-branch PRs. No develop prerelease or
-source-gate-only deployment path is permitted. Staging and production deploy
-the same validated version and binary; enrolled runners follow the Hub through
-the existing coordinated update owner.
-Failing Detent release suites share one open stabilization owner per release
-series, with each failed job's evidence and replay identity retained in bounded
-occurrences. Develop retains per-job reporting under stable job fingerprints;
-other projects retain their configured reporting behavior. Reports enter native
-Todo at least High,
-following [deployment and release failure reporting](../AGENTS.md#deployment-and-release-failure-reporting);
-infrastructure reports carry the infrastructure label and CI-instance
-attribution, and failed Cloud publication never falls back to GitHub issue
-writes. Explicit workflow cancellation stops finalization and creates no repair
-issues, including before the run conclusion settles; timeouts and cancelled
-jobs without workflow cancellation remain reportable and never authorize a tag. Plain checkouts compile and test without ignored assets; build owners
-prepare conversation bundles and configuration references before deployment.
+Only a green full suite on the release branch head produces release evidence;
+develop evidence is never reused after cherry-picks. Every release starts from
+a frozen develop snapshot on a release branch, fixes land on develop first and
+are cherry-picked with `-x` through release-branch PRs, and no develop
+prerelease or source-gate-only deployment path exists. Release API calls belong
+to operators and GitHub Actions, never Detent runners. The release flow is
+specified in [the release workflow](../WORKFLOW.md#release).
 
-**Enforcement:** `TestRepositoryWorkflow`,
-`TestRepositoryHasNoPullRequestActions`, and `TestWorkflowViolations` in
-`internal/invariants`; `TestMakeCheckFastOverlapsWorktrees` in
-`tools/checklock`; `TestParseProblems`, `TestReport`, `TestCloudReport`,
-`TestCloudDestinationAuthority`, `TestReleaseStabilization`, and `TestScheduledFinalizer` in
-`tools/cifailure`. Review preserves project-specific policy and release authority.
+**Enforcement:** checks assert outcomes only: no workflow triggers on
+`pull_request`, `pull_request_target` or `merge_group` except the bounded
+`ci.yml` Windows guard and the `cla.yml` exception; `ci.yml` triggers only on
+`pull_request`, `schedule` and `workflow_dispatch`, isolates its other jobs from
+PR events, and its
+finalize job needs every other job in the parsed workflow and runs
+`scripts/scheduled-ci-finish.sh`; the finalizer fails the run when any job
+concluded other than success and creates stable tags only after a green
+release-branch suite; and `release.yml` verifies provenance of the exact tagged
+commit before building. Checks must not pin workflow shape such as job
+conditions, schedules, shard counts, timeouts or command text except where
+needed to enforce the bounded PR guard.
+`TestCIWindowsChecksUseExistingLinuxVetStep` in the repository root;
+`TestRepositoryWorkflow`, `TestRepositoryHasNoPullRequestActions`, and
+`TestWorkflowViolations` in `internal/invariants`;
+`TestReleaseWorkflowAuthenticatesExactCommitProvenance` in the repository root;
+`TestMakeCheckFastOverlapsWorktrees` in `tools/checklock`; `TestParseProblems`,
+`TestReport`, `TestCloudReport`, `TestCloudDestinationAuthority`,
+`TestReleaseStabilization`, and `TestScheduledFinalizer` in `tools/cifailure`.
+Review preserves project-specific policy and release authority.
 
-## INV-6 — Isolated Codex home
+## INV-6 — Isolated agent home
 
-Workers run with an isolated Codex home; user-level instructions never reach
-a worker. Repository instructions and the Detent-provided worktree remain
-authoritative. Worker state and transcript directories belong to the isolated
-profile and must not write through host transcript symlinks.
-
-Legacy resume copies only the requested persisted thread into profile storage
-before verification or resume. Existing profile rollouts take precedence, and
-resumed writes leave the host rollout unchanged. Retention preserves unfinished
-threads, their resume sources and descendants of retained parents.
+Workers never inherit the operator's agent instructions or write to the
+operator's transcript storage, for any backend. Repository instructions and
+the Detent-provided worktree remain authoritative. Codex workers run with an
+isolated Codex home; resuming a persisted thread copies only that thread into
+the isolated profile and leaves the host copy unchanged.
 
 **Enforcement:** `TestPrepareCodexCommandForServiceIsolatesInstructions`,
 `TestPrepareWorkerCodexHomeExistingInstructions`, and
 `TestPrepareLegacyCodexRollout` in `internal/cli`;
-`TestAppServerThreadPreparation` in `internal/codex`.
+`TestAppServerThreadPreparation` in `internal/codex`. Review applies the rule
+to other backends.
 
 ## INV-7 — Machine issue identity
 
-Machine-filed issues carry an origin stamp and a stable problem fingerprint
-that identifies the problem, excluding timestamps, attempt IDs and wording
-variations. Filing uses the selected tracker's supported owner, preserves
-imported provenance and matches open work before filing: a matching open issue
-receives an occurrence or comment, never a duplicate, and when every match is
-closed the newest one is already handled and nothing is created or changed.
-Occurrence evidence identifies runs, attempts, commits and jobs without
-changing problem identity. Detent release stabilization uses a stable release-series
-fingerprint, retaining the original job occurrence identities. A later failure
-after a stabilization owner completes starts a new episode without reopening
-terminal work; replaying a terminal occurrence changes nothing.
-
-The worker's `file_machine_issue` tool accepts integer priority ranks 1–4
-(Urgent to Low); omission leaves priority unset and body prose never supplies
-it. A fingerprint match may raise unset or weaker priority through the existing
-mutation owner; it never lowers stronger priority, replaces origin or content,
-removes operator holds, changes lanes or authorizes admission. Host-owned
-worker intake requires the current runner's scoped lease. Reproducible tests, source diagnostics
-and migration failures in the selected Detent Cloud project share the scheduled
-reporting owner and host-derived defect identity, entering Todo at least High.
-Other worker follow-ups remain Backlog. Reuse preserves existing lanes, holds
-and scheduled job origin stamps.
+Machine-filed issues carry an origin stamp and a problem fingerprint. A new
+report of an open problem becomes an occurrence on that issue, never a
+duplicate. A report matching a closed issue is ignored, unless scheduled
+validation shows a fixed problem failing again, which starts a new issue. A
+human's Cancelled or no-dispatch decision is never overridden. Interactive
+native filing first returns likely duplicates and related items, and creates
+nothing until the filer explicitly confirms the issue is distinct; machine
+reports and supported imports deduplicate by fingerprint instead.
 
 **Enforcement:** `TestMachineIssueTool` in `internal/orchestrator`;
 `TestNativeMachineDefectOccurrences` and `TestNativeReleaseStabilizationOccurrences` in `internal/hubserver` and
 `TestDefectFingerprint` in `internal/issueorigin`;
-`TestMachineIssueDuplicate`, `TestMachineIssueSeparateConnectors`,
-`TestMachineOriginSurvivesBodyUpdates`,
-`TestConnectorFindIntakeIssueSearchesDurableMarker`, and
-`TestConnectorFindIntakeIssuePrefersOpenDuplicate` in
-`internal/connector/github`; `TestManagerPreservesClosedFinding` in
+`TestManagerPreservesClosedFinding` in
 `internal/intake`; `TestNativeMachineIntakeAuthorityAndFingerprint` in
 `internal/hubclient`; `TestParseProblems`, `TestReport`, and `TestCloudReport`
 in `tools/cifailure`. Review checks fingerprint stability.
@@ -317,17 +271,8 @@ in `tools/cifailure`. Review checks fingerprint stability.
 This repository does not require strict up-to-date branch protection on
 branches Detent merges into. Managed projects may require strict freshness;
 Detent honors their branch rules. Code changes do not authorize live settings
-changes.
-
-Concurrent migration and generated-output collisions use ordinary Git conflict
-handling. New Hub and store SQL migrations use UTC Goose
-`YYYYMMDDHHMMSS_name.sql` versions; historical names and fixed migration-checker
-cutovers remain unchanged. Adding a SQL migration requires only its new file,
-with no shared version-count edit or landing-time renumbering.
-Regenerate tracked sqlc and Templ Go output from combined source inputs
-instead of text-merging generated conflicts. Tailwind, conversation bundles and
-configuration references remain ignored output generated by build, test and
-docs-publish consumers.
+changes. Concurrent changes resolve through ordinary Git conflict handling and
+regenerated output, never landing-time renumbering or shared version edits.
 
 **Enforcement:** `TestDoctorRespectsProjectCIPolicy` in `internal/cli`;
 `TestIndividuallyValidBranchesRejectIntegratedCollision` in
@@ -336,33 +281,45 @@ protection as project evidence; the operator verifies live settings.
 
 ## INV-9 — Retired mechanisms
 
-Retired lane revocation, indeterminate-lane stops, per-issue infrastructure
-parking and root-level `rateLimit` in mutation documents stay retired.
-Obtain budget information through a separate query. Documentation and negative
-fixtures may name retired mechanisms; runtime code must not restore them.
+These stay retired, and runtime code must not restore them under any name:
+lane revocation, indeterminate-lane stops, per-issue infrastructure parking,
+root-level `rateLimit` in mutation documents (obtain budget information through
+a separate query), the rolling landing barrier with its Red landing hold,
+repair, bisection and automatic revert owners, uncertain-publication and
+`manual_recovery` holds, repository-policy approval as a claim or publication
+gate, server-side MCP confirmation modes, YOLO, pending approval actions and the
+`/chat/approval` page, historical external-blocker answers, per-item answer
+cooldowns, recorded-dependency recovery fences, sticky reason strings, consumed
+recovery signatures, generic managed/fingerprint and cross-host park vetoes,
+and remembered review-conversation refusals.
 
-The rolling landing barrier and its Red landing hold, execution, repair,
-bisection and automatic revert owners stay retired. Historical barrier tables
-and migrations, legacy policy decoding and stale-version handling remain
-readable; they do not authorize restarting those owners.
-
-Repository-policy approval matching no longer gates claims, lease renewal,
-source publication or checkpoint recovery. Configuration reports retain source
-provenance and the selected workflow; they are not recurring permission requests.
-Authentication, project access, execution isolation, lease fencing and configured
-review and validation requirements remain enforced.
-
-Server-side MCP confirmation modes, YOLO, pending approval actions and the
-`/chat/approval` page stay retired. The Hub enforces key scope, project access and
-current grants on every call; authorized calls execute directly. Clients own
-confirmation. Luna asks inline by default using its per-user client preference.
-Removing a forbidden symbol from a list does not authorize its resurrection.
+Current facts replace them: publication reconciles the remote ref against the
+intended SHA, typed dependencies and current review/check evidence own
+readiness, and the Hub enforces key scope, project access and current grants on
+every call. Historical tables, migrations and legacy decoding remain readable;
+they do not authorize restarting a retired owner. Documentation and negative
+fixtures may name retired mechanisms, and removing a forbidden symbol from a
+list does not authorize its resurrection.
 
 **Enforcement:** `TestRepositorySources`, `TestSourceViolations`, and
 `TestMutationDocuments` in `internal/invariants` reject retired identifiers,
 assembled constants and GraphQL mutation budget queries, including aliases
-and fragments. INV-2's behavioral checks preserve infrastructure attribution.
-Review covers novel names, reflection and generated semantic equivalents.
+and fragments. `TestApprovedPolicyClaimExposure` in `internal/hubserver`
+preserves claim exposure across approved-policy behavior and release drift.
+INV-2's behavioral checks preserve infrastructure attribution.
+`TestNativeRecoveryWipeDerivedHold` and `TestNativePublicationRecoveryOnAnyRunner`
+in `internal/runner`, `TestNativeExecutionSettlesFinishedRun` in
+`internal/hubclient`, `TestLocalGitLandChangeViaGitHub` in `internal/workspace`,
+and `TestNativeChangeRunCompletion` in `internal/orchestrator` enforce effect
+reconciliation and dispatch equivalence after removing stored hold judgments.
+`TestAttemptRecoveryAfterPolicyChange` and
+`TestOrphanRecoveryRetainsPolicyAcrossHubTransition` in `internal/orchestrator`
+preserve retry availability and pinned continuation identity after policy changes.
+`TestNativeDerivedHoldDispatchEquivalence` and
+`TestReviewConversationHistoryDoesNotVetoLanding` in `internal/hubserver`,
+`TestDerivedHoldDispatchEquivalence` in `internal/orchestrator`, and the retired
+symbol checks in `internal/invariants` cover the retired vetoes. Review covers
+novel names, reflection and generated semantic equivalents.
 
 ## INV-10 — Priority only picks the next job
 
@@ -372,34 +329,13 @@ READY request; if higher-ranked projects have nothing ready, dispatch whatever
 is ready. The system never cancels, stops or preempts running work; only a user
 cancels work.
 
-Compatible execution releases and ordinary policy changes do not drain a
-runner or withhold its free slots. Each new attempt captures its verified
-execution release and effective policy; continuations keep that identity.
-Routine controller replacement waits for an idle reservation while existing
-workers continue and new compatible workers can launch through the older
-controller. Only an identified critical security release, a concrete incompatible
-execution protocol or shared-state contract, or intentional operator maintenance
-uses the existing drain owner. Update requests, version skew and elapsed
-deferral time alone never authorize a drain.
-
-Pending requests own no capacity. Submission, release and capacity changes
-share real-slot acquisition with atomic project, lane and host ceilings.
-Eligible hosts remain alternatives until acquisition; retry host preference
-must not strand available capacity. Refreshes retain and update standing
-requests; acquisition revalidates current eligibility. Authorization,
-dependencies, retry readiness, local ceilings and stop exclusions remain
-authoritative. Admission filters eligible candidates before acquiring capacity.
-
-Native admission reads reuse the claim owner's candidate predicates and retain
-authorized current exclusion evidence without changing eligibility. Required
-unfinished dependencies include their scoped identity and observed nonterminal
-state; optional dependencies are never attributed as exclusions. Multiple
-observed dependencies remain separate, and unproven exclusions or truncated
-evidence remain explicitly unavailable. Snapshot observation times describe the
-current read, never a recorded scheduler decision. Reads write no claims or
-scheduler events and preserve active-lease, workflow, intake and project-grant
-authority. Current refusals do not supply historical skip counts, missing
-durations, private instruction causality or zero-valued analytics.
+Paid project Sprite capacity is the exception: project allocations keep paid
+capacity with its configured project unless the pool explicitly opts in to
+sharing idle capacity. Compatible releases and ordinary policy changes never
+drain a runner or withhold its free slots; only a critical security release, a
+concrete incompatibility or intentional operator maintenance uses the existing
+drain owner. Native claim eligibility has one candidate owner, recomputed from
+current facts, and admission reads never change eligibility.
 
 **Enforcement:** `TestGlobalDispatchGatePriorityOnlyPicksNextJob`,
 `TestGlobalDispatchGateReadyRequests`,
@@ -417,56 +353,32 @@ durations, private instruction causality or zero-valued analytics.
 `TestNativeRuntimeReadHistoryCost`, `TestNativeRuntimeReadSharedCapacityCost`,
 `TestHostedAnalyticsReads` and `TestNativeAnalyticsRuntimePopulation` in
 `internal/hubserver` enforce scoped current evidence and recorded-read boundaries.
-Review rejects semantic reservation and preemption substitutes.
-
 `TestWorkerArtifactsRoutineUpdatePaths` and `TestSchedulerDrainPolicy` in
 `internal/update` and `TestLocalWorkerReleaseAndPolicyCoexistence` in
 `internal/cli` enforce compatible update capacity and exceptional-only drains.
+Review rejects semantic reservation and preemption substitutes.
+
+## INV-11 — Retired
+
+Human mechanism scope approval before Todo is retired. Mechanism growth is
+governed by INV-3, and visible UI scope by INV-15.
 
 ## INV-12 — Native toolchain caches
 
-Workers inherit the host's native toolchain caches, except that an enrolled
-local Cloud runner may use one runner-owned Go build cache shared across its
-projects and daemon generations. That cache is bound to one canonical runtime
-store. The existing cache cleanup expires old entries and reclaims recent
-managed entries, oldest first, toward its retained-size budget. Size eviction
-tries the existing admission and exclusive consumer locks without waiting and
-yields when either is busy. It never removes recent entries while a consumer
-is active or holds admission closed waiting for that consumer. The existing
-cleanup schedule retries reclamation; continuous consumers can defer it, so the
-budget is an eventual target rather than a hard size limit. On the managed
-cache's own filesystem, low free space lets that same cleanup reclaim below
-its normal target using the existing reserve and cache budget for recovery
-headroom. Unrelated filesystem pressure does not expand reclamation. Actual
-low disk space retains its existing admission owner when reclamation is
-insufficient; already-running consumers can continue writing during that
-admission hold. Native operator caches retain age-only expiry.
+Workers inherit the host's native toolchain caches; cache contents may affect
+speed but never correctness. The one exception is a runner-owned Go build cache
+for an enrolled local Cloud runner, shared across its projects and trimmed by
+the existing cleanup toward a retained-size budget without removing entries a
+running consumer may need. No cache is keyed per project or attempt, and no new
+cache configuration is introduced; new `workspace.*cache*` keys are rejected.
+Per-attempt isolation is limited to the host-provided `TMPDIR`/`TMP`/`TEMP`.
 
-Explicit operator cache overrides remain native and unmanaged. Local-board and
-SSH workers retain native build caches. The old native build cache is not
-removed automatically because operators and other applications may still use
-it. Native caches may only be trimmed through mechanisms the toolchain
-supports. No cache is keyed per project or attempt, and no new cache
-configuration is introduced. Per-attempt isolation is limited to the
-host-provided `TMPDIR`/`TMP`/`TEMP`; workers never fall back to host scratch or
-use the orchestrator's scratch.
-
-Apart from that owned build cache, the runner must not set `GOCACHE`,
-`GOMODCACHE`, `GOBIN`, `GOLANGCI_LINT_CACHE`, `GOFLAGS`, `npm_config_cache`,
-`PNPM_HOME`, `YARN_CACHE_FOLDER`, `CARGO_HOME`, `CARGO_TARGET_DIR`,
-`PIP_CACHE_DIR`, `UV_CACHE_DIR`, `PLAYWRIGHT_BROWSERS_PATH` or `DOCKER_CONFIG`
-unless explicitly passed through by the operator, except for the existing
-shared Go admission budget's `-p`, `-trimpath` and `-toolexec` defaults.
-That same budget applies to agent subprocesses and direct review/landing
-validation, including repositories whose Go modules are nested. Explicit Go
-flags and process limits remain authoritative; a missing root `go.mod` does
-not exempt subprocesses from the configured host budget. Preserve host values and
-explicit overrides. New `workspace.*cache*` keys are rejected; the removed
-`workspace.cache_strategy` is ignored with its compatibility warning.
-
-Sandbox grants follow the selected cache paths. Restricted turns keep cache
-writes and network access disabled. SSH workers use remote host caches,
-scratch and the shared Go admission budget.
+Apart from that owned build cache and the shared Go admission budget's `-p`,
+`-trimpath` and `-toolexec` defaults, the runner must not set toolchain cache,
+home or flag variables (such as `GOCACHE`, `GOMODCACHE`, `GOFLAGS`,
+`npm_config_cache`, `CARGO_HOME` or `PIP_CACHE_DIR`) unless the operator
+explicitly passes them through. Host values and explicit overrides are
+preserved.
 
 **Enforcement:** `TestINV12WorkerInheritsToolchainEnvironment`,
 `TestINV12BackendToolchainEnvironment` in `internal/runner`;
@@ -479,28 +391,21 @@ scratch and the shared Go admission budget.
 
 ## INV-13 — A board card is a title and one status line
 
-A board card renders exactly the identity row (project, issue and PR references,
-origin, model and configured effort), the title, at most one status line and
-existing priority controls. The approved Cloud split footer places status and
-priority above a divider, then a compact muted row containing only attempt
-count and relative update time with small icons. Its menu stays inside the
-identity header, and titles wrap without a fixed height budget. Compact may
-hide effort before model; Cozy and Comfy retain effort. The status line
-contains at most 48 Unicode characters and names the wait in actionable words.
-
-Scheduler evidence, tracker ages, absolute timestamps, token counts, fact grids
-and diagnostic text are not card content. Attempt count and relative update
-time are permitted only in the approved compact metadata row. Existing
-observations belong in the detail sheet and hover titles, subject to INV-15.
-Adding card body content or lengthening the status line changes this rule.
+A board card renders its identity row, the title, at most one status line and
+the existing priority controls. The status line contains at most 48 Unicode
+characters and names the wait in actionable words. Scheduler evidence, tracker
+ages, absolute timestamps, token counts, fact grids and diagnostic text are not
+card content; existing observations belong in the detail sheet and hover
+titles, subject to INV-15. Adding card body content or lengthening the status
+line changes this rule. The card layout is specified in the
+[design system](design-system/patterns.md#work-board-and-issues).
 
 **Enforcement:** `TestINV13BoardCardContent`,
 `TestINV13SheetObservations`, and `TestBoardCardSignalBudget` in
 `internal/web/templates`, plus the board-card content contract in
 `web/conversation/tests/components/work.test.tsx`. The existing Cloud board
-browser fixture checks split-footer containment and grouping at
-240/260/320/400 CSS pixels across densities and themes; browser review checks
-one-line status and effort visibility across densities.
+browser fixture checks split-footer containment and grouping across densities
+and themes; browser review checks one-line status and effort visibility.
 
 ## INV-14 — Workers never wait on a human question
 
@@ -515,12 +420,12 @@ report through the authenticated final outcome; the existing native completion
 owner settles human attention in Blocked. Prose cannot replace authoritative
 typed status or fabricate a landed version.
 
-Only an authorized newer Workpad clears the action after it is performed;
-ordinary replies do not. Existing recovery owns the return to executable work.
-Legacy generated prerequisites record the action on each dependent before
-removing the old dependency. Infrastructure and forge failures remain
-instance-owned. Human approvals, operator pins, protections and actual backend
-approval declines retain their authority.
+A human action is cleared only by an authorized human, either through a newer
+Workpad or by moving the item out of Blocked through the transition owner; the
+answer is recorded on the item when one was given. Ordinary replies never clear
+it. Existing recovery owns the return to executable work. Infrastructure and
+forge failures remain instance-owned. Human approvals, operator pins,
+protections and actual backend approval declines retain their authority.
 
 **Enforcement:** `TestINV14DispatchQuestionTool`,
 `TestINV14LegacyQuestionRowDispatch`,
@@ -549,8 +454,7 @@ UI to make them observable, including on Diagnostics, behind toggles or debug
 flags. Agents describe proposed UI additions in their outcome or file Backlog
 work for a human to author or rewrite; they do not build them.
 
-**Enforcement:** Review applies [AGENTS.md](../AGENTS.md#implementation),
-[CLAUDE.md](../CLAUDE.md#workflow) and the
+**Enforcement:** Review applies [AGENTS.md](../AGENTS.md#ui) and the
 [PR template](../.github/PULL_REQUEST_TEMPLATE.md). No additional gate,
 configuration, reason code or UI surface enforces this rule.
 
@@ -577,18 +481,19 @@ in the enforcing tests and package documentation, not in an invariant.
 The current completion contract owns tracker publication; this rule grants
 workers no additional write authority.
 
-**Enforcement:** Review applies [AGENTS.md](../AGENTS.md#repository-invariants),
-[CLAUDE.md](../CLAUDE.md#repository-invariants) and the evidence instructions in
-the [PR template](../.github/PULL_REQUEST_TEMPLATE.md). This is a review rule;
+**Enforcement:** Review applies [AGENTS.md](../AGENTS.md#repository-invariants) and the evidence
+instructions in the [PR template](../.github/PULL_REQUEST_TEMPLATE.md). This is a review rule;
 it adds no check, gate, configuration or runtime mechanism.
 
 ## INV-17 — Runners are stateless, like GitHub Actions runners
 
 A runner needs only its install configuration: the Hub URL, its identity, a
-capacity limit and one workspace root that it owns. Nothing else about the
-machine may change which work it can claim or how a job behaves: not other
-directories, symlinks, existing checkouts, shell profiles, tool logins or
-files left behind by earlier jobs.
+capacity limit, one workspace root that it owns, and a declared GitHub
+credential: a configured worker credential or, when none is configured, the
+host's authenticated GitHub CLI, whose login jobs then use. Nothing else about the machine may change which work it can
+claim or how a job behaves: not other directories, symlinks, existing
+checkouts, shell profiles, other tool logins or files left behind by earlier
+jobs. A missing or expired declared credential is an instance setup failure.
 
 Every job starts in a workspace the runner prepares itself under its workspace
 root, from an exact commit or a Hub-stored source bundle. Work a job must keep
@@ -605,8 +510,7 @@ critical or incompatible update refusal. A captured artifact remains owned
 until its workers and cleanup finish; only then may an obsolete artifact be
 removed. Execution processes access local session state through the controller's
 bounded typed protocol, never concurrent SQLite migrations or independent store
-writers. The supported protocol and lifecycle are documented in
-[ephemeral execution workers](development.md#ephemeral-execution-workers).
+writers.
 
 A change may not add machine-local state that later jobs depend on, discover
 configuration by scanning the machine, or route work by where earlier work
@@ -628,13 +532,98 @@ transaction, and may lag the request that changed it.
 
 Work inside any write transaction is bounded by the size of the request, never
 by the size of history. Reads use the reader pool, never the writer
-connection.
-
-New Hub tables and columns store typed columns, never JSON documents. Existing
-JSON columns are being migrated to typed columns under this rule, and the
-in-commit board card refresh is being moved to background work; no change may
-extend either.
+connection. Stored data shape is governed by
+[INV-20](#inv-20--sql-never-reads-or-writes-inside-stored-json): new Hub
+columns are typed, never JSON.
 
 **Enforcement:** `TestINV18RequestCommitDoesNoDerivedWork` and
 `TestINV18HubMigrationsUseTypedColumns` in `internal/hubserver`. Review applies
 the history bound and reader rule to Hub persistence changes.
+
+## INV-19 — No flaky tests
+
+A test that both passes and fails on the same commit is a defect, reported at
+High. Its owner fixes the cause or deletes the test. An intermittent failure is
+not "cannot reproduce": diagnose it from the failing run's evidence (logs,
+captured snapshots and artifacts) or by repeating it under CI load, then fix
+the product or test cause.
+
+A flake is never accommodated: no added retries, sleeps or fixed waits, longer
+timeouts, skips, `fixme` or expected-failure marks, or quarantine. A test's own
+waits and timeouts never grow to hide a flake; a suite's overall execution
+budget may be sized from measured runtime. CI keeps Playwright's
+`failOnFlakyTests` on with at most one retry, so a test that only passes on
+retry still fails the run and is reported.
+
+**Enforcement:** `TestINV19NoFlakeAccommodation` in `internal/invariants`
+checks the Playwright CI settings, that no browser spec skips, marks or retries
+a test, and that no Go test skips itself as flaky.
+
+## INV-20 — SQL never reads or writes inside stored JSON
+
+Hub and store SQL never use JSON functions or operators over stored data:
+`json_extract`, `->`, `->>`, `json_each`, `json_tree`, `json_set`, `json_insert`,
+`json_replace`, `json_patch`, `json_remove`, `json_object`, `json_array`,
+`json_group_*`, `json_valid`, `json_type` or `json_array_length`. This includes
+constructing JSON from stored columns. Every field SQL filters, joins, orders,
+aggregates, projects or updates is a typed column.
+
+A JSON-shaped value may only be stored as an opaque payload that the application
+decodes after reading it whole. New code adds none; [INV-18](#inv-18--hub-writes-stay-small)
+already forbids new Hub JSON columns. Existing uses are migration debt: no change
+may add one, and a change that edits a query using one moves that query to typed
+columns.
+
+**Enforcement:** `TestINV20NoSQLOverJSON` in `internal/hubserver` scans non-test
+Go files in Hub and store (including generated SQL), and `db/queries` SQL sources.
+Per-file function counts must equal `testdata/inv20_json_sql_baseline.txt`;
+reductions must lower the baseline in the same change, and increases are forbidden.
+Migrations from the INV-18 adoption cutoff (`20261015000000`) are also checked;
+existing calls are baseline debt and new migrations have no allowance. The scan
+conservatively counts function calls even on parameters or literals. It does not
+recognize `->` or `->>` operators, to avoid false positives outside SQL strings;
+review enforces these operators and conversion of edited queries to typed columns.
+
+## INV-21 — Designs hold at ten thousand tenants and runners
+
+Every design is judged at 10,000 tenants and 10,000 runners, with up to 1,000
+runners, 100 projects and 1,000,000 attempts of history in one tenant. A choice
+that only works at today's size is a defect.
+
+Work per request is bounded by the size of that request. Work per periodic tick
+is bounded by a fixed budget and resumes on the next tick. For a fixed request size or tick budget, the number of items processed does not grow with total tenant count, runner count, item count or history. No request or background job
+holds a lock, connection or transaction shared by other requests across
+per-item network calls or a walk over many objects; such work takes the shared
+resource per item, briefly. Each heartbeat, poll, retry and reconnect processes a bounded number of items:
+heartbeats, polls, retries and reconnects use capped jittered intervals, and the
+control plane applies per-tenant and per-runner admission limits, so one tenant
+or a synchronized fleet cannot starve the others.
+
+**Enforcement:** a Change that adds or modifies a hot path (per-request,
+per-heartbeat or per-event code), a shared lock, or a periodic job states its
+cost at INV-21 scale in its description, for example "per heartbeat: one row
+read and one row written, no history reads" or "per tick: at most 500 rows, lock
+held around one object". Review rejects such a Change without that statement or
+with unbounded scans or fan-out over history or the fleet. Hot-path changes attach
+benchmark evidence where a benchmark exists. A manually run scale soak against a seeded
+large tenant and a simulated runner fleet provides release evidence when it is
+run; it never blocks merging or releasing.
+
+## INV-22 — Tests never use production credentials or systems
+
+No test, fixture, harness, smoke run or development environment uses an active
+production credential or reaches a production system. A production credential
+is one that consumes real usage or quota, or acts on production data: email
+delivery, model provider, production Hub, tracker and deploy keys. Sandbox and
+test-mode credentials, such as Stripe test keys or a WorkOS development
+environment, are allowed. A production key may stay in a development
+environment file only commented out, for reference.
+
+Code under test that reads a credential from the process environment is
+isolated from the developer's shell: its test package clears that variable or
+injects a fake sender or client before any test runs.
+
+**Enforcement:** a test package whose code under test reads a credential from
+the environment clears it in `TestMain` or injects a fake. Review rejects a
+Change that enables a production credential in any development, test or CI
+environment, or a test that can open a connection to a production endpoint.

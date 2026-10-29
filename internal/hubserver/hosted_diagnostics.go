@@ -13,7 +13,6 @@ import (
 
 	"github.com/labstack/echo/v4"
 
-	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -31,25 +30,31 @@ type diagnosticsCapacity struct {
 }
 
 type diagnosticsReport struct {
-	Requests      *requestMetricsReport      `json:"requests,omitempty"`
-	From          time.Time                  `json:"from"`
-	To            time.Time                  `json:"to"`
-	Partial       bool                       `json:"partial"`
-	Findings      any                        `json:"findings"`
-	DetectorTick  *time.Time                 `json:"detector_tick"`
-	Capacity      []diagnosticsCapacity      `json:"capacity"`
-	Claimed       *int                       `json:"claimed"`
-	Ready         *int                       `json:"ready"`
-	Skipped       *int                       `json:"skipped"`
-	SkipReasons   []nativeAnalyticsSkip      `json:"skip_reasons"`
-	MergeEntered  int                        `json:"merge_entered"`
-	MergeLanded   int                        `json:"merge_landed"`
-	MergeWaitP50  *float64                   `json:"merge_wait_p50"`
-	MergeWaitP90  *float64                   `json:"merge_wait_p90"`
-	MergeWaitMax  *float64                   `json:"merge_wait_max"`
-	Refused       []diagnosticsRefusal       `json:"refused"`
-	Coverage      []diagnosticsCoverage      `json:"coverage"`
-	Configuration []diagnosticsConfiguration `json:"configuration"`
+	StorageConversions []diagnosticsStorageConversion `json:"storage_conversions"`
+	Requests           *requestMetricsReport          `json:"requests,omitempty"`
+	From               time.Time                      `json:"from"`
+	To                 time.Time                      `json:"to"`
+	Partial            bool                           `json:"partial"`
+	Findings           any                            `json:"findings"`
+	DetectorTick       *time.Time                     `json:"detector_tick"`
+	Capacity           []diagnosticsCapacity          `json:"capacity"`
+	Claimed            *int                           `json:"claimed"`
+	Ready              *int                           `json:"ready"`
+	Skipped            *int                           `json:"skipped"`
+	SkipReasons        []nativeAnalyticsSkip          `json:"skip_reasons"`
+	MergeEntered       int                            `json:"merge_entered"`
+	MergeLanded        int                            `json:"merge_landed"`
+	MergeWaitP50       *float64                       `json:"merge_wait_p50"`
+	MergeWaitP90       *float64                       `json:"merge_wait_p90"`
+	MergeWaitMax       *float64                       `json:"merge_wait_max"`
+	Refused            []diagnosticsRefusal           `json:"refused"`
+	Coverage           []diagnosticsCoverage          `json:"coverage"`
+	Configuration      []diagnosticsConfiguration     `json:"configuration"`
+}
+
+type diagnosticsStorageConversion struct {
+	ProjectID string                      `json:"project_id"`
+	Progress  []storageConversionProgress `json:"progress"`
 }
 
 type diagnosticsRefusal struct {
@@ -74,15 +79,27 @@ func (s *Service) hostedDiagnostics(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	w := operatortool.AnalyticsWindow{From: window.From, To: window.To, Bucket: time.Hour}
-	analytics, err := s.readAnalyticsReport(ctx, credential, operatortool.AnalyticsRequest{Limit: 100}, w)
-	if err != nil {
-		return s.hostedJSONError(c, http.StatusServiceUnavailable, "Diagnostics are temporarily unavailable")
-	}
-	report, err := s.readHostedDiagnostics(ctx, analytics)
+	report, err := s.readCloudDiagnostics(ctx, credential, w)
 	if err != nil {
 		return s.hostedJSONError(c, http.StatusServiceUnavailable, "Diagnostics are temporarily unavailable")
 	}
 	return c.JSON(http.StatusOK, report)
+}
+
+func (s *Service) readCloudDiagnostics(ctx context.Context, credential apiCredential, w operatortool.AnalyticsWindow) (diagnosticsReport, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return diagnosticsReport{}, err
+	}
+	defer tx.Rollback()
+	q := analyticsRollupReader{tx}
+	analytics, err := s.readAnalyticsReportFor(ctx, credential, operatortool.AnalyticsRequest{Limit: 100}, w, q, true)
+	if err != nil {
+		return diagnosticsReport{}, err
+	}
+	return s.readHostedDiagnosticsFrom(ctx, analytics, q)
 }
 
 func (s *Service) readHostedDiagnostics(ctx context.Context, analytics nativeAnalyticsReport) (diagnosticsReport, error) {
@@ -134,10 +151,20 @@ func (s *Service) readHostedDiagnosticsFrom(ctx context.Context, analytics nativ
 			}
 		}
 		scope := nativeScope{organization: tracker.OrganizationID(analytics.OrganizationID), project: tracker.ProjectID(p.ProjectID)}
+		progress, err := readStorageConversionProgress(ctx, reader, scope)
+		if err != nil {
+			return out, err
+		}
+		out.StorageConversions = append(out.StorageConversions, diagnosticsStorageConversion{ProjectID: p.ProjectID, Progress: progress})
 		q, err := analyticsProjectReader(ctx, reader, scope)
 		if err != nil {
 			return out, err
 		}
+		q, err = prepareReportsQuery(ctx, q, scope, "report_attempts", "report_events")
+		if err != nil {
+			return out, err
+		}
+
 		var projectReady int
 		if _, rolledUp := q.(analyticsRollupReader); rolledUp {
 			projectReady, err = readAnalyticsCounter(ctx, q, scope, "ready", w.From, w.To)
@@ -145,7 +172,7 @@ func (s *Service) readHostedDiagnosticsFrom(ctx context.Context, analytics nativ
 				return out, err
 			}
 		} else {
-			if err := q.QueryRowContext(ctx, `SELECT count(*) FROM (SELECT id FROM collaboration_events WHERE organization_id=? AND project_id=? AND type='scheduler.decision' AND json_extract(data_json,'$.decision.outcome')='ready' AND julianday(recorded_at)>=julianday(?) AND julianday(recorded_at)<julianday(?) LIMIT ?)`, scope.organization, scope.project, formatHubTime(w.From), formatHubTime(w.To), maxAnalyticsPopulation+1).Scan(&projectReady); err != nil {
+			if err := q.QueryRowContext(ctx, `SELECT count(*) FROM (SELECT id FROM report_events WHERE organization_id=? AND project_id=? AND type='scheduler.decision' AND scheduler_outcome='ready' AND julianday(recorded_at)>=julianday(?) AND julianday(recorded_at)<julianday(?) LIMIT ?)`, scope.organization, scope.project, formatHubTime(w.From), formatHubTime(w.To), maxAnalyticsPopulation+1).Scan(&projectReady); err != nil {
 				return out, err
 			}
 		}
@@ -209,7 +236,7 @@ func (s *Service) readHostedDiagnosticsFrom(ctx context.Context, analytics nativ
 				return out, err
 			}
 		} else {
-			if err := q.QueryRowContext(ctx, `SELECT count(*) FROM collaboration_events WHERE organization_id=? AND project_id=? AND type='workflow.transitioned' AND json_extract(data_json,'$.to_state')='Merging' AND julianday(recorded_at)>=julianday(?) AND julianday(recorded_at)<julianday(?)`, scope.organization, scope.project, formatHubTime(w.From), formatHubTime(w.To)).Scan(&entered); err != nil {
+			if err := q.QueryRowContext(ctx, `SELECT count(*) FROM report_events WHERE organization_id=? AND project_id=? AND type='workflow.transitioned' AND analytics_to_state='Merging' AND julianday(recorded_at)>=julianday(?) AND julianday(recorded_at)<julianday(?)`, scope.organization, scope.project, formatHubTime(w.From), formatHubTime(w.To)).Scan(&entered); err != nil {
 				return out, err
 			}
 		}
@@ -260,7 +287,7 @@ func (s *Service) readHostedDiagnosticsFrom(ctx context.Context, analytics nativ
 		}
 		out.Coverage[7].Observed = &observed
 	}
-	for _, name := range []string{"Plan gate", "Validator gate", "Gate kind", "Merge method", "Lifetime limit"} {
+	for _, name := range []string{"Plan gate", "Validator gate", "Gate kind", "Merge method"} {
 		row := diagnosticsConfiguration{Name: name}
 		if len(values[name]) > 1 {
 			value := "Varies by project"
@@ -290,16 +317,18 @@ func (s *Service) readHostedDiagnosticsFrom(ctx context.Context, analytics nativ
 }
 
 func diagnosticsMergeWaits(ctx context.Context, q nativeQueryer, scope nativeScope, landings []nativeAnalyticsLanding) ([]float64, error) {
+	q, prepareErr := prepareReportsQuery(ctx, q, scope, "report_events")
+	if prepareErr != nil {
+		return nil, prepareErr
+	}
 	encoded, err := marshalNative(landings)
 	if err != nil {
 		return nil, err
 	}
-	statement := `SELECT json_extract(l.value,'$.landing.landed_at'),max(e.recorded_at),l.key
-FROM json_each(?) l JOIN collaboration_events e ON e.organization_id=? AND e.project_id=? AND e.work_item_id=json_extract(l.value,'$.work_item_id')
-AND e.type='workflow.transitioned' AND json_extract(e.data_json,'$.to_state')='Merging'
-AND julianday(e.recorded_at)<=julianday(json_extract(l.value,'$.landing.landed_at')) GROUP BY l.key ORDER BY l.key`
-	if _, projected := q.(analyticsRollupReader); projected {
-		statement = `WITH landings AS (SELECT key,value FROM json_each(?)),waits AS (SELECT l.key,json_extract(l.value,'$.landing.landed_at') AS landed,(SELECT json_extract(e.data_json,'$.At') FROM analytics_hourly_rollups e WHERE e.organization_id=? AND e.project_id=? AND e.metric='merge_entry' AND json_extract(e.data_json,'$.ID')=json_extract(l.value,'$.work_item_id') AND julianday(json_extract(e.data_json,'$.At'))<=julianday(json_extract(l.value,'$.landing.landed_at')) ORDER BY json_extract(e.data_json,'$.AtNS') DESC LIMIT 1) AS entered FROM landings l) SELECT landed,entered,key FROM waits WHERE entered IS NOT NULL`
+	_, projected := q.(analyticsRollupReader)
+	statement := `SELECT json_extract(l.value,'$.landing.landed_at'),e.recorded_at,l.key,e.analytics_to_state FROM json_each(?) l JOIN report_events e ON e.organization_id=? AND e.project_id=? AND e.work_item_id=json_extract(l.value,'$.work_item_id') AND e.type='workflow.transitioned' AND (e.analytics_to_state='Merging' OR e.analytics_projection_version IS NULL) AND julianday(e.recorded_at)<=julianday(json_extract(l.value,'$.landing.landed_at')) ORDER BY l.key,e.recorded_at DESC`
+	if projected {
+		statement = `WITH landings AS (SELECT key,value FROM json_each(?)),waits AS (SELECT l.key,json_extract(l.value,'$.landing.landed_at') AS landed,(SELECT e.sample_at FROM analytics_hourly_rollups e WHERE e.organization_id=? AND e.project_id=? AND e.metric='merge_entry' AND e.sample_id=json_extract(l.value,'$.work_item_id') AND julianday(e.sample_at)<=julianday(json_extract(l.value,'$.landing.landed_at')) ORDER BY e.sample_ns DESC LIMIT 1) AS entered FROM landings l) SELECT landed,entered,key,'{}' FROM waits WHERE entered IS NOT NULL`
 	}
 	rows, err := q.QueryContext(ctx, statement, encoded, scope.organization, scope.project)
 	if err != nil {
@@ -311,12 +340,20 @@ AND julianday(e.recorded_at)<=julianday(json_extract(l.value,'$.landing.landed_a
 		seconds float64
 	}
 	var ordered []wait
+	seen := map[int]bool{}
 	for rows.Next() {
-		var landed, entered string
+		var landed, entered, raw string
 		var landing int
-		if err := rows.Scan(&landed, &entered, &landing); err != nil {
+		if err := rows.Scan(&landed, &entered, &landing, &raw); err != nil {
 			return nil, err
 		}
+		if !projected && raw != "Merging" {
+			continue
+		}
+		if seen[landing] {
+			continue
+		}
+		seen[landing] = true
 		finish, err := parseTimeValue(landed)
 		if err != nil {
 			return nil, err
@@ -363,32 +400,26 @@ func diagnosticsTodoDepth(issues []analyticsResidenceIssue, states map[string]tr
 }
 
 func diagnosticsPolicyValues(ctx context.Context, q policyQuerier, scope nativeScope) (map[string]string, error) {
-	values := map[string]string{"Plan gate": "", "Validator gate": "", "Gate kind": "", "Merge method": "", "Lifetime limit": ""}
-	approval, err := readProjectPolicy(ctx, q, string(scope.organization)+"/"+string(scope.project))
+	values := map[string]string{"Plan gate": "", "Validator gate": "", "Gate kind": "", "Merge method": ""}
+	approval, found, err := readProjectPolicy(ctx, q, string(scope.organization)+"/"+string(scope.project))
 	if err != nil {
-		var unavailable *nativeError
-		if errors.As(err, &unavailable) && unavailable.Code == "policy_mismatch" {
-			return values, nil
-		}
 		return nil, err
+	}
+	if !found {
+		return values, nil
 	}
 	values["Plan gate"] = strconv.FormatBool(approval.Policy.Gates.PlanEnabled)
 	values["Validator gate"] = strconv.FormatBool(approval.Policy.Gates.Validator)
 	values["Gate kind"] = approval.Policy.Gates.Kind
 	values["Merge method"] = approval.Policy.Gates.MergeMethod
-	if approval.Policy.Configuration != nil || approval.Policy.Authored != nil {
-		workflow, err := workflowconfig.ApplyNativePolicy(workflowconfig.Workflow{}, approval.Policy)
-		if err != nil {
-			return nil, err
-		}
-		values["Lifetime limit"] = fmt.Sprintf("%d sessions", workflow.Config.Agent.LifetimeSessionLimit)
-	}
 	return values, nil
 }
 
 func diagnosticsLeaseCapacity(ctx context.Context, q nativeQueryer, scope nativeScope, out *diagnosticsReport) error {
 	if _, rolledUp := q.(analyticsRollupReader); rolledUp && out.From.Equal(out.From.Truncate(time.Hour)) {
-		rows, err := q.QueryContext(ctx, `SELECT hour,sum(value) FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='slots' AND hour>=? AND hour<? GROUP BY hour`, scope.organization, scope.project, out.From.Unix(), out.To.Truncate(time.Hour).Unix())
+		rows, err := q.QueryContext(ctx, `SELECT hour,sum(value) FROM (
+SELECT hour,value FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='slots' AND hour>=? AND hour<?
+UNION ALL SELECT hour,total FROM analytics_sample_hours WHERE organization_id=? AND project_id=? AND metric='slots' AND hour>=? AND hour<?) GROUP BY hour`, scope.organization, scope.project, out.From.Unix(), out.To.Truncate(time.Hour).Unix(), scope.organization, scope.project, out.From.Unix(), out.To.Truncate(time.Hour).Unix())
 		if err != nil {
 			return err
 		}
@@ -419,7 +450,7 @@ func diagnosticsLeaseCapacity(ctx context.Context, q nativeQueryer, scope native
 func diagnosticsLeaseCapacityFrom(ctx context.Context, q nativeQueryer, scope nativeScope, out *diagnosticsReport) error {
 	statement := `SELECT l.acquired_at,coalesce(l.released_at,l.expires_at),l.expires_at FROM leases l JOIN issues i ON i.id=l.issue_id WHERE i.organization_id=? AND i.project_id=? AND julianday(l.acquired_at)<julianday(?) AND julianday(coalesce(l.released_at,l.expires_at))>julianday(?)`
 	if _, rolledUp := q.(analyticsRollupReader); rolledUp {
-		statement = `SELECT l.acquired_at,coalesce(l.released_at,l.expires_at),l.expires_at FROM leases l WHERE l.organization_id=? AND l.project_id=? AND julianday(l.acquired_at)<julianday(?) AND julianday(coalesce(l.released_at,l.expires_at))>julianday(?)`
+		return readAnalyticsSlotHours(ctx, q, scope, out)
 	}
 	rows, err := q.QueryContext(ctx, statement, scope.organization, scope.project, formatHubTime(out.To), formatHubTime(out.From))
 	if err != nil {

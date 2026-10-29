@@ -439,7 +439,12 @@ func (e workspaceOperatorExecutor) connectionResult(ctx context.Context, call op
 	return e.actionResult(action, data)
 }
 
-func (s *Service) readWorkspaceTool(ctx context.Context, scope nativeScope, name string, r workspaceToolRequest) (json.RawMessage, error) {
+func (s *Service) readWorkspaceTool(ctx context.Context, scope nativeScope, name string, r workspaceToolRequest) (result json.RawMessage, resultErr error) {
+	defer func() {
+		if archive := nativeArchiveReadError(resultErr); archive != nil {
+			resultErr = archive
+		}
+	}()
 	if (strings.Contains(name, "conversation") || name == "list_work_item_references") && s.conversations == nil {
 		return nil, errWorkspaceOperationUnavailable
 	}

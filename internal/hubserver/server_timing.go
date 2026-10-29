@@ -21,12 +21,14 @@ import (
 // their own spans; compute is the remainder of the total. Named spans time
 // the parts of one read, such as each Reports sub-read, by wall clock.
 type requestTiming struct {
-	start  time.Time
-	db     atomic.Int64
-	encode atomic.Int64
-	trace  func(query string, args []driver.NamedValue)
-	mu     sync.Mutex
-	spans  []timingSpan
+	start             time.Time
+	db                atomic.Int64
+	encode            atomic.Int64
+	trace             func(query string, args []driver.NamedValue)
+	writerTrace       func(query string, args []driver.NamedValue)
+	writerTransaction func(active bool)
+	mu                sync.Mutex
+	spans             []timingSpan
 }
 
 type timingSpan struct {
@@ -178,8 +180,13 @@ func (timedJSONSerializer) Serialize(c echo.Context, i any, indent string) error
 // timedRows counts the time spent stepping a result set toward the request's
 // db span, since SQLite does most of a query's work while rows are read.
 type timedRows struct {
+	committed func()
 	driver.Rows
-	timing *requestTiming
+	timing       *requestTiming
+	writer       *timedConn
+	holder       writerHold
+	writerTiming *writerTiming
+	writerStart  time.Time
 }
 
 func (r *timedRows) Next(dest []driver.Value) error {
@@ -192,7 +199,15 @@ func (r *timedRows) Next(dest []driver.Value) error {
 func (r *timedRows) Close() error {
 	start := time.Now()
 	err := r.Rows.Close()
+	if err == nil && r.committed != nil {
+		r.committed()
+		r.committed = nil
+	}
 	r.timing.addDB(start)
+	if r.holder.n != 0 {
+		r.writerTiming.add(r.writerStart)
+		r.writer.endWriterHold(&r.holder)
+	}
 	return err
 }
 

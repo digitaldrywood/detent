@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,19 +24,24 @@ import (
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
+	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 type recoveringReviewAgent struct {
 	committingAgent
-	failStage      string
-	available      atomic.Bool
-	sourceCalls    atomic.Int32
-	securityCalls  atomic.Int32
-	validatorCalls atomic.Int32
-	malformed      bool
+	failStage          string
+	available          atomic.Bool
+	sourceCalls        atomic.Int32
+	sourceWorkspace    atomic.Pointer[string]
+	validatorWorkspace atomic.Pointer[string]
+	securityCalls      atomic.Int32
+	validatorCalls     atomic.Int32
+	malformed          bool
+	securityVerdict    string
 }
 
 func (a *recoveringReviewAgent) RunTurn(ctx context.Context, request runner.AgentTurnRequest, update runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
@@ -44,9 +50,11 @@ func (a *recoveringReviewAgent) RunTurn(ctx context.Context, request runner.Agen
 	case strings.Contains(request.Prompt, "independent Detent implementation reviewer"):
 		stage = "source"
 		a.sourceCalls.Add(1)
+		a.sourceWorkspace.Store(&request.Workspace)
 	case strings.Contains(request.Prompt, "Detent validator-agent"):
 		stage = "validator"
 		a.validatorCalls.Add(1)
+		a.validatorWorkspace.Store(&request.Workspace)
 	case request.ReadOnly:
 		stage = "security"
 		a.securityCalls.Add(1)
@@ -64,7 +72,11 @@ func (a *recoveringReviewAgent) RunTurn(ctx context.Context, request runner.Agen
 		if err := update(runner.AgentUpdate{Type: runner.AgentUpdateProcessStarted, WorkerProcess: procgroup.Identity{PID: 4242, GroupID: 4242, StartedAt: time.Now()}}); err != nil {
 			return runner.AgentTurnResult{}, err
 		}
-		if err := update(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, Delta: `{"verdict":"pass","summary":"Reviewed immutable source","findings":[]}`}); err != nil {
+		output := `{"verdict":"pass","summary":"Reviewed immutable source","findings":[]}`
+		if a.securityVerdict == "rework" {
+			output = `{"verdict":"fail","summary":"Authorization bypass","findings":[{"id":"auth","severity":"p1","certainty":"confirmed","body":"Authorization bypass","path":"source.go"}]}`
+		}
+		if err := update(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, Delta: output}); err != nil {
 			return runner.AgentTurnResult{}, err
 		}
 		return runner.AgentTurnResult{ThreadID: "security-thread", TurnID: "security-turn", AuthenticationMode: "api_key"}, nil
@@ -84,14 +96,20 @@ func TestNativeReviewProducerRecoversAfterTemporaryFailure(t *testing.T) {
 	for _, test := range []struct {
 		name, stage, verdict string
 		refusal              string
+		publicationField     string
 		restore, malformed   bool
-		hostHandoff          bool
+		hostHandoff, stopped bool
 	}{
 		{name: "healthy"},
 		{name: "tool-directed host publication handoff", hostHandoff: true},
-		{name: "source", stage: "source"},
+		{name: "source", stage: "source", restore: true},
 		{name: "security", stage: "security"},
+		{name: "security reviewer version", stage: "security", publicationField: "run.reviewer_version"},
+		{name: "security reviewer digest", stage: "security", publicationField: "run.reviewer_digest"},
+		{name: "security source rejection", stage: "security", publicationField: "run.head_sha"},
+		{name: "security findings", stage: "security", verdict: "rework"},
 		{name: "validator", stage: "validator"},
+		{name: "stopped published source", stage: "validator", stopped: true},
 		{name: "restored security", stage: "security", restore: true},
 		{name: "source findings", stage: "source", verdict: "rework"},
 		{name: "acceptance findings", stage: "validator", verdict: "rework"},
@@ -100,6 +118,7 @@ func TestNativeReviewProducerRecoversAfterTemporaryFailure(t *testing.T) {
 		{name: "replaced source", stage: "source", refusal: "source"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			h := newNativeChangeHubTransport(t, "In Review", []tracker.NativeState{
 				{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress"}},
 				{Name: "In Progress", Dispatchable: true, Transitions: []string{"In Review", "Blocked", "Merging", "Rework"}},
@@ -142,7 +161,7 @@ func TestNativeReviewProducerRecoversAfterTemporaryFailure(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			runtimeStore, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "runtime.db")})
+			runtimeStore, err := store.Open(t.Context(), store.Config{Path: nativeRuntimeDatabasePath(t)})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -152,6 +171,60 @@ func TestNativeReviewProducerRecoversAfterTemporaryFailure(t *testing.T) {
 				}
 			})
 			provider := &recoveringReviewAgent{committingAgent: committingAgent{staged: true, complete: true, validator: "pass"}, failStage: test.stage, malformed: test.malformed}
+			var rejectedVersion tracker.ChangeVersion
+			var publicationRefusals atomic.Int32
+			if test.publicationField != "" {
+				provider.failStage = "publication"
+				transport := h.native.client.httpClient.Transport
+				h.native.client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+					if request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/reviews") && !provider.available.Load() {
+						var review tracker.ReviewChange
+						if err := json.NewDecoder(request.Body).Decode(&review); err != nil {
+							return nil, err
+						}
+						if review.SecurityAudit != nil {
+							switch test.publicationField {
+							case "run.reviewer_version":
+								review.SecurityAudit.Run.ReviewerVersion = "old"
+							case "run.reviewer_digest":
+								review.SecurityAudit.Run.ReviewerDigest = "old"
+							case "run.head_sha":
+								review.SecurityAudit.Run.HeadSHA = strings.Repeat("a", 40)
+							}
+						}
+						raw, err := json.Marshal(review)
+						if err != nil {
+							return nil, err
+						}
+						if err := request.Body.Close(); err != nil {
+							return nil, err
+						}
+						request.Body = io.NopCloser(bytes.NewReader(raw))
+						request.ContentLength = int64(len(raw))
+						response, err := transport.RoundTrip(request)
+						if err != nil {
+							return nil, err
+						}
+						if response.StatusCode == http.StatusUnprocessableEntity {
+							publicationRefusals.Add(1)
+							if test.publicationField == "run.reviewer_digest" {
+								data, err := io.ReadAll(response.Body)
+								if err != nil {
+									return nil, err
+								}
+								if err := response.Body.Close(); err != nil {
+									return nil, err
+								}
+								data = bytes.ReplaceAll(data, []byte("run.reviewer_version"), []byte("run.reviewer_digest"))
+								response.Body = io.NopCloser(bytes.NewReader(data))
+								response.ContentLength = int64(len(data))
+							}
+						}
+						return response, nil
+					}
+					return transport.RoundTrip(request)
+				})
+			}
 			var previousVersion tracker.ChangeVersion
 			if test.hostHandoff {
 				info, err := backend.Create(t.Context(), workspace.Issue{ProjectID: "local", ID: issue.ID, Identifier: issue.Identifier})
@@ -203,9 +276,12 @@ func TestNativeReviewProducerRecoversAfterTemporaryFailure(t *testing.T) {
 				}
 			})
 			if test.verdict != "" {
-				if test.stage == "source" {
+				switch test.stage {
+				case "source":
 					provider.sourceVerdict = test.verdict
-				} else {
+				case "security":
+					provider.securityVerdict = test.verdict
+				default:
 					provider.validator = test.verdict
 				}
 			}
@@ -236,17 +312,112 @@ func TestNativeReviewProducerRecoversAfterTemporaryFailure(t *testing.T) {
 				return stop
 			}
 			stopOrchestrator := start(orch)
-			deadline, stop := context.WithTimeout(t.Context(), 45*time.Second)
+			deadline, stop := context.WithCancel(testenv.WaitContext(t, t.Context()))
 			defer stop()
 			ticker := time.NewTicker(20 * time.Millisecond)
 			defer ticker.Stop()
 			deferred := false
+			readGit := func(path string, args ...string) string {
+				t.Helper()
+				output, err := exec.CommandContext(t.Context(), "git", append([]string{"-C", path}, args...)...).CombinedOutput()
+				if err != nil {
+					t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
+				}
+				return string(output)
+			}
+			implementingState := func() []string {
+				t.Helper()
+				untracked, err := os.ReadFile(filepath.Join(provider.workspace, "untracked.txt"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				return []string{
+					readGit(provider.workspace, "rev-parse", "HEAD"),
+					readGit(provider.workspace, "status", "--porcelain"),
+					readGit(provider.workspace, "diff", "--binary"),
+					readGit(provider.workspace, "diff", "--cached", "--binary"),
+					string(untracked),
+				}
+			}
+			var implementingBefore []string
 			for {
 				state, err := orch.State(deadline)
 				if err != nil {
 					t.Fatalf("observe recovery: deferred=%v source=%d security=%d validator=%d error=%v", deferred, provider.sourceCalls.Load(), provider.securityCalls.Load(), provider.validatorCalls.Load(), err)
 				}
-				if state.Retry[issue.ID].CompletionDeferred {
+				failureReached := true
+				switch test.stage {
+				case "source":
+					failureReached = provider.sourceCalls.Load() > 0
+				case "security":
+					failureReached = provider.securityCalls.Load() > 0
+				case "validator":
+					failureReached = provider.validatorCalls.Load() > 0
+				}
+				if test.publicationField != "" {
+					failureReached = publicationRefusals.Load() > 0
+				}
+				if state.Retry[issue.ID].CompletionDeferred && (deferred || failureReached) {
+					if !deferred && test.publicationField != "" {
+						owner := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+						owner.mu.Lock()
+						outcome := owner.preparedOutcome
+						owner.mu.Unlock()
+						if publicationRefusals.Load() == 0 {
+							t.Fatal("audit publication rejection was not exercised")
+						}
+						if test.publicationField == "run.head_sha" {
+							if outcome != "failed" {
+								t.Fatalf("source rejection became reviewer continuation: %s", outcome)
+							}
+							return
+						}
+						if outcome != "interrupted" {
+							t.Fatalf("reviewer rejection failed the source attempt: outcome=%s", outcome)
+						}
+						detail, err := h.admin.currentChange(deadline, current.WorkItemID)
+						if err != nil || len(detail.Versions) != 1 || len(detail.Reviews) != 0 || detail.Summary.Status == "reviewed" {
+							t.Fatalf("rejected audit changed published source or became accepted: %+v, %v", detail, err)
+						}
+						rejectedVersion = detail.Versions[0]
+					}
+					if !deferred && test.stopped {
+						stopOrchestrator()
+						owner := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+						change := owner.NativeChange()
+						if err := owner.KeepWorker(func(context.Context) error { return nil }, nil); err != nil {
+							t.Fatal(err)
+						}
+						if err := owner.Finish(t.Context(), "interrupted"); err != nil {
+							t.Fatal(err)
+						}
+						if err := h.native.Release(t.Context(), owner.claim.lease, "cancelled"); err != nil {
+							t.Fatal(err)
+						}
+						var sourceRecovery tracker.NativeSourceRecovery
+						if err := h.admin.client.request(t.Context(), "GET", h.admin.base()+"/work-items/"+issue.ID+"/source-recovery", nil, &sourceRecovery); err != nil || sourceRecovery.Quiesced {
+							t.Fatalf("interrupted writer became quiescent before cleanup: %+v, %v", sourceRecovery, err)
+						}
+						if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "cancelled"); err != nil {
+							t.Fatal(err)
+						}
+						if err := h.admin.client.request(t.Context(), "GET", h.admin.base()+"/work-items/"+issue.ID+"/source-recovery", nil, &sourceRecovery); err != nil || !sourceRecovery.Quiesced || sourceRecovery.VersionID != change.VersionID || sourceRecovery.HeadSHA != change.HeadSHA {
+							t.Fatalf("confirmed worker cleanup lost recoverable source: %+v, %v", sourceRecovery, err)
+						}
+						provider.available.Store(true)
+						candidate := h.claim(t, issue.ID)
+						replacement := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+						result, err := agent.Run(t.Context(), runner.RunRequest{Execution: replacement, Issue: candidate, Mode: runner.RunModeImplement})
+						if err != nil || result.NativeChange == nil || !result.NativeChange.Reviewed || result.TurnStarted || provider.writableCalls != 1 {
+							t.Fatalf("stopped source did not resume configured review: result=%+v writable=%d error=%v", result, provider.writableCalls, err)
+						}
+						h.complete(t, issue.ID, result.NativeChange)
+						detail, err := h.admin.Change(t.Context(), current.WorkItemID, change.ChangeID)
+						if err != nil || len(detail.Versions) != 1 || detail.Versions[0].ID != change.VersionID || detail.Versions[0].HeadSHA != change.HeadSHA || len(detail.Reviews) != 3 || detail.Summary.Status != "reviewed" || provider.securityCalls.Load() != 1 || provider.sourceCalls.Load() != 1 || provider.validatorCalls.Load() != 2 {
+							t.Fatalf("recovery changed source or bypassed independent review: detail=%+v error=%v", detail, err)
+						}
+						return
+					}
 					if !deferred && test.refusal != "" {
 						stopOrchestrator()
 						owner := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
@@ -286,21 +457,8 @@ func TestNativeReviewProducerRecoversAfterTemporaryFailure(t *testing.T) {
 						}
 						return
 					}
-					if !deferred && test.restore {
-						stopOrchestrator()
-						machine := h.scheduler.machine
-						h.scheduler, err = NewScheduler(h.native.client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: machine, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second})
-						if err != nil {
-							t.Fatal(err)
-						}
-						dependencies.Scheduling = h.scheduler
-						orch, err = orchestrator.New(cfg, dependencies)
-						if err != nil {
-							t.Fatal(err)
-						}
-						stopOrchestrator = start(orch)
-					}
 					if !deferred && test.name == "source" {
+						stopOrchestrator()
 						owner := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
 						change := owner.NativeChange()
 						for _, ref := range []tracker.NativeChangeReference{{ChangeID: change.ChangeID, VersionID: "version_other", HeadSHA: change.HeadSHA}, {ChangeID: "change_other", VersionID: change.VersionID, HeadSHA: change.HeadSHA}, {ChangeID: change.ChangeID, VersionID: change.VersionID, HeadSHA: strings.Repeat("a", 40)}} {
@@ -338,6 +496,36 @@ func TestNativeReviewProducerRecoversAfterTemporaryFailure(t *testing.T) {
 								t.Fatalf("changed %s authority admitted: %v", field, err)
 							}
 						}
+						nativeChangeGit(t, provider.workspace, "reset", "--hard", change.BaseSHA)
+						for _, content := range []string{"staged source\n", "unstaged source\n"} {
+							if err := os.WriteFile(filepath.Join(provider.workspace, "README.md"), []byte(content), 0o600); err != nil {
+								t.Fatal(err)
+							}
+							if content == "staged source\n" {
+								nativeChangeGit(t, provider.workspace, "add", "README.md")
+							}
+						}
+						if err := os.WriteFile(filepath.Join(provider.workspace, "untracked.txt"), []byte("untracked source\n"), 0o600); err != nil {
+							t.Fatal(err)
+						}
+						implementingBefore = implementingState()
+						if strings.TrimSpace(implementingBefore[0]) != change.BaseSHA || change.BaseSHA == change.HeadSHA || implementingBefore[2] == "" || implementingBefore[3] == "" {
+							t.Fatal("fixture lacks dirty implementing A and distinct retained B")
+						}
+					}
+					if !deferred && test.restore {
+						stopOrchestrator()
+						machine := h.scheduler.machine
+						h.scheduler, err = NewScheduler(h.native.client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: machine, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second})
+						if err != nil {
+							t.Fatal(err)
+						}
+						dependencies.Scheduling = h.scheduler
+						orch, err = orchestrator.New(cfg, dependencies)
+						if err != nil {
+							t.Fatal(err)
+						}
+						stopOrchestrator = start(orch)
 					}
 					deferred = true
 					provider.available.Store(true)
@@ -383,6 +571,22 @@ func TestNativeReviewProducerRecoversAfterTemporaryFailure(t *testing.T) {
 						t.Fatalf("invalid recovery: deferred=%v versions=%d reviews=%+v writable=%d", deferred, len(detail.Versions), detail.Reviews, provider.writableCalls)
 					}
 					version := detail.Versions[len(detail.Versions)-1]
+					if implementingBefore != nil {
+						for i, after := range implementingState() {
+							if after != implementingBefore[i] {
+								t.Fatalf("deferred completion changed implementing source: before=%q after=%q", implementingBefore[i], after)
+							}
+						}
+						for _, path := range []*string{provider.sourceWorkspace.Load(), provider.validatorWorkspace.Load()} {
+							if path == nil || *path == provider.workspace || strings.TrimSpace(readGit(*path, "rev-parse", "HEAD")) != version.HeadSHA || readGit(*path, "status", "--porcelain") != "" {
+								t.Fatal("deferred completion did not review clean retained B separately from implementing A")
+							}
+						}
+						t.Logf("normal deferred completion preserved dirty A=%s and reviewed retained version=%s B=%s tree=%s without another implementing turn", strings.TrimSpace(implementingBefore[0]), version.ID, version.HeadSHA, version.Validation.TreeSHA)
+					}
+					if test.publicationField != "" && (version.ID != rejectedVersion.ID || version.BaseSHA != rejectedVersion.BaseSHA || version.HeadSHA != rejectedVersion.HeadSHA || detail.Reviews[0].SecurityAudit == nil || detail.Reviews[0].SecurityAudit.Run.ReviewerVersion != securityaudit.ReviewerVersion || detail.Reviews[0].SecurityAudit.Run.ReviewerDigest != securityaudit.ReviewerDigest()) {
+						t.Fatal("reviewer continuation replaced source or accepted outdated audit evidence")
+					}
 					if test.hostHandoff {
 						if detail.Versions[0].ID != previousVersion.ID || version.HeadSHA == previousVersion.HeadSHA || version.Validation == nil || version.Validation.HeadSHA != version.HeadSHA || version.Validation.TreeSHA == "" || version.Source == nil || version.Source.HeadSHA != version.HeadSHA {
 							t.Fatal("handoff lost old source or failed to validate the new source")
@@ -422,7 +626,7 @@ func TestNativeReviewProducerRecoversAfterTemporaryFailure(t *testing.T) {
 					calls := map[string]int32{"source": provider.sourceCalls.Load(), "security": provider.securityCalls.Load(), "validator": provider.validatorCalls.Load()}
 					for stage, count := range calls {
 						want := int32(1)
-						if stage == test.stage {
+						if stage == test.stage && test.publicationField == "" {
 							want++
 						}
 						if count != want {

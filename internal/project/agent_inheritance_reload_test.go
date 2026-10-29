@@ -7,6 +7,7 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/project"
+	"github.com/digitaldrywood/detent/internal/testutil/projectfixture"
 )
 
 func TestManagerReloadsInheritedAgentSelection(t *testing.T) {
@@ -16,14 +17,14 @@ func TestManagerReloadsInheritedAgentSelection(t *testing.T) {
 		Projects: []globalconfig.Project{{ID: "alpha", Weight: 1}, {ID: "beta", Weight: 1}},
 	}
 	created := 0
-	manager, err := project.NewManager(project.ManagerConfigFromGlobal(global), project.ManagerDependencies{
+	manager, err := projectfixture.NewManager(project.ManagerConfigFromGlobal(global), project.ManagerDependencies{
 		ProjectFactory: func(cfg globalconfig.Project) (*project.Project, error) {
 			created++
-			workflow := workflowConfig("memory")
+			workflow := workflowConfig(workflowconfig.TrackerHubNative)
 			if cfg.ID == "beta" {
 				workflow.Agents.ModelSelection.ComplexModel = new("beta-complex")
 			}
-			return project.New(project.Config{Project: cfg, Workflow: workflowconfig.Workflow{Config: workflow}}, project.Dependencies{Runner: blockingRunner{}})
+			return projectfixture.New(project.Config{Project: cfg, Workflow: workflowconfig.Workflow{Config: workflow}}, project.Dependencies{Runner: blockingRunner{}})
 		},
 	})
 	if err != nil {

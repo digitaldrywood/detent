@@ -7,12 +7,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 )
 
 type Managed struct {
-	root string
+	root    string
+	program string
 }
 
 type managedContextKey struct{}
@@ -50,6 +50,14 @@ func NewManaged(ctx context.Context, root, owner string) (cache *Managed, err er
 		return nil, errors.Join(errors.New("managed Go build cache must be an owned directory"), err)
 	}
 	cache = &Managed{root: filepath.Clean(root)}
+	executable, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("resolve cache program: %w", err)
+	}
+	if strings.Contains(executable, `"`) {
+		return nil, errors.New("cache program path contains a quote")
+	}
+	cache.program = `"` + executable + `" ` + ProgramArgument
 	lock, err := cache.lock(ctx, "admission", false)
 	if err != nil {
 		return nil, err
@@ -94,19 +102,21 @@ func (m *Managed) Use(ctx context.Context) (context.Context, func() error, error
 	if m == nil || ctx.Value(consumerContextKey{}) == m.root {
 		return ctx, func() error { return nil }, nil
 	}
-	queue, err := m.lock(ctx, "admission", false)
-	if err != nil {
+	if err := ctx.Err(); err != nil {
 		return ctx, nil, err
 	}
-	usage, err := m.lock(ctx, "consumers", true)
-	err = errors.Join(err, queue.Close())
-	if err != nil {
-		if usage != nil {
-			err = errors.Join(err, usage.Close())
-		}
-		return ctx, nil, err
+	if info, err := os.Stat(m.root); err != nil || !info.IsDir() {
+		return ctx, nil, errors.Join(errors.New("managed cache unavailable"), err)
 	}
-	return context.WithValue(m.WithContext(ctx), consumerContextKey{}, m.root), sync.OnceValue(usage.Close), nil
+	return context.WithValue(m.WithContext(ctx), consumerContextKey{}, m.root), func() error { return nil }, nil
+}
+
+func ManagedEnvironment(ctx context.Context) map[string]string {
+	cache, ok := ctx.Value(managedContextKey{}).(*Managed)
+	if !ok || cache == nil {
+		return nil
+	}
+	return map[string]string{"GOCACHE": cache.root, "GOCACHEPROG": cache.program}
 }
 
 func (m *Managed) Maintain(ctx context.Context, policy Policy, now time.Time) (report Report, err error) {
@@ -115,31 +125,39 @@ func (m *Managed) Maintain(ctx context.Context, policy Policy, now time.Time) (r
 			report.Error = err.Error()
 		}
 	}()
-	report, err = TrimWithReport(ctx, m.root, policy, now)
+	report.BuildPath = m.root
+	busy := func() (Report, error) {
+		report.Deferred = true
+		report.BuildBytes, err = size(ctx, m.root)
+		report.RetainedBytes = report.BuildBytes
+		return report, err
+	}
+	queue, err := m.tryLock(ctx, "admission", false)
 	if err != nil {
 		return report, err
 	}
-	capacity, capacityErr := CapacityBytes(m.root)
-	if capacityErr != nil {
-		capacity = 0
+	if queue == nil {
+		return busy()
 	}
-	policy = policy.NormalizedForCapacity(capacity)
-	if policy.reclaimBytes > 0 {
-		policy.MaxBytes = min(policy.MaxBytes, max(1, report.RetainedBytes-policy.reclaimBytes))
-	}
-	if report.RetainedBytes <= policy.MaxBytes {
-		return report, nil
-	}
-	queue, err := m.tryLock(ctx, "admission", false)
-	if err != nil || queue == nil {
-		return report, err
-	}
-	defer func() { err = errors.Join(err, queue.Close()) }()
+	defer func() {
+		if queue != nil {
+			err = errors.Join(err, queue.Close())
+		}
+	}()
 	usage, err := m.tryLock(ctx, "consumers", false)
-	if err != nil || usage == nil {
+	if err != nil {
 		return report, err
+	}
+	if usage == nil {
+		err = queue.Close()
+		queue = nil
+		if err != nil {
+			return report, err
+		}
+		return busy()
 	}
 	defer func() { err = errors.Join(err, usage.Close()) }()
+
 	_, err = trim(ctx, m.root, policy, now, &report, true)
 	return report, err
 }

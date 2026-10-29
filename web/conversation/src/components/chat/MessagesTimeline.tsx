@@ -1,3 +1,4 @@
+import type { ConversationSpeech } from "../../app/hooks/useConversationSpeech.ts";
 import {
   type AssistantCitation,
   type EnvironmentId,
@@ -138,7 +139,9 @@ import {
   type MessagesTimelineRowsProjection,
   liveWorkEntryLabel,
   resolveAssistantMessageCopyState,
+  latestUserMessageRowId,
   resolveTimelineIsAtEnd,
+  resolveTimelineIsNearEnd,
   resolveTimelineMinimapHasPersistentGutter,
   resolveTimelineMinimapCurrentIndex,
   resolveTimelineMinimapHeightStyle,
@@ -201,6 +204,8 @@ import {
 // ---------------------------------------------------------------------------
 
 interface TimelineRowSharedState {
+  speech: ConversationSpeech | undefined;
+  speechMetaDetached: boolean;
   citationRequest: AssistantCitationTarget | null;
   listRef: React.RefObject<LegendListRef | null>;
   timestampFormat: TimestampFormat;
@@ -303,6 +308,7 @@ const TIMELINE_MAINTAIN_SCROLL_AT_END = {
 // ---------------------------------------------------------------------------
 
 interface MessagesTimelineProps {
+  speech?: ConversationSpeech | undefined;
   citationRequest?: AssistantCitationRequest | null;
   citationHistoryLoading?: boolean;
   onCiteAssistantText?: (
@@ -391,6 +397,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   markdownCwd,
   resolvedTheme,
   timestampFormat,
+  speech,
   workspaceRoot,
   skills = EMPTY_TIMELINE_SKILLS,
   anchorMessageId,
@@ -419,6 +426,18 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     [routeThreadKey],
   );
   const [disclosureToggleSettling, setDisclosureToggleSettling] = useState(false);
+  // A reader at the end when their own message lands stays on the end through
+  // the reply until they navigate by hand. The list's own end-follow drops out
+  // as soon as a content-anchor adjustment moves the view up, so the timeline
+  // holds the end itself while this is set.
+  const [ownTurnPinned, setOwnTurnPinned] = useState(false);
+  const ownTurnPinnedRef = useRef(false);
+  const readerNearEndRef = useRef(true);
+  const setOwnTurnPin = useCallback((pinned: boolean) => {
+    if (ownTurnPinnedRef.current === pinned) return;
+    ownTurnPinnedRef.current = pinned;
+    setOwnTurnPinned(pinned);
+  }, []);
   const [minimapStripMap] = useState(() => new Map<string, HTMLSpanElement>());
   const disclosureAnchorKeyRef = useRef<string | null>(null);
   const disclosureSettleFrameRef = useRef<number | null>(null);
@@ -436,6 +455,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
 
   const suspendEndScrollMaintenanceForDisclosure = useCallback(
     (anchorKey: string, collapsed = false) => {
+      setOwnTurnPin(false);
       disclosureAnchorKeyRef.current = anchorKey;
       setDisclosureToggleSettling(true);
       if (disclosureSettleFrameRef.current !== null) {
@@ -458,7 +478,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         });
       });
     },
-    [listRef, onToolOutputCollapsedAtEnd],
+    [listRef, onToolOutputCollapsedAtEnd, setOwnTurnPin],
   );
 
   const shouldRestoreVisibleContentPosition = useCallback((row: MessagesTimelineRow) => {
@@ -656,12 +676,80 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     onContentOverflowChange?.(measureContentOverflow());
   }, [cancelContentOverflowFrame, measureContentOverflow, onContentOverflowChange, rows.length]);
 
+  const holdOwnTurnPin = useCallback(() => {
+    const list = listRef.current;
+    const state = list?.getState?.();
+    if (state) {
+      readerNearEndRef.current = resolveTimelineIsNearEnd(state);
+    }
+    if (!ownTurnPinnedRef.current || citationPositioning || disclosureAnchorKeyRef.current !== null) {
+      return;
+    }
+    if (resolveTimelineIsAtEnd(state) === false) {
+      void list?.scrollToEnd({ animated: false });
+    }
+  }, [citationPositioning, listRef]);
+  const handleItemSizeChanged = useCallback(() => {
+    reportContentOverflow();
+    holdOwnTurnPin();
+  }, [holdOwnTurnPin, reportContentOverflow]);
+
+  const latestUserRowId = useMemo(() => latestUserMessageRowId(rows), [rows]);
+  const latestUserRowRef = useRef({ threadKey: routeThreadKey, id: latestUserRowId });
+  useLayoutEffect(() => {
+    const previous = latestUserRowRef.current;
+    latestUserRowRef.current = { threadKey: routeThreadKey, id: latestUserRowId };
+    if (previous.threadKey !== routeThreadKey) {
+      readerNearEndRef.current = true;
+      setOwnTurnPin(false);
+      return;
+    }
+    if (
+      latestUserRowId === null ||
+      latestUserRowId === previous.id ||
+      anchorMessageId !== null ||
+      citationPositioning ||
+      !readerNearEndRef.current
+    ) {
+      return;
+    }
+    setOwnTurnPin(true);
+    void listRef.current?.scrollToEnd({ animated: false });
+  }, [anchorMessageId, citationPositioning, latestUserRowId, listRef, routeThreadKey, setOwnTurnPin]);
+
+  useEffect(() => {
+    if (!timelineViewportElement) {
+      return;
+    }
+    const release = () => setOwnTurnPin(false);
+    const onWheel = (event: WheelEvent) => {
+      if (event.deltaY < 0) release();
+    };
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (["ArrowUp", "PageUp", "Home"].includes(event.key)) release();
+    };
+    const onPointerDown = (event: PointerEvent) => {
+      if (event.target === listRef.current?.getScrollableNode?.()) release();
+    };
+    timelineViewportElement.addEventListener("wheel", onWheel, { passive: true });
+    timelineViewportElement.addEventListener("touchmove", release, { passive: true });
+    timelineViewportElement.addEventListener("keydown", onKeyDown);
+    timelineViewportElement.addEventListener("pointerdown", onPointerDown);
+    return () => {
+      timelineViewportElement.removeEventListener("wheel", onWheel);
+      timelineViewportElement.removeEventListener("touchmove", release);
+      timelineViewportElement.removeEventListener("keydown", onKeyDown);
+      timelineViewportElement.removeEventListener("pointerdown", onPointerDown);
+    };
+  }, [listRef, setOwnTurnPin, timelineViewportElement]);
+
   const handleScroll = useCallback(() => {
     const state = listRef.current?.getState?.();
     const isAtEnd = resolveTimelineIsAtEnd(state);
     if (isAtEnd !== undefined && !citationPositioning) {
       onIsAtEndChange(isAtEnd);
     }
+    holdOwnTurnPin();
     reportContentOverflow();
     if (!state || minimapItems.length === 0) {
       return;
@@ -699,6 +787,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     );
   }, [
     citationPositioning,
+    holdOwnTurnPin,
     listRef,
     minimapItems,
     minimapStripMap,
@@ -742,6 +831,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       citationRequest: readyCitationRequest,
       listRef,
       timestampFormat,
+      speech,
+      speechMetaDetached: rows.some((row) => row.kind === "assistant-meta" && row.message.id === speech?.readingMessageId),
       routeThreadKey,
       // Keep Markdown callbacks memoized during unrelated activity updates.
       threadRef: citationThreadRef,
@@ -767,6 +858,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       readyCitationRequest,
       listRef,
       timestampFormat,
+      speech,
+      rows,
       routeThreadKey,
       citationThreadRef,
       markdownCwd,
@@ -861,17 +954,17 @@ export const MessagesTimeline = memo(function MessagesTimeline({
             maintainScrollAtEnd={
               citationPositioning ||
               anchoredEndSpace ||
-              !liveFollowEnabled ||
+              (!liveFollowEnabled && !ownTurnPinned) ||
               disclosureToggleSettling
                 ? false
                 : TIMELINE_MAINTAIN_SCROLL_AT_END
             }
             maintainVisibleContentPosition={
-              citationPositioning ? false : maintainVisibleContentPosition
+              citationPositioning || ownTurnPinned ? false : maintainVisibleContentPosition
             }
             maintainScrollAtEndThreshold={1}
             onScroll={handleScroll}
-            onItemSizeChanged={reportContentOverflow}
+            onItemSizeChanged={handleItemSizeChanged}
             className={cn(
               "scrollbar-gutter-both h-full min-h-0 overflow-x-hidden overscroll-y-contain px-3 [overflow-anchor:none] sm:px-5",
               topFadeEnabled && "topbar-scroll-fade",
@@ -1690,7 +1783,7 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
           resolvedTheme={ctx.resolvedTheme}
           onOpenTurnDiff={ctx.onOpenTurnDiff}
         />
-        {row.showAssistantMeta ? (
+        {row.showAssistantMeta || (ctx.speech?.readingMessageId === row.message.id && !ctx.speechMetaDetached) ? (
           <AssistantMessageMeta
             className="mt-1.5"
             message={row.message}
@@ -1740,7 +1833,7 @@ function AssistantMessageMeta({
     <div
       className={cn(
         "flex items-center gap-2 text-xs tabular-nums transition-opacity duration-200",
-        alwaysVisible
+        alwaysVisible || ctx.speech?.readingMessageId === message.id
           ? "opacity-100"
           : "opacity-0 focus-within:opacity-100 group-hover/assistant:opacity-100",
         className,
@@ -1751,6 +1844,14 @@ function AssistantMessageMeta({
         showCopyButton={showCopyButton}
         streaming={copyStreaming}
       />
+      {ctx.speech?.readingMessageId === message.id ? (
+        <span className="flex items-center gap-1 text-muted-foreground">
+          <span role="status">Reading aloud</span>
+          <Button type="button" variant="ghost-muted" size="compact" onClick={ctx.speech.stop} aria-label="Stop reading aloud">
+            Stop
+          </Button>
+        </span>
+      ) : null}
       {!message.streaming && (
         <Tooltip>
           <TooltipTrigger render={<p className="text-muted-foreground text-xs tabular-nums" />}>

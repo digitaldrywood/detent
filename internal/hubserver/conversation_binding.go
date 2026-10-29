@@ -64,7 +64,7 @@ type conversationResumeDecision struct {
 }
 
 // resumeThread reports whether the binding attempt may continue the recorded
-// provider thread (decisions section 9.3).
+// provider thread.
 //
 // A provider thread carries the instructions and the permission set of the
 // turn that opened it. A coordinator thread was opened read-only, with no
@@ -90,10 +90,10 @@ func (d conversationResumeDecision) resumeThread() bool {
 
 // resumeFor decides what a binding runner continues from: its own provider
 // thread, or the recent transcript when the thread was produced elsewhere or
-// by the other kind of turn (decisions section 9.3). named reports that this
+// by the other kind of turn. named reports that this
 // bind supplied the thread. Messages already handed over as pending controls
 // are left out so the runner does not see them twice.
-func (c *conversationService) resumeFor(ctx context.Context, tx *sql.Tx, record conversationRecord, scope nativeScope, thread string, named bool, coordinator bool, pending []conversationControl) (conversationResumeResource, error) {
+func (c *conversationService) resumeFor(ctx context.Context, tx nativeQueryer, record conversationRecord, scope nativeScope, thread string, named bool, coordinator bool, pending []conversationControl) (conversationResumeResource, error) {
 	decision := conversationResumeDecision{
 		RecordedRunnerID: record.ProviderThreadRunnerID,
 		RecordedOrigin:   record.ProviderThreadOrigin,
@@ -135,7 +135,7 @@ func (c *conversationService) resumeFor(ctx context.Context, tx *sql.Tx, record 
 }
 
 // conversationResumeKind reports what the bind handed the runner, for the
-// execution resource's resume field (decisions section 10.4).
+// execution resource's resume field.
 func conversationResumeKind(resume conversationResumeResource) string {
 	switch {
 	case resume.ThreadID != "":
@@ -148,8 +148,7 @@ func conversationResumeKind(resume conversationResumeResource) string {
 }
 
 // conversationTranscriptNotice is the exact copy the history records when a
-// runner continues from a transcript instead of a resumable provider thread
-// (decisions section 10.4).
+// runner continues from a transcript instead of a resumable provider thread.
 func conversationTranscriptNotice(messages int) string {
 	return fmt.Sprintf("Provider history was not available on this runner; continuing from a transcript of the last %d messages", messages)
 }

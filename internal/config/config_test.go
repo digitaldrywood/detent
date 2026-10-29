@@ -3,6 +3,7 @@ package config
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -24,7 +25,7 @@ import (
 func TestParseWorkflowOverlayPrecedence(t *testing.T) {
 	t.Parallel()
 
-	shared := []byte("---\ntracker:\n  kind: memory\n  assignee: shared\n  lanes:\n    - name: Backlog\n      role: holding\n    - name: Human Review\n      role: holding\n    - name: Blocked\n      role: holding\n    - name: Todo\n      role: active\n    - name: In Progress\n      role: active\n    - name: Closed\n      role: terminal\n    - name: Cancelled\n      role: terminal\n    - name: Canceled\n      role: terminal\n    - name: Duplicate\n      role: terminal\n    - name: Done\n      role: terminal\npolling:\n  interval_ms: 60000\n  conditional: true\nagent:\n  max_turns: 20\n---\nShared direction.\n")
+	shared := []byte("---\ntracker:\n  kind: hub_native\n  assignee: shared\n  lanes:\n    - name: Backlog\n      role: holding\n    - name: Human Review\n      role: holding\n    - name: Blocked\n      role: holding\n    - name: Todo\n      role: active\n    - name: In Progress\n      role: active\n    - name: Closed\n      role: terminal\n    - name: Cancelled\n      role: terminal\n    - name: Canceled\n      role: terminal\n    - name: Duplicate\n      role: terminal\n    - name: Done\n      role: terminal\npolling:\n  interval_ms: 60000\n  conditional: true\nagent:\n  max_turns: 20\n---\nShared direction.\n")
 	tests := []struct {
 		name             string
 		local            string
@@ -89,8 +90,8 @@ func TestParseWorkflowOverlayPrecedence(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ParseWorkflowOverlay() error = %v", err)
 			}
-			if workflow.Config.Tracker.Kind != TrackerMemory {
-				t.Fatalf("Tracker.Kind = %q, want %q", workflow.Config.Tracker.Kind, TrackerMemory)
+			if workflow.Config.Tracker.Kind != TrackerHubNative {
+				t.Fatalf("Tracker.Kind = %q, want %q", workflow.Config.Tracker.Kind, TrackerHubNative)
 			}
 			if workflow.Config.Tracker.Assignee != tt.wantAssignee {
 				t.Fatalf("Tracker.Assignee = %q, want %q", workflow.Config.Tracker.Assignee, tt.wantAssignee)
@@ -123,7 +124,7 @@ func TestParseWorkflowOverlayPrecedence(t *testing.T) {
 func TestWorkerGitHubPolicyConfiguration(t *testing.T) {
 	t.Parallel()
 
-	workflow, err := ParseWorkflow([]byte("---\ntracker:\n  kind: memory\nworker:\n  github_token: $DETENT_WORKER_GITHUB_TOKEN\n  github_token_resolution_timeout_ms: 30000\n  github_rest_min_remaining_reserve: 1250\n  github_rest_poll_interval_ms: 90000\n---\nPrompt\n"))
+	workflow, err := ParseWorkflow([]byte("---\ntracker:\n  kind: hub_native\nworker:\n  github_token: $DETENT_WORKER_GITHUB_TOKEN\n  github_token_resolution_timeout_ms: 30000\n  github_rest_min_remaining_reserve: 1250\n  github_rest_poll_interval_ms: 90000\n---\nPrompt\n"))
 	if err != nil {
 		t.Fatalf("ParseWorkflow() error = %v", err)
 	}
@@ -149,8 +150,8 @@ func TestRefreshFailureThresholdConfiguration(t *testing.T) {
 		raw  string
 		want int
 	}{
-		{name: "default", raw: "---\ntracker:\n  kind: memory\n---\nPrompt\n", want: DefaultRefreshFailureThreshold},
-		{name: "override", raw: "---\ntracker:\n  kind: memory\npolling:\n  refresh_failure_threshold: 5\n---\nPrompt\n", want: 5},
+		{name: "default", raw: "---\ntracker:\n  kind: hub_native\n---\nPrompt\n", want: DefaultRefreshFailureThreshold},
+		{name: "override", raw: "---\ntracker:\n  kind: hub_native\npolling:\n  refresh_failure_threshold: 5\n---\nPrompt\n", want: 5},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -226,7 +227,7 @@ func TestWorkerGitHubPolicyValidation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			cfg := Default()
-			cfg.Tracker.Kind = TrackerMemory
+			cfg.Tracker.Kind = TrackerHubNative
 			tt.mutate(&cfg)
 			err := cfg.Validate()
 			if tt.wantProblem == "" {
@@ -304,7 +305,7 @@ func TestParseWorkflowActiveHours(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			workflow, err := ParseWorkflow([]byte("---\n" + test.activeHours + "tracker:\n  kind: memory\n---\n"))
+			workflow, err := ParseWorkflow([]byte("---\n" + test.activeHours + "tracker:\n  kind: hub_native\n---\n"))
 			if err == nil {
 				err = workflow.Config.Validate()
 			}
@@ -327,7 +328,7 @@ func TestParseWorkflowActiveHours(t *testing.T) {
 func TestLoadWorkflowWithoutOverlayPreservesExistingBehavior(t *testing.T) {
 	t.Parallel()
 
-	raw := []byte("---\ntracker:\n  kind: memory\n---\nShared direction.\n")
+	raw := []byte("---\ntracker:\n  kind: hub_native\n---\nShared direction.\n")
 	path := filepath.Join(t.TempDir(), "WORKFLOW.md")
 	if err := os.WriteFile(path, raw, 0o600); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
@@ -367,62 +368,6 @@ func TestLocalWorkflowPath(t *testing.T) {
 				t.Fatalf("LocalWorkflowPath(%q) = %q, want %q", tt.path, got, tt.want)
 			}
 		})
-	}
-}
-
-func TestShippedWorkflowTemplatesEnableBudgetCaps(t *testing.T) {
-	t.Parallel()
-
-	templateDir := filepath.Join("..", "..", "docs", "templates")
-	entries, err := os.ReadDir(templateDir)
-	if err != nil {
-		t.Fatalf("ReadDir(%q) error = %v", templateDir, err)
-	}
-
-	checked := 0
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasPrefix(entry.Name(), "WORKFLOW.") || !strings.HasSuffix(entry.Name(), ".md") {
-			continue
-		}
-		checked++
-		t.Run(entry.Name(), func(t *testing.T) {
-			t.Parallel()
-
-			path := filepath.Join(templateDir, entry.Name())
-			raw, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatalf("ReadFile(%q) error = %v", path, err)
-			}
-			variant := strings.TrimSuffix(strings.TrimPrefix(entry.Name(), "WORKFLOW."), ".md")
-			configPath := filepath.Join(templateDir, "detent."+variant+".yaml")
-			configRaw, err := os.ReadFile(configPath)
-			if err != nil {
-				t.Fatalf("ReadFile(%q) error = %v", configPath, err)
-			}
-			workflow, err := ParseProjectDefinition(ProjectDefinitionSources{
-				WorkflowPath: path,
-				Workflow:     raw,
-				ConfigPath:   configPath,
-				Config:       configRaw,
-				HasConfig:    true,
-			})
-			if err != nil {
-				t.Fatalf("ParseProjectDefinition(%q) error = %v", path, err)
-			}
-			if !workflow.Config.Budget.Enabled {
-				t.Fatalf("%s budget.enabled = false, want true", path)
-			}
-			if workflow.Config.Budget.BillingMode != BillingModeMetered {
-				t.Fatalf("%s budget.billing_mode = %q, want metered", path, workflow.Config.Budget.BillingMode)
-			}
-			normalizedRaw := strings.ReplaceAll(string(configRaw), "\r\n", "\n")
-			if workflow.Config.Deliverable.Kind == DeliverablePullRequest && !strings.Contains(normalizedRaw, "\n  merge_method: squash\n") {
-				t.Fatalf("%s does not declare deliverable.merge_method: squash", path)
-			}
-		})
-	}
-	if checked == 0 {
-		t.Fatal("no shipped WORKFLOW templates found")
 	}
 }
 
@@ -485,7 +430,7 @@ func TestParseWorkflowBillingMode(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			frontmatter := "---\ntracker:\n  kind: memory\n"
+			frontmatter := "---\ntracker:\n  kind: hub_native\n"
 			if tt.value != "" {
 				frontmatter += "budget:\n  billing_mode: \"" + tt.value + "\"\n"
 			}
@@ -507,55 +452,6 @@ func TestParseWorkflowBillingMode(t *testing.T) {
 			}
 			if got := workflow.Config.Budget.BillingModeConfigured(); got != tt.configured {
 				t.Fatalf("BillingModeConfigured() = %t, want %t", got, tt.configured)
-			}
-		})
-	}
-}
-
-func TestUSDBrakes(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name           string
-		billingMode    string
-		budgetEnabled  bool
-		spendLimit     float64
-		wantBudgetCaps bool
-		wantProgress   bool
-		wantWarning    bool
-	}{
-		{name: "subscription disabled without progress limit", billingMode: BillingModeSubscription},
-		{name: "subscription disabled with progress limit", billingMode: BillingModeSubscription, spendLimit: 3},
-		{name: "subscription enabled without progress limit", billingMode: BillingModeSubscription, budgetEnabled: true},
-		{name: "subscription enabled with progress limit", billingMode: BillingModeSubscription, budgetEnabled: true, spendLimit: 3},
-		{name: "metered disabled without progress limit", billingMode: BillingModeMetered},
-		{name: "metered disabled with progress limit", billingMode: BillingModeMetered, spendLimit: 3, wantProgress: true, wantWarning: true},
-		{name: "metered enabled without progress limit", billingMode: BillingModeMetered, budgetEnabled: true, wantBudgetCaps: true},
-		{name: "metered enabled with progress limit", billingMode: BillingModeMetered, budgetEnabled: true, spendLimit: 3, wantBudgetCaps: true, wantProgress: true, wantWarning: true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			cfg := Config{
-				Budget: Budget{BillingMode: tt.billingMode, Enabled: tt.budgetEnabled},
-				Agent:  Agent{NoProgressSpendLimitUSD: tt.spendLimit},
-			}
-			brakes := cfg.USDBrakes()
-			if brakes.BudgetCaps != tt.wantBudgetCaps || brakes.NoProgress != tt.wantProgress {
-				t.Fatalf("USDBrakes() = %#v, want budget caps=%t progress=%t", brakes, tt.wantBudgetCaps, tt.wantProgress)
-			}
-			warnings := cfg.ValidationWarnings()
-			if got := len(warnings) > 0; got != tt.wantWarning {
-				t.Fatalf("ValidationWarnings() = %#v, want warning=%t", warnings, tt.wantWarning)
-			}
-			if tt.wantWarning {
-				warning := strings.Join(warnings, "; ")
-				for _, want := range []string{"billing_mode: metered", "agent.no_progress_spend_limit_usd", "budget.enabled: false", "billing_mode: subscription"} {
-					if !strings.Contains(warning, want) {
-						t.Fatalf("ValidationWarnings() = %q, want %q", warning, want)
-					}
-				}
 			}
 		})
 	}
@@ -583,7 +479,7 @@ func TestParseWorkflowMergeMethod(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			raw := "---\ntracker:\n  kind: memory\n"
+			raw := "---\ntracker:\n  kind: hub_native\n"
 			if tt.value != "" {
 				raw += "deliverable:\n  merge_method: " + tt.value + "\n"
 			}
@@ -638,164 +534,6 @@ func TestParseWorkflowFollowups(t *testing.T) {
 	}
 }
 
-func TestNoProgressSpendLimitConfiguration(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name    string
-		raw     string
-		want    float64
-		wantErr string
-	}{
-		{name: "default enabled", raw: "---\ntracker:\n  kind: memory\n---\nPrompt\n", want: DefaultNoProgressSpendLimitUSD},
-		{name: "explicitly disabled", raw: "---\ntracker:\n  kind: memory\nagent:\n  no_progress_spend_limit_usd: 0\n---\nPrompt\n", want: 0},
-		{name: "custom threshold", raw: "---\ntracker:\n  kind: memory\nagent:\n  no_progress_spend_limit_usd: 8.5\n---\nPrompt\n", want: 8.5},
-		{name: "negative rejected", raw: "---\ntracker:\n  kind: memory\nagent:\n  no_progress_spend_limit_usd: -1\n---\nPrompt\n", wantErr: "agent.no_progress_spend_limit_usd must be greater than or equal to 0"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			workflow, err := ParseWorkflow([]byte(tt.raw))
-			if tt.wantErr != "" {
-				if err == nil {
-					err = workflow.Config.Validate()
-				}
-				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-					t.Fatalf("configuration error = %v, want %q", err, tt.wantErr)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("ParseWorkflow() error = %v", err)
-			}
-			if workflow.Config.Agent.NoProgressSpendLimitUSD != tt.want {
-				t.Fatalf("NoProgressSpendLimitUSD = %g, want %g", workflow.Config.Agent.NoProgressSpendLimitUSD, tt.want)
-			}
-		})
-	}
-}
-
-func TestNoProgressTokenLimitConfiguration(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name    string
-		raw     string
-		want    int64
-		wantErr string
-	}{
-		{name: "default enabled", raw: "---\ntracker:\n  kind: memory\n---\nPrompt\n", want: DefaultNoProgressTokenLimit},
-		{name: "explicitly disabled", raw: "---\ntracker:\n  kind: memory\nagent:\n  no_progress_token_limit: 0\n---\nPrompt\n"},
-		{name: "custom threshold", raw: "---\ntracker:\n  kind: memory\nagent:\n  no_progress_token_limit: 40000000\n---\nPrompt\n", want: 40_000_000},
-		{name: "negative rejected", raw: "---\ntracker:\n  kind: memory\nagent:\n  no_progress_token_limit: -1\n---\nPrompt\n", wantErr: "agent.no_progress_token_limit must be greater than or equal to 0"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			workflow, err := ParseWorkflow([]byte(tt.raw))
-			if tt.wantErr != "" {
-				if err == nil {
-					err = workflow.Config.Validate()
-				}
-				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-					t.Fatalf("configuration error = %v, want %q", err, tt.wantErr)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("ParseWorkflow() error = %v", err)
-			}
-			if workflow.Config.Agent.NoProgressTokenLimit != tt.want {
-				t.Fatalf("NoProgressTokenLimit = %d, want %d", workflow.Config.Agent.NoProgressTokenLimit, tt.want)
-			}
-		})
-	}
-}
-
-func TestLifetimeLimitConfiguration(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name         string
-		raw          string
-		wantSessions int64
-		wantTokens   int64
-		wantOverride string
-		wantErr      string
-	}{
-		{
-			name:         "default enabled",
-			raw:          "---\ntracker:\n  kind: memory\n---\nPrompt\n",
-			wantSessions: DefaultLifetimeSessionLimit,
-			wantTokens:   DefaultLifetimeTokenLimit,
-			wantOverride: DefaultLifetimeLimitOverrideLabel,
-		},
-		{
-			name:         "custom values normalize override label",
-			raw:          "---\ntracker:\n  kind: memory\nagent:\n  lifetime_session_limit: 20\n  lifetime_token_limit: 50000000\n  lifetime_limit_cooldown_seconds: 7200\n  lifetime_limit_override_label: Allow-Hard-Issue\n---\nPrompt\n",
-			wantSessions: 20,
-			wantTokens:   50_000_000,
-			wantOverride: "allow-hard-issue",
-		},
-		{
-			name:         "limits can be disabled",
-			raw:          "---\ntracker:\n  kind: memory\nagent:\n  lifetime_session_limit: 0\n  lifetime_token_limit: 0\n  lifetime_limit_cooldown_seconds: 0\n---\nPrompt\n",
-			wantOverride: DefaultLifetimeLimitOverrideLabel,
-		},
-		{
-			name:    "negative sessions rejected",
-			raw:     "---\ntracker:\n  kind: memory\nagent:\n  lifetime_session_limit: -1\n---\nPrompt\n",
-			wantErr: "agent.lifetime_session_limit must be greater than or equal to 0",
-		},
-		{
-			name:    "negative tokens rejected",
-			raw:     "---\ntracker:\n  kind: memory\nagent:\n  lifetime_token_limit: -1\n---\nPrompt\n",
-			wantErr: "agent.lifetime_token_limit must be greater than or equal to 0",
-		},
-		{
-			name:         "legacy cooldown ignored with enabled limits",
-			raw:          "---\ntracker:\n  kind: memory\nagent:\n  lifetime_session_limit: 1\n  lifetime_limit_cooldown_seconds: 0\n---\nPrompt\n",
-			wantSessions: 1,
-			wantTokens:   DefaultLifetimeTokenLimit,
-			wantOverride: DefaultLifetimeLimitOverrideLabel,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			workflow, err := ParseWorkflow([]byte(tt.raw))
-			if tt.wantErr != "" {
-				if err == nil {
-					err = workflow.Config.Validate()
-				}
-				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-					t.Fatalf("configuration error = %v, want containing %q", err, tt.wantErr)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("ParseWorkflow() error = %v", err)
-			}
-			agent := workflow.Config.Agent
-			if agent.LifetimeSessionLimit != tt.wantSessions || agent.LifetimeTokenLimit != tt.wantTokens || agent.LifetimeLimitOverrideLabel != tt.wantOverride {
-				t.Fatalf("lifetime config = sessions %d tokens %d override %q", agent.LifetimeSessionLimit, agent.LifetimeTokenLimit, agent.LifetimeLimitOverrideLabel)
-			}
-		})
-	}
-}
-
-func TestLifetimeLimitDefaultsSeparateHistoricalRunaways(t *testing.T) {
-	t.Parallel()
-
-	if DefaultLifetimeSessionLimit != 120 {
-		t.Fatalf("DefaultLifetimeSessionLimit = %d, want 120", DefaultLifetimeSessionLimit)
-	}
-	if DefaultLifetimeTokenLimit != 750_000_000 {
-		t.Fatalf("DefaultLifetimeTokenLimit = %d, want 750000000", DefaultLifetimeTokenLimit)
-	}
-}
-
 func TestFailureBreakerConfiguration(t *testing.T) {
 	t.Parallel()
 
@@ -807,7 +545,7 @@ func TestFailureBreakerConfiguration(t *testing.T) {
 	}{
 		{
 			name: "defaults enabled",
-			raw:  "---\ntracker:\n  kind: memory\n---\nPrompt\n",
+			raw:  "---\ntracker:\n  kind: hub_native\n---\nPrompt\n",
 			want: FailureBreaker{
 				SameClassLimit:  DefaultFailureBreakerSameClassLimit,
 				WindowSeconds:   DefaultFailureBreakerWindowSeconds,
@@ -816,22 +554,22 @@ func TestFailureBreakerConfiguration(t *testing.T) {
 		},
 		{
 			name: "custom values",
-			raw:  "---\ntracker:\n  kind: memory\nagent:\n  failure_breaker:\n    same_class_limit: 7\n    window_seconds: 900\n    cooldown_seconds: 120\n---\nPrompt\n",
+			raw:  "---\ntracker:\n  kind: hub_native\nagent:\n  failure_breaker:\n    same_class_limit: 7\n    window_seconds: 900\n    cooldown_seconds: 120\n---\nPrompt\n",
 			want: FailureBreaker{SameClassLimit: 7, WindowSeconds: 900, CooldownSeconds: 120},
 		},
 		{
 			name:    "negative limit rejected",
-			raw:     "---\ntracker:\n  kind: memory\nagent:\n  failure_breaker:\n    same_class_limit: -1\n---\nPrompt\n",
+			raw:     "---\ntracker:\n  kind: hub_native\nagent:\n  failure_breaker:\n    same_class_limit: -1\n---\nPrompt\n",
 			wantErr: "agent.failure_breaker.same_class_limit must be greater than 0",
 		},
 		{
 			name:    "negative window rejected",
-			raw:     "---\ntracker:\n  kind: memory\nagent:\n  failure_breaker:\n    window_seconds: -1\n---\nPrompt\n",
+			raw:     "---\ntracker:\n  kind: hub_native\nagent:\n  failure_breaker:\n    window_seconds: -1\n---\nPrompt\n",
 			wantErr: "agent.failure_breaker.window_seconds must be greater than 0",
 		},
 		{
 			name:    "negative cooldown rejected",
-			raw:     "---\ntracker:\n  kind: memory\nagent:\n  failure_breaker:\n    cooldown_seconds: -1\n---\nPrompt\n",
+			raw:     "---\ntracker:\n  kind: hub_native\nagent:\n  failure_breaker:\n    cooldown_seconds: -1\n---\nPrompt\n",
 			wantErr: "agent.failure_breaker.cooldown_seconds must be greater than 0",
 		},
 	}
@@ -867,10 +605,10 @@ func TestOverloadRetryDelayConfiguration(t *testing.T) {
 		want    int
 		wantErr string
 	}{
-		{name: "default", raw: "---\ntracker:\n  kind: memory\n---\nPrompt\n", want: DefaultOverloadRetryDelayMS},
-		{name: "custom", raw: "---\ntracker:\n  kind: memory\nagent:\n  overload_retry_delay_ms: 60000\n---\nPrompt\n", want: 60000},
-		{name: "zero rejected", raw: "---\ntracker:\n  kind: memory\nagent:\n  overload_retry_delay_ms: 0\n---\nPrompt\n", wantErr: "agent.overload_retry_delay_ms must be greater than 0"},
-		{name: "negative rejected", raw: "---\ntracker:\n  kind: memory\nagent:\n  overload_retry_delay_ms: -1\n---\nPrompt\n", wantErr: "agent.overload_retry_delay_ms must be greater than 0"},
+		{name: "default", raw: "---\ntracker:\n  kind: hub_native\n---\nPrompt\n", want: DefaultOverloadRetryDelayMS},
+		{name: "custom", raw: "---\ntracker:\n  kind: hub_native\nagent:\n  overload_retry_delay_ms: 60000\n---\nPrompt\n", want: 60000},
+		{name: "zero rejected", raw: "---\ntracker:\n  kind: hub_native\nagent:\n  overload_retry_delay_ms: 0\n---\nPrompt\n", wantErr: "agent.overload_retry_delay_ms must be greater than 0"},
+		{name: "negative rejected", raw: "---\ntracker:\n  kind: hub_native\nagent:\n  overload_retry_delay_ms: -1\n---\nPrompt\n", wantErr: "agent.overload_retry_delay_ms must be greater than 0"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -895,34 +633,6 @@ func TestOverloadRetryDelayConfiguration(t *testing.T) {
 	}
 }
 
-func TestEffectiveNoProgressSpendLimitUSD(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name   string
-		limit  float64
-		effort string
-		want   float64
-	}{
-		{name: "disabled", limit: 0, effort: "xhigh", want: 0},
-		{name: "unknown uses base", limit: 3, want: 3},
-		{name: "low uses base", limit: 3, effort: "low", want: 3},
-		{name: "medium", limit: 3, effort: "medium", want: 4.5},
-		{name: "high", limit: 3, effort: "high", want: 9},
-		{name: "xhigh", limit: 3, effort: "xhigh", want: 18},
-		{name: "max", limit: 3, effort: "max", want: 24},
-		{name: "ultracode", limit: 3, effort: "ultracode", want: 24},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			if got := EffectiveNoProgressSpendLimitUSD(tt.limit, tt.effort); got != tt.want {
-				t.Fatalf("EffectiveNoProgressSpendLimitUSD(%g, %q) = %g, want %g", tt.limit, tt.effort, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestRESTFanoutMaxRequestsConfiguration(t *testing.T) {
 	t.Parallel()
 
@@ -938,7 +648,7 @@ func TestRESTFanoutMaxRequestsConfiguration(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			raw := []byte("---\ntracker:\n  kind: memory\n  github_rest_fanout_max_requests: " + strconv.Itoa(tt.value) + "\n---\nPrompt\n")
+			raw := []byte("---\ntracker:\n  kind: hub_native\n  github_rest_fanout_max_requests: " + strconv.Itoa(tt.value) + "\n---\nPrompt\n")
 			workflow, err := ParseWorkflow(raw)
 			if err == nil {
 				err = workflow.Config.Validate()
@@ -978,7 +688,7 @@ func TestGitHubUnstartedCheckThresholdConfiguration(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			raw := "---\ntracker:\n  kind: memory\n"
+			raw := "---\ntracker:\n  kind: hub_native\n"
 			if tt.value != nil {
 				raw += "  github_unstarted_check_threshold_seconds: " + strconv.Itoa(*tt.value) + "\n"
 			}
@@ -1013,10 +723,9 @@ identity:
   ownership_mode: field
   owner_field: Owner
 tracker:
-  kind: github
+  kind: hub_native
+  endpoint: https://api.github.com/graphql
   api_key: $GITHUB_TOKEN
-  project_slug: "PVT_project"
-  write_probe_issue: " digitaldrywood/detent#1 "
   http_max_idle_conns: 120
   http_max_idle_conns_per_host: 40
   http_idle_conn_timeout_ms: 120000
@@ -1078,7 +787,6 @@ tracker:
     readiness: terminal_or_merged
   blocked_recovery:
     enabled: true
-    breaker_cooldown_seconds: 43200
     source_states:
       - Blocked
     target_state: Rework
@@ -1116,7 +824,6 @@ agent:
   max_concurrent_agents: 5
   max_turn_duration_ms: 900000
   max_session_duration_ms: 3600000
-  no_progress_timeout_ms: 1800000
   merge_worker_startup_timeout_ms: 180000
   merge_worker_max_duration_ms: 7200000
   max_session_tokens: 10000000
@@ -1142,8 +849,6 @@ agent:
     optout_label: Requires-Human-Review
     gate_wait_state: review
     gate_wait_timeout_seconds: 900
-    rework_limit: 3
-    no_progress_limit: 4
     allowed_issue_labels:
       - enhancement
   instructions_by_state:
@@ -1169,9 +874,6 @@ agent:
     enabled: true
     path: ".detent/skills"
     max_skills_in_prompt: 20
-    creation:
-      enabled: true
-      max_drafts_per_run: 3
   followups:
     enabled: false
 codex:
@@ -1194,8 +896,6 @@ plan:
   approval_label: Plan-Approved
   stop: " Plan Review "
 server:
-  host: 0.0.0.0
-  port: 4001
   kanban:
     mode: integration
     show_blocked_alerts: true
@@ -1240,8 +940,8 @@ Ticket prompt {{ issue.title }}
 	if workflow.Prompt != "Ticket prompt {{ issue.title }}\n" {
 		t.Fatalf("Prompt = %q", workflow.Prompt)
 	}
-	if cfg.Tracker.Kind != TrackerGitHub {
-		t.Fatalf("Tracker.Kind = %q, want %q", cfg.Tracker.Kind, TrackerGitHub)
+	if cfg.Tracker.Kind != TrackerHubNative {
+		t.Fatalf("Tracker.Kind = %q, want %q", cfg.Tracker.Kind, TrackerHubNative)
 	}
 	if cfg.Identity.Name != "release-captain" {
 		t.Fatalf("Identity.Name = %q, want release-captain", cfg.Identity.Name)
@@ -1257,9 +957,6 @@ Ticket prompt {{ issue.title }}
 	}
 	if cfg.Tracker.Endpoint != "https://api.github.com/graphql" {
 		t.Fatalf("Tracker.Endpoint = %q", cfg.Tracker.Endpoint)
-	}
-	if cfg.Tracker.WriteProbeIssue != "digitaldrywood/detent#1" {
-		t.Fatalf("Tracker.WriteProbeIssue = %q, want digitaldrywood/detent#1", cfg.Tracker.WriteProbeIssue)
 	}
 	if cfg.Tracker.HTTPMaxIdleConns != 120 {
 		t.Fatalf("Tracker.HTTPMaxIdleConns = %d, want 120", cfg.Tracker.HTTPMaxIdleConns)
@@ -1348,9 +1045,6 @@ Ticket prompt {{ issue.title }}
 	if got := cfg.Tracker.BlockedRecovery.ReasonCodes; !reflect.DeepEqual(got, []string{"merge_conflict", "stale_base", "missing_current_head_ci"}) {
 		t.Fatalf("Tracker.BlockedRecovery.ReasonCodes = %#v, want canonical reason codes", got)
 	}
-	if cfg.Tracker.BlockedRecovery.BreakerCooldownSeconds != 43200 {
-		t.Fatalf("Tracker.BlockedRecovery.BreakerCooldownSeconds = %d, want 43200", cfg.Tracker.BlockedRecovery.BreakerCooldownSeconds)
-	}
 	if !cfg.Tracker.BlockerAutoPromote.Enabled {
 		t.Fatal("Tracker.BlockerAutoPromote.Enabled = false, want true")
 	}
@@ -1371,9 +1065,6 @@ Ticket prompt {{ issue.title }}
 	}
 	if cfg.Agent.MaxSessionDurationMS != 3600000 {
 		t.Fatalf("Agent.MaxSessionDurationMS = %d, want 3600000", cfg.Agent.MaxSessionDurationMS)
-	}
-	if cfg.Agent.NoProgressTimeoutMS != 1800000 {
-		t.Fatalf("Agent.NoProgressTimeoutMS = %d, want 1800000", cfg.Agent.NoProgressTimeoutMS)
 	}
 	if cfg.Agent.MergeWorkerStartupTimeoutMS != 180000 {
 		t.Fatalf("Agent.MergeWorkerStartupTimeoutMS = %d, want 180000", cfg.Agent.MergeWorkerStartupTimeoutMS)
@@ -1407,12 +1098,6 @@ Ticket prompt {{ issue.title }}
 	}
 	if source := cfg.Agent.Knowledge.Sources[0]; source.Name != "Team standards" || source.Path != "../knowledge/team.md" {
 		t.Fatalf("Agent.Knowledge.Sources[0] = %#v, want team standards source", source)
-	}
-	if !cfg.Agent.Skills.Creation.Enabled {
-		t.Fatal("Agent.Skills.Creation.Enabled = false, want true")
-	}
-	if cfg.Agent.Skills.Creation.MaxDraftsPerRun != 3 {
-		t.Fatalf("Agent.Skills.Creation.MaxDraftsPerRun = %d, want 3", cfg.Agent.Skills.Creation.MaxDraftsPerRun)
 	}
 	if cfg.Agent.Followups.Enabled {
 		t.Fatal("Agent.Followups.Enabled = true, want false")
@@ -1492,223 +1177,53 @@ Ticket prompt {{ issue.title }}
 	}
 }
 
-func TestParseWorkflowRetroDefaultsAndValidation(t *testing.T) {
+func TestParseWorkflowHookShellSurvivesWorkerTransfer(t *testing.T) {
 	t.Parallel()
 
-	workflow, err := ParseWorkflow([]byte(`---
-tracker:
-  kind: memory
-  lanes:
-    - name: Backlog
-      role: holding
-    - name: Blocked
-      role: holding
-    - name: Todo
-      role: active
-    - name: Closed
-      role: terminal
-    - name: Cancelled
-      role: terminal
-    - name: Canceled
-      role: terminal
-    - name: Duplicate
-      role: terminal
-    - name: Done
-      role: terminal
-retro:
-  enabled: true
-  target_state: Backlog
-  allow_public_cross_project_details: true
----
-Prompt
-`))
-	if err != nil {
-		t.Fatalf("ParseWorkflow() error = %v", err)
+	tests := []struct {
+		name  string
+		shell string
+		want  string
+	}{
+		{name: "worker default"},
+		{name: "blank worker default", shell: "  "},
+		{name: "explicit bash", shell: "bash", want: "bash"},
+		{name: "explicit sh", shell: "sh", want: "sh"},
+		{name: "explicit PowerShell", shell: " pwsh ", want: "pwsh"},
+		{name: "explicit path", shell: `C:\Tools\bash.exe`, want: `C:\Tools\bash.exe`},
 	}
-	if err := workflow.Config.Validate(); err != nil {
-		t.Fatalf("Validate() error = %v", err)
-	}
-	retro := workflow.Config.Retro
-	if !retro.Enabled || !retro.AllowPublicCrossProjectDetails || retro.DailyIssueCap != 3 || retro.LookbackDays != 7 || retro.MinOccurrences != 2 || retro.ProductRepository != "digitaldrywood/detent" || !reflect.DeepEqual(retro.Labels, []string{"retro"}) {
-		t.Fatalf("Retro = %#v", retro)
-	}
-}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-func TestParseWorkflowGitHubIssueFieldTracker(t *testing.T) {
-	t.Parallel()
-
-	raw := []byte(`---
-tracker:
-  kind: github
-  api_key: $GITHUB_TOKEN
-  github_status_source: issue_field
-  repository: digitaldrywood/detent
-  lanes:
-    - name: Backlog
-      role: holding
-    - name: Human Review
-      role: holding
-    - name: Blocked
-      role: holding
-    - name: Todo
-      role: active
-    - name: Closed
-      role: terminal
-    - name: Cancelled
-      role: terminal
-    - name: Canceled
-      role: terminal
-    - name: Duplicate
-      role: terminal
-    - name: Done
-      role: terminal
----
-Prompt
-`)
-
-	workflow, err := ParseWorkflow(raw)
-	if err != nil {
-		t.Fatalf("ParseWorkflow() error = %v", err)
-	}
-	cfg := workflow.Config
-	if err := cfg.Validate(); err != nil {
-		t.Fatalf("Validate() error = %v", err)
-	}
-	if cfg.Tracker.GitHubStatusSource != GitHubStatusSourceIssueField {
-		t.Fatalf("GitHubStatusSource = %q, want %q", cfg.Tracker.GitHubStatusSource, GitHubStatusSourceIssueField)
-	}
-	if cfg.Tracker.Repository != "digitaldrywood/detent" {
-		t.Fatalf("Repository = %q, want digitaldrywood/detent", cfg.Tracker.Repository)
-	}
-	if cfg.Tracker.StatusField != "Status" {
-		t.Fatalf("StatusField = %q, want Status", cfg.Tracker.StatusField)
-	}
-	if cfg.Tracker.ProjectSlug != "" {
-		t.Fatalf("ProjectSlug = %q, want empty for issue_field source", cfg.Tracker.ProjectSlug)
-	}
-}
-
-func TestParseWorkflowGitHubLabelTracker(t *testing.T) {
-	t.Parallel()
-
-	raw := []byte(`---
-tracker:
-  kind: github
-  api_key: $GITHUB_TOKEN
-  github_status_source: label
-  repository: digitaldrywood/detent
-  status_label_prefix: "detent:"
-  lanes:
-    - name: Backlog
-      role: holding
-    - name: Human Review
-      role: holding
-    - name: Blocked
-      role: holding
-    - name: Todo
-      role: active
-    - name: Closed
-      role: terminal
-    - name: Cancelled
-      role: terminal
-    - name: Canceled
-      role: terminal
-    - name: Duplicate
-      role: terminal
-    - name: Done
-      role: terminal
----
-Prompt
-`)
-
-	workflow, err := ParseWorkflow(raw)
-	if err != nil {
-		t.Fatalf("ParseWorkflow() error = %v", err)
-	}
-	cfg := workflow.Config
-	if err := cfg.Validate(); err != nil {
-		t.Fatalf("Validate() error = %v", err)
-	}
-	if cfg.Tracker.GitHubStatusSource != GitHubStatusSourceLabel {
-		t.Fatalf("GitHubStatusSource = %q, want %q", cfg.Tracker.GitHubStatusSource, GitHubStatusSourceLabel)
-	}
-	if cfg.Tracker.Repository != "digitaldrywood/detent" {
-		t.Fatalf("Repository = %q, want digitaldrywood/detent", cfg.Tracker.Repository)
-	}
-	if cfg.Tracker.StatusLabelPrefix != "detent:" {
-		t.Fatalf("StatusLabelPrefix = %q, want detent:", cfg.Tracker.StatusLabelPrefix)
-	}
-	if cfg.Tracker.ProjectSlug != "" {
-		t.Fatalf("ProjectSlug = %q, want empty for label source", cfg.Tracker.ProjectSlug)
-	}
-}
-
-func TestValidateGitHubProjectV2StillRequiresProjectSlug(t *testing.T) {
-	t.Parallel()
-
-	cfg := Default()
-	cfg.Tracker.Kind = TrackerGitHub
-	cfg.Tracker.APIKey = "token"
-	cfg.Tracker.ProjectSlug = ""
-
-	err := cfg.Validate()
-	if err == nil || !strings.Contains(err.Error(), "tracker.project_slug") {
-		t.Fatalf("Validate() error = %v, want project_slug requirement", err)
-	}
-}
-
-func TestValidateGitHubIssueFieldRequiresRepository(t *testing.T) {
-	t.Parallel()
-
-	cfg := Default()
-	cfg.Tracker.Kind = TrackerGitHub
-	cfg.Tracker.APIKey = "token"
-	cfg.Tracker.GitHubStatusSource = GitHubStatusSourceIssueField
-	cfg.Tracker.ProjectSlug = ""
-	cfg.Tracker.Repository = ""
-
-	err := cfg.Validate()
-	if err == nil || !strings.Contains(err.Error(), "tracker.repository") {
-		t.Fatalf("Validate() error = %v, want repository requirement", err)
-	}
-	if strings.Contains(err.Error(), "tracker.project_slug") {
-		t.Fatalf("Validate() error = %v, want no project_slug requirement in issue_field mode", err)
-	}
-}
-
-func TestValidateGitHubLabelRequiresRepository(t *testing.T) {
-	t.Parallel()
-
-	cfg := Default()
-	cfg.Tracker.Kind = TrackerGitHub
-	cfg.Tracker.APIKey = "token"
-	cfg.Tracker.GitHubStatusSource = GitHubStatusSourceLabel
-	cfg.Tracker.ProjectSlug = ""
-	cfg.Tracker.Repository = ""
-
-	err := cfg.Validate()
-	if err == nil || !strings.Contains(err.Error(), "tracker.repository") {
-		t.Fatalf("Validate() error = %v, want repository requirement", err)
-	}
-	if strings.Contains(err.Error(), "tracker.project_slug") {
-		t.Fatalf("Validate() error = %v, want no project_slug requirement in label mode", err)
-	}
-}
-
-func TestNormalizeGitHubLabelStatusSourceAliases(t *testing.T) {
-	t.Parallel()
-
-	for _, value := range []string{"label", "labels", "issue_label", "issue_labels"} {
-		if got := normalizeGitHubStatusSource(value); got != GitHubStatusSourceLabel {
-			t.Fatalf("normalizeGitHubStatusSource(%q) = %q, want %q", value, got, GitHubStatusSourceLabel)
-		}
+			raw := fmt.Sprintf("---\ntracker:\n  kind: hub_native\nhooks:\n  shell: %q\n---\nPrompt\n", tt.shell)
+			workflow, err := ParseWorkflow([]byte(raw))
+			if err != nil {
+				t.Fatal(err)
+			}
+			workflow.Config.normalize()
+			if workflow.Config.Hooks.Shell != tt.want {
+				t.Fatalf("normalized hook shell = %q, want %q", workflow.Config.Hooks.Shell, tt.want)
+			}
+			data, err := json.Marshal(workflow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var transferred Workflow
+			if err := json.Unmarshal(data, &transferred); err != nil {
+				t.Fatal(err)
+			}
+			if got := transferred.Config.Hooks.Shell; got != tt.want {
+				t.Fatalf("transferred hook shell = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
 func TestParseWorkflowDefaults(t *testing.T) {
 	t.Parallel()
 
-	workflow, err := ParseWorkflow([]byte("---\ntracker:\n  kind: memory\n---\nPrompt\n"))
+	workflow, err := ParseWorkflow([]byte("---\ntracker:\n  kind: hub_native\n---\nPrompt\n"))
 	if err != nil {
 		t.Fatalf("ParseWorkflow() error = %v", err)
 	}
@@ -1718,7 +1233,7 @@ func TestParseWorkflowDefaults(t *testing.T) {
 		t.Fatalf("Validate() error = %v", err)
 	}
 
-	if cfg.Tracker.Endpoint != "https://api.linear.app/graphql" {
+	if cfg.Tracker.Endpoint != "" {
 		t.Fatalf("Tracker.Endpoint = %q", cfg.Tracker.Endpoint)
 	}
 	if cfg.Identity.Configured() {
@@ -1750,9 +1265,6 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	}
 	if got := cfg.Tracker.BlockedRecovery.ReasonCodes; !reflect.DeepEqual(got, []string{"merge_conflict", "stale_base", "missing_current_head_ci"}) {
 		t.Fatalf("Tracker.BlockedRecovery.ReasonCodes = %#v, want default allowlist", got)
-	}
-	if cfg.Tracker.BlockedRecovery.BreakerCooldownSeconds != 86400 {
-		t.Fatalf("Tracker.BlockedRecovery.BreakerCooldownSeconds = %d, want 86400", cfg.Tracker.BlockedRecovery.BreakerCooldownSeconds)
 	}
 	if cfg.Tracker.BlockerAutoPromote.Enabled {
 		t.Fatal("Tracker.BlockerAutoPromote.Enabled = true, want disabled by default")
@@ -1815,9 +1327,6 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	if cfg.Agent.MaxSessionDurationMS != DefaultMaxSessionDurationMS {
 		t.Fatalf("Agent.MaxSessionDurationMS = %d, want %d", cfg.Agent.MaxSessionDurationMS, DefaultMaxSessionDurationMS)
 	}
-	if cfg.Agent.NoProgressTimeoutMS != DefaultNoProgressTimeoutMS {
-		t.Fatalf("Agent.NoProgressTimeoutMS = %d, want legacy default %d", cfg.Agent.NoProgressTimeoutMS, DefaultNoProgressTimeoutMS)
-	}
 	if cfg.Agent.MaxSessionTokens != 0 {
 		t.Fatalf("Agent.MaxSessionTokens = %d, want disabled default", cfg.Agent.MaxSessionTokens)
 	}
@@ -1857,12 +1366,6 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	if len(cfg.Agent.Knowledge.Sources) != 0 {
 		t.Fatalf("Agent.Knowledge.Sources = %#v, want empty default", cfg.Agent.Knowledge.Sources)
 	}
-	if !cfg.Agent.Skills.Creation.Enabled {
-		t.Fatal("Agent.Skills.Creation.Enabled = false, want true default")
-	}
-	if cfg.Agent.Skills.Creation.MaxDraftsPerRun != 1 {
-		t.Fatalf("Agent.Skills.Creation.MaxDraftsPerRun = %d, want 1", cfg.Agent.Skills.Creation.MaxDraftsPerRun)
-	}
 	if !cfg.Agent.Followups.Enabled {
 		t.Fatal("Agent.Followups.Enabled = false, want true default")
 	}
@@ -1884,8 +1387,8 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	if strings.TrimSpace(cfg.Codex.Shell) == "" {
 		t.Fatal("Codex.Shell is blank, want per-OS default")
 	}
-	if strings.TrimSpace(cfg.Hooks.Shell) == "" {
-		t.Fatal("Hooks.Shell is blank, want per-OS default")
+	if cfg.Hooks.Shell != "" {
+		t.Fatalf("Hooks.Shell = %q, want default resolved on the executing worker", cfg.Hooks.Shell)
 	}
 	if cfg.Server.Host != "127.0.0.1" {
 		t.Fatalf("Server.Host = %q", cfg.Server.Host)
@@ -1898,9 +1401,6 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	}
 	if cfg.Observability.DispatchStallThresholdSeconds != DefaultDispatchStallThresholdSeconds {
 		t.Fatalf("Observability.DispatchStallThresholdSeconds = %d, want %d", cfg.Observability.DispatchStallThresholdSeconds, DefaultDispatchStallThresholdSeconds)
-	}
-	if cfg.Observability.ParkReviewThreshold != DefaultParkReviewThreshold {
-		t.Fatalf("Observability.ParkReviewThreshold = %d, want %d", cfg.Observability.ParkReviewThreshold, DefaultParkReviewThreshold)
 	}
 	if cfg.Observability.Efficiency.AnomalyTokensMultiple != 3 || cfg.Observability.Efficiency.AnomalySessionsMultiple != 3 || cfg.Observability.Efficiency.AnomalyDwellMultiple != 3 {
 		t.Fatalf("Observability.Efficiency = %#v, want 3x defaults", cfg.Observability.Efficiency)
@@ -1934,7 +1434,7 @@ func TestParseWorkflowDefaults(t *testing.T) {
 func TestParseWorkflowCanDisableOrphanedSessionResume(t *testing.T) {
 	t.Parallel()
 
-	workflow, err := ParseWorkflow([]byte("---\ntracker:\n  kind: memory\nagent:\n  resume_orphaned_sessions: false\n---\nPrompt\n"))
+	workflow, err := ParseWorkflow([]byte("---\ntracker:\n  kind: hub_native\nagent:\n  resume_orphaned_sessions: false\n---\nPrompt\n"))
 	if err != nil {
 		t.Fatalf("ParseWorkflow() error = %v", err)
 	}
@@ -2272,32 +1772,6 @@ func TestKanbanTransitionPolicyAllowsConfiguredOverrides(t *testing.T) {
 	}
 }
 
-func TestServerBoardSnapshotStaleness(t *testing.T) {
-	t.Parallel()
-
-	if got := Default().Server.BoardSnapshotStaleAfterSeconds; got != DefaultBoardSnapshotStaleAfterSeconds {
-		t.Fatalf("Default Server.BoardSnapshotStaleAfterSeconds = %d, want %d", got, DefaultBoardSnapshotStaleAfterSeconds)
-	}
-	workflow, err := ParseWorkflow([]byte(`---
-tracker:
-  kind: memory
-server:
-  board_snapshot_stale_after_seconds: 120
----
-Prompt
-`))
-	if err != nil {
-		t.Fatalf("ParseWorkflow() error = %v", err)
-	}
-	if got := workflow.Config.Server.BoardSnapshotStaleAfterSeconds; got != 120 {
-		t.Fatalf("Server.BoardSnapshotStaleAfterSeconds = %d, want 120", got)
-	}
-	workflow.Config.Server.BoardSnapshotStaleAfterSeconds = -1
-	if err := workflow.Config.Validate(); err == nil || !strings.Contains(err.Error(), "server.board_snapshot_stale_after_seconds must be greater than 0") {
-		t.Fatalf("Validate() error = %v, want board snapshot staleness validation", err)
-	}
-}
-
 func TestDefaultStalenessObservability(t *testing.T) {
 	t.Parallel()
 	cfg := Default()
@@ -2367,7 +1841,7 @@ func TestStalenessRepeatedDecisionBenignReasonsOverride(t *testing.T) {
 			name: "project override replaces defaults",
 			yaml: `---
 tracker:
-  kind: memory
+  kind: hub_native
 observability:
   staleness:
     repeated_decision_benign_reasons:
@@ -2398,7 +1872,7 @@ func TestStalenessRepeatedDecisionBenignReasonsRejectUnknownSchedulerReason(t *t
 	t.Parallel()
 
 	cfg := Default()
-	cfg.Tracker.Kind = TrackerMemory
+	cfg.Tracker.Kind = TrackerHubNative
 	cfg.Observability.Staleness.RepeatedDecisionBenignReasons = []string{"unauthorized"}
 	err := cfg.Validate()
 	if err == nil {
@@ -2425,7 +1899,7 @@ func TestStalenessRepeatedDecisionBenignReasonsAcceptHistoricalReasons(t *testin
 	} {
 		t.Run(reason, func(t *testing.T) {
 			t.Parallel()
-			workflow, err := ParseWorkflow([]byte("---\ntracker:\n  kind: memory\nobservability:\n  staleness:\n    repeated_decision_benign_reasons:\n      - " + reason + "\n---\nPrompt\n"))
+			workflow, err := ParseWorkflow([]byte("---\ntracker:\n  kind: hub_native\nobservability:\n  staleness:\n    repeated_decision_benign_reasons:\n      - " + reason + "\n---\nPrompt\n"))
 			if err != nil {
 				t.Fatalf("ParseWorkflow() rejected historical reason: %v", err)
 			}
@@ -2514,7 +1988,7 @@ func TestParseWorkflowAgentsConfig(t *testing.T) {
 
 	workflow, err := ParseWorkflow([]byte(`---
 tracker:
-  kind: memory
+  kind: hub_native
 agents:
   backends:
     - id: codex-high
@@ -2610,7 +2084,7 @@ func TestParseWorkflowClaudeCodeAgentBackendConfig(t *testing.T) {
 
 	workflow, err := ParseWorkflow([]byte(`---
 tracker:
-  kind: memory
+  kind: hub_native
 agents:
   backends:
     - id: claude-worker
@@ -2693,7 +2167,7 @@ func TestParseWorkflowAgentRoleEffort(t *testing.T) {
 
 	workflow, err := ParseWorkflow([]byte(`---
 tracker:
-  kind: memory
+  kind: hub_native
 agent:
   effort:
     code: xhigh
@@ -2774,7 +2248,7 @@ func TestAgentBackendConfigsMergesLegacyCodexDefaults(t *testing.T) {
 
 	workflow, err := ParseWorkflow([]byte(`---
 tracker:
-  kind: memory
+  kind: hub_native
 codex:
   command: codex app-server
   shell: bash
@@ -2850,7 +2324,7 @@ func TestParseWorkflowCommandGateDisablesAutomatedReviewRequirement(t *testing.T
 
 	workflow, err := ParseWorkflow([]byte(`---
 tracker:
-  kind: memory
+  kind: hub_native
 gate:
   kind: command
   run: make check
@@ -2897,7 +2371,7 @@ func TestParseWorkflowAutomatedReviewModeAndTimeoutAction(t *testing.T) {
 
 			raw := fmt.Sprintf(`---
 tracker:
-  kind: memory
+  kind: hub_native
 agent:
   auto_promote:
     gate_wait_timeout_action: %s
@@ -2929,7 +2403,7 @@ func TestParseWorkflowCommandGateCIFailureAction(t *testing.T) {
 
 	workflow, err := ParseWorkflow([]byte(`---
 tracker:
-  kind: memory
+  kind: hub_native
 gate:
   kind: command
   run: make check
@@ -2959,7 +2433,7 @@ func TestParseWorkflowGateRequiredStatusChecks(t *testing.T) {
 
 	workflow, err := ParseWorkflow([]byte(`---
 tracker:
-  kind: memory
+  kind: hub_native
 gate:
   required_status_checks:
     - " Lint "
@@ -2986,7 +2460,7 @@ func TestParseWorkflowGateCITriggerLabel(t *testing.T) {
 
 	workflow, err := ParseWorkflow([]byte(`---
 tracker:
-  kind: memory
+  kind: hub_native
 gate:
   ci_trigger_label: " CI:Ready "
   ci_trigger_label_stagger_seconds: 20
@@ -3013,7 +2487,7 @@ func TestParseWorkflowGateCITriggerLabelRejectsZeroStagger(t *testing.T) {
 
 	workflow, err := ParseWorkflow([]byte(`---
 tracker:
-  kind: memory
+  kind: hub_native
 gate:
   ci_trigger_label: ci:ready
   ci_trigger_label_stagger_seconds: 0
@@ -3033,7 +2507,7 @@ func TestParseWorkflowGateTransientCIRetryLimitCanDisable(t *testing.T) {
 
 	workflow, err := ParseWorkflow([]byte(`---
 tracker:
-  kind: memory
+  kind: hub_native
 gate:
   transient_ci_retry_limit: 0
 ---
@@ -3054,7 +2528,7 @@ func TestParseWorkflowGateValidatorConfig(t *testing.T) {
 
 	workflow, err := ParseWorkflow([]byte(`---
 tracker:
-  kind: memory
+  kind: hub_native
 gate:
   kind: command
   validator:
@@ -3116,6 +2590,9 @@ func TestParseWorkflowGateSecurityAuditConfig(t *testing.T) {
 		{"explicit native opt out", "gate:\n  security_audit:\n    enabled: false\n", false},
 		{"explicit native enabled", "gate:\n  security_audit:\n    enabled: true\n", true},
 		{"partial audit config", "gate:\n  security_audit:\n    max_attempts: 4\n", true},
+		{"default native github pull request", "deliverable:\n  github_pull_request: true\n", true},
+		{"native github pull request opt out", "deliverable:\n  github_pull_request: true\ngate:\n  security_audit:\n    enabled: false\n", false},
+		{"native github pull request enabled", "deliverable:\n  github_pull_request: true\ngate:\n  security_audit:\n    enabled: true\n", true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			workflow, err := ParseWorkflow([]byte("---\ntracker:\n  kind: hub_native\n" + test.setting + "---\nPrompt\n"))
@@ -3133,11 +2610,7 @@ func TestParseWorkflowGateSecurityAuditConfig(t *testing.T) {
 
 	workflow, err := ParseWorkflow([]byte(`---
 tracker:
-  kind: github_local
-  api_key: ghp_example
-  repository: example-org/example-project
-  local_sqlite:
-    path: .detent/work-items.db
+  kind: hub_native
 gate:
   kind: command
   security_audit:
@@ -3174,7 +2647,7 @@ func TestParseWorkflowAgentRoutesCanUseLegacyCodexBackend(t *testing.T) {
 
 	workflow, err := ParseWorkflow([]byte(`---
 tracker:
-  kind: memory
+  kind: hub_native
 codex:
   command: codex app-server
 agents:
@@ -3201,7 +2674,7 @@ func TestParseWorkflowMemoryTrackerIssues(t *testing.T) {
 
 	workflow, err := ParseWorkflow([]byte(`---
 tracker:
-  kind: memory
+  kind: hub_native
   issues:
     - id: issue-1
       identifier: MT-1
@@ -3272,7 +2745,7 @@ func TestParseWorkflowMemoryTrackerIssueDefaults(t *testing.T) {
 
 	workflow, err := ParseWorkflow([]byte(`---
 tracker:
-  kind: memory
+  kind: hub_native
   issues:
     - id: issue-1
 ---
@@ -3294,15 +2767,12 @@ Prompt
 	}
 }
 
-func TestParseWorkflowLocalSQLiteArtifactWorkflow(t *testing.T) {
+func TestParseWorkflowNativeArtifactWorkflow(t *testing.T) {
 	t.Parallel()
 
 	workflow, err := ParseWorkflow([]byte(`---
 tracker:
-  kind: local_sqlite
-  local_sqlite:
-    path: .detent/work-items.db
-    project_id: video-production
+  kind: hub_native
   lanes:
     - name: Review
       role: holding
@@ -3353,7 +2823,7 @@ Produce the video artifact.
 	}
 
 	cfg := workflow.Config
-	if cfg.Tracker.Kind != TrackerLocalSQLite || cfg.Tracker.LocalSQLite.Path != ".detent/work-items.db" || cfg.Tracker.LocalSQLite.ProjectID != "video-production" {
+	if cfg.Tracker.Kind != TrackerHubNative {
 		t.Fatalf("Tracker local sqlite config = %#v", cfg.Tracker)
 	}
 	if cfg.Workspace.Kind != WorkspaceFilesystem || cfg.Workspace.Root != ".detent/workspaces" || cfg.Workspace.OutputRoot != ".detent/renders" {
@@ -3376,38 +2846,6 @@ Produce the video artifact.
 	}
 }
 
-func TestParseWorkflowGitHubLocalTracker(t *testing.T) {
-	t.Parallel()
-
-	workflow, err := ParseWorkflow([]byte(`---
-tracker:
-  kind: github_local
-  api_key: ghp_example
-  repository: digitaldrywood/detent
-  local_sqlite:
-    path: .detent/work-items.db
----
-Prompt
-`))
-	if err != nil {
-		t.Fatalf("ParseWorkflow() error = %v", err)
-	}
-	if err := workflow.Config.Validate(); err != nil {
-		t.Fatalf("Validate() error = %v", err)
-	}
-
-	cfg := workflow.Config
-	if cfg.Tracker.Kind != TrackerGitHubLocal {
-		t.Fatalf("Tracker.Kind = %q, want %q", cfg.Tracker.Kind, TrackerGitHubLocal)
-	}
-	if cfg.Tracker.Endpoint != defaultGitHubEndpoint {
-		t.Fatalf("Tracker.Endpoint = %q, want %q", cfg.Tracker.Endpoint, defaultGitHubEndpoint)
-	}
-	if cfg.Tracker.GitHubStatusSource != GitHubStatusSourceProjectV2 {
-		t.Fatalf("GitHubStatusSource default changed to %q", cfg.Tracker.GitHubStatusSource)
-	}
-}
-
 func TestTrackerStatusPageDefaultsAndOverride(t *testing.T) {
 	t.Parallel()
 
@@ -3418,9 +2856,7 @@ func TestTrackerStatusPageDefaultsAndOverride(t *testing.T) {
 		want       string
 	}{
 		{name: "github default", kind: TrackerGitHub, want: defaultGitHubStatusPageURL},
-		{name: "github local default", kind: TrackerGitHubLocal, want: defaultGitHubStatusPageURL},
-		{name: "linear default", kind: TrackerLinear, want: defaultLinearStatusPageURL},
-		{name: "unknown connector has no source", kind: TrackerMemory},
+		{name: "unknown connector has no source", kind: TrackerHubNative},
 		{name: "configured source overrides default", kind: TrackerGitHub, configured: "https://status.example.com/", want: "https://status.example.com"},
 	}
 	for _, tt := range tests {
@@ -3465,32 +2901,6 @@ func TestValidateStatusPageURL(t *testing.T) {
 	}
 }
 
-func TestParseWorkflowGitHubLocalRejectsGitHubStatusSource(t *testing.T) {
-	t.Parallel()
-
-	workflow, err := ParseWorkflow([]byte(`---
-tracker:
-  kind: github_local
-  api_key: ghp_example
-  repository: digitaldrywood/detent
-  github_status_source: label
-  local_sqlite:
-    path: .detent/work-items.db
----
-Prompt
-`))
-	if err != nil {
-		t.Fatalf("ParseWorkflow() error = %v", err)
-	}
-	err = workflow.Config.Validate()
-	if err == nil {
-		t.Fatal("Validate() error = nil, want github_status_source rejection")
-	}
-	if !strings.Contains(err.Error(), "tracker.github_status_source must be omitted when tracker.kind is github_local") {
-		t.Fatalf("Validate() error = %q, want github_status_source rejection", err)
-	}
-}
-
 func TestParseWorkflowNormalizesGitHubAppIDs(t *testing.T) {
 	t.Parallel()
 
@@ -3498,7 +2908,6 @@ func TestParseWorkflowNormalizesGitHubAppIDs(t *testing.T) {
 tracker:
   kind: github
   api_key: token
-  project_slug: PVT_project
   github_app_id: 12345
   github_app_installation_id: 67890
 ---
@@ -3516,34 +2925,12 @@ Prompt
 	}
 }
 
-func TestConfigValidateAcceptsGitHubAppCredentials(t *testing.T) {
-	t.Parallel()
-
-	workflow, err := ParseWorkflow([]byte(`---
-tracker:
-  kind: github
-  project_slug: PVT_project
-  github_app_id: 12345
-  github_app_private_key_path: .detent/github-app.pem
-  github_app_installation_id: 67890
----
-Prompt
-`))
-	if err != nil {
-		t.Fatalf("ParseWorkflow() error = %v", err)
-	}
-
-	if err := workflow.Config.Validate(); err != nil {
-		t.Fatalf("Validate() error = %v", err)
-	}
-}
-
 func TestStringOrMapFieldsAcceptScalarOrMapping(t *testing.T) {
 	t.Parallel()
 
 	workflow, err := ParseWorkflow([]byte(`---
 tracker:
-  kind: memory
+  kind: hub_native
   state_map: $STATE_MAP_JSON
   priority_map:
     P0: 1
@@ -3578,7 +2965,7 @@ func TestParseWorkflowDeliverableElicitationAllowlist(t *testing.T) {
 
 	workflow, err := ParseWorkflow([]byte(`---
 tracker:
-  kind: memory
+  kind: hub_native
 codex:
   deliverable_elicitation_allowlist:
     - server: " codex_apps "
@@ -3655,7 +3042,7 @@ func TestDeliverableElicitationAllowlistValidation(t *testing.T) {
 			t.Parallel()
 
 			cfg := Default()
-			cfg.Tracker.Kind = TrackerMemory
+			cfg.Tracker.Kind = TrackerHubNative
 			cfg.Codex.DeliverableElicitationAllowlist = tt.rules
 			err := cfg.Validate()
 			if tt.wantErr == "" {
@@ -3706,13 +3093,6 @@ func TestObservabilityValidation(t *testing.T) {
 				cfg.Observability.DispatchStallThresholdSeconds = 0
 			},
 			wantErr: "observability.dispatch_stall_threshold_seconds must be greater than 0",
-		},
-		{
-			name: "nonpositive park review threshold",
-			mutate: func(cfg *Config) {
-				cfg.Observability.ParkReviewThreshold = -1
-			},
-			wantErr: "observability.park_review_threshold must be greater than 0",
 		},
 	}
 	for _, tt := range tests {
@@ -3786,21 +3166,49 @@ func TestConfigValidateReportsInvalidSettings(t *testing.T) {
 		{
 			name: "unsupported tracker kind",
 			raw:  "---\ntracker:\n  kind: jira\n---\nPrompt\n",
-			want: []string{"tracker.kind must be one of"},
+			want: []string{"tracker.kind must be hub_native"},
 		},
 		{
-			name: "linear credentials",
+			name: "retired linear tracker",
 			raw:  "---\ntracker:\n  kind: linear\n---\nPrompt\n",
-			want: []string{"tracker.api_key is required for linear", "tracker.project_slug is required for linear"},
+			want: []string{"tracker.kind must be hub_native"},
 		},
+		{
+			name: "retired memory tracker",
+			raw:  "---\ntracker:\n  kind: memory\n---\nPrompt\n",
+			want: []string{"tracker.kind must be hub_native"},
+		},
+		{
+			name: "retired local_sqlite tracker",
+			raw:  "---\ntracker:\n  kind: local_sqlite\n---\nPrompt\n",
+			want: []string{"tracker.kind must be hub_native"},
+		},
+		{
+			name: "retired local tracker",
+			raw:  "---\ntracker:\n  kind: local\n---\nPrompt\n",
+			want: []string{"tracker.kind must be hub_native"},
+		},
+		{
+			name: "retired github_local tracker",
+			raw:  "---\ntracker:\n  kind: github_local\n---\nPrompt\n",
+			want: []string{"tracker.kind must be hub_native"},
+		},
+		{
+			name: "retired githublocal tracker",
+			raw:  "---\ntracker:\n  kind: githublocal\n---\nPrompt\n",
+			want: []string{"tracker.kind must be hub_native"},
+		},
+		{name: "retired configured github project_v2", raw: "---\ntracker:\n  kind: github\n  api_key: fixture-token\n  repository: example-org/example-project\n---\nPrompt\n", want: []string{"tracker.kind must be hub_native"}},
+		{name: "retired configured github issue_field", raw: "---\ntracker:\n  kind: github\n  api_key: fixture-token\n  repository: example-org/example-project\n---\nPrompt\n", want: []string{"tracker.kind must be hub_native"}},
+		{name: "retired configured github label", raw: "---\ntracker:\n  kind: github\n  api_key: fixture-token\n  repository: example-org/example-project\n---\nPrompt\n", want: []string{"tracker.kind must be hub_native"}},
 		{
 			name: "github credentials",
 			raw:  "---\ntracker:\n  kind: github\n---\nPrompt\n",
-			want: []string{"tracker.api_key or GitHub App credentials are required for github", "tracker.project_slug is required for github"},
+			want: []string{"tracker.kind must be hub_native"},
 		},
 		{
 			name: "dependency source",
-			raw:  "---\ntracker:\n  kind: memory\ndependencies:\n  source: prose\n---\nPrompt\n",
+			raw:  "---\ntracker:\n  kind: hub_native\ndependencies:\n  source: prose\n---\nPrompt\n",
 			want: []string{"dependencies.source must be one of merged, native_only"},
 		},
 		{
@@ -3808,21 +3216,19 @@ func TestConfigValidateReportsInvalidSettings(t *testing.T) {
 			raw: `---
 tracker:
   kind: github
-  project_slug: PVT_project
   github_app_id: 12345
 ---
 Prompt
 `,
 			want: []string{
-				"tracker.github_app_installation_id is required for github app",
-				"tracker.github_app_private_key or tracker.github_app_private_key_path is required for github app",
+				"tracker.kind must be hub_native",
 			},
 		},
 		{
 			name: "positive numbers and states",
 			raw: `---
 tracker:
-  kind: memory
+  kind: hub_native
   http_max_idle_conns: 0
   http_max_idle_conns_per_host: 0
   http_idle_conn_timeout_ms: 0
@@ -3842,7 +3248,6 @@ agent:
   max_concurrent_agents: 0
   max_turn_duration_ms: -1
   max_session_duration_ms: -1
-  no_progress_timeout_ms: -1
   merge_worker_startup_timeout_ms: -1
   merge_worker_max_duration_ms: -1
   max_session_tokens: -1
@@ -3862,7 +3267,6 @@ observability:
 budget:
   per_day_max_usd: 0
 server:
-  port: -1
   kanban:
     mode: edit
     issue_state_field_id: -1
@@ -3884,7 +3288,6 @@ Prompt
 				"agent.max_concurrent_agents must be greater than 0",
 				"agent.max_turn_duration_ms must be greater than or equal to 0",
 				"agent.max_session_duration_ms must be greater than or equal to 0",
-				"agent.no_progress_timeout_ms must be greater than or equal to 0",
 				"agent.merge_worker_startup_timeout_ms must be greater than 0",
 				"agent.merge_worker_max_duration_ms must be greater than 0",
 				"agent.max_session_tokens must be greater than or equal to 0",
@@ -3897,7 +3300,6 @@ Prompt
 				"hooks.timeout_ms must be greater than 0",
 				"observability.refresh_ms must be greater than 0",
 				"budget.per_day_max_usd must be greater than 0",
-				"server.port must be greater than or equal to 0",
 				"server.kanban.mode must be one of read_only, integration",
 				"server.kanban.issue_state_field_id must be greater than 0 when set",
 			},
@@ -3906,7 +3308,7 @@ Prompt
 			name: "invalid agent workflow instructions",
 			raw: `---
 tracker:
-  kind: memory
+  kind: hub_native
   lanes:
     - name: Blocked
       role: holding
@@ -3955,7 +3357,7 @@ Prompt
 			name: "polling interval floor",
 			raw: `---
 tracker:
-  kind: memory
+  kind: hub_native
 polling:
   interval_ms: 59999
 ---
@@ -3967,7 +3369,7 @@ Prompt
 			name: "invalid dependency auto unblock config",
 			raw: `---
 tracker:
-  kind: memory
+  kind: hub_native
   dependency_auto_unblock:
     enabled: true
     source_states: [""]
@@ -3987,7 +3389,7 @@ Prompt
 			name: "dependency auto unblock requires active rework",
 			raw: `---
 tracker:
-  kind: memory
+  kind: hub_native
   lanes:
     - name: Backlog
       role: holding
@@ -4026,7 +3428,7 @@ Prompt
 			name: "invalid blocked recovery config",
 			raw: `---
 tracker:
-  kind: memory
+  kind: hub_native
   lanes:
     - name: Backlog
       role: holding
@@ -4050,7 +3452,6 @@ tracker:
       role: terminal
   blocked_recovery:
     enabled: true
-    breaker_cooldown_seconds: -1
     source_states: [""]
     target_state: ""
     reason_codes:
@@ -4061,7 +3462,6 @@ tracker:
 Prompt
 `,
 			want: []string{
-				"tracker.blocked_recovery.breaker_cooldown_seconds must be greater than or equal to 0",
 				"tracker.blocked_recovery.source_states state names must not be blank",
 				"tracker.blocked_recovery.target_state is required when tracker.blocked_recovery.enabled is true",
 				"tracker.blocked_recovery.reason_codes must contain only merge_conflict, stale_base, missing_current_head_ci",
@@ -4072,7 +3472,7 @@ Prompt
 			name: "blocked recovery requires active target state",
 			raw: `---
 tracker:
-  kind: memory
+  kind: hub_native
   lanes:
     - name: Backlog
       role: holding
@@ -4112,7 +3512,7 @@ Prompt
 			name: "invalid blocker auto promote config",
 			raw: `---
 tracker:
-  kind: memory
+  kind: hub_native
   blocker_auto_promote:
     enabled: true
     source_states: [""]
@@ -4131,7 +3531,7 @@ Prompt
 			name: "invalid transient ci retry limit",
 			raw: `---
 tracker:
-  kind: memory
+  kind: hub_native
 gate:
   transient_ci_retry_limit: -1
 ---
@@ -4145,7 +3545,7 @@ Prompt
 			name: "invalid auto promote gate wait settings",
 			raw: `---
 tracker:
-  kind: memory
+  kind: hub_native
 agent:
   auto_promote:
     gate_wait_state: backlog
@@ -4162,7 +3562,7 @@ Prompt
 			name: "invalid automated review settings",
 			raw: `---
 tracker:
-  kind: memory
+  kind: hub_native
 agent:
   auto_promote:
     gate_wait_timeout_action: abandon
@@ -4180,7 +3580,7 @@ Prompt
 			name: "invalid paths and priority map",
 			raw: `---
 tracker:
-  kind: memory
+  kind: hub_native
   priority_map:
     "": 1
     Bad: 5
@@ -4192,8 +3592,6 @@ agent:
       - path: ""
   skills:
     path: /tmp/skills
-    creation:
-      max_drafts_per_run: 0
 ---
 Prompt
 `,
@@ -4203,14 +3601,13 @@ Prompt
 				"agent.lessons.path must be a relative path inside the workspace",
 				"agent.knowledge.sources[0].path must not be blank",
 				"agent.skills.path must be a relative path inside the workspace",
-				"agent.skills.creation.max_drafts_per_run must be greater than 0",
 			},
 		},
 		{
 			name: "invalid agents config",
 			raw: `---
 tracker:
-  kind: memory
+  kind: hub_native
 agents:
   backends:
     - id: codex
@@ -4239,7 +3636,7 @@ Prompt
 			name: "invalid claude code protocol",
 			raw: `---
 tracker:
-  kind: memory
+  kind: hub_native
 agents:
   backends:
     - id: claude
@@ -4259,7 +3656,7 @@ Prompt
 			name: "invalid agent backend options decode",
 			raw: `---
 tracker:
-  kind: memory
+  kind: hub_native
 agents:
   backends:
     - id: codex
@@ -4282,7 +3679,7 @@ Prompt
 			name: "invalid claude code permission mode",
 			raw: `---
 tracker:
-  kind: memory
+  kind: hub_native
 agents:
   backends:
     - id: claude
@@ -4303,7 +3700,7 @@ Prompt
 			name: "invalid runtime identity labels and effort",
 			raw: `---
 tracker:
-  kind: memory
+  kind: hub_native
 agents:
   backends:
     - id: claude
@@ -4326,7 +3723,7 @@ Prompt
 			name: "invalid claude code plan permission mode",
 			raw: `---
 tracker:
-  kind: memory
+  kind: hub_native
 agents:
   backends:
     - id: claude
@@ -4347,7 +3744,7 @@ Prompt
 			name: "invalid claude code option timeouts",
 			raw: `---
 tracker:
-  kind: memory
+  kind: hub_native
 agents:
   backends:
     - id: claude
@@ -4370,7 +3767,7 @@ Prompt
 			name: "invalid agent backend option timeouts",
 			raw: `---
 tracker:
-  kind: memory
+  kind: hub_native
 agents:
   backends:
     - id: codex
@@ -4400,7 +3797,7 @@ identity:
   github_login: detent-bot
   ownership_mode: field
 tracker:
-  kind: memory
+  kind: hub_native
   authorization:
     priority_in: [0]
     fields:
@@ -4422,7 +3819,7 @@ identity:
   name: release-captain
   github_login: detent-bot
 tracker:
-  kind: memory
+  kind: hub_native
   claims:
     enabled: true
     lease_field: ""
@@ -4440,7 +3837,7 @@ Prompt
 			name: "invalid gate config",
 			raw: `---
 tracker:
-  kind: memory
+  kind: hub_native
 gate:
   kind: checklist
   ci_failure_action: bounce
@@ -4456,7 +3853,7 @@ Prompt
 			name: "invalid validator config",
 			raw: `---
 tracker:
-  kind: memory
+  kind: hub_native
 gate:
   validator:
     enabled: true
@@ -4509,7 +3906,7 @@ func TestParseWorkflowReportsInvalidFrontmatter(t *testing.T) {
 		want string
 	}{
 		{name: "missing frontmatter", raw: "Prompt only\n", want: "missing YAML frontmatter"},
-		{name: "unterminated frontmatter", raw: "---\ntracker:\n  kind: memory\n", want: "unterminated YAML frontmatter"},
+		{name: "unterminated frontmatter", raw: "---\ntracker:\n  kind: hub_native\n", want: "unterminated YAML frontmatter"},
 		{name: "invalid yaml", raw: "---\ntracker: [\n---\nPrompt\n", want: "parse YAML frontmatter"},
 		{name: "not a map", raw: "---\n- tracker\n---\nPrompt\n", want: "workflow frontmatter must be a mapping"},
 	}
@@ -4536,9 +3933,11 @@ func TestReleaseConfigValidation(t *testing.T) {
 		name   string
 		change func(*Config)
 		want   string
+		warn   bool
 	}{
 		{
-			name: "valid github policy",
+			name: "retired github policy",
+			want: "tracker.kind must be hub_native",
 			change: func(cfg *Config) {
 				cfg.Tracker.Kind = TrackerGitHub
 				cfg.Tracker.APIKey = "token"
@@ -4548,17 +3947,44 @@ func TestReleaseConfigValidation(t *testing.T) {
 			},
 		},
 		{
-			name: "requires github tracker",
+			name: "native direct git rejects release automation",
 			change: func(cfg *Config) {
-				cfg.Tracker.Kind = TrackerMemory
+				cfg.Tracker.Kind = TrackerHubNative
+				cfg.Tracker.Repository = "example-org/example-project"
 				cfg.Release.Enabled = true
 			},
-			want: "release.enabled requires tracker.kind github or github_local",
+			want: "warning: release.enabled: release automation is unavailable for tracker.kind hub_native",
+			warn: true,
+		},
+		{
+			name: "native github pull request rejects release automation",
+			change: func(cfg *Config) {
+				cfg.Tracker.Kind = TrackerHubNative
+				cfg.Tracker.Repository = "example-org/example-project"
+				cfg.Deliverable.GitHubPullRequest = true
+				cfg.Release.Enabled = true
+			},
+			want: "warning: release.enabled: release automation is unavailable for tracker.kind hub_native",
+			warn: true,
+		},
+		{
+			name: "native direct git with release disabled",
+			change: func(cfg *Config) {
+				cfg.Tracker.Kind = TrackerHubNative
+			},
+		},
+		{
+			name: "native github pull request with release disabled",
+			change: func(cfg *Config) {
+				cfg.Tracker.Kind = TrackerHubNative
+				cfg.Deliverable.GitHubPullRequest = true
+			},
 		},
 		{
 			name: "green ci cannot be waived",
+			warn: true,
 			change: func(cfg *Config) {
-				cfg.Tracker.Kind = TrackerGitHub
+				cfg.Tracker.Kind = TrackerHubNative
 				cfg.Tracker.APIKey = "token"
 				cfg.Tracker.GitHubStatusSource = GitHubStatusSourceLabel
 				cfg.Tracker.Repository = "example/repo"
@@ -4569,8 +3995,9 @@ func TestReleaseConfigValidation(t *testing.T) {
 		},
 		{
 			name: "flaky rerun requires allowlist",
+			warn: true,
 			change: func(cfg *Config) {
-				cfg.Tracker.Kind = TrackerGitHub
+				cfg.Tracker.Kind = TrackerHubNative
 				cfg.Tracker.APIKey = "token"
 				cfg.Tracker.GitHubStatusSource = GitHubStatusSourceLabel
 				cfg.Tracker.Repository = "example/repo"
@@ -4586,7 +4013,15 @@ func TestReleaseConfigValidation(t *testing.T) {
 			t.Parallel()
 			cfg := Default()
 			test.change(&cfg)
+			warnings := cfg.ValidationWarnings()
+			const releaseWarning = "release.enabled: release automation is unavailable for tracker.kind hub_native, including deliverable.github_pull_request: true; requires tracker.kind github"
+			if got := slices.Contains(warnings, releaseWarning); got != test.warn {
+				t.Fatalf("ValidationWarnings() = %q, want release warning=%t", warnings, test.warn)
+			}
 			err := cfg.Validate()
+			if test.warn && (err == nil || !strings.Contains(err.Error(), releaseWarning)) {
+				t.Fatalf("Validate() error = %v, want release warning %q", err, releaseWarning)
+			}
 			if test.want == "" {
 				if err != nil {
 					t.Fatalf("Validate() error = %v", err)
@@ -4652,7 +4087,7 @@ func TestLoadWorkflowSandboxPolicy(t *testing.T) {
 							t.Fatal(err)
 						}
 					}
-					base := "tracker:\n  kind: memory\ncodex:\n  thread_sandbox: danger-full-access\n"
+					base := "tracker:\n  kind: hub_native\ncodex:\n  thread_sandbox: danger-full-access\n"
 					policy := "  turn_sandbox_policy: " + tt.policy + "\n"
 					offendingPath := basePath
 					if overlay {
@@ -4752,7 +4187,7 @@ func TestOperatorConfig(t *testing.T) {
 	}
 	explicit := Operator{Actions: []string{" Merge_When_Wedged ", "merge_when_wedged"}}
 	explicit.Normalize()
-	if !reflect.DeepEqual(explicit.Actions, []string{OperatorActionMergeWhenWedged}) || explicit.ActionEnabled(OperatorActionReturnRetiredParks) {
+	if !reflect.DeepEqual(explicit.Actions, []string{OperatorActionMergeWhenWedged}) {
 		t.Fatalf("explicit = %#v", explicit)
 	}
 	problems := Operator{Actions: []string{"file_deduped_issue"}, MergeWedgeSeconds: -1}.Validate("operator")
@@ -4792,11 +4227,10 @@ func TestWithRuntimeGitHubToken(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct{ name, kind, global, override, want string }{
 		{name: "github default", kind: TrackerGitHub, global: " global-token ", want: "global-token"},
-		{name: "local tracker default", kind: TrackerMemory, global: "global-token", want: "global-token"},
 		{name: "literal override", kind: TrackerGitHub, global: "global-token", override: "worker-token", want: "worker-token"},
 		{name: "environment override", kind: TrackerGitHub, global: "global-token", override: "$WORKER_TOKEN", want: "$WORKER_TOKEN"},
 		{name: "gh override", kind: TrackerGitHub, global: "global-token", override: "gh", want: "gh"},
-		{name: "no credentials", kind: TrackerMemory},
+		{name: "no credentials", kind: TrackerHubNative},
 		{name: "native default", kind: TrackerHubNative, global: "global-token"},
 		{name: "native explicit override", kind: TrackerHubNative, global: "global-token", override: "worker-token", want: "worker-token"},
 	} {
@@ -4826,7 +4260,7 @@ func TestClearedSandboxPolicyOverlay(t *testing.T) {
 				overlay := filepath.Join(dir, "detent.local.yaml")
 				for name, body := range map[string]string{
 					path:                              "Instructions.\n",
-					filepath.Join(dir, "detent.yaml"): "schema: 1\ntracker: {kind: memory}\ncodex:\n  thread_sandbox: danger-full-access\n  turn_sandbox_policy: {type: dangerFullAccess}\n",
+					filepath.Join(dir, "detent.yaml"): "schema: 1\ntracker: {kind: hub_native}\ncodex:\n  thread_sandbox: danger-full-access\n  turn_sandbox_policy: {type: dangerFullAccess}\n",
 					overlay:                           "schema: 1\ncodex:\n  thread_sandbox: ''\n  turn_sandbox_policy: " + policy + "\n",
 				} {
 					if err := os.WriteFile(name, []byte(body), 0o600); err != nil {
@@ -4863,7 +4297,7 @@ func TestTypelessSandboxPolicyValidation(t *testing.T) {
 	for _, thread := range []string{"", "custom", "workspace-write", "danger-full-access", "read-only"} {
 		for _, backend := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/backend=%t", thread, backend), func(t *testing.T) {
-				body := "---\ntracker: {kind: memory}\ncodex:\n  thread_sandbox: " + fmt.Sprintf("%q", thread) + "\n"
+				body := "---\ntracker: {kind: hub_native}\ncodex:\n  thread_sandbox: " + fmt.Sprintf("%q", thread) + "\n"
 				if backend {
 					body += "agents:\n  backends:\n    - id: primary\n      kind: codex\n      options:\n        turn_sandbox_policy: {networkAccess: false}\n"
 				} else {

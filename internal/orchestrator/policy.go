@@ -3,10 +3,9 @@ package orchestrator
 import (
 	"context"
 	"encoding/json"
-	"errors"
-	"strings"
 
 	"github.com/digitaldrywood/detent/internal/policy"
+	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
 )
 
@@ -30,21 +29,19 @@ func (o *Orchestrator) prepareDispatchProject(ctx context.Context) error {
 	return preparer.PrepareProject(ctx, o.cfg.Project.ID)
 }
 
-func (o *Orchestrator) checkAttemptPolicy(attempt store.WorkAttempt) error {
-	if o.cfg.Policy.ID == "" && strings.TrimSpace(attempt.WorkerMetadataJSON) == "" {
-		return nil
-	}
+func persistedAttemptPolicy(attempt store.WorkAttempt) (policy.Descriptor, bool) {
 	var metadata struct {
 		Policy *policy.Descriptor `json:"policy"`
 	}
-	if err := json.Unmarshal([]byte(attempt.WorkerMetadataJSON), &metadata); err != nil {
-		return errors.New("policy_mismatch: recovery requires the attempt's persisted policy identity")
+	if err := json.Unmarshal([]byte(attempt.WorkerMetadataJSON), &metadata); err != nil || metadata.Policy == nil {
+		return policy.Descriptor{}, false
 	}
-	if metadata.Policy == nil {
-		if o.cfg.Policy.ID == "" {
-			return nil
-		}
-		return errors.New("policy_mismatch: recovery requires the attempt's persisted policy identity")
+	return *metadata.Policy, metadata.Policy.Validate() == nil
+}
+
+func (o *Orchestrator) dispatchAttemptPolicy(retry Retry, workerHost string) policy.Descriptor {
+	if retry.RetryMode == runpkg.RetryModeResume && retry.ResumeState.Orphaned && retry.Policy.ID != "" && (retry.WorkerHost == workerHost || o.nativeWorkflow()) {
+		return retry.Policy
 	}
-	return metadata.Policy.Match(o.cfg.Policy)
+	return o.cfg.Policy
 }

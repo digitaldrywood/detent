@@ -9,7 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-// Per-turn usage reporting (decisions section 17.5). The runner already
+// Per-turn usage reporting. The runner already
 // prices a whole session for its own store; the hub wants the same numbers
 // per turn so the usage report can group them by day, provider and model.
 // The execution accumulates the attempt total, so the runner only has to
@@ -80,4 +80,28 @@ func reportTurnUsage(ctx context.Context, execution Execution, result RunResult,
 	if err := recorder.RecordUsage(ctx, entry); err != nil && logger != nil {
 		logger.Warn("runner.usage_report_failed", "model", entry.Model, "provider", entry.Provider, "error", err)
 	}
+}
+
+type turnUsageReporter struct {
+	tokens TokenTotals
+}
+
+func (u *turnUsageReporter) report(ctx context.Context, execution Execution, result RunResult, model, backend string, price usagePricer, logger *slog.Logger) {
+	recorder, ok := execution.(UsageExecution)
+	if !ok {
+		return
+	}
+	tokens := result.Tokens
+	result.Tokens.InputTokens = max(0, tokens.InputTokens-u.tokens.InputTokens)
+	result.Tokens.CachedInputTokens = max(0, tokens.CachedInputTokens-u.tokens.CachedInputTokens)
+	result.Tokens.OutputTokens = max(0, tokens.OutputTokens-u.tokens.OutputTokens)
+	entry, reportable := turnUsageEntry(result, model, backend, price)
+	if !reportable {
+		return
+	}
+	if err := recorder.RecordUsage(ctx, entry); err != nil {
+		logger.Warn("runner.usage_report_failed", "model", entry.Model, "provider", entry.Provider, "error", err)
+		return
+	}
+	u.tokens = tokens
 }

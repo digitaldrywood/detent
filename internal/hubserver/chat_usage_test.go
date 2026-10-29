@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/genkitbackend"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -53,21 +54,17 @@ func TestConversationCoordinatorPersistsUsage(t *testing.T) {
 	record := f.seed(t, "Usage", nil)
 	f.say(t, &record, "Hello")
 	assistant := f.waitAssistant(t, record.ID, conversation.DeliveryCompleted)
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	testenv.WaitUntil(t, t.Context(), func() error {
 		var input, cached, output, reasoning int64
 		err := f.service.database.db.QueryRowContext(t.Context(), "SELECT input, cached_input, output, reasoning_output FROM conversation_usage WHERE turn_id=? AND organization_id=? AND conversation_id=?", assistant.ID, f.organization, record.ID).Scan(&input, &cached, &output, &reasoning)
-		if err == nil {
-			if input != 20 || cached != 5 || output != 10 || reasoning != 3 {
-				t.Fatalf("tokens = %d %d %d %d", input, cached, output, reasoning)
-			}
-			return
+		if err != nil {
+			return fmt.Errorf("durable usage missing: %w", err)
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("durable usage missing: %v", err)
+		if input != 20 || cached != 5 || output != 10 || reasoning != 3 {
+			t.Fatalf("tokens = %d %d %d %d", input, cached, output, reasoning)
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return nil
+	})
 }
 
 func TestChatUsagePriceVersionsAndPeriods(t *testing.T) {
@@ -276,22 +273,18 @@ func TestGenkitCoordinatorPersistsPricedUsage(t *testing.T) {
 	record := f.seed(t, "Usage", nil)
 	f.say(t, &record, "Hello")
 	assistant := f.waitAssistant(t, record.ID, conversation.DeliveryCompleted)
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	testenv.WaitUntil(t, t.Context(), func() error {
 		var cost float64
 		var provider string
 		err := f.service.database.db.QueryRowContext(t.Context(), "SELECT provider,cost_usd FROM conversation_usage WHERE turn_id=?", assistant.ID).Scan(&provider, &cost)
-		if err == nil {
-			if provider != "openai" || math.Abs(cost-.114) > 1e-12 {
-				t.Fatalf("provider=%s cost=%v", provider, cost)
-			}
-			break
+		if err != nil {
+			return fmt.Errorf("usage not persisted: %w", err)
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("usage not persisted: %v", err)
+		if provider != "openai" || math.Abs(cost-.114) > 1e-12 {
+			t.Fatalf("provider=%s cost=%v", provider, cost)
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return nil
+	})
 	databasePath := f.service.config.DatabasePath
 	if err := f.service.Close(); err != nil {
 		t.Fatal(err)
@@ -332,7 +325,7 @@ func TestConversationCoordinatorMetersFailedAndInterruptedTurns(t *testing.T) {
 			f.say(t, &record, "Hello")
 			select {
 			case <-reported:
-			case <-time.After(5 * time.Second):
+			case <-testenv.WaitContext(t, t.Context()).Done():
 				t.Fatal("usage update missing")
 			}
 			if test.interrupt {
@@ -341,22 +334,18 @@ func TestConversationCoordinatorMetersFailedAndInterruptedTurns(t *testing.T) {
 				}
 			}
 			assistant := f.waitAssistant(t, record.ID, test.outcome)
-			deadline := time.Now().Add(5 * time.Second)
-			for {
+			testenv.WaitUntil(t, t.Context(), func() error {
 				var outcome string
 				var input, output int64
 				err := f.service.database.db.QueryRowContext(t.Context(), "SELECT outcome,input,output FROM conversation_usage WHERE turn_id=?", assistant.ID).Scan(&outcome, &input, &output)
-				if err == nil {
-					if outcome != string(test.outcome) || input != 10 || output != 5 {
-						t.Fatalf("usage = %s %d %d", outcome, input, output)
-					}
-					break
+				if err != nil {
+					return fmt.Errorf("usage missing: %w", err)
 				}
-				if time.Now().After(deadline) {
-					t.Fatalf("usage missing: %v", err)
+				if outcome != string(test.outcome) || input != 10 || output != 5 {
+					t.Fatalf("usage = %s %d %d", outcome, input, output)
 				}
-				time.Sleep(10 * time.Millisecond)
-			}
+				return nil
+			})
 		})
 	}
 }

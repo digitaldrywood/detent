@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"path/filepath"
 	"reflect"
@@ -29,6 +30,129 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
+
+func TestNativeCommentOffsetRefusal(t *testing.T) {
+	client := NativeClient{project: "prj_example"}
+	for _, offset := range []int{1, 100} {
+		t.Run(strconv.Itoa(offset), func(t *testing.T) {
+			arguments, err := json.Marshal(map[string]any{"project_id": "prj_example", "reference": "wi_example", "offset": offset, "limit": 100})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = client.readAgentTool(t.Context(), runner.AgentToolCall{Name: operatortool.WorkComments, Arguments: arguments}, time.Now())
+			var refusal *operatortool.RequestError
+			if !errors.As(err, &refusal) || refusal.Code != "invalid_request" || !strings.Contains(refusal.Message, "returned next_cursor") {
+				t.Fatalf("native offset refusal lacks paging guidance: %v", err)
+			}
+		})
+	}
+}
+
+func TestNativeCommentReadFallback(t *testing.T) {
+	h := newNativeChangeHub(t, true)
+	issue := h.createInProgress(t, "Oversized comment history")
+	h.claim(t, issue.ID)
+	item := tracker.NativeWorkItemID(issue.ID)
+	expected := make([]tracker.NativeComment, 5)
+	for index := range expected {
+		body := "readable comment"
+		if index > 0 {
+			body = strings.Repeat("\x00", (64<<10)-1) + strconv.Itoa(index)
+		}
+		comment, err := h.admin.CreateComment(t.Context(), item, tracker.CreateComment{Mutation: nativeMutationKey(), Body: body})
+		if err != nil {
+			t.Fatal(err)
+		}
+		expected[index] = comment
+	}
+	execution := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+	if err := execution.Start(t.Context(), tracker.NativeExecutionIdentity{Role: "code", Backend: "codex", Model: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	tools, handler := execution.AgentTools()
+	if !slices.ContainsFunc(tools, func(tool runner.AgentTool) bool { return tool.Name == operatortool.WorkBulkExport }) {
+		t.Error("native runner lacks the advertised oversized-comment fallback")
+	}
+	call := func(name string, arguments map[string]any) (runner.AgentToolResult, error) {
+		t.Helper()
+		raw, err := json.Marshal(arguments)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return handler(t.Context(), runner.AgentToolCall{Name: name, Arguments: raw})
+	}
+	arguments := map[string]any{"project_id": h.project, "reference": item, "limit": 100}
+	result, err := call(operatortool.WorkComments, arguments)
+	var page operatortool.WorkReadResult[tracker.Page[tracker.NativeComment]]
+	if err != nil || !result.Success || json.Unmarshal([]byte(result.Content), &page) != nil || len(page.Data.Items) != 1 || page.Data.NextCursor == "" || !reflect.DeepEqual(page.Data.Items[0], expected[0]) {
+		t.Fatalf("readable comment page failed: success=%t err=%v", result.Success, err)
+	}
+	arguments["cursor"] = page.Data.NextCursor
+	result, err = call(operatortool.WorkComments, arguments)
+	var refusal *operatortool.RequestError
+	var content operatortool.RequestError
+	if !errors.As(err, &refusal) || result.Success || json.Unmarshal([]byte(result.Content), &content) != nil || content.Code != "invalid_request" || !strings.Contains(content.Message, "single comment") || !strings.Contains(content.Message, operatortool.WorkBulkExport) {
+		t.Errorf("native runner lost oversized-comment guidance: content=%s err=%v", result.Content, err)
+	}
+	result, err = call(operatortool.WorkBulkExport, map[string]any{"project_id": h.project, "limit": 1})
+	var exported operatortool.WorkBulkExportPage
+	if err != nil || !result.Success || json.Unmarshal([]byte(result.Content), &exported) != nil || len(result.Content) <= maxResponseBytes || len(result.Content) > operatortool.WorkBulkExportMaxBytes || exported.ProjectID != string(h.project) || len(exported.Items) != 1 || !reflect.DeepEqual(exported.Items[0].Comments, expected) {
+		t.Fatalf("native oversized-comment fallback failed: success=%t bytes=%d err=%v", result.Success, len(result.Content), err)
+	}
+	t.Logf("recovered %d complete comments in %d export bytes", len(expected), len(result.Content))
+	for _, test := range []struct {
+		name string
+		want error
+	}{
+		{"foreign page", operatortool.ErrAccessDenied},
+		{"foreign item project", operatortool.ErrAccessDenied},
+		{"foreign item organization", operatortool.ErrAccessDenied},
+		{"over byte budget", operatortool.ErrReadUnavailable},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			page := exported
+			page.Items = slices.Clone(exported.Items)
+			switch test.name {
+			case "foreign page":
+				page.ProjectID = "prj_foreign"
+			case "foreign item project":
+				page.Items[0].ProjectID = "prj_foreign"
+			case "foreign item organization":
+				page.Items[0].OrganizationID = "org_foreign"
+			}
+			payload, err := json.Marshal(page)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.name == "over byte budget" {
+				payload = append(payload, strings.Repeat(" ", operatortool.WorkBulkExportMaxBytes+1-len(payload))...)
+			}
+			client := execution.claim.source.client.client.httpClient
+			transport := client.Transport
+			client.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+				if request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/work-items/export") {
+					return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(string(payload))), Request: request}, nil
+				}
+				return transport.RoundTrip(request)
+			})
+			t.Cleanup(func() { client.Transport = transport })
+			result, err := call(operatortool.WorkBulkExport, map[string]any{"project_id": h.project, "limit": 1})
+			if !errors.Is(err, test.want) || result.Success {
+				t.Fatalf("invalid export was accepted: success=%t err=%v", result.Success, err)
+			}
+		})
+	}
+	for _, name := range []string{operatortool.WorkComments, operatortool.WorkBulkExport} {
+		arguments := map[string]any{"project_id": "prj_foreign"}
+		if name == operatortool.WorkComments {
+			arguments["reference"] = item
+		}
+		result, err := call(name, arguments)
+		if !errors.Is(err, operatortool.ErrAccessDenied) || result.Success {
+			t.Fatalf("%s crossed project scope: %v", name, err)
+		}
+	}
+}
 
 func TestNativeExecutionReadToolsKeepHostAuthority(t *testing.T) {
 	if testing.Short() {
@@ -183,8 +307,8 @@ func TestNativeExecutionReadToolsKeepHostAuthority(t *testing.T) {
 		t.Fatal("native execution omitted its read tools")
 	}
 	tools, handler := source.AgentTools()
-	if len(tools) != 13 {
-		t.Fatalf("native tools = %d, want 13", len(tools))
+	if len(tools) != 14 {
+		t.Fatalf("native tools = %d, want 14", len(tools))
 	}
 	diagnosticArgs, err := json.Marshal(map[string]any{"project_id": h.project, "runner_id": file.Identity.RunnerID, "issue_id": issue.ID})
 	if err != nil {
@@ -477,9 +601,13 @@ func TestNativeExecutionReadToolsKeepHostAuthority(t *testing.T) {
 				t.Fatal(err)
 			}
 			result, err := handler(t.Context(), runner.AgentToolCall{Name: operatortool.WorkRuns, Arguments: arguments})
-			var refusal operatortool.RequestError
-			if err == nil || result.Success || json.Unmarshal([]byte(result.Content), &refusal) != nil || refusal.Code != "attempt_record_too_large" || !strings.Contains(refusal.Message, "65536-byte") {
-				t.Fatalf("lost run page bound: result=%s error=%v", result.Content, err)
+			var page operatortool.WorkReadResult[tracker.Page[tracker.NativeAttempt]]
+			if err != nil || !result.Success || json.Unmarshal([]byte(result.Content), &page) != nil || len(result.Content) > operatortool.MaxResultBytes || len(page.Data.Items) != 1 {
+				t.Fatalf("lost bounded run summary: result=%s error=%v", result.Content, err)
+			}
+			attempt := page.Data.Items[0]
+			if attempt.AttemptID != finished.AttemptID || attempt.LeaseID != finished.LeaseID || attempt.FencingToken != finished.FencingToken || attempt.CompletionBody != "" || !slices.Contains(attempt.Unavailable, "completion_body") {
+				t.Fatalf("lost projected attempt authority: %+v", attempt)
 			}
 		})
 	}
@@ -517,6 +645,151 @@ func TestNativeExecutionReadToolsKeepHostAuthority(t *testing.T) {
 		if !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) || result.Success {
 			t.Fatalf("lost attachment read authority: success=%t error=%v", result.Success, err)
 		}
+	}
+}
+
+func TestNativeChangeOversizedReviewRecovery(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+	h := newNativeChangeHub(t, true)
+	type evidence struct {
+		name    string
+		item    tracker.NativeWorkItemID
+		change  tracker.ChangeRequest
+		version tracker.ChangeVersion
+		reviews []tracker.ChangeReview
+	}
+	var fixtures []evidence
+	for i, field := range []string{"criterion", "security finding", "implementation commands", "second implementation commands"} {
+		issue := h.createInProgress(t, "Oversized retained "+field)
+		item := tracker.NativeWorkItemID(issue.ID)
+		change, err := h.admin.CreateChange(t.Context(), item, tracker.CreateChange{Mutation: nativeMutationKey(), Title: "Retained review"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		version := h.publish(t, item, change.ID, nativeChangeFixtureHead([]string{"b", "c", "d", "e"}[i]))
+		reviews := []tracker.ChangeReview{
+			{ID: fmt.Sprintf("review_small_%d", i), VersionID: version.ID, Decision: "approved", Body: "Initial review"},
+			{ID: fmt.Sprintf("review_large_%d", i), VersionID: version.ID, Decision: "changes_requested"},
+		}
+		large := &reviews[1]
+		text := strings.Repeat("<\\\"\n世界", 40000)
+		switch i {
+		case 0:
+			large.Validator = &gate.ValidatorResult{Attribution: "unknown", VersionID: version.ID, HeadSHA: version.HeadSHA, Verdict: "rework", Submitted: true, Findings: []gate.Finding{{Attribution: "unknown", Severity: "p1", Body: "Failed criterion"}}, CriteriaEvidence: []gate.CriterionEvidence{{Criterion: "Retained criterion", Kind: gate.EvidenceNotVerified, Behavior: text, ReceiptIDs: []string{"receipt_failed"}, HeadSHA: version.HeadSHA}}, Commands: []gate.CommandResult{{Attribution: "unknown", Findings: []gate.Finding{{Attribution: "unknown", Body: "Command failed"}}, ReceiptID: "receipt_failed", HeadSHA: version.HeadSHA, ExitCode: 1, Output: "Failed"}}}
+		case 1:
+			large.SecurityAudit = &tracker.SecurityAuditReview{VersionID: version.ID, Verdict: "rework", Run: securityaudit.Run{Attribution: "unknown", Repository: version.Repository, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA, Verdict: "fail", Findings: []securityaudit.Finding{{Attribution: "unknown", ID: "finding_blocking", Severity: "p2", Body: text}}}}
+		default:
+			result := &gate.ValidatorResult{Attribution: "unknown", VersionID: version.ID, Repository: version.Repository, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA, Verdict: "rework", Submitted: true, Findings: []gate.Finding{{Attribution: "unknown", Severity: "p2", Body: "Command evidence requires rework"}}}
+			for command := range 76 {
+				receipt := fmt.Sprintf("receipt_%d_%02d", i, command)
+				result.Commands = append(result.Commands, gate.CommandResult{Attribution: "unknown", ReceiptID: receipt, Execution: "executed", Command: fmt.Sprintf("go test -timeout=60s ./internal/example%d -run TestCase%d", i, command), HeadSHA: version.HeadSHA, TreeSHA: strings.Repeat("f", 40), ExitCode: command % 2, Output: fmt.Sprintf("Command %d result\n", command) + strings.Repeat("output <\\\"\n世界", 500)})
+				if command%2 != 0 {
+					result.Commands[command].Findings = []gate.Finding{{Attribution: "unknown", Body: "Command failed", CheckCommand: result.Commands[command].Command}}
+				}
+				result.CriteriaEvidence = append(result.CriteriaEvidence, gate.CriterionEvidence{Criterion: fmt.Sprintf("Command criterion %d", command), Kind: gate.EvidenceNotVerified, Behavior: "Command evidence retained", ReceiptIDs: []string{receipt}, HeadSHA: version.HeadSHA})
+			}
+			large.ImplementationReview = result
+			bounded := *result
+			bounded.Commands = slices.Clone(result.Commands)
+			for command := range bounded.Commands {
+				bounded.Commands[command] = tracker.PublicGateResult(bounded.Commands[command])
+				if !bounded.Commands[command].OutputTruncated {
+					t.Fatal("many-command fixture did not exercise normal output bounding")
+				}
+			}
+			raw, err := json.Marshal(bounded)
+			if err != nil || len(raw) <= operatortool.MaxResultBytes {
+				t.Fatalf("many-command review must overflow after normal output bounding: bytes=%d error=%v", len(raw), err)
+			}
+			t.Logf("%s: commands=%d bounded_review_bytes=%d", field, len(result.Commands), len(raw))
+		}
+		fixtures = append(fixtures, evidence{name: field, item: item, change: change, version: version, reviews: reviews})
+	}
+	h.reopen(func(path string) error {
+		db, err := sql.Open("sqlite", path)
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+		for _, fixture := range fixtures {
+			for _, review := range fixture.reviews {
+				raw, err := json.Marshal(review)
+				if err != nil {
+					return err
+				}
+				if _, err := db.ExecContext(t.Context(), "INSERT INTO change_evidence (change_id, version_id, kind, source_key, record_json) VALUES (?, ?, 'review', ?, ?)", fixture.change.ID, review.VersionID, review.ID, string(raw)); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
+	nativeTransport := h.native.client.httpClient.Transport
+	h.native.client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+		response, err := nativeTransport.RoundTrip(request)
+		if err != nil {
+			return nil, err
+		}
+		data, err := io.ReadAll(response.Body)
+		response.Body.Close()
+		if err != nil {
+			return nil, err
+		}
+		if len(data) > operatortool.MaxResultBytes {
+			t.Errorf("recovery transport exceeded byte cap: %d", len(data))
+		}
+		response.Body = io.NopCloser(strings.NewReader(string(data)))
+		return response, nil
+	})
+	t.Cleanup(func() { h.native.client.httpClient.Transport = nativeTransport })
+	for _, fixture := range fixtures {
+		t.Run(fixture.name, func(t *testing.T) {
+			path, err := changePath(fixture.item, fixture.change.ID, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var first operatortool.ChangeResult
+			if err := h.native.client.request(t.Context(), http.MethodGet, h.native.base()+path+"?view=bounded", nil, &first); err != nil {
+				t.Fatal(err)
+			}
+			if first.Read.Sections["reviews"].Complete || len(first.Detail.Reviews) != 1 {
+				t.Fatal("fixture must fit its current page and defer its oversized review")
+			}
+			var next operatortool.ChangeResult
+			err = h.native.client.request(t.Context(), http.MethodGet, h.native.base()+path+"?view=bounded&section=reviews&cursor="+first.Read.Sections["reviews"].NextCursor, nil, &next)
+			if err != nil || next.Fragment == nil || next.Read.Sections["reviews"].Complete || len(next.Detail.Reviews) != 0 {
+				t.Fatalf("oversized continuation did not return a bounded fragment: %v", err)
+			}
+			newer, err := h.admin.CreateChange(t.Context(), fixture.item, tracker.CreateChange{Mutation: nativeMutationKey(), Title: "Newer independent Change"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			newerVersion := h.publish(t, fixture.item, newer.ID, nativeChangeFixtureHead("f"))
+			latest, err := h.native.currentChange(t.Context(), fixture.item)
+			if err != nil || latest.Change.ID != newer.ID || latest.Change.CurrentVersion != newerVersion.ID {
+				t.Fatalf("newer Change is not independently usable: %v", err)
+			}
+			detail, err := h.native.runtimeChange(t.Context(), fixture.item, fixture.change.ID)
+			if err != nil {
+				t.Fatalf("recover oversized retained review: %v", err)
+			}
+			if !reflect.DeepEqual(detail.Reviews, fixture.reviews) {
+				t.Fatal("recovery lost complete review verdicts, criteria, findings or receipts")
+			}
+			if detail.Change.ID != fixture.change.ID || detail.Change.CurrentVersion != fixture.version.ID || len(detail.Versions) != 1 || detail.Versions[0].ID != fixture.version.ID || detail.Versions[0].HeadSHA != fixture.version.HeadSHA || !reflect.DeepEqual(detail.Versions[0].Source, fixture.version.Source) {
+				t.Fatal("recovery changed immutable source/version identity")
+			}
+			state, err := h.connector.ReadChangeReview(t.Context(), string(fixture.item), fixture.change.ID, fixture.version.ID, fixture.version.HeadSHA)
+			if err != nil || !state.Current || state.Reviewed || !state.ChangesRequested {
+				t.Fatalf("controller recovery changed failing review state: %+v, %v", state, err)
+			}
+			canonical, err := h.admin.Change(t.Context(), fixture.item, fixture.change.ID)
+			if err != nil || !reflect.DeepEqual(canonical.Reviews, fixture.reviews) {
+				t.Fatalf("recovery changed canonical reviews: %v", err)
+			}
+		})
 	}
 }
 
@@ -584,16 +857,16 @@ func TestNativeExecutionRetainedRecoveryEvidence(t *testing.T) {
 		}
 		reviews := []tracker.ChangeReview{
 			{ID: fmt.Sprintf("review_human_%d", i), VersionID: current.ID, Decision: "changes_requested", Body: strings.Repeat("human feedback <\n", 65536), Actor: tracker.Actor{Kind: "human", PrincipalID: "reviewer"}, CreatedAt: current.CreatedAt},
-			{ID: fmt.Sprintf("review_commands_%d", i), VersionID: old.ID, Decision: "approved", Actor: tracker.Actor{Kind: "runner", PrincipalID: "worker"}, CreatedAt: old.CreatedAt, ImplementationReview: &gate.ValidatorResult{VersionID: old.ID, Repository: old.Repository, BaseSHA: old.BaseSHA, HeadSHA: old.HeadSHA, Submitted: true, Verdict: "pass", Commands: []gate.CommandResult{{Command: "make check-land", Output: strings.Repeat("command output <\n", 40000)}}}},
+			{ID: fmt.Sprintf("review_commands_%d", i), VersionID: old.ID, Decision: "approved", Actor: tracker.Actor{Kind: "runner", PrincipalID: "worker"}, CreatedAt: old.CreatedAt, ImplementationReview: &gate.ValidatorResult{Attribution: "unknown", VersionID: old.ID, Repository: old.Repository, BaseSHA: old.BaseSHA, HeadSHA: old.HeadSHA, Submitted: true, Verdict: "pass", Commands: []gate.CommandResult{{Attribution: "unknown", Command: "make check-land", Output: strings.Repeat("command output <\n", 40000)}}}},
 		}
 		now := time.Now().UTC()
-		run := securityaudit.Run{ID: int64(42 + i), InvocationID: fmt.Sprintf("audit-%d", i), ProjectID: string(h.project), IssueID: string(item), Repository: current.Repository, BaseSHA: current.BaseSHA, HeadSHA: current.HeadSHA, ReviewerVersion: securityaudit.ReviewerVersion, ReviewerDigest: securityaudit.ReviewerDigest(), WorkerPID: 1, WorkerPGID: 1, WorkerStartedAt: now, StartedAt: now, CompletedAt: now, ExitStatus: securityaudit.ExitStatusSuccess, OutputBytes: 1, OutputDigest: policy.Digest([]byte("audit")), Verdict: "pass", Summary: strings.Repeat("s", (1<<20)-(16<<10))}
+		run := securityaudit.Run{Attribution: "unknown", ID: int64(42 + i), InvocationID: fmt.Sprintf("audit-%d", i), ProjectID: string(h.project), IssueID: string(item), Repository: current.Repository, BaseSHA: current.BaseSHA, HeadSHA: current.HeadSHA, ReviewerVersion: securityaudit.ReviewerVersion, ReviewerDigest: securityaudit.ReviewerDigest(), WorkerPID: 1, WorkerPGID: 1, WorkerStartedAt: now, StartedAt: now, CompletedAt: now, ExitStatus: securityaudit.ExitStatusSuccess, OutputBytes: 1, OutputDigest: policy.Digest([]byte("audit")), Verdict: "pass", Summary: strings.Repeat("s", (1<<20)-(16<<10))}
 		audit := &tracker.SecurityAuditReview{VersionID: current.ID, SessionID: run.ID, Verdict: "pass", DiffDigest: policy.Digest([]byte("diff")), Run: run}
 		decision := "approved"
 		if i == 1 {
 			audit.Run.Summary = "Blocking audit"
 			audit.Run.Verdict, audit.Verdict, decision = "fail", "rework", "changes_requested"
-			audit.Run.Findings = []securityaudit.Finding{{ID: "blocking", Severity: "p2", Body: strings.Repeat("finding <\n", 90_000)}, {ID: "resolved", Severity: "p1", Status: "resolved", Body: "Already addressed"}}
+			audit.Run.Findings = []securityaudit.Finding{{Attribution: "unknown", ID: "blocking", Severity: "p2", Body: strings.Repeat("finding <\n", 90_000)}, {Attribution: "unknown", ID: "resolved", Severity: "p1", Status: "resolved", Body: "Already addressed"}}
 		}
 		reviews = append(reviews, tracker.ChangeReview{ID: fmt.Sprintf("review_audit_%d", i), VersionID: current.ID, Decision: decision, SecurityAudit: audit, Actor: tracker.Actor{Kind: "runner", PrincipalID: "audit-worker"}, CreatedAt: current.CreatedAt})
 		var landing *tracker.SecurityAuditReview

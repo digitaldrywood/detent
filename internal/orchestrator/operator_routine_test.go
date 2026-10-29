@@ -46,11 +46,10 @@ func TestOperatorConfigActionEnabled(t *testing.T) {
 		kind    string
 		want    bool
 	}{
-		{"defaults return parks", nil, workflowconfig.OperatorActionReturnRetiredParks, true},
 		{"defaults clear dependencies", nil, workflowconfig.OperatorActionClearClosedDependencies, true},
 		{"defaults restore merging", nil, workflowconfig.OperatorActionRestoreStuckMerging, true},
 		{"defaults exclude merge when wedged", nil, workflowconfig.OperatorActionMergeWhenWedged, false},
-		{"explicit empty disables everything", []string{}, workflowconfig.OperatorActionReturnRetiredParks, false},
+		{"explicit empty disables everything", []string{}, workflowconfig.OperatorActionClearClosedDependencies, false},
 		{"explicit list", []string{"Merge_When_Wedged"}, workflowconfig.OperatorActionMergeWhenWedged, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

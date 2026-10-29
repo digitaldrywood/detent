@@ -378,7 +378,8 @@ func TestRunnerHeartbeatIdleTraffic(t *testing.T) {
 					heartbeats += count
 				}
 			}
-			if heartbeats != 20 || mode == "delta" && total != 20 || mode != "delta" && total <= 20 {
+			itemReads := counts["/api/v2/organizations/org_test/projects/prj_test/work-items/wi_idle0"]
+			if heartbeats != 20 || mode == "delta" && (itemReads != 20 || total != heartbeats+itemReads) || mode != "delta" && total <= 20 {
 				t.Fatalf("requests=%d heartbeats=%d routes=%+v", total, heartbeats, counts)
 			}
 			t.Logf("two runners, 31 Blocked items, 10 idle intervals: %d requests (%d heartbeats)", total, heartbeats)
@@ -414,8 +415,12 @@ func TestRunnerHeartbeatIdleTraffic(t *testing.T) {
 							t.Fatalf("unchanged resource was polled: %s %d", route, count)
 						}
 					}
-					if reads != 2 {
-						t.Fatalf("changed resource reads=%d want=2 routes=%+v", reads, counts)
+					wantReads := 2
+					if test.route == "/work-items/wi_idle0" {
+						wantReads += 2
+					}
+					if reads != wantReads {
+						t.Fatalf("changed resource reads=%d want=%d routes=%+v", reads, wantReads, counts)
 					}
 				})
 			}

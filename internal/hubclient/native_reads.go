@@ -106,7 +106,7 @@ func (e *nativeExecution) AgentTools() ([]runner.AgentTool, runner.AgentToolHand
 	definitions = append(definitions, operatortool.LocalProjectCatalog()...)
 	for _, definition := range definitions {
 		switch definition.Name {
-		case operatortool.WorkList:
+		case operatortool.WorkList, operatortool.WorkBulkExport:
 			definition.Description += " Use cursor, not offset, for paging."
 			tools = append(tools, runner.AgentTool{Name: definition.Name, Description: definition.Description, InputSchema: definition.InputSchema})
 		case operatortool.WorkItem, operatortool.WorkComments, operatortool.WorkHistory, operatortool.WorkRuns, operatortool.BoardActivity, operatortool.WorkAttemptReceipt:
@@ -187,7 +187,7 @@ func (c *NativeClient) readAgentTool(ctx context.Context, call runner.AgentToolC
 		}
 		err = c.client.request(ctx, http.MethodGet, c.base()+"/runner-diagnostics?"+params.Encode(), nil, &page)
 		value = page
-	case operatortool.WorkList:
+	case operatortool.WorkList, operatortool.WorkBulkExport:
 		request, decodeErr := operatortool.DecodeWorkRead(call.Name, call.Arguments)
 		if decodeErr != nil {
 			return operatortool.Result{}, decodeErr
@@ -197,6 +197,28 @@ func (c *NativeClient) readAgentTool(ctx context.Context, call runner.AgentToolC
 		}
 		if request.Offset != 0 {
 			return operatortool.Result{}, operatortool.ErrInvalidArguments
+		}
+		if call.Name == operatortool.WorkBulkExport {
+			params := request.NativeWorkQuery()
+			params.Del("include")
+			var raw []byte
+			raw, _, err = c.client.download(ctx, c.base()+"/work-items/export?"+params.Encode(), operatortool.WorkBulkExportMaxBytes)
+			var page operatortool.WorkBulkExportPage
+			if err == nil {
+				err = json.Unmarshal(raw, &page)
+			}
+			if err == nil {
+				if page.ProjectID != string(c.project) {
+					return operatortool.Result{}, operatortool.ErrAccessDenied
+				}
+				for _, item := range page.Items {
+					if item.OrganizationID != c.organization || item.ProjectID != c.project {
+						return operatortool.Result{}, operatortool.ErrAccessDenied
+					}
+				}
+				return operatortool.EncodeBulkExport(page)
+			}
+			break
 		}
 		var page tracker.NativeIssuePage
 		page, err = c.IssuesPage(ctx, request.NativeWorkQuery())
@@ -231,7 +253,7 @@ func (c *NativeClient) readAgentTool(ctx context.Context, call runner.AgentToolC
 			return operatortool.Result{}, operatortool.ErrInvalidArguments
 		}
 		if request.Offset != 0 {
-			return operatortool.Result{}, operatortool.ErrInvalidArguments
+			return operatortool.Result{}, &operatortool.RequestError{Code: "invalid_request", Message: "offset is not supported here; page with the returned next_cursor"}
 		}
 		switch call.Name {
 		case operatortool.WorkItem:
@@ -321,7 +343,7 @@ func (c *NativeClient) readAgentTool(ctx context.Context, call runner.AgentToolC
 	}
 	if err != nil {
 		var refusal *APIError
-		if errors.As(err, &refusal) && refusal.Code == "attempt_record_too_large" {
+		if errors.As(err, &refusal) && (refusal.Code == "attempt_record_too_large" || refusal.Status == http.StatusUnprocessableEntity && refusal.Code == "invalid_request") {
 			return operatortool.Result{}, &operatortool.RequestError{Code: refusal.Code, Message: refusal.Message}
 		}
 		if errors.As(err, &refusal) && (refusal.Status == http.StatusForbidden || refusal.Status == http.StatusUnauthorized || refusal.Status == http.StatusNotFound) {

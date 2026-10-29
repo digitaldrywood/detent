@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type webhookOutcome string
@@ -75,17 +77,20 @@ type githubWebhookIssue struct {
 }
 
 type githubWebhookPullRequest struct {
-	DatabaseID *int64            `json:"id"`
-	NodeID     *string           `json:"node_id"`
-	Number     *int              `json:"number"`
-	Title      *string           `json:"title"`
-	HTMLURL    *string           `json:"html_url"`
-	State      *string           `json:"state"`
-	Draft      *bool             `json:"draft"`
-	Head       *githubWebhookRef `json:"head"`
-	Base       *githubWebhookRef `json:"base"`
-	CreatedAt  json.RawMessage   `json:"created_at"`
-	UpdatedAt  json.RawMessage   `json:"updated_at"`
+	MergeSHA   *string             `json:"merge_commit_sha"`
+	MergedAt   json.RawMessage     `json:"merged_at"`
+	MergedBy   *githubWebhookActor `json:"merged_by"`
+	DatabaseID *int64              `json:"id"`
+	NodeID     *string             `json:"node_id"`
+	Number     *int                `json:"number"`
+	Title      *string             `json:"title"`
+	HTMLURL    *string             `json:"html_url"`
+	State      *string             `json:"state"`
+	Draft      *bool               `json:"draft"`
+	Head       *githubWebhookRef   `json:"head"`
+	Base       *githubWebhookRef   `json:"base"`
+	CreatedAt  json.RawMessage     `json:"created_at"`
+	UpdatedAt  json.RawMessage     `json:"updated_at"`
 }
 
 type githubWebhookRef struct {
@@ -127,6 +132,9 @@ type normalizedIssue struct {
 }
 
 type normalizedPullRequest struct {
+	MergeSHA   string    `json:"merge_sha,omitempty"`
+	MergedAt   time.Time `json:"merged_at,omitzero"`
+	MergedBy   string    `json:"merged_by,omitempty"`
 	NodeID     string    `json:"node_id"`
 	DatabaseID *int64    `json:"database_id,omitempty"`
 	Number     int       `json:"number"`
@@ -488,18 +496,29 @@ func applyIssueProjection(ctx context.Context, tx *sql.Tx, repositoryID int64, i
 		workflowStateID = &resolvedWorkflowStateID
 	}
 	if errors.Is(queryErr, sql.ErrNoRows) {
-		_, err := tx.ExecContext(ctx, `
+		inserted, err := tx.ExecContext(ctx, `
 			INSERT INTO issues (
 				repository_id, workflow_state_id, github_node_id, github_database_id, github_number,
 				title, body, url, github_state, author_login, labels_json, assignees_json,
-				source_version, source_updated_at, synchronized_at, created_at, updated_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				source_version, source_updated_at, synchronized_at, created_at, updated_at, provenance_provider, provenance_external_id
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '')
 		`, repositoryID, optionalInt64(workflowStateID), issue.NodeID, optionalInt64(issue.DatabaseID), issue.Number,
 			issue.Title, issue.Body, issue.URL, issue.State, issue.AuthorID, string(labelsJSON), string(assigneesJSON),
 			stamp.Version, formatWebhookTime(stamp.UpdatedAt), formatWebhookTime(now),
 			formatWebhookTime(issue.CreatedAt), formatWebhookTime(issue.UpdatedAt))
 		if err != nil {
 			return projectionApplyResult{}, fmt.Errorf("insert GitHub webhook issue: %w", err)
+		}
+		id, err := inserted.LastInsertId()
+		if err != nil {
+			return projectionApplyResult{}, err
+		}
+
+		if err := updateIssueActor(ctx, tx, id, tracker.Actor{Kind: "integration", PrincipalID: "github-import"}); err != nil {
+			return projectionApplyResult{}, err
+		}
+		if err := replaceIssueFilterValues(ctx, tx, id, issue.Labels, issue.Assignees); err != nil {
+			return projectionApplyResult{}, err
 		}
 		return projectionApplyResult{Changed: true}, nil
 	}
@@ -542,6 +561,9 @@ func applyIssueProjection(ctx context.Context, tx *sql.Tx, repositoryID int64, i
 		stamp.Version, formatWebhookTime(stamp.UpdatedAt), formatWebhookTime(now),
 		formatWebhookTime(issue.CreatedAt), formatWebhookTime(issue.UpdatedAt), issueID); err != nil {
 		return projectionApplyResult{}, fmt.Errorf("update GitHub webhook issue: %w", err)
+	}
+	if err := replaceIssueFilterValues(ctx, tx, issueID, issue.Labels, issue.Assignees); err != nil {
+		return projectionApplyResult{}, err
 	}
 	result.Changed = true
 	return result, nil
@@ -601,15 +623,18 @@ func applyPullRequestProjection(ctx context.Context, tx *sql.Tx, repositoryID in
 			INSERT INTO pull_requests (
 				repository_id, github_node_id, github_database_id, github_number,
 				title, url, github_state, draft, head_ref, head_sha, base_ref, base_sha,
-				source_version, source_updated_at, synchronized_at, created_at, updated_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				source_version, source_updated_at, synchronized_at, created_at, updated_at, merge_sha, merged_at, merged_by
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`, repositoryID, pullRequest.NodeID, optionalInt64(pullRequest.DatabaseID), pullRequest.Number,
 			pullRequest.Title, pullRequest.URL, pullRequest.State, pullRequest.Draft,
 			pullRequest.HeadRef, pullRequest.HeadSHA, pullRequest.BaseRef, pullRequest.BaseSHA,
 			stamp.Version, formatWebhookTime(stamp.UpdatedAt), formatWebhookTime(now),
-			formatWebhookTime(pullRequest.CreatedAt), formatWebhookTime(pullRequest.UpdatedAt))
+			formatWebhookTime(pullRequest.CreatedAt), formatWebhookTime(pullRequest.UpdatedAt), pullRequest.MergeSHA, mergedPullRequestTime(pullRequest.MergedAt), pullRequest.MergedBy)
 		if err != nil {
 			return projectionApplyResult{}, fmt.Errorf("insert GitHub webhook pull request: %w", err)
+		}
+		if err := recordMergedPullRequestPolicyLanding(ctx, tx, repositoryID, pullRequest); err != nil {
+			return projectionApplyResult{}, fmt.Errorf("record merged pull request policy landing: %w", err)
 		}
 		return projectionApplyResult{Changed: true}, nil
 	}
@@ -648,23 +673,37 @@ func applyPullRequestProjection(ctx context.Context, tx *sql.Tx, repositoryID in
 			source_updated_at = ?,
 			synchronized_at = ?,
 			created_at = ?,
-			updated_at = ?
+			updated_at = ?, merge_sha = ?, merged_at = ?, merged_by = ?
 		WHERE id = ?
 	`, repositoryID, pullRequest.NodeID, optionalInt64(pullRequest.DatabaseID), pullRequest.Number,
 		pullRequest.Title, pullRequest.URL, pullRequest.State, pullRequest.Draft,
 		pullRequest.HeadRef, pullRequest.HeadSHA, pullRequest.BaseRef, pullRequest.BaseSHA,
 		stamp.Version, formatWebhookTime(stamp.UpdatedAt), formatWebhookTime(now),
-		formatWebhookTime(pullRequest.CreatedAt), formatWebhookTime(pullRequest.UpdatedAt), pullRequestID); err != nil {
+		formatWebhookTime(pullRequest.CreatedAt), formatWebhookTime(pullRequest.UpdatedAt), pullRequest.MergeSHA, mergedPullRequestTime(pullRequest.MergedAt), pullRequest.MergedBy, pullRequestID); err != nil {
 		return projectionApplyResult{}, fmt.Errorf("update GitHub webhook pull request: %w", err)
+	}
+	if err := recordMergedPullRequestPolicyLanding(ctx, tx, repositoryID, pullRequest); err != nil {
+		return projectionApplyResult{}, fmt.Errorf("record merged pull request policy landing: %w", err)
 	}
 	result.Changed = true
 	return result, nil
 }
 
+func recordMergedPullRequestPolicyLanding(ctx context.Context, tx *sql.Tx, repositoryID int64, pullRequest normalizedPullRequest) error {
+	if pullRequest.MergedAt.IsZero() || !strings.EqualFold(pullRequest.State, "closed") {
+		return nil
+	}
+	var repository string
+	if err := tx.QueryRowContext(ctx, "SELECT github_owner || '/' || github_name FROM repositories WHERE id = ?", repositoryID).Scan(&repository); err != nil {
+		return err
+	}
+	return recordPolicyLandingProvenance(ctx, tx, "repository:"+repository, repositoryID, repository, pullRequest.MergeSHA, policyLanding{PullRequestURL: pullRequest.URL})
+}
+
 // enqueueHydration records a demand for fresh connector data. deliveryID names
 // the webhook delivery that asked, and is empty for a demand that did not come
 // from a delivery at all -- a client's ?refresh=1 on the pull request panel
-// (decisions section 18.6) -- which is stored as NULL rather than as a
+// -- which is stored as NULL rather than as a
 // delivery id the inbox has never seen.
 func enqueueHydration(ctx context.Context, tx *sql.Tx, deliveryID string, target hydrationTarget, now time.Time) error {
 	if target.RepositoryID != nil {
@@ -849,6 +888,15 @@ func normalizeWebhookPullRequest(pullRequest *githubWebhookPullRequest) (normali
 		BaseSHA:    strings.TrimSpace(*pullRequest.Base.SHA),
 		CreatedAt:  createdAt,
 		UpdatedAt:  updatedAt,
+	}
+	if mergedAt, ok := parseWebhookTime(pullRequest.MergedAt); ok {
+		normalized.MergedAt = mergedAt
+	}
+	if pullRequest.MergeSHA != nil {
+		normalized.MergeSHA = strings.TrimSpace(*pullRequest.MergeSHA)
+	}
+	if pullRequest.MergedBy != nil && pullRequest.MergedBy.Login != nil {
+		normalized.MergedBy = strings.TrimSpace(*pullRequest.MergedBy.Login)
 	}
 	stamp, err := newSourceStamp(updatedAt, normalized)
 	if err != nil {
@@ -1165,4 +1213,11 @@ func optionalString(value string) any {
 		return nil
 	}
 	return value
+}
+
+func mergedPullRequestTime(value time.Time) string {
+	if value.IsZero() {
+		return ""
+	}
+	return formatWebhookTime(value)
 }

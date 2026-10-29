@@ -1,7 +1,6 @@
-// What a live surface *says* while its workspace session is not serving it
-// (decisions.md §18.1).
+// What a live surface *says* while its workspace session is not serving it.
 //
-// §18.1 gives a workspace eight states and nine reasons, and a surface that
+// The workspace session contract gives a workspace eight states and nine reasons, and a surface that
 // draws a skeleton for all of them tells a reader nothing: a request no runner
 // claims sits in `requested` for `workspaces.request_timeout` — five minutes by
 // default — and a panel that answers that with grey bars for five minutes and
@@ -17,7 +16,7 @@
 // parameter the sentences take.
 import type { Workspace, WorkspaceReason, WorkspaceState } from "../../contracts/work.ts";
 
-/** The channel a surface needs the claiming runner to have reported (§18.12). */
+/** The channel a surface needs the claiming runner to have reported. */
 export type WorkspaceCapability = "files" | "exec" | "terminal";
 
 interface CapabilityWords {
@@ -199,7 +198,7 @@ export interface WorkspaceReasonOptions {
 }
 
 /**
- * The sentence a reader sees for a workspace that failed or closed (§18.1).
+ * The sentence a reader sees for a workspace that failed or closed.
  *
  * Every reason gets its own; the fallbacks are for a build that meets a reason
  * it does not know, which is a decode this client survives rather than a state

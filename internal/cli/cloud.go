@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
@@ -273,14 +274,20 @@ func readCloudConfig(path string, lookupEnv func(string) string) (cloudentry.Con
 		}
 	}
 	result := cloudentry.Config{
-		GitHubWebhookSecret: []byte(strings.TrimSpace(lookupEnv("DETENT_HUB_GITHUB_WEBHOOK_SECRET"))),
-		Platform:            config.Platform,
-		PublicURL:           config.PublicURL, Issuer: config.Assertion.Issuer, SigningKey: key, Provider: provider,
+		LookupEnv:              lookupEnv,
+		GitHubUserClientID:     lookupEnv("DETENT_HUB_GITHUB_APP_CLIENT_ID"),
+		GitHubUserClientSecret: lookupEnv("DETENT_HUB_GITHUB_APP_CLIENT_SECRET"),
+		GitHubWebhookSecret:    []byte(strings.TrimSpace(lookupEnv("DETENT_HUB_GITHUB_WEBHOOK_SECRET"))),
+		Platform:               config.Platform,
+		PublicURL:              config.PublicURL, Issuer: config.Assertion.Issuer, SigningKey: key, Provider: provider,
 		StaffEmails: config.StaffEmails, SupportActors: config.SupportActors, EntitlementAdministrators: config.EntitlementAdministrators, StateDir: config.StateDirectory, ListenAddress: config.Listen, Logger: slog.Default(), ConfigPath: path,
 	}
 	appID, privateKey := lookupEnv("DETENT_HUB_GITHUB_APP_ID"), lookupEnv("DETENT_HUB_GITHUB_APP_PRIVATE_KEY")
 	if appID != "" && privateKey != "" {
 		result.GitHubApp = &connectorgithub.InstallationTokenConfig{AppID: appID, PrivateKey: privateKey, LookupEnv: lookupEnv}
+	}
+	result.ArchiveCredentials = func(_ context.Context, organization, reference string) (attachment.Credentials, error) {
+		return attachment.CredentialsFromEnvironment(organization, reference, lookupEnv)
 	}
 	if config.Attachments != nil {
 		config.Attachments.AccessKeyID = lookupEnv("DETENT_ATTACHMENTS_ACCESS_KEY_ID")
@@ -368,6 +375,8 @@ func readCloudConfig(path string, lookupEnv func(string) string) (cloudentry.Con
 		}
 		restartAllocation := *config.Allocation
 		restartAllocation.Entitlements = nil
+		restartAllocation.AllowedEmails = nil
+		restartAllocation.AllowedDomains = nil
 		if restartAllocation.Billing != nil {
 			restartBilling := *restartAllocation.Billing
 			restartBilling.Prices = nil

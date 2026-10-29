@@ -1,26 +1,21 @@
-// `/projects/:project/setup` — the first-run wizard.
-//
-// The artifact's screen 5: a 640px card over a dimmed shell, the Detent Cloud
-// logo, a stepper, option rows with checkboxes, and a footer that moves
-// forward. What it drives is exactly what `static/js/hosted-setup.js` drove,
-// step for step and payload for payload — the configuration, the progress
-// save, the runner enrollment and its routing, the artifact binding, the
-// repository bind and the GitHub integration.
-//
-//  - Idempotency keys live in `sessionStorage`, keyed by request path and body
-//    fingerprint, and are retired only once the hub has answered. A save whose
-//    outcome the browser never learned is retried under the same key, so it
-//    cannot land twice (see `idempotency.ts`).
-//
 import React from "react";
+import { CheckIcon, CircleIcon, TriangleAlertIcon } from "lucide-react";
+import { Spinner } from "../../components/ui/spinner.tsx";
+import { formatRelativeTime } from "../fleet/format.ts";
 import { GitHubIssueIntake } from "./IssueIntake.tsx";
+import { RepositoryPicker, validRepositoryName } from "./RepositoryPicker.tsx";
 
+import { Avatar } from "../../components/ui/avatar.tsx";
+import { useSidebar } from "../../components/ui/sidebar.tsx";
+import { useSidebarData } from "../adapters/sidebarData.tsx";
+import { useClient } from "../client.ts";
+import { formatPageTitle } from "../pageTitle.ts";
+import { ProjectSetupContext, ProjectSetupProvider } from "./projectSetup.tsx";
 import { Button } from "../../components/ui/button.tsx";
 import { Checkbox } from "../../components/ui/checkbox.tsx";
 import { Input } from "../../components/ui/input.tsx";
 import { Label } from "../../components/ui/label.tsx";
-import type { Onboarding, OnboardingStep, ProjectIntegration } from "../../contracts/account.ts";
-import { ONBOARDING_STEPS } from "../../contracts/account.ts";
+import type { OnboardingStep } from "../../contracts/account.ts";
 import { cn } from "../../lib/utils.ts";
 import { AccountError } from "./api.ts";
 import { ContextHelp } from "../components/ContextHelp.tsx";
@@ -31,55 +26,37 @@ import { DetentCloudLogo } from "./Login.tsx";
 import { retireKey, setupKey } from "./idempotency.ts";
 import { useMutation, useResource } from "./useResource.ts";
 
-/** The step the wizard opens on: the first one that still needs something. */
-export function firstUnreadyStep(steps: readonly OnboardingStep[]): number {
-  const index = steps.findIndex((step) => step.state !== "ready");
-  return index === -1 ? Math.max(steps.length - 1, 0) : index;
-}
-
-export function orderedSteps(onboarding: Onboarding | undefined, integration?: ProjectIntegration): readonly OnboardingStep[] {
-  const sent = onboarding?.steps ?? [];
-  const evaluated = ONBOARDING_STEPS.map(
-    (name) =>
-      sent.find((step) => step.name === name) ?? {
-        name,
-        state: "action_required" as const,
-        detail: "",
-      },
-  );
-  return [{
-    name: "Repository",
-    state: integration?.checkout_repository || integration?.repository ? "ready" : "action_required",
-    detail: "Bind the project repository before enrolling a runner. The runner uses its own Git credentials to prepare the checkout.",
-  }, ...evaluated];
-}
+import { firstUnreadyStep, orderedSteps } from "./setupSteps.ts";
+export { firstUnreadyStep, orderedSteps } from "./setupSteps.ts";
 
 export function Stepper({
   steps,
   activeIndex,
   onSelect,
+  summaries = {},
 }: {
   readonly steps: readonly OnboardingStep[];
   readonly activeIndex: number;
   readonly onSelect: (index: number) => void;
+  readonly summaries?: Readonly<Record<string, string>>;
 }): React.ReactElement {
   return (
     <ol
       aria-label="Setup steps"
-      className="mt-[18px] flex gap-1.5 rounded-[10px] border border-border/60 bg-muted p-1"
+      className="mt-[18px] grid grid-cols-2 gap-1.5 sm:grid-cols-4 rounded-[10px] border border-border/60 bg-muted p-1"
     >
       {steps.map((step, index) => {
         const active = index === activeIndex;
         return (
-          // `min-w-0` lets the tabs shrink to the card: without it each keeps
-          // its full label's width and the row runs past the card's edge.
-          <li key={step.name} className={cn("min-w-0", active ? "flex-[2_1_0%]" : "flex-1")}>
+          <li key={step.name} className="min-w-0">
             <button
               type="button"
               aria-current={active ? "step" : undefined}
+              aria-label={`${step.name} ${step.state === "ready" ? "ready" : "action required"}`}
+              aria-description={summaries[step.name]}
               onClick={() => onSelect(index)}
               className={cn(
-                "flex h-10 w-full min-w-0 items-center justify-center gap-2.5 rounded-lg px-2 text-left text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring sm:justify-start sm:px-3",
+                "flex h-full min-h-14 w-full min-w-0 items-start gap-1.5 rounded-lg px-2 py-2 text-left text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring sm:flex-col",
                 active
                   ? "bg-background text-foreground shadow-[0_0_0_1px_var(--contrast-border)]"
                   : "text-muted-foreground hover:text-foreground",
@@ -97,7 +74,10 @@ export function Stepper({
               >
                 {step.state === "ready" ? "✓" : index + 1}
               </span>
-              <span className={cn("min-w-0 flex-1 truncate", active ? null : "max-sm:sr-only")}>{step.name}</span>
+              <span className="min-w-0 flex-1 break-words sm:w-full">
+                <span className="block font-medium">{step.name}</span>
+                {summaries[step.name] ? <span className="mt-0.5 block text-xs text-muted-foreground">{summaries[step.name]}</span> : null}
+              </span>
               <span className="sr-only">
                 {step.state === "ready" ? "ready" : "action required"}
               </span>
@@ -185,7 +165,7 @@ export function OptionRow({
 
 export interface Choice {
   readonly value: string;
-  readonly name: string;
+  readonly name: React.ReactNode;
   readonly help?: string;
   readonly detail?: React.ReactNode;
 }
@@ -246,7 +226,7 @@ export function ChoiceGroup({
                 )}
               </span>
             </label>
-            {choice.help === undefined ? null : <ContextHelp label={choice.name}>{choice.help}</ContextHelp>}
+            {choice.help === undefined ? null : <ContextHelp label={typeof choice.name === "string" ? choice.name : legend}>{choice.help}</ContextHelp>}
           </div>
         );
       })}
@@ -262,6 +242,9 @@ export function WizardCard({
   lede,
   children,
   footer,
+  projectName,
+  organizationName,
+  summaries,
 }: {
   readonly steps: readonly OnboardingStep[];
   readonly activeIndex: number;
@@ -270,6 +253,9 @@ export function WizardCard({
   readonly lede: string;
   readonly children: React.ReactNode;
   readonly footer: React.ReactNode;
+  readonly projectName?: string;
+  readonly organizationName?: string;
+  readonly summaries?: Readonly<Record<string, string>>;
 }): React.ReactElement {
   return (
     // Not `place-items-center`: centring a card taller or wider than the
@@ -279,13 +265,23 @@ export function WizardCard({
       <div className="my-auto w-full min-w-0 max-w-[640px] rounded-2xl border border-border bg-card shadow-[0_30px_80px_rgb(0_0_0/45%)]">
         <div className="border-b border-border/60 px-5 pt-[26px] pb-[18px] sm:px-7">
           <DetentCloudLogo />
-          <Stepper steps={steps} activeIndex={activeIndex} onSelect={onSelectStep} />
+          {projectName ? (
+            <section aria-label="Project setup context" className="mt-4 flex flex-wrap items-center gap-3 rounded-xl border border-border/60 bg-muted px-3 py-3">
+              <Avatar name={projectName} size="md" className="rounded-lg bg-background" />
+              <div className="min-w-0 flex-1 break-words">
+                <p className="text-xs text-muted-foreground">Setting up a project in {organizationName}</p>
+                <p className="text-sm font-semibold">{projectName}</p>
+              </div>
+              <SwitchProject />
+            </section>
+          ) : null}
+          {steps.length > 0 ? <Stepper steps={steps} activeIndex={activeIndex} onSelect={onSelectStep} summaries={summaries} /> : null}
         </div>
         <div className="px-5 pt-6 pb-[26px] sm:px-7">
           <h1 className="mb-2 text-2xl font-semibold tracking-[-0.02em] text-balance">{title}</h1>
           <p className="mb-[18px] text-sm text-muted-foreground">{lede}</p>
           {children}
-          <div className="mt-[18px] flex justify-end gap-2">{footer}</div>
+          <div className="mt-[18px] flex flex-wrap justify-end gap-2">{footer}</div>
         </div>
       </div>
     </div>
@@ -308,37 +304,72 @@ async function withSetupKey<A>(
   return result;
 }
 
-export function SetupRoute({
-  projectId,
-  onNavigate,
-}: {
+function SwitchProject(): React.ReactElement | null {
+  const sidebar = useSidebarData();
+  return sidebar?.projectSwitcher ? <SwitchProjectButton open={sidebar.projectSwitcher.setOpen} /> : null;
+}
+
+function SwitchProjectButton({ open }: { readonly open: (open: boolean) => void }): React.ReactElement {
+  const { isMobile, setOpenMobile, setOpen } = useSidebar();
+  return <Button variant="link" size="sm" onClick={() => {
+    if (isMobile) setOpenMobile(true);
+    else setOpen(true);
+    open(true);
+  }} className="text-xs text-muted-foreground underline">Switch project</Button>;
+}
+
+export function SetupRoute(props: {
+  readonly projectId: string;
+  readonly onNavigate?: (to: string) => void;
+}): React.ReactElement {
+  const setup = React.useContext(ProjectSetupContext);
+  return setup?.projectId === props.projectId
+    ? <SetupContent {...props} />
+    : <ProjectSetupProvider key={props.projectId} projectId={props.projectId}><SetupContent {...props} /></ProjectSetupProvider>;
+}
+
+function SetupContent({ projectId, onNavigate }: {
   readonly projectId: string;
   readonly onNavigate?: (to: string) => void;
 }): React.ReactElement {
   const api = useAccountApi();
-  const onboarding = useResource<Onboarding>(() => api.onboarding(projectId), [api, projectId]);
-  const integration = useResource<ProjectIntegration>(() => api.integration(projectId), [api, projectId]);
-
-  const waitingForSetup = (onboarding.value !== undefined && !onboarding.value.ready)
-    || (Boolean(integration.value?.checkout_repository) && (
-      integration.value?.checkout_verified !== true
-      || (!onboarding.value?.policy && (onboarding.value?.observed_policies?.length ?? 0) === 0)
-    ));
+  const client = useClient();
+  const { onboarding, integration } = React.useContext(ProjectSetupContext)!;
+  const projectName = client.bootstrap.projects.find((project) => project.id === projectId)?.name;
+  const organizationName = client.bootstrap.organization.name;
   React.useEffect(() => {
-    if (!waitingForSetup) return;
-    const timer = window.setInterval(() => {
-      void onboarding.refresh();
-      void integration.refresh();
-    }, 5_000);
-    return () => window.clearInterval(timer);
-  }, [waitingForSetup, onboarding.refresh, integration.refresh]);
+    document.title = formatPageTitle(projectName ? `${projectName} setup` : "Project setup");
+  }, [projectName]);
 
   const steps = orderedSteps(onboarding.value, integration.value);
+  const runners = React.useMemo(() => [...(onboarding.value?.runners ?? [])].sort((a, b) => Number((b.runner.connection_health ?? b.runner.health) === "online") - Number((a.runner.connection_health ?? a.runner.health) === "online")), [onboarding.value?.runners]);
+  const [selectedRunnerId, setSelectedRunnerId] = React.useState(() => new URLSearchParams(window.location.search).get("setup_runner") ?? "");
+  const runner = runners.find((entry) => entry.runner.runner_id === selectedRunnerId)
+    ?? runners.find((entry) => entry.runner.state === "active" && (entry.runner.connection_health ?? entry.runner.health) === "online" && !(entry.exclusions ?? []).some((exclusion) => !["project_access_denied", "host_capacity", "runner_capacity"].includes(exclusion.code)))
+    ?? runners.find((entry) => entry.runner.state === "active");
+  const readySummaries: Record<string, string> = {
+    Repository: integration.value?.checkout_repository || integration.value?.repository || "Repository connected",
+    Runner: runner?.runner.display_name ?? "Runner connected",
+    Checkout: onboarding.value?.runners?.some((entry) => entry.local_checks?.doctor === "warning" && entry.local_checks.checkout === "passed" && entry.local_checks.provider === "passed") ? "Checks passed with warnings" : "All checks passed",
+    "Run files": onboarding.value?.progress.artifacts === "customer" ? "Your bucket and gateway" : `Kept on ${runner?.runner.display_name ?? "your runner"}`,
+  };
+  const prompts: Record<string, string> = {
+    Runner: "Choose a computer",
+    Repository: "Pick a repository",
+    Checkout: "Check your runner",
+    "Run files": "Choose storage",
+  };
   const [activeIndex, setActiveIndex] = React.useState(0);
+  const summaries = Object.fromEntries(steps.map((step, index) => [step.name,
+    step.state === "ready" ? readySummaries[step.name] ?? "Ready" : index === activeIndex ? prompts[step.name] ?? "Complete this step" : "—",
+  ]));
+  const [importing, setImporting] = React.useState(false);
+  const [showReady, setShowReady] = React.useState(false);
   const [settled, setSettled] = React.useState(false);
   React.useEffect(() => {
     if (onboarding.value === undefined || integration.value === undefined || settled) return;
-    setActiveIndex(firstUnreadyStep(orderedSteps(onboarding.value, integration.value)));
+    setActiveIndex(new URLSearchParams(window.location.search).get("setup_step") === "repository" ? 1 : firstUnreadyStep(orderedSteps(onboarding.value, integration.value)));
+    setShowReady(onboarding.value.ready && orderedSteps(onboarding.value, integration.value).every((step) => step.state === "ready"));
     setSettled(true);
   }, [onboarding.value, integration.value, settled]);
 
@@ -348,16 +379,34 @@ export function SetupRoute({
   const savedRepository = progress?.repository;
   const savedArtifacts = progress?.artifacts;
   const [repository, setRepository] = React.useState("");
-  const [artifacts, setArtifacts] = React.useState("");
+  const [artifacts, setArtifacts] = React.useState("local");
   React.useEffect(() => {
     if (savedRepository === undefined || savedArtifacts === undefined) return;
     setRepository(savedRepository);
-    setArtifacts(savedArtifacts);
+    setArtifacts(savedArtifacts || "local");
   }, [projectId, savedRepository, savedArtifacts]);
 
   const [repositoryName, setRepositoryName] = React.useState("");
-  const policyReports = onboarding.value?.observed_policies ?? [];
-  const [enrolling, setEnrolling] = React.useState(false);
+  const [enrollingChoice, setEnrolling] = React.useState<boolean | null>(null);
+  const enrolling = enrollingChoice ?? (onboarding.value !== undefined && runners.length === 0);
+  const enrollmentBaseline = React.useRef<Set<string> | null>(null);
+  React.useEffect(() => {
+    if (!enrolling) { enrollmentBaseline.current = null; return; }
+    if (onboarding.value === undefined) return;
+    if (enrollmentBaseline.current === null) {
+      enrollmentBaseline.current = new Set(runners.map((entry) => entry.runner.runner_id));
+      setEnrolling(true);
+      return;
+    }
+    const connected = runners.find((entry) => !enrollmentBaseline.current!.has(entry.runner.runner_id)
+      && entry.runner.state === "active" && (entry.runner.connection_health ?? entry.runner.health) === "online"
+      && !(entry.exclusions ?? []).some((exclusion) => exclusion.code === "project_access_denied"));
+    if (connected) {
+      setSelectedRunnerId(connected.runner.runner_id);
+      setEnrolling(false);
+      setActiveIndex(1);
+    }
+  }, [enrolling, onboarding.value, runners]);
   const fleet = useResource(() => enrolling ? api.fleet() : Promise.resolve(undefined), [api, enrolling]);
   const [serviceId, setServiceId] = React.useState("");
   const [serviceOrigin, setServiceOrigin] = React.useState("");
@@ -393,17 +442,37 @@ export function SetupRoute({
         api.saveProgress({ projectId, key, revision: current.progress.revision, ...next }),
       );
       onboarding.set({ ...current, progress: saved });
-      // The steps are recomputed by the hub, so the readiness the stepper
-      // shows comes from a re-read rather than from a local guess.
-      await onboarding.refresh();
-      return saved;
+      const updated = await api.onboarding(projectId);
+      onboarding.set(updated);
+      return updated;
     },
   );
+
+  const refreshRepositories = useMutation(async (runnerId: string) => {
+    const body = { runner_id: runnerId };
+    await withSetupKey(`${base}/onboarding/repositories`, body, (key) => api.requestRunnerRepositories(projectId, runnerId, key));
+    await onboarding.refresh();
+  });
+  const requestRepositories = refreshRepositories.call;
+  const repositoryStep = steps[activeIndex]?.name === "Repository";
+  const githubAvailable = integration.value?.github_transport_available === true;
+  const githubRepositories = useResource(() => repositoryStep && githubAvailable ? api.githubRepositories() : Promise.resolve(undefined), [api, repositoryStep, githubAvailable]);
+  const connectGitHub = useMutation(async () => {
+    const target = new URL(window.location.href);
+    target.searchParams.set("setup_step", "repository");
+    if (runner) target.searchParams.set("setup_runner", runner.runner.runner_id);
+    const result = await api.connectGitHub(`${target.pathname}${target.search}`);
+    window.location.assign(result.url);
+  });
+  const listingRunnerId = runner?.runner.runner_id;
+  React.useEffect(() => {
+    if (repositoryStep && listingRunnerId && !integration.value?.checkout_repository) void requestRepositories(listingRunnerId);
+  }, [repositoryStep, listingRunnerId, projectId, requestRepositories, integration.value?.checkout_repository]);
 
   const bindRepository = useMutation(async (name: string) => {
     const current = onboarding.value;
     if (current === undefined) return null;
-    if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(name)) {
+    if (!validRepositoryName(name)) {
       throw new AccountError({ status: 422, code: "invalid_request", message: "Enter the repository as owner/name, then retry." });
     }
     const currentIntegration = await api.integration(projectId);
@@ -452,7 +521,9 @@ export function SetupRoute({
       tags: Array.isArray(found["tags"]) ? (found["tags"] as string[]) : [],
       state: String(found["state"] ?? "enabled"),
       capacityLimit: Number(found["capacity_limit"] ?? 0),
-      projectIds: projectIds.includes(projectId) ? projectIds : [...projectIds, projectId],
+      projectIds: found["scope"] === "organization" ? [] : projectIds.includes(projectId) ? projectIds : [...projectIds, projectId],
+      scope: found["scope"] === "organization" ? "organization" : "projects",
+      projectRanks: found["project_ranks"] as Record<string, number> | undefined,
     });
     await onboarding.refresh();
     return routed;
@@ -472,6 +543,9 @@ export function SetupRoute({
   if (onboarding.error !== null && onboarding.error.isAccessError) {
     return (
       <WizardCard
+        projectName={projectName}
+        organizationName={organizationName}
+        summaries={summaries}
         steps={steps}
         activeIndex={0}
         onSelectStep={() => undefined}
@@ -500,60 +574,26 @@ export function SetupRoute({
 
   const step = steps[activeIndex];
   const needsAction = step?.state === "action_required";
-  const eligible = (onboarding.value.runners ?? []).filter(
-    (entry) => (entry.exclusions ?? []).length === 0,
-  );
-  const blocked = (onboarding.value.runners ?? []).filter(
-    (entry) => (entry.exclusions ?? []).length > 0,
-  );
-
   const next = () => setActiveIndex((index) => Math.min(index + 1, steps.length - 1));
   const back = () => setActiveIndex((index) => Math.max(index - 1, 0));
   const checkoutRepository = integration.value?.checkout_repository;
   const associatedRepository = checkoutRepository || integration.value?.repository;
-  const checkoutVerified = integration.value?.checkout_verified === true;
-  const configurationChosen = Boolean(progress?.repository) || Boolean(onboarding.value.policy);
-  const configurationReported = Boolean(onboarding.value.policy) || policyReports.length > 0;
-  const preparingRunner = onboarding.value.runners?.find((entry) => entry.runner.state === "active" && (entry.runner.connection_health ?? entry.runner.health) === "online");
+  const preparingRunner = runner;
+  const configurationMissing = preparingRunner?.local_checks?.configuration === "missing";
+  const runnerName = preparingRunner?.runner.display_name ?? "Your runner";
+  const requestChecks = () => void saveProgress.call({ repository: progress?.repository ?? "", doctor: progress?.doctor ?? false, provider: progress?.provider ?? false, artifacts });
   const githubApp = integration.value;
   const showGitHubApp = githubApp?.profile === "native" && associatedRepository && githubApp.github_transport_available === true && githubApp.github_app_slug && githubApp.github_app_install_url;
 
   const bodies: Record<string, React.ReactNode> = {
     "Repository": (
       <>
-        <div className="mb-2.5 flex flex-col gap-2 rounded-xl border border-border/60 bg-muted px-4 py-3.5 sm:flex-row sm:items-end">
-          <div className="flex flex-1 flex-col gap-1.5">
-            <div className="flex items-center gap-1">
-              <Label htmlFor="setup-repository">Which repository should Detent work on?</Label>
-              <ContextHelp label="Associate the runner checkout">
-                This connects your project to a repository your runner can download using its Git sign-in. Enter owner/name and click Associate; private repositories work too, without a GitHub integration.
-              </ContextHelp>
-            </div>
-            <Input
-              id="setup-repository"
-              placeholder="owner/name"
-              value={checkoutRepository || repositoryName}
-              onChange={(event) => setRepositoryName(event.currentTarget.value)}
-              disabled={Boolean(integration.value?.checkout_repository)}
-            />
-            <p className="text-[13px] text-muted-foreground">
-              Enter your repository's owner/name; your runner downloads it using its Git sign-in. Private repositories work too, without a GitHub integration.
-            </p>
-            {integration.value?.checkout_repository ? (
-              <p role="status" className={`text-[13px] ${checkoutVerified ? "text-success-foreground" : "text-muted-foreground"}`}>
-                {checkoutVerified ? "Verified runner checkout: " : `Waiting for ${preparingRunner?.runner.display_name || "an enrolled runner"} to clone or verify checkout: `}
-                <code className="font-mono">{integration.value.checkout_repository}</code>
-              </p>
-            ) : null}
-          </div>
-          <Button
-            variant="outline"
-            disabled={bindRepository.pending || repositoryName.trim().length === 0 || Boolean(integration.value?.checkout_repository)}
-            onClick={() => void bindRepository.call(repositoryName.trim())}
-          >
-            {bindRepository.pending ? "Associating…" : "Associate"}
-          </Button>
-        </div>
+        <RepositoryPicker key={preparingRunner?.runner.runner_id} runner={preparingRunner} value={checkoutRepository || repositoryName}
+          onChange={setRepositoryName} disabled={Boolean(checkoutRepository)} refreshing={refreshRepositories.pending}
+          error={refreshRepositories.error?.message ?? onboarding.error?.message}
+          github={githubAvailable ? githubRepositories.value : undefined} connectGitHub={() => void connectGitHub.call()} connecting={connectGitHub.pending}
+          refresh={() => { if (preparingRunner) void refreshRepositories.call(preparingRunner.runner.runner_id); void githubRepositories.refresh(); }} />
+        <ControlError message={connectGitHub.error?.message ?? null} />
         <ControlError message={bindRepository.error?.message ?? null} />
         <ControlError message={integration.error?.message ?? null} />
         {showGitHubApp ? (
@@ -571,144 +611,84 @@ export function SetupRoute({
         ) : null}
       </>
     ),
-    "Repository configuration": (
+    "Checkout": (
       <>
-        {checkoutRepository ? (
-          <section className="mt-4" aria-labelledby="setup-configuration-heading">
-            <h2 id="setup-configuration-heading" className="mb-2 text-sm font-medium">Configuration files</h2>
-            {configurationChosen ? (
-              <p className="mb-3 text-sm text-muted-foreground">
-                {progress?.repository === "generate" && policyReports.length === 0 && !configurationReported ? `Create detent.yaml and WORKFLOW.md in ${associatedRepository} on your runner’s computer so it can load the project settings.` : `The runner reads detent.yaml and WORKFLOW.md from ${associatedRepository} to learn how to build, check and deliver your work.`}
-              </p>
-            ) : (
-              <>
-                <p className="mb-3 text-sm text-muted-foreground">Detent needs detent.yaml and WORKFLOW.md in this repository to know how to build, check and deliver your work.</p>
-                <ChoiceGroup
-                  name="setup-repository"
-                  legend="Configuration files"
-                  value={repository}
-                  onValueChange={setRepository}
-                  choices={[
-                    { value: "existing", name: "Use existing configuration files", detail: "detent.yaml and WORKFLOW.md are already in the repository" },
-                    { value: "generate", name: "Create configuration files", detail: "Create detent.yaml and WORKFLOW.md on your runner’s computer" },
-                  ]}
-                />
-                <Button variant="outline" disabled={saveProgress.pending || repository === ""} onClick={() => void saveProgress.call({ repository, doctor: progress?.doctor ?? false, provider: progress?.provider ?? false, artifacts })}>
-                  {saveProgress.pending ? "Saving…" : "Save configuration choice"}
-                </Button>
-              </>
-            )}
-          </section>
-        ) : null}
-
+        {!preparingRunner ? <p className="mb-3 text-sm text-muted-foreground">Enroll a runner first to check that its computer is ready.</p> : (() => {
+          const checks = preparingRunner.local_checks;
+          const offline = (preparingRunner.runner.connection_health ?? preparingRunner.runner.health) !== "online";
+          const configuration = checks?.configuration ?? (checks?.checkout === "passed" ? "passed" : "pending");
+          const rows = [
+            { name: `Cloned ${associatedRepository ?? "repository"}`, state: checks?.checkout, at: checks?.checkout_at, detail: `Using ${runnerName}’s Git sign-in`, hint: checks?.checkout_fix || "Check the runner’s Git sign-in and repository access, then retry." },
+            { name: configurationMissing ? "detent.yaml and WORKFLOW.md not found" : "Found detent.yaml and WORKFLOW.md", state: configuration, at: checks?.configuration_at, detail: configurationMissing ? "Looked in the repository root" : "Project settings loaded from the repository", hint: "Check detent.yaml and WORKFLOW.md in the repository, then retry." },
+            { name: "detent doctor", state: checks?.doctor, at: checks?.doctor_at, detail: configurationMissing ? "Waiting for settings" : `Checking build tools on ${runnerName}`, hint: "Run detent doctor --config <global.yaml> --project <project> on your runner’s computer to see what needs fixing." },
+            { name: "AI coding tool sign-in", state: checks?.provider, at: checks?.provider_at, detail: configurationMissing ? "Waiting for settings" : `Sign-in stays on ${runnerName}`, hint: `Sign in to ${(checks?.provider_kinds ?? []).join(" and ") || "the AI coding tool chosen for this project"} on your runner’s computer, then retry.` },
+          ];
+          return <>
+            <ul aria-label="Runner checks" className="divide-y divide-border/60 overflow-hidden rounded-xl border border-border/60 bg-muted" aria-live="polite">
+              {rows.map((row) => {
+                const state = row.state ?? "pending";
+                const status = state === "passed" ? "Passed" : state === "running" ? "Running" : state === "failed" ? "Failed" : state === "missing" ? "Missing" : state === "warning" ? "Warnings" : "Waiting";
+                const observed = row.at || checks?.observed_at;
+                return <li key={row.name} className="flex items-start gap-3 px-3.5 py-3">
+                  <span className="mt-0.5 shrink-0" aria-hidden="true">
+                    {state === "passed" ? <CheckIcon className="size-5 rounded-full bg-success/15 p-0.5 text-success-foreground" /> : state === "running" ? <Spinner size="lg" /> : ["failed", "missing", "warning"].includes(state) ? <TriangleAlertIcon className="size-5 text-warning-foreground" /> : <CircleIcon className="size-5 text-muted-foreground" />}
+                  </span>
+                  <div className="min-w-0 flex-1 text-sm">
+                    <p className="break-words">{row.name}</p>
+                    <p className="break-words text-xs text-muted-foreground">{state === "failed" ? row.hint : row.detail}</p>
+                    {state === "failed" && row.name.startsWith("Cloned") && checks?.checkout_message ? <p className="text-xs text-muted-foreground">{checks.checkout_message}</p> : null}
+                    {state === "failed" ? <Button variant="link" size="sm" disabled={saveProgress.pending} onClick={requestChecks} aria-label={`Retry ${row.name}`}>Retry</Button> : null}
+                  </div>
+                  <div className="shrink-0 text-right text-xs text-muted-foreground">
+                    <span>{status}</span>
+                    {observed && !["pending", "running"].includes(state) ? <time className="mt-0.5 block" dateTime={observed}>{formatRelativeTime(observed)}</time> : null}
+                  </div>
+                </li>;
+              })}
+            </ul>
+            {offline ? <p role="status" className="mt-2 text-sm text-muted-foreground">Reconnect {runnerName} to continue checking.</p> : null}
+            {configurationMissing ? <section className="mt-3">
+              <ChoiceGroup name="setup-repository" legend="Configuration files" value={repository || "generate"} onValueChange={setRepository} choices={[
+                { value: "generate", name: `Create starter files on ${runnerName}`, detail: `Written into ${runnerName}’s checkout for you to review and commit` },
+                { value: "existing", name: "I’ll add them myself", detail: `${runnerName} picks them up on its next check` },
+              ]} />
+              {progress?.repository ? <p role="status" className="text-sm text-muted-foreground">{progress.repository === "generate" ? `Waiting for ${runnerName} to create starter files.` : `Add and commit the files. ${runnerName} will check again automatically.`}</p> : null}
+            </section> : <div className="mt-2"><Button variant="link" size="sm" disabled={saveProgress.pending} onClick={requestChecks}>Refresh runner checks</Button></div>}
+          </>;
+        })()}
       </>
     ),
-    "Local validation": (
+    "Runner": enrolling ? (
+      <EnrollRunnerDialog inline open onOpenChange={setEnrolling} fleet={fleet} projectIds={[projectId]}
+        onEnrolled={() => void onboarding.refresh()} onConnected={() => void onboarding.refresh()} />
+    ) : (
       <>
-        {(onboarding.value.runners ?? []).length === 0 ? (
-          <p className="mb-3 text-sm text-muted-foreground">Enroll a runner first to check that its computer is ready.</p>
-        ) : null}
-        {(onboarding.value.runners ?? []).map((entry) => {
-          const checks = entry.local_checks;
-          const offline = (entry.runner.connection_health ?? entry.runner.health) !== "online";
-          return (
-            <div key={entry.runner.runner_id} className="mb-3">
-              <p className="mb-2 text-sm font-medium">{entry.runner.display_name} · {offline ? "Offline" : "Online"}{entry.runner.health === "needs_attention" ? " · Needs attention" : ""}</p>
-              {([
-                ["Project checkout and configuration", "Your runner needs a copy of your code with detent.yaml and WORKFLOW.md in the project folder. Put those files on the runner’s computer, restart the runner, then click Refresh runner checks.", checks?.checkout, "Put your code, WORKFLOW.md and detent.yaml in the project folder shown when you enrolled the runner."],
-                ["detent doctor", "detent doctor checks whether Detent is set up correctly on your computer. Run the command below on that computer for details, fix any problems, then restart the runner and refresh the checks.", checks?.doctor, "Run detent doctor --config <global.yaml> --project <project> on your runner’s computer to see what needs fixing."],
-                ["Provider sign-in", "Your runner needs to be signed in to the AI coding tool chosen for this project; your sign-in details stay on that computer. Sign in there, restart the runner, then click Refresh runner checks.", checks?.provider, `Sign in to ${(checks?.provider_kinds ?? []).join(" and ") || "the AI coding tool chosen for this project"} on your runner’s computer, then restart the runner.`],
-              ] as const).map(([name, help, state, hint]) => (
-                <OptionRow key={name} label={name} name={name} help={help}
-                  detail={state === "passed" ? "Checked on your runner’s computer" : hint}
-                  right={<><StatusDot tone={state === "passed" && !offline ? "ok" : "warn"} />{state === "passed" ? "Passed" : state === "failed" ? "Failed" : state === "warning" ? "Warnings" : "Waiting"}</>} />
-              ))}
-              {checks?.observed_at ? <p className="text-xs text-muted-foreground">Reported {new Date(checks.observed_at).toLocaleString()}. {offline ? "Reconnect the runner’s computer to use these results." : "Sign-in details and command output stay on your computer."}</p> : null}
-            </div>
-          );
-        })}
-        <Button variant={needsAction ? "default" : "outline"} onClick={() => void onboarding.refresh()}>Refresh runner checks</Button>
-      </>
-    ),
-    "Execution runner": (
-      <>
-        <div className="mb-2 flex items-center gap-1 text-sm">
-          Runner eligibility
-          <ContextHelp label="Runner eligibility">
-            A runner is a computer you control, like your laptop or a server, where Detent's agents write and test code. Runners that can take work for this project are listed here; if one can't, the reason is shown next to it.
-          </ContextHelp>
-        </div>
-        {eligible.map((entry) => (
-          <OptionRow
-            key={entry.runner.runner_id}
-            label={`Runner ${entry.runner.display_name}`}
-            name={entry.runner.display_name}
-            detail={`${entry.runner.hostname ?? entry.runner.runner_id} · ${entry.runner.state}`}
-            right={
-              <>
-                <StatusDot tone="ok" />
-                Eligible
-              </>
-            }
-          />
-        ))}
-        {blocked.map((entry) => (
-          <OptionRow
-            key={entry.runner.runner_id}
-            label={`Runner ${entry.runner.display_name}`}
-            name={entry.runner.display_name}
-            detail={(entry.exclusions ?? []).map((exclusion) => exclusion.message).join(" · ")}
-            right={
-              <>
-                <StatusDot tone="warn" />
-                Not eligible
-                <Button
-                  size="xs"
-                  variant="outline"
-                  disabled={route.pending}
-                  onClick={() => void route.call(entry.runner.runner_id)}
-                >
-                  Route here
-                </Button>
-                <ContextHelp label="Route here">Allow this runner to work on this project as well as its other projects. If it still cannot start, check the reason shown next to it.</ContextHelp>
-              </>
-            }
-          />
-        ))}
+        <ChoiceGroup name="setup-runner" legend="Computer for this project" value={runner?.runner.runner_id ?? ""} onValueChange={setSelectedRunnerId}
+          choices={runners.map((entry) => {
+            const online = (entry.runner.connection_health ?? entry.runner.health) === "online";
+            const count = entry.other_project_count ?? entry.runner.project_ids?.filter((id) => id !== projectId).length ?? 0;
+            return {
+              value: entry.runner.runner_id,
+              name: <span className="flex flex-wrap items-center justify-between gap-2"><span>{entry.runner.display_name}</span><span className="flex items-center gap-1.5 text-xs text-muted-foreground"><StatusDot tone={online ? "ok" : "idle"} />{online ? "Online" : "Offline"}</span></span>,
+              detail: <>{entry.runner.hostname ?? entry.runner.runner_id} · works on {count} other {count === 1 ? "project" : "projects"}{online ? "" : " · starts work when it reconnects"}</>,
+            };
+          })} />
+        <OptionRow label="Use a different computer" name="Use a different computer" detail="Enroll a new runner with one command"
+          right={<Button variant="outline" onClick={() => setEnrolling(true)}>Enroll a runner</Button>} />
         <ControlError message={route.error?.message ?? null} />
-        <div className="mb-2.5 flex flex-col gap-2 rounded-xl border border-border/60 bg-muted px-4 py-3.5">
-          <div className="text-[14.5px]">Connect a computer</div>
-          <p className="text-[13px] text-muted-foreground">
-            Choose a name for the computer, then paste the enrollment command into a terminal on it. The command connects that computer to this project.
-          </p>
-          <div>
-            <Button variant={needsAction ? "default" : "outline"} onClick={() => setEnrolling(true)}>
-              Enroll a runner
-            </Button>
-          </div>
-          <EnrollRunnerDialog
-            open={enrolling}
-            onOpenChange={setEnrolling}
-            fleet={fleet}
-            projectIds={[projectId]}
-            onEnrolled={() => void onboarding.refresh()}
-            onConnected={() => void onboarding.refresh()}
-          />
-        </div>
-        {(integration.value?.checkout_repository || integration.value?.repository) ? <GitHubIssueIntake projectId={projectId} repository={integration.value.checkout_repository || integration.value.repository || ""} runners={(onboarding.value?.runners ?? []).map(entry => ({ id: entry.runner.runner_id, name: entry.runner.display_name }))} /> : null}
       </>
     ),
-    "Artifact history": (
+    "Run files": (
       <>
         <ChoiceGroup
           name="setup-artifacts"
-          legend="Artifact history"
+          legend="Run files"
           value={artifacts}
           onValueChange={setArtifacts}
           choices={[
             {
               value: "local",
-              name: "Your runner (local history)",
+              name: `Keep them on ${runner?.runner.display_name ?? "your runner"}`,
               help: "Keep logs, screenshots and other run files on your runner, with no separate storage account or fee. You can view them while that computer is available; losing it also loses those files.",
               detail: "Keep run files on your runner, with no separate storage fee",
             },
@@ -783,54 +763,69 @@ export function SetupRoute({
   };
 
   const saveAndContinue = () => {
-    void saveProgress
-      .call({ repository, doctor: false, provider: false, artifacts })
-      .then((saved) => {
-        if (saved === null) return;
-        if (activeIndex < steps.length - 1) next();
-        else onNavigate?.("/work");
-      });
+    void saveProgress.call({ repository, doctor: progress?.doctor ?? false, provider: progress?.provider ?? false, artifacts }).then((saved) => {
+      if (saved === null) return;
+      if (activeIndex < steps.length - 1) next();
+      else if (onboarding.value?.ready && steps.every((candidate) => candidate.state === "ready")) setShowReady(true);
+      else onNavigate?.("/work");
+    });
   };
-
+  const finishSetup = async () => {
+    const saved = await saveProgress.call({ repository, doctor: progress?.doctor ?? false, provider: progress?.provider ?? false, artifacts });
+    if (saved === null) return;
+    if (saved.ready) setShowReady(true);
+    else onNavigate?.("/work");
+  };
+  const titles: Record<string, string> = {
+    Runner: enrolling ? `Connect a computer to ${projectName ?? "this project"}` : `Which computer should work on ${projectName ?? "this project"}?`,
+    Repository: `Which repository is ${projectName ?? "this project"}?`,
+    Checkout: configurationMissing ? `${associatedRepository ?? "This repository"} has no Detent settings yet` : `${runnerName} is preparing ${associatedRepository ?? "the repository"}`,
+    "Run files": "Where should run files go?",
+  };
+  const selectStep = (index: number) => { setShowReady(false); setActiveIndex(index); };
+  const ready = showReady && onboarding.value.ready && steps.every((candidate) => candidate.state === "ready");
   return (
-    <WizardCard
-      steps={steps}
-      activeIndex={activeIndex}
-      onSelectStep={setActiveIndex}
-      title={step?.name ?? "Set up this project"}
-      lede={step?.name === "Repository configuration" ? "Connect your repository so Detent can work on your code. Prepare its configuration files so your runner can load the project settings." : step?.detail ?? ""}
-      footer={
-        <>
-          {activeIndex > 0 ? (
-            <Button variant="outline" onClick={back}>
-              Back
-            </Button>
-          ) : null}
-          {onboarding.value.ready && steps.every((candidate) => candidate.state === "ready") && activeIndex === steps.length - 1 ? (
-            <Button onClick={() => onNavigate?.("/work")}>Finish</Button>
-          ) : needsAction ? (
-            <>
-              <Button variant="outline" onClick={saveAndContinue} disabled={saveProgress.pending}>
-                {saveProgress.pending ? "Saving…" : "Skip for now"}
-              </Button>
-              {step.name === "Artifact history" && artifacts !== "customer" ? (
-                <Button onClick={saveAndContinue} disabled={saveProgress.pending || artifacts !== "local"}>
-                  {saveProgress.pending ? "Saving…" : "Save choice"}
-                </Button>
-              ) : null}
-            </>
-          ) : (
-            <Button onClick={saveAndContinue} disabled={saveProgress.pending}>
-              {saveProgress.pending ? "Saving…" : "Continue"}
-            </Button>
-          )}
-        </>
-      }
+    <WizardCard projectName={projectName} organizationName={organizationName} summaries={summaries}
+      steps={ready ? [] : steps} activeIndex={activeIndex} onSelectStep={selectStep}
+      title={ready ? `${projectName ?? "This project"} is ready for work` : titles[step?.name ?? ""] ?? "Set up this project"}
+      lede={ready ? `New issues in this project go to ${runner?.runner.display_name ?? "your runner"}. You can change any of this in project settings.`
+        : step?.name === "Runner" && enrolling ? "Name it, then run the command in a terminal on that computer."
+        : step?.name === "Repository" ? `These are the repositories ${runnerName} can reach with its own Git sign-in. Private ones are included; no GitHub integration is needed.`
+        : step?.name === "Checkout" ? configurationMissing ? `${runnerName} cloned it but found no project configuration. Pick one and the checks continue on their own.` : "The runner clones the repository and checks itself. This page updates as each check finishes; sign-in details and command output stay on that computer."
+        : step?.name === "Run files" ? `Logs, screenshots and other files from each run of ${projectName ?? "this project"}.` : step?.detail ?? ""}
+      footer={ready ? <Button onClick={() => onNavigate?.("/work")}>Open Work</Button> : <>
+        {step?.name === "Runner" ? <>
+          {enrolling ? <Button variant="outline" onClick={() => setEnrolling(false)}>Use an existing runner</Button> : null}
+          <Button variant="outline" onClick={next}>Skip for now</Button>
+          {!enrolling ? <Button disabled={!runner || route.pending} onClick={() => {
+            if (runner) { setSelectedRunnerId(runner.runner.runner_id); void route.call(runner.runner.runner_id).then((routed) => { if (routed !== null) next(); }); }
+          }}>{route.pending ? "Routing…" : `Use ${runner?.runner.display_name ?? "runner"}`}</Button> : null}
+        </> : <>
+          <Button variant="outline" onClick={back}>Back</Button>
+          {step?.name === "Repository" && checkoutRepository ? <Button onClick={next}>Continue</Button> : step?.name === "Repository" ? <Button disabled={bindRepository.pending || !validRepositoryName(repositoryName.trim()) || Boolean(checkoutRepository)} onClick={() => void bindRepository.call(repositoryName.trim()).then((bound) => { if (bound) next(); })}>{bindRepository.pending ? "Connecting…" : `Use ${repositoryName.trim() || "owner/name"}`}</Button> : step?.name === "Checkout" ? <>
+            {configurationMissing ? <Button disabled={saveProgress.pending} onClick={() => void saveProgress.call({ repository: repository || "generate", doctor: progress?.doctor ?? false, provider: progress?.provider ?? false, artifacts })}>{saveProgress.pending ? "Saving…" : repository === "existing" ? "Wait for files" : "Create starter files"}</Button> : <>
+              <Button variant="outline" className="order-last w-full sm:order-none sm:w-auto" onClick={next}>Continue in background</Button>
+              <Button disabled={needsAction} onClick={next}>Continue</Button>
+            </>}
+          </> : step?.name === "Run files" ? <Button disabled={saveProgress.pending || artifacts === "customer" && (onboarding.value.artifact_services ?? []).length === 0} onClick={() => void finishSetup()}>{saveProgress.pending ? "Saving…" : "Finish setup"}</Button>
+            : <Button variant={needsAction ? "outline" : "default"} disabled={saveProgress.pending} onClick={saveAndContinue}>{saveProgress.pending ? "Saving…" : needsAction ? "Skip for now" : "Continue"}</Button>}
+        </>}
+      </>}
     >
-      <>
-        {bodies[step?.name ?? ""] ?? null}
-        <ControlError message={saveProgress.error?.message ?? null} />
-      </>
+      {ready ? <>
+        <dl className="divide-y divide-border/60 rounded-xl border border-border/60 bg-muted">
+          {steps.map((candidate, index) => <div key={candidate.name} className="flex flex-wrap items-center gap-3 px-4 py-3 text-sm">
+            <dt className="w-20 text-muted-foreground">{candidate.name}</dt><dd className="min-w-0 flex-1 break-words">{readySummaries[candidate.name]}</dd>
+            <Button variant="link" size="sm" aria-label={`${candidate.name === "Checkout" ? "View" : "Change"} ${candidate.name}`} onClick={() => selectStep(index)}>{candidate.name === "Checkout" ? "View" : "Change"}</Button>
+          </div>)}
+        </dl>
+        {associatedRepository ? <div className="mt-3">
+          <OptionRow label="Bring in GitHub issues" name="Bring in GitHub issues" detail={`Optional: import open issues from ${associatedRepository}`}
+            right={<Button variant="outline" onClick={() => setImporting((open) => !open)}>{importing ? "Hide import" : "Import issues"}</Button>} />
+          {importing ? <GitHubIssueIntake projectId={projectId} repository={associatedRepository} runners={runners.map((entry) => ({ id: entry.runner.runner_id, name: entry.runner.display_name }))} /> : null}
+        </div> : null}
+      </> : <>{bodies[step?.name ?? ""] ?? null}</>}
+      <ControlError message={saveProgress.error?.message ?? null} />
     </WizardCard>
   );
 }

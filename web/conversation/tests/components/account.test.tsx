@@ -8,18 +8,22 @@
 // behaviour rather than the client it would otherwise be wired to.
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import React from "react";
+import * as Schema from "effect/Schema";
+import * as Effect from "effect/Effect";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createMemoryHistory, createRootRoute, createRouter, RouterProvider } from "@tanstack/react-router";
 
 import { decodeAccountBootstrap, type AccountBootstrap, type Member, type OnboardingStep } from "../../src/contracts/account.ts";
 import { SidebarWorkspacePicker, WorkspacePicker } from "../../src/components/sidebar/SidebarWorkspacePicker.tsx";
-import { ClientContext } from "../../src/app/client.ts";
-import type { ConversationClient } from "../../src/runtime/bootstrap.ts";
+import { ClientContext, ClientProvider, useClient } from "../../src/app/client.ts";
+import { makeClient, type ConversationClient } from "../../src/runtime/bootstrap.ts";
+import { Bootstrap } from "../../src/contracts/index.ts";
 import membersFixture from "../../src/contracts/fixtures/account-members.json";
 import { OrganizationMembersProvider } from "../../src/app/account/OrganizationMembers.tsx";
 import { MemberAccessSheet, ProjectAccessMatrix } from "../../src/app/account/MemberAccess.tsx";
 import accountFixture from "../../src/contracts/fixtures/account-bootstrap.json";
+import integrationFixture from "../../src/contracts/fixtures/account-integration.json";
 import { SidebarProvider } from "../../src/components/ui/sidebar.tsx";
 import {
   LoginCard,
@@ -36,14 +40,14 @@ import {
   SupportBanner,
 } from "../../src/app/account/Organization.tsx";
 import { firstUnreadyStep, orderedSteps, Stepper } from "../../src/app/account/Setup.tsx";
-import { hubUrlNamesOrganization, parseCapacity, runnerNameFits, registerCommand, runnerHubUrl, shellArgument } from "../../src/app/fleet/EnrollRunner.tsx";
+import { installAndRegisterCommand, runnerInstallPlatform, WINDOWS_INSTALL_DETENT_COMMAND, hubUrlNamesOrganization, parseCapacity, runnerNameFits, registerCommand, runnerHubUrl, shellArgument } from "../../src/app/fleet/EnrollRunner.tsx";
 import { EntrySignIn } from "../../src/app/entry/EntryScreens.tsx";
 import { AccountError } from "../../src/app/account/api.ts";
 import { applyHubPaths, resetHubPaths } from "../../src/runtime/basePath.ts";
-import { noApprovedPolicy, saveMessage, WorkflowSettings, ProjectDeletionSettings } from "../../src/app/account/ProjectSettings.tsx";
+import { saveMessage, WorkflowSettings, ProjectDeletionSettings, ProjectSettingsRoute } from "../../src/app/account/ProjectSettings.tsx";
 import { allowanceRows, allowanceLabel } from "../../src/app/settings/Settings.tsx";
-import approval from "../../src/contracts/fixtures/account-policy.json";
-import { WorkflowRevisions } from "../../src/app/account/WorkflowRevisions.tsx";
+import emptyApproval from "../../src/contracts/fixtures/account-policy-empty.json";
+import { PolicyApproval } from "../../src/contracts/account.ts";
 
 afterEach(cleanup);
 
@@ -74,6 +78,32 @@ describe("the footer workspace picker", () => {
     );
     return userEvent.setup();
   }
+
+  it("replaces the current workspace monogram in the trigger and menu with its saved logo", async () => {
+    const account = decodeAccountBootstrap({ ...accountFixture, organization: { ...accountFixture.organization, logo: { url: "/organizations/org_a/api/v2/attachments/att_example", revision: "2" } } });
+    const user = mountAccount(account);
+    const logo = await screen.findByRole("img", { name: `${account.organization.name} logo` });
+    expect(logo.getAttribute("src")).toBe("/organizations/org_a/api/v2/attachments/att_example");
+    await user.click(screen.getByRole("button", { name: /Switch workspace/ }));
+    expect(within(await screen.findByRole("menu")).getByRole("img", { name: `${account.organization.name} logo` }).getAttribute("src")).toBe(logo.getAttribute("src"));
+  });
+
+  it.each(["owner", "admin", "member", "viewer", "reporter"])("shows workspace roles and sign out for %s", async (role) => {
+    const account = decodeAccountBootstrap({
+      ...accountFixture,
+      actor: { ...accountFixture.actor, role },
+      organizations: [
+        { ...accountFixture.organizations[0], role, current: true },
+        { ...accountFixture.organizations[0], id: "org_other", name: "Another workspace", role: "admin", current: false },
+      ],
+    });
+    const user = mountAccount(account);
+    await user.click(await screen.findByRole("button", { name: /Switch workspace/ }));
+    const menu = await screen.findByRole("menu");
+    expect(within(menu).getByRole("menuitem", { name: "Another workspace" }).getAttribute("aria-description")).toBe("admin");
+    expect(within(menu).getByRole("menuitem", { name: account.organization.name }).getAttribute("aria-description")).toBe(role);
+    expect(within(menu).queryByRole("menuitem", { name: "Sign out" })).not.toBeNull();
+  });
 
   it.each(["admin", "support", "billing", "viewer", "", undefined])("offers the platform console only to platform staff (%s)", async (platform_role) => {
     const account = decodeAccountBootstrap({
@@ -620,10 +650,10 @@ describe("the plan's allowances", () => {
 
 describe("the wizard stepper", () => {
   const steps: OnboardingStep[] = [
-    { name: "Repository configuration", state: "ready", detail: "" },
-    { name: "Local validation", state: "action_required", detail: "" },
-    { name: "Execution runner", state: "ready", detail: "" },
-    { name: "Artifact history", state: "action_required", detail: "" },
+    { name: "Repository", state: "ready", detail: "" },
+    { name: "Checkout", state: "action_required", detail: "" },
+    { name: "Runner", state: "ready", detail: "" },
+    { name: "Run files", state: "action_required", detail: "" },
   ];
 
   it("opens on the first step that still needs something", () => {
@@ -634,28 +664,31 @@ describe("the wizard stepper", () => {
     expect(firstUnreadyStep(steps.map((step) => ({ ...step, state: "ready" as const })))).toBe(3);
   });
 
-  it("puts repository binding before the Hub steps and preserves their readiness", () => {
+  it("keeps the Hub steps in runner-first order and preserves their readiness", () => {
     const ordered = orderedSteps({
       progress: { revision: "1", repository: "", doctor: false, provider: false, artifacts: "" },
       runners: [],
       artifact_services: [],
-      steps: [{ name: "Execution runner", state: "ready", detail: "d" }],
+      steps: [{ name: "Runner", state: "ready", detail: "d" }],
       ready: false,
     });
     expect(ordered.map((step) => step.name)).toEqual([
+      "Runner",
       "Repository",
-      "Execution runner",
-      "Local validation",
-      "Repository configuration",
-      "Artifact history",
+      "Checkout",
+      "Run files",
     ]);
-    expect(ordered[0]?.state).toBe("action_required");
-    expect(ordered[1]?.state).toBe("ready");
+    expect(ordered[0]?.state).toBe("ready");
+    expect(ordered[1]?.state).toBe("action_required");
     expect(ordered[3]?.state).toBe("action_required");
   });
 
   it("says ready or action required in words, not only in colour", () => {
-    render(<Stepper steps={steps} activeIndex={1} onSelect={vi.fn()} />);
+    render(<Stepper steps={steps} activeIndex={1} onSelect={vi.fn()} summaries={{ "Runner": "Example runner", "Repository": "Configuration approved", "Checkout": "Check your runner" }} />);
+    for (const step of steps) expect(screen.getByText(step.name, { exact: true })).toBeTruthy();
+    expect(screen.getByText("Example runner")).toBeTruthy();
+    expect(screen.getByText("Configuration approved")).toBeTruthy();
+    expect(screen.getByText("Check your runner")).toBeTruthy();
     expect(screen.getAllByText("ready")).toHaveLength(2);
     expect(screen.getAllByText("action required")).toHaveLength(2);
   });
@@ -667,12 +700,99 @@ describe("the wizard stepper", () => {
       .getAllByRole("button")
       .filter((button) => button.getAttribute("aria-current") === "step");
     expect(current).toHaveLength(1);
-    fireEvent.click(screen.getByRole("button", { name: /Artifact history/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Run files/ }));
     expect(onSelect).toHaveBeenCalledWith(3);
   });
 });
 
 describe("the project settings", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    resetHubPaths();
+  });
+
+  it.each(["success", "refused", "refresh_refused", "refresh_network"] as const)("refreshes project and conversation lists or reloads app home after deletion (%s)", async (outcome) => {
+    const user = userEvent.setup();
+    const account = decodeAccountBootstrap(accountFixture);
+    const project = account.projects[0]!;
+    const remaining = { ...project, id: "proj_remaining", name: "Remaining project" };
+    const initial = { ...account, projects: [project, remaining] };
+    const client = makeClient({ bootstrap: Schema.decodeUnknownSync(Bootstrap)(initial), account: initial });
+    let finishConversations!: () => void;
+    const conversations = new Promise<void>((resolve) => { finishConversations = resolve; });
+    const refreshConversations = vi.spyOn(client.effects, "refreshList").mockImplementation(() => Effect.promise(() => conversations));
+    const assign = vi.fn();
+    vi.stubGlobal("location", { assign });
+    let current = client;
+    function Projects() {
+      current = useClient();
+      return <ul aria-label="Available projects">{current.account?.projects.map((item) => <li key={item.id}>{item.name}</li>)}</ul>;
+    }
+    let finishDelete!: (response: Response) => void;
+    const deletion = new Promise<Response>((resolve) => { finishDelete = resolve; });
+    let finishBootstrap!: (response: Response) => void;
+    let rejectBootstrap!: (cause: Error) => void;
+    const bootstrap = new Promise<Response>((resolve, reject) => { finishBootstrap = resolve; rejectBootstrap = reject; });
+    const refresh = vi.fn(() => bootstrap);
+    const remove = vi.fn(() => deletion);
+    vi.stubGlobal("fetch", vi.fn((input: string, init?: RequestInit) => {
+      if (input === "/app/bootstrap") return refresh();
+      if (input.endsWith(`/projects/${project.id}`) && init?.method === "DELETE") {
+        const body = JSON.parse(String(init.body));
+        expect(body.confirm_name).toBe(project.name);
+        expect(body.idempotency_key).toEqual(expect.any(String));
+        expect(body.idempotency_key.length).toBeGreaterThan(0);
+        return remove();
+      }
+      if (input.endsWith("/integration")) return Promise.resolve(Response.json(integrationFixture));
+      return Promise.resolve(Response.json({ code: "not_found", message: "Not available" }, { status: 404 }));
+    }));
+    const navigate = vi.fn();
+    const root = createRootRoute({ component: () => <><Projects /><ProjectSettingsRoute projectId={project.id} tab="danger" onNavigate={navigate} /></> });
+    const router = createRouter({ routeTree: root, history: createMemoryHistory({ initialEntries: ["/"] }) });
+    render(<ClientProvider client={client}><RouterProvider router={router as never} /></ClientProvider>);
+    await user.click(await screen.findByRole("button", { name: "Delete project" }));
+    await user.type(within(screen.getByRole("alertdialog")).getByRole("textbox", { name: `To confirm, type ${project.name} below` }), project.name);
+    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Delete project" }));
+    expect(remove).toHaveBeenCalledOnce();
+    expect(refresh).not.toHaveBeenCalled();
+    expect(navigate).not.toHaveBeenCalled();
+    if (outcome === "refused") {
+      await act(async () => finishDelete(Response.json({ code: "conflict", message: "Finish active work first" }, { status: 409 })));
+      expect(within(screen.getByRole("alertdialog")).getByText("Finish active work first")).toBeTruthy();
+      expect(refresh).not.toHaveBeenCalled();
+      expect(navigate).not.toHaveBeenCalled();
+      expect(current.account?.projects).toEqual([project, remaining]);
+      expect(refreshConversations).not.toHaveBeenCalled();
+      expect(assign).not.toHaveBeenCalled();
+      return;
+    }
+    await act(async () => finishDelete(new Response(null, { status: 204 })));
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(navigate).not.toHaveBeenCalled();
+    if (outcome === "refresh_refused" || outcome === "refresh_network") {
+      await act(async () => {
+        if (outcome === "refresh_network") rejectBootstrap(new TypeError("Failed to fetch"));
+        else finishBootstrap(Response.json({ message: "Unavailable" }, { status: 503 }));
+      });
+      expect(assign).toHaveBeenCalledExactlyOnceWith("/work");
+      expect(navigate).not.toHaveBeenCalled();
+      expect(remove).toHaveBeenCalledOnce();
+      expect(refreshConversations).not.toHaveBeenCalled();
+      return;
+    }
+    await act(async () => finishBootstrap(Response.json({ ...accountFixture, projects: [remaining] })));
+    expect(refreshConversations).toHaveBeenCalledOnce();
+    expect(navigate).not.toHaveBeenCalled();
+    await act(async () => finishConversations());
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith("/work"));
+    expect(assign).not.toHaveBeenCalled();
+    expect(current.bootstrap.projects.map((item) => item.id)).toEqual([remaining.id]);
+    expect(current.account?.projects.map((item) => item.id)).toEqual([remaining.id]);
+    expect(within(screen.getByRole("list", { name: "Available projects" })).queryByText(project.name)).toBeNull();
+    expect(within(screen.getByRole("list", { name: "Available projects" })).getByText(remaining.name)).toBeTruthy();
+  });
+
   it("confirms the named deletion, cancels without a mutation, and keeps contextual failure feedback", async () => {
     const user = userEvent.setup();
     const onDelete = vi.fn();
@@ -682,20 +802,61 @@ describe("the project settings", () => {
     const dialog = screen.getByRole("alertdialog", { name: "Delete Retired project?" });
     expect(within(dialog).getByText(/deletes its secrets and access grants/)).toBeTruthy();
     expect(within(dialog).getByText(/stored artifacts are retained/)).toBeTruthy();
+    const warning = within(dialog).getByRole("alert");
+    expect(warning.textContent).toBe("This action cannot be undone.");
+    expect(warning.getAttribute("data-variant")).toBe("error");
+    const input = within(dialog).getByRole("textbox", { name: "To confirm, type Retired project below" });
+    const button = within(dialog).getByRole("button", { name: "Delete project" }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    await user.click(button);
+    await user.click(input);
+    await user.keyboard("{Enter}");
+    expect(onDelete).not.toHaveBeenCalled();
+    for (const name of ["retired project", "Retired", "Retired project extra"]) {
+      await user.clear(input);
+      await user.type(input, name);
+      expect(button.disabled).toBe(true);
+      fireEvent.submit(input.closest("form")!);
+      await user.keyboard("{Enter}");
+      expect(onDelete).not.toHaveBeenCalled();
+    }
+    await user.clear(input);
+    await user.type(input, "Retired project");
+    expect(button.disabled).toBe(false);
     await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
     await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
     expect(onDelete).not.toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: "Delete project" }));
-    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Delete project" }));
+    const reopened = within(screen.getByRole("alertdialog"));
+    const reopenedInput = reopened.getByRole("textbox", { name: "To confirm, type Retired project below" }) as HTMLInputElement;
+    expect(reopenedInput.value).toBe("");
+    expect((reopened.getByRole("button", { name: "Delete project" }) as HTMLButtonElement).disabled).toBe(true);
+    await user.type(reopenedInput, "  Retired project  ");
+    expect((reopened.getByRole("button", { name: "Delete project" }) as HTMLButtonElement).disabled).toBe(false);
+    await user.click(reopened.getByRole("button", { name: "Delete project" }));
     expect(onDelete).toHaveBeenCalledOnce();
     view.rerender(<ProjectDeletionSettings projectName="Retired project" pending error={null} onDelete={onDelete} onDismiss={onDismiss} />);
     expect((screen.getByRole("button", { name: "Deleting…" }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole("button", { name: "Cancel" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(reopenedInput.disabled).toBe(true);
+    await user.keyboard("{Escape}");
+    expect(screen.getByRole("alertdialog")).toBeTruthy();
+    fireEvent.submit(reopenedInput.closest("form")!);
+    expect(onDelete).toHaveBeenCalledOnce();
     view.rerender(<ProjectDeletionSettings projectName="Retired project" pending={false} error="Finish active work first" onDelete={onDelete} onDismiss={onDismiss} />);
     expect(within(screen.getByRole("alertdialog")).getByText("Finish active work first")).toBeTruthy();
+    await user.click(reopenedInput);
+    await user.keyboard("{Enter}");
+    expect(onDelete).toHaveBeenCalledTimes(2);
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    await user.click(screen.getByRole("button", { name: "Delete project" }));
+    expect((screen.getByRole("textbox", { name: "To confirm, type Retired project below" }) as HTMLInputElement).value).toBe("");
   });
 
-  it("shows the saved workflow and submits a reviewed edit without allowing viewer edits", () => {
+  it.each([false, true])("shows lane details and preserves workflow editing on mobile %s", async (phone) => {
+    vi.stubGlobal("PointerEvent", MouseEvent);
+    const media = vi.spyOn(window, "matchMedia").mockImplementation((query) => ({ matches: phone, media: query, onchange: null, addListener: vi.fn(), removeListener: vi.fn(), addEventListener: vi.fn(), removeEventListener: vi.fn(), dispatchEvent: vi.fn() }));
     const integration = {
       profile: "native", revision: "2", intake: "disabled", projection: "disabled", repository_enabled: false,
       archive_completed_after_days: 30, archive_cancelled_after_days: 7,
@@ -703,37 +864,52 @@ describe("the project settings", () => {
       states: [
         { name: "Backlog", terminal: false, dispatchable: false, operator_only: true, transitions: ["Todo"] },
         { name: "Todo", terminal: false, dispatchable: true, transitions: [] },
+        { name: "Blocked", terminal: false, dispatchable: false, transitions: ["Todo"] },
+        { name: "Done", terminal: true, dispatchable: false, transitions: [] },
       ],
     };
     const onSave = vi.fn();
     const view = render(<WorkflowSettings integration={integration} canManage saving={false} error={null} onSave={onSave} />);
-    expect(screen.getByText("Backlog · Initial · Nondispatchable · Operator only")).toBeTruthy();
+    expect(within(screen.getByRole("button", { name: /Backlog/ })).getByLabelText("Initial")).toBeTruthy();
+    expect(within(screen.getByRole("button", { name: /Todo/ })).getByLabelText("Dispatchable")).toBeTruthy();
+    expect(screen.getByText("Waiting for runner").querySelector("span")?.className).toContain("bg-muted-foreground");
+    expect(within(screen.getByRole("button", { name: /Blocked/ })).getByLabelText("Holding")).toBeTruthy();
+    expect(within(screen.getByRole("button", { name: /Done/ })).getByLabelText("Terminal")).toBeTruthy();
+    const user = userEvent.setup();
+    if (phone) await user.click(screen.getByRole("button", { name: /Backlog/ }));
+    else await user.hover(screen.getByRole("button", { name: /Backlog/ }));
+    const tooltip = await screen.findByRole("tooltip");
+    expect(within(tooltip).getByText(/Holding/)).toBeTruthy();
+    expect(within(tooltip).getAllByRole("listitem").map((item) => item.textContent)).toEqual(["Todo"]);
+    if (phone) await user.click(screen.getByRole("button", { name: /Backlog/ }));
+    else await user.unhover(screen.getByRole("button", { name: /Backlog/ }));
     const states = [...integration.states, { name: "Rework", terminal: false, dispatchable: true, transitions: ["Todo"] }];
     const markdown = "---\ntracker:\n  kind: hub_native\n  active_states: [Todo, Rework]\n---\nComplete the issue.\n";
+    fireEvent.change(screen.getByRole("textbox", { name: "Workflow definition" }), { target: { value: markdown } });
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect((screen.getByRole("textbox", { name: "Workflow definition" }) as HTMLTextAreaElement).value).not.toBe(markdown);
     fireEvent.change(screen.getByRole("textbox", { name: "Workflow definition" }), { target: { value: markdown } });
     fireEvent.click(screen.getByRole("button", { name: "Save workflow" }));
     expect(onSave).toHaveBeenCalledWith(markdown);
     view.rerender(<WorkflowSettings integration={{ ...integration, states }} canManage={false} saving={false} error={null} onSave={onSave} />);
     expect(screen.queryByRole("textbox", { name: "Workflow definition" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Save workflow" })).toBeNull();
-    expect(screen.getByText("Rework · Dispatchable")).toBeTruthy();
-    view.rerender(<WorkflowSettings integration={{ ...integration, states, authority: { workflow: "repository" }, checkout_repository: "acme/example-project", workflow_source: "detent.yaml", workflow_source_revision: "abc123" }} canManage saving={false} error={null} onSave={onSave} />);
+    expect(screen.getByRole("button", { name: /Rework/ })).toBeTruthy();
+    view.rerender(<WorkflowSettings integration={{ ...integration, states, authority: { workflow: "repository" }, checkout_repository: "example-org/example-project", workflow_source: "detent.yaml", workflow_source_revision: "abc123" }} canManage saving={false} error={null} onSave={onSave} />);
     expect(screen.queryByRole("textbox", { name: "Workflow definition" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Save workflow" })).toBeNull();
-    expect(screen.getByText(/Controlled by acme\/example-project: detent.yaml at revision abc123/)).toBeTruthy();
+    expect(screen.getByText(/Defined in/)).toBeTruthy();
+    expect(screen.getByRole("link", { name: "detent.yaml" }).getAttribute("href")).toBe("https://github.com/example-org/example-project/blob/abc123/detent.yaml");
+    expect(screen.queryByText(/abc123/)).toBeNull();
+    media.mockRestore();
+    vi.unstubAllGlobals();
   });
 
-  it("reads both shapes of \"nothing is approved\" as an answer, not a failure", () => {
-    expect(
-      noApprovedPolicy(new AccountError({ status: 404, code: "not_found", message: "" })),
-    ).toBe(true);
-    // The hosted preview answers this for a project with no matching approval.
-    expect(
-      noApprovedPolicy(new AccountError({ status: 409, code: "policy_mismatch", message: "" })),
-    ).toBe(true);
-    expect(
-      noApprovedPolicy(new AccountError({ status: 503, code: "unavailable", message: "" })),
-    ).toBe(false);
+  it("reads a successful policy response with nothing approved", () => {
+    const result = Schema.decodeUnknownSync(PolicyApproval)(emptyApproval);
+    expect(result.policy).toBeNull();
+    expect(result.history).toEqual([]);
+    expect(result.observed_policies).toEqual([]);
   });
 
   it("tells the reader to look again after a revision conflict, and never to retry blind", () => {
@@ -763,6 +939,33 @@ describe("the runner hub URL", () => {
   });
 });
 
+describe("runner installation", () => {
+  it.each([
+    ["Win32", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", "windows"],
+    ["", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", "windows"],
+    ["MacIntel", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)", "macos"],
+    ["", "Mozilla/5.0 (darwin)", "macos"],
+    ["Linux x86_64", "Mozilla/5.0 (X11; Linux x86_64)", "linux"],
+  ])("detects %s / %s", (platform, userAgent, expected) => {
+    vi.stubGlobal("navigator", { platform, userAgent });
+    expect(runnerInstallPlatform()).toBe(expected);
+    vi.unstubAllGlobals();
+  });
+
+  it("installs in PowerShell and refreshes the installer directory before registering", () => {
+    expect(WINDOWS_INSTALL_DETENT_COMMAND).toBe("irm https://raw.githubusercontent.com/digitaldrywood/detent/main/install.ps1 | iex");
+    expect(installAndRegisterCommand("detent hub runner register", "windows")).toBe(
+      `$ErrorActionPreference = 'Stop'; irm https://raw.githubusercontent.com/digitaldrywood/detent/main/install.ps1 | iex; $detentInstallDir = if ($env:DETENT_INSTALL_DIR) { $env:DETENT_INSTALL_DIR } elseif ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA 'detent\\bin' } else { Join-Path $HOME '.detent\\bin' }; $env:Path = "$detentInstallDir;$env:Path"; detent hub runner register`,
+    );
+  });
+
+  it.each(["macos", "linux"] as const)("preserves the %s one-paste command", (platform) => {
+    expect(installAndRegisterCommand("detent hub runner register", platform)).toBe(
+      'curl -fsSL https://raw.githubusercontent.com/digitaldrywood/detent/main/install.sh | sh && export PATH="$HOME/.local/bin:/usr/local/bin:$PATH" && detent hub runner register',
+    );
+  });
+});
+
 describe("the register command", () => {
   const input = {
     hubUrl: "https://cloud.example.com/organizations/org_1",
@@ -782,6 +985,16 @@ describe("the register command", () => {
     { name: "a URL naming a longer organization ID", change: { hubUrl: "https://cloud.example.com/organizations/org_1-extra" }, want: "detent hub runner register --url https://cloud.example.com/organizations/org_1-extra --organization org_1 --token det_enroll_abc --isolation-tier sandbox" },
   ])("builds it for $name", ({ change, want }) => {
     expect(registerCommand({ ...input, ...change })).toBe(want);
+  });
+
+  it.each([
+    [` Owner's "Windows" $host `, `Owner''s "Windows" $host`],
+    ["Owner’s ‘Windows’ $host", "Owner’’s ‘‘Windows’’ $host"],
+  ])("quotes every Windows register argument as a PowerShell literal: %s", (name, quotedName) => {
+    expect(registerCommand({
+      ...input, platform: "windows", hubUrl: "https://hub.example.test/$hub", organizationId: "org's $id",
+      token: "token'$secret", name, isolationTier: "native-trusted", capacity: 2, service: true,
+    })).toBe(`detent hub runner register --url 'https://hub.example.test/$hub' --organization 'org''s $id' --token 'token''$secret' --name '${quotedName}' --capacity 2 --isolation-tier native-trusted --service`);
   });
 
   it.each([
@@ -832,32 +1045,4 @@ describe("the runner name limit", () => {
   ])("counts UTF-8 bytes: $fits", ({ name, fits }) => {
     expect(runnerNameFits(name)).toBe(fits);
   });
-});
-
-const definition = { ...approval.policy, workflow: { source: "detent.yaml", states: [
-  { name: "Todo", dispatchable: true, terminal: false, transitions: [] },
-] } };
-const props = {
-  repository: "acme/orders", canApprove: false, approving: false,
-  onApprove: vi.fn(), error: null, onLoadOlder: vi.fn(), loadingOlder: false,
-};
-
-it("does not invent an initial diff when a stored predecessor is unavailable", () => {
-  render(<WorkflowRevisions {...props} observed={[]} policy={{ ...approval, policy: definition, history: [{
-    id: "2", repository: "acme/orders", commit: "b".repeat(40),
-    previous_definition_digest: "missing", definition_digest: "current", runner_id: "runner_test",
-    applied_by: "runner_test", applied_at: "2026-10-05T12:00:00Z", definition,
-  }] }} />);
-  expect(screen.getByText("The stored definition for this comparison is unavailable.")).toBeTruthy();
-  expect(screen.queryByRole("table")).toBeNull();
-});
-
-it("keeps old approvals out of pending revisions and does not label a digest as a commit", () => {
-  render(<WorkflowRevisions {...props} policy={null} observed={[
-    { policy: { ...definition, policy_id: "old" }, runner_id: "runner_old", observed_at: "2026-10-05T10:00:00Z", previously_approved: true },
-    { policy: definition, runner_id: "runner_test", observed_at: "2026-10-05T12:00:00Z" },
-  ]} />);
-  expect(screen.getAllByRole("heading", { name: "Reported revision" })).toHaveLength(1);
-  expect(screen.getByText("Commit not recorded")).toBeTruthy();
-  expect(screen.queryByText(definition.source_revision)).toBeNull();
 });

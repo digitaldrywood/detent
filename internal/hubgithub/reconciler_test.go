@@ -54,10 +54,26 @@ func TestReconcilerUsesCursorAndRepositoryIdentity(t *testing.T) {
 			path:   pullsPath,
 			response: []reconcilePullRequest{{
 				ID: 201, NodeID: "PR_issue", Number: 18, Title: "Pull request",
-				HTMLURL: "https://github.test/new-owner/renamed/pull/18", State: "open",
+				HTMLURL: "https://github.test/new-owner/renamed/pull/18", State: "closed", MergeSHA: "merged-commit", MergedAt: updatedAt,
 				Head: restRef{Ref: "feature", SHA: "head"}, Base: restRef{Ref: "main", SHA: "base"},
 				CreatedAt: since.Add(-time.Hour), UpdatedAt: updatedAt,
+			}, {
+				ID: 202, NodeID: "PR_older", Number: 19, Title: "Historical pull request",
+				HTMLURL: "https://github.test/new-owner/renamed/pull/19", State: "closed", MergeSHA: "older-commit", MergedAt: since.Add(-time.Minute),
+				Head: restRef{Ref: "older-feature", SHA: "older-head"}, Base: restRef{Ref: "main", SHA: "older-base"},
+				CreatedAt: since.Add(-time.Hour), UpdatedAt: since.Add(-time.Minute),
 			}},
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/new-owner/renamed/pulls/18",
+			response: reconcilePullRequest{
+				ID: 201, NodeID: "PR_issue", Number: 18, Title: "Pull request",
+				HTMLURL: "https://github.test/new-owner/renamed/pull/18", State: "closed",
+				MergeSHA: "merged-commit", MergedAt: updatedAt, MergedBy: restActor{Login: "example-operator"},
+				Head: restRef{Ref: "feature", SHA: "head"}, Base: restRef{Ref: "main", SHA: "base"},
+				CreatedAt: since.Add(-time.Hour), UpdatedAt: updatedAt,
+			},
 		},
 	}}
 	databaseID := int64(100)
@@ -78,8 +94,8 @@ func TestReconcilerUsesCursorAndRepositoryIdentity(t *testing.T) {
 	if len(snapshot.Issues) != 1 || snapshot.Issues[0].Number != 17 || snapshot.Issues[0].AuthorID != "octocat" || !reflect.DeepEqual(snapshot.Issues[0].Labels, []string{"feature"}) || !reflect.DeepEqual(snapshot.Issues[0].Assignees, []string{"alice"}) {
 		t.Fatalf("issues = %#v, want one normalized issue", snapshot.Issues)
 	}
-	if len(snapshot.PullRequests) != 1 || snapshot.PullRequests[0].Number != 18 || snapshot.PullRequests[0].HeadSHA != "head" {
-		t.Fatalf("pull requests = %#v, want one normalized pull request", snapshot.PullRequests)
+	if len(snapshot.PullRequests) != 2 || snapshot.PullRequests[0].Number != 18 || snapshot.PullRequests[0].HeadSHA != "head" || snapshot.PullRequests[0].MergeSHA != "merged-commit" || !snapshot.PullRequests[0].MergedAt.Equal(updatedAt) || snapshot.PullRequests[0].MergedBy != "example-operator" {
+		t.Fatalf("pull requests = %#v, want current and historical pull requests", snapshot.PullRequests)
 	}
 }
 
@@ -130,12 +146,13 @@ func TestReconcilerHydratesRequestedPullRequestDetails(t *testing.T) {
 	commented.User.Login = "codex"
 	pullRequest := reconcilePullRequest{
 		ID: 201, NodeID: "PR_issue", Number: 18, Title: "Pull request",
-		HTMLURL: "https://github.test/new-owner/renamed/pull/18", State: "open",
+		HTMLURL: "https://github.test/new-owner/renamed/pull/18", State: "closed", MergeSHA: "merged-commit", MergedAt: updatedAt,
 		Head: restRef{Ref: "feature", SHA: "head"}, Base: restRef{Ref: "main", SHA: "base"},
 		CreatedAt: updatedAt.Add(-time.Hour), UpdatedAt: updatedAt,
 	}
 	detailedPullRequest := pullRequest
 	detailedPullRequest.MergeableState = "clean"
+	detailedPullRequest.MergedBy.Login = "example-operator"
 	client := &scriptedRESTClient{t: t, steps: []restStep{
 		{method: http.MethodGet, path: "/repositories/100", response: reconcileRepository{ID: 100, NodeID: "R_repo", Name: "renamed", Owner: restActor{Login: "new-owner"}, UpdatedAt: updatedAt}},
 		{method: http.MethodGet, path: "/repos/new-owner/renamed/issues?direction=asc&per_page=100&sort=updated&state=all", response: []reconcileIssue{}},

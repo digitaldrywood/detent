@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -35,6 +36,9 @@ func (i *Importer) FetchImportPage(ctx context.Context, request hubserver.GitHub
 	ctx = scopedRequests(ctx, request.Profile, "import", request.Repository)
 	if i == nil || i.client == nil {
 		return result, errors.New("github importer is not configured")
+	}
+	if request.Stage == "scheduled-range" {
+		return i.fetchScheduledRange(ctx, request)
 	}
 	if request.Stage == "batch" {
 		return i.fetchBatch(ctx, request)
@@ -245,6 +249,10 @@ func matchesScheduledCIWorkflow(request hubserver.GitHubImportRequest, workflow,
 	if workflow != expectedWorkflow {
 		return false
 	}
+	if request.ScheduledBranch == "release/v*" {
+		matched, err := path.Match(request.ScheduledBranch, branch)
+		return err == nil && matched && branch != "release/v"
+	}
 	if request.ScheduledBranch != "" {
 		return branch == request.ScheduledBranch
 	}
@@ -300,4 +308,26 @@ func (i *Importer) fetchBatch(ctx context.Context, request hubserver.GitHubImpor
 		preview.NeedsDiscussion = false
 	}
 	return hubserver.GitHubImportPage{BatchPage: &page}, nil
+}
+
+func (i *Importer) fetchScheduledRange(ctx context.Context, request hubserver.GitHubImportRequest) (hubserver.GitHubImportPage, error) {
+	var result struct {
+		Status  string `json:"status"`
+		Total   int    `json:"total_commits"`
+		Commits []struct {
+			SHA string `json:"sha"`
+		} `json:"commits"`
+	}
+	endpoint := "/repos/" + request.Repository + "/compare/" + url.PathEscape(request.CompareBase) + "..." + url.PathEscape(request.CompareHead) + "?per_page=100"
+	if err := i.client.REST(ctx, http.MethodGet, endpoint, nil, &result); err != nil {
+		return hubserver.GitHubImportPage{}, err
+	}
+	if result.Status != "ahead" || result.Total == 0 || result.Total > 100 || result.Total != len(result.Commits) {
+		return hubserver.GitHubImportPage{}, nil
+	}
+	page := hubserver.GitHubImportPage{}
+	for _, commit := range result.Commits {
+		page.Commits = append(page.Commits, commit.SHA)
+	}
+	return page, nil
 }

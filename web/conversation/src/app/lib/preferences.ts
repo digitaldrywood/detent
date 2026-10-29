@@ -2,14 +2,14 @@
 //
 // Written for this repository. The shapes are the contract's
 // (`contracts/conversation.ts`); everything here is the reading of them the
-// pickers need and the rules §14 states: "Auto" is always first and always
+// pickers need and the rules the conversation contract states: "Auto" is always first and always
 // preselected, a value the hub has stopped publishing is kept rather than
 // silently swapped, and — the part this file adds — reasoning effort is scoped
 // to the model that is selected.
 //
 // A provider's ladder is per model: one offers low through max, the next only
-// medium. The hub publishes each model's ladder on `preferences.models[]`
-// (decisions.md §14), so a model that has one shows its own levels and a model
+// medium. The hub publishes each model's ladder on `preferences.models[]`,
+// so a model that has one shows its own levels and a model
 // that has none — or "Auto", which is not one model — falls back to the fixed
 // vocabulary the hub publishes for the whole organization.
 import {

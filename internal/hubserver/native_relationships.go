@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -23,30 +25,39 @@ func changeRelatedIssuesTx(ctx context.Context, tx *sql.Tx, first, second tracke
 
 func readNativeRelated(ctx context.Context, query nativeQueryer, scope nativeScope, item tracker.NativeWorkItemID) ([]tracker.NativeDependency, error) {
 	issue := &tracker.NativeIssue{NativeReference: tracker.NativeReference{WorkItemID: item}}
-	raw, err := marshalNative([]tracker.NativeWorkItemID{item})
-	if err != nil {
-		return nil, err
-	}
-	err = readNativeRelatedBatch(ctx, query, scope, map[tracker.NativeWorkItemID]*tracker.NativeIssue{item: issue}, raw)
+	err := readNativeRelatedBatch(ctx, query, scope, map[tracker.NativeWorkItemID]*tracker.NativeIssue{item: issue})
 	return issue.Related, err
 }
 
-func readNativeRelatedBatch(ctx context.Context, query nativeQueryer, scope nativeScope, items map[tracker.NativeWorkItemID]*tracker.NativeIssue, selection string) error {
-	for _, issue := range items {
+func readNativeRelatedBatch(ctx context.Context, query nativeQueryer, scope nativeScope, items map[tracker.NativeWorkItemID]*tracker.NativeIssue) error {
+	if len(items) == 0 {
+		return nil
+	}
+	if scope.credential.HostedRole == "reporter" {
+		pageQuery, pageErr := prepareNativePageQuery(ctx, query, nativeScope{organization: scope.organization}, "", "native_issue_actors")
+		if pageErr != nil {
+			return pageErr
+		}
+		query = pageQuery
+	}
+	ids := make([]any, 0, len(items))
+	for id, issue := range items {
+		ids = append(ids, id)
 		issue.Related = []tracker.NativeDependency{}
 	}
 	condition, grantArgs := scope.credential.projectGrantSQL("i.organization_id", "i.project_id")
 	visibility, visibilityArgs := scope.issueVisibilitySQL("i")
 	condition = "(" + condition + ") AND (" + visibility + ")"
 	grantArgs = append(grantArgs, visibilityArgs...)
-	args := append([]any{selection, scope.organization, scope.project, scope.organization}, grantArgs...)
+	args := append(ids, scope.organization, scope.project, scope.organization)
+	args = append(args, grantArgs...)
 	rows, err := query.QueryContext(ctx, `SELECT source.native_id, i.native_id, i.project_id, i.project_id || '#' || i.number, ws.detent_state, ws.terminal, i.number, i.title, o.slug, p.slug
-FROM issue_relationships r JOIN issues source ON source.id IN (r.first_issue_id, r.second_issue_id)
+FROM issues source CROSS JOIN issue_relationships r ON r.first_issue_id=source.id OR r.second_issue_id=source.id
 JOIN issues i ON i.id = CASE WHEN source.id = r.first_issue_id THEN r.second_issue_id ELSE r.first_issue_id END
 JOIN workflow_states ws ON ws.id = i.workflow_state_id
 JOIN organizations o ON o.id=i.organization_id JOIN projects p ON p.id=i.project_id
-WHERE source.native_id IN (SELECT value FROM json_each(?)) AND source.organization_id = ? AND source.project_id = ? AND i.organization_id = ?
-AND r.relationship_type = 'related' AND (`+condition+`) ORDER BY source.native_id,i.native_id`, args...)
+WHERE source.native_id IN (`+placeholders(len(ids))+`) AND source.organization_id = ? AND source.project_id = ? AND i.organization_id = ?
+AND r.relationship_type = 'related' AND (`+condition+`)`, args...)
 	if err != nil {
 		return err
 	}
@@ -64,6 +75,11 @@ AND r.relationship_type = 'related' AND (`+condition+`) ORDER BY source.native_i
 			return sql.ErrNoRows
 		}
 		issue.Related = append(issue.Related, link)
+	}
+	for _, issue := range items {
+		slices.SortFunc(issue.Related, func(a, b tracker.NativeDependency) int {
+			return strings.Compare(string(a.ID), string(b.ID))
+		})
 	}
 	return errors.Join(rows.Err(), rows.Close())
 }

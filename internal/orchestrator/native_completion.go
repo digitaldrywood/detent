@@ -10,10 +10,12 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workpad"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 var errNativeReviewPending = errors.New("waiting on review evidence for published Change version")
@@ -46,8 +48,9 @@ func (o *Orchestrator) completeNativeChangeRun(
 	mode := firstNonBlank(event.Request.Mode, running.Mode)
 	recoveryRequired := errors.Is(event.Err, runpkg.ErrNativeRecoveryRequired)
 	preProvider := !event.Result.TurnStarted && running.TurnCount == 0 && !running.WorkProductPushed && running.Tokens.TotalTokens == 0 && event.Result.Tokens.TotalTokens == 0
-	recoveryRefusal := recoveryRequired && preProvider && running.Cancellation == nil && preTurnFailureClass(event, running) == "" && !errors.Is(event.Err, context.Canceled) && !errors.Is(event.Err, context.DeadlineExceeded)
-	if mergeWorkerIssue(running.Issue) || mode != "" && mode != runpkg.RunModeImplement && (mode != runpkg.RunModePlan || !recoveryRefusal) {
+	recoveryRefusal := recoveryRequired && preProvider && running.Cancellation == nil && !errors.Is(event.Err, context.Canceled) && !errors.Is(event.Err, context.DeadlineExceeded)
+	mergeResolution := change != nil && change.MergeResolution && mode == runpkg.RunModeMerge
+	if !mergeResolution && (mergeWorkerIssue(running.Issue) || mode != "" && mode != runpkg.RunModeImplement && (mode != runpkg.RunModePlan || !recoveryRefusal)) {
 		return false
 	}
 	if finalState == "" {
@@ -57,6 +60,7 @@ func (o *Orchestrator) completeNativeChangeRun(
 	issueID := strings.TrimSpace(event.IssueID)
 	handoff := func(err error) bool {
 		o.warnNativeCompletion(issue, err)
+		running.Issue = cloneIssue(issue)
 		o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
 		return true
 	}
@@ -72,9 +76,17 @@ func (o *Orchestrator) completeNativeChangeRun(
 		finalState = FinalStateCompleted
 		event.Result.FinalState = FinalStateCompleted
 	}
+	retryReason := terminalAttemptWithoutWorkProductReason
+	retryErrorClass := terminalAttemptWithoutWorkProductReason
+	retryMessage := noWorkProductMessage
+	if change != nil && change.VersionID != "" {
+		retryReason = "state_transition"
+		retryErrorClass = ""
+		retryMessage = "published source requires further work"
+	}
 
 	if event.Err != nil || terminalStateForRun(nil, finalState) != store.WorkAttemptTerminalSuccess {
-		if (preProvider || errors.Is(event.Err, runpkg.ErrValidatorInfrastructure)) && !recoveryRequired && o.handlePreTurnFailure(ctx, state, event, running) {
+		if (preProvider || errors.Is(event.Err, runpkg.ErrValidatorInfrastructure) || errors.Is(event.Err, runpkg.ErrReviewConversationsUnavailable)) && o.handlePreTurnFailure(ctx, state, event, running) {
 			return true
 		}
 		states, err := reader.WorkflowStates(ctx)
@@ -83,20 +95,7 @@ func (o *Orchestrator) completeNativeChangeRun(
 		}
 		target := terminalAttemptTodoState(o.cfg.ActiveStates)
 		var allowed bool
-		if recoveryRefusal {
-			target, allowed = connector.CompletionLane(states, issue.State, "Blocked", true)
-			if !allowed || dispatchableState(states, target) {
-				return handoff(fmt.Errorf("native workflow allows no recovery refusal handoff from %s to Blocked", issue.State))
-			}
-		} else if humanReview && recoveryRequired && preTurnFailureClass(event, running) == "" {
-			target, allowed = connector.CompletionLane(states, issue.State, "Blocked", true)
-			if !allowed {
-				target, allowed = nativeRetryLane(states, issue.State, cfg.ReworkState)
-			}
-			if !allowed {
-				return handoff(fmt.Errorf("native workflow allows no source recovery destination from %s", issue.State))
-			}
-		} else if humanReview && preTurnFailureClass(event, running) == "" {
+		if humanReview && !recoveryRequired && preTurnFailureClass(event, running) == "" {
 			review := cfg.reviewTargetState()
 			if autoPromoteOptoutLabel(issue, cfg) {
 				review = cfg.SourceState
@@ -116,7 +115,7 @@ func (o *Orchestrator) completeNativeChangeRun(
 		}
 		if normalizeState(issue.State) != normalizeState(target) {
 			metadata := workflowLaneMetadata{}
-			if err := o.updateIssueStateByIDStrictWithMetadata(ctx, state, issueID, issue, target, event.CompletedAt, terminalAttemptWithoutWorkProductReason, metadata); err != nil {
+			if err := o.updateIssueStateByIDStrictWithMetadata(ctx, state, issueID, issue, target, event.CompletedAt, retryReason, metadata); err != nil {
 				return handoff(fmt.Errorf("move failed native item to %s: %w", target, err))
 			}
 		}
@@ -127,19 +126,29 @@ func (o *Orchestrator) completeNativeChangeRun(
 			o.recordCompletionUsage(ctx, state, event, issue)
 			return true
 		}
-		if err := o.abandonClaim(ctx, issueID); err != nil {
-			return handoff(err)
-		}
 		terminal := terminalStateForRun(event.Err, finalState)
 		class := runnerWorkAttemptErrorClass(event.Err)
 		message := errorString(event.Err)
+		issue.State = target
+		if dispatchableState(states, target) && running.Cancellation == nil && !errors.Is(event.Err, context.Canceled) {
+			if err := o.retryMachineFailure(ctx, state, issue, nextAttempt(running.Attempt), event.CompletedAt, message, running.WorkerHost); err != nil {
+				return handoff(err)
+			}
+		} else {
+			if err := o.abandonClaim(ctx, issueID); err != nil {
+				return handoff(err)
+			}
+			o.releaseClaim(state, issueID)
+		}
 		o.recordProjectAttemptOutcome(state, issueID, event.CompletedAt, terminal, event.Err, class, message)
 		o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, terminal, class, message, "failed", "native worker failed; source preserved", nativeChangeMetadata(change))
 		o.recordCompletionUsage(ctx, state, event, issue)
-		o.releaseClaim(state, issueID)
 		return true
 	}
 	report, reported := runpkg.NativeCompletionSignalFromMessage(event.Result.FinalMessage)
+	if reported && report != nil && report.Invalid == nil && strings.TrimSpace(report.HumanAction) != "" {
+		issue.WorkpadSignal = report
+	}
 	humanReview = humanReview || reported && report != nil && report.Invalid == nil && report.HumanAction != ""
 	blocked := reported && report != nil && report.Invalid == nil && report.Status == workpad.StatusBlocked
 	clearedBlockers := false
@@ -159,8 +168,9 @@ func (o *Orchestrator) completeNativeChangeRun(
 	if o.completeRecordedInstanceBlockers(ctx, state, event, running, report) {
 		return true
 	}
+	publicationRefused := !humanReview && change != nil && change.VersionCode == workspace.LandRefusalHeadMoved
 	accepted := reported && report != nil && report.Invalid == nil && report.Status == workpad.StatusComplete && len(report.Blockers) == 0 && report.HumanAction == ""
-	if change == nil && !blocked && !clearedBlockers && (humanReview || accepted || running.DiffStats.Status != "clean" || running.DiffStats.UnpushedCommits > 0) {
+	if change == nil && !blocked && !clearedBlockers && (humanReview || running.DiffStats.Status != "clean" || running.DiffStats.UnpushedCommits > 0) {
 		return false
 	}
 	if change != nil && change.Error != "" {
@@ -178,6 +188,7 @@ func (o *Orchestrator) completeNativeChangeRun(
 		return handoff(fmt.Errorf("read native workflow states: %w", err))
 	}
 	reviewChangesRequested := false
+	repairPending := false
 	if change != nil {
 		var reviewErr error
 		var review connector.ChangeReview
@@ -185,10 +196,34 @@ func (o *Orchestrator) completeNativeChangeRun(
 		if reviewErr != nil {
 			return handoff(reviewErr)
 		}
+		repairPending = review.RepairPending
 		reviewChangesRequested = review.ChangesRequested && (report == nil || len(report.Blockers) == 0 && report.HumanAction == "")
 	}
-	needsReview := change != nil && change.VersionError != "" || !changed && !accepted || reported && !accepted
+	if repairPending && !humanReview && !blocked && !clearedBlockers && change != nil && change.VersionError == "" {
+		target := issue.State
+		if !dispatchableState(states, target) {
+			var allowed bool
+			target, allowed = nativeRetryLane(states, issue.State, cfg.ReworkState)
+			if !allowed {
+				return handoff(errors.New("native workflow has no dispatchable repair wait lane"))
+			}
+			if err := o.updateIssueStateByIDStrictWithMetadata(ctx, state, issueID, issue, target, event.CompletedAt, "state_transition", workflowLaneMetadata{}); err != nil {
+				return handoff(err)
+			}
+		}
+		issue.State = target
+		if err := o.retryMachineFailure(ctx, state, issue, nextAttempt(running.Attempt), event.CompletedAt, "independent failure awaits repair dependency", running.WorkerHost); err != nil {
+			return handoff(err)
+		}
+		o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "completed", "independent failure awaits repair dependency", nativeChangeMetadata(change))
+		o.recordCompletionUsage(ctx, state, event, issue)
+		return true
+	}
+	needsReview := change != nil && change.VersionError != "" || !changed || reported && !accepted
 	review := cfg.reviewTargetState()
+	if explicitHumanAction(issue) != "" {
+		review = blockedStatusState
+	}
 	if autoPromoteOptoutLabel(issue, cfg) {
 		review = cfg.SourceState
 	}
@@ -201,7 +236,10 @@ func (o *Orchestrator) completeNativeChangeRun(
 		}
 	}
 	if blocked {
-		target, ok = connector.CompletionLane(states, issue.State, "Blocked", true)
+		target, ok = nativeRetryLane(states, issue.State, cfg.ReworkState)
+		if !ok {
+			target, ok = nativeRetryLane(states, issue.State, "Todo")
+		}
 	}
 	if clearedBlockers {
 		target, ok = connector.CompletionLane(states, issue.State, normalizeDependencyAutoUnblockConfig(o.cfg.DependencyAutoUnblock).TargetState, true)
@@ -209,24 +247,57 @@ func (o *Orchestrator) completeNativeChangeRun(
 	validatorRework := change != nil && change.Validator != nil && change.Validator.Verdict == "rework" && (report == nil || len(report.Blockers) == 0 && report.HumanAction == "")
 	implementationRework := change != nil && change.ImplementationReview != nil && change.ImplementationReview.Verdict == gate.ValidatorVerdictRework && (report == nil || len(report.Blockers) == 0 && report.HumanAction == "")
 	auditRework := change != nil && change.SecurityAudit != nil && change.SecurityAudit.Verdict == "rework" && (report == nil || len(report.Blockers) == 0 && report.HumanAction == "")
-	unfinished := reviewChangesRequested || auditRework || validatorRework || implementationRework || change != nil && reported && report != nil && report.Invalid == nil && report.Status == workpad.StatusInProgress && len(report.Blockers) == 0 && report.HumanAction == ""
+	if !blocked && !clearedBlockers && !reviewChangesRequested && !validatorRework && !implementationRework && !auditRework && (report == nil || len(report.Blockers) == 0 && report.HumanAction == "") && change != nil && change.VersionError == "" && change.Validator != nil && change.Validator.Verdict == gate.ValidatorVerdictWait {
+		if criteria := change.Validator.UnsatisfiableCriteria(); len(criteria) > 0 {
+			validatorRework = true
+		}
+	}
+	unfinished := publicationRefused || (reviewChangesRequested || auditRework || validatorRework || implementationRework || change != nil && reported && report != nil && report.Invalid == nil && report.Status == workpad.StatusInProgress && len(report.Blockers) == 0 && report.HumanAction == "")
+	start := running.CompletionSourceStart
+	headUnchanged := !changed || start.Captured && start.WorkspaceHeadAvailable && strings.TrimSpace(change.HeadSHA) != "" && strings.TrimSpace(start.Fingerprint.WorkspaceHead) == strings.TrimSpace(change.HeadSHA)
+	staleRework := unfinished && headUnchanged && !blocked && !clearedBlockers && !humanReview && normalizeState(issue.State) == normalizeState(cfg.ReworkState) &&
+		(reviewChangesRequested || auditRework || validatorRework || implementationRework)
+	if staleRework {
+		unfinished = false
+		retryMessage = nativeCompletionReason(retryMessage, nil, "", change.Validator)
+		retryMessage = nativeCompletionReason(retryMessage, nil, "", change.ImplementationReview)
+		var rejection strings.Builder
+		rejection.WriteString(retryMessage)
+		if change.SecurityAudit != nil {
+			for _, finding := range change.SecurityAudit.Run.Findings {
+				if finding.Status != "resolved" {
+					fmt.Fprintf(&rejection, "\n\n%s %s: %s", finding.ID, finding.Severity, finding.Body)
+				}
+			}
+		}
+		if execution := event.Request.Execution; execution != nil {
+			if detail := execution.Recovery().ChangeDetail; detail != nil && detail.Change.ID == change.ChangeID && detail.Change.CurrentVersion == change.VersionID {
+				for _, review := range detail.Reviews {
+					if review.VersionID == change.VersionID && review.Decision == "changes_requested" {
+						fmt.Fprintf(&rejection, "\n\n%s: %s", review.ID, review.Body)
+					}
+				}
+			}
+		}
+		retryMessage = rejection.String()
+	}
 	if unfinished {
 		if rework, allowed := nativeRetryLane(states, issue.State, cfg.ReworkState); allowed {
 			target, ok = rework, true
 		}
 	}
-	if !humanReview && !blocked && !unfinished && changed && change.VersionID != "" && change.VersionError == "" && !change.Reviewed && (!reported || accepted) {
+	if !humanReview && !blocked && !unfinished && !staleRework && changed && change.VersionID != "" && change.VersionError == "" && !change.Reviewed && (!reported || accepted) {
 		event.Result.NativeChange = change
 		if reviewInfrastructureErr != nil {
 			return handoff(fmt.Errorf("%w: %w", errNativeReviewPending, reviewInfrastructureErr))
 		}
 		return handoff(errNativeReviewPending)
 	}
-	if !humanReview && !blocked && (change != nil && change.VersionError != "" || !ok && (needsReview || changed && !change.Reviewed)) {
+	if !humanReview && !blocked && !publicationRefused && (staleRework || change != nil && change.VersionError != "" || !ok && (needsReview || changed && !change.Reviewed)) {
 		o.observeNativeCompletion(ctx, event, false)
-		if !changed {
+		if !changed || staleRework {
 			retryState := terminalAttemptTodoState(o.cfg.ActiveStates)
-			if running.DiffStats.RecoveryStateAvailable {
+			if running.DiffStats.RecoveryStateAvailable || staleRework {
 				retryState = cfg.ReworkState
 			}
 			retryState, allowed := nativeRetryLane(states, issue.State, retryState)
@@ -234,20 +305,40 @@ func (o *Orchestrator) completeNativeChangeRun(
 				return handoff(fmt.Errorf("native workflow allows no retry from %s", issue.State))
 			}
 			if normalizeState(issue.State) != normalizeState(retryState) {
-				if err := o.updateIssueStateByIDStrictWithMetadata(ctx, state, issueID, issue, retryState, event.CompletedAt, terminalAttemptWithoutWorkProductReason, workflowLaneMetadata{}); err != nil {
+				if err := o.updateIssueStateByIDStrictWithMetadata(ctx, state, issueID, issue, retryState, event.CompletedAt, retryReason, workflowLaneMetadata{}); err != nil {
 					return handoff(fmt.Errorf("move unfinished native item to %s: %w", retryState, err))
 				}
 			}
+			issue.State = retryState
+			if err := o.retryMachineFailure(ctx, state, issue, nextAttempt(running.Attempt), event.CompletedAt, retryMessage, running.WorkerHost); err != nil {
+				return handoff(err)
+			}
+			o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, retryErrorClass, retryMessage, "completed", "provider completed; issue acceptance is not recorded", nativeChangeMetadata(change))
+			o.recordCompletionUsage(ctx, state, event, issue)
+			return true
 		}
-		if err := o.abandonClaim(ctx, issueID); err != nil {
+		if err := o.retryMachineFailure(ctx, state, issue, nextAttempt(max(running.Attempt, state.Retry[issueID].Attempt)), event.CompletedAt, firstNonBlank(change.VersionError, retryMessage), running.WorkerHost); err != nil {
 			return handoff(err)
 		}
 		o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "completed", "provider completed; issue acceptance is not recorded", nativeChangeMetadata(change))
 		o.recordCompletionUsage(ctx, state, event, issue)
-		o.releaseClaim(state, issueID)
 		return true
 	}
-	if changed && change.Reviewed && !needsReview && !unfinished && !autoPromoteOptoutLabel(issue, cfg) {
+	unaddressedRefusal, resolvedRefusal := "", false
+	if changed && change.Reviewed && !needsReview && !unfinished {
+		if refusal := o.nativeReviewConversationRefusal(event, change); refusal != "" {
+			unaddressedRefusal, resolvedRefusal = refusal, event.Result.ReviewConversationsCleared
+			if resolvedRefusal {
+				unaddressedRefusal = ""
+			}
+		}
+	}
+	if unaddressedRefusal != "" {
+		target, ok = nativeRetryLane(states, issue.State, cfg.ReworkState)
+		if !ok {
+			return handoff(fmt.Errorf("native workflow allows no move from %s to the review lane %s", strings.TrimSpace(issue.State), review))
+		}
+	} else if changed && change.Reviewed && !needsReview && !unfinished && !autoPromoteOptoutLabel(issue, cfg) {
 		if landing, direct := connector.CompletionLane(states, issue.State, autoPromoteMergingState, true); direct && dispatchableState(states, landing) {
 			target, ok = landing, true
 		} else if _, allowed := connector.CompletionLane(states, issue.State, "", false); allowed {
@@ -278,8 +369,14 @@ func (o *Orchestrator) completeNativeChangeRun(
 		if unfinished && normalizeState(target) == normalizeState(cfg.ReworkState) {
 			comment = fmt.Sprintf("The provider turn completed with %s and no reported blocker or human action. Implementation remains unfinished in %s; the completed turn and any genuine source version are preserved for further work, but issue acceptance is not recorded.", disposition, displayStateName(target))
 		}
+	} else if unaddressedRefusal != "" {
+		comment = fmt.Sprintf("Rework returned Change Request %s (head %s) unchanged and resolved none of the review conversations that blocked its landing, so it was not sent back to Merging. Moved from %s to %s. Address or dismiss each conversation on the pull request, then move the item to Merging.\n\n%s",
+			change.ChangeID, shortCommit(change.HeadSHA), displayStateName(issue.State), displayStateName(target), unaddressedRefusal)
 	} else {
 		comment = nativeCompletionComment(change, issue.State, target)
+		if resolvedRefusal {
+			comment += " " + workspace.ReviewConversationsResolvedText
+		}
 	}
 	if needsReview {
 		comment = nativeCompletionReason(comment, report, event.Result.FinalMessage, nil)
@@ -291,6 +388,11 @@ func (o *Orchestrator) completeNativeChangeRun(
 	if validatorRework {
 		reason = string(AutoPromoteReasonValidatorRework)
 		comment = nativeCompletionComment(change, issue.State, target)
+		if criteria := change.Validator.UnsatisfiableCriteria(); len(criteria) > 0 && o.cfg.IssueContract != nil && !o.cfg.IssueContract.RequiresHumanConfirmation() {
+			comment = fmt.Sprintf("The validator requires source-verifiable criteria for Change Request %s (head %s). Moved from %s to %s.", change.ChangeID, shortCommit(change.HeadSHA), displayStateName(issue.State), displayStateName(target))
+			comment = nativeCompletionReason(comment, nil, "", change.Validator)
+			comment += "\n\nRecord equivalent pre-merge criteria and evidence through the existing Change outcome; do not wait for human verification:\n- " + strings.Join(criteria, "\n- ")
+		}
 	}
 	if normalizeState(issue.State) != normalizeState(target) {
 		metadata := workflowLaneMetadata{ReasonDetail: workpad.FinalSummary(comment)}
@@ -304,8 +406,21 @@ func (o *Orchestrator) completeNativeChangeRun(
 	if !changed || needsReview {
 		o.observeNativeCompletion(ctx, event, !needsReview && !unfinished)
 	}
-	if err := o.abandonClaim(ctx, issueID); err != nil {
-		return handoff(err)
+	machineRetry := explicitHumanAction(issue) == "" && dispatchableState(states, target) && (blocked || needsReview || unfinished || staleRework || unaddressedRefusal != "")
+	if !machineRetry {
+		if err := o.abandonClaim(ctx, issueID); err != nil {
+			return handoff(err)
+		}
+	}
+	if machineRetry {
+		issue.State = target
+		attempt := nextAttempt(max(running.Attempt, state.Retry[issueID].Attempt))
+		if unfinished && !blocked && !publicationRefused && !reviewChangesRequested && !validatorRework && !implementationRework && !auditRework && unaddressedRefusal == "" && change != nil && change.VersionError == "" && change.VersionID != "" && len(implementProgressSourceKinds(running, issue)) > 0 {
+			attempt = 1
+		}
+		if err := o.retryMachineFailure(ctx, state, issue, attempt, event.CompletedAt, comment, running.WorkerHost); err != nil {
+			return handoff(err)
+		}
 	}
 	attemptCompleted := o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "completed", "worker completed", nativeChangeMetadata(change))
 	completed := Completed{
@@ -319,7 +434,10 @@ func (o *Orchestrator) completeNativeChangeRun(
 		RuntimeIdentity:            running.RuntimeIdentity,
 	}
 	o.recordCompletionUsage(ctx, state, event, issue)
-	o.recordCompletedActiveReviewTransition(state, issue, completed, target)
+	if !machineRetry {
+		delete(state.Retry, issueID)
+		o.recordCompletedActiveReviewTransition(state, issue, completed, target)
+	}
 	recordStateEvent(state, telemetry.ActivityEvent{
 		At:      event.CompletedAt,
 		Event:   "completed_issue_review_transition",
@@ -336,6 +454,25 @@ func (o *Orchestrator) completeNativeChangeRun(
 			"changed", changed, "change_id", changeID)
 	}
 	return true
+}
+
+// nativeReviewConversationRefusal returns the review-conversation landing
+// refusal recorded for exactly the version this run returned.
+func (o *Orchestrator) nativeReviewConversationRefusal(event runpkg.Completion, change *runpkg.NativeChange) string {
+	execution := event.Request.Execution
+	if execution == nil {
+		if source, ok := o.scheduling.(interface{ RunExecution(string) runpkg.Execution }); ok {
+			execution = source.RunExecution(event.IssueID)
+		}
+	}
+	if execution == nil || change == nil {
+		return ""
+	}
+	recovery := execution.Recovery()
+	if recovery.Change == nil || recovery.Change.ChangeID != change.ChangeID || recovery.Change.VersionID != change.VersionID || recovery.Change.HeadSHA != change.HeadSHA {
+		return ""
+	}
+	return runpkg.NativeReviewConversationRefusal(recovery)
 }
 
 func (o *Orchestrator) observeNativeCompletion(ctx context.Context, event runpkg.Completion, accepted bool) {
@@ -428,9 +565,11 @@ func (o *Orchestrator) continueNativeRun(ctx context.Context, state *State, even
 	return nil
 }
 
+const noWorkProductMessage = "provider completed without a new source version"
+
 func nativeRetryLane(states []connector.WorkflowState, current, preferred string) (string, bool) {
 	for _, state := range states {
-		if normalizeState(state.Name) != normalizeState(preferred) || state.Terminal || state.OperatorOnly || !state.Dispatchable {
+		if normalizeState(state.Name) != normalizeState(preferred) || normalizeState(state.Name) == normalizeState(blockedStatusState) || state.Terminal || state.OperatorOnly || !state.Dispatchable {
 			continue
 		}
 		if normalizeState(current) == normalizeState(state.Name) {
@@ -512,6 +651,15 @@ func nativeChangeMetadata(change *runpkg.NativeChange) map[string]any {
 	if change == nil {
 		return nil
 	}
+	if change.Validator != nil && change.Validator.Attribution == "" {
+		gate.NormalizeAttribution(change.Validator)
+	}
+	if change.ImplementationReview != nil && change.ImplementationReview.Attribution == "" {
+		gate.NormalizeAttribution(change.ImplementationReview)
+	}
+	if change.SecurityAudit != nil && change.SecurityAudit.Run.Attribution == "" {
+		securityaudit.NormalizeAttribution(&change.SecurityAudit.Run)
+	}
 	metadata := map[string]any{"native_changed": change.Changed, "native_files": change.Files}
 	if change.ChangeID != "" {
 		metadata["native_change_id"] = change.ChangeID
@@ -528,10 +676,24 @@ func nativeChangeMetadata(change *runpkg.NativeChange) map[string]any {
 	if change.VersionCode != "" {
 		metadata["native_version_code"] = change.VersionCode
 	}
+	if change.Validator != nil {
+		metadata["validator_attribution"] = change.Validator.Attribution
+	}
+	if change.ImplementationReview != nil {
+		metadata["implementation_review_attribution"] = change.ImplementationReview.Attribution
+	}
+	if change.SecurityAudit != nil {
+		metadata["security_audit_attribution"] = change.SecurityAudit.Run.Attribution
+	}
 	return metadata
 }
 
-func nativeCompletionComment(change *runpkg.NativeChange, from, to string) string {
+func nativeCompletionComment(change *runpkg.NativeChange, from, to string) (comment string) {
+	defer func() {
+		if change.ReusedDispositionAttemptID != "" {
+			comment += fmt.Sprintf("\n\nDetent reused the completed disposition from attempt %s to resume review without rerunning implementation.", change.ReusedDispositionAttemptID)
+		}
+	}()
 	from, to = displayStateName(from), displayStateName(to)
 	if change.Validator != nil && change.Validator.Verdict == gate.ValidatorVerdictRework {
 		comment := fmt.Sprintf("The validator requested changes to Change Request %s (head %s). Moved from %s to %s.", change.ChangeID, shortCommit(change.HeadSHA), from, to)

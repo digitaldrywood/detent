@@ -307,7 +307,7 @@ func TestCommandAttachments(t *testing.T) {
 }
 
 // The per-message total and the provider-input split are the two rules the
-// hub and the runner both read off an attachment (decisions section 17.1).
+// hub and the runner both read off an attachment.
 func TestValidateAttachmentTotal(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

@@ -230,8 +230,8 @@ func (s *Service) readAttachmentContent(c echo.Context, input operatortool.Attac
 }
 
 func (s *Service) finishAttachmentMCPDeletion(c echo.Context, input operatortool.AttachmentOperationArguments) bool {
-	s.attachmentMu.RLock()
-	defer s.attachmentMu.RUnlock()
+	unlock := s.attachmentLocks.lock(c.Param("organization"), false)
+	defer unlock()
 	if s.attachments == nil {
 		return false
 	}

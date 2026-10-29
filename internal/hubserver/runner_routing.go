@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"maps"
 	"net/http"
 	"slices"
 	"strings"
@@ -12,8 +13,6 @@ import (
 
 	"github.com/labstack/echo/v4"
 
-	"github.com/digitaldrywood/detent/internal/isolation"
-	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -23,26 +22,22 @@ import (
 const runnerIdentitySelect = `SELECT r.id, r.organization_id, r.machine_id, r.token_id, r.display_name, r.tags_json, r.state, r.capacity_limit,
 r.reported_capacity, r.os, r.architecture, r.last_heartbeat_at, r.revision, r.operations_json, r.routing_settings_json,
 m.hostname, m.display_name, m.capacity, m.routing_revision, t.created_at, t.expires_at, t.revoked_at,
-(SELECT json_group_array(project_id) FROM (SELECT project_id FROM token_grants WHERE token_id = r.token_id ORDER BY project_id)),
-r.problems_json, r.backend_isolation_json, r.reported_protocol_major, r.settings_rejected, r.capacity_configuration_json, r.provider_reports_json, r.update_observation_json, r.project_configuration_json, r.scope,
+r.problems_json, r.backend_isolation_json, r.reported_protocol_major, r.settings_rejected, r.capacity_configuration_json, r.provider_reports_json, r.update_observation_json, r.scope,
 m.version, o.urgent_runner_update_json,
-(SELECT json_group_array(json_object('backend', backend, 'kind', kind, 'percent_used', percent_used, 'reset_at', reset_at, 'observed_at', observed_at))
-FROM (SELECT * FROM runner_provider_usage_windows WHERE runner_id = r.id ORDER BY backend, kind)),
-(SELECT json_group_object(backend, billing) FROM runner_provider_billing WHERE runner_id = r.id),
-COALESCE(json_extract(m.capabilities_json,'$.sprite_name'),'')
+COALESCE(m.sprite_name,''),CASE WHEN m.machine_facts_ready IS NULL THEN m.capabilities_json END
 FROM runner_identities r JOIN machines m ON m.id = r.machine_id JOIN api_tokens t ON t.id = r.token_id JOIN organizations o ON o.id = r.organization_id`
 
 func scanRunnerIdentity(row interface{ Scan(...any) error }, clock func() time.Time, extra ...any) (runnerauth.Runner, []providercapacity.Report, time.Time, error) {
 	var r runnerauth.Runner
 	var tags, operations, heartbeat, created, expires, token, settings string
-	var projects, problems, isolationRaw, capacityRaw, providerRaw, updateRaw, configurationRaw string
-	var version, urgentRaw, usageRaw, billingRaw, spriteName string
+	var problems, isolationRaw, capacityRaw, providerRaw, updateRaw string
+	var version, urgentRaw, spriteName string
 	var protocol int
 	var rejected bool
-	var revoked sql.NullString
+	var revoked, machineLegacy sql.NullString
 	destinations := []any{&r.RunnerID, &r.OrganizationID, &r.MachineID, &token, &r.DisplayName, &tags, &r.State, &r.CapacityLimit,
 		&r.ReportedCapacity, &r.OS, &r.Architecture, &heartbeat, &r.Revision, &operations, &settings,
-		&r.Hostname, &r.HostDisplayName, &r.HostCapacity, &r.HostRevision, &created, &expires, &revoked, &projects, &problems, &isolationRaw, &protocol, &rejected, &capacityRaw, &providerRaw, &updateRaw, &configurationRaw, &r.Scope, &version, &urgentRaw, &usageRaw, &billingRaw, &spriteName}
+		&r.Hostname, &r.HostDisplayName, &r.HostCapacity, &r.HostRevision, &created, &expires, &revoked, &problems, &isolationRaw, &protocol, &rejected, &capacityRaw, &providerRaw, &updateRaw, &r.Scope, &version, &urgentRaw, &spriteName, &machineLegacy}
 	err := row.Scan(append(destinations, extra...)...)
 	if err != nil {
 		return r, nil, time.Time{}, err
@@ -71,15 +66,22 @@ func scanRunnerIdentity(row interface{ Scan(...any) error }, clock func() time.T
 		r.Health = "offline"
 	}
 	r.ConnectionHealth = r.Health
-	if err := json.Unmarshal([]byte(projects), &r.ProjectIDs); err != nil {
-		return r, nil, time.Time{}, err
-	}
 	r.Routing = r.Normalized()
 	if r.MachineUse == "" {
 		r.MachineUse = "shared"
 	}
-	if err := applyRunnerProblems(&r, problems, isolationRaw, protocol, rejected); err != nil {
+	if err := json.Unmarshal([]byte(updateRaw), &r.Update); err != nil {
 		return r, nil, time.Time{}, err
+	}
+	if err := applyRunnerProblems(&r, problems, isolationRaw, protocol, rejected, now); err != nil {
+		return r, nil, time.Time{}, err
+	}
+	if machineLegacy.Valid {
+		facts, err := resolveMachineSpriteFacts(machineSpriteFacts{}, machineLegacy)
+		if err != nil {
+			return r, nil, time.Time{}, err
+		}
+		spriteName = spriteFactValue(facts.Name)
 	}
 	if spriteName != "" && spriteName == r.Hostname && r.IsolationTier == "sandbox" {
 		for i := range r.Problems {
@@ -88,9 +90,6 @@ func scanRunnerIdentity(row interface{ Scan(...any) error }, clock func() time.T
 				r.Problems[i].FixHint = "Ask an organization owner or admin to approve switching this runner to Full access. Projects requiring sandbox cannot use it with Full access."
 			}
 		}
-	}
-	if err := json.Unmarshal([]byte(updateRaw), &r.Update); err != nil {
-		return r, nil, time.Time{}, err
 	}
 	var urgent urgentRunnerUpdate
 	if err := json.Unmarshal([]byte(urgentRaw), &urgent); err != nil {
@@ -104,64 +103,105 @@ func scanRunnerIdentity(row interface{ Scan(...any) error }, clock func() time.T
 	if err := json.Unmarshal([]byte(providerRaw), &reports); err != nil {
 		return r, nil, time.Time{}, err
 	}
-	var windows []struct {
-		Backend string `json:"backend"`
-		providercapacity.UsageWindow
-	}
-	if err := json.Unmarshal([]byte(usageRaw), &windows); err != nil {
-		return r, nil, time.Time{}, err
-	}
-	var billing map[string]string
-	if err := json.Unmarshal([]byte(billingRaw), &billing); err != nil {
-		return r, nil, time.Time{}, err
-	}
-	for i := range reports {
-		reports[i].Billing = (providercapacity.Report{Billing: billing[reports[i].Backend]}).BillingBasis()
-		for _, window := range windows {
-			if window.Backend == reports[i].Backend {
-				reports[i].UsageWindows = append(reports[i].UsageWindows, window.UsageWindow)
-			}
-		}
-	}
+
 	return r, reports, now, nil
 }
 
-func readRunner(ctx context.Context, db nativeQueryer, organization tracker.OrganizationID, id string, now time.Time) (runnerauth.Runner, error) {
-	return readRunnerWithClock(ctx, db, organization, id, func() time.Time { return now })
+func readRunner(ctx context.Context, db nativeQueryer, organization tracker.OrganizationID, id string, now time.Time, joining ...string) (runnerauth.Runner, error) {
+	return readRunnerWithClock(ctx, db, organization, id, func() time.Time { return now }, joining...)
 }
 
-func readRunnerWithClock(ctx context.Context, db nativeQueryer, organization tracker.OrganizationID, id string, clock func() time.Time) (runnerauth.Runner, error) {
+func readRunnerWithClock(ctx context.Context, db nativeQueryer, organization tracker.OrganizationID, id string, clock func() time.Time, joining ...string) (runnerauth.Runner, error) {
+	return readRunnerFactsWithClock(ctx, db, organization, id, clock, true, joining...)
+}
+
+func readRunnerFactsWithClock(ctx context.Context, db nativeQueryer, organization tracker.OrganizationID, id string, clock func() time.Time, display bool, joining ...string) (runnerauth.Runner, error) {
 	r, reports, now, err := scanRunnerIdentity(db.QueryRowContext(ctx, runnerIdentitySelect+" WHERE r.organization_id = ? AND r.id = ?", organization, id), clock)
 	if err != nil {
+		return r, err
+	}
+	if err := readRunnerIdentityFacts(ctx, db, &r, reports); err != nil {
 		return r, err
 	}
 	r.ProjectRanks, err = readRunnerProjectRanks(ctx, db, r.RunnerID, r.OrganizationID)
 	if err != nil {
 		return r, err
 	}
-	r.Leases = []runnerauth.RunnerLease{}
-	rows, err := db.QueryContext(ctx, `SELECT l.expires_at, coalesce(lr.runner_id, ''), l.lease_id, l.fencing_token, coalesce(i.native_id, ''), i.title, coalesce(i.project_id, ''), coalesce(p.metadata_json, ''), coalesce(pp.policy_id, '')
+	group := ""
+	if len(joining) > 0 {
+		group = joining[0]
+	}
+	r.HostUsed, r.Used, err = machineClaimUsage(ctx, db, r.MachineID, id, now, group)
+	if err != nil {
+		return r, err
+	}
+	if display {
+		r.Leases = []runnerauth.RunnerLease{}
+	}
+	r.ProjectUsed = make(map[tracker.ProjectID]int)
+	runnerSlots := make(map[string]bool)
+	leaseQuery := `SELECT l.expires_at, coalesce(lr.runner_id, ''), l.lease_id, coalesce(i.project_id, ''), l.session_id, ` + nativeLandingCapacityProject + `
+FROM leases l JOIN issues i ON i.id = l.issue_id LEFT JOIN lease_runners lr ON lr.lease_id = l.lease_id ` + nativeLandingCapacityJoins + ` WHERE l.machine_id = ? AND l.released_at IS NULL ORDER BY l.fencing_token`
+	if display {
+		leaseQuery = `SELECT l.expires_at, coalesce(lr.runner_id, ''), l.lease_id, l.fencing_token, coalesce(i.native_id, ''), i.title, coalesce(i.project_id, ''), coalesce(p.metadata_json, ''), coalesce(pp.policy_id, ''), l.session_id, ` + nativeLandingCapacityProject + `
 FROM leases l JOIN issues i ON i.id = l.issue_id LEFT JOIN lease_runners lr ON lr.lease_id = l.lease_id
 LEFT JOIN lease_policies lp ON lp.lease_id = l.lease_id LEFT JOIN policy_revisions p ON p.scope = lp.scope AND p.policy_id = lp.policy_id
-LEFT JOIN project_policies pp ON pp.scope = lp.scope WHERE l.machine_id = ? AND l.released_at IS NULL ORDER BY l.fencing_token`, r.MachineID)
+LEFT JOIN project_policies pp ON pp.scope = lp.scope ` + nativeLandingCapacityJoins + ` WHERE l.machine_id = ? AND l.released_at IS NULL ORDER BY l.fencing_token`
+	}
+	rows, err := db.QueryContext(ctx, leaseQuery, r.MachineID)
 	if err != nil {
 		return r, err
 	}
 	defer rows.Close()
+
+	type landingUsageRow struct {
+		expiry, runner, raw, approved, session, batchProject string
+		lease                                                runnerauth.RunnerLease
+	}
+	var landingRows []landingUsageRow
 	for rows.Next() {
-		var expiry, runner, raw, approved string
-		var lease runnerauth.RunnerLease
-		if err := rows.Scan(&expiry, &runner, &lease.ID, &lease.FencingToken, &lease.WorkItemID, &lease.Title, &lease.ProjectID, &raw, &approved); err != nil {
+		var value landingUsageRow
+		destinations := []any{&value.expiry, &value.runner, &value.lease.ID, &value.lease.ProjectID, &value.session, &value.batchProject}
+		if display {
+			destinations = []any{&value.expiry, &value.runner, &value.lease.ID, &value.lease.FencingToken, &value.lease.WorkItemID, &value.lease.Title, &value.lease.ProjectID, &value.raw, &value.approved, &value.session, &value.batchProject}
+		}
+		if err := rows.Scan(destinations...); err != nil {
 			return r, err
 		}
+		landingRows = append(landingRows, value)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return r, err
+	}
+	if err := rows.Close(); err != nil {
+		return r, err
+	}
+	for _, value := range landingRows {
+
+		expiry, runner, lease, raw, approved, session, batchProject := value.expiry, value.runner, value.lease, value.raw, value.approved, value.session, value.batchProject
+
 		end, err := parseTimeValue(expiry)
 		if err != nil {
 			return r, err
 		}
+		batchProject, err = resolveLandingProject(ctx, db, batchProject, false)
+		if err != nil {
+			return r, err
+		}
 		if end.After(now) {
-			r.HostUsed++
 			if runner == id {
-				r.Used++
+				key := landingCapacityKey(r.MachineID, batchProject, session)
+				if key == "" {
+					key = string(lease.ID)
+				}
+				if !runnerSlots[key] && (group == "" || key != group) {
+					r.ProjectUsed[lease.ProjectID]++
+					runnerSlots[key] = true
+				}
+				if !display {
+					continue
+				}
 				lease.ExpiresAt = end
 				if raw != "" {
 					if err := json.Unmarshal([]byte(raw), &lease.Policy); err != nil {
@@ -182,12 +222,19 @@ LEFT JOIN project_policies pp ON pp.scope = lp.scope WHERE l.machine_id = ? AND 
 	if err := rows.Close(); err != nil {
 		return r, err
 	}
-	for _, report := range reports {
-		view, err := providerView(ctx, db, organization, id, report, now)
+	if display {
+		if err := appendRunnerRuntimeProblems(ctx, db, &r, now); err != nil {
+			return r, err
+		}
+	}
+	if len(reports) > 0 {
+		snapshot, err := readProviderCapacitySnapshot(ctx, db, organization, now)
 		if err != nil {
 			return r, err
 		}
-		r.ProviderCapacity = append(r.ProviderCapacity, view)
+		for _, report := range reports {
+			r.ProviderCapacity = append(r.ProviderCapacity, snapshot.view(id, report, now, group))
+		}
 	}
 	for i := range r.Leases {
 		reservation, reserved, err := readProviderReservation(ctx, db, r.Leases[i].ID)
@@ -236,9 +283,19 @@ func unmarshalRunnerSettings(raw string, routing *runnerauth.Routing) error {
 func readRunnerRoutingSnapshot(ctx context.Context, db nativeQueryer, organization tracker.OrganizationID, id string, now time.Time) (runnerauth.RoutingSnapshot, error) {
 	runner, _, _, err := scanRunnerIdentity(db.QueryRowContext(ctx, runnerIdentitySelect+" WHERE r.organization_id = ? AND r.id = ?", organization, id), func() time.Time { return now })
 	if err == nil {
+		err = readRunnerIdentityFacts(ctx, db, &runner, nil)
+	}
+	if err == nil {
 		runner.ProjectRanks, err = readRunnerProjectRanks(ctx, db, runner.RunnerID, runner.OrganizationID)
 	}
-	return runnerauth.RoutingSnapshot{RunnerID: id, Revision: runner.Revision, Routing: runner.Routing}, err
+	snapshot := runnerauth.RoutingSnapshot{RunnerID: id, Revision: runner.Revision, Routing: runner.Routing}
+	if err == nil {
+		err = db.QueryRowContext(ctx, `SELECT request_id FROM runner_repository_lists WHERE runner_id=? AND pending=1`, id).Scan(&snapshot.RepositoryListRequest)
+		if errors.Is(err, sql.ErrNoRows) {
+			err = nil
+		}
+	}
+	return snapshot, err
 }
 
 func (s *Service) getRunnerRouting(c echo.Context) error {
@@ -268,8 +325,16 @@ func (s *Service) readRunnerRouting(ctx context.Context, scope nativeScope, runn
 	if !visible {
 		return runnerauth.Runner{}, nativeNotFound()
 	}
-	runner, err := readRunnerWithClock(ctx, s.database.reader, scope.organization, runnerID, s.config.now)
+	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
+		return runnerauth.Runner{}, err
+	}
+	defer tx.Rollback()
+	runner, err := readRunnerWithClock(ctx, tx, scope.organization, runnerID, s.config.now)
+	if err != nil {
+		return runnerauth.Runner{}, err
+	}
+	if err := tx.Commit(); err != nil {
 		return runnerauth.Runner{}, err
 	}
 	if credential.Hosted != nil && !s.appAllRunnerGrants(ctx, credential, runnerManagementProjects(runner)...) {
@@ -280,9 +345,10 @@ func (s *Service) readRunnerRouting(ctx context.Context, scope nativeScope, runn
 
 type runnerRoutingRequest struct {
 	runnerauth.RoutingChange
-	IsolationTier *string                  `json:"isolation_tier"`
-	HostServices  *[]string                `json:"host_services"`
-	Availability  *runnerauth.Availability `json:"availability"`
+	IdempotencyKey string                   `json:"idempotency_key,omitempty"`
+	IsolationTier  *string                  `json:"isolation_tier"`
+	HostServices   *[]string                `json:"host_services"`
+	Availability   *runnerauth.Availability `json:"availability"`
 }
 
 // effective preserves optional settings exactly as the dashboard command does.
@@ -293,6 +359,9 @@ func (request runnerRoutingRequest) effective(current runnerauth.Routing) runner
 	}
 	if change.Scope == "" {
 		change.Scope = current.Scope
+	}
+	if change.ProjectCapacityLimits == nil {
+		change.ProjectCapacityLimits = current.ProjectCapacityLimits
 	}
 	change.UpdateRequest = current.UpdateRequest
 	change.CapacityRequest = current.CapacityRequest
@@ -319,7 +388,7 @@ func (request runnerRoutingRequest) effective(current runnerauth.Routing) runner
 func (s *Service) updateRunnerRouting(c echo.Context) error {
 	var request runnerRoutingRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	credential, ok := c.Get("hub_api_credential").(apiCredential)
 	if !ok {
@@ -333,34 +402,11 @@ func (s *Service) updateRunnerRouting(c echo.Context) error {
 	return c.JSON(http.StatusOK, value)
 }
 
-func validateRunnerAccess(ctx context.Context, db nativeQueryer, r runnerauth.Runner, tier string) error {
-	if tier != "sandbox" || r.IsolationTier == "sandbox" || reportsSandbox(r.BackendIsolation) {
-		return nil
-	}
-	var sprite bool
-	if err := db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM machines WHERE id=? AND organization_id=? AND json_extract(capabilities_json,'$.sprite_name')=hostname)`, r.MachineID, r.OrganizationID).Scan(&sprite); err != nil {
-		return err
-	}
-	if sprite {
-		return &operatortool.RequestError{Code: "invalid_request", Message: spriteSandboxUnavailableReason}
-	}
-	return nil
-}
-
-func reportsSandbox(report isolation.Report) bool {
-	if len(report) == 0 {
-		return false
-	}
-	for _, tiers := range report {
-		if !slices.Contains(tiers, isolation.Sandbox) {
-			return false
-		}
-	}
-	return true
-}
-
 func (s *Service) updateRunnerRoutingCommand(ctx context.Context, scope nativeScope, resource string, request runnerRoutingRequest) (any, error) {
 	change := request.RoutingChange
+	if len(request.IdempotencyKey) > 128 {
+		return nil, nativePublicInvalid("Project capacity updates require an idempotency key of 1 to 128 characters")
+	}
 	scope.managedRunner = resource
 	scope.managedRunnerScope = request.Normalized().Scope
 	scope.managedRunnerProjects = request.Normalized().ProjectIDs
@@ -370,13 +416,27 @@ func (s *Service) updateRunnerRoutingCommand(ctx context.Context, scope nativeSc
 		if err != nil {
 			return nil, err
 		}
+		if request.ProjectCapacityLimits != nil && !maps.Equal(request.ProjectCapacityLimits, r.ProjectCapacityLimits) && strings.TrimSpace(request.IdempotencyKey) == "" {
+			return nil, nativePublicInvalid("Project capacity updates require an idempotency key of 1 to 128 characters")
+		}
+		operation := "runner_routing " + resource
+		hash, err := nativeCommandHash(request)
+		if err != nil {
+			return nil, err
+		}
+		if request.IdempotencyKey != "" {
+			raw, found, err := nativeCommandReceipt(ctx, tx, scope, operation, request.IdempotencyKey, hash)
+			if err != nil {
+				return nil, err
+			}
+			if found {
+				return json.RawMessage(raw), nil
+			}
+		}
 		if r.Revision != change.ExpectedRevision {
 			return nil, nativeConflict(tracker.Revision(r.Revision))
 		}
 		change = request.effective(r.Routing)
-		if err := validateRunnerAccess(ctx, tx, r, change.IsolationTier); err != nil {
-			return nil, err
-		}
 		if change.Scope != r.Scope || !slices.Equal(change.ProjectIDs, r.ProjectIDs) {
 			owned, err := runnerOwnedBy(ctx, tx, organization, r.RunnerID, scope.credential)
 			if err != nil {
@@ -391,7 +451,7 @@ func (s *Service) updateRunnerRoutingCommand(ctx context.Context, scope nativeSc
 				owned = true
 			}
 			if !owned {
-				return nil, &nativeError{Code: "access_denied", Message: "Only the runner owner may change its allowed projects", status: http.StatusForbidden}
+				return nil, &nativeError{Code: "access_denied", Message: "Only the runner owner may change its allowed projects", status: http.StatusForbidden, publicMessage: true}
 			}
 		}
 		if change.ProjectRanks == nil {
@@ -414,7 +474,17 @@ func (s *Service) updateRunnerRoutingCommand(ctx context.Context, scope nativeSc
 		if err := change.Validate(); err != nil {
 			return nil, nativeInvalid(err.Error())
 		}
+		for project := range change.ProjectCapacityLimits {
+			if !change.AllowsProject(project) {
+				return nil, nativePublicInvalid("Project capacity limits require existing runner project access")
+			}
+		}
 		projects := slices.Clone(change.ProjectIDs)
+		for project := range change.ProjectCapacityLimits {
+			if !slices.Contains(projects, project) {
+				projects = append(projects, project)
+			}
+		}
 		for project := range change.ProjectRanks {
 			if !slices.Contains(projects, project) {
 				projects = append(projects, project)
@@ -426,7 +496,7 @@ func (s *Service) updateRunnerRoutingCommand(ctx context.Context, scope nativeSc
 				return nil, err
 			}
 			if count != 1 {
-				return nil, nativeInvalid("Runner projects must belong to the organization")
+				return nil, nativePublicInvalid("Runner projects must belong to the organization")
 			}
 		}
 		tags, err := marshalNative(change.Tags)
@@ -441,6 +511,9 @@ func (s *Service) updateRunnerRoutingCommand(ctx context.Context, scope nativeSc
 		if _, err := tx.ExecContext(ctx, `UPDATE runner_identities SET display_name = ?, tags_json = ?, state = ?, capacity_limit = ?, routing_settings_json = ?, revision = revision + 1, scope = ? WHERE id = ?`, change.DisplayName, tags, change.State, change.CapacityLimit, settings, change.Scope, r.RunnerID); err != nil {
 			return nil, err
 		}
+		if err := storeRunnerRoutingFacts(ctx, tx, r.RunnerID, settings); err != nil {
+			return nil, err
+		}
 		if _, err := tx.ExecContext(ctx, "DELETE FROM token_grants WHERE token_id = (SELECT token_id FROM runner_identities WHERE id = ?)", r.RunnerID); err != nil {
 			return nil, err
 		}
@@ -449,17 +522,40 @@ func (s *Service) updateRunnerRoutingCommand(ctx context.Context, scope nativeSc
 				return nil, err
 			}
 		}
+		if request.ProjectCapacityLimits != nil && !maps.Equal(request.ProjectCapacityLimits, r.ProjectCapacityLimits) {
+			if _, err := tx.ExecContext(ctx, "DELETE FROM runner_project_capacity_limits WHERE organization_id=? AND runner_id=?", organization, r.RunnerID); err != nil {
+				return nil, err
+			}
+			for project, limit := range request.ProjectCapacityLimits {
+				if _, err := tx.ExecContext(ctx, "INSERT INTO runner_project_capacity_limits (organization_id, runner_id, project_id, capacity_limit) VALUES (?, ?, ?, ?)", organization, r.RunnerID, project, limit); err != nil {
+					return nil, err
+				}
+			}
+		}
 		if err := refreshRunnerProblems(ctx, tx, organization, r.RunnerID, now); err != nil {
 			return nil, err
 		}
-		return readRunner(ctx, tx, organization, r.RunnerID, now)
+		updated, err := readRunner(ctx, tx, organization, r.RunnerID, now)
+		if err != nil {
+			return nil, err
+		}
+		if request.IdempotencyKey != "" {
+			raw, err := marshalNative(updated)
+			if err != nil {
+				return nil, err
+			}
+			if _, err := insertNativeCommandReceipt(ctx, tx, organization, scope.credential.ID, operation, request.IdempotencyKey, hash, raw, formatHubTime(now)); err != nil {
+				return nil, err
+			}
+		}
+		return updated, nil
 	})
 }
 
 func (s *Service) updateRunnerHost(c echo.Context) error {
 	var change runnerauth.HostChange
 	if err := decodeAPIJSON(c, &change); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	credential, ok := c.Get("hub_api_credential").(apiCredential)
 	if !ok {
@@ -476,7 +572,7 @@ func (s *Service) updateRunnerHost(c echo.Context) error {
 func (s *Service) updateRunnerHostCommand(ctx context.Context, scope nativeScope, resource string, change runnerauth.HostChange) (any, error) {
 	change.DisplayName = strings.TrimSpace(change.DisplayName)
 	if change.DisplayName == "" || len(change.DisplayName) > 200 || strings.ContainsAny(change.DisplayName, "\r\n\x00") || change.Capacity < 0 || change.Capacity > 10000 {
-		return nil, nativeInvalid("Host name and a capacity between 0 and 10000 are required")
+		return nil, nativePublicInvalid("Host name and a capacity between 0 and 10000 are required")
 	}
 	return s.runnerAdminTransaction(ctx, scope, false, func(ctx context.Context, tx *sql.Tx, _ time.Time) (any, error) {
 		var revision int64
@@ -505,13 +601,18 @@ func (s *Service) listRunnerRouting(c echo.Context) error {
 func (s *Service) listRunnerRoutingData(ctx context.Context, organization tracker.OrganizationID, limit, offset int) ([]runnerauth.Runner, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
+	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
 	query := "SELECT id FROM runner_identities WHERE organization_id = ? AND removed_at IS NULL ORDER BY display_name, id"
 	args := []any{organization}
 	if limit > 0 {
 		query += " LIMIT ? OFFSET ?"
 		args = append(args, limit, offset)
 	}
-	rows, err := s.database.reader.QueryContext(ctx, query, args...)
+	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -531,7 +632,7 @@ func (s *Service) listRunnerRoutingData(ctx context.Context, organization tracke
 	}
 	result := []runnerauth.Runner{}
 	for _, id := range ids {
-		r, err := readRunnerWithClock(ctx, s.database.reader, organization, id, s.config.now)
+		r, err := readRunnerWithClock(ctx, tx, organization, id, s.config.now)
 		if err != nil {
 			return nil, err
 		}
@@ -547,28 +648,40 @@ func runnerExcluded(exclusions []runnerauth.Exclusion) error {
 	return &nativeError{Code: exclusions[0].Code, Message: exclusions[0].Message, status: http.StatusConflict}
 }
 
+const runnerAuthoritySelect = `SELECT t.token_hash,t.created_at,t.expires_at,t.revoked_at,r.state,
+ r.scope='organization' OR EXISTS(SELECT 1 FROM token_grants g WHERE g.token_id=r.token_id AND g.project_id=?)
+ FROM runner_identities r JOIN api_tokens t ON t.id=r.token_id
+ WHERE r.organization_id=? AND r.id=? AND r.token_id=?`
+
 func requireRunnerAuthority(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) error {
-	if err := requireCredentialAuthority(ctx, tx, scope.credential, now); err != nil {
+	if scope.credential.Runner.RunnerID == "" {
+		return requireCredentialAuthority(ctx, tx, scope.credential, now)
+	}
+	if err := readRunnerAuthority(ctx, tx, scope, now); err != nil {
 		return err
 	}
-	if scope.credential.Runner.RunnerID == "" {
-		return nil
+	return authorizeNativeProject(ctx, tx, scope)
+}
+
+func readRunnerAuthority(ctx context.Context, query nativeQueryer, scope nativeScope, now time.Time) error {
+	if scope.credential.EntryKey != nil {
+		return runnerUnauthorized()
 	}
-	r, err := readRunner(ctx, tx, scope.organization, scope.credential.Runner.RunnerID, now)
+	var hash, created, state string
+	var expires, revoked sql.NullString
+	var allowed bool
+	err := query.QueryRowContext(ctx, runnerAuthoritySelect, scope.project, scope.organization, scope.credential.Runner.RunnerID, scope.credential.ID).Scan(&hash, &created, &expires, &revoked, &state, &allowed)
 	if err != nil {
 		return err
 	}
-	if !r.AllowsProject(scope.project) {
+	if hash != scope.credential.Hash || revoked.Valid || !expires.Valid || !runnerTimeValid(now, created, expires.String) {
+		return runnerUnauthorized()
+	}
+	if scope.project == "" || !allowed {
 		return nativeNotFound()
 	}
-	if err := authorizeNativeProject(ctx, tx, scope); err != nil {
-		return err
-	}
-	if r.State == "disabled" {
+	if state == "disabled" {
 		return runnerExcluded([]runnerauth.Exclusion{{Code: "runner_disabled", Message: "Runner is disabled"}})
-	}
-	if r.Health == "revoked" || r.Health == "expired" {
-		return runnerUnauthorized()
 	}
 	return nil
 }
@@ -605,23 +718,27 @@ JOIN runner_identities r ON r.id = lr.runner_id WHERE l.lease_id = ? AND i.organ
 		return err
 	}
 	if count != 1 {
-		return nativeNotFound()
+		return nativeNotFoundAt("lease_runner_credential")
 	}
 	return nil
 }
 
-func validateRunnerDispatch(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) error {
-	r, err := readRunner(ctx, tx, scope.organization, scope.credential.Runner.RunnerID, now)
+func validateRunnerDispatch(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time, joining ...string) error {
+	r, err := readRunnerForDispatch(ctx, tx, scope, now, joining...)
 	if err != nil {
 		return err
 	}
 	return runnerExcluded(r.Exclusions(scope.project, policy.Requirements{}, false))
 }
 
+func readRunnerForDispatch(ctx context.Context, tx nativeQueryer, scope nativeScope, now time.Time, joining ...string) (runnerauth.Runner, error) {
+	return readRunnerFactsWithClock(ctx, tx, scope.organization, scope.credential.Runner.RunnerID, func() time.Time { return now }, false, joining...)
+}
+
 func (s *Service) validateRunnerLease(c echo.Context) error {
 	var request tracker.NativeLeaseMutation
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	return s.runnerReadTransaction(c, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
 		return validateRunnerLeaseTx(ctx, tx, nativeRequestScope(c), tracker.LeaseID(c.Param("lease")), request.FencingToken, now)
@@ -662,7 +779,17 @@ func validateRunnerLeaseTx(ctx context.Context, tx *sql.Tx, scope nativeScope, i
 }
 
 func readRunnerProjectRanks(ctx context.Context, db nativeQueryer, runnerID string, organization tracker.OrganizationID) (map[tracker.ProjectID]int, error) {
-	rows, err := db.QueryContext(ctx, "SELECT p.id, COALESCE(json_extract(r.routing_settings_json, '$.project_ranks.' || p.id), p.scheduling_rank) FROM projects p JOIN runner_identities r ON r.organization_id=p.organization_id WHERE r.id=? AND p.organization_id=? AND (r.scope='organization' AND p.deleted_at IS NULL OR EXISTS (SELECT 1 FROM token_grants g WHERE g.token_id=r.token_id AND g.project_id=p.id AND g.organization_id=p.organization_id))", runnerID, organization)
+	var legacy sql.NullString
+	if err := db.QueryRowContext(ctx, `SELECT CASE WHEN routing_facts_ready IS NULL THEN routing_settings_json END FROM runner_identities WHERE id=? AND organization_id=?`, runnerID, organization).Scan(&legacy); err != nil {
+		return nil, err
+	}
+	var settings runnerSettings
+	if legacy.Valid {
+		if err := json.Unmarshal([]byte(legacy.String), &settings); err != nil {
+			return nil, err
+		}
+	}
+	rows, err := db.QueryContext(ctx, "SELECT p.id, COALESCE(rank.rank, p.scheduling_rank) FROM projects p JOIN runner_identities r ON r.organization_id=p.organization_id LEFT JOIN runner_project_ranks rank ON rank.runner_id=r.id AND rank.project_id=p.id AND r.routing_facts_ready IS NOT NULL WHERE r.id=? AND p.organization_id=? AND (r.scope='organization' AND p.deleted_at IS NULL OR EXISTS (SELECT 1 FROM token_grants g WHERE g.token_id=r.token_id AND g.project_id=p.id AND g.organization_id=p.organization_id))", runnerID, organization)
 	if err != nil {
 		return nil, err
 	}
@@ -673,6 +800,11 @@ func readRunnerProjectRanks(ctx context.Context, db nativeQueryer, runnerID stri
 		var rank int
 		if err := rows.Scan(&id, &rank); err != nil {
 			return nil, err
+		}
+		if legacy.Valid {
+			if override, ok := settings.ProjectRanks[id]; ok {
+				rank = override
+			}
 		}
 		ranks[id] = rank
 	}
@@ -725,6 +857,37 @@ func readRunnerClaimState(ctx context.Context, db nativeQueryer, scope nativeSco
 		return err
 	}
 	state.PolicyIDs = map[tracker.ProjectID]string{scope.project: approved}
+
+	released, err := db.QueryContext(ctx, `SELECT DISTINCT a.work_item_id FROM native_attempts a JOIN leases l ON l.lease_id=a.lease_id JOIN lease_runners lr ON lr.lease_id=l.lease_id
+ WHERE a.organization_id=? AND a.project_id=? AND lr.runner_id=? AND l.machine_id=? AND l.released_at IS NOT NULL AND a.status IN ('running','interrupted') AND a.checkpoint_json IS NOT NULL ORDER BY a.work_item_id`, scope.organization, scope.project, snapshot.RunnerID, scope.credential.Runner.MachineID)
+	if err != nil {
+		return err
+	}
+	defer released.Close()
+	var items []tracker.NativeWorkItemID
+	for released.Next() {
+		var item tracker.NativeWorkItemID
+		if err := released.Scan(&item); err != nil {
+			return errors.Join(err, released.Close())
+		}
+		items = append(items, item)
+	}
+	if err := errors.Join(released.Err(), released.Close()); err != nil {
+		return err
+	}
+	for _, item := range items {
+		source, err := readNativeSourceCheckpoint(ctx, db, scope, string(item))
+		if errors.Is(err, errClaimHintStale) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if source.Released.Valid && source.MachineID == scope.credential.Runner.MachineID && source.RunnerID == snapshot.RunnerID && (source.Status == "running" || source.Status == "interrupted") {
+			state.ReleasedExecutions = append(state.ReleasedExecutions, runnerauth.ReleasedExecution{ProjectID: scope.project, WorkItemID: item, AttemptID: source.AttemptID})
+		}
+	}
+
 	snapshot.ClaimState = &state
 	return nil
 }

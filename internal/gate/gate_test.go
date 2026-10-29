@@ -194,7 +194,7 @@ func TestEvaluateSecurityAudit(t *testing.T) {
 			want: Decision{
 				Action:   ActionRework,
 				Reason:   ReasonSecurityAuditFindings,
-				Findings: []Finding{{Severity: "p1", Body: "Bypass", Path: "auth.go", Line: 12}},
+				Findings: []Finding{{Attribution: "unknown", Severity: "p1", Body: "Bypass", Path: "auth.go", Line: 12}},
 			},
 		},
 		{
@@ -264,7 +264,7 @@ func TestEvaluate(t *testing.T) {
 	now := time.Date(2026, 6, 2, 12, 0, 0, 0, time.UTC)
 	oldActivity := now.Add(-20 * time.Minute)
 	recentActivity := now.Add(-30 * time.Second)
-	finding := Finding{Body: "P1 finding", URL: "https://example.test/comment", Path: "main.go", Line: 7}
+	finding := Finding{Attribution: "unknown", Body: "P1 finding", URL: "https://example.test/comment", Path: "main.go", Line: 7}
 	readyCommand := Summary{
 		PullRequestURL: "https://github.test/pull/42",
 		CIStatus:       "green",
@@ -436,7 +436,7 @@ func TestEvaluate(t *testing.T) {
 			want: Decision{
 				Action:   ActionRework,
 				Reason:   ReasonValidatorError,
-				Findings: []Finding{{Severity: "p1", Body: "validator review production failed"}},
+				Findings: []Finding{{Attribution: "unknown", Severity: "p1", Body: "validator review production failed"}},
 			},
 		},
 		{
@@ -499,7 +499,7 @@ func TestEvaluate(t *testing.T) {
 			want: Decision{
 				Action:   ActionRework,
 				Reason:   ReasonValidatorBlockedSeverity,
-				Findings: []Finding{{Severity: "P1", Body: "Acceptance criteria missed."}},
+				Findings: []Finding{{Attribution: "unknown", Severity: "P1", Body: "Acceptance criteria missed."}},
 			},
 		},
 		{
@@ -597,7 +597,7 @@ func TestEvaluate(t *testing.T) {
 func TestEvaluatePlan(t *testing.T) {
 	t.Parallel()
 
-	finding := Finding{Body: "Plan misses rollback steps.", URL: "https://github.test/comment/1"}
+	finding := Finding{Attribution: "unknown", Body: "Plan misses rollback steps.", URL: "https://github.test/comment/1"}
 
 	tests := []struct {
 		name   string
@@ -834,7 +834,7 @@ func TestInstructionsDescribeCITriggerLabel(t *testing.T) {
 		"after any other CI lane labels",
 		"Detent records successful worker pushes",
 		"merging workers also reapply it immediately after deterministic head-changing pushes",
-		"detent ci-trigger-label",
+		"detent hub ci-trigger-label",
 		"removes the label if present, adds it again",
 		"REST issue-label endpoints",
 		"before waiting for current-head checks",
@@ -904,7 +904,7 @@ func TestEvaluateAutomatedReviewModes(t *testing.T) {
 		{name: "legacy disabled pending after deadline", required: new(false), pending: true, expired: true, want: Decision{Action: ActionPass, Reason: ReasonReady}},
 		{name: "off present", mode: AutomatedReviewOff, review: "COMMENTED", want: Decision{Action: ActionPass, Reason: ReasonReady}},
 		{name: "required p1", mode: AutomatedReviewRequired, review: "P1", want: Decision{Action: ActionRework, Reason: ReasonP1Findings}},
-		{name: "optional late p1", mode: AutomatedReviewOptional, review: "COMMENTED", expired: true, p1Findings: []Finding{{Severity: "p1"}}, want: Decision{Action: ActionRework, Reason: ReasonP1Findings, Findings: []Finding{{Severity: "p1"}}}},
+		{name: "optional late p1", mode: AutomatedReviewOptional, review: "COMMENTED", expired: true, p1Findings: []Finding{{Severity: "p1"}}, want: Decision{Action: ActionRework, Reason: ReasonP1Findings, Findings: []Finding{{Attribution: "unknown", Severity: "p1"}}}},
 		{name: "off p1", mode: AutomatedReviewOff, review: "P1", want: Decision{Action: ActionRework, Reason: ReasonP1Findings}},
 	}
 

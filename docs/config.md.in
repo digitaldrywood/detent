@@ -42,14 +42,10 @@ Enrolled runners reject unknown keys at startup, including nested machine-settin
 keys. Errors name each unsupported key path. Removed keys include `projects`,
 `weight`, `priority`, `scheduling`, `fair_share`, `global.agents.model_selection`,
 `client.native_projects` and other local project policy defaults, even when their
-values are malformed. Remove these keys before upgrading; the one-release
-warning-and-ignore transition has ended. Before releasing this transition, the
-release owner must confirm the compatibility release shipped, verify that no live
-runner file still contains removed keys, and authorize the subsequent release.
-An unchanged legacy file will fail startup and may leave its service restarting.
+values are malformed. A runner file that still contains a removed key fails
+startup, so a supervised service keeps restarting until the key is removed.
 Cloud supplies project membership, rank and model selection; runners have no
-file-defined project or model-selection fallback. Local instances store these
-settings in SQLite.
+file-defined project or model-selection fallback.
 
 Existing checkouts under `workspace_root` are matched by Git origin to
 Cloud-allowed repositories. They do not supply workflow paths or policy.
@@ -62,15 +58,17 @@ existing files remain untouched.
 This page is the reference for machine and project configuration. Each
 project's workflow continues to come from its repository.
 
-`agent.no_progress_timeout_ms` remains readable for older project files but is
-ignored. Worker sessions use their absolute duration bound, and local validation
-waits use the gate lock deadline.
+Retired per-issue progress, lifetime and retry-brake settings are rejected with
+a validation error naming the key. Remove those keys from existing configuration.
+Worker sessions use their absolute duration bound, and local validation waits
+use the gate lock deadline.
 
-Priority settings order ready work (INV-10). Stored project rank and
-`dispatch_priority_by_state`, `dispatch_priority_by_label`, and
-`prioritize_unblockers` choose the next eligible request. They never reserve
-idle slots or cancel running workers. `max_concurrent_agents` and
-`max_concurrent_agents_by_state` remain independent capacity ceilings.
+Ready work is ordered by issue priority, then stored project rank, then
+creation time, then issue identifier (INV-10). `dispatch_priority_by_state`,
+`dispatch_priority_by_label` and `prioritize_unblockers` are still accepted but
+do not change that order. Ordering never reserves idle slots or cancels running
+workers. `max_concurrent_agents` and `max_concurrent_agents_by_state` remain
+independent capacity ceilings.
 
 ## Host Go caches
 
@@ -122,29 +120,27 @@ configured-check behavior.
 ## Issue session allowance
 
 Code and rework share a fixed allowance of three sessions without a merged PR.
-The next code dispatch runs one read-only triage pass, publishes its explanation,
-and leaves the issue in Human Review. An operator move out of Human Review
-renews the allowance, as does a merged PR. Detent-instance moves, new PR heads,
-changed CI signatures, ordinary lane moves, and acknowledgements alone do not
-renew it; instance-attributed failures do not consume it. Completed, successful
-PR deliveries without a recorded error also do not consume it; waiting on the
-completion gate is not a failed delivery. The existing triage
-comment records the operator reset timestamp when comment updates are supported.
+When it is exhausted, the next code dispatch runs one read-only triage pass and
+publishes its explanation as an issue comment. The issue then continues through
+the shared capped-backoff retry owner in a dispatchable lane; it does not move
+to Blocked or Human Review. Instance-attributed failures (backend startup,
+workspace preparation, tracker or forge unavailability, service restarts, lease
+expiry, capacity and protocol errors) do not consume the allowance.
 
 The former `agent.auto_promote.rework_limit` and
-`agent.auto_promote.no_progress_limit` keys are retired and have no effect.
+`agent.auto_promote.no_progress_limit` keys are retired and fail configuration validation.
 Remove them from existing configuration. There is no replacement tuning key.
-See [INV-3](invariants.md#inv-3--mechanism-moratorium) for the consolidation and
+See [INV-3](invariants.md#inv-3--net-zero-mechanisms) for the consolidation and
 historical-reader compatibility contract.
 
 ## Session limits by complexity level
 
 Model selection is configured in Cloud organization settings. Projects inherit
 that default and may override it in their Cloud project settings. Runners receive
-the effective selection from the Hub. `global.agents.model_selection` and
-`agents.model_selection` in `detent.yaml` or legacy workflow frontmatter are
-ignored with a compatibility warning for one release; the next release rejects
-them. Remove those keys from runner and repository files.
+the effective selection from the Hub. Enrolled runners reject
+`global.agents.model_selection` at startup. `agents.model_selection` in
+`detent.yaml` or legacy workflow frontmatter is ignored with a compatibility
+warning; a later release will reject it.
 
 Cloud complexity levels may include `max_session_duration_ms` and
 `max_session_tokens` alongside model and effort. The selected level (stage
@@ -156,8 +152,8 @@ existing behavior, including clamping effort to the stage's ceiling.
 
 The running session keeps its resolved values across turns, checkpoints, and
 fallbacks. Later label or configuration changes do not change its limits or reset
-attempt counts or lifetime usage. Turn inactivity, no-progress limits, context
-multipliers, and token exemption settings retain their existing behavior.
+attempt counts or lifetime usage. Turn inactivity, context multipliers, and token
+exemption settings retain their existing behavior.
 `detent doctor` reports each level's effective limits for the project, plus the
 flat limits used by ineligible backends.
 
@@ -166,48 +162,11 @@ existing stage and role rules).
 
 ## Terminal attempt recovery
 
-Set `recovery.terminal_attempt_retry_limit` in `detent.yaml` or
-`detent.local.yaml` to control recovery from consecutive terminal attempts
-without a pushed work product or linked pull request:
-
-```yaml
-recovery:
-  terminal_attempt_retry_limit: 0
-```
-
-The default is `3`. The value preserves the existing consecutive-failure
-threshold for values of `2` or greater; `1` explicitly permits one recovery
-attempt, and `0` disables automatic recovery for a qualifying failure.
-
-| Setting | Failure 1 | Failure 2 | Failure 3 | Recovery after parking |
-| --- | --- | --- | --- | --- |
-| `0` | Blocked | No automatic attempt | No automatic attempt | Operator reviews the failure and moves the issue to Todo |
-| `1` | Todo; one recovery attempt | Blocked | No attempt before recovery from parking | Existing breaker cooldown |
-| `3` (default) | Todo | Todo | Blocked | Existing breaker cooldown |
-
-Thus `1` and `2` both park on the second qualifying failure. Higher values
-park on that numbered failure. Negative values are rejected. This compatibility
-rule keeps the existing default at two redispatches before parking.
-
-The zero policy persists an operator-owned hold, including the latest failure
-evidence. It also enforces the hold from the current completion when saving the
-attempt fails or no durable attempt record is available. Restarting Detent or waiting for the breaker cooldown does not release
-that hold. If the tracker rejects the Blocked transition, Detent holds the issue
-locally and retries that transition during reconciliation without starting a worker.
-Changing the setting alone does not authorize release of an existing
-operator-owned hold. Retry counts are reconstructed from durable issue attempt
-history after restart; successful attempts and pushed work reset the sequence.
-Service-restart recovery remains resumable and does not consume this limit.
-
-Durable provider capacity, GitHub REST capacity, and forge availability waits
-retain their existing handling and do not consume generic terminal retries.
-Transient overload failures remain qualifying terminal failures. Workspace
-preparation retains its separate fixed threshold of three failures. This policy
-is independent of automatic promotion, validators, and Rework limits.
-
-`detent doctor` reports the effective setting, the qualifying failure on which
-Detent parks, and whether parking requires external review or uses cooldown
-recovery. Local overlays preserve an explicit zero.
+Machine failures retry in a dispatchable lane through the shared capped-backoff
+owner. Attempts without source progress retain growing retry counts; verified
+committed or published source progress can reset the attempt count. Typed human
+actions, permission requests and explicit operator stops remain authoritative.
+The former per-issue retry-limit configuration is retired and rejected.
 
 ## Repository policy with Hub execution
 
@@ -236,8 +195,6 @@ Git commit. The loader resolves the ref once and reads shared files at that
 commit; edits to the working branch do not change it. Shared behavior changes in
 local overlays still need approval. An external definition is authorized by
 reviewing its resolved content digest through the same approval command.
-Approvals must be performed outside
-the implementation worker; do not give workers the Hub administrator credential.
 
 `hub policy inspect` prints schema 1, the source revision, source/configuration
 digests, a content-derived `policy_id`, selected runner requirements and gate
@@ -328,10 +285,11 @@ approval as part of the effective definition.
 Profiles declare requirements, never enrollment or capabilities. Machine
 registration still happens on an authorized physical host. The Hub checks
 machine pins and matches runner IDs only against authenticated enrolled runner
-identities. Legacy worker tokens cannot assert an enrolled runner ID. Required
-tags return `selector_no_match` until the authorized tag-placement deliverable
-#2185 is available. Self-reported machine capabilities never satisfy privileged
-tags. See [runner enrollment](hub-api.md) for the separate host authorization path.
+identities. Legacy worker tokens cannot assert an enrolled runner ID, and a
+policy with any runner, machine or tag requirement refuses legacy registrations
+with `selector_no_match`. Required tags match the tags recorded on the enrolled
+runner identity; a mismatch also returns `selector_no_match`. Self-reported
+machine capabilities never satisfy privileged tags. See [runner enrollment](hub-api.md) for the separate host authorization path.
 
 ## Host configuration
 
@@ -387,10 +345,6 @@ that drain immediately.
 the log level from `--log-level`, then `LOG_LEVEL`, then `DETENT_LOG_LEVEL`,
 default to `info`, reject any value other than `debug`, `info`, `warn` or
 `error`, and write JSON logs to stderr for journald.
-
-The web host resolves from `--host`, then the first registered workflow's
-`server.host`, then the built-in `127.0.0.1` default. It is not a top-level
-`global.yaml` key.
 
 ### Host pressure admission
 
@@ -500,19 +454,18 @@ to `detent`; `detent hub runner register` writes `service_name: detent.runner`.
 Give each configuration on one host its own name. Names use lowercase letters,
 digits, dots and hyphens.
 
-A project listed under `client.native_projects` whose committed `detent.yaml`
-uses the GitHub tracker (`github` or `github_local`) uses the Hub instead
-(`tracker.kind: hub_native`), so a runner host can use a repository checkout
-as it is. Any other tracker kind is treated as a deliberate local choice and
-kept.
+`client.native_projects` is accepted only by legacy token-mode clients (no
+`client.identity_file`); enrolled runners reject it. In legacy mode, a project
+listed there whose committed `detent.yaml` uses the GitHub tracker (`github` or
+`github_local`) uses the Hub instead (`tracker.kind: hub_native`).
 
 Configure `client.hub_url` to move candidate discovery and claiming to a Detent
 Hub. The machine registers its identity, project and pool capabilities,
 capacity, operating system, architecture, and binary version. It then
 heartbeats while polling the Hub and renewing fenced work leases. The token is
 read from the environment variable named by `client.token_env` in legacy mode;
-the token is never stored in the configuration file. For scoped native runners,
-use `client.identity_file` instead: an absolute path to the private host-generated
+the token is never stored in the configuration file. Scoped native runners use
+`client.identity_file` instead: an absolute path to the private host-generated
 identity created by `detent hub runner init` and enrolled with `detent hub runner
 enroll`. The client renews this credential automatically. Its organization,
 machine ID and explicit native projects must match enrollment. See
@@ -524,6 +477,8 @@ The runner reads it on heartbeats and again before starting provider work. See
 [provider capacity reports](hub-api.md#provider-capacity-reports) for its safe
 schema, shared-account declarations and reservation semantics. This setting does
 not change backend credentials, model routes, effort defaults or fallback policy.
+
+A legacy token-mode client looks like this:
 
 ```yaml
 client:
@@ -542,9 +497,9 @@ name, or hostname. Enrolled mode uses the immutable host-generated machine ID.
 `capacity` defaults to `global.max_concurrent_agents`. The heartbeat
 interval must be shorter than the lease TTL. Hub outages mark project refresh
 health degraded and back off with the normal scheduling loop; they do not
-consume issue retry, no-progress, or work-failure budgets. GitHub remains in
-use for event ingestion, reconciliation, write-back, and fresh safety checks,
-but the scheduling claim cycle does not depend on a GitHub read.
+consume issue retry or attempt budgets. For GitHub-compatible projects, GitHub
+remains in use for event ingestion, reconciliation, write-back, and fresh safety
+checks, but the scheduling claim cycle does not depend on a GitHub read.
 
 Native issue projects use `tracker.kind: hub_native` in their repository
 workflow configuration. Enrolled runners obtain the stable project IDs and
@@ -632,8 +587,6 @@ The root `detent.yaml` and `WORKFLOW.md` configure the Detent project itself.
 They are not templates for other projects. Use the documentation samples below
 when configuring another repository.
 
-- [`docs/templates`](templates) contains paired `detent.*.yaml` and
-  `WORKFLOW.*.md` presets for supported tracker and deliverable setups.
 - [`config.example.yaml`](../config.example.yaml) is the smallest working
   project config.
 - [`config.annotated.yaml`](../config.annotated.yaml) is a realistic GitHub
@@ -641,10 +594,48 @@ when configuring another repository.
 - [`config.reference.yaml`](../config.reference.yaml) contains every supported
   project key. It is fully commented so you can copy only what you need.
 
-Keep `detent.yaml` portable and checked in. Put machine-specific paths or
-secrets in `detent.local.yaml`, a credential reference, or host configuration.
+`detent.yaml` is portable and checked in. Machine-specific paths or secrets
+belong in `detent.local.yaml`, a credential reference, or host configuration.
 The local file overlays the shared file recursively and is not a second,
 independent configuration.
+
+### Project definition layout
+
+A project definition uses four files with separate ownership:
+
+- `detent.yaml` is the checked-in, schema-versioned machine contract.
+- `WORKFLOW.md` is checked-in, portable agent instruction prose.
+- `detent.local.yaml` is an optional, gitignored machine-local config overlay.
+- `WORKFLOW.local.md` is an optional, gitignored machine-local prose overlay.
+
+The configured workflow path is the project-definition anchor; Detent resolves
+the other files beside it, so an external definition directory works without
+copies in the source worktree. `detent doctor --project <project-id>` reports
+the active layout: `split` (`detent.yaml` is authoritative and `WORKFLOW.md` is
+prose-only), `legacy` (configuration still lives in `WORKFLOW.md` frontmatter),
+`mixed` (more than one structured source claims authority), `incomplete`
+(prose exists but the machine contract is missing) or `stale` (the running
+process does not match the configured layout or source hash). Mixed layouts,
+invalid YAML, unsupported schema versions, missing files and invalid effective
+configuration fail before dispatch. Doctor also warns when either local overlay
+is tracked by Git.
+
+`detent fix workflow-layout --workflow <path>/WORKFLOW.md` converts a legacy
+definition: `--dry-run` previews the file operations and semantic result,
+the default asks for confirmation, and `--yes` applies without prompting. It
+validates the legacy effective configuration first, moves shared structured
+configuration into schema 1 `detent.yaml`, leaves the `WORKFLOW.md` body
+byte-for-byte unchanged, moves structured local overrides to
+`detent.local.yaml` and keeps local prose in `WORKFLOW.local.md`. Files keep
+their permissions and line endings and are installed atomically; a conflicting
+destination, validation failure, concurrent edit or write failure leaves the
+original definition in place. Detent then reloads the split definition and
+proves its effective configuration matches the legacy one. Repeating the
+command after success is a no-op. Environment-variable references stay
+references and are never resolved or printed.
+
+With `workflow_ref` configured, Detent reads `WORKFLOW.md` and `detent.yaml`
+from the selected commit and applies local overlays from the working tree.
 
 ## How the subsystems fit together
 
@@ -694,8 +685,9 @@ and approval provenance. Historical policies and approvals remain readable.
 
 `dependency_auto_unblock`, `blocked_recovery`, and `blocker_auto_promote` are
 opt-in tracker automations: the first advances work whose dependencies cleared,
-the second revives agent-recoverable PR maintenance, and the third promotes
-blockers when they enter configured states.
+the second routes items with persisted PR-maintenance reason codes to a repair
+lane, and the third promotes resolved blockers out of configured states. See
+[dependency workflows](dependency-workflows.md).
 
 GitHub and Linear trackers also receive a default Statuspage base URL through
 `tracker.status_page_url`; set that key to override the provider endpoint.
@@ -824,6 +816,13 @@ empty, `worker.github_token` defaults to the resolved top-level `github_token`
 projects, which never inherit the instance credential. An explicit project worker
 credential overrides that default; with neither credential configured, the worker
 policy is disabled.
+For native landing pushes, HTTPS uses the runner host's GitHub CLI login when
+no worker token is handed off; SSH uses the host's SSH key. An explicitly handed
+off worker token remains the Git credential for HTTPS operations in that worker.
+`worker.github_token` controls agent GitHub access; it is not required for native
+landing. Agent GitHub CLI calls retain their private `GH_CONFIG_DIR` in both cases.
+`detent doctor` includes a named landing push credential check that runs a
+noninteractive dry run without changing remote refs.
 Set the worker override to `gh` to resolve `gh auth token` in the Detent process
 and copy only the resolved token into the worker's isolated `GH_CONFIG_DIR`. An environment
 reference remains available when permission or revocation isolation is useful:
@@ -874,8 +873,8 @@ current body declarations. Remove a body declaration to remove its blocker
 
 `agent` is the orchestration policy: concurrency, turn and session limits,
 retry brakes, spend limits, shutdown, dispatch priority, automatic promotion,
-state-specific instructions, learned context, skill drafts, and follow-up
-work. `agents.backends` defines pluggable Codex, Claude Code, or Pi processes, while
+state-specific instructions, learned context, skills, and follow-up
+work. `agents.backends` defines pluggable Codex, Claude Code, Pi, or OpenCode processes, while
 `agents.routes` selects a backend and model by role or issue selector.
 
 `codex` is the legacy/default Codex backend configuration and remains the
@@ -889,6 +888,12 @@ Pi requires native-trusted isolation; sandboxed/read-only turns, resume,
 Detent dynamic tools and persisted history hydration are unsupported in this
 initial integration. See [Pi backend configuration and limitations](pi-agent.md)
 for a complete route example, authentication and an opt-in smoke test.
+
+OpenCode uses `kind: opencode`, `protocol: acp`, and `command: opencode`.
+Routes select an explicit `provider/model`, including OpenCode Go models.
+It supports scoped Detent MCP tools and requires native-trusted isolation.
+Corrections start fresh from published source and findings; persisted OpenCode
+sessions are not resumed across workspaces.
 
 Implementation workers on automatically owned Git branches request a bounded
 recovery checkpoint when a duration, turn, or no-progress limit stops them.
@@ -941,6 +946,15 @@ optional OTLP export. `budget` is the project-wide spend policy;
 `agent.budget` can further constrain agent sessions. `release` enables
 release-readiness automation after merged work accumulates.
 
+Release automation requires `tracker.kind: github`, `tracker.repository: owner/repository`,
+and `release.enabled: true`. It is unavailable for `hub_native` with either
+plain git delivery (`deliverable.github_pull_request: false`, the default) or
+GitHub pull request delivery (`deliverable.github_pull_request: true`). Config
+validation rejects `release.enabled: true` for native projects, including the
+release-unavailable warning in the returned error so creation and reload failures
+surface it. Leave `release.enabled: false` when migrating to `hub_native`.
+Opting into GitHub pull requests does not enable release automation.
+
 `observability.stranded_active_threshold_seconds` controls when Health and
 `detent doctor` report an issue that remains in `In Progress` without a live
 worker and when Detent recovers it automatically. Issues with an open pull
@@ -966,10 +980,13 @@ hooks:
   timeout_ms: 300000
 ```
 
-Each runner records the successful SHA-256 of the script content and shell in
-its local store, scoped to its runner identity and project. Unchanged setup
-does not run for later attempts or after restarting with the same store.
-Changing the script or shell runs setup again before the next dispatch. With
+Each runner records the successful SHA-256 of the script content, shell and
+source checkout path in its local store, scoped to its runner identity and
+project. When the checkout is a Git clone, the runner also writes the hash to
+`.git/detent-runner-setup` inside it. Unchanged setup does not run for later
+attempts or after restarting with the same store. Changing the script, shell
+or checkout path, or recreating the checkout, runs setup again before the next
+dispatch. With
 `workflow_ref`, the script comes from the same Git revision as the project's
 configuration; otherwise it comes from the source checkout, including local
 edits. Paths must remain inside the repository. Keep setup self-contained:
@@ -985,20 +1002,25 @@ and prevent claims and dispatch without consuming an issue failure allowance.
 The existing project polling retries setup until it succeeds. Other projects
 and runners remain eligible.
 
-Use workspace hooks for worktree or attempt preparation. Move project tool
-installation from `hooks.after_create`, `hooks.before_run`, or Sprite pool
-customer `bootstrap` into this script. Pool `bootstrap` is reserved for
-prerequisites that cannot live in a readable repository file, such as fetching
-credentials through a customer's secret service or obtaining the checkout.
+Workspace hooks (`hooks.after_create`, `hooks.before_run`) cover worktree or
+attempt preparation; `hooks.runner_setup` covers project tool installation.
+Sprite pool customer `bootstrap` covers prerequisites that cannot live in a
+readable repository file, such as fetching credentials through a customer's
+secret service or obtaining the checkout.
 
-### Intake, retrospectives, routines, and admission
+### Retired local-board configuration
 
-`intake.sources`, `retro`, `routines`, and `backlog_admission` are scheduled
-features of repository trackers. `tracker.kind: hub_native` rejects
-`intake.sources` and `routines`, `retro` requires a `github` or `memory`
-tracker, and `backlog_admission` needs candidate selectors that native trackers
-do not provide. Native cutover refuses a workflow that still enables any of
-them.
+The local `intake`, `retro`, `routines`, and `backlog_admission` blocks are
+retired. Workflow loading rejects them even when disabled. GitHub tracker
+status keys (`github_status_source`, `project_slug`, `status_field`,
+`status_label_prefix`, and `write_probe_issue`) and the local dashboard's
+`server.host`, `server.port`, and `server.board_snapshot_stale_after_seconds`
+are retired as well. Keep `server.kanban.allowed_transitions` for native
+workflow transitions.
+
+Runner `global.yaml` files reject `projects`, `dashboard_access`,
+`trust_loopback_peer_read`, and `global.local_intake_enabled`. Errors name the
+retired key. Register-generated runner configuration remains supported.
 
 ## Fleet staleness warnings
 
@@ -1009,11 +1031,9 @@ recent entry. Repeated entries can still raise a cumulative warning when their
 residency exceeds the lane threshold within
 `observability.staleness.lane_reentry_window_hours`. Human-gate lanes emit one
 reminder at their threshold, then remain quiet until the lane changes or
-`observability.staleness.human_gate_rearm_hours` passes. Sticky breaker and
-operator parks with a recorded cause are excluded from lane aging because the
-Blocked lane already carries their operator signal. A `park_cause_stale`
-warning replaces lane aging when recorded evidence is cleared or can no longer
-be verified.
+`observability.staleness.human_gate_rearm_hours` passes. Current typed human actions and operator stops remain visible in Blocked
+and do not generate stale-park warnings. Machine outcomes retry with capped
+backoff.
 
 Operator-facing warnings use the same authorization selector as board and
 runtime rows. Item warnings outside that selector are excluded before they are
@@ -1076,22 +1096,22 @@ codex:
   deliverable_elicitation_allowlist:
     - server: codex_apps
       tool: github.create_pull_request
-      repository: digitaldrywood/detent
+      repository: example-org/example-project
     - server: codex_apps
       tool: github.update_pull_request
-      repository: digitaldrywood/detent
+      repository: example-org/example-project
     - server: codex_apps
       tool: github.add_comment_to_issue
-      repository: digitaldrywood/detent
+      repository: example-org/example-project
     - server: codex_apps
       tool: github.update_issue_comment
-      repository: digitaldrywood/detent
+      repository: example-org/example-project
     - server: codex_apps
       tool: github.update_issue
-      repository: digitaldrywood/detent
+      repository: example-org/example-project
     - server: codex_apps
       tool: github.create_issue
-      repository: digitaldrywood/detent
+      repository: example-org/example-project
 ```
 
 The allowlist is a narrow exception to `codex.approval_policy`, not a broader
@@ -1156,8 +1176,25 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 
 `gate.security_audit.enabled` defaults to `true` for every tracker. The audit
 reviews each immutable base/head before merge. P1/P2 findings send the change to
-Rework; non-blocking findings remain recorded on the Change or pull request.
+Rework when confirmed; non-blocking findings remain recorded on the Change or
+pull request. A potentially P1/P2 lead that cannot be established from the
+supplied evidence has certainty `undetermined`, no severity, and an explicit
+unresolved fact. The same stage verifies it once using the effective model
+selection's complex model in a fresh session, with all supplied evidence and
+the original deadline and capacity reservation. Confirmed findings go to Rework;
+disproved leads remain recorded as rejected with their reasoning. If verification
+still cannot decide, native completion uses the existing Blocked `human_action`
+park, naming the lead, both verdicts and the unresolved fact. Both audit verdicts
+are retained on the Change. Prior unresolved findings remain blocking when their
+context is absent; their unresolved severity cannot change.
 Backend and runner failures are instance failures and do not become findings.
+
+For `tracker.kind: hub_native`, audits run for both plain git delivery
+(`deliverable.github_pull_request: false`, the default) and GitHub pull request
+delivery (`deliverable.github_pull_request: true`). Migrating to the native
+tracker requires no audit opt-in: keep the default or explicitly set
+`gate.security_audit.enabled: true` in the approved project policy. GitHub pull
+request delivery is not required for the audit.
 
 The effective model selection's `stages.security_audit` selects the backend,
 model and effort. Codex and Claude use their ordinary authentication, including

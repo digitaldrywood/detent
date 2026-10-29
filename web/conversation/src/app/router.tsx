@@ -1,8 +1,8 @@
 import { resolveReadable, redirectLegacyIssue, redirectLegacyProject } from "./work/readableRoutes.ts";
 // Routes.
 //
-// The hub serves the application shell for every non-API path
-// (decisions.md §12, "Serving"). The router's basepath is the hub's base path
+// The hub serves the application shell for every non-API path.
+// The router's basepath is the hub's base path
 // (`/` at the root of an origin, `/organizations/ORG` behind the shared Cloud
 // entry), and every path below is absolute within it. Chat lives under
 // `/chat`, Work under `/work`, and `routes.account.tsx` adds the account,
@@ -25,6 +25,7 @@ import { accountRoutes } from "./routes.account.tsx";
 import { SupportRoute } from "./account/Support.tsx";
 import { routerBasePath, withoutBasePath } from "../runtime/basePath.ts";
 import { plainSearchOptions } from "./lib/searchParams.ts";
+import { lastAccountBootstrap } from "../runtime/bootstrap.ts";
 
 // --- Design system (dev builds only) ----------------------------------------
 //
@@ -75,15 +76,27 @@ const ReadableProjectBoard = lazyRouteComponent(() => import("./work/WorkRoutes.
 const ChangesPage = lazyRouteComponent(() => import("./work/ChangesPage.tsx"), "ChangesPage");
 const IssuePage = lazyRouteComponent(() => import("./work/IssuePage.tsx"), "IssuePage");
 const ChangeRequestPage = lazyRouteComponent(() => import("./work/ChangeRequestPage.tsx"), "ChangeRequestPage");
+const MyIssues = lazyRouteComponent(() => import("./reporter/MyIssues.tsx"), "MyIssues");
+const ConnectAI = lazyRouteComponent(() => import("./reporter/ConnectAI.tsx"), "ConnectAI");
+const ReporterLanding = lazyRouteComponent(() => import("./reporter/ReporterShell.tsx"), "ReporterLanding");
+const reporterRoutes = [
+  createRoute({ getParentRoute: () => rootRoute, path: "/my-issues", component: MyIssues, beforeLoad: requireReporter }),
+  createRoute({ getParentRoute: () => rootRoute, path: "/connect-ai", component: ConnectAI, beforeLoad: requireReporter }),
+  createRoute({ getParentRoute: () => rootRoute, path: "/reporter", component: ReporterLanding, beforeLoad: requireReporter }),
+];
 
-// `/` is not a screen of its own: Work is the application's home (§12, "the
+function requireReporter() {
+  if (lastAccountBootstrap()?.actor.role !== "reporter") throw redirect({ to: "/work", replace: true });
+}
+
+// `/` is not a screen of its own: Work is the application's home ("the
 // hub redirects a successful sign-in to /work"), so the root sends the reader
 // there rather than rendering a second, emptier front door.
 const homeRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/",
   beforeLoad: () => {
-    throw redirect({ to: "/work" });
+    throw redirect({ to: lastAccountBootstrap()?.actor.role === "reporter" ? "/reporter" : "/work" });
   },
 });
 
@@ -102,7 +115,7 @@ const conversationRoute = createRoute({
 });
 
 // `/chat/issues/:workItem` was the linked conversation; the issue page is the
-// destination now (decisions.md §19.4), so the old path is a redirect rather
+// destination now, so the old path is a redirect rather
 // than a second view of the same thing. It is a route-level redirect because
 // the work item id is in the path: nothing has to be read to resolve it.
 const issueRoute = createRoute({
@@ -123,7 +136,7 @@ const projectRoute = createRoute({
   component: ProjectNewChat,
 });
 
-// --- Work (design inventory A.1, A.2) ---------------------------------------
+// --- Work ------------------------------------------------------------------
 //
 // `/work` is the all-projects board, `/work/p/:project` one project's, and
 // `/work/i/:workItem` one issue. The view, the filters, the sort and the lane
@@ -137,6 +150,15 @@ const workRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/work",
   component: AllProjectsWorkBoard,
+});
+
+const workViewsRoute = createRoute({
+  getParentRoute: () => rootRoute, path: "/work/views",
+  component: lazyRouteComponent(() => import("./work/SavedViews.tsx"), "ViewsPage"),
+});
+const workSavedViewRoute = createRoute({
+  getParentRoute: () => rootRoute, path: "/work/views/$viewId",
+  component: lazyRouteComponent(() => import("./work/SavedViews.tsx"), "SavedViewPage"),
 });
 
 const workChangesRoute = createRoute({
@@ -172,7 +194,7 @@ const workChangeRoute = createRoute({
 //
 // `/support` is the one screen a Detent staff account reaches before it has
 // any organization access at all, so it renders without the bootstrap; the
-// entry point mounts it directly when the bootstrap is refused (§12).
+// entry point mounts it directly when the bootstrap is refused.
 
 const supportRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -191,6 +213,7 @@ const readableIssueRoute = createRoute({ getParentRoute: () => rootRoute, path: 
 const readableChangeRoute = createRoute({ getParentRoute: () => rootRoute, path: "/$projectSlug/issues/$number/changes/$changeId", component: ChangeRequestPage, beforeLoad: ({ params }) => resolveReadable(params.projectSlug, params.number) });
 
 const routeTree = rootRoute.addChildren([
+  ...reporterRoutes,
   readableProjectRoute, readableIssueRoute, readableChangeRoute,
   homeRoute,
   newChatRoute,
@@ -198,6 +221,8 @@ const routeTree = rootRoute.addChildren([
   issueRoute,
   projectRoute,
   workRoute,
+  workViewsRoute,
+  workSavedViewRoute,
   workChangesRoute,
   workProjectRoute,
   workItemRoute,

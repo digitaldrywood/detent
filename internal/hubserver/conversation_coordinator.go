@@ -103,7 +103,7 @@ Sprites onboarding:
 1. Scope: default to All projects, including future projects. The Sprite pool belongs to the organization; repository checkout, runner_setup hooks and policy approval stay per project. For a runner restricted to selected projects, guide manual enrollment with its project scope instead of creating a per-project pool. Skip this question when the AI assisted intake already says All projects.
 2. Token setup: read token presence rather than asking whether a Sprites organization token is set. If absent and existing project tokens should be reused, offer promote_sprites_token and wait for explicit admin approval; it preserves the project overrides. Otherwise use set_sprites_token to link the secure connector and Sprites account page, then wait for the user to save it before continuing. Explain how to create a Sprites organization token for a dedicated Fly organization with billing and a spend alert. Never request, repeat or print tokens or provider API keys in chat; the user sets the write-only token on the connector page. Read get_sprite_pool again after they save it. A rejected token needs replacement there; a billing failure needs billing enabled in the Sprites account. If already valid, skip token setup.
 3. How many runners? Ask for floor and ceiling together, default 1/1 for a first runner; for an existing pool, offer its current bounds. Explain that the floor is the minimum retained runner capacity and can incur Fly usage even without queued work, while the ceiling caps growth and potential concurrent Fly usage; provider subscriptions and usage are separate. Do not invent prices. Accept "2 and 2" as min_runners 2 and max_runners 2. If these were already supplied, explain their cost implications without asking again. For a reply such as "no extra steps, 2 and 2", use min_runners 2, max_runners 2 and omit bootstrap.
-4. Access: explain that each Fly Sprite is a dedicated VM and new Sprite runners use Full access (native-trusted), which lets agents use files, credentials and network inside the VM. Do not offer Sandbox for a pool. Include isolation_tier native-trusted for a new pool. An individual Sprite runner can switch to Sandbox through set_runner_tier only after get_runners reports sandbox in its backend_isolation. Existing sandbox pools keep their saved tier when omitted; explain isolation_tier_unavailable_reason and ask before proposing a switch to Full access.
+4. Access: explain that each Fly Sprite is a dedicated VM and new Sprite runners use Full access (native-trusted), which lets agents use files, credentials and network inside the VM. Do not offer Sandbox for a pool. Include isolation_tier native-trusted for a new pool. An individual Sprite runner can request Sandbox through set_runner_tier; it cannot run Sandbox work until its isolation probe reports sandbox support for every configured backend. Existing sandbox pools keep their saved tier when omitted; explain isolation_tier_unavailable_reason and ask before proposing a switch to Full access.
 5. Once scope, token, bounds and access are resolved, call set_sprite_pool exactly once for a single preview of the agreed settings, including isolation_tier and wait for the client's approval/submission result. Omit bootstrap to preserve the saved bootstrap. Repository dependencies come from hooks.runner_setup after checkout; never ask the user to write setup steps or read their README. Optional extra bootstrap is accepted only when volunteered. No tokens, provider API keys or private credentials in chat or bootstrap; use customer-owned login/setup inside the Sprite. Never treat prose agreement as execution or generate another preview unless the user changes the settings or the tool reports a stale/invalid proposal.
 - When get_sprite_pool reports runner_setup_declared false, a connected runner has observed a checkout without hooks.runner_setup. Use propose_issue to offer one Todo issue titled "derive runner setup from CI" for the user's confirmation. Check earlier conversation results and list_attention for existing setup work first and reuse it rather than duplicating it. The issue directs an agent on that runner to derive a repository setup script from the checkout's CI workflows, Makefile, lockfiles and toolchain files, declare hooks.runner_setup, and land a normal reviewed change. Do not ask the user for commands. A null declaration means unknown; do not infer a missing hook. This observation never blocks pool creation; pinned base tools support the first run.
 - Never show raw tool refusals. Explain the observed problem in plain language and give the next action to resolve it.
@@ -368,7 +368,7 @@ func (c *conversationTurnCoordinator) pass(conversationID string) (bool, error) 
 // coordinatorHandles reports whether the hub-side coordinator owns the
 // conversation's turns. Status is deliberately not consulted: a settled
 // conversation with a pending message is woken by the message itself, and
-// leaving its turn unanswered would strand the user (decisions section 14).
+// leaving its turn unanswered would strand the user.
 func coordinatorHandles(record conversationRecord) bool {
 	return record.WorkItemID == ""
 }
@@ -409,10 +409,13 @@ ORDER BY seq LIMIT ?`, conversationID, conversation.RoleUser, conversation.Messa
 	// The rows are drained before the follow-up query: the hub pool holds a
 	// single connection. References are resolved here because these records
 	// are updated and re-projected, and a message.updated event that dropped
-	// them would take them off the client's copy (decisions section 14).
+	// them would take them off the client's copy.
 	pointers := make([]*conversationMessageRecord, 0, len(messages))
 	for i := range messages {
 		pointers = append(pointers, &messages[i])
+	}
+	if err := c.service.store.resolveMessageContents(ctx, query, pointers); err != nil {
+		return nil, err
 	}
 	if err := resolveMessageReferences(ctx, query, pointers); err != nil {
 		return nil, err
@@ -428,6 +431,11 @@ ORDER BY seq LIMIT ?`, conversationID, conversation.RoleUser, conversation.Messa
 // record inside the transaction keeps revision checks exact even when the
 // API changed the conversation during the turn.
 func (c *conversationTurnCoordinator) write(ctx context.Context, conversationID string, fn func(ctx context.Context, tx *sql.Tx, record *conversationRecord, now time.Time) error) (resultErr error) {
+	var err error
+	ctx, err = c.service.store.prepareLegacyToolRevisions(ctx, conversationID)
+	if err != nil {
+		return err
+	}
 	now, err := c.service.server.database.currentTime()
 	if err != nil {
 		return err
@@ -548,7 +556,11 @@ func (c *conversationTurnCoordinator) runTurn(conversationID string) (bool, erro
 				return err
 			}
 			refusal = nil
-			if balance <= 0 {
+			included, err := d.includedAICredits(ctx, tx, record.OrganizationID, now)
+			if err != nil {
+				return err
+			}
+			if balance+included.remaining() <= 0 {
 				var owner bool
 				if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM hosted_members WHERE principal_id=? AND active=1 AND role='owner')", pending[len(pending)-1].Actor.PrincipalID).Scan(&owner); err != nil {
 					return err
@@ -625,7 +637,7 @@ func (c *conversationTurnCoordinator) runTurn(conversationID string) (bool, erro
 
 	// Files the user attached to the pending messages ride the turn: the
 	// hub-side coordinator reads them straight out of the store, where the
-	// runner-dispatched one downloads them (decisions section 17.1).
+	// runner-dispatched one downloads them.
 	attachments, runErr := c.coordinatorAttachments(turnCtx, state.users)
 	prompt := coordinatorPrompt(transcript, state.users)
 	if runErr == nil {
@@ -927,7 +939,7 @@ func appendCoordinatorData(prompt string, attachments []coordinatorAttachment) s
 
 // coordinatorAttachmentBlock renders the text attachments as one delimited
 // data block. The delimiters inside it are escaped so quoted content cannot
-// close its own fence (decisions sections 10.6 and 17.1).
+// close its own fence.
 func coordinatorAttachmentBlock(attachments []coordinatorAttachment) string {
 	text := make([]coordinatorAttachment, 0, len(attachments))
 	for _, attachment := range attachments {
@@ -1005,8 +1017,7 @@ func coordinatorPrompt(transcript, pending []conversationMessageRecord) string {
 }
 
 // escapeCoordinatorData neutralizes the delimiters that fence data blocks so
-// that quoted content cannot close its own block and read as instructions
-// (decisions section 10.6).
+// that quoted content cannot close its own block and read as instructions.
 func escapeCoordinatorData(value string) string {
 	return coordinatorDataDelimiters.Replace(value)
 }
@@ -1062,7 +1073,7 @@ func (s *coordinatorTurnState) observeThread(ctx context.Context, threadID strin
 		// The hub-side coordinator owns this thread, not a runner.
 		record.ProviderThreadRunnerID = ""
 		// It is still a coordinator thread, so a worker attempt is handed a
-		// transcript even if a runner ever reached it (decisions section 9.3).
+		// transcript even if a runner ever reached it.
 		record.ProviderThreadOrigin = conversation.ThreadOriginCoordinator
 		return s.coordinator.service.saveConversation(ctx, tx, record, now)
 	})
@@ -1153,6 +1164,12 @@ func (s *coordinatorTurnState) recordTool(ctx context.Context, update runner.Age
 	if err != nil {
 		return
 	}
+	prepared, err := s.coordinator.service.prepareConversationContents(ctx, s.conversationID, conversationMessageRecord{Role: conversation.RoleSystem, Kind: conversation.MessageTool, Text: summary, Data: data, Delivery: conversation.DeliveryCompleted})
+	if err != nil {
+		s.coordinator.logger.Warn("publish tool content", "error", err)
+		return
+	}
+	ctx = prepared
 	existing, known := s.toolMessages[update.ItemID]
 	err = s.coordinator.write(ctx, s.conversationID, func(ctx context.Context, tx *sql.Tx, record *conversationRecord, now time.Time) error {
 		if known && update.ItemID != "" {
@@ -1233,20 +1250,26 @@ func (s *coordinatorTurnState) finish(ctx context.Context, outcome conversation.
 		userDelivery = conversation.DeliverySaved
 		failure = nil
 	}
+
+	s.assistant.Delivery = outcome
+	s.assistant.ThreadID = s.threadID
+	if outcome == conversation.DeliveryFailed {
+		data, err := json.Marshal(map[string]string{"error": execution.Error})
+		if err != nil {
+			return err
+		}
+		s.assistant.Data = data
+	}
+	prepared, err := s.coordinator.service.prepareConversationContents(ctx, s.conversationID, s.assistant)
+	if err != nil {
+		return err
+	}
+	ctx = prepared
 	return s.coordinator.write(ctx, s.conversationID, func(ctx context.Context, tx *sql.Tx, record *conversationRecord, now time.Time) error {
 		if usage != nil {
 			if err := s.coordinator.service.server.database.recordConversationUsage(ctx, tx, *usage); err != nil {
 				return err
 			}
-		}
-		s.assistant.Delivery = outcome
-		s.assistant.ThreadID = s.threadID
-		if outcome == conversation.DeliveryFailed {
-			data, err := json.Marshal(map[string]string{"error": execution.Error})
-			if err != nil {
-				return err
-			}
-			s.assistant.Data = data
 		}
 		if err := s.coordinator.service.updateMessage(ctx, tx, s.assistant, now); err != nil {
 			return err
@@ -1254,8 +1277,7 @@ func (s *coordinatorTurnState) finish(ctx context.Context, outcome conversation.
 		for i := range s.users {
 			// setControlDelivery rather than updateMessage: the receipt must
 			// follow the message so the client can offer the retry command
-			// a failed or unknown turn leaves as the only way forward
-			// (decisions section 10.3).
+			// a failed or unknown turn leaves as the only way forward.
 			if err := s.coordinator.service.setControlDelivery(ctx, tx, &s.users[i], userDelivery, failure, now); err != nil {
 				return err
 			}

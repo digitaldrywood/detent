@@ -31,29 +31,24 @@ import (
 )
 
 const (
-	defaultPollInterval                        = 30 * time.Second
-	defaultRunningReconcileInterval            = 2 * time.Minute
-	defaultWorkspaceCleanupIdleTTL             = 24 * time.Hour
-	defaultWorkspaceCleanupSweep               = 10 * time.Minute
-	defaultGitHubGraphQLWarnRemaining          = 500
-	defaultGitHubGraphQLMinReserve             = 1000
-	defaultGitHubRESTMinReserve                = 1000
-	defaultMaxConcurrentAgents                 = 1
-	defaultMaxRetryBackoff                     = 5 * time.Minute
-	defaultOverloadRetryDelay                  = 45 * time.Second
-	defaultContinuationRetry                   = time.Second
-	defaultFailureRetryBaseDelay               = 10 * time.Second
-	defaultFailureBreakerSameClassLimit        = 5
-	defaultFailureBreakerWindow                = time.Hour
-	defaultFailureBreakerCooldown              = time.Hour
-	maxMergeWorkerRunnerFailures               = 3
-	mergeWorkerCurrentHeadCIWaitTimeout        = time.Hour
-	instantFailureThreshold                    = 5
-	instantFailureMaxDuration                  = 10 * time.Second
-	instantFailureBlockedReasonPrefix          = "instant fail circuit breaker: "
-	repeatedFailureThreshold                   = 5
-	repeatedFailureBlockedReasonPrefix         = "repeated failure circuit breaker: "
-	tokenCeilingBlockedReasonPrefix            = "token ceiling circuit breaker: "
+	defaultPollInterval                 = 30 * time.Second
+	defaultRunningReconcileInterval     = 2 * time.Minute
+	defaultWorkspaceCleanupIdleTTL      = 24 * time.Hour
+	defaultWorkspaceCleanupSweep        = 10 * time.Minute
+	defaultGitHubGraphQLWarnRemaining   = 500
+	defaultGitHubGraphQLMinReserve      = 1000
+	defaultGitHubRESTMinReserve         = 1000
+	defaultMaxConcurrentAgents          = 1
+	defaultMaxRetryBackoff              = 5 * time.Minute
+	defaultOverloadRetryDelay           = 45 * time.Second
+	defaultContinuationRetry            = time.Second
+	defaultFailureRetryBaseDelay        = 10 * time.Second
+	defaultFailureBreakerSameClassLimit = 5
+	defaultFailureBreakerWindow         = time.Hour
+	defaultFailureBreakerCooldown       = time.Hour
+	maxMergeWorkerRunnerFailures        = 3
+	mergeWorkerCurrentHeadCIWaitTimeout = time.Hour
+
 	deliverableConfigurationFailureCause       = "deliverable_configuration_failure"
 	budgetProjectionCeilingFailureCause        = "budget_projection_ceiling"
 	continuationDispatchBackoff                = 100 * time.Millisecond
@@ -100,13 +95,7 @@ type Config struct {
 	StopRunPriorityNames          map[int]string
 	MaxConcurrentAgentsPerHost    int
 	MaxRetryBackoff               time.Duration
-	Recovery                      workflowconfig.Recovery
 	OverloadRetryDelay            time.Duration
-	NoProgressTokenLimit          int64
-	NoProgressSpendLimitUSD       float64
-	LifetimeSessionLimit          int64
-	LifetimeTokenLimit            int64
-	LifetimeLimitOverrideLabel    string
 	BillingMode                   string
 	RateWindowPacing              workflowconfig.RateWindowPacing
 	FailureBreaker                FailureBreakerConfig
@@ -183,6 +172,7 @@ type ClaimingConfig struct {
 }
 
 type SchedulingRequest struct {
+	BeginDiscovery          func(context.Context) (context.Context, context.CancelFunc)
 	LandingCapacity         int
 	NativeLandingBatch      bool
 	DispatchPriorityByState []string
@@ -232,8 +222,6 @@ type Dependencies struct {
 	LifecycleExporter    efficiency.LifecycleExporter
 	WorkAttempts         store.WorkAttemptStore
 	MergeRequiredChecks  store.MergeRequiredCheckStore
-	ProgressSpend        store.ProgressSpendStore
-	LifetimeUsage        LifetimeUsageStore
 	AgentResume          store.AgentResumeStore
 	OrphanSessions       store.OrphanSessionStore
 	ValidatorMemo        store.ValidatorMemoStore
@@ -248,7 +236,6 @@ type Dependencies struct {
 	ReadCPUPressure      func(context.Context) (hostpressure.Sample, error)
 	Now                  func() time.Time
 	Logger               *slog.Logger
-	Retrospector         Retrospector
 	WorkerProcesses      WorkerProcessStore
 	ReapWorkerProcess    WorkerProcessReapFunc
 	WorkerReapGrace      time.Duration
@@ -261,10 +248,6 @@ type WorkerProcessStore interface {
 }
 
 type WorkerProcessReapFunc func(context.Context, procgroup.Identity, time.Duration) (procgroup.TerminationOutcome, error)
-
-type Retrospector interface {
-	Trigger(string)
-}
 
 type runDurationLimitFactory func(context.Context, time.Duration, error) (context.Context, context.CancelFunc)
 
@@ -290,26 +273,25 @@ type RuntimeUpdate struct {
 }
 
 type Orchestrator struct {
-	nativeLandingBatch      *nativeLandingDispatchBatch
-	cfg                     Config
-	connector               connector.Connector
-	scheduling              SchedulingSource
-	workflowMetrics         WorkflowMetricsRecorder
-	laneLedger              store.LaneLedgerStore
-	laneCoordination        coordination.Store
-	laneWriteMu             sync.Mutex
-	laneWrites              map[string]coordination.LaneWrite
-	laneWriteResults        map[string]string
-	laneWriteOrigin         string
-	laneWriteAction         string
-	laneObservations        map[string]store.LaneObservation
-	efficiency              efficiency.Recorder
-	lifecycleExporter       efficiency.LifecycleExporter
-	workAttempts            store.WorkAttemptStore
-	mergeRequiredChecks     store.MergeRequiredCheckStore
-	operatorStops           store.OperatorStopStore
-	progressSpend           store.ProgressSpendStore
-	lifetimeUsage           LifetimeUsageStore
+	nativeLandingBatch  *nativeLandingDispatchBatch
+	cfg                 Config
+	connector           connector.Connector
+	scheduling          SchedulingSource
+	workflowMetrics     WorkflowMetricsRecorder
+	laneLedger          store.LaneLedgerStore
+	laneCoordination    coordination.Store
+	laneWriteMu         sync.Mutex
+	laneWrites          map[string]coordination.LaneWrite
+	laneWriteResults    map[string]string
+	laneWriteOrigin     string
+	laneWriteAction     string
+	laneObservations    map[string]store.LaneObservation
+	efficiency          efficiency.Recorder
+	lifecycleExporter   efficiency.LifecycleExporter
+	workAttempts        store.WorkAttemptStore
+	mergeRequiredChecks store.MergeRequiredCheckStore
+	operatorStops       store.OperatorStopStore
+
 	agentResume             store.AgentResumeStore
 	orphanSessions          store.OrphanSessionStore
 	supervisor              *runpkg.Supervisor
@@ -322,6 +304,7 @@ type Orchestrator struct {
 	globalDispatchGate      scheduler.ProjectDispatchGate
 	globalDispatchReady     chan struct{}
 	globalDispatchPending   map[string]pendingGlobalDispatch
+	standaloneHostPressure  scheduler.HostPressure
 	readMemoryPressure      func(context.Context) (hostpressure.Sample, error)
 	readIOPressure          func(context.Context) (hostpressure.Sample, error)
 	readCPUPressure         func(context.Context) (hostpressure.Sample, error)
@@ -352,7 +335,6 @@ type Orchestrator struct {
 	githubRESTBudgetProber  runpkg.GitHubRESTBudgetProber
 	githubRESTBudgetProbes  map[string]time.Time
 	now                     func() time.Time
-	retrospector            Retrospector
 	workerProcesses         WorkerProcessStore
 	reapWorkerProcess       WorkerProcessReapFunc
 	workerReapGrace         time.Duration
@@ -369,7 +351,7 @@ type Orchestrator struct {
 	capacityClearMu         sync.Mutex
 	dispatchStarts          int
 	dispatchStartsDone      chan struct{}
-	dispatchClosed          atomic.Bool
+	dispatchDone            chan struct{}
 	localIntakeDisabled     atomic.Bool
 	projectID               string
 	dispatchGateSampleMu    sync.Mutex
@@ -412,6 +394,7 @@ type Orchestrator struct {
 	workspaceCleanupCancel    context.CancelFunc
 	workspaceCleanupWG        sync.WaitGroup
 	workspaceCleanupRemaining *int
+	workspaceCleanupLocal     bool
 }
 
 type runtimeState struct {
@@ -626,23 +609,6 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 			laneLedger = ledger
 		}
 	}
-	progressSpend := deps.ProgressSpend
-	if progressSpend == nil {
-		if candidate, ok := deps.WorkflowMetrics.(store.ProgressSpendStore); ok {
-			progressSpend = candidate
-		}
-	}
-	lifetimeUsage := deps.LifetimeUsage
-	if lifetimeUsage == nil {
-		if candidate, ok := deps.WorkflowMetrics.(LifetimeUsageStore); ok {
-			lifetimeUsage = candidate
-		}
-	}
-	if lifetimeUsage == nil {
-		if candidate, ok := deps.WorkAttempts.(LifetimeUsageStore); ok {
-			lifetimeUsage = candidate
-		}
-	}
 	mergeRequiredChecks := deps.MergeRequiredChecks
 	if mergeRequiredChecks == nil {
 		if candidate, ok := deps.WorkAttempts.(store.MergeRequiredCheckStore); ok {
@@ -712,19 +678,18 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 	}
 
 	orchestrator := &Orchestrator{
-		cfg:                     cfg,
-		connector:               deps.Connector,
-		scheduling:              deps.Scheduling,
-		workflowMetrics:         deps.WorkflowMetrics,
-		laneLedger:              laneLedger,
-		laneCoordination:        deps.LaneCoordination,
-		efficiency:              deps.Efficiency,
-		lifecycleExporter:       deps.LifecycleExporter,
-		workAttempts:            deps.WorkAttempts,
-		mergeRequiredChecks:     mergeRequiredChecks,
-		operatorStops:           operatorStops,
-		progressSpend:           progressSpend,
-		lifetimeUsage:           lifetimeUsage,
+		cfg:                 cfg,
+		connector:           deps.Connector,
+		scheduling:          deps.Scheduling,
+		workflowMetrics:     deps.WorkflowMetrics,
+		laneLedger:          laneLedger,
+		laneCoordination:    deps.LaneCoordination,
+		efficiency:          deps.Efficiency,
+		lifecycleExporter:   deps.LifecycleExporter,
+		workAttempts:        deps.WorkAttempts,
+		mergeRequiredChecks: mergeRequiredChecks,
+		operatorStops:       operatorStops,
+
 		agentResume:             agentResume,
 		orphanSessions:          orphanSessions,
 		supervisor:              supervisor,
@@ -746,7 +711,6 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		stalenessWarningStore:   deps.StalenessWarnings,
 		activity:                deps.Activity,
 		release:                 deps.Release,
-		retrospector:            deps.Retrospector,
 		workerProcesses:         workerProcesses,
 		reapWorkerProcess:       reapWorkerProcess,
 		workerReapGrace:         workerReapGrace,
@@ -1290,6 +1254,7 @@ func (o *Orchestrator) State(ctx context.Context) (State, error) {
 }
 
 func (o *Orchestrator) publishedState() State {
+	runtime := o.latestRuntimeState.Load()
 	completion := o.completionState.Load()
 	var state State
 	if completion != nil {
@@ -1298,7 +1263,7 @@ func (o *Orchestrator) publishedState() State {
 		state = o.latestState.Load().clone()
 	}
 	state.LocalIntake.Enabled = o.LocalIntakeEnabled()
-	if runtime := o.latestRuntimeState.Load(); runtime != nil {
+	if runtime != nil {
 		state.Running = cloneRunning(runtime.Running)
 		state.WorkAttempts = cloneTelemetryWorkAttempts(runtime.WorkAttempts)
 		if completion == nil {
@@ -1466,14 +1431,45 @@ func (o *Orchestrator) BeginDrain() {
 	}
 
 	o.dispatchLifecycleMu.Lock()
-	if o.dispatchClosed.Swap(true) {
+	done := o.dispatchDoneLocked()
+	select {
+	case <-done:
 		o.dispatchLifecycleMu.Unlock()
 		return
+	default:
+		close(done)
 	}
 	o.dispatchLifecycleMu.Unlock()
 	if o.globalDispatchGate != nil {
 		o.globalDispatchGate.MarkIdle(scheduler.ProjectCandidate{ID: o.projectID})
 	}
+}
+
+func (o *Orchestrator) dispatchDoneLocked() chan struct{} {
+	if o.dispatchDone == nil {
+		o.dispatchDone = make(chan struct{})
+	}
+	return o.dispatchDone
+}
+
+func (o *Orchestrator) beginDispatchDiscovery(ctx context.Context) (context.Context, context.CancelFunc) {
+	o.dispatchLifecycleMu.Lock()
+	done := o.dispatchDoneLocked()
+	o.dispatchLifecycleMu.Unlock()
+	discoveryCtx, cancel := context.WithCancel(ctx)
+	select {
+	case <-done:
+		cancel()
+	default:
+		go func() {
+			select {
+			case <-done:
+				cancel()
+			case <-discoveryCtx.Done():
+			}
+		}()
+	}
+	return discoveryCtx, cancel
 }
 
 func (o *Orchestrator) WaitForDispatchQuiesced(ctx context.Context) error {
@@ -1502,8 +1498,10 @@ func (o *Orchestrator) WaitForDispatchQuiesced(ctx context.Context) error {
 func (o *Orchestrator) beginDispatchStart() bool {
 	o.dispatchLifecycleMu.Lock()
 	defer o.dispatchLifecycleMu.Unlock()
-	if o.dispatchQuiesced() {
+	select {
+	case <-o.dispatchDone:
 		return false
+	default:
 	}
 	if o.dispatchStarts == 0 {
 		o.dispatchStartsDone = make(chan struct{})
@@ -1523,7 +1521,17 @@ func (o *Orchestrator) finishDispatchStart() {
 }
 
 func (o *Orchestrator) dispatchQuiesced() bool {
-	return o == nil || o.dispatchClosed.Load()
+	if o == nil {
+		return true
+	}
+	o.dispatchLifecycleMu.Lock()
+	defer o.dispatchLifecycleMu.Unlock()
+	select {
+	case <-o.dispatchDone:
+		return true
+	default:
+		return false
+	}
 }
 
 func (o *Orchestrator) applyRuntimeUpdate(state *State, update RuntimeUpdate, ticker *time.Ticker) {
@@ -1565,7 +1573,9 @@ func (o *Orchestrator) applyRuntimeUpdate(state *State, update RuntimeUpdate, ti
 	state.RateWindowPacing = cfg.RateWindowPacing
 	state.StrandedActiveThreshold = cfg.StrandedActiveThreshold
 	state.DispatchStallThreshold = cfg.DispatchStallThreshold
-	refreshCachedHostPressure(state, previousCfg, cfg, updatedAt)
+	o.updateHostPressure(state, func(shared *State) {
+		refreshCachedHostPressure(shared, previousCfg, cfg, updatedAt)
+	})
 	state.AutoPromoteQuietDuration = cfg.AutoPromote.QuietDuration
 	state.AutoPromote = cloneAutoPromoteConfig(cfg.AutoPromote)
 	state.ActiveStates = append([]string(nil), cfg.ActiveStates...)
@@ -1667,6 +1677,5 @@ func (o *Orchestrator) cleanupDrainedRun(ctx context.Context, state *State, issu
 	delete(state.Retry, issueID)
 	delete(state.BudgetRefusals, issueID)
 	delete(state.PriorAttempts, issueID)
-	delete(state.InstantFailures, issueID)
-	delete(state.RepeatedFailures, issueID)
+
 }

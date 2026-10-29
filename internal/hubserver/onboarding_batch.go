@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
-	"time"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/onboarding"
@@ -35,9 +34,9 @@ func (s *Service) projectOnboardingBatch(ctx context.Context, organization track
 		return nil, err
 	}
 	defer tx.Rollback()
-	rows, err := tx.QueryContext(ctx, `SELECT p.id, coalesce(o.progress_json,'{}'),
+	rows, err := tx.QueryContext(ctx, `SELECT p.id, coalesce(nullif(p.checkout_repository,''),r.github_owner||'/'||r.github_name,''), coalesce(o.progress_json,'{}'),
  coalesce((SELECT json_group_array(json(binding_json)) FROM artifact_services a WHERE a.organization_id=p.organization_id AND a.project_id=p.id),'[]')
- FROM projects p LEFT JOIN project_onboarding o ON o.organization_id=p.organization_id AND o.project_id=p.id
+ FROM projects p LEFT JOIN repositories r ON r.id=p.repository_id LEFT JOIN project_onboarding o ON o.organization_id=p.organization_id AND o.project_id=p.id
  WHERE p.organization_id=? AND p.deleted_at IS NULL AND p.id IN (SELECT value FROM json_each(?))`, organization, string(encoded))
 	if err != nil {
 		return nil, err
@@ -47,7 +46,7 @@ func (s *Service) projectOnboardingBatch(ctx context.Context, organization track
 		var id tracker.ProjectID
 		var progress, artifacts string
 		value := onboarding.Project{Runners: []runnerauth.Eligibility{}, Artifacts: []artifact.Binding{}}
-		if err := rows.Scan(&id, &progress, &artifacts); err != nil {
+		if err := rows.Scan(&id, &value.Repository, &progress, &artifacts); err != nil {
 			return nil, errors.Join(err, rows.Close())
 		}
 		if err := json.Unmarshal([]byte(progress), &value.Progress); err != nil {
@@ -78,7 +77,7 @@ func (s *Service) projectOnboardingBatch(ctx context.Context, organization track
 			return nil, errors.Join(err, rows.Close())
 		}
 		if current {
-			approval, err = decodeProjectPolicy(raw, approval)
+			approval, err = decodeProjectPolicy(ctx, string(organization)+"/"+string(id), policyID, raw, approval)
 			if err != nil {
 				return nil, errors.Join(err, rows.Close())
 			}
@@ -120,17 +119,12 @@ func (s *Service) projectOnboardingBatch(ctx context.Context, organization track
 	}
 	query := strings.Replace(runnerIdentitySelect, "\nFROM runner_identities", `, r.local_checks_json
  FROM runner_identities`, 1)
-	rows, err = tx.QueryContext(ctx, query+" WHERE r.organization_id=? AND r.removed_at IS NULL ORDER BY r.display_name,r.id", organization)
+	identities, err := readRunnerIdentityBatch(ctx, tx, query+" WHERE r.organization_id=? AND r.removed_at IS NULL ORDER BY r.display_name,r.id", []any{organization}, now, true)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var checksRaw string
-		runner, reports, _, err := scanRunnerIdentity(rows, func() time.Time { return now }, &checksRaw)
-		if err != nil {
-			return nil, errors.Join(err, rows.Close())
-		}
+	for _, item := range identities {
+		runner, reports, checksRaw := item.runner, item.reports, item.checks
 		runner.HostUsed = machineUsed[runner.MachineID]
 		runner.Used = runnerUsed[runner.RunnerID]
 		for _, report := range reports {
@@ -147,9 +141,6 @@ func (s *Service) projectOnboardingBatch(ctx context.Context, organization track
 			value.Runners = append(value.Runners, runnerauth.Eligibility{Runner: runner, Exclusions: runner.Exclusions(id, approvals[id].Policy.Requirements, false), LocalChecks: checks[id]})
 			result[id] = value
 		}
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err

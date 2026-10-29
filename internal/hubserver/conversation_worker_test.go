@@ -1,11 +1,13 @@
 package hubserver
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -15,9 +17,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/labstack/echo/v4"
+
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -39,7 +45,7 @@ type conversationWorkerFixture struct {
 	record    conversationRecord
 }
 
-func newConversationWorkerFixture(t *testing.T) *conversationWorkerFixture {
+func newConversationWorkerFixture(t *testing.T, contents ...attachment.ArchiveContentStore) *conversationWorkerFixture {
 	t.Helper()
 	fixture := &conversationWorkerFixture{now: time.Now().UTC().Truncate(time.Second)}
 	config := Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), Conversation: &ConversationConfig{Enabled: true, QuestionTimeout: time.Hour}, now: func() time.Time {
@@ -47,6 +53,9 @@ func newConversationWorkerFixture(t *testing.T) *conversationWorkerFixture {
 		defer fixture.mu.Unlock()
 		return fixture.now
 	}}
+	if len(contents) > 0 {
+		config.Conversation.ArchiveContents = contents[0]
+	}
 	f := newNativeFixture(t, openTestService(t, config), "", "conversation-worker")
 	fixture.nativeFixture = f
 	fixture.chat = f.service.conversations
@@ -160,6 +169,21 @@ func (f *conversationWorkerFixture) controls(t *testing.T, after int64, wait int
 	response := httptest.NewRecorder()
 	f.service.Handler().ServeHTTP(response, request)
 	return response
+}
+
+// awaitControlSubscribers waits until want broker subscriptions watch the
+// conversation, so a test acts only once a long poll is actually waiting.
+func (f *conversationWorkerFixture) awaitControlSubscribers(t *testing.T, want int) {
+	t.Helper()
+	testenv.WaitUntil(t, t.Context(), func() error {
+		f.chat.broker.mu.Lock()
+		got := len(f.chat.broker.subscribers[f.record.ID])
+		f.chat.broker.mu.Unlock()
+		if got >= want {
+			return nil
+		}
+		return fmt.Errorf("control poll did not subscribe: subscribers=%d, want %d", got, want)
+	})
 }
 
 // queue seeds an accepted user control the way the operator API would:
@@ -311,14 +335,23 @@ func requireConversationErrorCode(t *testing.T, response *httptest.ResponseRecor
 
 func TestConversationWorkerBind(t *testing.T) {
 	t.Parallel()
-	for _, confirmed := range []bool{false, true} {
-		t.Run("ordinary Continue lease loss confirmed="+strconv.FormatBool(confirmed), func(t *testing.T) {
+	for _, test := range []struct{ confirmed, legacy bool }{{false, false}, {true, false}, {false, true}, {true, true}} {
+		confirmed := test.confirmed
+		t.Run("ordinary Continue lease loss confirmed="+strconv.FormatBool(confirmed)+" legacy="+strconv.FormatBool(test.legacy), func(t *testing.T) {
 			f := newConversationWorkerFixture(t)
+			bind := func() *httptest.ResponseRecorder {
+				if test.legacy {
+					if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE conversation_events SET query_metadata_version=0,message_role=NULL,message_kind=NULL,attempt_id=NULL,execution_status=NULL WHERE conversation_id=?`, f.record.ID); err != nil {
+						t.Fatal(err)
+					}
+				}
+				return f.bind(t, nil)
+			}
 			if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM conversations WHERE id = ?", f.record.ID); err != nil {
 				t.Fatal(err)
 			}
 			var bound workerBindResponse
-			response := f.bind(t, nil)
+			response := bind()
 			requireNativeStatus(t, response, http.StatusOK)
 			decodeHubResponse(t, response, &bound)
 			f.record.ID = bound.ConversationID
@@ -350,7 +383,7 @@ func TestConversationWorkerBind(t *testing.T) {
 			message := f.messages(t)[receipt.MessageID]
 			requireConversationDelivery(t, f, message, command.Key, conversation.DeliverySaved)
 			f.claim(t)
-			response = f.bind(t, nil)
+			response = bind()
 			requireNativeStatus(t, response, http.StatusOK)
 			decodeHubResponse(t, response, &bound)
 			if !bound.Continuation || len(bound.Pending) != 1 || bound.Pending[0].MessageID != message.ID {
@@ -375,7 +408,7 @@ func TestConversationWorkerBind(t *testing.T) {
 				t.Fatalf("Continue intent lost prior attempt: %s", got)
 			}
 			f.claim(t)
-			response = f.bind(t, nil)
+			response = bind()
 			requireNativeStatus(t, response, http.StatusOK)
 			decodeHubResponse(t, response, &bound)
 			if !bound.Continuation || len(bound.Pending) != 0 {
@@ -389,7 +422,7 @@ func TestConversationWorkerBind(t *testing.T) {
 				t.Fatalf("second lease loss settlement = %+v", record.Execution)
 			}
 			f.claim(t)
-			response = f.bind(t, nil)
+			response = bind()
 			requireNativeStatus(t, response, http.StatusOK)
 			decodeHubResponse(t, response, &bound)
 			if !bound.Continuation || len(bound.Pending) != 0 {
@@ -403,7 +436,7 @@ func TestConversationWorkerBind(t *testing.T) {
 			f.release(t)
 			for range 2 {
 				f.claim(t)
-				response = f.bind(t, nil)
+				response = bind()
 				requireNativeStatus(t, response, http.StatusOK)
 				decodeHubResponse(t, response, &bound)
 				if bound.Continuation || len(bound.Pending) != 0 {
@@ -589,7 +622,6 @@ func TestConversationWorkerControlsLongPoll(t *testing.T) {
 	})
 
 	t.Run("waits for a queued control", func(t *testing.T) {
-		started := time.Now()
 		done := make(chan workerControlsResponse, 1)
 		go func() {
 			response := f.controls(t, first.Seq, 10)
@@ -597,7 +629,8 @@ func TestConversationWorkerControlsLongPoll(t *testing.T) {
 			_ = json.Unmarshal(response.Body.Bytes(), &page)
 			done <- page
 		}()
-		time.Sleep(150 * time.Millisecond)
+		f.awaitControlSubscribers(t, 1)
+		started := time.Now()
 		second := f.queue(t, conversation.MessageInterrupt, "stop-1", "", nil)
 		select {
 		case page := <-done:
@@ -607,7 +640,7 @@ func TestConversationWorkerControlsLongPoll(t *testing.T) {
 			if time.Since(started) > 5*time.Second {
 				t.Fatal("poll did not return promptly after the control committed")
 			}
-		case <-time.After(8 * time.Second):
+		case <-testenv.WaitContext(t, t.Context()).Done():
 			t.Fatal("long poll did not return after a control was queued")
 		}
 	})
@@ -646,8 +679,7 @@ func TestConversationWorkerControlsLongPoll(t *testing.T) {
 		pollResult := make(chan *httptest.ResponseRecorder, 1)
 		go func() { pollResult <- f.controls(t, cursor, 30) }()
 
-		waitContext, cancelWait := context.WithTimeout(t.Context(), 5*time.Second)
-		defer cancelWait()
+		waitContext := testenv.WaitContext(t, t.Context())
 		ticker := time.NewTicker(time.Millisecond)
 		defer ticker.Stop()
 		for {
@@ -665,8 +697,7 @@ func TestConversationWorkerControlsLongPoll(t *testing.T) {
 				t.Fatal("poll did not subscribe")
 			}
 		}
-		shutdownContext, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
+		shutdownContext := testenv.WaitContext(t, context.Background())
 		if err := f.service.Shutdown(shutdownContext); err != nil {
 			t.Fatalf("Shutdown() with waiting poll: %v", err)
 		}
@@ -686,6 +717,148 @@ func TestConversationWorkerControlsLongPoll(t *testing.T) {
 
 func TestConversationWorkerTurnEvents(t *testing.T) {
 	t.Parallel()
+	t.Run("immutable content and compact replay", func(t *testing.T) {
+		objects := &conversationContentFixture{}
+		f := newConversationWorkerFixture(t, objects)
+		requireNativeStatus(t, f.bind(t, nil), http.StatusOK)
+		var logs bytes.Buffer
+		f.service.config.Logger = slog.New(slog.NewTextHandler(&logs, nil))
+		user := f.queue(t, conversation.MessageText, "inline-user", "user text", nil)
+		first := strings.Repeat("streamed text ", 300)
+		second := "final suffix"
+		events := []map[string]any{{"type": "turn_started", "thread_id": "thread-content", "turn_id": "turn-content"}, {"type": "delta", "provider_item_id": "assistant-content", "text": first}, {"type": "delta", "provider_item_id": "assistant-content", "text": second}}
+		toolText := strings.Repeat("tool result ", 250)
+		for i := range 50 {
+			events = append(events, map[string]any{"type": "item", "kind": "tool", "summary": toolText, "provider_item_id": fmt.Sprintf("tool-%d", i), "data": map[string]string{"output": toolText}})
+		}
+		events = append(events, map[string]any{"type": "turn_completed", "turn_id": "turn-content", "status": "completed"})
+		objects.setFail(true)
+		before := f.load(t)
+		failed := f.turnEvents(t, events...)
+		if failed.Code < 500 {
+			t.Fatalf("publication failure accepted: %d", failed.Code)
+		}
+		after := f.load(t)
+		if after.EventSeq != before.EventSeq || len(f.messages(t)) != 1 {
+			t.Fatal("failed upload committed conversation content")
+		}
+		objects.setFail(false)
+		response := f.turnEvents(t, events...)
+		if response.Code != http.StatusAccepted {
+			t.Fatalf("turn response=%d logs=%s", response.Code, logs.String())
+		}
+		messages, err := f.chat.store.listMessages(t.Context(), f.service.database.reader, f.record.ID, 0, 500)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(messages) != 52 || messages[0].ID != user.ID || messages[0].Text != "user text" || messages[1].Text != first+second {
+			t.Fatalf("message content/order changed: %d messages, %v", len(messages), err)
+		}
+		for _, message := range messages[1:] {
+			if message.ContentID == "" {
+				t.Fatalf("message %s kept its content inline", message.ID)
+			}
+		}
+		var largeEvents, bodyCopies, inlineTools int
+		if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM conversation_events WHERE conversation_id=? AND length(CAST(body_json AS BLOB))+length(conversation_id)+length(type)+length(created_at)+8>2048`, f.record.ID).Scan(&largeEvents); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM conversation_events WHERE conversation_id=? AND (json_type(body_json,'$.text') IS NOT NULL OR json_type(body_json,'$.data') IS NOT NULL)`, f.record.ID).Scan(&bodyCopies); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM conversation_messages WHERE conversation_id=? AND role='system' AND (length(text)>256 OR data_json<>'{}' OR content_attachment_id='')`, f.record.ID).Scan(&inlineTools); err != nil {
+			t.Fatal(err)
+		}
+		if largeEvents != 0 || bodyCopies != 0 || inlineTools != 0 {
+			t.Fatalf("large events=%d body copies=%d inline tools=%d", largeEvents, bodyCopies, inlineTools)
+		}
+		replay, err := f.chat.store.replayEvents(t.Context(), f.service.database.reader, f.record.ID, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var deltas string
+		var accepted []string
+		for _, event := range replay {
+			switch event.Type {
+			case conversation.EventMessageAccepted:
+				var message conversationMessageResource
+				if err := json.Unmarshal(event.Data, &message); err != nil {
+					t.Fatal(err)
+				}
+				accepted = append(accepted, message.ID)
+				if message.Role == conversation.RoleAssistant && message.Text != "" {
+					t.Fatal("accepted frame included future delta text")
+				}
+				if message.Role == conversation.RoleSystem && message.Text != toolText {
+					t.Fatal("tool replay content changed")
+				}
+			case conversation.EventMessageDelta:
+				var delta struct {
+					Text string `json:"text"`
+				}
+				if err := json.Unmarshal(event.Data, &delta); err != nil {
+					t.Fatal(err)
+				}
+				deltas += delta.Text
+			}
+		}
+		if deltas != first+second || len(accepted) != len(messages) {
+			t.Fatalf("replay changed: %d accepted, %d delta bytes", len(accepted), len(deltas))
+		}
+		for index, id := range accepted {
+			if id != messages[index].ID {
+				t.Fatal("replay reordered messages")
+			}
+		}
+		snapshot := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/conversations/"+f.record.ID+"/messages?limit=500", f.token, nil)
+		requireNativeStatus(t, snapshot, http.StatusOK)
+		var page conversationMessagesPage
+		decodeHubResponse(t, snapshot, &page)
+		if len(page.Messages) != len(messages) || page.Messages[1].Text != first+second {
+			t.Fatal("API did not hydrate external content")
+		}
+		operatorCtx := workspaceOperatorContext(t, f.service, f.token, string(f.project.OrganizationID), "content-read")
+		var operatorMessages []conversationMessageResource
+		var beforeCursor int64
+		for {
+			args := map[string]any{"project_id": f.project.ID, "conversation_id": f.record.ID, "limit": 5, "before": beforeCursor}
+			result, err := workspaceOperatorCall(t, f.service, operatorCtx, "list_conversation_messages", args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var operatorPage conversationMessagesPage
+			if err := json.Unmarshal(workspaceOperatorData(t, result), &operatorPage); err != nil {
+				t.Fatal(err)
+			}
+			operatorMessages = append(operatorPage.Messages, operatorMessages...)
+			if operatorPage.NextCursor == nil {
+				break
+			}
+			next, err := strconv.ParseInt(*operatorPage.NextCursor, 10, 64)
+			if err != nil || next <= 0 || (beforeCursor > 0 && next >= beforeCursor) {
+				t.Fatalf("MCP cursor failed to advance: %q", *operatorPage.NextCursor)
+			}
+			beforeCursor = next
+		}
+		if len(operatorMessages) != len(messages) {
+			t.Fatalf("MCP messages=%d want=%d", len(operatorMessages), len(messages))
+		}
+		for index, message := range operatorMessages {
+			if message.ID != messages[index].ID || message.Text != messages[index].Text {
+				t.Fatal("MCP message content or order changed")
+			}
+		}
+
+		output := httptest.NewRecorder()
+		stream := &conversationStream{response: echo.NewResponse(output, echo.New())}
+		head := f.load(t).EventSeq
+		cursor, err := stream.replay(t.Context(), f.chat.store, f.service.database.reader, f.record.ID, 0, head)
+		if err != nil || cursor != head || !strings.Contains(output.Body.String(), toolText) || !strings.Contains(output.Body.String(), second) {
+			t.Fatalf("SSE replay lost content: cursor=%d head=%d error=%v", cursor, head, err)
+		}
+
+	})
+
 	t.Run("registered runner middleware and fencing", func(t *testing.T) {
 		f := newConversationWorkerFixture(t)
 		f.release(t)
@@ -751,6 +924,7 @@ func TestConversationWorkerTurnEvents(t *testing.T) {
 			t.Fatal("registered event did not persist authentic transcript")
 		}
 		f.advance(11 * time.Minute)
+		publishCapacity(t, f.nativeFixture, r, capacityReport(f.now))
 		before := f.load(t)
 		if err := f.chat.reconcileExecutions(t.Context()); err != nil {
 			t.Fatal(err)
@@ -978,7 +1152,7 @@ func TestConversationWorkerUnbind(t *testing.T) {
 			messages := f.messages(t)
 			// A control the worker was handed is never replayed, whatever
 			// its kind; one that was never handed out stays queued for the
-			// next attempt (decisions section 10.3).
+			// next attempt.
 			if messages[text.ID].Delivery != conversation.DeliveryUnknown || messages[stop.ID].Delivery != conversation.DeliveryUnknown {
 				t.Fatalf("text = %s stop = %s", messages[text.ID].Delivery, messages[stop.ID].Delivery)
 			}
@@ -1155,7 +1329,7 @@ func TestConversationReconcileLeaseLoss(t *testing.T) {
 		}
 		messages := f.messages(t)
 		// Everything the worker was handed becomes unknown; only what was
-		// never handed out stays queued (decisions section 10.3).
+		// never handed out stays queued.
 		if messages[text.ID].Delivery != conversation.DeliveryUnknown || messages[stop.ID].Delivery != conversation.DeliveryUnknown {
 			t.Fatalf("text = %s stop = %s", messages[text.ID].Delivery, messages[stop.ID].Delivery)
 		}
@@ -1219,20 +1393,20 @@ func TestConversationControlRouterWakeAndStop(t *testing.T) {
 	f.chat.controls.Wake(f.record.ID)
 	select {
 	case <-subscription.wake:
-	case <-time.After(time.Second):
+	case <-testenv.WaitContext(t, t.Context()).Done():
 		t.Fatal("Wake must notify broker subscribers")
 	}
 	requireNativeStatus(t, f.bind(t, nil), http.StatusOK)
 	done := make(chan int, 1)
 	go func() { done <- f.controls(t, 0, 10).Code }()
-	time.Sleep(100 * time.Millisecond)
+	f.awaitControlSubscribers(t, 2)
 	f.chat.controls.Stop()
 	select {
 	case code := <-done:
 		if code != http.StatusOK {
 			t.Fatalf("poll after stop = %d", code)
 		}
-	case <-time.After(5 * time.Second):
+	case <-testenv.WaitContext(t, t.Context()).Done():
 		t.Fatal("Stop must end in-flight polls")
 	}
 }
@@ -1243,20 +1417,40 @@ func TestConversationControlRouterWakeAndStop(t *testing.T) {
 // snapshot so its card renders locked instead of disappearing.
 func TestConversationWorkerQuestionSnapshot(t *testing.T) {
 	t.Parallel()
-	f := newConversationWorkerFixture(t)
+	f := newConversationWorkerFixture(t, &conversationContentFixture{})
 	requireNativeStatus(t, f.bind(t, nil), http.StatusOK)
 	requireNativeStatus(t, f.turnEvents(t, map[string]any{"type": "turn_started", "thread_id": "thread-1", "turn_id": "turn-1"}), http.StatusAccepted)
 	requireNativeStatus(t, f.turnEvents(t, map[string]any{
 		"type": "question_opened", "request_id": "req-1", "thread_id": "thread-1", "turn_id": "turn-1",
 		"prompts": []map[string]any{
 			{"id": "surfaces", "header": "Surfaces", "question": "Which surfaces?", "options": []map[string]string{{"label": "Checkout lock"}, {"label": "Orphan lease"}}, "multiple": true},
-			{"id": "notes", "header": "Notes", "question": "Anything else?", "free_text": true},
+			{"id": "notes", "header": "Notes", "question": strings.Repeat("Details? ", 400), "free_text": true},
 		},
 	}), http.StatusAccepted)
 
 	questions := f.questions(t)
 	if len(questions) != 1 || len(questions[0].Prompts) != 2 {
 		t.Fatalf("questions = %#v", questions)
+	}
+	if questions[0].Prompts[1].Question != strings.Repeat("Details? ", 400) {
+		t.Fatal("pending prompt was truncated")
+	}
+	replay, err := f.chat.store.replayEvents(t.Context(), f.service.database.reader, f.record.ID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range replay {
+		if event.Type == conversation.EventQuestionOpened {
+			var question struct {
+				Prompts []conversation.Prompt `json:"questions"`
+			}
+			if err := json.Unmarshal(event.Data, &question); err != nil {
+				t.Fatal(err)
+			}
+			if len(question.Prompts) != 2 || question.Prompts[1].Question != questions[0].Prompts[1].Question {
+				t.Fatal("pending question replay lost content")
+			}
+		}
 	}
 	t.Run("multiple round trips through storage", func(t *testing.T) {
 		if !questions[0].Prompts[0].Multiple || questions[0].Prompts[1].Multiple {
@@ -1282,8 +1476,29 @@ func TestConversationWorkerQuestionSnapshot(t *testing.T) {
 
 	t.Run("a settled question stays in the snapshot", func(t *testing.T) {
 		question := questions[0]
-		f.queue(t, conversation.MessageAnswer, "answer-1", "", map[string]any{"question_id": question.ID, "answers": map[string][]string{"surfaces": {"Checkout lock"}, "notes": {"None"}}})
-		requireNativeStatus(t, f.controls(t, 0, 0), http.StatusOK)
+		answer := strings.Repeat("Detailed answer ", 200)
+		response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/conversations/"+f.record.ID+"/commands", f.token, conversation.Command{Key: "answer-1", Kind: conversation.CommandAnswer, QuestionID: question.ID, Answers: map[string][]string{"surfaces": {"Checkout lock"}, "notes": {answer}}, Expected: conversation.Expected{AttemptID: f.attempt}})
+		requireNativeStatus(t, response, http.StatusOK)
+		if err := f.service.maintainNativeRetention(t.Context(), f.now); err != nil {
+			t.Fatal(err)
+		}
+		controls := f.controls(t, 0, 0)
+		requireNativeStatus(t, controls, http.StatusOK)
+		var page conversationControlsResponse
+		decodeHubResponse(t, controls, &page)
+		found := false
+		for _, control := range page.Controls {
+			if control.Key == "answer-1" {
+				found = true
+				if control.Answers["notes"][0] != answer {
+					t.Fatal("external answer was not delivered in full")
+				}
+			}
+		}
+		if !found {
+			t.Fatal("undelivered answer disappeared")
+		}
+
 		requireNativeStatus(t, f.turnEvents(t, map[string]any{"type": "control_result", "key": "answer-1", "status": "delivered"}), http.StatusAccepted)
 		ctx := t.Context()
 		db := f.service.database.db
@@ -1315,12 +1530,12 @@ func TestConversationWorkerQuestionSnapshot(t *testing.T) {
 // runner that names the thread resumes it and the execution says so, while a
 // runner that cannot reach the thread is handed a transcript, the execution
 // says transcript, and the history records the hand-off with the number of
-// messages the transcript carried (decisions section 10.4).
+// messages the transcript carried.
 func TestConversationBindReportsResume(t *testing.T) {
 	t.Parallel()
 	for _, protected := range []bool{false, true} {
 		t.Run(fmt.Sprintf("protected=%t", protected), func(t *testing.T) {
-			f := newConversationWorkerFixture(t)
+			f := newConversationWorkerFixture(t, &conversationContentFixture{})
 			body := f.bindBody()
 			body["thread_id"] = "thread-1"
 			requireNativeStatus(t, f.bind(t, body), http.StatusOK)
@@ -1391,7 +1606,7 @@ func TestConversationBindReportsResume(t *testing.T) {
 // TestConversationInterruptedTurnStaysInterrupted covers a turn that ended
 // without a provider error: the execution records interrupted or failed
 // rather than reporting running, the turn is cleared, and the unbind outcome
-// still wins afterwards (decisions section 10.7).
+// still wins afterwards.
 func TestConversationInterruptedTurnStaysInterrupted(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
@@ -1510,6 +1725,29 @@ func TestConversationTurnEventBatchIsIdempotent(t *testing.T) {
 		}
 	})
 
+	t.Run("retired receipts reject late batches", func(t *testing.T) {
+		requireNativeStatus(t, f.unbind(t, "succeeded"), http.StatusOK)
+		f.release(t)
+		if err := f.service.maintainNativeRetention(t.Context(), f.now); err != nil {
+			t.Fatal(err)
+		}
+		var remaining int
+		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM conversation_turn_batches WHERE attempt_id=?", f.attempt).Scan(&remaining); err != nil {
+			t.Fatal(err)
+		}
+		if remaining != 0 {
+			t.Fatalf("terminal attempt retained %d receipts", remaining)
+		}
+		before := f.load(t)
+		response := batch("batch-1", events...)
+		if response.Code < 400 || response.Code >= 500 {
+			t.Fatalf("late batch response=%d %s", response.Code, response.Body.String())
+		}
+		after := f.load(t)
+		if after.EventSeq != before.EventSeq || after.Revision != before.Revision {
+			t.Fatal("retired batch executed again")
+		}
+	})
 	t.Run("a batch key that is too long is refused", func(t *testing.T) {
 		requireConversationErrorCode(t, batch(strings.Repeat("k", 129), events...), http.StatusUnprocessableEntity, "invalid_request")
 	})

@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 )
 
 func TestRunAutoPromotesQuietHumanReviewIssueThroughMemoryConnector(t *testing.T) {
@@ -28,10 +28,10 @@ func TestRunAutoPromotesQuietHumanReviewIssueThroughMemoryConnector(t *testing.T
 		CodexReviewSubmittedAt: &reviewedAt,
 	}
 
-	events := make(chan memory.Event, 4)
-	tracker := memory.New(memory.Config{
+	events := make(chan fakehub.Event, 4)
+	tracker := fakehub.New(fakehub.Config{
 		Issues: []connector.Issue{issue},
-		EventSink: func(event memory.Event) {
+		EventSink: func(event fakehub.Event) {
 			events <- event
 		},
 	})
@@ -63,11 +63,11 @@ func TestRunAutoPromotesQuietHumanReviewIssueThroughMemoryConnector(t *testing.T
 		select {
 		case event := <-events:
 			switch event.Kind {
-			case memory.EventKindStateUpdate:
+			case fakehub.EventKindStateUpdate:
 				if event.IssueID == issue.ID && event.State == "Merging" {
 					gotStateUpdate = true
 				}
-			case memory.EventKindComment:
+			case fakehub.EventKindComment:
 				if event.IssueID == issue.ID && strings.Contains(event.Body, "Auto-promoted this issue from Human Review to Merging.") {
 					gotComment = true
 				}
@@ -93,10 +93,10 @@ func TestRunAutoPromoteUsesRuntimeQuietDurationUpdate(t *testing.T) {
 		CodexReviewSubmittedAt: &reviewedAt,
 	}
 
-	events := make(chan memory.Event, 4)
-	tracker := memory.New(memory.Config{
+	events := make(chan fakehub.Event, 4)
+	tracker := fakehub.New(fakehub.Config{
 		Issues: []connector.Issue{issue},
-		EventSink: func(event memory.Event) {
+		EventSink: func(event fakehub.Event) {
 			events <- event
 		},
 	})
@@ -147,7 +147,7 @@ func TestRunAutoPromoteUsesRuntimeQuietDurationUpdate(t *testing.T) {
 	for {
 		select {
 		case event := <-events:
-			if event.Kind == memory.EventKindStateUpdate && event.IssueID == issue.ID && event.State == "Merging" {
+			if event.Kind == fakehub.EventKindStateUpdate && event.IssueID == issue.ID && event.State == "Merging" {
 				return
 			}
 		case <-deadline:

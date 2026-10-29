@@ -1,7 +1,6 @@
 package hubserver
 
 import (
-	"context"
 	"database/sql"
 	"database/sql/driver"
 	"net/http"
@@ -13,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -131,12 +131,19 @@ func TestHotReadQueryPlans(t *testing.T) {
 
 	organization := browserHostedOrganizationBase
 	project := organization + "/projects/" + f.project
+	var item string
+	if err := reader.QueryRowContext(t.Context(), "SELECT native_id FROM issues WHERE project_id=? AND native_id IS NOT NULL LIMIT 1", f.project).Scan(&item); err != nil {
+		t.Fatal(err)
+	}
 	known := make(map[string]bool)
 	for _, read := range []struct {
 		name string
 		path string
 	}{
 		{"activity", organization + "/activity"},
+		{"newest issue history", project + "/work-items/" + item + "/history?direction=newest&view=timeline&limit=100"},
+		{"newest issue attempts", project + "/work-items/" + item + "/attempts?direction=newest&limit=100"},
+		{"newest issue comments", project + "/work-items/" + item + "/comments?direction=newest&limit=100"},
 		{"work items list", project + "/work-items?limit=50"},
 		{"board lanes", project + "/work-items?include=board&state=Todo&open=true&limit=50"},
 		{"projects", organization + "/projects"},
@@ -163,8 +170,7 @@ func TestHotReadQueryPlans(t *testing.T) {
 				statements = append(statements, tracedStatement{query, values})
 				mu.Unlock()
 			}}
-			ctx, cancel := context.WithTimeout(withRequestTiming(t.Context(), timing), 30*time.Second)
-			defer cancel()
+			ctx := testenv.WaitContext(t, withRequestTiming(t.Context(), timing))
 			request := httptest.NewRequest(http.MethodGet, f.server.URL+read.path, nil).WithContext(ctx)
 			request.AddCookie(f.cookies["owner"])
 			response := httptest.NewRecorder()
@@ -316,10 +322,10 @@ func seedProductionShapedRollups(t *testing.T, s *Service, scope nativeScope, at
 		{`WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i+1 FROM n WHERE i<?-1),
 items AS (SELECT native_id,row_number() OVER (ORDER BY native_id)-1 AS k,count(*) OVER () AS total FROM issues WHERE organization_id=? AND project_id=? AND native_id IS NOT NULL),
 shaped AS (SELECT i,strftime('%Y-%m-%dT%H:%M:%SZ',?,'-'||(i*7776000/?)||' seconds') AS at FROM n)
-INSERT INTO collaboration_events(id,organization_id,project_id,work_item_id,sequence,type,schema_version,actor_json,data_json,recorded_at)
-SELECT 'bench_event_'||i,?,?,(SELECT native_id FROM items WHERE k=i%total),1000000+i,'workflow.transitioned',1,'{}',json_object('from_state',CASE WHEN i%5=0 THEN 'Done' ELSE 'Todo' END,'to_state','In Progress'),at FROM shaped`,
+INSERT INTO collaboration_events(id,organization_id,project_id,work_item_id,sequence,type,schema_version,actor_json,data_json,recorded_at,analytics_from_state,analytics_to_state,analytics_projection_version)
+SELECT 'bench_event_'||i,?,?,(SELECT native_id FROM items WHERE k=i%total),1000000+i,'workflow.transitioned',1,'{}',json_object('from_state',CASE WHEN i%5=0 THEN 'Done' ELSE 'Todo' END,'to_state','In Progress'),at,CASE WHEN i%5=0 THEN 'Done' ELSE 'Todo' END,'In Progress',1 FROM shaped`,
 			[]any{events, scope.organization, scope.project, now, events, scope.organization, scope.project}},
-		{analyticsSourceEvents + `INSERT INTO analytics_hourly_rollups(organization_id,project_id,hour,metric,dimension,value,data_json) SELECT organization_id,project_id,hour,metric,dimension,value,data_json FROM analytics_source_events WHERE organization_id=? AND project_id=? AND dimension LIKE 'bench_event_%'`,
+		{analyticsSourceEvents + `INSERT INTO analytics_hourly_rollups(organization_id,project_id,hour,metric,dimension,value,data_json,work_item_id,sequence,type,recorded_at,projection_version) SELECT organization_id,project_id,hour,metric,dimension,value,data_json,work_item_id,sequence,type,recorded_at,1 FROM analytics_source_events WHERE organization_id=? AND project_id=? AND dimension LIKE 'bench_event_%'`,
 			[]any{scope.organization, scope.project}},
 		{`WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i+1 FROM n WHERE i<?-1),
 items AS (SELECT native_id,row_number() OVER (ORDER BY native_id)-1 AS k,count(*) OVER () AS total FROM issues WHERE organization_id=? AND project_id=? AND native_id IS NOT NULL),
@@ -343,6 +349,8 @@ FROM shaped`,
 			t.Fatalf("seed production-shaped rollups: %v\n%s", err, statement.query)
 		}
 	}
+	projectTestChangeColumns(t, s)
+	convertTestAnalyticsProjections(t, s)
 }
 
 type explainedPlanLine struct {
@@ -426,7 +434,7 @@ func rollupRepeatedReadViolations(statement string, plan []explainedPlanLine) []
 var windowedRollupReads = []struct{ name, fragment, index, bound string }{
 	{"usage rows", "FROM analytics_attempt_usage u LEFT JOIN analytics_native_attempts a ON a.id = u.attempt_id", "analytics_usage_window", ">?"},
 	{"attempts in window", "julianday(a.started_at)<julianday(?) AND julianday(a.updated_at)>=julianday(?) AND (?=''", "analytics_attempt_started", ""},
-	{"failed attempts in window", "WHERE metric='attempt' AND json_extract(data_json,'$.failed_at') IS NOT NULL", "analytics_attempt_failed", ">?"},
+	{"failed attempts in window", "WHERE r.metric='attempt' AND r.failed_at IS NOT NULL", "analytics_attempt_failed", ">?"},
 	{"residence transitions", "type='workflow.transitioned' AND julianday(recorded_at)>=julianday(?)", "analytics_event_order", ">?"},
 }
 
@@ -448,8 +456,12 @@ func TestAnalyticsRollupReportPlans(t *testing.T) {
 	} {
 		t.Run(tenant.name, func(t *testing.T) {
 			f := newUsageHostedFixture(t)
+			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+				t.Fatal(err)
+			}
 			scope := nativeScope{organization: "org_browser_preview", project: tracker.ProjectID(f.project)}
 			tenant.seed(t, f.service, scope)
+			projectTestChangeColumns(t, f.service)
 			reader := f.service.database.reader
 			for _, window := range []string{"24h", "7d", "30d"} {
 				t.Run(window, func(t *testing.T) {
@@ -464,8 +476,7 @@ func TestAnalyticsRollupReportPlans(t *testing.T) {
 						statements = append(statements, tracedStatement{query, values})
 						mu.Unlock()
 					}}
-					ctx, cancel := context.WithTimeout(withRequestTiming(t.Context(), timing), 2*time.Minute)
-					defer cancel()
+					ctx := testenv.WaitContext(t, withRequestTiming(t.Context(), timing))
 					request := httptest.NewRequest(http.MethodGet, f.server.URL+browserHostedOrganizationBase+"/reports?project="+f.project+"&range="+window, nil).WithContext(ctx)
 					request.AddCookie(f.cookies["owner"])
 					response := httptest.NewRecorder()
@@ -527,6 +538,7 @@ func TestAnalyticsRollupReportPlans(t *testing.T) {
 // productionProjectShape is the row population of one production project.
 type productionProjectShape struct {
 	issues, attempts, usage, leases, comments int
+	days                                      int
 }
 
 // pyroApexShape matches the production project whose Reports took 4 to 17
@@ -543,6 +555,10 @@ func seedProductionProject(t testing.TB, s *Service, scope nativeScope, shape pr
 	t.Helper()
 	now := formatHubTime(s.config.now().UTC())
 	org, project := string(scope.organization), string(scope.project)
+	days := shape.days
+	if days == 0 {
+		days = 2
+	}
 	statements := []struct {
 		query string
 		args  []any
@@ -552,11 +568,11 @@ SELECT ?,name,name,terminal,dispatchable,?,? FROM (SELECT 'Backlog' AS name,0 AS
  UNION ALL SELECT 'Rework',0,1 UNION ALL SELECT 'Merging',0,0 UNION ALL SELECT 'Done',1,0 UNION ALL SELECT 'Cancelled',1,0) AS wanted
 WHERE NOT EXISTS(SELECT 1 FROM workflow_states ws WHERE ws.project_id=? AND ws.detent_state=wanted.name)`, []any{project, now, now, project}},
 		{`WITH RECURSIVE n(k) AS (SELECT 0 UNION ALL SELECT k+1 FROM n WHERE k<?-1),
-shaped AS (SELECT k,strftime('%Y-%m-%dT%H:%M:%SZ',?,'-'||(172800-k*144000/?)||' seconds') AS created,
+shaped AS (SELECT k,strftime('%Y-%m-%dT%H:%M:%SZ',?,'-'||(?-k*?/?)||' seconds') AS created,
  CASE WHEN k%11<4 THEN 'Done' WHEN k%11=4 THEN 'Cancelled' WHEN k%11<9 THEN 'Backlog' WHEN k%11=9 THEN 'Todo' ELSE 'In Progress' END AS state FROM n)
 INSERT INTO issues(workflow_state_id,native_id,organization_id,project_id,number,title,url,github_state,source_version,source_updated_at,synchronized_at,created_at,updated_at,native_created_at,native_updated_at)
 SELECT (SELECT min(id) FROM workflow_states WHERE project_id=? AND detent_state=state),'wi_shaped_'||k,?,?,100000+k,'Shaped issue '||k,'https://example.test/'||k,'open','v1',created,created,created,created,created,created FROM shaped`,
-			[]any{shape.issues, now, shape.issues, project, org, project}},
+			[]any{shape.issues, now, days * 86400, days*86400 - 28800, shape.issues, project, org, project}},
 		{`WITH steps(state,seq,kind,from_state,to_state,offset) AS (VALUES
  ('Done',2,'workflow.transitioned','Backlog','Todo',600),('Done',3,'scheduler.decision','','',900),('Done',4,'workflow.transitioned','Todo','In Progress',1200),
  ('Done',5,'workflow.transitioned','In Progress','Merging',7200),('Done',6,'workflow.transitioned','Merging','Rework',7800),('Done',7,'scheduler.decision','','',8000),
@@ -614,7 +630,7 @@ FROM issues i JOIN workflow_states ws ON ws.id=i.workflow_state_id WHERE i.organ
 		{`INSERT INTO change_versions(id,change_id,number,record_json)
 SELECT 'version_'||work_item_id,id,1,json_object('head_sha',json_extract(record_json,'$.landed.head_sha')) FROM change_requests WHERE organization_id=? AND project_id=? AND id LIKE 'change_wi_shaped_%'`,
 			[]any{org, project}},
-		{`INSERT OR REPLACE INTO native_board_items
+		{`INSERT OR REPLACE INTO native_board_items(work_item_id,organization_id,project_id,state,archived,terminal,running,lane_rank,priority_rank,activity_missing,activity_at,identifier,closed_at,expires_at,record_json)
 SELECT i.native_id,i.organization_id,i.project_id,ws.detent_state,0,ws.terminal,0,0,0,0,'',i.project_id||'#'||i.number,
  CASE WHEN ws.terminal=1 THEN strftime('%Y-%m-%dT%H:%M:%S.000000000Z',i.created_at,CASE ws.detent_state WHEN 'Done' THEN '+9000 seconds' ELSE '+1800 seconds' END) ELSE '' END,'','{}'
 FROM issues i JOIN workflow_states ws ON ws.id=i.workflow_state_id WHERE i.organization_id=? AND i.project_id=? AND i.native_id LIKE 'wi_shaped_%'`,
@@ -624,6 +640,19 @@ FROM issues i JOIN workflow_states ws ON ws.id=i.workflow_state_id WHERE i.organ
 	for _, statement := range statements {
 		if _, err := s.database.db.ExecContext(t.Context(), statement.query, statement.args...); err != nil {
 			t.Fatalf("seed production project: %v\n%s", err, statement.query)
+		}
+	}
+	projectTestChangeColumns(t, s)
+	for {
+		if err := s.convertIssuePageFacts(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		var pending bool
+		if err := s.database.reader.QueryRowContext(t.Context(), "SELECT EXISTS(SELECT 1 FROM issues WHERE actor_principal_id IS NULL OR page_filters_ready IS NULL)").Scan(&pending); err != nil {
+			t.Fatal(err)
+		}
+		if !pending {
+			break
 		}
 	}
 	rebuildTestAnalyticsRollups(t, s, scope)

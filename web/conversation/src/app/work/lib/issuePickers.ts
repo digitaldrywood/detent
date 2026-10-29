@@ -55,7 +55,7 @@ export interface StatusAction {
  * Every state in the workflow's own order.
  *
  * A state the workflow does not allow from here stays on the list with the
- * reason rather than disappearing (decisions.md §16) — a workflow that will
+ * reason rather than disappearing — a workflow that will
  * not take a move is a fact about the workflow, and a reader who cannot see
  * the state at all cannot learn it. Digits follow the workflow's order, so
  * the number beside a state is the number it always has.
@@ -134,7 +134,7 @@ export type AssigneeAction =
  * unassigns, which is how their picker toggles.
  *
  * The invitation row is listed whether or not this reader may use it, with
- * the reason when they may not (§16).
+ * the reason when they may not.
  */
 export function assigneeSections(input: {
   readonly assignees: readonly string[];

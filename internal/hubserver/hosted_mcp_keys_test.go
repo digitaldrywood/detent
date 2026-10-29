@@ -514,27 +514,35 @@ func TestHostedAPIKeyManagement(t *testing.T) {
 
 func TestHostedProjectRankTools(t *testing.T) {
 	for _, deployment := range []string{"shared", "dedicated"} {
-		for _, role := range []string{"owner", "viewer"} {
+		for _, role := range []string{"owner", "admin", "member", "viewer"} {
 			t.Run(deployment+"/"+role, func(t *testing.T) {
 				f, ctx := newHostedKeyMCPFixture(t, deployment, role)
 				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO projects (id, organization_id, name, profile, created_at) SELECT 'prj_rank_second', organization_id, 'Second', profile, created_at FROM projects WHERE id = ?", f.project); err != nil {
 					t.Fatal(err)
 				}
+				for _, table := range []string{"hosted_project_grants", "token_grants"} {
+					operatorSQL(t, f.hostedSecurityFixture, "DELETE FROM "+table+" WHERE project_id='prj_rank_second'")
+				}
 				executor := hostedOperatorExecutor{f.service}
-				_, err := executor.Execute(ctx, operatortool.Call{Name: operatortool.OrganizationProjectRank, Arguments: json.RawMessage(`{}`)})
-				if role == "viewer" {
-					if !errors.Is(err, operatortool.ErrAccessDenied) {
-						t.Fatalf("viewer read: %v", err)
-					}
-				} else if err != nil {
+				read, err := executor.Execute(ctx, operatortool.Call{Name: operatortool.OrganizationProjectRank, Arguments: json.RawMessage(`{}`)})
+				if err != nil {
 					t.Fatal(err)
+				}
+				var envelope struct {
+					Data organizationProjectRank `json:"data"`
+				}
+				if err := json.Unmarshal(read.Content, &envelope); err != nil {
+					t.Fatal(err)
+				}
+				visible := envelope.Data
+				if !slices.Equal(visible.ProjectIDs, []tracker.ProjectID{f.project}) {
+					t.Fatalf("rank leaked hidden projects: %#v", visible)
 				}
 				before, err := readOrganizationProjectRank(ctx, f.service.database.db, "org_security")
 				if err != nil {
 					t.Fatal(err)
 				}
-				ids := slices.Clone(before.ProjectIDs)
-				slices.Reverse(ids)
+				ids := slices.Clone(visible.ProjectIDs)
 				args, err := json.Marshal(struct {
 					projectRankChange
 					RequestID string `json:"request_id"`
@@ -544,7 +552,7 @@ func TestHostedProjectRankTools(t *testing.T) {
 				}
 				call := operatortool.Call{Name: operatortool.OrganizationProjectRankUpdate, Arguments: args}
 				_, err = executor.Execute(ctx, call)
-				if role == "viewer" {
+				if role == "viewer" || role == "member" {
 					if !errors.Is(err, operatortool.ErrAccessDenied) {
 						t.Fatalf("viewer update: %v", err)
 					}
@@ -565,8 +573,8 @@ func TestHostedProjectRankTools(t *testing.T) {
 					t.Fatal(err)
 				}
 				expected, revision := before.ProjectIDs, before.Revision
-				if role == "owner" {
-					expected, revision = ids, revision+1
+				if role == "owner" || role == "admin" {
+					expected, revision = before.ProjectIDs, revision+1
 				}
 				if !slices.Equal(after.ProjectIDs, expected) || after.Revision != revision {
 					t.Fatalf("rank changed incorrectly: %#v", after)

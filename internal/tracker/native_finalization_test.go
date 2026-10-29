@@ -6,6 +6,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/digitaldrywood/detent/internal/failureattribution"
 	"github.com/digitaldrywood/detent/internal/gate"
 )
 
@@ -29,7 +30,14 @@ func TestPublicGateResultRedactsCheckEvidence(t *testing.T) {
 		wantTruncated bool
 		wasTruncated  bool
 	}{
+		{name: "separated failures", output: "--- FAIL: TestFirst (0.01s)\n" + strings.Repeat("ok example.org/passing\n", 4000) + "--- FAIL: TestSecond (0.02s)\ninternal/example.go:12:3: unchecked result (errcheck)\n" + strings.Repeat("ok example.org/passing\n", 4000) + "FAIL\texample.org/second\t1s\n", wantChecks: 1, wantTruncated: true, wantContains: []string{"--- FAIL: TestFirst (0.01s)\n", "--- FAIL: TestSecond (0.02s)\n", "internal/example.go:12:3: unchecked result (errcheck)\n", "FAIL\texample.org/second\t1s\n"}},
+		{name: "terminal make failure preserves preceding diagnostic", output: strings.Repeat(" PASS frontend suite 世界\n", 1000) + "./scripts/check-repository.sh\nRepository schema mismatch 世界\nmigrations/example.sql: missing delivery column\nexpected column: delivery_id\nactual column: legacy_id\nTOKEN=private-assignment\n/home/private/project/build.log\nmake: *** [check-repository] Error 2\n", wantChecks: 1, wantTruncated: true, wantContains: []string{"./scripts/check-repository.sh", "Repository schema mismatch 世界", "migrations/example.sql: missing delivery column", "expected column: delivery_id", "actual column: legacy_id", "make: *** [check-repository] Error 2", "[redacted]"}},
 		{name: "colored frontend failure before passing output", output: "\x1b[31m FAIL \x1b[0m packages/ui/selection.test.tsx > selects a range\nAssertionError: expected range but received null\n" + strings.Repeat(" PASS later suite\n", 1000), wantChecks: 1, wantTruncated: true, wantContains: []string{"selection.test.tsx", "AssertionError: expected range but received null"}},
+		{name: "legacy npm build failure", output: "npm ERR! code ELIFECYCLE\nnpm ERR! command failed\n" + strings.Repeat(" PASS frontend suite 世界\n", 8000), wantChecks: 1, wantTruncated: true, wantContains: []string{"npm ERR! code ELIFECYCLE", "npm ERR! command failed"}},
+		{name: "pnpm build failure", output: "ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL build: `vite build`\n" + strings.Repeat(" PASS frontend suite 世界\n", 8000), wantChecks: 1, wantTruncated: true, wantContains: []string{"ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL"}},
+		{name: "compiler location", output: "src/widget.tsx:12:7 - error TS2322: Type mismatch 世界\n" + strings.Repeat(" PASS frontend suite 世界\n", 8000), wantChecks: 1, wantTruncated: true, wantContains: []string{"src/widget.tsx:12:7 - error TS2322", "世界"}},
+		{name: "vite build failure", output: "error during build:\n[vite:esbuild] Transform failed with 1 error:\nsrc/widget.ts:12:7: ERROR: Unexpected token\n" + strings.Repeat(" PASS frontend suite 世界\n", 8000), wantChecks: 1, wantTruncated: true, wantContains: []string{"error during build:", "[vite:esbuild] Transform failed", "src/widget.ts:12:7: ERROR: Unexpected token"}},
+		{name: "successful stage does not hide later failure", output: "check-fast-stage stage=repository exit_status=0\n" + strings.Repeat(" PASS frontend suite 世界\n", 1000) + "Error: repository check rejected migration\n" + strings.Repeat(" PASS later suite\n", 1000), wantChecks: 1, wantTruncated: true, wantContains: []string{"Error: repository check rejected migration"}},
 		{name: "colored secret assignments", output: "TOK\x1b[31mEN=private-assignment\x1b[0m\nAuthorization: \x1b[31mBearer private-bearer-token\x1b[0m\n", wantChecks: 1, wantOutput: "TOKEN=[redacted]\nAuthorization: [redacted]\n"},
 		{name: "assertion without failure header", output: "AssertionError: expected 世界 but received null\n" + strings.Repeat(" PASS later suite\n", 1000), wantChecks: 1, wantTruncated: true, wantContains: []string{"AssertionError: expected 世界 but received null"}},
 		{name: "Bearer output", output: "Bearer private-bearer-token", wantCommand: "go test internalexample", wantOutput: "Bearer [redacted]", wantChecks: 1},
@@ -67,7 +75,13 @@ func TestPublicGateResultRedactsCheckEvidence(t *testing.T) {
 					FinishedAt: time.Date(2026, 10, 9, 12, 0, 1, 0, time.UTC),
 				}}},
 			}
+			result.BaseReproduction = &failureattribution.Observation{Command: resultCommand, Output: test.output, Complete: !test.wasTruncated}
+			result.Findings = []gate.Finding{{CheckCommand: resultCommand, CheckDiagnostic: test.output, AttributionEvidence: &failureattribution.Evidence{Command: resultCommand, Diagnostic: test.output}}}
 			got := PublicGateResult(result)
+			if got.BaseReproduction.Command != wantCommand || got.BaseReproduction.Output != got.Output || got.Findings[0].CheckCommand != wantCommand || got.Findings[0].CheckDiagnostic != got.Output || got.Findings[0].AttributionEvidence.Command != wantCommand || got.Findings[0].AttributionEvidence.Diagnostic != got.Output {
+				t.Fatalf("attribution proof was not redacted: %#v %#v", got.BaseReproduction, got.Findings)
+			}
+
 			if got.Command != wantCommand {
 				t.Fatalf("PublicGateResult command = %q, want %q", got.Command, wantCommand)
 			}

@@ -117,6 +117,21 @@ func TestRunnerCapacityApplication(t *testing.T) {
 	if view.Status != "applied" || view.Effective == nil || *view.Effective != 6 {
 		t.Fatalf("applied=%+v", view)
 	}
+	other := newNativeFixture(t, f.service, f.project.OrganizationID, "capacity-readback-other")
+	routing := runnerRoutingRequest{RoutingChange: runnerauth.RoutingChange{ExpectedRevision: stored.Revision, Routing: stored.Routing}, IdempotencyKey: "project-ceilings"}
+	routing.ProjectIDs = []tracker.ProjectID{f.project.ID, other.project.ID}
+	routing.ProjectCapacityLimits = map[tracker.ProjectID]int{f.project.ID: 4, other.project.ID: 10000}
+	response = performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, routing)
+	requireNativeStatus(t, response, http.StatusOK)
+	decodeHubResponse(t, response, &stored)
+	read = performHubAPIRequest(t, f.service, http.MethodGet, r.identityPath()+"/capacity?backend=codex", testHubAdminToken, nil)
+	requireNativeStatus(t, read, http.StatusOK)
+	decodeHubResponse(t, read, &view)
+	project := view.Projects[f.project.ID]
+	inherited := view.Projects[other.project.ID]
+	if view.Status != "applied" || view.Desired != 6 || view.Applied == nil || view.Applied.RuntimeLimit != 6 || view.Effective == nil || *view.Effective != 6 || project.Desired == nil || *project.Desired != 4 || project.Applied == nil || *project.Applied != 4 || project.Effective == nil || *project.Effective != 4 || project.Used != 6 || inherited.Desired == nil || *inherited.Desired != 10000 || inherited.Effective == nil || *inherited.Effective != 6 {
+		t.Fatalf("project ceilings distorted effective totals=%+v", view)
+	}
 	encoded, err := json.Marshal(view)
 	if err != nil {
 		t.Fatal(err)
@@ -127,7 +142,7 @@ func TestRunnerCapacityApplication(t *testing.T) {
 	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET capacity_configuration_json='null' WHERE id=?", r.binding.RunnerID); err != nil {
 		t.Fatal(err)
 	}
-	change := runnerauth.RoutingChange{ExpectedRevision: stored.Revision, Routing: stored.Routing}
+	change := runnerRoutingRequest{RoutingChange: runnerauth.RoutingChange{ExpectedRevision: stored.Revision, Routing: stored.Routing}, IdempotencyKey: "lower-total"}
 	change.CapacityLimit = 3
 	response = performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, change)
 	requireNativeStatus(t, response, http.StatusOK)

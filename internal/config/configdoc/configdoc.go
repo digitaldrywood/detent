@@ -289,8 +289,7 @@ func expandable(typ reflect.Type) bool {
 		path == "github.com/digitaldrywood/detent/internal/activehours" ||
 		path == "github.com/digitaldrywood/detent/internal/connector" ||
 		path == "github.com/digitaldrywood/detent/internal/gate" ||
-		path == "github.com/digitaldrywood/detent/internal/intake" ||
-		path == "github.com/digitaldrywood/detent/internal/retro" ||
+		path == "github.com/digitaldrywood/detent/internal/issuefiling" ||
 		path == "github.com/digitaldrywood/detent/internal/scheduleowner" ||
 		path == "github.com/digitaldrywood/detent/internal/selector"
 }
@@ -454,11 +453,7 @@ func trackerStatusPageURLDefault() (string, string) {
 		}
 		return cfg.Tracker.StatusPageURL
 	}
-	return fmt.Sprintf(
-		"%s for linear; %s for github or github_local; unused otherwise",
-		strconv.Quote(statusURLFor(config.TrackerLinear)),
-		strconv.Quote(statusURLFor(config.TrackerGitHub)),
-	), "null"
+	return strconv.Quote(statusURLFor(config.TrackerGitHub)) + " for github; unused otherwise", "null"
 }
 
 func trackerEndpointDefault() (string, string) {
@@ -471,13 +466,8 @@ func trackerEndpointDefault() (string, string) {
 		}
 		return cfg.Tracker.Endpoint
 	}
-	linearEndpoint := endpointFor(config.TrackerLinear)
 	githubEndpoint := endpointFor(config.TrackerGitHub)
-	return fmt.Sprintf(
-		"%s for linear; %s for github or github_local; unused otherwise",
-		strconv.Quote(linearEndpoint),
-		strconv.Quote(githubEndpoint),
-	), "null"
+	return strconv.Quote(githubEndpoint) + " for github; unused otherwise", "null"
 }
 
 func optionDefault(path string) (string, string) {
@@ -495,6 +485,7 @@ func optionDefault(path string) (string, string) {
 		{"Codex", config.CodexAgentBackend(config.Default().Codex).CodexOptions()},
 		{"Claude Code", claude},
 		{"Pi", (config.AgentBackend{Kind: config.AgentBackendPiAgent}).PiAgentOptions()},
+		{"OpenCode", (config.AgentBackend{Kind: config.AgentBackendOpenCode}).OpenCodeOptions()},
 	}
 	descriptions := make([]string, 0, len(variants))
 	names := make([]string, 0, len(variants))
@@ -738,7 +729,7 @@ func appendUnique(values []string, value string) []string {
 
 func probeBase() config.Config {
 	cfg := config.Default()
-	cfg.Tracker.Kind = config.TrackerMemory
+	cfg.Tracker.Kind = config.TrackerHubNative
 	normalizedConfig, err := normalized(cfg)
 	if err != nil {
 		return cfg
@@ -869,7 +860,7 @@ func candidates(typ reflect.Type) []reflect.Value {
 	case reflect.String:
 		values := []string{
 			"", " ", "\n", "__invalid__", "github", "github_local", "linear",
-			"local_sqlite", "memory", "command", "artifact", "codex", "claude_code", "pi_agent",
+			"local_sqlite", "memory", "command", "artifact", "codex", "claude_code", "pi_agent", "opencode",
 			"plan", "invalid/value/extra", "0 0",
 		}
 		out := make([]reflect.Value, 0, len(values))
@@ -955,7 +946,7 @@ func candidates(typ reflect.Type) []reflect.Value {
 func backendOptionProblems() ([]string, error) {
 	documents := []string{
 		`tracker:
-  kind: memory
+  kind: hub_native
 agents:
   backends:
     - id: pi
@@ -968,7 +959,7 @@ agents:
         stall_timeout_ms: -1
 `,
 		`tracker:
-  kind: memory
+  kind: hub_native
 agents:
   backends:
     - id: codex
@@ -986,7 +977,7 @@ agents:
         stall_timeout_ms: -1
 `,
 		`tracker:
-  kind: memory
+  kind: hub_native
 agents:
   backends:
     - id: claude
@@ -1000,7 +991,7 @@ agents:
         stall_timeout_ms: -1
 `,
 		`tracker:
-  kind: memory
+  kind: hub_native
 agents:
   backends:
     - id: claude
@@ -1011,21 +1002,18 @@ agents:
 `,
 		`tracker:
   kind: github
-  github_status_source: label
-  repository: example/example
+  repository: example-org/example-project
   github_app_id: "1"
 `,
 		`tracker:
   kind: github
-  github_status_source: label
-  repository: example/example
+  repository: example-org/example-project
   github_app_installation_id: "2"
   github_app_private_key_path: example.pem
 `,
 		`tracker:
   kind: github
-  github_status_source: label
-  repository: example/example
+  repository: example-org/example-project
   github_app_id: "1"
   github_app_installation_id: "2"
 `,

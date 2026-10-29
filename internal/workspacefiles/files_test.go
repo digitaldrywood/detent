@@ -150,7 +150,7 @@ func TestReadRefusesWhatTheDenylistCovers(t *testing.T) {
 	}
 }
 
-// TestContainmentRefusesEveryEscape is the security argument of section 18.4
+// TestContainmentRefusesEveryEscape is the security argument of the Files contract
 // stated as a test: no request, however it is spelled, reaches outside the
 // worktree.
 func TestContainmentRefusesEveryEscape(t *testing.T) {

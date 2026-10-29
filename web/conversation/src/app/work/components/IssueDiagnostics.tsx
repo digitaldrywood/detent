@@ -52,13 +52,49 @@ const LANE_COLORS: Readonly<Record<string, string>> = {
   blocked: "bg-destructive", "human review": "bg-warning", merging: "bg-primary", done: "bg-success",
 };
 
-export function IssueDiagnostics({ issue, attempts, history, now, attemptsAvailable = true, historyAvailable = true }: {
+export function IssueDiagnostics(props: Parameters<typeof IssueDiagnosticsBody>[0]) {
+  return props.issue.archive_summary === undefined ? <IssueDiagnosticsBody {...props} /> : <ArchivedDiagnostics {...props} />;
+}
+
+function ArchivedDiagnostics(props: Parameters<typeof IssueDiagnosticsBody>[0]) {
+  const http = useWorkHttp();
+  const [attempts, setAttempts] = React.useState<readonly NativeAttempt[] | null>(null);
+  const [error, setError] = React.useState<string | null>(null);
+  const { issue } = props;
+  React.useEffect(() => {
+    const controller = new AbortController();
+    setAttempts(null);
+    setError(null);
+    void (async () => {
+      const result: NativeAttempt[] = [];
+      let cursor: string | undefined;
+      do {
+        const page = await http.listAttempts(issue.project_id, issue.work_item_id, 100, controller.signal, cursor);
+        result.push(...page.items);
+        const next = page.next_cursor ?? undefined;
+        if (next !== undefined && next === cursor) throw new Error("Archived runs cursor did not advance");
+        cursor = next;
+      } while (cursor !== undefined);
+      if (!controller.signal.aborted) setAttempts(result);
+    })().catch((cause: unknown) => {
+      if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : "Archived detail is unavailable.");
+    });
+    return () => controller.abort();
+  }, [http, issue.project_id, issue.work_item_id, issue.archive_summary?.revision]);
+  if (error !== null) return <p role="alert" className="text-sm text-destructive">{error}</p>;
+  if (attempts === null) return <p role="status" className="text-sm text-muted-foreground">Reading archived runs…</p>;
+  return <IssueDiagnosticsBody {...props} attempts={attempts} attemptsAvailable />;
+}
+
+function IssueDiagnosticsBody({ issue, attempts, history, now, attemptsAvailable = true, historyAvailable = true, historyPartial = false, attemptsPartial = false }: {
   readonly issue: NativeIssue;
   readonly attempts: readonly NativeAttempt[];
   readonly history: readonly CollaborationEvent[];
   readonly now: number;
   readonly attemptsAvailable?: boolean;
   readonly historyAvailable?: boolean;
+  readonly historyPartial?: boolean;
+  readonly attemptsPartial?: boolean;
 }) {
   const http = useWorkHttp();
   const [explanation, setExplanation] = React.useState<IssueExplanation | null>(null);
@@ -103,8 +139,8 @@ export function IssueDiagnostics({ issue, attempts, history, now, attemptsAvaila
       </>}
     </Section>
     <Section title="Clock">
-      <p className="text-xs text-muted-foreground">From the first Todo entry; Backlog excluded.</p>
-      {clock === null ? <p className="text-muted-foreground">{historyAvailable ? "No Todo transition recorded." : "History unavailable."}</p> : <>
+      <p className="text-xs text-muted-foreground">{historyPartial || attemptsPartial ? "Loaded history and attempts only; Backlog excluded." : "From the first Todo entry; Backlog excluded."}</p>
+      {clock === null ? <p className="text-muted-foreground">{historyAvailable ? historyPartial ? "No Todo transition in loaded history." : "No Todo transition recorded." : "History unavailable."}</p> : <>
         <div className="flex h-3 overflow-hidden rounded-sm bg-muted" role="img" aria-label={clock.lanes.map(({ lane, duration }) => `${lane}: ${durationLabel(duration)}`).join(", ")}>
           {clock.lanes.map(({ lane, duration }) => <span key={lane} className={LANE_COLORS[lane.toLowerCase()] || "bg-muted-foreground"} style={{ width: `${clock.total === 0 ? 0 : duration / clock.total * 100}%` }} />)}
         </div>
@@ -125,7 +161,7 @@ export function IssueDiagnostics({ issue, attempts, history, now, attemptsAvaila
         <Kv name="Human action">{humanAction}</Kv>
       </dl>
     </Section>
-    <Section title="Attempts">
+    <Section title={attemptsPartial ? "Attempts (loaded)" : "Attempts"}>
       {!attemptsAvailable ? <p className="text-muted-foreground">Attempts unavailable.</p> : groups.length === 0 ? <p className="text-muted-foreground">No attempts yet.</p> : <Table tabIndex={0} aria-label="Attempts" className="tabular-nums outline-none focus-visible:ring-2 focus-visible:ring-ring">
         <TableHeader><TableRow>{["When", "Stage", "Model · effort", "Duration", "Outcome", "Tokens", "Cost"].map((label) => <TableHead key={label} className={label === "Tokens" || label === "Cost" || label === "Duration" ? "text-right" : undefined}>{label}</TableHead>)}</TableRow></TableHeader>
         <TableBody>{groups.map((group) => {

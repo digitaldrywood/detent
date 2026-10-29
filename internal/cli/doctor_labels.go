@@ -124,14 +124,6 @@ func doctorConfiguredLabels(cfg workflowconfig.Config) []doctorConfiguredLabel {
 			Color:       "fbca04",
 		})
 	}
-	if name := strings.TrimSpace(cfg.Agent.LifetimeLimitOverrideLabel); name != "" {
-		labels = append(labels, doctorConfiguredLabel{
-			ConfigKey:   "agent.lifetime_limit_override_label",
-			Name:        name,
-			Description: "Allows an issue to bypass the configured lifetime session and token limits.",
-			Color:       "fbca04",
-		})
-	}
 	return labels
 }
 

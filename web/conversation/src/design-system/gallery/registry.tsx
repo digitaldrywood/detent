@@ -1,3 +1,4 @@
+import { teamThreads } from "./specimens/teamThreads.tsx";
 // Catalog id → specimens, plus the foundation pages.
 //
 // The catalog (`src/design-system/catalog.json`) decides what components
@@ -63,6 +64,7 @@ export const REGISTRY: Readonly<Record<string, GalleryDoc>> = {
   "runner-status-dot": feedback.runnerStatusDot,
   "stage-progress": feedback.stageProgress,
   "activity-page": activityPage,
+  "team-threads": teamThreads,
   "capacity-panel": feedback.capacityPanel,
   // Layout and data display
   "scroll-area": layout.scrollArea,

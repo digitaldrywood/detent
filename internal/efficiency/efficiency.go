@@ -52,7 +52,7 @@ type Receipt struct {
 	WorkingSeconds        int64
 	GateWaitSeconds       int64
 	MergeTrainSeconds     int64
-	ParkedSeconds         int64
+	ParkedSeconds         int64 `json:"-"`
 	Redispatches          int64
 	BreakerTrips          int64
 	CIReruns              int64
@@ -102,7 +102,7 @@ type Dwell struct {
 	WorkingSeconds    int64
 	GateWaitSeconds   int64
 	MergeTrainSeconds int64
-	ParkedSeconds     int64
+	ParkedSeconds     int64 `json:"-"`
 }
 
 type RollupWindow struct {

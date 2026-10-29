@@ -21,7 +21,7 @@ export interface HandoffValues {
   readonly priority: number | null;
   readonly shareHistory: boolean;
   /**
-   * What happens to the issue once it exists (decisions.md §13.8, §14).
+   * What happens to the issue once it exists.
    * Always present: the form preselects the project's defaults, so the reader
    * is answering a question that has already been answered sensibly rather
    * than filling in a blank.
@@ -60,8 +60,8 @@ export interface HandoffFormProps {
   readonly projectName: string;
   /**
    * How much history becomes readable: the conversation's `message_count`,
-   * which is the whole history rather than the loaded page (decisions.md
-   * §10.5). Stated, never estimated.
+   * which is the whole history rather than the loaded page.
+   * Stated, never estimated.
    */
   readonly messageCount: number;
   readonly proposal?: IssueProposal | null;
@@ -69,7 +69,7 @@ export interface HandoffFormProps {
   readonly seedTitle?: string;
   readonly seedObjective?: string;
   readonly labels?: readonly string[];
-  /** The project's workflow states, for the next step's lane (§14). */
+  /** The project's workflow states, for the next step's lane. */
   readonly states?: readonly HandoffState[];
   readonly submitting: boolean;
   readonly failure: HandoffFailure | null;
@@ -176,8 +176,7 @@ export function HandoffForm(props: HandoffFormProps): React.ReactElement {
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="dc-handoff-project">Project</Label>
               {/* Fixed, not disabled: a disabled control reads as "not yet",
-                  and this one is never going to change (decisions.md §3 rule
-                  5). */}
+                  and this one is never going to change. */}
               <input
                 id="dc-handoff-project"
                 type="text"
@@ -251,7 +250,7 @@ export function HandoffForm(props: HandoffFormProps): React.ReactElement {
               </fieldset>
             )}
 
-            {/* The next step (decisions.md §13.8, §14). Creating an issue from
+            {/* The next step. Creating an issue from
                 a chat always ends with the same three questions, and Detent
                 knows sensible answers to all three, so they are preselected
                 rather than asked from a blank. */}
@@ -281,7 +280,7 @@ export function HandoffForm(props: HandoffFormProps): React.ReactElement {
                 </div>
               )}
 
-              {/* The hub takes the native rank, 0-3 (§14), so the options are
+              {/* The hub takes the native rank, 0-3, so the options are
                   the tracker's own ranks under its own names. */}
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="dc-handoff-priority">Priority</Label>

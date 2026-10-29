@@ -17,9 +17,11 @@ import (
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/connector/memory"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/testenv"
+	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -103,13 +105,14 @@ func TestMemoryConnectorRunnerE2EGateCreatesBranchDiffStatAndSQLiteTokens(t *tes
 	issue.CreatedAt = &createdAt
 
 	orch, err := New(Config{
+		Project:                scheduler.ProjectCandidate{ID: "detent"},
 		PollInterval:           time.Hour,
 		MaxConcurrentAgents:    1,
 		ActiveStates:           []string{"Todo"},
 		TerminalStates:         []string{"Done", "Cancelled"},
 		ContinuationRetryDelay: time.Hour,
 	}, Dependencies{
-		Connector: memory.New(memory.Config{Issues: []connector.Issue{issue}}),
+		Connector: fakehub.New(fakehub.Config{Issues: []connector.Issue{issue}}),
 		Runner:    runnerBackend,
 		Logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
@@ -124,16 +127,12 @@ func TestMemoryConnectorRunnerE2EGateCreatesBranchDiffStatAndSQLiteTokens(t *tes
 	}()
 	t.Cleanup(cancel)
 
-	state := waitForCompletedIssue(t, orch, issue.ID)
+	state := waitForRetriedIssue(t, orch, issue.ID)
 	cancel()
 	assertOrchestratorStopped(t, errCh)
 
-	completed := state.Completed[issue.ID]
-	if completed.FinalState != runpkg.FinalStateCompleted {
-		t.Fatalf("completed final state = %q, want %q", completed.FinalState, runpkg.FinalStateCompleted)
-	}
-	if completed.Tokens.Last == nil || completed.Tokens.Last.TotalTokens != 55 {
-		t.Fatalf("completed last-call tokens = %#v, want 55", completed.Tokens.Last)
+	if retry, ok := state.Retry[issue.ID]; !ok || retry.Attempt != 1 {
+		t.Fatalf("dirty uncommitted result retry = %+v, present = %t", retry, ok)
 	}
 	diffStat := state.DiffStats[issue.ID]
 	if diffStat.FilesChanged != 1 || diffStat.AddedLines != 1 || diffStat.RemovedLines != 0 || diffStat.Status != "changed" {
@@ -188,20 +187,7 @@ func TestMemoryConnectorRunnerE2EGateCreatesBranchDiffStatAndSQLiteTokens(t *tes
 	if issueSpend.TotalTokens != 66 || issueSpend.Sessions != 1 || math.Abs(issueSpend.CostUSD-0.501) > 0.000001 {
 		t.Fatalf("IssueSpendSince() = %#v, want uncached input plus output tokens and cost", issueSpend)
 	}
-	orch.cfg.Project.ID = "detent"
-	orch.cfg.BillingMode = config.BillingModeSubscription
-	orch.cfg.NoProgressTokenLimit = 366
-	orch.progressSpend = storeBackend
-	orch.workAttempts = nil
-	decision := orch.evaluateSpendProgress(ctx, Running{Issue: issue}, time.Now().UTC(), false, "")
-	if decision.Block || decision.Spend.TotalTokens != 66 {
-		t.Fatalf("spend progress decision = %#v, want cached-heavy session below token limit", decision)
-	}
-	orch.cfg.NoProgressTokenLimit = 66
-	decision = orch.evaluateSpendProgress(ctx, Running{Issue: issue}, time.Now().UTC(), false, "")
-	if !decision.Block || decision.BlockedBy != "tokens" || decision.Spend.TotalTokens != 66 {
-		t.Fatalf("spend progress decision = %#v, want genuine uncached spend at limit to block", decision)
-	}
+
 }
 
 type e2eAgentBackend struct {
@@ -251,26 +237,21 @@ func (c *e2eAgentBackend) RunTurn(_ context.Context, req runpkg.AgentTurnRequest
 	return runpkg.AgentTurnResult{ThreadID: "thread-e2e", TurnID: "turn-e2e", SessionID: "thread-e2e-turn-e2e"}, nil
 }
 
-func waitForCompletedIssue(t *testing.T, orch *Orchestrator, issueID string) State {
+func waitForRetriedIssue(t *testing.T, orch *Orchestrator, issueID string) State {
 	t.Helper()
-
-	deadline := time.Now().Add(20 * time.Second)
-	for time.Now().Before(deadline) {
-		stateCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-		state, err := orch.State(stateCtx)
-		cancel()
-		if err == nil {
-			if _, ok := state.Completed[issueID]; ok {
-				return state
-			}
-		} else if !errors.Is(err, context.DeadlineExceeded) {
-			t.Fatalf("State() error = %v", err)
+	var state State
+	testenv.WaitUntil(t, t.Context(), func() error {
+		var err error
+		state, err = orch.State(t.Context())
+		if err != nil {
+			return err
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	t.Fatalf("timed out waiting for completed issue %s", issueID)
-	return State{}
+		if _, ok := state.Retry[issueID]; !ok {
+			return fmt.Errorf("issue %s has not retried", issueID)
+		}
+		return nil
+	})
+	return state
 }
 
 func assertOrchestratorStopped(t *testing.T, errCh <-chan error) {

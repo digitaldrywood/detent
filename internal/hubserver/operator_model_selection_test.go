@@ -269,7 +269,8 @@ func TestNativeModelSelectionTools(t *testing.T) {
 	f := newDefaultNativeFixture(t, Config{})
 	contexts := make(chan context.Context, 1)
 	f.service.echo.GET("/api/v2/organizations/:organization/model-tool-test", func(c echo.Context) error {
-		contexts <- operatortool.BindConnection(c.Request().Context(), "native-model-tools", "test")
+		ctx := c.Request().Context()
+		contexts <- operatortool.BindConnection(ctx, "native-model-tools-"+operatortool.ConnectionIdentity(ctx).PrincipalID, "test")
 		return c.NoContent(http.StatusOK)
 	}, f.service.operatorAuthority)
 	path := "/api/v2/organizations/" + string(f.project.OrganizationID) + "/model-tool-test"
@@ -283,9 +284,9 @@ func TestNativeModelSelectionTools(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, d := range definitions {
-		if operatortool.IsOrganizationModelSelection(d.Name) {
-			t.Fatalf("native hub exposes hosted session operation %s", d.Name)
+	for _, d := range operatortool.ModelSelectionCatalog() {
+		if !slices.ContainsFunc(definitions, func(definition operatortool.Definition) bool { return definition.Name == d.Name }) {
+			t.Fatalf("native hub missing model selection operation %s", d.Name)
 		}
 	}
 	for _, project := range []string{string(f.project.ID), "foreign-project"} {
@@ -311,7 +312,66 @@ func TestNativeModelSelectionTools(t *testing.T) {
 	if action.Status != chatpkg.ActionSucceeded || saved.Revision != 2 || saved.Effective.Model("normal") != "native-model" {
 		t.Fatalf("saved=%+v action=%+v", saved, action)
 	}
-	if _, err := executor.Execute(ctx, operatortool.Call{Name: operatortool.GetOrganizationModelSelection, Arguments: json.RawMessage(`{}`)}); !errors.Is(err, operatortool.ErrAccessDenied) {
-		t.Fatalf("native organization authority=%v", err)
+	response := performHubAPIRequest(t, f.service, http.MethodPost, "/api/v1/tokens", testHubAdminToken, map[string]any{"name": "organization-operator", "scope": "operator"})
+	requireNativeStatus(t, response, http.StatusCreated)
+	var operator tokenResponse
+	decodeHubResponse(t, response, &operator)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, "/api/v2/organizations/missing-organization/model-tool-test", operator.Token, nil), http.StatusForbidden)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, path, operator.Token, nil), http.StatusOK)
+	ctx = <-contexts
+	if err := executor.OpenConnection(ctx); err != nil {
+		t.Fatal(err)
+	}
+	definitions, err = executor.ListTools(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, definition := range operatortool.ModelSelectionCatalog() {
+		if operatortool.IsOrganizationModelSelection(definition.Name) && !slices.ContainsFunc(definitions, func(d operatortool.Definition) bool { return d.Name == definition.Name }) {
+			t.Fatalf("organization operator missing model selection operation %s", definition.Name)
+		}
+	}
+	if _, err := executor.Execute(ctx, operatortool.Call{Name: operatortool.GetProjectModelSelection, Arguments: json.RawMessage(`{"project_id":"` + string(f.project.ID) + `"}`)}); err == nil {
+		t.Fatal("organization operator accessed project without a grant")
+	}
+	readCall := operatortool.Call{Name: operatortool.GetOrganizationModelSelection, Arguments: json.RawMessage(`{}`)}
+	result, err = executor.Execute(ctx, readCall)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var organization struct {
+		Data cloudModelSelection `json:"data"`
+	}
+	if err := json.Unmarshal(result.Content, &organization); err != nil {
+		t.Fatal(err)
+	}
+	selection := *organization.Data.Selection
+	selection.NormalModel = new("organization-model")
+	call = modelSelectionCall(t, operatortool.UpdateOrganizationModelSelection, "", "native-organization-selection", operatortool.ModelSelectionInput{ExpectedRevision: organization.Data.Revision, Selection: &selection})
+	result, err = executor.Execute(ctx, call)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(result.Content, &action); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(action.Result), &saved); err != nil {
+		t.Fatal(err)
+	}
+	if action.Status != chatpkg.ActionSucceeded || saved.Revision != organization.Data.Revision+1 || saved.Effective.Model("normal") != "organization-model" {
+		t.Fatalf("organization saved=%+v action=%+v", saved, action)
+	}
+	response = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/model-selection", f.token, nil)
+	requireNativeStatus(t, response, http.StatusOK)
+	decodeHubResponse(t, response, &saved)
+	if saved.Effective.Model("normal") != "native-model" {
+		t.Fatalf("organization update replaced project override: %+v", saved)
+	}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, path, f.token, nil), http.StatusOK)
+	projectCtx := <-contexts
+	for _, deniedCall := range []operatortool.Call{readCall, call} {
+		if _, err := executor.Execute(projectCtx, deniedCall); !errors.Is(err, operatortool.ErrAccessDenied) {
+			t.Fatalf("project credential organization authority=%v", err)
+		}
 	}
 }

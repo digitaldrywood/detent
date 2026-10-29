@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/diffbody"
+	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/mcp"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -49,6 +50,10 @@ func TestMigratedAttemptDiffReadsThroughEntry(t *testing.T) {
 	if err := json.Unmarshal(created.Body.Bytes(), &issue); err != nil {
 		t.Fatal(err)
 	}
+	tenant := f.fixtures["org_alpha"]
+	if err := tenant.service.Close(); err != nil {
+		t.Fatal(err)
+	}
 	db, err := sql.Open("sqlite", f.fixtures["org_alpha"].path+"?_pragma=foreign_keys(1)")
 	if err != nil {
 		t.Fatal(err)
@@ -72,6 +77,19 @@ VALUES (?,?,'org_alpha',?,?,'attempt','',2,'base','head','attempt',?,'runner_tes
 		}
 	}
 	if _, err := db.ExecContext(t.Context(), `UPDATE attempt_diff_body_migration SET vacuum_pending=1`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	shared, err := hubserver.Open(t.Context(), tenant.config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = shared.Close() })
+	f.tenants[testSocketEndpoint("alpha.sock")] = shared.Handler()
+	db, err = sql.Open("sqlite", tenant.path+"?mode=ro")
+	if err != nil {
 		t.Fatal(err)
 	}
 	organization, err := f.service.registry.Organization(t.Context(), "org_alpha")

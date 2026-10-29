@@ -405,7 +405,7 @@ func TestRunnerCapacityRecommendationReadOnly(t *testing.T) {
 			}
 		}
 	}
-	for i := range 14 {
+	for i := range 16 {
 		run := runs[i%10]
 		runnerID := r.binding.RunnerID
 		if i == 13 {
@@ -430,6 +430,9 @@ func TestRunnerCapacityRecommendationReadOnly(t *testing.T) {
 		if i == 12 {
 			status = "interrupted"
 		}
+		if i >= 14 {
+			run.Usage.PeakMemoryBytes = 0
+		}
 		lease := fmt.Sprintf("lease_capacity_%d", i)
 		at, end := formatHubTime(run.StartedAt), formatHubTime(run.StartedAt.Add(time.Hour))
 		var fence int64
@@ -439,11 +442,18 @@ func TestRunnerCapacityRecommendationReadOnly(t *testing.T) {
 		if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO lease_runners(lease_id,runner_id) VALUES(?,?)`, lease, runnerID); err != nil {
 			t.Fatal(err)
 		}
-		raw, err := json.Marshal(tracker.NativeRunData{ProcessUsage: &run.Usage})
+		var ready any
+		var peak, user, system, wall any = int64(128 * capacityGiB), float64(10000), float64(10000), float64(1)
+		var sourceUsage = &run.Usage
+		if i%2 == 0 {
+			ready, peak, user, system, wall = 1, run.Usage.PeakMemoryBytes, run.Usage.UserCPUSeconds, run.Usage.SystemCPUSeconds, run.Usage.WallSeconds
+			sourceUsage = &procgroup.Usage{PeakMemoryBytes: 128 * capacityGiB, UserCPUSeconds: 10000, SystemCPUSeconds: 10000, WallSeconds: 1}
+		}
+		raw, err := json.Marshal(tracker.NativeRunData{ProcessUsage: sourceUsage})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO native_attempts(id,organization_id,project_id,work_item_id,lease_id,fencing_token,run_id,sequence,status,data_json,started_at,updated_at) VALUES(?,?,?,?,?,?,?,1,?,?,?,?)`, fmt.Sprintf("attempt_capacity_%d", i), f.project.OrganizationID, f.project.ID, issue.WorkItemID, lease, fence, fmt.Sprintf("run_capacity_%d", i), status, string(raw), at, end); err != nil {
+		if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO native_attempts(id,organization_id,project_id,work_item_id,lease_id,fencing_token,run_id,sequence,status,data_json,started_at,updated_at,usage_facts_ready,process_peak_memory_bytes,process_user_cpu_seconds,process_system_cpu_seconds,process_wall_seconds) VALUES(?,?,?,?,?,?,?,1,?,?,?,?,?,?,?,?,?)`, fmt.Sprintf("attempt_capacity_%d", i), f.project.OrganizationID, f.project.ID, issue.WorkItemID, lease, fence, fmt.Sprintf("run_capacity_%d", i), status, string(raw), at, end, ready, peak, user, system, wall); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -470,7 +480,7 @@ func TestRunnerCapacityRecommendationReadOnly(t *testing.T) {
 		}
 		if machineUse == "dedicated" {
 			p := out.Recommendation.Periods[0]
-			if len(out.Recommendation.Periods) != 1 || p.HoursCovered != 24 || p.RunsObserved != 10 || p.SlotHours != 12 || p.Slots == nil || *p.Slots != (slotRange{14, 14}) {
+			if len(out.Recommendation.Periods) != 1 || p.HoursCovered != 24 || p.RunsObserved != 10 || p.SlotHours != 14 || p.P90PeakMemoryBytes != 4*capacityGiB || p.P90CPUCores != 1 || p.Slots == nil || *p.Slots != (slotRange{14, 14}) {
 				t.Fatalf("period=%+v", p)
 			}
 		} else if len(out.Recommendation.Periods) != 2 || out.Recommendation.Periods[0].Status != "insufficient_evidence" || out.Recommendation.Periods[1].Status != "insufficient_evidence" {

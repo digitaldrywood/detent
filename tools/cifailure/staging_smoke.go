@@ -24,28 +24,31 @@ import (
 var smokeSkipped = strings.Fields(`
  billing_usage.hosted_billing_checkout billing_usage.hosted_credit_checkout billing_usage.hosted_credit_auto_fund billing_usage.hosted_billing_portal
  billing_usage.api_budget_override_set billing_usage.api_budget_override_clear
- stop_run delete_comment remove_item acknowledge_parks dispose_security_finding post_operator_chat
+ stop_run delete_comment remove_item dispose_security_finding post_operator_chat
  upload_attachment delete_attachment reference_attachment delete_conversation_attachment
  create_native_project create_hosted_project save_onboarding bind_native_repository
  start_git_hub_import advance_git_hub_import command_git_hub_batch cutover_project
  approve_project_policy revoke_project_policy project_native_summary remove_project_secret import_sprite_usage
- update_organization_model_selection update_project_model_selection
+ update_sprite_pool update_project_sprite_allocation
+ update_organization_model_selection update_project_model_selection set_organization_logo
  apply_local_project_policy resume_local_project drain_local_project detach_local_project
  session_logout organization_switch organization_create organization_delete resume_provisioning
  organization_project_rank_update invitation_accept invitation_send invitation_edit invitation_resend invitation_revoke
  member_remove member_role member_grant credential_create credential_rotate credential_revoke credential_grant support_start
+ revoke_oauth_grant
  platform_adjust_ai_credits platform_change_entitlement
  refresh capacity_clear tracker_availability_clear forge_availability_clear failure_breaker_canary update_apply
- mark_urgent_runner_update issue_progress_credit acknowledge_staleness_warnings recover_work_attempt transfer_item verify_fix
+ mark_urgent_runner_update acknowledge_staleness_warnings recover_work_attempt transfer_item verify_fix
  create_runner_enrollment revoke_runner_enrollment revoke_runner_identity
  update_runner_capacity update_runner_routing update_runner_host update_fleet_runner update_fleet_host
  create_workspace delete_workspace create_conversation post_conversation_command link_conversation patch_conversation
+ create_thread post_to_thread resolve_thread
  upload_conversation_attachment create_project_action patch_project_action delete_project_action create_project_action_run
- artifact_access associate_release_pick create_change publish_change_version discuss_change review_change view_change_file
+ artifact_access publish_release_pick associate_release_pick create_change publish_change_version discuss_change review_change view_change_file
  approve_change_review_policy bind_artifact_service
 `)
 
-var smokeWrites = strings.Fields(`file_issue edit_item add_comment edit_comment move_item set_dependency order_item set_queue_priority archive_item restore_item set_priority update_project_integration`)
+var smokeWrites = strings.Fields(`file_issue edit_item add_comment edit_comment move_item set_dependency order_item set_queue_priority archive_item restore_item set_priority update_project_integration rename_project set_project_icon`)
 var errSmokeFixture = errors.New("smoke resource fixture unavailable")
 
 var smokeReadSkips = map[string]string{
@@ -861,6 +864,69 @@ func (s *mcpSmoke) integration(ctx context.Context) error {
 	for _, key := range []string{"intake", "projection", "repository_enabled"} {
 		if current[key] != data[key] {
 			return fmt.Errorf("update_project_integration: unchanged %s was modified", key)
+		}
+	}
+	name, ok := current["name"].(string)
+	if !ok || name == "" {
+		return errors.New("get_project_integration: missing project name")
+	}
+	if err := json.Unmarshal(s.mcp.tools["rename_project"].InputSchema, &schema); err != nil {
+		return err
+	}
+	value, err = smokeRevisionArgument(schema.Properties["expected_revision"], next)
+	if err != nil {
+		return err
+	}
+	if _, err := s.call(ctx, "rename_project", map[string]any{"organization_id": s.fixtures["organization_id"], "project_id": s.project, "name": name, "expected_revision": value}); err != nil {
+		return err
+	}
+	renamed, err := s.call(ctx, "get_project_integration", map[string]any{"project_id": s.project})
+	if err != nil {
+		return err
+	}
+	saved, ok := renamed["data"].(map[string]any)
+	if !ok {
+		return errors.New("rename_project: missing updated data")
+	}
+	revision, err = smokeRevision(saved)
+	if err != nil || revision <= next {
+		return errors.Join(errors.New("rename_project: revision did not advance"), err)
+	}
+	for _, key := range []string{"name", "intake", "projection", "repository_enabled"} {
+		if saved[key] != current[key] {
+			return fmt.Errorf("rename_project: unchanged %s was modified", key)
+		}
+	}
+	if err := json.Unmarshal(s.mcp.tools["set_project_icon"].InputSchema, &schema); err != nil {
+		return err
+	}
+	value, err = smokeRevisionArgument(schema.Properties["expected_revision"], revision)
+	if err != nil {
+		return err
+	}
+	icon := map[string]any{"kind": "lucide", "name": "rocket", "color": "blue"}
+	if _, err := s.call(ctx, "set_project_icon", map[string]any{"organization_id": s.fixtures["organization_id"], "project_id": s.project, "icon": icon, "expected_revision": value}); err != nil {
+		return err
+	}
+	result, err = s.call(ctx, "get_project_integration", map[string]any{"project_id": s.project})
+	if err != nil {
+		return err
+	}
+	updated, ok := result["data"].(map[string]any)
+	if !ok {
+		return errors.New("set_project_icon: missing updated data")
+	}
+	next, err = smokeRevision(updated)
+	if err != nil || next <= revision {
+		return errors.Join(errors.New("set_project_icon: revision did not advance"), err)
+	}
+	chosen, ok := updated["project_icon"].(map[string]any)
+	if !ok || !maps.Equal(chosen, icon) {
+		return errors.New("set_project_icon: saved icon does not match")
+	}
+	for _, key := range []string{"name", "intake", "projection", "repository_enabled"} {
+		if updated[key] != saved[key] {
+			return fmt.Errorf("set_project_icon: unchanged %s was modified", key)
 		}
 	}
 	return nil

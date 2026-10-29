@@ -9,7 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
-// Handing a queued run to the runner (decisions section 18.12).
+// Handing a queued run to the runner.
 //
 // A run is a row before it is a process, and until now the only thing that
 // turned the row into a process was a person opening the exec channel for it.
@@ -139,7 +139,7 @@ func (w *workspaceService) dispatchActionRun(ctx context.Context, run actionRunR
 		w.failUndeliveredRun(ctx, claimed, stream)
 		return
 	}
-	// No actor is stamped. Section 18.2's stamp says which person asked, and
+	// No actor is stamped. The relay protocol's stamp says which person asked, and
 	// nobody did: this run is the hub acting on a row somebody wrote through
 	// the API, and inventing a person for it would put a name on an audit line
 	// that names the wrong thing.

@@ -1,6 +1,7 @@
 package runnerauth
 
 import (
+	"context"
 	"errors"
 	"regexp"
 	"slices"
@@ -10,16 +11,29 @@ import (
 )
 
 type Problem struct {
-	ProjectID   string    `json:"project_id,omitempty"`
-	Subject     string    `json:"subject,omitempty"`
-	Check       string    `json:"check,omitempty"`
-	ErrorOutput string    `json:"error_output,omitempty"`
-	FixCommand  string    `json:"fix_command,omitempty"`
-	ReportedAt  time.Time `json:"reported_at,omitempty"`
-	Code        string    `json:"code"`
-	Message     string    `json:"message"`
-	FixHint     string    `json:"fix_hint"`
-	FirstSeen   time.Time `json:"first_seen"`
+	CachedCapabilities bool      `json:"cached_capabilities,omitempty"`
+	ProjectID          string    `json:"project_id,omitempty"`
+	Subject            string    `json:"subject,omitempty"`
+	Check              string    `json:"check,omitempty"`
+	ErrorOutput        string    `json:"error_output,omitempty"`
+	FixCommand         string    `json:"fix_command,omitempty"`
+	ReportedAt         time.Time `json:"reported_at,omitempty"`
+	Code               string    `json:"code"`
+	Message            string    `json:"message"`
+	FixHint            string    `json:"fix_hint"`
+	FirstSeen          time.Time `json:"first_seen"`
+}
+
+func WorkflowLoadProblems(projectID string, err error) []Problem {
+	if err == nil || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return nil
+	}
+	p := NewProblem("settings_invalid")
+	p.ProjectID = projectID
+	p.Subject = projectID + "/workflow"
+	p.Check = "load workflow"
+	p.ErrorOutput = err.Error()
+	return []Problem{SanitizeProblem(p)}
 }
 
 func NewProblem(code string) Problem {
@@ -49,9 +63,9 @@ func NewProblem(code string) Problem {
 	case "version_unsupported":
 		p.Message = "The runner's protocol version is unsupported."
 		p.FixHint = "Upgrade the runner to a version compatible with this Hub."
-	case "policy_mismatch":
-		p.Message = "The runner's project policy differs from the Hub's current approval."
-		p.FixHint = "Approve the pending policy in the project's Integrations settings, or update the runner's project files to match the approved policy."
+	case "update_applied_not_running":
+		p.Message = "The runner control process has not converged to its applied verified release."
+		p.FixHint = "Check the runner's update and restart logs; active attempts must finish before its control process restarts."
 	}
 	return p
 }

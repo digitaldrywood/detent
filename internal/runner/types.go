@@ -389,7 +389,7 @@ type AgentTurnRequest struct {
 	TempDir             string
 	Prompt              string
 	// Attachments are the files the user attached to the message that starts
-	// this turn (decisions section 17.1). Images become provider image input;
+	// this turn. Images become provider image input;
 	// text files are appended to Prompt as a delimited data block.
 	Attachments             []AgentAttachment
 	ToolInstructions        string
@@ -620,8 +620,9 @@ func (e *agentDurationLimitError) Is(target error) bool {
 }
 
 type RunRequest struct {
-	workspaceBackend workspace.Backend
-	LandingBatch     *workspace.LandingBatchTicket `json:"-"`
+	workspacePrepared bool
+	workspaceBackend  workspace.Backend
+	LandingBatch      *workspace.LandingBatchTicket `json:"-"`
 	// DeferExecutionFinish leaves terminal publication with the claim owner so
 	// native collaboration and lane writes finish under the execution lease.
 	DeferExecutionFinish     bool
@@ -669,9 +670,12 @@ type RunRequest struct {
 	retainCheckpoint          bool
 	finalizeNativeWork        bool
 	reviewOnly                bool
+	repairResume              bool
 	checkpointRefs            *checkpointRefs
 	executionCancellation     func() error
+	attemptDiffSource         AttemptDiffSource
 	validationEvidenceSource  AttemptDiffSource
+	reviewSource              func(context.Context, *RunResult) (string, error)
 }
 
 type NativeReviewContinuation struct {
@@ -767,6 +771,9 @@ const (
 )
 
 type ValidatorRequest struct {
+	usageExecution       Execution
+	source               ChangeSourceExecution
+	workspacePrepared    bool
 	SecurityAudit        *NativeSecurityAuditEvidence
 	Discussion           NativeReviewDiscussion
 	Evidence             []tracker.NativeEvidence
@@ -784,6 +791,7 @@ type ValidatorRequest struct {
 }
 
 type SecurityAuditRequest struct {
+	usageExecution  Execution
 	complete        func(context.Context, SecurityAuditExecution) error
 	evidence        ValidationEvidenceExecution
 	OnUsageUpdate   UsageUpdateHandler
@@ -794,6 +802,7 @@ type SecurityAuditRequest struct {
 }
 
 type SecurityAuditExecution struct {
+	Verification       *securityaudit.Verification
 	RuntimeIdentity    agentidentity.Identity
 	SessionID          int64
 	InvocationID       string
@@ -808,36 +817,36 @@ type SecurityAuditExecution struct {
 }
 
 type RunResult struct {
-	BillingMode             string
-	ReportedCostMicros      *int64
-	CostSource              string
-	GitHubScope             *tracker.NativeGitHubScope
-	GitHubRESTUsage         *connector.RESTRateLimitUsage
-	GitHubRESTConsumer      string
-	Compute                 *compute.Usage
-	TokenUSD                float64
-	Checkpoint              *workspace.CheckpointRecord
-	FinalState              string
-	Output                  string
-	FinalMessage            string
-	Model                   string
-	TurnStarted             bool
-	TurnStartRefused        bool
-	TurnCount               int
-	RuntimeIdentity         agentidentity.Identity
-	Tokens                  TokenTotals
-	DiffStats               DiffStats
-	ArtifactEvidence        ArtifactProgressEvidence
-	RateLimits              *telemetry.RateLimits
-	BudgetRefusal           *BudgetRefusal
-	SkillDraftProposed      bool
-	PullRequestUpdated      bool
-	PullRequestHeadPushed   bool
-	CITriggerLabelReapplied bool
-	ForgeWriteCompleted     bool
-	DeliverableCommands     []DeliverableCommandEvidence
-	WorkspaceBranch         string
-	MergePrecheck           *MergePrecheck
+	BillingMode                string
+	ReportedCostMicros         *int64
+	CostSource                 string
+	GitHubScope                *tracker.NativeGitHubScope
+	GitHubRESTUsage            *connector.RESTRateLimitUsage
+	GitHubRESTConsumer         string
+	Compute                    *compute.Usage
+	TokenUSD                   float64
+	Checkpoint                 *workspace.CheckpointRecord
+	FinalState                 string
+	Output                     string
+	FinalMessage               string
+	Model                      string
+	TurnStarted                bool
+	TurnStartRefused           bool
+	TurnCount                  int
+	ReviewConversationsCleared bool
+	RuntimeIdentity            agentidentity.Identity
+	Tokens                     TokenTotals
+	DiffStats                  DiffStats
+	ArtifactEvidence           ArtifactProgressEvidence
+	RateLimits                 *telemetry.RateLimits
+	BudgetRefusal              *BudgetRefusal
+	PullRequestUpdated         bool
+	PullRequestHeadPushed      bool
+	CITriggerLabelReapplied    bool
+	ForgeWriteCompleted        bool
+	DeliverableCommands        []DeliverableCommandEvidence
+	WorkspaceBranch            string
+	MergePrecheck              *MergePrecheck
 	// GateValidatedHead is the pull request head on which Detent itself ran
 	// the configured command gate and saw it pass. Empty when it did not.
 	GateValidatedHead string
@@ -851,38 +860,45 @@ type RunResult struct {
 	// NativeLanding is what a hub-native landing run did with the reviewed
 	// version: landed it, or refused with a reason a person acts on. It is
 	// nil for every other run.
-	NativeLanding    *NativeLanding
-	budgetProjection *dispatchBudgetProjection
+	NativeLanding              *NativeLanding
+	budgetProjection           *dispatchBudgetProjection
+	terminalFailure            *tracker.NativeTerminalFailure
+	reusedDispositionAttemptID string
+	landingCleanup             func(context.Context) error
 }
 
 // NativeLandingTarget is the reviewed version a landing run puts on the
 // base branch: the Change Request, the version, its head, and the merge
 // method the approved policy names.
 type NativeLandingTarget struct {
-	ReviewPending     bool
-	SourceMergeSHA    string
-	BaseRef           string
-	BaseSHA           string
-	SecurityAudit     bool
-	Validation        *gate.CommandResult
-	RebaseRequired    bool
-	CI                *tracker.NativeLandingCIReceipt
-	SourceIssues      []tracker.ExternalReference
-	External          *tracker.ChangeExternalReference
-	ChangeID          string
-	VersionID         string
-	HeadSHA           string
-	Method            string
-	Repository        string
-	GitHubPullRequest bool
-	Title             string
-	Number            int64
+	ConflictFiles      []string
+	ReviewDispositions []tracker.ReviewDisposition
+	ReviewPending      bool
+	SourceMergeSHA     string
+	BaseRef            string
+	BaseSHA            string
+	SecurityAudit      bool
+	Validation         *gate.CommandResult
+	RebaseRequired     bool
+	MergeResolution    bool
+	CI                 *tracker.NativeLandingCIReceipt
+	SourceIssues       []tracker.ExternalReference
+	External           *tracker.ChangeExternalReference
+	ChangeID           string
+	VersionID          string
+	HeadSHA            string
+	Method             string
+	Repository         string
+	GitHubPullRequest  bool
+	Title              string
+	Number             int64
 }
 
 // NativeLanding reports a landing run's outcome. A landed version names the
 // commit the base branch advanced to; a refused one carries the refusal kind
 // and the reason, and the base branch is unchanged.
 type NativeLanding struct {
+	ConflictFiles   []string
 	SecurityAudit   *tracker.SecurityAuditReview
 	Pipeline        []gate.PipelineTiming `json:"pipeline,omitempty"`
 	PipelineDropped int                   `json:"pipeline_dropped,omitempty"`
@@ -906,18 +922,20 @@ type NativeLanding struct {
 }
 
 func (l NativeLanding) RequiresRework() bool {
-	return !l.Landed && (l.CI != nil && l.CI.State == "failure" || l.GateFailed || l.RefusalKind == workspace.LandRefusalConflict || l.RefusalKind == workspace.LandRefusalProtected && workspace.ReviewConversationsRefusal(l.Refusal))
+	return !l.Landed && (l.CI != nil && l.CI.State == "failure" || l.GateFailed || l.RefusalKind == workspace.LandRefusalConflict || l.RefusalKind == workspace.LandRefusalHeadMoved || l.RefusalKind == workspace.LandRefusalProtected && workspace.ReviewConversationsRefusal(l.Refusal))
 }
 
 // NativeChange describes a successful hub-native work run's change. A hub
 // native item has no pull request; the runner opens the Change Request under
 // the run's lease and reports it here, and the orchestrator moves the item.
 type NativeChange struct {
-	SecurityAudit             *tracker.SecurityAuditReview
-	ImplementationReview      *gate.ValidatorResult
-	ImplementationReviewError string
-	Landing                   *NativeLanding
-	Validator                 *gate.ValidatorResult
+	MergeResolution            bool
+	ReusedDispositionAttemptID string
+	SecurityAudit              *tracker.SecurityAuditReview
+	ImplementationReview       *gate.ValidatorResult
+	ImplementationReviewError  string
+	Landing                    *NativeLanding
+	Validator                  *gate.ValidatorResult
 	// Changed reports that the run's final attempt diff has commits ahead of
 	// its base. A run that committed nothing has nothing to review.
 	Changed bool
@@ -998,10 +1016,10 @@ type UsageUpdate struct {
 	RSSBytes              uint64
 	RSSCeilingBytes       uint64
 	RSSObservedAt         time.Time
-	DispatchLoopStart     *DispatchLoopStartSnapshot
+	CompletionSourceStart *CompletionSourceStartSnapshot
 }
 
-type DispatchLoopStartSnapshot struct {
+type CompletionSourceStartSnapshot struct {
 	WorkspaceDiffAvailable bool
 	WorkspaceHeadAvailable bool
 	DiffStats              DiffStats
@@ -1034,6 +1052,7 @@ type DiffStats struct {
 	CommitsAhead                   int
 	RemoteBranchExists             bool
 	DeliveryStateChecked           bool
+	TreeSHA                        string
 	HeadSHA                        string
 	Fingerprint                    string
 	Status                         string
@@ -1051,15 +1070,9 @@ type TokenTotals struct {
 }
 
 type PriorAttempt struct {
-	Source                  string
-	Reason                  string
-	ExplainBeforeRetry      bool
-	MissingSignal           string
-	ObservedTokens          int64
-	NoProgressTokenLimit    int64
-	ObservedSpendUSD        float64
-	NoProgressSpendLimitUSD float64
-	Validator               gate.ValidatorResult
+	Source    string
+	Reason    string
+	Validator gate.ValidatorResult
 }
 
 type FakeRunner struct{}
