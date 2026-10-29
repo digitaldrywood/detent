@@ -14,7 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
-const nativeSearchRebuildBatch = 100
+const nativeSearchRebuildBatch = 1
 
 var registerNativeSearchText = sync.OnceValue(func() error {
 	if err := registerNativeSearchTokenizer(); err != nil {
