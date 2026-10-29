@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -14,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 func TestProgressCheckUsesReadOnlyBackendAndJSONBudget(t *testing.T) {
@@ -21,10 +23,12 @@ func TestProgressCheckUsesReadOnlyBackendAndJSONBudget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("TMPDIR", root)
+	for _, key := range []string{"TMPDIR", "TMP", "TEMP"} {
+		t.Setenv(key, "")
+	}
 	output := `{"outcome":"reroute","step":"implement","reason":"` + strings.Repeat("evidence ", 100) + `","evidence":["failed-attempt"]}`
 	backend := &progressPolicyBackend{fakeCodexClient: fakeCodexClient{updates: []AgentUpdate{{Type: AgentUpdateTokenUsage, Tokens: AgentTokenUsage{InputTokens: 100, OutputTokens: 50}}, {Type: AgentUpdateMessageDelta, ItemID: "final", Delta: output}}}}
-	r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: config.Config{Agents: config.Agents{Routes: []config.AgentRoute{{Name: "default", Backend: "codex", Model: "example-model", Default: true}}}}}, Workspace: &fakeWorkspaceBackend{}, AgentBackend: backend})
+	r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: config.Config{Agents: config.Agents{Routes: []config.AgentRoute{{Name: "default", Backend: "codex", Model: "example-model", Default: true}}}}}, Workspace: progressWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: root}}}, AgentBackend: backend})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,8 +44,11 @@ func TestProgressCheckUsesReadOnlyBackendAndJSONBudget(t *testing.T) {
 	if request.MaxDuration <= 0 || request.MaxDuration > 30*time.Second {
 		t.Fatalf("progress deadline=%v", request.MaxDuration)
 	}
-	if !request.ReadOnly || !request.TextOnly || request.SupplementalTools || request.MaxTurns != 1 || request.Resume.ThreadID != "" || filepath.Dir(request.Workspace) != root {
+	if !request.ReadOnly || !request.TextOnly || request.SupplementalTools || request.MaxTurns != 1 || request.Resume.ThreadID != "" || filepath.Dir(filepath.Dir(request.Workspace)) != workspace.WorkerScratchRoot(root) {
 		t.Fatalf("progress request escaped read-only isolated turn: %+v", request)
+	}
+	if _, err := os.Stat(request.Workspace); !os.IsNotExist(err) {
+		t.Fatalf("progress scratch retained: %v", err)
 	}
 	if !strings.Contains(request.Prompt, "failed-attempt") || !strings.Contains(request.Prompt, progresscheck.Instructions) {
 		t.Fatal("backend did not receive evidence and decision contract")
@@ -99,7 +106,9 @@ func TestProgressCheckTimeoutAndAdmissionAccounting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("TMPDIR", root)
+	for _, key := range []string{"TMPDIR", "TMP", "TEMP"} {
+		t.Setenv(key, "")
+	}
 	for _, rejected := range []bool{false, true} {
 		t.Run(map[bool]string{false: "timeout reports reasoning spend", true: "capacity rejection starts no provider"}[rejected], func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
@@ -108,7 +117,7 @@ func TestProgressCheckTimeoutAndAdmissionAccounting(t *testing.T) {
 				if rejected {
 					execution.startError = errors.New("provider capacity unavailable")
 				}
-				r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: config.Config{Agents: config.Agents{Routes: []config.AgentRoute{{Name: "default", Backend: "codex", Model: "", Default: true}}}}}, Workspace: &fakeWorkspaceBackend{}, AgentBackend: backend})
+				r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: config.Config{Agents: config.Agents{Routes: []config.AgentRoute{{Name: "default", Backend: "codex", Model: "", Default: true}}}}}, Workspace: progressWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: root}}}, AgentBackend: backend})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -125,3 +134,7 @@ func TestProgressCheckTimeoutAndAdmissionAccounting(t *testing.T) {
 		})
 	}
 }
+
+type progressWorkspace struct{ *fakeWorkspaceBackend }
+
+func (w progressWorkspace) Existing(workspace.Issue) (workspace.Info, error) { return w.info, nil }
