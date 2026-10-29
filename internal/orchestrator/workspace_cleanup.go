@@ -38,7 +38,7 @@ func (o *Orchestrator) startWorkspaceCleanupPass(ctx context.Context, state *Sta
 	if o.quarantineWarnings == nil {
 		o.quarantineWarnings = make(map[string]struct{})
 	}
-	worker := &Orchestrator{cfg: o.cfg, connector: o.connector, reaper: o.reaper, logger: o.logger, trimHostCache: o.trimHostCache, quarantineWarnings: o.quarantineWarnings}
+	worker := &Orchestrator{cfg: o.cfg, connector: o.connector, reaper: o.reaper, workAttempts: o.workAttempts, logger: o.logger, trimHostCache: o.trimHostCache, quarantineWarnings: o.quarantineWarnings}
 	remaining := workspaceCleanupBatchSize
 	worker.workspaceCleanupRemaining = &remaining
 	budget := o.cfg.PollInterval

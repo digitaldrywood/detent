@@ -15,10 +15,19 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
+const storeProjectionSweepBatches = 16
+
 func (o *Orchestrator) sweepRetention(ctx context.Context, state *State, now time.Time) {
 	if maintainer, ok := o.workAttempts.(store.TypedProjectionMaintainer); ok {
-		if _, err := maintainer.BackfillTypedProjections(ctx); err != nil {
-			o.logger.Warn("store projection backfill failed", "error", err)
+		for range storeProjectionSweepBatches {
+			changed, err := maintainer.BackfillTypedProjections(ctx)
+			if err != nil {
+				o.logger.Warn("store projection backfill failed", "error", err)
+				break
+			}
+			if changed == 0 {
+				break
+			}
 		}
 	}
 	sweeper, ok := o.reaper.(workspace.RetentionSweeper)
