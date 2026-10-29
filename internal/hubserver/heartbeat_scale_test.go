@@ -130,7 +130,7 @@ func TestHeartbeatScaleBenchmark(t *testing.T) {
 			if err := json.Unmarshal(response.Body.Bytes(), &snapshot); err != nil {
 				t.Fatal(err)
 			}
-			if snapshot.ClaimState == nil || len(snapshot.ClaimState.ReleasedExecutions) != releasedExecutionsPageSize {
+			if snapshot.ClaimState == nil || len(snapshot.ClaimState.ReleasedExecutions) > releasedExecutionsPageSize {
 				t.Fatalf("released executions = %+v", snapshot.ClaimState)
 			}
 			if writer == nil {
@@ -444,8 +444,12 @@ func TestHeartbeatClaimSkipsUnknownLegacySource(t *testing.T) {
 }
 
 func TestReleasedExecutionPollingBudget(t *testing.T) {
-	for _, history := range []int{0, 1000} {
-		t.Run(fmt.Sprintf("history=%d", history), func(t *testing.T) {
+	for _, test := range []struct {
+		history    int
+		unresolved bool
+		pending    int
+	}{{0, false, 101}, {1000, false, 101}, {0, true, 101}, {1000, true, 101}, {0, true, 100}} {
+		t.Run(fmt.Sprintf("history=%d/unresolved=%v/pending=%d", test.history, test.unresolved, test.pending), func(t *testing.T) {
 			f := newNativeFixture(t, nil, "", "cleanup-budget")
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim)
 			r.enroll(t)
@@ -457,7 +461,7 @@ func TestReleasedExecutionPollingBudget(t *testing.T) {
 			}
 			defer tx.Rollback()
 			pending := map[string]bool{}
-			for i := range 101 + history {
+			for i := range test.pending + test.history {
 				id := fmt.Sprintf("cleanup-%04d", i)
 				result, err := tx.ExecContext(t.Context(), `INSERT INTO issues(workflow_state_id,native_id,organization_id,project_id,number,title,url,github_state,source_version,source_updated_at,synchronized_at,created_at,updated_at,native_created_at,native_updated_at) VALUES((SELECT id FROM workflow_states WHERE project_id=? AND source_name='Todo'),?,?,?,?,?,'','open','v1',?,?,?,?,?,?)`, f.project.ID, "wi_"+id, f.project.OrganizationID, f.project.ID, i+1, "Example issue", at, at, at, at, at, at)
 				if err != nil {
@@ -478,9 +482,9 @@ func TestReleasedExecutionPollingBudget(t *testing.T) {
 				if _, err := tx.ExecContext(t.Context(), `INSERT INTO lease_runners(lease_id,runner_id) VALUES(?,?)`, id, r.binding.RunnerID); err != nil {
 					t.Fatal(err)
 				}
-				required := i < 101 || i%2 == 0
+				required := i < test.pending || i%2 == 0
 				var acknowledged any
-				if i < 101 {
+				if i < test.pending {
 					pending[id] = true
 				} else if required {
 					acknowledged = at
@@ -494,14 +498,18 @@ func TestReleasedExecutionPollingBudget(t *testing.T) {
 				t.Fatal(err)
 			}
 			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{Runner: r.identity}}
-			for poll, want := range []int{100, 1, 0} {
+			pages := []int{100, 1, 0}
+			if test.unresolved {
+				pages = []int{100, test.pending - 100, 100, 0}
+			}
+			for poll, want := range pages {
 				query := &runtimeReadQuery{nativeQueryer: f.service.database.reader}
 				snapshot := runnerauth.RoutingSnapshot{RunnerID: r.binding.RunnerID}
-				if err := readRunnerClaimState(t.Context(), query, scope, &snapshot, now); err != nil {
+				if err := f.service.readRunnerClaimState(t.Context(), query, scope, &snapshot, now); err != nil {
 					t.Fatal(err)
 				}
 				if len(query.statements) != 4 || len(snapshot.ClaimState.ReleasedExecutions) != want {
-					t.Fatalf("poll %d with %d history: queries=%d executions=%d want=4,%d", poll, history, len(query.statements), len(snapshot.ClaimState.ReleasedExecutions), want)
+					t.Fatalf("poll %d with %d history: queries=%d executions=%d want=4,%d", poll, test.history, len(query.statements), len(snapshot.ClaimState.ReleasedExecutions), want)
 				}
 				for index, statement := range query.statements {
 					if strings.Contains(statement, "checkpoint") {
@@ -517,6 +525,9 @@ func TestReleasedExecutionPollingBudget(t *testing.T) {
 				for _, reference := range snapshot.ClaimState.ReleasedExecutions {
 					if !pending[reference.AttemptID] {
 						t.Fatalf("history or acknowledged cleanup returned: %+v", reference)
+					}
+					if test.unresolved && poll == 0 {
+						continue
 					}
 					delete(pending, reference.AttemptID)
 					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET cleanup_acknowledged_at=? WHERE id=?", at, reference.AttemptID); err != nil {

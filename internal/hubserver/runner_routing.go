@@ -826,7 +826,13 @@ func runnerOwnedBy(ctx context.Context, db nativeQueryer, organization tracker.O
 
 const releasedExecutionsPageSize = 100
 
-func readRunnerClaimState(ctx context.Context, db nativeQueryer, scope nativeScope, snapshot *runnerauth.RoutingSnapshot, now time.Time) error {
+type releasedExecutionCursorKey struct {
+	organization tracker.OrganizationID
+	project      tracker.ProjectID
+	runner       string
+}
+
+func (s *Service) readRunnerClaimState(ctx context.Context, db nativeQueryer, scope nativeScope, snapshot *runnerauth.RoutingSnapshot, now time.Time) error {
 	var state runnerauth.ClaimState
 	if err := db.QueryRowContext(ctx, `SELECT m.capacity, min(r.capacity_limit, r.reported_capacity) FROM runner_identities r JOIN machines m ON m.id = r.machine_id WHERE r.id = ? AND r.organization_id = ?`, snapshot.RunnerID, scope.organization).Scan(&state.HostCapacity, &state.RunnerCapacity); err != nil {
 		return err
@@ -860,10 +866,13 @@ func readRunnerClaimState(ctx context.Context, db nativeQueryer, scope nativeSco
 	}
 	state.PolicyIDs = map[tracker.ProjectID]string{scope.project: approved}
 
+	key := releasedExecutionCursorKey{organization: scope.organization, project: scope.project, runner: snapshot.RunnerID}
+	position, _ := s.cleanupPollCursors.Load(key)
+	after, _ := position.(string)
 	released, err := db.QueryContext(ctx, `SELECT a.work_item_id,a.id FROM native_attempts a JOIN leases l ON l.lease_id=a.lease_id
  WHERE a.organization_id=? AND a.project_id=? AND a.runner_id=? AND l.machine_id=? AND l.released_at IS NOT NULL
  AND a.worker_cleanup_required=1 AND a.cleanup_acknowledged_at IS NULL AND a.status IN ('running','interrupted','cancelled')
- ORDER BY a.id LIMIT ?`, scope.organization, scope.project, snapshot.RunnerID, scope.credential.Runner.MachineID, releasedExecutionsPageSize)
+ AND a.id>? ORDER BY a.id LIMIT ?`, scope.organization, scope.project, snapshot.RunnerID, scope.credential.Runner.MachineID, after, releasedExecutionsPageSize)
 	if err != nil {
 		return err
 	}
@@ -877,6 +886,11 @@ func readRunnerClaimState(ctx context.Context, db nativeQueryer, scope nativeSco
 	}
 	if err := errors.Join(released.Err(), released.Close()); err != nil {
 		return err
+	}
+	if len(state.ReleasedExecutions) == releasedExecutionsPageSize {
+		s.cleanupPollCursors.Store(key, state.ReleasedExecutions[len(state.ReleasedExecutions)-1].AttemptID)
+	} else {
+		s.cleanupPollCursors.Delete(key)
 	}
 
 	snapshot.ClaimState = &state

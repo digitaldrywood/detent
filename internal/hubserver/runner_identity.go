@@ -480,7 +480,7 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 					}
 					return nil, err
 				}
-				if err := readRunnerClaimState(ctx, tx, scope, &snapshot, now); err != nil {
+				if err := s.readRunnerClaimState(ctx, tx, scope, &snapshot, now); err != nil {
 					return nil, err
 				}
 				if request.ChangeCursor != nil {

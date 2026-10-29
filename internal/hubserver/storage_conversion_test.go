@@ -885,6 +885,15 @@ func TestStorageConversionAttemptLeaseBudget(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	for i, item := range items {
+		id := seedHealthRateAttempt(t, tx, scope, item, "repair-machine", "running", tracker.NativeRunData{PolicyID: "example-policy", Sequence: 1}, now, -1)
+		if _, err := tx.ExecContext(t.Context(), "UPDATE leases SET released_at=NULL WHERE lease_id=(SELECT lease_id FROM native_attempts WHERE id=?)", id); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.ExecContext(t.Context(), "UPDATE native_attempts SET id=? WHERE id=?", fmt.Sprintf("zz-live-%d", i), id); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
@@ -898,6 +907,17 @@ func TestStorageConversionAttemptLeaseBudget(t *testing.T) {
 		}
 		if cancelled != want {
 			t.Fatalf("tick %d cancelled %d attempts, want %d", tick, cancelled, want)
+		}
+		for i := range items {
+			var status string
+			var sequence int64
+			var released sql.NullString
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT a.status,a.sequence,l.released_at FROM native_attempts a JOIN leases l ON l.lease_id=a.lease_id WHERE a.id=?", fmt.Sprintf("zz-live-%d", i)).Scan(&status, &sequence, &released); err != nil {
+				t.Fatal(err)
+			}
+			if status != "running" || sequence != 1 || released.Valid {
+				t.Fatalf("tick %d changed live attempt %d: status=%s sequence=%d released=%v", tick, i, status, sequence, released)
+			}
 		}
 	}
 }

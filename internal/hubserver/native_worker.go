@@ -260,7 +260,7 @@ func (s *Service) registerNativeMachine(c echo.Context) error {
 			if err != nil {
 				return nil, err
 			}
-			err = readRunnerClaimState(ctx, tx, scope, &snapshot, now)
+			err = s.readRunnerClaimState(ctx, tx, scope, &snapshot, now)
 			return snapshot, err
 		})
 	}
