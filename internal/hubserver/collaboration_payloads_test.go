@@ -97,7 +97,7 @@ func TestCollaborationPayloadInlineBytes(t *testing.T) {
 				owner := ctx.Value(runDetailContextKey{}).(*runDetailContext)
 				data := tracker.CollaborationData{Revision: issue.Revision}
 				if kind == "scheduler.decision" {
-					data.Decision = &tracker.NativeSchedulerDecision{RunnerID: "runner", Source: "native_claim", Outcome: "claimed", Reason: "ready", At: f.service.config.now(), WorkItemRevision: issue.Revision}
+					data.Decision = &tracker.NativeSchedulerDecision{RunnerID: "runner", Source: "native_claim", Outcome: "skipped", Reason: "capacity", At: f.service.config.now(), WorkItemRevision: issue.Revision}
 					data.Change = &tracker.NativeChangeReference{ChangeID: "change", VersionID: "version", HeadSHA: "head"}
 					data.ReasonDetail = "retain scheduler audit context"
 					prepared := &claimPreparation{decisions: []preparedClaimDecision{{scope: scope, item: string(issue.WorkItemID), data: data}}}
@@ -148,6 +148,24 @@ func TestCollaborationPayloadInlineBytes(t *testing.T) {
 				}
 				if len(page.Items) != 2 {
 					t.Fatalf("history items=%d, want 2", len(page.Items))
+				}
+				if kind == "scheduler.decision" {
+					for _, lightweight := range []bool{false, true} {
+						ctx := context.WithValue(t.Context(), explanationReadKey{}, lightweight)
+						runtime, err := f.service.readNativeRuntime(ctx, scope, string(issue.WorkItemID), "")
+						if err != nil {
+							t.Fatal(err)
+						}
+						want := page.Items[1].Data
+						if lightweight {
+							want.ReasonDetail = ""
+						}
+						for name, event := range map[string]*tracker.CollaborationEvent{"latest decision": runtime.LatestDecision, "candidate exclusion": runtime.NativeCandidateExclusion} {
+							if event == nil || !reflect.DeepEqual(event.Data, want) {
+								t.Errorf("%s payload differs from history (lightweight=%v): got %+v, want %+v", name, lightweight, event, want)
+							}
+						}
+					}
 				}
 				if size < 1024 || kind == "scheduler.decision" {
 					if !reflect.DeepEqual(page.Items[1].Data, data) {

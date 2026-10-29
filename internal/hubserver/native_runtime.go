@@ -495,7 +495,7 @@ func latestNativeRuntimeEvent(ctx context.Context, q nativeQueryer, scope native
 		if err := rows.Scan(&e.ID, &e.AggregateSequence, &e.Type, &e.SchemaVersion, &actor, &data, &at, &version, &present, &decisionOutcome, &reason, &source, &runner, &decisionAt, &revision, &change.ChangeID, &change.VersionID, &change.HeadSHA, &changePresent, &eventRevision); err != nil {
 			return tracker.CollaborationEvent{}, err
 		}
-		if version == 1 && e.Type == "scheduler.decision" {
+		if version == 1 && e.Type == "scheduler.decision" && explanationRead(ctx) {
 			projected := tracker.CollaborationData{Revision: tracker.Revision(eventRevision.Int64)}
 			if present.Bool {
 				decision := tracker.NativeSchedulerDecision{Outcome: decisionOutcome.String, Reason: reason.String, Source: source.String, RunnerID: runner.String, WorkItemRevision: tracker.Revision(revision.Int64)}
