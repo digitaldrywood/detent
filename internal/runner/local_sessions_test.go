@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
@@ -10,9 +11,67 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
+
+func TestLocalSessionResumeLookupScope(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name string
+		edit func(*RunRequest, *store.AgentResumeLookup)
+		want error
+	}{
+		{name: "claimed source attempt"},
+		{name: "different project", edit: func(_ *RunRequest, lookup *store.AgentResumeLookup) { lookup.ProjectID = "other" }, want: store.ErrNotFound},
+		{name: "different issue", edit: func(_ *RunRequest, lookup *store.AgentResumeLookup) { lookup.IssueID = "other" }, want: store.ErrNotFound},
+		{name: "additional issue alias", edit: func(_ *RunRequest, lookup *store.AgentResumeLookup) { lookup.Identifier = "other" }, want: store.ErrNotFound},
+		{name: "additional issue URL", edit: func(_ *RunRequest, lookup *store.AgentResumeLookup) { lookup.IssueURL = "https://example.com/other" }, want: store.ErrNotFound},
+		{name: "different attempt", edit: func(_ *RunRequest, lookup *store.AgentResumeLookup) { lookup.WorkAttemptID++ }, want: store.ErrNotFound},
+		{name: "unbounded attempt", edit: func(_ *RunRequest, lookup *store.AgentResumeLookup) { lookup.WorkAttemptID = 0 }, want: store.ErrNotFound},
+		{name: "different machine", edit: func(req *RunRequest, _ *store.AgentResumeLookup) {
+			req.Execution.(*testExecution).recovery.Lease.MachineID = "other"
+		}, want: store.ErrNotFound},
+		{name: "expired authority", edit: func(req *RunRequest, _ *store.AgentResumeLookup) {
+			req.Execution.(*testExecution).validateErr = ErrExecutionAuthorityUnavailable
+		}, want: ErrExecutionAuthorityUnavailable},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			sessions := &fakeSessionStore{resumeState: store.AgentResumeState{DetentSessionID: 1, ProviderThreadID: "retained-thread"}}
+			execution := &testExecution{recovery: tracker.NativeRecovery{Lease: tracker.NativeLease{MachineID: "machine"}, Attempts: []tracker.NativeAttempt{{NativeRunData: tracker.NativeRunData{MachineID: "machine", Runtime: &tracker.NativeRuntimeObservation{LocalAttemptID: 17}}}}}}
+			request := RunRequest{ProjectID: "example", Issue: connector.Issue{ID: "work"}, Execution: execution}
+			lookup := store.AgentResumeLookup{ProjectID: "example", IssueID: "work", WorkAttemptID: 17}
+			if test.edit != nil {
+				test.edit(&request, &lookup)
+			}
+			a, b := net.Pipe()
+			defer a.Close()
+			defer b.Close()
+			controller := NewSSHPeer(t.Context(), a, a, NewSSHCallbackHandler(request, sessions, nil, nil))
+			defer controller.Close()
+			worker := NewSSHPeer(t.Context(), b, b, nil)
+			defer worker.Close()
+			var proxy any = LocalSessionStore{SSHSessionStore: SSHSessionStore{Peer: worker}}
+			resumeStore, ok := proxy.(store.AgentResumeStore)
+			if !ok {
+				t.Fatal("local execution worker cannot read persisted resume state")
+			}
+			state, err := resumeStore.LatestAgentResumeState(t.Context(), lookup)
+			if !errors.Is(err, test.want) {
+				t.Fatalf("resume lookup error = %v, want %v", err, test.want)
+			}
+			if test.want == nil {
+				if state.ProviderThreadID != "retained-thread" || sessions.resumeLookups != 1 || sessions.resumeLookup != lookup {
+					t.Fatalf("resume lookup lost state or filters: state=%+v lookup=%+v calls=%d", state, sessions.resumeLookup, sessions.resumeLookups)
+				}
+			} else if sessions.resumeLookups != 0 || !agentResumeStateEmpty(state) {
+				t.Fatalf("out-of-scope lookup reached session store: state=%+v calls=%d", state, sessions.resumeLookups)
+			}
+		})
+	}
+}
 
 type localProcessSessions struct {
 	fakeSessionStore

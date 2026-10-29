@@ -133,6 +133,32 @@ func NewSSHCallbackHandler(request RunRequest, sessions SessionStore, checker Bu
 		if strings.HasPrefix(method, "store.") {
 			name := strings.TrimPrefix(method, "store.")
 			switch name {
+			case "LatestAgentResumeState":
+				var lookup store.AgentResumeLookup
+				if len(arguments) != 1 || json.Unmarshal(arguments[0], &lookup) != nil {
+					return nil, errors.New("invalid SSH resume lookup arguments")
+				}
+				if request.Execution == nil || lookup.ProjectID != request.ProjectID || lookup.IssueID != request.Issue.ID || lookup.Identifier != "" || lookup.IssueURL != "" || lookup.WorkAttemptID <= 0 {
+					return nil, store.ErrNotFound
+				}
+				recovery := request.Execution.Recovery()
+				previous := recovery.SourceAttempt()
+				if previous == nil || previous.Runtime == nil || previous.Runtime.LocalAttemptID != lookup.WorkAttemptID || previous.MachineID != recovery.Lease.MachineID {
+					return nil, store.ErrNotFound
+				}
+				if err := request.Execution.Validate(ctx); err != nil {
+					return nil, err
+				}
+				return invokeSSHMethod(ctx, sessions, name, arguments)
+			case "LatestIssueAgentResumeState":
+				var identity store.IssueIdentity
+				if len(arguments) != 1 || json.Unmarshal(arguments[0], &identity) != nil {
+					return nil, errors.New("invalid SSH issue resume lookup arguments")
+				}
+				if identity.ProjectID == "" || identity.ProjectID != request.ProjectID || identity.IssueID == "" || identity.IssueID != request.Issue.ID || identity.Identifier != "" || identity.IssueURL != "" {
+					return nil, store.ErrNotFound
+				}
+				return invokeSSHMethod(ctx, sessions, name, arguments)
 			case "StartSession", "FinishSession", "RecordUsageEvent", "UpdateSessionIdentity", "UpdateSessionProviderIdentity", "UpdateSessionResumeState", "RecordWorkflowPhaseEvent", "SaveWorkflowActivityProfile", "SessionProgress", "SaveSessionProgress", "SessionPolicy":
 				return invokeSSHMethod(ctx, sessions, name, arguments)
 			default:
@@ -341,6 +367,18 @@ func (r *Runner) GoTestReceiptsEnabled() bool {
 // SSHSessionStore forwards session data, but has no local process-registration
 // interface: numeric PIDs from another host are never local reap authorities.
 type SSHSessionStore struct{ Peer *SSHPeer }
+
+func (s SSHSessionStore) LatestAgentResumeState(ctx context.Context, lookup store.AgentResumeLookup) (store.AgentResumeState, error) {
+	var result store.AgentResumeState
+	err := s.Peer.Call(ctx, "store.LatestAgentResumeState", &result, lookup)
+	return result, err
+}
+
+func (s SSHSessionStore) LatestIssueAgentResumeState(ctx context.Context, identity store.IssueIdentity) (store.AgentResumeState, error) {
+	var result store.AgentResumeState
+	err := s.Peer.Call(ctx, "store.LatestIssueAgentResumeState", &result, identity)
+	return result, err
+}
 
 func (s SSHSessionStore) StartSession(ctx context.Context, input store.SessionStart) (int64, error) {
 	var result int64
