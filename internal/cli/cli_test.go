@@ -142,7 +142,7 @@ func TestRootCommandSuggestsMistypedCommandsAndFlags(t *testing.T) {
 		},
 	}
 
-	for _, name := range []string{"state", "mcp", "promote", "unpause"} {
+	for _, name := range []string{"issue", "state", "mcp", "promote", "unpause"} {
 		tests = append(tests, commandCase{name: "removed " + name, args: []string{name}, want: []string{`unknown command "` + name + `"`}, wantNoBoot: true})
 	}
 	for _, name := range []string{"get", "create", "edit", "comment", "edit-comment", "transition", "dependency", "comments", "history", "changes", "create-change", "change", "publish-change", "review-change", "check-change", "discuss-change", "approve-review-policy"} {
