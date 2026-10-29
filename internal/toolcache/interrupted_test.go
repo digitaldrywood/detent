@@ -83,7 +83,19 @@ func TestCacheProgramInterruptedPublication(t *testing.T) {
 			if err != nil {
 				t.Fatalf("interrupted helper failed: %v\n%s", err, &stderr)
 			}
-			report, err := cache.Maintain(t.Context(), Policy{MaxBytes: 1}, time.Now())
+			now := time.Now()
+			report, err := cache.Maintain(t.Context(), Policy{MaxBytes: 1}, now)
+			if err != nil || report.SizeEvictedBytes != 0 || report.AgeExpiredBytes != 0 {
+				t.Fatalf("fresh interrupted publication was reclaimed: report=%#v err=%v", report, err)
+			}
+			if _, err := os.Stat(staged[0]); err != nil {
+				t.Fatalf("fresh interrupted staging lost: %v", err)
+			}
+			old := now.Add(-26 * time.Hour)
+			if err := os.Chtimes(staged[0], old, old); err != nil {
+				t.Fatal(err)
+			}
+			report, err = cache.Maintain(t.Context(), Policy{MaxBytes: 1}, now)
 			if err != nil {
 				t.Fatal(err)
 			}

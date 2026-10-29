@@ -155,7 +155,7 @@ func trim(ctx context.Context, root string, policy Policy, now time.Time, report
 			}
 		}
 		total += bytes
-		if candidate && (managed || info.ModTime().Before(now.Add(-policy.MaxAge))) {
+		if candidate && info.ModTime().Before(now.Add(-25*time.Hour)) {
 			candidates = append(candidates, trimEntry{name: name, bytes: bytes, modified: info.ModTime(), directory: entry.IsDir()})
 		}
 		if entry.IsDir() {
@@ -167,18 +167,16 @@ func trim(ctx context.Context, root string, policy Policy, now time.Time, report
 		return reclaimed, err
 	}
 	report.RetainedBytes = total
-	if managed {
-		if policy.reclaimBytes > 0 {
-			retained := total
-			for _, candidate := range candidates {
-				if candidate.modified.Before(now.Add(-policy.MaxAge)) {
-					retained -= candidate.bytes
-				}
+	if policy.reclaimBytes > 0 {
+		retained := total
+		for _, candidate := range candidates {
+			if candidate.modified.Before(now.Add(-policy.MaxAge)) {
+				retained -= candidate.bytes
 			}
-			policy.MaxBytes = min(policy.MaxBytes, max(1, retained-policy.reclaimBytes))
 		}
-		slices.SortFunc(candidates, func(a, b trimEntry) int { return a.modified.Compare(b.modified) })
+		policy.MaxBytes = min(policy.MaxBytes, max(1, retained-policy.reclaimBytes))
 	}
+	slices.SortFunc(candidates, func(a, b trimEntry) int { return a.modified.Compare(b.modified) })
 	stamp := now.UTC().Format(time.RFC3339Nano)
 	marker := "detent-trim.txt"
 	var previousMarkerBytes int64
@@ -193,7 +191,7 @@ func trim(ctx context.Context, root string, policy Policy, now time.Time, report
 			return reclaimed, err
 		}
 		aged := candidate.modified.Before(now.Add(-policy.MaxAge))
-		if !aged && (!managed || total-previousMarkerBytes+int64(len(metadata(0))) <= policy.MaxBytes) {
+		if !aged && total-previousMarkerBytes+int64(len(metadata(0))) <= policy.MaxBytes {
 			continue
 		}
 		current, err := cache.Lstat(candidate.name)
