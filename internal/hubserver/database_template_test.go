@@ -61,6 +61,10 @@ func seedHostedSecurityDatabaseTemplate(t *testing.T, cfg Config) {
 }
 
 func TestMain(m *testing.M) {
+	if err := registerNativeSearchText(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 	if err := testenv.ClearGitEnvironment(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
