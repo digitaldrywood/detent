@@ -3,10 +3,12 @@ package hubserver
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -38,12 +40,44 @@ func (v *changeColumnValues) add(column string, value any) {
 	v.values = append(v.values, value)
 }
 
+func decodeChangeColumnsJSON(ctx context.Context, raw []byte, result any) error {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil {
+		return err
+	}
+	for key := range object {
+		if key != "_storage_archive" {
+			return json.Unmarshal(raw, result)
+		}
+	}
+	reference, found := object["_storage_archive"]
+	if !found {
+		return json.Unmarshal(raw, result)
+	}
+	var ref storageJSONReference
+	if err := json.Unmarshal(reference, &ref); err != nil {
+		return err
+	}
+	data, err := readChangeContent(ctx, ref.Organization, ref.Reference)
+	if err != nil {
+		return err
+	}
+	var payload storageJSONPayload
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return err
+	}
+	if payload.Organization != ref.Organization || payload.Project != ref.Project || payload.Family != ref.Family || payload.Row != ref.Row || !json.Valid(payload.Data) {
+		return artifact.ErrIntegrity
+	}
+	return json.Unmarshal(payload.Data, result)
+}
+
 func changeRecordColumns(ctx context.Context, query nativeQueryer, family, raw string) (changeColumnValues, error) {
 	var columns changeColumnValues
 	switch family {
 	case "change_requests":
 		var c tracker.ChangeRequest
-		if err := decodeStorageJSON(ctx, []byte(raw), &c); err != nil {
+		if err := decodeChangeColumnsJSON(ctx, []byte(raw), &c); err != nil {
 			return columns, err
 		}
 		columns.add("created_at", changeColumnTime(c.CreatedAt))
@@ -59,7 +93,7 @@ func changeRecordColumns(ctx context.Context, query nativeQueryer, family, raw s
 		columns.add("landed_at", changeColumnTime(landing.LandedAt))
 	case "change_versions":
 		var v tracker.ChangeVersion
-		if err := decodeStorageJSON(ctx, []byte(raw), &v); err != nil {
+		if err := decodeChangeColumnsJSON(ctx, []byte(raw), &v); err != nil {
 			return columns, err
 		}
 		columns.add("created_at", changeColumnTime(v.CreatedAt))
@@ -86,7 +120,7 @@ func changeRecordColumns(ctx context.Context, query nativeQueryer, family, raw s
 			ReceivedAt           time.Time                    `json:"received_at"`
 			Escape               *tracker.QualityEscape       `json:"escape"`
 		}
-		if err := decodeStorageJSON(ctx, []byte(raw), &e); err != nil {
+		if err := decodeChangeColumnsJSON(ctx, []byte(raw), &e); err != nil {
 			return columns, err
 		}
 		columns.add("claim_review_decision", e.Decision)
@@ -110,19 +144,19 @@ func changeRecordColumns(ctx context.Context, query nativeQueryer, family, raw s
 		columns.add("escape_observed_at", changeColumnTime(escape.ObservedAt))
 	case "quality_landings":
 		var l tracker.ChangeLanding
-		if err := decodeStorageJSON(ctx, []byte(raw), &l); err != nil {
+		if err := decodeChangeColumnsJSON(ctx, []byte(raw), &l); err != nil {
 			return columns, err
 		}
 		columns.add("landed_at", changeColumnTime(l.LandedAt))
 	case "change_landing_receipts":
 		var l tracker.NativeLandingReceipt
-		if err := decodeStorageJSON(ctx, []byte(raw), &l); err != nil {
+		if err := decodeChangeColumnsJSON(ctx, []byte(raw), &l); err != nil {
 			return columns, err
 		}
 		columns.add("merge_sha", l.MergeSHA)
 	case "native_attempts":
 		var run tracker.NativeRunData
-		if err := decodeRunDetail(ctx, query, raw, &run); err != nil {
+		if err := decodeChangeColumnsJSON(ctx, []byte(raw), &run); err != nil {
 			return columns, err
 		}
 		columns.add("policy_id", run.PolicyID)
@@ -148,13 +182,13 @@ func changeRecordColumns(ctx context.Context, query nativeQueryer, family, raw s
 		columns.add("checkpoint_change_id", checkpointID)
 	case "collaboration_events":
 		var e tracker.CollaborationData
-		if err := decodeRunHistory(ctx, query, raw, &e); err != nil {
+		if err := decodeChangeColumnsJSON(ctx, []byte(raw), &e); err != nil {
 			return columns, err
 		}
 		return changeEventColumns(e), nil
 	case "issues", "native_comments":
 		var actor tracker.Actor
-		if err := decodeStorageJSON(ctx, []byte(raw), &actor); err != nil {
+		if err := decodeChangeColumnsJSON(ctx, []byte(raw), &actor); err != nil {
 			return columns, err
 		}
 		if family == "issues" {
@@ -214,38 +248,85 @@ func projectChangeColumns(ctx context.Context, tx *sql.Tx, table string, id any,
 	return errors.New("unknown Change column family")
 }
 
+func readChangeColumnIdentity(ctx context.Context, query nativeQueryer, id, raw string) (string, string, error) {
+	var change struct {
+		CurrentVersion string `json:"current_version_id"`
+	}
+	if err := decodeChangeColumnsJSON(ctx, []byte(raw), &change); err != nil {
+		return "", "", err
+	}
+	if change.CurrentVersion == "" {
+		return "", "", nil
+	}
+	if err := query.QueryRowContext(ctx, `SELECT record_json FROM change_versions WHERE change_id=? AND id=?`, id, change.CurrentVersion).Scan(&raw); err != nil {
+		return "", "", err
+	}
+	var version struct {
+		HeadSHA string `json:"head_sha"`
+	}
+	if err := decodeChangeColumnsJSON(ctx, []byte(raw), &version); err != nil {
+		return "", "", err
+	}
+	return change.CurrentVersion, version.HeadSHA, nil
+}
+
+func decodeChangeColumnCheckpoint(ctx context.Context, raw string) (*tracker.NativeCheckpoint, error) {
+	var checkpoint tracker.NativeCheckpoint
+	if err := decodeChangeColumnsJSON(ctx, []byte(raw), &checkpoint); err != nil {
+		return nil, err
+	}
+	return &checkpoint, nil
+}
+
 const changeColumnsPerTick = 100
 
 func (s *Service) populateChangeColumns(ctx context.Context) error {
 	ctx = s.runDetailContext(ctx)
+	var failures error
 	for range changeColumnsPerTick {
 		changed, err := s.populateChangeColumn(ctx)
-		if err != nil || !changed {
-			return err
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		failures = errors.Join(failures, err)
+		if !changed {
+			return failures
 		}
 	}
-	return nil
+	return failures
 }
 
 func (s *Service) populateChangeColumn(ctx context.Context) (bool, error) {
-	for _, family := range changeColumnFamilies {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	for s.changeColumnFamily < len(changeColumnFamilies) {
+		family := changeColumnFamilies[s.changeColumnFamily]
 		var id any
 		var raw string
-		err := s.database.reader.QueryRowContext(ctx, "SELECT "+family.key+","+family.payload+" FROM "+family.table+" WHERE "+family.pending+" IS NULL ORDER BY "+family.key+" LIMIT 1").Scan(&id, &raw)
+		statement := "SELECT " + family.key + "," + family.payload + " FROM " + family.table + " WHERE " + family.pending + " IS NULL"
+		var args []any
+		if s.changeColumnAfter != nil {
+			statement += " AND " + family.key + ">?"
+			args = append(args, s.changeColumnAfter)
+		}
+		err := s.database.reader.QueryRowContext(ctx, statement+" ORDER BY "+family.key+" LIMIT 1", args...).Scan(&id, &raw)
 		if errors.Is(err, sql.ErrNoRows) {
+			s.changeColumnFamily++
+			s.changeColumnAfter = nil
 			continue
 		}
 		if err != nil {
-			return false, err
+			return true, err
 		}
+		s.changeColumnAfter = id
 		columns, err := changeRecordColumns(ctx, s.database.reader, family.table, raw)
 		if err != nil {
-			return false, fmt.Errorf("decode %s columns: %w", family.table, err)
+			return true, fmt.Errorf("decode %s columns: %w", family.table, err)
 		}
 		if family.table == "change_requests" {
-			version, head, err := claimChangeIdentity(ctx, s.database.reader, fmt.Sprint(id), raw)
+			version, head, err := readChangeColumnIdentity(ctx, s.database.reader, fmt.Sprint(id), raw)
 			if err != nil {
-				return false, err
+				return true, err
 			}
 			columns.add("claim_version_id", version)
 			columns.add("claim_head_sha", head)
@@ -253,13 +334,13 @@ func (s *Service) populateChangeColumn(ctx context.Context) (bool, error) {
 		if family.table == "native_attempts" {
 			var checkpoint sql.NullString
 			if err := s.database.reader.QueryRowContext(ctx, `SELECT checkpoint_json FROM native_attempts WHERE id=?`, id).Scan(&checkpoint); err != nil {
-				return false, err
+				return true, err
 			}
 			checkpointID := ""
 			if checkpoint.Valid {
-				value, err := decodeRunCheckpoint(ctx, s.database.reader, checkpoint.String)
+				value, err := decodeChangeColumnCheckpoint(ctx, checkpoint.String)
 				if err != nil {
-					return false, err
+					return true, err
 				}
 				if value != nil && value.Change != nil {
 					checkpointID = value.Change.ChangeID
@@ -271,19 +352,19 @@ func (s *Service) populateChangeColumn(ctx context.Context) (bool, error) {
 		if family.table == "native_comments" {
 			var edited sql.NullString
 			if err := s.database.reader.QueryRowContext(ctx, `SELECT edited_by_json FROM native_comments WHERE id=?`, id).Scan(&edited); err != nil {
-				return false, err
+				return true, err
 			}
 			actor := tracker.Actor{}
 			if edited.Valid {
-				if err := decodeStorageJSON(ctx, []byte(edited.String), &actor); err != nil {
-					return false, err
+				if err := decodeChangeColumnsJSON(ctx, []byte(edited.String), &actor); err != nil {
+					return true, err
 				}
 			}
 			columns.add("change_edited_by_kind", actor.Kind)
 		}
 		tx, err := s.database.db.BeginTx(ctx, nil)
 		if err != nil {
-			return false, err
+			return true, err
 		}
 		err = writeChangeColumns(ctx, tx, family, id, raw, columns, true)
 		if err == nil {
@@ -292,6 +373,8 @@ func (s *Service) populateChangeColumn(ctx context.Context) (bool, error) {
 		_ = tx.Rollback()
 		return true, err
 	}
+	s.changeColumnFamily = 0
+	s.changeColumnAfter = nil
 	return false, nil
 }
 
@@ -318,7 +401,7 @@ func decodeQualityLanding(ctx context.Context, raw string, landing *tracker.Chan
 		tracker.ChangeLanding
 		Landed *tracker.ChangeLanding `json:"landed"`
 	}
-	if err := decodeStorageJSON(ctx, []byte(raw), &record); err != nil {
+	if err := decodeChangeColumnsJSON(ctx, []byte(raw), &record); err != nil {
 		return err
 	}
 	*landing = record.ChangeLanding
@@ -366,22 +449,19 @@ func changeEventColumns(e tracker.CollaborationData) changeColumnValues {
 }
 
 func changeColumnRecords[T any](ctx context.Context, query nativeQueryer, statement string, args ...any) ([]T, error) {
-	rows, err := query.QueryContext(ctx, statement+" LIMIT ?", append(args, changeLegacyReadLimit+1)...)
+	rows, err := queryChangeLegacyRows(ctx, query, statement, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	values := []T{}
 	for rows.Next() {
-		if len(values) == changeLegacyReadLimit {
-			return nil, errChangeColumnsIncomplete
-		}
 		var raw string
 		var value T
 		if err := rows.Scan(&raw); err != nil {
 			return nil, err
 		}
-		if err := decodeStorageJSON(ctx, []byte(raw), &value); err != nil {
+		if err := decodeChangeColumnsJSON(ctx, []byte(raw), &value); err != nil {
 			return nil, err
 		}
 		values = append(values, value)

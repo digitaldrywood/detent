@@ -1,8 +1,10 @@
 package hubserver
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -12,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -807,7 +811,7 @@ func TestChangeColumnsSelectAttemptEvidence(t *testing.T) {
 	}
 }
 
-func TestChangeAnalyticsFallbackReadBudget(t *testing.T) {
+func TestChangeAnalyticsFallbackServesLegacyHistory(t *testing.T) {
 	t.Parallel()
 	for _, family := range []string{"landing", "discussion", "event", "evidence"} {
 		t.Run(family, func(t *testing.T) {
@@ -869,8 +873,8 @@ func TestChangeAnalyticsFallbackReadBudget(t *testing.T) {
 					t.Fatal(err)
 				}
 				_, err = loadAnalyticsQualityInputs(t.Context(), f.service.database.reader, scope, window)
-				if !errors.Is(err, operatortool.ErrServiceUnavailable) || !strings.Contains(err.Error(), "evidence backfill") {
-					t.Fatalf("read unbounded pending evidence: %v", err)
+				if err != nil {
+					t.Fatalf("legacy evidence unavailable: %v", err)
 				}
 				return
 			}
@@ -879,10 +883,106 @@ func TestChangeAnalyticsFallbackReadBudget(t *testing.T) {
 					continue
 				}
 				_, err := readUnconvertedAnalyticsLandings(t.Context(), f.service.database.reader, scope, window, quality)
-				if !errors.Is(err, operatortool.ErrServiceUnavailable) || !strings.Contains(err.Error(), family+" backfill") {
-					t.Fatalf("quality=%v read an unbounded %s population: %v", quality, family, err)
+				if err != nil {
+					t.Fatalf("quality=%v legacy %s unavailable: %v", quality, family, err)
 				}
 			}
 		})
 	}
+}
+
+func TestChangeColumnBackfillUsesInlineAndRetriesArchive(t *testing.T) {
+	t.Parallel()
+	f := newChangeFixture(t, nil)
+	version := f.publish(t, "version", "")
+	if err := f.service.populateChangeColumns(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	f.service.config.content = func(context.Context, entryauthority.ContentRequest) ([]byte, error) {
+		calls++
+		return nil, context.DeadlineExceeded
+	}
+	data := []byte(`{"decision":"approved","validator":{},"created_at":"2026-10-25T12:00:00Z"}`)
+	payload, err := json.Marshal(storageJSONPayload{Organization: string(f.project.OrganizationID), Project: string(f.project.ID), Family: "change_evidence", Row: 1, Data: data})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, _, err := attachment.PrepareArchive(string(f.project.OrganizationID), 1, bytes.NewReader(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reference := storageJSONReference{Organization: string(f.project.OrganizationID), Project: string(f.project.ID), Family: "change_evidence", Row: 1, Reference: ref}
+	envelope, err := json.Marshal(map[string]any{"_storage_archive": reference})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inline, err := compactStorageJSON(data, reference)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range [][]byte{envelope, inline} {
+		if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO change_evidence(change_id,version_id,kind,record_json) VALUES(?,?,'review',?)`, f.change.ID, version.ID, string(raw)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := f.service.populateChangeColumns(t.Context()); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("archive failure=%v", err)
+	}
+	var pending, converted int
+	if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FILTER(WHERE has_validator IS NULL),count(*) FILTER(WHERE has_validator=1) FROM change_evidence WHERE change_id=?`, f.change.ID).Scan(&pending, &converted); err != nil {
+		t.Fatal(err)
+	}
+	if pending != 1 || converted != 1 || calls != 1 {
+		t.Fatalf("pending=%d converted=%d archive reads=%d", pending, converted, calls)
+	}
+	objects := &changeObjectFixture{}
+	_, compressed, err := attachment.PrepareArchive(string(f.project.OrganizationID), 1, bytes.NewReader(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := objects.call(t.Context(), entryauthority.ContentRequest{Organization: string(f.project.OrganizationID), Reference: ref, Data: compressed, Write: true}); err != nil {
+		t.Fatal(err)
+	}
+	f.service.config.content = objects.call
+	if err := f.service.populateChangeColumns(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM change_evidence WHERE change_id=? AND has_validator=1`, f.change.ID).Scan(&converted); err != nil || converted != 2 {
+		t.Fatalf("retry converted=%d error=%v", converted, err)
+	}
+	change := f.changeWithCurrentVersion(t)
+	changeRaw, err := json.Marshal(change)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err = json.Marshal(storageJSONPayload{Organization: string(f.project.OrganizationID), Project: string(f.project.ID), Family: "change_requests", Row: 2, Data: changeRaw})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, compressed, err = attachment.PrepareArchive(string(f.project.OrganizationID), 1, bytes.NewReader(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := objects.call(t.Context(), entryauthority.ContentRequest{Organization: string(f.project.OrganizationID), Reference: ref, Data: compressed, Write: true}); err != nil {
+		t.Fatal(err)
+	}
+	envelope, err = json.Marshal(map[string]any{"_storage_archive": storageJSONReference{Organization: string(f.project.OrganizationID), Project: string(f.project.ID), Family: "change_requests", Row: 2, Reference: ref}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE change_requests SET record_json=?,created_at=NULL WHERE id=?`, string(envelope), f.change.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.populateChangeColumns(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	var claimVersion, claimHead string
+	if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT claim_version_id,claim_head_sha FROM change_requests WHERE id=?`, f.change.ID).Scan(&claimVersion, &claimHead); err != nil {
+		t.Fatal(err)
+	}
+	if claimVersion != version.ID || claimHead != version.HeadSHA {
+		t.Fatalf("archive-only identity=%s/%s want=%s/%s", claimVersion, claimHead, version.ID, version.HeadSHA)
+	}
+
 }

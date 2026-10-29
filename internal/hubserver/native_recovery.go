@@ -742,7 +742,7 @@ func boundedRecoveryReviews(reviews []tracker.ChangeReview, budget int) ([]track
 func readLatestLandingExit(ctx context.Context, tx *sql.Tx, scope nativeScope, item string) (tracker.CollaborationEvent, bool, error) {
 	event := tracker.CollaborationEvent{OrganizationID: scope.organization, ProjectID: scope.project, AggregateType: "work_item", AggregateID: tracker.NativeWorkItemID(item)}
 	before := int64(1<<63 - 1)
-	for examined := 0; ; examined++ {
+	for {
 		var actor, data, at string
 		var from sql.NullString
 		err := tx.QueryRowContext(ctx, `SELECT id,sequence,type,actor_json,data_json,recorded_at,from_state FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND type='workflow.transitioned' AND sequence<? AND (lower(from_state)='merging' OR from_state IS NULL) ORDER BY sequence DESC LIMIT 1`, scope.organization, scope.project, item, before).Scan(&event.ID, &event.AggregateSequence, &event.Type, &actor, &data, &at, &from)
@@ -752,13 +752,10 @@ func readLatestLandingExit(ctx context.Context, tx *sql.Tx, scope nativeScope, i
 		if err != nil {
 			return event, false, err
 		}
-		if examined == changeLegacyReadLimit {
-			return event, false, errChangeColumnsIncomplete
-		}
 		if err := json.Unmarshal([]byte(actor), &event.Actor); err != nil {
 			return event, false, err
 		}
-		if err := decodeRunHistory(ctx, tx, data, &event.Data); err != nil {
+		if err := decodeChangeColumnsJSON(ctx, []byte(data), &event.Data); err != nil {
 			return event, false, err
 		}
 		if !from.Valid && !strings.EqualFold(event.Data.FromState, "merging") {

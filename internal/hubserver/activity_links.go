@@ -12,16 +12,13 @@ import (
 )
 
 func readActivityWorkspaces(ctx context.Context, q nativeQueryer, organization string, a operatortool.ActivityAttempt) ([]string, error) {
-	rows, err := q.QueryContext(ctx, `SELECT id FROM workspace_sessions WHERE organization_id=? AND project_id=? AND subject_work_item_id=? AND attempt_id=? AND state IN ('requested','starting','ready','idle') ORDER BY id LIMIT ?`, organization, a.ProjectID, a.WorkItemID, a.AttemptID, changeLegacyReadLimit+1)
+	rows, err := queryChangeLegacyRows(ctx, q, `SELECT id FROM workspace_sessions WHERE organization_id=? AND project_id=? AND subject_work_item_id=? AND attempt_id=? AND state IN ('requested','starting','ready','idle') ORDER BY id`, organization, a.ProjectID, a.WorkItemID, a.AttemptID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	ids := []string{}
 	for rows.Next() {
-		if len(ids) == changeLegacyReadLimit {
-			return nil, errChangeColumnsIncomplete
-		}
 		var id string
 		if err := rows.Scan(&id); err != nil {
 			return nil, err
@@ -41,17 +38,12 @@ func readActivityChangeLink(ctx context.Context, q nativeQueryer, organization s
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		rows, err := q.QueryContext(ctx, `SELECT id,record_json FROM change_requests WHERE organization_id=? AND project_id=? AND work_item_id=? AND activity_current_version_id IS NULL LIMIT ?`, organization, a.ProjectID, a.WorkItemID, activityIssueHistoryLimit+1)
+		rows, err := queryChangeLegacyRows(ctx, q, `SELECT id,record_json FROM change_requests WHERE organization_id=? AND project_id=? AND work_item_id=? AND activity_current_version_id IS NULL ORDER BY id`, organization, a.ProjectID, a.WorkItemID)
 		if err != nil {
 			return err
 		}
 		defer rows.Close()
-		count := 0
 		for rows.Next() {
-			count++
-			if count > activityIssueHistoryLimit {
-				return errHubOperatorUnavailable
-			}
 			var id, raw string
 			if err := rows.Scan(&id, &raw); err != nil {
 				rows.Close()
