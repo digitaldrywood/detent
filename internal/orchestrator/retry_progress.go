@@ -8,6 +8,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
+	runpkg "github.com/digitaldrywood/detent/internal/runner"
 )
 
 type retryProgressSource interface {
@@ -62,7 +63,19 @@ func (o *Orchestrator) prepareRetryProgress(ctx context.Context, run *RunRequest
 	case progresscheck.Reroute:
 		switch record.Decision.Step {
 		case RunModeImplement, RunModeMerge:
+			previousMode := run.Mode
 			run.Mode = record.Decision.Step
+			if run.Mode != previousMode {
+				if admission, ok := o.scheduling.(interface {
+					ReadmitRetryProgress(context.Context, RunRequest, runpkg.ProviderCapacityResolver) (runpkg.Execution, error)
+				}); ok {
+					execution, err := admission.ReadmitRetryProgress(ctx, *run, o.providerCapacity)
+					if err != nil {
+						return fmt.Errorf("admit progress step: %w", err)
+					}
+					run.Execution = execution
+				}
+			}
 			return nil
 		}
 	case progresscheck.SystemDefect:

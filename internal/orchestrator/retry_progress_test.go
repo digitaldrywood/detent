@@ -16,10 +16,20 @@ import (
 
 type progressScheduling struct {
 	hubSchedulingSource
-	request  progresscheck.Request
-	records  map[string]progresscheck.Record
-	comments int
-	defects  map[string]string
+	request        progresscheck.Request
+	records        map[string]progresscheck.Record
+	comments       int
+	defects        map[string]string
+	admissions     int
+	admissionError error
+}
+
+func (s *progressScheduling) ReadmitRetryProgress(_ context.Context, _ RunRequest, _ runpkg.ProviderCapacityResolver) (runpkg.Execution, error) {
+	s.admissions++
+	if s.admissionError != nil {
+		return nil, s.admissionError
+	}
+	return &planDispatchExecution{}, nil
 }
 
 func (s *progressScheduling) RetryProgress(_ context.Context, issue connector.Issue) (progresscheck.Request, progresscheck.Owner, error) {
@@ -232,5 +242,57 @@ func TestRetryProgressRespectsBackendCapacity(t *testing.T) {
 	outcome := o.dispatchIssueWithOutcome(t.Context(), &state, issue, 2, time.Now(), "worker-a")
 	if outcome.dispatched || outcome.reason != dispatchIssueFailureBackendCapacityPaused || checker.calls != 0 {
 		t.Fatalf("capacity refusal ran a progress turn: %+v calls=%d", outcome, checker.calls)
+	}
+}
+
+func TestRetryProgressReadmitsSelectedMode(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name     string
+		retained bool
+		refused  bool
+	}{
+		{name: "new decision"},
+		{name: "retained decision", retained: true},
+		{name: "new admission refused", refused: true},
+		{name: "retained admission refused", retained: true, refused: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			issue := dispatchTestIssue("example-issue", "Todo")
+			source := &progressScheduling{request: progresscheck.Request{ProjectID: "example-project", IssueID: issue.ID, PolicyID: "policy", EvidenceRevision: "1", AvailableSteps: []string{RunModeImplement}, Attempts: []progresscheck.Attempt{{ID: "failed-plan", Step: runpkg.RolePlan, Outcome: "failed"}}}, records: map[string]progresscheck.Record{}}
+			decision := progresscheck.Decision{Outcome: progresscheck.Reroute, Step: RunModeImplement, Reason: "Continue with implementation", Evidence: []string{"failed-plan"}}
+			if tt.retained {
+				id, err := source.request.ID()
+				if err != nil {
+					t.Fatal(err)
+				}
+				source.records[id] = progresscheck.Record{RequestID: id, ProjectID: source.request.ProjectID, IssueID: issue.ID, EvidenceRevision: "1", Decision: decision, CommentID: "retained-comment"}
+			}
+			if tt.refused {
+				source.admissionError = errors.New("implementation capacity unavailable")
+			}
+			checker := &progressRunner{decision: decision}
+			o := &Orchestrator{scheduling: source, progressRunner: checker}
+			original := &planDispatchExecution{}
+			request := RunRequest{Issue: issue, Mode: RunModePlan, Execution: original}
+			err := o.prepareRetryProgress(t.Context(), &request)
+			if source.admissions != 1 || request.Mode != RunModeImplement || request.ProgressDecision.Decision.Step != RunModeImplement {
+				t.Fatalf("selected step was not readmitted: admissions=%d mode=%s decision=%+v", source.admissions, request.Mode, request.ProgressDecision)
+			}
+			wantCalls := 1
+			if tt.retained {
+				wantCalls = 0
+			}
+			if checker.calls != wantCalls {
+				t.Fatalf("progress calls=%d, want %d", checker.calls, wantCalls)
+			}
+			if tt.refused {
+				if !errors.Is(err, source.admissionError) || request.Execution != original {
+					t.Fatalf("admission refusal did not preserve its error and execution: %v", err)
+				}
+			} else if err != nil || request.Execution == original {
+				t.Fatalf("reroute retained its old execution: %v", err)
+			}
+		})
 	}
 }
