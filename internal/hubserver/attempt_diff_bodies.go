@@ -19,11 +19,135 @@ const diffBodyRetention = 30 * 24 * time.Hour
 
 const supersededDiffBody = `julianday(d.created_at) < julianday(?)
 AND NOT EXISTS (SELECT 1 FROM native_attempts a WHERE a.id=d.attempt_id AND a.status='running')
-AND NOT EXISTS (SELECT 1 FROM change_versions v JOIN change_requests c ON (c.claim_version_id=v.id OR c.claim_version_id IS NULL)
-WHERE c.organization_id=d.organization_id AND c.project_id=d.project_id AND (v.attempt_id=d.attempt_id OR v.attempt_id IS NULL))
+AND NOT EXISTS (SELECT 1 FROM change_versions v INDEXED BY change_versions_attempt_idx
+WHERE v.attempt_id=d.attempt_id
+AND (EXISTS (SELECT 1 FROM change_requests c
+WHERE c.organization_id=d.organization_id AND c.project_id=d.project_id AND c.claim_version_id=v.id)
+OR EXISTS (SELECT 1 FROM change_requests c
+WHERE c.organization_id=d.organization_id AND c.project_id=d.project_id AND c.claim_version_id IS NULL)))
 AND d.id <> (SELECT latest.id FROM attempt_diffs latest
 WHERE latest.organization_id=d.organization_id AND latest.project_id=d.project_id AND latest.work_item_id=d.work_item_id AND latest.source=d.source
 ORDER BY latest.created_at DESC, latest.rowid DESC LIMIT 1)`
+
+const expireDiffBodyManifest = `UPDATE attempt_diffs AS d SET manifest_expired=1
+WHERE d.id=? AND d.manifest_expired=0
+AND (d.object_key<>'' OR EXISTS(SELECT 1 FROM attempt_diff_file_archives f WHERE f.diff_id=d.id))
+AND ` + supersededDiffBody
+
+const expireDiffBodyFile = `UPDATE attempt_diff_files SET patch_expired=1
+WHERE diff_id=? AND position=? AND patch_object<>'' AND patch_expired=0
+AND EXISTS (SELECT 1 FROM attempt_diffs d WHERE d.id=attempt_diff_files.diff_id AND ` + supersededDiffBody + `)`
+
+type diffBodyExpiryCandidates struct {
+	manifests []string
+	files     []diffBodyExpiryFile
+}
+
+type diffBodyExpiryFile struct {
+	diffID   string
+	position int
+}
+
+func (s *Service) selectDiffBodyExpiryCandidates(ctx context.Context, cutoff time.Time) (diffBodyExpiryCandidates, error) {
+	var candidates diffBodyExpiryCandidates
+	reader, err := s.database.reader.Conn(ctx)
+	if err != nil {
+		return candidates, err
+	}
+	defer reader.Close()
+	protectedProjects := make(map[[2]string]bool)
+	projectProtected := func(organization, project string) (bool, error) {
+		scope := [2]string{organization, project}
+		if protected, found := protectedProjects[scope]; found {
+			return protected, nil
+		}
+		var protected bool
+		err := reader.QueryRowContext(ctx, `SELECT
+EXISTS (SELECT 1 FROM change_requests c JOIN change_versions v ON v.id=c.claim_version_id
+WHERE c.organization_id=? AND c.project_id=? AND v.attempt_id IS NULL)
+OR (EXISTS (SELECT 1 FROM change_requests c
+WHERE c.organization_id=? AND c.project_id=? AND c.claim_version_id IS NULL)
+AND EXISTS (SELECT 1 FROM change_versions WHERE attempt_id IS NULL))`, organization, project, organization, project).Scan(&protected)
+		if err != nil {
+			return false, err
+		}
+		protectedProjects[scope] = protected
+		return protected, nil
+	}
+	rows, err := reader.QueryContext(ctx, `SELECT d.id,d.organization_id,d.project_id FROM attempt_diffs d
+WHERE (d.object_key<>'' OR EXISTS(SELECT 1 FROM attempt_diff_file_archives f WHERE f.diff_id=d.id))
+AND d.manifest_expired=0 AND `+supersededDiffBody, formatHubTime(cutoff))
+	if err != nil {
+		return candidates, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, organization, project string
+		if err := rows.Scan(&id, &organization, &project); err != nil {
+			return candidates, err
+		}
+		protected, err := projectProtected(organization, project)
+		if err != nil {
+			return candidates, err
+		}
+		if protected {
+			continue
+		}
+		candidates.manifests = append(candidates.manifests, id)
+		if len(candidates.manifests) == 32 {
+			break
+		}
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return candidates, err
+	}
+	rows, err = reader.QueryContext(ctx, `SELECT f.diff_id,f.position,d.organization_id,d.project_id
+FROM attempt_diff_files f JOIN attempt_diffs d ON d.id=f.diff_id
+WHERE f.patch_object<>'' AND f.patch_expired=0 AND `+supersededDiffBody, formatHubTime(cutoff))
+	if err != nil {
+		return candidates, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var file diffBodyExpiryFile
+		var organization, project string
+		if err := rows.Scan(&file.diffID, &file.position, &organization, &project); err != nil {
+			return candidates, err
+		}
+		protected, err := projectProtected(organization, project)
+		if err != nil {
+			return candidates, err
+		}
+		if protected {
+			continue
+		}
+		candidates.files = append(candidates.files, file)
+		if len(candidates.files) == 32 {
+			break
+		}
+	}
+	return candidates, errors.Join(rows.Err(), rows.Close())
+}
+
+func (s *Service) expireDiffBodyCandidates(ctx context.Context, candidates diffBodyExpiryCandidates) error {
+	if len(candidates.manifests) == 0 && len(candidates.files) == 0 {
+		return nil
+	}
+	return s.hubTransact(ctx, func(tx *sql.Tx, now time.Time) error {
+		cutoff := formatHubTime(now.Add(-diffBodyRetention))
+		for _, id := range candidates.manifests {
+			if _, err := tx.ExecContext(ctx, expireDiffBodyManifest, id, cutoff); err != nil {
+				return err
+			}
+		}
+		for _, file := range candidates.files {
+			if _, err := tx.ExecContext(ctx, expireDiffBodyFile, file.diffID, file.position, cutoff); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
 
 func (s *Service) registerAttemptDiffBodyRoutes(e *echo.Echo) {
 	e.POST("/internal/v1/diff-bodies/batch", s.attemptDiffBodyBatch)
@@ -74,16 +198,15 @@ func (s *Service) attemptDiffBodyBatch(c echo.Context) error {
 	if len(batch.Files) > 0 {
 		return c.JSON(http.StatusOK, batch)
 	}
-	err = s.hubTransact(ctx, func(tx *sql.Tx, now time.Time) error {
-		if _, err := tx.ExecContext(ctx, `UPDATE attempt_diffs SET manifest_expired=1 WHERE id IN (SELECT d.id FROM attempt_diffs d WHERE (d.object_key<>'' OR EXISTS(SELECT 1 FROM attempt_diff_file_archives f WHERE f.diff_id=d.id)) AND d.manifest_expired=0 AND `+supersededDiffBody+` LIMIT 32)`, formatHubTime(now.Add(-diffBodyRetention))); err != nil {
-			return err
-		}
-		_, err := tx.ExecContext(ctx, `UPDATE attempt_diff_files SET patch_expired=1 WHERE patch_object<>'' AND patch_expired=0
-AND (diff_id,position) IN (SELECT f.diff_id,f.position FROM attempt_diff_files f JOIN attempt_diffs d ON d.id=f.diff_id
-WHERE f.patch_object<>'' AND f.patch_expired=0 AND `+supersededDiffBody+` LIMIT 32)`, formatHubTime(now.Add(-diffBodyRetention)))
-		return err
-	})
+	now, err := s.database.currentTime()
 	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	candidates, err := s.selectDiffBodyExpiryCandidates(readCtx, now.Add(-diffBodyRetention))
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	if err := s.expireDiffBodyCandidates(ctx, candidates); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	rows, err = s.database.reader.QueryContext(readCtx, `SELECT d.organization_id,d.project_id,f.diff_id,f.position,f.patch_object,f.patch_sha256,f.patch_size
