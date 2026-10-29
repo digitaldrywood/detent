@@ -8,9 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 )
 
 const (
+	MaxDuration    = 30 * time.Second
 	MaxAttempts    = 12
 	MaxReceipts    = 24
 	MaxComments    = 24

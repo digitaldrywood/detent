@@ -25,6 +25,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -525,7 +526,12 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 				}
 			}
 			if got.state != want {
-				t.Fatalf("native run finished in %s, want handoff to %s before lease retirement", got.state, want)
+				recovery, readErr := h.admin.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))
+				var last *tracker.NativeTerminalFailure
+				if len(recovery.Attempts) > 0 {
+					last = recovery.Attempts[len(recovery.Attempts)-1].TerminalFailure
+				}
+				t.Fatalf("native run finished in %s, want handoff to %s before lease retirement: attempt=%+v read_error=%v", got.state, want, last, readErr)
 			}
 		case <-testenv.WaitContext(t, t.Context()).Done():
 			state, _ := orch.State(t.Context())
@@ -595,7 +601,7 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 		if err != nil || current.Issue.State != "Todo" || (len(current.Attempts) != len(preservedRecovery.Attempts)+1 || !reflect.DeepEqual(current.Attempts[:len(current.Attempts)-1], preservedRecovery.Attempts)) || !reflect.DeepEqual(current.Change, preservedRecovery.Change) || !reflect.DeepEqual(current.ChangeDetail, preservedRecovery.ChangeDetail) || provider.calls.Load() != 0 || !reflect.DeepEqual(changes, preservedChanges) {
 			t.Errorf("planning refusal changed preserved evidence: state=%s receipt_unchanged=%v change_unchanged=%v calls=%d changes=%d error=%v", current.Issue.State, reflect.DeepEqual(current.Attempts, preservedRecovery.Attempts), reflect.DeepEqual(current.Change, preservedRecovery.Change), provider.calls.Load(), len(changes), err)
 		}
-		assertSetupRefusalReceipt(t, current.Attempts)
+		assertSetupRefusalReceipt(t, current.Attempts, provider.progressCalls.Load() > 0)
 		if (resumeCase == "identity" || resumeCase == "policy") && provider.resumeVerified.Load() != 1 {
 			t.Fatalf("resume refusal did not exercise the intended boundary: case=%s verification_calls=%d", resumeCase, provider.resumeVerified.Load())
 		}
@@ -712,6 +718,7 @@ func hubserverPlanStates() []tracker.NativeState {
 type nativePlanningAgent struct {
 	failure        string
 	calls          atomic.Int64
+	progressCalls  atomic.Int64
 	workspace      string
 	resumeVerified atomic.Int64
 }
@@ -725,6 +732,29 @@ func (a *nativePlanningAgent) VerifyResume(_ context.Context, _ runner.AgentProc
 }
 
 func (a *nativePlanningAgent) RunTurn(ctx context.Context, req runner.AgentTurnRequest, update runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
+	if req.TextOnly && strings.Contains(req.Prompt, progresscheck.Instructions) {
+		a.progressCalls.Add(1)
+		if err := update(runner.AgentUpdate{Type: runner.AgentUpdateTokenUsage, Tokens: runner.AgentTokenUsage{InputTokens: 10, OutputTokens: 1}}); err != nil {
+			return runner.AgentTurnResult{}, err
+		}
+		_, encoded, found := strings.Cut(req.Prompt, "\n\nEvidence:\n")
+		if !found {
+			return runner.AgentTurnResult{}, errors.New("progress evidence is missing")
+		}
+		var evidence progresscheck.Request
+		if err := json.Unmarshal([]byte(encoded), &evidence); err != nil {
+			return runner.AgentTurnResult{}, err
+		}
+		if len(evidence.Attempts) == 0 {
+			return runner.AgentTurnResult{}, errors.New("progress attempt is missing")
+		}
+		decision, err := json.Marshal(progresscheck.Decision{Outcome: progresscheck.Progressing, Reason: "Continue the selected recovery step", Evidence: []string{evidence.Attempts[len(evidence.Attempts)-1].ID}})
+		if err != nil {
+			return runner.AgentTurnResult{}, err
+		}
+		return runner.AgentTurnResult{}, update(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, ItemID: "decision", Delta: string(decision)})
+	}
+
 	a.calls.Add(1)
 	a.workspace = req.Workspace
 	if a.failure == "cleanup" || a.failure == "exited" {
@@ -830,13 +860,17 @@ func (t *nativePlanTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	return response, nil
 }
 
-func assertSetupRefusalReceipt(t *testing.T, attempts []tracker.NativeAttempt) {
+func assertSetupRefusalReceipt(t *testing.T, attempts []tracker.NativeAttempt, progressPaid bool) {
 	t.Helper()
 	if len(attempts) == 0 {
 		t.Fatal("setup refusal receipt absent")
 	}
 	a := attempts[len(attempts)-1]
-	if a.Identity != nil || a.Status != "interrupted" || a.Checkpoint != nil || a.TerminalFailure == nil || a.TerminalFailure.Stage != "pre_provider" || a.TerminalFailure.Attribution != "instance" || a.TerminalFailure.ErrorClass != "source_recovery" || !strings.Contains(a.TerminalFailure.Error, "native checkpoint requires recovery:") {
+	stage := "pre_provider"
+	if progressPaid {
+		stage = "workspace_preparation"
+	}
+	if (a.Identity != nil) != progressPaid || progressPaid && (len(a.Usage) != 1 || a.Usage[0].Input != 10 || a.Usage[0].Output != 1) || a.Status != "interrupted" || a.Checkpoint != nil || a.TerminalFailure == nil || a.TerminalFailure.Stage != stage || a.TerminalFailure.Attribution != "instance" || a.TerminalFailure.ErrorClass != "source_recovery" || !strings.Contains(a.TerminalFailure.Error, "native checkpoint requires recovery:") {
 		t.Fatalf("setup refusal replaced source or lost diagnostic: %+v failure=%+v", a, a.TerminalFailure)
 	}
 }

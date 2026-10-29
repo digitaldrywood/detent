@@ -1974,3 +1974,64 @@ func TestNativeRejectedReviewCheckpointReleasesClaim(t *testing.T) {
 		})
 	}
 }
+
+func TestNativeProgressStartupRecoverySnapshot(t *testing.T) {
+	t.Parallel()
+	h := newNativeChangeHub(t)
+	issue := h.createInProgress(t, "Concurrent progress startup")
+	h.claim(t, issue.ID)
+	execution := h.scheduler.RunExecution(issue.ID)
+	publishing := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	releasePublication := func() { once.Do(func() { close(release) }) }
+	transport := h.native.client.httpClient.Transport
+	h.native.client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+		if request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/events") {
+			close(publishing)
+			select {
+			case <-release:
+			case <-request.Context().Done():
+				return nil, request.Context().Err()
+			}
+		}
+		return transport.RoundTrip(request)
+	})
+	finished := make(chan struct{})
+	var readDone chan struct{}
+	var startErr error
+	t.Cleanup(func() {
+		releasePublication()
+		<-finished
+		if readDone != nil {
+			<-readDone
+		}
+	})
+	go func() {
+		defer close(finished)
+		startErr = execution.Start(t.Context(), tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"})
+	}()
+	select {
+	case <-publishing:
+	case <-finished:
+		t.Fatalf("progress startup failed before publication: %v", startErr)
+	case <-testenv.WaitContext(t, t.Context()).Done():
+		t.Fatal("progress startup did not publish its execution")
+	}
+	snapshots := make(chan tracker.NativeRecovery, 1)
+	readDone = make(chan struct{})
+	go func() { defer close(readDone); snapshots <- execution.Recovery() }()
+	select {
+	case snapshot := <-snapshots:
+		if string(snapshot.Issue.WorkItemID) != issue.ID || snapshot.Lease.WorkItemID != snapshot.Issue.WorkItemID {
+			t.Fatalf("progress startup changed recovery scope: %+v", snapshot.Issue.NativeReference)
+		}
+	case <-testenv.WaitContext(t, t.Context()).Done():
+		t.Fatal("scheduler recovery read waited for progress publication")
+	}
+	releasePublication()
+	<-finished
+	if startErr != nil {
+		t.Fatal(startErr)
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/serviceapi"
@@ -71,6 +72,9 @@ func (r *Runner) textGenerator(backend AgentBackend, template AgentTurnRequest, 
 		var text strings.Builder
 		lastItem := ""
 		usage := RunResult{Model: request.Model}
+		if usage.Model == "" {
+			usage.Model = "provider_default"
+		}
 		result, err, cleanupErr := runAgentBackendTurn(ctx, backend, request, func(update AgentUpdate) error {
 			if update.Type == AgentUpdateTokenUsage {
 				usage.Tokens = TokenTotals{InputTokens: update.Tokens.InputTokens, CachedInputTokens: update.Tokens.CachedInputTokens, OutputTokens: update.Tokens.OutputTokens}
@@ -95,7 +99,9 @@ func (r *Runner) textGenerator(backend AgentBackend, template AgentTurnRequest, 
 			return nil
 		})
 		usage.ReportedCostMicros, usage.CostSource = result.ReportedCostMicros, result.CostSource
-		reportTurnUsage(ctx, execution, usage, request.Model, backendKind, r.usageCostUSD, r.logger)
+		usageCtx, cancelUsage := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		reportTurnUsage(usageCtx, execution, usage, request.Model, backendKind, r.usageCostUSD, r.logger)
+		cancelUsage()
 		if err := errors.Join(err, cleanupErr); err != nil {
 			return "", err
 		}

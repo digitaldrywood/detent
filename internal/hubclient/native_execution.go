@@ -27,6 +27,7 @@ import (
 
 type nativeExecution struct {
 	completionOwner   atomic.Bool
+	recovery          atomic.Pointer[tracker.NativeRecovery]
 	stepReviews       *tracker.ChangeDetail
 	stepDiscussion    []tracker.NativeComment
 	workerMu          sync.Mutex
@@ -229,6 +230,9 @@ func (s *Scheduler) RunExecution(issueID string) runner.Execution {
 
 func (e *nativeExecution) Recovery() tracker.NativeRecovery {
 	recovery := e.claim.recovery
+	if current := e.recovery.Load(); current != nil {
+		recovery = *current
+	}
 	recovery.Lease = e.claim.lease
 	return recovery
 }
@@ -451,7 +455,9 @@ func (e *nativeExecution) Start(ctx context.Context, identity tracker.NativeExec
 	}
 	e.data.Identity = &identity
 	e.role = identity.Role
-	e.claim.recovery.Issue.State = issue.State
+	recovery := e.Recovery()
+	recovery.Issue.State = issue.State
+	e.recovery.Store(&recovery)
 	return e.append(ctx, "run.started", "", nil)
 }
 
@@ -742,7 +748,7 @@ func (e *nativeExecution) finishPrepared(ctx context.Context) error {
 	outcome := e.preparedOutcome
 	finished := e.data.Outcome != ""
 	interrupted := e.data.Outcome == "interrupted"
-	expectedState := e.claim.recovery.Issue.State
+	expectedState := e.Recovery().Issue.State
 	publicationUnavailable := outcome == "succeeded" && !e.settled && e.change != nil && e.change.Error != ""
 	e.mu.Unlock()
 	var finishErr error

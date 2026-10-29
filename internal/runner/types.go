@@ -621,7 +621,8 @@ func (e *agentDurationLimitError) Is(target error) bool {
 }
 
 type RunRequest struct {
-	ProgressDecision  progresscheck.Record `json:",omitzero"`
+	PrepareRun        func(context.Context, *RunRequest) error `json:"-"`
+	ProgressDecision  progresscheck.Record                     `json:",omitzero"`
 	workspacePrepared bool
 	workspaceBackend  workspace.Backend
 	LandingBatch      *workspace.LandingBatchTicket `json:"-"`

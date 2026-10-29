@@ -1,8 +1,5 @@
 -- +goose Up
 ALTER TABLE native_comments ADD COLUMN progress_request_id TEXT NOT NULL DEFAULT '';
-CREATE INDEX native_comments_progress_input ON native_comments(organization_id, project_id, work_item_id, sequence DESC) WHERE progress_request_id = '' AND deleted = 0;
-CREATE INDEX native_attempts_progress_success ON native_attempts(organization_id, project_id, work_item_id, fencing_token DESC) WHERE status = 'succeeded';
-CREATE INDEX native_progress_human_input ON collaboration_events(organization_id, project_id, work_item_id, sequence DESC) WHERE actor_kind = 'human' AND type IN ('comment.created', 'comment.edited');
 CREATE TABLE native_progress_decisions (
   organization_id TEXT NOT NULL,
   project_id TEXT NOT NULL,
@@ -36,9 +33,9 @@ CREATE UNIQUE INDEX native_progress_comment ON native_progress_decisions(comment
 CREATE INDEX native_progress_latest_defect ON native_progress_decisions(organization_id, project_id, work_item_id, outcome, created_at DESC, request_id DESC);
 
 -- +goose Down
+DROP INDEX IF EXISTS native_comments_progress_input;
+DROP INDEX IF EXISTS native_attempts_progress_success;
+DROP INDEX IF EXISTS native_progress_human_input;
 DROP TABLE native_progress_evidence;
 DROP TABLE native_progress_decisions;
-DROP INDEX native_comments_progress_input;
-DROP INDEX native_attempts_progress_success;
-DROP INDEX native_progress_human_input;
 ALTER TABLE native_comments DROP COLUMN progress_request_id;

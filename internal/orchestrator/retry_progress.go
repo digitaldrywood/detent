@@ -3,6 +3,8 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
@@ -19,42 +21,55 @@ type retryProgressRunner interface {
 type retryProgressBackend struct {
 	runner retryProgressRunner
 	run    RunRequest
+	called bool
 }
 
-func (b retryProgressBackend) Decide(ctx context.Context, request progresscheck.Request) (progresscheck.Decision, error) {
+func (b *retryProgressBackend) Decide(ctx context.Context, request progresscheck.Request) (progresscheck.Decision, error) {
+	if b.run.AcquireModelPermit != nil {
+		if err := b.run.AcquireModelPermit(ctx); err != nil {
+			return progresscheck.Decision{}, err
+		}
+	}
+	b.called = true
 	return b.runner.CheckProgress(ctx, b.run, request)
 }
 
-func (o *Orchestrator) retryProgress(ctx context.Context, issue connector.Issue, mode string, decision *progresscheck.Record) (string, bool, error) {
+func (o *Orchestrator) prepareRetryProgress(ctx context.Context, run *RunRequest) error {
 	source, ok := o.scheduling.(retryProgressSource)
 	if !ok || o.progressRunner == nil {
-		return mode, true, nil
+		return nil
 	}
-	request, owner, err := source.RetryProgress(ctx, issue)
+	ctx, cancel := context.WithTimeout(ctx, progresscheck.MaxDuration)
+	defer cancel()
+	request, owner, err := source.RetryProgress(ctx, run.Issue)
 	if err != nil {
-		return "", false, err
+		return err
 	}
-	backend := retryProgressBackend{runner: o.progressRunner, run: RunRequest{Issue: issue, Mode: mode, SelectorContext: o.selectorContext()}}
+	backend := &retryProgressBackend{runner: o.progressRunner, run: *run}
 	record, checked, err := progresscheck.Check(ctx, request, backend, owner)
 	if err != nil {
-		return "", false, err
+		return err
 	}
 	if !checked {
-		return mode, true, nil
+		return nil
 	}
-	if decision != nil {
-		*decision = record
-	}
+	run.ProgressDecision = record
+	run.PriorAttempt.Source = "Progress check comment " + record.CommentID
+	run.PriorAttempt.Reason = strings.TrimSpace(run.PriorAttempt.Reason + "\n" + record.Decision.Reason)
 	switch record.Decision.Outcome {
 	case progresscheck.Progressing:
-		return mode, true, nil
+		return nil
 	case progresscheck.Reroute:
 		switch record.Decision.Step {
 		case RunModeImplement, RunModeMerge:
-			return record.Decision.Step, true, nil
+			run.Mode = record.Decision.Step
+			return nil
 		}
 	case progresscheck.SystemDefect:
-		return "", false, nil
+		if !backend.called {
+			return nil
+		}
+		return fmt.Errorf("progress check filed dependency %s", record.DefectIssueID)
 	}
-	return "", false, errors.New("progress decision cannot be dispatched")
+	return errors.New("progress decision cannot be dispatched")
 }
