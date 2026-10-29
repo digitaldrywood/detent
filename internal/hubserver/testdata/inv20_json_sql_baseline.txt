@@ -30,7 +30,6 @@ internal/hubserver/native_archive_reader.go 1
 internal/hubserver/native_dependency_reasons.go 2
 internal/hubserver/native_dispatch_wait.go 1
 internal/hubserver/native_shipped.go 1
-internal/hubserver/native_work_search.go 1
 internal/hubserver/onboarding_batch.go 2
 internal/hubserver/operator_analytics_residence.go 1
 internal/hubserver/report_productivity.go 7
