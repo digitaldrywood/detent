@@ -87,6 +87,7 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 	effectiveGate := gate.Effective(workflow.Config.Gate)
 	options := workspace.LandOptions{ReviewDispositions: target.ReviewDispositions, TargetBranch: target.BaseRef, LandingMode: effectiveGate.LandingMode, Native: !target.GitHubPullRequest, Validation: target.Validation, RebaseRequired: target.RebaseRequired, RequiredStatusChecks: effectiveGate.RequiredStatusChecks, CITriggerLabel: effectiveGate.CITriggerLabel, PreviousCI: target.CI, ValidationCommand: effectiveGate.Run, HeadSHA: target.HeadSHA, Method: target.Method, Message: message, PushAttemptBranch: true, Repository: target.Repository, External: target.External, SourceIssues: target.SourceIssues}
 	options.ChangeID = target.ChangeID
+	options.SourceBaseSHA = target.BaseSHA
 	if target.SourceMergeSHA != "" {
 		options.ExpectedBaseSHA = target.BaseSHA
 	}
