@@ -120,7 +120,7 @@ func (o *Orchestrator) registerBackendOutage(
 	observedAt time.Time,
 	capacityProbe bool,
 ) BackendOutage {
-	if capacityErr == nil || capacityErr.Details.Type == backendcapacity.ErrorTypeTransientOverload {
+	if capacityErr == nil || capacityErr.Details.Type == backendcapacity.ErrorTypeTransientOverload || o.cfg.subscriptionBilling() && capacityErr.Details.Type == backendcapacity.ErrorTypeUsageLimit {
 		return BackendOutage{}
 	}
 	if observedAt.IsZero() {
@@ -174,11 +174,49 @@ func backendCapacityProviderOutage(outage BackendOutage) bool {
 	return outage.Kind == "http_404" || (len(outage.Kind) == len("http_500") && strings.HasPrefix(outage.Kind, "http_5"))
 }
 
+func (o *Orchestrator) subscriptionQuotaOutage(outage BackendOutage) bool {
+	switch outage.Scope.BackendKind {
+	case workflowconfig.AgentBackendCodex, workflowconfig.AgentBackendClaudeCode, workflowconfig.AgentBackendPiAgent, workflowconfig.AgentBackendOpenCode:
+		return o.cfg.subscriptionBilling() && outage.Scope.Hosted() && !backendCapacityProviderOutage(outage)
+	default:
+		return false
+	}
+}
+
 func backendCapacityCanary(outage BackendOutage) bool {
 	return backendCapacityProviderOutage(outage) || outage.QuotaReadUnsupported
 }
 
 func (o *Orchestrator) refreshBackendCapacity(ctx context.Context, state *State, now time.Time) {
+	if o.cfg.subscriptionBilling() {
+		clearedQuota := false
+		for key, outage := range state.BackendOutages {
+			if o.subscriptionQuotaOutage(outage) {
+				clearedQuota = true
+				delete(state.BackendOutages, key)
+				delete(state.DispatchRecoveries, dispatchRecoveryBackendCapacity+":"+outage.Scope.Key())
+				releaseBackendCapacityRetries(state, outage.Scope, now)
+			}
+		}
+		for key, recovery := range state.BackendRecoveries {
+			if o.subscriptionQuotaOutage(recovery.Outage) {
+				clearedQuota = true
+				delete(state.BackendRecoveries, key)
+				delete(state.DispatchRecoveries, dispatchRecoveryBackendCapacity+":"+recovery.Outage.Scope.Key())
+				releaseBackendCapacityRetries(state, recovery.Outage.Scope, now)
+			}
+		}
+		if clearedQuota {
+			if _, active := activeProviderCapacityOutage(state.BackendOutages); !active {
+				key, outage, held := githubLookupBackoff(state.BackendOutages)
+				if held && outage.Trigger == githubLookupTriggerProvider {
+					delete(state.BackendOutages, key)
+					delete(state.DispatchRecoveries, dispatchRecoveryGitHubLookup)
+				}
+			}
+		}
+		return
+	}
 	if o.capacityReader == nil {
 		return
 	}
@@ -325,7 +363,7 @@ func (o *Orchestrator) backendCapacityDispatch(
 		return backendcapacity.Scope{}, "", false
 	}
 	key, outage, ok := matchingBackendOutage(state.BackendOutages, scope)
-	if !ok {
+	if !ok || o.subscriptionQuotaOutage(outage) {
 		return scope, "", false
 	}
 	if !backendCapacityCanary(outage) {
@@ -365,7 +403,7 @@ func (o *Orchestrator) validatorCapacityDispatch(
 		return backendcapacity.Scope{}, "", false
 	}
 	key, outage, ok := matchingBackendOutage(state.BackendOutages, scope)
-	if !ok {
+	if !ok || o.subscriptionQuotaOutage(outage) {
 		return scope, "", false
 	}
 	if !backendCapacityCanary(outage) {
@@ -394,6 +432,9 @@ func (o *Orchestrator) publishValidatorCapacityEvent(ctx context.Context, event 
 
 func (o *Orchestrator) handleValidatorCapacityEvent(state *State, event validatorCapacityEvent) {
 	if event.CapacityErr != nil {
+		if o.cfg.subscriptionBilling() && event.CapacityErr.Details.Type == backendcapacity.ErrorTypeUsageLimit {
+			return
+		}
 		if event.CapacityErr.Details.Type == backendcapacity.ErrorTypeTransientOverload {
 			if event.CapacityProbe {
 				releaseBackendCapacityProbe(state, Running{CapacityScope: event.Scope, CapacityProbe: true})
@@ -505,7 +546,7 @@ func (o *Orchestrator) recoverBackendCapacityFromStatus(
 	rateLimits *telemetry.RateLimits,
 	observedAt time.Time,
 ) {
-	if o.capacityStatus == nil || rateLimits == nil || !running.CapacityScope.Hosted() {
+	if o.cfg.subscriptionBilling() || o.capacityStatus == nil || rateLimits == nil || !running.CapacityScope.Hosted() {
 		return
 	}
 	status, ok := o.capacityStatus.BackendCapacityStatus(running.CapacityScope, rateLimits)

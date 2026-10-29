@@ -238,7 +238,7 @@ func (v View) Summary() string {
 }
 
 func (v View) Available() bool {
-	return v.State != "exhausted" && (v.MaxConcurrent == 0 || v.Used < v.MaxConcurrent)
+	return v.MaxConcurrent == 0 || v.Used < v.MaxConcurrent
 }
 
 func validateUsageWindows(windows []UsageWindow) error {

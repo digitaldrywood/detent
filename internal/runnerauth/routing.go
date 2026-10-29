@@ -335,7 +335,7 @@ func (r Runner) Exclusions(project tracker.ProjectID, requirements policy.Requir
 			return view.Available()
 		})
 		if !available {
-			add("provider_capacity", "All reported provider accounts are exhausted or fully reserved; work stays queued")
+			add("provider_capacity", "All reported provider concurrency slots are fully reserved; work stays queued")
 		}
 	}
 	return result

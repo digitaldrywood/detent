@@ -153,7 +153,7 @@ func TestRunnerEligibility(t *testing.T) {
 		{"active retains slot", func(r *Runner) { r.Used = 2; r.HostUsed = 2 }, policy.Requirements{}, true, ""},
 		{"provider exhausted", func(r *Runner) {
 			r.ProviderCapacity = []providercapacity.View{{Report: providercapacity.Report{MaxConcurrent: 2}, State: "exhausted"}}
-		}, policy.Requirements{}, false, "provider_capacity"},
+		}, policy.Requirements{}, false, ""},
 		{"provider fully reserved", func(r *Runner) {
 			r.ProviderCapacity = []providercapacity.View{{Report: providercapacity.Report{MaxConcurrent: 2}, State: "available", Used: 2}}
 		}, policy.Requirements{}, false, "provider_capacity"},

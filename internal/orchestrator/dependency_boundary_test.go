@@ -161,7 +161,7 @@ func TestDependencyRetryPreservesParks(t *testing.T) {
 	if _, ok := state.Blocked[issue.ID]; !ok {
 		t.Fatal("budget hold discarded independent park")
 	}
-	if p.hardAvailableSlots(nil) != 0 || p.providerModelPermitSlots(nil) != 0 || p.rateWindowBackpressureActive(nil) || modelPermitsUsed(nil) != 0 {
+	if p.hardAvailableSlots(nil) != 0 || p.providerModelPermitSlots(nil) != 0 || modelPermitsUsed(nil) != 0 {
 		t.Fatal("missing capacity admitted a worker")
 	}
 	if got := p.retryDelay(100, false); got != time.Minute {

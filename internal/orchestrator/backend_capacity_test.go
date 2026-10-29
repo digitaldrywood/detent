@@ -104,12 +104,12 @@ func TestCodexProviderOutagePausesAndRecoversWithoutParking(t *testing.T) {
 	}
 }
 
-func TestProductionClaudeSessionLimitRecordsOneCapacityOutage(t *testing.T) {
+func TestMeteredClaudeSessionLimitRecordsOneCapacityOutage(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 8, 15, 20, 47, 49, 0, time.UTC)
 	scope := backendcapacity.Scope{BackendID: "claude-video", BackendKind: "claude_code", Provider: "anthropic"}
-	cfg := normalizeConfig(Config{
+	cfg := normalizeConfig(Config{BillingMode: "metered",
 		ActiveStates:   []string{"In Progress"},
 		TerminalStates: []string{"Done"},
 		FailureBreaker: FailureBreakerConfig{SameClassLimit: 5, Window: time.Hour, Cooldown: time.Hour},
@@ -143,7 +143,7 @@ func TestProductionClaudeSessionLimitRecordsOneCapacityOutage(t *testing.T) {
 	}
 }
 
-func TestSubscriptionStatusArmsOutageBeforeCompletion(t *testing.T) {
+func TestMeteredStatusArmsOutageBeforeCompletion(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 8, 19, 16, 30, 43, 0, time.UTC)
@@ -163,8 +163,8 @@ func TestSubscriptionStatusArmsOutageBeforeCompletion(t *testing.T) {
 		},
 		hasStatus: true,
 	}
-	orch := &Orchestrator{capacityController: controller, capacityStatus: controller, now: func() time.Time { return now }}
-	state := newState(normalizeConfig(Config{}))
+	orch := &Orchestrator{cfg: normalizeConfig(Config{BillingMode: "metered"}), capacityController: controller, capacityStatus: controller, now: func() time.Time { return now }}
+	state := newState(normalizeConfig(Config{BillingMode: "metered"}))
 	issue := connector.Issue{ID: "issue-live-exhaustion", State: "In Progress"}
 	state.Running[issue.ID] = Running{Issue: issue, CapacityScope: scope, StartedAt: now.Add(-time.Minute)}
 
@@ -206,14 +206,14 @@ func TestSubscriptionStatusArmsOutageBeforeCompletion(t *testing.T) {
 	}
 }
 
-func TestSlippedSubscriptionAttemptsFinishAsCapacityBeforeSessionBrakes(t *testing.T) {
+func TestSlippedMeteredAttemptsFinishAsCapacityBeforeSessionBrakes(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 8, 19, 20, 0, 0, 0, time.UTC)
 	resetAt := now.Add(12 * time.Hour)
 	scope := backendcapacity.Scope{BackendID: "claude-video", BackendKind: "claude_code", Provider: "anthropic"}
 	attempts := &recordingWorkAttemptStore{}
-	cfg := normalizeConfig(Config{ActiveStates: []string{"In Progress", "Rework"}, TerminalStates: []string{"Done"}})
+	cfg := normalizeConfig(Config{BillingMode: "metered", ActiveStates: []string{"In Progress", "Rework"}, TerminalStates: []string{"Done"}})
 	orch := &Orchestrator{cfg: cfg, workAttempts: attempts}
 	state := newState(cfg)
 	issue := connector.Issue{ID: "issue-slipped-capacity", State: "In Progress"}
@@ -298,8 +298,8 @@ func TestBackendCapacityPollsStatusWithoutWorkClaims(t *testing.T) {
 				reads++
 				return runpkg.CapacityObservation{Status: status}, readErr
 			}}
-			orch := &Orchestrator{capacityController: controller, capacityReader: controller, validatorCapacity: controller}
-			state := newState(normalizeConfig(Config{}))
+			orch := &Orchestrator{cfg: normalizeConfig(Config{BillingMode: "metered"}), capacityController: controller, capacityReader: controller, validatorCapacity: controller}
+			state := newState(normalizeConfig(Config{BillingMode: "metered"}))
 			outage := orch.registerBackendOutage(&state, &backendcapacity.Error{Scope: scope, Details: backendcapacity.Details{Type: backendcapacity.ErrorTypeUsageLimit, Kind: "usageLimitExceeded", ResetAt: &resetAt}}, now, false)
 			state.BackendOutages[other.Key()] = BackendOutage{Scope: other, NextProbeAt: resetAt.Add(24 * time.Hour)}
 			trackerHold := BackendOutage{Scope: githubRESTCapacityScope, Kind: githubRESTCapacityKind, NextProbeAt: now, ResumeAt: resetAt}
@@ -316,7 +316,7 @@ func TestBackendCapacityPollsStatusWithoutWorkClaims(t *testing.T) {
 			if _, key, paused := orch.backendCapacityDispatch(&state, request, due); !paused || key != "" {
 				t.Fatal("quota polling selected a work-item canary")
 			}
-			if _, key, paused := (&Orchestrator{validatorCapacity: controller}).validatorCapacityDispatch(&state, request.Issue, due); !paused || key != "" {
+			if _, key, paused := (&Orchestrator{cfg: orch.cfg, validatorCapacity: controller}).validatorCapacityDispatch(&state, request.Issue, due); !paused || key != "" {
 				t.Fatal("quota polling selected a validator canary")
 			}
 			orch.refreshBackendCapacity(t.Context(), &state, due)
@@ -785,8 +785,8 @@ func TestBackendCapacityStatusProbeRecoversOutageEarly(t *testing.T) {
 		status:    runpkg.CapacityStatus{Available: true, Detail: "live provider status reports 20% capacity remaining"},
 		hasStatus: true,
 	}
-	orch := &Orchestrator{capacityStatus: controller}
-	state := newState(normalizeConfig(Config{}))
+	orch := &Orchestrator{cfg: normalizeConfig(Config{BillingMode: "metered"}), capacityStatus: controller}
+	state := newState(normalizeConfig(Config{BillingMode: "metered"}))
 	state.BackendOutages[scope.Key()] = BackendOutage{
 		Scope:       scope,
 		DetectedAt:  now.Add(-time.Hour),
@@ -830,8 +830,8 @@ func TestBackendCapacityStatusProbeKeepsExhaustedOutage(t *testing.T) {
 		status:    runpkg.CapacityStatus{Detail: "live provider status reports 0% capacity remaining"},
 		hasStatus: true,
 	}
-	orch := &Orchestrator{capacityStatus: controller, now: func() time.Time { return now }}
-	state := newState(normalizeConfig(Config{}))
+	orch := &Orchestrator{cfg: normalizeConfig(Config{BillingMode: "metered"}), capacityStatus: controller, now: func() time.Time { return now }}
+	state := newState(normalizeConfig(Config{BillingMode: "metered"}))
 	state.BackendOutages[scope.Key()] = BackendOutage{
 		Scope:       scope,
 		DetectedAt:  now.Add(-time.Hour),
@@ -1097,8 +1097,8 @@ func TestBackendCapacityFailureRefreshesProviderWindow(t *testing.T) {
 	freshResetAt := now.Add(2 * time.Hour)
 	scope := backendcapacity.Scope{BackendID: "codex", BackendKind: "codex", Provider: "openai"}
 	controller := backendCapacityTestController{scope: scope}
-	orch := &Orchestrator{capacityController: controller}
-	state := newState(normalizeConfig(Config{}))
+	orch := &Orchestrator{cfg: normalizeConfig(Config{BillingMode: "metered"}), capacityController: controller}
+	state := newState(normalizeConfig(Config{BillingMode: "metered"}))
 	state.BackendOutages[scope.Key()] = BackendOutage{
 		Scope:         scope,
 		DetectedAt:    now.Add(-time.Hour),
@@ -1274,7 +1274,7 @@ func TestValidatorCapacityPausesWithoutFailureBackoff(t *testing.T) {
 	}
 	controller := backendCapacityTestController{scope: scope}
 	orch := &Orchestrator{
-		cfg:                     normalizeConfig(Config{}),
+		cfg:                     normalizeConfig(Config{BillingMode: "metered"}),
 		validator:               validator,
 		validatorCapacity:       controller,
 		validatorRuns:           map[string]Running{},
@@ -1597,7 +1597,7 @@ func TestOperatorCapacityRecoveryModes(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			now := time.Date(2026, 9, 9, 0, 0, 0, 0, time.UTC)
-			cfg := normalizeConfig(Config{MaxConcurrentAgents: 10})
+			cfg := normalizeConfig(Config{BillingMode: "metered", MaxConcurrentAgents: 10})
 			orch := &Orchestrator{cfg: cfg}
 			state := newState(cfg)
 			scope := backendcapacity.Scope{BackendID: "codex", BackendKind: "codex", Provider: "openai"}
@@ -1766,8 +1766,8 @@ func TestBackendCapacityProviderResetWindow(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			scope := backendcapacity.Scope{BackendID: "codex", BackendKind: "codex", Provider: "openai"}
-			orch := &Orchestrator{capacityController: backendCapacityTestController{scope: scope}}
-			state := newState(normalizeConfig(Config{}))
+			orch := &Orchestrator{cfg: normalizeConfig(Config{BillingMode: "metered"}), capacityController: backendCapacityTestController{scope: scope}}
+			state := newState(normalizeConfig(Config{BillingMode: "metered"}))
 			err := &codex.TurnFailedError{Status: "failed", Body: `{"message":"You've hit your usage limit. Try again at Sep 22nd, 2026 11:27 AM.","codexErrorInfo":"usageLimitExceeded"}`}
 			details, ok := codex.ClassifyCapacityError(err, nil, now)
 			if !ok || details.ResetAt == nil || !details.ResetAt.Equal(reset) {
@@ -1784,6 +1784,96 @@ func TestBackendCapacityProviderResetWindow(t *testing.T) {
 			_, _, paused := orch.backendCapacityDispatch(&state, runpkg.RunRequest{}, tt.at)
 			if paused != tt.paused {
 				t.Errorf("paused = %v, want %v", paused, tt.paused)
+			}
+		})
+	}
+}
+
+func TestSubscriptionCapacityIgnoresUsageAndLegacyOutages(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)
+	for _, tt := range []struct {
+		name            string
+		kind            string
+		legacy          bool
+		paused          bool
+		tracker         bool
+		recovered       bool
+		lookup          bool
+		trackerRecovery bool
+	}{
+		{name: "100 percent weekly usage"},
+		{name: "legacy subscription window", kind: "subscription_window_exhausted", legacy: true},
+		{name: "legacy quota error", kind: "usageLimitExceeded", legacy: true},
+		{name: "HTTP outage remains authoritative", kind: "http_503", legacy: true, paused: true},
+		{name: "GitHub lookup hold remains authoritative", kind: githubLookupBackoffKind, legacy: true, paused: true, tracker: true},
+		{name: "legacy quota recovery ramp", kind: "usageLimitExceeded", recovered: true},
+		{name: "legacy quota derived lookup hold", kind: "usageLimitExceeded", legacy: true, lookup: true},
+		{name: "independent tracker recovery remains", kind: "usageLimitExceeded", legacy: true, trackerRecovery: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			scope := backendcapacity.Scope{BackendID: "codex", BackendKind: "codex", Provider: "openai"}
+			if tt.tracker {
+				scope = backendcapacity.Scope{BackendID: "github-lookups", BackendKind: "tracker", Provider: "github"}
+			}
+			controller := backendCapacityTestController{scope: scope, hasStatus: true, status: runpkg.CapacityStatus{Exhausted: true}, read: func(context.Context, backendcapacity.Scope, time.Time) (runpkg.CapacityObservation, error) {
+				t.Fatal("subscription scheduling read quota")
+				return runpkg.CapacityObservation{}, nil
+			}}
+			cfg := normalizeConfig(Config{MaxConcurrentAgents: 3, ActiveStates: []string{"Todo"}})
+			orch := &Orchestrator{cfg: cfg, capacityController: controller, capacityStatus: controller, capacityReader: controller, validatorCapacity: controller}
+			state := newState(cfg)
+			reset := now.Add(7 * 24 * time.Hour)
+			if tt.legacy {
+				state.BackendOutages[scope.Key()] = BackendOutage{Scope: scope, Kind: tt.kind, ResumeAt: reset, NextProbeAt: reset}
+				state.Retry["retry"] = Retry{Issue: dispatchTestIssue("retry", "Todo"), Attempt: 4, CapacityScope: scope, DueAt: reset}
+			}
+			if tt.trackerRecovery {
+				state.DispatchRecoveries[dispatchRecoveryGitHubLookup] = DispatchRecovery{Kind: dispatchRecoveryGitHubLookup, Reason: "GitHub REST exhausted", Limit: 1, Status: dispatchRecoveryStatusRamping}
+			}
+			if tt.lookup {
+				state.BackendOutages[githubLookupBackoffScope.Key()] = BackendOutage{Scope: githubLookupBackoffScope, Kind: githubLookupBackoffKind, Trigger: githubLookupTriggerProvider, NextProbeAt: reset}
+				state.DispatchRecoveries[dispatchRecoveryGitHubLookup] = DispatchRecovery{Kind: dispatchRecoveryGitHubLookup, Limit: 1, Status: dispatchRecoveryStatusRamping}
+			}
+			if tt.recovered {
+				outage := BackendOutage{Scope: scope, Kind: tt.kind}
+				state.BackendRecoveries[scope.Key()] = BackendRecovery{Outage: outage}
+				orch.activateBackendDispatchRecovery(&state, outage, now)
+			}
+			limits := &telemetry.RateLimits{ReachedType: "weekly", Secondary: &telemetry.RateLimitBucket{Limit: 100, Remaining: 0, Status: telemetry.RateLimitStatusExhausted, ResetAt: &reset, ObservedAt: &now}}
+			orch.recoverBackendCapacityFromStatus(&state, Running{CapacityScope: scope}, limits, now)
+			if _, _, paused := orch.backendCapacityDispatch(&state, runpkg.RunRequest{}, now); paused != tt.paused {
+				t.Fatalf("worker paused = %t, want %t", paused, tt.paused)
+			}
+			if _, _, paused := orch.validatorCapacityDispatch(&state, connector.Issue{}, now); paused != tt.paused {
+				t.Fatalf("validator paused = %t, want %t", paused, tt.paused)
+			}
+			orch.refreshBackendCapacity(t.Context(), &state, now)
+			if got := len(state.BackendOutages) > 0; got != tt.paused {
+				t.Fatalf("outage retained = %t, want %t", got, tt.paused)
+			}
+			if tt.trackerRecovery {
+				if recovery, ok := state.DispatchRecoveries[dispatchRecoveryGitHubLookup]; !ok || recovery.Limit != 1 {
+					t.Fatalf("quota cleanup changed independent tracker recovery: %#v", state.DispatchRecoveries)
+				}
+			}
+			if !tt.paused && !tt.trackerRecovery {
+				if len(state.DispatchRecoveries) != 0 || len(state.BackendRecoveries) != 0 {
+					t.Fatalf("quota retained a recovery ramp: %#v", state.DispatchRecoveries)
+				}
+				state.RateLimits = limits
+				plan := PlanDispatch(cfg, state, []connector.Issue{dispatchTestIssue("first", "Todo"), dispatchTestIssue("second", "Todo"), dispatchTestIssue("third", "Todo"), dispatchTestIssue("fourth", "Todo")}, now)
+				if len(plan.Dispatches) != cfg.MaxConcurrentAgents {
+					t.Fatalf("dispatches = %d, want declared concurrency %d", len(plan.Dispatches), cfg.MaxConcurrentAgents)
+				}
+			}
+			if tt.legacy && !tt.paused {
+				if retry := state.Retry["retry"]; retry.DueAt.After(now) || retry.Attempt != 4 {
+					t.Fatalf("legacy quota retry = %#v, want immediate retry with unchanged attempt", retry)
+				}
+			}
+			if outage := orch.registerBackendOutage(&state, &backendcapacity.Error{Scope: scope, Details: backendcapacity.Details{Type: backendcapacity.ErrorTypeUsageLimit, ResetAt: &reset}}, now, false); outage.Scope.BackendID != "" {
+				t.Fatalf("quota registered an outage: %#v", outage)
 			}
 		})
 	}

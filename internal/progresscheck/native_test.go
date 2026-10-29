@@ -109,3 +109,56 @@ func TestNativeCompletionAvailabilityUsesCurrentReviewedEmptySource(t *testing.T
 		})
 	}
 }
+
+func TestNativeNoProgressSuccessRequiresCheck(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(*tracker.NativeRecovery)
+		want   bool
+	}{
+		{"finalization changed zero", func(r *tracker.NativeRecovery) { r.Attempts[1].Finalization.Changed = false }, true},
+		{"no work product", func(r *tracker.NativeRecovery) {
+			r.Attempts[1].Finalization = nil
+			r.Attempts[1].Identity = &tracker.NativeExecutionIdentity{Role: "rework"}
+		}, true},
+		{"blocked source recovery", func(r *tracker.NativeRecovery) {
+			r.Attempts[1].Disposition = &tracker.NativeDisposition{Status: "blocked", ReasonCode: "source_recovery_required"}
+		}, true},
+		{"repeated typed refusal", func(r *tracker.NativeRecovery) {
+			for i := range r.Attempts {
+				r.Attempts[i].Runtime = &tracker.NativeRuntimeObservation{Landing: &tracker.NativeLandingReceipt{RefusalKind: "source_missing", BaseSHA: "base", HeadSHA: "head"}}
+			}
+		}, true},
+		{"productive success", func(*tracker.NativeRecovery) {}, false},
+		{"same prose is not a refusal", func(r *tracker.NativeRecovery) {
+			for i := range r.Attempts {
+				r.Attempts[i].Runtime = &tracker.NativeRuntimeObservation{Landing: &tracker.NativeLandingReceipt{Refusal: "source missing", BaseSHA: "base", HeadSHA: "head"}}
+			}
+		}, false},
+		{"changed source refusal", func(r *tracker.NativeRecovery) {
+			for i := range r.Attempts {
+				r.Attempts[i].Runtime = &tracker.NativeRuntimeObservation{Landing: &tracker.NativeLandingReceipt{RefusalKind: "source_missing", BaseSHA: "base", HeadSHA: "head"}}
+			}
+			r.Attempts[1].Runtime.Landing.HeadSHA = "new-head"
+		}, false},
+		{"different typed refusal", func(r *tracker.NativeRecovery) {
+			for i := range r.Attempts {
+				r.Attempts[i].Runtime = &tracker.NativeRuntimeObservation{Landing: &tracker.NativeLandingReceipt{RefusalKind: "source_missing", BaseSHA: "base", HeadSHA: "head"}}
+			}
+			r.Attempts[1].Runtime.Landing.RefusalKind = "audit_missing"
+		}, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			r := tracker.NativeRecovery{Issue: tracker.NativeIssue{NativeReference: tracker.NativeReference{ProjectID: "project", WorkItemID: "issue", Revision: 1}}}
+			for _, id := range []string{"prior", "latest"} {
+				r.Attempts = append(r.Attempts, tracker.NativeAttempt{NativeRunData: tracker.NativeRunData{AttemptID: id, Outcome: "succeeded", Finalization: &tracker.NativeFinalization{Changed: true, BaseSHA: "base", HeadSHA: "head"}}})
+			}
+			test.mutate(&r)
+			backend := &fakeBackend{decision: Decision{Outcome: Reroute, Step: "implement", Reason: "Produce missing work", Evidence: []string{"latest"}}}
+			_, checked, err := Check(t.Context(), NativeRequest(r, "policy", "instance"), backend, &fakeOwner{})
+			if err != nil || checked != test.want || (backend.calls == 1) != test.want {
+				t.Fatalf("checked=%v calls=%d err=%v, want %v", checked, backend.calls, err, test.want)
+			}
+		})
+	}
+}

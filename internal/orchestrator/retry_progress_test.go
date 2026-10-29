@@ -251,7 +251,8 @@ func TestRetryProgressDispatch(t *testing.T) {
 		{name: "success pays no AI turn", outcome: "success", want: RunModeImplement},
 		{name: "backend failure permits ordinary retry", err: errors.New("provider unavailable"), reason: "provider unavailable", want: RunModeImplement},
 		{name: "timeout permits ordinary retry", err: context.DeadlineExceeded, reason: "context deadline exceeded", want: RunModeImplement},
-		{name: "invalid decision permits ordinary retry", decision: progresscheck.Decision{Outcome: progresscheck.Progressing, Step: RunModeMerge, Reason: "Continue", Evidence: []string{"attempt-2"}}, reason: "progressing decision cannot change step", want: RunModeImplement},
+		{name: "invalid decision permits ordinary retry", decision: progresscheck.Decision{Outcome: progresscheck.Progressing, Step: RunModeMerge, Reason: "Continue", Evidence: []string{"unavailable"}}, reason: "progress decision cites unavailable evidence", want: RunModeImplement},
+		{name: "progressing ignores suggested step", decision: progresscheck.Decision{Outcome: progresscheck.Progressing, Step: RunModeMerge, Reason: "Continue", Evidence: []string{"attempt-2"}}, want: RunModeImplement},
 		{name: "missing owner permits ordinary retry", missingOwner: true, reason: "progress check requires backend and tracker owner", want: RunModeImplement},
 		{name: "evidence failure permits ordinary retry", requestError: errors.New("progress evidence unavailable"), reason: "progress evidence unavailable", want: RunModeImplement},
 	} {
@@ -406,7 +407,7 @@ func TestRetryProgressRespectsBackendCapacity(t *testing.T) {
 	scope := backendcapacity.Scope{BackendID: "codex", BackendKind: "codex", Provider: "openai"}
 	o := &Orchestrator{cfg: cfg, scheduling: source, progressRunner: checker, capacityController: backendCapacityTestController{scope: scope}}
 	state := newState(cfg)
-	state.BackendOutages[scope.Key()] = BackendOutage{Scope: scope, NextProbeAt: time.Now().Add(time.Hour)}
+	state.BackendOutages[scope.Key()] = BackendOutage{Scope: scope, Kind: "http_503", NextProbeAt: time.Now().Add(time.Hour)}
 	outcome := o.dispatchIssueWithOutcome(t.Context(), &state, issue, 2, time.Now(), "worker-a")
 	if outcome.dispatched || outcome.reason != dispatchIssueFailureBackendCapacityPaused || checker.calls != 0 {
 		t.Fatalf("capacity refusal ran a progress turn: %+v calls=%d", outcome, checker.calls)

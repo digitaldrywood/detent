@@ -13,7 +13,7 @@ import (
 
 const (
 	CompleteStep   = "complete"
-	MaxDuration    = 30 * time.Second
+	MaxDuration    = 3 * time.Minute
 	MaxAttempts    = 12
 	MaxReceipts    = 24
 	MaxComments    = 24
@@ -32,18 +32,25 @@ const (
 )
 
 type Attempt struct {
-	LandingRefusal  string `json:"landing_refusal,omitempty"`
-	ID              string `json:"id"`
-	Step            string `json:"step"`
-	Outcome         string `json:"outcome"`
-	Error           string `json:"error"`
-	FailureClass    string `json:"failure_class"`
-	Attribution     string `json:"attribution"`
-	Instance        string `json:"instance"`
-	InstanceVersion string `json:"instance_version,omitempty"`
-	SourceSHA       string `json:"source_sha"`
-	BaseSHA         string `json:"base_sha"`
-	CheckpointSHA   string `json:"checkpoint_sha"`
+	LandingRefusal      string `json:"landing_refusal,omitempty"`
+	FinalizationChanged *bool  `json:"finalization_changed,omitempty"`
+	WorkProduct         bool   `json:"work_product,omitempty"`
+	Disposition         string `json:"disposition,omitempty"`
+	ReasonCode          string `json:"reason_code,omitempty"`
+	RefusalKind         string `json:"refusal_kind,omitempty"`
+	RefusalBaseSHA      string `json:"refusal_base_sha,omitempty"`
+	RefusalHeadSHA      string `json:"refusal_head_sha,omitempty"`
+	ID                  string `json:"id"`
+	Step                string `json:"step"`
+	Outcome             string `json:"outcome"`
+	Error               string `json:"error"`
+	FailureClass        string `json:"failure_class"`
+	Attribution         string `json:"attribution"`
+	Instance            string `json:"instance"`
+	InstanceVersion     string `json:"instance_version,omitempty"`
+	SourceSHA           string `json:"source_sha"`
+	BaseSHA             string `json:"base_sha"`
+	CheckpointSHA       string `json:"checkpoint_sha"`
 }
 
 type Receipt struct {
@@ -151,7 +158,26 @@ func (request Request) NeedsCheck() bool {
 		return false
 	}
 	last := request.Attempts[len(request.Attempts)-1]
-	return last.Outcome != "success" && last.Outcome != "cancelled" || last.Outcome == "success" && last.LandingRefusal == "nothing_to_land"
+	if last.Outcome != "success" {
+		return last.Outcome != "cancelled"
+	}
+	if last.Disposition == "blocked" && last.ReasonCode == "source_recovery_required" {
+		return true
+	}
+	if last.FinalizationChanged != nil && !*last.FinalizationChanged {
+		return true
+	}
+	if last.FinalizationChanged == nil && !last.WorkProduct && (last.Step == "code" || last.Step == "rework" || last.Step == "implement") {
+		return true
+	}
+	if last.LandingRefusal == "nothing_to_land" || last.RefusalKind == "nothing_to_land" {
+		return true
+	}
+	if last.RefusalKind == "" || last.RefusalBaseSHA == "" || last.RefusalHeadSHA == "" || len(request.Attempts) < 2 {
+		return false
+	}
+	previous := request.Attempts[len(request.Attempts)-2]
+	return last.RefusalKind == previous.RefusalKind && last.RefusalBaseSHA == previous.RefusalBaseSHA && last.RefusalHeadSHA == previous.RefusalHeadSHA
 }
 
 func Failed(outcome string) bool {
@@ -257,9 +283,6 @@ func validateDecision(request Request, decision Decision) error {
 	}
 	switch decision.Outcome {
 	case Progressing:
-		if decision.Step != "" {
-			return errors.New("progressing decision cannot change step")
-		}
 	case Reroute:
 		if decision.Step == CompleteStep {
 			if !request.EmptyDelta || len(request.Attempts) == 0 || request.Attempts[len(request.Attempts)-1].LandingRefusal != "nothing_to_land" {

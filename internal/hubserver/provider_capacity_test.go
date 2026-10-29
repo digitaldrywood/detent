@@ -61,7 +61,7 @@ func TestProviderCapacityClaimObservations(t *testing.T) {
 			r.Availability = "exhausted"
 			r.ObservedAt = r.ObservedAt.Add(time.Second)
 		}, http.StatusOK},
-		{"exhausted", func(r *providercapacity.Report, _ *tracker.NativeClaim) { r.Availability = "exhausted" }, http.StatusConflict},
+		{"exhausted", func(r *providercapacity.Report, _ *tracker.NativeClaim) { r.Availability = "exhausted" }, http.StatusOK},
 		{"reset", func(r *providercapacity.Report, _ *tracker.NativeClaim) {
 			r.Availability = "exhausted"
 			r.ResetAt = r.ObservedAt
@@ -202,7 +202,7 @@ func TestProviderProjectBackendReservations(t *testing.T) {
 
 func TestProviderSharedCapacityConcurrentRecovery(t *testing.T) {
 	t.Parallel()
-	for _, sharing := range []string{"declared", "unknown", "same local alias", "mixed", "mixed reversed"} {
+	for _, sharing := range []string{"declared", "subscription weekly exhausted", "subscription stale quota", "subscription unknown quota", "unknown", "same local alias", "mixed", "mixed reversed"} {
 		t.Run(sharing, func(t *testing.T) {
 			now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
 			cfg := Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }}
@@ -214,6 +214,19 @@ func TestProviderSharedCapacityConcurrentRecovery(t *testing.T) {
 				runners[i].enroll(t)
 				report := capacityReport(now)
 				report.AccountAlias = fmt.Sprintf("local-%d", i)
+				if strings.HasPrefix(sharing, "subscription") {
+					used := 100.0
+					report.Billing = "subscription"
+					report.Availability = "exhausted"
+					report.UsageWindows = []providercapacity.UsageWindow{{Kind: "weekly", PercentUsed: &used, ObservedAt: now, ResetAt: now.Add(7 * 24 * time.Hour)}}
+					if sharing == "subscription stale quota" {
+						report.ObservedAt = now.Add(-providercapacity.MaxAge)
+					}
+					if sharing == "subscription unknown quota" {
+						report.Availability = "unknown"
+						report.UsageWindows = nil
+					}
+				}
 				if sharing == "same local alias" {
 					report.AccountAlias = "local"
 				}
@@ -255,7 +268,7 @@ func TestProviderSharedCapacityConcurrentRecovery(t *testing.T) {
 				}
 			}
 			want := 2
-			if sharing == "declared" {
+			if sharing == "declared" || strings.HasPrefix(sharing, "subscription") {
 				want = 1
 			}
 			if count != want {
@@ -324,7 +337,7 @@ func TestProviderStartRevalidation(t *testing.T) {
 				report.AccountAlias = "changed"
 			}
 			publishCapacity(t, f, r, report)
-			if change == "active" {
+			if change == "active" || change == "exhausted" {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, r.redemption.Credential, event), http.StatusOK)
 				event.Type, event.IdempotencyKey, event.Data.Sequence = "run.checkpointed", "checkpoint", 2
 				event.Data.Handoff = nativeTestCheckpoint()
