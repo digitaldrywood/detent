@@ -116,7 +116,7 @@ func TestNativeSecurityAuditCapturesBeyondStoredDiff(t *testing.T) {
 		t.Skip("git subprocess integration")
 	}
 	isolateNativeChangeGit(t)
-	for _, size := range []int{300 << 10, 21 << 20, tracker.MaxChangeDiffBytes} {
+	for _, size := range []int{0, 300 << 10, 21 << 20, tracker.MaxChangeDiffBytes} {
 		t.Run(strconv.Itoa(size), func(t *testing.T) {
 			directory := nativeChangeSourceRepo(t)
 			gitOutput := func(args ...string) string {
@@ -128,18 +128,21 @@ func TestNativeSecurityAuditCapturesBeyondStoredDiff(t *testing.T) {
 			}
 			base := strings.TrimSpace(gitOutput("rev-parse", "HEAD"))
 			for path, content := range map[string]string{"large.txt": strings.Repeat("source line\n", size/11+1), "zz-late.txt": "late security change\n"} {
+				if size == 0 {
+					continue
+				}
 				if err := os.WriteFile(filepath.Join(directory, path), []byte(content), 0o600); err != nil {
 					t.Fatal(err)
 				}
 			}
 			nativeChangeGit(t, directory, "add", ".")
-			nativeChangeGit(t, directory, "commit", "-m", "large source")
+			nativeChangeGit(t, directory, "commit", "--allow-empty", "-m", "audit source")
 			head := strings.TrimSpace(gitOutput("rev-parse", "HEAD"))
 			var original string
 			var expected [sha256.Size]byte
 			if size < tracker.MaxChangeDiffBytes {
 				original = gitOutput("diff", "--no-ext-diff", "--no-textconv", "--find-renames", base, head, "--")
-				if len(original) <= size {
+				if size > 0 && len(original) <= size {
 					t.Fatal("fixture did not cross source boundary")
 				}
 				expected = sha256.Sum256([]byte(original))
@@ -189,6 +192,9 @@ func TestNativeSecurityAuditCapturesBeyondStoredDiff(t *testing.T) {
 				t.Fatal(err)
 			}
 			execution := &nativeExecution{claim: nativeClaim{source: &NativeConnector{client: native}, lease: tracker.NativeLease{WorkItemID: "wi_example"}}, change: &runner.NativeChange{ChangeID: detail.Change.ID, VersionID: version.ID}, data: runtime.Attempt.NativeRunData, lastDiff: &request}
+			if size == 0 {
+				execution.recoveredSource = &tracker.NativeChangeReference{ChangeID: detail.Change.ID, VersionID: version.ID, HeadSHA: head}
+			}
 			execution.SetChangeSource(func(ctx context.Context, base, head string) (tracker.ChangeSourceCapture, error) {
 				return workspace.CaptureChangeSource(ctx, directory, base, head)
 			})
@@ -227,7 +233,7 @@ func TestNativeSecurityAuditCapturesBeyondStoredDiff(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if snapshot.BaseSHA != base || snapshot.HeadSHA != head || snapshot.DiffTruncated || sha256.Sum256([]byte(snapshot.Diff)) != expected || !strings.Contains(snapshot.Diff, "+late security change") {
+			if snapshot.BaseSHA != base || snapshot.HeadSHA != head || snapshot.DiffTruncated || sha256.Sum256([]byte(snapshot.Diff)) != expected || size > 0 && !strings.Contains(snapshot.Diff, "+late security change") {
 				t.Fatalf("audit lost exact source: captured=%d original=%d", len(snapshot.Diff), len(original))
 			}
 		})

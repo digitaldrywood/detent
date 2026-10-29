@@ -141,7 +141,7 @@ func (e *nativeExecution) validationVersion(ctx context.Context, stage string) (
 			if err := e.retainChangeSource(ctx, *e.lastDiff); err != nil {
 				return runner.NativeValidation{}, err
 			}
-			if e.retainedSource == nil || e.retainedSource.Patch == "" {
+			if e.retainedSource == nil || e.retainedSource.Patch == "" && e.retainedSource.Source.DiffSHA256 != tracker.ChangeSourceDigest(nil) {
 				return runner.NativeValidation{}, errors.New("security audit retained source patch is unavailable")
 			}
 			diff.Patch = e.retainedSource.Patch
