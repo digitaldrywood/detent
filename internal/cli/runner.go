@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -23,6 +24,7 @@ import (
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gobudget"
+	"github.com/digitaldrywood/detent/internal/gotestreceipt"
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/observability"
@@ -171,7 +173,7 @@ func withRunnerFactoryWithProjectTokens(
 			}); ok {
 				identity = reporter.CommitIdentity()
 			}
-			run, err = buildRunnerWithIdentity(ctx, workflow, cfg.ID, cfg.Workdir, cfg.EffectiveMemory(), hostGoBudget(cfg.GlobalCPU.GoBuildBudget), sessionStore, deps.Logger, projectServiceConnection, identity, deps.HostBuildCache, providerUsage, isolationPolicy)
+			run, err = buildRunnerWithIdentity(ctx, workflow, cfg.ID, cfg.Workdir, cfg.EffectiveMemory(), hostGoBudget(cfg.GlobalCPU.GoBuildBudget), sessionStore, deps.Logger, projectServiceConnection, identity, deps.HostBuildCache, providerUsage, projectGoTestReceipts(deps.Scheduling, cfg.ID, deps.Logger), isolationPolicy)
 			if local, ok := run.(*sshRunner); ok {
 				local.artifacts = artifacts
 			}
@@ -247,7 +249,7 @@ func buildRunner(
 	serviceConnection serviceapi.Connection,
 	isolationPolicies ...func() (isolation.Policy, error),
 ) (orchestrator.Runner, error) {
-	return buildRunnerWithIdentity(context.Background(), workflow, projectID, projectWorkdir, memory, goBudget, sessionStore, logger, serviceConnection, workspace.CommitIdentity{}, nil, nil, isolationPolicies...)
+	return buildRunnerWithIdentity(context.Background(), workflow, projectID, projectWorkdir, memory, goBudget, sessionStore, logger, serviceConnection, workspace.CommitIdentity{}, nil, nil, gotestreceipt.Config{}, isolationPolicies...)
 }
 
 func buildRunnerWithIdentity(
@@ -263,6 +265,7 @@ func buildRunnerWithIdentity(
 	commitIdentity workspace.CommitIdentity,
 	buildCache *toolcache.Managed,
 	providerUsage *runnerpkg.ProviderUsage,
+	goTestReceipts gotestreceipt.Config,
 	isolationPolicies ...func() (isolation.Policy, error),
 ) (orchestrator.Runner, error) {
 	deps, err := buildRunnerDependenciesWithIdentity(ctx, workflow, projectID, projectWorkdir, memory, sessionStore, logger, serviceConnection, commitIdentity, isolationPolicies...)
@@ -272,11 +275,45 @@ func buildRunnerWithIdentity(
 	deps.GoBudget = goBudget
 	deps.BuildCache = buildCache
 	deps.ProviderUsage = providerUsage
+	deps.GoTestReceipts = goTestReceipts
 	run, err := runnerpkg.NewRunner(deps)
 	if err != nil {
 		return nil, fmt.Errorf("create runner: %w", err)
 	}
 	return &sshRunner{Runner: run, commitIdentity: commitIdentity, buildCache: buildCache, workdir: projectWorkdir, projectID: projectID, memory: memory, goBuildSlots: goBudget.Slots, connection: serviceConnection, logger: logger, command: sshCommand}, nil
+}
+
+func projectGoTestReceipts(scheduling any, projectID string, logger *slog.Logger) gotestreceipt.Config {
+	source, ok := scheduling.(interface {
+		GoTestReceipts(string) gotestreceipt.Store
+	})
+	if !ok {
+		return gotestreceipt.Config{}
+	}
+	return goTestReceiptConfig(source.GoTestReceipts(projectID), projectID, logger)
+}
+
+func goTestReceiptConfig(store gotestreceipt.Store, projectID string, logger *slog.Logger) gotestreceipt.Config {
+	wrapper, err := installGoTestWrapper()
+	if err == nil {
+		return gotestreceipt.Config{Store: store, Wrapper: wrapper}
+	}
+	if logger != nil {
+		logger.Warn("go test receipts unavailable; validation tests execute", "project", projectID, "error", err)
+	}
+	return gotestreceipt.Config{}
+}
+
+func installGoTestWrapper() (string, error) {
+	executable, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("resolve go test wrapper executable: %w", err)
+	}
+	cache, err := os.UserCacheDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve go test wrapper directory: %w", err)
+	}
+	return gotestreceipt.Install(filepath.Join(cache, "detent", gotestreceipt.WrapperName), executable)
 }
 
 func hostGoBudget(slots int) gobudget.Budget {

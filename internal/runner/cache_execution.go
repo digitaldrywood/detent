@@ -9,6 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/gobudget"
+	"github.com/digitaldrywood/detent/internal/gotestreceipt"
 	"github.com/digitaldrywood/detent/internal/toolcache"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -22,6 +23,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (result RunResult, err
 	ctx = r.buildCache.WithContext(ctx)
 	ctx = r.withCacheWaitObserver(ctx, req)
 	ctx = r.withValidationProcessOwner(ctx, req.Issue, req.WorkAttemptID)
+	ctx = gotestreceipt.WithContext(ctx, r.goTestReceipts)
 	return r.runExecution(ctx, req)
 }
 
@@ -67,6 +69,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (result gat
 	ctx = r.buildCache.WithContext(ctx)
 	ctx = r.withCacheWaitObserver(ctx, RunRequest{Issue: req.Issue})
 	ctx = r.withValidationProcessOwner(ctx, req.Issue, 0)
+	ctx = gotestreceipt.WithContext(ctx, r.goTestReceipts)
 	return r.validate(ctx, req)
 }
 

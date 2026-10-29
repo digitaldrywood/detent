@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/gotestreceipt"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/procgroup"
@@ -303,7 +304,38 @@ func (r *Runner) SSHCallbackHandler(request RunRequest) func(context.Context, st
 		}
 		return forward(update)
 	}
-	return NewSSHCallbackHandler(request, r.store, checker, estimator)
+	handler := NewSSHCallbackHandler(request, r.store, checker, estimator)
+	receipts := r.goTestReceipts.Store
+	return func(ctx context.Context, method string, arguments []json.RawMessage) (any, error) {
+		switch method {
+		case sshGoTestReceiptLookup:
+			return invokeSSHMethod(ctx, receipts, "Lookup", arguments)
+		case sshGoTestReceiptRecord:
+			return invokeSSHMethod(ctx, receipts, "Record", arguments)
+		}
+		return handler(ctx, method, arguments)
+	}
+}
+
+const (
+	sshGoTestReceiptLookup = "go_test_receipts.lookup"
+	sshGoTestReceiptRecord = "go_test_receipts.record"
+)
+
+type SSHGoTestReceipts struct{ Peer *SSHPeer }
+
+func (s SSHGoTestReceipts) Lookup(ctx context.Context, key string) ([]gotestreceipt.Candidate, error) {
+	var candidates []gotestreceipt.Candidate
+	err := s.Peer.Call(ctx, sshGoTestReceiptLookup, &candidates, key)
+	return candidates, err
+}
+
+func (s SSHGoTestReceipts) Record(ctx context.Context, receipt gotestreceipt.Receipt) error {
+	return s.Peer.Call(ctx, sshGoTestReceiptRecord, nil, receipt)
+}
+
+func (r *Runner) GoTestReceiptsEnabled() bool {
+	return r.goTestReceipts.Store != nil
 }
 
 // SSHSessionStore forwards session data, but has no local process-registration

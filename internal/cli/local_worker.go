@@ -163,7 +163,7 @@ func (r *sshRunner) runLocalWorkerLaunch(ctx context.Context, request runnerpkg.
 	boot := sshBootstrap{Local: true, CommitIdentity: r.commitIdentity, Version: runnerpkg.SSHProtocolVersion, Workflow: workflow, Policy: workflow.Config.Policy,
 		ProjectID: r.projectID, Workdir: r.workdir, Home: home, Repository: workspace.RepositoryURL(ctx, r.workdir),
 		Memory: r.memory, GoBuildSlots: r.goBuildSlots, Connection: r.connection,
-		BudgetChecker: checker, BudgetEstimator: estimator, Run: runnerpkg.NewSSHRunRequest(request)}
+		BudgetChecker: checker, BudgetEstimator: estimator, GoTestReceipts: r.GoTestReceiptsEnabled(), Run: runnerpkg.NewSSHRunRequest(request)}
 	processCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	cmd, err := artifact.Command(processCtx, SSHWorkerArgument)
 	if err != nil {

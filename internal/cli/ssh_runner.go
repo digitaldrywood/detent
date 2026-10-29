@@ -94,6 +94,7 @@ type sshBootstrap struct {
 	Connection      serviceapi.Connection
 	BudgetChecker   bool
 	BudgetEstimator bool
+	GoTestReceipts  bool
 	Run             runnerpkg.SSHRunRequest
 }
 
@@ -197,7 +198,7 @@ func (r *sshRunner) callSSH(ctx context.Context, request runnerpkg.RunRequest, m
 	if source == "" {
 		source = r.workdir
 	}
-	bootstrap := sshBootstrap{Issues: issues, Version: runnerpkg.SSHProtocolVersion, Workflow: workflow, Policy: workflow.Config.Policy, ProjectID: r.projectID, Workdir: r.workdir, Home: home, Repository: workspace.RepositoryURL(ctx, source), Memory: r.memory, GoBuildSlots: r.goBuildSlots, Connection: r.connection, BudgetChecker: checker, BudgetEstimator: estimator, Run: runnerpkg.NewSSHRunRequest(request)}
+	bootstrap := sshBootstrap{Issues: issues, Version: runnerpkg.SSHProtocolVersion, Workflow: workflow, Policy: workflow.Config.Policy, ProjectID: r.projectID, Workdir: r.workdir, Home: home, Repository: workspace.RepositoryURL(ctx, source), Memory: r.memory, GoBuildSlots: r.goBuildSlots, Connection: r.connection, BudgetChecker: checker, BudgetEstimator: estimator, GoTestReceipts: r.GoTestReceiptsEnabled(), Run: runnerpkg.NewSSHRunRequest(request)}
 	command := "detent " + SSHWorkerArgument
 	cmd := r.command(ctx, request.WorkerHost, command)
 	cmd.WaitDelay = time.Second
@@ -396,6 +397,9 @@ func runSSHBootstrap(ctx context.Context, peer *runnerpkg.SSHPeer, boot sshBoots
 		return nil, fmt.Errorf("%w: %w", runnerpkg.ErrWorkspacePreparation, err)
 	}
 	deps.GoBudget = goBudget
+	if boot.GoTestReceipts {
+		deps.GoTestReceipts = goTestReceiptConfig(runnerpkg.SSHGoTestReceipts{Peer: peer}, boot.ProjectID, logger)
+	}
 	deps.BudgetGuardBuilder = func(config.Budget) (runnerpkg.BudgetChecker, runnerpkg.DispatchEstimator, error) {
 		var checker runnerpkg.BudgetChecker
 		var estimator runnerpkg.DispatchEstimator

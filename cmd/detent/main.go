@@ -13,6 +13,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/cli"
 	"github.com/digitaldrywood/detent/internal/gobudget"
+	"github.com/digitaldrywood/detent/internal/gotestreceipt"
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/service"
 	"github.com/digitaldrywood/detent/internal/toolcache"
@@ -39,6 +40,9 @@ func main() {
 	}
 	if gobudget.IsWrapperInvocation(os.Args[0]) {
 		os.Exit(gobudget.RunWrapper(os.Args[1:], os.Getenv, os.Stdin, os.Stdout, os.Stderr))
+	}
+	if gotestreceipt.IsWrapperInvocation(os.Args[0]) {
+		os.Exit(gotestreceipt.RunWrapper(os.Args[1:], os.Getenv, os.Stdin, os.Stdout, os.Stderr))
 	}
 	exitCode, restartBinary := runCLIResultWithRestart(context.Background(), os.Args[1:], os.Stdout, os.Stderr, automaticRestartRequest())
 	manager := service.ManagerFromProcessEnvironment(runtime.GOOS, os.LookupEnv)
