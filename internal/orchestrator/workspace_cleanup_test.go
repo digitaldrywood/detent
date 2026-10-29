@@ -87,7 +87,8 @@ func TestStoragePressureReclaimsBeforeClaim(t *testing.T) {
 				tracker := &runningStateConnector{issuesByState: []connector.Issue{issue}}
 				reaper := &cleanupSweepReaper{}
 				var logs bytes.Buffer
-				o := &Orchestrator{cfg: cfg, connector: tracker, reaper: reaper, logger: slog.New(slog.NewTextHandler(&logs, nil))}
+				projections := &retentionProjectionStore{}
+				o := &Orchestrator{cfg: cfg, connector: tracker, reaper: reaper, workAttempts: projections, logger: slog.New(slog.NewTextHandler(&logs, nil))}
 				state := newState(cfg)
 				now := time.Now()
 				state.LastWorkspaceCleanupAt = now
@@ -117,6 +118,9 @@ func TestStoragePressureReclaimsBeforeClaim(t *testing.T) {
 				o.stopWorkspaceCleanup()
 				if !checked {
 					t.Fatal("claim path was not reached")
+				}
+				if projections.calls == 0 {
+					t.Fatal("cleanup pass skipped the store projection backfill")
 				}
 			})
 		}
