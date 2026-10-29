@@ -59,7 +59,7 @@ type duplicateCostConn struct {
 }
 
 func (c *duplicateCostConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
-	c.searching = strings.Contains(query, "native_work_fts") || strings.Contains(query, "native_work_scoped_fts")
+	c.searching = strings.Contains(query, "native_work_search_postings") || strings.Contains(query, "native_work_fts") || strings.Contains(query, "native_work_scoped_fts")
 	return c.timedConn.QueryContext(ctx, query, args)
 }
 

@@ -768,9 +768,10 @@ WHERE i.organization_id = ? AND i.project_id = ? `
 	searchQuery := strings.TrimSpace(params.Get("q"))
 	if searchQuery != "" {
 		expressions := nativeSearchExpressions(searchQuery)
-		join, searchArgs := nativeSearchJoin(scope, params.Get("archived"), expressions)
+		join, searchArgs := nativeSearchJoin(scope, params.Get("archived"), expressions, searchQuery, slices.ContainsFunc(strings.Split(params.Get("include"), ","), func(name string) bool { return strings.TrimSpace(name) == "work" }))
 		number, project := nativeSearchNumber(searchQuery)
-		query = strings.Replace(query, "WHERE i.organization_id", join+nativeNumberSearchJoin+"WHERE i.organization_id", 1)
+		query = `SELECT i.native_id FROM ` + join + ` CROSS JOIN issues i LEFT JOIN workflow_states ws ON ws.id=i.workflow_state_id ` + nativeNumberSearchJoin + `
+ WHERE i.id=search.issue_id AND i.organization_id=? AND i.project_id=? `
 		args = append(append(searchArgs, number, project, -float64(len(expressions))-1), args...)
 	}
 	var dateClauses strings.Builder
@@ -849,18 +850,6 @@ WHERE i.organization_id = ? AND i.project_id = ? `
 		}
 	}
 	query += filterClauses.String()
-	workIncluded := slices.ContainsFunc(strings.Split(params.Get("include"), ","), func(name string) bool { return strings.TrimSpace(name) == "work" })
-	if value := strings.TrimSpace(params.Get("q")); value != "" {
-		text := "i.title"
-		if !workIncluded {
-			text += " || ' ' || i.body"
-		}
-		query += " AND (number_search.number IS NOT NULL OR search.issue_id IS NOT NULL OR instr(lower(" + text + "), lower(?)) > 0" +
-			" OR instr(lower((SELECT name FROM projects WHERE id = i.project_id) || '#' || i.number), lower(?)) > 0" +
-			" OR instr(lower(i.project_id || '#' || i.number), lower(?)) > 0" +
-			" OR EXISTS (SELECT 1 FROM native_issue_page_filter_values WHERE issue_id=i.id AND kind='label' AND instr(lower(value), lower(?)) > 0))"
-		args = append(args, value, value, value, value)
-	}
 
 	return query, args, nil
 }
