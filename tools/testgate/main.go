@@ -175,8 +175,6 @@ func runGoTest(ctx context.Context, collector *evidenceCollector, options goTest
 func goTestArgs(options goTestOptions) []string {
 	args := []string{
 		"-json",
-		// Avoid replaying filesystem-heavy test input logs; keep build caching.
-		"-count=1",
 		"-p=1",
 		"-parallel=" + strconv.Itoa(options.parallel),
 		"-timeout=" + options.timeout.String(),

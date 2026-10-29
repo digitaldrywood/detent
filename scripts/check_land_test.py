@@ -182,7 +182,7 @@ class LandingGateTest(unittest.TestCase):
                 if failure not in ("app", "docs", "sqlc"):
                     self.assertTrue(tests)
                 for event in tests:
-                    self.assertEqual("-count=1" in event["args"], target in ("test-race", "test-cover"), event)
+                    self.assertNotIn("-count=1", event["args"], event)
                 if target == "test-cover":
                     for event in tests:
                         self.assertTrue(any(arg in ("fixture", "./internal/hubserver", "./internal/web") for arg in event["args"]), event)
