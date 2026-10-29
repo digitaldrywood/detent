@@ -860,6 +860,7 @@ func TestInvestigationExhaustsToolBudgetWithinOneTurn(t *testing.T) {
 				}
 				if message.Method == "thread/start" {
 					assertJSONContains(t, message.Params, "config.permissions.detent-investigation.filesystem./", "deny")
+					assertJSONContains(t, message.Params, "config.project_doc_max_bytes", 0)
 					var params struct {
 						Config map[string]any `json:"config"`
 					}
