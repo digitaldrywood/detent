@@ -229,7 +229,15 @@ func TestNativeRetryResumesPersistedSessionAfterRunnerRestart(t *testing.T) {
 		dirty              bool
 		rebase             bool
 		gitRef             bool
+		workerProxy        bool
+		providerMissing    bool
 	}{
+		{name: "worker proxy resumes cancelled clean session", status: "cancelled", workerProxy: true, priorEffort: "high", configuredEffort: "high"},
+		{name: "worker proxy resumes succeeded unpushed session", status: "succeeded", workerProxy: true, gitRef: true, unpushed: true, priorEffort: "high", configuredEffort: "high"},
+		{name: "worker proxy rejects unavailable provider", status: "succeeded", workerProxy: true, gitRef: true, providerMissing: true},
+		{name: "worker proxy rejects changed effort", status: "succeeded", workerProxy: true, gitRef: true, priorEffort: "low", configuredEffort: "high"},
+		{name: "worker proxy rejects changed head", status: "succeeded", workerProxy: true, gitRef: true, changedHead: true},
+		{name: "worker proxy rejects source changed by rebase", status: "succeeded", workerProxy: true, gitRef: true, rebase: true},
 		{name: "killed clean attempt", status: "cancelled"},
 		{name: "killed unpushed attempt", status: "cancelled", unpushed: true},
 		{name: "ordinary failed retry", status: "failed"},
@@ -254,7 +262,7 @@ func TestNativeRetryResumesPersistedSessionAfterRunnerRestart(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			fresh := test.changedHead || test.changedModel || test.conversationModel != "" || test.dirty || test.rebase || test.conversationEffort != "" || test.configuredEffort != test.priorEffort || test.overrideEffort != "" && test.overrideEffort != test.priorEffort || test.legacyEffort && test.priorEffort != test.configuredEffort
+			fresh := test.providerMissing || test.changedHead || test.changedModel || test.conversationModel != "" || test.dirty || test.rebase || test.conversationEffort != "" || test.configuredEffort != test.priorEffort || test.overrideEffort != "" && test.overrideEffort != test.priorEffort || test.legacyEffort && test.priorEffort != test.configuredEffort
 			ctx := t.Context()
 			path := filepath.Join(t.TempDir(), "sessions.db")
 			db, err := store.Open(ctx, store.Config{Path: path})
@@ -269,7 +277,7 @@ func TestNativeRetryResumesPersistedSessionAfterRunnerRestart(t *testing.T) {
 				t.Fatal(err)
 			}
 			role := RoleCode
-			if test.rebase || test.dirty {
+			if test.rebase || test.dirty || test.workerProxy {
 				role = RoleRework
 			}
 			identity := agentidentity.Configured("codex", "codex", "default", role, "example-model", "openai", test.priorEffort, "", started)
@@ -311,6 +319,9 @@ func TestNativeRetryResumesPersistedSessionAfterRunnerRestart(t *testing.T) {
 			backend := &resumedExecutionWorkspace{LocalGit: gitWorkspace}
 			providerErr := errors.New("provider interrupted")
 			agent := &fakeCodexClient{err: providerErr, result: AgentTurnResult{ThreadID: "persisted-thread", SessionID: "persisted-session"}}
+			if test.providerMissing {
+				agent.verifyErr = errors.New("provider thread unavailable")
+			}
 			if fresh {
 				agent.result = AgentTurnResult{ThreadID: "fresh-thread", SessionID: "fresh-session"}
 			}
@@ -342,12 +353,16 @@ func TestNativeRetryResumesPersistedSessionAfterRunnerRestart(t *testing.T) {
 				t.Fatal(err)
 			}
 			deps.Store = db
-			if test.status == "cancelled" {
+			if test.status == "cancelled" && !test.workerProxy {
 				if _, err := db.TimeoutExpiredWorkAttempts(ctx, store.WorkAttemptTimeout{Now: started.Add(time.Minute), ConfirmedGoneAttemptIDs: []int64{attemptID}, TerminalState: store.WorkAttemptTerminalAbandoned, ErrorClass: "service_restart"}); err != nil {
 					t.Fatal(err)
 				}
 			} else {
-				if err := db.CompleteWorkAttempt(ctx, store.WorkAttemptCompletion{AttemptID: attemptID, CompletedAt: started.Add(time.Minute), Status: store.WorkAttemptStatusTerminal, TerminalState: store.WorkAttemptTerminalFailure, SessionFinalState: "failed", WorkerMetadataJSON: string(metadata)}); err != nil {
+				terminal, final := store.WorkAttemptTerminalFailure, "failed"
+				if test.status == "succeeded" {
+					terminal, final = store.WorkAttemptTerminalSuccess, "completed"
+				}
+				if err := db.CompleteWorkAttempt(ctx, store.WorkAttemptCompletion{AttemptID: attemptID, CompletedAt: started.Add(time.Minute), Status: store.WorkAttemptStatusTerminal, TerminalState: terminal, SessionFinalState: final, WorkerMetadataJSON: string(metadata)}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -410,7 +425,19 @@ func TestNativeRetryResumesPersistedSessionAfterRunnerRestart(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, err = restarted.Run(ctx, RunRequest{ProjectID: "native", Policy: approved, WorkAttemptID: currentAttemptID, Generation: 2, Issue: issue, Mode: RunModeImplement, Execution: runExecution})
+			request := RunRequest{ProjectID: "native", Policy: approved, WorkAttemptID: currentAttemptID, Generation: 2, Issue: issue, Mode: RunModeImplement, Execution: runExecution}
+			if test.workerProxy {
+				a, b := net.Pipe()
+				defer a.Close()
+				defer b.Close()
+				callbacks := restarted.LocalRunCallbacks(request)
+				controller := NewSSHPeer(ctx, a, a, callbacks.Handle)
+				defer controller.Close()
+				worker := NewSSHPeer(ctx, b, b, nil)
+				defer worker.Close()
+				restarted.store = LocalSessionStore{SSHSessionStore: SSHSessionStore{Peer: worker}}
+			}
+			_, err = restarted.Run(ctx, request)
 			wantResume := resume
 			wantAction, wantReason := "resume_session", "verified_local_session"
 			if fresh {
