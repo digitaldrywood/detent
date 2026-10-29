@@ -144,53 +144,22 @@ func classifyAgentCapacityError(
 ) error {
 	var capacityErr *backendcapacity.Error
 	if errors.As(err, &capacityErr) {
+		if capacityErr.Details.Type == backendcapacity.ErrorTypeUsageLimit {
+			return capacityErr.Err
+		}
 		return err
 	}
 	if err != nil {
 		if classifier, ok := backend.(AgentCapacityClassifier); ok {
 			scope := configuredCapacityScope(selection, backendConfig, identity)
 			if scope.Hosted() {
-				if details, classified := classifier.ClassifyCapacityError(err, rateLimits, now); classified {
+				if details, classified := classifier.ClassifyCapacityError(err, nil, now); classified && details.Type != backendcapacity.ErrorTypeUsageLimit {
 					return backendcapacity.NewError(scope, details, err)
 				}
 			}
 		}
 	}
-	scope := configuredCapacityScope(selection, backendConfig, identity)
-	if !scope.Hosted() {
-		return err
-	}
-	provider, ok := backend.(AgentCapacityStatusProvider)
-	if !ok {
-		return err
-	}
-	status, reported := provider.CapacityStatus(rateLimits)
-	if !reported || !status.Exhausted {
-		return err
-	}
-	details := status.Details
-	if details.Type == "" {
-		details.Type = backendcapacity.ErrorTypeUsageLimit
-	}
-	if strings.TrimSpace(details.Kind) == "" {
-		details.Kind = "subscription_window_exhausted"
-	}
-	if strings.TrimSpace(details.Reason) == "" {
-		details.Reason = "subscription window exhausted"
-	}
-	if err == nil {
-		err = errors.New(firstNonBlankCapacityDetail(status.Detail, details.Reason))
-	}
-	return backendcapacity.NewError(scope, details, err)
-}
-
-func firstNonBlankCapacityDetail(values ...string) string {
-	for _, value := range values {
-		if value = strings.TrimSpace(value); value != "" {
-			return value
-		}
-	}
-	return "subscription window exhausted"
+	return err
 }
 
 func configuredCapacityScope(selection RouteSelection, backend config.AgentBackend, identity agentidentity.Identity) backendcapacity.Scope {

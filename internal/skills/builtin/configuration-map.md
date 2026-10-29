@@ -47,8 +47,8 @@ Cloud's desired runner ceiling and the runner's reported
 ceiling. The lower applicable limit wins. Jobs at once requests the existing
 configuration owner to save these values and reload; desired, applied and
 effective observations can differ while it runs. A host ceiling still limits
-the shared host. Provider quota and account/model reservations can impose a
-lower limit; unknown quota never becomes available capacity. External provider
+the shared host. Declared provider concurrency and account/model reservations can impose a
+lower limit. Subscription quota usage and freshness are diagnostics only. External provider
 reports are changed at their producer, not by editing generated reports.
 Project throughput combines the eligible capacity of routed runners and also
 depends on project/pool/lane limits, approved policy and plan admission.

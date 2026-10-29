@@ -35,13 +35,13 @@ func TestProviderWindowAdmissionDecisions(t *testing.T) {
 			issue:               providerWindowMergeIssue("fallback"),
 			running:             3,
 			modelPermitRequired: boolPointer(true),
-			wantReason:          dispatchSkipRateWindowBackpressure,
+			wantDispatchable:    true,
 		},
 		{
-			name:       "ordinary work needs model permit",
-			issue:      dispatchTestIssue("ordinary", "Todo"),
-			running:    3,
-			wantReason: dispatchSkipRateWindowBackpressure,
+			name:             "ordinary work needs model permit",
+			issue:            dispatchTestIssue("ordinary", "Todo"),
+			running:          3,
+			wantDispatchable: true,
 		},
 		{
 			name:       "mechanical work still obeys hard project cap",
@@ -96,22 +96,22 @@ func TestProviderWindowPlanAdmitsMechanicalMerge(t *testing.T) {
 		}},
 	)
 
-	if len(plan.Dispatches) != 1 || plan.Dispatches[0].IssueID != merge.ID {
-		t.Fatalf("dispatches = %#v, want only mechanical merge", plan.Dispatches)
+	if len(plan.Dispatches) != 2 || plan.Dispatches[0].IssueID != merge.ID {
+		t.Fatalf("dispatches = %#v, want mechanical merge and ordinary work", plan.Dispatches)
 	}
 	if running := state.Running[merge.ID]; !running.ModelPermitExempt {
 		t.Fatalf("merge Running = %#v, want model permit exempt during precheck", running)
 	}
-	if len(decisions) != 2 || !decisions[0].Selected || decisions[1].SkipReason != dispatchSkipRateWindowBackpressure {
-		t.Fatalf("decisions = %#v, want selected merge then model backpressure", decisions)
+	if len(decisions) != 2 || !decisions[0].Selected || !decisions[1].Selected {
+		t.Fatalf("decisions = %#v, want both items selected", decisions)
 	}
 }
 
-func TestProviderWindowFallbackRetryRemainsDeferred(t *testing.T) {
+func TestProviderWindowFallbackRetryPreservesPrecheckAtCapacity(t *testing.T) {
 	t.Parallel()
 
 	cfg := providerWindowTestConfig()
-	state := providerWindowState(cfg, 3)
+	state := providerWindowState(cfg, 5)
 	issue := providerWindowMergeIssue("fallback")
 	precheck := &runpkg.MergePrecheck{Status: "conflict", Message: "README conflict"}
 	state.Retry[issue.ID] = Retry{
@@ -128,8 +128,8 @@ func TestProviderWindowFallbackRetryRemainsDeferred(t *testing.T) {
 		},
 	})
 
-	if len(plan.Dispatches) != 0 || decision.SkipReason != dispatchSkipRateWindowBackpressure {
-		t.Fatalf("plan = %#v decision = %#v, want deferred provider backpressure", plan, decision)
+	if len(plan.Dispatches) != 0 || decision.SkipReason != dispatchSkipProjectCapacityFull {
+		t.Fatalf("plan = %#v decision = %#v, want deferred at declared capacity", plan, decision)
 	}
 	retry := state.Retry[issue.ID]
 	if retry.MergePrecheck == nil || retry.MergePrecheck.Status != precheck.Status || retry.MergePrecheck.Message != precheck.Message {
@@ -147,8 +147,8 @@ func TestProviderWindowMechanicalToModelTransition(t *testing.T) {
 		wantExempt      bool
 		wantPermitsUsed int
 	}{
-		{name: "defer at scaled cap", modelRuns: 3, wantErr: runpkg.ErrModelPermitUnavailable, wantExempt: true, wantPermitsUsed: 3},
-		{name: "acquire below scaled cap", modelRuns: 2, wantExempt: false, wantPermitsUsed: 3},
+		{name: "defer at declared cap", modelRuns: 5, wantErr: runpkg.ErrModelPermitUnavailable, wantExempt: true, wantPermitsUsed: 5},
+		{name: "acquire below declared cap", modelRuns: 2, wantExempt: false, wantPermitsUsed: 3},
 	}
 
 	for _, tt := range tests {
@@ -184,15 +184,15 @@ func TestProviderWindowScaledCap(t *testing.T) {
 	}{
 		{remaining: 100, want: 5},
 		{remaining: 81, want: 5},
-		{remaining: 80, want: 4},
-		{remaining: 61, want: 4},
-		{remaining: 60, want: 3},
-		{remaining: 41, want: 3},
-		{remaining: 40, want: 2},
-		{remaining: 21, want: 2},
-		{remaining: 20, want: 1},
-		{remaining: 1, want: 1},
-		{remaining: 0, want: 1},
+		{remaining: 80, want: 5},
+		{remaining: 61, want: 5},
+		{remaining: 60, want: 5},
+		{remaining: 41, want: 5},
+		{remaining: 40, want: 5},
+		{remaining: 21, want: 5},
+		{remaining: 20, want: 5},
+		{remaining: 1, want: 5},
+		{remaining: 0, want: 5},
 	}
 
 	for _, tt := range tests {

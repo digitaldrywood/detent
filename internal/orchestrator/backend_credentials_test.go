@@ -87,6 +87,7 @@ func TestCredentialTriggeredProbeFailureReentersNormalBackoff(t *testing.T) {
 	state := newState(cfg)
 	state.BackendOutages[scope.Key()] = BackendOutage{
 		Scope:         scope,
+		Kind:          "http_503",
 		NextProbeAt:   now.Add(52 * time.Minute),
 		ProbeAttempts: 7,
 	}

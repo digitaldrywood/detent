@@ -16,12 +16,14 @@ func TestClassifyAgentCapacityErrorSkipsLocalProviders(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name     string
-		provider string
-		want     bool
+		name      string
+		provider  string
+		want      bool
+		errorType backendcapacity.ErrorType
 	}{
-		{name: "hosted provider", provider: "openai", want: true},
-		{name: "local ollama provider", provider: "local_ollama"},
+		{name: "hosted provider outage", provider: "openai", want: true, errorType: backendcapacity.ErrorTypeProviderOutage},
+		{name: "local ollama provider", provider: "local_ollama", errorType: backendcapacity.ErrorTypeProviderOutage},
+		{name: "quota response is not a capacity constraint", provider: "openai", errorType: backendcapacity.ErrorTypeUsageLimit},
 	}
 
 	for _, tt := range tests {
@@ -29,7 +31,7 @@ func TestClassifyAgentCapacityErrorSkipsLocalProviders(t *testing.T) {
 			t.Parallel()
 
 			err := classifyAgentCapacityError(
-				capacityClassifierBackend{},
+				capacityClassifierBackend{errorType: tt.errorType},
 				RouteSelection{BackendID: "codex"},
 				config.AgentBackend{ID: "codex", Kind: config.AgentBackendCodex, Provider: tt.provider},
 				agentidentity.Identity{},
@@ -44,16 +46,14 @@ func TestClassifyAgentCapacityErrorSkipsLocalProviders(t *testing.T) {
 	}
 }
 
-func TestClassifyAgentCapacityErrorUsesExhaustedProviderStatus(t *testing.T) {
+func TestClassifyAgentCapacityErrorIgnoresProviderUsage(t *testing.T) {
 	t.Parallel()
 
 	resetAt := time.Date(2026, 8, 20, 15, 27, 0, 0, time.UTC)
 	tests := []struct {
-		name       string
-		runErr     error
-		status     CapacityStatus
-		wantErr    bool
-		wantReason string
+		name   string
+		runErr error
+		status CapacityStatus
 	}{
 		{
 			name: "clean completion with exhausted subscription window",
@@ -67,8 +67,6 @@ func TestClassifyAgentCapacityErrorUsesExhaustedProviderStatus(t *testing.T) {
 					ResetAt: &resetAt,
 				},
 			},
-			wantErr:    true,
-			wantReason: "subscription window exhausted",
 		},
 		{
 			name:   "missing result with exhausted subscription window",
@@ -79,8 +77,6 @@ func TestClassifyAgentCapacityErrorUsesExhaustedProviderStatus(t *testing.T) {
 					ResetAt: &resetAt,
 				},
 			},
-			wantErr:    true,
-			wantReason: "subscription window exhausted",
 		},
 		{
 			name:   "ordinary failure without exact exhaustion",
@@ -102,31 +98,23 @@ func TestClassifyAgentCapacityErrorUsesExhaustedProviderStatus(t *testing.T) {
 				&telemetry.RateLimits{},
 				time.Now(),
 			)
-			capacityErr, ok := backendcapacity.As(got)
-			if ok != tt.wantErr {
-				t.Fatalf("backendcapacity.As() ok = %v, want %v; error = %v", ok, tt.wantErr, got)
-			}
-			if !tt.wantErr {
-				if !errors.Is(got, tt.runErr) {
-					t.Fatalf("error = %v, want original %v", got, tt.runErr)
-				}
-				return
-			}
-			if capacityErr.Details.Reason != tt.wantReason || capacityErr.Details.ResetAt == nil || !capacityErr.Details.ResetAt.Equal(resetAt) {
-				t.Fatalf("capacity error = %#v, want reason %q reset %s", capacityErr, tt.wantReason, resetAt)
+			if IsCapacityError(got) || !errors.Is(got, tt.runErr) {
+				t.Fatalf("error = %v, want original non-capacity result %v", got, tt.runErr)
 			}
 		})
 	}
 }
 
-type capacityClassifierBackend struct{}
+type capacityClassifierBackend struct {
+	errorType backendcapacity.ErrorType
+}
 
 func (capacityClassifierBackend) RunTurn(context.Context, AgentTurnRequest, AgentUpdateHandler) (AgentTurnResult, error) {
 	return AgentTurnResult{}, nil
 }
 
-func (capacityClassifierBackend) ClassifyCapacityError(error, *telemetry.RateLimits, time.Time) (backendcapacity.Details, bool) {
-	return backendcapacity.Details{Kind: "usageLimitExceeded", Reason: "provider usage limit reached"}, true
+func (b capacityClassifierBackend) ClassifyCapacityError(error, *telemetry.RateLimits, time.Time) (backendcapacity.Details, bool) {
+	return backendcapacity.Details{Type: b.errorType}, true
 }
 
 type capacityStatusBackend struct {

@@ -25,9 +25,9 @@ func TestRateWindowPacingSnapshot(t *testing.T) {
 		wantRemaining    float64
 		wantHasRemaining bool
 	}{
-		{name: "missing fails open", wantStatus: telemetry.RateWindowBucketMissing, wantCeiling: 10, wantApplicable: true},
-		{name: "stale fails open", limits: pacingRateLimits(10, &staleAt), wantStatus: telemetry.RateWindowBucketStale, wantCeiling: 10, wantApplicable: true, wantRemaining: 10, wantHasRemaining: true},
-		{name: "proportional scales fresh", limits: pacingRateLimits(10, &freshAt), wantStatus: telemetry.RateWindowBucketFresh, wantCeiling: 1, wantApplicable: true, wantScaling: true, wantRemaining: 10, wantHasRemaining: true},
+		{name: "missing fails open", wantStatus: telemetry.RateWindowBucketMissing, wantCeiling: 10},
+		{name: "stale fails open", limits: pacingRateLimits(10, &staleAt), wantStatus: telemetry.RateWindowBucketStale, wantCeiling: 10, wantRemaining: 10, wantHasRemaining: true},
+		{name: "fresh quota is diagnostic only", limits: pacingRateLimits(10, &freshAt), wantStatus: telemetry.RateWindowBucketFresh, wantCeiling: 10, wantRemaining: 10, wantHasRemaining: true},
 		{name: "off reports but does not scale", pacing: workflowconfig.RateWindowPacing{Mode: workflowconfig.RateWindowPacingOff}, limits: pacingRateLimits(10, &freshAt), wantStatus: telemetry.RateWindowBucketFresh, wantCeiling: 10, wantRemaining: 10, wantHasRemaining: true},
 	}
 

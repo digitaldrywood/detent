@@ -344,7 +344,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	if o.handleMergeWorkerDurationExceeded(ctx, state, event, running) {
 		return
 	}
-	if capacityErr, ok := backendcapacity.As(event.Err); ok {
+	if capacityErr, ok := backendcapacity.As(event.Err); ok && (!o.cfg.subscriptionBilling() || capacityErr.Details.Type != backendcapacity.ErrorTypeUsageLimit) {
 		if !nativeCompletion {
 			o.releaseTerminalAttemptClaim(ctx, state, running.Issue, event.CompletedAt)
 		}

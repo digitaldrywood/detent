@@ -74,29 +74,7 @@ func CapacityStatus(limits *telemetry.RateLimits) (runner.CapacityStatus, bool) 
 	if limits == nil {
 		return runner.CapacityStatus{}, false
 	}
-	resetAt := claudeCapacityResetAt(limits)
-	exhausted := strings.TrimSpace(limits.ReachedType) != ""
-	if !exhausted {
-		for _, bucket := range []*telemetry.RateLimitBucket{limits.Primary, limits.Secondary} {
-			if bucket != nil && bucket.Status == telemetry.RateLimitStatusExhausted {
-				exhausted = true
-				break
-			}
-		}
-	}
-	if !exhausted {
-		return runner.CapacityStatus{}, false
-	}
-	return runner.CapacityStatus{
-		Exhausted: true,
-		Detail:    "live provider status reports an exhausted subscription window",
-		Details: backendcapacity.Details{
-			Type:    backendcapacity.ErrorTypeUsageLimit,
-			Kind:    "subscription_window_exhausted",
-			Reason:  "subscription window exhausted",
-			ResetAt: resetAt,
-		},
-	}, true
+	return runner.CapacityStatus{Available: true, Detail: "Provider usage is diagnostic only"}, true
 }
 
 func claudeCapacityResetAt(limits *telemetry.RateLimits) *time.Time {
