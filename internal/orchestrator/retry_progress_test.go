@@ -251,7 +251,8 @@ func TestRetryProgressDispatch(t *testing.T) {
 		{name: "success pays no AI turn", outcome: "success", want: RunModeImplement},
 		{name: "backend failure permits ordinary retry", err: errors.New("provider unavailable"), reason: "provider unavailable", want: RunModeImplement},
 		{name: "timeout permits ordinary retry", err: context.DeadlineExceeded, reason: "context deadline exceeded", want: RunModeImplement},
-		{name: "invalid decision permits ordinary retry", decision: progresscheck.Decision{Outcome: progresscheck.Progressing, Step: RunModeMerge, Reason: "Continue", Evidence: []string{"attempt-2"}}, reason: "progressing decision cannot change step", want: RunModeImplement},
+		{name: "invalid decision permits ordinary retry", decision: progresscheck.Decision{Outcome: progresscheck.Progressing, Step: RunModeMerge, Reason: "Continue", Evidence: []string{"unavailable"}}, reason: "progress decision cites unavailable evidence", want: RunModeImplement},
+		{name: "progressing ignores suggested step", decision: progresscheck.Decision{Outcome: progresscheck.Progressing, Step: RunModeMerge, Reason: "Continue", Evidence: []string{"attempt-2"}}, want: RunModeImplement},
 		{name: "missing owner permits ordinary retry", missingOwner: true, reason: "progress check requires backend and tracker owner", want: RunModeImplement},
 		{name: "evidence failure permits ordinary retry", requestError: errors.New("progress evidence unavailable"), reason: "progress evidence unavailable", want: RunModeImplement},
 	} {

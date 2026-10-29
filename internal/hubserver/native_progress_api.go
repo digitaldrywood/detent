@@ -177,9 +177,9 @@ func (s *Service) publishNativeProgress(c echo.Context) error {
 		return s.nativeAPIError(c, &nativeError{Code: "revision_conflict", status: http.StatusConflict})
 	}
 	if !request.NeedsCheck() {
-		return s.nativeAPIError(c, nativeInvalid("Progress decision requires a failed attempt or an empty landing refusal"))
+		return s.nativeAPIError(c, nativeInvalid("Progress decision requires a non-progressing previous attempt"))
 	}
-	owner := nativeProgressOwner{service: s, scope: scope, request: request, leaseID: input.LeaseID, fencingToken: input.FencingToken, guardRevision: &sequence}
+	owner := nativeProgressOwner{service: s, scope: scope, request: request, leaseID: input.LeaseID, fencingToken: input.FencingToken, guardRevision: &sequence, expectedRevision: input.ExpectedRevision}
 	record, err := owner.Publish(c.Request().Context(), progresscheck.Record{RequestID: id, ProjectID: request.ProjectID, IssueID: request.IssueID, EvidenceRevision: request.EvidenceRevision, Decision: input.Decision})
 	if err != nil {
 		return s.nativeAPIError(c, err)

@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"time"
 
+	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/gobudget"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
@@ -46,10 +49,7 @@ func (r *Runner) CheckProgress(ctx context.Context, req RunRequest, evidence pro
 		return progresscheck.Decision{}, err
 	}
 	modelProvider, serviceTier, effort := agentTurnIdentityOptions(backendConfig)
-	request := AgentTurnRequest{Model: effectiveModel("", selection.Model, runtime.defaultModelForRole(role)), ModelProvider: modelProvider, ServiceTier: serviceTier, ReasoningEffort: effort, MaxDuration: min(progresscheck.MaxDuration, durationFromMillis(workflow.Config.Agent.MaxTurnDurationMS)), MaxRSSBytes: r.maxAgentRSSBytes, RSSPollInterval: r.rssPollInterval, processRSS: r.processRSS}
-	if request.MaxDuration <= 0 {
-		request.MaxDuration = progresscheck.MaxDuration
-	}
+	request := AgentTurnRequest{Model: effectiveModel("", selection.Model, runtime.defaultModelForRole(role)), ModelProvider: modelProvider, ServiceTier: serviceTier, ReasoningEffort: effort, MaxDuration: progressTurnTimeout(workflow.Config, backendConfig), MaxRSSBytes: r.maxAgentRSSBytes, RSSPollInterval: r.rssPollInterval, processRSS: r.processRSS}
 	identity := tracker.NativeExecutionIdentity{Role: role, Backend: selection.BackendID, Model: request.Model}
 	if reserved, ok := req.Execution.(ProviderCapacityExecution); ok {
 		if reservation := reserved.ProviderCapacity(); reservation != nil {
@@ -73,22 +73,46 @@ func (r *Runner) CheckProgress(ctx context.Context, req RunRequest, evidence pro
 	if err := req.Execution.Start(ctx, identity); err != nil {
 		return progresscheck.Decision{}, err
 	}
-	local, ok := r.workspaceSnapshot().(interface {
+	root := workflow.Config.Workspace.Root
+	if local, ok := r.workspaceSnapshot().(interface {
 		Existing(workspace.Issue) (workspace.Info, error)
-	})
-	if !ok {
-		return progresscheck.Decision{}, errors.New("progress worker workspace is unavailable")
+	}); ok {
+		info, err := local.Existing(workspaceIssue(r.projectID, req.Issue))
+		if err == nil {
+			root = info.Path
+		} else if !errors.Is(err, workspace.ErrMissingWorkspace) && !errors.Is(err, os.ErrNotExist) {
+			return progresscheck.Decision{}, fmt.Errorf("resolve progress workspace: %w", err)
+		}
 	}
-	info, err := local.Existing(workspaceIssue(r.projectID, req.Issue))
-	if err != nil {
-		return progresscheck.Decision{}, fmt.Errorf("resolve progress workspace: %w", err)
+	if root == "" {
+		return progresscheck.Decision{}, errors.New("progress worker workspace root is unavailable")
 	}
-	scratch, err := workspace.PrepareWorkerScratch(ctx, info.Path)
+	scratch, err := workspace.PrepareWorkerScratch(ctx, root)
 	if err != nil {
 		return progresscheck.Decision{}, err
 	}
-	defer func() { returnErr = errors.Join(returnErr, workspace.CleanupWorkerScratch(info.Path, scratch)) }()
+	defer func() { returnErr = errors.Join(returnErr, workspace.CleanupWorkerScratch(root, scratch)) }()
 	request.TempDir = scratch
 	generate := r.textGenerator(backend, request, req.Execution, backendConfig.Kind, progresscheck.MaxOutputBytes, "Return only the requested JSON object. Do not call tools or read files.")
 	return (progresscheck.AI{Backend: progressTextBackend{generate: generate}}).Decide(ctx, evidence)
+}
+
+func progressTurnTimeout(cfg config.Config, backend config.AgentBackend) time.Duration {
+	limit := durationFromMillis(cfg.Agent.MaxTurnDurationMS)
+	if limit <= 0 {
+		switch backend.Kind {
+		case config.AgentBackendCodex:
+			limit = durationFromMillis(backend.CodexOptions().TurnTimeoutMS)
+		case config.AgentBackendClaudeCode:
+			limit = durationFromMillis(backend.ClaudeCodeOptions().TurnTimeoutMS)
+		case config.AgentBackendOpenCode:
+			limit = durationFromMillis(backend.OpenCodeOptions().TurnTimeoutMS)
+		case config.AgentBackendPiAgent:
+			limit = durationFromMillis(backend.PiAgentOptions().TurnTimeoutMS)
+		}
+	}
+	if limit <= 0 {
+		return progresscheck.MaxDuration
+	}
+	return min(limit, progresscheck.MaxDuration)
 }
