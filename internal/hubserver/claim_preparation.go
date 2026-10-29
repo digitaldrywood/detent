@@ -577,7 +577,10 @@ func readLegacyClaimReviews(ctx context.Context, q nativeQueryer, change, versio
 	slices.Sort(keys)
 	reviews := make([]tracker.ChangeReview, 0, len(keys))
 	for _, sequence := range keys {
-		review := bySequence[sequence]
+		review, found := bySequence[sequence]
+		if !found {
+			return nil, errors.New("selected change review is missing")
+		}
 		if err := hydrateChangeRecord(ctx, q, &review); err != nil {
 			return nil, err
 		}
