@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/digitaldrywood/detent/internal/hubserver"
 )
 
 func TestFormatVersionInfo(t *testing.T) {
@@ -95,15 +97,23 @@ func TestVersionCommandDefaultsJSONForNonTTY(t *testing.T) {
 	}
 
 	var got struct {
-		Version   string `json:"version"`
-		Commit    string `json:"commit"`
-		BuildDate string `json:"build_date"`
-		GoVersion string `json:"go_version"`
-		OS        string `json:"os"`
-		Arch      string `json:"arch"`
+		HubSchemaVersion int64  `json:"hub_schema_version"`
+		Version          string `json:"version"`
+		Commit           string `json:"commit"`
+		BuildDate        string `json:"build_date"`
+		GoVersion        string `json:"go_version"`
+		OS               string `json:"os"`
+		Arch             string `json:"arch"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
 		t.Fatalf("version output is not JSON: %v\n%s", err, stdout.String())
+	}
+	latest, err := hubserver.LatestSchemaVersion()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.HubSchemaVersion != latest || latest == 0 {
+		t.Fatalf("hub schema version = %d, want %d", got.HubSchemaVersion, latest)
 	}
 	if got.Version != "v1.2.3" || got.Commit != "abc1234" || got.BuildDate != "2026-05-31T18:30:00Z" {
 		t.Fatalf("version metadata = %#v, want build metadata", got)

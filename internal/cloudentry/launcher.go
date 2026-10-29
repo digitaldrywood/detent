@@ -258,6 +258,10 @@ func (l *ExecLauncher) waitTenant(ctx context.Context, spec TenantSpec, result <
 			if ctx.Err() != nil {
 				return <-result
 			}
+			if errors.Is(err, errTenantMigrating) {
+				lastHealthy = time.Now()
+				continue
+			}
 			if err == nil {
 				lastHealthy, served = time.Now(), true
 				continue
