@@ -3,14 +3,12 @@ package orchestrator
 import (
 	"context"
 	"fmt"
-	"regexp"
 	"slices"
 	"strings"
 	"time"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/dependencyline"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/workpad"
@@ -40,11 +38,6 @@ type dependencyBlocker struct {
 	Issue    connector.Issue
 	Resolved bool
 }
-
-var (
-	dependencyIssueRefPattern = regexp.MustCompile(`(?:([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+))?#(\d+)`)
-	dependencyIssueURLPattern = regexp.MustCompile(`https?://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/issues/(\d+)`)
-)
 
 func normalizeDependencySource(source string) string {
 	switch strings.ToLower(strings.TrimSpace(source)) {
@@ -443,11 +436,7 @@ func (o *Orchestrator) refreshDependencyAutoUnblockComments(ctx context.Context,
 
 func (o *Orchestrator) issueWithDependencyRefs(issue connector.Issue) connector.Issue {
 	issue = issue.WithNativeWorkpadAuthority()
-	if normalizeDependencySource(o.cfg.DependencySource) == workflowconfig.DependencySourceNativeOnly {
-		issue.BlockedBy = dependencyBlockedRefsWithoutSelf(issue.BlockedBy, issue.Identifier)
-		return issue
-	}
-	return issueWithTextDependencyRefs(issue)
+	return issueWithoutSelfDependencies(issue)
 }
 
 func (o *Orchestrator) issueWithCurrentWorkpadDependencyRefs(
@@ -570,11 +559,7 @@ func workpadDependencyRefs(issue connector.Issue) []connector.BlockedRef {
 	return refs
 }
 
-func issueWithTextDependencyRefs(issue connector.Issue) connector.Issue {
-	// A hydrated connector owns dependency selection, including an empty list.
-	if issue.DependencySource == "" {
-		issue.BlockedBy = mergeDependencyBlockedRefs(issue.BlockedBy, dependencyRefsFromIssueText(issue))
-	}
+func issueWithoutSelfDependencies(issue connector.Issue) connector.Issue {
 	issue.BlockedBy = dependencyBlockedRefsWithoutSelf(issue.BlockedBy, issue.Identifier)
 	return issue
 }
@@ -627,105 +612,6 @@ func dependencyBlockedRefsWithoutSelf(refs []connector.BlockedRef, identifier st
 	return filtered
 }
 
-func dependencyRefsFromIssueText(issue connector.Issue) []connector.BlockedRef {
-	repo := dependencyIssueRepo(issue.Identifier)
-	refs := []connector.BlockedRef{}
-	seen := map[string]struct{}{}
-	appendRefs := func(incoming []connector.BlockedRef) {
-		for _, ref := range incoming {
-			key := strings.ToLower(strings.TrimSpace(ref.Identifier))
-			if key == "" {
-				continue
-			}
-			if _, ok := seen[key]; ok {
-				continue
-			}
-			seen[key] = struct{}{}
-			refs = append(refs, ref)
-		}
-	}
-	appendRefs(dependencyLineRefs(issue.Description, repo))
-	appendRefs(dependencyRefsInText(dependencyMarkdownSectionText(issue.Description, "Blockers"), repo))
-	appendRefs(dependencyReasonRefs(issue.BlockerReason, repo))
-	return refs
-}
-
-func dependencyLineRefs(body string, repo string) []connector.BlockedRef {
-	refs := []connector.BlockedRef{}
-	// Read declarations preceding unfinished examples, just like the connector.
-	declarations, _ := dependencyline.Declarations(body)
-	for _, text := range declarations {
-		refs = append(refs, dependencyRefsInText(text, repo)...)
-	}
-	return refs
-}
-
-func dependencyRefsInText(text string, repo string) []connector.BlockedRef {
-	refs := []connector.BlockedRef{}
-	for _, identifier := range dependencyIssueIdentifiersInText(text, repo) {
-		refs = append(refs, connector.BlockedRef{Identifier: identifier, Source: connector.BlockedRefSourceProse})
-	}
-	return refs
-}
-
-func dependencyReasonRefs(reason string, repo string) []connector.BlockedRef {
-	lines, _ := dependencyline.LinesOutsideFences(reason)
-	reason = strings.Join(lines, "\n")
-	refs := dependencyLineRefs(reason, repo)
-	if len(refs) > 0 {
-		return refs
-	}
-	if !dependencyReasonMentionsWaiting(reason) {
-		return nil
-	}
-	return dependencyRefsInText(reason, repo)
-}
-
-func dependencyReasonMentionsWaiting(reason string) bool {
-	reason = strings.ToLower(strings.Join(strings.Fields(reason), " "))
-	for _, phrase := range []string{
-		"waiting on",
-		"waited on",
-		"blocked by",
-		"depends on",
-		"dependency",
-		"blocker",
-	} {
-		if strings.Contains(reason, phrase) {
-			return true
-		}
-	}
-	return false
-}
-
-func dependencyIssueIdentifiersInText(text string, repo string) []string {
-	refs := []string{}
-	seen := map[string]struct{}{}
-	add := func(refRepo string, number string) {
-		identifier := dependencyBlockerIdentifier(refRepo, number, repo)
-		if identifier == "" {
-			return
-		}
-		key := strings.ToLower(identifier)
-		if _, ok := seen[key]; ok {
-			return
-		}
-		seen[key] = struct{}{}
-		refs = append(refs, identifier)
-	}
-	for _, matches := range dependencyIssueURLPattern.FindAllStringSubmatch(text, -1) {
-		if len(matches) == 3 {
-			add(matches[1], matches[2])
-		}
-	}
-	for _, matches := range dependencyIssueRefPattern.FindAllStringSubmatch(text, -1) {
-		if len(matches) == 3 {
-			add(matches[1], matches[2])
-		}
-	}
-	return refs
-}
-
 func dependencyIssueRepo(identifier string) string {
 	identifier = strings.TrimSpace(identifier)
 	index := strings.LastIndex(identifier, "#")
@@ -733,63 +619,6 @@ func dependencyIssueRepo(identifier string) string {
 		return ""
 	}
 	return strings.TrimSpace(identifier[:index])
-}
-
-func dependencyBlockerIdentifier(refRepo string, number string, repo string) string {
-	if strings.TrimSpace(number) == "" {
-		return ""
-	}
-	refRepo = strings.TrimSpace(refRepo)
-	if refRepo == "" {
-		if repo == "" {
-			return "#" + strings.TrimSpace(number)
-		}
-		refRepo = repo
-	}
-	return refRepo + "#" + strings.TrimSpace(number)
-}
-
-func dependencyMarkdownSectionText(body string, title string) string {
-	want := dependencyNormalizeSectionTitle(title)
-	inSection := false
-	lines := []string{}
-	prose, _ := dependencyline.LinesOutsideFences(body)
-	for _, line := range prose {
-		heading, ok := dependencyMarkdownHeadingTitle(line)
-		if ok {
-			if inSection {
-				break
-			}
-			inSection = dependencyNormalizeSectionTitle(heading) == want
-			continue
-		}
-		if inSection {
-			lines = append(lines, line)
-		}
-	}
-	return strings.Join(lines, "\n")
-}
-
-func dependencyMarkdownHeadingTitle(line string) (string, bool) {
-	line = strings.TrimSpace(line)
-	if line == "" || line[0] != '#' {
-		return "", false
-	}
-	index := 0
-	for index < len(line) && line[index] == '#' {
-		index++
-	}
-	if index > 6 || index == len(line) {
-		return "", false
-	}
-	if line[index] != ' ' && line[index] != '\t' {
-		return "", false
-	}
-	return strings.Trim(strings.TrimSpace(line[index:]), "# \t"), true
-}
-
-func dependencyNormalizeSectionTitle(title string) string {
-	return strings.ToLower(strings.Join(strings.Fields(title), " "))
 }
 
 func sameIssueIdentity(left connector.Issue, right connector.Issue) bool {

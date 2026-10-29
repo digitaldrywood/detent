@@ -12,7 +12,7 @@ import (
 
 func TestDispatchDependencyRetry(t *testing.T) {
 	t.Parallel()
-	for _, source := range []string{"native", "body", "github body", "workpad"} {
+	for _, source := range []string{"native", "typed edge", "github body", "workpad"} {
 		for _, retry := range []bool{false, true} {
 			name := source + "/stranded"
 			if retry {
@@ -28,8 +28,8 @@ func TestDispatchDependencyRetry(t *testing.T) {
 				case "native":
 					issue.DependencySource = connector.BlockedRefSourceNative
 					issue.BlockedBy = []connector.BlockedRef{{Identifier: ref, State: "Todo", Source: connector.BlockedRefSourceNative}}
-				case "body":
-					issue.Description = "Depends on: " + ref
+				case "typed edge":
+					issue.BlockedBy = []connector.BlockedRef{{Identifier: ref, Source: connector.BlockedRefSourceWorkpad}}
 				case "github body":
 					issue.State = "Todo"
 					issue.Description = "**Depends on:** #2680\n- Depends on #2680 so the helpers exist."
@@ -203,8 +203,8 @@ func TestDispatchDependencyProseCycle(t *testing.T) {
 		name, firstBody string
 		wantDispatches  int
 	}{
-		{name: "series order is prose", firstBody: "Depends on: none. First slice (#2 → #3 → #4; #2 → #5 → #6, #7).", wantDispatches: 1},
-		{name: "explicit cycle remains blocked", firstBody: "Depends on: #2", wantDispatches: 0},
+		{name: "series order is prose", firstBody: "Depends on: none. First slice (#2 → #3 → #4; #2 → #5 → #6, #7).", wantDispatches: 2},
+		{name: "prose cycle does not block", firstBody: "Depends on: #2", wantDispatches: 2},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()

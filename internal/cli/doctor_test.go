@@ -2441,7 +2441,7 @@ func TestCheckDoctorAutoPromoteCandidateDiagnostics(t *testing.T) {
 					CIStatus:       "success",
 				})
 				issue.Comments = []connector.IssueComment{{
-					Body: "## Codex Workpad\n\n### Blockers\n- Owner approval is still required.",
+					Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Owner approval is still required.\n```",
 				}}
 				return issue
 			}(),
@@ -2454,7 +2454,7 @@ func TestCheckDoctorAutoPromoteCandidateDiagnostics(t *testing.T) {
 				PRMergeableState:    "clean",
 				Reason:              "workpad_blocker",
 				WorkpadBlocker:      "Owner approval is still required.",
-				WorkpadSignalSource: "prose_section",
+				WorkpadSignalSource: "structured",
 			},
 		},
 	}

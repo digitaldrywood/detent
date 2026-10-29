@@ -675,7 +675,7 @@ func TestTickAutoUnblockIgnoresPersistedReworkLimit(t *testing.T) {
 	t.Parallel()
 
 	waiting := dependencyAutoUnblockIssue("issue-rework-limit-blocked", "Blocked")
-	waiting.Description = "Blocked by #415"
+	waiting.BlockedBy = []connector.BlockedRef{{Identifier: "digitaldrywood/detent#415", Source: connector.BlockedRefSourceNative}}
 	blocker := dependencyAutoUnblockIssue("issue-done", "Done")
 	blocker.Identifier = "digitaldrywood/detent#415"
 	tracker := &dependencyAutoUnblockConnector{
@@ -729,7 +729,7 @@ func TestDependencyAutoUnblockIgnoresHistoricalReason(t *testing.T) {
 				if native {
 					waiting.BlockedBy = []connector.BlockedRef{{Identifier: blocker.Identifier, Source: connector.BlockedRefSourceNative}}
 				} else {
-					waiting.Description = "Depends on: #415"
+					waiting.BlockedBy = []connector.BlockedRef{{Identifier: blocker.Identifier, Source: connector.BlockedRefSourceWorkpad}}
 				}
 				tracker := &dependencyAutoUnblockConnector{stateIssues: []connector.Issue{waiting}, blockers: []connector.Issue{blocker}}
 				orch := dependencyAutoUnblockOrchestrator(tracker, DependencyAutoUnblockConfig{
@@ -1297,7 +1297,7 @@ func TestTickAutoPromotesInactiveBlockerForDependencyWaitingIssue(t *testing.T) 
 	t.Parallel()
 
 	waiting := dependencyAutoUnblockIssue("issue-416", "Blocked")
-	waiting.Description = "Blocked by #415"
+	waiting.BlockedBy = []connector.BlockedRef{{Identifier: "digitaldrywood/detent#415", Source: connector.BlockedRefSourceNative}}
 	blocker := dependencyAutoUnblockIssue("issue-415", "Backlog")
 	blocker.Identifier = "digitaldrywood/detent#415"
 	tracker := &dependencyAutoUnblockConnector{
@@ -1339,7 +1339,7 @@ func TestTickDoesNotAutoPromoteInactiveBlockerWithOpenPullRequest(t *testing.T) 
 	t.Parallel()
 
 	waiting := dependencyAutoUnblockIssue("issue-416", "Blocked")
-	waiting.Description = "Blocked by #415"
+	waiting.BlockedBy = []connector.BlockedRef{{Identifier: "digitaldrywood/detent#415", Source: connector.BlockedRefSourceNative}}
 	blocker := dependencyAutoUnblockIssue("issue-415", "Human Review")
 	blocker.Identifier = "digitaldrywood/detent#415"
 	blocker.PullRequest = &connector.PullRequest{
@@ -1377,7 +1377,7 @@ func TestTickAutoPromoteBlockerWaitsForAvailableCapacity(t *testing.T) {
 	t.Parallel()
 
 	waiting := dependencyAutoUnblockIssue("issue-416", "Blocked")
-	waiting.Description = "Blocked by #415"
+	waiting.BlockedBy = []connector.BlockedRef{{Identifier: "digitaldrywood/detent#415", Source: connector.BlockedRefSourceNative}}
 	blocker := dependencyAutoUnblockIssue("issue-415", "Backlog")
 	blocker.Identifier = "digitaldrywood/detent#415"
 	tracker := &dependencyAutoUnblockConnector{
@@ -1653,7 +1653,7 @@ func (c *dependencyAutoUnblockConnector) SetField(context.Context, string, strin
 	return nil
 }
 
-func TestMarkdownBodyDependencyPreventsDispatch(t *testing.T) {
+func TestMarkdownBodyDependencyDoesNotPreventDispatch(t *testing.T) {
 	t.Parallel()
 	for _, body := range []string{
 		"**Depends on:** #388",
@@ -1669,18 +1669,13 @@ func TestMarkdownBodyDependencyPreventsDispatch(t *testing.T) {
 			state := newState(cfg)
 			issue := dependencyAutoUnblockIssue("issue-todo", "Todo")
 			issue.Description = body
-			issue = issueWithTextDependencyRefs(issue)
-			if len(issue.BlockedBy) != 1 || issue.BlockedBy[0].Identifier != "digitaldrywood/detent#388" {
-				t.Fatalf("body dependencies = %+v", issue.BlockedBy)
+			issue = issueWithoutSelfDependencies(issue)
+			if len(issue.BlockedBy) != 0 {
+				t.Fatalf("prose created dependencies: %+v", issue.BlockedBy)
 			}
-			issue.BlockedBy[0].State = "In Progress"
 			planner := newDispatchPlanner(cfg)
-			if _, ok, _ := planner.dispatchAction(&state, issue, time.Now()); ok {
-				t.Fatal("dispatched issue with open body dependency")
-			}
-			blocked, ok := state.Blocked[issue.ID]
-			if !ok || blocked.Source != BlockedSourceDependency {
-				t.Fatalf("dependency wait missing: %+v", blocked)
+			if _, ok, _ := planner.dispatchAction(&state, issue, time.Now()); !ok {
+				t.Fatal("prose prevented dispatch")
 			}
 		})
 	}

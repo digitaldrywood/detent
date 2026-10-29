@@ -87,6 +87,7 @@ func TestTerminalPermissionWait(t *testing.T) {
 		name, output string
 		want         bool
 	}{
+		{"typed human action", "```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Choose the storage architecture\n```", true},
 		{"ordinary no progress", "No implementation or tests have run.", false},
 		{"completed", "Implemented the fix and ran tests.", false},
 		{"quoted example", "> May I deploy to production?", false},
@@ -94,11 +95,11 @@ func TestTerminalPermissionWait(t *testing.T) {
 		{"tilde example", "~~~text\nMay I deploy to production?\n~~~", false},
 		{"nested shorter fence", "````text\n```\nMay I deploy to production?\n````", false},
 		{"mixed fence", "~~~text\n```\nMay I deploy to production?\n~~~", false},
-		{"after fence", "~~~text\nexample\n~~~\nMay I deploy to production?", true},
-		{"implementation", "Can I edit the assigned files?", true},
-		{"architecture", "Do you approve the storage architecture?", true},
-		{"access", "May I access the production database?", true},
-		{"withdrawal", "Do you authorize withdrawing the release?", true},
+		{"after fence", "~~~text\nexample\n~~~\nMay I deploy to production?", false},
+		{"implementation", "Can I edit the assigned files?", false},
+		{"architecture", "Do you approve the storage architecture?", false},
+		{"access", "May I access the production database?", false},
+		{"withdrawal", "Do you authorize withdrawing the release?", false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			_, got := terminalPermissionWait(tt.output)

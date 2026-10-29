@@ -80,7 +80,7 @@ func EvaluateBlockedRecoveryWithConfig(issue connector.Issue, cfg BlockedRecover
 }
 
 func evaluateBlockedRecovery(issue connector.Issue, cfg BlockedRecoveryConfig, terminalStates []string) BlockedRecoveryDecision {
-	issue = issueWithTextDependencyRefs(issue)
+	issue = issueWithoutSelfDependencies(issue)
 	cfg = normalizeBlockedRecoveryConfig(cfg)
 	if !stateIn(issue.State, cfg.SourceStates) {
 		return blockedRecoveryDecision(BlockedRecoveryActionNone, BlockedRecoveryReasonNotBlocked, "")
@@ -379,7 +379,7 @@ func reworkBreakerPullRequestMetadataEqual(left, right *workflowLanePullRequestM
 }
 
 func reworkBreakerIssueHeld(issue connector.Issue, terminalStates []string) bool {
-	issue = issueWithTextDependencyRefs(issue.WithNativeWorkpadAuthority())
+	issue = issueWithoutSelfDependencies(issue.WithNativeWorkpadAuthority())
 	if blockedRefsUnresolved(issue.BlockedBy, terminalStates) || blockedRecoveryHumanOnly(issue) {
 		return true
 	}

@@ -192,7 +192,7 @@ func TestEvaluateAutoPromote(t *testing.T) {
 			},
 		},
 		{
-			name: "workpad blocker awaits review",
+			name: "workpad prose blocker does not park",
 			issue: func() connector.Issue {
 				issue := autoPromoteTestIssue("issue-workpad-blocker", nil)
 				issue.Comments = []connector.IssueComment{{
@@ -212,8 +212,8 @@ func TestEvaluateAutoPromote(t *testing.T) {
 				LastActivityAt: &oldActivity,
 			},
 			want: AutoPromoteDecision{
-				Action: AutoPromoteActionAwaitReview,
-				Reason: AutoPromoteReasonWorkpadBlocker,
+				Action: AutoPromoteActionPromote,
+				Reason: AutoPromoteReasonReady,
 			},
 		},
 		{
@@ -321,7 +321,7 @@ func TestEvaluateAutoPromote(t *testing.T) {
 			issue: func() connector.Issue {
 				issue := autoPromoteTestIssue("issue-workpad-closed-blocked-by", nil)
 				issue.Comments = []connector.IssueComment{{
-					Body: "## Codex Workpad\n\n### Blockers\n- Blocked by: #1462\n\n### Validation\n- make check passed.",
+					Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: '#1462'\n    reason: Dependency #1462 is closed\nhuman_action: null\n```",
 				}}
 				issue.BlockedBy = []connector.BlockedRef{{
 					Identifier: "digitaldrywood/detent#1462",
@@ -352,7 +352,7 @@ func TestEvaluateAutoPromote(t *testing.T) {
 			issue: func() connector.Issue {
 				issue := autoPromoteTestIssue("issue-workpad-open-blocked-by", nil)
 				issue.Comments = []connector.IssueComment{{
-					Body: "## Codex Workpad\n\n### Blockers\n- Blocked by: #1462\n\n### Validation\n- make check passed.",
+					Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: '#1462'\n    reason: Dependency #1462 is closed\nhuman_action: null\n```",
 				}}
 				issue.BlockedBy = []connector.BlockedRef{{
 					Identifier: "digitaldrywood/detent#1462",
@@ -378,11 +378,11 @@ func TestEvaluateAutoPromote(t *testing.T) {
 			},
 		},
 		{
-			name: "workpad blocker phrase awaits review",
+			name: "waiting for CI prose does not park",
 			issue: func() connector.Issue {
 				issue := autoPromoteTestIssue("issue-workpad-blocker-phrase", nil)
 				issue.Comments = []connector.IssueComment{{
-					Body: "## Codex Workpad\n\n### Notes\n- Owner listening approval is still required before approved audio assets are copied and committed.",
+					Body: "## Codex Workpad\n\n### Notes\n- waiting for CI",
 				}}
 				return issue
 			}(),
@@ -398,8 +398,8 @@ func TestEvaluateAutoPromote(t *testing.T) {
 				LastActivityAt: &oldActivity,
 			},
 			want: AutoPromoteDecision{
-				Action: AutoPromoteActionAwaitReview,
-				Reason: AutoPromoteReasonWorkpadBlocker,
+				Action: AutoPromoteActionPromote,
+				Reason: AutoPromoteReasonReady,
 			},
 		},
 		{
@@ -934,79 +934,6 @@ func TestArtifactStatusFromIssue(t *testing.T) {
 	}
 }
 
-func TestAutoPromoteNormalizeWorkpadBlockerText(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name string
-		text string
-		want string
-	}{
-		{
-			name: "none sentinel remains non-blocking",
-			text: "- None",
-		},
-		{
-			name: "none currently sentinel remains non-blocking",
-			text: "- None currently.",
-		},
-		{
-			name: "n/a sentinel remains non-blocking",
-			text: "- N/A",
-		},
-		{
-			name: "no blockers sentinel remains non-blocking",
-			text: "- No blockers;",
-		},
-		{
-			name: "none first clause is non-blocking",
-			text: "- None. Dependency #123 is closed; rebased onto main.",
-		},
-		{
-			name: "none currently first clause is non-blocking",
-			text: "- None currently. Waiting on nothing.",
-		},
-		{
-			name: "n/a first clause is non-blocking",
-			text: "- N/A: covered by #456.",
-		},
-		{
-			name: "none starting a real sentence is blocking",
-			text: "- None of the tests pass.",
-			want: "None of the tests pass.",
-		},
-		{
-			name: "blocked first clause remains blocking",
-			text: "- Blocked: needs schema decision.",
-			want: "Blocked: needs schema decision.",
-		},
-		{
-			name: "must be resolved remains blocking",
-			text: "- Blocked by: #123 must be resolved before merge.",
-			want: "Blocked by: #123 must be resolved before merge.",
-		},
-		{
-			name: "removed stale blocked by prose is non-blocking",
-			text: "- The previous dependency blocker regressions now pass locally on the rebased head,\n  so stale `Blocked by: #1462` / `Blocked by: #1463` lines were removed from the issue body.",
-		},
-		{
-			name: "resolved dependency prose is non-blocking",
-			text: "- Dependency blocker #1462 merged via PR #1482 and issue #1462 is closed/Done; #1463 was already closed. Removed the stale `Blocked by: #1462` line from #1476.",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			got := autoPromoteNormalizeWorkpadBlockerText(tt.text)
-			if got != tt.want {
-				t.Fatalf("autoPromoteNormalizeWorkpadBlockerText() = %q, want %q", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestEvaluateAutoPromoteStructuredWorkpad(t *testing.T) {
 	t.Parallel()
 
@@ -1102,12 +1029,10 @@ func TestEvaluateAutoPromoteStructuredWorkpad(t *testing.T) {
 			wantInvalid: "status blocked requires",
 		},
 		{
-			name:        "prose fallback preserved",
-			body:        "## Codex Workpad\n\n### Blockers\n- Owner approval is still required before merge.",
-			wantAction:  AutoPromoteActionAwaitReview,
-			wantReason:  AutoPromoteReasonWorkpadBlocker,
-			wantBlocker: "Owner approval is still required before merge.",
-			wantSource:  "prose_section",
+			name:       "prose fallback removed",
+			body:       "## Codex Workpad\n\n### Blockers\n- Owner approval is still required before merge.",
+			wantAction: AutoPromoteActionPromote,
+			wantReason: AutoPromoteReasonReady,
 		},
 		{
 			name: "structured only disables prose fallback",
@@ -1117,10 +1042,8 @@ func TestEvaluateAutoPromoteStructuredWorkpad(t *testing.T) {
 				cfg.WorkpadStructuredOnly = true
 				return cfg
 			}(),
-			wantAction:        AutoPromoteActionPromote,
-			wantReason:        AutoPromoteReasonReady,
-			wantSource:        "prose_section",
-			wantProseDisabled: true,
+			wantAction: AutoPromoteActionPromote,
+			wantReason: AutoPromoteReasonReady,
 		},
 	}
 
@@ -1193,7 +1116,7 @@ func TestEvaluateAutoPromoteStructuredWorkpad(t *testing.T) {
 			if got.WorkpadSignalSource != tt.wantSource {
 				t.Fatalf("WorkpadSignalSource = %q, want %q", got.WorkpadSignalSource, tt.wantSource)
 			}
-			if got.WorkpadCommentURL != wantURL {
+			if tt.wantSource != "" && got.WorkpadCommentURL != wantURL {
 				t.Fatalf("WorkpadCommentURL = %q, want structured comment URL", got.WorkpadCommentURL)
 			}
 			if tt.wantInvalid != "" && !strings.Contains(got.WorkpadStatusInvalid, tt.wantInvalid) {
@@ -1275,21 +1198,17 @@ func TestEvaluateAutoPromoteStructuredWorkpadStatusPolicy(t *testing.T) {
 			wantInvalid:         `status "human_review"`,
 		},
 		{
-			name:        "missing structured block uses prose fallback",
-			body:        "## Codex Workpad\n\n### Blockers\n- Owner approval is still required before merge.",
-			wantAction:  AutoPromoteActionAwaitReview,
-			wantReason:  AutoPromoteReasonWorkpadBlocker,
-			wantBlocker: "Owner approval is still required before merge.",
-			wantSource:  "prose_section",
+			name:       "missing structured block ignores prose",
+			body:       "## Codex Workpad\n\n### Blockers\n- Owner approval is still required before merge.",
+			wantAction: AutoPromoteActionPromote,
+			wantReason: AutoPromoteReasonReady,
 		},
 		{
-			name:              "missing structured block with structured only ignores prose",
-			body:              "## Codex Workpad\n\n### Blockers\n- Owner approval is still required before merge.",
-			structuredOnly:    true,
-			wantAction:        AutoPromoteActionPromote,
-			wantReason:        AutoPromoteReasonReady,
-			wantSource:        "prose_section",
-			wantProseDisabled: true,
+			name:           "missing structured block with structured only ignores prose",
+			body:           "## Codex Workpad\n\n### Blockers\n- Owner approval is still required before merge.",
+			structuredOnly: true,
+			wantAction:     AutoPromoteActionPromote,
+			wantReason:     AutoPromoteReasonReady,
 		},
 	}
 

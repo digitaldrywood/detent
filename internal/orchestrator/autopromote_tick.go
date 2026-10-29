@@ -1182,16 +1182,12 @@ func autoPromoteWorkpadBlockerRefs(issue connector.Issue, structuredOnly bool) [
 		}
 		return refs
 	}
-	reason := workpad.Reason(signal)
-	if reason == "" {
-		return nil
-	}
-	return dependencyRefsInText(reason, dependencyIssueRepo(issue.Identifier))
+	return nil
 }
 
 func autoPromoteBlockedRefFromIssue(issue connector.Issue, terminalStates []string) connector.BlockedRef {
 	state := strings.TrimSpace(issue.State)
-	if issue.Closed || autoPromotePullRequestMerged(issue.PullRequest) {
+	if issue.Closed {
 		state = doneStateName(terminalStates)
 	}
 	return connector.BlockedRef{

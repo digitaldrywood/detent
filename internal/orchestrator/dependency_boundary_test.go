@@ -20,30 +20,6 @@ import (
 
 func TestDependencySectionAndReferenceBoundaries(t *testing.T) {
 	t.Parallel()
-	for _, tt := range []struct {
-		line, title string
-		valid       bool
-	}{
-		{line: "## Dependencies", title: "Dependencies", valid: true},
-		{line: "###### Dependencies ###", title: "Dependencies", valid: true},
-		{line: "####### Dependencies"}, {line: "###"}, {line: "#123"}, {line: "prose"},
-	} {
-		t.Run(tt.line, func(t *testing.T) {
-			title, ok := dependencyMarkdownHeadingTitle(tt.line)
-			if title != tt.title || ok != tt.valid {
-				t.Fatalf("heading = %q %v", title, ok)
-			}
-		})
-	}
-	if got := dependencyMarkdownSectionText("# Task\nText\n## Dependencies\nDepends on: #1\n## Criteria\nIndependent work", "Dependencies"); got != "Depends on: #1" {
-		t.Fatalf("section = %q", got)
-	}
-	if got := dependencyIssueIdentifiersInText("https://github.com/owner/repo/issues/1 owner/repo#1 #2 #2", "owner/repo"); !reflect.DeepEqual(got, []string{"owner/repo#1", "owner/repo#2"}) {
-		t.Fatalf("refs = %v", got)
-	}
-	if dependencyBlockerIdentifier("", "", "") != "" || dependencyBlockerIdentifier("", "1", "") != "#1" {
-		t.Fatal("invalid local reference normalization")
-	}
 	if !sameIssueIdentity(connector.Issue{Identifier: "OWNER/REPO#1"}, connector.Issue{Identifier: "owner/repo#1"}) {
 		t.Fatal("canonical identity mismatch")
 	}

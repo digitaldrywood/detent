@@ -130,7 +130,7 @@ func TestHumanClosureIgnoresHistoricalBreakerReason(t *testing.T) {
 	t.Parallel()
 	child := dependencyAutoUnblockIssue("child", "Blocked")
 	child.Identifier = "owner/repo#20"
-	child.Description = "Depends on: owner/repo#10"
+	child.BlockedBy = []connector.BlockedRef{{Identifier: "owner/repo#10", Source: connector.BlockedRefSourceNative}}
 	blocker := humanDependencyIssue("Verified authentication", true)
 	tracker := &dependencyAutoUnblockConnector{stateIssues: []connector.Issue{child}, hydratedIssues: []connector.Issue{child}, blockers: []connector.Issue{blocker}}
 	o := dependencyAutoUnblockOrchestrator(tracker, DependencyAutoUnblockConfig{Enabled: true, SourceStates: []string{"Blocked"}, TargetState: "Todo"})

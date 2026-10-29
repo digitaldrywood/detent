@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/dependencyline"
 	"github.com/digitaldrywood/detent/internal/failureattribution"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
@@ -585,35 +584,7 @@ func autoPromoteWorkpadBlocker(issue connector.Issue, cfg AutoPromoteConfig) aut
 	if signal.Source == workpad.SourceStructured {
 		return autoPromoteStructuredWorkpadBlockerCheck(issue, signal, cfg.TerminalStates, check)
 	}
-	reason := workpad.Reason(signal)
-	if reason == "" {
-		return check
-	}
-	check.Verifications = autoPromoteTextWorkpadBlockerVerifications(reason, issue, cfg.TerminalStates)
-	if resolved, ok := autoPromoteResolvedWorkpadBlockers(reason, issue, cfg.TerminalStates); ok {
-		check.Resolved = resolved
-		return check
-	}
-	check.Reason = reason
 	return check
-}
-
-func autoPromoteTextWorkpadBlockerVerifications(
-	reason string,
-	issue connector.Issue,
-	terminalStates []string,
-) []AutoPromoteWorkpadBlockerVerification {
-	refs := dependencyRefsInText(reason, dependencyIssueRepo(issue.Identifier))
-	if len(refs) == 0 {
-		return nil
-	}
-	blockers := make([]workpad.Blocker, 0, len(refs))
-	for _, ref := range refs {
-		if identifier := strings.TrimSpace(ref.Identifier); identifier != "" {
-			blockers = append(blockers, workpad.Blocker{Identifier: identifier})
-		}
-	}
-	return autoPromoteWorkpadBlockerVerifications(issue, blockers, terminalStates)
 }
 
 func autoPromoteStructuredWorkpadBlockerCheck(
@@ -691,43 +662,6 @@ func autoPromoteApplyWorkpadDecisionFields(decision *AutoPromoteDecision, check 
 	}
 }
 
-func autoPromoteResolvedWorkpadBlockers(reason string, issue connector.Issue, terminalStates []string) ([]string, bool) {
-	refs := dependencyRefsInText(reason, dependencyIssueRepo(issue.Identifier))
-	if len(refs) == 0 {
-		return nil, false
-	}
-
-	byIdentifier := make(map[string]connector.BlockedRef, len(issue.BlockedBy))
-	for _, ref := range issue.BlockedBy {
-		key := strings.ToLower(strings.TrimSpace(ref.Identifier))
-		if key != "" {
-			byIdentifier[key] = ref
-		}
-	}
-
-	resolved := make([]string, 0, len(refs))
-	self := strings.ToLower(strings.TrimSpace(issue.Identifier))
-	for _, ref := range refs {
-		identifier := strings.TrimSpace(ref.Identifier)
-		key := strings.ToLower(identifier)
-		if key == "" || key == self {
-			continue
-		}
-		blocker, ok := byIdentifier[key]
-		if !ok || !autoPromoteBlockedRefResolved(blocker, terminalStates) {
-			return nil, false
-		}
-		if blocker.Identifier != "" {
-			identifier = strings.TrimSpace(blocker.Identifier)
-		}
-		resolved = append(resolved, identifier)
-	}
-	if len(resolved) == 0 {
-		return nil, false
-	}
-	return resolved, true
-}
-
 func autoPromoteBlockedRefResolved(ref connector.BlockedRef, terminalStates []string) bool {
 	state := strings.TrimSpace(ref.State)
 	return state != "" && stateIn(state, terminalStates)
@@ -750,10 +684,6 @@ func rawIssueWorkpadSignal(issue connector.Issue) (*workpad.Signal, bool) {
 			signal.RecordedAt = autoPromoteWorkpadRecordedAt(comment)
 			return signal, true
 		}
-		if signal := autoPromoteWorkpadProseSignalFromBody(body, comment.URL, issue.DependencySource == connector.BlockedRefSourceNative); signal != nil {
-			signal.RecordedAt = autoPromoteWorkpadRecordedAt(comment)
-			return signal, true
-		}
 		return nil, false
 	}
 	if signal, ok := workpad.SignalFromWorkpad(issue.Description, issue.URL, dependencyIssueRepo(issue.Identifier)); ok {
@@ -762,12 +692,6 @@ func rawIssueWorkpadSignal(issue connector.Issue) (*workpad.Signal, bool) {
 	}
 	if issue.WorkpadSignal != nil {
 		return workpad.CloneSignal(issue.WorkpadSignal), true
-	}
-	if reason := autoPromoteNormalizeWorkpadBlockerText(issue.BlockerReason); reason != "" {
-		return &workpad.Signal{
-			Source:      workpad.SourceProse,
-			HumanAction: reason,
-		}, true
 	}
 	return nil, false
 }
@@ -818,124 +742,6 @@ func autoPromoteIsWorkpadComment(body string) bool {
 	return false
 }
 
-func autoPromoteWorkpadProseSignalFromBody(body string, commentURL string, native bool) *workpad.Signal {
-	sectionFound := false
-	for _, title := range []string{"Human Action Needed", "Blockers"} {
-		text, ok := autoPromoteMarkdownSectionText(body, title)
-		if !ok {
-			continue
-		}
-		sectionFound = true
-		if native && title == "Blockers" {
-			text = withoutDependencyOnlyWorkpadLines(text)
-		}
-		if reason := autoPromoteNormalizeWorkpadBlockerText(text); reason != "" {
-			return &workpad.Signal{
-				Source:      workpad.SourceProseSection,
-				CommentURL:  strings.TrimSpace(commentURL),
-				HumanAction: reason,
-			}
-		}
-	}
-	if sectionFound {
-		return nil
-	}
-	if native {
-		body = withoutDependencyOnlyWorkpadLines(body)
-	}
-	if reason := autoPromoteWorkpadBlockerPhraseReason(body); reason != "" {
-		return &workpad.Signal{
-			Source:      workpad.SourceProsePhrase,
-			CommentURL:  strings.TrimSpace(commentURL),
-			HumanAction: reason,
-		}
-	}
-	return nil
-}
-
-// Dependency-only prose is historical evidence. Retain free text, including
-// approval requests adjacent to a dependency line.
-func withoutDependencyOnlyWorkpadLines(body string) string {
-	lines := strings.Split(body, "\n")
-	kept := lines[:0]
-	for _, line := range lines {
-		if text, ok := dependencyline.MatchText(line); ok {
-			remainder := dependencyIssueURLPattern.ReplaceAllString(text, "")
-			remainder = dependencyIssueRefPattern.ReplaceAllString(remainder, "")
-			dependencyOnly := true
-			for _, word := range strings.Fields(strings.ToLower(remainder)) {
-				word = strings.Trim(word, " ,;.`*_~[]()<>&")
-				if word != "" && word != "and" && word != "or" {
-					dependencyOnly = false
-					break
-				}
-			}
-			if dependencyOnly {
-				continue
-			}
-		}
-		kept = append(kept, line)
-	}
-	return strings.Join(kept, "\n")
-}
-
-func autoPromoteWorkpadBlockerPhraseReason(body string) string {
-	for line := range strings.SplitSeq(body, "\n") {
-		if _, ok := autoPromoteMarkdownHeadingTitle(line); ok {
-			continue
-		}
-		line = autoPromoteNormalizeWorkpadLine(line)
-		if line == "" || autoPromoteWorkpadNonBlockerLine(line) {
-			continue
-		}
-		lower := strings.ToLower(line)
-		for _, phrase := range []string{
-			"human action needed",
-			"human approval",
-			"owner approval",
-			"owner listening approval",
-			"still required",
-			"still needed",
-			"still needs",
-			"required before",
-			"waiting for",
-			"blocked by:",
-			"depends on:",
-			"cannot proceed",
-			"cannot continue",
-		} {
-			if strings.Contains(lower, phrase) {
-				return line
-			}
-		}
-	}
-	return ""
-}
-
-func autoPromoteMarkdownSectionText(body string, title string) (string, bool) {
-	want := autoPromoteNormalizeSectionTitle(title)
-	inSection := false
-	found := false
-	lines := []string{}
-	for line := range strings.SplitSeq(body, "\n") {
-		heading, ok := autoPromoteMarkdownHeadingTitle(line)
-		if ok {
-			if inSection {
-				break
-			}
-			inSection = autoPromoteNormalizeSectionTitle(heading) == want
-			if inSection {
-				found = true
-			}
-			continue
-		}
-		if inSection {
-			lines = append(lines, line)
-		}
-	}
-	return strings.Join(lines, "\n"), found
-}
-
 func autoPromoteMarkdownHeadingTitle(line string) (string, bool) {
 	line = strings.TrimSpace(line)
 	if line == "" || line[0] != '#' {
@@ -956,123 +762,6 @@ func autoPromoteMarkdownHeadingTitle(line string) (string, bool) {
 
 func autoPromoteNormalizeSectionTitle(title string) string {
 	return strings.ToLower(strings.Join(strings.Fields(title), " "))
-}
-
-func autoPromoteNormalizeWorkpadBlockerText(text string) string {
-	parts := []string{}
-	for line := range strings.SplitSeq(text, "\n") {
-		line = autoPromoteNormalizeWorkpadLine(line)
-		if line == "" || autoPromoteWorkpadNonBlockerLine(line) {
-			continue
-		}
-		parts = append(parts, line)
-	}
-	return strings.Join(parts, "; ")
-}
-
-func autoPromoteNormalizeWorkpadLine(line string) string {
-	line = strings.TrimSpace(line)
-	line = strings.TrimPrefix(line, ">")
-	line = strings.TrimSpace(line)
-	for _, marker := range []string{"- ", "* ", "+ "} {
-		if after, ok := strings.CutPrefix(line, marker); ok {
-			line = strings.TrimSpace(after)
-			break
-		}
-	}
-	for _, marker := range []string{"[ ] ", "[x] ", "[X] "} {
-		if after, ok := strings.CutPrefix(line, marker); ok {
-			line = strings.TrimSpace(after)
-			break
-		}
-	}
-	if index := autoPromoteNumberedListMarkerEnd(line); index > 0 {
-		line = strings.TrimSpace(line[index:])
-	}
-	return strings.Join(strings.Fields(line), " ")
-}
-
-func autoPromoteNumberedListMarkerEnd(line string) int {
-	index := 0
-	for index < len(line) && line[index] >= '0' && line[index] <= '9' {
-		index++
-	}
-	if index == 0 || index >= len(line) {
-		return 0
-	}
-	if line[index] != '.' && line[index] != ')' {
-		return 0
-	}
-	if index+1 < len(line) && line[index+1] != ' ' && line[index+1] != '\t' {
-		return 0
-	}
-	return index + 1
-}
-
-func autoPromoteWorkpadNonBlockerLine(line string) bool {
-	line = strings.ToLower(strings.TrimSpace(line))
-	if autoPromoteResolvedWorkpadLine(line) {
-		return true
-	}
-	if autoPromoteWorkpadNonBlockerSentinel(strings.Trim(line, ".:; ")) {
-		return true
-	}
-	index := strings.IndexAny(line, ".;:")
-	if index < 0 {
-		return false
-	}
-	firstClause := strings.Trim(line[:index], ".:; ")
-	return firstClause != "" && autoPromoteWorkpadNonBlockerSentinel(firstClause)
-}
-
-func autoPromoteResolvedWorkpadLine(line string) bool {
-	line = strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(line)), " "))
-	if line == "" {
-		return false
-	}
-	if strings.Contains(line, "now pass") && (strings.Contains(line, "blocker") || strings.Contains(line, "regression")) {
-		return true
-	}
-	if strings.Contains(line, "removed") && strings.Contains(line, "stale") && strings.Contains(line, "blocked by") {
-		return true
-	}
-	if strings.Contains(line, "blockers are gone") || strings.Contains(line, "blocker is gone") {
-		return true
-	}
-	hasIssueRef := strings.Contains(line, "#") || strings.Contains(line, "/issues/")
-	if !hasIssueRef {
-		return false
-	}
-	for _, phrase := range []string{
-		"closed/done",
-		"already closed",
-		"is closed",
-		"was closed",
-		"merged via",
-		"already merged",
-		"is merged",
-		"was merged",
-		"is resolved",
-		"was resolved",
-		"has been resolved",
-		"resolved by",
-		"resolved via",
-	} {
-		if strings.Contains(line, phrase) {
-			return true
-		}
-	}
-	return false
-}
-
-func autoPromoteWorkpadNonBlockerSentinel(line string) bool {
-	switch line {
-	case "", "none", "none currently", "n/a", "na", "not applicable", "nothing", "nothing currently",
-		"no blockers", "no known blockers", "no unresolved blockers", "no human action needed":
-		return true
-	default:
-		return false
-	}
 }
 
 func gateFindings(findings []AutoPromoteFinding) []gate.Finding {

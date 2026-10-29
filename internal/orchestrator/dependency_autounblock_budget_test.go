@@ -180,7 +180,7 @@ func TestDeferredDependencyUnblockRevalidatesEvidence(t *testing.T) {
 			case "operator stop":
 				state.Blocked[base.stateIssues[0].ID] = Blocked{Issue: base.stateIssues[0], Source: BlockedSourceOperatorStop, Reason: "operator stop"}
 			case "new dependency":
-				base.hydratedIssues[0].Description = "Depends on: #200"
+				base.hydratedIssues[0].BlockedBy = append(base.hydratedIssues[0].BlockedBy, connector.BlockedRef{Identifier: "digitaldrywood/detent#200", Source: connector.BlockedRefSourceNative})
 			case "new comment dependency", "native-only comment":
 				tracker.currentComments = []connector.IssueComment{{Body: "Depends on: #200"}}
 				if name == "native-only comment" {

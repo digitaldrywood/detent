@@ -1612,7 +1612,7 @@ func TestTickAutoPromoteHydratesWorkpadBlockerBeforeTransition(t *testing.T) {
 		stateIssues: []connector.Issue{issue},
 		issueComments: map[string][]connector.IssueComment{
 			issue.ID: {{
-				Body: "## Codex Workpad\n\n### Blockers\n- no generated seasonal MP3s were copied into `assets/audio/`\n- Gate A/B/C owner listening approval is still required before approved audio assets are copied and committed",
+				Body: "## Codex Workpad\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Approve copying the assets\n```",
 			}},
 		},
 	}
@@ -1625,7 +1625,7 @@ func TestTickAutoPromoteHydratesWorkpadBlockerBeforeTransition(t *testing.T) {
 
 	orch.tick(context.Background(), &state, now)
 
-	if len(tracker.updates) != 1 || tracker.updates[0].state != "Rework" {
+	if len(tracker.updates) != 1 || tracker.updates[0].state != "Blocked" {
 		t.Fatalf("updates = %#v, want no transition while Workpad blocker is present", tracker.updates)
 	}
 	if got, want := tracker.fetchComments, []string{issue.ID}; !reflect.DeepEqual(got, want) {
@@ -1732,7 +1732,7 @@ func TestTickAutoPromoteResolvesClosedWorkpadBlockerBeforeTransition(t *testing.
 		stateIssues: []connector.Issue{issue},
 		issueComments: map[string][]connector.IssueComment{
 			issue.ID: {{
-				Body: "## Codex Workpad\n\n### Blockers\n- Blocked by: #1462\n\n### Validation\n- make check passed.",
+				Body: "## Codex Workpad\n```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: '#1462'\n    reason: dependency\nhuman_action: null\n```",
 			}},
 		},
 		resolvedIssues: []connector.Issue{{
@@ -1776,7 +1776,7 @@ func TestTickAutoPromoteResolvesClosedWorkpadBlockerBeforeTransition(t *testing.
 	}
 }
 
-func TestTickAutoPromoteResolvesMergedWorkpadBlockerBeforeTransition(t *testing.T) {
+func TestTickAutoPromoteKeepsOpenIssueWithMergedPullRequestBlocked(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 7, 8, 22, 35, 0, 0, time.UTC)
@@ -1805,7 +1805,7 @@ func TestTickAutoPromoteResolvesMergedWorkpadBlockerBeforeTransition(t *testing.
 		stateIssues: []connector.Issue{issue},
 		issueComments: map[string][]connector.IssueComment{
 			issue.ID: {{
-				Body: "## Codex Workpad\n\n### Blockers\n- Blocked by: #1462\n\n### Validation\n- make check passed.",
+				Body: "## Codex Workpad\n```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: '#1462'\n    reason: dependency\nhuman_action: null\n```",
 			}},
 		},
 		resolvedIssues: []connector.Issue{{
@@ -1824,14 +1824,8 @@ func TestTickAutoPromoteResolvesMergedWorkpadBlockerBeforeTransition(t *testing.
 
 	result := orch.autoPromoteHumanReviewIssues(context.Background(), &state, []connector.Issue{issue}, now)
 
-	if got, want := tracker.updates, []autoPromoteTickUpdate{{issueID: issue.ID, state: "Merging"}}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("updates = %#v, want %#v", got, want)
-	}
-	if _, ok := result.transitioned[issue.ID]; !ok {
-		t.Fatalf("transitioned = %#v, want %s", result.transitioned, issue.ID)
-	}
-	if !strings.Contains(logs.String(), "resolved_workpad_blockers=digitaldrywood/detent#1462") {
-		t.Fatalf("logs %q missing resolved_workpad_blockers", logs.String())
+	if len(tracker.updates) != 1 || tracker.updates[0].state != "Rework" {
+		t.Fatalf("open dependency promoted: updates=%+v transitioned=%+v", tracker.updates, result.transitioned)
 	}
 }
 
@@ -2888,7 +2882,7 @@ func TestTickReconcilesStaleTodoHydratesWorkpadBlockerBeforePromotion(t *testing
 		stateIssues: []connector.Issue{issue},
 		issueComments: map[string][]connector.IssueComment{
 			issue.ID: {{
-				Body: "## Codex Workpad\n\n### Blockers\n- Gate A/B/C owner listening approval is still required before approved audio assets are copied and committed.",
+				Body: "## Codex Workpad\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Approve copying the assets\n```",
 			}},
 		},
 	}
@@ -2902,7 +2896,7 @@ func TestTickReconcilesStaleTodoHydratesWorkpadBlockerBeforePromotion(t *testing
 	state := newState(cfg)
 	orch.tick(context.Background(), &state, now)
 
-	wantUpdates := []autoPromoteTickUpdate{{issueID: issue.ID, state: "Rework"}}
+	wantUpdates := []autoPromoteTickUpdate{{issueID: issue.ID, state: "Blocked"}}
 	if !reflect.DeepEqual(tracker.updates, wantUpdates) {
 		t.Fatalf("updates = %#v, want %#v", tracker.updates, wantUpdates)
 	}
@@ -6869,11 +6863,11 @@ func TestTickWorkpadHumanDecisionLane(t *testing.T) {
 		name, kind, source, want string
 		optout, noBlocked        bool
 	}{
-		{name: "command todo", kind: gate.KindCommand, source: "Todo", want: "Rework"},
-		{name: "command review", kind: gate.KindCommand, source: "Human Review", want: "Rework"},
+		{name: "command todo", kind: gate.KindCommand, source: "Todo", want: "Blocked"},
+		{name: "command review", kind: gate.KindCommand, source: "Human Review", want: "Blocked"},
 		{name: "human gate", kind: gate.KindHumanReview, source: "Todo", want: "Human Review"},
 		{name: "opt out", kind: gate.KindCommand, source: "Todo", optout: true, want: "Human Review"},
-		{name: "no blocked lane", kind: gate.KindCommand, source: "Todo", noBlocked: true, want: "Rework"},
+		{name: "no blocked lane", kind: gate.KindCommand, source: "Todo", noBlocked: true, want: "Blocked"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			now := time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC)
@@ -6892,7 +6886,7 @@ func TestTickWorkpadHumanDecisionLane(t *testing.T) {
 			}
 			tracker := &autoPromoteTickConnector{
 				stateIssues:   []connector.Issue{issue},
-				issueComments: map[string][]connector.IssueComment{issue.ID: {{Body: "## Codex Workpad\n\n### Blockers\n- Owner approval is required before assets can be copied."}}},
+				issueComments: map[string][]connector.IssueComment{issue.ID: {{Body: "## Codex Workpad\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Approve copying the assets\n```"}}},
 			}
 			var logs strings.Builder
 			orch := &Orchestrator{cfg: cfg, connector: tracker, logger: slog.New(slog.NewTextHandler(&logs, nil))}

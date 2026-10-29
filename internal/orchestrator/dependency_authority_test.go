@@ -39,7 +39,7 @@ func TestDependencyAuthoritySurvivesRefresh(t *testing.T) {
 				t.Fatalf("notes = %v", got.DependencyNotes)
 			}
 			// Both dispatch hydration and dependency recovery use this tracker merge.
-			merged := issueWithTextDependencyRefs(mergeIssueTrackerFields(old, fresh))
+			merged := issueWithoutSelfDependencies(mergeIssueTrackerFields(old, fresh))
 			if len(merged.BlockedBy) != len(tt.refs) {
 				t.Fatalf("merge restored stale blockers: %+v", merged.BlockedBy)
 			}
@@ -55,7 +55,7 @@ func TestDependencyTextIgnoresHistoricalComments(t *testing.T) {
 	} {
 		t.Run(body, func(t *testing.T) {
 			t.Parallel()
-			issue := issueWithTextDependencyRefs(connector.Issue{Identifier: "owner/repo#101", Comments: []connector.IssueComment{{Body: body}}})
+			issue := issueWithoutSelfDependencies(connector.Issue{Identifier: "owner/repo#101", Comments: []connector.IssueComment{{Body: body}}})
 			if len(issue.BlockedBy) != 0 {
 				t.Fatalf("historical blockers = %+v", issue.BlockedBy)
 			}
@@ -163,16 +163,16 @@ func TestNativeAuthorityIgnoresLegacyDependencyWorkpad(t *testing.T) {
 	}
 }
 
-func TestNativeAuthorityPreservesLegacyHumanAction(t *testing.T) {
+func TestNativeAuthorityIgnoresLegacyHumanAction(t *testing.T) {
 	t.Parallel()
 	issue := connector.Issue{Identifier: "owner/repo#101", DependencySource: connector.BlockedRefSourceNative, Comments: []connector.IssueComment{{Body: "## Codex Workpad\n### Human Action Needed\nApprove access for #100"}}}
 	signal, ok := autoPromoteIssueWorkpadSignal(issue)
-	if !ok || signal == nil || signal.HumanAction != "Approve access for #100" {
+	if ok || signal != nil {
 		t.Fatalf("human action lost: %+v", signal)
 	}
 }
 
-func TestNativeAuthorityPreservesLegacyApprovalBlockers(t *testing.T) {
+func TestNativeAuthorityIgnoresLegacyApprovalBlockers(t *testing.T) {
 	t.Parallel()
 	for _, body := range []string{
 		"## Codex Workpad\n### Blockers\n- Owner approval is still required before merge.",
@@ -182,18 +182,18 @@ func TestNativeAuthorityPreservesLegacyApprovalBlockers(t *testing.T) {
 		t.Run(body, func(t *testing.T) {
 			issue := connector.Issue{Identifier: "owner/repo#101", DependencySource: connector.BlockedRefSourceNative, Comments: []connector.IssueComment{{Body: body}}}
 			signal, ok := autoPromoteIssueWorkpadSignal(issue)
-			if !ok || signal == nil || signal.HumanAction != "Owner approval is still required before merge." {
+			if ok || signal != nil {
 				t.Fatalf("approval lost: %+v", signal)
 			}
 		})
 	}
 }
 
-func TestNativeAuthorityPreservesMixedDependencyApproval(t *testing.T) {
+func TestNativeAuthorityIgnoresMixedDependencyApproval(t *testing.T) {
 	t.Parallel()
 	issue := connector.Issue{Identifier: "owner/repo#101", DependencySource: connector.BlockedRefSourceNative, Comments: []connector.IssueComment{{Body: "## Codex Workpad\n### Blockers\nDepends on: #100 and owner approval"}}}
 	signal, ok := autoPromoteIssueWorkpadSignal(issue)
-	if !ok || signal == nil || signal.HumanAction == "" {
+	if ok || signal != nil {
 		t.Fatalf("approval lost: %+v", signal)
 	}
 }
