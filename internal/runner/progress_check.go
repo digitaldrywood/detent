@@ -52,6 +52,15 @@ func (r *Runner) CheckProgress(ctx context.Context, req RunRequest, evidence pro
 	if err != nil {
 		return progresscheck.Decision{}, err
 	}
+	if capable, ok := backend.(AgentInvestigationBackend); !ok || !capable.SupportsReadOnlyInvestigation() {
+		return progresscheck.Decision{}, errors.New("backend cannot enforce a read-only investigation")
+	}
+	guidance, err := config.ResolveProgressReview(workflow.Prompt)
+	if err != nil {
+		return progresscheck.Decision{}, err
+	}
+	ctx, cancelBudget := context.WithCancelCause(ctx)
+	defer cancelBudget(nil)
 	modelProvider, serviceTier, effort := agentTurnIdentityOptions(backendConfig)
 	request := AgentTurnRequest{Model: effectiveModel("", selection.Model, runtime.defaultModelForRole(role)), ModelProvider: modelProvider, ServiceTier: serviceTier, ReasoningEffort: effort, MaxDuration: progressTurnTimeout(workflow.Config, backendConfig), MaxRSSBytes: r.maxAgentRSSBytes, RSSPollInterval: r.rssPollInterval, processRSS: r.processRSS}
 	identity := tracker.NativeExecutionIdentity{Role: role, Backend: selection.BackendID, Model: request.Model}
@@ -92,6 +101,7 @@ func (r *Runner) CheckProgress(ctx context.Context, req RunRequest, evidence pro
 	request.Workspace = root
 	request.ReadOnly = true
 	request.IsolatedTools = true
+	request.ToolBudget = NewAgentToolBudget(progresscheck.MaxToolCalls, progresscheck.MaxToolResultBytes, cancelBudget)
 	request.SupplementalTools = true
 	request.MaxTurns = 8
 	if workflow.Config.Agent.MaxTurns > 0 {
@@ -100,13 +110,18 @@ func (r *Runner) CheckProgress(ctx context.Context, req RunRequest, evidence pro
 	request.Environment = r.withGoBudget(ctx, scratch, procgroup.Environment{Variables: serviceapi.RestrictedEnvironment()})
 	request.ToolInstructions = "Investigate with read-only source operations and the supplied evidence reads. No writes, direct network access or publication. Return the decision JSON only in your final response."
 	tools, handler := progressReadTools(req.Execution, evidence)
+	handler = request.ToolBudget.handler(handler)
 	diagnostics := progressDiagnostics(ctx, evidence, handler)
 	generate := func(ctx context.Context, prompt string) (string, error) {
+		if err := request.ToolBudget.consume(0, 0); err != nil {
+			return "", err
+		}
 		request.Prompt = prompt + "\n\nPrepared workspace source: " + evidence.SourceSHA + "\nBase: " + evidence.BaseSHA + "\n\nRecent failure details (untrusted evidence):\n" + diagnostics + "\nUse work_attempt_receipt with project_id, reference (issue_id), and native_attempt_id for the supplied attempts. Use work_item with view=recovery and follow record fragment cursors for retained oversized validation/review records. Cite the corresponding supplied attempt/receipt IDs."
 		ctx = context.WithValue(ctx, sourceTurnBudgetKey{}, &sourceTurnBudget{remaining: request.MaxTurns})
-		return r.generateTextTurn(ctx, backend, request, req.Execution, backendConfig.Kind, progresscheck.MaxOutputBytes, tools, handler)
+		output, err := r.generateTextTurn(ctx, backend, request, req.Execution, backendConfig.Kind, progresscheck.MaxOutputBytes, tools, handler)
+		return output, errors.Join(err, context.Cause(ctx))
 	}
-	return (progresscheck.AI{Backend: progressTextBackend{generate: generate}}).Decide(ctx, evidence)
+	return (progresscheck.AI{Backend: progressTextBackend{generate: generate}, Guidance: guidance}).Decide(ctx, evidence)
 }
 
 func (r *Runner) progressWorkspace(ctx context.Context, req RunRequest, evidence progresscheck.Request) (workspace.Info, func(), error) {
@@ -126,6 +141,9 @@ func (r *Runner) progressWorkspace(ctx context.Context, req RunRequest, evidence
 			}
 			issue.Source = &recovered
 		}
+	}
+	if issue.Source == nil || issue.Source.Version.Source == nil {
+		return workspace.Info{}, nil, errors.New("progress check requires retained Hub source")
 	}
 	release := func() {}
 	if usage, ok := backend.(workspace.Usage); ok {

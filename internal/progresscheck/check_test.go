@@ -214,3 +214,31 @@ func TestCheckSuccessfulOrCancelledWorkPaysNoTurnForStaleEvidence(t *testing.T) 
 		})
 	}
 }
+
+func TestRetainedLegacyDecisionsRemainValid(t *testing.T) {
+	for _, outcome := range []Outcome{Progressing, Reroute, SystemDefect} {
+		t.Run(string(outcome), func(t *testing.T) {
+			request := refusalRequest()
+			decision := Decision{Outcome: outcome, Reason: "Retained judgment", Evidence: []string{"attempt-2"}}
+			if outcome == Reroute {
+				decision.Step = "implement"
+			}
+			if outcome == SystemDefect {
+				decision.DefectKey, decision.DefectTitle, decision.DefectBody = "key", "title", "body"
+			}
+			id, err := request.ID()
+			if err != nil {
+				t.Fatal(err)
+			}
+			record := Record{RequestID: id, ProjectID: request.ProjectID, IssueID: request.IssueID, EvidenceRevision: request.EvidenceRevision, Decision: decision, CommentID: "comment", DefectIssueID: "defect"}
+			backend := &fakeBackend{}
+			got, checked, err := Check(t.Context(), request, backend, &fakeOwner{records: map[string]Record{id: record}})
+			if err != nil || !checked || backend.calls != 0 || !got.Decision.Legacy() {
+				t.Fatalf("legacy replay invalidated: checked=%t calls=%d record=%+v err=%v", checked, backend.calls, got, err)
+			}
+			if err := validateDecision(request, decision); err == nil {
+				t.Fatal("new AI decision accepted legacy shape")
+			}
+		})
+	}
+}

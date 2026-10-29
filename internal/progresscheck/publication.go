@@ -2,6 +2,8 @@ package progresscheck
 
 import "github.com/digitaldrywood/detent/internal/tracker"
 
+const InvestigationCapability = "progress_investigation"
+
 type Publication struct {
 	tracker.Mutation
 	ExpectedRevision tracker.Revision `json:"expected_revision,string,omitempty"`

@@ -30,12 +30,12 @@ func TestProgressCheckUsesReadOnlyBackendAndJSONBudget(t *testing.T) {
 	}
 	output := `{"outcome":"reroute","step":"implement","diagnosis":"failed-attempt: TestExample asserts the repaired value but the implementation still returns the old value","instruction":"Update the code exercised by TestExample and rerun the assertion","reason":"` + strings.Repeat("evidence ", 100) + `","evidence":["failed-attempt"]}`
 	backend := &progressPolicyBackend{fakeCodexClient: fakeCodexClient{updates: []AgentUpdate{{Type: AgentUpdateTokenUsage, Tokens: AgentTokenUsage{InputTokens: 100, OutputTokens: 50}}, {Type: AgentUpdateMessageDelta, ItemID: "final", Delta: output}}}}
-	r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: config.Config{Agents: config.Agents{Routes: []config.AgentRoute{{Name: "default", Backend: "codex", Model: "example-model", Default: true}}}}}, Workspace: progressWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: root}}}, AgentBackend: backend})
+	r, err := NewRunner(Dependencies{Workflow: config.Workflow{Prompt: "## Progress Review\nProject-specific assertion investigation.\n## Other\nDo not include this section.", Config: config.Config{Agents: config.Agents{Routes: []config.AgentRoute{{Name: "default", Backend: "codex", Model: "example-model", Default: true}}}}}, Workspace: progressWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: root}}}, AgentBackend: backend})
 	if err != nil {
 		t.Fatal(err)
 	}
 	execution := &progressReadExecution{}
-	evidence := progresscheck.Request{ProjectID: "example-project", IssueID: "example-issue", PolicyID: "policy", EvidenceRevision: "revision", Attempts: []progresscheck.Attempt{{ID: "failed-attempt", Outcome: "failed"}}, AvailableSteps: []string{RunModeImplement}}
+	evidence := progresscheck.Request{ProjectID: "example-project", IssueID: "example-issue", PolicyID: "policy", EvidenceRevision: "revision", SourceSHA: "head", BaseSHA: "base", Attempts: []progresscheck.Attempt{{ID: "failed-attempt", Outcome: "failed"}}, AvailableSteps: []string{RunModeImplement}}
 	beforeID, err := evidence.ID()
 	if err != nil {
 		t.Fatal(err)
@@ -56,6 +56,9 @@ func TestProgressCheckUsesReadOnlyBackendAndJSONBudget(t *testing.T) {
 	}
 	if _, err := os.Stat(request.TempDir); !os.IsNotExist(err) {
 		t.Fatalf("progress scratch retained: %v", err)
+	}
+	if !strings.Contains(request.Prompt, "Project-specific assertion investigation.") || strings.Contains(request.Prompt, "Do not include this section.") || strings.Contains(request.Prompt, progresscheck.DefaultGuidance) {
+		t.Fatal("project progress review did not reach prompt exclusively")
 	}
 	if !strings.Contains(request.Prompt, "failed-attempt") || !strings.Contains(request.Prompt, progresscheck.Instructions) {
 		t.Fatal("backend did not receive evidence and decision contract")
@@ -191,7 +194,7 @@ func TestProgressCheckTimeoutAndAdmissionAccounting(t *testing.T) {
 					t.Fatal(err)
 				}
 				start := time.Now()
-				_, err = r.CheckProgress(t.Context(), RunRequest{Issue: connector.Issue{ID: "example"}, Mode: RunModePlan, Execution: execution}, progresscheck.Request{ProjectID: "project", IssueID: "example", PolicyID: "policy", EvidenceRevision: "1", Attempts: []progresscheck.Attempt{{ID: "failed", Outcome: "failed"}}, AvailableSteps: []string{RunModeImplement}})
+				_, err = r.CheckProgress(t.Context(), RunRequest{Issue: connector.Issue{ID: "example"}, Mode: RunModePlan, Execution: execution}, progresscheck.Request{ProjectID: "project", IssueID: "example", PolicyID: "policy", EvidenceRevision: "1", SourceSHA: "head", BaseSHA: "base", Attempts: []progresscheck.Attempt{{ID: "failed", Outcome: "failed"}}, AvailableSteps: []string{RunModeImplement}})
 				if test.rejected {
 					if !errors.Is(err, execution.startError) || backend.request.MaxDuration != 0 || len(execution.entries) != 0 {
 						t.Fatalf("rejected check spent provider capacity: %v %+v", err, execution.entries)
@@ -206,6 +209,22 @@ func TestProgressCheckTimeoutAndAdmissionAccounting(t *testing.T) {
 
 type progressWorkspace struct{ *fakeWorkspaceBackend }
 
+func (*progressPolicyBackend) SupportsReadOnlyInvestigation() bool  { return true }
+func (*stalledProgressBackend) SupportsReadOnlyInvestigation() bool { return true }
+func (*progressInspectBackend) SupportsReadOnlyInvestigation() bool { return true }
+
+func (w progressWorkspace) Head(context.Context, workspace.Info, workspace.Issue) (string, error) {
+	return "head", nil
+}
+func (w progressWorkspace) VerifyReviewTree(context.Context, workspace.Info, workspace.Issue) error {
+	return nil
+}
+func (*progressUsageExecution) SetChangeSource(func(context.Context, string, string) (tracker.ChangeSourceCapture, error)) {
+}
+func (*progressUsageExecution) RecoverChangeSource(context.Context) (workspace.ChangeSource, error) {
+	return workspace.ChangeSource{Version: tracker.ChangeVersion{ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: "head", BaseSHA: "base", Source: &tracker.ChangeSource{}}}}, nil
+}
+
 func (w progressWorkspace) Existing(workspace.Issue) (workspace.Info, error) { return w.info, nil }
 
 func TestProgressCheckMissingCheckoutUsesWorkerScratch(t *testing.T) {
@@ -216,14 +235,17 @@ func TestProgressCheckMissingCheckoutUsesWorkerScratch(t *testing.T) {
 	for _, key := range []string{"TMPDIR", "TMP", "TEMP"} {
 		t.Setenv(key, "")
 	}
-	backend := &fakeCodexClient{updates: []AgentUpdate{{Type: AgentUpdateMessageDelta, ItemID: "final", Delta: `{"outcome":"progressing","reason":"Assertion repaired","diagnosis":"failed: TestExample returned the old value","convergence":"TestExample now passes on the repaired source","evidence":["failed"]}`}}}
-	r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: config.Config{Workspace: config.Workspace{Root: root}}}, Workspace: missingProgressWorkspace{&fakeWorkspaceBackend{info: workspace.Info{Path: root}}}, AgentBackend: backend})
+	backend := &progressScratchBackend{fakeCodexClient: fakeCodexClient{updates: []AgentUpdate{{Type: AgentUpdateMessageDelta, ItemID: "final", Delta: `{"outcome":"progressing","reason":"Assertion repaired","diagnosis":"failed: TestExample returned the old value","convergence":"TestExample now passes on the repaired source","evidence":["failed"]}`}}}}
+	r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: config.Config{Workspace: config.Workspace{Root: root}}}, Workspace: missingProgressWorkspace{progressWorkspace{&fakeWorkspaceBackend{info: workspace.Info{Path: root}}}}, AgentBackend: backend})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = r.CheckProgress(t.Context(), RunRequest{Issue: connector.Issue{ID: "example"}, Mode: RunModeImplement, Execution: &progressUsageExecution{}}, progresscheck.Request{ProjectID: "project", IssueID: "example", PolicyID: "policy", EvidenceRevision: "1", Attempts: []progresscheck.Attempt{{ID: "failed", Outcome: "failed"}}, AvailableSteps: []string{RunModeImplement}})
+	_, err = r.CheckProgress(t.Context(), RunRequest{Issue: connector.Issue{ID: "example"}, Mode: RunModeImplement, Execution: &progressUsageExecution{}}, progresscheck.Request{ProjectID: "project", IssueID: "example", PolicyID: "policy", EvidenceRevision: "1", SourceSHA: "head", BaseSHA: "base", Attempts: []progresscheck.Attempt{{ID: "failed", Outcome: "failed"}}, AvailableSteps: []string{RunModeImplement}})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !strings.Contains(backend.request.Prompt, progresscheck.DefaultGuidance) {
+		t.Fatal("missing section did not use generic default")
 	}
 	if !backend.request.ReadOnly || backend.request.TextOnly || backend.request.Workspace != root {
 		t.Fatalf("unconfined progress request: %+v", backend.request)
@@ -233,7 +255,11 @@ func TestProgressCheckMissingCheckoutUsesWorkerScratch(t *testing.T) {
 	}
 }
 
-type missingProgressWorkspace struct{ *fakeWorkspaceBackend }
+type progressScratchBackend struct{ fakeCodexClient }
+
+func (*progressScratchBackend) SupportsReadOnlyInvestigation() bool { return true }
+
+type missingProgressWorkspace struct{ progressWorkspace }
 
 func (w missingProgressWorkspace) Existing(workspace.Issue) (workspace.Info, error) {
 	return workspace.Info{}, workspace.ErrMissingWorkspace
@@ -243,8 +269,12 @@ func TestProgressCheckRestoresPinnedSource(t *testing.T) {
 	isolateAttemptDiffGitConfig(t)
 	for _, test := range []struct {
 		name, mismatch string
+		concurrent     bool
 	}{
 		{name: "fresh runner restores Hub bundle"},
+		{name: "concurrent preparation", concurrent: true},
+		{name: "missing retained source refused", mismatch: "missing"},
+		{name: "source metadata missing refused", mismatch: "metadata"},
 		{name: "moved source refused", mismatch: "head"},
 		{name: "moved base refused", mismatch: "base"},
 	} {
@@ -274,6 +304,12 @@ func TestProgressCheckRestoresPinnedSource(t *testing.T) {
 			if test.mismatch == "base" {
 				evidence.BaseSHA = head
 			}
+			if test.mismatch == "missing" {
+				execution.source = workspace.ChangeSource{}
+			}
+			if test.mismatch == "metadata" {
+				execution.source.Version.Source = nil
+			}
 			local, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: fresh, AutoBranch: true})
 			if err != nil {
 				t.Fatal(err)
@@ -282,6 +318,27 @@ func TestProgressCheckRestoresPinnedSource(t *testing.T) {
 			r, err := NewRunner(Dependencies{Workspace: local, AgentBackend: backend})
 			if err != nil {
 				t.Fatal(err)
+			}
+			if test.concurrent {
+				start := make(chan struct{})
+				results := make(chan error, 2)
+				for range 2 {
+					go func() {
+						<-start
+						_, release, err := r.progressWorkspace(t.Context(), RunRequest{Issue: connector.Issue{ID: "example", Identifier: "example#1"}, Execution: execution}, evidence)
+						if err == nil {
+							release()
+						}
+						results <- err
+					}()
+				}
+				close(start)
+				for range 2 {
+					if err := <-results; err != nil {
+						t.Error(err)
+					}
+				}
+				return
 			}
 			_, err = r.CheckProgress(t.Context(), RunRequest{Issue: connector.Issue{ID: "example", Identifier: "example#1"}, Mode: RunModeImplement, Execution: execution}, evidence)
 			if test.mismatch != "" {
@@ -319,4 +376,107 @@ func (b *progressInspectBackend) RunTurn(ctx context.Context, req AgentTurnReque
 		return AgentTurnResult{}, errors.New("pinned source unavailable to read-only investigation")
 	}
 	return AgentTurnResult{}, update(AgentUpdate{Type: AgentUpdateMessageDelta, ItemID: "final", Delta: `{"outcome":"reroute","step":"implement","reason":"Repair the failing assertion","diagnosis":"failed: assertion.txt retains the failing assertion","instruction":"Change the implementation exercised by assertion.txt and run the matching validation command","evidence":["failed"]}`})
+}
+
+func TestProgressToolBudgetBoundsAllReads(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		calls, bytes int
+		result       string
+		native       bool
+	}{
+		{"call count", 1, 1000, "small", false},
+		{"cumulative bytes", 10, 7, "four", false},
+		{"host and provider call count", 1, 1000, "small", true},
+		{"host and provider bytes", 10, 7, "four", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancelCause(t.Context())
+			defer cancel(nil)
+			budget := NewAgentToolBudget(test.calls, test.bytes, cancel)
+			reads := 0
+			handle := budget.handler(func(context.Context, AgentToolCall) (AgentToolResult, error) {
+				reads++
+				return AgentToolResult{Success: true, Content: test.result}, nil
+			})
+			if _, err := handle(ctx, AgentToolCall{}); err != nil {
+				t.Fatal(err)
+			}
+			var result AgentToolResult
+			var err error
+			if test.native {
+				typeOfUpdate := AgentUpdateToolOutput
+				if test.calls == 1 {
+					typeOfUpdate = AgentUpdateToolStarted
+				}
+				err = budget.Observe(AgentUpdate{Type: typeOfUpdate, Delta: test.result})
+			} else {
+				result, err = handle(ctx, AgentToolCall{})
+			}
+			if !errors.Is(err, ErrInvestigationBudget) || result.Content != "" || !errors.Is(context.Cause(ctx), ErrInvestigationBudget) {
+				t.Fatalf("exhaustion leaked result or continued: result=%+v err=%v cause=%v", result, err, context.Cause(ctx))
+			}
+			if _, err := handle(ctx, AgentToolCall{}); !errors.Is(err, ErrInvestigationBudget) {
+				t.Fatal(err)
+			}
+			want := 2
+			if test.calls == 1 || test.native {
+				want = 1
+			}
+			if reads != want {
+				t.Fatalf("reads=%d, want %d", reads, want)
+			}
+		})
+	}
+}
+
+func TestProgressCheckRefusesUnsupportedBackend(t *testing.T) {
+	backend := &fakeCodexClient{}
+	r, err := NewRunner(Dependencies{Workspace: progressWorkspace{&fakeWorkspaceBackend{}}, AgentBackend: backend})
+	if err != nil {
+		t.Fatal(err)
+	}
+	execution := &progressUsageExecution{}
+	_, err = r.CheckProgress(t.Context(), RunRequest{Execution: execution}, progresscheck.Request{})
+	if err == nil || !strings.Contains(err.Error(), "cannot enforce") || execution.started || backend.request.Prompt != "" {
+		t.Fatalf("unsupported investigation invoked provider: err=%v started=%t", err, execution.started)
+	}
+}
+
+func TestProgressPreparationNeverFallsBackWithoutRetainedSource(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		execution Execution
+		sourceSHA string
+	}{
+		{"execution lacks source capability", &recordingUsageExecution{}, "head"},
+		{"empty recovered version", &progressSourceExecution{}, "head"},
+		{"metadata missing", &progressSourceExecution{source: workspace.ChangeSource{Version: tracker.ChangeVersion{ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: "head", BaseSHA: "base"}}}}, "head"},
+		{"source SHA missing", &progressUsageExecution{}, ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			backend := &progressFallbackWorkspace{progressWorkspace: progressWorkspace{&fakeWorkspaceBackend{}}}
+			r, err := NewRunner(Dependencies{Workspace: backend, AgentBackend: &progressScratchBackend{}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, release, err := r.progressWorkspace(t.Context(), RunRequest{Issue: connector.Issue{ID: "example"}, Execution: test.execution}, progresscheck.Request{SourceSHA: test.sourceSHA, BaseSHA: "base"})
+			if release != nil {
+				release()
+			}
+			if err == nil || backend.created || backend.seeded {
+				t.Fatalf("unavailable retained source reached fallback: err=%v created=%t seeded=%t", err, backend.created, backend.seeded)
+			}
+		})
+	}
+}
+
+type progressFallbackWorkspace struct {
+	progressWorkspace
+	seeded bool
+}
+
+func (w *progressFallbackWorkspace) SeedReviewHead(context.Context, workspace.Info, workspace.Issue) error {
+	w.seeded = true
+	return nil
 }

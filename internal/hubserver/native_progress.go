@@ -133,13 +133,17 @@ func (o nativeProgressOwner) Publish(ctx context.Context, record progresscheck.R
 		return progresscheck.Record{}, &nativeError{Code: "revision_conflict", status: http.StatusConflict}
 	}
 	body := "Progress check: " + string(record.Decision.Outcome) + "\n\n" + record.Decision.Reason
-	body += "\n\nDiagnosis: " + record.Decision.Diagnosis
+	if record.Decision.Diagnosis != "" {
+		body += "\n\nDiagnosis: " + record.Decision.Diagnosis
+	}
 	if record.Decision.Convergence != "" {
 		body += "\n\nConvergence: " + record.Decision.Convergence
 	}
 	if record.Decision.Outcome == progresscheck.Reroute {
 		body += "\n\nNext step: `" + record.Decision.Step + "`"
-		body += "\n\nInstruction: " + record.Decision.Instruction
+		if record.Decision.Instruction != "" {
+			body += "\n\nInstruction: " + record.Decision.Instruction
+		}
 	}
 	body += "\n\nEvidence: " + strings.Join(record.Decision.Evidence, ", ")
 	if record.Decision.Outcome == progresscheck.SystemDefect {

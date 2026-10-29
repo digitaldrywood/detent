@@ -36,7 +36,7 @@ func investigationSettings(workspace string) map[string]any {
 		"workspace_roots": map[string]any{workspace: true},
 		"network":         map[string]any{"enabled": false},
 	}}
-	for _, feature := range []string{"shell_tool", "unified_exec", "view_image"} {
+	for _, feature := range []string{"shell_tool", "unified_exec"} {
 		settings["features."+feature] = true
 	}
 	return settings

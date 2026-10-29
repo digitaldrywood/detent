@@ -92,6 +92,8 @@ type progressPublicationAgent struct {
 	attempt string
 }
 
+func (progressPublicationAgent) SupportsReadOnlyInvestigation() bool { return true }
+
 func (a progressPublicationAgent) RunTurn(_ context.Context, request runner.AgentTurnRequest, update runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
 	if !strings.Contains(request.Prompt, "TestExample: expected repaired value, got old value") || !request.ReadOnly || request.TextOnly || !request.IsolatedTools {
 		return runner.AgentTurnResult{}, fmt.Errorf("progress turn did not receive retained failure output and read-only investigation access")
@@ -111,6 +113,12 @@ type progressPublicationWorkspace struct {
 	path string
 }
 
+func (w progressPublicationWorkspace) Head(_ context.Context, _ workspace.Info, issue workspace.Issue) (string, error) {
+	return issue.PullRequestHeadSHA, nil
+}
+func (w progressPublicationWorkspace) VerifyReviewTree(context.Context, workspace.Info, workspace.Issue) error {
+	return nil
+}
 func (w progressPublicationWorkspace) Existing(workspace.Issue) (workspace.Info, error) {
 	return workspace.Info{Path: w.path}, nil
 }
@@ -137,6 +145,14 @@ func TestNativeProgressExecutionPublication(t *testing.T) {
 			overlap := strings.HasSuffix(boundary, "guard")
 			f := newDispatchGuardFixture(t)
 			path := f.base + "/work-items/" + string(f.issue.WorkItemID)
+			response := performHubAPIRequest(t, f.service, http.MethodPost, path+"/changes", testHubAdminToken, tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: "progress-source"}, Title: "Retained progress source"})
+			requireNativeStatus(t, response, http.StatusOK)
+			var change tracker.ChangeRequest
+			decodeHubResponse(t, response, &change)
+			input := changeTestInput()
+			bundle := changeTestSource(t, &input)
+			response = performHubAPIRequest(t, f.service, http.MethodPost, path+"/changes/"+change.ID+"/versions", testHubAdminToken, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "progress-version"}, ChangeVersionInput: input, SourceBundle: bundle})
+			requireNativeStatus(t, response, http.StatusOK)
 			for i := range test.attempts {
 				if i > 0 {
 					f.claim(t)
@@ -312,6 +328,7 @@ func TestNativeProgressRequestReplayAndFencing(t *testing.T) {
 		released       bool
 		editedOlder    bool
 		fullContext    bool
+		legacy         bool
 		active         bool
 		success        bool
 		noProduct      bool
@@ -320,6 +337,7 @@ func TestNativeProgressRequestReplayAndFencing(t *testing.T) {
 		evidenceChange string
 	}{
 		{name: "decision comment does not create new evidence"},
+		{name: "older runner decision remains replayable", legacy: true},
 		{name: "succeeded without change is checked", success: true},
 		{name: "succeeded without work product is checked", success: true, noProduct: true},
 		{name: "succeeded with source recovery blocker is checked", success: true, blocked: true},
@@ -408,6 +426,9 @@ func TestNativeProgressRequestReplayAndFencing(t *testing.T) {
 				t.Fatal(err)
 			}
 			input := progresscheck.Publication{Mutation: tracker.Mutation{LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken}, RequestID: id, PolicyID: f.policy, Instance: string(f.lease.MachineID), Decision: progresscheck.Decision{Outcome: progresscheck.Reroute, Step: "implement", Diagnosis: f.attempt + ": the retained failure identifies missing validation evidence; the failing step has not produced its required receipt", Instruction: "Repair the missing validation evidence in the source finalization path and verify the previously failing check on the pinned source", Reason: "Produce audit evidence on the current source", Evidence: []string{f.attempt}}}
+			if test.legacy {
+				input.Decision.Diagnosis, input.Decision.Instruction, input.Decision.Convergence = "", "", ""
+			}
 			currentResponse := performHubAPIRequest(t, f.service, http.MethodGet, path, f.worker, nil)
 			requireNativeStatus(t, currentResponse, http.StatusOK)
 			var current tracker.NativeIssue
@@ -464,6 +485,21 @@ func TestNativeProgressRequestReplayAndFencing(t *testing.T) {
 			replayID, err := replay.Request.ID()
 			if err != nil || replayID != id || replay.Record == nil {
 				t.Fatalf("decision self-invalidated: id=%s want=%s record=%+v err=%v", replayID, id, replay.Record, err)
+			}
+			if test.legacy {
+				if !replay.Record.Decision.Legacy() {
+					t.Fatalf("legacy decision fields synthesized: %+v", replay.Record.Decision)
+				}
+				if err := replay.Record.Validate(replay.Request); err != nil {
+					t.Fatalf("retained legacy decision invalid: %v", err)
+				}
+				var diagnosis, instruction, convergence string
+				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT diagnosis,instruction,convergence FROM native_progress_decisions WHERE work_item_id=? AND request_id=?", f.issue.WorkItemID, id).Scan(&diagnosis, &instruction, &convergence); err != nil {
+					t.Fatal(err)
+				}
+				if diagnosis != "" || instruction != "" || convergence != "" {
+					t.Fatalf("legacy fields were not stored empty: %q %q %q", diagnosis, instruction, convergence)
+				}
 			}
 			var comments int
 			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM native_comments WHERE work_item_id=?", f.issue.WorkItemID).Scan(&comments); err != nil {

@@ -31,6 +31,8 @@ type AgentBackend struct {
 var _ runner.AgentResumeVerifier = (*AgentBackend)(nil)
 var _ runner.AgentToolBackend = (*AgentBackend)(nil)
 
+func (*AgentBackend) SupportsReadOnlyInvestigation() bool { return true }
+
 func NewAgentBackend(client *AppServer, options Options) (*AgentBackend, error) {
 	if client == nil {
 		return nil, ErrMissingAppServer
@@ -203,6 +205,9 @@ func (b *AgentBackend) runTurn(
 		ToolHandler:             toolHandler,
 		RequireSubscriptionAuth: req.RequireSubscriptionAuth,
 	}, func(update Update) error {
+		if err := req.ToolBudget.Observe(agentUpdateFromCodex(update)); err != nil {
+			return err
+		}
 		if onUpdate == nil {
 			return nil
 		}

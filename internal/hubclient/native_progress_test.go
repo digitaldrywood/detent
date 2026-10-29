@@ -28,6 +28,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
+func (*nativeProgressRerouteAgent) SupportsReadOnlyInvestigation() bool { return true }
+
 type nativeProgressBackend struct{ calls int }
 
 func (b *nativeProgressBackend) Decide(context.Context, progresscheck.Request) (progresscheck.Decision, error) {
@@ -66,6 +68,9 @@ func TestNativeRetryProgressOwnerAndSuccess(t *testing.T) {
 			var retained *progresscheck.Record
 			reads, writes := 0, 0
 			client, err := New(Config{URL: "https://hub.example.test", TokenSource: func() string { return "worker" }, HTTPClient: &http.Client{Transport: executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+				if request.URL.Path == "/api/v2/capabilities" {
+					return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"features":["progress_investigation"]}`)), Request: request}, nil
+				}
 				if request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/work-items/wi_example") {
 					return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"revision":"7"}`)), Request: request}, nil
 				}
@@ -243,6 +248,12 @@ type nativeProgressWorkspace struct {
 	path string
 }
 
+func (w nativeProgressWorkspace) Head(_ context.Context, _ workspace.Info, issue workspace.Issue) (string, error) {
+	return issue.PullRequestHeadSHA, nil
+}
+func (w nativeProgressWorkspace) VerifyReviewTree(context.Context, workspace.Info, workspace.Issue) error {
+	return nil
+}
 func (w nativeProgressWorkspace) Existing(workspace.Issue) (workspace.Info, error) {
 	return workspace.Info{Path: w.path}, nil
 }
@@ -360,6 +371,11 @@ func testNativeRetryProgressReroute(t *testing.T, reserved, tighten bool) {
 	}
 	issue = claimPlan()
 	original := h.scheduler.RunExecution(issue.ID)
+	change, err := h.admin.CreateChange(t.Context(), tracker.NativeWorkItemID(issue.ID), tracker.CreateChange{Mutation: nativeMutationKey(), Title: "Retained progress source"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.publish(t, tracker.NativeWorkItemID(issue.ID), change.ID, nativeChangeFixtureHead("b"))
 	provider := &nativeProgressRerouteAgent{attempt: failed.data.AttemptID}
 	if tighten {
 		if issue.IsolationPolicy == nil || issue.IsolationPolicy.Tier != isolation.NativeTrusted {
@@ -509,6 +525,11 @@ func TestNativeRetryProgressFailureReleasesExecutionIdentity(t *testing.T) {
 			}
 			issue = claim("Rework")
 			original := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+			change, err := h.admin.CreateChange(t.Context(), tracker.NativeWorkItemID(issue.ID), tracker.CreateChange{Mutation: nativeMutationKey(), Title: "Retained progress source"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			h.publish(t, tracker.NativeWorkItemID(issue.ID), change.ID, nativeChangeFixtureHead("b"))
 			provider := &nativeProgressRerouteAgent{err: tt.failure, attempt: failed.data.AttemptID}
 			if tt.invalid {
 				provider.decision = &progresscheck.Decision{Outcome: progresscheck.Reroute, Step: "unavailable", Diagnosis: failed.data.AttemptID + ": the retained failure identifies missing validation evidence; the failing step has not produced its required receipt", Instruction: "Repair the missing validation evidence in the source finalization path and verify the previously failing check on the pinned source", Reason: "Continue", Evidence: []string{failed.data.AttemptID}}
@@ -627,6 +648,9 @@ func TestProgressPublicationRefreshesRevisionOnce(t *testing.T) {
 			reads, writes := 0, 0
 			requestID := ""
 			client, err := New(Config{URL: "https://hub.example.test", TokenSource: func() string { return "worker" }, HTTPClient: &http.Client{Transport: executionRoundTrip(func(req *http.Request) (*http.Response, error) {
+				if req.URL.Path == "/api/v2/capabilities" {
+					return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"features":["progress_investigation"]}`)), Request: req}, nil
+				}
 				status := http.StatusOK
 				var body any
 				if req.Method == http.MethodGet {
@@ -679,6 +703,82 @@ func TestProgressPublicationRefreshesRevisionOnce(t *testing.T) {
 			_, checked, err := progresscheck.Check(t.Context(), evidence, backend, owner)
 			if (err != nil) != test.wantError || checked == test.wantError || reads != test.wantReads || writes != test.wantWrites || backend.calls != 1 {
 				t.Fatalf("checked=%v err=%v reads=%d writes=%d turns=%d", checked, err, reads, writes, backend.calls)
+			}
+		})
+	}
+}
+
+func TestProgressPublicationNegotiatesDecisionFields(t *testing.T) {
+	for _, modern := range []bool{false, true} {
+		t.Run(fmt.Sprintf("investigation capability=%t", modern), func(t *testing.T) {
+			request := progresscheck.Request{ProjectID: "prj_example", IssueID: "wi_example", PolicyID: "policy", EvidenceRevision: "revision", Instance: "machine", Attempts: []progresscheck.Attempt{{ID: "failed", Outcome: "failed"}}, AvailableSteps: []string{"implement"}}
+			id, err := request.ID()
+			if err != nil {
+				t.Fatal(err)
+			}
+			capabilityReads, writes := 0, 0
+			client, err := New(Config{URL: "https://hub.example.test", TokenSource: func() string { return "worker" }, HTTPClient: &http.Client{Transport: executionRoundTrip(func(req *http.Request) (*http.Response, error) {
+				var body any
+				switch {
+				case req.URL.Path == "/api/v2/capabilities":
+					capabilityReads++
+					features := []string{"native_issues", "scoped_collaboration", "repository_policy"}
+					if modern {
+						features = append(features, progresscheck.InvestigationCapability)
+					}
+					body = nativeCapabilities{ProtocolMajors: []int{2}, EventSchemas: []int{1}, Features: features}
+				case req.Method == http.MethodGet && strings.HasSuffix(req.URL.Path, "/prj_example"):
+					body = tracker.NativeProject{Profile: "native"}
+				case req.Method == http.MethodGet:
+					body = tracker.NativeIssue{NativeReference: tracker.NativeReference{Revision: 7}}
+				default:
+					writes++
+					var input progresscheck.Publication
+					decoder := json.NewDecoder(req.Body)
+					if err := decoder.Decode(&input); err != nil {
+						t.Fatal(err)
+					}
+					if input.Decision.Legacy() == modern {
+						t.Fatalf("incorrect negotiated shape: %+v", input.Decision)
+					}
+					if !modern {
+						encoded, err := json.Marshal(input.Decision)
+						if err != nil {
+							t.Fatal(err)
+						}
+						var fields map[string]json.RawMessage
+						if err := json.Unmarshal(encoded, &fields); err != nil {
+							t.Fatal(err)
+						}
+						for _, name := range []string{"diagnosis", "instruction", "convergence"} {
+							if _, found := fields[name]; found {
+								t.Fatalf("legacy Hub received new field %s", name)
+							}
+						}
+					}
+					body = progresscheck.Record{RequestID: id, ProjectID: request.ProjectID, IssueID: request.IssueID, EvidenceRevision: request.EvidenceRevision, Decision: input.Decision, CommentID: "comment"}
+				}
+				encoded, err := json.Marshal(body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(encoded))), Request: req}, nil
+			})}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			native, err := client.Native("org_example", "prj_example")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := native.Negotiate(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			owner := &progressOwner{client: native, request: request, lease: tracker.NativeLease{WorkItemID: "wi_example", ID: "lease", FencingToken: 7}}
+			decision := progresscheck.Decision{Outcome: progresscheck.Reroute, Step: "implement", Reason: "Repair the assertion", Diagnosis: "failed: assertion differs", Instruction: "Repair assertion", Evidence: []string{"failed"}}
+			record, err := owner.Publish(t.Context(), progresscheck.Record{RequestID: id, Decision: decision})
+			if err != nil || record.Validate(request) != nil || capabilityReads != 1 || writes != 1 {
+				t.Fatalf("publication err=%v capability reads=%d writes=%d record=%+v", err, capabilityReads, writes, record)
 			}
 		})
 	}

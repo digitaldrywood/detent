@@ -12,12 +12,14 @@ import (
 )
 
 const (
-	MaxDuration    = 3 * time.Minute
-	MaxAttempts    = 12
-	MaxReceipts    = 24
-	MaxComments    = 24
-	MaxInputBytes  = 64 << 10
-	MaxOutputBytes = 8 << 10
+	MaxToolCalls       = 32
+	MaxToolResultBytes = 256 << 10
+	MaxDuration        = 3 * time.Minute
+	MaxAttempts        = 12
+	MaxReceipts        = 24
+	MaxComments        = 24
+	MaxInputBytes      = 64 << 10
+	MaxOutputBytes     = 8 << 10
 )
 
 var ErrBackend = errors.New("progress check backend failed")
@@ -213,7 +215,7 @@ func validateRecord(request Request, id string, record Record) error {
 	if record.CommentID == "" || record.Decision.Outcome == SystemDefect && record.DefectIssueID == "" {
 		return errors.New("progress decision publication receipts missing")
 	}
-	return validateDecision(request, record.Decision)
+	return validateDecisionVersion(request, record.Decision, record.Decision.Legacy())
 }
 
 func encodeRequest(request Request) ([]byte, error) {
@@ -258,7 +260,15 @@ func encodeRequest(request Request) ([]byte, error) {
 	return encoded, nil
 }
 
+func (decision Decision) Legacy() bool {
+	return decision.Diagnosis == "" && decision.Instruction == "" && decision.Convergence == ""
+}
+
 func validateDecision(request Request, decision Decision) error {
+	return validateDecisionVersion(request, decision, false)
+}
+
+func validateDecisionVersion(request Request, decision Decision, legacy bool) error {
 	encoded, err := json.Marshal(decision)
 	if err != nil || len(encoded) > MaxOutputBytes || strings.TrimSpace(decision.Reason) == "" || len(decision.Evidence) == 0 || len(decision.Evidence) > MaxReceipts {
 		return errors.New("progress decision requires bounded reasoning and evidence")
@@ -278,14 +288,14 @@ func validateDecision(request Request, decision Decision) error {
 			return errors.New("progress decision cites unavailable evidence")
 		}
 	}
-	if strings.TrimSpace(decision.Diagnosis) == "" {
+	if !legacy && strings.TrimSpace(decision.Diagnosis) == "" {
 		return errors.New("progress decision requires a diagnosis of the failure and its cause")
 	}
 	cited := false
 	for _, id := range decision.Evidence {
 		cited = cited || strings.Contains(decision.Diagnosis, id)
 	}
-	if !cited {
+	if !legacy && !cited {
 		return errors.New("progress diagnosis must cite its evidence")
 	}
 	if decision.Outcome != SystemDefect && (decision.DefectKey != "" || decision.DefectTitle != "" || decision.DefectBody != "") {
@@ -293,11 +303,11 @@ func validateDecision(request Request, decision Decision) error {
 	}
 	switch decision.Outcome {
 	case Progressing:
-		if strings.TrimSpace(decision.Convergence) == "" {
+		if !legacy && strings.TrimSpace(decision.Convergence) == "" {
 			return errors.New("progressing decision requires evidence of convergence")
 		}
 	case Reroute:
-		if strings.TrimSpace(decision.Instruction) == "" {
+		if !legacy && strings.TrimSpace(decision.Instruction) == "" {
 			return errors.New("reroute decision requires an actionable instruction")
 		}
 		for _, step := range request.AvailableSteps {

@@ -71,6 +71,16 @@ Every change gets independent review and a per-change security audit bound to it
 - Do not demand documentation-text tests or a visual attachment for a documentary criterion.
 - Rework cannot recover evidence that was never retained. Do not report in_progress or blocked only because a review asks to diagnose a historical failure whose output is truncated or gone: when worker-owned checks pass, report complete, name the receipt and the missing evidence, and let the next independent review assess it.
 
+## Progress Review
+
+Investigate why repeated attempts are not converging using the pinned source and retained attempt, review, validation and finalization evidence. Read the failing package, test and assertion and the implementation they exercise. Inspect source history and diffs when available through read-only tools. Diagnose the cause before choosing the next available step; cite supplied evidence IDs and inspected paths. Missing or truncated diagnostics require a concrete action to recover the diagnostic, never an invented cause.
+
+A changed head or base, a rebase, different error text, attempt counts, new receipts or unrelated passing checks alone do not establish convergence. Use progressing only when substantive evidence explains how the failing behavior or assertion is being resolved. For reroute, give the implementer a specific repair or evidence-recovery instruction and the check that verifies it. The implementation prompt receives the diagnosis and instruction.
+
+For finalization gate failures, read the failing package and test. A demonstrated defect in base code independent of the change, or broken Detent gate or validator tooling, uses system_defect with a stable key and reproduction evidence identifying the base and source. Repetition alone does not prove a base defect. Keep instance failures attributed to the instance.
+
+Contradictory or unverifiable acceptance criteria use the existing Issue Contract correction path: reroute to implement with the corrected pre-merge criterion and its evidence, without granting extra tracker writes. A genuine unresolved human decision uses the existing typed human_action path through implementation. The merge step runs the existing landing pipeline, including review, validation and security audit. Never bypass gates or propose attempt limits, parks, brakes or spending caps.
+
 ## Evidence Policy
 
 `detent.yaml` sets `gate.validator.unverified_criteria: rework` for every path.

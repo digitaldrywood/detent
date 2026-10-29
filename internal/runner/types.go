@@ -398,6 +398,7 @@ type AgentTurnRequest struct {
 	ReadOnly                bool
 	TextOnly                bool
 	IsolatedTools           bool
+	ToolBudget              *AgentToolBudget
 	RequireSubscriptionAuth bool
 	Model                   string
 	ModelProvider           string

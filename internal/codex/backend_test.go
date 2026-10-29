@@ -498,6 +498,13 @@ func TestAgentBackendTextOnlyTurn(t *testing.T) {
 				responseMessage(t, 3, `{"turn":{"id":"turn-1"}}`),
 				notificationMessage(t, "turn/completed", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}`),
 			})
+			if test.investigation && !test.fail {
+				transport.received = append(transport.received[:len(transport.received)-1],
+					serverRequestMessage(t, 90, "item/commandExecution/requestApproval", `{"command":"printf changed > source.txt"}`),
+					serverRequestMessage(t, 91, "item/fileChange/requestApproval", `{"changes":{"source.txt":"changed"}}`),
+					serverRequestMessage(t, 92, "item/permissions/requestApproval", `{"permissions":{"network":{"enabled":true},"fileSystem":{"write":["/scratch"]}}}`),
+					notificationMessage(t, "turn/completed", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}`))
+			}
 			server, err := NewAppServer(&workerTempCapturingTransportFactory{transport: transport}, WithReadTimeout(time.Second), WithTurnTimeout(time.Second))
 			if err != nil {
 				t.Fatal(err)
@@ -539,7 +546,7 @@ func TestAgentBackendTextOnlyTurn(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, key := range []string{"features.shell_tool", "features.unified_exec", "features.view_image", "features.apps", "features.plugins", "features.browser_use", "features.computer_use", "features.code_mode", "features.code_mode_host", "features.multi_agent", "features.hooks"} {
-				want := test.investigation && (key == "features.shell_tool" || key == "features.unified_exec" || key == "features.view_image")
+				want := test.investigation && (key == "features.shell_tool" || key == "features.unified_exec")
 				if value, ok := params.Config[key]; !ok || value != want {
 					t.Fatalf("tool remains available: %s=%v", key, value)
 				}
@@ -559,6 +566,20 @@ func TestAgentBackendTextOnlyTurn(t *testing.T) {
 			}
 			assertJSONContains(t, sent[4].Params, "permissions", profile)
 			assertJSONContains(t, sent[4].Params, "approvalPolicy", "never")
+			if test.investigation {
+				for _, response := range sent[5:] {
+					if string(response.ID) == "90" || string(response.ID) == "91" {
+						assertJSONContains(t, response.Result, "decision", "decline")
+					}
+					if string(response.ID) == "92" {
+						assertJSONContains(t, response.Result, "permissions", map[string]any{})
+					}
+				}
+				if len(sent) != 8 {
+					t.Fatalf("write/network approval attempts not answered: %d", len(sent))
+				}
+			}
+
 		})
 	}
 }
@@ -728,4 +749,49 @@ func (t *quietCommandTransport) Receive(ctx context.Context) (Message, error) {
 		}
 	}
 	return t.fakeAppServerTransport.Receive(ctx)
+}
+
+func TestInvestigationExhaustsToolBudgetWithinOneTurn(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		calls, bytes int
+		events       []Message
+	}{
+		{"calls", 1, 1000, []Message{
+			notificationMessage(t, "item/started", `{"threadId":"thread-1","turnId":"turn-1","item":{"id":"read-1","type":"commandExecution","command":"cat source.go"}}`),
+			notificationMessage(t, "item/started", `{"threadId":"thread-1","turnId":"turn-1","item":{"id":"read-2","type":"commandExecution","command":"cat test.go"}}`),
+		}},
+		{"aggregate result bytes", 10, 7, []Message{
+			notificationMessage(t, "item/commandExecution/outputDelta", `{"threadId":"thread-1","turnId":"turn-1","itemId":"read-1","delta":"four"}`),
+			notificationMessage(t, "item/commandExecution/outputDelta", `{"threadId":"thread-1","turnId":"turn-1","itemId":"read-2","delta":"four"}`),
+		}},
+		{"completed item bytes", 10, 7, []Message{
+			notificationMessage(t, "item/completed", `{"threadId":"thread-1","turnId":"turn-1","item":{"id":"read-1","type":"commandExecution","aggregatedOutput":"four","status":"completed"}}`),
+			notificationMessage(t, "item/completed", `{"threadId":"thread-1","turnId":"turn-1","item":{"id":"read-2","type":"commandExecution","aggregatedOutput":"four","status":"completed"}}`),
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			messages := []Message{responseMessage(t, 1, `{"userAgent":"codex-cli/0.157.0"}`), responseMessage(t, 5, `{"config":{}}`), responseMessage(t, 2, `{"thread":{"id":"thread-1"}}`), responseMessage(t, 3, `{"turn":{"id":"turn-1"}}`)}
+			messages = append(messages, test.events...)
+			messages = append(messages, notificationMessage(t, "turn/completed", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}`))
+			transport := newFakeAppServerTransport(messages)
+			server, err := NewAppServer(&workerTempCapturingTransportFactory{transport: transport}, WithReadTimeout(time.Second), WithTurnTimeout(time.Second))
+			if err != nil {
+				t.Fatal(err)
+			}
+			backend, err := NewAgentBackend(server, Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancelCause(t.Context())
+			defer cancel(nil)
+			_, err = backend.RunTurn(ctx, runner.AgentTurnRequest{Workspace: "/scratch", ReadOnly: true, IsolatedTools: true, MaxTurns: 8, ToolBudget: runner.NewAgentToolBudget(test.calls, test.bytes, cancel)}, nil)
+			if !errors.Is(err, runner.ErrInvestigationBudget) || !errors.Is(context.Cause(ctx), runner.ErrInvestigationBudget) {
+				t.Fatalf("single turn escaped budget: err=%v cause=%v", err, context.Cause(ctx))
+			}
+			if len(transport.received) == 0 {
+				t.Fatal("consumed successful completion after exhaustion")
+			}
+		})
+	}
 }
