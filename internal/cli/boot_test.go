@@ -27,6 +27,7 @@ import (
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
 	githubconnector "github.com/digitaldrywood/detent/internal/connector/github"
+	"github.com/digitaldrywood/detent/internal/gotestreceipt"
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/instancelock"
 	projectpkg "github.com/digitaldrywood/detent/internal/project"
@@ -175,6 +176,9 @@ func TestStartRunningPublishesEnrolledUpdateSupport(t *testing.T) {
 }
 
 func TestMain(m *testing.M) {
+	if gotestreceipt.IsWrapperInvocation(os.Args[0]) {
+		os.Exit(gotestreceipt.RunWrapper(os.Args[1:], os.Getenv, os.Stdin, os.Stdout, os.Stderr))
+	}
 	if strings.TrimSuffix(filepath.Base(os.Args[0]), ".exe") == "gh" && os.Getenv("DETENT_SSH_TEST_HELPER") != "" {
 		sshGitHubCLIHelper()
 	}

@@ -94,7 +94,7 @@ def admit(repository, current_run, now):
             workflow = run["path"].split("@", 1)[0].rsplit("/", 1)[-1]
             if str(run["id"]) == current_run or run["status"] not in ACTIVE:
                 continue
-            if workflow in ("release-cut.yml", "release.yml") or (workflow == "ci.yml" and re.fullmatch(r"release/v\d+\.\d+", run["head_branch"] or "")):
+            if workflow in ("release-cut.yml", "release.yml") or (workflow == "release-finalize.yml" and re.fullmatch(r"release/v\d+\.\d+", run["head_branch"] or "")):
                 print(f"Release admission: no-op; active {workflow} ({run['status']}): {reference(run)}")
                 return False
     runs = api(repository, "actions/workflows/release.yml/runs?status=success&per_page=100", "workflow_runs")
