@@ -79,6 +79,7 @@ func TestAppShellServing(t *testing.T) {
 		{name: "organization members", account: "owner", path: "/organization/members", status: http.StatusOK, shell: true},
 		{name: "settings", account: "owner", path: "/settings/integration", status: http.StatusOK, shell: true},
 		{name: "activity", account: "owner", path: "/activity", status: http.StatusOK, shell: true},
+		{name: "thread", account: "owner", path: "/threads/th_any", status: http.StatusOK, shell: true},
 		{name: "fleet", account: "owner", path: "/fleet", status: http.StatusOK, shell: true},
 		{name: "diagnostics", account: "viewer", path: "/diagnostics", status: http.StatusOK, shell: true},
 		{name: "chat", account: "owner", path: "/chat", status: http.StatusOK, shell: true},
