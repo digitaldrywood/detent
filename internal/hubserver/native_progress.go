@@ -207,6 +207,10 @@ func (o nativeProgressOwner) Publish(ctx context.Context, record progresscheck.R
 }
 
 func expireNativeProgressDependencies(ctx context.Context, tx *sql.Tx, scope nativeScope, item, eventType string, data tracker.CollaborationData) error {
+	if eventType == "run.finished" {
+		_, err := tx.ExecContext(ctx, `UPDATE issues SET progress_evidence_revision=progress_evidence_revision+1 WHERE organization_id=? AND project_id=? AND native_id=?`, scope.organization, scope.project, item)
+		return err
+	}
 	if eventType != "issue.edited" && eventType != "comment.created" && eventType != "comment.edited" && eventType != "run.checkpointed" && !strings.HasPrefix(eventType, "change.") {
 		return nil
 	}
