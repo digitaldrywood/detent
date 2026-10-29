@@ -27,7 +27,7 @@ func readQualityLanding(ctx context.Context, q nativeQueryer, change tracker.Cha
 		return nil, err
 	}
 	var landing tracker.ChangeLanding
-	err = decodeStorageJSON(ctx, []byte(raw), &landing)
+	err = decodeChangeColumnsJSON(ctx, []byte(raw), &landing)
 	return &landing, err
 }
 
@@ -65,9 +65,9 @@ func readLandingQualitySnapshot(ctx context.Context, q nativeQueryer, scope nati
 	return snapshot, rows.Err()
 }
 
-func validateQualityEscape(ctx context.Context, tx *sql.Tx, scope nativeScope, change tracker.ChangeRequest, request tracker.DiscussChange, now time.Time) error {
+func validateQualityEscape(ctx context.Context, q nativeQueryer, scope nativeScope, change tracker.ChangeRequest, request tracker.DiscussChange, now time.Time, prepared *preparedQualityEscape) error {
 	escape := request.Escape
-	landing, err := readQualityLanding(ctx, tx, change, request.VersionID)
+	landing, err := readQualityLanding(ctx, q, change, request.VersionID)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
@@ -89,12 +89,12 @@ func validateQualityEscape(ctx context.Context, tx *sql.Tx, scope nativeScope, c
 		return nativePublicInvalid("Revert occurrence must identify the revert commit and quote its reference to the landed commit")
 	}
 	if escape.Kind == "scheduled_failure" {
-		if err := validateScheduledEscape(ctx, tx, scope, *escape); err != nil {
+		if err := validateScheduledEscape(ctx, q, scope, *escape, prepared); err != nil {
 			return err
 		}
 	}
 	if escape.Kind == "reopened" {
-		valid, err := qualityReopenOccurrence(ctx, tx, scope, string(change.WorkItemID), *escape)
+		valid, err := qualityReopenOccurrence(ctx, q, scope, string(change.WorkItemID), *escape)
 		if err != nil {
 			return err
 		}
@@ -102,16 +102,19 @@ func validateQualityEscape(ctx context.Context, tx *sql.Tx, scope nativeScope, c
 			return nativePublicInvalid("Reopen occurrence must reference its recorded Done transition")
 		}
 	}
-	previous, err := readEscapeOccurrence(ctx, tx, change.ID, landing.VersionID, escape.OccurrenceID)
+	previous, err := readEscapeOccurrence(ctx, q, change.ID, landing.VersionID, escape.OccurrenceID)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
 	if err == nil {
 		var discussion tracker.ChangeDiscussion
-		if err := decodeStorageJSON(ctx, []byte(previous), &discussion); err != nil {
+		if err := decodeChangeColumnsJSON(ctx, []byte(previous), &discussion); err != nil {
 			return err
 		}
 		prior := discussion.Escape
+		if prior == nil {
+			return nativePublicInvalid("Escape occurrence assessment is unavailable")
+		}
 		if prior.Kind != escape.Kind || !prior.ObservedAt.Equal(escape.ObservedAt) || prior.EvidenceReference != escape.EvidenceReference {
 			return nativePublicInvalid("Escape occurrence identity cannot change")
 		}
@@ -151,16 +154,17 @@ func validateQualityBasis(snapshot *tracker.LandingQualitySnapshot, escape track
 	return nil
 }
 
-func validateScheduledEscape(ctx context.Context, q nativeQueryer, scope nativeScope, escape tracker.QualityEscape) error {
-	rows, err := q.QueryContext(ctx, `SELECT body FROM issues WHERE organization_id=? AND project_id=? AND instr(body,'detent-checks')>0 AND instr(body,?)>0
-UNION ALL SELECT body FROM native_comments WHERE organization_id=? AND project_id=? AND instr(body,'detent-checks')>0 AND instr(body,?)>0 LIMIT ?`, scope.organization, scope.project, escape.EvidenceReference, scope.organization, scope.project, escape.EvidenceReference, maxAnalyticsPopulation+1)
+func validateScheduledEscape(ctx context.Context, q nativeQueryer, scope nativeScope, escape tracker.QualityEscape, prepared *preparedQualityEscape) error {
+	rows, err := q.QueryContext(ctx, `SELECT id,body,0 FROM issues WHERE organization_id=? AND project_id=? AND instr(body,'detent-checks')>0 AND instr(body,?)>0
+UNION ALL SELECT id,body,1 FROM native_comments WHERE organization_id=? AND project_id=? AND instr(body,'detent-checks')>0 AND instr(body,?)>0 LIMIT ?`, scope.organization, scope.project, escape.EvidenceReference, scope.organization, scope.project, escape.EvidenceReference, maxAnalyticsPopulation+1)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var body string
-		if err := rows.Scan(&body); err != nil {
+		var id, body string
+		var comment bool
+		if err := rows.Scan(&id, &body, &comment); err != nil {
 			return err
 		}
 		origin, ok := issueorigin.Parse(body)
@@ -169,6 +173,7 @@ UNION ALL SELECT body FROM native_comments WHERE organization_id=? AND project_i
 		}
 		for _, scheduled := range gate.ParseScheduledEvidence(body) {
 			if scheduled.OccurrenceKey == escape.OccurrenceID && scheduled.RunURL == escape.EvidenceReference && scheduledRepairOriginMatches(origin.Source, scheduled) && scheduled.Conclusion == "failure" {
+				prepared.scheduled = &preparedScheduledEscape{id: id, body: body, comment: comment}
 				return nil
 			}
 		}
@@ -177,4 +182,54 @@ UNION ALL SELECT body FROM native_comments WHERE organization_id=? AND project_i
 		return err
 	}
 	return nativePublicInvalid("Scheduled escape must quote an existing red scheduled-suite occurrence; candidate commits alone do not establish attribution")
+}
+
+type preparedQualityEscape struct {
+	version, occurrence string
+	snapshot            qualityEscapeSnapshot
+	scheduled           *preparedScheduledEscape
+}
+
+type preparedScheduledEscape struct {
+	id, body string
+	comment  bool
+}
+
+type qualityEscapeSnapshot struct {
+	version, landing, event, from, to, at string
+}
+
+func readQualityEscapeSnapshot(ctx context.Context, q nativeQueryer, scope nativeScope, change string, prepared *preparedQualityEscape) (qualityEscapeSnapshot, error) {
+	var snapshot qualityEscapeSnapshot
+	err := q.QueryRowContext(ctx, `SELECT v.record_json,COALESCE(l.record_json,''),COALESCE(e.data_json,''),COALESCE(e.from_state,''),COALESCE(e.to_state,''),COALESCE(e.recorded_at,'')
+FROM change_versions v LEFT JOIN quality_landings l ON l.version_id=v.id
+LEFT JOIN collaboration_events e ON e.organization_id=? AND e.project_id=? AND e.work_item_id=(SELECT work_item_id FROM change_requests WHERE id=v.change_id) AND e.id=? AND e.type='workflow.transitioned'
+WHERE v.change_id=? AND v.id=?`, scope.organization, scope.project, prepared.occurrence, change, prepared.version).Scan(&snapshot.version, &snapshot.landing, &snapshot.event, &snapshot.from, &snapshot.to, &snapshot.at)
+	return snapshot, err
+}
+
+func recheckQualityEscape(ctx context.Context, q nativeQueryer, scope nativeScope, prepared *changeMutationPreparation) error {
+	quality := prepared.quality
+	current, err := readQualityEscapeSnapshot(ctx, q, scope, prepared.change.ID, quality)
+	if err != nil {
+		return err
+	}
+	if current != quality.snapshot {
+		return nativeConflict(prepared.change.Revision)
+	}
+	if witness := quality.scheduled; witness != nil {
+		statement := `SELECT body FROM issues WHERE organization_id=? AND project_id=? AND id=?`
+		if witness.comment {
+			statement = `SELECT body FROM native_comments WHERE organization_id=? AND project_id=? AND id=?`
+		}
+		var body string
+		err := q.QueryRowContext(ctx, statement, scope.organization, scope.project, witness.id).Scan(&body)
+		if errors.Is(err, sql.ErrNoRows) || err == nil && body != witness.body {
+			return nativeConflict(prepared.change.Revision)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }

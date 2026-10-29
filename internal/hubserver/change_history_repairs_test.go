@@ -668,3 +668,52 @@ func TestChangeAttemptBackfillKeepsCurrentCheckpoint(t *testing.T) {
 		}
 	}
 }
+
+func TestLegacyClaimReviewsRetainGateAuthority(t *testing.T) {
+	t.Parallel()
+	f := newChangeFixture(t, nil)
+	version := f.publish(t, "initial", "")
+	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	reviews := []tracker.ChangeReview{
+		{ID: "human-approval", Actor: tracker.Actor{PrincipalID: "first-reviewer"}, Decision: "approved"},
+		{ID: "old-implementation", ImplementationReview: &gate.ValidatorResult{Verdict: "pass"}, Decision: "approved"},
+		{ID: "old-validator", Validator: &gate.ValidatorResult{Verdict: "pass"}, Decision: "approved"},
+		{ID: "source-rejection", SecurityAudit: &tracker.SecurityAuditReview{}, Decision: "changes_requested"},
+		{ID: "landing-rejection", SecurityAudit: &tracker.SecurityAuditReview{Landing: true}, Decision: "changes_requested"},
+	}
+	for i := range claimEvidenceLimit + 1 {
+		reviews = append(reviews, tracker.ChangeReview{ID: fmt.Sprintf("comment-%d", i), Actor: tracker.Actor{PrincipalID: "first-reviewer"}, Decision: "commented"})
+	}
+	reviews = append(reviews,
+		tracker.ChangeReview{ID: "human-refusal", Actor: tracker.Actor{PrincipalID: "second-reviewer"}, Decision: "changes_requested"},
+		tracker.ChangeReview{ID: "implementation", ImplementationReview: &gate.ValidatorResult{Verdict: "fail"}, Decision: "changes_requested"},
+		tracker.ChangeReview{ID: "validator", Validator: &gate.ValidatorResult{Verdict: "pass"}, Decision: "approved"},
+		tracker.ChangeReview{ID: "source-approval", SecurityAudit: &tracker.SecurityAuditReview{}, Decision: "approved"},
+		tracker.ChangeReview{ID: "landing-approval", SecurityAudit: &tracker.SecurityAuditReview{Landing: true}, Decision: "approved"},
+	)
+	for _, review := range reviews {
+		review.VersionID = version.ID
+		if err := insertChangeEvidence(t.Context(), tx, f.change.ID, version.ID, "review", "", review); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	selected, err := readClaimReviews(t.Context(), f.service.database.reader, f.change.ID, version.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]string, 0, len(selected))
+	for _, review := range selected {
+		ids = append(ids, review.ID)
+	}
+	want := []string{"human-approval", "source-rejection", "landing-rejection", "human-refusal", "implementation", "validator", "source-approval", "landing-approval"}
+	if !slices.Equal(ids, want) {
+		t.Fatalf("review selection lost gate authority: got %v want %v", ids, want)
+	}
+}

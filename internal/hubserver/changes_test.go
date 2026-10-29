@@ -814,6 +814,7 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 		{"wrong policy", false}, {"wrong pinned policy", false}, {"wrong attempt policy", false}, {"unrecorded sequence", false},
 		{"wrong change", false}, {"wrong version", false}, {"wrong reference head", false}, {"wrong checkpoint head", false},
 		{"latest malformed recorder", false}, {"legacy confirmed", true}, {"legacy wrong recorder", false},
+		{"legacy overflow confirmed", true}, {"legacy overflow wrong recorder", false}, {"legacy overflow newer invalid", false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
@@ -848,10 +849,10 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 				eventScope.project, eventItem = foreignProject.project.ID, foreignProjectItem.WorkItemID
 			case "foreign work item":
 				eventItem = foreignItem.WorkItemID
-			case "latest malformed recorder":
+			case "legacy overflow newer invalid", "latest malformed recorder":
 				appendCheckpoint()
 				fallthrough
-			case "wrong recorder", "legacy wrong recorder":
+			case "wrong recorder", "legacy wrong recorder", "legacy overflow wrong recorder":
 				run.AttemptID = newNativeID("attempt")
 			case "wrong run":
 				run.RunID = newNativeID("run")
@@ -881,6 +882,12 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 				handoff.HeadSHA = strings.Repeat("e", 40)
 			}
 			appendCheckpoint()
+			if strings.HasPrefix(test.name, "legacy overflow") {
+				run.Handoff = nil
+				for range claimEvidenceLimit + 1 {
+					appendCheckpoint()
+				}
+			}
 			if strings.HasPrefix(test.name, "legacy ") {
 				if _, err := tx.ExecContext(t.Context(), `UPDATE collaboration_events SET claim_attempt_id=NULL WHERE organization_id=? AND project_id=? AND work_item_id=? AND type='run.checkpointed'`, scope.organization, scope.project, f.issue.WorkItemID); err != nil {
 					t.Fatal(err)

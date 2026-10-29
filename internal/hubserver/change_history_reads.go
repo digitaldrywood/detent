@@ -89,3 +89,19 @@ func (r *changeLegacyRows) Scan(dest ...any) error {
 }
 func (r *changeLegacyRows) Err() error   { return r.err }
 func (r *changeLegacyRows) Close() error { r.closed = true; return r.rows.Close() }
+
+func readChangeLegacyPage[T any](ctx context.Context, query nativeQueryer, statement string, scan func(*sql.Rows) (T, error), args ...any) (records []T, err error) {
+	rows, err := query.QueryContext(ctx, statement, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { err = errors.Join(err, rows.Close()) }()
+	for rows.Next() {
+		value, err := scan(rows)
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, value)
+	}
+	return records, rows.Err()
+}

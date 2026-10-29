@@ -247,20 +247,25 @@ func (s *Service) reviewChangeCommand(ctx context.Context, tx *sql.Tx, scope nat
 }
 
 func (s *Service) discussChangeCommand(ctx context.Context, tx *sql.Tx, scope nativeScope, item, changeID string, request tracker.DiscussChange, now time.Time) (any, error) {
-	change, err := readChange(ctx, tx, scope, item, changeID)
-	if err != nil {
-		return nil, err
+	var change tracker.ChangeRequest
+	prepared := preparedChangeMutation(ctx)
+	if request.Escape != nil {
+		if prepared == nil || prepared.quality == nil {
+			return nil, nativePublicInvalid("Quality escape preparation is required")
+		}
+		change = prepared.change
+	} else {
+		var err error
+		change, err = readChange(ctx, tx, scope, item, changeID)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if strings.TrimSpace(request.Body) == "" || len(request.Body) > 64<<10 {
 		return nil, nativePublicInvalid("Discussion requires 1 byte to 64 KiB")
 	}
-	if request.VersionID != "" {
+	if request.VersionID != "" && request.Escape == nil {
 		if _, err := readChangeVersion(ctx, tx, change.ID, request.VersionID); err != nil {
-			return nil, err
-		}
-	}
-	if request.Escape != nil {
-		if err := validateQualityEscape(ctx, tx, scope, change, request, now); err != nil {
 			return nil, err
 		}
 	}

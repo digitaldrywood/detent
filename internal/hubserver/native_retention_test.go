@@ -61,8 +61,9 @@ func TestNativeRetention(t *testing.T) {
 		if err := tx.Commit(); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := readClaimReviews(t.Context(), db.reader, f.change.ID, first.ID); !errors.Is(err, errClaimHintStale) {
-			t.Fatalf("unknown evidence authorized truncated history: %v", err)
+		reviewsBefore, err := readClaimReviews(t.Context(), db.reader, f.change.ID, first.ID)
+		if err != nil || len(reviewsBefore) != 2 || reviewsBefore[0].Decision != "approved" || reviewsBefore[1].Decision != "changes_requested" {
+			t.Fatalf("legacy reviews lost current authority: %+v %v", reviewsBefore, err)
 		}
 		beforeSchema := storageSchemaVersion(t, db.reader)
 		for range (claimEvidenceLimit+1)/storageConversionRows + 2 {
@@ -96,8 +97,11 @@ func TestNativeRetention(t *testing.T) {
 			if err := tx.Commit(); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := readClaimReviews(t.Context(), db.reader, f.change.ID, first.ID); !errors.Is(err, errClaimHintStale) {
-				t.Fatalf("new unknown review reused old projection: %v", err)
+			reviews, err := readClaimReviews(t.Context(), db.reader, f.change.ID, first.ID)
+			if err != nil || !slices.ContainsFunc(reviews, func(review tracker.ChangeReview) bool {
+				return review.Actor.PrincipalID == update.actor && review.Decision == update.decision
+			}) {
+				t.Fatalf("new unknown review lost authority: %+v %v", reviews, err)
 			}
 			if err := db.populateClaimFacts(t.Context()); err != nil {
 				t.Fatal(err)
