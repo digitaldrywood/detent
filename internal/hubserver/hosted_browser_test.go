@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/billing"
+	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/genkitbackend"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -791,12 +792,14 @@ func (f *browserHostedFixture) seedConversation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+	now := f.service.config.now()
+	ctx := prepareTestConversationRecord(t, store, conversationRecord{OrganizationID: owner.OrganizationID, Execution: conversation.Execution{Status: conversation.ExecutionWaitingForRunner, UpdatedAt: now}})
+	tx, err := f.service.database.db.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = tx.Rollback() })
-	worker, err := f.service.conversations.ensureWorkerConversation(t.Context(), tx, nativeScope{organization: owner.OrganizationID, project: owner.ProjectID, credential: apiCredential{ID: owner.OwnerPrincipalID}}, string(issue.WorkItemID), f.service.config.now())
+	worker, err := f.service.conversations.ensureWorkerConversation(ctx, tx, nativeScope{organization: owner.OrganizationID, project: owner.ProjectID, credential: apiCredential{ID: owner.OwnerPrincipalID}}, string(issue.WorkItemID), now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -861,7 +864,7 @@ func (f *browserHostedFixture) sessionRefreshHandler(t *testing.T, next http.Han
 }
 
 func TestHostedBrowserPreviewSeed(t *testing.T) {
-	t.Parallel()
+	t.Setenv("DETENT_HOSTED_BROWSER_CHAT_ORIGIN", "1")
 	f := newBrowserHostedOrganizationFixture(t, true, "org_browser_preview", browserPreviewConfig)
 
 	f.seedPreview(t)
@@ -884,6 +887,7 @@ func TestHostedBrowserPreviewSeed(t *testing.T) {
 		{name: "owner lists project conversations", account: "owner", path: base + "/conversations", status: http.StatusOK, contains: f.conversation},
 		{name: "viewer reads the shared transcript", account: "viewer", path: base + "/conversations/" + f.conversation, status: http.StatusOK, contains: "Why does the lease lapse under load?"},
 		{name: "viewer lists the shared conversation", account: "viewer", path: base + "/conversations", status: http.StatusOK, contains: f.conversation},
+		{name: "owner reads the worker conversation", account: "owner", path: base + "/conversations/" + f.workerChat, status: http.StatusOK, contains: f.workerItem},
 		{name: "viewer reads the linked work item", account: "viewer", path: base + "/work-items/" + f.workItem, status: http.StatusOK, contains: "Renew the lease"},
 		{name: "owner reads runner updates", account: "owner", path: "/app/updates", status: http.StatusOK, contains: `"runners":[]`},
 	}
