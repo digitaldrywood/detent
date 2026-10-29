@@ -357,10 +357,16 @@ func TestNativeChangeSourceRecoversOnlyVerifiedOwner(t *testing.T) {
 		foreignChange, dirty, unpublished, unknown bool
 		available, retained, activePublication     bool
 		uncertain                                  bool
+		currentCheckpoint, cleanCheckpoint         bool
 	}{
 		{name: "owner recaptures missing artifact", status: http.StatusInternalServerError},
 		{name: "transferred version retains exact selection during recapture", status: http.StatusInternalServerError, transferred: true},
 		{name: "stale transfer advances to current published source", transferred: true, staleTransfer: true, available: true},
+		{name: "stale transfer with current unpushed checkpoint advances", transferred: true, staleTransfer: true, currentCheckpoint: true, available: true},
+		{name: "stale transfer with current clean checkpoint advances", transferred: true, staleTransfer: true, currentCheckpoint: true, cleanCheckpoint: true, available: true},
+		{name: "current dirty checkpoint refuses substitution", transferred: true, staleTransfer: true, currentCheckpoint: true, dirty: true, available: true, wantError: true},
+		{name: "current uncertain checkpoint refuses substitution", transferred: true, staleTransfer: true, currentCheckpoint: true, uncertain: true, available: true, wantError: true},
+		{name: "current checkpoint cannot accept corrupt current bundle", transferred: true, staleTransfer: true, currentCheckpoint: true, missingCapture: true, wantError: true},
 		{name: "recovered source advances without transfer selection", staleTransfer: true, recovered: true, available: true},
 		{name: "recovered transfer advances to current published source", transferred: true, staleTransfer: true, recovered: true, available: true},
 		{name: "different Change transfer refuses substitution", transferred: true, staleTransfer: true, foreignChange: true, available: true, wantError: true},
@@ -480,6 +486,12 @@ func TestNativeChangeSourceRecoversOnlyVerifiedOwner(t *testing.T) {
 				execution.claim.recovery.SourceVersionID = "version_unknown"
 			}
 			checkpoint := execution.claim.recovery.SourceAttempt().Checkpoint
+			if test.currentCheckpoint {
+				checkpoint.HeadSHA = version.HeadSHA
+			}
+			if test.cleanCheckpoint {
+				checkpoint.WorktreeState = "clean"
+			}
 			if test.uncertain {
 				checkpoint.ExternalEffect, checkpoint.EffectState = "git_push", "ambiguous"
 			}
@@ -570,6 +582,12 @@ func TestNativeChangeSourceRecoversOnlyVerifiedOwner(t *testing.T) {
 			}
 			if !test.wantError && (execution.recoveredSource == nil || execution.recoveredSource.ChangeID != change.ID || execution.recoveredSource.VersionID != version.ID || execution.recoveredSource.HeadSHA != version.HeadSHA) {
 				t.Fatal("recovery did not retain the validated current publication identity")
+			}
+			if test.currentCheckpoint && !test.wantError {
+				retried, err := execution.RecoverChangeSource(t.Context())
+				if err != nil || retried.Version.ID != version.ID || !bytes.Equal(retried.Bundle, capture.Bundle) {
+					t.Fatalf("repeated recovery did not retain current published source: %q, %v", retried.Version.ID, err)
+				}
 			}
 			if test.foreign || test.wrongHead || test.status == http.StatusForbidden {
 				if calls != 0 {
