@@ -172,7 +172,7 @@ func (b *AgentBackend) exchange(ctx context.Context, records <-chan scanResult, 
 					return &infrastructureError{err: errors.New("antigravity result omitted its payload"), startup: !started}
 				}
 				if r.Result.Status != "SUCCESS" {
-					return fmt.Errorf("antigravity turn %s: %s", r.Result.Status, r.Result.Error)
+					return &infrastructureError{err: fmt.Errorf("antigravity turn %s: %s", r.Result.Status, r.Result.Error), startup: !started}
 				}
 				if !started {
 					return &infrastructureError{err: errors.New("antigravity succeeded without a conversation"), startup: true}
@@ -237,10 +237,13 @@ func (s *turnState) step(u stepUpdate) error {
 		return nil
 	}
 	s.turns++
+	if err := s.reportUsage(*u.Usage); err != nil {
+		return err
+	}
 	if s.req.MaxTurns > 0 && s.turns > s.req.MaxTurns {
 		return runner.ErrSessionTurnLimitExceeded
 	}
-	return s.reportUsage(*u.Usage)
+	return nil
 }
 
 func (s *turnState) reportUsage(u usage) error {

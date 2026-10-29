@@ -896,9 +896,10 @@ Corrections start fresh from published source and findings; persisted OpenCode
 sessions are not resumed across workspaces.
 
 Antigravity uses `kind: antigravity`, `protocol: stream-json`, and `command: agy`.
-Routes select an exact model ID from `agy models`; `options.effort` sets the
-default reasoning effort. It requires native-trusted isolation and does not
-support Detent dynamic tools, image attachments or resume. See
+Routes select an exact model ID from `agy models`; `options.home` names the
+required dedicated, signed-in Antigravity home and `options.effort` sets the
+default reasoning effort. It supports scoped Detent MCP tools, requires
+native-trusted isolation, and does not support image attachments or resume. See
 [Antigravity backend](antigravity.md).
 
 Implementation workers on automatically owned Git branches request a bounded

@@ -493,7 +493,7 @@ func buildAgentBackendWithIsolation(backend workflowconfig.AgentBackend, policie
 			CommandFactory: func(ctx context.Context, args []string) *exec.Cmd {
 				return buildClaudeCommandFromConfig(ctx, backend.Command, cfg.Shell, args)
 			},
-			Provider: backend.Provider, Effort: cfg.Effort,
+			Home: cfg.Home, Provider: backend.Provider, Effort: cfg.Effort,
 			TurnTimeout: durationFromMillis(cfg.TurnTimeoutMS), StallTimeout: durationFromMillis(cfg.StallTimeoutMS),
 		})
 	case workflowconfig.AgentBackendCodex:

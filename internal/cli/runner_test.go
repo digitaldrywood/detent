@@ -38,6 +38,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/toolcache"
 	detentupdate "github.com/digitaldrywood/detent/internal/update"
 	"github.com/digitaldrywood/detent/internal/workspace"
+
+	"gopkg.in/yaml.v3"
 )
 
 var errProjectFactoryStub = errors.New("project factory stub")
@@ -2825,11 +2827,20 @@ func TestBuildOpenCodeBackend(t *testing.T) {
 }
 
 func TestBuildAntigravityBackend(t *testing.T) {
-	backend, err := buildAgentBackend(workflowconfig.AgentBackend{ID: "agy", Kind: workflowconfig.AgentBackendAntigravity, Protocol: "stream-json", Command: "agy"})
+	backend, err := buildAgentBackend(workflowconfig.AgentBackend{ID: "agy", Kind: workflowconfig.AgentBackendAntigravity, Protocol: "stream-json", Command: "agy", Options: antigravityHomeOptions(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := backend.(*antigravity.AgentBackend); !ok {
 		t.Fatalf("backend = %T, want Antigravity", backend)
 	}
+}
+
+func antigravityHomeOptions(t *testing.T) workflowconfig.BackendOptions {
+	t.Helper()
+	var options workflowconfig.BackendOptions
+	if err := yaml.Unmarshal([]byte("home: "+t.TempDir()), &options); err != nil {
+		t.Fatal(err)
+	}
+	return options
 }

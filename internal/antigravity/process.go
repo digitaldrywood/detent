@@ -64,6 +64,7 @@ func (b *AgentBackend) RunTurn(ctx context.Context, req runner.AgentTurnRequest,
 	}
 	cmd.Dir = req.Workspace
 	procgroup.SetEnvironment(cmd, req.Environment)
+	procgroup.SetEnvironment(cmd, procgroup.Environment{Variables: map[string]string{"HOME": b.options.Home}})
 	procgroup.SetTempDir(cmd, req.TempDir)
 
 	inputReader, input, err := os.Pipe()

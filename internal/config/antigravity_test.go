@@ -7,13 +7,15 @@ import (
 )
 
 func TestAntigravityWorkflow(t *testing.T) {
-	for _, test := range []struct{ name, extra, want string }{
-		{name: "defaults"},
-		{name: "protocol", extra: "protocol: headless", want: "protocol must be stream-json"},
-		{name: "timeout", extra: "options:\n        turn_timeout_ms: -1", want: "turn_timeout_ms must be greater"},
-		{name: "stall", extra: "options:\n        stall_timeout_ms: -1", want: "stall_timeout_ms must be greater"},
-		{name: "effort", extra: "options:\n        effort: extreme", want: "effort must be one of"},
-		{name: "valid effort", extra: "options:\n        effort: XHigh"},
+	for _, test := range []struct{ name, protocol, options, want string }{
+		{name: "defaults", options: "home: /srv/agy-home"},
+		{name: "protocol", protocol: "protocol: headless", options: "home: /srv/agy-home", want: "protocol must be stream-json"},
+		{name: "missing home", options: "effort: high", want: "home must be an absolute path"},
+		{name: "relative home", options: "home: agy-home", want: "home must be an absolute path"},
+		{name: "timeout", options: "home: /srv/agy-home\n        turn_timeout_ms: -1", want: "turn_timeout_ms must be greater"},
+		{name: "stall", options: "home: /srv/agy-home\n        stall_timeout_ms: -1", want: "stall_timeout_ms must be greater"},
+		{name: "effort", options: "home: /srv/agy-home\n        effort: extreme", want: "effort must be one of"},
+		{name: "valid effort", options: "home: /srv/agy-home\n        effort: XHigh"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			workflow, err := ParseWorkflow([]byte(fmt.Sprintf(`---
@@ -25,6 +27,8 @@ agents:
       kind: ANTIGRAVITY
       provider: fixture
       %s
+      options:
+        %s
   routes:
     - name: antigravity-code
       role: code
@@ -33,7 +37,7 @@ agents:
       default: true
 ---
 Prompt
-`, test.extra)))
+`, test.protocol, test.options)))
 			if err == nil {
 				err = workflow.Config.Validate()
 			}
@@ -47,7 +51,7 @@ Prompt
 				t.Fatal(err)
 			}
 			backends := workflow.Config.AgentBackendConfigs()
-			if len(backends) != 1 || backends[0].Kind != AgentBackendAntigravity || backends[0].Protocol != "stream-json" || backends[0].Command != "agy" || backends[0].Provider != "fixture" {
+			if len(backends) != 1 || backends[0].Kind != AgentBackendAntigravity || backends[0].Protocol != "stream-json" || backends[0].Command != "agy" || backends[0].Provider != "fixture" || backends[0].AntigravityOptions().Home != "/srv/agy-home" {
 				t.Fatalf("backends = %#v", backends)
 			}
 		})

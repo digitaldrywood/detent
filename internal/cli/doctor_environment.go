@@ -568,7 +568,7 @@ func doctorAgentBinaryCheckJobs(ctx context.Context, cfg *globalconfig.Config, d
 			}})
 		case workflowconfig.AgentBackendAntigravity:
 			jobs = append(jobs, doctorCheckJob{Name: "agy binary", Run: func(jobCtx context.Context) []doctorCheck {
-				return []doctorCheck{checkDoctorBinary(jobCtx, deps, environment, "agy", "agy binary", "--version", "Install the Antigravity CLI and sign in by running agy once. Antigravity workers require native-trusted isolation; resume, Detent dynamic tools and image attachments are not supported.")}
+				return []doctorCheck{checkDoctorBinary(jobCtx, deps, environment, "agy", "agy binary", "--version", "Install the Antigravity CLI and sign in once with HOME set to the backend's dedicated home (options.home). Antigravity workers require native-trusted isolation; resume and image attachments are not supported.")}
 			}})
 		case workflowconfig.AgentBackendPiAgent:
 			jobs = append(jobs, doctorCheckJob{Name: "pi binary", Run: func(jobCtx context.Context) []doctorCheck {

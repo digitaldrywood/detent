@@ -6,8 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -33,7 +36,8 @@ func TestRunTurnStream(t *testing.T) {
 		capacity  bool
 	}{
 		{mode: "success"},
-		{mode: "error_result", wantError: "antigravity turn ERROR: invalid model selection"},
+		{mode: "tools"},
+		{mode: "error_result", wantError: "antigravity turn ERROR: invalid model selection", capacity: true},
 		{mode: "no_result", wantError: "exited before a result", capacity: true},
 		{mode: "no_init", wantError: "outside a conversation", capacity: true},
 		{mode: "foreign_step", wantError: "different conversation", capacity: true},
@@ -47,11 +51,12 @@ func TestRunTurnStream(t *testing.T) {
 	} {
 		t.Run(fmt.Sprintf("%s/%v/%v", test.mode, test.cancel, test.reject), func(t *testing.T) {
 			dir := t.TempDir()
+			home := t.TempDir()
 			var command *exec.Cmd
-			backend, err := NewAgentBackend(Options{Provider: "google", Effort: "high", CommandFactory: func(ctx context.Context, args []string) *exec.Cmd {
+			backend, err := NewAgentBackend(Options{Home: home, Provider: "google", Effort: "high", CommandFactory: func(ctx context.Context, args []string) *exec.Cmd {
 				command = exec.CommandContext(ctx, os.Args[0], "-test.run=^TestAntigravityProcess$", "--")
 				command.Args = append(command.Args, args...)
-				command.Env = append(os.Environ(), "DETENT_ANTIGRAVITY_FIXTURE="+test.mode, "GOCOVERDIR="+t.TempDir())
+				command.Env = append(os.Environ(), "DETENT_ANTIGRAVITY_FIXTURE="+test.mode, "DETENT_ANTIGRAVITY_EXPECTED_HOME="+home, "GOCOVERDIR="+t.TempDir())
 				return command
 			}})
 			if err != nil {
@@ -59,7 +64,7 @@ func TestRunTurnStream(t *testing.T) {
 			}
 			ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 			defer cancel()
-			req := runner.AgentTurnRequest{Workspace: dir, TempDir: dir, Model: "fixture-model", Prompt: "hello world", ToolInstructions: "use tools", MaxTurns: 3, Environment: procgroup.Environment{Variables: map[string]string{"DETENT_ANTIGRAVITY_MARKER": "propagated"}}}
+			req := runner.AgentTurnRequest{Workspace: dir, TempDir: dir, Model: "fixture-model", Prompt: "hello\u2028world", ToolInstructions: "use tools", MaxTurns: 3, Environment: procgroup.Environment{Variables: map[string]string{"DETENT_ANTIGRAVITY_MARKER": "propagated"}}}
 			switch test.mode {
 			case "turn_limit":
 				req.MaxTurns = 1
@@ -70,7 +75,16 @@ func TestRunTurnStream(t *testing.T) {
 				req.TurnTimeout = 500 * time.Millisecond
 			}
 			var updates []runner.AgentUpdate
-			result, err := backend.RunTurn(ctx, req, func(update runner.AgentUpdate) error {
+			var calls []runner.AgentToolCall
+			tools := []runner.AgentTool{{Name: "attach_evidence", Description: "Attach evidence", InputSchema: json.RawMessage(`{"type":"object","properties":{"note":{"type":"string"}}}`)}}
+			handle := func(_ context.Context, call runner.AgentToolCall) (runner.AgentToolResult, error) {
+				calls = append(calls, call)
+				return runner.AgentToolResult{Success: true, Content: `{"status":"evidence-ok"}`}, nil
+			}
+			if test.mode != "tools" {
+				tools = nil
+			}
+			result, err := backend.RunTurnWithTools(ctx, req, tools, handle, func(update runner.AgentUpdate) error {
 				updates = append(updates, update)
 				if update.Type == runner.AgentUpdateToolStarted && test.cancel {
 					cancel()
@@ -80,6 +94,9 @@ func TestRunTurnStream(t *testing.T) {
 				}
 				return nil
 			})
+			if leftovers, globErr := filepath.Glob(filepath.Join(dir, "antigravity-tools-*")); globErr != nil || len(leftovers) != 0 {
+				t.Fatalf("tool directories left behind: %v %v", leftovers, globErr)
+			}
 			if command == nil || command.ProcessState == nil {
 				t.Fatalf("process was not waited: %#v", command)
 			}
@@ -92,6 +109,17 @@ func TestRunTurnStream(t *testing.T) {
 				}
 				if got := backendcapacity.IsTransientOverload(err); got != test.capacity {
 					t.Fatalf("capacity attribution = %v, want %v: %v", got, test.capacity, err)
+				}
+				if test.mode == "turn_limit" {
+					var usage runner.AgentTokenUsage
+					for _, u := range updates {
+						if u.Type == runner.AgentUpdateTokenUsage {
+							usage = u.Tokens
+						}
+					}
+					if usage.TotalTokens != 17 {
+						t.Fatalf("response over the turn limit was not reported: %#v", usage)
+					}
 				}
 				return
 			}
@@ -122,7 +150,14 @@ func TestRunTurnStream(t *testing.T) {
 					toolTypes = append(toolTypes, u.Type)
 				}
 			}
-			if output != "hello world\n" || toolOutput != "one two" || toolCommand != "echo one" {
+			wantOutput := "hello\u2028world\n"
+			if test.mode == "tools" {
+				if len(calls) != 1 || calls[0].Name != "attach_evidence" || string(calls[0].Arguments) != `{"note":"fixture"}` {
+					t.Fatalf("tool calls = %#v", calls)
+				}
+				wantOutput = "evidence-ok" + wantOutput
+			}
+			if output != wantOutput || toolOutput != "one two" || toolCommand != "echo one" {
 				t.Fatalf("output = %q, tool = %q, command = %q", output, toolOutput, toolCommand)
 			}
 			if !reflect.DeepEqual(toolTypes, []runner.AgentUpdateType{runner.AgentUpdateToolStarted, runner.AgentUpdateToolCompleted}) {
@@ -181,7 +216,7 @@ func TestAntigravityProcess(t *testing.T) {
 			Content string `json:"content"`
 		} `json:"message"`
 	}
-	if err := json.Unmarshal(scanner.Bytes(), &input); err != nil || input.Event != "user" || input.Message.Content != "hello world\n\nuse tools" {
+	if err := json.Unmarshal(scanner.Bytes(), &input); err != nil || input.Event != "user" || input.Message.Content != "hello\u2028world\n\nuse tools" {
 		os.Exit(5)
 	}
 	if scanner.Scan() {
@@ -190,6 +225,20 @@ func TestAntigravityProcess(t *testing.T) {
 	cwd, err := os.Stat(".")
 	if err != nil || os.Getenv("DETENT_ANTIGRAVITY_MARKER") != "propagated" {
 		os.Exit(7)
+	}
+	home, err := os.Stat(os.Getenv("HOME"))
+	expectedHome, expectedErr := os.Stat(os.Getenv("DETENT_ANTIGRAVITY_EXPECTED_HOME"))
+	if err != nil || expectedErr != nil || !os.SameFile(home, expectedHome) {
+		fmt.Fprintln(os.Stderr, "fixture HOME is not the dedicated Antigravity home")
+		os.Exit(7)
+	}
+	toolDirectory := ""
+	if index := slices.Index(os.Args, "--add-dir"); index >= 0 && index+1 < len(os.Args) {
+		toolDirectory = os.Args[index+1]
+	}
+	if (mode == "tools") != (toolDirectory != "") {
+		fmt.Fprintln(os.Stderr, "fixture tool directory does not match the mode")
+		os.Exit(9)
 	}
 	for _, key := range []string{"TMPDIR", "TMP", "TEMP"} {
 		temp, err := os.Stat(os.Getenv(key))
@@ -218,6 +267,14 @@ func TestAntigravityProcess(t *testing.T) {
 		os.Exit(0)
 	}
 	step(map[string]any{"step_index": 0, "state": "DONE", "step_type": "user_input"})
+	if mode == "tools" {
+		reply, err := callWorkerTool(toolDirectory)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(10)
+		}
+		step(map[string]any{"step_index": 1, "state": "ACTIVE", "step_type": "agent_response", "text_delta": reply})
+	}
 	step(map[string]any{"step_index": 1, "state": "DONE", "step_type": "agent_response", "usage": map[string]any{"input_tokens": 10, "output_tokens": 5, "thinking_tokens": 1, "cache_read_tokens": 0}})
 	if mode == "turn_limit" {
 		step(map[string]any{"step_index": 2, "state": "DONE", "step_type": "agent_response", "usage": map[string]any{"input_tokens": 1}})
@@ -231,13 +288,90 @@ func TestAntigravityProcess(t *testing.T) {
 	}
 	tool["output"] = "one two"
 	step(map[string]any{"step_index": 2, "state": "DONE", "step_type": "tool", "tool_name": "run_command", "tool_info": tool})
-	step(map[string]any{"step_index": 3, "state": "ACTIVE", "step_type": "agent_response", "text_delta": "hello world"})
+	step(map[string]any{"step_index": 3, "state": "ACTIVE", "step_type": "agent_response", "text_delta": "hello\u2028world"})
 	step(map[string]any{"step_index": 3, "state": "DONE", "step_type": "agent_response", "text_delta": "\n", "usage": map[string]any{"input_tokens": 13, "output_tokens": 3, "thinking_tokens": 2, "cache_read_tokens": 4}})
 	if mode == "no_result" {
 		os.Exit(0)
 	}
-	send(map[string]any{"event": "result", "result": map[string]any{"conversation_id": "fixture-conversation", "status": "SUCCESS", "response": "hello world\n", "usage": map[string]any{"input_tokens": 23, "output_tokens": 8}}})
+	send(map[string]any{"event": "result", "result": map[string]any{"conversation_id": "fixture-conversation", "status": "SUCCESS", "response": "hello\u2028world\n", "usage": map[string]any{"input_tokens": 23, "output_tokens": 8}}})
 	os.Exit(0)
+}
+
+func callWorkerTool(directory string) (string, error) {
+	data, err := os.ReadFile(filepath.Join(directory, ".agents", "mcp_config.json"))
+	if err != nil {
+		return "", err
+	}
+	var config struct {
+		Servers map[string]struct {
+			URL     string            `json:"serverUrl"`
+			Headers map[string]string `json:"headers"`
+		} `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(data, &config); err != nil {
+		return "", err
+	}
+	server, ok := config.Servers["detent"]
+	if !ok || server.URL == "" {
+		return "", errors.New("fixture tool config has no detent server")
+	}
+	session := ""
+	post := func(body string) (string, error) {
+		request, err := http.NewRequest(http.MethodPost, server.URL, strings.NewReader(body))
+		if err != nil {
+			return "", err
+		}
+		for key, value := range server.Headers {
+			request.Header.Set(key, value)
+		}
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Accept", "application/json, text/event-stream")
+		if session != "" {
+			request.Header.Set("Mcp-Session-Id", session)
+		}
+		response, err := (&http.Client{Transport: &http.Transport{}}).Do(request)
+		if err != nil {
+			return "", err
+		}
+		defer response.Body.Close()
+		reply, err := io.ReadAll(response.Body)
+		if err != nil {
+			return "", err
+		}
+		if response.StatusCode >= 300 {
+			return "", fmt.Errorf("fixture MCP status %d: %s", response.StatusCode, reply)
+		}
+		if id := response.Header.Get("Mcp-Session-Id"); id != "" {
+			session = id
+		}
+		return string(reply), nil
+	}
+	if _, err := post(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"fixture","version":"1"}}}`); err != nil {
+		return "", err
+	}
+	if _, err := post(`{"jsonrpc":"2.0","method":"notifications/initialized"}`); err != nil {
+		return "", err
+	}
+	reply, err := post(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"attach_evidence","arguments":{"note":"fixture"}}}`)
+	if err != nil {
+		return "", err
+	}
+	if !strings.Contains(reply, "evidence-ok") {
+		return "", fmt.Errorf("fixture tool reply = %s", reply)
+	}
+	return "evidence-ok", nil
+}
+
+func newRestrictedBackend(t *testing.T) *AgentBackend {
+	t.Helper()
+	backend, err := NewAgentBackend(Options{Home: t.TempDir(), CommandFactory: func(context.Context, []string) *exec.Cmd {
+		t.Fatal("restricted request launched Antigravity")
+		return nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return backend
 }
 
 func TestRestrictedRequestsNeverLaunchAntigravity(t *testing.T) {
@@ -257,18 +391,12 @@ func TestRestrictedRequestsNeverLaunchAntigravity(t *testing.T) {
 		{name: "image attachment", req: runner.AgentTurnRequest{Attachments: []runner.AgentAttachment{{Name: "screen.png", MIME: "image/png", Content: []byte("png")}}}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			backend, err := NewAgentBackend(Options{CommandFactory: func(context.Context, []string) *exec.Cmd {
-				t.Fatal("restricted request launched Antigravity")
-				return nil
-			}})
-			if err != nil {
-				t.Fatal(err)
-			}
+			backend := newRestrictedBackend(t)
 			ctx := t.Context()
 			if test.policy.Tier != "" {
 				ctx = isolation.WithPolicy(ctx, test.policy)
 			}
-			_, err = backend.RunTurn(ctx, test.req, nil)
+			_, err := backend.RunTurn(ctx, test.req, nil)
 			if err == nil || test.want != nil && !errors.Is(err, test.want) {
 				t.Fatalf("error = %v, want %v", err, test.want)
 			}
@@ -280,10 +408,7 @@ func TestRestrictedRequestsNeverLaunchAntigravity(t *testing.T) {
 }
 
 func TestInfrastructureClassification(t *testing.T) {
-	backend, err := NewAgentBackend(Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	backend := newRestrictedBackend(t)
 	for _, test := range []struct {
 		err  error
 		want bool
@@ -303,30 +428,11 @@ func TestInfrastructureClassification(t *testing.T) {
 	}
 }
 
-func TestRealAntigravitySmoke(t *testing.T) {
-	if os.Getenv("DETENT_ANTIGRAVITY_SMOKE") != "1" {
-		t.Skip("set DETENT_ANTIGRAVITY_SMOKE=1 with an installed, signed-in Antigravity CLI")
-	}
-	if _, err := exec.LookPath("agy"); err != nil {
-		t.Skip("Antigravity CLI is unavailable")
-	}
-	dir := t.TempDir()
-	backend, err := NewAgentBackend(Options{TurnTimeout: 2 * time.Minute})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var output string
-	var tokens runner.AgentTokenUsage
-	result, err := backend.RunTurn(t.Context(), runner.AgentTurnRequest{Workspace: dir, TempDir: dir, Model: os.Getenv("DETENT_ANTIGRAVITY_MODEL"), Prompt: "Reply with exactly AGY_SMOKE_OK. Do not use tools.", MaxTurns: 2}, func(u runner.AgentUpdate) error {
-		switch u.Type {
-		case runner.AgentUpdateMessageDelta:
-			output += u.Delta
-		case runner.AgentUpdateTokenUsage:
-			tokens = u.Tokens
+func TestNewAgentBackendRequiresLaunchContract(t *testing.T) {
+	factory := func(context.Context, []string) *exec.Cmd { return nil }
+	for _, options := range []Options{{Home: t.TempDir()}, {CommandFactory: factory}, {Home: "relative", CommandFactory: factory}} {
+		if _, err := NewAgentBackend(options); err == nil {
+			t.Errorf("NewAgentBackend(%#v) accepted an incomplete launch contract", options)
 		}
-		return nil
-	})
-	if err != nil || result.SessionID == "" || !strings.Contains(output, "AGY_SMOKE_OK") || tokens.TotalTokens == 0 {
-		t.Fatalf("smoke = %#v, %q, %#v, %v", result, output, tokens, err)
 	}
 }

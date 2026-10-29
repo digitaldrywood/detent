@@ -1,4 +1,3 @@
-// Package antigravity adapts the Antigravity CLI print-mode stream to Detent's worker interface.
 package antigravity
 
 import (
@@ -6,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
@@ -20,22 +20,28 @@ type Options struct {
 	BackendID       string
 	CommandFactory  func(context.Context, []string) *exec.Cmd
 	IsolationPolicy func() (isolation.Policy, error)
+	Home            string
 	Provider        string
 	Effort          string
 	TurnTimeout     time.Duration
 	StallTimeout    time.Duration
 }
 
-type AgentBackend struct{ options Options }
+type AgentBackend struct {
+	options       Options
+	toolDirectory string
+}
 
 var _ runner.AgentBackend = (*AgentBackend)(nil)
 var _ runner.AgentResumeVerifier = (*AgentBackend)(nil)
+var _ runner.AgentToolBackend = (*AgentBackend)(nil)
 
 func NewAgentBackend(options Options) (*AgentBackend, error) {
 	if options.CommandFactory == nil {
-		options.CommandFactory = func(ctx context.Context, args []string) *exec.Cmd {
-			return exec.CommandContext(ctx, "agy", args...) // #nosec G204 -- the fixed Antigravity executable receives backend-built arguments directly without a shell.
-		}
+		return nil, errors.New("antigravity command factory is required")
+	}
+	if !filepath.IsAbs(options.Home) {
+		return nil, errors.New("antigravity requires an absolute dedicated home")
 	}
 	return &AgentBackend{options: options}, nil
 }
@@ -92,8 +98,8 @@ func (b *AgentBackend) argv(ctx context.Context, req runner.AgentTurnRequest) ([
 	if req.RequireSubscriptionAuth {
 		return nil, runner.ErrSubscriptionAuthRequired
 	}
-	if req.SupplementalTools {
-		return nil, &infrastructureError{err: errors.New("antigravity backend does not support Detent dynamic tools")}
+	if req.SupplementalTools && b.toolDirectory == "" {
+		return nil, &infrastructureError{err: errors.New("antigravity dynamic tools require RunTurnWithTools")}
 	}
 	if len(runner.AttachmentImages(req.Attachments)) > 0 {
 		return nil, errors.New("antigravity backend does not support image attachments")
@@ -104,6 +110,9 @@ func (b *AgentBackend) argv(ctx context.Context, req runner.AgentTurnRequest) ([
 	}
 	if effort := b.effort(req); effort != "" {
 		args = append(args, "--effort", effort)
+	}
+	if b.toolDirectory != "" {
+		args = append(args, "--add-dir", b.toolDirectory)
 	}
 	return append(args, "--print="), nil
 }
