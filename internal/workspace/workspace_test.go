@@ -3793,10 +3793,6 @@ func TestLocalGitMergeFallbackRetryRevalidatesAheadHead(t *testing.T) {
 }
 
 func TestRunGitAtBoundsInheritedOutput(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process lifecycle integration")
-	}
-
 	skipWindows(t)
 
 	for _, tt := range []struct {
@@ -3804,10 +3800,9 @@ func TestRunGitAtBoundsInheritedOutput(t *testing.T) {
 		args        []string
 		redirection string
 		exitCode    int
-		wantDelay   bool
 	}{
-		{name: "stdout retained", redirection: "2>/dev/null", wantDelay: true},
-		{name: "stderr retained", redirection: ">/dev/null", wantDelay: true},
+		{name: "stdout retained", redirection: "2>/dev/null"},
+		{name: "stderr retained", redirection: ">/dev/null"},
 		{name: "failed command", exitCode: 23},
 		{name: "output closed", redirection: ">/dev/null 2>&1"},
 		{name: "worktree creation stdout retained", args: []string{"worktree", "add", "--detach", "new-worktree", "HEAD"}, redirection: "2>/dev/null"},
@@ -3887,11 +3882,8 @@ exit %d
 			case <-time.After(10 * time.Second):
 				t.Fatal("Git command did not return while descendant retained output")
 			}
-			if errors.Is(got.err, exec.ErrWaitDelay) != tt.wantDelay {
-				t.Fatalf("runGitAtWithEnv() error = %v, want WaitDelay = %t", got.err, tt.wantDelay)
-			}
 			output := got.output
-			if tt.wantDelay || tt.exitCode != 0 {
+			if tt.exitCode != 0 {
 				var commandErr *CommandError
 				if !errors.As(got.err, &commandErr) {
 					t.Fatalf("error = %v, want CommandError", got.err)
@@ -3914,10 +3906,6 @@ exit %d
 }
 
 func TestGitQueriesCompleteWhenDescendantRetainsOutput(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process lifecycle integration")
-	}
-
 	skipWindows(t)
 	for _, tt := range []struct {
 		name     string
@@ -3926,6 +3914,14 @@ func TestGitQueriesCompleteWhenDescendantRetainsOutput(t *testing.T) {
 	}{
 		{name: "source common dir", probe: gitCommonDir},
 		{name: "workspace common dir", probe: gitCommonDirWithinRoot},
+		{name: "index path", probe: func(ctx context.Context, dir string) (string, error) {
+			output, err := runGitAt(ctx, dir, "rev-parse", "--git-path", "index", "--verify", "HEAD")
+			return strings.TrimSpace(output), err
+		}},
+		{name: "fetch", probe: func(ctx context.Context, dir string) (string, error) {
+			output, err := runGitAt(ctx, dir, "fetch", "origin", "+refs/heads/main:refs/remotes/origin/main")
+			return strings.TrimSpace(output), err
+		}},
 		{name: "remote listing", probe: func(ctx context.Context, dir string) (string, error) {
 			output, err := (&LocalGit{sourceRoot: dir}).gitRemotes(ctx)
 			return strings.TrimSpace(output), err

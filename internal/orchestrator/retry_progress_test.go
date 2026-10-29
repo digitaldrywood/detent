@@ -2,7 +2,10 @@ package orchestrator
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -13,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/progresscheck"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type progressScheduling struct {
@@ -73,6 +77,7 @@ func (s *progressScheduling) Publish(_ context.Context, r progresscheck.Record) 
 }
 
 type progressRunner struct {
+	evidence progresscheck.Request
 	decision progresscheck.Decision
 	calls    int
 	err      error
@@ -80,7 +85,8 @@ type progressRunner struct {
 	release  <-chan struct{}
 }
 
-func (r *progressRunner) CheckProgress(ctx context.Context, req RunRequest, _ progresscheck.Request) (progresscheck.Decision, error) {
+func (r *progressRunner) CheckProgress(ctx context.Context, req RunRequest, evidence progresscheck.Request) (progresscheck.Decision, error) {
+	r.evidence = evidence
 	r.calls++
 	if r.started != nil {
 		r.started <- req
@@ -93,6 +99,110 @@ func (r *progressRunner) CheckProgress(ctx context.Context, req RunRequest, _ pr
 		}
 	}
 	return r.decision, r.err
+}
+
+type progressCompletionExecution struct {
+	planDispatchExecution
+	outcomes []string
+}
+
+func (e *progressCompletionExecution) Finish(_ context.Context, outcome string) error {
+	e.outcomes = append(e.outcomes, outcome)
+	return nil
+}
+
+func TestEmptyLandingProgressCompletesOrImplements(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name            string
+		complete        bool
+		deferCompletion bool
+	}{
+		{name: "1818 repeated successful rework and merge completes on base", complete: true},
+		{name: "unmet acceptance implements with refusal feedback"},
+		{name: "completion survives tracker deferral", complete: true, deferCompletion: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			issue := dispatchTestIssue("example-issue", "Rework")
+			cfg := normalizeConfig(Config{MaxConcurrentAgents: 1, ActiveStates: []string{"In Progress", "Rework", "Merging"}, TerminalStates: []string{"Done"}, Project: scheduler.ProjectCandidate{ID: "example-project"}, WorkerHosts: []string{"worker-a"}})
+			recovery := tracker.NativeRecovery{Issue: tracker.NativeIssue{NativeReference: tracker.NativeReference{ProjectID: "example-project", WorkItemID: "example-issue", Revision: 1}}, ChangeDetail: &tracker.ChangeDetail{Change: tracker.ChangeRequest{CurrentVersion: "empty-version"}, Summary: tracker.ChangeSummary{Status: "reviewed"}, Versions: []tracker.ChangeVersion{{ID: "empty-version", ChangeVersionInput: tracker.ChangeVersionInput{BaseSHA: "base", HeadSHA: "empty-head", Source: &tracker.ChangeSource{DiffSHA256: tracker.ChangeSourceDigest(nil)}}}}}, Discussion: []tracker.NativeComment{{ID: "base-evidence", Body: "Acceptance regression passes on base; prior reviewed fix is incorporated in base"}}}
+			if !test.complete {
+				recovery.Discussion[0].Body = "Acceptance regression still fails on base; the required behavior is missing"
+			}
+			for i := range 3 {
+				recovery.Attempts = append(recovery.Attempts,
+					tracker.NativeAttempt{NativeRunData: tracker.NativeRunData{AttemptID: fmt.Sprintf("rework-%d", i), Outcome: "succeeded", Identity: &tracker.NativeExecutionIdentity{Role: "rework"}}},
+					tracker.NativeAttempt{NativeRunData: tracker.NativeRunData{AttemptID: fmt.Sprintf("merge-%d", i), Outcome: "succeeded", Identity: &tracker.NativeExecutionIdentity{Role: "merge"}, Runtime: &tracker.NativeRuntimeObservation{Landing: &tracker.NativeLandingReceipt{RefusalKind: "nothing_to_land", Refusal: "the published source has no deliverable to verify", HeadSHA: "empty-head", BaseSHA: "base"}}}},
+				)
+			}
+			execution := &progressCompletionExecution{}
+			source := &progressScheduling{hubSchedulingSource: hubSchedulingSource{execution: execution}, request: progresscheck.NativeRequest(recovery, "policy", "instance"), records: map[string]progresscheck.Record{}}
+			decision := progresscheck.Decision{Outcome: progresscheck.Reroute, Step: RunModeImplement, Reason: "Produce the missing acceptance regression", Evidence: []string{"merge-2:landing"}}
+			if test.complete {
+				decision = progresscheck.Decision{Outcome: progresscheck.Reroute, Step: progresscheck.CompleteStep, Reason: "The reviewed fix and passing acceptance regression are already on base", Evidence: []string{"merge-2:landing", "base-evidence"}}
+			}
+			checker := &progressRunner{decision: decision}
+			worker := newWorkerHostRunner()
+			tick := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+			workflow := &nativeWorkflowConnector{autoPromoteTickConnector: tick, states: []connector.WorkflowState{{Name: "Rework", Dispatchable: true, Transitions: []string{"Merging", "Done"}}, {Name: "Done", Terminal: true}}}
+			o := &Orchestrator{cfg: cfg, connector: workflow, scheduling: source, progressRunner: checker, supervisor: newTestSupervisor(t, worker, cfg), runResults: make(chan runpkg.Completion, 1)}
+			state := newState(cfg)
+			if !o.dispatchIssue(t.Context(), &state, issue, 7, time.Now(), "worker-a") {
+				t.Fatal("progress check was not admitted")
+			}
+			running := state.Running[issue.ID]
+			t.Cleanup(func() { running.cancel(); <-running.done })
+			if !test.complete {
+				var request RunRequest
+				select {
+				case request = <-worker.started:
+				case completion := <-o.runResults:
+					t.Fatalf("unmet acceptance did not reach implementation: %+v", completion)
+				}
+				state.Running[issue.ID].cancel()
+				<-o.runResults
+				<-state.Running[issue.ID].done
+				if request.Mode != RunModeImplement || !strings.Contains(request.PriorAttempt.Reason, "nothing_to_land") || !strings.Contains(request.PriorAttempt.Reason, "no deliverable to verify") || !strings.Contains(request.PriorAttempt.Reason, decision.Reason) {
+					t.Fatalf("implementation lost refusal feedback: %+v", request)
+				}
+			} else {
+				var completion runpkg.Completion
+				select {
+				case completion = <-o.runResults:
+				case <-worker.started:
+					t.Fatal("already delivered work dispatched rework")
+				}
+				<-state.Running[issue.ID].done
+				if completion.Err != nil || completion.Result.FinalState != FinalStateCompleted || completion.Result.NativeLanding != nil || len(execution.outcomes) != 1 || execution.outcomes[0] != "cancelled" {
+					t.Fatalf("progress completion=%+v execution outcomes=%v", completion, execution.outcomes)
+				}
+				select {
+				case <-worker.started:
+					t.Fatal("already delivered work dispatched rework")
+				default:
+				}
+				if test.deferCompletion {
+					record := newDeferredCompletion(completion, state.Running[issue.ID], errors.New("tracker unavailable"), time.Now())
+					encoded, err := json.Marshal(record)
+					if err != nil {
+						t.Fatal(err)
+					}
+					var retained deferredCompletion
+					if err := json.Unmarshal(encoded, &retained); err != nil {
+						t.Fatal(err)
+					}
+					completion = retained.completion()
+				}
+				o.handleRunResult(t.Context(), &state, completion)
+				if len(tick.updates) != 1 || tick.updates[0].state != "Done" || len(state.Retry) != 0 || len(tick.comments) != 1 || !strings.Contains(tick.comments[0].body, "base-evidence") || !strings.Contains(tick.comments[0].body, decision.Reason) {
+					t.Fatalf("completion did not use lane owner: updates=%+v retry=%+v comments=%+v", tick.updates, state.Retry, tick.comments)
+				}
+			}
+			if checker.calls != 1 || source.comments != 1 || len(checker.evidence.Attempts) != 6 || checker.evidence.Attempts[5].Outcome != "success" || !checker.evidence.EmptyDelta {
+				t.Fatalf("history/check publication lost: calls=%d comments=%d request=%+v", checker.calls, source.comments, checker.evidence)
+			}
+		})
+	}
 }
 
 func TestRetryProgressDispatch(t *testing.T) {

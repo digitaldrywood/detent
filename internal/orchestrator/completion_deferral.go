@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/progresscheck"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -60,6 +61,7 @@ type deferredDeliverableRecovery struct {
 }
 
 type deferredCompletionRequest struct {
+	ProgressDecision    progresscheck.Record   `json:"progress_decision,omitzero"`
 	ProjectID           string                 `json:"project_id,omitempty"`
 	Issue               connector.Issue        `json:"issue"`
 	Attempt             int                    `json:"attempt,omitempty"`
@@ -183,6 +185,7 @@ func deferredCompletionRequestFromRun(request runpkg.RunRequest) deferredComplet
 		DispatchSourceState: request.DispatchSourceState,
 		DispatchTargetState: request.DispatchTargetState,
 		PriorAttempt:        request.PriorAttempt,
+		ProgressDecision:    request.ProgressDecision,
 		StartedAt:           request.StartedAt,
 		WorkerHost:          request.WorkerHost,
 		RetryMode:           request.RetryMode,
@@ -206,6 +209,7 @@ func (r deferredCompletion) completion() runpkg.Completion {
 			DispatchSourceState: r.Request.DispatchSourceState,
 			DispatchTargetState: r.Request.DispatchTargetState,
 			PriorAttempt:        r.Request.PriorAttempt,
+			ProgressDecision:    r.Request.ProgressDecision,
 			StartedAt:           r.Request.StartedAt,
 			WorkerHost:          r.Request.WorkerHost,
 			RetryMode:           r.Request.RetryMode,

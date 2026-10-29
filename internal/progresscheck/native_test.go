@@ -59,3 +59,53 @@ func TestNativeRequestActiveAttemptDoesNotRetryOlderFailure(t *testing.T) {
 		t.Fatalf("active continuation paid an AI turn: checked=%v calls=%d error=%v", checked, backend.calls, err)
 	}
 }
+
+func TestNativeEmptyLandingSuccessRequiresProgressCheck(t *testing.T) {
+	t.Parallel()
+	for _, outcome := range []string{"succeeded", "failed"} {
+		t.Run(outcome, func(t *testing.T) {
+			recovery := tracker.NativeRecovery{
+				Issue:    tracker.NativeIssue{NativeReference: tracker.NativeReference{ProjectID: "example-project", WorkItemID: "example-issue", Revision: 1}},
+				Attempts: []tracker.NativeAttempt{{NativeRunData: tracker.NativeRunData{AttemptID: "merge-attempt", Outcome: outcome, Identity: &tracker.NativeExecutionIdentity{Role: "merge"}, Runtime: &tracker.NativeRuntimeObservation{Landing: &tracker.NativeLandingReceipt{RefusalKind: "nothing_to_land", Refusal: "the published source has no deliverable to verify", BaseSHA: "base", HeadSHA: "head"}}}}},
+			}
+			backend := &fakeBackend{decision: Decision{Outcome: Reroute, Step: "implement", Reason: "Acceptance remains unmet after nothing_to_land", Evidence: []string{"merge-attempt:landing"}}}
+			_, checked, err := Check(t.Context(), NativeRequest(recovery, "policy", "instance"), backend, &fakeOwner{})
+			if err != nil || !checked || backend.calls != 1 {
+				t.Fatalf("empty landing skipped progress check: checked=%v calls=%d error=%v", checked, backend.calls, err)
+			}
+		})
+	}
+}
+
+func TestNativeCompletionAvailabilityUsesCurrentReviewedEmptySource(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name    string
+		current string
+		status  string
+		empty   bool
+		want    bool
+	}{
+		{name: "reviewed empty source", current: "empty", status: "reviewed", empty: true, want: true},
+		{name: "review pending", current: "empty", status: "review_required", empty: true},
+		{name: "audit rejected", current: "empty", status: "changes_requested", empty: true},
+		{name: "older empty source", current: "current", status: "reviewed", empty: true},
+		{name: "reviewed deliverable", current: "empty", status: "reviewed"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			digest := tracker.ChangeSourceDigest([]byte("delta"))
+			if test.empty {
+				digest = tracker.ChangeSourceDigest(nil)
+			}
+			recovery := tracker.NativeRecovery{ChangeDetail: &tracker.ChangeDetail{Change: tracker.ChangeRequest{CurrentVersion: test.current}, Summary: tracker.ChangeSummary{Status: test.status}, Versions: []tracker.ChangeVersion{{ID: "empty", ChangeVersionInput: tracker.ChangeVersionInput{Source: &tracker.ChangeSource{DiffSHA256: digest}}}}}}
+			request := NativeRequest(recovery, "policy", "instance")
+			available := false
+			for _, step := range request.AvailableSteps {
+				available = available || step == CompleteStep
+			}
+			if available != test.want {
+				t.Fatalf("completion available=%v want=%v request=%+v", available, test.want, request)
+			}
+		})
+	}
+}

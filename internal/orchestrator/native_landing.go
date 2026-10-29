@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/progresscheck"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -39,20 +40,22 @@ func (o *Orchestrator) completeNativeLandingRun(
 	running Running,
 ) bool {
 	landing := event.Result.NativeLanding
+	progress := event.Request.ProgressDecision
+	completedOnBase := landing == nil && progress.Decision.Outcome == progresscheck.Reroute && progress.Decision.Step == progresscheck.CompleteStep && progress.CommentID != "" && progress.IssueID == event.IssueID
 	reader, ok := o.connector.(connector.WorkflowStateReader)
-	if landing == nil || !ok {
+	if landing == nil && !completedOnBase || !ok {
 		return false
 	}
 	issue := running.Issue
 	issueID := strings.TrimSpace(event.IssueID)
-	if !landing.Landed && !landing.RequiresRework() && landing.RefusalKind == workspace.LandRefusalProtected {
+	if landing != nil && !landing.Landed && !landing.RequiresRework() && landing.RefusalKind == workspace.LandRefusalProtected {
 		if wait, reported := terminalPermissionWait(event.Result.FinalMessage); reported && wait.Source == "terminal_detent_status" && permissionWaitCompletionAllowed(event) {
 			running.Issue = cloneIssue(issue)
 			running.Issue.NativeLandingHeadSHA = landing.HeadSHA
 			return o.parkPermissionWait(ctx, state, event, running, wait)
 		}
 	}
-	if !landing.Landed && (landing.Waiting || (landing.Path == "batch_member" || landing.Path == "merge_resolution_pending") && landing.RefusalKind == workspace.LandRefusalConflict || landing.RefusalKind == "" && landing.CI != nil && landing.CI.State == "pending" || landing.RefusalKind == workspace.LandRefusalBaseMoved) {
+	if landing != nil && !landing.Landed && (landing.Waiting || (landing.Path == "batch_member" || landing.Path == "merge_resolution_pending") && landing.RefusalKind == workspace.LandRefusalConflict || landing.RefusalKind == "" && landing.CI != nil && landing.CI.State == "pending" || landing.RefusalKind == workspace.LandRefusalBaseMoved) {
 		if landing.Waiting && !mergeWorkerIssue(issue) {
 			issue.NativeLandingHeadSHA = landing.HeadSHA
 		}
@@ -70,7 +73,7 @@ func (o *Orchestrator) completeNativeLandingRun(
 		finalState = FinalStateCompleted
 	}
 	target := ""
-	if landing.Landed {
+	if completedOnBase || landing.Landed {
 		current, err := o.connector.FetchIssueStatesByIDs(ctx, []string{issueID})
 		if err != nil {
 			return handoff(fmt.Errorf("read the landed item: %w", err))
@@ -137,13 +140,23 @@ func (o *Orchestrator) completeNativeLandingRun(
 		}
 		target = lane
 	}
-	if err := o.connector.CreateComment(ctx, issueID, nativeLandingComment(landing, issue.State, target)); err != nil {
+	var comment, message string
+	metadata := nativeLandingMetadata(landing)
+	if completedOnBase {
+		comment = fmt.Sprintf("Acceptance criteria already met on the base. Progress check comment %s: %s\n\nEvidence: %s", progress.CommentID, progress.Decision.Reason, strings.Join(progress.Decision.Evidence, ", "))
+		message = "verified acceptance on the base for " + issueLabel(issue)
+		metadata = map[string]any{"progress_decision": progress}
+	} else {
+		comment = nativeLandingComment(landing, issue.State, target)
+		message = nativeLandingEventMessage(landing, issue, target)
+	}
+	if err := o.connector.CreateComment(ctx, issueID, comment); err != nil {
 		o.warnNativeCompletion(issue, fmt.Errorf("comment on the landing: %w", err))
 	}
 	if err := o.abandonClaim(ctx, issueID); err != nil {
 		return handoff(err)
 	}
-	attemptCompleted := o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "completed", "worker completed", nativeLandingMetadata(landing))
+	attemptCompleted := o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "completed", "worker completed", metadata)
 	completed := Completed{
 		Issue:                      cloneIssue(issue),
 		SessionID:                  running.SessionID,
@@ -156,7 +169,7 @@ func (o *Orchestrator) completeNativeLandingRun(
 	}
 	o.recordCompletionUsage(ctx, state, event, issue)
 	o.recordCompletedActiveReviewTransition(state, issue, completed, target)
-	if !landing.Landed {
+	if !completedOnBase && !landing.Landed {
 		issue.State = target
 		delete(state.Completed, issueID)
 		attempt := nextAttempt(running.Attempt)
@@ -165,9 +178,9 @@ func (o *Orchestrator) completeNativeLandingRun(
 	recordStateEvent(state, telemetry.ActivityEvent{
 		At:      event.CompletedAt,
 		Event:   "completed_native_landing",
-		Message: nativeLandingEventMessage(landing, issue, target),
+		Message: message,
 	})
-	if o.logger != nil {
+	if o.logger != nil && landing != nil {
 		o.logger.Info("completed native landing",
 			"issue_id", issueID, "identifier", issue.Identifier,
 			"from_state", issue.State, "target_state", target,

@@ -65,12 +65,23 @@ func (o *Orchestrator) prepareRetryProgress(ctx context.Context, run *RunRequest
 	}
 	run.ProgressDecision = record
 	run.PriorAttempt.Source = "Progress check comment " + record.CommentID
+	last := request.Attempts[len(request.Attempts)-1]
+	if last.LandingRefusal == "nothing_to_land" {
+		run.PriorAttempt.Reason = strings.TrimSpace(run.PriorAttempt.Reason + "\nnothing_to_land: " + last.Error)
+	}
 	run.PriorAttempt.Reason = strings.TrimSpace(run.PriorAttempt.Reason + "\n" + record.Decision.Reason)
 	previousMode := run.Mode
 	switch record.Decision.Outcome {
 	case progresscheck.Progressing:
 	case progresscheck.Reroute:
 		switch record.Decision.Step {
+		case progresscheck.CompleteStep:
+			if run.Execution != nil {
+				if err := run.Execution.Finish(ctx, "cancelled"); err != nil {
+					return fmt.Errorf("finish progress execution: %w", err)
+				}
+			}
+			return nil
 		case RunModeImplement, RunModeMerge:
 			run.Mode = record.Decision.Step
 		default:

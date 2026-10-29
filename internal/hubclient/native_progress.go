@@ -103,7 +103,7 @@ func (s *Scheduler) RetryProgress(ctx context.Context, issue connector.Issue) (p
 		return progresscheck.Request{}, nil, errors.New("progress check requires current native claim")
 	}
 	request := progresscheck.NativeRequest(claim.recovery, claim.lease.PolicyID, string(claim.lease.MachineID))
-	if len(request.Attempts) == 0 || !progresscheck.Failed(request.Attempts[len(request.Attempts)-1].Outcome) {
+	if !request.NeedsCheck() {
 		return request, &progressOwner{client: claim.source.client, request: request, lease: claim.lease}, nil
 	}
 	path, err := nativeItemPath(claim.lease.WorkItemID)

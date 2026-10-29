@@ -61,6 +61,12 @@ func NativeRequest(recovery tracker.NativeRecovery, policy, instance string) Req
 			}
 			r.SourceSHA, r.BaseSHA = entry.SourceSHA, entry.BaseSHA
 		}
+		if a.Runtime != nil && a.Runtime.Landing != nil {
+			entry.LandingRefusal = a.Runtime.Landing.RefusalKind
+			if entry.LandingRefusal == "nothing_to_land" {
+				entry.Error = bound(a.Runtime.Landing.Refusal, 768)
+			}
+		}
 		r.Attempts = append(r.Attempts, entry)
 		for i, step := range a.Steps {
 			receipt := Receipt{ID: fmt.Sprintf("%s:step:%d", a.AttemptID, i), Step: step.Step, BaseSHA: step.Source.BaseSHA, HeadSHA: step.Source.HeadSHA, Detail: bound(step.CompletionBody, 256)}
@@ -76,7 +82,7 @@ func NativeRequest(recovery tracker.NativeRecovery, policy, instance string) Req
 		}
 		if a.Runtime != nil && a.Runtime.Landing != nil {
 			landing := a.Runtime.Landing
-			r.Receipts = append(r.Receipts, Receipt{ID: a.AttemptID + ":landing", Step: "landing", BaseSHA: landing.BaseSHA, HeadSHA: landing.HeadSHA, Detail: bound(landing.Refusal, 256)})
+			r.Receipts = append(r.Receipts, Receipt{ID: a.AttemptID + ":landing", Step: "landing", Outcome: landing.RefusalKind, BaseSHA: landing.BaseSHA, HeadSHA: landing.HeadSHA, Detail: bound(landing.Refusal, 256)})
 		}
 	}
 	if detail := recovery.ChangeDetail; detail != nil {
@@ -87,6 +93,12 @@ func NativeRequest(recovery tracker.NativeRecovery, policy, instance string) Req
 			v := detail.Versions[len(detail.Versions)-1]
 			r.SourceSHA, r.BaseSHA = v.HeadSHA, v.BaseSHA
 			r.Receipts = append(r.Receipts, Receipt{ID: v.ID, Step: "source", BaseSHA: v.BaseSHA, HeadSHA: v.HeadSHA})
+			if v.ID == detail.Change.CurrentVersion && v.Source != nil && v.Source.DiffSHA256 == tracker.ChangeSourceDigest(nil) {
+				r.EmptyDelta = true
+				if detail.Summary.Status == "reviewed" {
+					r.AvailableSteps = append(r.AvailableSteps, CompleteStep)
+				}
+			}
 		}
 		for _, check := range detail.Checks {
 			r.Receipts = append(r.Receipts, Receipt{ID: check.VersionID + ":" + check.CheckRunID, Step: "check", Outcome: check.Conclusion, HeadSHA: check.HeadSHA})

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
+	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -232,7 +233,11 @@ func (s *Supervisor) Run(ctx context.Context, request RunRequest) (completion Co
 	}
 	completion.Request = request
 	if err == nil {
-		result, err = s.backend.Run(ctx, request)
+		if request.ProgressDecision.Decision.Outcome == progresscheck.Reroute && request.ProgressDecision.Decision.Step == progresscheck.CompleteStep && request.ProgressDecision.CommentID != "" {
+			result = RunResult{FinalState: FinalStateCompleted, Output: request.ProgressDecision.Decision.Reason}
+		} else {
+			result, err = s.backend.Run(ctx, request)
+		}
 	}
 	err = preserveCancellation(ctx, err, "orchestrator.parent_context")
 	if cause := context.Cause(ctx); cooperativeStopError(cause) {

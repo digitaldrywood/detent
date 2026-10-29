@@ -13,14 +13,16 @@ import (
 func TestNativeProgressRequestReplayAndFencing(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name        string
-		changed     bool
-		released    bool
-		editedOlder bool
-		fullContext bool
-		active      bool
+		name         string
+		changed      bool
+		released     bool
+		editedOlder  bool
+		fullContext  bool
+		active       bool
+		emptyLanding bool
 	}{
 		{name: "decision comment does not create new evidence"},
+		{name: "successful empty landing checks and replays decision", emptyLanding: true},
 		{name: "full context remains stable after publication", fullContext: true},
 		{name: "admitted active worker still reads prior failures", active: true},
 		{name: "new human input rejects stale decision", changed: true},
@@ -33,6 +35,11 @@ func TestNativeProgressRequestReplayAndFencing(t *testing.T) {
 				Sequence: 2, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "gpt-6-astra"}, LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken, RunID: f.run, AttemptID: f.attempt, PolicyID: f.policy, Outcome: "failed",
 				TerminalFailure: &tracker.NativeTerminalFailure{Error: "422: landing requires security audit evidence for its exact base and head", ErrorClass: "publication", Stage: "publication", ObservedAt: f.now},
 			}}
+			if test.emptyLanding {
+				event.Data.Outcome = "succeeded"
+				event.Data.TerminalFailure = nil
+				event.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "completed", HeartbeatAt: f.now, Landing: &tracker.NativeLandingReceipt{RefusalKind: "nothing_to_land", ObservedAt: f.now}}
+			}
 			path := f.base + "/work-items/" + string(f.issue.WorkItemID)
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", f.worker, event), http.StatusOK)
 			f.release(t)
@@ -66,8 +73,11 @@ func TestNativeProgressRequestReplayAndFencing(t *testing.T) {
 				}
 			}
 			view := read()
-			if len(view.Request.Attempts) != 1 || view.Request.Attempts[0].ID != f.attempt || view.Request.Attempts[0].FailureClass != "publication" {
+			if len(view.Request.Attempts) != 1 || view.Request.Attempts[0].ID != f.attempt || !test.emptyLanding && view.Request.Attempts[0].FailureClass != "publication" {
 				t.Fatalf("request attempts=%+v", view.Request.Attempts)
+			}
+			if test.emptyLanding && (view.Request.Attempts[0].Outcome != "success" || view.Request.Attempts[0].LandingRefusal != "nothing_to_land") {
+				t.Fatalf("successful landing lost refusal: %+v", view.Request.Attempts[0])
 			}
 			id, err := view.Request.ID()
 			if err != nil {

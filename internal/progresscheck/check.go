@@ -12,6 +12,7 @@ import (
 )
 
 const (
+	CompleteStep   = "complete"
 	MaxDuration    = 30 * time.Second
 	MaxAttempts    = 12
 	MaxReceipts    = 24
@@ -31,6 +32,7 @@ const (
 )
 
 type Attempt struct {
+	LandingRefusal  string `json:"landing_refusal,omitempty"`
 	ID              string `json:"id"`
 	Step            string `json:"step"`
 	Outcome         string `json:"outcome"`
@@ -61,6 +63,7 @@ type Comment struct {
 }
 
 type Request struct {
+	EmptyDelta       bool      `json:"empty_delta,omitempty"`
 	ProjectID        string    `json:"project_id"`
 	IssueID          string    `json:"issue_id"`
 	PolicyID         string    `json:"policy_id"`
@@ -106,11 +109,7 @@ type Owner interface {
 }
 
 func Check(ctx context.Context, request Request, backend Backend, owner Owner) (Record, bool, error) {
-	if len(request.Attempts) == 0 {
-		return Record{}, false, nil
-	}
-	last := request.Attempts[len(request.Attempts)-1]
-	if last.Outcome == "success" || last.Outcome == "cancelled" {
+	if !request.NeedsCheck() {
 		return Record{}, false, nil
 	}
 	id, err := request.ID()
@@ -145,6 +144,14 @@ func Check(ctx context.Context, request Request, backend Backend, owner Owner) (
 		return Record{}, false, fmt.Errorf("validate published progress decision: %w", err)
 	}
 	return record, true, nil
+}
+
+func (request Request) NeedsCheck() bool {
+	if len(request.Attempts) == 0 {
+		return false
+	}
+	last := request.Attempts[len(request.Attempts)-1]
+	return last.Outcome != "success" && last.Outcome != "cancelled" || last.Outcome == "success" && last.LandingRefusal == "nothing_to_land"
 }
 
 func Failed(outcome string) bool {
@@ -254,6 +261,30 @@ func validateDecision(request Request, decision Decision) error {
 			return errors.New("progressing decision cannot change step")
 		}
 	case Reroute:
+		if decision.Step == CompleteStep {
+			if !request.EmptyDelta || len(request.Attempts) == 0 || request.Attempts[len(request.Attempts)-1].LandingRefusal != "nothing_to_land" {
+				return errors.New("completion requires an empty landing refusal")
+			}
+			allowed := false
+			for _, step := range request.AvailableSteps {
+				allowed = allowed || step == CompleteStep
+			}
+			if !allowed {
+				return errors.New("completion requires current review and audit gates")
+			}
+			acceptanceEvidence := false
+			for _, id := range decision.Evidence {
+				for _, comment := range request.Comments {
+					acceptanceEvidence = acceptanceEvidence || comment.ID == id
+				}
+				for _, receipt := range request.Receipts {
+					acceptanceEvidence = acceptanceEvidence || receipt.ID == id && receipt.Step != "landing" && receipt.Step != "source"
+				}
+			}
+			if !acceptanceEvidence {
+				return errors.New("completion requires acceptance evidence beyond the empty delta")
+			}
+		}
 		for _, step := range request.AvailableSteps {
 			if step != "" && decision.Step == step {
 				return nil

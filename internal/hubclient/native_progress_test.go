@@ -35,9 +35,13 @@ func (b *nativeProgressBackend) Decide(context.Context, progresscheck.Request) (
 
 func TestNativeRetryProgressOwnerAndSuccess(t *testing.T) {
 	t.Parallel()
-	for _, outcome := range []string{"failed", "succeeded", "different issue"} {
+	for _, outcome := range []string{"failed", "succeeded", "empty landing", "different issue"} {
 		t.Run(outcome, func(t *testing.T) {
 			recovery := tracker.NativeRecovery{Issue: tracker.NativeIssue{NativeReference: tracker.NativeReference{ProjectID: "prj_example", WorkItemID: "wi_example", Revision: 1}}, Attempts: []tracker.NativeAttempt{{NativeRunData: tracker.NativeRunData{AttemptID: "failed-attempt", Outcome: outcome}}}}
+			if outcome == "empty landing" {
+				recovery.Attempts[0].Outcome = "succeeded"
+				recovery.Attempts[0].Runtime = &tracker.NativeRuntimeObservation{Landing: &tracker.NativeLandingReceipt{RefusalKind: "nothing_to_land", Refusal: "the published source has no deliverable to verify"}}
+			}
 			evidence := progresscheck.NativeRequest(recovery, "policy", "machine")
 			if outcome == "different issue" {
 				recovery.Attempts[0].Outcome = "failed"
@@ -99,12 +103,12 @@ func TestNativeRetryProgressOwnerAndSuccess(t *testing.T) {
 			}
 			for range 2 {
 				_, checked, err := progresscheck.Check(t.Context(), request, backend, owner)
-				if err != nil || checked != (outcome == "failed") {
+				if err != nil || checked != (outcome == "failed" || outcome == "empty landing") {
 					t.Fatalf("checked=%v error=%v", checked, err)
 				}
 			}
 			want := 0
-			if outcome == "failed" {
+			if outcome == "failed" || outcome == "empty landing" {
 				want = 1
 			}
 			if reads != want || writes != want || backend.calls != want {
