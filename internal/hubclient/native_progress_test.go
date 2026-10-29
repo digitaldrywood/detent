@@ -210,6 +210,9 @@ func testNativeRetryProgressReroute(t *testing.T, reserved bool) {
 	}
 	issue = claimPlan()
 	original := h.scheduler.RunExecution(issue.ID)
+	if original == nil {
+		t.Fatal("claimed planning execution is missing")
+	}
 	provider := &nativeProgressRerouteAgent{attempt: failed.data.AttemptID}
 	agent, err := runner.NewRunner(runner.Dependencies{Workflow: config.Workflow{Config: config.Config{Agents: config.Agents{Routes: []config.AgentRoute{
 		{Name: "planner", Role: runner.RolePlan, Backend: "codex", Model: "plan-model"},
