@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -607,7 +608,7 @@ type runnerAttemptOutcome struct {
 
 // startAttempt claims the linked issue and runs it through the production
 // runner in the background, as the orchestrator's dispatch path does.
-func (h *conversationRunnerHub) startAttempt(t *testing.T, scheduler *Scheduler, backend runner.AgentBackend, issueID string) <-chan runnerAttemptOutcome {
+func (h *conversationRunnerHub) startAttempt(t *testing.T, scheduler *Scheduler, backend runner.AgentBackend, issueID string, workflows ...config.Workflow) <-chan runnerAttemptOutcome {
 	t.Helper()
 	candidates, err := scheduler.FetchCandidateIssues(t.Context(), orchestrator.SchedulingRequest{Policy: h.descriptor, ProjectID: "local", WorkflowStates: []string{"Todo"}})
 	if err != nil {
@@ -623,8 +624,12 @@ func (h *conversationRunnerHub) startAttempt(t *testing.T, scheduler *Scheduler,
 	if execution == nil {
 		t.Fatal("claimed native issue has no execution lifecycle")
 	}
+	workflow := config.Workflow{Config: config.Config{}, Prompt: "Complete the linked issue"}
+	if len(workflows) > 0 {
+		workflow = workflows[0]
+	}
 	agent, err := runner.NewRunner(runner.Dependencies{
-		Workflow:     config.Workflow{Config: config.Config{}, Prompt: "Complete the linked issue"},
+		Workflow:     workflow,
 		Workspace:    &conversationStubWorkspace{info: workspace.Info{Path: t.TempDir(), Key: "native", Branch: "native"}},
 		AgentBackend: backend,
 	})
@@ -827,4 +832,142 @@ func (b *liveConversationBackend) consumedKinds() []runner.AgentControlKind {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return append([]runner.AgentControlKind(nil), b.consumed...)
+}
+
+type conversationBindingBackend struct {
+	requests []runner.AgentTurnRequest
+}
+
+func (*conversationBindingBackend) SupportsLiveControl() bool { return true }
+
+func (b *conversationBindingBackend) RunTurn(_ context.Context, request runner.AgentTurnRequest, update runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
+	b.requests = append(b.requests, request)
+	for _, event := range []runner.AgentUpdate{
+		{Type: runner.AgentUpdateTurnStarted, ThreadID: "fresh-thread", TurnID: "fresh-turn"},
+		{Type: runner.AgentUpdateTurnCompleted, ThreadID: "fresh-thread", TurnID: "fresh-turn", Status: "completed"},
+	} {
+		if err := update(event); err != nil {
+			return runner.AgentTurnResult{}, err
+		}
+	}
+	return runner.AgentTurnResult{ThreadID: "fresh-thread", TurnID: "fresh-turn"}, nil
+}
+
+func TestConversationRunnerNegotiatesPreStartBinding(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		advertise bool
+		oldHub    bool
+	}{
+		{name: "old Hub starts then binds", oldHub: true},
+		{name: "new Hub binds before start", advertise: true},
+		{name: "pre-start rejection never launches provider", advertise: true, oldHub: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			hub := newConversationRunnerHub(t)
+			var created struct {
+				Conversation struct {
+					ID string `json:"id"`
+				} `json:"conversation"`
+			}
+			hub.expect(t, http.MethodPost, "/conversations", map[string]any{"key": "create-binding", "title": "Example"}, http.StatusCreated, &created)
+			id := created.Conversation.ID
+			hub.expect(t, http.MethodPatch, "/conversations/"+id, map[string]any{"preferences": map[string]string{"reasoning_effort": "high"}}, http.StatusOK, nil)
+			var linked struct {
+				Issue struct {
+					ID string `json:"id"`
+				} `json:"issue"`
+			}
+			hub.expect(t, http.MethodPost, "/conversations/"+id+"/link", map[string]any{"key": "link-binding", "share_history": true, "issue": map[string]string{"title": "Example", "description": "Complete the requested work." + issueContractTestSections}}, http.StatusOK, &linked)
+			hub.command(t, id, conversation.Command{Key: "pending-binding", Kind: conversation.CommandMessage, Text: "Keep these additional instructions."})
+			next := hub.httpClient.Transport
+			var mu sync.Mutex
+			started, bound, boundBeforeStart := false, false, false
+			var registered tracker.NativeExecutionIdentity
+			hub.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+				var event tracker.NativeRunEvent
+				if request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/events") {
+					body, err := io.ReadAll(request.Body)
+					if err != nil {
+						return nil, err
+					}
+					request.Body = io.NopCloser(bytes.NewReader(body))
+					if err := json.Unmarshal(body, &event); err != nil {
+						return nil, err
+					}
+				}
+				bind := strings.HasSuffix(request.URL.Path, "/conversation/bind")
+				if bind {
+					mu.Lock()
+					bound, boundBeforeStart = true, !started
+					reject := test.oldHub && !started
+					mu.Unlock()
+					if reject {
+						response := &http.Response{StatusCode: http.StatusConflict, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":"stale_execution","message":"attempt is not running"}`)), Request: request}
+						return response, nil
+					}
+				}
+				response, err := next.RoundTrip(request)
+				if err != nil {
+					return nil, err
+				}
+				if event.Type == "run.started" && response.StatusCode == http.StatusOK {
+					mu.Lock()
+					started = true
+					registered = *event.Data.Identity
+					mu.Unlock()
+				}
+				if request.URL.Path == "/api/v2/capabilities" {
+					var capabilities nativeCapabilities
+					if err := json.NewDecoder(response.Body).Decode(&capabilities); err != nil {
+						return nil, err
+					}
+					if err := response.Body.Close(); err != nil {
+						return nil, err
+					}
+					if !slices.Contains(capabilities.Features, tracker.NativePreStartConversationBindingCapability) {
+						t.Error("new Hub did not advertise pre-start conversation binding")
+					}
+					if !test.advertise {
+						capabilities.Features = slices.DeleteFunc(capabilities.Features, func(feature string) bool { return feature == tracker.NativePreStartConversationBindingCapability })
+					}
+					body, err := json.Marshal(capabilities)
+					if err != nil {
+						return nil, err
+					}
+					response.Body = io.NopCloser(bytes.NewReader(body))
+					response.ContentLength = int64(len(body))
+				}
+				return response, nil
+			})
+			backend := &conversationBindingBackend{}
+			workflow := config.Workflow{Config: config.Config{Agents: config.Agents{Routes: []config.AgentRoute{{Name: "default", Role: runner.RolePlan, Backend: "codex", Model: "example-model", Default: true}}}}, Prompt: "Complete the linked issue"}
+			outcome := awaitRunnerAttempt(t, hub.startAttempt(t, hub.scheduler(t), backend, linked.Issue.ID, workflow))
+			mu.Lock()
+			defer mu.Unlock()
+			if test.oldHub && test.advertise {
+				if !errors.Is(outcome.err, ErrStaleConversation) || len(backend.requests) != 0 || started || !boundBeforeStart {
+					t.Fatalf("rejected bind: error=%v turns=%d started=%t pre-start=%t", outcome.err, len(backend.requests), started, boundBeforeStart)
+				}
+				return
+			}
+			if outcome.err != nil {
+				t.Fatal(outcome.err)
+			}
+			if !started || !bound || boundBeforeStart != test.advertise || len(backend.requests) != 1 {
+				t.Fatalf("started=%t bound=%t pre-start=%t turns=%d", started, bound, boundBeforeStart, len(backend.requests))
+			}
+			request := backend.requests[0]
+			if request.ReasoningEffort != "high" || request.ConversationControl == nil || !strings.Contains(request.Prompt, "Keep these additional instructions.") || request.Resume.ThreadID != "" || request.Resume.SessionID != "" {
+				t.Fatalf("bound provider request = %#v", request)
+			}
+			want := tracker.NativeExecutionIdentity{Role: runner.RolePlan, Backend: "codex", Model: "example-model"}
+			if test.advertise {
+				want.ReasoningEffort = "high"
+			}
+			if registered != want {
+				t.Fatalf("registered identity = %#v, want %#v", registered, want)
+			}
+		})
+	}
 }

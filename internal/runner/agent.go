@@ -1264,7 +1264,11 @@ func (r *Runner) runAgentTurn(
 	turnStarted := false
 	workerProcessObserved := false
 	conversation := conversationRunFromContext(ctx)
+	freshNativeTurn := runRequest.Execution != nil && runRequest.RetryMode == RetryModeFresh && agentResumeEmpty(turnRequest.Resume)
 	turnRequest = conversation.prepareTurn(turnRequest)
+	if freshNativeTurn {
+		turnRequest.Resume = AgentResume{}
+	}
 	turnRequest.reserveScratch = r.reserveSessionWorkerScratch(detentSessionID, info.Path, "")
 	providerResume := turnRequest.Resume
 	usage := newSessionTokenUsage(!agentResumeEmpty(providerResume))
@@ -1701,9 +1705,10 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		}
 	}
 	publicationRecovery := req.publicationRecovery(mode)
-	if req.Execution != nil && !nativeLanding && !publicationRecovery && reviewRecovery == nil && turnRecovery == nil && nativeInterruptedResumeAttempt(req.Execution.Recovery()) != nil {
-		if !req.operatorFreshRetry() {
-			resume, err := r.nativeInterruptedResumeState(ctx, req, agentRuntime)
+	if req.Execution != nil && !nativeLanding && !publicationRecovery && reviewRecovery == nil && turnRecovery == nil {
+		previous := req.Execution.Recovery().SourceAttempt()
+		if !req.operatorFreshRetry() && previous != nil && previous.Checkpoint != nil && previous.Checkpoint.Resume == "resume_session" {
+			resume, err := r.nativeSessionResumeState(ctx, req, agentRuntime)
 			if err != nil {
 				return RunResult{}, err
 			}
@@ -1714,7 +1719,9 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 				req.RetryMode = RetryModeFresh
 			}
 		}
-		req.retainCheckpoint = true
+		if nativeInterruptedResumeAttempt(req.Execution.Recovery()) != nil {
+			req.retainCheckpoint = true
+		}
 	}
 	if err := r.checkResumePolicy(ctx, req, req.ResumeState); err != nil {
 		return RunResult{}, err
@@ -2051,10 +2058,6 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	}
 	workflow.Config.Agent = workflow.Config.EffectiveModelSelection().SessionAgent(workflow.Config.Agent, resolvedOverride.Selection.Level)
 	sessionModel := effectiveModel("", selectedModel, agentRuntime.defaultModelForRole(role))
-	executionIdentity := tracker.NativeExecutionIdentity{Role: role, Backend: selection.BackendID, Model: sessionModel}
-	if executionIdentity.Model == "" {
-		executionIdentity.Model = "provider_default"
-	}
 	runtimeIdentity := configuredRuntimeIdentity(selection, backendConfig, role, sessionModel, startedAt)
 	runtimeIdentity.Selection = resolvedOverride.Selection
 	runtimeIdentity.Selection.BackendSource = workflow.Config.Agents.Sources["backends."+selection.BackendID]
@@ -2071,6 +2074,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		modelProvider = runtimeIdentity.Provider.Value
 		serviceTier = runtimeIdentity.ServiceTier.Value
 	}
+	turnRequest := AgentTurnRequest{Model: selectedModel, ModelProvider: modelProvider, ServiceTier: serviceTier, ReasoningEffort: effort}
 	var budgetProjection *dispatchBudgetProjection
 	if workflow.Config.Budget.EffectiveBillingMode() != config.BillingModeSubscription {
 		if admission, refused, err := r.checkDispatchBudget(ctx, budgetChecker, dispatchEstimator, req.Issue, sessionModel, startedAt); err != nil {
@@ -2106,11 +2110,6 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		}
 		if !nativeReviewResumeMatches(req.Execution.Recovery(), recoveryState, workspaceIssue.Source) {
 			return RunResult{}, fmt.Errorf("%w: review source changed before finalization", ErrNativeRecoveryRequired)
-		}
-	} else if turnRecovery == nil {
-		resumeState, err = r.nativeResume(ctx, req, backend, processRequest, recoveryState, resumeState, executionIdentity, runWorkspace, info, workspaceIssue)
-		if err != nil {
-			return RunResult{}, err
 		}
 	}
 	if req.Execution != nil {
@@ -2148,31 +2147,74 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 				})
 			}
 		}
+		preStartBinding := true
+		if _, binds := req.Execution.(ConversationExecution); binds {
+			if live, ok := backend.(AgentLiveBackend); ok && live.SupportsLiveControl() {
+				preStartBinding = false
+				if capabilities, ok := req.Execution.(PreStartConversationExecution); ok {
+					preStartBinding, err = capabilities.SupportsPreStartConversationBinding(ctx)
+					if err != nil {
+						return RunResult{}, err
+					}
+				}
+			}
+		}
+		executionIdentity := tracker.NativeExecutionIdentity{Role: role, Backend: selection.BackendID, Model: sessionModel}
+		if !preStartBinding {
+			if err := req.Execution.Start(ctx, executionIdentity); err != nil {
+				return RunResult{}, err
+			}
+			afterRunPending = true
+		}
+		resumeThreadID := ""
+		if preStartBinding {
+			resumeThreadID = resumeState.ProviderThreadID
+		}
+		conversation, err := r.bindConversation(ctx, req, backend, resumeThreadID)
+		if err != nil {
+			return RunResult{}, err
+		}
+		ctx = conversation.attach(ctx)
+		defer func() { conversation.close(ctx, returnValue, returnErr) }()
+		if conversation := conversationRunFromContext(ctx); conversation != nil {
+			turnRequest = applyConversationPreferences(turnRequest, conversation.session.Preferences())
+			if (reviewRecovery != nil || turnRecovery != nil) && conversation.session.Continuation() {
+				reviewRecovery = nil
+				turnRecovery = nil
+				resumeState, err = r.runRequestResumeState(ctx, workflow.Config.Agent, req, turnRequest.Model, selection.BackendID, backendConfig.Kind, role)
+				if err != nil {
+					return RunResult{}, err
+				}
+			}
+		}
+		if preStartBinding {
+			executionIdentity = tracker.NativeExecutionIdentity{
+				Role:            role,
+				Backend:         selection.BackendID,
+				Model:           effectiveModel("", turnRequest.Model, "provider_default"),
+				ReasoningEffort: turnRequest.ReasoningEffort,
+			}
+		}
+		if reviewRecovery == nil && turnRecovery == nil {
+			resumeState, err = r.nativeResume(ctx, &req, backend, processRequest, recoveryState, resumeState, executionIdentity, preStartBinding, runWorkspace, info, workspaceIssue)
+			if err != nil {
+				return RunResult{}, err
+			}
+		}
+		sessionModel = turnRequest.Model
+		runtimeIdentity.RequestedModel = agentidentity.NewValue(turnRequest.Model, agentidentity.ProvenanceConfigured)
+		runtimeIdentity.ReasoningEffort = agentidentity.NewValue(turnRequest.ReasoningEffort, agentidentity.ProvenanceConfigured)
 		if runtime, ok := req.Execution.(RuntimeExecution); ok {
 			if err := runtime.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{LocalAttemptID: req.WorkAttemptID, Generation: req.Generation, Phase: nativeRuntimePhase(req), HeartbeatAt: r.now(), Identity: runtimeIdentity}); err != nil {
 				return RunResult{}, err
 			}
 		}
-		if err := req.Execution.Start(ctx, executionIdentity); err != nil {
-			return RunResult{}, err
-		}
-		afterRunPending = true
-		if conversation := r.bindConversation(ctx, req, backend, resumeState.ProviderThreadID); conversation != nil {
-			ctx = conversation.attach(ctx)
-			defer func() { conversation.close(ctx, returnValue, returnErr) }()
-			if (reviewRecovery != nil || turnRecovery != nil) && conversation.session.Continuation() {
-				reviewRecovery = nil
-				turnRecovery = nil
-				resumeState, err = r.runRequestResumeState(ctx, workflow.Config.Agent, req, sessionModel, selection.BackendID, backendConfig.Kind, role)
-				if err != nil {
-					return RunResult{}, err
-				}
-				resumeState, err = r.nativeResume(ctx, req, backend, processRequest, recoveryState, resumeState, executionIdentity, runWorkspace, info, workspaceIssue)
-				if err != nil {
-					return RunResult{}, err
-				}
+		if preStartBinding {
+			if err := req.Execution.Start(ctx, executionIdentity); err != nil {
+				return RunResult{}, err
 			}
 		}
+		afterRunPending = true
 		if artifacts, ok := req.Execution.(ArtifactExecution); ok {
 			if err := artifacts.PrepareArtifacts(ctx, info.Path); err != nil {
 				return RunResult{}, err
@@ -2253,15 +2295,22 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			if err != nil {
 				return RunResult{}, nativeGitError("prepare native rework", err)
 			}
-			if landingRework && precheck.Status == workspace.MergePrepareStatusConflict {
+			resumeSource := recoveryState
+			recoveryState = r.workspaceRecoveryState(runWorkspace, ctx, info, workspaceIssue, "rework_prepared")
+			if recoveryState == nil {
+				return RunResult{}, ErrNativeRecoveryRequired
+			}
+			sourceChanged := resumeSource == nil || resumeSource.HeadSHA != recoveryState.HeadSHA || resumeSource.WorkspaceFingerprint != recoveryState.WorkspaceFingerprint
+			if landingRework && precheck.Status == workspace.MergePrepareStatusConflict || !agentResumeStateEmpty(resumeState) && sourceChanged {
 				resumeState = store.AgentResumeState{}
 				req.ResumeState = store.AgentResumeState{}
 				req.RetryMode = RetryModeFresh
 				r.logWorkerEvent(req.Issue, "worker_native_recovery", "action", "fresh_checkout", "reason", "session_restart_required")
-			}
-			recoveryState = r.workspaceRecoveryState(runWorkspace, ctx, info, workspaceIssue, "rework_prepared")
-			if recoveryState == nil {
-				return RunResult{}, ErrNativeRecoveryRequired
+				if runtime, ok := req.Execution.(RuntimeExecution); ok {
+					if err := runtime.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{LocalAttemptID: req.WorkAttemptID, Generation: req.Generation, Phase: nativeRuntimePhase(req), HeartbeatAt: r.now(), Recovery: &tracker.NativeRecoveryDecision{Action: "fresh_checkout", Reason: "session_restart_required"}}); err != nil {
+						return RunResult{}, err
+					}
+				}
 			}
 			if diffs, ok := req.Execution.(DiffExecution); ok {
 				diffIssue := workspaceIssue
@@ -2422,17 +2471,17 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		extraWritableRoots = extraWritableRootsForWorkspace(sessionCtx, workflow.Config.Workspace.Kind, info.Path, req.Execution != nil && mode == RunModeImplement, r.logger)
 	}
 	deliverableKind, deliverableRepository := agentTurnDeliverable(workflow.Config, req.Issue, mode)
-	turnRequest := AgentTurnRequest{
+	turnRequest = AgentTurnRequest{
 		AllowLocalBinding:     workflow.Config.Worker.EffectiveAllowLocalBinding(),
 		ExtraNetworkDomains:   workflow.Config.Worker.ExtraNetworkDomains,
 		Workspace:             info.Path,
 		Prompt:                turnPrompt,
 		ReadOnly:              mode == RunModeRoutine,
 		SupplementalTools:     len(req.AgentTools) > 0,
-		Model:                 selectedModel,
-		ModelProvider:         modelProvider,
-		ServiceTier:           serviceTier,
-		ReasoningEffort:       effort,
+		Model:                 turnRequest.Model,
+		ModelProvider:         turnRequest.ModelProvider,
+		ServiceTier:           turnRequest.ServiceTier,
+		ReasoningEffort:       turnRequest.ReasoningEffort,
 		Resume:                agentResumeFromState(resumeState),
 		MaxTurns:              workflow.Config.Agent.MaxTurns,
 		MaxDuration:           durationFromMillis(workflow.Config.Agent.MaxTurnDurationMS),

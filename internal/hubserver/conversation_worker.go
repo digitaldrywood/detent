@@ -282,7 +282,7 @@ func (c *conversationService) requireWorkerOwner(ctx context.Context, tx *sql.Tx
 			return leaseRecord{}, err
 		}
 	}
-	return c.requireExecutionOwner(ctx, tx, scope, item, identity, runID, allowReleased, now)
+	return c.requireExecutionOwner(ctx, tx, scope, item, identity, runID, allowReleased, runID != "" || allowReleased, now)
 }
 
 func readConversationOwnerScope(ctx context.Context, tx *sql.Tx, scope nativeScope, lease tracker.LeaseID) (nativeScope, error) {
@@ -297,7 +297,7 @@ WHERE l.lease_id = ?`, lease).Scan(&scope.credential.ID, &scope.credential.Hash,
 	return scope, err
 }
 
-func (c *conversationService) requireExecutionOwner(ctx context.Context, tx *sql.Tx, scope nativeScope, item string, identity conversationWorkerIdentity, runID string, allowReleased bool, now time.Time) (leaseRecord, error) {
+func (c *conversationService) requireExecutionOwner(ctx context.Context, tx *sql.Tx, scope nativeScope, item string, identity conversationWorkerIdentity, runID string, allowReleased, allowUnstarted bool, now time.Time) (leaseRecord, error) {
 	if err := identity.validate(); err != nil {
 		return leaseRecord{}, err
 	}
@@ -337,6 +337,15 @@ func (c *conversationService) requireExecutionOwner(ctx context.Context, tx *sql
 		return leaseRecord{}, fmt.Errorf("read conversation attempt: %w", err)
 	}
 	if count != 1 {
+		if allowUnstarted {
+			var occupied bool
+			if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM native_attempts WHERE lease_id = ?) OR EXISTS (SELECT 1 FROM native_attempts WHERE id = ?)`, identity.LeaseID, identity.AttemptID).Scan(&occupied); err != nil {
+				return leaseRecord{}, fmt.Errorf("read conversation attempt ownership: %w", err)
+			}
+			if !occupied {
+				return lease, nil
+			}
+		}
 		return leaseRecord{}, conversationStale("The attempt is not the running owner of the lease")
 	}
 	return lease, nil
@@ -790,6 +799,9 @@ max(COALESCE((SELECT MAX(seq) FROM conversation_events WHERE conversation_id=? A
 			return err
 		}
 		if !previous.Status.Terminal() && previous.Owner.AttemptID != "" && previous.Owner.AttemptID != request.AttemptID {
+			if previous.Owner.LeaseID == string(request.LeaseID) {
+				return conversationStale("The lease is already bound to another attempt")
+			}
 			// The earlier owner lost its lease without unbinding; the new
 			// claim proves that. Settle it before the new attempt takes over.
 			if err := c.finishExecution(ctx, tx, &record, conversation.ExecutionInterrupted, conversationLeaseLostError, false, now); err != nil {
@@ -1582,7 +1594,7 @@ func (c *conversationService) settleLostExecution(ctx context.Context, ref conve
 		identity := conversationWorkerIdentity{LeaseID: tracker.LeaseID(execution.Owner.LeaseID), FencingToken: tracker.FencingToken(execution.Owner.FencingToken), AttemptID: execution.Owner.AttemptID}
 		scope, err := readConversationOwnerScope(ctx, tx, nativeScope{organization: record.OrganizationID, project: record.ProjectID}, identity.LeaseID)
 		if err == nil {
-			_, err = c.requireExecutionOwner(ctx, tx, scope, record.WorkItemID, identity, execution.Owner.RunID, false, now)
+			_, err = c.requireExecutionOwner(ctx, tx, scope, record.WorkItemID, identity, execution.Owner.RunID, false, true, now)
 		}
 		if err == nil {
 			return nil

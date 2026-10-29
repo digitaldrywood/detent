@@ -2529,8 +2529,7 @@ func runGitAt(ctx context.Context, dir string, args ...string) (string, error) {
 }
 
 func runGitAtWithEnv(ctx context.Context, dir string, env []string, args ...string) (string, error) {
-	fileOutput := len(args) >= 2 && args[0] == "worktree" && args[1] == "add"
-	return runGitAtWithEnvCapture(ctx, dir, env, fileOutput, args...)
+	return runGitAtWithEnvCapture(ctx, dir, env, true, args...)
 }
 
 func runGitAtWithEnvCapture(ctx context.Context, dir string, env []string, fileOutput bool, args ...string) (string, error) {

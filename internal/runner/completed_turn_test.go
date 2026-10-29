@@ -754,7 +754,7 @@ func TestCompletedNativeTurnReapFailure(t *testing.T) {
 				r.store = &fakeSessionStore{resumeState: store.AgentResumeState{ProviderThreadID: "finished-thread", ProviderSessionID: "finished-session"}}
 				execution.recovery.Attempts = []tracker.NativeAttempt{{Status: execution.finish, Checkpoint: execution.checkpoint, NativeRunData: tracker.NativeRunData{Identity: &tracker.NativeExecutionIdentity{Role: RoleCode, Backend: "codex"}, Runtime: &tracker.NativeRuntimeObservation{LocalAttemptID: 1}}}}
 				_, runtime, _, _ := r.runtimeSnapshot()
-				resume, err := r.nativeInterruptedResumeState(t.Context(), RunRequest{Execution: execution, Issue: connector.Issue{ID: "work"}}, runtime)
+				resume, err := r.nativeSessionResumeState(t.Context(), RunRequest{Execution: execution, Issue: connector.Issue{ID: "work"}}, runtime)
 				if err != nil || resume.ProviderThreadID != "finished-thread" || resume.ProviderSessionID != "finished-session" {
 					t.Fatalf("finished implementation did not retain its provider resume: %+v %v", resume, err)
 				}

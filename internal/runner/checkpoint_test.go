@@ -46,13 +46,18 @@ func (b *checkpointBackendStub) Checkpoint(ctx context.Context, _ workspace.Chec
 	return b.published, b.err
 }
 
-type checkpointAgentStub struct{}
+type checkpointAgentStub struct {
+	run func(context.Context, AgentTurnRequest, AgentUpdateHandler) (AgentTurnResult, error)
+}
 
-func (checkpointAgentStub) RunTurn(context.Context, AgentTurnRequest, AgentUpdateHandler) (AgentTurnResult, error) {
+func (b checkpointAgentStub) RunTurn(ctx context.Context, request AgentTurnRequest, update AgentUpdateHandler) (AgentTurnResult, error) {
+	if b.run != nil {
+		return b.run(ctx, request, update)
+	}
 	return AgentTurnResult{}, nil
 }
-func (checkpointAgentStub) RunTurnWithTools(context.Context, AgentTurnRequest, []AgentTool, AgentToolHandler, AgentUpdateHandler) (AgentTurnResult, error) {
-	return AgentTurnResult{}, nil
+func (b checkpointAgentStub) RunTurnWithTools(ctx context.Context, request AgentTurnRequest, _ []AgentTool, _ AgentToolHandler, update AgentUpdateHandler) (AgentTurnResult, error) {
+	return b.RunTurn(ctx, request, update)
 }
 
 func checkpointRunnerFixture(t *testing.T) (*Runner, *workerCheckpoint, *checkpointBackendStub) {
@@ -305,6 +310,67 @@ func TestCheckpointBoundedPeriodicAndTerminalTurns(t *testing.T) {
 				}
 				if scenario == "duration during checkpoint" && !errors.Is(result.err, ErrSessionDurationExceeded) {
 					t.Fatalf("session deadline extended: %v", result.err)
+				}
+			})
+		})
+	}
+}
+
+func TestFreshNativeCheckpointResumesCurrentThread(t *testing.T) {
+	t.Parallel()
+	for _, reason := range []string{"periodic", "duration"} {
+		t.Run(reason, func(t *testing.T) {
+			t.Parallel()
+			r, checkpoint, publication := checkpointRunnerFixture(t)
+			r.reapWorkspaceProcesses = func(context.Context, string, time.Duration) (int, error) { return 0, nil }
+			synctest.Test(t, func(t *testing.T) {
+				request := checkpoint.request
+				request.Execution = &testExecution{}
+				request.RetryMode = RetryModeFresh
+				conversation := newFakeConversationSession()
+				conversation.resume = "historical-thread"
+				ctx := (&conversationRun{session: conversation}).attach(t.Context())
+				current := AgentResume{ThreadID: "new-thread", SessionID: "new-session"}
+				var requests []AgentTurnRequest
+				agent := checkpointAgentStub{run: func(ctx context.Context, turn AgentTurnRequest, _ AgentUpdateHandler) (AgentTurnResult, error) {
+					requests = append(requests, turn)
+					want := current
+					if len(requests) == 1 {
+						want = AgentResume{}
+					}
+					if turn.Resume != want {
+						t.Errorf("provider turn %d (checkpoint=%t) resume = %+v, want %+v", len(requests), turn.ReadOnly, turn.Resume, want)
+					}
+					result := AgentTurnResult{ThreadID: current.ThreadID, SessionID: current.SessionID}
+					if len(requests) == 1 {
+						if reason == "periodic" {
+							<-ctx.Done()
+							return result, context.Cause(ctx)
+						}
+						return result, ErrSessionDurationExceeded
+					}
+					return result, nil
+				}}
+				run := func(ctx context.Context, turn AgentTurnRequest, req RunRequest) agentTurnExecution {
+					if turn.ReadOnly {
+						submitCheckpoint(t, ctx, req)
+					}
+					return r.runAgentTurn(ctx, agent, turn, req, workspace.Info{}, workspace.Issue{}, config.Agent{}, "", nil, time.Now(), 0, agentidentity.Identity{}, nil, 0, "", "")
+				}
+				cfg := config.Agent{}
+				wantTurns := 2
+				var wantErr error = ErrSessionDurationExceeded
+				if reason == "periodic" {
+					cfg.CheckpointIntervalMS = 1000
+					wantTurns = 3
+					wantErr = nil
+				}
+				result := r.runCheckpointedTurn(ctx, ctx, checkpoint, cfg, agent, AgentTurnRequest{}, request, run)
+				if !errors.Is(result.err, wantErr) || len(requests) != wantTurns || publication.calls != 1 || checkpoint.record == nil || !checkpoint.record.Published {
+					t.Fatalf("checkpoint did not preserve run: error=%v turns=%d publication=%d record=%+v", result.err, len(requests), publication.calls, checkpoint.record)
+				}
+				if !requests[1].ReadOnly || reason == "periodic" && (requests[2].ReadOnly || !strings.Contains(requests[2].Prompt, "Continue the assigned issue work")) {
+					t.Fatal("checkpoint or continuation did not reach provider")
 				}
 			})
 		})
