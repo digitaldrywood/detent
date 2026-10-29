@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"sort"
@@ -31,7 +32,7 @@ func readHealthRates(ctx context.Context, q nativeQueryer, organization tracker.
 		if err := readHealthProductivityAttempts(ctx, q, scope, p.Attempts); err != nil {
 			return err
 		}
-		landings, err := nativeAnalyticsLandings(ctx, q, scope, window)
+		landings, err := readHealthLandings(ctx, q, scope, window)
 		if err != nil {
 			return err
 		}
@@ -71,6 +72,73 @@ func readHealthRates(ctx context.Context, q nativeQueryer, organization tracker.
 		snapshot.Rates = append(snapshot.Rates, p)
 	}
 	return nil
+}
+
+func readHealthLandings(ctx context.Context, q nativeQueryer, scope nativeScope, window operatortool.AnalyticsWindow) ([]nativeAnalyticsLanding, error) {
+	rows, err := q.QueryContext(ctx, `SELECT id,work_item_id,record_json,legacy FROM (
+	 SELECT id,work_item_id,record_json,0 AS legacy FROM (SELECT id,work_item_id,record_json FROM change_requests INDEXED BY change_requests_analytics_landed WHERE organization_id=? AND project_id=? AND landed_at>=? AND landed_at<? ORDER BY landed_at,id LIMIT ?)
+	 UNION ALL SELECT id,work_item_id,record_json,1 FROM (SELECT id,work_item_id,record_json FROM change_requests INDEXED BY change_requests_policy_unknown WHERE organization_id=? AND project_id=? AND created_at IS NULL LIMIT ?)
+)`, scope.organization, scope.project, changeColumnTime(window.From), changeColumnTime(window.To), healthReadLimit+1, scope.organization, scope.project, changeLegacyReadLimit+1)
+	if err != nil {
+		return nil, err
+	}
+	var candidates []nativeAnalyticsLanding
+	legacy, converted := 0, 0
+	for rows.Next() {
+		var candidate nativeAnalyticsLanding
+		var raw string
+		var pending bool
+		if err := rows.Scan(&candidate.ChangeID, &candidate.WorkItemID, &raw, &pending); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if pending {
+			legacy++
+		} else {
+			converted++
+		}
+		if legacy > changeLegacyReadLimit || converted > healthReadLimit {
+			rows.Close()
+			return nil, errHealthReadLimit
+		}
+		var change tracker.ChangeRequest
+		if err := decodeChangeColumnsJSON(ctx, []byte(raw), &change); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if change.Landed == nil || change.Landed.LandedAt.Before(window.From) || !change.Landed.LandedAt.Before(window.To) {
+			continue
+		}
+		candidate.Landing = *change.Landed
+		candidates = append(candidates, candidate)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, err
+	}
+	landings := []nativeAnalyticsLanding{}
+	for _, candidate := range candidates {
+		var head sql.NullString
+		var raw string
+		err := q.QueryRowContext(ctx, `SELECT head_sha,CASE WHEN head_sha IS NULL THEN record_json ELSE '' END FROM change_versions WHERE id=? AND change_id=?`, candidate.Landing.VersionID, candidate.ChangeID).Scan(&head, &raw)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if !head.Valid {
+			var version tracker.ChangeVersion
+			if err := decodeChangeColumnsJSON(ctx, []byte(raw), &version); err != nil {
+				return nil, err
+			}
+			head.String = version.HeadSHA
+		}
+		if candidate.Landing.HeadSHA == head.String && (len(candidate.Landing.MergeSHA) == 40 || len(candidate.Landing.MergeSHA) == 64) {
+			candidate.Landing.Quality = nil
+			landings = append(landings, candidate)
+		}
+	}
+	return landings, nil
 }
 
 func readHealthRateAttempts(ctx context.Context, q nativeQueryer, scope nativeScope, window operatortool.AnalyticsWindow) ([]healthRateAttempt, error) {
