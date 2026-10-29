@@ -2,7 +2,6 @@ import json
 import os
 from pathlib import Path
 import re
-import select
 import shutil
 import signal
 import subprocess
@@ -48,6 +47,12 @@ if name == "python3" and args[:1] == ["scripts/test-landing-hub.py"]:
     sys.exit(subprocess.run([sys.executable, *args]).returncode)
 if name == "make" and any(target in args for target in ("test-landing-hub", "nilaway-changed")):
     sys.exit(subprocess.run([os.environ["REAL_MAKE"], *args]).returncode)
+if name == "go" and args[:1] == ["test"] and "./internal/hubserver" in args and os.environ.get("HUB_TEST_BINARY"):
+    flags = ["-test." + flag[1:] for flag in args if flag.startswith("-timeout=") or flag == "-short"]
+    for flag in ("-run", "-list"):
+        if flag in args:
+            flags.extend(["-test." + flag[1:], args[args.index(flag) + 1]])
+    sys.exit(subprocess.run([os.environ["HUB_TEST_BINARY"], *flags], cwd="internal/hubserver").returncode)
 if name == "go" and args[:1] == ["test"] and os.environ.get("RUN_GO_TESTS"):
     sys.exit(subprocess.run([os.environ["REAL_GO"], *args]).returncode)
 if name == "go" and args[:1] == ["list"]:
@@ -98,7 +103,7 @@ class LandingGateTest(unittest.TestCase):
             tool = binaries / name
             tool.write_text(TOOL)
             tool.chmod(0o755)
-        self.env = dict(os.environ, PATH=str(binaries) + os.pathsep + os.environ["PATH"], DETENT_API_TOKEN="fixture-token", REAL_GO=shutil.which("go"), REAL_MAKE=shutil.which("make"))
+        self.env = dict(os.environ, PATH=str(binaries) + os.pathsep + os.environ["PATH"], DETENT_API_TOKEN="fixture-token", GOCACHEPROG="", REAL_GO=shutil.which("go"), REAL_MAKE=shutil.which("make"))
         self.linter = str(binaries / "golangci-lint")
 
     def git(self, *args):
@@ -142,7 +147,6 @@ class LandingGateTest(unittest.TestCase):
                 processes.append(process)
                 output = b""
                 while b"fixture-ready\n" not in output:
-                    self.assertTrue(select.select([process.stdout], [], [], 5)[0])
                     chunk = os.read(process.stdout.fileno(), 65536)
                     self.assertTrue(chunk, "fixture exited before its child was ready")
                     output += chunk
@@ -161,10 +165,11 @@ class LandingGateTest(unittest.TestCase):
                 self.assertIn(processes[0].pid, drained, "gate timeout did not drain descendant output")
         finally:
             for process in processes:
-                try:
-                    killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
+                if process.poll() is None:
+                    try:
+                        killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
                 process.wait(timeout=5)
 
     def trace(self):
@@ -283,6 +288,10 @@ class LandingGateTest(unittest.TestCase):
                 for letter in names
             )
         )
+        binary = self.root / ".git/hub.test"
+        subprocess.run([self.env["REAL_GO"], "test", "-p", "1", "-c", "-o", str(binary), "./internal/hubserver"],
+                       cwd=self.root, env=self.env, check=True, capture_output=True, timeout=30)
+        self.env["HUB_TEST_BINARY"] = str(binary)
         self.commit()
         for index, path in enumerate(("internal/hubserver/source.go", "go.mod", "lib/source.go", "internal/hubserver/source.go", "internal/hubserver/source.go")):
             with self.subTest(path=path, index=index):
