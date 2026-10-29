@@ -1633,11 +1633,15 @@ func (r *Runner) recoverRunChangeSource(ctx context.Context, req RunRequest, run
 func restoreRunWorkspaceCheckpoint(req RunRequest, runWorkspace workspace.Backend, issue *workspace.Issue, nativeLanding bool) {
 	if req.Execution != nil && !nativeLanding && issue.Source != nil {
 		previous := req.Execution.Recovery().SourceAttempt()
-		if previous != nil && previous.Checkpoint != nil && previous.Checkpoint.WorktreeState == "clean" && !previous.Checkpoint.UncertainForgeEffect() && previous.Checkpoint.HeadSHA != issue.Source.Version.HeadSHA && previous.Finalization != nil {
+		if previous != nil && previous.Checkpoint != nil && !previous.Checkpoint.UncertainForgeEffect() && previous.Checkpoint.HeadSHA != issue.Source.Version.HeadSHA && previous.Finalization != nil {
 			f, v := previous.Finalization, issue.Source.Version
-			if ref := f.SourceVersion; ref != nil && ref.ChangeID == v.ChangeID && ref.VersionID == v.ID && ref.HeadSHA == v.HeadSHA && f.ChangeID == ref.ChangeID && f.VersionID == ref.VersionID && f.HeadSHA == ref.HeadSHA {
-				issue.Checkpoint, issue.FreshCheckout = nil, true
-				return
+			if ref := f.SourceVersion; ref != nil && ref.ChangeID == v.ChangeID && ref.VersionID == v.ID && ref.HeadSHA == v.HeadSHA && f.ChangeID == ref.ChangeID && f.HeadSHA == ref.HeadSHA {
+				clean := previous.Checkpoint.WorktreeState == "clean"
+				empty := f.Settled && f.Changed && f.VersionID == "" && f.Files == 0 && (clean || previous.Checkpoint.WorktreeState == "unpushed")
+				if clean && f.VersionID == ref.VersionID || empty {
+					issue.Checkpoint, issue.FreshCheckout = nil, true
+					return
+				}
 			}
 		}
 	}

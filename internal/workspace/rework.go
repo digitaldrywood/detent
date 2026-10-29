@@ -291,6 +291,38 @@ func (l *LocalGit) prepareRework(ctx context.Context, info Info, issue Issue, op
 	if err := validate(ctx); err != nil {
 		return MergePrepareResult{}, err
 	}
+	if issue.Source != nil {
+		version := issue.Source.Version
+		head, err := runGitAt(ctx, info.Path, "rev-parse", "HEAD")
+		if err != nil {
+			return MergePrepareResult{}, err
+		}
+		head = strings.TrimSpace(head)
+		_, sourceErr := runGitAt(ctx, info.Path, "merge-base", "--is-ancestor", version.HeadSHA, head)
+		if sourceErr != nil {
+			var commandErr *CommandError
+			if !errors.As(sourceErr, &commandErr) || commandErr.ExitCode != 1 {
+				return MergePrepareResult{}, fmt.Errorf("verify retained rework ancestry: %w", sourceErr)
+			}
+		}
+		if sourceErr == nil {
+			merged, err := runGitAt(ctx, info.Path, "merge-tree", "--write-tree", "--merge-base="+version.BaseSHA, base, head)
+			if err != nil {
+				var commandErr *CommandError
+				if !errors.As(err, &commandErr) || commandErr.ExitCode != 1 {
+					return MergePrepareResult{}, fmt.Errorf("compare retained rework source: %w", err)
+				}
+			} else {
+				tree, err := runGitAt(ctx, info.Path, "rev-parse", base+"^{tree}")
+				if err != nil {
+					return MergePrepareResult{}, err
+				}
+				if strings.TrimSpace(merged) == strings.TrimSpace(tree) {
+					return MergePrepareResult{Status: MergePrepareStatusClean, BaseSHA: version.BaseSHA, HeadSHA: head}, nil
+				}
+			}
+		}
+	}
 	_, rebaseErr := l.runCommit(ctx, info.Path, nil, "rebase", "--no-update-refs", "--no-autostash", "--no-rebase-merges", base)
 	prepared, err := reworkRebaseResult(ctx, info.Path, rebaseErr)
 	prepared.BaseSHA = base
