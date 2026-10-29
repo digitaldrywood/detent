@@ -213,14 +213,15 @@ func (w *resumedExecutionWorkspace) AfterRun(ctx context.Context, info workspace
 func TestNativeRetryResumesPersistedSessionAfterRunnerRestart(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name         string
-		status       string
-		unpushed     bool
-		changedHead  bool
-		changedModel bool
-		dirty        bool
-		rebase       bool
-		gitRef       bool
+		name              string
+		status            string
+		unpushed          bool
+		changedHead       bool
+		changedModel      bool
+		conversationModel string
+		dirty             bool
+		rebase            bool
+		gitRef            bool
 	}{
 		{name: "killed clean attempt", status: "cancelled"},
 		{name: "killed unpushed attempt", status: "cancelled", unpushed: true},
@@ -230,6 +231,7 @@ func TestNativeRetryResumesPersistedSessionAfterRunnerRestart(t *testing.T) {
 		{name: "cancelled retry with changed head", status: "cancelled", gitRef: true, changedHead: true},
 		{name: "failed retry with changed head", status: "failed", gitRef: true, changedHead: true},
 		{name: "failed retry with changed execution model", status: "failed", gitRef: true, changedModel: true},
+		{name: "failed retry with changed conversation model", status: "failed", gitRef: true, conversationModel: "example-model-b"},
 		{name: "cancelled retry preserves divergent tracked and untracked work", status: "cancelled", gitRef: true, dirty: true},
 		{name: "failed retry preserves divergent tracked and untracked work", status: "failed", gitRef: true, dirty: true},
 		{name: "cancelled retry rebases current Change", status: "cancelled", gitRef: true, rebase: true},
@@ -290,7 +292,7 @@ func TestNativeRetryResumesPersistedSessionAfterRunnerRestart(t *testing.T) {
 			backend := &resumedExecutionWorkspace{LocalGit: gitWorkspace}
 			providerErr := errors.New("provider interrupted")
 			agent := &fakeCodexClient{err: providerErr, result: AgentTurnResult{ThreadID: "persisted-thread", SessionID: "persisted-session"}}
-			if test.changedHead || test.changedModel || test.dirty || test.rebase {
+			if test.changedHead || test.changedModel || test.conversationModel != "" || test.dirty || test.rebase {
 				agent.result = AgentTurnResult{ThreadID: "fresh-thread", SessionID: "fresh-session"}
 			}
 			cfg := config.Config{Policy: approved}
@@ -377,6 +379,7 @@ func TestNativeRetryResumesPersistedSessionAfterRunnerRestart(t *testing.T) {
 			}
 			session := newFakeConversationSession()
 			session.resume = resume.ThreadID
+			session.preferences.Model = test.conversationModel
 			ctx = (&conversationRun{session: session}).attach(ctx)
 			before, err := gitWorkspace.RecoveryState(ctx, info, workspaceIssue)
 			if err != nil {
@@ -385,12 +388,16 @@ func TestNativeRetryResumesPersistedSessionAfterRunnerRestart(t *testing.T) {
 			_, err = restarted.Run(ctx, RunRequest{ProjectID: "native", Policy: approved, WorkAttemptID: currentAttemptID, Generation: 2, Issue: issue, Mode: RunModeImplement, Execution: runExecution})
 			wantResume := resume
 			wantAction, wantReason := "resume_session", "verified_local_session"
-			if test.changedHead || test.changedModel || test.dirty || test.rebase {
+			if test.changedHead || test.changedModel || test.conversationModel != "" || test.dirty || test.rebase {
 				wantResume = AgentResume{}
 				wantAction, wantReason = "fresh_checkout", "session_restart_required"
 			}
-			if !errors.Is(err, providerErr) || agent.calls != 1 || agent.request.Resume != wantResume || agent.verifiedResume != resume {
-				t.Fatalf("restart lost persisted provider session: error=%v calls=%d resume=%+v verified=%+v", err, agent.calls, agent.request.Resume, agent.verifiedResume)
+			wantModel := "example-model"
+			if test.conversationModel != "" {
+				wantModel = test.conversationModel
+			}
+			if !errors.Is(err, providerErr) || agent.calls != 1 || agent.request.Resume != wantResume || agent.verifiedResume != resume || agent.request.Model != wantModel {
+				t.Fatalf("restart lost persisted provider session: error=%v calls=%d model=%q resume=%+v verified=%+v", err, agent.calls, agent.request.Model, agent.request.Resume, agent.verifiedResume)
 			}
 			decision := execution.runtime.Recovery
 			if decision == nil || decision.Action != wantAction || decision.Reason != wantReason || agent.request.Workspace != info.Path {

@@ -2167,6 +2167,16 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		if conversation := r.bindConversation(ctx, req, backend, resumeState.ProviderThreadID); conversation != nil {
 			ctx = conversation.attach(ctx)
 			defer func() { conversation.close(ctx, returnValue, returnErr) }()
+		}
+		if conversation := conversationRunFromContext(ctx); conversation != nil {
+			resumeIdentity := executionIdentity
+			resumeIdentity.Model = applyConversationPreferences(AgentTurnRequest{Model: executionIdentity.Model}, conversation.session.Preferences()).Model
+			if resumeIdentity != executionIdentity && reviewRecovery == nil && turnRecovery == nil {
+				resumeState, err = r.nativeResume(ctx, &req, backend, processRequest, recoveryState, resumeState, resumeIdentity, runWorkspace, info, workspaceIssue)
+				if err != nil {
+					return RunResult{}, err
+				}
+			}
 			if (reviewRecovery != nil || turnRecovery != nil) && conversation.session.Continuation() {
 				reviewRecovery = nil
 				turnRecovery = nil
@@ -2174,7 +2184,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 				if err != nil {
 					return RunResult{}, err
 				}
-				resumeState, err = r.nativeResume(ctx, &req, backend, processRequest, recoveryState, resumeState, executionIdentity, runWorkspace, info, workspaceIssue)
+				resumeState, err = r.nativeResume(ctx, &req, backend, processRequest, recoveryState, resumeState, resumeIdentity, runWorkspace, info, workspaceIssue)
 				if err != nil {
 					return RunResult{}, err
 				}
