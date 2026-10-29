@@ -243,6 +243,10 @@ func TestLocalGitCleanupChecksRemovalHooks(t *testing.T) {
 			if err := os.WriteFile(entry, make([]byte, 2048), 0600); err != nil {
 				t.Fatal(err)
 			}
+			aged := time.Now().Add(-26 * time.Hour)
+			if err := os.Chtimes(entry, aged, aged); err != nil {
+				t.Fatal(err)
+			}
 			pin := filepath.Join(t.TempDir(), "active-output")
 			if err := os.Link(entry, pin); err != nil {
 				t.Fatal(err)

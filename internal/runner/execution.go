@@ -980,25 +980,24 @@ func nativeInterruptedResumeAttempt(recovery tracker.NativeRecovery) *tracker.Na
 	return previous
 }
 
-func (r *Runner) nativeInterruptedResumeState(ctx context.Context, req RunRequest, runtime agentRuntime) (store.AgentResumeState, error) {
+func (r *Runner) nativeSessionResumeState(ctx context.Context, req RunRequest, runtime agentRuntime) (store.AgentResumeState, error) {
 	recovery := req.Execution.Recovery()
-	previous := nativeInterruptedResumeAttempt(recovery)
-	if previous == nil {
+	previous := recovery.SourceAttempt()
+	if previous == nil || previous.Checkpoint == nil || previous.Checkpoint.Resume != "resume_session" || previous.Status == "running" && nativeInterruptedResumeAttempt(recovery) == nil {
 		return store.AgentResumeState{}, nil
 	}
-	restartable := previous.Checkpoint.GitRef() || cleanLocalCheckpoint(previous.Checkpoint)
-	if restartable && previous.MachineID != recovery.Lease.MachineID {
+	if previous.MachineID != recovery.Lease.MachineID {
 		return store.AgentResumeState{}, nil
 	}
-	state, err := r.lookupInterruptedResumeState(ctx, req, runtime, previous)
-	if err != nil && restartable {
+	state, err := r.lookupNativeResumeState(ctx, req, runtime, previous)
+	if err != nil && (previous.Checkpoint.GitRef() || cleanLocalCheckpoint(previous.Checkpoint) || nativeInterruptedResumeAttempt(recovery) == nil) {
 		r.logWorkerEvent(req.Issue, "worker_native_session_unavailable", "error", err)
 		return store.AgentResumeState{}, nil
 	}
 	return state, err
 }
 
-func (r *Runner) lookupInterruptedResumeState(ctx context.Context, req RunRequest, runtime agentRuntime, previous *tracker.NativeAttempt) (store.AgentResumeState, error) {
+func (r *Runner) lookupNativeResumeState(ctx context.Context, req RunRequest, runtime agentRuntime, previous *tracker.NativeAttempt) (store.AgentResumeState, error) {
 	resumeStore, ok := r.store.(store.AgentResumeStore)
 	if !ok || previous.Runtime == nil || previous.Runtime.LocalAttemptID <= 0 || previous.Identity == nil {
 		return store.AgentResumeState{}, ErrNativeRecoveryRequired
@@ -1044,20 +1043,30 @@ func nativeRecoveryAction(recovery tracker.NativeRecovery, local *workspace.Reco
 	if checkpoint.UncertainForgeEffect() {
 		return "fresh_checkout", "publication_reconciliation_required"
 	}
-	if current != nil && current.Version.ID != "" && local != nil && local.HeadSHA == current.Version.HeadSHA &&
+	if current != nil && current.Version.ID != "" && local != nil && local.HeadSHA == current.Version.HeadSHA && checkpoint.HeadSHA != current.Version.HeadSHA &&
 		len(local.TrackedPaths) == 0 && len(local.UntrackedPaths) == 0 &&
 		(checkpoint.WorktreeState == "clean" || checkpoint.WorktreeState == "unpushed") {
 		return "fresh_checkout", "session_restart_required"
 	}
+	identityMatches := false
+	if previous.Identity != nil {
+		previousIdentity := *previous.Identity
+		if previousIdentity.ReasoningEffort == "" && identity.ReasoningEffort != "" && state.DetentSessionID > 0 && sessionAvailable &&
+			state.RuntimeIdentity.ReasoningEffort.Value == identity.ReasoningEffort &&
+			agentResumeStateMatches(state, identity.Model, identity.Backend, state.RuntimeIdentity.BackendKind, identity.Role) {
+			previousIdentity.ReasoningEffort = identity.ReasoningEffort
+		}
+		identityMatches = previousIdentity == identity
+	}
 	sameMachine := previous.MachineID == recovery.Lease.MachineID
+	localAvailable := sameMachine && local != nil
+	checkpointMatches := localAvailable && checkpoint.HeadSHA == local.HeadSHA && checkpoint.WorkspaceDigest != "" && checkpoint.WorkspaceDigest == local.WorkspaceFingerprint
 	if checkpoint.GitRef() {
-		if !operatorFresh && sameMachine && sessionAvailable && checkpoint.Resume == "resume_session" && previous.Identity != nil && *previous.Identity == identity {
+		if !operatorFresh && checkpointMatches && sessionAvailable && checkpoint.Resume == "resume_session" && identityMatches {
 			return "resume_session", "verified_local_session"
 		}
 		return "fresh_checkout", "session_restart_required"
 	}
-	localAvailable := sameMachine && local != nil
-	checkpointMatches := localAvailable && checkpoint.HeadSHA == local.HeadSHA && checkpoint.WorkspaceDigest != "" && checkpoint.WorkspaceDigest == local.WorkspaceFingerprint
 	if localAvailable && checkpoint.WorktreeState != "clean" && (checkpoint.HeadSHA != local.HeadSHA || checkpoint.WorkspaceDigest != "" && checkpoint.WorkspaceDigest != local.WorkspaceFingerprint) {
 		if nativeInterruptedResumeAttempt(recovery) == nil && (len(local.TrackedPaths) != 0 || len(local.UntrackedPaths) != 0 || local.UnpushedCommits > 0) {
 			return "fresh_checkout", "local_work_preserved"
@@ -1065,6 +1074,9 @@ func nativeRecoveryAction(recovery tracker.NativeRecovery, local *workspace.Reco
 		return "manual_recovery", "local_checkpoint_changed"
 	}
 	if !localAvailable && checkpoint.WorktreeState != "clean" {
+		if nativeInterruptedResumeAttempt(recovery) != nil && !operatorFresh {
+			return "manual_recovery", "checkpoint_unavailable"
+		}
 		return "fresh_checkout", "checkpoint_unavailable"
 	}
 	if checkpoint.Availability == "missing" || checkpoint.Availability == "inaccessible" || checkpoint.Storage == "customer_store" {
@@ -1074,7 +1086,7 @@ func nativeRecoveryAction(recovery tracker.NativeRecovery, local *workspace.Reco
 		return "fresh_checkout", "checkpoint_unavailable"
 	}
 	interrupted := nativeInterruptedResumeAttempt(recovery) != nil
-	if !operatorFresh && checkpointMatches && checkpoint.Resume == "resume_session" && previous.Identity != nil && *previous.Identity == identity {
+	if !operatorFresh && checkpointMatches && checkpoint.Resume == "resume_session" && identityMatches {
 		if sessionAvailable {
 			return "resume_session", "verified_local_session"
 		}
@@ -1095,20 +1107,20 @@ func nativeRecoveryAction(recovery tracker.NativeRecovery, local *workspace.Reco
 	return "fresh_checkout", "session_restart_required"
 }
 
-func (r *Runner) nativeResume(ctx context.Context, req RunRequest, backend AgentBackend, process AgentProcessRequest, local *workspace.RecoveryState, state store.AgentResumeState, identity tracker.NativeExecutionIdentity, source workspace.Backend, info workspace.Info, issue workspace.Issue) (store.AgentResumeState, error) {
+func (r *Runner) nativeResume(ctx context.Context, req *RunRequest, backend AgentBackend, process AgentProcessRequest, local *workspace.RecoveryState, state store.AgentResumeState, identity tracker.NativeExecutionIdentity, resumeIdentityComplete bool, source workspace.Backend, info workspace.Info, issue workspace.Issue) (store.AgentResumeState, error) {
 	if req.Execution == nil {
 		return state, nil
 	}
 	if state.DetentSessionID == 0 && req.ResumeState.DetentSessionID > 0 {
 		state = req.ResumeState
 	}
-	sessionAvailable := !agentResumeStateEmpty(state) && verifyAgentResume(ctx, backend, process, agentResumeFromState(state)) == nil
+	sessionAvailable := resumeIdentityComplete && !agentResumeStateEmpty(state) && verifyAgentResume(ctx, backend, process, agentResumeFromState(state)) == nil
 	if issue.Source != nil {
 		if err := req.Execution.Validate(ctx); err != nil {
 			return store.AgentResumeState{}, err
 		}
 	}
-	action, reason := nativeRecoveryAction(req.Execution.Recovery(), local, sessionAvailable, state, identity, req.operatorFreshRetry(), issue.Source)
+	action, reason := nativeRecoveryAction(req.Execution.Recovery(), local, sessionAvailable, state, identity, req.operatorFreshRetry() || !resumeIdentityComplete, issue.Source)
 	if reason == "publication_reconciliation_required" && !nativePublicationRecovery(req.Execution.Recovery(), local, identity, issue.Source) {
 		return store.AgentResumeState{}, fmt.Errorf("%w: publication requires verified current source before reconciliation", ErrNativeRecoveryRequired)
 	}
@@ -1141,7 +1153,7 @@ func (r *Runner) nativeResume(ctx context.Context, req RunRequest, backend Agent
 						break
 					}
 				}
-				action, reason = nativeRecoveryAction(recovery, local, sessionAvailable, state, identity, req.operatorFreshRetry(), issue.Source)
+				action, reason = nativeRecoveryAction(recovery, local, sessionAvailable, state, identity, req.operatorFreshRetry() || !resumeIdentityComplete, issue.Source)
 				if action != "manual_recovery" {
 					if err := req.Execution.Start(ctx, identity); err != nil {
 						return store.AgentResumeState{}, err
@@ -1158,13 +1170,17 @@ func (r *Runner) nativeResume(ctx context.Context, req RunRequest, backend Agent
 		return store.AgentResumeState{}, fmt.Errorf("%w: %s", ErrNativeRecoveryRequired, reason)
 	}
 	if runtime, ok := req.Execution.(RuntimeExecution); ok {
-		if err := runtime.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{LocalAttemptID: req.WorkAttemptID, Generation: req.Generation, Phase: nativeRuntimePhase(req), HeartbeatAt: r.now(), Recovery: &tracker.NativeRecoveryDecision{Action: action, Reason: reason}}); err != nil {
+		if err := runtime.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{LocalAttemptID: req.WorkAttemptID, Generation: req.Generation, Phase: nativeRuntimePhase(*req), HeartbeatAt: r.now(), Recovery: &tracker.NativeRecoveryDecision{Action: action, Reason: reason}}); err != nil {
 			return store.AgentResumeState{}, err
 		}
 	}
 	if action != "resume_session" {
+		req.ResumeState = store.AgentResumeState{}
+		req.RetryMode = RetryModeFresh
 		return store.AgentResumeState{}, nil
 	}
+	req.ResumeState = state
+	req.RetryMode = RetryModeResume
 	return state, nil
 }
 

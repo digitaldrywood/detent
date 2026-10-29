@@ -404,20 +404,44 @@ func planAnalyticsAttempts(ctx context.Context, plan *projectionPlan, id string,
 		count++
 	}
 	if count == 0 {
-		p.phase = analyticsDrainUsage
+		p.phase, p.source, p.offset = analyticsDrainUsage, "", 0
 	}
 	return rows.Err()
 }
 
 func planAnalyticsUsage(ctx context.Context, plan *projectionPlan, id string, p *analyticsDrainPosition) error {
-	rows, err := plan.QueryContext(ctx, `SELECT u.attempt_id,u.period,u.provider,u.model,u.input,u.cached_input,u.output,u.cost_estimate,u.currency,u.updated_at FROM attempt_usage u WHERE u.organization_id=? AND u.project_id=? AND (EXISTS(SELECT 1 FROM native_attempts a WHERE a.id=u.attempt_id AND a.work_item_id=?) OR EXISTS(SELECT 1 FROM collaboration_events e WHERE e.organization_id=u.organization_id AND e.project_id=u.project_id AND e.work_item_id=? AND e.analytics_attempt_id=u.attempt_id)) AND NOT EXISTS(SELECT 1 FROM analytics_hourly_rollups r WHERE r.organization_id=u.organization_id AND r.project_id=u.project_id AND r.metric='usage' AND r.attempt_id=u.attempt_id AND r.period=u.period AND r.provider=u.provider AND r.model=u.model AND r.currency=u.currency AND r.input=u.input AND r.cached_input=u.cached_input AND r.output=u.output AND r.value=u.cost_estimate AND r.updated_at=u.updated_at) LIMIT ?`, p.scope.organization, p.scope.project, id, id, analyticsDrainWrites)
+	if p.source == "" {
+		return advanceAnalyticsUsageAttempt(ctx, plan, id, p)
+	}
+	var through sql.NullInt64
+	if err := plan.QueryRowContext(ctx, `SELECT max(rowid) FROM (SELECT rowid FROM attempt_usage INDEXED BY attempt_usage_drain WHERE attempt_id=? AND rowid>? ORDER BY rowid LIMIT ?)`, p.source, p.offset, analyticsDrainWrites).Scan(&through); err != nil {
+		return err
+	}
+	if !through.Valid {
+		return advanceAnalyticsUsageAttempt(ctx, plan, id, p)
+	}
+	rows, err := plan.QueryContext(ctx, `SELECT attempt_id,period,provider,model,input,cached_input,output,cost_estimate,currency,updated_at FROM attempt_usage INDEXED BY attempt_usage_drain WHERE attempt_id=? AND rowid>? AND rowid<=? AND organization_id=? AND project_id=? ORDER BY rowid`, p.source, p.offset, through.Int64, p.scope.organization, p.scope.project)
 	if err != nil {
 		return err
 	}
 	if err := writeAnalyticsUsageRows(ctx, plan, string(p.scope.organization), string(p.scope.project), rows); err != nil {
 		return err
 	}
-	if len(plan.writes) == 0 {
+	p.offset = int(through.Int64)
+	return nil
+}
+
+func advanceAnalyticsUsageAttempt(ctx context.Context, plan *projectionPlan, id string, p *analyticsDrainPosition) error {
+	var next sql.NullString
+	err := plan.QueryRowContext(ctx, `SELECT min(id) FROM (
+ SELECT id FROM (SELECT id FROM native_attempts INDEXED BY native_attempts_usage_drain WHERE organization_id=? AND project_id=? AND work_item_id=? AND id>? ORDER BY id LIMIT 1)
+ UNION ALL SELECT analytics_attempt_id FROM (SELECT analytics_attempt_id FROM collaboration_events INDEXED BY collaboration_events_usage_drain WHERE organization_id=? AND project_id=? AND work_item_id=? AND analytics_attempt_id>? ORDER BY analytics_attempt_id LIMIT 1)
+)`, p.scope.organization, p.scope.project, id, p.source, p.scope.organization, p.scope.project, id, p.source).Scan(&next)
+	if err != nil {
+		return err
+	}
+	p.source, p.offset = next.String, 0
+	if !next.Valid {
 		p.phase = analyticsDrainLeases
 	}
 	return nil

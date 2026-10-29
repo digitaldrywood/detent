@@ -126,6 +126,7 @@ func TestNativeRuntimeMigrationPreservesHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := f.service.database.db.ExecContext(t.Context(), `DROP VIEW native_transition_facts;
+DROP INDEX IF EXISTS collaboration_events_usage_drain;
 DROP INDEX IF EXISTS collaboration_events_change_unknown;
 DROP INDEX IF EXISTS collaboration_events_change_conversion;
 DROP INDEX collaboration_events_comment_actor;

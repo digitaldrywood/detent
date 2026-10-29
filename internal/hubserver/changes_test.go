@@ -1770,11 +1770,11 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 					{"offline", "UPDATE runner_identities SET last_heartbeat_at='2000-01-01T00:00:00Z' WHERE id=?", "UPDATE runner_identities SET last_heartbeat_at=? WHERE id=?", "runner_offline", []any{owner.binding.RunnerID}},
 					{"runner paused", "UPDATE runner_identities SET capacity_limit=0 WHERE id=?", "UPDATE runner_identities SET capacity_limit=1 WHERE id=?", "runner_capacity", []any{owner.binding.RunnerID}},
 					{"host paused", "UPDATE machines SET capacity=0 WHERE id=?", "UPDATE machines SET capacity=1 WHERE id=?", "host_capacity", []any{owner.binding.MachineID}},
-					{"provider exhausted", `UPDATE runner_identities SET provider_reports_json=? WHERE id=?`, `UPDATE runner_identities SET provider_reports_json='[]' WHERE id=?`, "provider_capacity", nil},
+					{"provider incompatible", `UPDATE runner_identities SET provider_reports_json=? WHERE id=?`, `UPDATE runner_identities SET provider_reports_json='[]' WHERE id=?`, "provider_incompatible", nil},
 				} {
 					t.Run(exclusion.name, func(t *testing.T) {
 						args := exclusion.args
-						if exclusion.name == "provider exhausted" {
+						if exclusion.name == "provider incompatible" {
 							report := capacityReport(f.service.config.now())
 							report.Availability = "exhausted"
 							raw, err := json.Marshal([]providercapacity.Report{report})
@@ -1796,7 +1796,7 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 						if exclusion.name == "offline" {
 							args = []any{formatHubTime(f.service.config.now()), owner.binding.RunnerID}
 						}
-						if exclusion.name == "provider exhausted" {
+						if exclusion.name == "provider incompatible" {
 							args = []any{owner.binding.RunnerID}
 						}
 						if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), exclusion.restore, args...); err != nil {

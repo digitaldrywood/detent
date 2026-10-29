@@ -21,7 +21,7 @@ const nativeBoardTrimLimit = 32
 
 const nativeBoardCandidateQuery = `SELECT work_item_id,1 FROM (SELECT work_item_id FROM native_board_dirty
 WHERE work_item_id>? ORDER BY work_item_id LIMIT 1)
-UNION ALL SELECT work_item_id,expires_at<>'' AND expires_at<=? FROM (SELECT work_item_id,expires_at FROM native_board_items
+UNION ALL SELECT work_item_id,(running=1 AND execution_fence=0) OR (expires_at<>'' AND expires_at<=?) FROM (SELECT work_item_id,expires_at,running,execution_fence FROM native_board_items
 WHERE work_item_id>? ORDER BY work_item_id LIMIT 1)`
 
 func (s *Service) maintainNativeBoard(ctx context.Context) {
@@ -167,8 +167,9 @@ func refreshNativeBoardCard(ctx context.Context, tx projectionQuery, id string, 
 	var workspace bool
 	err = tx.QueryRowContext(ctx, "SELECT i.organization_id,i.project_id, NOT ("+notWorkspaceItemClause+") FROM issues i WHERE i.native_id=?", id).Scan(&scope.organization, &scope.project, &workspace)
 	var current *tracker.NativeBoardCard
+	var executionFence tracker.FencingToken
 	if err == nil && !workspace {
-		issue, _, err := readNativeIssueProjection(withDisplayLandingFacts(ctx), tx, scope, id, true)
+		issue, internalID, err := readNativeIssueProjection(withDisplayLandingFacts(ctx), tx, scope, id, true)
 		if err != nil {
 			return fmt.Errorf("read issue projection: %w", err)
 		}
@@ -192,6 +193,11 @@ FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=?
 		current.Execution, err = readNativeBoardExecution(ctx, tx, scope, id, latest, now)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("read execution: %w", err)
+		}
+		if current.Execution != nil {
+			if err := tx.QueryRowContext(ctx, "SELECT fencing_token FROM leases WHERE issue_id=? AND released_at IS NULL", internalID).Scan(&executionFence); err != nil {
+				return err
+			}
 		}
 		change, found, err := readLatestNativeChangeRequest(ctx, tx, scope, id)
 		if err != nil {
@@ -266,7 +272,7 @@ FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=?
 			expires = current.Execution.ExpiresAt.UTC().Format("2006-01-02T15:04:05.000000000Z")
 		}
 		running := !issue.Terminal && current.Execution != nil && current.Execution.Running
-		if _, err := tx.ExecContext(ctx, `INSERT INTO native_board_items(work_item_id,organization_id,project_id,state,archived,terminal,running,lane_rank,priority_rank,activity_missing,activity_at,identifier,closed_at,expires_at,record_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, issue.OrganizationID, issue.ProjectID, issue.State, issue.Archived, issue.Terminal, running, rank, priority, missing, activity, string(issue.ProjectID)+"#"+strconv.Itoa(issue.Number), closed, expires, string(raw)); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO native_board_items(work_item_id,organization_id,project_id,state,archived,terminal,running,lane_rank,priority_rank,activity_missing,activity_at,identifier,closed_at,expires_at,record_json,execution_fence) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, issue.OrganizationID, issue.ProjectID, issue.State, issue.Archived, issue.Terminal, running, rank, priority, missing, activity, string(issue.ProjectID)+"#"+strconv.Itoa(issue.Number), closed, expires, string(raw), executionFence); err != nil {
 			return err
 		}
 		if err := updateBoardFilterFacts(ctx, tx, *current); err != nil {

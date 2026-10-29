@@ -35,7 +35,8 @@ func TestTrimRootReplacement(t *testing.T) {
 	}{
 		{"age eviction", 72 * time.Hour, 1 << 20, true, false},
 		{"recent above target", 0, 1, false, false},
-		{"managed recent eviction", 0, 1, true, true},
+		{"managed recent retained", 0, 1, false, true},
+		{"managed old eviction", 26 * time.Hour, 1, true, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			base := t.TempDir()

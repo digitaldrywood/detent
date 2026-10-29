@@ -19,15 +19,46 @@ import (
 	"github.com/digitaldrywood/detent/internal/toolcache"
 )
 
+func (b *AgentBackend) SupportsReadOnlyInvestigation() bool { return b.options.IsolationPolicy != nil }
+
 func (b *AgentBackend) RunTurn(
 	ctx context.Context,
 	req runner.AgentTurnRequest,
 	onUpdate runner.AgentUpdateHandler,
 ) (turnResult runner.AgentTurnResult, turnErr error) {
+	return b.runTurn(ctx, req, onUpdate, false)
+}
+
+func (b *AgentBackend) runTurn(ctx context.Context, req runner.AgentTurnRequest, onUpdate runner.AgentUpdateHandler, finalizing bool) (turnResult runner.AgentTurnResult, turnErr error) {
+	if req.ToolBudget != nil {
+		previous := onUpdate
+		onUpdate = func(update runner.AgentUpdate) error {
+			observation := update
+			if observation.Type == runner.AgentUpdateToolOutput && (observation.Status == "completed" || observation.Status == "failed") {
+				observation.Type = runner.AgentUpdateToolCompleted
+			}
+			if err := req.ToolBudget.Observe(observation); err != nil && !errors.Is(err, runner.ErrInvestigationBudget) {
+				return err
+			}
+			if previous != nil {
+				return previous(update)
+			}
+			return nil
+		}
+	}
 	ctx = contextOrBackground(ctx)
 	turnTimeout := b.options.TurnTimeout
 	if req.TurnTimeout > 0 {
 		turnTimeout = req.TurnTimeout
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return runner.AgentTurnResult{}, context.DeadlineExceeded
+		}
+		if turnTimeout <= 0 || remaining < turnTimeout {
+			turnTimeout = remaining
+		}
 	}
 	if turnTimeout > 0 {
 		var cancel context.CancelFunc
@@ -177,6 +208,12 @@ func (b *AgentBackend) RunTurn(
 	if finalErr != nil && strings.EqualFold(strings.TrimSpace(state.resultSubtype), "error_max_turns") {
 		finalErr = errors.Join(runner.ErrSessionTurnLimitExceeded, finalErr)
 	}
+	if !finalizing && req.ToolBudget.Exhausted() && !json.Valid([]byte(state.resultText)) && state.sessionID != "" && ctx.Err() == nil && (finalErr == nil || errors.Is(finalErr, runner.ErrSessionTurnLimitExceeded)) {
+		req.Resume = runner.AgentResume{SessionID: state.sessionID}
+		req.Prompt = req.ToolBudget.FinalPrompt(ctx)
+		req.MaxTurns = 1
+		return b.runTurn(ctx, req, onUpdate, true)
+	}
 	status := runner.FinalStateCompleted
 	if finalErr != nil {
 		status = runner.FinalStateFailed
@@ -203,6 +240,9 @@ func (b *AgentBackend) command(ctx context.Context, req runner.AgentTurnRequest)
 }
 
 func (b *AgentBackend) commandWithIsolation(ctx context.Context, req runner.AgentTurnRequest) (*exec.Cmd, map[string]any, error) {
+	if req.IsolatedTools && (!req.ReadOnly || b.options.IsolationPolicy == nil) {
+		return nil, nil, errors.New("read-only investigation requires enforced read-only isolation")
+	}
 	if req.TextOnly {
 		req.ReadOnly = true
 	}
@@ -221,7 +261,10 @@ func (b *AgentBackend) commandWithIsolation(ctx context.Context, req runner.Agen
 		if !req.ReadOnly {
 			policy.ExtraNetworkDomains = req.ExtraNetworkDomains
 		}
-		policy.WritableRoots = []string{req.Workspace}
+		policy.WritableRoots = nil
+		if req.Workspace != "" {
+			policy.WritableRoots = append(policy.WritableRoots, req.Workspace)
+		}
 		if req.TempDir != "" {
 			policy.WritableRoots = append(policy.WritableRoots, req.TempDir)
 		}
@@ -240,6 +283,35 @@ func (b *AgentBackend) commandWithIsolation(ctx context.Context, req runner.Agen
 		if err != nil {
 			return nil, nil, err
 		}
+		if req.IsolatedTools {
+			if policy.Tier != isolation.Sandbox {
+				return nil, nil, errors.New("read-only investigation requires sandbox enforcement")
+			}
+			sandbox, ok := settings["sandbox"].(map[string]any)
+			if !ok || sandbox == nil {
+				return nil, nil, errors.New("investigation sandbox settings are missing")
+			}
+			filesystem, ok := sandbox["filesystem"].(map[string]any)
+			if !ok || filesystem == nil {
+				return nil, nil, errors.New("investigation filesystem settings are missing")
+			}
+			sandbox["autoAllowBashIfSandboxed"] = false
+			filesystem["allowWrite"] = []string{}
+			sandbox["network"] = map[string]any{"allowedDomains": []string{}, "allowUnixSockets": []string{}, "allowAllUnixSockets": false, "allowLocalBinding": false, "strictAllowlist": true}
+			permissions, ok := settings["permissions"].(map[string]any)
+			if !ok || permissions == nil {
+				return nil, nil, errors.New("investigation permission settings are missing")
+			}
+			denied, ok := permissions["deny"].([]string)
+			if !ok {
+				return nil, nil, errors.New("investigation tool restrictions are missing")
+			}
+			denied = append(denied, "Bash", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch")
+			if req.ToolBudget != nil || req.Workspace == "" {
+				denied = append(denied, "Read", "Glob", "Grep")
+			}
+			permissions["deny"] = denied
+		}
 		if policy.Tier == "sandbox" && len(b.options.ExtraArgs) > 0 {
 			return nil, nil, errors.New("runner isolation cannot apply Claude extra arguments")
 		}
@@ -249,7 +321,7 @@ func (b *AgentBackend) commandWithIsolation(ctx context.Context, req runner.Agen
 			bounded.options.PermissionMode = "acceptEdits"
 			argv = bounded.argv(req)
 			argv = append(argv, "--input-format", "stream-json")
-			if !req.TextOnly {
+			if !req.TextOnly && !req.IsolatedTools {
 				argv = append(argv, "--tools", "Bash,Read,Glob,Grep", "--strict-mcp-config", "--mcp-config", `{"mcpServers":{}}`)
 			}
 		}
@@ -293,6 +365,9 @@ func (b *AgentBackend) commandWithIsolation(ctx context.Context, req runner.Agen
 		return nil, nil, ErrNilCommand
 	}
 	cmd.Dir = req.Workspace
+	if cmd.Dir == "" && req.IsolatedTools {
+		cmd.Dir = req.TempDir
+	}
 	if len(cmd.Args) == 0 {
 		cmd.Args = []string{cmd.Path}
 	}
@@ -359,6 +434,8 @@ func (b *AgentBackend) argv(req runner.AgentTurnRequest) []string {
 		)
 		if req.TextOnly {
 			args = append(args, "--tools", "", "--mcp-config", `{"mcpServers":{}}`)
+		} else if req.IsolatedTools && (req.ToolBudget != nil || req.Workspace == "") {
+			args = append(args, "--tools", "")
 		} else {
 			args = append(args, "--tools", "Read", "Glob", "Grep")
 		}

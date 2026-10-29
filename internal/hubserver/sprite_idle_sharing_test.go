@@ -160,7 +160,7 @@ func TestProjectSpriteIdleSharingClaims(t *testing.T) {
 		{"grants remain required", true, false, false, true, false, "", http.StatusNotFound},
 		{"target checkout remains required", true, false, true, false, false, "", http.StatusConflict},
 		{"sharing to another allocation", true, false, true, true, true, "", http.StatusOK},
-		{"provider exhaustion", true, false, true, true, false, "provider", http.StatusConflict},
+		{"subscription exhaustion permits sharing", true, false, true, true, false, "provider", http.StatusOK},
 		{"monthly exhaustion", true, false, true, true, false, "monthly", http.StatusConflict},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -240,6 +240,7 @@ func TestProjectSpriteIdleSharingClaims(t *testing.T) {
 			}
 			if test.budget == "provider" {
 				report := capacityReport(f.service.config.now())
+				report.Models = []string{"test-model", "gpt-6.1-sol"}
 				report.Availability = "exhausted"
 				publishCapacity(t, f, r, report)
 			}

@@ -43,32 +43,28 @@ type conversationRun struct {
 
 type conversationRunContextKey struct{}
 
-// bindConversation binds the run to the issue's conversation when both the
-// execution and the backend support live control. A conversation never
-// blocks a run: every failure is logged and the run continues without one.
-func (r *Runner) bindConversation(ctx context.Context, req RunRequest, backend AgentBackend, resumeThreadID string) *conversationRun {
+func (r *Runner) bindConversation(ctx context.Context, req RunRequest, backend AgentBackend, resumeThreadID string) (*conversationRun, error) {
 	execution, ok := req.Execution.(ConversationExecution)
 	if !ok {
-		return nil
+		return nil, ErrNoConversation
 	}
 	live, ok := backend.(AgentLiveBackend)
 	if !ok || !live.SupportsLiveControl() {
-		return nil
+		return nil, ErrNoConversation
 	}
 	session, err := execution.BindConversation(ctx, ConversationCapabilities{Steer: true, Interrupt: true, Answer: true, Continue: true}, resumeThreadID)
 	if err != nil {
-		level := slog.LevelWarn
-		if errors.Is(err, ErrNoConversation) {
-			level = slog.LevelDebug
+		if !errors.Is(err, ErrNoConversation) {
+			return nil, fmt.Errorf("bind conversation: %w", err)
 		}
-		r.logWorkerEventLevel(level, req.Issue, "worker_conversation_bind_skipped", telemetry.WorkAttemptIDKey, req.WorkAttemptID, "error", errorString(err))
-		return nil
+		r.logWorkerEventLevel(slog.LevelDebug, req.Issue, "worker_conversation_bind_skipped", telemetry.WorkAttemptIDKey, req.WorkAttemptID, "error", errorString(err))
+		return nil, ErrNoConversation
 	}
 	if session == nil {
-		return nil
+		return nil, ErrNoConversation
 	}
 	r.logWorkerEvent(req.Issue, "worker_conversation_bound", telemetry.WorkAttemptIDKey, req.WorkAttemptID, "conversation_id", session.ConversationID(), "thread_id", session.ResumeThreadID(), "resume", session.ResumeMode(), "thread_origin", conversationThreadOrigin(session))
-	return &conversationRun{session: session, logger: r.logger, issue: req.Issue}
+	return &conversationRun{session: session, logger: r.logger, issue: req.Issue}, nil
 }
 
 // conversationThreadOrigin reports the kind of turn the bound thread belongs

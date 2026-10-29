@@ -28,11 +28,13 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
+func (*nativeProgressRerouteAgent) SupportsReadOnlyInvestigation() bool { return true }
+
 type nativeProgressBackend struct{ calls int }
 
 func (b *nativeProgressBackend) Decide(context.Context, progresscheck.Request) (progresscheck.Decision, error) {
 	b.calls++
-	return progresscheck.Decision{Outcome: progresscheck.Reroute, Step: "implement", Reason: "Repair the publication protocol", Evidence: []string{"failed-attempt"}}, nil
+	return progresscheck.Decision{Outcome: progresscheck.Reroute, Step: "implement", Diagnosis: "failed-attempt" + ": the retained failure identifies missing validation evidence; the failing step has not produced its required receipt", Instruction: "Repair the missing validation evidence in the source finalization path and verify the previously failing check on the pinned source", Reason: "Repair the publication protocol", Evidence: []string{"failed-attempt"}}, nil
 }
 
 func TestNativeRetryProgressOwnerAndSuccess(t *testing.T) {
@@ -69,6 +71,9 @@ func TestNativeRetryProgressOwnerAndSuccess(t *testing.T) {
 			var retained *progresscheck.Record
 			reads, writes := 0, 0
 			client, err := New(Config{URL: "https://hub.example.test", TokenSource: func() string { return "worker" }, HTTPClient: &http.Client{Transport: executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+				if request.URL.Path == "/api/v2/capabilities" {
+					return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"features":["progress_investigation"]}`)), Request: request}, nil
+				}
 				if request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/work-items/wi_example") {
 					return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"revision":"7"}`)), Request: request}, nil
 				}
@@ -230,7 +235,7 @@ func (a *nativeProgressRerouteAgent) RunTurn(ctx context.Context, _ runner.Agent
 	if err := update(runner.AgentUpdate{Type: runner.AgentUpdateTokenUsage, Tokens: runner.AgentTokenUsage{InputTokens: 10, OutputTokens: 1}}); err != nil {
 		return runner.AgentTurnResult{}, err
 	}
-	output := progresscheck.Decision{Outcome: progresscheck.Reroute, Step: runner.RunModeImplement, Reason: "Implement after the failed plan", Evidence: []string{a.attempt}}
+	output := progresscheck.Decision{Outcome: progresscheck.Reroute, Step: runner.RunModeImplement, Diagnosis: a.attempt + ": the retained failure identifies missing validation evidence; the failing step has not produced its required receipt", Instruction: "Repair the missing validation evidence in the source finalization path and verify the previously failing check on the pinned source", Reason: "Implement after the failed plan", Evidence: []string{a.attempt}}
 	if a.decision != nil {
 		output = *a.decision
 	}
@@ -246,7 +251,17 @@ type nativeProgressWorkspace struct {
 	path string
 }
 
+func (w nativeProgressWorkspace) Head(_ context.Context, _ workspace.Info, issue workspace.Issue) (string, error) {
+	return issue.PullRequestHeadSHA, nil
+}
+func (w nativeProgressWorkspace) VerifyReviewTree(context.Context, workspace.Info, workspace.Issue) error {
+	return nil
+}
 func (w nativeProgressWorkspace) Existing(workspace.Issue) (workspace.Info, error) {
+	return workspace.Info{Path: w.path}, nil
+}
+
+func (w nativeProgressWorkspace) Create(context.Context, workspace.Issue) (workspace.Info, error) {
 	return workspace.Info{Path: w.path}, nil
 }
 
@@ -363,6 +378,11 @@ func testNativeRetryProgressReroute(t *testing.T, reserved, tighten bool) {
 	if original == nil {
 		t.Fatal("claimed planning execution is missing")
 	}
+	change, err := h.admin.CreateChange(t.Context(), tracker.NativeWorkItemID(issue.ID), tracker.CreateChange{Mutation: nativeMutationKey(), Title: "Retained progress source"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.publish(t, tracker.NativeWorkItemID(issue.ID), change.ID, nativeChangeFixtureHead("b"))
 	provider := &nativeProgressRerouteAgent{attempt: failed.data.AttemptID}
 	if tighten {
 		if issue.IsolationPolicy == nil || issue.IsolationPolicy.Tier != isolation.NativeTrusted {
@@ -445,14 +465,16 @@ func testNativeRetryProgressReroute(t *testing.T, reserved, tighten bool) {
 func TestNativeRetryProgressFailureReleasesExecutionIdentity(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
-		name    string
-		failure error
-		invalid bool
-		reason  string
+		name     string
+		failure  error
+		invalid  bool
+		conflict bool
+		reason   string
 	}{
 		{name: "backend", failure: errors.New("provider unavailable"), reason: "provider unavailable"},
 		{name: "timeout", failure: context.DeadlineExceeded, reason: "context deadline exceeded"},
 		{name: "invalid decision", invalid: true, reason: "progress decision names unavailable step"},
+		{name: "old Hub publication conflict", conflict: true, reason: "revision_conflict"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			now := time.Now()
@@ -460,6 +482,17 @@ func TestNativeRetryProgressFailureReleasesExecutionIdentity(t *testing.T) {
 			states[1].Transitions = append(states[1].Transitions, "Rework")
 			states = append(states, tracker.NativeState{Name: "Rework", Dispatchable: true, Transitions: []string{"Todo", "In Progress"}})
 			h := newNativeChangeHubTransport(t, "Human Review", states, true)
+			conflicts := 0
+			if tt.conflict {
+				next := h.failChanges.next
+				h.failChanges.next = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+					if request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/progress") {
+						conflicts++
+						return &http.Response{StatusCode: http.StatusConflict, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":"revision_conflict","message":"evidence changed"}`)), Request: request}, nil
+					}
+					return next.RoundTrip(request)
+				})
+			}
 			issue, err := h.connector.CreateIssue(t.Context(), connector.IssueDraft{Title: "Retry implementation after progress failure", Body: "Update the README." + issueContractTestSections})
 			if err != nil {
 				t.Fatal(err)
@@ -500,9 +533,14 @@ func TestNativeRetryProgressFailureReleasesExecutionIdentity(t *testing.T) {
 			}
 			issue = claim("Rework")
 			original := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
-			provider := &nativeProgressRerouteAgent{err: tt.failure}
+			change, err := h.admin.CreateChange(t.Context(), tracker.NativeWorkItemID(issue.ID), tracker.CreateChange{Mutation: nativeMutationKey(), Title: "Retained progress source"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			h.publish(t, tracker.NativeWorkItemID(issue.ID), change.ID, nativeChangeFixtureHead("b"))
+			provider := &nativeProgressRerouteAgent{err: tt.failure, attempt: failed.data.AttemptID}
 			if tt.invalid {
-				provider.decision = &progresscheck.Decision{Outcome: progresscheck.Reroute, Step: "unavailable", Reason: "Continue", Evidence: []string{failed.data.AttemptID}}
+				provider.decision = &progresscheck.Decision{Outcome: progresscheck.Reroute, Step: "unavailable", Diagnosis: failed.data.AttemptID + ": the retained failure identifies missing validation evidence; the failing step has not produced its required receipt", Instruction: "Repair the missing validation evidence in the source finalization path and verify the previously failing check on the pinned source", Reason: "Continue", Evidence: []string{failed.data.AttemptID}}
 			}
 			agent, err := runner.NewRunner(runner.Dependencies{Workflow: config.Workflow{Config: config.Config{Agents: config.Agents{Routes: []config.AgentRoute{{Name: "implementation", Backend: "codex", Model: "code-model", Default: true}}}}}, Workspace: nativeProgressWorkspace{path: t.TempDir()}, AgentBackend: provider})
 			if err != nil {
@@ -538,6 +576,9 @@ func TestNativeRetryProgressFailureReleasesExecutionIdentity(t *testing.T) {
 			}
 			if started.request.Mode != runner.RunModeImplement || started.request.ProgressDecision.RequestID != "" || strings.Count(started.request.PriorAttempt.Reason, tt.reason) != 1 {
 				t.Fatalf("ordinary retry lost advisory failure: %+v", started.request)
+			}
+			if tt.conflict && conflicts != 2 {
+				t.Fatalf("old Hub conflict made %d publications, want 2", conflicts)
 			}
 
 			check, err := h.admin.NativeAttempt(t.Context(), tracker.NativeWorkItemID(issue.ID), original.data.AttemptID)
@@ -615,6 +656,9 @@ func TestProgressPublicationRefreshesRevisionOnce(t *testing.T) {
 			reads, writes := 0, 0
 			requestID := ""
 			client, err := New(Config{URL: "https://hub.example.test", TokenSource: func() string { return "worker" }, HTTPClient: &http.Client{Transport: executionRoundTrip(func(req *http.Request) (*http.Response, error) {
+				if req.URL.Path == "/api/v2/capabilities" {
+					return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"features":["progress_investigation"]}`)), Request: req}, nil
+				}
 				status := http.StatusOK
 				var body any
 				if req.Method == http.MethodGet {
@@ -646,7 +690,7 @@ func TestProgressPublicationRefreshesRevisionOnce(t *testing.T) {
 						status = test.status
 						body = map[string]string{"code": test.code, "error": "publication refused"}
 					} else {
-						body = progresscheck.Record{RequestID: id, ProjectID: evidence.ProjectID, IssueID: evidence.IssueID, EvidenceRevision: evidence.EvidenceRevision, Decision: progresscheck.Decision{Outcome: progresscheck.Reroute, Step: "implement", Reason: "Repair the publication protocol", Evidence: []string{"failed-attempt"}}, CommentID: "comment"}
+						body = progresscheck.Record{RequestID: id, ProjectID: evidence.ProjectID, IssueID: evidence.IssueID, EvidenceRevision: evidence.EvidenceRevision, Decision: progresscheck.Decision{Outcome: progresscheck.Reroute, Step: "implement", Diagnosis: "failed-attempt" + ": the retained failure identifies missing validation evidence; the failing step has not produced its required receipt", Instruction: "Repair the missing validation evidence in the source finalization path and verify the previously failing check on the pinned source", Reason: "Repair the publication protocol", Evidence: []string{"failed-attempt"}}, CommentID: "comment"}
 					}
 				}
 				encoded, err := json.Marshal(body)
@@ -667,6 +711,82 @@ func TestProgressPublicationRefreshesRevisionOnce(t *testing.T) {
 			_, checked, err := progresscheck.Check(t.Context(), evidence, backend, owner)
 			if (err != nil) != test.wantError || checked == test.wantError || reads != test.wantReads || writes != test.wantWrites || backend.calls != 1 {
 				t.Fatalf("checked=%v err=%v reads=%d writes=%d turns=%d", checked, err, reads, writes, backend.calls)
+			}
+		})
+	}
+}
+
+func TestProgressPublicationNegotiatesDecisionFields(t *testing.T) {
+	for _, modern := range []bool{false, true} {
+		t.Run(fmt.Sprintf("investigation capability=%t", modern), func(t *testing.T) {
+			request := progresscheck.Request{ProjectID: "prj_example", IssueID: "wi_example", PolicyID: "policy", EvidenceRevision: "revision", Instance: "machine", Attempts: []progresscheck.Attempt{{ID: "failed", Outcome: "failed"}}, AvailableSteps: []string{"implement"}}
+			id, err := request.ID()
+			if err != nil {
+				t.Fatal(err)
+			}
+			capabilityReads, writes := 0, 0
+			client, err := New(Config{URL: "https://hub.example.test", TokenSource: func() string { return "worker" }, HTTPClient: &http.Client{Transport: executionRoundTrip(func(req *http.Request) (*http.Response, error) {
+				var body any
+				switch {
+				case req.URL.Path == "/api/v2/capabilities":
+					capabilityReads++
+					features := []string{"native_issues", "scoped_collaboration", "repository_policy"}
+					if modern {
+						features = append(features, progresscheck.InvestigationCapability)
+					}
+					body = nativeCapabilities{ProtocolMajors: []int{2}, EventSchemas: []int{1}, Features: features}
+				case req.Method == http.MethodGet && strings.HasSuffix(req.URL.Path, "/prj_example"):
+					body = tracker.NativeProject{Profile: "native"}
+				case req.Method == http.MethodGet:
+					body = tracker.NativeIssue{NativeReference: tracker.NativeReference{Revision: 7}}
+				default:
+					writes++
+					var input progresscheck.Publication
+					decoder := json.NewDecoder(req.Body)
+					if err := decoder.Decode(&input); err != nil {
+						t.Fatal(err)
+					}
+					if input.Decision.Legacy() == modern {
+						t.Fatalf("incorrect negotiated shape: %+v", input.Decision)
+					}
+					if !modern {
+						encoded, err := json.Marshal(input.Decision)
+						if err != nil {
+							t.Fatal(err)
+						}
+						var fields map[string]json.RawMessage
+						if err := json.Unmarshal(encoded, &fields); err != nil {
+							t.Fatal(err)
+						}
+						for _, name := range []string{"diagnosis", "instruction", "convergence"} {
+							if _, found := fields[name]; found {
+								t.Fatalf("legacy Hub received new field %s", name)
+							}
+						}
+					}
+					body = progresscheck.Record{RequestID: id, ProjectID: request.ProjectID, IssueID: request.IssueID, EvidenceRevision: request.EvidenceRevision, Decision: input.Decision, CommentID: "comment"}
+				}
+				encoded, err := json.Marshal(body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(encoded))), Request: req}, nil
+			})}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			native, err := client.Native("org_example", "prj_example")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := native.Negotiate(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			owner := &progressOwner{client: native, request: request, lease: tracker.NativeLease{WorkItemID: "wi_example", ID: "lease", FencingToken: 7}}
+			decision := progresscheck.Decision{Outcome: progresscheck.Reroute, Step: "implement", Reason: "Repair the assertion", Diagnosis: "failed: assertion differs", Instruction: "Repair assertion", Evidence: []string{"failed"}}
+			record, err := owner.Publish(t.Context(), progresscheck.Record{RequestID: id, Decision: decision})
+			if err != nil || record.Validate(request) != nil || capabilityReads != 1 || writes != 1 {
+				t.Fatalf("publication err=%v capability reads=%d writes=%d record=%+v", err, capabilityReads, writes, record)
 			}
 		})
 	}

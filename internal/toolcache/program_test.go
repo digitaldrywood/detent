@@ -172,12 +172,15 @@ func TestCacheProgramGoBuild(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for build := range 2 {
+	for build, native := range []bool{false, false, true, true, false} {
 		cmd := exec.CommandContext(t.Context(), "go", "build", "-x", "-o", filepath.Join(module, "output.a"), ".")
 		cmd.Dir = module
 		variables := ManagedEnvironment(cache.WithContext(t.Context()))
 		if variables == nil {
 			t.Fatal("managed cache environment is missing")
+		}
+		if native {
+			variables["GOCACHEPROG"] = ""
 		}
 		variables["GOCOVERDIR"] = t.TempDir()
 		variables["GOENV"], variables["GOFLAGS"], variables["GOWORK"], variables["GOTOOLCHAIN"] = "off", "", "off", "local"
@@ -252,6 +255,10 @@ func TestCacheProgramPinSurvivesLinkFailureAndEviction(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer reader.close()
+			old := time.Now().Add(-26 * time.Hour)
+			if err := os.Chtimes(filepath.Join(root, cacheName(output[:], "d")), old, old); err != nil {
+				t.Fatal(err)
+			}
 			reader.link = func(_, _ string) error {
 				if evict {
 					if _, err := cache.Maintain(t.Context(), Policy{MaxBytes: 1}, time.Now()); err != nil {

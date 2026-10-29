@@ -514,6 +514,10 @@ func TestRuntimeUpdateIdleIsConservative(t *testing.T) {
 		if err := os.WriteFile(output, make([]byte, 2000), 0o600); err != nil {
 			t.Fatal(err)
 		}
+		aged := now.Add(-26 * time.Hour)
+		if err := os.Chtimes(output, aged, aged); err != nil {
+			t.Fatal(err)
+		}
 		candidate := scheduler.ProjectCandidate{ID: "fixture"}
 		gate, err := scheduler.NewPoolRegistry([]scheduler.PoolConfig{{Name: scheduler.DefaultPoolName, Scheduler: scheduler.Config{Kind: "round_robin", Capacity: 1}}}, []scheduler.ProjectCandidate{candidate})
 		if err != nil {

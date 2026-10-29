@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -113,5 +114,57 @@ func TestResolveOnce(t *testing.T) {
 	cmd.Env = append(os.Environ(), "DETENT_TEST_CACHE_ONCE=1")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("child: %v\n%s", err, out)
+	}
+}
+
+func TestResolveHostSettings(t *testing.T) {
+	for _, tt := range []struct {
+		name                   string
+		persisted, environment bool
+	}{
+		{name: "default"},
+		{name: "GOCACHE environment", environment: true},
+		{name: "go env -w GOCACHE", persisted: true},
+		{name: "environment overrides persisted", persisted: true, environment: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			telemetry := t.TempDir()
+			t.Setenv("TEST_TELEMETRY_DIR", telemetry)
+			if err := os.WriteFile(filepath.Join(telemetry, "mode"), []byte("off\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home)
+			t.Setenv("XDG_CACHE_HOME", filepath.Join(home, "cache"))
+			t.Setenv("LocalAppData", filepath.Join(home, "cache"))
+			t.Setenv("GOENV", filepath.Join(home, "goenv"))
+			t.Setenv("GOCACHE", "")
+			t.Setenv("GOMODCACHE", "")
+			t.Setenv("GOPATH", filepath.Join(home, "go"))
+			t.Setenv("GOTOOLCHAIN", "local")
+			t.Setenv("GOWORK", "off")
+			t.Setenv("GOFLAGS", "")
+			if tt.persisted {
+				cmd := exec.CommandContext(t.Context(), "go", "env", "-w", "GOCACHE="+filepath.Join(home, "persisted-build"))
+				cmd.Dir = home
+				if output, err := cmd.CombinedOutput(); err != nil {
+					t.Fatalf("write isolated Go settings: %v\n%s", err, output)
+				}
+			}
+			if tt.environment {
+				t.Setenv("GOCACHE", filepath.Join(home, "environment-build"))
+			}
+			expected := exec.CommandContext(t.Context(), "go", "env", "GOCACHE")
+			expected.Dir = home
+			output, err := expected.Output()
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := resolve(t.Context())
+			if err != nil || got.Build != strings.TrimSpace(string(output)) {
+				t.Fatalf("resolved %+v, %v; want Go cache %q", got, err, output)
+			}
+		})
 	}
 }

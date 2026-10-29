@@ -2,6 +2,7 @@ package codex
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -30,6 +31,8 @@ type AgentBackend struct {
 
 var _ runner.AgentResumeVerifier = (*AgentBackend)(nil)
 var _ runner.AgentToolBackend = (*AgentBackend)(nil)
+
+func (*AgentBackend) SupportsReadOnlyInvestigation() bool { return true }
 
 func NewAgentBackend(client *AppServer, options Options) (*AgentBackend, error) {
 	if client == nil {
@@ -60,6 +63,7 @@ func (b *AgentBackend) RunTurnWithTools(
 	toolHandler runner.AgentToolHandler,
 	onUpdate runner.AgentUpdateHandler,
 ) (runner.AgentTurnResult, error) {
+	toolHandler = req.ToolBudget.Handler(tools, toolHandler)
 	dynamicTools := make([]DynamicTool, 0, len(tools))
 	for _, tool := range tools {
 		dynamicTools = append(dynamicTools, DynamicTool{
@@ -86,6 +90,9 @@ func (b *AgentBackend) runTurn(
 	toolHandler DynamicToolHandler,
 	onUpdate runner.AgentUpdateHandler,
 ) (runner.AgentTurnResult, error) {
+	if req.IsolatedTools && !req.ReadOnly {
+		return runner.AgentTurnResult{}, errors.New("isolated tools require a read-only turn")
+	}
 	if req.TextOnly {
 		if len(tools) > 0 || req.Resume != (runner.AgentResume{}) || len(req.Attachments) > 0 || req.ConversationControl != nil {
 			return runner.AgentTurnResult{}, errors.New("text-only turns require a fresh prompt without tools or attachments")
@@ -156,6 +163,27 @@ func (b *AgentBackend) runTurn(
 		settings = textOnlySettings(req.Workspace)
 		runtimeRoots = []string{req.Workspace}
 	}
+	if req.IsolatedTools && !req.TextOnly {
+		options.PermissionProfile = "detent-investigation"
+		options.ThreadSandbox, options.TurnSandboxPolicy = "", nil
+		settings = investigationSettings(req.Workspace)
+		if req.ToolBudget != nil || req.Workspace == "" {
+			settings = textOnlySettings(req.Workspace)
+			settings["default_permissions"] = "detent-investigation"
+			settings["permissions"] = map[string]any{"detent-investigation": map[string]any{
+				"filesystem":      map[string]any{"/": "deny", ":workspace_roots": "deny"},
+				"workspace_roots": map[string]any{},
+				"network":         map[string]any{"enabled": false},
+			}}
+		}
+		runtimeRoots = []string{req.Workspace}
+		if req.Workspace == "" {
+			runtimeRoots = nil
+		}
+	}
+	if req.Workspace == "" && req.IsolatedTools {
+		req.Workspace = req.TempDir
+	}
 	instructionTools := tools
 	if req.SupplementalTools {
 		instructionTools = nil
@@ -166,9 +194,18 @@ func (b *AgentBackend) runTurn(
 		stallTimeout = 0
 		terminalTimeout = terminalWaitTimeout
 	}
+	var finalText strings.Builder
+	lastItem := ""
 	result, err := b.client.RunTurn(ctx, RunTurnRequest{
+		FinalPrompt: func() string {
+			if req.ToolBudget.Exhausted() && !json.Valid([]byte(finalText.String())) {
+				return req.ToolBudget.FinalPrompt(ctx)
+			}
+			return ""
+		},
 		ConversationControl:     req.ConversationControl,
 		TextOnly:                req.TextOnly,
+		IsolatedTools:           req.IsolatedTools,
 		Workspace:               req.Workspace,
 		Prompt:                  req.Prompt,
 		Attachments:             req.Attachments,
@@ -193,6 +230,16 @@ func (b *AgentBackend) runTurn(
 		ToolHandler:             toolHandler,
 		RequireSubscriptionAuth: req.RequireSubscriptionAuth,
 	}, func(update Update) error {
+		if req.ToolBudget != nil && update.Type == UpdateAgentMessageDelta {
+			if update.ItemID != lastItem {
+				finalText.Reset()
+				lastItem = update.ItemID
+			}
+			finalText.WriteString(update.Delta)
+		}
+		if err := req.ToolBudget.Observe(agentUpdateFromCodex(update)); err != nil && !errors.Is(err, runner.ErrInvestigationBudget) {
+			return err
+		}
 		if onUpdate == nil {
 			return nil
 		}
@@ -217,6 +264,7 @@ func (b *AgentBackend) runTurn(
 		}
 		return runner.AgentTurnResult{}, err
 	}
+
 	return runner.AgentTurnResult{
 		ThreadID:           result.ThreadID,
 		TurnID:             result.TurnID,

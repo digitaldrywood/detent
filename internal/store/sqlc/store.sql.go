@@ -1957,15 +1957,17 @@ SELECT
   CAST(COALESCE(s.agent_backend_kind, '') AS TEXT) AS agent_backend_kind,
   CAST(COALESCE(s.agent_role, '') AS TEXT) AS agent_role,
   CAST(COALESCE(s.runtime_identity_json, '') AS TEXT) AS runtime_identity_json,
-  CAST(s.completed_at AS TEXT) AS completed_at
+  CAST(COALESCE(s.completed_at, w.completed_at) AS TEXT) AS completed_at
 FROM codex_sessions AS s NOT INDEXED
 JOIN work_attempts AS w ON w.id = s.work_attempt_id
-WHERE s.completed_at IS NOT NULL
-  AND w.completed_at IS NOT NULL
+WHERE w.completed_at IS NOT NULL
   AND (
-    (CAST(?1 AS INTEGER) = 0 AND lower(trim(COALESCE(s.final_state, ''))) = 'completed')
+    (CAST(?1 AS INTEGER) = 0 AND s.completed_at IS NOT NULL
+      AND lower(trim(COALESCE(s.final_state, ''))) = 'completed')
     OR (CAST(?1 AS INTEGER) > 0 AND s.work_attempt_id = CAST(?1 AS INTEGER)
-      AND lower(trim(COALESCE(s.final_state, ''))) IN ('completed', 'failed'))
+      AND ((s.completed_at IS NOT NULL AND lower(trim(COALESCE(s.final_state, ''))) IN ('completed', 'failed'))
+        OR (w.terminal_state = 'abandoned' AND w.error_class = 'service_restart'
+          AND lower(trim(COALESCE(s.final_state, ''))) IN ('running', 'orphaned'))))
   )
   AND (COALESCE(s.provider_thread_id, '') != '' OR COALESCE(s.provider_session_id, '') != ''
     OR (CAST(?1 AS INTEGER) > 0

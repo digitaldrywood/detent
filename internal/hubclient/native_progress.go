@@ -30,6 +30,10 @@ func (s *Scheduler) ReadmitRetryProgress(ctx context.Context, run runner.RunRequ
 	if !ok || claim.execution == nil || claim.execution != run.Execution {
 		return nil, nil, runner.ErrExecutionAuthorityUnavailable
 	}
+	if claim.lifecycle != nil {
+		claim.lifecycle.Lock()
+		defer claim.lifecycle.Unlock()
+	}
 	session, err := s.sessionID()
 	if err != nil {
 		return nil, nil, err
@@ -57,9 +61,19 @@ func (s *Scheduler) ReadmitRetryProgress(ctx context.Context, run runner.RunRequ
 	if err := claim.execution.Finish(ctx, "cancelled"); err != nil {
 		return nil, nil, err
 	}
-	if err := s.ReleaseClaim(ctx, run.Issue.ID, "released"); err != nil {
+	claim.execution.RetainCompletion()
+	if err := claim.execution.finishPrepared(ctx); err != nil {
 		return nil, nil, err
 	}
+	defer func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if current, found := s.nativeClaims[run.Issue.ID]; found && current.lease.FencingToken == claim.lease.FencingToken {
+			delete(s.claims, run.Issue.ID)
+			delete(s.nativeClaims, run.Issue.ID)
+			delete(s.claimPolicies, run.Issue.ID)
+		}
+	}()
 	started := s.now()
 	lease, err, admitted := s.claimNative(ctx, claim.source, request)
 	if err != nil {
@@ -84,12 +98,12 @@ func (s *Scheduler) ReadmitRetryProgress(ctx context.Context, run runner.RunRequ
 		return release(err)
 	}
 	s.mu.Lock()
-	if _, exists := s.nativeClaims[run.Issue.ID]; exists {
+	if current, exists := s.nativeClaims[run.Issue.ID]; !exists || current.lost || current.lease.FencingToken != claim.lease.FencingToken {
 		s.mu.Unlock()
 		return release(runner.ErrExecutionAuthorityUnavailable)
 	}
 	s.claims[run.Issue.ID] = nativeTrackerLease(lease)
-	s.nativeClaims[run.Issue.ID] = nativeClaim{source: claim.source, lease: lease, recovery: recovery, deadline: nativeLeaseDeadline(started, lease), availabilityDeadline: claim.availabilityDeadline, landingCapacity: claim.landingCapacity}
+	s.nativeClaims[run.Issue.ID] = nativeClaim{lifecycle: claim.lifecycle, source: claim.source, lease: lease, recovery: recovery, deadline: nativeLeaseDeadline(started, lease), availabilityDeadline: claim.availabilityDeadline, landingCapacity: claim.landingCapacity}
 	s.claimPolicies[run.Issue.ID] = policy
 	s.mu.Unlock()
 	return s.RunExecution(run.Issue.ID), lease.IsolationPolicy, nil
@@ -141,7 +155,15 @@ func (o *progressOwner) Publish(ctx context.Context, record progresscheck.Record
 	if err != nil {
 		return progresscheck.Record{}, err
 	}
-	input := progresscheck.Publication{Mutation: tracker.Mutation{LeaseID: o.lease.ID, FencingToken: o.lease.FencingToken}, RequestID: record.RequestID, PolicyID: o.request.PolicyID, Instance: o.request.Instance, Decision: record.Decision}
+	modern, err := o.client.HubFeature(ctx, progresscheck.InvestigationCapability)
+	if err != nil {
+		return progresscheck.Record{}, err
+	}
+	decision := record.Decision
+	if !modern {
+		decision.Diagnosis, decision.Instruction, decision.Convergence = "", "", ""
+	}
+	input := progresscheck.Publication{Mutation: tracker.Mutation{LeaseID: o.lease.ID, FencingToken: o.lease.FencingToken}, RequestID: record.RequestID, PolicyID: o.request.PolicyID, Instance: o.request.Instance, Decision: decision}
 	current, err := o.client.Issue(ctx, o.lease.WorkItemID)
 	if err != nil {
 		return progresscheck.Record{}, err

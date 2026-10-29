@@ -14,6 +14,8 @@ import (
 
 const NativeExecutionCapability = "fenced_run_history"
 
+const NativePreStartConversationBindingCapability = "native_pre_start_conversation_binding"
+
 const NativeRuntimeEvidenceCapability = "native_runtime_evidence"
 const NativePreProviderFailureCapability = "native_pre_provider_failure"
 const NativeAdmissionEvidenceCapability = "native_admission_evidence"
@@ -63,6 +65,7 @@ type NativeAttempt struct {
 	TerminalFailureAvailability string            `json:"terminal_failure_availability"`
 	FinalizationAvailability    string            `json:"finalization_availability"`
 	ClaimReleasedAt             *time.Time        `json:"claim_released_at,omitempty"`
+	CleanupAcknowledgedAt       *time.Time        `json:"cleanup_acknowledged_at,omitempty"`
 	Status                      string            `json:"status"`
 	StartedAt                   time.Time         `json:"started_at"`
 	UpdatedAt                   time.Time         `json:"updated_at"`

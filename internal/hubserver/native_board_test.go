@@ -560,7 +560,7 @@ func TestNativeBoardAttemptAndChangeDeltas(t *testing.T) {
 			event.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", HeartbeatAt: now, Identity: agentidentity.RuntimeUpdate(model, "", effort, "", now)}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/events", worker, event), http.StatusOK)
 		}},
-		{"release", "interrupted", 1, func(t *testing.T) {
+		{"release", "cancelled", 1, func(t *testing.T) {
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "released"}), http.StatusNoContent)
 		}},
 		{"new attempt", "running", 2, func(t *testing.T) {

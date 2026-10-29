@@ -48,13 +48,13 @@ type diffBodyExpiryFile struct {
 	position int
 }
 
-func (s *Service) selectDiffBodyExpiryCandidates(ctx context.Context, cutoff time.Time) (diffBodyExpiryCandidates, error) {
+func (s *Service) selectDiffBodyExpiryCandidates(ctx context.Context, cutoff time.Time) (_ diffBodyExpiryCandidates, closeErr error) {
 	var candidates diffBodyExpiryCandidates
 	reader, err := s.database.reader.Conn(ctx)
 	if err != nil {
 		return candidates, err
 	}
-	defer reader.Close()
+	defer func() { closeErr = errors.Join(closeErr, reader.Close()) }()
 	protectedProjects := make(map[[2]string]bool)
 	projectProtected := func(organization, project string) (bool, error) {
 		scope := [2]string{organization, project}

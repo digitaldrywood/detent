@@ -54,6 +54,15 @@ func resolveRequestAgentSelection(ctx context.Context, req RunRequest, process A
 	if hasResumeIdentity(req) {
 		identity := req.ResumeState.RuntimeIdentity
 		model := effectiveModel("", identity.RequestedModel.Value, identity.ResolvedModel.Value)
+		if req.Execution != nil {
+			result := resolveAgentSelection(ctx, req.Issue, process, model, role, cfg, backendConfig, backend)
+			projectEffort, _ := cfg.Agent.Effort.Resolve(role)
+			_, _, backendEffort := agentTurnIdentityOptions(backendConfig)
+			if result.Effort == "" && result.Model == model && projectEffort == "" && backendEffort == "" && len(result.Rejections) == 0 && result.Err == nil {
+				result.Effort = identity.ReasoningEffort.Value
+			}
+			return result
+		}
 		result := agentSelection{resolvedAgentOverride: resolvedAgentOverride{Model: model, Effort: identity.ReasoningEffort.Value}, Selection: identity.Selection}
 		policy := cfg.EffectiveModelSelection()
 		if !policy.Active() || policy.BackendKinds == nil || !slices.Contains(*policy.BackendKinds, backendConfig.Kind) {

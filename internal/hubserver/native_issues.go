@@ -1138,9 +1138,6 @@ func (s *Service) transitionNativeIssueCommandWithChat(ctx context.Context, scop
 				if err := releaseLeaseRow(ctx, tx, lease, "cancelled", now); err != nil {
 					return nil, err
 				}
-				if err := cancelNativeLeaseAttempt(ctx, tx, scope, lease, now); err != nil {
-					return nil, err
-				}
 				heldLease = lease.session.ID
 			}
 		}

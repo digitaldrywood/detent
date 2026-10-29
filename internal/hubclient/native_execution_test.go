@@ -377,9 +377,6 @@ func TestNativeClaimLossReleasesStoppedWorker(t *testing.T) {
 				t.Fatalf("reading stopped attempt: %v", err)
 			}
 			wantStatus := "cancelled"
-			if test.prepared && !test.retained {
-				wantStatus = "interrupted"
-			}
 			if test.preProvider {
 				wantStatus = "failed"
 				if evidence.Attempt.Identity != nil || evidence.Attempt.TerminalFailure == nil || evidence.Attempt.TerminalFailure.ErrorClass != "workspace_hook" {

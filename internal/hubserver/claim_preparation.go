@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"errors"
@@ -95,6 +96,8 @@ func claimWriting(ctx context.Context) bool {
 }
 
 func (d *database) claimNativePrepared(ctx context.Context, request tracker.ClaimRequest, query claimCandidateQuery, interval time.Duration) (tracker.Lease, error) {
+	contentMutation(ctx, true)
+	defer contentMutation(ctx, false)
 	prepared := &claimPreparation{versions: make(map[string]preparedClaimVersion), checkpoints: make(map[string]preparedClaimCheckpoint), details: make(map[string]preparedClaimDetail)}
 	pass := context.WithValue(ctx, claimPreparationKey{}, prepared)
 	for prepared.passes < claimPreparationLimit {
@@ -117,7 +120,19 @@ func (d *database) claimNativePrepared(ctx context.Context, request tracker.Clai
 		if err := prepareClaimDecisionPayloads(pass, prepared); err != nil {
 			return tracker.Lease{}, err
 		}
+		contentWriting(pass, true)
 		lease, err = d.claimNextOn(pass, d.db, nil, mode, request, query, interval)
+		contentWriting(pass, false)
+		var hydration *claimHydration
+		if errors.As(err, &hydration) {
+			prepared.hydrating = true
+			err = hydration.run(pass, d.reader)
+			prepared.hydrating = false
+			if err != nil {
+				return tracker.Lease{}, err
+			}
+			continue
+		}
 		if !errors.Is(err, errClaimHintStale) {
 			return lease, err
 		}
@@ -605,17 +620,14 @@ func readLegacyClaimReviews(ctx context.Context, q nativeQueryer, change, versio
 	for _, value := range selected {
 		bySequence[value.sequence] = value.review
 	}
-	keys := make([]int64, 0, len(bySequence))
-	for sequence := range bySequence {
-		keys = append(keys, sequence)
+	ordered := make([]selectedReview, 0, len(bySequence))
+	for sequence, review := range bySequence {
+		ordered = append(ordered, selectedReview{sequence, review})
 	}
-	slices.Sort(keys)
-	reviews := make([]tracker.ChangeReview, 0, len(keys))
-	for _, sequence := range keys {
-		review, found := bySequence[sequence]
-		if !found {
-			return nil, errors.New("selected change review is missing")
-		}
+	slices.SortFunc(ordered, func(a, b selectedReview) int { return cmp.Compare(a.sequence, b.sequence) })
+	reviews := make([]tracker.ChangeReview, 0, len(ordered))
+	for _, record := range ordered {
+		review := record.review
 		if err := hydrateChangeRecord(ctx, q, &review); err != nil {
 			return nil, err
 		}

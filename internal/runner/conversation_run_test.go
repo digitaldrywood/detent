@@ -17,6 +17,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -33,6 +35,10 @@ type conversationAgentBackend struct {
 }
 
 func (*conversationAgentBackend) SupportsLiveControl() bool { return true }
+
+func (*conversationAgentBackend) VerifyResume(context.Context, AgentProcessRequest, AgentResume) error {
+	return nil
+}
 
 func (b *conversationAgentBackend) RunTurn(_ context.Context, req AgentTurnRequest, onUpdate AgentUpdateHandler) (AgentTurnResult, error) {
 	b.mu.Lock()
@@ -79,15 +85,25 @@ func (b *conversationAgentBackend) RunTurn(_ context.Context, req AgentTurnReque
 // conversationTestExecution adds conversation binding to testExecution.
 type conversationTestExecution struct {
 	testExecution
-	bindErr      error
-	session      *fakeConversationSession
-	capabilities ConversationCapabilities
-	bound        bool
-	resumeThread string
+	bindErr          error
+	legacyBinding    bool
+	boundBeforeStart bool
+	session          *fakeConversationSession
+	capabilities     ConversationCapabilities
+	bound            bool
+	resumeThread     string
+}
+
+func (e *conversationTestExecution) SupportsPreStartConversationBinding(context.Context) (bool, error) {
+	return !e.legacyBinding, nil
 }
 
 func (e *conversationTestExecution) BindConversation(_ context.Context, capabilities ConversationCapabilities, resumeThreadID string) (ConversationSession, error) {
 	e.bound = true
+	e.boundBeforeStart = !e.started
+	if e.legacyBinding && !e.started {
+		return nil, ErrStaleConversationControl
+	}
 	e.capabilities = capabilities
 	e.resumeThread = resumeThreadID
 	if e.bindErr != nil {
@@ -203,14 +219,39 @@ func newConversationRunner(t *testing.T, agent AgentBackend) *Runner {
 	return r
 }
 
-func TestRunWithoutConversationStillSucceeds(t *testing.T) {
+func prepareConversationResume(t *testing.T, r *Runner, execution *conversationTestExecution, thread string) {
+	t.Helper()
+	workflow, _, _, _ := r.runtimeSnapshot()
+	workflow.Config.Agents.Routes = []config.AgentRoute{{Name: "default", Role: RolePlan, Backend: "codex", Model: "example-model", Default: true}}
+	if err := r.UpdateWorkflowChecked(workflow); err != nil {
+		t.Fatal(err)
+	}
+	r.store = &fakeSessionStore{sessionID: 2, resumeState: store.AgentResumeState{DetentSessionID: 1, ProviderThreadID: thread}}
+	r.workspace.(*retainedExecutionWorkspace).recoveryStates = []workspace.RecoveryState{{HeadSHA: "actual-head", WorkspaceFingerprint: "actual-digest"}}
+	execution.recovery = tracker.NativeRecovery{
+		Lease: tracker.NativeLease{MachineID: "runner"},
+		Attempts: []tracker.NativeAttempt{{
+			Status: "failed",
+			NativeRunData: tracker.NativeRunData{
+				MachineID: "runner",
+				Identity:  &tracker.NativeExecutionIdentity{Role: RolePlan, Backend: "codex", Model: "example-model"},
+				Runtime:   &tracker.NativeRuntimeObservation{LocalAttemptID: 1},
+			},
+			Checkpoint: &tracker.NativeCheckpoint{Resume: "resume_session", Storage: "local_only", Availability: "available", WorktreeState: "clean", HeadSHA: "actual-head", WorkspaceDigest: "actual-digest"},
+		}},
+	}
+}
+
+func TestRunConversationBindFailure(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
 		name string
 		err  error
 	}{
 		{"no conversation", ErrNoConversation},
-		{"bind failure", errors.New("hub unavailable")},
+		{"stale execution", ErrStaleConversationControl},
+		{"permission denied", errors.New("permission denied")},
+		{"transport failure", errors.New("hub unavailable")},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -218,6 +259,12 @@ func TestRunWithoutConversationStillSucceeds(t *testing.T) {
 			execution := &conversationTestExecution{bindErr: test.err}
 			r := newConversationRunner(t, agent)
 			result, err := r.Run(t.Context(), RunRequest{Execution: execution, Issue: connector.Issue{ID: "native", Identifier: "native#1"}, Mode: RunModePlan})
+			if !errors.Is(test.err, ErrNoConversation) {
+				if !errors.Is(err, test.err) || len(agent.requests) != 0 {
+					t.Fatalf("bind failure launched provider: requests=%d error=%v", len(agent.requests), err)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("run error = %v", err)
 			}
@@ -249,6 +296,7 @@ func TestRunBindsConversationAndReportsTurn(t *testing.T) {
 	session.commands <- AgentControl{Kind: AgentControlMessage, ThreadID: "thread-1", TurnID: "turn-1", MessageID: "msg_1", Text: "steer", Check: func(context.Context) error { return nil }, Reply: make(chan error, 1)}
 	execution := &conversationTestExecution{session: session}
 	r := newConversationRunner(t, agent)
+	prepareConversationResume(t, r, execution, session.resume)
 	var reported []AgentTokenCounts
 	result, err := r.Run(t.Context(), RunRequest{
 		Execution: execution,
@@ -281,8 +329,8 @@ func TestRunBindsConversationAndReportsTurn(t *testing.T) {
 	if result.Tokens.TotalTokens != laterDelta.TotalTokens || result.Tokens.Last == nil || *result.Tokens.Last != *laterUsage.Last {
 		t.Fatalf("canonical resume result = %#v, want attempt total %d with unchanged last-call usage", result.Tokens, laterDelta.TotalTokens)
 	}
-	if execution.resumeThread != "" {
-		t.Fatalf("initial resume thread = %q, want no resume before canonical conversation binding", execution.resumeThread)
+	if execution.resumeThread != session.resume {
+		t.Fatalf("initial resume thread = %q, want verified native thread %q", execution.resumeThread, session.resume)
 	}
 	if !execution.capabilities.Steer || !execution.capabilities.Interrupt || !execution.capabilities.Answer {
 		t.Fatalf("capabilities = %#v", execution.capabilities)
@@ -353,22 +401,35 @@ func TestRunBindsConversationAndReportsTurn(t *testing.T) {
 
 func TestConversationStartupRetainsBoundProviderIdentity(t *testing.T) {
 	t.Parallel()
-	for _, thread := range []string{"", "bound-thread"} {
-		t.Run(thread, func(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		thread   string
+		verified bool
+	}{
+		{name: "no bound thread"},
+		{name: "unverified bound thread", thread: "bound-thread"},
+		{name: "verified bound thread", thread: "bound-thread", verified: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			startupErr := errors.New("provider startup failed before updates")
 			agent := &conversationAgentBackend{beforeTurnErr: startupErr}
 			session := newFakeConversationSession()
-			session.resume = thread
+			session.resume = test.thread
 			execution := &conversationTestExecution{session: session}
 			r := newConversationRunner(t, agent)
 			r.workspace.(*retainedExecutionWorkspace).recoveryStates = []workspace.RecoveryState{{HeadSHA: "actual-head", WorkspaceFingerprint: "actual-digest"}}
+			if test.verified {
+				prepareConversationResume(t, r, execution, test.thread)
+			}
 			result, err := r.Run(t.Context(), RunRequest{Execution: execution, Issue: connector.Issue{ID: "native", Identifier: "native#1"}, Mode: RunModePlan})
 			want := "fresh_checkout"
-			if thread != "" {
+			wantThread := ""
+			if test.verified {
 				want = "resume_session"
+				wantThread = test.thread
 			}
-			if !errors.Is(err, startupErr) || !execution.bound || len(agent.requests) != 1 || agent.requests[0].Resume.ThreadID != thread || execution.checkpoint == nil || execution.checkpoint.Resume != want || execution.checkpoint.HeadSHA != "actual-head" || execution.checkpoint.WorkspaceDigest != "actual-digest" || result.NativeChange != nil || result.TurnCount != 0 {
+			if !errors.Is(err, startupErr) || !execution.bound || len(agent.requests) != 1 || agent.requests[0].Resume.ThreadID != wantThread || execution.checkpoint == nil || execution.checkpoint.Resume != want || execution.checkpoint.HeadSHA != "actual-head" || execution.checkpoint.WorkspaceDigest != "actual-digest" || result.NativeChange != nil || result.TurnCount != 0 {
 				t.Fatalf("startup identity: error=%v requests=%d checkpoint=%+v turns=%d", err, len(agent.requests), execution.checkpoint, result.TurnCount)
 			}
 		})
@@ -824,11 +885,70 @@ func TestBindConversationNamesTheRunsResumeThread(t *testing.T) {
 			agent := &conversationAgentBackend{}
 			execution := &conversationTestExecution{session: newFakeConversationSession()}
 			r := newConversationRunner(t, agent)
-			if run := r.bindConversation(t.Context(), RunRequest{Execution: execution, Issue: connector.Issue{ID: "native"}}, agent, test.thread); run == nil {
+			if run, err := r.bindConversation(t.Context(), RunRequest{Execution: execution, Issue: connector.Issue{ID: "native"}}, agent, test.thread); err != nil || run == nil {
 				t.Fatal("bind returned no conversation")
 			}
 			if execution.resumeThread != test.thread {
 				t.Fatalf("bind resume thread = %q, want %q", execution.resumeThread, test.thread)
+			}
+		})
+	}
+}
+
+func TestRunConversationBindingOrder(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		legacy     bool
+		effort     string
+		wantResume bool
+	}{
+		{effort: "high"},
+		{legacy: true, effort: "high"},
+		{legacy: true},
+		{wantResume: true},
+	} {
+		t.Run(fmt.Sprintf("legacy=%t/effort=%s", test.legacy, test.effort), func(t *testing.T) {
+			t.Parallel()
+			legacy := test.legacy
+			agent := &conversationAgentBackend{}
+			session := newFakeConversationSession()
+			session.preferences = ConversationPreferences{Model: "example-model", ReasoningEffort: test.effort}
+			session.pending = "Keep the additional instructions."
+			session.pendingAttachments = []AgentAttachment{{Name: "evidence.txt", MIME: "text/plain", Content: []byte("supporting evidence")}}
+			session.resume = "unverified-historical-thread"
+			execution := &conversationTestExecution{session: session, legacyBinding: legacy}
+			r := newConversationRunner(t, agent)
+			prepareConversationResume(t, r, execution, session.resume)
+			result, err := r.Run(t.Context(), RunRequest{Execution: execution, Issue: connector.Issue{ID: "native", Identifier: "native#1"}, Mode: RunModePlan})
+			if err != nil || result.FinalState != FinalStateCompleted {
+				t.Fatalf("run = %#v, error = %v", result, err)
+			}
+			if execution.boundBeforeStart == legacy {
+				t.Fatalf("pre-start bind = %t, legacy = %t", execution.boundBeforeStart, legacy)
+			}
+			if len(agent.requests) != 1 {
+				t.Fatalf("provider requests = %d", len(agent.requests))
+			}
+			request := agent.requests[0]
+			if request.ConversationControl == nil || !strings.Contains(request.Prompt, session.pending) || len(request.Attachments) != 1 || request.Model != "example-model" || request.ReasoningEffort != test.effort {
+				t.Fatalf("conversation input lost: %#v", request)
+			}
+			wantParent := int64(0)
+			if test.wantResume {
+				wantParent = 1
+			}
+			if agentResumeEmpty(request.Resume) == test.wantResume || r.store.(*fakeSessionStore).started.ResumedFromSessionID != wantParent {
+				t.Fatalf("provider resume = %#v, parent = %d, want resume = %t", request.Resume, r.store.(*fakeSessionStore).started.ResumedFromSessionID, test.wantResume)
+			}
+			want := tracker.NativeExecutionIdentity{Role: RolePlan, Backend: "codex", Model: "example-model"}
+			if !legacy {
+				want.ReasoningEffort = test.effort
+			}
+			if execution.identity != want {
+				t.Fatalf("registered identity = %#v, want %#v", execution.identity, want)
+			}
+			if legacy && execution.resumeThread != "" {
+				t.Fatalf("legacy bind named an unverified thread: %s", execution.resumeThread)
 			}
 		})
 	}

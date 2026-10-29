@@ -70,6 +70,7 @@ type nativeExecution struct {
 	worktreeHead             string
 	role                     string
 	conversationContinuation bool
+	conversationReady        chan struct{}
 	settled                  bool
 	landed                   bool
 	change                   *runner.NativeChange
@@ -202,6 +203,9 @@ func (s *Scheduler) RunExecution(issueID string) runner.Execution {
 	}
 	if claim.execution != nil {
 		return claim.execution
+	}
+	if claim.lifecycle == nil {
+		claim.lifecycle = &sync.Mutex{}
 	}
 	execution := &nativeExecution{scheduler: s, claim: claim, data: tracker.NativeRunData{
 		RunID: executionID("run", string(claim.lease.WorkItemID)), AttemptID: executionID("attempt", string(claim.lease.ID)),
@@ -400,6 +404,12 @@ func (e *nativeExecution) validationError(ctx context.Context, err error) error 
 func (e *nativeExecution) Start(ctx context.Context, identity tracker.NativeExecutionIdentity) (startErr error) {
 	defer func() {
 		if startErr == nil {
+			e.mu.Lock()
+			if e.conversationReady != nil {
+				close(e.conversationReady)
+				e.conversationReady = nil
+			}
+			e.mu.Unlock()
 			e.refreshReasons(ctx, false)
 		}
 	}()
@@ -817,7 +827,7 @@ func (e *nativeExecution) finishPrepared(ctx context.Context) error {
 	defer e.mu.Unlock()
 	if releasedAttempt != nil {
 		attempt := *releasedAttempt
-		if attempt.Outcome == "" || attempt.Outcome == "interrupted" {
+		if attempt.CleanupAcknowledgedAt == nil && (attempt.Outcome == "" || attempt.Outcome == "interrupted" || attempt.Outcome == "cancelled") {
 			if err := cancelNativeReleasedAttempt(ctx, e.claim.source.client, e.claim.lease.WorkItemID, attempt); err != nil {
 				return errors.Join(finishErr, err)
 			}
@@ -850,6 +860,9 @@ func (e *nativeExecution) finishPrepared(ctx context.Context) error {
 }
 
 func cancelNativeReleasedAttempt(ctx context.Context, client *NativeClient, item tracker.NativeWorkItemID, attempt tracker.NativeAttempt) error {
+	if attempt.CleanupAcknowledgedAt != nil {
+		return nil
+	}
 	data := tracker.NativeRunData{AttemptID: attempt.AttemptID, RunID: attempt.RunID, LeaseID: attempt.LeaseID,
 		FencingToken: attempt.FencingToken, PolicyID: attempt.PolicyID, Identity: attempt.Identity,
 		Sequence: attempt.Sequence + 1, Outcome: "cancelled"}

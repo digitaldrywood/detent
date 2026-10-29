@@ -50,7 +50,7 @@ func TestNativeProgressPublicationIsAtomicAndScoped(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			decision := progresscheck.Decision{Outcome: outcome, Reason: "Source or evidence requires another step", Evidence: []string{"failed-attempt"}}
+			decision := progresscheck.Decision{Outcome: outcome, Diagnosis: "failed-attempt" + ": the retained failure identifies missing validation evidence; the failing step has not produced its required receipt", Instruction: "Repair the source finalization check and retain its command receipt", Convergence: "The previously failing check has a successful receipt on the repaired assertion", Reason: "Source or evidence requires another step", Evidence: []string{"failed-attempt"}}
 			if outcome == progresscheck.Reroute {
 				decision.Step = "implement"
 			}
@@ -71,6 +71,36 @@ func TestNativeProgressPublicationIsAtomicAndScoped(t *testing.T) {
 			}
 			if _, err := owner.Publish(t.Context(), record); err == nil {
 				t.Fatal("new source evidence was accepted under the old publication revision")
+			}
+			for _, eventType := range []string{"run.started", "run.observed", "workflow.transitioned", "run.finished", "run.checkpointed"} {
+				revision, err = progressRevision(t.Context(), f.service.database.reader, scope, request.IssueID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := appendNativeHistory(t.Context(), tx, scope, request.IssueID, eventType, tracker.CollaborationData{}, clock); err != nil {
+					_ = tx.Rollback()
+					t.Fatal(err)
+				}
+				if err := tx.Commit(); err != nil {
+					t.Fatal(err)
+				}
+				current, err := progressRevision(t.Context(), f.service.database.reader, scope, request.IssueID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				changed := eventType == "run.finished" || eventType == "run.checkpointed"
+				if (current != revision) != changed {
+					t.Fatalf("%s changed evidence revision from %d to %d", eventType, revision, current)
+				}
+				if changed {
+					if _, err := owner.Publish(t.Context(), record); err == nil {
+						t.Fatalf("%s bypassed the transaction guard", eventType)
+					}
+				}
 			}
 			owner.guardRevision = nil
 

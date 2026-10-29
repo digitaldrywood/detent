@@ -24,6 +24,7 @@ import (
 )
 
 type nativeClaim struct {
+	lifecycle            *sync.Mutex
 	lost                 bool
 	landingCapacity      int
 	execution            *nativeExecution
@@ -656,7 +657,7 @@ func (s *Scheduler) reconcileReleasedExecution(ctx context.Context, source *Nati
 	if err := source.client.client.request(ctx, http.MethodGet, source.client.base()+path+"/attempts/"+reference.AttemptID, nil, &attempt); err != nil {
 		return fmt.Errorf("read attempt: %w", err)
 	}
-	if attempt.AttemptID != reference.AttemptID || attempt.MachineID != identity.MachineID || attempt.RunnerID != identity.RunnerID || attempt.ClaimReleasedAt == nil || attempt.Identity == nil || attempt.Outcome != "" && attempt.Outcome != "interrupted" || !attempt.Checkpoint.PreservesSource() || attempt.Runtime == nil || attempt.Runtime.WorkerLaunch == nil {
+	if attempt.AttemptID != reference.AttemptID || attempt.MachineID != identity.MachineID || attempt.RunnerID != identity.RunnerID || attempt.ClaimReleasedAt == nil || attempt.CleanupAcknowledgedAt != nil || attempt.Identity == nil || attempt.Outcome != "" && attempt.Outcome != "interrupted" && attempt.Outcome != "cancelled" || attempt.Runtime == nil || attempt.Runtime.WorkerLaunch == nil {
 		return nil
 	}
 	launch := attempt.Runtime.WorkerLaunch

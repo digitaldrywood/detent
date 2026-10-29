@@ -13,6 +13,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -50,12 +51,12 @@ func (s *Service) readNativeCapabilities(ctx context.Context) (nativeCapabilitie
 	if err := s.database.reader.QueryRowContext(ctx, "SELECT id FROM hub_identity").Scan(&serverID); err != nil {
 		return nativeCapabilitiesResponse{}, err
 	}
-	features := []string{"native_issues", "scoped_collaboration", "revision_conflicts", "idempotent_mutations", "scoped_runner_identity", "repository_policy", "change_requests", tracker.NativeExecutionCapability, tracker.NativeRuntimeEvidenceCapability, tracker.NativePreProviderFailureCapability, tracker.NativeAdmissionEvidenceCapability, tracker.NativeAdmissionObservationCapability, tracker.NativeProviderCapacityCapability, tracker.NativeCheckoutRepositoryCapability, tracker.NativeRunnerSkillsCapability, tracker.NativeLocalChecksCapability, tracker.NativeRunnerCapacityCapability, tracker.NativeProjectConfigurationCapability, tracker.NativeProjectDiagnosticsCapability, tracker.NativeRunnerUpdateCapability}
+	features := []string{progresscheck.InvestigationCapability, "native_issues", "scoped_collaboration", "revision_conflicts", "idempotent_mutations", "scoped_runner_identity", "repository_policy", "change_requests", tracker.NativeExecutionCapability, tracker.NativeRuntimeEvidenceCapability, tracker.NativePreProviderFailureCapability, tracker.NativeAdmissionEvidenceCapability, tracker.NativeAdmissionObservationCapability, tracker.NativeProviderCapacityCapability, tracker.NativeCheckoutRepositoryCapability, tracker.NativeRunnerSkillsCapability, tracker.NativeLocalChecksCapability, tracker.NativeRunnerCapacityCapability, tracker.NativeProjectConfigurationCapability, tracker.NativeProjectDiagnosticsCapability, tracker.NativeRunnerUpdateCapability}
 	if s.workspaces != nil {
 		features = append(features, tracker.NativeWorkspaceCapability)
 	}
 	features = append(features, tracker.NativeRunnerCommitPolicyCapability, tracker.NativeRunnerSetupCapability, tracker.NativeProjectCheckoutCapability, tracker.NativeRunnerSetupDeclarationCapability)
-	features = append(features, tracker.NativeDispatchPriorityCapability, tracker.NativeDispatchWaitCapability, tracker.NativeHeartbeatChangesCapability, tracker.NativeHostMetricsCapability, tracker.NativeLandingCapacityCapability)
+	features = append(features, tracker.NativePreStartConversationBindingCapability, tracker.NativeDispatchPriorityCapability, tracker.NativeDispatchWaitCapability, tracker.NativeHeartbeatChangesCapability, tracker.NativeHostMetricsCapability, tracker.NativeLandingCapacityCapability)
 	return nativeCapabilitiesResponse{
 		ServerID: serverID, Version: s.config.Version, MinimumRunnerVersion: minimumRunnerVersion(s.config.Version),
 		ProtocolMajors: []int{1, 2}, EventSchemas: []int{1}, Features: features,

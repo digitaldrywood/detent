@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/procgroup"
@@ -365,12 +366,16 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 	if err != nil {
 		t.Fatal(err)
 	}
+	var checkingProgress atomic.Bool
 	finished := make(chan nativePlanFinish, 4)
-	transport := &nativePlanTransport{next: h.failChanges, native: h.native, finished: finished, terminated: make(chan tracker.NativeRunData, 1), blocked: make(chan struct{}, 1)}
+	transport := &nativePlanTransport{next: h.failChanges, native: h.native, finished: finished, terminated: make(chan tracker.NativeRunData, 1), blocked: make(chan struct{}, 1), checkingProgress: &checkingProgress}
 	transport.failWorkflow.Store(abandon)
 	h.native.client.httpClient.Transport = transport
 	if failure == "recovery" && !manualCheckpoint && !cleanCheckpoint {
 		h.native.client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+			if checkingProgress.Load() {
+				return transport.RoundTrip(request)
+			}
 			if planningRecovery && request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/release") {
 				current, readErr := h.native.Issue(request.Context(), tracker.NativeWorkItemID(issue.ID))
 				h.scheduler.mu.Lock()
@@ -397,15 +402,20 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 		PollInterval: time.Hour, MaxConcurrentAgents: 1,
 		ActiveStates: []string{"Todo", "In Progress"}, ObservedStates: []string{"Human Review"}, TerminalStates: []string{"Done"},
 	}
-	var runBackend runner.Backend = agent
+	if abandon || failure == "workspace" {
+		orchCfg.PollInterval = time.Hour
+	}
 	observed := make(chan nativePlanRunObservation, 8)
+	var runBackend runner.Backend = &nativePlanObservedRunner{Runner: agent, observed: observed, checkingProgress: &checkingProgress}
 	if failure == "recovery" {
 		orchCfg.ObservedStates = append(orchCfg.ObservedStates, "Blocked")
 	}
 	if planningRecovery && !manualCheckpoint && !cleanCheckpoint {
-		runBackend = &nativePlanObservedRunner{Runner: agent, observed: observed}
+		orchCfg.PollInterval = time.Hour
 	}
-	orch, err := orchestrator.New(orchCfg, orchestrator.Dependencies{Connector: h.connector, Scheduling: h.scheduler, Runner: runBackend, WorkAttempts: runtimeStore, LaneLedger: runtimeStore, WorkflowMetrics: runtimeStore, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	dependencies := orchestrator.Dependencies{Connector: h.connector, Scheduling: h.scheduler, Runner: runBackend, WorkAttempts: runtimeStore, LaneLedger: runtimeStore, WorkflowMetrics: runtimeStore, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	dependencies.Scheduling = &nativePlanProgressScheduler{Scheduler: h.scheduler, checkingProgress: &checkingProgress}
+	orch, err := orchestrator.New(orchCfg, dependencies)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -792,9 +802,27 @@ type nativePlanRunObservation struct {
 	localAttemptID int64
 }
 
+type nativePlanProgressScheduler struct {
+	*Scheduler
+	checkingProgress *atomic.Bool
+}
+
+func (s *nativePlanProgressScheduler) ReadmitRetryProgress(ctx context.Context, request runner.RunRequest, resolver runner.ProviderCapacityResolver) (runner.Execution, *isolation.Policy, error) {
+	s.checkingProgress.Store(true)
+	defer s.checkingProgress.Store(false)
+	return s.Scheduler.ReadmitRetryProgress(ctx, request, resolver)
+}
+
 type nativePlanObservedRunner struct {
 	*runner.Runner
-	observed chan<- nativePlanRunObservation
+	observed         chan<- nativePlanRunObservation
+	checkingProgress *atomic.Bool
+}
+
+func (r *nativePlanObservedRunner) CheckProgress(ctx context.Context, request runner.RunRequest, evidence progresscheck.Request) (progresscheck.Decision, error) {
+	r.checkingProgress.Store(true)
+	defer r.checkingProgress.Store(false)
+	return r.Runner.CheckProgress(ctx, request, evidence)
 }
 
 func (r *nativePlanObservedRunner) Run(ctx context.Context, request runner.RunRequest) (runner.RunResult, error) {
@@ -815,12 +843,13 @@ func (r *nativePlanObservedRunner) Run(ctx context.Context, request runner.RunRe
 }
 
 type nativePlanTransport struct {
-	next         http.RoundTripper
-	native       *NativeClient
-	finished     chan<- nativePlanFinish
-	terminated   chan tracker.NativeRunData
-	blocked      chan struct{}
-	failWorkflow atomic.Bool
+	next             http.RoundTripper
+	native           *NativeClient
+	checkingProgress *atomic.Bool
+	finished         chan<- nativePlanFinish
+	terminated       chan tracker.NativeRunData
+	blocked          chan struct{}
+	failWorkflow     atomic.Bool
 }
 
 func (t *nativePlanTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -843,6 +872,9 @@ func (t *nativePlanTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	var event tracker.NativeRunEvent
 	if err := json.NewDecoder(body).Decode(&event); err != nil {
 		return response, err
+	}
+	if t.checkingProgress != nil && t.checkingProgress.Load() {
+		return response, nil
 	}
 	if event.Type != "run.finished" {
 		return response, nil

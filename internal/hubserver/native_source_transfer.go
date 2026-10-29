@@ -57,12 +57,12 @@ func readSourceRecoveryView(ctx context.Context, q nativeQueryer, scope nativeSc
 	}
 	if view.AttemptID == "" {
 		view.HeadSHA, view.AttemptID = version.HeadSHA, version.AttemptID
-		err = q.QueryRowContext(ctx, `SELECT l.machine_id, COALESCE(lr.runner_id,''),COALESCE(NULLIF(r.display_name,''),m.hostname,''), a.status, l.released_at FROM native_attempts a JOIN leases l ON l.lease_id=a.lease_id LEFT JOIN lease_runners lr ON lr.lease_id=l.lease_id LEFT JOIN runner_identities r ON r.id=lr.runner_id AND r.organization_id=a.organization_id LEFT JOIN machines m ON m.id=l.machine_id AND m.organization_id=a.organization_id WHERE a.id=? AND a.organization_id=? AND a.project_id=? AND a.work_item_id=?`, version.AttemptID, scope.organization, scope.project, item).Scan(&view.SourceMachineID, &view.SourceRunnerID, &view.SourceRunnerName, &rawStatus, &released)
+		err = q.QueryRowContext(ctx, `SELECT l.machine_id, COALESCE(lr.runner_id,''),COALESCE(NULLIF(r.display_name,''),m.hostname,''), a.status, l.released_at,coalesce(a.failure_stage,'')='lease_release' AND a.cleanup_acknowledged_at IS NULL FROM native_attempts a JOIN leases l ON l.lease_id=a.lease_id LEFT JOIN lease_runners lr ON lr.lease_id=l.lease_id LEFT JOIN runner_identities r ON r.id=lr.runner_id AND r.organization_id=a.organization_id LEFT JOIN machines m ON m.id=l.machine_id AND m.organization_id=a.organization_id WHERE a.id=? AND a.organization_id=? AND a.project_id=? AND a.work_item_id=?`, version.AttemptID, scope.organization, scope.project, item).Scan(&view.SourceMachineID, &view.SourceRunnerID, &view.SourceRunnerName, &rawStatus, &released, &source.UnacknowledgedRelease)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return view, id, err
 		}
 	}
-	view.Quiesced = released.Valid && (rawStatus == "succeeded" || rawStatus == "failed" || rawStatus == "cancelled")
+	view.Quiesced = released.Valid && !source.UnacknowledgedRelease && (rawStatus == "succeeded" || rawStatus == "failed" || rawStatus == "cancelled")
 	_, claimed, err := readUnreleasedLease(ctx, q, id)
 	if err != nil {
 		return view, id, err

@@ -140,6 +140,7 @@ func (s *Service) convertLegacyStorage(ctx context.Context, now time.Time) error
 		s.convertIssuePageFacts,
 		s.convertActivityProjections,
 		s.convertAttemptHotProjections,
+		s.convertAttemptLeases,
 		s.convertNativeBoardRanks,
 		s.convertHealthProjections,
 		s.convertRunnerBoardProjections,
