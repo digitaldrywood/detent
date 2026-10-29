@@ -710,6 +710,7 @@ func TestHostedBrowserProviderAccountSelection(t *testing.T) {
 const browserHostedOwnerEmail = "owner@example.test"
 
 func browserPreviewConfig(cfg *Config) {
+	cfg.Logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
 	if os.Getenv("DETENT_HOSTED_BROWSER_RUNNER_CAPACITY") != "" {
 		plans := pilotHostedPlans()
 		plan := plans.Plans[0]
