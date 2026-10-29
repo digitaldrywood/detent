@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestLocalGitNativeReworkOwnsPausedRebase(t *testing.T) {
@@ -397,6 +398,96 @@ func TestLocalGitNativeReworkOwnsPausedRebase(t *testing.T) {
 			}
 			if readFile(t, filepath.Join(sibling.Path, "README.md")) != siblingFiles || readFile(t, configPath) != configBefore || readFile(t, signer) != "personal signer sentinel\n" {
 				t.Fatal("sibling files or host signing material changed")
+			}
+		})
+	}
+}
+
+func TestLocalGitReworkPreservesIncorporatedSource(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name          string
+		incorporation string
+		conflict      bool
+		followup      bool
+	}{
+		{name: "merged source awaiting evidence", incorporation: "merge"},
+		{name: "squashed source awaiting evidence", incorporation: "squash"},
+		{name: "incorporated followup retains its candidate", incorporation: "squash", followup: true},
+		{name: "undelivered source still rebases"},
+		{name: "conflicting source still pauses", conflict: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			source := initSourceRepo(t)
+			remote := initBareRemote(t)
+			runGit(t, source, "remote", "add", "origin", remote)
+			runGit(t, source, "push", "-u", "origin", "main")
+			base := strings.TrimSpace(runGit(t, source, "rev-parse", "HEAD"))
+			backend, err := NewBackend(KindLocalGit, LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			owner := backend.(*LocalGit)
+			issue := Issue{Identifier: "native#141", NativeRework: true, BaseRef: base}
+			info, err := backend.Create(t.Context(), issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeCheckpointFile(t, info.Path, "README.md", "retained source\n")
+			runGit(t, info.Path, "add", "README.md")
+			runGit(t, info.Path, "commit", "-m", "retain source")
+			head := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
+			issue.Source = &ChangeSource{Version: tracker.ChangeVersion{ChangeVersionInput: tracker.ChangeVersionInput{BaseSHA: base, HeadSHA: head}}}
+			if test.followup {
+				writeCheckpointFile(t, info.Path, "README.md", "updated retained source\n")
+				runGit(t, info.Path, "add", "README.md")
+				runGit(t, info.Path, "commit", "-m", "revise source")
+				head = strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
+			}
+			switch test.incorporation {
+			case "merge":
+				runGit(t, source, "merge", "--ff-only", head)
+			case "squash":
+				runGit(t, source, "merge", "--squash", head)
+				runGit(t, source, "commit", "-m", "deliver source")
+			}
+			writeCheckpointFile(t, source, "base.txt", "unrelated integration change\n")
+			runGit(t, source, "add", "base.txt")
+			if test.conflict {
+				writeCheckpointFile(t, source, "README.md", "conflicting integration change\n")
+				runGit(t, source, "add", "README.md")
+			}
+			runGit(t, source, "commit", "-m", "advance integration")
+			runGit(t, source, "push", "origin", "main")
+			target := strings.TrimSpace(runGit(t, source, "rev-parse", "HEAD"))
+			validate := func(ctx context.Context) error { return ctx.Err() }
+			prepared, err := owner.PrepareRework(t.Context(), info, issue, MergePrepareOptions{}, validate)
+			if test.conflict {
+				if err != nil || prepared.Status != MergePrepareStatusConflict || len(prepared.ConflictPaths) != 1 || prepared.ConflictPaths[0] != "README.md" {
+					t.Fatalf("source conflict did not retain resolution custody: %+v, %v", prepared, err)
+				}
+				return
+			}
+			if err != nil || prepared.Status != MergePrepareStatusClean {
+				t.Fatalf("prepare retained source: %+v, %v", prepared, err)
+			}
+			wantBase := target
+			if test.incorporation != "" {
+				wantBase = base
+				if prepared.HeadSHA != head {
+					t.Fatalf("incorporation erased source awaiting review: head=%s want=%s", prepared.HeadSHA, head)
+				}
+			} else {
+				runGit(t, info.Path, "merge-base", "--is-ancestor", target, prepared.HeadSHA)
+			}
+			finalBase, err := owner.FinalizeNativeWork(t.Context(), info, issue, validate)
+			if err != nil || prepared.BaseSHA != wantBase || finalBase != wantBase {
+				t.Fatalf("finalized source base: prepared=%s final=%s want=%s error=%v", prepared.BaseSHA, finalBase, wantBase, err)
+			}
+			diff, err := GitFileDiffs(t.Context(), info.Path, finalBase, tracker.MaxDiffBytes)
+			if err != nil || diff.HeadSHA != prepared.HeadSHA || len(diff.Files) != 1 || diff.Files[0].Path != "README.md" {
+				t.Fatalf("final publication diff lost the owned delta: %+v, %v", diff, err)
 			}
 		})
 	}

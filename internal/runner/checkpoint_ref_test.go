@@ -60,14 +60,17 @@ func TestNativeRestorableCheckpoint(t *testing.T) {
 func TestIncorporationRefusalRestoresPublishedSource(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name       string
-		gitRef     bool
-		retained   bool
-		dirty      bool
-		uncertain  bool
-		stale      bool
-		wantFresh  bool
-		wantPushed bool
+		name        string
+		gitRef      bool
+		retained    bool
+		dirty       bool
+		uncertain   bool
+		stale       bool
+		unpublished bool
+		unpushed    bool
+		files       int
+		wantFresh   bool
+		wantPushed  bool
 	}{
 		{name: "clean integration git checkpoint yields to published source", gitRef: true, wantFresh: true},
 		{name: "clean local integration checkpoint yields to published source", wantFresh: true},
@@ -75,6 +78,13 @@ func TestIncorporationRefusalRestoresPublishedSource(t *testing.T) {
 		{name: "dirty checkpoint preserves unpublished edits", gitRef: true, dirty: true, wantPushed: true},
 		{name: "uncertain publication retains custody", gitRef: true, uncertain: true},
 		{name: "different version cannot redirect recovery", gitRef: true, stale: true, wantPushed: true},
+		{name: "empty clean publication mismatch restores current source", gitRef: true, unpublished: true, wantFresh: true},
+		{name: "empty unpushed publication mismatch restores current source", gitRef: true, unpublished: true, unpushed: true, wantFresh: true},
+		{name: "retained empty publication mismatch restores current source", gitRef: true, retained: true, unpublished: true, unpushed: true, wantFresh: true},
+		{name: "unpublished source edits retain their checkpoint", gitRef: true, unpublished: true, unpushed: true, files: 1, wantPushed: true},
+		{name: "dirty publication mismatch preserves source", gitRef: true, unpublished: true, dirty: true, wantPushed: true},
+		{name: "uncertain publication mismatch retains custody", gitRef: true, unpublished: true, unpushed: true, uncertain: true},
+		{name: "stale publication mismatch cannot redirect recovery", gitRef: true, unpublished: true, unpushed: true, stale: true, wantPushed: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -85,6 +95,9 @@ func TestIncorporationRefusalRestoresPublishedSource(t *testing.T) {
 			}
 			if test.dirty {
 				checkpoint.WorktreeState = "dirty"
+			}
+			if test.unpushed {
+				checkpoint.WorktreeState = "unpushed"
 			}
 			if test.uncertain {
 				checkpoint.ExternalEffect, checkpoint.EffectState = "git_push", "ambiguous"
@@ -97,6 +110,10 @@ func TestIncorporationRefusalRestoresPublishedSource(t *testing.T) {
 				NativeRunData: tracker.NativeRunData{MachineID: "machine", Finalization: &tracker.NativeFinalization{ChangeID: ref.ChangeID, VersionID: ref.VersionID, HeadSHA: ref.HeadSHA, SourceVersion: ref}},
 				Checkpoint:    checkpoint,
 			}}}
+			if test.unpublished {
+				f := recovery.Attempts[0].Finalization
+				f.VersionID, f.Settled, f.Changed, f.Files = "", true, true, test.files
+			}
 			backend := existingWorkspaceBackend{err: workspace.ErrMissingWorkspace}
 			if test.retained {
 				backend.err = nil
