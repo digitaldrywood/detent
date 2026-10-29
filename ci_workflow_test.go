@@ -179,31 +179,23 @@ func TestCIWindowsChecksUseExistingLinuxVetStep(t *testing.T) {
 
 	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
 	triggers := workflowBetween(t, workflow, "on:\n", "\npermissions:")
-	if !strings.Contains(triggers, "\n  pull_request:\n") {
-		t.Fatal("Windows checks must run on pull requests")
+	for _, event := range []string{"pull_request", "schedule", "push"} {
+		if strings.Contains(triggers, "\n  "+event+":") {
+			t.Fatalf("CI must run only on manual dispatch, found %s trigger", event)
+		}
 	}
 	job := workflowBetween(t, workflow, "\n  verify-fast:\n", "\n  generated:")
 	if !strings.Contains(job, "    runs-on: ubuntu-latest\n") {
 		t.Fatal("Windows checks must reuse the existing Linux verify-fast job")
 	}
-	for _, want := range []string{
-		"    if: ${{ !cancelled() && (github.event_name == 'pull_request' || needs.preflight.outputs.should_run == 'true') }}\n",
-		"          ref: ${{ github.event_name == 'pull_request' && github.sha || needs.preflight.outputs.develop_sha }}\n",
-	} {
-		if !strings.Contains(job, want) {
-			t.Fatalf("Windows checks must run on the PR merge commit even when scheduled preflight is skipped: missing %q", want)
-		}
-	}
-	for _, name := range []string{"Build", "Audit all Go packages with NilAway and the reviewed baseline", "Verify landing gate concurrency and failure propagation"} {
-		if !strings.Contains(job, "      - name: "+name+"\n        if: github.event_name != 'pull_request'\n") {
-			t.Errorf("%s must stay outside the PR guard", name)
-		}
+	if !strings.Contains(job, "          ref: ${{ needs.preflight.outputs.develop_sha }}\n") {
+		t.Fatal("Windows checks must run on the pinned validation commit")
 	}
 	var parsed struct {
 		Jobs map[string]struct {
 			Steps []struct {
-				If  string `yaml:"if"`
-				Run string `yaml:"run"`
+				Name string `yaml:"name"`
+				Run  string `yaml:"run"`
 			} `yaml:"steps"`
 		} `yaml:"jobs"`
 	}
@@ -226,11 +218,11 @@ done
 	if err := os.WriteFile(filepath.Join(root, "go"), []byte(goRecorder), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, event := range []string{"pull_request", "schedule", "workflow_dispatch"} {
+	for _, event := range []string{"workflow_dispatch"} {
 		t.Run(event, func(t *testing.T) {
 			calls := filepath.Join(t.TempDir(), "go-calls")
 			for _, step := range parsed.Jobs["verify-fast"].Steps {
-				if step.Run == "" || step.If != "" {
+				if step.Name != "Vet" {
 					continue
 				}
 				cmd := exec.CommandContext(t.Context(), "bash", "-e", "-c", step.Run)
@@ -248,10 +240,7 @@ done
 				t.Fatal(err)
 			}
 			got := strings.Split(strings.TrimSpace(string(data)), "\n")
-			want := []string{"linux amd64 vet ./..."}
-			if event == "pull_request" {
-				want = []string{"windows amd64 build ./...", "windows amd64 vet ./...", "windows arm64 build ./..."}
-			}
+			want := []string{"linux amd64 vet ./...", "windows amd64 build ./...", "windows amd64 vet ./...", "windows arm64 build ./..."}
 			slices.Sort(got)
 			slices.Sort(want)
 			if !slices.Equal(got, want) {
@@ -293,13 +282,8 @@ func TestCIScheduledWindowsTestsSeparateFromReleasePromotion(t *testing.T) {
 	if err := yaml.Unmarshal([]byte(readNormalizedFile(t, ".github/workflows/windows-tests.yml")), &workflow); err != nil {
 		t.Fatal(err)
 	}
-	if len(workflow.On) != 2 {
-		t.Fatalf("Windows workflow triggers = %v, want schedule and workflow_dispatch only", workflow.On)
-	}
-	for _, event := range []string{"schedule", "workflow_dispatch"} {
-		if _, ok := workflow.On[event]; !ok {
-			t.Errorf("Windows workflow missing %s trigger", event)
-		}
+	if _, ok := workflow.On["workflow_dispatch"]; !ok || len(workflow.On) != 1 {
+		t.Fatalf("Windows workflow triggers = %v, want workflow_dispatch only", workflow.On)
 	}
 	job, ok := workflow.Jobs["windows-go"]
 	if !ok || job.RunsOn != "windows-latest" {
@@ -308,8 +292,8 @@ func TestCIScheduledWindowsTestsSeparateFromReleasePromotion(t *testing.T) {
 	if job.Needs.Kind != 0 {
 		t.Fatal("Windows tests must run independently of the full suite")
 	}
-	if job.If != "(github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/develop'" {
-		t.Fatal("Windows tests must be schedule/dispatch-gated on develop")
+	if job.If != "github.ref == 'refs/heads/develop'" {
+		t.Fatal("Windows tests must be gated on develop")
 	}
 	var commands []string
 	var pinnedCheckout, goSetup bool
