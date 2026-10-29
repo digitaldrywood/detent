@@ -752,6 +752,50 @@ func TestConversationWorkerControlsLongPoll(t *testing.T) {
 
 func TestConversationWorkerTurnEvents(t *testing.T) {
 	t.Parallel()
+	for _, metadataVersion := range []int{0, 1} {
+		t.Run("active legacy tool history metadata="+strconv.Itoa(metadataVersion), func(t *testing.T) {
+			f := newConversationWorkerFixture(t)
+			requireNativeStatus(t, f.bind(t, nil), http.StatusOK)
+			requireNativeStatus(t, f.turnEvents(t, map[string]any{"type": "turn_started", "thread_id": "thread-legacy", "turn_id": "turn-legacy"}), http.StatusAccepted)
+			legacy := conversationFixture{store: f.chat.store}
+			tx, err := f.chat.store.db.BeginTx(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			for range 101 {
+				message := conversationMessageRecord{ConversationID: f.record.ID, Role: conversation.RoleSystem, Kind: conversation.MessageTool, Text: "historical tool output", Data: json.RawMessage(`{"tool":"example","item_id":"item","status":"completed"}`), Delivery: conversation.DeliveryCompleted, Actor: conversation.Actor{Kind: conversation.ActorCoordinator}, CreatedAt: f.now, UpdatedAt: f.now}
+				if err := legacy.insertLegacyMessage(t, t.Context(), tx, &message); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := tx.ExecContext(t.Context(), "UPDATE conversation_messages SET query_metadata_version=? WHERE conversation_id=?", metadataVersion, f.record.ID); err != nil {
+				t.Fatal(err)
+			}
+			if err := tx.Commit(); err != nil {
+				t.Fatal(err)
+			}
+			requireNativeStatus(t, f.turnEvents(t,
+				map[string]any{"type": "delta", "provider_item_id": "assistant-legacy", "text": "finished"},
+				map[string]any{"type": "turn_completed", "turn_id": "turn-legacy", "status": "completed"},
+			), http.StatusAccepted)
+			if record := f.load(t); record.Execution.Owner.TurnID != "" {
+				t.Fatalf("completed turn remained active: %s", record.Execution.Owner.TurnID)
+			}
+			requireNativeStatus(t, f.unbind(t, "succeeded"), http.StatusOK)
+			if record := f.load(t); record.Execution.Status != conversation.ExecutionCompleted {
+				t.Fatalf("execution did not complete: %s", record.Execution.Status)
+			}
+			var untouched int
+			if err := f.chat.store.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM conversation_messages WHERE conversation_id=? AND kind='tool' AND content_attachment_id='' AND revision=1", f.record.ID).Scan(&untouched); err != nil || untouched != 101 {
+				t.Fatalf("unrelated legacy messages changed: untouched=%d err=%v", untouched, err)
+			}
+			var inline int
+			if err := f.chat.store.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM conversation_messages WHERE conversation_id=? AND role='assistant' AND (content_attachment_id='' OR text<>'' OR data_json<>'{}' OR actor_json<>'{}')", f.record.ID).Scan(&inline); err != nil || inline != 0 {
+				t.Fatalf("new assistant payload stayed inline: count=%d err=%v", inline, err)
+			}
+		})
+	}
 	t.Run("immutable content and compact replay", func(t *testing.T) {
 		objects := &conversationContentFixture{}
 		f := newConversationWorkerFixture(t, objects)

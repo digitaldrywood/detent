@@ -11,6 +11,7 @@ import (
 )
 
 type conversationPublicationPlan struct {
+	toolRevisions    map[string]legacyToolRevision
 	prepared         preparedConversationContents
 	reads            *conversationArchiveReads
 	retryMessage     *conversationMessageRecord
@@ -132,6 +133,19 @@ func (p *conversationPublicationPlan) nextMessageRevision(ctx context.Context, m
 
 func (p *conversationPublicationPlan) updateMessage(ctx context.Context, message conversationMessageRecord) error {
 	ctx = p.context(ctx)
+	if message.Kind == conversation.MessageTool && message.Actor.Kind == conversation.ActorCoordinator {
+		var err error
+		ctx, err = p.service.store.prepareLegacyToolRevision(ctx, p.record.ID, message.ID)
+		if err != nil {
+			return err
+		}
+		if revisions, ok := ctx.Value(legacyToolRevisionKey{}).(map[string]legacyToolRevision); ok {
+			p.toolRevisions = revisions
+		}
+		if contents, ok := ctx.Value(conversationContentsKey{}).(preparedConversationContents); ok {
+			p.prepared = contents
+		}
+	}
 	prepared, err := p.message(ctx, message)
 	if err != nil {
 		return err

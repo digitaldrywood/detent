@@ -237,11 +237,6 @@ func (s *conversationStore) resolveMessageContents(ctx context.Context, query na
 }
 
 func (c *conversationService) prepareTurnContents(ctx context.Context, organization, id string, events []conversationTurnEvent, finishing bool) (context.Context, error) {
-	var err error
-	ctx, err = c.store.prepareLegacyToolRevisions(ctx, id)
-	if err != nil {
-		return ctx, err
-	}
 	if c.store.contents == nil {
 		return ctx, nil
 	}

@@ -606,7 +606,7 @@ func TestConversationLegacyToolRevision(t *testing.T) {
 						}
 					}
 				}
-				prepared, err := f.store.prepareLegacyToolRevisions(t.Context(), record.ID)
+				prepared, err := f.store.prepareLegacyToolRevision(t.Context(), record.ID, message.ID)
 				if err != nil {
 					t.Fatal(err)
 				}

@@ -404,13 +404,20 @@ type legacyToolRevision struct {
 	actorKind        conversation.ActorKind
 }
 
-func (s *conversationStore) prepareLegacyToolRevisions(ctx context.Context, id string) (context.Context, error) {
-	rows, err := s.reader.QueryContext(ctx, `SELECT id,data_json,actor_json,text,revision,query_metadata_version,actor_kind,tool_name,tool_item_id,tool_status FROM conversation_messages WHERE conversation_id=? AND kind='tool' AND content_attachment_id='' LIMIT ?`, id, storageConversionRows+1)
+func (s *conversationStore) prepareLegacyToolRevision(ctx context.Context, id, messageID string) (context.Context, error) {
+	prepared, ok := ctx.Value(legacyToolRevisionKey{}).(map[string]legacyToolRevision)
+	if !ok || prepared == nil {
+		prepared = map[string]legacyToolRevision{}
+	}
+	if _, ready := prepared[messageID]; ready {
+		return ctx, nil
+	}
+	rows, err := s.reader.QueryContext(ctx, `SELECT id,data_json,actor_json,text,revision,query_metadata_version,actor_kind,tool_name,tool_item_id,tool_status FROM conversation_messages WHERE conversation_id=? AND id=? AND kind='tool' AND content_attachment_id=''`, id, messageID)
 	if err != nil {
 		return ctx, err
 	}
 	defer rows.Close()
-	prepared := map[string]legacyToolRevision{}
+	var pending []legacyToolRevision
 	for rows.Next() {
 		var id string
 		var c legacyToolRevision
@@ -442,20 +449,18 @@ func (s *conversationStore) prepareLegacyToolRevisions(ctx context.Context, id s
 			return ctx, err
 		}
 		prepared[id] = c
+		pending = append(pending, c)
 	}
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return ctx, err
 	}
-	if len(prepared) > storageConversionRows {
-		return ctx, errors.New("conversation tool metadata conversion is pending")
-	}
-	if len(prepared) > 0 {
+	if len(pending) > 0 {
 		var organization string
 		if err := s.reader.QueryRowContext(ctx, "SELECT organization_id FROM conversations WHERE id=?", id).Scan(&organization); err != nil {
 			return ctx, err
 		}
 		var contents [][]byte
-		for _, old := range prepared {
+		for _, old := range pending {
 			if old.actorKind != conversation.ActorCoordinator {
 				continue
 			}

@@ -43,6 +43,9 @@ func (p *conversationPublicationPlan) context(ctx context.Context) context.Conte
 			p.reads = &conversationArchiveReads{content: map[string][]byte{}}
 		}
 	}
+	if p.toolRevisions != nil {
+		ctx = context.WithValue(ctx, legacyToolRevisionKey{}, p.toolRevisions)
+	}
 	ctx = context.WithValue(ctx, conversationContentsKey{}, p.prepared)
 	ctx = context.WithValue(ctx, conversationArchiveReadsKey{}, p.reads)
 	if p.retryMessage != nil {

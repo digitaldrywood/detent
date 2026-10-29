@@ -439,10 +439,7 @@ func (c *conversationTurnCoordinator) write(ctx context.Context, conversationID 
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		prepared, err := c.service.store.prepareLegacyToolRevisions(newConversationArchiveReads(ctx), conversationID)
-		if err != nil {
-			return err
-		}
+		prepared := newConversationArchiveReads(ctx)
 		original, err := c.readConversation(prepared, c.service.store.reader, conversationID)
 		if err != nil {
 			return err
