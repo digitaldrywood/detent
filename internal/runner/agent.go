@@ -29,6 +29,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/gobudget"
+	"github.com/digitaldrywood/detent/internal/gotestreceipt"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/selector"
@@ -141,6 +142,7 @@ type Dependencies struct {
 	MaxAgentRSSBytes       uint64
 	RSSPollInterval        time.Duration
 	GoBudget               gobudget.Budget
+	GoTestReceipts         gotestreceipt.Config
 	ProcessRSS             func(context.Context, procgroup.Identity) (uint64, error)
 	WorkerReapGrace        time.Duration
 	ReapWorkerProcess      workerProcessReapFunc
@@ -191,6 +193,7 @@ type Runner struct {
 	startCompute              func(compute.Rates) func() *compute.Usage
 	lookupEnv                 func(string) string
 	goBudget                  gobudget.Budget
+	goTestReceipts            gotestreceipt.Config
 }
 
 func NewRunner(deps Dependencies) (*Runner, error) {
@@ -297,6 +300,7 @@ func NewRunner(deps Dependencies) (*Runner, error) {
 		turnLimit:                 deps.turnLimit,
 		lookupEnv:                 deps.lookupEnv,
 		goBudget:                  deps.GoBudget,
+		goTestReceipts:            deps.GoTestReceipts,
 	}, nil
 }
 
