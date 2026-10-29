@@ -710,6 +710,7 @@ func TestHostedBrowserProviderAccountSelection(t *testing.T) {
 const browserHostedOwnerEmail = "owner@example.test"
 
 func browserPreviewConfig(cfg *Config) {
+	cfg.Content = (&changeObjectFixture{}).call
 	if os.Getenv("DETENT_HOSTED_BROWSER_RUNNER_CAPACITY") != "" {
 		plans := pilotHostedPlans()
 		plan := plans.Plans[0]
