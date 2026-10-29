@@ -37,7 +37,8 @@ func TestNativeSourceTransfer(t *testing.T) {
 		{name: "operator stop retains live source refusal", running: true, stopped: true, status: http.StatusUnprocessableEntity},
 		{name: "operator stop followed by terminal acknowledgment", running: true, stopped: true, acknowledged: true, status: http.StatusOK},
 		{name: "operator stop acknowledgment after replacement failure", running: true, stopped: true, acknowledged: true, replacement: true, status: http.StatusOK},
-		{name: "new publication retains stale transfer selection", advanced: true, released: true, status: http.StatusOK},
+		{name: "new publication retires stale transfer selection", advanced: true, released: true, status: http.StatusOK},
+		{name: "new publication preserves later dirty checkpoint recovery", advanced: true, dirty: true, released: true, status: http.StatusOK},
 		{name: "same runner version-bound recovery", released: true, dirty: true, sameRunner: true, status: http.StatusOK},
 		{name: "cancel explicit routing", released: true, cancel: true, status: http.StatusOK},
 		{name: "concurrent transfer revisions", released: true, concurrent: true, status: http.StatusOK},
@@ -385,12 +386,36 @@ func TestNativeSourceTransfer(t *testing.T) {
 				requireNativeStatus(t, next, http.StatusOK)
 				var newer tracker.ChangeVersion
 				decodeHubResponse(t, next, &newer)
-				recovery = performHubAPIRequest(t, f.service, http.MethodGet, itemPath+"?view=recovery", f.token, nil)
-				requireNativeStatus(t, recovery, http.StatusOK)
-				resumed = tracker.NativeRecovery{}
-				decodeHubResponse(t, recovery, &resumed)
-				if newer.ID == version.ID || resumed.SourceVersionID != version.ID || resumed.Change == nil || resumed.Change.VersionID != newer.ID {
-					t.Fatalf("new publication erased stale transfer binding: selected=%q current=%+v", resumed.SourceVersionID, resumed.Change)
+				checkpoint := resumed.SourceAttempt().Checkpoint
+				if test.dirty {
+					claim.SessionID = "continued-source"
+					response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", a.redemption.Credential, claim)
+					requireNativeStatus(t, response, http.StatusOK)
+					decodeHubResponse(t, response, &lease)
+					event = nativeStartedEvent(lease)
+					event.IdempotencyKey = "continued-start"
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, itemPath+"/events", a.redemption.Credential, event), http.StatusOK)
+					event.Type, event.IdempotencyKey, event.Data.Sequence = "run.checkpointed", "continued-checkpoint", 2
+					checkpoint.Storage, checkpoint.Ref = "git_ref", tracker.CheckpointRefPrefix+string(f.issue.WorkItemID)
+					checkpoint.CommitSHA, checkpoint.TreeSHA, checkpoint.BaseSHA = strings.Repeat("c", 40), strings.Repeat("e", 40), input.BaseSHA
+					event.Data.Handoff = checkpoint
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, itemPath+"/events", a.redemption.Credential, event), http.StatusOK)
+				}
+				for _, bounded := range []bool{false, true} {
+					resumed, err := f.service.readNativeRecovery(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, string(f.issue.WorkItemID), bounded)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if newer.ID == version.ID || resumed.SourceVersionID != "" || resumed.Change == nil || resumed.Change.VersionID != newer.ID {
+						t.Fatalf("stale transfer still overrides current source: selected=%q current=%+v", resumed.SourceVersionID, resumed.Change)
+					}
+					if test.dirty && (resumed.SourceAttemptID != event.Data.AttemptID || resumed.SourceAttempt() == nil || !reflect.DeepEqual(resumed.SourceAttempt().Checkpoint, checkpoint)) {
+						t.Fatalf("new publication lost dirty checkpoint custody: %+v", resumed.SourceAttempt())
+					}
+				}
+				var storedVersion, storedRunner string
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT recovery_version_id,recovery_runner_id FROM issues WHERE organization_id=? AND project_id=? AND native_id=?", f.project.OrganizationID, f.project.ID, f.issue.WorkItemID).Scan(&storedVersion, &storedRunner); err != nil || storedVersion != version.ID || storedRunner != b.binding.RunnerID {
+					t.Fatalf("recovery read changed retained transfer: version=%q runner=%q error=%v", storedVersion, storedRunner, err)
 				}
 				return
 			}

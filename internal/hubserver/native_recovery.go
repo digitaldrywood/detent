@@ -38,7 +38,7 @@ func (s *Service) readNativeRecovery(ctx context.Context, scope nativeScope, ite
 	if err != nil {
 		return result, err
 	}
-	if err := tx.QueryRowContext(ctx, `SELECT CASE WHEN recovery_runner_id != '' THEN recovery_version_id ELSE '' END FROM issues WHERE organization_id=? AND project_id=? AND native_id=?`, scope.organization, scope.project, item).Scan(&result.SourceVersionID); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT CASE WHEN recovery_runner_id != '' AND recovery_version_id = ? THEN recovery_version_id ELSE '' END FROM issues WHERE organization_id=? AND project_id=? AND native_id=?`, change.CurrentVersion, scope.organization, scope.project, item).Scan(&result.SourceVersionID); err != nil {
 		return result, err
 	}
 	source, err := readNativeSourceCheckpoint(ctx, tx, scope, item)
