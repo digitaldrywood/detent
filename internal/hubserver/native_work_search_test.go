@@ -398,7 +398,8 @@ func TestNativeWorkSearchRanking(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			var got []tracker.NativeWorkItemID
 			if mode == "rebuilding issues" {
-				if _, err := f.service.database.db.ExecContext(t.Context(), `DELETE FROM native_work_scoped_fts; UPDATE native_work_search_rebuild SET through_id=0,last_id=(SELECT max(id) FROM native_work_documents)`); err != nil {
+				if _, err := f.service.database.db.ExecContext(t.Context(), `DELETE FROM native_work_scoped_fts; DELETE FROM native_work_search_lengths;
+UPDATE native_work_search_rebuild SET through_id=0,last_id=(SELECT max(id) FROM native_work_documents)`); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -438,7 +439,7 @@ func TestNativeWorkSearchRanking(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		if _, err := f.service.database.db.ExecContext(t.Context(), `DELETE FROM native_work_scoped_fts;
+		if _, err := f.service.database.db.ExecContext(t.Context(), `DELETE FROM native_work_scoped_fts; DELETE FROM native_work_search_lengths;
 UPDATE native_work_search_rebuild SET through_id=0,last_id=(SELECT max(id) FROM native_work_documents)`); err != nil {
 			t.Fatal(err)
 		}
@@ -922,5 +923,202 @@ func TestNativeWorkSearchProjectRebuild(t *testing.T) {
 		if err != nil || len(matches) != want {
 			t.Errorf("unaffected duplicate search project=%s matches=%v err=%v", fixture.project.ID, matches, err)
 		}
+	}
+}
+
+func TestNativeSearchIndexedIssueDuringRebuild(t *testing.T) {
+	for _, mode := range []string{"deployment backfill", "scope refresh"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newDefaultNativeFixture(t, Config{})
+			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+				t.Fatal(err)
+			}
+			legacy := f.create(t, "Legacy narwhal discussion")
+			if _, err := f.service.database.db.ExecContext(t.Context(), `WITH RECURSIVE seed(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM seed WHERE n<?)
+ INSERT INTO issues(native_id,organization_id,project_id,number,workflow_state_id,title,body,url,github_state,source_version,source_updated_at,synchronized_at,created_at,updated_at,actor_kind,actor_principal_id)
+ SELECT 'wi_rebuild_legacy_'||seed.n,i.organization_id,i.project_id,seed.n+1,i.workflow_state_id,'Legacy discussion','','','open','','','',i.created_at,i.updated_at,i.actor_kind,i.actor_principal_id
+ FROM seed CROSS JOIN issues i WHERE i.native_id=?`, nativeSearchPostingBudget+100, legacy.WorkItemID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), `DELETE FROM native_work_scoped_fts;
+ DELETE FROM native_work_search_lengths`); err != nil {
+				t.Fatal(err)
+			}
+			if mode == "deployment backfill" {
+				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE native_work_search_rebuild SET through_id=0,last_id=(SELECT max(id) FROM native_work_documents)`); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO native_work_search_dirty(issue_id,organization_id,project_id)
+ SELECT id,organization_id,project_id FROM issues WHERE native_id=?`, legacy.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			fresh := f.create(t, "Narwhal quasaruniqueterm")
+			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+			if err := requireNativeSearchIndex(t.Context(), f.service.database.reader, scope); !errors.Is(err, operatortool.ErrServiceUnavailable) {
+				t.Fatalf("search rebuild not pending: %v", err)
+			}
+			for _, test := range []struct {
+				query string
+				want  []tracker.NativeWorkItemID
+			}{
+				{"quasaruniqueterm", []tracker.NativeWorkItemID{fresh.WorkItemID}},
+				{"narwhal quasaruniqueterm", []tracker.NativeWorkItemID{fresh.WorkItemID, legacy.WorkItemID}},
+			} {
+				t.Run(test.query, func(t *testing.T) {
+					params := url.Values{"q": {test.query}, "limit": {"2"}}
+					response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items?"+params.Encode(), f.token, nil)
+					requireNativeStatus(t, response, http.StatusOK)
+					var page tracker.NativeIssuePage
+					decodeHubResponse(t, response, &page)
+					var got []tracker.NativeWorkItemID
+					for _, item := range page.Items {
+						got = append(got, item.WorkItemID)
+					}
+					if !slices.Equal(got, test.want) {
+						t.Fatalf("search during rebuild=%v want=%v", got, test.want)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestNativeSearchCommonTermBudget(t *testing.T) {
+	f := newDefaultNativeFixture(t, Config{})
+	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
+	target := f.create(t, "Failure breaker classification blame phrase heuristic")
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET body='' WHERE native_id=?", target.WorkItemID); err != nil {
+		t.Fatal(err)
+	}
+	var steps int64
+	pool := sql.OpenDB(duplicateCostConnector{timedConnector: timedConnector{driver: f.service.database.reader.Driver(), dsn: sqliteReaderDSN(f.service.database.path, f.service.config.BusyTimeout)}, steps: &steps})
+	pool.SetMaxOpenConns(1)
+	t.Cleanup(func() {
+		if err := pool.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+	count := 0
+	saturated := map[string]int64{}
+	for _, size := range []int{100, 2000, 5000} {
+		_, err := f.service.database.db.ExecContext(t.Context(), `WITH RECURSIVE seed(n) AS (
+ SELECT ? UNION ALL SELECT n+1 FROM seed WHERE n<?)
+ INSERT INTO native_comments(id,organization_id,project_id,work_item_id,revision,sequence,body,actor_json,created_at,updated_at)
+ SELECT 'common-term-budget-'||seed.n,i.organization_id,i.project_id,i.native_id,1,seed.n,'failure breaker classification','{}',i.native_created_at,i.native_created_at
+ FROM seed CROSS JOIN issues i WHERE i.native_id=?`, count+1, size, target.WorkItemID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		count = size
+		for _, query := range []string{"litestream WAL truncate", "failure breaker classification blame phrase heuristic", "failure breaker cifailure classification instance blame phrase"} {
+			statement, args, err := nativeIssueSelection(scope, url.Values{"q": {query}}, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			steps = 0
+			projected, err := f.service.projectIssuePage(t.Context(), pool, statement, args, "", query, scope)
+			if err != nil {
+				t.Fatal(err)
+			}
+			slices.SortStableFunc(projected, compareIssuePageRows)
+			want := 1
+			if query == "litestream WAL truncate" {
+				want = 0
+			}
+			if len(projected) != want || want > 0 && issuePageItem(projected[0]).ID != string(target.WorkItemID) {
+				t.Fatalf("documents=%d query=%q first page=%v", size, query, projected)
+			}
+			t.Logf("documents=%d query=%q VM steps=%d", size, query, steps)
+			if steps == 0 || steps > 1000000 {
+				t.Errorf("documents=%d query=%q VM steps=%d, fixed budget=1000000", size, query, steps)
+			}
+			if size == 2000 {
+				saturated[query] = steps
+			}
+			if size == 5000 && steps > saturated[query]+2000 {
+				t.Errorf("query=%q VM steps grew past posting budget: 2000=%d 5000=%d", query, saturated[query], steps)
+			}
+		}
+	}
+}
+
+func TestNativeSearchPostingPrefixes(t *testing.T) {
+	f := newDefaultNativeFixture(t, Config{})
+	first := f.create(t, strings.Repeat("a", nativeSearchPrefixLimit)+"one")
+	second := f.create(t, strings.Repeat("a", nativeSearchPrefixLimit)+"two")
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET body='' WHERE project_id=?", f.project.ID); err != nil {
+		t.Fatal(err)
+	}
+	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+	for _, test := range []struct {
+		name, query string
+		plain       bool
+		want        tracker.NativeWorkItemID
+	}{
+		{"long prefix one", strings.Repeat("a", nativeSearchPrefixLimit) + "o", false, first.WorkItemID},
+		{"long prefix two", strings.Repeat("a", nativeSearchPrefixLimit) + "t", false, second.WorkItemID},
+		{"long exact", strings.Repeat("a", nativeSearchPrefixLimit) + "one", true, first.WorkItemID},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			expressions := nativeSearchExpressions(test.query)
+			if test.plain {
+				expressions[0] = strings.TrimSuffix(expressions[0], "*")
+			}
+			statement, args := nativeSearchHits(scope, "", expressions)
+			ids, err := nativePageIDs(t.Context(), f.service.database.reader, statement+"SELECT i.native_id FROM ranked r JOIN issues i ON i.id=r.issue_id WHERE hit=1", args...)
+			if err != nil || !slices.Equal(ids, []string{string(test.want)}) {
+				t.Fatalf("matches=%v want=%s err=%v", ids, test.want, err)
+			}
+		})
+	}
+}
+
+func TestNativeSearchBoundedCandidatePages(t *testing.T) {
+	f := newDefaultNativeFixture(t, Config{})
+	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
+	target := f.create(t, "Failure classification unique")
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET body='' WHERE native_id=?", target.WorkItemID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), `WITH RECURSIVE seed(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM seed WHERE n<?)
+ INSERT INTO issues(native_id,organization_id,project_id,number,workflow_state_id,title,body,url,github_state,source_version,source_updated_at,synchronized_at,created_at,updated_at,actor_kind,actor_principal_id)
+ SELECT 'wi_candidate_budget_'||seed.n,i.organization_id,i.project_id,seed.n+1,i.workflow_state_id,'Failure classification','','','open','','','',i.created_at,i.updated_at,i.actor_kind,i.actor_principal_id
+ FROM seed CROSS JOIN issues i WHERE i.native_id=?`, nativeSearchPostingBudget+100, target.WorkItemID); err != nil {
+		t.Fatal(err)
+	}
+	params := url.Values{"q": {"failure classification unique"}, "limit": {"2"}}
+	response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items?"+params.Encode(), f.token, nil)
+	requireNativeStatus(t, response, http.StatusOK)
+	var page tracker.NativeIssuePage
+	decodeHubResponse(t, response, &page)
+	if page.Total != nativeSearchPostingBudget+1 || len(page.Items) != 2 || page.Items[0].WorkItemID != target.WorkItemID || page.NextCursor == "" {
+		t.Fatalf("bounded first page=%+v", page)
+	}
+	total := page.Total
+	late := f.create(t, "Failure classification unique unique unique")
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET body='' WHERE native_id=?", late.WorkItemID); err != nil {
+		t.Fatal(err)
+	}
+	params.Set("cursor", page.NextCursor)
+	response = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items?"+params.Encode(), f.token, nil)
+	requireNativeStatus(t, response, http.StatusOK)
+	decodeHubResponse(t, response, &page)
+	if page.Total != total || len(page.Items) != 2 || slices.ContainsFunc(page.Items, func(item tracker.NativeIssue) bool {
+		return item.WorkItemID == late.WorkItemID || item.WorkItemID == target.WorkItemID
+	}) {
+		t.Fatalf("cursor changed candidate snapshot=%+v", page)
+	}
+	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+	statement, args := nativeSearchHits(scope, "", nativeSearchExpressions("unique"))
+	var id string
+	if err := f.service.database.reader.QueryRowContext(t.Context(), statement+"SELECT i.native_id FROM ranked r JOIN issues i ON i.id=r.issue_id WHERE hit=1 ORDER BY search_score LIMIT 1", args...).Scan(&id); err != nil || id != string(late.WorkItemID) {
+		t.Fatalf("late high-impact issue=%s want=%s err=%v", id, late.WorkItemID, err)
 	}
 }

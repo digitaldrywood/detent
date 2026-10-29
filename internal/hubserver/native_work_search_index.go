@@ -6,6 +6,7 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 
 	"modernc.org/sqlite"
@@ -35,9 +36,12 @@ func nativeSearchText(content, scope string) string {
 
 func nativeSearchIndexPending(scope nativeScope) (string, []any) {
 	return `EXISTS(SELECT 1 FROM native_work_search_rebuild r
- WHERE r.through_id<r.last_id AND EXISTS(SELECT 1 FROM issues i CROSS JOIN native_work_documents d
- WHERE i.organization_id=? AND i.project_id=? AND d.issue_id=i.id AND d.id>r.through_id AND d.id<=r.last_id
- AND NOT EXISTS(SELECT 1 FROM native_work_scoped_fts WHERE rowid=d.id*2)))
+ WHERE r.through_id<r.last_id AND EXISTS(SELECT 1 FROM (
+ SELECT d.id FROM (SELECT id FROM issues WHERE organization_id=? AND project_id=?
+ LIMIT ` + strconv.Itoa(nativeSearchPostingBudget) + `) i CROSS JOIN native_work_documents d
+ WHERE d.issue_id=i.id AND d.id>r.through_id AND d.id<=r.last_id
+ LIMIT ` + strconv.Itoa(nativeSearchPostingBudget) + `) d WHERE (NOT EXISTS(SELECT 1 FROM native_work_scoped_fts WHERE rowid=d.id*2)
+ OR NOT EXISTS(SELECT 1 FROM native_work_search_lengths WHERE document_id=d.id))))
  OR EXISTS(SELECT 1 FROM native_work_search_dirty WHERE organization_id=? AND project_id=?)
  OR (? AND EXISTS(SELECT 1 FROM issues WHERE organization_id=? AND project_id=? AND actor_principal_id IS NULL))`,
 		[]any{scope.organization, scope.project, scope.organization, scope.project, scope.credential.HostedRole == "reporter", scope.organization, scope.project}
@@ -93,6 +97,9 @@ func (d *database) backfillNativeSearch(ctx context.Context) (bool, error) {
 	}
 	defer tx.Rollback()
 	if next != 0 {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO native_work_search_refresh VALUES(?)`, next); err != nil {
+			return false, fmt.Errorf("index impact postings: %w", err)
+		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM native_work_scoped_fts WHERE rowid IN(?,?)`, next*2, next*2+1); err != nil {
 			return false, fmt.Errorf("remove stale search document: %w", err)
 		}
