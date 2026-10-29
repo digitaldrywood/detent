@@ -40,7 +40,7 @@ func TestManagedCacheReclaimsAbandonedStages(t *testing.T) {
 		managed bool
 		aged    bool
 	}{
-		{"managed size", true, false},
+		{"managed recent retained", true, false},
 		{"managed age", true, true},
 		{"native size", false, false},
 		{"native age", false, true},
@@ -86,20 +86,16 @@ func TestManagedCacheReclaimsAbandonedStages(t *testing.T) {
 			}
 			for i, name := range names {
 				_, err := os.Stat(filepath.Join(root, "00", name))
-				removed := tt.managed && i < 2
+				removed := tt.managed && tt.aged && i < 2
 				if os.IsNotExist(err) != removed || err != nil && !os.IsNotExist(err) {
 					t.Errorf("stage %q: removed=%t stat=%v", name, removed, err)
 				}
 			}
-			var aged, sized int64
-			if tt.managed {
-				if tt.aged {
-					aged = 4096
-				} else {
-					sized = 4096
-				}
+			var aged int64
+			if tt.managed && tt.aged {
+				aged = 4096
 			}
-			if report.AgeExpiredBytes != aged || report.SizeEvictedBytes != sized {
+			if report.AgeExpiredBytes != aged || report.SizeEvictedBytes != 0 {
 				t.Fatalf("abandoned stage accounting: %#v", report)
 			}
 		})
@@ -180,9 +176,8 @@ func TestCacheProgramPutSurvivesMaintenance(t *testing.T) {
 				if !maintained {
 					t.Fatal("maintenance did not run during publication")
 				}
-				miss := point != "data" || crossDevice
-				if get := writer.get(action[:]); get.Miss != miss {
-					t.Fatalf("publication after maintenance: miss=%t response=%#v", miss, get)
+				if get := writer.get(action[:]); get.Miss {
+					t.Fatalf("publication unavailable after gentle maintenance: %#v", get)
 				}
 				if _, err := cache.Maintain(t.Context(), Policy{MaxBytes: 1}, time.Now()); err != nil {
 					t.Fatal(err)

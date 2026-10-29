@@ -333,17 +333,24 @@ func TestTrimSizeTarget(t *testing.T) {
 		repeat                 bool
 		marker                 string
 		managed                bool
+		age                    time.Duration
+		reclaim                int64
 	}{
-		{"age only below cap", 100, true, true, 10, false, "", false},
-		{"exact cap", 24, true, true, 10, false, "", false},
-		{"recent retained above target", 14, true, true, 10, false, "", false},
-		{"fresh entries and metadata retained", 1, true, true, 10, false, "", false},
-		{"replacement marker boundary", 70, true, true, 10, true, "", false},
-		{"counter width boundary", 61, true, true, 10, true, "", false},
-		{"oversized previous marker", 70, true, true, 10, true, strings.Repeat("x", 1000), false},
-		{"managed oldest first", 64, false, true, 20, true, "", true},
-		{"managed metadata budget", 61, false, false, 30, true, "", true},
-		{"managed oversized previous marker", 70, false, true, 20, true, strings.Repeat("x", 1000), true},
+		{"age only below cap", 100, true, true, 10, false, "", false, time.Hour, 0},
+		{"exact cap", 24, true, true, 10, false, "", false, time.Hour, 0},
+		{"recent retained above target", 14, true, true, 10, false, "", false, time.Hour, 0},
+		{"fresh entries and metadata retained", 1, true, true, 10, false, "", false, time.Hour, 0},
+		{"replacement marker boundary", 70, true, true, 10, true, "", false, time.Hour, 0},
+		{"counter width boundary", 61, true, true, 10, true, "", false, time.Hour, 0},
+		{"oversized previous marker", 70, true, true, 10, true, strings.Repeat("x", 1000), false, time.Hour, 0},
+		{"native oldest first", 64, false, true, 20, true, "", false, 26 * time.Hour, 0},
+		{"native pressure", 1000, false, false, 30, true, "", false, 26 * time.Hour, 1000},
+		{"managed oldest first", 64, false, true, 20, true, "", true, 26 * time.Hour, 0},
+		{"managed metadata budget", 61, false, false, 30, true, "", true, 26 * time.Hour, 0},
+		{"managed oversized previous marker", 70, false, true, 20, true, strings.Repeat("x", 1000), true, 26 * time.Hour, 0},
+		{"managed recent above target", 1, true, true, 10, true, "", true, time.Hour, 0},
+		{"managed recent under pressure", 1, true, true, 10, true, "", true, time.Hour, 1000},
+		{"native recent under pressure", 1, true, true, 10, true, "", false, time.Hour, 1000},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -353,8 +360,8 @@ func TestTrimSizeTarget(t *testing.T) {
 				data string
 			}{
 				{"00/" + strings.Repeat("0", 64) + "-d", 49 * time.Hour, "0123456789"},
-				{"00/" + strings.Repeat("1", 64) + "-a", 2 * time.Hour, "0123456789"},
-				{"00/" + strings.Repeat("2", 64) + "-d", time.Hour, "0123456789"},
+				{"00/" + strings.Repeat("1", 64) + "-a", tt.age, "0123456789"},
+				{"00/" + strings.Repeat("2", 64) + "-d", tt.age + time.Hour, "0123456789"},
 				{"README", 72 * time.Hour, "12"},
 				{"trim.txt", 72 * time.Hour, "12"},
 			} {
@@ -376,14 +383,14 @@ func TestTrimSizeTarget(t *testing.T) {
 				}
 			}
 			var report Report
-			reclaimed, err := trim(t.Context(), root, Policy{MaxAge: 48 * time.Hour, MaxBytes: tt.cap}, now, &report, tt.managed)
+			reclaimed, err := trim(t.Context(), root, Policy{MaxAge: 48 * time.Hour, MaxBytes: tt.cap}.WithReclaimBytes(tt.reclaim), now, &report, tt.managed)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if reclaimed != tt.reclaimed {
 				t.Fatalf("reclaimed %d, want %d", reclaimed, tt.reclaimed)
 			}
-			for name, keep := range map[string]bool{"00/" + strings.Repeat("0", 64) + "-d": false, "00/" + strings.Repeat("1", 64) + "-a": tt.keepRecent, "00/" + strings.Repeat("2", 64) + "-d": tt.keepNewest, "README": true, "trim.txt": true} {
+			for name, keep := range map[string]bool{"00/" + strings.Repeat("0", 64) + "-d": false, "00/" + strings.Repeat("1", 64) + "-a": tt.keepNewest, "00/" + strings.Repeat("2", 64) + "-d": tt.keepRecent, "README": true, "trim.txt": true} {
 				_, err := os.Stat(filepath.Join(root, name))
 				if keep && err != nil || !keep && !os.IsNotExist(err) {
 					t.Errorf("%s: stat=%v, keep=%t", name, err, keep)
@@ -392,7 +399,7 @@ func TestTrimSizeTarget(t *testing.T) {
 			if tt.repeat {
 				previous := report.RetainedBytes
 				report = Report{}
-				if _, err := trim(t.Context(), root, Policy{MaxAge: 48 * time.Hour, MaxBytes: tt.cap}, now, &report, tt.managed); err != nil {
+				if _, err := trim(t.Context(), root, Policy{MaxAge: 48 * time.Hour, MaxBytes: tt.cap}.WithReclaimBytes(tt.reclaim), now, &report, tt.managed); err != nil {
 					t.Fatal(err)
 				}
 				if report.RetainedBytes > previous || report.SizeEvictedBytes != 0 {
@@ -453,12 +460,19 @@ func TestTrimExplicitReportedGrowth(t *testing.T) {
 		size                        int64
 		age                         time.Duration
 		managed, removed, directory bool
+		reclaim                     int64
 	}{
-		{"native recent growth", 47 << 10, 5 * time.Hour, false, false, false},
-		{"managed recent growth", 47 << 10, 5 * time.Hour, true, true, false},
-		{"managed recent directory", 47 << 10, 5 * time.Hour, true, true, true},
-		{"below budget", 1 << 10, 5 * time.Hour, true, false, false},
-		{"expired below budget", 1 << 10, 49 * time.Hour, true, true, false},
+		{"native recent growth", 47 << 10, 5 * time.Hour, false, false, false, 0},
+		{"managed recent growth", 47 << 10, 5 * time.Hour, true, false, false, 0},
+		{"managed recent directory", 47 << 10, 5 * time.Hour, true, false, true, 0},
+		{"managed recent under pressure", 47 << 10, 5 * time.Hour, true, false, false, 100 << 10},
+		{"native recent under pressure", 47 << 10, 5 * time.Hour, false, false, false, 100 << 10},
+		{"managed 25 hour boundary", 47 << 10, 25 * time.Hour, true, false, false, 100 << 10},
+		{"native 25 hour boundary", 47 << 10, 25 * time.Hour, false, false, false, 100 << 10},
+		{"managed old growth", 47 << 10, 26 * time.Hour, true, true, false, 0},
+		{"native old growth", 47 << 10, 26 * time.Hour, false, true, false, 0},
+		{"below budget", 1 << 10, 5 * time.Hour, true, false, false, 0},
+		{"expired below budget", 1 << 10, 49 * time.Hour, true, true, false, 0},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -472,6 +486,7 @@ func TestTrimExplicitReportedGrowth(t *testing.T) {
 			if err := os.Mkdir(filepath.Join(root, "00"), 0700); err != nil {
 				t.Fatal(err)
 			}
+			now := time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)
 			for cycle := range 3 {
 				_, release, err := cache.Use(t.Context())
 				if err != nil {
@@ -490,12 +505,11 @@ func TestTrimExplicitReportedGrowth(t *testing.T) {
 				if err := errors.Join(writeErr, releaseErr); err != nil {
 					t.Fatal(err)
 				}
-				now := time.Now()
 				at := now.Add(-tt.age)
 				if err := os.Chtimes(path, at, at); err != nil {
 					t.Fatal(err)
 				}
-				policy := Policy{MaxBytes: 20 << 10}
+				policy := Policy{MaxBytes: 20 << 10}.WithReclaimBytes(tt.reclaim)
 				var report Report
 				if tt.managed {
 					report, err = cache.Maintain(t.Context(), policy, now)
@@ -512,11 +526,11 @@ func TestTrimExplicitReportedGrowth(t *testing.T) {
 				if tt.removed && report.AgeExpiredBytes+report.SizeEvictedBytes != tt.size {
 					t.Fatalf("cycle %d: report = %+v", cycle, report)
 				}
-				if tt.managed && report.RetainedBytes > policy.MaxBytes {
+				if tt.removed && report.RetainedBytes > policy.MaxBytes {
 					t.Fatalf("cycle %d: over budget: %+v", cycle, report)
 				}
-				if tt.managed && tt.removed && tt.age < 25*time.Hour && report.SizeEvictedBytes != tt.size {
-					t.Fatalf("recent entries not size evicted: %+v", report)
+				if !tt.removed && (report.AgeExpiredBytes != 0 || report.SizeEvictedBytes != 0 || report.RetainedBytes < int64(cycle+1)*tt.size) {
+					t.Fatalf("recent growth was reclaimed: %+v", report)
 				}
 				retained, err := Size(root)
 				if err != nil || report.RetainedBytes != retained {
@@ -585,12 +599,9 @@ func TestManagedCacheConsumerLifetime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	other, err := NewManaged(t.Context(), root, owner)
+	other, err := NewManaged(t.Context(), root, filepath.Join(root, "other.db"))
 	if err != nil {
 		t.Fatal(err)
-	}
-	if _, err := NewManaged(t.Context(), root, filepath.Join(root, "other.db")); err == nil {
-		t.Fatal("different cache owner accepted")
 	}
 	leased, release, err := cache.Use(t.Context())
 	if err != nil {
@@ -736,7 +747,7 @@ func TestManagedCacheConsumerLifetime(t *testing.T) {
 		}
 	})
 	report, err := cache.Maintain(ctx, Policy{MaxBytes: 1024}, time.Now())
-	if err != nil || report.RetainedBytes > 1024 || report.SizeEvictedBytes != 2048 || report.AgeExpiredBytes != int64(len("reusable")) || report.Deferred {
+	if err != nil || report.RetainedBytes < 2048 || report.SizeEvictedBytes != 0 || report.AgeExpiredBytes != int64(len("reusable")) || report.Deferred {
 		t.Fatalf("idle maintenance: %+v, %v", report, err)
 	}
 	_, finalRelease, err := UseFromContext(cache.WithContext(ctx))
