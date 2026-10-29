@@ -30,6 +30,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/instancelock"
 	projectpkg "github.com/digitaldrywood/detent/internal/project"
+	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/serviceapi"
@@ -1242,16 +1243,49 @@ func TestStartRunningPublishesStartupSnapshotBeforeProjectStartCompletes(t *test
 	provisionStarted := make(chan struct{})
 	provisionRelease := make(chan struct{})
 	var provisionStartedOnce sync.Once
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
+	local, remote := net.Pipe()
+	defer local.Close()
+	defer remote.Close()
+	adopted := make(chan controllerReady, 1)
+	server := runnerpkg.NewSSHPeer(ctx, remote, remote, func(_ context.Context, method string, args []json.RawMessage) (any, error) {
+		if method == "ready" {
+			var ready controllerReady
+			if err := json.Unmarshal(args[0], &ready); err != nil {
+				return nil, err
+			}
+			adopted <- ready
+			return struct{}{}, nil
+		}
+		if method == "snapshot" {
+			return struct{}{}, nil
+		}
+		return nil, fmt.Errorf("unexpected controller request: %s", method)
+	})
+	defer server.Close()
+	peer := runnerpkg.NewSSHPeer(ctx, local, local, nil)
+	defer peer.Close()
+	restart := NewRestartRequest()
+	restart.control = &controllerConnection{peer: peer}
+	recovery := &recordingStartupRecovery{}
 	done := make(chan error, 1)
+	finished := make(chan struct{})
+	defer func() {
+		cancel()
+		<-finished
+	}()
 	go func() {
+		defer close(finished)
 		done <- startRunning(ctx, BootConfig{
-			Mode:   BootModeRunning,
-			Global: global,
-			Host:   "127.0.0.1",
-			Port:   &port,
-			Output: output,
+			Mode:            BootModeRunning,
+			Global:          global,
+			Host:            "127.0.0.1",
+			Port:            &port,
+			Output:          output,
+			Restart:         restart,
+			Shutdown:        NewShutdownController(),
+			StartupRecovery: recovery,
 			Scheduling: &fakehubscheduling.Source{Factory: func(string) (connector.Connector, bool) {
 				return bootProvisioningConnector{
 					provision: func(ctx context.Context) error {
@@ -1272,6 +1306,18 @@ func TestStartRunningPublishesStartupSnapshotBeforeProjectStartCompletes(t *test
 
 	if err := awaitProjectProvisioningStart(provisionStarted, done, output, bootProvisioningStartTimeout); err != nil {
 		t.Fatal(err)
+	}
+
+	select {
+	case ready := <-adopted:
+		if ready.Address == "" {
+			t.Fatal("controller adopted without a verified listener")
+		}
+	default:
+		t.Fatal("controller adoption waited for blocked project startup")
+	}
+	if recovery.healthyCalls != 0 {
+		t.Fatal("pending update accepted before project startup completed")
 	}
 
 	baseURL := waitForBootDashboardURL(t, output, done)
@@ -1322,8 +1368,11 @@ func TestStartRunningPublishesStartupSnapshotBeforeProjectStartCompletes(t *test
 		if err != nil && !errors.Is(err, context.Canceled) {
 			t.Fatalf("startRunning() error = %v, want %v", err, context.Canceled)
 		}
-	case <-time.After(10 * time.Second):
+	case <-testenv.WaitContext(t, t.Context()).Done():
 		t.Fatal("timed out waiting for startRunning to stop")
+	}
+	if recovery.healthyCalls != 1 {
+		t.Fatalf("healthy update receipts = %d, want one after project startup", recovery.healthyCalls)
 	}
 }
 
