@@ -364,7 +364,7 @@ func TestProviderQueueOrderAndSelectors(t *testing.T) {
 		{name: "precise creation order breaks unranked ties", states: []string{"Todo", "Todo", "Todo"}, priorities: []int{1, 1, 1}, order: []string{"Todo"}, ranks: []string{" ", "  ", "   "}, created: []string{"2026-10-02T12:00:00.000000002Z", "2026-10-02T12:00:00Z", "2026-10-02T12:00:00.000000001Z"}, want: []int{1, 2, 0}, winner: 1},
 		{name: "unblocker count yields to age", states: []string{"Todo", "Todo", "Todo"}, priorities: []int{1, 1, 1}, order: []string{"Todo"}, unavailable: "unblocker", want: []int{0, 1}},
 		{name: "retired red barrier does not hold merging", states: []string{"Merging", "Todo", "Todo"}, priorities: []int{0, 1, 2}, order: []string{"Merging", "Todo"}, unavailable: "retired barrier", want: []int{0, 1, 2}},
-		{name: "required review is retained", states: []string{"Merging", "Todo", "Todo"}, priorities: []int{3, 0, 2}, order: []string{"Merging", "Todo"}, unavailable: "required review", want: []int{1, 2}, winner: 1},
+		{name: "missing required review keeps merging unclaimable", states: []string{"Merging", "Todo", "Todo"}, priorities: []int{3, 0, 2}, order: []string{"Merging", "Todo"}, unavailable: "required review", want: []int{1, 2}, winner: 1},
 		{name: "unavailable merging provider falls through", states: []string{"Merging", "Todo", "Todo"}, priorities: []int{0, 1, 2}, order: []string{"Merging", "Todo"}, unavailable: "provider", want: []int{0, 1, 2}, winner: 1},
 		{name: "changed merging revision falls through", states: []string{"Merging", "Todo", "Todo"}, priorities: []int{0, 1, 2}, order: []string{"Merging", "Todo"}, unavailable: "revision", want: []int{0, 1, 2}, winner: 1},
 		{name: "unreviewed merging falls through", states: []string{"Merging", "Todo", "Todo"}, priorities: []int{3, 0, 2}, order: []string{"Merging", "Todo"}, unavailable: "review", want: []int{1, 2}, winner: 1},
@@ -456,6 +456,8 @@ func TestProviderQueueOrderAndSelectors(t *testing.T) {
 					wantReviewed := test.unavailable != "required review"
 					if detail := cf.detail(t); (detail.Summary.Status == "reviewed") != wantReviewed {
 						t.Fatalf("change readiness = %+v", detail.Summary)
+					} else if !wantReviewed && detail.Summary.Status != "needs_evidence" {
+						t.Fatalf("missing required review status = %s, want needs_evidence", detail.Summary.Status)
 					}
 				}
 				candidate := providerClaim(r, issue, "").ProviderCandidates[0]
