@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 )
@@ -85,13 +86,14 @@ func (o *Orchestrator) prepareRetryProgress(ctx context.Context, run *RunRequest
 	}
 	if backend.called || run.Mode != previousMode {
 		if admission, ok := o.scheduling.(interface {
-			ReadmitRetryProgress(context.Context, RunRequest, runpkg.ProviderCapacityResolver) (runpkg.Execution, error)
+			ReadmitRetryProgress(context.Context, RunRequest, runpkg.ProviderCapacityResolver) (runpkg.Execution, *isolation.Policy, error)
 		}); ok {
-			execution, err := admission.ReadmitRetryProgress(ctx, *run, o.providerCapacity)
+			execution, policy, err := admission.ReadmitRetryProgress(ctx, *run, o.providerCapacity)
 			if err != nil {
 				return fmt.Errorf("admit progress step: %w", err)
 			}
 			run.Execution = execution
+			run.Issue.IsolationPolicy = policy
 		}
 	}
 	return nil

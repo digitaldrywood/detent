@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -21,56 +22,56 @@ type progressOwner struct {
 	lease    tracker.NativeLease
 }
 
-func (s *Scheduler) ReadmitRetryProgress(ctx context.Context, run runner.RunRequest, resolver runner.ProviderCapacityResolver) (runner.Execution, error) {
+func (s *Scheduler) ReadmitRetryProgress(ctx context.Context, run runner.RunRequest, resolver runner.ProviderCapacityResolver) (runner.Execution, *isolation.Policy, error) {
 	s.mu.Lock()
 	claim, ok := s.nativeClaims[run.Issue.ID]
 	policy := s.claimPolicies[run.Issue.ID]
 	s.mu.Unlock()
 	if !ok || claim.execution == nil || claim.execution != run.Execution {
-		return nil, runner.ErrExecutionAuthorityUnavailable
+		return nil, nil, runner.ErrExecutionAuthorityUnavailable
 	}
 	session, err := s.sessionID()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	request := tracker.NativeClaim{WorkItemID: claim.lease.WorkItemID, PolicyID: claim.lease.PolicyID, MachineID: claim.lease.MachineID, SessionID: session, TTLSeconds: int64(s.leaseTTL / time.Second), ProtocolMajor: 2, LandingCapacity: claim.landingCapacity, WorkflowStates: []string{run.Issue.State}, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}}
 	if s.providerReports != nil {
 		if resolver == nil {
-			return nil, errors.New("progress admission requires the runner's model resolver")
+			return nil, nil, errors.New("progress admission requires the runner's model resolver")
 		}
 		run.ProviderReports, err = s.providerReports()
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		requirement, err := resolver.DispatchCapacity(ctx, run)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		issue, err := claim.source.client.Issue(ctx, claim.lease.WorkItemID)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		request.ProviderCandidates = []tracker.NativeCapacityCandidate{{WorkItemID: issue.WorkItemID, Revision: issue.Revision, Requirement: requirement}}
 		request.Capabilities = append(request.Capabilities, tracker.NativeProviderCapacityCapability)
 	}
 	if err := claim.execution.Finish(ctx, "cancelled"); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := s.ReleaseClaim(ctx, run.Issue.ID, "released"); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	started := s.now()
 	lease, err, admitted := s.claimNative(ctx, claim.source, request)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if !admitted {
-		return nil, orchestrator.ErrSchedulingUnavailable
+		return nil, nil, orchestrator.ErrSchedulingUnavailable
 	}
-	release := func(cause error) (runner.Execution, error) {
+	release := func(cause error) (runner.Execution, *isolation.Policy, error) {
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
-		return nil, errors.Join(cause, claim.source.client.Release(cleanupCtx, lease, "work_item_hydration_failed"))
+		return nil, nil, errors.Join(cause, claim.source.client.Release(cleanupCtx, lease, "work_item_hydration_failed"))
 	}
 	recovery, err := claim.source.client.Recovery(ctx, lease.WorkItemID)
 	if err == nil && s.providerReports != nil && lease.ProviderReservation == nil {
@@ -91,7 +92,7 @@ func (s *Scheduler) ReadmitRetryProgress(ctx context.Context, run runner.RunRequ
 	s.nativeClaims[run.Issue.ID] = nativeClaim{source: claim.source, lease: lease, recovery: recovery, deadline: nativeLeaseDeadline(started, lease), availabilityDeadline: claim.availabilityDeadline, landingCapacity: claim.landingCapacity}
 	s.claimPolicies[run.Issue.ID] = policy
 	s.mu.Unlock()
-	return s.RunExecution(run.Issue.ID), nil
+	return s.RunExecution(run.Issue.ID), lease.IsolationPolicy, nil
 }
 
 func (s *Scheduler) RetryProgress(ctx context.Context, issue connector.Issue) (progresscheck.Request, progresscheck.Owner, error) {

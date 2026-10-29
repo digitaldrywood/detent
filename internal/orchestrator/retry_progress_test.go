@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
@@ -37,12 +38,12 @@ func (e *progressExecution) Finish(ctx context.Context, outcome string) error {
 	return nil
 }
 
-func (s *progressScheduling) ReadmitRetryProgress(_ context.Context, _ RunRequest, _ runpkg.ProviderCapacityResolver) (runpkg.Execution, error) {
+func (s *progressScheduling) ReadmitRetryProgress(_ context.Context, run RunRequest, _ runpkg.ProviderCapacityResolver) (runpkg.Execution, *isolation.Policy, error) {
 	s.admissions++
 	if s.admissionError != nil {
-		return nil, s.admissionError
+		return nil, nil, s.admissionError
 	}
-	return &progressExecution{}, nil
+	return &progressExecution{}, run.Issue.IsolationPolicy, nil
 }
 
 func (s *progressScheduling) RetryProgress(_ context.Context, issue connector.Issue) (progresscheck.Request, progresscheck.Owner, error) {

@@ -116,11 +116,17 @@ func TestNativeRetryProgressOwnerAndSuccess(t *testing.T) {
 
 type nativeProgressRerouteAgent struct {
 	nativePlanningAgent
-	attempt string
-	err     error
+	attempt     string
+	err         error
+	duringCheck func(context.Context) error
 }
 
-func (a *nativeProgressRerouteAgent) RunTurn(_ context.Context, _ runner.AgentTurnRequest, update runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
+func (a *nativeProgressRerouteAgent) RunTurn(ctx context.Context, _ runner.AgentTurnRequest, update runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
+	if a.duringCheck != nil {
+		if err := a.duringCheck(ctx); err != nil {
+			return runner.AgentTurnResult{}, err
+		}
+	}
 	if a.err != nil {
 		return runner.AgentTurnResult{}, a.err
 	}
@@ -149,12 +155,12 @@ type nativeProgressRerouteScheduling struct {
 	refused chan error
 }
 
-func (s *nativeProgressRerouteScheduling) ReadmitRetryProgress(ctx context.Context, request runner.RunRequest, resolver runner.ProviderCapacityResolver) (runner.Execution, error) {
-	execution, err := s.Scheduler.ReadmitRetryProgress(ctx, request, resolver)
+func (s *nativeProgressRerouteScheduling) ReadmitRetryProgress(ctx context.Context, request runner.RunRequest, resolver runner.ProviderCapacityResolver) (runner.Execution, *isolation.Policy, error) {
+	execution, policy, err := s.Scheduler.ReadmitRetryProgress(ctx, request, resolver)
 	if err != nil {
 		s.refused <- err
 	}
-	return execution, err
+	return execution, policy, err
 }
 
 func (r *nativeProgressRerouteRunner) Run(ctx context.Context, request runner.RunRequest) (runner.RunResult, error) {
@@ -170,17 +176,46 @@ func (r *nativeProgressRerouteRunner) Run(ctx context.Context, request runner.Ru
 func TestNativeRetryProgressRerouteExecutionIdentity(t *testing.T) {
 	for _, reserved := range []bool{false, true} {
 		t.Run(map[bool]string{false: "legacy admission", true: "provider reservation"}[reserved], func(t *testing.T) {
-			t.Parallel()
-			testNativeRetryProgressReroute(t, reserved)
+			for _, tighten := range []bool{false, true} {
+				t.Run(map[bool]string{false: "unchanged isolation", true: "stricter isolation"}[tighten], func(t *testing.T) {
+					t.Parallel()
+					testNativeRetryProgressReroute(t, reserved, tighten)
+				})
+			}
 		})
 	}
 }
 
-func testNativeRetryProgressReroute(t *testing.T, reserved bool) {
+func testNativeRetryProgressReroute(t *testing.T, reserved, tighten bool) {
 	t.Helper()
 	h := newNativeChangeHubTransport(t, "Human Review", hubserverPlanStates(), true)
-	if reserved {
+	if reserved || tighten {
 		configureNativeProgressProvider(t, h)
+		if !reserved {
+			h.scheduler.providerReports = nil
+		}
+	}
+	setIsolation := func(ctx context.Context, tier string) error {
+		fleet, err := NewFleetClient(h.admin.client, h.organization, nil)
+		if err != nil {
+			return err
+		}
+		current, err := fleet.Fleet(ctx)
+		if err != nil {
+			return err
+		}
+		if len(current.Runners) != 1 {
+			return errors.New("expected one fixture runner")
+		}
+		r := current.Runners[0]
+		routing := r.Routing
+		routing.IsolationTier = tier
+		return fleet.UpdateRunner(ctx, r.RunnerID, runnerauth.RoutingChange{ExpectedRevision: r.Revision, Routing: routing})
+	}
+	if tighten {
+		if err := setIsolation(t.Context(), isolation.NativeTrusted); err != nil {
+			t.Fatal(err)
+		}
 	}
 	issue, err := h.connector.CreateIssue(t.Context(), connector.IssueDraft{Title: "Retry failed planning as implementation", Body: "Update the README." + issueContractTestSections})
 	if err != nil {
@@ -215,6 +250,12 @@ func testNativeRetryProgressReroute(t *testing.T, reserved bool) {
 	issue = claimPlan()
 	original := h.scheduler.RunExecution(issue.ID)
 	provider := &nativeProgressRerouteAgent{attempt: failed.data.AttemptID}
+	if tighten {
+		if issue.IsolationPolicy == nil || issue.IsolationPolicy.Tier != isolation.NativeTrusted {
+			t.Fatalf("initial claim did not pin trusted isolation: %+v", issue.IsolationPolicy)
+		}
+		provider.duringCheck = func(ctx context.Context) error { return setIsolation(ctx, isolation.Sandbox) }
+	}
 	agent, err := runner.NewRunner(runner.Dependencies{Workflow: config.Workflow{Config: config.Config{Agents: config.Agents{Routes: []config.AgentRoute{
 		{Name: "planner", Role: runner.RolePlan, Backend: "codex", Model: "plan-model"},
 		{Name: "implementation", Backend: "codex", Model: "code-model", Default: true},
@@ -244,6 +285,15 @@ func testNativeRetryProgressReroute(t *testing.T, reserved bool) {
 		}
 		if started.request.Mode != runner.RunModeImplement || started.request.Execution == original {
 			t.Fatalf("reroute did not reconcile the selected execution: mode=%s", started.request.Mode)
+		}
+		if tighten {
+			execution := started.request.Execution.(*nativeExecution)
+			if execution.claim.lease.IsolationPolicy == nil || execution.claim.lease.IsolationPolicy.Tier != isolation.Sandbox {
+				t.Fatalf("replacement claim did not pin sandbox: %+v", execution.claim.lease.IsolationPolicy)
+			}
+			if started.request.Issue.IsolationPolicy == nil || started.request.Issue.IsolationPolicy.Tier != isolation.Sandbox {
+				t.Fatalf("implementation retained trusted isolation after sandbox readmission: %+v", started.request.Issue.IsolationPolicy)
+			}
 		}
 		check, err := h.admin.NativeAttempt(t.Context(), tracker.NativeWorkItemID(issue.ID), original.(*nativeExecution).data.AttemptID)
 		if err != nil {
