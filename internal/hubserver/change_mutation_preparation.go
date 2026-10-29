@@ -18,6 +18,7 @@ type changeMutationPreparation struct {
 	change           tracker.ChangeRequest
 	version          tracker.ChangeVersion
 	publication      *preparedChangeVersion
+	quality          *preparedQualityEscape
 	review           tracker.ReviewChange
 	reviewFields     []cloudContentField
 	record           tracker.ChangeReview
@@ -64,8 +65,12 @@ WHERE c.organization_id=? AND c.project_id=? AND c.id=? AND EXISTS(SELECT 1 FROM
 }
 
 func (s *Service) prepareChangeMutation(ctx context.Context, scope nativeScope, options nativeCommandOptions, command tracker.Mutation, input any, requestHash string) (context.Context, error) {
-	switch input.(type) {
+	switch request := input.(type) {
 	case tracker.PublishChangeVersion, tracker.ReviewChange:
+	case tracker.DiscussChange:
+		if request.Escape == nil {
+			return ctx, nil
+		}
 	default:
 		return ctx, nil
 	}
@@ -102,6 +107,24 @@ func (s *Service) prepareChangeMutation(ctx context.Context, scope nativeScope, 
 	}
 	prepared := &changeMutationPreparation{lease: command.LeaseID}
 	switch request := input.(type) {
+	case tracker.DiscussChange:
+		prepared.change, err = readChange(readCtx, tx, scope, options.Item, options.ChangeID)
+		if err != nil {
+			return ctx, err
+		}
+		if request.VersionID != "" {
+			if _, err := readChangeVersion(readCtx, tx, prepared.change.ID, request.VersionID); err != nil {
+				return ctx, err
+			}
+		}
+		prepared.quality = &preparedQualityEscape{version: request.VersionID, occurrence: request.Escape.OccurrenceID}
+		if err := validateQualityEscape(readCtx, tx, scope, prepared.change, request, now, prepared.quality); err != nil {
+			return ctx, err
+		}
+		prepared.quality.snapshot, err = readQualityEscapeSnapshot(readCtx, tx, scope, options.ChangeID, prepared.quality)
+		if err != nil {
+			return ctx, err
+		}
 	case tracker.PublishChangeVersion:
 		prepared.publication, err = s.prepareChangeVersion(readCtx, tx, scope, options.Item, options.ChangeID, request, now)
 		if err != nil {
@@ -165,7 +188,7 @@ func (s *Service) prepareChangeMutation(ctx context.Context, scope nativeScope, 
 			}
 		}
 	}
-	if prepared.publication == nil {
+	if prepared.publication == nil && prepared.quality == nil {
 		if _, ok := ctx.Value(changeContentKey{}).(*changeContent); ok {
 			for _, result := range []*gate.ValidatorResult{prepared.storedReview.Validator, prepared.storedReview.ImplementationReview} {
 				if result != nil {
@@ -193,11 +216,17 @@ func recheckChangeMutation(ctx context.Context, tx *sql.Tx, scope nativeScope, o
 		return err
 	}
 	if current != prepared.snapshot {
+		if prepared.quality != nil {
+			return nativeConflict(prepared.change.Revision)
+		}
 		change, err := readChange(ctx, tx, scope, options.Item, options.ChangeID)
 		if err != nil {
 			return err
 		}
 		return nativeConflict(change.Revision)
+	}
+	if prepared.quality != nil {
+		return recheckQualityEscape(ctx, tx, scope, prepared)
 	}
 	return nil
 }

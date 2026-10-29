@@ -1,9 +1,11 @@
 package hubserver
 
 import (
+	"database/sql/driver"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -218,6 +220,23 @@ func TestQualityEscapeApplicationAndRead(t *testing.T) {
 	}
 	request.IdempotencyKey = "recorded-scheduled"
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/discussion", f.token, request), http.StatusOK)
+	request.IdempotencyKey = "changed-scheduled-source"
+	injected := false
+	ctx := withRequestTiming(t.Context(), &requestTiming{trace: func(query string, _ []driver.NamedValue) {
+		if injected || !strings.Contains(query, "FROM change_requests c JOIN issues i") {
+			return
+		}
+		injected = true
+		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET body='Evidence withdrawn' WHERE native_id=?", f.issue.WorkItemID); err != nil {
+			t.Fatal(err)
+		}
+	}})
+	response := httptest.NewRecorder()
+	f.service.Handler().ServeHTTP(response, newHubAPIRequest(t, http.MethodPost, f.path+"/discussion", f.token, request).WithContext(ctx))
+	requireNativeStatus(t, response, http.StatusConflict)
+	if !injected {
+		t.Fatal("scheduled evidence edit was not injected")
+	}
 	frozen, err := readChangeVersion(t.Context(), f.service.database.db, f.change.ID, version.ID)
 	if err != nil || frozen.LandingQuality == nil || frozen.LandingQuality.IssueBody != landing.Quality.IssueBody {
 		t.Fatalf("later issue edits changed landing classification context: %+v, %v", frozen.LandingQuality, err)

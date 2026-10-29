@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -15,46 +14,48 @@ func legacyPublicationPush(ctx context.Context, q nativeQueryer, scope nativeSco
 	if err := q.QueryRowContext(ctx, `SELECT COALESCE((SELECT sequence FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND type='run.checkpointed' AND claim_attempt_id IS NOT NULL AND push_external_effect='git_push' AND push_effect_state='confirmed' AND push_change_id=? AND push_version_id=? AND push_head_sha=? ORDER BY sequence DESC LIMIT 1),0)`, scope.organization, scope.project, item, version.ChangeID, version.ID, version.HeadSHA).Scan(&knownSequence); err != nil {
 		return nil, false, err
 	}
-	rows, err := q.QueryContext(ctx, `SELECT data_json FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND type='run.checkpointed' AND claim_attempt_id IS NULL AND sequence>? ORDER BY sequence DESC LIMIT ?`, scope.organization, scope.project, item, knownSequence, claimEvidenceLimit+1)
-	if err != nil {
-		return nil, false, err
-	}
-	defer rows.Close()
-	var records []string
-	for rows.Next() {
-		var raw string
-		if err := rows.Scan(&raw); err != nil {
-			return nil, false, err
+	var before int64
+	for {
+		statement := `SELECT sequence,data_json FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND type='run.checkpointed' AND claim_attempt_id IS NULL AND sequence>?`
+		args := []any{scope.organization, scope.project, item, knownSequence}
+		if before != 0 {
+			statement += ` AND sequence<?`
+			args = append(args, before)
 		}
-		records = append(records, raw)
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return nil, false, err
-	}
-	if len(records) > claimEvidenceLimit {
-		return nil, false, fmt.Errorf("legacy publication evidence exceeds bounded preparation: %w", errClaimHintStale)
-	}
-	for _, raw := range records {
-		var data tracker.CollaborationData
-		if err := decodeRunHistory(ctx, q, raw, &data); err != nil {
-			return nil, false, err
-		}
-		if data.Run == nil || data.Run.Handoff == nil || data.Run.Handoff.Change == nil {
-			continue
-		}
-		handoff := data.Run.Handoff
-		ref := handoff.Change
-		if handoff.ExternalEffect != "git_push" || handoff.EffectState != "confirmed" || ref.ChangeID != version.ChangeID || ref.VersionID != version.ID || ref.HeadSHA != version.HeadSHA {
-			continue
-		}
-		valid, err := legacyPublicationProvenance(ctx, q, scope, item, *data.Run)
+		args = append(args, changeLegacyReadLimit)
+		records, err := readChangeLegacyPage(ctx, q, statement+` ORDER BY sequence DESC LIMIT ?`, func(rows *sql.Rows) (string, error) {
+			var raw string
+			err := rows.Scan(&before, &raw)
+			return raw, err
+		}, args...)
 		if err != nil {
-			return nil, true, err
+			return nil, false, err
 		}
-		if !valid {
-			return nil, true, nil
+		for _, raw := range records {
+			var data tracker.CollaborationData
+			if err := decodeRunHistory(ctx, q, raw, &data); err != nil {
+				return nil, false, err
+			}
+			if data.Run == nil || data.Run.Handoff == nil || data.Run.Handoff.Change == nil {
+				continue
+			}
+			handoff := data.Run.Handoff
+			ref := handoff.Change
+			if handoff.ExternalEffect != "git_push" || handoff.EffectState != "confirmed" || ref.ChangeID != version.ChangeID || ref.VersionID != version.ID || ref.HeadSHA != version.HeadSHA {
+				continue
+			}
+			valid, err := legacyPublicationProvenance(ctx, q, scope, item, *data.Run)
+			if err != nil {
+				return nil, true, err
+			}
+			if !valid {
+				return nil, true, nil
+			}
+			return data.Run, true, nil
 		}
-		return data.Run, true, nil
+		if len(records) < changeLegacyReadLimit {
+			break
+		}
 	}
 	return nil, false, nil
 }
