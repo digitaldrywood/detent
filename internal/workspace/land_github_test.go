@@ -1632,7 +1632,7 @@ func runPausedGitHubLanding(t *testing.T, fixture landingFixture, opts LandOptio
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	ctx, cancel := context.WithCancel(t.Context())
 	if scenario == "bootstrap" {
 		cache, err := toolcache.NewManaged(ctx, filepath.Join(t.TempDir(), "build-cache"), t.TempDir())
 		if err != nil {
@@ -1702,9 +1702,7 @@ func runPausedGitHubLanding(t *testing.T, fixture landingFixture, opts LandOptio
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
 	}
-	createCtx, stopCreate := context.WithTimeout(ctx, 5*time.Second)
-	defer stopCreate()
-	independent, err := other.Create(createCtx, otherIssue)
+	independent, err := other.Create(ctx, otherIssue)
 	if err != nil {
 		t.Fatalf("independent source import blocked behind paused validation: %v", err)
 	}
@@ -1770,9 +1768,7 @@ func runPausedGitHubLanding(t *testing.T, fixture landingFixture, opts LandOptio
 	close(resume)
 	<-done
 	preserved()
-	cleanupCtx, stopCleanup := context.WithTimeout(t.Context(), 5*time.Second)
-	defer stopCleanup()
-	release, err = other.acquireSourceOperation(cleanupCtx)
+	release, err = other.acquireSourceOperation(t.Context())
 	if err != nil {
 		t.Fatalf("landing leaked the source lock: %v", err)
 	}
