@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -94,13 +93,11 @@ func readLegacyReportFact(ctx context.Context, q nativeQueryer, scope nativeScop
 		f.known += " AND project_id=?"
 		f.knownArgs = append(f.knownArgs, scope.project)
 	}
+	order := "project_id,id"
 	if family == "report_attempts" {
-		query += " ORDER BY project_id,work_item_id,id LIMIT ?"
-	} else {
-		query += " ORDER BY project_id,id LIMIT ?"
+		order = "project_id,work_item_id,id"
 	}
-	args = append(args, storageConversionRows+1)
-	rows, err := q.QueryContext(ctx, query, args...)
+	rows, err := queryLegacyPageRows(ctx, q, query, order, args...)
 	if err != nil {
 		return f, err
 	}
@@ -110,11 +107,7 @@ func readLegacyReportFact(ctx context.Context, q nativeQueryer, scope nativeScop
 		raw, status, updated string
 	}
 	var batch []legacyRow
-	bytes := 0
 	for rows.Next() {
-		if len(batch) == storageConversionRows {
-			return f, operatortool.ErrReadUnavailable
-		}
 		var id, org, project, item, raw, status, updated string
 		var values []any
 		if family == "report_attempts" {
@@ -130,10 +123,6 @@ func readLegacyReportFact(ctx context.Context, q nativeQueryer, scope nativeScop
 				return f, err
 			}
 			values = []any{id, org, project, item, sequence, kind, at, raw}
-		}
-		bytes += len(raw)
-		if bytes > storageConversionBytes {
-			return f, operatortool.ErrReadUnavailable
 		}
 		batch = append(batch, legacyRow{values: values, raw: raw, status: status, updated: updated})
 	}

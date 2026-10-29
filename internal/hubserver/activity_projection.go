@@ -119,32 +119,39 @@ func readActivityPhases(ctx context.Context, q nativeQueryer, id string) ([]trac
 func (s *Service) convertActivityProjections(ctx context.Context) error {
 	ctx = s.runDetailContext(ctx)
 	families := []struct {
-		selection string
-		convert   func(context.Context, string) error
+		name, selection string
+		convert         func(context.Context, string) error
 	}{
-		{`SELECT id FROM native_attempts WHERE activity_projection_version IS NULL ORDER BY id LIMIT ?`, s.convertActivityAttempt},
-		{`SELECT id FROM native_attempts WHERE report_projection_version IS NULL ORDER BY id LIMIT ?`, s.convertActivityAttempt},
-		{`SELECT CAST(id AS TEXT) FROM issues WHERE activity_actor_principal_id IS NULL ORDER BY id LIMIT ?`, s.convertActivityActor},
-		{`SELECT id FROM change_requests WHERE activity_current_version_id IS NULL ORDER BY id LIMIT ?`, s.convertActivityChange},
-		{`SELECT id FROM change_versions WHERE activity_external_url IS NULL ORDER BY id LIMIT ?`, s.convertActivityVersion},
+		{"activity-attempts", `SELECT id FROM native_attempts WHERE activity_projection_version IS NULL`, s.convertActivityAttempt},
+		{"report-attempts", `SELECT id FROM native_attempts WHERE report_projection_version IS NULL`, s.convertActivityAttempt},
+		{"activity-actors", `SELECT id FROM issues WHERE activity_actor_principal_id IS NULL`, s.convertActivityActor},
+		{"activity-changes", `SELECT id FROM change_requests WHERE activity_current_version_id IS NULL`, s.convertActivityChange},
+		{"activity-versions", `SELECT id FROM change_versions WHERE activity_external_url IS NULL`, s.convertActivityVersion},
 	}
+	start := int((s.activityConvertFamily.Add(1) - 1) % uint64(len(families)))
+	families = append(families[start:], families[:start]...)
 	remaining := storageConversionRows
+	var failures error
 	for _, family := range families {
 		if remaining == 0 {
 			break
 		}
-		ids, err := nativePageIDs(ctx, s.database.reader, family.selection, remaining)
+		candidates, err := s.storageProjectionPage(ctx, family.name, family.selection, "id", remaining)
 		if err != nil {
-			return err
+			return errors.Join(failures, err)
 		}
-		for _, id := range ids {
-			if err := family.convert(ctx, id); err != nil {
-				return err
-			}
+		for _, candidate := range candidates {
 			remaining--
+			s.projectionCursors.Store(family.name, candidate.cursor)
+			if err := family.convert(ctx, candidate.id); err != nil {
+				failures = errors.Join(failures, err)
+				if ctx.Err() != nil {
+					return failures
+				}
+			}
 		}
 	}
-	return nil
+	return failures
 }
 
 func (s *Service) convertActivityAttempt(ctx context.Context, id string) error {

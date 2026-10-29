@@ -2,8 +2,8 @@ package hubserver
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -183,7 +183,7 @@ func TestReportTypedQueryCompatibility(t *testing.T) {
 	}
 }
 
-func TestReportUnknownFactsFailClosed(t *testing.T) {
+func TestReportUnknownFactsServeDuringBackfill(t *testing.T) {
 	f := newDefaultNativeFixture(t, Config{})
 	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
 		t.Fatal(err)
@@ -199,7 +199,7 @@ func TestReportUnknownFactsFailClosed(t *testing.T) {
 			defer tx.Rollback()
 			if family == "report_events" {
 				for index := range storageConversionRows + 1 {
-					if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "scheduler.decision", tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Source: "native_claim", Outcome: "claimed"}}, f.service.config.now().Add(time.Duration(index)*time.Nanosecond)); err != nil {
+					if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "scheduler.decision", tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Source: "native_claim", Outcome: "claimed", Reason: strings.Repeat("x", 11000)}}, f.service.config.now().Add(time.Duration(index)*time.Nanosecond)); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -213,12 +213,16 @@ func TestReportUnknownFactsFailClosed(t *testing.T) {
 					t.Fatal(err)
 				}
 				for range storageConversionRows + 1 {
-					seedHealthRateAttempt(t, tx, scope, issue, machine, "failed", tracker.NativeRunData{}, now, -1)
+					seedHealthRateAttempt(t, tx, scope, issue, machine, "failed", tracker.NativeRunData{RunnerID: strings.Repeat("example-", 1500)}, now, -1)
 				}
 			}
 			q, err := prepareReportsQuery(t.Context(), tx, scope, family)
-			if !errors.Is(err, operatortool.ErrReadUnavailable) || q != nil {
-				t.Fatalf("unknown population authorized a partial query: query=%v error=%v", q, err)
+			if err != nil {
+				t.Fatalf("pending report backfill prevents reads: %v", err)
+			}
+			var count int
+			if err := q.QueryRowContext(t.Context(), "SELECT count(*) FROM "+family).Scan(&count); err != nil || count < storageConversionRows+1 {
+				t.Fatalf("legacy report rows=%d error=%v", count, err)
 			}
 		})
 	}
