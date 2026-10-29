@@ -432,6 +432,7 @@ func TestServiceNamesSelectDistinctDefinitions(t *testing.T) {
 		{name: "", label: "com.digitaldrywood.detent", unit: "detent.service", plist: "com.digitaldrywood.detent.plist", userUnit: "detent.service"},
 		{name: "detent", label: "com.digitaldrywood.detent", unit: "detent.service", plist: "com.digitaldrywood.detent.plist", userUnit: "detent.service"},
 		{name: "detent.runner", label: "com.digitaldrywood.detent.runner", unit: "detent.runner.service", plist: "com.digitaldrywood.detent.runner.plist", userUnit: "detent.runner.service"},
+		{name: "detent.runner-example", label: "com.digitaldrywood.detent.runner-example", unit: "detent.runner-example.service", plist: "com.digitaldrywood.detent.runner-example.plist", userUnit: "detent.runner-example.service"},
 	} {
 		t.Run(test.label, func(t *testing.T) {
 			t.Parallel()
@@ -447,9 +448,27 @@ func TestServiceNamesSelectDistinctDefinitions(t *testing.T) {
 			if launchd.Info().Unit != test.label || filepath.Base(launchd.Definition().Path) != test.plist || !strings.Contains(launchd.Definition().Content, "<string>"+test.label+"</string>") {
 				t.Fatalf("launchd info = %+v", launchd.Info())
 			}
+			plist := strings.Join(strings.Fields(launchd.Definition().Content), " ")
+			for _, want := range []string{
+				"<key>RunAtLoad</key> <true/>",
+				"<key>KeepAlive</key> <dict> <key>SuccessfulExit</key> <false/> </dict>",
+			} {
+				if !strings.Contains(plist, want) {
+					t.Fatalf("launchd restart policy missing %q:\n%s", want, launchd.Definition().Content)
+				}
+			}
 			systemd := newSystemdManager(cfg)
 			if systemd.Info().Unit != test.unit || filepath.Base(systemd.userPath) != test.userUnit {
 				t.Fatalf("systemd info = %+v path %s", systemd.Info(), systemd.userPath)
+			}
+			unit := systemd.Definition().Content
+			if !strings.Contains(unit, "\nRestart=on-failure\n") {
+				t.Fatalf("systemd restart policy does not restart failures:\n%s", unit)
+			}
+			for _, forbidden := range []string{"SuccessExitStatus=", "RestartPreventExitStatus="} {
+				if strings.Contains(unit, forbidden) {
+					t.Fatalf("systemd restart policy exempts failures with %q:\n%s", forbidden, unit)
+				}
 			}
 		})
 	}
