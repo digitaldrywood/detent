@@ -375,7 +375,7 @@ func TestWorkItemConversationLookup(t *testing.T) {
 	f.service.config.Logger = slog.New(slog.NewJSONHandler(&logs, nil))
 	for _, fault := range []bool{false, true} {
 		if fault {
-			if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE conversation_messages SET actor_json = '["credential sentinel"]' WHERE conversation_id = ?`, created.Conversation.ID); err != nil {
+			if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE conversation_messages SET actor_json = '["credential sentinel"]', actor_kind = NULL, actor_principal_id = NULL WHERE conversation_id = ?`, created.Conversation.ID); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -546,9 +546,7 @@ func TestWorkspaceOperatorConversation(t *testing.T) {
 		}
 	}
 	requireNativeStatus(t, f.link(t, f.token, id, "link-stale", true, "Completed item"), http.StatusOK)
-	if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE conversations SET execution_json = json_set(execution_json, '$.attempt_id', 'att_523', '$.turn_id', '', '$.status', 'completed') WHERE id = ?`, id); err != nil {
-		t.Fatal(err)
-	}
+	f.setExecution(t, id, conversation.Execution{Status: conversation.ExecutionCompleted, Owner: conversation.Owner{AttemptID: "att_523"}, UpdatedAt: time.Now().UTC()})
 	before := f.snapshot(t, f.token, id)
 	var generation int64
 	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT dispatch_generation FROM issues WHERE native_id = ?", before.Conversation.WorkItemID).Scan(&generation); err != nil {
@@ -689,13 +687,21 @@ func TestWorkspaceOperatorConversationHandoff(t *testing.T) {
 	otherChat := f.create(t, f.other, map[string]any{"title": "Other private subject chat", "subject_work_item_id": subject.WorkItemID})
 	attachment := f.upload(t, f.token, id, "context.txt", "text/plain", []byte("attachment context"))
 	requireNativeStatus(t, f.command(t, f.token, id, conversation.Command{Key: "context", Kind: conversation.CommandMessage, Text: "private user context", Attachments: []string{attachment.ID}}), http.StatusOK)
-	if err := f.service.conversations.transact(t.Context(), func(tx *sql.Tx, now time.Time) error {
-		record, err := f.service.conversations.store.readConversationByID(t.Context(), tx, id)
+	plan, err := f.service.conversations.newPublicationPlan(t.Context(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	message := conversationMessageRecord{Role: conversation.RoleAssistant, Kind: conversation.MessageText, Text: "private assistant decision", Delivery: conversation.DeliveryCompleted, Actor: conversation.Actor{Kind: conversation.ActorCoordinator}}
+	if err := plan.appendMessage(t.Context(), &message); err != nil {
+		t.Fatal(err)
+	}
+	ctx := plan.context(t.Context())
+	if err := f.service.conversations.transact(ctx, func(tx *sql.Tx, now time.Time) error {
+		record, err := f.service.conversations.store.readConversationByID(ctx, tx, id)
 		if err != nil {
 			return err
 		}
-		message := conversationMessageRecord{Role: conversation.RoleAssistant, Kind: conversation.MessageText, Text: "private assistant decision", Delivery: conversation.DeliveryCompleted, Actor: conversation.Actor{Kind: conversation.ActorCoordinator}}
-		return f.service.conversations.appendMessage(t.Context(), tx, &record, &message, now)
+		return f.service.conversations.appendMessage(ctx, tx, &record, &message, now)
 	}); err != nil {
 		t.Fatal(err)
 	}

@@ -40,7 +40,11 @@ func TestArchiveFactsBackfill(t *testing.T) {
 		if _, err := d.db.ExecContext(t.Context(), `INSERT INTO change_issue_links(change_id,organization_id,project_id,work_item_id) VALUES(?,?,?,?)`, change.ID, scope.organization, scope.project, item); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := d.db.ExecContext(t.Context(), `UPDATE conversations SET status='settled',execution_status=NULL,execution_lease_id=NULL WHERE id=?`, record.ID); err != nil {
+		execution, err := json.Marshal(record.Execution)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := d.db.ExecContext(t.Context(), `UPDATE conversations SET status='settled',execution_json=?,content_attachment_id='',conversion_state=0,execution_status=NULL,execution_lease_id=NULL WHERE id=?`, string(execution), record.ID); err != nil {
 			t.Fatal(err)
 		}
 	}
