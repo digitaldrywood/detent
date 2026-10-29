@@ -16,7 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-const nativeSearchRebuildBatch = 0
+const nativeSearchRebuildBatch = 1
 
 var registerNativeSearchText = sync.OnceValue(func() error {
 	if err := registerNativeSearchTokenizer(); err != nil {

@@ -94,8 +94,8 @@ func nativeSearchHits(scope nativeScope, archived string, expressions []string) 
 	}
 	values := make([]string, len(expressions))
 	for i, expression := range expressions {
-		values[i] = "(?,native_search_key(?))"
-		args = append(args, expression, expression)
+		values[i] = "(?,native_search_key(?),native_search_key_end(?))"
+		args = append(args, expression, expression, expression)
 	}
 	scopeValues := make([]string, len(scopes))
 	for index, searchScope := range scopes {
@@ -108,7 +108,7 @@ func nativeSearchHits(scope nativeScope, archived string, expressions []string) 
  SELECT i.id FROM index_state CROSS JOIN (
  SELECT i.* FROM issues i WHERE i.organization_id=? AND i.project_id=?` + archiveFilter + ` LIMIT ` + strconv.Itoa(nativeSearchPostingBudget) + `
  ) i WHERE index_state.incomplete AND (` + visibility + `)
- ), terms(matched,key) AS (VALUES ` + strings.Join(values, ",") + `), search_scopes(scope) AS (VALUES ` + strings.Join(scopeValues, ",") + `), fallback_candidates AS MATERIALIZED (
+ ), terms(matched,key,end) AS (VALUES ` + strings.Join(values, ",") + `), search_scopes(scope) AS (VALUES ` + strings.Join(scopeValues, ",") + `), fallback_candidates AS MATERIALIZED (
  SELECT d.id,d.issue_id,c.title,c.body FROM (
  SELECT document_id AS id FROM native_work_search_refresh WHERE organization_id=? AND project_id=? ORDER BY document_id DESC LIMIT ` + strconv.Itoa(nativeSearchPostingBudget) + `
  ) q CROSS JOIN native_work_documents d CROSS JOIN native_work_search_content c CROSS JOIN issues i WHERE d.id=q.id AND c.id=d.id AND i.id=d.issue_id` + archiveFilter + ` AND (` + visibility + `)
@@ -138,25 +138,40 @@ func nativeSearchHits(scope nativeScope, archived string, expressions []string) 
  SELECT DISTINCT p.document_id,p.scope FROM terms CROSS JOIN search_scopes s
  CROSS JOIN native_work_search_postings p
  WHERE p.rowid IN (
- SELECT rowid FROM native_work_search_postings WHERE scope=s.scope AND term=terms.key
- ORDER BY impact DESC,document_id LIMIT ` + strconv.Itoa(nativeSearchPostingBudget) + `)
- ), indexed_matches AS MATERIALIZED (
- SELECT c.document_id,d.issue_id,c.scope,t.matched,
- CASE WHEN length(t.matched)>` + strconv.Itoa(nativeSearchPrefixLimit+3) + ` THEN
- (SELECT 5*native_search_tokens(title,t.matched)+native_search_tokens(body,t.matched) FROM native_work_search_content WHERE id=c.document_id)
- ELSE p.frequency END AS frequency,l.tokens,CAST(pop.tokens AS REAL)/pop.documents AS average,pop.documents,f.documents AS matching
- FROM candidates c CROSS JOIN terms t
- CROSS JOIN native_work_search_postings p CROSS JOIN native_work_search_lengths l
- CROSS JOIN native_work_search_population pop CROSS JOIN native_work_search_frequencies f
- CROSS JOIN native_work_documents d
- WHERE p.document_id=c.document_id AND p.scope=c.scope AND p.term=t.key
- AND l.document_id=c.document_id AND l.scope=c.scope AND pop.scope=c.scope
- AND f.scope=c.scope AND f.term=t.key AND d.id=c.document_id
- AND NOT EXISTS(SELECT 1 FROM native_work_search_refresh WHERE document_id=c.document_id)
- ), indexed_scores AS MATERIALIZED (
- SELECT document_id,issue_id,scope,count(*) AS terms,group_concat(matched,', ') AS matched,
- sum(native_search_bm25(frequency,tokens,average,documents,matching)) AS score
- FROM indexed_matches WHERE frequency>0 GROUP BY document_id,scope
+ SELECT rowid FROM native_work_search_postings WHERE scope=s.scope AND term>=terms.key AND term<terms.end
+ ORDER BY term,impact DESC,document_id LIMIT ` + strconv.Itoa(nativeSearchPostingBudget) + `)
+ AND NOT EXISTS(SELECT 1 FROM native_work_search_refresh WHERE document_id=p.document_id)
+ ), scoped_terms AS MATERIALIZED (
+ SELECT s.scope,t.*,(SELECT term FROM native_work_search_frequencies f
+ WHERE f.scope=s.scope AND f.term>=t.key AND f.term<t.end ORDER BY term LIMIT 1) AS first,
+ (SELECT term FROM native_work_search_frequencies f
+ WHERE f.scope=s.scope AND f.term>=t.key AND f.term<t.end ORDER BY term LIMIT 1 OFFSET 1) AS second
+ FROM search_scopes s CROSS JOIN terms t
+ ), prefix_terms AS MATERIALIZED (
+ SELECT t.*,(SELECT count(DISTINCT document_id) FROM (
+ SELECT document_id FROM native_work_search_postings p WHERE p.scope=t.scope AND p.term>=t.key AND p.term<t.end
+ ORDER BY term,impact DESC,document_id LIMIT ` + strconv.Itoa(nativeSearchPostingBudget) + `)) AS matching
+ FROM scoped_terms t WHERE t.second IS NOT NULL
+ ), indexed_matches AS (
+ SELECT c.document_id,c.scope,t.matched,p.frequency,f.documents AS matching
+ FROM scoped_terms t CROSS JOIN candidates c CROSS JOIN native_work_search_postings p
+ CROSS JOIN native_work_search_frequencies f
+ WHERE t.first IS NOT NULL AND t.second IS NULL AND t.scope=c.scope
+ AND p.document_id=c.document_id AND p.scope=c.scope AND p.term=t.first
+ AND f.scope=p.scope AND f.term=p.term
+ UNION ALL
+ SELECT c.document_id,c.scope,t.matched,sum(p.frequency) AS frequency,t.matching
+ FROM prefix_terms t CROSS JOIN candidates c CROSS JOIN native_work_search_postings p
+ WHERE t.scope=c.scope AND t.second IS NOT NULL
+ AND p.document_id=c.document_id AND p.scope=c.scope AND p.term>=t.key AND p.term<t.end
+ GROUP BY c.document_id,c.scope,t.matched
+ ), indexed_scores AS (
+ SELECT m.document_id,d.issue_id,m.scope,count(*) AS terms,group_concat(m.matched,', ') AS matched,
+ sum(native_search_bm25(m.frequency,l.tokens,CAST(pop.tokens AS REAL)/pop.documents,pop.documents,m.matching)) AS score
+ FROM indexed_matches m CROSS JOIN native_work_search_lengths l
+ CROSS JOIN native_work_search_population pop CROSS JOIN native_work_documents d
+ WHERE l.document_id=m.document_id AND l.scope=m.scope AND pop.scope=m.scope AND d.id=m.document_id
+ GROUP BY m.document_id,m.scope
  ), hits AS MATERIALIZED (
  SELECT issue_id,document_id*2 AS id,score,terms,matched FROM indexed_scores
  UNION ALL SELECT issue_id,id*2,score,terms,matched FROM fallback_scores

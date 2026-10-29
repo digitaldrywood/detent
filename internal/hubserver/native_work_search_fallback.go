@@ -21,6 +21,7 @@ func registerNativeSearchFallback(tls *libc.TLS, database, module uintptr) int32
 		{"native_search_tokens", 2, nativeSearchTokens},
 		{"native_search_postings", 2, nativeSearchPostingText},
 		{"native_search_key", 1, nativeSearchKey},
+		{"native_search_key_end", 1, nativeSearchKeyEnd},
 		{"native_search_bm25", 5, nativeSearchBM25},
 	} {
 		name, err := libc.CString(function.name)
@@ -140,20 +141,15 @@ func nativeSearchResultText(tls *libc.TLS, context uintptr, value string) {
 	sqlite3.Xsqlite3_result_text(tls, context, text, int32(len(value)), ^uintptr(0))
 }
 
-const nativeSearchPrefixLimit = 64
-
-func nativeSearchPrefix(token string) string {
-	count := 0
-	for offset := range token {
-		if count == nativeSearchPrefixLimit {
-			return token[:offset]
-		}
-		count++
-	}
-	return token
+func nativeSearchKey(tls *libc.TLS, context uintptr, count int32, arguments uintptr) {
+	nativeSearchKeyBound(tls, context, count, arguments, false)
 }
 
-func nativeSearchKey(tls *libc.TLS, context uintptr, _ int32, arguments uintptr) {
+func nativeSearchKeyEnd(tls *libc.TLS, context uintptr, count int32, arguments uintptr) {
+	nativeSearchKeyBound(tls, context, count, arguments, true)
+}
+
+func nativeSearchKeyBound(tls *libc.TLS, context uintptr, _ int32, arguments uintptr, end bool) {
 	value := *nativeSearchMemory[uintptr](arguments)
 	input := string(libc.GoBytes(sqlite3.Xsqlite3_value_text(tls, value), int(sqlite3.Xsqlite3_value_bytes(tls, value))))
 	tokens, err := nativeSearchLexemes(tls, context, input)
@@ -164,8 +160,14 @@ func nativeSearchKey(tls *libc.TLS, context uintptr, _ int32, arguments uintptr)
 	key := ""
 	if len(tokens) == 1 {
 		key = "e" + tokens[0]
-		if strings.HasSuffix(input, "*") {
-			key = "p" + nativeSearchPrefix(tokens[0])
+		if end {
+			if strings.HasSuffix(input, "*") {
+				runes := []rune(key)
+				runes[len(runes)-1]++
+				key = string(runes)
+			} else {
+				key += "\x00"
+			}
 		}
 	}
 	nativeSearchResultText(tls, context, key)
@@ -186,13 +188,6 @@ func nativeSearchPostingText(tls *libc.TLS, context uintptr, _ int32, arguments 
 		}
 		for _, token := range tokens {
 			frequencies["e"+token] += weight
-			prefix := nativeSearchPrefix(token)
-			for offset := range prefix {
-				if offset > 0 {
-					frequencies["p"+prefix[:offset]] += weight
-				}
-			}
-			frequencies["p"+prefix] += weight
 		}
 	}
 	keys := make([]string, 0, len(frequencies))
