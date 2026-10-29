@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/progresscheck"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type progressScheduling struct {
@@ -27,7 +29,8 @@ type progressScheduling struct {
 
 type progressExecution struct {
 	planDispatchExecution
-	finished string
+	finished     string
+	observations []tracker.NativeRuntimeObservation
 }
 
 func (e *progressExecution) Finish(ctx context.Context, outcome string) error {
@@ -38,8 +41,21 @@ func (e *progressExecution) Finish(ctx context.Context, outcome string) error {
 	return nil
 }
 
-func (s *progressScheduling) ReadmitRetryProgress(_ context.Context, run RunRequest, _ runpkg.ProviderCapacityResolver) (runpkg.Execution, *isolation.Policy, error) {
+func (e *progressExecution) ObserveRuntime(ctx context.Context, observation tracker.NativeRuntimeObservation) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	e.observations = append(e.observations, observation)
+	return nil
+}
+
+func (s *progressScheduling) ReadmitRetryProgress(ctx context.Context, run RunRequest, _ runpkg.ProviderCapacityResolver) (runpkg.Execution, *isolation.Policy, error) {
 	s.admissions++
+	if run.Execution != nil {
+		if err := run.Execution.Finish(ctx, "cancelled"); err != nil {
+			return nil, nil, err
+		}
+	}
 	if s.admissionError != nil {
 		return nil, nil, s.admissionError
 	}
@@ -78,10 +94,15 @@ type progressRunner struct {
 	err      error
 	started  chan RunRequest
 	release  <-chan struct{}
+	timeout  bool
 }
 
 func (r *progressRunner) CheckProgress(ctx context.Context, req RunRequest, _ progresscheck.Request) (progresscheck.Decision, error) {
 	r.calls++
+	if r.timeout {
+		<-ctx.Done()
+		return progresscheck.Decision{}, ctx.Err()
+	}
 	if r.started != nil {
 		r.started <- req
 	}
@@ -104,99 +125,101 @@ func TestRetryProgressDispatch(t *testing.T) {
 		outcome  string
 		want     string
 		err      error
+		reason   string
 	}{
 		{name: "changed source dispatches same step", source: "new-head", decision: progresscheck.Decision{Outcome: progresscheck.Progressing, Reason: "Source changed", Evidence: []string{"attempt-2"}}, want: RunModeImplement},
 		{name: "1748 unchanged 422 refusal reroutes to the audit pipeline", decision: progresscheck.Decision{Outcome: progresscheck.Reroute, Step: RunModeMerge, Reason: "Run the merge pipeline to produce the missing audit receipt", Evidence: []string{"attempt-1", "attempt-2"}}, want: RunModeMerge},
 		{name: "Detent refusal files one dependency and retained decision is advisory", decision: progresscheck.Decision{Outcome: progresscheck.SystemDefect, Reason: "Protocol cannot carry the audit receipt", Evidence: []string{"attempt-1", "attempt-2"}, DefectKey: "audit-publication-protocol", DefectTitle: "Audit receipt cannot be published", DefectBody: "Repeated 422 on unchanged base and head"}},
 		{name: "success pays no AI turn", outcome: "success", want: RunModeImplement},
-		{name: "backend failure never permits blind retry", err: errors.New("provider unavailable")},
+		{name: "backend failure permits ordinary retry", err: errors.New("provider unavailable"), reason: "provider unavailable", want: RunModeImplement},
+		{name: "timeout permits ordinary retry", err: context.DeadlineExceeded, reason: "context deadline exceeded", want: RunModeImplement},
+		{name: "invalid decision permits ordinary retry", decision: progresscheck.Decision{Outcome: progresscheck.Progressing, Step: RunModeMerge, Reason: "Continue", Evidence: []string{"attempt-2"}}, reason: "progressing decision cannot change step", want: RunModeImplement},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := normalizeConfig(Config{MaxConcurrentAgents: 1, ActiveStates: []string{"Todo", "In Progress"}, TerminalStates: []string{"Done"}, Project: scheduler.ProjectCandidate{ID: "example-project"}, WorkerHosts: []string{"worker-a"}})
-			issue := dispatchTestIssue("example-issue", "In Progress")
-			source := &progressScheduling{request: progresscheck.Request{ProjectID: "example-project", IssueID: issue.ID, PolicyID: "policy", EvidenceRevision: "1", SourceSHA: "head", BaseSHA: "base", AvailableSteps: []string{RunModeImplement, RunModePlan, RunModeMerge}, Attempts: []progresscheck.Attempt{
-				{ID: "attempt-1", Step: "publication", Outcome: "failed", SourceSHA: "head", BaseSHA: "base", Error: "422: landing requires security audit evidence for its exact base and head"},
-				{ID: "attempt-2", Step: "publication", Outcome: "failed", SourceSHA: "head", BaseSHA: "base", Error: "422: landing requires security audit evidence for its exact base and head"},
-			}}, records: map[string]progresscheck.Record{}, defects: map[string]string{}}
-			if tt.source != "" {
-				source.request.SourceSHA = tt.source
-			}
-			if tt.outcome != "" {
-				source.request.Attempts[1].Outcome = tt.outcome
-			}
-			checker := &progressRunner{decision: tt.decision, err: tt.err}
-			worker := newWorkerHostRunner()
-			o := &Orchestrator{cfg: cfg, scheduling: source, progressRunner: checker, supervisor: newTestSupervisor(t, worker, cfg), runResults: make(chan runpkg.Completion, 1)}
-			state := newState(cfg)
-			now := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
-			execution := &progressExecution{}
-			req := RunRequest{Issue: issue, Mode: RunModeImplement, Execution: execution}
-			err := o.prepareRetryProgress(t.Context(), &req)
-			wantError := tt.err != nil || tt.decision.Outcome == progresscheck.SystemDefect
-			if (err != nil) != wantError || !wantError && req.Mode != tt.want {
-				t.Fatalf("progress request mode=%q error=%v", req.Mode, err)
-			}
-			if wantError && execution.finished != "failed" {
-				t.Fatalf("failed progress check retained its execution: outcome=%s", execution.finished)
-			}
-			if tt.err == nil {
-				replay := RunRequest{Issue: issue, Mode: RunModeImplement, Execution: req.Execution}
-				replayErr := o.prepareRetryProgress(t.Context(), &replay)
-				if replayErr != nil {
-					t.Fatal(replayErr)
+			synctest.Test(t, func(t *testing.T) {
+				cfg := normalizeConfig(Config{MaxConcurrentAgents: 1, ActiveStates: []string{"Todo", "In Progress"}, TerminalStates: []string{"Done"}, Project: scheduler.ProjectCandidate{ID: "example-project"}, WorkerHosts: []string{"worker-a"}})
+				issue := dispatchTestIssue("example-issue", "In Progress")
+				source := &progressScheduling{request: progresscheck.Request{ProjectID: "example-project", IssueID: issue.ID, PolicyID: "policy", EvidenceRevision: "1", SourceSHA: "head", BaseSHA: "base", AvailableSteps: []string{RunModeImplement, RunModePlan, RunModeMerge}, Attempts: []progresscheck.Attempt{
+					{ID: "attempt-1", Step: "publication", Outcome: "failed", SourceSHA: "head", BaseSHA: "base", Error: "422: landing requires security audit evidence for its exact base and head"},
+					{ID: "attempt-2", Step: "publication", Outcome: "failed", SourceSHA: "head", BaseSHA: "base", Error: "422: landing requires security audit evidence for its exact base and head"},
+				}}, records: map[string]progresscheck.Record{}, defects: map[string]string{}}
+				if tt.source != "" {
+					source.request.SourceSHA = tt.source
 				}
-				wantCalls := 1
-				if tt.outcome == "success" {
-					wantCalls = 0
+				if tt.outcome != "" {
+					source.request.Attempts[1].Outcome = tt.outcome
 				}
-				if checker.calls != wantCalls || source.comments != wantCalls {
-					t.Fatalf("replay calls=%d comments=%d", checker.calls, source.comments)
+				checker := &progressRunner{decision: tt.decision, err: tt.err, timeout: errors.Is(tt.err, context.DeadlineExceeded)}
+				worker := newWorkerHostRunner()
+				o := &Orchestrator{cfg: cfg, scheduling: source, progressRunner: checker, supervisor: newTestSupervisor(t, worker, cfg), runResults: make(chan runpkg.Completion, 1)}
+				state := newState(cfg)
+				now := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
+				execution := &progressExecution{}
+				req := RunRequest{Issue: issue, Mode: RunModeImplement, Execution: execution}
+				err := o.prepareRetryProgress(t.Context(), &req)
+				wantError := tt.decision.Outcome == progresscheck.SystemDefect
+				if (err != nil) != wantError || !wantError && req.Mode != tt.want {
+					t.Fatalf("progress request mode=%q error=%v", req.Mode, err)
 				}
-			}
-			if !o.dispatchIssue(t.Context(), &state, issue, 3, now, "worker-a") {
-				t.Fatal("worker was not admitted")
-			}
-			if tt.err != nil {
-				completion := <-o.runResults
-				<-state.Running[issue.ID].done
-				if completion.Err == nil || !completion.Retryable {
-					t.Fatalf("progress failure escaped retry owner: %+v", completion)
+				if wantError && execution.finished != "failed" {
+					t.Fatalf("failed progress check retained its execution: outcome=%s", execution.finished)
 				}
-				select {
-				case <-worker.started:
-					t.Fatal("worker retried blindly after failed progress check")
-				default:
+				if tt.reason != "" {
+					if req.ProgressDecision.RequestID != "" || len(execution.observations) != 1 || execution.observations[0].Recovery == nil || !strings.Contains(execution.observations[0].Recovery.Reason, tt.reason) || strings.Count(req.PriorAttempt.Reason, tt.reason) != 1 || source.comments != 0 || source.admissions != 1 || execution.finished != "cancelled" {
+						t.Fatalf("advisory failure missing: request=%+v observations=%+v admissions=%d", req, execution.observations, source.admissions)
+					}
 				}
-			} else {
-				request := <-worker.started
-				state.Running[issue.ID].cancel()
-				<-o.runResults
-				<-state.Running[issue.ID].done
-				if tt.want != "" && request.Mode != tt.want {
-					t.Fatalf("dispatched mode=%q want %q", request.Mode, tt.want)
+				if tt.reason == "" {
+					replay := RunRequest{Issue: issue, Mode: RunModeImplement, Execution: req.Execution}
+					replayErr := o.prepareRetryProgress(t.Context(), &replay)
+					if replayErr != nil {
+						t.Fatal(replayErr)
+					}
+					wantCalls := 1
+					if tt.outcome == "success" {
+						wantCalls = 0
+					}
+					if checker.calls != wantCalls || source.comments != wantCalls {
+						t.Fatalf("replay calls=%d comments=%d", checker.calls, source.comments)
+					}
 				}
-				if tt.decision.Outcome == progresscheck.Reroute && (request.ProgressDecision.Decision.Step != tt.want || request.PriorAttempt.Reason != tt.decision.Reason) {
-					t.Fatalf("reroute feedback missing: %+v", request.PriorAttempt)
-				}
-			}
-			if tt.decision.Outcome == progresscheck.SystemDefect {
-				if len(source.defects) != 1 || source.comments != 1 || checker.calls != 1 {
-					t.Fatalf("defects=%v comments=%d calls=%d", source.defects, source.comments, checker.calls)
-				}
-				source.request.Comments = []progresscheck.Comment{{ID: "human-input", Human: true, Revision: "1", Body: "The audit protocol is repaired"}}
-				checker.decision = progresscheck.Decision{Outcome: progresscheck.Progressing, Reason: "New human input", Evidence: []string{"human-input"}}
-				delete(state.Running, issue.ID)
 				if !o.dispatchIssue(t.Context(), &state, issue, 3, now, "worker-a") {
-					t.Fatal("new human input did not reopen dispatch")
+					t.Fatal("worker was not admitted")
 				}
-				<-worker.started
-				state.Running[issue.ID].cancel()
-				<-o.runResults
-				<-state.Running[issue.ID].done
-				if checker.calls != 2 || len(source.defects) != 1 {
-					t.Fatalf("calls=%d defects=%v", checker.calls, source.defects)
+				{
+					request := <-worker.started
+					state.Running[issue.ID].cancel()
+					<-o.runResults
+					<-state.Running[issue.ID].done
+					if tt.reason != "" && (request.ProgressDecision.RequestID != "" || strings.Count(request.PriorAttempt.Reason, tt.reason) != 1) {
+						t.Fatalf("ordinary retry lost failure reason: %+v", request)
+					}
+					if tt.want != "" && request.Mode != tt.want {
+						t.Fatalf("dispatched mode=%q want %q", request.Mode, tt.want)
+					}
+					if tt.decision.Outcome == progresscheck.Reroute && (request.ProgressDecision.Decision.Step != tt.want || request.PriorAttempt.Reason != tt.decision.Reason) {
+						t.Fatalf("reroute feedback missing: %+v", request.PriorAttempt)
+					}
 				}
-			}
+				if tt.decision.Outcome == progresscheck.SystemDefect {
+					if len(source.defects) != 1 || source.comments != 1 || checker.calls != 1 {
+						t.Fatalf("defects=%v comments=%d calls=%d", source.defects, source.comments, checker.calls)
+					}
+					source.request.Comments = []progresscheck.Comment{{ID: "human-input", Human: true, Revision: "1", Body: "The audit protocol is repaired"}}
+					checker.decision = progresscheck.Decision{Outcome: progresscheck.Progressing, Reason: "New human input", Evidence: []string{"human-input"}}
+					delete(state.Running, issue.ID)
+					if !o.dispatchIssue(t.Context(), &state, issue, 3, now, "worker-a") {
+						t.Fatal("new human input did not reopen dispatch")
+					}
+					<-worker.started
+					state.Running[issue.ID].cancel()
+					<-o.runResults
+					<-state.Running[issue.ID].done
+					if checker.calls != 2 || len(source.defects) != 1 {
+						t.Fatalf("calls=%d defects=%v", checker.calls, source.defects)
+					}
+				}
+			})
 		})
 	}
 }
