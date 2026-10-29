@@ -13,7 +13,7 @@ for the full command catalog, including subcommands, flags and examples.
 | Artifacts and installation | `artifacts`, `update`, `version`, `skill` |
 | Configuration and diagnostics | `config`, `doctor`, `fix`, `logs`, `help`, `completion` |
 | Project operations | `pause`, `resume`, `budget`, `capacity`, `exposure` |
-| Application reads and tools | `audit`, `issue`, `report` |
+| Application reads and tools | `audit`, `report` |
 | Isolated browser fixtures | `dev-runtime` |
 
 Enroll a runner with `detent hub runner register --service` to install and start
@@ -34,6 +34,7 @@ The following operator commands are removed; `hub issue import-local` remains fo
 
 | Removed command | Hub replacement |
 | --- | --- |
+| `issue --explain` | MCP `explain_item` |
 | `hub issue` issue and Change operations | MCP `work_item`, `file_issue`, `edit_item`, `move_item`, `add_comment`, `edit_comment`, `set_dependency`, `work_comments`, and `work_history`; native Change and review-policy APIs under `/api/v2/organizations/{organization}/projects/{project}` |
 | `state` | MCP `board_state` and `dashboard` |
 | `promote` | MCP `organization_project_rank` and `organization_project_rank_update`, or `GET` and `PUT /api/v2/organizations/{organization}/project-rank` |
@@ -49,7 +50,6 @@ Commands with capabilities absent from the Hub remain available:
 
 | Retained command | Capability preserved |
 | --- | --- |
-| `issue` | `--credit-progress` resets local spend-since-progress counters. Hub `explain_item` covers inspection, but the Hub has no equivalent progress-credit operation. |
 | `pause` | Local pause reasons and automatic unpause at a timestamp or after a tracker issue closes. The Hub has no equivalent conditional project-dispatch pause. |
 | `resume` | Temporary dispatch outside active hours using `--for` or `--until`; this differs from `resume_local_project`, which clears a runner project's pause. |
 | `report` | Self-contained HTML operations export. Hub MCP `reports` supplies structured analytics, without this export. |
@@ -190,7 +190,6 @@ Structured command objects:
 | `detent resume api --for 2h` | `{"status":"ok","project":"api","active_hours_override_until":"2026-08-07T21:00:00Z"}` |
 | `detent config path` | `{"path":"/path/global.yaml","rule":"--config"}` |
 | `detent exposure [--project api]` | `{"findings":[{"source_project":"api","source_repository":"example-org/private-api","destination_repository":"example-org/public-project","issue_number":42,"issue_url":"https://github.com/example-org/public-project/issues/42","matched_identifier":"example-org/private-api"}],"warnings":[]}` |
-| `detent issue '#42' --explain --project api` | The exact versioned issue explanation DTO returned by the running service, with no wrapper. |
 | `detent skill install --target codex --dry-run` | The complete skill install result, including bundle/build stamps, target intent and status, every planned filesystem action, and any rollback actions. |
 | `detent doctor` | `{"checks":[{"name":"Config resolution","status":"OK","detail":"...","hint":"..."}],"summary":{"ok":8,"warn":0,"fail":0},"result":"PASS"}` |
 | `detent fix worker-processes --dry-run` / `--yes` | The orphaned process groups reported by the live service, including session identity, PID, PGID, RSS, and the reap outcome when applied. |
@@ -257,25 +256,6 @@ backup files use mode `0600`. The install manifest records the embedded bundle
 version and SHA-256 plus the running binary's resolved build version, commit,
 date, and dirty state. It contains no credentials, Detent config, or runtime
 filesystem paths.
-
-### Issue explanation reads
-
-`detent issue <ref> --explain --project <project-id>` reads the versioned issue
-explanation model from the running Detent service. `--project` is always
-required, including for `#number`, so issue numbers are never treated as
-globally unique. Issue IDs, canonical identifiers, and full tracker URLs are
-accepted as `<ref>`.
-
-The command resolves the configured host and port, maps wildcard bind hosts to
-loopback for dialing, and uses `DETENT_API_TOKEN` before the resolved
-`api_token`. If either source supplies a credential, the client sends it; a
-rejected credential is reported as `dashboard_unauthorized` and is not retried
-without authentication. Requests have a ten-second client timeout and honor
-caller cancellation.
-
-JSON mode writes exactly one issue explanation DTO to stdout. Pretty mode is a
-human-readable projection of the same DTO. Diagnostics and JSON problem objects
-remain on stderr.
 
 ### Operations report export
 
