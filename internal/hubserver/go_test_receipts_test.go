@@ -17,7 +17,7 @@ func TestGoTestReceiptsAreProjectScopedAndExpire(t *testing.T) {
 	first := newNativeFixture(t, service, "", "receipts-first")
 	second := newNativeFixture(t, service, "", "receipts-second")
 	firstWorker, secondWorker := first.worker(t, "first-runner"), second.worker(t, "second-runner")
-	firstRunner, secondRunner := prepareRunner(t, first, "events"), prepareRunner(t, second, "events")
+	firstRunner, secondRunner := prepareRunner(t, first, "events", "read"), prepareRunner(t, second, "events", "read")
 	firstRunner.enroll(t)
 	secondRunner.enroll(t)
 	otherRunner := prepareRunner(t, first, "events")
@@ -94,6 +94,26 @@ func TestGoTestReceiptsAreProjectScopedAndExpire(t *testing.T) {
 		}
 	}
 	invalid := receipt('b')
+	ownExecution := begin(first, otherRunner.redemption.Credential)
+	forged := receipt('b')
+	forged.ExecutionID = ownExecution.ID
+	forged.Key = strings.Repeat("f", 64)
+	forged.Inputs = nil
+	emptyDigest, err := gotestreceipt.Digest(nil, gotestreceipt.Environment{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	forged.Digest = emptyDigest
+	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, first.base+"/go-test-receipts", otherRunner.redemption.Credential, forged), http.StatusNoContent)
+	response := performHubAPIRequest(t, service, http.MethodGet, first.base+"/go-test-receipts?key="+forged.Key, firstRunner.redemption.Credential, nil)
+	requireNativeStatus(t, response, http.StatusOK)
+	var forgedCandidates struct {
+		Candidates []gotestreceipt.Candidate `json:"candidates"`
+	}
+	decodeHubResponse(t, response, &forgedCandidates)
+	if len(forgedCandidates.Candidates) != 0 {
+		t.Fatal("runner-created execution allowed forged receipt reuse by another runner")
+	}
 	invalid.Inputs = []string{"open\tm\tline\nbreak"}
 	absolute := receipt('b')
 	absolute.Inputs = []string{"open\ta\t/etc/hosts"}
