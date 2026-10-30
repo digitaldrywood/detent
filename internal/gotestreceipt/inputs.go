@@ -24,7 +24,6 @@ type pathKind int
 const (
 	pathInput pathKind = iota
 	pathTemporary
-	pathIgnored
 	pathUncacheable
 )
 
@@ -32,7 +31,6 @@ type Environment struct {
 	Root            string
 	RootAlias       string
 	TempDirs        []string
-	IgnoreDirs      []string
 	UncacheableDirs []string
 	LookupEnv       func(string) (string, bool)
 }
@@ -52,8 +50,6 @@ func ParseTestLog(r io.Reader, pwd string, env Environment, start time.Time) ([]
 		}
 		scope, name, kind := env.classify(path)
 		switch kind {
-		case pathIgnored:
-			return nil
 		case pathUncacheable:
 			return fmt.Errorf("test read system path %s", path)
 		case pathTemporary:
@@ -272,11 +268,6 @@ func copyFile(w io.Writer, path string) (err error) {
 }
 
 func (e Environment) classify(path string) (string, string, pathKind) {
-	for _, dir := range e.IgnoreDirs {
-		if within(dir, path) {
-			return "", "", pathIgnored
-		}
-	}
 	for _, dir := range e.UncacheableDirs {
 		if within(dir, path) && filepath.Clean(dir) != path {
 			return "", "", pathUncacheable

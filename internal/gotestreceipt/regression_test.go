@@ -247,6 +247,10 @@ func (reader) Run() int { data, err := os.ReadFile("input.txt"); if err != nil |
 func TestMain(m *testing.M) { { m := reader{}; if m.Run() != 0 { os.Exit(1) } }; os.Exit(m.Run()) }
 func TestInput(t *testing.T) {}
 `, false},
+		{"deleted build input", `package fixture
+import ("os"; "testing")
+func TestInput(t *testing.T) { path := os.Getenv("RECEIPT_BUILD_INPUT"); data, err := os.ReadFile(path); if err != nil || string(data) != "pass\n" { t.Fatal("missing build input") }; if err := os.Remove(path); err != nil { t.Fatal(err) } }
+`, false},
 		{"TestMain file", `package fixture
 import ("os"; "testing")
 func TestMain(m *testing.M) { data, err := os.ReadFile("input.txt"); if err != nil || string(data) != "pass\n" { os.Exit(1) }; os.Exit(m.Run()) }
@@ -279,6 +283,18 @@ func main() { data, err := os.ReadFile("input.txt"); if err != nil || string(dat
 				}
 			}
 			binary := filepath.Join(root, "fixture.test")
+			if tc.name == "deleted build input" {
+				build := filepath.Join(root, "go-build-fixture")
+				binary = filepath.Join(build, "b001", "fixture.test")
+				if err := os.MkdirAll(filepath.Dir(binary), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				input := filepath.Join(build, "input.txt")
+				if err := os.WriteFile(input, []byte("pass\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				t.Setenv("RECEIPT_BUILD_INPUT", input)
+			}
 			cmd := exec.CommandContext(t.Context(), "go", "test", "-c", "-o", binary, ".")
 			cmd.Dir = root
 			procgroup.Configure(t.Context(), cmd)
@@ -316,7 +332,7 @@ func main() { data, err := os.ReadFile("input.txt"); if err != nil || string(dat
 			}
 			if tc.environment {
 				t.Setenv("RECEIPT_INPUT", "fail")
-			} else if !strings.HasPrefix(tc.name, "stdin") {
+			} else if !strings.HasPrefix(tc.name, "stdin") && tc.name != "deleted build input" {
 				if err := os.WriteFile(filepath.Join(root, "input.txt"), []byte("fail\n"), 0o600); err != nil {
 					t.Fatal(err)
 				}

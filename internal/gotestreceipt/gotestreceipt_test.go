@@ -212,7 +212,7 @@ func TestParseTestLog(t *testing.T) {
 	if err := os.Chtimes(kept, start.Add(-time.Hour), start.Add(-time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	env := Environment{Root: "/work/repo", TempDirs: []string{scratch, "/work/repo/tmp"}, IgnoreDirs: []string{"/dev/null"}, UncacheableDirs: []string{"/dev", "/proc"}}
+	env := Environment{Root: "/work/repo", TempDirs: []string{scratch, "/work/repo/tmp"}, UncacheableDirs: []string{"/dev", "/proc"}}
 	tests := []struct {
 		name    string
 		log     string
