@@ -804,7 +804,7 @@ func TestNativeLeaseCancellationPreparation(t *testing.T) {
 				}
 				switch failure {
 				case "upload":
-					status = http.StatusInternalServerError
+					status = http.StatusServiceUnavailable
 				case "source changed":
 					status = http.StatusConflict
 				}

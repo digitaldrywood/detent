@@ -1138,6 +1138,9 @@ WHERE a.lease_id=? AND a.fencing_token=? AND a.status='running'`, lease.session.
 	if err != nil {
 		return err
 	}
+	if owner, ok := ctx.Value(runDetailContextKey{}).(*runDetailContext); ok && owner.cancellation != nil && owner.cancellation.source != raw {
+		return nativeConflict(revision)
+	}
 	var stored storedRun
 	if err := decodeStorageJSON(ctx, []byte(raw), &stored); err != nil {
 		return err
