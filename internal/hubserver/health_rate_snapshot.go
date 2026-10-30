@@ -75,8 +75,8 @@ func readHealthRates(ctx context.Context, q nativeQueryer, organization tracker.
 
 func readHealthLandings(ctx context.Context, q nativeQueryer, scope nativeScope, window operatortool.AnalyticsWindow) ([]nativeAnalyticsLanding, error) {
 	rows, err := q.QueryContext(ctx, `SELECT id,work_item_id,record_json,legacy FROM (
-	 SELECT id,work_item_id,record_json,0 AS legacy FROM (SELECT id,work_item_id,COALESCE(NULLIF(payload_object_key,''),record_json) AS record_json FROM change_requests INDEXED BY change_requests_analytics_landed WHERE organization_id=? AND project_id=? AND landed_at>=? AND landed_at<? ORDER BY landed_at,id LIMIT ?)
-	 UNION ALL SELECT id,work_item_id,record_json,1 FROM (SELECT id,work_item_id,COALESCE(NULLIF(payload_object_key,''),record_json) AS record_json FROM change_requests INDEXED BY change_requests_policy_unknown WHERE organization_id=? AND project_id=? AND created_at IS NULL LIMIT ?)
+	 SELECT id,work_item_id,record_json,0 AS legacy FROM (SELECT id,work_item_id,record_json FROM change_requests INDEXED BY change_requests_analytics_landed WHERE organization_id=? AND project_id=? AND landed_at>=? AND landed_at<? ORDER BY landed_at,id LIMIT ?)
+	 UNION ALL SELECT id,work_item_id,record_json,1 FROM (SELECT id,work_item_id,record_json FROM change_requests INDEXED BY change_requests_policy_unknown WHERE organization_id=? AND project_id=? AND created_at IS NULL LIMIT ?)
 )`, scope.organization, scope.project, changeColumnTime(window.From), changeColumnTime(window.To), healthReadLimit+1, scope.organization, scope.project, changeLegacyReadLimit+1)
 	if err != nil {
 		return nil, err
