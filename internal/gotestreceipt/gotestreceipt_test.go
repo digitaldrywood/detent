@@ -3,14 +3,17 @@ package gotestreceipt
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/testenv"
 )
 
 const (
@@ -18,29 +21,14 @@ const (
 	helperRan         = "gotestreceipt helper ran"
 )
 
-func TestHelperProcess(t *testing.T) {
-	if os.Getenv(helperEnvironment) == "" {
-		t.Skip("helper process only")
+func TestMain(m *testing.M) {
+	if IsWrapperInvocation(os.Args[0]) {
+		os.Exit(RunWrapper(os.Args[1:], os.Getenv, os.Stdin, os.Stdout, os.Stderr))
 	}
-	fmt.Println(helperRan)
-	for _, name := range []string{SocketEnvironment, TokenEnvironment, RootEnvironment} {
-		if _, ok := os.LookupEnv(name); ok {
-			t.Fatalf("test binary received %s", name)
-		}
+	if err := testenv.ClearGitEnvironment(); err != nil {
+		panic(err)
 	}
-	data, err := os.ReadFile("input.txt")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if os.Getenv("GOTESTRECEIPT_HELPER_MODE") == "rewrite" {
-		if err := os.WriteFile("input.txt", data, 0o600); err != nil {
-			t.Fatal(err)
-		}
-		return
-	}
-	if strings.TrimSpace(string(data)) != "pass" || os.Getenv("GOTESTRECEIPT_HELPER_MODE") == "fail" {
-		t.Fatalf("input %q", data)
-	}
+	os.Exit(m.Run())
 }
 
 type memoryStore struct {
@@ -69,6 +57,13 @@ func (s *memoryStore) Record(_ context.Context, receipt Receipt) error {
 
 func TestRunWrapperReusesOnlyMatchingReceipts(t *testing.T) {
 	root := t.TempDir()
+	scratch := filepath.Join(root, "scratch with spaces")
+	if err := os.Mkdir(scratch, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"TMPDIR", "TMP", "TEMP"} {
+		t.Setenv(name, scratch)
+	}
 	pkg := filepath.Join(root, "pkg")
 	if err := os.MkdirAll(pkg, 0o755); err != nil {
 		t.Fatal(err)
@@ -76,6 +71,49 @@ func TestRunWrapperReusesOnlyMatchingReceipts(t *testing.T) {
 	input := filepath.Join(pkg, "input.txt")
 	t.Setenv(helperEnvironment, "1")
 	t.Setenv("GOCOVERDIR", t.TempDir())
+	helperSource := `package fixture
+import ("testing"; "fmt"; "os"; "strings")
+func TestHelperProcess(t *testing.T) {
+	if os.Getenv("GOTESTRECEIPT_HELPER") == "" {
+		t.Skip("helper process only")
+	}
+	fmt.Println("gotestreceipt helper ran")
+	for _, name := range []string{"DETENT_GO_TEST_RECEIPTS", "DETENT_GO_TEST_RECEIPTS_TOKEN", "DETENT_GO_TEST_ROOT"} {
+		if _, ok := os.LookupEnv(name); ok {
+			t.Fatalf("test binary received %s", name)
+		}
+	}
+	data, err := os.ReadFile("input.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if os.Getenv("GOTESTRECEIPT_HELPER_MODE") == "rewrite" {
+		if err := os.WriteFile("input.txt", data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	if strings.TrimSpace(string(data)) != "pass" || os.Getenv("GOTESTRECEIPT_HELPER_MODE") == "fail" {
+		t.Fatalf("input %q", data)
+	}
+}
+
+`
+	for name, content := range map[string]string{"go.mod": "module example.org/fixture\n\ngo 1.26\n", "fixture_test.go": helperSource} {
+		if err := os.WriteFile(filepath.Join(pkg, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	executable := filepath.Join(root, "fixture.test")
+	build := exec.CommandContext(t.Context(), "go", "test", "-c", "-o", executable)
+	build.Dir = pkg
+	procgroup.Configure(t.Context(), build)
+	if err := procgroup.Start(build); err != nil {
+		t.Fatal(err)
+	}
+	if err := procgroup.Wait(build); err != nil {
+		t.Fatal(err)
+	}
 	t.Chdir(pkg)
 
 	store := &memoryStore{}
@@ -99,29 +137,40 @@ func TestRunWrapperReusesOnlyMatchingReceipts(t *testing.T) {
 		}
 		return os.Getenv(name)
 	}
-	executable, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
 	args := []string{executable, "-test.paniconexit0", "-test.run=^TestHelperProcess$"}
 
 	steps := []struct {
-		name     string
-		content  string
-		mode     string
-		wantCode int
-		wantRun  bool
+		name        string
+		content     string
+		mode        string
+		wantCode    int
+		wantRun     bool
+		staleSource bool
 	}{
 		{name: "first pass executes and records", content: "pass", wantRun: true},
 		{name: "unchanged input reuses receipt", content: "pass"},
 		{name: "changed input executes and fails", content: "changed", wantCode: 1, wantRun: true},
-		{name: "restored input reuses receipt", content: "pass"},
+		{name: "restored input with a new timestamp executes", content: "pass", wantRun: true},
+		{name: "source changed after compilation cannot certify the old binary", content: "pass", wantRun: true, staleSource: true},
 		{name: "changed environment executes", content: "pass", mode: "fail", wantCode: 1, wantRun: true},
 		{name: "a test that rewrites its input executes and is not recorded", content: "pass", mode: "rewrite", wantRun: true},
 	}
 	for _, step := range steps {
-		if err := os.WriteFile(input, []byte(step.content), 0o600); err != nil {
+		source := helperSource
+		if step.staleSource {
+			source = strings.ReplaceAll(source, "gotestreceipt helper ran", "different compiled behavior")
+		}
+		if err := os.WriteFile(filepath.Join(pkg, "fixture_test.go"), []byte(source), 0o600); err != nil {
 			t.Fatal(err)
+		}
+		previous, err := os.ReadFile(input)
+		if err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		if string(previous) != step.content {
+			if err := os.WriteFile(input, []byte(step.content), 0o600); err != nil {
+				t.Fatal(err)
+			}
 		}
 		t.Setenv("GOTESTRECEIPT_HELPER_MODE", step.mode)
 		var stdout, stderr bytes.Buffer
@@ -134,11 +183,13 @@ func TestRunWrapperReusesOnlyMatchingReceipts(t *testing.T) {
 		}
 	}
 	stats := session.Stats()
-	if stats.Hits != 2 || stats.Records != 1 || stats.Refused != 1 || stats.Failures != 0 {
-		t.Fatalf("stats = %+v, want 2 hits, 1 record and 1 refusal", stats)
+	if stats.Hits != 1 || stats.Records != 2 || stats.Refused != 2 || stats.Failures != 0 {
+		t.Fatalf("stats = %+v, want 1 hit, 2 records and 2 refusals", stats)
 	}
-	forged := NewClient(session.socket, "forged").Record(t.Context(), Receipt{Key: strings.Repeat("a", 64), Digest: strings.Repeat("b", 64)})
-	if forged == nil || len(store.receipts) != 1 {
+	forgedClient := NewClient(session.socket, "forged")
+	defer forgedClient.http.CloseIdleConnections()
+	forged := forgedClient.Record(t.Context(), Receipt{Key: strings.Repeat("a", 64), Digest: strings.Repeat("b", 64)})
+	if forged == nil || len(store.receipts) != 2 {
 		t.Fatalf("record without the session token = %v, receipts %d", forged, len(store.receipts))
 	}
 	if got := store.receipts[0].Package; got != "pkg" {
@@ -161,7 +212,7 @@ func TestParseTestLog(t *testing.T) {
 	if err := os.Chtimes(kept, start.Add(-time.Hour), start.Add(-time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	env := Environment{Root: "/work/repo", TempDirs: []string{scratch, "/work/repo/tmp"}, IgnoreDirs: []string{"/dev/null"}, UncacheableDirs: []string{"/dev", "/proc"}}
+	env := Environment{Root: "/work/repo", TempDirs: []string{scratch, "/work/repo/tmp"}, UncacheableDirs: []string{"/dev", "/proc"}}
 	tests := []struct {
 		name    string
 		log     string
@@ -179,14 +230,14 @@ func TestParseTestLog(t *testing.T) {
 			want: []string{"open\tm\tdocs/invariants.md", "stat\tm\tdocs"},
 		},
 		{
-			name: "temporary roots, removed temporary files and device paths are not inputs",
-			log:  "# test log\nopen " + scratch + "\nopen " + filepath.Join(scratch, "TestX", "001", "db") + "\nopen /dev/null\nopen /etc/hosts\n",
-			want: []string{"open\ta\t/etc/hosts"},
+			name:    "removed temporary inputs are refused",
+			log:     "# test log\nopen " + scratch + "\nopen " + filepath.Join(scratch, "TestX", "001", "db") + "\nopen /dev/null\nopen /etc/hosts\n",
+			wantErr: true,
 		},
 		{
-			name: "temporary files that predate the test are absolute inputs and files it wrote are not",
-			log:  "# test log\nopen " + kept + "\nopen " + written + "\nopen /work/repo/tmp/config\n",
-			want: []string{"open\ta\t" + kept},
+			name:    "temporary files written during execution are refused",
+			log:     "# test log\nopen " + kept + "\nopen " + written + "\nopen /work/repo/tmp/config\n",
+			wantErr: true,
 		},
 		{name: "impossible paths are not inputs", log: "# test log\nopen bad\x00name\n", want: []string{}},
 		{name: "system reads are uncacheable", log: "# test log\nopen /proc/cpuinfo\n", wantErr: true},
@@ -209,14 +260,14 @@ func TestParseTestLog(t *testing.T) {
 	}
 }
 
-func TestDigestIgnoresCheckoutLocation(t *testing.T) {
+func TestDigestPreservesCheckoutLocation(t *testing.T) {
 	first, second := t.TempDir(), t.TempDir()
 	for _, root := range []string{first, second} {
 		if err := os.WriteFile(filepath.Join(root, "data.txt"), []byte("same"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
-	inputs := []string{"open\tm\tdata.txt", "stat\tm\tmissing", "env\tDETENT_WORKSPACE"}
+	inputs := []string{"open\tm\tdata.txt", "env\tDETENT_WORKSPACE"}
 	digest := func(root, workspace string) string {
 		t.Helper()
 		value, err := Digest(inputs, Environment{Root: root, LookupEnv: func(string) (string, bool) { return workspace, true }})
@@ -225,8 +276,8 @@ func TestDigestIgnoresCheckoutLocation(t *testing.T) {
 		}
 		return value
 	}
-	if digest(first, first) != digest(second, second) {
-		t.Fatal("digest differs between checkouts with identical inputs")
+	if digest(first, first) == digest(second, second) {
+		t.Fatal("digest hides literal checkout paths")
 	}
 	if err := os.WriteFile(filepath.Join(second, "data.txt"), []byte("diff"), 0o600); err != nil {
 		t.Fatal(err)
@@ -244,7 +295,7 @@ func TestModifiedSince(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "input.txt"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	inputs := []string{"open\tm\tinput.txt", "stat\tm\tmissing", "stat\tm\t.", "env\tHOME"}
+	inputs := []string{"open\tm\tinput.txt", "stat\tm\t.", "env\tHOME"}
 	env := Environment{Root: root}
 	if err := ModifiedSince(inputs, env, time.Now().Add(time.Hour)); err != nil {
 		t.Fatalf("unchanged inputs: %v", err)
