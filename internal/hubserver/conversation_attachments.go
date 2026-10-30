@@ -183,12 +183,37 @@ func (s *conversationStore) readAttachmentContent(ctx context.Context, query nat
 
 // deleteAttachment tombstones an attachment and drops its bytes.
 func (s *conversationStore) deleteAttachment(ctx context.Context, tx *sql.Tx, id string, now time.Time) error {
+	var contentID string
+	if err := tx.QueryRowContext(ctx, "SELECT content_attachment_id FROM conversation_attachments WHERE id=? AND message_id IS NULL", id).Scan(&contentID); err != nil {
+		return fmt.Errorf("read unsent attachment archive: %w", err)
+	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM conversation_attachment_blobs WHERE artifact_ref IN
  (SELECT artifact_ref FROM conversation_attachments WHERE id = ?)`, id); err != nil {
 		return fmt.Errorf("delete attachment content: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, "UPDATE conversation_attachments SET deleted_at = ?, expires_at = NULL WHERE id = ?", conversationTime(now), id); err != nil {
+	if _, err := tx.ExecContext(ctx, "UPDATE conversation_attachments SET deleted_at = ?, expires_at = NULL, content_attachment_id = '' WHERE id = ?", conversationTime(now), id); err != nil {
 		return fmt.Errorf("delete attachment: %w", err)
+	}
+	if contentID != "" {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM attachments WHERE id=? AND kind='archive'
+ AND NOT EXISTS (SELECT 1 FROM conversation_attachments WHERE content_attachment_id=attachments.id)
+ AND NOT EXISTS (SELECT 1 FROM conversations WHERE content_attachment_id=attachments.id)
+ AND NOT EXISTS (SELECT 1 FROM conversation_messages WHERE content_attachment_id=attachments.id)
+ AND NOT EXISTS (SELECT 1 FROM conversation_questions WHERE content_attachment_id=attachments.id)
+ AND NOT EXISTS (SELECT 1 FROM conversation_commands WHERE content_attachment_id=attachments.id)
+ AND NOT EXISTS (SELECT 1 FROM conversation_events WHERE content_attachment_id=attachments.id)
+ AND NOT EXISTS (SELECT 1 FROM conversation_tool_revisions WHERE content_attachment_id=attachments.id)
+ AND NOT EXISTS (SELECT 1 FROM collaboration_events WHERE payload_attachment_id=attachments.id)
+ AND NOT EXISTS (SELECT 1 FROM native_attempts WHERE detail_attachment_id=attachments.id)
+ AND NOT EXISTS (SELECT 1 FROM native_attempts WHERE checkpoint_attachment_id=attachments.id)
+ AND NOT EXISTS (SELECT 1 FROM attachment_archive_references WHERE attachment_id=attachments.id)
+ AND NOT EXISTS (SELECT 1 FROM native_archive_sections WHERE attachment_id=attachments.id)
+ AND NOT EXISTS (SELECT 1 FROM issue_archive_sections WHERE attachment_id=attachments.id)
+ AND NOT EXISTS (SELECT 1 FROM issue_storage_archives WHERE attachment_id=attachments.id)
+ AND NOT EXISTS (SELECT 1 FROM attachment_references WHERE attachment_id=attachments.id)
+ AND NOT EXISTS (SELECT 1 FROM release_audit_parts WHERE attachment_id=attachments.id)`, contentID); err != nil {
+			return fmt.Errorf("reclaim unsent attachment archive: %w", err)
+		}
 	}
 	return nil
 }

@@ -190,3 +190,74 @@ func TestConversationAttachmentPublicationRechecksRevision(t *testing.T) {
 		t.Fatalf("upload retry committed %d rows: %v", rows, err)
 	}
 }
+
+func TestConversationUnsentAttachmentReclaimsArchiveCharge(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		expire bool
+		shared bool
+	}{
+		{name: "delete"},
+		{name: "expire", expire: true},
+		{name: "delete shared object", shared: true},
+		{name: "expire shared object", expire: true, shared: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			objects := &conversationContentFixture{}
+			f := newConversationAPIFixture(t, &ConversationConfig{Enabled: true, ArchiveContents: objects})
+			first := f.create(t, f.token, map[string]any{"title": "first upload"})
+			second := f.create(t, f.token, map[string]any{"title": "second upload"})
+			database := f.service.database
+			usage := func() int64 {
+				t.Helper()
+				var size int64
+				if err := database.reader.QueryRowContext(t.Context(), "SELECT value FROM hosted_usage_counters WHERE name='collaboration_bytes'").Scan(&size); err != nil {
+					t.Fatal(err)
+				}
+				return size
+			}
+			before := usage()
+			content := []byte("unsent upload bytes")
+			ref, _, err := attachment.PrepareArchive(string(f.project.OrganizationID), 1, bytes.NewReader(content))
+			if err != nil {
+				t.Fatal(err)
+			}
+			upload := f.upload(t, f.token, first.Conversation.ID, "example.txt", "text/plain", content)
+			var other conversation.AttachmentUpload
+			if test.shared {
+				other = f.upload(t, f.token, second.Conversation.ID, "example.txt", "text/plain", content)
+			}
+			if got := usage() - before; got != ref.CompressedSize {
+				t.Fatalf("upload charge=%d; want %d", got, ref.CompressedSize)
+			}
+			if test.expire {
+				if _, err := database.db.ExecContext(t.Context(), "UPDATE conversation_attachments SET expires_at=? WHERE id=?", "2020-01-01T00:00:00Z", upload.ID); err != nil {
+					t.Fatal(err)
+				}
+				if swept, err := f.service.conversations.sweepAttachments(t.Context()); err != nil || swept != 1 {
+					t.Fatalf("expired uploads=%d; want 1: %v", swept, err)
+				}
+			} else {
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodDelete, upload.URL, f.token, nil), http.StatusNoContent)
+			}
+			want := int64(0)
+			if test.shared {
+				want = ref.CompressedSize
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, other.URL, f.token, nil), http.StatusOK)
+			}
+			if got := usage() - before; got != want {
+				t.Fatalf("remaining archive charge=%d; want %d", got, want)
+			}
+			if test.shared {
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodDelete, other.URL, f.token, nil), http.StatusNoContent)
+			}
+			if got := usage() - before; got != 0 {
+				t.Fatalf("last upload left archive charge=%d; want 0", got)
+			}
+			var rows int
+			if err := database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM attachments WHERE id=?", contentArchiveID(string(f.project.OrganizationID), ref)).Scan(&rows); err != nil || rows != 0 {
+				t.Fatalf("unreferenced archive rows=%d; want 0: %v", rows, err)
+			}
+		})
+	}
+}
