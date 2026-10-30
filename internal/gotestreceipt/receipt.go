@@ -19,7 +19,7 @@ const (
 	maxInputLength      = 1024
 	maxInputBytes       = 96 << 10
 	maxPackageLength    = 512
-	protocolFingerprint = "detent-go-test-receipt-v1"
+	protocolFingerprint = "detent-go-test-receipt-v2"
 )
 
 var digestPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
