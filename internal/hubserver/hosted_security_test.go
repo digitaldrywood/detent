@@ -1100,7 +1100,7 @@ func TestHostedSecurityLogsExcludeCustomerContent(t *testing.T) {
 	var logs bytes.Buffer
 	provider := newHostedSecurityProvider()
 	service, err := Open(t.Context(), Config{
-		DatabasePath:   filepath.Join(t.TempDir(), "hub.db"),
+		DatabasePath:   hostedTestDatabasePath(t),
 		GitHubDisabled: true,
 		Logger:         slog.New(slog.NewTextHandler(&logs, nil)),
 		Hosted:         &HostedConfig{OrganizationID: "org_logs", WorkOSOrganizationID: "org_provider", PublicURL: "https://logs.example.test", Provider: provider},

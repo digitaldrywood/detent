@@ -243,6 +243,7 @@ func TestHostedDatabaseRejectsInvalidBinding(t *testing.T) {
 		t.Run(field, func(t *testing.T) {
 			t.Parallel()
 			cfg := hostedStorageConfig(t)
+			seedHubDatabaseTemplate(t, cfg.DatabasePath)
 			switch field {
 			case "organization":
 				cfg.Hosted.OrganizationID = ""
