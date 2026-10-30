@@ -95,6 +95,12 @@ func (o *Orchestrator) sweepRetention(ctx context.Context, state *State, now tim
 		}
 		return completed, nil
 	}
+	if ctx.Err() != nil {
+		return
+	}
+	if o.workspaceCleanupContext != nil {
+		ctx = o.workspaceCleanupContext
+	}
 	totals, err := sweeper.SweepRetention(ctx, request)
 	if totals.Workdir != "" {
 		state.WorkspaceRetention = []workspace.RetentionTotals{totals}

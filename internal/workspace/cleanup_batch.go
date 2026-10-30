@@ -15,8 +15,19 @@ func WithCleanupBatch(ctx context.Context, size int) context.Context {
 	return context.WithValue(ctx, cleanupBatchKey{}, &cleanupBatch{remaining: size, inventories: make(map[*cleanupInventoryScanner]cleanupInventory)})
 }
 
+func WithCleanupAdmission(ctx, admission context.Context) context.Context {
+	return context.WithValue(ctx, cleanupAdmissionKey{}, admission)
+}
+
+type cleanupAdmissionKey struct{}
+
+func cleanupAdmissionExpired(ctx context.Context) bool {
+	admission, ok := ctx.Value(cleanupAdmissionKey{}).(context.Context)
+	return ok && admission.Err() != nil
+}
+
 func takeCleanupSlot(ctx context.Context) bool {
-	if ctx.Err() != nil {
+	if ctx.Err() != nil || cleanupAdmissionExpired(ctx) {
 		return false
 	}
 	batch, ok := ctx.Value(cleanupBatchKey{}).(*cleanupBatch)
@@ -31,7 +42,7 @@ func takeCleanupSlot(ctx context.Context) bool {
 }
 
 func cleanupBatchExhausted(ctx context.Context) bool {
-	if ctx.Err() != nil {
+	if ctx.Err() != nil || cleanupAdmissionExpired(ctx) {
 		return true
 	}
 	batch, ok := ctx.Value(cleanupBatchKey{}).(*cleanupBatch)

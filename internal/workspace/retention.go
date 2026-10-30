@@ -101,6 +101,9 @@ func (l *LocalGit) SweepRetention(ctx context.Context, request RetentionRequest)
 				if !ok || since.IsZero() || request.Now.Before(since.Add(time.Hour)) {
 					continue
 				}
+				if cleanupBatchExhausted(ctx) {
+					break
+				}
 				pids, err := scanOwnedWorkspaceProcessIDs(ctx, record.Path, l.scanWorkspacePaths)
 				if err != nil {
 					recordError(err)
@@ -184,6 +187,9 @@ func (l *LocalGit) sweepLanding(ctx context.Context, root *os.Root, request Rete
 		}
 		if at.IsZero() || request.Now.Before(at.Add(time.Hour)) {
 			continue
+		}
+		if cleanupBatchExhausted(ctx) {
+			break
 		}
 		pids, err := scanOwnedWorkspaceProcessIDs(ctx, path, l.scanWorkspacePaths)
 		if err != nil {
@@ -349,6 +355,9 @@ func (l *LocalGit) sweepQuarantine(ctx context.Context, root *os.Root, now time.
 		}
 		relative := filepath.Join(parent, candidate.name)
 		path := filepath.Join(l.root, relative)
+		if cleanupBatchExhausted(ctx) {
+			break
+		}
 		pids, err := scanOwnedWorkspaceProcessIDs(ctx, path, l.scanWorkspacePaths)
 		if err != nil {
 			failures = append(failures, err)
@@ -495,6 +504,9 @@ func (l *LocalGit) sweepScratchParents(ctx context.Context, root *os.Root, base 
 			}
 			if !terminal && (registered || request.Now.Before(info.ModTime().Add(time.Hour))) {
 				continue
+			}
+			if cleanupBatchExhausted(ctx) {
+				break
 			}
 			pids, err := scanOwnedWorkspaceProcessIDs(ctx, filepath.Join(base, path), l.scanWorkspacePaths)
 			if err != nil {
