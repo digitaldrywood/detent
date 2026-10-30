@@ -24,6 +24,19 @@ if [ -z "$previous" ]; then
 fi
 base="$(git merge-base "refs/remotes/origin/$previous" "$sha")"
 repository="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
+scope=full
+creators="${DETENT_RELEASE_STATUS_CREATORS_JSON:-$(gh variable get DETENT_RELEASE_STATUS_CREATORS_JSON --repo "$repository" 2>/dev/null || true)}"
+if [ -n "$creators" ] && [ "$sha" != "$base" ]; then
+  for candidate in $(git rev-list --first-parent --max-count=100 "$sha^" "^$base"); do
+    if gh api "repos/$repository/commits/$candidate/statuses?per_page=100" |
+      jq -e --argjson creators "$creators" 'any(.[]; .context == "release-security-audit" and (.creator.login as $login | $creators | index($login)) != null)' > /dev/null; then
+      base="$candidate"
+      scope=delta
+      break
+    fi
+  done
+fi
+echo "Audit scope: $scope ${base:0:7}..${sha:0:7}"
 mkdir -p "$root/tmp"
 output_dir="$(mktemp -d "$root/tmp/release-audit.XXXXXX")"
 worktree="$output_dir/source"
@@ -62,10 +75,10 @@ fi
 jq . "$last_message" > "$findings"
 count="$(jq '[.findings[] | select(.severity == "p1" or .severity == "p2")] | length' "$findings")"
 state=success
-description="No P1/P2 findings (${base:0:7}..${sha:0:7})"
+description="No P1/P2 findings in $scope audit ${base:0:7}..${sha:0:7}"
 if [ "$count" -gt 0 ]; then
   state=failure
-  description="$count P1/P2 findings"
+  description="$count P1/P2 findings in $scope audit ${base:0:7}..${sha:0:7}"
 fi
 gh api -X POST "repos/$repository/statuses/$sha" -f context=release-security-audit -f state="$state" -f description="$description" > /dev/null
 echo "Posted release-security-audit=$state on $sha."

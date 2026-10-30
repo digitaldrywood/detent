@@ -59,6 +59,11 @@ class ReleaseAuditLocalTest(unittest.TestCase):
                     'args = sys.argv[1:]\n'
                     'with open(os.environ["CALLS"], "a") as f: f.write(json.dumps(args) + "\\n")\n'
                     'if args[:2] == ["repo", "view"]: print("example-org/example-project")\n'
+                    'elif args[:2] == ["variable", "get"]: print(json.dumps(["operator"]))\n'
+                    'elif any("/statuses?" in a for a in args):\n'
+                    '    audited = json.loads(os.environ["AUDITED"])\n'
+                    '    sha = next(a for a in args if "/commits/" in a).split("/commits/")[1].split("/")[0]\n'
+                    '    print(json.dumps([{"context": "release-security-audit", "state": "failure", "creator": {"login": audited[sha]}}] if sha in audited else []))\n'
                     'elif any("/status?" in a for a in args):\n'
                     '    statuses = [] if os.environ["SUITE"] == "absent" else [{"context": "scheduled-full-ci", "state": "success", "id": 1}]\n'
                     '    if os.environ["SUITE"] == "superseded": statuses.append({"context": "scheduled-full-ci", "state": "failure", "id": 2})\n'
@@ -77,7 +82,7 @@ class ReleaseAuditLocalTest(unittest.TestCase):
                 for binary in binaries.iterdir():
                     binary.chmod(0o755)
                 env.update(PATH=str(binaries) + os.pathsep + env["PATH"], CALLS=str(calls), BASE=base, HEAD=head,
-                           MESSAGE=json.dumps(message) if isinstance(message, dict) else message, CODEX_EXIT=str(codex_exit), SUITE=suite)
+                           MESSAGE=json.dumps(message) if isinstance(message, dict) else message, CODEX_EXIT=str(codex_exit), SUITE=suite, AUDITED="{}")
                 result = subprocess.run(["bash", str(scripts / "release-audit-local.sh"), "release/v1.10"], cwd=repo, env=env, text=True, capture_output=True)
                 self.assertEqual(result.returncode == 0, state == "success", result.stdout + result.stderr)
                 requests = [json.loads(line) for line in calls.read_text().splitlines()]
@@ -94,6 +99,69 @@ class ReleaseAuditLocalTest(unittest.TestCase):
                 if state == "success" and suite != "success":
                     self.assertIn("Waiting for local validation", result.stdout)
                 self.assertEqual(git("worktree", "list", "--porcelain").count("worktree "), 1)
+
+    def test_audit_scope(self):
+        source = Path(__file__).resolve().parent
+        for name, audited_by, expect in (
+            ("first audit covers the series", {}, "base"),
+            ("later audit covers the delta from the last allowlisted audit", {"cut": "stranger", "pick": "operator"}, "pick"),
+            ("audits by other creators are ignored", {"pick": "stranger"}, "base"),
+        ):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                repo = root / "repo"
+                repo.mkdir()
+                env = {"PATH": os.environ["PATH"], "HOME": str(root), "TMPDIR": str(root), "GIT_CONFIG_NOSYSTEM": "1"}
+
+                def git(*args):
+                    return subprocess.check_output(["git", *args], cwd=repo, env=env, text=True, stderr=subprocess.DEVNULL).strip()
+
+                git("init")
+                git("config", "user.name", "Example")
+                git("config", "user.email", "example@example.test")
+                commits = {}
+                for label in ("base", "cut", "pick", "head"):
+                    (repo / "example.go").write_text(f"package example\n\nconst Label = {label!r}\n".replace("'", '"'))
+                    git("add", ".")
+                    git("commit", "-m", label)
+                    commits[label] = git("rev-parse", "HEAD")
+                    if label == "base":
+                        git("branch", "release/v1.9")
+                git("branch", "release/v1.10")
+                git("remote", "add", "origin", str(repo))
+                scripts = repo / "scripts"
+                scripts.mkdir()
+                for filename in ("release-audit-local.sh", "release-audit-prompt.md"):
+                    shutil.copyfile(source / filename, scripts / filename)
+                binaries = root / "bin"
+                binaries.mkdir()
+                (binaries / "gh").write_text(
+                    '#!/usr/bin/env python3\n'
+                    'import json, os, sys\n'
+                    'args = sys.argv[1:]\n'
+                    'if args[:2] == ["repo", "view"]: print("example-org/example-project")\n'
+                    'elif args[:2] == ["variable", "get"]: print(json.dumps(["operator"]))\n'
+                    'elif any("/statuses?" in a for a in args):\n'
+                    '    audited = json.loads(os.environ["AUDITED"])\n'
+                    '    sha = next(a for a in args if "/commits/" in a).split("/commits/")[1].split("/")[0]\n'
+                    '    print(json.dumps([{"context": "release-security-audit", "state": "failure", "creator": {"login": audited[sha]}}] if sha in audited else []))\n'
+                    'elif any("/status?" in a for a in args): print(json.dumps([{"sha": os.environ["HEAD"], "statuses": []}]))\n'
+                )
+                (binaries / "codex").write_text(
+                    '#!/usr/bin/env python3\n'
+                    'import json, os, pathlib, sys\n'
+                    'a = sys.argv[1:]\n'
+                    'pathlib.Path(os.environ["PROMPT"]).write_text(a[-1])\n'
+                    'pathlib.Path(a[a.index("-o") + 1]).write_text(json.dumps({"verdict": "pass", "findings": []}))\n'
+                )
+                for binary in binaries.iterdir():
+                    binary.chmod(0o755)
+                prompt = root / "prompt"
+                env.update(PATH=str(binaries) + os.pathsep + env["PATH"], HEAD=commits["head"], PROMPT=str(prompt),
+                           AUDITED=json.dumps({commits[label]: login for label, login in audited_by.items()}))
+                result = subprocess.run(["bash", str(scripts / "release-audit-local.sh"), "release/v1.10"], cwd=repo, env=env, text=True, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn(f"git diff {commits[expect]}..{commits['head']}", prompt.read_text().replace("\n", " "))
 
 
 if __name__ == "__main__":
