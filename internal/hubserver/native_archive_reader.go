@@ -520,47 +520,98 @@ func archiveProjectionColumn(table, column string) bool {
 }
 
 func archiveProjectionDefault(table, column string) json.RawMessage {
-	if (table == "native_attempts" || table == "change_versions" || table == "change_evidence") && column == "payload_object_key" {
-		return json.RawMessage(`""`)
-	}
-	if table == "native_attempts" {
-		if column == "checkpoint_summary_ready" {
-			return json.RawMessage("0")
-		}
-		if column == "checkpoint_object_key" || strings.HasPrefix(column, "checkpoint_") && column != "checkpoint_json" && column != "checkpoint_attachment_id" && column != "checkpoint_preserves_source" && column != "checkpoint_change_id" {
-			return json.RawMessage(`""`)
-		}
-	}
 	switch table {
-	case "conversation_events":
-		if slices.Contains([]string{"content_attachment_id", "delta_offset", "delta_bytes", "message_revision"}, column) {
-			return json.RawMessage("null")
+	case "attempt_diff_files":
+		switch column {
+		case "conversion_state":
+			return json.RawMessage(`0`)
 		}
-	case "conversation_messages":
-		if slices.Contains([]string{"actor_principal_id", "text_bytes", "stored_text_bytes"}, column) {
-			return json.RawMessage("null")
-		}
-	case "native_attempts":
-		if slices.Contains([]string{"worker_cleanup_required", "cleanup_acknowledged_at", "implementing_session_id"}, column) {
-			return json.RawMessage("null")
+	case "change_evidence":
+		switch column {
+		case "conversion_state":
+			return json.RawMessage(`0`)
+		case "has_implementation_review", "has_validator", "has_security_audit", "security_audit_landing", "check_run_id",
+			"created_at", "received_at", "escape_occurrence_id", "escape_observed_at":
+			return json.RawMessage(`null`)
+		case "payload_object_key":
+			return json.RawMessage(`""`)
 		}
 	case "change_versions":
 		switch column {
-		case "implementing_session_id", "implementing_machine_id":
-			return json.RawMessage("null")
-		case "session_history_sequence", "session_history_candidate", "session_history_state":
-			return json.RawMessage("0")
-		case "session_history_machine_id":
+		case "claim_head_sha", "gate_github_pull_request", "external_url", "activity_external_url", "created_at",
+			"attempt_id", "head_sha", "repository", "external_provider", "external_id", "implementing_session_id",
+			"implementing_machine_id":
+			return json.RawMessage(`null`)
+		case "conversion_state", "session_history_sequence", "session_history_candidate", "session_history_state":
+			return json.RawMessage(`0`)
+		case "payload_object_key", "session_history_machine_id":
 			return json.RawMessage(`""`)
 		}
 	case "collaboration_events":
 		switch column {
-		case "archive_operation", "archive_from_state", "archive_to_state", "archive_attempt_id", "archive_outcome", "archive_landed_commit":
-			return json.RawMessage("null")
-		case "payload_version", "payload_bytes", "payload_content_bytes", "scheduler_change_present":
-			return json.RawMessage("0")
-		case "payload_attachment_id", "payload_entry", "payload_object_key", "payload_sha256", "scheduler_change_id", "scheduler_version_id", "scheduler_head_sha", "run_outcome", "run_machine_id", "run_session_id", "run_runner_id", "push_effect_id", "push_checkpoint_head_sha":
+		case "scheduler_outcome", "claim_attempt_id", "run_id", "run_lease_id", "run_fencing_token", "run_sequence",
+			"run_policy_id", "push_change_id", "push_version_id", "push_head_sha", "push_external_effect",
+			"push_effect_state", "page_projection_ready", "actor_kind", "actor_principal_id", "event_revision", "from_state",
+			"to_state", "reason", "run_present", "edited_title", "edited_body", "analytics_recorded_ns",
+			"analytics_from_state", "analytics_to_state", "analytics_attempt_id", "analytics_skip_key",
+			"analytics_projection_version", "run_attempt_id", "activity_spans_present", "archive_operation",
+			"archive_from_state", "archive_to_state", "archive_attempt_id", "archive_outcome", "archive_landed_commit",
+			"health_projected", "scheduler_present", "scheduler_at", "scheduler_revision", "transition_from",
+			"transition_to", "transition_reason", "transition_detail", "transition_revision", "event_landed",
+			"event_landing_at":
+			return json.RawMessage(`null`)
+		case "scheduler_reason", "scheduler_source", "scheduler_runner_id", "payload_attachment_id", "payload_entry",
+			"payload_object_key", "payload_sha256", "scheduler_change_id", "scheduler_version_id", "scheduler_head_sha",
+			"run_outcome", "run_machine_id", "run_session_id", "run_runner_id", "push_effect_id", "push_checkpoint_head_sha":
 			return json.RawMessage(`""`)
+		case "query_metadata_version", "conversion_state", "payload_version", "payload_bytes", "payload_content_bytes",
+			"scheduler_change_present":
+			return json.RawMessage(`0`)
+		}
+	case "conversation_events":
+		switch column {
+		case "query_metadata_version", "conversion_state":
+			return json.RawMessage(`0`)
+		case "message_id", "object_id", "message_role", "message_kind", "attempt_id", "execution_status", "thread_id",
+			"turn_id", "snapshot_title", "snapshot_visibility", "snapshot_status", "snapshot_preferences_key",
+			"snapshot_model", "snapshot_effort", "snapshot_access", "snapshot_subject_work_item_id", "snapshot_work_item_id",
+			"snapshot_linked_at", "delta_offset", "delta_bytes", "message_revision":
+			return json.RawMessage(`null`)
+		case "content_attachment_id":
+			return json.RawMessage(`""`)
+		}
+	case "conversation_messages":
+		switch column {
+		case "query_metadata_version", "conversion_state":
+			return json.RawMessage(`0`)
+		case "actor_kind", "tool_name", "tool_item_id", "tool_status", "operator_action_id", "operator_action_agent",
+			"operator_action_result", "actor_principal_id", "text_bytes", "stored_text_bytes":
+			return json.RawMessage(`null`)
+		}
+	case "native_attempts":
+		switch column {
+		case "health_projected", "landing_landed", "hot_projection_version", "health_instance_failure", "health_landing",
+			"health_landed", "health_conflict", "conversion_state", "analytics_revision", "checkpoint_summary_ready":
+			return json.RawMessage(`0`)
+		case "health_failure_text", "failure_attribution", "landing_refusal_kind", "landing_change_id",
+			"landing_version_id", "landing_merge_sha", "landing_observed_at", "health_failure_signature",
+			"health_recovery_reason", "health_landing_at", "health_landing_key", "payload_object_key",
+			"checkpoint_object_key", "checkpoint_resume", "checkpoint_availability", "checkpoint_storage",
+			"checkpoint_worktree_state", "checkpoint_head_sha", "checkpoint_workspace_digest",
+			"checkpoint_expected_head_sha", "checkpoint_effect_id", "checkpoint_ref", "checkpoint_commit_sha",
+			"checkpoint_base_sha", "checkpoint_tree_sha", "checkpoint_change_id_summary", "checkpoint_version_id_summary",
+			"checkpoint_change_head_sha", "checkpoint_publication_version_id":
+			return json.RawMessage(`""`)
+		case "health_updated_day", "health_landing_day", "claim_facts_known", "disposition_present",
+			"disposition_blockers", "disposition_reason_code", "acceptance_recorded", "checkpoint_external_effect",
+			"checkpoint_effect_state", "landing_waiting", "landing_head_sha", "usage_facts_ready",
+			"process_peak_memory_bytes", "process_user_cpu_seconds", "process_system_cpu_seconds", "process_wall_seconds",
+			"role", "activity_projection_version", "activity_phases_dropped", "activity_checkpoint_change_id",
+			"activity_publication_url", "health_disposition_reason", "has_landing_receipt", "activity_identity_known",
+			"finalization_external_url", "checkpoint_change_id", "report_projection_version", "report_requested_model",
+			"report_resolved_model", "report_failed_at", "worker_cleanup_required", "cleanup_acknowledged_at",
+			"implementing_session_id":
+			return json.RawMessage(`null`)
 		}
 	}
 	return nil
