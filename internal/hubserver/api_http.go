@@ -156,6 +156,9 @@ func SharedEntryRequestBodyLimit(method, path string) int64 {
 	if len(parts) == 9 && parts[6] == "work-items" && parts[8] == "events" {
 		return 8 * maxAPIRequestBodyBytes
 	}
+	if len(parts) == 13 && parts[6] == "work-items" && parts[8] == "changes" && parts[10] == "versions" && parts[12] == "landing" {
+		return maxChangeVersionRequestBytes
+	}
 	if len(parts) == 11 && parts[6] == "work-items" && parts[8] == "changes" && parts[10] == "versions" {
 		return maxChangeVersionRequestBytes
 	}

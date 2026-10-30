@@ -154,7 +154,11 @@ func (l *LocalGit) LandChanges(ctx context.Context, requests []LandRequest) []La
 			if delivered.MergeSHA != "" {
 				if request.Options.SecurityAuditRequired {
 					delivered.BaseBefore = request.Options.SourceBaseSHA
-					delivered.SecurityAudit, err = l.auditDeliveredLanding(ctx, info, delivered.BaseBefore, delivered.MergeSHA, request.Options)
+					auditHead := delivered.MergeSHA
+					if delivered.Incorporation != nil {
+						auditHead = delivered.Incorporation.SourceHeadSHA
+					}
+					delivered.SecurityAudit, err = l.auditDeliveredLanding(ctx, info, delivered.BaseBefore, auditHead, request.Options)
 					if err != nil {
 						delivered.MergeSHA = ""
 						out[i] = LandOutcome{Result: delivered, Err: err}

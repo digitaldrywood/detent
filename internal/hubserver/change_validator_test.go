@@ -181,6 +181,10 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 		{"security audit reconciliation without a provider session", func(_ *tracker.ReviewChange) {}, http.StatusOK, "reviewed", nil},
 		{"security audit reconciliation reuses implementing session", func(r *tracker.ReviewChange) { r.SecurityAudit.Run.ID = 41; r.SecurityAudit.SessionID = 41 }, http.StatusUnprocessableEntity, "needs_evidence", nil},
 		{"security audit landing pass", landingAudit, http.StatusOK, "reviewed", nil},
+		{"security audit landing incorporated unverified proof", func(r *tracker.ReviewChange) {
+			r.SecurityAudit.Landing = true
+			r.SecurityAudit.VersionID = r.ExpectedVersionID
+		}, http.StatusOK, "reviewed", nil},
 		{"security audit landing after configuration change", landingAudit, http.StatusOK, "reviewed", nil},
 		{"security audit landing requires merge execution", landingAudit, http.StatusUnprocessableEntity, "reviewed", nil},
 		{"security audit landing stale version", func(r *tracker.ReviewChange) { landingAudit(r); r.SecurityAudit.VersionID = "other" }, http.StatusUnprocessableEntity, "reviewed", nil},
@@ -1209,13 +1213,47 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 					t.Fatal("continuation lost a landing copy")
 				}
 			}
-			if test.name == "security audit landing pass" {
+			if test.name == "security audit landing pass" || test.name == "security audit landing incorporated unverified proof" {
 				original := request.SecurityAudit.Run
-				for _, mismatch := range []string{"base", "head", "unrecorded", "modified", "none", "pass"} {
+				incorporated := test.name == "security audit landing incorporated unverified proof"
+				mismatches := []string{"base", "audit base", "head", "unrecorded", "modified", "none", "incorporated wrong range", "pass"}
+				if incorporated {
+					mismatches = append([]string{"source base", "source head", "target head", "target tree", "merge tree", "invalid tree", "missing proof", "missing reviewed head"}, mismatches...)
+				}
+				for _, mismatch := range mismatches {
 					audit := *request.SecurityAudit
-					receipt := &tracker.NativeLandingReceipt{SecurityAudit: &audit, BaseSHA: original.BaseSHA, MergeSHA: original.HeadSHA}
+					receipt := &tracker.NativeLandingReceipt{SecurityAudit: &audit, BaseSHA: original.BaseSHA, HeadSHA: version.HeadSHA, MergeSHA: original.HeadSHA}
+					if incorporated {
+						receipt.MergeSHA = strings.Repeat("e", 40)
+						receipt.Incorporation = &tracker.LandingIncorporation{SourceBaseSHA: version.BaseSHA, SourceHeadSHA: version.HeadSHA, TargetHeadSHA: receipt.MergeSHA, TargetTreeSHA: strings.Repeat("a", 40), MergeTreeSHA: strings.Repeat("a", 40)}
+					}
 					want := http.StatusUnprocessableEntity
 					switch mismatch {
+					case "incorporated wrong range":
+						receipt.BaseSHA = version.BaseSHA
+						receipt.MergeSHA = strings.Repeat("e", 40)
+						receipt.Incorporation = &tracker.LandingIncorporation{SourceBaseSHA: version.BaseSHA, SourceHeadSHA: version.HeadSHA, TargetHeadSHA: receipt.MergeSHA, TargetTreeSHA: strings.Repeat("a", 40), MergeTreeSHA: strings.Repeat("a", 40)}
+						if incorporated {
+							audit.Run.BaseSHA = strings.Repeat("d", 40)
+						}
+					case "audit base":
+						audit.Run.BaseSHA = strings.Repeat("f", 40)
+					case "source base":
+						receipt.Incorporation.SourceBaseSHA = strings.Repeat("f", 40)
+					case "source head":
+						receipt.Incorporation.SourceHeadSHA = strings.Repeat("f", 40)
+					case "target head":
+						receipt.Incorporation.TargetHeadSHA = strings.Repeat("f", 40)
+					case "target tree":
+						receipt.Incorporation.TargetTreeSHA = strings.Repeat("f", 40)
+					case "merge tree":
+						receipt.Incorporation.MergeTreeSHA = strings.Repeat("f", 40)
+					case "invalid tree":
+						receipt.Incorporation.TargetTreeSHA, receipt.Incorporation.MergeTreeSHA = "invalid", "invalid"
+					case "missing proof":
+						receipt.Incorporation = nil
+					case "missing reviewed head":
+						receipt.HeadSHA = ""
 					case "base":
 						receipt.BaseSHA = strings.Repeat("f", 40)
 					case "head":
@@ -1227,9 +1265,11 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 					case "none":
 						receipt.SecurityAudit = nil
 					case "pass":
-						want = http.StatusOK
+						if !incorporated {
+							want = http.StatusOK
+						}
 					}
-					land := tracker.LandChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "landing-" + mismatch, LeaseID: lease.ID, FencingToken: lease.FencingToken}, Receipt: receipt, MergeSHA: original.HeadSHA, BaseRef: "main", Method: "squash"}
+					land := tracker.LandChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "landing-" + mismatch, LeaseID: lease.ID, FencingToken: lease.FencingToken}, Receipt: receipt, MergeSHA: receipt.MergeSHA, BaseRef: "main", Method: "squash"}
 					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/landing", worker, land), want)
 				}
 			}

@@ -199,7 +199,17 @@ type NativeLandingCIReceipt struct {
 	Triggered      bool     `json:"triggered,omitempty"`
 }
 
+type LandingIncorporation struct {
+	Objects       []byte `json:"-"`
+	SourceBaseSHA string `json:"source_base_sha"`
+	SourceHeadSHA string `json:"source_head_sha"`
+	TargetHeadSHA string `json:"target_head_sha"`
+	TargetTreeSHA string `json:"target_tree_sha"`
+	MergeTreeSHA  string `json:"merge_tree_sha"`
+}
+
 type NativeLandingReceipt struct {
+	Incorporation   *LandingIncorporation   `json:"incorporation,omitempty"`
 	ConflictFiles   []string                `json:"conflict_files,omitempty"`
 	SecurityAudit   *SecurityAuditReview    `json:"security_audit,omitempty"`
 	Pipeline        []gate.PipelineTiming   `json:"pipeline,omitempty"`

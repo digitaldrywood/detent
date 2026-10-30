@@ -1,6 +1,7 @@
 package hubclient
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -57,6 +58,7 @@ func TestNativeExecutionLandsReviewedVersion(t *testing.T) {
 		{name: "published passing source lands after completion outage", refusal: "completion_outage"},
 		{name: "audited clean landing", audited: "clean"},
 		{name: "audited already incorporated landing", audited: "incorporated"},
+		{name: "incorporated audit excludes 200 unrelated target commits", audited: "advanced"},
 		{name: "audited already incorporated receipt retry", audited: "receipt"},
 		{name: "stale audit returns to its evidence producer", refusal: "stale_audit"},
 		{name: "conflict receipt returns to Rework", refusal: "conflict"},
@@ -151,11 +153,17 @@ func testNativeExecutionLandsAuditedVersion(t *testing.T, scenario string) {
 	if incorporated {
 		nativeChangeGit(t, source, "merge", "--squash", change.HeadSHA)
 		nativeChangeGit(t, source, "commit", "-m", "Previously incorporated source")
-		if err := os.WriteFile(filepath.Join(source, "INDEPENDENT.md"), []byte("Later target change\n"), 0o600); err != nil {
-			t.Fatal(err)
+		commits := 1
+		if scenario == "advanced" {
+			commits = 200
 		}
-		nativeChangeGit(t, source, "add", "INDEPENDENT.md")
-		nativeChangeGit(t, source, "commit", "-m", "Advance target independently")
+		for i := range commits {
+			if err := os.WriteFile(filepath.Join(source, "INDEPENDENT.md"), fmt.Appendf(nil, "Later target change %d\n", i), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			nativeChangeGit(t, source, "add", "INDEPENDENT.md")
+			nativeChangeGit(t, source, "commit", "-m", fmt.Sprintf("Advance target independently %d", i))
+		}
 		nativeChangeGit(t, source, "push", "origin", "main")
 	}
 	baseOutput, err := exec.CommandContext(t.Context(), "git", "-C", source, "rev-parse", "main").Output()
@@ -179,13 +187,23 @@ func testNativeExecutionLandsAuditedVersion(t *testing.T, scenario string) {
 	if _, err := h.scheduler.AdoptClaim(t.Context(), candidates[0], time.Now()); err != nil {
 		t.Fatal(err)
 	}
+	if scenario == "advanced" {
+		h.failChanges.next = incorporationRejectionTransport{next: h.failChanges.next, t: t}
+	}
 	result, err = agent.Run(t.Context(), runner.RunRequest{Execution: h.scheduler.RunExecution(issue.ID), ProjectID: "local", Issue: candidates[0], Mode: runner.RunModeMerge})
 	if err != nil || result.NativeLanding == nil || !result.NativeLanding.Landed || h.state(t, issue.ID) != "Done" {
 		t.Fatalf("audited landing did not reach Done: %+v, %v, state=%s", result.NativeLanding, err, h.state(t, issue.ID))
 	}
 	landed := result.NativeLanding
 	audit := landed.SecurityAudit
-	if audit == nil || !audit.Landing || audit.Verdict != "pass" || audit.VersionID != change.VersionID || audit.Run.BaseSHA != landed.BaseSHA || audit.Run.HeadSHA != landed.MergeSHA || landed.HeadSHA != change.HeadSHA || provider.securityCalls.Load() != 2 {
+	auditHead := landed.MergeSHA
+	if incorporated {
+		auditHead = change.HeadSHA
+	}
+	if prompt := provider.securityPrompt.Load(); incorporated && (prompt == nil || !strings.Contains(*prompt, "CHANGE.md") || strings.Contains(*prompt, "INDEPENDENT.md")) {
+		t.Fatal("incorporated landing audit must contain only the reviewed delta files")
+	}
+	if audit == nil || !audit.Landing || audit.Verdict != "pass" || audit.VersionID != change.VersionID || audit.Run.BaseSHA != landed.BaseSHA || audit.Run.HeadSHA != auditHead || landed.HeadSHA != change.HeadSHA || provider.securityCalls.Load() != 2 {
 		t.Fatalf("landing lost generated exact-source audit evidence: %+v, audit calls=%d", landed, provider.securityCalls.Load())
 	}
 	if incorporated && (landed.BaseSHA != change.BaseSHA || landed.MergeSHA != base || landed.HeadSHA == base) {
@@ -195,13 +213,26 @@ func testNativeExecutionLandsAuditedVersion(t *testing.T, scenario string) {
 	if err != nil || detail.Change.Landed == nil || detail.Change.Landed.MergeSHA != landed.MergeSHA || detail.Summary.Status != "landed" || len(detail.Versions) != 1 || detail.Versions[0].Landing == nil {
 		t.Fatalf("Hub did not retain audited landing: %+v, %v", detail.Change.Landed, err)
 	}
+	if incorporated {
+		proof := detail.Versions[0].Landing.Incorporation
+		treeOutput, err := exec.CommandContext(t.Context(), "git", "-C", source, "rev-parse", base+"^{tree}").Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		tree := strings.TrimSpace(string(treeOutput))
+		if proof == nil || proof.SourceBaseSHA != change.BaseSHA || proof.SourceHeadSHA != change.HeadSHA || proof.TargetHeadSHA != base || proof.TargetTreeSHA != tree || proof.MergeTreeSHA != tree {
+			t.Fatalf("Hub lost incorporation proof for the reviewed range: %+v", proof)
+		}
+	} else if detail.Versions[0].Landing.Incorporation != nil {
+		t.Fatal("normal landing received an incorporation proof")
+	}
 	retained := detail.Versions[0].Landing.SecurityAudit
 	if retained == nil || !retained.Landing || retained.SessionID != audit.SessionID || retained.DiffDigest != audit.DiffDigest || retained.Verdict != "pass" {
 		t.Fatalf("Hub landing lost audit identity: %+v", retained)
 	}
 	recorded := false
 	for _, review := range detail.Reviews {
-		recorded = recorded || review.Decision == "approved" && review.SecurityAudit != nil && review.SecurityAudit.Landing && review.SecurityAudit.SessionID == audit.SessionID && review.SecurityAudit.DiffDigest == audit.DiffDigest && review.SecurityAudit.Run.BaseSHA == landed.BaseSHA && review.SecurityAudit.Run.HeadSHA == landed.MergeSHA
+		recorded = recorded || review.Decision == "approved" && review.SecurityAudit != nil && review.SecurityAudit.Landing && review.SecurityAudit.SessionID == audit.SessionID && review.SecurityAudit.DiffDigest == audit.DiffDigest && review.SecurityAudit.Run.BaseSHA == landed.BaseSHA && review.SecurityAudit.Run.HeadSHA == auditHead
 	}
 	if !recorded {
 		t.Fatal("Hub accepted landing without its generated audit approval")
@@ -1381,4 +1412,63 @@ func TestNativeLandingBatchClaimsOneCapacityUnit(t *testing.T) {
 	if err != nil || len(candidates) != 0 {
 		t.Fatalf("Code %s claimed beside full landing slot: %v, %v", issue.ID, candidates, err)
 	}
+}
+
+type incorporationRejectionTransport struct {
+	next http.RoundTripper
+	t    *testing.T
+}
+
+func (transport incorporationRejectionTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	if request.Method != http.MethodPost || !strings.HasSuffix(request.URL.Path, "/landing") {
+		return transport.next.RoundTrip(request)
+	}
+	body, err := request.GetBody()
+	if err != nil {
+		return nil, err
+	}
+	raw, err := io.ReadAll(body)
+	body.Close()
+	if err != nil {
+		return nil, err
+	}
+	for _, mismatch := range []string{"audit base", "audit head", "forged equal trees", "wrong target", "missing objects", "corrupt objects"} {
+		var candidate tracker.LandChangeVersion
+		if err := json.Unmarshal(raw, &candidate); err != nil {
+			return nil, err
+		}
+		candidate.IdempotencyKey = "reject-" + strings.ReplaceAll(mismatch, " ", "-")
+		switch mismatch {
+		case "audit base":
+			candidate.Receipt.SecurityAudit.Run.BaseSHA = strings.Repeat("f", 40)
+		case "audit head":
+			candidate.Receipt.SecurityAudit.Run.HeadSHA = strings.Repeat("f", 40)
+		case "forged equal trees":
+			candidate.Receipt.Incorporation.TargetTreeSHA, candidate.Receipt.Incorporation.MergeTreeSHA = strings.Repeat("a", 40), strings.Repeat("a", 40)
+		case "wrong target":
+			candidate.MergeSHA = strings.Repeat("e", 40)
+			candidate.Receipt.MergeSHA = candidate.MergeSHA
+			candidate.Receipt.Incorporation.TargetHeadSHA = candidate.MergeSHA
+		case "missing objects":
+			candidate.IncorporationObjects = nil
+		case "corrupt objects":
+			candidate.IncorporationObjects[len(candidate.IncorporationObjects)-1] ^= 1
+		}
+		encoded, err := json.Marshal(candidate)
+		if err != nil {
+			return nil, err
+		}
+		probe := request.Clone(request.Context())
+		probe.Body, probe.ContentLength = io.NopCloser(bytes.NewReader(encoded)), int64(len(encoded))
+		response, err := transport.next.RoundTrip(probe)
+		if err != nil {
+			return nil, err
+		}
+		io.Copy(io.Discard, response.Body)
+		response.Body.Close()
+		if response.StatusCode != http.StatusUnprocessableEntity {
+			transport.t.Errorf("incorporated landing accepted %s: status=%d", mismatch, response.StatusCode)
+		}
+	}
+	return transport.next.RoundTrip(request)
 }

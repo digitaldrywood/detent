@@ -50,6 +50,7 @@ type ChangeLanding struct {
 // with its own git credentials: the merge commit now on the base branch. The
 // Hub records it and finishes the primary issue in the same transaction.
 type LandChangeVersion struct {
+	IncorporationObjects []byte `json:"incorporation_objects,omitempty"`
 	Mutation
 	Receipt  *NativeLandingReceipt `json:"receipt,omitempty"`
 	Rebased  bool                  `json:"rebased,omitempty"`

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -1199,7 +1200,11 @@ func TestLocalGitNativeLanding(t *testing.T) {
 					if test.moved {
 						wantAudits = 2
 					}
-					if len(audits[i]) != wantAudits || outcome.Result.SecurityAudit == nil || outcome.Result.SecurityAudit.Run.BaseSHA != wantBase || outcome.Result.SecurityAudit.Run.HeadSHA != outcome.Result.MergeSHA {
+					wantAuditHead := outcome.Result.MergeSHA
+					if test.alreadyContains == "content" && i == 0 {
+						wantAuditHead = requests[i].Options.HeadSHA
+					}
+					if len(audits[i]) != wantAudits || outcome.Result.SecurityAudit == nil || outcome.Result.SecurityAudit.Run.BaseSHA != wantBase || outcome.Result.SecurityAudit.Run.HeadSHA != wantAuditHead {
 						t.Fatalf("landing reused audit for another identity: audits=%+v result=%+v", audits[i], outcome.Result)
 					}
 					if test.moved && audits[i][0].BaseSHA == audits[i][1].BaseSHA {
@@ -1299,6 +1304,59 @@ func TestLocalGitRebasedNativeLanding(t *testing.T) {
 			data, err := os.ReadFile(lintLog)
 			if err != nil || !strings.Contains(string(data), "--new-from-rev="+result.BaseBefore+" --whole-files .") {
 				t.Fatalf("lint scope = %q, %v", data, err)
+			}
+		})
+	}
+}
+
+func TestLandingIncorporationRejectsForgedObjects(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+	t.Parallel()
+	f := newLandingFixture(t)
+	base := f.remoteMain(t)
+	runGit(t, f.source, "merge", "--squash", f.head)
+	runGit(t, f.source, "commit", "-m", "Incorporate source")
+	target := strings.TrimSpace(runGit(t, f.source, "rev-parse", "HEAD"))
+	proof, err := incorporatedSourceDelta(t.Context(), f.source, base, target, f.head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(LandResult{Incorporation: proof})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var transported LandResult
+	if err := json.Unmarshal(encoded, &transported); err != nil {
+		t.Fatal(err)
+	}
+	if transported.Incorporation == nil || len(transported.Incorporation.Objects) == 0 {
+		t.Fatal("landing transport lost incorporation objects")
+	}
+	proof = transported.Incorporation
+
+	for _, test := range []string{"valid", "forged equal trees", "wrong target commit", "unincorporated target", "corrupt pack", "missing pack"} {
+		t.Run(test, func(t *testing.T) {
+			candidate := *proof
+			pack := proof.Objects
+			switch test {
+			case "forged equal trees":
+				candidate.TargetTreeSHA, candidate.MergeTreeSHA = strings.Repeat("a", 40), strings.Repeat("a", 40)
+			case "wrong target commit":
+				candidate.TargetHeadSHA = strings.Repeat("e", 40)
+			case "unincorporated target":
+				candidate.TargetHeadSHA = base
+				candidate.TargetTreeSHA = strings.TrimSpace(runGit(t, f.source, "rev-parse", base+"^{tree}"))
+				candidate.MergeTreeSHA = candidate.TargetTreeSHA
+			case "corrupt pack":
+				pack = append([]byte(nil), pack...)
+				pack[len(pack)-1] ^= 1
+			case "missing pack":
+				pack = nil
+			}
+			if err := VerifyLandingIncorporation(t.Context(), candidate, pack); (err == nil) != (test == "valid") {
+				t.Fatalf("verification error = %v", err)
 			}
 		})
 	}

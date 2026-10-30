@@ -317,7 +317,7 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 		r.logWorkerEventLevel(slog.LevelWarn, req.Issue, "worker_native_landing_warning",
 			telemetry.WorkAttemptIDKey, req.WorkAttemptID, "change", target.ChangeID, "version", target.VersionID, "merge_sha", result.MergeSHA, "error", err.Error())
 	}
-	landed := NativeLanding{SecurityAudit: result.SecurityAudit, Pipeline: result.Pipeline, PipelineDropped: result.PipelineDropped, Path: result.Path, Packages: result.Packages, CI: result.CI, ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: target.HeadSHA, BaseSHA: result.BaseBefore, Landed: true, MergeSHA: result.MergeSHA, BaseRef: result.BaseRef, Method: result.Method, Rebased: result.Rebased}
+	landed := NativeLanding{Incorporation: result.Incorporation, SecurityAudit: result.SecurityAudit, Pipeline: result.Pipeline, PipelineDropped: result.PipelineDropped, Path: result.Path, Packages: result.Packages, CI: result.CI, ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: target.HeadSHA, BaseSHA: result.BaseBefore, Landed: true, MergeSHA: result.MergeSHA, BaseRef: result.BaseRef, Method: result.Method, Rebased: result.Rebased}
 	if options.Resolution != nil {
 		landed.ConflictFiles = options.Resolution.ConflictFiles
 	}

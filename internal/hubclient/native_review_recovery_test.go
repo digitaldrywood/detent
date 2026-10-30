@@ -39,6 +39,7 @@ type recoveringReviewAgent struct {
 	sourceWorkspace    atomic.Pointer[string]
 	validatorWorkspace atomic.Pointer[string]
 	securityCalls      atomic.Int32
+	securityPrompt     atomic.Pointer[string]
 	validatorCalls     atomic.Int32
 	malformed          bool
 	securityVerdict    string
@@ -58,6 +59,7 @@ func (a *recoveringReviewAgent) RunTurn(ctx context.Context, request runner.Agen
 	case request.ReadOnly:
 		stage = "security"
 		a.securityCalls.Add(1)
+		a.securityPrompt.Store(&request.Prompt)
 	}
 	if stage == a.failStage && !a.available.Load() {
 		return runner.AgentTurnResult{}, errors.New("temporary provider startup failure")
