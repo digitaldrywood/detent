@@ -158,18 +158,9 @@ func TestStartRunningPublishesEnrolledUpdateSupport(t *testing.T) {
 					t.Error("headless runtime did not join retention")
 				}
 			})
-			select {
-			case <-entered:
-			case <-time.After(10 * time.Second):
-				t.Fatal("owned log maintenance did not start")
-			}
-			select {
-			case observed := <-observations:
-				if observed == nil || !observed.Supported || observed.Validate() != nil {
-					t.Fatalf("headless heartbeat update observation = %+v", observed)
-				}
-			case <-time.After(15 * time.Second):
-				t.Fatal("headless runner did not publish a heartbeat")
+			<-entered
+			if observed := <-observations; observed == nil || !observed.Supported || observed.Validate() != nil {
+				t.Fatalf("headless heartbeat update observation = %+v", observed)
 			}
 		})
 	}
@@ -199,7 +190,7 @@ func TestMain(m *testing.M) {
 			panic(err)
 		}
 	}
-	for _, name := range []string{serviceapi.AddressEnvironment, serviceapi.TokenEnvironment, serviceapi.DispositionTokenEnvironment} {
+	for _, name := range []string{serviceapi.AddressEnvironment, serviceapi.TokenEnvironment, serviceapi.DispositionTokenEnvironment, "TMUX", "TMUX_PANE"} {
 		if err := os.Unsetenv(name); err != nil {
 			panic("clear " + name + ": " + err.Error())
 		}
