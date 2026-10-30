@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -109,12 +110,17 @@ func matchCompiledSources(ctx context.Context, binary string) (err error) {
 	if err != nil {
 		return fmt.Errorf("locate source verifier: %w", err)
 	}
-	wrapper, err := Install(dir, executable)
-	if err != nil {
-		return err
+	name := WrapperName
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	wrapper := filepath.Join(dir, name)
+	if err := os.Symlink(executable, wrapper); err != nil {
+		return fmt.Errorf("prepare source verifier: %w", err)
 	}
 	observed := filepath.Join(dir, "binary-digest")
-	cmd := exec.CommandContext(ctx, "go", "test", "-exec="+wrapper+" --detent-source-digest "+observed, ".")
+	cmd := exec.CommandContext(ctx, "go")
+	cmd.Args = append(cmd.Args, "test", "-exec="+strconv.Quote(wrapper)+" --detent-source-digest "+strconv.Quote(observed), ".")
 	procgroup.Configure(ctx, cmd)
 	if err := procgroup.Start(cmd); err != nil {
 		return fmt.Errorf("compile inspected test sources: %w", err)
@@ -134,7 +140,8 @@ func matchCompiledSources(ctx context.Context, binary string) (err error) {
 		return nil
 	}
 	compiled := filepath.Join(dir, "verified.test")
-	cmd = exec.CommandContext(ctx, "go", "test", "-c", "-o", compiled, ".")
+	cmd = exec.CommandContext(ctx, "go")
+	cmd.Args = append(cmd.Args, "test", "-c", "-o", compiled, ".")
 	procgroup.Configure(ctx, cmd)
 	if err := procgroup.Start(cmd); err != nil {
 		return fmt.Errorf("compile retained test binary: %w", err)
