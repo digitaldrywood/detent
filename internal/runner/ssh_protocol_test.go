@@ -33,7 +33,7 @@ func TestSSHErrorRoundTrip(t *testing.T) {
 	t.Parallel()
 	acceptanceFailure := func(err error) bool {
 		failure := nativeTerminalFailure(err, time.Now().UTC(), false)
-		return failure != nil && failure.Rejection != nil && failure.Rejection.Category == "acceptance_validation" && failure.Rejection.Field == "validator.session_id" && failure.Stage == "acceptance_publication" && failure.ErrorClass == "acceptance_publication" && failure.Attribution == "" && failure.Error == "publication rejected: category=acceptance_validation field=validator.session_id [private error text omitted]"
+		return failure != nil && failure.Rejection != nil && failure.Rejection.Category == "acceptance_validation" && failure.Rejection.Field == "validator.session_id" && failure.Stage == "acceptance_publication" && failure.ErrorClass == "acceptance_publication" && failure.Attribution == "instance" && failure.Error == "publication rejected: category=acceptance_validation field=validator.session_id [private error text omitted]"
 	}
 	tests := []struct {
 		name     string
