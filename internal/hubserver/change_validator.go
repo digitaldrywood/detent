@@ -173,15 +173,12 @@ func validateNativeValidatorReview(ctx context.Context, tx *sql.Tx, scope native
 		return "", invalid("validator verdict does not match the review decision", field)
 	}
 	var raw string
-	err = tx.QueryRowContext(ctx, "SELECT data_json FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? AND id=?", scope.organization, scope.project, change.WorkItemID, version.AttemptID).Scan(&raw)
-	if err != nil {
+	var sourceSession sql.NullInt64
+	var sourceMachine sql.NullString
+	if err := tx.QueryRowContext(ctx, `SELECT implementing_session_id,implementing_machine_id FROM change_versions WHERE id=? AND change_id=?`, version.ID, change.ID).Scan(&sourceSession, &sourceMachine); err != nil {
 		return "", err
 	}
-	var source tracker.NativeRunData
-	if err := decodeRunDetail(ctx, tx, raw, &source); err != nil {
-		return "", err
-	}
-	if source.RunID != version.RunID || source.PolicyID != version.PolicyID || source.Identity == nil || (source.Identity.Role != "code" && source.Identity.Role != "rework") || source.Runtime == nil || source.Runtime.Activity == nil || source.Runtime.Activity.SessionID <= 0 {
+	if !sourceSession.Valid || sourceSession.Int64 < 0 || !sourceMachine.Valid || sourceMachine.String == "" {
 		if audit {
 			return "", auditInvalid("security audit requires the implementing session's recorded identity", "source.identity")
 		}
@@ -202,7 +199,7 @@ func validateNativeValidatorReview(ctx context.Context, tx *sql.Tx, scope native
 	if landingAudit {
 		validSession = current.Identity != nil && current.Identity.Role == "merge"
 	}
-	if current.FencingToken != request.FencingToken || !validSession || current.MachineID == source.MachineID && source.Runtime.Activity.SessionID == result.SessionID {
+	if current.FencingToken != request.FencingToken || !validSession || sourceSession.Int64 == 0 && current.AttemptID == version.AttemptID || current.MachineID == tracker.MachineID(sourceMachine.String) && sourceSession.Int64 == result.SessionID {
 		if audit {
 			return "", auditInvalid("security audit must come from a session separate from the implementing session under its active execution authority", "execution_session")
 		}

@@ -35,6 +35,7 @@ const (
 type Service struct {
 	changeColumnFamily      int
 	changeColumnAfter       any
+	changeSessionAfter      string
 	dashboard               *dashboardDelivery
 	releaseNotes            []releasenotes.Build
 	activityDurations       activityDurationCache
