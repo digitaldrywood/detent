@@ -235,11 +235,6 @@ func (a hubChangeApplication) MutateChange(ctx context.Context, name string, arg
 			}
 			return result, err
 		}
-		if _, ok := ctx.Value(changeContentKey{}).(*changeContent); ok && len(request.SourceBundle) > 0 {
-			if _, err := prepareChangeContent(ctx, string(scope.organization), request.SourceBundle); err != nil {
-				return result, err
-			}
-		}
 		op = func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 			return s.publishChangeVersionCommand(ctx, tx, scope, args.ItemID, args.ChangeID, request, now)
 		}

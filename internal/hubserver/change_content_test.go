@@ -90,19 +90,49 @@ func TestChangeContentObjects(t *testing.T) {
 	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET require_visual_attachments=1 WHERE id=?", f.project.ID); err != nil {
 		t.Fatal(err)
 	}
-	visualInput := input
-	visualInput.Artifacts = []tracker.ChangeArtifact{{Kind: "artifact", URI: "https://example.test/screen.png", SHA256: artifact.Digest([]byte("image")), Availability: "available"}}
-	refused := performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "visual-source-refusal"}, ChangeVersionInput: visualInput, SourceBundle: bundle})
-	requireNativeStatus(t, refused, http.StatusUnprocessableEntity)
-	var registered int
-	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM change_content_objects").Scan(&registered); err != nil {
+	var initialRegistered int
+	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM change_content_objects").Scan(&initialRegistered); err != nil {
 		t.Fatal(err)
 	}
 	objects.mu.Lock()
-	writes := objects.writes
+	initialWrites := objects.writes
 	objects.mu.Unlock()
-	if registered != 0 || writes != 0 {
-		t.Fatalf("visual refusal published archives: registered=%d writes=%d", registered, writes)
+	for _, test := range []struct {
+		name   string
+		edit   func(*tracker.PublishChangeVersion)
+		status int
+	}{
+		{"visual source refusal", func(request *tracker.PublishChangeVersion) {
+			request.Artifacts = []tracker.ChangeArtifact{{Kind: "artifact", URI: "https://example.test/screen.png", SHA256: artifact.Digest([]byte("image")), Availability: "available"}}
+		}, http.StatusUnprocessableEntity},
+		{"stale version", func(request *tracker.PublishChangeVersion) {
+			request.ExpectedVersionID = newNativeID("version")
+		}, http.StatusConflict},
+		{"unknown configuration", func(request *tracker.PublishChangeVersion) {
+			request.PolicyID = artifact.Digest([]byte("unknown configuration"))
+		}, http.StatusUnprocessableEntity},
+		{"invalid validation artifact", func(request *tracker.PublishChangeVersion) {
+			validation := *request.Validation
+			validation.EvidenceArtifact = &artifact.Reference{}
+			request.Validation = &validation
+		}, http.StatusUnprocessableEntity},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: test.name}, ChangeVersionInput: input, SourceBundle: bundle}
+			test.edit(&request)
+			refused := performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", f.token, request)
+			requireNativeStatus(t, refused, test.status)
+			var registered int
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM change_content_objects").Scan(&registered); err != nil {
+				t.Fatal(err)
+			}
+			objects.mu.Lock()
+			writes := objects.writes
+			objects.mu.Unlock()
+			if registered != initialRegistered || writes != initialWrites {
+				t.Fatalf("refusal published archives: registered=%d writes=%d", registered-initialRegistered, writes-initialWrites)
+			}
+		})
 	}
 
 	versions := make([]tracker.ChangeVersion, 3)
@@ -175,7 +205,7 @@ func TestChangeContentObjects(t *testing.T) {
 		{"SELECT count(*) FROM change_sources WHERE length(bundle)=0 AND object_key<>''", &count, 3},
 		{"SELECT count(DISTINCT policy_revision_id) FROM change_versions WHERE policy_revision_id<>'' AND json_extract(record_json,'$.policy') IS NULL", &policies, 1},
 		{"SELECT count(DISTINCT object_key) FROM change_command_outputs", &count, 2},
-		{"SELECT count(*) FROM change_content_objects", &count, 8},
+		{"SELECT count(*) FROM change_content_objects", &count, initialRegistered + 8 + len(versions)},
 	} {
 		if err := f.service.database.reader.QueryRowContext(ctx, check.query).Scan(check.target); err != nil {
 			t.Fatal(err)
@@ -199,8 +229,8 @@ func TestChangeContentObjects(t *testing.T) {
 	objects.mu.Lock()
 	objectCount := len(objects.objects)
 	objects.mu.Unlock()
-	if objectCount != 8 {
-		t.Fatalf("stored %d objects, want one bundle, two command outputs, three versions and two reviews", objectCount)
+	if objectCount != initialRegistered+8+len(versions) {
+		t.Fatalf("stored %d objects, want fixture archives, one bundle, two command outputs, three versions, two reviews and three command receipts", objectCount)
 	}
 
 	requireUsageCountersMatchRecount(t, f.service.database)
