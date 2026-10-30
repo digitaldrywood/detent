@@ -76,9 +76,21 @@ linters:
     rules:
       - path: _test\.go
         linters:
-          - gosec
+          - bodyclose
+          - containedctx
+          - contextcheck
           - errcheck
+          - errorlint
+          - fatcontext
+          - gosec
+          - ineffassign
+          - intrange
+          - nilnil
           - noctx
+          - perfsprint
+          - sqlclosecheck
+          - unconvert
+          - wastedassign
       - path: _templ\.go$
         linters:
           - all

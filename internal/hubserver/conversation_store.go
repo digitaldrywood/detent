@@ -1117,7 +1117,10 @@ func (s *conversationStore) listEvents(ctx context.Context, query nativeQueryer,
 	}
 	defer func() { _ = rows.Close() }()
 	var events []conversation.Event
-	var contents []string
+	var contents []struct {
+		event     conversation.Event
+		contentID string
+	}
 	for rows.Next() {
 		var event conversation.Event
 		var body, created, contentID string
@@ -1128,21 +1131,24 @@ func (s *conversationStore) listEvents(ctx context.Context, query nativeQueryer,
 		if event.CreatedAt, err = parseTimeValue(created); err != nil {
 			return nil, fmt.Errorf("decode event %d created_at: %w", event.Seq, err)
 		}
-		events = append(events, event)
-		contents = append(contents, contentID)
+		contents = append(contents, struct {
+			event     conversation.Event
+			contentID string
+		}{event: event, contentID: contentID})
 	}
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return nil, fmt.Errorf("list events: %w", err)
 	}
-	for index, contentID := range contents {
-		if contentID == "" {
-			continue
+	for _, content := range contents {
+		event := content.event
+		if content.contentID != "" {
+			data, err := s.readEventStorage(ctx, query, conversationID, content.contentID)
+			if err != nil {
+				return nil, err
+			}
+			event.Data = data
 		}
-		data, err := s.readEventStorage(ctx, query, conversationID, contentID)
-		if err != nil {
-			return nil, err
-		}
-		events[index].Data = data
+		events = append(events, event)
 	}
 	if err := s.resolveEventContent(ctx, query, conversationID, events); err != nil {
 		return nil, err

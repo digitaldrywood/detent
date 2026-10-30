@@ -130,6 +130,12 @@ func (t *coordinatorToolset) screenRead(ctx context.Context, record conversation
 	case "get_project_runners", "get_project_fleet":
 		if err = decodeCoordinatorArguments(call.Arguments, &struct{}{}); err == nil && call.Name == "get_project_runners" {
 			ctx, err = operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeAdmin, ResourceKind: "runners"})
+			if err != nil {
+				if errors.Is(err, operatortool.ErrAccessDenied) {
+					return nil, fmt.Errorf("you don't have access to %s: %w", coordinatorReadPermission(call.Name), operatortool.ErrAccessDenied)
+				}
+				return nil, err
+			}
 		}
 		if err == nil {
 			value, err = s.coordinatorProjectRunners(ctx, record, credential, call.Name == "get_project_runners" || s.hostedAllRunnerGrants(ctx, credential))

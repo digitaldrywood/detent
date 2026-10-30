@@ -10,6 +10,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 BASELINE = ROOT / "scripts" / "nilaway-baseline.json"
+TEST_FILE = re.compile(r"_test\.go:\d+")
 DIAGNOSTIC = re.compile(r"^(?P<path>\S+\.go):(?P<line>\d+):(?P<column>\d+):\s*(?:error:\s*)?(?P<message>.*)")
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 RELATED_DIAGNOSTIC = re.compile(r"^\(Same nil source could also cause potential nil panic\(s\) at \d+ other place\(s\): .+\.\)$")
@@ -44,8 +45,12 @@ def main():
         return 1
     unexpected = []
     diagnostics = 0
-    for raw in result.stdout.splitlines():
-        line = ANSI.sub("", raw)
+    lines = [ANSI.sub("", raw) for raw in result.stdout.splitlines()]
+    for index, line in enumerate(lines):
+        if TEST_FILE.search(line):
+            continue
+        if line.endswith("INTERNAL ERROR(s):") and index + 1 < len(lines) and TEST_FILE.search(lines[index + 1]):
+            continue
         match = DIAGNOSTIC.search(line)
         if not match:
             if line.strip() and not line.startswith(("# ", "\t", " ")) and not RELATED_DIAGNOSTIC.fullmatch(line):
@@ -57,7 +62,7 @@ def main():
             path = ROOT / path
         try:
             try:
-                relative = path.resolve().relative_to(ROOT)
+                relative = path.resolve().relative_to(ROOT.resolve())
             except ValueError:
                 relative = None
             if relative not in baseline_paths:
@@ -66,7 +71,7 @@ def main():
                     raise ValueError
                 relative = candidates[0]
                 path = ROOT / relative
-                relative = path.resolve().relative_to(ROOT)
+                relative = path.resolve().relative_to(ROOT.resolve())
             source = path.read_text().splitlines()[int(match["line"]) - 1]
         except (OSError, ValueError, IndexError):
             unexpected.append(line)

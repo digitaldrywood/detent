@@ -673,9 +673,11 @@ OR EXISTS(SELECT 1 FROM native_archive_sections WHERE organization_id=? AND proj
 	}
 	query = historyQuery
 	page.Items = page.Items[:min(len(page.Items), limit)]
-	for index := range page.Items {
+	for index, data := range payloads {
+		if index >= len(page.Items) {
+			break
+		}
 		event := &page.Items[index]
-		data := payloads[index]
 		if view != "blockers" {
 			resolved, err := resolveCollaborationPayload(ctx, query, data)
 			if err != nil {
