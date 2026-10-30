@@ -707,3 +707,41 @@ func TestLocalGitReconcilePreservesManualWorktrees(t *testing.T) {
 		})
 	}
 }
+
+func TestResidualCleanupFinishesAdmittedWorkspace(t *testing.T) {
+	source := initSourceRepo(t)
+	publishCleanupSource(t, source)
+	backend, err := NewLocalGit(LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var paths []string
+	for i := range 2 {
+		issue := Issue{ProjectID: "prj_example", ID: fmt.Sprintf("wi_%d", i), Identifier: fmt.Sprintf("prj_example#%d", i), Terminal: true}
+		info, err := backend.Create(t.Context(), issue)
+		if err != nil {
+			t.Fatal(err)
+		}
+		paths = append(paths, info.Path)
+	}
+	admission, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	backend.scanWorkspacePaths = func(ctx context.Context, _ string) ([]int, error) { cancel(); return nil, ctx.Err() }
+	backend.processSource = ProcessSource(backend.scanWorkspacePaths)
+	ctx := WithCleanupAdmission(WithCleanupBatch(t.Context(), 10), admission)
+	result, err := backend.ReconcileResiduals(ctx, nil)
+	if err != nil || len(result.Failures) != 0 || result.Removed != 1 {
+		t.Fatalf("admitted workspace did not finish: result=%+v error=%v", result, err)
+	}
+	remaining := 0
+	for _, path := range paths {
+		if _, err := os.Stat(path); err == nil {
+			remaining++
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			t.Fatal(err)
+		}
+	}
+	if remaining != 1 {
+		t.Fatalf("remaining workspaces=%d, want one deferred", remaining)
+	}
+}

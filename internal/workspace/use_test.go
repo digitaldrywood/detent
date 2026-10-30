@@ -133,29 +133,37 @@ func TestFilesystemCleanupProtectsWorker(t *testing.T) {
 }
 
 func TestFilesystemCleanupBatch(t *testing.T) {
-	for _, count := range []int{0, 1, 10, 11, 50} {
-		t.Run(strconv.Itoa(count), func(t *testing.T) {
-			backend, err := NewFilesystem(FilesystemOptions{Root: t.TempDir()})
-			if err != nil {
-				t.Fatal(err)
-			}
-			ctx := WithCleanupBatch(t.Context(), 10)
-			for i := range count {
-				issue := Issue{Identifier: fmt.Sprintf("repo#%d", i), ID: strconv.Itoa(i)}
-				info, err := backend.Create(t.Context(), issue)
+	for _, expired := range []bool{false, true} {
+		for _, count := range []int{0, 1, 10, 11, 50} {
+			t.Run(fmt.Sprintf("expired=%v/count=%d", expired, count), func(t *testing.T) {
+				backend, err := NewFilesystem(FilesystemOptions{Root: t.TempDir()})
 				if err != nil {
 					t.Fatal(err)
 				}
-				_, err = backend.CleanupIssue(ctx, issue)
-				_, statErr := os.Stat(info.Path)
-				if i < 10 {
-					if err != nil || !errors.Is(statErr, os.ErrNotExist) {
-						t.Fatalf("candidate %d cleanup=%v stat=%v", i, err, statErr)
-					}
-				} else if !errors.Is(err, ErrWorkspacePreserved) || statErr != nil {
-					t.Fatalf("candidate %d exceeded batch: cleanup=%v stat=%v", i, err, statErr)
+				ctx := WithCleanupBatch(t.Context(), 10)
+				admission, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				ctx = WithCleanupAdmission(ctx, admission)
+				if expired {
+					cancel()
 				}
-			}
-		})
+				for i := range count {
+					issue := Issue{Identifier: fmt.Sprintf("repo#%d", i), ID: strconv.Itoa(i)}
+					info, err := backend.Create(t.Context(), issue)
+					if err != nil {
+						t.Fatal(err)
+					}
+					_, err = backend.CleanupIssue(ctx, issue)
+					_, statErr := os.Stat(info.Path)
+					if !expired && i < 10 {
+						if err != nil || !errors.Is(statErr, os.ErrNotExist) {
+							t.Fatalf("candidate %d cleanup=%v stat=%v", i, err, statErr)
+						}
+					} else if !errors.Is(err, ErrWorkspacePreserved) || statErr != nil {
+						t.Fatalf("candidate %d exceeded batch: cleanup=%v stat=%v", i, err, statErr)
+					}
+				}
+			})
+		}
 	}
 }
