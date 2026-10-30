@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/spritenames"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -56,7 +57,7 @@ func validateSpritesToken(ctx context.Context, configured *http.Client, token []
 		}
 	}
 	slug := strings.Clone(parts[0])
-	if !validSpritesSlug(slug) {
+	if !spritenames.ValidSlug(slug) {
 		return "", errSpritesValidation
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.sprites.dev/v1/sprites", nil)
@@ -102,18 +103,6 @@ func validateSpritesToken(ctx context.Context, configured *http.Client, token []
 		return "", errSpritesValidation
 	}
 	return slug, nil
-}
-
-func validSpritesSlug(slug string) bool {
-	if len(slug) == 0 || len(slug) > 63 || slug[0] == '-' || slug[len(slug)-1] == '-' {
-		return false
-	}
-	for _, c := range slug {
-		if c != '-' && (c < 'a' || c > 'z') && (c < '0' || c > '9') {
-			return false
-		}
-	}
-	return true
 }
 
 // checkProjectSprites is the internal use path: unseal for one fixed provider
@@ -334,7 +323,7 @@ ORDER BY m.hostname LIMIT 1`, scope.organization, cutoff, formatHubTime(s.config
 		if facts.Name == nil || *facts.Name != candidate.name || spriteFactValue(facts.WokenAt) >= formatHubTime(s.config.now().Add(-time.Minute)) {
 			continue
 		}
-		if !validSpritesSlug(candidate.name) {
+		if !spritenames.ValidSlug(candidate.name) {
 			continue
 		}
 		if configured {

@@ -146,7 +146,7 @@ func (s *Service) applyHostedRuntime(ctx context.Context, update *HostedRuntimeU
 		}
 	}
 	if !plans.IsZero() {
-		if err := plans.validate(); err != nil {
+		if err := plans.Validate(); err != nil {
 			return nativePublicInvalid("Reloaded entitlement configuration is invalid")
 		}
 	}

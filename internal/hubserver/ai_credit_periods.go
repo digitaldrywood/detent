@@ -18,19 +18,6 @@ type includedAICredits struct {
 	PlanName        string    `json:"plan_name"`
 }
 
-func (plan HostedPlan) includedAICreditMicros() *int64 {
-	amount := int64(0)
-	tier, ok := hostedTierFor(plan.PlanReference)
-	if !ok || !tier.offered || plan.ID == "free" {
-		return &amount
-	}
-	if plan.MonthlyUSDCents == nil {
-		return nil
-	}
-	amount = max(0, *plan.MonthlyUSDCents) * 1000
-	return &amount
-}
-
 func (credits includedAICredits) remaining() int64 {
 	return max(0, credits.AllowanceMicros-credits.UsedMicros)
 }
@@ -59,7 +46,7 @@ func (d *database) includedAICredits(ctx context.Context, query nativeQueryer, o
 	if err != nil {
 		return result, err
 	}
-	amount := plan.includedAICreditMicros()
+	amount := plan.IncludedAICreditMicros()
 	if amount == nil || *amount == 0 {
 		return result, nil
 	}

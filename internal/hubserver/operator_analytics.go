@@ -266,11 +266,11 @@ func (s *Service) readAnalyticsReportFor(ctx context.Context, credential apiCred
 		sessions := map[string]bool{}
 		for _, row := range rows {
 			cost += row.Cost
-			tokens += row.tokens()
+			tokens += row.Tokens()
 			sessions[row.AttemptID] = true
 			if i := nativeAnalyticsBucketIndex(row.Period, w); i >= 0 {
 				value.Digest[i].Cost += row.Cost
-				value.Digest[i].Tokens += row.tokens()
+				value.Digest[i].Tokens += row.Tokens()
 			}
 			if row.Period.After(value.SourceAt) {
 				value.SourceAt = row.Period

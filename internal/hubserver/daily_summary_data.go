@@ -63,7 +63,7 @@ func readSummaryCosts(ctx context.Context, q nativeQueryer, scope nativeScope, w
 		if !u.Period.Before(window.To) {
 			continue
 		}
-		out.tokens += u.tokens()
+		out.tokens += u.Tokens()
 		byAttempt[u.AttemptID] = append(byAttempt[u.AttemptID], u)
 	}
 	inputs := reportsInputs{done: reportsDoneFrom(out.shipped), lanes: func(time.Time, time.Time) map[string]float64 { return nil }, timing: func([]string, time.Time) (reportsCompletion, error) { return reportsCompletion{}, nil }}

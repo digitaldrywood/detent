@@ -27,6 +27,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/spritenames"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -410,7 +411,7 @@ func TestSpritePoolLifecycle(t *testing.T) {
 					t.Fatal(err)
 				}
 				for _, member := range view.Members {
-					if test.names == nil && !strings.HasPrefix(member.Name, "sprite-") || !validSpritesSlug(member.Name) {
+					if test.names == nil && !strings.HasPrefix(member.Name, "sprite-") || !spritenames.ValidSlug(member.Name) {
 						t.Fatalf("invalid new member name %q", member.Name)
 					}
 					if strings.Contains(member.BootstrapLog, provider.token) || strings.Contains(member.BootstrapLog, "private-provider-secret") || strings.Contains(member.BootstrapLog, spritesSecretSentinel) {
@@ -577,20 +578,20 @@ func TestSpritePoolNameCollisions(t *testing.T) {
 			}
 			if test.stored {
 				created, err := f.service.createPoolSpriteNamed(t.Context(), scope, view.spritePoolSettings, true, "sprite-bright-badger")
-				if created || !errors.Is(err, errSpriteNameTaken) || len(provider.created) != 0 {
+				if created || !errors.Is(err, spritenames.ErrTaken) || len(provider.created) != 0 {
 					t.Fatalf("insert collision was not retried: created=%t err=%v", created, err)
 				}
 			}
 			draws := 0
-			names := spriteNameGenerator{intN: func(n int) int {
+			names := spritenames.New(func(n int) int {
 				value := draws / 2
 				draws++
 				return value % n
-			}}
+			})
 			for range 2 {
-				created, err := f.service.createPoolSpriteWithNames(t.Context(), scope, view.spritePoolSettings, true, &names)
+				created, err := f.service.createPoolSpriteWithNames(t.Context(), scope, view.spritePoolSettings, true, names)
 				if test.conflicts == 10 {
-					if !created || !errors.Is(err, errSpriteNamesExhausted) || len(provider.created) != 10 {
+					if !created || !errors.Is(err, spritenames.ErrExhausted) || len(provider.created) != 10 {
 						t.Fatalf("unbounded conflict handling: created=%t err=%v calls=%d", created, err, len(provider.created))
 					}
 					break
