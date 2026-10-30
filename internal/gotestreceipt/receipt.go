@@ -106,7 +106,7 @@ func ValidateInputs(inputs []string) error {
 		switch {
 		case len(fields) == 1 && fields[0] == environInput:
 		case len(fields) == 2 && fields[0] == "env" && fields[1] != "" && !strings.ContainsAny(fields[1], "=/\\:"):
-		case len(fields) == 3 && (fields[0] == "open" || fields[0] == "stat") && validPathScope(fields[1]) && validRelativePath(fields[2]):
+		case len(fields) == 3 && (fields[0] == "open" || fields[0] == "stat" || fields[0] == treeInput) && validPathScope(fields[1]) && validRelativePath(fields[2]):
 		default:
 			return errors.New("receipt input must name an environment variable or checkout-relative path")
 		}

@@ -124,8 +124,8 @@ func ParseTestLog(r io.Reader, pwd string, env Environment, start time.Time) ([]
 		if err != nil {
 			return nil, err
 		}
-		if len(seen) > MaxInputs {
-			return nil, fmt.Errorf("test read more than %d inputs", MaxInputs)
+		if len(seen) > maxLoggedInputs {
+			return nil, fmt.Errorf("test read more than %d inputs", maxLoggedInputs)
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -139,6 +139,7 @@ func ParseTestLog(r io.Reader, pwd string, env Environment, start time.Time) ([]
 		inputs = append(inputs, input)
 	}
 	slices.Sort(inputs)
+	inputs = compactInputs(inputs, env)
 	if err := ValidateInputs(inputs); err != nil {
 		return nil, err
 	}
@@ -206,6 +207,11 @@ func ModifiedSince(inputs []string, env Environment, start time.Time) error {
 		if err != nil {
 			return err
 		}
+		if fields[0] == treeInput {
+			if err := treeModifiedSince(path, fields[2], start); err != nil {
+				return err
+			}
+		}
 		for _, stat := range []func(string) (os.FileInfo, error){os.Lstat, os.Stat} {
 			info, err := stat(path)
 			if errors.Is(err, os.ErrNotExist) {
@@ -270,6 +276,13 @@ func (v *Verifier) observeInput(input string) observation {
 			return observation{value: "unset"}
 		}
 		return observation{value: "set " + sum([]byte(v.env.normalize(value)))}
+	case len(fields) == 3 && fields[0] == treeInput:
+		path, err := v.env.path(fields[1], fields[2])
+		if err != nil {
+			return observation{err: err}
+		}
+		value, err := v.observeTree(path, strings.HasPrefix(fields[1], scopeTemporary))
+		return observation{value: value, err: err}
 	case len(fields) == 3 && (fields[0] == "open" || fields[0] == "stat"):
 		path, err := v.env.path(fields[1], fields[2])
 		if err != nil {
