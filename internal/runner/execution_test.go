@@ -228,6 +228,8 @@ func TestNativeRetryResumesPersistedSessionAfterRunnerRestart(t *testing.T) {
 		conversationModel  string
 		dirty              bool
 		rebase             bool
+		conflict           bool
+		cachedResolution   bool
 		gitRef             bool
 		workerProxy        bool
 		providerMissing    bool
@@ -259,6 +261,8 @@ func TestNativeRetryResumesPersistedSessionAfterRunnerRestart(t *testing.T) {
 		{name: "failed retry preserves divergent tracked and untracked work", status: "failed", gitRef: true, dirty: true},
 		{name: "cancelled retry rebases current Change", status: "cancelled", gitRef: true, rebase: true},
 		{name: "failed retry rebases current Change", status: "failed", rebase: true},
+		{name: "rework conflict reaches fresh agent", status: "failed", rebase: true, conflict: true},
+		{name: "cached rework conflict reaches fresh agent", status: "failed", rebase: true, conflict: true, cachedResolution: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -413,8 +417,27 @@ func TestNativeRetryResumesPersistedSessionAfterRunnerRestart(t *testing.T) {
 					t.Fatal(err)
 				}
 				runRunnerGit(t, source, "add", "base.md")
+				if test.conflict {
+					if err := os.WriteFile(filepath.Join(source, "feature.md"), []byte("upstream feature\n"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					runRunnerGit(t, source, "add", "feature.md")
+				}
 				runRunnerGit(t, source, "commit", "-m", "advance integration base")
 				runRunnerGit(t, source, "push", "origin", "main")
+				if test.cachedResolution {
+					runRunnerGit(t, source, "config", "rerere.enabled", "true")
+					runRunnerGit(t, source, "config", "rerere.autoupdate", "true")
+					if err := runAgentGit(ctx, info.Path, "rebase", "origin/main"); err == nil {
+						t.Fatal("fixture rebase did not conflict")
+					}
+					if err := os.WriteFile(filepath.Join(info.Path, "feature.md"), []byte("cached resolution\n"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					runRunnerGit(t, info.Path, "add", "feature.md")
+					runRunnerGit(t, info.Path, "rerere")
+					runRunnerGit(t, info.Path, "rebase", "--abort")
+				}
 			}
 			session := newFakeConversationSession()
 			session.resume = resume.ThreadID
@@ -471,8 +494,17 @@ func TestNativeRetryResumesPersistedSessionAfterRunnerRestart(t *testing.T) {
 				t.Fatal(err)
 			}
 			if test.rebase {
-				if !backend.prepared || after.HeadSHA == before.HeadSHA || !strings.Contains(runRunnerGit(t, info.Path, "show", "HEAD:base.md"), "advanced base") || !strings.Contains(runRunnerGit(t, info.Path, "show", "HEAD:feature.md"), "retained feature") {
+				if !backend.prepared || after.HeadSHA == before.HeadSHA || !strings.Contains(runRunnerGit(t, info.Path, "show", "HEAD:base.md"), "advanced base") {
 					t.Fatalf("preparation did not rebase the retained feature: before=%+v after=%+v", before, after)
+				}
+				if test.conflict {
+					paths := strings.TrimSpace(runRunnerGit(t, info.Path, "diff", "--name-only", "--diff-filter=U"))
+					contents, readErr := os.ReadFile(filepath.Join(agent.request.Workspace, "feature.md"))
+					if paths != "feature.md" || readErr != nil || !strings.Contains(string(contents), "<<<<<<<") || !strings.Contains(agent.request.Prompt, "feature.md") || before.WorkspaceFingerprint == after.WorkspaceFingerprint {
+						t.Fatalf("agent did not receive changed conflicted source: paths=%q contents=%q error=%v", paths, contents, readErr)
+					}
+				} else if !strings.Contains(runRunnerGit(t, info.Path, "show", "HEAD:feature.md"), "retained feature") {
+					t.Fatal("rebase lost retained feature")
 				}
 			} else if before.HeadSHA != after.HeadSHA || before.WorkspaceFingerprint != after.WorkspaceFingerprint {
 				t.Fatalf("retry changed retained source: before=%+v after=%+v", before, after)
