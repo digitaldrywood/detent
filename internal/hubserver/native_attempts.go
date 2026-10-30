@@ -975,7 +975,7 @@ func (s *Service) readNativeCleanupAttempt(ctx context.Context, scope nativeScop
 	var raw, started, released string
 	var acknowledged sql.NullString
 	var attempt tracker.NativeAttempt
-	err = tx.QueryRowContext(ctx, `SELECT a.data_json,a.status,a.started_at,l.released_at,a.cleanup_acknowledged_at
+	err = tx.QueryRowContext(ctx, `SELECT COALESCE(NULLIF(a.payload_object_key,''),a.data_json),a.status,a.started_at,l.released_at,a.cleanup_acknowledged_at
 FROM native_attempts a JOIN leases l ON l.lease_id=a.lease_id
 WHERE a.organization_id=? AND a.project_id=? AND a.work_item_id=? AND a.id=?
 AND a.runner_id=? AND l.machine_id=? AND l.released_at IS NOT NULL AND a.worker_cleanup_required=1`, scope.organization, scope.project, item, id, scope.credential.Runner.RunnerID, scope.credential.Runner.MachineID).Scan(&raw, &attempt.Status, &started, &released, &acknowledged)
