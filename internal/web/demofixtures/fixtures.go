@@ -444,13 +444,16 @@ func demoBoardAlertsHeavySnapshot() telemetry.Snapshot {
 		StartedAt: now.Add(-12 * time.Minute),
 		ResumeAt:  now.Add(-2 * time.Minute),
 	}}
-	snapshot.BackendOutages = []telemetry.BackendOutage{{
-		ProjectID:   "mobile-client",
-		BackendID:   "claude-opus-5",
-		BackendKind: "claude",
-		Provider:    "anthropic",
-		Reason:      "provider usage limit reached",
-	}}
+	snapshot.BackendOutages = make([]telemetry.BackendOutage, 0, len(projectIDs))
+	for _, projectID := range projectIDs {
+		snapshot.BackendOutages = append(snapshot.BackendOutages, telemetry.BackendOutage{
+			ProjectID:   projectID,
+			BackendID:   "claude-opus-5",
+			BackendKind: "claude",
+			Provider:    "anthropic",
+			Reason:      "provider usage limit reached",
+		})
+	}
 	snapshot.Update = telemetry.Update{
 		Enabled:            true,
 		AutoApplyEnabled:   true,
