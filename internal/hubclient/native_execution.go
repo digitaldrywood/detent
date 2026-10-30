@@ -1,6 +1,7 @@
 package hubclient
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -52,6 +53,7 @@ type nativeExecution struct {
 	integrationSource func(context.Context, tracker.ChangeVersion, string) (workspace.LandResult, error)
 	publicationSource func(context.Context, tracker.ChangeVersion, workspace.LandOptions) (workspace.GitHubPublication, error)
 	publication       *tracker.NativePRPublication
+	rejected          *tracker.NativeRunEvent
 	pending           *tracker.NativeRunEvent
 	observations      []tracker.NativeRunEvent
 	cancel            context.CancelCauseFunc
@@ -1006,6 +1008,14 @@ func (e *nativeExecution) append(ctx context.Context, kind, outcome string, chec
 		return nil
 	}
 	event.PriorEvents = append([]tracker.NativeRunEvent(nil), e.observations...)
+	encoded, err := json.Marshal(event)
+	if err != nil {
+		return err
+	}
+	event = tracker.NativeRunEvent{}
+	if err := json.Unmarshal(encoded, &event); err != nil {
+		return err
+	}
 	e.pending = &event
 	return e.flush(ctx)
 }
@@ -1052,16 +1062,45 @@ func (e *nativeExecution) flush(ctx context.Context) (err error) {
 	}
 	e.pending.Data.Steps = events[0].Data.Steps
 	e.pending.PriorEvents = events[1:]
+	previousRuntime, err := json.Marshal(e.data.Runtime)
+	if err != nil {
+		return fmt.Errorf("encode current runtime: %w", err)
+	}
+	publishedRuntime, err := json.Marshal(e.pending.Data.Runtime)
+	if err != nil {
+		return fmt.Errorf("encode pending runtime: %w", err)
+	}
 	if err := e.claim.source.client.AppendEvent(ctx, e.claim.lease.WorkItemID, *e.pending); err != nil {
 		var refusal *APIError
-		if (e.pending.Type == "run.finished" || e.pending.Type == "run.checkpointed") && errors.As(err, &refusal) && refusal.permanentInvalidRequest() {
+		if e.preparedOutcome != "" && errors.As(err, &refusal) && refusal.Status == http.StatusConflict && (refusal.Code == "run_sequence_conflict" || refusal.Code == "idempotency_conflict") {
+			path, pathErr := nativeItemPath(e.claim.lease.WorkItemID)
+			if pathErr != nil {
+				return pathErr
+			}
+			var attempt tracker.NativeAttempt
+			if lookupErr := e.claim.source.client.client.request(ctx, http.MethodGet, e.claim.source.client.base()+path+"/attempts/"+e.data.AttemptID, nil, &attempt); lookupErr != nil {
+				return e.executionError(ctx, lookupErr)
+			}
+			if !sameCompletionRun(e.data, attempt.NativeRunData) {
+				return errors.Join(runner.ErrExecutionAuthorityUnavailable, err)
+			}
+			if attempt.ClaimReleasedAt != nil || attempt.Sequence < e.pending.Data.Sequence {
+				return e.executionError(ctx, err)
+			}
+			failure := tracker.NativeTerminalFailure{Stage: "event_publication", ErrorClass: "event_publication", Error: "Hub rejected the run event sequence; retained event requires reconciliation", ObservedAt: e.scheduler.now().UTC()}
+			return &nativeCompletionRejection{failure: failure}
+		}
+		if (e.pending.Type == "run.finished" || e.pending.Type == "run.checkpointed" || e.preparedOutcome != "") && errors.As(err, &refusal) && refusal.permanentInvalidRequest() {
+			if e.rejected == nil {
+				e.rejected = e.pending
+			}
 			if len(e.pending.PriorEvents) > 0 {
 				e.data.Sequence = e.pending.PriorEvents[0].Data.Sequence - 1
 				e.observations = nil
 			}
 			failure := refusal.NativeTerminalFailure()
 			failure.Stage, failure.ErrorClass = "event_publication", "event_publication"
-			failure.Error = "Hub rejected the completion request"
+			failure.Error = refusal.Error()
 			failure.ObservedAt = e.scheduler.now().UTC()
 			failure = failure.Public()
 			data := tracker.NativeRunData{
@@ -1100,7 +1139,7 @@ func (e *nativeExecution) flush(ctx context.Context) (err error) {
 	e.pending = nil
 	e.observations = nil
 	e.runtimeDirty = false
-	if runtime != nil && runtime != e.data.Runtime {
+	if runtime != nil && !bytes.Equal(previousRuntime, publishedRuntime) {
 		if e.data.Runtime == nil {
 			e.data.Runtime = runtime
 		} else {

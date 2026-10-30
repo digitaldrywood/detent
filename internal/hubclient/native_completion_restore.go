@@ -20,6 +20,7 @@ type nativeCompletionState struct {
 	Publication              *tracker.NativePRPublication   `json:"publication,omitempty"`
 	Lease                    tracker.NativeLease            `json:"lease"`
 	Data                     tracker.NativeRunData          `json:"data"`
+	Rejected                 *tracker.NativeRunEvent        `json:"rejected,omitempty"`
 	Pending                  *tracker.NativeRunEvent        `json:"pending,omitempty"`
 	Diff                     *tracker.AttemptDiffRequest    `json:"diff,omitempty"`
 	StoredSeq                int64                          `json:"stored_seq"`
@@ -47,7 +48,7 @@ func (e *nativeExecution) CompletionState() json.RawMessage {
 	}
 	data, err := json.Marshal(nativeCompletionState{
 		Publication: e.publication, Observations: e.observations,
-		Lease: e.claim.lease, Data: e.data, Pending: e.pending,
+		Lease: e.claim.lease, Data: e.data, Pending: e.pending, Rejected: e.rejected,
 		Diff: e.lastDiff, StoredSeq: e.storedSeq,
 		WorktreeState: e.worktreeState, WorktreeHead: e.worktreeHead,
 		Repository: e.repository, ConversationContinuation: e.conversationContinuation,
@@ -176,7 +177,7 @@ func (s *Scheduler) RestoreCompletion(ctx context.Context, request orchestrator.
 	claim = nativeClaim{source: source, lease: renewed, recovery: recovery, deadline: nativeLeaseDeadline(started, renewed)}
 	execution := &nativeExecution{
 		publication: state.Publication, observations: state.Observations,
-		scheduler: s, claim: claim, data: state.Data, pending: state.Pending,
+		scheduler: s, claim: claim, data: state.Data, pending: state.Pending, rejected: state.Rejected,
 		lastDiff: state.Diff, storedSeq: state.StoredSeq,
 		worktreeState: state.WorktreeState, worktreeHead: state.WorktreeHead,
 		sourceRequired: state.SourceRequired, retainedSource: state.RetainedSource,

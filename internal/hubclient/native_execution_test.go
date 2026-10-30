@@ -1700,12 +1700,19 @@ func TestNativePublicationFailureReleasesMovedItem(t *testing.T) {
 		name, state string
 		revoked     bool
 	}{
+		{name: "operator hold", state: "Blocked"},
 		{name: "moved to Todo", state: "Todo"},
 		{name: "moved to Done", state: "Done"},
 		{name: "revoked in place", state: "In Progress", revoked: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			h := newNativeChangeHub(t, true)
+			h := newNativeChangeHubTransport(t, "In Review", []tracker.NativeState{
+				{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}},
+				{Name: "In Progress", Dispatchable: true, Transitions: []string{"In Review", "Done", "Todo", "Blocked"}},
+				{Name: "In Review", Transitions: []string{"In Progress", "Done"}},
+				{Name: "Blocked", Transitions: []string{"Todo"}},
+				{Name: "Done", Terminal: true, Transitions: []string{"Todo"}},
+			}, true)
 			issue := h.createInProgress(t, "publication recovery")
 			h.claim(t, issue.ID)
 			execution := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
@@ -1751,6 +1758,10 @@ func TestNativePublicationFailureReleasesMovedItem(t *testing.T) {
 			h.scheduler.mu.Unlock()
 			if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); err != nil && !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
 				t.Fatalf("moved item retained transient publication failure: %v", err)
+			}
+			current, err = h.admin.Issue(t.Context(), tracker.NativeWorkItemID(issue.ID))
+			if err != nil || current.State != test.state {
+				t.Fatalf("completion changed operator intent: %+v %v", current, err)
 			}
 			if !closed || execution.hasWorkers() {
 				t.Fatal("moved item retained its worker process")
@@ -2200,6 +2211,199 @@ func TestCompletedAttemptSurvivesHubOutage(t *testing.T) {
 					t.Fatal("completed claim retained")
 				}
 			})
+		})
+	}
+}
+
+func TestNativeDeterministicCompletionReleasesCapacity(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		observed bool
+		status   int
+		code     string
+	}{
+		{"lost identical acknowledgment", true, 200, ""},
+		{"review observation conflict", true, 409, "run_sequence_conflict"},
+		{"changed idempotency payload", true, 409, "idempotency_conflict"},
+		{"terminal issue contract rejection", false, 422, "invalid_request"},
+		{"review observation validation rejection", true, 422, "invalid_request"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := newNativeChangeHub(t, true)
+			issue := h.createInProgress(t, "Completion")
+			h.claim(t, issue.ID)
+			e := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+			if err := e.Start(t.Context(), tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test"}); err != nil {
+				t.Fatal(err)
+			}
+			item := tracker.NativeWorkItemID(issue.ID)
+			change, err := h.admin.CreateChange(t.Context(), item, tracker.CreateChange{Mutation: nativeMutationKey(), Title: issue.Title})
+			if err != nil {
+				t.Fatal(err)
+			}
+			version := h.publish(t, item, change.ID, nativeChangeFixtureHead("b"))
+			source := tracker.NativeCheckpoint{Resume: "fresh_checkout", Storage: "local_only", Availability: "available", WorktreeState: "clean", HeadSHA: version.HeadSHA, WorkspaceDigest: strings.Repeat("b", 64), ExternalEffect: "none", EffectState: "none"}
+			if err := e.Checkpoint(t.Context(), source); err != nil {
+				t.Fatal(err)
+			}
+			publication := tracker.NativePRPublication{ChangeID: change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA, Repository: "https://github.com/owner/repository", Branch: "work/completion", External: tracker.ChangeExternalReference{Provider: "github", ID: "7", URL: "https://github.com/owner/repository/pull/7"}}
+			e.publication = &publication
+			client := e.claim.source.client.client
+			next := client.httpClient.Transport
+			committed := false
+			replacementInterrupted := false
+			var retries []tracker.NativeRunEvent
+			var original *tracker.NativeRunEvent
+			client.httpClient.Transport = executionRoundTrip(func(r *http.Request) (*http.Response, error) {
+				if strings.HasSuffix(r.URL.Path, "/events") {
+					body, err := io.ReadAll(r.Body)
+					if err != nil {
+						t.Fatal(err)
+					}
+					r.Body = io.NopCloser(strings.NewReader(string(body)))
+					var event tracker.NativeRunEvent
+					if err := json.Unmarshal(body, &event); err != nil {
+						t.Fatal(err)
+					}
+					if original == nil {
+						original = &event
+					}
+					if test.status == 200 {
+						retries = append(retries, event)
+						response, err := next.RoundTrip(r)
+						if err != nil {
+							return nil, err
+						}
+						if !committed {
+							committed = true
+							response.Body.Close()
+							return nil, errors.New("acknowledgment lost")
+						}
+						return response, nil
+					}
+					if test.status == 422 && strings.HasSuffix(event.IdempotencyKey, ":rejected") && !replacementInterrupted {
+						replacementInterrupted = true
+						return nil, errors.New("replacement transport unavailable")
+					}
+					if test.status == 409 {
+						if !committed {
+							other := event
+							if test.code != "idempotency_conflict" {
+								other.IdempotencyKey += ":other"
+							}
+							other.Type = "run.observed"
+							runtime := *other.Data.Runtime
+							runtime.HeartbeatAt = runtime.HeartbeatAt.Add(time.Second)
+							runtime.Phase = "implementation"
+							other.Data.Runtime = &runtime
+							encoded, err := json.Marshal(other)
+							if err != nil {
+								t.Fatal(err)
+							}
+							request := r.Clone(r.Context())
+							request.Body = io.NopCloser(strings.NewReader(string(encoded)))
+							request.ContentLength = int64(len(encoded))
+							response, err := next.RoundTrip(request)
+							if err != nil {
+								t.Fatal(err)
+							}
+							response.Body.Close()
+							if response.StatusCode != 200 {
+								t.Fatalf("conflicting writer: %d", response.StatusCode)
+							}
+							committed = true
+						}
+						return next.RoundTrip(r)
+					}
+					return &http.Response{StatusCode: test.status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":"` + test.code + `","message":"Add or complete these required issue sections: Invariants touched, Safety regression"}`)), Request: r}, nil
+				}
+				return next.RoundTrip(r)
+			})
+			if test.observed {
+				e.mu.Lock()
+				e.data.Runtime = &tracker.NativeRuntimeObservation{Phase: "validation", LocalAttemptID: 42, Generation: 1, HeartbeatAt: time.Now().UTC()}
+				err := e.append(t.Context(), "run.observed", "", nil, true)
+				e.mu.Unlock()
+				if err == nil {
+					t.Fatal("conflict ignored")
+				}
+			}
+			if test.observed {
+				e.data.Runtime.Phase = "completed"
+			}
+			_ = e.PrepareFinish(t.Context(), "failed", "", nil)
+			if test.status == 422 && !test.observed {
+				if err := e.Finish(t.Context(), "failed"); err == nil {
+					t.Fatal("missing terminal refusal")
+				}
+			}
+			if test.status != 200 {
+				saved := e.CompletionState()
+				h.scheduler.mu.Lock()
+				delete(h.scheduler.nativeClaims, issue.ID)
+				delete(h.scheduler.claims, issue.ID)
+				h.scheduler.mu.Unlock()
+				if _, err := h.scheduler.RestoreCompletion(t.Context(), orchestrator.SchedulingRequest{ProjectID: "local", Policy: h.descriptor}, issue, saved); err != nil {
+					t.Fatal(err)
+				}
+				e = h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+				if e.publication == nil || *e.publication != publication {
+					t.Fatal("restart lost PR publication identity")
+				}
+			}
+			if test.status == 200 {
+				if len(retries) != 2 || !reflect.DeepEqual(retries[0], retries[1]) {
+					t.Fatalf("identical replay changed payload: %+v", retries)
+				}
+				recovery, err := h.admin.Recovery(t.Context(), item)
+				if err != nil || recovery.Attempts[0].Sequence != original.Data.Sequence {
+					t.Fatalf("identical replay consumed another sequence: %+v %v", recovery, err)
+				}
+				if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+			if test.status == 409 {
+				recovery, err := h.admin.Recovery(t.Context(), item)
+				if err != nil || len(recovery.Attempts) != 1 {
+					t.Fatalf("read conflicting attempt: %v", err)
+				}
+				attempt := recovery.Attempts[0]
+				if attempt.Sequence != original.Data.Sequence || attempt.Outcome != "" || attempt.Runtime == nil || attempt.Runtime.Phase != "implementation" {
+					t.Fatalf("conflict overwrote another writer or fabricated success: %+v", attempt)
+				}
+			}
+			err = h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed")
+			var rejection *nativeCompletionRejection
+			if !errors.As(err, &rejection) {
+				t.Fatalf("deterministic rejection did not settle: %v", err)
+			}
+			if test.status == 422 && !strings.Contains(rejection.failure.Error, "Invariants touched") {
+				t.Fatalf("issue contract diagnostic lost: %s", rejection.failure.Error)
+			}
+			var saved nativeCompletionState
+			if err := json.Unmarshal(e.CompletionState(), &saved); err != nil {
+				t.Fatal(err)
+			}
+			retained := saved.Rejected
+			if test.status == 409 {
+				retained = saved.Pending
+			}
+			if !reflect.DeepEqual(retained, original) {
+				t.Fatal("rejection lost original event identity")
+			}
+			if _, ok := h.scheduler.claims[issue.ID]; ok {
+				t.Fatal("completed execution retained capacity")
+			}
+			recovery, err := h.admin.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))
+			detail, changeErr := h.admin.Change(t.Context(), item, change.ID)
+			if changeErr != nil || detail.Change.CurrentVersion != version.ID {
+				t.Fatalf("published source changed: %+v %v", detail, changeErr)
+			}
+			if err != nil || len(recovery.Attempts) != 1 || recovery.Attempts[0].ClaimReleasedAt == nil || recovery.Attempts[0].Checkpoint == nil || !reflect.DeepEqual(*recovery.Attempts[0].Checkpoint, source) {
+				t.Fatalf("lease retained: %+v %v", recovery, err)
+			}
 		})
 	}
 }
