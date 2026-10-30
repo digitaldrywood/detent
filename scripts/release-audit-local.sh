@@ -39,7 +39,7 @@ prompt="${prompt//\{BASE\}/$base}"
 prompt="${prompt//\{HEAD\}/$sha}"
 echo "Audit output: $output_dir/codex.log"
 echo "Audit findings: $findings"
-if ! codex exec --sandbox read-only -C "$worktree" -o "$last_message" "$prompt" < /dev/null > "$output_dir/codex.log" 2>&1; then
+if ! codex exec -m gpt-6.1-terra -c model_reasoning_effort="max" --sandbox read-only -C "$worktree" -o "$last_message" "$prompt" < /dev/null > "$output_dir/codex.log" 2>&1; then
   echo "Codex failed; no audit status posted. See $output_dir/codex.log" >&2
   exit 1
 fi
