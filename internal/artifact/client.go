@@ -6,12 +6,12 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"time"
 )
 
 type Client struct {
-	Origin string
-	Token  func(context.Context) (string, error)
+	Origin    string
+	Transport http.RoundTripper
+	Token     func(context.Context) (string, error)
 }
 
 func (c *Client) request(ctx context.Context, method, path string, input, output any) error {
@@ -32,7 +32,7 @@ func (c *Client) request(ctx context.Context, method, path string, input, output
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
-	client := &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	client := &http.Client{Transport: c.Transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	resp, err := client.Do(req)
 	if err != nil {
 		return ErrStorage
@@ -56,7 +56,11 @@ func (c *Client) request(ctx context.Context, method, path string, input, output
 		_, err := io.Copy(io.Discard, io.LimitReader(resp.Body, MaxManifestBytes))
 		return err
 	}
-	return Decode(resp.Body, output, MaxManifestBytes)
+	data, err := io.ReadAll(io.LimitReader(resp.Body, MaxManifestBytes+1))
+	if err != nil {
+		return ErrStorage
+	}
+	return Decode(bytes.NewReader(data), output, MaxManifestBytes)
 }
 
 func (c *Client) Reserve(ctx context.Context, r Reservation) (Upload, error) {

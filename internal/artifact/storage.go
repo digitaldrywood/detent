@@ -45,7 +45,7 @@ func NewStorage(ctx context.Context, cfg StorageConfig) (Storage, error) {
 	if cfg.Endpoint != "" && !ValidOrigin(cfg.Endpoint) {
 		return nil, ErrInvalid
 	}
-	client := &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	loaded, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(cfg.Region), awsconfig.WithHTTPClient(client), awsconfig.WithRetryMaxAttempts(2))
 	if err != nil {
 		return nil, ErrStorage

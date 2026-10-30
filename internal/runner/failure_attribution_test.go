@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/gate"
@@ -52,6 +53,8 @@ func TestFailureDecisionControlsRetryAndPublication(t *testing.T) {
 		{"deterministic failure", "issue", failedStep("validation", &workspace.CommandError{Command: "go", ExitCode: 1, Output: "assertion failed"}), 3, 1},
 		{"unknown validation", "unknown", failedStep("validation", errors.New("command failed")), 3, 1},
 		{"unknown hook", "instance", fmt.Errorf("%w: hook failed", ErrWorkspacePreparation), 2, 0},
+		{"artifact completion", "instance", artifact.ErrStorage, 2, 0},
+		{"step receipt restore", "instance", failedStep("commit", artifact.ErrStorage), 2, 0},
 		{"transport", "instance", fmt.Errorf("receive: %w", io.ErrUnexpectedEOF), 2, 0},
 		{"startup", "instance", backendcapacity.NewError(backendcapacity.Scope{}, backendcapacity.Details{Type: backendcapacity.ErrorTypeTransientOverload, Kind: backendcapacity.StartupFailureKind}, errors.New("backend exited")), 2, 0},
 		{"prior issue verdict for hook", "instance", RestoreFailureDecision(fmt.Errorf("%w: hook failed", ErrWorkspacePreparation), tracker.FailureAttribution{Outcome: "issue", Reason: "prior verdict"}), 2, 0},

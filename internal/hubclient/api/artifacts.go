@@ -37,3 +37,5 @@ func (c *NativeConnector) FetchArtifacts(ctx context.Context, item tracker.Nativ
 func (c *NativeClient) ArtifactReader(token string) *NativeClient {
 	return &NativeClient{organization: c.organization, project: c.project, client: &Client{baseURL: c.client.baseURL, httpClient: c.client.httpClient, tokenSource: func() string { return token }}}
 }
+
+func (c *Client) ArtifactTransport() http.RoundTripper { return c.httpClient.Transport }
