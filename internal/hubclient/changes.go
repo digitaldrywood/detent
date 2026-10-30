@@ -188,7 +188,7 @@ func (c *NativeClient) ReviewChange(ctx context.Context, item tracker.NativeWork
 		return result, errors.New("valid Change Request and version identities are required")
 	}
 	err = c.client.request(ctx, http.MethodPost, c.base()+path+"/reviews", request, &result)
-	return result, err
+	return result, auditPublicationFailure(err, request)
 }
 
 func (c *NativeClient) ChangeViewedFiles(ctx context.Context, item tracker.NativeWorkItemID, id, version string) ([]tracker.ChangeViewedFile, error) {

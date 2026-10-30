@@ -34,7 +34,15 @@ type stepError struct {
 func (e *stepError) Error() string { return fmt.Sprintf("%s: %v", e.step, e.err) }
 func (e *stepError) Unwrap() error { return e.err }
 func (e *stepError) NativeTerminalFailure() tracker.NativeTerminalFailure {
-	return tracker.NativeTerminalFailure{Stage: e.step, ErrorClass: e.step, Operation: e.step}
+	failure := tracker.NativeTerminalFailure{Stage: e.step, ErrorClass: e.step, Operation: e.step}
+	var carrier interface {
+		NativeTerminalFailure() tracker.NativeTerminalFailure
+	}
+	if errors.As(e.err, &carrier) {
+		inner := carrier.NativeTerminalFailure()
+		failure.Publication, failure.Rejection = inner.Publication, inner.Rejection
+	}
+	return failure
 }
 
 func failedStep(step string, err error) error {

@@ -107,3 +107,21 @@ func (acceptanceRejectionError) Error() string { return "private-payload token=p
 func (acceptanceRejectionError) NativeTerminalFailure() tracker.NativeTerminalFailure {
 	return tracker.NativeTerminalFailure{Rejection: &tracker.PublicationRejection{Category: "acceptance_validation", Field: "validator.session_id"}}
 }
+
+func TestAuditPublicationSurvivesStepFailure(t *testing.T) {
+	for _, step := range []string{"security_audit_publication", "security_audit"} {
+		t.Run(step, func(t *testing.T) {
+			failure := nativeTerminalFailure(fmt.Errorf("%w: %w", ErrValidatorInfrastructure, failedStep(step, auditPublicationCarrier{})), time.Now(), false)
+			if failure.Publication == nil || failure.Publication.RequestBytes != 1234 || failure.Publication.HTTPStatus != 413 || failure.Rejection == nil || failure.Rejection.Field != "session_id" || failure.Stage != "security_audit_publication" {
+				t.Fatalf("lost audit publication diagnostics: %+v", failure)
+			}
+		})
+	}
+}
+
+type auditPublicationCarrier struct{}
+
+func (auditPublicationCarrier) Error() string { return "private audit response" }
+func (auditPublicationCarrier) NativeTerminalFailure() tracker.NativeTerminalFailure {
+	return tracker.NativeTerminalFailure{Rejection: &tracker.PublicationRejection{Category: "security_audit", Field: "session_id"}, Publication: &tracker.PublicationFailure{Operation: "security_audit/review", Code: "http_rejection", HTTPStatus: 413, RequestBytes: 1234}}
+}

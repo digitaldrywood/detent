@@ -8,6 +8,7 @@ import (
 )
 
 type NativeTerminalFailure struct {
+	Publication      *PublicationFailure   `json:"publication,omitempty"`
 	Decision         *FailureAttribution   `json:"decision,omitempty"`
 	Rejection        *PublicationRejection `json:"rejection,omitempty"`
 	Error            string                `json:"error,omitempty"`
@@ -32,6 +33,16 @@ var nativeFailureAssignment = regexp.MustCompile(`[a-zA-Z_][a-zA-Z0-9_]*\s*=\s*(
 
 func (f NativeTerminalFailure) Public() NativeTerminalFailure {
 	text := NativeFinalization{}
+	if f.Publication != nil {
+		publication := *f.Publication
+		if publication.Valid() {
+			f.Publication = &publication
+			f.Stage, f.ErrorClass = "security_audit_publication", "security_audit_publication"
+			f.Error = "Security audit publication failed; private error output omitted"
+		} else {
+			f.Publication = nil
+		}
+	}
 	if f.ErrorClass == "git_push" {
 		f.Error, _ = publicGateOutput(f.Error)
 	}
