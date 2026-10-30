@@ -3,6 +3,7 @@ package progresscheck
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -10,11 +11,12 @@ import (
 type fakeBackend struct {
 	decision Decision
 	calls    int
+	err      error
 }
 
 func (b *fakeBackend) Decide(context.Context, Request) (Decision, error) {
 	b.calls++
-	return b.decision, nil
+	return b.decision, b.err
 }
 
 type fakeOwner struct {
@@ -68,13 +70,15 @@ func refusalRequest() Request {
 
 func TestCheckDecisionReplayAndEvidenceChange(t *testing.T) {
 	tests := []struct {
-		name          string
-		decision      Decision
-		changedSource bool
+		name            string
+		decision        Decision
+		changedSource   bool
+		backendRecovery bool
 	}{
-		{"repaired assertion progresses", Decision{Outcome: Progressing, Diagnosis: "attempt-2" + ": the retained failure identifies missing validation evidence; the failing step has not produced its required receipt", Convergence: "The failing validation now has a matching successful command receipt after the assertion was repaired", Reason: "The failing assertion has been repaired", Evidence: []string{"attempt-2"}}, true},
-		{"1748 repeated publication refusal reroutes", Decision{Outcome: Reroute, Step: "security_audit", Diagnosis: "attempt-1" + ": the retained failure identifies missing validation evidence; the failing step has not produced its required receipt", Instruction: "Repair the missing validation evidence in the source finalization path and verify the previously failing check on the pinned source", Reason: "Produce the missing audit receipt before repeating publication", Evidence: []string{"attempt-1", "attempt-2"}}, false},
-		{"Detent refusal reports defect", Decision{Outcome: SystemDefect, Diagnosis: "attempt-1" + ": the retained failure identifies missing validation evidence; the failing step has not produced its required receipt", Reason: "The publication protocol cannot carry the required audit evidence", Evidence: []string{"attempt-1", "attempt-2"}, DefectKey: "publication-audit-protocol", DefectTitle: "Publication cannot carry audit evidence", DefectBody: "Two unchanged-source attempts received the same 422 refusal"}, false},
+		{"repaired assertion progresses", Decision{Outcome: Progressing, Diagnosis: "attempt-2" + ": the retained failure identifies missing validation evidence; the failing step has not produced its required receipt", Convergence: "The failing validation now has a matching successful command receipt after the assertion was repaired", Reason: "The failing assertion has been repaired", Evidence: []string{"attempt-2"}}, true, false},
+		{"1748 repeated publication refusal reroutes", Decision{Outcome: Reroute, Step: "security_audit", Diagnosis: "attempt-1" + ": the retained failure identifies missing validation evidence; the failing step has not produced its required receipt", Instruction: "Repair the missing validation evidence in the source finalization path and verify the previously failing check on the pinned source", Reason: "Produce the missing audit receipt before repeating publication", Evidence: []string{"attempt-1", "attempt-2"}}, false, false},
+		{"Detent refusal reports defect", Decision{Outcome: SystemDefect, Diagnosis: "attempt-1" + ": the retained failure identifies missing validation evidence; the failing step has not produced its required receipt", Reason: "The publication protocol cannot carry the required audit evidence", Evidence: []string{"attempt-1", "attempt-2"}, DefectKey: "publication-audit-protocol", DefectTitle: "Publication cannot carry audit evidence", DefectBody: "Two unchanged-source attempts received the same 422 refusal"}, false, false},
+		{"backend recovery preserves evidence", Decision{Outcome: Progressing, Diagnosis: "attempt-2: publication failed because its audit receipt was missing; the instruction-loading helper subsequently prevented the progress check", Convergence: "The repaired instruction-loading helper now permits the progress check to return a decision using the preserved source and receipts", Reason: "Backend recovered", Evidence: []string{"attempt-2"}}, false, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -84,6 +88,22 @@ func TestCheckDecisionReplayAndEvidenceChange(t *testing.T) {
 			}
 			backend := &fakeBackend{decision: tt.decision}
 			owner := &fakeOwner{}
+			if tt.backendRecovery {
+				request.Receipts = []Receipt{{ID: "review", Step: "review", Outcome: "pass", BaseSHA: "base", HeadSHA: "head"}, {ID: "acceptance", Step: "acceptance", Outcome: "pass", BaseSHA: "base", HeadSHA: "head"}}
+				before := request
+				before.Attempts = append([]Attempt(nil), request.Attempts...)
+				before.Receipts = append([]Receipt(nil), request.Receipts...)
+				backend.err = errors.New("thread/start instruction helper denied")
+				record, checked, err := Check(t.Context(), request, backend, owner)
+				if !errors.Is(err, ErrBackend) || checked || record.RequestID != "" || owner.comments != 0 || len(owner.records) != 0 {
+					t.Fatalf("failed backend retained a decision: %+v %t %v", record, checked, err)
+				}
+				if !reflect.DeepEqual(request, before) {
+					t.Fatal("backend failure changed source or receipts")
+				}
+				backend.err = nil
+				backend.calls = 0
+			}
 			first, checked, err := Check(t.Context(), request, backend, owner)
 			if err != nil || !checked {
 				t.Fatalf("Check = %v, %v", checked, err)
