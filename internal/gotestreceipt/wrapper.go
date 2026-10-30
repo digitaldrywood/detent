@@ -76,7 +76,9 @@ func RunWrapper(args []string, getenv func(string) string, stdin io.Reader, stdo
 	}
 	if err := checkEligibility(ctx, args[0]); err != nil {
 		fmt.Fprintf(stderr, "%s: receipt not eligible: %v\n", WrapperName, err)
-		_ = client.Refuse(ctx, Refusal{Package: packageName(pwd, env), Reason: err.Error()})
+		if err := client.Refuse(ctx, Refusal{Package: packageName(pwd, env), Reason: err.Error()}); err != nil {
+			fmt.Fprintf(stderr, "%s: report refusal: %v\n", WrapperName, err)
+		}
 		return run(args, true, stdin, stdout, stderr)
 	}
 	for _, candidate := range candidates {
