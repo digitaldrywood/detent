@@ -6,6 +6,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/operatorfailure"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -24,10 +25,10 @@ func applyHealthAttemptData(a *healthRateAttempt, data tracker.NativeRunData) {
 	if data.Runtime != nil {
 		projected.Runtime = &tracker.NativeRuntimeObservation{HeartbeatAt: data.Runtime.HeartbeatAt, Landing: data.Runtime.Landing}
 	}
-	text, _ := failureFromAttempt(projected, a.Status)
+	text, _ := operatorfailure.FromAttempt(projected, a.Status)
 	a.Recovery = healthRecoveryReason(text)
 	if text != "" && a.Recovery == "" {
-		a.Signature = normalizeFailureSignature(text)
+		a.Signature = operatorfailure.Normalize(text)
 	}
 	if r := data.Runtime; r != nil {
 		a.Heartbeat = r.HeartbeatAt

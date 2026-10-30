@@ -376,14 +376,14 @@ func (s *Service) readBillingView(ctx context.Context, pages ...creditPageReques
 	view.ComparisonPlans = []hostedComparisonPlan{}
 	if runtimePlans := s.database.plans(); runtimePlans != nil {
 		for _, tier := range hostedTiers() {
-			if !tier.offered || !slices.ContainsFunc(runtimePlans.Plans, func(plan HostedPlan) bool { return plan.PlanReference == tier.PlanReference }) {
+			if !tier.Offered || !slices.ContainsFunc(runtimePlans.Plans, func(plan HostedPlan) bool { return plan.PlanReference == tier.PlanReference }) {
 				continue
 			}
 			plan, err := s.database.readHostedPlan(ctx, s.database.reader, tier.PlanReference)
 			if err != nil {
 				return hostedBillingView{}, err
 			}
-			comparison := hostedComparisonPlan{HostedPlan: plan, IncludedAICreditMicros: plan.includedAICreditMicros()}
+			comparison := hostedComparisonPlan{HostedPlan: plan, IncludedAICreditMicros: plan.IncludedAICreditMicros()}
 			if cfg := s.hostedBillingConfig(); cfg != nil {
 				for _, price := range cfg.Prices {
 					if price.Plan == plan.PlanReference {

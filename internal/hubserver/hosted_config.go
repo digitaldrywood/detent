@@ -84,7 +84,7 @@ func (c *HostedConfig) validate() error {
 		if c.PlanID != "" || c.StorageQuotaBytes != 0 || c.EventQuota != 0 {
 			return errors.New("use entitlements instead of legacy plan metadata fields")
 		}
-		if err := c.Plans.validate(); err != nil {
+		if err := c.Plans.Validate(); err != nil {
 			return err
 		}
 	}

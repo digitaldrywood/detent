@@ -16,6 +16,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/emailtemplate"
+	"github.com/digitaldrywood/detent/internal/operatorfailure"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -39,12 +40,12 @@ var healthEmailPrivateText = regexp.MustCompile(`(?i)\bauthorization\s*[:=]\s*(?
 var healthEmailSubjectID = regexp.MustCompile(`^(?:wi|prj|org|runner|machine)_[0-9a-f]{32}$`)
 
 func healthEmailText(value string) string {
-	return boundedFailureText(healthEmailPrivateText.ReplaceAllStringFunc(failureFirstLine(value), func(match string) string {
+	return operatorfailure.BoundedText(healthEmailPrivateText.ReplaceAllStringFunc(operatorfailure.FirstLine(value), func(match string) string {
 		if healthEmailSubjectID.MatchString(match) {
 			return match
 		}
 		return "[redacted]"
-	}), maxFailureExampleLength)
+	}), operatorfailure.MaxExampleLength)
 }
 
 func (s *Service) commitHealthEvaluation(ctx context.Context, organization tracker.OrganizationID, now time.Time, findings []healthFinding, unavailable []healthBaselineUnavailable) error {

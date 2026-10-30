@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/operatorfailure"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -230,7 +231,7 @@ ORDER BY r.report_failed_at DESC,r.id DESC LIMIT ?`
 		} else if payload.Runtime != nil {
 			data.Runtime = &tracker.NativeRuntimeObservation{Landing: payload.Runtime.Landing, Validation: payload.Runtime.Validation}
 		}
-		failure.example, failure.class = failureFromAttempt(data, status)
+		failure.example, failure.class = operatorfailure.FromAttempt(data, status)
 		if failure.example == "" {
 			continue
 		}

@@ -26,8 +26,6 @@ const (
 	// usagePeriodLayout is how attempt_usage.period is stored: a fixed-width
 	// UTC hour start that sorts and compares as a string.
 	usagePeriodLayout = "2006-01-02T15:04:05Z"
-	// usageDayLayout is how a daily report bucket is written.
-	usageDayLayout = "2006-01-02"
 )
 
 // validateNativeRunUsage checks the usage a run event carries. Usage belongs
@@ -79,7 +77,7 @@ func recordAttemptUsage(ctx context.Context, tx *sql.Tx, scope nativeScope, requ
 	}
 	attempt := request.Data.AttemptID
 	period := usagePeriod(now)
-	currency := prices.currency()
+	currency := prices.CurrencyName()
 	for _, entry := range usage {
 		if entry.UsageKind == "incremental" {
 			continue
@@ -125,11 +123,11 @@ func usageDelta(total, recorded tracker.NativeUsage, prices UsageConfig) tracker
 		Output:      max(total.Output-recorded.Output, 0),
 	}
 	runnerCurrency := strings.ToUpper(strings.TrimSpace(total.Currency))
-	if total.CostEstimate > 0 && (runnerCurrency == "" || runnerCurrency == prices.currency()) {
+	if total.CostEstimate > 0 && (runnerCurrency == "" || runnerCurrency == prices.CurrencyName()) {
 		delta.CostEstimate = max(total.CostEstimate-recorded.CostEstimate, 0)
 		return delta
 	}
-	if estimated, _, found := prices.estimate(strings.TrimSpace(total.Model), delta.Input, delta.CachedInput, delta.Output); found {
+	if estimated, _, found := prices.Estimate(strings.TrimSpace(total.Model), delta.Input, delta.CachedInput, delta.Output); found {
 		delta.CostEstimate = estimated
 	}
 	return delta

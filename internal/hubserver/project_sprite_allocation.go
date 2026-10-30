@@ -11,6 +11,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/spritenames"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -153,7 +154,7 @@ func spriteAllocationRunnerAllowed(ctx context.Context, q nativeQueryer, scope n
 		if err := q.QueryRowContext(ctx, `SELECT hostname FROM machines WHERE id=? AND organization_id=?`, machine, scope.organization).Scan(&hostname); err != nil {
 			return false, err
 		}
-		if name == hostname && validSpritesSlug(name) {
+		if name == hostname && spritenames.ValidSlug(name) {
 			return true, nil
 		}
 		placement, _, err := readPlacementPolicy(ctx, q, scope)

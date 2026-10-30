@@ -1,4 +1,4 @@
-package hubserver
+package spritenames
 
 import (
 	"errors"
@@ -23,12 +23,12 @@ func TestSpriteNames(t *testing.T) {
 		{name: "repeated pair gets suffix", values: []int{0}, taken: map[string]bool{"sprite-bright-badger": true}, want: "sprite-bright-badger-0"},
 		{name: "taken suffix is retried", values: []int{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}, taken: map[string]bool{"sprite-bright-badger": true, "sprite-bright-badger-0": true}, want: "sprite-bright-badger-1"},
 		{name: "suffix space upper boundary", values: []int{-1}, taken: map[string]bool{"sprite-zippy-wren": true}, want: "sprite-zippy-wren-zzzzz"},
-		{name: "exhausted names", values: []int{0}, taken: map[string]bool{"sprite-bright-badger": true, "sprite-bright-badger-0": true}, err: errSpriteNamesExhausted},
+		{name: "exhausted names", values: []int{0}, taken: map[string]bool{"sprite-bright-badger": true, "sprite-bright-badger-0": true}, err: ErrExhausted},
 		{name: "lookup failure", values: []int{0}, fail: lookupErr, err: lookupErr},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			index := 0
-			names := spriteNameGenerator{intN: func(n int) int {
+			names := Generator{intN: func(n int) int {
 				value := test.values[index%len(test.values)]
 				index++
 				if value < 0 {
@@ -36,11 +36,11 @@ func TestSpriteNames(t *testing.T) {
 				}
 				return value
 			}}
-			got, err := names.next(func(name string) (bool, error) { return test.taken[name], test.fail })
+			got, err := names.Next(func(name string) (bool, error) { return test.taken[name], test.fail })
 			if got != test.want || !errors.Is(err, test.err) {
 				t.Fatalf("name=%q err=%v, want %q err=%v", got, err, test.want, test.err)
 			}
-			if err == nil && (test.taken[got] || !shape.MatchString(got) || !validSpritesSlug(got) || len(got) > 63) {
+			if err == nil && (test.taken[got] || !shape.MatchString(got) || !ValidSlug(got) || len(got) > 63) {
 				t.Fatalf("invalid or taken name %q", got)
 			}
 		})
@@ -73,7 +73,7 @@ func TestSpriteNameWords(t *testing.T) {
 	}
 	for _, adjective := range spriteAdjectives {
 		for _, noun := range spriteNouns {
-			if name := "sprite-" + adjective + "-" + noun + "-zzzzz"; !validSpritesSlug(name) {
+			if name := "sprite-" + adjective + "-" + noun + "-zzzzz"; !ValidSlug(name) {
 				t.Fatalf("word pair exceeds slug limits: %q", name)
 			}
 		}

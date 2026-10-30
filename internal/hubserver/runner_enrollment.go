@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/spritenames"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -388,7 +389,7 @@ func (s *Service) redeemRunnerEnrollment(c echo.Context) error {
 	if !request.Valid() || !runnerauth.ValidCredential(request.Credential) || token == request.Credential || strings.TrimSpace(request.Hostname) == "" || len(request.Hostname) > 200 || len(request.DisplayName) > 200 || request.Capacity < 0 || strings.TrimSpace(request.Version) == "" || len(request.Version) > 100 || !validRunnerPlatform(request.OS, request.Architecture) {
 		return s.nativeAPIError(c, nativePublicInvalid("Host identity, a separate generated credential, hostname, version and nonnegative capacity are required"))
 	}
-	if request.SpriteName != "" && (request.SpriteName != request.Hostname || !validSpritesSlug(request.SpriteName)) {
+	if request.SpriteName != "" && (request.SpriteName != request.Hostname || !spritenames.ValidSlug(request.SpriteName)) {
 		return s.nativeAPIError(c, nativePublicInvalid("Sprite name must match the runner hostname"))
 	}
 	if err := request.BackendIsolation.Validate(); err != nil {
