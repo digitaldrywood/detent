@@ -191,7 +191,7 @@ func (s *Session) recordRun(ctx context.Context, key string, request executionRe
 	if after, err := SourceDigest(request.Directory); err != nil || after != source {
 		return errors.Join(errors.New("test package source changed while the test ran"), err)
 	}
-	inputs = slices.Compact(slices.Sorted(slices.Values(append(inputs, early...))))
+	inputs = compactInputs(slices.Compact(slices.Sorted(slices.Values(append(inputs, early...)))), env)
 	if err := ValidateInputs(inputs); err != nil {
 		return err
 	}
