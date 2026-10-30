@@ -541,8 +541,17 @@ func archiveProjectionDefault(table, column string) json.RawMessage {
 			return json.RawMessage("null")
 		}
 	case "native_attempts":
-		if slices.Contains([]string{"worker_cleanup_required", "cleanup_acknowledged_at"}, column) {
+		if slices.Contains([]string{"worker_cleanup_required", "cleanup_acknowledged_at", "implementing_session_id"}, column) {
 			return json.RawMessage("null")
+		}
+	case "change_versions":
+		switch column {
+		case "implementing_session_id", "implementing_machine_id":
+			return json.RawMessage("null")
+		case "session_history_sequence", "session_history_candidate", "session_history_state":
+			return json.RawMessage("0")
+		case "session_history_machine_id":
+			return json.RawMessage(`""`)
 		}
 	case "collaboration_events":
 		switch column {
