@@ -205,6 +205,9 @@ func (s *Service) prepareChangeMutation(ctx context.Context, scope nativeScope, 
 	}
 	response := any(prepared.record)
 	if prepared.publication != nil {
+		if _, err := prepareChangeContent(ctx, string(scope.organization), []byte(prepared.publication.raw)); err != nil {
+			return ctx, err
+		}
 		response = prepared.publication.version
 	}
 	responseRaw, err := json.Marshal(response)
