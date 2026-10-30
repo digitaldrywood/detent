@@ -765,7 +765,9 @@ func TestChangeWorkerRequiresCurrentAttempt(t *testing.T) {
 
 func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 	t.Parallel()
-	f := newChangeFixture(t, nil)
+	now := time.Date(2026, time.October, 25, 12, 0, 0, 0, time.UTC)
+	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }})
+	f := newChangeFixture(t, service)
 	descriptor := hubTestPolicy()
 	descriptor.Gates.GitHubPullRequest = true
 	descriptor = descriptor.WithID()
