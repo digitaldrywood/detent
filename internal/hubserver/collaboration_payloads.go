@@ -40,7 +40,21 @@ func collaborationPayloadValues(ctx context.Context, tx *sql.Tx, scope nativeSco
 			}
 		}
 		if ref.Validate(string(scope.organization)) != nil {
-			return "", nil, errors.New("scheduler payload archive was not prepared")
+			if claimPrepared(ctx) != nil {
+				return "", nil, errors.New("scheduler payload archive was not prepared")
+			}
+			payload, err := schedulerPayloadArchive(scope, raw)
+			if err != nil {
+				return "", nil, err
+			}
+			key, err := storedPayloadKey(ctx, string(scope.organization), payload)
+			if err != nil {
+				return "", nil, err
+			}
+			ref, err = readPayloadReference(ctx, tx, string(scope.organization), key)
+			if err != nil {
+				return "", nil, err
+			}
 		}
 		version, raw = 1, "{}"
 	}
