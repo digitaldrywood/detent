@@ -128,8 +128,11 @@ func TestRunHistoryUpgradesCompletedVersionOne(t *testing.T) {
 				if envelope && pass == 1 {
 					want++
 				}
-				if err := f.service.convertStorageFamily(f.service.freshRunDetailContext(t.Context()), scope, storageConversionFamilies[0], f.now); err != nil {
-					t.Fatal(err)
+				ctx := context.WithValue(f.service.freshRunDetailContext(t.Context()), storageBatchKey{}, &storageBatchBudget{})
+				for range storageConversionRows {
+					if err := f.service.convertStorageFamilyTurn(ctx, storageConversionFamilies[0], storageFamilyCursor{}, f.now); err != nil {
+						t.Fatal(err)
+					}
 				}
 				var converted int
 				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE work_item_id=? AND payload_object_key<>'' AND data_json='{}'", issue.WorkItemID).Scan(&converted); err != nil || converted != want {
@@ -139,10 +142,10 @@ func TestRunHistoryUpgradesCompletedVersionOne(t *testing.T) {
 			var key, attempt string
 			var version int
 			var complete bool
-			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT format_version,complete FROM storage_conversion_progress WHERE family='runs' AND aggregate_id=?", issue.WorkItemID).Scan(&version, &complete); err != nil || version != 2 || !complete {
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT format_version,complete FROM storage_conversion_progress WHERE family='runs' AND aggregate_id=?", issue.WorkItemID).Scan(&version, &complete); err != nil || version != storageConversionVersion || !complete {
 				t.Fatalf("run conversion version=%d complete=%t: %v", version, complete, err)
 			}
-			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT payload_object_key,run_attempt_id FROM collaboration_events WHERE work_item_id=? AND type='run.finished' ORDER BY sequence DESC LIMIT 1", issue.WorkItemID).Scan(&key, &attempt); err != nil {
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT "+collaborationPayloadColumn("")+",run_attempt_id FROM collaboration_events WHERE work_item_id=? AND type='run.finished' ORDER BY sequence DESC LIMIT 1", issue.WorkItemID).Scan(&key, &attempt); err != nil {
 				t.Fatal(err)
 			}
 			if attempt != data.AttemptID {
@@ -239,8 +242,11 @@ func TestRunHistoryConversionAdvancesPastActiveIssues(t *testing.T) {
 	f.commit(t, tx)
 	convert := func() {
 		t.Helper()
-		if err := f.service.convertStorageFamily(f.service.freshRunDetailContext(t.Context()), scope, storageConversionFamilies[0], f.now); err != nil {
-			t.Fatal(err)
+		ctx := context.WithValue(f.service.freshRunDetailContext(t.Context()), storageBatchKey{}, &storageBatchBudget{})
+		for range storageConversionRows {
+			if err := f.service.convertStorageFamilyTurn(ctx, storageConversionFamilies[0], storageFamilyCursor{}, f.now); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
 	assertConverted := func(item tracker.NativeWorkItemID, want int) {
@@ -251,11 +257,17 @@ func TestRunHistoryConversionAdvancesPastActiveIssues(t *testing.T) {
 		}
 	}
 	convert()
-	assertConverted(active.WorkItemID, 0)
-	assertConverted(eligible.WorkItemID, 0)
+	var firstPass int
+	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE work_item_id IN (?,?) AND type='run.finished' AND payload_object_key<>''", active.WorkItemID, eligible.WorkItemID).Scan(&firstPass); err != nil || firstPass != storageConversionRows {
+		t.Fatalf("first pass converted=%d, want %d: %v", firstPass, storageConversionRows, err)
+	}
 	convert()
 	assertConverted(eligible.WorkItemID, 1)
-	assertConverted(active.WorkItemID, 0)
+	assertConverted(active.WorkItemID, storageConversionRows)
+	var live bool
+	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT released_at IS NULL FROM leases WHERE lease_id=?", lease.ID).Scan(&live); err != nil || !live {
+		t.Fatalf("historical conversion changed the live lease: live=%v error=%v", live, err)
+	}
 	if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE leases SET released_at=? WHERE lease_id=?`, formatHubTime(f.now), lease.ID); err != nil {
 		t.Fatal(err)
 	}
