@@ -258,7 +258,7 @@ func TestNativeRetryResumesPersistedSessionAfterRunnerRestart(t *testing.T) {
 			t.Parallel()
 			fresh := test.changedHead || test.changedModel || test.conversationModel != "" || test.dirty || test.rebase || test.conversationEffort != "" || test.configuredEffort != test.priorEffort || test.overrideEffort != "" && test.overrideEffort != test.priorEffort || test.legacyEffort && test.priorEffort != test.configuredEffort
 			ctx := t.Context()
-			path := filepath.Join(t.TempDir(), "sessions.db")
+			path := storetest.NewDatabasePath(t)
 			db, err := store.Open(ctx, store.Config{Path: path})
 			if err != nil {
 				t.Fatal(err)
