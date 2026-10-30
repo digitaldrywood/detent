@@ -355,12 +355,12 @@ func newNativeArchiveQuery(ctx context.Context, query nativeQueryer, section *at
 			if len(row) != len(table.Columns) {
 				return nil, attachment.ErrInvalid
 			}
-			for position, index := range indexes {
-				if index < 0 {
-					value, _ := archiveProjectionColumn(table.Name, columns[position])
-					flat = append(flat, value)
-				} else {
+			for position, column := range columns {
+				if index := indexes[position]; index >= 0 {
 					flat = append(flat, row[index])
+				} else {
+					value, _ := archiveProjectionColumn(table.Name, column)
+					flat = append(flat, json.RawMessage(value))
 				}
 			}
 		}
@@ -499,31 +499,31 @@ func archiveConversationQuery(ctx context.Context, query nativeQueryer, id strin
 	return archiveQuery(ctx, query, record.WorkItemID, "conversation", id, before)
 }
 
-var archiveProjectedColumns = map[string]map[string]json.RawMessage{
+var archiveProjectedColumns = map[string]map[string]string{
 	"native_attempts": {
-		"worker_cleanup_required": json.RawMessage("null"),
-		"cleanup_acknowledged_at": json.RawMessage("null"),
-		"implementing_session_id": json.RawMessage("null"),
+		"worker_cleanup_required": "null",
+		"cleanup_acknowledged_at": "null",
+		"implementing_session_id": "null",
 	},
 	"change_versions": {
-		"implementing_session_id":    json.RawMessage("null"),
-		"implementing_machine_id":    json.RawMessage("null"),
-		"session_history_sequence":   json.RawMessage("0"),
-		"session_history_candidate":  json.RawMessage("0"),
-		"session_history_state":      json.RawMessage("0"),
-		"session_history_machine_id": json.RawMessage(`""`),
+		"implementing_session_id":    "null",
+		"implementing_machine_id":    "null",
+		"session_history_sequence":   "0",
+		"session_history_candidate":  "0",
+		"session_history_state":      "0",
+		"session_history_machine_id": `""`,
 	},
 	"collaboration_events": {
-		"archive_operation":     json.RawMessage("null"),
-		"archive_from_state":    json.RawMessage("null"),
-		"archive_to_state":      json.RawMessage("null"),
-		"archive_attempt_id":    json.RawMessage("null"),
-		"archive_outcome":       json.RawMessage("null"),
-		"archive_landed_commit": json.RawMessage("null"),
+		"archive_operation":     "null",
+		"archive_from_state":    "null",
+		"archive_to_state":      "null",
+		"archive_attempt_id":    "null",
+		"archive_outcome":       "null",
+		"archive_landed_commit": "null",
 	},
 }
 
-func archiveProjectionColumn(table, column string) (json.RawMessage, bool) {
+func archiveProjectionColumn(table, column string) (string, bool) {
 	value, ok := archiveProjectedColumns[table][column]
 	return value, ok
 }
