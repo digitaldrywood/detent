@@ -654,7 +654,7 @@ func (s *Scheduler) reconcileReleasedExecution(ctx context.Context, source *Nati
 		return fmt.Errorf("item path: %w", err)
 	}
 	var attempt tracker.NativeAttempt
-	if err := source.client.client.request(ctx, http.MethodGet, source.client.base()+path+"/attempts/"+reference.AttemptID, nil, &attempt); err != nil {
+	if err := source.client.client.request(ctx, http.MethodGet, source.client.base()+path+"/attempts/"+reference.AttemptID+"?view=cleanup", nil, &attempt); err != nil {
 		return fmt.Errorf("read attempt: %w", err)
 	}
 	if attempt.AttemptID != reference.AttemptID || attempt.MachineID != identity.MachineID || attempt.RunnerID != identity.RunnerID || attempt.ClaimReleasedAt == nil || attempt.CleanupAcknowledgedAt != nil || attempt.Identity == nil || attempt.Outcome != "" && attempt.Outcome != "interrupted" && attempt.Outcome != "cancelled" || attempt.Runtime == nil || attempt.Runtime.WorkerLaunch == nil {
