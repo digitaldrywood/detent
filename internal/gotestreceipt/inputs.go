@@ -288,7 +288,7 @@ func (e Environment) classify(path string) (string, string, pathKind) {
 		}
 	}
 	for _, dir := range e.UncacheableDirs {
-		if within(dir, path) {
+		if within(dir, path) && filepath.Clean(dir) != path {
 			return "", "", pathUncacheable
 		}
 	}

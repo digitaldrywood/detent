@@ -190,6 +190,7 @@ func TestParseTestLog(t *testing.T) {
 		},
 		{name: "impossible paths are not inputs", log: "# test log\nopen bad\x00name\n", want: []string{}},
 		{name: "system reads are uncacheable", log: "# test log\nopen /proc/cpuinfo\n", wantErr: true},
+		{name: "a stat of the device directory itself is an input", log: "# test log\nstat /dev\n", want: []string{"stat\ta\t/dev"}},
 		{name: "device reads beyond the standard streams are uncacheable", log: "# test log\nopen /dev/shm/fixture\n", wantErr: true},
 		{name: "missing header", log: "open a\n", wantErr: true},
 		{name: "unknown operation", log: "# test log\nexec a\n", wantErr: true},
