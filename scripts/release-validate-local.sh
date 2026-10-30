@@ -16,6 +16,8 @@ project="${DETENT_VALIDATE_PROJECT:-${repository#*/}}"
 config_args=()
 if [ -n "${DETENT_VALIDATE_CONFIG:-}" ]; then config_args=(--config "$DETENT_VALIDATE_CONFIG"); fi
 procs="${TEST_PROCS:-4}"
+export GOCACHE="${DETENT_VALIDATE_GOCACHE:-$HOME/.cache/detent-validate/go-build}"
+mkdir -p "$GOCACHE"
 context=scheduled-full-ci
 if [ "$branch" = develop ]; then context=develop-full-ci; fi
 mkdir -p "$root/tmp"
