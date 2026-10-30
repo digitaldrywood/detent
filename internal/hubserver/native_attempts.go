@@ -286,11 +286,12 @@ func prepareNativeAttempt(ctx context.Context, tx nativeQueryer, scope nativeSco
 	update.digest = digest
 	var previousJSON, status string
 	var sequence int64
+	var recordedSession sql.NullInt64
 	if prior != nil {
 		err = nil
 		sequence, status = prior.data.Sequence, prior.status
 	} else {
-		err = tx.QueryRowContext(ctx, "SELECT COALESCE(NULLIF(payload_object_key,''),data_json), sequence, status FROM native_attempts WHERE id = ?", data.AttemptID).Scan(&previousJSON, &sequence, &status)
+		err = tx.QueryRowContext(ctx, "SELECT COALESCE(NULLIF(payload_object_key,''),data_json), sequence, status, implementing_session_id FROM native_attempts WHERE id = ?", data.AttemptID).Scan(&previousJSON, &sequence, &status, &recordedSession)
 	}
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
@@ -351,6 +352,12 @@ func prepareNativeAttempt(ctx context.Context, tx nativeQueryer, scope nativeSco
 			data.Runtime.RepairDependencies = previous.Runtime.RepairDependencies
 		}
 		data.Evidence = previous.Evidence
+		if nativeImplementingSession(previous) > 0 && nativeImplementingSession(data) <= 0 {
+			return update, nativeExecutionConflict("Implementing session identity cannot be cleared during an attempt")
+		}
+		if recordedSession.Valid && recordedSession.Int64 > 0 && nativeImplementingSession(data) <= 0 {
+			return update, nativeExecutionConflict("Implementing session identity cannot be cleared during an attempt")
+		}
 		reconnecting := (status == "running" || status == "interrupted") && event.Type == "run.observed" && data.Runtime != nil && data.Runtime.LocalAttemptID == 0 && data.Runtime.Generation == 0 && data.Outcome == ""
 		usageCorrection := status != "running" && event.Type == "run.finished" && nativeUsageCorrection(previous, data)
 		terminating := termination && (status == "interrupted" || status == "cancelled")
@@ -453,8 +460,8 @@ func recordNativeAttempt(ctx context.Context, tx *sql.Tx, scope nativeScope, ite
 		if data.Identity == nil {
 			status = data.Outcome
 		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO native_attempts (id, organization_id, project_id, work_item_id, lease_id, fencing_token, run_id, sequence, status, data_json, started_at, updated_at, work_item_revision, dispatch_generation, checkpoint_preserves_source, payload_object_key, conversion_state)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?, ?, ?, 0, ?, 2)`, data.AttemptID, scope.organization, scope.project, item, data.LeaseID, data.FencingToken, data.RunID, data.Sequence, status, formatHubTime(now), formatHubTime(now), revision, dispatch.generation, key)
+		_, err = tx.ExecContext(ctx, `INSERT INTO native_attempts (id, organization_id, project_id, work_item_id, lease_id, fencing_token, run_id, sequence, status, data_json, started_at, updated_at, work_item_revision, dispatch_generation, checkpoint_preserves_source, payload_object_key, conversion_state, implementing_session_id)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?, ?, ?, 0, ?, 2, ?)`, data.AttemptID, scope.organization, scope.project, item, data.LeaseID, data.FencingToken, data.RunID, data.Sequence, status, formatHubTime(now), formatHubTime(now), revision, dispatch.generation, key, nativeImplementingSession(data))
 		if err != nil {
 			return false, false, err
 		}
@@ -471,6 +478,9 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?, ?, ?, 0, ?, 2)`, data.AttemptID, 
 		} else if _, err := tx.ExecContext(ctx, "UPDATE native_attempts SET sequence = ?, status = ?, payload_object_key = ?, data_json = '{}', updated_at = ?, analytics_revision = analytics_revision + 1 WHERE id = ?", data.Sequence, update.status, key, formatHubTime(now), data.AttemptID); err != nil {
 			return false, false, err
 		}
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE native_attempts SET implementing_session_id=CASE WHEN ?>0 THEN ? WHEN implementing_session_id>0 THEN implementing_session_id WHEN implementing_session_id IS NULL THEN NULL ELSE ? END WHERE id=?`, nativeImplementingSession(data), nativeImplementingSession(data), nativeImplementingSession(data), data.AttemptID); err != nil {
+		return false, false, err
 	}
 	if !termination && data.Runtime != nil && data.Runtime.Landing != nil {
 		if err := recordAttemptLanding(ctx, tx, scope, item, data.AttemptID, *data.Runtime.Landing); err != nil {
@@ -566,6 +576,9 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(version_id) DO NOTHING`,
 func nativeRuntimeHistoryChanged(previous, observation *tracker.NativeRuntimeObservation) bool {
 	if previous == nil || observation == nil {
 		return previous != observation
+	}
+	if nativeRuntimeSession(previous) != nativeRuntimeSession(observation) {
+		return true
 	}
 	left, right := *previous, *observation
 	left.Activity, right.Activity = nil, nil
