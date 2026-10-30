@@ -175,6 +175,9 @@ func (s *Service) prepareCollaborationConversion(ctx context.Context, scope nati
 	if err != nil {
 		return nil, attachment.ArchiveReference{}, err
 	}
+	if err := expandStorageConversion(ctx, len(encoded)); err != nil {
+		return nil, attachment.ArchiveReference{}, err
+	}
 	ref, err := prepareChangeContent(ctx, string(scope.organization), encoded)
 	if err != nil {
 		return nil, ref, err

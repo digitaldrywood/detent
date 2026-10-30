@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -306,10 +307,9 @@ func TestStorageConversionByteBudgetAndVersion(t *testing.T) {
 	for _, test := range []struct {
 		name              string
 		detailBytes, rows int
-		progress          []int64
 	}{
-		{"batch budget", 180 << 10, 11, []int64{11}},
-		{"oversized row advances", 2 << 20, 2, []int64{2}},
+		{"batch budget", 180 << 10, 11},
+		{"oversized row advances", 2 << 20, 2},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newStorageArchiveFixture(t)
@@ -329,26 +329,44 @@ func TestStorageConversionByteBudgetAndVersion(t *testing.T) {
 			if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO storage_conversion_progress(organization_id,project_id,family,aggregate_id,format_version,through_rowid,cursor_rowid,complete,updated_at) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(organization_id,project_id,family,aggregate_id) DO UPDATE SET format_version=0,cursor_rowid=excluded.cursor_rowid,complete=1`, scope.organization, scope.project, "runs", issue.WorkItemID, 0, through, through, 1, formatHubTime(f.now)); err != nil {
 				t.Fatal(err)
 			}
-			for _, want := range test.progress {
-				var before int64
-				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT coalesce(sum(length(CAST(data_json AS BLOB))),0) FROM collaboration_events WHERE work_item_id=? AND payload_version=1", issue.WorkItemID).Scan(&before); err != nil {
+			converted := int64(0)
+			previousRows, previousBytes, previousOversized := 0, 0, 0
+			for tick := 0; tick < 12 && converted < int64(test.rows); tick++ {
+				var sourceBefore, maximumSource int64
+				if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT sum(length(CAST(data_json AS BLOB))),max(length(CAST(data_json AS BLOB))) FROM collaboration_events WHERE work_item_id=? AND type='run.finished'`, issue.WorkItemID).Scan(&sourceBefore, &maximumSource); err != nil {
 					t.Fatal(err)
 				}
 				if err := f.service.convertLegacyStorage(t.Context(), f.now); err != nil {
 					t.Fatal(err)
 				}
-				var after int64
-				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT coalesce(sum(length(CAST(data_json AS BLOB))),0) FROM collaboration_events WHERE work_item_id=? AND payload_version=1", issue.WorkItemID).Scan(&after); err != nil {
+				var sourceAfter int64
+				if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT sum(length(CAST(data_json AS BLOB))) FROM collaboration_events WHERE work_item_id=? AND type='run.finished'`, issue.WorkItemID).Scan(&sourceAfter); err != nil {
 					t.Fatal(err)
 				}
-				if after-before > int64(max(storageConversionBytes, test.detailBytes+4096)) {
-					t.Fatalf("chunk wrote %d payload bytes", after-before)
+				if removed := sourceBefore - sourceAfter; removed > max(1<<20, maximumSource) {
+					t.Fatalf("tick removed %d source bytes, limit %d", removed, max(1<<20, maximumSource))
 				}
-				progress, err := readStorageConversionProgress(t.Context(), f.service.database.reader, scope)
-				if err != nil || len(progress) != 1 || progress[0].Version != storageConversionVersion || progress[0].Rows != want || progress[0].Complete != (want == int64(test.rows)) {
-					t.Fatalf("progress=%+v err=%v", progress, err)
+				var rows, bytes, oversized int
+				if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT coalesce(sum(examined_rows),0),coalesce(sum(examined_bytes),0),coalesce(sum(oversized_rows),0) FROM storage_conversion_cursors`).Scan(&rows, &bytes, &oversized); err != nil {
+					t.Fatal(err)
+				}
+				rowDelta, byteDelta, oversizedDelta := rows-previousRows, bytes-previousBytes, oversized-previousOversized
+				if rowDelta > 100 || (byteDelta > 1<<20 && (oversizedDelta != 1 || rowDelta != 1)) {
+					t.Fatalf("tick=%d rows=%d bytes=%d oversized=%d", tick, rowDelta, byteDelta, oversizedDelta)
+				}
+				previousRows, previousBytes, previousOversized = rows, bytes, oversized
+				if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT converted_rows FROM storage_conversion_progress WHERE organization_id=? AND project_id=? AND family='runs' AND aggregate_id=?`, scope.organization, scope.project, issue.WorkItemID).Scan(&converted); err != nil {
+					t.Fatal(err)
 				}
 			}
+			if converted != int64(test.rows) {
+				t.Fatalf("conversion stalled: rows=%d want=%d", converted, test.rows)
+			}
+			progress, err := readStorageConversionProgress(t.Context(), f.service.database.reader, scope)
+			if err != nil || len(progress) != 1 || progress[0].Version != storageConversionVersion || !progress[0].Complete {
+				t.Fatalf("progress=%+v err=%v", progress, err)
+			}
+
 		})
 	}
 }
@@ -684,7 +702,7 @@ SELECT ?,?,'runs','completed-'||n,1,n,n,1,'' FROM history`, scope.organization, 
 			t.Fatalf("unbounded discovery plan: %s", plan.String())
 		}
 	}
-	for pass, want := range []int{2, 0} {
+	for pass, want := range []int{0, 0} {
 		if err := f.service.convertLegacyStorage(t.Context(), f.now.Add(time.Duration(pass)*time.Second)); err != nil {
 			t.Fatal(err)
 		}
@@ -1143,7 +1161,8 @@ func TestStorageConversionAttemptLeaseBudget(t *testing.T) {
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
-	for tick, want := range []int{storageConversionRows, storageConversionRows + 3, storageConversionRows + 3} {
+	previous := 0
+	for tick := range 30 {
 		if err := f.service.convertLegacyStorage(t.Context(), now); err != nil {
 			t.Fatal(err)
 		}
@@ -1151,9 +1170,10 @@ func TestStorageConversionAttemptLeaseBudget(t *testing.T) {
 		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM native_attempts WHERE status='cancelled'").Scan(&cancelled); err != nil {
 			t.Fatal(err)
 		}
-		if cancelled != want {
-			t.Fatalf("tick %d cancelled %d attempts, want %d", tick, cancelled, want)
+		if cancelled < previous || cancelled-previous > 100 {
+			t.Fatalf("unbounded lease repair: tick=%d before=%d after=%d", tick, previous, cancelled)
 		}
+		previous = cancelled
 		for i := range items {
 			var status string
 			var sequence int64
@@ -1165,5 +1185,380 @@ func TestStorageConversionAttemptLeaseBudget(t *testing.T) {
 				t.Fatalf("tick %d changed live attempt %d: status=%s sequence=%d released=%v", tick, i, status, sequence, released)
 			}
 		}
+	}
+	if previous != storageConversionRows+3 {
+		t.Fatalf("lease repair stalled at %d", previous)
+	}
+	var before, after int
+	query := `SELECT examined_rows FROM storage_conversion_cursors WHERE family='projection-leases'`
+	if err := f.service.database.reader.QueryRowContext(t.Context(), query).Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.convertLegacyStorage(t.Context(), now); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.database.reader.QueryRowContext(t.Context(), query).Scan(&after); err != nil {
+		t.Fatal(err)
+	}
+	if after-before > len(items) {
+		t.Fatalf("same live leases repeatedly examined in one tick: %d", after-before)
+	}
+
+}
+
+func TestStorageConversionOwnerFairnessAndRestart(t *testing.T) {
+	for _, history := range []int{20, 2000} {
+		t.Run(strconv.Itoa(history), func(t *testing.T) {
+			f := newStorageArchiveFixture(t)
+			f.service.outbox.stop()
+			other := newNativeFixture(t, f.service, "", "other-tenant")
+			sibling := newNativeFixture(t, f.service, f.project.OrganizationID, "sibling-project")
+			fixtures := []nativeFixture{f.nativeFixture, other, sibling}
+			convertedByProject := make(map[string]int)
+			tx := f.tx(t)
+			for i, fixture := range fixtures {
+				limit := 2
+				if i == 0 {
+					limit = history
+				}
+				for j := range limit {
+					raw := `{"work_item_id":"example-item","status":"failed","completion_body":"` + strings.Repeat("x", 4096) + `"}`
+					if _, err := tx.ExecContext(t.Context(), `INSERT INTO analytics_hourly_rollups(organization_id,project_id,hour,metric,dimension,value,data_json) VALUES(?,?,0,'attempt',?,1,?)`, fixture.project.OrganizationID, fixture.project.ID, fmt.Sprintf("row-%06d", j), raw); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if _, err := tx.ExecContext(t.Context(), `INSERT INTO analytics_hourly_rollups(organization_id,project_id,hour,metric,dimension,value,data_json) VALUES(?,?,0,'attempt','000-malformed',1,'[]')`, f.project.OrganizationID, f.project.ID); err != nil {
+				t.Fatal(err)
+			}
+			f.commit(t, tx)
+			for _, fixture := range fixtures {
+				for range 2 {
+					issue := fixture.create(t, "Fair storage progress")
+					tx = f.tx(t)
+					scope := nativeScope{organization: fixture.project.OrganizationID, project: fixture.project.ID}
+					if err := appendLegacyNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "run.finished", tracker.CollaborationData{Run: &tracker.NativeRunData{CompletionBody: strings.Repeat("output", 1024)}}, f.now); err != nil {
+						t.Fatal(err)
+					}
+					f.commit(t, tx)
+				}
+			}
+			calls := 0
+			f.hook = func(entryauthority.ContentRequest) error {
+				calls++
+				if got := f.service.database.reader.Stats().InUse; got != 0 {
+					t.Errorf("network call held %d readers", got)
+				}
+				if got := f.service.database.db.Stats().InUse; got != 0 {
+					t.Errorf("network call held %d writer connections", got)
+				}
+				return nil
+			}
+			var firstStatements int
+			ctx := withRequestTiming(t.Context(), &requestTiming{trace: func(string, []driver.NamedValue) { firstStatements++ }})
+			if err := f.service.convertLegacyStorage(ctx, f.now); err != nil && !strings.Contains(err.Error(), "cannot unmarshal array") && !strings.Contains(err.Error(), "invalid JSON object") {
+				t.Fatal(err)
+			}
+			for _, fixture := range fixtures {
+				var converted int
+				if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM collaboration_events WHERE organization_id=? AND project_id=? AND type='run.finished' AND payload_version=1`, fixture.project.OrganizationID, fixture.project.ID).Scan(&converted); err != nil {
+					t.Fatal(err)
+				}
+				if converted != 2 {
+					t.Fatalf("analytics backlog or malformed row starved runs: converted=%d want=2", converted)
+				}
+				if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND payload_object_key<>''`, fixture.project.OrganizationID, fixture.project.ID).Scan(&converted); err != nil {
+					t.Fatal(err)
+				}
+				if converted == 0 {
+					t.Fatal("earlier scope backlog starved analytics in a later scope")
+				}
+				convertedByProject[string(fixture.project.ID)] = converted
+			}
+			var rows, bytes, oversized int
+			if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT sum(examined_rows),sum(examined_bytes),sum(oversized_rows) FROM storage_conversion_cursors`).Scan(&rows, &bytes, &oversized); err != nil {
+				t.Fatal(err)
+			}
+			if rows > 100 || bytes > 1<<20 || oversized != 0 {
+				t.Fatalf("unbounded tick: rows=%d bytes=%d oversized=%d", rows, bytes, oversized)
+			}
+			if firstStatements > 2300 {
+				t.Fatalf("tick executed %d statements", firstStatements)
+			}
+			var convertedRows, reclaimed int64
+			if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT coalesce(sum(converted_rows),0),coalesce(sum(reclaimed_bytes),0) FROM storage_conversion_progress`).Scan(&convertedRows, &reclaimed); err != nil {
+				t.Fatal(err)
+			}
+			t.Logf("history=%d tick rows=%d input_bytes=%d statements=%d network_calls=%d converted_rows=%d reclaimed_bytes=%d", history, rows, bytes, firstStatements, calls, convertedRows, reclaimed)
+			var before int
+			if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM analytics_hourly_rollups WHERE payload_object_key<>''`).Scan(&before); err != nil {
+				t.Fatal(err)
+			}
+			if before == 0 || calls == 0 {
+				t.Fatal("malformed first row prevented later conversion")
+			}
+			cfg := f.service.config
+			f.service.conversations = nil
+			if err := f.service.Close(); err != nil {
+				t.Fatal(err)
+			}
+			f.service = openTestService(t, cfg)
+			f.service.outbox.stop()
+			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT 1").Scan(new(int)); err != nil {
+				t.Fatal(err)
+			}
+			for _, fixture := range fixtures {
+				for index := range 2 {
+					if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO analytics_hourly_rollups(organization_id,project_id,hour,metric,dimension,value,data_json) VALUES(?,?,0,'attempt',?,1,'{"status":"failed"}')`, fixture.project.OrganizationID, fixture.project.ID, fmt.Sprintf("000-added-%d", index)); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO analytics_hourly_rollups(organization_id,project_id,hour,metric,dimension,value,data_json) VALUES(?,?,0,'attempt','gap-before-vacuum',1,'{}')`, f.project.OrganizationID, f.project.ID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), `DELETE FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND dimension='row-000000'`, f.project.OrganizationID, f.project.ID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), "VACUUM"); err != nil {
+				t.Fatal(err)
+			}
+			for range 8 {
+				if err := f.service.convertLegacyStorage(t.Context(), f.now); err != nil && !strings.Contains(err.Error(), "cannot unmarshal array") && !strings.Contains(err.Error(), "invalid JSON object") {
+					t.Fatal(err)
+				}
+			}
+			for _, fixture := range fixtures {
+				var converted int
+				if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM collaboration_events WHERE organization_id=? AND project_id=? AND type='run.finished' AND payload_version=1`, fixture.project.OrganizationID, fixture.project.ID).Scan(&converted); err != nil {
+					t.Fatal(err)
+				}
+				if converted != 2 {
+					t.Fatalf("large analytics family starved runs in tenant: converted=%d", converted)
+				}
+				if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND payload_object_key<>''`, fixture.project.OrganizationID, fixture.project.ID).Scan(&converted); err != nil || converted <= convertedByProject[string(fixture.project.ID)] {
+					t.Fatalf("scope did not resume analytics after reopen and VACUUM: converted=%d err=%v", converted, err)
+				}
+			}
+			var after int
+			if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM analytics_hourly_rollups WHERE payload_object_key<>''`).Scan(&after); err != nil {
+				t.Fatal(err)
+			}
+			if after <= before {
+				t.Fatalf("restart did not advance: before=%d after=%d", before, after)
+			}
+			var retained string
+			if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT data_json FROM analytics_hourly_rollups WHERE dimension='000-malformed'`).Scan(&retained); err != nil || retained != "[]" {
+				t.Fatalf("malformed source lost: %q %v", retained, err)
+			}
+		})
+	}
+}
+
+func TestStorageConversionKeysetsUsePendingIndexes(t *testing.T) {
+	f := newStorageArchiveFixture(t)
+	for _, family := range storageConversionFamilies {
+		t.Run(family.name, func(t *testing.T) {
+			keys, numeric := family.keyset()
+			args := make([]any, len(keys))
+			for index := range args {
+				args[index] = "example-key"
+				if numeric && index == len(keys)-1 {
+					args[index] = int64(1)
+				}
+			}
+			query := "SELECT r.rowid FROM " + family.keysetFrom() + " WHERE " + family.payloadPredicate() + " AND (" + strings.Join(keys, ",") + ")>(" + strings.TrimSuffix(strings.Repeat("?,", len(keys)), ",") + ") ORDER BY " + strings.Join(keys, ",") + " LIMIT 1"
+			plan := strings.Join(explainQueryPlan(t, f.service.database.reader, query, args), "; ")
+			if strings.Contains(plan, "TEMP B-TREE") || !strings.Contains(plan, "SEARCH r USING") {
+				t.Fatalf("keyset scans or sorts history: %s", plan)
+			}
+		})
+	}
+}
+
+func TestStorageConversionIdleTickDoesNotWrite(t *testing.T) {
+	f := newStorageArchiveFixture(t)
+	if err := f.service.convertLegacyStorage(t.Context(), f.now); err != nil {
+		t.Fatal(err)
+	}
+	var before, after int64
+	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT total_changes()").Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.convertLegacyStorage(t.Context(), f.now); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT total_changes()").Scan(&after); err != nil {
+		t.Fatal(err)
+	}
+	if after != before {
+		t.Fatalf("idle conversion tick changed %d rows", after-before)
+	}
+}
+
+func TestStorageConversionProjectionKeysetsAvoidHistorySorts(t *testing.T) {
+	f := newStorageArchiveFixture(t)
+	var selections []tracedStatement
+	ctx := withRequestTiming(t.Context(), &requestTiming{trace: func(query string, args []driver.NamedValue) {
+		if !strings.HasPrefix(query, "SELECT ") || !strings.Contains(query, " ORDER BY ") || !strings.HasSuffix(query, " LIMIT ?") {
+			return
+		}
+		statement := tracedStatement{query: query}
+		for _, arg := range args {
+			statement.args = append(statement.args, arg.Value)
+		}
+		selections = append(selections, statement)
+	}})
+	if err := f.service.convertLegacyStorage(ctx, f.now); err != nil {
+		t.Fatal(err)
+	}
+	if len(selections) < 10 {
+		t.Fatalf("only %d projection families checked", len(selections))
+	}
+	for _, statement := range selections {
+		plan := strings.Join(explainQueryPlan(t, f.service.database.reader, statement.query, statement.args), "; ")
+		if strings.Contains(plan, "TEMP B-TREE") {
+			t.Errorf("projection sorts history: %s: %s", statement.query, plan)
+		}
+	}
+}
+
+func TestStorageConversionDeferredProjectionResumes(t *testing.T) {
+	for _, archived := range []bool{false, true} {
+		t.Run(fmt.Sprintf("archived=%t", archived), func(t *testing.T) {
+			f := newStorageArchiveFixture(t)
+			issue := f.nativeFixture.create(t, "deferred hot projection")
+			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+			raw := `{"completion_body":"` + strings.Repeat("x", 2<<20) + `"}`
+			var payloadKeys [2]string
+			if archived {
+				ctx := f.service.freshRunDetailContext(t.Context())
+				for i, payload := range []string{"[]", raw} {
+					ref, err := prepareChangeContent(ctx, string(scope.organization), []byte(payload))
+					if err != nil {
+						t.Fatal(err)
+					}
+					payloadKeys[i] = ref.Key
+				}
+			} else {
+				f.service.config.Content = nil
+			}
+
+			tx := f.tx(t)
+			at := formatHubTime(f.now)
+			if _, err := tx.ExecContext(t.Context(), `INSERT INTO machines(id,hostname,capacity,version,last_heartbeat_at,registered_at,updated_at) VALUES('example-machine','example',1,'test',?,?,?)`, at, at, at); err != nil {
+				t.Fatal(err)
+			}
+			for i, payload := range []string{`[]`, raw} {
+				id := seedHealthRateAttempt(t, tx, scope, issue, "example-machine", "failed", tracker.NativeRunData{}, f.now, -1)
+				if _, err := tx.ExecContext(t.Context(), `UPDATE native_attempts SET id=?,data_json=?,payload_object_key=?,activity_projection_version=1,report_projection_version=1,health_disposition_reason='',worker_cleanup_required=0 WHERE id=?`, []string{"A", "B"}[i], payload, payloadKeys[i], id); err != nil {
+					t.Fatal(err)
+				}
+			}
+			f.commit(t, tx)
+			if err := f.service.convertStorageBatch(t.Context(), f.now); err == nil {
+				t.Fatal("malformed A was not attempted")
+			}
+			var projected int
+			if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT hot_projection_version FROM native_attempts WHERE id='B'`).Scan(&projected); err != nil || projected != 0 {
+				t.Fatalf("B admitted alongside A: projected=%d err=%v", projected, err)
+			}
+			cfg := f.service.config
+			f.service.conversations = nil
+			if err := f.service.Close(); err != nil {
+				t.Fatal(err)
+			}
+			f.service = openTestService(t, cfg)
+			if !archived {
+				f.service.config.Content = nil
+			}
+			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+				t.Fatal(err)
+			}
+			for range 6 {
+				if err := f.service.convertStorageBatch(t.Context(), f.now); err != nil && !strings.Contains(err.Error(), "cannot unmarshal array") {
+					t.Fatal(err)
+				}
+			}
+			if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT hot_projection_version FROM native_attempts WHERE id='B'`).Scan(&projected); err != nil || projected != 1 {
+				t.Fatalf("deferred B starved after reopen: projected=%d err=%v", projected, err)
+			}
+			var retained string
+			if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT data_json FROM native_attempts WHERE id='A'`).Scan(&retained); err != nil || retained != "[]" {
+				t.Fatalf("malformed A lost: %q %v", retained, err)
+			}
+		})
+	}
+}
+
+func TestStorageConversionChargesPublishedLegacyRuns(t *testing.T) {
+	f := newStorageArchiveFixture(t)
+	issue := f.nativeFixture.create(t, "expanded legacy runs")
+	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+	ctx := f.service.freshRunDetailContext(t.Context())
+	var row int64
+	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT coalesce(max(rowid),0) FROM collaboration_events").Scan(&row); err != nil {
+		t.Fatal(err)
+	}
+	row++
+	if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO collaboration_events(rowid,id,organization_id,project_id,work_item_id,sequence,type,schema_version,actor_json,data_json,recorded_at,health_projected,page_projection_ready,query_metadata_version,analytics_projection_version,activity_spans_present) VALUES(?,'000-malformed',?,?,?,99,'run.finished',1,'{}','[]',?,1,1,1,1,0)`, row, scope.organization, scope.project, issue.WorkItemID, formatHubTime(f.now)); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 3 {
+		row++
+		raw := []byte(`{"run":{"completion_body":"` + strings.Repeat("x", 2<<20) + `"},"reason_detail":"` + strconv.Itoa(i) + `"}`)
+		encoded, err := json.Marshal(storageJSONPayload{Organization: string(scope.organization), Project: string(scope.project), Family: "runs", Row: row, Data: raw})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ref, err := prepareChangeContent(ctx, string(scope.organization), encoded)
+		if err != nil {
+			t.Fatal(err)
+		}
+		compact, err := compactStorageJSON(raw, storageJSONReference{Organization: string(scope.organization), Project: string(scope.project), Family: "runs", Row: row, Reference: ref})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(compact) > 4096 {
+			t.Fatalf("reference is not compact: %d", len(compact))
+		}
+		if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO collaboration_events(rowid,id,organization_id,project_id,work_item_id,sequence,type,schema_version,actor_json,data_json,recorded_at,health_projected,page_projection_ready,query_metadata_version,analytics_projection_version,activity_spans_present) VALUES(?,?,?,?,?,?,'run.finished',1,'{}',?,?,1,1,1,1,0)`, row, fmt.Sprintf("legacy-run-%d", i), scope.organization, scope.project, issue.WorkItemID, 100+i, string(compact), formatHubTime(f.now)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	publishedBytes, publishedRows := 0, 0
+	f.hook = func(r entryauthority.ContentRequest) error {
+		if r.Write {
+			publishedBytes += len(archiveTestBytes(t, r.Data))
+			publishedRows++
+		}
+		return nil
+	}
+	for tick := range 8 {
+		publishedBytes, publishedRows = 0, 0
+		if err := f.service.convertStorageBatch(t.Context(), f.now); err != nil && !strings.Contains(err.Error(), "cannot unmarshal array") {
+			t.Fatal(err)
+		}
+		if tick == 0 {
+			cfg := f.service.config
+			f.service.conversations = nil
+			if err := f.service.Close(); err != nil {
+				t.Fatal(err)
+			}
+			f.service = openTestService(t, cfg)
+			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if publishedRows > 1 || (publishedBytes > storageConversionBytes && publishedRows != 1) {
+			t.Fatalf("tick %d published %d uncompressed bytes across %d rows", tick, publishedBytes, publishedRows)
+		}
+	}
+	var converted int
+	if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM collaboration_events WHERE type='run.finished' AND payload_version=1 AND work_item_id=?`, issue.WorkItemID).Scan(&converted); err != nil || converted != 3 {
+		t.Fatalf("deferred runs stalled: converted=%d err=%v", converted, err)
 	}
 }

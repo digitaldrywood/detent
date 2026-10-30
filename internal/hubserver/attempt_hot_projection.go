@@ -89,22 +89,13 @@ func updateAttemptCleanupProjection(ctx context.Context, tx *sql.Tx, id string, 
 }
 
 func (s *Service) convertAttemptHotProjections(ctx context.Context) error {
-	rows, err := s.database.reader.QueryContext(ctx, `SELECT id FROM native_attempts WHERE hot_projection_version=0 OR health_disposition_reason IS NULL OR worker_cleanup_required IS NULL ORDER BY id LIMIT ?`, storageConversionRows)
+	candidates, err := s.storageProjectionPage(ctx, "hot-attempts", `SELECT id FROM native_attempts INDEXED BY storage_keyset_hot_attempts WHERE (hot_projection_version=0 OR health_disposition_reason IS NULL OR worker_cleanup_required IS NULL)`, "id", storageConversionLimit(ctx))
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
 	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			rows.Close()
-			return err
-		}
-		ids = append(ids, id)
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return err
+	for _, candidate := range candidates {
+		ids = append(ids, candidate.id)
 	}
 	for _, id := range ids {
 		if err := s.convertAttemptHotProjection(ctx, id); err != nil {
@@ -123,6 +114,9 @@ func (s *Service) convertAttemptHotProjection(ctx context.Context, id string) er
 		return nil
 	}
 	if err != nil {
+		return err
+	}
+	if err := chargeStorageConversion(ctx, len(raw)); err != nil {
 		return err
 	}
 	var data tracker.NativeRunData
@@ -162,6 +156,9 @@ func (s *Service) convertAttemptHotProjection(ctx context.Context, id string) er
 }
 
 func (s *Service) convertAttemptLease(ctx context.Context, id tracker.LeaseID, now time.Time) error {
+	if err := chargeStorageConversion(ctx, 4096); err != nil {
+		return err
+	}
 	ctx = s.runDetailContext(ctx)
 	_, err := prepareContentMutation(ctx, s.database.reader, func() (struct{}, error) {
 		return struct{}{}, s.convertAttemptLeaseOnce(ctx, id, now)
@@ -201,7 +198,7 @@ func (s *Service) convertAttemptLeases(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	candidates, err := s.storageProjectionPage(ctx, "attempt_leases", "SELECT a.lease_id FROM native_attempts a WHERE a.status='running'", "a.id", storageConversionRows)
+	candidates, err := s.storageProjectionPage(ctx, "attempt_leases", "SELECT a.lease_id FROM native_attempts a WHERE a.status='running'", "a.id", storageConversionLimit(ctx))
 	if err != nil {
 		return err
 	}

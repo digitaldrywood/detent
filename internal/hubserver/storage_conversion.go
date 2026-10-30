@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -21,6 +22,8 @@ const backgroundStorageBudget = 2 * time.Second
 const storageConversionVersion = 1
 const storageConversionRows = 100
 const storageConversionBytes = 1 << 20
+
+const storageConversionOwnerPredicate = "family IN ('projection-pages','projection-activity','projection-attempts','projection-leases','projection-ranks','projection-health','projection-runners','runs','attempts','analytics','conversation_events','messages','versions','evidence','sources','diff_files','checkpoints','landings','tool_revisions','conversation_records','conversation_questions','conversation_commands','conversation_attachments')"
 
 type storageConversionFamily struct {
 	name, column, from, where, aggregate, update string
@@ -92,7 +95,19 @@ type storageProjectionRow struct {
 }
 
 func (s *Service) storageProjectionPage(ctx context.Context, family, selection, key string, limit int, args ...any) ([]storageProjectionRow, error) {
+	limit = min(limit, storageConversionLimit(ctx))
 	cursor, _ := s.projectionCursors.Load(family)
+	if ctx.Value(storageBatchKey{}) != nil {
+		position, err := s.readStorageProjectionCursor(ctx, "keyset-"+family)
+		if err != nil {
+			return nil, err
+		}
+		if position != nil {
+			cursor = position
+		} else {
+			cursor = nil
+		}
+	}
 	query := strings.Replace(selection, "SELECT ", "SELECT "+key+",", 1)
 	pageArgs := append([]any{}, args...)
 	keys := strings.Split(key, ",")
@@ -127,93 +142,30 @@ func (s *Service) storageProjectionPage(ctx context.Context, family, selection, 
 	}
 	if len(candidates) == 0 && cursor != nil {
 		s.projectionCursors.Delete(family)
+		if ctx.Value(storageBatchKey{}) != nil {
+			if _, err := s.database.db.ExecContext(ctx, `UPDATE storage_conversion_cursors SET positioned=0 WHERE family=?`, "keyset-"+family); err != nil {
+				return nil, err
+			}
+			return nil, nil
+		}
 		return s.storageProjectionPage(ctx, family, selection, key, limit, args...)
+	}
+	if budget, ok := ctx.Value(storageBatchKey{}).(*storageBatchBudget); ok && len(candidates) > 0 {
+		budget.advance = func() error {
+			return s.writeStorageProjectionCursor(ctx, "keyset-"+family, candidates[len(candidates)-1].cursor)
+		}
 	}
 	return candidates, nil
 }
 
 func (s *Service) convertLegacyStorage(ctx context.Context, now time.Time) error {
-	ctx, cancel := context.WithTimeout(ctx, backgroundStorageBudget)
+	batchCtx, cancel := context.WithTimeout(ctx, backgroundStorageBudget)
 	defer cancel()
-	var failures error
-	for _, convert := range []func(context.Context) error{
-		s.convertIssuePageFacts,
-		s.convertActivityProjections,
-		s.convertAttemptHotProjections,
-		s.convertAttemptLeases,
-		s.convertNativeBoardRanks,
-		s.convertHealthProjections,
-		s.convertRunnerBoardProjections,
-	} {
-		if err := convert(ctx); err != nil {
-			failures = errors.Join(failures, err)
-			if ctx.Err() != nil {
-				return failures
-			}
-		}
+	err := s.convertStorageBatch(batchCtx, now)
+	if ctx.Err() == nil && errors.Is(batchCtx.Err(), context.DeadlineExceeded) {
+		return storageConversionBatchError(err)
 	}
-	if s.storageArchiveContent() == nil && s.runDetailStore() == nil {
-		return failures
-	}
-	ctx = s.freshRunDetailContext(ctx)
-	for _, family := range storageConversionFamilies {
-		if objectPayloadFamily(family.name) {
-			if err := s.convertObjectPayloadFamily(ctx, family, now); err != nil {
-				failures = errors.Join(failures, fmt.Errorf("convert legacy %s: %w", family.name, err))
-				if ctx.Err() != nil {
-					return failures
-				}
-			}
-			continue
-		}
-		if s.storageArchiveContent() == nil {
-			continue
-		}
-		if err := s.discoverStorageFamily(ctx, family, now); err != nil {
-			return err
-		}
-	}
-	if s.storageArchiveContent() == nil {
-		return failures
-	}
-	rows, err := s.database.reader.QueryContext(ctx, storageConversionSchedule)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	type pending struct {
-		scope             nativeScope
-		family, aggregate string
-	}
-	var batch []pending
-	for rows.Next() {
-		var item pending
-		if err := rows.Scan(&item.scope.organization, &item.scope.project, &item.family, &item.aggregate); err != nil {
-			rows.Close()
-			return err
-		}
-		batch = append(batch, item)
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return err
-	}
-	for _, item := range batch {
-		for _, family := range storageConversionFamilies {
-			if family.name != item.family {
-				continue
-			}
-			if _, err := s.database.db.ExecContext(ctx, `UPDATE storage_conversion_progress SET cursor_rowid=CASE WHEN format_version<>? THEN 0 ELSE cursor_rowid END,format_version=?,complete=0,updated_at=? WHERE organization_id=? AND project_id=? AND family=? AND aggregate_id=?`, storageConversionVersion, storageConversionVersion, formatHubTime(now), item.scope.organization, item.scope.project, family.name, item.aggregate); err != nil {
-				return err
-			}
-			if err := s.convertStorageAggregate(ctx, item.scope, family, item.aggregate, now); err != nil {
-				failures = errors.Join(failures, fmt.Errorf("convert legacy %s: %w", family.name, err))
-				if ctx.Err() != nil {
-					return failures
-				}
-			}
-		}
-	}
-	return failures
+	return err
 }
 
 func (f storageConversionFamily) table() string {
@@ -381,7 +333,12 @@ func (s *Service) convertStorageAggregate(ctx context.Context, scope nativeScope
 	}
 	cursorKey := "archive-" + string(scope.organization) + "/" + string(scope.project) + "/" + family.name + "/" + aggregate
 	selection := "SELECT r.rowid" + family.filter() + " AND r.conversion_state=1 AND " + family.aggregate + "=?"
-	candidates, err := s.storageProjectionPage(ctx, cursorKey, selection, "r.rowid", storageConversionRows, scope.organization, scope.project, aggregate)
+	var candidates []storageProjectionRow
+	if selected, ok := ctx.Value(storageSelectedRowKey{}).(int64); ok {
+		candidates = []storageProjectionRow{{id: strconv.FormatInt(selected, 10)}}
+	} else {
+		candidates, err = s.storageProjectionPage(ctx, cursorKey, selection, "r.rowid", storageConversionRows, scope.organization, scope.project, aggregate)
+	}
 	if err != nil {
 		return err
 	}
@@ -409,11 +366,12 @@ func (s *Service) convertStorageAggregate(ctx context.Context, scope nativeScope
 		if err != nil {
 			return 0, false, err
 		}
+		sourceDigest := storageConversionDigest(raw)
 		tx, err := s.database.db.BeginTx(ctx, nil)
 		if err != nil {
 			return 0, false, err
 		}
-		applied, err := s.applyStorageConversion(ctx, tx, scope, family, cursor, row, aggregate, stamp, raw, converted, ref, metadata, now)
+		applied, err := s.applyStorageConversion(ctx, tx, scope, family, cursor, row, aggregate, stamp, sourceDigest, raw, converted, ref, metadata, now)
 		if err == nil && applied {
 			err = s.database.commit(ctx, tx)
 		}
@@ -563,7 +521,7 @@ func (s *Service) prepareStorageConversion(ctx context.Context, scope nativeScop
 	return compact, ref, nil
 }
 
-func (s *Service) applyStorageConversion(ctx context.Context, tx *sql.Tx, scope nativeScope, family storageConversionFamily, cursor, row int64, aggregate, stamp string, raw, converted []byte, ref attachment.ArchiveReference, metadata conversationQueryMetadata, now time.Time) (bool, error) {
+func (s *Service) applyStorageConversion(ctx context.Context, tx *sql.Tx, scope nativeScope, family storageConversionFamily, cursor, row int64, aggregate, stamp, sourceDigest string, raw, converted []byte, ref attachment.ArchiveReference, metadata conversationQueryMetadata, now time.Time) (bool, error) {
 	var currentCursor int64
 	if err := tx.QueryRowContext(ctx, `SELECT cursor_rowid FROM storage_conversion_progress WHERE organization_id=? AND project_id=? AND family=? AND aggregate_id=? AND format_version=?`, scope.organization, scope.project, family.name, aggregate, storageConversionVersion).Scan(&currentCursor); err != nil {
 		return false, err
@@ -576,7 +534,7 @@ func (s *Service) applyStorageConversion(ctx context.Context, tx *sql.Tx, scope 
 		return false, err
 	}
 	var unchanged bool
-	if err := tx.QueryRowContext(ctx, "SELECT aggregate_id=? AND CAST(conversion_payload AS BLOB)=? FROM ("+family.selection()+" AND r.conversion_state=1) WHERE conversion_rowid=?", aggregate, raw, scope.organization, scope.project, row).Scan(&unchanged); err != nil {
+	if err := tx.QueryRowContext(ctx, "SELECT aggregate_id=? AND storage_conversion_digest(conversion_payload)=? FROM ("+family.selection()+" AND r.conversion_state=1) WHERE conversion_rowid=?", aggregate, sourceDigest, scope.organization, scope.project, row).Scan(&unchanged); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return false, nil
 		}
@@ -659,4 +617,471 @@ func readStorageConversionProgress(ctx context.Context, q nativeQueryer, scope n
 		result = append(result, p)
 	}
 	return result, rows.Err()
+}
+
+type storageBatchKey struct{}
+type storageSelectedRowKey struct{}
+
+type storageBatchBudget struct {
+	bytes     int64
+	rows      int
+	oversized int
+	turn      int64
+	reserve   func() error
+	advance   func() error
+	itemBytes int
+}
+
+var errStorageBatchFull = errors.New("storage conversion batch is full")
+
+func storageConversionLimit(ctx context.Context) int {
+	if ctx.Value(storageBatchKey{}) != nil {
+		return 1
+	}
+	return storageConversionRows
+}
+
+func chargeStorageConversion(ctx context.Context, size int) error {
+	budget, ok := ctx.Value(storageBatchKey{}).(*storageBatchBudget)
+	if !ok {
+		return nil
+	}
+	size = max(1, size)
+	if budget.bytes > 0 && budget.bytes+int64(size) > storageConversionBytes {
+		return errStorageBatchFull
+	}
+	if budget.reserve != nil {
+		if err := budget.reserve(); err != nil {
+			return err
+		}
+		budget.reserve = nil
+	}
+	budget.itemBytes = size
+	budget.rows++
+	budget.bytes += int64(size)
+	if size > storageConversionBytes {
+		budget.oversized++
+	}
+	return nil
+}
+
+type storageFamilyCursor struct {
+	family     string
+	turn       int64
+	positioned bool
+	keys       [4]string
+	sequence   int64
+}
+
+func (f storageConversionFamily) keyset() ([]string, bool) {
+	switch f.name {
+	case "analytics":
+		return []string{"r.organization_id", "r.project_id", "r.rowid"}, true
+	case "attempts", "versions", "evidence", "checkpoints", "landings":
+		return []string{"r.rowid"}, true
+	case "sources":
+		return []string{"r.version_id"}, false
+	case "diff_files":
+		return []string{"r.diff_id", "r.position"}, true
+	case "conversation_events", "messages":
+		return []string{"r.conversation_id", "r.rowid"}, true
+	case "tool_revisions":
+		return []string{"r.conversation_id", "r.message_id", "r.revision"}, true
+	case "conversation_commands":
+		return []string{"r.conversation_id", "r.key"}, false
+	default:
+		return []string{"r.id"}, false
+	}
+}
+
+func (f storageConversionFamily) payloadPredicate() string {
+	switch f.name {
+	case "attempts", "versions", "evidence":
+		return "r.payload_object_key=''"
+	case "analytics":
+		return "r.payload_object_key='' AND r.metric='attempt' AND r.data_json<>'{}'"
+	case "diff_files":
+		return "1"
+	}
+	return f.where
+}
+
+func (s *Service) convertStorageBatch(ctx context.Context, now time.Time) error {
+	ctx = s.freshRunDetailContext(ctx)
+	budget := &storageBatchBudget{}
+	ctx = context.WithValue(ctx, storageBatchKey{}, budget)
+	projections := []struct {
+		name    string
+		convert func(context.Context) error
+	}{
+		{"projection-pages", s.convertIssuePageFacts},
+		{"projection-activity", s.convertActivityProjections},
+		{"projection-attempts", s.convertAttemptHotProjections},
+		{"projection-leases", s.convertAttemptLeases},
+		{"projection-ranks", s.convertNativeBoardRanks},
+		{"projection-health", s.convertHealthProjections},
+		{"projection-runners", s.convertRunnerBoardProjections},
+	}
+	names := make([]string, 0, len(projections)+len(storageConversionFamilies))
+	for _, p := range projections {
+		names = append(names, p.name)
+	}
+	for _, f := range storageConversionFamilies {
+		names = append(names, f.name)
+	}
+	rows, err := s.database.reader.QueryContext(ctx, "SELECT family FROM storage_conversion_cursors WHERE "+storageConversionOwnerPredicate)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	existing := map[string]bool{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return errors.Join(err, rows.Close())
+		}
+		existing[name] = true
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return err
+	}
+	for _, name := range names {
+		if !existing[name] {
+			if _, err := s.database.db.ExecContext(ctx, `INSERT INTO storage_conversion_cursors(family) VALUES(?) ON CONFLICT DO NOTHING`, name); err != nil {
+				return err
+			}
+		}
+	}
+	var failures error
+	for turns := 0; turns < storageConversionRows*(len(storageConversionFamilies)+len(projections)) && budget.rows < storageConversionRows && len(names) > 0; turns++ {
+		var cursor storageFamilyCursor
+		err := s.database.reader.QueryRowContext(ctx, `SELECT family,turn,positioned,key_1,key_2,key_3,key_4,sequence FROM storage_conversion_cursors WHERE family IN (`+strings.TrimSuffix(strings.Repeat("?,", len(names)), ",")+`) ORDER BY turn,family LIMIT 1`, stringArguments(names)...).Scan(&cursor.family, &cursor.turn, &cursor.positioned, &cursor.keys[0], &cursor.keys[1], &cursor.keys[2], &cursor.keys[3], &cursor.sequence)
+		if err != nil {
+			return errors.Join(failures, err)
+		}
+		budget.reserve = func() error {
+			_, err := s.database.db.ExecContext(ctx, "UPDATE storage_conversion_cursors SET turn=(SELECT max(turn)+1 FROM storage_conversion_cursors WHERE "+storageConversionOwnerPredicate+") WHERE family=?", cursor.family)
+			return err
+		}
+		budget.advance = nil
+		budget.itemBytes = 0
+		budget.turn = cursor.turn
+		beforeRows, beforeBytes, beforeOversized := budget.rows, budget.bytes, budget.oversized
+		index := slices.IndexFunc(projections, func(p struct {
+			name    string
+			convert func(context.Context) error
+		}) bool {
+			return p.name == cursor.family
+		})
+		if index >= 0 {
+			err = projections[index].convert(ctx)
+		} else {
+			family := storageConversionFamilies[slices.IndexFunc(storageConversionFamilies, func(f storageConversionFamily) bool { return f.name == cursor.family })]
+			if (objectPayloadFamily(family.name) && (s.runDetailStore() != nil || s.storageArchiveContent() != nil)) || (!objectPayloadFamily(family.name) && s.storageArchiveContent() != nil) {
+				err = s.convertStorageFamilyTurn(ctx, family, cursor, now)
+			}
+		}
+		if errors.Is(err, errStorageBatchFull) {
+			if budget.reserve != nil {
+				return failures
+			}
+			_, restoreErr := s.database.db.ExecContext(ctx, `UPDATE storage_conversion_cursors SET turn=? WHERE family=?`, cursor.turn, cursor.family)
+			return errors.Join(failures, restoreErr)
+		}
+		if budget.rows > beforeRows && budget.advance != nil {
+			if advanceErr := budget.advance(); advanceErr != nil {
+				return errors.Join(failures, err, advanceErr)
+			}
+		}
+		if budget.rows > beforeRows {
+			if _, recordErr := s.database.db.ExecContext(ctx, `UPDATE storage_conversion_cursors SET examined_rows=examined_rows+?,examined_bytes=examined_bytes+?,oversized_rows=oversized_rows+? WHERE family=?`, budget.rows-beforeRows, budget.bytes-beforeBytes, budget.oversized-beforeOversized, cursor.family); recordErr != nil {
+				return errors.Join(failures, err, recordErr)
+			}
+		} else {
+			names = slices.DeleteFunc(names, func(name string) bool { return name == cursor.family })
+		}
+
+		if err != nil {
+			failures = errors.Join(failures, fmt.Errorf("convert legacy %s: %w", cursor.family, err))
+		}
+		if ctx.Err() != nil {
+			return errors.Join(failures, ctx.Err())
+		}
+		if budget.bytes >= storageConversionBytes {
+			break
+		}
+	}
+	return failures
+}
+
+func stringArguments(values []string) []any {
+	args := make([]any, len(values))
+	for i, value := range values {
+		args[i] = value
+	}
+	return args
+}
+
+func (s *Service) convertStorageFamilyTurn(ctx context.Context, family storageConversionFamily, cursor storageFamilyCursor, now time.Time) error {
+	keys, numeric := family.keyset()
+	predicate := family.payloadPredicate()
+	aggregate := family.aggregate
+	switch family.name {
+	case "versions", "evidence":
+		aggregate = "c.id"
+	case "sources":
+		aggregate = "r.version_id"
+	case "diff_files":
+		aggregate = "r.diff_id"
+	}
+	var c objectPayloadConversionPosition
+	var next storageFamilyCursor
+	var err error
+	if family.name == "analytics" {
+		c, next, err = s.selectStorageAnalyticsRow(ctx, family, cursor)
+		if err != nil {
+			return err
+		}
+		if c.row == 0 {
+			return nil
+		}
+	} else {
+		selection := "SELECT r.rowid," + family.scope() + ".organization_id," + family.scope() + ".project_id," + aggregate + "," + strings.Join(keys, ",") + " FROM " + family.keysetFrom() + " WHERE " + predicate
+		var args []any
+		if cursor.positioned {
+			selection += " AND (" + strings.Join(keys, ",") + ")>(" + strings.TrimSuffix(strings.Repeat("?,", len(keys)), ",") + ")"
+			for i := range keys {
+				if numeric && i == len(keys)-1 {
+					args = append(args, cursor.sequence)
+				} else {
+					args = append(args, cursor.keys[i])
+				}
+			}
+		}
+		scan := []any{&c.row, &c.scope.organization, &c.scope.project, &c.aggregate}
+		for i := range keys {
+			if numeric && i == len(keys)-1 {
+				scan = append(scan, &next.sequence)
+			} else {
+				scan = append(scan, &next.keys[i])
+			}
+		}
+		err = s.database.reader.QueryRowContext(ctx, selection+" ORDER BY "+strings.Join(keys, ",")+" LIMIT 1", args...).Scan(scan...)
+		if errors.Is(err, sql.ErrNoRows) {
+			_, err = s.database.db.ExecContext(ctx, `UPDATE storage_conversion_cursors SET positioned=0 WHERE family=? AND positioned<>0`, family.name)
+			return err
+		}
+		if err != nil {
+			return err
+		}
+	}
+	sizeQuery := "SELECT " + family.payloadSize() + " FROM " + family.from + " WHERE r.rowid=?"
+	var size int
+	if err := s.database.reader.QueryRowContext(ctx, sizeQuery, c.row).Scan(&size); err != nil {
+		return err
+	}
+	if err := chargeStorageConversion(ctx, size); err != nil {
+		return err
+	}
+	budget, ok := ctx.Value(storageBatchKey{}).(*storageBatchBudget)
+	if !ok {
+		return errors.New("storage conversion budget is unavailable")
+	}
+	budget.advance = func() error {
+		if family.name == "analytics" {
+			if err := s.writeStorageProjectionCursor(ctx, storageAnalyticsCursor(c.scope), []any{next.sequence}); err != nil {
+				return err
+			}
+		}
+		_, err := s.database.db.ExecContext(ctx, `UPDATE storage_conversion_cursors SET positioned=1,key_1=?,key_2=?,key_3=?,key_4=?,sequence=? WHERE family=?`, next.keys[0], next.keys[1], next.keys[2], next.keys[3], next.sequence, family.name)
+		return err
+	}
+	ctx = context.WithValue(ctx, storageSelectedRowKey{}, c.row)
+	if objectPayloadFamily(family.name) {
+		return s.convertObjectPayloadRow(ctx, family, c, now)
+	}
+	if err := s.discoverStorageRow(ctx, family, c.row, now); err != nil {
+		return err
+	}
+	if _, err := s.database.db.ExecContext(ctx, `UPDATE storage_conversion_progress SET format_version=?,complete=0 WHERE organization_id=? AND project_id=? AND family=? AND aggregate_id=?`, storageConversionVersion, c.scope.organization, c.scope.project, family.name, c.aggregate); err != nil {
+		return err
+	}
+	return s.convertStorageAggregate(ctx, c.scope, family, c.aggregate, now)
+}
+
+func storageAnalyticsCursor(scope nativeScope) string {
+	return "analytics-scope/" + string(scope.organization) + "/" + string(scope.project)
+}
+
+func (s *Service) selectStorageAnalyticsRow(ctx context.Context, family storageConversionFamily, cursor storageFamilyCursor) (objectPayloadConversionPosition, storageFamilyCursor, error) {
+	var c objectPayloadConversionPosition
+	var next storageFamilyCursor
+	query := "SELECT r.organization_id,r.project_id FROM " + family.keysetFrom() + " WHERE " + family.payloadPredicate()
+	order := " ORDER BY r.organization_id,r.project_id LIMIT 1"
+	err := s.database.reader.QueryRowContext(ctx, query+" AND (r.organization_id,r.project_id)>(?,?)"+order, cursor.keys[0], cursor.keys[1]).Scan(&c.scope.organization, &c.scope.project)
+	if errors.Is(err, sql.ErrNoRows) {
+		err = s.database.reader.QueryRowContext(ctx, query+order).Scan(&c.scope.organization, &c.scope.project)
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return c, next, nil
+	}
+	if err != nil {
+		return c, next, err
+	}
+	position, err := s.readStorageProjectionCursor(ctx, storageAnalyticsCursor(c.scope))
+	if err != nil {
+		return c, next, err
+	}
+	var after any = int64(0)
+	if len(position) > 0 {
+		after = position[0]
+	}
+	query = "SELECT r.rowid FROM " + family.keysetFrom() + " WHERE " + family.payloadPredicate() + " AND r.organization_id=? AND r.project_id=?"
+	err = s.database.reader.QueryRowContext(ctx, query+" AND r.rowid>? ORDER BY r.rowid LIMIT 1", c.scope.organization, c.scope.project, after).Scan(&c.row)
+	if errors.Is(err, sql.ErrNoRows) {
+		err = s.database.reader.QueryRowContext(ctx, query+" ORDER BY r.rowid LIMIT 1", c.scope.organization, c.scope.project).Scan(&c.row)
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return c, next, nil
+	}
+	next.keys[0], next.keys[1], next.sequence = string(c.scope.organization), string(c.scope.project), c.row
+	return c, next, err
+}
+
+func (f storageConversionFamily) payloadSize() string {
+	columns := []string{f.column}
+	switch f.name {
+	case "messages":
+		columns = []string{"text", "data_json", "actor_json"}
+	case "tool_revisions":
+		columns = []string{"text", "tool", "item_id", "status"}
+	case "diff_files":
+		columns = []string{"path", "old_path", "patch"}
+	case "checkpoints":
+		columns = []string{"checkpoint_json", "artifact_ids_json"}
+	case "conversation_records":
+		columns = []string{"execution_json", "preferences_json"}
+	case "conversation_questions":
+		columns = []string{"prompts_json", "answers_json"}
+	case "conversation_attachments":
+		return "coalesce((SELECT length(b.content) FROM conversation_attachment_blobs b WHERE b.artifact_ref=r.artifact_ref),0)"
+	}
+	for i, column := range columns {
+		columns[i] = "coalesce(length(CAST(r." + column + " AS BLOB)),0)"
+	}
+	return strings.Join(columns, "+")
+}
+
+func (s *Service) readStorageProjectionCursor(ctx context.Context, family string) ([]any, error) {
+	var keys [5]string
+	var numeric int
+	var positioned bool
+	err := s.database.reader.QueryRowContext(ctx, `SELECT positioned,key_1,key_2,key_3,key_4,key_5,numeric_keys FROM storage_conversion_cursors WHERE family=?`, family).Scan(&positioned, &keys[0], &keys[1], &keys[2], &keys[3], &keys[4], &numeric)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !positioned {
+		return nil, nil
+	}
+	count := numeric >> 8
+	if count < 1 || count > len(keys) {
+		return nil, errors.New("invalid storage projection cursor width")
+	}
+	result := make([]any, count)
+	for i := range result {
+		if numeric&(1<<i) != 0 {
+			value, err := strconv.ParseInt(keys[i], 10, 64)
+			if err != nil {
+				return nil, err
+			}
+			result[i] = value
+		} else {
+			result[i] = keys[i]
+		}
+	}
+	return result, nil
+}
+
+func (s *Service) writeStorageProjectionCursor(ctx context.Context, family string, cursor []any) error {
+	var keys [5]string
+	if len(cursor) == 0 || len(cursor) > len(keys) {
+		return errors.New("invalid storage projection cursor width")
+	}
+	numeric := len(cursor) << 8
+	for i, value := range cursor {
+		switch value := value.(type) {
+		case string:
+			keys[i] = value
+		case int64:
+			keys[i] = strconv.FormatInt(value, 10)
+			numeric |= 1 << i
+		default:
+			return errors.New("invalid storage projection key type")
+		}
+	}
+	_, err := s.database.db.ExecContext(ctx, `INSERT INTO storage_conversion_cursors(family,positioned,key_1,key_2,key_3,key_4,key_5,numeric_keys) VALUES(?,1,?,?,?,?,?,?) ON CONFLICT(family) DO UPDATE SET positioned=1,key_1=excluded.key_1,key_2=excluded.key_2,key_3=excluded.key_3,key_4=excluded.key_4,key_5=excluded.key_5,numeric_keys=excluded.numeric_keys`, family, keys[0], keys[1], keys[2], keys[3], keys[4], numeric)
+	return err
+}
+
+func storageProjectionStart(ctx context.Context, fallback uint64, count int) int {
+	if budget, ok := ctx.Value(storageBatchKey{}).(*storageBatchBudget); ok {
+		return int(budget.turn/int64(len(storageConversionFamilies)+7)) % count
+	}
+	return int(fallback % uint64(count))
+}
+
+func storageConversionBatchError(err error) error {
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		var failures error
+		for _, item := range joined.Unwrap() {
+			failures = errors.Join(failures, storageConversionBatchError(item))
+		}
+		return failures
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return nil
+	}
+	return err
+}
+
+func expandStorageConversion(ctx context.Context, size int) error {
+	budget, ok := ctx.Value(storageBatchKey{}).(*storageBatchBudget)
+	if !ok || size <= budget.itemBytes {
+		return nil
+	}
+	expanded := budget.bytes + int64(size-budget.itemBytes)
+	if budget.rows > 1 && expanded > storageConversionBytes {
+		return errStorageBatchFull
+	}
+	if budget.bytes <= storageConversionBytes && expanded > storageConversionBytes {
+		budget.oversized++
+	}
+	budget.bytes = expanded
+	budget.itemBytes = size
+	return nil
+}
+
+func (f storageConversionFamily) keysetFrom() string {
+	from := f.from
+	if f.name != "diff_files" {
+		index := map[string]string{
+			"attempts":            "native_attempts_payload_pending",
+			"versions":            "change_versions_payload_pending",
+			"evidence":            "change_evidence_payload_pending",
+			"checkpoints":         "native_attempts_checkpoint_pending",
+			"landings":            "change_landing_receipts_payload_pending",
+			"analytics":           "analytics_attempt_payload_pending_scope",
+			"conversation_events": "conversation_events_payload_pending",
+			"messages":            "conversation_messages_payload_pending",
+			"tool_revisions":      "conversation_tool_revisions_payload_pending",
+		}[f.name]
+		if index == "" {
+			index = "storage_keyset_" + f.name
+		}
+		from = strings.Replace(from, " r", " r INDEXED BY "+index, 1)
+	}
+	return strings.ReplaceAll(from, " JOIN ", " CROSS JOIN ")
 }

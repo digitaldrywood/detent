@@ -34,25 +34,23 @@ func readNativeBoardRank(ctx context.Context, q nativeQueryer, project, state st
 }
 
 func (s *Service) convertNativeBoardRanks(ctx context.Context) error {
-	rows, err := s.database.reader.QueryContext(ctx, `SELECT id,states_json FROM projects WHERE id IN (SELECT project_id FROM workflow_states WHERE board_rank IS NULL) ORDER BY id LIMIT ?`, storageConversionRows)
+	positions, err := s.storageProjectionPage(ctx, "board-ranks", `SELECT project_id FROM workflow_states WHERE board_rank IS NULL`, "project_id", storageConversionLimit(ctx))
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
 	type candidate struct{ id, raw string }
 	var candidates []candidate
-	for rows.Next() {
-		var c candidate
-		if err := rows.Scan(&c.id, &c.raw); err != nil {
-			rows.Close()
+	for _, position := range positions {
+		c := candidate{id: position.id}
+		if err := s.database.reader.QueryRowContext(ctx, "SELECT states_json FROM projects WHERE id=?", c.id).Scan(&c.raw); err != nil {
 			return err
 		}
 		candidates = append(candidates, c)
 	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return err
-	}
 	for _, c := range candidates {
+		if err := chargeStorageConversion(ctx, len(c.raw)); err != nil {
+			return err
+		}
 		if err := s.convertNativeBoardRank(ctx, c.id, c.raw); err != nil {
 			return err
 		}

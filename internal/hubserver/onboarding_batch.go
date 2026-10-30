@@ -25,37 +25,56 @@ func (s *Service) projectOnboardingBatch(ctx context.Context, organization track
 	for _, project := range projects {
 		ids = append(ids, project.ID)
 	}
-	encoded, err := json.Marshal(ids)
-	if err != nil {
-		return nil, err
-	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+	args := append([]any{organization}, stringArguments(ids)...)
 	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
-	rows, err := tx.QueryContext(ctx, `SELECT p.id, coalesce(nullif(p.checkout_repository,''),r.github_owner||'/'||r.github_name,''), coalesce(o.progress_json,'{}'),
- coalesce((SELECT json_group_array(json(binding_json)) FROM artifact_services a WHERE a.organization_id=p.organization_id AND a.project_id=p.id),'[]')
+	query := strings.Join([]string{`SELECT p.id, coalesce(nullif(p.checkout_repository,''),r.github_owner||'/'||r.github_name,''), coalesce(o.progress_json,'{}')
  FROM projects p LEFT JOIN repositories r ON r.id=p.repository_id LEFT JOIN project_onboarding o ON o.organization_id=p.organization_id AND o.project_id=p.id
- WHERE p.organization_id=? AND p.deleted_at IS NULL AND p.id IN (SELECT value FROM json_each(?))`, organization, string(encoded))
+ WHERE p.organization_id=? AND p.deleted_at IS NULL AND p.id IN (`, placeholders, `)`}, "")
+	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var id tracker.ProjectID
-		var progress, artifacts string
+		var progress string
 		value := onboarding.Project{Runners: []runnerauth.Eligibility{}, Artifacts: []artifact.Binding{}}
-		if err := rows.Scan(&id, &value.Repository, &progress, &artifacts); err != nil {
+		if err := rows.Scan(&id, &value.Repository, &progress); err != nil {
 			return nil, errors.Join(err, rows.Close())
 		}
 		if err := json.Unmarshal([]byte(progress), &value.Progress); err != nil {
 			return nil, errors.Join(err, rows.Close())
 		}
-		if err := json.Unmarshal([]byte(artifacts), &value.Artifacts); err != nil {
+		result[id] = value
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, err
+	}
+	query = strings.Join([]string{`SELECT project_id,binding_json FROM artifact_services WHERE organization_id=? AND project_id IN (`, placeholders, `) ORDER BY project_id,id`}, "")
+	rows, err = tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id tracker.ProjectID
+		var raw string
+		if err := rows.Scan(&id, &raw); err != nil {
 			return nil, errors.Join(err, rows.Close())
 		}
-		result[id] = value
+		if value, ok := result[id]; ok {
+			var binding artifact.Binding
+			if err := json.Unmarshal([]byte(raw), &binding); err != nil {
+				return nil, errors.Join(err, rows.Close())
+			}
+			value.Artifacts = append(value.Artifacts, binding)
+			result[id] = value
+		}
 	}
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return nil, err
@@ -117,7 +136,7 @@ func (s *Service) projectOnboardingBatch(ctx context.Context, organization track
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return nil, err
 	}
-	query := strings.Replace(runnerIdentitySelect, "\nFROM runner_identities", `, r.local_checks_json
+	query = strings.Replace(runnerIdentitySelect, "\nFROM runner_identities", `, r.local_checks_json
  FROM runner_identities`, 1)
 	identities, err := readRunnerIdentityBatch(ctx, tx, query+" WHERE r.organization_id=? AND r.removed_at IS NULL ORDER BY r.display_name,r.id", []any{organization}, now, true)
 	if err != nil {

@@ -27,6 +27,11 @@ func (s *Service) convertConversationPayload(ctx context.Context, scope nativeSc
 		order = "r.message_id,r.revision"
 	}
 	err = s.database.reader.QueryRowContext(ctx, "SELECT r.rowid FROM "+family.from+" WHERE c.organization_id=? AND c.project_id=? AND r.conversation_id=? AND "+family.where+" ORDER BY "+order+" LIMIT 1", scope.organization, scope.project, id).Scan(&row)
+	if selected, ok := ctx.Value(storageSelectedRowKey{}).(int64); ok {
+		row = selected
+		err = nil
+	}
+
 	if errors.Is(err, sql.ErrNoRows) {
 		_, err = s.database.db.ExecContext(ctx, `UPDATE storage_conversion_progress SET complete=1,updated_at=? WHERE organization_id=? AND project_id=? AND family=? AND aggregate_id=?`, formatHubTime(now), scope.organization, scope.project, family.name, id)
 		return err
@@ -79,6 +84,9 @@ func (s *Service) convertConversationPayload(ctx context.Context, scope nativeSc
 		}
 	}
 	if err != nil {
+		return err
+	}
+	if err := expandStorageConversion(ctx, len(data)); err != nil {
 		return err
 	}
 	ref, err := store.contents.PublishContent(ctx, string(scope.organization), data)
@@ -145,7 +153,13 @@ func (s *Service) convertConversationPayload(ctx context.Context, scope nativeSc
 func (s *Service) convertConversationToolPayload(ctx context.Context, scope nativeScope, family storageConversionFamily, id, messageID, stamp string, now time.Time) (bool, error) {
 	var row, revision int64
 	var text, tool, item, status string
-	err := s.database.reader.QueryRowContext(ctx, `SELECT rowid,revision,text,tool,item_id,status FROM conversation_tool_revisions WHERE conversation_id=? AND message_id=? AND content_attachment_id='' ORDER BY revision LIMIT 1`, id, messageID).Scan(&row, &revision, &text, &tool, &item, &status)
+	query := `SELECT rowid,revision,text,tool,item_id,status FROM conversation_tool_revisions WHERE conversation_id=? AND message_id=? AND content_attachment_id=''`
+	args := []any{id, messageID}
+	if selected, ok := ctx.Value(storageSelectedRowKey{}).(int64); ok && family.name == "tool_revisions" {
+		query += " AND rowid=?"
+		args = append(args, selected)
+	}
+	err := s.database.reader.QueryRowContext(ctx, query+" ORDER BY revision LIMIT 1", args...).Scan(&row, &revision, &text, &tool, &item, &status)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -161,6 +175,9 @@ func (s *Service) convertConversationToolPayload(ctx context.Context, scope nati
 		return false, err
 	}
 	store := s.conversations.store
+	if err := expandStorageConversion(ctx, len(content)); err != nil {
+		return false, err
+	}
 	ref, err := store.contents.PublishContent(ctx, string(scope.organization), content)
 	if err != nil {
 		return false, err

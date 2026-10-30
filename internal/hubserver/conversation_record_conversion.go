@@ -25,6 +25,11 @@ func (s *Service) convertConversationRecordPayload(ctx context.Context, scope na
 	}
 	var row int64
 	err = s.database.reader.QueryRowContext(ctx, "SELECT r.rowid FROM "+family.from+" WHERE "+family.aggregate+"=? AND r.conversion_state=1 AND "+family.where+" ORDER BY r.rowid LIMIT 1", id).Scan(&row)
+	if selected, ok := ctx.Value(storageSelectedRowKey{}).(int64); ok {
+		row = selected
+		err = nil
+	}
+
 	if errors.Is(err, sql.ErrNoRows) {
 		_, err = s.database.db.ExecContext(ctx, `UPDATE storage_conversion_progress SET complete=1,updated_at=? WHERE organization_id=? AND project_id=? AND family=? AND aggregate_id=?`, formatHubTime(now), scope.organization, scope.project, family.name, id)
 		return err
@@ -97,6 +102,9 @@ func (s *Service) convertConversationRecordPayload(ctx context.Context, scope na
 		if err != nil {
 			return err
 		}
+	}
+	if err := expandStorageConversion(ctx, len(content)); err != nil {
+		return err
 	}
 	ctx, err = store.preparePayload(ctx, string(scope.organization), content)
 	if err != nil {

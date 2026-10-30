@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func storeRunnerBoardProjection(ctx context.Context, tx *sql.Tx, scope nativeScope, runner string, view runnerauth.ProjectConfiguration) error {
@@ -91,28 +92,34 @@ func readRunnerBoardProjection(ctx context.Context, q nativeQueryer, scope nativ
 }
 
 func (s *Service) convertRunnerBoardProjections(ctx context.Context) error {
-	rows, err := s.database.reader.QueryContext(ctx, `SELECT o.organization_id,o.runner_id,o.project_id,r.project_configuration_json FROM runner_project_observations o JOIN runner_identities r ON r.id=o.runner_id AND r.organization_id=o.organization_id WHERE o.board_projection_version=0 ORDER BY o.organization_id,o.runner_id,o.project_id LIMIT ?`, storageConversionRows)
+	positions, err := s.storageProjectionPage(ctx, "runner-board", `SELECT o.runner_id FROM runner_project_observations o WHERE o.board_projection_version=0`, "o.organization_id,o.runner_id,o.project_id", storageConversionLimit(ctx))
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
 	type candidate struct {
 		scope       nativeScope
 		runner, raw string
 	}
 	var candidates []candidate
-	for rows.Next() {
-		var c candidate
-		if err := rows.Scan(&c.scope.organization, &c.runner, &c.scope.project, &c.raw); err != nil {
-			rows.Close()
+	for _, position := range positions {
+		organization, ok := position.cursor[0].(string)
+		if !ok {
+			return errors.New("invalid runner board organization key")
+		}
+		project, ok := position.cursor[2].(string)
+		if !ok {
+			return errors.New("invalid runner board project key")
+		}
+		c := candidate{scope: nativeScope{organization: tracker.OrganizationID(organization), project: tracker.ProjectID(project)}, runner: position.id}
+		if err := s.database.reader.QueryRowContext(ctx, "SELECT project_configuration_json FROM runner_identities WHERE organization_id=? AND id=?", c.scope.organization, c.runner).Scan(&c.raw); err != nil {
 			return err
 		}
 		candidates = append(candidates, c)
 	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return err
-	}
 	for _, c := range candidates {
+		if err := chargeStorageConversion(ctx, len(c.raw)); err != nil {
+			return err
+		}
 		entry, err := projectConfigurationEntry(c.raw, string(c.scope.project))
 		if err != nil {
 			return err
