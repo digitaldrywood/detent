@@ -73,7 +73,7 @@ type analyticsRows struct {
 }
 
 func queryAnalyticsRows(ctx context.Context, q nativeQueryer, statement string, args ...any) (*analyticsRows, error) {
-	rows, err := q.QueryContext(ctx, statement, args...)
+	rows, err := querySQL(ctx, q, statement, args...)
 	return &analyticsRows{rows: rows}, err
 }
 

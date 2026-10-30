@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
-	"encoding/json"
 	"net/http"
 	"slices"
 	"strconv"
@@ -56,17 +55,17 @@ func readNativeDependencyDetailsBatch(ctx context.Context, q nativeQueryer, scop
 		edges[issue.WorkItemID] = &dependencyEdges{}
 		ids = append(ids, issue.WorkItemID)
 	}
-	rawIDs, err := json.Marshal(ids)
+	rawIDs, err := sqlList(ids)
 	if err != nil {
 		return err
 	}
-	selection := string(rawIDs)
+	selection := rawIDs
 	condition, grantArgs := scope.credential.projectGrantSQL("i.organization_id", "i.project_id")
 	visibility, visibilityArgs := scope.issueVisibilitySQL("i")
 	condition = "(" + condition + ") AND (" + visibility + ")"
 	grantArgs = append(grantArgs, visibilityArgs...)
 	args := append(grantArgs, selection, scope.organization, scope.project)
-	rows, err := q.QueryContext(ctx, `SELECT source.native_id, i.native_id, i.project_id, i.number, i.title, COALESCE(ws.detent_state,''), COALESCE(ws.terminal,0), o.slug, p.slug,
+	rows, err := querySQL(ctx, q, `SELECT source.native_id, i.native_id, i.project_id, i.number, i.title, COALESCE(ws.detent_state,''), COALESCE(ws.terminal,0), o.slug, p.slug,
  d.dependent_issue_id = source.id, (`+condition+`), COALESCE(ws.dispatchable,0), CASE WHEN ws.terminal=1 THEN `+nativeTerminalEnteredAt+` ELSE NULL END,
  (SELECT a.started_at FROM native_attempts a
  WHERE a.work_item_id=i.native_id AND a.organization_id=i.organization_id AND a.project_id=i.project_id AND a.status='running'
@@ -75,7 +74,7 @@ func readNativeDependencyDetailsBatch(ctx context.Context, q nativeQueryer, scop
  JOIN issues i ON i.id=CASE WHEN d.dependent_issue_id=source.id THEN d.blocker_issue_id ELSE d.dependent_issue_id END
  JOIN organizations o ON o.id=i.organization_id JOIN projects p ON p.id=i.project_id
  LEFT JOIN workflow_states ws ON ws.id=i.workflow_state_id
- WHERE source.native_id IN (SELECT value FROM json_each(?)) AND source.organization_id=? AND source.project_id=?`, args...)
+ WHERE source.native_id IN (SELECT value FROM sql_rows(?)) AND source.organization_id=? AND source.project_id=?`, args...)
 	if err != nil {
 		return err
 	}
@@ -144,7 +143,7 @@ func readNativeDependencyDetailsBatch(ctx context.Context, q nativeQueryer, scop
 			return strings.Compare(string(a.ID), string(b.ID))
 		})
 	}
-	reasons, err := q.QueryContext(ctx, `SELECT native_id,blocked_reason,blocked_reason_basis,blocked_reason_revision,unblocks_reason,unblocks_reason_basis,unblocks_reason_revision FROM issues WHERE native_id IN (SELECT value FROM json_each(?)) AND organization_id=? AND project_id=?`, selection, scope.organization, scope.project)
+	reasons, err := querySQL(ctx, q, `SELECT native_id,blocked_reason,blocked_reason_basis,blocked_reason_revision,unblocks_reason,unblocks_reason_basis,unblocks_reason_revision FROM issues WHERE native_id IN (SELECT value FROM sql_rows(?)) AND organization_id=? AND project_id=?`, selection, scope.organization, scope.project)
 	if err != nil {
 		return err
 	}

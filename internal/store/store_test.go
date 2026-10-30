@@ -3757,6 +3757,12 @@ func TestDailyDigestReconcilesRuntimeTables(t *testing.T) {
 		t.Fatalf("RecordWorkflowPhaseEvent() error = %v", err)
 	}
 
+	sqliteBackend, ok := backend.(*sqliteStore)
+	if !ok {
+		t.Fatalf("store type=%T", backend)
+	}
+	recorder := &refreshQueryRecorder{DB: sqliteBackend.db}
+	sqliteBackend.queries = sqlc.New(recorder)
 	days, err := backend.DailyDigest(ctx, []DailyDigestWindow{
 		{Date: "2026-07-09", From: from.Add(-24 * time.Hour), To: from},
 		{Date: "2026-07-10", From: from, To: to},
@@ -3810,6 +3816,37 @@ func TestDailyDigestReconcilesRuntimeTables(t *testing.T) {
 				t.Fatalf("foreign model: %v", day.Models)
 			}
 		})
+	}
+
+	for _, read := range recorder.reads {
+		if !strings.Contains(read.query, "-- name: DailyDigestRuntime") {
+			continue
+		}
+		rows, err := sqliteBackend.db.QueryContext(ctx, "EXPLAIN QUERY PLAN "+read.query, read.args...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		var plan strings.Builder
+		indexedWindow := false
+		for rows.Next() {
+			var id, parent, unused int
+			var detail string
+			if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+				t.Fatal(err)
+			}
+			if strings.HasPrefix(detail, "SEARCH codex_sessions USING") && strings.Contains(detail, "completed_at>?") && strings.Contains(detail, "completed_at<?") {
+				indexedWindow = true
+			}
+			plan.WriteString(detail)
+			plan.WriteByte('\n')
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(plan.String(), "SCAN codex_sessions") || !indexedWindow {
+			t.Fatalf("digest session history lost its window index: %s", plan.String())
+		}
 	}
 
 }

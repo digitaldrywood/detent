@@ -147,8 +147,8 @@ func readNativeShippedSpend(ctx context.Context, q nativeQueryer, scope nativeSc
 	for _, id := range ids {
 		perIssue[id] = 0
 	}
-	err := forShippedBatches(ids, func(batch string) error {
-		rows, err := q.QueryContext(ctx, `SELECT a.work_item_id,coalesce(sum(u.cost_estimate),0) FROM json_each(?) w
+	err := forShippedBatches(ids, func(batch sqlParameterRows) error {
+		rows, err := querySQL(ctx, q, `SELECT a.work_item_id,coalesce(sum(u.cost_estimate),0) FROM sql_rows(?) w
 CROSS JOIN native_attempts a ON a.organization_id=? AND a.project_id=? AND a.work_item_id=w.value
 CROSS JOIN attempt_usage u ON u.attempt_id=a.id AND u.organization_id=? AND u.project_id=? AND +u.period<? GROUP BY a.work_item_id`,
 			batch, scope.organization, scope.project, scope.organization, scope.project, to.UTC().Format(usagePeriodLayout))

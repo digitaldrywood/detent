@@ -122,12 +122,12 @@ func (s *Service) requireHostedRunnerProjects(ctx context.Context, query nativeQ
 	if projects != nil && len(projects) == 0 {
 		return fmt.Errorf("%w: An unassigned runner needs an owner or admin", operatortool.ErrAccessDenied)
 	}
-	raw, err := marshalNative(projects)
+	raw, err := sqlList(projects)
 	if err != nil {
 		return err
 	}
 	var project, name string
-	err = query.QueryRowContext(ctx, `SELECT p.id,p.name FROM projects p WHERE p.deleted_at IS NULL AND p.organization_id=? AND (? OR p.id IN (SELECT value FROM json_each(?))) AND NOT EXISTS
+	err = queryRowSQL(ctx, query, `SELECT p.id,p.name FROM projects p WHERE p.deleted_at IS NULL AND p.organization_id=? AND (? OR p.id IN (SELECT value FROM sql_rows(?))) AND NOT EXISTS
 (SELECT 1 FROM hosted_project_grants g WHERE g.organization_id=p.organization_id AND g.project_id=p.id AND g.user_id=? AND g.manage_runner=1)
 ORDER BY p.name,p.id LIMIT 1`, s.config.Hosted.OrganizationID, projects == nil, raw, credential.Hosted.Subject).Scan(&project, &name)
 	if err == nil {
@@ -137,7 +137,7 @@ ORDER BY p.name,p.id LIMIT 1`, s.config.Hosted.OrganizationID, projects == nil, 
 		return err
 	}
 	var count int
-	if err := query.QueryRowContext(ctx, "SELECT count(*) FROM projects WHERE deleted_at IS NULL AND organization_id=? AND (? OR id IN (SELECT value FROM json_each(?)))", s.config.Hosted.OrganizationID, projects == nil, raw).Scan(&count); err != nil {
+	if err := queryRowSQL(ctx, query, "SELECT count(*) FROM projects WHERE deleted_at IS NULL AND organization_id=? AND (? OR id IN (SELECT value FROM sql_rows(?)))", s.config.Hosted.OrganizationID, projects == nil, raw).Scan(&count); err != nil {
 		return err
 	}
 	if count == 0 || projects != nil && count != len(projects) {

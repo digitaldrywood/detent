@@ -189,7 +189,8 @@
       "TestClaimCandidatesRetryInstancePreProviderFailures",
       "TestReviewConversationHistoryDoesNotVetoLanding",
       "TestINV18RequestCommitDoesNoDerivedWork",
-      "TestINV18HubMigrationsUseTypedColumns"
+      "TestINV18HubMigrationsUseTypedColumns",
+      "TestINV20NoSQLOverJSON"
     ],
     "./internal/web": [
       "TestOperationsWorkpadHumanAction"

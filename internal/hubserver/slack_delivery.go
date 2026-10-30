@@ -72,11 +72,11 @@ func enqueueSlackOpened(ctx context.Context, tx *sql.Tx, organization tracker.Or
 	return err
 }
 
-func enqueueSlackResolved(ctx context.Context, tx *sql.Tx, organization tracker.OrganizationID, fingerprints []byte, at time.Time) error {
+func enqueueSlackResolved(ctx context.Context, tx *sql.Tx, organization tracker.OrganizationID, fingerprints sqlParameterRows, at time.Time) error {
 	now := formatHubTime(at)
-	_, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO health_slack_deliveries(finding_id,event,queued_at,next_attempt_at)
- SELECT f.id,'resolved',?,? FROM health_findings f WHERE f.organization_id=? AND f.resolved_at IS NULL AND f.severity='attention' AND f.fingerprint NOT IN (SELECT value FROM json_each(?))
- AND EXISTS(SELECT 1 FROM organization_secrets WHERE organization_id=? AND kind=?) AND EXISTS(SELECT 1 FROM health_slack_deliveries d WHERE d.finding_id=f.id AND d.event='opened')`, now, now, organization, string(fingerprints), organization, slackWebhookSecret)
+	_, err := execSQL(ctx, tx, `INSERT OR IGNORE INTO health_slack_deliveries(finding_id,event,queued_at,next_attempt_at)
+ SELECT f.id,'resolved',?,? FROM health_findings f WHERE f.organization_id=? AND f.resolved_at IS NULL AND f.severity='attention' AND f.fingerprint NOT IN (SELECT value FROM sql_rows(?))
+ AND EXISTS(SELECT 1 FROM organization_secrets WHERE organization_id=? AND kind=?) AND EXISTS(SELECT 1 FROM health_slack_deliveries d WHERE d.finding_id=f.id AND d.event='opened')`, now, now, organization, fingerprints, organization, slackWebhookSecret)
 	return err
 }
 

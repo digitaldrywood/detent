@@ -3,11 +3,12 @@ package hubserver
 import (
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"slices"
-	"strconv"
 	"strings"
 
 	"github.com/labstack/echo/v4"
@@ -341,12 +342,13 @@ func nativeArchiveColumns(ctx context.Context, query nativeQueryer, table string
 func newNativeArchiveQuery(ctx context.Context, query nativeQueryer, section *attachment.ArchiveSection, subject string, first, last int64) (*nativeArchiveQuery, error) {
 	result := &nativeArchiveQuery{nativeQueryer: query}
 	var ctes []string
+	sqlBytes := 0
 	for _, table := range section.Tables {
 		columns, primaryColumns, err := nativeArchiveColumns(ctx, query, table.Name)
 		if err != nil {
 			return nil, err
 		}
-		flat := make([]json.RawMessage, 0, len(table.Rows)*len(columns))
+		var records []string
 		for _, column := range table.Columns {
 			if !slices.Contains(columns, column) {
 				return nil, attachment.ErrInvalid
@@ -363,29 +365,34 @@ func newNativeArchiveQuery(ctx context.Context, query nativeQueryer, section *at
 			if len(row) != len(table.Columns) {
 				return nil, attachment.ErrInvalid
 			}
+			cells := make([]string, len(columns))
 			for i, index := range indexes {
-				if index < 0 {
-					flat = append(flat, archiveProjectionDefault(table.Name, columns[i]))
-				} else {
-					flat = append(flat, row[index])
+				raw := archiveProjectionDefault(table.Name, columns[i])
+				if index >= 0 {
+					raw = row[index]
 				}
+				cell, err := archiveSQLScalar(raw)
+				if err != nil {
+					return nil, err
+				}
+				cells[i] = cell
 			}
+			record := "(" + strings.Join(cells, ",") + ")"
+			sqlBytes += len(record) + 1
+			if sqlBytes > maxArchiveSQLBytes {
+				return nil, attachment.ErrInvalid
+			}
+			records = append(records, record)
 		}
-
-		var projection []string
-		width := strconv.Itoa(len(columns))
-		for index := range columns {
-			projection = append(projection, "max(CASE WHEN key%"+width+"="+strconv.Itoa(index)+" THEN atom END)")
+		relation := "VALUES " + strings.Join(records, ",")
+		if len(records) == 0 {
+			relation = "SELECT " + strings.Repeat("NULL,", len(columns)-1) + "NULL WHERE 0"
 		}
 		quoted := make([]string, len(columns))
 		liveProjection := make([]string, len(columns))
 		for i, column := range columns {
 			quoted[i] = `"` + strings.ReplaceAll(column, `"`, `""`) + `"`
 			liveProjection[i] = "live." + quoted[i]
-		}
-		raw, err := json.Marshal(flat)
-		if err != nil {
-			return nil, err
 		}
 		name := table.Name
 		if len(primaryColumns) == 0 {
@@ -396,7 +403,6 @@ func newNativeArchiveQuery(ctx context.Context, query nativeQueryer, section *at
 			liveIdentity = append(liveIdentity, "live."+quoted[index])
 			archivedIdentity = append(archivedIdentity, quoted[index])
 		}
-		result.values = append(result.values, string(raw))
 		conditions := []string{"(" + strings.Join(liveIdentity, ",") + ") NOT IN (SELECT " + strings.Join(archivedIdentity, ",") + " FROM archive_" + name + ")"}
 		for _, field := range []struct{ column, value string }{
 			{"organization_id", section.OrganizationID},
@@ -448,10 +454,13 @@ func newNativeArchiveQuery(ctx context.Context, query nativeQueryer, section *at
 				result.values = append(result.values, next.Int64)
 			}
 		}
-		ctes = append(ctes, fmt.Sprintf(`archive_%s(%s) AS MATERIALIZED (SELECT %s FROM json_each(?) GROUP BY CAST(key/%s AS INTEGER)),
-%s AS NOT MATERIALIZED (SELECT * FROM archive_%s UNION ALL SELECT %s FROM main.%s AS live WHERE %s)`, name, strings.Join(quoted, ","), strings.Join(projection, ","), width, name, name, strings.Join(liveProjection, ","), name, strings.Join(conditions, " AND ")))
+		ctes = append(ctes, fmt.Sprintf(`archive_%s(%s) AS MATERIALIZED (%s),
+%s AS NOT MATERIALIZED (SELECT * FROM archive_%s UNION ALL SELECT %s FROM main.%s AS live WHERE %s)`, name, strings.Join(quoted, ","), relation, name, name, strings.Join(liveProjection, ","), name, strings.Join(conditions, " AND ")))
 	}
 	result.ctes = strings.Join(ctes, ",")
+	if len(result.ctes) > maxArchiveSQLBytes {
+		return nil, attachment.ErrInvalid
+	}
 	return result, nil
 }
 
@@ -546,4 +555,36 @@ func archiveProjectionDefault(table, column string) json.RawMessage {
 		}
 	}
 	return nil
+}
+
+const maxArchiveSQLBytes = 16 << 20
+
+func archiveSQLScalar(raw json.RawMessage) (string, error) {
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return "", attachment.ErrInvalid
+	}
+	if decoder.Decode(new(any)) != io.EOF {
+		return "", attachment.ErrInvalid
+	}
+	switch value := value.(type) {
+	case nil:
+		return "NULL", nil
+	case bool:
+		if value {
+			return "1", nil
+		}
+		return "0", nil
+	case json.Number:
+		return value.String(), nil
+	case string:
+		if strings.ContainsRune(value, 0) {
+			return "CAST(X'" + hex.EncodeToString([]byte(value)) + "' AS TEXT)", nil
+		}
+		return "'" + strings.ReplaceAll(value, "'", "''") + "'", nil
+	default:
+		return "", attachment.ErrInvalid
+	}
 }

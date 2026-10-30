@@ -304,10 +304,10 @@ func (s *sqliteStore) UpdateTerminalWorkAttemptWait(ctx context.Context, attrs W
 }
 
 func (s *sqliteStore) ListActiveWorkAttempts(ctx context.Context, query WorkAttemptQuery) ([]WorkAttempt, error) {
-	excluded := emptyGenerations
+	excluded := []int64(nil)
 	if query.ExcludeLiveForeignGenerations {
 		var err error
-		excluded, err = s.liveForeignGenerationsJSON(ctx)
+		excluded, err = s.liveForeignGenerationIDs(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -376,7 +376,7 @@ func (s *sqliteStore) ListPendingWorkAttemptCapacityReleases(ctx context.Context
 	if projectID == "" {
 		return nil, errors.New("project_id is required")
 	}
-	excluded, err := s.liveForeignGenerationsJSON(ctx)
+	excluded, err := s.liveForeignGenerationIDs(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -432,7 +432,7 @@ func (s *sqliteStore) UpdateOperatorStop(ctx context.Context, attrs OperatorStop
 }
 
 func (s *sqliteStore) ListPendingOperatorStops(ctx context.Context, projectID string) ([]WorkAttempt, error) {
-	excluded, err := s.liveForeignGenerationsJSON(ctx)
+	excluded, err := s.liveForeignGenerationIDs(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -463,25 +463,21 @@ func (s *sqliteStore) TimeoutExpiredWorkAttempts(ctx context.Context, attrs Work
 	if strings.TrimSpace(errorMessage) == "" {
 		errorMessage = "work attempt lease expired"
 	}
-	excludedIDs := attrs.ExcludeAttemptIDs
-	if excludedIDs == nil {
-		excludedIDs = []int64{}
+	if len(attrs.ExcludeAttemptIDs) > 10000 || len(attrs.ConfirmedGoneAttemptIDs) > 10000 {
+		return nil, errors.New("work attempt selection exceeds query bound")
 	}
-	excluded, err := json.Marshal(excludedIDs)
-	if err != nil {
-		return nil, fmt.Errorf("encoding excluded work attempts: %w", err)
-	}
-	confirmedGone, err := json.Marshal(attrs.ConfirmedGoneAttemptIDs)
-	if err != nil {
-		return nil, fmt.Errorf("encoding processless work attempts: %w", err)
-	}
-	liveForeign, err := s.liveForeignGenerationsJSON(ctx)
+	liveForeign, err := s.liveForeignGenerationIDs(ctx)
 	if err != nil {
 		return nil, err
 	}
+	const scalarParameters = 10
+	const maxParameters = 30000
+	if len(attrs.ExcludeAttemptIDs)+len(attrs.ConfirmedGoneAttemptIDs)+len(liveForeign) > maxParameters-scalarParameters {
+		return nil, errors.New("work attempt timeout exceeds query parameter bound")
+	}
 	rows, err := s.queries.TimeoutExpiredWorkAttempts(ctx, sqlc.TimeoutExpiredWorkAttemptsParams{
-		ExcludeAttemptIds:       string(excluded),
-		ConfirmedGoneAttemptIds: string(confirmedGone),
+		ExcludeAttemptIds:       attrs.ExcludeAttemptIDs,
+		ConfirmedGoneAttemptIds: attrs.ConfirmedGoneAttemptIDs,
 		Status:                  string(WorkAttemptStatusTerminal),
 		TerminalState:           nullString(string(terminalState)),
 		CompletedAt:             sql.NullString{String: now, Valid: true},
@@ -890,7 +886,7 @@ func boolInt64(value bool) int64 {
 }
 
 func (s *sqliteStore) ListLocalAdmittedIssueIDs(ctx context.Context, projectID string) ([]string, error) {
-	excluded, err := s.liveForeignGenerationsJSON(ctx)
+	excluded, err := s.liveForeignGenerationIDs(ctx)
 	if err != nil {
 		return nil, err
 	}

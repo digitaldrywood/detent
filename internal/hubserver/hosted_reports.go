@@ -499,11 +499,11 @@ func (s *Service) readHostedReportsFrom(ctx context.Context, analytics nativeAna
 			titleIDs = append(titleIDs, class.TrackingWorkItemID)
 		}
 	}
-	encodedIDs, err := marshalNative(titleIDs)
+	encodedIDs, err := sqlList(titleIDs)
 	if err != nil {
 		return out, err
 	}
-	titleRows, err := q.QueryContext(ctx, "SELECT native_id,title FROM issues WHERE organization_id=? AND project_id=? AND native_id IN (SELECT value FROM json_each(?))", scope.organization, scope.project, encodedIDs)
+	titleRows, err := querySQL(ctx, q, "SELECT native_id,title FROM issues WHERE organization_id=? AND project_id=? AND native_id IN (SELECT value FROM sql_rows(?))", scope.organization, scope.project, encodedIDs)
 	if err != nil {
 		return out, err
 	}

@@ -189,6 +189,11 @@ SET resumed_from_session_id = sqlc.narg(resumed_from_session_id),
 WHERE id = sqlc.arg(id);
 
 -- name: ListOrphanedAgentSessions :many
+WITH query_parameters AS (
+  SELECT CAST(sqlc.arg(project_id) AS TEXT) AS selected_project
+), live_foreign AS (
+  SELECT gen FROM worker_generations WHERE gen IN (sqlc.slice('live_foreign_generations'))
+)
 SELECT
   s.id,
   s.work_attempt_id,
@@ -211,14 +216,14 @@ SELECT
   CAST(s.started_at AS TEXT) AS started_at
 FROM codex_sessions s
 JOIN work_attempts w ON w.id = s.work_attempt_id
-WHERE w.project_id = sqlc.arg(project_id)
+WHERE w.project_id = (SELECT selected_project FROM query_parameters)
   AND (lower(trim(COALESCE(w.status, ''))) = 'active'
        OR (w.terminal_state = 'abandoned' AND w.error_class = 'service_restart'))
   AND s.completed_at IS NULL
   AND lower(trim(COALESCE(s.final_state, ''))) = 'running'
   AND (COALESCE(s.provider_thread_id, '') != '' OR COALESCE(s.provider_session_id, '') != '')
-  AND (s.owner_generation IS NULL OR s.owner_generation NOT IN (SELECT value FROM json_each(sqlc.arg(live_foreign_generations))))
-  AND (w.owner_generation IS NULL OR w.owner_generation NOT IN (SELECT value FROM json_each(sqlc.arg(live_foreign_generations))))
+  AND (s.owner_generation IS NULL OR s.owner_generation NOT IN (SELECT gen FROM live_foreign))
+  AND (w.owner_generation IS NULL OR w.owner_generation NOT IN (SELECT gen FROM live_foreign))
 ORDER BY s.started_at DESC, s.id DESC;
 
 -- name: MarkCodexSessionOrphaned :execrows
@@ -651,14 +656,19 @@ FROM usage_events
 WHERE id = ?;
 
 -- name: UsageReportRows :many
-WITH usage_report_rows AS (
+WITH query_parameters AS (
+  SELECT CAST(sqlc.arg(bucket_by) AS TEXT) AS bucket_by,
+         CAST(sqlc.arg(all_projects) AS INTEGER) AS all_projects,
+         CAST(sqlc.narg(from_day) AS TEXT) AS from_day,
+         CAST(sqlc.narg(to_day) AS TEXT) AS to_day
+), usage_report_rows AS (
   SELECT
     CASE
-      WHEN sqlc.arg(bucket_by) = 'day' THEN event_day
-      WHEN sqlc.arg(bucket_by) = 'project' THEN project_id
-      WHEN sqlc.arg(bucket_by) = 'issue' THEN COALESCE(NULLIF(identifier, ''), NULLIF(issue_id, ''), 'unassigned')
-      WHEN sqlc.arg(bucket_by) = 'pr' THEN project_id || '#' || COALESCE(CAST(pr_number AS TEXT), 'unassigned')
-      WHEN sqlc.arg(bucket_by) = 'model' THEN COALESCE(NULLIF(model, ''), 'unassigned')
+      WHEN (SELECT bucket_by FROM query_parameters) = 'day' THEN event_day
+      WHEN (SELECT bucket_by FROM query_parameters) = 'project' THEN project_id
+      WHEN (SELECT bucket_by FROM query_parameters) = 'issue' THEN COALESCE(NULLIF(identifier, ''), NULLIF(issue_id, ''), 'unassigned')
+      WHEN (SELECT bucket_by FROM query_parameters) = 'pr' THEN project_id || '#' || COALESCE(CAST(pr_number AS TEXT), 'unassigned')
+      WHEN (SELECT bucket_by FROM query_parameters) = 'model' THEN COALESCE(NULLIF(model, ''), 'unassigned')
       ELSE event_day
     END AS group_key,
     COALESCE(NULLIF(model, ''), 'unassigned') AS model,
@@ -671,9 +681,9 @@ WITH usage_report_rows AS (
     runtime_seconds,
     compute_usd
   FROM usage_events
-  WHERE (sqlc.narg(project_ids_json) IS NULL OR project_id IN (SELECT value FROM json_each(sqlc.narg(project_ids_json))))
-    AND (sqlc.narg(from_day) IS NULL OR event_day >= sqlc.narg(from_day))
-    AND (sqlc.narg(to_day) IS NULL OR event_day <= sqlc.narg(to_day))
+  WHERE (CAST((SELECT all_projects FROM query_parameters) AS INTEGER) = 1 OR project_id IN (sqlc.slice('project_ids')))
+    AND ((SELECT from_day FROM query_parameters) IS NULL OR event_day >= (SELECT from_day FROM query_parameters))
+    AND ((SELECT to_day FROM query_parameters) IS NULL OR event_day <= (SELECT to_day FROM query_parameters))
 )
 SELECT
   CAST(usage_report_rows.group_key AS TEXT) AS group_key,
@@ -987,7 +997,7 @@ SELECT *
 FROM work_attempts
 WHERE completed_at IS NULL
   AND (sqlc.arg(filter_project_id) = '' OR project_id = sqlc.arg(filter_project_id))
-  AND (owner_generation IS NULL OR owner_generation NOT IN (SELECT value FROM json_each(sqlc.arg(live_foreign_generations))))
+  AND (owner_generation IS NULL OR owner_generation NOT IN (SELECT gen FROM worker_generations WHERE gen IN (sqlc.slice('live_foreign_generations'))))
 ORDER BY started_at, id;
 
 -- name: ListRecentTerminalWorkAttempts :many
@@ -1073,7 +1083,7 @@ WHERE project_id = sqlc.arg(project_id)
   AND status = 'terminal'
   AND completed_at IS NOT NULL
   AND lower(trim(COALESCE(next_action, ''))) = 'release capacity'
-  AND (owner_generation IS NULL OR owner_generation NOT IN (SELECT value FROM json_each(sqlc.arg(live_foreign_generations))))
+  AND (owner_generation IS NULL OR owner_generation NOT IN (SELECT gen FROM worker_generations WHERE gen IN (sqlc.slice('live_foreign_generations'))))
 ORDER BY completed_at, id;
 
 -- name: ClearWorkAttemptCapacityRelease :exec
@@ -1109,7 +1119,7 @@ FROM work_attempts
 WHERE project_id = sqlc.arg(project_id)
   AND terminal_state = 'operator_stopped'
   AND phase IN ('operator_stop_pending', 'operator_stop_transition_failed')
-  AND (owner_generation IS NULL OR owner_generation NOT IN (SELECT value FROM json_each(sqlc.arg(live_foreign_generations))))
+  AND (owner_generation IS NULL OR owner_generation NOT IN (SELECT gen FROM worker_generations WHERE gen IN (sqlc.slice('live_foreign_generations'))))
 ORDER BY completed_at, id;
 
 -- name: TimeoutExpiredWorkAttempts :many
@@ -1124,12 +1134,12 @@ SET status = ?,
     status_message = ?
 WHERE completed_at IS NULL
   AND (sqlc.arg(filter_project_id) = '' OR project_id = sqlc.arg(filter_project_id))
-  AND ((lease_expires_at IS NOT NULL AND lease_expires_at <= sqlc.arg(lease_expires_at))
-       OR (lease_expires_at IS NULL AND lower(trim(COALESCE(phase, ''))) = 'completion_deferred')
+  AND ((work_attempts.lease_expires_at IS NOT NULL AND work_attempts.lease_expires_at <= sqlc.arg(lease_expires_at))
+       OR (work_attempts.lease_expires_at IS NULL AND lower(trim(COALESCE(phase, ''))) = 'completion_deferred')
        OR (lower(trim(COALESCE(phase, ''))) != 'completion_deferred'
-           AND id IN (SELECT value FROM json_each(sqlc.arg(confirmed_gone_attempt_ids)))))
-  AND id NOT IN (SELECT value FROM json_each(sqlc.arg(exclude_attempt_ids)))
-  AND (owner_generation IS NULL OR owner_generation NOT IN (SELECT value FROM json_each(sqlc.arg(live_foreign_generations))))
+           AND work_attempts.id IN (sqlc.slice('confirmed_gone_attempt_ids'))))
+  AND work_attempts.id NOT IN (SELECT excluded.id FROM work_attempts excluded WHERE excluded.id IN (sqlc.slice('exclude_attempt_ids')))
+  AND (owner_generation IS NULL OR owner_generation NOT IN (SELECT gen FROM worker_generations WHERE gen IN (sqlc.slice('live_foreign_generations'))))
 RETURNING *;
 
 -- name: CreateSchedulerDecision :one
@@ -1570,30 +1580,53 @@ WHERE project_id = ?
   AND (sqlc.arg(pr_number) = 0 OR pr_number = sqlc.arg(pr_number));
 
 -- name: DailyDigestRuntime :one
+WITH query_parameters AS (
+  SELECT CAST(sqlc.arg(all_projects) AS INTEGER) AS all_projects,
+         CAST(sqlc.arg(from_at) AS TEXT) AS from_at,
+         CAST(sqlc.arg(to_at) AS TEXT) AS to_at
+), selected_codex_sessions AS (
+  SELECT agent_role,completed_at,input_tokens,cached_input_tokens,output_tokens,total_tokens,orphan_recovery_outcome,final_state FROM codex_sessions
+  WHERE (CAST((SELECT all_projects FROM query_parameters) AS INTEGER) = 1
+    OR codex_sessions.project_id IN (sqlc.slice('session_project_ids')))
+    AND completed_at >= (SELECT from_at FROM query_parameters) AND completed_at < (SELECT to_at FROM query_parameters)
+), selected_work_attempts AS (
+  SELECT started_at,completed_at,terminal_state FROM work_attempts
+  WHERE (CAST((SELECT all_projects FROM query_parameters) AS INTEGER) = 1
+    OR work_attempts.project_id IN (sqlc.slice('attempt_project_ids')))
+    AND started_at < (SELECT to_at FROM query_parameters) AND completed_at > (SELECT from_at FROM query_parameters)
+), selected_scheduler_decisions AS (
+  SELECT id,identifier,decision_at,reason,wait_reason FROM scheduler_decisions
+  WHERE (CAST((SELECT all_projects FROM query_parameters) AS INTEGER) = 1
+    OR scheduler_decisions.project_id IN (sqlc.slice('decision_project_ids')))
+    AND decision_at >= (SELECT from_at FROM query_parameters) AND decision_at < (SELECT to_at FROM query_parameters)
+), selected_workflow_phase_events AS (
+  SELECT id,identifier,started_at,reason FROM workflow_phase_events
+  WHERE (CAST((SELECT all_projects FROM query_parameters) AS INTEGER) = 1
+    OR workflow_phase_events.project_id IN (sqlc.slice('event_project_ids')))
+    AND started_at >= (SELECT from_at FROM query_parameters) AND started_at < (SELECT to_at FROM query_parameters)
+)
 SELECT
-  (SELECT COUNT(*) FROM codex_sessions AS session WHERE COALESCE(session.agent_role, '') != 'host_validation' AND (sqlc.arg(project_ids_json) = '' OR session.project_id IN (SELECT value FROM json_each(sqlc.arg(project_ids_json)))) AND session.completed_at >= sqlc.arg(from_at) AND session.completed_at < sqlc.arg(to_at)) AS sessions,
-  (SELECT CAST(COALESCE(SUM(session.input_tokens), 0) AS INTEGER) FROM codex_sessions AS session WHERE COALESCE(session.agent_role, '') != 'host_validation' AND (sqlc.arg(project_ids_json) = '' OR session.project_id IN (SELECT value FROM json_each(sqlc.arg(project_ids_json)))) AND session.completed_at >= sqlc.arg(from_at) AND session.completed_at < sqlc.arg(to_at)) AS input_tokens,
-  (SELECT CAST(COALESCE(SUM(session.cached_input_tokens), 0) AS INTEGER) FROM codex_sessions AS session WHERE COALESCE(session.agent_role, '') != 'host_validation' AND (sqlc.arg(project_ids_json) = '' OR session.project_id IN (SELECT value FROM json_each(sqlc.arg(project_ids_json)))) AND session.completed_at >= sqlc.arg(from_at) AND session.completed_at < sqlc.arg(to_at)) AS cached_input_tokens,
-  (SELECT CAST(COALESCE(SUM(session.output_tokens), 0) AS INTEGER) FROM codex_sessions AS session WHERE COALESCE(session.agent_role, '') != 'host_validation' AND (sqlc.arg(project_ids_json) = '' OR session.project_id IN (SELECT value FROM json_each(sqlc.arg(project_ids_json)))) AND session.completed_at >= sqlc.arg(from_at) AND session.completed_at < sqlc.arg(to_at)) AS output_tokens,
-  (SELECT CAST(COALESCE(SUM(session.total_tokens), 0) AS INTEGER) FROM codex_sessions AS session WHERE COALESCE(session.agent_role, '') != 'host_validation' AND (sqlc.arg(project_ids_json) = '' OR session.project_id IN (SELECT value FROM json_each(sqlc.arg(project_ids_json)))) AND session.completed_at >= sqlc.arg(from_at) AND session.completed_at < sqlc.arg(to_at)) AS total_tokens,
-  (SELECT COUNT(*) FROM codex_sessions AS session WHERE COALESCE(session.agent_role, '') != 'host_validation' AND (sqlc.arg(project_ids_json) = '' OR session.project_id IN (SELECT value FROM json_each(sqlc.arg(project_ids_json)))) AND session.completed_at >= sqlc.arg(from_at) AND session.completed_at < sqlc.arg(to_at) AND lower(trim(COALESCE(session.orphan_recovery_outcome, ''))) = 'resumed') AS orphan_resumed,
-  (SELECT COUNT(*) FROM codex_sessions AS session WHERE COALESCE(session.agent_role, '') != 'host_validation' AND (sqlc.arg(project_ids_json) = '' OR session.project_id IN (SELECT value FROM json_each(sqlc.arg(project_ids_json)))) AND session.completed_at >= sqlc.arg(from_at) AND session.completed_at < sqlc.arg(to_at) AND lower(trim(COALESCE(session.orphan_recovery_outcome, ''))) = 'fresh') AS orphan_fresh,
-  (SELECT COUNT(*) FROM codex_sessions AS session WHERE COALESCE(session.agent_role, '') != 'host_validation' AND (sqlc.arg(project_ids_json) = '' OR session.project_id IN (SELECT value FROM json_each(sqlc.arg(project_ids_json)))) AND session.completed_at >= sqlc.arg(from_at) AND session.completed_at < sqlc.arg(to_at) AND lower(trim(COALESCE(session.final_state, ''))) IN ('failed', 'failure', 'cancelled', 'canceled', 'orphaned', 'token_ceiling_exceeded')) AS failed_sessions,
-  (SELECT COUNT(*) FROM work_attempts AS attempt WHERE (sqlc.arg(project_ids_json) = '' OR attempt.project_id IN (SELECT value FROM json_each(sqlc.arg(project_ids_json)))) AND attempt.started_at < sqlc.arg(to_at) AND attempt.completed_at > sqlc.arg(from_at) AND lower(trim(COALESCE(attempt.terminal_state, ''))) = 'capacity') AS capacity_outages,
-  (SELECT CAST(COALESCE(SUM(MAX(0, CAST(strftime('%s', MIN(attempt.completed_at, sqlc.arg(to_at))) AS INTEGER) - CAST(strftime('%s', MAX(attempt.started_at, sqlc.arg(from_at))) AS INTEGER))), 0) AS INTEGER) FROM work_attempts AS attempt WHERE (sqlc.arg(project_ids_json) = '' OR attempt.project_id IN (SELECT value FROM json_each(sqlc.arg(project_ids_json)))) AND attempt.started_at < sqlc.arg(to_at) AND attempt.completed_at > sqlc.arg(from_at) AND lower(trim(COALESCE(attempt.terminal_state, ''))) = 'capacity') AS capacity_seconds,
+  (SELECT COUNT(*) FROM selected_codex_sessions AS session WHERE COALESCE(session.agent_role, '') != 'host_validation' AND session.completed_at >= (SELECT from_at FROM query_parameters) AND session.completed_at < (SELECT to_at FROM query_parameters)) AS sessions,
+  (SELECT CAST(COALESCE(SUM(session.input_tokens), 0) AS INTEGER) FROM selected_codex_sessions AS session WHERE COALESCE(session.agent_role, '') != 'host_validation' AND session.completed_at >= (SELECT from_at FROM query_parameters) AND session.completed_at < (SELECT to_at FROM query_parameters)) AS input_tokens,
+  (SELECT CAST(COALESCE(SUM(session.cached_input_tokens), 0) AS INTEGER) FROM selected_codex_sessions AS session WHERE COALESCE(session.agent_role, '') != 'host_validation' AND session.completed_at >= (SELECT from_at FROM query_parameters) AND session.completed_at < (SELECT to_at FROM query_parameters)) AS cached_input_tokens,
+  (SELECT CAST(COALESCE(SUM(session.output_tokens), 0) AS INTEGER) FROM selected_codex_sessions AS session WHERE COALESCE(session.agent_role, '') != 'host_validation' AND session.completed_at >= (SELECT from_at FROM query_parameters) AND session.completed_at < (SELECT to_at FROM query_parameters)) AS output_tokens,
+  (SELECT CAST(COALESCE(SUM(session.total_tokens), 0) AS INTEGER) FROM selected_codex_sessions AS session WHERE COALESCE(session.agent_role, '') != 'host_validation' AND session.completed_at >= (SELECT from_at FROM query_parameters) AND session.completed_at < (SELECT to_at FROM query_parameters)) AS total_tokens,
+  (SELECT COUNT(*) FROM selected_codex_sessions AS session WHERE COALESCE(session.agent_role, '') != 'host_validation' AND session.completed_at >= (SELECT from_at FROM query_parameters) AND session.completed_at < (SELECT to_at FROM query_parameters) AND lower(trim(COALESCE(session.orphan_recovery_outcome, ''))) = 'resumed') AS orphan_resumed,
+  (SELECT COUNT(*) FROM selected_codex_sessions AS session WHERE COALESCE(session.agent_role, '') != 'host_validation' AND session.completed_at >= (SELECT from_at FROM query_parameters) AND session.completed_at < (SELECT to_at FROM query_parameters) AND lower(trim(COALESCE(session.orphan_recovery_outcome, ''))) = 'fresh') AS orphan_fresh,
+  (SELECT COUNT(*) FROM selected_codex_sessions AS session WHERE COALESCE(session.agent_role, '') != 'host_validation' AND session.completed_at >= (SELECT from_at FROM query_parameters) AND session.completed_at < (SELECT to_at FROM query_parameters) AND lower(trim(COALESCE(session.final_state, ''))) IN ('failed', 'failure', 'cancelled', 'canceled', 'orphaned', 'token_ceiling_exceeded')) AS failed_sessions,
+  (SELECT COUNT(*) FROM selected_work_attempts AS attempt WHERE attempt.started_at < (SELECT to_at FROM query_parameters) AND attempt.completed_at > (SELECT from_at FROM query_parameters) AND lower(trim(COALESCE(attempt.terminal_state, ''))) = 'capacity') AS capacity_outages,
+  (SELECT CAST(COALESCE(SUM(MAX(0, CAST(strftime('%s', MIN(attempt.completed_at, (SELECT to_at FROM query_parameters))) AS INTEGER) - CAST(strftime('%s', MAX(attempt.started_at, (SELECT from_at FROM query_parameters))) AS INTEGER))), 0) AS INTEGER) FROM selected_work_attempts AS attempt WHERE attempt.started_at < (SELECT to_at FROM query_parameters) AND attempt.completed_at > (SELECT from_at FROM query_parameters) AND lower(trim(COALESCE(attempt.terminal_state, ''))) = 'capacity') AS capacity_seconds,
   (SELECT COUNT(DISTINCT trip.identifier) FROM (
     SELECT COALESCE(NULLIF(decision.identifier, ''), printf('decision:%d', decision.id)) AS identifier
-    FROM scheduler_decisions AS decision
-    WHERE (sqlc.arg(project_ids_json) = '' OR decision.project_id IN (SELECT value FROM json_each(sqlc.arg(project_ids_json))))
-      AND decision.decision_at >= sqlc.arg(from_at)
-      AND decision.decision_at < sqlc.arg(to_at)
+    FROM selected_scheduler_decisions AS decision
+    WHERE decision.decision_at >= (SELECT from_at FROM query_parameters)
+      AND decision.decision_at < (SELECT to_at FROM query_parameters)
       AND (lower(COALESCE(decision.reason, '')) LIKE '%circuit_breaker%' OR lower(COALESCE(decision.wait_reason, '')) LIKE '%circuit_breaker%')
     UNION ALL
     SELECT COALESCE(NULLIF(event.identifier, ''), printf('event:%d', event.id)) AS identifier
-    FROM workflow_phase_events AS event
-    WHERE (sqlc.arg(project_ids_json) = '' OR event.project_id IN (SELECT value FROM json_each(sqlc.arg(project_ids_json))))
-      AND event.started_at >= sqlc.arg(from_at)
-      AND event.started_at < sqlc.arg(to_at)
+    FROM selected_workflow_phase_events AS event
+    WHERE event.started_at >= (SELECT from_at FROM query_parameters)
+      AND event.started_at < (SELECT to_at FROM query_parameters)
       AND lower(COALESCE(event.reason, '')) LIKE '%circuit_breaker%'
   ) AS trip) AS breaker_trips;
 
@@ -1608,9 +1641,9 @@ SELECT
   COUNT(*) AS sessions
 FROM codex_sessions
 WHERE COALESCE(agent_role, '') != 'host_validation'
-  AND (sqlc.arg(project_ids_json) = '' OR project_id IN (SELECT value FROM json_each(sqlc.arg(project_ids_json))))
   AND completed_at >= sqlc.arg(from_at)
   AND completed_at < sqlc.arg(to_at)
+  AND (CAST(sqlc.arg(all_projects) AS INTEGER) = 1 OR project_id IN (sqlc.slice('project_ids')))
 GROUP BY COALESCE(NULLIF(trim(model), ''), NULLIF(trim(requested_model), ''), 'unassigned')
 ORDER BY model;
 
@@ -1619,11 +1652,11 @@ SELECT
   CAST(COALESCE(NULLIF(trim(error_class), ''), 'unknown') AS TEXT) AS error_class,
   COUNT(*) AS failures
 FROM work_attempts
-WHERE (sqlc.arg(project_ids_json) = '' OR project_id IN (SELECT value FROM json_each(sqlc.arg(project_ids_json))))
-  AND completed_at >= sqlc.arg(from_at)
+WHERE completed_at >= sqlc.arg(from_at)
   AND completed_at < sqlc.arg(to_at)
   AND lower(trim(COALESCE(terminal_state, ''))) IN ('failure', 'timed_out', 'no_progress', 'capacity')
   AND outcome_excluded = 0
+  AND (CAST(sqlc.arg(all_projects) AS INTEGER) = 1 OR project_id IN (sqlc.slice('project_ids')))
 GROUP BY COALESCE(NULLIF(trim(error_class), ''), 'unknown')
 ORDER BY failures DESC, error_class
 LIMIT 1;
@@ -1633,10 +1666,10 @@ SELECT
   CAST(COALESCE(NULLIF(trim(next_action), ''), NULLIF(trim(wait_reason), ''), 'automatic retry') AS TEXT) AS recovery_mode,
   COUNT(*) AS outages
 FROM work_attempts
-WHERE (sqlc.arg(project_ids_json) = '' OR project_id IN (SELECT value FROM json_each(sqlc.arg(project_ids_json))))
-  AND started_at < sqlc.arg(to_at)
+WHERE started_at < sqlc.arg(to_at)
   AND completed_at > sqlc.arg(from_at)
   AND lower(trim(COALESCE(terminal_state, ''))) = 'capacity'
+  AND (CAST(sqlc.arg(all_projects) AS INTEGER) = 1 OR project_id IN (sqlc.slice('project_ids')))
 GROUP BY COALESCE(NULLIF(trim(next_action), ''), NULLIF(trim(wait_reason), ''), 'automatic retry')
 ORDER BY outages DESC, recovery_mode
 LIMIT 1;
@@ -1839,5 +1872,5 @@ SELECT reason, CAST(recorded_at AS TEXT) AS recorded_at FROM (
 -- name: ListLocalAdmittedIssueIDs :many
 SELECT DISTINCT issue_id FROM work_attempts
 WHERE project_id = sqlc.arg(project_id) AND metadata_run_mode != ''
-  AND (owner_generation IS NULL OR owner_generation NOT IN (SELECT value FROM json_each(sqlc.arg(live_foreign_generations))))
+  AND (owner_generation IS NULL OR owner_generation NOT IN (SELECT gen FROM worker_generations WHERE gen IN (sqlc.slice('live_foreign_generations'))))
 ORDER BY issue_id;

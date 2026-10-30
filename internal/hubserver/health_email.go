@@ -103,14 +103,14 @@ func (s *Service) claimHealthEmails(ctx context.Context, tx *sql.Tx, organizatio
 	if len(transitions) == 0 {
 		return nil, nil
 	}
-	raw, err := json.Marshal(transitions)
+	raw, err := sqlList(transitions)
 	if err != nil {
 		return nil, err
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT id,signal,subject_json,opened_at,resolved_at,summary,next_action,evidence_json FROM health_findings
-WHERE id IN (SELECT value FROM json_each(?)) AND organization_id=? AND severity='attention' AND
+	rows, err := querySQL(ctx, tx, `SELECT id,signal,subject_json,opened_at,resolved_at,summary,next_action,evidence_json FROM health_findings
+WHERE id IN (SELECT value FROM sql_rows(?)) AND organization_id=? AND severity='attention' AND
 ((resolved_at IS NULL AND email_open_attempted=0) OR (resolved_at IS NOT NULL AND email_resolve_attempted=0))
-ORDER BY rowid LIMIT ?`, string(raw), organization, healthReadLimit+1)
+ORDER BY rowid LIMIT ?`, raw, organization, healthReadLimit+1)
 	if err != nil {
 		return nil, err
 	}
@@ -153,7 +153,7 @@ ORDER BY rowid LIMIT ?`, string(raw), organization, healthReadLimit+1)
 		if f.ResolvedAt != nil {
 			query = `UPDATE health_findings SET email_resolve_attempted=1,email_unavailable=MAX(email_unavailable,?) WHERE organization_id=? AND id=?`
 		}
-		if _, err := tx.ExecContext(ctx, query, unavailable, organization, f.ID); err != nil {
+		if _, err := execSQL(ctx, tx, query, unavailable, organization, f.ID); err != nil {
 			return nil, err
 		}
 	}

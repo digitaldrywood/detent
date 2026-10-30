@@ -699,30 +699,30 @@ func (s *Service) hostedReadableProjects(ctx context.Context, credential apiCred
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	projects := []appBootstrapProject{}
-	rows, err := s.database.reader.QueryContext(ctx, `SELECT p.id, p.name, p.slug, p.profile, p.states_json, g.can_write, g.manage_runner
+	rows, err := querySQL(ctx, s.database.reader, `SELECT p.id, p.name, p.slug, p.profile, p.states_json, g.can_write, g.manage_runner
 FROM projects p JOIN hosted_project_grants g ON g.project_id = p.id
 WHERE p.deleted_at IS NULL AND g.user_id = ? AND p.organization_id = ? ORDER BY p.name, p.id`, credential.Hosted.Subject, s.config.Hosted.OrganizationID)
 	if credential.EntryKey != nil {
 		if rows != nil {
 			_ = rows.Close()
 		}
-		projects, encodeErr := json.Marshal(credential.EntryKey.Projects)
+		projects, encodeErr := sqlList(credential.EntryKey.Projects)
 		if encodeErr != nil {
 			return nil, encodeErr
 		}
-		blocked, encodeErr := json.Marshal(credential.EntryKey.BlockedProjects)
+		blocked, encodeErr := sqlList(credential.EntryKey.BlockedProjects)
 		if encodeErr != nil {
 			return nil, encodeErr
 		}
 		kind, owner := credential.EntryKey.Kind, credential.Hosted.Subject
-		rows, err = s.database.reader.QueryContext(ctx, `SELECT p.id,p.name,p.slug,p.profile,p.states_json,
+		rows, err = querySQL(ctx, s.database.reader, `SELECT p.id,p.name,p.slug,p.profile,p.states_json,
 CASE WHEN ?='service' THEN 1 ELSE COALESCE((SELECT g.can_write FROM hosted_project_grants g WHERE g.user_id=? AND g.project_id=p.id),0) END,
 CASE WHEN ?='service' THEN 1 ELSE COALESCE((SELECT g.manage_runner FROM hosted_project_grants g WHERE g.user_id=? AND g.project_id=p.id),0) END
 FROM projects p WHERE p.deleted_at IS NULL AND p.organization_id=?
 AND (?='service' OR EXISTS (SELECT 1 FROM hosted_project_grants g JOIN hosted_members m ON m.user_id=g.user_id JOIN api_tokens t ON t.id=m.principal_id WHERE g.user_id=? AND g.organization_id=p.organization_id AND g.project_id=p.id AND m.active=1 AND t.revoked_at IS NULL))
-AND (?='all' OR p.id IN (SELECT value FROM json_each(?) WHERE type='text'))
-AND p.id NOT IN (SELECT value FROM json_each(?) WHERE type='text')
-ORDER BY p.name,p.id`, kind, owner, kind, owner, s.config.Hosted.OrganizationID, kind, owner, credential.EntryKey.Access, string(projects), string(blocked))
+AND (?='all' OR p.id IN (SELECT value FROM sql_rows(?)))
+AND p.id NOT IN (SELECT value FROM sql_rows(?))
+ORDER BY p.name,p.id`, kind, owner, kind, owner, s.config.Hosted.OrganizationID, kind, owner, credential.EntryKey.Access, projects, blocked)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("list project grants: %w", err)

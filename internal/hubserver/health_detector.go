@@ -105,10 +105,10 @@ func writeHealthEvaluation(ctx context.Context, tx *sql.Tx, organization tracker
 	for _, f := range findings {
 		fingerprints = append(fingerprints, f.Fingerprint)
 		var id string
-		err := tx.QueryRowContext(ctx, "SELECT id FROM health_findings WHERE organization_id=? AND fingerprint=? AND resolved_at IS NULL", organization, f.Fingerprint).Scan(&id)
+		err := queryRowSQL(ctx, tx, "SELECT id FROM health_findings WHERE organization_id=? AND fingerprint=? AND resolved_at IS NULL", organization, f.Fingerprint).Scan(&id)
 		if errors.Is(err, sql.ErrNoRows) {
 			cutoff := now.Add(-healthReopenWindow)
-			err = tx.QueryRowContext(ctx, `SELECT id FROM health_findings WHERE organization_id=? AND fingerprint=? AND resolved_at>=? AND julianday(resolved_at)>=julianday(?) ORDER BY resolved_at DESC LIMIT 1`, organization, f.Fingerprint, cutoff.UTC().Format("2006-01-02T15:04:05"), formatHubTime(cutoff)).Scan(&id)
+			err = queryRowSQL(ctx, tx, `SELECT id FROM health_findings WHERE organization_id=? AND fingerprint=? AND resolved_at>=? AND julianday(resolved_at)>=julianday(?) ORDER BY resolved_at DESC LIMIT 1`, organization, f.Fingerprint, cutoff.UTC().Format("2006-01-02T15:04:05"), formatHubTime(cutoff)).Scan(&id)
 		}
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return nil, err
@@ -133,7 +133,7 @@ func writeHealthEvaluation(ctx context.Context, tx *sql.Tx, organization tracker
 			if !f.ConditionSince.IsZero() && f.ConditionSince.Before(now) {
 				openedAt = f.ConditionSince
 			}
-			_, err = tx.ExecContext(ctx, `INSERT INTO health_findings(id,organization_id,fingerprint,signal,class,subject_json,projects_json,opened_at,last_seen_at,severity,summary,next_action,evidence_json,projects_projected) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,1)`, id, organization, f.Fingerprint, f.Signal, f.Class, string(subject), string(projects), formatHubTime(openedAt), formatHubTime(now), f.Severity, f.Summary, f.NextAction, string(evidence))
+			_, err = execSQL(ctx, tx, `INSERT INTO health_findings(id,organization_id,fingerprint,signal,class,subject_json,projects_json,opened_at,last_seen_at,severity,summary,next_action,evidence_json,projects_projected) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,1)`, id, organization, f.Fingerprint, f.Signal, f.Class, string(subject), string(projects), formatHubTime(openedAt), formatHubTime(now), f.Severity, f.Summary, f.NextAction, string(evidence))
 			if err == nil {
 				err = syncHealthFindingProjects(ctx, tx, organization, id, f.Projects)
 			}
@@ -147,20 +147,20 @@ func writeHealthEvaluation(ctx context.Context, tx *sql.Tx, organization tracker
 			if err := syncHealthFindingProjects(ctx, tx, organization, id, f.Projects); err != nil {
 				return nil, err
 			}
-			_, err = tx.ExecContext(ctx, `UPDATE health_findings SET last_seen_at=?,resolved_at=NULL,projects_json=?,severity=?,summary=?,next_action=?,evidence_json=?,projects_projected=1 WHERE id=? AND organization_id=?`, formatHubTime(now), string(projects), f.Severity, f.Summary, f.NextAction, string(evidence), id, organization)
+			_, err = execSQL(ctx, tx, `UPDATE health_findings SET last_seen_at=?,resolved_at=NULL,projects_json=?,severity=?,summary=?,next_action=?,evidence_json=?,projects_projected=1 WHERE id=? AND organization_id=?`, formatHubTime(now), string(projects), f.Severity, f.Summary, f.NextAction, string(evidence), id, organization)
 		}
 		if err != nil {
 			return nil, err
 		}
 	}
-	raw, err := json.Marshal(fingerprints)
+	raw, err := sqlList(fingerprints)
 	if err != nil {
 		return nil, err
 	}
 	if err := enqueueSlackResolved(ctx, tx, organization, raw, now); err != nil {
 		return nil, err
 	}
-	rows, err := tx.QueryContext(ctx, `UPDATE health_findings SET resolved_at=? WHERE organization_id=? AND resolved_at IS NULL AND fingerprint NOT IN (SELECT value FROM json_each(?)) RETURNING id`, formatHubTime(now), organization, string(raw))
+	rows, err := querySQL(ctx, tx, `UPDATE health_findings SET resolved_at=? WHERE organization_id=? AND resolved_at IS NULL AND fingerprint NOT IN (SELECT value FROM sql_rows(?)) RETURNING id`, formatHubTime(now), organization, raw)
 	if err != nil {
 		return nil, err
 	}
@@ -178,6 +178,6 @@ func writeHealthEvaluation(ctx context.Context, tx *sql.Tx, organization tracker
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return nil, err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO health_detector_ticks(organization_id,last_tick_at) VALUES(?,?) ON CONFLICT(organization_id) DO UPDATE SET last_tick_at=excluded.last_tick_at`, organization, formatHubTime(now))
+	_, err = execSQL(ctx, tx, `INSERT INTO health_detector_ticks(organization_id,last_tick_at) VALUES(?,?) ON CONFLICT(organization_id) DO UPDATE SET last_tick_at=excluded.last_tick_at`, organization, formatHubTime(now))
 	return transitions, err
 }

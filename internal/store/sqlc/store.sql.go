@@ -8,6 +8,7 @@ package sqlc
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"time"
 )
 
@@ -1448,19 +1449,20 @@ SELECT
   CAST(COALESCE(NULLIF(trim(next_action), ''), NULLIF(trim(wait_reason), ''), 'automatic retry') AS TEXT) AS recovery_mode,
   COUNT(*) AS outages
 FROM work_attempts
-WHERE (?1 = '' OR project_id IN (SELECT value FROM json_each(?1)))
-  AND started_at < ?2
-  AND completed_at > ?3
+WHERE started_at < ?1
+  AND completed_at > ?2
   AND lower(trim(COALESCE(terminal_state, ''))) = 'capacity'
+  AND (CAST(?3 AS INTEGER) = 1 OR project_id IN (/*SLICE:project_ids*/?))
 GROUP BY COALESCE(NULLIF(trim(next_action), ''), NULLIF(trim(wait_reason), ''), 'automatic retry')
 ORDER BY outages DESC, recovery_mode
 LIMIT 1
 `
 
 type DailyDigestCapacityModesParams struct {
-	ProjectIdsJson interface{}    `json:"project_ids_json"`
-	ToAt           string         `json:"to_at"`
-	FromAt         sql.NullString `json:"from_at"`
+	ToAt        string         `json:"to_at"`
+	FromAt      sql.NullString `json:"from_at"`
+	AllProjects int64          `json:"all_projects"`
+	ProjectIds  []string       `json:"project_ids"`
 }
 
 type DailyDigestCapacityModesRow struct {
@@ -1469,7 +1471,20 @@ type DailyDigestCapacityModesRow struct {
 }
 
 func (q *Queries) DailyDigestCapacityModes(ctx context.Context, arg DailyDigestCapacityModesParams) ([]DailyDigestCapacityModesRow, error) {
-	rows, err := q.db.QueryContext(ctx, dailyDigestCapacityModes, arg.ProjectIdsJson, arg.ToAt, arg.FromAt)
+	query := dailyDigestCapacityModes
+	var queryParams []interface{}
+	queryParams = append(queryParams, arg.ToAt)
+	queryParams = append(queryParams, arg.FromAt)
+	queryParams = append(queryParams, arg.AllProjects)
+	if len(arg.ProjectIds) > 0 {
+		for _, v := range arg.ProjectIds {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:project_ids*/?", strings.Repeat(",?", len(arg.ProjectIds))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:project_ids*/?", "NULL", 1)
+	}
+	rows, err := q.db.QueryContext(ctx, query, queryParams...)
 	if err != nil {
 		return nil, err
 	}
@@ -1496,20 +1511,21 @@ SELECT
   CAST(COALESCE(NULLIF(trim(error_class), ''), 'unknown') AS TEXT) AS error_class,
   COUNT(*) AS failures
 FROM work_attempts
-WHERE (?1 = '' OR project_id IN (SELECT value FROM json_each(?1)))
-  AND completed_at >= ?2
-  AND completed_at < ?3
+WHERE completed_at >= ?1
+  AND completed_at < ?2
   AND lower(trim(COALESCE(terminal_state, ''))) IN ('failure', 'timed_out', 'no_progress', 'capacity')
   AND outcome_excluded = 0
+  AND (CAST(?3 AS INTEGER) = 1 OR project_id IN (/*SLICE:project_ids*/?))
 GROUP BY COALESCE(NULLIF(trim(error_class), ''), 'unknown')
 ORDER BY failures DESC, error_class
 LIMIT 1
 `
 
 type DailyDigestFailureClassesParams struct {
-	ProjectIdsJson interface{}    `json:"project_ids_json"`
-	FromAt         sql.NullString `json:"from_at"`
-	ToAt           sql.NullString `json:"to_at"`
+	FromAt      sql.NullString `json:"from_at"`
+	ToAt        sql.NullString `json:"to_at"`
+	AllProjects int64          `json:"all_projects"`
+	ProjectIds  []string       `json:"project_ids"`
 }
 
 type DailyDigestFailureClassesRow struct {
@@ -1518,7 +1534,20 @@ type DailyDigestFailureClassesRow struct {
 }
 
 func (q *Queries) DailyDigestFailureClasses(ctx context.Context, arg DailyDigestFailureClassesParams) ([]DailyDigestFailureClassesRow, error) {
-	rows, err := q.db.QueryContext(ctx, dailyDigestFailureClasses, arg.ProjectIdsJson, arg.FromAt, arg.ToAt)
+	query := dailyDigestFailureClasses
+	var queryParams []interface{}
+	queryParams = append(queryParams, arg.FromAt)
+	queryParams = append(queryParams, arg.ToAt)
+	queryParams = append(queryParams, arg.AllProjects)
+	if len(arg.ProjectIds) > 0 {
+		for _, v := range arg.ProjectIds {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:project_ids*/?", strings.Repeat(",?", len(arg.ProjectIds))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:project_ids*/?", "NULL", 1)
+	}
+	rows, err := q.db.QueryContext(ctx, query, queryParams...)
 	if err != nil {
 		return nil, err
 	}
@@ -1551,17 +1580,18 @@ SELECT
   COUNT(*) AS sessions
 FROM codex_sessions
 WHERE COALESCE(agent_role, '') != 'host_validation'
-  AND (?1 = '' OR project_id IN (SELECT value FROM json_each(?1)))
-  AND completed_at >= ?2
-  AND completed_at < ?3
+  AND completed_at >= ?1
+  AND completed_at < ?2
+  AND (CAST(?3 AS INTEGER) = 1 OR project_id IN (/*SLICE:project_ids*/?))
 GROUP BY COALESCE(NULLIF(trim(model), ''), NULLIF(trim(requested_model), ''), 'unassigned')
 ORDER BY model
 `
 
 type DailyDigestModelsParams struct {
-	ProjectIdsJson interface{}    `json:"project_ids_json"`
-	FromAt         sql.NullString `json:"from_at"`
-	ToAt           sql.NullString `json:"to_at"`
+	FromAt      sql.NullString   `json:"from_at"`
+	ToAt        sql.NullString   `json:"to_at"`
+	AllProjects int64            `json:"all_projects"`
+	ProjectIds  []sql.NullString `json:"project_ids"`
 }
 
 type DailyDigestModelsRow struct {
@@ -1575,7 +1605,20 @@ type DailyDigestModelsRow struct {
 }
 
 func (q *Queries) DailyDigestModels(ctx context.Context, arg DailyDigestModelsParams) ([]DailyDigestModelsRow, error) {
-	rows, err := q.db.QueryContext(ctx, dailyDigestModels, arg.ProjectIdsJson, arg.FromAt, arg.ToAt)
+	query := dailyDigestModels
+	var queryParams []interface{}
+	queryParams = append(queryParams, arg.FromAt)
+	queryParams = append(queryParams, arg.ToAt)
+	queryParams = append(queryParams, arg.AllProjects)
+	if len(arg.ProjectIds) > 0 {
+		for _, v := range arg.ProjectIds {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:project_ids*/?", strings.Repeat(",?", len(arg.ProjectIds))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:project_ids*/?", "NULL", 1)
+	}
+	rows, err := q.db.QueryContext(ctx, query, queryParams...)
 	if err != nil {
 		return nil, err
 	}
@@ -1606,38 +1649,65 @@ func (q *Queries) DailyDigestModels(ctx context.Context, arg DailyDigestModelsPa
 }
 
 const dailyDigestRuntime = `-- name: DailyDigestRuntime :one
+WITH query_parameters AS (
+  SELECT CAST(?1 AS INTEGER) AS all_projects,
+         CAST(?2 AS TEXT) AS from_at,
+         CAST(?3 AS TEXT) AS to_at
+), selected_codex_sessions AS (
+  SELECT agent_role,completed_at,input_tokens,cached_input_tokens,output_tokens,total_tokens,orphan_recovery_outcome,final_state FROM codex_sessions
+  WHERE (CAST((SELECT all_projects FROM query_parameters) AS INTEGER) = 1
+    OR codex_sessions.project_id IN (/*SLICE:session_project_ids*/?))
+    AND completed_at >= (SELECT from_at FROM query_parameters) AND completed_at < (SELECT to_at FROM query_parameters)
+), selected_work_attempts AS (
+  SELECT started_at,completed_at,terminal_state FROM work_attempts
+  WHERE (CAST((SELECT all_projects FROM query_parameters) AS INTEGER) = 1
+    OR work_attempts.project_id IN (/*SLICE:attempt_project_ids*/?))
+    AND started_at < (SELECT to_at FROM query_parameters) AND completed_at > (SELECT from_at FROM query_parameters)
+), selected_scheduler_decisions AS (
+  SELECT id,identifier,decision_at,reason,wait_reason FROM scheduler_decisions
+  WHERE (CAST((SELECT all_projects FROM query_parameters) AS INTEGER) = 1
+    OR scheduler_decisions.project_id IN (/*SLICE:decision_project_ids*/?))
+    AND decision_at >= (SELECT from_at FROM query_parameters) AND decision_at < (SELECT to_at FROM query_parameters)
+), selected_workflow_phase_events AS (
+  SELECT id,identifier,started_at,reason FROM workflow_phase_events
+  WHERE (CAST((SELECT all_projects FROM query_parameters) AS INTEGER) = 1
+    OR workflow_phase_events.project_id IN (/*SLICE:event_project_ids*/?))
+    AND started_at >= (SELECT from_at FROM query_parameters) AND started_at < (SELECT to_at FROM query_parameters)
+)
 SELECT
-  (SELECT COUNT(*) FROM codex_sessions AS session WHERE COALESCE(session.agent_role, '') != 'host_validation' AND (?1 = '' OR session.project_id IN (SELECT value FROM json_each(?1))) AND session.completed_at >= ?2 AND session.completed_at < ?3) AS sessions,
-  (SELECT CAST(COALESCE(SUM(session.input_tokens), 0) AS INTEGER) FROM codex_sessions AS session WHERE COALESCE(session.agent_role, '') != 'host_validation' AND (?1 = '' OR session.project_id IN (SELECT value FROM json_each(?1))) AND session.completed_at >= ?2 AND session.completed_at < ?3) AS input_tokens,
-  (SELECT CAST(COALESCE(SUM(session.cached_input_tokens), 0) AS INTEGER) FROM codex_sessions AS session WHERE COALESCE(session.agent_role, '') != 'host_validation' AND (?1 = '' OR session.project_id IN (SELECT value FROM json_each(?1))) AND session.completed_at >= ?2 AND session.completed_at < ?3) AS cached_input_tokens,
-  (SELECT CAST(COALESCE(SUM(session.output_tokens), 0) AS INTEGER) FROM codex_sessions AS session WHERE COALESCE(session.agent_role, '') != 'host_validation' AND (?1 = '' OR session.project_id IN (SELECT value FROM json_each(?1))) AND session.completed_at >= ?2 AND session.completed_at < ?3) AS output_tokens,
-  (SELECT CAST(COALESCE(SUM(session.total_tokens), 0) AS INTEGER) FROM codex_sessions AS session WHERE COALESCE(session.agent_role, '') != 'host_validation' AND (?1 = '' OR session.project_id IN (SELECT value FROM json_each(?1))) AND session.completed_at >= ?2 AND session.completed_at < ?3) AS total_tokens,
-  (SELECT COUNT(*) FROM codex_sessions AS session WHERE COALESCE(session.agent_role, '') != 'host_validation' AND (?1 = '' OR session.project_id IN (SELECT value FROM json_each(?1))) AND session.completed_at >= ?2 AND session.completed_at < ?3 AND lower(trim(COALESCE(session.orphan_recovery_outcome, ''))) = 'resumed') AS orphan_resumed,
-  (SELECT COUNT(*) FROM codex_sessions AS session WHERE COALESCE(session.agent_role, '') != 'host_validation' AND (?1 = '' OR session.project_id IN (SELECT value FROM json_each(?1))) AND session.completed_at >= ?2 AND session.completed_at < ?3 AND lower(trim(COALESCE(session.orphan_recovery_outcome, ''))) = 'fresh') AS orphan_fresh,
-  (SELECT COUNT(*) FROM codex_sessions AS session WHERE COALESCE(session.agent_role, '') != 'host_validation' AND (?1 = '' OR session.project_id IN (SELECT value FROM json_each(?1))) AND session.completed_at >= ?2 AND session.completed_at < ?3 AND lower(trim(COALESCE(session.final_state, ''))) IN ('failed', 'failure', 'cancelled', 'canceled', 'orphaned', 'token_ceiling_exceeded')) AS failed_sessions,
-  (SELECT COUNT(*) FROM work_attempts AS attempt WHERE (?1 = '' OR attempt.project_id IN (SELECT value FROM json_each(?1))) AND attempt.started_at < ?3 AND attempt.completed_at > ?2 AND lower(trim(COALESCE(attempt.terminal_state, ''))) = 'capacity') AS capacity_outages,
-  (SELECT CAST(COALESCE(SUM(MAX(0, CAST(strftime('%s', MIN(attempt.completed_at, ?3)) AS INTEGER) - CAST(strftime('%s', MAX(attempt.started_at, ?2)) AS INTEGER))), 0) AS INTEGER) FROM work_attempts AS attempt WHERE (?1 = '' OR attempt.project_id IN (SELECT value FROM json_each(?1))) AND attempt.started_at < ?3 AND attempt.completed_at > ?2 AND lower(trim(COALESCE(attempt.terminal_state, ''))) = 'capacity') AS capacity_seconds,
+  (SELECT COUNT(*) FROM selected_codex_sessions AS session WHERE COALESCE(session.agent_role, '') != 'host_validation' AND session.completed_at >= (SELECT from_at FROM query_parameters) AND session.completed_at < (SELECT to_at FROM query_parameters)) AS sessions,
+  (SELECT CAST(COALESCE(SUM(session.input_tokens), 0) AS INTEGER) FROM selected_codex_sessions AS session WHERE COALESCE(session.agent_role, '') != 'host_validation' AND session.completed_at >= (SELECT from_at FROM query_parameters) AND session.completed_at < (SELECT to_at FROM query_parameters)) AS input_tokens,
+  (SELECT CAST(COALESCE(SUM(session.cached_input_tokens), 0) AS INTEGER) FROM selected_codex_sessions AS session WHERE COALESCE(session.agent_role, '') != 'host_validation' AND session.completed_at >= (SELECT from_at FROM query_parameters) AND session.completed_at < (SELECT to_at FROM query_parameters)) AS cached_input_tokens,
+  (SELECT CAST(COALESCE(SUM(session.output_tokens), 0) AS INTEGER) FROM selected_codex_sessions AS session WHERE COALESCE(session.agent_role, '') != 'host_validation' AND session.completed_at >= (SELECT from_at FROM query_parameters) AND session.completed_at < (SELECT to_at FROM query_parameters)) AS output_tokens,
+  (SELECT CAST(COALESCE(SUM(session.total_tokens), 0) AS INTEGER) FROM selected_codex_sessions AS session WHERE COALESCE(session.agent_role, '') != 'host_validation' AND session.completed_at >= (SELECT from_at FROM query_parameters) AND session.completed_at < (SELECT to_at FROM query_parameters)) AS total_tokens,
+  (SELECT COUNT(*) FROM selected_codex_sessions AS session WHERE COALESCE(session.agent_role, '') != 'host_validation' AND session.completed_at >= (SELECT from_at FROM query_parameters) AND session.completed_at < (SELECT to_at FROM query_parameters) AND lower(trim(COALESCE(session.orphan_recovery_outcome, ''))) = 'resumed') AS orphan_resumed,
+  (SELECT COUNT(*) FROM selected_codex_sessions AS session WHERE COALESCE(session.agent_role, '') != 'host_validation' AND session.completed_at >= (SELECT from_at FROM query_parameters) AND session.completed_at < (SELECT to_at FROM query_parameters) AND lower(trim(COALESCE(session.orphan_recovery_outcome, ''))) = 'fresh') AS orphan_fresh,
+  (SELECT COUNT(*) FROM selected_codex_sessions AS session WHERE COALESCE(session.agent_role, '') != 'host_validation' AND session.completed_at >= (SELECT from_at FROM query_parameters) AND session.completed_at < (SELECT to_at FROM query_parameters) AND lower(trim(COALESCE(session.final_state, ''))) IN ('failed', 'failure', 'cancelled', 'canceled', 'orphaned', 'token_ceiling_exceeded')) AS failed_sessions,
+  (SELECT COUNT(*) FROM selected_work_attempts AS attempt WHERE attempt.started_at < (SELECT to_at FROM query_parameters) AND attempt.completed_at > (SELECT from_at FROM query_parameters) AND lower(trim(COALESCE(attempt.terminal_state, ''))) = 'capacity') AS capacity_outages,
+  (SELECT CAST(COALESCE(SUM(MAX(0, CAST(strftime('%s', MIN(attempt.completed_at, (SELECT to_at FROM query_parameters))) AS INTEGER) - CAST(strftime('%s', MAX(attempt.started_at, (SELECT from_at FROM query_parameters))) AS INTEGER))), 0) AS INTEGER) FROM selected_work_attempts AS attempt WHERE attempt.started_at < (SELECT to_at FROM query_parameters) AND attempt.completed_at > (SELECT from_at FROM query_parameters) AND lower(trim(COALESCE(attempt.terminal_state, ''))) = 'capacity') AS capacity_seconds,
   (SELECT COUNT(DISTINCT trip.identifier) FROM (
     SELECT COALESCE(NULLIF(decision.identifier, ''), printf('decision:%d', decision.id)) AS identifier
-    FROM scheduler_decisions AS decision
-    WHERE (?1 = '' OR decision.project_id IN (SELECT value FROM json_each(?1)))
-      AND decision.decision_at >= ?2
-      AND decision.decision_at < ?3
+    FROM selected_scheduler_decisions AS decision
+    WHERE decision.decision_at >= (SELECT from_at FROM query_parameters)
+      AND decision.decision_at < (SELECT to_at FROM query_parameters)
       AND (lower(COALESCE(decision.reason, '')) LIKE '%circuit_breaker%' OR lower(COALESCE(decision.wait_reason, '')) LIKE '%circuit_breaker%')
     UNION ALL
     SELECT COALESCE(NULLIF(event.identifier, ''), printf('event:%d', event.id)) AS identifier
-    FROM workflow_phase_events AS event
-    WHERE (?1 = '' OR event.project_id IN (SELECT value FROM json_each(?1)))
-      AND event.started_at >= ?2
-      AND event.started_at < ?3
+    FROM selected_workflow_phase_events AS event
+    WHERE event.started_at >= (SELECT from_at FROM query_parameters)
+      AND event.started_at < (SELECT to_at FROM query_parameters)
       AND lower(COALESCE(event.reason, '')) LIKE '%circuit_breaker%'
   ) AS trip) AS breaker_trips
 `
 
 type DailyDigestRuntimeParams struct {
-	ProjectIdsJson interface{}    `json:"project_ids_json"`
-	FromAt         sql.NullString `json:"from_at"`
-	ToAt           sql.NullString `json:"to_at"`
+	AllProjects        int64            `json:"all_projects"`
+	FromAt             string           `json:"from_at"`
+	ToAt               string           `json:"to_at"`
+	SessionProjectIds  []sql.NullString `json:"session_project_ids"`
+	AttemptProjectIds  []string         `json:"attempt_project_ids"`
+	DecisionProjectIds []string         `json:"decision_project_ids"`
+	EventProjectIds    []string         `json:"event_project_ids"`
 }
 
 type DailyDigestRuntimeRow struct {
@@ -1655,7 +1725,44 @@ type DailyDigestRuntimeRow struct {
 }
 
 func (q *Queries) DailyDigestRuntime(ctx context.Context, arg DailyDigestRuntimeParams) (DailyDigestRuntimeRow, error) {
-	row := q.db.QueryRowContext(ctx, dailyDigestRuntime, arg.ProjectIdsJson, arg.FromAt, arg.ToAt)
+	query := dailyDigestRuntime
+	var queryParams []interface{}
+	queryParams = append(queryParams, arg.AllProjects)
+	queryParams = append(queryParams, arg.FromAt)
+	queryParams = append(queryParams, arg.ToAt)
+	if len(arg.SessionProjectIds) > 0 {
+		for _, v := range arg.SessionProjectIds {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:session_project_ids*/?", strings.Repeat(",?", len(arg.SessionProjectIds))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:session_project_ids*/?", "NULL", 1)
+	}
+	if len(arg.AttemptProjectIds) > 0 {
+		for _, v := range arg.AttemptProjectIds {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:attempt_project_ids*/?", strings.Repeat(",?", len(arg.AttemptProjectIds))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:attempt_project_ids*/?", "NULL", 1)
+	}
+	if len(arg.DecisionProjectIds) > 0 {
+		for _, v := range arg.DecisionProjectIds {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:decision_project_ids*/?", strings.Repeat(",?", len(arg.DecisionProjectIds))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:decision_project_ids*/?", "NULL", 1)
+	}
+	if len(arg.EventProjectIds) > 0 {
+		for _, v := range arg.EventProjectIds {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:event_project_ids*/?", strings.Repeat(",?", len(arg.EventProjectIds))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:event_project_ids*/?", "NULL", 1)
+	}
+	row := q.db.QueryRowContext(ctx, query, queryParams...)
 	var i DailyDigestRuntimeRow
 	err := row.Scan(
 		&i.Sessions,
@@ -3100,17 +3207,28 @@ SELECT id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_
 FROM work_attempts
 WHERE completed_at IS NULL
   AND (?1 = '' OR project_id = ?1)
-  AND (owner_generation IS NULL OR owner_generation NOT IN (SELECT value FROM json_each(?2)))
+  AND (owner_generation IS NULL OR owner_generation NOT IN (SELECT gen FROM worker_generations WHERE gen IN (/*SLICE:live_foreign_generations*/?)))
 ORDER BY started_at, id
 `
 
 type ListActiveWorkAttemptsParams struct {
 	FilterProjectID        interface{} `json:"filter_project_id"`
-	LiveForeignGenerations interface{} `json:"live_foreign_generations"`
+	LiveForeignGenerations []int64     `json:"live_foreign_generations"`
 }
 
 func (q *Queries) ListActiveWorkAttempts(ctx context.Context, arg ListActiveWorkAttemptsParams) ([]WorkAttempt, error) {
-	rows, err := q.db.QueryContext(ctx, listActiveWorkAttempts, arg.FilterProjectID, arg.LiveForeignGenerations)
+	query := listActiveWorkAttempts
+	var queryParams []interface{}
+	queryParams = append(queryParams, arg.FilterProjectID)
+	if len(arg.LiveForeignGenerations) > 0 {
+		for _, v := range arg.LiveForeignGenerations {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:live_foreign_generations*/?", strings.Repeat(",?", len(arg.LiveForeignGenerations))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:live_foreign_generations*/?", "NULL", 1)
+	}
+	rows, err := q.db.QueryContext(ctx, query, queryParams...)
 	if err != nil {
 		return nil, err
 	}
@@ -3903,17 +4021,28 @@ func (q *Queries) ListIssueWorkAttempts(ctx context.Context, arg ListIssueWorkAt
 const listLocalAdmittedIssueIDs = `-- name: ListLocalAdmittedIssueIDs :many
 SELECT DISTINCT issue_id FROM work_attempts
 WHERE project_id = ?1 AND metadata_run_mode != ''
-  AND (owner_generation IS NULL OR owner_generation NOT IN (SELECT value FROM json_each(?2)))
+  AND (owner_generation IS NULL OR owner_generation NOT IN (SELECT gen FROM worker_generations WHERE gen IN (/*SLICE:live_foreign_generations*/?)))
 ORDER BY issue_id
 `
 
 type ListLocalAdmittedIssueIDsParams struct {
-	ProjectID              string      `json:"project_id"`
-	LiveForeignGenerations interface{} `json:"live_foreign_generations"`
+	ProjectID              string  `json:"project_id"`
+	LiveForeignGenerations []int64 `json:"live_foreign_generations"`
 }
 
 func (q *Queries) ListLocalAdmittedIssueIDs(ctx context.Context, arg ListLocalAdmittedIssueIDsParams) ([]sql.NullString, error) {
-	rows, err := q.db.QueryContext(ctx, listLocalAdmittedIssueIDs, arg.ProjectID, arg.LiveForeignGenerations)
+	query := listLocalAdmittedIssueIDs
+	var queryParams []interface{}
+	queryParams = append(queryParams, arg.ProjectID)
+	if len(arg.LiveForeignGenerations) > 0 {
+		for _, v := range arg.LiveForeignGenerations {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:live_foreign_generations*/?", strings.Repeat(",?", len(arg.LiveForeignGenerations))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:live_foreign_generations*/?", "NULL", 1)
+	}
+	rows, err := q.db.QueryContext(ctx, query, queryParams...)
 	if err != nil {
 		return nil, err
 	}
@@ -3936,6 +4065,11 @@ func (q *Queries) ListLocalAdmittedIssueIDs(ctx context.Context, arg ListLocalAd
 }
 
 const listOrphanedAgentSessions = `-- name: ListOrphanedAgentSessions :many
+WITH query_parameters AS (
+  SELECT CAST(?1 AS TEXT) AS selected_project
+), live_foreign AS (
+  SELECT gen FROM worker_generations WHERE gen IN (/*SLICE:live_foreign_generations*/?)
+)
 SELECT
   s.id,
   s.work_attempt_id,
@@ -3958,20 +4092,20 @@ SELECT
   CAST(s.started_at AS TEXT) AS started_at
 FROM codex_sessions s
 JOIN work_attempts w ON w.id = s.work_attempt_id
-WHERE w.project_id = ?1
+WHERE w.project_id = (SELECT selected_project FROM query_parameters)
   AND (lower(trim(COALESCE(w.status, ''))) = 'active'
        OR (w.terminal_state = 'abandoned' AND w.error_class = 'service_restart'))
   AND s.completed_at IS NULL
   AND lower(trim(COALESCE(s.final_state, ''))) = 'running'
   AND (COALESCE(s.provider_thread_id, '') != '' OR COALESCE(s.provider_session_id, '') != '')
-  AND (s.owner_generation IS NULL OR s.owner_generation NOT IN (SELECT value FROM json_each(?2)))
-  AND (w.owner_generation IS NULL OR w.owner_generation NOT IN (SELECT value FROM json_each(?2)))
+  AND (s.owner_generation IS NULL OR s.owner_generation NOT IN (SELECT gen FROM live_foreign))
+  AND (w.owner_generation IS NULL OR w.owner_generation NOT IN (SELECT gen FROM live_foreign))
 ORDER BY s.started_at DESC, s.id DESC
 `
 
 type ListOrphanedAgentSessionsParams struct {
-	ProjectID              string      `json:"project_id"`
-	LiveForeignGenerations interface{} `json:"live_foreign_generations"`
+	ProjectID              string  `json:"project_id"`
+	LiveForeignGenerations []int64 `json:"live_foreign_generations"`
 }
 
 type ListOrphanedAgentSessionsRow struct {
@@ -3997,7 +4131,18 @@ type ListOrphanedAgentSessionsRow struct {
 }
 
 func (q *Queries) ListOrphanedAgentSessions(ctx context.Context, arg ListOrphanedAgentSessionsParams) ([]ListOrphanedAgentSessionsRow, error) {
-	rows, err := q.db.QueryContext(ctx, listOrphanedAgentSessions, arg.ProjectID, arg.LiveForeignGenerations)
+	query := listOrphanedAgentSessions
+	var queryParams []interface{}
+	queryParams = append(queryParams, arg.ProjectID)
+	if len(arg.LiveForeignGenerations) > 0 {
+		for _, v := range arg.LiveForeignGenerations {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:live_foreign_generations*/?", strings.Repeat(",?", len(arg.LiveForeignGenerations))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:live_foreign_generations*/?", "NULL", 1)
+	}
+	rows, err := q.db.QueryContext(ctx, query, queryParams...)
 	if err != nil {
 		return nil, err
 	}
@@ -4153,17 +4298,28 @@ FROM work_attempts
 WHERE project_id = ?1
   AND terminal_state = 'operator_stopped'
   AND phase IN ('operator_stop_pending', 'operator_stop_transition_failed')
-  AND (owner_generation IS NULL OR owner_generation NOT IN (SELECT value FROM json_each(?2)))
+  AND (owner_generation IS NULL OR owner_generation NOT IN (SELECT gen FROM worker_generations WHERE gen IN (/*SLICE:live_foreign_generations*/?)))
 ORDER BY completed_at, id
 `
 
 type ListPendingOperatorStopsParams struct {
-	ProjectID              string      `json:"project_id"`
-	LiveForeignGenerations interface{} `json:"live_foreign_generations"`
+	ProjectID              string  `json:"project_id"`
+	LiveForeignGenerations []int64 `json:"live_foreign_generations"`
 }
 
 func (q *Queries) ListPendingOperatorStops(ctx context.Context, arg ListPendingOperatorStopsParams) ([]WorkAttempt, error) {
-	rows, err := q.db.QueryContext(ctx, listPendingOperatorStops, arg.ProjectID, arg.LiveForeignGenerations)
+	query := listPendingOperatorStops
+	var queryParams []interface{}
+	queryParams = append(queryParams, arg.ProjectID)
+	if len(arg.LiveForeignGenerations) > 0 {
+		for _, v := range arg.LiveForeignGenerations {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:live_foreign_generations*/?", strings.Repeat(",?", len(arg.LiveForeignGenerations))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:live_foreign_generations*/?", "NULL", 1)
+	}
+	rows, err := q.db.QueryContext(ctx, query, queryParams...)
 	if err != nil {
 		return nil, err
 	}
@@ -4240,17 +4396,28 @@ WHERE project_id = ?1
   AND status = 'terminal'
   AND completed_at IS NOT NULL
   AND lower(trim(COALESCE(next_action, ''))) = 'release capacity'
-  AND (owner_generation IS NULL OR owner_generation NOT IN (SELECT value FROM json_each(?2)))
+  AND (owner_generation IS NULL OR owner_generation NOT IN (SELECT gen FROM worker_generations WHERE gen IN (/*SLICE:live_foreign_generations*/?)))
 ORDER BY completed_at, id
 `
 
 type ListPendingWorkAttemptCapacityReleasesParams struct {
-	ProjectID              string      `json:"project_id"`
-	LiveForeignGenerations interface{} `json:"live_foreign_generations"`
+	ProjectID              string  `json:"project_id"`
+	LiveForeignGenerations []int64 `json:"live_foreign_generations"`
 }
 
 func (q *Queries) ListPendingWorkAttemptCapacityReleases(ctx context.Context, arg ListPendingWorkAttemptCapacityReleasesParams) ([]WorkAttempt, error) {
-	rows, err := q.db.QueryContext(ctx, listPendingWorkAttemptCapacityReleases, arg.ProjectID, arg.LiveForeignGenerations)
+	query := listPendingWorkAttemptCapacityReleases
+	var queryParams []interface{}
+	queryParams = append(queryParams, arg.ProjectID)
+	if len(arg.LiveForeignGenerations) > 0 {
+		for _, v := range arg.LiveForeignGenerations {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:live_foreign_generations*/?", strings.Repeat(",?", len(arg.LiveForeignGenerations))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:live_foreign_generations*/?", "NULL", 1)
+	}
+	rows, err := q.db.QueryContext(ctx, query, queryParams...)
 	if err != nil {
 		return nil, err
 	}
@@ -5022,12 +5189,12 @@ SET status = ?,
     status_message = ?
 WHERE completed_at IS NULL
   AND (?9 = '' OR project_id = ?9)
-  AND ((lease_expires_at IS NOT NULL AND lease_expires_at <= ?10)
-       OR (lease_expires_at IS NULL AND lower(trim(COALESCE(phase, ''))) = 'completion_deferred')
+  AND ((work_attempts.lease_expires_at IS NOT NULL AND work_attempts.lease_expires_at <= ?10)
+       OR (work_attempts.lease_expires_at IS NULL AND lower(trim(COALESCE(phase, ''))) = 'completion_deferred')
        OR (lower(trim(COALESCE(phase, ''))) != 'completion_deferred'
-           AND id IN (SELECT value FROM json_each(?11))))
-  AND id NOT IN (SELECT value FROM json_each(?12))
-  AND (owner_generation IS NULL OR owner_generation NOT IN (SELECT value FROM json_each(?13)))
+           AND work_attempts.id IN (/*SLICE:confirmed_gone_attempt_ids*/?)))
+  AND work_attempts.id NOT IN (SELECT excluded.id FROM work_attempts excluded WHERE excluded.id IN (/*SLICE:exclude_attempt_ids*/?))
+  AND (owner_generation IS NULL OR owner_generation NOT IN (SELECT gen FROM worker_generations WHERE gen IN (/*SLICE:live_foreign_generations*/?)))
 RETURNING id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action, detent_session_id, provider_session_id, runtime_identity_json, owner_generation, metadata_pr_number, metadata_pr_head_sha, metadata_pr_base_sha, metadata_run_mode, outcome_excluded, forge_wait_present, forge_wait_host, forge_wait_error_class, forge_write_completed_host, metrics_turns, projection_ready
 `
 
@@ -5042,27 +5209,49 @@ type TimeoutExpiredWorkAttemptsParams struct {
 	StatusMessage           sql.NullString `json:"status_message"`
 	FilterProjectID         interface{}    `json:"filter_project_id"`
 	LeaseExpiresAt          sql.NullString `json:"lease_expires_at"`
-	ConfirmedGoneAttemptIds interface{}    `json:"confirmed_gone_attempt_ids"`
-	ExcludeAttemptIds       interface{}    `json:"exclude_attempt_ids"`
-	LiveForeignGenerations  interface{}    `json:"live_foreign_generations"`
+	ConfirmedGoneAttemptIds []int64        `json:"confirmed_gone_attempt_ids"`
+	ExcludeAttemptIds       []int64        `json:"exclude_attempt_ids"`
+	LiveForeignGenerations  []int64        `json:"live_foreign_generations"`
 }
 
 func (q *Queries) TimeoutExpiredWorkAttempts(ctx context.Context, arg TimeoutExpiredWorkAttemptsParams) ([]WorkAttempt, error) {
-	rows, err := q.db.QueryContext(ctx, timeoutExpiredWorkAttempts,
-		arg.Status,
-		arg.TerminalState,
-		arg.CompletedAt,
-		arg.HeartbeatAt,
-		arg.ErrorClass,
-		arg.ErrorMessage,
-		arg.Phase,
-		arg.StatusMessage,
-		arg.FilterProjectID,
-		arg.LeaseExpiresAt,
-		arg.ConfirmedGoneAttemptIds,
-		arg.ExcludeAttemptIds,
-		arg.LiveForeignGenerations,
-	)
+	query := timeoutExpiredWorkAttempts
+	var queryParams []interface{}
+	queryParams = append(queryParams, arg.Status)
+	queryParams = append(queryParams, arg.TerminalState)
+	queryParams = append(queryParams, arg.CompletedAt)
+	queryParams = append(queryParams, arg.HeartbeatAt)
+	queryParams = append(queryParams, arg.ErrorClass)
+	queryParams = append(queryParams, arg.ErrorMessage)
+	queryParams = append(queryParams, arg.Phase)
+	queryParams = append(queryParams, arg.StatusMessage)
+	queryParams = append(queryParams, arg.FilterProjectID)
+	queryParams = append(queryParams, arg.LeaseExpiresAt)
+	if len(arg.ConfirmedGoneAttemptIds) > 0 {
+		for _, v := range arg.ConfirmedGoneAttemptIds {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:confirmed_gone_attempt_ids*/?", strings.Repeat(",?", len(arg.ConfirmedGoneAttemptIds))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:confirmed_gone_attempt_ids*/?", "NULL", 1)
+	}
+	if len(arg.ExcludeAttemptIds) > 0 {
+		for _, v := range arg.ExcludeAttemptIds {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:exclude_attempt_ids*/?", strings.Repeat(",?", len(arg.ExcludeAttemptIds))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:exclude_attempt_ids*/?", "NULL", 1)
+	}
+	if len(arg.LiveForeignGenerations) > 0 {
+		for _, v := range arg.LiveForeignGenerations {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:live_foreign_generations*/?", strings.Repeat(",?", len(arg.LiveForeignGenerations))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:live_foreign_generations*/?", "NULL", 1)
+	}
+	rows, err := q.db.QueryContext(ctx, query, queryParams...)
 	if err != nil {
 		return nil, err
 	}
@@ -5879,14 +6068,19 @@ func (q *Queries) UpsertValidatorVerdict(ctx context.Context, arg UpsertValidato
 }
 
 const usageReportRows = `-- name: UsageReportRows :many
-WITH usage_report_rows AS (
+WITH query_parameters AS (
+  SELECT CAST(?1 AS TEXT) AS bucket_by,
+         CAST(?2 AS INTEGER) AS all_projects,
+         CAST(?3 AS TEXT) AS from_day,
+         CAST(?4 AS TEXT) AS to_day
+), usage_report_rows AS (
   SELECT
     CASE
-      WHEN ?1 = 'day' THEN event_day
-      WHEN ?1 = 'project' THEN project_id
-      WHEN ?1 = 'issue' THEN COALESCE(NULLIF(identifier, ''), NULLIF(issue_id, ''), 'unassigned')
-      WHEN ?1 = 'pr' THEN project_id || '#' || COALESCE(CAST(pr_number AS TEXT), 'unassigned')
-      WHEN ?1 = 'model' THEN COALESCE(NULLIF(model, ''), 'unassigned')
+      WHEN (SELECT bucket_by FROM query_parameters) = 'day' THEN event_day
+      WHEN (SELECT bucket_by FROM query_parameters) = 'project' THEN project_id
+      WHEN (SELECT bucket_by FROM query_parameters) = 'issue' THEN COALESCE(NULLIF(identifier, ''), NULLIF(issue_id, ''), 'unassigned')
+      WHEN (SELECT bucket_by FROM query_parameters) = 'pr' THEN project_id || '#' || COALESCE(CAST(pr_number AS TEXT), 'unassigned')
+      WHEN (SELECT bucket_by FROM query_parameters) = 'model' THEN COALESCE(NULLIF(model, ''), 'unassigned')
       ELSE event_day
     END AS group_key,
     COALESCE(NULLIF(model, ''), 'unassigned') AS model,
@@ -5899,9 +6093,9 @@ WITH usage_report_rows AS (
     runtime_seconds,
     compute_usd
   FROM usage_events
-  WHERE (?2 IS NULL OR project_id IN (SELECT value FROM json_each(?2)))
-    AND (?3 IS NULL OR event_day >= ?3)
-    AND (?4 IS NULL OR event_day <= ?4)
+  WHERE (CAST((SELECT all_projects FROM query_parameters) AS INTEGER) = 1 OR project_id IN (/*SLICE:project_ids*/?))
+    AND ((SELECT from_day FROM query_parameters) IS NULL OR event_day >= (SELECT from_day FROM query_parameters))
+    AND ((SELECT to_day FROM query_parameters) IS NULL OR event_day <= (SELECT to_day FROM query_parameters))
 )
 SELECT
   CAST(usage_report_rows.group_key AS TEXT) AS group_key,
@@ -5922,10 +6116,11 @@ ORDER BY usage_report_rows.group_key, usage_report_rows.model
 `
 
 type UsageReportRowsParams struct {
-	BucketBy       interface{} `json:"bucket_by"`
-	ProjectIdsJson interface{} `json:"project_ids_json"`
-	FromDay        interface{} `json:"from_day"`
-	ToDay          interface{} `json:"to_day"`
+	BucketBy    string         `json:"bucket_by"`
+	AllProjects int64          `json:"all_projects"`
+	FromDay     sql.NullString `json:"from_day"`
+	ToDay       sql.NullString `json:"to_day"`
+	ProjectIds  []string       `json:"project_ids"`
 }
 
 type UsageReportRowsRow struct {
@@ -5944,12 +6139,21 @@ type UsageReportRowsRow struct {
 }
 
 func (q *Queries) UsageReportRows(ctx context.Context, arg UsageReportRowsParams) ([]UsageReportRowsRow, error) {
-	rows, err := q.db.QueryContext(ctx, usageReportRows,
-		arg.BucketBy,
-		arg.ProjectIdsJson,
-		arg.FromDay,
-		arg.ToDay,
-	)
+	query := usageReportRows
+	var queryParams []interface{}
+	queryParams = append(queryParams, arg.BucketBy)
+	queryParams = append(queryParams, arg.AllProjects)
+	queryParams = append(queryParams, arg.FromDay)
+	queryParams = append(queryParams, arg.ToDay)
+	if len(arg.ProjectIds) > 0 {
+		for _, v := range arg.ProjectIds {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:project_ids*/?", strings.Repeat(",?", len(arg.ProjectIds))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:project_ids*/?", "NULL", 1)
+	}
+	rows, err := q.db.QueryContext(ctx, query, queryParams...)
 	if err != nil {
 		return nil, err
 	}

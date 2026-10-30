@@ -295,7 +295,7 @@ func readUsageRows(ctx context.Context, database nativeQueryer, organization str
 	if len(projects) == 0 {
 		return nil, nil
 	}
-	encoded, err := marshalNative(projects)
+	encoded, err := sqlList(projects)
 	if err != nil {
 		return nil, fmt.Errorf("encode readable projects: %w", err)
 	}
@@ -317,7 +317,7 @@ func readUsageRows(ctx context.Context, database nativeQueryer, organization str
 			attemptSource = "report_attempts"
 		}
 	}
-	projectClause, projectArg := "u.project_id IN (SELECT value FROM json_each(?))", any(encoded)
+	projectClause, projectArg := "u.project_id IN (SELECT value FROM sql_rows(?))", any(encoded)
 	if len(projects) == 1 {
 		projectClause, projectArg = "u.project_id = ?", projects[0]
 	}
