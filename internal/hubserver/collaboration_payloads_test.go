@@ -58,7 +58,7 @@ func appendLegacyNativeHistory(ctx context.Context, tx *sql.Tx, scope nativeScop
 	if err != nil {
 		return err
 	}
-	args := []any{id, scope.organization, scope.project, workItemID, sequence, eventType, actor, payload, formatHubTime(now), decision.Outcome, decision.Reason, decision.Source, decision.RunnerID, nullString(data.FromState), nullString(data.ToState), attempt, key, now.UnixNano(), metadata.values[0], metadata.values[1]}
+	args := []any{id, scope.organization, scope.project, workItemID, sequence, eventType, actor, payload, formatHubTime(now), decision.Outcome, decision.Reason, decision.Source, decision.RunnerID, nullString(data.FromState), nullString(data.ToState), attempt, key, now.UnixNano(), metadata.Values[0], metadata.Values[1]}
 	args = append(args, eventClaimFacts(data.Run)...)
 	args = append(args, archiveValues...)
 	_, err = tx.ExecContext(ctx, "INSERT INTO collaboration_events (id,organization_id,project_id,work_item_id,sequence,type,schema_version,actor_json,data_json,recorded_at,scheduler_outcome,scheduler_reason,scheduler_source,scheduler_runner_id,analytics_from_state,analytics_to_state,analytics_attempt_id,analytics_skip_key,analytics_recorded_ns,analytics_projection_version,query_metadata_version,run_attempt_id,activity_spans_present,claim_attempt_id,run_id,run_lease_id,run_fencing_token,run_sequence,run_policy_id,push_change_id,push_version_id,push_head_sha,push_external_effect,push_effect_state,archive_operation,archive_from_state,archive_to_state,archive_attempt_id,archive_outcome,archive_landed_commit) VALUES(?,?,?,?,?,?,1,?,?,?,?,?,?,?,?,?,?,?,?,1,1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", args...)
@@ -394,7 +394,7 @@ func restoreLegacyCollaborationPayloads(t *testing.T, service *Service, scope na
 			if err != nil {
 				return err
 			}
-			if err := metadata.write(ctx, tx, "collaboration_events", "id=?", r.id); err != nil {
+			if err := metadata.Write(ctx, tx, "collaboration_events", "id=?", r.id); err != nil {
 				return err
 			}
 		}
