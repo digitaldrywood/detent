@@ -118,14 +118,14 @@ func (d *database) chatUsageSummary(ctx context.Context, organization tracker.Or
  FROM conversation_usage WHERE organization_id=? AND occurred_at>=? AND occurred_at<?`
 	args := []any{organization, window.From.UnixMicro(), window.To.UnixMicro()}
 	if projects != nil {
-		encoded, err := marshalNative(projects)
+		encoded, err := sqlList(projects)
 		if err != nil {
 			return summary, err
 		}
-		query += " AND project_id IN (SELECT value FROM json_each(?))"
+		query += " AND project_id IN (SELECT value FROM sql_rows(?))"
 		args = append(args, encoded)
 	}
-	err := d.reader.QueryRowContext(ctx, query, args...).Scan(&summary.Input, &summary.CachedInput, &summary.Output, &summary.ReasoningOutput, &summary.Turns, &summary.UnpricedTurns, &summary.CostUSD)
+	err := queryRowSQL(ctx, d.reader, query, args...).Scan(&summary.Input, &summary.CachedInput, &summary.Output, &summary.ReasoningOutput, &summary.Turns, &summary.UnpricedTurns, &summary.CostUSD)
 	summary.Tokens = summary.Input + summary.Output
 	return summary, err
 }
@@ -136,11 +136,11 @@ func (s *Service) chatUsageRows(ctx context.Context, window usageWindow, project
 	if len(projects) == 0 {
 		return nil, nil
 	}
-	encoded, err := marshalNative(projects)
+	encoded, err := sqlList(projects)
 	if err != nil {
 		return nil, err
 	}
-	result, err := s.database.reader.QueryContext(ctx, `SELECT turn_id,occurred_at,provider,model,input,cached_input,output,coalesce(cost_usd,0),coalesce(cache_savings_usd,0) FROM conversation_usage WHERE organization_id=? AND occurred_at>=? AND occurred_at<? AND project_id IN (SELECT value FROM json_each(?)) ORDER BY occurred_at,turn_id`, s.config.Hosted.OrganizationID, window.From.UnixMicro(), window.To.UnixMicro(), encoded)
+	result, err := querySQL(ctx, s.database.reader, `SELECT turn_id,occurred_at,provider,model,input,cached_input,output,coalesce(cost_usd,0),coalesce(cache_savings_usd,0) FROM conversation_usage WHERE organization_id=? AND occurred_at>=? AND occurred_at<? AND project_id IN (SELECT value FROM sql_rows(?)) ORDER BY occurred_at,turn_id`, s.config.Hosted.OrganizationID, window.From.UnixMicro(), window.To.UnixMicro(), encoded)
 	if err != nil {
 		return nil, err
 	}

@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -20,8 +19,6 @@ const (
 	WorkerGenerationStateExited    = "exited"
 	WorkerGenerationStateAbandoned = "abandoned"
 )
-
-const emptyGenerations = "[]"
 
 type WorkerGenerationStore interface {
 	LiveForeignGenerationReader
@@ -65,11 +62,10 @@ func (s *sqliteStore) StartWorkerGeneration(ctx context.Context, attrs WorkerGen
 			dead = append(dead, row.Gen)
 		}
 	}
-	deadJSON, err := json.Marshal(dead)
-	if err != nil {
-		return 0, fmt.Errorf("encoding dead worker generations: %w", err)
-	}
 
+	if len(dead) > 10000 {
+		return 0, errors.New("dead worker generations exceed query bound")
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, fmt.Errorf("beginning worker generation transaction: %w", err)
@@ -79,7 +75,7 @@ func (s *sqliteStore) StartWorkerGeneration(ctx context.Context, attrs WorkerGen
 	if _, err := queries.ExitWorkerGenerations(ctx, sqlc.ExitWorkerGenerationsParams{
 		State:       WorkerGenerationStateAbandoned,
 		ExitedAt:    sql.NullString{String: startedAt, Valid: true},
-		Generations: string(deadJSON),
+		Generations: dead,
 	}); err != nil {
 		return 0, fmt.Errorf("abandoning dead worker generations: %w", err)
 	}
@@ -113,7 +109,7 @@ func (s *sqliteStore) ExitWorkerGeneration(ctx context.Context, exitedAt time.Ti
 	if _, err := s.queries.ExitWorkerGenerations(ctx, sqlc.ExitWorkerGenerationsParams{
 		State:       WorkerGenerationStateExited,
 		ExitedAt:    sql.NullString{String: timestamp, Valid: true},
-		Generations: fmt.Sprintf("[%d]", generation),
+		Generations: []int64{generation},
 	}); err != nil {
 		return fmt.Errorf("marking worker generation %d exited: %w", generation, err)
 	}
@@ -145,22 +141,18 @@ func (s *sqliteStore) LiveForeignWorkerGenerations(ctx context.Context) ([]int64
 	return slices.DeleteFunc(live, func(generation int64) bool { return generation == current }), err
 }
 
-func (s *sqliteStore) liveForeignGenerationsJSON(ctx context.Context) (string, error) {
+func (s *sqliteStore) liveForeignGenerationIDs(ctx context.Context) ([]int64, error) {
 	foreign, err := s.LiveForeignWorkerGenerations(ctx)
 	var unknown *WorkerGenerationLivenessError
 	if errors.As(err, &unknown) {
 		unknown.Log(slog.Default())
 	} else if err != nil {
-		return "", err
+		return nil, err
 	}
-	if len(foreign) == 0 {
-		return emptyGenerations, nil
+	if len(foreign) > 10000 {
+		return nil, errors.New("live worker generations exceed query bound")
 	}
-	encoded, err := json.Marshal(foreign)
-	if err != nil {
-		return "", fmt.Errorf("encoding live worker generations: %w", err)
-	}
-	return string(encoded), nil
+	return foreign, nil
 }
 
 func (s *sqliteStore) classifyWorkerGenerations(rows []sqlc.ListUnexitedWorkerGenerationsRow) ([]int64, []UnknownWorkerGeneration) {

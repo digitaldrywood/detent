@@ -212,14 +212,14 @@ func reportsAttemptClause(ctx context.Context, alias string) (string, []any, err
 		if len(filter.values) == 0 {
 			continue
 		}
-		encoded, err := marshalNative(filter.values)
+		encoded, err := sqlList(filter.values)
 		if err != nil {
 			return "", nil, fmt.Errorf("encode report attempt filter: %w", err)
 		}
-		clause.WriteString(" AND " + filter.expression + " IN (SELECT value FROM json_each(?))")
+		clause.WriteString(" AND " + filter.expression + " IN (SELECT value FROM sql_rows(?))")
 		args = append(args, encoded)
 	}
-	return clause.String(), args, nil
+	return bindSQLParameters(clause.String(), args)
 }
 
 // reportsScopedClause is the issue and attempt narrowing of a read whose
@@ -246,18 +246,18 @@ func reportsIssueSubquery(scope nativeScope, f reportsFilter, from, to time.Time
 		clause string
 		window bool
 	}{
-		{f.Labels, "EXISTS (SELECT 1 FROM native_issue_page_filter_values rl WHERE rl.issue_id=ri.id AND rl.kind='label' AND rl.value IN (SELECT value FROM json_each(?)))", false},
-		{f.Types, "ri.issue_type IN (SELECT value FROM json_each(?))", false},
-		{f.FiledBy, nativeIssuePrincipal("ri") + " IN (SELECT value FROM json_each(?))", false},
-		{f.Priorities, "EXISTS (SELECT 1 FROM queue_entries rq WHERE rq.issue_id=ri.id AND CAST(rq.priority_override AS TEXT) IN (SELECT value FROM json_each(?)))", false},
+		{f.Labels, "EXISTS (SELECT 1 FROM native_issue_page_filter_values rl WHERE rl.issue_id=ri.id AND rl.kind='label' AND rl.value IN (SELECT value FROM sql_rows(?)))", false},
+		{f.Types, "ri.issue_type IN (SELECT value FROM sql_rows(?))", false},
+		{f.FiledBy, nativeIssuePrincipal("ri") + " IN (SELECT value FROM sql_rows(?))", false},
+		{f.Priorities, "EXISTS (SELECT 1 FROM queue_entries rq WHERE rq.issue_id=ri.id AND CAST(rq.priority_override AS TEXT) IN (SELECT value FROM sql_rows(?)))", false},
 		{f.Runners, `EXISTS (SELECT 1 FROM report_attempts ra WHERE ra.organization_id=ri.organization_id AND ra.project_id=ri.project_id AND ra.work_item_id=ri.native_id
  AND julianday(ra.started_at)<julianday(?) AND julianday(ra.updated_at)>=julianday(?)
- AND coalesce((SELECT rlr.runner_id FROM lease_runners rlr WHERE rlr.lease_id=ra.lease_id),ra.runner_id,'') IN (SELECT value FROM json_each(?)))`, true},
+ AND coalesce((SELECT rlr.runner_id FROM lease_runners rlr WHERE rlr.lease_id=ra.lease_id),ra.runner_id,'') IN (SELECT value FROM sql_rows(?)))`, true},
 	} {
 		if len(filter.values) == 0 {
 			continue
 		}
-		encoded, err := marshalNative(filter.values)
+		encoded, err := sqlList(filter.values)
 		if err != nil {
 			return "", nil, fmt.Errorf("encode report issue filter: %w", err)
 		}
@@ -267,7 +267,7 @@ func reportsIssueSubquery(scope nativeScope, f reportsFilter, from, to time.Time
 		}
 		args = append(args, encoded)
 	}
-	return statement.String(), args, nil
+	return bindSQLParameters(statement.String(), args)
 }
 
 type reportsFacet struct {
@@ -290,7 +290,7 @@ func (s *Service) readReportsFacets(ctx context.Context, projects []string, w op
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	out := reportsFacets{Labels: []string{}, FiledBy: []reportsFacet{}, Runners: []reportsFacet{}, Models: []string{}, Stages: []string{}}
-	encoded, err := marshalNative(projects)
+	encoded, err := sqlList(projects)
 	if err != nil {
 		return out, fmt.Errorf("encode report projects: %w", err)
 	}
@@ -318,7 +318,7 @@ func (s *Service) readReportsFacets(ctx context.Context, projects []string, w op
 			scopedArgs = append(scopedArgs, visibilityArgs...)
 			args = append(scopedArgs, args[len(args)-1])
 		}
-		rows, err := q.QueryContext(ctx, statement, args...)
+		rows, err := querySQL(ctx, q, statement, args...)
 		if err != nil {
 			return err
 		}
@@ -332,11 +332,11 @@ func (s *Service) readReportsFacets(ctx context.Context, projects []string, w op
 		}
 		return errors.Join(rows.Err(), rows.Close())
 	}
-	if err := read(`SELECT DISTINCT l.value,'' FROM issues i JOIN native_issue_page_filter_values l ON l.issue_id=i.id AND l.kind='label' WHERE i.organization_id=? AND i.project_id IN (SELECT value FROM json_each(?)) ORDER BY l.value LIMIT ?`,
+	if err := read(`SELECT DISTINCT l.value,'' FROM issues i JOIN native_issue_page_filter_values l ON l.issue_id=i.id AND l.kind='label' WHERE i.organization_id=? AND i.project_id IN (SELECT value FROM sql_rows(?)) ORDER BY l.value LIMIT ?`,
 		func(values ...string) { out.Labels = append(out.Labels, values[0]) }, organization, encoded, reportsFacetLimit); err != nil {
 		return out, fmt.Errorf("read report label facets: %w", err)
 	}
-	if err := read(`SELECT f.principal,`+nativeActorDisplayName("f.principal", "?")+` FROM (SELECT DISTINCT `+nativeIssuePrincipal("i")+` AS principal FROM issues i WHERE i.organization_id=? AND i.project_id IN (SELECT value FROM json_each(?)) AND coalesce(`+nativeIssuePrincipal("i")+`,'')<>'') f ORDER BY 2,1 LIMIT ?`,
+	if err := read(`SELECT f.principal,`+nativeActorDisplayName("f.principal", "?")+` FROM (SELECT DISTINCT `+nativeIssuePrincipal("i")+` AS principal FROM issues i WHERE i.organization_id=? AND i.project_id IN (SELECT value FROM sql_rows(?)) AND coalesce(`+nativeIssuePrincipal("i")+`,'')<>'') f ORDER BY 2,1 LIMIT ?`,
 		func(values ...string) { out.FiledBy = append(out.FiledBy, reportsFacet{values[0], values[1]}) }, organization, organization, encoded, reportsFacetLimit); err != nil {
 		return out, fmt.Errorf("read report filer facets: %w", err)
 	}

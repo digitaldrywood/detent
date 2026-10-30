@@ -8,6 +8,7 @@ package sqlc
 import (
 	"context"
 	"database/sql"
+	"strings"
 )
 
 const createWorkerGeneration = `-- name: CreateWorkerGeneration :one
@@ -51,17 +52,29 @@ SET state = ?1,
     exited_at = ?2,
     updated_at = ?2
 WHERE exited_at IS NULL
-  AND gen IN (SELECT value FROM json_each(?3))
+  AND gen IN (/*SLICE:generations*/?)
 `
 
 type ExitWorkerGenerationsParams struct {
 	State       string         `json:"state"`
 	ExitedAt    sql.NullString `json:"exited_at"`
-	Generations interface{}    `json:"generations"`
+	Generations []int64        `json:"generations"`
 }
 
 func (q *Queries) ExitWorkerGenerations(ctx context.Context, arg ExitWorkerGenerationsParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, exitWorkerGenerations, arg.State, arg.ExitedAt, arg.Generations)
+	query := exitWorkerGenerations
+	var queryParams []interface{}
+	queryParams = append(queryParams, arg.State)
+	queryParams = append(queryParams, arg.ExitedAt)
+	if len(arg.Generations) > 0 {
+		for _, v := range arg.Generations {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:generations*/?", strings.Repeat(",?", len(arg.Generations))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:generations*/?", "NULL", 1)
+	}
+	result, err := q.db.ExecContext(ctx, query, queryParams...)
 	if err != nil {
 		return 0, err
 	}

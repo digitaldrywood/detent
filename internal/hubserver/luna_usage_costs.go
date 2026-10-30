@@ -2,18 +2,17 @@ package hubserver
 
 import (
 	"context"
-	"encoding/json"
 	"math"
 	"strconv"
 	"time"
 )
 
 func readLunaCostObservations(ctx context.Context, query nativeQueryer, organization string, projects []string, window usageWindow) ([]attributedCostObservation, error) {
-	encoded, err := json.Marshal(projects)
+	encoded, err := sqlList(projects)
 	if err != nil {
 		return nil, err
 	}
-	rows, err := query.QueryContext(ctx, `SELECT project_id,turn_id,provider,model,occurred_at,input,cached_input,output,price_id,cost_usd FROM conversation_usage WHERE organization_id=? AND occurred_at>=? AND occurred_at<? AND (? OR project_id IN (SELECT value FROM json_each(?))) ORDER BY project_id,occurred_at,turn_id`, organization, window.From.UnixMicro(), window.To.UnixMicro(), projects == nil, string(encoded))
+	rows, err := querySQL(ctx, query, `SELECT project_id,turn_id,provider,model,occurred_at,input,cached_input,output,price_id,cost_usd FROM conversation_usage WHERE organization_id=? AND occurred_at>=? AND occurred_at<? AND (? OR project_id IN (SELECT value FROM sql_rows(?))) ORDER BY project_id,occurred_at,turn_id`, organization, window.From.UnixMicro(), window.To.UnixMicro(), projects == nil, encoded)
 	if err != nil {
 		return nil, err
 	}

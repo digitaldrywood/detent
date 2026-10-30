@@ -118,23 +118,19 @@ func projectAnalyticsCapacityRollups(ctx context.Context, q nativeQueryer, scope
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	encoded, err := json.Marshal(ids)
+	encoded, err := sqlList(ids)
 	if err != nil {
 		return err
 	}
-	type bucket struct {
-		From, To     time.Time
-		FromNS, ToNS int64
-	}
-	var buckets []bucket
+	var buckets [][]any
 	for _, b := range out.Digest {
-		buckets = append(buckets, bucket{From: b.From, To: b.To, FromNS: b.From.UnixNano(), ToNS: b.To.UnixNano()})
+		buckets = append(buckets, []any{b.From.UnixNano(), b.To.UnixNano()})
 	}
-	encodedBuckets, err := json.Marshal(buckets)
+	encodedBuckets, err := sqlTypedRows([]string{"from_ns", "to_ns"}, buckets)
 	if err != nil {
 		return err
 	}
-	totals, err := q.QueryContext(ctx, `SELECT b.key,sum(CASE WHEN r.hour*1000000000>=json_extract(b.value,'$.FromNS') AND (r.hour+3600)*1000000000<=json_extract(b.value,'$.ToNS') THEN r.value ELSE max(0,min((r.hour+3600)*1000000000,json_extract(b.value,'$.ToNS'),r.sample_ns)-max(r.hour*1000000000,json_extract(b.value,'$.FromNS'),r.sample_start_ns))/1000000000.0 END) FROM json_each(?) b JOIN analytics_hourly_rollups r ON r.organization_id=? AND r.project_id=? AND r.metric='capacity_wait' AND r.dimension IN (SELECT value FROM json_each(?)) AND r.hour*1000000000<json_extract(b.value,'$.ToNS') AND (r.hour+3600)*1000000000>json_extract(b.value,'$.FromNS') GROUP BY b.key ORDER BY b.key`, string(encodedBuckets), scope.organization, scope.project, string(encoded))
+	totals, err := querySQL(ctx, q, `SELECT b.key,sum(CASE WHEN r.hour*1000000000>=b.from_ns AND (r.hour+3600)*1000000000<=b.to_ns THEN r.value ELSE max(0,min((r.hour+3600)*1000000000,b.to_ns,r.sample_ns)-max(r.hour*1000000000,b.from_ns,r.sample_start_ns))/1000000000.0 END) FROM sql_rows(?) b JOIN analytics_hourly_rollups r ON r.organization_id=? AND r.project_id=? AND r.metric='capacity_wait' AND r.dimension IN (SELECT value FROM sql_rows(?)) AND r.hour*1000000000<b.to_ns AND (r.hour+3600)*1000000000>b.from_ns GROUP BY b.key ORDER BY b.key`, encodedBuckets, scope.organization, scope.project, encoded)
 	if err != nil {
 		return err
 	}

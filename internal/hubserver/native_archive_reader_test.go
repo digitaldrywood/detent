@@ -458,3 +458,88 @@ func TestArchiveQueryScopesLiveFallback(t *testing.T) {
 		}
 	}
 }
+
+func TestArchiveSQLScalar(t *testing.T) {
+	db := openSQLParameterTestDatabase(t)
+	for _, test := range []struct {
+		raw     string
+		want    any
+		invalid bool
+	}{
+		{raw: `"quote' and question? --"`, want: "quote' and question? --"},
+		{raw: `"nul\u0000byte"`, want: "nul\x00byte"},
+		{raw: `9223372036854775806`, want: int64(9223372036854775806)},
+		{raw: `1.25`, want: 1.25},
+		{raw: `true`, want: int64(1)},
+		{raw: `null`, want: nil},
+		{raw: `{}`, invalid: true},
+		{raw: `1; SELECT 2`, invalid: true},
+	} {
+		t.Run(test.raw, func(t *testing.T) {
+			literal, err := archiveSQLScalar(json.RawMessage(test.raw))
+			if test.invalid {
+				if err == nil {
+					t.Fatal("invalid archive scalar accepted")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got any
+			if err := db.QueryRowContext(t.Context(), "SELECT "+literal).Scan(&got); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, test.want) {
+				t.Fatalf("archive value=%#v want=%#v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestArchiveQueryExceedsSQLiteParameterCount(t *testing.T) {
+	f := newDefaultNativeFixture(t, Config{})
+	item := f.create(t, "archive with many scalar cells")
+	id := string(item.WorkItemID)
+	table := archiveTestTable(t, f.service, "collaboration_versions", "record_id=?", id)
+	if len(table.Rows) != 1 {
+		t.Fatalf("seed rows=%d", len(table.Rows))
+	}
+	original := table.Rows[0]
+	table.Rows = nil
+	count := maxSQLParameters/len(table.Columns) + 1
+	for i := range count {
+		row := slices.Clone(original)
+		for column, name := range table.Columns {
+			switch name {
+			case "rowid", "revision":
+				row[column] = json.RawMessage(strconv.Itoa(i + 1))
+			case "record_json":
+				row[column] = json.RawMessage(`"{}"`)
+			}
+		}
+		table.Rows = append(table.Rows, row)
+	}
+	section := &attachment.ArchiveSection{OrganizationID: string(f.project.OrganizationID), ProjectID: string(f.project.ID), WorkItemID: id, SectionID: "large-revision", Tables: []attachment.ArchiveTable{table}}
+	raw, err := json.Marshal(section)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) > attachment.MaxSectionBytes {
+		t.Fatal("fixture exceeds archive section limit")
+	}
+	query, err := newNativeArchiveQuery(t.Context(), f.service.database.reader, section, id, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got int
+	if err := query.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_versions WHERE record_id=?", id).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got != count {
+		t.Fatalf("archive rows=%d want=%d", got, count)
+	}
+	if len(query.ctes) > maxArchiveSQLBytes {
+		t.Fatal("archive query exceeded its size bound")
+	}
+}

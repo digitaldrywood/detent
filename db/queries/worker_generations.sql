@@ -22,4 +22,4 @@ SET state = sqlc.arg(state),
     exited_at = sqlc.arg(exited_at),
     updated_at = sqlc.arg(exited_at)
 WHERE exited_at IS NULL
-  AND gen IN (SELECT value FROM json_each(sqlc.arg(generations)));
+  AND gen IN (sqlc.slice('generations'));

@@ -282,12 +282,12 @@ func (s *Service) appAllRunnerGrants(ctx context.Context, credential apiCredenti
 		return true
 	}
 	condition, args := credential.projectGrantSQL("p.organization_id", "p.id")
-	raw, err := marshalNative(projects)
+	raw, err := sqlList(projects)
 	if err != nil {
 		return false
 	}
 	args = append(args, s.config.Hosted.OrganizationID, projects == nil, raw)
 	var total, granted int
-	err = s.database.reader.QueryRowContext(ctx, "SELECT count(*), COALESCE(sum("+condition+"),0) FROM projects p WHERE p.deleted_at IS NULL AND p.organization_id = ? AND (? OR p.id IN (SELECT value FROM json_each(?)))", args...).Scan(&total, &granted)
+	err = queryRowSQL(ctx, s.database.reader, "SELECT count(*), COALESCE(sum("+condition+"),0) FROM projects p WHERE p.deleted_at IS NULL AND p.organization_id = ? AND (? OR p.id IN (SELECT value FROM sql_rows(?)))", args...).Scan(&total, &granted)
 	return err == nil && total > 0 && total == granted
 }

@@ -137,15 +137,15 @@ WHERE r.organization_id = ? AND r.state = 'active' AND t.revoked_at IS NULL`
 		if len(projects) == 0 {
 			return []conversationModel{}, nil
 		}
-		encoded, err := json.Marshal(projects)
+		encoded, err := sqlList(projects)
 		if err != nil {
 			return nil, fmt.Errorf("encode project list: %w", err)
 		}
 		statement += ` AND (r.scope='organization' OR EXISTS (SELECT 1 FROM token_grants g WHERE g.token_id = r.token_id AND g.organization_id = r.organization_id
- AND g.project_id IN (SELECT value FROM json_each(?))))`
-		args = append(args, string(encoded))
+ AND g.project_id IN (SELECT value FROM sql_rows(?))))`
+		args = append(args, encoded)
 	}
-	rows, err := query.QueryContext(ctx, statement, args...)
+	rows, err := querySQL(ctx, query, statement, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list runner provider reports: %w", err)
 	}

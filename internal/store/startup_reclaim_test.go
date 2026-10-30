@@ -1,6 +1,8 @@
 package store
 
 import (
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -102,6 +104,76 @@ func TestTimeoutWorkAttemptsProcessEvidence(t *testing.T) {
 			}
 			if (len(rows) == 1) != tc.terminal {
 				t.Fatalf("recovered %d attempts, want terminal=%v", len(rows), tc.terminal)
+			}
+		})
+	}
+}
+
+func TestTimeoutWorkAttemptsCombinedParameterBoundary(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		confirmed      int
+		wantBoundError bool
+	}{
+		{name: "exactly 30000 parameters", confirmed: 9990},
+		{name: "30001 parameters reject without updates", confirmed: 9991, wantBoundError: true},
+		{name: "30010 parameters reject without updates", confirmed: 10000, wantBoundError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			backend, err := openSQLite(t.Context(), Config{Path: filepath.Join(t.TempDir(), "store.db")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := backend.Close(); err != nil {
+					t.Error(err)
+				}
+			})
+			backend.matchProcess = func(int, string) (bool, error) { return true, nil }
+			now := time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
+			if _, err := backend.db.ExecContext(t.Context(), `WITH RECURSIVE ids(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM ids WHERE n<10000)
+INSERT INTO worker_generations(gen,pid,process_start,version,state,started_at,updated_at)
+SELECT n,n,'example','test','active',?,? FROM ids`, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
+				t.Fatal(err)
+			}
+			ids := make([]int64, 5)
+			for i := range ids {
+				project := "first"
+				if i == 4 {
+					project = "second"
+				}
+				id, err := backend.StartWorkAttempt(t.Context(), WorkAttemptStart{ProjectID: project, IssueID: "example", WorkerType: "agent", StartedAt: now.Add(-time.Hour), LeaseExpiresAt: now.Add(-time.Minute)})
+				if err != nil {
+					t.Fatal(err)
+				}
+				ids[i] = id
+			}
+			if _, err := backend.db.ExecContext(t.Context(), "UPDATE work_attempts SET owner_generation=1 WHERE id=?", ids[3]); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := backend.db.ExecContext(t.Context(), "UPDATE work_attempts SET lease_expires_at=NULL WHERE id=?", ids[0]); err != nil {
+				t.Fatal(err)
+			}
+			excluded := make([]int64, 10000)
+			confirmed := make([]int64, tc.confirmed)
+			excluded[0], confirmed[0] = ids[1], ids[0]
+			got, err := backend.TimeoutExpiredWorkAttempts(t.Context(), WorkAttemptTimeout{ProjectID: "first", Now: now, ExcludeAttemptIDs: excluded, ConfirmedGoneAttemptIDs: confirmed})
+			if tc.wantBoundError {
+				if err == nil || !strings.Contains(err.Error(), "query parameter bound") {
+					t.Fatalf("error=%v, want query parameter bound", err)
+				}
+			} else if err != nil || len(got) != 2 {
+				t.Fatalf("timed out=%v error=%v, want two attempts", got, err)
+			}
+			for i, id := range ids {
+				var terminal bool
+				if err := backend.db.QueryRowContext(t.Context(), "SELECT completed_at IS NOT NULL FROM work_attempts WHERE id=?", id).Scan(&terminal); err != nil {
+					t.Fatal(err)
+				}
+				want := !tc.wantBoundError && (i == 0 || i == 2)
+				if terminal != want {
+					t.Errorf("attempt %d terminal=%v, want %v", i, terminal, want)
+				}
 			}
 		})
 	}

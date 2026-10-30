@@ -219,7 +219,7 @@ func TestAttemptProjectionFallbackSourceFence(t *testing.T) {
 		if _, err := backend.db.ExecContext(t.Context(), `UPDATE work_attempts SET worker_metadata_json='{}' WHERE id=?`, id); err != nil {
 			t.Fatal(err)
 		}
-		ids, err := sqlc.New(reader).ListLocalAdmittedIssueIDs(t.Context(), sqlc.ListLocalAdmittedIssueIDsParams{ProjectID: project, LiveForeignGenerations: emptyGenerations})
+		ids, err := sqlc.New(reader).ListLocalAdmittedIssueIDs(t.Context(), sqlc.ListLocalAdmittedIssueIDsParams{ProjectID: project, LiveForeignGenerations: []int64(nil)})
 		if err != nil || len(ids) != 0 {
 			t.Fatalf("stale source authorized=%v err=%v", ids, err)
 		}

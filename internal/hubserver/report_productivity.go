@@ -68,26 +68,26 @@ type organizationProductivity struct {
 }
 
 func productivityFilter(projects []string, filter reportsFilter) (string, []any, error) {
-	encoded, err := marshalNative(projects)
+	encoded, err := sqlList(projects)
 	if err != nil {
 		return "", nil, err
 	}
 	var clause strings.Builder
-	clause.WriteString(`s.organization_id=? AND s.project_id IN (SELECT value FROM json_each(?))`)
+	clause.WriteString(`s.organization_id=? AND s.project_id IN (SELECT value FROM sql_rows(?))`)
 	args := []any{encoded}
 	for _, dimension := range []struct {
 		values     []string
 		expression string
 	}{
-		{filter.Labels, `EXISTS(SELECT 1 FROM report_issue_labels l WHERE l.organization_id=s.organization_id AND l.project_id=s.project_id AND l.work_item_id=s.work_item_id AND l.label IN (SELECT value FROM json_each(?)))`},
-		{filter.Priorities, `s.priority IN (SELECT value FROM json_each(?))`},
-		{filter.Types, `s.issue_type IN (SELECT value FROM json_each(?))`},
-		{filter.FiledBy, `s.filer_id IN (SELECT value FROM json_each(?))`},
+		{filter.Labels, `EXISTS(SELECT 1 FROM report_issue_labels l WHERE l.organization_id=s.organization_id AND l.project_id=s.project_id AND l.work_item_id=s.work_item_id AND l.label IN (SELECT value FROM sql_rows(?)))`},
+		{filter.Priorities, `s.priority IN (SELECT value FROM sql_rows(?))`},
+		{filter.Types, `s.issue_type IN (SELECT value FROM sql_rows(?))`},
+		{filter.FiledBy, `s.filer_id IN (SELECT value FROM sql_rows(?))`},
 	} {
 		if len(dimension.values) == 0 {
 			continue
 		}
-		raw, err := marshalNative(dimension.values)
+		raw, err := sqlList(dimension.values)
 		if err != nil {
 			return "", nil, err
 		}
@@ -118,16 +118,16 @@ func (s *Service) readOrganizationProductivity(ctx context.Context, projects []s
 	if err != nil {
 		return out, err
 	}
-	if err := s.database.reader.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM projects WHERE organization_id=? AND id IN (SELECT value FROM json_each(?)) AND julianday(created_at)<julianday(?))`, out.OrganizationID, args[0], formatHubTime(prior.To)).Scan(&out.PriorRecorded); err != nil {
+	if err := queryRowSQL(ctx, s.database.reader, `SELECT EXISTS(SELECT 1 FROM projects WHERE organization_id=? AND id IN (SELECT value FROM sql_rows(?)) AND julianday(created_at)<julianday(?))`, out.OrganizationID, args[0], formatHubTime(prior.To)).Scan(&out.PriorRecorded); err != nil {
 		return out, fmt.Errorf("read organization prior availability: %w", err)
 	}
 	args = append([]any{out.OrganizationID}, args...)
 	if len(filter.Runners) > 0 {
-		raw, err := marshalNative(filter.Runners)
+		raw, err := sqlList(filter.Runners)
 		if err != nil {
 			return out, err
 		}
-		clause += ` AND EXISTS(SELECT 1 FROM report_issue_runners r WHERE r.organization_id=s.organization_id AND r.project_id=s.project_id AND r.work_item_id=s.work_item_id AND r.started_ns<? AND r.updated_ns>=? AND r.runner_id IN (SELECT value FROM json_each(?)))`
+		clause += ` AND EXISTS(SELECT 1 FROM report_issue_runners r WHERE r.organization_id=s.organization_id AND r.project_id=s.project_id AND r.work_item_id=s.work_item_id AND r.started_ns<? AND r.updated_ns>=? AND r.runner_id IN (SELECT value FROM sql_rows(?)))`
 		args = append(args, w.To.UnixNano(), prior.From.UnixNano(), raw)
 	}
 	var statement strings.Builder
@@ -149,7 +149,7 @@ func (s *Service) readOrganizationProductivity(ctx context.Context, projects []s
  FROM selected s LEFT JOIN activity a ON a.organization_id=s.organization_id AND a.project_id=s.project_id AND a.work_item_id=s.work_item_id
  WHERE (s.created_ns>=? AND s.created_ns<?) OR (s.closed_ns>=? AND s.closed_ns<?) OR coalesce(a.worked,0)>0 OR coalesce(a.previous_worked,0)>0 OR coalesce(a.landed,0)>0 OR coalesce(a.previous_landed,0)>0`)
 	args = append(args, w.To.Unix(), w.From.Unix(), w.From.Unix(), w.To.Unix(), prior.From.Unix(), w.From.Unix(), w.From.Unix(), w.To.Unix(), prior.From.Unix(), w.From.Unix(), w.From.Unix(), w.To.Unix(), prior.From.Unix(), w.From.Unix(), w.To.Unix(), prior.From.UnixNano(), w.To.UnixNano(), prior.From.UnixNano(), w.To.UnixNano())
-	rows, err := s.database.reader.QueryContext(ctx, statement.String(), args...)
+	rows, err := querySQL(ctx, s.database.reader, statement.String(), args...)
 	if err != nil {
 		return out, fmt.Errorf("read organization productivity: %w", err)
 	}

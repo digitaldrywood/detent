@@ -328,16 +328,20 @@ func diagnosticsMergeWaits(ctx context.Context, q nativeQueryer, scope nativeSco
 	if prepareErr != nil {
 		return nil, prepareErr
 	}
-	encoded, err := marshalNative(landings)
+	var tuples [][]any
+	for _, landing := range landings {
+		tuples = append(tuples, []any{landing.WorkItemID, formatHubTime(landing.Landing.LandedAt)})
+	}
+	encoded, err := sqlTypedRows([]string{"work_item_id", "landed_at"}, tuples)
 	if err != nil {
 		return nil, err
 	}
 	_, projected := q.(analyticsRollupReader)
-	statement := `SELECT json_extract(l.value,'$.landing.landed_at'),e.recorded_at,l.key,e.analytics_to_state FROM json_each(?) l JOIN report_events e ON e.organization_id=? AND e.project_id=? AND e.work_item_id=json_extract(l.value,'$.work_item_id') AND e.type='workflow.transitioned' AND (e.analytics_to_state='Merging' OR e.analytics_projection_version IS NULL) AND julianday(e.recorded_at)<=julianday(json_extract(l.value,'$.landing.landed_at')) ORDER BY l.key,e.recorded_at DESC`
+	statement := `SELECT l.landed_at,e.recorded_at,l.key,e.analytics_to_state FROM sql_rows(?) l JOIN report_events e ON e.organization_id=? AND e.project_id=? AND e.work_item_id=l.work_item_id AND e.type='workflow.transitioned' AND (e.analytics_to_state='Merging' OR e.analytics_projection_version IS NULL) AND julianday(e.recorded_at)<=julianday(l.landed_at) ORDER BY l.key,e.recorded_at DESC`
 	if projected {
-		statement = `WITH landings AS (SELECT key,value FROM json_each(?)),waits AS (SELECT l.key,json_extract(l.value,'$.landing.landed_at') AS landed,(SELECT e.sample_at FROM analytics_hourly_rollups e WHERE e.organization_id=? AND e.project_id=? AND e.metric='merge_entry' AND e.sample_id=json_extract(l.value,'$.work_item_id') AND julianday(e.sample_at)<=julianday(json_extract(l.value,'$.landing.landed_at')) ORDER BY e.sample_ns DESC LIMIT 1) AS entered FROM landings l) SELECT landed,entered,key,'{}' FROM waits WHERE entered IS NOT NULL`
+		statement = `WITH landings AS (SELECT key,work_item_id,landed_at FROM sql_rows(?)),waits AS (SELECT l.key,l.landed_at AS landed,(SELECT e.sample_at FROM analytics_hourly_rollups e WHERE e.organization_id=? AND e.project_id=? AND e.metric='merge_entry' AND e.sample_id=l.work_item_id AND julianday(e.sample_at)<=julianday(l.landed_at) ORDER BY e.sample_ns DESC LIMIT 1) AS entered FROM landings l) SELECT landed,entered,key,'{}' FROM waits WHERE entered IS NOT NULL`
 	}
-	rows, err := q.QueryContext(ctx, statement, encoded, scope.organization, scope.project)
+	rows, err := querySQL(ctx, q, statement, encoded, scope.organization, scope.project)
 	if err != nil {
 		return nil, err
 	}

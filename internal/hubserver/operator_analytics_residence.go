@@ -217,7 +217,7 @@ ORDER BY i.native_id LIMIT ? OFFSET ?`, append([]any{scope.organization, scope.p
 	for _, issue := range issues {
 		ids = append(ids, issue.id)
 	}
-	encodedIDs, err := marshalNative(ids)
+	encodedIDs, err := sqlList(ids)
 	if err != nil {
 		return nil, nil, false, err
 	}
@@ -228,7 +228,7 @@ ORDER BY i.native_id LIMIT ? OFFSET ?`, append([]any{scope.organization, scope.p
 	}
 	rows, err = queryAnalyticsPopulation(ctx, q, "residence_events", `SELECT work_item_id,type,recorded_at,data_json FROM report_events
 WHERE organization_id=? AND project_id=? AND julianday(recorded_at)<julianday(?)
-AND work_item_id IN (SELECT value FROM json_each(?))
+AND work_item_id IN (SELECT value FROM sql_rows(?))
 AND (type='workflow.transitioned' OR (type='scheduler.decision' AND scheduler_source='native_claim' AND scheduler_outcome='claimed'))
 ORDER BY work_item_id,sequence LIMIT ? OFFSET ?`, args...)
 	if err != nil {

@@ -220,12 +220,12 @@ func resolveMessageAttachments(ctx context.Context, query nativeQueryer, message
 	if len(ids) == 0 {
 		return nil
 	}
-	encoded, err := marshalNative(ids)
+	encoded, err := sqlList(ids)
 	if err != nil {
 		return fmt.Errorf("encode message ids: %w", err)
 	}
-	rows, err := query.QueryContext(ctx, "SELECT "+conversationAttachmentColumns+conversationAttachmentFrom+
-		"a.message_id IN (SELECT value FROM json_each(?)) AND a.deleted_at IS NULL ORDER BY a.message_id, a.created_at, a.id", encoded)
+	rows, err := querySQL(ctx, query, "SELECT "+conversationAttachmentColumns+conversationAttachmentFrom+
+		"a.message_id IN (SELECT value FROM sql_rows(?)) AND a.deleted_at IS NULL ORDER BY a.message_id, a.created_at, a.id", encoded)
 	if err != nil {
 		return fmt.Errorf("read message attachments: %w", err)
 	}

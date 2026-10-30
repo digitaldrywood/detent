@@ -576,7 +576,7 @@ a test, and that no Go test skips itself as flaky.
 ## INV-20 — SQL never reads or writes inside stored JSON
 
 Hub and store SQL never use JSON functions or operators over stored data:
-`json_extract`, `->`, `->>`, `json_each`, `json_tree`, `json_set`, `json_insert`,
+`json`, `jsonb`, `json_extract`, `->`, `->>`, `json_each`, `json_tree`, `json_set`, `json_insert`,
 `json_replace`, `json_patch`, `json_remove`, `json_object`, `json_array`,
 `json_group_*`, `json_valid`, `json_type` or `json_array_length`. This includes
 constructing JSON from stored columns. Every field SQL filters, joins, orders,

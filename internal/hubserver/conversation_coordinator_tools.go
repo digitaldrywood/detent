@@ -297,7 +297,7 @@ WHERE m.user_id = ? AND m.active = 1 AND g.organization_id = ?`
 		var scope, createdAt string
 		var nativeOnly bool
 		var revokedAt, expiresAt sql.NullString
-		err := db.QueryRowContext(ctx, "SELECT scope, native_only, revoked_at, expires_at, created_at FROM api_tokens WHERE id = ?", record.OwnerPrincipalID).
+		err := queryRowSQL(ctx, db, "SELECT scope, native_only, revoked_at, expires_at, created_at FROM api_tokens WHERE id = ?", record.OwnerPrincipalID).
 			Scan(&scope, &nativeOnly, &revokedAt, &expiresAt, &createdAt)
 		if errors.Is(err, sql.ErrNoRows) {
 			return []tracker.ProjectID{}, nil
@@ -324,7 +324,7 @@ WHERE m.user_id = ? AND m.active = 1 AND g.organization_id = ?`
 			args = []any{record.OrganizationID}
 		}
 	}
-	rows, err := db.QueryContext(ctx, query, args...)
+	rows, err := querySQL(ctx, db, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list readable projects: %w", err)
 	}
@@ -345,14 +345,8 @@ WHERE m.user_id = ? AND m.active = 1 AND g.organization_id = ?`
 	return projects, nil
 }
 
-// projectList encodes project identifiers for an IN (SELECT value FROM
-// json_each(?)) clause so the SQL text stays static.
-func projectList(projects []tracker.ProjectID) (string, error) {
-	encoded, err := json.Marshal(projects)
-	if err != nil {
-		return "", fmt.Errorf("encode project list: %w", err)
-	}
-	return string(encoded), nil
+func projectList(projects []tracker.ProjectID) (sqlParameterRows, error) {
+	return sqlList(projects)
 }
 
 type coordinatorAttentionItem struct {
@@ -423,12 +417,12 @@ func (t *coordinatorToolset) listAttention(ctx context.Context, record conversat
 	if err != nil {
 		return nil, err
 	}
-	rows, err := db.QueryContext(ctx, `SELECT i.native_id, i.project_id, COALESCE(i.number, 0), i.title, COALESCE(ws.detent_state, ''), i.workflow_state_id IS NULL, i.native_updated_at,
+	rows, err := querySQL(ctx, db, `SELECT i.native_id, i.project_id, COALESCE(i.number, 0), i.title, COALESCE(ws.detent_state, ''), i.workflow_state_id IS NULL, i.native_updated_at,
  COALESCE((SELECT group_concat(b.native_id, ' ') FROM issue_dependencies d JOIN issues b ON b.id = d.blocker_issue_id LEFT JOIN workflow_states bs ON bs.id = b.workflow_state_id
    WHERE d.dependent_issue_id = i.id AND COALESCE(bs.terminal, 0) = 0
-    AND b.organization_id = i.organization_id AND b.project_id IN (SELECT value FROM json_each(?))), ''),o.slug,p.slug
+    AND b.organization_id = i.organization_id AND b.project_id IN (SELECT value FROM sql_rows(?))), ''),o.slug,p.slug
 FROM issues i JOIN organizations o ON o.id=i.organization_id JOIN projects p ON p.id=i.project_id LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id
-WHERE i.organization_id = ? AND i.project_id IN (SELECT value FROM json_each(?)) AND COALESCE(ws.terminal, 0) = 0
+WHERE i.organization_id = ? AND i.project_id IN (SELECT value FROM sql_rows(?)) AND COALESCE(ws.terminal, 0) = 0
 ORDER BY i.native_updated_at DESC, i.native_id LIMIT ?`, readableJSON, record.OrganizationID, projectJSON, coordinatorAttentionScan+1)
 	if err != nil {
 		return nil, fmt.Errorf("list issues: %w", err)
@@ -488,9 +482,9 @@ ORDER BY i.native_updated_at DESC, i.native_id LIMIT ?`, readableJSON, record.Or
 
 // runningAttempts maps work items to the attempt whose lease is unreleased
 // and unexpired.
-func runningAttempts(ctx context.Context, db *sql.DB, organization tracker.OrganizationID, projectJSON string, now time.Time) (map[string]string, error) {
-	rows, err := db.QueryContext(ctx, `SELECT a.work_item_id, a.id, l.expires_at FROM native_attempts a JOIN leases l ON l.lease_id = a.lease_id
-WHERE a.organization_id = ? AND a.project_id IN (SELECT value FROM json_each(?)) AND a.status = 'running' AND l.released_at IS NULL`, organization, projectJSON)
+func runningAttempts(ctx context.Context, db *sql.DB, organization tracker.OrganizationID, projectJSON sqlParameterRows, now time.Time) (map[string]string, error) {
+	rows, err := querySQL(ctx, db, `SELECT a.work_item_id, a.id, l.expires_at FROM native_attempts a JOIN leases l ON l.lease_id = a.lease_id
+WHERE a.organization_id = ? AND a.project_id IN (SELECT value FROM sql_rows(?)) AND a.status = 'running' AND l.released_at IS NULL`, organization, projectJSON)
 	if err != nil {
 		return nil, fmt.Errorf("list running attempts: %w", err)
 	}
@@ -517,9 +511,9 @@ WHERE a.organization_id = ? AND a.project_id IN (SELECT value FROM json_each(?))
 
 // waitingQuestions reports the work items whose linked conversation has a
 // question that still awaits an answer.
-func waitingQuestions(ctx context.Context, db *sql.DB, organization tracker.OrganizationID, projectJSON string) (map[string]bool, error) {
-	rows, err := db.QueryContext(ctx, `SELECT DISTINCT c.work_item_id FROM conversation_questions q JOIN conversations c ON c.id = q.conversation_id
-WHERE c.organization_id = ? AND c.project_id IN (SELECT value FROM json_each(?)) AND c.work_item_id IS NOT NULL AND q.status IN ('pending', 'sending', 'sent')`, organization, projectJSON)
+func waitingQuestions(ctx context.Context, db *sql.DB, organization tracker.OrganizationID, projectJSON sqlParameterRows) (map[string]bool, error) {
+	rows, err := querySQL(ctx, db, `SELECT DISTINCT c.work_item_id FROM conversation_questions q JOIN conversations c ON c.id = q.conversation_id
+WHERE c.organization_id = ? AND c.project_id IN (SELECT value FROM sql_rows(?)) AND c.work_item_id IS NOT NULL AND q.status IN ('pending', 'sending', 'sent')`, organization, projectJSON)
 	if err != nil {
 		return nil, fmt.Errorf("list pending questions: %w", err)
 	}
@@ -598,9 +592,9 @@ func (t *coordinatorToolset) explainIssue(ctx context.Context, record conversati
 	}
 	db := t.coordinator.service.store.reader
 	issue := coordinatorIssue{Comments: []coordinatorComment{}}
-	err = db.QueryRowContext(ctx, `SELECT i.native_id, i.project_id, COALESCE(i.number, 0), i.title, i.body, COALESCE(ws.detent_state, ''), COALESCE(ws.terminal, 0), i.native_updated_at
+	err = queryRowSQL(ctx, db, `SELECT i.native_id, i.project_id, COALESCE(i.number, 0), i.title, i.body, COALESCE(ws.detent_state, ''), COALESCE(ws.terminal, 0), i.native_updated_at
 FROM issues i LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id
-WHERE i.organization_id = ? AND i.project_id IN (SELECT value FROM json_each(?)) AND i.native_id = ?`, record.OrganizationID, projectJSON, workItemID).Scan(
+WHERE i.organization_id = ? AND i.project_id IN (SELECT value FROM sql_rows(?)) AND i.native_id = ?`, record.OrganizationID, projectJSON, workItemID).Scan(
 		&issue.WorkItemID, &issue.ProjectID, &issue.Number, &issue.Title, &issue.Body, &issue.State, &issue.Terminal, &issue.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("work item %s is not readable in this conversation", workItemID)
@@ -622,7 +616,7 @@ WHERE i.organization_id = ? AND i.project_id IN (SELECT value FROM json_each(?))
 	var attempt coordinatorAttempt
 	var data, expires string
 	var released sql.NullString
-	err = db.QueryRowContext(ctx, `SELECT a.id, a.status, COALESCE(NULLIF(a.payload_object_key,''),a.data_json), a.started_at, a.updated_at, l.expires_at, l.released_at
+	err = queryRowSQL(ctx, db, `SELECT a.id, a.status, COALESCE(NULLIF(a.payload_object_key,''),a.data_json), a.started_at, a.updated_at, l.expires_at, l.released_at
 FROM native_attempts a JOIN leases l ON l.lease_id = a.lease_id
 WHERE a.organization_id = ? AND a.project_id = ? AND a.work_item_id = ? ORDER BY a.fencing_token DESC LIMIT 1`, record.OrganizationID, issue.ProjectID, issue.WorkItemID).Scan(
 		&attempt.AttemptID, &attempt.Status, &data, &attempt.StartedAt, &attempt.UpdatedAt, &expires, &released)
@@ -645,7 +639,7 @@ WHERE a.organization_id = ? AND a.project_id = ? AND a.work_item_id = ? ORDER BY
 		}
 		issue.LatestAttempt = &attempt
 	}
-	rows, err := db.QueryContext(ctx, "SELECT actor_json, body, created_at FROM native_comments WHERE organization_id = ? AND project_id = ? AND work_item_id = ? ORDER BY sequence DESC LIMIT ?", record.OrganizationID, issue.ProjectID, issue.WorkItemID, coordinatorCommentCount)
+	rows, err := querySQL(ctx, db, "SELECT actor_json, body, created_at FROM native_comments WHERE organization_id = ? AND project_id = ? AND work_item_id = ? ORDER BY sequence DESC LIMIT ?", record.OrganizationID, issue.ProjectID, issue.WorkItemID, coordinatorCommentCount)
 	if err != nil {
 		return nil, fmt.Errorf("list comments: %w", err)
 	}
@@ -668,7 +662,7 @@ WHERE a.organization_id = ? AND a.project_id = ? AND a.work_item_id = ? ORDER BY
 	}
 	slices.Reverse(issue.Comments)
 	var linked string
-	err = db.QueryRowContext(ctx, "SELECT id FROM conversations WHERE organization_id = ? AND project_id = ? AND work_item_id = ?", record.OrganizationID, issue.ProjectID, issue.WorkItemID).Scan(&linked)
+	err = queryRowSQL(ctx, db, "SELECT id FROM conversations WHERE organization_id = ? AND project_id = ? AND work_item_id = ?", record.OrganizationID, issue.ProjectID, issue.WorkItemID).Scan(&linked)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 	case err != nil:

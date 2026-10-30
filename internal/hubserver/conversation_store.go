@@ -486,11 +486,11 @@ func (s *conversationStore) listConversations(ctx context.Context, query nativeQ
 		args = append(args, filter.Project)
 	}
 	if filter.Projects != nil {
-		encoded, err := marshalNative(filter.Projects)
+		encoded, err := sqlList(filter.Projects)
 		if err != nil {
 			return nil, "", fmt.Errorf("encode readable projects: %w", err)
 		}
-		where.WriteString(" AND project_id IN (SELECT value FROM json_each(?))")
+		where.WriteString(" AND project_id IN (SELECT value FROM sql_rows(?))")
 		args = append(args, encoded)
 	}
 	if needle := strings.TrimSpace(filter.Title); needle != "" {
@@ -521,7 +521,7 @@ func (s *conversationStore) listConversations(ctx context.Context, query nativeQ
 		args = append(args, decoded.Settled, decoded.Settled, decoded.Activity, decoded.Activity, decoded.ID)
 	}
 	args = append(args, limit+1)
-	rows, err := query.QueryContext(ctx, "SELECT "+conversationReadColumns+" FROM conversations WHERE "+where.String()+
+	rows, err := querySQL(ctx, query, "SELECT "+conversationReadColumns+" FROM conversations WHERE "+where.String()+
 		" ORDER BY "+conversationSettledRank+" ASC, COALESCE(last_message_at, updated_at) DESC, id DESC LIMIT ?", args...)
 	if err != nil {
 		return nil, "", fmt.Errorf("list conversations: %w", err)
@@ -1259,14 +1259,14 @@ func resolveMessageReferences(ctx context.Context, query nativeQueryer, messages
 	if len(ids) == 0 {
 		return nil
 	}
-	encoded, err := marshalNative(ids)
+	encoded, err := sqlList(ids)
 	if err != nil {
 		return fmt.Errorf("encode message ids: %w", err)
 	}
-	rows, err := query.QueryContext(ctx, `SELECT r.message_id, r.target_kind, r.target_id, r.label,
+	rows, err := querySQL(ctx, query, `SELECT r.message_id, r.target_kind, r.target_id, r.label,
 CASE WHEN r.target_kind='issue' THEN '/' || o.slug || '/' || p.slug || '/issues/' || i.number ELSE '/chat/c/' || r.target_id END
 FROM message_references r LEFT JOIN issues i ON r.target_kind='issue' AND i.native_id=r.target_id LEFT JOIN projects p ON p.id=i.project_id LEFT JOIN organizations o ON o.id=i.organization_id
-WHERE r.message_id IN (SELECT value FROM json_each(?)) ORDER BY r.message_id, r.rowid`, encoded)
+WHERE r.message_id IN (SELECT value FROM sql_rows(?)) ORDER BY r.message_id, r.rowid`, encoded)
 	if err != nil {
 		return fmt.Errorf("read message references: %w", err)
 	}

@@ -751,14 +751,14 @@ func resolveConversationWorkItems(ctx context.Context, query nativeQueryer, reco
 	if len(linked) == 0 {
 		return nil
 	}
-	ids, err := marshalNative(linked)
+	ids, err := sqlList(linked)
 	if err != nil {
 		return fmt.Errorf("encode linked work items: %w", err)
 	}
-	rows, err := query.QueryContext(ctx, `SELECT i.organization_id, i.project_id, i.native_id, p.name, COALESCE(i.number, 0), i.title, COALESCE(ws.detent_state, '')
+	rows, err := querySQL(ctx, query, `SELECT i.organization_id, i.project_id, i.native_id, p.name, COALESCE(i.number, 0), i.title, COALESCE(ws.detent_state, '')
 FROM issues i JOIN projects p ON p.id = i.project_id AND p.organization_id = i.organization_id
 LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id
-WHERE i.native_id IN (SELECT value FROM json_each(?))`, ids)
+WHERE i.native_id IN (SELECT value FROM sql_rows(?))`, ids)
 	if err != nil {
 		return fmt.Errorf("read linked work items: %w", err)
 	}

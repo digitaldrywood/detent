@@ -172,7 +172,7 @@ func TestLiveWorkerGenerations(t *testing.T) {
 		}
 		if row.exited {
 			if _, err := observer.queries.ExitWorkerGenerations(t.Context(), sqlc.ExitWorkerGenerationsParams{
-				State: WorkerGenerationStateExited, ExitedAt: sql.NullString{String: now, Valid: true}, Generations: "[" + strconv.FormatInt(generation, 10) + "]",
+				State: WorkerGenerationStateExited, ExitedAt: sql.NullString{String: now, Valid: true}, Generations: []int64{generation},
 			}); err != nil {
 				t.Fatal(err)
 			}

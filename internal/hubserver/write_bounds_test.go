@@ -192,7 +192,7 @@ func TestINV18HubMigrationsUseTypedColumns(t *testing.T) {
 	}
 }
 
-var inv20JSONFunction = regexp.MustCompile(`(?i)\bjson_(?:extract|each|tree|set|insert|replace|patch|remove|object|array|group_\w+|valid|type|array_length)\s*\(`)
+var inv20JSONFunction = regexp.MustCompile(`(?i)\bjson(?:b)?(?:_(?:array(?:_length)?|each|error_position|extract|group_(?:array|object)|insert|object|patch|pretty|quote|remove|replace|set|tree|type|valid))?\s*\(`)
 
 func TestINV20NoSQLOverJSON(t *testing.T) {
 	raw, err := os.ReadFile("testdata/inv20_json_sql_baseline.txt")
@@ -293,6 +293,7 @@ func TestINV20JSONFunctionPatterns(t *testing.T) {
 		goSource bool
 	}{
 		{"JSON_EXTRACT (data, '$.id')", 1, false},
+		{"json(data), jsonb(data), json_quote(data), json_pretty(data)", 4, false},
 		{"json_each(data), json_tree(data)", 2, false},
 		{"json_set(data), json_insert(data), json_replace(data), json_patch(data), json_remove(data)", 5, false},
 		{"json_object(data), json_array(data), json_group_array(data), json_group_object(data)", 4, false},

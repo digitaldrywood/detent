@@ -3,7 +3,6 @@ package hubserver
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -256,11 +255,11 @@ func boundedMonthlyCostDetails(report monthlyCostReport) monthlyCostReport {
 }
 
 func readSpriteCostResources(ctx context.Context, query nativeQueryer, organization string, projects []string) ([]costResource, error) {
-	encoded, err := json.Marshal(projects)
+	encoded, err := sqlList(projects)
 	if err != nil {
 		return nil, err
 	}
-	rows, err := query.QueryContext(ctx, `SELECT DISTINCT project_id,provider_account,name,legacy FROM (
+	rows, err := querySQL(ctx, query, `SELECT DISTINCT project_id,provider_account,name,legacy FROM (
 SELECT token_project_id AS project_id,provider_organization AS provider_account,name,NULL AS legacy FROM organization_sprite_members WHERE organization_id=? AND state<>'deleted'
 UNION
 SELECT g.project_id,ps.organization_slug,m.hostname,CASE WHEN m.machine_facts_ready IS NULL THEN m.capabilities_json END FROM machines m JOIN runner_identities r ON r.machine_id=m.id AND r.removed_at IS NULL
@@ -268,7 +267,7 @@ JOIN token_grants g ON g.token_id=r.token_id AND g.organization_id=r.organizatio
 JOIN project_secrets ps ON ps.organization_id=g.organization_id AND ps.project_id=g.project_id AND ps.kind='fly_sprites_token'
 WHERE m.organization_id=? AND (m.sprite_name=m.hostname OR m.machine_facts_ready IS NULL)
 UNION SELECT '',os.organization_slug,m.hostname,CASE WHEN m.machine_facts_ready IS NULL THEN m.capabilities_json END FROM machines m JOIN runner_identities r ON r.machine_id=m.id AND r.removed_at IS NULL AND r.scope='organization' JOIN organization_secrets os ON os.organization_id=r.organization_id AND os.kind='fly_sprites_token' WHERE m.organization_id=? AND (m.sprite_name=m.hostname OR m.machine_facts_ready IS NULL))
-WHERE (? OR project_id IN (SELECT value FROM json_each(?))) ORDER BY project_id,provider_account,name`, organization, organization, organization, projects == nil, string(encoded))
+WHERE (? OR project_id IN (SELECT value FROM sql_rows(?))) ORDER BY project_id,provider_account,name`, organization, organization, organization, projects == nil, encoded)
 	if err != nil {
 		return nil, fmt.Errorf("read Sprite cost inventory: %w", err)
 	}
@@ -324,14 +323,14 @@ func (d *database) monthlyCosts(ctx context.Context, organization, scope string,
 	if err != nil {
 		return monthlyCostReport{}, err
 	}
-	encoded, err := json.Marshal(projects)
+	encoded, err := sqlList(projects)
 	if err != nil {
 		return report, err
 	}
 	report.RunnerReporting = "finish_time"
-	err = tx.QueryRowContext(ctx, `SELECT coalesce(sum(status='running'),0),coalesce(sum(NOT EXISTS (SELECT 1 FROM usage_cost_observations u WHERE u.organization_id=a.organization_id AND u.resource_id=a.id AND u.bucket='runner_api')),0) FROM native_attempts a WHERE organization_id=? AND substr(started_at,1,19)<?
+	err = queryRowSQL(ctx, tx, `SELECT coalesce(sum(status='running'),0),coalesce(sum(NOT EXISTS (SELECT 1 FROM usage_cost_observations u WHERE u.organization_id=a.organization_id AND u.resource_id=a.id AND u.bucket='runner_api')),0) FROM native_attempts a WHERE organization_id=? AND substr(started_at,1,19)<?
 AND (status='running' OR substr(updated_at,1,19)>? OR (substr(updated_at,1,19)=? AND length(updated_at)>20))
-AND (? OR project_id IN (SELECT value FROM json_each(?)))`, organization, window.To.UTC().Format("2006-01-02T15:04:05"), window.From.UTC().Format("2006-01-02T15:04:05"), window.From.UTC().Format("2006-01-02T15:04:05"), projects == nil, string(encoded)).Scan(&report.ActiveAttempts, &report.UnreportedAttempts)
+AND (? OR project_id IN (SELECT value FROM sql_rows(?)))`, organization, window.To.UTC().Format("2006-01-02T15:04:05"), window.From.UTC().Format("2006-01-02T15:04:05"), window.From.UTC().Format("2006-01-02T15:04:05"), projects == nil, encoded).Scan(&report.ActiveAttempts, &report.UnreportedAttempts)
 	if err != nil {
 		return report, err
 	}

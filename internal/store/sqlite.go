@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -562,7 +561,7 @@ func (s *sqliteStore) ListOrphanedAgentSessions(ctx context.Context, projectID s
 	if projectID == "" {
 		return nil, errors.New("project_id is required")
 	}
-	excluded, err := s.liveForeignGenerationsJSON(ctx)
+	excluded, err := s.liveForeignGenerationIDs(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -723,19 +722,15 @@ func (s *sqliteStore) UsageReport(ctx context.Context, query UsageReportQuery) (
 		return UsageReport{}, errors.New("from date must be on or before to date")
 	}
 
-	var projects sql.NullString
-	if query.ProjectIDs != nil {
-		encoded, err := json.Marshal(query.ProjectIDs)
-		if err != nil {
-			return UsageReport{}, err
-		}
-		projects = sql.NullString{String: string(encoded), Valid: true}
+	if len(query.ProjectIDs) > 1000 {
+		return UsageReport{}, errors.New("project selection exceeds query bound")
 	}
 	rows, err := s.queries.UsageReportRows(ctx, sqlc.UsageReportRowsParams{
-		ProjectIdsJson: projects,
-		BucketBy:       string(group),
-		FromDay:        nullString(from),
-		ToDay:          nullString(to),
+		AllProjects: boolInt64(query.ProjectIDs == nil),
+		ProjectIds:  query.ProjectIDs,
+		BucketBy:    string(group),
+		FromDay:     nullString(from),
+		ToDay:       nullString(to),
 	})
 	if err != nil {
 		return UsageReport{}, fmt.Errorf("reading usage report: %w", err)
@@ -847,24 +842,23 @@ func (s *sqliteStore) DailyDigest(ctx context.Context, windows []DailyDigestWind
 		if strings.TrimSpace(window.Date) == "" || window.From.IsZero() || window.To.IsZero() || !window.From.Before(window.To) {
 			return nil, errors.New("daily digest window must have a date and increasing boundaries")
 		}
-		projectJSON := ""
-		if window.ProjectIDs != nil {
-			encoded, err := json.Marshal(window.ProjectIDs)
-			if err != nil {
-				return nil, err
-			}
-			projectJSON = string(encoded)
+		if len(window.ProjectIDs) > 1000 {
+			return nil, errors.New("project selection exceeds query bound")
 		}
 		params := sqlc.DailyDigestRuntimeParams{
-			ProjectIdsJson: projectJSON,
-			FromAt:         nullString(window.From.UTC().Format(time.RFC3339Nano)),
-			ToAt:           nullString(window.To.UTC().Format(time.RFC3339Nano)),
+			AllProjects:        boolInt64(window.ProjectIDs == nil),
+			SessionProjectIds:  nullableProjectIDs(window.ProjectIDs),
+			AttemptProjectIds:  window.ProjectIDs,
+			DecisionProjectIds: window.ProjectIDs,
+			EventProjectIds:    window.ProjectIDs,
+			FromAt:             window.From.UTC().Format(time.RFC3339Nano),
+			ToAt:               window.To.UTC().Format(time.RFC3339Nano),
 		}
 		runtime, err := s.queries.DailyDigestRuntime(ctx, params)
 		if err != nil {
 			return nil, fmt.Errorf("reading daily digest runtime for %s: %w", window.Date, err)
 		}
-		models, err := s.queries.DailyDigestModels(ctx, sqlc.DailyDigestModelsParams(params))
+		models, err := s.queries.DailyDigestModels(ctx, sqlc.DailyDigestModelsParams{AllProjects: params.AllProjects, ProjectIds: params.SessionProjectIds, FromAt: nullString(params.FromAt), ToAt: nullString(params.ToAt)})
 		if err != nil {
 			return nil, fmt.Errorf("reading daily digest models for %s: %w", window.Date, err)
 		}
@@ -872,13 +866,13 @@ func (s *sqliteStore) DailyDigest(ctx context.Context, windows []DailyDigestWind
 		if err != nil {
 			return nil, err
 		}
-		failureClasses, err := projectionQueries.DailyDigestFailureClasses(ctx, sqlc.DailyDigestFailureClassesParams(params))
+		failureClasses, err := projectionQueries.DailyDigestFailureClasses(ctx, sqlc.DailyDigestFailureClassesParams{AllProjects: params.AllProjects, ProjectIds: window.ProjectIDs, FromAt: nullString(params.FromAt), ToAt: nullString(params.ToAt)})
 		if err != nil {
 			return nil, fmt.Errorf("reading daily digest failures for %s: %w", window.Date, err)
 		}
 		capacityModes, err := s.queries.DailyDigestCapacityModes(ctx, sqlc.DailyDigestCapacityModesParams{
-			ProjectIdsJson: projectJSON, FromAt: params.FromAt,
-			ToAt: params.ToAt.String,
+			AllProjects: params.AllProjects, ProjectIds: window.ProjectIDs, FromAt: nullString(params.FromAt),
+			ToAt: params.ToAt,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("reading daily digest capacity modes for %s: %w", window.Date, err)
@@ -1541,4 +1535,12 @@ func requireAffected(rows int64, name string, id int64) error {
 		return fmt.Errorf("%w: %s %d", ErrNotFound, name, id)
 	}
 	return nil
+}
+
+func nullableProjectIDs(ids []string) []sql.NullString {
+	values := make([]sql.NullString, len(ids))
+	for i, id := range ids {
+		values[i] = sql.NullString{String: id, Valid: true}
+	}
+	return values
 }
