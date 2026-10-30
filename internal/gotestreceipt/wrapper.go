@@ -66,7 +66,7 @@ func RunWrapper(args []string, getenv func(string) string, stdin io.Reader, stdo
 	if err != nil {
 		return run(args, true, stdin, stdout, stderr)
 	}
-	env := wrapperEnvironment(root, args[0], getenv)
+	env := wrapperEnvironment(root, getenv)
 	client := NewClient(socket, token)
 	defer client.http.CloseIdleConnections()
 	ctx := context.Background()
@@ -207,11 +207,8 @@ func isTestBinary(path string) bool {
 	return strings.HasSuffix(strings.TrimSuffix(filepath.Base(path), ".exe"), ".test")
 }
 
-func wrapperEnvironment(root, binary string, getenv func(string) string) Environment {
+func wrapperEnvironment(root string, getenv func(string) string) Environment {
 	env := Environment{Root: filepath.Clean(root)}
-	if build, err := filepath.Abs(filepath.Dir(filepath.Dir(binary))); err == nil && strings.HasPrefix(filepath.Base(build), "go-build") {
-		env.IgnoreDirs = append(env.IgnoreDirs, build)
-	}
 	if resolved, err := filepath.EvalSymlinks(env.Root); err == nil && resolved != env.Root {
 		env.RootAlias = resolved
 	}
