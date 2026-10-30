@@ -1,6 +1,10 @@
 package runner
 
-import "github.com/digitaldrywood/detent/internal/workspace"
+import (
+	"errors"
+
+	"github.com/digitaldrywood/detent/internal/workspace"
+)
 
 func reworkPreparationOutcome(status workspace.MergePrepareStatus, err error) string {
 	if err != nil {
@@ -12,4 +16,18 @@ func reworkPreparationOutcome(status workspace.MergePrepareStatus, err error) st
 	default:
 		return "rework"
 	}
+}
+
+func reworkPreparationReason(status workspace.MergePrepareStatus, err error) string {
+	if err != nil {
+		var preparationErr *workspace.ReworkPreparationError
+		if errors.As(err, &preparationErr) {
+			return string(preparationErr.Reason)
+		}
+		return string(workspace.ReworkPreparationFailed)
+	}
+	if status == workspace.MergePrepareStatusDirty {
+		return string(workspace.ReworkPreparationDirtyWorktree)
+	}
+	return reworkPreparationOutcome(status, nil)
 }

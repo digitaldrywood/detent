@@ -34,10 +34,13 @@ func TestReworkPreparationOutcome(t *testing.T) {
 		status workspace.MergePrepareStatus
 		err    error
 		want   string
+		reason string
 	}{
 		{name: "clean", status: workspace.MergePrepareStatusClean, want: "clean"},
 		{name: "conflict", status: workspace.MergePrepareStatusConflict, want: "conflict"},
-		{name: "dirty", status: workspace.MergePrepareStatusDirty, want: "dirty"},
+		{name: "dirty", status: workspace.MergePrepareStatusDirty, want: "dirty", reason: "dirty_worktree"},
+		{name: "signing failure", err: &workspace.ReworkPreparationError{Reason: workspace.ReworkPreparationSigningFailed, Err: errors.New("private detail")}, want: "rework", reason: "signing_failed"},
+		{name: "paused rebase", err: fmt.Errorf("prepare: %w", &workspace.ReworkPreparationError{Reason: workspace.ReworkPreparationRebaseInProgress, Err: errors.New("private detail")}), want: "rework", reason: "rebase_in_progress"},
 		{name: "missing result", want: "rework"},
 		{name: "failed clean result", status: workspace.MergePrepareStatusClean, err: errors.New("fetch failed"), want: "rework"},
 		{name: "failed dirty result", status: workspace.MergePrepareStatusDirty, err: errors.New("lease expired"), want: "rework"},
@@ -46,6 +49,16 @@ func TestReworkPreparationOutcome(t *testing.T) {
 			got := reworkPreparationOutcome(test.status, test.err)
 			if got != test.want {
 				t.Fatalf("pipeline outcome = %q, want %q", got, test.want)
+			}
+			wantReason := test.reason
+			if wantReason == "" {
+				wantReason = test.want
+				if test.err != nil {
+					wantReason = "preparation_failed"
+				}
+			}
+			if got := reworkPreparationReason(test.status, test.err); got != wantReason {
+				t.Fatalf("preparation diagnostic = %q, want %q", got, wantReason)
 			}
 			execution := &readToolTestExecution{}
 			r := Runner{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}

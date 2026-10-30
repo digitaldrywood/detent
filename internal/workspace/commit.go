@@ -18,6 +18,8 @@ import (
 
 const signingProbeTimeout = 5 * time.Second
 
+const commitSigningFailureMarker = "detent: commit signing failed"
+
 type CommitIdentity struct {
 	Name  string `json:"name"`
 	Email string `json:"email"`
@@ -233,11 +235,11 @@ func (p commitPolicy) run(ctx context.Context, path string, env []string, args .
 			return "", err
 		}
 		wrapper := filepath.Join(scratch, "signer")
-		script := "#!/bin/sh\nexec '" + strings.ReplaceAll(filepath.ToSlash(program), "'", "'\"'\"'") + "'"
+		script := "#!/bin/sh\nif '" + strings.ReplaceAll(filepath.ToSlash(program), "'", "'\"'\"'") + "'"
 		if p.format != "ssh" {
 			script += " --batch --no-tty --pinentry-mode error"
 		}
-		script += " \"$@\"\n"
+		script += " \"$@\"; then\n exit 0\nelse\n result=$?\n printf '\\n" + commitSigningFailureMarker + "\\n' >&2\n exit \"$result\"\nfi\n"
 		if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
 			return "", err
 		}
