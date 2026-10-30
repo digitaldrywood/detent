@@ -111,7 +111,7 @@ func resolveCollaborationPayload(ctx context.Context, q nativeQueryer, raw strin
 	err := q.QueryRowContext(ctx, `SELECT organization_id,project_id,type,payload_attachment_id,payload_entry,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,
 coalesce(event_revision,0),coalesce(run_sequence,0),run_outcome,run_machine_id,run_session_id,run_runner_id,
 coalesce(scheduler_present,0),coalesce(scheduler_outcome,''),coalesce(scheduler_reason,''),coalesce(scheduler_source,''),coalesce(scheduler_runner_id,''),coalesce(scheduler_at,''),coalesce(scheduler_revision,0),scheduler_change_id,scheduler_version_id,scheduler_head_sha,scheduler_change_present,
-rowid,coalesce(claim_attempt_id,''),coalesce(run_id,''),coalesce(run_lease_id,''),coalesce(run_fencing_token,0),coalesce(run_policy_id,'')
+rowid,coalesce(claim_attempt_id,run_attempt_id,''),coalesce(run_id,''),coalesce(run_lease_id,''),coalesce(run_fencing_token,0),coalesce(run_policy_id,'')
 FROM collaboration_events WHERE id=? AND payload_version=1`, id).Scan(&organization, &project, &kind, &attachmentID, &entry, &ref.Key, &ref.SHA256, &ref.CompressedSize, &ref.UncompressedSize,
 		&revision, &sequence, &outcome, &machine, &session, &runner,
 		&schedulerPresent, &scheduler.Outcome, &scheduler.Reason, &scheduler.Source, &scheduler.RunnerID, &schedulerAt, &scheduler.WorkItemRevision, &change.ChangeID, &change.VersionID, &change.HeadSHA, &changePresent,
