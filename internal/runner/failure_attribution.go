@@ -206,8 +206,8 @@ func infrastructureFailureDecision(err error) *tracker.FailureAttribution {
 	var failure tracker.NativeTerminalFailure
 	if errors.As(err, &provider) {
 		failure = provider.NativeTerminalFailure()
-		if failure.Rejection.TerminalStage() != "" {
-			return nil
+		if decision := failure.InfrastructureDecision(); decision != nil {
+			return decision
 		}
 	}
 	switch {
@@ -219,5 +219,5 @@ func infrastructureFailureDecision(err error) *tracker.FailureAttribution {
 	if capacity, ok := backendcapacity.As(err); ok && capacity.Details.Type == backendcapacity.ErrorTypeTransientOverload {
 		return &tracker.FailureAttribution{Outcome: "instance", Reason: "backend startup or service unavailable"}
 	}
-	return failure.InfrastructureDecision()
+	return nil
 }

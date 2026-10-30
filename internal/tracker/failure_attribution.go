@@ -35,6 +35,12 @@ type FailureStepSuccess struct {
 }
 
 func (f NativeTerminalFailure) InfrastructureDecision() *FailureAttribution {
+	if f.Rejection.TerminalStage() != "" {
+		return &FailureAttribution{Outcome: "instance", Reason: "typed publication rejection"}
+	}
+	if f.Publication != nil && f.Publication.Valid() {
+		return &FailureAttribution{Outcome: "instance", Reason: "typed audit publication failure"}
+	}
 	if f.RPCCode != nil {
 		switch *f.RPCCode {
 		case -32700, -32600, -32601, -32603:

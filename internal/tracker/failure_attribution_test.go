@@ -40,12 +40,22 @@ func TestFailureAttributionPublicRecord(t *testing.T) {
 		})
 	}
 	for _, test := range []struct {
-		class, outcome string
+		name, outcome string
+		failure       NativeTerminalFailure
 	}{
-		{"workspace_hook", "instance"}, {"validation", ""}, {"backend_startup", "instance"}, {"protocol", "instance"},
+		{"workspace_hook", "instance", NativeTerminalFailure{ErrorClass: "workspace_hook"}},
+		{"validation", "", NativeTerminalFailure{ErrorClass: "validation"}},
+		{"backend_startup", "instance", NativeTerminalFailure{ErrorClass: "backend_startup"}},
+		{"protocol", "instance", NativeTerminalFailure{ErrorClass: "protocol"}},
+		{"acceptance rejection", "instance", NativeTerminalFailure{Rejection: &PublicationRejection{Category: "acceptance_validation", Field: "validator.session_id"}}},
+		{"audit rejection", "instance", NativeTerminalFailure{Rejection: &PublicationRejection{Category: "security_audit", Field: "run.exit_status"}}},
+		{"event rejection", "instance", NativeTerminalFailure{Rejection: &PublicationRejection{Category: "event_validation", Field: "data.runtime"}}},
+		{"audit publication", "instance", NativeTerminalFailure{Publication: &PublicationFailure{Operation: "security_audit/review", Code: "request_failed"}}},
+		{"invalid rejection", "", NativeTerminalFailure{Rejection: &PublicationRejection{Category: "security_audit", Field: "private"}}},
+		{"invalid publication", "", NativeTerminalFailure{Publication: &PublicationFailure{Operation: "private", Code: "request_failed"}}},
 	} {
 		for _, outcome := range []string{"", "issue", "unknown"} {
-			input := NativeTerminalFailure{ErrorClass: test.class}
+			input := test.failure
 			if outcome != "" {
 				input.Decision = &FailureAttribution{Outcome: outcome, Reason: "prior decision"}
 			}
@@ -54,7 +64,9 @@ func TestFailureAttributionPublicRecord(t *testing.T) {
 				want = outcome
 			}
 			if failure := input.Public(); failure.Attribution != want {
-				t.Fatalf("error class %s with decision %s: attribution=%s, want %s", test.class, outcome, failure.Attribution, want)
+				t.Fatalf("%s with decision %s: attribution=%s, want %s", test.name, outcome, failure.Attribution, want)
+			} else if again := failure.Public(); !reflect.DeepEqual(again, failure) {
+				t.Fatalf("%s changed attribution on replay", test.name)
 			}
 		}
 	}
