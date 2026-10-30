@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/config"
@@ -53,6 +54,7 @@ func TestNativeExecutionLandsReviewedVersion(t *testing.T) {
 		audited      string
 	}{
 		{name: "plain git by default"},
+		{name: "published passing source lands after completion outage", refusal: "completion_outage"},
 		{name: "audited clean landing", audited: "clean"},
 		{name: "audited already incorporated landing", audited: "incorporated"},
 		{name: "audited already incorporated receipt retry", audited: "receipt"},
@@ -230,6 +232,10 @@ func TestLinkedNativeIssueLandsWithoutGitHub(t *testing.T) {
 
 func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, batch bool, otherMachine string, policyChange func(*policy.Descriptor), wantStale bool, refusalKinds ...string) {
 	t.Helper()
+	completionOutage := len(refusalKinds) > 0 && refusalKinds[0] == "completion_outage"
+	if completionOutage {
+		refusalKinds = nil
+	}
 	staleAudit := len(refusalKinds) > 0 && refusalKinds[0] == "stale_audit"
 	directWait := len(refusalKinds) > 0 && refusalKinds[0] == "direct_capacity_wait"
 	if directWait {
@@ -304,6 +310,9 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 			return tracker.GitHubIssueSnapshot{}, errors.New("GitHub source access removed after Hub intake")
 		}
 	}
+	if completionOutage {
+		h.scheduler.leaseTTL = 10 * time.Minute
+	}
 	item := tracker.NativeWorkItemID(issue.ID)
 	head := nativeChangeFixtureHead("c")
 	h.claim(t, issue.ID)
@@ -339,6 +348,43 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 	if err := work.(runner.SourceValidationExecution).RecordSourceValidation(guarded, sourceValidation); err != nil {
 		t.Fatal(err)
 	}
+	if completionOutage {
+		h.failChanges.dropVersions.Store(true)
+		if err := work.(runner.CompletionExecution).PrepareFinish(guarded, "succeeded", "", nil); err != nil {
+			t.Fatal(err)
+		}
+		published := work.(runner.ChangeExecution).NativeChange()
+		if published == nil || published.ChangeID == "" || published.Error == "" {
+			t.Fatalf("publication acknowledgment was not lost: %+v", published)
+		}
+		detail, err := h.admin.Change(t.Context(), item, published.ChangeID)
+		if err != nil || len(detail.Versions) != 1 || detail.Versions[0].HeadSHA != head || !reflect.DeepEqual(detail.Versions[0].Validation, &sourceValidation) {
+			t.Fatalf("outage requires published source and passing gate: %+v, %v", detail, err)
+		}
+		stop()
+		guarded = t.Context()
+		execution := work.(*nativeExecution)
+		execution.data.Runtime = &tracker.NativeRuntimeObservation{Phase: "completed", HeartbeatAt: time.Now().Add(-11 * time.Minute)}
+		now := time.Now()
+		h.scheduler.now = func() time.Time { return now }
+		original := h.native.client.httpClient.Transport
+		synctest.Test(t, func(t *testing.T) {
+			h.native.client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: http.StatusBadGateway, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":"unavailable"}`)), Request: request}, nil
+			})
+			defer func() { h.native.client.httpClient.Transport = original }()
+			if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); !nativeTransportUnavailable(err) {
+				t.Fatalf("completion outage = %v", err)
+			}
+			time.Sleep(2 * time.Minute)
+			now = now.Add(2 * time.Minute)
+			h.native.client.httpClient.Transport = original
+		})
+		if _, err := h.scheduler.RenewClaim(t.Context(), issue.ID, now); err != nil {
+			t.Fatalf("outage discarded published completion: %v", err)
+		}
+		h.scheduler.now = time.Now
+	}
 	if err := work.Finish(guarded, "succeeded"); err != nil {
 		t.Fatal(err)
 	}
@@ -348,6 +394,12 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 		t.Fatalf("native change = %#v", change)
 	}
 	h.complete(t, issue.ID, change)
+	if completionOutage {
+		page, err := h.admin.AttemptsDetailPage(t.Context(), item, "", 10)
+		if err != nil || len(page.Items) != 1 || page.Items[0].Status != "succeeded" || page.Items[0].TerminalFailure != nil || page.Items[0].ClaimReleasedAt == nil {
+			t.Fatalf("outage lost completed work: %+v, %v", page.Items, err)
+		}
+	}
 	if state := h.state(t, issue.ID); state != "Human Review" {
 		t.Fatalf("after the run the item is in %s", state)
 	}

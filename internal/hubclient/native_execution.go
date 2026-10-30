@@ -2,12 +2,14 @@ package hubclient
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/big"
 	"net/http"
 	"slices"
 	"strconv"
@@ -76,6 +78,7 @@ type nativeExecution struct {
 	change                   *runner.NativeChange
 	finalizationSource       *tracker.NativeChangeReference
 	finalizationAttempt      string
+	completionOutageDeadline time.Time
 	preparedOutcome          string
 	preparedMessage          string
 	preparedDisposition      *tracker.NativeDisposition
@@ -296,6 +299,9 @@ func (e *nativeExecution) Guard(ctx context.Context) (context.Context, func(), e
 						return
 					}
 					remaining = backoff
+					if jitter, err := rand.Int(rand.Reader, big.NewInt(int64(backoff/2)+1)); err == nil {
+						remaining = backoff/2 + time.Duration(jitter.Int64())
+					}
 					backoff = min(30*time.Second, backoff*2)
 				} else {
 					remaining = e.remaining()
@@ -563,6 +569,7 @@ func (e *nativeExecution) PrepareFinish(ctx context.Context, outcome, finalMessa
 	if err := e.prepareFinish(ctx, outcome); err != nil {
 		err = e.executionError(ctx, err)
 		err = errors.Join(err, nativeEffectError(ctx))
+		e.observeCompletionOutage(err)
 		if outcome == "succeeded" && e.ownsChangeCompletion() && nativeTransportUnavailable(err) && nativeEffectError(ctx) == nil {
 			if e.change == nil {
 				e.change = &runner.NativeChange{}
@@ -680,6 +687,10 @@ func (e *nativeExecution) finish(ctx context.Context, outcome string) (err error
 	done := e.diagnosticOperation("native.finish")
 	defer func() { done(err) }()
 	preparationErr := e.prepareFinish(ctx, outcome)
+	if nativeTransportUnavailable(preparationErr) {
+		e.observeCompletionOutage(preparationErr)
+		return preparationErr
+	}
 	if errors.Is(preparationErr, runner.ErrExecutionAuthorityUnavailable) {
 		return preparationErr
 	}
@@ -719,6 +730,12 @@ func (e *nativeExecution) finish(ctx context.Context, outcome string) (err error
 	return errors.Join(preparationErr, finishErr)
 }
 
+func (e *nativeExecution) observeCompletionOutage(err error) {
+	if nativeTransportUnavailable(err) && e.completionOutageDeadline.IsZero() {
+		e.completionOutageDeadline = e.scheduler.now().Add(e.scheduler.leaseTTL)
+	}
+}
+
 func (e *nativeExecution) finalizationFailure(err error) *tracker.NativeTerminalFailure {
 	stage := "finalization"
 	if e.change != nil && (e.change.VersionError != "" || e.change.Error != "") {
@@ -753,7 +770,12 @@ func (e *nativeExecution) finalizationFailure(err error) *tracker.NativeTerminal
 	return &public
 }
 
-func (e *nativeExecution) finishPrepared(ctx context.Context) error {
+func (e *nativeExecution) finishPrepared(ctx context.Context) (err error) {
+	defer func() {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		e.observeCompletionOutage(err)
+	}()
 	e.mu.Lock()
 	outcome := e.preparedOutcome
 	finished := e.data.Outcome != ""

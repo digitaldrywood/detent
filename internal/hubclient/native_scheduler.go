@@ -859,9 +859,18 @@ func (s *Scheduler) nativeClaimRenewable(ctx context.Context, claim nativeClaim)
 		}
 		// The controller owns bounded finalization after the turn ends. Its
 		// turn-end heartbeat cannot expire a live publication or review.
-		if observation != nil && observation.Phase == "completed" && (controller || localWorker) {
+		outage := !execution.completionOutageDeadline.IsZero()
+		if observation != nil && observation.Phase == "completed" && (controller || localWorker) && !outage {
 			execution.mu.Unlock()
 			return true, nil
+		}
+		if outage && s.now().Before(execution.completionOutageDeadline) && execution.preparedOutcome != "" {
+			execution.mu.Unlock()
+			return true, nil
+		}
+		if outage && !s.now().Before(execution.completionOutageDeadline) && pending {
+			execution.mu.Unlock()
+			return false, nil
 		}
 		if !pending && observation != nil && observation.Phase == "completed" &&
 			(observation.HeartbeatAt.IsZero() || !s.now().Before(observation.HeartbeatAt.Add(s.leaseTTL))) {
@@ -869,6 +878,12 @@ func (s *Scheduler) nativeClaimRenewable(ctx context.Context, claim nativeClaim)
 			execution.preparedOutcome = "failed"
 			execution.preparedDisposition = nil
 			execution.preparedFailure = execution.finalizationFailure(errors.New("completed worker runtime expired before finalization"))
+			if outage {
+				execution.preparedFailure.ErrorClass = "publication"
+				execution.preparedFailure.Error = "Hub unavailable during completion finalization"
+				failure := execution.preparedFailure.Public()
+				execution.preparedFailure = &failure
+			}
 			err := execution.finish(ctx, "failed")
 			finished := execution.data.Outcome != ""
 			execution.mu.Unlock()
