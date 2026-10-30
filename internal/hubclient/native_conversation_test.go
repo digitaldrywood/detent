@@ -5,13 +5,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -930,6 +933,61 @@ func TestNativeConversationRejectedEventDropsOnlyItself(t *testing.T) {
 	}
 	if calls := hub.reportCallCount(); calls != 4 {
 		t.Fatalf("report calls = %d, want the batch plus one call per event", calls)
+	}
+}
+
+func TestNativeConversationPublicationConflictPreservesBatch(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		code       string
+		multiple   bool
+		persistent bool
+		wantCalls  int
+		wantError  bool
+	}{
+		{name: "concurrent publication", code: "revision_conflict", wantCalls: 2},
+		{name: "concurrent publication preserves multiple events", code: "revision_conflict", multiple: true, wantCalls: 2},
+		{name: "persistent conflict keeps the existing attempt limit", code: "revision_conflict", multiple: true, persistent: true, wantCalls: 3, wantError: true},
+		{name: "lost execution", code: "stale_execution", wantCalls: 1, wantError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				var requests []ConversationTurnEventsRequest
+				client, err := New(Config{URL: "http://hub.test", TokenSource: func() string { return "test" }, HTTPClient: &http.Client{Transport: executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+					var batch ConversationTurnEventsRequest
+					if err := json.NewDecoder(request.Body).Decode(&batch); err != nil {
+						return nil, err
+					}
+					requests = append(requests, batch)
+					status, body := http.StatusAccepted, `{"event_seq":1}`
+					if len(requests) == 1 || test.persistent {
+						status, body = http.StatusConflict, fmt.Sprintf(`{"code":%q,"message":"publication refused"}`, test.code)
+					}
+					return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
+				})}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				native, err := client.Native("org_test", "prj_test")
+				if err != nil {
+					t.Fatal(err)
+				}
+				session := &conversationSession{client: native, id: "conv_test", identity: ConversationIdentity{LeaseID: "lease_test", FencingToken: 1, AttemptID: "attempt_test"}}
+				batch := []runner.ConversationTurnEvent{{Type: runner.ConversationEventTurnStarted, ThreadID: "thread_test", TurnID: "turn_test"}}
+				if test.multiple {
+					batch = append(batch, runner.ConversationTurnEvent{Type: runner.ConversationEventControlResult, Key: "continue_test", Status: runner.ConversationControlDelivered})
+				}
+				err = session.post(t.Context(), batch)
+				if (err != nil) != test.wantError || len(requests) != test.wantCalls {
+					t.Fatalf("report calls=%d error=%v, want calls=%d error=%t", len(requests), err, test.wantCalls, test.wantError)
+				}
+				for _, request := range requests {
+					if request.BatchKey == "" || request.BatchKey != requests[0].BatchKey || !reflect.DeepEqual(request.Events, batch) || request.ConversationIdentity != session.identity {
+						t.Fatalf("publication changed its batch or authority: %+v", requests)
+					}
+				}
+			})
+		})
 	}
 }
 

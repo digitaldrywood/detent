@@ -204,6 +204,8 @@ func conversationError(err error) error {
 		return fmt.Errorf("%w: %w", runner.ErrNoConversation, err)
 	case apiErr.Code == "stale_execution":
 		return fmt.Errorf("%w: %w: %w", ErrStaleConversation, runner.ErrExecutionAuthorityUnavailable, err)
+	case apiErr.Code == "revision_conflict":
+		return fmt.Errorf("%w: %w", ErrUnavailable, err)
 	default:
 		return err
 	}
@@ -881,7 +883,7 @@ func conversationTruncateBytes(value string, limit int) string {
 // it contained. A session the hub no longer owns is not a rejection: every
 // event of the batch would fail the same way.
 func conversationBatchRejected(err error) bool {
-	if errors.Is(err, ErrStaleConversation) || errors.Is(err, runner.ErrNoConversation) {
+	if errors.Is(err, ErrStaleConversation) || errors.Is(err, runner.ErrNoConversation) || errors.Is(err, ErrUnavailable) {
 		return false
 	}
 	var apiErr *APIError
