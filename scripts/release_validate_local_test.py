@@ -46,11 +46,25 @@ class ReleaseValidateLocalTest(unittest.TestCase):
                 shutil.copyfile(ROOT / "scripts/release-validate-local.sh", repo / "scripts/release-validate-local.sh")
                 (repo / ".gitignore").write_text("tmp/\n")
                 (repo / "Makefile").write_text(
-                    "app:\n\t@test \"$$MODE\" != build\n"
-                    "build:\n\t@mkdir -p tmp && printf '%s\\n' '#!/bin/sh' "
-                    "'unset GH_TOKEN' 'printf \"go test receipts: 3 of 5 test binaries reused, 2 recorded, 0 not recordable, 0 receipt service failures\\\\n\"' "
-                    "'printf \"%s\\\\n\" \"$$*\" > \"$$ARGS_LOG\"' 'if [ \"$$MODE\" = mutate ]; then echo changed >> \"$$(dirname \"$$0\")/../Makefile\"; exit 0; fi' '[ \"$$MODE\" = pass ]' > tmp/detent && chmod +x tmp/detent\n"
+                    "app:\n\t@test -z \"$$GH_TOKEN\" && test -z \"$$MODE\" && test ! -e build-fails\n"
+                    "build:\n\t@test -z \"$$GH_TOKEN\" && test -z \"$$MODE\"\n"
                 )
+                if mode == "build":
+                    (repo / "build-fails").write_text("")
+                validator = root / "validator"
+                (root / "mode").write_text(mode)
+                validator.write_text(
+                    "#!/bin/sh\n"
+                    f"if [ -n \"$GH_TOKEN\" ] || [ \"$HOME\" = '{os.environ['HOME']}' ]; then echo 'operator environment reached the validator' >&2; exit 3; fi\n"
+                    "printf 'go test receipts: 3 of 5 test binaries reused, 2 recorded, 0 not recordable, 0 receipt service failures\\n'\n"
+                    f"printf '%s\\n' \"$*\" > '{root / 'args'}'\n"
+                    "dir=''\n"
+                    "while [ $# -gt 0 ]; do if [ \"$1\" = --dir ]; then dir=$2; fi; shift; done\n"
+                    f"mode=$(cat '{root / 'mode'}')\n"
+                    "if [ \"$mode\" = mutate ]; then echo changed >> \"$dir/Makefile\"; exit 0; fi\n"
+                    "[ \"$mode\" = pass ]\n"
+                )
+                validator.chmod(0o755)
                 git("add", ".")
                 git("commit", "-qm", "head")
                 head = git("rev-parse", "HEAD")
@@ -68,7 +82,7 @@ class ReleaseValidateLocalTest(unittest.TestCase):
                     "if args[:2] == ['repo', 'view']: print('example-org/example-project')\n"
                 )
                 (binaries / "gh").chmod(0o755)
-                env.update(PATH=str(binaries) + os.pathsep + env["PATH"], GH_TOKEN="fixture-status-token", CALLS=str(calls), MODE=mode, ARGS_LOG=str(root / "args"), TEST_PROCS="2")
+                env.update(PATH=str(binaries) + os.pathsep + env["PATH"], GH_TOKEN="fixture-status-token", CALLS=str(calls), MODE=mode, ARGS_LOG=str(root / "args"), TEST_PROCS="2", DETENT_VALIDATOR=str(validator), DETENT_VALIDATE_CONFIG=str(root / "config.yaml"))
                 result = subprocess.run(["bash", "scripts/release-validate-local.sh", branch], cwd=repo, env=env, text=True, capture_output=True, timeout=120)
                 self.assertEqual(result.returncode == 0, state == "success", result.stdout + result.stderr)
                 requests = [json.loads(line) for line in calls.read_text().splitlines()]
@@ -85,7 +99,7 @@ class ReleaseValidateLocalTest(unittest.TestCase):
                 elif mode != "build":
                     self.assertIn("3 of 5 test binaries reused", description)
                     arguments = (root / "args").read_text()
-                    self.assertIn("validate --project example-project --dir ", arguments)
+                    self.assertIn(f"validate --config {root / 'config.yaml'} --project example-project --dir ", arguments)
                     self.assertIn("make check-release TEST_PROCS=2", arguments)
                 dispatches = [args for args in requests if args[:2] == ["workflow", "run"]]
                 self.assertEqual(dispatches, [["workflow", "run", "release-finalize.yml", "--repo", "example-org/example-project", "--ref", branch]] if dispatch else [])

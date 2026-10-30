@@ -24,20 +24,51 @@ mkdir -p "$root/tmp"
 output_dir="$(mktemp -d "$root/tmp/release-validate.XXXXXX")"
 worktree="$output_dir/source"
 log="$output_dir/validation.log"
+trap 'cleanup' EXIT
 cleanup() { git worktree remove --force "$worktree" > /dev/null 2>&1 || true; }
-trap cleanup EXIT
 git worktree add --detach "$worktree" "$sha"
 host="$(hostname -s)"
 gh api -X POST "repos/$repository/statuses/$sha" -f context="$context" -f state=pending -f description="Local validation running on $host" > /dev/null
-started=$SECONDS
-if ! (cd "$worktree" && make app TEST_PROCS="$procs" && make build TEST_PROCS="$procs") > "$log" 2>&1; then
-  gh api -X POST "repos/$repository/statuses/$sha" -f context="$context" -f state=failure -f description="Local validation could not build ${sha:0:7} on $host" > /dev/null
-  tail -40 "$log" >&2
-  echo "Validation build failed; log: $log" >&2
+fail_setup() {
+  gh api -X POST "repos/$repository/statuses/$sha" -f context="$context" -f state=failure -f description="$1" > /dev/null
+  tail -40 "$log" >&2 || true
+  echo "$1; log: $log" >&2
   exit 1
+}
+gopath="$(go env GOPATH)" || fail_setup "Local validation could not read the Go environment on $host"
+gomodcache="$(go env GOMODCACHE)" || fail_setup "Local validation could not read the Go environment on $host"
+npm_cache="${npm_config_cache:-$HOME/.npm}"
+browsers="${PLAYWRIGHT_BROWSERS_PATH:-$HOME/Library/Caches/ms-playwright}"
+[ -n "${DETENT_VALIDATE_CONFIG:-}" ] || fail_setup "Local validation needs DETENT_VALIDATE_CONFIG on $host"
+validator_dir="$(mktemp -d "$root/tmp/release-validator.XXXXXX")"
+chmod 700 "$validator_dir"
+validator="$validator_dir/detent"
+cleanup() {
+  git worktree remove --force "$worktree" > /dev/null 2>&1 || true
+  rm -rf "$validator_dir"
+}
+installed="${DETENT_VALIDATOR:-$(command -v detent || true)}"
+[ -n "$installed" ] && [ -x "$installed" ] || fail_setup "Local validation found no installed detent validator on $host"
+cp "$installed" "$validator"
+chmod 700 "$validator"
+validator_digest="$(shasum -a 256 "$validator" | cut -d' ' -f1)"
+build_home="$output_dir/home"
+build_tmp="$output_dir/tmp"
+mkdir -p "$build_home" "$build_tmp"
+validator_home="$validator_dir/home"
+mkdir -p "$validator_home"
+toolchain_env=(PATH="$PATH" LANG="${LANG:-en_US.UTF-8}" TMPDIR="$build_tmp" GOCACHE="$GOCACHE" GOPATH="$gopath" GOMODCACHE="$gomodcache" GOTOOLCHAIN="${GOTOOLCHAIN:-auto}" npm_config_cache="$npm_cache" PLAYWRIGHT_BROWSERS_PATH="$browsers" TEST_PROCS="$procs")
+build_env=(env -i HOME="$build_home" "${toolchain_env[@]}")
+validator_env=(env -i HOME="$validator_home" "${toolchain_env[@]}")
+started=$SECONDS
+if ! (cd "$worktree" && "${build_env[@]}" make app TEST_PROCS="$procs" && "${build_env[@]}" make build TEST_PROCS="$procs") >> "$log" 2>&1; then
+  fail_setup "Local validation could not build ${sha:0:7} on $host"
+fi
+if [ "$(shasum -a 256 "$validator" | cut -d' ' -f1)" != "$validator_digest" ]; then
+  fail_setup "Local validation found the validator changed during the build on $host"
 fi
 state=success
-if ! TMPDIR="$output_dir" "$worktree/tmp/detent" validate ${config_args[@]+"${config_args[@]}"} --project "$project" --dir "$worktree" "make check-release TEST_PROCS=$procs" >> "$log" 2>&1; then
+if ! "${validator_env[@]}" "$validator" validate ${config_args[@]+"${config_args[@]}"} --project "$project" --dir "$worktree" "make check-release TEST_PROCS=$procs" >> "$log" 2>&1; then
   state=failure
 fi
 source_changed=false
