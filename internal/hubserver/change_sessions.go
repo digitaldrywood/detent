@@ -78,6 +78,11 @@ func (s *Service) populateChangeSession(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	version, err := readChangeVersionSnapshot(ctx, s.database.reader, change, id)
+	if errors.Is(err, sql.ErrNoRows) {
+		_, err = s.database.db.ExecContext(ctx, `UPDATE change_versions SET implementing_session_id=-1 WHERE id=? AND implementing_session_id IS NULL`, id)
+		s.changeSessionAfter = id
+		return true, err
+	}
 	if err != nil {
 		return true, err
 	}
