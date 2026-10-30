@@ -33,7 +33,29 @@ func runMigrations(ctx context.Context, db *sql.DB, lockPath string) (err error)
 			}
 		}()
 	}
+	if err := enableIncrementalVacuum(ctx, db); err != nil {
+		return err
+	}
 	return runMigrationsFromFS(ctx, db, migrationsFS)
+}
+
+func enableIncrementalVacuum(ctx context.Context, db *sql.DB) error {
+	var mode int
+	if err := db.QueryRowContext(ctx, "PRAGMA auto_vacuum").Scan(&mode); err != nil {
+		return fmt.Errorf("reading sqlite auto vacuum: %w", err)
+	}
+	if mode == 2 {
+		return nil
+	}
+	if _, err := db.ExecContext(ctx, "PRAGMA auto_vacuum = INCREMENTAL"); err != nil {
+		return fmt.Errorf("setting sqlite auto vacuum: %w", err)
+	}
+	if mode == 0 {
+		if _, err := db.ExecContext(ctx, "VACUUM"); err != nil {
+			return fmt.Errorf("converting sqlite auto vacuum: %w", err)
+		}
+	}
+	return nil
 }
 
 func migrationLockPath(path string) string {

@@ -1112,6 +1112,7 @@ func (q *Queries) CreateWebSession(ctx context.Context, arg CreateWebSessionPara
 
 const createWorkAttempt = `-- name: CreateWorkAttempt :one
 INSERT INTO work_attempts (
+  id,
   project_id,
   issue_id,
   identifier,
@@ -1154,7 +1155,7 @@ INSERT INTO work_attempts (
   forge_write_completed_host,
   metrics_turns,
   projection_ready
-) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, 1)
+) VALUES ((SELECT last_id + 1 FROM work_attempt_sequence WHERE singleton = 1), ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, 1)
 RETURNING id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action, detent_session_id, provider_session_id, runtime_identity_json, owner_generation, metadata_pr_number, metadata_pr_head_sha, metadata_pr_base_sha, metadata_run_mode, outcome_excluded, forge_wait_present, forge_wait_host, forge_wait_error_class, forge_write_completed_host, metrics_turns, projection_ready
 `
 

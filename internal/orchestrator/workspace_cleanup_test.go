@@ -9,11 +9,13 @@ import (
 	"log/slog"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -280,6 +282,44 @@ func TestWorkspaceCleanupNeverAppliesTrackerObservations(t *testing.T) {
 			o.finishWorkspaceCleanup(&current, workspaceCleanupResult{before: before, after: after})
 			if got := current.Running["issue"]; got.Issue.State != "In Progress" || got.CompletionLane != "" {
 				t.Fatalf("cleanup replaced authoritative running observation: %+v", got)
+			}
+		})
+	}
+}
+
+type historyRetentionAttempts struct {
+	store.WorkAttemptStore
+	calls chan time.Time
+}
+
+func (s *historyRetentionAttempts) PruneRuntimeHistory(_ context.Context, now time.Time) error {
+	s.calls <- now
+	return nil
+}
+
+func TestWorkspaceCleanupMaintainsHistoryBetweenWorkspaceSweeps(t *testing.T) {
+	for _, withReaper := range []bool{false, true} {
+		t.Run(strconv.FormatBool(withReaper), func(t *testing.T) {
+			cfg := normalizeConfig(Config{WorkspaceCleanupSweepInterval: time.Hour})
+			attempts := &historyRetentionAttempts{calls: make(chan time.Time, 2)}
+			o := &Orchestrator{cfg: cfg, connector: &runningStateConnector{}, workAttempts: attempts, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+			if withReaper {
+				o.reaper = &cleanupSweepReaper{}
+			}
+			state := newState(cfg)
+			now := time.Now()
+			state.LastWorkspaceCleanupAt = now
+			for _, at := range []time.Time{now, now.Add(time.Second)} {
+				o.startWorkspaceCleanup(t.Context(), &state, at)
+				finishTestWorkspaceCleanup(t, o, &state)
+				select {
+				case got := <-attempts.calls:
+					if !got.Equal(at) {
+						t.Fatalf("retention clock=%v want %v", got, at)
+					}
+				default:
+					t.Fatal("cleanup owner skipped store retention")
+				}
 			}
 		})
 	}

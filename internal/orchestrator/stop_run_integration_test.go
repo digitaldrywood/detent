@@ -401,7 +401,7 @@ func TestStopRunRecoveryAppliesTodoPriorityBeforeDispatch(t *testing.T) {
 		t.Fatalf("store.Open() error = %v", err)
 	}
 	t.Cleanup(func() { _ = runtimeStore.Close() })
-	now := time.Date(2026, 7, 16, 18, 0, 0, 0, time.UTC)
+	now := time.Now().UTC()
 	attemptID, err := runtimeStore.StartWorkAttempt(t.Context(), store.WorkAttemptStart{ProjectID: "detent", IssueID: issue.ID, Identifier: issue.Identifier, IssueURL: issue.URL, WorkerType: "agent", Lane: "In Progress", AttemptNumber: 0, StartedAt: now.Add(-time.Minute), LeaseExpiresAt: now.Add(time.Minute)})
 	if err != nil {
 		t.Fatalf("StartWorkAttempt() error = %v", err)

@@ -848,6 +848,7 @@ ORDER BY event.started_at, event.id;
 
 -- name: CreateWorkAttempt :one
 INSERT INTO work_attempts (
+  id,
   project_id,
   issue_id,
   identifier,
@@ -890,7 +891,7 @@ INSERT INTO work_attempts (
   forge_write_completed_host,
   metrics_turns,
   projection_ready
-) VALUES (sqlc.arg(project_id), sqlc.arg(issue_id), sqlc.arg(identifier), sqlc.arg(issue_url), sqlc.arg(pr_number), sqlc.arg(repo), sqlc.arg(worker_type), sqlc.arg(worker_host), sqlc.arg(lane), sqlc.arg(attempt_number), sqlc.arg(status), sqlc.arg(started_at), sqlc.arg(lease_expires_at), sqlc.arg(heartbeat_at), sqlc.arg(phase), sqlc.arg(status_message), sqlc.arg(current_step), sqlc.arg(total_steps), sqlc.arg(progress_percent), sqlc.arg(current_command), sqlc.arg(wait_reason), sqlc.arg(github_rate_snapshot_json), sqlc.arg(ci_state), sqlc.arg(capacity_snapshot_json), sqlc.arg(worker_metadata_json), sqlc.arg(metrics_json), sqlc.arg(next_action), sqlc.arg(detent_session_id), sqlc.arg(provider_session_id), sqlc.arg(runtime_identity_json), sqlc.arg(owner_generation), sqlc.narg(metadata_pr_number), sqlc.narg(metadata_pr_head_sha), sqlc.narg(metadata_pr_base_sha), sqlc.narg(metadata_run_mode), sqlc.narg(outcome_excluded), sqlc.narg(forge_wait_present), sqlc.narg(forge_wait_host), sqlc.narg(forge_wait_error_class), sqlc.narg(forge_write_completed_host), sqlc.narg(metrics_turns), 1)
+) VALUES ((SELECT last_id + 1 FROM work_attempt_sequence WHERE singleton = 1), sqlc.arg(project_id), sqlc.arg(issue_id), sqlc.arg(identifier), sqlc.arg(issue_url), sqlc.arg(pr_number), sqlc.arg(repo), sqlc.arg(worker_type), sqlc.arg(worker_host), sqlc.arg(lane), sqlc.arg(attempt_number), sqlc.arg(status), sqlc.arg(started_at), sqlc.arg(lease_expires_at), sqlc.arg(heartbeat_at), sqlc.arg(phase), sqlc.arg(status_message), sqlc.arg(current_step), sqlc.arg(total_steps), sqlc.arg(progress_percent), sqlc.arg(current_command), sqlc.arg(wait_reason), sqlc.arg(github_rate_snapshot_json), sqlc.arg(ci_state), sqlc.arg(capacity_snapshot_json), sqlc.arg(worker_metadata_json), sqlc.arg(metrics_json), sqlc.arg(next_action), sqlc.arg(detent_session_id), sqlc.arg(provider_session_id), sqlc.arg(runtime_identity_json), sqlc.arg(owner_generation), sqlc.narg(metadata_pr_number), sqlc.narg(metadata_pr_head_sha), sqlc.narg(metadata_pr_base_sha), sqlc.narg(metadata_run_mode), sqlc.narg(outcome_excluded), sqlc.narg(forge_wait_present), sqlc.narg(forge_wait_host), sqlc.narg(forge_wait_error_class), sqlc.narg(forge_write_completed_host), sqlc.narg(metrics_turns), 1)
 RETURNING *;
 
 -- name: GetWorkAttempt :one

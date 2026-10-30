@@ -626,6 +626,11 @@ type WorkAttempt struct {
 	ProjectionReady         sql.NullInt64  `json:"projection_ready"`
 }
 
+type WorkAttemptSequence struct {
+	Singleton int64 `json:"singleton"`
+	LastID    int64 `json:"last_id"`
+}
+
 type WorkerGeneration struct {
 	Gen          int64          `json:"gen"`
 	Pid          int64          `json:"pid"`

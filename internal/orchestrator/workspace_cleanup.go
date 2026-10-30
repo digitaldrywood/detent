@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -23,7 +24,8 @@ func (o *Orchestrator) startWorkspaceCleanup(ctx context.Context, state *State, 
 }
 
 func (o *Orchestrator) startWorkspaceCleanupPass(ctx context.Context, state *State, now time.Time, force bool) {
-	if (o.reaper == nil && o.trimHostCache == nil) || o.workspaceCleanupCancel != nil {
+	_, maintainsHistory := o.workAttempts.(store.RuntimeHistoryMaintainer)
+	if (o.reaper == nil && o.trimHostCache == nil && !maintainsHistory) || o.workspaceCleanupCancel != nil {
 		return
 	}
 	if o.workspaceCleanupResults == nil {
@@ -55,6 +57,11 @@ func (o *Orchestrator) startWorkspaceCleanupPass(ctx context.Context, state *Sta
 	go func() {
 		defer o.workspaceCleanupWG.Done()
 		defer connector.LogRESTScope(o.logger, restScope)
+		if maintainer, ok := worker.workAttempts.(store.RuntimeHistoryMaintainer); ok {
+			if err := maintainer.PruneRuntimeHistory(cleanupCtx, now); err != nil {
+				worker.logger.Warn("store history retention failed", "error", err)
+			}
+		}
 		if worker.trimHostCache != nil {
 			if err := worker.trimHostCache(cleanupCtx, worker.cfg.HostCache, now); err != nil {
 				worker.logger.Warn("trim host Go cache", "error", err)
