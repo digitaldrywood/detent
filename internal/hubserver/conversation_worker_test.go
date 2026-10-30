@@ -409,10 +409,10 @@ func TestConversationWorkerBind(t *testing.T) {
 		f.startAttempt(t, identity)
 		var data tracker.NativeRunData
 		var raw string
-		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT data_json FROM native_attempts WHERE id = ?", f.attempt).Scan(&raw); err != nil {
+		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT COALESCE(NULLIF(payload_object_key,''),data_json) FROM native_attempts WHERE id = ?", f.attempt).Scan(&raw); err != nil {
 			t.Fatal(err)
 		}
-		if err := json.Unmarshal([]byte(raw), &data); err != nil || data.Identity == nil || *data.Identity != identity {
+		if err := decodeRunDetail(f.service.runDetailContext(t.Context()), f.service.database.reader, raw, &data); err != nil || data.Identity == nil || *data.Identity != identity {
 			t.Fatalf("started identity = %+v, error = %v", data.Identity, err)
 		}
 		requireNativeStatus(t, f.controls(t, 0, 0), http.StatusOK)
