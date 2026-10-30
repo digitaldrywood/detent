@@ -40,7 +40,7 @@ class ReleaseValidateLocalTest(unittest.TestCase):
                 (repo / "Makefile").write_text(
                     "app:\n\t@test \"$$MODE\" != build\n"
                     "build:\n\t@mkdir -p tmp && printf '%s\\n' '#!/bin/sh' "
-                    "'printf \"go test receipts: 3 of 5 test binaries reused, 2 recorded, 0 not recordable, 0 receipt service failures\\\\n\"' "
+                    "'unset GH_TOKEN' 'printf \"go test receipts: 3 of 5 test binaries reused, 2 recorded, 0 not recordable, 0 receipt service failures\\\\n\"' "
                     "'printf \"%s\\\\n\" \"$$*\" > \"$$ARGS_LOG\"' 'if [ \"$$MODE\" = mutate ]; then echo changed >> \"$$(dirname \"$$0\")/../Makefile\"; exit 0; fi' '[ \"$$MODE\" = pass ]' > tmp/detent && chmod +x tmp/detent\n"
                 )
                 git("add", ".")
@@ -55,11 +55,12 @@ class ReleaseValidateLocalTest(unittest.TestCase):
                     "#!/usr/bin/env python3\n"
                     "import json, os, sys\n"
                     "args = sys.argv[1:]\n"
+                    "assert os.environ.get('GH_TOKEN') == 'fixture-status-token'\n"
                     "with open(os.environ['CALLS'], 'a') as f: f.write(json.dumps(args) + '\\n')\n"
                     "if args[:2] == ['repo', 'view']: print('example-org/example-project')\n"
                 )
                 (binaries / "gh").chmod(0o755)
-                env.update(PATH=str(binaries) + os.pathsep + env["PATH"], CALLS=str(calls), MODE=mode, ARGS_LOG=str(root / "args"), TEST_PROCS="2")
+                env.update(PATH=str(binaries) + os.pathsep + env["PATH"], GH_TOKEN="fixture-status-token", CALLS=str(calls), MODE=mode, ARGS_LOG=str(root / "args"), TEST_PROCS="2")
                 result = subprocess.run(["bash", "scripts/release-validate-local.sh", branch], cwd=repo, env=env, text=True, capture_output=True, timeout=120)
                 self.assertEqual(result.returncode == 0, state == "success", result.stdout + result.stderr)
                 requests = [json.loads(line) for line in calls.read_text().splitlines()]
