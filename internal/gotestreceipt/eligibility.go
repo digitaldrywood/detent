@@ -201,13 +201,13 @@ func checkSource(file *ast.File) error {
 		switch n := node.(type) {
 		case *ast.FuncDecl:
 			if n.Name.Name == "init" || n.Name.Name == "TestMain" {
-				allowed := make(map[string]bool)
+				var allowed *ast.Ident
 				if n.Name.Name == "TestMain" && n.Type.Params != nil && len(n.Type.Params.List) == 1 {
 					param := n.Type.Params.List[0]
 					if ptr, ok := param.Type.(*ast.StarExpr); ok {
 						if selector, ok := ptr.X.(*ast.SelectorExpr); ok {
 							if id, ok := selector.X.(*ast.Ident); ok && imports[id.Name] == "testing" && selector.Sel.Name == "M" && len(param.Names) == 1 {
-								allowed[param.Names[0].Name+".Run"] = true
+								allowed = param.Names[0]
 							}
 						}
 					}
@@ -272,7 +272,7 @@ func observableInitializer(expr ast.Expr, imports map[string]string) bool {
 	return observableCalls(expr, imports, nil)
 }
 
-func observableCalls(node ast.Node, imports map[string]string, allowed map[string]bool) bool {
+func observableCalls(node ast.Node, imports map[string]string, allowed *ast.Ident) bool {
 	safe := true
 	ast.Inspect(node, func(node ast.Node) bool {
 		if !safe {
@@ -292,7 +292,7 @@ func observableCalls(node ast.Node, imports map[string]string, allowed map[strin
 				safe = false
 				break
 			}
-			if allowed[id.Name+"."+function.Sel.Name] {
+			if allowed != nil && id.Obj != nil && id.Obj == allowed.Obj && function.Sel.Name == "Run" {
 				return true
 			}
 			if id.Obj != nil {
