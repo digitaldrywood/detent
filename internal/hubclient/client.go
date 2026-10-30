@@ -68,6 +68,7 @@ type Client struct {
 	baseURL            *url.URL
 	tokenSource        func() string
 	httpClient         *http.Client
+	leaseHTTPClient    *http.Client
 }
 
 type Machine struct {
@@ -200,7 +201,15 @@ func New(config Config) (*Client, error) {
 		httpClient = http.DefaultClient
 	}
 	baseURL.Path = strings.TrimRight(baseURL.Path, "/")
-	client := &Client{reads: newNativeReadCache(), baseURL: baseURL, tokenSource: config.TokenSource, httpClient: httpClient, artifactServiceID: config.ArtifactServiceID, artifactBytes: config.ArtifactBytes}
+	leaseHTTPClient := *httpClient
+	transport := httpClient.Transport
+	if transport == nil {
+		transport = http.DefaultTransport
+	}
+	if transport, ok := transport.(*http.Transport); ok {
+		leaseHTTPClient.Transport = transport.Clone()
+	}
+	client := &Client{reads: newNativeReadCache(), baseURL: baseURL, tokenSource: config.TokenSource, httpClient: httpClient, leaseHTTPClient: &leaseHTTPClient, artifactServiceID: config.ArtifactServiceID, artifactBytes: config.ArtifactBytes}
 	if config.IdentityFile != "" {
 		file, err := runnerauth.Load(config.IdentityFile)
 		if err != nil {
@@ -287,13 +296,16 @@ func (c *Client) requestWithDeadline(ctx context.Context, timeout time.Duration,
 }
 
 func (c *Client) requestOnce(ctx context.Context, timeout time.Duration, method string, path string, headers http.Header, input any, output any) error {
+	return c.requestOnceWithClient(ctx, c.httpClient, timeout, method, path, headers, input, output)
+}
+
+func (c *Client) requestOnceWithClient(ctx context.Context, httpClient *http.Client, timeout time.Duration, method string, path string, headers http.Header, input any, output any) error {
 	if method != http.MethodGet {
 		c.reads.forget(path)
 		defer c.reads.forget(path)
 		c.forgetHeartbeatItems(path)
 		defer c.forgetHeartbeatItems(path)
 	}
-	httpClient := c.httpClient
 	if timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, timeout)

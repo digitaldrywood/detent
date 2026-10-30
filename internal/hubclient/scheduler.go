@@ -373,6 +373,62 @@ func (s *Scheduler) RenewClaim(ctx context.Context, issueID string, _ time.Time)
 	return claimedIssue(issue, renewed), nil
 }
 
+func (s *Scheduler) RenewClaimHeartbeat(ctx context.Context, issueID string, now time.Time) (orchestrator.Claimed, error) {
+	s.mu.Lock()
+	claim, ok := s.nativeClaims[issueID]
+	s.mu.Unlock()
+	if !ok {
+		return s.RenewClaim(ctx, issueID, now)
+	}
+	if claim.lost {
+		return orchestrator.Claimed{}, orchestrator.ErrSchedulingClaimLost
+	}
+	active, err := s.nativeClaimActive(ctx, claim, false)
+	if err != nil || !active {
+		if err == nil {
+			err = orchestrator.ErrSchedulingClaimLost
+		}
+		return orchestrator.Claimed{}, s.nativeClaimError(ctx, issueID, claim.lease.FencingToken, err)
+	}
+	started := s.now()
+	lease, err := claim.source.client.renewHeartbeat(ctx, claim.lease, int64(s.leaseTTL/time.Second))
+	s.mu.Lock()
+	current, found := s.nativeClaims[issueID]
+	if found && !current.lost && current.lease.FencingToken != claim.lease.FencingToken {
+		s.mu.Unlock()
+		return claimedIssue(connector.Issue{ID: issueID}, nativeTrackerLease(current.lease)), nil
+	}
+	if err == nil && found && !current.lost && current.lease.ID == lease.ID && current.lease.FencingToken == lease.FencingToken {
+		if current.lease.RenewedAt.After(lease.RenewedAt) {
+			s.mu.Unlock()
+			return claimedIssue(connector.Issue{ID: issueID}, nativeTrackerLease(current.lease)), nil
+		}
+		current.lease = lease
+		current.deadline = nativeLeaseDeadline(started, lease)
+		s.nativeClaims[issueID] = current
+		s.claims[issueID] = nativeTrackerLease(lease)
+		s.mu.Unlock()
+		return claimedIssue(connector.Issue{ID: issueID}, nativeTrackerLease(lease)), nil
+	}
+	s.mu.Unlock()
+	if err == nil {
+		return orchestrator.Claimed{}, orchestrator.ErrSchedulingClaimLost
+	}
+	if claim.lifecycle != nil {
+		if !claim.lifecycle.TryLock() {
+			return orchestrator.Claimed{}, errors.Join(ErrUnavailable, err)
+		}
+		defer claim.lifecycle.Unlock()
+	}
+	s.mu.Lock()
+	current, found = s.nativeClaims[issueID]
+	s.mu.Unlock()
+	if found && !current.lost && current.lease.FencingToken != claim.lease.FencingToken {
+		return claimedIssue(connector.Issue{ID: issueID}, nativeTrackerLease(current.lease)), nil
+	}
+	return orchestrator.Claimed{}, s.nativeClaimError(ctx, issueID, claim.lease.FencingToken, err)
+}
+
 func (s *Scheduler) ReleaseClaim(ctx context.Context, issueID string, reason string) error {
 	issueID = strings.TrimSpace(issueID)
 	s.mu.Lock()
