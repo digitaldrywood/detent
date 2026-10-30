@@ -1016,22 +1016,7 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 		t.Fatalf("landed change = %#v, summary %#v", detail.Change.Landed, detail.Summary)
 	}
 	if otherMachine != "" {
-		attempts, err := h.admin.Attempts(t.Context(), item, "")
-		if err != nil {
-			t.Fatal(err)
-		}
-		merges := 0
-		for _, attempt := range attempts.Items {
-			if attempt.Identity.Role == runner.RoleMerge {
-				merges++
-				if attempt.MachineID != h.scheduler.machine.ID {
-					t.Fatalf("landing ran away from reviewed head: %+v", attempt)
-				}
-			}
-		}
-		if merges != 1 {
-			t.Fatalf("landing started %d times, want once", merges)
-		}
+		testNativeLandingUsesCurrentMachine(t, h, item)
 	}
 	for _, fetch := range []struct {
 		name string
@@ -1076,6 +1061,26 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 	}
 	if len(attempt.Usage) != 1 || attempt.Usage[0].Provider != "openai" || attempt.Usage[0].Model != "test" || attempt.Usage[0].Input != 123 || attempt.Usage[0].Output != 45 {
 		t.Fatalf("landing completion lost usage: %+v", attempt.Usage)
+	}
+}
+
+func testNativeLandingUsesCurrentMachine(t *testing.T, h *nativeChangeHub, item tracker.NativeWorkItemID) {
+	t.Helper()
+	attempts, err := h.admin.Attempts(t.Context(), item, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	merges := 0
+	for _, attempt := range attempts.Items {
+		if attempt.Identity.Role == runner.RoleMerge {
+			merges++
+			if attempt.MachineID != h.scheduler.machine.ID {
+				t.Fatalf("landing ran away from reviewed head: %+v", attempt)
+			}
+		}
+	}
+	if merges != 1 {
+		t.Fatalf("landing started %d times, want once", merges)
 	}
 }
 

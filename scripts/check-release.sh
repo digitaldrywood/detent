@@ -20,7 +20,7 @@ if [ "$#" -gt 1 ]; then
         windows-build-arm64) check_with_evidence windows-build-arm64 env GOOS=windows GOARCH=arm64 go build -p "$procs" ./... ;;
         vet) check_with_evidence vet make vet TEST_PROCS="$procs" ;;
         lint) check_with_evidence lint make lint TEST_PROCS="$procs" ;;
-        scripts) check_with_evidence scripts python3 -m unittest scripts/nilaway_changed_test.py scripts/check_land_test.py ;;
+        scripts) check_with_evidence scripts python3 -m unittest scripts/nilaway_changed_test.py scripts/check_land_test.py scripts/release_validate_local_test.py ;;
         nilaway-changed) check_with_evidence nilaway-changed make nilaway-changed ;;
         race) check_with_evidence race make test-race TEST_PROCS="$procs" ;;
         subprocess-lifecycle) check_with_evidence subprocess-lifecycle env -u DETENT_API_TOKEN go test -race ./internal/claudecode ./internal/codex -run '^(TestRunTurnCancellationKillsChildProcessGroup|TestRunTurnDetectsExitedParentWithInheritedStdout|TestLocalTransportCloseKillsChildProcessGroup|TestLocalTransportReapsChildAfterParentExits)$' -count=20 -timeout=5m ;;

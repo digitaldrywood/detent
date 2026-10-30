@@ -293,25 +293,40 @@ sys.exit(7 if stage in json.loads(os.environ["FAILURES"]) else 0)
             git("tag", "-a", "v1.0.0", "-m", "<!-- detent-release-provenance:" + json.dumps(provenance) + " -->")
             expected = sorted(CHECK_RELEASE.SMOKE_SPECS)
             self.assertEqual(select(), expected)
+            for path in ("docs/browser.md", "docs/browser.svg", "README.md", "internal/hubserver/preview_test.go",
+                         "scripts/check_release_test.py", "tests/test_release.py", "scripts/browser_test.sh"):
+                with self.subTest(path=path):
+                    target = root / path
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text("irrelevant\n")
+                    try:
+                        self.assertEqual(select(), expected)
+                    finally:
+                        target.unlink()
+            for path in ("tests/visual/runtime.js", "web/conversation/src/App.tsx", "scripts/check-browser.sh",
+                         "internal/hubserver/migration_steps/00064_cloud_attachment_references.sql",
+                         "internal/hubserver/native_pages.go", "internal/store/migrations/example.sql",
+                         "internal/web/example.templ", "app/example.ts", "config.yaml", "unknown.input"):
+                with self.subTest(path=path):
+                    target = root / path
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text("shared\n")
+                    try:
+                        self.assertEqual(select(), ["tests/visual"])
+                    finally:
+                        target.unlink()
             (root / "tests/visual/affected.spec.js").write_text("changed\n")
             git("add", ".")
             git("commit", "-qm", "changed journey")
             git("tag", "v9.0.0")
             git("tag", "-a", "v9.0.1", "-m", "unvalidated")
-            self.assertEqual(select(), sorted([*expected, "tests/visual/affected.spec.js"]))
+            self.assertEqual(select(), ["tests/visual"])
             provenance.update(tag="v1.0.1", commit=git("rev-parse", "HEAD"))
             git("tag", "-a", "v1.0.1", "-m", "<!-- detent-release-provenance:" + json.dumps(provenance) + " -->")
             self.assertEqual(select(), expected)
             (root / "tests/visual/unrelated.spec.js").write_text("uncommitted change\n")
-            self.assertEqual(select(), sorted([*expected, "tests/visual/unrelated.spec.js"]))
+            self.assertEqual(select(), ["tests/visual"])
             (root / "tests/visual/unrelated.spec.js").write_text("test fixture\n")
-            for path in ("tests/visual/runtime.js", "web/conversation/src/App.tsx", "internal/hubserver/preview_test.go", "scripts/check-browser.sh"):
-                with self.subTest(path=path):
-                    target = root / path
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    target.write_text("shared\n")
-                    self.assertEqual(select(), ["tests/visual"])
-                    target.unlink()
             with mock.patch.object(CHECK_RELEASE, "git", side_effect=subprocess.CalledProcessError(1, "git")):
                 self.assertEqual(select(), ["tests/visual"])
             with mock.patch.object(CHECK_RELEASE, "git", return_value="true\n"):

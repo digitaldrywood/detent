@@ -30,7 +30,6 @@ SMOKE_SPECS = (
     "tests/visual/conversation-actions.spec.js",
     "tests/visual/mobile.spec.js",
 )
-SPEC = re.compile(r"\.(?:spec|test)\.[cm]?[jt]sx?$")
 
 
 def dependencies(step):
@@ -192,26 +191,18 @@ def browser_specs():
         changed.update(git("diff", "--name-only", "--no-renames", "-z", "HEAD").split("\0"))
         changed.update(git("ls-files", "--others", "--exclude-standard", "-z").split("\0"))
         changed.discard("")
-        shared_files = {
-            "Makefile", "go.mod", "go.sum", "package.json", "package-lock.json",
-            "scripts/check-browser.sh", "scripts/check-release.sh", "scripts/check-release.py",
-            "internal/invariants/browser_policy.json",
-        }
         for path in sorted(changed):
-            if (path in shared_files or path.startswith(("playwright.config.", "web/conversation/", "static/"))
-                    or (path.endswith(".go") and not path.endswith("_test.go"))
-                    or path.startswith(("internal/web/", "internal/hubserver/migrations/", "internal/store/migrations/"))
-                    or (path.startswith("tests/visual/") and not SPEC.search(path))
-                    or (path.startswith(("internal/hubserver/", "internal/cli/", "internal/cloudentry/"))
-                        and path.endswith("_test.go"))):
-                print(f"Browser comparison: shared browser inputs changed ({path}); running full suite.", file=sys.stderr)
-                return ["tests/visual"]
-        selected = set(SMOKE_SPECS)
-        selected.update(path for path in changed if path.startswith("tests/visual/") and SPEC.search(path) and Path(path).is_file())
-        if not all(Path(path).is_file() for path in selected):
+            name = Path(path).name
+            if (path.startswith("docs/") or path.endswith(("_test.go", ".md"))
+                    or re.fullmatch(r"(?:test_.+|.+_test)\.py", name)
+                    or (path.startswith("scripts/") and re.fullmatch(r"(?:test_.+|.+_test)\.(?:sh|bash|bats)", name))):
+                continue
+            print(f"Browser comparison: browser-relevant or unknown input changed ({path}); running full suite.", file=sys.stderr)
+            return ["tests/visual"]
+        if not all(Path(path).is_file() for path in SMOKE_SPECS):
             print("Browser comparison: smoke spec missing; running full suite.", file=sys.stderr)
             return ["tests/visual"]
-        return sorted(selected)
+        return sorted(SMOKE_SPECS)
     except (OSError, subprocess.CalledProcessError, UnicodeError) as error:
         print(f"Browser comparison unavailable ({error}); running full suite.", file=sys.stderr)
         return ["tests/visual"]

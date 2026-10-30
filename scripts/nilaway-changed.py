@@ -10,7 +10,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 BASELINE = ROOT / "scripts" / "nilaway-baseline.json"
-TEST_FILE = re.compile(r"_test\.go:\d+")
 DIAGNOSTIC = re.compile(r"^(?P<path>\S+\.go):(?P<line>\d+):(?P<column>\d+):\s*(?:error:\s*)?(?P<message>.*)")
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 RELATED_DIAGNOSTIC = re.compile(r"^\(Same nil source could also cause potential nil panic\(s\) at \d+ other place\(s\): .+\.\)$")
@@ -45,16 +44,19 @@ def main():
         return 1
     unexpected = []
     diagnostics = 0
+    test_diagnostics = 0
     lines = [ANSI.sub("", raw) for raw in result.stdout.splitlines()]
-    for index, line in enumerate(lines):
-        if TEST_FILE.search(line):
-            continue
-        if line.endswith("INTERNAL ERROR(s):") and index + 1 < len(lines) and TEST_FILE.search(lines[index + 1]):
+    for line in lines:
+        if "INTERNAL ERROR(s):" in line:
+            unexpected.append(line)
             continue
         match = DIAGNOSTIC.search(line)
         if not match:
             if line.strip() and not line.startswith(("# ", "\t", " ")) and not RELATED_DIAGNOSTIC.fullmatch(line):
                 unexpected.append(line)
+            continue
+        if match["path"].endswith("_test.go"):
+            test_diagnostics += 1
             continue
         diagnostics += 1
         path = Path(match["path"])
@@ -86,7 +88,7 @@ def main():
         print("Unexpected NilAway diagnostics:")
         print("\n".join(unexpected))
         return 1
-    if result.returncode and not diagnostics:
+    if result.returncode and not (diagnostics or test_diagnostics):
         print(result.stdout)
         return result.returncode
     scope = "all Go packages" if packages == ["./..."] else f"{len(packages)} changed Go packages"

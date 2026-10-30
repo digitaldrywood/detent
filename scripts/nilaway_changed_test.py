@@ -135,6 +135,28 @@ class ReverseDependentAuditTests(unittest.TestCase):
                 self.assertEqual(code, 0, output)
                 self.assertIn("1 reviewed legacy diagnostics", output)
 
+            test_diagnostic = "importer/importer_test.go:10:2: Potential nil panic detected\n"
+            internal_error = "importer/importer.go:1:1: INTERNAL ERROR(s):\nimporter/importer_test.go:10:2: function has 509 CFG blocks\n"
+            for name, replay, expected in (
+                ("test-only diagnostic", test_diagnostic, 0),
+                ("internal error in test", internal_error, 1),
+                ("internal error with reviewed diagnostic", reviewed + internal_error, 1),
+                ("internal error located in test", internal_error.replace("importer/importer.go:1:1", "importer/importer_test.go:1:1"), 1),
+            ):
+                with self.subTest(name=name), mock.patch.object(
+                    audit.subprocess, "run", side_effect=[
+                        subprocess.CompletedProcess([], 0, ""),
+                        subprocess.CompletedProcess([], 1, replay),
+                    ],
+                ):
+                    code, output = run_audit()
+                    self.assertEqual(code, expected, output)
+                    if expected:
+                        self.assertIn("INTERNAL ERROR(s):", output)
+                        self.assertNotIn("Audited all Go packages", output)
+                    else:
+                        self.assertIn("0 reviewed legacy diagnostics", output)
+
             for returncode, failure in ((1, "nilaway: signal: killed\n"), (-9, ""), (2, "")):
                 with self.subTest(returncode=returncode, failure=failure), mock.patch.object(
                     audit.subprocess, "run", side_effect=[
