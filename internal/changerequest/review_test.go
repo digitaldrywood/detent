@@ -432,12 +432,22 @@ func TestArtifactMetadataBoundary(t *testing.T) {
 func TestReviewState(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name    string
-		edit    func(*tracker.ChangeDetail)
-		version string
-		head    string
-		want    connector.ChangeReview
+		name           string
+		baseAcceptance string
+		edit           func(*tracker.ChangeDetail)
+		version        string
+		head           string
+		want           connector.ChangeReview
 	}{
+		{name: "base acceptance approved", baseAcceptance: "approved", want: connector.ChangeReview{Current: true, Reviewed: true, AcceptanceOnBase: true}},
+		{name: "base acceptance missing", baseAcceptance: "missing", want: connector.ChangeReview{Current: true, Reviewed: true}},
+		{name: "base acceptance old", baseAcceptance: "old", want: connector.ChangeReview{Current: true, Reviewed: true}},
+		{name: "base acceptance nonempty", baseAcceptance: "nonempty", want: connector.ChangeReview{Current: true, Reviewed: true}},
+		{name: "base acceptance unavailable", baseAcceptance: "unavailable", want: connector.ChangeReview{Current: true, Reviewed: true}},
+		{name: "base acceptance no base", baseAcceptance: "no base", want: connector.ChangeReview{Current: true, Reviewed: true}},
+		{name: "base acceptance revoked", baseAcceptance: "revoked", want: connector.ChangeReview{Current: true, ChangesRequested: true}},
+		{name: "base acceptance missing native review", baseAcceptance: "missing native review", want: connector.ChangeReview{Current: true}},
+		{name: "base acceptance audit rejection", baseAcceptance: "audit rejection", want: connector.ChangeReview{Current: true, ChangesRequested: true}},
 		{name: "passing checks with missing review", edit: func(d *tracker.ChangeDetail) { d.Reviews = nil }, want: connector.ChangeReview{Current: true}},
 		{name: "failed checks require rework", edit: func(d *tracker.ChangeDetail) { d.Checks[0].Conclusion = "failure" }, want: connector.ChangeReview{Current: true, ChangesRequested: true}},
 		{name: "cancelled checks require a fresh version", edit: func(d *tracker.ChangeDetail) { d.Checks[0].Conclusion = "cancelled" }, want: connector.ChangeReview{Current: true, ChangesRequested: true}},
@@ -486,6 +496,31 @@ func TestReviewState(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			detail, now := reviewFixture()
+			if test.baseAcceptance != "" {
+				detail.Versions[0].BaseSHA = strings.Repeat("b", 40)
+				detail.Versions[0].Source = &tracker.ChangeSource{DiffSHA256: tracker.ChangeSourceDigest(nil)}
+				review := tracker.ChangeReview{VersionID: "v1", Decision: "approved", Validator: &gate.ValidatorResult{Verdict: "pass"}}
+				if test.baseAcceptance == "old" {
+					review.VersionID = "old"
+				}
+				if test.baseAcceptance != "missing" {
+					detail.Reviews = append(detail.Reviews, review)
+				}
+				switch test.baseAcceptance {
+				case "nonempty":
+					detail.Versions[0].Source.DiffSHA256 = tracker.ChangeSourceDigest([]byte("delta"))
+				case "unavailable":
+					detail.Versions[0].Source = nil
+				case "no base":
+					detail.Versions[0].BaseSHA = ""
+				case "revoked":
+					detail.Reviews = append(detail.Reviews, tracker.ChangeReview{VersionID: "v1", Decision: "changes_requested", Validator: &gate.ValidatorResult{Verdict: "rework"}})
+				case "missing native review":
+					detail.Reviews = detail.Reviews[1:]
+				case "audit rejection":
+					detail.Reviews = append(detail.Reviews, tracker.ChangeReview{VersionID: "v1", Decision: "changes_requested", SecurityAudit: &tracker.SecurityAuditReview{Verdict: "rework"}})
+				}
+			}
 			policyID, reviewID := detail.Versions[0].PolicyID, detail.Versions[0].ReviewPolicy.ID
 			if test.edit != nil {
 				test.edit(&detail)
