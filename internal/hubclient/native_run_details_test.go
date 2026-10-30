@@ -381,6 +381,18 @@ func TestNativeOversizedStepReceipt(t *testing.T) {
 				attachmentBody = saved
 			}
 			if ref := e.data.Steps[0].PayloadArtifact; ref != nil {
+				transport := h.native.client.httpClient.Transport
+				h.native.client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+					if strings.HasPrefix(request.URL.Path, "/v1/artifacts/") {
+						return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(failedReceiptBody{})}, nil
+					}
+					return transport.RoundTrip(request)
+				})
+				if _, err := e.restoreStep(t.Context(), e.data.Steps[0]); !errors.Is(err, artifact.ErrStorage) {
+					t.Fatalf("interrupted receipt read is not an instance storage failure: %v", err)
+				}
+				h.native.client.httpClient.Transport = transport
+
 				altered := e.data.Steps[0]
 				changed := *ref
 				changed.WorkItemID = "wi_" + strings.Repeat("f", 32)
@@ -406,3 +418,7 @@ func TestNativeOversizedStepReceipt(t *testing.T) {
 		})
 	}
 }
+
+type failedReceiptBody struct{}
+
+func (failedReceiptBody) Read([]byte) (int, error) { return 0, io.ErrUnexpectedEOF }

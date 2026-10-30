@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"time"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
@@ -75,7 +74,7 @@ func (e *nativeExecution) restoreStep(ctx context.Context, receipt tracker.Nativ
 	if !artifact.ValidOrigin(grant.Origin) || grant.SHA256 != ref.SHA256 {
 		return tracker.NativeStepReceipt{}, artifact.ErrIntegrity
 	}
-	httpClient := &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	httpClient := &http.Client{Transport: client.client.httpClient.Transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	read := func(path string, limit int64) ([]byte, error) {
 		request, err := http.NewRequestWithContext(ctx, http.MethodGet, grant.Origin+path, nil)
 		if err != nil {
@@ -91,7 +90,10 @@ func (e *nativeExecution) restoreStep(ctx context.Context, receipt tracker.Nativ
 			return nil, artifact.ErrStorage
 		}
 		data, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
-		if err != nil || int64(len(data)) > limit {
+		if err != nil {
+			return nil, artifact.ErrStorage
+		}
+		if int64(len(data)) > limit {
 			return nil, artifact.ErrIntegrity
 		}
 		return data, nil
