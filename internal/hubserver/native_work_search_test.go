@@ -24,6 +24,33 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+func TestNativeSearchExpressionsBound(t *testing.T) {
+	terms := make([]string, 33)
+	want := make([]string, 32)
+	for index := range terms {
+		terms[index] = "term" + strconv.Itoa(index)
+		if index < len(want) {
+			want[index] = `"` + terms[index] + `"*`
+		}
+	}
+	for _, test := range []struct {
+		name, query string
+		want        []string
+	}{
+		{"empty", "!!!", []string{`""`}},
+		{"normalized distinct terms", "Café CAFE café repo-path REPO", []string{`"café"*`, `"cafe"*`, `"repo"*`, `"path"*`}},
+		{"at cap", strings.Join(terms[:32], " "), want},
+		{"over cap", strings.Join(terms, " "), want},
+		{"duplicates do not consume cap", strings.Repeat("TERM0 ", 40) + strings.Join(terms, " "), want},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := nativeSearchExpressions(test.query); !slices.Equal(got, test.want) {
+				t.Fatalf("expressions=%v want=%v", got, test.want)
+			}
+		})
+	}
+}
+
 func TestNativeWorkSearch(t *testing.T) {
 	f := newNativeFixture(t, nil, "", "ranked-search")
 	target := f.create(t, "fix(setup): Associate runner checkout deadlocks on a new project")
@@ -198,17 +225,44 @@ No safety-critical path is touched; onboarding repository binding and runner che
 	for _, transport := range []string{"stdio", "http"} {
 		protocols[transport] = hostedContextProtocol(t, f.service, ctx, transport)
 	}
-	longTerms := make([]string, 502)
+	longTerms := make([]string, 32)
 	for index := range longTerms {
 		longTerms[index] = "w" + strconv.Itoa(index)
 	}
 	longTerms[len(longTerms)-1] = "unicorn"
-	t.Run("long HTTP query", func(t *testing.T) {
-		page := list(url.Values{"q": {strings.Join(longTerms, " ")}})
-		if len(page.Items) != 1 || page.Items[0].WorkItemID != commentItem.WorkItemID {
-			t.Fatalf("long query lost comment match: %+v", page.Items)
-		}
-	})
+	for _, test := range []struct {
+		name, query string
+		want        []tracker.NativeWorkItemID
+	}{
+		{"at term cap", strings.Join(longTerms, " "), []tracker.NativeWorkItemID{commentItem.WorkItemID}},
+		{"past term cap", "excluded " + strings.Join(longTerms, " "), nil},
+		{"duplicates before term cap", strings.Repeat("w0 ", 40) + strings.Join(longTerms, " "), []tracker.NativeWorkItemID{commentItem.WorkItemID}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			page := list(url.Values{"q": {test.query}})
+			var got []tracker.NativeWorkItemID
+			for _, item := range page.Items {
+				got = append(got, item.WorkItemID)
+			}
+			if !slices.Equal(got, test.want) {
+				t.Fatalf("HTTP capped query=%v want=%v", got, test.want)
+			}
+			for _, transport := range []string{"stdio", "http"} {
+				raw := hostedContextData(t, protocols[transport]("tools/call", operatortool.WorkList, map[string]any{"project_id": f.project.ID, "query": test.query}), false)
+				var result operatortool.WorkReadResult[operatortool.NativeWorkPage]
+				if err := json.Unmarshal(raw, &result); err != nil {
+					t.Fatal(err)
+				}
+				got = nil
+				for _, item := range result.Data.Items {
+					got = append(got, item.WorkItemID)
+				}
+				if !slices.Equal(got, test.want) {
+					t.Fatalf("%s MCP capped query=%v want=%v", transport, got, test.want)
+				}
+			}
+		})
+	}
 	for _, test := range []struct {
 		name, query, matched string
 		want                 tracker.NativeWorkItemID
@@ -400,17 +454,33 @@ func TestNativeWorkSearchRanking(t *testing.T) {
 	}
 	want := []tracker.NativeWorkItemID{title.WorkItemID, body.WorkItemID, partial.WorkItemID}
 	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-	for _, mode := range []string{"issues", "duplicates", "rebuilding issues"} {
-		t.Run(mode, func(t *testing.T) {
+	terms := []string{"repos", "associ", "deadlock"}
+	for index := range 29 {
+		terms = append(terms, "unmatched"+strconv.Itoa(index))
+	}
+	cappedQuery := strings.Join(terms, " ")
+	for _, mode := range []struct {
+		name, query string
+		rebuilding  bool
+	}{
+		{"issues", "repos associ deadlock", false},
+		{"at term cap", cappedQuery, false},
+		{"past term cap", cappedQuery + " separate", false},
+		{"duplicates", "", false},
+		{"rebuilding issues", "repos associ deadlock", true},
+		{"rebuilding at term cap", cappedQuery, true},
+		{"rebuilding past term cap", cappedQuery + " separate", true},
+	} {
+		t.Run(mode.name, func(t *testing.T) {
 			var got []tracker.NativeWorkItemID
-			if mode == "rebuilding issues" {
+			if mode.rebuilding {
 				if _, err := f.service.database.db.ExecContext(t.Context(), `DELETE FROM native_work_scoped_fts; DELETE FROM native_work_search_lengths;
 UPDATE native_work_search_rebuild SET through_id=0,last_id=(SELECT max(id) FROM native_work_documents)`); err != nil {
 					t.Fatal(err)
 				}
 			}
-			if mode != "duplicates" {
-				response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items?"+url.Values{"q": {"repos associ deadlock"}}.Encode(), f.token, nil)
+			if mode.name != "duplicates" {
+				response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items?"+url.Values{"q": {mode.query}}.Encode(), f.token, nil)
 				requireNativeStatus(t, response, http.StatusOK)
 				var page tracker.NativeIssuePage
 				decodeHubResponse(t, response, &page)
@@ -581,6 +651,14 @@ UNION ALL SELECT term,col,offset FROM search_scoped_token_vocabulary WHERE doc=?
 			}
 			if !slices.Equal(original, indexed) {
 				t.Fatalf("Unicode61 tokens changed: original=%v indexed=%v", original, indexed)
+			}
+			var lexemes string
+			var count int
+			if err := pool.QueryRowContext(t.Context(), "SELECT native_search_lexemes(?),native_search_token_matches(native_search_lexemes(?),'')", test.content, test.content).Scan(&lexemes, &count); err != nil {
+				t.Fatal(err)
+			}
+			if lexemes != strings.Join(original, " ") || count != len(original) {
+				t.Fatalf("fallback lexemes=%q count=%d want=%v", lexemes, count, original)
 			}
 		})
 	}

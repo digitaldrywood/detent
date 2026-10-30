@@ -19,6 +19,8 @@ func registerNativeSearchFallback(tls *libc.TLS, database, module uintptr) int32
 		callback func(*libc.TLS, uintptr, int32, uintptr)
 	}{
 		{"native_search_tokens", 2, nativeSearchTokens},
+		{"native_search_lexemes", 1, nativeSearchLexemeText},
+		{"native_search_token_matches", 2, nativeSearchTokenMatches},
 		{"native_search_postings", 2, nativeSearchPostingText},
 		{"native_search_key", 1, nativeSearchKey},
 		{"native_search_key_end", 1, nativeSearchKeyEnd},
@@ -38,6 +40,14 @@ func registerNativeSearchFallback(tls *libc.TLS, database, module uintptr) int32
 }
 
 func nativeSearchTokens(tls *libc.TLS, context uintptr, _ int32, arguments uintptr) {
+	nativeSearchCountTokens(tls, context, arguments, false)
+}
+
+func nativeSearchTokenMatches(tls *libc.TLS, context uintptr, _ int32, arguments uintptr) {
+	nativeSearchCountTokens(tls, context, arguments, true)
+}
+
+func nativeSearchCountTokens(tls *libc.TLS, context uintptr, arguments uintptr, tokenized bool) {
 	values := nativeSearchMemory[[2]uintptr](arguments)
 	input := make([]string, len(values))
 	for i, value := range values {
@@ -56,6 +66,12 @@ func nativeSearchTokens(tls *libc.TLS, context uintptr, _ int32, arguments uintp
 	base := *(*func(*libc.TLS, uintptr, uintptr, int32, uintptr, int32, uintptr) int32)(unsafe.Pointer(&instance.module.base.FxTokenize))
 	var tokens [2][]string
 	for i, content := range input {
+		if i == 0 && tokenized {
+			if content != "" {
+				tokens[i] = strings.Split(content, " ")
+			}
+			continue
+		}
 		text, err := libc.CString(content)
 		if err != nil {
 			sqlite3.Xsqlite3_result_error_nomem(tls, context)
@@ -101,6 +117,17 @@ func nativeSearchTokens(tls *libc.TLS, context uintptr, _ int32, arguments uintp
 		}
 	}
 	sqlite3.Xsqlite3_result_int64(tls, context, count)
+}
+
+func nativeSearchLexemeText(tls *libc.TLS, context uintptr, _ int32, arguments uintptr) {
+	value := *nativeSearchMemory[uintptr](arguments)
+	content := string(libc.GoBytes(sqlite3.Xsqlite3_value_text(tls, value), int(sqlite3.Xsqlite3_value_bytes(tls, value))))
+	tokens, err := nativeSearchLexemes(tls, context, content)
+	if err != nil {
+		sqlite3.Xsqlite3_result_error_code(tls, context, sqlite3.SQLITE_ERROR)
+		return
+	}
+	nativeSearchResultText(tls, context, strings.Join(tokens, " "))
 }
 
 func nativeSearchLexemes(tls *libc.TLS, context uintptr, content string) ([]string, error) {

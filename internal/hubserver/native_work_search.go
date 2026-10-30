@@ -22,6 +22,8 @@ func nativeSearchNumber(query string) (int, string) {
 	return value, project
 }
 
+const nativeSearchTermLimit = 32
+
 func nativeSearchExpressions(query string) []string {
 	terms := strings.FieldsFunc(query, func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsNumber(r) })
 	seen := map[string]bool{}
@@ -31,6 +33,9 @@ func nativeSearchExpressions(query string) []string {
 		if !seen[term] {
 			expressions = append(expressions, `"`+term+`"*`)
 			seen[term] = true
+			if len(expressions) == nativeSearchTermLimit {
+				break
+			}
 		}
 	}
 	if len(expressions) == 0 {
@@ -116,16 +121,19 @@ func nativeSearchHits(scope nativeScope, archived string, expressions []string) 
  SELECT d.id,d.issue_id,c.title,c.body
  FROM fallback_issues i CROSS JOIN native_work_documents d CROSS JOIN native_work_search_content c
  WHERE d.issue_id=i.id AND c.id=d.id AND NOT EXISTS(SELECT 1 FROM native_work_search_refresh WHERE document_id=d.id) LIMIT ` + strconv.Itoa(nativeSearchPostingBudget) + `
- ), fallback_documents AS MATERIALIZED (
- SELECT d.*,native_search_tokens(d.title,'')+native_search_tokens(d.body,'') AS tokens
+ ), fallback_tokenized AS MATERIALIZED (
+ SELECT d.id,d.issue_id,native_search_lexemes(d.title) AS title_tokens,native_search_lexemes(d.body) AS body_tokens
  FROM fallback_candidates d WHERE EXISTS (SELECT 1 FROM native_work_search_refresh WHERE document_id=d.id) OR NOT EXISTS (
  SELECT 1 FROM search_scopes s CROSS JOIN native_work_search_lengths l WHERE l.document_id=d.id AND l.scope=s.scope
  )
+ ), fallback_documents AS MATERIALIZED (
+ SELECT d.*,native_search_token_matches(d.title_tokens,'')+native_search_token_matches(d.body_tokens,'') AS tokens
+ FROM fallback_tokenized d
  ), fallback_population AS MATERIALIZED (
  SELECT count(*) AS documents,avg(tokens) AS average FROM fallback_documents
  ), fallback_matches AS MATERIALIZED (
  SELECT d.id,d.issue_id,d.tokens,terms.matched,
- 5*native_search_tokens(d.title,terms.matched)+native_search_tokens(d.body,terms.matched) AS frequency
+ 5*native_search_token_matches(d.title_tokens,terms.matched)+native_search_token_matches(d.body_tokens,terms.matched) AS frequency
  FROM fallback_documents d CROSS JOIN terms
  ), fallback_frequencies AS MATERIALIZED (
  SELECT matched,count(*) AS documents FROM fallback_matches WHERE frequency>0 GROUP BY matched
