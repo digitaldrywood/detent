@@ -69,7 +69,7 @@ class ReleaseAuditLocalTest(unittest.TestCase):
                     'import os, pathlib, sys\n'
                     'a = sys.argv[1:]\n'
                     'assert a[0] == "exec" and a[a.index("--sandbox") + 1] == "read-only"\n'
-                    'assert "-m" not in a and sys.stdin.read() == ""\n'
+                    'assert a[a.index("-m") + 1] == "gpt-6.1-terra" and a[a.index("-c") + 1] == "model_reasoning_effort=max" and sys.stdin.read() == ""\n'
                     'assert os.environ["BASE"] in a[-1] and os.environ["HEAD"] in a[-1]\n'
                     'pathlib.Path(a[a.index("-o") + 1]).write_text(os.environ["MESSAGE"])\n'
                     'sys.exit(int(os.environ["CODEX_EXIT"]))\n'
