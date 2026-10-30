@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
+	"github.com/digitaldrywood/detent/internal/hubanalytics"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -41,10 +42,10 @@ func TestActivityIssueResidence(t *testing.T) {
 		{name: "truncated prefix does not fabricate a start", entries: []entry{{"Build", 20}}, unknown: true, seconds: []float64{0, 0}, counts: []int{0, 0}, names: []string{"Ready", "Build"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			samples := []analyticsResidenceSample{{Created: base, At: base, Entered: base, Initial: tt.entries[0].lane, State: tt.entries[0].lane}}
+			samples := []hubanalytics.ResidenceSample{{Created: base, At: base, Entered: base, Initial: tt.entries[0].lane, State: tt.entries[0].lane}}
 			for i, e := range tt.entries[1:] {
 				at := base.Add(time.Duration(e.second) * time.Second)
-				samples = append(samples, analyticsResidenceSample{Created: base, At: at, Entered: at, State: e.lane, Sequence: int64(i + 1)})
+				samples = append(samples, hubanalytics.ResidenceSample{Created: base, At: at, Entered: at, State: e.lane, Sequence: int64(i + 1)})
 			}
 			if tt.unknown {
 				samples[0].Sequence = 4
@@ -147,7 +148,7 @@ func TestActivityIssueRead(t *testing.T) {
 						continue
 					}
 					at := base.Add(time.Duration(e.second) * time.Second)
-					sample := analyticsResidenceSample{ID: id, Created: base, At: at, Entered: at, Initial: tt.entries[0].lane, State: e.lane, Sequence: int64(i)}
+					sample := hubanalytics.ResidenceSample{ID: id, Created: base, At: at, Entered: at, Initial: tt.entries[0].lane, State: e.lane, Sequence: int64(i)}
 					if err := writeAnalyticsResidenceSample(t.Context(), tx, scope, "residence_edge", fmt.Sprintf("%s:%d", id, i), sample); err != nil {
 						t.Fatal(err)
 					}

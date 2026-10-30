@@ -19,13 +19,15 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubanalytics"
+	"github.com/digitaldrywood/detent/internal/hubhealth"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func applyTestHealth(t *testing.T, f nativeFixture, now time.Time, findings []healthFinding) {
+func applyTestHealth(t *testing.T, f nativeFixture, now time.Time, findings []hubhealth.Finding) {
 	t.Helper()
 	if err := f.service.commitHealthEvaluation(t.Context(), f.project.OrganizationID, now, findings, nil); err != nil {
 		t.Fatal(err)
@@ -38,34 +40,34 @@ func TestHealthFindingStartTime(t *testing.T) {
 	start := now.Add(-48 * time.Hour)
 	for _, test := range []struct {
 		name         string
-		wait         healthWait
+		wait         hubhealth.Wait
 		withoutStart bool
 		want         time.Time
 	}{
-		{name: "transition wait", wait: healthWait{Event: "transition", Since: start}, want: start},
-		{name: "attempt disposition wait", wait: healthWait{Attempt: "attempt", Since: start}, want: start},
-		{name: "question wait", wait: healthWait{Since: start}, want: start},
+		{name: "transition wait", wait: hubhealth.Wait{Event: "transition", Since: start}, want: start},
+		{name: "attempt disposition wait", wait: hubhealth.Wait{Attempt: "attempt", Since: start}, want: start},
+		{name: "question wait", wait: hubhealth.Wait{Since: start}, want: start},
 		{name: "rule without start", withoutStart: true, want: now},
-		{name: "contract wait without start", wait: healthWait{Reason: "Complete the issue contract."}, want: now},
-		{name: "contract wait with future start", wait: healthWait{Reason: "Complete the issue contract.", Since: now.Add(time.Minute)}, want: now},
-		{name: "contract wait bypasses age gate", wait: healthWait{Reason: "Complete the issue contract.", Since: now.Add(-time.Minute)}, want: now.Add(-time.Minute)},
+		{name: "contract wait without start", wait: hubhealth.Wait{Reason: "Complete the issue contract."}, want: now},
+		{name: "contract wait with future start", wait: hubhealth.Wait{Reason: "Complete the issue contract.", Since: now.Add(time.Minute)}, want: now},
+		{name: "contract wait bypasses age gate", wait: hubhealth.Wait{Reason: "Complete the issue contract.", Since: now.Add(-time.Minute)}, want: now.Add(-time.Minute)},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			f := newNativeFixture(t, nil, "", "health-start")
-			var finding healthFinding
+			var finding hubhealth.Finding
 			if test.withoutStart {
-				finding = newHealthFinding("fixture", "instance", "work_item", "item", "", "", []string{string(f.project.ID)}, healthEvidence{})
+				finding = hubhealth.NewFinding("fixture", "instance", "work_item", "item", "", "", []string{string(f.project.ID)}, hubhealth.Evidence{})
 			} else {
 				wait := test.wait
 				wait.Item, wait.Project, wait.Active = "item", string(f.project.ID), true
 				var active bool
-				finding, active = humanWaitFinding(now, wait)
+				finding, active = hubhealth.HumanWaitFinding(now, wait)
 				if !active {
 					t.Fatal("finding is inactive")
 				}
 			}
-			applyTestHealth(t, f, now, []healthFinding{finding})
+			applyTestHealth(t, f, now, []hubhealth.Finding{finding})
 			var opened, seen string
 			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT opened_at,last_seen_at FROM health_findings").Scan(&opened, &seen); err != nil {
 				t.Fatal(err)
@@ -83,7 +85,7 @@ func TestHealthFindingLifecycle(t *testing.T) {
 	addHealthBacklog(t, f)
 	now := time.Date(2026, 10, 6, 18, 0, 0, 0, time.UTC)
 	start := now.Add(-48 * time.Hour)
-	finding, _ := humanWaitFinding(now, healthWait{Item: "item", Project: string(f.project.ID), Since: start, Active: true})
+	finding, _ := hubhealth.HumanWaitFinding(now, hubhealth.Wait{Item: "item", Project: string(f.project.ID), Since: start, Active: true})
 	var original string
 	for _, test := range []struct {
 		name   string
@@ -108,7 +110,7 @@ func TestHealthFindingLifecycle(t *testing.T) {
 			if test.name == "updates last seen" {
 				finding.ConditionSince = now.Add(-time.Hour)
 			}
-			findings := evaluateHealth(now.Add(test.offset), healthSnapshot{Projects: []healthProject{{ID: string(f.project.ID), Candidates: 1, RefusalReasons: []string{"runner_capacity_full"}}}})
+			findings := hubhealth.Evaluate(now.Add(test.offset), hubhealth.Snapshot{Projects: []hubhealth.Project{{ID: string(f.project.ID), Candidates: 1, RefusalReasons: []string{"runner_capacity_full"}}}})
 			if test.active {
 				findings = append(findings, finding)
 			}
@@ -204,16 +206,16 @@ func TestHealthFindingsReads(t *testing.T) {
 	other := newNativeFixture(t, f.service, f.project.OrganizationID, "other-health")
 	addHealthBacklog(t, other)
 	now := time.Date(2026, 10, 6, 18, 0, 0, 0, time.UTC)
-	findings := []healthFinding{}
+	findings := []hubhealth.Finding{}
 	for _, test := range []struct {
 		id      string
 		project tracker.ProjectID
 	}{{"first", f.project.ID}, {"second", f.project.ID}, {"hidden", other.project.ID}} {
-		findings = append(findings, newHealthFinding("test", "instance", "project", test.id, "Summary.", "The operator acts.", []string{string(test.project)}, healthEvidence{}))
+		findings = append(findings, hubhealth.NewFinding("test", "instance", "project", test.id, "Summary.", "The operator acts.", []string{string(test.project)}, hubhealth.Evidence{}))
 	}
 	findings[0].Projects = append(findings[0].Projects, string(other.project.ID))
-	findings[0].Evidence = healthEvidence{Counts: map[string]int{"queue_depth": 8}, Queues: map[string]healthQueueEvidence{string(f.project.ID): {QueueDepth: 3}, string(other.project.ID): {QueueDepth: 5}}}
-	scheduled, active := deadManFinding(now, healthProject{ID: string(f.project.ID), Scheduled: healthScheduledValidation{LastReport: now.Add(-6 * time.Hour), LastRunURL: "https://github.com/example-org/example-project/actions/runs/1/attempts/1"}})
+	findings[0].Evidence = hubhealth.Evidence{Counts: map[string]int{"queue_depth": 8}, Queues: map[string]hubhealth.QueueEvidence{string(f.project.ID): {QueueDepth: 3}, string(other.project.ID): {QueueDepth: 5}}}
+	scheduled, active := hubhealth.DeadManFinding(now, hubhealth.Project{ID: string(f.project.ID), Scheduled: hubhealth.ScheduledValidation{LastReport: now.Add(-6 * time.Hour), LastRunURL: "https://github.com/example-org/example-project/actions/runs/1/attempts/1"}})
 	if !active {
 		t.Fatal("scheduled validation finding was not active")
 	}
@@ -241,7 +243,7 @@ func TestHealthFindingsReads(t *testing.T) {
 			if test.status != http.StatusOK {
 				return
 			}
-			var page healthFindingsPage
+			var page hubhealth.FindingsPage
 			decodeHubResponse(t, response, &page)
 			for _, finding := range page.Items {
 				if len(finding.Evidence.Queues) > 0 && (len(finding.Evidence.Queues) != 1 || finding.Evidence.Queues[string(f.project.ID)].QueueDepth != 3 || finding.Evidence.Counts["queue_depth"] != 3) {
@@ -255,14 +257,14 @@ func TestHealthFindingsReads(t *testing.T) {
 	}
 	response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/health/findings?limit=1", f.token, nil)
 	requireNativeStatus(t, response, http.StatusOK)
-	var first healthFindingsPage
+	var first hubhealth.FindingsPage
 	decodeHubResponse(t, response, &first)
 	if len(first.Items) != 1 || first.NextCursor == "" {
 		t.Fatalf("first=%+v", first)
 	}
 	response = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/health/findings?limit=1&cursor="+first.NextCursor, f.token, nil)
 	requireNativeStatus(t, response, http.StatusOK)
-	var second healthFindingsPage
+	var second hubhealth.FindingsPage
 	decodeHubResponse(t, response, &second)
 	if len(second.Items) != 1 || second.NextCursor != "" || second.Items[0].ID == first.Items[0].ID {
 		t.Fatalf("second=%+v", second)
@@ -284,13 +286,13 @@ func TestHealthFindingsReads(t *testing.T) {
 	applyTestHealth(t, f, now.Add(time.Minute), nil)
 	response = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/health/findings?state=resolved&since="+url.QueryEscape(formatHubTime(now.Add(time.Second))), f.token, nil)
 	requireNativeStatus(t, response, http.StatusOK)
-	var resolved healthFindingsPage
+	var resolved hubhealth.FindingsPage
 	decodeHubResponse(t, response, &resolved)
 	if len(resolved.Items) != 2 {
 		t.Fatalf("resolved=%+v", resolved)
 	}
-	opened := newHealthFinding("test", "instance", "project", "new-open", "New finding.", "Check project.", []string{string(f.project.ID)}, healthEvidence{})
-	applyTestHealth(t, f, now.Add(2*time.Minute), []healthFinding{opened})
+	opened := hubhealth.NewFinding("test", "instance", "project", "new-open", "New finding.", "Check project.", []string{string(f.project.ID)}, hubhealth.Evidence{})
+	applyTestHealth(t, f, now.Add(2*time.Minute), []hubhealth.Finding{opened})
 	for _, test := range []struct {
 		name  string
 		since time.Time
@@ -303,7 +305,7 @@ func TestHealthFindingsReads(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/health/findings?state=all&since="+url.QueryEscape(formatHubTime(test.since)), f.token, nil)
 			requireNativeStatus(t, response, http.StatusOK)
-			var page healthFindingsPage
+			var page hubhealth.FindingsPage
 			decodeHubResponse(t, response, &page)
 			if len(page.Items) != test.count {
 				t.Fatalf("findings=%+v", page.Items)
@@ -362,7 +364,7 @@ func TestHealthSnapshotRunnerAndPolicyFallback(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			got := evaluateHealth(now, snapshot)
+			got := hubhealth.Evaluate(now, snapshot)
 			found := false
 			for _, finding := range got {
 				if finding.Signal == test.want {
@@ -381,8 +383,8 @@ func TestHealthReadFailurePreservesFindingsAndTick(t *testing.T) {
 	f := newNativeFixture(t, nil, "", "failed-health")
 	addHealthBacklog(t, f)
 	now := time.Date(2026, 10, 6, 18, 0, 0, 0, time.UTC)
-	finding := newHealthFinding("test", "instance", "project", string(f.project.ID), "Summary.", "The operator acts.", []string{string(f.project.ID)}, healthEvidence{})
-	applyTestHealth(t, f, now, []healthFinding{finding})
+	finding := hubhealth.NewFinding("test", "instance", "project", string(f.project.ID), "Summary.", "The operator acts.", []string{string(f.project.ID)}, hubhealth.Evidence{})
+	applyTestHealth(t, f, now, []hubhealth.Finding{finding})
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	if err := f.service.evaluateOrganizationHealth(ctx, f.project.OrganizationID, now.Add(time.Minute)); !errors.Is(err, context.Canceled) {
@@ -434,8 +436,8 @@ func TestHealthSnapshotRecordedCyclesAndLandings(t *testing.T) {
 			{"2026-10-21T11:59:59.9996Z"},
 			{"2026-10-21T11:59:59.999999999Z"},
 			{"2026-10-21T07:00:00-05:00"},
-			{formatHubTime(now.Add(-healthInstanceWindow))},
-			{formatHubTime(now.Add(-healthInstanceWindow - time.Nanosecond))},
+			{formatHubTime(now.Add(-hubhealth.InstanceWindow))},
+			{formatHubTime(now.Add(-hubhealth.InstanceWindow - time.Nanosecond))},
 			{"2026-10-21T12:00:00.000000001Z"},
 		}
 		reasons := []string{"policy_mismatch", "runner_heartbeat_stale"}
@@ -465,8 +467,8 @@ func TestHealthSnapshotRecordedCyclesAndLandings(t *testing.T) {
 		if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM health_event_times; DELETE FROM time_index_progress WHERE owner='health'"); err != nil {
 			t.Fatal(err)
 		}
-		var before [][]healthTimeEvent
-		var beforeFindings [][]healthFinding
+		var before [][]hubhealth.TimeEvent
+		var beforeFindings [][]hubhealth.Finding
 		for _, phase := range []string{"legacy", "projected", "populated"} {
 			if phase == "projected" {
 				if err := f.service.convertHealthProjections(t.Context()); err != nil {
@@ -487,25 +489,25 @@ func TestHealthSnapshotRecordedCyclesAndLandings(t *testing.T) {
 					t.Fatalf("%s events=%+v", phase, events)
 				}
 				for j, event := range events {
-					if event.project != string(fixture.project.ID) {
+					if event.Project != string(fixture.project.ID) {
 						t.Fatal("cross-organization event")
 					}
-					if j > 0 && event.at.Before(events[j-1].at) {
+					if j > 0 && event.At.Before(events[j-1].At) {
 						t.Fatal("events not ordered by nanosecond")
 					}
 				}
-				if !events[0].at.Equal(now.Add(-healthInstanceWindow)) || !events[len(events)-1].at.Equal(now) {
+				if !events[0].At.Equal(now.Add(-hubhealth.InstanceWindow)) || !events[len(events)-1].At.Equal(now) {
 					t.Fatalf("cutoff equality lost: %+v", events)
 				}
-				snapshot := healthSnapshot{Projects: []healthProject{{ID: string(fixture.project.ID), Candidates: 1, CandidateIDs: map[string]bool{candidates[fixture.project.ID]: true}, FreeSlots: 1, CandidateSince: now.Add(-time.Hour)}}}
+				snapshot := hubhealth.Snapshot{Projects: []hubhealth.Project{{ID: string(fixture.project.ID), Candidates: 1, CandidateIDs: map[string]bool{candidates[fixture.project.ID]: true}, FreeSlots: 1, CandidateSince: now.Add(-time.Hour)}}}
 				if err := readHealthEvents(t.Context(), f.service.database.reader, fixture.project.OrganizationID, now, &snapshot); err != nil {
 					t.Fatal(err)
 				}
 				if !snapshot.Projects[0].LastLanding.Equal(now.Add(-time.Minute)) {
 					t.Fatal("landing changed")
 				}
-				findings := evaluateHealth(now, snapshot)
-				if len(findings) != 1 || findings[0].Signal != "every_candidate_refused" || findings[0].Subject.ID != string(fixture.project.ID) || findings[0].Evidence.Reason != reasons[i] || findings[0].Evidence.Counts["candidates"] != 1 || findings[0].Evidence.Counts["claims"] != 0 || len(findings[0].Evidence.EventIDs) != 1 || findings[0].Evidence.EventIDs[0] != events[len(events)-1].id {
+				findings := hubhealth.Evaluate(now, snapshot)
+				if len(findings) != 1 || findings[0].Signal != "every_candidate_refused" || findings[0].Subject.ID != string(fixture.project.ID) || findings[0].Evidence.Reason != reasons[i] || findings[0].Evidence.Counts["candidates"] != 1 || findings[0].Evidence.Counts["claims"] != 0 || len(findings[0].Evidence.EventIDs) != 1 || findings[0].Evidence.EventIDs[0] != events[len(events)-1].Id {
 					t.Fatalf("%s organization %s findings=%+v", phase, fixture.project.OrganizationID, findings)
 				}
 				if phase == "legacy" {
@@ -573,11 +575,11 @@ func TestHealthSnapshotRecordedCyclesAndLandings(t *testing.T) {
 			if test.landing {
 				appendTestHealthEvent(t, f, items[0], "run.observed", tracker.CollaborationData{Run: &tracker.NativeRunData{Runtime: &tracker.NativeRuntimeObservation{Landing: &tracker.NativeLandingReceipt{Landed: true, ObservedAt: at}}}}, at)
 			}
-			snapshot := healthSnapshot{Projects: []healthProject{{ID: string(f.project.ID), Candidates: 2, CandidateIDs: map[string]bool{string(items[0].WorkItemID): true, string(items[1].WorkItemID): true}, FreeSlots: 1, CandidateSince: now.Add(-time.Hour)}}}
+			snapshot := hubhealth.Snapshot{Projects: []hubhealth.Project{{ID: string(f.project.ID), Candidates: 2, CandidateIDs: map[string]bool{string(items[0].WorkItemID): true, string(items[1].WorkItemID): true}, FreeSlots: 1, CandidateSince: now.Add(-time.Hour)}}}
 			if err := readHealthEvents(t.Context(), f.service.database.db, f.project.OrganizationID, now, &snapshot); err != nil {
 				t.Fatal(err)
 			}
-			_, refused := refusalFinding(snapshot.Projects[0])
+			_, refused := hubhealth.RefusalFinding(snapshot.Projects[0])
 			if refused != test.wantRefusal {
 				t.Fatalf("refused=%v snapshot=%+v", refused, snapshot)
 			}
@@ -585,7 +587,7 @@ func TestHealthSnapshotRecordedCyclesAndLandings(t *testing.T) {
 				if !snapshot.Projects[0].LastLanding.Equal(at) {
 					t.Fatalf("landing=%v", snapshot.Projects[0].LastLanding)
 				}
-				if _, active := deadManFinding(now, snapshot.Projects[0]); active {
+				if _, active := hubhealth.DeadManFinding(now, snapshot.Projects[0]); active {
 					t.Fatal("recent landing reported dead man")
 				}
 			}
@@ -664,7 +666,7 @@ func TestHealthSnapshotCurrentWaitAndLimitAuthority(t *testing.T) {
 						tx.Rollback()
 						t.Fatal(err)
 					}
-					snapshot := healthSnapshot{}
+					snapshot := hubhealth.Snapshot{}
 					readErr := readHealthCurrentWaits(t.Context(), tx, f.project.OrganizationID, now, &snapshot)
 					if err := tx.Rollback(); err != nil {
 						t.Fatal(err)
@@ -706,11 +708,11 @@ func TestHealthSnapshotCurrentWaitAndLimitAuthority(t *testing.T) {
 			if test.name == "recovered lifetime transition" {
 				appendTestHealthEvent(t, f, item, "workflow.transitioned", tracker.CollaborationData{Reason: "lifetime_limit_recovered"}, now)
 			}
-			snapshot := healthSnapshot{}
+			snapshot := hubhealth.Snapshot{}
 			if err := readHealthCurrentWaits(t.Context(), f.service.database.db, f.project.OrganizationID, now, &snapshot); err != nil {
 				t.Fatal(err)
 			}
-			got := evaluateHealth(now, snapshot)
+			got := hubhealth.Evaluate(now, snapshot)
 			if test.want == "unanswered_human_wait" && len(got) == 1 && !got[0].ConditionSince.Equal(at) {
 				t.Fatalf("attempt start=%s want %s", got[0].ConditionSince, at)
 			}
@@ -732,7 +734,7 @@ func TestHealthSnapshotCurrentWaitAndLimitAuthority(t *testing.T) {
 	if len(runners) != 1 || runners[0].Leases != 1 {
 		t.Fatalf("runners=%+v", runners)
 	}
-	if _, active := heartbeatFinding(now, runners[0].healthRunner); !active {
+	if _, active := hubhealth.HeartbeatFinding(now, runners[0].Runner); !active {
 		t.Fatal("expired unreleased assignment lost heartbeat gap")
 	}
 	if runners[0].FreeSlots != 2 {
@@ -781,11 +783,11 @@ func TestHealthSnapshotConversationQuestions(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			snapshot := healthSnapshot{}
+			snapshot := hubhealth.Snapshot{}
 			if err := readHealthCurrentWaits(t.Context(), f.service.database.db, f.project.OrganizationID, now, &snapshot); err != nil {
 				t.Fatal(err)
 			}
-			got := evaluateHealth(now, snapshot)
+			got := hubhealth.Evaluate(now, snapshot)
 			if len(got) != test.want {
 				t.Fatalf("findings=%+v", got)
 			}
@@ -817,7 +819,7 @@ func TestHealthReadBoundsPreserveEvaluation(t *testing.T) {
 		{name: "unknown runtime traffic before refusal", nonsignal: true, incomplete: true, laterSignal: "scheduler.decision"},
 		{name: "unknown runtime traffic before landing", nonsignal: true, incomplete: true, laterSignal: "run.finished"},
 		{name: "candidate pages", candidates: 101},
-		{name: "candidate bound", candidates: healthReadLimit + 1},
+		{name: "candidate bound", candidates: hubhealth.ReadLimit + 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -829,10 +831,10 @@ func TestHealthReadBoundsPreserveEvaluation(t *testing.T) {
 			addHealthBacklog(t, f)
 			item := f.create(t, "bounded")
 			now := time.Date(2026, 10, 6, 18, 0, 0, 0, time.UTC)
-			finding := newHealthFinding("test", "flow", "project", string(f.project.ID), "Summary.", "The operator acts.", []string{string(f.project.ID)}, healthEvidence{})
-			applyTestHealth(t, f, now, []healthFinding{finding})
+			finding := hubhealth.NewFinding("test", "flow", "project", string(f.project.ID), "Summary.", "The operator acts.", []string{string(f.project.ID)}, hubhealth.Evidence{})
+			applyTestHealth(t, f, now, []hubhealth.Finding{finding})
 			if test.projects {
-				_, err := f.service.database.db.ExecContext(t.Context(), `WITH RECURSIVE n(x) AS(SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<?) INSERT INTO projects(id,organization_id,name,profile,created_at) SELECT 'health-project-'||x,?,'health-project-'||x,'native',? FROM n`, healthProjectLimit, f.project.OrganizationID, formatHubTime(now))
+				_, err := f.service.database.db.ExecContext(t.Context(), `WITH RECURSIVE n(x) AS(SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<?) INSERT INTO projects(id,organization_id,name,profile,created_at) SELECT 'health-project-'||x,?,'health-project-'||x,'native',? FROM n`, hubhealth.ProjectLimit, f.project.OrganizationID, formatHubTime(now))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -843,7 +845,7 @@ func TestHealthReadBoundsPreserveEvaluation(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if test.candidates <= healthReadLimit {
+				if test.candidates <= hubhealth.ReadLimit {
 					snapshot, err := readHealthSnapshot(t.Context(), f.service.database.db, f.project.OrganizationID, now)
 					if err != nil {
 						t.Fatal(err)
@@ -863,7 +865,7 @@ func TestHealthReadBoundsPreserveEvaluation(t *testing.T) {
 				if test.cancellations {
 					kind = "workflow.transitioned"
 				}
-				_, err := f.service.database.db.ExecContext(t.Context(), `WITH RECURSIVE n(x) AS(SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<?) INSERT INTO collaboration_events(id,organization_id,project_id,work_item_id,sequence,type,schema_version,actor_json,data_json,recorded_at) SELECT 'health-event-'||x,?,?,?,x+100,?,1,'{"kind":"runner","principal_id":"health-test"}','{}',? FROM n`, healthReadLimit+1, f.project.OrganizationID, f.project.ID, item.WorkItemID, kind, formatHubTime(now))
+				_, err := f.service.database.db.ExecContext(t.Context(), `WITH RECURSIVE n(x) AS(SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<?) INSERT INTO collaboration_events(id,organization_id,project_id,work_item_id,sequence,type,schema_version,actor_json,data_json,recorded_at) SELECT 'health-event-'||x,?,?,?,x+100,?,1,'{"kind":"runner","principal_id":"health-test"}','{}',? FROM n`, hubhealth.ReadLimit+1, f.project.OrganizationID, f.project.ID, item.WorkItemID, kind, formatHubTime(now))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -892,8 +894,8 @@ func TestHealthReadBoundsPreserveEvaluation(t *testing.T) {
 			} else {
 				err = f.service.evaluateOrganizationHealth(t.Context(), f.project.OrganizationID, now.Add(time.Minute))
 			}
-			success := test.nonsignal && !test.incomplete || test.candidates > 0 && test.candidates <= healthReadLimit
-			if success && err != nil || !success && !errors.Is(err, errHealthReadLimit) {
+			success := test.nonsignal && !test.incomplete || test.candidates > 0 && test.candidates <= hubhealth.ReadLimit
+			if success && err != nil || !success && !errors.Is(err, hubhealth.ErrReadLimit) {
 				t.Fatalf("error=%v", err)
 			}
 			var resolved sql.NullString
@@ -960,7 +962,7 @@ func TestHealthSnapshotRefreshObservation(t *testing.T) {
 			if _, err := f.service.database.db.ExecContext(t.Context(), `DELETE FROM runner_admission_observations WHERE runner_id=?`, r.binding.RunnerID); err != nil {
 				t.Fatal(err)
 			}
-			var previous healthSnapshot
+			var previous hubhealth.Snapshot
 			for _, phase := range []string{"legacy", "typed"} {
 				if phase == "typed" {
 					if err := f.service.database.populateRunnerFacts(t.Context()); err != nil {
@@ -977,7 +979,7 @@ func TestHealthSnapshotRefreshObservation(t *testing.T) {
 					t.Fatalf("refresh projection changed snapshot: before=%+v after=%+v", previous, snapshot)
 				}
 
-				findings := evaluateHealth(now, snapshot)
+				findings := hubhealth.Evaluate(now, snapshot)
 				active := false
 				for _, finding := range findings {
 					if finding.Signal == "scheduler_loop_behind" {
@@ -1108,7 +1110,7 @@ func TestHealthDetectorTicksAndStops(t *testing.T) {
 		service.stopHealthDetector()
 		synctest.Wait()
 		select {
-		case <-service.healthDetector.done:
+		case <-service.healthDetector.Done():
 		default:
 			t.Fatal("detector did not join shutdown")
 		}
@@ -1142,12 +1144,12 @@ func TestHealthSnapshotCloudTransitionDetailAndDependencyHolds(t *testing.T) {
 	appendTestHealthEvent(t, f, recent, "workflow.transitioned", tracker.CollaborationData{Reason: "worker_progress", ReasonDetail: "permission wait"}, now.Add(-time.Minute))
 	appendTestHealthEvent(t, f, limited, "workflow.transitioned", tracker.CollaborationData{Reason: "worker_progress", ReasonDetail: "lifetime limit"}, now.Add(-time.Hour))
 	appendTestHealthEventAs(t, f, tracker.Actor{Kind: "human", PrincipalID: "operator"}, explained, "workflow.transitioned", tracker.CollaborationData{Reason: "user_requested", ReasonDetail: "lifetime limit"}, now.Add(-time.Hour))
-	snapshot := healthSnapshot{}
+	snapshot := hubhealth.Snapshot{}
 	if err := readHealthCurrentWaits(t.Context(), f.service.database.db, f.project.OrganizationID, now, &snapshot); err != nil {
 		t.Fatal(err)
 	}
 	got := map[string]string{}
-	for _, finding := range evaluateHealth(now, snapshot) {
+	for _, finding := range hubhealth.Evaluate(now, snapshot) {
 		got[finding.Subject.ID] = finding.Signal
 		if finding.Signal == "unanswered_human_wait" && !finding.ConditionSince.Equal(now.Add(-time.Hour)) {
 			t.Fatalf("transition start=%s", finding.ConditionSince)
@@ -1224,8 +1226,8 @@ func TestHealthSnapshotCloudTransitionDetailAndDependencyHolds(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		present := slices.ContainsFunc(issues, func(issue analyticsResidenceIssue) bool { return issue.id == string(active.WorkItemID) })
-		if present == live || !slices.ContainsFunc(issues, func(issue analyticsResidenceIssue) bool { return issue.id == string(gated.WorkItemID) }) {
+		present := slices.ContainsFunc(issues, func(issue hubanalytics.ResidenceIssue) bool { return issue.ID == string(active.WorkItemID) })
+		if present == live || !slices.ContainsFunc(issues, func(issue hubanalytics.ResidenceIssue) bool { return issue.ID == string(gated.WorkItemID) }) {
 			t.Fatalf("archived present=%v live=%v issues=%d", present, live, len(issues))
 		}
 	}

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubhealth"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -120,12 +121,12 @@ func TestHotAttemptProjectionCompatibility(t *testing.T) {
 						}
 						for _, read := range []struct {
 							name string
-							run  func() ([]healthRateAttempt, error)
+							run  func() ([]hubhealth.RateAttempt, error)
 						}{
-							{"typed", func() ([]healthRateAttempt, error) {
+							{"typed", func() ([]hubhealth.RateAttempt, error) {
 								return readHealthRateAttempts(first.service.runDetailContext(t.Context()), tx, scope, window)
 							}},
-							{"mixed", func() ([]healthRateAttempt, error) {
+							{"mixed", func() ([]hubhealth.RateAttempt, error) {
 								return readLegacyHealthRateAttempts(first.service.runDetailContext(t.Context()), tx, scope, window)
 							}},
 						} {
@@ -162,7 +163,7 @@ func TestHotAttemptProjectionCompatibility(t *testing.T) {
 		defer tx.Rollback()
 		legacyIssue := tracker.NativeIssue{}
 		legacyIssue.WorkItemID = item
-		for i := range healthReadLimit + 1 {
+		for i := range hubhealth.ReadLimit + 1 {
 			data := tracker.NativeRunData{CompletionBody: strings.Repeat("x", 4096)}
 			if i == 0 {
 				data.Runtime = &tracker.NativeRuntimeObservation{Landing: &tracker.NativeLandingReceipt{Landed: true, ObservedAt: now.Add(-time.Minute), ChangeID: "change_legacy", VersionID: "version_legacy", MergeSHA: "def"}}

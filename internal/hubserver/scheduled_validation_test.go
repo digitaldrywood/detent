@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubhealth"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -110,7 +111,7 @@ func TestScheduledValidationDeliveryHealth(t *testing.T) {
 			for _, fixture := range []nativeFixture{f, other} {
 				response := performHubAPIRequest(t, service, http.MethodGet, fixture.base+"/health/findings", fixture.token, nil)
 				requireNativeStatus(t, response, http.StatusOK)
-				var page healthFindingsPage
+				var page hubhealth.FindingsPage
 				decodeHubResponse(t, response, &page)
 				if step.signal == "" {
 					if len(page.Items) != 0 {
@@ -166,9 +167,9 @@ func TestScheduledValidationDeliveryHealth(t *testing.T) {
 		})
 	}
 	response := performHubAPIRequest(t, service, http.MethodGet, f.base+"/health/findings?state=resolved", f.token, nil)
-	var page healthFindingsPage
+	var page hubhealth.FindingsPage
 	decodeHubResponse(t, response, &page)
-	if len(page.Items) != 3 || !slices.ContainsFunc(page.Items, func(f healthFinding) bool { return f.ResolvedAt != nil && f.ResolvedAt.Equal(now) }) {
+	if len(page.Items) != 3 || !slices.ContainsFunc(page.Items, func(f hubhealth.Finding) bool { return f.ResolvedAt != nil && f.ResolvedAt.Equal(now) }) {
 		t.Fatalf("resolved findings = %+v", page.Items)
 	}
 }
@@ -227,7 +228,7 @@ func TestHealthScheduledReporterHistory(t *testing.T) {
 			if !scheduled.LastReport.Equal(base.Add(step.wantLast)) || (step.wantGreen < 0 && !scheduled.LastGreen.IsZero()) || (step.wantGreen >= 0 && !scheduled.LastGreen.Equal(base.Add(step.wantGreen))) {
 				t.Fatalf("scheduled history = %+v", scheduled)
 			}
-			finding, active := deadManFinding(now, healthProject{ID: string(f.project.ID), Scheduled: scheduled})
+			finding, active := hubhealth.DeadManFinding(now, hubhealth.Project{ID: string(f.project.ID), Scheduled: scheduled})
 			if active != step.wantSilent || active && finding.Evidence.Counts["scheduled_silent"] != 1 {
 				t.Fatalf("active=%v finding=%+v", active, finding)
 			}
@@ -253,7 +254,7 @@ func TestHealthScheduledReporterHistory(t *testing.T) {
 				}
 				want := scheduled
 				if phase.excluded {
-					want = healthScheduledValidation{}
+					want = hubhealth.ScheduledValidation{}
 				}
 				if readErr != nil || !reflect.DeepEqual(observed, want) {
 					t.Fatalf("%s changed scheduled comments: got=%+v want=%+v err=%v", phase.name, observed, want, readErr)

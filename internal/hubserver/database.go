@@ -16,6 +16,7 @@ import (
 
 	"github.com/shirou/gopsutil/v4/process"
 
+	"github.com/digitaldrywood/detent/internal/hubanalytics"
 	"github.com/digitaldrywood/detent/internal/instancelock"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -48,14 +49,13 @@ const readerConnectionLifetime = time.Hour
 type database struct {
 	policies               projectPolicyCache
 	dashboardCommitted     chan struct{}
-	analyticsRetryMu       sync.Mutex
-	analyticsRetryCursor   string
+	analyticsRetry         hubanalytics.RetryState
 	linkedSourceBase       string
 	db                     *sql.DB
 	reader                 *sql.DB
 	authReader             *sql.DB
 	claimReader            *sql.DB
-	analytics              analyticsStatements
+	analytics              *hubanalytics.Statements
 	lock                   *instancelock.Lock
 	path                   string
 	schemaVersion          int64
@@ -501,7 +501,7 @@ func (d *database) Close() error {
 		if d.claimReader != nil {
 			claimReaderErr = d.claimReader.Close()
 		}
-		d.closeErr = errors.Join(readerErr, authErr, claimReaderErr, d.analytics.close(), d.db.Close(), d.lock.Close())
+		d.closeErr = errors.Join(readerErr, authErr, claimReaderErr, d.analytics.Close(), d.db.Close(), d.lock.Close())
 	})
 	return d.closeErr
 }

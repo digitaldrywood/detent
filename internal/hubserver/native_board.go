@@ -13,10 +13,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubanalytics"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 const nativeBoardReplayLimit = 2048
+
 const nativeBoardTrimLimit = 32
 
 const nativeBoardCandidateQuery = `SELECT work_item_id,1 FROM (SELECT work_item_id FROM native_board_dirty
@@ -32,7 +34,7 @@ func (s *Service) maintainNativeBoard(ctx context.Context) {
 	if err := s.trimNextDashboardProject(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		s.config.Logger.ErrorContext(ctx, "trim dashboard changes", "error", err)
 	}
-	deadline := s.config.now().Add(analyticsBackfillBudget)
+	deadline := s.config.now().Add(hubanalytics.BackfillBudget)
 	for ctx.Err() == nil {
 		now := s.config.now()
 		if !now.Before(deadline) {
@@ -74,7 +76,7 @@ func (d *database) drainNativeBoardDirtyAfter(ctx context.Context, now time.Time
 	if err := snapshot.QueryRowContext(ctx, `SELECT coalesce((SELECT board_revision FROM derived_refresh_revisions WHERE work_item_id=?),0)`, id).Scan(&revision); err != nil {
 		return false, id, err
 	}
-	plan := &projectionPlan{nativeQueryer: snapshot}
+	plan := &hubanalytics.ProjectionPlan{Queryer: snapshot}
 	if err := refreshNativeBoardCard(ctx, plan, id, now, map[string]changeSummaryPolicy{}); err != nil {
 		return false, id, err
 	}
@@ -93,8 +95,8 @@ func (d *database) drainNativeBoardDirtyAfter(ctx context.Context, now time.Time
 	if revision != currentRevision {
 		return true, id, nil
 	}
-	for _, w := range plan.writes {
-		if _, err := tx.ExecContext(ctx, w.query, w.args...); err != nil {
+	for _, w := range plan.Writes {
+		if _, err := tx.ExecContext(ctx, w.Query, w.Args...); err != nil {
 			return false, id, err
 		}
 	}
@@ -152,7 +154,7 @@ ON CONFLICT(organization_id,project_id) DO UPDATE SET sequence=excluded.sequence
 	return err
 }
 
-func refreshNativeBoardCard(ctx context.Context, tx projectionQuery, id string, now time.Time, policies map[string]changeSummaryPolicy) error {
+func refreshNativeBoardCard(ctx context.Context, tx hubanalytics.ProjectionQuery, id string, now time.Time, policies map[string]changeSummaryPolicy) error {
 	var previous *tracker.NativeBoardCard
 	var oldJSON string
 	err := tx.QueryRowContext(ctx, "SELECT record_json FROM native_board_items WHERE work_item_id=?", id).Scan(&oldJSON)

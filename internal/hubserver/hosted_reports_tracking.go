@@ -3,17 +3,19 @@ package hubserver
 import (
 	"context"
 
+	"github.com/digitaldrywood/detent/internal/hubanalytics"
+	"github.com/digitaldrywood/detent/internal/hubhealth"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 )
 
 // reportsTrackingFingerprints maps the fingerprint a machine-filed issue would
 // carry for a failure to its class: the normalized signature, the signature's
 // digest, the class name and the class name's digest.
-func reportsTrackingFingerprints(failures []nativeFailure) map[string]string {
+func reportsTrackingFingerprints(failures []hubanalytics.Failure) map[string]string {
 	out := map[string]string{}
 	for _, f := range failures {
-		class := classifyFailure(f.example).Name
-		signature := normalizeFailureSignature(f.example)
+		class := classifyFailure(f.Example).Name
+		signature := hubhealth.NormalizeFailureSignature(f.Example)
 		for _, fingerprint := range []string{signature, issueorigin.Fingerprint(signature), class, issueorigin.Fingerprint(class)} {
 			if _, taken := out[fingerprint]; !taken && fingerprint != "" {
 				out[fingerprint] = class
@@ -25,7 +27,7 @@ func reportsTrackingFingerprints(failures []nativeFailure) map[string]string {
 
 // reportsTrackingIssues links each failure class to an open issue whose origin
 // fingerprint matches one of its signatures. A class with no match keeps no link.
-func (s *Service) reportsTrackingIssues(ctx context.Context, scope nativeScope, classes []reportClassTotal, failures []nativeFailure) error {
+func (s *Service) reportsTrackingIssues(ctx context.Context, scope nativeScope, classes []reportClassTotal, failures []hubanalytics.Failure) error {
 	fingerprints := reportsTrackingFingerprints(failures)
 	if len(fingerprints) == 0 {
 		return nil
@@ -33,7 +35,7 @@ func (s *Service) reportsTrackingIssues(ctx context.Context, scope nativeScope, 
 	rows, err := s.database.reader.QueryContext(ctx, `SELECT i.native_id, i.body FROM issues i JOIN workflow_states ws ON ws.id = i.workflow_state_id
 WHERE i.organization_id = ? AND i.project_id = ? AND i.archived = 0 AND ws.terminal = 0
 AND (instr(i.body, 'detent-origin') > 0 OR instr(i.body, 'detent-audit-fp') > 0)
-ORDER BY i.number LIMIT ?`, scope.organization, scope.project, maxAnalyticsPopulation)
+ORDER BY i.number LIMIT ?`, scope.organization, scope.project, hubanalytics.MaxPopulation)
 	if err != nil {
 		return err
 	}

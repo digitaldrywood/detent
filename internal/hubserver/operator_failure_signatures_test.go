@@ -11,40 +11,10 @@ import (
 	"unicode/utf8"
 
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubanalytics"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
-
-func TestNormalizeFailureSignature(t *testing.T) {
-	for _, test := range []struct {
-		name, a, b, want string
-	}{
-		{"ids", "attempt 123 wi_abc123 lease_deadbeef", "attempt 456 wi_def456 lease_abcd1234", "attempt <id> <id> <id>"},
-		{"hashes", "checkpoint deadbeef12345678 changed", "checkpoint abcdef1234567890 changed", "checkpoint <hash> changed"},
-		{"numeric hashes", "checkpoint " + strings.Repeat("1", 40) + " changed", "checkpoint " + strings.Repeat("2", 64) + " changed", "checkpoint <hash> changed"},
-		{"paths", "open /work/123/file42.go failed", "open /work/456/file97.go failed", "open /work/<n>/file<n>.go failed"},
-		{"windows paths", `open C:\work\123\file42.go failed`, `open C:\work\456\file97.go failed`, `open C:\work\<n>\file<n>.go failed`},
-		{"counts", "actual 1048576 characters exceeds limit 65536", "actual 2222222 characters exceeds limit 99999", "actual <n> characters exceeds limit <n>"},
-		{"bytes", "received 1048576 bytes, needed 32 KiB", "received 2097152 bytes, needed 64 KiB", "received <bytes>, needed <bytes>"},
-		{"timestamps", "failed at 2026-10-06T10:23:12.123Z", "failed at 2025-01-01T12:59:59-05:00", "failed at <timestamp>"},
-		{"first line", "  local_checkpoint_changed\nprivate details", "local_checkpoint_changed\r\nother details", "local_checkpoint_changed"},
-		{"bounded", strings.Repeat("界", 200), strings.Repeat("界", 200), strings.Repeat("界", 85)},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			for _, input := range []string{test.a, test.b} {
-				got := normalizeFailureSignature(input)
-				if got != test.want || len(got) > maxFailureSignatureLength || !utf8.ValidString(got) {
-					t.Fatalf("normalize %q = %q, want %q", input, got, test.want)
-				}
-			}
-		})
-	}
-	for _, pair := range [][2]string{{"local_checkpoint_changed", "local_checkpoint_missing"}, {"HTTP 401 unauthorized", "HTTP 403 forbidden"}, {"RPC code -32602", "RPC code -32603"}, {"open /work/123/a.go failed", "open /work/456/b.go failed"}} {
-		if normalizeFailureSignature(pair[0]) == normalizeFailureSignature(pair[1]) {
-			t.Fatalf("distinct errors collapsed: %q", pair)
-		}
-	}
-}
 
 func TestGroupNativeFailureSignatures(t *testing.T) {
 	now := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
@@ -66,7 +36,7 @@ func TestGroupNativeFailureSignatures(t *testing.T) {
 		{"merge storm", "merge", "retry storm", 5, time.Minute, false, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			failures := []nativeFailure{}
+			failures := []hubanalytics.Failure{}
 			for i := range test.count {
 				item := "wi_one"
 				if test.separateItems {
@@ -76,14 +46,14 @@ func TestGroupNativeFailureSignatures(t *testing.T) {
 				if test.olderFailure && i == 0 {
 					at = now.Add(-2 * time.Hour)
 				}
-				failures = append(failures, nativeFailure{workItem: item, example: fmt.Sprintf("count %d failed\nsecond line", i), class: test.class, at: at, started: at.Add(-2 * time.Minute), cost: 0.5, tokens: 10})
+				failures = append(failures, hubanalytics.Failure{WorkItem: item, Example: fmt.Sprintf("count %d failed\nsecond line", i), Class: test.class, At: at, Started: at.Add(-2 * time.Minute), Cost: 0.5, Tokens: 10})
 			}
 			got := groupNativeFailures(failures)
 			if len(got) != 1 {
 				t.Fatalf("groups=%#v", got)
 			}
 			g := got[0]
-			if g.Class != test.want || g.Count != test.count || g.Cost != 0.5*float64(test.count) || g.Tokens != 10*int64(test.count) || g.SlotMinutes != 2*float64(test.count) || g.FirstSeen != failures[0].at || g.LastSeen != failures[len(failures)-1].at || strings.Contains(g.Example, "\n") {
+			if g.Class != test.want || g.Count != test.count || g.Cost != 0.5*float64(test.count) || g.Tokens != 10*int64(test.count) || g.SlotMinutes != 2*float64(test.count) || g.FirstSeen != failures[0].At || g.LastSeen != failures[len(failures)-1].At || strings.Contains(g.Example, "\n") {
 				t.Fatalf("group=%#v", g)
 			}
 			for i, j := 0, len(failures)-1; i < j; i, j = i+1, j-1 {
@@ -95,10 +65,10 @@ func TestGroupNativeFailureSignatures(t *testing.T) {
 		})
 	}
 	t.Run("latest signature counts only matching failures", func(t *testing.T) {
-		failures := []nativeFailure{
-			{attemptID: "attempt_a", example: "count 1 failed", at: now},
-			{attemptID: "attempt_b", example: "other error", at: now.Add(-time.Minute)},
-			{attemptID: "attempt_c", example: "count 2 failed", at: now.Add(-time.Minute)},
+		failures := []hubanalytics.Failure{
+			{AttemptID: "attempt_a", Example: "count 1 failed", At: now},
+			{AttemptID: "attempt_b", Example: "other error", At: now.Add(-time.Minute)},
+			{AttemptID: "attempt_c", Example: "count 2 failed", At: now.Add(-time.Minute)},
 		}
 		got := latestNativeFailureSignature(failures, true)
 		if got == nil || got.Signature != "count <n> failed" || got.Count != 2 || !got.Partial {
@@ -114,15 +84,15 @@ func TestGroupNativeFailureSignatures(t *testing.T) {
 	})
 
 	t.Run("bounded items examples and pages", func(t *testing.T) {
-		failures := []nativeFailure{}
+		failures := []hubanalytics.Failure{}
 		for i := range maxFailureWorkItems + 3 {
-			failures = append(failures, nativeFailure{workItem: fmt.Sprintf("wi_%02d", i), example: strings.Repeat("界", 1000), class: "attempt", at: now, started: now.Add(time.Minute)})
+			failures = append(failures, hubanalytics.Failure{WorkItem: fmt.Sprintf("wi_%02d", i), Example: strings.Repeat("界", 1000), Class: "attempt", At: now, Started: now.Add(time.Minute)})
 		}
 		got := groupNativeFailures(failures)[0]
 		if got.WorkItemsCount != len(failures) || len(got.WorkItems) != maxFailureWorkItems || !got.WorkItemsPartial || len(got.Example) > maxFailureExampleLength || !utf8.ValidString(got.Example) || got.SlotMinutes != 0 {
 			t.Fatalf("bounds=%#v", got)
 		}
-		groups := make([]nativeFailureSignature, 200)
+		groups := make([]hubanalytics.FailureSignature, 200)
 		for i := range groups {
 			groups[i] = got
 			groups[i].WorkItems = make([]string, maxFailureWorkItems)
@@ -267,7 +237,7 @@ func TestNativeFailureSignatureReads(t *testing.T) {
 		}
 	})
 
-	for _, count := range []int{maxAnalyticsPopulation, maxAnalyticsPopulation + 1} {
+	for _, count := range []int{hubanalytics.MaxPopulation, hubanalytics.MaxPopulation + 1} {
 		t.Run(fmt.Sprintf("population %d", count), func(t *testing.T) {
 			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
 			if err != nil {
@@ -289,11 +259,11 @@ FROM native_attempts a CROSS JOIN leases l WHERE a.id=? AND l.lease_id LIKE 'lea
 				t.Fatal(err)
 			}
 			failures, partial, err := readNativeFailures(f.service.runDetailContext(t.Context()), tx, scope, string(issue.WorkItemID), &w)
-			if err != nil || partial != (count > maxAnalyticsPopulation) || len(failures) != maxAnalyticsPopulation {
+			if err != nil || partial != (count > hubanalytics.MaxPopulation) || len(failures) != hubanalytics.MaxPopulation {
 				t.Fatalf("population=%d partial=%v err=%v", len(failures), partial, err)
 			}
 			latest := latestNativeFailureSignature(failures, partial)
-			if latest == nil || latest.Count != maxAnalyticsPopulation || latest.Partial != partial {
+			if latest == nil || latest.Count != hubanalytics.MaxPopulation || latest.Partial != partial {
 				t.Fatalf("latest=%#v", latest)
 			}
 		})

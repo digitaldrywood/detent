@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubhealth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -81,8 +82,8 @@ func TestHealthProjectionBackfill(t *testing.T) {
 	if err != nil || len(before) != 2*storageConversionRows+1 {
 		t.Fatalf("unknown events=%d err=%v", len(before), err)
 	}
-	var findingPages [2]healthFindingsPage
-	var scheduledBefore [2]healthScheduledValidation
+	var findingPages [2]hubhealth.FindingsPage
+	var scheduledBefore [2]hubhealth.ScheduledValidation
 	for i, f := range fixtures {
 		page, err := first.service.readHealthFindings(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, "open", "", "", 100)
 		if err != nil || len(page.Items) != 2 {
@@ -169,10 +170,10 @@ func TestHealthProjectionBackfill(t *testing.T) {
 	}
 	for _, event := range events {
 		var observed tracker.CollaborationData
-		if err := json.Unmarshal([]byte(event.raw), &observed); err != nil {
+		if err := json.Unmarshal([]byte(event.Raw), &observed); err != nil {
 			t.Fatal(err)
 		}
-		if event.kind == "scheduler.decision" {
+		if event.Kind == "scheduler.decision" {
 			want := tracker.NativeSchedulerDecision{Outcome: "claimed", Reason: "policy_mismatch", Source: "native_runner_routing", RunnerID: "runner_typed", At: now, WorkItemRevision: 73}
 			if observed.Decision == nil || !reflect.DeepEqual(*observed.Decision, want) {
 				t.Fatalf("decision ignored typed fields: %+v", observed.Decision)
@@ -197,7 +198,7 @@ func TestHealthProjectionBackfill(t *testing.T) {
 			t.Fatalf("typed landing filter, indexed=%v: events=%d err=%v", indexed, len(got), err)
 		}
 		for _, event := range got {
-			if event.kind != "scheduler.decision" {
+			if event.Kind != "scheduler.decision" {
 				t.Fatalf("typed non-landing was indexed: %+v", event)
 			}
 		}

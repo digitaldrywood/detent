@@ -13,6 +13,7 @@ import (
 	"text/template"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubhealth"
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -22,6 +23,7 @@ var slackMessageTemplate = template.Must(template.New("health-slack").Parse(`*{{
 {{.Summary}}
 Next action: {{.NextAction}}
 {{.Age}}`))
+
 var slackPrivateText = regexp.MustCompile(`(?i)(?s:-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----.*?-----END (?:[A-Z]+ )?PRIVATE KEY-----)|\b(?:AKIA|ASIA)[A-Z0-9]{16}\b|https?://[^\s<>]+|\b(?:xox[a-z]-|sk-|gh[pousr]_|github_pat_|glpat-|AIza|detent_|det_)[a-z0-9_-]+|\bBearer\s+[^\s,;]+|\b[a-z0-9_]*(?:token|secret|password|api_key)[a-z0-9_]*\s*[=:]\s*[^\s,;]+|\beyJ[a-z0-9_-]+\.[a-z0-9_-]+\.[a-z0-9_-]+`)
 
 func slackText(value string) string {
@@ -32,7 +34,7 @@ func slackText(value string) string {
 	return strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", "|", "¦", "*", "", "`", "").Replace(value)
 }
 
-func renderSlackFinding(publicURL string, basePath string, finding healthFinding, event string, at time.Time, issuePath string) (string, error) {
+func renderSlackFinding(publicURL string, basePath string, finding hubhealth.Finding, event string, at time.Time, issuePath string) (string, error) {
 	base, err := url.Parse(publicURL)
 	if err != nil || base.Scheme != "https" && base.Scheme != "http" || base.Host == "" || base.User != nil || base.RawQuery != "" || base.Fragment != "" {
 		return "", errors.New("slack app link is unavailable")
@@ -168,7 +170,7 @@ func (s *Service) processSlackDelivery(ctx context.Context) (bool, error) {
 	}
 	now := s.config.now()
 	var organization tracker.OrganizationID
-	var finding healthFinding
+	var finding hubhealth.Finding
 	var event, subject, opened, queued string
 	var attempts int
 	err := s.database.reader.QueryRowContext(readCtx, `SELECT f.organization_id,f.id,f.signal,f.subject_json,f.summary,f.next_action,f.opened_at,d.event,d.queued_at,d.attempts

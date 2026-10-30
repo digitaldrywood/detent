@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubanalytics"
 	"github.com/digitaldrywood/detent/internal/operatoradmin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -304,7 +305,7 @@ func (s *Service) coordinatorScreenReport(ctx context.Context, record conversati
 		}
 		w = operatortool.AnalyticsWindow{From: window.From, To: window.To, Bucket: time.Hour}
 	}
-	analytics, err := s.readAnalyticsReport(ctx, credential, operatortool.AnalyticsRequest{ProjectID: string(record.ProjectID), Limit: maxAnalyticsPopulation}, w)
+	analytics, err := s.readAnalyticsReport(ctx, credential, operatortool.AnalyticsRequest{ProjectID: string(record.ProjectID), Limit: hubanalytics.MaxPopulation}, w)
 	if err != nil {
 		return nil, err
 	}

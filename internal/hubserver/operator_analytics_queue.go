@@ -3,23 +3,12 @@ package hubserver
 import (
 	"context"
 	"strings"
-	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubanalytics"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-type nativeAnalyticsCapacityWait struct {
-	Source               string    `json:"source"`
-	Coverage             string    `json:"coverage"`
-	ClaimsObserved       int       `json:"claims_observed"`
-	IntervalsObserved    int       `json:"intervals_observed"`
-	IntervalsUnavailable int       `json:"intervals_unavailable"`
-	Seconds              float64   `json:"seconds"`
-	SourceAt             time.Time `json:"source_at"`
-	Partial              bool      `json:"partial"`
-}
-
-func projectNativeAnalyticsCapacityWait(ctx context.Context, q nativeQueryer, scope nativeScope, out *nativeAnalyticsProject) error {
+func projectNativeAnalyticsCapacityWait(ctx context.Context, q nativeQueryer, scope nativeScope, out *hubanalytics.Project) error {
 	q, prepareErr := prepareReportsQuery(ctx, q, scope, "report_events")
 	if prepareErr != nil {
 		return prepareErr
@@ -27,7 +16,7 @@ func projectNativeAnalyticsCapacityWait(ctx context.Context, q nativeQueryer, sc
 	if _, projected := q.(analyticsRollupReader); projected {
 		return projectAnalyticsCapacityRollups(ctx, q, scope, out)
 	}
-	queue := nativeAnalyticsCapacityWait{Source: "native_scheduler_decisions", Coverage: "recorded_provider_capacity_wait_to_claim; claimed_in_window; clipped_to_window", Partial: true}
+	queue := hubanalytics.CapacityWait{Source: "native_scheduler_decisions", Coverage: "recorded_provider_capacity_wait_to_claim; claimed_in_window; clipped_to_window", Partial: true}
 	statement := `SELECT c.data_json,c.recorded_at,
 coalesce((SELECT p.data_json FROM report_events p
  WHERE p.organization_id=c.organization_id AND p.project_id=c.project_id AND p.work_item_id=c.work_item_id AND p.sequence<c.sequence
@@ -46,7 +35,7 @@ ORDER BY c.recorded_at,c.id LIMIT ? OFFSET ?`
 	visibility, visibilityArgs := reportsIssueClause(ctx, "c.work_item_id")
 	statement = strings.Replace(statement, "ORDER BY c.recorded_at,c.id", visibility+" ORDER BY c.recorded_at,c.id", 1)
 	args := append([]any{scope.organization, scope.project, formatHubTime(out.Window.From), formatHubTime(out.Window.To)}, visibilityArgs...)
-	rows, err := queryAnalyticsPopulation(ctx, q, "capacity", statement, args...)
+	rows, err := hubanalytics.QueryAnalyticsPopulation(ctx, q, "capacity", statement, args...)
 	if err != nil {
 		return err
 	}
@@ -65,7 +54,7 @@ ORDER BY c.recorded_at,c.id LIMIT ? OFFSET ?`
 		return err
 	}
 	for _, sample := range intervals {
-		if queue.ClaimsObserved == maxAnalyticsPopulation {
+		if queue.ClaimsObserved == hubanalytics.MaxPopulation {
 			out.Partial = true
 			break
 		}
@@ -77,7 +66,7 @@ ORDER BY c.recorded_at,c.id LIMIT ? OFFSET ?`
 		if finishErr == nil && finish.After(queue.SourceAt) {
 			queue.SourceAt = finish
 		}
-		if priorType != "scheduler.decision" || finishErr != nil || startErr != nil || decodeRunHistory(ctx, q, claimRaw, &claim) != nil || decodeRunHistory(ctx, q, priorRaw, &prior) != nil || !nativeAnalyticsCapacityInterval(prior.Decision, claim.Decision, start, finish) {
+		if priorType != "scheduler.decision" || finishErr != nil || startErr != nil || decodeRunHistory(ctx, q, claimRaw, &claim) != nil || decodeRunHistory(ctx, q, priorRaw, &prior) != nil || !hubanalytics.CapacityInterval(prior.Decision, claim.Decision, start, finish) {
 			queue.IntervalsUnavailable++
 			continue
 		}
@@ -103,8 +92,4 @@ ORDER BY c.recorded_at,c.id LIMIT ? OFFSET ?`
 		out.Unavailable = append(out.Unavailable, "provider_capacity_wait")
 	}
 	return nil
-}
-
-func nativeAnalyticsCapacityInterval(prior, claim *tracker.NativeSchedulerDecision, start, finish time.Time) bool {
-	return prior != nil && claim != nil && prior.Source == "native_provider_capacity" && prior.Outcome == "skipped" && claim.Source == "native_claim" && claim.Outcome == "claimed" && prior.RunnerID == claim.RunnerID && prior.WorkItemRevision > 0 && prior.WorkItemRevision == claim.WorkItemRevision && prior.At.Equal(start) && claim.At.Equal(finish) && finish.After(start)
 }

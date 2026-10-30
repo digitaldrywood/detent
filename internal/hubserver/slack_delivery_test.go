@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/hubhealth"
 )
 
 const slackTestWebhook = "https://hooks.slack.com/services/T123/B456/SLACK_SECRET_SENTINEL"
@@ -56,7 +58,7 @@ func TestSlackFindingDelivery(t *testing.T) {
 			}
 			now := time.Date(2026, 10, 6, 18, 0, 0, 0, time.UTC)
 			configureTestSlack(t, f, &now, !test.unset)
-			finding := newHealthFinding("runner_heartbeat_gap", "instance", kind, subject, "Runner heartbeat is behind.", "Check the runner connection.", []string{string(f.project.ID)}, healthEvidence{})
+			finding := hubhealth.NewFinding("runner_heartbeat_gap", "instance", kind, subject, "Runner heartbeat is behind.", "Check the runner connection.", []string{string(f.project.ID)}, hubhealth.Evidence{})
 			finding.ConditionSince = now.Add(-48 * time.Hour)
 			setSlugs := func(organization, project string) {
 				t.Helper()
@@ -107,7 +109,7 @@ func TestSlackFindingDelivery(t *testing.T) {
 				}
 				return processed
 			}
-			applyTestHealth(t, f, now, []healthFinding{finding})
+			applyTestHealth(t, f, now, []hubhealth.Finding{finding})
 			if len(calls) != 0 {
 				t.Fatal("detector called HTTP inline")
 			}
@@ -126,7 +128,7 @@ func TestSlackFindingDelivery(t *testing.T) {
 			if test.issue && !strings.Contains(calls[0], "<https://cloud.detent.test/example-org/example-project/issues/1?tab=diagnostics|") {
 				t.Fatalf("opened notification uses the wrong issue URL: %s", calls[0])
 			}
-			applyTestHealth(t, f, now, []healthFinding{finding})
+			applyTestHealth(t, f, now, []hubhealth.Finding{finding})
 			if process() {
 				t.Fatal("repeated evaluation delivered again")
 			}
@@ -191,7 +193,7 @@ func TestSlackFindingDelivery(t *testing.T) {
 				t.Fatal("repeated resolve delivered again")
 			}
 			now = now.Add(time.Minute)
-			applyTestHealth(t, f, now, []healthFinding{finding})
+			applyTestHealth(t, f, now, []hubhealth.Finding{finding})
 			if process() {
 				t.Fatal("reopen window posted again")
 			}
@@ -199,8 +201,8 @@ func TestSlackFindingDelivery(t *testing.T) {
 			if process() {
 				t.Fatal("second resolve in reopen window posted again")
 			}
-			now = now.Add(healthReopenWindow + time.Second)
-			applyTestHealth(t, f, now, []healthFinding{finding})
+			now = now.Add(hubhealth.ReopenWindow + time.Second)
+			applyTestHealth(t, f, now, []hubhealth.Finding{finding})
 			process()
 			if enabled {
 				want++
@@ -222,7 +224,7 @@ func TestSlackMessagePrivacyAndLinks(t *testing.T) {
 		{"work_item", "wi_test", "/example-org/example-project/issues/1?tab=diagnostics"}, {"runner", "runner_test", "/fleet"}, {"project", "prj_test", "/diagnostics"},
 	} {
 		t.Run(test.kind, func(t *testing.T) {
-			finding := healthFinding{Signal: "runner_heartbeat_gap", Subject: healthSubject{test.kind, test.id}, OpenedAt: now.Add(-time.Minute), Summary: "Failed with xoxb-123-SECRET sk-proj-SECRET ghp_SECRET github_pat_SECRET glpat-SECRET AIzaSECRET AKIA1234567890ABCDEF eyJabc.def.ghi " + slackTestWebhook, NextAction: "token=SECRET Bearer SECRET\n<@here> checks `raw log`."}
+			finding := hubhealth.Finding{Signal: "runner_heartbeat_gap", Subject: hubhealth.Subject{Kind: test.kind, ID: test.id}, OpenedAt: now.Add(-time.Minute), Summary: "Failed with xoxb-123-SECRET sk-proj-SECRET ghp_SECRET github_pat_SECRET glpat-SECRET AIzaSECRET AKIA1234567890ABCDEF eyJabc.def.ghi " + slackTestWebhook, NextAction: "token=SECRET Bearer SECRET\n<@here> checks `raw log`."}
 			message, err := renderSlackFinding("https://cloud.detent.test", "/example-org", finding, "opened", now, func() string {
 				if test.kind == "work_item" {
 					return "/example-org/example-project/issues/1"

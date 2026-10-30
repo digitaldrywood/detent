@@ -14,13 +14,16 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/hubanalytics"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 const backgroundStorageBudget = 2 * time.Second
 
 const storageConversionVersion = 1
+
 const storageConversionRows = 100
+
 const storageConversionBytes = 1 << 20
 
 const storageConversionOwnerPredicate = "family IN ('projection-pages','projection-activity','projection-attempts','projection-leases','projection-ranks','projection-health','projection-runners','runs','attempts','analytics','conversation_events','messages','versions','evidence','sources','diff_files','checkpoints','landings','tool_revisions','conversation_records','conversation_questions','conversation_commands','conversation_attachments')"
@@ -450,7 +453,7 @@ func (s *Service) prepareStorageConversion(ctx context.Context, scope nativeScop
 		return s.prepareCollaborationConversion(ctx, scope, row, raw)
 	}
 	if family.name == "analytics" {
-		var projection analyticsAttemptProjection
+		var projection hubanalytics.AttemptProjection
 		if err := json.Unmarshal(raw, &projection); err != nil {
 			return nil, zero, err
 		}
@@ -620,6 +623,7 @@ func readStorageConversionProgress(ctx context.Context, q nativeQueryer, scope n
 }
 
 type storageBatchKey struct{}
+
 type storageSelectedRowKey struct{}
 
 type storageBatchBudget struct {

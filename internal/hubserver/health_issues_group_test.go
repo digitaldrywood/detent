@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubhealth"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -56,11 +57,11 @@ func TestHealthIntakeSignatures(t *testing.T) {
 			other := newNativeFixture(t, f.service, f.project.OrganizationID, "health-other-intake")
 			addHealthBacklog(t, other)
 			now := f.service.config.now()
-			var findings []healthFinding
+			var findings []hubhealth.Finding
 			for i, signatures := range test.signatures {
 				for _, fixture := range []nativeFixture{f, other} {
 					item := fixture.create(t, []string{"first-item", "second-item"}[i])
-					finding := newHealthFinding("retry_storm", test.class, "work_item", string(item.WorkItemID), "Repeated failures.", "Inspect attempts.", []string{string(fixture.project.ID)}, healthEvidence{Signatures: signatures, AttemptIDs: []string{[]string{"attempt_one", "attempt_two"}[i]}, Counts: map[string]int{"attempts": 5}})
+					finding := hubhealth.NewFinding("retry_storm", test.class, "work_item", string(item.WorkItemID), "Repeated failures.", "Inspect attempts.", []string{string(fixture.project.ID)}, hubhealth.Evidence{Signatures: signatures, AttemptIDs: []string{[]string{"attempt_one", "attempt_two"}[i]}, Counts: map[string]int{"attempts": 5}})
 					findings = append(findings, finding)
 				}
 				applyTestHealth(t, f, now.Add(time.Duration(i)*time.Minute), findings)
@@ -105,7 +106,7 @@ func TestHealthIntakeSignatures(t *testing.T) {
 					}
 				}
 				if test.name == "overlapping signatures" {
-					index := slices.IndexFunc(page.Items, func(finding healthFinding) bool { return len(finding.Issues) == 2 })
+					index := slices.IndexFunc(page.Items, func(finding hubhealth.Finding) bool { return len(finding.Issues) == 2 })
 					visible := page.Items[index].Issues[0].WorkItemID
 					for _, actorProjection := range []string{
 						`UPDATE issues SET actor_kind=NULL,actor_principal_id=NULL,actor_json='{"kind":"human","principal_id":"reporter"}' WHERE native_id=?`,
@@ -177,16 +178,16 @@ func TestHealthFindingOccurrenceDeduplication(t *testing.T) {
 			t.Parallel()
 			f := healthIntakeFixture(t)
 			now := f.service.config.now()
-			finding := newHealthFinding(test.signal, "instance", "runner", "runner-example", "Repeated failures.", "Inspect attempts.", []string{string(f.project.ID)}, healthEvidence{Signatures: []string{"protocol failure"}})
+			finding := hubhealth.NewFinding(test.signal, "instance", "runner", "runner-example", "Repeated failures.", "Inspect attempts.", []string{string(f.project.ID)}, hubhealth.Evidence{Signatures: []string{"protocol failure"}})
 			if test.change == "order" {
 				finding.Evidence.Signatures = []string{"protocol failure", "workspace failure"}
 			}
 			scope := healthIssueScope(f.project.OrganizationID, f.project.ID)
-			intake := healthIssueFindings(finding)[0]
+			intake := hubhealth.IssueFindings(finding)[0]
 			if test.legacy {
 				intake = finding
 			}
-			request, err := healthIssueRequest(intake)
+			request, err := hubhealth.IssueRequest(intake)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -201,7 +202,7 @@ func TestHealthFindingOccurrenceDeduplication(t *testing.T) {
 				t.Fatal(err)
 			}
 			if test.legacy {
-				if _, err := writeHealthEvaluation(t.Context(), tx, f.project.OrganizationID, now, []healthFinding{finding}); err != nil {
+				if _, err := writeHealthEvaluation(t.Context(), tx, f.project.OrganizationID, now, []hubhealth.Finding{finding}); err != nil {
 					t.Fatal(err)
 				}
 				if _, err := tx.ExecContext(t.Context(), `INSERT INTO health_finding_issues(finding_id,project_id,work_item_id,reported_evidence_digest) SELECT id,?,?,'' FROM health_findings`, f.project.ID, owner.WorkItemID); err != nil {
@@ -225,7 +226,7 @@ func TestHealthFindingOccurrenceDeduplication(t *testing.T) {
 				finding.Evidence.AttemptIDs = []string{[]string{"attempt-one", "attempt-two", "attempt-three", "attempt-four"}[i]}
 				finding.Evidence.Counts = map[string]int{"failures_1h": 5 + i, "failures_6h": 10 + i}
 				finding.Evidence.Values = map[string]float64{"retry_ratio_1h": 0.5 + float64(i)/10, "retry_ratio_6h": 0.6 + float64(i)/10}
-				applyTestHealth(t, f, now.Add(time.Duration(i)*time.Minute), []healthFinding{finding})
+				applyTestHealth(t, f, now.Add(time.Duration(i)*time.Minute), []hubhealth.Finding{finding})
 				assertOccurrences(1)
 				page, err := f.service.readHealthFindings(t.Context(), scope, "open", "", "", 100)
 				if err != nil || len(page.Items) != 1 {
@@ -249,9 +250,9 @@ func TestHealthFindingOccurrenceDeduplication(t *testing.T) {
 			default:
 				return
 			}
-			applyTestHealth(t, f, now.Add(5*time.Minute), []healthFinding{finding})
+			applyTestHealth(t, f, now.Add(5*time.Minute), []hubhealth.Finding{finding})
 			assertOccurrences(want)
-			applyTestHealth(t, f, now.Add(6*time.Minute), []healthFinding{finding})
+			applyTestHealth(t, f, now.Add(6*time.Minute), []hubhealth.Finding{finding})
 			assertOccurrences(want)
 		})
 	}
@@ -295,9 +296,9 @@ func TestHealthIntakeLegacyResolution(t *testing.T) {
 			t.Parallel()
 			f := healthIntakeFixture(t)
 			now := f.service.config.now()
-			var findings []healthFinding
+			var findings []hubhealth.Finding
 			for _, subject := range []string{"work_one", "work_two"} {
-				findings = append(findings, newHealthFinding("retry_storm", "instance", "work_item", subject, "Repeated failure.", "Inspect attempts.", []string{string(f.project.ID)}, healthEvidence{Signatures: []string{"protocol failure"}}))
+				findings = append(findings, hubhealth.NewFinding("retry_storm", "instance", "work_item", subject, "Repeated failure.", "Inspect attempts.", []string{string(f.project.ID)}, hubhealth.Evidence{Signatures: []string{"protocol failure"}}))
 			}
 			if test.legacy {
 				findings = findings[:1]
@@ -391,7 +392,7 @@ func TestHealthIntakeLegacyResolution(t *testing.T) {
 				}
 			}
 
-			var active []healthFinding
+			var active []hubhealth.Finding
 			if test.unresolved {
 				active = findings[1:]
 			}
@@ -464,7 +465,7 @@ func TestHealthIntakeLegacyResolution(t *testing.T) {
 					}
 				}
 				recurredAt := resolvedAt.Add(test.age + time.Minute)
-				finding := newHealthFinding("retry_storm", "instance", "work_item", test.recurrence, "Repeated failure.", "Inspect attempts.", []string{string(f.project.ID)}, healthEvidence{Signatures: []string{"protocol failure"}, AttemptIDs: []string{"attempt_recurred"}})
+				finding := hubhealth.NewFinding("retry_storm", "instance", "work_item", test.recurrence, "Repeated failure.", "Inspect attempts.", []string{string(f.project.ID)}, hubhealth.Evidence{Signatures: []string{"protocol failure"}, AttemptIDs: []string{"attempt_recurred"}})
 				if test.cancellationProjection == "changed" {
 					if _, err := f.service.database.db.ExecContext(t.Context(), `CREATE TRIGGER change_health_cancellation AFTER UPDATE ON health_detector_ticks BEGIN
  INSERT INTO collaboration_events(id,organization_id,project_id,work_item_id,sequence,type,schema_version,actor_json,data_json,recorded_at)
@@ -472,7 +473,7 @@ func TestHealthIntakeLegacyResolution(t *testing.T) {
  END`); err != nil {
 						t.Fatal(err)
 					}
-					err := f.service.commitHealthEvaluation(t.Context(), f.project.OrganizationID, recurredAt, []healthFinding{finding}, nil)
+					err := f.service.commitHealthEvaluation(t.Context(), f.project.OrganizationID, recurredAt, []hubhealth.Finding{finding}, nil)
 					if err == nil || !strings.Contains(err.Error(), "health cancellation observation changed") {
 						t.Fatalf("changed observation authorized recurrence: %v", err)
 					}
@@ -484,12 +485,12 @@ func TestHealthIntakeLegacyResolution(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				applyTestHealth(t, f, recurredAt, []healthFinding{finding})
+				applyTestHealth(t, f, recurredAt, []hubhealth.Finding{finding})
 				if test.keepCancelled {
 					if err := f.service.convertHealthProjections(t.Context()); err != nil {
 						t.Fatal(err)
 					}
-					applyTestHealth(t, f, recurredAt.Add(time.Minute), []healthFinding{finding})
+					applyTestHealth(t, f, recurredAt.Add(time.Minute), []hubhealth.Finding{finding})
 					var open int
 					if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM issues i JOIN workflow_states ws ON ws.id=i.workflow_state_id WHERE i.project_id=? AND ws.terminal=0`, f.project.ID).Scan(&open); err != nil || open != 0 {
 						t.Fatalf("unknown cancellation authorized episode: open=%d err=%v", open, err)
@@ -505,7 +506,7 @@ func TestHealthIntakeLegacyResolution(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				applyTestHealth(t, f, recurredAt.Add(time.Minute), []healthFinding{finding})
+				applyTestHealth(t, f, recurredAt.Add(time.Minute), []hubhealth.Finding{finding})
 				origin, ok := issueorigin.Parse(previous.Body)
 				if !ok {
 					t.Fatal("missing previous origin")
@@ -525,8 +526,8 @@ func TestHealthIntakeLegacyResolution(t *testing.T) {
 				if err != nil || len(page.Items) != 1 || len(page.Items[0].Issues) != 1 || page.Items[0].Issues[0].WorkItemID != matches.Items[0].WorkItemID {
 					t.Fatalf("new episode link = %+v, %v", page, err)
 				}
-				followup := newHealthFinding(finding.Signal, finding.Class, finding.Subject.Kind, "work_followup", finding.Summary, finding.NextAction, finding.Projects, finding.Evidence)
-				applyTestHealth(t, f, recurredAt.Add(2*time.Minute), []healthFinding{finding, followup})
+				followup := hubhealth.NewFinding(finding.Signal, finding.Class, finding.Subject.Kind, "work_followup", finding.Summary, finding.NextAction, finding.Projects, finding.Evidence)
+				applyTestHealth(t, f, recurredAt.Add(2*time.Minute), []hubhealth.Finding{finding, followup})
 				var comments int
 				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM native_comments WHERE work_item_id=?", matches.Items[0].WorkItemID).Scan(&comments); err != nil || comments != 1 {
 					t.Fatalf("new episode followup comments = %d, want 1: %v", comments, err)

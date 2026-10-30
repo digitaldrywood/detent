@@ -4,6 +4,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/digitaldrywood/detent/internal/hubanalytics"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
@@ -16,7 +17,7 @@ type reportsRunner struct {
 	Cost      float64                        `json:"cost_usd"`
 }
 
-func reportsRunnerTotals(attempts []nativeAnalyticsAttempt, usage map[string][]usageRow) []reportsRunner {
+func reportsRunnerTotals(attempts []hubanalytics.Attempt, usage map[string][]usageRow) []reportsRunner {
 	runners := map[string]*reportsRunner{}
 	durations := map[string][]float64{}
 	for _, a := range attempts {
@@ -45,7 +46,7 @@ func reportsRunnerTotals(attempts []nativeAnalyticsAttempt, usage map[string][]u
 	}
 	out := make([]reportsRunner, 0, len(runners))
 	for id, runner := range runners {
-		runner.Duration = sampledDuration(durations[id])
+		runner.Duration = hubanalytics.SampledDuration(durations[id])
 		out = append(out, *runner)
 	}
 	slices.SortFunc(out, func(a, b reportsRunner) int {

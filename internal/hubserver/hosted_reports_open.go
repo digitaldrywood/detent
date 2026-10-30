@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubanalytics"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -36,7 +37,7 @@ func reportsOpenAt(issue reportsOpenIssue, states map[string]tracker.NativeState
 	if issue.partial || states[issue.state].Terminal || !issue.entered.Before(at) {
 		return "", false
 	}
-	group := analyticsResidenceGroup(issue.state, states)
+	group := hubanalytics.ResidenceGroup(issue.state, states)
 	return group, group == "system" || group == "held"
 }
 
@@ -101,7 +102,7 @@ func (s *Service) reportsPriorQuality(ctx context.Context, scope nativeScope, w 
 		return err
 	}
 	prior := operatortool.AnalyticsWindow{From: w.From.Add(-w.To.Sub(w.From)), To: w.From, Bucket: w.Bucket}
-	quality, err := readAnalyticsQuality(ctx, q, scope, operatortool.AnalyticsRequest{ProjectID: string(scope.project), Limit: maxAnalyticsPopulation}, prior)
+	quality, err := readAnalyticsQuality(ctx, q, scope, operatortool.AnalyticsRequest{ProjectID: string(scope.project), Limit: hubanalytics.MaxPopulation}, prior)
 	if err != nil {
 		return err
 	}

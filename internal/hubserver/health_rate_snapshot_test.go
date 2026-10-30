@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubhealth"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -114,10 +115,10 @@ func TestHealthRatePersistedObservations(t *testing.T) {
 	}
 	response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/health/findings", f.token, nil)
 	requireNativeStatus(t, response, http.StatusOK)
-	var page healthFindingsPage
+	var page hubhealth.FindingsPage
 	decodeHubResponse(t, response, &page)
 	for _, signal := range []string{"retry_storm", "recovery_loop", "stalled_active_item", "cost_anomaly"} {
-		if !slices.ContainsFunc(page.Items, func(f healthFinding) bool { return f.Signal == signal }) {
+		if !slices.ContainsFunc(page.Items, func(f hubhealth.Finding) bool { return f.Signal == signal }) {
 			t.Fatalf("missing %s: %+v", signal, page)
 		}
 	}
@@ -126,12 +127,14 @@ func TestHealthRatePersistedObservations(t *testing.T) {
 			t.Fatalf("lost normalized usage evidence: %+v", finding)
 		}
 	}
-	if !slices.ContainsFunc(page.BaselineUnavailable, func(g healthBaselineUnavailable) bool { return g.Signal == "throughput_collapse" }) || slices.ContainsFunc(page.BaselineUnavailable, func(g healthBaselineUnavailable) bool { return g.Signal == "retry_storm" || g.Signal == "cost_anomaly" }) {
+	if !slices.ContainsFunc(page.BaselineUnavailable, func(g hubhealth.BaselineUnavailable) bool { return g.Signal == "throughput_collapse" }) || slices.ContainsFunc(page.BaselineUnavailable, func(g hubhealth.BaselineUnavailable) bool {
+		return g.Signal == "retry_storm" || g.Signal == "cost_anomaly"
+	}) {
 		t.Fatalf("baseline gaps=%+v", page.BaselineUnavailable)
 	}
 	response = performHubAPIRequest(t, f.service, http.MethodGet, other.base+"/health/findings", other.token, nil)
 	requireNativeStatus(t, response, http.StatusOK)
-	var otherPage healthFindingsPage
+	var otherPage hubhealth.FindingsPage
 	decodeHubResponse(t, response, &otherPage)
 	if len(otherPage.Items) != 0 || len(otherPage.BaselineUnavailable) != 9 {
 		t.Fatalf("cross-project findings or missing diagnostics: %+v", otherPage)
@@ -151,7 +154,7 @@ func TestHealthRatePersistedObservations(t *testing.T) {
 	requireNativeStatus(t, response, http.StatusOK)
 	decodeHubResponse(t, response, &page)
 	for _, signal := range []string{"retry_storm", "recovery_loop"} {
-		if !slices.ContainsFunc(page.Items, func(f healthFinding) bool { return f.Signal == signal && f.ResolvedAt != nil }) {
+		if !slices.ContainsFunc(page.Items, func(f hubhealth.Finding) bool { return f.Signal == signal && f.ResolvedAt != nil }) {
 			t.Fatalf("rate did not resolve: %s %+v", signal, page)
 		}
 	}

@@ -127,6 +127,8 @@
       "TestVerifyMinisignSignatureRejectsTamper"
     ],
     "./internal/invariants": [
+      "TestINV20NoSQLOverJSON",
+      "TestINV20JSONFunctionPatterns",
       "TestRepositoryBrowserTests",
       "TestBrowserPolicyViolations",
       "TestRepositorySources",
@@ -189,8 +191,7 @@
       "TestClaimCandidatesRetryInstancePreProviderFailures",
       "TestReviewConversationHistoryDoesNotVetoLanding",
       "TestINV18RequestCommitDoesNoDerivedWork",
-      "TestINV18HubMigrationsUseTypedColumns",
-      "TestINV20NoSQLOverJSON"
+      "TestINV18HubMigrationsUseTypedColumns"
     ],
     "./internal/web": [
       "TestOperationsWorkpadHumanAction"

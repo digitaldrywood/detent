@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/digitaldrywood/detent/internal/hubanalytics"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -55,7 +56,7 @@ func (s *Service) readActivityTypicalDurations(ctx context.Context, q nativeQuer
 	visibility, args := reportsIssueClause(ctx, "work_item_id")
 	statement := strings.Replace(activityDurationQuery, "WHERE 1 ORDER BY", "WHERE 1 "+visibility+" ORDER BY", 1)
 	args = append([]any{scope.organization, scope.project, formatHubTime(w.From), formatHubTime(w.To), runner, runner}, args...)
-	args = append(args, maxAnalyticsPopulation+1)
+	args = append(args, hubanalytics.MaxPopulation+1)
 	samples := []activityDurationSample{}
 	partial := false
 	offset := 0
@@ -98,18 +99,18 @@ func (s *Service) readActivityTypicalDurations(ctx context.Context, q nativeQuer
 			if runner != "" && c.runner != runner {
 				continue
 			}
-			if len(samples) == maxAnalyticsPopulation {
+			if len(samples) == hubanalytics.MaxPopulation {
 				partial = true
 				break
 			}
 			partial = partial || c.sample.Partial
 			samples = append(samples, c.sample)
 		}
-		if len(samples) == maxAnalyticsPopulation && partial || len(candidates) < maxAnalyticsPopulation+1 {
+		if len(samples) == hubanalytics.MaxPopulation && partial || len(candidates) < hubanalytics.MaxPopulation+1 {
 			break
 		}
 		offset += len(candidates)
-		if offset >= maxAnalyticsPopulation {
+		if offset >= hubanalytics.MaxPopulation {
 			return nil, false, errHubOperatorUnavailable
 		}
 	}

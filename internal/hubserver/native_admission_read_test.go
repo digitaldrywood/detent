@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/explain"
+	"github.com/digitaldrywood/detent/internal/hubhealth"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -343,8 +344,8 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				findings := evaluateHealth(now, snapshot)
-				if !slices.ContainsFunc(findings, func(finding healthFinding) bool {
+				findings := hubhealth.Evaluate(now, snapshot)
+				if !slices.ContainsFunc(findings, func(finding hubhealth.Finding) bool {
 					return finding.Subject.ID == string(issue.WorkItemID) && finding.Class == "human" && finding.Evidence.Reason == test.code && finding.NextAction == test.reason
 				}) {
 					t.Fatalf("missing human contract finding: %+v", findings)

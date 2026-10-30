@@ -12,6 +12,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubanalytics"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -22,33 +23,27 @@ type diagnosticsCoverage struct {
 	Total    *int   `json:"total"`
 }
 
-type diagnosticsCapacity struct {
-	Hour  time.Time `json:"hour"`
-	Slots float64   `json:"slots"`
-	Todo  *int      `json:"todo"`
-}
-
 type diagnosticsReport struct {
-	StorageConversions []diagnosticsStorageConversion `json:"storage_conversions"`
-	Requests           *requestMetricsReport          `json:"requests,omitempty"`
-	From               time.Time                      `json:"from"`
-	To                 time.Time                      `json:"to"`
-	Partial            bool                           `json:"partial"`
-	Findings           any                            `json:"findings"`
-	DetectorTick       *time.Time                     `json:"detector_tick"`
-	Capacity           []diagnosticsCapacity          `json:"capacity"`
-	Claimed            *int                           `json:"claimed"`
-	Ready              *int                           `json:"ready"`
-	Skipped            *int                           `json:"skipped"`
-	SkipReasons        []nativeAnalyticsSkip          `json:"skip_reasons"`
-	MergeEntered       int                            `json:"merge_entered"`
-	MergeLanded        int                            `json:"merge_landed"`
-	MergeWaitP50       *float64                       `json:"merge_wait_p50"`
-	MergeWaitP90       *float64                       `json:"merge_wait_p90"`
-	MergeWaitMax       *float64                       `json:"merge_wait_max"`
-	Refused            []diagnosticsRefusal           `json:"refused"`
-	Coverage           []diagnosticsCoverage          `json:"coverage"`
-	Configuration      []diagnosticsConfiguration     `json:"configuration"`
+	StorageConversions []diagnosticsStorageConversion     `json:"storage_conversions"`
+	Requests           *requestMetricsReport              `json:"requests,omitempty"`
+	From               time.Time                          `json:"from"`
+	To                 time.Time                          `json:"to"`
+	Partial            bool                               `json:"partial"`
+	Findings           any                                `json:"findings"`
+	DetectorTick       *time.Time                         `json:"detector_tick"`
+	Capacity           []hubanalytics.DiagnosticsCapacity `json:"capacity"`
+	Claimed            *int                               `json:"claimed"`
+	Ready              *int                               `json:"ready"`
+	Skipped            *int                               `json:"skipped"`
+	SkipReasons        []hubanalytics.Skip                `json:"skip_reasons"`
+	MergeEntered       int                                `json:"merge_entered"`
+	MergeLanded        int                                `json:"merge_landed"`
+	MergeWaitP50       *float64                           `json:"merge_wait_p50"`
+	MergeWaitP90       *float64                           `json:"merge_wait_p90"`
+	MergeWaitMax       *float64                           `json:"merge_wait_max"`
+	Refused            []diagnosticsRefusal               `json:"refused"`
+	Coverage           []diagnosticsCoverage              `json:"coverage"`
+	Configuration      []diagnosticsConfiguration         `json:"configuration"`
 }
 
 type diagnosticsStorageConversion struct {
@@ -129,10 +124,10 @@ func (s *Service) diagnosticsRequestMetrics(ctx context.Context) (*requestMetric
 
 func readHostedDiagnosticsSnapshot(ctx context.Context, analytics nativeAnalyticsReport, reader nativeQueryer, requests *requestMetricsReport) (diagnosticsReport, error) {
 	w := analytics.Window
-	out := diagnosticsReport{From: w.From, To: w.To, Partial: analytics.NextOffset != nil, Capacity: []diagnosticsCapacity{}, SkipReasons: []nativeAnalyticsSkip{}, Requests: requests}
+	out := diagnosticsReport{From: w.From, To: w.To, Partial: analytics.NextOffset != nil, Capacity: []hubanalytics.DiagnosticsCapacity{}, SkipReasons: []hubanalytics.Skip{}, Requests: requests}
 	for at := w.From; at.Before(w.To); at = at.Add(time.Hour) {
 		zero := 0
-		out.Capacity = append(out.Capacity, diagnosticsCapacity{Hour: at, Todo: &zero})
+		out.Capacity = append(out.Capacity, hubanalytics.DiagnosticsCapacity{Hour: at, Todo: &zero})
 	}
 	var transitions, attempts, usage, receipts, receiptTotal, queue, claims, ready, skipped, identity int
 	refusals := map[string]int{}
@@ -179,12 +174,12 @@ func readHostedDiagnosticsSnapshot(ctx context.Context, analytics nativeAnalytic
 				return out, err
 			}
 		} else {
-			if err := q.QueryRowContext(ctx, `SELECT count(*) FROM (SELECT id FROM report_events WHERE organization_id=? AND project_id=? AND type='scheduler.decision' AND scheduler_outcome='ready' AND julianday(recorded_at)>=julianday(?) AND julianday(recorded_at)<julianday(?) LIMIT ?)`, scope.organization, scope.project, formatHubTime(w.From), formatHubTime(w.To), maxAnalyticsPopulation+1).Scan(&projectReady); err != nil {
+			if err := q.QueryRowContext(ctx, `SELECT count(*) FROM (SELECT id FROM report_events WHERE organization_id=? AND project_id=? AND type='scheduler.decision' AND scheduler_outcome='ready' AND julianday(recorded_at)>=julianday(?) AND julianday(recorded_at)<julianday(?) LIMIT ?)`, scope.organization, scope.project, formatHubTime(w.From), formatHubTime(w.To), hubanalytics.MaxPopulation+1).Scan(&projectReady); err != nil {
 				return out, err
 			}
 		}
-		out.Partial = out.Partial || projectReady > maxAnalyticsPopulation
-		ready += min(projectReady, maxAnalyticsPopulation)
+		out.Partial = out.Partial || projectReady > hubanalytics.MaxPopulation
+		ready += min(projectReady, hubanalytics.MaxPopulation)
 		if _, projected := q.(analyticsRollupReader); projected {
 			observed, partial, err := readDiagnosticsResidenceRollups(ctx, q, scope, &out)
 			if err != nil {
@@ -199,8 +194,8 @@ func readHostedDiagnosticsSnapshot(ctx context.Context, analytics nativeAnalytic
 			}
 			out.Partial = out.Partial || clipped
 			for _, issue := range issues {
-				for _, event := range issue.events {
-					if event.kind == "workflow.transitioned" && !event.at.Before(w.From) && event.at.Before(w.To) {
+				for _, event := range issue.Events {
+					if event.Kind == "workflow.transitioned" && !event.At.Before(w.From) && event.At.Before(w.To) {
 						transitions++
 					}
 				}
@@ -267,7 +262,7 @@ func readHostedDiagnosticsSnapshot(ctx context.Context, analytics nativeAnalytic
 	}
 	sort.Slice(out.Refused, func(i, j int) bool { return out.Refused[i].Reason < out.Refused[j].Reason })
 	if len(waits) > 0 {
-		d := analyticsDuration(waits)
+		d := hubanalytics.Duration(waits)
 		out.MergeWaitP50 = &d.P50Seconds
 		out.MergeWaitP90 = &d.P90Seconds
 		maximum := waits[0]
@@ -383,27 +378,27 @@ func diagnosticsMergeWaits(ctx context.Context, q nativeQueryer, scope nativeSco
 	return waits, rows.Err()
 }
 
-func diagnosticsTodoDepth(issues []analyticsResidenceIssue, states map[string]tracker.NativeState, clipped bool, at time.Time) *int {
+func diagnosticsTodoDepth(issues []hubanalytics.ResidenceIssue, states map[string]tracker.NativeState, clipped bool, at time.Time) *int {
 	if clipped {
 		return nil
 	}
 	count := 0
 	for _, issue := range issues {
-		if !issue.created.Before(at) {
+		if !issue.Created.Before(at) {
 			continue
 		}
 		past := issue
-		past.events = nil
-		for _, event := range issue.events {
-			if event.at.Before(at) {
-				past.events = append(past.events, event)
+		past.Events = nil
+		for _, event := range issue.Events {
+			if event.At.Before(at) {
+				past.Events = append(past.Events, event)
 			}
 		}
-		timeline := buildAnalyticsResidenceTimeline(past, states, at)
-		if timeline.issue.partial {
+		timeline := hubanalytics.BuildResidenceTimeline(past, states, at)
+		if timeline.Issue.Partial {
 			return nil
 		}
-		if timeline.state == "Todo" {
+		if timeline.State == "Todo" {
 			count++
 		}
 	}

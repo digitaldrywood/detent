@@ -12,13 +12,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubanalytics"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
-
-// The usage report: what runners report is stored
-// per attempt, day, provider and model, and the report folds it into the
-// shape the client reads.
 
 func TestUsageRangeWindow(t *testing.T) {
 	t.Parallel()
@@ -316,11 +313,11 @@ func TestNativeRunEventRecordsUsage(t *testing.T) {
 	}
 	drainTestAnalytics(t, f.service)
 	window := usageWindow{From: f.service.config.now().Add(-time.Hour), To: f.service.config.now().Add(time.Hour)}
-	raw, err := readUsageRows(t.Context(), f.service.database.reader, string(f.project.OrganizationID), window, []string{string(f.project.ID)}, maxAnalyticsPopulation)
+	raw, err := readUsageRows(t.Context(), f.service.database.reader, string(f.project.OrganizationID), window, []string{string(f.project.ID)}, hubanalytics.MaxPopulation)
 	if err != nil {
 		t.Fatal(err)
 	}
-	projected, err := readUsageRows(t.Context(), analyticsRollupReader{f.service.database.reader}, string(f.project.OrganizationID), window, []string{string(f.project.ID)}, maxAnalyticsPopulation)
+	projected, err := readUsageRows(t.Context(), analyticsRollupReader{f.service.database.reader}, string(f.project.OrganizationID), window, []string{string(f.project.ID)}, hubanalytics.MaxPopulation)
 	if err != nil {
 		t.Fatal(err)
 	}

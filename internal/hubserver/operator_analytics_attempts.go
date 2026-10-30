@@ -5,12 +5,13 @@ import (
 	"encoding/json"
 
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubanalytics"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type nativeAnalyticsAttemptPopulation struct {
-	Items     []nativeAnalyticsAttempt
+	Items     []hubanalytics.Attempt
 	Partial   bool
 	Malformed bool
 	Clipped   bool
@@ -33,20 +34,20 @@ func loadNativeAnalyticsAttempts(ctx context.Context, q nativeQueryer, scope nat
 	if err != nil {
 		return nativeAnalyticsAttemptPopulation{}, err
 	}
-	rows, err := queryAnalyticsPopulation(ctx, q, "attempts", `SELECT a.id, a.work_item_id, a.status, a.started_at, a.updated_at, (SELECT count(*) FROM attempt_usage u WHERE u.attempt_id=a.id AND u.organization_id=a.organization_id AND u.project_id=a.project_id AND julianday(u.period)>=julianday(?) AND julianday(u.period)<julianday(?)), a.data_json,a.role,a.report_requested_model,a.report_resolved_model
+	rows, err := hubanalytics.QueryAnalyticsPopulation(ctx, q, "attempts", `SELECT a.id, a.work_item_id, a.status, a.started_at, a.updated_at, (SELECT count(*) FROM attempt_usage u WHERE u.attempt_id=a.id AND u.organization_id=a.organization_id AND u.project_id=a.project_id AND julianday(u.period)>=julianday(?) AND julianday(u.period)<julianday(?)), a.data_json,a.role,a.report_requested_model,a.report_resolved_model
 FROM `+analyticsAttemptsInStartedOrder(q)+` a LEFT JOIN lease_runners lr ON lr.lease_id=a.lease_id WHERE a.organization_id=? AND a.project_id=? AND julianday(a.started_at)<julianday(?) AND julianday(a.updated_at)>=julianday(?) AND (?='' OR coalesce(lr.runner_id,a.runner_id,'')=?)`+scoped+` ORDER BY a.started_at,a.id LIMIT ? OFFSET ?`, append([]any{formatHubTime(w.From), formatHubTime(w.To), scope.organization, scope.project, formatHubTime(w.To), formatHubTime(w.From), runner, runner}, scopedArgs...)...)
 	if err != nil {
 		return nativeAnalyticsAttemptPopulation{}, err
 	}
 	defer rows.Close()
 	type attemptRow struct {
-		attempt                                            nativeAnalyticsAttempt
+		attempt                                            hubanalytics.Attempt
 		from, to, raw, role, requestedModel, resolvedModel string
 	}
 	var batch []attemptRow
 	partial, malformed, clipped := false, false, false
 	for rows.Next() {
-		if len(batch) == maxAnalyticsPopulation {
+		if len(batch) == hubanalytics.MaxPopulation {
 			partial, clipped = true, true
 			break
 		}
@@ -60,7 +61,7 @@ FROM `+analyticsAttemptsInStartedOrder(q)+` a LEFT JOIN lease_runners lr ON lr.l
 	if err := rows.Err(); err != nil {
 		return nativeAnalyticsAttemptPopulation{}, err
 	}
-	attempts := []nativeAnalyticsAttempt{}
+	attempts := []hubanalytics.Attempt{}
 	for _, row := range batch {
 		a, from, to := row.attempt, row.from, row.to
 		role, requestedModel, resolvedModel := row.role, row.requestedModel, row.resolvedModel
@@ -166,8 +167,8 @@ FROM `+analyticsAttemptsInStartedOrder(q)+` a LEFT JOIN lease_runners lr ON lr.l
 			partial = true
 		}
 		_, projected := q.(analyticsRollupReader)
-		a.publicActivity = projected && stored.ID != ""
-		a.activityRaw = activityRaw
+		a.PublicActivity = projected && stored.ID != ""
+		a.ActivityRaw = activityRaw
 		attempts = append(attempts, a)
 	}
 	return nativeAnalyticsAttemptPopulation{Items: attempts, Partial: partial, Malformed: malformed, Clipped: clipped}, nil

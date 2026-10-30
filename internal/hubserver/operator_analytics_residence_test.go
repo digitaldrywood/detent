@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubanalytics"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -15,27 +16,27 @@ import (
 func TestNativeAnalyticsLaneResidence(t *testing.T) {
 	base := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
 	at := func(hour int) time.Time { return base.Add(time.Duration(hour) * time.Hour) }
-	transition := func(hour int, from, to, detail string) analyticsResidenceEvent {
-		return analyticsResidenceEvent{at: at(hour), kind: "workflow.transitioned", data: tracker.CollaborationData{FromState: from, ToState: to, ReasonDetail: detail}}
+	transition := func(hour int, from, to, detail string) hubanalytics.ResidenceEvent {
+		return hubanalytics.ResidenceEvent{At: at(hour), Kind: "workflow.transitioned", Data: tracker.CollaborationData{FromState: from, ToState: to, ReasonDetail: detail}}
 	}
-	claim := func(hour int) analyticsResidenceEvent {
-		return analyticsResidenceEvent{at: at(hour), kind: "scheduler.decision", data: tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Source: "native_claim", Outcome: "claimed", At: at(hour)}}}
+	claim := func(hour int) hubanalytics.ResidenceEvent {
+		return hubanalytics.ResidenceEvent{At: at(hour), Kind: "scheduler.decision", Data: tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Source: "native_claim", Outcome: "claimed", At: at(hour)}}}
 	}
-	fixtures := []analyticsResidenceIssue{
-		{id: "a", created: base, initial: "Backlog", events: []analyticsResidenceEvent{
+	fixtures := []hubanalytics.ResidenceIssue{
+		{ID: "a", Created: base, Initial: "Backlog", Events: []hubanalytics.ResidenceEvent{
 			transition(2, "Backlog", "Todo", ""), transition(4, "Todo", "In Progress", ""),
 			transition(6, "In Progress", "Blocked", ""), transition(8, "Blocked", "In Progress", ""),
 			transition(8, "In Progress", "Rework", "tests"), claim(9), transition(10, "Rework", "In Progress", ""),
 			transition(12, "In Progress", "Human Review", ""), transition(14, "Human Review", "Rework", "review"),
 			transition(16, "Rework", "Merging", ""), transition(18, "Merging", "Done", ""),
 		}},
-		{id: "b", created: base, initial: "Todo", events: []analyticsResidenceEvent{
+		{ID: "b", Created: base, Initial: "Todo", Events: []hubanalytics.ResidenceEvent{
 			transition(4, "Todo", "In Progress", ""), transition(8, "In Progress", "Rework", "tests"), claim(10), transition(14, "Rework", "Done", ""),
 		}},
-		{id: "c", created: base, initial: "Backlog", events: []analyticsResidenceEvent{
+		{ID: "c", Created: base, Initial: "Backlog", Events: []hubanalytics.ResidenceEvent{
 			transition(1, "Backlog", "Blocked", ""), transition(3, "Blocked", "Todo", ""),
 		}},
-		{id: "d", created: base, initial: "Triage"},
+		{ID: "d", Created: base, Initial: "Triage"},
 	}
 	f := newDefaultNativeFixture(t, Config{now: func() time.Time { return base }})
 	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
@@ -53,17 +54,17 @@ func TestNativeAnalyticsLaneResidence(t *testing.T) {
 	}
 	ids := map[string]string{}
 	for _, fixture := range fixtures {
-		issue, err := createNativeIssueDraft(t.Context(), tx, scope, tracker.CreateIssue{Body: nativeContractTestBody, Title: fixture.id, State: fixture.initial}, fixture.created, false, false)
+		issue, err := createNativeIssueDraft(t.Context(), tx, scope, tracker.CreateIssue{Body: nativeContractTestBody, Title: fixture.ID, State: fixture.Initial}, fixture.Created, false, false)
 		if err != nil {
 			t.Fatal(err)
 		}
-		ids[fixture.id] = string(issue.WorkItemID)
-		for _, event := range fixture.events {
-			if event.kind == "workflow.transitioned" {
-				issue.State = event.data.ToState
-				issue, err = persistNativeIssue(t.Context(), tx, scope, issue, event.kind, event.data, event.at)
+		ids[fixture.ID] = string(issue.WorkItemID)
+		for _, event := range fixture.Events {
+			if event.Kind == "workflow.transitioned" {
+				issue.State = event.Data.ToState
+				issue, err = persistNativeIssue(t.Context(), tx, scope, issue, event.Kind, event.Data, event.At)
 			} else {
-				err = appendLegacyNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), event.kind, event.data, event.at)
+				err = appendLegacyNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), event.Kind, event.Data, event.At)
 			}
 			if err != nil {
 				t.Fatal(err)
@@ -203,7 +204,7 @@ VALUES (?,?,1,(SELECT id FROM workflow_states WHERE project_id=? AND detent_stat
 			if err != nil {
 				t.Fatal(err)
 			}
-			for i := range maxAnalyticsPopulation {
+			for i := range hubanalytics.MaxPopulation {
 				if kind == "issues" {
 					_, err = createNativeFixtureIssueTx(t.Context(), tx, scope, tracker.CreateIssue{Body: nativeContractTestBody, Title: strconv.Itoa(i), State: "Todo"}, base)
 				} else {

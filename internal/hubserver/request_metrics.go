@@ -17,6 +17,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/hubhealth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -334,13 +335,13 @@ func (m *tenantRequestMetrics) admit(now time.Time, runner, route string, capaci
 	return int(minute + 60 - now.Unix())
 }
 
-func (m *tenantRequestMetrics) findings(now time.Time) []healthFinding {
+func (m *tenantRequestMetrics) findings(now time.Time) []hubhealth.Finding {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	findings := []healthFinding{}
+	findings := []hubhealth.Finding{}
 	for id, w := range m.runners {
 		if now.Sub(w.ExcessAt) <= 2*time.Minute {
-			findings = append(findings, newHealthFinding("runner_request_budget", "instance", "runner", id, fmt.Sprintf("Runner exceeded its request budget (%d/%d per minute). Top routes: %s", w.ExcessCount, w.ExcessBudget, strings.Join(w.ExcessRoutes, ", ")), "The runner operator checks polling and read volume on the named routes.", w.Projects, healthEvidence{Counts: map[string]int{"requests": w.ExcessCount, "budget": w.ExcessBudget}, Signatures: w.ExcessRoutes}))
+			findings = append(findings, hubhealth.NewFinding("runner_request_budget", "instance", "runner", id, fmt.Sprintf("Runner exceeded its request budget (%d/%d per minute). Top routes: %s", w.ExcessCount, w.ExcessBudget, strings.Join(w.ExcessRoutes, ", ")), "The runner operator checks polling and read volume on the named routes.", w.Projects, hubhealth.Evidence{Counts: map[string]int{"requests": w.ExcessCount, "budget": w.ExcessBudget}, Signatures: w.ExcessRoutes}))
 		}
 		if now.Unix()/60*60 > w.Minute+120 {
 			delete(m.runners, id)

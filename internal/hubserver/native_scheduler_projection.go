@@ -7,6 +7,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubanalytics"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -78,7 +79,7 @@ func updateAnalyticsEventProjection(ctx context.Context, writer *sql.DB, id stri
 	if data.Run != nil {
 		attempt = data.Run.AttemptID
 	}
-	key := analyticsDimension(decision.Source, decision.Reason)
+	key := hubanalytics.Dimension(decision.Source, decision.Reason)
 	_, err := writer.ExecContext(ctx, `UPDATE collaboration_events SET scheduler_outcome=?,scheduler_reason=?,scheduler_source=?,scheduler_runner_id=?,analytics_from_state=?,analytics_to_state=?,analytics_attempt_id=?,analytics_skip_key=?,analytics_recorded_ns=?,analytics_projection_version=1 WHERE id=?`, decision.Outcome, decision.Reason, decision.Source, decision.RunnerID, data.FromState, data.ToState, attempt, key, at.UnixNano(), id)
 	return err
 }

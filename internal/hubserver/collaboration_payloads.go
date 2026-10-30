@@ -12,6 +12,8 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/hubanalytics"
+	"github.com/digitaldrywood/detent/internal/hubhealth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -252,7 +254,7 @@ func (s *Service) prepareCollaborationPayloadMetadata(ctx context.Context, row i
 		run = *data.Run
 	}
 	for i, column := range []string{"scheduler_change_id", "scheduler_version_id", "scheduler_head_sha", "scheduler_change_present", "run_outcome", "run_machine_id", "run_session_id", "run_runner_id", "run_attempt_id", "activity_spans_present", "analytics_from_state", "analytics_to_state", "analytics_attempt_id", "analytics_skip_key", "analytics_recorded_ns", "analytics_projection_version"} {
-		values := []any{change.ChangeID, change.VersionID, change.HeadSHA, data.Change != nil, run.Outcome, run.MachineID, run.SessionID, run.RunnerID, nullString(run.AttemptID), false, nullString(data.FromState), nullString(data.ToState), run.AttemptID, analyticsDimension(decision.Source, decision.Reason), recorded.UnixNano(), 1}
+		values := []any{change.ChangeID, change.VersionID, change.HeadSHA, data.Change != nil, run.Outcome, run.MachineID, run.SessionID, run.RunnerID, nullString(run.AttemptID), false, nullString(data.FromState), nullString(data.ToState), run.AttemptID, hubanalytics.Dimension(decision.Source, decision.Reason), recorded.UnixNano(), 1}
 		m.add(column, values[i])
 	}
 	checkpoint := tracker.NativeCheckpoint{}
@@ -266,7 +268,7 @@ func (s *Service) prepareCollaborationPayloadMetadata(ctx context.Context, row i
 		projected.ReasonDetail = ""
 	}
 	m.project = func(ctx context.Context, tx *sql.Tx) error {
-		if err := updateHealthEventProjection(ctx, tx, id, actor, projected); err != nil {
+		if err := hubhealth.UpdateEventProjection(ctx, tx, id, actor, projected); err != nil {
 			return err
 		}
 		return updateEventPageFacts(ctx, tx, id, actor, data)

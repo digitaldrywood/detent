@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubanalytics"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -147,7 +148,7 @@ func readNativeShippedSpend(ctx context.Context, q nativeQueryer, scope nativeSc
 	for _, id := range ids {
 		perIssue[id] = 0
 	}
-	err := forShippedBatches(ids, func(batch sqlParameterRows) error {
+	err := hubanalytics.ForShippedBatches(ids, func(batch sqlParameterRows) error {
 		rows, err := querySQL(ctx, q, `SELECT a.work_item_id,coalesce(sum(u.cost_estimate),0) FROM sql_rows(?) w
 CROSS JOIN native_attempts a ON a.organization_id=? AND a.project_id=? AND a.work_item_id=w.value
 CROSS JOIN attempt_usage u ON u.attempt_id=a.id AND u.organization_id=? AND u.project_id=? AND +u.period<? GROUP BY a.work_item_id`,

@@ -3,14 +3,16 @@ package hubserver
 import (
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/hubanalytics"
+	"github.com/digitaldrywood/detent/internal/hubhealth"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 )
 
 func TestReportsTrackingIssues(t *testing.T) {
-	failures := []nativeFailure{
-		{workItem: "wi_a", example: "hub request timed out"},
-		{workItem: "wi_b", example: "landing gate failed"},
-		{workItem: "wi_c", example: "something nobody filed"},
+	failures := []hubanalytics.Failure{
+		{WorkItem: "wi_a", Example: "hub request timed out"},
+		{WorkItem: "wi_b", Example: "landing gate failed"},
+		{WorkItem: "wi_c", Example: "something nobody filed"},
 	}
 	for _, tt := range []struct {
 		name     string
@@ -19,7 +21,7 @@ func TestReportsTrackingIssues(t *testing.T) {
 		linked   bool
 	}{
 		{"signature digest", func() string {
-			return issueorigin.Stamp("Hub timeouts", issueorigin.Origin{Kind: "worker", Fingerprint: issueorigin.Fingerprint(normalizeFailureSignature("hub request timed out"))})
+			return issueorigin.Stamp("Hub timeouts", issueorigin.Origin{Kind: "worker", Fingerprint: issueorigin.Fingerprint(hubhealth.NormalizeFailureSignature("hub request timed out"))})
 		}, false, true},
 		{"class name", func() string {
 			return issueorigin.Stamp("Hub timeouts", issueorigin.Origin{Kind: "audit", Fingerprint: "Hub request timed out"})

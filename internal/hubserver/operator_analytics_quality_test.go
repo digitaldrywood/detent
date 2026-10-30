@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubanalytics"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -40,7 +41,7 @@ func TestAnalyticsQualityEvidencePopulationOrder(t *testing.T) {
 		}
 		if _, err := tx.ExecContext(t.Context(), `WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<?)
 INSERT INTO change_evidence(change_id,sequence,kind,version_id,record_json)
-SELECT ?,x*2-?,'review',?,json_object('review_id',?||x,'version_id',?,'decision','changes_requested','created_at',strftime('%Y-%m-%dT%H:%M:%SZ',?,'-'||x||' seconds')) FROM n`, maxAnalyticsPopulation+2, change, 1-index, version, name+"-", version, formatHubTime(now)); err != nil {
+SELECT ?,x*2-?,'review',?,json_object('review_id',?||x,'version_id',?,'decision','changes_requested','created_at',strftime('%Y-%m-%dT%H:%M:%SZ',?,'-'||x||' seconds')) FROM n`, hubanalytics.MaxPopulation+2, change, 1-index, version, name+"-", version, formatHubTime(now)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -59,7 +60,7 @@ SELECT ?,x*2-?,'review',?,json_object('review_id',?||x,'version_id',?,'decision'
 		{2000, 4, "first-1001", "second-1002", true},
 	} {
 		t.Run(fmt.Sprintf("offset-%d", test.offset), func(t *testing.T) {
-			ctx, paging, err := analyticsPagingContext(t.Context(), fmt.Sprintf("quality_evidence:%d:0", test.offset))
+			ctx, paging, err := hubanalytics.PagingContext(t.Context(), fmt.Sprintf("quality_evidence:%d:0", test.offset))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -79,8 +80,8 @@ SELECT ?,x*2-?,'review',?,json_object('review_id',?||x,'version_id',?,'decision'
 			if ids[0] != test.first || ids[len(ids)-1] != test.last {
 				t.Fatalf("evidence page begins %s and ends %s", ids[0], ids[len(ids)-1])
 			}
-			if test.offset < 2000 && paging.next["quality_evidence"] != fmt.Sprintf("quality_evidence:%d:0", test.offset+maxAnalyticsPopulation) {
-				t.Fatalf("evidence continuation=%v", paging.next)
+			if test.offset < 2000 && paging.Next["quality_evidence"] != fmt.Sprintf("quality_evidence:%d:0", test.offset+hubanalytics.MaxPopulation) {
+				t.Fatalf("evidence continuation=%v", paging.Next)
 			}
 		})
 	}

@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubhealth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -222,7 +223,7 @@ VALUES('finding_dashboard',?,'dashboard','example','flow','{}','[]',?,?,'attenti
 		}
 	})
 	t.Run("health writer routes membership changes once per revision", func(t *testing.T) {
-		finding := healthFinding{Fingerprint: "dashboard-writer", Signal: "example", Class: "flow", Severity: "watch", Summary: "Example finding", NextAction: "Inspect", Projects: []string{string(f.project.ID), string(other.project.ID)}}
+		finding := hubhealth.Finding{Fingerprint: "dashboard-writer", Signal: "example", Class: "flow", Severity: "watch", Summary: "Example finding", NextAction: "Inspect", Projects: []string{string(f.project.ID), string(other.project.ID)}}
 		var findingID string
 		for step, test := range []struct {
 			projects []string
@@ -242,7 +243,7 @@ VALUES('finding_dashboard',?,'dashboard','example','flow','{}','[]',?,?,'attenti
 				t.Fatal(err)
 			}
 			defer tx.Rollback()
-			findings := []healthFinding{finding}
+			findings := []hubhealth.Finding{finding}
 			findings[0].Projects = test.projects
 			if test.resolved {
 				findings = nil

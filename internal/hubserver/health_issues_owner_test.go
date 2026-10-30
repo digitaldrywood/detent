@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/hubhealth"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -39,7 +40,7 @@ func TestHealthFindingOpenOwner(t *testing.T) {
 			f := newNativeFixture(t, nil, "", "health-owner")
 			other := newNativeFixture(t, f.service, f.project.OrganizationID, "health-owner-other")
 			now := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
-			var findings []healthFinding
+			var findings []hubhealth.Finding
 			owners := map[tracker.ProjectID]tracker.NativeWorkItemID{}
 			previous := map[tracker.ProjectID]tracker.NativeIssue{}
 			for _, fixture := range []nativeFixture{f, other} {
@@ -55,7 +56,7 @@ func TestHealthFindingOpenOwner(t *testing.T) {
 				if kind != "reverse related" {
 					subject = fixture.create(t, "affected subject")
 				}
-				finding := newHealthFinding("recovery_loop", "instance", "work_item", string(subject.WorkItemID), "Repeated checkpoint recovery.", "Inspect retained attempts.", []string{string(fixture.project.ID)}, healthEvidence{Counts: map[string]int{"recoveries": 5}, AttemptIDs: []string{"attempt-evidence"}, EventIDs: []string{"event-evidence"}})
+				finding := hubhealth.NewFinding("recovery_loop", "instance", "work_item", string(subject.WorkItemID), "Repeated checkpoint recovery.", "Inspect retained attempts.", []string{string(fixture.project.ID)}, hubhealth.Evidence{Counts: map[string]int{"recoveries": 5}, AttemptIDs: []string{"attempt-evidence"}, EventIDs: []string{"event-evidence"}})
 				findings = append(findings, finding)
 				if kind == "unowned" || kind == "concurrent" {
 					continue
@@ -113,7 +114,7 @@ func TestHealthFindingOpenOwner(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					findings[len(findings)-1] = newHealthFinding(finding.Signal, finding.Class, finding.Subject.Kind, string(subject.WorkItemID), finding.Summary, finding.NextAction, finding.Projects, finding.Evidence)
+					findings[len(findings)-1] = hubhealth.NewFinding(finding.Signal, finding.Class, finding.Subject.Kind, string(subject.WorkItemID), finding.Summary, finding.NextAction, finding.Projects, finding.Evidence)
 				}
 				if strings.Contains(kind, "related") || kind == "dependency" {
 					_, subjectID, err := readNativeIssue(t.Context(), tx, scope, string(subject.WorkItemID))
@@ -247,7 +248,7 @@ func TestHealthFindingReusesLinkedIssueWhileSearchRebuilds(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 10, 6, 18, 30, 0, 0, time.UTC)
-	finding := newHealthFinding("scheduler_loop_behind", "instance", "project", string(f.project.ID), "Scheduler loop is behind.", "Inspect scheduler timing.", []string{string(f.project.ID)}, healthEvidence{Signatures: []string{"first signature"}})
+	finding := hubhealth.NewFinding("scheduler_loop_behind", "instance", "project", string(f.project.ID), "Scheduler loop is behind.", "Inspect scheduler timing.", []string{string(f.project.ID)}, hubhealth.Evidence{Signatures: []string{"first signature"}})
 	countIntake := func() int {
 		t.Helper()
 		var count int
@@ -256,13 +257,13 @@ func TestHealthFindingReusesLinkedIssueWhileSearchRebuilds(t *testing.T) {
 		}
 		return count
 	}
-	applyTestHealth(t, f, now, []healthFinding{finding})
+	applyTestHealth(t, f, now, []hubhealth.Finding{finding})
 	if got := countIntake(); got != 1 {
 		t.Fatalf("intake issues after first report = %d, want 1", got)
 	}
 	for i, signature := range []string{"second signature", "third signature"} {
 		finding.Evidence.Signatures = []string{signature}
-		applyTestHealth(t, f, now.Add(time.Duration(i+1)*time.Minute), []healthFinding{finding})
+		applyTestHealth(t, f, now.Add(time.Duration(i+1)*time.Minute), []hubhealth.Finding{finding})
 		if got := countIntake(); got != 1 {
 			t.Fatalf("intake issues after evidence change %d = %d, want 1", i+1, got)
 		}

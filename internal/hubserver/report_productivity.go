@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubanalytics"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
@@ -273,7 +274,7 @@ func finishProductivityMetrics(m *productivityMetrics) {
 		m.ReworkRate = new(100 * float64(m.Reworked) / float64(m.Worked))
 	}
 	if len(m.cycles) > 0 {
-		m.CycleP50 = new(sampledDuration(m.cycles).P50Seconds)
+		m.CycleP50 = new(hubanalytics.SampledDuration(m.cycles).P50Seconds)
 	}
 }
 

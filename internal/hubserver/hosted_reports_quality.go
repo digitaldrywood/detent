@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 
+	"github.com/digitaldrywood/detent/internal/hubanalytics"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
@@ -27,7 +28,7 @@ func reportsQualityInputs(ctx context.Context, q nativeQueryer, scope nativeScop
 	}
 	if !read.read {
 		combined := operatortool.AnalyticsWindow{From: read.prior.From, To: read.current.To, Bucket: w.Bucket}
-		inputs, err := loadAnalyticsQualityInputs(context.WithValue(ctx, analyticsPagingKey{}, nil), q, scope, combined)
+		inputs, err := loadAnalyticsQualityInputs(context.WithValue(ctx, hubanalytics.PagingKey{}, nil), q, scope, combined)
 		if err != nil {
 			return analyticsQualityInputs{}, err
 		}

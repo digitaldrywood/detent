@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubanalytics"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -320,9 +321,9 @@ func TestMergeHostedReports(t *testing.T) {
 	cost := func(v float64) *float64 { return &v }
 	report := func(done int, cycle []float64, first reportsRatio, priorFailed *int, priorCost *float64, issueCosts []float64) hostedReportsReport {
 		return hostedReportsReport{
-			Completion:  reportsCompletion{Done: done, System: sampledDuration(slices.Clone(cycle)), perIssue: issueCosts, Cost: 1},
-			Analytics:   nativeAnalyticsProject{ProjectID: "p", Unavailable: []string{"recorded_usage", "activity_complete_window"}},
-			Runners:     []reportsRunner{{RunnerID: "r", Sessions: 1, Duration: sampledDuration(slices.Clone(cycle))}},
+			Completion:  hubanalytics.Completion{Done: done, System: hubanalytics.SampledDuration(slices.Clone(cycle)), PerIssue: issueCosts, Cost: 1},
+			Analytics:   hubanalytics.Project{ProjectID: "p", Unavailable: []string{"recorded_usage", "activity_complete_window"}},
+			Runners:     []reportsRunner{{RunnerID: "r", Sessions: 1, Duration: hubanalytics.SampledDuration(slices.Clone(cycle))}},
 			Spend:       []reportsSpend{{WorkItemID: "wi", Cost: float64(done)}},
 			firstTry:    first,
 			FirstTry:    first.percent(),

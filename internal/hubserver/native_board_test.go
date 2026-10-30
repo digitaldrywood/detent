@@ -23,6 +23,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/hubanalytics"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -1157,7 +1158,7 @@ func TestNativeBoardRefreshSkipsFailingCard(t *testing.T) {
 			}
 			var logs bytes.Buffer
 			f.service.config.Logger = slog.New(slog.NewJSONHandler(&logs, nil))
-			step := analyticsBackfillBudget / time.Duration(test.attemptsPerTick+1)
+			step := hubanalytics.BackfillBudget / time.Duration(test.attemptsPerTick+1)
 			f.service.config.now = func() time.Time {
 				result := now
 				now = now.Add(step)

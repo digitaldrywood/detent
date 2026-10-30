@@ -8,6 +8,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubanalytics"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -23,7 +24,7 @@ type productivityHour struct {
 	worked, reworked, landed int
 }
 
-func refreshProductivitySummary(ctx context.Context, tx projectionQuery, scope nativeScope, id string) error {
+func refreshProductivitySummary(ctx context.Context, tx hubanalytics.ProjectionQuery, scope nativeScope, id string) error {
 	var created, closed, state, kind, priority, actorRaw, body, labelsRaw string
 	err := tx.QueryRowContext(ctx, `SELECT i.created_at,coalesce(CASE WHEN ws.terminal=1 THEN `+nativeTerminalEnteredAt+` END,''),ws.detent_state,coalesce(i.issue_type,''),coalesce(CAST(q.priority_override AS TEXT),''),i.actor_json,i.body,i.labels_json
  FROM issues i JOIN workflow_states ws ON ws.id=i.workflow_state_id LEFT JOIN queue_entries q ON q.issue_id=i.id
@@ -105,7 +106,7 @@ func refreshProductivitySummary(ctx context.Context, tx projectionQuery, scope n
 		return err
 	}
 	if err == nil {
-		var sample analyticsResidenceSample
+		var sample hubanalytics.ResidenceSample
 		if err := decodeStorageJSON(ctx, []byte(sampleRaw), &sample); err != nil {
 			return err
 		}
@@ -160,7 +161,7 @@ func refreshProductivitySummary(ctx context.Context, tx projectionQuery, scope n
 	return nil
 }
 
-func productivityHours(ctx context.Context, tx projectionQuery, scope nativeScope, id string) (map[int64]productivityHour, error) {
+func productivityHours(ctx context.Context, tx hubanalytics.ProjectionQuery, scope nativeScope, id string) (map[int64]productivityHour, error) {
 	hours := map[int64]productivityHour{}
 	atHour := func(at time.Time) int64 {
 		return at.UTC().Truncate(time.Hour).Unix()
@@ -216,7 +217,7 @@ func productivityHours(ctx context.Context, tx projectionQuery, scope nativeScop
 	return hours, nil
 }
 
-func productivityQualityInputs(ctx context.Context, tx projectionQuery, scope nativeScope, id string) (_ productivityQuality, resultErr error) {
+func productivityQualityInputs(ctx context.Context, tx hubanalytics.ProjectionQuery, scope nativeScope, id string) (_ productivityQuality, resultErr error) {
 	out := productivityQuality{}
 	rows, err := queryChangeLegacyRows(ctx, tx, `SELECT c.id,c.work_item_id,c.record_json,v.id,COALESCE(NULLIF(v.payload_object_key,''),v.record_json),coalesce(l.record_json,'') FROM change_requests c JOIN change_versions v ON v.change_id=c.id LEFT JOIN quality_landings l ON l.version_id=v.id WHERE c.organization_id=? AND c.project_id=? AND c.work_item_id=? ORDER BY c.id,v.number`, scope.organization, scope.project, id)
 	if err != nil {
@@ -305,7 +306,7 @@ func productivityQualityInputs(ctx context.Context, tx projectionQuery, scope na
 	return out, errors.Join(rows.Err(), rows.Close())
 }
 
-func refreshProductivityRunners(ctx context.Context, tx projectionQuery, scope nativeScope, id string) error {
+func refreshProductivityRunners(ctx context.Context, tx hubanalytics.ProjectionQuery, scope nativeScope, id string) error {
 	rows, err := tx.QueryContext(ctx, `SELECT r.id,a.started_at,a.updated_at FROM native_attempts a LEFT JOIN lease_runners lr ON lr.lease_id=a.lease_id JOIN runner_identities r ON r.id=coalesce(lr.runner_id,a.runner_id) AND r.organization_id=a.organization_id WHERE a.organization_id=? AND a.project_id=? AND a.work_item_id=?`, scope.organization, scope.project, id)
 	if err != nil {
 		return err

@@ -13,6 +13,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubanalytics"
+	"github.com/digitaldrywood/detent/internal/hubhealth"
 	"github.com/digitaldrywood/detent/internal/issuecontract"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -98,47 +100,47 @@ ORDER BY a.fencing_token DESC`, scope.organization, scope.project, item, scope.o
 	return nativeSourceCheckpoint{}, rows.Err()
 }
 
-func readExplanationFailures(ctx context.Context, q nativeQueryer, scope nativeScope, item string) ([]nativeFailure, bool, error) {
+func readExplanationFailures(ctx context.Context, q nativeQueryer, scope nativeScope, item string) ([]hubanalytics.Failure, bool, error) {
 	rows, err := q.QueryContext(ctx, `SELECT id,status,started_at,updated_at,COALESCE(NULLIF(payload_object_key,''),data_json),health_failure_signature FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? ORDER BY fencing_token DESC LIMIT 65`, scope.organization, scope.project, item)
 	if err != nil {
 		return nil, false, err
 	}
 	defer rows.Close()
-	var failures []nativeFailure
+	var failures []hubanalytics.Failure
 	observed := 0
 	for rows.Next() {
 		if observed == 64 {
 			return failures, true, rows.Err()
 		}
 		observed++
-		var f nativeFailure
+		var f hubanalytics.Failure
 		var status, started, updated, raw, signature string
-		if err := rows.Scan(&f.attemptID, &status, &started, &updated, &raw, &signature); err != nil {
+		if err := rows.Scan(&f.AttemptID, &status, &started, &updated, &raw, &signature); err != nil {
 			return nil, false, err
 		}
 		var data tracker.NativeRunData
 		if err := decodeStorageJSON(ctx, []byte(raw), &data); err != nil {
 			return nil, false, err
 		}
-		f.example, f.class = failureFromAttempt(data, status)
+		f.Example, f.Class = failureFromAttempt(data, status)
 		if signature != "" {
-			f.example = signature
+			f.Example = signature
 		}
-		if f.example == "" {
+		if f.Example == "" {
 			continue
 		}
-		f.workItem = item
-		f.started, err = parseTimeValue(started)
+		f.WorkItem = item
+		f.Started, err = parseTimeValue(started)
 		if err != nil {
 			return nil, false, err
 		}
-		f.finished, err = parseTimeValue(updated)
+		f.Finished, err = parseTimeValue(updated)
 		if err != nil {
 			return nil, false, err
 		}
-		f.at = f.finished
+		f.At = f.Finished
 		if data.Runtime != nil && data.Runtime.Landing != nil && !data.Runtime.Landing.ObservedAt.IsZero() {
-			f.at = data.Runtime.Landing.ObservedAt
+			f.At = data.Runtime.Landing.ObservedAt
 		}
 		failures = append(failures, f)
 	}
@@ -388,10 +390,10 @@ func boundedNativeExplanation(evidence tracker.NativeRuntimeEvidence, failure *e
 	result.Sources = []explain.SourceStatus{{Name: "explanation_evidence_truncated", State: explain.SourceUnavailable}}
 	result.Evidence, result.Reasons, result.LatestTransition, result.FailureSignature = nil, nil, nil, nil
 	result.Eligibility.Refusals, result.Eligibility.Latest, result.Eligibility.Current = nil, nil, nil
-	result.RequiredGate.Reason = boundedFailureText(result.RequiredGate.Reason, 4096)
+	result.RequiredGate.Reason = hubhealth.BoundedFailureText(result.RequiredGate.Reason, 4096)
 	result.RequiredGate.Failures, result.RequiredGate.Running = nil, nil
 	if result.RequiredGate.ExternalMerge != nil {
-		result.RequiredGate.ExternalMerge.Detail = boundedFailureText(result.RequiredGate.ExternalMerge.Detail, 4096)
+		result.RequiredGate.ExternalMerge.Detail = hubhealth.BoundedFailureText(result.RequiredGate.ExternalMerge.Detail, 4096)
 	}
 	raw, err = json.Marshal(result)
 	if err != nil {
@@ -426,7 +428,7 @@ func explanationLanding(value *tracker.NativeLandingReceipt) *tracker.NativeLand
 		for _, values := range []*[]string{&ci.RequiredChecks, &ci.PendingChecks, &ci.MissingChecks, &ci.FailedChecks} {
 			*values = slices.Clone((*values)[:min(len(*values), 16)])
 			for i := range *values {
-				(*values)[i] = boundedFailureText((*values)[i], 256)
+				(*values)[i] = hubhealth.BoundedFailureText((*values)[i], 256)
 			}
 		}
 		result.CI = &ci

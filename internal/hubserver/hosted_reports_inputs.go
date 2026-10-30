@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubanalytics"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -30,7 +31,7 @@ type reportsInputs struct {
 	states    map[string]tracker.NativeState
 	done      []reportsDone
 	priorDone []reportsDone
-	timing    func(ids []string, to time.Time) (reportsCompletion, error)
+	timing    func(ids []string, to time.Time) (hubanalytics.Completion, error)
 	open      []reportsOpenIssue
 	priorOpen []reportsOpenIssue
 	lanes     func(from, to time.Time) map[string]float64
@@ -72,30 +73,30 @@ func reportsLanesExcept(summary operatortool.AnalyticsResidenceSummary) map[stri
 }
 
 // reportsTimelineResidence fills the residence inputs from raw timelines.
-func reportsTimelineResidence(in *reportsInputs, timelines []analyticsResidenceTimeline, issues []analyticsResidenceIssue, states map[string]tracker.NativeState, w operatortool.AnalyticsWindow, clipped bool) {
+func reportsTimelineResidence(in *reportsInputs, timelines []hubanalytics.ResidenceTimeline, issues []hubanalytics.ResidenceIssue, states map[string]tracker.NativeState, w operatortool.AnalyticsWindow, clipped bool) {
 	in.states, in.clipped = states, clipped
 	in.lanes = func(from, to time.Time) map[string]float64 {
-		summary, _ := summarizeAnalyticsResidence(timelines, states, from, to)
+		summary, _ := hubanalytics.SummarizeResidence(timelines, states, from, to)
 		return reportsLanesExcept(summary)
 	}
 	in.open = nil
 	for _, timeline := range timelines {
-		in.open = append(in.open, reportsOpenIssue{id: timeline.issue.id, state: timeline.state, entered: timeline.entered, started: timeline.started, partial: timeline.issue.partial})
+		in.open = append(in.open, reportsOpenIssue{id: timeline.Issue.ID, state: timeline.State, entered: timeline.Entered, started: timeline.Started, partial: timeline.Issue.Partial})
 	}
 	in.priorOpen = nil
 	for _, issue := range issues {
-		if !issue.created.Before(w.From) {
+		if !issue.Created.Before(w.From) {
 			continue
 		}
 		earlier := issue
-		earlier.events = nil
-		for _, event := range issue.events {
-			if event.at.Before(w.From) {
-				earlier.events = append(earlier.events, event)
+		earlier.Events = nil
+		for _, event := range issue.Events {
+			if event.At.Before(w.From) {
+				earlier.Events = append(earlier.Events, event)
 			}
 		}
-		timeline := buildAnalyticsResidenceTimeline(earlier, states, w.From)
-		in.priorOpen = append(in.priorOpen, reportsOpenIssue{id: issue.id, state: timeline.state, entered: timeline.entered, started: timeline.started, partial: timeline.issue.partial})
+		timeline := hubanalytics.BuildResidenceTimeline(earlier, states, w.From)
+		in.priorOpen = append(in.priorOpen, reportsOpenIssue{id: issue.ID, state: timeline.State, entered: timeline.Entered, started: timeline.Started, partial: timeline.Issue.Partial})
 	}
 }
 
@@ -108,9 +109,9 @@ func readReportsResidence(ctx context.Context, q nativeQueryer, scope nativeScop
 		if err != nil {
 			return err
 		}
-		timelines := make([]analyticsResidenceTimeline, 0, len(issues))
+		timelines := make([]hubanalytics.ResidenceTimeline, 0, len(issues))
 		for _, issue := range issues {
-			timelines = append(timelines, buildAnalyticsResidenceTimeline(issue, states, w.To))
+			timelines = append(timelines, hubanalytics.BuildResidenceTimeline(issue, states, w.To))
 		}
 		reportsTimelineResidence(in, timelines, issues, states, w, clipped)
 		return nil
@@ -123,15 +124,15 @@ func readReportsResidence(ctx context.Context, q nativeQueryer, scope nativeScop
 	if err != nil {
 		return err
 	}
-	in.states, in.clipped = frames.states, frames.clipped
+	in.states, in.clipped = frames.States, frames.Clipped
 	in.lanes = func(from, to time.Time) map[string]float64 {
-		summary, _ := summarizeResidenceFrames(frames, from, to)
+		summary, _ := hubanalytics.SummarizeResidenceFrames(frames, from, to)
 		return reportsLanesExcept(summary)
 	}
 	at := func(instant time.Time) []reportsOpenIssue {
-		out := make([]reportsOpenIssue, 0, len(frames.ids))
-		for _, id := range frames.ids {
-			sample, ok := frames.sample(instant, id)
+		out := make([]reportsOpenIssue, 0, len(frames.IDs))
+		for _, id := range frames.IDs {
+			sample, ok := frames.Sample(instant, id)
 			if !ok || sample.State == "" {
 				continue
 			}

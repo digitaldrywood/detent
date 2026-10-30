@@ -15,6 +15,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubanalytics"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -75,7 +76,7 @@ func (s *Service) readActivityReport(ctx context.Context, credential apiCredenti
 	}
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
-	out := operatortool.ActivityReport{OrganizationID: s.config.Hosted.OrganizationID, ObservedAt: s.config.now().UTC(), Window: w, Running: []operatortool.ActivityAttempt{}, Finished: []operatortool.ActivityAttempt{}, TypicalDurations: []operatortool.ActivityTypicalDuration{}, PopulationLimit: maxAnalyticsPopulation}
+	out := operatortool.ActivityReport{OrganizationID: s.config.Hosted.OrganizationID, ObservedAt: s.config.now().UTC(), Window: w, Running: []operatortool.ActivityAttempt{}, Finished: []operatortool.ActivityAttempt{}, TypicalDurations: []operatortool.ActivityTypicalDuration{}, PopulationLimit: hubanalytics.MaxPopulation}
 	projects, err := s.usageReadableProjects(ctx, credential)
 	if err != nil {
 		return out, err
@@ -149,7 +150,7 @@ func activityTypicalDurations(project string, attempts []activityDurationSample,
 	}
 	out := []operatortool.ActivityTypicalDuration{}
 	for role, seconds := range values {
-		out = append(out, operatortool.ActivityTypicalDuration{ProjectID: project, Stage: role, AnalyticsDuration: analyticsDuration(seconds), Partial: partial})
+		out = append(out, operatortool.ActivityTypicalDuration{ProjectID: project, Stage: role, AnalyticsDuration: hubanalytics.Duration(seconds), Partial: partial})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Stage < out[j].Stage })
 	return out
@@ -293,7 +294,7 @@ func readActivityAttempts(ctx context.Context, q nativeQueryer, organization str
 			return out, nil
 		}
 		offset += len(candidates)
-		if offset >= maxAnalyticsPopulation {
+		if offset >= hubanalytics.MaxPopulation {
 			return nil, errHubOperatorUnavailable
 		}
 	}

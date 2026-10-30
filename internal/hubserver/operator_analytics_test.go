@@ -19,6 +19,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubanalytics"
 	"github.com/digitaldrywood/detent/internal/mcp"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/testenv"
@@ -429,25 +430,25 @@ func TestNativeAnalyticsUnavailableServices(t *testing.T) {
 			}
 		}
 	}
-	_, err := hubOperatorResult(nativeAnalyticsProject{SkipReasons: []nativeAnalyticsSkip{{Reason: strings.Repeat("x", operatortool.MaxResultBytes)}}})
+	_, err := hubOperatorResult(hubanalytics.Project{SkipReasons: []hubanalytics.Skip{{Reason: strings.Repeat("x", operatortool.MaxResultBytes)}}})
 	if !errors.Is(err, errHubOperatorUnavailable) {
 		t.Fatalf("oversized native report: %v", err)
 	}
 	t.Run("receipt pages retain offsets under byte limit", func(t *testing.T) {
-		attempts := make([]nativeAnalyticsAttempt, 200)
+		attempts := make([]hubanalytics.Attempt, 200)
 		sources := make([]workflowmetrics.InstructionRef, 64)
 		for i := range sources {
 			sources[i] = workflowmetrics.InstructionRef{Name: "AGENTS.md (effective)", Hash: strings.Repeat("a", 64), PathRef: strings.Repeat("b", 64), Version: strings.Repeat("c", 64), ObservedAt: time.Now().UTC()}
 		}
 		for i := range attempts {
-			attempts[i] = nativeAnalyticsAttempt{Activity: &workflowmetrics.ActivityProfile{Sources: sources}, Pipeline: make([]gate.PipelineTiming, 1024)}
+			attempts[i] = hubanalytics.Attempt{Activity: &workflowmetrics.ActivityProfile{Sources: sources}, Pipeline: make([]gate.PipelineTiming, 1024)}
 		}
 		timings := make([]gate.PipelineTiming, 200)
 		for i := range timings {
 			timings[i] = (gate.CommandResult{Command: "make " + strings.Repeat("v", 3000), StartedAt: time.Now().UTC(), FinishedAt: time.Now().UTC(), HeadSHA: strings.Repeat("a", 40), TreeSHA: strings.Repeat("b", 40)}).PipelineTiming("finalization")
 		}
 		for offset := 0; offset < len(timings); {
-			page := pipelineTimingPage(timings, offset, 200)
+			page := hubanalytics.PipelineTimingPage(timings, offset, 200)
 			raw, err := json.Marshal(page.Items)
 			if err != nil || len(raw) > operatortool.WorkListPageBytes || len(page.Items) == 0 || page.Offset != offset {
 				t.Fatalf("timing page offset=%d size=%d err=%v", offset, len(raw), err)
@@ -523,10 +524,10 @@ func TestNativeAnalyticsCostPerOutcome(t *testing.T) {
 		{name: "complete aligned population", usageRows: 2, landings: 2, populationObserved: 2, costPerShipped: 4, tokensPerShipped: 120},
 		{name: "multiple rows from one attempt", usageRows: 2, landings: 2, sharedAttempt: true, populationObserved: 1, costPerShipped: 4, tokensPerShipped: 120},
 		{name: "partial hour attribution", usageRows: 2, landings: 2, partialHour: true, populationObserved: 2, costPerShipped: 4, tokensPerShipped: 120},
-		{name: "usage population beyond one page", usageRows: maxAnalyticsPopulation + 1, landings: 2, clipped: true, populationObserved: 1000, costPerShipped: 2000, tokensPerShipped: 60000},
-		{name: "partial hour population beyond one page", usageRows: maxAnalyticsPopulation + 1, landings: 2, partialHour: true, clipped: true, populationObserved: 1000, costPerShipped: 2000, tokensPerShipped: 60000},
-		{name: "exclusive end does not clip population", usageRows: maxAnalyticsPopulation + 1, landings: 2, usageAtWindowEnd: true, populationObserved: maxAnalyticsPopulation, costPerShipped: 2000, tokensPerShipped: 60000},
-		{name: "landing population beyond one page", usageRows: maxAnalyticsPopulation + 1, landings: maxAnalyticsPopulation + 1, clipped: true, populationObserved: 1000, costPerShipped: 4, tokensPerShipped: 120},
+		{name: "usage population beyond one page", usageRows: hubanalytics.MaxPopulation + 1, landings: 2, clipped: true, populationObserved: 1000, costPerShipped: 2000, tokensPerShipped: 60000},
+		{name: "partial hour population beyond one page", usageRows: hubanalytics.MaxPopulation + 1, landings: 2, partialHour: true, clipped: true, populationObserved: 1000, costPerShipped: 2000, tokensPerShipped: 60000},
+		{name: "exclusive end does not clip population", usageRows: hubanalytics.MaxPopulation + 1, landings: 2, usageAtWindowEnd: true, populationObserved: hubanalytics.MaxPopulation, costPerShipped: 2000, tokensPerShipped: 60000},
+		{name: "landing population beyond one page", usageRows: hubanalytics.MaxPopulation + 1, landings: hubanalytics.MaxPopulation + 1, clipped: true, populationObserved: 1000, costPerShipped: 4, tokensPerShipped: 120},
 		{name: "missing recorded usage", landings: 2},
 		{name: "no shipped outcomes", usageRows: 2, populationObserved: 2},
 	} {
@@ -609,7 +610,7 @@ VALUES (?,'org_security',?,?,json_object('landed',json_object('version_id',?,'he
 				}
 			}
 			outcome := project.CostPerOutcome
-			if outcome.Shipped != min(test.landings, maxAnalyticsPopulation) || outcome.PopulationObserved != test.populationObserved || outcome.Clipped != test.clipped {
+			if outcome.Shipped != min(test.landings, hubanalytics.MaxPopulation) || outcome.PopulationObserved != test.populationObserved || outcome.Clipped != test.clipped {
 				t.Fatalf("outcome coverage = %#v", outcome)
 			}
 			if test.clipped {
@@ -848,7 +849,7 @@ func TestNativeAnalyticsRuntimePopulation(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
-	for range maxAnalyticsPopulation + 1 {
+	for range hubanalytics.MaxPopulation + 1 {
 
 		data := tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Source: "recorded", Outcome: "skipped", Reason: "capacity", At: now}}
 		if err := appendLegacyNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "scheduler.decision", data, now); err != nil {

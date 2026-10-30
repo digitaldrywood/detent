@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/entryauthority"
+	"github.com/digitaldrywood/detent/internal/hubanalytics"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -351,7 +352,7 @@ func TestReportObjectDownloadsReleaseReaders(t *testing.T) {
 			case "cloud diagnostics":
 				_, err = f.service.readCloudDiagnostics(readCtx, credential, w)
 			case "hosted diagnostics":
-				_, err = f.service.readHostedDiagnostics(readCtx, nativeAnalyticsReport{OrganizationID: string(scope.organization), Window: w, Projects: []nativeAnalyticsProject{{ProjectID: string(scope.project)}}})
+				_, err = f.service.readHostedDiagnostics(readCtx, nativeAnalyticsReport{OrganizationID: string(scope.organization), Window: w, Projects: []hubanalytics.Project{{ProjectID: string(scope.project)}}})
 			}
 			if err != nil {
 				t.Fatal(err)

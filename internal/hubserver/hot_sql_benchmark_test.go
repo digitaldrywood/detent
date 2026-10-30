@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubhealth"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -151,7 +152,7 @@ func BenchmarkHotSQL(b *testing.B) {
 	}
 	for _, path := range []struct {
 		name string
-		read func(context.Context, nativeQueryer, nativeScope, operatortool.AnalyticsWindow) ([]healthRateAttempt, error)
+		read func(context.Context, nativeQueryer, nativeScope, operatortool.AnalyticsWindow) ([]hubhealth.RateAttempt, error)
 	}{{"json", readJSONHealthRateAttempts}, {"typed", readHealthRateAttempts}} {
 		b.Run("health/"+path.name, func(b *testing.B) {
 			b.ReportAllocs()
@@ -168,7 +169,7 @@ func BenchmarkHotSQL(b *testing.B) {
 			if err := readHealthProductivityAttempts(b.Context(), q, scope, got); err != nil {
 				b.Fatal(err)
 			}
-			healthProductivityFindings(now, healthRateProject{ID: string(scope.project), Attempts: got})
+			hubhealth.ProductivityFindings(now, hubhealth.RateProject{ID: string(scope.project), Attempts: got})
 		}
 	})
 	for _, typed := range []bool{false, true} {
@@ -188,7 +189,8 @@ func BenchmarkHotSQL(b *testing.B) {
 		})
 	}
 }
-func readJSONHealthRateAttempts(ctx context.Context, q nativeQueryer, scope nativeScope, window operatortool.AnalyticsWindow) ([]healthRateAttempt, error) {
+
+func readJSONHealthRateAttempts(ctx context.Context, q nativeQueryer, scope nativeScope, window operatortool.AnalyticsWindow) ([]hubhealth.RateAttempt, error) {
 	rows, err := q.QueryContext(ctx, `SELECT a.id,a.work_item_id,a.status,a.updated_at,
  COALESCE((SELECT lr.runner_id FROM lease_runners lr WHERE lr.lease_id=a.lease_id),''),
  json_object('terminal_failure',json_extract(a.data_json,'$.terminal_failure'),'finalization',json_extract(a.data_json,'$.finalization'),'runtime',json_object('heartbeat_at',json_extract(a.data_json,'$.runtime.heartbeat_at'),'landing',json_extract(a.data_json,'$.runtime.landing'))),
@@ -196,18 +198,18 @@ func readJSONHealthRateAttempts(ctx context.Context, q nativeQueryer, scope nati
  FROM native_attempts a JOIN projects p ON p.id=a.project_id
  WHERE a.organization_id=? AND a.project_id=? AND p.profile='native'
  AND (julianday(a.updated_at)>=julianday(?) OR julianday(json_extract(a.data_json,'$.runtime.landing.observed_at'))>=julianday(?))
- AND julianday(a.started_at)<julianday(?) ORDER BY a.fencing_token LIMIT ?`, formatHubTime(window.To), scope.organization, scope.project, formatHubTime(window.From), formatHubTime(window.From), formatHubTime(window.To), healthReadLimit+1)
+ AND julianday(a.started_at)<julianday(?) ORDER BY a.fencing_token LIMIT ?`, formatHubTime(window.To), scope.organization, scope.project, formatHubTime(window.From), formatHubTime(window.From), formatHubTime(window.To), hubhealth.ReadLimit+1)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	out := []healthRateAttempt{}
+	out := []hubhealth.RateAttempt{}
 	landed := map[string]bool{}
 	for rows.Next() {
-		if len(out) == healthReadLimit {
-			return nil, errHealthReadLimit
+		if len(out) == hubhealth.ReadLimit {
+			return nil, hubhealth.ErrReadLimit
 		}
-		var a healthRateAttempt
+		var a hubhealth.RateAttempt
 		var at, raw string
 		if err := rows.Scan(&a.ID, &a.Item, &a.Status, &at, &a.Runner, &raw, &a.Cost); err != nil {
 			return nil, err
@@ -223,9 +225,9 @@ func readJSONHealthRateAttempts(ctx context.Context, q nativeQueryer, scope nati
 			a.InstanceSetupFailure = true
 		}
 		text, _ := failureFromAttempt(data, a.Status)
-		a.Recovery = healthRecoveryReason(text)
+		a.Recovery = hubhealth.RecoveryReason(text)
 		if text != "" && a.Recovery == "" {
-			a.Signature = normalizeFailureSignature(text)
+			a.Signature = hubhealth.NormalizeFailureSignature(text)
 		}
 		if data.Runtime != nil {
 			a.Heartbeat = data.Runtime.HeartbeatAt

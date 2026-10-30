@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubanalytics"
+	"github.com/digitaldrywood/detent/internal/hubhealth"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -80,7 +82,7 @@ func TestAnalyticsUsageDrainBoundsHistory(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				for row := range 2*analyticsDrainWrites + 1 {
+				for row := range 2*hubanalytics.DrainWrites + 1 {
 					if _, err := tx.ExecContext(t.Context(), `INSERT INTO attempt_usage(attempt_id,organization_id,project_id,period,provider,model,cost_estimate,updated_at) VALUES(?,?,?,?, 'example','example',1,?)`, attempt, scope.organization, scope.project, formatHubTime(now.Add(time.Duration(row)*time.Hour)), formatHubTime(now)); err != nil {
 						t.Fatal(err)
 					}
@@ -90,21 +92,21 @@ func TestAnalyticsUsageDrainBoundsHistory(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, item := range items {
-				position := analyticsDrainPosition{scope: scope, phase: analyticsDrainUsage}
+				position := hubanalytics.DrainPosition{Scope: hubanalytics.Scope{Organization: scope.organization, Project: scope.project}, Phase: hubanalytics.DrainUsage}
 				reader := &backgroundCPUReader{nativeQueryer: f.service.database.reader}
 				writes := 0
 				for tick := range 6 {
 					reader.queries = nil
-					plan := &projectionPlan{nativeQueryer: reader}
-					if err := planAnalyticsUsage(t.Context(), plan, string(item.WorkItemID), &position); err != nil {
+					plan := &hubanalytics.ProjectionPlan{Queryer: reader}
+					if err := hubanalytics.PlanAnalyticsUsage(t.Context(), plan, string(item.WorkItemID), &position); err != nil {
 						t.Fatal(err)
 					}
-					if len(plan.writes) > analyticsDrainWrites || len(reader.queries) > 2 {
-						t.Fatalf("tick %d: writes=%d queries=%d", tick, len(plan.writes), len(reader.queries))
+					if len(plan.Writes) > hubanalytics.DrainWrites || len(reader.queries) > 2 {
+						t.Fatalf("tick %d: writes=%d queries=%d", tick, len(plan.Writes), len(reader.queries))
 					}
 					plans := reader.plans(t)
 					if tick < 2 {
-						t.Logf("history=%d tick=%d source rows written=%d queries=%d plans:\n%s", history, tick, len(plan.writes), len(reader.queries), plans)
+						t.Logf("history=%d tick=%d source rows written=%d queries=%d plans:\n%s", history, tick, len(plan.Writes), len(reader.queries), plans)
 					}
 					if strings.Contains(plans, "TEMP B-TREE") || strings.Contains(plans, "SCAN u") {
 						t.Fatalf("unbounded usage read: %s", plans)
@@ -112,21 +114,21 @@ func TestAnalyticsUsageDrainBoundsHistory(t *testing.T) {
 					if tick == 0 && (!strings.Contains(plans, "native_attempts_usage_drain") || !strings.Contains(plans, "collaboration_events_usage_drain")) {
 						t.Fatalf("attempt selection missing seek indexes: %s", plans)
 					}
-					if len(plan.writes) > 0 && !strings.Contains(plans, "attempt_usage_drain (attempt_id=? AND rowid>?") {
+					if len(plan.Writes) > 0 && !strings.Contains(plans, "attempt_usage_drain (attempt_id=? AND rowid>?") {
 						t.Fatalf("usage page missing rowid seek: %s", plans)
 					}
-					for _, write := range plan.writes {
-						if _, err := f.service.database.db.ExecContext(t.Context(), write.query, write.args...); err != nil {
+					for _, write := range plan.Writes {
+						if _, err := f.service.database.db.ExecContext(t.Context(), write.Query, write.Args...); err != nil {
 							t.Fatal(err)
 						}
 					}
-					writes += len(plan.writes)
-					if position.phase == analyticsDrainLeases {
+					writes += len(plan.Writes)
+					if position.Phase == hubanalytics.DrainLeases {
 						break
 					}
 				}
-				if position.phase != analyticsDrainLeases || writes != 65 {
-					t.Fatalf("usage did not converge: phase=%d writes=%d", position.phase, writes)
+				if position.Phase != hubanalytics.DrainLeases || writes != 65 {
+					t.Fatalf("usage did not converge: phase=%d writes=%d", position.Phase, writes)
 				}
 			}
 			var count int
@@ -201,7 +203,7 @@ func TestHealthLandingReadBoundsHistory(t *testing.T) {
 			reader := &backgroundCPUReader{nativeQueryer: f.service.database.reader}
 			landings, err := readHealthLandings(t.Context(), reader, scope, window)
 			if test.legacy && 2*(test.history+1) > changeLegacyReadLimit {
-				if !errors.Is(err, errHealthReadLimit) || len(reader.queries) != 1 {
+				if !errors.Is(err, hubhealth.ErrReadLimit) || len(reader.queries) != 1 {
 					t.Fatalf("legacy overflow must be explicit and bounded: landings=%d queries=%d err=%v", len(landings), len(reader.queries), err)
 				}
 			} else if err != nil || len(landings) != 2 || len(reader.queries) != 3 || landings[0].WorkItemID == landings[1].WorkItemID {
@@ -213,7 +215,7 @@ func TestHealthLandingReadBoundsHistory(t *testing.T) {
 			if err := reader.nativeQueryer.QueryRowContext(t.Context(), "SELECT count(*) FROM ("+query.statement+")", query.args...).Scan(&candidates); err != nil {
 				t.Fatal(err)
 			}
-			if candidates > healthReadLimit+changeLegacyReadLimit+2 {
+			if candidates > hubhealth.ReadLimit+changeLegacyReadLimit+2 {
 				t.Fatalf("unbounded health candidate rows: %d", candidates)
 			}
 			t.Logf("history=%d legacy=%v candidate rows=%d queries=%d plans:\n%s", 2*test.history, test.legacy, candidates, len(reader.queries), plans)

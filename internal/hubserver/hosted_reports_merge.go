@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/digitaldrywood/detent/internal/hubanalytics"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
@@ -14,7 +15,7 @@ import (
 // percentages are computed again from the combined samples and counts.
 func mergeHostedReports(reports []hostedReportsReport, w operatortool.AnalyticsWindow) hostedReportsReport {
 	out := hostedReportsReport{
-		Pipeline:    pipelineReport{Stages: []pipelineStage{}},
+		Pipeline:    hubanalytics.PipelineReport{Stages: []hubanalytics.PipelineStage{}},
 		Requests:    reports[0].Requests,
 		Stages:      []reportsStage{},
 		Spend:       []reportsSpend{},
@@ -22,8 +23,8 @@ func mergeHostedReports(reports []hostedReportsReport, w operatortool.AnalyticsW
 		Coverage:    []diagnosticsCoverage{},
 		Unavailable: mergeReportsUnavailable(reports, func(r hostedReportsReport) []string { return r.Unavailable }),
 	}
-	analytics := make([]nativeAnalyticsProject, 0, len(reports))
-	completions, previous, priors := make([]reportsCompletion, 0, len(reports)), make([]reportsCompletion, 0, len(reports)), make([]reportsPrior, 0, len(reports))
+	analytics := make([]hubanalytics.Project, 0, len(reports))
+	completions, previous, priors := make([]hubanalytics.Completion, 0, len(reports)), make([]hubanalytics.Completion, 0, len(reports)), make([]reportsPrior, 0, len(reports))
 	priorFailed := true
 	var failed int
 	firstMissing, priorFirstMissing, priorCostMissing := false, false, false
@@ -129,36 +130,8 @@ func mergeReportsUnavailable[T any](items []T, keys func(T) []string) []string {
 	return out
 }
 
-func mergeDurations(durations ...operatortool.AnalyticsDuration) operatortool.AnalyticsDuration {
-	var samples []float64
-	for _, d := range durations {
-		if len(d.Histogram) > 0 {
-			return mergeHistogramDurations(durations...)
-		}
-		samples = append(samples, d.Samples...)
-	}
-	return sampledDuration(samples)
-}
-
-func mergeLaneDurations(groups ...[]operatortool.AnalyticsLaneDuration) []operatortool.AnalyticsLaneDuration {
-	byLane := map[string][]operatortool.AnalyticsDuration{}
-	group := map[string]string{}
-	for _, lanes := range groups {
-		for _, lane := range lanes {
-			byLane[lane.Lane] = append(byLane[lane.Lane], lane.AnalyticsDuration)
-			group[lane.Lane] = lane.Group
-		}
-	}
-	out := []operatortool.AnalyticsLaneDuration{}
-	for lane, durations := range byLane {
-		out = append(out, operatortool.AnalyticsLaneDuration{Lane: lane, Group: group[lane], AnalyticsDuration: mergeDurations(durations...)})
-	}
-	slices.SortFunc(out, func(a, b operatortool.AnalyticsLaneDuration) int { return strings.Compare(a.Lane, b.Lane) })
-	return out
-}
-
-func mergeReportsCompletion(items []reportsCompletion) reportsCompletion {
-	out := reportsCompletion{}
+func mergeReportsCompletion(items []hubanalytics.Completion) hubanalytics.Completion {
+	out := hubanalytics.Completion{}
 	var lanes [][]operatortool.AnalyticsLaneDuration
 	var system, lead, working []operatortool.AnalyticsDuration
 	for _, c := range items {
@@ -166,14 +139,14 @@ func mergeReportsCompletion(items []reportsCompletion) reportsCompletion {
 		out.Cancelled += c.Cancelled
 		out.Cost += c.Cost
 		out.Partial = out.Partial || c.Partial
-		out.perIssue = append(out.perIssue, c.perIssue...)
+		out.PerIssue = append(out.PerIssue, c.PerIssue...)
 		lanes = append(lanes, c.Lanes)
 		system, lead, working = append(system, c.System), append(lead, c.Lead), append(working, c.Working)
 	}
-	out.Lanes = mergeLaneDurations(lanes...)
-	out.System, out.Lead, out.Working = mergeDurations(system...), mergeDurations(lead...), mergeDurations(working...)
-	if len(out.perIssue) > 0 {
-		spread := analyticsDuration(slices.Clone(out.perIssue))
+	out.Lanes = hubanalytics.MergeLaneDurations(lanes...)
+	out.System, out.Lead, out.Working = hubanalytics.MergeDurations(system...), hubanalytics.MergeDurations(lead...), hubanalytics.MergeDurations(working...)
+	if len(out.PerIssue) > 0 {
+		spread := hubanalytics.Duration(slices.Clone(out.PerIssue))
 		out.CostP50, out.CostP90 = &spread.P50Seconds, &spread.P90Seconds
 	}
 	return out
@@ -232,7 +205,7 @@ func mergeReportsSeries(reports []hostedReportsReport) []reportsSeriesBucket {
 				merged.ReworkClasses[class] += count
 			}
 		}
-		merged.Cycle, merged.Lead = mergeDurations(cycle...), mergeDurations(lead...)
+		merged.Cycle, merged.Lead = hubanalytics.MergeDurations(cycle...), hubanalytics.MergeDurations(lead...)
 		out[i] = merged
 	}
 	if out == nil {
@@ -275,7 +248,7 @@ func mergeReportsRunners(reports []hostedReportsReport) []reportsRunner {
 	}
 	out := make([]reportsRunner, 0, len(byID))
 	for id, runner := range byID {
-		runner.Duration = mergeDurations(durations[id]...)
+		runner.Duration = hubanalytics.MergeDurations(durations[id]...)
 		out = append(out, *runner)
 	}
 	slices.SortFunc(out, func(a, b reportsRunner) int {
@@ -314,7 +287,7 @@ func mergeReportsStages(reports []hostedReportsReport) []reportsStage {
 	out := []reportsStage{}
 	active := map[string]bool{}
 	for key, stage := range byKey {
-		stage.Duration = mergeDurations(durations[key]...)
+		stage.Duration = hubanalytics.MergeDurations(durations[key]...)
 		active[stage.Stage] = true
 		out = append(out, *stage)
 	}
@@ -445,16 +418,16 @@ func mergeReportsCoverage(reports []hostedReportsReport) []diagnosticsCoverage {
 	return out
 }
 
-func mergeReportsAnalytics(projects []nativeAnalyticsProject, w operatortool.AnalyticsWindow) nativeAnalyticsProject {
-	out := nativeAnalyticsProject{
+func mergeReportsAnalytics(projects []hubanalytics.Project, w operatortool.AnalyticsWindow) hubanalytics.Project {
+	out := hubanalytics.Project{
 		ProjectID:   reportsAllProjects,
 		Source:      projects[0].Source,
 		Window:      w,
-		Digest:      []nativeAnalyticsBucket{},
-		Efficiency:  []nativeAnalyticsPhase{},
-		SkipReasons: []nativeAnalyticsSkip{},
-		Unavailable: mergeReportsUnavailable(projects, func(p nativeAnalyticsProject) []string { return p.Unavailable }),
-		Pipeline:    pipelineReport{Stages: []pipelineStage{}},
+		Digest:      []hubanalytics.Bucket{},
+		Efficiency:  []hubanalytics.Phase{},
+		SkipReasons: []hubanalytics.Skip{},
+		Unavailable: mergeReportsUnavailable(projects, func(p hubanalytics.Project) []string { return p.Unavailable }),
+		Pipeline:    hubanalytics.PipelineReport{Stages: []hubanalytics.PipelineStage{}},
 		Quality:     mergeReportsQuality(projects),
 		LaneResidence: operatortool.AnalyticsResidence{
 			Source:   projects[0].LaneResidence.Source,
@@ -465,7 +438,7 @@ func mergeReportsAnalytics(projects []nativeAnalyticsProject, w operatortool.Ana
 	var lanes [][]operatortool.AnalyticsLaneDuration
 	var system, held, lead, queue []operatortool.AnalyticsDuration
 	causes := map[[2]string]int{}
-	signatures := []nativeFailureSignature{}
+	signatures := []hubanalytics.FailureSignature{}
 	for _, p := range projects {
 		out.Partial = out.Partial || p.Partial
 		r := p.LaneResidence
@@ -480,9 +453,9 @@ func mergeReportsAnalytics(projects []nativeAnalyticsProject, w operatortool.Ana
 		}
 		signatures = append(signatures, p.FailureSignatures.Items...)
 	}
-	residence.Lanes = mergeLaneDurations(lanes...)
-	residence.SystemTotal, residence.HeldTotal, residence.LeadTotal, residence.QueueTotal = mergeDurations(system...), mergeDurations(held...), mergeDurations(lead...), mergeDurations(queue...)
-	residence.Aging.Items = reportsAgingTop(residence.Aging.Items, maxAnalyticsPopulation)
+	residence.Lanes = hubanalytics.MergeLaneDurations(lanes...)
+	residence.SystemTotal, residence.HeldTotal, residence.LeadTotal, residence.QueueTotal = hubanalytics.MergeDurations(system...), hubanalytics.MergeDurations(held...), hubanalytics.MergeDurations(lead...), hubanalytics.MergeDurations(queue...)
+	residence.Aging.Items = reportsAgingTop(residence.Aging.Items, hubanalytics.MaxPopulation)
 	residence.Issues.Items = []operatortool.AnalyticsIssueResidence{}
 	residence.ReworkCauses = []operatortool.AnalyticsReworkCause{}
 	for key, count := range causes {
@@ -491,18 +464,18 @@ func mergeReportsAnalytics(projects []nativeAnalyticsProject, w operatortool.Ana
 	slices.SortFunc(residence.ReworkCauses, func(a, b operatortool.AnalyticsReworkCause) int {
 		return cmp.Or(strings.Compare(a.FromState, b.FromState), strings.Compare(a.ReasonDetail, b.ReasonDetail))
 	})
-	slices.SortStableFunc(signatures, func(a, b nativeFailureSignature) int { return cmp.Compare(b.Count, a.Count) })
+	slices.SortStableFunc(signatures, func(a, b hubanalytics.FailureSignature) int { return cmp.Compare(b.Count, a.Count) })
 	out.FailureSignatures.Items = signatures
 	out.Landings.Items = []nativeAnalyticsLanding{}
-	out.Attempts.Items = []nativeAnalyticsAttempt{}
+	out.Attempts.Items = []hubanalytics.Attempt{}
 	return out
 }
 
-func mergeReportsQuality(projects []nativeAnalyticsProject) analyticsQuality {
-	out := analyticsQuality{Source: projects[0].Quality.Source, Coverage: projects[0].Quality.Coverage, Unavailable: mergeReportsUnavailable(projects, func(p nativeAnalyticsProject) []string { return p.Quality.Unavailable })}
-	out.analyticsQualityCounts = mergeQualityCounts(func(yield func(analyticsQualityCounts) bool) {
+func mergeReportsQuality(projects []hubanalytics.Project) hubanalytics.Quality {
+	out := hubanalytics.Quality{Source: projects[0].Quality.Source, Coverage: projects[0].Quality.Coverage, Unavailable: mergeReportsUnavailable(projects, func(p hubanalytics.Project) []string { return p.Quality.Unavailable })}
+	out.QualityCounts = mergeQualityCounts(func(yield func(hubanalytics.QualityCounts) bool) {
 		for _, p := range projects {
-			if !yield(p.Quality.analyticsQualityCounts) {
+			if !yield(p.Quality.QualityCounts) {
 				return
 			}
 		}
@@ -512,12 +485,12 @@ func mergeReportsQuality(projects []nativeAnalyticsProject) analyticsQuality {
 		out.Occurrences.Items = append(out.Occurrences.Items, p.Quality.Occurrences.Items...)
 	}
 	buckets := projects[0].Quality.Buckets
-	out.Buckets = make([]analyticsQualityBucket, 0, len(buckets))
+	out.Buckets = make([]hubanalytics.QualityBucket, 0, len(buckets))
 	for i, bucket := range buckets {
-		merged := analyticsQualityBucket{From: bucket.From, To: bucket.To}
-		merged.analyticsQualityCounts = mergeQualityCounts(func(yield func(analyticsQualityCounts) bool) {
+		merged := hubanalytics.QualityBucket{From: bucket.From, To: bucket.To}
+		merged.QualityCounts = mergeQualityCounts(func(yield func(hubanalytics.QualityCounts) bool) {
 			for _, p := range projects {
-				if i < len(p.Quality.Buckets) && !yield(p.Quality.Buckets[i].analyticsQualityCounts) {
+				if i < len(p.Quality.Buckets) && !yield(p.Quality.Buckets[i].QualityCounts) {
 					return
 				}
 			}
@@ -531,13 +504,13 @@ func mergeReportsQuality(projects []nativeAnalyticsProject) analyticsQuality {
 		}
 	}
 	if out.Occurrences.Items == nil {
-		out.Occurrences.Items = []analyticsQualityEscape{}
+		out.Occurrences.Items = []hubanalytics.QualityEscape{}
 	}
 	return out
 }
 
-func mergeQualityCounts(counts func(func(analyticsQualityCounts) bool)) analyticsQualityCounts {
-	out := analyticsQualityCounts{Causes: map[string]int{}}
+func mergeQualityCounts(counts func(func(hubanalytics.QualityCounts) bool)) hubanalytics.QualityCounts {
+	out := hubanalytics.QualityCounts{Causes: map[string]int{}}
 	for c := range counts {
 		out.WorkedItems += c.WorkedItems
 		out.ReworkedItems += c.ReworkedItems
@@ -559,7 +532,7 @@ func mergeQualityCounts(counts func(func(analyticsQualityCounts) bool)) analytic
 // withoutPriorPeriod drops the window before the report's, for a read that
 // asked for no comparison.
 func withoutPriorPeriod(report hostedReportsReport) hostedReportsReport {
-	report.Previous = reportsCompletion{Lanes: []operatortool.AnalyticsLaneDuration{}}
+	report.Previous = hubanalytics.Completion{Lanes: []operatortool.AnalyticsLaneDuration{}}
 	report.Prior = reportsPrior{LaneSeconds: map[string]float64{}}
 	report.PriorCost, report.PriorFirst, report.PriorFailed, report.OpenWork.PreviousStuck = nil, nil, nil, nil
 	report.PriorRecorded = false

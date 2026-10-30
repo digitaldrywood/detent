@@ -7,6 +7,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/digitaldrywood/detent/internal/hubanalytics"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -18,12 +19,12 @@ func reportAttemptModels(data tracker.NativeRunData) (string, string) {
 }
 
 func reportAttemptFailure(data tracker.NativeRunData, status, updated string) (sql.NullString, error) {
-	var landing *analyticsAttemptLanding
+	var landing *hubanalytics.AttemptLanding
 	if data.Runtime != nil && data.Runtime.Landing != nil {
 		l := data.Runtime.Landing
-		landing = &analyticsAttemptLanding{RefusalKind: l.RefusalKind, Landed: l.Landed, GateFailed: l.GateFailed, ObservedAt: l.ObservedAt}
+		landing = &hubanalytics.AttemptLanding{RefusalKind: l.RefusalKind, Landed: l.Landed, GateFailed: l.GateFailed, ObservedAt: l.ObservedAt}
 	}
-	failed := analyticsFailureTime(landing, status, updated)
+	failed := hubanalytics.FailureTime(landing, status, updated)
 	if !failed.Valid {
 		return failed, nil
 	}

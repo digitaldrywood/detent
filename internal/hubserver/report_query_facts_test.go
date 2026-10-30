@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
+	"github.com/digitaldrywood/detent/internal/hubanalytics"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -109,7 +110,7 @@ func TestReportTypedQueryCompatibility(t *testing.T) {
 			}
 			attempts = append(attempts, attempt{id, model, stage, string(raw), string(changedRaw), data})
 		}
-		if err := refreshAnalyticsAttempts(t.Context(), tx, nil, string(scope.organization), string(scope.project), string(issue.WorkItemID)); err != nil {
+		if err := hubanalytics.RefreshAttempts(t.Context(), tx, nil, string(scope.organization), string(scope.project), string(issue.WorkItemID)); err != nil {
 			t.Fatal(err)
 		}
 		if err := tx.Commit(); err != nil {
@@ -154,7 +155,7 @@ func TestReportTypedQueryCompatibility(t *testing.T) {
 					}
 				}
 				failures, partial, err := readNativeFailures(t.Context(), f.service.database.reader, scope, string(issue.WorkItemID), &window)
-				if err != nil || partial || len(failures) != 2 || failures[0].attemptID != attempts[1].id || failures[1].attemptID != attempts[0].id || !failures[1].at.Equal(now) {
+				if err != nil || partial || len(failures) != 2 || failures[0].AttemptID != attempts[1].id || failures[1].AttemptID != attempts[0].id || !failures[1].At.Equal(now) {
 					t.Fatalf("typed failure selection, nanosecond order or timestamp changed: %+v partial=%t error=%v", failures, partial, err)
 				}
 				quality, err := loadAnalyticsQualityInputs(t.Context(), f.service.database.reader, scope, window)
@@ -173,7 +174,7 @@ func TestReportTypedQueryCompatibility(t *testing.T) {
 				boundary := window
 				boundary.From, boundary.To = now, now.Add(time.Nanosecond)
 				failures, _, err = readNativeFailures(t.Context(), f.service.database.reader, scope, "", &boundary)
-				if err != nil || len(failures) != 1 || failures[0].attemptID != attempts[0].id {
+				if err != nil || len(failures) != 1 || failures[0].AttemptID != attempts[0].id {
 					t.Fatalf("failure window boundary changed: %+v %v", failures, err)
 				}
 				landings := []nativeAnalyticsLanding{{WorkItemID: issue.WorkItemID, Landing: tracker.ChangeLanding{LandedAt: window.To}}}

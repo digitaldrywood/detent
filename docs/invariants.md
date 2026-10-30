@@ -624,9 +624,10 @@ other payload blobs are never stored inline in Hub rows, and no derived table
 copies them. Existing inline payload columns are migration debt to move to object
 storage; no change may add one, and a change that touches one moves it.
 
-**Enforcement:** Review enforces payload placement in object storage. `TestINV20NoSQLOverJSON` in `internal/hubserver` scans non-test
-Go files in Hub and store (including generated SQL), and `db/queries` SQL sources.
-Per-file function counts must equal `testdata/inv20_json_sql_baseline.txt`;
+**Enforcement:** Review enforces payload placement in object storage. `TestINV20NoSQLOverJSON` in `internal/invariants` scans non-test
+Go files in Hub and store, including the extracted health, analytics and shared SQL
+packages and generated SQL, and `db/queries` SQL sources.
+Per-file function counts must equal `internal/hubserver/testdata/inv20_json_sql_baseline.txt`;
 reductions must lower the baseline in the same change, and increases are forbidden.
 Migrations from the INV-18 adoption cutoff (`20261015000000`) are also checked;
 existing calls are baseline debt and new migrations have no allowance. The scan

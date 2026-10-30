@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/entryauthority"
+	"github.com/digitaldrywood/detent/internal/hubanalytics"
+	"github.com/digitaldrywood/detent/internal/hubhealth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -45,7 +47,7 @@ func appendLegacyNativeHistory(ctx context.Context, tx *sql.Tx, scope nativeScop
 	if data.Decision != nil {
 		decision = *data.Decision
 	}
-	key := analyticsDimension(decision.Source, decision.Reason)
+	key := hubanalytics.Dimension(decision.Source, decision.Reason)
 	attempt := ""
 	if data.Run != nil {
 		attempt = data.Run.AttemptID
@@ -69,7 +71,7 @@ func appendLegacyNativeHistory(ctx context.Context, tx *sql.Tx, scope nativeScop
 	if err := updateEventPageFacts(ctx, tx, id, scope.actor(), data); err != nil {
 		return err
 	}
-	if err := updateHealthEventProjection(ctx, tx, id, scope.actor(), data); err != nil {
+	if err := hubhealth.UpdateEventProjection(ctx, tx, id, scope.actor(), data); err != nil {
 		return err
 	}
 	if err := writeChangeColumns(ctx, tx, changeColumnFamily{table: "collaboration_events", key: "id", payload: "data_json"}, id, payload, changeEventColumns(data)); err != nil {

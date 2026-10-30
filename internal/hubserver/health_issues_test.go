@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/hubhealth"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -66,7 +67,7 @@ func TestHealthFindingIssueLifecycle(t *testing.T) {
 				t.Fatal(err)
 			}
 			now := time.Date(2026, 10, 6, 18, 30, 0, 0, time.UTC)
-			finding := newHealthFinding("retry_storm", test.class, "work_item", string(original.WorkItemID), "Repeated failures.", "Inspect the protocol signature.", []string{string(f.project.ID)}, healthEvidence{AttemptIDs: []string{"attempt_one"}, Signatures: []string{"protocol failure"}, Counts: map[string]int{"attempts": 3}})
+			finding := hubhealth.NewFinding("retry_storm", test.class, "work_item", string(original.WorkItemID), "Repeated failures.", "Inspect the protocol signature.", []string{string(f.project.ID)}, hubhealth.Evidence{AttemptIDs: []string{"attempt_one"}, Signatures: []string{"protocol failure"}, Counts: map[string]int{"attempts": 3}})
 			var owner tracker.NativeIssue
 			var firstFinding string
 			if test.linked {
@@ -75,7 +76,7 @@ func TestHealthFindingIssueLifecycle(t *testing.T) {
 					t.Fatal(err)
 				}
 				defer tx.Rollback()
-				if _, err := writeHealthEvaluation(t.Context(), tx, f.project.OrganizationID, now, []healthFinding{finding}); err != nil {
+				if _, err := writeHealthEvaluation(t.Context(), tx, f.project.OrganizationID, now, []hubhealth.Finding{finding}); err != nil {
 					t.Fatal(err)
 				}
 				if err := tx.QueryRowContext(t.Context(), "SELECT id FROM health_findings").Scan(&firstFinding); err != nil {
@@ -130,14 +131,14 @@ func TestHealthFindingIssueLifecycle(t *testing.T) {
 						finding.Evidence.Counts["attempts"]++
 						finding.Evidence.AttemptIDs = append(finding.Evidence.AttemptIDs, "attempt_new")
 					}
-					active, state := []healthFinding{}, "resolved"
+					active, state := []hubhealth.Finding{}, "resolved"
 					if step.active {
-						active, state = []healthFinding{finding}, "open"
+						active, state = []hubhealth.Finding{finding}, "open"
 					}
 					applyTestHealth(t, f, now.Add(step.offset), active)
 					response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/health/findings?state="+state, f.token, nil)
 					requireNativeStatus(t, response, http.StatusOK)
-					var page healthFindingsPage
+					var page hubhealth.FindingsPage
 					decodeHubResponse(t, response, &page)
 					if len(page.Items) == 0 {
 						t.Fatal("missing finding")
@@ -295,7 +296,7 @@ func TestHealthFindingReporterPreservesHistory(t *testing.T) {
 			f := newNativeFixture(t, nil, "", "health-history")
 			addHealthBacklog(t, f)
 			now := time.Date(2026, 10, 6, 18, 30, 0, 0, time.UTC)
-			finding := newHealthFinding("runner_heartbeat_gap", "instance", "runner", "runner_subject", "Missing heartbeat.", "Inspect the runner.", []string{string(f.project.ID)}, healthEvidence{})
+			finding := hubhealth.NewFinding("runner_heartbeat_gap", "instance", "runner", "runner_subject", "Missing heartbeat.", "Inspect the runner.", []string{string(f.project.ID)}, hubhealth.Evidence{})
 			body := issueorigin.Stamp("Human question and migration hold remain authoritative.", issueorigin.Origin{Kind: "audit", Instance: "external-board-audit", Source: "imported-occurrence", Fingerprint: finding.Fingerprint})
 			provenance := &tracker.Provenance{Provider: "github", ExternalID: "old-report", AuthorID: "operator", CreatedAt: now, UpdatedAt: now, ObservedAt: now}
 			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
@@ -321,7 +322,7 @@ func TestHealthFindingReporterPreservesHistory(t *testing.T) {
 			if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO conversation_questions(id,conversation_id,status,created_at,updated_at) VALUES('health-held-question','health-held-conversation','pending',?,?)`, formatHubTime(now), formatHubTime(now)); err != nil {
 				t.Fatal(err)
 			}
-			applyTestHealth(t, f, now.Add(time.Minute), []healthFinding{finding})
+			applyTestHealth(t, f, now.Add(time.Minute), []hubhealth.Finding{finding})
 			got, _, err := readNativeIssue(t.Context(), f.service.database.db, scope, string(owner.WorkItemID))
 			if err != nil {
 				t.Fatal(err)
@@ -376,8 +377,8 @@ func TestHealthFindingResolutionOwnership(t *testing.T) {
 			f := newNativeFixture(t, nil, "", "health-resolution")
 			addHealthBacklog(t, f)
 			now := f.service.config.now()
-			finding := newHealthFinding("scheduler_loop_behind", "instance", "project", string(f.project.ID), "Scheduler refresh is behind.", "Check scheduler refresh health.", []string{string(f.project.ID)}, healthEvidence{})
-			applyTestHealth(t, f, now, []healthFinding{finding})
+			finding := hubhealth.NewFinding("scheduler_loop_behind", "instance", "project", string(f.project.ID), "Scheduler refresh is behind.", "Check scheduler refresh health.", []string{string(f.project.ID)}, hubhealth.Evidence{})
+			applyTestHealth(t, f, now, []hubhealth.Finding{finding})
 			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
 			var item tracker.NativeWorkItemID
 			var findingID string
@@ -488,7 +489,7 @@ func TestHealthFindingResolutionOwnership(t *testing.T) {
 				t.Fatal(err)
 			}
 			if test.name == "later unresolved observation" {
-				if _, err := writeHealthEvaluation(t.Context(), tx, scope.organization, now.Add(62*time.Minute), []healthFinding{finding}); err != nil {
+				if _, err := writeHealthEvaluation(t.Context(), tx, scope.organization, now.Add(62*time.Minute), []hubhealth.Finding{finding}); err != nil {
 					t.Fatal(err)
 				}
 				if _, err := reportHealthFindings(t.Context(), tx, scope.organization, now.Add(62*time.Minute), nil); err != nil {
@@ -516,9 +517,9 @@ func TestHealthFindingResolutionOwnership(t *testing.T) {
 			if err := tx.Rollback(); err != nil {
 				t.Fatal(err)
 			}
-			var findings []healthFinding
+			var findings []hubhealth.Finding
 			if test.name == "later unresolved observation" {
-				findings = []healthFinding{finding}
+				findings = []hubhealth.Finding{finding}
 			}
 			applyTestHealth(t, f, now.Add(63*time.Minute), findings)
 			tx, err = f.service.database.reader.BeginTx(t.Context(), &sql.TxOptions{ReadOnly: true})
@@ -561,7 +562,7 @@ func TestHealthFindingResolutionOwnership(t *testing.T) {
 			if err := tx.Commit(); err != nil {
 				t.Fatal(err)
 			}
-			applyTestHealth(t, f, now.Add(64*time.Minute), []healthFinding{finding})
+			applyTestHealth(t, f, now.Add(64*time.Minute), []hubhealth.Finding{finding})
 			recurred, _, err := readNativeIssue(t.Context(), f.service.database.db, scope, string(item))
 			if err != nil {
 				t.Fatal(err)
@@ -580,8 +581,8 @@ func TestHealthFindingIssueScope(t *testing.T) {
 	other := newNativeFixture(t, f.service, f.project.OrganizationID, "health-shared-other")
 	addHealthBacklog(t, other)
 	now := time.Date(2026, 10, 6, 18, 30, 0, 0, time.UTC)
-	finding := newHealthFinding("runner_heartbeat_gap", "instance", "runner", "shared_runner", "Missing heartbeat.", "Inspect runner.", []string{string(f.project.ID), string(other.project.ID)}, healthEvidence{Counts: map[string]int{"queue_depth": 12}, Queues: map[string]healthQueueEvidence{string(f.project.ID): {QueueDepth: 5}, string(other.project.ID): {QueueDepth: 7}}})
-	repairFinding := newHealthFinding("retry_storm", "instance", "runner", "repair_runner", "Previously diagnosed source failure.", "Keep the reviewed repair.", finding.Projects, healthEvidence{})
+	finding := hubhealth.NewFinding("runner_heartbeat_gap", "instance", "runner", "shared_runner", "Missing heartbeat.", "Inspect runner.", []string{string(f.project.ID), string(other.project.ID)}, hubhealth.Evidence{Counts: map[string]int{"queue_depth": 12}, Queues: map[string]hubhealth.QueueEvidence{string(f.project.ID): {QueueDepth: 5}, string(other.project.ID): {QueueDepth: 7}}})
+	repairFinding := hubhealth.NewFinding("retry_storm", "instance", "runner", "repair_runner", "Previously diagnosed source failure.", "Keep the reviewed repair.", finding.Projects, hubhealth.Evidence{})
 	repairs := map[tracker.ProjectID]tracker.NativeIssue{}
 	for _, fixture := range []nativeFixture{f, other} {
 		workflow := config.Workflow{Config: config.Default()}
@@ -624,7 +625,7 @@ func TestHealthFindingIssueScope(t *testing.T) {
 			if step.changed {
 				finding.Evidence.Signatures = []string{"heartbeat failure"}
 			}
-			findings := []healthFinding{repairFinding}
+			findings := []hubhealth.Finding{repairFinding}
 			if step.active {
 				findings = append(findings, finding)
 			}
@@ -793,9 +794,9 @@ func TestHealthFindingIssueWorkflow(t *testing.T) {
 				}
 			}
 			now := time.Date(2026, 10, 6, 18, 30, 0, 0, time.UTC)
-			finding := newHealthFinding("runner_heartbeat_gap", "instance", "runner", "shared_runner", "Missing heartbeat.", "Inspect runner.", []string{string(f.project.ID), string(other.project.ID)}, healthEvidence{Counts: map[string]int{"leases": 1}})
+			finding := hubhealth.NewFinding("runner_heartbeat_gap", "instance", "runner", "shared_runner", "Missing heartbeat.", "Inspect runner.", []string{string(f.project.ID), string(other.project.ID)}, hubhealth.Evidence{Counts: map[string]int{"leases": 1}})
 			for _, offset := range []time.Duration{0, time.Minute} {
-				applyTestHealth(t, f, now.Add(offset), []healthFinding{finding})
+				applyTestHealth(t, f, now.Add(offset), []hubhealth.Finding{finding})
 				for _, project := range []struct {
 					fixture nativeFixture
 					want    string
@@ -848,15 +849,15 @@ func TestHealthFindingIssueRollback(t *testing.T) {
 			f := newNativeFixture(t, nil, "", "health-rollback")
 			addHealthBacklog(t, f)
 			now := time.Date(2026, 10, 6, 18, 30, 0, 0, time.UTC)
-			finding := newHealthFinding("runner_heartbeat_gap", "instance", "runner", "runner", "Missing heartbeat.", "Inspect runner.", []string{string(f.project.ID)}, healthEvidence{Counts: map[string]int{"leases": 1}})
+			finding := hubhealth.NewFinding("runner_heartbeat_gap", "instance", "runner", "runner", "Missing heartbeat.", "Inspect runner.", []string{string(f.project.ID)}, hubhealth.Evidence{Counts: map[string]int{"leases": 1}})
 			if test.existing {
-				applyTestHealth(t, f, now, []healthFinding{finding})
+				applyTestHealth(t, f, now, []hubhealth.Finding{finding})
 			}
 			if _, err := f.service.database.db.ExecContext(t.Context(), "CREATE TRIGGER fail_health_reporting BEFORE INSERT ON "+test.table+" BEGIN SELECT RAISE(ABORT,'fixture reporting failure'); END"); err != nil {
 				t.Fatal(err)
 			}
 			finding.Severity = "watch"
-			err := f.service.commitHealthEvaluation(t.Context(), f.project.OrganizationID, now.Add(time.Minute), []healthFinding{finding}, nil)
+			err := f.service.commitHealthEvaluation(t.Context(), f.project.OrganizationID, now.Add(time.Minute), []hubhealth.Finding{finding}, nil)
 			if err == nil || !strings.Contains(err.Error(), "fixture reporting failure") {
 				t.Fatalf("report error = %v", err)
 			}

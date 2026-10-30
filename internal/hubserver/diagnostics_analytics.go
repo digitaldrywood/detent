@@ -9,17 +9,18 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubanalytics"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-const diagnosticsAttemptsQuery = `SELECT r.dimension,r.started_at,r.updated_at,` + analyticsAttemptPayload + `
+const diagnosticsAttemptsQuery = `SELECT r.dimension,r.started_at,r.updated_at,` + hubanalytics.AttemptPayload + `
 FROM analytics_hourly_rollups r INDEXED BY analytics_attempt_reports_updated
 WHERE r.organization_id=? AND r.project_id=? AND r.metric='attempt'
 AND r.updated_at>=?
 ORDER BY r.updated_at,r.started_at LIMIT ?`
 
-const diagnosticsFailuresQuery = `SELECT r.status,` + analyticsAttemptPayload + `,r.work_item_id,r.failed_at,r.started_at,r.updated_at,
+const diagnosticsFailuresQuery = `SELECT r.status,` + hubanalytics.AttemptPayload + `,r.work_item_id,r.failed_at,r.started_at,r.updated_at,
 (SELECT coalesce(sum(u.cost_estimate),0) FROM attempt_usage u WHERE u.organization_id=r.organization_id AND u.project_id=r.project_id AND u.attempt_id=r.dimension),
 (SELECT coalesce(sum(u.input+u.output),0) FROM attempt_usage u WHERE u.organization_id=r.organization_id AND u.project_id=r.project_id AND u.attempt_id=r.dimension)
 FROM analytics_hourly_rollups r INDEXED BY analytics_attempt_failed
@@ -32,13 +33,13 @@ INDEXED BY analytics_usage_window
 WHERE organization_id=? AND project_id=? AND metric='usage' AND period>=? AND period<=?
 ORDER BY period,provider,model,attempt_id LIMIT ?`
 
-func readNativeDiagnostics(ctx context.Context, q nativeQueryer, scope nativeScope, r operatortool.AnalyticsRequest, w operatortool.AnalyticsWindow) (nativeAnalyticsProject, error) {
+func readNativeDiagnostics(ctx context.Context, q nativeQueryer, scope nativeScope, r operatortool.AnalyticsRequest, w operatortool.AnalyticsWindow) (hubanalytics.Project, error) {
 	if _, scoped := reportsScopeFrom(ctx); scoped {
 		if projected, ok := q.(analyticsRollupReader); ok {
 			q = projected.nativeQueryer
 		}
 	}
-	out := nativeAnalyticsProject{ProjectID: string(scope.project), Window: w}
+	out := hubanalytics.Project{ProjectID: string(scope.project), Window: w}
 	q, err := prepareReportsQuery(ctx, q, scope, "report_attempts", "report_events")
 	if err != nil {
 		return out, fmt.Errorf("prepare diagnostics projections: %w", err)
@@ -53,8 +54,8 @@ func readNativeDiagnostics(ctx context.Context, q nativeQueryer, scope nativeSco
 	if err != nil {
 		return out, fmt.Errorf("read diagnostics landings: %w", err)
 	}
-	out.Partial = out.Partial || len(landings) > maxAnalyticsPopulation
-	landings = landings[:min(len(landings), maxAnalyticsPopulation)]
+	out.Partial = out.Partial || len(landings) > hubanalytics.MaxPopulation
+	landings = landings[:min(len(landings), hubanalytics.MaxPopulation)]
 	out.CostPerOutcome.Shipped = len(landings)
 	out.Landings = operatortool.OffsetPage(landings, r.RowOffset, r.Limit)
 	if err := readDiagnosticsUsage(ctx, q, scope, &out); err != nil {
@@ -69,7 +70,7 @@ func readNativeDiagnostics(ctx context.Context, q nativeQueryer, scope nativeSco
 	return out, nil
 }
 
-func readDiagnosticsAttempts(ctx context.Context, q nativeQueryer, scope nativeScope, out *nativeAnalyticsProject) error {
+func readDiagnosticsAttempts(ctx context.Context, q nativeQueryer, scope nativeScope, out *hubanalytics.Project) error {
 	w := out.Window
 	statement := diagnosticsAttemptsQuery
 	if _, projected := q.(analyticsRollupReader); !projected {
@@ -87,12 +88,12 @@ ORDER BY r.updated_at,r.started_at LIMIT ?`
 	}
 	defer rows.Close()
 	type attemptRow struct {
-		attempt               nativeAnalyticsAttempt
+		attempt               hubanalytics.Attempt
 		started, updated, raw string
 	}
 	var batch []attemptRow
 	for rows.Next() {
-		if len(batch) == maxAnalyticsPopulation {
+		if len(batch) == hubanalytics.MaxPopulation {
 			out.Partial = true
 			break
 		}
@@ -123,9 +124,9 @@ ORDER BY r.updated_at,r.started_at LIMIT ?`
 			ID      string              `json:"id"`
 			Detail  *runDetailReference `json:"detail"`
 			Runtime struct {
-				Phases        analyticsPhases `json:"phases"`
-				PhasesDropped int             `json:"phases_dropped"`
-				Activity      json.RawMessage `json:"activity"`
+				Phases        hubanalytics.Phases `json:"phases"`
+				PhasesDropped int                 `json:"phases_dropped"`
+				Activity      json.RawMessage     `json:"activity"`
 			} `json:"runtime"`
 		}
 		if err := decodeStorageJSON(payloadQueryContext(ctx, q), []byte(raw), &payload); err != nil {
@@ -137,7 +138,7 @@ ORDER BY r.updated_at,r.started_at LIMIT ?`
 				return err
 			}
 			if data.Runtime != nil {
-				payload.Runtime.Phases.items = data.Runtime.Phases
+				payload.Runtime.Phases.Items = data.Runtime.Phases
 				payload.Runtime.PhasesDropped = data.Runtime.PhasesDropped
 				activity, err := json.Marshal(data.Runtime.Activity)
 				if err != nil {
@@ -146,17 +147,17 @@ ORDER BY r.updated_at,r.started_at LIMIT ?`
 				payload.Runtime.Activity = activity
 			}
 		}
-		if payload.Runtime.Phases.malformed || len(payload.Runtime.Phases.items) == 0 || payload.Runtime.PhasesDropped > 0 {
+		if payload.Runtime.Phases.Malformed || len(payload.Runtime.Phases.Items) == 0 || payload.Runtime.PhasesDropped > 0 {
 			out.Partial = true
 		}
 		_, projected := q.(analyticsRollupReader)
-		attempt.publicActivity = projected && payload.ID != ""
+		attempt.PublicActivity = projected && payload.ID != ""
 		activity := string(payload.Runtime.Activity)
 		if activity == "" {
 			activity = "null"
 		}
 		projectNativeAnalyticsActivity(out, &attempt, activity)
-		for _, phase := range payload.Runtime.Phases.items {
+		for _, phase := range payload.Runtime.Phases.Items {
 			if !phase.FinishedAt.IsZero() && phase.FinishedAt.After(phase.StartedAt) && !phase.FinishedAt.Before(w.From) && phase.FinishedAt.Before(w.To) {
 				phases[phase.Name]++
 			}
@@ -164,12 +165,12 @@ ORDER BY r.updated_at,r.started_at LIMIT ?`
 		out.AttemptsObserved++
 	}
 	for name, count := range phases {
-		out.Efficiency = append(out.Efficiency, nativeAnalyticsPhase{Name: name, Count: count})
+		out.Efficiency = append(out.Efficiency, hubanalytics.Phase{Name: name, Count: count})
 	}
 	return rows.Err()
 }
 
-func readDiagnosticsRefusals(ctx context.Context, q nativeQueryer, scope nativeScope, request operatortool.AnalyticsRequest, out *nativeAnalyticsProject) error {
+func readDiagnosticsRefusals(ctx context.Context, q nativeQueryer, scope nativeScope, request operatortool.AnalyticsRequest, out *hubanalytics.Project) error {
 	statement := diagnosticsFailuresQuery
 	if _, projected := q.(analyticsRollupReader); !projected {
 		statement = `SELECT r.status,r.data_json,r.work_item_id,r.report_failed_at,r.started_at,r.updated_at,
@@ -189,17 +190,17 @@ ORDER BY r.report_failed_at DESC,r.id DESC LIMIT ?`
 	}
 	defer rows.Close()
 	type failureRow struct {
-		failure                           nativeFailure
+		failure                           hubanalytics.Failure
 		status, raw, at, started, updated string
 	}
 	var batch []failureRow
 	for rows.Next() {
-		if len(batch) == maxAnalyticsPopulation {
+		if len(batch) == hubanalytics.MaxPopulation {
 			out.Partial = true
 			break
 		}
 		var row failureRow
-		if err := rows.Scan(&row.status, &row.raw, &row.failure.workItem, &row.at, &row.started, &row.updated, &row.failure.cost, &row.failure.tokens); err != nil {
+		if err := rows.Scan(&row.status, &row.raw, &row.failure.WorkItem, &row.at, &row.started, &row.updated, &row.failure.Cost, &row.failure.Tokens); err != nil {
 			return err
 		}
 		batch = append(batch, row)
@@ -207,7 +208,7 @@ ORDER BY r.report_failed_at DESC,r.id DESC LIMIT ?`
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return err
 	}
-	var failures []nativeFailure
+	var failures []hubanalytics.Failure
 	for _, row := range batch {
 		failure, status, raw, at, started, updated := row.failure, row.status, row.raw, row.at, row.started, row.updated
 		var payload struct {
@@ -230,19 +231,19 @@ ORDER BY r.report_failed_at DESC,r.id DESC LIMIT ?`
 		} else if payload.Runtime != nil {
 			data.Runtime = &tracker.NativeRuntimeObservation{Landing: payload.Runtime.Landing, Validation: payload.Runtime.Validation}
 		}
-		failure.example, failure.class = failureFromAttempt(data, status)
-		if failure.example == "" {
+		failure.Example, failure.Class = failureFromAttempt(data, status)
+		if failure.Example == "" {
 			continue
 		}
-		failure.at, err = parseTimeValue(at)
+		failure.At, err = parseTimeValue(at)
 		if err != nil {
 			return err
 		}
-		failure.started, err = parseTimeValue(started)
+		failure.Started, err = parseTimeValue(started)
 		if err != nil {
 			return err
 		}
-		failure.finished, err = parseTimeValue(updated)
+		failure.Finished, err = parseTimeValue(updated)
 		if err != nil {
 			return err
 		}
@@ -253,10 +254,10 @@ ORDER BY r.report_failed_at DESC,r.id DESC LIMIT ?`
 	return rows.Err()
 }
 
-func readDiagnosticsUsage(ctx context.Context, q nativeQueryer, scope nativeScope, out *nativeAnalyticsProject) error {
+func readDiagnosticsUsage(ctx context.Context, q nativeQueryer, scope nativeScope, out *hubanalytics.Project) error {
 	statement := diagnosticsUsageQuery
 	if _, projected := q.(analyticsRollupReader); !projected {
-		rows, err := readUsageRows(ctx, q, string(scope.organization), usageWindow{From: out.Window.From, To: out.Window.To}, []string{string(scope.project)}, maxAnalyticsPopulation+1)
+		rows, err := readUsageRows(ctx, q, string(scope.organization), usageWindow{From: out.Window.From, To: out.Window.To}, []string{string(scope.project)}, hubanalytics.MaxPopulation+1)
 		if err != nil {
 			return err
 		}
@@ -264,7 +265,7 @@ func readDiagnosticsUsage(ctx context.Context, q nativeQueryer, scope nativeScop
 		observed := 0
 		for _, row := range rows {
 			if row.Period.Before(out.Window.To) {
-				if observed == maxAnalyticsPopulation {
+				if observed == hubanalytics.MaxPopulation {
 					out.Partial = true
 					break
 				}
@@ -275,7 +276,7 @@ func readDiagnosticsUsage(ctx context.Context, q nativeQueryer, scope nativeScop
 		out.CostPerOutcome.PopulationObserved = len(attempts)
 		return nil
 	}
-	rows, err := q.QueryContext(ctx, statement, scope.organization, scope.project, out.Window.From.UTC().Format(usagePeriodLayout), out.Window.To.UTC().Format(usagePeriodLayout), maxAnalyticsPopulation+1)
+	rows, err := q.QueryContext(ctx, statement, scope.organization, scope.project, out.Window.From.UTC().Format(usagePeriodLayout), out.Window.To.UTC().Format(usagePeriodLayout), hubanalytics.MaxPopulation+1)
 	if err != nil {
 		return err
 	}
@@ -294,7 +295,7 @@ func readDiagnosticsUsage(ctx context.Context, q nativeQueryer, scope nativeScop
 		if !at.Before(out.Window.To) {
 			continue
 		}
-		if observed == maxAnalyticsPopulation {
+		if observed == hubanalytics.MaxPopulation {
 			out.Partial = true
 			break
 		}
@@ -312,5 +313,5 @@ func diagnosticsScopedQuery(ctx context.Context, statement string, args []any) (
 	}
 	statement = strings.Replace(statement, "ORDER BY", scoped+" ORDER BY", 1)
 	args = append(args, scopedArgs...)
-	return statement, append(args, maxAnalyticsPopulation+1), nil
+	return statement, append(args, hubanalytics.MaxPopulation+1), nil
 }

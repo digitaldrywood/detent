@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubanalytics"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
@@ -78,7 +79,7 @@ func reportsSeriesIndex(spans []reportsSeriesSpan) func(time.Time) int {
 // reportsSeries counts each shipped issue once, on the day it closed, and
 // splits every usage row in the window by stage, so the buckets sum to the
 // Shipped and Total spend headlines.
-func reportsSeries(in reportsInputs, attempts []nativeAnalyticsAttempt, usage map[string][]usageRow, w operatortool.AnalyticsWindow) ([]reportsSeriesBucket, error) {
+func reportsSeries(in reportsInputs, attempts []hubanalytics.Attempt, usage map[string][]usageRow, w operatortool.AnalyticsWindow) ([]reportsSeriesBucket, error) {
 	spans := reportsSeriesSpans(w)
 	index := reportsSeriesIndex(spans)
 	span := w.To.Sub(w.From)
@@ -114,7 +115,7 @@ func reportsSeries(in reportsInputs, attempts []nativeAnalyticsAttempt, usage ma
 		out[i].Cycle, out[i].Lead = timing.System, timing.Lead
 	}
 	shipped := in.shipped()
-	byAttempt := map[string]nativeAnalyticsAttempt{}
+	byAttempt := map[string]hubanalytics.Attempt{}
 	for _, a := range attempts {
 		byAttempt[a.AttemptID] = a
 	}
@@ -139,20 +140,20 @@ func reportsSeries(in reportsInputs, attempts []nativeAnalyticsAttempt, usage ma
 	return out, nil
 }
 
-func reportsSeriesClasses(series []reportsSeriesBucket, returns []qualityReturn, failures []nativeFailure, w operatortool.AnalyticsWindow) {
+func reportsSeriesClasses(series []reportsSeriesBucket, returns []hubanalytics.QualityReturn, failures []hubanalytics.Failure, w operatortool.AnalyticsWindow) {
 	index := reportsSeriesIndex(reportsSeriesSpans(w))
 	for _, r := range returns {
-		if i := index(r.at); i >= 0 && i < len(series) {
-			series[i].ReworkClasses[r.class.Name]++
+		if i := index(r.At); i >= 0 && i < len(series) {
+			series[i].ReworkClasses[r.Class.Name]++
 		}
 	}
 	for _, f := range failures {
-		i := index(f.at)
+		i := index(f.At)
 		if i < 0 || i >= len(series) {
 			continue
 		}
 		series[i].Failed++
-		switch classifyFailure(f.example).Kind {
+		switch classifyFailure(f.Example).Kind {
 		case reportKindInfrastructure:
 			series[i].FailedInfrastructure++
 		case reportKindIssue:
@@ -161,7 +162,7 @@ func reportsSeriesClasses(series []reportsSeriesBucket, returns []qualityReturn,
 	}
 }
 
-func reportsSpendOutcomes(spend []reportsSpend, attempts []nativeAnalyticsAttempt, in reportsInputs) {
+func reportsSpendOutcomes(spend []reportsSpend, attempts []hubanalytics.Attempt, in reportsInputs) {
 	counts := map[string]int{}
 	for _, a := range attempts {
 		counts[a.WorkItemID]++
@@ -194,7 +195,7 @@ func reportClassTopItems(counts map[string]int) []string {
 	return items[:min(len(items), reportClassTopIssues)]
 }
 
-func reportClassDetails(rework, failures []reportClassTotal, returns []qualityReturn, failed []nativeFailure) {
+func reportClassDetails(rework, failures []reportClassTotal, returns []hubanalytics.QualityReturn, failed []hubanalytics.Failure) {
 	type event struct {
 		class, item string
 		at          time.Time
@@ -221,11 +222,11 @@ func reportClassDetails(rework, failures []reportClassTotal, returns []qualityRe
 	}
 	reworkEvents := make([]event, 0, len(returns))
 	for _, r := range returns {
-		reworkEvents = append(reworkEvents, event{r.class.Name, r.item, r.at})
+		reworkEvents = append(reworkEvents, event{r.Class.Name, r.Item, r.At})
 	}
 	failureEvents := make([]event, 0, len(failed))
 	for _, f := range failed {
-		failureEvents = append(failureEvents, event{classifyFailure(f.example).Name, f.workItem, f.at})
+		failureEvents = append(failureEvents, event{classifyFailure(f.Example).Name, f.WorkItem, f.At})
 	}
 	fill(rework, reworkEvents)
 	fill(failures, failureEvents)

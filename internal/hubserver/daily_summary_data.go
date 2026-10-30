@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/emailtemplate"
+	"github.com/digitaldrywood/detent/internal/hubanalytics"
+	"github.com/digitaldrywood/detent/internal/hubhealth"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -50,7 +52,7 @@ func readSummaryCosts(ctx context.Context, q nativeQueryer, scope nativeScope, w
 	if err != nil {
 		return out, err
 	}
-	usage, err := readUsageRows(ctx, q, string(scope.organization), window, []string{string(scope.project)}, maxAnalyticsPopulation)
+	usage, err := readUsageRows(ctx, q, string(scope.organization), window, []string{string(scope.project)}, hubanalytics.MaxPopulation)
 	if err != nil {
 		return out, err
 	}
@@ -66,7 +68,9 @@ func readSummaryCosts(ctx context.Context, q nativeQueryer, scope nativeScope, w
 		out.tokens += u.tokens()
 		byAttempt[u.AttemptID] = append(byAttempt[u.AttemptID], u)
 	}
-	inputs := reportsInputs{done: reportsDoneFrom(out.shipped), lanes: func(time.Time, time.Time) map[string]float64 { return nil }, timing: func([]string, time.Time) (reportsCompletion, error) { return reportsCompletion{}, nil }}
+	inputs := reportsInputs{done: reportsDoneFrom(out.shipped), lanes: func(time.Time, time.Time) map[string]float64 { return nil }, timing: func([]string, time.Time) (hubanalytics.Completion, error) {
+		return hubanalytics.Completion{}, nil
+	}}
 	series, err := reportsSeries(inputs, population.Items, byAttempt, operatortool.AnalyticsWindow{From: window.From, To: window.To})
 	for _, bucket := range series {
 		out.notShipped += bucket.NotShippedCost
@@ -261,6 +265,7 @@ func projectsToIDs(projects []summaryProjectRef) []string {
 }
 
 func summaryMoney(value float64) string { return fmt.Sprintf("$%.2f", value) }
+
 func summaryTokens(value int64) string {
 	if value >= 1000000 {
 		return fmt.Sprintf("%.1fM", float64(value)/1000000)
@@ -379,7 +384,7 @@ func (s *Service) readSummaryHealth(ctx context.Context, q nativeQueryer, r summ
 		if len(ids) == 0 && totalProjects != len(projects) || slices.ContainsFunc(ids, func(id string) bool { return !slices.Contains(projects, id) }) {
 			continue
 		}
-		var subject healthSubject
+		var subject hubhealth.Subject
 		if err := json.Unmarshal([]byte(subjectRaw), &subject); err != nil {
 			return nil, err
 		}
@@ -395,7 +400,7 @@ func (s *Service) readSummaryHealth(ctx context.Context, q nativeQueryer, r summ
 			}
 			link = base + path
 		}
-		out = append(out, summaryEntry{SummaryRow: emailtemplate.SummaryRow{Title: healthEmailText(signal), Detail: healthEmailText(summary), URL: link}, at: at})
+		out = append(out, summaryEntry{SummaryRow: emailtemplate.SummaryRow{Title: hubhealth.EmailText(signal), Detail: hubhealth.EmailText(summary), URL: link}, at: at})
 	}
 	return out, rows.Err()
 }

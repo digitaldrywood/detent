@@ -7,105 +7,19 @@ import (
 	"sort"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/apikey"
-	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubanalytics"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
 
-const maxAnalyticsPopulation = 1000
+type nativeAnalyticsLanding = hubanalytics.Landing
 
-type nativeAnalyticsBucket struct {
-	LaneResidence               operatortool.AnalyticsResidenceSummary `json:"lane_residence"`
-	ProviderCapacityWaitSeconds float64                                `json:"provider_capacity_wait_seconds"`
-	From                        time.Time                              `json:"from"`
-	To                          time.Time                              `json:"to"`
-	Shipped                     int                                    `json:"shipped"`
-	Sessions                    int                                    `json:"sessions"`
-	Tokens                      int64                                  `json:"tokens"`
-	Cost                        float64                                `json:"cost_usd"`
-	Activity                    nativeAnalyticsActivityTiming          `json:"activity"`
-	QueueSeconds                float64                                `json:"queue_seconds"`
-}
-type nativeAnalyticsLanding struct {
-	ChangeID   string                   `json:"change_id"`
-	WorkItemID tracker.NativeWorkItemID `json:"work_item_id"`
-	Landing    tracker.ChangeLanding    `json:"landing"`
-}
-type nativeAnalyticsPhase struct {
-	Name           string  `json:"name"`
-	Count          int     `json:"count"`
-	Seconds        float64 `json:"seconds"`
-	AverageSeconds float64 `json:"average_seconds"`
-}
-type nativeAnalyticsAttempt struct {
-	Pipeline            []gate.PipelineTiming `json:"pipeline,omitempty"`
-	PipelineDropped     int                   `json:"pipeline_dropped,omitempty"`
-	activityRaw         string
-	publicActivity      bool
-	UsageRowsObserved   int                              `json:"usage_rows_observed"`
-	Identity            agentidentity.Identity           `json:"identity,omitzero"`
-	Landing             *tracker.NativeLandingReceipt    `json:"landing,omitempty"`
-	AttemptID           string                           `json:"attempt_id"`
-	WorkItemID          string                           `json:"work_item_id"`
-	Status              string                           `json:"status"`
-	StartedAt           time.Time                        `json:"started_at"`
-	ObservedAt          time.Time                        `json:"observed_at"`
-	Phases              []tracker.NativePhase            `json:"phases"`
-	Activity            *workflowmetrics.ActivityProfile `json:"activity,omitempty"`
-	ActivityUnavailable string                           `json:"activity_unavailable,omitempty"`
-}
-type nativeAnalyticsSkip struct {
-	Source string `json:"source"`
-	Reason string `json:"reason"`
-	Count  int    `json:"count"`
-}
-type nativeAnalyticsOutcome struct {
-	Shipped            int      `json:"shipped"`
-	CostPerShipped     *float64 `json:"cost_per_shipped_usd,omitempty"`
-	TokensPerShipped   *float64 `json:"tokens_per_shipped,omitempty"`
-	PopulationObserved int      `json:"population_observed"`
-	PopulationTotal    *int     `json:"population_total,omitempty"`
-	Clipped            bool     `json:"clipped"`
-}
-type nativeAnalyticsProject struct {
-	PopulationCursors    map[string]string `json:"population_cursors,omitempty"`
-	pipelineTimings      []gate.PipelineTiming
-	allAttempts          []nativeAnalyticsAttempt
-	allLandings          []nativeAnalyticsLanding
-	failures             []nativeFailure
-	Pipeline             pipelineReport                                `json:"pipeline"`
-	PipelineReceipts     operatortool.ReadPage[gate.PipelineTiming]    `json:"pipeline_receipts"`
-	Quality              analyticsQuality                              `json:"quality"`
-	FailureSignatures    operatortool.ReadPage[nativeFailureSignature] `json:"failure_signatures"`
-	LaneResidence        operatortool.AnalyticsResidence               `json:"lane_residence"`
-	ProviderCapacityWait nativeAnalyticsCapacityWait                   `json:"provider_capacity_wait"`
-	ProjectID            string                                        `json:"project_id"`
-	Source               string                                        `json:"source"`
-	SourceAt             time.Time                                     `json:"source_at"`
-	Window               operatortool.AnalyticsWindow                  `json:"window"`
-	Digest               []nativeAnalyticsBucket                       `json:"digest"`
-	Efficiency           []nativeAnalyticsPhase                        `json:"efficiency"`
-	CostPerOutcome       nativeAnalyticsOutcome                        `json:"cost_per_outcome"`
-	Landings             operatortool.ReadPage[nativeAnalyticsLanding] `json:"landings"`
-	Attempts             operatortool.ReadPage[nativeAnalyticsAttempt] `json:"attempts"`
-	Activity             nativeAnalyticsActivity                       `json:"activity"`
-	QueueTime            operatortool.AnalyticsQueue                   `json:"queue_time"`
-	SkipReasons          []nativeAnalyticsSkip                         `json:"skip_reasons"`
-	PopulationLimit      int                                           `json:"population_limit"`
-	AttemptsObserved     int                                           `json:"attempts_observed"`
-	DecisionsObserved    int                                           `json:"decisions_observed"`
-	UsageRowsObserved    int                                           `json:"usage_rows_observed"`
-	Partial              bool                                          `json:"partial"`
-	Unavailable          []string                                      `json:"unavailable"`
-}
 type nativeAnalyticsReport struct {
 	Requests       *requestMetricsReport        `json:"requests,omitempty"`
 	RouteLatency   *routeLatencyHistory         `json:"route_latency,omitempty"`
 	OrganizationID string                       `json:"organization_id"`
-	Projects       []nativeAnalyticsProject     `json:"projects"`
+	Projects       []hubanalytics.Project       `json:"projects"`
 	ObservedAt     time.Time                    `json:"observed_at"`
 	Window         operatortool.AnalyticsWindow `json:"window"`
 	NextOffset     *int                         `json:"next_offset,omitempty"`
@@ -149,7 +63,7 @@ func (s *Service) executeAnalyticsRead(ctx context.Context, call operatortool.Ca
 		}
 		return hubOperatorResult(report)
 	}
-	if _, _, cursorErr := analyticsPagingContext(ctx, r.PopulationCursor); cursorErr != nil {
+	if _, _, cursorErr := hubanalytics.PagingContext(ctx, r.PopulationCursor); cursorErr != nil {
 		return operatortool.Result{}, operatortool.ErrInvalidArguments
 	}
 	report, err := s.readAnalyticsReport(ctx, credential, r, w)
@@ -208,11 +122,11 @@ func (s *Service) readAnalyticsReportFor(ctx context.Context, credential apiCred
 	if reporterErr != nil {
 		return nativeAnalyticsReport{}, reporterErr
 	}
-	_, _, pagingErr := analyticsPagingContext(ctx, r.PopulationCursor)
+	_, _, pagingErr := hubanalytics.PagingContext(ctx, r.PopulationCursor)
 	if pagingErr != nil {
 		return nativeAnalyticsReport{}, pagingErr
 	}
-	report := nativeAnalyticsReport{OrganizationID: s.config.Hosted.OrganizationID, Projects: []nativeAnalyticsProject{}, ObservedAt: s.config.now().UTC(), Window: w}
+	report := nativeAnalyticsReport{OrganizationID: s.config.Hosted.OrganizationID, Projects: []hubanalytics.Project{}, ObservedAt: s.config.now().UTC(), Window: w}
 	sort.Strings(projects)
 	end := min(len(projects), r.Offset+r.Limit)
 	if end < len(projects) {
@@ -220,7 +134,7 @@ func (s *Service) readAnalyticsReportFor(ctx context.Context, credential apiCred
 	}
 	for _, id := range projects[min(r.Offset, len(projects)):end] {
 		scope := nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), project: tracker.ProjectID(id), credential: credential}
-		projectCtx, paging, err := analyticsPagingContext(context.WithValue(ctx, analyticsPagingKey{}, nil), r.PopulationCursor)
+		projectCtx, paging, err := hubanalytics.PagingContext(context.WithValue(ctx, hubanalytics.PagingKey{}, nil), r.PopulationCursor)
 		if err != nil {
 			return report, err
 		}
@@ -245,19 +159,19 @@ func (s *Service) readAnalyticsReportFor(ctx context.Context, credential apiCred
 			return report, err
 		}
 		done := timeSpan(ctx, "analytics_usage")
-		rows, err := readUsageRows(projectCtx, projectQ, s.config.Hosted.OrganizationID, usageWindow{From: w.From, To: w.To, Hourly: w.Bucket < 24*time.Hour}, []string{id}, maxAnalyticsPopulation+1)
+		rows, err := readUsageRows(projectCtx, projectQ, s.config.Hosted.OrganizationID, usageWindow{From: w.From, To: w.To, Hourly: w.Bucket < 24*time.Hour}, []string{id}, hubanalytics.MaxPopulation+1)
 		done()
 		if err != nil {
 			return report, err
 		}
 		rows = slices.DeleteFunc(rows, func(row usageRow) bool { return !row.Period.Before(w.To) })
-		if len(rows) > maxAnalyticsPopulation {
+		if len(rows) > hubanalytics.MaxPopulation {
 			value.Partial = true
 			value.CostPerOutcome.Clipped = true
-			rows = rows[:maxAnalyticsPopulation]
+			rows = rows[:hubanalytics.MaxPopulation]
 		}
 		value.Pipeline.Partial = value.Pipeline.Partial || value.Partial
-		if paging.name == "usage" || paging.name == "attempts" || paging.name == "landings" {
+		if paging.Name == "usage" || paging.Name == "attempts" || paging.Name == "landings" {
 			value.CostPerOutcome.Clipped = true
 		}
 		value.UsageRowsObserved = len(rows)
@@ -313,31 +227,31 @@ func nativeAnalyticsBucketIndex(at time.Time, w operatortool.AnalyticsWindow) in
 	return int(at.Sub(w.From) / w.Bucket)
 }
 
-func readNativeAnalytics(ctx context.Context, q nativeQueryer, scope nativeScope, r operatortool.AnalyticsRequest, w operatortool.AnalyticsWindow) (nativeAnalyticsProject, error) {
+func readNativeAnalytics(ctx context.Context, q nativeQueryer, scope nativeScope, r operatortool.AnalyticsRequest, w operatortool.AnalyticsWindow) (hubanalytics.Project, error) {
 	q, prepareErr := prepareReportsQuery(ctx, q, scope, "report_attempts", "report_events")
 	if prepareErr != nil {
-		return nativeAnalyticsProject{}, prepareErr
+		return hubanalytics.Project{}, prepareErr
 	}
-	ctx, paging, pagingErr := analyticsPagingContext(ctx, r.PopulationCursor)
+	ctx, paging, pagingErr := hubanalytics.PagingContext(ctx, r.PopulationCursor)
 	if pagingErr != nil {
-		return nativeAnalyticsProject{}, pagingErr
+		return hubanalytics.Project{}, pagingErr
 	}
-	out := nativeAnalyticsProject{ProjectID: string(scope.project), Source: "native_change_landing_and_recorded_runtime", Window: w, PopulationLimit: maxAnalyticsPopulation, Unavailable: []string{"private_instruction_causality", "receipt_efficiency_quantiles"}, Digest: []nativeAnalyticsBucket{}, Efficiency: []nativeAnalyticsPhase{}, SkipReasons: []nativeAnalyticsSkip{}}
+	out := hubanalytics.Project{ProjectID: string(scope.project), Source: "native_change_landing_and_recorded_runtime", Window: w, PopulationLimit: hubanalytics.MaxPopulation, Unavailable: []string{"private_instruction_causality", "receipt_efficiency_quantiles"}, Digest: []hubanalytics.Bucket{}, Efficiency: []hubanalytics.Phase{}, SkipReasons: []hubanalytics.Skip{}}
 	done := timeSpan(ctx, "analytics_failures")
 	failures, partial, err := readNativeFailures(ctx, q, scope, "", &w)
 	done()
 	if err != nil {
 		return out, err
 	}
-	out.failures = failures
+	out.Failures = failures
 	out.FailureSignatures = nativeFailureSignaturePage(groupNativeFailures(failures), r.RowOffset, r.Limit)
 	out.Partial = partial
 	if partial {
 		out.Unavailable = append(out.Unavailable, "failure_signatures_complete_population")
 	}
 	for _, failure := range failures {
-		if failure.at.After(out.SourceAt) {
-			out.SourceAt = failure.at
+		if failure.At.After(out.SourceAt) {
+			out.SourceAt = failure.At
 		}
 	}
 	for from := w.From; from.Before(w.To); from = from.Add(w.Bucket) {
@@ -345,7 +259,7 @@ func readNativeAnalytics(ctx context.Context, q nativeQueryer, scope nativeScope
 		if to.After(w.To) {
 			to = w.To
 		}
-		out.Digest = append(out.Digest, nativeAnalyticsBucket{From: from, To: to})
+		out.Digest = append(out.Digest, hubanalytics.Bucket{From: from, To: to})
 	}
 	done = timeSpan(ctx, "analytics_landings")
 	landings, err := nativeAnalyticsLandings(ctx, q, scope, w)
@@ -353,12 +267,12 @@ func readNativeAnalytics(ctx context.Context, q nativeQueryer, scope nativeScope
 	if err != nil {
 		return out, err
 	}
-	if len(landings) > maxAnalyticsPopulation {
+	if len(landings) > hubanalytics.MaxPopulation {
 		out.Partial = true
 		out.CostPerOutcome.Clipped = true
-		landings = landings[:maxAnalyticsPopulation]
+		landings = landings[:hubanalytics.MaxPopulation]
 	}
-	out.allLandings = landings
+	out.AllLandings = landings
 	out.CostPerOutcome.Shipped = len(landings)
 	for _, l := range landings {
 		if i := nativeAnalyticsBucketIndex(l.Landing.LandedAt, w); i >= 0 {
@@ -387,7 +301,7 @@ func readNativeAnalytics(ctx context.Context, q nativeQueryer, scope nativeScope
 			out.Digest[i].Activity.Partial = true
 		}
 	}
-	phases := map[string]nativeAnalyticsPhase{}
+	phases := map[string]hubanalytics.Phase{}
 	for i := range attempts {
 		a := &attempts[i]
 		for _, p := range a.Phases {
@@ -407,24 +321,24 @@ func readNativeAnalytics(ctx context.Context, q nativeQueryer, scope nativeScope
 		if len(a.Pipeline) == 0 && a.Landing == nil {
 			out.Pipeline.Partial = true
 		}
-		out.pipelineTimings = append(out.pipelineTimings, a.Pipeline...)
+		out.PipelineTimings = append(out.PipelineTimings, a.Pipeline...)
 		if a.PipelineDropped > 0 {
 			out.Pipeline.Partial = true
 		}
 		if a.Landing != nil {
-			out.pipelineTimings = append(out.pipelineTimings, a.Landing.Pipeline...)
+			out.PipelineTimings = append(out.PipelineTimings, a.Landing.Pipeline...)
 			if a.Landing.PipelineDropped > 0 {
 				out.Pipeline.Partial = true
 			}
 			if result := a.Landing.Gate; result != nil {
-				out.pipelineTimings = append(out.pipelineTimings, result.PipelineTiming("landing_validation"))
+				out.PipelineTimings = append(out.PipelineTimings, result.PipelineTiming("landing_validation"))
 				if result.Pipeline != nil {
-					out.pipelineTimings = append(out.pipelineTimings, result.Pipeline.Timings...)
+					out.PipelineTimings = append(out.PipelineTimings, result.Pipeline.Timings...)
 					out.Pipeline.Partial = out.Pipeline.Partial || result.Pipeline.Dropped > 0
 				}
 			}
 		}
-		projectNativeAnalyticsActivity(&out, a, a.activityRaw)
+		projectNativeAnalyticsActivity(&out, a, a.ActivityRaw)
 	}
 	out.AttemptsObserved = len(attempts)
 	for _, a := range attempts {
@@ -432,7 +346,7 @@ func readNativeAnalytics(ctx context.Context, q nativeQueryer, scope nativeScope
 			out.Digest[i].Sessions++
 		}
 	}
-	out.allAttempts = attempts
+	out.AllAttempts = attempts
 	out.Attempts = nativeAnalyticsAttemptPage(attempts, r.RowOffset, r.Limit)
 	if out.Activity.ProfilesObserved == 0 {
 		out.Unavailable = append(out.Unavailable, "instruction_activity")
@@ -466,23 +380,23 @@ func readNativeAnalytics(ctx context.Context, q nativeQueryer, scope nativeScope
 	if err != nil {
 		return out, err
 	}
-	out.PopulationCursors = paging.next
-	out.Partial = out.Partial || paging.name != ""
+	out.PopulationCursors = paging.Next
+	out.Partial = out.Partial || paging.Name != ""
 	pipelinePartial := out.Pipeline.Partial
-	out.Pipeline = summarizePipelineTimings(out.pipelineTimings, w)
+	out.Pipeline = hubanalytics.SummarizePipelineTimings(out.PipelineTimings, w)
 	out.Pipeline.Partial = out.Pipeline.Partial || pipelinePartial || population.Partial || out.LaneResidence.Partial || out.Partial
 	if len(out.Pipeline.Stages) == 0 {
 		out.Pipeline.Partial = true
 		out.Unavailable = append(out.Unavailable, "recorded_pipeline_timings")
 	}
-	out.PipelineReceipts = pipelineTimingPage(uniquePipelineTimings(out.pipelineTimings, w), r.RowOffset, r.Limit)
+	out.PipelineReceipts = hubanalytics.PipelineTimingPage(hubanalytics.UniquePipelineTimings(out.PipelineTimings, w), r.RowOffset, r.Limit)
 	done = timeSpan(ctx, "analytics_quality")
 	out.Quality, err = readAnalyticsQuality(ctx, q, scope, r, w)
 	done()
 	if err != nil {
 		return out, err
 	}
-	out.Pipeline.Partial = out.Pipeline.Partial || out.Partial || len(paging.next) > 0
+	out.Pipeline.Partial = out.Pipeline.Partial || out.Partial || len(paging.Next) > 0
 	return out, nil
 }
 
@@ -495,7 +409,7 @@ func nativeAnalyticsLandings(ctx context.Context, q nativeQueryer, scope nativeS
 		return readUnconvertedAnalyticsLandings(ctx, q, scope, w, false)
 	}
 	issues, issueArgs := reportsIssueClause(ctx, "c.work_item_id")
-	rows, err := queryAnalyticsPopulation(ctx, q, "landings", `SELECT c.id,c.work_item_id,c.record_json FROM change_requests c
+	rows, err := hubanalytics.QueryAnalyticsPopulation(ctx, q, "landings", `SELECT c.id,c.work_item_id,c.record_json FROM change_requests c
 JOIN change_versions v ON v.change_id=c.id AND v.id=c.landed_version_id
 WHERE c.organization_id=? AND c.project_id=? AND c.landed_head_sha=v.head_sha
 AND length(c.landed_merge_sha) IN (40,64)
@@ -522,7 +436,7 @@ ORDER BY c.landed_at,c.id LIMIT ? OFFSET ?`, append([]any{scope.organization, sc
 	return out, rows.Err()
 }
 
-func projectNativeAnalyticsSkips(ctx context.Context, q nativeQueryer, scope nativeScope, out *nativeAnalyticsProject) error {
+func projectNativeAnalyticsSkips(ctx context.Context, q nativeQueryer, scope nativeScope, out *hubanalytics.Project) error {
 	q, prepareErr := prepareReportsQuery(ctx, q, scope, "report_events")
 	if prepareErr != nil {
 		return prepareErr
@@ -532,7 +446,7 @@ func projectNativeAnalyticsSkips(ctx context.Context, q nativeQueryer, scope nat
 		if err != nil {
 			return err
 		}
-		offset := analyticsPopulationOffset(ctx, "decisions")
+		offset := hubanalytics.PopulationOffset(ctx, "decisions")
 		if compacted && offset != 0 {
 			return nil
 		}
@@ -543,14 +457,14 @@ func projectNativeAnalyticsSkips(ctx context.Context, q nativeQueryer, scope nat
 			}
 		}
 	}
-	var rows *analyticsRows
+	var rows *hubanalytics.Rows
 	var err error
 	if _, projected := q.(analyticsRollupReader); projected {
-		rows, err = queryAnalyticsPopulation(ctx, q, "decisions", `SELECT skip_source,skip_reason,sample_at FROM analytics_hourly_rollups INDEXED BY analytics_skip_order WHERE organization_id=? AND project_id=? AND metric='skip_sample' AND sample_ns>=? AND sample_ns<? ORDER BY sample_at,dimension LIMIT ? OFFSET ?`, scope.organization, scope.project, out.Window.From.UnixNano(), out.Window.To.UnixNano())
+		rows, err = hubanalytics.QueryAnalyticsPopulation(ctx, q, "decisions", `SELECT skip_source,skip_reason,sample_at FROM analytics_hourly_rollups INDEXED BY analytics_skip_order WHERE organization_id=? AND project_id=? AND metric='skip_sample' AND sample_ns>=? AND sample_ns<? ORDER BY sample_at,dimension LIMIT ? OFFSET ?`, scope.organization, scope.project, out.Window.From.UnixNano(), out.Window.To.UnixNano())
 	} else {
 		visibility, args := reportsIssueClause(ctx, "work_item_id")
 		args = append([]any{scope.organization, scope.project, formatHubTime(out.Window.From), formatHubTime(out.Window.To)}, args...)
-		rows, err = queryAnalyticsPopulation(ctx, q, "decisions", `SELECT coalesce(scheduler_source,''), coalesce(scheduler_reason,''), recorded_at
+		rows, err = hubanalytics.QueryAnalyticsPopulation(ctx, q, "decisions", `SELECT coalesce(scheduler_source,''), coalesce(scheduler_reason,''), recorded_at
 FROM report_events WHERE organization_id=? AND project_id=? AND type='scheduler.decision' AND scheduler_outcome='skipped'
 AND julianday(recorded_at)>=julianday(?) AND julianday(recorded_at)<julianday(?)`+visibility+` ORDER BY recorded_at,id LIMIT ? OFFSET ?`, args...)
 	}
@@ -558,9 +472,9 @@ AND julianday(recorded_at)>=julianday(?) AND julianday(recorded_at)<julianday(?)
 		return err
 	}
 	defer rows.Close()
-	skips := map[string]nativeAnalyticsSkip{}
+	skips := map[string]hubanalytics.Skip{}
 	for rows.Next() {
-		if out.DecisionsObserved == maxAnalyticsPopulation {
+		if out.DecisionsObserved == hubanalytics.MaxPopulation {
 			out.Partial = true
 			break
 		}

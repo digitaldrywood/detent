@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubanalytics"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -17,7 +18,7 @@ import (
 func TestDiagnosticsTodoHistory(t *testing.T) {
 	at := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
 	states := map[string]tracker.NativeState{"Todo": {Name: "Todo", Dispatchable: true}, "In Progress": {Name: "In Progress", Dispatchable: true}}
-	issue := analyticsResidenceIssue{created: at.Add(-time.Hour), initial: "Todo", events: []analyticsResidenceEvent{{at: at, kind: "workflow.transitioned", data: tracker.CollaborationData{FromState: "Todo", ToState: "In Progress"}}}}
+	issue := hubanalytics.ResidenceIssue{Created: at.Add(-time.Hour), Initial: "Todo", Events: []hubanalytics.ResidenceEvent{{At: at, Kind: "workflow.transitioned", Data: tracker.CollaborationData{FromState: "Todo", ToState: "In Progress"}}}}
 	for _, test := range []struct {
 		name        string
 		at          time.Time
@@ -37,8 +38,8 @@ func TestDiagnosticsTodoHistory(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			input := issue
-			input.initial, input.partial = test.initial, test.partial
-			got := diagnosticsTodoDepth([]analyticsResidenceIssue{input}, states, test.clipped, test.at)
+			input.Initial, input.Partial = test.initial, test.partial
+			got := diagnosticsTodoDepth([]hubanalytics.ResidenceIssue{input}, states, test.clipped, test.at)
 			if test.unavailable {
 				if got != nil {
 					t.Fatalf("queue depth = %d, want unavailable", *got)
@@ -70,7 +71,7 @@ func TestDiagnosticsProjectionReadBound(t *testing.T) {
 		for _, age := range []int{2, 2400} {
 			if _, err := f.service.database.db.ExecContext(t.Context(), `WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<?)
 INSERT INTO analytics_hourly_rollups(organization_id,project_id,hour,metric,dimension,value,data_json,started_at,updated_at,failed_at,failed_day,projection_version,status,work_item_id)
-SELECT ?,?,?,'attempt',?||x,1,?,?,?,?,julianday(?),1,'failed','example-item' FROM n`, 4*maxAnalyticsPopulation, scope.organization, project, now.Add(-time.Duration(age)*time.Hour).Unix(), fmt.Sprintf("diagnostics-%d-", age), payload, formatHubTime(now.Add(-time.Duration(age)*time.Hour)), formatHubTime(now.Add(-time.Duration(age)*time.Hour)), formatHubTime(now.Add(-time.Duration(age)*time.Hour)), formatHubTime(now.Add(-time.Duration(age)*time.Hour))); err != nil {
+SELECT ?,?,?,'attempt',?||x,1,?,?,?,?,julianday(?),1,'failed','example-item' FROM n`, 4*hubanalytics.MaxPopulation, scope.organization, project, now.Add(-time.Duration(age)*time.Hour).Unix(), fmt.Sprintf("diagnostics-%d-", age), payload, formatHubTime(now.Add(-time.Duration(age)*time.Hour)), formatHubTime(now.Add(-time.Duration(age)*time.Hour)), formatHubTime(now.Add(-time.Duration(age)*time.Hour)), formatHubTime(now.Add(-time.Duration(age)*time.Hour))); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -78,9 +79,9 @@ SELECT ?,?,?,'attempt',?||x,1,?,?,?,?,julianday(?),1,'failed','example-item' FRO
 			name, query, index string
 			args               []any
 		}{
-			{"attempts", diagnosticsAttemptsQuery, "analytics_attempt_reports_updated", []any{scope.organization, project, w.From.Add(-24 * time.Hour).Format(time.DateOnly), maxAnalyticsPopulation + 1}},
-			{"failures", diagnosticsFailuresQuery, "analytics_attempt_failed", []any{scope.organization, project, formatHubTime(w.From), formatHubTime(w.To), maxAnalyticsPopulation + 1}},
-			{"usage", diagnosticsUsageQuery, "analytics_usage_window", []any{scope.organization, project, w.From.Format(usagePeriodLayout), w.To.Format(usagePeriodLayout), maxAnalyticsPopulation + 1}},
+			{"attempts", diagnosticsAttemptsQuery, "analytics_attempt_reports_updated", []any{scope.organization, project, w.From.Add(-24 * time.Hour).Format(time.DateOnly), hubanalytics.MaxPopulation + 1}},
+			{"failures", diagnosticsFailuresQuery, "analytics_attempt_failed", []any{scope.organization, project, formatHubTime(w.From), formatHubTime(w.To), hubanalytics.MaxPopulation + 1}},
+			{"usage", diagnosticsUsageQuery, "analytics_usage_window", []any{scope.organization, project, w.From.Format(usagePeriodLayout), w.To.Format(usagePeriodLayout), hubanalytics.MaxPopulation + 1}},
 		} {
 			t.Run(project+"/"+test.name, func(t *testing.T) {
 				plan := strings.Join(explainQueryPlan(t, f.service.database.reader, test.query, test.args), "\n")
@@ -99,8 +100,8 @@ SELECT ?,?,?,'attempt',?||x,1,?,?,?,?,julianday(?),1,'failed','example-item' FRO
 				if err := rows.Err(); err != nil {
 					t.Fatal(err)
 				}
-				if count > maxAnalyticsPopulation+1 || (test.name != "usage" && count != maxAnalyticsPopulation+1) {
-					t.Fatalf("rows=%d, want at most %d and a full page for attempts/failures", count, maxAnalyticsPopulation+1)
+				if count > hubanalytics.MaxPopulation+1 || (test.name != "usage" && count != hubanalytics.MaxPopulation+1) {
+					t.Fatalf("rows=%d, want at most %d and a full page for attempts/failures", count, hubanalytics.MaxPopulation+1)
 				}
 			})
 		}
@@ -116,7 +117,7 @@ SELECT ?,?,?,'attempt',?||x,1,?,?,?,?,julianday(?),1,'failed','example-item' FRO
 			t.Fatalf("diagnostics fetched full attempt details: %s", query)
 		}
 	}
-	if project.AttemptsObserved != maxAnalyticsPopulation || !project.Partial || len(project.FailureSignatures.Items) != 1 || project.FailureSignatures.Items[0].Count != maxAnalyticsPopulation {
+	if project.AttemptsObserved != hubanalytics.MaxPopulation || !project.Partial || len(project.FailureSignatures.Items) != 1 || project.FailureSignatures.Items[0].Count != hubanalytics.MaxPopulation {
 		t.Fatalf("bounded diagnostics population: %+v", project)
 	}
 }
@@ -142,10 +143,10 @@ func TestDiagnosticsAttemptCandidatesBound(t *testing.T) {
 			started, updated time.Time
 			observed         int
 		}{
-			{"matching", now.Add(-2 * time.Hour), now.Add(-time.Hour), maxAnalyticsPopulation},
+			{"matching", now.Add(-2 * time.Hour), now.Add(-time.Hour), hubanalytics.MaxPopulation},
 			{"before exact window", w.From.Add(-time.Hour), w.From.Add(-time.Minute), 0},
 			{"started at exclusive end", w.To, w.To.Add(time.Hour), 0},
-			{"overlapping old start", w.From.Add(-365 * 24 * time.Hour), w.From, maxAnalyticsPopulation},
+			{"overlapping old start", w.From.Add(-365 * 24 * time.Hour), w.From, hubanalytics.MaxPopulation},
 		} {
 			t.Run(fmt.Sprintf("%d/%s", population, test.name), func(t *testing.T) {
 				tx, err := f.service.database.db.BeginTx(t.Context(), nil)
@@ -161,7 +162,7 @@ INSERT INTO analytics_hourly_rollups(organization_id,project_id,hour,metric,dime
 SELECT ?,?,0,'attempt','candidate-'||x,1,'{"runtime":{"phases":[{"name":"implement"}]}}',?,?,1 FROM n`, population, scope.organization, scope.project, formatHubTime(test.started), formatHubTime(test.updated)); err != nil {
 					t.Fatal(err)
 				}
-				out := nativeAnalyticsProject{Window: w}
+				out := hubanalytics.Project{Window: w}
 				if err := readDiagnosticsAttempts(t.Context(), analyticsRollupReader{tx}, scope, &out); err != nil {
 					t.Fatal(err)
 				}
@@ -178,12 +179,12 @@ func TestDiagnosticsRefusalPageByteParity(t *testing.T) {
 	now := f.service.config.now().UTC().Truncate(time.Hour)
 	scope := nativeScope{organization: "org_browser_preview", project: tracker.ProjectID(f.project)}
 	w := operatortool.AnalyticsWindow{From: now.Add(-24 * time.Hour), To: now, Bucket: time.Hour}
-	signatures := make([]nativeFailureSignature, 0, 51)
+	signatures := make([]hubanalytics.FailureSignature, 0, 51)
 	for i := range 50 {
 		example := fmt.Sprintf("failure %c%c ", 'g'+i/20, 'g'+i%20) + strings.Repeat("z", 501)
-		signatures = append(signatures, nativeFailureSignature{Signature: example[:256], Example: example[:512], Class: "attempt", Count: 1, WorkItems: []string{fmt.Sprintf("item-%d", i)}, WorkItemsCount: 1, FirstSeen: now.Add(-time.Hour), LastSeen: now.Add(-time.Hour), Cost: 123456789.125, Tokens: 999999999999, SlotMinutes: 60})
+		signatures = append(signatures, hubanalytics.FailureSignature{Signature: example[:256], Example: example[:512], Class: "attempt", Count: 1, WorkItems: []string{fmt.Sprintf("item-%d", i)}, WorkItemsCount: 1, FirstSeen: now.Add(-time.Hour), LastSeen: now.Add(-time.Hour), Cost: 123456789.125, Tokens: 999999999999, SlotMinutes: 60})
 	}
-	signatures = append(signatures, nativeFailureSignature{Signature: "landing refused: conflict", Example: "landing refused: conflict", Class: "merge", Count: 1, WorkItems: []string{"conflict-item"}, WorkItemsCount: 1, FirstSeen: now.Add(-time.Hour), LastSeen: now.Add(-time.Hour), Cost: 123456789.125, Tokens: 999999999999, SlotMinutes: 60})
+	signatures = append(signatures, hubanalytics.FailureSignature{Signature: "landing refused: conflict", Example: "landing refused: conflict", Class: "merge", Count: 1, WorkItems: []string{"conflict-item"}, WorkItemsCount: 1, FirstSeen: now.Add(-time.Hour), LastSeen: now.Add(-time.Hour), Cost: 123456789.125, Tokens: 999999999999, SlotMinutes: 60})
 	size := 2
 	for _, signature := range signatures {
 		raw, err := json.Marshal(signature)
@@ -241,7 +242,7 @@ VALUES(?,?,0,'usage',?,?,'{}',?,?,'provider','model',?,0,1)`, scope.organization
 		{"refusal on next page", 50, 100, 1, 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			expected := append([]nativeFailureSignature(nil), signatures...)
+			expected := append([]hubanalytics.FailureSignature(nil), signatures...)
 			firstItem := signatures[0].WorkItems[0]
 			expected[0].WorkItems = []string{firstItem[:len(firstItem)-test.trim]}
 			if _, err := tx.ExecContext(t.Context(), `UPDATE analytics_hourly_rollups SET work_item_id=? WHERE organization_id=? AND project_id=? AND metric='attempt' AND dimension='boundary-0'`, expected[0].WorkItems[0], scope.organization, scope.project); err != nil {
@@ -252,7 +253,7 @@ VALUES(?,?,0,'usage',?,?,'{}',?,?,'provider','model',?,0,1)`, scope.organization
 			if err != nil {
 				t.Fatal(err)
 			}
-			out := nativeAnalyticsProject{Window: w}
+			out := hubanalytics.Project{Window: w}
 			if err := readDiagnosticsRefusals(t.Context(), qPrepared, scope, operatortool.AnalyticsRequest{RowOffset: test.offset, Limit: test.limit}, &out); err != nil {
 				t.Fatal(err)
 			}
@@ -270,8 +271,8 @@ VALUES(?,?,0,'usage',?,?,'{}',?,?,'provider','model',?,0,1)`, scope.organization
 			baseline := out
 			baseline.FailureSignatures = want
 			reports := make([]diagnosticsReport, 0, 2)
-			for _, project := range []nativeAnalyticsProject{baseline, out} {
-				report, err := f.service.readHostedDiagnosticsFrom(t.Context(), nativeAnalyticsReport{OrganizationID: string(scope.organization), Window: w, Projects: []nativeAnalyticsProject{project}}, qPrepared)
+			for _, project := range []hubanalytics.Project{baseline, out} {
+				report, err := f.service.readHostedDiagnosticsFrom(t.Context(), nativeAnalyticsReport{OrganizationID: string(scope.organization), Window: w, Projects: []hubanalytics.Project{project}}, qPrepared)
 				if err != nil {
 					t.Fatal(err)
 				}

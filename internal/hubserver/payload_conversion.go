@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/diffbody"
+	"github.com/digitaldrywood/detent/internal/hubanalytics"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -177,7 +178,7 @@ VALUES(?,?,?,?,2,?,?,?,?,?,?) ON CONFLICT(organization_id,project_id,family,aggr
 	}
 	switch family.name {
 	case "analytics":
-		if _, err := tx.ExecContext(ctx, analyticsProjectionBackfill, analyticsValues...); err != nil {
+		if _, err := tx.ExecContext(ctx, hubanalytics.ProjectionBackfill, analyticsValues...); err != nil {
 			return err
 		}
 		_, err = tx.ExecContext(ctx, "UPDATE analytics_hourly_rollups SET data_json='{}',payload_object_key=?,conversion_state=2 WHERE rowid=?", ref.Key, row)
@@ -348,7 +349,7 @@ func (s *Service) convertObjectPayloadRow(ctx context.Context, family storageCon
 	}
 	var analyticsValues []any
 	if family.name == "analytics" {
-		analyticsValues, err = analyticsProjection(string(data))
+		analyticsValues, err = hubanalytics.Projection(string(data))
 		if err != nil {
 			return err
 		}

@@ -6,10 +6,11 @@ import (
 	"errors"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubhealth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func applyHealthAttemptData(a *healthRateAttempt, data tracker.NativeRunData) {
+func applyHealthAttemptData(a *hubhealth.RateAttempt, data tracker.NativeRunData) {
 	a.Session = data.SessionID
 	if data.TerminalFailure != nil {
 		a.Stage = data.TerminalFailure.Stage
@@ -25,9 +26,9 @@ func applyHealthAttemptData(a *healthRateAttempt, data tracker.NativeRunData) {
 		projected.Runtime = &tracker.NativeRuntimeObservation{HeartbeatAt: data.Runtime.HeartbeatAt, Landing: data.Runtime.Landing}
 	}
 	text, _ := failureFromAttempt(projected, a.Status)
-	a.Recovery = healthRecoveryReason(text)
+	a.Recovery = hubhealth.RecoveryReason(text)
 	if text != "" && a.Recovery == "" {
-		a.Signature = normalizeFailureSignature(text)
+		a.Signature = hubhealth.NormalizeFailureSignature(text)
 	}
 	if r := data.Runtime; r != nil {
 		a.Heartbeat = r.HeartbeatAt
@@ -44,7 +45,7 @@ func applyHealthAttemptData(a *healthRateAttempt, data tracker.NativeRunData) {
 }
 
 func updateAttemptHotProjection(ctx context.Context, tx *sql.Tx, id, status string, data tracker.NativeRunData) error {
-	a := healthRateAttempt{Status: status}
+	a := hubhealth.RateAttempt{Status: status}
 	applyHealthAttemptData(&a, data)
 	heartbeat, landingAt := "", ""
 	if !a.Heartbeat.IsZero() {

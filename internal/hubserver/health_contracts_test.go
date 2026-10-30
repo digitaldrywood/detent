@@ -7,12 +7,12 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubhealth"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -59,7 +59,7 @@ func TestHealthContractsReuseRevisions(t *testing.T) {
 		t.Fatal(err)
 	}
 	exec("INSERT INTO scheduled_validation_reports(organization_id,project_id,repository,run_id,run_attempt,record_json,recorded_at) VALUES(?,?,?,'1','1',?,?)", other.project.OrganizationID, other.project.ID, "example-org/example-project", string(report), formatHubTime(now.Add(-5*time.Hour-29*time.Minute)))
-	var cache healthContractCache
+	var cache hubhealth.ContractCache
 	for _, test := range []struct {
 		name      string
 		change    func()
@@ -111,9 +111,9 @@ func TestHealthContractsReuseRevisions(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			findings, want := evaluateHealth(now, snapshot), evaluateHealth(now, uncached)
-			sort := func(findings []healthFinding) {
-				slices.SortFunc(findings, func(a, b healthFinding) int { return strings.Compare(a.Fingerprint, b.Fingerprint) })
+			findings, want := hubhealth.Evaluate(now, snapshot), hubhealth.Evaluate(now, uncached)
+			sort := func(findings []hubhealth.Finding) {
+				slices.SortFunc(findings, func(a, b hubhealth.Finding) int { return strings.Compare(a.Fingerprint, b.Fingerprint) })
 			}
 			sort(findings)
 			sort(want)
@@ -134,40 +134,6 @@ func TestHealthContractsReuseRevisions(t *testing.T) {
 			}
 			if contracts != test.contracts || heartbeat != test.heartbeat || elapsed != test.elapsed || scheduled != test.elapsed {
 				t.Fatalf("contracts=%d heartbeat=%t elapsed=%t scheduled=%t, want %d %t %t %t", contracts, heartbeat, elapsed, scheduled, test.contracts, test.heartbeat, test.elapsed, test.elapsed)
-			}
-		})
-	}
-}
-
-func TestHealthContractsBoundedRetention(t *testing.T) {
-	t.Parallel()
-	f := newNativeFixture(t, nil, "", "bounded-health-contracts")
-	f.service.stopHealthDetector()
-	issue := f.create(t, "candidate")
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{Scope: apiScopeAdmin}}
-	key := healthContractKey{organization: scope.organization, project: scope.project, item: string(issue.WorkItemID)}
-	cache := healthContractCache{entries: make(map[healthContractKey]healthContractResult)}
-	for i := range healthReadLimit {
-		old := healthContractKey{item: strconv.Itoa(i)}
-		cache.order = append(cache.order, old)
-		cache.entries[old] = healthContractResult{}
-	}
-	for _, test := range []struct {
-		name     string
-		revision tracker.Revision
-	}{
-		{name: "evicts oldest at capacity", revision: issue.Revision},
-		{name: "updates existing without evicting", revision: issue.Revision + 1},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			if _, err := cache.read(t.Context(), f.service.database.reader, scope, string(issue.WorkItemID), test.revision, "policy"); err != nil {
-				t.Fatal(err)
-			}
-			if _, stale := cache.entries[healthContractKey{item: "0"}]; stale {
-				t.Fatal("oldest entry retained")
-			}
-			if len(cache.entries) != healthReadLimit || len(cache.order) != healthReadLimit || cache.oldest != 1 || cache.entries[key].revision != test.revision {
-				t.Fatalf("entries=%d order=%d oldest=%d revision=%d", len(cache.entries), len(cache.order), cache.oldest, cache.entries[key].revision)
 			}
 		})
 	}
@@ -205,13 +171,13 @@ func TestHealthContractsLiveInputs(t *testing.T) {
 					exec("UPDATE issues SET issue_contract_json=? WHERE native_id=?", string(original), issue.WorkItemID)
 				}
 			}
-			var cache healthContractCache
+			var cache hubhealth.ContractCache
 			for step := range 2 {
 				if step == 1 {
 					change()
 				}
 				queries := &healthContractQueries{nativeQueryer: f.service.database.reader}
-				wait, err := cache.read(t.Context(), queries, scope, string(issue.WorkItemID), issue.Revision, hubTestPolicy().ID)
+				wait, err := cache.Read(t.Context(), queries, hubhealth.Scope{Organization: scope.organization, Project: scope.project}, string(issue.WorkItemID), issue.Revision, hubTestPolicy().ID, healthContractLoad)
 				if err != nil {
 					t.Fatal(err)
 				}

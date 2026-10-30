@@ -10,6 +10,7 @@ import (
 	"testing/fstest"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubanalytics"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -167,7 +168,7 @@ SELECT organization_id,project_id,unixepoch(period),'usage',json_array(attempt_i
 				t.Fatal(err)
 			}
 			defer tx.Rollback()
-			if err := refreshAnalyticsUsage(t.Context(), tx, "org_example", project, "", 0); err != nil {
+			if err := hubanalytics.RefreshUsage(t.Context(), tx, "org_example", project, "", 0); err != nil {
 				t.Fatal(err)
 			}
 			if err := tx.Commit(); err != nil {
@@ -192,9 +193,9 @@ SELECT organization_id,project_id,unixepoch(period),'usage',json_array(attempt_i
 	}
 	t.Run("skip compaction", func(t *testing.T) {
 		window := operatortool.AnalyticsWindow{From: at, To: at.Add(time.Hour), Bucket: time.Hour}
-		before := map[string]nativeAnalyticsProject{}
+		before := map[string]hubanalytics.Project{}
 		for _, project := range projects {
-			out := nativeAnalyticsProject{Window: window}
+			out := hubanalytics.Project{Window: window}
 			ok, err := readAnalyticsSkipRollups(t.Context(), db, nativeScope{organization: "org_example", project: tracker.ProjectID(project)}, &out, false)
 			if err != nil || !ok || out.DecisionsObserved != len(identities) {
 				t.Fatalf("%s: historical skips=%+v ok=%v error=%v", project, out.SkipReasons, ok, err)
@@ -210,7 +211,7 @@ SELECT organization_id,project_id,unixepoch(period),'usage',json_array(attempt_i
 			return count
 		}
 		for count := remaining(); count > 0; {
-			if err := d.compactAnalyticsSamples(t.Context(), at.Add(analyticsSampleRetention+2*time.Hour)); err != nil {
+			if err := d.compactAnalyticsSamples(t.Context(), at.Add(hubanalytics.SampleRetention+2*time.Hour)); err != nil {
 				t.Fatal(err)
 			}
 			next := remaining()
@@ -224,39 +225,13 @@ SELECT organization_id,project_id,unixepoch(period),'usage',json_array(attempt_i
 			if err := db.QueryRowContext(t.Context(), `SELECT count(*) FROM analytics_hourly_rollups WHERE project_id=? AND metric='skip_sample'`, project).Scan(&samples); err != nil || samples != 0 {
 				t.Fatalf("%s: historical samples remaining=%d error=%v", project, samples, err)
 			}
-			out := nativeAnalyticsProject{Window: window}
+			out := hubanalytics.Project{Window: window}
 			ok, err := readAnalyticsSkipRollups(t.Context(), db, nativeScope{organization: "org_example", project: tracker.ProjectID(project)}, &out, true)
 			if err != nil || !ok || out.DecisionsObserved != before[project].DecisionsObserved || !reflect.DeepEqual(out.SkipReasons, before[project].SkipReasons) {
 				t.Fatalf("%s: compacted skips=%+v before=%+v error=%v", project, out.SkipReasons, before[project].SkipReasons, err)
 			}
 		}
 	})
-}
-
-func TestAnalyticsFailureTime(t *testing.T) {
-	observed := time.Date(2026, 10, 25, 0, 0, 0, 7, time.UTC)
-	updated := "2026-10-25T01:00:00Z"
-	for _, test := range []struct {
-		name, status string
-		landing      *analyticsAttemptLanding
-		want         string
-	}{
-		{"unknown landing", "succeeded", nil, ""},
-		{"failed without landing", "failed", nil, updated},
-		{"interrupted", "interrupted", nil, updated},
-		{"conflict", "succeeded", &analyticsAttemptLanding{RefusalKind: "conflict", ObservedAt: observed}, formatHubTime(observed)},
-		{"protection", "succeeded", &analyticsAttemptLanding{RefusalKind: "base_protected", ObservedAt: observed}, formatHubTime(observed)},
-		{"refusal then landed", "succeeded", &analyticsAttemptLanding{RefusalKind: "conflict", Landed: true, ObservedAt: observed}, updated},
-		{"gate failure", "succeeded", &analyticsAttemptLanding{GateFailed: true, Landed: true, ObservedAt: observed}, formatHubTime(observed)},
-		{"missing observation", "succeeded", &analyticsAttemptLanding{GateFailed: true}, updated},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			got := analyticsFailureTime(test.landing, test.status, updated)
-			if got.Valid != (test.want != "") || got.String != test.want || strings.Contains(got.String, "0001-") {
-				t.Fatalf("failure time=%v want %q", got, test.want)
-			}
-		})
-	}
 }
 
 func TestAnalyticsEventProjectionUnknown(t *testing.T) {
@@ -299,7 +274,7 @@ func TestAnalyticsEventProjectionUnknown(t *testing.T) {
 		window := operatortool.AnalyticsWindow{From: now.Add(-time.Hour), To: now.Add(time.Hour), Bucket: time.Hour}
 		verifyReports := func(source, reason string) {
 			t.Helper()
-			out := nativeAnalyticsProject{Window: window}
+			out := hubanalytics.Project{Window: window}
 			if err := projectNativeAnalyticsSkips(t.Context(), f.service.database.reader, scope, &out); err != nil {
 				t.Fatal(err)
 			}
@@ -378,7 +353,7 @@ func TestAnalyticsCompactionLegacyIdentifiers(t *testing.T) {
 				insert("residence_hour", "good-residence", `{"State":"Done"}`, 1)
 				insert("slots", "good-slot", `{}`, nil)
 			}
-			err := d.compactAnalyticsSamples(t.Context(), now.Add(analyticsSampleRetention+2*time.Hour))
+			err := d.compactAnalyticsSamples(t.Context(), now.Add(hubanalytics.SampleRetention+2*time.Hour))
 			if err == nil || strings.Contains(err.Error(), "private customer content") {
 				t.Fatalf("unsafe or missing row error: %v", err)
 			}
@@ -435,9 +410,9 @@ func TestAnalyticsMaintenanceFailureBatchProgress(t *testing.T) {
 		clockStep    time.Duration
 	}{
 		{"projection", "slots", storageConversionRows, nil, 0},
-		{"samples", "capacity_claim", analyticsSampleCompactionBatch, 1, 0},
-		{"residence", "residence_hour", analyticsSampleCompactionBatch, 1, 0},
-		{"time budget", "capacity_claim", 1, 1, analyticsBackfillBudget + time.Nanosecond},
+		{"samples", "capacity_claim", hubanalytics.SampleCompactionBatch, 1, 0},
+		{"residence", "residence_hour", hubanalytics.SampleCompactionBatch, 1, 0},
+		{"time budget", "capacity_claim", 1, 1, hubanalytics.BackfillBudget + time.Nanosecond},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			now := time.Date(2026, 10, 25, 0, 0, 0, 0, time.UTC)
@@ -470,7 +445,7 @@ func TestAnalyticsMaintenanceFailureBatchProgress(t *testing.T) {
 				t.Helper()
 				restarted := &database{db: d.db, reader: d.reader}
 				elapsed := time.Duration(0)
-				err := restarted.compactAnalyticsSamplesWithClock(t.Context(), now.Add(analyticsSampleRetention+time.Hour), func() time.Time {
+				err := restarted.compactAnalyticsSamplesWithClock(t.Context(), now.Add(hubanalytics.SampleRetention+time.Hour), func() time.Time {
 					at := now.Add(elapsed)
 					elapsed += test.clockStep
 					return at

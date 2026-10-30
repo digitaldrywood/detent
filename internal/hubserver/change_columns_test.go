@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubanalytics"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -831,7 +832,7 @@ func TestChangeAnalyticsFallbackServesLegacyHistory(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer tx.Rollback()
-			population := maxAnalyticsPopulation
+			population := hubanalytics.MaxPopulation
 			if family == "evidence" {
 				population /= 2
 			}

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubanalytics"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -86,7 +87,7 @@ func readUnconvertedAnalyticsLandings(ctx context.Context, q nativeQueryer, scop
 	if quality {
 		name = "quality_landings"
 	}
-	population := newAnalyticsOrderedPopulation(ctx, name, func(a, b nativeAnalyticsLanding) int {
+	population := hubanalytics.NewOrderedPopulation(ctx, name, func(a, b nativeAnalyticsLanding) int {
 		if order := a.Landing.LandedAt.Compare(b.Landing.LandedAt); order != 0 {
 			return order
 		}
@@ -126,9 +127,9 @@ func readUnconvertedAnalyticsLandings(ctx context.Context, q nativeQueryer, scop
 		if !quality {
 			value.Landing.Quality = nil
 		}
-		population.add(value)
+		population.Add(value)
 	}
-	return population.page(ctx, name), rows.Err()
+	return population.Page(ctx, name), rows.Err()
 }
 
 func legacyQualityEvidenceMatches(ctx context.Context, q nativeQueryer, kind, raw string, w operatortool.AnalyticsWindow) (bool, error) {
@@ -162,6 +163,7 @@ func legacyQualityEvidenceMatches(ctx context.Context, q nativeQueryer, kind, ra
 type legacyAnalyticsRows struct{ *changeLegacyRows }
 
 func (r *legacyAnalyticsRows) Close() { r.err = errors.Join(r.err, r.changeLegacyRows.Close()) }
+
 func queryLegacyAnalyticsRows(ctx context.Context, q nativeQueryer, statement string, args ...any) (*legacyAnalyticsRows, error) {
 	rows, err := queryChangeLegacyRows(ctx, q, statement, args...)
 	if err != nil {

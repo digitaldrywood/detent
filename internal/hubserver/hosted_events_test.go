@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubhealth"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
@@ -157,9 +158,9 @@ func TestHostedEventsHealthFinding(t *testing.T) {
 	f := newHostedSecurityFixture(t)
 	user := f.user(t, "member", "member", "member@example.test", "read", "")
 	now := time.Date(2026, 10, 6, 18, 0, 0, 0, time.UTC)
-	finding := newHealthFinding("dead_man", "flow", "project", string(f.project), "No landings", "Check admission", []string{string(f.project)}, healthEvidence{})
+	finding := hubhealth.NewFinding("dead_man", "flow", "project", string(f.project), "No landings", "Check admission", []string{string(f.project)}, hubhealth.Evidence{})
 	scope := nativeScope{organization: "org_security", project: f.project}
-	write := func(at time.Time, findings []healthFinding) int64 {
+	write := func(at time.Time, findings []hubhealth.Finding) int64 {
 		t.Helper()
 		previous, _, err := readDashboardWatermark(t.Context(), f.service.database.reader, scope)
 		if err != nil {
@@ -178,7 +179,7 @@ func TestHostedEventsHealthFinding(t *testing.T) {
 		}
 		return previous
 	}
-	previous := write(now, []healthFinding{finding})
+	previous := write(now, []hubhealth.Finding{finding})
 	scanner := openHostedTestStream(t, f, user, "")
 	var findingID string
 	for _, state := range []struct {

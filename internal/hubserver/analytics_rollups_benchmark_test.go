@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubanalytics"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -28,7 +29,7 @@ func BenchmarkAnalyticsRollupReads(b *testing.B) {
 						if err != nil {
 							b.Fatal(err)
 						}
-						report := nativeAnalyticsReport{OrganizationID: string(scope.organization), Window: w, Projects: []nativeAnalyticsProject{project}}
+						report := nativeAnalyticsReport{OrganizationID: string(scope.organization), Window: w, Projects: []hubanalytics.Project{project}}
 						if endpoint == "diagnostics" {
 							_, err = f.service.readHostedDiagnosticsFrom(b.Context(), report, source.q)
 						} else {
@@ -64,7 +65,7 @@ func BenchmarkAnalyticsReportSubreads(b *testing.B) {
 			}{
 				{"attempts", func() error { _, err := loadNativeAnalyticsAttempts(b.Context(), source.q, scope, w, ""); return err }},
 				{"quality", func() error {
-					_, err := readAnalyticsQuality(b.Context(), source.q, scope, operatortool.AnalyticsRequest{Limit: maxAnalyticsPopulation}, w)
+					_, err := readAnalyticsQuality(b.Context(), source.q, scope, operatortool.AnalyticsRequest{Limit: hubanalytics.MaxPopulation}, w)
 					return err
 				}},
 				{"landings", func() error { _, err := nativeAnalyticsLandings(b.Context(), source.q, scope, w); return err }},
@@ -131,9 +132,9 @@ func BenchmarkAnalyticsProjectionApply(b *testing.B) {
 					b.Fatal(err)
 				}
 				if prepared {
-					_, err = d.analytics.exec(b.Context(), tx, analyticsIssuesRefresh, f.project.OrganizationID, f.project.ID, id)
+					_, err = d.analytics.Exec(b.Context(), tx, hubanalytics.IssuesRefresh, f.project.OrganizationID, f.project.ID, id)
 				} else {
-					_, err = tx.ExecContext(b.Context(), analyticsIssuesRefresh, f.project.OrganizationID, f.project.ID, id)
+					_, err = tx.ExecContext(b.Context(), hubanalytics.IssuesRefresh, f.project.OrganizationID, f.project.ID, id)
 				}
 				rollbackErr := tx.Rollback()
 				if err != nil || rollbackErr != nil {
@@ -231,7 +232,7 @@ SELECT organization_id,project_id,unixepoch(started_at)/3600*3600,'attempt',id,1
 					if err != nil {
 						b.Fatal(err)
 					}
-					var project nativeAnalyticsProject
+					var project hubanalytics.Project
 					if focused {
 						project, err = readNativeDiagnostics(b.Context(), q, scope, r, w)
 					} else {
@@ -240,7 +241,7 @@ SELECT organization_id,project_id,unixepoch(started_at)/3600*3600,'attempt',id,1
 					if err != nil {
 						b.Fatal(err)
 					}
-					report := nativeAnalyticsReport{OrganizationID: string(scope.organization), Window: w, Projects: []nativeAnalyticsProject{project}}
+					report := nativeAnalyticsReport{OrganizationID: string(scope.organization), Window: w, Projects: []hubanalytics.Project{project}}
 					if _, err := f.service.readHostedDiagnosticsFrom(b.Context(), report, q); err != nil {
 						b.Fatal(err)
 					}

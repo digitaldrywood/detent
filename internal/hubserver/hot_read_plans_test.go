@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubanalytics"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -257,7 +258,7 @@ func TestAnalyticsCommitPlans(t *testing.T) {
 		t.Fatal(err)
 	}
 	statements = statements[:0]
-	if err := f.service.database.projectAnalyticsBatch(ctx, tx, f.service.config.now(), analyticsBackfillBatch); err != nil {
+	if err := f.service.database.projectAnalyticsBatch(ctx, tx, f.service.config.now(), hubanalytics.BackfillBatch); err != nil {
 		t.Fatal(err)
 	}
 	traced := slices.Clone(statements)
@@ -325,7 +326,7 @@ shaped AS (SELECT i,strftime('%Y-%m-%dT%H:%M:%SZ',?,'-'||(i*7776000/?)||' second
 INSERT INTO collaboration_events(id,organization_id,project_id,work_item_id,sequence,type,schema_version,actor_json,data_json,recorded_at,analytics_from_state,analytics_to_state,analytics_projection_version)
 SELECT 'bench_event_'||i,?,?,(SELECT native_id FROM items WHERE k=i%total),1000000+i,'workflow.transitioned',1,'{}',json_object('from_state',CASE WHEN i%5=0 THEN 'Done' ELSE 'Todo' END,'to_state','In Progress'),at,CASE WHEN i%5=0 THEN 'Done' ELSE 'Todo' END,'In Progress',1 FROM shaped`,
 			[]any{events, scope.organization, scope.project, now, events, scope.organization, scope.project}},
-		{analyticsSourceEvents + `INSERT INTO analytics_hourly_rollups(organization_id,project_id,hour,metric,dimension,value,data_json,work_item_id,sequence,type,recorded_at,projection_version) SELECT organization_id,project_id,hour,metric,dimension,value,data_json,work_item_id,sequence,type,recorded_at,1 FROM analytics_source_events WHERE organization_id=? AND project_id=? AND dimension LIKE 'bench_event_%'`,
+		{hubanalytics.SourceEvents + `INSERT INTO analytics_hourly_rollups(organization_id,project_id,hour,metric,dimension,value,data_json,work_item_id,sequence,type,recorded_at,projection_version) SELECT organization_id,project_id,hour,metric,dimension,value,data_json,work_item_id,sequence,type,recorded_at,1 FROM analytics_source_events WHERE organization_id=? AND project_id=? AND dimension LIKE 'bench_event_%'`,
 			[]any{scope.organization, scope.project}},
 		{`WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i+1 FROM n WHERE i<?-1),
 items AS (SELECT native_id,row_number() OVER (ORDER BY native_id)-1 AS k,count(*) OVER () AS total FROM issues WHERE organization_id=? AND project_id=? AND native_id IS NOT NULL),

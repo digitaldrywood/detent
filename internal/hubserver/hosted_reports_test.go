@@ -12,6 +12,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubanalytics"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -21,39 +22,43 @@ func TestReportsCompletionPopulation(t *testing.T) {
 	base := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
 	at := func(hour int) time.Time { return base.Add(time.Duration(hour) * time.Hour) }
 	states := map[string]tracker.NativeState{"Done": {Terminal: true}, "Todo": {Dispatchable: true}}
-	events := []analyticsResidenceEvent{}
+	events := []hubanalytics.ResidenceEvent{}
 	for _, step := range []struct {
 		hour     int
 		from, to string
 	}{{10, "Backlog", "Todo"}, {15, "Todo", "In Progress"}, {18, "In Progress", "Blocked"}, {22, "Blocked", "Merging"}, {25, "Merging", "Done"}} {
-		events = append(events, analyticsResidenceEvent{at: at(step.hour), kind: "workflow.transitioned", data: tracker.CollaborationData{FromState: step.from, ToState: step.to}})
+		events = append(events, hubanalytics.ResidenceEvent{At: at(step.hour), Kind: "workflow.transitioned", Data: tracker.CollaborationData{FromState: step.from, ToState: step.to}})
 	}
 	last := events[len(events)-1]
-	events[len(events)-1] = analyticsResidenceEvent{at: at(23), kind: "scheduler.decision"}
+	events[len(events)-1] = hubanalytics.ResidenceEvent{At: at(23), Kind: "scheduler.decision"}
 	events = append(events, last)
-	timeline := buildAnalyticsResidenceTimeline(analyticsResidenceIssue{id: "done", created: base, initial: "Backlog", events: events}, states, at(48))
-	timings := residencePipelineTimings(timeline, []nativeAnalyticsAttempt{{WorkItemID: "done", Landing: &tracker.NativeLandingReceipt{Landed: true, ObservedAt: at(24)}}})
+	timeline := hubanalytics.BuildResidenceTimeline(hubanalytics.ResidenceIssue{ID: "done", Created: base, Initial: "Backlog", Events: events}, states, at(48))
+	timings := hubanalytics.ResidencePipelineTimings(timeline, []hubanalytics.Attempt{{WorkItemID: "done", Landing: &tracker.NativeLandingReceipt{Landed: true, ObservedAt: at(24)}}})
 	if len(timings) != 2 || !timings[0].Valid() || timings[0].Stage != "merging_queue" || timings[0].StartedAt != at(22) || timings[0].FinishedAt != at(23) || timings[1].Stage != "merging_to_landed" || timings[1].FinishedAt != at(24) {
 		t.Fatalf("workflow timestamps not derivable: %+v", timings)
 	}
-	reclosed := append(append([]analyticsResidenceEvent{}, events...),
-		analyticsResidenceEvent{at: at(30), kind: "workflow.transitioned", data: tracker.CollaborationData{FromState: "Done", ToState: "Rework"}},
-		analyticsResidenceEvent{at: at(34), kind: "workflow.transitioned", data: tracker.CollaborationData{FromState: "Rework", ToState: "Done"}})
+	reclosed := append(append([]hubanalytics.ResidenceEvent{}, events...),
+		hubanalytics.ResidenceEvent{At: at(30), Kind: "workflow.transitioned", Data: tracker.CollaborationData{FromState: "Done", ToState: "Rework"}},
+		hubanalytics.ResidenceEvent{At: at(34), Kind: "workflow.transitioned", Data: tracker.CollaborationData{FromState: "Rework", ToState: "Done"}})
 	for _, tt := range []struct {
 		name                  string
-		issue                 analyticsResidenceTimeline
+		issue                 hubanalytics.ResidenceTimeline
 		to                    int
 		partial               bool
 		count                 int
 		system, lead, working float64
 	}{
 		{"whole history despite window starting after Todo", timeline, 48, false, 1, 11 * 3600, 25 * 3600, 3 * 3600},
-		{"re-closed issue measured at its final close", buildAnalyticsResidenceTimeline(analyticsResidenceIssue{id: "done", created: base, initial: "Backlog", events: reclosed}, states, at(48)), 48, false, 1, 15 * 3600, 34 * 3600, 3 * 3600},
+		{"re-closed issue measured at its final close", hubanalytics.BuildResidenceTimeline(hubanalytics.ResidenceIssue{ID: "done", Created: base, Initial: "Backlog", Events: reclosed}, states, at(48)), 48, false, 1, 15 * 3600, 34 * 3600, 3 * 3600},
 		{"close outside the read has no timing", timeline, 24, true, 0, 0, 0, 0},
-		{"incomplete history omits timing", func() analyticsResidenceTimeline { item := timeline; item.issue.partial = true; return item }(), 48, true, 0, 0, 0, 0},
+		{"incomplete history omits timing", func() hubanalytics.ResidenceTimeline {
+			item := timeline
+			item.Issue.Partial = true
+			return item
+		}(), 48, true, 0, 0, 0, 0},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			got := reportsCompletions([]analyticsResidenceTimeline{tt.issue}, states, at(tt.to))
+			got := reportsCompletions([]hubanalytics.ResidenceTimeline{tt.issue}, states, at(tt.to))
 			if got.System.Count != tt.count || got.System.P50Seconds != tt.system || got.Lead.P50Seconds != tt.lead || got.Working.P50Seconds != tt.working || got.Partial != tt.partial {
 				t.Fatalf("completion=%+v", got)
 			}
@@ -147,11 +152,11 @@ func TestReportsShippedPopulation(t *testing.T) {
 	}
 	var reports [2]hostedReportsReport
 	for i, q := range [2]nativeQueryer{f.service.database.reader, analyticsRollupReader{f.service.database.reader}} {
-		project, err := readNativeAnalytics(t.Context(), q, scope, operatortool.AnalyticsRequest{Limit: maxAnalyticsPopulation}, w)
+		project, err := readNativeAnalytics(t.Context(), q, scope, operatortool.AnalyticsRequest{Limit: hubanalytics.MaxPopulation}, w)
 		if err != nil {
 			t.Fatal(err)
 		}
-		report, err := f.service.readHostedReportsFrom(t.Context(), nativeAnalyticsReport{OrganizationID: string(scope.organization), Window: w, Projects: []nativeAnalyticsProject{project}}, q)
+		report, err := f.service.readHostedReportsFrom(t.Context(), nativeAnalyticsReport{OrganizationID: string(scope.organization), Window: w, Projects: []hubanalytics.Project{project}}, q)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -189,11 +194,11 @@ func TestReportsShippedPopulation(t *testing.T) {
 		}
 	}
 	day := operatortool.AnalyticsWindow{From: to.Add(-24 * time.Hour), To: to, Bucket: time.Hour}
-	dayProject, err := readNativeAnalytics(t.Context(), f.service.database.reader, scope, operatortool.AnalyticsRequest{Limit: maxAnalyticsPopulation}, day)
+	dayProject, err := readNativeAnalytics(t.Context(), f.service.database.reader, scope, operatortool.AnalyticsRequest{Limit: hubanalytics.MaxPopulation}, day)
 	if err != nil {
 		t.Fatal(err)
 	}
-	dayReport, err := f.service.readHostedReportsFrom(t.Context(), nativeAnalyticsReport{OrganizationID: string(scope.organization), Window: day, Projects: []nativeAnalyticsProject{dayProject}}, f.service.database.reader)
+	dayReport, err := f.service.readHostedReportsFrom(t.Context(), nativeAnalyticsReport{OrganizationID: string(scope.organization), Window: day, Projects: []hubanalytics.Project{dayProject}}, f.service.database.reader)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -217,7 +222,7 @@ func TestReportsShippedPopulation(t *testing.T) {
 
 func TestReportsStageAndSpendAttribution(t *testing.T) {
 	at := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
-	attempts := []nativeAnalyticsAttempt{
+	attempts := []hubanalytics.Attempt{
 		{AttemptID: "a", WorkItemID: "one", Status: "succeeded", Identity: agentidentity.Configured("codex", "codex", "", "code", "model-a", "openai", "high", "", at), Phases: []tracker.NativePhase{{Name: "implement", StartedAt: at, FinishedAt: at.Add(time.Minute)}}},
 		{AttemptID: "b", WorkItemID: "one", Status: "failed", Identity: agentidentity.Configured("codex", "codex", "", "code", "model-b", "openai", "medium", "", at), Phases: []tracker.NativePhase{{Name: "implement", StartedAt: at, FinishedAt: at.Add(3 * time.Minute)}}},
 		{AttemptID: "c", WorkItemID: "two", Status: "running", Identity: agentidentity.Configured("codex", "codex", "", "code", "model-a", "openai", "high", "", at)},
@@ -236,7 +241,7 @@ func TestReportsRunnerTotals(t *testing.T) {
 	minutes := func(n int) []tracker.NativePhase {
 		return []tracker.NativePhase{{Name: "implement", StartedAt: at, FinishedAt: at.Add(time.Duration(n) * time.Minute)}}
 	}
-	attempts := []nativeAnalyticsAttempt{
+	attempts := []hubanalytics.Attempt{
 		{AttemptID: "a", WorkItemID: "one", Status: "succeeded", Phases: minutes(2)},
 		{AttemptID: "b", WorkItemID: "one", Status: "failed", Phases: minutes(4)},
 		{AttemptID: "c", WorkItemID: "two", Status: "succeeded", Phases: minutes(1)},
@@ -251,8 +256,8 @@ func TestReportsRunnerTotals(t *testing.T) {
 	}
 	got := reportsRunnerTotals(attempts, usage)
 	want := []reportsRunner{
-		{RunnerID: "run_sprite", Name: "sprite", Sessions: 1, Succeeded: 1, Duration: sampledDuration([]float64{60}), Cost: 5},
-		{RunnerID: "run_studio", Name: "studio", Sessions: 2, Succeeded: 1, Duration: sampledDuration([]float64{120, 240}), Cost: 4},
+		{RunnerID: "run_sprite", Name: "sprite", Sessions: 1, Succeeded: 1, Duration: hubanalytics.SampledDuration([]float64{60}), Cost: 5},
+		{RunnerID: "run_studio", Name: "studio", Sessions: 2, Succeeded: 1, Duration: hubanalytics.SampledDuration([]float64{120, 240}), Cost: 4},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("runners=%+v want %+v", got, want)
@@ -267,7 +272,7 @@ func TestReportsFirstTryHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := f.service.config.now().UTC()
-	report := nativeAnalyticsProject{Landings: operatortool.ReadPage[nativeAnalyticsLanding]{Items: []nativeAnalyticsLanding{{ChangeID: "change", WorkItemID: tracker.NativeWorkItemID(item), Landing: tracker.ChangeLanding{LandedAt: now}}}}}
+	report := hubanalytics.Project{Landings: operatortool.ReadPage[nativeAnalyticsLanding]{Items: []nativeAnalyticsLanding{{ChangeID: "change", WorkItemID: tracker.NativeWorkItemID(item), Landing: tracker.ChangeLanding{LandedAt: now}}}}}
 	for _, tt := range []struct {
 		name, role string
 		receipt    *tracker.NativeLandingReceipt
@@ -316,21 +321,21 @@ func TestReportsOpenWork(t *testing.T) {
 	base := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
 	at := func(hour int) time.Time { return base.Add(time.Duration(hour) * time.Hour) }
 	states := map[string]tracker.NativeState{"Done": {Terminal: true}, "Todo": {Dispatchable: true}, "Rework": {Dispatchable: true}, "Backlog": {}}
-	move := func(hour int, from, to string) analyticsResidenceEvent {
-		return analyticsResidenceEvent{at: at(hour), kind: "workflow.transitioned", data: tracker.CollaborationData{FromState: from, ToState: to}}
+	move := func(hour int, from, to string) hubanalytics.ResidenceEvent {
+		return hubanalytics.ResidenceEvent{At: at(hour), Kind: "workflow.transitioned", Data: tracker.CollaborationData{FromState: from, ToState: to}}
 	}
 	w := operatortool.AnalyticsWindow{From: at(100), To: at(200), Bucket: time.Hour}
-	issues := []analyticsResidenceIssue{
-		{id: "backlog", created: at(0), initial: "Backlog"},
-		{id: "todo", created: at(10), initial: "Todo"},
-		{id: "held", created: at(150), initial: "Todo", events: []analyticsResidenceEvent{move(160, "Todo", "Blocked")}},
-		{id: "working", created: at(190), initial: "Todo", events: []analyticsResidenceEvent{move(195, "Todo", "In Progress")}},
-		{id: "done", created: at(20), initial: "Todo", events: []analyticsResidenceEvent{move(110, "Todo", "Done")}},
-		{id: "late", created: at(60), initial: "Todo", events: []analyticsResidenceEvent{move(90, "Todo", "Rework"), move(120, "Rework", "Done")}},
+	issues := []hubanalytics.ResidenceIssue{
+		{ID: "backlog", Created: at(0), Initial: "Backlog"},
+		{ID: "todo", Created: at(10), Initial: "Todo"},
+		{ID: "held", Created: at(150), Initial: "Todo", Events: []hubanalytics.ResidenceEvent{move(160, "Todo", "Blocked")}},
+		{ID: "working", Created: at(190), Initial: "Todo", Events: []hubanalytics.ResidenceEvent{move(195, "Todo", "In Progress")}},
+		{ID: "done", Created: at(20), Initial: "Todo", Events: []hubanalytics.ResidenceEvent{move(110, "Todo", "Done")}},
+		{ID: "late", Created: at(60), Initial: "Todo", Events: []hubanalytics.ResidenceEvent{move(90, "Todo", "Rework"), move(120, "Rework", "Done")}},
 	}
-	timelines := make([]analyticsResidenceTimeline, 0, len(issues))
+	timelines := make([]hubanalytics.ResidenceTimeline, 0, len(issues))
 	for _, issue := range issues {
-		timelines = append(timelines, buildAnalyticsResidenceTimeline(issue, states, w.To))
+		timelines = append(timelines, hubanalytics.BuildResidenceTimeline(issue, states, w.To))
 	}
 	var in reportsInputs
 	reportsTimelineResidence(&in, timelines, issues, states, w, false)
@@ -385,21 +390,21 @@ func TestReportsSeriesBuckets(t *testing.T) {
 	at := func(hour int) time.Time { return base.Add(time.Duration(hour) * time.Hour) }
 	day := func(n, hour int) int { return n*24 + hour }
 	states := map[string]tracker.NativeState{"Done": {Terminal: true}, "Todo": {Dispatchable: true}}
-	transition := func(hour int, from, to string) analyticsResidenceEvent {
-		return analyticsResidenceEvent{at: at(hour), kind: "workflow.transitioned", data: tracker.CollaborationData{FromState: from, ToState: to}}
+	transition := func(hour int, from, to string) hubanalytics.ResidenceEvent {
+		return hubanalytics.ResidenceEvent{At: at(hour), Kind: "workflow.transitioned", Data: tracker.CollaborationData{FromState: from, ToState: to}}
 	}
 	end := at(day(14, 10))
-	shippedIssue := buildAnalyticsResidenceTimeline(analyticsResidenceIssue{id: "shipped", created: at(day(7, 1)), initial: "Backlog", events: []analyticsResidenceEvent{
+	shippedIssue := hubanalytics.BuildResidenceTimeline(hubanalytics.ResidenceIssue{ID: "shipped", Created: at(day(7, 1)), Initial: "Backlog", Events: []hubanalytics.ResidenceEvent{
 		transition(day(7, 12), "Backlog", "Todo"), transition(day(7, 14), "Todo", "In Progress"), transition(day(8, 1), "In Progress", "Done"),
 		transition(day(9, 2), "Done", "Todo"), transition(day(10, 3), "Todo", "Done"),
 	}}, states, end)
-	priorIssue := buildAnalyticsResidenceTimeline(analyticsResidenceIssue{id: "prior", created: at(1), initial: "Todo", events: []analyticsResidenceEvent{
+	priorIssue := hubanalytics.BuildResidenceTimeline(hubanalytics.ResidenceIssue{ID: "prior", Created: at(1), Initial: "Todo", Events: []hubanalytics.ResidenceEvent{
 		transition(day(1, 5), "Todo", "Done"),
 	}}, states, end)
-	open := buildAnalyticsResidenceTimeline(analyticsResidenceIssue{id: "open", created: at(day(7, 0)), initial: "Todo"}, states, end)
-	timelines := []analyticsResidenceTimeline{shippedIssue, priorIssue, open}
+	open := hubanalytics.BuildResidenceTimeline(hubanalytics.ResidenceIssue{ID: "open", Created: at(day(7, 0)), Initial: "Todo"}, states, end)
+	timelines := []hubanalytics.ResidenceTimeline{shippedIssue, priorIssue, open}
 	identity := agentidentity.Configured("codex", "codex", "", "code", "model-a", "openai", "high", "", base)
-	attempts := []nativeAnalyticsAttempt{
+	attempts := []hubanalytics.Attempt{
 		{AttemptID: "a", WorkItemID: "shipped", Status: "succeeded", Identity: identity},
 		{AttemptID: "b", WorkItemID: "open", Status: "failed", ObservedAt: at(day(8, 3)), Identity: identity},
 	}
@@ -408,10 +413,10 @@ func TestReportsSeriesBuckets(t *testing.T) {
 	in := reportsInputs{
 		done:      []reportsDone{{id: "shipped", at: at(day(10, 3))}},
 		priorDone: []reportsDone{{id: "prior", at: at(day(1, 5))}},
-		timing: func(ids []string, to time.Time) (reportsCompletion, error) {
-			var picked []analyticsResidenceTimeline
+		timing: func(ids []string, to time.Time) (hubanalytics.Completion, error) {
+			var picked []hubanalytics.ResidenceTimeline
 			for _, timeline := range timelines {
-				if slices.Contains(ids, timeline.issue.id) {
+				if slices.Contains(ids, timeline.Issue.ID) {
 					picked = append(picked, timeline)
 				}
 			}
@@ -462,15 +467,15 @@ func TestReportsSeriesBuckets(t *testing.T) {
 			}
 		})
 	}
-	returns := []qualityReturn{
-		{item: "open", at: at(day(7, 13)), class: classifyReworkReason("Merging", "conflict on landing")},
-		{item: "shipped", at: at(day(8, 2)), class: classifyReworkReason("Merging", "conflict on landing")},
-		{item: "open", at: at(day(8, 4)), class: classifyReworkReason("Merging", "base protected")},
+	returns := []hubanalytics.QualityReturn{
+		{Item: "open", At: at(day(7, 13)), Class: classifyReworkReason("Merging", "conflict on landing")},
+		{Item: "shipped", At: at(day(8, 2)), Class: classifyReworkReason("Merging", "conflict on landing")},
+		{Item: "open", At: at(day(8, 4)), Class: classifyReworkReason("Merging", "base protected")},
 	}
-	failures := []nativeFailure{
-		{workItem: "open", at: at(day(8, 3)), example: "hub request timed out"},
-		{workItem: "open", at: at(day(8, 5)), example: "landing gate failed"},
-		{workItem: "open", at: at(day(6, 0)), example: "hub request timed out"},
+	failures := []hubanalytics.Failure{
+		{WorkItem: "open", At: at(day(8, 3)), Example: "hub request timed out"},
+		{WorkItem: "open", At: at(day(8, 5)), Example: "landing gate failed"},
+		{WorkItem: "open", At: at(day(6, 0)), Example: "hub request timed out"},
 	}
 	reportsSeriesClasses(series, returns, failures, w)
 	if got := series[1].ReworkClasses; !reflect.DeepEqual(got, map[string]int{"Conflict on landing": 1, "Landing refused: protected base": 1}) {
@@ -524,7 +529,7 @@ func TestReportsPipelineTiming(t *testing.T) {
 					tt.events[i].HeadSHA, tt.events[i].TreeSHA = strings.Repeat("a", 40), strings.Repeat("b", 40)
 				}
 			}
-			got := summarizePipelineTimings(tt.events, window)
+			got := hubanalytics.SummarizePipelineTimings(tt.events, window)
 			if got.Partial != tt.partial {
 				t.Fatalf("partial=%v", got.Partial)
 			}

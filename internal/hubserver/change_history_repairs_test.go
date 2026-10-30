@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubhealth"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -420,7 +421,7 @@ func TestProductivityRefreshServesChangeBackfill(t *testing.T) {
 				if err != nil {
 					t.Fatalf("legacy health snapshot: %v", err)
 				}
-				if err := f.service.commitHealthEvaluation(f.service.runDetailContext(t.Context()), scope.organization, at, evaluateHealth(at, snapshot), snapshot.BaselineUnavailable); err != nil {
+				if err := f.service.commitHealthEvaluation(f.service.runDetailContext(t.Context()), scope.organization, at, hubhealth.Evaluate(at, snapshot), snapshot.BaselineUnavailable); err != nil {
 					t.Fatal(err)
 				}
 			}

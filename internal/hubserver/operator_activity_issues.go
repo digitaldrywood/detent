@@ -8,6 +8,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubanalytics"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -62,6 +63,7 @@ func readActivityIssueCandidates(ctx context.Context, q nativeQueryer, organizat
 }
 
 type activityWorkInterval struct{ from, to time.Time }
+
 type activityIssueAttempt struct {
 	run                   tracker.NativeRunData
 	started, ended        time.Time
@@ -79,7 +81,7 @@ func activityLaneRole(lane tracker.NativeState) string {
 	return "holding"
 }
 
-func activityIssueResidence(issue operatortool.ActivityIssue, lanes []tracker.NativeState, samples []analyticsResidenceSample, now time.Time) operatortool.ActivityIssue {
+func activityIssueResidence(issue operatortool.ActivityIssue, lanes []tracker.NativeState, samples []hubanalytics.ResidenceSample, now time.Time) operatortool.ActivityIssue {
 	issue.Lanes = []operatortool.ActivityLane{}
 	issue.RunnerIDs = []string{}
 	issue.WorkedByRole = []operatortool.ActivityRoleWork{}
@@ -92,7 +94,7 @@ func activityIssueResidence(issue operatortool.ActivityIssue, lanes []tracker.Na
 		}
 		return issue
 	}
-	slices.SortFunc(samples, func(a, b analyticsResidenceSample) int {
+	slices.SortFunc(samples, func(a, b hubanalytics.ResidenceSample) int {
 		return cmp.Or(a.At.Compare(b.At), cmp.Compare(a.Sequence, b.Sequence))
 	})
 	firstActive := slices.IndexFunc(lanes, func(l tracker.NativeState) bool { return l.Dispatchable && !l.Terminal })
@@ -257,16 +259,16 @@ func activityIssueWork(issue *operatortool.ActivityIssue, attempts []activityIss
 	return live
 }
 
-func readActivityIssueSamples(ctx context.Context, q nativeQueryer, organization, project, id string) ([]analyticsResidenceSample, bool, error) {
+func readActivityIssueSamples(ctx context.Context, q nativeQueryer, organization, project, id string) ([]hubanalytics.ResidenceSample, bool, error) {
 	rows, err := q.QueryContext(ctx, activityIssueSamplesQuery, organization, project, id, activityIssueHistoryLimit+1)
 	if err != nil {
 		return nil, false, err
 	}
 	defer rows.Close()
-	samples := []analyticsResidenceSample{}
+	samples := []hubanalytics.ResidenceSample{}
 	for rows.Next() {
 		var raw string
-		var sample analyticsResidenceSample
+		var sample hubanalytics.ResidenceSample
 		if err := rows.Scan(&raw); err != nil {
 			return nil, false, err
 		}
@@ -347,7 +349,7 @@ func readActivityIssues(ctx context.Context, q nativeQueryer, projects []string,
 	out.RunningIssues = []operatortool.ActivityIssue{}
 	out.FinishedIssues = []operatortool.ActivityIssue{}
 	out.IssueTypicalDurations = []operatortool.ActivityIssueTypical{}
-	remaining := maxAnalyticsPopulation
+	remaining := hubanalytics.MaxPopulation
 	for _, project := range projects {
 		var name, raw string
 		if err := q.QueryRowContext(ctx, `SELECT name,states_json FROM projects WHERE organization_id=? AND id=?`, out.OrganizationID, project).Scan(&name, &raw); err != nil {
@@ -430,10 +432,10 @@ func readActivityIssues(ctx context.Context, q nativeQueryer, projects []string,
 				out.FinishedIssues = append(out.FinishedIssues, issue)
 			}
 		}
-		typical.Total = analyticsDuration(totals)
+		typical.Total = hubanalytics.Duration(totals)
 		typical.Partial = typical.Partial || partial
 		for lane, values := range laneTimes {
-			typical.Lanes[lane] = analyticsDuration(values)
+			typical.Lanes[lane] = hubanalytics.Duration(values)
 		}
 		out.IssueTypicalDurations = append(out.IssueTypicalDurations, typical)
 		out.IssuesPartial = out.IssuesPartial || partial

@@ -15,14 +15,9 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/hubanalytics"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
-
-// The usage report. Every member of the
-// organization reads it; the rows are filtered to the projects the member
-// can read, so a member without a grant sees their own organization's shape
-// without another team's spend. Cost is an estimate the client labels "API
-// estimate": what a runner priced, or what the hub's own table prices.
 
 // usageRanges are the windows the report offers, in the order the client
 // shows them.
@@ -331,7 +326,7 @@ WHERE u.organization_id = ? AND u.period >= ? AND u.period <= ?
  AND ` + projectClause + scoped + `
 ORDER BY u.period, u.provider, u.model, u.attempt_id LIMIT ? OFFSET ?`
 	args := append([]any{organization, window.From.UTC().Format(usagePeriodLayout), window.To.UTC().Format(usagePeriodLayout), projectArg}, scopedArgs...)
-	result, err := queryAnalyticsRows(ctx, database, query, append(args, limit, analyticsPopulationOffset(ctx, "usage"))...)
+	result, err := hubanalytics.QueryAnalyticsRows(ctx, database, query, append(args, limit, hubanalytics.PopulationOffset(ctx, "usage"))...)
 	if err != nil {
 		return nil, fmt.Errorf("read usage: %w", err)
 	}
@@ -351,9 +346,9 @@ ORDER BY u.period, u.provider, u.model, u.attempt_id LIMIT ? OFFSET ?`
 		row.Period = parsed.UTC()
 		row.BusySeconds = usageBusySeconds(started, updated, window)
 		rows = append(rows, row)
-		if len(rows) > maxAnalyticsPopulation && limit == maxAnalyticsPopulation+1 && row.Period.Before(window.To) {
-			if paging, ok := ctx.Value(analyticsPagingKey{}).(*analyticsPaging); ok {
-				paging.next["usage"] = fmt.Sprintf("usage:%d:0", analyticsPopulationOffset(ctx, "usage")+maxAnalyticsPopulation)
+		if len(rows) > hubanalytics.MaxPopulation && limit == hubanalytics.MaxPopulation+1 && row.Period.Before(window.To) {
+			if paging, ok := ctx.Value(hubanalytics.PagingKey{}).(*hubanalytics.Paging); ok {
+				paging.Next["usage"] = fmt.Sprintf("usage:%d:0", hubanalytics.PopulationOffset(ctx, "usage")+hubanalytics.MaxPopulation)
 			}
 		}
 	}

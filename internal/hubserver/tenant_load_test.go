@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubanalytics"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -109,7 +110,7 @@ func TestTenantRunnerWritesStayFlatWithHistory(t *testing.T) {
 				if _, err := tx.ExecContext(t.Context(), `WITH RECURSIVE n(i) AS (SELECT ? UNION ALL SELECT i+1 FROM n WHERE i < ?)
 INSERT INTO collaboration_events(id,organization_id,project_id,work_item_id,sequence,type,schema_version,actor_json,data_json,recorded_at,scheduler_outcome,scheduler_reason,scheduler_source,scheduler_runner_id,analytics_attempt_id,analytics_skip_key,analytics_recorded_ns,analytics_projection_version)
 SELECT 'evt_history_'||?||'_'||i, ?, ?, ?, ?+i, 'comment.created', 1, '{"kind":"system"}', ?, ?, '', '', '', '', '', ?, ?, 1 FROM n`,
-					previous+1, history, index, f.project.OrganizationID, f.project.ID, item.WorkItemID, sequence-previous, `{"pad":"`+strings.Repeat("h", 200)+`"}`, formatHubTime(now), analyticsDimension("", ""), now.UnixNano()); err != nil {
+					previous+1, history, index, f.project.OrganizationID, f.project.ID, item.WorkItemID, sequence-previous, `{"pad":"`+strings.Repeat("h", 200)+`"}`, formatHubTime(now), hubanalytics.Dimension("", ""), now.UnixNano()); err != nil {
 					t.Fatal(err)
 				}
 				if _, err := tx.ExecContext(t.Context(), "UPDATE issues SET event_sequence=? WHERE organization_id=? AND project_id=? AND native_id=?", sequence+history-previous, f.project.OrganizationID, f.project.ID, item.WorkItemID); err != nil {

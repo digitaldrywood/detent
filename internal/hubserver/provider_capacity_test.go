@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubhealth"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/testenv"
@@ -506,13 +507,13 @@ func TestProviderQueueOrderAndSelectors(t *testing.T) {
 			}
 			if test.unavailable == "resolved health" {
 				now := f.service.config.now()
-				finding := newHealthFinding("scheduler_loop_behind", "instance", "project", string(f.project.ID), "Scheduler refresh is behind.", "Check scheduler refresh health.", []string{string(f.project.ID)}, healthEvidence{})
+				finding := hubhealth.NewFinding("scheduler_loop_behind", "instance", "project", string(f.project.ID), "Scheduler refresh is behind.", "Check scheduler refresh health.", []string{string(f.project.ID)}, hubhealth.Evidence{})
 				tx, err := f.service.database.db.BeginTx(t.Context(), nil)
 				if err != nil {
 					t.Fatal(err)
 				}
 				defer tx.Rollback()
-				if _, err := writeHealthEvaluation(t.Context(), tx, f.project.OrganizationID, now, []healthFinding{finding}); err != nil {
+				if _, err := writeHealthEvaluation(t.Context(), tx, f.project.OrganizationID, now, []hubhealth.Finding{finding}); err != nil {
 					t.Fatal(err)
 				}
 				if _, err := tx.ExecContext(t.Context(), `INSERT INTO health_finding_issues(finding_id,project_id,work_item_id,reported_evidence_digest) SELECT id,?,?,'' FROM health_findings`, f.project.ID, issues[0].WorkItemID); err != nil {

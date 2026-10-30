@@ -9,59 +9,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubanalytics"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
-
-type analyticsQualityCounts struct {
-	WorkedItems     int            `json:"worked_items"`
-	ReworkedItems   int            `json:"reworked_items"`
-	LandedVersions  int            `json:"landed_versions"`
-	EscapedVersions int            `json:"escaped_versions"`
-	Escapes         int            `json:"escapes"`
-	Infrastructure  int            `json:"infrastructure"`
-	InfraReturns    int            `json:"infrastructure_returns"`
-	Pending         int            `json:"pending_classification"`
-	ReworkPercent   *float64       `json:"rework_percent"`
-	EscapePercent   *float64       `json:"escape_percent"`
-	Causes          map[string]int `json:"causes"`
-}
-
-type analyticsQualityBucket struct {
-	analyticsQualityCounts
-	From time.Time `json:"from"`
-	To   time.Time `json:"to"`
-}
-
-type analyticsQualityEscape struct {
-	tracker.QualityEscape
-	ChangeID                string        `json:"change_id"`
-	VersionID               string        `json:"version_id"`
-	WorkItemID              string        `json:"work_item_id,omitempty"`
-	MergeSHA                string        `json:"merge_sha"`
-	LandedAt                time.Time     `json:"landed_at"`
-	DiscussionID            string        `json:"discussion_id,omitempty"`
-	Actor                   tracker.Actor `json:"actor"`
-	Attribution             string        `json:"attribution"`
-	LandingContextAvailable bool          `json:"landing_context_available"`
-}
-
-type analyticsQuality struct {
-	analyticsQualityCounts
-	Source      string                                        `json:"source"`
-	Coverage    string                                        `json:"coverage"`
-	Partial     bool                                          `json:"partial"`
-	Unavailable []string                                      `json:"unavailable"`
-	Buckets     []analyticsQualityBucket                      `json:"buckets"`
-	Occurrences operatortool.ReadPage[analyticsQualityEscape] `json:"occurrences"`
-	returns     []qualityReturn
-}
-
-type qualityReturn struct {
-	item  string
-	at    time.Time
-	class reportClass
-}
 
 type qualityHistoryEvent struct {
 	ID, Item, Kind, VersionID string
@@ -91,7 +42,7 @@ func readQualityLandings(ctx context.Context, q nativeQueryer, scope nativeScope
 		return readUnconvertedAnalyticsLandings(ctx, q, scope, w, true)
 	}
 	issues, issueArgs := reportsIssueClause(ctx, "l.work_item_id")
-	rows, err := queryAnalyticsRows(ctx, q, `WITH reopened_items(work_item_id) AS MATERIALIZED (
+	rows, err := hubanalytics.QueryAnalyticsRows(ctx, q, `WITH reopened_items(work_item_id) AS MATERIALIZED (
 SELECT e.work_item_id FROM collaboration_events e WHERE e.organization_id=? AND e.project_id=? AND e.type='workflow.transitioned' AND e.recorded_at>=? AND e.recorded_at<? AND julianday(e.recorded_at)>=julianday(?) AND julianday(e.recorded_at)<julianday(?) AND lower(e.from_state)='done'
 ),escaped_versions(change_id,version_id) AS MATERIALIZED (
 SELECT e.change_id,e.version_id FROM change_evidence e INDEXED BY change_evidence_analytics_escape CROSS JOIN change_requests c ON c.id=e.change_id
@@ -125,7 +76,7 @@ OR (l.id,l.version_id) IN (SELECT change_id,version_id FROM escaped_versions))
 	type qualityLandingRow struct {
 		id, item, raw, version, at string
 	}
-	population := newAnalyticsOrderedPopulation(ctx, "quality_landings", func(a, b qualityLandingRow) int {
+	population := hubanalytics.NewOrderedPopulation(ctx, "quality_landings", func(a, b qualityLandingRow) int {
 		if order := cmp.Compare(a.at, b.at); order != 0 {
 			return order
 		}
@@ -139,10 +90,10 @@ OR (l.id,l.version_id) IN (SELECT change_id,version_id FROM escaped_versions))
 		if err := rows.Scan(&row.id, &row.item, &row.raw, &row.version, &row.at); err != nil {
 			return nil, err
 		}
-		population.add(row)
+		population.Add(row)
 	}
 	landings := []nativeAnalyticsLanding{}
-	for _, row := range population.page(ctx, "quality_landings") {
+	for _, row := range population.Page(ctx, "quality_landings") {
 		landing := nativeAnalyticsLanding{ChangeID: row.id, WorkItemID: tracker.NativeWorkItemID(row.item)}
 		if err := decodeQualityLanding(ctx, row.raw, &landing.Landing); err != nil {
 			return nil, err
@@ -168,8 +119,8 @@ func loadAnalyticsQualityInputs(ctx context.Context, q nativeQueryer, scope nati
 	if err != nil {
 		return analyticsQualityInputs{}, err
 	}
-	partial := len(landings) > maxAnalyticsPopulation || analyticsPopulationOffset(ctx, "quality_landings") > 0 || analyticsPopulationOffset(ctx, "quality_events") > 0 || analyticsPopulationOffset(ctx, "quality_evidence") > 0 || analyticsPopulationOffset(ctx, "quality_worked") > 0
-	landings = landings[:min(len(landings), maxAnalyticsPopulation)]
+	partial := len(landings) > hubanalytics.MaxPopulation || hubanalytics.PopulationOffset(ctx, "quality_landings") > 0 || hubanalytics.PopulationOffset(ctx, "quality_events") > 0 || hubanalytics.PopulationOffset(ctx, "quality_evidence") > 0 || hubanalytics.PopulationOffset(ctx, "quality_worked") > 0
+	landings = landings[:min(len(landings), hubanalytics.MaxPopulation)]
 	eventIssues, eventArgs := reportsIssueClause(ctx, "work_item_id")
 	var rows interface {
 		Next() bool
@@ -177,7 +128,7 @@ func loadAnalyticsQualityInputs(ctx context.Context, q nativeQueryer, scope nati
 		Err() error
 		Close()
 	}
-	rows, err = queryAnalyticsPopulation(ctx, q, "quality_events", `SELECT id,work_item_id,type,recorded_at,data_json,to_state,coalesce((SELECT terminal FROM workflow_states ws WHERE ws.project_id=collaboration_events.project_id AND ws.detent_state=to_state),0) FROM `+analyticsEventsInRecordedOrder(q)+`
+	rows, err = hubanalytics.QueryAnalyticsPopulation(ctx, q, "quality_events", `SELECT id,work_item_id,type,recorded_at,data_json,to_state,coalesce((SELECT terminal FROM workflow_states ws WHERE ws.project_id=collaboration_events.project_id AND ws.detent_state=to_state),0) FROM `+analyticsEventsInRecordedOrder(q)+`
 WHERE organization_id=? AND project_id=? AND type='workflow.transitioned'
 AND julianday(recorded_at)>=julianday(?) AND julianday(recorded_at)<julianday(?) AND recorded_at>=? AND recorded_at<?`+eventIssues+` ORDER BY recorded_at,sequence,id LIMIT ? OFFSET ?`, append([]any{scope.organization, scope.project, changeColumnTime(w.From), changeColumnTime(w.To), w.From.UTC().Add(-24 * time.Hour).Format(time.DateOnly), w.To.UTC().Add(48 * time.Hour).Format(time.DateOnly)}, eventArgs...)...)
 	if err != nil {
@@ -218,8 +169,8 @@ AND julianday(recorded_at)>=julianday(?) AND julianday(recorded_at)<julianday(?)
 	if err := rows.Err(); err != nil {
 		return analyticsQualityInputs{}, err
 	}
-	partial = partial || len(events) > maxAnalyticsPopulation
-	events = events[:min(len(events), maxAnalyticsPopulation)]
+	partial = partial || len(events) > hubanalytics.MaxPopulation
+	events = events[:min(len(events), hubanalytics.MaxPopulation)]
 	evidenceIssues, evidenceArgs := reportsIssueClause(ctx, "c.work_item_id")
 	pending, err := analyticsChangeColumnsPending(ctx, q, scope)
 	if err != nil {
@@ -228,7 +179,7 @@ AND julianday(recorded_at)>=julianday(?) AND julianday(recorded_at)<julianday(?)
 	if pending {
 		rows, err = queryLegacyAnalyticsRows(ctx, q, `SELECT e.change_id,e.kind,COALESCE(NULLIF(e.payload_object_key,''),e.record_json),c.work_item_id,e.sequence FROM change_evidence e JOIN change_requests c ON c.id=e.change_id WHERE c.organization_id=? AND c.project_id=? AND e.kind IN ('review','discussion')`+evidenceIssues+` ORDER BY e.sequence`, append([]any{scope.organization, scope.project}, evidenceArgs...)...)
 	} else {
-		rows, err = queryAnalyticsRows(ctx, q, `SELECT e.change_id,e.kind,COALESCE(NULLIF(e.payload_object_key,''),e.record_json),c.work_item_id,e.sequence FROM change_evidence e INDEXED BY change_evidence_analytics_review CROSS JOIN change_requests c ON c.id=e.change_id
+		rows, err = hubanalytics.QueryAnalyticsRows(ctx, q, `SELECT e.change_id,e.kind,COALESCE(NULLIF(e.payload_object_key,''),e.record_json),c.work_item_id,e.sequence FROM change_evidence e INDEXED BY change_evidence_analytics_review CROSS JOIN change_requests c ON c.id=e.change_id
 WHERE c.organization_id=? AND c.project_id=? AND e.kind='review' AND e.claim_review_decision='changes_requested' AND e.created_at>=? AND e.created_at<? AND NOT EXISTS (SELECT 1 FROM change_versions current JOIN change_versions newer ON newer.change_id=current.change_id AND newer.number>current.number WHERE current.id=e.version_id AND julianday(newer.created_at)<=julianday(e.created_at))
 `+evidenceIssues+`
 UNION ALL SELECT e.change_id,e.kind,COALESCE(NULLIF(e.payload_object_key,''),e.record_json),c.work_item_id,e.sequence FROM change_evidence e INDEXED BY change_evidence_analytics_escape CROSS JOIN change_requests c ON c.id=e.change_id
@@ -244,7 +195,7 @@ WHERE c.organization_id=? AND c.project_id=? AND e.kind='discussion' AND e.escap
 		id, kind, raw, item string
 		sequence            int64
 	}
-	evidence := newAnalyticsOrderedPopulation(ctx, "quality_evidence", func(a, b qualityEvidenceRow) int { return cmp.Compare(a.sequence, b.sequence) })
+	evidence := hubanalytics.NewOrderedPopulation(ctx, "quality_evidence", func(a, b qualityEvidenceRow) int { return cmp.Compare(a.sequence, b.sequence) })
 	for rows.Next() {
 		var value qualityEvidenceRow
 		if err := rows.Scan(&value.id, &value.kind, &value.raw, &value.item, &value.sequence); err != nil {
@@ -260,7 +211,7 @@ WHERE c.organization_id=? AND c.project_id=? AND e.kind='discussion' AND e.escap
 			}
 		}
 
-		evidence.add(value)
+		evidence.Add(value)
 	}
 	if err := rows.Err(); err != nil {
 		return analyticsQualityInputs{}, err
@@ -270,9 +221,9 @@ WHERE c.organization_id=? AND c.project_id=? AND e.kind='discussion' AND e.escap
 		return analyticsQualityInputs{}, err
 	}
 	discussions := []qualityDiscussion{}
-	values := evidence.page(ctx, "quality_evidence")
-	partial = partial || len(values) > maxAnalyticsPopulation
-	for _, value := range values[:min(len(values), maxAnalyticsPopulation)] {
+	values := evidence.Page(ctx, "quality_evidence")
+	partial = partial || len(values) > hubanalytics.MaxPopulation
+	for _, value := range values[:min(len(values), hubanalytics.MaxPopulation)] {
 		id, kind, raw, item := value.id, value.kind, value.raw, value.item
 		if kind == "discussion" {
 			var discussion qualityDiscussion
@@ -298,7 +249,7 @@ WHERE c.organization_id=? AND c.project_id=? AND e.kind='discussion' AND e.escap
 		workedSource = "(SELECT organization_id,project_id,dimension AS id,work_item_id,started_at,attempt_role FROM analytics_hourly_rollups INDEXED BY analytics_attempt_started WHERE metric='attempt')"
 	}
 	workedIssues, workedArgs := reportsIssueClause(ctx, "work_item_id")
-	rows, err = queryAnalyticsPopulation(ctx, q, "quality_worked", `SELECT work_item_id,started_at FROM `+workedSource+` a WHERE organization_id=? AND project_id=? AND `+role+` IN ('code','rework') AND julianday(started_at)>=julianday(?) AND julianday(started_at)<julianday(?) AND started_at>=? AND started_at<?`+workedIssues+` ORDER BY started_at,id LIMIT ? OFFSET ?`, append([]any{scope.organization, scope.project, changeColumnTime(w.From), changeColumnTime(w.To), w.From.UTC().Add(-24 * time.Hour).Format(time.DateOnly), w.To.UTC().Add(48 * time.Hour).Format(time.DateOnly)}, workedArgs...)...)
+	rows, err = hubanalytics.QueryAnalyticsPopulation(ctx, q, "quality_worked", `SELECT work_item_id,started_at FROM `+workedSource+` a WHERE organization_id=? AND project_id=? AND `+role+` IN ('code','rework') AND julianday(started_at)>=julianday(?) AND julianday(started_at)<julianday(?) AND started_at>=? AND started_at<?`+workedIssues+` ORDER BY started_at,id LIMIT ? OFFSET ?`, append([]any{scope.organization, scope.project, changeColumnTime(w.From), changeColumnTime(w.To), w.From.UTC().Add(-24 * time.Hour).Format(time.DateOnly), w.To.UTC().Add(48 * time.Hour).Format(time.DateOnly)}, workedArgs...)...)
 	if err != nil {
 		return analyticsQualityInputs{}, err
 	}
@@ -311,7 +262,7 @@ WHERE c.organization_id=? AND c.project_id=? AND e.kind='discussion' AND e.escap
 			return analyticsQualityInputs{}, err
 		}
 		count++
-		if count > maxAnalyticsPopulation {
+		if count > hubanalytics.MaxPopulation {
 			partial = true
 			break
 		}
@@ -333,10 +284,10 @@ WHERE c.organization_id=? AND c.project_id=? AND e.kind='discussion' AND e.escap
 	return analyticsQualityInputs{landings, events, discussions, partial}, nil
 }
 
-func readAnalyticsQuality(ctx context.Context, q nativeQueryer, scope nativeScope, r operatortool.AnalyticsRequest, w operatortool.AnalyticsWindow) (analyticsQuality, error) {
+func readAnalyticsQuality(ctx context.Context, q nativeQueryer, scope nativeScope, r operatortool.AnalyticsRequest, w operatortool.AnalyticsWindow) (hubanalytics.Quality, error) {
 	inputs, err := reportsQualityInputs(ctx, q, scope, w)
 	if err != nil {
-		return analyticsQuality{}, err
+		return hubanalytics.Quality{}, err
 	}
 	landings, events, discussions, partial := inputs.landings, inputs.events, inputs.discussions, inputs.partial
 	out := summarizeAnalyticsQuality(landings, events, discussions, w)
@@ -353,7 +304,7 @@ func readAnalyticsQuality(ctx context.Context, q nativeQueryer, scope nativeScop
 	for i, occurrence := range out.Occurrences.Items {
 		raw, err := json.Marshal(occurrence)
 		if err != nil {
-			return analyticsQuality{}, err
+			return hubanalytics.Quality{}, err
 		}
 		if len(raw) > budget {
 			next := r.RowOffset + i
@@ -366,15 +317,15 @@ func readAnalyticsQuality(ctx context.Context, q nativeQueryer, scope nativeScop
 	return out, nil
 }
 
-func summarizeAnalyticsQuality(landings []nativeAnalyticsLanding, events []qualityHistoryEvent, discussions []qualityDiscussion, w operatortool.AnalyticsWindow) analyticsQuality {
-	out := analyticsQuality{Source: "native_landing_workflow_review_and_escape_evidence", Coverage: "rework: unique_items_returned_before_landing / unique_items_worked_in_window; escape: unique_landed_versions_in_window_with_non_infrastructure_escape_by_window_end / versions_landed_in_window; buckets_use_landing_cohorts; occurrences_and_causes_use_detection_time; pending_classifications_count_as_escapes; infrastructure_excluded_from_escape_rate; infrastructure_returns_excluded_from_rework_rate", Unavailable: []string{}, Buckets: []analyticsQualityBucket{}}
+func summarizeAnalyticsQuality(landings []nativeAnalyticsLanding, events []qualityHistoryEvent, discussions []qualityDiscussion, w operatortool.AnalyticsWindow) hubanalytics.Quality {
+	out := hubanalytics.Quality{Source: "native_landing_workflow_review_and_escape_evidence", Coverage: "rework: unique_items_returned_before_landing / unique_items_worked_in_window; escape: unique_landed_versions_in_window_with_non_infrastructure_escape_by_window_end / versions_landed_in_window; buckets_use_landing_cohorts; occurrences_and_causes_use_detection_time; pending_classifications_count_as_escapes; infrastructure_excluded_from_escape_rate; infrastructure_returns_excluded_from_rework_rate", Unavailable: []string{}, Buckets: []hubanalytics.QualityBucket{}}
 	byVersion := map[string]nativeAnalyticsLanding{}
 	byItem := map[string][]nativeAnalyticsLanding{}
 	for _, landing := range landings {
 		byVersion[landing.ChangeID+"/"+landing.Landing.VersionID] = landing
 		byItem[string(landing.WorkItemID)] = append(byItem[string(landing.WorkItemID)], landing)
 	}
-	occurrences := map[string]analyticsQualityEscape{}
+	occurrences := map[string]hubanalytics.QualityEscape{}
 	for _, event := range events {
 		if event.Kind != "workflow.transitioned" || event.ToTerminal || !strings.EqualFold(event.Data.FromState, "Done") || strings.EqualFold(event.Data.ToState, "Done") {
 			continue
@@ -404,37 +355,37 @@ func summarizeAnalyticsQuality(landings []nativeAnalyticsLanding, events []quali
 		}
 		occurrences[key] = qualityOccurrence(landing, *assessment, discussion.ID, discussion.Actor)
 	}
-	items := make([]analyticsQualityEscape, 0, len(occurrences))
+	items := make([]hubanalytics.QualityEscape, 0, len(occurrences))
 	for _, escape := range occurrences {
 		items = append(items, escape)
 	}
-	slices.SortFunc(items, func(a, b analyticsQualityEscape) int {
+	slices.SortFunc(items, func(a, b hubanalytics.QualityEscape) int {
 		if order := a.ObservedAt.Compare(b.ObservedAt); order != 0 {
 			return order
 		}
 		return strings.Compare(a.ChangeID+"/"+a.VersionID+"/"+a.OccurrenceID, b.ChangeID+"/"+b.VersionID+"/"+b.OccurrenceID)
 	})
 	out.Occurrences.Items = items
-	out.analyticsQualityCounts = qualityCounts(landings, events, items, w.From, w.To, w.To)
+	out.QualityCounts = qualityCounts(landings, events, items, w.From, w.To, w.To)
 	for _, event := range events {
 		if event.Kind == "workflow.transitioned" && event.Data.ToState == "Rework" && qualityReturnedBeforeLanding(landings, event) && nativeAnalyticsBucketIndex(event.At, w) >= 0 {
-			out.returns = append(out.returns, qualityReturn{item: event.Item, at: event.At, class: classifyReworkReason(event.Data.FromState, event.Data.ReasonDetail)})
+			out.Returns = append(out.Returns, hubanalytics.QualityReturn{Item: event.Item, At: event.At, Class: classifyReworkReason(event.Data.FromState, event.Data.ReasonDetail)})
 		}
 	}
 	for from := w.From; from.Before(w.To); from = from.Add(w.Bucket) {
 		to := minTime(from.Add(w.Bucket), w.To)
-		out.Buckets = append(out.Buckets, analyticsQualityBucket{From: from, To: to, analyticsQualityCounts: qualityCounts(landings, events, items, from, to, w.To)})
+		out.Buckets = append(out.Buckets, hubanalytics.QualityBucket{From: from, To: to, QualityCounts: qualityCounts(landings, events, items, from, to, w.To)})
 	}
 	return out
 }
 
-func qualityOccurrence(landing nativeAnalyticsLanding, escape tracker.QualityEscape, discussion string, actor tracker.Actor) analyticsQualityEscape {
+func qualityOccurrence(landing nativeAnalyticsLanding, escape tracker.QualityEscape, discussion string, actor tracker.Actor) hubanalytics.QualityEscape {
 	item := string(landing.WorkItemID)
 	attribution := "change"
 	if escape.Cause == "infrastructure" {
 		item, attribution = "", "instance"
 	}
-	return analyticsQualityEscape{QualityEscape: escape, ChangeID: landing.ChangeID, VersionID: landing.Landing.VersionID, WorkItemID: item, MergeSHA: landing.Landing.MergeSHA, LandedAt: landing.Landing.LandedAt, DiscussionID: discussion, Actor: actor, Attribution: attribution, LandingContextAvailable: landing.Landing.Quality != nil}
+	return hubanalytics.QualityEscape{QualityEscape: escape, ChangeID: landing.ChangeID, VersionID: landing.Landing.VersionID, WorkItemID: item, MergeSHA: landing.Landing.MergeSHA, LandedAt: landing.Landing.LandedAt, DiscussionID: discussion, Actor: actor, Attribution: attribution, LandingContextAvailable: landing.Landing.Quality != nil}
 }
 
 func qualityReturnedBeforeLanding(landings []nativeAnalyticsLanding, event qualityHistoryEvent) bool {
@@ -446,8 +397,8 @@ func qualityReturnedBeforeLanding(landings []nativeAnalyticsLanding, event quali
 	return true
 }
 
-func qualityCounts(landings []nativeAnalyticsLanding, events []qualityHistoryEvent, escapes []analyticsQualityEscape, from, to, observedTo time.Time) analyticsQualityCounts {
-	out := analyticsQualityCounts{Causes: map[string]int{"underspecified_issue": 0, "missing_criterion": 0, "validator_miss": 0, "infrastructure": 0}}
+func qualityCounts(landings []nativeAnalyticsLanding, events []qualityHistoryEvent, escapes []hubanalytics.QualityEscape, from, to, observedTo time.Time) hubanalytics.QualityCounts {
+	out := hubanalytics.QualityCounts{Causes: map[string]int{"underspecified_issue": 0, "missing_criterion": 0, "validator_miss": 0, "infrastructure": 0}}
 	worked, reworked, cohort, affected := map[string]bool{}, map[string]bool{}, map[string]bool{}, map[string]bool{}
 	for _, landing := range landings {
 		if !landing.Landing.LandedAt.Before(from) && landing.Landing.LandedAt.Before(to) {

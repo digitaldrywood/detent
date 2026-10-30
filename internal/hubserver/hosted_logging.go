@@ -9,12 +9,14 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/digitaldrywood/detent/internal/hubhealth"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
 type hostedLogError struct{ err error }
 
 func (e hostedLogError) Error() string { return hostedLogText(e.err.Error()) }
+
 func (e hostedLogError) Unwrap() error { return e.err }
 
 type hostedLogHandler struct {
@@ -66,14 +68,7 @@ func hostedTimingAttr(attr slog.Attr) bool {
 	return hostedTimingCounters[attr.Key] && (kind == slog.KindInt64 || kind == slog.KindUint64)
 }
 
-func hostedLogText(value string) string {
-	return healthEmailPrivateText.ReplaceAllStringFunc(strings.Join(strings.Fields(value), " "), func(match string) string {
-		if healthEmailSubjectID.MatchString(match) || uuid.Validate(match) == nil {
-			return match
-		}
-		return "[redacted]"
-	})
-}
+func hostedLogText(value string) string { return hubhealth.LogText(value) }
 
 func hostedLogAttr(attr slog.Attr) (slog.Attr, bool) {
 	if hostedContentKey(attr.Key) {
@@ -168,6 +163,7 @@ func (h hostedLogHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	h.output = h.output.WithAttrs(filtered)
 	return h
 }
+
 func (h hostedLogHandler) WithGroup(name string) slog.Handler {
 	if hostedContentKey(name) {
 		h.dropAttrs = true

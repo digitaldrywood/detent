@@ -16,6 +16,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
+	"github.com/digitaldrywood/detent/internal/hubanalytics"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -63,16 +64,16 @@ func TestActivityStageTiming(t *testing.T) {
 
 func TestActivityTypicalDurations(t *testing.T) {
 	base := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
-	makeAttempt := func(role, model, effort, status string, seconds int) nativeAnalyticsAttempt {
-		return nativeAnalyticsAttempt{Identity: agentidentity.Configured("codex", "codex", "", role, model, "openai", effort, "", base), Status: status, Phases: []tracker.NativePhase{{StartedAt: base, FinishedAt: base.Add(time.Duration(seconds) * time.Second)}}}
+	makeAttempt := func(role, model, effort, status string, seconds int) hubanalytics.Attempt {
+		return hubanalytics.Attempt{Identity: agentidentity.Configured("codex", "codex", "", role, model, "openai", effort, "", base), Status: status, Phases: []tracker.NativePhase{{StartedAt: base, FinishedAt: base.Add(time.Duration(seconds) * time.Second)}}}
 	}
-	population := []nativeAnalyticsAttempt{
+	population := []hubanalytics.Attempt{
 		makeAttempt("code", "a", "high", "succeeded", 60), makeAttempt("code", "b", "medium", "failed", 180), makeAttempt("code", "c", "low", "succeeded", 300),
 		makeAttempt("plan", "a", "high", "succeeded", 30), makeAttempt("code", "a", "high", "running", 900), makeAttempt("code", "a", "high", "interrupted", 900), makeAttempt("code", "a", "high", "cancelled", 900), makeAttempt("merge", "a", "high", "succeeded", 0),
 	}
 	for _, tt := range []struct {
 		name     string
-		attempts []nativeAnalyticsAttempt
+		attempts []hubanalytics.Attempt
 		partial  bool
 		want     []operatortool.ActivityTypicalDuration
 	}{
@@ -89,7 +90,7 @@ func TestActivityTypicalDurations(t *testing.T) {
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Fatalf("typical=%+v want=%+v", got, tt.want)
 			}
-			combined := append([]nativeAnalyticsAttempt{}, tt.attempts...)
+			combined := append([]hubanalytics.Attempt{}, tt.attempts...)
 			for i := range combined {
 				combined[i].Identity = agentidentity.Configured("codex", "codex", "", combined[i].Identity.Role, "combined", "openai", "combined", "", base)
 			}
@@ -451,7 +452,7 @@ func TestActivityPopulationCap(t *testing.T) {
 		id := fmt.Sprintf("population_%04d", i)
 		stamp := formatHubTime(now.Add(-time.Minute))
 		start := formatHubTime(now.Add(-2 * time.Minute))
-		if i > maxAnalyticsPopulation {
+		if i > hubanalytics.MaxPopulation {
 			stamp = formatHubTime(now.Add(-30 * 24 * time.Hour))
 			start = formatHubTime(now.Add(-31 * 24 * time.Hour))
 		}
@@ -476,11 +477,11 @@ func TestActivityPopulationCap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !partial || len(typical) != 1 || !typical[0].Partial || typical[0].Count != maxAnalyticsPopulation || typical[0].P50Seconds != 60 {
+	if !partial || len(typical) != 1 || !typical[0].Partial || typical[0].Count != hubanalytics.MaxPopulation || typical[0].P50Seconds != 60 {
 		t.Fatalf("partial=%t typical=%+v", partial, typical)
 	}
 	t.Logf("11002-attempt capped duration read: %s", time.Since(started))
-	last := fmt.Sprintf("population_%04d", maxAnalyticsPopulation)
+	last := fmt.Sprintf("population_%04d", hubanalytics.MaxPopulation)
 	if _, err := tx.ExecContext(t.Context(), "UPDATE leases SET released_at=NULL,renewed_at=?,expires_at=? WHERE lease_id=?", formatHubTime(now.Add(-time.Minute)), formatHubTime(now.Add(time.Hour)), last); err != nil {
 		t.Fatal(err)
 	}
@@ -499,7 +500,7 @@ func TestActivityPopulationCap(t *testing.T) {
 			assertActivityQueryPlan(t, f.service.database.reader, statement, args, "SEARCH n USING INDEX native_attempts_activity_")
 		}
 	}
-	assertActivityQueryPlan(t, f.service.database.reader, activityDurationQuery, []any{scope.organization, scope.project, formatHubTime(now.Add(-time.Hour)), formatHubTime(now), "", "", maxAnalyticsPopulation + 1}, "SEARCH d USING INDEX activity_attempt_durations_window")
+	assertActivityQueryPlan(t, f.service.database.reader, activityDurationQuery, []any{scope.organization, scope.project, formatHubTime(now.Add(-time.Hour)), formatHubTime(now), "", "", hubanalytics.MaxPopulation + 1}, "SEARCH d USING INDEX activity_attempt_durations_window")
 	request := httptest.NewRequest(http.MethodGet, "/api/v2/organizations/org_security/activity?limit=1", nil)
 	request.AddCookie(&http.Cookie{Name: hostedCookie, Value: user.token})
 	response := httptest.NewRecorder()
@@ -510,7 +511,7 @@ func TestActivityPopulationCap(t *testing.T) {
 	}
 	var report operatortool.ActivityReport
 	usageDecode(t, response, &report)
-	if !report.Partial || len(report.TypicalDurations) != 1 || !report.TypicalDurations[0].Partial || report.TypicalDurations[0].Count != maxAnalyticsPopulation || len(report.Running) != 1 || report.Running[0].AttemptID != last || len(report.Finished) != 1 {
+	if !report.Partial || len(report.TypicalDurations) != 1 || !report.TypicalDurations[0].Partial || report.TypicalDurations[0].Count != hubanalytics.MaxPopulation || len(report.Running) != 1 || report.Running[0].AttemptID != last || len(report.Finished) != 1 {
 		t.Fatalf("capped activity=%+v", report)
 	}
 	t.Logf("11002-attempt complete activity HTTP read: %s", time.Since(started))

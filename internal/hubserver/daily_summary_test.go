@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/emailtemplate"
+	"github.com/digitaldrywood/detent/internal/hubanalytics"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -382,11 +383,11 @@ func TestDailySummaryContentAndAccess(t *testing.T) {
 				for _, projectID := range []string{string(f.project), "prj_second"} {
 					scope := nativeScope{organization: "org_security", project: tracker.ProjectID(projectID)}
 					w := operatortool.AnalyticsWindow{From: r.end.Add(-24 * time.Hour), To: r.end, Bucket: time.Hour}
-					project, err := readNativeAnalytics(t.Context(), f.service.database.reader, scope, operatortool.AnalyticsRequest{Limit: maxAnalyticsPopulation}, w)
+					project, err := readNativeAnalytics(t.Context(), f.service.database.reader, scope, operatortool.AnalyticsRequest{Limit: hubanalytics.MaxPopulation}, w)
 					if err != nil {
 						t.Fatal(err)
 					}
-					report, err := f.service.readHostedReportsFrom(t.Context(), nativeAnalyticsReport{OrganizationID: r.organization, Window: w, Projects: []nativeAnalyticsProject{project}}, f.service.database.reader)
+					report, err := f.service.readHostedReportsFrom(t.Context(), nativeAnalyticsReport{OrganizationID: r.organization, Window: w, Projects: []hubanalytics.Project{project}}, f.service.database.reader)
 					if err != nil {
 						t.Fatal(err)
 					}
