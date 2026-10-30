@@ -180,9 +180,19 @@ func validateNativeExecution(data tracker.NativeRunData, eventType string) error
 	if data.CompletionBody != "" && (eventType != "run.finished" || data.Sequence <= 0 || len(data.CompletionBody) > 64<<10 || !utf8.ValidString(data.CompletionBody)) {
 		return nativeRejection(nativePublicInvalid("Completion responses require a bounded ordered terminal event"), "execution_validation", "data.completion_body")
 	}
-	if data.Disposition != nil && (eventType != "run.finished" || data.Sequence <= 0 || !slices.Contains([]string{workpad.StatusInProgress, workpad.StatusBlocked, workpad.StatusComplete}, data.Disposition.Status)) {
+	if data.Disposition != nil && (eventType != "run.finished" || data.Sequence <= 0 || !slices.Contains([]string{workpad.StatusInProgress, workpad.StatusBlocked, workpad.StatusComplete, workpad.StatusNoChangeNeeded}, data.Disposition.Status)) {
 		return nativeRejection(nativePublicInvalid("Final disposition requires an ordered terminal event and a supported workpad status"), "execution_validation", "data.disposition")
 	}
+	if d := data.Disposition; d != nil {
+		invalid := d.NoChange != nil
+		if d.Status == workpad.StatusNoChangeNeeded {
+			invalid = d.NoChange.Validate() != nil || d.Blockers || len(d.BlockerEvidence) != 0 || d.HumanAction || d.ReasonCode != ""
+		}
+		if invalid {
+			return nativeRejection(nativePublicInvalid("No-change disposition requires bounded source evidence and no blockers or human action"), "execution_validation", "data.disposition")
+		}
+	}
+
 	if data.Disposition != nil && (len(data.Disposition.FinalSummary) > workpad.MaxFinalSummaryBytes || !utf8.ValidString(data.Disposition.FinalSummary)) {
 		return nativeRejection(nativePublicInvalid("Final summary must be bounded UTF-8 text"), "execution_validation", "data.disposition")
 	}

@@ -848,20 +848,51 @@ func TestNativeConcurrentOrderedEvents(t *testing.T) {
 
 func TestNativeDispositionValidation(t *testing.T) {
 	t.Parallel()
+	report := func() *workpad.NoChangeReport {
+		return &workpad.NoChangeReport{VerifiedSHA: strings.Repeat("a", 40), Evidence: "Focused regression passed; attachment:att_example"}
+	}
 	for _, test := range []struct {
 		name    string
 		summary string
 		valid   bool
+		edit    func(*tracker.NativeDisposition)
 	}{
-		{"legacy empty summary", "", true},
-		{"exact bound", strings.Repeat("x", workpad.MaxFinalSummaryBytes), true},
-		{"oversized summary", strings.Repeat("x", workpad.MaxFinalSummaryBytes+1), false},
-		{"invalid UTF-8 summary", string([]byte{0xff}), false},
+		{name: "legacy empty summary", valid: true},
+		{name: "exact bound", summary: strings.Repeat("x", workpad.MaxFinalSummaryBytes), valid: true},
+		{name: "oversized summary", summary: strings.Repeat("x", workpad.MaxFinalSummaryBytes+1)},
+		{name: "invalid UTF-8 summary", summary: string([]byte{0xff})},
+		{name: "no change carries source and evidence", valid: true, edit: func(d *tracker.NativeDisposition) { d.NoChange = report() }},
+		{name: "missing no change evidence", edit: func(d *tracker.NativeDisposition) {}},
+		{name: "invalid source", edit: func(d *tracker.NativeDisposition) { d.NoChange = report(); d.NoChange.VerifiedSHA = "abc" }},
+		{name: "empty evidence", edit: func(d *tracker.NativeDisposition) { d.NoChange = report(); d.NoChange.Evidence = " " }},
+		{name: "oversized evidence", edit: func(d *tracker.NativeDisposition) {
+			d.NoChange = report()
+			d.NoChange.Evidence = strings.Repeat("x", 32769)
+		}},
+		{name: "invalid UTF-8 evidence", edit: func(d *tracker.NativeDisposition) { d.NoChange = report(); d.NoChange.Evidence = string([]byte{0xff}) }},
+		{name: "human action", edit: func(d *tracker.NativeDisposition) { d.NoChange = report(); d.HumanAction = true }},
+		{name: "blockers", edit: func(d *tracker.NativeDisposition) { d.NoChange = report(); d.Blockers = true }},
+		{name: "blocker evidence", edit: func(d *tracker.NativeDisposition) {
+			d.NoChange = report()
+			d.BlockerEvidence = []workpad.Blocker{{Ref: "#1"}}
+		}},
+		{name: "reason code", edit: func(d *tracker.NativeDisposition) { d.NoChange = report(); d.ReasonCode = "instance_limitation" }},
+		{name: "ordinary completion with report", edit: func(d *tracker.NativeDisposition) { d.NoChange = report(); d.Status = workpad.StatusComplete }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			data := tracker.NativeRunData{Sequence: 2, Identity: &tracker.NativeExecutionIdentity{Role: "code", Backend: "codex", Model: "test"}, Disposition: &tracker.NativeDisposition{Status: "blocked", ReasonCode: "instance_limitation", FinalSummary: test.summary}}
+			d := &tracker.NativeDisposition{Status: "blocked", ReasonCode: "instance_limitation", FinalSummary: test.summary}
+			if test.edit != nil {
+				d.Status, d.ReasonCode = workpad.StatusNoChangeNeeded, ""
+				test.edit(d)
+			}
+			data := tracker.NativeRunData{Sequence: 2, Identity: &tracker.NativeExecutionIdentity{Role: "code", Backend: "codex", Model: "test"}, Disposition: d}
 			if err := validateNativeExecution(data, "run.finished"); (err == nil) != test.valid {
 				t.Fatalf("disposition validation = %v, want valid %t", err, test.valid)
+			}
+			if test.edit != nil && test.valid {
+				if err := validateNativeExecution(data, "run.observed"); err == nil {
+					t.Fatal("no change report accepted before the terminal event")
+				}
 			}
 		})
 	}
