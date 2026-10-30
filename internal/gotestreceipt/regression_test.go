@@ -66,7 +66,8 @@ func TestReceiptInputRegressions(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if kind == "open file identity" {
+			switch kind {
+			case "open file identity":
 				replacement := filepath.Join(root, "replacement")
 				info, err := os.Stat(path)
 				if err != nil {
@@ -81,10 +82,10 @@ func TestReceiptInputRegressions(t *testing.T) {
 				if err := os.Rename(replacement, path); err != nil {
 					t.Fatal(err)
 				}
-			} else if kind == "literal environment path" {
+			case "literal environment path":
 				env.Root = root + "-longer"
 				env.LookupEnv = func(string) (string, bool) { return env.Root, true }
-			} else {
+			default:
 				stamp := time.Unix(100, 123456789)
 				if err := os.Chtimes(path, stamp, stamp); err != nil {
 					t.Fatal(err)
