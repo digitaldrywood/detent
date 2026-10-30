@@ -174,7 +174,11 @@ func checkSource(file *ast.File) error {
 	for _, decl := range file.Decls {
 		if gen, ok := decl.(*ast.GenDecl); ok && gen.Tok == token.VAR {
 			for _, spec := range gen.Specs {
-				for _, expr := range spec.(*ast.ValueSpec).Values {
+				value, ok := spec.(*ast.ValueSpec)
+				if !ok {
+					return errors.New("variable declaration cannot be inspected")
+				}
+				for _, expr := range value.Values {
 					if !observableInitializer(expr, imports) {
 						return errors.New("variable initialization may read outside the input log")
 					}
