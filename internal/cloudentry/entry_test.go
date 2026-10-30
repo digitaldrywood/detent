@@ -492,12 +492,17 @@ type entryFixture struct {
 	fixtures map[string]tenantFixture
 }
 
-func newEntryFixture(t *testing.T) entryFixture {
+func newEntryFixture(t *testing.T, configure ...func(*Config)) entryFixture {
 	t.Helper()
-	return newEntryFixtureWithLogger(t, slog.New(slog.DiscardHandler))
+	return newEntryFixtureWithConfig(t, slog.New(slog.DiscardHandler), configure)
 }
 
 func newEntryFixtureWithLogger(t *testing.T, logger *slog.Logger, configure ...func(*hubserver.Config)) entryFixture {
+	t.Helper()
+	return newEntryFixtureWithConfig(t, logger, nil, configure...)
+}
+
+func newEntryFixtureWithConfig(t *testing.T, logger *slog.Logger, configureEntry []func(*Config), configure ...func(*hubserver.Config)) entryFixture {
 	t.Helper()
 	seed := make([]byte, ed25519.SeedSize)
 	seed[0] = 42
@@ -513,14 +518,18 @@ func newEntryFixtureWithLogger(t *testing.T, logger *slog.Logger, configure ...f
 	alpha, alphaHandler := newTenant(t, provider, key, "org_alpha", "porg_alpha", "user_alice", "Alpha secret project", configure...)
 	beta, betaHandler := newTenant(t, provider, key, "org_beta", "porg_beta", "user_alice", "Beta secret project", configure...)
 	tenants := map[string]http.Handler{testSocketEndpoint("alpha.sock"): alphaHandler, testSocketEndpoint("beta.sock"): betaHandler}
-	service, err := Open(t.Context(), Config{
+	cfg := Config{
 		Platform:  PlatformConfig{BootstrapAdminEmail: "bootstrap@example.test"},
 		PublicURL: testPublicURL, ListenAddress: "127.0.0.1:0", Issuer: "entry", SigningKey: key, Provider: provider, StaffEmails: []string{"staff@example.test", "support@example.test"}, SupportActors: []string{"support@example.test"}, StateDir: t.TempDir(),
 		LookupEnv: func(string) string { return "" }, Logger: logger, clientFS: fstest.MapFS{},
 		transport: func(organization Organization) (http.RoundTripper, error) {
 			return handlerTransport{tenants[organization.Endpoint]}, nil
 		},
-	})
+	}
+	for _, configure := range configureEntry {
+		configure(&cfg)
+	}
+	service, err := Open(t.Context(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
