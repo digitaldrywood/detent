@@ -37,6 +37,8 @@ def dependencies(step):
         return set()
     if step == "browser":
         return {"app", "generated"}
+    if step == "race":
+        return {"app", "generated", "browser-assets", "full"}
     return {"app", "generated", "browser-assets"}
 
 
@@ -48,19 +50,23 @@ def process_budget(step, total):
     return 1
 
 
-def step_environment(budget):
-    env = dict(os.environ, TEST_PROCS=str(budget), GOMAXPROCS="1")
+def core_share(budget, total):
+    return max(1, (os.cpu_count() or 1) * budget // total)
+
+
+def step_environment(budget, total):
+    env = dict(os.environ, TEST_PROCS=str(budget), GOMAXPROCS=str(core_share(budget, total)))
     env["GOFLAGS"] = shlex.join([*shlex.split(env.get("GOFLAGS", "")), f"-p={budget}"])
     return env
 
 
-def run_step(step, budget, directory, browser_ready):
+def run_step(step, budget, total, directory, browser_ready):
     started = time.monotonic()
     result = 1
     with (directory / f"{step}.log").open("w") as log:
         try:
             command = ["bash", "scripts/check-release.sh", str(budget), step]
-            env = step_environment(budget)
+            env = step_environment(budget, total)
             if step == "browser":
                 read_fd, write_fd = os.pipe()
                 try:
@@ -108,7 +114,7 @@ def run_checks(total):
                 if budget > available or not dependencies(step).issubset(satisfied):
                     continue
                 print(f"Starting {step}: budget={budget}; log: {directory / (step + '.log')}", flush=True)
-                running[executor.submit(run_step, step, budget, directory, browser_ready)] = (step, budget)
+                running[executor.submit(run_step, step, budget, total, directory, browser_ready)] = (step, budget)
                 if step == "browser":
                     browser_started = True
                 available -= budget

@@ -239,7 +239,9 @@ sys.exit(7 if stage in json.loads(os.environ["FAILURES"]) else 0)
                     if event["action"] == "start":
                         active += event["budget"]
                         self.assertLessEqual(active, budget, trace)
-                        self.assertEqual(event["gomaxprocs"], "1")
+                        self.assertEqual(event["gomaxprocs"], str(CHECK_RELEASE.core_share(event["budget"], budget)))
+                        if event["stage"] == "race":
+                            self.assertIn("full", ended, trace)
                         self.assertIn(f'-p={event["budget"]}', event["goflags"])
                         if event["stage"] not in ("app", "generated", "scripts", "migrations"):
                             self.assertTrue({"app", "generated"}.issubset(ended), trace)
