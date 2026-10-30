@@ -3,7 +3,7 @@
 These rules apply to all repository changes. Follow the
 [validation policy](../WORKFLOW.md#validation). Only a change to an invariant's
 rule or its enforcing check edits this document. Identify affected INV IDs in
-the Change/PR description; put per-change rationale, evidence and verification
+the Change description; put per-change rationale, evidence and verification
 there or in issue comments, as required by INV-16. A passing check does not
 authorize weakening a rule.
 
@@ -170,7 +170,9 @@ the deleted per-issue brake owners.
 
 ## INV-4 — Native merge queue
 
-Merges go through the repository's merge queue when one exists. Without a
+This rule applies only to projects whose configured delivery is GitHub pull
+requests; native projects, this repository included, land Changes through the
+runner. Merges go through the repository's merge queue when one exists. Without a
 queue, Detent uses its serialized merge worker. Other repositories retain
 their chosen settings. Queue ownership belongs to the current PR head, and
 Detent never bypasses a configured queue with a programmatic merge.
@@ -233,8 +235,8 @@ Only a green `make check-release` on the exact release branch head produces
 release evidence: `scripts/release-validate-local.sh release/vX.Y` posts
 `scheduled-full-ci` on that head, and develop evidence is never reused after
 cherry-picks. Every release starts from a frozen develop snapshot on a release
-branch, fixes land on develop first and are cherry-picked with `-x` through
-release-branch PRs, and no develop prerelease or source-gate-only deployment
+branch, fixes land on develop first and are cherry-picked with `-x` by
+`scripts/release-pick.sh` as direct signed pushes with no pull request, and no develop prerelease or source-gate-only deployment
 path exists. Stable tags are created only by `release-finalize.yml` in GitHub
 Actions, after the latest `scheduled-full-ci` and `release-security-audit`
 statuses on the current release head are successful, and the latest
@@ -502,19 +504,18 @@ UI to make them observable, including on Diagnostics, behind toggles or debug
 flags. Agents describe proposed UI additions in their outcome or file Backlog
 work for a human to author or rewrite; they do not build them.
 
-**Enforcement:** Review applies [AGENTS.md](../AGENTS.md#ui) and the
-[PR template](../.github/PULL_REQUEST_TEMPLATE.md). No additional gate,
+**Enforcement:** Review applies [AGENTS.md](../AGENTS.md#ui). No additional gate,
 configuration, reason code or UI surface enforces this rule.
 
 ## INV-16 — The tracker database is the only shared knowledge channel
 
 Agents, runs and issues share knowledge only through the selected tracker
-database: issue bodies, comments, the Workpad, Change/PR records and run
+database: issue bodies, comments, the Workpad, Change records and run
 history. Agents never use repository files to pass knowledge between issues
 or runs. The repository holds product source and normative documentation,
 never a shared log or notebook.
 
-Per-change evidence, rationale and verification go in the Change/PR description
+Per-change evidence, rationale and verification go in the Change description
 or issue comments through the authorized tracker owner. No change appends
 evidence, notes or history to a shared repository file. No repository file is
 append-only by convention. Edit documentation to state the current rule or
@@ -529,8 +530,7 @@ in the enforcing tests and package documentation, not in an invariant.
 The current completion contract owns tracker publication; this rule grants
 workers no additional write authority.
 
-**Enforcement:** Review applies [AGENTS.md](../AGENTS.md#repository-invariants) and the evidence
-instructions in the [PR template](../.github/PULL_REQUEST_TEMPLATE.md). This is a review rule;
+**Enforcement:** Review applies [AGENTS.md](../AGENTS.md#repository-invariants). This is a review rule;
 it adds no check, gate, configuration or runtime mechanism.
 
 ## INV-17 — Runners are stateless, like GitHub Actions runners

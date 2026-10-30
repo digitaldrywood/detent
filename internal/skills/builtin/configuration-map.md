@@ -65,7 +65,7 @@ administrator to Providers & runners. Never expose an ungranted project.
 Project model overrides inherit organization defaults when cleared. Stage
 selection is delivered by the Hub; do not recommend global.yaml or detent.yaml
 for model selection. Approve the entire selected repository policy unchanged;
-integration toggles do not alter its PR landing policy. A missing GitHub
+integration toggles do not alter its landing policy. A missing GitHub
 transport cannot be fixed by enabling repository_enabled.
 
 Read secret metadata only. To set or replace a Sprites token, use
