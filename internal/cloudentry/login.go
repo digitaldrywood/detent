@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/readableurl"
 	"github.com/digitaldrywood/detent/internal/web/templates"
 )
 
@@ -31,10 +32,15 @@ func validReturnPath(path, organization string) bool {
 		return false
 	}
 	if organization == "" {
-		return path == "/organizations" || path == platformPath || strings.HasPrefix(path, "/oauth/consent/") && safeID(strings.TrimPrefix(path, "/oauth/consent/"))
+		return path == "/organizations" || path == platformPath || strings.HasPrefix(path, "/oauth/consent/") && safeID(strings.TrimPrefix(path, "/oauth/consent/")) || readableReturnPath(path)
 	}
 	prefix := "/organizations/" + organization
 	return (path == prefix || strings.HasPrefix(path, prefix+"/")) && !strings.HasSuffix(path, "/logout")
+}
+
+func readableReturnPath(path string) bool {
+	first := strings.Split(strings.Trim(path, "/"), "/")[0]
+	return readableurl.Validate(first) == nil && first != "oauth" && first != "mcp" && !strings.HasSuffix(path, "/logout")
 }
 
 func (s *Service) readyOrganization(ctx context.Context, id string) (Organization, error) {

@@ -117,11 +117,33 @@ func TestSharedEntryReadableIssueURLs(t *testing.T) {
 		}
 	}
 	html := map[string]string{"Accept": "text/html"}
-	for _, path := range []string{"/alpha/work", "/alpha", "/missing/work", "/missing"} {
-		response := anonymous.do(http.MethodGet, path, nil, html)
-		if response.StatusCode != http.StatusSeeOther || response.Header.Get("Location") != "/auth/oidc/start?return=%2Forganizations" {
-			t.Fatalf("signed-out navigation %s=%+v", path, response)
+	for _, test := range []struct{ path, returnPath string }{
+		{"/alpha/work", "/alpha/work"},
+		{"/alpha", "/alpha"},
+		{"/missing/work", "/missing/work"},
+		{"/missing", "/missing"},
+		{"/alpha/alpha-secret-project/issues/1", "/alpha/alpha-secret-project/issues/1"},
+		{"/alpha/logout", "/organizations"},
+	} {
+		response := anonymous.do(http.MethodGet, test.path, nil, html)
+		want := "/auth/oidc/start?" + url.Values{"return": {test.returnPath}}.Encode()
+		if response.StatusCode != http.StatusSeeOther || response.Header.Get("Location") != want {
+			t.Fatalf("signed-out navigation %s=%+v want %s", test.path, response, want)
 		}
+	}
+	signedOut := newBrowser(t, f.service.Handler())
+	start := signedOut.do(http.MethodGet, "/alpha/alpha-secret-project/issues/1", nil, html).Header.Get("Location")
+	if landed := signedOut.login(start, "user_alice:porg_alpha"); landed != "/alpha/alpha-secret-project/issues/1" {
+		t.Fatalf("signed-out issue link landed on %q", landed)
+	}
+	otherOrganization := newBrowser(t, f.service.Handler())
+	otherOrganization.login("/organizations/org_beta/organization", "user_alice:porg_beta")
+	start = otherOrganization.do(http.MethodGet, "/alpha/alpha-secret-project/issues/1", nil, html).Header.Get("Location")
+	if landed := otherOrganization.login(start, "user_alice:porg_alpha"); landed != "/organizations/org_alpha/alpha-secret-project/issues/1" {
+		t.Fatalf("issue link from another organization landed on %q", landed)
+	}
+	if issuePage := otherOrganization.do(http.MethodGet, "/organizations/org_alpha/alpha-secret-project/issues/1", nil, html); issuePage.StatusCode != http.StatusPermanentRedirect || issuePage.Header.Get("Location") != "/alpha/alpha-secret-project/issues/1" {
+		t.Fatalf("issue link from another organization=%+v", issuePage)
 	}
 	if member := alice.do(http.MethodGet, "/alpha/work", nil, html); member.StatusCode == http.StatusSeeOther {
 		t.Fatalf("member navigation=%+v", member)

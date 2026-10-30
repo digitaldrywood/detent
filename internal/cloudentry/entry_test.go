@@ -1397,7 +1397,13 @@ func TestValidReturnPath(t *testing.T) {
 		{"/organizations/org_a/work?next=x", "org_a", false},
 		{`/\attacker`, "", false},
 		{"/organizations/org_a/../org_b", "org_a", false},
-		{"/admin", "", false},
+		{"/settings", "", false},
+		{"/example-org/example-project/issues/1", "", true},
+		{"/example-org/../settings", "", false},
+		{"/example-org/logout", "", false},
+		{"/oauth/authorize", "", false},
+		{"/mcp", "", false},
+		{"/example-org/example-project/issues/1", "org_a", false},
 	} {
 		if got := validReturnPath(test.path, test.organization); got != test.ok {
 			t.Errorf("validReturnPath(%q, %q) = %v, want %v", test.path, test.organization, got, test.ok)

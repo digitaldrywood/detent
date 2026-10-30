@@ -20,7 +20,11 @@ func (s *Service) readableProxy(c echo.Context) error {
 	}
 	if wantsHTMLNavigation(c) {
 		if _, err := s.session(c); err != nil {
-			return c.Redirect(http.StatusSeeOther, "/auth/oidc/start?return=%2Forganizations")
+			returnPath := "/organizations"
+			if validReturnPath(c.Request().URL.Path, "") {
+				returnPath = c.Request().URL.Path
+			}
+			return c.Redirect(http.StatusSeeOther, "/auth/oidc/start?"+url.Values{"return": {returnPath}}.Encode())
 		}
 	}
 	var id string
