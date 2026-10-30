@@ -15,8 +15,11 @@ import (
 )
 
 const (
-	scopeRoot     = "m"
-	scopeAbsolute = "a"
+	maxDirectoryEntries = 4096
+	maxListedEntries    = 64 << 10
+	maxHashedBytes      = 64 << 20
+	scopeRoot           = "m"
+	scopeAbsolute       = "a"
 )
 
 type pathKind int
@@ -116,7 +119,37 @@ func ParseTestLog(r io.Reader, pwd string, env Environment, start time.Time) ([]
 	return inputs, nil
 }
 
+type Verifier struct {
+	env           Environment
+	observed      map[string]observation
+	bytes         int64
+	entries       int
+	hashedContent bool
+}
+
+type observation struct {
+	value string
+	err   error
+	path  string
+	state pathState
+}
+
+type pathState [2]statResult
+
+type statResult struct {
+	info    os.FileInfo
+	missing bool
+}
+
+func NewVerifier(env Environment) *Verifier {
+	return &Verifier{env: env, observed: make(map[string]observation), bytes: maxHashedBytes, entries: maxListedEntries}
+}
+
 func Digest(inputs []string, env Environment) (string, error) {
+	return NewVerifier(env).Digest(inputs)
+}
+
+func (v *Verifier) Digest(inputs []string) (string, error) {
 	if err := ValidateInputs(inputs); err != nil {
 		return "", err
 	}
@@ -125,7 +158,7 @@ func Digest(inputs []string, env Environment) (string, error) {
 	hash := sha256.New()
 	fmt.Fprintf(hash, "%s\n", protocolFingerprint)
 	for _, input := range slices.Compact(sorted) {
-		value, err := env.observe(input)
+		value, err := v.observe(input)
 		if err != nil {
 			return "", err
 		}
@@ -160,24 +193,77 @@ func ModifiedSince(inputs []string, env Environment, start time.Time) error {
 	return nil
 }
 
-func (e Environment) observe(input string) (string, error) {
+func (v *Verifier) Match(candidate Candidate) bool {
+	digest, err := v.Digest(candidate.Inputs)
+	if err != nil || digest != candidate.Digest {
+		return false
+	}
+	for _, input := range candidate.Inputs {
+		seen := v.observed[input]
+		if seen.path != "" && !seen.state.same(statPath(seen.path)) {
+			return false
+		}
+	}
+	return true
+}
+
+func (v *Verifier) observe(input string) (string, error) {
+	if seen, ok := v.observed[input]; ok {
+		return seen.value, seen.err
+	}
+	v.hashedContent = false
+	seen := v.observeInput(input)
+	if !v.hashedContent {
+		v.observed[input] = seen
+	}
+	return seen.value, seen.err
+}
+
+func (v *Verifier) observeInput(input string) observation {
 	fields := strings.Split(input, "\t")
 	switch {
 	case len(fields) == 2 && fields[0] == "env":
-		value, ok := e.lookup(fields[1])
+		value, ok := v.env.lookup(fields[1])
 		if !ok {
-			return "unset", nil
+			return observation{value: "unset"}
 		}
-		return "set " + sum([]byte(value)), nil
+		return observation{value: "set " + sum([]byte(value))}
 	case len(fields) == 3 && (fields[0] == "open" || fields[0] == "stat"):
-		path, err := e.path(fields[1], fields[2])
+		path, err := v.env.path(fields[1], fields[2])
 		if err != nil {
-			return "", err
+			return observation{err: err}
 		}
-		return observePath(fields[0], path)
+		state := statPath(path)
+		value, err := v.observePath(fields[0], path)
+		return observation{value: value, err: err, path: path, state: state}
 	default:
-		return "", fmt.Errorf("receipt input %q is malformed", input)
+		return observation{err: fmt.Errorf("receipt input %q is malformed", input)}
 	}
+}
+
+func statPath(path string) pathState {
+	var state pathState
+	for i, stat := range []func(string) (os.FileInfo, error){os.Lstat, os.Stat} {
+		info, err := stat(path)
+		state[i] = statResult{info: info, missing: err != nil && errors.Is(err, os.ErrNotExist)}
+	}
+	return state
+}
+
+func (s pathState) same(current pathState) bool {
+	for i, before := range s {
+		after := current[i]
+		if before.info == nil || after.info == nil {
+			if before.info != nil || after.info != nil || before.missing != after.missing {
+				return false
+			}
+			continue
+		}
+		if !os.SameFile(before.info, after.info) || before.info.Size() != after.info.Size() || before.info.Mode() != after.info.Mode() || !before.info.ModTime().Equal(after.info.ModTime()) {
+			return false
+		}
+	}
+	return true
 }
 
 func (e Environment) path(scope, name string) (string, error) {
@@ -197,7 +283,7 @@ func (e Environment) path(scope, name string) (string, error) {
 	}
 }
 
-func observePath(op, path string) (string, error) {
+func (v *Verifier) observePath(op, path string) (string, error) {
 	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return "", errors.New("test input is missing")
@@ -210,16 +296,16 @@ func observePath(op, path string) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("read test input link: %w", err)
 		}
-		resolved, err := observeTarget(op, path)
+		resolved, err := v.observeTarget(op, path)
 		if err != nil {
 			return "", err
 		}
 		return fmt.Sprintf("link %s %d %v %s %s", info.Mode(), info.ModTime().UnixNano(), info.Sys(), sum([]byte(target)), resolved), nil
 	}
-	return describe(op, path, info)
+	return v.describe(op, path, info)
 }
 
-func observeTarget(op, path string) (string, error) {
+func (v *Verifier) observeTarget(op, path string) (string, error) {
 	info, err := os.Stat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return "", errors.New("test input is missing")
@@ -227,19 +313,25 @@ func observeTarget(op, path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("stat test input: %w", err)
 	}
-	return describe(op, path, info)
+	return v.describe(op, path, info)
 }
 
-func describe(op, path string, info os.FileInfo) (string, error) {
+func (v *Verifier) describe(op, path string, info os.FileInfo) (string, error) {
 	switch {
 	case info.IsDir():
 		if op == "stat" {
 			return fmt.Sprintf("dir %s %d %v", info.Mode(), info.ModTime().UnixNano(), info.Sys()), nil
 		}
-		entries, err := os.ReadDir(path)
+		dir, err := os.Open(path)
+		if err != nil {
+			return "", fmt.Errorf("open test input directory: %w", err)
+		}
+		entries, err := v.readDirectory(dir.ReadDir)
+		err = errors.Join(err, dir.Close())
 		if err != nil {
 			return "", fmt.Errorf("list test input: %w", err)
 		}
+		slices.SortFunc(entries, func(a, b os.DirEntry) int { return strings.Compare(a.Name(), b.Name()) })
 		names := make([]string, 0, len(entries))
 		for _, entry := range entries {
 			names = append(names, entry.Name()+"\x00"+entry.Type().String())
@@ -250,11 +342,51 @@ func describe(op, path string, info os.FileInfo) (string, error) {
 	case op == "stat":
 		return fmt.Sprintf("file %d %s %d %v", info.Size(), info.Mode(), info.ModTime().UnixNano(), info.Sys()), nil
 	}
+	if info.Size() > v.bytes {
+		return "", errInputBytes
+	}
 	hash := sha256.New()
-	if err := copyFile(hash, path); err != nil {
+	v.hashedContent = true
+	if err := v.hashFile(hash, path); err != nil {
 		return "", fmt.Errorf("hash test input: %w", err)
 	}
 	return fmt.Sprintf("file %d %s %d %v %s", info.Size(), info.Mode(), info.ModTime().UnixNano(), info.Sys(), hex.EncodeToString(hash.Sum(nil))), nil
+}
+
+var (
+	errInputBytes   = errors.New("test inputs exceed the verification byte limit")
+	errInputEntries = errors.New("test inputs exceed the verification directory entry limit")
+)
+
+func (v *Verifier) readDirectory(read func(int) ([]os.DirEntry, error)) ([]os.DirEntry, error) {
+	limit := min(maxDirectoryEntries, v.entries)
+	entries, err := read(limit + 1)
+	if len(entries) > limit {
+		return nil, errInputEntries
+	}
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, err
+	}
+	v.entries -= len(entries)
+	return entries, nil
+}
+
+func (v *Verifier) hashFile(w io.Writer, path string) (err error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, file.Close()) }()
+	remaining := v.bytes
+	n, err := io.Copy(w, io.LimitReader(file, remaining+1))
+	v.bytes = remaining - min(n, remaining)
+	if err != nil {
+		return err
+	}
+	if n > remaining {
+		return errInputBytes
+	}
+	return nil
 }
 
 func copyFile(w io.Writer, path string) (err error) {

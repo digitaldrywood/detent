@@ -518,7 +518,7 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 	}
 	procgroup.SetTempDir(cmd, scratch)
 	if !paged {
-		if session := l.startGoTestReceipts(ctx, cmd, info.Path); session != nil {
+		if session := l.startGoTestReceipts(ctx, cmd, info.Path, scratch); session != nil {
 			defer func() { l.finishGoTestReceipts(ctx, session, &result) }()
 		}
 	}

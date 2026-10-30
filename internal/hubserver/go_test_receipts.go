@@ -14,7 +14,7 @@ import (
 
 const (
 	goTestReceiptRetention   = 30 * 24 * time.Hour
-	goTestReceiptPruneRounds = 20
+	goTestReceiptPruneBudget = backgroundStorageBudget
 )
 
 func (s *Service) lookupGoTestReceipts(c echo.Context) error {
@@ -23,7 +23,7 @@ func (s *Service) lookupGoTestReceipts(c echo.Context) error {
 		return s.nativeAPIError(c, nativeInvalid("key must be a lowercase sha256 hex digest"))
 	}
 	scope := nativeRequestScope(c)
-	candidates, err := readGoTestReceipts(c.Request().Context(), s.database.reader, string(scope.organization), string(scope.project), key)
+	candidates, err := readGoTestReceipts(c.Request().Context(), s.database.reader, string(scope.organization), string(scope.project), key, s.config.now())
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -53,9 +53,8 @@ func (s *Service) recordGoTestReceipt(c echo.Context) error {
 	return c.NoContent(http.StatusNoContent)
 }
 
-func readGoTestReceipts(ctx context.Context, query nativeQueryer, organization, project, key string) ([]gotestreceipt.Candidate, error) {
-	rows, err := query.QueryContext(ctx, `SELECT inputs, inputs_digest FROM go_test_receipts
-WHERE organization_id=? AND project_id=? AND binary_key=? ORDER BY recorded_at_ns DESC LIMIT ?`, organization, project, key, gotestreceipt.MaxCandidates)
+func readGoTestReceipts(ctx context.Context, query nativeQueryer, organization, project, key string, now time.Time) ([]gotestreceipt.Candidate, error) {
+	rows, err := query.QueryContext(ctx, goTestReceiptLookupQuery, organization, project, key, now.Add(-goTestReceiptRetention).UnixNano(), gotestreceipt.MaxCandidates)
 	if err != nil {
 		return nil, fmt.Errorf("read go test receipts: %w", err)
 	}
@@ -89,10 +88,27 @@ ON CONFLICT(organization_id, project_id, binary_key, inputs_digest) DO UPDATE SE
 	return nil
 }
 
-func (d *database) expireGoTestReceipts(ctx context.Context, now time.Time) error {
+const (
+	goTestReceiptLookupQuery = `SELECT inputs, inputs_digest FROM go_test_receipts
+WHERE organization_id=? AND project_id=? AND binary_key=? AND recorded_at_ns>=? ORDER BY recorded_at_ns DESC LIMIT ?`
+	goTestReceiptPruneQuery = "DELETE FROM go_test_receipts WHERE rowid IN (SELECT rowid FROM go_test_receipts INDEXED BY go_test_receipts_recorded WHERE recorded_at_ns < ? ORDER BY recorded_at_ns LIMIT 1)"
+)
+
+func (d *database) expireGoTestReceipts(ctx context.Context, now time.Time, clock func() time.Time) error {
+	return expireGoTestReceipts(ctx, d.db, now, clock)
+}
+
+func expireGoTestReceipts(ctx context.Context, exec hostedExecer, now time.Time, clock func() time.Time) error {
 	cutoff := now.Add(-goTestReceiptRetention).UnixNano()
-	for range goTestReceiptPruneRounds {
-		result, err := d.db.ExecContext(ctx, "DELETE FROM go_test_receipts WHERE rowid IN (SELECT rowid FROM go_test_receipts WHERE recorded_at_ns < ? ORDER BY recorded_at_ns LIMIT ?)", cutoff, commandReceiptPruneBatch)
+	deadline := clock().Add(goTestReceiptPruneBudget)
+	for {
+		remaining := deadline.Sub(clock())
+		if remaining <= 0 {
+			return nil
+		}
+		statementCtx, cancel := context.WithTimeout(ctx, remaining)
+		result, err := exec.ExecContext(statementCtx, goTestReceiptPruneQuery, cutoff)
+		cancel()
 		if err != nil {
 			return fmt.Errorf("expire go test receipts: %w", err)
 		}
@@ -100,9 +116,8 @@ func (d *database) expireGoTestReceipts(ctx context.Context, now time.Time) erro
 		if err != nil {
 			return fmt.Errorf("count expired go test receipts: %w", err)
 		}
-		if deleted < commandReceiptPruneBatch {
+		if deleted == 0 {
 			return nil
 		}
 	}
-	return nil
 }

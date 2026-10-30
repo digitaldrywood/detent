@@ -307,7 +307,7 @@ func main() { data, err := os.ReadFile("input.txt"); if err != nil || string(dat
 			t.Chdir(root)
 			t.Setenv("RECEIPT_INPUT", "pass")
 			store := &memoryStore{}
-			session, err := Start(t.Context(), store, nil)
+			session, err := Start(t.Context(), store, nil, t.TempDir())
 			if err != nil {
 				t.Fatal(err)
 			}

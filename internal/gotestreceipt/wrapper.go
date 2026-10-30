@@ -81,9 +81,9 @@ func RunWrapper(args []string, getenv func(string) string, stdin io.Reader, stdo
 		}
 		return run(args, true, stdin, stdout, stderr)
 	}
+	verifier := NewVerifier(env)
 	for _, candidate := range candidates {
-		digest, err := Digest(candidate.Inputs, env)
-		if err == nil && digest == candidate.Digest {
+		if verifier.Match(candidate) {
 			if err := client.Hit(ctx, key); err != nil {
 				fmt.Fprintf(stderr, "%s: report receipt reuse: %v\n", WrapperName, err)
 			}

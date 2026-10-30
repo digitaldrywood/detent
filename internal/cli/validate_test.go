@@ -169,6 +169,11 @@ func TestValidateCommandFiltersOperatorEnvironment(t *testing.T) {
 			value := tc.value
 			if value == "" {
 				value = filepath.Join(root, "fixture-value")
+				if tc.name == "TMPDIR" {
+					if err := os.Mkdir(value, 0o700); err != nil {
+						t.Fatal(err)
+					}
+				}
 			}
 			t.Setenv(tc.name, value)
 			var output bytes.Buffer
