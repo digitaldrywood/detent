@@ -178,7 +178,7 @@ func changeLimit(args operatortool.ChangeArguments) int {
 func (a hubChangeApplication) MutateChange(ctx context.Context, name string, args operatortool.ChangeArguments) (operatortool.ChangeResult, error) {
 	ctx = a.service.contentContext(ctx)
 	if content, ok := ctx.Value(changeContentKey{}).(*changeContent); ok {
-		ctx = context.WithValue(ctx, changeContentKey{}, &changeContent{call: content.call, register: content.register})
+		ctx = context.WithValue(ctx, changeContentKey{}, &changeContent{call: content.call, store: content.store, register: content.register, query: content.query})
 	}
 	scope, err := a.authorized(ctx, args, name != operatortool.ArtifactAccess)
 	if err != nil {

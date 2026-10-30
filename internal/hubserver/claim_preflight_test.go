@@ -1,8 +1,10 @@
 package hubserver
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -141,5 +143,51 @@ func TestClaimSelectionStaysOffTheWriter(t *testing.T) {
 			service, first, second := open(t)
 			test.run(t, service, first, second)
 		})
+	}
+}
+
+func TestClaimRetryAfterCommittedDecisionUsesFreshEventIDs(t *testing.T) {
+	f := newNativeFixture(t, nil, "", "claim-retry-event-ids")
+	worker := f.worker(t, "retry-worker")
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker, map[string]any{"id": "retry-machine", "hostname": "isolated", "capacity": 1, "version": "test"}), http.StatusOK)
+	credential, _, err := f.service.authenticateAPIToken(t.Context(), worker, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+	decision := func(issue tracker.NativeIssue) preparedClaimDecision {
+		t.Helper()
+		var id tracker.WorkItemID
+		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT id FROM issues WHERE native_id=?", issue.WorkItemID).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		return preparedClaimDecision{scope: scope, id: id, item: string(issue.WorkItemID), data: tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{RunnerID: credential.Runner.RunnerID, Source: "native_claim", Outcome: "skipped", Reason: "capacity", WorkItemRevision: issue.Revision}}}
+	}
+	first, second, selected := decision(f.create(t, "first decision")), decision(f.create(t, "second decision")), decision(f.create(t, "selected candidate"))
+	prepared := &claimPreparation{}
+	ctx := context.WithValue(f.service.runDetailContext(t.Context()), claimPreparationKey{}, prepared)
+	contentMutation(ctx, true)
+	defer contentMutation(ctx, false)
+	request := tracker.ClaimRequest{MachineID: "retry-machine", SessionID: "retry-session", TTL: time.Minute}
+	query := claimCandidateQuery{NativeScope: &scope, Scope: string(scope.project)}
+	stale := claimMode{hint: &claimSelected{id: selected.id, revision: -1}}
+	for pass, decisions := range [][]preparedClaimDecision{{first}, {first, second}} {
+		prepared.decisions = decisions
+		if err := prepareClaimDecisionPayloads(ctx, prepared); err != nil {
+			t.Fatal(err)
+		}
+		contentWriting(ctx, true)
+		_, err := f.service.database.claimNextOn(ctx, f.service.database.db, nil, stale, request, query, time.Minute)
+		contentWriting(ctx, false)
+		if !errors.Is(err, errClaimHintStale) {
+			t.Fatalf("pass %d: %v, want committed stale hint", pass, err)
+		}
+	}
+	var events, ids int
+	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*),count(DISTINCT id) FROM collaboration_events WHERE type='scheduler.decision' AND work_item_id IN (?,?)", first.item, second.item).Scan(&events, &ids); err != nil {
+		t.Fatal(err)
+	}
+	if events != 2 || ids != 2 {
+		t.Fatalf("scheduler decisions=%d distinct ids=%d, want 2 committed events with distinct ids", events, ids)
 	}
 }

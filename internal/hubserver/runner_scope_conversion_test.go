@@ -45,7 +45,7 @@ func TestRunnerScopeConversion(t *testing.T) {
 			requireNativeStatus(t, response, http.StatusOK)
 			var after runnerauth.Runner
 			decodeHubResponse(t, response, &after)
-			stored, err := readRunnerWithClock(t.Context(), f.service.database.db, f.project.OrganizationID, r.binding.RunnerID, f.service.config.now)
+			stored, err := readRunnerWithClock(f.service.contentContext(t.Context()), f.service.database.reader, f.project.OrganizationID, r.binding.RunnerID, f.service.config.now)
 			if err != nil {
 				t.Fatal(err)
 			}

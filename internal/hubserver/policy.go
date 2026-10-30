@@ -313,6 +313,7 @@ func (d *database) approvePolicyInTx(ctx context.Context, tx *sql.Tx, scope, act
 	if err != nil {
 		return result, err
 	}
+	now = payloadTimestamp(ctx, now)
 	carryover := false
 	if current != "" && current != change.Policy.ID {
 		previous, err := requireProjectPolicy(ctx, tx, scope)

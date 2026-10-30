@@ -368,7 +368,7 @@ func TestHeartbeatResponseArchivedCleanup(t *testing.T) {
 				table := archiveTestTable(t, f.service, name, "0")
 				if name == "native_attempts" {
 					table = archiveTestTable(t, f.service, name, "id=?", event.Data.AttemptID)
-					index := slices.Index(table.Columns, "analytics_revision")
+					index := slices.Index(table.Columns, "data_json")
 					table.Columns = slices.Delete(table.Columns, index, index+1)
 					for i := range table.Rows {
 						table.Rows[i] = slices.Delete(table.Rows[i], index, index+1)

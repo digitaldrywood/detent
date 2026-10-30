@@ -382,6 +382,7 @@ func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *s
 			if err := d.commit(ctx, tx); err != nil {
 				return err
 			}
+			contentCommitted(ctx)
 			if prepared := claimPrepared(ctx); prepared != nil {
 				for _, progress := range prepared.selection {
 					if progress.written {

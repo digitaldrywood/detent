@@ -151,7 +151,7 @@ func (s *Service) storageProjectionPage(ctx context.Context, family, selection, 
 		return s.storageProjectionPage(ctx, family, selection, key, limit, args...)
 	}
 	if budget, ok := ctx.Value(storageBatchKey{}).(*storageBatchBudget); ok && len(candidates) > 0 {
-		budget.advance = func() error {
+		budget.advance = func(ctx context.Context) error {
 			return s.writeStorageProjectionCursor(ctx, "keyset-"+family, candidates[len(candidates)-1].cursor)
 		}
 	}
@@ -628,8 +628,9 @@ type storageBatchBudget struct {
 	oversized int
 	turn      int64
 	reserve   func() error
-	advance   func() error
+	advance   func(context.Context) error
 	itemBytes int
+	visited   map[string]bool
 }
 
 var errStorageBatchFull = errors.New("storage conversion batch is full")
@@ -789,7 +790,10 @@ func (s *Service) convertStorageBatch(ctx context.Context, now time.Time) error 
 			return errors.Join(failures, restoreErr)
 		}
 		if budget.rows > beforeRows && budget.advance != nil {
-			if advanceErr := budget.advance(); advanceErr != nil {
+			advanceCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), backgroundStorageBudget)
+			advanceErr := budget.advance(advanceCtx)
+			cancel()
+			if advanceErr != nil {
 				return errors.Join(failures, err, advanceErr)
 			}
 		}
@@ -846,18 +850,7 @@ func (s *Service) convertStorageFamilyTurn(ctx context.Context, family storageCo
 			return nil
 		}
 	} else {
-		selection := "SELECT r.rowid," + family.scope() + ".organization_id," + family.scope() + ".project_id," + aggregate + "," + strings.Join(keys, ",") + " FROM " + family.keysetFrom() + " WHERE " + predicate
-		var args []any
-		if cursor.positioned {
-			selection += " AND (" + strings.Join(keys, ",") + ")>(" + strings.TrimSuffix(strings.Repeat("?,", len(keys)), ",") + ")"
-			for i := range keys {
-				if numeric && i == len(keys)-1 {
-					args = append(args, cursor.sequence)
-				} else {
-					args = append(args, cursor.keys[i])
-				}
-			}
-		}
+		base := "SELECT r.rowid," + family.scope() + ".organization_id," + family.scope() + ".project_id," + aggregate + "," + strings.Join(keys, ",") + " FROM " + family.keysetFrom() + " WHERE " + predicate
 		scan := []any{&c.row, &c.scope.organization, &c.scope.project, &c.aggregate}
 		for i := range keys {
 			if numeric && i == len(keys)-1 {
@@ -866,7 +859,28 @@ func (s *Service) convertStorageFamilyTurn(ctx context.Context, family storageCo
 				scan = append(scan, &next.keys[i])
 			}
 		}
-		err = s.database.reader.QueryRowContext(ctx, selection+" ORDER BY "+strings.Join(keys, ",")+" LIMIT 1", args...).Scan(scan...)
+		wrapped := false
+		for positioned := cursor.positioned; ; positioned, wrapped = false, true {
+			selection := base
+			var args []any
+			if positioned {
+				selection += " AND (" + strings.Join(keys, ",") + ")>(" + strings.TrimSuffix(strings.Repeat("?,", len(keys)), ",") + ")"
+				for i := range keys {
+					if numeric && i == len(keys)-1 {
+						args = append(args, cursor.sequence)
+					} else {
+						args = append(args, cursor.keys[i])
+					}
+				}
+			}
+			err = s.database.reader.QueryRowContext(ctx, selection+" ORDER BY "+strings.Join(keys, ",")+" LIMIT 1", args...).Scan(scan...)
+			if !positioned || !errors.Is(err, sql.ErrNoRows) {
+				break
+			}
+		}
+		if err == nil && wrapped && storageAggregateVisited(ctx, family, c) {
+			err = sql.ErrNoRows
+		}
 		if errors.Is(err, sql.ErrNoRows) {
 			_, err = s.database.db.ExecContext(ctx, `UPDATE storage_conversion_cursors SET positioned=0 WHERE family=? AND positioned<>0`, family.name)
 			return err
@@ -887,7 +901,11 @@ func (s *Service) convertStorageFamilyTurn(ctx context.Context, family storageCo
 	if !ok {
 		return errors.New("storage conversion budget is unavailable")
 	}
-	budget.advance = func() error {
+	if budget.visited == nil {
+		budget.visited = make(map[string]bool)
+	}
+	budget.visited[storageAggregateKey(family, c)] = true
+	budget.advance = func(ctx context.Context) error {
 		if family.name == "analytics" {
 			if err := s.writeStorageProjectionCursor(ctx, storageAnalyticsCursor(c.scope), []any{next.sequence}); err != nil {
 				return err
@@ -907,6 +925,15 @@ func (s *Service) convertStorageFamilyTurn(ctx context.Context, family storageCo
 		return err
 	}
 	return s.convertStorageAggregate(ctx, c.scope, family, c.aggregate, now)
+}
+
+func storageAggregateKey(family storageConversionFamily, c objectPayloadConversionPosition) string {
+	return family.name + "/" + string(c.scope.organization) + "/" + string(c.scope.project) + "/" + c.aggregate
+}
+
+func storageAggregateVisited(ctx context.Context, family storageConversionFamily, c objectPayloadConversionPosition) bool {
+	budget, ok := ctx.Value(storageBatchKey{}).(*storageBatchBudget)
+	return ok && budget.visited[storageAggregateKey(family, c)]
 }
 
 func storageAnalyticsCursor(scope nativeScope) string {

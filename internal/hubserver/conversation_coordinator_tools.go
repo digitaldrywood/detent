@@ -85,6 +85,9 @@ func (t *coordinatorToolset) tools() []runner.AgentTool {
 // handle runs one tool call. Errors are returned to the model as
 // {"error": ...} and logged; they never end the turn.
 func (t *coordinatorToolset) handle(ctx context.Context, call runner.AgentToolCall) (runner.AgentToolResult, error) {
+	if server := t.coordinator.service.server; server != nil {
+		ctx = server.runDetailContext(ctx)
+	}
 	t.state.endTextSegment(ctx)
 	result, err := t.execute(ctx, call)
 	if err != nil {
