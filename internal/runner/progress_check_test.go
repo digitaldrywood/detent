@@ -15,6 +15,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
@@ -447,6 +448,7 @@ func (e *progressSourceExecution) RecoverChangeSource(context.Context) (workspac
 
 type progressInspectBackend struct {
 	head         string
+	citation     string
 	called       bool
 	evidenceOnly bool
 }
@@ -463,7 +465,11 @@ func (b *progressInspectBackend) RunTurn(ctx context.Context, req AgentTurnReque
 	if err != nil || string(content) != "failing assertion and exercised code\n" || !req.ReadOnly || req.TextOnly || !req.IsolatedTools || !strings.Contains(req.Prompt, b.head) {
 		return AgentTurnResult{}, errors.New("pinned source unavailable to read-only investigation")
 	}
-	return AgentTurnResult{}, update(AgentUpdate{Type: AgentUpdateMessageDelta, ItemID: "final", Delta: `{"outcome":"reroute","step":"implement","reason":"Repair the failing assertion","diagnosis":"failed: assertion.txt retains the failing assertion","instruction":"Change the implementation exercised by assertion.txt and run the matching validation command","evidence":["failed"]}`})
+	output, err := json.Marshal(progresscheck.Decision{Outcome: progresscheck.Reroute, Step: "implement", Reason: "Repair the failing assertion", Diagnosis: b.citation + ": assertion.txt retains the failing assertion", Instruction: "Change the implementation exercised by assertion.txt and run the matching validation command", Evidence: []string{b.citation}})
+	if err != nil {
+		return AgentTurnResult{}, err
+	}
+	return AgentTurnResult{}, update(AgentUpdate{Type: AgentUpdateMessageDelta, ItemID: "final", Delta: string(output)})
 }
 
 func TestProgressToolBudgetBoundsAllReads(t *testing.T) {
@@ -644,10 +650,15 @@ func (b *progressInspectBackend) RunTurnWithTools(ctx context.Context, req Agent
 				return AgentTurnResult{}, errors.New("unexpected investigation tool")
 			}
 		}
-		result, err := handle(ctx, AgentToolCall{Name: "detent_read_source", Arguments: json.RawMessage(`{"operation":"read","revision":"head","path":"assertion.txt"}`)})
+		result, err := req.ToolBudget.Handler(tools, handle)(ctx, AgentToolCall{Name: "detent_read_source", Arguments: json.RawMessage(`{"operation":"read","revision":"head","path":"assertion.txt"}`)})
 		if err != nil || !result.Success || !strings.Contains(result.Content, "failing assertion and exercised code") {
 			return AgentTurnResult{}, fmt.Errorf("pinned source tool unavailable: %w, %s", err, result.Content)
 		}
+		var receipt gate.CommandResult
+		if err := json.Unmarshal([]byte(result.Content), &receipt); err != nil {
+			return AgentTurnResult{}, err
+		}
+		b.citation = receipt.ReceiptID
 		result, err = handle(ctx, AgentToolCall{Name: "detent_run_validation", Arguments: json.RawMessage(`{"command":"printf changed > assertion.txt"}`)})
 		if err == nil || result.Success {
 			return AgentTurnResult{}, errors.New("investigation permitted validation command")
@@ -684,4 +695,71 @@ type progressEvidenceExecution struct{ progressReadExecution }
 
 func (*progressEvidenceExecution) RecoverChangeSource(context.Context) (workspace.ChangeSource, error) {
 	return workspace.ChangeSource{}, nil
+}
+
+func TestProgressCheckCitesOnlyRetrievedEvidence(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		id      string
+		result  string
+		success bool
+		valid   bool
+	}{
+		{"comment", "comment-read", `{"data":{"discussion":[{"comment_id":"comment-read"}]}}`, true, true},
+		{"attempt", "attempt-read", `{"data":{"attempts":[{"attempt_id":"attempt-read"}]}}`, true, true},
+		{"receipt", "receipt-read", `{"data":{"attempts":[{"attempt_id":"attempt-read","runtime":{"validation":{"receipt_id":"receipt-read"}}}]}}`, true, true},
+		{"invented step receipt ID", "attempt-read:step:0", `{"data":{"attempts":[{"attempt_id":"attempt-read","steps":[{"step":"validation"}]}]}}`, true, false},
+		{"attachment", "attachment-read", `{"data":{"attempts":[{"attempt_id":"attempt-read","steps":[{"payload_attachment":{"id":"attachment-read"}}]}]}}`, true, true},
+		{"over budget", "comment-read", `{"data":{"discussion":[{"comment_id":"comment-read","body":"` + strings.Repeat("x", progresscheck.MaxToolResultBytes) + `"}]}}`, true, false},
+		{"unseen", "comment-unseen", `{"data":{"discussion":[{"comment_id":"comment-read"}]}}`, true, false},
+		{"body is not an ID", "comment-unseen", `{"data":{"discussion":[{"comment_id":"comment-read","body":"comment-unseen"}]}}`, true, false},
+		{"failed read", "comment-read", `{"data":{"discussion":[{"comment_id":"comment-read"}]}}`, false, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			output, err := json.Marshal(progresscheck.Decision{Outcome: progresscheck.Reroute, Step: "implement", Reason: "Repair assertion", Diagnosis: test.id + ": assertion returns the old value", Instruction: "Repair the implementation and rerun TestExample", Evidence: []string{test.id}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			backend := &progressCitationBackend{fakeCodexClient: fakeCodexClient{updates: []AgentUpdate{{Type: AgentUpdateMessageDelta, ItemID: "final", Delta: string(output)}}}}
+			r, err := NewRunner(Dependencies{Workspace: progressWorkspace{&fakeWorkspaceBackend{}}, AgentBackend: backend})
+			if err != nil {
+				t.Fatal(err)
+			}
+			evidence := progresscheck.Request{ProjectID: "example-project", IssueID: "example-issue", PolicyID: "policy", EvidenceRevision: "revision", Attempts: []progresscheck.Attempt{{ID: "failed-attempt", Outcome: "failed"}}, AvailableSteps: []string{"implement"}}
+			before, err := evidence.ID()
+			if err != nil {
+				t.Fatal(err)
+			}
+			execution := &progressCitationExecution{result: AgentToolResult{Success: test.success, Content: test.result}}
+			_, err = r.CheckProgress(t.Context(), RunRequest{Issue: connector.Issue{ID: evidence.IssueID}, Mode: RunModeImplement, Execution: execution}, evidence)
+			if (err == nil) != test.valid {
+				t.Fatalf("citation %s: error=%v valid=%v", test.id, err, test.valid)
+			}
+			after, err := evidence.ID()
+			if err != nil || before != after {
+				t.Fatalf("request identity changed: %s -> %s: %v", before, after, err)
+			}
+		})
+	}
+}
+
+type progressCitationExecution struct {
+	progressUsageExecution
+	result AgentToolResult
+}
+
+func (e *progressCitationExecution) AgentTools() ([]AgentTool, AgentToolHandler) {
+	return []AgentTool{{Name: operatortool.WorkItem}}, func(context.Context, AgentToolCall) (AgentToolResult, error) { return e.result, nil }
+}
+
+type progressCitationBackend struct{ fakeCodexClient }
+
+func (*progressCitationBackend) SupportsReadOnlyInvestigation() bool { return true }
+
+func (b *progressCitationBackend) RunTurnWithTools(ctx context.Context, req AgentTurnRequest, tools []AgentTool, handle AgentToolHandler, update AgentUpdateHandler) (AgentTurnResult, error) {
+	_, err := req.ToolBudget.Handler(tools, handle)(ctx, AgentToolCall{Name: operatortool.WorkItem, Arguments: json.RawMessage(`{"project_id":"example-project","reference":"example-issue","view":"recovery"}`)})
+	if err != nil {
+		return AgentTurnResult{}, err
+	}
+	return b.RunTurn(ctx, req, update)
 }

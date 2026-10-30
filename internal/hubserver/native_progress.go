@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/issueorigin"
@@ -42,7 +43,7 @@ func readNativeProgress(ctx context.Context, q nativeQueryer, scope nativeScope,
 	if err != nil {
 		return progresscheck.Record{}, false, fmt.Errorf("read progress decision: %w", err)
 	}
-	rows, err := q.QueryContext(ctx, `SELECT evidence_id FROM native_progress_evidence
+	rows, err := q.QueryContext(ctx, `SELECT evidence_id, retrieved, retrieved_attempt_id, retrieved_source_sha FROM native_progress_evidence
  WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND request_id = ? ORDER BY position LIMIT ?`, scope.organization, scope.project, issue, id, progresscheck.MaxReceipts+1)
 	if err != nil {
 		return progresscheck.Record{}, false, fmt.Errorf("read progress evidence: %w", err)
@@ -50,10 +51,15 @@ func readNativeProgress(ctx context.Context, q nativeQueryer, scope nativeScope,
 	defer rows.Close()
 	for rows.Next() {
 		var evidence string
-		if err := rows.Scan(&evidence); err != nil {
+		var retrieved bool
+		var attemptID, sourceSHA string
+		if err := rows.Scan(&evidence, &retrieved, &attemptID, &sourceSHA); err != nil {
 			return progresscheck.Record{}, false, err
 		}
 		record.Decision.Evidence = append(record.Decision.Evidence, evidence)
+		if retrieved {
+			record.Decision.RetrievedEvidence = append(record.Decision.RetrievedEvidence, progresscheck.EvidenceReference{ID: evidence, AttemptID: attemptID, SourceSHA: sourceSHA})
+		}
 	}
 	return record, true, rows.Err()
 }
@@ -69,6 +75,39 @@ func (o nativeProgressOwner) Publish(ctx context.Context, record progresscheck.R
 	}
 	if err := candidate.ValidatePublication(o.request); err != nil {
 		return progresscheck.Record{}, err
+	}
+	for _, reference := range record.Decision.RetrievedEvidence {
+		if reference.SourceSHA != "" {
+			continue
+		}
+		if reference.AttemptID != "" {
+			attempt, err := readNativeAttemptRecord(o.service.runDetailContext(ctx), o.service.database.reader, o.scope, record.IssueID, reference.AttemptID, o.service.config.now())
+			if err != nil {
+				return progresscheck.Record{}, fmt.Errorf("read cited progress attempt: %w", err)
+			}
+			if !slices.Contains(progresscheck.AttemptEvidence(attempt), reference) {
+				return progresscheck.Record{}, nativeInvalid("Retrieved progress receipt is unavailable for this attempt")
+			}
+			continue
+		}
+		id := reference.ID
+		var exists bool
+		if err := o.service.database.reader.QueryRowContext(ctx, `SELECT
+ EXISTS(SELECT 1 FROM native_comments WHERE id=? AND organization_id=? AND project_id=? AND work_item_id=? AND deleted=0)
+ OR EXISTS(SELECT 1 FROM native_attempts WHERE id=? AND organization_id=? AND project_id=? AND work_item_id=?)
+ OR EXISTS(SELECT 1 FROM attachments WHERE id=? AND organization_id=? AND project_id=? AND work_item_id=? AND deleted_at IS NULL)`,
+			id, o.scope.organization, o.scope.project, record.IssueID,
+			id, o.scope.organization, o.scope.project, record.IssueID,
+			id, o.scope.organization, o.scope.project, record.IssueID).Scan(&exists); err != nil {
+			return progresscheck.Record{}, fmt.Errorf("read retrieved progress evidence: %w", err)
+		}
+		if !exists {
+			return progresscheck.Record{}, nativeInvalid("Retrieved progress evidence is unavailable for this work item")
+		}
+	}
+	record.Decision.RetrievedEvidence = slices.Clone(record.Decision.RetrievedEvidence)
+	for i := range record.Decision.RetrievedEvidence {
+		record.Decision.RetrievedEvidence[i].SourceReceipt = nil
 	}
 	tx, err := o.service.database.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -204,7 +243,15 @@ func (o nativeProgressOwner) Publish(ctx context.Context, record progresscheck.R
 		return progresscheck.Record{}, fmt.Errorf("write progress decision: %w", err)
 	}
 	for position, evidence := range record.Decision.Evidence {
-		_, err = tx.ExecContext(ctx, `INSERT INTO native_progress_evidence (organization_id, project_id, work_item_id, request_id, position, evidence_id) VALUES (?, ?, ?, ?, ?, ?)`, o.scope.organization, o.scope.project, record.IssueID, record.RequestID, position, evidence)
+		var retrieved bool
+		var attemptID, sourceSHA string
+		for _, reference := range record.Decision.RetrievedEvidence {
+			if reference.ID == evidence {
+				retrieved, attemptID, sourceSHA = true, reference.AttemptID, reference.SourceSHA
+				break
+			}
+		}
+		_, err = tx.ExecContext(ctx, `INSERT INTO native_progress_evidence (organization_id, project_id, work_item_id, request_id, position, evidence_id, retrieved, retrieved_attempt_id, retrieved_source_sha) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, o.scope.organization, o.scope.project, record.IssueID, record.RequestID, position, evidence, retrieved, attemptID, sourceSHA)
 		if err != nil {
 			return progresscheck.Record{}, fmt.Errorf("write progress evidence: %w", err)
 		}

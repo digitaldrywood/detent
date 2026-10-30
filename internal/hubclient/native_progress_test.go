@@ -783,6 +783,11 @@ func TestProgressPublicationNegotiatesDecisionFields(t *testing.T) {
 			if err != nil || record.Validate(request) != nil || capabilityReads != 1 || writes != 1 {
 				t.Fatalf("publication err=%v capability reads=%d writes=%d record=%+v", err, capabilityReads, writes, record)
 			}
+			decision.Evidence = []string{"retrieved-comment"}
+			decision.RetrievedEvidence = []progresscheck.EvidenceReference{{ID: "retrieved-comment"}}
+			if _, err := owner.Publish(t.Context(), progresscheck.Record{RequestID: id, Decision: decision}); err == nil || writes != 1 {
+				t.Fatalf("Hub without retrieved evidence capability received new publication: error=%v writes=%d", err, writes)
+			}
 		})
 	}
 }

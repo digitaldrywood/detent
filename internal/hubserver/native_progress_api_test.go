@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubclient"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -90,7 +91,9 @@ func (f progressPublicationTransport) RoundTrip(r *http.Request) (*http.Response
 
 type progressPublicationAgent struct {
 	runner.AgentBackend
-	attempt string
+	attempt  string
+	recordID string
+	retrieve bool
 }
 
 func (progressPublicationAgent) SupportsReadOnlyInvestigation() bool { return true }
@@ -107,6 +110,45 @@ func (a progressPublicationAgent) RunTurn(_ context.Context, request runner.Agen
 		return runner.AgentTurnResult{}, err
 	}
 	return runner.AgentTurnResult{}, update(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, ItemID: "decision", Delta: string(data)})
+}
+
+func (a progressPublicationAgent) RunTurnWithTools(ctx context.Context, request runner.AgentTurnRequest, tools []runner.AgentTool, handle runner.AgentToolHandler, update runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
+	if a.retrieve {
+		bounded := request.ToolBudget.Handler(tools, handle)
+		cursor := ""
+		found := false
+		var evidence progresscheck.Request
+		input := strings.SplitN(request.Prompt, "Evidence:\n", 2)
+		if len(input) != 2 {
+			return runner.AgentTurnResult{}, errors.New("missing request evidence")
+		}
+		if err := json.NewDecoder(strings.NewReader(input[1])).Decode(&evidence); err != nil {
+			return runner.AgentTurnResult{}, err
+		}
+		for range progresscheck.MaxToolCalls - 3 {
+			args, err := json.Marshal(operatortool.WorkReadRequest{ProjectID: evidence.ProjectID, Reference: evidence.IssueID, View: "recovery", Cursor: cursor})
+			if err != nil {
+				return runner.AgentTurnResult{}, err
+			}
+			result, err := bounded(ctx, runner.AgentToolCall{Name: operatortool.WorkItem, Arguments: args})
+			if err != nil {
+				return runner.AgentTurnResult{}, err
+			}
+			var page operatortool.WorkReadResult[tracker.NativeRecoveryPage]
+			if err := json.Unmarshal([]byte(result.Content), &page); err != nil {
+				return runner.AgentTurnResult{}, err
+			}
+			found = page.Data.RecordID == a.recordID
+			cursor = page.Data.NextCursor
+			if found || cursor == "" {
+				break
+			}
+		}
+		if !found {
+			return runner.AgentTurnResult{}, errors.New("citation was not returned by recovery reads")
+		}
+	}
+	return a.RunTurn(ctx, request, update)
 }
 
 type progressPublicationWorkspace struct {
@@ -135,6 +177,9 @@ func TestNativeProgressExecutionPublication(t *testing.T) {
 		staleRunning int
 	}{
 		{"sequential", 1, 0},
+		{"retrieved comment", 1, 0},
+		{"retrieved older attempt", progresscheck.MaxAttempts + 1, 0},
+		{"retrieved command receipt", 1, 0},
 		{"sequential at attempt bound", progresscheck.MaxAttempts + 1, 0},
 		{"stale running attempt inside history bound", progresscheck.MaxAttempts + 1, 1},
 		{"multiple stale running attempts", progresscheck.MaxAttempts + 3, 3},
@@ -154,12 +199,17 @@ func TestNativeProgressExecutionPublication(t *testing.T) {
 			bundle := changeTestSource(t, &input)
 			response = performHubAPIRequest(t, f.service, http.MethodPost, path+"/changes/"+change.ID+"/versions", testHubAdminToken, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "progress-version"}, ChangeVersionInput: input, SourceBundle: bundle})
 			requireNativeStatus(t, response, http.StatusOK)
+			commandReceipt := newNativeID("receipt")
+			var oldestAttempt string
 			for i := range test.attempts {
 				if i > 0 {
 					f.claim(t)
 				}
+				if i == 0 {
+					oldestAttempt = f.attempt
+				}
 				event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: newNativeID("finish")}, Type: "run.finished", SchemaVersion: 1, Data: tracker.NativeRunData{Sequence: 2, LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken, RunID: f.run, AttemptID: f.attempt, PolicyID: f.policy, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "gpt-6-astra"}, Outcome: "failed"}}
-				event.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "completed", HeartbeatAt: f.service.config.now(), Validation: &gate.CommandResult{Command: "go test ./example", ExitCode: 2, Stage: gate.StageSourceFinalization, HeadSHA: strings.Repeat("a", 40), TreeSHA: strings.Repeat("b", 40), DurationNS: 1, Output: "TestExample: expected repaired value, got old value"}}
+				event.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "completed", HeartbeatAt: f.service.config.now(), Validation: &gate.CommandResult{ReceiptID: commandReceipt, Command: "go test ./example", ExitCode: 2, Stage: gate.StageSourceFinalization, HeadSHA: strings.Repeat("a", 40), TreeSHA: strings.Repeat("b", 40), DurationNS: 1, Output: "TestExample: expected repaired value, got old value"}}
 				if i == 0 || i > test.staleRunning {
 					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", f.worker, event), http.StatusOK)
 				}
@@ -170,6 +220,26 @@ func TestNativeProgressExecutionPublication(t *testing.T) {
 				if joined := strings.Join(plan, "\n"); !strings.Contains(joined, "USING INDEX native_attempts_progress_terminal") || strings.Contains(joined, "TEMP B-TREE") {
 					t.Fatalf("terminal history lookup is not indexed and bounded: %v", plan)
 				}
+			}
+			citation := f.attempt
+			retrieve := strings.HasPrefix(test.name, "retrieved")
+			if test.name == "retrieved older attempt" {
+				citation = oldestAttempt
+			}
+			if test.name == "retrieved comment" {
+				for i := range progresscheck.MaxComments + 2 {
+					response := performHubAPIRequest(t, f.service, http.MethodPost, path+"/comments", testHubAdminToken, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("citation-comment-%d", i)}, Body: "Retained diagnostic evidence"})
+					requireNativeStatus(t, response, http.StatusOK)
+					if i == 0 {
+						var comment tracker.NativeComment
+						decodeHubResponse(t, response, &comment)
+						citation = comment.ID
+					}
+				}
+			}
+			recordID := citation
+			if test.name == "retrieved command receipt" {
+				citation = commandReceipt
 			}
 			var deferred *http.Request
 			var usage []tracker.NativeUsage
@@ -260,13 +330,32 @@ func TestNativeProgressExecutionPublication(t *testing.T) {
 			if len(request.Attempts) != min(test.attempts-test.staleRunning, progresscheck.MaxAttempts) {
 				t.Fatalf("evidence omitted terminal attempts: got %d", len(request.Attempts))
 			}
-			worker, err := runner.NewRunner(runner.Dependencies{Workflow: config.Workflow{Config: config.Config{Agents: config.Agents{Routes: []config.AgentRoute{{Name: "implementation", Backend: "codex", Model: "code-model", Default: true}}}}}, Workspace: progressPublicationWorkspace{path: t.TempDir()}, AgentBackend: progressPublicationAgent{attempt: f.attempt}})
+			worker, err := runner.NewRunner(runner.Dependencies{Workflow: config.Workflow{Config: config.Config{Agents: config.Agents{Routes: []config.AgentRoute{{Name: "implementation", Backend: "codex", Model: "code-model", Default: true}}}}}, Workspace: progressPublicationWorkspace{path: t.TempDir()}, AgentBackend: progressPublicationAgent{attempt: citation, recordID: recordID, retrieve: retrieve}})
 			if err != nil {
 				t.Fatal(err)
 			}
 			decision, err := worker.CheckProgress(t.Context(), runner.RunRequest{Issue: claim.Issue, Mode: runner.RunModeImplement, Execution: execution}, request)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if retrieve {
+				for _, attempt := range request.Attempts {
+					if attempt.ID == citation {
+						t.Fatal("retrieved attempt was already in request")
+					}
+				}
+				for _, comment := range request.Comments {
+					if comment.ID == citation {
+						t.Fatal("retrieved comment was already in request")
+					}
+				}
+				expected := progresscheck.EvidenceReference{ID: citation}
+				if test.name == "retrieved command receipt" {
+					expected.AttemptID = recordID
+				}
+				if !reflect.DeepEqual(decision.RetrievedEvidence, []progresscheck.EvidenceReference{expected}) {
+					t.Fatalf("retrieved citation missing: %+v", decision)
+				}
 			}
 			if overlap && (deferred == nil || len(usage) != 1 || usage[0].Input != 10 || usage[0].Output != 1) {
 				t.Fatalf("real check did not defer its usage: request=%v usage=%+v", deferred, usage)
@@ -295,10 +384,46 @@ func TestNativeProgressExecutionPublication(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			if test.name == "retrieved command receipt" {
+				other := (nativeFixture{service: f.service, project: f.project, base: f.base, token: testHubAdminToken}).createIndependent(t, "Example receipt scope")
+				for _, invalid := range []struct{ name, citation, item string }{
+					{"nonexistent receipt", "receipt-missing", request.IssueID},
+					{"cross item receipt", citation, string(other.WorkItemID)},
+				} {
+					candidateRequest := request
+					candidateRequest.IssueID = invalid.item
+					candidateID, err := candidateRequest.ID()
+					if err != nil {
+						t.Fatal(err)
+					}
+					candidate := decision
+					candidate.Evidence = []string{invalid.citation}
+					candidate.Diagnosis = invalid.citation + ": assertion still returns the old value"
+					candidate.RetrievedEvidence = []progresscheck.EvidenceReference{{ID: invalid.citation, AttemptID: recordID}}
+					direct := nativeProgressOwner{service: f.service, scope: f.scope(), request: candidateRequest}
+					if _, err := direct.Publish(t.Context(), progresscheck.Record{RequestID: candidateID, ProjectID: candidateRequest.ProjectID, IssueID: candidateRequest.IssueID, EvidenceRevision: candidateRequest.EvidenceRevision, Decision: candidate}); err == nil {
+						t.Fatalf("%s was published", invalid.name)
+					}
+				}
+			}
 			record, err := owner.Publish(t.Context(), progresscheck.Record{RequestID: id, ProjectID: request.ProjectID, IssueID: request.IssueID, EvidenceRevision: request.EvidenceRevision, Decision: decision})
 			if err != nil || record.CommentID == "" {
 				freshID, idErr := fresh.ID()
 				t.Fatalf("own execution invalidated publication: statuses=%v attempts=%d->%d evidence_revision=%s->%s request_id=%s->%s id_error=%v observations=%d err=%v", publicationStatuses, len(request.Attempts), len(fresh.Attempts), request.EvidenceRevision, fresh.EvidenceRevision, id, freshID, idErr, observed, err)
+			}
+			if err := record.Validate(request); err != nil {
+				t.Fatalf("published decision failed validation: %v", err)
+			}
+			_, replayOwner, err := scheduler.RetryProgress(t.Context(), claim.Issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			retained, found, err := replayOwner.Load(t.Context(), request.ProjectID, request.IssueID, id)
+			if err != nil || !found || !reflect.DeepEqual(record.Decision, retained.Decision) {
+				t.Fatalf("publication replay lost citation: record=%+v found=%v error=%v", retained, found, err)
+			}
+			if err := retained.Validate(request); err != nil {
+				t.Fatalf("retained decision failed validation: %v", err)
 			}
 			if !reflect.DeepEqual(request, fresh) {
 				t.Fatalf("start or usage changed request: before=%+v after=%+v", request, fresh)

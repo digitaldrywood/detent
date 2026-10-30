@@ -160,6 +160,15 @@ func (o *progressOwner) Publish(ctx context.Context, record progresscheck.Record
 		return progresscheck.Record{}, err
 	}
 	decision := record.Decision
+	if len(decision.RetrievedEvidence) > 0 {
+		supported, err := o.client.HubFeature(ctx, progresscheck.RetrievedEvidenceCapability)
+		if err != nil {
+			return progresscheck.Record{}, err
+		}
+		if !supported {
+			return progresscheck.Record{}, errors.New("hub cannot publish retrieved progress evidence")
+		}
+	}
 	if !modern {
 		decision.Diagnosis, decision.Instruction, decision.Convergence = "", "", ""
 	}
