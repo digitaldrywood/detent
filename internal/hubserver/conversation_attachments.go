@@ -629,7 +629,11 @@ func (s *Service) commandUploadAttachment(ctx context.Context, scope nativeScope
 	if err != nil {
 		return nil, err
 	}
-	plan.prepared = ctx.Value(conversationContentsKey{}).(preparedConversationContents)
+	prepared, ok := ctx.Value(conversationContentsKey{}).(preparedConversationContents)
+	if !ok {
+		return nil, errors.New("prepare attachment payload: prepared contents unavailable")
+	}
+	plan.prepared = prepared
 	ctx = plan.context(ctx)
 	err = service.transact(ctx, func(tx *sql.Tx, now time.Time) error {
 		record, err := service.loadConversation(ctx, tx, scope, id)
