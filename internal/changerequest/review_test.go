@@ -439,7 +439,7 @@ func TestReviewState(t *testing.T) {
 		head           string
 		want           connector.ChangeReview
 	}{
-		{name: "base acceptance approved", baseAcceptance: "approved", want: connector.ChangeReview{Current: true, Reviewed: true, AcceptanceOnBase: true}},
+		{name: "base acceptance approved", baseAcceptance: "approved", want: connector.ChangeReview{Current: true, Reviewed: true, AcceptanceOnBase: true, AcceptedBaseSHA: strings.Repeat("b", 40)}},
 		{name: "base acceptance missing", baseAcceptance: "missing", want: connector.ChangeReview{Current: true, Reviewed: true}},
 		{name: "base acceptance old", baseAcceptance: "old", want: connector.ChangeReview{Current: true, Reviewed: true}},
 		{name: "base acceptance nonempty", baseAcceptance: "nonempty", want: connector.ChangeReview{Current: true, Reviewed: true}},

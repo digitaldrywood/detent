@@ -581,6 +581,9 @@ func TestLocalGitLandingAlreadyContains(t *testing.T) {
 					if !errors.As(err, &refusal) || refusal.Kind != wantKind || result.MergeSHA != "" || f.remoteMain(t) != before {
 						t.Fatalf("unproven source treated as delivered: result=%+v error=%v", result, err)
 					}
+					if test.empty && refusal.BaseSHA != before {
+						t.Fatalf("empty source refusal base = %q, want %q", refusal.BaseSHA, before)
+					}
 					return
 				}
 				method := test.method
