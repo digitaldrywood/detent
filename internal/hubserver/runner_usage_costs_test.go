@@ -102,7 +102,7 @@ func TestRunnerUsageCosts(t *testing.T) {
 					t.Fatal(err)
 				}
 				defer tx.Rollback()
-				if _, err := tx.ExecContext(t.Context(), `UPDATE native_attempts SET machine_id=?,usage_facts_ready=?,data_json=? WHERE id=?`, machine, ready, string(raw), finish.Data.AttemptID); err != nil {
+				if _, err := tx.ExecContext(t.Context(), `UPDATE native_attempts SET machine_id=?,usage_facts_ready=?,data_json=?,payload_object_key='' WHERE id=?`, machine, ready, string(raw), finish.Data.AttemptID); err != nil {
 					t.Fatal(err)
 				}
 				if err := recordRunnerUsageCosts(t.Context(), tx, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, probe, UsageConfig{}, now); err != nil {
