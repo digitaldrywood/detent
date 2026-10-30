@@ -150,7 +150,7 @@ func TestCloneRunnerRepositoryUsesLocalGitConfiguration(t *testing.T) {
 	source := filepath.Join(root, "source")
 	checkout(t, source)
 	runDoctorWorkflowSourceGit(t, source, "config", "uploadpack.allowFilter", "true")
-	archive := make([]byte, 9*1024*1024)
+	archive := make([]byte, 256*1024)
 	if _, err := rand.Read(archive); err != nil {
 		t.Fatal(err)
 	}
@@ -172,38 +172,30 @@ func TestCloneRunnerRepositoryUsesLocalGitConfiguration(t *testing.T) {
 		t.Fatal(err)
 	}
 	backend := &cgi.Handler{Path: git, Args: []string{"http-backend"}, Env: []string{"GIT_PROJECT_ROOT=" + root, "GIT_HTTP_EXPORT_ALL=1"}}
-	var throttle atomic.Bool
 	var transferred atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if throttle.Load() {
-			backend.ServeHTTP(&runnerCheckoutTransferWriter{ResponseWriter: w, done: r.Context().Done(), started: time.Now(), transferred: &transferred}, r)
-			return
-		}
-		backend.ServeHTTP(w, r)
+		backend.ServeHTTP(&runnerCheckoutTransferWriter{ResponseWriter: w, transferred: &transferred}, r)
 	}))
 	defer server.Close()
 	runDoctorWorkflowSourceGit(t, source, "config", "--file", gitConfig, "url."+server.URL+"/source.insteadOf", "https://github.com/example-org/example-project.git")
-	throttle.Store(true)
-	fullCtx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
-	defer cancel()
-	full := exec.CommandContext(fullCtx, "git", "clone", "--", "https://github.com/example-org/example-project.git", filepath.Join(root, "full-clone"))
-	procgroup.Configure(fullCtx, full)
-	full.WaitDelay = time.Second
-	started := time.Now()
-	if err := full.Run(); err == nil || !errors.Is(fullCtx.Err(), context.DeadlineExceeded) || transferred.Load() < 7*1024*1024 {
-		t.Fatalf("full clone did not exhaust its two-minute transfer budget: bytes=%d error=%v context=%v", transferred.Load(), err, fullCtx.Err())
+	full := exec.CommandContext(t.Context(), "git", "clone", "--", "https://github.com/example-org/example-project.git", filepath.Join(root, "full-clone"))
+	procgroup.Configure(t.Context(), full)
+	if output, err := full.CombinedOutput(); err != nil {
+		t.Fatalf("full clone: %v: %s", err, output)
 	}
-	t.Logf("full clone: %s, %d bytes received before deadline at 64 KiB/s", time.Since(started), transferred.Load())
-	transferred.Store(0)
-	started = time.Now()
+	fullBytes := transferred.Swap(0)
+	if fullBytes < int64(len(archive)) {
+		t.Fatalf("full clone transferred %d bytes, want at least the %d-byte history blob", fullBytes, len(archive))
+	}
 	selected := globalconfig.Project{Workdir: filepath.Join(root, "checkout")}
 	for range 2 {
 		if err := prepareRunnerCheckout(t.Context(), selected, "https://github.com/example-org/example-project.git"); err != nil {
 			t.Fatal(err)
 		}
 	}
-	t.Logf("partial clone: %s, %d bytes received at 64 KiB/s", time.Since(started), transferred.Load())
-	throttle.Store(false)
+	if partialBytes := transferred.Load(); partialBytes <= 0 || partialBytes >= fullBytes {
+		t.Fatalf("partial clone transferred %d bytes, want fewer than the full clone's %d bytes", partialBytes, fullBytes)
+	}
 	missing := runDoctorWorkflowSourceGit(t, selected.Workdir, "rev-list", "--objects", "--all", "--missing=print")
 	if !strings.Contains(missing, "\n?") {
 		t.Fatalf("clone downloaded obsolete history blobs: %s", missing)
@@ -313,34 +305,13 @@ func TestCloneRunnerRepositoryFailure(t *testing.T) {
 
 type runnerCheckoutTransferWriter struct {
 	http.ResponseWriter
-	done        <-chan struct{}
-	started     time.Time
-	written     int64
 	transferred *atomic.Int64
 }
 
 func (w *runnerCheckoutTransferWriter) Write(p []byte) (int, error) {
-	total := 0
-	for len(p) > 0 {
-		chunk := p[:min(len(p), 16*1024)]
-		due := w.started.Add(time.Duration(w.written+int64(len(chunk))) * time.Second / (64 * 1024))
-		timer := time.NewTimer(time.Until(due))
-		select {
-		case <-w.done:
-			timer.Stop()
-			return total, fmt.Errorf("transfer canceled: %w", context.Canceled)
-		case <-timer.C:
-		}
-		n, err := w.ResponseWriter.Write(chunk)
-		w.written += int64(n)
-		w.transferred.Add(int64(n))
-		total += n
-		if err != nil {
-			return total, err
-		}
-		p = p[n:]
-	}
-	return total, nil
+	n, err := w.ResponseWriter.Write(p)
+	w.transferred.Add(int64(n))
+	return n, err
 }
 
 func TestRunnerCheckoutRefreshPreservesEdits(t *testing.T) {
