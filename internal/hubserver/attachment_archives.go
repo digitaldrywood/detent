@@ -118,12 +118,6 @@ VALUES(?,?,?,?,'archive.gz','application/gzip',?,?,?,'archive',?,?,?,?,?,?,?) ON
 	return c.JSON(http.StatusCreated, ref)
 }
 
-func scanAttachmentArchive(row interface{ Scan(...any) error }) (attachment.ArchiveReference, error) {
-	var ref attachment.ArchiveReference
-	err := row.Scan(&ref.Key, &ref.SHA256, &ref.CompressedSize, &ref.UncompressedSize, &ref.Codec, &ref.SchemaVersion, &ref.Kind, &ref.Retention, &ref.BindingID, &ref.CustomerOwned)
-	return ref, err
-}
-
 func (s *Service) readAttachmentArchive(c echo.Context) error {
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 	defer cancel()

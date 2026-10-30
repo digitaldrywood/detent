@@ -10,10 +10,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/artifact"
 )
 
-func (f storageConversionFamily) recordPayload() bool {
-	return f.name == "conversation_records" || f.name == "conversation_questions" || f.name == "conversation_commands" || f.name == "conversation_attachments"
-}
-
 func (s *Service) convertConversationRecordPayload(ctx context.Context, scope nativeScope, family storageConversionFamily, id string, now time.Time) error {
 	if s.conversations == nil || s.conversations.store.contents == nil {
 		return errors.New("conversation content storage is unavailable")
@@ -149,8 +145,8 @@ func (s *Service) convertConversationRecordPayload(ctx context.Context, scope na
 	if err != nil || changed == 0 {
 		return err
 	}
-	if len(metadata.columns) > 0 {
-		if err := metadata.write(ctx, tx, family.table(), "rowid=?", row); err != nil {
+	if len(metadata.Columns) > 0 {
+		if err := metadata.Write(ctx, tx, family.table(), "rowid=?", row); err != nil {
 			return err
 		}
 	}

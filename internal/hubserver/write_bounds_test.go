@@ -215,7 +215,7 @@ func TestINV20NoSQLOverJSON(t *testing.T) {
 		baseline[fields[0]] = count
 	}
 	root := filepath.Join("..", "..")
-	for _, directory := range []string{"internal/hubserver", "internal/store", "db/queries"} {
+	for _, directory := range []string{"internal/hubserver", "internal/hubconversation", "internal/store", "db/queries"} {
 		err := filepath.WalkDir(filepath.Join(root, directory), func(path string, entry fs.DirEntry, walkErr error) error {
 			if walkErr != nil {
 				return walkErr
