@@ -270,6 +270,14 @@ func TestNativeRunEventRejectionsLogged(t *testing.T) {
 			e.Data.Evidence = []tracker.NativeEvidence{{Caption: "sentinel-private"}}
 		}},
 		{"completion body", "execution_validation", "data.completion_body", "", func(e *tracker.NativeRunEvent) { e.Data.CompletionBody = strings.Repeat("sentinel-private", 5000) }},
+		{"missing decision request", "execution_validation", "data.completion_body", "blocked completion with human_action requires decision_request", func(e *tracker.NativeRunEvent) {
+			e.Data.CompletionBody = "```detent-status\nschema: 1\nstatus: blocked\nhuman_action: Choose a name\n```"
+			e.Data.Disposition = &tracker.NativeDisposition{Status: workpad.StatusBlocked, HumanAction: true}
+		}},
+		{"malformed decision request", "execution_validation", "data.completion_body", "blocked completion with human_action requires a valid decision_request in detent-status", func(e *tracker.NativeRunEvent) {
+			e.Data.CompletionBody = strings.Replace(decisionCompletion, "  question: Which naming rule should the installer use?\n", "", 1)
+			e.Data.Disposition = &tracker.NativeDisposition{Status: workpad.StatusBlocked, HumanAction: true}
+		}},
 		{"disposition", "execution_validation", "data.disposition", "", func(e *tracker.NativeRunEvent) {
 			e.Data.Disposition = &tracker.NativeDisposition{Status: "sentinel-private"}
 		}},
