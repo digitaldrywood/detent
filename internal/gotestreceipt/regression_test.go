@@ -169,6 +169,8 @@ func TestReceiptEligibilityRegressions(t *testing.T) {
 		{"TestMain shadowed environment reader", `package fixture; import ("os"; "testing"); type reader struct{}; func (reader) Getenv(string) string { data, _ := os.ReadFile("fixture"); return string(data) }; func TestMain(m *testing.M) { os := reader{}; os.Getenv("INPUT"); m.Run() }`, true},
 		{"initializer shadowed pure package", `package fixture; import ("os"; "reflect"); type reader struct{}; func (reader) TypeOf(string) string { data, _ := os.ReadFile("fixture"); return string(data) }; func init() { reflect := reader{}; reflect.TypeOf("INPUT") }`, true},
 		{"TestMain indirect input", `package fixture; import "testing"; func TestMain(m *testing.M) { setup(); m.Run() }`, true},
+		{"TestMain shadowed Run receiver", `package fixture; import ("os"; "testing"); type reader struct{}; func (reader) Run() int { data, _ := os.ReadFile("fixture"); return len(data) }; func TestMain(m *testing.M) { { m := reader{}; m.Run() }; os.Exit(m.Run()) }`, true},
+		{"TestMain renamed Run receiver", `package fixture; import ("os"; test "testing"); func TestMain(suite *test.M) { os.Exit(suite.Run()) }`, false},
 		{"TestMain disguised run", `package fixture; func TestMain(m *fixture) { m.Run() }`, true},
 		{"init reads outside log", `package fixture; import "os"; func init() { os.ReadFile("fixture") }`, true},
 		{"initializer reads outside log", `package fixture; import "os"; var input, err = os.ReadFile("fixture")`, true},
@@ -236,6 +238,13 @@ import ("os"; "testing")
 type reader struct{}
 func (reader) Getenv(string) string { data, _ := os.ReadFile("input.txt"); return string(data) }
 func TestMain(m *testing.M) { failed := false; { os := reader{}; failed = os.Getenv("INPUT") != "pass\n" }; if failed { os.Exit(1) }; os.Exit(m.Run()) }
+func TestInput(t *testing.T) {}
+`, false},
+		{"TestMain shadowed Run receiver", `package fixture
+import ("os"; "testing")
+type reader struct{}
+func (reader) Run() int { data, err := os.ReadFile("input.txt"); if err != nil || string(data) != "pass\n" { return 1 }; return 0 }
+func TestMain(m *testing.M) { { m := reader{}; if m.Run() != 0 { os.Exit(1) } }; os.Exit(m.Run()) }
 func TestInput(t *testing.T) {}
 `, false},
 		{"TestMain file", `package fixture
