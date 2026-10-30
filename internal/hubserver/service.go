@@ -57,6 +57,8 @@ type Service struct {
 	issueMailer             *issueMailer
 	hostedMutationMu        sync.Mutex
 	sourceVerification      chan struct{}
+	sourceVerifier          func(context.Context, tracker.ChangeSource, []byte) error
+	incorporationVerifier   func(context.Context, tracker.LandingIncorporation, []byte) error
 	runtimeMu               sync.Mutex
 	hostedAuthLogger        *slog.Logger
 	hostedSessions          *auth.Service
