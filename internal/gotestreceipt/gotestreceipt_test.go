@@ -84,6 +84,7 @@ func TestRunWrapperReusesOnlyMatchingReceipts(t *testing.T) {
 	}
 	input := filepath.Join(pkg, "input.txt")
 	t.Setenv(helperEnvironment, "1")
+	t.Setenv(TokenEnvironment, "receipt-token-sentinel")
 	t.Setenv("GOCOVERDIR", t.TempDir())
 	t.Chdir(pkg)
 

@@ -324,8 +324,10 @@ func (e Environment) classify(path string) (string, string, pathKind) {
 		}
 	}
 	if temporary != "" {
-		relative, _ := filepath.Rel(temporary, path)
-		return scopeTemporary, filepath.ToSlash(relative), pathTemporary
+		relative, err := filepath.Rel(temporary, path)
+		if err == nil {
+			return scopeTemporary, filepath.ToSlash(relative), pathTemporary
+		}
 	}
 	return scopeAbsolute, path, pathInput
 }

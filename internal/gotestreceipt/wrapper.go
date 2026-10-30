@@ -224,7 +224,7 @@ func run(args []string, isolate bool, stdin io.Reader, stdout, stderr io.Writer)
 }
 
 func runEnvironment(ctx context.Context, args []string, directory string, environment []string, stdin io.Reader, stdout, stderr io.Writer) int {
-	cmd := exec.CommandContext(ctx, args[0], args[1:]...) // #nosec G204 -- the go command supplies the test binary and its arguments via -exec.
+	cmd := exec.CommandContext(ctx, args[0], args[1:]...) // #nosec G204 G702 -- the receipt session executes the requested test binary directly, without a shell, and observes its exit status.
 	procgroup.Configure(ctx, cmd)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, stdout, stderr
 	cmd.Dir = directory

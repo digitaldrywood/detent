@@ -1,6 +1,7 @@
 package gotestreceipt
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -63,10 +64,15 @@ func (s *Session) execute(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid execution", http.StatusBadRequest)
 		return
 	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unavailable", http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	encoder := json.NewEncoder(w)
 	var mu sync.Mutex
-	output := executionOutput{mu: &mu, encoder: encoder, flush: w.(http.Flusher)}
+	output := executionOutput{mu: &mu, encoder: encoder, flush: flusher}
 	stderr := output
 	stderr.stderr = true
 	code := executeWrapper(r.Context(), request, executionStore{session: s}, output, stderr)
@@ -80,13 +86,19 @@ func (s *Session) execute(w http.ResponseWriter, r *http.Request) {
 func requestExecution(socket string, request executionRequest, stdout, stderr io.Writer) int {
 	client := newExecutionClient(socket)
 	defer client.CloseIdleConnections()
-	reader, writer := io.Pipe()
-	encoded := make(chan error, 1)
-	go func() { err := json.NewEncoder(writer).Encode(request); _ = writer.CloseWithError(err); encoded <- err }()
-	response, err := client.Post(clientBaseURL+"/execute", "application/json", reader)
-	_ = reader.Close()
-	encodeErr := <-encoded
-	if err != nil || encodeErr != nil {
+	data, err := json.Marshal(request)
+	if err != nil {
+		fmt.Fprintln(stderr, "invalid test execution request")
+		return 1
+	}
+	httpRequest, err := http.NewRequestWithContext(context.Background(), http.MethodPost, clientBaseURL+"/execute", bytes.NewReader(data))
+	if err != nil {
+		fmt.Fprintln(stderr, "invalid test execution request")
+		return 1
+	}
+	httpRequest.Header.Set("Content-Type", "application/json")
+	response, err := client.Do(httpRequest)
+	if err != nil {
 		fmt.Fprintln(stderr, "test execution service unavailable")
 		return 1
 	}
