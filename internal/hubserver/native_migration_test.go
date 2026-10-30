@@ -107,6 +107,7 @@ func TestNativeRuntimeMigrationPreservesHistory(t *testing.T) {
 		"20261028233138_analytics_attempt_object_references.sql",
 		"20261029031758_analytics_attempt_pending_scope.sql",
 		"20261029061743_conversation_stored_text_bytes.sql",
+		"20261030023425_storage_conversion_fair_cursors.sql",
 	} {
 		data, err := migrationFiles.ReadFile("migrations/" + name)
 		if err != nil {
@@ -122,7 +123,7 @@ func TestNativeRuntimeMigrationPreservesHistory(t *testing.T) {
 	if _, _, err := provider.GetVersions(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO "+versionTable+" (version_id,is_applied) VALUES (59,1),(20261023234600,1),(20261025220000,1),(20261025230900,1),(20261025233000,1),(20261026003000,1),(20261026041522,1),(20261026090910,1),(20261027230218,1),(20261028075830,1),(20261028195844,1),(20261028195951,1),(20261028233138,1),(20261029031758,1),(20261029061743,1)"); err != nil {
+	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO "+versionTable+" (version_id,is_applied) VALUES (59,1),(20261023234600,1),(20261025220000,1),(20261025230900,1),(20261025233000,1),(20261026003000,1),(20261026041522,1),(20261026090910,1),(20261027230218,1),(20261028075830,1),(20261028195844,1),(20261028195951,1),(20261028233138,1),(20261029031758,1),(20261029061743,1),(20261030023425,1)"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.service.database.db.ExecContext(t.Context(), `DROP VIEW native_transition_facts;
