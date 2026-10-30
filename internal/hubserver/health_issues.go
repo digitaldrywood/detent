@@ -208,14 +208,23 @@ func reportHealthFindings(ctx context.Context, tx *sql.Tx, organization tracker.
 			if err != nil {
 				return nil, err
 			}
+			contract, err := nativeIssueContract(ctx, tx, scope)
+			if err != nil {
+				return nil, err
+			}
+			target := "Todo"
+			if contract.Context != "" && !contract.Evaluate(nativeContractIssue(tracker.NativeIssue{Body: request.Body})).Satisfied() {
+				target = "Backlog"
+			}
+			request.State = target
 			project, err := validateNativeIssueDraft(ctx, tx, scope, request)
 			if err != nil {
 				return nil, err
 			}
 			request.State = ""
 			for _, state := range project.States {
-				if state.Name == "Todo" && !state.Terminal && !state.OperatorOnly && state.Dispatchable {
-					request.State = "Todo"
+				if state.Name == target && !state.Terminal && !state.OperatorOnly && state.Dispatchable == (target == "Todo") {
+					request.State = target
 					break
 				}
 			}

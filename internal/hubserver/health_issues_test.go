@@ -719,11 +719,16 @@ func TestHealthFindingIssueScope(t *testing.T) {
 func TestHealthFindingIssueWorkflow(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name   string
-		states []tracker.NativeState
-		todo   *tracker.NativeState
-		want   string
+		name           string
+		missingSection bool
+		confirmation   bool
+		states         []tracker.NativeState
+		todo           *tracker.NativeState
+		want           string
 	}{
+		{name: "missing project section", missingSection: true, states: []tracker.NativeState{{Name: "Backlog"}}, want: "Backlog"},
+		{name: "confirmation required", confirmation: true, states: []tracker.NativeState{{Name: "Backlog"}}, want: "Backlog"},
+		{name: "missing section without safe intake", missingSection: true},
 		{name: "reserved triage", states: []tracker.NativeState{{Name: "Triage"}}, want: "Todo"},
 		{name: "custom intake", states: []tracker.NativeState{{Name: "Intake"}}, want: "Todo"},
 		{name: "first eligible intake", states: []tracker.NativeState{{Name: "Intake"}, {Name: "Later"}}, want: "Todo"},
@@ -741,6 +746,22 @@ func TestHealthFindingIssueWorkflow(t *testing.T) {
 			f := newNativeFixture(t, nil, "", "health-custom-workflow")
 			other := newNativeFixture(t, f.service, f.project.OrganizationID, "health-standard-workflow")
 			addHealthBacklog(t, other)
+			for _, fixture := range []nativeFixture{f, other} {
+				prompt := "## Issue Contract\n- Acceptance criteria\n- Must not break\n- How we know it worked\n"
+				if test.missingSection && fixture.project.ID == f.project.ID {
+					prompt += "- Roadmap Summary\n"
+				}
+				if !test.confirmation || fixture.project.ID != f.project.ID {
+					prompt += "\nAgent-authored criteria do not require human confirmation.\n"
+				}
+				workflow := config.Workflow{Config: config.Default(), SharedPrompt: prompt}
+				workflow.Config.Tracker.Kind = config.TrackerHubNative
+				descriptor, err := config.ResolvePolicy(workflow)
+				if err != nil {
+					t.Fatal(err)
+				}
+				approveHubTestPolicy(t, f.service, fixture.base+"/policy", descriptor)
+			}
 			states := nativeFixtureStates()
 			if test.todo != nil {
 				states[0] = *test.todo
@@ -803,6 +824,9 @@ func TestHealthFindingIssueWorkflow(t *testing.T) {
 					issue, _, err := readNativeIssue(t.Context(), f.service.database.db, scope, string(page.Items[0].Issues[0].WorkItemID))
 					if err != nil || issue.State != project.want || strings.Contains(issue.Body, "<!-- detent:no-dispatch -->") {
 						t.Fatalf("report intake = %+v, %v", issue, err)
+					}
+					if evaluation, err := evaluateNativeIssueContract(t.Context(), f.service.database.db, scope, issue); err != nil || !evaluation.Allowed {
+						t.Fatalf("health intake contract = %+v, %v", evaluation, err)
 					}
 				}
 			}
