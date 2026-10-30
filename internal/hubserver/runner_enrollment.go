@@ -64,12 +64,26 @@ func runnerCollision() error {
 type runnerCommittedResponse func(context.Context, *sql.Tx, time.Time) (any, error)
 
 func (s *Service) runnerTransaction(c echo.Context, status int, operation func(context.Context, *sql.Tx, time.Time) (any, error)) error {
+	ctx := s.runDetailContext(c.Request().Context())
+	c.SetRequest(c.Request().WithContext(ctx))
+	contentMutation(ctx, true)
+	defer contentMutation(ctx, false)
+	_, err := prepareContentMutation(ctx, s.database.reader, func() (struct{}, error) {
+		return struct{}{}, s.commitRunnerTransaction(c, status, operation)
+	})
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	return nil
+}
+
+func (s *Service) commitRunnerTransaction(c echo.Context, status int, operation func(context.Context, *sql.Tx, time.Time) (any, error)) error {
 	ctx := c.Request().Context()
 	metrics := hostedRunnerTransactionMetrics(c.Path())
 	heartbeat := strings.HasSuffix(c.Path(), "/heartbeat")
 	tx, err := s.database.db.BeginTx(ctx, nil)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return err
 	}
 	defer tx.Rollback()
 	step := func(string) {}
@@ -80,40 +94,40 @@ func (s *Service) runnerTransaction(c echo.Context, status int, operation func(c
 	step("authority")
 	now, err := s.database.currentTime()
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return err
 	}
 	if credential, ok := c.Get("hub_api_credential").(apiCredential); ok {
 		if err := s.recheckHostedMutation(ctx, tx, &nativeScope{organization: tracker.OrganizationID(c.Param("organization")), credential: credential}); err != nil {
-			return s.nativeAPIError(c, err)
+			return err
 		}
 		if err := requireCredentialAuthority(ctx, tx, credential, now); err != nil {
-			return s.nativeAPIError(c, err)
+			return err
 		}
 	}
 	step("consumption_before")
 	before, err := s.database.hostedConsumption(ctx, tx, now, metrics...)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return err
 	}
 	step("dispatch_before")
 	var dispatchBefore string
 	if heartbeat {
 		dispatchBefore, err = runnerDispatchFingerprint(ctx, tx, nativeRequestScope(c), c.Param("machine"), now)
 		if err != nil {
-			return s.nativeAPIError(c, err)
+			return err
 		}
 	}
 	step("")
 	value, err := operation(ctx, tx, now)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return err
 	}
 	step("dispatch_after")
 	notify := !heartbeat && c.Request().Method != http.MethodGet && c.Path() != nativeBase+"/claims/preview" && !strings.HasSuffix(c.Path(), "/renew") && !strings.HasSuffix(c.Path(), "/validate")
 	if heartbeat {
 		after, err := runnerDispatchFingerprint(ctx, tx, nativeRequestScope(c), c.Param("machine"), now)
 		if err != nil {
-			return s.nativeAPIError(c, err)
+			return err
 		}
 		notify = dispatchBefore != after
 	}
@@ -122,26 +136,26 @@ func (s *Service) runnerTransaction(c echo.Context, status int, operation func(c
 	if s.database.plans() != nil && (heartbeat || strings.HasSuffix(c.Path(), "/machines/register")) {
 		credential, ok := c.Get("hub_api_credential").(apiCredential)
 		if !ok {
-			return s.nativeAPIError(c, runnerUnauthorized())
+			return runnerUnauthorized()
 		}
 		active, err := countHostedAfter(ctx, tx, "SELECT l.expires_at FROM leases l JOIN lease_runners r ON r.lease_id=l.lease_id WHERE l.released_at IS NULL AND r.runner_id=?", now, credential.Runner.RunnerID)
 		if err != nil {
-			return s.nativeAPIError(c, err)
+			return err
 		}
 		completion = active > 0
 	}
 	if err := s.database.checkHostedGrowth(ctx, tx, before, now, completion, metrics...); err != nil {
-		return s.nativeAPIError(c, err)
+		return err
 	}
 	step("usage")
 	if heartbeat {
 		if err := s.database.recordHostedUsage(ctx, tx, now, "heartbeats", 1); err != nil {
-			return s.nativeAPIError(c, err)
+			return err
 		}
 	}
 	step("commit")
 	if err := tx.Commit(); err != nil {
-		return s.nativeAPIError(c, err)
+		return err
 	}
 	step("")
 	if notify {
@@ -153,7 +167,7 @@ func (s *Service) runnerTransaction(c echo.Context, status int, operation func(c
 	if response, ok := value.(runnerCommittedResponse); ok {
 		value, err = s.readCommittedRunnerResponse(c, response)
 		if err != nil {
-			return s.nativeAPIError(c, err)
+			return err
 		}
 	}
 	c.Response().Header().Set("Cache-Control", "no-store")
