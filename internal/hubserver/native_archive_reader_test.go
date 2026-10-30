@@ -352,7 +352,7 @@ func TestArchiveQueryScopesLiveFallback(t *testing.T) {
 		legacy := attachment.ArchiveTable{Name: original.Name}
 		var indexes []int
 		for index, column := range original.Columns {
-			if !archiveProjectionColumn(original.Name, column) {
+			if _, projected := archiveProjectionColumn(original.Name, column); !projected {
 				legacy.Columns = append(legacy.Columns, column)
 				indexes = append(indexes, index)
 			}
@@ -379,15 +379,58 @@ func TestArchiveQueryScopesLiveFallback(t *testing.T) {
 			t.Fatalf("historical fields changed: sequence=%d type=%s actor=%s data=%s operation=%+v", sequence, kind, actor, data, operation)
 		}
 	})
+	for _, test := range []struct {
+		kind, table string
+		want        map[string]any
+	}{
+		{"run", "native_attempts", map[string]any{"worker_cleanup_required": nil, "cleanup_acknowledged_at": nil, "implementing_session_id": nil}},
+		{"change", "change_versions", map[string]any{"implementing_session_id": nil, "implementing_machine_id": nil, "session_history_sequence": int64(0), "session_history_candidate": int64(0), "session_history_state": int64(0), "session_history_machine_id": ""}},
+	} {
+		t.Run("pre-migration "+test.table+" row projects added columns", func(t *testing.T) {
+			table := archiveTestTable(t, f.service, test.table, "0")
+			table.Columns = slices.DeleteFunc(table.Columns, func(column string) bool {
+				_, added := test.want[column]
+				return added
+			})
+			row := make([]json.RawMessage, len(table.Columns))
+			for i, column := range table.Columns {
+				switch column {
+				case "rowid":
+					row[i] = json.RawMessage("9001")
+				case "id":
+					row[i] = json.RawMessage(`"archived-` + test.table + `"`)
+				default:
+					row[i] = json.RawMessage("null")
+				}
+			}
+			table.Rows = [][]json.RawMessage{row}
+			section := &attachment.ArchiveSection{
+				OrganizationID: string(f.project.OrganizationID), ProjectID: string(f.project.ID),
+				WorkItemID: string(item.WorkItemID), SectionID: test.kind, Tables: []attachment.ArchiveTable{table},
+			}
+			query, err := newNativeArchiveQuery(t.Context(), f.service.database.reader, section, "absent-subject", 1, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for column, want := range test.want {
+				var got any
+				if err := query.QueryRowContext(t.Context(), "SELECT "+column+" FROM "+test.table+" WHERE id=?", "archived-"+test.table).Scan(&got); err != nil {
+					t.Fatalf("%s: %v", column, err)
+				}
+				if got != want {
+					t.Errorf("%s = %#v, want %#v", column, got, want)
+				}
+			}
+		})
+	}
 	for _, kind := range []string{"run", "change", "revision", "conversation", "history"} {
 		for _, name := range nativeArchiveTables(kind) {
 			t.Run(name, func(t *testing.T) {
 				table := archiveTestTable(t, f.service, name, "0")
-				if name == "native_attempts" {
-					table.Columns = slices.DeleteFunc(table.Columns, func(column string) bool {
-						return column == "worker_cleanup_required" || column == "cleanup_acknowledged_at"
-					})
-				}
+				table.Columns = slices.DeleteFunc(table.Columns, func(column string) bool {
+					_, projected := archiveProjectionColumn(name, column)
+					return projected
+				})
 				section := &attachment.ArchiveSection{
 					OrganizationID: string(f.project.OrganizationID), ProjectID: string(f.project.ID),
 					WorkItemID: string(item.WorkItemID), SectionID: kind, Tables: []attachment.ArchiveTable{table},
