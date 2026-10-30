@@ -105,6 +105,12 @@ func (o *Orchestrator) reconcileResidualWorkspaces(ctx context.Context, state *S
 	if !ok {
 		return true
 	}
+	if ctx.Err() != nil {
+		return false
+	}
+	if o.workspaceCleanupContext != nil {
+		ctx = o.workspaceCleanupContext
+	}
 	result, err := reconciler.ReconcileWorkspaces(ctx, activeWorkspaceIssues(state, o.cfg.TerminalStates))
 	if state.CleanupFailures == nil {
 		state.CleanupFailures = map[string]string{}
@@ -463,6 +469,12 @@ func (o *Orchestrator) reapWorkspace(ctx context.Context, state *State, issue co
 		if verificationErr != nil && o.logger != nil {
 			o.logger.Warn("verify workspace PR delivery", "identifier", issue.Identifier, "error", verificationErr)
 		}
+	}
+	if ctx.Err() != nil {
+		return false
+	}
+	if o.workspaceCleanupContext != nil {
+		ctx = o.workspaceCleanupContext
 	}
 	result, err := o.reaper.ReapWorkspace(ctx, issue)
 	if errors.Is(err, workspace.ErrWorkspacePreserved) {

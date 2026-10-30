@@ -384,6 +384,8 @@ type Orchestrator struct {
 	workspaceCleanupCancel    context.CancelFunc
 	workspaceCleanupWG        sync.WaitGroup
 	workspaceCleanupRemaining *int
+	workspaceCleanupContext   context.Context
+	workspaceCleanupTimeout   func(context.Context, time.Duration) (context.Context, context.CancelFunc)
 	workspaceCleanupLocal     bool
 }
 
