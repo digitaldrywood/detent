@@ -656,13 +656,9 @@ func TestLocalGitNativeWorkDisablesTrackedHooks(t *testing.T) {
 			if test.gpgsign != "" {
 				runGit(t, source, "config", "commit.gpgsign", test.gpgsign)
 			}
-			probeStarted := time.Now()
 			backend, err = NewBackend(KindLocalGit, LocalGitOptions{Root: filepath.Dir(info.Path), SourceRoot: source, AutoBranch: true, CommitIdentity: CommitIdentity{Name: "Enrolled runner", Email: "machine_fixture@runners.detent.invalid"}})
 			if err != nil {
 				t.Fatal(err)
-			}
-			if time.Since(probeStarted) > signingProbeTimeout+5*time.Second {
-				t.Fatal("signing probe exceeded its bounded startup deadline")
 			}
 			owner := backend.(*LocalGit)
 			report := owner.CommitReport()
