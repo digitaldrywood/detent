@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -289,7 +291,25 @@ func (p commitPolicy) run(ctx context.Context, path string, env []string, args .
 	cmd.Env = append(os.Environ(), env...)
 	cmd.WaitDelay = workspaceCommandWaitDelay
 	procgroup.Configure(ctx, cmd)
-	output, err := cmd.CombinedOutput()
+	file, err := os.CreateTemp("", "detent-commit-output-*")
+	if err != nil {
+		return "", fmt.Errorf("create commit output file: %w", err)
+	}
+	defer func() {
+		err = errors.Join(err, file.Close())
+		if removeErr := os.Remove(file.Name()); removeErr != nil {
+			slog.Warn("remove commit output file", slog.String("path", file.Name()), slog.Any("error", removeErr))
+		}
+	}()
+	cmd.Stdout, cmd.Stderr = file, file
+	err = cmd.Run()
+	if _, seekErr := file.Seek(0, io.SeekStart); seekErr != nil {
+		return "", errors.Join(err, fmt.Errorf("rewind commit output file: %w", seekErr))
+	}
+	output, readErr := io.ReadAll(file)
+	if readErr != nil {
+		return "", errors.Join(err, fmt.Errorf("read commit output file: %w", readErr))
+	}
 	if err != nil {
 		if ctx.Err() != nil {
 			err = ctx.Err()

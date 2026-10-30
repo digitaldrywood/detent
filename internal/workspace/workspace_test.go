@@ -3804,6 +3804,7 @@ func TestRunGitAtBoundsInheritedOutput(t *testing.T) {
 		args        []string
 		redirection string
 		exitCode    int
+		commit      bool
 	}{
 		{name: "stdout retained", redirection: "2>/dev/null"},
 		{name: "stderr retained", redirection: ">/dev/null"},
@@ -3814,6 +3815,9 @@ func TestRunGitAtBoundsInheritedOutput(t *testing.T) {
 		{name: "worktree creation stdout retained", args: []string{"worktree", "add", "--detach", "new-worktree", "HEAD"}, redirection: "2>/dev/null"},
 		{name: "worktree creation stderr retained", args: []string{"worktree", "add", "--detach", "new-worktree", "HEAD"}, redirection: ">/dev/null"},
 		{name: "failed worktree creation retains diagnostics", args: []string{"worktree", "add", "--detach", "new-worktree", "HEAD"}, exitCode: 23},
+		{name: "commit stdout retained", redirection: "2>/dev/null", commit: true},
+		{name: "commit stderr retained", redirection: ">/dev/null", commit: true},
+		{name: "failed commit retains diagnostics", commit: true, exitCode: 23},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -3849,10 +3853,18 @@ exit %d
 				if len(args) == 0 {
 					args = []string{"worktree", "prune"}
 				}
-				output, err := runGitAtWithEnv(ctx, dir, []string{
+				env := []string{
 					"DETENT_PIPE_RELEASE=" + fifoPath,
 					"DETENT_PIPE_DONE=" + donePath,
-				}, args...)
+				}
+				var output string
+				var err error
+				if tt.commit {
+					policy := commitPolicy{report: CommitReport{Identity: CommitIdentity{Name: "Runner", Email: "runner@example.test"}, Signing: "unsigned"}}
+					output, err = policy.run(ctx, dir, env, "commit", "--allow-empty", "-m", "example")
+				} else {
+					output, err = runGitAtWithEnv(ctx, dir, env, args...)
+				}
 				results <- result{output: output, err: err}
 			}()
 			defer func() {
