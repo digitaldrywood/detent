@@ -22,7 +22,7 @@ const (
 	maxPackageLength    = 512
 	maxAttestation      = 128
 	DigestKeyBytes      = 32
-	protocolFingerprint = "detent-go-test-receipt-v4"
+	protocolFingerprint = "detent-go-test-receipt-v5"
 )
 
 var digestPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -104,6 +104,7 @@ func ValidateInputs(inputs []string) error {
 		}
 		fields := strings.Split(input, "\t")
 		switch {
+		case len(fields) == 1 && fields[0] == environInput:
 		case len(fields) == 2 && fields[0] == "env" && fields[1] != "" && !strings.ContainsAny(fields[1], "=/\\:"):
 		case len(fields) == 3 && (fields[0] == "open" || fields[0] == "stat") && validPathScope(fields[1]) && validRelativePath(fields[2]):
 		default:

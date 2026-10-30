@@ -204,6 +204,31 @@ passing Go test binaries are reused from Hub receipts, and posts
 `develop-full-ci` on the exact commit. Ordinary landing waits for no additional
 CI producer or full-suite validation.
 
+A Go test receipt reuses a pass only for a hermetic test binary: one whose
+complete input set is the binary, its flags, its package directory relative to
+the checkout, the Go runtime environment, and the files and environment
+variables it observably reads. A binary that starts a subprocess, opens a
+missing relative path, reads an input that disappeared or changed while it ran,
+reads a path outside the checkout, GOROOT and temporary directories, or whose
+package source changed while it ran is never recorded. Code that runs before
+Go's test log starts (`init`, `TestMain`, package variables and the package
+functions and methods they reach), inspected in every package file regardless
+of build constraints, is held to the same rule: a file read, glob or process
+start there prevents recording, named environment reads there join the input
+set, and an unnamed or shadowed read there or an environment listing anywhere
+in the package keys the whole environment in its observed order. Read files
+are fingerprinted by mode and content; stat-only inputs by size and mode, plus
+modification time for temporary files, because a fresh checkout's timestamps
+carry no meaning. Checkout and temporary directory prefixes in environment
+values are normalized only to their length, so relocating to an equal-length
+path is the only difference a receipt ignores. Like Go's own test cache,
+receipts do not observe `Readlink` or `syscall.Getenv` during tests,
+modification-time assertions on checkout files, the length of the path
+`syscall.Getwd` returns, or network, clock and host state other than files and
+environment; a test whose result depends on them is a defect under the
+repository test rules, which already forbid ambient state, running processes
+and real time.
+
 Only a green `make check-release` on the exact release branch head produces
 release evidence: `scripts/release-validate-local.sh release/vX.Y` posts
 `scheduled-full-ci` on that head, and develop evidence is never reused after
@@ -232,6 +257,10 @@ exact tagged commit before building.
 `TestWorkflowViolations` in `internal/invariants`;
 `TestReleaseWorkflowAuthenticatesExactCommitProvenance` in the repository root;
 `TestValidateCommandReusesGoTestReceiptsAcrossCheckouts` in `internal/cli`;
+`TestRunWrapperExecutesWhenUnobservedInputsChange`, `TestPreWindowInputs`,
+`TestParseTestLog`, `TestKeySeparatesArguments`, `TestSnapshotTempEntries`,
+`TestEnvironmentListingKeepsOrder` and `TestWrapperRejectsUnobservedInputs` in
+`internal/gotestreceipt`;
 `TestMakeCheckFastOverlapsWorktrees` in `tools/checklock`; `TestParseProblems`,
 `TestReport`, `TestCloudReport`, `TestCloudDestinationAuthority`,
 `TestReleaseStabilization`, and `TestReleaseFinalizer` in `tools/cifailure`.

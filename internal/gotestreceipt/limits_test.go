@@ -85,7 +85,7 @@ func TestVerifierRejectsInputsChangedDuringLookup(t *testing.T) {
 			if err := os.Chtimes(path, time.Time{}, time.Unix(1, 0)); err != nil {
 				t.Fatal(err)
 			}
-		}},
+		}, want: true},
 		{name: "file replaced with same size and time", change: func(t *testing.T, path string) {
 			info, err := os.Stat(path)
 			if err != nil {

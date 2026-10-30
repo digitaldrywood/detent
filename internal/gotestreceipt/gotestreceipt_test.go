@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -24,7 +25,10 @@ import (
 const (
 	helperEnvironment = "GOTESTRECEIPT_HELPER"
 	helperRan         = "gotestreceipt helper ran"
+	earlySource       = "package gotestreceipt\n\nimport \"os\"\n\nvar earlyMode = os.Getenv(\"GOTESTRECEIPT_EARLY\")\n"
 )
+
+var earlyMode = os.Getenv("GOTESTRECEIPT_EARLY")
 
 func TestMain(m *testing.M) {
 	if IsWrapperInvocation(os.Args[0]) {
@@ -51,6 +55,40 @@ func TestHelperProcess(t *testing.T) {
 		if strings.HasPrefix(name, "DETENT_GO_TEST") || strings.Contains(entry, string(testDigestKey)) {
 			t.Fatalf("test binary received receipt session state %s", name)
 		}
+	}
+	path := os.Getenv("GOTESTRECEIPT_HELPER_PATH")
+	switch os.Getenv("GOTESTRECEIPT_HELPER_MODE") {
+	case "exec":
+		output, err := exec.Command("/bin/sh", "script.sh").Output()
+		if err != nil || strings.TrimSpace(string(output)) != "pass" {
+			t.Fatalf("script output %q: %v", output, err)
+		}
+		return
+	case "early":
+		if earlyMode != "" {
+			t.Fatalf("early mode %q", earlyMode)
+		}
+		return
+	case "mtime":
+		info, err := os.Stat(path)
+		if err != nil || info.ModTime().Year() < 2001 {
+			t.Fatalf("stat %s: %v", path, err)
+		}
+		return
+	case "remove":
+		data, err := os.ReadFile(path)
+		if err != nil || string(data) != "pass" {
+			t.Fatalf("input %q: %v", data, err)
+		}
+		if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
+		return
+	case "length":
+		if limit, err := strconv.Atoi(os.Getenv("GOTESTRECEIPT_HELPER_LIMIT")); err != nil || len(path) > limit {
+			t.Fatalf("path %q exceeds the limit: %v", path, err)
+		}
+		return
 	}
 	data, err := os.ReadFile("input.txt")
 	if err != nil {
@@ -201,29 +239,20 @@ func TestHelperProcess(t *testing.T) {
 	}
 
 	steps := []struct {
-		name        string
-		content     string
-		mode        string
-		wantCode    int
-		wantRun     bool
-		staleSource bool
+		name     string
+		content  string
+		mode     string
+		wantCode int
+		wantRun  bool
 	}{
 		{name: "first pass executes and records", content: "pass", wantRun: true},
 		{name: "unchanged input reuses receipt", content: "pass"},
 		{name: "changed input executes and fails", content: "changed", wantCode: 1, wantRun: true},
-		{name: "restored input with a new timestamp executes", content: "pass", wantRun: true},
-		{name: "source changed after compilation cannot certify the old binary", content: "pass", wantRun: true, staleSource: true},
+		{name: "restored input content with a new timestamp reuses the receipt", content: "pass"},
 		{name: "changed environment executes", content: "pass", mode: "fail", wantCode: 1, wantRun: true},
 		{name: "a test that rewrites its input executes and is not recorded", content: "pass", mode: "rewrite", wantRun: true},
 	}
 	for _, step := range steps {
-		source := helperSource
-		if step.staleSource {
-			source = strings.ReplaceAll(source, "gotestreceipt helper ran", "different compiled behavior")
-		}
-		if err := os.WriteFile(filepath.Join(pkg, "fixture_test.go"), []byte(source), 0o600); err != nil {
-			t.Fatal(err)
-		}
 		previous, err := os.ReadFile(input)
 		if err != nil && !os.IsNotExist(err) {
 			t.Fatal(err)
@@ -244,8 +273,8 @@ func TestHelperProcess(t *testing.T) {
 		}
 	}
 	stats := session.Stats()
-	if stats.Hits != 1 || stats.Records != 2 || stats.Refused != 2 || stats.Failures != 0 {
-		t.Fatalf("stats = %+v, want 1 hit, 2 records and 2 refusals", stats)
+	if stats.Hits != 2 || stats.Records != 1 || stats.Refused != 1 || stats.Failures != 0 {
+		t.Fatalf("stats = %+v, want 2 hits, 1 record and 1 refusal", stats)
 	}
 	for name, value := range session.Environment() {
 		if strings.Contains(value, string(testDigestKey)) || strings.Contains(value, base64.StdEncoding.EncodeToString(testDigestKey)) {
@@ -270,7 +299,7 @@ func TestHelperProcess(t *testing.T) {
 	if err := forged.Body.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if forged.StatusCode != http.StatusNotFound || store.count() != 2 {
+	if forged.StatusCode != http.StatusNotFound || store.count() != 1 {
 		t.Fatalf("forged receipt: status %d, receipts %d; want no record endpoint", forged.StatusCode, store.count())
 	}
 	if got := store.receipts[0]; got.Package != "pkg" || got.Attestation != "attestation" {
@@ -278,6 +307,278 @@ func TestHelperProcess(t *testing.T) {
 	}
 	if !slices.Contains(store.receipts[0].Inputs, "open\tm\tpkg/input.txt") || !slices.Contains(store.receipts[0].Inputs, "env\tGOTESTRECEIPT_HELPER_MODE") {
 		t.Fatalf("inputs = %q, want the helper's input file and mode variable", store.receipts[0].Inputs)
+	}
+}
+
+func TestRunWrapperExecutesWhenUnobservedInputsChange(t *testing.T) {
+	type fixture struct {
+		root, pkg, scratch string
+		env                map[string]string
+	}
+	tests := []struct {
+		name    string
+		mode    string
+		prepare func(t *testing.T, f *fixture)
+		change  func(t *testing.T, f *fixture)
+	}{
+		{
+			name: "a script read by a subprocess changes",
+			mode: "exec",
+			prepare: func(t *testing.T, f *fixture) {
+				writeFile(t, filepath.Join(f.pkg, "script.sh"), "cat data.txt\n")
+				writeFile(t, filepath.Join(f.pkg, "data.txt"), "pass")
+			},
+			change: func(t *testing.T, f *fixture) { writeFile(t, filepath.Join(f.pkg, "data.txt"), "fail") },
+		},
+		{
+			name:   "an environment variable read during package initialization changes",
+			mode:   "early",
+			change: func(t *testing.T, f *fixture) { f.env["GOTESTRECEIPT_EARLY"] = "fail" },
+		},
+		{
+			name: "a temporary stat input changes only its modification time",
+			mode: "mtime",
+			prepare: func(t *testing.T, f *fixture) {
+				f.env["GOTESTRECEIPT_HELPER_PATH"] = filepath.Join(f.scratch, "stamp")
+				writeFile(t, f.env["GOTESTRECEIPT_HELPER_PATH"], "x")
+				setTime(t, f.env["GOTESTRECEIPT_HELPER_PATH"], time.Now().Add(-time.Hour))
+			},
+			change: func(t *testing.T, f *fixture) {
+				setTime(t, f.env["GOTESTRECEIPT_HELPER_PATH"], time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC))
+			},
+		},
+		{
+			name: "a checkout input the test deleted stays missing",
+			mode: "remove",
+			prepare: func(t *testing.T, f *fixture) {
+				f.env["GOTESTRECEIPT_HELPER_PATH"] = filepath.Join(f.pkg, "fixture.txt")
+				writeFile(t, f.env["GOTESTRECEIPT_HELPER_PATH"], "pass")
+				setTime(t, f.pkg, time.Now().Add(-time.Hour))
+			},
+			change: func(*testing.T, *fixture) {},
+		},
+		{
+			name: "a temporary input the test deleted stays missing",
+			mode: "remove",
+			prepare: func(t *testing.T, f *fixture) {
+				f.env["GOTESTRECEIPT_HELPER_PATH"] = filepath.Join(f.scratch, "fixture.txt")
+				writeFile(t, f.env["GOTESTRECEIPT_HELPER_PATH"], "pass")
+				setTime(t, f.env["GOTESTRECEIPT_HELPER_PATH"], time.Now().Add(-time.Hour))
+			},
+			change: func(*testing.T, *fixture) {},
+		},
+		{
+			name: "the checkout moves to a path of a different length",
+			mode: "length",
+			prepare: func(t *testing.T, f *fixture) {
+				f.env["GOTESTRECEIPT_HELPER_PATH"] = f.root
+				f.env["GOTESTRECEIPT_HELPER_LIMIT"] = strconv.Itoa(len(f.root))
+			},
+			change: func(t *testing.T, f *fixture) {
+				f.root += "-moved"
+				f.pkg = filepath.Join(f.root, "pkg")
+				if err := os.MkdirAll(f.pkg, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				writeFile(t, filepath.Join(f.pkg, "early_test.go"), earlySource)
+				f.env["GOTESTRECEIPT_HELPER_PATH"] = f.root
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := &fixture{root: filepath.Join(t.TempDir(), "repo"), scratch: t.TempDir(), env: map[string]string{helperEnvironment: "1", "GOTESTRECEIPT_HELPER_MODE": tt.mode, "GOCOVERDIR": t.TempDir()}}
+			f.pkg = filepath.Join(f.root, "pkg")
+			if err := os.MkdirAll(f.pkg, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			writeFile(t, filepath.Join(f.pkg, "early_test.go"), earlySource)
+			if tt.prepare != nil {
+				tt.prepare(t, f)
+			}
+			store := &memoryStore{}
+			run := func() (int, string, Stats) {
+				t.Helper()
+				for name, value := range f.env {
+					t.Setenv(name, value)
+				}
+				t.Chdir(f.pkg)
+				session, err := Start(t.Context(), store, nil, t.TempDir(), f.root)
+				if err != nil {
+					t.Fatal(err)
+				}
+				executable := stageTestBinary(t, filepath.Join(session.workDir, "go-build1"))
+				getenv := func(name string) string {
+					switch name {
+					case SocketEnvironment:
+						return session.socket
+					case RootEnvironment:
+						return f.root
+					}
+					return os.Getenv(name)
+				}
+				var stdout, stderr bytes.Buffer
+				code := RunWrapper([]string{executable, "-test.paniconexit0", "-test.run=^TestHelperProcess$"}, getenv, nil, &stdout, &stderr)
+				stats, err := session.Close(context.WithoutCancel(t.Context()))
+				if err != nil {
+					t.Fatal(err)
+				}
+				return code, stdout.String() + stderr.String(), stats
+			}
+			if code, output, _ := run(); code != 0 || !strings.Contains(output, helperRan) {
+				t.Fatalf("first run code = %d\n%s", code, output)
+			}
+			tt.change(t, f)
+			code, output, stats := run()
+			if !strings.Contains(output, helperRan) || code == 0 {
+				t.Fatalf("second run code = %d, want the test to execute and fail after its input changed (stats %+v)\n%s", code, stats, output)
+			}
+		})
+	}
+}
+
+func TestPreWindowInputs(t *testing.T) {
+	tests := []struct {
+		name    string
+		source  string
+		want    []string
+		wantErr bool
+	}{
+		{
+			name:   "reads in tests run inside the logged window are not added",
+			source: "package p\nimport (\"os\"; \"sync\"; \"testing\")\nvar lazy = sync.OnceValue(func() string { data, _ := os.ReadFile(\"x\"); return string(data) })\nfunc TestX(t *testing.T) { _ = os.Getenv(\"LATE\"); _, _ = os.ReadFile(\"late\") }\n",
+		},
+		{
+			name:   "named reads in TestMain, init and package variables are added",
+			source: "package p\nimport (sys \"os\"; \"testing\")\nconst mode = \"MODE\"\nvar early = sys.Getenv(\"EARLY\")\nfunc init() { _, _ = sys.LookupEnv(mode) }\nfunc TestMain(m *testing.M) { _ = sys.Getenv(\"MAIN\"); m.Run() }\n",
+			want:   []string{"env\tEARLY", "env\tMAIN", "env\tMODE"},
+		},
+		{
+			name:   "an unnamed read or a passed reader keys the whole environment",
+			source: "package p\nimport (\"os\"; \"testing\")\nfunc run(func(string) string) {}\nfunc TestMain(m *testing.M) { run(os.Getenv); m.Run() }\n",
+			want:   []string{environInput},
+		},
+		{
+			name:   "listing the environment anywhere keys the whole environment because Go never logs it",
+			source: "package p\nimport (\"os\"; \"testing\")\nfunc TestX(t *testing.T) { _ = os.Environ() }\n",
+			want:   []string{environInput},
+		},
+		{
+			name:    "a file read by a function TestMain calls is refused",
+			source:  "package p\nimport (\"os\"; \"testing\")\nfunc setup() { _, _ = os.ReadFile(\"fixture\") }\nfunc TestMain(m *testing.M) { setup(); os.Exit(m.Run()) }\n",
+			wantErr: true,
+		},
+		{
+			name:    "a file read by a method TestMain calls is refused",
+			source:  "package p\nimport (\"os\"; \"testing\")\ntype reader struct{}\nfunc (reader) Getenv(string) string { data, _ := os.ReadFile(\"input.txt\"); return string(data) }\nfunc TestMain(m *testing.M) { os := reader{}; _ = os.Getenv(\"INPUT\"); m.Run() }\n",
+			wantErr: true,
+		},
+		{
+			name:   "running the tests through the testing.M parameter follows no local Run method",
+			source: "package p\nimport (\"os\"; \"testing\")\ntype server struct{}\nfunc (server) Run() int { _, _ = os.ReadFile(\"late\"); return 0 }\nfunc TestMain(m *testing.M) { os.Exit(m.Run()) }\n",
+		},
+		{
+			name:    "a shadowed testing.M parameter follows local Run methods",
+			source:  "package p\nimport (\"os\"; \"testing\")\ntype reader struct{}\nfunc (reader) Run() int { _, _ = os.ReadFile(\"input.txt\"); return 0 }\nfunc TestMain(m *testing.M) { { m := reader{}; m.Run() }; os.Exit(m.Run()) }\n",
+			wantErr: true,
+		},
+		{
+			name:    "a process started from TestMain is refused",
+			source:  "package p\nimport (\"os\"; \"os/exec\"; \"testing\")\nfunc TestMain(m *testing.M) { _ = exec.Command(\"git\").Run(); os.Exit(m.Run()) }\n",
+			wantErr: true,
+		},
+		{
+			name:    "a glob in init is refused",
+			source:  "package p\nimport \"path/filepath\"\nfunc init() { _, _ = filepath.Glob(\"*.yaml\") }\n",
+			wantErr: true,
+		},
+		{
+			name:    "a file reader taken as a value before the log is refused",
+			source:  "package p\nimport (\"io/fs\"; \"os\"; \"testing\")\nvar read = fs.ReadFile\nfunc TestMain(m *testing.M) { load := os.ReadFile; _, _ = load(\"x\"); os.Exit(m.Run()) }\n",
+			wantErr: true,
+		},
+		{
+			name:    "files excluded by build constraints are still inspected",
+			source:  "//go:build never\n\npackage p\nimport \"os\"\nfunc init() { _, _ = os.ReadFile(\"x\") }\n",
+			wantErr: true,
+		},
+		{
+			name:   "a local variable that shadows a constant keys the whole environment",
+			source: "package p\nimport (\"os\"; \"testing\")\nconst name = \"FIXED\"\nfunc TestMain(m *testing.M) { name := os.Args[0]; _ = os.Getenv(name); os.Exit(m.Run()) }\n",
+			want:   []string{environInput},
+		},
+		{
+			name:    "an initializer that reads a file is refused",
+			source:  "package p\nimport \"os\"\nvar input, err = os.ReadFile(\"fixture\")\n",
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeFile(t, filepath.Join(dir, "p_test.go"), tt.source)
+			got, err := PreWindowInputs(dir)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("err = %v, wantErr %t", err, tt.wantErr)
+			}
+			if len(got) != 0 || len(tt.want) != 0 {
+				if !slices.Equal(got, tt.want) {
+					t.Fatalf("inputs = %q, want %q", got, tt.want)
+				}
+			}
+		})
+	}
+}
+
+func TestSnapshotTempEntries(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "kept"), "x")
+	entries, err := SnapshotTempEntries([]TempRoot{{"TMPDIR", root}, {"TMP", filepath.Join(root, "absent")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !entries[root] || !entries[filepath.Join(root, "kept")] || len(entries) != 2 {
+		t.Fatalf("entries = %v, want the root and its entry", entries)
+	}
+	unreadable := filepath.Join(root, "unreadable")
+	if err := os.Mkdir(unreadable, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(unreadable, 0o700); err != nil {
+			t.Error(err)
+		}
+	})
+	if _, err := SnapshotTempEntries([]TempRoot{{"TMPDIR", unreadable}}); err == nil {
+		t.Fatal("an unreadable temporary root was treated as empty")
+	}
+}
+
+func TestEnvironmentListingKeepsOrder(t *testing.T) {
+	digest := func(environ ...string) string {
+		t.Helper()
+		value, err := Digest([]string{environInput}, Environment{DigestKey: testDigestKey, Environ: func() []string { return environ }})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return value
+	}
+	if digest("A=1", "A=2") == digest("A=2", "A=1") {
+		t.Fatal("environment order that decides a duplicate's value did not change the digest")
+	}
+}
+
+func writeFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func setTime(t *testing.T, path string, at time.Time) {
+	t.Helper()
+	if err := os.Chtimes(path, at, at); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -293,13 +594,37 @@ func TestParseTestLog(t *testing.T) {
 	if err := os.Chtimes(kept, start.Add(-time.Hour), start.Add(-time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	env := Environment{DigestKey: testDigestKey, Root: "/work/repo", GoRoot: "/opt/go", TempDirs: []TempRoot{{"TMPDIR", scratch}, {"TMP", "/work/repo/tmp"}}, UncacheableDirs: []string{"/dev", "/proc"}}
+	tool := filepath.Join(scratch, "tool")
+	if err := os.WriteFile(tool, []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	repo := filepath.Join(t.TempDir(), "repo")
+	for _, name := range []string{"pkg/testdata/a.txt", "docs/invariants.md"} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(repo, name)), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, filepath.Join(repo, name), "x")
+	}
+	env := Environment{DigestKey: testDigestKey, Root: repo, GoRoot: "/opt/go", TempDirs: []TempRoot{{"TMPDIR", scratch}, {"TMP", repo + "/tmp"}}, UncacheableDirs: []string{"/dev", "/proc"}}
+	snapshot := env
+	snapshot.TempEntries = map[string]bool{kept: true, tool: true, filepath.Join(scratch, "shared"): true}
 	tests := []struct {
 		name    string
 		log     string
+		env     *Environment
 		want    []string
 		wantErr bool
 	}{
+		{
+			name: "temporary files under entries created during the test are not inputs",
+			log:  "# test log\nopen " + written + "\nopen " + filepath.Join(scratch, "TestX", "001", "db") + "\nopen " + kept + "\n",
+			env:  &snapshot,
+			want: []string{"open\tt:TMPDIR\tkept"},
+		},
+		{name: "a removed temporary file under an entry that predates the test is refused", log: "# test log\nopen " + filepath.Join(scratch, "shared", "fixture") + "\n", env: &snapshot, wantErr: true},
+		{name: "a started program is refused", log: "# test log\nopen " + tool + "\n", env: &snapshot, wantErr: true},
+		{name: "a missing relative open, which a subprocess may resolve elsewhere, is refused", log: "# test log\nopen tool.sh\n", wantErr: true},
+		{name: "a missing relative stat is an input", log: "# test log\nstat optional.yaml\n", want: []string{"stat\tm\tpkg/optional.yaml"}},
 		{
 			name: "relative paths resolve from the package directory",
 			log:  "# test log\nopen testdata/a.txt\nstat ../shared\ngetenv HOME\n",
@@ -307,7 +632,7 @@ func TestParseTestLog(t *testing.T) {
 		},
 		{
 			name: "chdir records its directory and changes later relative paths",
-			log:  "# test log\nchdir /work/repo/docs\nopen invariants.md\n",
+			log:  "# test log\nchdir " + repo + "/docs\nopen invariants.md\n",
 			want: []string{"open\tm\tdocs/invariants.md", "stat\tm\tdocs"},
 		},
 		{
@@ -317,7 +642,7 @@ func TestParseTestLog(t *testing.T) {
 		},
 		{
 			name:    "temporary files written during execution are refused",
-			log:     "# test log\nopen " + kept + "\nopen " + written + "\nopen /work/repo/tmp/config\n",
+			log:     "# test log\nopen " + kept + "\nopen " + written + "\nopen " + repo + "/tmp/config\n",
 			wantErr: true,
 		},
 		{
@@ -341,7 +666,11 @@ func TestParseTestLog(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := ParseTestLog(strings.NewReader(tt.log), "/work/repo/pkg", env, start)
+			parseEnv := env
+			if tt.env != nil {
+				parseEnv = *tt.env
+			}
+			got, err := ParseTestLog(strings.NewReader(tt.log), filepath.Join(repo, "pkg"), parseEnv, start)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("err = %v, wantErr %t", err, tt.wantErr)
 			}
@@ -352,29 +681,36 @@ func TestParseTestLog(t *testing.T) {
 	}
 }
 
-func TestDigestPreservesCheckoutLocation(t *testing.T) {
-	first, second := t.TempDir(), t.TempDir()
-	for _, root := range []string{first, second} {
+func TestDigestRelocatesOnlyEqualLengthCheckouts(t *testing.T) {
+	base := t.TempDir()
+	first, second, longer := filepath.Join(base, "one"), filepath.Join(base, "two"), filepath.Join(base, "three")
+	for _, root := range []string{first, second, longer} {
+		if err := os.Mkdir(root, 0o700); err != nil {
+			t.Fatal(err)
+		}
 		if err := os.WriteFile(filepath.Join(root, "data.txt"), []byte("same"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
-	inputs := []string{"open\tm\tdata.txt", "env\tDETENT_WORKSPACE"}
-	digest := func(root, workspace string) string {
+	inputs := []string{"open\tm\tdata.txt", "stat\tm\tmissing", "env\tDETENT_WORKSPACE"}
+	digest := func(root string) string {
 		t.Helper()
-		value, err := Digest(inputs, Environment{DigestKey: testDigestKey, Root: root, LookupEnv: func(string) (string, bool) { return workspace, true }})
+		value, err := Digest(inputs, Environment{DigestKey: testDigestKey, Root: root, LookupEnv: func(string) (string, bool) { return root, true }})
 		if err != nil {
 			t.Fatal(err)
 		}
 		return value
 	}
-	if digest(first, first) == digest(second, second) {
-		t.Fatal("digest hides literal checkout paths")
+	if digest(first) != digest(second) {
+		t.Fatal("digest differs between equal-length checkouts with identical inputs")
+	}
+	if digest(first) == digest(longer) {
+		t.Fatal("digest hides a checkout path of a different length")
 	}
 	if err := os.WriteFile(filepath.Join(second, "data.txt"), []byte("diff"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if digest(first, first) == digest(second, second) {
+	if digest(first) == digest(second) {
 		t.Fatal("digest ignores a changed input file")
 	}
 	if _, err := Digest([]string{"open\tm\t../escape"}, Environment{DigestKey: testDigestKey, Root: first}); err == nil {
@@ -402,20 +738,37 @@ func TestKeySeparatesArguments(t *testing.T) {
 	if err := os.WriteFile(binary, []byte("binary"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	joined, err := Key(binary, []string{"-test.run=^A$\narg 13 -test.skip=B"}, "", "", nil)
+	concatenated := filepath.Join(t.TempDir(), "pkg.test")
+	if err := os.WriteFile(concatenated, []byte("binary\narg 13 -test.run=^A$"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	keys := make(map[string]string)
+	for name, call := range map[string]struct {
+		binary, workdir string
+		args, environ   []string
+	}{
+		"joined arguments":                     {binary: binary, workdir: "m\tpkg", args: []string{"-test.run=^A$\narg 13 -test.skip=B"}},
+		"split arguments":                      {binary: binary, workdir: "m\tpkg", args: []string{"-test.run=^A$", "-test.skip=B"}},
+		"runtime environment":                  {binary: binary, workdir: "m\tpkg", args: []string{"-test.run=^A$", "-test.skip=B"}, environ: []string{"GOMAXPROCS=1"}},
+		"argument":                             {binary: binary, workdir: "m\tpkg", args: []string{"-test.run=^A$"}},
+		"binary bytes that spell the argument": {binary: concatenated, workdir: "m\tpkg"},
+		"other package directory":              {binary: binary, workdir: "m\tother", args: []string{"-test.run=^A$"}},
+	} {
+		key, err := Key(call.binary, call.args, call.workdir, call.environ)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if other, ok := keys[key]; ok {
+			t.Fatalf("%s and %s produced the same key", name, other)
+		}
+		keys[key] = name
+	}
+	unrelated, err := Key(binary, []string{"-test.run=^A$"}, "m\tpkg", []string{"DETENT_ISSUE_ID=example"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	split, err := Key(binary, []string{"-test.run=^A$", "-test.skip=B"}, "", "", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	limited, err := Key(binary, []string{"-test.run=^A$", "-test.skip=B"}, "", "", []string{"GOMAXPROCS=1"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if joined == split || limited == split {
-		t.Fatal("distinct arguments or runtime environment produced the same key")
+	if keys[unrelated] != "argument" {
+		t.Fatal("an environment variable outside the runtime set changed the key")
 	}
 }
 

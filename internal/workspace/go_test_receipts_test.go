@@ -42,7 +42,7 @@ func (s *memoryGoTestReceipts) Record(_ context.Context, receipt gotestreceipt.R
 	return nil
 }
 
-func TestRunReviewCommandSeparatesReceiptWorkspaces(t *testing.T) {
+func TestRunReviewCommandReusesGoTestReceiptsAcrossWorkspaces(t *testing.T) {
 	if testing.Short() {
 		t.Skip("subprocess Go toolchain fixture")
 	}
@@ -121,7 +121,7 @@ func TestInputs(t *testing.T) {
 		wantOutput string
 	}{
 		{name: "first workspace executes and records", identifier: "receipts-1", external: "ready", wantOutput: "0 of 1 test binaries reused, 1 recorded, 0 not recordable"},
-		{name: "second workspace executes at its literal path", identifier: "receipts-2", external: "ready", wantOutput: "0 of 1 test binaries reused, 1 recorded, 0 not recordable"},
+		{name: "second workspace reuses the receipt", identifier: "receipts-2", external: "ready", wantOutput: "1 of 1 test binaries reused, 0 recorded, 0 not recordable"},
 		{name: "changed external input executes again", identifier: "receipts-3", external: "changed", wantCode: 1, wantOutput: "external input"},
 	}
 	for _, step := range steps {
