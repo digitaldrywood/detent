@@ -194,6 +194,11 @@ func (e *nativeExecution) ArtifactLog(ctx context.Context, delta string) error {
 }
 
 func (a *nativeArtifacts) flush(ctx context.Context, final bool) (resultErr error) {
+	defer func() {
+		if resultErr != nil {
+			a.log = artifact.Upload{}
+		}
+	}()
 	if a.log.ArtifactID == "" {
 		u, err := a.client.Reserve(ctx, a.reservation)
 		if err != nil {
@@ -264,10 +269,15 @@ func (a *nativeArtifacts) flush(ctx context.Context, final bool) (resultErr erro
 	return nil
 }
 
-func (e *nativeExecution) FinalizeArtifacts(ctx context.Context, directory string) error {
+func (e *nativeExecution) FinalizeArtifacts(ctx context.Context, directory string) (resultErr error) {
 	a := &e.artifacts
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	defer func() {
+		if resultErr != nil {
+			a.log = artifact.Upload{}
+		}
+	}()
 	if a.directory == "" || a.finished {
 		return nil
 	}

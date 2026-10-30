@@ -128,3 +128,90 @@ func TestArtifactJournalRejectsInvalidAndOversizeLogs(t *testing.T) {
 		})
 	}
 }
+
+func TestArtifactFinalizationReconcilesLostAcknowledgment(t *testing.T) {
+	for _, stage := range []string{"reserve", "append", "finalize log", "finalize diff"} {
+		t.Run(stage, func(t *testing.T) {
+			states := map[string]string{}
+			parts := map[string][]artifact.Part{}
+			lost := false
+			reconciled := true
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				current := ""
+				var response any
+				if r.URL.Path == "/v1/uploads" {
+					var reservation artifact.Reservation
+					if err := json.NewDecoder(r.Body).Decode(&reservation); err != nil {
+						t.Error(err)
+						return
+					}
+					id := "artifact_" + strings.Repeat("a", 32)
+					if reservation.Kind == "diff" {
+						id = "artifact_" + strings.Repeat("b", 32)
+					}
+					if states[id] == "" {
+						states[id] = "uploading"
+					}
+					response = artifact.Upload{ArtifactID: id, State: states[id]}
+					current = "reserve"
+					reconciled = true
+				} else {
+					if !reconciled {
+						t.Error("uncertain write retried before reservation reconciliation")
+					}
+					id := strings.Split(r.URL.Path, "/")[3]
+					if strings.HasSuffix(r.URL.Path, "/parts") {
+						var part artifact.Part
+						if err := json.NewDecoder(r.Body).Decode(&part); err != nil {
+							t.Error(err)
+							return
+						}
+						if states[id] != "uploading" {
+							t.Error("append after committed finalization")
+						}
+						if part.Sequence == len(parts[id]) {
+							parts[id] = append(parts[id], part)
+						} else if part.Sequence >= len(parts[id]) || !bytes.Equal(parts[id][part.Sequence].Data, part.Data) {
+							t.Error("replay changed bytes")
+						}
+						response = artifact.Object{}
+						current = "append"
+					} else {
+						states[id] = "complete"
+						response = artifact.Reference{}
+						current = "finalize log"
+						if strings.Contains(id, "bbbb") {
+							current = "finalize diff"
+						}
+					}
+				}
+				if current == stage && !lost {
+					lost = true
+					reconciled = false
+					w.WriteHeader(http.StatusServiceUnavailable)
+					_, _ = w.Write([]byte(`{"code":"storage_unreachable"}`))
+					return
+				}
+				_ = json.NewEncoder(w).Encode(response)
+			}))
+			defer server.Close()
+			directory := t.TempDir()
+			if err := os.WriteFile(filepath.Join(directory, "log"), []byte("finished work"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			e := &nativeExecution{artifacts: nativeArtifacts{directory: directory, base: strings.Repeat("a", 40), client: &artifact.Client{Origin: server.URL, Transport: server.Client().Transport, Token: func(context.Context) (string, error) { return "worker", nil }}, reservation: artifact.Reservation{Kind: "log", Key: "attempt:log", Bytes: 4 << 20}, capture: func(context.Context, string, string) (artifact.GitCapture, error) { return artifact.GitCapture{}, nil }}}
+			if err := e.FinalizeArtifacts(t.Context(), directory); !errors.Is(err, artifact.ErrStorage) {
+				t.Fatalf("missing injected failure: %v", err)
+			}
+			if e.artifacts.finished {
+				t.Fatal("uncertain upload marked finished")
+			}
+			if err := e.FinalizeArtifacts(t.Context(), directory); err != nil {
+				t.Fatal(err)
+			}
+			if !e.artifacts.finished || len(parts["artifact_"+strings.Repeat("a", 32)]) != 1 {
+				t.Fatal("retry lost finished work")
+			}
+		})
+	}
+}
