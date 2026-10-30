@@ -33,7 +33,28 @@ required_checks="$(jq -ce '
   else error("release requirements must be an array of nonempty names") end
 ' <<< "$required_checks")"
 
+platform_status() {
+  local commit statuses latest
+  local now
+  now="$(date -u +%s)"
+  local ancestors
+  ancestors="$(git rev-list --topo-order "$CI_DEVELOP_SHA")" || return 1
+  for commit in $ancestors; do
+    statuses="$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/commits/$commit/statuses?per_page=100")" || return 1
+    latest="$(jq -c '[.[][] | select(.context == "platform-full-ci")] | max_by(.id)' <<< "$statuses")" || return 1
+    if [ "$latest" = null ]; then continue; fi
+    jq -e --argjson now "$now" '
+      .state == "success" and (.id | type == "number") and .id > 0
+      and (.created_at | fromdateiso8601) <= $now
+      and (.created_at | fromdateiso8601) >= ($now - 86400)
+    ' <<< "$latest" > /dev/null
+    return $?
+  done
+  return 1
+}
+
 required_statuses() {
+  platform_status || return 1
   gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/commits/$CI_DEVELOP_SHA/status?per_page=100" |
     jq -ce --arg sha "$CI_DEVELOP_SHA" --argjson required "$required_checks" '
       select(all(.[]; .sha == $sha))
@@ -69,7 +90,7 @@ for existing in $(git tag --points-at "$CI_DEVELOP_SHA" --list "$series.*"); do
   fi
 done
 if ! checks="$(required_statuses)"; then
-  echo "Release $series awaits required statuses scheduled-full-ci, release-security-audit and all configured checks on $CI_DEVELOP_SHA; missing, failed, or superseded evidence; not tagging."
+  echo "Release $series awaits required statuses scheduled-full-ci, release-security-audit and all configured checks on $CI_DEVELOP_SHA; missing, failed, stale platform-full-ci (24h on an ancestor), or superseded evidence; not tagging."
   exit 0
 fi
 git config user.name 'github-actions[bot]'

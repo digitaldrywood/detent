@@ -212,7 +212,10 @@ branch, fixes land on develop first and are cherry-picked with `-x` through
 release-branch PRs, and no develop prerelease or source-gate-only deployment
 path exists. Stable tags are created only by `release-finalize.yml` in GitHub
 Actions, after the latest `scheduled-full-ci` and `release-security-audit`
-statuses on the current release head are successful. Release API calls belong
+statuses on the current release head are successful, and the latest
+`platform-full-ci` status on the nearest validated ancestor (including the head)
+is successful and no older than 24 hours. Platform validation runs daily on
+local Colima, using the validated source and pinned toolchain. Release API calls belong
 to operators and GitHub Actions, never Detent runners. The release flow is
 specified in [the release workflow](../WORKFLOW.md#release).
 
