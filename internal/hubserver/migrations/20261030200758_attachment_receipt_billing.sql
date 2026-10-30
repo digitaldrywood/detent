@@ -1,5 +1,5 @@
 -- +goose Up
-ALTER TABLE change_content_objects ADD COLUMN billable INTEGER NOT NULL DEFAULT 1 CHECK (billable IN (0,1));
+ALTER TABLE change_content_objects ADD COLUMN billable INTEGER NOT NULL DEFAULT 1;
 DROP TRIGGER change_content_usage_insert;
 DROP TRIGGER change_content_usage_delete;
 -- +goose StatementBegin
@@ -18,7 +18,6 @@ CREATE TRIGGER change_content_usage_update AFTER UPDATE OF billable ON change_co
 END;
 -- +goose StatementEnd
 -- +goose Down
-UPDATE change_content_objects SET billable=1 WHERE billable=0;
 DROP TRIGGER change_content_usage_update;
 DROP TRIGGER change_content_usage_insert;
 DROP TRIGGER change_content_usage_delete;
