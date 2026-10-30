@@ -21,6 +21,10 @@ import (
 
 const heartbeatOperationTimeout = 30 * time.Second
 
+type claimHeartbeatSource interface {
+	RenewClaimHeartbeat(context.Context, string, time.Time) (Claimed, error)
+}
+
 type heartbeatManager struct {
 	mu           sync.Mutex
 	settings     heartbeatSettings
@@ -293,10 +297,26 @@ func (m *heartbeatManager) execute(ctx context.Context, target heartbeatTarget) 
 	if target.flightDone != nil {
 		defer close(target.flightDone)
 	}
-	operationCtx, cancel := context.WithTimeout(ctx, heartbeatOperationTimeout)
-	defer cancel()
 	settings := m.settingsSnapshot()
 	result := heartbeatResult{issueID: target.issueID, sequence: target.sequence}
+	claimCtx, cancelClaim := context.WithTimeout(ctx, heartbeatOperationTimeout)
+	now := m.now().UTC()
+	if source, ok := settings.scheduling.(claimHeartbeatSource); ok {
+		result.claim, result.claimError = source.RenewClaimHeartbeat(claimCtx, target.issueID, now)
+	} else if settings.scheduling != nil {
+		result.claim, result.claimError = settings.scheduling.RenewClaim(claimCtx, target.issueID, now)
+	}
+	if settings.scheduling != nil {
+		result.claimOwnerLost = errors.Is(result.claimError, ErrSchedulingClaimLost)
+		result.claimRenewed = result.claimError == nil
+		if result.claimRenewed {
+			result.claimIssue = result.claim.Issue
+			result.currentClaimOwner = result.claim.Owner
+		}
+	}
+	cancelClaim()
+	operationCtx, cancel := context.WithTimeout(ctx, heartbeatOperationTimeout)
+	defer cancel()
 	if target.progress != nil {
 		running := target.progress.latest.Load()
 		target.workerProcess = running.WorkerProcess
@@ -304,18 +324,9 @@ func (m *heartbeatManager) execute(ctx context.Context, target heartbeatTarget) 
 	}
 	result.workerAlive, result.workerChecked, result.livenessError = heartbeatWorkerLiveness(target.workerProcess)
 	result.workspaceModifiedAt, result.workspaceAdvanced = heartbeatWorkspaceActivity(target.workspacePath, target.workspaceModifiedAt)
-	now := m.now().UTC()
 	result.heartbeat, result.workAttemptError = m.persistHeartbeat(operationCtx, target, settings)
 	result.workAttemptRenewed = result.workAttemptError == nil && settings.workAttempts != nil && result.heartbeat.AttemptID > 0
-	if settings.scheduling != nil {
-		result.claim, result.claimError = settings.scheduling.RenewClaim(operationCtx, target.issueID, now)
-		result.claimOwnerLost = errors.Is(result.claimError, ErrSchedulingClaimLost)
-		result.claimRenewed = result.claimError == nil
-		if result.claimRenewed {
-			result.claimIssue = result.claim.Issue
-			result.currentClaimOwner = result.claim.Owner
-		}
-	} else if settings.claiming.Enabled && strings.TrimSpace(settings.claiming.LeaseField) != "" && strings.TrimSpace(target.claimOwner) != "" {
+	if settings.scheduling == nil && settings.claiming.Enabled && strings.TrimSpace(settings.claiming.LeaseField) != "" && strings.TrimSpace(target.claimOwner) != "" {
 		result.claimIssue, result.currentClaimOwner, result.claimOwnerLost, result.claimError = renewTrackerClaim(operationCtx, settings, target, now)
 		result.claimRenewed = result.claimError == nil && !result.claimOwnerLost
 	}
