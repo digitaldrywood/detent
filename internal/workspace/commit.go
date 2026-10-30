@@ -12,13 +12,10 @@ import (
 	"slices"
 	"strings"
 	"sync/atomic"
-	"time"
 
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 )
-
-const signingProbeTimeout = 5 * time.Second
 
 const commitSigningFailureMarker = "detent: commit signing failed"
 
@@ -42,8 +39,6 @@ type commitPolicy struct {
 }
 
 func probeCommitPolicy(ctx context.Context, source string, fallback CommitIdentity) (_ commitPolicy, err error) {
-	ctx, cancel := context.WithTimeout(ctx, signingProbeTimeout)
-	defer cancel()
 	output, err := runGitAt(ctx, source, "config", "--null", "--list")
 	if err != nil {
 		return commitPolicy{}, fmt.Errorf("read runner commit configuration: %w", err)
@@ -108,8 +103,6 @@ func probeCommitPolicy(ctx context.Context, source string, fallback CommitIdenti
 }
 
 func (p commitPolicy) verifySigning(ctx context.Context) (_ bool, err error) {
-	ctx, cancel := context.WithTimeout(ctx, signingProbeTimeout)
-	defer cancel()
 	scratch, err := changeSourceScratch()
 	if err != nil {
 		return false, fmt.Errorf("prepare signing probe: %w", err)
