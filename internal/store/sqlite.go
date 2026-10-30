@@ -33,8 +33,10 @@ func openSQLite(ctx context.Context, cfg Config) (*sqliteStore, error) {
 	if cfg.Path == "" {
 		return nil, errors.New("sqlite path is required")
 	}
-	if err := os.MkdirAll(filepath.Dir(cfg.Path), 0o755); err != nil {
-		return nil, fmt.Errorf("creating sqlite directory: %w", err)
+	if filename, ok := sqliteFilename(cfg.Path); ok {
+		if err := os.MkdirAll(filepath.Dir(filename), 0o755); err != nil {
+			return nil, fmt.Errorf("creating sqlite directory: %w", err)
+		}
 	}
 
 	db, err := sql.Open("sqlite", sqliteDSN(cfg.Path))
