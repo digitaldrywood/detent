@@ -67,6 +67,9 @@ func (f NativeTerminalFailure) Public() NativeTerminalFailure {
 		f.Rejection = nil
 	}
 	f.Attribution = ""
+	if decision := f.InfrastructureDecision(); decision != nil {
+		f.Decision = decision
+	}
 	if f.Decision != nil {
 		decision := *f.Decision
 		switch decision.Outcome {

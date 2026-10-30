@@ -1044,8 +1044,8 @@ func TestRunnerWorkAttemptErrorClass(t *testing.T) {
 		err  error
 		want string
 	}{
-		{name: "decided issue hook", err: decidedTestFailure{runpkg.ErrWorkspacePreparation, "issue"}, want: workAttemptErrorIssue},
-		{name: "unknown hook", err: decidedTestFailure{runpkg.ErrWorkspacePreparation, "unknown"}, want: workAttemptErrorIssue},
+		{name: "decided issue hook", err: decidedTestFailure{runpkg.ErrWorkspacePreparation, "issue"}, want: workAttemptErrorWorkspace},
+		{name: "unknown hook", err: decidedTestFailure{runpkg.ErrWorkspacePreparation, "unknown"}, want: workAttemptErrorWorkspace},
 		{name: "decided instance validation", err: decidedTestFailure{errors.New("validation failed"), "instance"}, want: workAttemptErrorWorkspace},
 		{name: "generic runner failure", err: errors.New("runner failed"), want: workAttemptErrorRunner},
 		{name: "typed workspace diagnostic", err: errors.Join(runpkg.ErrWorkspacePreparation, errors.New("workspace diff stat: index unreadable")), want: workAttemptErrorWorkspace},

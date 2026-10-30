@@ -34,6 +34,24 @@ type FailureStepSuccess struct {
 	CompletedAt time.Time        `json:"completed_at"`
 }
 
+func (f NativeTerminalFailure) InfrastructureDecision() *FailureAttribution {
+	if f.RPCCode != nil {
+		switch *f.RPCCode {
+		case -32700, -32600, -32601, -32603:
+			return &FailureAttribution{Outcome: "instance", Reason: "backend protocol unavailable"}
+		}
+	}
+	switch f.ErrorClass {
+	case "backend_startup", "workspace_hook":
+		return &FailureAttribution{Outcome: "instance", Reason: "typed instance infrastructure failure"}
+	case "protocol":
+		if f.RPCCode == nil {
+			return &FailureAttribution{Outcome: "instance", Reason: "backend protocol unavailable"}
+		}
+	}
+	return nil
+}
+
 func (e FailureEvidence) Valid() bool {
 	return len(e.Signal) <= 64 && utf8.ValidString(e.Signal) && len(e.SourceDiff) <= 4000 && len(e.Step) <= 512 && len(e.OutputTail) <= 8000 && len(e.MissingEvidence) <= 1024 && utf8.ValidString(e.SourceDiff) && utf8.ValidString(e.Step) && utf8.ValidString(e.OutputTail) && utf8.ValidString(e.MissingEvidence)
 }

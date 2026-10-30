@@ -333,7 +333,19 @@ func (o *Orchestrator) restoreWorkAttemptRetryIntents(ctx context.Context, state
 	return transitions
 }
 
-func issueConfigurationFailure(err error, errorClass, _ string) bool {
+func issueConfigurationFailure(err error, errorClass, message string) bool {
 	var configurationErr *runpkg.IssueConfigurationError
-	return errors.As(err, &configurationErr) || errorClass == "issue_configuration"
+	if errors.As(err, &configurationErr) || errorClass == "issue_configuration" {
+		return true
+	}
+	if err != nil || errorClass != workAttemptErrorRunner {
+		return false
+	}
+	for line := range strings.SplitSeq(message, "\n") {
+		_, detail, found := strings.Cut(line, "agent override rejected: ")
+		if found && (strings.HasPrefix(detail, "block: parse detent-agent YAML:") || detail == "block: detent-agent schema must be 1") {
+			return true
+		}
+	}
+	return false
 }

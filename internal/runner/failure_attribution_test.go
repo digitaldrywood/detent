@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -42,12 +44,17 @@ func TestFailureDecisionControlsRetryAndPublication(t *testing.T) {
 		name, outcome string
 		failure       error
 		attempt       int
+		decisionCalls int
 	}{
-		{"changed hook", "issue", fmt.Errorf("%w: %w", ErrWorkspacePreparation, &workspace.HookError{Hook: "after_create", ExitCode: 2, Output: "setup failed"}), 3},
-		{"checkout disk full", "instance", fmt.Errorf("%w: %w", ErrWorkspacePreparation, &workspace.CommandError{Command: "git", ExitCode: 128, Output: "no space left on device"}), 2},
-		{"validation OOM", "instance", failedStep("validation", &workspace.ValidationError{Result: gate.CommandResult{ExitCode: 137}, Output: "OOM killed"}), 2},
-		{"deterministic failure", "issue", failedStep("validation", &workspace.CommandError{Command: "go", ExitCode: 1, Output: "assertion failed"}), 3},
-		{"unknown hook", "unknown", fmt.Errorf("%w: hook failed", ErrWorkspacePreparation), 3},
+		{"changed hook", "instance", fmt.Errorf("%w: %w", ErrWorkspacePreparation, &workspace.HookError{Hook: "after_create", ExitCode: 2, Output: "setup failed"}), 2, 0},
+		{"checkout disk full", "instance", fmt.Errorf("%w: %w", ErrWorkspacePreparation, &workspace.CommandError{Command: "git", ExitCode: 128, Output: "no space left on device"}), 2, 0},
+		{"validation OOM", "instance", failedStep("validation", &workspace.ValidationError{Result: gate.CommandResult{ExitCode: 137}, Output: "OOM killed"}), 2, 1},
+		{"deterministic failure", "issue", failedStep("validation", &workspace.CommandError{Command: "go", ExitCode: 1, Output: "assertion failed"}), 3, 1},
+		{"unknown validation", "unknown", failedStep("validation", errors.New("command failed")), 3, 1},
+		{"unknown hook", "instance", fmt.Errorf("%w: hook failed", ErrWorkspacePreparation), 2, 0},
+		{"transport", "instance", fmt.Errorf("receive: %w", io.ErrUnexpectedEOF), 2, 0},
+		{"startup", "instance", backendcapacity.NewError(backendcapacity.Scope{}, backendcapacity.Details{Type: backendcapacity.ErrorTypeTransientOverload, Kind: backendcapacity.StartupFailureKind}, errors.New("backend exited")), 2, 0},
+		{"prior issue verdict for hook", "instance", RestoreFailureDecision(fmt.Errorf("%w: hook failed", ErrWorkspacePreparation), tracker.FailureAttribution{Outcome: "issue", Reason: "prior verdict"}), 2, 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			backend := &fakeCodexClient{failureOutcome: test.outcome}
@@ -59,10 +66,10 @@ func TestFailureDecisionControlsRetryAndPublication(t *testing.T) {
 			execution := &testExecution{recovery: tracker.NativeRecovery{Lease: tracker.NativeLease{MachineID: "machine_example"}, Issue: tracker.NativeIssue{NativeReference: tracker.NativeReference{WorkItemID: "wi_current"}}, InstanceSuccesses: []tracker.FailureStepSuccess{{Step: "validation", MachineID: "machine_example", WorkItemID: "wi_other", CompletedAt: now.Add(-time.Minute)}}}}
 			attributed := r.attributeFailure(t.Context(), RunRequest{Mode: RunModeImplement, Execution: execution}, test.failure)
 			decision, ok := FailureDecision(attributed)
-			if !ok || decision.Outcome != test.outcome || backend.failureCalls != 1 || !backend.failureRequest.ReadOnly || !backend.failureRequest.TextOnly || !errors.Is(attributed, test.failure) {
+			if !ok || decision.Outcome != test.outcome || backend.failureCalls != test.decisionCalls || test.decisionCalls > 0 && (!backend.failureRequest.ReadOnly || !backend.failureRequest.TextOnly) || !errors.Is(attributed, test.failure) {
 				t.Fatalf("decision=%+v calls=%d error=%v", decision, backend.failureCalls, attributed)
 			}
-			if test.name == "changed hook" && !strings.Contains(backend.failureRequest.Prompt, "after_create: ./setup.sh") {
+			if test.decisionCalls > 0 && !strings.Contains(backend.failureRequest.Prompt, "after_create: ./setup.sh") {
 				t.Fatal("source diff missing from decision input")
 			}
 			if test.name == "validation OOM" && (decision.Evidence.RecentOtherIssueSuccess == nil || !*decision.Evidence.RecentOtherIssueSuccess || !strings.Contains(backend.failureRequest.Prompt, `"recent_other_issue_success":true`)) {

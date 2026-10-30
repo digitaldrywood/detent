@@ -77,11 +77,22 @@ func preTurnFailureClass(event runpkg.Completion, running Running) string {
 		if errors.Is(event.Err, runpkg.ErrMergeWorkerStartupTimeout) {
 			return backendcapacity.StartupTimeoutErrorClass
 		}
-		if capacity, ok := backendcapacity.As(event.Err); ok && capacity.Details.Kind == backendcapacity.StartupTimeoutKind {
-			return backendcapacity.StartupTimeoutErrorClass
+		if capacity, ok := backendcapacity.As(event.Err); ok {
+			switch capacity.Details.Kind {
+			case backendcapacity.StartupTimeoutKind:
+				return backendcapacity.StartupTimeoutErrorClass
+			case backendcapacity.StartupFailureKind:
+				return backendcapacity.StartupFailureErrorClass
+			}
 		}
 	}
 	if errors.Is(event.Err, context.Canceled) || running.Cancellation != nil {
+		return ""
+	}
+	if capacity, ok := backendcapacity.As(event.Err); ok {
+		if capacity.Details.Kind == backendcapacity.StartupFailureKind {
+			return backendcapacity.StartupFailureErrorClass
+		}
 		return ""
 	}
 	if decision, ok := runpkg.FailureDecision(event.Err); ok {
