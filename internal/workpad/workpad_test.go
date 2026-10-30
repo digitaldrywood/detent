@@ -47,10 +47,17 @@ func TestSignalFromComment(t *testing.T) {
 		wantBlockers     []string
 		wantHuman        string
 		wantComment      string
+		wantNoChange     *NoChangeReport
 		wantDispositions []ReviewDisposition
 		wantFields       map[string]string
 		wantLastBlock    bool
 	}{
+		{name: "no change preserves source and evidence", body: "```detent-status\nschema: 1\nstatus: no_change_needed\nno_change: {verified_sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, evidence: \"go test ./internal/example passed; attachment:att_example\"}\n```", wantOK: true, wantStatus: StatusNoChangeNeeded, wantNoChange: &NoChangeReport{VerifiedSHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Evidence: "go test ./internal/example passed; attachment:att_example"}},
+		{name: "no change requires report", body: "```detent-status\nschema: 1\nstatus: no_change_needed\n\n```", wantOK: true, wantInvalid: "requires a no_change report"},
+		{name: "no change rejects abbreviated source", body: "```detent-status\nschema: 1\nstatus: no_change_needed\nno_change: {verified_sha: abc, evidence: passed}\n```", wantOK: true, wantInvalid: "full lowercase source SHA"},
+		{name: "no change requires evidence", body: "```detent-status\nschema: 1\nstatus: no_change_needed\nno_change: {verified_sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}\n```", wantOK: true, wantInvalid: "evidence must contain"},
+		{name: "ordinary completion rejects no change report", body: "```detent-status\nschema: 1\nstatus: complete\nno_change: {verified_sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, evidence: passed}\n```", wantOK: true, wantInvalid: "only valid when status"},
+		{name: "no change cannot request human action", body: "```detent-status\nschema: 1\nstatus: no_change_needed\nno_change: {verified_sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, evidence: passed}\nhuman_action: approval\n```", wantOK: true, wantInvalid: "cannot carry blockers"},
 		{
 			name:   "review dispositions survive completion parsing",
 			body:   "```detent-status\nschema: 1\nstatus: complete\nreview_dispositions:\n  - thread_id: T1\n    disposition: fixed\n    evidence: source.go:17 and regression pass\n  - thread_id: T2\n    disposition: dismissed\n    evidence: source.go:29 already checks the head\n```",
@@ -184,6 +191,9 @@ func TestSignalFromComment(t *testing.T) {
 			}
 			if got.Invalid != nil {
 				t.Fatalf("Invalid = %#v, want nil", got.Invalid)
+			}
+			if !reflect.DeepEqual(got.NoChange, tt.wantNoChange) {
+				t.Fatalf("NoChange = %#v, want %#v", got.NoChange, tt.wantNoChange)
 			}
 			if !reflect.DeepEqual(got.ReviewDispositions, tt.wantDispositions) {
 				t.Fatalf("ReviewDispositions = %#v, want %#v", got.ReviewDispositions, tt.wantDispositions)

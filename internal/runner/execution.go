@@ -181,7 +181,7 @@ func NativeDispositionFromMessage(message string) *tracker.NativeDisposition {
 	if !reported || signal == nil || signal.Invalid != nil {
 		return nil
 	}
-	return &tracker.NativeDisposition{Status: signal.Status, Blockers: len(signal.Blockers) != 0, HumanAction: signal.HumanAction != "", ReasonCode: signal.ReasonCode, FinalSummary: workpad.FinalSummary(message), BlockerEvidence: signal.Blockers}
+	return &tracker.NativeDisposition{NoChange: signal.NoChange, Status: signal.Status, Blockers: len(signal.Blockers) != 0, HumanAction: signal.HumanAction != "", ReasonCode: signal.ReasonCode, FinalSummary: workpad.FinalSummary(message), BlockerEvidence: signal.Blockers}
 }
 
 // hostPublicationOnly reports a blocked disposition whose only stated cause is
