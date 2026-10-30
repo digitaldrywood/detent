@@ -107,7 +107,7 @@ func (s *Service) requireGoTestReceiptAuthority(ctx context.Context, tx *sql.Tx,
 		}
 		return runner, nil
 	}
-	if scope.credential.Scope != apiScopeOperator && scope.credential.Scope != apiScopeAdmin {
+	if scope.credential.Scope != apiScopeOperator {
 		return "", nativeNotFound()
 	}
 	return scope.credential.ID, nil
