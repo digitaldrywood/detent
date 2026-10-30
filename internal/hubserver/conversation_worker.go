@@ -1021,6 +1021,9 @@ func conversationControlQuery(e echo.Context) (after int64, wait time.Duration, 
 // changed nothing, so an idle worker never produces events.
 func (c *conversationService) pollControls(ctx context.Context, scope nativeScope, id string, identity conversationWorkerIdentity, after int64) (conversationControlsResponse, error) {
 	page := conversationControlsResponse{Controls: []conversationControl{}, Cursor: after}
+	if err := c.authorizeControlPublication(ctx, scope, id, identity); err != nil {
+		return page, err
+	}
 	plan, err := c.newPublicationPlan(ctx, id)
 	if err != nil {
 		return page, err
@@ -1081,6 +1084,27 @@ func (c *conversationService) pollControls(ctx context.Context, scope nativeScop
 		c.committed(record)
 	}
 	return page, nil
+}
+
+func (c *conversationService) authorizeControlPublication(ctx context.Context, scope nativeScope, id string, identity conversationWorkerIdentity) error {
+	tx, err := c.store.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	record, item, err := c.loadWorkerConversation(ctx, tx, scope, id)
+	if err != nil {
+		return err
+	}
+	if err := requireConversationRecordOwner(record, identity, false); err != nil {
+		return err
+	}
+	now, err := c.server.database.currentTime()
+	if err != nil {
+		return err
+	}
+	_, err = c.requireWorkerOwner(ctx, tx, scope, item, identity, "", false, now)
+	return err
 }
 
 // conversationTurn carries the state of one turn-event batch while it is

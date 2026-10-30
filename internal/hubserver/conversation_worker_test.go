@@ -1946,3 +1946,50 @@ func TestConversationAnswerRefusesExpiredQuestion(t *testing.T) {
 	setExpiry(f.service.config.now().Add(time.Hour))
 	requireNativeStatus(t, answer("in-time"), http.StatusOK)
 }
+
+func TestConversationControlRejectionDoesNotPublish(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		invalidate func(*testing.T, *conversationWorkerFixture)
+	}{
+		{name: "unknown lease", invalidate: func(t *testing.T, f *conversationWorkerFixture) { f.lease.ID = "lease_unknown" }},
+		{name: "stale fencing token", invalidate: func(t *testing.T, f *conversationWorkerFixture) { f.lease.FencingToken++ }},
+		{name: "wrong runner", invalidate: func(t *testing.T, f *conversationWorkerFixture) {
+			f.worker = f.nativeFixture.worker(t, "another-worker")
+		}},
+	} {
+		for _, acknowledge := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/acknowledge=%t", test.name, acknowledge), func(t *testing.T) {
+				objects := &conversationContentFixture{}
+				f := newConversationWorkerFixture(t, objects)
+				requireNativeStatus(t, f.bind(t, nil), http.StatusOK)
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/conversations/"+f.record.ID+"/commands", f.token,
+					conversation.Command{Key: "queued-message", Kind: conversation.CommandMessage, Text: "pending control"})
+				requireNativeStatus(t, response, http.StatusOK)
+				var receipt conversation.Receipt
+				decodeHubResponse(t, response, &receipt)
+				var after int64
+				if acknowledge {
+					requireNativeStatus(t, f.controls(t, 0, 0), http.StatusOK)
+					if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT seq FROM conversation_messages WHERE id=?", receipt.MessageID).Scan(&after); err != nil {
+						t.Fatal(err)
+					}
+				}
+				test.invalidate(t, f)
+				objects.mu.Lock()
+				before := objects.publications
+				objects.mu.Unlock()
+				response = f.controls(t, after, 0)
+				if response.Code < 400 || response.Code >= 500 {
+					t.Fatalf("invalid worker status=%d; want rejection: %s", response.Code, response.Body)
+				}
+				objects.mu.Lock()
+				afterPublications := objects.publications
+				objects.mu.Unlock()
+				if afterPublications != before {
+					t.Fatalf("rejected control poll published %d objects; want 0", afterPublications-before)
+				}
+			})
+		}
+	}
+}
