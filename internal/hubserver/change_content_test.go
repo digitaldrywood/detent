@@ -13,7 +13,10 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/fstest"
 	"time"
+
+	"github.com/pressly/goose/v3"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
@@ -331,4 +334,84 @@ func legacyChangeService(t *testing.T, service *Service) *Service {
 		t.Fatal(err)
 	}
 	return openTestService(t, Config{DatabasePath: path, now: service.config.now, Content: service.config.Content, RunDetails: service.config.RunDetails})
+}
+
+func TestAttachmentReceiptSharedContentBilling(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name     string
+		billable []bool
+	}{
+		{"receipt first", []bool{false, true, false}},
+		{"content first", []bool{true, false, true}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newHostedSharedFixture(t)
+			hostedTestPlans(t, f.service, map[string]int64{"collaboration_bytes": 10000})
+			ctx := f.service.contentContext(t.Context())
+			var charged bool
+			for _, billable := range test.billable {
+				ref, err := prepareMeteredContent(ctx, "org_security", []byte("shared attachment metadata"), billable)
+				if err != nil {
+					t.Fatal(err)
+				}
+				charged = charged || billable
+				var want int64
+				if charged {
+					want = ref.CompressedSize
+				}
+				var used int64
+				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT value FROM hosted_usage_counters WHERE name='collaboration_bytes'").Scan(&used); err != nil || used != want {
+					t.Fatalf("billable=%t usage=%d want=%d err=%v", billable, used, want, err)
+				}
+			}
+		})
+	}
+}
+
+func TestAttachmentReceiptBillingMigration(t *testing.T) {
+	t.Parallel()
+	f := newHostedSharedFixture(t)
+	const file = "20261030200758_attachment_receipt_billing.sql"
+	data, err := migrationFiles.ReadFile("migrations/" + file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const ledger = "attachment_receipt_billing_test"
+	provider, err := goose.NewProvider(goose.DialectSQLite3, f.service.database.db, fstest.MapFS{file: &fstest.MapFile{Data: data}}, goose.WithDisableGlobalRegistry(true), goose.WithTableName(ledger), goose.WithSlog(discardLogger()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := provider.GetVersions(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO "+ledger+" (version_id,is_applied) VALUES (20261030200758,1)"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.Down(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	var retained int64
+	for _, operation := range []string{"attachment.record example", "example.record"} {
+		ref, _, err := attachment.PrepareArchive("org_security", 1, strings.NewReader(operation))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO change_content_objects(organization_id,object_sha256,object_key,object_bytes,content_bytes) VALUES(?,?,?,?,?)", "org_security", ref.SHA256, ref.Key, ref.CompressedSize, ref.UncompressedSize); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO native_commands(organization_id,actor_id,operation,command_key,request_hash,response_json,response_object_key,created_at) VALUES(?,?,?,?,?,'{}',?,?)", "org_security", bootstrapTokenID, operation, operation, "example", ref.Key, testTimestamp); err != nil {
+			t.Fatal(err)
+		}
+		if operation == "example.record" {
+			retained = ref.CompressedSize
+		}
+	}
+	if _, err := provider.Up(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	var usage int64
+	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT value FROM hosted_usage_counters WHERE name='collaboration_bytes'").Scan(&usage); err != nil || usage != retained {
+		t.Fatalf("migrated receipt usage=%d want=%d err=%v", usage, retained, err)
+	}
 }

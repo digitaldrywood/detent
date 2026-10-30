@@ -18,19 +18,23 @@ import (
 var errContentStorageUnconfigured = fmt.Errorf("immutable content storage is not configured: %w", artifact.ErrStorage)
 
 func storedPayloadKey(ctx context.Context, organization string, raw []byte) (string, error) {
+	return storedMeteredPayloadKey(ctx, organization, raw, true)
+}
+
+func storedMeteredPayloadKey(ctx context.Context, organization string, raw []byte, billable bool) (string, error) {
 	content, ok := ctx.Value(changeContentKey{}).(*changeContent)
 	if !ok {
 		return "", errContentStorageUnconfigured
 	}
 	content.mu.Lock()
 	content.organization = organization
-	ref, found := content.prepared[organization+"/"+artifact.Digest(raw)]
+	ref, found := content.prepared[contentPreparationKey(organization, raw, billable)]
 	content.mu.Unlock()
 	if found {
 		return ref.Key, nil
 	}
 	return "", &claimHydration{run: func(ctx context.Context, _ nativeQueryer) error {
-		_, err := prepareChangeContent(ctx, organization, raw)
+		_, err := prepareMeteredContent(ctx, organization, raw, billable)
 		return err
 	}}
 }

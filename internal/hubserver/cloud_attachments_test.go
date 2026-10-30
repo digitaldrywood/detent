@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -345,6 +346,17 @@ func TestCloudAttachmentQuota(t *testing.T) {
 			replayedUsage, err := f.service.database.hostedConsumption(t.Context(), f.service.database.db, time.Now())
 			if err != nil || replayedUsage["collaboration_bytes"] != usage["collaboration_bytes"] || replayedUsage["api_mutations"] != 2 || usage["api_mutations"] != 2 {
 				t.Fatalf("metadata replay consumption=%v err=%v", replayedUsage, err)
+			}
+			if test.retained == 0 {
+				if err := f.service.hubTransact(t.Context(), func(tx *sql.Tx, _ time.Time) error {
+					return recountCollaborationBytes(t.Context(), tx)
+				}); err != nil {
+					t.Fatal(err)
+				}
+				recounted, err := f.service.database.hostedConsumption(t.Context(), f.service.database.db, now, "collaboration_bytes")
+				if err != nil || recounted["collaboration_bytes"] != record.Size {
+					t.Fatalf("metadata recount consumption=%v err=%v", recounted, err)
+				}
 			}
 		})
 	}

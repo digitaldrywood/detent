@@ -23,7 +23,7 @@ const collaborationBytesLegacyRecount = `SELECT
 	(SELECT coalesce(sum(length(CAST(record_json AS BLOB))),0) FROM github_import_records) +
 	(SELECT coalesce(sum(size),0) FROM attachments WHERE object_deleted_at IS NULL AND customer_owned=0)`
 
-const collaborationBytesRecount = collaborationBytesLegacyRecount + ` + (SELECT coalesce(sum(object_bytes),0) FROM change_content_objects)`
+const collaborationBytesRecount = collaborationBytesLegacyRecount + ` + (SELECT coalesce(sum(object_bytes),0) FROM change_content_objects WHERE billable=1)`
 
 func recountCollaborationBytes(ctx context.Context, tx *sql.Tx) error {
 	var exists bool
@@ -33,6 +33,13 @@ func recountCollaborationBytes(ctx context.Context, tx *sql.Tx) error {
 	query := collaborationBytesLegacyRecount
 	if exists {
 		query = collaborationBytesRecount
+		var billable int
+		if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM pragma_table_info('change_content_objects') WHERE name='billable'").Scan(&billable); err != nil {
+			return err
+		}
+		if billable == 0 {
+			query = strings.ReplaceAll(query, " WHERE billable=1", "")
+		}
 	}
 	var customerOwned int
 	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM pragma_table_info('attachments') WHERE name='customer_owned'").Scan(&customerOwned); err != nil {
