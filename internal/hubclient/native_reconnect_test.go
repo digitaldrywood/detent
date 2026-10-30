@@ -31,6 +31,7 @@ func TestNativeRunnerReconnectsRetainedAttempt(t *testing.T) {
 		outcome             string
 		effort              string
 		observedIdentity    bool
+		incompatibleArchive bool
 		legacy              bool
 		hiddenDependency    bool
 		hold                bool
@@ -44,6 +45,7 @@ func TestNativeRunnerReconnectsRetainedAttempt(t *testing.T) {
 	}{
 		{name: "running"},
 		{name: "released source after restart", released: true},
+		{name: "released incompatible archive after restart", released: true, incompatibleArchive: true},
 		{name: "released source preserves newer claim", released: true, replacement: true},
 		{name: "released interrupted source after restart", released: true, outcome: "interrupted"},
 		{name: "released interrupted source with configured effort", released: true, outcome: "interrupted", effort: "high"},
@@ -101,6 +103,9 @@ func TestNativeRunnerReconnectsRetainedAttempt(t *testing.T) {
 				httpClient := *h.admin.client.httpClient
 				transport := httpClient.Transport
 				httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+					if test.incompatibleArchive && request.Method == http.MethodGet && strings.Contains(request.URL.Path, "/attempts/") && request.URL.Query().Get("view") != "cleanup" {
+						return &http.Response{StatusCode: http.StatusServiceUnavailable, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":"archive_incompatible","message":"archive section incompatible"}`))}, nil
+					}
 					if request.URL.Query().Get("view") == "recovery" && !held.Load() {
 						t.Error("restart recovery ran without a scheduler hold")
 					}
