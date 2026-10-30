@@ -87,23 +87,6 @@ func (s *Service) publishChangeVersion(c echo.Context) error {
 	if err := s.prepareChangeSource(c.Request().Context(), nativeRequestScope(c), c.Param("item"), c.Param("change"), c.Request().Method+" "+c.Request().URL.EscapedPath(), request); err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	if content, ok := c.Request().Context().Value(changeContentKey{}).(*changeContent); ok && (content.call != nil || content.store != nil) {
-		ctx := c.Request().Context()
-		scope := nativeRequestScope(c)
-		if _, err := s.authorizeChangeSource(ctx, scope, c.Param("item"), c.Param("change"), c.Request().Method+" "+c.Request().URL.EscapedPath(), request); err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		if len(request.SourceBundle) > 0 {
-			if _, err := prepareChangeContent(ctx, string(scope.organization), request.SourceBundle); err != nil {
-				return s.nativeAPIError(c, err)
-			}
-		}
-		if request.Validation != nil && request.Validation.Output != "" {
-			if _, err := prepareChangeContent(ctx, string(scope.organization), []byte(request.Validation.Output)); err != nil {
-				return s.nativeAPIError(c, err)
-			}
-		}
-	}
 	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		return s.publishChangeVersionCommand(ctx, tx, scope, c.Param("item"), c.Param("change"), request, now)
 	})
@@ -216,7 +199,9 @@ func (s *Service) prepareChangeVersion(ctx context.Context, tx *sql.Tx, scope na
 	}
 	if version.Source != nil {
 		if _, ok := ctx.Value(changeContentKey{}).(*changeContent); ok {
-			prepared.sourceRef, err = preparedChangeContent(ctx, string(scope.organization), request.SourceBundle)
+			if _, err = storedPayloadKey(ctx, string(scope.organization), request.SourceBundle); err == nil {
+				prepared.sourceRef, err = preparedChangeContent(ctx, string(scope.organization), request.SourceBundle)
+			}
 		} else {
 			prepared.source, err = encodeChangeSource(request.SourceBundle)
 		}
