@@ -46,14 +46,14 @@ func (o *Orchestrator) completeNativeLandingRun(
 	}
 	issue := running.Issue
 	issueID := strings.TrimSpace(event.IssueID)
-	if landing != nil && !landing.Landed && !landing.RequiresRework() && landing.RefusalKind == workspace.LandRefusalProtected {
+	if !landing.Landed && !landing.RequiresRework() && landing.RefusalKind == workspace.LandRefusalProtected {
 		if wait, reported := terminalPermissionWait(event.Result.FinalMessage); reported && wait.Source == "terminal_detent_status" && permissionWaitCompletionAllowed(event) {
 			running.Issue = cloneIssue(issue)
 			running.Issue.NativeLandingHeadSHA = landing.HeadSHA
 			return o.parkPermissionWait(ctx, state, event, running, wait)
 		}
 	}
-	if landing != nil && !landing.Landed && (landing.Waiting || (landing.Path == "batch_member" || landing.Path == "merge_resolution_pending") && landing.RefusalKind == workspace.LandRefusalConflict || landing.RefusalKind == "" && landing.CI != nil && landing.CI.State == "pending" || landing.RefusalKind == workspace.LandRefusalBaseMoved) {
+	if !landing.Landed && (landing.Waiting || (landing.Path == "batch_member" || landing.Path == "merge_resolution_pending") && landing.RefusalKind == workspace.LandRefusalConflict || landing.RefusalKind == "" && landing.CI != nil && landing.CI.State == "pending" || landing.RefusalKind == workspace.LandRefusalBaseMoved) {
 		if landing.Waiting && !mergeWorkerIssue(issue) {
 			issue.NativeLandingHeadSHA = landing.HeadSHA
 		}
@@ -66,7 +66,7 @@ func (o *Orchestrator) completeNativeLandingRun(
 		o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
 		return true
 	}
-	if landing != nil && !landing.Landed && !landing.RequiresRework() && landing.RefusalKind == workspace.LandRefusalNothing && landing.ChangeID != "" && landing.VersionID != "" && landing.HeadSHA != "" {
+	if !landing.Landed && !landing.RequiresRework() && landing.RefusalKind == workspace.LandRefusalNothing && landing.ChangeID != "" && landing.VersionID != "" && landing.HeadSHA != "" {
 		if reviews, ok := o.connector.(connector.ChangeReviewReader); ok {
 			review, err := reviews.ReadChangeReview(ctx, issueID, landing.ChangeID, landing.VersionID, landing.HeadSHA)
 			if err != nil {
@@ -149,7 +149,7 @@ func (o *Orchestrator) completeNativeLandingRun(
 	}
 	var comment, message string
 	metadata := nativeLandingMetadata(landing)
-	if completedOnBase && landing != nil {
+	if completedOnBase {
 		comment = fmt.Sprintf("Acceptance criteria already met on the base for Change Request %s, version %s (head %s), with recorded validator approval. Landing refused (%s): %s. Moved from %s to %s.", landing.ChangeID, landing.VersionID, shortCommit(landing.HeadSHA), landing.RefusalKind, landing.Refusal, displayStateName(issue.State), displayStateName(target))
 		message = "verified acceptance on the base for " + issueLabel(issue)
 	} else {
@@ -186,7 +186,7 @@ func (o *Orchestrator) completeNativeLandingRun(
 		Event:   "completed_native_landing",
 		Message: message,
 	})
-	if o.logger != nil && landing != nil {
+	if o.logger != nil {
 		o.logger.Info("completed native landing",
 			"issue_id", issueID, "identifier", issue.Identifier,
 			"from_state", issue.State, "target_state", target,
