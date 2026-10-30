@@ -1,7 +1,9 @@
 package workspace
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -36,7 +38,7 @@ func (s *memoryGoTestReceipts) Record(_ context.Context, receipt gotestreceipt.R
 	return nil
 }
 
-func TestRunReviewCommandReusesGoTestReceiptsAcrossWorkspaces(t *testing.T) {
+func TestRunReviewCommandSeparatesReceiptWorkspaces(t *testing.T) {
 	if testing.Short() {
 		t.Skip("subprocess Go toolchain fixture")
 	}
@@ -73,7 +75,8 @@ func TestInputs(t *testing.T) {
 	}
 	runGit(t, source, "add", ".")
 	runGit(t, source, "commit", "-m", "receipt fixture")
-	backend, err := NewLocalGit(LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+	var receiptLog bytes.Buffer
+	backend, err := NewLocalGit(LocalGitOptions{Logger: slog.New(slog.NewTextHandler(&receiptLog, nil)), Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +117,7 @@ func TestInputs(t *testing.T) {
 		wantOutput string
 	}{
 		{name: "first workspace executes and records", identifier: "receipts-1", external: "ready", wantOutput: "0 of 1 test binaries reused, 1 recorded, 0 not recordable"},
-		{name: "second workspace reuses the receipt", identifier: "receipts-2", external: "ready", wantOutput: "1 of 1 test binaries reused, 0 recorded, 0 not recordable"},
+		{name: "second workspace executes at its literal path", identifier: "receipts-2", external: "ready", wantOutput: "0 of 1 test binaries reused, 1 recorded, 0 not recordable"},
 		{name: "changed external input executes again", identifier: "receipts-3", external: "changed", wantCode: 1, wantOutput: "external input"},
 	}
 	for _, step := range steps {
@@ -123,7 +126,7 @@ func TestInputs(t *testing.T) {
 		}
 		code, output := run(step.identifier)
 		if code != step.wantCode || !strings.Contains(output, step.wantOutput) {
-			t.Fatalf("%s: exit %d, want %d; output missing %q:\n%s", step.name, code, step.wantCode, step.wantOutput, output)
+			t.Fatalf("%s: exit %d, want %d; output missing %q:\n%s\nreceipt log:\n%s", step.name, code, step.wantCode, step.wantOutput, output, receiptLog.String())
 		}
 	}
 }
