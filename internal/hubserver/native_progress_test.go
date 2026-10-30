@@ -1,8 +1,10 @@
 package hubserver
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"strings"
 	"sync/atomic"
@@ -12,6 +14,14 @@ import (
 	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+type sharedOutageProgressBackend struct {
+	decision progresscheck.Decision
+}
+
+func (b sharedOutageProgressBackend) Decide(context.Context, progresscheck.Request) (progresscheck.Decision, error) {
+	return b.decision, nil
+}
 
 func TestNativeProgressPublicationIsAtomicAndScoped(t *testing.T) {
 	t.Parallel()
@@ -194,6 +204,35 @@ func TestNativeProgressPublicationIsAtomicAndScoped(t *testing.T) {
 			if err != nil || second.DefectIssueID != published.DefectIssueID {
 				t.Fatalf("defect deduplication = %+v, %v", second, err)
 			}
+			t.Run("shared outage across distinct issues creates one defect", func(t *testing.T) {
+				backend := sharedOutageProgressBackend{decision: decision}
+				for index := range 6 {
+					other := f.createIndependent(t, fmt.Sprintf("Outage issue %d", index))
+					outage := request
+					outage.IssueID = string(other.WorkItemID)
+					outage.Instance = "example-instance"
+					outage.Attempts = []progresscheck.Attempt{
+						{ID: "failed-attempt", Step: "implement", Outcome: "failed", Error: fmt.Sprintf("backend protocol unavailable: request-%d", index), Attribution: "instance", Instance: outage.Instance},
+						{ID: "failed-retry", Step: "implement", Outcome: "failed", Error: fmt.Sprintf("backend protocol unavailable: retry-%d", index), Attribution: "instance", Instance: outage.Instance},
+					}
+					otherOwner := nativeProgressOwner{service: f.service, scope: scope, request: outage}
+					result, checked, err := progresscheck.Check(t.Context(), outage, backend, otherOwner)
+					if err != nil || !checked || result.DefectIssueID != published.DefectIssueID || result.CommentID == published.CommentID {
+						t.Fatalf("issue %s did not reuse the shared defect: result=%+v checked=%t error=%v", other.WorkItemID, result, checked, err)
+					}
+					dependent, _, err := readNativeIssue(t.Context(), f.service.database.reader, scope, outage.IssueID)
+					if err != nil || len(dependent.Dependencies) != 1 || string(dependent.Dependencies[0]) != published.DefectIssueID || dependent.DependencyReady {
+						t.Fatalf("issue %s lost its shared repair dependency: %+v, %v", other.WorkItemID, dependent, err)
+					}
+				}
+				var defects int
+				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE project_id=? AND title=?", f.project.ID, decision.DefectTitle).Scan(&defects); err != nil {
+					t.Fatal(err)
+				}
+				if defects != 1 {
+					t.Fatalf("shared outage created %d defect records, want 1", defects)
+				}
+			})
 			offset.Store(int64(100 * time.Millisecond))
 			request.EvidenceRevision = "different-defect"
 			record.RequestID, err = request.ID()
@@ -255,19 +294,13 @@ func TestNativeProgressPublicationIsAtomicAndScoped(t *testing.T) {
 				t.Fatalf("landed defect still vetoes dispatch: %v", err)
 			}
 			ordinary := f.createIndependent(t, "Ordinary dependency")
-			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := changeNativeDependencyTx(t.Context(), tx, scope, request.IssueID, tracker.DependencyMutation{ExpectedRevision: reopened.Revision, Operation: "add", RelatedWorkItemID: ordinary.WorkItemID}, clock); err != nil {
-				_ = tx.Rollback()
-				t.Fatal(err)
-			}
-			if err := appendNativeHistory(t.Context(), tx, scope, request.IssueID, "issue.edited", tracker.CollaborationData{}, clock); err != nil {
-				_ = tx.Rollback()
-				t.Fatal(err)
-			}
-			if err := tx.Commit(); err != nil {
+			ctx := f.service.contentContext(t.Context())
+			if err := f.service.hubTransact(ctx, func(tx *sql.Tx, _ time.Time) error {
+				if _, err := changeNativeDependencyTx(ctx, tx, scope, request.IssueID, tracker.DependencyMutation{ExpectedRevision: reopened.Revision, Operation: "add", RelatedWorkItemID: ordinary.WorkItemID}, clock); err != nil {
+					return err
+				}
+				return appendNativeHistory(ctx, tx, scope, request.IssueID, "issue.edited", tracker.CollaborationData{}, clock)
+			}); err != nil {
 				t.Fatal(err)
 			}
 			retained, _, err := readNativeIssue(t.Context(), f.service.database.reader, scope, request.IssueID)

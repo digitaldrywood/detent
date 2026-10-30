@@ -111,11 +111,6 @@ func TestTrackerUnavailableCompletionBypassesAllFailureBreakers(t *testing.T) {
 		ActiveStates:        []string{"In Progress"},
 		TerminalStates:      []string{"Done"},
 		MaxConcurrentAgents: 1,
-		FailureBreaker: FailureBreakerConfig{
-			SameClassLimit: 1,
-			Window:         time.Hour,
-			Cooldown:       time.Hour,
-		},
 	})
 	tracker := &backendCapacityTestConnector{}
 	orch := Orchestrator{cfg: cfg, connector: tracker, now: func() time.Time { return now }}
@@ -133,9 +128,6 @@ func TestTrackerUnavailableCompletionBypassesAllFailureBreakers(t *testing.T) {
 		RetryDelay:   time.Minute,
 	})
 
-	if state.FailureBreaker.Active() || len(state.FailureBreaker.Failures) != 0 {
-		t.Fatalf("FailureBreaker = %#v, want no tracker strike", state.FailureBreaker)
-	}
 	if _, blocked := state.Blocked[issue.ID]; blocked {
 		t.Fatalf("Blocked[%q] present after tracker wait", issue.ID)
 	}

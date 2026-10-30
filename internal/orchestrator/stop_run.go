@@ -305,7 +305,6 @@ func (o *Orchestrator) completeOperatorStopCompletion(ctx context.Context, state
 	delete(state.BudgetRefusals, event.IssueID)
 	delete(state.PriorAttempts, event.IssueID)
 	releaseDispatchRecoveryAdmission(state, event.IssueID)
-	releaseProjectFailureBreakerCanary(state, event.IssueID)
 	completedAt := event.CompletedAt.UTC()
 	if completedAt.IsZero() {
 		completedAt = o.clockNow().UTC()

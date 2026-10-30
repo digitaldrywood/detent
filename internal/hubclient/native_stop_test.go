@@ -290,7 +290,7 @@ func testNativeStopDuringHostFinalization(t *testing.T, mode string) {
 	case info = <-backend.started:
 	case <-testenv.WaitContext(t, t.Context()).Done():
 		state, err := orch.State(t.Context())
-		t.Logf("running=%+v blocked=%+v failures=%+v error=%v", state.Running, state.Blocked, state.FailureBreaker.Failures, err)
+		t.Logf("running=%+v blocked=%+v error=%v", state.Running, state.Blocked, err)
 		t.Fatal("host check did not start")
 	}
 	identity, err := os.ReadFile(filepath.Join(info.Path, ".git"))

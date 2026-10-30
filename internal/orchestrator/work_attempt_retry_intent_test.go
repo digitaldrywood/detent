@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -145,7 +144,7 @@ func TestDurableRecoveryPreservesCurrentPredicates(t *testing.T) {
 	}
 
 	t.Parallel()
-	for _, condition := range []string{"dependency", "budget", "project outage", "stale tracker", "new invalid override", "multiple causes"} {
+	for _, condition := range []string{"dependency", "budget", "stale tracker", "new invalid override", "multiple causes"} {
 		t.Run(condition, func(t *testing.T) {
 			db := openWorkAttemptRecoveryStore(t, t.Context())
 			host := newWorkAttemptRecoveryOrchestrator(t, db, nil)
@@ -167,9 +166,6 @@ func TestDurableRecoveryPreservesCurrentPredicates(t *testing.T) {
 				issue.BlockedBy = []connector.BlockedRef{{Identifier: "digitaldrywood/detent#1", State: "Todo"}}
 			case "budget":
 				state.BudgetRefusals[issue.ID] = BudgetRefusal{Issue: issue, Code: "per_issue_max_usd"}
-			case "project outage":
-				state.FailureBreaker.Class = "backend_startup_timeout"
-				state.FailureBreaker.ResumeAt = now.Add(time.Hour)
 			case "stale tracker":
 				old := now.Add(-time.Hour)
 				issue.UpdatedAt = &old
@@ -178,15 +174,13 @@ func TestDurableRecoveryPreservesCurrentPredicates(t *testing.T) {
 			case "multiple causes":
 				issue.BlockedBy = []connector.BlockedRef{{Identifier: "digitaldrywood/detent#1", State: "Todo"}}
 				state.BudgetRefusals[issue.ID] = BudgetRefusal{Issue: issue, Code: "per_issue_max_usd"}
-				state.FailureBreaker.Class = "backend_startup_timeout"
-				state.FailureBreaker.ResumeAt = now.Add(time.Hour)
 			}
 			for range 2 {
 				response, err := host.applyWorkAttemptRetryIntent(t.Context(), &state, issue, intent, receipt, now)
 				if err != nil || response.Status != "blocked" || len(response.Blockers) == 0 {
 					t.Fatalf("%s recovery: %#v, %v", condition, response, err)
 				}
-				if condition == "multiple causes" && len(response.Blockers) < 3 {
+				if condition == "multiple causes" && len(response.Blockers) < 2 {
 					t.Fatalf("response omitted current blockers: %v", response.Blockers)
 				}
 				if retry, queued := state.Retry[issue.ID]; queued && (condition != "new invalid override" || !retry.DueAt.After(now)) {
@@ -394,8 +388,6 @@ func TestRecoveryReceiptReportsCurrentState(t *testing.T) {
 			case "blocked":
 				state.Blocked[issue.ID] = Blocked{Issue: issue, Source: BlockedSourceProjectStatus, Reason: "operator_recovery_pending", RecoveryRemedy: "dependency remains open"}
 				state.BudgetRefusals[issue.ID] = BudgetRefusal{Issue: issue, Code: "per_issue_max_usd"}
-				state.FailureBreaker.Class = "backend_startup_timeout"
-				state.FailureBreaker.ResumeAt = now.Add(time.Hour)
 			case "running":
 				state.Running[issue.ID] = Running{Issue: issue, WorkAttemptID: attemptID + 1}
 			}
@@ -404,7 +396,7 @@ func TestRecoveryReceiptReportsCurrentState(t *testing.T) {
 			if err != nil || response.Status != status || response.NextAction == "" {
 				t.Fatalf("receipt = %#v, %v", response, err)
 			}
-			if status == "blocked" && (len(response.Blockers) != 3 || !strings.Contains(response.Message, "dependency remains open")) {
+			if status == "blocked" && (len(response.Blockers) != 2 || !strings.Contains(response.Message, "dependency remains open")) {
 				t.Fatalf("receipt omitted blockers: %#v", response)
 			}
 			if status == "running" && (response.CurrentAttemptID != attemptID+1 || response.Queued) {
@@ -491,8 +483,12 @@ func TestConfigurationCompletionDoesNotRetryOrPoisonProject(t *testing.T) {
 			}
 			host.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, Err: failure, CompletedAt: now})
 			attempt, err := db.WorkAttempt(t.Context(), attemptID)
-			if err != nil || attempt.ErrorClass != "issue_configuration" || state.FailureBreaker.Active() || len(state.FailureBreaker.Failures) != 0 {
-				t.Fatalf("completion class=%s retry=%v breaker=%v err=%v", attempt.ErrorClass, state.Retry, state.FailureBreaker, err)
+			wantClass := "issue_configuration"
+			if form == "restored" {
+				wantClass = workAttemptErrorRunner
+			}
+			if err != nil || attempt.ErrorClass != wantClass {
+				t.Fatalf("completion class=%s retry=%v err=%v", attempt.ErrorClass, state.Retry, err)
 			}
 			if len(state.Blocked) != 0 {
 				t.Fatal("configuration failure created a human hold")
@@ -530,14 +526,14 @@ func TestInvalidConfigurationPreflightDoesNotSpendLaunchAttempts(t *testing.T) {
 	for range 6 {
 		host.dispatchReadyIssues(ctx, &state, []connector.Issue{issue}, now)
 	}
-	if len(state.Running) != 0 || len(state.WorkAttempts) != 0 || state.FailureBreaker.Active() || len(state.Blocked) != 0 || len(state.Retry) != 1 {
-		t.Fatalf("invalid override consumed attempts: running=%v attempts=%v breaker=%v blocked=%v", state.Running, state.WorkAttempts, state.FailureBreaker, state.Blocked)
+	if len(state.Running) != 0 || len(state.WorkAttempts) != 0 || len(state.Blocked) != 0 || len(state.Retry) != 1 {
+		t.Fatalf("invalid override consumed attempts: running=%v attempts=%v blocked=%v", state.Running, state.WorkAttempts, state.Blocked)
 	}
 	issue.Description = "```detent-agent\nschema: 1\neffort: low\n```"
 	if err := tracker.UpdateIssueBody(ctx, issue.ID, issue.Description); err != nil {
 		t.Fatal(err)
 	}
-	host.dispatchReadyIssues(ctx, &state, []connector.Issue{issue}, now.Add(time.Second))
+	host.dispatchReadyIssues(ctx, &state, []connector.Issue{issue}, state.Retry[issue.ID].DueAt)
 	select {
 	case <-runner.started:
 	case <-t.Context().Done():
@@ -548,35 +544,5 @@ func TestInvalidConfigurationPreflightDoesNotSpendLaunchAttempts(t *testing.T) {
 	case <-runner.canceled:
 	case <-t.Context().Done():
 		t.Fatal("worker did not stop")
-	}
-}
-
-func TestConfigurationRecoveryOnlyClearsMatchingFailures(t *testing.T) {
-	t.Parallel()
-	for _, unrelated := range []bool{false, true} {
-		t.Run(strconv.FormatBool(unrelated), func(t *testing.T) {
-			now := time.Now().UTC()
-			host := &Orchestrator{}
-			state := newState(normalizeConfig(Config{FailureBreaker: FailureBreakerConfig{SameClassLimit: 2}}))
-			state.FailureBreaker.Class = "issue_configuration"
-			state.FailureBreaker.ResumeAt = now.Add(time.Hour)
-			for range 6 {
-				state.FailureBreaker.Failures["issue_configuration"] = append(state.FailureBreaker.Failures["issue_configuration"], ProjectFailure{IssueID: "bad", At: now, ErrorMessage: "agent override rejected: block: detent-agent schema must be 1"})
-			}
-			if unrelated {
-				for range 2 {
-					state.FailureBreaker.Failures["issue_configuration"] = append(state.FailureBreaker.Failures["issue_configuration"], ProjectFailure{At: now, IssueID: "other", ErrorMessage: "runner unavailable"})
-				}
-			}
-			host.clearConfigurationFailureEvidence(&state, "bad", now)
-			if state.FailureBreaker.Active() != unrelated {
-				t.Fatalf("breaker active = %v", state.FailureBreaker.Active())
-			}
-			for _, failure := range state.FailureBreaker.Failures["issue_configuration"] {
-				if strings.Contains(failure.ErrorMessage, "agent override rejected:") {
-					t.Fatal("matching stale evidence retained")
-				}
-			}
-		})
 	}
 }

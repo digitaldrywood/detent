@@ -102,16 +102,10 @@ func projectDispatchStatusFromCycle(
 				if waitReason == "" {
 					waitReason = schedulerDecisionWaitReason(outcome.reason)
 				}
-				if outcome.reason == projectFailureBreakerDispatchPaused {
-					status.EligibleCandidateCount++
-				}
 			}
 		} else {
 			waitReasonCode = strings.TrimSpace(decision.SkipReason)
 			waitReason = dispatchPlanDecisionWaitReason(decision)
-			if decision.SkipReason == dispatchSkipProjectFailureBreaker {
-				status.EligibleCandidateCount++
-			}
 		}
 		status.SkippedCount++
 		if waitReason == "" || waitReasonCode == "" {

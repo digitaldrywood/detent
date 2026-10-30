@@ -21,7 +21,6 @@ func (o *Orchestrator) handleModelPermitDeferred(
 	}
 	releaseBackendCapacityProbe(state, running)
 	releaseDispatchRecoveryAdmission(state, event.IssueID)
-	releaseProjectFailureBreakerCanary(state, event.IssueID)
 	o.completeDurableWorkAttempt(
 		ctx,
 		state,

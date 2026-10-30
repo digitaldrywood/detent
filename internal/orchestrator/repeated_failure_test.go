@@ -145,9 +145,6 @@ func TestRunDefersRESTBudgetFailureAsCapacityWithoutBreaker(t *testing.T) {
 	if _, ok := state.Blocked[issue.ID]; ok {
 		t.Fatalf("Blocked[%q] present after capacity deferral", issue.ID)
 	}
-	if state.FailureBreaker.Active() {
-		t.Fatalf("FailureBreaker = %#v, want inactive", state.FailureBreaker)
-	}
 	for _, event := range metrics.snapshot() {
 		if event.PhaseName == "Blocked" {
 			t.Fatalf("workflow event = %#v, want no breaker transition", event)

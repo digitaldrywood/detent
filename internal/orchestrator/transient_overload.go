@@ -46,17 +46,6 @@ func (o *Orchestrator) handleTransientOverload(
 			retryEvent = "backend_startup_timeout_retry"
 			retryMessage = "backend startup handshake timed out"
 		}
-		o.recordProjectAttemptOutcome(
-			state,
-			event.IssueID,
-			event.CompletedAt,
-			store.WorkAttemptTerminalTimedOut,
-			event.Err,
-			errorClass,
-			event.Err.Error(),
-		)
-	} else {
-		o.deferProjectFailureBreakerCanary(state, event.IssueID, event.CompletedAt, delay)
 	}
 	o.completeDurableWorkAttemptWithMetadata(
 		ctx,

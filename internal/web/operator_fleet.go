@@ -22,7 +22,7 @@ import (
 type fleetRequest = operatortool.FleetArguments
 
 func dashboardFleetTool(name string) bool {
-	return slices.Contains([]string{operatortool.InstanceHealth, operatortool.AIDebugPrompt, operatortool.Dashboard, operatortool.HealthDashboard, operatortool.DiagnosticsDashboard, operatortool.AnalyticsDashboard, operatortool.TimeSeries, operatortool.Reports, operatortool.OperationsReport, operatortool.RunnerFleet, operatortool.Refresh, operatortool.CapacityClear, operatortool.TrackerAvailabilityClear, operatortool.ForgeAvailabilityClear, operatortool.FailureBreakerCanary, operatortool.UpdateApply, operatortool.AcknowledgeWarnings, operatortool.RecoverAttempt, operatortool.UpdateFleetRunner, operatortool.UpdateFleetHost}, name)
+	return slices.Contains([]string{operatortool.InstanceHealth, operatortool.AIDebugPrompt, operatortool.Dashboard, operatortool.HealthDashboard, operatortool.DiagnosticsDashboard, operatortool.AnalyticsDashboard, operatortool.TimeSeries, operatortool.Reports, operatortool.OperationsReport, operatortool.RunnerFleet, operatortool.Refresh, operatortool.CapacityClear, operatortool.TrackerAvailabilityClear, operatortool.ForgeAvailabilityClear, operatortool.UpdateApply, operatortool.AcknowledgeWarnings, operatortool.RecoverAttempt, operatortool.UpdateFleetRunner, operatortool.UpdateFleetHost}, name)
 }
 
 func dashboardFleetRequirement(name, projectID string) operatortool.Requirement {
@@ -38,7 +38,7 @@ func dashboardFleetRequirement(name, projectID string) operatortool.Requirement 
 	switch name {
 	case operatortool.InstanceHealth, operatortool.OperationsReport, operatortool.RunnerFleet, operatortool.UpdateFleetRunner, operatortool.UpdateFleetHost, operatortool.Refresh, operatortool.UpdateApply:
 		r.ResourceKind = "instance"
-	case operatortool.CapacityClear, operatortool.TrackerAvailabilityClear, operatortool.ForgeAvailabilityClear, operatortool.FailureBreakerCanary:
+	case operatortool.CapacityClear, operatortool.TrackerAvailabilityClear, operatortool.ForgeAvailabilityClear:
 		if projectID == "" {
 			r.ResourceKind = "instance"
 		}
@@ -334,8 +334,6 @@ func (s *Server) executeFleetAction(ctx context.Context, a chatpkg.Action) (stri
 		value, err = s.clearTrackerAvailability(ctx, r.ProjectID)
 	case operatortool.ForgeAvailabilityClear:
 		value, err = s.clearForgeAvailability(ctx, r.ProjectID, r.Host)
-	case operatortool.FailureBreakerCanary:
-		value, err = s.requestBreakerCanary(ctx, r.ProjectID)
 	case operatortool.UpdateApply:
 		value, err = s.applyOperatorUpdate(ctx, r.Release, r.FromRelease)
 	case operatortool.AcknowledgeWarnings:

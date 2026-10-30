@@ -124,7 +124,6 @@ func TestDispatchFailureRetryReason(t *testing.T) {
 		{name: "backend capacity paused", reason: dispatchIssueFailureBackendCapacityPaused, want: dispatchIssueFailureBackendCapacityPaused},
 		{name: "github rest capacity paused", reason: dispatchIssueFailureGitHubRESTPaused, want: dispatchIssueFailureGitHubRESTPaused},
 		{name: "recovery ramp", reason: dispatchIssueFailureRecoveryRamp, want: dispatchIssueFailureRecoveryRamp},
-		{name: "project failure breaker", reason: projectFailureBreakerDispatchPaused, want: projectFailureBreakerDispatchPaused},
 	}
 
 	for _, tt := range tests {

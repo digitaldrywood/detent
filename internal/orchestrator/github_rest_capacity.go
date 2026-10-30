@@ -330,7 +330,6 @@ func (o *Orchestrator) handleGitHubRESTCapacityCompletion(
 		return true
 	}
 	if headroom {
-		o.deferProjectFailureBreakerCanary(state, event.IssueID, event.CompletedAt, retryAt.Sub(event.CompletedAt))
 		o.scheduleGitHubRESTCapacityRetry(state, running, outage, retryAt)
 	} else {
 		o.scheduleBackendCapacityRetry(state, running, outage)

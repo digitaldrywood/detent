@@ -31,11 +31,6 @@ func TestApprovalDeniedDeliverableUsesInstanceForgeWait(t *testing.T) {
 		ActiveStates:        []string{"In Progress"},
 		TerminalStates:      []string{"Done"},
 		MaxConcurrentAgents: 1,
-		FailureBreaker: FailureBreakerConfig{
-			SameClassLimit: 1,
-			Window:         time.Hour,
-			Cooldown:       time.Hour,
-		},
 	})
 	tracker := &backendCapacityTestConnector{}
 	attempts := &recordingWorkAttemptStore{}
@@ -44,7 +39,6 @@ func TestApprovalDeniedDeliverableUsesInstanceForgeWait(t *testing.T) {
 	issue := dispatchTestIssue("issue-forge-wait", "In Progress")
 	issue.URL = "https://github.com/digitaldrywood/detent/issues/1871"
 	state.Running[issue.ID] = Running{Issue: issue, Attempt: 4, WorkAttemptID: 42, StartedAt: now.Add(-time.Minute)}
-	state.FailureBreaker.Failures["existing"] = []ProjectFailure{{IssueID: "other", At: now.Add(-time.Minute)}}
 	deliverableErr := &runpkg.DeliverableCommandError{
 		OperationClass: "pull_request",
 		Operation:      "codex_apps/github.create_pull_request",
@@ -69,9 +63,6 @@ func TestApprovalDeniedDeliverableUsesInstanceForgeWait(t *testing.T) {
 		RetryDelay:   time.Minute,
 	})
 
-	if got := len(state.FailureBreaker.Failures["existing"]); got != 1 || state.FailureBreaker.Active() {
-		t.Fatalf("FailureBreaker = %#v, want existing evidence unchanged and inactive", state.FailureBreaker)
-	}
 	if _, blocked := state.Blocked[issue.ID]; blocked {
 		t.Fatalf("Blocked[%q] present after forge wait", issue.ID)
 	}

@@ -35,7 +35,7 @@ func TestCodexProviderOutagePausesAndRecoversWithoutParking(t *testing.T) {
 			controller := backendCapacityTestController{scope: scope, hasStatus: true, status: runpkg.CapacityStatus{Available: true}}
 			attempts := &terminalRetryWorkAttemptStore{}
 			tracker := &terminalRetryConnector{issues: map[string]connector.Issue{}}
-			cfg := normalizeConfig(Config{ActiveStates: []string{"Todo", "In Progress"}, FailureBreaker: FailureBreakerConfig{SameClassLimit: 2, Window: time.Hour, Cooldown: time.Hour}})
+			cfg := normalizeConfig(Config{ActiveStates: []string{"Todo", "In Progress"}})
 			orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts, capacityController: controller, capacityStatus: controller}
 			state := newState(cfg)
 			providerErr := &codex.TurnFailedError{Status: "failed", Body: fmt.Sprintf(`{"message":"unexpected status %d from responses endpoint"}`, status)}
@@ -51,8 +51,8 @@ func TestCodexProviderOutagePausesAndRecoversWithoutParking(t *testing.T) {
 				orch.upsertWorkAttemptSnapshot(&state, telemetry.WorkAttempt{AttemptID: int64(attempt), IssueID: issue.ID, Status: string(store.WorkAttemptStatusActive), StartedAt: now.Add(-time.Second)})
 				orch.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, Err: backendcapacity.NewError(scope, details, providerErr), CompletedAt: now})
 			}
-			if len(state.BackendOutages) != 1 || len(state.Retry) != 5 || len(state.Blocked) != 0 || state.FailureBreaker.Active() || len(state.FailureBreaker.Failures) != 0 {
-				t.Fatalf("unexpected state after completion: retry=%+v blocked=%+v breaker=%+v", state.Retry, state.Blocked, state.FailureBreaker)
+			if len(state.BackendOutages) != 1 || len(state.Retry) != 5 || len(state.Blocked) != 0 {
+				t.Fatalf("unexpected state after completion: retry=%+v blocked=%+v", state.Retry, state.Blocked)
 			}
 			if len(attempts.completions) != 30 {
 				t.Fatalf("completed attempts = %d, want 30", len(attempts.completions))
@@ -89,7 +89,7 @@ func TestCodexProviderOutagePausesAndRecoversWithoutParking(t *testing.T) {
 			}
 			recoveredAt := outage.NextProbeAt
 			orch.recoverBackendCapacity(&state, Running{CapacityScope: scope, CapacityProbe: true}, recoveredAt)
-			if len(state.BackendOutages) != 0 || len(state.Blocked) != 0 || state.FailureBreaker.Active() {
+			if len(state.BackendOutages) != 0 || len(state.Blocked) != 0 {
 				t.Fatal("successful probe left the provider or cards parked")
 			}
 			if _, _, paused := orch.backendCapacityDispatch(&state, request, recoveredAt); paused {
@@ -112,7 +112,6 @@ func TestMeteredClaudeSessionLimitRecordsOneCapacityOutage(t *testing.T) {
 	cfg := normalizeConfig(Config{BillingMode: "metered",
 		ActiveStates:   []string{"In Progress"},
 		TerminalStates: []string{"Done"},
-		FailureBreaker: FailureBreakerConfig{SameClassLimit: 5, Window: time.Hour, Cooldown: time.Hour},
 	})
 	orch := &Orchestrator{cfg: cfg}
 	state := newState(cfg)
@@ -137,9 +136,6 @@ func TestMeteredClaudeSessionLimitRecordsOneCapacityOutage(t *testing.T) {
 
 	if len(state.BackendOutages) != 1 {
 		t.Fatalf("BackendOutages = %#v, want one scoped outage", state.BackendOutages)
-	}
-	if state.FailureBreaker.Active() || len(state.FailureBreaker.Failures) != 0 {
-		t.Fatalf("FailureBreaker = %#v, want no capacity strikes", state.FailureBreaker)
 	}
 }
 
@@ -250,8 +246,8 @@ func TestSlippedMeteredAttemptsFinishAsCapacityBeforeSessionBrakes(t *testing.T)
 	if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalCapacity || attempts.completions[0].ErrorClass != backendcapacity.ErrorClass {
 		t.Fatalf("work attempt completions = %#v, want backend capacity", attempts.completions)
 	}
-	if len(state.Blocked) != 0 || state.FailureBreaker.Active() {
-		t.Fatalf("unexpected state after completion: retry=%+v blocked=%+v breaker=%+v", state.Retry, state.Blocked, state.FailureBreaker)
+	if len(state.Blocked) != 0 {
+		t.Fatalf("unexpected state after completion: retry=%+v blocked=%+v", state.Retry, state.Blocked)
 	}
 	if retry, ok := state.Retry[issue.ID]; !ok || !retry.CapacityScope.Matches(scope) || retry.Attempt != 3 {
 		t.Fatalf("Retry[%q] = %#v, want same-attempt capacity wait", issue.ID, retry)
@@ -491,11 +487,6 @@ func TestHandleRunResultRetriesStartupTimeoutWithoutProjectBreaker(t *testing.T)
 		OverloadRetryDelay: 45 * time.Second,
 		ActiveStates:       []string{"In Progress"},
 		TerminalStates:     []string{"Done"},
-		FailureBreaker: FailureBreakerConfig{
-			SameClassLimit: 2,
-			Window:         time.Hour,
-			Cooldown:       5 * time.Minute,
-		},
 	})
 	attempts := &recordingWorkAttemptStore{}
 	orch := &Orchestrator{cfg: cfg, workAttempts: attempts}
@@ -536,9 +527,6 @@ func TestHandleRunResultRetriesStartupTimeoutWithoutProjectBreaker(t *testing.T)
 	if _, retried := state.Retry[issue.ID]; !retried {
 		t.Fatal("startup failure did not retry the issue")
 	}
-	if len(state.FailureBreaker.Failures) != 0 || state.FailureBreaker.Active() {
-		t.Fatalf("FailureBreaker = %#v, want instance startup failure kept out of the project breaker", state.FailureBreaker)
-	}
 	if len(attempts.completions) != 1 {
 		t.Fatalf("work attempt completions = %#v, want one", attempts.completions)
 	}
@@ -565,11 +553,6 @@ func TestHandleRunResultRetriesStartupExitWithoutProjectBreaker(t *testing.T) {
 	cfg := normalizeConfig(Config{
 		OverloadRetryDelay: 45 * time.Second,
 		TerminalStates:     []string{"Done"},
-		FailureBreaker: FailureBreakerConfig{
-			SameClassLimit: 2,
-			Window:         time.Hour,
-			Cooldown:       5 * time.Minute,
-		},
 	})
 	attempts := &recordingWorkAttemptStore{}
 	orch := &Orchestrator{cfg: cfg, workAttempts: attempts}
@@ -594,8 +577,8 @@ func TestHandleRunResultRetriesStartupExitWithoutProjectBreaker(t *testing.T) {
 		})
 	}
 
-	if state.FailureBreaker.Active() || len(state.FailureBreaker.Failures) != 0 || len(state.Retry) != 3 {
-		t.Fatalf("FailureBreaker = %#v retries=%d, want three issue retries and no project pause", state.FailureBreaker, len(state.Retry))
+	if len(state.Retry) != 3 {
+		t.Fatalf("retries=%d, want three issue retries and no project pause", len(state.Retry))
 	}
 	if len(attempts.completions) != 3 {
 		t.Fatalf("work attempt completions = %#v, want three", attempts.completions)
@@ -604,48 +587,6 @@ func TestHandleRunResultRetriesStartupExitWithoutProjectBreaker(t *testing.T) {
 		if completion.ErrorClass != backendcapacity.StartupFailureErrorClass || !strings.Contains(completion.ErrorMessage, "stderr") {
 			t.Fatalf("completion = %#v, want startup class with stderr diagnostics", completion)
 		}
-	}
-}
-
-func TestHandleRunResultTransientOverloadDefersFailureBreakerCanary(t *testing.T) {
-	t.Parallel()
-
-	now := time.Date(2026, 7, 15, 20, 0, 0, 0, time.UTC)
-	scope := backendcapacity.Scope{BackendID: "codex", BackendKind: "codex", Provider: "openai"}
-	cfg := normalizeConfig(Config{OverloadRetryDelay: 45 * time.Second, TerminalStates: []string{"Done"}})
-	orch := &Orchestrator{cfg: cfg}
-	state := newState(cfg)
-	issue := connector.Issue{ID: "issue-overload-canary", State: "In Progress"}
-	state.Running[issue.ID] = Running{Issue: issue, Attempt: 2, StartedAt: now.Add(-time.Minute)}
-	state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: now.Add(-time.Minute)}
-	state.FailureBreaker.Class = "runner_error:systemic"
-	state.FailureBreaker.CanaryIssueID = issue.ID
-	state.FailureBreaker.ResumeAt = now
-	overloadErr := backendcapacity.NewError(scope, backendcapacity.Details{
-		Type:   backendcapacity.ErrorTypeTransientOverload,
-		Kind:   "serverOverloaded",
-		Reason: string(backendcapacity.ErrorTypeTransientOverload),
-	}, errors.New("selected model is at capacity"))
-
-	orch.handleRunResult(t.Context(), &state, runpkg.Completion{
-		IssueID:      issue.ID,
-		Err:          overloadErr,
-		CompletedAt:  now,
-		RetryAttempt: 2,
-		RetryDelay:   45 * time.Second,
-	})
-
-	if !state.FailureBreaker.Active() || state.FailureBreaker.CanaryIssueID != "" || !state.FailureBreaker.ResumeAt.Equal(now.Add(45*time.Second)) {
-		t.Fatalf("FailureBreaker = %#v, want active breaker with bounded canary backoff", state.FailureBreaker)
-	}
-	if projectFailureBreakerAllowsDispatch(&state, now.Add(44*time.Second)) {
-		t.Fatal("failure breaker admitted another canary before transient backoff elapsed")
-	}
-	if !projectFailureBreakerAllowsDispatch(&state, now.Add(45*time.Second)) {
-		t.Fatal("failure breaker did not admit a new canary after transient backoff")
-	}
-	if retry := state.Retry[issue.ID]; !retry.DueAt.Equal(now.Add(45*time.Second)) || retry.Error != backendcapacity.TransientOverloadErrorClass {
-		t.Fatalf("Retry[%q] = %#v, want transient overload canary retry", issue.ID, retry)
 	}
 }
 
@@ -739,9 +680,6 @@ func TestHandleOperatorStopCompletionDefersCapacityProbe(t *testing.T) {
 		Limit:      1,
 		Admissions: map[string]bool{issue.ID: false},
 	}
-	state.FailureBreaker.Class = "runner_error:systemic"
-	state.FailureBreaker.CanaryIssueID = issue.ID
-	state.FailureBreaker.ResumeAt = now
 	running := Running{Issue: issue, Attempt: 1, CapacityScope: scope, CapacityProbe: true}
 	state.Running[issue.ID] = running
 	orch.pendingStops[issue.ID] = &pendingStopRun{
@@ -769,9 +707,6 @@ func TestHandleOperatorStopCompletionDefersCapacityProbe(t *testing.T) {
 	}
 	if recovery := state.DispatchRecoveries[dispatchRecoveryBackendCapacity]; len(recovery.Admissions) != 0 {
 		t.Fatalf("dispatch recovery = %#v, want operator-stopped admission released", recovery)
-	}
-	if !state.FailureBreaker.Active() || state.FailureBreaker.CanaryIssueID != "" {
-		t.Fatalf("failure breaker = %#v, want active breaker with canary released", state.FailureBreaker)
 	}
 }
 
@@ -1657,7 +1592,7 @@ func TestOperatorCapacityRecoveryModes(t *testing.T) {
 
 func TestImmediateCapacityClearPreservesOtherHolds(t *testing.T) {
 	t.Parallel()
-	for _, kind := range []string{dispatchRecoveryGitHubREST, dispatchRecoveryTrackerUnavailable, dispatchRecoveryProjectFailureBreaker, dispatchRecoveryBackendCapacity} {
+	for _, kind := range []string{dispatchRecoveryGitHubREST, dispatchRecoveryTrackerUnavailable, dispatchRecoveryBackendCapacity} {
 		t.Run(kind, func(t *testing.T) {
 			now := time.Date(2026, 9, 9, 0, 0, 0, 0, time.UTC)
 			cfg := normalizeConfig(Config{MaxConcurrentAgents: 10})
@@ -1672,9 +1607,8 @@ func TestImmediateCapacityClearPreservesOtherHolds(t *testing.T) {
 			} else {
 				orch.activateDispatchRecovery(&state, kind, "unrelated hold", now, "")
 			}
-			state.FailureBreaker.Class = "human hold"
 			orch.clearBackendCapacity(&state, "codex", now, true)
-			if len(state.DispatchRecoveries) != 1 || len(state.BackendOutages) != 1 || state.FailureBreaker.Class != "human hold" {
+			if len(state.DispatchRecoveries) != 1 || len(state.BackendOutages) != 1 {
 				t.Fatalf("unrelated holds changed: %#v", state.DispatchRecoveries)
 			}
 			_, first, _ := tryReserveDispatchRecovery(&state, "one", now)

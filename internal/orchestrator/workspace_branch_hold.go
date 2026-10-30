@@ -68,9 +68,6 @@ func (o *Orchestrator) handleWorkspaceBranchHoldCompletion(
 	if workspaceIssueTerminal(running.Issue, o.cfg.TerminalStates) {
 		return true
 	}
-	if state.FailureBreaker.Active() && state.FailureBreaker.CanaryIssueID == running.Issue.ID {
-		o.deferProjectFailureBreakerCanary(state, running.Issue.ID, event.CompletedAt, delay)
-	}
 	state.Retry[running.Issue.ID] = Retry{
 		Issue:      cloneIssue(running.Issue),
 		Attempt:    running.Attempt,

@@ -28,15 +28,9 @@ func TestWorkspaceBranchHoldCompletionIsNotWorkFailure(t *testing.T) {
 		ActiveStates:        []string{"In Progress"},
 		TerminalStates:      []string{"Done"},
 		MaxConcurrentAgents: 1,
-		FailureBreaker: FailureBreakerConfig{
-			SameClassLimit: 1,
-			Window:         time.Hour,
-			Cooldown:       time.Hour,
-		},
 	})
 	orch := Orchestrator{cfg: cfg, connector: &terminalRetryConnector{}, workAttempts: attempts, now: func() time.Time { return now }}
 	state := newState(cfg)
-	state.FailureBreaker.Failures["existing"] = []ProjectFailure{{IssueID: "other", At: now.Add(-time.Minute)}}
 	state.Running[issue.ID] = Running{Issue: issue, Attempt: 4, WorkAttemptID: 42, StartedAt: now.Add(-time.Minute)}
 
 	orch.handleRunResult(t.Context(), &state, runpkg.Completion{
@@ -52,9 +46,6 @@ func TestWorkspaceBranchHoldCompletionIsNotWorkFailure(t *testing.T) {
 		RetryDelay:   time.Minute,
 	})
 
-	if got := len(state.FailureBreaker.Failures["existing"]); got != 1 || state.FailureBreaker.Active() {
-		t.Fatalf("FailureBreaker = %#v, want existing evidence unchanged and inactive", state.FailureBreaker)
-	}
 	if _, blocked := state.Blocked[issue.ID]; blocked {
 		t.Fatalf("Blocked[%q] present after branch hold", issue.ID)
 	}

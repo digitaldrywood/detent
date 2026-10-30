@@ -53,8 +53,8 @@ func TestUnfinishedCompletionClassification(t *testing.T) {
 					if len(tracker.updates) != 0 {
 						t.Fatalf("unexpected lane updates: %#v", tracker.updates)
 					}
-					if changed && (len(state.FailureBreaker.Failures) != 0 || attempts.completions[0].ErrorClass != "") {
-						t.Fatalf("unexpected state after completion: retry=%+v blocked=%+v breaker=%+v", state.Retry, state.Blocked, state.FailureBreaker)
+					if changed && attempts.completions[0].ErrorClass != "" {
+						t.Fatalf("unexpected state after completion: retry=%+v blocked=%+v", state.Retry, state.Blocked)
 					}
 					if _, ok := state.Retry[issue.ID]; !ok {
 						t.Fatal("missing allowance-controlled continuation")
@@ -318,8 +318,8 @@ func TestCompletionRebaseAfterRestart(t *testing.T) {
 			if attempt.TerminalState != tt.want {
 				t.Fatalf("terminal state = %s, want %s", attempt.TerminalState, tt.want)
 			}
-			if tt.want == store.WorkAttemptTerminalSuccess && (attempt.ErrorClass != "" || len(state.FailureBreaker.Failures) != 0) {
-				t.Fatalf("unexpected state after completion: retry=%+v blocked=%+v breaker=%+v", state.Retry, state.Blocked, state.FailureBreaker)
+			if tt.want == store.WorkAttemptTerminalSuccess && attempt.ErrorClass != "" {
+				t.Fatalf("unexpected state after completion: retry=%+v blocked=%+v", state.Retry, state.Blocked)
 			}
 		})
 	}

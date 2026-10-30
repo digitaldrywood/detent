@@ -104,19 +104,9 @@ effect. Every machine failure, including a session or merge-worker ceiling, is
 retried by one retry owner with growing attempts and capped, jittered backoff
 in a dispatchable lane. Spending limits belong to the budget policy.
 
-`agent.failure_breaker` pauses new project dispatches when the same failure
-class reaches `same_class_limit` attempts inside `window_seconds`. The default
-is five matching failures in one hour, followed by a one-hour cooldown. After
-the cooldown or a workflow reload, Detent permits exactly one canary attempt;
-a success or different failure class closes the breaker, while the same class
-starts a fresh cooldown. The state and health APIs report failed-attempt and
-distinct-item counts, affected item links and each item's recovery action, a representative
-operator cause, backend/provider identity, any matching capacity outage, the
-absolute resume time, and the current eligible-candidate count. The breaker
-pauses new dispatches only; it never moves an issue to `Blocked`. The eligible
-count includes only candidates that dispatched or were
-held solely by the project breaker; dependency, budget, provider-capacity, and
-other dispatch gates remain separate reasons that can leave the count at zero.
+Repeated failures are evaluated by the AI progress check using recorded attempt
+history. Shared system defects use the existing deduplicated filing owner;
+instance failures retain their existing capped, jittered retry backoff.
 
 Daily budget caps are scoped to the configured project. Session rows persist
 the project ID; on upgrade, Detent backfills older rows first from work

@@ -182,10 +182,6 @@ func TestEventAndTickDispatchEligibilityParity(t *testing.T) {
 		{name: "recovery park", wantRunning: true, prepare: func(_ *Config, state *State, issue *connector.Issue) {
 			state.Blocked[issue.ID] = Blocked{Issue: *issue, Reason: "recovery pending", Source: BlockedSourceProjectStatus}
 		}},
-		{name: "failure breaker", prepare: func(_ *Config, state *State, _ *connector.Issue) {
-			state.FailureBreaker.Class = "runner_error"
-			state.FailureBreaker.ResumeAt = now.Add(time.Hour)
-		}},
 		{name: "instance tracker outage", prepare: func(_ *Config, state *State, _ *connector.Issue) {
 			state.TrackerUnavailable = &TrackerCondition{}
 		}},

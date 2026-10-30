@@ -2264,7 +2264,6 @@ func TestMergeSnapshotStampsProjectIDOnIssueRows(t *testing.T) {
 			{Issue: telemetry.Issue{ID: "completed", Identifier: "digitaldrywood/detent#5"}, CompletedAt: completedAt},
 		},
 		CIUnavailable:      []telemetry.CICondition{{UnstartedCheckCount: 4, PullRequestCount: 2}},
-		FailureBreakers:    []telemetry.FailureBreaker{{Class: "session_token_ceiling"}},
 		DispatchRecoveries: []telemetry.DispatchRecovery{{Kind: "github_rest", Status: "ramping"}},
 	})
 
@@ -2281,7 +2280,6 @@ func TestMergeSnapshotStampsProjectIDOnIssueRows(t *testing.T) {
 		{name: "blocked", got: got.Blocked[0].ProjectID},
 		{name: "completed", got: got.Completed[0].ProjectID},
 		{name: "CI unavailable", got: got.CIUnavailable[0].ProjectID},
-		{name: "failure breaker", got: got.FailureBreakers[0].ProjectID},
 		{name: "dispatch recovery", got: got.DispatchRecoveries[0].ProjectID},
 	}
 	for _, tt := range tests {

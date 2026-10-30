@@ -93,9 +93,6 @@ func TestMergeWorkerStartupDeadlineExpiresWithoutPollTick(t *testing.T) {
 	if _, retried := state.Retry[issue.ID]; !retried || len(state.Blocked) != 0 {
 		t.Fatalf("startup timer failure did not retry the issue: retry=%v blocked=%v", state.Retry, state.Blocked)
 	}
-	if state.FailureBreaker.Active() || len(state.FailureBreaker.Failures) != 0 {
-		t.Fatalf("FailureBreaker = %#v, want instance startup timeout kept out of the project breaker", state.FailureBreaker)
-	}
 	issues, err := tracker.FetchIssueStatesByIDs(t.Context(), []string{issue.ID})
 	if err != nil || len(issues) != 1 || issues[0].State != "Merging" {
 		t.Fatalf("issues = %#v, err = %v; want preserved Merging lane", issues, err)

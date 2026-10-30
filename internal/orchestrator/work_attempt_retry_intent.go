@@ -169,7 +169,6 @@ func (o *Orchestrator) applyWorkAttemptRetryIntent(ctx context.Context, state *S
 		receipt.Blockers = append(receipt.Blockers, kind+": "+err.Error())
 	}
 	if len(receipt.Blockers) == 0 && intent.Configuration {
-		o.clearConfigurationFailureEvidence(state, issue.ID, intent.RecordedAt)
 		if normalizeState(issue.State) == normalizeState(blockedStatusState) && !o.currentBlockedHumanIntent(ctx, state, issue) && !o.currentBlockedOperatorStop(ctx, state, issue) {
 			target := terminalAttemptTodoState(o.cfg.ActiveStates)
 			if err := o.updateIssueStateByIDStrictWithMetadata(ctx, state, issue.ID, issue, target, now, "operator_configuration_recovery", workflowLaneMetadata{}); err != nil {
@@ -248,9 +247,6 @@ func (o *Orchestrator) currentWorkAttemptRecoveryBlockers(ctx context.Context, s
 	if refusal, held := state.BudgetRefusals[issue.ID]; held {
 		blockers = append(blockers, "budget: "+refusal.Code)
 	}
-	if state.FailureBreaker.Active() && !projectFailureBreakerAllowsDispatch(state, now) {
-		blockers = append(blockers, "project_failure_breaker: "+state.FailureBreaker.Class+"; recheck "+state.FailureBreaker.ResumeAt.Format(time.RFC3339))
-	}
 	if state.Draining || o.dispatchQuiesced() {
 		blockers = append(blockers, "dispatch is draining or paused")
 	}
@@ -306,39 +302,6 @@ func (o *Orchestrator) reconcileIssueConfigurationHolds(ctx context.Context, sta
 	}
 }
 
-func (o *Orchestrator) clearConfigurationFailureEvidence(state *State, issueID string, through time.Time) {
-	breaker := &state.FailureBreaker
-	changedActive := false
-	for class, failures := range breaker.Failures {
-		kept := failures[:0]
-		for _, failure := range failures {
-			if failure.IssueID == issueID && !failure.At.After(through) && issueConfigurationFailure(nil, class, failure.ErrorMessage) {
-				changedActive = changedActive || class == breaker.Class
-				continue
-			}
-			kept = append(kept, failure)
-		}
-		if len(kept) == 0 {
-			delete(breaker.Failures, class)
-		} else {
-			breaker.Failures[class] = kept
-		}
-	}
-	if changedActive {
-		breaker.Count = len(breaker.Failures[breaker.Class])
-	}
-	if changedActive && len(breaker.Failures[breaker.Class]) < normalizeFailureBreakerConfig(breaker.Config).SameClassLimit {
-		resumeAt := breaker.ResumeAt
-		breaker.Class = ""
-		breaker.Count = 0
-		breaker.FirstFailureAt = time.Time{}
-		breaker.TrippedAt = time.Time{}
-		breaker.ResumeAt = time.Time{}
-		breaker.CanaryIssueID = ""
-		releaseProjectFailureBreakerRetries(state, resumeAt, through)
-	}
-}
-
 func (o *Orchestrator) restoreWorkAttemptRetryIntents(ctx context.Context, state *State, issues []connector.Issue, now time.Time) []connector.Issue {
 	for _, issue := range issues {
 		o.restoreMachineRetry(ctx, state, issue)
@@ -368,4 +331,9 @@ func (o *Orchestrator) restoreWorkAttemptRetryIntents(ctx context.Context, state
 		}
 	}
 	return transitions
+}
+
+func issueConfigurationFailure(err error, errorClass, _ string) bool {
+	var configurationErr *runpkg.IssueConfigurationError
+	return errors.As(err, &configurationErr) || errorClass == "issue_configuration"
 }

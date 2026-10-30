@@ -47,15 +47,6 @@ func (o *Orchestrator) handleMergeWorkerDurationExceeded(
 		)
 	}
 
-	o.recordProjectAttemptOutcome(
-		state,
-		event.IssueID,
-		completedAt,
-		store.WorkAttemptTerminalTimedOut,
-		event.Err,
-		workAttemptErrorMergeDuration,
-		event.Err.Error(),
-	)
 	o.completeDurableWorkAttempt(
 		ctx,
 		state,

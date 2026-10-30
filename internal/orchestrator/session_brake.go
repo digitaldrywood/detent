@@ -79,15 +79,6 @@ func (o *Orchestrator) handleSessionBrake(
 		phase = runpkg.FinalStateMemoryCeilingExceeded
 		statusMessage = "agent session stopped after exceeding its memory ceiling"
 	}
-	o.recordProjectAttemptOutcome(
-		state,
-		event.IssueID,
-		completedAt,
-		terminalState,
-		event.Err,
-		brake.Reason,
-		event.Err.Error(),
-	)
 	o.completeDurableWorkAttemptWithMetadata(
 		ctx,
 		state,
@@ -161,7 +152,6 @@ func (o *Orchestrator) handleSessionBrake(
 	event.CompletedAt = completedAt
 	o.retryMachineCompletion(ctx, state, event, running, sourceContinuationAttempt(running, issue, event.Result, !strings.EqualFold(strings.TrimSpace(event.Result.FinalState), runpkg.FinalStateFailed)), brake.Reason)
 	releaseDispatchRecoveryAdmission(state, event.IssueID)
-	releaseProjectFailureBreakerCanary(state, event.IssueID)
 	recordStateEvent(state, telemetry.ActivityEvent{
 		At:      completedAt,
 		Event:   "session_brake_tripped",

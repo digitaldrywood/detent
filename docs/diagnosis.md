@@ -377,7 +377,7 @@ Response waits use one `read_timeout_ms` deadline across notifications and
 server requests. Streaming turns retain their separate activity/stall rules.
 A close timeout is retained in the error chain, but cannot turn an explicit
 startup rejection or EOF into a startup timeout for capacity classification.
-Retries retain workspace state and the existing startup failure breaker.
+Retries retain workspace state and the existing instance retry backoff.
 Admission startup failures retain their error in failed-run records instead
 of becoming generic capacity deferrals. Quota and provider-overload errors
 continue to defer admission without marking model output malformed.

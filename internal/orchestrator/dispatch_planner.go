@@ -420,13 +420,6 @@ func (p dispatchPlanner) retryAction(
 			state.Retry[retry.Issue.ID] = retry
 			return dispatchAction{skipDetail: decision.detail}, false, decision.reason
 		}
-		if decision.reason == dispatchSkipProjectFailureBreaker {
-			if retry.DueAt.Before(state.FailureBreaker.ResumeAt) {
-				retry.DueAt = state.FailureBreaker.ResumeAt
-			}
-			state.Retry[retry.Issue.ID] = retry
-			return dispatchAction{skipDetail: decision.detail}, false, decision.reason
-		}
 		if reason := p.budgetRefusalWaitReason(state, issue.ID, now); reason != "" {
 			if reason == dispatchSkipBudgetCooldown {
 				p.rescheduleRetry(state, retry, now, "budget cooldown active", false)
@@ -739,7 +732,6 @@ const (
 	dispatchSkipCompletionDeferred        = scheduler.DecisionReasonCompletionDeferred
 	dispatchSkipForgeUnavailable          = scheduler.DecisionReasonForgeUnavailable
 	dispatchSkipCIUnavailable             = scheduler.DecisionReasonCIUnavailable
-	dispatchSkipProjectFailureBreaker     = scheduler.DecisionReasonProjectFailureBreakerPaused
 	dispatchSkipRateWindowBackpressure    = scheduler.DecisionReasonProviderRateWindowBackpressure
 	dispatchSkipCurrentHeadCIWait         = scheduler.DecisionReasonCurrentHeadCIWait
 	dispatchSkipWorkspaceBranchHeld       = scheduler.DecisionReasonWorkspaceBranchHeld
@@ -901,9 +893,6 @@ func (p dispatchPlanner) dispatchableIssueDecisionForModelRequirement(
 	}
 	if !p.joinsNativeLandingBatch(issue) && !mergeControl && !p.workerSlotsAvailable(state, preferredWorkerHost) {
 		return dispatchableDecision{reason: dispatchSkipWorkerHostUnavailable}
-	}
-	if !projectFailureBreakerAllowsDispatch(state, now) {
-		return dispatchableDecision{reason: dispatchSkipProjectFailureBreaker}
 	}
 	if p.recordedBlockers != nil {
 		evaluation, err := p.recordedBlockers(issue, state, now)

@@ -1014,14 +1014,6 @@ func (o *Orchestrator) capacitySnapshotJSON(state *State, issue connector.Issue)
 		snapshot["pressure_constrained_since"] = constraint.constrainedAt
 		snapshot["pressure_constrained_for_ms"] = constraint.constrainedFor.Milliseconds()
 	}
-	if state != nil && state.FailureBreaker.Active() {
-		snapshot["project_failure_breaker"] = map[string]any{
-			"class":           state.FailureBreaker.Class,
-			"count":           state.FailureBreaker.Count,
-			"resume_at":       state.FailureBreaker.ResumeAt,
-			"canary_issue_id": state.FailureBreaker.CanaryIssueID,
-		}
-	}
 	return marshalWorkAttemptJSON(snapshot)
 }
 

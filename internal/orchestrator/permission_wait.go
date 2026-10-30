@@ -95,7 +95,6 @@ func (o *Orchestrator) parkPermissionWait(ctx context.Context, state *State, eve
 	if diffStatsPresent(running.DiffStats) {
 		state.DiffStats[event.IssueID] = running.DiffStats
 	}
-	o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalNoProgress, nil, cause, detail)
 	metadata := nativeLandingMetadata(event.Result.NativeLanding)
 	if metadata == nil {
 		metadata = make(map[string]any)

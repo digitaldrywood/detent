@@ -43,9 +43,6 @@ const (
 	defaultOverloadRetryDelay           = 45 * time.Second
 	defaultContinuationRetry            = time.Second
 	defaultFailureRetryBaseDelay        = 10 * time.Second
-	defaultFailureBreakerSameClassLimit = 5
-	defaultFailureBreakerWindow         = time.Hour
-	defaultFailureBreakerCooldown       = time.Hour
 	maxMergeWorkerRunnerFailures        = 3
 	mergeWorkerCurrentHeadCIWaitTimeout = time.Hour
 
@@ -98,7 +95,6 @@ type Config struct {
 	OverloadRetryDelay            time.Duration
 	BillingMode                   string
 	RateWindowPacing              workflowconfig.RateWindowPacing
-	FailureBreaker                FailureBreakerConfig
 	Project                       scheduler.ProjectCandidate
 	SchedulingRepository          string
 	Claiming                      ClaimingConfig
@@ -150,12 +146,6 @@ type Config struct {
 	CPUPressureSomeAvg10Max       float64
 	CPUPressureDegradedMaxAgents  int
 	CPUPressurePollInterval       time.Duration
-}
-
-type FailureBreakerConfig struct {
-	SameClassLimit int
-	Window         time.Duration
-	Cooldown       time.Duration
 }
 
 type ClaimingConfig struct {
@@ -372,7 +362,6 @@ type Orchestrator struct {
 	credentialChanges       chan backendCredentialChangeRequest
 	trackerClearRequests    chan trackerClearRequest
 	forgeClearRequests      chan forgeClearRequest
-	failureCanaryRequests   chan failureBreakerCanaryRequest
 	stopRequests            chan stopRunRequest
 	modelPermitRequests     chan modelPermitRequest
 	runResults              chan runpkg.Completion
@@ -471,11 +460,6 @@ type forgeClearRequest struct {
 
 type forgeClearReply struct {
 	cleared []ForgeCondition
-}
-
-type failureBreakerCanaryRequest struct {
-	at    time.Time
-	reply chan FailureBreakerCanaryResult
 }
 
 func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
@@ -744,7 +728,6 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		credentialChanges:       make(chan backendCredentialChangeRequest),
 		trackerClearRequests:    make(chan trackerClearRequest),
 		forgeClearRequests:      make(chan forgeClearRequest),
-		failureCanaryRequests:   make(chan failureBreakerCanaryRequest),
 		stopRequests:            make(chan stopRunRequest),
 		modelPermitRequests:     make(chan modelPermitRequest),
 		runResults:              make(chan runpkg.Completion, max(cfg.MaxConcurrentAgents, 1)),
@@ -904,16 +887,6 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 		case request := <-o.forgeClearRequests:
 			state.syncWorkerProgress()
 			request.reply <- forgeClearReply{cleared: o.clearForgeAvailability(&state, request.host, request.at)}
-		case request := <-o.failureCanaryRequests:
-			state.syncWorkerProgress()
-			result := o.requestProjectFailureBreakerCanary(&state, request.at)
-			request.reply <- result
-			if result.Requested {
-				o.startTick(&state, time.Now())
-				o.tick(ctx, &state, request.at)
-				o.finishTick(ctx, &state)
-				resetTicker(ticker, state.PollInterval)
-			}
 		case request := <-o.stopRequests:
 			state.syncWorkerProgress()
 			before := len(state.Running)
@@ -1143,31 +1116,6 @@ func (o *Orchestrator) ClearTrackerAvailability(ctx context.Context) ([]TrackerC
 		return nil, ErrStopped
 	case reply := <-request.reply:
 		return reply.cleared, nil
-	}
-}
-
-func (o *Orchestrator) RequestProjectFailureBreakerCanary(ctx context.Context) (FailureBreakerCanaryResult, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	request := failureBreakerCanaryRequest{
-		at:    o.clockNow(),
-		reply: make(chan FailureBreakerCanaryResult, 1),
-	}
-	select {
-	case <-ctx.Done():
-		return FailureBreakerCanaryResult{}, ctx.Err()
-	case <-o.done:
-		return FailureBreakerCanaryResult{}, ErrStopped
-	case o.failureCanaryRequests <- request:
-	}
-	select {
-	case <-ctx.Done():
-		return FailureBreakerCanaryResult{}, ctx.Err()
-	case <-o.done:
-		return FailureBreakerCanaryResult{}, ErrStopped
-	case result := <-request.reply:
-		return result, nil
 	}
 }
 
@@ -1557,7 +1505,6 @@ func (o *Orchestrator) applyRuntimeUpdate(state *State, update RuntimeUpdate, ti
 		now = o.now
 	}
 	updatedAt := now()
-	o.reloadProjectFailureBreaker(state, cfg.FailureBreaker, updatedAt)
 	o.heartbeats.configure(cfg, o.connector, o.workAttempts)
 	if update.ReplaceRelease {
 		o.release = update.Release

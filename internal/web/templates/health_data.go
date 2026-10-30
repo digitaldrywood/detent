@@ -45,7 +45,6 @@ func healthViewFromDashboard(data DashboardData) healthView {
 	dispatchFaults := healthFaultDispatchStalls(snapshot.DispatchStalls)
 	stalenessFaults := healthFaultStalenessWarnings(snapshot.StalenessWarnings)
 	backendFaults := healthFaultBackendOutages(snapshot.BackendOutages)
-	breakerFaults := actionableBoardFailureBreakers(snapshot.FailureBreakers)
 	recoveryFaults := healthFaultDispatchRecoveries(snapshot.DispatchRecoveries, snapshot.GeneratedAt)
 	view := healthView{
 		CheckedAt: snapshot.GeneratedAt,
@@ -133,12 +132,6 @@ func healthViewFromDashboard(data DashboardData) healthView {
 		view.Detail = detail
 		return view
 	}
-	if summary, ok := boardFailureBreakerSummary(breakerFaults); ok {
-		view.Kind = primitives.KindErr
-		view.Verdict = summary.Title + "."
-		view.Detail = "Dispatch resumes through a canary after the configured cooldown."
-		return view
-	}
 	if len(snapshot.LaneSignalWarnings) > 0 {
 		view.Kind = primitives.KindWarn
 		view.Verdict = "Lane signals are being ignored."
@@ -158,7 +151,6 @@ func healthViewFromDashboard(data DashboardData) healthView {
 }
 
 func healthFaultSnapshot(snapshot telemetry.Snapshot) telemetry.Snapshot {
-	snapshot.FailureBreakers = actionableBoardFailureBreakers(snapshot.FailureBreakers)
 	snapshot.StalenessWarnings = healthFaultStalenessWarnings(snapshot.StalenessWarnings)
 	backendOutages := make([]telemetry.BackendOutage, 0, len(snapshot.BackendOutages))
 	for _, outage := range snapshot.BackendOutages {
@@ -275,7 +267,6 @@ func healthRows(snapshot telemetry.Snapshot) []healthRow {
 	rows = append(rows, healthStrandedActiveRows(snapshot.StrandedActiveIssues)...)
 	rows = append(rows, healthDispatchRecoveryRows(healthFaultDispatchRecoveries(snapshot.DispatchRecoveries, snapshot.GeneratedAt), snapshot.GeneratedAt)...)
 	rows = append(rows, healthRefreshFailureRows(snapshot.RefreshFailures())...)
-	rows = append(rows, healthFailureBreakerRows(actionableBoardFailureBreakers(snapshot.FailureBreakers))...)
 	rows = append(rows, healthSchedulerRow(snapshot), healthUpdateRowAt(snapshot.Update, snapshot.GeneratedAt))
 	for _, release := range healthReleases(snapshot) {
 		rows = append(rows, healthReleaseRow(release))
@@ -586,23 +577,6 @@ func healthFaultBackendOutages(outages []telemetry.BackendOutage) []telemetry.Ba
 		}
 	}
 	return backendCapacityOutages(faults)
-}
-
-func healthFailureBreakerRows(breakers []telemetry.FailureBreaker) []healthRow {
-	rows := make([]healthRow, 0, len(breakers))
-	for index, breaker := range breakers {
-		projectID := diagnosticsConditionProject(breaker.ProjectID)
-		row := healthRow{
-			ID:        "health-failure-breaker-" + boardAlertRowSlug(projectID+breaker.Class, index),
-			Component: "Failure breaker · " + projectID,
-			Kind:      primitives.KindErr,
-			Status:    "Needs attention",
-			Detail:    failureBreakerCauseLabel(breaker),
-			Resets:    "operator action",
-		}
-		rows = append(rows, row)
-	}
-	return rows
 }
 
 func healthDispatchStallRow(stall telemetry.DispatchStatus) healthRow {

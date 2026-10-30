@@ -61,7 +61,6 @@ func (o *Orchestrator) handleWorkspaceDiskExhaustion(ctx context.Context, state 
 		o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
 		return true
 	}
-	o.deferProjectFailureBreakerCanary(state, running.Issue.ID, event.CompletedAt, o.retryDelay(attempt, false))
 	recordStateEvent(state, telemetry.ActivityEvent{At: event.CompletedAt, Event: "workspace_host_disk_full", Message: telemetry.WorkspaceDiskExhaustionMessage + "; retrying " + issueLabel(running.Issue)})
 	if o.logger != nil {
 		o.logger.Log(ctx, slog.LevelWarn, "workspace preparation waiting for host disk space", "issue_id", running.Issue.ID, "worker_host", running.WorkerHost, "retry_at", state.Retry[running.Issue.ID].DueAt, "error", event.Err)

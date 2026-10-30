@@ -178,17 +178,6 @@ func TestHealthViewVerdicts(t *testing.T) {
 			wantVerdict: "Backend codex: subscription window exhausted.",
 		},
 		{
-			name: "failure breaker requires attention",
-			snapshot: telemetry.Snapshot{
-				GeneratedAt: now,
-				FailureBreakers: []telemetry.FailureBreaker{{
-					ProjectID: "detent",
-				}},
-			},
-			wantKind:    primitives.KindErr,
-			wantVerdict: "Project failure breaker active — 1 project.",
-		},
-		{
 			name: "overdue recovery requires attention",
 			snapshot: telemetry.Snapshot{
 				GeneratedAt: now,

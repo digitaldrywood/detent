@@ -733,7 +733,6 @@ func stateResponse(snapshot telemetry.Snapshot, generatedAt time.Time, observedA
 		ForgeUnavailable:   append([]telemetry.ForgeCondition(nil), snapshot.ForgeUnavailable...),
 		CIUnavailable:      append([]telemetry.CICondition(nil), snapshot.CIUnavailable...),
 		BackendOutages:     append([]telemetry.BackendOutage(nil), snapshot.BackendOutages...),
-		FailureBreakers:    append([]telemetry.FailureBreaker(nil), snapshot.FailureBreakers...),
 		DispatchRecoveries: append([]telemetry.DispatchRecovery(nil), snapshot.DispatchRecoveries...),
 		Dispatch:           snapshot.Dispatch,
 		DispatchStalls:     append([]telemetry.DispatchStatus(nil), snapshot.DispatchStalls...),
@@ -1726,7 +1725,6 @@ type stateAPIResponse struct {
 	ForgeUnavailable   []telemetry.ForgeCondition    `json:"forge_unavailable,omitempty"`
 	CIUnavailable      []telemetry.CICondition       `json:"ci_unavailable,omitempty"`
 	BackendOutages     []telemetry.BackendOutage     `json:"backend_outages,omitempty"`
-	FailureBreakers    []telemetry.FailureBreaker    `json:"failure_breakers,omitempty"`
 	DispatchRecoveries []telemetry.DispatchRecovery  `json:"dispatch_recoveries,omitempty"`
 	Dispatch           telemetry.DispatchStatus      `json:"dispatch"`
 	DispatchStalls     []telemetry.DispatchStatus    `json:"dispatch_stalls,omitempty"`

@@ -16,14 +16,8 @@ func TestHandleOperatorMoveClearsOnlyMovedIssueRuntimeMemory(t *testing.T) {
 	at := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
 	moved := connector.Issue{ID: "moved", Identifier: "digitaldrywood/detent#1482", State: "Blocked"}
 	unrelated := connector.Issue{ID: "unrelated", Identifier: "digitaldrywood/detent#1483", State: "Blocked"}
-	class := projectFailureClassRunnerError
 	cfg := normalizeConfig(Config{
 		ActiveStates: []string{"Todo", "Rework"},
-		FailureBreaker: FailureBreakerConfig{
-			SameClassLimit: 2,
-			Window:         time.Hour,
-			Cooldown:       time.Minute,
-		},
 	})
 	state := newState(cfg)
 	state.BoardIssues = []connector.Issue{moved, unrelated}
@@ -51,15 +45,6 @@ func TestHandleOperatorMoveClearsOnlyMovedIssueRuntimeMemory(t *testing.T) {
 			WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{implementProgressMetadataKey: implementProgressRecord{Outcome: "no_progress", Reason: "dispatch_loop_detected", TrackerState: "Blocked"}}),
 		},
 	}
-	state.FailureBreaker.Failures[class] = []ProjectFailure{
-		{IssueID: unrelated.ID, At: at.Add(-time.Minute)},
-		{IssueID: moved.ID, At: at},
-	}
-	state.FailureBreaker.Class = class
-	state.FailureBreaker.Count = 2
-	state.FailureBreaker.FirstFailureAt = at.Add(-time.Minute)
-	state.FailureBreaker.TrippedAt = at
-	state.FailureBreaker.ResumeAt = at.Add(time.Minute)
 
 	orch := &Orchestrator{cfg: cfg}
 	result := orch.handleOperatorMove(&state, OperatorMoveRequest{
@@ -71,11 +56,10 @@ func TestHandleOperatorMoveClearsOnlyMovedIssueRuntimeMemory(t *testing.T) {
 	}, at)
 
 	if result != (OperatorMoveResult{
-		Reconciled:           true,
-		BlockedCleared:       true,
-		ClaimCleared:         true,
-		RetryCleared:         true,
-		FailureMemoryCleared: true,
+		Reconciled:     true,
+		BlockedCleared: true,
+		ClaimCleared:   true,
+		RetryCleared:   true,
 	}) {
 		t.Fatalf("handleOperatorMove() = %#v", result)
 	}
@@ -99,13 +83,6 @@ func TestHandleOperatorMoveClearsOnlyMovedIssueRuntimeMemory(t *testing.T) {
 	}
 	if _, ok := state.Retry[unrelated.ID]; !ok {
 		t.Fatalf("Retry[%q] missing", unrelated.ID)
-	}
-	if state.FailureBreaker.Active() {
-		t.Fatalf("FailureBreaker = %#v, want inactive after moved issue signal cleared", state.FailureBreaker)
-	}
-	failures := state.FailureBreaker.Failures[class]
-	if len(failures) != 1 || failures[0].IssueID != unrelated.ID {
-		t.Fatalf("FailureBreaker.Failures[%q] = %#v, want unrelated signal preserved", class, failures)
 	}
 	snapshot := state.Snapshot(at)
 	if snapshot.Counts.Blocked != 1 || len(snapshot.Blocked) != 1 || snapshot.Blocked[0].ID != unrelated.ID {

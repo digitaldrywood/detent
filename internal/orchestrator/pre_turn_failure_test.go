@@ -62,12 +62,6 @@ func TestPreTurnFailuresRetryWithoutPausingProject(t *testing.T) {
 				if tracker.issues[issue.ID].State != "Todo" || len(state.Blocked) != 0 || len(tracker.comments) != 0 || !retried || retry.Attempt != 2 || !retry.DueAt.After(now) {
 					t.Fatalf("pre-turn failure %d did not retry in its lane: state=%s blocked=%v comments=%v retry=%#v", index+1, tracker.issues[issue.ID].State, state.Blocked, tracker.comments, state.Retry)
 				}
-				if !projectFailureBreakerAllowsDispatch(&state, now) || state.FailureBreaker.Active() {
-					t.Fatalf("instance failure %d paused project dispatch: breaker=%#v", index+1, state.FailureBreaker)
-				}
-			}
-			if rows := projectFailureBreakerSnapshots(state); len(rows) != 0 {
-				t.Fatalf("instance failures produced project breaker evidence: %#v", rows)
 			}
 		})
 	}

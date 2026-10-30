@@ -7,7 +7,6 @@ import (
 
 func TestConditionClassification(t *testing.T) {
 	t.Parallel()
-	zero := 0
 	now := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
 	tests := []struct {
 		name string
@@ -22,7 +21,6 @@ func TestConditionClassification(t *testing.T) {
 		{name: "unstalled dispatch has no condition", got: Dispatch(false, "authorization_selector_declined"), want: ""},
 		{name: "provider usage outage is fault", got: BackendOutage("usage_limit"), want: ClassFault},
 		{name: "github rest pause is diagnostic", got: BackendOutage("github_rest_rate_limit"), want: ClassDiagnostic},
-		{name: "breaker without current candidates is diagnostic", got: FailureBreaker(&zero), want: ClassDiagnostic},
 		{name: "scheduled recovery is diagnostic", got: DispatchRecovery("waiting", now.Add(time.Minute), now), want: ClassDiagnostic},
 		{name: "unscheduled recovery is diagnostic", got: DispatchRecovery("waiting", time.Time{}, now), want: ClassDiagnostic},
 		{name: "ramping recovery is diagnostic", got: DispatchRecovery("ramping", now, now), want: ClassDiagnostic},

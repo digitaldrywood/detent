@@ -115,9 +115,6 @@ func TestSSHHostLossUsesInstanceRetry(t *testing.T) {
 			if _, ok := state.Retry[issue.ID]; !ok {
 				t.Fatal("host loss did not schedule retry")
 			}
-			if state.FailureBreaker.Active() {
-				t.Fatalf("unexpected state after completion: retry=%+v blocked=%+v breaker=%+v", state.Retry, state.Blocked, state.FailureBreaker)
-			}
 		})
 	}
 }

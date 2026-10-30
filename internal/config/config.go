@@ -65,9 +65,6 @@ const (
 	AgentBackendClaudeCode   = "claude_code"
 	DefaultKnowledgeMaxBytes = 64 * 1024
 
-	DefaultFailureBreakerSameClassLimit      = 5
-	DefaultFailureBreakerWindowSeconds       = 3600
-	DefaultFailureBreakerCooldownSeconds     = 3600
 	DefaultAutoPromoteGateWaitTimeoutSeconds = 3600
 	DefaultOverloadRetryDelayMS              = 45000
 	DefaultMergeWorkerStartupTimeoutMS       = 4 * 60 * 1000
@@ -334,7 +331,6 @@ type Agent struct {
 	MergeWorkerMaxDurationMS     int                          `yaml:"merge_worker_max_duration_ms"`
 	MaxRetryBackoffMS            int                          `yaml:"max_retry_backoff_ms"`
 	OverloadRetryDelayMS         int                          `yaml:"overload_retry_delay_ms"`
-	FailureBreaker               FailureBreaker               `yaml:"failure_breaker"`
 	MaxSessionTokens             int64                        `yaml:"max_session_tokens"`
 	MaxSessionContextMultiplier  float64                      `yaml:"max_session_context_multiplier"`
 	MaxSessionTokenOverrideLabel string                       `yaml:"max_session_token_override_label"`
@@ -362,12 +358,6 @@ type Agent struct {
 
 type StopRun struct {
 	TargetState string `yaml:"target_state,omitempty"`
-}
-
-type FailureBreaker struct {
-	SameClassLimit  int `yaml:"same_class_limit"`
-	WindowSeconds   int `yaml:"window_seconds"`
-	CooldownSeconds int `yaml:"cooldown_seconds"`
 }
 
 type AgentRoleEffort struct {
@@ -1517,11 +1507,6 @@ func Default() Config {
 				Enabled:            true,
 				FairnessAgeSeconds: DefaultMergeFairnessAgeSeconds,
 			},
-			FailureBreaker: FailureBreaker{
-				SameClassLimit:  DefaultFailureBreakerSameClassLimit,
-				WindowSeconds:   DefaultFailureBreakerWindowSeconds,
-				CooldownSeconds: DefaultFailureBreakerCooldownSeconds,
-			},
 			ExperimentalThreadResume:   true,
 			ResumeOrphanedSessions:     true,
 			Shutdown:                   Shutdown{DrainTimeoutMS: DefaultShutdownDrainTimeoutMS},
@@ -1859,15 +1844,6 @@ func (c *Config) normalize() {
 	}
 	if c.Agent.MergeFastPath.FairnessAgeSeconds == 0 {
 		c.Agent.MergeFastPath.FairnessAgeSeconds = DefaultMergeFairnessAgeSeconds
-	}
-	if c.Agent.FailureBreaker.SameClassLimit == 0 {
-		c.Agent.FailureBreaker.SameClassLimit = DefaultFailureBreakerSameClassLimit
-	}
-	if c.Agent.FailureBreaker.WindowSeconds == 0 {
-		c.Agent.FailureBreaker.WindowSeconds = DefaultFailureBreakerWindowSeconds
-	}
-	if c.Agent.FailureBreaker.CooldownSeconds == 0 {
-		c.Agent.FailureBreaker.CooldownSeconds = DefaultFailureBreakerCooldownSeconds
 	}
 	c.Agent.DispatchPriorityByState = normalizeStateList(c.Agent.DispatchPriorityByState)
 	c.Agent.DispatchPriorityByLabel = normalizeLabels(c.Agent.DispatchPriorityByLabel)
@@ -2213,9 +2189,6 @@ func (a *Agent) validate(prefix string, problems *[]string) {
 	if a.MaxSessionContextMultiplier < 0 {
 		*problems = append(*problems, prefix+".max_session_context_multiplier must be greater than or equal to 0")
 	}
-	validatePositive(prefix+".failure_breaker.same_class_limit", a.FailureBreaker.SameClassLimit, problems)
-	validatePositive(prefix+".failure_breaker.window_seconds", a.FailureBreaker.WindowSeconds, problems)
-	validatePositive(prefix+".failure_breaker.cooldown_seconds", a.FailureBreaker.CooldownSeconds, problems)
 	a.Effort.validate(prefix+".effort", problems)
 	a.Shutdown.validate(prefix+".shutdown", problems)
 	validateStateLimits(prefix+".max_concurrent_agents_by_state", a.MaxConcurrentAgentsByState, problems)

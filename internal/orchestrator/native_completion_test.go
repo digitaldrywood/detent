@@ -973,12 +973,12 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 				}
 			}
 			if test.preProvider {
-				if len(state.Completed) != 0 || state.FailureBreaker.Count != 0 {
-					t.Fatalf("unexpected state after completion: retry=%+v blocked=%+v breaker=%+v", state.Retry, state.Blocked, state.FailureBreaker)
+				if len(state.Completed) != 0 {
+					t.Fatalf("unexpected state after completion: retry=%+v blocked=%+v", state.Retry, state.Blocked)
 				}
 				if test.preInstance {
 					retry, retried := state.Retry[issue.ID]
-					if tick.stateIssues[0].State != issue.State || len(tick.updates) != 0 || len(tick.comments) != 0 || len(state.Blocked) != 0 || len(state.Claimed) != 0 || scheduling.releases != 1 || !retried || retry.Attempt != 2 || !retry.DueAt.After(now) || !dispatchableState(test.states, retry.Issue.State) || len(state.FailureBreaker.Failures) != 0 {
+					if tick.stateIssues[0].State != issue.State || len(tick.updates) != 0 || len(tick.comments) != 0 || len(state.Blocked) != 0 || len(state.Claimed) != 0 || scheduling.releases != 1 || !retried || retry.Attempt != 2 || !retry.DueAt.After(now) || !dispatchableState(test.states, retry.Issue.State) {
 						t.Fatalf("pre-provider recovery did not retry the instance in its lane: updates=%v retry=%+v releases=%d", tick.updates, retry, scheduling.releases)
 					}
 					if len(attempts.completions) != 1 {
@@ -1176,9 +1176,6 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 				if len(attempts.completions) != 1 || scheduling.releases != 1 || len(state.deferredCompletions) != 0 {
 					t.Fatal("settled immutable outcome replayed completion")
 				}
-				if wantTerminal == store.WorkAttemptTerminalSuccess && len(state.FailureBreaker.Failures) != 0 {
-					t.Fatal("publication refusal consumed issue failure allowance")
-				}
 				return
 			}
 			if test.handoffState != "" {
@@ -1197,7 +1194,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 						lane = update.state
 					}
 				}
-				if _, retried := state.Retry[issue.ID]; retried != stateIn(lane, cfg.ActiveStates) || len(tick.comments) != 0 || len(state.Blocked) != 0 || len(state.Completed) != 0 || len(state.Claimed) != 0 || scheduling.releases != 1 || len(state.FailureBreaker.Failures) != 0 {
+				if _, retried := state.Retry[issue.ID]; retried != stateIn(lane, cfg.ActiveStates) || len(tick.comments) != 0 || len(state.Blocked) != 0 || len(state.Completed) != 0 || len(state.Claimed) != 0 || scheduling.releases != 1 {
 					t.Fatalf("instance report did not retry in its lane: lane=%s updates=%v blocked=%v retry=%v completed=%v claims=%v releases=%d", lane, tick.updates, state.Blocked, state.Retry, state.Completed, state.Claimed, scheduling.releases)
 				}
 				if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalSuccess || attempts.completions[0].ErrorClass != "" {
@@ -1238,7 +1235,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 				if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalAbandoned || !strings.Contains(attempts.completions[0].ErrorMessage, "final diff unavailable") {
 					t.Fatalf("native authority failure = %#v", attempts.completions)
 				}
-				if test.updateErr == nil && len(tick.updates) != 0 || tick.stateIssues[0].State != issue.State || len(state.Blocked) != 0 || len(state.Completed) != 0 || len(state.deferredCompletions) != 0 || len(state.FailureBreaker.Failures) != 0 {
+				if test.updateErr == nil && len(tick.updates) != 0 || tick.stateIssues[0].State != issue.State || len(state.Blocked) != 0 || len(state.Completed) != 0 || len(state.deferredCompletions) != 0 {
 					t.Fatal("native authority failure changed the issue or repeated an obsolete completion")
 				}
 				return
@@ -1403,7 +1400,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 				if test.wantRecovery {
 					receipt := attempts.completions[0]
 					reasons := tracker.(*nativeWorkflowConnector).reasons
-					if len(reasons) != wantTransitions || wantTransitions > 0 && reasons[0] != "terminal attempt without work product" || receipt.ErrorClass != workAttemptErrorWorkspace || !allowanceInfrastructureAttempt(store.WorkAttempt{TerminalState: receipt.TerminalState, ErrorClass: receipt.ErrorClass, MetricsJSON: receipt.MetricsJSON}) || len(state.FailureBreaker.Failures) != 0 || !test.optout && test.humanReview != nil && !*test.humanReview && !dispatchableState(test.states, tick.stateIssues[0].State) {
+					if len(reasons) != wantTransitions || wantTransitions > 0 && reasons[0] != "terminal attempt without work product" || receipt.ErrorClass != workAttemptErrorWorkspace || !allowanceInfrastructureAttempt(store.WorkAttempt{TerminalState: receipt.TerminalState, ErrorClass: receipt.ErrorClass, MetricsJSON: receipt.MetricsJSON}) || !test.optout && test.humanReview != nil && !*test.humanReview && !dispatchableState(test.states, tick.stateIssues[0].State) {
 						t.Fatalf("checkpoint recovery lost mismatch or instance attribution: reasons=%v receipt=%+v state=%s", reasons, receipt, tick.stateIssues[0].State)
 					}
 					for range 3 {
@@ -1446,7 +1443,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 				}
 				if test.wantDeferred && test.change != nil && test.change.VersionError != "" {
 					preserved := state.deferredCompletions[issue.ID].Result.NativeChange
-					if preserved == nil || preserved.VersionError != test.change.VersionError || preserved.VersionCode != test.change.VersionCode || preserved.ChangeID != test.change.ChangeID || preserved.HeadSHA != test.change.HeadSHA || len(state.FailureBreaker.Failures) != 0 || len(state.Completed) != 0 || len(state.Blocked) != 0 || scheduling.releases != 0 {
+					if preserved == nil || preserved.VersionError != test.change.VersionError || preserved.VersionCode != test.change.VersionCode || preserved.ChangeID != test.change.ChangeID || preserved.HeadSHA != test.change.HeadSHA || len(state.Completed) != 0 || len(state.Blocked) != 0 || scheduling.releases != 0 {
 						t.Fatalf("publication refusal lost its existing completion owner: %#v", preserved)
 					}
 				}
@@ -1520,7 +1517,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 			if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalSuccess {
 				t.Fatalf("attempt completions = %#v", attempts.completions)
 			}
-			if attempts.completions[0].ErrorClass != "" || len(state.FailureBreaker.Failures) != 0 || terminalAttemptRetryableFailure(telemetry.WorkAttempt{TerminalState: string(attempts.completions[0].TerminalState), ErrorClass: attempts.completions[0].ErrorClass}) {
+			if attempts.completions[0].ErrorClass != "" || terminalAttemptRetryableFailure(telemetry.WorkAttempt{TerminalState: string(attempts.completions[0].TerminalState), ErrorClass: attempts.completions[0].ErrorClass}) {
 				t.Fatal("successful native review consumed failure allowance")
 			}
 			var metadata struct {

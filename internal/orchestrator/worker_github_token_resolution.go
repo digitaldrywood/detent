@@ -76,9 +76,6 @@ func (o *Orchestrator) handleWorkerGitHubTokenResolutionCompletion(
 			},
 		}
 	}
-	if state.FailureBreaker.Active() && state.FailureBreaker.CanaryIssueID == running.Issue.ID {
-		o.deferProjectFailureBreakerCanary(state, running.Issue.ID, detectedAt, nextRetryAt.Sub(detectedAt))
-	}
 	recordStateEvent(state, telemetry.ActivityEvent{
 		At:      detectedAt,
 		Event:   workerGitHubTokenResolutionErrorClass,

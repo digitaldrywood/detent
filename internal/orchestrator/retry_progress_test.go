@@ -479,3 +479,113 @@ func TestRetryProgressReadmitsSelectedMode(t *testing.T) {
 		})
 	}
 }
+
+type outageBackendError struct{ body string }
+
+func (outageBackendError) Error() string { return "backend protocol unavailable" }
+func (e outageBackendError) BackendErrorBody() string {
+	if e.body != "" {
+		return e.body
+	}
+	return `{"error":"protocol unavailable"}`
+}
+
+func TestRetryProgressSharedBackendOutage(t *testing.T) {
+	t.Parallel()
+	for _, instance := range []bool{false, true} {
+		t.Run(fmt.Sprintf("instance=%t", instance), func(t *testing.T) {
+			cfg := normalizeConfig(Config{MaxConcurrentAgents: 1, ActiveStates: []string{"Todo", "In Progress"}, TerminalStates: []string{"Done"}, Project: scheduler.ProjectCandidate{ID: "example-project"}, WorkerHosts: []string{"worker-a"}, FailureRetryBaseDelay: time.Second, MaxRetryBackoff: time.Minute})
+			source := &progressScheduling{records: map[string]progresscheck.Record{}, defects: map[string]string{}}
+			checker := &progressRunner{decision: progresscheck.Decision{Outcome: progresscheck.SystemDefect, Diagnosis: "attempt-1 and attempt-2 record a shared backend protocol outage on worker-a across issues", Reason: "Shared backend protocol outage", Evidence: []string{"attempt-1", "attempt-2"}, DefectKey: "backend-protocol-unavailable", DefectTitle: "Backend protocol unavailable", DefectBody: "Multiple issues failed on the same instance"}}
+			worker := newWorkerHostRunner()
+			attempts := &recordingWorkAttemptStore{}
+			tracker := &terminalRetryConnector{issues: map[string]connector.Issue{}}
+			o := &Orchestrator{cfg: cfg, connector: tracker, progressRunner: checker, supervisor: newTestSupervisor(t, worker, cfg), runResults: make(chan runpkg.Completion, 1), workAttempts: attempts}
+			state := newState(cfg)
+			now := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
+			issues := make([]connector.Issue, 6)
+			history := make(map[string][]progresscheck.Attempt)
+			for index := range issues {
+				issue := dispatchTestIssue(fmt.Sprintf("issue-%d", index), "In Progress")
+				issues[index] = issue
+				tracker.issues[issue.ID] = issue
+				var failure error = outageBackendError{}
+				if instance {
+					failure = fmt.Errorf("%w: backend protocol unavailable", runpkg.ErrWorkspacePreparation)
+				}
+				failure = decidedTestFailure{failure, "instance"}
+				for attempt := 1; attempt <= 2; attempt++ {
+					state.Running[issue.ID] = Running{Issue: issue, Attempt: attempt, WorkAttemptID: int64(index*2 + attempt), WorkerHost: "worker-a", StartedAt: now.Add(-time.Second)}
+					o.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, CompletedAt: now, Err: failure, Result: RunResult{TurnStarted: !instance}})
+					retry, ok := state.Retry[issue.ID]
+					if !ok || retry.Attempt != attempt+1 || !retry.DueAt.After(now) || retry.DueAt.After(now.Add(time.Minute)) {
+						t.Fatalf("issue %s attempt %d retry=%+v present=%t", issue.ID, attempt, retry, ok)
+					}
+					if instance && attempts.completions[len(attempts.completions)-1].StatusMessage != "instance workspace or startup failure" {
+						t.Fatalf("lost instance attribution: %+v", attempts.completions)
+					}
+					maximum := time.Duration(1<<attempt) * time.Second
+					if delay := retry.DueAt.Sub(now); delay < maximum-maximum/8 || delay > maximum {
+						t.Fatalf("attempt %d backoff=%v, want jittered backoff in [%v, %v]", attempt, delay, maximum-maximum/8, maximum)
+					}
+					completion := attempts.completions[len(attempts.completions)-1]
+					if instance && completion.ErrorClass != workAttemptErrorWorkspace {
+						t.Fatalf("instance outage recorded as issue failure: %+v", completion)
+					}
+					entry := progresscheck.Attempt{ID: fmt.Sprintf("attempt-%d", attempt), Step: RunModeImplement, Outcome: "failed", Error: completion.ErrorMessage, FailureClass: completion.ErrorClass, Instance: "worker-a"}
+					if instance {
+						entry.Attribution = "instance"
+					}
+					history[issue.ID] = append(history[issue.ID], entry)
+				}
+				issues[index] = state.Retry[issue.ID].Issue
+			}
+			o.scheduling = source
+			for _, issue := range issues {
+				source.request = progresscheck.Request{ProjectID: "example-project", IssueID: issue.ID, PolicyID: "policy", EvidenceRevision: "1", SourceSHA: "head", BaseSHA: "base", Instance: "worker-a", AvailableSteps: []string{RunModeImplement}, Attempts: history[issue.ID]}
+				outcome := o.dispatchIssueWithOutcome(t.Context(), &state, issue, 3, now.Add(time.Minute), "worker-a")
+				if !outcome.dispatched {
+					t.Fatalf("outage prevented AI progress check: %+v", outcome)
+				}
+				running := state.Running[issue.ID]
+				t.Cleanup(func() { running.cancel(); <-running.done })
+				var completion runpkg.Completion
+				select {
+				case completion = <-o.runResults:
+				case <-worker.started:
+					t.Fatal("progress defect dispatched implementation instead of returning to the retry owner")
+				}
+				<-running.done
+				if completion.Err == nil || !completion.Retryable {
+					t.Fatalf("progress defect escaped retry owner: %+v", completion)
+				}
+				o.handleRunResult(t.Context(), &state, completion)
+				retry, ok := state.Retry[issue.ID]
+				if !ok || retry.Attempt != 4 {
+					t.Fatalf("progress defect reset retry accounting: retry=%+v present=%t", retry, ok)
+				}
+				if delay := retry.DueAt.Sub(completion.CompletedAt); delay < 7*time.Second || delay > 8*time.Second {
+					t.Fatalf("progress defect lost growing jittered backoff: %v", delay)
+				}
+				request := checker.evidence
+				if len(request.Attempts) != 2 || request.Attempts[1].Error == "" || (instance && request.Attempts[1].Attribution != "instance") {
+					t.Fatalf("progress check lost recorded outage evidence: %+v", request)
+				}
+			}
+			if len(source.records) != len(issues) || checker.calls != len(issues) || len(state.Blocked) != 0 {
+				t.Fatalf("records=%d checks=%d holds=%v", len(source.records), checker.calls, state.Blocked)
+			}
+			source.request = progresscheck.Request{}
+			other := dispatchTestIssue("unrelated", "Todo")
+			if !o.dispatchIssue(t.Context(), &state, other, 1, now.Add(time.Minute), "worker-a") {
+				t.Fatal("backend outage paused unrelated project work")
+			}
+			running := state.Running[other.ID]
+			t.Cleanup(func() { running.cancel(); <-running.done })
+			<-worker.started
+			running.cancel()
+			<-o.runResults
+			<-running.done
+		})
+	}
+}

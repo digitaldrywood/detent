@@ -39,7 +39,6 @@ type boardAlertKind string
 const (
 	boardAlertKindLastKnown              boardAlertKind = "board-last-known"
 	boardAlertKindPartialRefresh         boardAlertKind = "project-refresh-degraded"
-	boardAlertKindFailureBreaker         boardAlertKind = "project-failure-breaker"
 	boardAlertKindDispatchStall          boardAlertKind = "dispatch-stall"
 	boardAlertKindTrackerUnavailable     boardAlertKind = "tracker-unavailable"
 	boardAlertKindForgeUnavailable       boardAlertKind = "forge-unavailable"
@@ -57,7 +56,6 @@ const (
 	boardAlertSeverityBackendCapacity                   = 300
 	boardAlertSeverityStaleness                         = 450
 	boardAlertSeverityLaneSignalIgnored                 = 425
-	boardAlertSeverityFailureBreaker                    = 500
 	boardAlertSeverityCIUnavailable                     = 550
 	boardAlertSeverityTrackerUnavailable                = 560
 	boardAlertSeverityForgeUnavailable                  = 565
@@ -111,9 +109,6 @@ func boardAlerts(snapshot telemetry.Snapshot) []boardAlert {
 		alerts = append(alerts, alert)
 	}
 	if alert, ok := boardPartialRefreshAlert(snapshot); ok {
-		alerts = append(alerts, alert)
-	}
-	if alert, ok := boardFailureBreakerAlert(snapshot); ok {
 		alerts = append(alerts, alert)
 	}
 	if alert, ok := boardCIUnavailableAlert(snapshot); ok {
@@ -697,86 +692,6 @@ func boardPartialRefreshAlert(snapshot telemetry.Snapshot) (boardAlert, bool) {
 		Overflow:      overflow,
 		DeepLink:      "/health/ui",
 	}, true
-}
-
-func boardFailureBreakerAlert(snapshot telemetry.Snapshot) (boardAlert, bool) {
-	breakers := actionableBoardFailureBreakers(snapshot.FailureBreakers)
-	summary, ok := boardFailureBreakerSummary(breakers)
-	if !ok {
-		return boardAlert{}, false
-	}
-	rows := make([]boardAlertDetailRow, 0, len(breakers))
-	for index, breaker := range breakers {
-		projectID := strings.TrimSpace(breaker.ProjectID)
-		label := projectID
-		if label == "" {
-			label = "Project"
-		}
-		link := ""
-		if len(breaker.Items) == 1 {
-			if itemLabel := failureBreakerItemLabel(breaker.Items[0]); itemLabel != "" {
-				label = itemLabel
-			}
-			link = strings.TrimSpace(breaker.Items[0].IssueURL)
-		}
-		detail, detailAt, showDetailAt := failureBreakerDetailParts(breaker, snapshot.GeneratedAt)
-		if showDetailAt && !detailAt.IsZero() {
-			detail += " " + localTimeToken(detailAt, LocalDateTimeZone)
-			if !snapshot.GeneratedAt.IsZero() && detailAt.After(snapshot.GeneratedAt) {
-				detail += " (in " + formatDuration(detailAt.Sub(snapshot.GeneratedAt).Seconds()) + ")"
-			}
-			detail += "."
-		}
-		summary := failureBreakerCauseLabel(breaker)
-		if !breaker.ResumeAt.IsZero() {
-			summary += " · Canary resumes " + localTimeToken(breaker.ResumeAt, LocalDateTimeZone)
-		}
-		rows = append(rows, boardAlertDetailRow{
-			ID:      "board-alert-failure-breaker-" + boardAlertRowSlug(projectID+"-"+breaker.Class, index),
-			Label:   label,
-			Link:    link,
-			Summary: summary,
-			Detail:  detail,
-		})
-	}
-	rows, overflow := capBoardAlertRows(rows)
-	lead := summary.Title
-	if len(breakers) == 1 {
-		lead += " · " + failureBreakerCauseLabel(breakers[0])
-		if !breakers[0].ResumeAt.IsZero() {
-			lead += " · Canary resumes " + localTimeToken(breakers[0].ResumeAt, LocalDateTimeZone)
-		}
-	}
-	alert := boardAlert{
-		ID:            "board-alert-failure-breaker",
-		Kind:          boardAlertKindFailureBreaker,
-		Severity:      boardAlertSeverityFailureBreaker,
-		Tone:          primitives.KindErr,
-		TerseSummary:  lead,
-		DetailSummary: summary.Title,
-		DetailRows:    rows,
-		Overflow:      overflow,
-		DeepLink:      "/health/ui",
-	}
-	if len(breakers) == 1 && strings.TrimSpace(breakers[0].CanaryIssueID) == "" {
-		path := "/api/v1/failure-breaker/canary"
-		if projectID := strings.TrimSpace(breakers[0].ProjectID); projectID != "" {
-			path += "?project_id=" + url.QueryEscape(projectID)
-		}
-		alert.Action = &boardAlertAction{Label: "Run canary now", Path: path, Swap: "none"}
-	}
-	return alert, true
-}
-
-func actionableBoardFailureBreakers(breakers []telemetry.FailureBreaker) []telemetry.FailureBreaker {
-	actionable := make([]telemetry.FailureBreaker, 0, len(breakers))
-	for _, breaker := range breakers {
-		if observability.FailureBreaker(breaker.EligibleCandidateCount) != observability.ClassFault {
-			continue
-		}
-		actionable = append(actionable, breaker)
-	}
-	return actionable
 }
 
 func boardBackendCapacityAlert(snapshot telemetry.Snapshot) (boardAlert, bool) {

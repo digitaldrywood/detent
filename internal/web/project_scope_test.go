@@ -85,10 +85,6 @@ func TestProjectScopedSnapshotFiltersRowsAndUsesProjectTotals(t *testing.T) {
 			{ProjectID: "detent", UnstartedCheckCount: 4, PullRequestCount: 2},
 			{ProjectID: "pyroapex", UnstartedCheckCount: 3, PullRequestCount: 2},
 		},
-		FailureBreakers: []telemetry.FailureBreaker{
-			{ProjectID: "detent", Class: "session_token_ceiling"},
-			{ProjectID: "pyroapex", Class: "deliverable_command_failure"},
-		},
 		DispatchRecoveries: []telemetry.DispatchRecovery{
 			{ProjectID: "detent", Kind: "github_rest", Status: "ramping"},
 			{ProjectID: "pyroapex", Kind: "backend_capacity", Status: "waiting"},
@@ -164,9 +160,6 @@ func TestProjectScopedSnapshotFiltersRowsAndUsesProjectTotals(t *testing.T) {
 	}
 	if len(got.CIUnavailable) != 1 || got.CIUnavailable[0].ProjectID != "detent" {
 		t.Fatalf("CIUnavailable = %#v, want only detent condition", got.CIUnavailable)
-	}
-	if len(got.FailureBreakers) != 1 || got.FailureBreakers[0].Class != "session_token_ceiling" {
-		t.Fatalf("FailureBreakers = %#v, want only detent row", got.FailureBreakers)
 	}
 	if len(got.DispatchRecoveries) != 1 || got.DispatchRecoveries[0].Kind != "github_rest" {
 		t.Fatalf("DispatchRecoveries = %#v, want only detent row", got.DispatchRecoveries)

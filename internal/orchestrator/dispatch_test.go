@@ -734,8 +734,6 @@ func TestDispatchableIssueDecisionReportsEarlierGateBeforeFailureBreaker(t *test
 	issue := dispatchTestIssue("issue-dependent", "Todo")
 	issue.BlockedBy = []connector.BlockedRef{{Identifier: "owner/repo#1", State: "Todo"}}
 	state := newState(cfg)
-	state.FailureBreaker.Class = "runner_error:opaque"
-	state.FailureBreaker.ResumeAt = now.Add(time.Hour)
 
 	decision := newDispatchPlanner(cfg).dispatchableIssueDecision(issue, &state, false, now, "")
 	if decision.dispatchable || decision.reason != dispatchSkipBlockedByDependency {

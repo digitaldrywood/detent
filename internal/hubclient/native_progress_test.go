@@ -32,6 +32,77 @@ func (*nativeProgressRerouteAgent) SupportsReadOnlyInvestigation() bool { return
 
 type nativeProgressBackend struct{ calls int }
 
+type nativeOutageProgressBackend struct{}
+
+func (nativeOutageProgressBackend) Decide(_ context.Context, evidence progresscheck.Request) (progresscheck.Decision, error) {
+	last := evidence.Attempts[len(evidence.Attempts)-1]
+	return progresscheck.Decision{Outcome: progresscheck.SystemDefect, Diagnosis: last.ID + " records a shared backend protocol outage", Reason: "Shared backend protocol outage", Evidence: []string{last.ID}, DefectKey: "shared-backend-protocol", DefectTitle: "Shared backend protocol outage", DefectBody: "Repair the backend protocol." + issueContractTestSections}, nil
+}
+
+func TestNativeRetryProgressSharedOutagePersistsOneDefect(t *testing.T) {
+	t.Parallel()
+	h := newNativeChangeHubTransport(t, "In Review", []tracker.NativeState{
+		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}},
+		{Name: "Backlog", Transitions: []string{"Todo"}},
+		{Name: "In Progress", Dispatchable: true, Transitions: []string{"In Review", "Done", "Todo"}},
+		{Name: "In Review", Transitions: []string{"In Progress", "Done"}},
+		{Name: "Done", Terminal: true},
+	}, true)
+	var defectID tracker.NativeWorkItemID
+	for index := range 6 {
+		issue := h.createInProgress(t, fmt.Sprintf("Backend outage issue %d", index))
+		h.claim(t, issue.ID)
+		failed := h.scheduler.RunExecution(issue.ID)
+		if err := failed.Start(t.Context(), tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := failed.Finish(t.Context(), "failed"); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "failed"); err != nil {
+			t.Fatal(err)
+		}
+		issue = h.claim(t, issue.ID)
+		request, owner, err := h.scheduler.RetryProgress(t.Context(), issue)
+		if err != nil {
+			t.Fatal(err)
+		}
+		record, checked, err := progresscheck.Check(t.Context(), request, nativeOutageProgressBackend{}, owner)
+		if err != nil || !checked || record.DefectIssueID == "" {
+			t.Fatalf("outage progress publication failed: record=%+v checked=%v error=%v", record, checked, err)
+		}
+		persisted, err := h.admin.Issue(t.Context(), tracker.NativeWorkItemID(issue.ID))
+		if err != nil || len(persisted.Dependencies) != 1 || string(persisted.Dependencies[0]) != record.DefectIssueID {
+			t.Fatalf("missing persisted defect reference: issue=%+v record=%+v error=%v", persisted, record, err)
+		}
+		if defectID == "" {
+			defectID = persisted.Dependencies[0]
+		}
+		if persisted.Dependencies[0] != defectID {
+			t.Fatalf("outage created another defect: got %s want %s", persisted.Dependencies[0], defectID)
+		}
+		if err := h.connector.UpdateIssueState(t.Context(), issue.ID, "In Review"); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "failed"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	page, err := h.admin.Issues(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defects := 0
+	for _, issue := range page.Items {
+		if issue.Title == "Shared backend protocol outage" {
+			defects++
+		}
+	}
+	if defects != 1 {
+		t.Fatalf("persisted %d shared outage defects, want 1", defects)
+	}
+}
+
 func (b *nativeProgressBackend) Decide(context.Context, progresscheck.Request) (progresscheck.Decision, error) {
 	b.calls++
 	return progresscheck.Decision{Outcome: progresscheck.Reroute, Step: "implement", Diagnosis: "failed-attempt" + ": the retained failure identifies missing validation evidence; the failing step has not produced its required receipt", Instruction: "Repair the missing validation evidence in the source finalization path and verify the previously failing check on the pinned source", Reason: "Repair the publication protocol", Evidence: []string{"failed-attempt"}}, nil

@@ -523,7 +523,6 @@ func (s *Server) registerRoutes() {
 	s.echo.POST("/api/v1/capacity/clear", s.apiCapacityClear, apiDashboardMutateAuth, apiAdminScope)
 	s.echo.POST("/api/v1/tracker/availability/clear", s.apiTrackerAvailabilityClear, apiDashboardMutateAuth, apiAdminScope)
 	s.echo.POST("/api/v1/forge/availability/clear", s.apiForgeAvailabilityClear, apiDashboardMutateAuth, apiAdminScope)
-	s.echo.POST("/api/v1/failure-breaker/canary", s.apiFailureBreakerCanary, apiDashboardMutateAuth, apiAdminScope)
 	s.echo.POST("/api/v1/webhooks/github", s.githubWebhook)
 	s.echo.GET("/api/v1/refresh", s.methodNotAllowed, apiDashboardReadAuth, apiReadScope)
 	s.echo.GET("/api/v1/usage", s.apiUsage, apiReadAuth, apiReadScope)
@@ -1207,7 +1206,6 @@ func (s *Server) readInstanceHealth(ctx context.Context) (healthResponse, int) {
 	sessionsRemaining := 0
 	updateStatus := telemetry.Update{}
 	backendOutages := []telemetry.BackendOutage{}
-	failureBreakers := []telemetry.FailureBreaker{}
 	trackerUnavailable := []telemetry.TrackerCondition{}
 	forgeUnavailable := []telemetry.ForgeCondition{}
 	ciUnavailable := []telemetry.CICondition{}
@@ -1256,7 +1254,6 @@ func (s *Server) readInstanceHealth(ctx context.Context) (healthResponse, int) {
 			}
 			updateStatus = snapshot.Update
 			backendOutages = append(backendOutages, snapshot.BackendOutages...)
-			failureBreakers = append(failureBreakers, snapshot.FailureBreakers...)
 			trackerUnavailable = append(trackerUnavailable, snapshot.TrackerUnavailable...)
 			forgeUnavailable = append(forgeUnavailable, snapshot.ForgeUnavailable...)
 			ciUnavailable = append(ciUnavailable, snapshot.CIUnavailable...)
@@ -1304,15 +1301,14 @@ func (s *Server) readInstanceHealth(ctx context.Context) (healthResponse, int) {
 	projectStatus, projectHealth := s.projectHealth()
 	stateEndpoints := s.stateEndpoints.health()
 	faultDispatchStalls := faultDispatchStatuses(dispatchStalls)
-	actionableBreakers := faultFailureBreakers(failureBreakers)
 	actionableOutages := faultBackendOutages(backendOutages)
-	projectHealth = applyNeedsAttentionToProjectHealth(projectHealth, faultDispatchStalls, trackerUnavailable, forgeUnavailable, ciUnavailable, actionableBreakers, actionableOutages, tickLiveness, refreshFailures)
+	projectHealth = applyNeedsAttentionToProjectHealth(projectHealth, faultDispatchStalls, trackerUnavailable, forgeUnavailable, ciUnavailable, actionableOutages, tickLiveness, refreshFailures)
 	var budgets []healthBudget
 	var workflows []healthWorkflowSource
 	if status != "draining" {
 		budgets = s.enforcedBudgets()
 		workflows = s.workflowSources()
-		if len(trackerUnavailable) > 0 || len(forgeUnavailable) > 0 || len(ciUnavailable) > 0 || len(faultDispatchStalls) > 0 || len(actionableBreakers) > 0 || len(actionableOutages) > 0 || len(laneSignalWarnings) > 0 || len(faultStalenessWarnings(stalenessWarnings)) > 0 || len(strandedActiveIssues) > 0 || len(cleanupFaults) > 0 || strings.TrimSpace(updateStatus.LastError) != "" || tickLivenessNeedsAttention(tickLiveness) || len(refreshFailures) > 0 || memoryPressure.DispatchHeld || ioPressure.CapacityConstrained || ioPressure.DispatchHeld || cpuPressure.CapacityConstrained || cpuPressure.DispatchHeld || orphanedProcesses.Count > 0 {
+		if len(trackerUnavailable) > 0 || len(forgeUnavailable) > 0 || len(ciUnavailable) > 0 || len(faultDispatchStalls) > 0 || len(actionableOutages) > 0 || len(laneSignalWarnings) > 0 || len(faultStalenessWarnings(stalenessWarnings)) > 0 || len(strandedActiveIssues) > 0 || len(cleanupFaults) > 0 || strings.TrimSpace(updateStatus.LastError) != "" || tickLivenessNeedsAttention(tickLiveness) || len(refreshFailures) > 0 || memoryPressure.DispatchHeld || ioPressure.CapacityConstrained || ioPressure.DispatchHeld || cpuPressure.CapacityConstrained || cpuPressure.DispatchHeld || orphanedProcesses.Count > 0 {
 			status = "needs_attention"
 		}
 		if pauseExitNeedsAttention(projectHealth) {
@@ -1350,7 +1346,6 @@ func (s *Server) readInstanceHealth(ctx context.Context) (healthResponse, int) {
 		ForgeUnavailable:       forgeUnavailable,
 		CIUnavailable:          ciUnavailable,
 		BackendOutages:         backendOutages,
-		FailureBreakers:        failureBreakers,
 		LaneSignalWarnings:     laneSignalWarnings,
 		StalenessWarnings:      stalenessWarnings,
 		StrandedIssues:         strandedActiveIssues,
@@ -1378,16 +1373,6 @@ func faultDispatchStatuses(statuses []telemetry.DispatchStatus) []telemetry.Disp
 	for _, status := range statuses {
 		if observability.Normalize(status.Class, observability.Dispatch(status.Stalled, status.WaitReasonCode)) == observability.ClassFault {
 			faults = append(faults, status)
-		}
-	}
-	return faults
-}
-
-func faultFailureBreakers(breakers []telemetry.FailureBreaker) []telemetry.FailureBreaker {
-	faults := make([]telemetry.FailureBreaker, 0, len(breakers))
-	for _, breaker := range breakers {
-		if observability.FailureBreaker(breaker.EligibleCandidateCount) == observability.ClassFault {
-			faults = append(faults, breaker)
 		}
 	}
 	return faults
@@ -1477,8 +1462,8 @@ func (s *Server) orphanedAgentProcesses(ctx context.Context, snapshot telemetry.
 	return summary, nil
 }
 
-func applyNeedsAttentionToProjectHealth(projects []healthProject, stalls []telemetry.DispatchStatus, trackerUnavailable []telemetry.TrackerCondition, forgeUnavailable []telemetry.ForgeCondition, ciUnavailable []telemetry.CICondition, breakers []telemetry.FailureBreaker, outages []telemetry.BackendOutage, tickLiveness []telemetry.TickLiveness, refreshFailures []telemetry.RefreshFailure) []healthProject {
-	needsAttention := make(map[string]struct{}, len(stalls)+len(trackerUnavailable)+len(forgeUnavailable)+len(ciUnavailable)+len(breakers)+len(outages)+len(tickLiveness))
+func applyNeedsAttentionToProjectHealth(projects []healthProject, stalls []telemetry.DispatchStatus, trackerUnavailable []telemetry.TrackerCondition, forgeUnavailable []telemetry.ForgeCondition, ciUnavailable []telemetry.CICondition, outages []telemetry.BackendOutage, tickLiveness []telemetry.TickLiveness, refreshFailures []telemetry.RefreshFailure) []healthProject {
+	needsAttention := make(map[string]struct{}, len(stalls)+len(trackerUnavailable)+len(forgeUnavailable)+len(ciUnavailable)+len(outages)+len(tickLiveness))
 	refreshByProject := make(map[string]telemetry.RefreshFailure, len(refreshFailures))
 	for _, stall := range stalls {
 		if projectID := strings.TrimSpace(stall.ProjectID); projectID != "" && stall.Stalled {
@@ -1497,11 +1482,6 @@ func applyNeedsAttentionToProjectHealth(projects []healthProject, stalls []telem
 	}
 	for _, condition := range forgeUnavailable {
 		if projectID := strings.TrimSpace(condition.ProjectID); projectID != "" {
-			needsAttention[projectID] = struct{}{}
-		}
-	}
-	for _, breaker := range breakers {
-		if projectID := strings.TrimSpace(breaker.ProjectID); projectID != "" {
 			needsAttention[projectID] = struct{}{}
 		}
 	}
@@ -1832,7 +1812,6 @@ type healthResponse struct {
 	ForgeUnavailable       []telemetry.ForgeCondition       `json:"forge_unavailable,omitempty"`
 	CIUnavailable          []telemetry.CICondition          `json:"ci_unavailable,omitempty"`
 	BackendOutages         []telemetry.BackendOutage        `json:"backend_outages,omitempty"`
-	FailureBreakers        []telemetry.FailureBreaker       `json:"failure_breakers,omitempty"`
 	LaneSignalWarnings     []telemetry.LaneSignalWarning    `json:"lane_signal_warnings,omitempty"`
 	StalenessWarnings      []telemetry.StalenessWarning     `json:"staleness_warnings,omitempty"`
 	StrandedIssues         []telemetry.StrandedIssue        `json:"stranded_active_issues,omitempty"`

@@ -780,7 +780,6 @@ func TestWorkerGitHubRESTHeadroomCompletionDefersWithoutBreakerStrike(t *testing
 		StartedAt: now.Add(-42 * time.Second), DiffStats: DiffStats{Status: "clean"},
 	}
 	state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: now.Add(-42 * time.Second)}
-	state.FailureBreaker.Failures["existing"] = []ProjectFailure{{IssueID: "other", At: now.Add(-time.Minute)}}
 	headroomErr := errors.New("run agent turn: worker github REST budget reached reserved headroom: consumer=shared_pool credential_identity=github-rest:worker remaining=1009 reserve=1250 reset_at=2026-08-16T00:00:00Z")
 	workerBudget := telemetry.RESTBudget{
 		Consumer: telemetry.RESTConsumerSharedPool, CredentialIdentity: "github-rest:worker",
@@ -809,9 +808,6 @@ func TestWorkerGitHubRESTHeadroomCompletionDefersWithoutBreakerStrike(t *testing
 	wantRetryAt := resetAt.Add(backendCapacityResetJitter)
 	if !ok || retry.Attempt != 4 || !retry.DueAt.Equal(wantRetryAt) {
 		t.Fatalf("Retry[%q] = %#v, want same-attempt retry at %s", issue.ID, retry, wantRetryAt)
-	}
-	if got := len(state.FailureBreaker.Failures["existing"]); got != 1 || state.FailureBreaker.Active() {
-		t.Fatalf("FailureBreaker = %#v, want existing evidence unchanged and inactive", state.FailureBreaker)
 	}
 	if _, blocked := state.Blocked[issue.ID]; blocked {
 		t.Fatalf("Blocked[%q] present after capacity deferral", issue.ID)

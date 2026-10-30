@@ -154,7 +154,6 @@ func (e *Executor) fleetHealth(ctx context.Context, raw json.RawMessage) (Result
 		TrackerUnavailable: boundedClone(snapshot.TrackerUnavailable, MaxItemLimit),
 		ForgeUnavailable:   boundedClone(snapshot.ForgeUnavailable, MaxItemLimit),
 		BackendOutages:     boundedClone(snapshot.BackendOutages, MaxItemLimit),
-		FailureBreakers:    boundedClone(snapshot.FailureBreakers, MaxItemLimit),
 		DispatchRecoveries: boundedClone(snapshot.DispatchRecoveries, MaxItemLimit),
 	})
 }
@@ -463,7 +462,6 @@ type FleetHealthResult struct {
 	TrackerUnavailable []telemetry.TrackerCondition `json:"tracker_unavailable"`
 	ForgeUnavailable   []telemetry.ForgeCondition   `json:"forge_unavailable"`
 	BackendOutages     []telemetry.BackendOutage    `json:"backend_outages"`
-	FailureBreakers    []telemetry.FailureBreaker   `json:"failure_breakers"`
 	DispatchRecoveries []telemetry.DispatchRecovery `json:"dispatch_recoveries"`
 }
 

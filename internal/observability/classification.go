@@ -44,7 +44,6 @@ func Dispatch(stalled bool, reason string) Class {
 		"tracker_unavailable",
 		"forge_unavailable",
 		"ci_unavailable",
-		"project_failure_breaker",
 		"hydrate_failed",
 		"invalid_candidate":
 		return ClassFault
@@ -57,13 +56,6 @@ func Dispatch(stalled bool, reason string) Class {
 
 func BackendOutage(kind string) Class {
 	if strings.EqualFold(strings.TrimSpace(kind), "github_rest_rate_limit") {
-		return ClassDiagnostic
-	}
-	return ClassFault
-}
-
-func FailureBreaker(eligibleCandidateCount *int) Class {
-	if eligibleCandidateCount != nil && *eligibleCandidateCount == 0 {
 		return ClassDiagnostic
 	}
 	return ClassFault

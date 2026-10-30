@@ -141,7 +141,6 @@ func TestProjectSetupFailurePreservesIssueAccounting(t *testing.T) {
 			issue := dispatchTestIssue("issue-one", "Todo")
 			state.Retry[issue.ID] = Retry{Issue: issue, Attempt: 2}
 			beforeRetry := state.Retry[issue.ID]
-			beforeBreaker := cloneProjectFailureBreaker(state.FailureBreaker)
 			attempts := &recordingWorkAttemptStore{}
 			source := &hubSchedulingSource{}
 			orch := Orchestrator{cfg: cfg, workAttempts: attempts, scheduling: preparingProjectScheduling{SchedulingSource: source, err: errors.New("instance project setup exited 7")}}
@@ -156,8 +155,8 @@ func TestProjectSetupFailurePreservesIssueAccounting(t *testing.T) {
 					t.Fatalf("preparation refusal was not released and recorded: releases=%d decisions=%+v", source.releases, attempts.decisions)
 				}
 			}
-			if !reflect.DeepEqual(state.Retry[issue.ID], beforeRetry) || !reflect.DeepEqual(state.FailureBreaker, beforeBreaker) || len(state.Running) != 0 || len(state.Claimed) != 0 || len(attempts.starts) != 0 {
-				t.Fatalf("unexpected state after completion: retry=%+v blocked=%+v breaker=%+v", state.Retry, state.Blocked, state.FailureBreaker)
+			if !reflect.DeepEqual(state.Retry[issue.ID], beforeRetry) || len(state.Running) != 0 || len(state.Claimed) != 0 || len(attempts.starts) != 0 {
+				t.Fatalf("unexpected state after completion: retry=%+v blocked=%+v", state.Retry, state.Blocked)
 			}
 		})
 	}

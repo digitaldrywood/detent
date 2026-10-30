@@ -121,7 +121,6 @@ type State struct {
 	dependencyUnblockEarly   bool
 	BudgetRefusals           map[string]BudgetRefusal
 	PriorAttempts            map[string]runpkg.PriorAttempt
-	FailureBreaker           ProjectFailureBreaker
 	DispatchRecoveries       map[string]DispatchRecovery
 	StalenessWarnings        map[string]StalenessWarning
 	stalenessReminders       map[string]time.Time
@@ -354,30 +353,6 @@ type RetryWait struct {
 	WorkspaceDestroyCount int
 }
 
-type ProjectFailureBreaker struct {
-	Config         FailureBreakerConfig
-	Failures       map[string][]ProjectFailure
-	Class          string
-	Count          int
-	FirstFailureAt time.Time
-	TrippedAt      time.Time
-	ResumeAt       time.Time
-	CanaryIssueID  string
-}
-
-type ProjectFailure struct {
-	IssueID      string
-	Identifier   string
-	IssueURL     string
-	Title        string
-	ErrorMessage string
-	Cause        string
-	BackendID    string
-	BackendKind  string
-	Provider     string
-	At           time.Time
-}
-
 type TransientCheckRetry struct {
 	IssueID       string
 	HeadSHA       string
@@ -451,7 +426,6 @@ func newState(cfg Config) State {
 		BudgetRefusals:           map[string]BudgetRefusal{},
 		PriorAttempts:            map[string]runpkg.PriorAttempt{},
 
-		FailureBreaker:           newProjectFailureBreaker(cfg.FailureBreaker),
 		DispatchRecoveries:       map[string]DispatchRecovery{},
 		StalenessWarnings:        map[string]StalenessWarning{},
 		stalenessReminders:       map[string]time.Time{},
@@ -564,7 +538,6 @@ func (s State) clone() State {
 		BudgetRefusals:           make(map[string]BudgetRefusal, len(s.BudgetRefusals)),
 		PriorAttempts:            clonePriorAttempts(s.PriorAttempts),
 
-		FailureBreaker:           cloneProjectFailureBreaker(s.FailureBreaker),
 		DispatchRecoveries:       cloneDispatchRecoveries(s.DispatchRecoveries),
 		StalenessWarnings:        maps.Clone(s.StalenessWarnings),
 		stalenessReminders:       maps.Clone(s.stalenessReminders),

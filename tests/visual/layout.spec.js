@@ -578,19 +578,12 @@ test("board shows only health states needing attention", async ({
   const bar = page.locator("#board-alerts");
   const overlay = page.locator("body > #board-alerts-overlay");
   await expect(bar).toHaveCount(1);
-  await expect(bar).toHaveAttribute("data-board-alert-count", "2");
+  await expect(bar).toHaveAttribute("data-board-alert-count", "1");
   await expect(bar).toHaveClass(/border-err/);
-  await expect(bar).toContainText("Project failure breaker active — 1 project");
-  await expect(page.locator("#project-failure-breaker")).toHaveCount(0);
+  await expect(bar).toContainText("Dispatch retry overdue for GitHub REST capacity — 1 project");
   await expect(page.locator("#dispatch-recovery-status")).toHaveCount(0);
   await expect(page.locator("#backend-capacity-outage")).toHaveCount(0);
   await page.locator("#board-alerts-toggle").click();
-  await expect(overlay.locator("#board-alert-failure-breaker")).toContainText(
-    "1 project",
-  );
-  await expect(overlay.locator("#board-alert-failure-breaker")).not.toContainText(
-    "Author beat visuals — example-org/detent-core#5280",
-  );
   await expect(overlay.locator("#board-alert-dispatch-recovery")).toContainText(
     "Dispatch retry overdue for GitHub REST capacity — 1 project",
   );

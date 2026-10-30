@@ -23,7 +23,6 @@ templ HealthPageV2(data DashboardData) {
 templ HealthSnapshotV2(data DashboardData) {
 	{{ view := healthViewFromDashboard(data) }}
 	{{ faults := healthFaultSnapshot(data.Snapshot) }}
-	@failureBreakerBanner(faults)
 	@dispatchRecoveryBanner(faults)
 	@backendCapacityBanner(faults)
 	<div class="flex flex-none flex-wrap items-center gap-2 rounded-card border border-warn/40 bg-warn/5 px-3 py-2">

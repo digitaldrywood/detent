@@ -113,7 +113,6 @@ func (o *Orchestrator) finishAttemptTriage(ctx context.Context, state *State, ev
 	}
 	o.releaseCompletedAttemptClaim(ctx, state, running.Issue)
 	releaseDispatchRecoveryAdmission(state, running.Issue.ID)
-	releaseProjectFailureBreakerCanary(state, running.Issue.ID)
 	releaseBackendCapacityProbe(state, running)
 	delete(state.Retry, running.Issue.ID)
 	if err := o.publishAttemptTriage(ctx, state, running.Issue, store.WorkAttempt{ID: running.WorkAttemptID, WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{"attempt_allowance_triage": note, "attempt_allowance_preserve_lane": running.CompletionLane != ""})}, event.CompletedAt); err != nil && o.logger != nil {

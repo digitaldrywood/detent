@@ -196,9 +196,7 @@ func TestHubSchedulingCycle(t *testing.T) {
 				state.RateLimits = &telemetry.RateLimits{GitHubGraphQL: &telemetry.RateLimitBucket{Remaining: 0, Limit: 5000, Used: 5000, ResetAt: &resetAt}}
 			}
 			state.Retry["preserved"] = Retry{Attempt: 3, DueAt: now.Add(time.Hour)}
-			state.FailureBreaker.Failures["existing"] = []ProjectFailure{{IssueID: "preserved", At: now.Add(-time.Minute)}}
 			beforeRetry := state.Retry["preserved"]
-			beforeBreaker := cloneProjectFailureBreaker(state.FailureBreaker)
 
 			orch.tick(t.Context(), &state, now)
 			if strings.HasPrefix(test.capacityWait, "quota-") && capacityReads != 0 {
@@ -287,8 +285,8 @@ func TestHubSchedulingCycle(t *testing.T) {
 				if !strings.Contains(state.LastRefreshError, "Hub unavailable") || !state.Snapshot(now).Refresh.Degraded() {
 					t.Fatalf("refresh = %#v", state.Snapshot(now).Refresh)
 				}
-				if !reflect.DeepEqual(state.Retry["preserved"], beforeRetry) || !reflect.DeepEqual(state.FailureBreaker, beforeBreaker) {
-					t.Fatalf("unexpected state after completion: retry=%+v blocked=%+v breaker=%+v", state.Retry, state.Blocked, state.FailureBreaker)
+				if !reflect.DeepEqual(state.Retry["preserved"], beforeRetry) {
+					t.Fatalf("unexpected state after completion: retry=%+v blocked=%+v", state.Retry, state.Blocked)
 				}
 				if state.PollInterval <= cfg.PollInterval {
 					t.Fatalf("outage poll interval = %s, want backoff above %s", state.PollInterval, cfg.PollInterval)
@@ -411,7 +409,7 @@ func TestHubSchedulingPreservesOverloadRetryAcrossAdmissions(t *testing.T) {
 				t.Fatalf("retry retained=%t claimed=%t, want released=%t", retained, claimed, test.wantReleased)
 			}
 			if len(state.BackendOutages) != 0 {
-				t.Fatalf("unexpected state after completion: retry=%+v blocked=%+v breaker=%+v", state.Retry, state.Blocked, state.FailureBreaker)
+				t.Fatalf("unexpected state after completion: retry=%+v blocked=%+v", state.Retry, state.Blocked)
 			}
 			if test.wantReleased {
 				return

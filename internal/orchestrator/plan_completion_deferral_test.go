@@ -105,8 +105,8 @@ func TestPlanCompletionCoordinationDeferral(t *testing.T) {
 				if _, owned, err := second.Acquire(t.Context()); owned || err == nil {
 					t.Fatalf("peer acquired unavailable coordination: %v %v", owned, err)
 				}
-				if planner.calls != 1 || len(state.FailureBreaker.Failures) != 0 {
-					t.Fatalf("runner calls=%d failures=%v", planner.calls, state.FailureBreaker.Failures)
+				if planner.calls != 1 {
+					t.Fatalf("runner calls=%d", planner.calls)
 				}
 				if len(tracker.comments) != 2 {
 					t.Fatalf("retry duplicated artifacts: %v", tracker.comments)

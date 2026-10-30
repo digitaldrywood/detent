@@ -3016,7 +3016,6 @@ func TestBoardAlertsBuildSeverityAndGroupedTrackerRows(t *testing.T) {
 	alerts := boardAlerts(snapshot)
 	wantKinds := []boardAlertKind{
 		boardAlertKindLastKnown,
-		boardAlertKindFailureBreaker,
 		boardAlertKindBackendCapacity,
 	}
 	if len(alerts) != len(wantKinds) {
@@ -3033,8 +3032,8 @@ func TestBoardAlertsBuildSeverityAndGroupedTrackerRows(t *testing.T) {
 
 	currentSnapshot := snapshot
 	currentSnapshot.LastKnown = false
-	if alerts := boardAlerts(currentSnapshot); len(alerts) != 2 {
-		t.Fatalf("boardAlerts() = %#v, want only failure and backend faults", alerts)
+	if alerts := boardAlerts(currentSnapshot); len(alerts) != 1 {
+		t.Fatalf("boardAlerts() = %#v, want only backend faults", alerts)
 	}
 	rows := diagnosticsConditionRows(currentSnapshot)
 	if len(rows) == 0 {
@@ -3118,13 +3117,6 @@ func TestBoardAlertsRenderOnlyFaultConditions(t *testing.T) {
 func TestBoardAlertCountIncludesOnlyActionableConditions(t *testing.T) {
 	t.Parallel()
 	data := boardTestData()
-	eligibleCandidates := 0
-	data.Snapshot.FailureBreakers = []telemetry.FailureBreaker{{
-		ProjectID:              "detent",
-		Class:                  "runner_error",
-		EligibleCandidateCount: &eligibleCandidates,
-		Items:                  []telemetry.FailureBreakerItem{{IssueID: "parked"}},
-	}}
 	data.Snapshot.StalenessWarnings = []telemetry.StalenessWarning{{
 		ID:         "warning-actionable",
 		Class:      observability.ClassFault,
@@ -3446,7 +3438,7 @@ func TestBoardAlertsRenderOneLineOverlayContract(t *testing.T) {
 	for _, want := range []string{
 		`id="board-alerts"`,
 		`class="min-w-0 max-w-full self-center overflow-hidden`,
-		`data-board-alert-count="3"`,
+		`data-board-alert-count="2"`,
 		`role="alert"`,
 		`aria-live="polite"`,
 		`type="button"`,
@@ -3572,7 +3564,6 @@ func boardAlertsHeavyTestSnapshot() telemetry.Snapshot {
 			Status:            telemetry.RefreshStatusDegraded,
 			Sources:           sources,
 		},
-		FailureBreakers: []telemetry.FailureBreaker{{ProjectID: "alpha", Class: "backend_startup_timeout", Count: 4, WindowSeconds: 3600}},
 		DispatchRecoveries: []telemetry.DispatchRecovery{{
 			ProjectID: "bravo",
 			Kind:      "github_rest",
@@ -3812,76 +3803,6 @@ func TestBoardSnapshotEscalatesStuckAutomaticRecovery(t *testing.T) {
 	}
 }
 
-func TestBoardSnapshotRendersProjectFailureBreakerBanner(t *testing.T) {
-	t.Parallel()
-
-	data := boardTestData()
-	eligibleCandidates := 1
-	data.Snapshot.FailureBreakers = []telemetry.FailureBreaker{{
-		ProjectID:              "detent",
-		Class:                  "runner_error:b6c174a86dfb",
-		Count:                  5,
-		AttemptCount:           5,
-		DistinctItemCount:      1,
-		Cause:                  "provider usage limit reached",
-		RepresentativeError:    "You've hit your limit. Try again at 9:39 PM",
-		BackendID:              "claude-code",
-		BackendKind:            "claude_code",
-		Provider:               "anthropic",
-		EligibleCandidateCount: &eligibleCandidates,
-		Items: []telemetry.FailureBreakerItem{{
-			IssueID:      "video-1",
-			Identifier:   "2026-07-10-detent-not-vibe-coding-short",
-			IssueURL:     "https://example.test/items/video-1",
-			Title:        "Author beat visuals",
-			CurrentState: "Blocked",
-			AttemptCount: 5,
-		}},
-		WindowSeconds: 3600,
-		ResumeAt:      data.Snapshot.GeneratedAt.Add(time.Hour),
-	}}
-	html := renderBoardComponent(t, BoardSnapshot(data))
-	for _, want := range []string{
-		`id="board-alerts"`,
-		`id="board-alert-failure-breaker"`,
-		`data-board-alert="project-failure-breaker"`,
-		"Project failure breaker active — 1 project",
-		"Run canary now",
-		`hx-post="/api/v1/failure-breaker/canary?project_id=detent"`,
-	} {
-		if !strings.Contains(html, want) {
-			t.Fatalf("failure breaker banner missing %q:\n%s", want, html)
-		}
-	}
-	for _, want := range []string{
-		"5 failed attempts across 1 item",
-		"The project may dispatch one eligible candidate",
-		"Author beat visuals — 2026-07-10-detent-not-vibe-coding-short",
-		`href="https://example.test/items/video-1"`,
-		"Provider usage limit reached",
-		"Canary resumes",
-		"Backend: claude-code · kind claude_code · provider anthropic",
-		"Diagnostic class: runner_error:b6c174a86dfb",
-		localTimeToken(data.Snapshot.GeneratedAt.Add(time.Hour), LocalDateTimeZone),
-	} {
-		if !strings.Contains(html, want) {
-			t.Fatalf("failure breaker overlay missing detail %q:\n%s", want, html)
-		}
-	}
-	health := renderBoardComponent(t, HealthSnapshotV2(data))
-	for _, want := range []string{
-		`id="project-failure-breaker"`,
-		"Provider usage limit reached",
-		"Canary resumes",
-		"Run canary now",
-		`datetime="` + data.Snapshot.GeneratedAt.Add(time.Hour).Format(time.RFC3339) + `"`,
-	} {
-		if !strings.Contains(health, want) {
-			t.Fatalf("health breaker banner missing %q:\n%s", want, health)
-		}
-	}
-}
-
 func TestBoardAndHealthShowHostDiskExhaustionRetry(t *testing.T) {
 	t.Parallel()
 	data := boardTestData()
@@ -3897,28 +3818,6 @@ func TestBoardAndHealthShowHostDiskExhaustionRetry(t *testing.T) {
 	for _, want := range []string{"Host disk is full", "Host disk", "build-host", "no space left on device"} {
 		if !strings.Contains(health, want) {
 			t.Fatalf("health missing %q", want)
-		}
-	}
-}
-
-func TestBoardSnapshotAttributesDeliverableFailureBreakerCommand(t *testing.T) {
-	t.Parallel()
-
-	data := boardTestData()
-	data.Snapshot.FailureBreakers = []telemetry.FailureBreaker{{
-		ProjectID:     "detent.build",
-		Class:         "deliverable_command_failure:codex_apps/github.create_pull_request",
-		Count:         5,
-		WindowSeconds: 3600,
-		ResumeAt:      data.Snapshot.GeneratedAt.Add(time.Hour),
-	}}
-	html := renderBoardComponent(t, BoardSnapshot(data))
-	for _, want := range []string{
-		"Deliverable command failed: codex apps/github.create pull request",
-		"deliverable_command_failure:codex_apps/github.create_pull_request",
-	} {
-		if !strings.Contains(html, want) {
-			t.Fatalf("failure breaker attribution missing %q:\n%s", want, html)
 		}
 	}
 }
@@ -3978,7 +3877,6 @@ func TestDispatchRecoveryLabelsDistinguishWaitReasons(t *testing.T) {
 		{kind: "github_rest", want: "GitHub REST capacity"},
 		{kind: "pull_request_hydration", want: "pull-request hydration"},
 		{kind: "backend_capacity", want: "backend capacity"},
-		{kind: "project_failure_breaker", want: "project failure breaker"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.kind, func(t *testing.T) {
@@ -3988,51 +3886,6 @@ func TestDispatchRecoveryLabelsDistinguishWaitReasons(t *testing.T) {
 				t.Fatalf("dispatchRecoveryTitle() = %q, want %q", title, tt.want)
 			}
 		})
-	}
-}
-
-func TestHealthSnapshotHidesCanaryActionWhileCanaryRuns(t *testing.T) {
-	t.Parallel()
-
-	data := boardTestData()
-	data.Snapshot.FailureBreakers = []telemetry.FailureBreaker{{
-		ProjectID:     "detent",
-		Class:         "backend_startup_timeout",
-		Count:         5,
-		WindowSeconds: 3600,
-		ResumeAt:      data.Snapshot.GeneratedAt,
-		CanaryIssueID: "issue-canary",
-	}}
-	html := renderBoardComponent(t, HealthSnapshotV2(data))
-	if strings.Contains(html, "Run canary now") || !strings.Contains(html, "The project is dispatching one canary candidate") {
-		t.Fatalf("active canary controls are incorrect:\n%s", html)
-	}
-}
-
-func TestDiagnosticsSnapshotExplainsReadyCanaryWithoutEligibleCandidates(t *testing.T) {
-	t.Parallel()
-
-	data := boardTestData()
-	eligibleCandidates := 0
-	data.Snapshot.FailureBreakers = []telemetry.FailureBreaker{{
-		ProjectID:              "detent",
-		Class:                  "runner_error:b6c174a86dfb",
-		Count:                  5,
-		AttemptCount:           5,
-		DistinctItemCount:      1,
-		EligibleCandidateCount: &eligibleCandidates,
-		Items:                  []telemetry.FailureBreakerItem{{IssueID: "issue-1", CurrentState: "Blocked", AttemptCount: 5}},
-		WindowSeconds:          3600,
-		ResumeAt:               data.Snapshot.GeneratedAt,
-	}}
-
-	html := renderBoardComponent(t, ProjectDiagnosticsSnapshot(data))
-	for _, want := range []string{
-		"Project canary dispatch is ready, but no eligible candidate is currently available",
-	} {
-		if !strings.Contains(html, want) {
-			t.Fatalf("zero-candidate breaker evidence missing %q:\n%s", want, html)
-		}
 	}
 }
 

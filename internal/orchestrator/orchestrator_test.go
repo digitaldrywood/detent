@@ -1551,7 +1551,7 @@ func TestRunSchedulesRetryAfterRunnerPanic(t *testing.T) {
 	defer stop()
 
 	state := waitForState(t, orch, func(state orchestrator.State) bool { _, ok := state.Retry[issue.ID]; return ok })
-	if len(state.Blocked) != 0 || state.FailureBreaker.Active() {
+	if len(state.Blocked) != 0 {
 		t.Fatal("runner panic parked the issue or paused the project")
 	}
 }
@@ -1626,9 +1626,6 @@ func TestRunPausesMeteredBackendAfterQuotaErrorWithoutBreakerStrike(t *testing.T
 		}
 		if _, ok := state.Blocked[issue.ID]; ok {
 			t.Fatalf("Blocked[%q] present after quota error", issue.ID)
-		}
-		if state.FailureBreaker.Active() || len(state.FailureBreaker.Failures) != 0 {
-			t.Fatalf("FailureBreaker = %#v, want no quota strike", state.FailureBreaker)
 		}
 		retry := state.Retry[issue.ID]
 		if retry.Issue.State != "Todo" {

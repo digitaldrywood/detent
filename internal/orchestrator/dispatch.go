@@ -673,9 +673,6 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 	if _, paused := activeGitHubRESTCapacityOutage(state, now); paused && o.dispatchPlanner().githubRESTDependent(issue) {
 		return dispatchIssueOutcome{reason: dispatchIssueFailureGitHubRESTPaused}
 	}
-	if !projectFailureBreakerAllowsDispatch(state, now) {
-		return dispatchIssueOutcome{reason: projectFailureBreakerDispatchPaused}
-	}
 	o.observeHostPressure(ctx, state, o.clockNow())
 	if state.MemoryPressure.DispatchHeld {
 		return dispatchIssueOutcome{reason: dispatchIssueFailureMemoryPressure}
@@ -818,23 +815,12 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 		}
 		return dispatchIssueOutcome{reason: recoveryReason}
 	}
-	canary, allowed := tryReserveProjectFailureBreakerCanary(state, issue.ID, now)
-	if !allowed {
-		if recovery {
-			releaseDispatchRecoveryAdmission(state, issue.ID)
-		}
-		o.releaseGlobalDispatchSlot(globalSlot)
-		return dispatchIssueOutcome{reason: projectFailureBreakerDispatchPaused}
-	}
 
 	o.dispatchStartMu.Lock()
 	if !o.localIntakeAllows(state, issue) {
 		o.dispatchStartMu.Unlock()
 		if recovery {
 			releaseDispatchRecoveryAdmission(state, issue.ID)
-		}
-		if canary {
-			releaseProjectFailureBreakerCanary(state, issue.ID)
 		}
 		o.releaseGlobalDispatchSlot(globalSlot)
 		return dispatchIssueOutcome{reason: dispatchSkipInactiveState, waitReason: "local intake disabled"}
@@ -844,9 +830,6 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 		o.dispatchStartMu.Unlock()
 		if recovery {
 			releaseDispatchRecoveryAdmission(state, issue.ID)
-		}
-		if canary {
-			releaseProjectFailureBreakerCanary(state, issue.ID)
 		}
 		o.releaseGlobalDispatchSlot(globalSlot)
 		o.logWorkerLifecycle(issue, "worker_capacity_released",
@@ -879,9 +862,6 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 		if recovery {
 			releaseDispatchRecoveryAdmission(state, issue.ID)
 		}
-		if canary {
-			releaseProjectFailureBreakerCanary(state, issue.ID)
-		}
 		o.releaseGlobalDispatchSlot(globalSlot)
 		o.logWorkerLifecycle(issue, "worker_capacity_released",
 			"attempt", attempt,
@@ -904,9 +884,6 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 		if err := o.updateIssueState(runCtx, state, issue, targetState, now, "dispatch_start"); err != nil {
 			if recovery {
 				releaseDispatchRecoveryAdmission(state, issue.ID)
-			}
-			if canary {
-				releaseProjectFailureBreakerCanary(state, issue.ID)
 			}
 			o.releaseGlobalDispatchSlot(globalSlot)
 			o.completeDurableWorkAttempt(ctx, state, Running{

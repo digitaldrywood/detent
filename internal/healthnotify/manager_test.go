@@ -72,6 +72,7 @@ func TestManagerEntryPayloadsFireOncePerIdentity(t *testing.T) {
 		wantWaitReasons []string
 		wantTracker     bool
 		wantForge       bool
+		wantOutage      bool
 	}{
 		{
 			name: "dispatch payload carries wait reason",
@@ -101,6 +102,14 @@ func TestManagerEntryPayloadsFireOncePerIdentity(t *testing.T) {
 			name:     "CI payload omits wait reason",
 			snapshot: telemetry.Snapshot{CIUnavailable: []telemetry.CICondition{{ProjectID: "detent"}}},
 			cause:    CauseCIUnavailable,
+		},
+		{
+			name: "capacity payload carries provider reset evidence",
+			snapshot: telemetry.Snapshot{BackendOutages: []telemetry.BackendOutage{{
+				ProjectID: "detent", BackendID: "claude-code", BackendKind: "claude_code", Provider: "anthropic", Kind: "usage_limit_exceeded", ResetAt: new(now.Add(39 * time.Minute)),
+			}}},
+			cause:      CauseBackendCapacity,
+			wantOutage: true,
 		},
 	}
 	for _, tt := range tests {
@@ -144,67 +153,14 @@ func TestManagerEntryPayloadsFireOncePerIdentity(t *testing.T) {
 				if got := len(event.ForgeConditions) > 0; got != tt.wantForge {
 					t.Fatalf("ForgeConditions = %#v, want present %v", event.ForgeConditions, tt.wantForge)
 				}
+				if got := len(event.BackendOutages) > 0; got != tt.wantOutage {
+					t.Fatalf("BackendOutages = %#v, want present %v", event.BackendOutages, tt.wantOutage)
+				}
+				if tt.wantOutage && (len(event.BackendOutages) != 1 || event.BackendOutages[0].Provider != "anthropic" || event.BackendOutages[0].ResetAt == nil || !event.BackendOutages[0].ResetAt.Equal(now.Add(39*time.Minute))) {
+					t.Fatalf("BackendOutages lost provider reset evidence: %#v", event.BackendOutages)
+				}
 			}
 		})
-	}
-}
-
-func TestManagerBreakerPayloadCarriesOperatorEvidence(t *testing.T) {
-	t.Parallel()
-
-	now := time.Date(2026, 8, 13, 18, 0, 0, 0, time.UTC)
-	resetAt := now.Add(39 * time.Minute)
-	eligibleCandidates := 1
-	breaker := telemetry.FailureBreaker{
-		ProjectID:              "digitaldrywood-video",
-		Class:                  "runner_error:b6c174a86dfb",
-		Count:                  5,
-		AttemptCount:           5,
-		DistinctItemCount:      1,
-		Cause:                  "provider usage limit reached",
-		RepresentativeError:    "You've hit your limit. Try again at 9:39 PM",
-		BackendID:              "claude-code",
-		BackendKind:            "claude_code",
-		Provider:               "anthropic",
-		EligibleCandidateCount: &eligibleCandidates,
-		Items: []telemetry.FailureBreakerItem{{
-			IssueID: "video-1", Identifier: "2026-07-10-detent-not-vibe-coding-short", IssueURL: "https://example.test/items/video-1", Title: "Author beat visuals", CurrentState: "Blocked", AttemptCount: 5,
-		}},
-		ResumeAt: now.Add(time.Hour),
-	}
-	outage := telemetry.BackendOutage{
-		ProjectID: "digitaldrywood-video", BackendID: "claude-code", BackendKind: "claude_code", Provider: "anthropic", Kind: "usage_limit_exceeded", Reason: "provider usage limit reached", ResetAt: &resetAt, ResumeAt: resetAt.Add(5 * time.Second),
-	}
-	breaker.BackendOutage = &outage
-	snapshot := telemetry.Snapshot{FailureBreakers: []telemetry.FailureBreaker{breaker}, BackendOutages: []telemetry.BackendOutage{outage}}
-	stateStore := newMemoryStateStore()
-	sender := &recordingSender{}
-	manager := newTestManager(t, stateStore, sender, Config{Debounce: time.Minute})
-	health := readyHealth("digitaldrywood-video")
-
-	managerReconcile(t, manager, snapshot, health, now)
-	managerReconcile(t, manager, snapshot, health, now.Add(time.Minute))
-
-	var breakerEvent *Event
-	for _, event := range sender.Events() {
-		if event.ProjectID == "digitaldrywood-video" && slices.Equal(event.Causes, []string{CauseProjectFailureBreaker}) {
-			value := event
-			breakerEvent = &value
-			break
-		}
-	}
-	if breakerEvent == nil {
-		t.Fatalf("events = %#v, want project failure breaker event", sender.Events())
-	}
-	if len(breakerEvent.FailureBreakers) != 1 || breakerEvent.FailureBreakers[0].AttemptCount != 5 || breakerEvent.FailureBreakers[0].DistinctItemCount != 1 {
-		t.Fatalf("FailureBreakers = %#v", breakerEvent.FailureBreakers)
-	}
-	if len(breakerEvent.BackendOutages) != 1 || breakerEvent.BackendOutages[0].Provider != "anthropic" || breakerEvent.BackendOutages[0].ResetAt == nil {
-		t.Fatalf("BackendOutages = %#v", breakerEvent.BackendOutages)
-	}
-	item := breakerEvent.FailureBreakers[0].Items[0]
-	if item.Title != "Author beat visuals" || item.IssueURL == "" {
-		t.Fatalf("breaker item = %#v", item)
 	}
 }
 
@@ -231,7 +187,6 @@ func TestManagerSuppressesFlapInsideDebounce(t *testing.T) {
 func TestManagerNotifiesOnlyFaultTransitions(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
-	zero := 0
 	tests := []struct {
 		name       string
 		snapshot   telemetry.Snapshot
@@ -249,12 +204,6 @@ func TestManagerNotifiesOnlyFaultTransitions(t *testing.T) {
 			name: "github rest pause is diagnostic",
 			snapshot: telemetry.Snapshot{BackendOutages: []telemetry.BackendOutage{{
 				ProjectID: "detent", Kind: "github_rest_rate_limit",
-			}}},
-		},
-		{
-			name: "fully parked breaker is diagnostic",
-			snapshot: telemetry.Snapshot{FailureBreakers: []telemetry.FailureBreaker{{
-				ProjectID: "detent", EligibleCandidateCount: &zero, Items: []telemetry.FailureBreakerItem{{IssueID: "issue-1"}},
 			}}},
 		},
 		{

@@ -30,13 +30,12 @@ type OperatorMoveRequest struct {
 }
 
 type OperatorMoveResult struct {
-	ContractSatisfied    bool
-	err                  error
-	Reconciled           bool
-	BlockedCleared       bool
-	ClaimCleared         bool
-	RetryCleared         bool
-	FailureMemoryCleared bool
+	ContractSatisfied bool
+	err               error
+	Reconciled        bool
+	BlockedCleared    bool
+	ClaimCleared      bool
+	RetryCleared      bool
 }
 
 type operatorMoveOutcome struct {
@@ -221,9 +220,6 @@ func (o *Orchestrator) handleOperatorMove(state *State, request OperatorMoveRequ
 			delete(state.Retry, issueID)
 			result.RetryCleared = true
 		}
-		if clearProjectFailureBreakerIssue(&state.FailureBreaker, issueID) {
-			result.FailureMemoryCleared = true
-		}
 	}
 
 	recordStateEvent(state, telemetry.ActivityEvent{
@@ -243,7 +239,6 @@ func (o *Orchestrator) handleOperatorMove(state *State, request OperatorMoveRequ
 			"runtime_block_cleared", result.BlockedCleared,
 			"claim_cleared", result.ClaimCleared,
 			"retry_cleared", result.RetryCleared,
-			"failure_memory_cleared", result.FailureMemoryCleared,
 		)
 	}
 	return result
@@ -251,53 +246,6 @@ func (o *Orchestrator) handleOperatorMove(state *State, request OperatorMoveRequ
 
 func (o *Orchestrator) operatorMoveTargetConfigured(state string) bool {
 	return stateIn(state, o.cfg.ActiveStates) || stateIn(state, o.cfg.ObservedStates) || stateIn(state, o.cfg.TerminalStates)
-}
-
-func clearProjectFailureBreakerIssue(breaker *ProjectFailureBreaker, issueID string) bool {
-	if breaker == nil || strings.TrimSpace(issueID) == "" {
-		return false
-	}
-	changed := false
-	for class, failures := range breaker.Failures {
-		kept := failures[:0]
-		for _, failure := range failures {
-			if strings.TrimSpace(failure.IssueID) == issueID {
-				changed = true
-				continue
-			}
-			kept = append(kept, failure)
-		}
-		if len(kept) == 0 {
-			delete(breaker.Failures, class)
-			continue
-		}
-		breaker.Failures[class] = kept
-	}
-	if strings.TrimSpace(breaker.CanaryIssueID) == issueID {
-		breaker.CanaryIssueID = ""
-		changed = true
-	}
-	if !changed {
-		return false
-	}
-	if !breaker.Active() {
-		return true
-	}
-	failures := breaker.Failures[breaker.Class]
-	if len(failures) < normalizeFailureBreakerConfig(breaker.Config).SameClassLimit {
-		breaker.Class = ""
-		breaker.Count = 0
-		breaker.FirstFailureAt = time.Time{}
-		breaker.TrippedAt = time.Time{}
-		breaker.ResumeAt = time.Time{}
-		breaker.CanaryIssueID = ""
-		return true
-	}
-	breaker.Count = len(failures)
-	breaker.FirstFailureAt = failures[0].At
-	breaker.TrippedAt = failures[len(failures)-1].At
-	breaker.ResumeAt = breaker.TrippedAt.Add(breaker.Config.Cooldown)
-	return true
 }
 
 func operatorMoveEventMessage(issue connector.Issue, fromState string, toState string, result OperatorMoveResult) string {

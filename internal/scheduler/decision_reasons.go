@@ -34,8 +34,6 @@ const (
 	DecisionReasonMergedPullRequestPending         = "merged_pull_request_reconciliation_pending"
 	DecisionReasonOwnershipAssigneeRequired        = "ownership_assignee_required"
 	DecisionReasonProjectCapacityFull              = "project_capacity_full"
-	DecisionReasonProjectFailureBreakerPaused      = "project_failure_breaker_paused"
-	DecisionReasonProjectFailureBreakerRecovery    = "project_failure_breaker_recovery"
 	DecisionReasonProviderRateWindowBackpressure   = "provider_rate_window_backpressure"
 	DecisionReasonPullRequestHydrationRecovery     = "pull_request_hydration_recovery"
 	DecisionReasonPullRequestHydrationUnavailable  = "pull_request_hydration_unavailable"
@@ -76,8 +74,6 @@ var emittedDecisionReasons = []string{
 	DecisionReasonMergedPullRequestPending,
 	DecisionReasonOwnershipAssigneeRequired,
 	DecisionReasonProjectCapacityFull,
-	DecisionReasonProjectFailureBreakerPaused,
-	DecisionReasonProjectFailureBreakerRecovery,
 	DecisionReasonProviderRateWindowBackpressure,
 	DecisionReasonPullRequestHydrationRecovery,
 	DecisionReasonPullRequestHydrationUnavailable,

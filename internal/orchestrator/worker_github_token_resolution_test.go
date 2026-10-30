@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -45,12 +44,6 @@ func TestWorkerGitHubTokenResolutionCompletionPreservesAttemptBudget(t *testing.
 		StartedAt: now.Add(-time.Minute), DiffStats: DiffStats{Status: "clean"},
 	}
 	state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: now.Add(-time.Minute)}
-	state.FailureBreaker.Class = "runner_error:systemic"
-	state.FailureBreaker.Count = 2
-	state.FailureBreaker.CanaryIssueID = issue.ID
-	state.FailureBreaker.ResumeAt = now
-	state.FailureBreaker.Failures["existing"] = []ProjectFailure{{IssueID: "other", At: now.Add(-time.Minute)}}
-	failureBreaker := cloneProjectFailureBreaker(state.FailureBreaker)
 
 	resolutionErr := &runpkg.WorkerGitHubTokenResolutionError{
 		Attempts: 3,
@@ -88,18 +81,6 @@ func TestWorkerGitHubTokenResolutionCompletionPreservesAttemptBudget(t *testing.
 	retry, ok := state.Retry[issue.ID]
 	if !ok || retry.Attempt != 4 || !retry.DueAt.Equal(now.Add(45*time.Second)) || retry.Wait.Kind != workerGitHubTokenResolutionWaitKind {
 		t.Fatalf("retry = %#v, want same-attempt token-resolution wait", retry)
-	}
-	if !reflect.DeepEqual(state.FailureBreaker.Failures, failureBreaker.Failures) || state.FailureBreaker.Class != failureBreaker.Class || state.FailureBreaker.Count != failureBreaker.Count {
-		t.Fatalf("unexpected state after completion: retry=%+v blocked=%+v breaker=%+v", state.Retry, state.Blocked, state.FailureBreaker)
-	}
-	if !state.FailureBreaker.Active() || state.FailureBreaker.CanaryIssueID != "" || !state.FailureBreaker.ResumeAt.Equal(now.Add(45*time.Second)) {
-		t.Fatalf("failure breaker = %#v, want active breaker with bounded canary backoff", state.FailureBreaker)
-	}
-	if projectFailureBreakerAllowsDispatch(&state, now.Add(44*time.Second)) {
-		t.Fatal("failure breaker admitted another canary before token-resolution backoff elapsed")
-	}
-	if !projectFailureBreakerAllowsDispatch(&state, now.Add(45*time.Second)) {
-		t.Fatal("failure breaker did not admit a new canary after token-resolution backoff")
 	}
 	if _, blocked := state.Blocked[issue.ID]; blocked {
 		t.Fatalf("issue %q was blocked by machine-recoverable token resolution", issue.ID)

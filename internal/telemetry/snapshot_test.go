@@ -1501,7 +1501,7 @@ func TestBoardProgressPointsOffsetAggregateCompletedCount(t *testing.T) {
 func TestSnapshotIgnoresRetiredHoldFields(t *testing.T) {
 	t.Parallel()
 	var snapshot telemetry.Snapshot
-	legacy := `{"dispatch_loops":[{"tripped":true,"dispatch_limit":3}],"board_issues":[{"id":"issue","park_summary":{"park_count":4},"completion_progress":{"outcome":"no_progress","consecutive_no_progress":4,"no_progress_limit":3}}],"failure_breakers":[{"class":"runner_error","items":[{"issue_id":"issue","parked":true}]}],"ci_unavailable":[{"parked_attempt_count":2}],"queue":[{"issue":{"id":"issue"},"error":"recorded retry error","attempt":4}]}`
+	legacy := `{"dispatch_loops":[{"tripped":true,"dispatch_limit":3}],"board_issues":[{"id":"issue","park_summary":{"park_count":4},"completion_progress":{"outcome":"no_progress","consecutive_no_progress":4,"no_progress_limit":3}}],"ci_unavailable":[{"parked_attempt_count":2}],"queue":[{"issue":{"id":"issue"},"error":"recorded retry error","attempt":4}]}`
 	if err := json.Unmarshal([]byte(legacy), &snapshot); err != nil {
 		t.Fatal(err)
 	}

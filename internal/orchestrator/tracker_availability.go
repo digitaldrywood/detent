@@ -327,9 +327,6 @@ func (o *Orchestrator) handleTrackerUnavailableCompletion(ctx context.Context, s
 	if dueAt.Before(event.CompletedAt) {
 		dueAt = event.CompletedAt
 	}
-	if state.FailureBreaker.Active() && state.FailureBreaker.CanaryIssueID == running.Issue.ID {
-		o.deferProjectFailureBreakerCanary(state, running.Issue.ID, event.CompletedAt, dueAt.Sub(event.CompletedAt))
-	}
 	state.Retry[running.Issue.ID] = Retry{
 		Issue:              cloneIssue(running.Issue),
 		Attempt:            running.Attempt,
@@ -341,7 +338,7 @@ func (o *Orchestrator) handleTrackerUnavailableCompletion(ctx context.Context, s
 	recordStateEvent(state, telemetry.ActivityEvent{
 		At:      event.CompletedAt.UTC(),
 		Event:   "tracker_unavailable_attempt_waiting",
-		Message: "waiting to retry " + issueLabel(running.Issue) + " without tripping a failure breaker",
+		Message: "waiting for tracker availability before retrying " + issueLabel(running.Issue),
 	})
 	return true
 }

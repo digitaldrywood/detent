@@ -35,7 +35,6 @@ func (o *Orchestrator) finishObservedLaneRun(ctx context.Context, state *State, 
 		o.deferBackendCapacityProbe(state, running, event.CompletedAt, event.Err)
 	}
 	releaseDispatchRecoveryAdmission(state, event.IssueID)
-	releaseProjectFailureBreakerCanary(state, event.IssueID)
 	if diffStatsPresent(event.Result.DiffStats) {
 		running.DiffStats = event.Result.DiffStats
 		state.DiffStats[event.IssueID] = running.DiffStats
@@ -71,7 +70,6 @@ func (o *Orchestrator) finishObservedLaneRun(ctx context.Context, state *State, 
 		return
 	}
 	state.TokenTotals = addTokenTotals(state.TokenTotals, tokens)
-	o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, terminal, event.Err, "", errorString(event.Err))
 	if terminal == store.WorkAttemptTerminalSuccess || stateIn(running.Issue.State, o.cfg.TerminalStates) {
 		finalState := event.Result.FinalState
 		if stateIn(running.Issue.State, o.cfg.TerminalStates) {

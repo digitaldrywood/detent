@@ -60,11 +60,6 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 		OverloadRetryDelay:         durationFromMillis(cfg.Agent.OverloadRetryDelayMS),
 		BillingMode:                cfg.Budget.EffectiveBillingMode(),
 		RateWindowPacing:           cfg.Agent.RateWindowPacing.Normalized(),
-		FailureBreaker: FailureBreakerConfig{
-			SameClassLimit: cfg.Agent.FailureBreaker.SameClassLimit,
-			Window:         durationFromSeconds(cfg.Agent.FailureBreaker.WindowSeconds),
-			Cooldown:       durationFromSeconds(cfg.Agent.FailureBreaker.CooldownSeconds),
-		},
 		Claiming: ClaimingConfig{
 			Enabled:           cfg.Tracker.Claims.Enabled,
 			OwnershipSet:      identity.Configured(),
@@ -237,15 +232,6 @@ func normalizeConfig(cfg Config) Config {
 	}
 	if cfg.FailureRetryBaseDelay <= 0 {
 		cfg.FailureRetryBaseDelay = defaultFailureRetryBaseDelay
-	}
-	if cfg.FailureBreaker.SameClassLimit <= 0 {
-		cfg.FailureBreaker.SameClassLimit = defaultFailureBreakerSameClassLimit
-	}
-	if cfg.FailureBreaker.Window <= 0 {
-		cfg.FailureBreaker.Window = defaultFailureBreakerWindow
-	}
-	if cfg.FailureBreaker.Cooldown <= 0 {
-		cfg.FailureBreaker.Cooldown = defaultFailureBreakerCooldown
 	}
 	if cfg.GitHubGraphQLWarnRemaining <= 0 {
 		cfg.GitHubGraphQLWarnRemaining = defaultGitHubGraphQLWarnRemaining

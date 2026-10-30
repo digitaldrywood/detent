@@ -400,7 +400,7 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 			}
 			if test.wantLandingWait {
 				if !retried || retry.ForgeUnavailable || retry.ForgeRetry != nil || retry.Attempt != 2 || retry.Issue.State != issue.State || retry.DueAt.Sub(now) < 2*cfg.FailureRetryBaseDelay-2*cfg.FailureRetryBaseDelay/8 || retry.DueAt.Sub(now) > 2*cfg.FailureRetryBaseDelay || orch.dispatchMode(t.Context(), &state, retry.Issue) != runpkg.RunModeMerge || len(tick.updates) != 0 || len(tick.comments) != 0 || len(state.Completed) != 0 || len(state.Blocked) != 0 || scheduling.releases != 1 || len(state.Claimed) != 0 || len(state.Running) != 0 {
-					t.Fatalf("unexpected state after completion: retry=%+v blocked=%+v breaker=%+v", state.Retry, state.Blocked, state.FailureBreaker)
+					t.Fatalf("unexpected state after completion: retry=%+v blocked=%+v", state.Retry, state.Blocked)
 				}
 				peer := completionTransitionIssue("Merging", "")
 				peer.ID = "unrelated-merge"
@@ -446,7 +446,7 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 						orch.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, CompletedAt: retry.DueAt.Add(time.Second), Request: runpkg.RunRequest{Mode: runpkg.RunModeMerge}, Result: retryResult})
 						retry = state.Retry[issue.ID]
 						if retry.Attempt != cycle+2 || retry.Issue.State != "Merging" || orch.dispatchMode(t.Context(), &state, retry.Issue) != runpkg.RunModeMerge || len(state.Claimed) != 0 || len(state.Running) != 0 || len(state.Retry) != 1 || len(state.Completed) != 0 || len(state.Blocked) != 0 || len(tick.updates) != 0 || scheduling.releases != cycle+1 || len(attempts.completions) != cycle+1 {
-							t.Fatalf("unexpected state after completion: retry=%+v blocked=%+v breaker=%+v", state.Retry, state.Blocked, state.FailureBreaker)
+							t.Fatalf("unexpected state after completion: retry=%+v blocked=%+v", state.Retry, state.Blocked)
 						}
 						completion := attempts.completions[cycle]
 						if completion.TerminalState != store.WorkAttemptTerminalSuccess || completion.Phase != "waiting" || completion.ErrorClass != "" {
@@ -473,7 +473,7 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 			}
 			if test.wantInfrastructure {
 				if !retried || !retry.ForgeUnavailable || retry.Attempt != 1 || retry.Issue.State != "Merging" || orch.dispatchMode(t.Context(), &state, retry.Issue) != runpkg.RunModeMerge || len(tick.updates) != 0 || len(tick.comments) != 0 || len(state.Completed) != 0 || len(state.Blocked) != 0 || scheduling.releases != 1 {
-					t.Fatalf("unexpected state after completion: retry=%+v blocked=%+v breaker=%+v", state.Retry, state.Blocked, state.FailureBreaker)
+					t.Fatalf("unexpected state after completion: retry=%+v blocked=%+v", state.Retry, state.Blocked)
 				}
 				message := "Pull Request has merge conflicts"
 				if test.mergeMessage != "" {
@@ -833,7 +833,7 @@ func TestNativeLandingQuotaWait(t *testing.T) {
 			if test.missingPublisher {
 				_, claimed := state.Claimed[issue.ID]
 				if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalAbandoned || len(state.Retry) != 0 || claimed || len(state.Running) != 0 || len(tick.updates) != 0 {
-					t.Fatalf("unexpected state after completion: retry=%+v blocked=%+v breaker=%+v", state.Retry, state.Blocked, state.FailureBreaker)
+					t.Fatalf("unexpected state after completion: retry=%+v blocked=%+v", state.Retry, state.Blocked)
 				}
 				return
 			}
@@ -864,7 +864,7 @@ func TestNativeLandingQuotaWait(t *testing.T) {
 				wantReleases++
 			}
 			if scheduling.releases != wantReleases || claimed {
-				t.Fatalf("unexpected state after completion: retry=%+v blocked=%+v breaker=%+v", state.Retry, state.Blocked, state.FailureBreaker)
+				t.Fatalf("unexpected state after completion: retry=%+v blocked=%+v", state.Retry, state.Blocked)
 			}
 			if orch.adaptivePollInterval(&state, now) > cfg.PollInterval {
 				t.Fatal("landing quota lengthened native polling")

@@ -73,11 +73,6 @@ func TestWorkspacePreparationRetriesIssueWithoutPausingProject(t *testing.T) {
 				ActiveStates:          []string{"Todo", "In Progress", "Rework"},
 				ObservedStates:        []string{"Blocked"},
 				TerminalStates:        []string{"Done"},
-				FailureBreaker: FailureBreakerConfig{
-					SameClassLimit: 5,
-					Window:         time.Hour,
-					Cooldown:       time.Hour,
-				},
 			})
 			scheduling := &hubSchedulingSource{}
 			orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts, scheduling: scheduling}
@@ -131,15 +126,9 @@ func TestWorkspacePreparationRetriesIssueWithoutPausingProject(t *testing.T) {
 				if tt.postTurn && tracker.issues[issue.ID].State != "Rework" {
 					t.Fatal("instance finalization failure changed the issue lane")
 				}
-				if !projectFailureBreakerAllowsDispatch(&state, completedAt) {
-					t.Fatal("Git infrastructure failure excluded other runnable work")
-				}
 				if !allowanceInfrastructureAttempt(store.WorkAttempt{ErrorClass: runnerWorkAttemptErrorClass(tt.err), MetricsJSON: `{"turns":1,"total_tokens":10}`}) {
 					t.Fatal("Git infrastructure consumed the issue allowance")
 				}
-			}
-			if state.FailureBreaker.Active() || len(state.FailureBreaker.Failures) != 0 {
-				t.Fatalf("instance failures reached the project breaker: %#v", state.FailureBreaker)
 			}
 
 		})
@@ -189,7 +178,7 @@ func TestWorkspaceSSHRefusalDoesNotTripProjectBreaker(t *testing.T) {
 	t.Parallel()
 	issue := connector.Issue{ID: "ssh-refusal", State: "In Progress"}
 	tracker := &terminalRetryConnector{issues: map[string]connector.Issue{issue.ID: issue}}
-	cfg := normalizeConfig(Config{ActiveStates: []string{"In Progress"}, FailureBreaker: FailureBreakerConfig{SameClassLimit: 3, Window: time.Hour, Cooldown: time.Hour}})
+	cfg := normalizeConfig(Config{ActiveStates: []string{"In Progress"}})
 	attempts := &terminalRetryWorkAttemptStore{}
 	orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts}
 	state := newState(cfg)
@@ -200,9 +189,6 @@ func TestWorkspaceSSHRefusalDoesNotTripProjectBreaker(t *testing.T) {
 		hook := &workspace.HookError{Hook: "after_create", Command: "git -C /source ls-remote --symref origin HEAD", Output: "git@github.com: Permission denied (publickey).", Err: errors.New("exit status 128")}
 		err := fmt.Errorf("%w: create workspace: %w", runpkg.ErrWorkspacePreparation, hook)
 		orch.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, Err: err, CompletedAt: at})
-		if state.FailureBreaker.Active() || len(state.FailureBreaker.Failures[workAttemptErrorWorkspace]) != 0 {
-			t.Fatalf("attempt %d counted SSH refusal toward project breaker: %#v", attempt, state.FailureBreaker)
-		}
 		if len(state.ForgeUnavailable) != 1 || !state.Retry[issue.ID].ForgeUnavailable || !state.Retry[issue.ID].DueAt.After(at) {
 			t.Fatalf("attempt %d forge condition = %#v retry = %#v", attempt, state.ForgeUnavailable, state.Retry[issue.ID])
 		}
@@ -216,7 +202,7 @@ func TestWorkspaceDiskExhaustionRetriesWithoutProjectBreaker(t *testing.T) {
 	t.Parallel()
 	issue := connector.Issue{ID: "disk-full", State: "In Progress"}
 	tracker := &terminalRetryConnector{issues: map[string]connector.Issue{issue.ID: issue}}
-	cfg := normalizeConfig(Config{ActiveStates: []string{"In Progress"}, FailureBreaker: FailureBreakerConfig{SameClassLimit: 3, Window: time.Hour, Cooldown: time.Hour}})
+	cfg := normalizeConfig(Config{ActiveStates: []string{"In Progress"}})
 	attempts := &terminalRetryWorkAttemptStore{}
 	orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts}
 	state := newState(cfg)
@@ -232,9 +218,6 @@ func TestWorkspaceDiskExhaustionRetriesWithoutProjectBreaker(t *testing.T) {
 		}
 		err := fmt.Errorf("%w: create workspace: %w", runpkg.ErrWorkspacePreparation, cause)
 		orch.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, Err: err, CompletedAt: at})
-		if state.FailureBreaker.Active() || len(state.FailureBreaker.Failures[workAttemptErrorWorkspace]) != 0 {
-			t.Fatalf("attempt %d charged disk exhaustion to project breaker: %#v", attempt, state.FailureBreaker)
-		}
 		maximum := 10 * time.Second << attempt
 		if retry, ok := state.Retry[issue.ID]; !ok || retry.DueAt.Before(at.Add(maximum-maximum/8)) || retry.DueAt.After(at.Add(maximum)) || retry.Error != telemetry.WorkspaceDiskExhaustionMessage {
 			t.Fatalf("attempt %d did not use infrastructure backoff: %#v", attempt, state.Retry)

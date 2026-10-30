@@ -245,9 +245,6 @@ func TestSessionBrakeReleasesSlotRecordsCauseAndParks(t *testing.T) {
 				if sessionBrake["rss_bytes"] != float64(brake.RSSBytes) || sessionBrake["rss_ceiling_bytes"] != float64(brake.RSSCeilingBytes) {
 					t.Fatalf("session brake metadata = %#v, want RSS evidence", sessionBrake)
 				}
-				if state.FailureBreaker.Count != 0 || len(state.FailureBreaker.Failures) != 0 {
-					t.Fatalf("FailureBreaker = %#v, want no memory ceiling strike", state.FailureBreaker)
-				}
 			}
 
 			var stateUpdated bool

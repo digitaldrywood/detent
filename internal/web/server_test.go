@@ -415,37 +415,6 @@ func TestForgeAvailabilityClearEndpointIsIdempotentWithoutConditions(t *testing.
 	}
 }
 
-func TestFailureBreakerCanaryEndpointIsIdempotentWithoutActiveBreakers(t *testing.T) {
-	t.Parallel()
-
-	server, err := newServerWithLaneWriter(web.Config{}, testDeps(t))
-	if err != nil {
-		t.Fatalf("NewServer() error = %v", err)
-	}
-	recorder := performForm(t, server.Handler(), http.MethodPost, "/api/v1/failure-breaker/canary", nil)
-	if recorder.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusNoContent, recorder.Body.String())
-	}
-	if recorder.Header().Get("HX-Trigger") != "failureBreakerCanaryRequested" {
-		t.Fatalf("HX-Trigger = %q", recorder.Header().Get("HX-Trigger"))
-	}
-}
-
-func TestFailureBreakerCanaryEndpointRejectsUnknownProject(t *testing.T) {
-	t.Parallel()
-
-	server, err := newServerWithLaneWriter(web.Config{}, testDeps(t))
-	if err != nil {
-		t.Fatalf("NewServer() error = %v", err)
-	}
-	recorder := performForm(t, server.Handler(), http.MethodPost, "/api/v1/failure-breaker/canary", url.Values{
-		"project_id": {"missing"},
-	})
-	if recorder.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusNotFound, recorder.Body.String())
-	}
-}
-
 func TestLibraryPageListsPullRequestRecords(t *testing.T) {
 	t.Parallel()
 
@@ -6989,55 +6958,6 @@ func TestStateAndHealthReportWorkspaceCleanupFailures(t *testing.T) {
 	health := requestJSON(t, server, http.MethodGet, "/health", http.StatusOK)
 	if health["status"] != "needs_attention" {
 		t.Fatalf("health status = %v, want needs_attention", health["status"])
-	}
-}
-
-func TestStateAPIIncludesProjectFailureBreakerEvidence(t *testing.T) {
-	if testing.Short() {
-		t.Skip("live service integration")
-	}
-
-	t.Parallel()
-
-	deps := testDeps(t)
-	now := time.Date(2026, 8, 15, 18, 0, 0, 0, time.UTC)
-	eligibleCandidates := 0
-	if err := deps.Hub.Publish(telemetry.Snapshot{
-		GeneratedAt: now,
-		FailureBreakers: []telemetry.FailureBreaker{{
-			ProjectID: "example-org-video", Class: "runner_error:b6c174a86dfb", Count: 5, AttemptCount: 5, DistinctItemCount: 1,
-			Cause: "provider usage limit reached", RepresentativeError: "You've hit your limit. Try again at 9:39 PM", BackendID: "claude-code", BackendKind: "claude_code", Provider: "anthropic", EligibleCandidateCount: &eligibleCandidates,
-			Items: []telemetry.FailureBreakerItem{{IssueID: "video-1", Identifier: "2026-07-10-detent-not-vibe-coding-short", IssueURL: "https://example.test/items/video-1", Title: "Author beat visuals", CurrentState: "Blocked", AttemptCount: 5}},
-		}},
-	}); err != nil {
-		t.Fatalf("Publish() error = %v", err)
-	}
-
-	server, err := newServerWithLaneWriter(web.Config{}, deps)
-	if err != nil {
-		t.Fatalf("NewServer() error = %v", err)
-	}
-
-	state := requestJSON(t, server, http.MethodGet, "/api/v1/state", http.StatusOK)
-	breakers := state["failure_breakers"].([]any)
-	if len(breakers) != 1 {
-		t.Fatalf("failure_breakers = %#v", breakers)
-	}
-	breaker := breakers[0].(map[string]any)
-	if breaker["attempt_count"] != float64(5) || breaker["distinct_item_count"] != float64(1) || breaker["cause"] != "provider usage limit reached" || breaker["eligible_candidate_count"] != float64(0) {
-		t.Fatalf("failure breaker evidence = %#v", breaker)
-	}
-	items := breaker["items"].([]any)
-	if len(items) != 1 || items[0].(map[string]any)["title"] != "Author beat visuals" || items[0].(map[string]any)["attempt_count"] != float64(5) || items[0].(map[string]any)["current_state"] != "Blocked" {
-		t.Fatalf("failure breaker items = %#v", items)
-	}
-	if _, ok := items[0].(map[string]any)["parked"]; ok {
-		t.Fatalf("failure breaker item includes retired parked field: %#v", items[0])
-	}
-	health := requestJSON(t, server, http.MethodGet, "/health", http.StatusOK)
-	healthBreakers := health["failure_breakers"].([]any)
-	if len(healthBreakers) != 1 || healthBreakers[0].(map[string]any)["provider"] != "anthropic" {
-		t.Fatalf("health failure_breakers = %#v", healthBreakers)
 	}
 }
 

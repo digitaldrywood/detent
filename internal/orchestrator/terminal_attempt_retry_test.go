@@ -47,8 +47,8 @@ func TestHandleRunResultRoutesTerminalRetryByWorkProduct(t *testing.T) {
 		wantState       string
 		wantTransitions []string
 	}{
-		{name: "distinct backend bodies retry", issue: terminalRetryTestIssue("distinct-backend"), runError: failureBreakerBackendError{body: secondBackendBody}, wantState: "Todo", wantTransitions: []string{"Todo"}},
-		{name: "identical backend bodies retry", issue: terminalRetryTestIssue("identical-backend"), runError: failureBreakerBackendError{body: firstBackendBody}, wantState: "Todo", wantTransitions: []string{"Todo"}},
+		{name: "distinct backend bodies retry", issue: terminalRetryTestIssue("distinct-backend"), runError: outageBackendError{body: secondBackendBody}, wantState: "Todo", wantTransitions: []string{"Todo"}},
+		{name: "identical backend bodies retry", issue: terminalRetryTestIssue("identical-backend"), runError: outageBackendError{body: firstBackendBody}, wantState: "Todo", wantTransitions: []string{"Todo"}},
 		{name: "issue attributed startup failure", issue: terminalRetryTestIssue("issue-startup"), runError: decidedTestFailure{backendcapacity.NewError(scope, backendcapacity.Details{Type: backendcapacity.ErrorTypeTransientOverload, Kind: backendcapacity.StartupFailureKind}, errors.New("configuration failed")), "issue"}, wantState: "Todo", wantTransitions: []string{"Todo"}},
 		{name: "unknown startup failure", issue: terminalRetryTestIssue("unknown-startup"), runError: decidedTestFailure{backendcapacity.NewError(scope, backendcapacity.Details{Type: backendcapacity.ErrorTypeTransientOverload, Kind: backendcapacity.StartupFailureKind}, errors.New("unclassified failure")), "unknown"}, wantState: "Todo", wantTransitions: []string{"Todo"}},
 		{name: "zero parks failed persistence", limit: new(0), issue: terminalRetryTestIssue("zero-store-error"), runError: errors.New("runner failed"), completionErr: true, wantState: "Todo", wantTransitions: []string{"Todo"}},
@@ -299,11 +299,6 @@ func TestHandleRunResultPersistsPublishedPushCommandEvidence(t *testing.T) {
 	persisted := metadata.DeliverableCommands[0]
 	if persisted.Command != command || persisted.ExitCode == nil || *persisted.ExitCode != exitCode || persisted.TargetRef == nil || !persisted.TargetRef.AdvancedToLocalHead {
 		t.Fatalf("persisted command evidence = %#v", persisted)
-	}
-	// Post-push command evidence belongs to the deliverable owner; it must
-	// not become a project-wide outage that stops unrelated work.
-	if len(state.FailureBreaker.Failures) != 0 || state.FailureBreaker.Active() {
-		t.Fatalf("published command failure paused unrelated work: %#v", state.FailureBreaker)
 	}
 }
 
@@ -645,8 +640,8 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 			}
 			if tt.wantInstanceFailure {
 				completion := attempts.completions[0]
-				if completion.ErrorClass != workAttemptErrorWorkspace || state.FailureBreaker.Active() || len(state.FailureBreaker.Failures) != 0 {
-					t.Fatalf("workspace failure lost its instance owner: completion=%#v breaker=%#v", completion, state.FailureBreaker)
+				if completion.ErrorClass != workAttemptErrorWorkspace {
+					t.Fatalf("workspace failure lost its instance owner: completion=%#v", completion)
 				}
 				var metadata struct {
 					WorkProductPushed bool `json:"work_product_pushed"`
@@ -655,7 +650,7 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 					t.Fatalf("workspace failure lost pushed work evidence: metadata=%s error=%v", completion.WorkerMetadataJSON, err)
 				}
 				if _, retried := state.Retry[issue.ID]; !retried || len(state.PriorAttempts) != 0 || len(state.Claimed) != 0 || len(state.Completed) != 0 || len(tracker.transitionStates()) != 0 {
-					t.Fatalf("unexpected state after completion: retry=%+v blocked=%+v breaker=%+v", state.Retry, state.Blocked, state.FailureBreaker)
+					t.Fatalf("unexpected state after completion: retry=%+v blocked=%+v", state.Retry, state.Blocked)
 				}
 				return
 			}

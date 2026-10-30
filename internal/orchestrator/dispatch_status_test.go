@@ -114,17 +114,6 @@ func TestProjectDispatchStatusScenarios(t *testing.T) {
 			wantAttention: true,
 		},
 		{
-			name:       "failure breaker counts only otherwise eligible candidates",
-			candidates: []connector.Issue{alpha, beta},
-			decisions: []dispatchPlanDecision{
-				{Issue: alpha, SkipReason: dispatchSkipProjectFailureBreaker},
-				{Issue: beta, SkipReason: dispatchSkipBlockedByDependency},
-			},
-			wantCount:    2,
-			wantEligible: 1,
-			wantSkipped:  2,
-		},
-		{
 			name:        "capacity rejection is not an eligible candidate",
 			candidates:  []connector.Issue{alpha},
 			decisions:   []dispatchPlanDecision{{Issue: alpha, Selected: true}},

@@ -141,7 +141,6 @@ func (o *Orchestrator) completeNativeChangeRun(
 			}
 			o.releaseClaim(state, issueID)
 		}
-		o.recordProjectAttemptOutcome(state, issueID, event.CompletedAt, terminal, event.Err, class, message)
 		o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, terminal, class, message, "failed", "native worker failed; source preserved", nativeChangeMetadata(change))
 		o.recordCompletionUsage(ctx, state, event, issue)
 		return true

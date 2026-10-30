@@ -840,7 +840,7 @@ worker:
 The token-resolution timeout applies to each `gh auth token` invocation. Detent
 tries the command up to three times with short backoff before recording a
 same-attempt infrastructure wait; these failures do not consume issue attempt
-or failure-breaker budgets. Increase the timeout when the host credential store
+budgets. Increase the timeout when the host credential store
 can legitimately take longer than 15 seconds.
 
 After resolving `gh`, Detent classifies an exact orchestrator token or any token

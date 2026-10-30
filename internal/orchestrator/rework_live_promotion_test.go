@@ -118,7 +118,7 @@ func TestReworkLiveDraftPromotion(t *testing.T) {
 				t.Fatalf("forge condition = %#v, waiting=%v, want %v", condition, waiting, tt.wantForge)
 			}
 			if len(state.Blocked) != 0 {
-				t.Fatalf("unexpected state after completion: retry=%+v blocked=%+v breaker=%+v", state.Retry, state.Blocked, state.FailureBreaker)
+				t.Fatalf("unexpected state after completion: retry=%+v blocked=%+v", state.Retry, state.Blocked)
 			}
 			promoted := len(tracker.updates) > 0
 			if promoted != tt.wantPromote {

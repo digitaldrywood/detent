@@ -30,7 +30,6 @@ const (
 	CapacityClear            = "capacity_clear"
 	TrackerAvailabilityClear = "tracker_availability_clear"
 	ForgeAvailabilityClear   = "forge_availability_clear"
-	FailureBreakerCanary     = "failure_breaker_canary"
 	UpdateApply              = "update_apply"
 	GetRunnerUpdate          = "get_runner_update"
 	GetUrgentRunnerUpdate    = "get_urgent_runner_update"
@@ -95,7 +94,6 @@ func FleetCatalog() []Definition {
 	add(CapacityClear, "Request the existing capacity outage clear; requires current authority.", `"scope":`+boundedID+`,"recovery":{"type":"string","maxLength":256,"enum":["ramping","immediate"]}`, "", false, true)
 	add(TrackerAvailabilityClear, "Clear existing tracker availability conditions; requires current authority.", "", "", false, true)
 	add(ForgeAvailabilityClear, "Clear existing forge availability conditions; requires current authority.", `"host":`+boundedID, "", false, true)
-	add(FailureBreakerCanary, "Request the existing breaker canary; requires current authority.", "", "", false, true)
 	update := `{"type":"object","required":["expected_revision","expected_build_revision","service","version"],"properties":{"expected_revision":{"type":"integer","minimum":1},"expected_build_revision":{"type":"string","pattern":"^[a-f0-9]{64}$","maxLength":64},"service":{"type":"string","minLength":6,"maxLength":6,"enum":["detent"]},"version":` + boundedID + `,"release":{"type":"boolean"},"from_release":{"type":"boolean"}},"additionalProperties":false}`
 	add(UpdateApply, "Apply through the installed updater and coordinated restart; Cloud requires runner_id and an observed change. Requires operator approval; acceptance is not running-build evidence.", `"release":{"type":"boolean"},"from_release":{"type":"boolean"},"runner_id":`+boundedID+`,"change":`+update, "", false, true)
 	add(GetRunnerUpdate, "Read enrolled runner update support, requested/applied state and observed running build provenance.", `"runner_id":`+boundedID, `"runner_id"`, true, false)

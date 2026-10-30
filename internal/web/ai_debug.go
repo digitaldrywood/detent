@@ -132,7 +132,6 @@ func aiDebugFleetEvidence(snapshot telemetry.Snapshot) aidebug.FleetEvidence {
 		Dispatch:          aiDebugJSON(map[string]any{"fleet": snapshot.Dispatch, "project_stalls": snapshot.DispatchStalls}),
 		CapacityConditions: aiDebugJSON(map[string]any{
 			"backend_outages":     snapshot.BackendOutages,
-			"failure_breakers":    snapshot.FailureBreakers,
 			"memory_pressure":     snapshot.MemoryPressure,
 			"io_pressure":         snapshot.IOPressure,
 			"cpu_pressure":        snapshot.CPUPressure,

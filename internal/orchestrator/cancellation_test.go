@@ -148,7 +148,7 @@ func TestAvailabilityInterruptionsPreserveIssueBudgets(t *testing.T) {
 		event := runpkg.Completion{IssueID: issue.ID, Request: RunRequest{Issue: issue, Mode: runpkg.RunModeImplement}, Result: runpkg.RunResult{TurnStarted: true}, Err: cause, CompletedAt: now, Retryable: true, RetryAttempt: 3, RetryDelay: 10 * time.Second}
 		orch.handleRunResult(t.Context(), &state, event)
 		if len(state.Running) != 0 || len(state.Retry) != 1 || state.Retry[issue.ID].Attempt != 3 {
-			t.Fatalf("unexpected state after completion: retry=%+v blocked=%+v breaker=%+v", state.Retry, state.Blocked, state.FailureBreaker)
+			t.Fatalf("unexpected state after completion: retry=%+v blocked=%+v", state.Retry, state.Blocked)
 		}
 		completed := attempts.completions[len(attempts.completions)-1]
 		if completed.TerminalState != store.WorkAttemptTerminalCancelled || completed.Phase != "cancelled" {

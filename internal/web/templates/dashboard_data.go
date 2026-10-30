@@ -1708,7 +1708,6 @@ func diagnosticsSnapshotHasLoadedData(snapshot telemetry.Snapshot) bool {
 		len(snapshot.BackendOutages) > 0 ||
 		len(snapshot.DispatchRecoveries) > 0 ||
 		len(snapshot.AdmissionProposals) > 0 ||
-		len(snapshot.FailureBreakers) > 0 ||
 		len(snapshot.StrandedActiveIssues) > 0 ||
 		len(snapshot.TokenTrend) > 0 ||
 		snapshot.Counts != (telemetry.Counts{}) ||
@@ -5464,24 +5463,6 @@ func diagnosticsConditionRows(snapshot telemetry.Snapshot) []diagnosticsConditio
 			ObservedAt: outage.LastObservedAt,
 		})
 	}
-	for index, breaker := range snapshot.FailureBreakers {
-		class := failureBreakerConditionClass(breaker)
-		detail, resumeAt, showResumeAt := failureBreakerDetailParts(breaker, snapshot.GeneratedAt)
-		if showResumeAt && !resumeAt.IsZero() {
-			detail += " " + localTimeToken(resumeAt, LocalDateTimeZone)
-		}
-		rows = append(rows, diagnosticsConditionRow{
-			ID:         "diagnostics-condition-breaker-" + boardAlertRowSlug(breaker.ProjectID+breaker.Class, index),
-			Class:      class,
-			ClassLabel: diagnosticsConditionClassLabel(class),
-			Kind:       diagnosticsConditionKind(class),
-			ProjectID:  diagnosticsConditionProject(breaker.ProjectID),
-			Target:     "Failure breaker",
-			Summary:    failureBreakerCauseLabel(breaker),
-			Detail:     detail,
-			ObservedAt: breaker.TrippedAt,
-		})
-	}
 	for index, issue := range snapshot.StrandedActiveIssues {
 		target := boardFirstNonBlank(issue.Identifier, issue.IssueID, "issue")
 		rows = append(rows, diagnosticsConditionRow{
@@ -5640,13 +5621,6 @@ func diagnosticsConditionObservedAt(value *time.Time, fallback time.Time) time.T
 		return value.UTC()
 	}
 	return fallback
-}
-
-func failureBreakerConditionClass(breaker telemetry.FailureBreaker) observability.Class {
-	if len(actionableBoardFailureBreakers([]telemetry.FailureBreaker{breaker})) == 1 {
-		return observability.ClassFault
-	}
-	return observability.ClassDiagnostic
 }
 
 func diagnosticsPacingRows(snapshot telemetry.Snapshot) []diagnosticsConditionRow {
@@ -7678,124 +7652,6 @@ func backendCapacityOutageTitle(outage telemetry.BackendOutage) string {
 	return "Backend " + backendCapacityBackendID(outage) + " at usage limit"
 }
 
-func failureBreakerDetailParts(breaker telemetry.FailureBreaker, now time.Time) (string, time.Time, bool) {
-	attemptCount := breaker.AttemptCount
-	if attemptCount == 0 {
-		attemptCount = breaker.Count
-	}
-	detail := boardCountLabel(attemptCount, "failed attempt", "failed attempts")
-	itemCount := breaker.DistinctItemCount
-	if itemCount == 0 && len(breaker.Items) > 0 {
-		itemCount = len(breaker.Items)
-	}
-	if itemCount > 0 {
-		detail += " across " + boardCountLabel(itemCount, "item", "items")
-	}
-	detail += " in " + formatDurationWindow(time.Duration(breaker.WindowSeconds)*time.Second) + "."
-	if projectID := strings.TrimSpace(breaker.ProjectID); projectID != "" {
-		detail += " Pause scope: project " + projectID + " only."
-	}
-	if backend := failureBreakerBackendLabel(breaker); backend != "" {
-		detail += " Backend: " + backend + "."
-	}
-	if cause := failureBreakerCauseLabel(breaker); cause != "" {
-		detail += " Cause: " + cause + "."
-	}
-	if message := strings.TrimSpace(breaker.RepresentativeError); message != "" && !strings.EqualFold(message, strings.TrimSpace(breaker.Cause)) {
-		detail += " Representative error: " + message + "."
-	}
-	if class := strings.TrimSpace(breaker.Class); class != "" {
-		detail += " Diagnostic class: " + class + "."
-	}
-	if outage := breaker.BackendOutage; outage != nil {
-		detail += " A backend capacity pause is also active"
-		if outage.ResetAt != nil && !outage.ResetAt.IsZero() {
-			detail += "; provider reset " + localTimeToken(*outage.ResetAt, LocalDateTimeZone)
-			if now.Before(*outage.ResetAt) {
-				detail += " (in " + formatDuration(outage.ResetAt.Sub(now).Seconds()) + ")"
-			}
-		}
-		detail += "."
-	}
-	if strings.TrimSpace(breaker.CanaryIssueID) != "" {
-		return detail + " The project is dispatching one canary candidate.", time.Time{}, false
-	}
-	if !breaker.ResumeAt.IsZero() && breaker.ResumeAt.After(now) {
-		copy := detail + " The project may dispatch one eligible candidate after the project cooldown at"
-		if breaker.EligibleCandidateCount != nil && *breaker.EligibleCandidateCount == 0 {
-			copy += "; no candidate is currently eligible"
-		}
-		return copy, breaker.ResumeAt, true
-	}
-	if breaker.EligibleCandidateCount != nil && *breaker.EligibleCandidateCount == 0 {
-		return detail + " Project canary dispatch is ready, but no eligible candidate is currently available.", time.Time{}, false
-	}
-	return detail + " The project may dispatch one eligible candidate now.", time.Time{}, false
-}
-
-func failureBreakerCauseLabel(breaker telemetry.FailureBreaker) string {
-	if cause := strings.TrimSpace(breaker.Cause); cause != "" {
-		return failureBreakerSentenceCase(cause)
-	}
-	class := strings.TrimSpace(breaker.Class)
-	prefix, suffix, _ := strings.Cut(class, ":")
-	switch prefix {
-	case "session_token_ceiling":
-		return "Agent session token ceiling reached"
-	case "deliverable_command_failure":
-		if suffix != "" {
-			return "Deliverable command failed: " + strings.ReplaceAll(suffix, "_", " ")
-		}
-		return "Deliverable command failed"
-	case "no_progress":
-		return "Agent made no work-product progress"
-	case "runner_final_state":
-		return "Runner ended in a failed state"
-	case "backend_error":
-		return "Agent backend returned an error"
-	case "runner_error":
-		return "Runner failed"
-	}
-	return failureBreakerSentenceCase(strings.ReplaceAll(class, "_", " "))
-}
-
-func failureBreakerSentenceCase(value string) string {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return ""
-	}
-	return strings.ToUpper(value[:1]) + value[1:]
-}
-
-func failureBreakerBackendLabel(breaker telemetry.FailureBreaker) string {
-	parts := make([]string, 0, 3)
-	if value := strings.TrimSpace(breaker.BackendID); value != "" {
-		parts = append(parts, value)
-	}
-	if value := strings.TrimSpace(breaker.BackendKind); value != "" && !strings.EqualFold(value, strings.TrimSpace(breaker.BackendID)) {
-		parts = append(parts, "kind "+value)
-	}
-	if value := strings.TrimSpace(breaker.Provider); value != "" {
-		parts = append(parts, "provider "+value)
-	}
-	return strings.Join(parts, " · ")
-}
-
-func failureBreakerItemLabel(item telemetry.FailureBreakerItem) string {
-	title := strings.TrimSpace(item.Title)
-	identifier := strings.TrimSpace(item.Identifier)
-	switch {
-	case title != "" && identifier != "":
-		return title + " — " + identifier
-	case title != "":
-		return title
-	case identifier != "":
-		return identifier
-	default:
-		return strings.TrimSpace(item.IssueID)
-	}
-}
-
 func dispatchRecoveryTitle(recovery telemetry.DispatchRecovery) string {
 	if strings.TrimSpace(recovery.Status) == "waiting" {
 		return "Dispatch waiting on " + dispatchRecoveryKindLabel(recovery.Kind)
@@ -7836,8 +7692,6 @@ func dispatchRecoveryKindLabel(kind string) string {
 		return "pull-request hydration"
 	case "backend_capacity":
 		return "backend capacity"
-	case "project_failure_breaker":
-		return "project failure breaker"
 	default:
 		return "dispatch dependency"
 	}
@@ -7846,21 +7700,6 @@ func dispatchRecoveryKindLabel(kind string) string {
 type boardBannerSummary struct {
 	ID    string
 	Title string
-}
-
-func boardFailureBreakerSummary(breakers []telemetry.FailureBreaker) (boardBannerSummary, bool) {
-	if len(breakers) == 0 {
-		return boardBannerSummary{}, false
-	}
-	count := boardAffectedProjectCount(len(breakers), func(yield func(string)) {
-		for _, breaker := range breakers {
-			yield(breaker.ProjectID)
-		}
-	})
-	return boardBannerSummary{
-		ID:    "board-failure-breaker-summary",
-		Title: boardBannerProjectTitle("Project failure breaker active", count),
-	}, true
 }
 
 func boardDispatchRecoverySummaries(recoveries []telemetry.DispatchRecovery, now time.Time) []boardBannerSummary {
@@ -7976,20 +7815,6 @@ func automaticRecoveryPending(resumeAt time.Time, now time.Time) bool {
 
 func automaticRecoveryOverdue(resumeAt time.Time, now time.Time) bool {
 	return !resumeAt.IsZero() && !now.IsZero() && !now.Before(resumeAt.Add(boardRecoveryOverdueGrace))
-}
-
-func boardAffectedProjectCount(entries int, projectIDs func(func(string))) int {
-	projects := make(map[string]struct{}, entries)
-	missing := 0
-	projectIDs(func(projectID string) {
-		projectID = strings.TrimSpace(projectID)
-		if projectID == "" {
-			missing++
-			return
-		}
-		projects[projectID] = struct{}{}
-	})
-	return len(projects) + missing
 }
 
 func boardBannerProjectTitle(title string, count int) string {

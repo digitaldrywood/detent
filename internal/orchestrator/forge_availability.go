@@ -363,9 +363,6 @@ func (o *Orchestrator) handleForgeUnavailableCompletion(ctx context.Context, sta
 	if workspaceIssueTerminal(running.Issue, o.cfg.TerminalStates) {
 		return true
 	}
-	if state.FailureBreaker.Active() && state.FailureBreaker.CanaryIssueID == running.Issue.ID {
-		o.deferProjectFailureBreakerCanary(state, running.Issue.ID, event.CompletedAt, condition.NextProbeAt.Sub(event.CompletedAt))
-	}
 	state.Retry[running.Issue.ID] = Retry{
 		Issue:            cloneIssue(running.Issue),
 		Attempt:          running.Attempt,
@@ -379,7 +376,7 @@ func (o *Orchestrator) handleForgeUnavailableCompletion(ctx context.Context, sta
 	recordStateEvent(state, telemetry.ActivityEvent{
 		At:      event.CompletedAt.UTC(),
 		Event:   "forge_unavailable_attempt_waiting",
-		Message: "waiting to retry the forge write for " + issueLabel(running.Issue) + " without tripping a failure breaker",
+		Message: "waiting for forge availability before retrying the write for " + issueLabel(running.Issue),
 	})
 	return true
 }

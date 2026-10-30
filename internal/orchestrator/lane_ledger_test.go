@@ -332,8 +332,8 @@ func TestObservedLanePreTurnFailureRemainsInstanceOwned(t *testing.T) {
 			state := newState(cfg)
 			running := Running{Issue: issue, WorkAttemptID: 1, CompletionLane: lane, DispatchSourceState: "Todo", DispatchTargetState: "In Progress"}
 			orch.finishObservedLaneRun(t.Context(), &state, running, runpkg.Completion{IssueID: issue.ID, CompletedAt: at, Err: decidedTestFailure{errors.New("backend failed before turn"), "instance"}})
-			if state.FailureBreaker.Active() || len(attempts.completions) != 1 || attempts.completions[0].ErrorClass != workAttemptErrorWorkspace {
-				t.Fatalf("pre-turn failure lost instance attribution: breaker=%#v completions=%#v", state.FailureBreaker, attempts.completions)
+			if len(attempts.completions) != 1 || attempts.completions[0].ErrorClass != workAttemptErrorWorkspace {
+				t.Fatalf("pre-turn failure lost instance attribution: completions=%#v", attempts.completions)
 			}
 			_, retried := state.Retry[issue.ID]
 			if len(tracker.updates) != 0 || retried != stateIn(lane, cfg.ActiveStates) {
@@ -422,7 +422,7 @@ func TestLaneAcknowledgementDoesNotHideLaterHumanReentry(t *testing.T) {
 				}
 			}
 			if _, blocked := state.Blocked[issue.ID]; blocked {
-				t.Fatalf("unexpected state after completion: retry=%+v blocked=%+v breaker=%+v", state.Retry, state.Blocked, state.FailureBreaker)
+				t.Fatalf("unexpected state after completion: retry=%+v blocked=%+v", state.Retry, state.Blocked)
 			}
 			timeline, err := backend.IssueWorkflowTimeline(t.Context(), store.IssueIdentity{ProjectID: cfg.Project.ID, IssueID: issue.ID})
 			want := 6

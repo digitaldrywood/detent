@@ -258,10 +258,6 @@ func TestDependencyCompletionDoesNotBypassDispatchRefusals(t *testing.T) {
 		{name: "draining", lane: "Todo", want: dispatchIssueFailureDraining, prepare: func(_ *Orchestrator, s *State) { s.Draining = true }},
 		{name: "tracker unavailable", lane: "Todo", want: dispatchIssueFailureTrackerUnavailable, prepare: func(_ *Orchestrator, s *State) { s.TrackerUnavailable = &TrackerCondition{} }},
 		{name: "CI unavailable", lane: "Merging", want: dispatchIssueFailureCIUnavailable, prepare: func(_ *Orchestrator, s *State) { s.CIUnavailable = &CICondition{} }},
-		{name: "breaker", lane: "Todo", want: projectFailureBreakerDispatchPaused, prepare: func(_ *Orchestrator, s *State) {
-			s.FailureBreaker.Class = "test"
-			s.FailureBreaker.ResumeAt = time.Now().Add(time.Hour)
-		}},
 		{name: "host full", lane: "In Progress", want: dispatchIssueFailureWorkerHostUnavailable, prepare: func(o *Orchestrator, s *State) {
 			o.cfg.WorkerHosts = []string{"one"}
 			o.cfg.MaxConcurrentAgentsPerHost = 1
@@ -373,13 +369,12 @@ func TestDependencyResumeFailureReleasesReservations(t *testing.T) {
 				o.connector = &dependencyResumeStateFailure{Connector: tracker}
 			}
 			state := newState(cfg)
-			state.FailureBreaker.Class = "test"
 			state.DispatchRecoveries["test"] = DispatchRecovery{Kind: "test", Status: dispatchRecoveryStatusRamping, Limit: 1}
 			got := o.dispatchIssueWithOutcome(t.Context(), &state, issue, 0, time.Now(), "")
 			if got.dispatched || got.reason != tt.want {
 				t.Fatalf("dispatch = %+v, want %s", got, tt.want)
 			}
-			if len(state.Running) != 0 || state.FailureBreaker.CanaryIssueID != "" || len(state.DispatchRecoveries["test"].Admissions) != 0 {
+			if len(state.Running) != 0 || len(state.DispatchRecoveries["test"].Admissions) != 0 {
 				t.Fatal("failed resume leaked a worker or recovery reservation")
 			}
 			if snapshot := gate.PoolSnapshot(); snapshot.Available != 1 {

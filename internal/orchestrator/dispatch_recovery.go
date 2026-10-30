@@ -10,14 +10,13 @@ import (
 )
 
 const (
-	dispatchRecoveryGitHubREST            = "github_rest"
-	dispatchRecoveryGitHubLookup          = "github_lookup"
-	dispatchRecoveryBackendCapacity       = "backend_capacity"
-	dispatchRecoveryTrackerUnavailable    = connector.TrackerUnavailableCondition
-	dispatchRecoveryForgeUnavailable      = "forge_unavailable"
-	dispatchRecoveryProjectFailureBreaker = "project_failure_breaker"
-	dispatchRecoveryStatusWaiting         = "waiting"
-	dispatchRecoveryStatusRamping         = "ramping"
+	dispatchRecoveryGitHubREST         = "github_rest"
+	dispatchRecoveryGitHubLookup       = "github_lookup"
+	dispatchRecoveryBackendCapacity    = "backend_capacity"
+	dispatchRecoveryTrackerUnavailable = connector.TrackerUnavailableCondition
+	dispatchRecoveryForgeUnavailable   = "forge_unavailable"
+	dispatchRecoveryStatusWaiting      = "waiting"
+	dispatchRecoveryStatusRamping      = "ramping"
 )
 
 type DispatchRecovery struct {

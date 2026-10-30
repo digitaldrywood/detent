@@ -309,23 +309,12 @@ func (o *Orchestrator) finishMergeRevocation(
 	delete(state.PriorAttempts, event.IssueID)
 
 	releaseDispatchRecoveryAdmission(state, event.IssueID)
-	releaseProjectFailureBreakerCanary(state, event.IssueID)
 	if event.Result.TurnStarted {
 		o.recoverBackendCapacity(state, running, completedAt)
 	}
 	if err := o.abandonClaim(ctx, event.IssueID); err != nil && o.logger != nil {
 		o.logger.Warn("merge revocation claim release failed", "issue_id", event.IssueID, "error", err)
 	}
-	revocationErr := mergeRevocationError(revocation)
-	o.recordProjectAttemptOutcome(
-		state,
-		event.IssueID,
-		completedAt,
-		store.WorkAttemptTerminalMergeRevoked,
-		revocationErr,
-		string(store.WorkAttemptTerminalMergeRevoked),
-		revocation.reason,
-	)
 	o.completeDurableWorkAttempt(
 		ctx,
 		state,
@@ -739,10 +728,6 @@ func (o *Orchestrator) escalateMergeRevocationCommentLoss(
 		return false
 	}
 	return true
-}
-
-func mergeRevocationError(revocation mergeRevocation) error {
-	return fmt.Errorf("%w: %s", runpkg.ErrMergeRevoked, revocation.reason)
 }
 
 type draftMergeDecision struct {

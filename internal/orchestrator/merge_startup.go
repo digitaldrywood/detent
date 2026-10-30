@@ -37,15 +37,6 @@ func (o *Orchestrator) handleMergeWorkerStartupTimeout(
 	)
 	o.logMergeWorkerFailure(running.Issue, "runner_startup_timeout", err)
 	o.recordMergeFailed(state, running.Issue, completedAt, "runner_startup_timeout", err)
-	o.recordProjectAttemptOutcome(
-		state,
-		event.IssueID,
-		completedAt,
-		store.WorkAttemptTerminalFailure,
-		err,
-		"runner_startup_timeout",
-		err.Error(),
-	)
 	o.completeDurableWorkAttempt(
 		ctx,
 		state,
