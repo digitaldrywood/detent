@@ -1278,7 +1278,7 @@ func TestChangeApprovalPreservesProtectedMerge(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		projected, _, err := readNativeIssueProjection(t.Context(), service.database.reader, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, string(f.issue.WorkItemID), true)
+		projected, _, err := readNativeIssueProjection(service.runDetailContext(t.Context()), service.database.reader, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, string(f.issue.WorkItemID), true)
 		if err != nil || projected.PullRequest == nil || projected.PullRequest.Number != 1 || projected.PullRequest.URL != "https://github.com/example/repo/pull/1" {
 			t.Fatalf("pending=%v external change projection=%+v error=%v", pending, projected.PullRequest, err)
 		}
