@@ -232,3 +232,33 @@ func bound(value string, limit int) string {
 	}
 	return strings.ToValidUTF8(value[:limit], "") + " [truncated]"
 }
+
+func AttemptEvidence(attempt tracker.NativeAttempt) []EvidenceReference {
+	references := []EvidenceReference{{ID: attempt.AttemptID}}
+	command := func(result *gate.CommandResult) {
+		if result != nil && result.ReceiptID != "" {
+			references = append(references, EvidenceReference{ID: result.ReceiptID, AttemptID: attempt.AttemptID})
+		}
+	}
+	if attempt.Runtime != nil {
+		command(attempt.Runtime.Validation)
+		if attempt.Runtime.Landing != nil {
+			command(attempt.Runtime.Landing.Gate)
+		}
+	}
+	for _, step := range attempt.Steps {
+		command(step.Validation)
+		if step.Validator != nil {
+			for _, result := range step.Validator.Commands {
+				command(&result)
+			}
+		}
+		if step.PayloadAttachment != nil {
+			references = append(references, EvidenceReference{ID: step.PayloadAttachment.ID})
+		}
+	}
+	for _, evidence := range attempt.Evidence {
+		references = append(references, EvidenceReference{ID: evidence.AttachmentID})
+	}
+	return references
+}
