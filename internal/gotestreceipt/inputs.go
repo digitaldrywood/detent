@@ -244,6 +244,13 @@ func (v *Verifier) Match(candidate Candidate) bool {
 		if seen.path != "" && !seen.state.same(statPath(seen.path)) {
 			return false
 		}
+		if seen.path != "" && strings.HasPrefix(input, "open\t") && strings.HasPrefix(seen.value, "dir ") {
+			fields := strings.Split(input, "\t")
+			value, err := v.observePath(fields[0], seen.path, strings.HasPrefix(fields[1], scopeTemporary))
+			if err != nil || value != seen.value {
+				return false
+			}
+		}
 	}
 	return true
 }
