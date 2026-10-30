@@ -2,6 +2,7 @@ package gotestreceipt
 
 import (
 	"bufio"
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -19,6 +20,8 @@ const (
 	maxListedEntries    = 64 << 10
 	maxHashedBytes      = 64 << 20
 	scopeRoot           = "m"
+	scopeGoRoot         = "g"
+	scopeTemporary      = "t:"
 	scopeAbsolute       = "a"
 )
 
@@ -31,11 +34,18 @@ const (
 )
 
 type Environment struct {
+	DigestKey       []byte
 	Root            string
 	RootAlias       string
-	TempDirs        []string
+	GoRoot          string
+	TempDirs        []TempRoot
 	UncacheableDirs []string
 	LookupEnv       func(string) (string, bool)
+}
+
+type TempRoot struct {
+	Token string
+	Dir   string
 }
 
 func (e Environment) lookup(name string) (string, bool) {
@@ -153,9 +163,12 @@ func (v *Verifier) Digest(inputs []string) (string, error) {
 	if err := ValidateInputs(inputs); err != nil {
 		return "", err
 	}
+	if len(v.env.DigestKey) != DigestKeyBytes {
+		return "", errors.New("receipt digest key is unavailable")
+	}
 	sorted := slices.Clone(inputs)
 	slices.Sort(sorted)
-	hash := sha256.New()
+	hash := hmac.New(sha256.New, v.env.DigestKey)
 	fmt.Fprintf(hash, "%s\n", protocolFingerprint)
 	for _, input := range slices.Compact(sorted) {
 		value, err := v.observe(input)
@@ -267,17 +280,25 @@ func (s pathState) same(current pathState) bool {
 }
 
 func (e Environment) path(scope, name string) (string, error) {
+	if token, ok := strings.CutPrefix(scope, scopeTemporary); ok {
+		for _, root := range e.TempDirs {
+			if root.Token == token && validRelativePath(name) {
+				return filepath.Join(root.Dir, filepath.FromSlash(name)), nil
+			}
+		}
+		return "", fmt.Errorf("receipt temporary root %q is unavailable", token)
+	}
 	switch scope {
 	case scopeRoot:
 		if e.Root == "" || !filepath.IsLocal(filepath.FromSlash(name)) {
 			return "", fmt.Errorf("receipt path %q is not local to the module root", name)
 		}
 		return filepath.Join(e.Root, filepath.FromSlash(name)), nil
-	case scopeAbsolute:
-		if !filepath.IsAbs(name) {
-			return "", fmt.Errorf("receipt path %q is not absolute", name)
+	case scopeGoRoot:
+		if e.GoRoot == "" || !validRelativePath(name) {
+			return "", fmt.Errorf("receipt path %q is not local to GOROOT", name)
 		}
-		return name, nil
+		return filepath.Join(e.GoRoot, filepath.FromSlash(name)), nil
 	default:
 		return "", fmt.Errorf("receipt path scope %q is unknown", scope)
 	}
@@ -405,24 +426,28 @@ func (e Environment) classify(path string) (string, string, pathKind) {
 			return "", "", pathUncacheable
 		}
 	}
-	temporary := ""
-	for _, dir := range e.TempDirs {
-		if within(dir, path) && len(dir) > len(temporary) {
-			temporary = dir
+	scope, base, kind := scopeAbsolute, "", pathInput
+	for _, root := range e.TempDirs {
+		if within(root.Dir, path) && len(root.Dir) > len(base) {
+			scope, base, kind = scopeTemporary+root.Token, root.Dir, pathTemporary
 		}
 	}
 	for _, root := range []string{e.Root, e.RootAlias} {
-		if within(root, path) && len(root) > len(temporary) {
-			relative, err := filepath.Rel(root, path)
-			if err == nil {
-				return scopeRoot, filepath.ToSlash(relative), pathInput
-			}
+		if within(root, path) && len(root) > len(base) {
+			scope, base, kind = scopeRoot, root, pathInput
 		}
 	}
-	if temporary != "" {
-		return scopeAbsolute, path, pathTemporary
+	if within(e.GoRoot, path) && len(e.GoRoot) > len(base) {
+		scope, base, kind = scopeGoRoot, e.GoRoot, pathInput
 	}
-	return scopeAbsolute, path, pathInput
+	if base == "" {
+		return scopeAbsolute, path, pathInput
+	}
+	relative, err := filepath.Rel(base, path)
+	if err != nil {
+		return scopeAbsolute, path, pathInput
+	}
+	return scope, filepath.ToSlash(relative), kind
 }
 
 func resolve(pwd, name string) string {

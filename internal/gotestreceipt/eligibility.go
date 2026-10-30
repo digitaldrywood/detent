@@ -33,10 +33,11 @@ type sourcePackage struct {
 	Error      *struct{ Err string }
 }
 
-func checkEligibility(ctx context.Context, binary string) error {
+func checkEligibility(ctx context.Context, binary, dir, scratch string, environment []string) error {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "go", "list", "-deps", "-test", "-json", ".")
+	cmd.Dir, cmd.Env = dir, environment
 	procgroup.Configure(ctx, cmd)
 	var output bytes.Buffer
 	cmd.Stdout = &output
@@ -85,7 +86,7 @@ func checkEligibility(ctx context.Context, binary string) error {
 	if count == 0 {
 		return errors.New("test sources unavailable")
 	}
-	if err := matchCompiledSources(ctx, binary); err != nil {
+	if err := matchCompiledSources(ctx, binary, dir, scratch, environment); err != nil {
 		return err
 	}
 	for path, digest := range sources {
@@ -100,8 +101,8 @@ func checkEligibility(ctx context.Context, binary string) error {
 	return nil
 }
 
-func matchCompiledSources(ctx context.Context, binary string) (err error) {
-	dir, err := os.MkdirTemp("", "detent-test-source-*")
+func matchCompiledSources(ctx context.Context, binary, workDir, scratch string, environment []string) (err error) {
+	dir, err := os.MkdirTemp(scratch, "detent-test-source-*")
 	if err != nil {
 		return fmt.Errorf("prepare test source verification: %w", err)
 	}
@@ -121,6 +122,7 @@ func matchCompiledSources(ctx context.Context, binary string) (err error) {
 	observed := filepath.Join(dir, "binary-digest")
 	cmd := exec.CommandContext(ctx, "go")
 	cmd.Args = append(cmd.Args, "test", "-exec="+strconv.Quote(wrapper)+" --detent-source-digest "+strconv.Quote(observed), ".")
+	cmd.Dir, cmd.Env = workDir, environment
 	procgroup.Configure(ctx, cmd)
 	if err := procgroup.Start(cmd); err != nil {
 		return fmt.Errorf("compile inspected test sources: %w", err)
@@ -142,6 +144,7 @@ func matchCompiledSources(ctx context.Context, binary string) (err error) {
 	compiled := filepath.Join(dir, "verified.test")
 	cmd = exec.CommandContext(ctx, "go")
 	cmd.Args = append(cmd.Args, "test", "-c", "-o", compiled, ".")
+	cmd.Dir, cmd.Env = workDir, environment
 	procgroup.Configure(ctx, cmd)
 	if err := procgroup.Start(cmd); err != nil {
 		return fmt.Errorf("compile retained test binary: %w", err)

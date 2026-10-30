@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
@@ -12,70 +13,159 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/gotestreceipt"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 )
 
-func TestGoTestReceiptsAreProjectScopedAndExpire(t *testing.T) {
-	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db")})
+func attestGoTestReceipts(t *testing.T, service *Service, base, token string) gotestreceipt.Attestation {
+	t.Helper()
+	response := performHubAPIRequest(t, service, http.MethodPost, base+"/go-test-receipts/attestations", token, nil)
+	requireNativeStatus(t, response, http.StatusCreated)
+	var attestation gotestreceipt.Attestation
+	decodeHubResponse(t, response, &attestation)
+	if err := attestation.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	return attestation
+}
+
+func lookupGoTestReceipts(t *testing.T, service *Service, base, token, key string) []gotestreceipt.Candidate {
+	t.Helper()
+	response := performHubAPIRequest(t, service, http.MethodGet, base+"/go-test-receipts?key="+key, token, nil)
+	requireNativeStatus(t, response, http.StatusOK)
+	var body struct {
+		Candidates []gotestreceipt.Candidate `json:"candidates"`
+	}
+	decodeHubResponse(t, response, &body)
+	return body.Candidates
+}
+
+func TestGoTestReceiptsRequireALiveAttestationOwnedByTheRecorder(t *testing.T) {
+	service := openTestService(t, Config{SecretKeys: secretTestKeys(t, "1", "1"), DatabasePath: filepath.Join(t.TempDir(), "hub.db")})
 	first := newNativeFixture(t, service, "", "receipts-first")
 	second := newNativeFixture(t, service, "", "receipts-second")
-	firstWorker, secondWorker := first.worker(t, "first-runner"), second.worker(t, "second-runner")
-	key := strings.Repeat("a", 64)
-	lookup := func(f nativeFixture, token string) []gotestreceipt.Candidate {
+	firstWorker := first.worker(t, "first-worker")
+	enroll := func(f nativeFixture) string {
 		t.Helper()
-		response := performHubAPIRequest(t, service, http.MethodGet, f.base+"/go-test-receipts?key="+key, token, nil)
-		requireNativeStatus(t, response, http.StatusOK)
-		var body struct {
-			Candidates []gotestreceipt.Candidate `json:"candidates"`
+		r := prepareRunner(t, f, runnerauth.Read, runnerauth.Events)
+		r.enroll(t)
+		return r.redemption.Credential
+	}
+	firstRunner, otherRunner, secondRunner := enroll(first), enroll(first), enroll(second)
+
+	firstAttestation := attestGoTestReceipts(t, service, first.base, firstRunner)
+	repeatAttestation := attestGoTestReceipts(t, service, first.base, otherRunner)
+	secondAttestation := attestGoTestReceipts(t, service, second.base, secondRunner)
+	if firstAttestation.ID == repeatAttestation.ID || !bytes.Equal(firstAttestation.DigestKey, repeatAttestation.DigestKey) || bytes.Equal(firstAttestation.DigestKey, secondAttestation.DigestKey) {
+		t.Fatal("attestations must be distinct while digest keys are shared within a project and differ across projects")
+	}
+	for name, request := range map[string]struct {
+		base, token string
+	}{
+		"project worker without a lease": {first.base, firstWorker},
+		"runner outside the project":     {first.base, secondRunner},
+	} {
+		if response := performHubAPIRequest(t, service, http.MethodPost, request.base+"/go-test-receipts/attestations", request.token, nil); response.Code < 400 || response.Code >= 500 {
+			t.Fatalf("%s: attestation status = %d, want a client error: %s", name, response.Code, response.Body.String())
 		}
-		decodeHubResponse(t, response, &body)
-		return body.Candidates
-	}
-	receipt := func(digest byte) gotestreceipt.Receipt {
-		return gotestreceipt.Receipt{Key: key, Package: "internal/example", Inputs: []string{"env\tHOME", "open\tm\tinternal/example/testdata/a.txt"}, Digest: strings.Repeat(string(digest), 64)}
 	}
 
-	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, first.base+"/go-test-receipts", firstWorker, receipt('b')), http.StatusNoContent)
-	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, first.base+"/go-test-receipts", firstWorker, receipt('b')), http.StatusNoContent)
-	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, second.base+"/go-test-receipts", secondWorker, receipt('c')), http.StatusNoContent)
+	key := strings.Repeat("a", 64)
+	legitimate := gotestreceipt.Receipt{Attestation: firstAttestation.ID, Key: key, Package: "internal/example", Inputs: []string{"env\tHOME", "open\tm\tinternal/example/testdata/a.txt"}, Digest: strings.Repeat("b", 64)}
+	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, first.base+"/go-test-receipts", firstRunner, legitimate), http.StatusNoContent)
+	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, first.base+"/go-test-receipts", firstRunner, legitimate), http.StatusNoContent)
+	secondReceipt := legitimate
+	secondReceipt.Attestation, secondReceipt.Digest = secondAttestation.ID, strings.Repeat("c", 64)
+	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, second.base+"/go-test-receipts", secondRunner, secondReceipt), http.StatusNoContent)
 
-	firstCandidates, secondCandidates := lookup(first, firstWorker), lookup(second, secondWorker)
-	if len(firstCandidates) != 1 || firstCandidates[0].Digest != receipt('b').Digest || !slices.Equal(firstCandidates[0].Inputs, receipt('b').Inputs) {
-		t.Fatalf("first project candidates = %+v", firstCandidates)
-	}
-	if len(secondCandidates) != 1 || secondCandidates[0].Digest != receipt('c').Digest {
-		t.Fatalf("second project candidates = %+v, want only its own receipt", secondCandidates)
+	for name, f := range map[string]struct {
+		base, token string
+		want        gotestreceipt.Receipt
+	}{
+		"first project reuses its own receipt":  {first.base, firstWorker, legitimate},
+		"second project reuses its own receipt": {second.base, secondRunner, secondReceipt},
+	} {
+		candidates := lookupGoTestReceipts(t, service, f.base, f.token, key)
+		if len(candidates) != 1 || candidates[0].Digest != f.want.Digest || !slices.Equal(candidates[0].Inputs, f.want.Inputs) {
+			t.Fatalf("%s: candidates = %+v", name, candidates)
+		}
 	}
 	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, second.base+"/go-test-receipts?key="+key, firstWorker, nil), http.StatusNotFound)
 
-	invalid := receipt('b')
-	invalid.Inputs = []string{"open\tm\tline\nbreak"}
-	for name, request := range map[string]struct {
-		method string
-		path   string
-		body   any
+	expired := attestGoTestReceipts(t, service, first.base, firstRunner)
+	if _, err := service.database.db.ExecContext(t.Context(), "UPDATE go_test_receipt_attestations SET expires_at_ns = ? WHERE id = ?", time.Now().Add(-time.Minute).UnixNano(), expired.ID); err != nil {
+		t.Fatal(err)
+	}
+	forgedKey := strings.Repeat("f", 64)
+	forged := func(attestation string, inputs ...string) gotestreceipt.Receipt {
+		return gotestreceipt.Receipt{Attestation: attestation, Key: forgedKey, Package: "internal/target", Inputs: inputs, Digest: strings.Repeat("e", 64)}
+	}
+	for name, attempt := range map[string]struct {
+		base, token string
+		receipt     gotestreceipt.Receipt
 	}{
-		"malformed key":   {http.MethodGet, first.base + "/go-test-receipts?key=ABC", nil},
-		"malformed input": {http.MethodPost, first.base + "/go-test-receipts", invalid},
+		"empty-input receipt without an attestation":    {first.base, firstRunner, forged("")},
+		"empty-input receipt with an invented session":  {first.base, firstRunner, forged("gtra_00000000000000000000000000000000")},
+		"another runner's attestation":                  {first.base, otherRunner, forged(firstAttestation.ID)},
+		"a project worker replaying a runner's session": {first.base, firstWorker, forged(firstAttestation.ID)},
+		"another project's attestation":                 {first.base, firstRunner, forged(secondAttestation.ID)},
+		"an attestation used in another project":        {second.base, secondRunner, forged(firstAttestation.ID)},
+		"an expired attestation":                        {first.base, firstRunner, forged(expired.ID)},
+		"an absolute host path input":                   {first.base, firstRunner, forged(firstAttestation.ID, "open\ta\t/etc/hosts")},
+		"an absolute path disguised as checkout input":  {first.base, firstRunner, forged(firstAttestation.ID, "open\tm\t/etc/hosts")},
+		"a malformed input":                             {first.base, firstRunner, forged(firstAttestation.ID, "open\tm\tline\nbreak")},
 	} {
-		if response := performHubAPIRequest(t, service, request.method, request.path, firstWorker, request.body); response.Code < 400 || response.Code >= 500 {
+		if response := performHubAPIRequest(t, service, http.MethodPost, attempt.base+"/go-test-receipts", attempt.token, attempt.receipt); response.Code < 400 || response.Code >= 500 {
 			t.Fatalf("%s: status = %d, want a client error: %s", name, response.Code, response.Body.String())
 		}
 	}
+	for _, base := range []string{first.base, second.base} {
+		token := firstRunner
+		if base == second.base {
+			token = secondRunner
+		}
+		if candidates := lookupGoTestReceipts(t, service, base, token, forgedKey); len(candidates) != 0 {
+			t.Fatalf("forged receipt returned by lookup: %+v", candidates)
+		}
+	}
+	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, first.base+"/go-test-receipts?key=ABC", firstRunner, nil), http.StatusUnprocessableEntity)
 
-	later := time.Now().Add(goTestReceiptRetention + time.Hour)
-	expired, err := readGoTestReceipts(t.Context(), service.database.reader, string(first.project.OrganizationID), string(first.project.ID), key, later)
-	if err != nil {
+	unbound := forged("")
+	if err := storeGoTestReceipt(t.Context(), service.database.db, string(first.project.OrganizationID), string(first.project.ID), "legacy", unbound, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if len(expired) != 0 {
-		t.Fatalf("lookup before pruning returned expired candidates %+v", expired)
+	if candidates := lookupGoTestReceipts(t, service, first.base, firstRunner, forgedKey); len(candidates) != 0 {
+		t.Fatalf("receipt without an attestation returned by lookup: %+v", candidates)
+	}
+
+	later := time.Now().Add(goTestReceiptRetention + time.Hour)
+	if expiredCandidates, err := readGoTestReceipts(t.Context(), service.database.reader, string(first.project.OrganizationID), string(first.project.ID), key, later); err != nil || len(expiredCandidates) != 0 {
+		t.Fatalf("lookup before pruning returned expired candidates %+v (%v)", expiredCandidates, err)
 	}
 	if err := service.database.expireGoTestReceipts(t.Context(), later, time.Now); err != nil {
 		t.Fatal(err)
 	}
-	var remaining int
-	if err := service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM go_test_receipts").Scan(&remaining); err != nil || remaining != 0 {
-		t.Fatalf("receipts after pruning = %d (%v), want 0", remaining, err)
+	var receipts, attestations int
+	if err := service.database.db.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM go_test_receipts), (SELECT count(*) FROM go_test_receipt_attestations)").Scan(&receipts, &attestations); err != nil || receipts != 0 || attestations != 0 {
+		t.Fatalf("after pruning receipts = %d, attestations = %d (%v), want 0", receipts, attestations, err)
+	}
+}
+
+func TestGoTestReceiptsRefuseLeasedWorkers(t *testing.T) {
+	f := claimedAttemptDiffFixture(t, false, Config{SecretKeys: secretTestKeys(t, "1", "1")})
+	r := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Events)
+	r.enroll(t)
+	runnerAttestation := attestGoTestReceipts(t, f.service, f.base, r.redemption.Credential)
+	lease := map[string]any{"lease_id": f.lease.ID, "fencing_token": f.lease.FencingToken}
+	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/go-test-receipts/attestations", f.worker, lease)
+	if response.Code < 400 || response.Code >= 500 || strings.Contains(response.Body.String(), "digest_key") {
+		t.Fatalf("leased worker attestation: status = %d, want a client error without a digest key: %s", response.Code, response.Body.String())
+	}
+	forged := gotestreceipt.Receipt{Attestation: runnerAttestation.ID, Key: strings.Repeat("f", 64), Package: "internal/target", Inputs: []string{}, Digest: strings.Repeat("e", 64)}
+	if response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/go-test-receipts", f.worker, forged); response.Code < 400 || response.Code >= 500 {
+		t.Fatalf("leased worker record: status = %d, want a client error: %s", response.Code, response.Body.String())
+	}
+	if candidates := lookupGoTestReceipts(t, f.service, f.base, f.worker, forged.Key); len(candidates) != 0 {
+		t.Fatalf("leased worker receipt returned by lookup: %+v", candidates)
 	}
 }
 
@@ -85,7 +175,7 @@ type receiptPruneObserver struct {
 }
 
 func (o *receiptPruneObserver) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
-	result, err := o.db.ExecContext(ctx, query, args...)
+	result, err := o.db.ExecContext(context.WithoutCancel(ctx), query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -148,20 +238,28 @@ SELECT ?, ?, printf('%064x', i), ?, '', 'internal/example', 'runner', ? FROM n`,
 			t.Fatal(err)
 		}
 	}
+	const expiredAttestations = 10
+	if _, err := db.ExecContext(t.Context(), `WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i+1 FROM n WHERE i+1<?)
+INSERT INTO go_test_receipt_attestations (id, organization_id, project_id, credential_id, runner_id, created_at_ns, expires_at_ns)
+SELECT printf('gtra_%032x', i), ?, ?, 'credential', 'runner', ?, ? FROM n`, expiredAttestations, tenants[0], "prj_"+tenants[0], now.Add(-2*goTestReceiptAttestationTTL).UnixNano(), now.Add(-goTestReceiptAttestationTTL).UnixNano()); err != nil {
+		t.Fatal(err)
+	}
 	for _, statement := range []struct {
 		query string
 		args  []any
 		index string
 	}{
+		{goTestReceiptAttestationPruneQuery, []any{now.UnixNano()}, "INDEX go_test_receipt_attestations_expiry (expires_at_ns<?)"},
 		{goTestReceiptPruneQuery, []any{now.UnixNano()}, "INDEX go_test_receipts_recorded (recorded_at_ns<?)"},
-		{goTestReceiptLookupQuery, []any{tenants[0], "prj_" + tenants[0], strings.Repeat("f", 64), now.UnixNano(), gotestreceipt.MaxCandidates}, "INDEX go_test_receipts_lookup (organization_id=? AND project_id=? AND binary_key=? AND recorded_at_ns>?)"},
+		{goTestReceiptLookupQuery, []any{tenants[0], "prj_" + tenants[0], strings.Repeat("f", 64), now.UnixNano(), gotestreceipt.MaxCandidates}, "INDEX go_test_receipts_attested_lookup (organization_id=? AND project_id=? AND binary_key=? AND recorded_at_ns>?)"},
 	} {
 		if joined := receiptQueryPlan(t, db, statement.query, statement.args...); !strings.Contains(joined, statement.index) || strings.Contains(joined, "TEMP B-TREE") {
 			t.Fatalf("plan %q is not served by %s", joined, statement.index)
 		}
 	}
 
-	for _, want := range []int{statementsPerTick, 2*perTenant - statementsPerTick} {
+	firstTick := statementsPerTick - 1
+	for tick, want := range []int{firstTick, 2*perTenant + expiredAttestations - firstTick} {
 		observer := &receiptPruneObserver{db: db}
 		if err := expireGoTestReceipts(t.Context(), observer, now, clock.Now); err != nil {
 			t.Fatal(err)
@@ -174,7 +272,11 @@ SELECT ?, ?, printf('%064x', i), ?, '', 'internal/example', 'runner', ? FROM n`,
 			total += deleted
 		}
 		if total != int64(want) {
-			t.Fatalf("tick deleted %d receipts, want %d", total, want)
+			t.Fatalf("tick deleted %d rows, want %d", total, want)
+		}
+		var attestations int
+		if err := service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM go_test_receipt_attestations").Scan(&attestations); err != nil || attestations != 0 {
+			t.Fatalf("tick %d left %d expired attestations (%v); expired receipts must not starve attestation pruning", tick, attestations, err)
 		}
 	}
 	for _, org := range tenants {

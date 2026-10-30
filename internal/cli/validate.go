@@ -37,7 +37,7 @@ func newValidateCommand(lookup func(string) string, httpClient *http.Client, ins
 				return fmt.Errorf("resolve validation directory: %w", err)
 			}
 			ctx := cmd.Context()
-			session, err := gotestreceipt.Start(ctx, native.GoTestReceipts(), nil, os.TempDir())
+			session, err := gotestreceipt.Start(ctx, native.GoTestReceipts(), nil, os.TempDir(), root)
 			if err != nil {
 				return err
 			}

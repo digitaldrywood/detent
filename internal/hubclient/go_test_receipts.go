@@ -13,6 +13,12 @@ type goTestReceiptCandidates struct {
 	Candidates []gotestreceipt.Candidate `json:"candidates"`
 }
 
+func (c *NativeClient) AttestGoTestReceipts(ctx context.Context) (gotestreceipt.Attestation, error) {
+	var attestation gotestreceipt.Attestation
+	err := c.client.request(ctx, http.MethodPost, c.base()+"/go-test-receipts/attestations", nil, &attestation)
+	return attestation, err
+}
+
 func (c *NativeClient) LookupGoTestReceipts(ctx context.Context, key string) ([]gotestreceipt.Candidate, error) {
 	var response goTestReceiptCandidates
 	if err := c.client.request(ctx, http.MethodGet, c.base()+"/go-test-receipts?key="+url.QueryEscape(key), nil, &response); err != nil {
@@ -42,6 +48,14 @@ func (s schedulerGoTestReceipts) native() (*NativeClient, error) {
 	return connector.client, nil
 }
 
+func (s schedulerGoTestReceipts) Attest(ctx context.Context) (gotestreceipt.Attestation, error) {
+	native, err := s.native()
+	if err != nil {
+		return gotestreceipt.Attestation{}, err
+	}
+	return native.AttestGoTestReceipts(ctx)
+}
+
 func (s schedulerGoTestReceipts) Lookup(ctx context.Context, key string) ([]gotestreceipt.Candidate, error) {
 	native, err := s.native()
 	if err != nil {
@@ -64,6 +78,10 @@ type nativeGoTestReceipts struct {
 
 func (c *NativeClient) GoTestReceipts() gotestreceipt.Store {
 	return nativeGoTestReceipts{client: c}
+}
+
+func (s nativeGoTestReceipts) Attest(ctx context.Context) (gotestreceipt.Attestation, error) {
+	return s.client.AttestGoTestReceipts(ctx)
 }
 
 func (s nativeGoTestReceipts) Lookup(ctx context.Context, key string) ([]gotestreceipt.Candidate, error) {

@@ -28,6 +28,13 @@ func TestValidateCommandSeparatesReceiptCheckouts(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		defer mu.Unlock()
+		if r.URL.Path == "/api/v2/organizations/org_cli/projects/prj_cli/go-test-receipts/attestations" && r.Method == http.MethodPost {
+			w.WriteHeader(http.StatusCreated)
+			if err := json.NewEncoder(w).Encode(gotestreceipt.Attestation{ID: "attestation", DigestKey: []byte(strings.Repeat("k", gotestreceipt.DigestKeyBytes))}); err != nil {
+				t.Error(err)
+			}
+			return
+		}
 		if r.URL.Path != "/api/v2/organizations/org_cli/projects/prj_cli/go-test-receipts" || r.Header.Get("Authorization") != "Bearer test-token" {
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
@@ -37,6 +44,9 @@ func TestValidateCommandSeparatesReceiptCheckouts(t *testing.T) {
 			var receipt gotestreceipt.Receipt
 			if err := json.NewDecoder(r.Body).Decode(&receipt); err != nil {
 				t.Error(err)
+			}
+			if receipt.Attestation != "attestation" {
+				t.Errorf("receipt attestation = %q, want the session's Hub attestation", receipt.Attestation)
 			}
 			receipts = append(receipts, receipt)
 			w.WriteHeader(http.StatusNoContent)
@@ -93,7 +103,7 @@ func TestValidateCommandSeparatesReceiptCheckouts(t *testing.T) {
 		cmd.SilenceUsage = true
 		cmd.SetOut(&output)
 		cmd.SetErr(&output)
-		cmd.SetArgs([]string{"--project", "prj_cli", "--organization", "org_cli", "--hub-url", "https://cloud.example", "--dir", root, "CGO_ENABLED=0 go test ./..."})
+		cmd.SetArgs([]string{"--project", "prj_cli", "--organization", "org_cli", "--hub-url", "https://cloud.example", "--dir", root, "env; CGO_ENABLED=0 go test ./..."})
 		err := cmd.Execute()
 		return output.String(), err
 	}
@@ -112,6 +122,9 @@ func TestValidateCommandSeparatesReceiptCheckouts(t *testing.T) {
 		{name: "changed input executes and fails", root: broken, want: "0 of 1 test binaries reused, 0 recorded", wantErr: true},
 	} {
 		output, err := run(step.root)
+		if strings.Contains(output, strings.Repeat("k", gotestreceipt.DigestKeyBytes)) {
+			t.Fatal("validation script received the receipt digest key")
+		}
 		if (err != nil) != step.wantErr || !strings.Contains(output, step.want) {
 			t.Fatalf("%s: err = %v, output missing %q:\n%s", step.name, err, step.want, output)
 		}

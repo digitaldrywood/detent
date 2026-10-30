@@ -89,18 +89,29 @@ operator acceptance. This API does not install a build or recover an attempt.
 
 ## Go test receipts
 
+`POST /api/v2/organizations/{organization}/projects/{project}/go-test-receipts/attestations`
+opens a receipt session and returns its `id` and the project's `digest_key`. Only
+a runner identity or an operator credential may open one or record receipts; other
+worker credentials are refused, leased or not. A session expires after 12 hours.
+
 `GET /api/v2/organizations/{organization}/projects/{project}/go-test-receipts?key={key}`
 returns up to eight recorded `candidates` for one test binary key, newest first.
-`POST` to the same path records a receipt with `key`, `package`, `inputs` and
-`digest`. Both require a worker or runner credential for the project; runner
-identities read with `read` and record with `events`.
+`POST` to the same path records a receipt with `attestation`, `key`, `package`,
+`inputs` and `digest`. The Hub refuses a receipt unless its attestation is live,
+belongs to the project and was opened by the same credential, and lookups return
+only attested receipts. Runner identities read with `read` and attest and record
+with `events`.
 
 The key is the SHA-256 of the test binary and its test flags. `inputs` lists the
 environment variables and files the test read, as recorded by Go's test log, with
-files inside the checkout stored relative to the checkout root. `digest` hashes
-their values. A receipt holds names and hashes only, never test output, build
-cache entries or file contents, is limited to 96 KiB of input names and expires
-after 30 days.
+files inside the checkout stored relative to the checkout root, files under the
+toolchain's GOROOT stored relative to GOROOT, and files that predate the test in a
+temporary directory stored relative to that directory with a token naming which
+temporary root it was; a receipt naming any other absolute path is refused. `digest` is an HMAC of their
+values keyed by the project's digest key, which the Hub derives from its secret
+keyring, so values cannot be guessed offline from a receipt. A receipt holds names
+and hashes only, never test output, build cache entries or file contents, is
+limited to 96 KiB of input names and expires after 30 days.
 
 ## Work view preferences
 

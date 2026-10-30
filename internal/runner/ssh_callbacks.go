@@ -308,6 +308,8 @@ func (r *Runner) SSHCallbackHandler(request RunRequest) func(context.Context, st
 	receipts := r.goTestReceipts.Store
 	return func(ctx context.Context, method string, arguments []json.RawMessage) (any, error) {
 		switch method {
+		case sshGoTestReceiptAttest:
+			return invokeSSHMethod(ctx, receipts, "Attest", arguments)
 		case sshGoTestReceiptLookup:
 			return invokeSSHMethod(ctx, receipts, "Lookup", arguments)
 		case sshGoTestReceiptRecord:
@@ -318,11 +320,18 @@ func (r *Runner) SSHCallbackHandler(request RunRequest) func(context.Context, st
 }
 
 const (
+	sshGoTestReceiptAttest = "go_test_receipts.attest"
 	sshGoTestReceiptLookup = "go_test_receipts.lookup"
 	sshGoTestReceiptRecord = "go_test_receipts.record"
 )
 
 type SSHGoTestReceipts struct{ Peer *SSHPeer }
+
+func (s SSHGoTestReceipts) Attest(ctx context.Context) (gotestreceipt.Attestation, error) {
+	var attestation gotestreceipt.Attestation
+	err := s.Peer.Call(ctx, sshGoTestReceiptAttest, &attestation)
+	return attestation, err
+}
 
 func (s SSHGoTestReceipts) Lookup(ctx context.Context, key string) ([]gotestreceipt.Candidate, error) {
 	var candidates []gotestreceipt.Candidate
