@@ -1,0 +1,240 @@
+package orchestrator
+
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/progresscheck"
+	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/workpad"
+	"github.com/digitaldrywood/detent/internal/workspace"
+)
+
+// nativeWorkflow reports whether the tracker is a hub-native project, whose
+// workflow the hub states and whose Change Requests the runner lands.
+func (o *Orchestrator) nativeWorkflow() bool {
+	_, ok := o.connector.(connector.WorkflowStateReader)
+	return ok
+}
+
+// withNativeLandingLane makes the landing lane an active state of a
+// hub-native project whether or not the configuration lists it: the hub
+// names the lane, a reviewed Change Request waits there for the runner that
+// lands it, and every dispatch decision reads the active states.
+func withNativeLandingLane(cfg Config, tracker connector.Connector) Config {
+	if _, ok := tracker.(connector.WorkflowStateReader); !ok || stateIn(autoPromoteMergingState, cfg.ActiveStates) {
+		return cfg
+	}
+	cfg.ActiveStates = append(append([]string(nil), cfg.ActiveStates...), normalizeState(autoPromoteMergingState))
+	return cfg
+}
+
+func (o *Orchestrator) completeNativeLandingRun(
+	ctx context.Context,
+	state *State,
+	event runpkg.Completion,
+	running Running,
+) bool {
+	landing := event.Result.NativeLanding
+	progress := event.Request.ProgressDecision
+	completedOnBase := landing == nil && progress.Decision.Outcome == progresscheck.Reroute && progress.Decision.Step == progresscheck.CompleteStep && progress.CommentID != "" && progress.IssueID == event.IssueID
+	reader, ok := o.connector.(connector.WorkflowStateReader)
+	if landing == nil && !completedOnBase || !ok {
+		return false
+	}
+	issue := running.Issue
+	issueID := strings.TrimSpace(event.IssueID)
+	if landing != nil && !landing.Landed && !landing.RequiresRework() && landing.RefusalKind == workspace.LandRefusalProtected {
+		if wait, reported := terminalPermissionWait(event.Result.FinalMessage); reported && wait.Source == "terminal_detent_status" && permissionWaitCompletionAllowed(event) {
+			running.Issue = cloneIssue(issue)
+			running.Issue.NativeLandingHeadSHA = landing.HeadSHA
+			return o.parkPermissionWait(ctx, state, event, running, wait)
+		}
+	}
+	if landing != nil && !landing.Landed && (landing.Waiting || (landing.Path == "batch_member" || landing.Path == "merge_resolution_pending") && landing.RefusalKind == workspace.LandRefusalConflict || landing.RefusalKind == "" && landing.CI != nil && landing.CI.State == "pending" || landing.RefusalKind == workspace.LandRefusalBaseMoved) {
+		if landing.Waiting && !mergeWorkerIssue(issue) {
+			issue.NativeLandingHeadSHA = landing.HeadSHA
+		}
+		o.waitForMergeWorkerRetry(ctx, state, event, running, issue, landing.Refusal,
+			"merge_worker_waiting", "waiting to retry landing of ")
+		return true
+	}
+	handoff := func(err error) bool {
+		o.warnNativeCompletion(issue, err)
+		o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
+		return true
+	}
+	finalState := event.Result.FinalState
+	if finalState == "" {
+		finalState = FinalStateCompleted
+	}
+	target := ""
+	if completedOnBase || landing.Landed {
+		current, err := o.connector.FetchIssueStatesByIDs(ctx, []string{issueID})
+		if err != nil {
+			return handoff(fmt.Errorf("read the landed item: %w", err))
+		}
+		for _, candidate := range current {
+			if strings.TrimSpace(candidate.ID) == issueID {
+				target = candidate.State
+			}
+		}
+		if target == "" {
+			return handoff(fmt.Errorf("the landed item %s was not returned by the hub", issueID))
+		}
+		terminal := stateIn(target, o.cfg.TerminalStates)
+		if !terminal {
+			states, err := reader.WorkflowStates(ctx)
+			if err != nil {
+				return handoff(fmt.Errorf("read native workflow states: %w", err))
+			}
+			for _, candidate := range states {
+				if normalizeState(candidate.Name) == normalizeState(target) && candidate.Terminal {
+					terminal = true
+				}
+			}
+			if !terminal {
+				from := cloneIssue(issue)
+				from.State = target
+				lane, allowed := connector.CompletionLane(states, target, "", false)
+				if !allowed {
+					return handoff(fmt.Errorf("native workflow allows no move from %s to a terminal lane", target))
+				}
+				if err := o.updateIssueStateByIDStrictWithMetadata(ctx, state, issueID, from, lane, event.CompletedAt, "completed_active_review_transition", workflowLaneMetadata{}); err != nil {
+					return handoff(fmt.Errorf("complete landed native item: %w", err))
+				}
+				target = lane
+			}
+		}
+	} else {
+		states, err := reader.WorkflowStates(ctx)
+		if err != nil {
+			return handoff(fmt.Errorf("read native workflow states: %w", err))
+		}
+		cfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
+		destination := cfg.ReworkState
+		lane, ok := nativeRetryLane(states, issue.State, destination)
+		if !ok && destination != autoPromoteReworkState {
+			lane, ok = nativeRetryLane(states, issue.State, autoPromoteReworkState)
+		}
+		if !ok {
+			for _, candidate := range states {
+				if candidate.Terminal || candidate.OperatorOnly || !candidate.Dispatchable || normalizeState(candidate.Name) == normalizeState(issue.State) || normalizeState(candidate.Name) == normalizeState(blockedStatusState) {
+					continue
+				}
+				lane, ok = nativeRetryLane(states, issue.State, candidate.Name)
+				if ok {
+					break
+				}
+			}
+		}
+		if !ok {
+			return handoff(fmt.Errorf("native workflow allows no move from %s to the landing refusal lane %s", strings.TrimSpace(issue.State), destination))
+		}
+		if err := o.updateIssueStateByIDWithMetadata(ctx, state, issueID, issue, lane, event.CompletedAt, "completed_active_review_transition", workflowLaneMetadata{ReasonDetail: workpad.FinalSummary(landing.Refusal)}); err != nil {
+			return handoff(fmt.Errorf("move native item to %s: %w", lane, err))
+		}
+		target = lane
+	}
+	var comment, message string
+	metadata := nativeLandingMetadata(landing)
+	if completedOnBase {
+		comment = fmt.Sprintf("Acceptance criteria already met on the base. Progress check comment %s: %s\n\nEvidence: %s", progress.CommentID, progress.Decision.Reason, strings.Join(progress.Decision.Evidence, ", "))
+		message = "verified acceptance on the base for " + issueLabel(issue)
+		metadata = map[string]any{"progress_decision": progress}
+	} else {
+		comment = nativeLandingComment(landing, issue.State, target)
+		message = nativeLandingEventMessage(landing, issue, target)
+	}
+	if err := o.connector.CreateComment(ctx, issueID, comment); err != nil {
+		o.warnNativeCompletion(issue, fmt.Errorf("comment on the landing: %w", err))
+	}
+	if err := o.abandonClaim(ctx, issueID); err != nil {
+		return handoff(err)
+	}
+	attemptCompleted := o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "completed", "worker completed", metadata)
+	completed := Completed{
+		Issue:                      cloneIssue(issue),
+		SessionID:                  running.SessionID,
+		StartedAt:                  running.StartedAt,
+		CompletedAt:                event.CompletedAt,
+		FinalState:                 finalState,
+		successfulAttemptPersisted: attemptCompleted,
+		Tokens:                     event.Result.Tokens,
+		RuntimeIdentity:            running.RuntimeIdentity,
+	}
+	o.recordCompletionUsage(ctx, state, event, issue)
+	o.recordCompletedActiveReviewTransition(state, issue, completed, target)
+	if !completedOnBase && !landing.Landed {
+		issue.State = target
+		delete(state.Completed, issueID)
+		attempt := nextAttempt(running.Attempt)
+		o.scheduleRetryAfter(state, issue, attempt, event.CompletedAt, o.machineRetryDelay(attempt), landing.Refusal, running.WorkerHost)
+	}
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      event.CompletedAt,
+		Event:   "completed_native_landing",
+		Message: message,
+	})
+	if o.logger != nil && landing != nil {
+		o.logger.Info("completed native landing",
+			"issue_id", issueID, "identifier", issue.Identifier,
+			"from_state", issue.State, "target_state", target,
+			"landed", landing.Landed, "change_id", landing.ChangeID, "merge_sha", landing.MergeSHA, "refusal", landing.RefusalKind)
+	}
+	return true
+}
+
+func nativeLandingMetadata(landing *runpkg.NativeLanding) map[string]any {
+	if landing == nil {
+		return nil
+	}
+	metadata := map[string]any{"native_landing_path": landing.Path, "native_landing_packages": landing.Packages, "native_landed": landing.Landed, "native_change_id": landing.ChangeID, "native_version_id": landing.VersionID, "native_head_sha": landing.HeadSHA}
+	if len(landing.ConflictFiles) > 0 {
+		metadata["native_conflict_files"] = landing.ConflictFiles
+	}
+	if landing.CI != nil {
+		metadata["native_ci"] = landing.CI
+	}
+	if landing.Rebased {
+		metadata["rebased"] = true
+	}
+	if landing.BaseSHA != "" {
+		metadata["native_base_sha"] = landing.BaseSHA
+	}
+	if landing.GateFailed {
+		metadata["native_gate_failed"] = true
+	}
+	if landing.MergeSHA != "" {
+		metadata["native_merge_sha"] = landing.MergeSHA
+		metadata["native_base_ref"] = landing.BaseRef
+	}
+	if landing.RefusalKind != "" {
+		metadata["native_landing_refusal"] = landing.RefusalKind
+	}
+	return metadata
+}
+
+func nativeLandingComment(landing *runpkg.NativeLanding, from, to string) string {
+	from, to = displayStateName(from), displayStateName(to)
+	if landing.Landed {
+		if landing.ChangeID == "" {
+			return fmt.Sprintf("Verified source %s already delivered on %s as %s. Moved from %s to %s.", shortCommit(landing.HeadSHA), landing.BaseRef, shortCommit(landing.MergeSHA), from, to)
+		}
+		return fmt.Sprintf("Landed Change Request %s (head %s) on %s as %s by %s. Moved from %s to %s.",
+			landing.ChangeID, shortCommit(landing.HeadSHA), landing.BaseRef, shortCommit(landing.MergeSHA), landing.Method, from, to)
+	}
+	return fmt.Sprintf("Change Request %s (head %s) was not landed: %s Moved from %s to %s.",
+		landing.ChangeID, shortCommit(landing.HeadSHA), strings.TrimSpace(landing.Refusal), from, to)
+}
+
+func nativeLandingEventMessage(landing *runpkg.NativeLanding, issue connector.Issue, target string) string {
+	if landing.Landed {
+		return "landed " + issueLabel(issue) + " on " + landing.BaseRef + " as " + shortCommit(landing.MergeSHA)
+	}
+	return "landing of " + issueLabel(issue) + " refused (" + landing.RefusalKind + "), moved to " + target
+}

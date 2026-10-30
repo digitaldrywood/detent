@@ -1,0 +1,294 @@
+package hubserver
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"net/http"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/labstack/echo/v4"
+
+	"github.com/digitaldrywood/detent/internal/isolation"
+	"github.com/digitaldrywood/detent/internal/providercapacity"
+	"github.com/digitaldrywood/detent/internal/skills"
+	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspacesession"
+)
+
+func authorizeClaimScope(ctx context.Context, tx *sql.Tx, request tracker.ClaimRequest, scope *nativeScope) error {
+	if scope != nil && scope.credential.Runner.RunnerID != "" && scope.credential.Runner.MachineID != request.MachineID {
+		return tracker.ErrMachineNotFound
+	}
+	var count int
+	query := "SELECT count(*) FROM machines WHERE id = ? AND organization_id IS NULL"
+	args := []any{request.MachineID}
+	if scope != nil {
+		query = "SELECT count(*) FROM machines WHERE id = ? AND organization_id = ? AND token_id = ?"
+		args = append(args, scope.organization, scope.credential.ID)
+		if scope.credential.Runner.RunnerID != "" {
+			query = "SELECT count(*) FROM runner_identities WHERE machine_id = ? AND organization_id = ? AND token_id = ?"
+		}
+	}
+	if err := tx.QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
+		return err
+	}
+	if count != 1 {
+		return tracker.ErrMachineNotFound
+	}
+	if request.WorkItemID != 0 {
+		return authorizeClaimItem(ctx, tx, request.WorkItemID, scope)
+	}
+	return nil
+}
+
+func authorizeClaimItem(ctx context.Context, tx *sql.Tx, id tracker.WorkItemID, scope *nativeScope) error {
+	var count int
+	query := "SELECT count(*) FROM issues i JOIN projects p ON p.id = i.project_id WHERE i.id = ? AND p.profile = 'github_compatible'"
+	args := []any{id}
+	if scope != nil {
+		query = "SELECT count(*) FROM issues WHERE id = ? AND organization_id = ? AND project_id = ?"
+		args = append(args, scope.organization, scope.project)
+	}
+	if err := tx.QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
+		return err
+	}
+	if count != 1 {
+		return tracker.ErrWorkItemNotFound
+	}
+	return nil
+}
+
+func (s *Service) claimNativeIssue(c echo.Context) error {
+	ctx := c.Request().Context()
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
+	var request tracker.NativeClaim
+	if err := decodeAPIJSON(c, &request); err != nil {
+		return s.invalidAPIRequest(c, err)
+	}
+	if err := validateProviderCandidates(request.ProviderCandidates); err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	if request.LandingCapacity < 0 {
+		return s.nativeAPIError(c, nativePublicInvalid("Landing capacity must be non-negative"))
+	}
+	if request.ProtocolMajor != tracker.NativeProtocolMajor || !slices.Contains(request.Capabilities, "scoped_collaboration") || !slices.Contains(request.Capabilities, "native_issues") {
+		return s.nativeAPIError(c, nativePublicInvalid("Native protocol and required collaboration capabilities must be negotiated"))
+	}
+	for _, capability := range request.Capabilities {
+		if !slices.Contains([]string{"native_issues", "scoped_collaboration", "revision_conflicts", "idempotent_mutations", tracker.NativeExecutionCapability, tracker.NativeProviderCapacityCapability, tracker.NativeWorkspaceCapability, tracker.NativeLandingCapacityCapability}, capability) {
+			return s.nativeAPIError(c, nativePublicInvalid("Unknown required capability"))
+		}
+	}
+	if len(request.SessionID) > 128 {
+		return s.nativeAPIError(c, nativePublicInvalid("Session ID is too long"))
+	}
+	ttl, err := apiTTL(request.TTLSeconds)
+	if err != nil {
+		return s.nativeAPIError(c, nativePublicInvalid("Lease TTL is invalid"))
+	}
+	scope := nativeRequestScope(c)
+	if request.WorkItemID == "" && len(request.ProviderCandidates) == 1 {
+		request.WorkItemID = request.ProviderCandidates[0].WorkItemID
+	}
+	var id tracker.WorkItemID
+	if request.WorkItemID != "" {
+		_, id, err = readNativeIssue(readCtx, s.database.reader, scope, string(request.WorkItemID))
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+	}
+	lease, err := s.database.claimNext(ctx, tracker.ClaimRequest{WorkItemID: id, MachineID: request.MachineID, SessionID: request.SessionID, TTL: ttl}, claimCandidateQuery{
+		LandingCapacity:      request.LandingCapacity,
+		LandingCapacityKnown: request.LandingCapacity > 0 || slices.Contains(request.Capabilities, tracker.NativeLandingCapacityCapability),
+		MinimumRunnerVersion: minimumRunnerVersion(s.config.Version),
+		PolicyID:             request.PolicyID, RequirePolicy: true, ProviderCandidates: request.ProviderCandidates,
+		DispatchPriorityByState: request.DispatchPriorityByState, DispatchPriorityByLabel: request.DispatchPriorityByLabel, PrioritizeUnblockers: request.PrioritizeUnblockers,
+		NativeScope: &scope, Scope: string(scope.project), WorkflowStates: request.WorkflowStates, Authors: request.Authors, Assignees: request.Assignees, LabelInclude: request.LabelInclude, LabelExclude: request.LabelExclude,
+		// Only a lane that declares the workspace capability is offered
+		// workspace items.
+		WorkspaceLane: slices.Contains(request.Capabilities, tracker.NativeWorkspaceCapability),
+	}, s.config.ReconcileInterval)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	return s.respondNativeLease(c, scope, lease)
+}
+
+func (s *Service) respondNativeLease(c echo.Context, scope nativeScope, lease tracker.Lease) error {
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	defer cancel()
+	policyID, err := s.database.leasePolicyID(ctx, lease.ID)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	var id tracker.NativeWorkItemID
+	if err := s.database.reader.QueryRowContext(ctx, "SELECT native_id FROM issues WHERE id = ? AND organization_id = ? AND project_id = ?", lease.WorkItemID, scope.organization, scope.project).Scan(&id); err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	reservation, reserved, err := readProviderReservation(ctx, s.database.reader, lease.ID)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	var providerReservation *providercapacity.Reservation
+	if reserved {
+		providerReservation = &reservation
+	}
+	var policy *isolation.Policy
+	if scope.credential.Runner.RunnerID != "" {
+		var encoded string
+		if err := s.database.reader.QueryRowContext(ctx, "SELECT isolation_policy_json FROM lease_runners WHERE lease_id = ? AND runner_id = ?", lease.ID, scope.credential.Runner.RunnerID).Scan(&encoded); err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		policy = &isolation.Policy{}
+		if err := json.Unmarshal([]byte(encoded), policy); err != nil {
+			return s.nativeAPIError(c, err)
+		}
+	}
+	return c.JSON(http.StatusOK, tracker.NativeLease{RunDetailBatching: s.runDetailStore() != nil, IsolationPolicy: policy, ProviderReservation: providerReservation, ServerTime: s.config.now().UTC(), PolicyID: policyID, ID: lease.ID, WorkItemID: id, MachineID: lease.Machine.ID, SessionID: lease.SessionID, FencingToken: lease.FencingToken, AcquiredAt: lease.AcquiredAt, RenewedAt: lease.RenewedAt, ExpiresAt: lease.ExpiresAt})
+}
+
+func (s *Service) requireNativeLease(c echo.Context) error {
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	defer cancel()
+	scope := nativeRequestScope(c)
+	return requireLeaseRunner(ctx, s.database.reader, tracker.LeaseID(c.Param("lease")), scope)
+}
+
+func (s *Service) renewNativeLease(c echo.Context) error {
+	if err := s.requireNativeLease(c); err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	var request tracker.NativeLeaseMutation
+	if err := decodeAPIJSON(c, &request); err != nil {
+		return s.invalidAPIRequest(c, err)
+	}
+	if request.LandingCapacity < 0 {
+		return s.nativeAPIError(c, nativePublicInvalid("Landing capacity must be non-negative"))
+	}
+	ttl, err := apiTTL(request.TTLSeconds)
+	if err != nil {
+		return s.nativeAPIError(c, nativePublicInvalid("Lease TTL is invalid"))
+	}
+	lease, err := s.database.renew(c.Request().Context(), tracker.RenewRequest{LeaseID: tracker.LeaseID(c.Param("lease")), FencingToken: request.FencingToken, TTL: ttl}, true, request.LandingCapacity, nativeRequestScope(c))
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	return s.respondNativeLease(c, nativeRequestScope(c), lease)
+}
+
+func (s *Service) releaseNativeLease(c echo.Context) error {
+	if err := s.requireNativeLease(c); err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	var request tracker.NativeLeaseMutation
+	if err := decodeAPIJSON(c, &request); err != nil {
+		return s.invalidAPIRequest(c, err)
+	}
+	if request.CancelAttempt && request.Reason != "cancelled" || !slices.Contains([]string{"completed", "cancelled", "failed", "work_item_hydration_failed", "work_item_identity_missing", "released"}, request.Reason) {
+		return s.nativeAPIError(c, nativePublicInvalid("Release reason is invalid"))
+	}
+	if err := s.database.releaseLease(c.Request().Context(), tracker.ReleaseRequest{LeaseID: tracker.LeaseID(c.Param("lease")), FencingToken: request.FencingToken, Reason: request.Reason}); err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	s.notifyNativeDispatch(c.Request().Context(), nativeRequestScope(c), request)
+	s.startSpritePoolForQueue(nativeRequestScope(c))
+	if s.conversations != nil {
+		s.conversations.leaseReleased(c.Request().Context(), tracker.LeaseID(c.Param("lease")))
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
+func (s *Service) registerNativeMachine(c echo.Context) error {
+	var request struct {
+		BackendIsolation isolation.Report          `json:"backend_isolation,omitempty"`
+		ID               tracker.MachineID         `json:"id"`
+		Hostname         string                    `json:"hostname"`
+		DisplayName      string                    `json:"display_name"`
+		Capacity         int                       `json:"capacity"`
+		Version          string                    `json:"version"`
+		OS               string                    `json:"os,omitempty"`
+		Architecture     string                    `json:"architecture,omitempty"`
+		ProviderReports  []providercapacity.Report `json:"provider_reports,omitempty"`
+		// WorkspaceCapabilities and WorkspaceIsolation are what this runner
+		// can serve for a workspace session, reported beside the provider
+		// reports. A runner that never reports them
+		// serves no surface and is never handed a workspace item.
+		WorkspaceCapabilities *workspacesession.Capabilities `json:"workspace_capabilities,omitempty"`
+		WorkspaceIsolation    string                         `json:"workspace_isolation,omitempty"`
+		Skills                *[]skills.ProviderSkill        `json:"skills,omitempty"`
+		CheckoutRepository    *string                        `json:"checkout_repository,omitempty"`
+	}
+	if err := decodeAPIJSON(c, &request); err != nil {
+		return s.invalidAPIRequest(c, err)
+	}
+	if strings.TrimSpace(string(request.ID)) == "" || len(request.ID) > 128 || strings.TrimSpace(request.Hostname) == "" || len(request.Hostname) > 200 || len(request.DisplayName) > 200 || strings.TrimSpace(request.Version) == "" || len(request.Version) > 100 || request.Capacity < 0 || !validRunnerPlatform(request.OS, request.Architecture) {
+		return s.nativeAPIError(c, nativePublicInvalid("Machine identity, hostname, version, and nonnegative capacity are required"))
+	}
+	scope := nativeRequestScope(c)
+	now := formatHubTime(s.config.now())
+	if scope.credential.Runner.RunnerID != "" && request.ID != scope.credential.Runner.MachineID {
+		return s.nativeAPIError(c, nativeNotFound())
+	}
+	if !workspacesession.ValidIsolation(request.WorkspaceIsolation) {
+		return s.nativeAPIError(c, nativePublicInvalid("Workspace isolation must be sandbox, container or user"))
+	}
+	if scope.credential.Runner.RunnerID != "" {
+		return s.runnerTransaction(c, http.StatusOK, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
+			if err := updateRunnerIsolationReport(ctx, tx, scope, request.BackendIsolation); err != nil {
+				return nil, err
+			}
+			if err := updateRunnerHeartbeat(ctx, tx, scope, request.Capacity, request.Version, request.OS, request.Architecture, now); err != nil {
+				return nil, err
+			}
+			if err := updateRunnerWorkspaceReport(ctx, tx, scope, request.WorkspaceCapabilities, request.WorkspaceIsolation); err != nil {
+				return nil, err
+			}
+			if err := updateRunnerSkills(ctx, tx, scope, request.Skills, now); err != nil {
+				return nil, err
+			}
+			if err := updateRunnerCheckoutReport(ctx, tx, scope, request.CheckoutRepository, now); err != nil {
+				return nil, err
+			}
+			if err := updateProviderReports(ctx, tx, scope, request.ProviderReports, now); err != nil {
+				return nil, err
+			}
+			snapshot, err := readRunnerRoutingSnapshot(ctx, tx, scope.organization, scope.credential.Runner.RunnerID, now)
+			if err != nil {
+				return nil, err
+			}
+			err = s.readRunnerClaimState(ctx, tx, scope, &snapshot, now)
+			return snapshot, err
+		})
+	}
+	if request.WorkspaceCapabilities != nil {
+		return s.nativeAPIError(c, nativePublicInvalid("Workspace capabilities require an enrolled runner"))
+	}
+	if len(request.ProviderReports) != 0 {
+		return s.nativeAPIError(c, nativePublicInvalid("Provider reports require an enrolled runner"))
+	}
+	if request.Skills != nil {
+		return s.nativeAPIError(c, nativePublicInvalid("Skill reports require an enrolled runner"))
+	}
+	if request.CheckoutRepository != nil && *request.CheckoutRepository != "" {
+		return s.nativeAPIError(c, nativePublicInvalid("Checkout reports require an enrolled runner"))
+	}
+	result, err := s.database.db.ExecContext(c.Request().Context(), `INSERT INTO machines (id, hostname, display_name, capacity, version, last_heartbeat_at, registered_at, updated_at, organization_id, token_id,machine_facts_ready)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?,1)
+ON CONFLICT(id) DO UPDATE SET hostname = excluded.hostname, display_name = excluded.display_name, capacity = excluded.capacity, version = excluded.version, last_heartbeat_at = excluded.last_heartbeat_at, updated_at = excluded.updated_at
+WHERE machines.organization_id = excluded.organization_id AND machines.token_id = excluded.token_id`, request.ID, request.Hostname, request.DisplayName, request.Capacity, request.Version, now, now, now, scope.organization, scope.credential.ID)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	if count != 1 {
+		return s.nativeAPIError(c, nativeNotFound())
+	}
+	return c.JSON(http.StatusOK, request)
+}

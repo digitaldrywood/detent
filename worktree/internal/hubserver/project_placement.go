@@ -1,0 +1,677 @@
+package hubserver
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/budget"
+	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/providercapacity"
+	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/selector"
+	"github.com/digitaldrywood/detent/internal/tracker"
+)
+
+type placementDecision struct {
+	Policy        policy.Placement `json:"policy"`
+	ReadyTodo     int              `json:"ready_todo"`
+	LocalFree     int              `json:"local_free"`
+	SpriteFree    int              `json:"sprite_free"`
+	SpriteUsed    int              `json:"sprite_used"`
+	Pending       int              `json:"pending"`
+	SpriteTarget  int              `json:"sprite_target"`
+	Provisionable int              `json:"provisionable"`
+	ProviderFree  *int             `json:"provider_free,omitempty"`
+	Reason        string           `json:"reason"`
+}
+
+type placementRunner struct {
+	runnerauth.Runner
+	Sprite, Pending, Paused bool
+	Enrollment              string
+}
+
+type placementSnapshot struct {
+	placementDecision
+	Runners      []placementRunner
+	Requirements policy.Requirements
+	Items        map[tracker.WorkItemID]providercapacity.Requirement
+	Local        map[tracker.WorkItemID]int
+	resolver     *runner.BoardIdentityResolver
+}
+
+func readPlacementPolicy(ctx context.Context, q nativeQueryer, scope nativeScope) (policy.Placement, int, error) {
+	var raw string
+	var ceiling int
+	err := q.QueryRowContext(ctx, `SELECT placement_json,max_runners FROM organization_sprite_pools WHERE organization_id=?`, scope.organization).Scan(&raw, &ceiling)
+	if errors.Is(err, sql.ErrNoRows) {
+		return policy.Placement{Mode: "blended"}, 0, nil
+	}
+	if err != nil {
+		return policy.Placement{}, 0, err
+	}
+	var placement policy.Placement
+	if err := json.Unmarshal([]byte(raw), &placement); err != nil {
+		return placement, 0, err
+	}
+	return placement.Resolved(), ceiling, placement.Validate()
+}
+
+func readPlacementSpriteUsage(ctx context.Context, q nativeQueryer, scope nativeScope, now time.Time, joining ...string) (int, error) {
+	rows, err := q.QueryContext(ctx, `SELECT l.machine_id,l.session_id,l.lease_id,COALESCE(lr.runner_id,''),`+nativeLandingCapacityProject+`,m.sprite_name,m.hostname,CASE WHEN m.machine_facts_ready IS NULL THEN m.capabilities_json END
+ FROM leases l JOIN issues i ON i.id=l.issue_id JOIN machines m ON m.id=l.machine_id
+ LEFT JOIN lease_runners lr ON lr.lease_id=l.lease_id `+nativeLandingCapacityJoins+`
+ WHERE i.organization_id=? AND l.released_at IS NULL AND julianday(l.expires_at)>julianday(?) AND (m.sprite_name=m.hostname OR m.machine_facts_ready IS NULL)`, scope.organization, formatHubTime(now))
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	groups := map[string]bool{}
+
+	type landingUsageRow struct {
+		machine                         tracker.MachineID
+		session, lease, runner, project string
+		name                            *string
+		hostname                        string
+		legacy                          sql.NullString
+	}
+	var landingRows []landingUsageRow
+	for rows.Next() {
+		var value landingUsageRow
+		if err := rows.Scan(&value.machine, &value.session, &value.lease, &value.runner, &value.project, &value.name, &value.hostname, &value.legacy); err != nil {
+			return 0, err
+		}
+		landingRows = append(landingRows, value)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, err
+	}
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
+	for _, value := range landingRows {
+
+		machine, session, lease, runner, project := value.machine, value.session, value.lease, value.runner, value.project
+
+		project, err = resolveLandingProject(ctx, q, project, false)
+		if err != nil {
+			return 0, err
+		}
+		facts, err := resolveMachineSpriteFacts(machineSpriteFacts{Name: value.name}, value.legacy)
+		if err != nil {
+			return 0, err
+		}
+		if facts.Name != nil && *facts.Name == value.hostname {
+			groups[landingLeaseCapacityKey(machine, project, session, runner, lease)] = true
+		}
+	}
+	if len(joining) > 0 && joining[0] != "" {
+		delete(groups, joining[0]+"/"+scope.credential.Runner.RunnerID)
+	}
+	return len(groups), rows.Err()
+}
+
+func readPlacementRunners(ctx context.Context, q nativeQueryer, scope nativeScope, now time.Time) ([]placementRunner, error) {
+	rows, err := q.QueryContext(ctx, `SELECT r.id, r.enrollment_id, m.sprite_name,m.sprite_woken_at,CASE WHEN m.machine_facts_ready IS NULL THEN m.capabilities_json END FROM runner_identities r JOIN machines m ON m.id=r.machine_id WHERE r.organization_id=? AND r.removed_at IS NULL AND (?='' OR r.scope='organization' OR EXISTS(SELECT 1 FROM token_grants g WHERE g.token_id=r.token_id AND g.organization_id=? AND g.project_id=?)) ORDER BY r.id`, scope.organization, scope.project, scope.organization, scope.project)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	type identity struct{ id, enrollment, name, woke string }
+	var identities []identity
+	for rows.Next() {
+		var id identity
+		var facts machineSpriteFacts
+		var legacy sql.NullString
+		if err := rows.Scan(&id.id, &id.enrollment, &facts.Name, &facts.WokenAt, &legacy); err != nil {
+			return nil, err
+		}
+		facts, err = resolveMachineSpriteFacts(facts, legacy)
+		if err != nil {
+			return nil, err
+		}
+		id.name, id.woke = spriteFactValue(facts.Name), spriteFactValue(facts.WokenAt)
+		identities = append(identities, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	var runners []placementRunner
+	for _, id := range identities {
+		r, err := readRunner(ctx, q, scope.organization, id.id, now)
+		if err != nil {
+			return nil, err
+		}
+		if scope.project != "" {
+			allowed, err := spriteAllocationRunnerAllowed(ctx, q, scope, r.MachineID)
+			if err != nil {
+				return nil, err
+			}
+			if !allowed {
+				continue
+			}
+		}
+		current := placementRunner{Runner: r, Enrollment: id.enrollment, Sprite: id.name == r.Hostname && validSpritesSlug(id.name)}
+		current.Paused = current.Sprite && now.Sub(r.LastHeartbeatAt) >= spriteRunnerIdle
+		var at time.Time
+		if id.woke != "" {
+			at, err = parseTimeValue(id.woke)
+			if err != nil {
+				return nil, err
+			}
+		}
+		current.Pending = current.Paused && !at.IsZero() && !now.Before(at) && now.Sub(at) < time.Minute
+		if current.Pending && r.Health != "revoked" && r.Health != "expired" {
+			current.Health, current.ConnectionHealth = "online", "online"
+		}
+		runners = append(runners, current)
+	}
+	return runners, nil
+}
+
+type placementCapacity struct {
+	hosts    map[tracker.MachineID]int
+	runners  map[string]int
+	accounts []scopedProviderAccount
+}
+
+func placementRunnerCompatible(r placementRunner, project tracker.ProjectID, requirements policy.Requirements, now time.Time, paused bool) bool {
+	if paused && r.Paused && !r.Pending && r.Health != "revoked" && r.Health != "expired" {
+		r.Health, r.ConnectionHealth = "online", "online"
+		r.Paused = false
+	}
+	blockingProblem := slices.ContainsFunc(r.Problems, func(p runnerauth.Problem) bool {
+		return p.Code != "settings_invalid" || p.Check != "commit_signing"
+	})
+	if r.Paused && !r.Pending || blockingProblem || len(r.Exclusions(project, requirements, false)) != 0 {
+		return false
+	}
+	availability, err := r.Availability.Evaluate(now)
+	return err == nil && availability.Open
+}
+
+func newPlacementCapacity() *placementCapacity {
+	return &placementCapacity{hosts: make(map[tracker.MachineID]int), runners: make(map[string]int)}
+}
+
+func (c *placementCapacity) available(r placementRunner, project tracker.ProjectID, requirements policy.Requirements, provider providercapacity.Requirement, now time.Time, consume bool) int {
+	if !placementRunnerCompatible(r, project, requirements, now, false) {
+		return 0
+	}
+	free := max(min(r.CapacityLimit, r.ReportedCapacity)-r.Used-c.runners[r.RunnerID], 0)
+	free = min(free, max(r.HostCapacity-r.HostUsed-c.hosts[r.MachineID], 0))
+	var selected providercapacity.Report
+	providerFree := 0
+	for _, view := range r.ProviderCapacity {
+		if provider.Model != "" && !view.Supports(provider) {
+			continue
+		}
+		remaining := free
+		if view.MaxConcurrent > 0 {
+			remaining = view.MaxConcurrent - view.Used
+			for _, account := range c.accounts {
+				if sharedProviderAccount(account, scopedProviderAccount{runnerID: r.RunnerID, Report: view.Report}) {
+					remaining--
+				}
+			}
+		}
+		if remaining > providerFree {
+			providerFree, selected = remaining, view.Report
+		}
+	}
+	free = min(free, max(providerFree, 0))
+	if consume && free > 0 {
+		c.hosts[r.MachineID]++
+		c.runners[r.RunnerID]++
+		c.accounts = append(c.accounts, scopedProviderAccount{runnerID: r.RunnerID, Report: selected})
+	}
+	return free
+}
+
+func readPlacementSnapshot(ctx context.Context, q nativeQueryer, scope nativeScope, now time.Time, overrides []tracker.NativeCapacityCandidate) (placementSnapshot, error) {
+	return readPlacementSnapshotWithCapacity(ctx, q, scope, now, overrides, newPlacementCapacity(), make(map[string]bool))
+}
+
+func readPlacementSnapshotWithCapacity(ctx context.Context, q nativeQueryer, scope nativeScope, now time.Time, overrides []tracker.NativeCapacityCandidate, localCapacity *placementCapacity, counted map[string]bool) (placementSnapshot, error) {
+	var result placementSnapshot
+	placement, ceiling, err := readPlacementPolicy(ctx, q, scope)
+	if err != nil {
+		return result, err
+	}
+	result.Policy = placement
+	result.Items = make(map[tracker.WorkItemID]providercapacity.Requirement)
+	result.Local = make(map[tracker.WorkItemID]int)
+	result.Runners, err = readPlacementRunners(ctx, q, scope, now)
+	if err != nil {
+		return result, err
+	}
+	result.SpriteUsed, err = readPlacementSpriteUsage(ctx, q, scope, now)
+	if err != nil {
+		return result, err
+	}
+	approval, found, err := readProjectPolicy(ctx, q, string(scope.organization)+"/"+string(scope.project))
+	if err != nil {
+		return result, err
+	}
+	if !found {
+		result.Reason = "No approved project policy; compatible Todo demand is unavailable"
+		return result, nil
+	}
+	workflow, err := projectPolicyWorkflow(ctx, string(scope.organization)+"/"+string(scope.project), approval.Policy)
+	if err != nil {
+		return result, err
+	}
+	result.Requirements = approval.Policy.Requirements
+	workflow.Config.Plan.Enabled = approval.Policy.Gates.PlanEnabled
+	resolver, err := readProjectIdentityResolver(ctx, q, scope, workflow.Config)
+	if err != nil {
+		return result, err
+	}
+	result.resolver = resolver
+	query := claimCandidateQuery{NativeScope: &scope, Scope: string(scope.project), AvailableAt: now, Limit: 100}
+	var ids []tracker.WorkItemID
+	for {
+		page, err := nativeCandidateIDs(ctx, q, query, nil, nil, []string{"todo"}, nil, nil, nil, nil)
+		if err != nil {
+			return result, err
+		}
+		ids = append(ids, page...)
+		if len(page) < query.Limit {
+			break
+		}
+		query.After = page[len(page)-1]
+	}
+	exposure := budget.CostExposure{SpriteInfrastructure: true, RunnerAPI: workflow.Config.Budget.EffectiveBillingMode() == config.BillingModeMetered}
+	budgetDecision, err := checkMonthlyBudget(ctx, q, scope, exposure, false, now)
+	if err != nil {
+		return result, err
+	}
+	if !budgetDecision.Allowed {
+		query.After = 0
+		var continuations []tracker.WorkItemID
+		for {
+			page, err := nativeCandidateIDs(ctx, q, query, nil, nil, nil, nil, nil, nil, nil)
+			if err != nil {
+				return result, err
+			}
+			for _, id := range page {
+				admitted, err := monthlyIssueAdmitted(ctx, q, id)
+				if err != nil {
+					return result, err
+				}
+				if !admitted {
+					continue
+				}
+				decision, err := checkMonthlyBudget(ctx, q, scope, exposure, true, now)
+				if err != nil {
+					return result, err
+				}
+				if decision.Allowed {
+					continuations = append(continuations, id)
+				}
+			}
+			if len(page) < query.Limit {
+				break
+			}
+			query.After = page[len(page)-1]
+		}
+		ids = continuations
+	}
+	localAssigned := make(map[tracker.WorkItemID]bool)
+	for _, id := range ids {
+		var native tracker.NativeWorkItemID
+		if err := q.QueryRowContext(ctx, `SELECT native_id FROM issues WHERE id=?`, id).Scan(&native); err != nil {
+			return result, err
+		}
+		issue, _, err := readNativeIssue(ctx, q, scope, string(native))
+		if err != nil {
+			return result, err
+		}
+		identity, err := resolver.Identity(connector.Issue{Title: issue.Title, Description: issue.Body, Labels: issue.Labels, State: issue.State})
+		if err != nil {
+			continue
+		}
+		requirement := providercapacity.Requirement{Role: identity.Role, Backend: identity.BackendKind, Model: identity.RequestedModel.Value}
+		for _, candidate := range overrides {
+			if candidate.WorkItemID == native && candidate.Revision == issue.Revision {
+				requirement = candidate.Requirement
+			}
+		}
+		if requirement.Validate() != nil {
+			continue
+		}
+		compatible := ceiling > 0 && result.Requirements.RunnerID == "" && result.Requirements.MachineID == "" && len(result.Requirements.RequiredTags) == 0
+		if slices.ContainsFunc(result.Runners, func(r placementRunner) bool { return r.Sprite && len(r.ProviderCapacity) > 0 }) {
+			compatible = false
+		}
+		for _, r := range result.Runners {
+			if !r.Sprite || r.State != "active" || r.Health == "revoked" || r.Health == "expired" || result.Requirements.Match(r.RunnerID, string(r.MachineID), r.Tags) != nil {
+				continue
+			}
+			if slices.ContainsFunc(r.ProviderCapacity, func(view providercapacity.View) bool { return view.Supports(requirement) }) {
+				compatible = true
+			}
+		}
+		if !compatible {
+			continue
+		}
+		result.Items[id] = requirement
+		result.ReadyTodo++
+		for _, r := range result.Runners {
+			if r.Sprite {
+				continue
+			}
+			result.Local[id] += newPlacementCapacity().available(r, scope.project, result.Requirements, requirement, now, false)
+		}
+		if placement.Mode != "sprites_only" {
+			for _, r := range result.Runners {
+				if !r.Sprite && localCapacity.available(r, scope.project, result.Requirements, requirement, now, true) > 0 {
+					result.LocalFree++
+					localAssigned[id] = true
+					break
+				}
+			}
+		}
+	}
+	spriteCapacity := localCapacity
+	for _, id := range ids {
+		if limit := placement.SpriteLimit(); limit > 0 && result.SpriteFree+result.Pending >= max(limit-result.SpriteUsed, 0) {
+			break
+		}
+		requirement, compatible := result.Items[id]
+		if !compatible || localAssigned[id] || placement.Mode == "local_first" && result.Local[id] > 0 {
+			continue
+		}
+		for _, r := range result.Runners {
+			if !r.Sprite || spriteCapacity.available(r, scope.project, result.Requirements, requirement, now, true) == 0 {
+				continue
+			}
+			counted[r.Enrollment] = true
+			if r.Pending {
+				result.Pending++
+			} else {
+				result.SpriteFree++
+			}
+			break
+		}
+	}
+	bootstrapPending := 0
+	rows, err := q.QueryContext(ctx, `SELECT enrollment_id,state FROM organization_sprite_members WHERE organization_id=? AND allocation_project_id=CASE WHEN EXISTS(SELECT 1 FROM project_sprite_allocations WHERE organization_id=? AND project_id=?) THEN ? ELSE '' END AND state IN ('bootstrapping','enrolled')`, scope.organization, scope.organization, scope.project, scope.project)
+	if err != nil {
+		return result, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var enrollment, state string
+		if err := rows.Scan(&enrollment, &state); err != nil {
+			return result, err
+		}
+		if state == "enrolled" && slices.ContainsFunc(result.Runners, func(r placementRunner) bool { return r.Enrollment == enrollment && len(r.ProviderCapacity) > 0 }) {
+			continue
+		}
+		if !counted[enrollment] && !slices.ContainsFunc(result.Runners, func(r placementRunner) bool {
+			return r.Enrollment == enrollment && r.Used > 0
+		}) {
+			counted[enrollment] = true
+			result.Pending++
+			bootstrapPending++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return result, err
+	}
+	result.SpriteTarget = max(result.ReadyTodo-result.LocalFree, 0)
+	if limit := placement.SpriteLimit(); limit > 0 {
+		result.SpriteTarget = min(result.SpriteTarget, max(limit-result.SpriteUsed, 0))
+	}
+	result.Reason = "Compatible ready Todo exceeds eligible local capacity"
+	if placement.Mode == "local_first" {
+		fullLocalDemand := 0
+		for id := range result.Items {
+			if result.Local[id] == 0 {
+				fullLocalDemand++
+			}
+		}
+		result.SpriteTarget = min(result.SpriteTarget, fullLocalDemand)
+		if result.ReadyTodo < placement.TodoThreshold {
+			result.SpriteTarget = 0
+			result.Reason = "Compatible ready Todo is below the local-first threshold"
+		} else {
+			result.SpriteTarget = min(result.SpriteTarget, max(placement.OverflowSlots-result.SpriteUsed, 0))
+			if fullLocalDemand == 0 && result.ReadyTodo > 0 {
+				result.Reason = "Local-first placement has compatible free local capacity"
+			}
+		}
+	}
+	if result.LocalFree == result.ReadyTodo && placement.Mode != "sprites_only" {
+		result.Reason = "Eligible local capacity can serve compatible ready Todo"
+	}
+	if limit := placement.SpriteLimit(); limit > 0 && result.SpriteUsed >= limit {
+		result.Reason = "Configured maximum Sprite concurrency is full"
+	}
+	result.Provisionable = max(result.SpriteTarget-result.SpriteFree-result.Pending, 0)
+	known := false
+	providerCapacity := 0
+	providerSlots := newPlacementCapacity()
+	for _, r := range result.Runners {
+		if !r.Sprite {
+			continue
+		}
+		for _, view := range r.ProviderCapacity {
+			supported := len(result.Items) == 0
+			for _, requirement := range result.Items {
+				if view.Supports(requirement) {
+					supported = true
+					break
+				}
+			}
+			if !supported {
+				continue
+			}
+			known = true
+			remaining := result.SpriteTarget
+			if view.MaxConcurrent > 0 {
+				remaining = view.MaxConcurrent - view.Used
+				for _, prior := range spriteCapacity.accounts {
+					if sharedProviderAccount(prior, scopedProviderAccount{runnerID: r.RunnerID, Report: view.Report}) {
+						remaining--
+					}
+				}
+				for _, prior := range providerSlots.accounts {
+					if sharedProviderAccount(prior, scopedProviderAccount{runnerID: r.RunnerID, Report: view.Report}) {
+						remaining--
+					}
+				}
+			}
+			for range max(remaining, 0) {
+				providerSlots.accounts = append(providerSlots.accounts, scopedProviderAccount{runnerID: r.RunnerID, Report: view.Report})
+				providerCapacity++
+			}
+		}
+	}
+	if known {
+		remaining := max(providerCapacity-bootstrapPending, 0)
+		result.ProviderFree = &remaining
+		result.Provisionable = min(result.Provisionable, remaining)
+		if result.Provisionable == 0 && result.SpriteTarget > result.SpriteFree+result.Pending {
+			result.Reason = "Reported compatible provider concurrency or budget is exhausted"
+		}
+	}
+	return result, nil
+}
+
+func placementClaimAllowed(ctx context.Context, q nativeQueryer, scope nativeScope, machine tracker.MachineID, id tracker.WorkItemID, now time.Time, overrides []tracker.NativeCapacityCandidate, joining ...string) (bool, string, error) {
+	if explanationRead(ctx) {
+		return explanationPlacementAllowed(ctx, q, scope, machine, id)
+	}
+	if allowed, reason, err := nativeSourceClaimAllowed(ctx, q, scope, machine, id); err != nil || !allowed {
+		return allowed, reason, err
+	}
+	allowed, err := spriteAllocationRunnerAllowed(ctx, q, scope, machine)
+	if err != nil {
+		return false, "", err
+	}
+	if !allowed {
+		return false, "Project Sprite allocation excludes this runner", nil
+	}
+	placement, _, err := readPlacementPolicy(ctx, q, scope)
+	if err != nil {
+		return false, "", err
+	}
+	facts, err := readMachineSpriteFacts(ctx, q, scope.organization, machine)
+	if err != nil {
+		return false, "", err
+	}
+	name := spriteFactValue(facts.Name)
+	var hostname string
+	if err := q.QueryRowContext(ctx, `SELECT hostname FROM machines WHERE id=? AND organization_id=?`, machine, scope.organization).Scan(&hostname); err != nil {
+		return false, "", err
+	}
+	sprite := name == hostname && validSpritesSlug(name)
+	if !sprite {
+		return placement.Mode != "sprites_only", "Resolved placement " + placement.Mode + " governs local eligibility", nil
+	}
+	used, err := readPlacementSpriteUsage(ctx, q, scope, now, joining...)
+	if err != nil {
+		return false, "", err
+	}
+	if limit := placement.SpriteLimit(); limit > 0 {
+		if used >= limit {
+			return false, "Configured maximum Sprite concurrency is full", nil
+		}
+	}
+	if placement.Mode != "local_first" {
+		return true, "Resolved placement " + placement.Mode + " permits Sprite runners", nil
+	}
+	snapshot, err := readPlacementSnapshot(ctx, q, scope, now, overrides)
+	if err != nil {
+		return false, "", err
+	}
+	snapshot.SpriteUsed = used
+	if snapshot.Local[id] > 0 {
+		return false, "Local-first placement has compatible free local capacity", nil
+	}
+	_, ready := snapshot.Items[id]
+	if !ready && snapshot.resolver != nil {
+		var issue connector.Issue
+		var native tracker.NativeWorkItemID
+		var revision tracker.Revision
+		var labels string
+		if err := q.QueryRowContext(ctx, `SELECT i.native_id,i.revision,i.title,i.body,i.labels_json,w.detent_state FROM issues i JOIN workflow_states w ON w.id=i.workflow_state_id WHERE i.id=? AND i.organization_id=? AND i.project_id=?`, id, scope.organization, scope.project).Scan(&native, &revision, &issue.Title, &issue.Description, &labels, &issue.State); err != nil {
+			return false, "", err
+		}
+		if err := json.Unmarshal([]byte(labels), &issue.Labels); err != nil {
+			return false, "", err
+		}
+		identity, err := snapshot.resolver.Identity(issue)
+		if err != nil {
+			return false, "Configured provider requirement is unavailable", nil
+		}
+		requirement := providercapacity.Requirement{Role: identity.Role, Backend: identity.BackendKind, Model: identity.RequestedModel.Value}
+		for _, candidate := range overrides {
+			if candidate.WorkItemID == native && candidate.Revision == revision {
+				requirement = candidate.Requirement
+			}
+		}
+		for _, r := range snapshot.Runners {
+			if !r.Sprite && newPlacementCapacity().available(r, scope.project, snapshot.Requirements, requirement, now, false) > 0 {
+				return false, "Local-first placement has compatible free local capacity", nil
+			}
+		}
+		ready = !strings.EqualFold(issue.State, "Todo") && snapshot.ReadyTodo >= placement.TodoThreshold && snapshot.SpriteUsed < placement.OverflowSlots
+	}
+	allowed = ready && snapshot.ReadyTodo >= placement.TodoThreshold && snapshot.SpriteUsed < placement.SpriteLimit()
+	reason := snapshot.Reason
+	if allowed {
+		reason = "Local-first overflow is eligible for this candidate"
+	}
+	return allowed, fmt.Sprintf("%s: ready Todo=%d, threshold=%d, local free=%d, Sprite used=%d, overflow slots=%d", reason, snapshot.ReadyTodo, placement.TodoThreshold, snapshot.LocalFree, snapshot.SpriteUsed, placement.OverflowSlots), nil
+}
+
+func readOrganizationPlacementSnapshot(ctx context.Context, q nativeQueryer, scope nativeScope, now time.Time) (placementSnapshot, error) {
+	result := placementSnapshot{Items: make(map[tracker.WorkItemID]providercapacity.Requirement), Local: make(map[tracker.WorkItemID]int)}
+	placement, _, err := readPlacementPolicy(ctx, q, scope)
+	if err != nil {
+		return result, err
+	}
+	result.Policy = placement
+	rows, err := q.QueryContext(ctx, `SELECT id FROM projects p WHERE organization_id=? AND profile='native' ORDER BY EXISTS(SELECT 1 FROM project_sprite_allocations a WHERE a.organization_id=p.organization_id AND a.project_id=p.id) DESC,scheduling_rank,id`, scope.organization)
+	if err != nil {
+		return result, err
+	}
+	defer rows.Close()
+	var projects []tracker.ProjectID
+	for rows.Next() {
+		var id tracker.ProjectID
+		if err := rows.Scan(&id); err != nil {
+			return result, err
+		}
+		projects = append(projects, id)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return result, err
+	}
+	capacity := newPlacementCapacity()
+	counted := make(map[string]bool)
+	for _, project := range projects {
+		projectScope := scope
+		projectScope.project = project
+		snapshot, err := readPlacementSnapshotWithCapacity(ctx, q, projectScope, now, nil, capacity, counted)
+		if err != nil {
+			return result, err
+		}
+		allocation, err := readProjectSpriteAllocation(ctx, q, projectScope)
+		if err != nil {
+			return result, err
+		}
+		if !allocation.Managed {
+			result.ReadyTodo += snapshot.ReadyTodo
+			result.SpriteTarget += snapshot.SpriteTarget
+			result.SpriteFree += snapshot.SpriteFree
+			result.Pending += snapshot.Pending
+			result.Provisionable += snapshot.Provisionable
+			result.LocalFree += snapshot.LocalFree
+		}
+		if snapshot.ProviderFree != nil {
+			if result.ProviderFree == nil {
+				result.ProviderFree = new(*snapshot.ProviderFree)
+			} else {
+				*result.ProviderFree = max(*result.ProviderFree, *snapshot.ProviderFree)
+			}
+		}
+	}
+	result.SpriteUsed, err = readPlacementSpriteUsage(ctx, q, scope, now)
+	if err != nil {
+		return result, err
+	}
+	if limit := placement.SpriteLimit(); limit > 0 {
+		remaining := max(limit-result.SpriteUsed, 0)
+		result.SpriteTarget = min(result.SpriteTarget, remaining)
+		result.SpriteFree = min(result.SpriteFree, remaining)
+		result.Pending = min(result.Pending, max(remaining-result.SpriteFree, 0))
+	}
+	result.Provisionable = max(result.SpriteTarget-result.SpriteFree-result.Pending, 0)
+	return result, nil
+}
+
+func readProjectIdentityResolver(ctx context.Context, q nativeQueryer, scope nativeScope, cfg config.Config) (*runner.BoardIdentityResolver, error) {
+	selection, err := readCloudModelSelection(ctx, q, scope)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Agents.ModelSelection = selection.Effective
+	return runner.NewBoardIdentityResolver(cfg, selector.Context{})
+}

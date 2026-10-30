@@ -1,0 +1,805 @@
+// @vitest-environment jsdom
+import {
+  render,
+  act,
+  cleanup,
+  fireEvent,
+  screen,
+  within,
+  renderHook,
+  waitFor,
+} from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import userEvent from "@testing-library/user-event";
+import { useUiStateStore } from "../../src/uiStateStore.ts";
+import { sidebarProjectScopeKey } from "../../src/app/adapters/shell.ts";
+import { PROJECTS } from "./sidebarHarness.tsx";
+import { SidebarDestinations } from "../../src/app/adapters/sidebarDestinations.tsx";
+import { SidebarDataProvider, type SidebarShellData } from "../../src/app/adapters/sidebarData.tsx";
+import { SidebarProvider } from "../../src/components/ui/sidebar.tsx";
+import { ProjectSetupContext } from "../../src/app/account/projectSetup.tsx";
+import type { Onboarding, ProjectIntegration } from "../../src/contracts/account.ts";
+import type { Resource } from "../../src/app/account/useResource.ts";
+import { subscribeProjectEvents } from "../../src/app/work/lib/projectEvents.ts";
+import { HealthFindingsProvider, useHealthFindings } from "../../src/app/diagnostics/healthFindings.tsx";
+import { useSidebarFindings } from "../../src/app/adapters/sidebarFindings.ts";
+import { resetUpdateCheckState } from "../../src/app/adapters/detentUpdates.ts";
+import * as settings from "../../src/hooks/useSettings.ts";
+import { setReleaseNotesUnread } from "../../src/app/account/releaseNotes.ts";
+import { AccountBootstrap } from "../../src/contracts/account.ts";
+import * as Schema from "effect/Schema";
+import accountFixture from "../../src/contracts/fixtures/account-bootstrap.json";
+import { makeClient } from "../../src/runtime/bootstrap.ts";
+import type { Bootstrap } from "../../src/contracts/index.ts";
+import bootstrapFixture from "../../src/contracts/fixtures/bootstrap.json";
+import { conversation } from "./builders.ts";
+import { renderSidebar, resetSidebarState, rowFor } from "./sidebarHarness.tsx";
+import { useSidebarHumanActions } from "../../src/app/adapters/sidebarHumanActions.ts";
+import itemFixture from "../../src/contracts/fixtures/work-item.json";
+const { dispatchHumanActionAnswered } = require("../../../../tests/visual/project-stream.js");
+
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+  resetUpdateCheckState();
+});
+beforeEach(resetSidebarState);
+
+const running = conversation({
+  id: "conv_running",
+  title: "Lock renewal",
+  work_item_id: "wi_1",
+  last_message_at: "2026-09-09T11:59:00Z",
+});
+const needsYou = conversation({
+  id: "conv_needs",
+  title: "Migration question",
+  work_item_id: "wi_2",
+  last_message_at: "2026-09-09T11:00:00Z",
+  execution: { ...running.execution, status: "waiting_input" },
+});
+const recentChat = conversation({
+  id: "conv_chat",
+  title: "Scratch ideas",
+  work_item_id: null,
+  work_item: null,
+  last_message_at: "2026-09-09T11:30:00Z",
+  execution: { ...running.execution, status: "idle" },
+});
+
+function sidebar(): HTMLElement {
+  return screen.getByRole("complementary", { name: "Conversations" });
+}
+
+/** The router navigates on a promise; this lets it land. */
+async function settleNavigation(): Promise<void> {
+  await act(async () => {
+    await Promise.resolve();
+  });
+}
+
+function expandSettled(): void {
+  fireEvent.click(screen.getByTestId("sidebar-settled-shelf-toggle"));
+}
+
+describe("the thread sidebar", () => {
+  it("renders one shared UI row per conversation", async () => {
+    await renderSidebar({ conversations: [running, needsYou, recentChat] });
+    for (const title of [
+      "Lock renewal",
+      "Migration question",
+      "Scratch ideas",
+    ]) {
+      expect(rowFor(sidebar(), title), title).not.toBeNull();
+    }
+  });
+
+  it("carries `#number · lane` in the branch slot", async () => {
+    await renderSidebar({ conversations: [running] });
+    expect(rowFor(sidebar(), "Lock renewal")?.textContent).toContain(
+      "#3363 · Running",
+    );
+  });
+
+  it("leaves the branch slot empty for a chat nobody is waiting on", async () => {
+    await renderSidebar({ conversations: [recentChat] });
+    const row = rowFor(sidebar(), "Scratch ideas");
+    expect(row?.textContent).toContain("Scratch ideas");
+    expect(row?.textContent).not.toContain("·");
+  });
+
+  it("shelves a settled conversation under the Settled shelf", async () => {
+    const settled = conversation({
+      id: "conv_settled",
+      title: "Put away",
+      work_item_id: null,
+      work_item: null,
+      status: "settled",
+      last_message_at: "2026-09-09T11:55:00Z",
+      execution: { ...running.execution, status: "completed" },
+    });
+    await renderSidebar({ conversations: [recentChat, settled] });
+    // Collapsed, the shelf still counts what is on it.
+    expect(
+      screen.getByTestId("sidebar-settled-shelf-toggle").textContent,
+    ).toContain("Settled (1)");
+    expect(rowFor(sidebar(), "Put away")).toBeNull();
+    expandSettled();
+    expect(rowFor(sidebar(), "Put away")).not.toBeNull();
+    // An active chat stays in the card block above it.
+    expect(rowFor(sidebar(), "Scratch ideas")).not.toBeNull();
+  });
+
+  it("moves a row to the Settled shelf when the reader settles it", async () => {
+    await renderSidebar({ conversations: [recentChat] });
+    expect(screen.getByTestId("sidebar-settled-shelf-toggle").textContent).toContain("Settled (0)");
+
+    fireEvent.click(screen.getByRole("button", { name: "Settle thread" }));
+    await settleNavigation();
+
+    expect(screen.getByTestId("sidebar-settled-shelf-toggle").textContent).toContain("Settled (1)");
+    expandSettled();
+    const row = rowFor(sidebar(), "Scratch ideas");
+    expect(row?.getAttribute("data-testid")).toBe("sidebar-row-slim");
+
+    fireEvent.click(screen.getByRole("button", { name: "Un-settle thread" }));
+    await settleNavigation();
+    expect(rowFor(sidebar(), "Scratch ideas")?.getAttribute("data-testid")).toBe(
+      "sidebar-row-card",
+    );
+  });
+
+  it("offers no archive affordance at all", async () => {
+    await renderSidebar({ conversations: [recentChat] });
+    expect(screen.queryByTestId("show-archived")).toBeNull();
+    expect(screen.queryByText(/archive/i)).toBeNull();
+  });
+
+  it("hides pinning and snoozing, which the hub has nothing behind", async () => {
+    await renderSidebar({ conversations: [running, recentChat] });
+    expect(screen.queryByLabelText("Snooze thread")).toBeNull();
+    expect(screen.queryByLabelText("Pin thread")).toBeNull();
+    expect(screen.queryByTestId("sidebar-snoozed-header")).toBeNull();
+  });
+
+  it("marks the open conversation with the active row surface", async () => {
+    await renderSidebar(
+      { conversations: [recentChat], activeConversationId: "conv_chat" },
+      { path: "/chat/c/conv_chat" },
+    );
+    expect(rowFor(sidebar(), "Scratch ideas")?.className).toContain(
+      "bg-sidebar-row-active",
+    );
+  });
+
+  it("opens a conversation on Detent's route", async () => {
+    const { navigated } = await renderSidebar({ conversations: [running] });
+    fireEvent.click(screen.getByText("Lock renewal"));
+    await settleNavigation();
+    expect(navigated).toContain("/chat/c/conv_running");
+  });
+
+  // `Sidebar.logic.ts`'s rule: title-only, order preserved. The shell folds
+  // the hub's own hits into the list first (`state/entities.ts`), so a
+  // conversation past the first page is found by the same rule.
+  it("filters by title while searching and folds in server results", async () => {
+    await renderSidebar({
+      conversations: [
+        recentChat,
+        conversation({ id: "conv_old", title: "Ancient thread" }),
+      ],
+      serverResults: [
+        conversation({ id: "conv_server", title: "Ancient server hit" }),
+      ],
+    });
+    fireEvent.change(screen.getByRole("combobox", { name: "Search threads" }), {
+      target: { value: "ancient" },
+    });
+    const results = screen.getByRole("listbox", {
+      name: "Thread search results",
+    });
+    expect(within(results).getByText("Ancient thread")).toBeTruthy();
+    expect(within(results).getByText("Ancient server hit")).toBeTruthy();
+    expect(within(results).queryByText("Scratch ideas")).toBeNull();
+  });
+
+  it("says nothing matched rather than showing an empty list", async () => {
+    await renderSidebar({ conversations: [recentChat] });
+    fireEvent.change(screen.getByRole("combobox", { name: "Search threads" }), {
+      target: { value: "zzzz" },
+    });
+    expect(screen.getByText("No threads found")).toBeTruthy();
+  });
+
+  it("offers exactly one new-chat action", async () => {
+    const { onNewChat } = await renderSidebar({
+      conversations: [recentChat],
+      projects: [{ id: "proj_alpha", name: "alpha", can_write: true }],
+    });
+    const actions = screen.getAllByLabelText("New thread");
+    expect(actions).toHaveLength(1);
+    fireEvent.click(actions[0]!);
+    await settleNavigation();
+    expect(onNewChat).toHaveBeenCalled();
+  });
+
+  // The brand row is the product, not the tenant.
+  it("reads Detent Cloud in the brand row", async () => {
+    await renderSidebar();
+    const brand = screen.getByLabelText("Go to Detent Cloud");
+    expect(brand.textContent).toContain("Detent");
+    expect(brand.textContent).toContain("Cloud");
+    expect(brand.getAttribute("href")).toBe("/work");
+  });
+
+  it.each([
+    ["Secondary Example Organization", "All Secondary Example Organization projects"],
+    ["Tertiary Example Organization", "All Tertiary Example Organization projects"],
+    ["", "All projects"],
+  ])("names the empty working set for %s and supports selecting and clearing", async (organizationName, label) => {
+    const onProjectChange = vi.fn();
+    await renderSidebar({ onProjectChange, organizationName });
+    const trigger = screen.getByLabelText("Filter threads by project");
+    expect(trigger.textContent).toContain(label);
+    expect(trigger.getAttribute("title")).toBe(label);
+    fireEvent.click(trigger);
+    fireEvent.click(await screen.findByRole("option", { name: "beta" }));
+    expect(trigger.textContent).toContain("1 of 2 projects");
+    expect(screen.getByRole("listbox")).toBeTruthy();
+    fireEvent.keyDown(screen.getByLabelText("Search projects"), { key: "Escape" });
+    const working = within(screen.getByRole("list", { name: "Project working set" }));
+    fireEvent.click(working.getByRole("button", { name: "beta" }));
+    expect(onProjectChange).toHaveBeenLastCalledWith("proj_beta");
+    fireEvent.click(trigger);
+    fireEvent.click(await screen.findByRole("button", { name: "Clear" }));
+    expect(onProjectChange).toHaveBeenLastCalledWith("");
+    expect(trigger.textContent).toContain(label);
+  });
+
+  it("keeps case-insensitive alphabetical dropdown order while toggling, searching and selecting all", async () => {
+    const projects = [
+      { id: "proj_z", name: "zeta", can_write: true },
+      { id: "proj_b", name: "Beta", can_write: true },
+      { id: "proj_a", name: "alpha", can_write: true },
+    ];
+    await renderSidebar({ projects });
+    const trigger = screen.getByLabelText("Filter threads by project");
+    fireEvent.click(trigger);
+    const labels = () => screen.getAllByRole("option").map((row) => row.textContent);
+    await screen.findByRole("option", { name: "alpha" });
+    expect(labels()).toEqual(["alpha", "Beta", "zeta"]);
+    fireEvent.click(screen.getByRole("option", { name: "zeta" }));
+    fireEvent.click(screen.getByRole("option", { name: "alpha" }));
+    expect(labels()).toEqual(["alpha", "Beta", "zeta"]);
+    expect(screen.getByRole("option", { name: "zeta" }).getAttribute("aria-selected")).toBe("true");
+    fireEvent.click(screen.getByRole("option", { name: "zeta" }));
+    expect(screen.getByRole("option", { name: "zeta" }).getAttribute("aria-selected")).toBe("false");
+    fireEvent.change(screen.getByLabelText("Search projects"), { target: { value: "be" } });
+    expect(labels()).toEqual(["Beta"]);
+    fireEvent.click(screen.getByRole("button", { name: "Select all" }));
+    expect(trigger.textContent).toContain("3 of 3 projects");
+    fireEvent.keyDown(screen.getByLabelText("Search projects"), { key: "Escape" });
+    const rows = within(screen.getByRole("list", { name: "Project working set" })).getAllByRole("button");
+    expect(rows.map((row) => row.textContent)).toEqual(["All", "alpha", "Beta", "zeta"]);
+    expect(rows.every((row) => row.tabIndex === 0)).toBe(true);
+    expect(rows.every((row) => row.querySelector("[aria-label$='active runners'], [aria-label$='blocked issues']") === null)).toBe(true);
+  });
+
+  it("shows existing runner and blocked counts, totals, hover details and project settings", async () => {
+    useUiStateStore.setState({ sidebarProjectWorkingSetKeys: PROJECTS.map(sidebarProjectScopeKey) });
+    await renderSidebar({}, { counts: { proj_alpha: { running: 2, blocked: 3 }, proj_beta: { running: 1, blocked: 0 } } });
+    const working = within(screen.getByRole("list", { name: "Project working set" }));
+    const all = working.getByRole("button", { name: "All" });
+    expect(within(all).getByLabelText("3 active runners").textContent).toBe("3");
+    expect(within(all).getByLabelText("3 blocked issues").textContent).toBe("3");
+    const alpha = working.getByRole("button", { name: "alpha" });
+    expect(within(alpha).getByLabelText("2 active runners").textContent).toBe("2");
+    expect(within(alpha).getByLabelText("3 blocked issues").textContent).toBe("3");
+    expect(within(working.getByRole("button", { name: "beta" })).queryByLabelText(/blocked issues/)).toBeNull();
+    act(() => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab" }));
+      alpha.focus();
+    });
+    expect((await screen.findByRole("tooltip")).textContent).toContain("alpha2 runners active3 blockedClick to show only this project");
+    act(() => all.focus());
+    const tooltip = await screen.findByRole("tooltip");
+    expect(tooltip.textContent).toBe("alpha32beta1Click to show all 2");
+    expect(within(tooltip).getByLabelText("3 blocked issues").textContent).toBe("3");
+    expect(within(tooltip).queryByLabelText("0 blocked issues")).toBeNull();
+    fireEvent.click(screen.getByLabelText("Filter threads by project"));
+    const keys = useUiStateStore.getState().sidebarProjectWorkingSetKeys;
+    fireEvent.click(within(await screen.findByRole("option", { name: "alpha" })).getByTitle("Project settings for alpha"));
+    expect(useUiStateStore.getState().sidebarProjectWorkingSetKeys).toEqual(keys);
+    await settleNavigation();
+  });
+
+  it("opens with Enter and Space, toggles a highlighted project with Space and focuses a sidebar row with Enter", async () => {
+    const user = userEvent.setup();
+    const onProjectChange = vi.fn();
+    await renderSidebar({ onProjectChange });
+    const trigger = screen.getByLabelText("Filter threads by project");
+    trigger.focus();
+    await user.keyboard("{Enter}");
+    const search = await screen.findByLabelText("Search projects");
+    await waitFor(() => expect(document.activeElement).toBe(search));
+    await user.keyboard("{ArrowDown}");
+    expect(search.getAttribute("aria-activedescendant")).toBeTruthy();
+    await user.keyboard(" ");
+    expect(trigger.textContent).toContain("1 of 2 projects");
+    await user.keyboard("{Escape}");
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+    trigger.focus();
+    await user.keyboard(" ");
+    expect(trigger.getAttribute("aria-expanded")).toBe("true");
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText("Search projects")));
+    act(() => trigger.focus());
+    await user.keyboard(" ");
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+    const working = within(screen.getByRole("list", { name: "Project working set" }));
+    const project = working.getAllByRole("button")[1]!;
+    project.focus();
+    await user.keyboard("{Enter}");
+    expect(project.getAttribute("aria-pressed")).toBe("true");
+    expect(onProjectChange).toHaveBeenLastCalledWith(project.textContent === "alpha" ? "proj_alpha" : "proj_beta");
+  });
+
+  it("updates the empty working set label when the organization changes", async () => {
+    const fixture = await renderSidebar({ organizationName: "Secondary Example Organization" });
+    fixture.setOrganization("Tertiary Example Organization");
+    expect(screen.getByLabelText("Filter threads by project").textContent).toContain("All Tertiary Example Organization projects");
+  });
+
+  it("carries the footer utility menu, pointed at Detent's destinations", async () => {
+    for (const [label, destination] of [
+      ["Settings", "/settings"],
+
+      ["Pull Requests", "/work/changes"],
+      ["Usage", "/usage"],
+    ] as const) {
+
+      const { navigated } = await renderSidebar();
+      const footer = within(
+        document.querySelector("[data-slot='sidebar-footer']") as HTMLElement,
+      );
+      fireEvent.click(footer.getByRole("button", { name: label }));
+      await settleNavigation();
+      expect(navigated, label).toContain(destination);
+      expect(
+        within(
+          document.querySelector("[data-slot='sidebar-footer']") as HTMLElement,
+        ).getByRole("button", { name: "Back" }),
+      ).toBeTruthy();
+      cleanup();
+    }
+  });
+
+  it("offers the update check in the status slot, and no second transport chip", async () => {
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("", { status: 404 })),
+    );
+    await renderSidebar();
+    expect(screen.queryByTestId("sidebar-connection")).toBeNull();
+    expect(
+      await screen.findByRole("button", { name: "Check for updates" }),
+    ).toBeTruthy();
+  });
+
+  it("gives every thread row the hover preview card", async () => {
+    await renderSidebar({ conversations: [running] });
+    const row = rowFor(sidebar(), "Lock renewal");
+    expect(row?.closest("[data-slot='tooltip-trigger']")).toBeTruthy();
+  });
+});
+
+
+it("renders only human actions while retaining the diagnostic findings count", async () => {
+  const findings = [
+    { id: "hf_1", class: "instance", summary: "Runner attention", next_action: "Check runner", subject: { kind: "runner", id: "runner_1" }, opened_at: "2026-10-06T09:00:00Z", resolved_at: null, severity: "attention", label: "Studio", to: "/fleet" },
+    { id: "hf_2", class: "human", summary: "Human attention", next_action: "Check issue", subject: { kind: "work_item", id: "wi_2" }, opened_at: "2026-10-06T10:00:00Z", resolved_at: null, severity: "attention", label: "#2 Migration question", to: "/work/i/wi_2?tab=diagnostics" },
+  ] as const;
+  const action = { id: "wi_2", label: "#2 Migration question", to: "/work/i/wi_2", opened_at: "2026-10-06T10:00:00Z" };
+  const harness = await renderSidebar({ findings, conversations: [needsYou], humanActions: [action] });
+  const group = screen.getByTestId("sidebar-needs-you");
+  expect(within(group).getAllByRole("button").map((row) => row.dataset.testid)).toEqual([
+    "sidebar-needs-you-shelf-toggle", "attention-issue-wi_2",
+  ]);
+  expect(screen.getByTestId("diagnostics-findings-count").textContent).toBe("2");
+  expect(screen.queryByTestId("finding-hf_1")).toBeNull();
+  expect(screen.queryByTestId("finding-hf_2")).toBeNull();
+  const row = screen.getByTestId("attention-issue-wi_2");
+  expect(row.querySelectorAll("time")).toHaveLength(1);
+  fireEvent.click(row);
+  expect(harness.onNavigate).toHaveBeenLastCalledWith(action.to);
+  fireEvent.click(screen.getByTestId("sidebar-needs-you-shelf-toggle"));
+  expect(screen.queryByTestId("attention-issue-wi_2")).toBeNull();
+});
+
+const mocks = vi.hoisted(() => ({
+  listHealthFindings: vi.fn(),
+  getWorkItem: vi.fn(),
+  getProject: vi.fn(),
+  listWorkItems: vi.fn(),
+  getExplanation: vi.fn(),
+  runnerNames: new Map<string, { display: string; host: string }>(),
+  realHttp: false,
+  eventsUrl: (id: string) => `/projects/${id}/events`,
+}));
+vi.mock("../../src/app/work/lib/useWork.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/app/work/lib/useWork.ts")>();
+  return { ...actual, useWorkHttp: () => mocks.realHttp ? actual.useWorkHttp() : mocks };
+});
+vi.mock("../../src/app/work/lib/runnerNames.ts", () => ({
+  useRunnerNames: () => mocks.runnerNames,
+  runnerDisplay: (names: typeof mocks.runnerNames, id: string) => names.get(id)?.display ?? (id === "runner_1" ? "Studio" : id),
+}));
+
+const retainedSubscriptions: (() => void)[] = [];
+class Source extends EventTarget {
+  static instances: Source[] = [];
+  close = vi.fn();
+  constructor(readonly url: string) { super(); Source.instances.push(this); }
+}
+
+afterEach(() => { cleanup(); retainedSubscriptions.splice(0).forEach((stop) => stop()); vi.useRealTimers(); vi.unstubAllGlobals(); vi.resetAllMocks(); mocks.runnerNames = new Map(); mocks.realHttp = false; Source.instances = []; });
+
+it("shares findings snapshots across rerenders and refreshes only the project named by a health frame", async () => {
+  vi.stubGlobal("EventSource", Source);
+  const projects = ["p1", "p2"].map((id) => ({ id, name: id, can_write: true }));
+  mocks.listHealthFindings.mockResolvedValue({ items: [], last_tick_at: null, change_sequence: 10 });
+  const hook = renderHook(() => useHealthFindings(), { wrapper: ({ children }) =>
+    <HealthFindingsProvider projects={projects}>{children}</HealthFindingsProvider> });
+  await act(async () => {});
+  hook.rerender();
+  expect(Source.instances).toHaveLength(2);
+  expect(mocks.listHealthFindings).toHaveBeenCalledTimes(2);
+  await act(async () => Source.instances[1]!.dispatchEvent(new MessageEvent("health.findings", {
+    data: JSON.stringify({ entity_id: "f", entity_revision: 2 }), lastEventId: "12",
+  })));
+  expect(mocks.listHealthFindings.mock.calls.map(([id]) => id)).toEqual(["p1", "p2", "p2"]);
+});
+
+it("retains successful findings and recovers a failed project on its next named invalidation", async () => {
+  vi.stubGlobal("EventSource", Source);
+  const projects = ["p1", "p2"].map((id) => ({ id, name: id, can_write: true }));
+  let fail = true;
+  mocks.listHealthFindings.mockImplementation(async (id) => {
+    if (id === "p2" && fail) throw new Error("Unavailable");
+    return { items: [], last_tick_at: "2026-10-06T10:00:00Z", change_sequence: 10 };
+  });
+  const hook = renderHook(() => useHealthFindings(), { wrapper: ({ children }) =>
+    <HealthFindingsProvider projects={projects}>{children}</HealthFindingsProvider> });
+  await act(async () => {});
+  expect(hook.result.current.error).toBe(true);
+  fail = false;
+  await act(async () => Source.instances[1]!.dispatchEvent(new MessageEvent("health.findings", {
+    data: JSON.stringify({ entity_id: "f", entity_revision: 2 }), lastEventId: "12",
+  })));
+  expect(hook.result.current.error).toBe(false);
+  expect(hook.result.current.read?.last_tick_at).toBe("2026-10-06T10:00:00Z");
+  expect(mocks.listHealthFindings.mock.calls.map(([id]) => id)).toEqual(["p1", "p2", "p2"]);
+});
+
+it("reads current human holds without promoting dependency waits or stale health findings", async () => {
+  vi.stubGlobal("EventSource", Source);
+  vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-10-20T12:00:00Z"));
+  const projects = [{ id: "p1", name: "Example project", can_write: true }, { id: "p2", name: "Read only", can_write: false }];
+  const issue = (id: string, state = "Blocked") => ({ ...itemFixture, project_id: "p1", work_item_id: id, state, terminal: false });
+  let items = [issue("wi_dependency"), issue("wi_old"), issue("wi_recent"), issue("wi_answered"), issue("wi_resumed", "Todo"),
+    { ...issue("wi_contract"), issue_contract: { human_action: "Approve the product decision" } }];
+  let answered = false;
+  mocks.getProject.mockResolvedValue({ states: [
+    { name: "Blocked", terminal: false, dispatchable: false },
+    { name: "Todo", terminal: false, dispatchable: true },
+    { name: "Backlog", terminal: false, dispatchable: false },
+  ] });
+  mocks.listWorkItems.mockImplementation(async () => ({ items }));
+  mocks.getExplanation.mockImplementation(async (_project, id) => ({
+    current_lane: { name: id === "wi_resumed" ? "Todo" : "Blocked", freshness: "available" },
+    required_gate: { state: "unavailable", source_state: "unavailable" },
+    latest_transition: { at: id === "wi_old" ? "2026-10-17T12:00:00Z" : "2026-10-20T10:00:00Z" },
+    native_runtime: { attempt: { updated_at: "2026-10-20T11:59:00Z", disposition: {
+      status: "blocked", human_action: !["wi_dependency", "wi_answered", "wi_contract"].includes(id) && !answered,
+    } } },
+  }));
+  const { result } = renderHook(() => useSidebarHumanActions(projects));
+  await waitFor(() => expect(result.current.map((action) => action.id)).toEqual(["wi_old", "wi_contract", "wi_recent"]));
+  expect(mocks.getProject.mock.calls.map(([id]) => id)).toEqual(["p1"]);
+  expect(mocks.listWorkItems).toHaveBeenCalledWith(expect.objectContaining({ state: ["Blocked"] }));
+  await renderSidebar({ humanActions: result.current, conversations: [] });
+  for (const [id, start, label] of [
+    ["wi_old", "2026-10-17T12:00:00Z", "3d"],
+    ["wi_recent", "2026-10-20T10:00:00Z", "2h"],
+  ]) {
+    expect(within(screen.getByTestId(`attention-issue-${id}`)).getByText(label!).getAttribute("datetime")).toBe(start);
+  }
+  vi.spyOn(Date, "now").mockRestore();
+  vi.useFakeTimers();
+  items = [issue("wi_old", "Todo"), issue("wi_dependency")];
+  await act(async () => {
+    Source.instances[0]!.dispatchEvent(new MessageEvent("human_action", { data: "1" }));
+    await vi.advanceTimersByTimeAsync(30_000);
+  });
+  expect(result.current).toEqual([]);
+  items = [issue("wi_recent")];
+  await act(async () => {
+    Source.instances[0]!.dispatchEvent(new MessageEvent("human_action", { data: "2" }));
+    await vi.advanceTimersByTimeAsync(30_000);
+  });
+  expect(result.current.map((action) => action.id)).toEqual(["wi_recent"]);
+  const explained = mocks.getExplanation.mock.calls.length;
+  await act(async () => {
+    Source.instances[0]!.dispatchEvent(new MessageEvent("human_action", { data: "2b" }));
+    await vi.advanceTimersByTimeAsync(30_000);
+  });
+  expect(mocks.listWorkItems.mock.calls.length).toBeGreaterThan(3);
+  expect(mocks.getExplanation.mock.calls.length).toBe(explained);
+  answered = true;
+  items = [{ ...issue("wi_recent"), revision: "answered" }];
+  await act(async () => {
+    Source.instances[0]!.dispatchEvent(new MessageEvent("human_action", { data: "3" }));
+    await vi.advanceTimersByTimeAsync(30_000);
+  });
+  expect(result.current).toEqual([]);
+});
+
+describe("human action stream invalidation", () => {
+  const projects = ["p1", "p2"].map((id) => ({ id, name: id, can_write: true }));
+  beforeEach(() => {
+    vi.stubGlobal("EventSource", Source);
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    mocks.getProject.mockResolvedValue({ states: [{ name: "Blocked", terminal: false, dispatchable: false }] });
+    mocks.listWorkItems.mockResolvedValue({ items: [], change_sequence: 10 });
+  });
+  const emit = (source: Source, id: number, type = "human_action") => source.dispatchEvent(new MessageEvent(type, {
+    data: JSON.stringify({ entity_id: "i", related_id: "i", entity_revision: id }), lastEventId: String(id),
+  }));
+  it("coalesces a burst for the named project without polling or refreshing on open", async () => {
+    renderHook(() => useSidebarHumanActions(projects));
+    await act(async () => {});
+    await act(async () => {
+      for (let id = 11; id <= 110; id++) emit(Source.instances[0]!, id);
+      Source.instances[1]!.dispatchEvent(new Event("open"));
+    });
+    expect(mocks.listWorkItems.mock.calls.map(([input]) => input.projectId)).toEqual(["p1", "p2", "p1"]);
+    expect(mocks.getProject).toHaveBeenCalledTimes(2);
+  });
+  it.each(["lane", "reset"])("discovers a changed holding lane after %s with one refresh of the affected project", async (type) => {
+    const issue = { ...itemFixture, state: "Plan Review", terminal: false, archived: false,
+      issue_contract: { human_action: "Approve the plan" } };
+    mocks.listWorkItems.mockImplementation(async ({ projectId, state }) => ({ items: projectId === "p1" && state.includes("Plan Review") ? [issue] : [], change_sequence: 10 }));
+    mocks.getExplanation.mockResolvedValue({ current_lane: { name: "Plan Review" }, required_gate: {} });
+    const hook = renderHook(() => useSidebarHumanActions(projects));
+    await act(async () => {});
+    expect(hook.result.current).toEqual([]);
+    let source = Source.instances[0]!;
+    if (type === "reset") {
+      vi.useFakeTimers();
+      await act(async () => {
+        source.dispatchEvent(new Event("error"));
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      source = Source.instances.at(-1)!;
+      expect(mocks.getProject).toHaveBeenCalledTimes(2);
+    }
+    mocks.getProject.mockResolvedValue({ states: [{ name: "Plan Review", terminal: false, dispatchable: false }] });
+    await act(async () => { emit(source, 11, type); emit(source, 11, type); });
+    expect(mocks.getProject.mock.calls.map(([id]) => id)).toEqual(["p1", "p2", "p1"]);
+    expect(mocks.listWorkItems.mock.calls.map(([input]) => input.projectId)).toEqual(["p1", "p2", "p1"]);
+    expect(hook.result.current.map((action) => action.id)).toEqual([issue.work_item_id]);
+  });
+  it.each(["human_action", "reset"])("clears an answered action after %s even when the issue revision is unchanged", async (type) => {
+    const issue = { ...itemFixture, work_item_id: "i", state: "Blocked", terminal: false, archived: false };
+    mocks.listWorkItems.mockResolvedValue({ items: [issue], change_sequence: 10 });
+    mocks.getExplanation.mockResolvedValue({ current_lane: { name: "Blocked" }, required_gate: { human_action: "Choose" } });
+    const hook = renderHook(() => useSidebarHumanActions(projects.slice(0, 1)));
+    await act(async () => {});
+    expect(hook.result.current.map((action) => action.id)).toEqual(["i"]);
+    mocks.getExplanation.mockResolvedValue({ current_lane: { name: "Blocked" }, required_gate: {} });
+    await act(async () => {
+      if (type === "human_action") {
+        vi.stubGlobal("findingSources", Source.instances);
+        dispatchHumanActionAnswered("i");
+      } else emit(Source.instances[0]!, 11, type);
+    });
+    expect(hook.result.current).toEqual([]);
+    expect(mocks.listWorkItems).toHaveBeenCalledTimes(2);
+  });
+  it("buffers changes during snapshot load, uses its watermark and releases the barrier on teardown", async () => {
+    let finish: (page: unknown) => void = () => {};
+    mocks.listWorkItems.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const hook = renderHook(() => useSidebarHumanActions(projects.slice(0, 1)));
+    try {
+      await act(async () => {});
+      await act(async () => { emit(Source.instances[0]!, 11); emit(Source.instances[0]!, 12); });
+      expect(mocks.listWorkItems).toHaveBeenCalledOnce();
+      await act(async () => finish({ items: [], change_sequence: 11 }));
+      expect(mocks.listWorkItems).toHaveBeenCalledTimes(2);
+      hook.unmount();
+      expect(Source.instances[0]!.close).toHaveBeenCalledOnce();
+    } finally { hook.unmount(); finish({ items: [], change_sequence: 12 }); }
+  });
+  it("shares workflow reads across hook remounts and never replays stale activity into a new query", async () => {
+    const retained = subscribeProjectEvents(mocks, "p1", { activity: () => {} });
+    try {
+      const hook = renderHook(() => useSidebarHumanActions(projects.slice(0, 1)));
+      await act(async () => {});
+      hook.unmount();
+      renderHook(() => useSidebarHumanActions(projects.slice(0, 1)));
+      await act(async () => {});
+      expect(mocks.listWorkItems).toHaveBeenCalledTimes(2);
+      expect(mocks.getProject).toHaveBeenCalledOnce();
+      expect(Source.instances).toHaveLength(1);
+    } finally { retained(); }
+  });
+});
+
+it("keeps health findings and failed or waiting conversations out of Needs you without a current human action", async () => {
+  await renderSidebar({ findings: [{ id: "hf_stall", class: "flow", severity: "attention", summary: "Delivery stalled", next_action: "Inspect flow", subject: { kind: "project", id: "p1" }, opened_at: "2026-10-20T10:00:00Z", resolved_at: null, label: "Example project", to: "/diagnostics" }], conversations: [needsYou, conversation({ execution: { ...running.execution, status: "failed" } })] });
+  expect(screen.queryByTestId("sidebar-needs-you")).toBeNull();
+  expect(screen.getByTestId("diagnostics-findings-count").textContent).toBe("1");
+});
+
+it("shares project events while reading every page, filtering and resolving findings", async () => {
+  vi.stubGlobal("EventSource", Source);
+  const finding = (id: string, kind: string, subject: string, age: number, severity = "attention", resolved_at: string | null = null) => ({
+    id, class: "flow", summary: "Flow attention", next_action: "Check flow", subject: { kind, id: subject }, opened_at: `2026-10-06T${String(age).padStart(2, "0")}:00:00Z`, severity, resolved_at,
+  });
+  const runner = finding("hf_runner", "runner", "runner_1", 10);
+  const item = finding("hf_item", "work_item", "wi_1", 11);
+  const project = finding("hf_project", "project", "p1", 9);
+  let resolved = false;
+  mocks.listHealthFindings.mockImplementation(async (id, cursor) => {
+    if (resolved) return { items: [], last_tick_at: null };
+    if (id === "p2") return { items: [runner], last_tick_at: null };
+    if (cursor) return { items: [project], last_tick_at: null };
+    return { items: [item, runner, finding("hf_watch", "project", "p1", 8, "watch"), finding("hf_closed", "project", "p1", 7, "attention", "2026-10-06T12:00:00Z")], next_cursor: "page2", last_tick_at: null };
+  });
+  mocks.getWorkItem.mockResolvedValue({ number: 550, title: "Open findings" });
+  const onActivity = vi.fn();
+  const unsubscribe = subscribeProjectEvents(mocks, "p1", { activity: onActivity });
+  retainedSubscriptions.push(unsubscribe);
+  const { result, unmount } = renderHook(() => useSidebarFindings([{ id: "p1", name: "Example project", can_write: true }, { id: "p2", name: "Other", can_write: true }]), { wrapper: ({ children }) => <HealthFindingsProvider projects={[{ id: "p1", name: "Example project", can_write: true }, { id: "p2", name: "Other", can_write: true }]}>{children}</HealthFindingsProvider> });
+  await waitFor(() => expect(result.current.map((f) => f.id)).toEqual(["hf_project", "hf_runner", "hf_item"]));
+  expect(Source.instances.map((source) => source.url)).toEqual(["/projects/p1/events", "/projects/p2/events"]);
+  expect(result.current.map((f) => [f.label, f.to])).toEqual([
+    ["Example project", "/diagnostics"], ["Studio", "/fleet"], ["#550 Open findings", "/work/i/wi_1?tab=diagnostics"],
+  ]);
+  expect(mocks.listHealthFindings).toHaveBeenCalledWith("p1", "page2", expect.any(AbortSignal));
+  resolved = true;
+  act(() => { for (const source of Source.instances) source.dispatchEvent(new MessageEvent("health.findings", { data: "new-tick" })); });
+  await waitFor(() => expect(result.current).toEqual([]));
+  expect(mocks.listHealthFindings.mock.calls.filter(([id]) => id === "p2")).toHaveLength(2);
+  const reads = mocks.listHealthFindings.mock.calls.length;
+  act(() => { for (const source of Source.instances) source.dispatchEvent(new MessageEvent("health.findings", { data: "new-tick" })); });
+  expect(mocks.listHealthFindings).toHaveBeenCalledTimes(reads);
+  const source = Source.instances[0]!;
+  const activity = new MessageEvent("activity", { data: "42" });
+  act(() => source.dispatchEvent(activity));
+  expect(onActivity).toHaveBeenCalledWith(activity);
+  const lateActivity = vi.fn();
+  const unsubscribeLate = subscribeProjectEvents(mocks, "p1", { activity: lateActivity });
+  expect(lateActivity).not.toHaveBeenCalled();
+  unsubscribeLate();
+  unmount();
+  expect(source.close).not.toHaveBeenCalled();
+  act(() => source.dispatchEvent(new MessageEvent("health.findings", { data: "after-unmount" })));
+  expect(mocks.listHealthFindings).toHaveBeenCalledTimes(reads);
+  act(() => source.dispatchEvent(new MessageEvent("activity", { data: "43" })));
+  expect(onActivity).toHaveBeenCalledTimes(2);
+  unsubscribe();
+  expect(source.close).toHaveBeenCalledOnce();
+});
+
+it("discards an older response after a live refresh", async () => {
+  vi.stubGlobal("EventSource", Source);
+  let finish: (value: unknown) => void = () => {};
+  retainedSubscriptions.push(() => finish({ items: [], last_tick_at: null }));
+  mocks.listHealthFindings.mockResolvedValueOnce({ items: [], last_tick_at: null })
+    .mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }))
+    .mockResolvedValueOnce({ items: [], last_tick_at: null });
+  const { result } = renderHook(() => useSidebarFindings([{ id: "p1", name: "Example project", can_write: true }]), { wrapper: ({ children }) => <HealthFindingsProvider projects={[{ id: "p1", name: "Example project", can_write: true }]}>{children}</HealthFindingsProvider> });
+  await act(async () => Source.instances[0]!.dispatchEvent(new MessageEvent("health.findings", { data: "older" })));
+  await waitFor(() => expect(mocks.listHealthFindings).toHaveBeenCalledTimes(2));
+  await act(async () => Source.instances[0]!.dispatchEvent(new MessageEvent("health.findings", { data: "newer" })));
+  expect(mocks.listHealthFindings).toHaveBeenCalledTimes(2);
+  await act(async () => finish({ items: [{ id: "stale", class: "flow", summary: "Flow attention", next_action: "Check flow", subject: { kind: "project", id: "p1" }, opened_at: "2026-10-06T00:00:00Z", severity: "attention", resolved_at: null }], last_tick_at: null }));
+  expect(result.current).toEqual([]);
+});
+
+
+describe("existing thread removal menu", () => {
+  it.each([
+    { action: "archive", label: "Archive thread", outcome: "cancel" },
+    { action: "delete", label: "Delete", outcome: "cancel" },
+    { action: "archive", label: "Archive thread", outcome: "failure" },
+    { action: "delete", label: "Delete", outcome: "failure" },
+    { action: "archive", label: "Archive thread", outcome: "success" },
+    { action: "delete", label: "Delete", outcome: "success" },
+  ])("$action $outcome preserves confirmation and navigation", async ({ action, label, outcome }) => {
+    const chat = conversation({ id: "conv_removal", project_id: "proj_alpha", title: "Menu removal", execution: { ...recentChat.execution, status: "idle" } });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(outcome !== "cancel");
+    vi.spyOn(settings, "useClientSettings").mockImplementation((select) => select({
+      ...settings.getClientSettings(), confirmThreadArchive: true, confirmThreadDelete: true,
+    }));
+    const request = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) => outcome === "failure"
+      ? new Response(JSON.stringify({ code: "stale_execution", message: "Finish the running turn first" }), { status: 409 })
+      : action === "archive"
+        ? new Response(JSON.stringify({ ...chat, archived: true, revision: chat.revision + 1 }), { status: 200 })
+        : new Response(null, { status: 204 }));
+    const client = makeClient({ bootstrap: bootstrapFixture as Bootstrap, fetch: request });
+    const h = await renderSidebar({ conversations: [chat], activeConversationId: chat.id }, { client });
+    fireEvent.contextMenu(rowFor(sidebar(), chat.title)!);
+    await act(async () => {
+      await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+    });
+    fireEvent.click(await screen.findByRole("button", { name: label }));
+    await waitFor(() => expect(confirm).toHaveBeenCalled());
+    expect(confirm.mock.calls[0]?.[0]).toContain(chat.title);
+    if (outcome === "cancel") {
+      expect(request).not.toHaveBeenCalled();
+      expect(h.onNavigate).not.toHaveBeenCalled();
+      expect(rowFor(sidebar(), chat.title)).not.toBeNull();
+      return;
+    }
+    await waitFor(() => expect(request).toHaveBeenCalledOnce());
+    expect(String(request.mock.calls[0]?.[0])).toContain(`/projects/proj_alpha/conversations/${chat.id}${action === "archive" ? "/archive" : ""}`);
+    if (outcome === "failure") {
+      await screen.findByText(action === "archive" ? "Failed to archive thread" : "Failed to delete thread");
+      expect(screen.getByText("Finish the running turn first")).toBeTruthy();
+      expect(h.onNavigate).not.toHaveBeenCalled();
+      expect(rowFor(sidebar(), chat.title)).not.toBeNull();
+    } else {
+      await waitFor(() => expect(h.onNavigate).toHaveBeenCalledWith("/chat/p/proj_alpha"));
+    }
+  });
+});
+
+it.each([true, false])("shows the settings gear unread dot from bootstrap (%s) and observes mark-seen", async (has_unread) => {
+  const account = Schema.decodeUnknownSync(AccountBootstrap)({ ...accountFixture, has_unread });
+  const client = makeClient({ bootstrap: bootstrapFixture as unknown as Bootstrap, account });
+  await renderSidebar({}, { client });
+  const gear = screen.getByRole("button", { name: has_unread ? "Settings, new release notes" : "Settings" });
+  expect(gear.querySelector('[aria-hidden="true"].bg-primary') !== null).toBe(has_unread);
+  act(() => setReleaseNotesUnread(account, false));
+  expect(screen.getByRole("button", { name: "Settings" }).querySelector('[aria-hidden="true"].bg-primary')).toBeNull();
+});
+
+function readyResource<A>(value: A): Resource<A> {
+  return { value, error: null, loading: false, refresh: vi.fn(async () => undefined), set: vi.fn() };
+}
+
+it("shows the first unready setup step for the active project and hides setup once ready", () => {
+  const onNavigate = vi.fn();
+  const data: SidebarShellData = {
+    organizationName: "Example organization", projects: [], activeProjectId: "proj_example",
+    onProjectChange: vi.fn(), conversations: [], serverResults: [], activeConversationId: null,
+    onSelect: vi.fn(), onNewChat: vi.fn(), onRename: vi.fn(), attention: new Set(),
+    navigation: { activePath: "/chat", onNavigate },
+  };
+  const onboarding: Onboarding = {
+    progress: { revision: "1", repository: "existing", doctor: false, provider: false, artifacts: "local" },
+    runners: [], artifact_services: [], ready: false,
+    steps: [
+      { name: "Runner", state: "ready", detail: "" },
+      { name: "Repository", state: "ready", detail: "" },
+      { name: "Checkout", state: "action_required", detail: "" },
+      { name: "Run files", state: "ready", detail: "" },
+    ],
+  };
+  const integration = readyResource({ checkout_repository: "example-org/example-project" } as ProjectIntegration);
+  const view = (ready: boolean) => <SidebarDataProvider value={data}>
+    <ProjectSetupContext.Provider value={{ projectId: "proj_example", onboarding: readyResource({ ...onboarding, ready }), integration }}>
+      <SidebarProvider><SidebarDestinations /></SidebarProvider>
+    </ProjectSetupContext.Provider>
+  </SidebarDataProvider>;
+  const mounted = render(view(false));
+  const setup = screen.getByRole("button", { name: "Setup 3 of 4" });
+  fireEvent.click(setup);
+  expect(onNavigate).toHaveBeenCalledWith("/projects/proj_example/setup");
+  mounted.rerender(view(true));
+  expect(screen.queryByRole("button", { name: /^Setup/ })).toBeNull();
+});

@@ -1,0 +1,2616 @@
+package runner
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strconv"
+	"strings"
+	"testing"
+	"testing/synctest"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/agentidentity"
+	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/connector/github"
+	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/progresscheck"
+	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/store/storetest"
+	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspace"
+)
+
+type testExecution struct {
+	recovery      tracker.NativeRecovery
+	validateErr   error
+	checkpoint    *tracker.NativeCheckpoint
+	checkpointErr error
+	runtime       tracker.NativeRuntimeObservation
+	finish        string
+	started       bool
+	identity      tracker.NativeExecutionIdentity
+	onCheckpoint  func(tracker.NativeCheckpoint)
+	onValidate    func()
+}
+
+func (*testExecution) ReviewVersion(context.Context) (NativeValidation, error) {
+	return NativeValidation{}, nil
+}
+
+func (*testExecution) RecordReview(context.Context, gate.ValidatorResult) error {
+	return errors.New("fixture has no published implementation review")
+}
+
+func (e *testExecution) Guard(ctx context.Context) (context.Context, func(), error) {
+	return ctx, func() {}, e.validateErr
+}
+
+func (e *testExecution) Validate(context.Context) error {
+	if e.onValidate != nil {
+		e.onValidate()
+	}
+	return e.validateErr
+}
+func (e *testExecution) Start(_ context.Context, identity tracker.NativeExecutionIdentity) error {
+	e.started = true
+	e.identity = identity
+	return nil
+}
+func (e *testExecution) Checkpoint(_ context.Context, checkpoint tracker.NativeCheckpoint) error {
+	if e.onCheckpoint != nil {
+		e.onCheckpoint(checkpoint)
+	}
+	if e.checkpointErr != nil {
+		return e.checkpointErr
+	}
+	e.checkpoint = &checkpoint
+	return nil
+}
+func (e *testExecution) Finish(_ context.Context, outcome string) error {
+	e.finish = outcome
+	return nil
+}
+func (e *testExecution) Recovery() tracker.NativeRecovery { return e.recovery }
+
+func (e *testExecution) ObserveRuntime(_ context.Context, observation tracker.NativeRuntimeObservation) error {
+	if observation.Recovery != nil {
+		e.runtime.Recovery = observation.Recovery
+	}
+	return nil
+}
+
+type readToolTestExecution struct {
+	testExecution
+	pipeline          []gate.PipelineTiming
+	reads             int
+	evidenceSource    func(context.Context, string) (ValidationEvidence, error)
+	completionBody    string
+	completionFailure *tracker.NativeTerminalFailure
+}
+
+func (e *readToolTestExecution) RecordPipelineTiming(timing gate.PipelineTiming) {
+	e.pipeline = append(e.pipeline, timing)
+}
+
+func (e *readToolTestExecution) SetEvidenceSource(source func(context.Context, string) (ValidationEvidence, error)) {
+	e.evidenceSource = source
+}
+
+func (e *readToolTestExecution) PrepareFinish(_ context.Context, _, body string, failure *tracker.NativeTerminalFailure) error {
+	e.completionBody = body
+	e.completionFailure = failure
+	return nil
+}
+
+func (e *readToolTestExecution) AgentTools() ([]AgentTool, AgentToolHandler) {
+	return []AgentTool{{Name: "work_item", InputSchema: json.RawMessage(`{"type":"object"}`)}}, func(ctx context.Context, call AgentToolCall) (AgentToolResult, error) {
+		if err := e.Validate(ctx); err != nil {
+			return AgentToolResult{}, err
+		}
+		e.reads++
+		return AgentToolResult{Content: "authenticated native context", Success: true}, nil
+	}
+}
+
+type executionToolTestBackend struct {
+	fakeCodexClient
+	testing *testing.T
+}
+
+func (b *executionToolTestBackend) RunTurnWithTools(ctx context.Context, request AgentTurnRequest, tools []AgentTool, handler AgentToolHandler, update AgentUpdateHandler) (AgentTurnResult, error) {
+	if !request.SupplementalTools || request.ReadOnly {
+		b.testing.Fatal("native read tools restricted the ordinary coding turn")
+	}
+	if len(tools) != 2 {
+		b.testing.Fatalf("tools=%d, want native read and existing worker tool", len(tools))
+	}
+	for _, name := range []string{"work_item", "existing_worker_tool"} {
+		result, err := handler(ctx, AgentToolCall{Name: name})
+		if err != nil || !result.Success {
+			b.testing.Fatalf("tool %s failed: %v", name, err)
+		}
+	}
+	return b.RunTurn(ctx, request, update)
+}
+
+func TestRunnerExecutionReadToolsPreserveCodingAndExistingTools(t *testing.T) {
+	t.Parallel()
+	execution := &readToolTestExecution{}
+	agent := &executionToolTestBackend{testing: t, fakeCodexClient: fakeCodexClient{updates: []AgentUpdate{{Type: AgentUpdateMessageDelta, Delta: "Verified the page."}, {Type: AgentUpdateTurnCompleted, Status: "completed"}}}}
+	backend := &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Key: "native", Branch: "native"}}
+	r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: config.Config{}, Prompt: "Complete the native issue"}, Workspace: backend, AgentBackend: agent})
+	if err != nil {
+		t.Fatal(err)
+	}
+	previousCalls := 0
+	_, err = r.Run(t.Context(), RunRequest{Execution: execution, Issue: connector.Issue{ID: "native", Identifier: "native#1"}, Mode: RunModeImplement,
+		AgentTools: []AgentTool{{Name: "existing_worker_tool"}},
+		AgentToolHandler: func(context.Context, AgentToolCall) (AgentToolResult, error) {
+			previousCalls++
+			return AgentToolResult{Success: true}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if execution.reads != 1 || previousCalls != 1 || agent.calls != 1 || !execution.started {
+		t.Fatalf("reads=%d previous=%d turns=%d started=%t", execution.reads, previousCalls, agent.calls, execution.started)
+	}
+	if execution.evidenceSource == nil || execution.completionBody != "Verified the page." || execution.finish != "succeeded" {
+		t.Fatalf("evidence source bound=%t completion=%q outcome=%q", execution.evidenceSource != nil, execution.completionBody, execution.finish)
+	}
+}
+
+type retainedExecutionWorkspace struct {
+	*fakeWorkspaceBackend
+	retained bool
+}
+
+func (w *retainedExecutionWorkspace) PreserveIssue(context.Context, workspace.Issue) (workspace.Preservation, error) {
+	w.retained = true
+	return workspace.Preservation{Preserved: true}, nil
+}
+
+type resumedExecutionWorkspace struct {
+	*workspace.LocalGit
+	afterRun          bool
+	prepared          bool
+	beforePreparation func()
+	afterVerification func()
+}
+
+func (w *resumedExecutionWorkspace) VerifyReworkRecovery(ctx context.Context, info workspace.Info, issue workspace.Issue, head, digest string, observed workspace.RecoveryState) (bool, error) {
+	verified, err := w.LocalGit.VerifyReworkRecovery(ctx, info, issue, head, digest, observed)
+	if w.afterVerification != nil {
+		w.afterVerification()
+	}
+	return verified, err
+}
+
+func (w *resumedExecutionWorkspace) PrepareRework(ctx context.Context, info workspace.Info, issue workspace.Issue, opts workspace.MergePrepareOptions, validate func(context.Context) error) (workspace.MergePrepareResult, error) {
+	if w.beforePreparation != nil {
+		w.beforePreparation()
+	}
+	w.prepared = true
+	return w.LocalGit.PrepareRework(ctx, info, issue, opts, validate)
+}
+
+func (w *resumedExecutionWorkspace) AfterRun(ctx context.Context, info workspace.Info, issue workspace.Issue) {
+	w.afterRun = true
+	w.LocalGit.AfterRun(ctx, info, issue)
+}
+
+func TestNativeRetryResumesPersistedSessionAfterRunnerRestart(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name               string
+		status             string
+		unpushed           bool
+		changedHead        bool
+		changedModel       bool
+		priorEffort        string
+		configuredEffort   string
+		overrideEffort     string
+		conversationEffort string
+		legacyEffort       bool
+		conversationModel  string
+		dirty              bool
+		rebase             bool
+		gitRef             bool
+	}{
+		{name: "killed clean attempt", status: "cancelled"},
+		{name: "killed unpushed attempt", status: "cancelled", unpushed: true},
+		{name: "ordinary failed retry", status: "failed"},
+		{name: "unchanged git checkpoint after restart", status: "cancelled", gitRef: true},
+		{name: "unchanged git checkpoint on failed retry", status: "failed", gitRef: true},
+		{name: "cancelled retry with changed head", status: "cancelled", gitRef: true, changedHead: true},
+		{name: "failed retry with changed head", status: "failed", gitRef: true, changedHead: true},
+		{name: "failed retry with changed execution model", status: "failed", gitRef: true, changedModel: true},
+		{name: "failed retry with changed conversation model", status: "failed", gitRef: true, conversationModel: "example-model-b"},
+		{name: "failed retry with changed conversation effort", status: "failed", gitRef: true, priorEffort: "low", conversationEffort: "high"},
+		{name: "failed retry with changed configured effort", status: "failed", gitRef: true, priorEffort: "low", configuredEffort: "high"},
+		{name: "failed retry with changed override effort", status: "failed", gitRef: true, priorEffort: "low", configuredEffort: "low", overrideEffort: "high"},
+		{name: "conversation effort overrides configured and issue effort", status: "failed", gitRef: true, priorEffort: "high", configuredEffort: "high", overrideEffort: "high", conversationEffort: "low"},
+		{name: "unchanged effort resumes after restart", status: "cancelled", gitRef: true, priorEffort: "low", configuredEffort: "low"},
+		{name: "legacy effort rejects changed conversation effort", status: "failed", gitRef: true, priorEffort: "low", legacyEffort: true, conversationEffort: "high"},
+		{name: "legacy effort rejects configured effort without session proof", status: "failed", gitRef: true, legacyEffort: true, configuredEffort: "high"},
+		{name: "legacy effort resumes with matching persisted session", status: "failed", gitRef: true, priorEffort: "low", legacyEffort: true, configuredEffort: "low"},
+		{name: "cancelled retry preserves divergent tracked and untracked work", status: "cancelled", gitRef: true, dirty: true},
+		{name: "failed retry preserves divergent tracked and untracked work", status: "failed", gitRef: true, dirty: true},
+		{name: "cancelled retry rebases current Change", status: "cancelled", gitRef: true, rebase: true},
+		{name: "failed retry rebases current Change", status: "failed", rebase: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			fresh := test.changedHead || test.changedModel || test.conversationModel != "" || test.dirty || test.rebase || test.conversationEffort != "" || test.configuredEffort != test.priorEffort || test.overrideEffort != "" && test.overrideEffort != test.priorEffort || test.legacyEffort && test.priorEffort != test.configuredEffort
+			ctx := t.Context()
+			path := filepath.Join(t.TempDir(), "sessions.db")
+			db, err := store.Open(ctx, store.Config{Path: path})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = db.Close() })
+			started := time.Date(2026, 10, 29, 14, 0, 0, 0, time.UTC)
+			approved := runnerTestPolicy()
+			metadata, err := json.Marshal(map[string]policy.Descriptor{"policy": approved})
+			if err != nil {
+				t.Fatal(err)
+			}
+			role := RoleCode
+			if test.rebase || test.dirty {
+				role = RoleRework
+			}
+			identity := agentidentity.Configured("codex", "codex", "default", role, "example-model", "openai", test.priorEffort, "", started)
+			issue := connector.Issue{ID: "work", Identifier: "example-org/example-project#1", State: "In Progress", BranchName: "example/work"}
+			if role == RoleRework {
+				issue.State = "Rework"
+			}
+			if test.overrideEffort != "" {
+				issue.Description = "```detent-agent\nschema: 1\neffort: " + test.overrideEffort + "\n```"
+			}
+			source := initRunnerSourceRepo(t)
+			remote := filepath.Join(t.TempDir(), "origin.git")
+			runRunnerGit(t, source, "init", "--bare", "-b", "main", remote)
+			repository := "https://github.com/example-org/example-project"
+			runRunnerGit(t, source, "remote", "add", "origin", repository)
+			runRunnerGit(t, source, "config", "url."+remote+".insteadOf", repository)
+			runRunnerGit(t, source, "push", "-u", "origin", "main")
+			gitWorkspace, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			workspaceIssue := workspaceIssue("native", issue)
+			info, err := gitWorkspace.Create(ctx, workspaceIssue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			base := strings.TrimSpace(runRunnerGit(t, info.Path, "rev-parse", "HEAD"))
+			if test.unpushed || test.rebase {
+				if err := os.WriteFile(filepath.Join(info.Path, "feature.md"), []byte("retained feature\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				runRunnerGit(t, info.Path, "add", "feature.md")
+				runRunnerGit(t, info.Path, "commit", "-m", "retained feature")
+			}
+			local, err := gitWorkspace.RecoveryState(ctx, info, workspaceIssue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			backend := &resumedExecutionWorkspace{LocalGit: gitWorkspace}
+			providerErr := errors.New("provider interrupted")
+			agent := &fakeCodexClient{err: providerErr, result: AgentTurnResult{ThreadID: "persisted-thread", SessionID: "persisted-session"}}
+			if fresh {
+				agent.result = AgentTurnResult{ThreadID: "fresh-thread", SessionID: "fresh-session"}
+			}
+			cfg := config.Config{Policy: approved}
+			agent.models = []AgentModel{{ID: "example-model", Model: "example-model", SupportedReasoningEfforts: []string{"low", "high"}}}
+			cfg.Tracker.Kind = config.TrackerHubNative
+			cfg.Agent.Effort.Code = test.configuredEffort
+			cfg.Agents.Routes = []config.AgentRoute{{Name: "default", Role: role, Backend: "codex", Model: "example-model", Default: true}}
+			deps := Dependencies{ProjectID: "native", Workflow: config.Workflow{Config: cfg, Prompt: "Continue the issue"}, Store: db, Workspace: backend, AgentBackend: agent}
+			first, err := NewRunner(deps)
+			if err != nil {
+				t.Fatal(err)
+			}
+			attemptID, err := db.StartWorkAttempt(ctx, store.WorkAttemptStart{ProjectID: "native", IssueID: issue.ID, WorkerType: "agent", StartedAt: started, RuntimeIdentity: identity, WorkerMetadataJSON: string(metadata)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			sessionID, _, err := first.startSession(ctx, RunRequest{Issue: issue, WorkAttemptID: attemptID}, started, identity, store.AgentResumeState{}, "", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			resume := AgentResume{ThreadID: "persisted-thread", SessionID: "persisted-session"}
+			first.persistSessionProviderIdentity(ctx, sessionID, AgentUpdate{ThreadID: resume.ThreadID, ProviderSessionID: resume.SessionID})
+			if err := db.Close(); err != nil {
+				t.Fatal(err)
+			}
+			db, err = store.Open(ctx, store.Config{Path: path})
+			if err != nil {
+				t.Fatal(err)
+			}
+			deps.Store = db
+			if test.status == "cancelled" {
+				if _, err := db.TimeoutExpiredWorkAttempts(ctx, store.WorkAttemptTimeout{Now: started.Add(time.Minute), ConfirmedGoneAttemptIDs: []int64{attemptID}, TerminalState: store.WorkAttemptTerminalAbandoned, ErrorClass: "service_restart"}); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				if err := db.CompleteWorkAttempt(ctx, store.WorkAttemptCompletion{AttemptID: attemptID, CompletedAt: started.Add(time.Minute), Status: store.WorkAttemptStatusTerminal, TerminalState: store.WorkAttemptTerminalFailure, SessionFinalState: "failed", WorkerMetadataJSON: string(metadata)}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			restarted, err := NewRunner(deps)
+			if err != nil {
+				t.Fatal(err)
+			}
+			currentAttemptID, err := db.StartWorkAttempt(ctx, store.WorkAttemptStart{ProjectID: "native", IssueID: issue.ID, WorkerType: "agent", StartedAt: started.Add(time.Minute)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			checkpoint := executionCheckpoint(&local)
+			checkpoint.Resume = "resume_session"
+			execution := &testExecution{recovery: tracker.NativeRecovery{Lease: tracker.NativeLease{ID: "new-lease", MachineID: "machine", FencingToken: 2}, Attempts: []tracker.NativeAttempt{{Status: test.status, Checkpoint: &checkpoint, NativeRunData: tracker.NativeRunData{MachineID: "machine", LeaseID: "old-lease", FencingToken: 1, Identity: &tracker.NativeExecutionIdentity{Role: role, Backend: "codex", Model: "example-model"}, Runtime: &tracker.NativeRuntimeObservation{LocalAttemptID: attemptID, Identity: identity}}}}}}
+			if !test.legacyEffort {
+				execution.recovery.Attempts[0].Identity.ReasoningEffort = test.priorEffort
+			}
+			var runExecution Execution = execution
+			if test.changedModel {
+				execution.recovery.Attempts[0].Identity.Model = "previous-model"
+			}
+			if test.gitRef {
+				ref, _, err := gitWorkspace.PushCheckpointRef(ctx, info, workspaceIssue, workspace.CheckpointRef{}, execution.Validate)
+				if err != nil {
+					t.Fatal(err)
+				}
+				checkpoint.Storage, checkpoint.Ref, checkpoint.CommitSHA, checkpoint.BaseSHA, checkpoint.TreeSHA = "git_ref", ref.Ref, ref.CommitSHA, ref.BaseSHA, ref.TreeSHA
+			}
+			if test.changedHead {
+				runRunnerGit(t, info.Path, "commit", "--allow-empty", "-m", "divergent head")
+			}
+			if test.dirty {
+				for _, name := range []string{"README.md", "untracked.md"} {
+					if err := os.WriteFile(filepath.Join(info.Path, name), []byte("divergent work\n"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if test.rebase {
+				capture, err := workspace.CaptureChangeSource(ctx, info.Path, base, local.HeadSHA)
+				if err != nil {
+					t.Fatal(err)
+				}
+				owner := &retainedReviewExecution{testExecution: *execution, source: workspace.ChangeSource{Version: tracker.ChangeVersion{ID: "version_example", ChangeID: "change_example", ChangeVersionInput: tracker.ChangeVersionInput{Repository: repository, BaseSHA: base, HeadSHA: local.HeadSHA, Source: &capture.Source}}, Bundle: capture.Bundle}}
+				execution = &owner.testExecution
+				runExecution = owner
+				if err := os.WriteFile(filepath.Join(source, "base.md"), []byte("advanced base\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				runRunnerGit(t, source, "add", "base.md")
+				runRunnerGit(t, source, "commit", "-m", "advance integration base")
+				runRunnerGit(t, source, "push", "origin", "main")
+			}
+			session := newFakeConversationSession()
+			session.resume = resume.ThreadID
+			session.preferences.Model = test.conversationModel
+			session.preferences.ReasoningEffort = test.conversationEffort
+			ctx = (&conversationRun{session: session}).attach(ctx)
+			before, err := gitWorkspace.RecoveryState(ctx, info, workspaceIssue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = restarted.Run(ctx, RunRequest{ProjectID: "native", Policy: approved, WorkAttemptID: currentAttemptID, Generation: 2, Issue: issue, Mode: RunModeImplement, Execution: runExecution})
+			wantResume := resume
+			wantAction, wantReason := "resume_session", "verified_local_session"
+			if fresh {
+				wantResume = AgentResume{}
+				wantAction, wantReason = "fresh_checkout", "session_restart_required"
+			}
+			wantModel := "example-model"
+			if test.conversationModel != "" {
+				wantModel = test.conversationModel
+			}
+			wantEffort := test.configuredEffort
+			if test.overrideEffort != "" {
+				wantEffort = test.overrideEffort
+			}
+			if test.conversationEffort != "" {
+				wantEffort = test.conversationEffort
+			}
+			if !errors.Is(err, providerErr) || agent.calls != 1 || agent.request.Resume != wantResume || agent.verifiedResume != resume || agent.request.Model != wantModel || agent.request.ReasoningEffort != wantEffort {
+				t.Fatalf("restart lost persisted provider session: error=%v calls=%d model=%q effort=%q resume=%+v verified=%+v", err, agent.calls, agent.request.Model, agent.request.ReasoningEffort, agent.request.Resume, agent.verifiedResume)
+			}
+			wantIdentity := tracker.NativeExecutionIdentity{Role: role, Backend: "codex", Model: wantModel, ReasoningEffort: wantEffort}
+			if execution.identity != wantIdentity {
+				t.Errorf("persisted native identity = %+v, want %+v", execution.identity, wantIdentity)
+			}
+			decision := execution.runtime.Recovery
+			if decision == nil || decision.Action != wantAction || decision.Reason != wantReason || agent.request.Workspace != info.Path {
+				t.Fatalf("restart lost recovery or workspace: decision=%+v workspace=%s", decision, agent.request.Workspace)
+			}
+			after, err := gitWorkspace.RecoveryState(ctx, info, workspaceIssue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.rebase {
+				if !backend.prepared || after.HeadSHA == before.HeadSHA || !strings.Contains(runRunnerGit(t, info.Path, "show", "HEAD:base.md"), "advanced base") || !strings.Contains(runRunnerGit(t, info.Path, "show", "HEAD:feature.md"), "retained feature") {
+					t.Fatalf("preparation did not rebase the retained feature: before=%+v after=%+v", before, after)
+				}
+			} else if before.HeadSHA != after.HeadSHA || before.WorkspaceFingerprint != after.WorkspaceFingerprint {
+				t.Fatalf("retry changed retained source: before=%+v after=%+v", before, after)
+			}
+			if test.dirty {
+				for _, name := range []string{"README.md", "untracked.md"} {
+					contents, err := os.ReadFile(filepath.Join(info.Path, name))
+					if err != nil || string(contents) != "divergent work\n" {
+						t.Fatalf("retry lost %s: content=%q error=%v", name, contents, err)
+					}
+				}
+			}
+			latest, err := db.(store.ActivityStore).LatestIssueAgentSession(ctx, store.IssueIdentity{ProjectID: "native", IssueID: issue.ID})
+			if err != nil {
+				t.Fatal(err)
+			}
+			persisted, err := db.Queries().GetCodexSession(ctx, latest.DetentSessionID)
+			wantParent := sessionID
+			if wantResume == (AgentResume{}) {
+				wantParent = 0
+			}
+			if err != nil || persisted.ResumedFromSessionID.Int64 != wantParent || persisted.WorkAttemptID.Int64 != currentAttemptID {
+				t.Fatalf("restart lost session provenance: session=%+v error=%v", persisted, err)
+			}
+		})
+	}
+}
+
+func TestNativeInterruptedCodeRecoversPersistedSession(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
+	t.Parallel()
+	for _, test := range []struct {
+		name                    string
+		dirty                   bool
+		edit                    func(*testExecution, *fakeCodexClient)
+		blocked                 bool
+		changedPolicy           bool
+		fresh                   bool
+		restartSession          bool
+		missingWorktree         bool
+		published               bool
+		providerNotStarted      bool
+		providerHadTurns        bool
+		startupFailsAgain       bool
+		observedProvider        bool
+		defaultModel            bool
+		legacyTurns             bool
+		configuredDefaultLabel  bool
+		rework                  bool
+		paused                  bool
+		resolved                bool
+		signedPause             bool
+		advancedBase            bool
+		revokeAfterVerification bool
+		foreign                 string
+		secondRecovery          bool
+	}{
+		{name: "verified paused checkpoint converges", rework: true, paused: true, secondRecovery: true},
+		{name: "verified paused checkpoint converges with advanced base", rework: true, paused: true, advancedBase: true, secondRecovery: true},
+		{name: "already paused unpushed rework", rework: true, paused: true},
+		{name: "already paused worker resolves", rework: true, paused: true, resolved: true},
+		{name: "already paused inherited signing", rework: true, paused: true, signedPause: true},
+		{name: "already paused base advanced", rework: true, paused: true, advancedBase: true},
+		{name: "already paused fence lost during verification", rework: true, paused: true, revokeAfterVerification: true, blocked: true},
+		{name: "already paused foreign digest", rework: true, paused: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) {
+			e.recovery.Attempts[0].Checkpoint.WorkspaceDigest = "foreign"
+		}},
+		{name: "already paused foreign head", rework: true, paused: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) { e.recovery.Attempts[0].Checkpoint.HeadSHA = "foreign" }},
+		{name: "already paused foreign branch", rework: true, paused: true, foreign: "head-name", blocked: true},
+		{name: "already paused foreign orig-head", rework: true, paused: true, foreign: "orig-head", blocked: true},
+		{name: "already paused foreign target", rework: true, paused: true, foreign: "onto", blocked: true},
+		{name: "already paused assigned branch moved", rework: true, paused: true, foreign: "branch-ref", blocked: true},
+		{name: "already paused additional refs", rework: true, paused: true, foreign: "update-refs", blocked: true},
+		{name: "already paused unknown autostash", rework: true, paused: true, foreign: "autostash", blocked: true},
+		{name: "already paused changed replay plan", rework: true, paused: true, foreign: "git-rebase-todo", blocked: true},
+		{name: "already paused unknown conflict edit", rework: true, paused: true, foreign: "digest", blocked: true},
+		{name: "already paused unknown untracked edit", rework: true, paused: true, foreign: "untracked", blocked: true},
+		{name: "already paused index changed", rework: true, paused: true, foreign: "index", blocked: true},
+		{name: "already paused hidden index edit", rework: true, paused: true, foreign: "hidden-index", blocked: true},
+		{name: "already paused lease revoked", rework: true, paused: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) { e.validateErr = ErrExecutionAuthorityUnavailable }},
+		{name: "already paused policy changed", rework: true, paused: true, changedPolicy: true},
+		{name: "already paused unavailable checkpoint", rework: true, paused: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) {
+			e.recovery.Attempts[0].Checkpoint.Availability = "inaccessible"
+		}},
+		{name: "already paused unavailable session", rework: true, paused: true, restartSession: true, startupFailsAgain: true, edit: func(_ *testExecution, a *fakeCodexClient) { a.verifyErr = errors.New("session unavailable") }},
+		{name: "already paused missing session", rework: true, paused: true, restartSession: true, startupFailsAgain: true, edit: func(e *testExecution, _ *fakeCodexClient) { e.recovery.Attempts[0].Runtime.LocalAttemptID += 1000 }},
+		{name: "already paused ambiguous publication", rework: true, paused: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) {
+			e.recovery.Attempts[0].Checkpoint.ExternalEffect = "git_push"
+			e.recovery.Attempts[0].Checkpoint.EffectState = "ambiguous"
+		}},
+		{name: "interrupted unpushed rework", rework: true},
+		{name: "rework foreign digest", rework: true, foreign: "digest", blocked: true},
+		{name: "rework foreign head", rework: true, foreign: "head", blocked: true},
+		{name: "rework wrong branch", rework: true, foreign: "branch", blocked: true},
+		{name: "rework lease revoked", rework: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) { e.validateErr = ErrExecutionAuthorityUnavailable }},
+		{name: "rework policy changed", rework: true, changedPolicy: true},
+		{name: "published checkpoint policy changed", changedPolicy: true, published: true},
+		{name: "policy changed with ambiguous publication", rework: true, changedPolicy: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) {
+			e.recovery.Attempts[0].Checkpoint.ExternalEffect = "git_push"
+			e.recovery.Attempts[0].Checkpoint.EffectState = "ambiguous"
+		}},
+		{name: "policy changed with revoked authority", rework: true, changedPolicy: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) { e.validateErr = ErrExecutionAuthorityUnavailable }},
+		{name: "rework unavailable checkpoint", rework: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) {
+			e.recovery.Attempts[0].Checkpoint.Availability = "inaccessible"
+		}},
+		{name: "rework unavailable session", rework: true, restartSession: true, startupFailsAgain: true, edit: func(_ *testExecution, a *fakeCodexClient) { a.verifyErr = errors.New("session unavailable") }},
+		{name: "running retained lease resumes session", edit: func(e *testExecution, _ *fakeCodexClient) {
+			e.recovery.Attempts[0].Status = "running"
+			e.recovery.Attempts[0].LeaseID = e.recovery.Lease.ID
+			e.recovery.Attempts[0].FencingToken = e.recovery.Lease.FencingToken
+		}},
+		{name: "clean 94"},
+		{name: "clean provider never started", providerNotStarted: true},
+		{name: "provider startup fails again", providerNotStarted: true, startupFailsAgain: true},
+		{name: "default model startup", providerNotStarted: true, startupFailsAgain: true, defaultModel: true},
+		{name: "historical startup synthetic turn", providerNotStarted: true, startupFailsAgain: true, legacyTurns: true},
+		{name: "historical default model startup", providerNotStarted: true, startupFailsAgain: true, legacyTurns: true, defaultModel: true},
+		{name: "configured provider_default model", providerNotStarted: true, startupFailsAgain: true, configuredDefaultLabel: true},
+		{name: "historical startup provider effect pending", providerNotStarted: true, legacyTurns: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) {
+			e.recovery.Attempts[0].Checkpoint.ExternalEffect = "provider_turn"
+			e.recovery.Attempts[0].Checkpoint.EffectState = "pending"
+		}},
+		{name: "historical startup provider effect ambiguous", providerNotStarted: true, legacyTurns: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) {
+			e.recovery.Attempts[0].Checkpoint.ExternalEffect = "provider_turn"
+			e.recovery.Attempts[0].Checkpoint.EffectState = "ambiguous"
+		}},
+		{name: "provider start identity retained", providerNotStarted: true, startupFailsAgain: true, observedProvider: true},
+		{name: "provider identity missing after turn without external effect", providerNotStarted: true, providerHadTurns: true, restartSession: true, startupFailsAgain: true},
+		{name: "dirty provider never started", providerNotStarted: true, dirty: true, blocked: true},
+		{name: "startup policy changed", providerNotStarted: true, changedPolicy: true},
+		{name: "startup host changed", providerNotStarted: true, restartSession: true, startupFailsAgain: true, edit: func(e *testExecution, _ *fakeCodexClient) { e.recovery.Lease.MachineID = "other-host" }},
+		{name: "startup digest changed", providerNotStarted: true, restartSession: true, startupFailsAgain: true, edit: func(e *testExecution, _ *fakeCodexClient) {
+			e.recovery.Attempts[0].Checkpoint.WorkspaceDigest = "other-digest"
+		}},
+		{name: "dirty 181", dirty: true},
+		{name: "provider unavailable", dirty: true, restartSession: true, startupFailsAgain: true, edit: func(_ *testExecution, agent *fakeCodexClient) { agent.verifyErr = errors.New("session missing") }},
+		{name: "clean provider unavailable", restartSession: true, startupFailsAgain: true, edit: func(_ *testExecution, agent *fakeCodexClient) { agent.verifyErr = errors.New("session missing") }},
+		{name: "clean persisted session missing", restartSession: true, startupFailsAgain: true, edit: func(e *testExecution, _ *fakeCodexClient) { e.recovery.Attempts[0].Runtime.LocalAttemptID += 1000 }},
+		{name: "clean session and worktree missing", restartSession: true, startupFailsAgain: true, missingWorktree: true, edit: func(e *testExecution, _ *fakeCodexClient) { e.recovery.Attempts[0].Runtime.LocalAttemptID += 1000 }},
+		{name: "rework persisted session missing", rework: true, restartSession: true, startupFailsAgain: true, edit: func(e *testExecution, _ *fakeCodexClient) { e.recovery.Attempts[0].Runtime.LocalAttemptID += 1000 }},
+		{name: "persisted policy differs", dirty: true, changedPolicy: true},
+		{name: "policy changed", dirty: true, changedPolicy: true},
+		{name: "model authority changed", dirty: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) { e.recovery.Attempts[0].Identity.Model = "other-model" }},
+		{name: "clean checkpoint unavailable", blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) {
+			e.recovery.Attempts[0].Checkpoint.Availability = "inaccessible"
+		}},
+		{name: "local attempt missing", dirty: true, restartSession: true, startupFailsAgain: true, edit: func(e *testExecution, _ *fakeCodexClient) { e.recovery.Attempts[0].Runtime.LocalAttemptID++ }},
+		{name: "workspace changed", dirty: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) {
+			e.recovery.Attempts[0].Checkpoint.WorkspaceDigest = "other-digest"
+		}},
+		{name: "ambiguous effect", dirty: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) {
+			e.recovery.Attempts[0].Checkpoint.ExternalEffect = "git_push"
+			e.recovery.Attempts[0].Checkpoint.EffectState = "ambiguous"
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := t.Context()
+			db, err := store.Open(ctx, store.Config{Path: storetest.NewDatabasePath(t)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = db.Close() })
+			approved := runnerTestPolicy()
+			metadata, err := json.Marshal(map[string]policy.Descriptor{"policy": approved})
+			if err != nil {
+				t.Fatal(err)
+			}
+			started := time.Date(2026, 10, 2, 14, 4, 0, 0, time.UTC)
+			model := "original-model"
+			if test.configuredDefaultLabel {
+				model = "provider_default"
+			}
+			if test.defaultModel {
+				model = ""
+			}
+			role := "code"
+			if test.rework {
+				role = "rework"
+			}
+			identity := agentidentity.Configured("codex", "codex", "", role, model, "openai", "high", "", started)
+			attemptID, err := db.StartWorkAttempt(ctx, store.WorkAttemptStart{ProjectID: "native", IssueID: "work", WorkerType: "agent", StartedAt: started, WorkerMetadataJSON: string(metadata), RuntimeIdentity: identity})
+			if err != nil {
+				t.Fatal(err)
+			}
+			sessionID, err := db.StartSession(ctx, store.SessionStart{ProjectID: "native", IssueID: "work", WorkAttemptID: attemptID, StartedAt: started, RequestedModel: model, Model: model, AgentBackendID: "codex", AgentBackendKind: "codex", AgentRole: role, RuntimeIdentity: identity})
+			if err != nil {
+				t.Fatal(err)
+			}
+			originalResume := AgentResume{ThreadID: "original-thread", SessionID: "original-session"}
+			if test.providerNotStarted {
+				originalResume = AgentResume{}
+			}
+			priorTurns := int64(0)
+			if test.legacyTurns {
+				priorTurns = 1
+			}
+			if test.providerHadTurns {
+				priorTurns = 1
+			}
+			if err := db.FinishSession(ctx, sessionID, store.SessionFinish{Turns: priorTurns, CompletedAt: started.Add(18 * time.Second), FinalState: "failed", ProviderThreadID: originalResume.ThreadID, ProviderSessionID: originalResume.SessionID}); err != nil {
+				t.Fatal(err)
+			}
+			observedTurns := priorTurns
+			if test.legacyTurns {
+				observedTurns = 0
+			}
+			metrics, err := json.Marshal(map[string]int64{"turns": observedTurns, "total_tokens": 0})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := db.CompleteWorkAttempt(ctx, store.WorkAttemptCompletion{AttemptID: attemptID, CompletedAt: started.Add(18 * time.Second), Status: store.WorkAttemptStatusTerminal, TerminalState: store.WorkAttemptTerminalCapacity, WorkerMetadataJSON: string(metadata), MetricsJSON: string(metrics)}); err != nil {
+				t.Fatal(err)
+			}
+			source := initRunnerSourceRepo(t)
+			if test.rework || test.published {
+				remote := filepath.Join(t.TempDir(), "origin.git")
+				runRunnerGit(t, source, "init", "--bare", "-b", "main", remote)
+				runRunnerGit(t, source, "remote", "add", "origin", remote)
+				runRunnerGit(t, source, "push", "-u", "origin", "main")
+			}
+			gitWorkspace, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			issue := connector.Issue{ID: "work", Identifier: "native#181", State: "In Progress", BranchName: "native/work"}
+			if test.rework {
+				issue.State = "Rework"
+			}
+			info, err := gitWorkspace.Create(ctx, workspaceIssue("native", issue))
+			if err != nil {
+				t.Fatal(err)
+			}
+			contents := []byte("source repo\n")
+			if test.dirty {
+				contents = []byte("unfinished original source\n")
+			}
+			if err := os.WriteFile(filepath.Join(info.Path, "README.md"), contents, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if test.rework || test.published {
+				contents = []byte("preserved feature\n")
+				if err := os.WriteFile(filepath.Join(info.Path, "README.md"), contents, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(info.Path, "stable.md"), []byte("preserved companion\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				runRunnerGit(t, info.Path, "add", "README.md", "stable.md")
+				runRunnerGit(t, info.Path, "commit", "-m", "preserved feature")
+				if err := os.WriteFile(filepath.Join(source, "README.md"), []byte("advanced base\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				runRunnerGit(t, source, "add", "README.md")
+				runRunnerGit(t, source, "commit", "-m", "conflicting base")
+				runRunnerGit(t, source, "push", "origin", "main")
+			}
+			local, err := gitWorkspace.RecoveryState(ctx, info, workspaceIssue("native", issue))
+			if err != nil {
+				t.Fatal(err)
+			}
+			sourceCheckpoint := executionCheckpoint(&local)
+			sourceCheckpoint.Resume = "resume_session"
+			if test.rework && sourceCheckpoint.WorktreeState != "unpushed" {
+				t.Fatalf("original source checkpoint is not genuinely unpushed: %+v", sourceCheckpoint)
+			}
+			publishedHead := ""
+			if test.published {
+				publishedHead = local.HeadSHA
+				runRunnerGit(t, info.Path, "push", "origin", info.Branch)
+				runRunnerGit(t, info.Path, "commit", "--allow-empty", "-m", "unpushed checkpoint")
+				local, err = gitWorkspace.RecoveryState(ctx, info, workspaceIssue("native", issue))
+				if err != nil {
+					t.Fatal(err)
+				}
+				sourceCheckpoint = executionCheckpoint(&local)
+				sourceCheckpoint.Resume = "resume_session"
+			}
+			if test.paused {
+				if test.signedPause {
+					runRunnerGit(t, info.Path, "fetch", "origin")
+					if err := runAgentGit(ctx, info.Path, "rebase", "--gpg-sign", "--no-update-refs", "origin/main"); err == nil {
+						t.Fatal("inherited rebase did not pause")
+					}
+				}
+				pausedIssue := workspaceIssue("native", issue)
+				pausedIssue.NativeRework = true
+				prepared, err := gitWorkspace.PrepareRework(ctx, info, pausedIssue, workspace.MergePrepareOptions{}, func(ctx context.Context) error { return ctx.Err() })
+				if err != nil || prepared.Status != workspace.MergePrepareStatusConflict {
+					t.Fatalf("historical preparation did not pause: %+v, %v", prepared, err)
+				}
+				if test.advancedBase {
+					if err := os.WriteFile(filepath.Join(source, "later.md"), []byte("later base\n"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					runRunnerGit(t, source, "add", "later.md")
+					runRunnerGit(t, source, "commit", "-m", "later base")
+					runRunnerGit(t, source, "push", "origin", "main")
+					runRunnerGit(t, info.Path, "fetch", "origin")
+				}
+			}
+			backend := &resumedExecutionWorkspace{LocalGit: gitWorkspace}
+			overload := errors.New("serverOverloaded: selected model at capacity")
+			agent := &fakeCodexClient{err: overload, result: AgentTurnResult{ThreadID: "original-thread", SessionID: "original-session"}}
+			if test.startupFailsAgain {
+				agent.result = AgentTurnResult{}
+			}
+			if test.observedProvider {
+				agent.updates = []AgentUpdate{{Type: AgentUpdateTurnStarted, ThreadID: "observed-thread", ProviderSessionID: "observed-session", TurnID: "observed-turn"}}
+			}
+			nativeIdentity := tracker.NativeExecutionIdentity{Role: role, Backend: "codex", Model: model}
+			if test.defaultModel {
+				nativeIdentity.Model = "provider_default"
+			}
+			execution := &testExecution{recovery: tracker.NativeRecovery{Lease: tracker.NativeLease{MachineID: "host", PolicyID: approved.ID}, Attempts: []tracker.NativeAttempt{{Status: "interrupted", NativeRunData: tracker.NativeRunData{MachineID: "host", PolicyID: approved.ID, Identity: &nativeIdentity, Runtime: &tracker.NativeRuntimeObservation{LocalAttemptID: attemptID, Identity: identity}}, Checkpoint: &sourceCheckpoint}}}}
+			if test.edit != nil {
+				test.edit(execution, agent)
+			}
+			if test.revokeAfterVerification {
+				backend.afterVerification = func() { execution.validateErr = ErrExecutionAuthorityUnavailable }
+			}
+			if test.foreign == "digest" {
+				contents = []byte("foreign source\n")
+				if err := os.WriteFile(filepath.Join(info.Path, "README.md"), contents, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			} else if test.foreign == "head" {
+				runRunnerGit(t, info.Path, "commit", "--allow-empty", "-m", "foreign head")
+			} else if test.foreign == "branch" {
+				runRunnerGit(t, info.Path, "checkout", "-b", "foreign")
+			} else if test.foreign == "branch-ref" {
+				runRunnerGit(t, source, "update-ref", "refs/heads/"+info.Branch, local.HeadSHA+"^")
+			} else if test.foreign == "index" {
+				runRunnerGit(t, info.Path, "update-index", "--force-remove", "README.md")
+			} else if test.foreign == "hidden-index" {
+				runRunnerGit(t, info.Path, "update-index", "--assume-unchanged", "stable.md")
+				if err := os.WriteFile(filepath.Join(info.Path, "stable.md"), []byte("hidden foreign edit\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			} else if test.foreign == "untracked" {
+				if err := os.WriteFile(filepath.Join(info.Path, "foreign.md"), []byte("foreign\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			} else if test.paused && test.foreign != "" {
+				gitDir := strings.TrimSpace(runRunnerGit(t, info.Path, "rev-parse", "--absolute-git-dir"))
+				value := "foreign\n"
+				switch test.foreign {
+				case "git-rebase-todo":
+					value = "pick " + local.HeadSHA + " preserved feature\n"
+				case "onto":
+					value = local.HeadSHA + "\n"
+				}
+				if err := os.WriteFile(filepath.Join(gitDir, "rebase-merge", test.foreign), []byte(value), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			beforeRun, err := gitWorkspace.RecoveryState(ctx, info, workspaceIssue("native", issue))
+			if err != nil {
+				t.Fatal(err)
+			}
+			reconciledCheckpoints := 0
+			if test.secondRecovery {
+				if beforeRun.WorkspaceFingerprint == sourceCheckpoint.WorkspaceDigest {
+					t.Fatal("fixture did not reproduce local_checkpoint_changed")
+				}
+				execution.onCheckpoint = func(checkpoint tracker.NativeCheckpoint) {
+					if backend.prepared {
+						return
+					}
+					reconciledCheckpoints++
+					if !execution.started || checkpoint.HeadSHA != beforeRun.HeadSHA || checkpoint.WorkspaceDigest != beforeRun.WorkspaceFingerprint || checkpoint.Resume != "resume_session" {
+						t.Fatalf("recovery published an unverified checkpoint: %+v", checkpoint)
+					}
+				}
+			}
+			indexPath := strings.TrimSpace(runRunnerGit(t, info.Path, "rev-parse", "--git-path", "index"))
+			indexBefore, err := os.ReadFile(indexPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			backend.beforePreparation = func() {
+				if test.restartSession {
+					if !execution.started || execution.checkpoint == nil || execution.checkpoint.HeadSHA != beforeRun.HeadSHA || execution.checkpoint.WorkspaceDigest != beforeRun.WorkspaceFingerprint || execution.checkpoint.Resume != "fresh_checkout" {
+						t.Fatalf("fresh turn lost retained source before preparation: %+v", execution.checkpoint)
+					}
+					return
+				}
+				if test.fresh {
+					return
+				}
+				if !execution.started || execution.checkpoint == nil || execution.checkpoint.HeadSHA != beforeRun.HeadSHA || execution.checkpoint.WorkspaceDigest != beforeRun.WorkspaceFingerprint || execution.checkpoint.Resume != "resume_session" {
+					t.Fatalf("preparation preceded verified checkpoint: %+v", execution.checkpoint)
+				}
+			}
+			var worker AgentBackend = agent
+			if test.resolved {
+				resolving := &resolvingReworkAgent{fakeCodexClient: *agent, t: t}
+				resolving.beforeStage = func() {
+					backend.beforePreparation()
+					index, err := os.ReadFile(indexPath)
+					if err != nil || string(index) != string(indexBefore) {
+						t.Fatalf("recovery altered the paused index: %v", err)
+					}
+				}
+				agent = &resolving.fakeCodexClient
+				worker = resolving
+			}
+			if test.changedPolicy {
+				approved.Gates.MergeMethod = "merge"
+				approved = approved.WithID()
+				if test.fresh {
+					execution.recovery.Lease.PolicyID = approved.ID
+				}
+			}
+			currentAttemptID, err := db.StartWorkAttempt(ctx, store.WorkAttemptStart{ProjectID: "native", IssueID: "work", WorkerType: "agent", StartedAt: started.Add(time.Minute), WorkerMetadataJSON: string(metadata)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg := config.Config{Policy: approved}
+			cfg.Tracker.Kind = config.TrackerHubNative
+			cfg.Agents.Routes = []config.AgentRoute{{Name: "default", Role: "code", Backend: "codex", Model: "new-default-model", Default: true}}
+			if test.providerNotStarted {
+				cfg.Agents.Routes[0].Model = model
+			}
+			var logs bytes.Buffer
+			r, err := NewRunner(Dependencies{ProjectID: "native", Workflow: config.Workflow{Config: cfg, Prompt: "Continue the issue"}, Store: db, Workspace: backend, AgentBackend: worker, Logger: slog.New(slog.NewTextHandler(&logs, nil))})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.missingWorktree {
+				runRunnerGit(t, source, "worktree", "remove", info.Path)
+			}
+			result, err := r.Run(ctx, RunRequest{ProjectID: "native", Policy: approved, Execution: execution, WorkAttemptID: currentAttemptID, Issue: issue, Mode: RunModeImplement})
+			if test.fresh && !test.blocked {
+				if !errors.Is(err, overload) || agent.calls != 1 || !agentResumeEmpty(agent.request.Resume) || !agentResumeEmpty(agent.verifiedResume) || !execution.started || backend.afterRun {
+					t.Fatalf("stale checkpoint did not start fresh: error=%v calls=%d resume=%+v verified=%+v started=%t", err, agent.calls, agent.request.Resume, agent.verifiedResume, execution.started)
+				}
+				wantHead := strings.TrimSpace(runRunnerGit(t, source, "rev-parse", "HEAD"))
+				if test.published {
+					wantHead = publishedHead
+					if got := strings.Fields(runRunnerGit(t, source, "ls-remote", "origin", "refs/heads/"+info.Branch)); len(got) != 2 || got[0] != wantHead {
+						t.Fatalf("published branch changed: %v", got)
+					}
+				}
+				observed, readErr := gitWorkspace.RecoveryState(ctx, info, workspaceIssue("native", issue))
+				if readErr != nil || observed.HeadSHA != wantHead || len(observed.TrackedPaths) != 0 || len(observed.UntrackedPaths) != 0 || execution.checkpoint == nil || execution.checkpoint.HeadSHA != wantHead {
+					t.Fatalf("fresh checkout retained stale source: %+v checkpoint=%+v error=%v", observed, execution.checkpoint, readErr)
+				}
+				latest, readErr := db.(store.ActivityStore).LatestIssueAgentSession(ctx, store.IssueIdentity{ProjectID: "native", IssueID: issue.ID})
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
+				fresh, readErr := db.Queries().GetCodexSession(ctx, latest.DetentSessionID)
+				if readErr != nil || fresh.ResumedFromSessionID.Int64 != 0 || fresh.WorkAttemptID.Int64 != currentAttemptID {
+					t.Fatalf("fresh session retained resume provenance: %+v error=%v", fresh, readErr)
+				}
+				if !strings.Contains(logs.String(), "worker_native_checkpoint_discarded") || !strings.Contains(logs.String(), approved.ID) || !strings.Contains(logs.String(), execution.recovery.Attempts[0].PolicyID) {
+					t.Fatalf("stale checkpoint discard was not recorded: %s", &logs)
+				}
+				return
+			}
+			if test.resolved {
+				if err != nil || agent.calls != 1 || agent.request.Resume != originalResume || agent.verifiedResume != originalResume || execution.finish != "succeeded" {
+					t.Fatalf("historical resolution failed: %+v, %v, %+v", result, err, execution)
+				}
+				head := strings.TrimSpace(runRunnerGit(t, info.Path, "rev-parse", "HEAD"))
+				if head == beforeRun.HeadSHA || strings.TrimSpace(runRunnerGit(t, info.Path, "symbolic-ref", "HEAD")) != "refs/heads/"+info.Branch || strings.TrimSpace(runRunnerGit(t, info.Path, "show", "HEAD:README.md")) != "resolved" {
+					t.Fatal("host did not finalize the resolved source on the assigned branch")
+				}
+				latest, err := db.(store.ActivityStore).LatestIssueAgentSession(ctx, store.IssueIdentity{ProjectID: "native", IssueID: issue.ID})
+				if err != nil {
+					t.Fatal(err)
+				}
+				resumed, err := db.Queries().GetCodexSession(ctx, latest.DetentSessionID)
+				if err != nil || resumed.ResumedFromSessionID.Int64 != sessionID || resumed.FinalState.String != "completed" {
+					t.Fatalf("resolved session lost provenance: %+v, %v", resumed, err)
+				}
+				return
+			}
+			if test.paused {
+				index, readErr := os.ReadFile(indexPath)
+				if readErr != nil || string(index) != string(indexBefore) {
+					t.Fatalf("recovery changed paused index: %v", readErr)
+				}
+			}
+			if test.blocked {
+				if err == nil || agent.calls != 0 || execution.started || backend.prepared || execution.checkpoint != nil {
+					t.Fatalf("invalid recovery ran: error=%v turns=%d started=%v", err, agent.calls, execution.started)
+				}
+			} else {
+				want := AgentResume{ThreadID: "original-thread", SessionID: "original-session"}
+				verified := want
+				if test.providerNotStarted || test.restartSession || test.rework && !test.paused {
+					want = AgentResume{}
+				}
+				if test.providerNotStarted || test.restartSession && agent.verifyErr == nil {
+					verified = AgentResume{}
+				}
+				if !errors.Is(err, overload) || agent.calls != 1 || agent.request.Resume != want || agent.verifiedResume != verified || (!test.providerNotStarted && !test.restartSession && (agent.request.Model != model || agent.request.ReasoningEffort != "high")) || agent.request.Workspace != info.Path {
+					t.Fatalf("recovery: error=%v turns=%d resume=%+v verified=%+v model=%s", err, agent.calls, agent.request.Resume, agent.verifiedResume, agent.request.Model)
+				}
+				if result.NativeChange != nil || result.FinalState != FinalStateFailed {
+					t.Fatalf("overload manufactured completion: %+v", result)
+				}
+				wantCheckpoint := "resume_session"
+				if test.startupFailsAgain && !test.observedProvider {
+					stored, readErr := db.Queries().GetCodexSession(ctx, sessionID+1)
+					if readErr != nil || stored.Turns != 0 {
+						t.Fatalf("startup persisted synthetic turns: turns=%d error=%v", stored.Turns, readErr)
+					}
+					wantCheckpoint = "fresh_checkout"
+				}
+				checkpointState := local
+				if test.rework {
+					checkpointState, err = gitWorkspace.RecoveryState(ctx, info, workspaceIssue("native", issue))
+					if err != nil || !backend.prepared || checkpointState.HeadSHA == local.HeadSHA || checkpointState.WorkspaceFingerprint == local.WorkspaceFingerprint || len(checkpointState.TrackedPaths) == 0 {
+						t.Fatalf("real preparation did not pause conflict: %+v, %v", checkpointState, err)
+					}
+					gitDir := strings.TrimSpace(runRunnerGit(t, info.Path, "rev-parse", "--absolute-git-dir"))
+					original, err := os.ReadFile(filepath.Join(gitDir, "rebase-merge", "orig-head"))
+					if err != nil || strings.TrimSpace(string(original)) != local.HeadSHA || strings.TrimSpace(runRunnerGit(t, info.Path, "rev-parse", "refs/heads/"+info.Branch)) != local.HeadSHA || !strings.Contains(agent.request.Prompt, "README.md") {
+						t.Fatalf("paused source ownership lost: %s, %v", original, err)
+					}
+				}
+				if execution.checkpoint == nil || execution.checkpoint.HeadSHA != checkpointState.HeadSHA || execution.checkpoint.WorkspaceDigest != checkpointState.WorkspaceFingerprint || execution.checkpoint.Resume != wantCheckpoint {
+					t.Fatalf("checkpoint changed: %+v", execution.checkpoint)
+				}
+
+				if test.restartSession {
+					decision := execution.runtime.Recovery
+					if decision == nil || decision.Action != "fresh_checkout" || decision.Reason != "session_restart_required" {
+						t.Fatalf("fallback missing from receipt: %+v", decision)
+					}
+					stored, readErr := db.Queries().GetCodexSession(ctx, sessionID+1)
+					if readErr != nil || stored.ResumedFromSessionID.Int64 != 0 || stored.WorkAttemptID.Int64 != currentAttemptID {
+						t.Fatalf("fresh session inherited lost-session provenance: %+v error=%v", stored, readErr)
+					}
+				}
+				if test.startupFailsAgain && !test.observedProvider && !test.restartSession {
+					if err := db.CompleteWorkAttempt(ctx, store.WorkAttemptCompletion{AttemptID: currentAttemptID, CompletedAt: started.Add(2 * time.Minute), Status: store.WorkAttemptStatusTerminal, TerminalState: store.WorkAttemptTerminalFailure, WorkerMetadataJSON: string(metadata)}); err != nil {
+						t.Fatal(err)
+					}
+					nextAttemptID, err := db.StartWorkAttempt(ctx, store.WorkAttemptStart{ProjectID: "native", IssueID: "work", WorkerType: "agent", StartedAt: started.Add(3 * time.Minute), WorkerMetadataJSON: string(metadata)})
+					if err != nil {
+						t.Fatal(err)
+					}
+					next := &testExecution{recovery: execution.recovery}
+					next.recovery.Attempts = append([]tracker.NativeAttempt(nil), execution.recovery.Attempts...)
+					next.recovery.Attempts[0].Runtime = &tracker.NativeRuntimeObservation{LocalAttemptID: currentAttemptID, Identity: identity}
+					next.recovery.Attempts[0].Checkpoint = execution.checkpoint
+					_, nextErr := r.Run(ctx, RunRequest{ProjectID: "native", Policy: approved, Execution: next, WorkAttemptID: nextAttemptID, Issue: issue, Mode: RunModeImplement})
+					if !errors.Is(nextErr, overload) || agent.calls != 2 || next.checkpoint == nil || next.checkpoint.Resume != "fresh_checkout" {
+						t.Fatalf("second failed startup wedged: error=%v calls=%d checkpoint=%+v", nextErr, agent.calls, next.checkpoint)
+					}
+				}
+
+				if !test.startupFailsAgain || test.observedProvider {
+					latest, err := db.(store.ActivityStore).LatestIssueAgentSession(ctx, store.IssueIdentity{ProjectID: "native", IssueID: issue.ID})
+					if err != nil {
+						t.Fatal(err)
+					}
+					resumed, err := db.Queries().GetCodexSession(ctx, latest.DetentSessionID)
+					from := sessionID
+					if agentResumeEmpty(want) {
+						from = 0
+					}
+					if err != nil || resumed.ResumedFromSessionID.Int64 != from || resumed.WorkAttemptID.Int64 != currentAttemptID || resumed.FinalState.String != "failed" {
+						t.Fatalf("persisted continuation=%+v error=%v", resumed, err)
+					}
+				}
+				if test.secondRecovery {
+					if reconciledCheckpoints == 0 {
+						t.Fatal("first recovery did not publish the reconciled checkpoint before preparation")
+					}
+					if err := db.CompleteWorkAttempt(ctx, store.WorkAttemptCompletion{AttemptID: currentAttemptID, CompletedAt: started.Add(2 * time.Minute), Status: store.WorkAttemptStatusTerminal, TerminalState: store.WorkAttemptTerminalCapacity, WorkerMetadataJSON: string(metadata)}); err != nil {
+						t.Fatal(err)
+					}
+					nextAttemptID, err := db.StartWorkAttempt(ctx, store.WorkAttemptStart{ProjectID: "native", IssueID: "work", WorkerType: "agent", StartedAt: started.Add(3 * time.Minute), WorkerMetadataJSON: string(metadata)})
+					if err != nil {
+						t.Fatal(err)
+					}
+					next := &testExecution{recovery: execution.recovery}
+					next.recovery.Attempts = append([]tracker.NativeAttempt(nil), execution.recovery.Attempts...)
+					next.recovery.Attempts[0].Checkpoint = execution.checkpoint
+					next.recovery.Attempts[0].Runtime = &tracker.NativeRuntimeObservation{LocalAttemptID: currentAttemptID, Identity: identity}
+					execution = next
+					_, nextErr := r.Run(ctx, RunRequest{ProjectID: "native", Policy: approved, Execution: next, WorkAttemptID: nextAttemptID, Issue: issue, Mode: RunModeImplement})
+					if !errors.Is(nextErr, overload) || agent.calls != 2 || !next.started || next.checkpoint == nil || next.checkpoint.WorkspaceDigest != beforeRun.WorkspaceFingerprint {
+						t.Fatalf("reconciled second attempt did not run: error=%v calls=%d checkpoint=%+v", nextErr, agent.calls, next.checkpoint)
+					}
+				}
+			}
+			if test.rework {
+				if backend.afterRun {
+					t.Fatal("rework checkpoint was cleaned")
+				}
+				return
+			}
+			got, readErr := os.ReadFile(filepath.Join(info.Path, "README.md"))
+			if readErr != nil || string(got) != string(contents) || backend.afterRun {
+				t.Fatalf("continuation workspace changed: %q error=%v cleaned=%v", got, readErr, backend.afterRun)
+			}
+			observed, err := gitWorkspace.RecoveryState(ctx, info, workspaceIssue("native", issue))
+			if err != nil || observed.HeadSHA != local.HeadSHA || observed.WorkspaceFingerprint != local.WorkspaceFingerprint {
+				t.Fatalf("workspace authority changed: %+v error=%v", observed, err)
+			}
+		})
+	}
+}
+
+type releaseDeliveryExecution struct {
+	testExecution
+	failure *tracker.NativeTerminalFailure
+}
+
+func (e *releaseDeliveryExecution) PrepareFinish(_ context.Context, _, _ string, failure *tracker.NativeTerminalFailure) error {
+	e.failure = failure
+	return nil
+}
+
+type releaseDeliveryAgent struct {
+	fakeCodexClient
+	head string
+}
+
+func (a *releaseDeliveryAgent) RunTurn(ctx context.Context, req AgentTurnRequest, update AgentUpdateHandler) (AgentTurnResult, error) {
+	if strings.HasPrefix(req.Prompt, progresscheck.FailureInstructions) {
+		return AgentTurnResult{}, nil
+	}
+	a.calls++
+	head, err := exec.CommandContext(ctx, "git", "-C", req.Workspace, "rev-parse", "HEAD").Output()
+	if err != nil {
+		return AgentTurnResult{}, err
+	}
+	a.head = strings.TrimSpace(string(head))
+	if err := update(AgentUpdate{Type: AgentUpdateTurnStarted, TurnID: "delivery-turn"}); err != nil {
+		return AgentTurnResult{}, err
+	}
+	return AgentTurnResult{}, errors.New("stop after observing delivery head")
+}
+
+func TestNativeReleaseDeliveryWorkspace(t *testing.T) {
+	for _, test := range []struct {
+		name                                            string
+		wrongBase, movedHead, hookFailure, advancedBase bool
+	}{
+		{name: "fresh checkout starts at delivery head"},
+		{name: "advanced release branch keeps frozen head", advancedBase: true},
+		{name: "head outside frozen lineage", wrongBase: true},
+		{name: "moved delivery head", movedHead: true},
+		{name: "workspace failure records unknown decision", hookFailure: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			writer := initRunnerSourceRepo(t)
+			remote := filepath.Join(t.TempDir(), "delivery.git")
+			runRunnerGit(t, writer, "clone", "--bare", writer, remote)
+			runRunnerGit(t, writer, "checkout", "-b", "release/v1.2")
+			runRunnerGit(t, writer, "commit", "--allow-empty", "-m", "freeze release")
+			base := strings.TrimSpace(runRunnerGit(t, writer, "rev-parse", "HEAD"))
+			runRunnerGit(t, writer, "push", remote, "HEAD:refs/heads/release/v1.2")
+			runRunnerGit(t, writer, "checkout", "-b", "operator/release-pick")
+			runRunnerGit(t, writer, "commit", "--allow-empty", "-m", "release pick")
+			head := strings.TrimSpace(runRunnerGit(t, writer, "rev-parse", "HEAD"))
+			runRunnerGit(t, writer, "push", remote, "HEAD:refs/heads/operator/release-pick")
+			receiver := filepath.Join(t.TempDir(), "receiver")
+			runRunnerGit(t, writer, "clone", "--no-local", "--single-branch", "--branch", "main", remote, receiver)
+			if err := exec.CommandContext(t.Context(), "git", "-C", receiver, "cat-file", "-e", head+"^{commit}").Run(); err == nil {
+				t.Fatal("fresh receiver already contains the delivery head")
+			}
+			repository := "https://github.com/example-org/example-project"
+			runRunnerGit(t, receiver, "config", "url."+remote+".insteadOf", repository+".git")
+			runRunnerGit(t, receiver, "remote", "remove", "origin")
+			if test.wrongBase || test.advancedBase {
+				runRunnerGit(t, writer, "checkout", "release/v1.2")
+				runRunnerGit(t, writer, "commit", "--allow-empty", "-m", "unrelated release tip")
+				if test.wrongBase {
+					base = strings.TrimSpace(runRunnerGit(t, writer, "rev-parse", "HEAD"))
+				}
+				runRunnerGit(t, writer, "push", remote, "HEAD:refs/heads/release/v1.2")
+			}
+			if test.movedHead {
+				runRunnerGit(t, writer, "commit", "--allow-empty", "-m", "moved pick")
+				runRunnerGit(t, writer, "push", remote, "HEAD:refs/heads/operator/release-pick")
+			}
+			options := workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: receiver, AutoBranch: true}
+			if test.hookFailure {
+				options.Hooks.AfterCreate = "exit 17"
+			}
+			backend, err := workspace.NewLocalGit(options)
+			if err != nil {
+				t.Fatal(err)
+			}
+			delivery := &tracker.ReleaseDelivery{ReleasePickInput: tracker.ReleasePickInput{Repository: repository, PRNumber: 7, BaseRef: "release/v1.2", BaseSHA: base, HeadRef: "operator/release-pick", HeadSHA: head}}
+			execution := &releaseDeliveryExecution{testExecution: testExecution{recovery: tracker.NativeRecovery{Issue: tracker.NativeIssue{ReleaseDelivery: delivery}}}}
+			agent := &releaseDeliveryAgent{}
+			cfg := config.Config{}
+			cfg.Tracker.Kind = config.TrackerHubNative
+			r, err := NewRunner(Dependencies{ProjectID: "native", Workflow: config.Workflow{Config: cfg, Prompt: "Complete the issue"}, Workspace: backend, AgentBackend: agent, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+			if err != nil {
+				t.Fatal(err)
+			}
+			issue := connector.Issue{ID: "delivery", Identifier: "native#1", State: "Rework", BranchName: delivery.HeadRef, PRRepository: repository, PullRequest: &connector.PullRequest{Number: 7, State: "OPEN", BranchName: delivery.HeadRef, HeadSHA: head, BaseRef: delivery.BaseRef, BaseSHA: base}}
+			result, err := r.Run(t.Context(), RunRequest{ProjectID: "native", Execution: execution, Issue: issue, Mode: RunModeImplement})
+			if test.wrongBase || test.movedHead || test.hookFailure {
+				if err == nil || agent.calls != 0 || result.TurnStarted {
+					t.Fatalf("unsafe delivery started: result=%+v error=%v calls=%d", result, err, agent.calls)
+				}
+				if test.wrongBase || test.movedHead {
+					var refusal *workspace.LandRefusal
+					if !errors.As(err, &refusal) || refusal.Kind != workspace.LandRefusalHeadMoved {
+						t.Fatalf("delivery identity failure = %v, want head_moved", err)
+					}
+				}
+				if test.hookFailure {
+					var hook *workspace.HookError
+					if !errors.As(err, &hook) || hook.ExitCode != 17 {
+						t.Fatalf("workspace failure = %v, want after_create exit 17", err)
+					}
+				}
+				if test.hookFailure && (execution.failure == nil || execution.failure.Attribution != "unknown" || execution.failure.ErrorClass != "workspace_hook" || execution.finish != "failed") {
+					t.Fatalf("workspace failure lost decision: failure=%+v finish=%s error=%v", execution.failure, execution.finish, err)
+				}
+				return
+			}
+			if agent.calls != 1 || agent.head != head || !result.TurnStarted {
+				t.Fatalf("delivery turn: head=%s want=%s calls=%d result=%+v error=%v", agent.head, head, agent.calls, result, err)
+			}
+		})
+	}
+}
+
+func TestNativeStartupRecoveryTracksActualProviderTurn(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
+	for _, test := range []struct {
+		name          string
+		startedTurn   bool
+		missingTurnID bool
+	}{
+		{name: "startup only"},
+		{name: "started turn", startedTurn: true},
+		{name: "started turn without ID", startedTurn: true, missingTurnID: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			startedTurn := test.startedTurn
+			ctx := t.Context()
+			db, err := store.Open(ctx, store.Config{Path: storetest.NewDatabasePath(t)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = db.Close() })
+			approved := runnerTestPolicy()
+			metadata, err := json.Marshal(map[string]policy.Descriptor{"policy": approved})
+			if err != nil {
+				t.Fatal(err)
+			}
+			gitWorkspace, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: initRunnerSourceRepo(t), AutoBranch: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			issue := connector.Issue{ID: "work", Identifier: "native#1", State: "In Progress", BranchName: "native/startup"}
+			overload := errors.New("provider startup failed")
+			agent := &fakeCodexClient{err: overload}
+			if startedTurn {
+				agent.updates = []AgentUpdate{{Type: AgentUpdateTurnStarted, TurnID: "actual-started-turn"}}
+				if test.missingTurnID {
+					agent.updates[0].TurnID = ""
+				}
+			}
+			cfg := config.Config{Policy: approved}
+			cfg.Tracker.Kind = config.TrackerHubNative
+			cfg.Agents.Routes = []config.AgentRoute{{Name: "default", Role: "code", Backend: "codex", Default: true}}
+			r, err := NewRunner(Dependencies{ProjectID: "native", Workflow: config.Workflow{Config: cfg, Prompt: "Complete the issue"}, Store: db, Workspace: &resumedExecutionWorkspace{LocalGit: gitWorkspace}, AgentBackend: agent, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+			if err != nil {
+				t.Fatal(err)
+			}
+			start := time.Date(2026, 10, 3, 0, 0, 0, 0, time.UTC)
+			firstID, err := db.StartWorkAttempt(ctx, store.WorkAttemptStart{ProjectID: "native", IssueID: issue.ID, WorkerType: "agent", StartedAt: start, WorkerMetadataJSON: string(metadata)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			first := &testExecution{recovery: tracker.NativeRecovery{Lease: tracker.NativeLease{MachineID: "host", PolicyID: approved.ID}}}
+			observedTurns := 0
+			result, firstErr := r.Run(ctx, RunRequest{ProjectID: "native", Policy: approved, Execution: first, WorkAttemptID: firstID, Issue: issue, Mode: RunModeImplement, OnUsageUpdate: func(update UsageUpdate) error { observedTurns = update.TurnCount; return nil }})
+			wantTurns := 0
+			if startedTurn && !test.missingTurnID {
+				wantTurns = 1
+			}
+			if !errors.Is(firstErr, overload) || result.TurnStarted != startedTurn || result.TurnCount != wantTurns || observedTurns != wantTurns || first.checkpoint == nil {
+				t.Fatalf("actual first turn: result=%+v error=%v observed=%d checkpoint=%+v", result, firstErr, observedTurns, first.checkpoint)
+			}
+			stored, err := db.Queries().GetCodexSession(ctx, 1)
+			persistedTurns := wantTurns
+			if startedTurn && persistedTurns == 0 {
+				persistedTurns = 1
+			}
+			if err != nil || stored.Turns != int64(persistedTurns) {
+				t.Fatalf("observed startup count: turns=%d error=%v", stored.Turns, err)
+			}
+			if result.TurnStarted && observedTurns == 0 {
+				observedTurns = 1
+			}
+
+			metrics, err := json.Marshal(map[string]int{"turns": observedTurns, "total_tokens": 0})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := db.CompleteWorkAttempt(ctx, store.WorkAttemptCompletion{AttemptID: firstID, CompletedAt: start.Add(time.Minute), Status: store.WorkAttemptStatusTerminal, TerminalState: store.WorkAttemptTerminalFailure, MetricsJSON: string(metrics), WorkerMetadataJSON: string(metadata)}); err != nil {
+				t.Fatal(err)
+			}
+			secondID, err := db.StartWorkAttempt(ctx, store.WorkAttemptStart{ProjectID: "native", IssueID: issue.ID, WorkerType: "agent", StartedAt: start.Add(2 * time.Minute), WorkerMetadataJSON: string(metadata)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			identity := tracker.NativeExecutionIdentity{Role: "code", Backend: "codex", Model: "provider_default"}
+			second := &testExecution{recovery: tracker.NativeRecovery{Lease: first.recovery.Lease, Attempts: []tracker.NativeAttempt{{Status: "interrupted", NativeRunData: tracker.NativeRunData{MachineID: "host", PolicyID: approved.ID, Identity: &identity, Runtime: &tracker.NativeRuntimeObservation{LocalAttemptID: firstID}}, Checkpoint: first.checkpoint}}}}
+			_, secondErr := r.Run(ctx, RunRequest{ProjectID: "native", Policy: approved, Execution: second, WorkAttemptID: secondID, Issue: issue, Mode: RunModeImplement})
+			// Approved hold redesign Step 4: prior activity alone is not a recovery hold.
+			if !errors.Is(secondErr, overload) || agent.calls != 2 || first.checkpoint.Resume != "fresh_checkout" {
+				t.Fatalf("verified source did not retry: calls=%d checkpoint=%+v error=%v", agent.calls, first.checkpoint, secondErr)
+			}
+		})
+	}
+}
+
+func TestNativeReworkRefusesSourceLostDuringValidation(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name string
+		lose func(*tracker.NativeRecovery)
+	}{
+		{"attempt removed", func(r *tracker.NativeRecovery) { r.Attempts = nil }},
+		{"declared attempt unavailable", func(r *tracker.NativeRecovery) { r.SourceAttemptID = "missing" }},
+		{"checkpoint removed", func(r *tracker.NativeRecovery) { r.Attempts[0].Checkpoint = nil }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			identity := tracker.NativeExecutionIdentity{Role: "rework", Backend: "codex", Model: "test"}
+			execution := &testExecution{recovery: tracker.NativeRecovery{
+				Lease: tracker.NativeLease{MachineID: "owner", PolicyID: "policy"},
+				Attempts: []tracker.NativeAttempt{{
+					NativeRunData: tracker.NativeRunData{AttemptID: "source", MachineID: "owner", PolicyID: "policy", Identity: &identity},
+					Checkpoint:    &tracker.NativeCheckpoint{Resume: "resume_session", WorktreeState: "unpushed", HeadSHA: "recorded-head", WorkspaceDigest: "recorded-digest", ExternalEffect: "none", EffectState: "none"},
+				}},
+			}}
+			local := workspace.RecoveryState{HeadSHA: "published-head", WorkspaceFingerprint: "published-digest"}
+			if _, reason := nativeRecoveryAction(execution.recovery, &local, false, store.AgentResumeState{}, identity, false, nil); reason != "local_checkpoint_changed" {
+				t.Fatalf("fixture did not require rework verification: %s", reason)
+			}
+			validated := false
+			execution.onValidate = func() {
+				validated = true
+				test.lose(&execution.recovery)
+			}
+			verified := false
+			source := &resumedExecutionWorkspace{afterVerification: func() { verified = true }}
+			r := &Runner{}
+			state, err := r.nativeResume(t.Context(), &RunRequest{Execution: execution}, nil, AgentProcessRequest{}, &local, store.AgentResumeState{}, identity, true, source, workspace.Info{}, workspace.Issue{NativeRework: true})
+			if !errors.Is(err, ErrNativeRecoveryRequired) {
+				t.Fatalf("missing refreshed source was not refused: %v", err)
+			}
+			if !validated || verified || execution.started || execution.checkpoint != nil || state != (store.AgentResumeState{}) {
+				t.Fatalf("missing source changed execution: validated=%t verified=%t started=%t checkpoint=%+v state=%+v", validated, verified, execution.started, execution.checkpoint, state)
+			}
+			if local.HeadSHA != "published-head" || local.WorkspaceFingerprint != "published-digest" {
+				t.Fatalf("missing source changed local recovery state: %+v", local)
+			}
+		})
+	}
+}
+
+func TestNativeRecoveryDecision(t *testing.T) {
+	t.Parallel()
+	identity := tracker.NativeExecutionIdentity{Role: "plan", Backend: "codex", Model: "test"}
+	current := &workspace.ChangeSource{Version: tracker.ChangeVersion{ID: "current", ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: "head"}}}
+	for _, test := range []struct {
+		name    string
+		edit    func(*tracker.NativeRecovery, **workspace.RecoveryState, *bool)
+		action  string
+		reason  string
+		current *workspace.ChangeSource
+	}{
+		{"verified session", func(*tracker.NativeRecovery, **workspace.RecoveryState, *bool) {}, "resume_session", "verified_local_session", nil},
+		{"restart after kill retains clean current Change session", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
+			r.Attempts[0].Status = "cancelled"
+			r.Attempts[0].MachineID = "machine"
+			r.Attempts[0].Checkpoint.WorktreeState = "clean"
+			r.Attempts[0].Checkpoint.HeadSHA = "head"
+			r.Attempts[0].Checkpoint.WorkspaceDigest = "digest"
+		}, "resume_session", "verified_local_session", current},
+		{"restart after kill retains unpushed current Change session", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
+			r.Attempts[0].Status = "cancelled"
+			r.Attempts[0].MachineID = "machine"
+			r.Attempts[0].Checkpoint.HeadSHA = "head"
+			r.Attempts[0].Checkpoint.WorkspaceDigest = "digest"
+			remoteCheckpoint(r.Attempts[0].Checkpoint)
+		}, "resume_session", "verified_local_session", current},
+		{"ordinary retry retains current Change session", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
+			r.Attempts[0].Status = "failed"
+			r.Attempts[0].MachineID = "machine"
+			r.Attempts[0].Checkpoint.WorktreeState = "clean"
+			r.Attempts[0].Checkpoint.HeadSHA = "head"
+			r.Attempts[0].Checkpoint.WorkspaceDigest = "digest"
+		}, "resume_session", "verified_local_session", current},
+		{"restart on another machine starts fresh", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
+			r.Attempts[0].Status = "cancelled"
+			r.Attempts[0].Checkpoint.HeadSHA = "head"
+			remoteCheckpoint(r.Attempts[0].Checkpoint)
+		}, "fresh_checkout", "session_restart_required", current},
+		{"restart with changed source starts fresh", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
+			r.Attempts[0].Status = "cancelled"
+			r.Attempts[0].MachineID = "machine"
+			remoteCheckpoint(r.Attempts[0].Checkpoint)
+		}, "fresh_checkout", "session_restart_required", current},
+		{"restart reconciles uncertain publication first", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
+			r.Attempts[0].Status = "cancelled"
+			r.Attempts[0].MachineID = "machine"
+			r.Attempts[0].Checkpoint.HeadSHA = "head"
+			remoteCheckpoint(r.Attempts[0].Checkpoint)
+			r.Attempts[0].Checkpoint.ExternalEffect, r.Attempts[0].Checkpoint.EffectState = "git_push", "ambiguous"
+		}, "fresh_checkout", "publication_reconciliation_required", current},
+		{"newer clean startup retains source session", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
+			r.Attempts = append(r.Attempts, tracker.NativeAttempt{NativeRunData: tracker.NativeRunData{MachineID: "other"}, Checkpoint: &tracker.NativeCheckpoint{Resume: "fresh_checkout", WorktreeState: "clean"}})
+		}, "resume_session", "verified_local_session", nil},
+		{"recorded rework source survives failed plan retry but cannot resume under another role", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
+			r.Attempts[0].AttemptID, r.SourceAttemptID = "recorded-rework", "recorded-rework"
+			r.Attempts[0].Status = "interrupted"
+			r.Attempts[0].Checkpoint.WorktreeState = "clean"
+			r.Attempts[0].Identity = &tracker.NativeExecutionIdentity{Role: "rework", Backend: "codex", Model: "test"}
+			r.Attempts = append(r.Attempts, tracker.NativeAttempt{Status: "failed", NativeRunData: tracker.NativeRunData{AttemptID: "failed-plan", Identity: &tracker.NativeExecutionIdentity{Role: "plan", Backend: "codex", Model: "test"}}, Checkpoint: &tracker.NativeCheckpoint{Resume: "fresh_checkout", WorktreeState: "clean"}})
+		}, "fresh_checkout", "session_restart_required", nil},
+		{"clean startup with uncertain publication remains source", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
+			r.Attempts = append(r.Attempts, tracker.NativeAttempt{NativeRunData: tracker.NativeRunData{MachineID: "other"}, Checkpoint: &tracker.NativeCheckpoint{Resume: "fresh_checkout", WorktreeState: "clean", ExternalEffect: "pr_create", EffectState: "ambiguous"}})
+		}, "fresh_checkout", "publication_reconciliation_required", nil},
+		{"advertised source is missing", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
+			r.SourceAttemptID = "missing"
+			r.Attempts = nil
+		}, "manual_recovery", "checkpoint_unavailable", nil},
+		{"first run", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) { r.Attempts = nil }, "fresh_checkout", "no_prior_attempt", nil},
+		{"missing checkpoint", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) { r.Attempts[0].Checkpoint = nil }, "fresh_checkout", "checkpoint_missing", nil},
+		{"machine lost with dirty work", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) { r.Lease.MachineID = "other" }, "fresh_checkout", "checkpoint_unavailable", nil},
+		{"local workspace missing", func(_ *tracker.NativeRecovery, local **workspace.RecoveryState, _ *bool) { *local = nil }, "fresh_checkout", "checkpoint_unavailable", nil},
+		{"dirty checkpoint replaced", func(_ *tracker.NativeRecovery, local **workspace.RecoveryState, _ *bool) {
+			(*local).WorkspaceFingerprint = "different"
+		}, "manual_recovery", "local_checkpoint_changed", nil},
+		{"inaccessible checkpoint", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
+			r.Attempts[0].Checkpoint.Availability = "inaccessible"
+		}, "manual_recovery", "checkpoint_unavailable", nil},
+		{"customer receipt unverified", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
+			r.Attempts[0].Checkpoint.Storage = "customer_store"
+		}, "manual_recovery", "checkpoint_unavailable", nil},
+		{"clean inaccessible checkpoint", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
+			r.Attempts[0].Checkpoint.Availability = "missing"
+			r.Attempts[0].Checkpoint.WorktreeState = "clean"
+		}, "fresh_checkout", "checkpoint_unavailable", nil},
+		{"provider session missing", func(_ *tracker.NativeRecovery, _ **workspace.RecoveryState, available *bool) { *available = false }, "fresh_checkout", "session_restart_required", nil},
+		{"interrupted session missing", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, available *bool) {
+			r.Attempts[0].Status = "interrupted"
+			*available = false
+		}, "fresh_checkout", "session_restart_required", nil},
+		{"interrupted clean workspace and session missing", func(r *tracker.NativeRecovery, local **workspace.RecoveryState, available *bool) {
+			r.Attempts[0].Status = "interrupted"
+			r.Attempts[0].Checkpoint.WorktreeState = "clean"
+			*local, *available = nil, false
+		}, "fresh_checkout", "session_restart_required", nil},
+		{"interrupted provider activity without session identity", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, available *bool) {
+			r.Attempts[0].Status = "interrupted"
+			r.Attempts[0].Checkpoint.ExternalEffect, r.Attempts[0].Checkpoint.EffectState = "provider_turn", "pending"
+			*available = false
+		}, "manual_recovery", "session_restart_required", nil},
+		{"policy changed", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
+			r.Lease.PolicyID = "new-policy"
+			r.Attempts[0].Status = "interrupted"
+		}, "resume_session", "verified_local_session", nil},
+		{"backend changed", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
+			r.Attempts[0].Identity = &tracker.NativeExecutionIdentity{Role: "implement", Backend: "claude", Model: "test"}
+		}, "fresh_checkout", "session_restart_required", nil},
+		{"push ambiguity", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
+			r.Attempts[0].Checkpoint.ExternalEffect = "git_push"
+			r.Attempts[0].Checkpoint.EffectState = "ambiguous"
+		}, "fresh_checkout", "publication_reconciliation_required", nil},
+		{"PR pending", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
+			r.Attempts[0].Checkpoint.ExternalEffect = "pr_create"
+			r.Attempts[0].Checkpoint.EffectState = "pending"
+		}, "fresh_checkout", "publication_reconciliation_required", nil},
+		{"manual checkpoint", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
+			r.Attempts[0].Checkpoint.Resume = "manual_recovery"
+		}, "fresh_checkout", "session_restart_required", nil},
+		{"git checkpoint restores on another runner", func(r *tracker.NativeRecovery, local **workspace.RecoveryState, _ *bool) {
+			r.Lease.MachineID = "other"
+			remoteCheckpoint(r.Attempts[0].Checkpoint)
+			(*local).HeadSHA, (*local).WorkspaceFingerprint = "restored", "restored-digest"
+		}, "fresh_checkout", "session_restart_required", nil},
+		{"git checkpoint with divergent fingerprint starts fresh", func(r *tracker.NativeRecovery, local **workspace.RecoveryState, _ *bool) {
+			remoteCheckpoint(r.Attempts[0].Checkpoint)
+			(*local).WorkspaceFingerprint = "restored-digest"
+		}, "fresh_checkout", "session_restart_required", nil},
+		{"interrupted git checkpoint without its session never blocks", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, available *bool) {
+			r.Attempts[0].Status = "interrupted"
+			r.Attempts[0].Checkpoint.ExternalEffect, r.Attempts[0].Checkpoint.EffectState = "provider_turn", "pending"
+			remoteCheckpoint(r.Attempts[0].Checkpoint)
+			*available = false
+		}, "fresh_checkout", "session_restart_required", nil},
+		{"git checkpoint keeps an uncertain push", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
+			remoteCheckpoint(r.Attempts[0].Checkpoint)
+			r.Attempts[0].Checkpoint.ExternalEffect, r.Attempts[0].Checkpoint.EffectState = "git_push", "ambiguous"
+		}, "fresh_checkout", "publication_reconciliation_required", nil},
+		{"current Change supersedes obsolete unpushed checkpoint", func(*tracker.NativeRecovery, **workspace.RecoveryState, *bool) {}, "fresh_checkout", "session_restart_required", current},
+		{"current Change on original machine", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
+			r.Attempts[0].MachineID = "machine"
+		}, "fresh_checkout", "session_restart_required", current},
+		{"current Change with missing obsolete checkpoint", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
+			r.Attempts[0].Checkpoint.Availability = "missing"
+		}, "fresh_checkout", "session_restart_required", current},
+		{"current Change with dirty checkpoint", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
+			r.Attempts[0].Checkpoint.WorktreeState = "dirty"
+		}, "fresh_checkout", "checkpoint_unavailable", current},
+		{"current Change with dirty local source", func(_ *tracker.NativeRecovery, local **workspace.RecoveryState, _ *bool) {
+			(*local).TrackedPaths = []string{"work.go"}
+		}, "fresh_checkout", "checkpoint_unavailable", current},
+		{"current Change does not match local head", func(_ *tracker.NativeRecovery, local **workspace.RecoveryState, _ *bool) {
+			(*local).HeadSHA = "unrelated"
+		}, "fresh_checkout", "checkpoint_unavailable", current},
+		{"current Change preserves ambiguous push", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
+			r.Attempts[0].Checkpoint.ExternalEffect, r.Attempts[0].Checkpoint.EffectState = "git_push", "ambiguous"
+		}, "fresh_checkout", "publication_reconciliation_required", current},
+		{"current Change preserves pending publication", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
+			r.Attempts[0].Checkpoint.ExternalEffect, r.Attempts[0].Checkpoint.EffectState = "pr_create", "pending"
+		}, "fresh_checkout", "publication_reconciliation_required", current},
+		{"current Change ignores historical manual recovery", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
+			r.Attempts[0].Checkpoint.Resume = "manual_recovery"
+		}, "fresh_checkout", "session_restart_required", current},
+	} {
+		for _, mode := range []RetryMode{"", RetryModeFresh} {
+			t.Run(test.name+"/"+string(mode), func(t *testing.T) {
+				local := &workspace.RecoveryState{HeadSHA: "head", WorkspaceFingerprint: "digest"}
+				available := true
+				recovery := tracker.NativeRecovery{Lease: tracker.NativeLease{MachineID: "machine", PolicyID: "policy"}, Attempts: []tracker.NativeAttempt{{
+					NativeRunData: tracker.NativeRunData{Identity: &identity, MachineID: "machine", PolicyID: "policy"},
+					Checkpoint:    &tracker.NativeCheckpoint{Resume: "resume_session", Availability: "available", Storage: "local_only", WorktreeState: "dirty", HeadSHA: "head", WorkspaceDigest: "digest", ExternalEffect: "none", EffectState: "none"},
+				}}}
+				if test.current != nil {
+					recovery.Attempts[0].MachineID = "other"
+					recovery.Attempts[0].Checkpoint.WorktreeState = "unpushed"
+					recovery.Attempts[0].Checkpoint.HeadSHA = "obsolete"
+					recovery.Attempts[0].Checkpoint.WorkspaceDigest = "obsolete-digest"
+				}
+				test.edit(&recovery, &local, &available)
+				action, reason := nativeRecoveryAction(recovery, local, available, store.AgentResumeState{}, identity, mode == RetryModeFresh, test.current)
+				wantAction, wantReason := test.action, test.reason
+				if mode == RetryModeFresh && (wantAction == "resume_session" || wantReason == "session_restart_required") {
+					wantAction, wantReason = "fresh_checkout", "session_restart_required"
+				}
+				if action != wantAction || reason != wantReason {
+					t.Fatalf("recovery = %s/%s, want %s/%s", action, reason, wantAction, wantReason)
+				}
+			})
+		}
+	}
+}
+
+func remoteCheckpoint(c *tracker.NativeCheckpoint) {
+	c.Storage, c.Ref, c.CommitSHA, c.TreeSHA = "git_ref", tracker.CheckpointRefPrefix+"work", strings.Repeat("c", 40), strings.Repeat("e", 40)
+}
+
+func TestNativeEpiloguePreservesBeforeCleanup(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name     string
+		state    workspace.RecoveryState
+		lost     bool
+		retained bool
+		after    bool
+	}{
+		{"clean", workspace.RecoveryState{HeadSHA: "head"}, false, false, true},
+		{"dirty", workspace.RecoveryState{TrackedPaths: []string{"work.go"}}, false, true, false},
+		{"unpushed", workspace.RecoveryState{UnpushedCommits: 2}, false, true, false},
+		{"claim lost", workspace.RecoveryState{TrackedPaths: []string{"work.go"}}, true, true, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			backend := &retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{recoveryStates: []workspace.RecoveryState{test.state}}}
+			execution := &testExecution{}
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			if test.lost {
+				execution.validateErr = ErrExecutionAuthorityUnavailable
+				cancel()
+			}
+			r := &Runner{workspace: backend, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), afterRunTimeout: time.Second}
+			err := r.afterExecution(ctx, RunRequest{Execution: execution, Issue: connector.Issue{ID: "work"}}, backend, workspace.Info{}, workspace.Issue{}, AgentResume{}, false)
+			if errors.Is(err, ErrExecutionAuthorityUnavailable) != test.lost || backend.retained != test.retained || backend.afterRun != test.after {
+				t.Fatalf("epilogue error=%v retained=%v hook=%v", err, backend.retained, backend.afterRun)
+			}
+			if test.lost && execution.checkpoint != nil {
+				t.Fatal("lost owner wrote a checkpoint")
+			}
+			if !test.lost && execution.checkpoint == nil {
+				t.Fatal("epilogue omitted checkpoint")
+			}
+		})
+	}
+}
+
+func TestNativeGuardPreventsRun(t *testing.T) {
+	t.Parallel()
+	r := &Runner{}
+	_, err := r.Run(t.Context(), RunRequest{Execution: &testExecution{validateErr: ErrExecutionAuthorityUnavailable}})
+	if !errors.Is(err, ErrExecutionAuthorityUnavailable) {
+		t.Fatalf("guard = %v", err)
+	}
+}
+
+type executionUnavailableBackend struct{ failure error }
+
+func (b executionUnavailableBackend) Run(context.Context, RunRequest) (RunResult, error) {
+	return RunResult{}, b.failure
+}
+
+func TestNativeOutagePreservesFailureBudget(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name            string
+		failure         error
+		parentCancelled bool
+	}{
+		{name: "authority unavailable", failure: ErrExecutionAuthorityUnavailable},
+		{name: "ownership stage deadline", failure: errors.Join(ErrWorkspacePreparation, context.DeadlineExceeded)},
+		{name: "genuine parent deadline", failure: errors.Join(ErrWorkspacePreparation, context.DeadlineExceeded), parentCancelled: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			supervisor, err := NewSupervisor(executionUnavailableBackend{failure: test.failure}, SupervisorConfig{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancelCause(t.Context())
+			defer cancel(context.Canceled)
+			if test.parentCancelled {
+				cancel(context.DeadlineExceeded)
+			}
+			completion := supervisor.Run(ctx, RunRequest{Attempt: 4})
+			if !completion.Retryable || completion.RetryAttempt != 4 || completion.RetryDelay != supervisor.OverloadRetryDelay() {
+				t.Fatalf("outage consumed retry budget: %#v", completion)
+			}
+			var cause *CancellationCause
+			if errors.As(completion.Err, &cause) != test.parentCancelled {
+				t.Fatalf("stage failure misattributed to parent: %v", completion.Err)
+			}
+		})
+	}
+}
+
+func TestNativeRecoveryPromptIncludesContext(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name         string
+		runtimeBytes int
+		bounded      bool
+	}{
+		{name: "small recovery", runtimeBytes: 10},
+		{name: "oversized runtime evidence", runtimeBytes: 2 << 20},
+		{name: "bounded evidence requires host detail reads", runtimeBytes: 10, bounded: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			execution := &testExecution{recovery: tracker.NativeRecovery{
+				Issue:      tracker.NativeIssue{Title: "Native issue", Body: "Duplicated issue body"},
+				Discussion: []tracker.NativeComment{{Body: "Prior discussion"}},
+				Attempts: []tracker.NativeAttempt{{
+					Status:     "interrupted",
+					Checkpoint: &tracker.NativeCheckpoint{Resume: "resume_session", WorktreeState: "dirty"},
+					NativeRunData: tracker.NativeRunData{
+						CompletionBody: "Preserved source handoff",
+						Runtime: &tracker.NativeRuntimeObservation{
+							Phase:   strings.Repeat("x", test.runtimeBytes),
+							Landing: &tracker.NativeLandingReceipt{VersionID: "reviewed-version", RefusalKind: "conflict"},
+						},
+					},
+				}},
+			}}
+			if test.bounded {
+				execution.recovery.Read = &tracker.NativeRecoveryRead{DetailPath: "scoped recovery evidence", Omitted: []string{"discussion", "change_detail.reviews"}}
+			}
+			prompt, err := nativeRecoveryPrompt(execution)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.bounded && (!strings.Contains(prompt, "Before acting on the omitted") || !strings.Contains(prompt, "following every returned section cursor") || !strings.Contains(prompt, "scoped recovery evidence") || !strings.Contains(prompt, "call work_item") || !strings.Contains(prompt, "view=recovery")) {
+				t.Fatal("bounded recovery was not wired to scoped detail consumers")
+			}
+			if len(prompt) > 16384 {
+				t.Fatalf("recovery prompt = %d bytes, runtime evidence was re-inlined", len(prompt))
+			}
+			for _, content := range []string{"Native issue", "Prior discussion", "interrupted", "resume_session", "dirty", "Preserved source handoff", "reviewed-version", "conflict", "untrusted task content", "Do not fetch GitHub issue history"} {
+				if !strings.Contains(prompt, content) {
+					t.Errorf("prompt omitted %q", content)
+				}
+			}
+			if strings.Contains(prompt, "Duplicated issue body") {
+				t.Fatal("recovery prompt repeated the issue body")
+			}
+			if len(execution.recovery.Attempts[0].Runtime.Phase) != test.runtimeBytes || execution.recovery.Issue.Body != "Duplicated issue body" {
+				t.Fatal("prompt projection mutated recovery authority")
+			}
+		})
+	}
+}
+
+type nativeExecutionTransport func(*http.Request) (*http.Response, error)
+
+func (f nativeExecutionTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func TestNativeRunnerPublishesOnlyAfterRecovery(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real-time lifecycle and timeout integration")
+	}
+
+	for _, test := range []struct {
+		name        string
+		blocked     bool
+		workerAuth  bool
+		local       bool
+		interrupted bool
+		fresh       bool
+		ambiguous   bool
+		automatic   bool
+		lost        bool
+		cleanRole   string
+		effect      bool
+		dirty       bool
+	}{
+		{name: "first run without worker GitHub access"},
+		{name: "clean foreign plan", interrupted: true, cleanRole: RolePlan},
+		{name: "clean foreign rework", interrupted: true, cleanRole: RoleRework},
+		{name: "effect bearing foreign checkpoint", interrupted: true, cleanRole: RolePlan, effect: true, blocked: true},
+		{name: "dirty foreign checkpoint", interrupted: true, cleanRole: RolePlan, dirty: true, blocked: true},
+		{name: "lost legacy checkpoint starts fresh", lost: true},
+		{name: "preserved planner checkpoint", local: true},
+		{name: "explicit worker GitHub access", workerAuth: true},
+		{name: "interrupted planner requires resume evidence", local: true, interrupted: true, blocked: true},
+		{name: "explicit fresh implementation preserves planner workspace", local: true, interrupted: true, fresh: true},
+		{name: "automatic fresh cannot restart interrupted planner", local: true, interrupted: true, fresh: true, blocked: true, automatic: true},
+		{name: "explicit fresh restarts from a lost legacy checkpoint", interrupted: true, fresh: true},
+		{name: "explicit fresh cannot replay ambiguous push", local: true, interrupted: true, fresh: true, ambiguous: true, blocked: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			backend := &retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Key: "native", Branch: "native"}}}
+			agent := &fakeCodexClient{}
+			execution := &testExecution{}
+			if test.lost || test.local || test.interrupted {
+				execution.recovery = tracker.NativeRecovery{Lease: tracker.NativeLease{MachineID: "new-machine"}, Attempts: []tracker.NativeAttempt{{NativeRunData: tracker.NativeRunData{MachineID: "lost-machine"}, Checkpoint: &tracker.NativeCheckpoint{Storage: "local_only", WorktreeState: "dirty", Resume: "resume_session"}}}}
+			}
+			if test.local {
+				previous := &execution.recovery.Attempts[0]
+				previous.MachineID = "new-machine"
+				previous.Checkpoint.HeadSHA = "head"
+				previous.Checkpoint.WorkspaceDigest = "digest"
+				previous.Checkpoint.ExternalEffect = "none"
+				backend.recoveryStates = []workspace.RecoveryState{{HeadSHA: "head", WorkspaceFingerprint: "digest", UntrackedPaths: []string{"docs/detent-cloud-smoke-test.md"}}}
+			}
+			if test.interrupted {
+				previous := &execution.recovery.Attempts[0]
+				previous.Status = "interrupted"
+				previous.Identity = &tracker.NativeExecutionIdentity{Role: "plan", Backend: "codex", Model: "test"}
+			}
+			if test.cleanRole != "" {
+				previous := &execution.recovery.Attempts[0]
+				previous.Identity.Role = test.cleanRole
+				previous.Checkpoint = &tracker.NativeCheckpoint{Storage: "local_only", Resume: "resume_session", Availability: "available", WorktreeState: "clean", HeadSHA: "recorded-head", WorkspaceDigest: "digest", ExternalEffect: "none", EffectState: "none"}
+				if test.dirty {
+					previous.Checkpoint.WorktreeState = "dirty"
+				}
+				if test.effect {
+					previous.Checkpoint.ExternalEffect, previous.Checkpoint.EffectState = "provider_turn", "pending"
+				}
+				backend.recoveryStates = []workspace.RecoveryState{{HeadSHA: "recorded-head", WorkspaceFingerprint: "digest"}}
+			}
+			if test.ambiguous {
+				execution.recovery.Attempts[0].Checkpoint.ExternalEffect = "git_push"
+				execution.recovery.Attempts[0].Checkpoint.EffectState = "ambiguous"
+			}
+			allowLocalBinding := true
+			cfg := config.Config{Worker: config.Worker{AllowLocalBinding: &allowLocalBinding, ExtraNetworkDomains: []string{"fonts.googleapis.com", "fonts.gstatic.com"}}}
+			cfg.Tracker.Kind = config.TrackerHubNative
+			cfg.Tracker.APIKey = "$NATIVE_HUB_TOKEN"
+			cfg = cfg.WithRuntimeGitHubToken("native-instance-token")
+			if test.workerAuth {
+				cfg.Worker.GitHubToken = "$NATIVE_WORKER_GITHUB_TOKEN"
+				cfg.Worker.GitHubRESTMinReserve = 500
+				cfg.Worker.GitHubRESTPollIntervalMS = 3600000
+			}
+			cliDir := t.TempDir()
+			cliName := "gh"
+			cliBody := "#!/bin/sh\n[ -r \"$GH_CONFIG_DIR/hosts.yml\" ] || exit 1\nprintf %s native-worker-token\n"
+			if runtime.GOOS == "windows" {
+				cliName = "gh.bat"
+				cliBody = "@echo off\r\nif not exist \"%GH_CONFIG_DIR%\\hosts.yml\" exit /b 1\r\necho native-worker-token\r\n"
+			}
+			if err := os.WriteFile(filepath.Join(cliDir, cliName), []byte(cliBody), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", cliDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+			identityReads, budgetReads := 0, 0
+			originalClient := http.DefaultClient
+			http.DefaultClient = &http.Client{Transport: nativeExecutionTransport(func(req *http.Request) (*http.Response, error) {
+				if !test.workerAuth || req.URL.Host != "api.github.com" || req.Header.Get("Authorization") != "Bearer native-worker-token" {
+					t.Errorf("unexpected worker GitHub request: %s", req.URL)
+					return nil, errors.New("unexpected worker GitHub request")
+				}
+				switch req.URL.Path {
+				case "/graphql":
+					identityReads++
+					return workerGitHubPrincipalResponse(), nil
+				case "/rate_limit":
+					budgetReads++
+					return workerGitHubRateLimitResponse(), nil
+				default:
+					t.Errorf("unexpected worker GitHub path: %s", req.URL.Path)
+					return nil, errors.New("unexpected worker GitHub path")
+				}
+			})}
+			t.Cleanup(func() { http.DefaultClient = originalClient })
+			githubCredentialReads := 0
+			r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: cfg, Prompt: "Complete the native issue"}, Workspace: backend, AgentBackend: agent, lookupEnv: func(key string) string {
+				if key == "GOFLAGS" || key == "GOMAXPROCS" {
+					return ""
+				}
+				githubCredentialReads++
+				if key == "NATIVE_WORKER_GITHUB_TOKEN" {
+					return "native-worker-token"
+				}
+				t.Errorf("resolved an unused credential: %s", key)
+				return ""
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := RunRequest{Execution: execution, Issue: connector.Issue{ID: "native", Identifier: "native#1"}, Mode: RunModePlan}
+			if test.cleanRole == RoleRework {
+				request.Mode, request.Issue.State = RunModeImplement, "Rework"
+			}
+			if test.fresh {
+				request.Mode, request.RetryMode = RunModeImplement, RetryModeFresh
+				if !test.automatic {
+					request.RecoveryAttemptID = 1
+				}
+			}
+			result, err := r.Run(t.Context(), request)
+			if test.workerAuth {
+				if githubCredentialReads != 1 || identityReads != 1 || budgetReads != 1 {
+					t.Fatalf("worker credential/identity/budget reads = %d/%d/%d, want 1/1/1", githubCredentialReads, identityReads, budgetReads)
+				}
+				policy := agent.request.workerGitHub
+				if !policy.Enabled || policy.Token != "native-worker-token" || policy.PrincipalID != 42 || policy.Principal.Login != "detent-worker[bot]" {
+					t.Fatal("native worker lost its selected credential or principal")
+				}
+				variables := agent.request.Environment.Variables
+				if variables["GH_CONFIG_DIR"] != filepath.Join(agent.request.TempDir, "github-cli") || variables["GH_TOKEN"] != "" || variables["GITHUB_TOKEN"] != "" {
+					t.Fatal("native worker lost its isolated GitHub environment")
+				}
+				if result.RateLimits == nil || len(result.RateLimits.GitHubRESTBudgets) != 1 {
+					t.Fatal("native worker omitted its GitHub budget accounting")
+				}
+				budget := result.RateLimits.GitHubRESTBudgets[0]
+				if budget.CredentialIdentity != policy.CredentialIdentity || budget.CredentialIdentity == "" || budget.Consumer != telemetry.RESTConsumerWorker || budget.Remaining != 4200 || budget.MinRemainingReserve != 500 {
+					t.Fatalf("native worker budget = %+v", budget)
+				}
+			} else if githubCredentialReads != 0 || identityReads != 0 || budgetReads != 0 {
+				t.Fatal("native coding resolved or used an unused GitHub credential")
+			}
+			if errors.Is(err, ErrNativeRecoveryRequired) != test.blocked || (!test.blocked && err != nil) {
+				t.Fatalf("run error = %v", err)
+			}
+			if test.cleanRole != "" && !test.blocked {
+				if !backend.createIssue.FreshCheckout || backend.createIssue.BaseRef != "recorded-head" || !agentResumeEmpty(agent.request.Resume) {
+					t.Fatalf("clean checkpoint did not restart at recorded head: issue=%+v resume=%+v", backend.createIssue, agent.request.Resume)
+				}
+			}
+			if test.blocked && execution.started {
+				t.Fatal("unresolved checkpoint was superseded by a new attempt")
+			}
+			if !test.blocked && len(agent.request.ExtraNetworkDomains) != 2 {
+				t.Fatalf("project domains missing: %#v", agent.request.ExtraNetworkDomains)
+			}
+			if !test.blocked && !agent.request.AllowLocalBinding {
+				t.Fatal("native turn omitted configured localhost permission")
+			}
+			if !test.blocked && (!execution.started || execution.finish == "" || execution.checkpoint == nil) {
+				t.Fatalf("native run omitted lifecycle: %#v", execution)
+			}
+		})
+	}
+}
+
+type artifactExecutionProbe struct {
+	publicationSource func(context.Context, tracker.ChangeVersion, workspace.LandOptions) (workspace.GitHubPublication, error)
+	testExecution
+	failure         error
+	evidenceFailure error
+	finalized       bool
+	evidence        []ValidationEvidence
+	onFinalize      func(context.Context) error
+}
+
+func (e *artifactExecutionProbe) SetPublicationSource(source func(context.Context, tracker.ChangeVersion, workspace.LandOptions) (workspace.GitHubPublication, error)) {
+	e.publicationSource = source
+}
+
+func (*artifactExecutionProbe) PrepareArtifacts(context.Context, string) error { return nil }
+func (*artifactExecutionProbe) ArtifactLog(context.Context, string) error      { return nil }
+func (e *artifactExecutionProbe) FinalizeArtifacts(ctx context.Context, _ string) error {
+	e.finalized = true
+	if e.onFinalize != nil {
+		return e.onFinalize(ctx)
+	}
+	return e.failure
+}
+
+func (e *artifactExecutionProbe) PublishValidationEvidence(_ context.Context, files []ValidationEvidence) error {
+	e.evidence = files
+	return e.evidenceFailure
+}
+
+type finalizingExecutionWorkspace struct {
+	retainedExecutionWorkspace
+	delay         time.Duration
+	failure       error
+	preserveErr   error
+	preserveDelay time.Duration
+	finalized     bool
+}
+
+func (w *finalizingExecutionWorkspace) GitHubPublicationIdentity(_ context.Context, _ workspace.Info, issue workspace.Issue, opts workspace.LandOptions) (workspace.GitHubPublication, error) {
+	if !w.finalized || opts.GitHubClient == nil {
+		return workspace.GitHubPublication{}, errors.New("publication identity lost finalized source or selected client")
+	}
+	return workspace.GitHubPublication{Repository: opts.Repository, HeadSHA: opts.HeadSHA, Branch: "detent/fixture", BaseRef: issue.ProgressBaseRef}, nil
+}
+
+func (w *finalizingExecutionWorkspace) PrepareGitHubPublication(ctx context.Context, _ workspace.Info, issue workspace.Issue, opts workspace.LandOptions) (workspace.GitHubPublication, error) {
+	if !w.finalized || opts.Repository != "https://github.com/example/repo" || opts.HeadSHA != strings.Repeat("c", 40) || opts.TargetBranch != issue.ProgressBaseRef || opts.GitHubClient == nil || opts.Authorize == nil {
+		return workspace.GitHubPublication{}, errors.New("publication hook lost finalized source, target, client or authority")
+	}
+	if err := opts.Authorize(ctx); err != nil {
+		return workspace.GitHubPublication{}, err
+	}
+	publication := workspace.GitHubPublication{Repository: opts.Repository, HeadSHA: opts.HeadSHA, Branch: "detent/fixture", BaseRef: opts.TargetBranch}
+	if opts.PublicationEffect != nil {
+		if err := opts.PublicationEffect(ctx, "git_push", "confirmed", publication); err != nil {
+			return workspace.GitHubPublication{}, err
+		}
+	}
+	return publication, nil
+}
+
+func (w *finalizingExecutionWorkspace) FinalizeNativeWork(ctx context.Context, _ workspace.Info, _ workspace.Issue, validate func(context.Context) error) (string, error) {
+	time.Sleep(w.delay)
+	if err := validate(ctx); err != nil {
+		return "", err
+	}
+	w.finalized = true
+	return "", w.failure
+}
+
+func (w *finalizingExecutionWorkspace) RecoveryState(ctx context.Context, info workspace.Info, issue workspace.Issue) (workspace.RecoveryState, error) {
+	if err := ctx.Err(); err != nil {
+		return workspace.RecoveryState{}, err
+	}
+	return w.fakeWorkspaceBackend.RecoveryState(ctx, info, issue)
+}
+
+func (w *finalizingExecutionWorkspace) PreserveIssue(ctx context.Context, issue workspace.Issue) (workspace.Preservation, error) {
+	time.Sleep(w.preserveDelay)
+	if err := errors.Join(ctx.Err(), w.preserveErr); err != nil {
+		return workspace.Preservation{}, fmt.Errorf("resolve cleanup ownership source: %w", err)
+	}
+	return w.retainedExecutionWorkspace.PreserveIssue(ctx, issue)
+}
+
+func TestNativeEpilogueStageContexts(t *testing.T) {
+	t.Parallel()
+	uploadErr := errors.New("artifact upload unavailable")
+	for _, test := range []struct {
+		name            string
+		finalDelay      time.Duration
+		artifactDelay   time.Duration
+		cancel          bool
+		authorityErr    error
+		artifactErr     error
+		finalErr        error
+		preserveErr     error
+		preserveDelay   time.Duration
+		parentDeadline  time.Duration
+		clean           bool
+		wantErr         error
+		publicationHook bool
+		remote          bool
+		sourceIteration bool
+	}{
+		{name: "slow finalization", finalDelay: 2 * time.Second},
+		{name: "required PR hook retains configured source and target", publicationHook: true},
+		{name: "SSH publication identity without source iteration", publicationHook: true, remote: true},
+		{name: "SSH publication identity with source iteration", publicationHook: true, remote: true, sourceIteration: true},
+		{name: "slow artifacts", artifactDelay: 2 * time.Second},
+		{name: "clean committed source cancelled during artifacts", finalDelay: 2 * time.Second, artifactDelay: 2 * time.Second, clean: true, cancel: true, wantErr: context.Canceled},
+		{name: "genuine parent deadline retains source without success", finalDelay: 2 * time.Second, artifactDelay: 2 * time.Second, parentDeadline: 3 * time.Second, clean: true, wantErr: context.DeadlineExceeded},
+		{name: "artifact failure retains checkpoint", artifactErr: uploadErr, wantErr: uploadErr},
+		{name: "expired authority retains source without checkpoint", authorityErr: ErrExecutionAuthorityUnavailable, wantErr: ErrExecutionAuthorityUnavailable},
+		{name: "source fence refusal", finalErr: workspace.ErrMergeResolutionInvalid, wantErr: workspace.ErrMergeResolutionInvalid},
+		{name: "ownership failure is instance owned", preserveDelay: 2 * time.Second, wantErr: ErrWorkspacePreparation},
+		{name: "absent issue workspace has nothing to preserve", preserveErr: workspace.ErrMissingWorkspace},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			info := workspace.Info{}
+			head := "committed-head"
+			if test.remote {
+				info.Path = initRunnerSourceRepo(t)
+				head = strings.TrimSpace(runRunnerGit(t, info.Path, "rev-parse", "HEAD"))
+			}
+			synctest.Test(t, func(t *testing.T) {
+				state := workspace.RecoveryState{HeadSHA: head, WorkspaceFingerprint: "tested-source-digest", UnpushedCommits: 1}
+				if test.clean {
+					state.UnpushedCommits = 0
+				}
+				backend := &finalizingExecutionWorkspace{retainedExecutionWorkspace: retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{recoveryStates: []workspace.RecoveryState{state}}}, delay: test.finalDelay, failure: test.finalErr, preserveErr: test.preserveErr}
+				backend.preserveDelay = test.preserveDelay
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				if test.parentDeadline > 0 {
+					var stop context.CancelFunc
+					ctx, stop = context.WithTimeout(ctx, test.parentDeadline)
+					defer stop()
+				}
+				execution := &artifactExecutionProbe{}
+				execution.onFinalize = func(ctx context.Context) error {
+					time.Sleep(test.artifactDelay)
+					if test.cancel {
+						cancel()
+					}
+					execution.validateErr = test.authorityErr
+					return errors.Join(ctx.Err(), test.artifactErr)
+				}
+				r := &Runner{workspace: backend, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), afterRunTimeout: time.Second}
+				issue := workspace.Issue{}
+				request := RunRequest{Execution: execution, Issue: connector.Issue{ID: "work"}, finalizeNativeWork: true}
+				var client *github.Client
+				if test.publicationHook {
+					issue.ProgressBaseRef = "develop"
+					var clientErr error
+					client, clientErr = github.NewClient(github.ClientConfig{TokenSource: github.StaticTokenSource(t.Name()), HTTPClient: workerGitHubHTTPClientFunc(func(*http.Request) (*http.Response, error) {
+						return nil, errors.New("publication fixture must not reach GitHub")
+					})})
+					if clientErr != nil {
+						t.Fatal(clientErr)
+					}
+					issue.Landing = &workspace.LandOptions{GitHubClient: client}
+				}
+				if test.remote {
+					r.workflow.Config.Gate.Kind = gate.KindArtifact
+					left, right := net.Pipe()
+					defer left.Close()
+					defer right.Close()
+					callbacks := r.SSHRunCallbacks(request)
+					central := NewSSHPeer(ctx, left, left, callbacks.Handle)
+					defer central.Close()
+					callbacks.BindExecutionSources(central, t.TempDir())
+					sources := &SSHExecutionSources{}
+					remote := NewSSHPeer(ctx, right, right, sources.Handle)
+					defer remote.Close()
+					wire := NewSSHRunRequest(request)
+					wire.Native, wire.SourceIteration, wire.Sources = true, test.sourceIteration, sources
+					bound := wire.Bind(ctx, remote)
+					request.Execution = bound.Execution
+					if _, supported := request.Execution.(NativeSourceIterationExecution); supported != test.sourceIteration {
+						t.Fatalf("source iteration support = %t, want %t", supported, test.sourceIteration)
+					}
+				}
+				err := r.afterExecution(ctx, request, backend, info, issue, AgentResume{}, true)
+				if test.publicationHook {
+					if err != nil || execution.publicationSource == nil || execution.checkpoint == nil {
+						t.Fatalf("host finalization omitted publication hook: %v", err)
+					}
+					effects := 0
+					publication, publicationErr := execution.publicationSource(ctx, tracker.ChangeVersion{ChangeVersionInput: tracker.ChangeVersionInput{Repository: "https://github.com/example/repo", HeadSHA: strings.Repeat("c", 40)}}, workspace.LandOptions{GitHubClient: client, Authorize: execution.Validate, PublicationEffect: func(context.Context, string, string, workspace.GitHubPublication) error { effects++; return nil }})
+					if publicationErr != nil || publication.Repository != "https://github.com/example/repo" || publication.HeadSHA != strings.Repeat("c", 40) || publication.BaseRef != "develop" || publication.Branch != "detent/fixture" || effects != 1 {
+						t.Fatalf("publication hook changed source binding: %+v, effects=%d, %v", publication, effects, publicationErr)
+					}
+				}
+				preserved := test.preserveErr == nil && test.preserveDelay == 0
+				absent := errors.Is(test.preserveErr, workspace.ErrMissingWorkspace)
+				if !errors.Is(err, test.wantErr) || backend.afterRun || backend.retained != preserved || absent && errors.Is(err, ErrWorkspacePreparation) {
+					t.Fatalf("error=%v retained=%t cleaned=%t", err, backend.retained, backend.afterRun)
+				}
+				if test.authorityErr != nil || !preserved && !absent {
+					if execution.checkpoint != nil {
+						t.Fatal("refused ownership or authority wrote checkpoint")
+					}
+				} else if execution.checkpoint == nil || execution.checkpoint.HeadSHA != state.HeadSHA || execution.checkpoint.WorkspaceDigest != state.WorkspaceFingerprint {
+					t.Fatalf("tested source identity lost: %+v", execution.checkpoint)
+				}
+			})
+		})
+	}
+}
+
+type workBudgetExecution struct {
+	testExecution
+	delay time.Duration
+}
+
+func (e *workBudgetExecution) Validate(ctx context.Context) error {
+	return errors.Join(ctx.Err(), e.validateErr)
+}
+
+func (e *workBudgetExecution) ValidatorVersion(ctx context.Context) (NativeValidation, error) {
+	time.Sleep(e.delay)
+	return NativeValidation{}, ctx.Err()
+}
+
+func (*workBudgetExecution) RecordValidator(context.Context, gate.ValidatorResult) error {
+	return nil
+}
+
+func TestNativeWorkUsesBackendBudget(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		phase        string
+		configure    func(*config.Config)
+		wantDeadline bool
+		noVersion    bool
+	}{
+		{name: "source inherits backend", phase: "source"},
+		{name: "validator inherits backend", phase: "validator"},
+		{name: "source turn limit retained", phase: "source", wantDeadline: true, configure: func(c *config.Config) { c.Agent.MaxTurnDurationMS = 10 }},
+		{name: "source session limit retained", phase: "source", wantDeadline: true, configure: func(c *config.Config) { c.Agent.MaxSessionDurationMS = 10 }},
+		{name: "validator turn limit retained", phase: "validator", wantDeadline: true, configure: func(c *config.Config) { c.Agent.MaxTurnDurationMS = 1000 }},
+		{name: "validator session limit retained", phase: "validator", wantDeadline: true, configure: func(c *config.Config) { c.Agent.MaxSessionDurationMS = 1000 }},
+		{name: "validator own limit retained", phase: "validator", wantDeadline: true, configure: func(c *config.Config) { c.Gate.Validator.TurnTimeoutMS = 1000 }},
+		{name: "validator limit outranks session fallback", phase: "validator", wantDeadline: true, configure: func(c *config.Config) { c.Agent.MaxSessionDurationMS = 7200000; c.Gate.Validator.TurnTimeoutMS = 1000 }},
+		{name: "no version needs no validator route", phase: "validator", noVersion: true, configure: func(c *config.Config) {
+			c.Agents.Routes = []config.AgentRoute{{Name: "code-only", Role: RoleCode, Backend: config.DefaultAgentBackendID}}
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			run := func(t *testing.T) {
+				backend := &finalizingExecutionWorkspace{retainedExecutionWorkspace: retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Key: "native", Branch: "native"}, recoveryStates: []workspace.RecoveryState{{HeadSHA: "head", WorkspaceFingerprint: "digest"}}}}, delay: 20 * time.Millisecond}
+				cfg := config.Config{Codex: config.Codex{TurnTimeoutMS: 3600000}}
+				cfg.Gate.Validator.Enabled = test.phase == "validator"
+				if test.configure != nil {
+					test.configure(&cfg)
+				}
+				r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: cfg}, Workspace: backend, AgentBackend: &fakeCodexClient{}, AfterRunTimeout: 10 * time.Millisecond})
+				if err != nil {
+					t.Fatal(err)
+				}
+				r.sleepInhibitor = func(context.Context, func()) (func(), error) { return func() {}, nil }
+				execution := &workBudgetExecution{delay: 65 * time.Second}
+				if test.noVersion {
+					execution.delay = 0
+				}
+				req := RunRequest{Execution: execution, Issue: connector.Issue{ID: "native", Identifier: "native#1"}, Mode: RunModeImplement}
+				if test.phase == "validator" {
+					err = r.validateNativeChange(t.Context(), req)
+				} else {
+					_, err = r.Run(t.Context(), req)
+				}
+				if test.wantDeadline {
+					if !errors.Is(err, context.DeadlineExceeded) {
+						t.Fatalf("explicit work limit was ignored: %v", err)
+					}
+					return
+				}
+				if err != nil {
+					t.Fatalf("%s work inherited cleanup timeout: %v", test.phase, err)
+				}
+				if test.phase == "source" && (!backend.finalized || execution.finish != "succeeded") {
+					t.Fatalf("source finalization=%t outcome=%q", backend.finalized, execution.finish)
+				}
+			}
+			synctest.Test(t, run)
+		})
+	}
+}
+
+func TestArtifactsFinalizeBeforeWorkspaceCleanup(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name        string
+		state       workspace.RecoveryState
+		recoveryErr error
+		failed      bool
+		finalized   bool
+		after       bool
+		screenshot  bool
+	}{
+		{name: "clean with screenshots", screenshot: true, state: workspace.RecoveryState{HeadSHA: "head"}, finalized: true, after: true},
+		{name: "clean", state: workspace.RecoveryState{HeadSHA: "head"}, finalized: true, after: true},
+		{name: "failed capture", state: workspace.RecoveryState{HeadSHA: "head"}, failed: true, finalized: true},
+		{name: "unpushed finalized head", state: workspace.RecoveryState{HeadSHA: "head", UnpushedCommits: 1}, finalized: true},
+		{name: "dirty source cannot freeze artifacts", state: workspace.RecoveryState{HeadSHA: "head", TrackedPaths: []string{"source.go"}}},
+		{name: "unavailable recovery cannot freeze artifacts", recoveryErr: errors.New("recovery unavailable")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			backend := &retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{recoveryStates: []workspace.RecoveryState{test.state}, recoveryErr: test.recoveryErr}}
+			execution := &artifactExecutionProbe{}
+			directory := t.TempDir()
+			if test.screenshot {
+				path := filepath.Join(directory, ".detent", "validation", "1")
+				if err := os.MkdirAll(path, 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(path, "test.png"), []byte("screenshot bytes"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.failed {
+				execution.failure = errors.New("upload unavailable")
+			}
+			r := &Runner{workspace: backend, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), afterRunTimeout: time.Second}
+			req := RunRequest{Execution: execution, Issue: connector.Issue{ID: "work"}, validationEvidenceSource: func(context.Context) (tracker.AttemptDiffRequest, bool) {
+				return tracker.AttemptDiffRequest{Files: []tracker.AttemptDiffFile{{Path: ".detent/validation/1/test.png", Status: "added"}}}, test.screenshot
+			}}
+			err := r.afterExecution(t.Context(), req, backend, workspace.Info{Path: directory}, workspace.Issue{}, AgentResume{}, false)
+			if test.screenshot && (len(execution.evidence) != 1 || string(execution.evidence[0].Content) != "screenshot bytes" || execution.evidence[0].Name != "test.png") {
+				t.Fatalf("evidence=%+v", execution.evidence)
+			}
+			if execution.finalized != test.finalized || backend.afterRun != test.after || (err != nil) != test.failed {
+				t.Fatal("cleanup preceded durable finalization", err, backend.afterRun)
+			}
+		})
+	}
+}
+
+type wipExecutionWorkspace struct {
+	retainedExecutionWorkspace
+	published  bool
+	pushes     int
+	publishErr error
+}
+
+func (w *wipExecutionWorkspace) PushCheckpointRef(ctx context.Context, _ workspace.Info, _ workspace.Issue, previous workspace.CheckpointRef, validate func(context.Context) error) (workspace.CheckpointRef, bool, error) {
+	if err := validate(ctx); err != nil {
+		return previous, false, err
+	}
+	w.pushes++
+	w.published = true
+	if w.publishErr != nil {
+		return previous, false, w.publishErr
+	}
+	return workspace.CheckpointRef{Ref: workspace.CheckpointRefPrefix + "work", CommitSHA: strings.Repeat("c", 40), HeadSHA: strings.Repeat("a", 40), TreeSHA: strings.Repeat("e", 40)}, true, nil
+}
+
+func TestStageEndPushesCheckpointRef(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name       string
+		failed     bool
+		restored   *workspace.CheckpointRef
+		wantCommit string
+	}{
+		{name: "pushed", wantCommit: strings.Repeat("c", 40)},
+		{name: "push failure keeps the job and records local state", failed: true},
+		{name: "push failure keeps the newest recorded checkpoint", failed: true, restored: &workspace.CheckpointRef{Ref: workspace.CheckpointRefPrefix + "work", CommitSHA: strings.Repeat("b", 40), TreeSHA: strings.Repeat("d", 40)}, wantCommit: strings.Repeat("b", 40)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			backend := &wipExecutionWorkspace{retainedExecutionWorkspace: retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{recoveryStates: []workspace.RecoveryState{{TrackedPaths: []string{"work.go"}}}}}}
+			if test.failed {
+				backend.publishErr = errors.New("push unavailable")
+			}
+			execution := &availabilityTestExecution{deadline: time.Now().Add(-time.Second)}
+			ctx, cancel := context.WithCancelCause(t.Context())
+			cancel(context.Canceled)
+			defer cancel(context.Canceled)
+			r := &Runner{workspace: backend, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), afterRunTimeout: time.Second}
+			req := RunRequest{Execution: execution, Issue: connector.Issue{ID: "work"}}
+			req.checkpointRefs = newCheckpointRefs(backend, execution, workspace.Info{}, workspace.Issue{Checkpoint: test.restored}, nil)
+			err := r.afterExecution(ctx, req, backend, workspace.Info{}, workspace.Issue{}, AgentResume{}, true)
+			wantPushes := 1
+			if test.failed {
+				wantPushes = checkpointRefFinalAttempts
+			}
+			if backend.pushes != wantPushes || backend.afterRun || errors.Is(err, backend.publishErr) && backend.publishErr != nil {
+				t.Fatalf("pushes=%d cleaned=%t err=%v", backend.pushes, backend.afterRun, err)
+			}
+			checkpoint := execution.checkpoint
+			if checkpoint == nil || checkpoint.CommitSHA != test.wantCommit || checkpoint.GitRef() != (test.wantCommit != "") {
+				t.Fatalf("final checkpoint = %#v", checkpoint)
+			}
+			if checkpoint.GitRef() && checkpoint.Resume == "manual_recovery" {
+				t.Fatal("a pushed checkpoint still demands manual recovery")
+			}
+		})
+	}
+}
+
+type availabilityTestExecution struct {
+	testExecution
+	deadline time.Time
+}
+
+func (e *availabilityTestExecution) AvailabilityDeadline() time.Time { return e.deadline }
+
+func (e *availabilityTestExecution) Validate(ctx context.Context) error { return ctx.Err() }
+
+func (e *availabilityTestExecution) Checkpoint(ctx context.Context, checkpoint tracker.NativeCheckpoint) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return e.testExecution.Checkpoint(ctx, checkpoint)
+}
+
+type deadlineRunExecution struct {
+	availabilityTestExecution
+	cancel    context.CancelCauseFunc
+	published *bool
+}
+
+func (e *deadlineRunExecution) Guard(ctx context.Context) (context.Context, func(), error) {
+	guarded, cancel := context.WithCancelCause(ctx)
+	e.cancel = cancel
+	return guarded, func() { cancel(context.Canceled) }, nil
+}
+
+func (e *deadlineRunExecution) Validate(ctx context.Context) error { return ctx.Err() }
+
+func (e *deadlineRunExecution) Finish(ctx context.Context, outcome string) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if !*e.published {
+		return errors.New("finish preceded checkpoint ref push")
+	}
+	e.finish = outcome
+	return nil
+}
+
+type availabilityStoppingBackend struct {
+	fakeCodexClient
+	stop func()
+	err  error
+}
+
+func (b *availabilityStoppingBackend) RunTurn(ctx context.Context, _ AgentTurnRequest, _ AgentUpdateHandler) (AgentTurnResult, error) {
+	b.stop()
+	<-ctx.Done()
+	return AgentTurnResult{}, errors.Join(ctx.Err(), b.err)
+}
+
+func TestRunnerAvailabilityInterruptionFinishesAfterCheckpointRef(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real-time lifecycle and timeout integration")
+	}
+
+	t.Parallel()
+	backend := &wipExecutionWorkspace{retainedExecutionWorkspace: retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Key: "native", Branch: "native"}, recoveryStates: []workspace.RecoveryState{{TrackedPaths: []string{"work.go"}}}}}}
+	execution := &deadlineRunExecution{availabilityTestExecution: availabilityTestExecution{deadline: time.Now().Add(-time.Second)}, published: &backend.published}
+	agent := &availabilityStoppingBackend{stop: func() { execution.cancel(context.Canceled) }}
+	r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: config.Config{}, Prompt: "Complete the native issue"}, Workspace: backend, AgentBackend: agent})
+	if err != nil {
+		t.Fatal(err)
+	}
+	held, released := false, false
+	r.sleepInhibitor = func(context.Context, func()) (func(), error) { held = true; return func() { released = true }, nil }
+	_, err = r.Run(t.Context(), RunRequest{Execution: execution, Issue: connector.Issue{ID: "native", Identifier: "native#1"}, Mode: RunModePlan})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("run error = %v", err)
+	}
+	if execution.finish != "interrupted" || !backend.published || !backend.retained || backend.afterRun {
+		t.Fatalf("finish=%s published=%t retained=%t cleaned=%t", execution.finish, backend.published, backend.retained, backend.afterRun)
+	}
+	if !held || !released {
+		t.Fatalf("sleep held=%t released=%t", held, released)
+	}
+}
+
+type availabilityCancelledBackend struct{}
+
+func (availabilityCancelledBackend) Run(context.Context, RunRequest) (RunResult, error) {
+	return RunResult{}, context.Canceled
+}
+
+func TestAvailabilityStopPreservesRetryBudget(t *testing.T) {
+	t.Parallel()
+	for _, expired := range []bool{false, true} {
+		t.Run(strconv.FormatBool(expired), func(t *testing.T) {
+			deadline := time.Now().Add(time.Hour)
+			if expired {
+				deadline = time.Now().Add(-time.Second)
+			}
+			execution := &availabilityTestExecution{deadline: deadline}
+			supervisor, err := NewSupervisor(availabilityCancelledBackend{}, SupervisorConfig{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			completion := supervisor.Run(t.Context(), RunRequest{Attempt: 4, Execution: execution})
+			want := 5
+			if expired {
+				want = 4
+			}
+			if !completion.Retryable || completion.RetryAttempt != want {
+				t.Fatalf("retry = %t/%d, want attempt %d", completion.Retryable, completion.RetryAttempt, want)
+			}
+		})
+	}
+}
+
+func TestAvailabilityStopRetainsUnreapedWorkspace(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real-time lifecycle and timeout integration")
+	}
+
+	backend := &wipExecutionWorkspace{retainedExecutionWorkspace: retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Key: "native", Branch: "native"}, recoveryStates: []workspace.RecoveryState{{TrackedPaths: []string{"work.go"}}}}}}
+	execution := &deadlineRunExecution{availabilityTestExecution: availabilityTestExecution{deadline: time.Now().Add(-time.Second)}, published: &backend.retained}
+	agent := &availabilityStoppingBackend{stop: func() { execution.cancel(context.Canceled) }, err: ErrWorkerProcessReap}
+	r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: config.Config{}, Prompt: "Complete the native issue"}, Workspace: backend, AgentBackend: agent})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = r.Run(t.Context(), RunRequest{Execution: execution, Issue: connector.Issue{ID: "native", Identifier: "native#1"}, Mode: RunModePlan})
+	if !errors.Is(err, ErrWorkerProcessReap) || !backend.published || !backend.retained || backend.afterRun {
+		t.Fatalf("error=%v published=%t retained=%t cleaned=%t", err, backend.published, backend.retained, backend.afterRun)
+	}
+	if checkpoint := execution.checkpoint; checkpoint == nil || !checkpoint.GitRef() || execution.finish != "interrupted" {
+		t.Fatalf("checkpoint=%+v finish=%q", checkpoint, execution.finish)
+	}
+}
+
+func TestAvailabilityStopFinalizesLocalSessionAfterPushFailure(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real-time lifecycle and timeout integration")
+	}
+
+	backend := &wipExecutionWorkspace{retainedExecutionWorkspace: retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Key: "native", Branch: "native"}, recoveryStates: []workspace.RecoveryState{{TrackedPaths: []string{"work.go"}}}}}, publishErr: errors.New("push unavailable")}
+	execution := &deadlineRunExecution{availabilityTestExecution: availabilityTestExecution{deadline: time.Now().Add(-time.Second)}, published: &backend.published}
+	agent := &availabilityStoppingBackend{stop: func() { execution.cancel(context.Canceled) }}
+	sessionStore := &fakeSessionStore{sessionID: 3169}
+	r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: config.Config{}, Prompt: "Complete the native issue"}, Workspace: backend, AgentBackend: agent, Store: sessionStore})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = r.Run(t.Context(), RunRequest{Execution: execution, Issue: connector.Issue{ID: "native", Identifier: "native#1"}, Mode: RunModePlan})
+	if errors.Is(err, backend.publishErr) || backend.pushes == 0 || sessionStore.finishCalls != 1 || sessionStore.usageCalls != 1 || execution.finish != "interrupted" {
+		t.Fatalf("error=%v session finishes=%d usage=%d outcome=%s", err, sessionStore.finishCalls, sessionStore.usageCalls, execution.finish)
+	}
+}
+
+func TestValidationEvidenceUsesCurrentAttemptDiff(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
+	t.Parallel()
+	directory := t.TempDir()
+	validation := filepath.Join(directory, ".detent", "validation")
+	if err := os.MkdirAll(validation, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 87 {
+		if err := os.WriteFile(filepath.Join(validation, strconv.Itoa(i)+".png"), []byte("inherited screenshot "+strconv.Itoa(i)), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, args := range [][]string{{"init", "--initial-branch=main"}, {"config", "user.name", "Test"}, {"config", "user.email", "test@example.com"}, {"config", "commit.gpgSign", "false"}, {"add", "."}, {"commit", "-m", "Inherited validation"}} {
+		if output, err := gitCommand(directory, args...); err != nil {
+			t.Fatalf("fixture Git: %v %s", err, output)
+		}
+	}
+	r := &Runner{logger: slog.New(slog.NewTextHandler(io.Discard, nil)), afterRunTimeout: time.Second}
+	source := r.attemptDiffSource(t.Context(), workspace.Info{Path: directory}, workspace.Issue{})
+	diff, available := source(t.Context())
+	if !available {
+		t.Fatal("initial attempt diff unavailable")
+	}
+	initial, err := validationScreenshots(directory, diff.Files)
+	if err != nil || len(initial) != 0 {
+		t.Fatalf("unchanged historical evidence=%d error=%v", len(initial), err)
+	}
+	for name, content := range map[string]string{"new.png": "current new screenshot", "0.png": "current modified screenshot"} {
+		if err := os.WriteFile(filepath.Join(validation, name), []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Rename(filepath.Join(validation, "1.png"), filepath.Join(validation, "renamed.png")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(validation, "2.png")); err != nil {
+		t.Fatal(err)
+	}
+	backend := &retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{recoveryStates: []workspace.RecoveryState{{HeadSHA: diff.HeadSHA}}}}
+	execution := &artifactExecutionProbe{}
+	req := RunRequest{Execution: execution, validationEvidenceSource: source}
+	if err := r.afterExecution(t.Context(), req, backend, workspace.Info{Path: directory}, workspace.Issue{}, AgentResume{}, false); err != nil {
+		t.Fatal(err)
+	}
+	if len(execution.evidence) != 3 {
+		t.Fatalf("current evidence=%+v", execution.evidence)
+	}
+	for _, file := range execution.evidence {
+		if file.Name != "0.png" && file.Name != "new.png" && file.Name != "renamed.png" {
+			t.Fatalf("historical or deleted evidence published: %s", file.Name)
+		}
+	}
+	execution.evidenceFailure = errors.New("attachment upload unavailable")
+	if err := r.afterExecution(t.Context(), req, backend, workspace.Info{Path: directory}, workspace.Issue{}, AgentResume{}, false); !errors.Is(err, execution.evidenceFailure) {
+		t.Fatalf("genuine publication failure lost: %v", err)
+	}
+	for i := range 11 {
+		if err := os.WriteFile(filepath.Join(validation, "current-"+strconv.Itoa(i)+".png"), []byte("fresh screenshot"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	diff, available = source(t.Context())
+	if !available {
+		t.Fatal("current attempt diff unavailable")
+	}
+	if evidence, err := validationScreenshots(directory, diff.Files); err == nil || len(evidence) != 0 {
+		t.Fatalf("current screenshot bound lost: evidence=%d error=%v", len(evidence), err)
+	}
+}
+
+func TestNativePublicationRecoveryOnAnyRunner(t *testing.T) {
+	t.Parallel()
+	change := tracker.NativeChangeReference{ChangeID: "change", VersionID: "version", HeadSHA: "head"}
+	for _, test := range []struct {
+		name string
+		role string
+		edit func(*tracker.NativeRecovery, **workspace.RecoveryState)
+		want bool
+	}{
+		{"source runner", RoleRework, func(*tracker.NativeRecovery, **workspace.RecoveryState) {}, true},
+		{"configuration changed", RoleRework, func(r *tracker.NativeRecovery, _ **workspace.RecoveryState) {
+			r.Lease.PolicyID = "new-configuration"
+		}, true},
+		{"another runner restored the Change source", RoleRework, func(r *tracker.NativeRecovery, local **workspace.RecoveryState) {
+			r.Lease.MachineID = "other"
+			(*local).WorkspaceFingerprint = "fresh-checkout-digest"
+		}, true},
+		{"another runner restored source under a stale policy", RoleCode, func(r *tracker.NativeRecovery, local **workspace.RecoveryState) {
+			r.Lease.MachineID = "other"
+			r.Lease.PolicyID = "new-policy"
+			r.ChangeDetail.Summary.Status = "stale_policy"
+			(*local).WorkspaceFingerprint = "fresh-checkout-digest"
+		}, true},
+		{"restored head differs from the version", RoleRework, func(r *tracker.NativeRecovery, local **workspace.RecoveryState) {
+			r.Lease.MachineID = "other"
+			(*local).HeadSHA = "other-head"
+		}, false},
+		{"restored workspace is dirty", RoleRework, func(r *tracker.NativeRecovery, local **workspace.RecoveryState) {
+			r.Lease.MachineID = "other"
+			(*local).TrackedPaths = []string{"work.go"}
+		}, false},
+		{"version superseded", RoleRework, func(r *tracker.NativeRecovery, _ **workspace.RecoveryState) {
+			r.ChangeDetail.Change.CurrentVersion = "newer"
+		}, false},
+		{"settled publication", RoleRework, func(r *tracker.NativeRecovery, _ **workspace.RecoveryState) {
+			r.Attempts[0].Checkpoint.EffectState = "confirmed"
+		}, false},
+		{"interrupted implementation restored on another runner", RoleCode, func(r *tracker.NativeRecovery, local **workspace.RecoveryState) {
+			r.Lease.MachineID = "other"
+			r.Attempts[0].Checkpoint.ExternalEffect, r.Attempts[0].Checkpoint.EffectState = "git_push", "ambiguous"
+			(*local).WorkspaceFingerprint = "fresh-checkout-digest"
+		}, true},
+		{"interrupted implementation PR creation from a git checkpoint", RoleCode, func(r *tracker.NativeRecovery, local **workspace.RecoveryState) {
+			r.Lease.MachineID = "other"
+			remoteCheckpoint(r.Attempts[0].Checkpoint)
+			r.Attempts[0].Checkpoint.ExternalEffect = "pr_create"
+			(*local).WorkspaceFingerprint = "fresh-checkout-digest"
+		}, true},
+		{"implementation without a restored workspace", RoleCode, func(r *tracker.NativeRecovery, local **workspace.RecoveryState) {
+			r.Lease.MachineID = "other"
+			*local = nil
+		}, false},
+		{"planning never reconciles publication", RolePlan, func(r *tracker.NativeRecovery, _ **workspace.RecoveryState) {
+			r.Lease.MachineID = "other"
+		}, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			identity := tracker.NativeExecutionIdentity{Role: test.role}
+			recovery := tracker.NativeRecovery{
+				Lease: tracker.NativeLease{MachineID: "source", PolicyID: "policy"},
+				Attempts: []tracker.NativeAttempt{{
+					NativeRunData: tracker.NativeRunData{MachineID: "source", PolicyID: "policy", Identity: &identity},
+					Checkpoint:    &tracker.NativeCheckpoint{Resume: "resume_session", Availability: "available", Storage: "local_only", WorktreeState: "unpushed", HeadSHA: "head", WorkspaceDigest: "source-digest", ExternalEffect: "git_push", EffectState: "pending", EffectID: "effect_push", Change: &change},
+				}},
+				ChangeDetail: &tracker.ChangeDetail{Change: tracker.ChangeRequest{ID: "change", CurrentVersion: "version"}, Summary: tracker.ChangeSummary{Status: "reviewed"}},
+			}
+			local := &workspace.RecoveryState{HeadSHA: "head", WorkspaceFingerprint: "source-digest"}
+			current := &workspace.ChangeSource{Version: tracker.ChangeVersion{
+				ID: "version", ChangeID: "change",
+				ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: "head", Repository: "owner/repo", PolicyID: "policy"},
+				Policy:             policy.Descriptor{ID: "policy", Gates: policy.Gates{GitHubPullRequest: true}},
+			}}
+			test.edit(&recovery, &local)
+			if got := nativePublicationRecovery(recovery, local, identity, current); got != test.want {
+				t.Fatalf("nativePublicationRecovery() = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestNativeDispositionFromMessageHostPublication(t *testing.T) {
+	report := func(body string) string { return "Done.\n\n```detent-status\nschema: 1\n" + body + "```" }
+	for _, tt := range []struct {
+		name       string
+		message    string
+		wantStatus string
+		wantReason string
+	}{
+		{name: "publication only is complete", message: report("status: blocked\nreason_code: publication_blocked\nblockers: []\nhuman_action: null\n"), wantStatus: "complete"},
+		{name: "pending publish is complete", message: report("status: blocked\nreason_code: awaiting_host_publish\nblockers: []\nhuman_action: null\n"), wantStatus: "complete"},
+		{name: "tool-directed host wait is complete", message: report("status: blocked\nreason_code: host_publication_pending\nblockers:\n  - ref: instance:tool\n    reason: Current published version needs host review\nhuman_action: null\n"), wantStatus: "complete"},
+		{name: "unclassified tool failure stays blocked", message: report("status: blocked\nreason_code: instance_limitation\nblockers:\n  - ref: instance:tool\n    reason: Current published version needs host review\nhuman_action: null\n"), wantStatus: "blocked", wantReason: "instance_limitation"},
+		{name: "host wait cannot clear another instance failure", message: report("status: blocked\nreason_code: host_publication_pending\nblockers:\n  - ref: instance:network\n    reason: Network unavailable\nhuman_action: null\n"), wantStatus: "blocked", wantReason: "host_publication_pending"},
+		{name: "host wait cannot clear mixed blockers", message: report("status: blocked\nreason_code: host_publication_pending\nblockers:\n  - ref: instance:tool\n    reason: Needs review\n  - ref: \"#42\"\n    reason: Product dependency\nhuman_action: null\n"), wantStatus: "blocked", wantReason: "host_publication_pending"},
+		{name: "host wait cannot clear human action", message: report("status: blocked\nreason_code: host_publication_pending\nblockers:\n  - ref: instance:tool\n    reason: Needs review\nhuman_action: Approve the migration\n"), wantStatus: "blocked", wantReason: "host_publication_pending"},
+		{name: "post-publication acceptance stays blocked", message: report("status: blocked\nreason_code: post_publish_acceptance_pending\nblockers: []\nhuman_action: null\n"), wantStatus: "blocked", wantReason: "post_publish_acceptance_pending"},
+		{name: "publication with a blocker stays blocked", message: report("status: blocked\nreason_code: publication_blocked\nblockers:\n  - ref: '#42'\n    reason: Await dependency\nhuman_action: null\n"), wantStatus: "blocked", wantReason: "publication_blocked"},
+		{name: "publication with human action stays blocked", message: report("status: blocked\nreason_code: publication_blocked\nblockers: []\nhuman_action: Approve the release\n"), wantStatus: "blocked", wantReason: "publication_blocked"},
+		{name: "other reason stays blocked", message: report("status: blocked\nreason_code: validation_failed\nblockers: []\nhuman_action: null\n"), wantStatus: "blocked", wantReason: "validation_failed"},
+		{name: "complete stays complete", message: report("status: complete\nblockers: []\nhuman_action: null\n"), wantStatus: "complete"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := NativeDispositionFromMessage(tt.message)
+			if got == nil || got.Status != tt.wantStatus || got.ReasonCode != tt.wantReason || tt.wantStatus == "complete" && (got.Blockers || len(got.BlockerEvidence) != 0) {
+				t.Fatalf("disposition = %+v, want status %q reason %q", got, tt.wantStatus, tt.wantReason)
+			}
+		})
+	}
+}
+
+func TestNativeRecoveryWipeDerivedHold(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name         string
+		availability string
+		effect       string
+		wantAction   string
+		wantReason   string
+	}{
+		{"verified source", "available", "none", "fresh_checkout", "session_restart_required"},
+		{"unavailable source", "inaccessible", "none", "manual_recovery", "checkpoint_unavailable"},
+		{"uncertain push", "available", "git_push", "fresh_checkout", "publication_reconciliation_required"},
+		{"uncertain PR", "available", "pr_create", "fresh_checkout", "publication_reconciliation_required"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			for _, resume := range []string{"manual_recovery", "fresh_checkout"} {
+				checkpoint := &tracker.NativeCheckpoint{Resume: resume, Availability: test.availability, Storage: "local_only", WorktreeState: "unpushed", HeadSHA: "head", WorkspaceDigest: "digest", ExternalEffect: test.effect, EffectState: "none"}
+				if test.effect != "none" {
+					checkpoint.EffectState = "ambiguous"
+				}
+				recovery := tracker.NativeRecovery{SourceAttemptID: "source", Lease: tracker.NativeLease{MachineID: "runner"}, Attempts: []tracker.NativeAttempt{{NativeRunData: tracker.NativeRunData{AttemptID: "source", MachineID: "runner"}, Checkpoint: checkpoint}}}
+				local := &workspace.RecoveryState{HeadSHA: "head", WorkspaceFingerprint: "digest"}
+				action, reason := nativeRecoveryAction(recovery, local, false, store.AgentResumeState{}, tracker.NativeExecutionIdentity{Role: RoleCode}, false, nil)
+				if action != test.wantAction || reason != test.wantReason {
+					t.Fatalf("resume=%s: decision=%s/%s, want %s/%s", resume, action, reason, test.wantAction, test.wantReason)
+				}
+			}
+		})
+	}
+}

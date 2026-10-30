@@ -1,0 +1,502 @@
+package codex
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"math"
+	"strings"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/agentidentity"
+	"github.com/digitaldrywood/detent/internal/isolation"
+	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/securityaudit"
+	"github.com/digitaldrywood/detent/internal/telemetry"
+)
+
+var ErrMissingAppServer = errors.New("codex app-server is required")
+
+const terminalWaitInstructions = "For known long-running terminal commands such as builds, test suites, gates, and CI checks, use the backend's native blocking wait. Start exec_command with yield_time_ms=30000. If it returns a session ID, reuse that session with write_stdin, empty chars, and yield_time_ms=3000000 (50 minutes); the wait returns early when the command exits. When code mode is available, await the initial exec and its first empty write_stdin wait in the same functions.exec cell before returning the result. For an enclosing functions.exec call or functions.wait on its running cell, set yield_time_ms=3060000 so the wrapper does not force a model turn before the terminal wait finishes. If the native wait reaches its cap with the command still running, wait on the same session again. Do not shorten waits to narrate progress or emit waiting-only commentary. Do not rerun the command or use ps, pgrep, or tail probes without evidence of a failure. Existing cancellation and runtime limits still apply."
+
+const terminalWaitTimeout = 50 * time.Minute
+
+const dynamicToolTurnInstructions = "You are Detent's board operator assistant. Use only the provided Detent tools for board, fleet, telemetry, activity, and operator actions. Never use shell, filesystem, network, MCP, browser, delegation, or configuration tools. Mutating tools only create proposals; tell the operator that confirmation is required and never claim a proposal already executed."
+
+type AgentBackend struct {
+	client  *AppServer
+	options Options
+}
+
+var _ runner.AgentResumeVerifier = (*AgentBackend)(nil)
+var _ runner.AgentToolBackend = (*AgentBackend)(nil)
+
+func (*AgentBackend) SupportsReadOnlyInvestigation() bool { return true }
+
+func NewAgentBackend(client *AppServer, options Options) (*AgentBackend, error) {
+	if client == nil {
+		return nil, ErrMissingAppServer
+	}
+	return &AgentBackend{
+		client:  client,
+		options: options,
+	}, nil
+}
+
+// SupportsLiveControl reports that the Codex backend can multiplex live
+// conversation controls into an active turn (runner.AgentLiveBackend).
+func (b *AgentBackend) SupportsLiveControl() bool { return true }
+
+func (b *AgentBackend) RunTurn(
+	ctx context.Context,
+	req runner.AgentTurnRequest,
+	onUpdate runner.AgentUpdateHandler,
+) (runner.AgentTurnResult, error) {
+	return b.runTurn(ctx, req, nil, nil, onUpdate)
+}
+
+func (b *AgentBackend) RunTurnWithTools(
+	ctx context.Context,
+	req runner.AgentTurnRequest,
+	tools []runner.AgentTool,
+	toolHandler runner.AgentToolHandler,
+	onUpdate runner.AgentUpdateHandler,
+) (runner.AgentTurnResult, error) {
+	toolHandler = req.ToolBudget.Handler(tools, toolHandler)
+	dynamicTools := make([]DynamicTool, 0, len(tools))
+	for _, tool := range tools {
+		dynamicTools = append(dynamicTools, DynamicTool{
+			Type:        "function",
+			Name:        tool.Name,
+			Description: tool.Description,
+			InputSchema: tool.InputSchema,
+		})
+	}
+	var dynamicHandler DynamicToolHandler
+	if toolHandler != nil {
+		dynamicHandler = func(ctx context.Context, call DynamicToolCall) (DynamicToolResult, error) {
+			result, err := toolHandler(ctx, runner.AgentToolCall{Name: call.Name, Arguments: call.Arguments})
+			return DynamicToolResult{Content: result.Content, Success: result.Success, ImageURL: result.ImageURL}, err
+		}
+	}
+	return b.runTurn(ctx, req, dynamicTools, dynamicHandler, onUpdate)
+}
+
+func (b *AgentBackend) runTurn(
+	ctx context.Context,
+	req runner.AgentTurnRequest,
+	tools []DynamicTool,
+	toolHandler DynamicToolHandler,
+	onUpdate runner.AgentUpdateHandler,
+) (runner.AgentTurnResult, error) {
+	if req.IsolatedTools && !req.ReadOnly {
+		return runner.AgentTurnResult{}, errors.New("isolated tools require a read-only turn")
+	}
+	if req.TextOnly {
+		if len(tools) > 0 || req.Resume != (runner.AgentResume{}) || len(req.Attachments) > 0 || req.ConversationControl != nil {
+			return runner.AgentTurnResult{}, errors.New("text-only turns require a fresh prompt without tools or attachments")
+		}
+		req.ReadOnly = true
+	}
+	ctx = withWorkerTempDir(ctx, req.TempDir)
+	ctx = withAgentProcess(ctx, runner.AgentProcessRequest{Workspace: req.Workspace, Environment: req.Environment})
+	restricted := req.ReadOnly || (len(tools) > 0 && !req.SupplementalTools)
+	options := b.options
+	runtimeRoots := isolationRuntimeRoots(options.PermissionProfile, req)
+	var settings map[string]any
+	var err error
+	if options.IsolationPolicy != nil {
+		policy, pinned := isolation.FromContext(ctx)
+		var policyErr error
+		if !pinned {
+			policy, policyErr = options.IsolationPolicy()
+		}
+		if policyErr != nil {
+			return runner.AgentTurnResult{}, policyErr
+		}
+		policy.AllowLocalBinding = req.AllowLocalBinding
+		policy.ExtraNetworkDomains = req.ExtraNetworkDomains
+		policy.WritableRoots = append([]string{req.Workspace, req.TempDir}, req.ExtraWritableRoots...)
+		policy.WritableRoots = appendUniqueStrings(nil, policy.WritableRoots...)
+		cacheOptions := Options{ThreadSandbox: "workspace-write", TurnSandboxPolicy: map[string]any{"type": "workspaceWrite"}}
+		if policy.Tier == isolation.Sandbox {
+			policy.WritableRoots, err = hostCacheWritableRoots(ctx, cacheOptions, policy.WritableRoots, restricted)
+			if err != nil {
+				return runner.AgentTurnResult{}, err
+			}
+		}
+		mapped, config, mapErr := IsolationSettings(policy)
+		if mapErr != nil {
+			return runner.AgentTurnResult{}, mapErr
+		}
+		options.ApprovalPolicy, options.ThreadSandbox, options.TurnSandboxPolicy = mapped.ApprovalPolicy, mapped.ThreadSandbox, mapped.TurnSandboxPolicy
+
+		options.PermissionProfile = mapped.PermissionProfile
+		settings = config
+		if options.PermissionProfile != "" {
+			runtimeRoots = policy.WritableRoots
+			if restricted {
+				permissions, ok := settings["permissions"].(map[string]any)
+				if !ok {
+					return runner.AgentTurnResult{}, errors.New("codex isolation permissions are unavailable")
+				}
+				profile, ok := permissions[options.PermissionProfile].(map[string]any)
+				if !ok {
+					return runner.AgentTurnResult{}, errors.New("codex isolation profile is unavailable")
+				}
+				profile["filesystem"] = map[string]any{"/": "read", ":workspace_roots": "read"}
+				profile["network"] = map[string]any{"enabled": false}
+				settings["features.network_proxy"] = false
+			}
+			options.ThreadSandbox, options.TurnSandboxPolicy = "", nil
+		}
+	} else {
+		req.ExtraWritableRoots, err = hostCacheWritableRoots(ctx, options, req.ExtraWritableRoots, restricted)
+	}
+	if err != nil {
+		return runner.AgentTurnResult{}, err
+	}
+	if req.TextOnly {
+		options.PermissionProfile = "detent-text-only"
+		options.ThreadSandbox, options.TurnSandboxPolicy = "", nil
+		settings = textOnlySettings(req.Workspace)
+		runtimeRoots = []string{req.Workspace}
+	}
+	if req.IsolatedTools && !req.TextOnly {
+		options.PermissionProfile = "detent-investigation"
+		options.ThreadSandbox, options.TurnSandboxPolicy = "", nil
+		settings = investigationSettings(req.Workspace)
+		if req.ToolBudget != nil || req.Workspace == "" {
+			settings = textOnlySettings(req.Workspace)
+			settings["default_permissions"] = "detent-investigation"
+			settings["permissions"] = map[string]any{"detent-investigation": map[string]any{
+				"filesystem":      map[string]any{"/": "deny", ":workspace_roots": "deny"},
+				"workspace_roots": map[string]any{},
+				"network":         map[string]any{"enabled": false},
+			}}
+		}
+		runtimeRoots = []string{req.Workspace}
+		if req.Workspace == "" {
+			runtimeRoots = nil
+		}
+	}
+	if req.Workspace == "" && req.IsolatedTools {
+		req.Workspace = req.TempDir
+	}
+	instructionTools := tools
+	if req.SupplementalTools {
+		instructionTools = nil
+	}
+	stallTimeout := b.options.StallTimeout
+	var terminalTimeout time.Duration
+	if len(instructionTools) == 0 {
+		stallTimeout = 0
+		terminalTimeout = terminalWaitTimeout
+	}
+	var finalText strings.Builder
+	lastItem := ""
+	result, err := b.client.RunTurn(ctx, RunTurnRequest{
+		FinalPrompt: func() string {
+			if req.ToolBudget.Exhausted() && !json.Valid([]byte(finalText.String())) {
+				return req.ToolBudget.FinalPrompt(ctx)
+			}
+			return ""
+		},
+		ConversationControl:     req.ConversationControl,
+		TextOnly:                req.TextOnly,
+		IsolatedTools:           req.IsolatedTools,
+		Workspace:               req.Workspace,
+		Prompt:                  req.Prompt,
+		Attachments:             req.Attachments,
+		TempDir:                 req.TempDir,
+		ResumeThreadID:          req.Resume.ThreadID,
+		DeveloperInstructions:   toolTurnInstructions(instructionTools, req.ToolInstructions),
+		Config:                  settings,
+		Permissions:             options.PermissionProfile,
+		RuntimeWorkspaceRoots:   runtimeRoots,
+		ApprovalPolicy:          approvalPolicy(options.ApprovalPolicy, restricted),
+		MCPElicitationPolicy:    mcpElicitationPolicy(b.options.DeliverableElicitationAllowlist, req, restricted),
+		ThreadSandbox:           threadSandbox(options.ThreadSandbox, restricted),
+		TurnSandboxPolicy:       turnSandboxPolicy(options.ThreadSandbox, options.TurnSandboxPolicy, req.ExtraWritableRoots, restricted),
+		Model:                   req.Model,
+		ModelProvider:           req.ModelProvider,
+		ServiceTier:             req.ServiceTier,
+		ReasoningEffort:         req.ReasoningEffort,
+		TurnTimeout:             req.TurnTimeout,
+		StallTimeout:            stallTimeout,
+		TerminalWaitTimeout:     terminalTimeout,
+		DynamicTools:            tools,
+		ToolHandler:             toolHandler,
+		RequireSubscriptionAuth: req.RequireSubscriptionAuth,
+	}, func(update Update) error {
+		if req.ToolBudget != nil && update.Type == UpdateAgentMessageDelta {
+			if update.ItemID != lastItem {
+				finalText.Reset()
+				lastItem = update.ItemID
+			}
+			finalText.WriteString(update.Delta)
+		}
+		if err := req.ToolBudget.Observe(agentUpdateFromCodex(update)); err != nil && !errors.Is(err, runner.ErrInvestigationBudget) {
+			return err
+		}
+		if onUpdate == nil {
+			return nil
+		}
+		return onUpdate(agentUpdateFromCodex(update))
+	})
+	if err != nil {
+		if errors.Is(err, ErrSubscriptionAuthRequired) {
+			return runner.AgentTurnResult{
+				ThreadID:           result.ThreadID,
+				TurnID:             result.TurnID,
+				SessionID:          result.SessionID,
+				AuthenticationMode: securityaudit.AuthenticationRejected,
+			}, fmt.Errorf("%w: %w", runner.ErrSubscriptionAuthRequired, err)
+		}
+		if errors.Is(err, ErrTransportClose) && result.ThreadID != "" && result.TurnID != "" {
+			return runner.AgentTurnResult{
+				ThreadID:           result.ThreadID,
+				TurnID:             result.TurnID,
+				SessionID:          result.SessionID,
+				AuthenticationMode: result.AuthenticationMode,
+			}, runner.NewAgentTurnCleanupError(err)
+		}
+		return runner.AgentTurnResult{}, err
+	}
+
+	return runner.AgentTurnResult{
+		ThreadID:           result.ThreadID,
+		TurnID:             result.TurnID,
+		SessionID:          result.SessionID,
+		AuthenticationMode: result.AuthenticationMode,
+	}, nil
+}
+
+func approvalPolicy(configured any, restricted bool) any {
+	if restricted {
+		return "never"
+	}
+	return configured
+}
+
+func mcpElicitationPolicy(allowlist []MCPElicitationRule, req runner.AgentTurnRequest, restricted bool) MCPElicitationPolicy {
+	if restricted {
+		return MCPElicitationPolicy{}
+	}
+	return MCPElicitationPolicy{
+		DeliverableKind: strings.TrimSpace(req.DeliverableKind),
+		Repository:      strings.TrimSpace(req.DeliverableRepository),
+		IssueRepository: strings.TrimSpace(req.IssueRepository),
+		Allowlist:       append([]MCPElicitationRule(nil), allowlist...),
+	}
+}
+
+func threadSandbox(configured string, restricted bool) string {
+	if restricted {
+		return "read-only"
+	}
+	return configured
+}
+
+func turnSandboxPolicy(threadSandbox string, configured any, roots []string, restricted bool) any {
+	if restricted {
+		return nil
+	}
+	return turnSandboxPolicyForWorkspace(threadSandbox, configured, roots)
+}
+
+func toolTurnInstructions(tools []DynamicTool, override string) string {
+	if override = strings.TrimSpace(override); override != "" {
+		return override
+	}
+	if len(tools) == 0 {
+		return terminalWaitInstructions
+	}
+	return dynamicToolTurnInstructions
+}
+
+func (b *AgentBackend) VerifyResume(ctx context.Context, process runner.AgentProcessRequest, resume runner.AgentResume) error {
+	if strings.TrimSpace(resume.ThreadID) == "" {
+		return runner.ErrAgentResumeUnsupported
+	}
+	return b.client.VerifyThread(withAgentProcess(ctx, process), resume.ThreadID)
+}
+
+func (b *AgentBackend) ListModels(ctx context.Context, process runner.AgentProcessRequest) ([]runner.AgentModel, error) {
+	models, err := b.client.ListModels(withAgentProcess(ctx, process))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]runner.AgentModel, 0, len(models))
+	for _, model := range models {
+		out = append(out, runner.AgentModel{
+			ID:                        model.ID,
+			Model:                     model.Model,
+			Default:                   model.Default,
+			Upgrade:                   model.Upgrade,
+			SupportedReasoningEfforts: append([]string(nil), model.SupportedReasoningEfforts...),
+		})
+	}
+	return out, nil
+}
+
+func (b *AgentBackend) DefaultModel(ctx context.Context, process runner.AgentProcessRequest) (string, error) {
+	return b.client.DefaultModel(withAgentProcess(ctx, process), process.Workspace)
+}
+
+func withAgentProcess(ctx context.Context, process runner.AgentProcessRequest) context.Context {
+	ctx = withWorkerTempDir(ctx, process.TempDir)
+	ctx = withWorkerWorkspace(ctx, process.Workspace)
+	return withWorkerEnvironment(ctx, process.Environment)
+}
+
+func agentUpdateFromCodex(update Update) runner.AgentUpdate {
+	identity := update.RuntimeIdentity
+	if identity.IsZero() && update.Model != "" {
+		identity = agentidentity.RuntimeUpdate(update.Model, "", "", "", time.Time{})
+	}
+	providerSessionID := ""
+	if update.ThreadID != "" && update.TurnID != "" {
+		providerSessionID = update.ThreadID + "-" + update.TurnID
+	}
+	threadTotal := runner.AgentTokenCounts{
+		InputTokens:           update.Tokens.InputTokens,
+		CachedInputTokens:     update.Tokens.CachedInputTokens,
+		OutputTokens:          update.Tokens.OutputTokens,
+		ReasoningOutputTokens: update.Tokens.ReasoningOutputTokens,
+		TotalTokens:           update.Tokens.TotalTokens,
+	}
+	return runner.AgentUpdate{
+		Type:                runner.AgentUpdateType(update.Type),
+		Method:              update.Method,
+		ProcessIdentity:     update.ProcessIdentity,
+		WorkerProcess:       update.WorkerProcess,
+		ThreadID:            update.ThreadID,
+		TurnID:              update.TurnID,
+		AuxiliaryTurn:       update.AuxiliaryTurn,
+		ProviderSessionID:   providerSessionID,
+		ItemID:              update.ItemID,
+		Tool:                update.Tool,
+		Command:             update.Command,
+		NativeActions:       update.NativeActions,
+		CWD:                 update.CWD,
+		Delta:               update.Delta,
+		Status:              update.Status,
+		ExitCode:            update.ExitCode,
+		Model:               update.Model,
+		RuntimeIdentity:     identity,
+		BackendErrorBody:    update.BackendErrorBody,
+		BackendErrorMessage: update.BackendErrorMessage,
+		Tokens: runner.AgentTokenUsage{
+			InputTokens:           update.Tokens.InputTokens,
+			CachedInputTokens:     update.Tokens.CachedInputTokens,
+			OutputTokens:          update.Tokens.OutputTokens,
+			ReasoningOutputTokens: update.Tokens.ReasoningOutputTokens,
+			TotalTokens:           update.Tokens.TotalTokens,
+			ThreadTotal:           &threadTotal,
+			Last:                  agentTokenCountsFromCodex(update.Tokens.Last),
+			ModelContextWindow:    update.Tokens.ModelContextWindow,
+		},
+		RateLimits: rateLimitsFromCodex(update.RateLimits),
+	}
+}
+
+func agentTokenCountsFromCodex(tokens *TokenUsageBreakdown) *runner.AgentTokenCounts {
+	if tokens == nil {
+		return nil
+	}
+	return &runner.AgentTokenCounts{
+		InputTokens:           tokens.InputTokens,
+		CachedInputTokens:     tokens.CachedInputTokens,
+		OutputTokens:          tokens.OutputTokens,
+		ReasoningOutputTokens: tokens.ReasoningOutputTokens,
+		TotalTokens:           tokens.TotalTokens,
+	}
+}
+
+func rateLimitsFromCodex(snapshot *RateLimitSnapshot) *telemetry.RateLimits {
+	if snapshot == nil {
+		return nil
+	}
+	limits := &telemetry.RateLimits{
+		LimitID:     snapshot.LimitID,
+		LimitName:   snapshot.LimitName,
+		ReachedType: snapshot.RateLimitReachedType,
+		Primary:     rateLimitBucketFromCodex(snapshot.Primary),
+		Secondary:   rateLimitBucketFromCodex(snapshot.Secondary),
+		Credits:     creditsBucketFromCodex(snapshot.Credits),
+	}
+	if limits.Primary != nil && limits.Primary.WindowKind == "" {
+		limits.Primary.WindowKind = "primary"
+	}
+	if limits.Secondary != nil && limits.Secondary.WindowKind == "" {
+		limits.Secondary.WindowKind = "secondary"
+	}
+	observedAt := time.Now().UTC()
+	for _, bucket := range []*telemetry.RateLimitBucket{limits.Primary, limits.Secondary} {
+		if bucket != nil {
+			bucket.ObservedAt = &observedAt
+		}
+	}
+	if strings.TrimSpace(snapshot.RateLimitReachedType) != "" {
+		bucket := limits.Primary
+		if strings.Contains(strings.ToLower(snapshot.RateLimitReachedType), "secondary") {
+			bucket = limits.Secondary
+		}
+		if bucket != nil {
+			bucket.Status = telemetry.RateLimitStatusExhausted
+		}
+	}
+	return limits
+}
+
+func rateLimitBucketFromCodex(window *RateLimitWindow) *telemetry.RateLimitBucket {
+	if window == nil {
+		return nil
+	}
+
+	used := min(max(int64(math.Round(window.UsedPercent)), 0), 100)
+
+	bucket := &telemetry.RateLimitBucket{
+		Limit:     100,
+		Used:      used,
+		Remaining: 100 - used,
+	}
+	if !window.missingUsedPercent {
+		percent := min(max(window.UsedPercent, 0), 100)
+		bucket.PercentUsed = &percent
+	}
+	if window.WindowDurationMins != nil {
+		switch *window.WindowDurationMins {
+		case 300:
+			bucket.WindowKind = "five_hour"
+		case 10080:
+			bucket.WindowKind = "weekly"
+		}
+	}
+	if window.ResetsAt != nil {
+		resetAt := time.Unix(*window.ResetsAt, 0).UTC()
+		bucket.ResetAt = &resetAt
+	}
+	return bucket
+}
+
+func creditsBucketFromCodex(credits *CreditsSnapshot) *telemetry.RateLimitBucket {
+	if credits == nil {
+		return nil
+	}
+	return &telemetry.RateLimitBucket{
+		HasCredits: credits.HasCredits,
+		Unlimited:  credits.Unlimited,
+		Balance:    credits.Balance,
+	}
+}
+
+func (b *AgentBackend) BillingBasis(ctx context.Context, process runner.AgentProcessRequest) (string, error) {
+	account, err := b.client.Account(withAgentProcess(ctx, process))
+	if err != nil {
+		return "unknown", err
+	}
+	return account.BillingBasis(), nil
+}

@@ -1,0 +1,563 @@
+package runner
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"strings"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/agentidentity"
+	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/connector/github"
+	"github.com/digitaldrywood/detent/internal/forgeavailability"
+	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspace"
+)
+
+func NativeLandingIdentity(at time.Time) agentidentity.Identity {
+	identity := agentidentity.RuntimeUpdate("none", "none", "none", "", at)
+	identity.Role, identity.BackendID, identity.BackendKind = RoleMerge, "git", "git"
+	return identity
+}
+
+// landNativeChange is a hub-native landing run. There is no agent in it: the
+// reviewed head is combined with the base branch by the runner's own git and
+// pushed with the runner's own credentials, and the hub records the commit
+// the base branch advanced to. A refusal (a head that moved, a conflict, a
+// base branch the forge protects) is reported on the run for the
+// orchestrator to hand back to review with its reason; only an
+// infrastructure failure fails the run.
+func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing LandingExecution, backend workspace.Backend, info workspace.Info, issue workspace.Issue, policy workerGitHubPolicy, prepared *NativeLandingTarget) (runResult RunResult, runErr error) {
+	if req.Execution != nil {
+		if err := req.Execution.Validate(ctx); err != nil {
+			return RunResult{}, err
+		}
+	}
+	target, err := landing.LandingTarget(ctx)
+	landingStarted := false
+	startLanding := func() error {
+		if runtime, ok := req.Execution.(LandingRuntimeExecution); ok && !landingStarted {
+			if err := runtime.StartLanding(ctx, req.WorkAttemptID, req.Generation); err != nil {
+				return err
+			}
+			landingStarted = true
+		}
+		return nil
+	}
+	defer func() {
+		if !runResult.TurnStarted && (target.MergeResolution || prepared != nil && prepared.MergeResolution) {
+			runErr = errors.Join(runErr, startLanding())
+		}
+	}()
+	if err != nil {
+		if errors.Is(err, ErrLandingNotReviewed) {
+			return r.refusedLanding(req, target, workspace.LandRefusalNothing, err.Error()), nil
+		}
+		return RunResult{}, fmt.Errorf("resolve landing target: %w", err)
+	}
+	if prepared != nil {
+		previous := *prepared
+		if previous.ChangeID != target.ChangeID || previous.VersionID != target.VersionID || previous.HeadSHA != target.HeadSHA || previous.BaseSHA != target.BaseSHA || previous.BaseRef != target.BaseRef || previous.SourceMergeSHA != target.SourceMergeSHA || previous.SecurityAudit != target.SecurityAudit || previous.Repository != target.Repository || previous.Method != target.Method || previous.GitHubPullRequest != target.GitHubPullRequest || !sameLandingExternal(previous.External, target.External) {
+			return r.refusedLanding(req, previous, workspace.LandRefusalHeadMoved, "the reviewed version changed during workspace preparation"), nil
+		}
+	}
+	lander, ok := backend.(workspace.Lander)
+	if !ok {
+		return RunResult{}, errors.New("workspace backend cannot land changes")
+	}
+	message := target.Title
+	if message == "" {
+		message = "Land " + target.HeadSHA
+	}
+	message += fmt.Sprintf("\n\nChange Request %s, round %d, head %s.", target.ChangeID, target.Number, target.HeadSHA)
+	if target.SourceMergeSHA != "" {
+		message += "\n\n(cherry picked from commit " + target.SourceMergeSHA + ")"
+	}
+	if target.GitHubPullRequest {
+		message = tracker.AppendGitHubIssueClosingReferences(message, target.SourceIssues)
+	}
+	workflow, _, _, _ := r.runtimeSnapshot()
+	effectiveGate := gate.Effective(workflow.Config.Gate)
+	options := workspace.LandOptions{ReviewDispositions: target.ReviewDispositions, TargetBranch: target.BaseRef, LandingMode: effectiveGate.LandingMode, Native: !target.GitHubPullRequest, Validation: target.Validation, RebaseRequired: target.RebaseRequired, RequiredStatusChecks: effectiveGate.RequiredStatusChecks, CITriggerLabel: effectiveGate.CITriggerLabel, PreviousCI: target.CI, ValidationCommand: effectiveGate.Run, HeadSHA: target.HeadSHA, Method: target.Method, Message: message, PushAttemptBranch: true, Repository: target.Repository, External: target.External, SourceIssues: target.SourceIssues}
+	options.ChangeID = target.ChangeID
+	options.SourceBaseSHA = target.BaseSHA
+	if target.SourceMergeSHA != "" {
+		options.ExpectedBaseSHA = target.BaseSHA
+	}
+	if effectiveGate.CITriggerLabelStaggerSeconds != nil {
+		options.CITriggerLabelStagger = time.Duration(*effectiveGate.CITriggerLabelStaggerSeconds) * time.Second
+	}
+	authorizeLanding := func(ctx context.Context) error {
+		if err := req.Execution.Validate(ctx); err != nil {
+			return err
+		}
+		current, err := landing.LandingTarget(ctx)
+		if err != nil {
+			return err
+		}
+		if current.ChangeID != target.ChangeID || current.VersionID != target.VersionID || current.HeadSHA != target.HeadSHA || current.BaseSHA != target.BaseSHA || current.SecurityAudit != target.SecurityAudit {
+			return errors.New("reviewed version changed before landing push")
+		}
+		return nil
+	}
+	options.Authorize = authorizeLanding
+	if target.MergeResolution && !target.GitHubPullRequest {
+		resolver, canResolve := backend.(workspace.LandingConflictResolver)
+		publication, canPublish := req.Execution.(MergeResolutionExecution)
+		if canResolve && canPublish {
+			resolved, turn, resolveErr := r.resolveNativeLanding(ctx, req, resolver, info, issue, options)
+			if !turn.TurnStarted {
+				if err := startLanding(); err != nil {
+					return turn, err
+				}
+			}
+			defer func() {
+				runResult.Tokens = turn.Tokens
+				runResult.Model, runResult.TokenUSD, runResult.RateLimits = turn.Model, turn.TokenUSD, turn.RateLimits
+				runResult.BillingMode, runResult.ReportedCostMicros, runResult.CostSource, runResult.Compute = turn.BillingMode, turn.ReportedCostMicros, turn.CostSource, turn.Compute
+				runResult.TurnStarted, runResult.TurnCount = turn.TurnStarted, turn.TurnCount
+				runResult.TurnStartRefused, runResult.budgetProjection = turn.TurnStartRefused, turn.budgetProjection
+				if !turn.RuntimeIdentity.IsZero() {
+					runResult.RuntimeIdentity = turn.RuntimeIdentity
+				}
+			}()
+			if turn.BudgetRefusal != nil {
+				return turn, nil
+			}
+			if resolveErr != nil {
+				if ctx.Err() != nil || IsCapacityError(resolveErr) || !turn.TurnStarted {
+					return turn, resolveErr
+				}
+				refused := r.refusedLanding(req, target, workspace.LandRefusalConflict, "merge resolution did not complete; conflict files: "+strings.Join(resolved.ConflictFiles, ", ")+": "+resolveErr.Error())
+				refused.NativeLanding.Path = "merge_resolution_failed"
+				refused.NativeLanding.ConflictFiles = resolved.ConflictFiles
+				if resolved.Gate.Command != "" {
+					refused.NativeLanding.Gate = &resolved.Gate
+					refused.NativeLanding.GateFailed = resolved.Gate.ExitCode != 0
+				}
+				return refused, nil
+			}
+			if !resolved.Unchanged {
+				if err := publication.PrepareMergeResolution(); err != nil {
+					return turn, err
+				}
+				if recorder, ok := req.Execution.(SourceValidationExecution); ok && resolved.Gate.Command != "" {
+					if err := recorder.RecordSourceValidation(ctx, resolved.Gate); err != nil {
+						return turn, err
+					}
+				}
+				turn.FinalState = FinalStateCompleted
+				turn.FinalMessage = "Merge resolution changed the reviewed diff; publish the resolved source for review."
+				turn.NativeChange = &NativeChange{MergeResolution: true, Changed: true, BaseSHA: resolved.BaseSHA, HeadSHA: resolved.HeadSHA}
+				return turn, nil
+			}
+			if err := startLanding(); err != nil {
+				return turn, err
+			}
+			options.Resolution = &resolved
+		} else {
+			refused := r.refusedLanding(req, target, workspace.LandRefusalConflict, "bounded merge resolution is unavailable; conflict files: "+strings.Join(target.ConflictFiles, ", "))
+			refused.NativeLanding.ConflictFiles = target.ConflictFiles
+			refused.NativeLanding.Path = "merge_resolution_failed"
+			return refused, nil
+		}
+	}
+	if target.SecurityAudit && !target.GitHubPullRequest {
+		options.SecurityAuditRequired = true
+		options.SecurityAudit = func(ctx context.Context, diff workspace.FileDiffs) (*tracker.SecurityAuditReview, error) {
+			return r.auditNativeLanding(ctx, req, target, diff)
+		}
+	}
+	var result workspace.LandResult
+	defer func() {
+		if runResult.NativeLanding != nil {
+			var command *workspace.CommandError
+			if runErr == nil && result.MergeSHA == "" && errors.As(err, &command) && command.Command == "git" && isGitPush(command.Args) {
+				runResult.terminalFailure = nativeTerminalFailure(err, r.now(), false)
+			}
+			if result.Gate.Command == "" && options.Validation != nil && options.Validation != target.Validation {
+				result.Gate = *options.Validation
+			}
+			runResult.NativeLanding.Pipeline, runResult.NativeLanding.PipelineDropped = result.Pipeline, result.PipelineDropped
+			runResult.NativeLanding.Path, runResult.NativeLanding.Packages = result.Path, result.Packages
+			runResult.NativeLanding.CI = result.CI
+			runResult.NativeLanding.SecurityAudit = result.SecurityAudit
+			runResult.NativeLanding.Rebased = result.Rebased
+			if result.Gate.Command != "" {
+				runResult.NativeLanding.Gate = &result.Gate
+			}
+		}
+	}()
+	if target.GitHubPullRequest {
+		scope := connector.RESTScopeFromContext(ctx)
+		if scope == nil {
+			started := time.Now()
+			scope = &connector.RESTScope{Name: "native_landing", ProjectID: r.projectID}
+			ctx = connector.WithRESTScope(ctx, scope)
+			defer func() { runResult.GitHubScope = nativeGitHubScope(scope, started) }()
+		}
+		scope.Set("merging", "land")
+		githubLander, supported := backend.(workspace.GitHubPRLander)
+		if !supported {
+			return RunResult{}, errors.New("workspace backend cannot land through a GitHub pull request")
+		}
+		if issue.Landing != nil {
+			options.GitHubClient = issue.Landing.GitHubClient
+		}
+		if options.GitHubClient == nil {
+			client, resolvedPolicy, clientErr := r.nativeLandingGitHubClient(ctx, req, policy)
+			if clientErr != nil {
+				return RunResult{}, clientErr
+			}
+			options.GitHubClient = client
+			defer func() {
+				usage := client.FlushRESTRateLimitUsage()
+				runResult.GitHubRESTUsage = &usage
+				runResult.GitHubRESTConsumer = resolvedPolicy.budgetConsumer()
+			}()
+		}
+		result, err = githubLander.LandChangeViaGitHub(ctx, info, issue, options)
+	} else if options.Validation, err = validateLandingHead(gate.WithPipelineRecorder(ctx, "landing_validation", func(timing gate.PipelineTiming) { r.recordPipeline(req, timing) }), backend, info, issue, options); err == nil {
+		batchLander, batched := backend.(workspace.BatchLander)
+		remoteBatch, remoteBatched := req.Execution.(BatchLandingExecution)
+		remoteBatched = remoteBatched && remoteBatch.BatchLandingEnabled()
+		if target.RebaseRequired && req.LandingBatch != nil {
+			req.LandingBatch.Finish()
+			result, err = lander.LandChange(ctx, info, issue, options)
+		} else if batched && remoteBatched {
+			if target.RebaseRequired {
+				if err = remoteBatch.FinishLandingBatch(ctx); err == nil {
+					result, err = lander.LandChange(ctx, info, issue, options)
+				}
+			} else {
+				result, err = remoteBatch.LandBatch(ctx, batchLander, workspace.LandRequest{Info: info, Issue: issue, Options: options})
+			}
+		} else if batched && req.LandingBatch != nil {
+			result, err = req.LandingBatch.Land(batchLander, workspace.LandRequest{Info: info, Issue: issue, Options: options, Validate: func(batchCtx context.Context) error {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				return authorizeLanding(batchCtx)
+			}})
+		} else {
+			result, err = lander.LandChange(ctx, info, issue, options)
+		}
+	}
+	if err == nil && result.CI != nil && result.CI.State == "pending" {
+		waiting := r.refusedLanding(req, target, "", "waiting for required CI on "+result.CI.HeadSHA)
+		waiting.WorkspaceBranch = info.Branch
+		return waiting, nil
+	}
+	for _, timing := range result.Pipeline {
+		r.recordPipeline(req, timing)
+	}
+	if result.Gate.Command != "" {
+		r.recordPipeline(req, result.Gate.PipelineTiming("landing_validation"))
+	}
+	if err != nil {
+		if result.MergeSHA == "" {
+			if IsCapacityError(err) || errors.Is(err, github.ErrRateLimited) || errors.Is(err, forgeavailability.ErrUnavailable) {
+				return RunResult{WorkspaceBranch: info.Branch, NativeLanding: &NativeLanding{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: target.HeadSHA}}, err
+			}
+			if result.SecurityAudit != nil && result.SecurityAudit.Verdict == "wait" {
+				refused := r.refusedLanding(req, target, "", result.SecurityAudit.Run.HumanAction())
+				refused.NativeLanding.SecurityAudit = result.SecurityAudit
+				refused.FinalMessage = result.SecurityAudit.Run.CompletionMessage(refused.FinalMessage)
+				return refused, nil
+			}
+			if result.SecurityAudit != nil && result.SecurityAudit.Verdict == "rework" {
+				refused := r.refusedLanding(req, target, "", result.SecurityAudit.Run.Summary)
+				refused.NativeLanding.GateFailed = true
+				return refused, nil
+			}
+			var validation *workspace.ValidationError
+			if errors.As(err, &validation) {
+				receipt := validation.Result
+				if receipt.Stage == "" {
+					receipt.Stage = validation.Stage
+				}
+				if receipt.Output == "" {
+					receipt.Output = validation.Output
+				}
+				receipt = tracker.PublicGateResult(receipt)
+				refusal := validation.Error()
+				if output := strings.TrimSpace(receipt.Output); output != "" {
+					refusal += "\n" + output
+				}
+				return RunResult{FinalState: FinalStateCompleted, Output: RunOutputNativeLandingRefused, NativeLanding: &NativeLanding{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: target.HeadSHA, GateFailed: true, Gate: &receipt, Refusal: refusal}}, nil
+			}
+			var refusal *workspace.LandRefusal
+			if errors.As(err, &refusal) {
+				if refusal.Kind == workspace.LandRefusalBaseMoved {
+					waiting := r.refusedLanding(req, target, refusal.Kind, err.Error())
+					waiting.NativeLanding.BaseSHA = refusal.BaseSHA
+					waiting.WorkspaceBranch = info.Branch
+					return waiting, nil
+				}
+				r.logWorkerEvent(req.Issue, "worker_native_landing_refused",
+					telemetry.WorkAttemptIDKey, req.WorkAttemptID, "change", target.ChangeID, "version", target.VersionID, "kind", refusal.Kind, "reason", refusal.Reason)
+				refused := r.refusedLanding(req, target, refusal.Kind, refusal.Reason)
+				refused.NativeLanding.ConflictFiles = refusal.ConflictFiles
+				if refusal.Kind == workspace.LandRefusalProtected && refusal.TargetBranch != "" && !target.GitHubPullRequest {
+					action := fmt.Sprintf("Allow the runner to push to branch %s in repository %s, or enable GitHub pull request mode for this project. Then resume landing of the reviewed version.", refusal.TargetBranch, target.Repository)
+					refused.NativeLanding.BaseRef = refusal.TargetBranch
+					refused.FinalMessage = fmt.Sprintf("%s\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: %q\n```", action, action)
+				}
+				return refused, nil
+			}
+			return RunResult{WorkspaceBranch: info.Branch, NativeLanding: &NativeLanding{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: target.HeadSHA}}, err
+		}
+		r.logWorkerEventLevel(slog.LevelWarn, req.Issue, "worker_native_landing_warning",
+			telemetry.WorkAttemptIDKey, req.WorkAttemptID, "change", target.ChangeID, "version", target.VersionID, "merge_sha", result.MergeSHA, "error", err.Error())
+	}
+	landed := NativeLanding{SecurityAudit: result.SecurityAudit, Pipeline: result.Pipeline, PipelineDropped: result.PipelineDropped, Path: result.Path, Packages: result.Packages, CI: result.CI, ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: target.HeadSHA, BaseSHA: result.BaseBefore, Landed: true, MergeSHA: result.MergeSHA, BaseRef: result.BaseRef, Method: result.Method, Rebased: result.Rebased}
+	if options.Resolution != nil {
+		landed.ConflictFiles = options.Resolution.ConflictFiles
+	}
+	if result.Gate.Command != "" {
+		landed.Gate = &result.Gate
+	}
+	// The base branch already carries the commit. Keep the landing beside the
+	// worktree before reporting it, so a report the hub cannot take right now
+	// is delivered by the next landing run instead of being lost.
+	if err := workspace.RecordLanding(ctx, info, target.HeadSHA, result); err != nil {
+		r.logWorkerEvent(req.Issue, "worker_native_landing_record_failed", telemetry.WorkAttemptIDKey, req.WorkAttemptID, "error", err.Error())
+	}
+	if err := r.reportLanding(ctx, landing, landed); err != nil {
+		return RunResult{}, fmt.Errorf("record landing %s on %s: %w", result.MergeSHA, result.BaseRef, err)
+	}
+	if err := workspace.ForgetLanding(ctx, info); err != nil {
+		r.logWorkerEvent(req.Issue, "worker_native_landing_record_failed", telemetry.WorkAttemptIDKey, req.WorkAttemptID, "error", err.Error())
+	}
+	r.logWorkerEvent(req.Issue, "worker_native_landed",
+		telemetry.WorkAttemptIDKey, req.WorkAttemptID, "change", target.ChangeID, "version", target.VersionID, "merge_sha", result.MergeSHA, "base_ref", result.BaseRef, "method", result.Method)
+	return RunResult{FinalState: FinalStateCompleted, Output: RunOutputNativeLanded, NativeLanding: &landed, ForgeWriteCompleted: target.GitHubPullRequest}, nil
+}
+
+func validateLandingHead(ctx context.Context, backend workspace.Backend, info workspace.Info, issue workspace.Issue, options workspace.LandOptions) (*gate.CommandResult, error) {
+	commands, canRun := backend.(workspace.ReviewCommandRunner)
+	heads, canRead := backend.(workspace.HeadProvider)
+	if !canRun || !canRead || options.ValidationCommand == "" || workspace.ValidationCoversHead(options.Validation, options.ValidationCommand, options.HeadSHA) {
+		return options.Validation, nil
+	}
+	if head, err := heads.Head(ctx, info, issue); err != nil || strings.TrimSpace(head) != options.HeadSHA {
+		return options.Validation, nil
+	}
+	issue.PullRequestHeadSHA = options.HeadSHA
+	receipt, err := commands.RunReviewCommand(ctx, info, issue, options.ValidationCommand)
+	if err != nil {
+		return options.Validation, err
+	}
+	if receipt.ExitCode != 0 {
+		attributeCommandFailure(ctx, commands, info, issue, options.ExpectedBaseSHA, &receipt)
+		receipt.Stage = gate.StageLanding
+		receipt = tracker.PublicGateResult(receipt)
+		return &receipt, &workspace.ValidationError{Stage: workspace.ValidationStageLanding, Result: receipt, Output: receipt.Output, Err: fmt.Errorf("exit status %d", receipt.ExitCode)}
+	}
+	return &receipt, nil
+}
+
+func sameLandingExternal(a, b *tracker.ChangeExternalReference) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+const (
+	landingReportTries   = 3
+	landingReportBackoff = 500 * time.Millisecond
+)
+
+// reportLanding delivers the landing to the hub, retrying a refusal that a
+// moment later may accept, such as a hub that is briefly unreachable.
+func (r *Runner) reportLanding(ctx context.Context, landing LandingExecution, landed NativeLanding) error {
+	var err error
+	for try := range landingReportTries {
+		if try > 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(landingReportBackoff):
+			}
+		}
+		if err = landing.RecordLanding(ctx, landed); err == nil {
+			return nil
+		}
+	}
+	return err
+}
+
+func (r *Runner) refusedLanding(_ RunRequest, target NativeLandingTarget, kind, reason string) RunResult {
+	return RunResult{FinalState: FinalStateCompleted, Output: RunOutputNativeLandingRefused, NativeLanding: &NativeLanding{
+		ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: target.HeadSHA, RefusalKind: kind, Refusal: reason,
+	}}
+}
+
+func newNativeLandingGitHubClient(policy workerGitHubPolicy, token string) (*github.Client, error) {
+	return github.NewClient(github.ClientConfig{
+		Endpoint:                   policy.GraphQLURL,
+		TokenSource:                github.StaticTokenSource(token),
+		HTTPClient:                 policy.HTTPClient,
+		DisableConditionalRequests: true,
+		Logger:                     policy.Logger,
+	})
+}
+
+func (r *Runner) nativeLandingGitHubClient(ctx context.Context, req RunRequest, policy workerGitHubPolicy) (*github.Client, workerGitHubPolicy, error) {
+	var err error
+	if policy.Token == "" {
+		workflow, _, _, _ := r.runtimeSnapshot()
+		policy, err = newWorkerGitHubPolicy(ctx, workflow.Config, r.projectID, req.Issue.Identifier, r.lookupEnv, nil, nil, r.logger)
+		if err != nil {
+			return nil, policy, err
+		}
+	}
+	token := policy.Token
+	if token == "" {
+		token, err = resolveWorkerGitHubToken(ctx, defaultWorkerGitHubToken, workerGitHubTokenResolutionOptions{})
+		if err != nil {
+			return nil, policy, err
+		}
+	}
+	client, err := newNativeLandingGitHubClient(policy, token)
+	return client, policy, err
+}
+
+func (r *Runner) nativeReviewThreadTools(req RunRequest) ([]AgentTool, AgentToolHandler) {
+	landing, ok := req.Execution.(LandingExecution)
+	workflow, _, _, _ := r.runtimeSnapshot()
+	if workflow.Config.Tracker.Kind != config.TrackerHubNative || normalizeRunMode(req.Mode) != RunModeImplement || !ok || req.Execution == nil || runRole(req.Mode, req.Issue) != RoleRework && !nativeLandingRework(req.Execution.Recovery()) {
+		return nil, nil
+	}
+	tools := []AgentTool{
+		{Name: "detent_read_review_threads", Description: "Read unresolved review conversations on this native item's recorded GitHub PR and published head. Inspect the actual immutable Change source using native reads before judging feedback. Pending local edits are not evidence that published feedback is fixed. Human-rooted conversations remain human-owned.", InputSchema: json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`)},
+		{Name: "detent_resolve_review_thread", Description: "Record an explicit fixed or dismissed disposition with concrete source/test evidence and resolve one bot conversation on this item's currently published, fully reviewed head. Read its full conversation first. Supply that published head, not an unpublished local repair. If a source fix is needed, stage it and return for normal host publication/review; resolve only once the actual published version contains the fix. Pending host publication or configured review/audit is a source handoff, not an instance failure: when source and worker-owned checks are complete, report complete and disclose the pending host work. Preserve genuine blockers and human actions. This does not approve or merge source and never resolves a human-rooted conversation.", InputSchema: json.RawMessage(`{"type":"object","properties":{"head_sha":{"type":"string"},"thread_id":{"type":"string"},"disposition":{"type":"string","enum":["fixed","dismissed"]},"evidence":{"type":"string","minLength":1,"maxLength":8192}},"required":["head_sha","thread_id","disposition","evidence"],"additionalProperties":false}`)},
+	}
+	return tools, func(ctx context.Context, call AgentToolCall) (AgentToolResult, error) {
+		var input struct {
+			Head        string `json:"head_sha"`
+			Thread      string `json:"thread_id"`
+			Disposition string `json:"disposition"`
+			Evidence    string `json:"evidence"`
+		}
+		decoder := json.NewDecoder(strings.NewReader(string(call.Arguments)))
+		decoder.DisallowUnknownFields()
+		var destination any = &input
+		if call.Name == "detent_read_review_threads" {
+			destination = &struct{}{}
+		}
+		if err := decoder.Decode(destination); err != nil || decoder.Decode(&struct{}{}) != io.EOF {
+			return AgentToolResult{Content: "invalid review disposition arguments"}, nil
+		}
+		if call.Name != "detent_read_review_threads" && call.Name != "detent_resolve_review_thread" {
+			return AgentToolResult{Content: "unsupported tool"}, nil
+		}
+		if err := req.Execution.Validate(ctx); err != nil {
+			return AgentToolResult{}, err
+		}
+		target, targetErr := landing.LandingTarget(ctx)
+		if targetErr != nil && (!errors.Is(targetErr, ErrLandingNotReviewed) || call.Name == "detent_resolve_review_thread" && !target.ReviewPending) {
+			return AgentToolResult{Content: targetErr.Error()}, nil
+		}
+		if !target.GitHubPullRequest || target.External == nil {
+			return AgentToolResult{Content: "this native version has no recorded GitHub pull request"}, nil
+		}
+		if call.Name == "detent_resolve_review_thread" {
+			if input.Head != target.HeadSHA {
+				return AgentToolResult{Content: "review disposition does not name the current published head"}, nil
+			}
+			if targetErr != nil {
+				data, err := json.Marshal(struct {
+					Status   string `json:"status"`
+					Reason   string `json:"reason_code"`
+					Change   string `json:"change_id"`
+					Version  string `json:"version_id"`
+					Head     string `json:"head_sha"`
+					Guidance string `json:"guidance"`
+				}{"pending", "host_publication_pending", target.ChangeID, target.VersionID, target.HeadSHA, "The published version is not reviewed. Disposition remains refused until host publication and configured review/audit finish. If the assigned source is staged and all worker-owned checks pass, report complete with no blockers for that host handoff. Preserve other blockers and human actions. Do not resolve against unpublished repairs."})
+				return AgentToolResult{Content: string(data)}, err
+			}
+		}
+
+		client, _, err := r.nativeLandingGitHubClient(ctx, req, workerGitHubPolicy{})
+		if err != nil {
+			return AgentToolResult{}, err
+		}
+		opts := workspace.LandOptions{Repository: target.Repository, External: target.External, HeadSHA: target.HeadSHA, TargetBranch: target.BaseRef}
+		if call.Name == "detent_read_review_threads" {
+			threads, err := workspace.ReadReviewConversations(ctx, client, opts)
+			if err != nil {
+				return AgentToolResult{Content: err.Error()}, nil
+			}
+			data, err := json.Marshal(struct {
+				Change   string                         `json:"change_id"`
+				Version  string                         `json:"version_id"`
+				Head     string                         `json:"head_sha"`
+				Reviewed bool                           `json:"reviewed"`
+				Threads  []workspace.ReviewConversation `json:"threads"`
+			}{target.ChangeID, target.VersionID, target.HeadSHA, targetErr == nil, threads})
+			return AgentToolResult{Content: string(data), Success: err == nil}, err
+		}
+		if strings.TrimSpace(input.Evidence) == "" {
+			return AgentToolResult{Content: "review disposition requires explicit source or test evidence"}, nil
+		}
+		opts.Authorize = func(ctx context.Context) error {
+			if err := req.Execution.Validate(ctx); err != nil {
+				return err
+			}
+			current, err := landing.LandingTarget(ctx)
+			if err != nil {
+				return err
+			}
+			if current.ChangeID != target.ChangeID || current.VersionID != target.VersionID || current.HeadSHA != target.HeadSHA || current.BaseSHA != target.BaseSHA || current.SecurityAudit != target.SecurityAudit || !current.GitHubPullRequest || current.Repository != target.Repository || current.External == nil || *current.External != *target.External || current.BaseRef != target.BaseRef {
+				return errors.New("review disposition source changed")
+			}
+			return nil
+		}
+		evidence := "Native Change " + target.ChangeID + ", version " + target.VersionID + ".\n\n" + input.Evidence
+		if err := workspace.ResolveReviewConversation(ctx, client, opts, input.Thread, input.Disposition, evidence); err != nil {
+			return AgentToolResult{Content: err.Error()}, nil
+		}
+		return AgentToolResult{Content: "Recorded disposition and resolved the bot conversation at published head " + target.HeadSHA, Success: true}, nil
+	}
+}
+
+// nativeReviewConversationsCleared reports whether the pull request of a
+// version refused for unresolved review conversations now has none. GitHub
+// owns that state, so a resolution made by an earlier attempt counts too. It
+// answers only for a run that returned the refused version unchanged, and a
+// failed read is an error rather than an unresolved answer.
+func (r *Runner) nativeReviewConversationsCleared(ctx context.Context, req RunRequest, change *NativeChange) (bool, error) {
+	landing, ok := req.Execution.(LandingExecution)
+	if !ok || req.Execution == nil || change == nil || normalizeRunMode(req.Mode) != RunModeImplement {
+		return false, nil
+	}
+	recovery := req.Execution.Recovery()
+	if recovery.Change == nil || recovery.Change.VersionID != change.VersionID || recovery.Change.HeadSHA != change.HeadSHA || NativeReviewConversationRefusal(recovery) == "" {
+		return false, nil
+	}
+	target, err := landing.LandingTarget(ctx)
+	if err != nil && !errors.Is(err, ErrLandingNotReviewed) {
+		return false, err
+	}
+	if !target.GitHubPullRequest || target.External == nil {
+		return false, nil
+	}
+	client, _, err := r.nativeLandingGitHubClient(ctx, req, workerGitHubPolicy{})
+	if err != nil {
+		return false, err
+	}
+	threads, err := workspace.ReadReviewConversations(ctx, client, workspace.LandOptions{Repository: target.Repository, External: target.External, HeadSHA: target.HeadSHA, TargetBranch: target.BaseRef})
+	if err != nil {
+		return false, err
+	}
+	return len(threads) == 0, nil
+}

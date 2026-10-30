@@ -1,0 +1,241 @@
+package orchestrator
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/connector"
+)
+
+func TestDispatchDependencyRetry(t *testing.T) {
+	t.Parallel()
+	for _, source := range []string{"native", "typed edge", "github body", "workpad"} {
+		for _, retry := range []bool{false, true} {
+			name := source + "/stranded"
+			if retry {
+				name = source + "/retry"
+			}
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				cfg := normalizeConfig(Config{MaxConcurrentAgents: 1, ActiveStates: []string{"Todo", "In Progress"}, TerminalStates: []string{"Done"}})
+				issue := dispatchTestIssue("issue-2699", "In Progress")
+				issue.Identifier = "digitaldrywood/detent#2699"
+				ref := "digitaldrywood/detent#2680"
+				switch source {
+				case "native":
+					issue.DependencySource = connector.BlockedRefSourceNative
+					issue.BlockedBy = []connector.BlockedRef{{Identifier: ref, State: "Todo", Source: connector.BlockedRefSourceNative}}
+				case "typed edge":
+					issue.BlockedBy = []connector.BlockedRef{{Identifier: ref, Source: connector.BlockedRefSourceWorkpad}}
+				case "github body":
+					issue.State = "Todo"
+					issue.Description = "**Depends on:** #2680\n- Depends on #2680 so the helpers exist."
+					issue.DependencySource = connector.BlockedRefSourceNative
+					issue.BlockedBy = []connector.BlockedRef{{Identifier: ref, Source: connector.BlockedRefSourceProse}}
+				case "workpad":
+					issue.Comments = []connector.IssueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: in_progress\nblockers:\n  - ref: 'digitaldrywood/detent#2680'\n    predicate: {type: issue_state, ref: 'digitaldrywood/detent#2680', states: [open]}\n    recheck_interval: tick\n```"}}
+				}
+				state := newState(cfg)
+				now := time.Now()
+				planner := newDispatchPlanner(cfg)
+				if retry {
+					planner.scheduleRetryAfter(&state, issue, 2, now, 0, "", "")
+				}
+				for _, closed := range []bool{false, false, false, true} {
+					o := &Orchestrator{cfg: cfg, connector: hydratingDispatchConnector{blockers: []connector.Issue{{ID: "blocker", Identifier: ref, State: "Todo", Closed: closed}}}}
+					var decisions []dispatchPlanDecision
+					cache := make(map[string]dependencyBlocker)
+					plan := planner.plan(&state, []connector.Issue{issue}, now, dispatchPlanHooks{
+						hydrate: func(issue connector.Issue) (connector.Issue, bool) {
+							issue = o.hydrateDispatchDependencies(t.Context(), issue, cache)
+							if blocked, ok := state.Blocked[issue.ID]; ok && blockedFromDependency(blocked) && !issueBlockedByNonTerminal(issue, cfg.TerminalStates) {
+								delete(state.Blocked, issue.ID)
+							}
+							return issue, true
+						},
+						decision: func(d dispatchPlanDecision) { decisions = append(decisions, d) },
+					})
+					if !closed {
+						if len(plan.Dispatches) != 0 || len(decisions) != 1 || decisions[0].SkipReason != dispatchSkipBlockedByDependency {
+							t.Fatalf("open dependency: dispatches=%+v decisions=%+v", plan.Dispatches, decisions)
+						}
+						if retry {
+							if got, ok := state.Retry[issue.ID]; !ok || got.Attempt != 2 {
+								t.Fatalf("dependency wait lost retry: %+v", state.Retry)
+							}
+						}
+					} else if len(plan.Dispatches) != 1 {
+						t.Fatalf("closed dependency: dispatches=%+v decisions=%+v", plan.Dispatches, decisions)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestDispatchWorkpadDependencySelection(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, status, predicate, source string
+		wantBlocked                     bool
+	}{
+		{name: "open in progress", status: "in_progress", predicate: "{type: issue_state, states: [open]}", wantBlocked: true},
+		{name: "open blocked", status: "blocked", predicate: "{type: issue_state, states: [open]}", wantBlocked: true},
+		{name: "legacy issue predicate", status: "blocked", predicate: "{type: issue_state}", wantBlocked: true},
+		{name: "closed predicate", status: "in_progress", predicate: "{type: issue_state, states: [closed]}"},
+		{name: "pull request predicate", status: "in_progress", predicate: "{type: pull_request_state, states: [open]}"},
+		{name: "completed workpad", status: "complete", predicate: "{type: issue_state, states: [open]}"},
+		{name: "native removal", status: "in_progress", predicate: "{type: issue_state, states: [open]}", source: connector.BlockedRefSourceNative},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			issue := dispatchTestIssue("issue", "In Progress")
+			issue.Identifier = "digitaldrywood/detent#2699"
+			issue.DependencySource = tt.source
+			issue.Comments = []connector.IssueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: " + tt.status + "\nblockers:\n  - ref: '#2680'\n    predicate: " + tt.predicate + "\n```"}}
+			cfg := normalizeConfig(Config{})
+			o := &Orchestrator{cfg: cfg, connector: hydratingDispatchConnector{blockers: []connector.Issue{{ID: "blocker", Identifier: "digitaldrywood/detent#2680", State: "Todo"}}}}
+			hydrated := o.hydrateDispatchDependencies(t.Context(), issue, make(map[string]dependencyBlocker))
+			if got := issueBlockedByNonTerminal(hydrated, cfg.TerminalStates); got != tt.wantBlocked {
+				t.Fatalf("blocked=%t, want %t; refs=%+v", got, tt.wantBlocked, hydrated.BlockedBy)
+			}
+		})
+	}
+}
+
+func TestDispatchWorkpadDependencyEvidence(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name            string
+		blockers        []connector.Issue
+		err             error
+		body            bool
+		legacyPredicate bool
+		wantBlocked     bool
+	}{
+		{name: "lookup error", err: errors.New("lookup unavailable"), wantBlocked: true},
+		{name: "missing issue", wantBlocked: true},
+		{name: "body and workpad open terminal lane", body: true, blockers: []connector.Issue{{Identifier: "digitaldrywood/detent#2680", State: "Done"}}, wantBlocked: true},
+		{name: "open terminal lane", blockers: []connector.Issue{{Identifier: "digitaldrywood/detent#2680", State: "Done"}}, wantBlocked: true},
+		{name: "normalized actual identifier", blockers: []connector.Issue{{Identifier: " DigitalDrywood/Detent#2680 ", State: "Done", Closed: true}}},
+		{name: "closed human without verification", legacyPredicate: true, blockers: []connector.Issue{{Identifier: "digitaldrywood/detent#2680", State: "Done", Closed: true, Labels: []string{"human-owned"}}}, wantBlocked: true},
+		{name: "closed terminal lane", blockers: []connector.Issue{{Identifier: "digitaldrywood/detent#2680", State: "Done", Closed: true}}},
+		{name: "open empty lane", blockers: []connector.Issue{{Identifier: "digitaldrywood/detent#2680"}}, wantBlocked: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := normalizeConfig(Config{TerminalStates: []string{"Done"}})
+			issue := dispatchTestIssue("issue", "In Progress")
+			issue.Identifier = "digitaldrywood/detent#2699"
+			issue.Comments = []connector.IssueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: '#2680'\n    predicate: {type: issue_state, states: [open]}\n```"}}
+			if tt.legacyPredicate {
+				issue.Comments[0].Body = strings.ReplaceAll(issue.Comments[0].Body, ", states: [open]", "")
+			}
+			if tt.body {
+				issue.Description = "Depends on: digitaldrywood/detent#2680"
+			}
+			reads := 0
+			o := &Orchestrator{cfg: cfg, connector: dispatchEvidenceConnector{hydratingDispatchConnector: hydratingDispatchConnector{blockers: tt.blockers}, err: tt.err, reads: &reads}}
+			cache := make(map[string]dependencyBlocker)
+			hydrated := o.hydrateDispatchDependencies(t.Context(), issue, cache)
+			if got := issueBlockedByNonTerminal(hydrated, cfg.TerminalStates); got != tt.wantBlocked {
+				t.Fatalf("blocked=%t, want %t; refs=%+v", got, tt.wantBlocked, hydrated.BlockedBy)
+			}
+
+			predicateState := newState(cfg)
+			evaluation, err := o.liveDispatchPlanner(t.Context(), cache).recordedBlockers(hydrated, &predicateState, time.Now())
+			if err != nil || !evaluation.Found || (evaluation.Holds || evaluation.Unverifiable) != tt.wantBlocked {
+				t.Fatalf("predicate evidence = %+v, err=%v, want blocked=%t", evaluation, err, tt.wantBlocked)
+			}
+			wantReads := 1
+			if tt.err != nil || len(tt.blockers) == 0 {
+				wantReads = 2
+			}
+			if reads != wantReads {
+				t.Fatalf("reference reads = %d, want %d", reads, wantReads)
+			}
+
+			for _, retry := range []bool{false, true} {
+				state := newState(cfg)
+				planner := newDispatchPlanner(cfg)
+				now := time.Now()
+				if retry {
+					planner.scheduleRetryAfter(&state, issue, 2, now, 0, "", "")
+				}
+				plan := planner.plan(&state, []connector.Issue{issue}, now, dispatchPlanHooks{
+					hydrate: func(connector.Issue) (connector.Issue, bool) { return hydrated, true },
+				})
+				if got := len(plan.Dispatches) == 0; got != tt.wantBlocked {
+					t.Fatalf("retry=%t: dispatches=%+v, want blocked=%t", retry, plan.Dispatches, tt.wantBlocked)
+				}
+				if retry && tt.wantBlocked {
+					if entry, ok := state.Retry[issue.ID]; !ok || entry.Attempt != 2 {
+						t.Fatalf("lost retry: %+v", state.Retry)
+					}
+				}
+			}
+		})
+	}
+}
+
+type dispatchEvidenceConnector struct {
+	hydratingDispatchConnector
+	err   error
+	reads *int
+}
+
+func (c dispatchEvidenceConnector) FetchIssueStatesByIdentifiers(ctx context.Context, refs []string) ([]connector.Issue, error) {
+	if c.reads != nil {
+		*c.reads++
+	}
+	if c.err != nil {
+		return nil, c.err
+	}
+	return c.hydratingDispatchConnector.FetchIssueStatesByIdentifiers(ctx, refs)
+}
+
+func TestDispatchDependencyProseCycle(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, firstBody string
+		wantDispatches  int
+	}{
+		{name: "series order is prose", firstBody: "Depends on: none. First slice (#2 → #3 → #4; #2 → #5 → #6, #7).", wantDispatches: 2},
+		{name: "prose cycle does not block", firstBody: "Depends on: #2", wantDispatches: 2},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := normalizeConfig(Config{MaxConcurrentAgents: 4, ActiveStates: []string{"Todo", "In Progress"}, TerminalStates: []string{"Done"}})
+			first := dispatchTestIssue("first", "Todo")
+			first.Identifier, first.Description = "owner/repo#1", tt.firstBody
+			second := dispatchTestIssue("second", "Todo")
+			second.Identifier, second.Description = "owner/repo#2", "Depends on: #1"
+			issues := []connector.Issue{first, second}
+			o := &Orchestrator{cfg: cfg, connector: hydratingDispatchConnector{blockers: issues}}
+			state := newState(cfg)
+			var decisions []dispatchPlanDecision
+			cache := make(map[string]dependencyBlocker)
+			plan := newDispatchPlanner(cfg).plan(&state, issues, time.Now(), dispatchPlanHooks{
+				hydrate: func(issue connector.Issue) (connector.Issue, bool) {
+					return o.hydrateDispatchDependencies(t.Context(), issue, cache), true
+				},
+				decision: func(d dispatchPlanDecision) { decisions = append(decisions, d) },
+			})
+			if len(plan.Dispatches) != tt.wantDispatches {
+				t.Fatalf("dispatches = %+v, want %d; decisions = %+v", plan.Dispatches, tt.wantDispatches, decisions)
+			}
+			blocked := 0
+			for _, decision := range decisions {
+				if decision.SkipReason == dispatchSkipBlockedByDependency {
+					blocked++
+				}
+			}
+			if blocked != 2-tt.wantDispatches {
+				t.Fatalf("dependency waits = %d; decisions = %+v", blocked, decisions)
+			}
+		})
+	}
+}

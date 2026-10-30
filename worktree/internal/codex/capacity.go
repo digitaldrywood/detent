@@ -1,0 +1,306 @@
+package codex
+
+import (
+	"context"
+	"errors"
+	"io"
+	"os"
+	"regexp"
+	"strings"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/backendcapacity"
+	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/telemetry"
+)
+
+var codexProviderOutageStatusPattern = regexp.MustCompile(`(?i)(?:http(?:/[0-9.]+)?\s+|status(?:[\s_-]*code)?["']?\s*[:=]?\s*)(404|5[0-9]{2})\b`)
+var codexResponsesEndpointPattern = regexp.MustCompile(`(?i)(?:/responses(?:[?,"'\s]|$)|responses endpoint)`)
+
+var codexCapacityRules = backendcapacity.Rules{
+	Kinds: []string{
+		"usageLimitExceeded",
+		"usage_limit_exceeded",
+		"quota_exceeded",
+		"insufficient_quota",
+		"rate_limit_exceeded",
+		"rateLimitExceeded",
+		"RESOURCE_EXHAUSTED",
+		"dailyLimitExceeded",
+	},
+	Phrases: []string{
+		"you've hit your usage limit",
+		"usage limit reached",
+		"quota exceeded",
+		"insufficient quota",
+	},
+	HTTP429:      true,
+	RequireReset: true,
+}
+
+var codexOverloadRules = backendcapacity.Rules{
+	Kinds: []string{
+		"serverOverloaded",
+		"overloaded_error",
+		"model_at_capacity",
+	},
+	Phrases: []string{
+		"selected model is at capacity",
+		"model is at capacity",
+		"model at capacity",
+		"server overloaded",
+		"temporarily overloaded",
+	},
+	HTTP5xx: true,
+}
+
+func (b *AgentBackend) ClassifyCapacityError(err error, limits *telemetry.RateLimits, now time.Time) (backendcapacity.Details, bool) {
+	if b == nil || err == nil {
+		return backendcapacity.Details{}, false
+	}
+	return ClassifyCapacityError(err, limits, now)
+}
+
+func ClassifyCapacityError(err error, limits *telemetry.RateLimits, now time.Time) (backendcapacity.Details, bool) {
+	if err == nil {
+		return backendcapacity.Details{}, false
+	}
+	if errors.Is(err, context.Canceled) {
+		return backendcapacity.Details{}, false
+	}
+	text := codexCapacityErrorText(err)
+	startup, hasStartupEvidence := startupEvidence(err)
+	startupCause := err
+	var startupErr *StartupError
+	if errors.As(err, &startupErr) && startupErr != nil && startupErr.Err != nil {
+		startupCause = startupErr.Err
+	}
+	startupText := strings.ToLower(codexCapacityErrorText(startupCause))
+	var pathErr *os.PathError
+	var responseErr *ResponseError
+	if errors.As(startupCause, &responseErr) && responseErr != nil && responseErr.Request == "turn/start" && responseErr.NativeTerminalFailure().ProviderCode == "input_too_large" {
+		return backendcapacity.Details{
+			Type:    backendcapacity.ErrorTypeTransientOverload,
+			Kind:    backendcapacity.StartupFailureKind,
+			Reason:  "backend turn input exceeds provider limit",
+			Trigger: boundedCapacityTrigger(text),
+			Startup: startupEvidencePointer(startup, hasStartupEvidence),
+		}, true
+	}
+	if hasStartupEvidence || codexStartupOperation(text) {
+		switch {
+		case errors.Is(startupCause, context.DeadlineExceeded):
+			return backendcapacity.Details{
+				Type:    backendcapacity.ErrorTypeTransientOverload,
+				Kind:    backendcapacity.StartupTimeoutKind,
+				Reason:  "backend startup handshake timed out",
+				Trigger: boundedCapacityTrigger(text),
+				Startup: startupEvidencePointer(startup, hasStartupEvidence),
+			}, true
+		case errors.Is(startupCause, io.EOF), strings.Contains(startupText, "process exited"), strings.Contains(startupText, "start codex app-server transport"), errors.As(startupCause, &pathErr):
+			return backendcapacity.Details{
+				Type:    backendcapacity.ErrorTypeTransientOverload,
+				Kind:    backendcapacity.StartupFailureKind,
+				Reason:  "backend startup handshake failed",
+				Trigger: boundedCapacityTrigger(text),
+				Startup: startupEvidencePointer(startup, hasStartupEvidence),
+			}, true
+		}
+	}
+	// Transport and JSON-RPC failures belong to the same instance-owned wait as
+	// provider outages, even when the backend has already emitted turn usage.
+	protocolFailure := false
+	if errors.As(startupCause, &responseErr) && responseErr != nil {
+		switch responseErr.Code {
+		case -32700, -32600, -32601, -32603:
+			protocolFailure = true
+		}
+	}
+	// Invalid parameters (-32602), such as an invalid model, remain a rejected
+	// request. An unrelated cleanup timeout must not reclassify that rejection.
+	if errors.Is(startupCause, io.EOF) || errors.Is(startupCause, io.ErrUnexpectedEOF) || errors.Is(startupCause, io.ErrClosedPipe) ||
+		errors.Is(startupCause, ErrTransportClose) || errors.Is(startupCause, ErrInvalidFrame) || protocolFailure {
+		return backendcapacity.Details{
+			Type:    backendcapacity.ErrorTypeTransientOverload,
+			Reason:  "backend transport or protocol unavailable",
+			Trigger: boundedCapacityTrigger(text),
+		}, true
+	}
+	evidence, ok := codexProviderCapacityEvidence(err)
+	if !ok {
+		return backendcapacity.Details{}, false
+	}
+	if details, ok := codexProviderOutage(err, evidence); ok {
+		return details, true
+	}
+	if details, ok := backendcapacity.ClassifyTransientOverload(evidence, codexOverloadRules); ok {
+		details.Trigger = boundedCapacityTrigger(evidence)
+		return details, true
+	}
+	details, ok := backendcapacity.Classify(evidence, codexCapacityResetAt(limits), now, codexCapacityRules)
+	if !ok {
+		return backendcapacity.Details{}, false
+	}
+	if codexSubscriptionLimitText(evidence) {
+		details.Reason = "subscription window exhausted"
+	}
+	details.Trigger = boundedCapacityTrigger(evidence)
+	return details, true
+}
+
+func codexProviderOutage(err error, evidence string) (backendcapacity.Details, bool) {
+	var turnFailed *TurnFailedError
+	if !errors.As(err, &turnFailed) || turnFailed == nil {
+		return backendcapacity.Details{}, false
+	}
+	match := codexProviderOutageStatusPattern.FindStringSubmatch(evidence)
+	if len(match) != 2 {
+		return backendcapacity.Details{}, false
+	}
+	if match[1] == "404" {
+		if !codexResponsesEndpointPattern.MatchString(evidence) {
+			return backendcapacity.Details{}, false
+		}
+		lower := strings.ToLower(evidence)
+		for _, resourceError := range []string{"model_not_found", "model not found", "invalid_model", "invalid model"} {
+			if strings.Contains(lower, resourceError) {
+				return backendcapacity.Details{}, false
+			}
+		}
+		if strings.Contains(lower, "model") && strings.Contains(lower, "does not exist") {
+			return backendcapacity.Details{}, false
+		}
+	}
+	return backendcapacity.Details{
+		Type:    backendcapacity.ErrorTypeProviderOutage,
+		Kind:    "http_" + match[1],
+		Reason:  "provider responses endpoint unavailable",
+		Trigger: boundedCapacityTrigger(evidence),
+	}, true
+}
+
+func startupEvidencePointer(evidence backendcapacity.StartupEvidence, ok bool) *backendcapacity.StartupEvidence {
+	if !ok {
+		return nil
+	}
+	return &evidence
+}
+
+func codexSubscriptionLimitText(text string) bool {
+	text = strings.ToLower(strings.TrimSpace(text))
+	return strings.Contains(text, "chatgpt.com/codex/settings/usage") ||
+		strings.Contains(text, "purchase more credits or try again at")
+}
+
+func codexProviderCapacityEvidence(err error) (string, bool) {
+	parts := make([]string, 0, 3)
+	var bodyCarrier interface {
+		BackendErrorBody() string
+		BackendErrorMessage() string
+	}
+	if errors.As(err, &bodyCarrier) {
+		parts = append(parts, bodyCarrier.BackendErrorBody(), bodyCarrier.BackendErrorMessage())
+	}
+	var statusCarrier interface {
+		BackendErrorStatus() string
+	}
+	if errors.As(err, &statusCarrier) {
+		parts = append(parts, statusCarrier.BackendErrorStatus())
+	}
+	return strings.TrimSpace(strings.Join(parts, "\n")), len(parts) > 0
+}
+
+func boundedCapacityTrigger(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) > 2048 {
+		return value[len(value)-2048:]
+	}
+	return value
+}
+
+func codexStartupOperation(text string) bool {
+	text = strings.ToLower(strings.TrimSpace(text))
+	if strings.Contains(text, "start codex app-server transport") {
+		return true
+	}
+	for _, operation := range []string{"initialize", "thread/start", "thread/resume", "turn/start"} {
+		if strings.Contains(text, "wait for "+operation+" response") {
+			return true
+		}
+	}
+	return false
+}
+
+func (b *AgentBackend) CapacityStatus(limits *telemetry.RateLimits) (runner.CapacityStatus, bool) {
+	if b == nil {
+		return runner.CapacityStatus{}, false
+	}
+	return CapacityStatus(limits)
+}
+
+func (b *AgentBackend) ReadCapacity(ctx context.Context) (runner.CapacityObservation, error) {
+	if b == nil {
+		return runner.CapacityObservation{}, nil
+	}
+	return b.client.ReadCapacity(ctx)
+}
+
+func (b *AgentBackend) CapacityAccount() string {
+	if b == nil {
+		return ""
+	}
+	return b.client.capacityAccount
+}
+
+func CapacityStatus(limits *telemetry.RateLimits) (runner.CapacityStatus, bool) {
+	if limits == nil {
+		return runner.CapacityStatus{}, false
+	}
+	return runner.CapacityStatus{Available: true, Detail: "Provider usage is diagnostic only"}, true
+}
+
+func codexCapacityErrorText(err error) string {
+	text := strings.TrimSpace(err.Error())
+	var carrier interface {
+		BackendErrorBody() string
+		BackendErrorMessage() string
+	}
+	if errors.As(err, &carrier) {
+		for _, value := range []string{carrier.BackendErrorBody(), carrier.BackendErrorMessage()} {
+			value = strings.TrimSpace(value)
+			if value == "" || strings.Contains(text, value) {
+				continue
+			}
+			if text != "" {
+				text += "\n"
+			}
+			text += value
+		}
+	}
+	return text
+}
+
+func codexCapacityResetAt(limits *telemetry.RateLimits) *time.Time {
+	if limits == nil {
+		return nil
+	}
+	buckets := []*telemetry.RateLimitBucket{limits.Primary, limits.Secondary}
+	if strings.Contains(strings.ToLower(limits.ReachedType), "secondary") {
+		buckets[0], buckets[1] = buckets[1], buckets[0]
+	}
+	for _, bucket := range buckets {
+		if bucket == nil || bucket.ResetAt == nil || bucket.Status != telemetry.RateLimitStatusExhausted {
+			continue
+		}
+		resetAt := bucket.ResetAt.UTC()
+		return &resetAt
+	}
+	for _, bucket := range buckets {
+		if bucket == nil || bucket.ResetAt == nil {
+			continue
+		}
+		resetAt := bucket.ResetAt.UTC()
+		return &resetAt
+	}
+	return nil
+}

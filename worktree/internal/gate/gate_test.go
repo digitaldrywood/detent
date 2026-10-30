@@ -1,0 +1,1109 @@
+package gate
+
+import (
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/securityaudit"
+)
+
+func TestEffectiveSelectsGateDefaults(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		cfg  Config
+		want Config
+	}{
+		{
+			name: "omitted gate defaults to make check command",
+			cfg:  Config{},
+			want: Config{Kind: KindCommand, Run: DefaultCommand, ApprovalLabel: DefaultApprovalLabel, RequireAutomatedReview: new(true), CIFailureAction: CIFailureActionRework},
+		},
+		{
+			name: "command keeps custom run",
+			cfg:  Config{Kind: " command ", Run: " make verify "},
+			want: Config{Kind: KindCommand, Run: "make verify", ApprovalLabel: DefaultApprovalLabel, RequireAutomatedReview: new(true), CIFailureAction: CIFailureActionRework},
+		},
+		{
+			name: "command can disable automated review requirement",
+			cfg:  Config{Kind: KindCommand, Run: "make verify", RequireAutomatedReview: new(false)},
+			want: Config{Kind: KindCommand, Run: "make verify", ApprovalLabel: DefaultApprovalLabel, RequireAutomatedReview: new(false), CIFailureAction: CIFailureActionRework},
+		},
+		{
+			name: "command can explicitly skip failed ci",
+			cfg:  Config{Kind: KindCommand, Run: "make verify", CIFailureAction: " skip "},
+			want: Config{Kind: KindCommand, Run: "make verify", ApprovalLabel: DefaultApprovalLabel, RequireAutomatedReview: new(true), CIFailureAction: CIFailureActionSkip},
+		},
+		{
+			name: "command can route failed ci to rework",
+			cfg:  Config{Kind: KindCommand, Run: "make verify", CIFailureAction: " Rework "},
+			want: Config{Kind: KindCommand, Run: "make verify", ApprovalLabel: DefaultApprovalLabel, RequireAutomatedReview: new(true), CIFailureAction: CIFailureActionRework},
+		},
+		{
+			name: "command can explicitly disable transient ci retries",
+			cfg:  Config{Kind: KindCommand, Run: "make verify", TransientCIRetryLimit: newInt(0)},
+			want: Config{Kind: KindCommand, Run: "make verify", ApprovalLabel: DefaultApprovalLabel, RequireAutomatedReview: new(true), CIFailureAction: CIFailureActionRework, TransientCIRetryLimit: newInt(0)},
+		},
+		{
+			name: "command normalizes required status checks",
+			cfg: Config{
+				Kind:                 KindCommand,
+				RequiredStatusChecks: []string{" Lint ", "Windows Core", "Lint", ""},
+			},
+			want: Config{
+				Kind:                   KindCommand,
+				Run:                    DefaultCommand,
+				ApprovalLabel:          DefaultApprovalLabel,
+				RequireAutomatedReview: new(true),
+				RequiredStatusChecks:   []string{"Lint", "Windows Core"},
+				CIFailureAction:        CIFailureActionRework,
+			},
+		},
+		{
+			name: "command normalizes ci trigger label and defaults stagger",
+			cfg: Config{
+				Kind:           KindCommand,
+				CITriggerLabel: " CI:Ready ",
+			},
+			want: Config{
+				Kind:                         KindCommand,
+				Run:                          DefaultCommand,
+				ApprovalLabel:                DefaultApprovalLabel,
+				RequireAutomatedReview:       new(true),
+				CITriggerLabel:               "ci:ready",
+				CITriggerLabelStaggerSeconds: newInt(DefaultCITriggerLabelStaggerSeconds),
+				CIFailureAction:              CIFailureActionRework,
+			},
+		},
+		{
+			name: "human review normalizes alias and approval label",
+			cfg:  Config{Kind: "human-review", Run: "make check", ApprovalLabel: " Human-Approved "},
+			want: Config{Kind: KindHumanReview, Run: "", ApprovalLabel: "human-approved", CIFailureAction: CIFailureActionSkip},
+		},
+		{
+			name: "human review gets default approval label",
+			cfg:  Config{Kind: KindHumanReview},
+			want: Config{Kind: KindHumanReview, Run: "", ApprovalLabel: DefaultApprovalLabel, CIFailureAction: CIFailureActionSkip},
+		},
+		{
+			name: "artifact gate gets status defaults and drops PR command settings",
+			cfg: Config{
+				Kind:                   "artifact-status",
+				Run:                    "make check",
+				RequireAutomatedReview: new(true),
+			},
+			want: Config{
+				Kind:            KindArtifact,
+				Run:             "",
+				ApprovalLabel:   DefaultApprovalLabel,
+				CIFailureAction: CIFailureActionSkip,
+				Artifact: ArtifactConfig{
+					StatusField:    DefaultArtifactStatusField,
+					PassStatuses:   []string{"approved", "complete", "completed", "pass", "passed", "valid"},
+					WaitStatuses:   []string{"pending", "review", "reviewing", "waiting"},
+					ReworkStatuses: []string{"changes_requested", "failed", "invalid", "rework"},
+				},
+			},
+		},
+		{
+			name: "validator defaults stay disabled with score threshold and p1 blocker",
+			cfg:  Config{Kind: KindCommand, Validator: ValidatorConfig{}},
+			want: Config{
+				Kind:                   KindCommand,
+				Run:                    DefaultCommand,
+				ApprovalLabel:          DefaultApprovalLabel,
+				RequireAutomatedReview: new(true),
+				CIFailureAction:        CIFailureActionRework,
+				Validator: ValidatorConfig{
+					MinScore: DefaultValidatorMinScore,
+					BlockOn:  []string{"p1"},
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := Effective(tt.cfg)
+			want := tt.want
+			if want.TransientCIRetryLimit == nil {
+				want.TransientCIRetryLimit = newInt(DefaultTransientCIRetries)
+			}
+			want.Validator = effectiveValidatorConfig(want.Validator)
+			want.Artifact = effectiveArtifactConfig(want.Artifact)
+			if !configsEqual(got, want) {
+				t.Fatalf("Effective() = %#v, want %#v", got, want)
+			}
+		})
+	}
+}
+
+func TestEffectiveSecurityAuditDefaults(t *testing.T) {
+	t.Parallel()
+
+	cfg := DefaultConfig().SecurityAudit
+	if !cfg.Enabled || cfg.MaxAttempts != DefaultSecurityAuditMaxAttempts || cfg.TurnTimeoutMS != DefaultSecurityAuditTurnTimeoutMS {
+		t.Fatalf("SecurityAudit = %#v", cfg)
+	}
+	if cfg.MaxDiffBytes == nil || *cfg.MaxDiffBytes != securityaudit.DefaultMaxDiffBytes {
+		t.Fatalf("SecurityAudit.MaxDiffBytes = %v", cfg.MaxDiffBytes)
+	}
+	if !slices.Equal(cfg.BlockOn, []string{"p1", "p2"}) {
+		t.Fatalf("SecurityAudit.BlockOn = %#v", cfg.BlockOn)
+	}
+}
+
+func TestEvaluateSecurityAudit(t *testing.T) {
+	t.Parallel()
+
+	base := Summary{
+		PullRequestURL: "https://github.test/pull/42",
+		CIStatus:       "green",
+		ReviewState:    "COMMENTED",
+	}
+	cfg := Config{
+		SecurityAudit: SecurityAuditConfig{Enabled: true},
+	}
+
+	tests := []struct {
+		name       string
+		evaluation securityaudit.Evaluation
+		want       Decision
+	}{
+		{
+			name:       "missing waits",
+			evaluation: securityaudit.Evaluation{Reason: securityaudit.ReasonMissing},
+			want:       Decision{Action: ActionWait, Reason: ReasonSecurityAuditMissing},
+		},
+		{
+			name:       "backend failure waits",
+			evaluation: securityaudit.Evaluation{Reason: securityaudit.ReasonFailed},
+			want:       Decision{Action: ActionWait, Reason: ReasonSecurityAuditFailed},
+		},
+		{
+			name: "finding reworks",
+			evaluation: securityaudit.Evaluation{
+				Reason:   securityaudit.ReasonUnresolvedFindings,
+				Findings: []securityaudit.Finding{{Severity: "p1", Body: "Bypass", Path: "auth.go", Line: 12}},
+			},
+			want: Decision{
+				Action:   ActionRework,
+				Reason:   ReasonSecurityAuditFindings,
+				Findings: []Finding{{Attribution: "unknown", Severity: "p1", Body: "Bypass", Path: "auth.go", Line: 12}},
+			},
+		},
+		{
+			name:       "trusted exact head continues",
+			evaluation: securityaudit.Evaluation{Allowed: true, Reason: securityaudit.ReasonReady},
+			want:       Decision{Action: ActionPass, Reason: ReasonReady},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			summary := base
+			summary.SecurityAudit = tt.evaluation
+			got := Evaluate(cfg, nil, summary, time.Now(), EvaluationOptions{})
+			if got.Action != tt.want.Action || got.Reason != tt.want.Reason || !slices.Equal(got.Findings, tt.want.Findings) {
+				t.Fatalf("Evaluate() = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestEffectivePlanSelectsDefaults(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		cfg  PlanConfig
+		want PlanConfig
+	}{
+		{
+			name: "omitted plan config is disabled with default review stop",
+			cfg:  PlanConfig{},
+			want: PlanConfig{Enabled: false, Review: PlanReviewHuman, ApprovalLabel: DefaultPlanApprovalLabel, Stop: DefaultPlanStop},
+		},
+		{
+			name: "enabled plan normalizes review and trims stop",
+			cfg:  PlanConfig{Enabled: true, Review: " Both ", Stop: " Plan Review "},
+			want: PlanConfig{Enabled: true, Review: PlanReviewBoth, ApprovalLabel: DefaultPlanApprovalLabel, Stop: DefaultPlanStop},
+		},
+		{
+			name: "enabled plan defaults review and stop",
+			cfg:  PlanConfig{Enabled: true},
+			want: PlanConfig{Enabled: true, Review: PlanReviewHuman, ApprovalLabel: DefaultPlanApprovalLabel, Stop: DefaultPlanStop},
+		},
+		{
+			name: "enabled plan normalizes approval label",
+			cfg:  PlanConfig{Enabled: true, ApprovalLabel: " Plan-Approved "},
+			want: PlanConfig{Enabled: true, Review: PlanReviewHuman, ApprovalLabel: DefaultPlanApprovalLabel, Stop: DefaultPlanStop},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := EffectivePlan(tt.cfg); got != tt.want {
+				t.Fatalf("EffectivePlan() = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestEvaluate(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 2, 12, 0, 0, 0, time.UTC)
+	oldActivity := now.Add(-20 * time.Minute)
+	recentActivity := now.Add(-30 * time.Second)
+	finding := Finding{Attribution: "unknown", Body: "P1 finding", URL: "https://example.test/comment", Path: "main.go", Line: 7}
+	readyCommand := Summary{
+		PullRequestURL: "https://github.test/pull/42",
+		CIStatus:       "green",
+		ReviewState:    "COMMENTED",
+		LastActivityAt: &oldActivity,
+	}
+
+	tests := []struct {
+		name   string
+		cfg    Config
+		labels []string
+		input  Summary
+		opts   EvaluationOptions
+		want   Decision
+	}{
+		{
+			name:  "command gate skips without pull request",
+			input: Summary{},
+			want:  Decision{Action: ActionSkip, Reason: ReasonMissingPullRequest},
+		},
+		{
+			name: "command gate reworks red ci by default",
+			input: Summary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "red",
+			},
+			want: Decision{Action: ActionRework, Reason: ReasonCINotGreen, CIStatus: "red"},
+		},
+		{
+			name: "command gate skips red ci when configured",
+			cfg:  Config{Kind: KindCommand, CIFailureAction: CIFailureActionSkip},
+			input: Summary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "red",
+			},
+			want: Decision{Action: ActionSkip, Reason: ReasonCINotGreen, CIStatus: "red"},
+		},
+		{
+			name: "command gate reworks red ci when configured",
+			cfg:  Config{Kind: KindCommand, CIFailureAction: CIFailureActionRework},
+			input: Summary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "fail",
+			},
+			want: Decision{Action: ActionRework, Reason: ReasonCINotGreen, CIStatus: "red"},
+		},
+		{
+			name: "command gate reworks cancelled ci when configured",
+			cfg:  Config{Kind: KindCommand, CIFailureAction: CIFailureActionRework},
+			input: Summary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "cancelled",
+			},
+			want: Decision{Action: ActionRework, Reason: ReasonCINotGreen, CIStatus: "cancelled"},
+		},
+		{
+			name: "command gate skips pending ci when rework is configured",
+			cfg:  Config{Kind: KindCommand, CIFailureAction: CIFailureActionRework},
+			input: Summary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "pending",
+			},
+			want: Decision{Action: ActionSkip, Reason: ReasonCINotGreen, CIStatus: "pending"},
+		},
+		{
+			name: "command gate waits for automated review",
+			input: Summary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "green",
+			},
+			want: Decision{Action: ActionWait, Reason: ReasonAutomatedReviewMissing},
+		},
+		{
+			name: "command gate passes without automated review when disabled",
+			cfg:  Config{Kind: KindCommand, RequireAutomatedReview: new(false)},
+			input: Summary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "green",
+				LastActivityAt: &oldActivity,
+			},
+			opts: EvaluationOptions{QuietDuration: 10 * time.Minute},
+			want: Decision{Action: ActionPass, Reason: ReasonReady},
+		},
+		{
+			name: "command gate requests rework for p1 findings",
+			input: Summary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "success",
+				ReviewState:    "APPROVED",
+				P1Findings:     []Finding{finding},
+				LastActivityAt: &oldActivity,
+			},
+			want: Decision{Action: ActionRework, Reason: ReasonP1Findings, Findings: []Finding{finding}},
+		},
+		{
+			name: "command gate requests rework for p1 review state",
+			input: Summary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "green",
+				ReviewState:    "P1",
+				LastActivityAt: &oldActivity,
+			},
+			want: Decision{Action: ActionRework, Reason: ReasonP1Findings},
+		},
+		{
+			name:  "command gate waits for quiet window",
+			input: Summary{PullRequestURL: "https://github.test/pull/42", CIStatus: "green", ReviewState: "P2", LastActivityAt: &recentActivity},
+			opts:  EvaluationOptions{QuietDuration: 10 * time.Minute},
+			want:  Decision{Action: ActionWait, Reason: ReasonAutomatedReviewNotQuiet, QuietRemaining: 570 * time.Second},
+		},
+		{
+			name:  "command gate passes when ci and automated review pass",
+			input: readyCommand,
+			opts:  EvaluationOptions{QuietDuration: 10 * time.Minute},
+			want:  Decision{Action: ActionPass, Reason: ReasonReady},
+		},
+		{
+			name: "validator gate waits for missing validator result",
+			cfg: Config{
+				Kind:      KindCommand,
+				Validator: ValidatorConfig{Enabled: true, MinScore: 0.8, BlockOn: []string{"p1"}},
+			},
+			input: readyCommand,
+			opts:  EvaluationOptions{QuietDuration: 10 * time.Minute},
+			want:  Decision{Action: ActionWait, Reason: ReasonValidatorMissing},
+		},
+		{
+			name: "validator gate requests validator before quiet window",
+			cfg: Config{
+				Kind:      KindCommand,
+				Validator: ValidatorConfig{Enabled: true, MinScore: 0.8, BlockOn: []string{"p1"}},
+			},
+			input: Summary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "green",
+				ReviewState:    "COMMENTED",
+				LastActivityAt: &recentActivity,
+			},
+			opts: EvaluationOptions{QuietDuration: 10 * time.Minute},
+			want: Decision{Action: ActionWait, Reason: ReasonValidatorMissing},
+		},
+		{
+			name: "validator gate requests validator before automated review",
+			cfg: Config{
+				Kind:      KindCommand,
+				Validator: ValidatorConfig{Enabled: true},
+			},
+			input: Summary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "green",
+			},
+			want: Decision{Action: ActionWait, Reason: ReasonValidatorMissing},
+		},
+		{
+			name: "validator gate reworks production errors",
+			cfg: Config{
+				Kind:      KindCommand,
+				Validator: ValidatorConfig{Enabled: true},
+			},
+			input: Summary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "green",
+				Validator: ValidatorResult{
+					Verdict:  ValidatorVerdictError,
+					Summary:  "validator review production failed",
+					Findings: []Finding{{Severity: "p1", Body: "validator review production failed"}},
+				},
+			},
+			want: Decision{
+				Action:   ActionRework,
+				Reason:   ReasonValidatorError,
+				Findings: []Finding{{Attribution: "unknown", Severity: "p1", Body: "validator review production failed"}},
+			},
+		},
+		{
+			name: "validator gate passes above score threshold",
+			cfg: Config{
+				Kind:      KindCommand,
+				Validator: ValidatorConfig{Enabled: true, MinScore: 0.8, BlockOn: []string{"p1"}},
+			},
+			input: Summary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "green",
+				ReviewState:    "COMMENTED",
+				LastActivityAt: &oldActivity,
+				Validator: ValidatorResult{
+					Submitted: true,
+					Verdict:   ValidatorVerdictPass,
+					Score:     0.91,
+				},
+			},
+			opts: EvaluationOptions{QuietDuration: 10 * time.Minute},
+			want: Decision{Action: ActionPass, Reason: ReasonReady},
+		},
+		{
+			name: "validator gate reworks below score threshold",
+			cfg: Config{
+				Kind:      KindCommand,
+				Validator: ValidatorConfig{Enabled: true, MinScore: 0.8, BlockOn: []string{"p1"}},
+			},
+			input: Summary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "green",
+				ReviewState:    "COMMENTED",
+				LastActivityAt: &oldActivity,
+				Validator: ValidatorResult{
+					Submitted: true,
+					Verdict:   ValidatorVerdictPass,
+					Score:     0.72,
+				},
+			},
+			want: Decision{Action: ActionRework, Reason: ReasonValidatorScoreBelowThreshold},
+		},
+		{
+			name: "validator gate reworks blocked severity regardless of score",
+			cfg: Config{
+				Kind:      KindCommand,
+				Validator: ValidatorConfig{Enabled: true, MinScore: 0.8, BlockOn: []string{"p1"}},
+			},
+			input: Summary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "green",
+				ReviewState:    "COMMENTED",
+				LastActivityAt: &oldActivity,
+				Validator: ValidatorResult{
+					Submitted: true,
+					Verdict:   ValidatorVerdictPass,
+					Score:     0.98,
+					Findings:  []Finding{{Severity: "P1", Body: "Acceptance criteria missed."}},
+				},
+			},
+			want: Decision{
+				Action:   ActionRework,
+				Reason:   ReasonValidatorBlockedSeverity,
+				Findings: []Finding{{Attribution: "unknown", Severity: "P1", Body: "Acceptance criteria missed."}},
+			},
+		},
+		{
+			name: "validator gate waits on wait verdict",
+			cfg: Config{
+				Kind:      KindCommand,
+				Validator: ValidatorConfig{Enabled: true, MinScore: 0.8, BlockOn: []string{"p1"}},
+			},
+			input: Summary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "green",
+				ReviewState:    "COMMENTED",
+				LastActivityAt: &oldActivity,
+				Validator: ValidatorResult{
+					Submitted: true,
+					Verdict:   ValidatorVerdictWait,
+					Score:     0.86,
+				},
+			},
+			want: Decision{Action: ActionWait, Reason: ReasonValidatorWait},
+		},
+		{
+			name:  "human review gate waits for approval label",
+			cfg:   Config{Kind: KindHumanReview, ApprovalLabel: "approved-by-human"},
+			input: Summary{PullRequestPresent: true},
+			labels: []string{
+				"enhancement",
+			},
+			want: Decision{Action: ActionWait, Reason: ReasonHumanApprovalMissing},
+		},
+		{
+			name:   "human review gate passes with approval label",
+			cfg:    Config{Kind: KindHumanReview, ApprovalLabel: "approved-by-human"},
+			input:  Summary{PullRequestPresent: true},
+			labels: []string{" Approved-By-Human "},
+			want:   Decision{Action: ActionPass, Reason: ReasonReady},
+		},
+		{
+			name:  "artifact gate waits for missing status",
+			cfg:   Config{Kind: KindArtifact},
+			input: Summary{},
+			want:  Decision{Action: ActionWait, Reason: ReasonArtifactStatusMissing},
+		},
+		{
+			name:  "artifact gate waits for pending status without pull request",
+			cfg:   Config{Kind: KindArtifact},
+			input: Summary{ArtifactStatus: " Pending "},
+			want:  Decision{Action: ActionWait, Reason: ReasonArtifactStatusWait},
+		},
+		{
+			name:  "artifact gate routes rework status without pull request",
+			cfg:   Config{Kind: KindArtifact},
+			input: Summary{ArtifactStatus: "invalid"},
+			want:  Decision{Action: ActionRework, Reason: ReasonArtifactStatusRework},
+		},
+		{
+			name: "artifact gate passes custom valid status without pull request",
+			cfg: Config{
+				Kind: KindArtifact,
+				Artifact: ArtifactConfig{
+					StatusField:    "render_status",
+					PassStatuses:   []string{"ready"},
+					WaitStatuses:   []string{"queued"},
+					ReworkStatuses: []string{"recut"},
+				},
+			},
+			input: Summary{ArtifactStatus: "Ready"},
+			want:  Decision{Action: ActionPass, Reason: ReasonReady},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := Evaluate(tt.cfg, tt.labels, tt.input, now, tt.opts)
+			if got.Action != tt.want.Action ||
+				got.Reason != tt.want.Reason ||
+				got.CIStatus != tt.want.CIStatus ||
+				got.QuietRemaining != tt.want.QuietRemaining {
+				t.Fatalf("Evaluate() = %#v, want %#v", got, tt.want)
+			}
+			if len(got.Findings) != len(tt.want.Findings) {
+				t.Fatalf("Findings len = %d, want %d", len(got.Findings), len(tt.want.Findings))
+			}
+			for i := range tt.want.Findings {
+				if got.Findings[i] != tt.want.Findings[i] {
+					t.Fatalf("Findings[%d] = %#v, want %#v", i, got.Findings[i], tt.want.Findings[i])
+				}
+			}
+		})
+	}
+}
+
+func TestEvaluatePlan(t *testing.T) {
+	t.Parallel()
+
+	finding := Finding{Attribution: "unknown", Body: "Plan misses rollback steps.", URL: "https://github.test/comment/1"}
+
+	tests := []struct {
+		name   string
+		cfg    PlanConfig
+		labels []string
+		input  Summary
+		want   Decision
+	}{
+		{
+			name: "disabled plan gate skips",
+			cfg:  PlanConfig{},
+			want: Decision{Action: ActionSkip, Reason: ReasonPlanDisabled},
+		},
+		{
+			name:   "human plan gate passes with plan approval label",
+			cfg:    PlanConfig{Enabled: true, Review: PlanReviewHuman},
+			labels: []string{" Plan-Approved "},
+			want:   Decision{Action: ActionPass, Reason: ReasonReady},
+		},
+		{
+			name:   "human plan gate ignores final approval label",
+			cfg:    PlanConfig{Enabled: true, Review: PlanReviewHuman, ApprovalLabel: "plan-approved"},
+			labels: []string{"human-approved"},
+			want:   Decision{Action: ActionWait, Reason: ReasonHumanApprovalMissing},
+		},
+		{
+			name: "human plan gate waits without approval label",
+			cfg:  PlanConfig{Enabled: true, Review: PlanReviewHuman},
+			want: Decision{Action: ActionWait, Reason: ReasonHumanApprovalMissing},
+		},
+		{
+			name:  "automated plan gate passes after automated review",
+			cfg:   PlanConfig{Enabled: true, Review: PlanReviewAutomated},
+			input: Summary{ReviewState: "COMMENTED"},
+			want:  Decision{Action: ActionPass, Reason: ReasonReady},
+		},
+		{
+			name: "automated plan gate waits before review",
+			cfg:  PlanConfig{Enabled: true, Review: PlanReviewAutomated},
+			want: Decision{Action: ActionWait, Reason: ReasonAutomatedReviewMissing},
+		},
+		{
+			name:  "automated plan gate routes p1 findings to rework",
+			cfg:   PlanConfig{Enabled: true, Review: PlanReviewAutomated},
+			input: Summary{ReviewState: "P1", P1Findings: []Finding{finding}},
+			want:  Decision{Action: ActionRework, Reason: ReasonP1Findings, Findings: []Finding{finding}},
+		},
+		{
+			name:   "both plan gate accepts human approval",
+			cfg:    PlanConfig{Enabled: true, Review: PlanReviewBoth},
+			labels: []string{"plan-approved"},
+			want:   Decision{Action: ActionPass, Reason: ReasonReady},
+		},
+		{
+			name:  "both plan gate accepts automated approval",
+			cfg:   PlanConfig{Enabled: true, Review: PlanReviewBoth},
+			input: Summary{ReviewState: "APPROVED"},
+			want:  Decision{Action: ActionPass, Reason: ReasonReady},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := EvaluatePlan(tt.cfg, tt.labels, tt.input)
+			if got.Action != tt.want.Action || got.Reason != tt.want.Reason {
+				t.Fatalf("EvaluatePlan() = %#v, want %#v", got, tt.want)
+			}
+			if len(got.Findings) != len(tt.want.Findings) {
+				t.Fatalf("Findings len = %d, want %d", len(got.Findings), len(tt.want.Findings))
+			}
+			for i := range tt.want.Findings {
+				if got.Findings[i] != tt.want.Findings[i] {
+					t.Fatalf("Findings[%d] = %#v, want %#v", i, got.Findings[i], tt.want.Findings[i])
+				}
+			}
+		})
+	}
+}
+
+func TestCommandGateQueueEligibleCI(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name     string
+		status   string
+		eligible bool
+		want     Action
+	}{
+		{name: "pending without queue evidence", status: "pending", want: ActionSkip},
+		{name: "pending with queue evidence", status: "pending", eligible: true, want: ActionPass},
+		{name: "failed with queue evidence", status: "failure", eligible: true, want: ActionRework},
+		{name: "missing with queue evidence", eligible: true, want: ActionSkip},
+		{name: "passed without queue evidence", status: "success", want: ActionPass},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := Evaluate(Config{Kind: KindCommand, CIFailureAction: CIFailureActionRework, RequireAutomatedReview: new(false)}, nil,
+				Summary{PullRequestURL: "https://github.test/pull/42", CIStatus: tt.status, QueueEligibleCI: tt.eligible}, time.Now(), EvaluationOptions{})
+			if got.Action != tt.want {
+				t.Fatalf("Evaluate() = %#v, want action %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestInstructionsDescribeOptimizedMergingGate(t *testing.T) {
+	t.Parallel()
+
+	got := Instructions(Config{Kind: KindCommand, Run: "make check", RequireAutomatedReview: new(false)})
+	for _, want := range []string{
+		"Run `make check` from the workspace root; require eligible current-head checks before promotion",
+		"skips are not passes",
+		"Merge-group-only CI must pass before merge",
+		"Merging smoke gate requires clean rebase, unchanged source, known current-head validation",
+		"otherwise rerun `make check`",
+		"REST backoff",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("Instructions() missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestInstructionsDescribeArtifactWorkpadCompletionField(t *testing.T) {
+	t.Parallel()
+
+	got := Instructions(Config{
+		Kind: KindArtifact,
+		Artifact: ArtifactConfig{
+			StatusField:    "render_status",
+			PassStatuses:   []string{"approved"},
+			WaitStatuses:   []string{"pending_review"},
+			ReworkStatuses: []string{"recut"},
+		},
+	})
+	for _, want := range []string{
+		"without shell or database commands",
+		"```detent-status\n" +
+			"schema: 1\n" +
+			"status: complete\n" +
+			"fields:\n" +
+			"  render_status: <configured status>\n" +
+			"blockers: []\n" +
+			"human_action: null\n" +
+			"```",
+		"Allowed pass statuses: approved.",
+		"Allowed wait statuses: pending_review.",
+		"Allowed rework statuses: recut.",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("Instructions() missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestInstructionsDescribeRequiredStatusChecks(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name   string
+		checks []string
+		want   []string
+		absent []string
+	}{
+		{
+			name: "omitted aggregate policy",
+			want: []string{
+				"require eligible current-head checks before promotion",
+				"skips are not passes",
+				"Merge-group-only CI must pass before merge",
+			},
+			absent: []string{"do not wait for a CI producer", "required_status_checks is explicitly empty"},
+		},
+		{
+			name:   "explicit empty native policy",
+			checks: []string{},
+			want: []string{
+				"required_status_checks is explicitly empty",
+				"defers to the base branch's native required checks",
+				"When that branch requires no checks, do not wait for a CI producer",
+				"Native required checks and red CI still block promotion and merge",
+			},
+			absent: []string{
+				"require eligible current-head checks before promotion",
+				"Merge-group-only CI must pass before merge",
+				"Required checks: present",
+			},
+		},
+		{
+			name:   "configured required checks",
+			checks: []string{"Windows Core"},
+			want: []string{
+				"Required checks: present, completed, successful on current PR head",
+				"missing/skipped/failed/cancelled/running blocks promotion",
+				"Native required checks and red CI still block promotion and merge",
+			},
+			absent: []string{"do not wait for a CI producer", "required_status_checks is explicitly empty"},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := Instructions(Config{
+				Kind:                 KindCommand,
+				Run:                  "true",
+				RequiredStatusChecks: tt.checks,
+			})
+			for _, want := range tt.want {
+				if !strings.Contains(got, want) {
+					t.Errorf("Instructions() missing %q", want)
+				}
+			}
+			for _, absent := range tt.absent {
+				if strings.Contains(got, absent) {
+					t.Errorf("Instructions() contradicts policy with %q", absent)
+				}
+			}
+		})
+	}
+}
+
+func TestInstructionsDescribeCITriggerLabel(t *testing.T) {
+	t.Parallel()
+
+	got := Instructions(Config{
+		Kind:                         KindCommand,
+		CITriggerLabel:               "ci:ready",
+		CITriggerLabelStaggerSeconds: newInt(20),
+	})
+	for _, want := range []string{
+		"CI trigger label `ci:ready`",
+		"After every push",
+		"after any other CI lane labels",
+		"Detent records successful worker pushes",
+		"merging workers also reapply it immediately after deterministic head-changing pushes",
+		"detent hub ci-trigger-label",
+		"removes the label if present, adds it again",
+		"REST issue-label endpoints",
+		"before waiting for current-head checks",
+		"host-wide lock plus persisted timestamp",
+		"at least 20 seconds apart",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("Instructions() missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestInstructionsEncodeCITriggerLabel(t *testing.T) {
+	t.Parallel()
+
+	got := Instructions(Config{
+		Kind:                         KindCommand,
+		CITriggerLabel:               "team's ci ready",
+		CITriggerLabelStaggerSeconds: newInt(15),
+	})
+	if want := "--label-base64 " + encodeCITriggerLabelArgument("team's ci ready") + " --stagger-seconds 15"; !strings.Contains(got, want) {
+		t.Fatalf("Instructions() missing %q:\n%s", want, got)
+	}
+}
+
+func TestInstructionsIncludeGitHubHostname(t *testing.T) {
+	t.Parallel()
+
+	got := InstructionsForGitHubHost(Config{
+		Kind:                         KindCommand,
+		CITriggerLabel:               "ci:ready",
+		CITriggerLabelStaggerSeconds: newInt(15),
+	}, "github.example.com")
+	if want := "--label-base64 " + encodeCITriggerLabelArgument("ci:ready") + " --hostname-base64 " + encodeCITriggerLabelArgument("github.example.com") + " --stagger-seconds 15"; !strings.Contains(got, want) {
+		t.Fatalf("InstructionsForGitHubHost() missing %q:\n%s", want, got)
+	}
+}
+
+func TestEvaluateAutomatedReviewModes(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name       string
+		mode       string
+		required   *bool
+		review     string
+		pending    bool
+		expired    bool
+		p1Findings []Finding
+		want       Decision
+	}{
+		{name: "required absent", mode: AutomatedReviewRequired, want: Decision{Action: ActionWait, Reason: ReasonAutomatedReviewMissing}},
+		{name: "required absent after deadline", mode: AutomatedReviewRequired, expired: true, want: Decision{Action: ActionPass, Reason: ReasonReady}},
+		{name: "required pending", mode: AutomatedReviewRequired, pending: true, want: Decision{Action: ActionWait, Reason: ReasonAutomatedReviewMissing}},
+		{name: "required pending after deadline", mode: AutomatedReviewRequired, pending: true, expired: true, want: Decision{Action: ActionPass, Reason: ReasonReady}},
+		{name: "required present", mode: AutomatedReviewRequired, review: "COMMENTED", want: Decision{Action: ActionPass, Reason: ReasonReady}},
+		{name: "required late review", mode: AutomatedReviewRequired, review: "COMMENTED", expired: true, want: Decision{Action: ActionPass, Reason: ReasonReady}},
+		{name: "optional absent", mode: AutomatedReviewOptional, want: Decision{Action: ActionWait, Reason: ReasonAutomatedReviewMissing}},
+		{name: "optional absent after deadline", mode: AutomatedReviewOptional, expired: true, want: Decision{Action: ActionPass, Reason: ReasonReady}},
+		{name: "optional pending after deadline", mode: AutomatedReviewOptional, pending: true, expired: true, want: Decision{Action: ActionPass, Reason: ReasonReady}},
+		{name: "optional present", mode: AutomatedReviewOptional, review: "APPROVED", want: Decision{Action: ActionPass, Reason: ReasonReady}},
+		{name: "optional late review", mode: AutomatedReviewOptional, review: "APPROVED", expired: true, want: Decision{Action: ActionPass, Reason: ReasonReady}},
+		{name: "off absent", mode: AutomatedReviewOff, want: Decision{Action: ActionPass, Reason: ReasonReady}},
+		{name: "off pending", mode: AutomatedReviewOff, pending: true, want: Decision{Action: ActionPass, Reason: ReasonReady}},
+		{name: "legacy disabled pending", required: new(false), pending: true, want: Decision{Action: ActionPass, Reason: ReasonReady}},
+		{name: "legacy disabled pending after deadline", required: new(false), pending: true, expired: true, want: Decision{Action: ActionPass, Reason: ReasonReady}},
+		{name: "off present", mode: AutomatedReviewOff, review: "COMMENTED", want: Decision{Action: ActionPass, Reason: ReasonReady}},
+		{name: "required p1", mode: AutomatedReviewRequired, review: "P1", want: Decision{Action: ActionRework, Reason: ReasonP1Findings}},
+		{name: "optional late p1", mode: AutomatedReviewOptional, review: "COMMENTED", expired: true, p1Findings: []Finding{{Severity: "p1"}}, want: Decision{Action: ActionRework, Reason: ReasonP1Findings, Findings: []Finding{{Attribution: "unknown", Severity: "p1"}}}},
+		{name: "off p1", mode: AutomatedReviewOff, review: "P1", want: Decision{Action: ActionRework, Reason: ReasonP1Findings}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := Evaluate(Config{Kind: KindCommand, AutomatedReview: tt.mode, RequireAutomatedReview: tt.required}, nil, Summary{
+				PullRequestURL: "https://github.test/pull/1297",
+				CIStatus:       "green",
+				ReviewState:    tt.review,
+				ReviewPending:  tt.pending,
+				P1Findings:     tt.p1Findings,
+			}, now, EvaluationOptions{AutomatedReviewWaitExpired: tt.expired})
+			if got.Action != tt.want.Action || got.Reason != tt.want.Reason || !slices.Equal(got.Findings, tt.want.Findings) {
+				t.Fatalf("Evaluate() = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestEvaluatePendingReviewExpiresAfterRepeatedMissingDecisions(t *testing.T) {
+	t.Parallel()
+
+	started := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
+	cfg := Config{Kind: KindCommand, AutomatedReview: AutomatedReviewOptional}
+	summary := Summary{
+		PullRequestURL: "https://github.test/pull/3062",
+		CIStatus:       "green",
+		ReviewPending:  true,
+	}
+	for i := range 22 {
+		got := Evaluate(cfg, nil, summary, started.Add(time.Duration(i)*time.Minute*2), EvaluationOptions{})
+		if got.Action != ActionWait || got.Reason != ReasonAutomatedReviewMissing {
+			t.Fatalf("decision %d before expiry = %#v, want automated review wait", i+1, got)
+		}
+	}
+	got := Evaluate(cfg, nil, summary, started.Add(time.Hour), EvaluationOptions{AutomatedReviewWaitExpired: true})
+	if got.Action != ActionPass || got.Reason != ReasonReady {
+		t.Fatalf("decision after expiry = %#v, want ready pass", got)
+	}
+}
+
+func configsEqual(left Config, right Config) bool {
+	return left.Kind == right.Kind &&
+		left.Run == right.Run &&
+		left.ApprovalLabel == right.ApprovalLabel &&
+		AutomatedReviewMode(left) == AutomatedReviewMode(right) &&
+		left.CIFailureAction == right.CIFailureAction &&
+		left.CITriggerLabel == right.CITriggerLabel &&
+		slices.Equal(left.RequiredStatusChecks, right.RequiredStatusChecks) &&
+		intPointerEqual(left.CITriggerLabelStaggerSeconds, right.CITriggerLabelStaggerSeconds) &&
+		intPointerEqual(left.TransientCIRetryLimit, right.TransientCIRetryLimit) &&
+		boolPointerEqual(left.RequireAutomatedReview, right.RequireAutomatedReview) &&
+		validatorConfigsEqual(left.Validator, right.Validator) &&
+		artifactConfigsEqual(left.Artifact, right.Artifact)
+}
+
+func intPointerEqual(left *int, right *int) bool {
+	if left == nil || right == nil {
+		return left == right
+	}
+	return *left == *right
+}
+
+func boolPointerEqual(left *bool, right *bool) bool {
+	if left == nil || right == nil {
+		return left == right
+	}
+	return *left == *right
+}
+
+func validatorConfigsEqual(left ValidatorConfig, right ValidatorConfig) bool {
+	if left.Enabled != right.Enabled ||
+		left.Model != right.Model ||
+		left.MinScore != right.MinScore ||
+		left.UnverifiedCriteria != right.UnverifiedCriteria ||
+		left.TurnTimeoutMS != right.TurnTimeoutMS ||
+		!intPointerEqual(left.MaxInlineDiffBytes, right.MaxInlineDiffBytes) ||
+		len(left.BlockOn) != len(right.BlockOn) {
+		return false
+	}
+	for i := range left.BlockOn {
+		if left.BlockOn[i] != right.BlockOn[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func artifactConfigsEqual(left ArtifactConfig, right ArtifactConfig) bool {
+	return left.StatusField == right.StatusField &&
+		stringSlicesEqual(left.PassStatuses, right.PassStatuses) &&
+		stringSlicesEqual(left.WaitStatuses, right.WaitStatuses) &&
+		stringSlicesEqual(left.ReworkStatuses, right.ReworkStatuses)
+}
+
+func stringSlicesEqual(left []string, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func TestInstructionsDoNotDuplicateWorkpadPredicates(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []string{KindCommand, KindArtifact} {
+		t.Run(kind, func(t *testing.T) {
+			got := Instructions(Config{Kind: kind})
+			for _, want := range []string{"Blocker predicate keys", "check_presence (check and present required)", "Unknown keys are ignored"} {
+				if strings.Contains(got, want) {
+					t.Errorf("instructions duplicate %q", want)
+				}
+			}
+		})
+	}
+}
+
+func TestLocalStatusConfiguration(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		cfg       Config
+		effective string
+		problem   string
+	}{
+		{name: "unset", cfg: Config{Kind: KindCommand}, effective: ""},
+		{name: "command gate", cfg: Config{Kind: KindCommand, LocalStatus: " local-gate "}, effective: "local-gate"},
+		{name: "default kind is command", cfg: Config{LocalStatus: "local-gate"}, effective: "local-gate"},
+		{name: "human review gate", cfg: Config{Kind: KindHumanReview, LocalStatus: "local-gate"}, effective: "", problem: "gate.local_status requires kind command"},
+		{name: "artifact gate", cfg: Config{Kind: KindArtifact, LocalStatus: "local-gate"}, effective: "", problem: "gate.local_status requires kind command"},
+		{name: "multi-line context", cfg: Config{Kind: KindCommand, LocalStatus: "local\ngate"}, effective: "local\ngate", problem: "gate.local_status must be a single-line status context of at most 100 characters"},
+		{name: "also a pre-merge required check", cfg: Config{Kind: KindCommand, LocalStatus: "local-gate", RequiredStatusChecks: []string{"build", " local-gate "}}, effective: "local-gate", problem: "gate.local_status must not be listed in gate.required_status_checks: Detent posts it in the merge lane, after the pre-merge gate"},
+		{name: "overlong context", cfg: Config{Kind: KindCommand, LocalStatus: strings.Repeat("x", 101)}, effective: strings.Repeat("x", 101), problem: "gate.local_status must be a single-line status context of at most 100 characters"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := Effective(tt.cfg).LocalStatus; got != tt.effective {
+				t.Fatalf("Effective().LocalStatus = %q, want %q", got, tt.effective)
+			}
+			problems := Validate("gate", tt.cfg)
+			if tt.problem == "" && len(problems) != 0 {
+				t.Fatalf("Validate() = %v, want none", problems)
+			}
+			if tt.problem != "" && !slices.Contains(problems, tt.problem) {
+				t.Fatalf("Validate() = %v, want %q", problems, tt.problem)
+			}
+		})
+	}
+}
+
+func TestEffectivePreservesRequiredStatusPolicyPresence(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		checks []string
+	}{
+		{name: "omitted"},
+		{name: "explicitly empty", checks: []string{}},
+		{name: "configured", checks: []string{"Checks"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := Effective(Effective(Config{RequiredStatusChecks: tt.checks}))
+			if (got.RequiredStatusChecks == nil) != (tt.checks == nil) || !slices.Equal(got.RequiredStatusChecks, tt.checks) {
+				t.Fatalf("required checks=%#v, want %#v", got.RequiredStatusChecks, tt.checks)
+			}
+		})
+	}
+}
+
+func TestLandingMode(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, input, want string
+		invalid           bool
+	}{
+		{"default", "", LandingPerChange, false},
+		{"per change", "per_landing", LandingPerChange, false},
+		{"legacy rolling", " ROLLING_BARRIER ", LandingPerChange, false},
+		{"unknown", "skip", "skip", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := Effective(Config{LandingMode: test.input})
+			if cfg.LandingMode != test.want {
+				t.Fatalf("mode=%q", cfg.LandingMode)
+			}
+			invalid := false
+			for _, problem := range Validate("gate", cfg) {
+				invalid = invalid || strings.Contains(problem, ".landing_mode")
+			}
+			if invalid != test.invalid {
+				t.Fatalf("invalid=%v", invalid)
+			}
+		})
+	}
+}
