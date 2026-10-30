@@ -23,6 +23,7 @@ import (
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -188,8 +189,16 @@ func TestCloneRunnerRepositoryUsesLocalGitConfiguration(t *testing.T) {
 		t.Fatalf("full clone transferred %d bytes, want at least the %d-byte history blob", fullBytes, len(archive))
 	}
 	selected := globalconfig.Project{Workdir: filepath.Join(root, "checkout")}
+	clone := func(ctx context.Context, cloneURL, staging string) error {
+		return cloneRunnerRepositoryWithCommandContext(ctx, cloneURL, staging, func(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+			if timeout != 2*time.Minute {
+				t.Fatalf("clone timeout = %s, want two minutes", timeout)
+			}
+			return context.WithCancel(ctx)
+		})
+	}
 	for range 2 {
-		if err := prepareRunnerCheckout(t.Context(), selected, "https://github.com/example-org/example-project.git"); err != nil {
+		if err := prepareRunnerCheckoutWithClone(t.Context(), selected, "https://github.com/example-org/example-project.git", clone); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -244,27 +253,24 @@ func TestCloneRunnerRepositoryFailure(t *testing.T) {
 			t.Setenv("CHECKOUT_STARTED", started)
 			contexts := newControlledRuntimeCommandContexts()
 			contexts.AllowCommand()
-			if test.timeout {
-				done := make(chan struct{})
+			done := make(chan error, 1)
+			go func() {
 				defer close(done)
-				go func() {
-					<-contexts.ready
-					ticker := time.NewTicker(time.Millisecond)
-					defer ticker.Stop()
-					for {
-						select {
-						case <-done:
-							return
-						case <-ticker.C:
-							if _, err := os.Stat(started); err == nil {
-								contexts.Expire()
-								return
-							}
-						}
-					}
-				}()
+				done <- cloneRunnerRepositoryWithCommandContext(t.Context(), "https://github.com/example-org/project.git", root, contexts.New)
+			}()
+			<-contexts.ready
+			t.Cleanup(func() {
+				contexts.Expire()
+				<-done
+			})
+			if test.timeout {
+				testenv.WaitUntil(t, t.Context(), func() error {
+					_, err := os.Stat(started)
+					return err
+				})
+				contexts.Expire()
 			}
-			err := cloneRunnerRepositoryWithCommandContext(t.Context(), "https://github.com/example-org/project.git", root, contexts.New)
+			err := <-done
 			var checkoutErr *runnerCheckoutError
 			if !errors.As(err, &checkoutErr) || !strings.Contains(checkoutErr.fix, test.fix) {
 				t.Fatalf("checkout failure: %v", err)
