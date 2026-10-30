@@ -182,6 +182,10 @@ func TestReceiptEligibilityRegressions(t *testing.T) {
 		{"token position", `package fixture; import "go/token"; var pos token.Pos`, false},
 		{"memory filesystem", `package fixture; import "testing/fstest"; var files fstest.MapFS`, false},
 		{"pure hash", `package fixture; import "crypto/sha256"; func hash(p []byte) [32]byte { return sha256.Sum256(p) }`, false},
+		{"stdin scan", `package fixture; import "fmt"; func run() { var value string; fmt.Scan(&value) }`, true},
+		{"stdin scanf alias", `package fixture; import input "fmt"; var scan = input.Scanf`, true},
+		{"stdin scanln function value", `package fixture; import "fmt"; func run() { scan := fmt.Scanln; _ = scan }`, true},
+		{"string scan", `package fixture; import "fmt"; func run() { var value string; fmt.Sscan("pass", &value) }`, false},
 		{"network service", `package fixture; import "net/http"; func run() { http.Get("http://example.invalid") }`, true},
 		{"clock", `package fixture; import "time"; func run() { time.Now() }`, true},
 		{"descriptor metadata", `package fixture; import "os"; func run() { os.Stdout.Stat() }`, true},
@@ -211,6 +215,18 @@ func TestWrapperRejectsUnobservedInputs(t *testing.T) {
 		name, source string
 		environment  bool
 	}{
+		{"stdin Scan", `package fixture
+import ("fmt"; "testing")
+func TestInput(t *testing.T) { var value string; if _, err := fmt.Scan(&value); err != nil || value != "pass" { t.Fatal("changed stdin") } }
+`, false},
+		{"stdin Scanf", `package fixture
+import (input "fmt"; "testing")
+func TestInput(t *testing.T) { var value string; scan := input.Scanf; if _, err := scan("%s", &value); err != nil || value != "pass" { t.Fatal("changed stdin") } }
+`, false},
+		{"stdin Scanln", `package fixture
+import ("fmt"; "testing")
+func TestInput(t *testing.T) { var value string; if _, err := fmt.Scanln(&value); err != nil || value != "pass" { t.Fatal("changed stdin") } }
+`, false},
 		{"subprocess", `package fixture
 import ("os/exec"; "testing")
 func TestInput(t *testing.T) { if err := exec.Command("go", "run", "./child").Run(); err != nil { t.Fatal(err) } }
@@ -286,16 +302,18 @@ func main() { data, err := os.ReadFile("input.txt"); if err != nil || string(dat
 			}
 			var output bytes.Buffer
 			args := []string{binary, "-test.run=^TestInput$"}
-			if code := RunWrapper(args, getenv, nil, &output, &output); code != 0 {
+			if code := RunWrapper(args, getenv, strings.NewReader("pass\n"), &output, &output); code != 0 {
 				t.Fatalf("first run = %d: %s", code, &output)
 			}
 			if tc.environment {
 				t.Setenv("RECEIPT_INPUT", "fail")
-			} else if err := os.WriteFile(filepath.Join(root, "input.txt"), []byte("fail\n"), 0o600); err != nil {
-				t.Fatal(err)
+			} else if !strings.HasPrefix(tc.name, "stdin") {
+				if err := os.WriteFile(filepath.Join(root, "input.txt"), []byte("fail\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
 			}
 			output.Reset()
-			if code := RunWrapper(args, getenv, nil, &output, &output); code != 1 {
+			if code := RunWrapper(args, getenv, strings.NewReader("fail\n"), &output, &output); code != 1 {
 				t.Fatalf("changed input returned %d, want failure: %s", code, &output)
 			}
 			if stats := session.Stats(); stats.Hits != 0 {
