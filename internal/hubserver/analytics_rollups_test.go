@@ -1509,18 +1509,19 @@ func TestAnalyticsHourlyRetentionScopes(t *testing.T) {
 
 func convertTestAnalyticsProjections(t testing.TB, s *Service) {
 	t.Helper()
+	ctx := s.runDetailContext(t.Context())
 	for {
-		if err := s.convertActivityProjections(t.Context()); err != nil {
+		if err := s.convertActivityProjections(ctx); err != nil {
 			t.Fatal(err)
 		}
-		if err := s.convertSchedulerDecisions(t.Context()); err != nil {
+		if err := s.convertSchedulerDecisions(ctx); err != nil {
 			t.Fatal(err)
 		}
-		if err := s.database.convertAnalyticsProjections(t.Context()); err != nil {
+		if err := s.database.convertAnalyticsProjections(ctx); err != nil {
 			t.Fatal(err)
 		}
 		var more bool
-		if err := s.database.reader.QueryRowContext(t.Context(), "SELECT EXISTS(SELECT 1 FROM collaboration_events WHERE analytics_projection_version IS NULL) OR EXISTS(SELECT 1 FROM analytics_hourly_rollups WHERE projection_version IS NULL) OR EXISTS(SELECT 1 FROM native_attempts WHERE report_projection_version IS NULL)").Scan(&more); err != nil {
+		if err := s.database.reader.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM collaboration_events WHERE analytics_projection_version IS NULL) OR EXISTS(SELECT 1 FROM analytics_hourly_rollups WHERE projection_version IS NULL) OR EXISTS(SELECT 1 FROM native_attempts WHERE report_projection_version IS NULL)").Scan(&more); err != nil {
 			t.Fatal(err)
 		}
 		if !more {

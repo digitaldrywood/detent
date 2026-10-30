@@ -955,7 +955,7 @@ func TestNativeBoardPolicyRefreshIsolatesProjects(t *testing.T) {
 	drainTestNativeBoard(t, service)
 	for _, project := range projects {
 		scope := nativeScope{organization: project.fixture.project.OrganizationID, project: project.fixture.project.ID, credential: apiCredential{Scope: apiScopeAdmin}}
-		page, err := service.readBoardIssues(t.Context(), scope, url.Values{"include": {"board"}})
+		page, err := service.readBoardIssues(service.runDetailContext(t.Context()), scope, url.Values{"include": {"board"}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -970,7 +970,7 @@ func TestNativeBoardPolicyRefreshIsolatesProjects(t *testing.T) {
 			if card.Issue.State != issue.State || card.Change == nil || card.Change.Status != project.want {
 				t.Fatalf("project %s card lane = %s, Change = %+v, want unchanged lane and %s", project.fixture.project.ID, card.Issue.State, card.Change, project.want)
 			}
-			detail, err := readChangeDetail(t.Context(), service.database.reader, scope, string(issue.WorkItemID), project.changes[index].ID, service.config.now())
+			detail, err := readChangeDetail(service.runDetailContext(t.Context()), service.database.reader, scope, string(issue.WorkItemID), project.changes[index].ID, service.config.now())
 			if err != nil || detail.Summary.Status != card.Change.Status {
 				t.Fatalf("card status differs from durable detail: %+v, error %v", detail.Summary, err)
 			}

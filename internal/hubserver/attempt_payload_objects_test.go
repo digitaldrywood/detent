@@ -645,8 +645,8 @@ func TestRunHistoryWritesOnlyObjectReferences(t *testing.T) {
 			}
 			event = tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "history-finished"}, Type: "run.finished", SchemaVersion: 1, Data: data}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", f.worker, event), http.StatusOK)
-			var raw, key string
-			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT data_json,payload_object_key FROM collaboration_events WHERE work_item_id=? AND type='run.finished' ORDER BY sequence DESC LIMIT 1", f.issue.WorkItemID).Scan(&raw, &key); err != nil {
+			var raw, key, document string
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT data_json,payload_object_key,"+collaborationPayloadColumn("")+" FROM collaboration_events WHERE work_item_id=? AND type='run.finished' ORDER BY sequence DESC LIMIT 1", f.issue.WorkItemID).Scan(&raw, &key, &document); err != nil {
 				t.Fatal(err)
 			}
 			if raw != "{}" || !strings.HasPrefix(key, "orgs/") {
@@ -662,7 +662,7 @@ func TestRunHistoryWritesOnlyObjectReferences(t *testing.T) {
 			ctx := f.service.freshRunDetailContext(t.Context())
 			ctx.Value(changeContentKey{}).(*changeContent).query = closed
 			var restored tracker.CollaborationData
-			if err := decodeRunHistory(ctx, f.service.database.reader, key, &restored); err != nil {
+			if err := decodeRunHistory(ctx, f.service.database.reader, document, &restored); err != nil {
 				t.Fatal(err)
 			}
 			if restored.Run == nil || restored.Run.CompletionBody != data.CompletionBody || restored.Run.AttemptID != data.AttemptID || restored.Run.Outcome != data.Outcome {

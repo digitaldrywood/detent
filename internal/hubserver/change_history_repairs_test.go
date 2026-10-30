@@ -313,14 +313,14 @@ func TestValidationCandidatesKeepHistoricalMatchBeyondPage(t *testing.T) {
 	if _, err := tx.ExecContext(t.Context(), `INSERT INTO change_versions(id,change_id,number,record_json) VALUES(?,?,?,?)`, noReceipt.ID, f.change.ID, noReceipt.Number, noReceiptRaw); err != nil {
 		t.Fatal(err)
 	}
-	rows, partial, err := readValidationCandidates(t.Context(), tx, scope, string(f.issue.WorkItemID), "", "", gate.ScheduledEvidence{Repository: validationRepository(old.Repository), HeadSHA: head})
+	rows, partial, err := readValidationCandidates(f.service.runDetailContext(t.Context()), tx, scope, string(f.issue.WorkItemID), "", "", gate.ScheduledEvidence{Repository: validationRepository(old.Repository), HeadSHA: head})
 	if err != nil || !partial || len(rows) != 20 || rows[0].VersionID != old.ID || rows[0].IntegratedSource != "same_commit" || slices.ContainsFunc(rows, func(row tracker.ValidationComparison) bool { return row.VersionID == noReceipt.ID }) {
 		t.Fatalf("lost historical match beyond 20 nonmatches: rows=%+v partial=%v error=%v", rows, partial, err)
 	}
 	if _, err := tx.ExecContext(t.Context(), `UPDATE change_landing_receipts SET merge_sha=NULL WHERE version_id IN (SELECT id FROM change_versions WHERE change_id=?)`, f.change.ID); err != nil {
 		t.Fatal(err)
 	}
-	rows, partial, err = readValidationCandidates(t.Context(), tx, scope, string(f.issue.WorkItemID), "", "", gate.ScheduledEvidence{Repository: validationRepository(old.Repository), HeadSHA: head})
+	rows, partial, err = readValidationCandidates(f.service.runDetailContext(t.Context()), tx, scope, string(f.issue.WorkItemID), "", "", gate.ScheduledEvidence{Repository: validationRepository(old.Repository), HeadSHA: head})
 	if err != nil || !partial || len(rows) != 20 || rows[0].VersionID != old.ID || rows[0].IntegratedSource != "same_commit" {
 		t.Fatalf("legacy receipts hid older match: rows=%+v partial=%v error=%v", rows, partial, err)
 	}
@@ -697,7 +697,7 @@ func TestLegacyClaimReviewsRetainGateAuthority(t *testing.T) {
 	)
 	for _, review := range reviews {
 		review.VersionID = version.ID
-		if err := insertChangeEvidence(t.Context(), tx, f.change.ID, version.ID, "review", "", review); err != nil {
+		if err := seedLegacyChangeEvidence(t.Context(), tx, f.change.ID, version.ID, "review", "", review); err != nil {
 			t.Fatal(err)
 		}
 	}

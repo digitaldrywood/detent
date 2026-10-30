@@ -477,11 +477,12 @@ func TestChangeLandingColumnsPreserveHistoricalReads(t *testing.T) {
 
 func projectTestChangeColumns(t testing.TB, s *Service) {
 	t.Helper()
+	ctx := s.runDetailContext(t.Context())
 	for _, family := range changeColumnFamilies {
 		if family.table == "native_attempts" || family.table == "issues" || family.table == "native_comments" {
 			continue
 		}
-		rows, err := s.database.reader.QueryContext(t.Context(), "SELECT "+family.key+","+family.payload+" FROM "+family.table+" WHERE "+family.pending+" IS NULL")
+		rows, err := s.database.reader.QueryContext(ctx, "SELECT "+family.key+","+family.payloadColumn()+" FROM "+family.table+" WHERE "+family.pending+" IS NULL")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -501,18 +502,18 @@ func projectTestChangeColumns(t testing.TB, s *Service) {
 		if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 			t.Fatal(err)
 		}
-		tx, err := s.database.db.BeginTx(t.Context(), nil)
+		tx, err := s.database.db.BeginTx(ctx, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		for _, r := range records {
-			columns, err := changeRecordColumns(t.Context(), tx, family.table, r.raw)
+			columns, err := changeRecordColumns(ctx, tx, family.table, r.raw)
 			if err != nil {
 				tx.Rollback()
 				t.Fatal(err)
 			}
 			if family.table == "change_requests" {
-				version, head, err := claimChangeIdentity(t.Context(), tx, fmt.Sprint(r.id), r.raw)
+				version, head, err := claimChangeIdentity(ctx, tx, fmt.Sprint(r.id), r.raw)
 				if err != nil {
 					tx.Rollback()
 					t.Fatal(err)
@@ -520,7 +521,7 @@ func projectTestChangeColumns(t testing.TB, s *Service) {
 				columns.add("claim_version_id", version)
 				columns.add("claim_head_sha", head)
 			}
-			if err := writeChangeColumns(t.Context(), tx, family, r.id, r.raw, columns); err != nil {
+			if err := writeChangeColumns(ctx, tx, family, r.id, r.raw, columns, true); err != nil {
 				tx.Rollback()
 				t.Fatal(err)
 			}
@@ -569,7 +570,7 @@ func TestChangeColumnsSelectIssueSideData(t *testing.T) {
 							t.Fatal(err)
 						}
 					}
-					issue, _, err := readNativeIssueProjection(t.Context(), tx, scope, string(f.issue.WorkItemID), false)
+					issue, _, err := readNativeIssueProjection(f.service.runDetailContext(t.Context()), tx, scope, string(f.issue.WorkItemID), false)
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -870,14 +871,14 @@ func TestChangeAnalyticsFallbackServesLegacyHistory(t *testing.T) {
 			}
 			window := operatortool.AnalyticsWindow{From: at.Add(-time.Hour), To: at}
 			if family == "evidence" {
-				inputs, err := loadAnalyticsQualityInputs(t.Context(), f.service.database.reader, scope, window)
+				inputs, err := loadAnalyticsQualityInputs(f.service.runDetailContext(t.Context()), f.service.database.reader, scope, window)
 				if err != nil || inputs.partial || len(inputs.discussions) != 0 {
 					t.Fatalf("boundary evidence read failed: inputs=%+v error=%v", inputs, err)
 				}
 				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO change_evidence(change_id,version_id,kind,record_json) VALUES(?,?,'review','{"decision":"commented"}')`, f.change.ID, versions[0].ID); err != nil {
 					t.Fatal(err)
 				}
-				_, err = loadAnalyticsQualityInputs(t.Context(), f.service.database.reader, scope, window)
+				_, err = loadAnalyticsQualityInputs(f.service.runDetailContext(t.Context()), f.service.database.reader, scope, window)
 				if err != nil {
 					t.Fatalf("legacy evidence unavailable: %v", err)
 				}
@@ -887,7 +888,7 @@ func TestChangeAnalyticsFallbackServesLegacyHistory(t *testing.T) {
 				if !quality && family != "landing" {
 					continue
 				}
-				_, err := readUnconvertedAnalyticsLandings(t.Context(), f.service.database.reader, scope, window, quality)
+				_, err := readUnconvertedAnalyticsLandings(f.service.runDetailContext(t.Context()), f.service.database.reader, scope, window, quality)
 				if err != nil {
 					t.Fatalf("quality=%v legacy %s unavailable: %v", quality, family, err)
 				}

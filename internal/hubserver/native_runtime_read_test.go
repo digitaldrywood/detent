@@ -65,13 +65,24 @@ func TestNativeRuntimeReadHistoryCost(t *testing.T) {
 	defer tx.Rollback()
 	mergeAttempt := seedHealthRateAttempt(t, tx, scope, f.issue, string(registered.binding.MachineID), "succeeded", tracker.NativeRunData{Runtime: &tracker.NativeRuntimeObservation{Phase: "completed", HeartbeatAt: now}}, now, -1)
 	receipt := tracker.NativeLandingReceipt{ChangeID: f.change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA, FromState: "Merging", TargetState: "In Progress", RefusalKind: "base_protected", Refusal: "base_protected", ObservedAt: now, Gate: &gate.CommandResult{ReceiptID: "receipt_example", Command: "make check-landing", HeadSHA: version.HeadSHA, TreeSHA: strings.Repeat("d", 40), FinishedAt: now, Output: strings.Repeat("validation output ", 4096)}}
-	if err := persistAttemptLanding(t.Context(), tx, mergeAttempt, receipt); err != nil {
+	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
+	contentCtx := f.service.runDetailContext(t.Context())
+	if err := f.service.hubTransact(contentCtx, func(tx *sql.Tx, _ time.Time) error {
+		return persistAttemptLanding(contentCtx, tx, mergeAttempt, receipt)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tx, err = db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
 	finding := "Unresolved review: integration actor overwrites the runner actor"
 	issue := f.issue
 	issue.State = "In Progress"
-	if _, err := persistNativeIssue(t.Context(), tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: "Merging", ToState: issue.State, Reason: "worker_progress", ReasonDetail: finding}, now); err != nil {
+	if _, err := persistNativeIssue(contentCtx, tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: "Merging", ToState: issue.State, Reason: "worker_progress", ReasonDetail: finding}, now); err != nil {
 		t.Fatal(err)
 	}
 	now = now.Add(4 * time.Second)
@@ -129,7 +140,7 @@ func TestNativeRuntimeReadHistoryCost(t *testing.T) {
 			projectTestChangeColumns(t, f.service)
 			previous = history
 			q := &runtimeReadQuery{nativeQueryer: db}
-			evidence, err := readNativeRuntime(t.Context(), q, scope, string(f.issue.WorkItemID), "", f.service.config.now())
+			evidence, err := readNativeRuntime(f.service.runDetailContext(t.Context()), q, scope, string(f.issue.WorkItemID), "", f.service.config.now())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -185,7 +196,7 @@ func TestNativeRuntimeReadHistoryCost(t *testing.T) {
 				}
 			}
 			explanationQuery := &runtimeReadQuery{nativeQueryer: f.service.database.reader}
-			ctx := context.WithValue(t.Context(), explanationReadKey{}, true)
+			ctx := context.WithValue(f.service.runDetailContext(t.Context()), explanationReadKey{}, true)
 			current, err := readNativeRuntime(ctx, explanationQuery, scope, string(f.issue.WorkItemID), "", now)
 			if err != nil {
 				t.Fatal(err)
@@ -203,7 +214,7 @@ func TestNativeRuntimeReadHistoryCost(t *testing.T) {
 	}
 	now = now.Add(time.Minute)
 	newVersion := f.publish(t, "superseding", version.ID)
-	evidence, err := readNativeRuntime(t.Context(), db, scope, string(f.issue.WorkItemID), "", now)
+	evidence, err := readNativeRuntime(f.service.runDetailContext(t.Context()), db, scope, string(f.issue.WorkItemID), "", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -315,7 +326,7 @@ func TestNativeExplanationIncompleteGateHistory(t *testing.T) {
 				t.Fatalf("invalid complete fixture: %+v", full.Summary)
 			}
 			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-			ctx := context.WithValue(t.Context(), explanationReadKey{}, true)
+			ctx := context.WithValue(f.service.runDetailContext(t.Context()), explanationReadKey{}, true)
 			evidence, err := readNativeRuntime(ctx, f.service.database.reader, scope, string(f.issue.WorkItemID), "", f.service.config.now())
 			if err != nil {
 				t.Fatal(err)
@@ -405,13 +416,13 @@ func TestNativeRuntimeReadSharedCapacityCost(t *testing.T) {
 				}
 			}
 			bounded := &runtimeReadQuery{nativeQueryer: f.service.database.reader}
-			explanationRunners, partial, err := readRuntimeRunners(context.WithValue(t.Context(), explanationReadKey{}, true), bounded, scope, now)
+			explanationRunners, partial, err := readRuntimeRunners(context.WithValue(f.service.runDetailContext(t.Context()), explanationReadKey{}, true), bounded, scope, now)
 			if err != nil || len(explanationRunners) != min(total, 16) || partial != (total > 16) || len(bounded.statements) != 5 {
 				t.Fatalf("unbounded explanation capacity: runners=%d partial=%v queries=%d error=%v", len(explanationRunners), partial, len(bounded.statements), err)
 			}
 			landingQuery := &runtimeReadQuery{nativeQueryer: f.service.database.reader}
 			landingEvidence := tracker.NativeRuntimeEvidence{Issue: tracker.NativeIssue{State: "Merging"}}
-			landingReady, landingCapacity, err := readAdmissionLandingCapacity(context.WithValue(t.Context(), explanationReadKey{}, true), landingQuery, scope, 0, &landingEvidence, now)
+			landingReady, landingCapacity, err := readAdmissionLandingCapacity(context.WithValue(f.service.runDetailContext(t.Context()), explanationReadKey{}, true), landingQuery, scope, 0, &landingEvidence, now)
 			if err != nil || landingReady != (total <= 64) || total > 64 && landingCapacity != nativeLandingCapacityUnknown {
 				t.Fatalf("landing capacity lost bounded current facts: ready=%v capacity=%d error=%v", landingReady, landingCapacity, err)
 			}
@@ -457,7 +468,7 @@ func TestNativeRuntimeReadSharedCapacityCost(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			ctx := context.WithValue(t.Context(), explanationReadKey{}, true)
+			ctx := context.WithValue(f.service.runDetailContext(t.Context()), explanationReadKey{}, true)
 			candidates, partial, err := readRuntimeRunners(ctx, tx, scope, now)
 			if err != nil || !partial || len(candidates) != 0 {
 				t.Fatalf("candidate search escaped sparse owner window: count=%d partial=%v err=%v", len(candidates), partial, err)
@@ -547,7 +558,7 @@ func TestExplanationProviderCapacityCandidateWindow(t *testing.T) {
 	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", first.redemption.Credential, providerClaim(first, issue, "reserved"))
 	requireNativeStatus(t, response, http.StatusOK)
 	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-	ctx := context.WithValue(t.Context(), explanationReadKey{}, true)
+	ctx := context.WithValue(f.service.runDetailContext(t.Context()), explanationReadKey{}, true)
 	previous := 1
 	for _, total := range []int{1024, 2048} {
 		tx, err := f.service.database.db.BeginTx(t.Context(), nil)

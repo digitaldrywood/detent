@@ -494,7 +494,7 @@ func TestProviderQueueOrderAndSelectors(t *testing.T) {
 			}
 			if test.unavailable == "retired barrier" {
 				var repository string
-				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT json_extract(record_json, '$.repository') FROM change_versions LIMIT 1").Scan(&repository); err != nil {
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT repository FROM change_versions LIMIT 1").Scan(&repository); err != nil {
 					t.Fatal(err)
 				}
 				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO landing_barriers (organization_id, repository, project_id, record_json) VALUES (?, ?, ?, ?)", f.project.OrganizationID, repository, f.project.ID, `{"red":true,"repair":"wi_unrelated"}`); err != nil {

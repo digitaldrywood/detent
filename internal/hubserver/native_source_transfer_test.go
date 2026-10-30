@@ -267,11 +267,11 @@ func TestNativeSourceTransfer(t *testing.T) {
 					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, itemPath+"/events", a.redemption.Credential, ack), http.StatusOK)
 				}
 				var status, raw string
-				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT status, data_json FROM native_attempts WHERE id=?", event.Data.AttemptID).Scan(&status, &raw); err != nil {
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT status, COALESCE(NULLIF(payload_object_key,''),data_json) FROM native_attempts WHERE id=?", event.Data.AttemptID).Scan(&status, &raw); err != nil {
 					t.Fatal(err)
 				}
 				var acknowledged tracker.NativeRunData
-				if err := json.Unmarshal([]byte(raw), &acknowledged); err != nil {
+				if err := decodeRunDetail(f.service.runDetailContext(t.Context()), f.service.database.reader, raw, &acknowledged); err != nil {
 					t.Fatal(err)
 				}
 				if failure := acknowledged.TerminalFailure; status != "cancelled" || failure == nil || failure.ErrorClass != "lease_released" || failure.Stage != "lease_release" || !strings.HasSuffix(failure.Error, "release reason: cancelled") || failure.ObservedAt.IsZero() {
@@ -434,7 +434,7 @@ func TestNativeSourceTransfer(t *testing.T) {
 				if !reflect.DeepEqual(retained, historical) {
 					t.Fatal("transfer rewrote historical outcome or checkpoint")
 				}
-				stored, err := readChangeVersion(t.Context(), f.service.database.db, version.ChangeID, version.ID)
+				stored, err := readChangeVersion(f.service.runDetailContext(t.Context()), f.service.database.db, version.ChangeID, version.ID)
 				if err != nil || !reflect.DeepEqual(stored, version) {
 					t.Fatalf("transfer replaced immutable source version: %v", err)
 				}
