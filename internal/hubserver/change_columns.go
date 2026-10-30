@@ -405,7 +405,7 @@ func (s *Service) populateChangeColumn(ctx context.Context) (bool, error) {
 	}
 	s.changeColumnFamily = 0
 	s.changeColumnAfter = nil
-	return false, nil
+	return s.populateChangeSession(ctx)
 }
 
 func readPriorChangeApproval(ctx context.Context, query nativeQueryer, change, version string) (bool, error) {

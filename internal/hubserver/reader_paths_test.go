@@ -417,6 +417,7 @@ func TestHubWriterQueriesRequireAnOwnedReadReason(t *testing.T) {
 		"compactAnalyticsSamplesWithClock":  "Deletes one bounded batch of skip samples already counted by hourly rollups, on the existing maintenance tick.",
 		"reclaimStorage":                    "Reclaims at most 128 free pages in one short transaction on the existing retention tick.",
 		"backfillChangeSource":              "Converts one legacy source representation after reader-pool validation on the existing maintenance tick.",
+		"populateChangeSession":             "Freezes one version session and its source attempt authority after incremental reader-pool history validation on the existing Change column tick.",
 		"backfillAnalyticsRollups":          "Projects one bounded batch of a project's work items and their positions on the existing maintenance tick.",
 		"drainAnalyticsItem":                "Applies one bounded reader-planned analytics page after checking source revision and progress, or removes the item's orphaned position and dirty marker.",
 		"drainNativeBoardDirtyAfter":        "Projects one dirty board card and consumes its marker in one background write transaction.",
