@@ -529,6 +529,9 @@ func RunSettlement(t *testing.T, scenarios []SettlementScenario, factories Const
 			}
 			execution := h.scheduler.RunExecution(issue.ID)
 			publicationOwner = execution.(*ownedExecution)
+			if test.Disposition != nil || test.PublicationRefused || test.MergeResolution {
+				checks.DisableBatching(execution)
+			}
 			if test.PublicationRecovery {
 				publicationOwner.SetChangeSource(publicationCapture)
 			}
