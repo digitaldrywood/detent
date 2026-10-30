@@ -366,9 +366,9 @@ func newNativeArchiveQuery(ctx context.Context, query nativeQueryer, section *at
 				return nil, attachment.ErrInvalid
 			}
 			cells := make([]string, len(columns))
-			for i, index := range indexes {
-				raw := archiveProjectionDefault(table.Name, columns[i])
-				if index >= 0 {
+			for i, column := range columns {
+				raw := archiveProjectionDefault(table.Name, column)
+				if index := indexes[i]; index >= 0 {
 					raw = row[index]
 				}
 				cell, err := archiveSQLScalar(raw)
