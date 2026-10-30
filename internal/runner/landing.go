@@ -308,7 +308,7 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 				if refusal.Kind == workspace.LandRefusalProtected && refusal.TargetBranch != "" && !target.GitHubPullRequest {
 					action := fmt.Sprintf("Allow the runner to push to branch %s in repository %s, or enable GitHub pull request mode for this project. Then resume landing of the reviewed version.", refusal.TargetBranch, target.Repository)
 					refused.NativeLanding.BaseRef = refusal.TargetBranch
-					refused.FinalMessage = fmt.Sprintf("%s\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: %q\n```", action, action)
+					refused.FinalMessage = fmt.Sprintf("%s\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nblock_kind: missing_authorization\noptions:\n  - answer: Authorize landing under the configured policy\nhuman_action: %q\n```", action, action)
 				}
 				return refused, nil
 			}

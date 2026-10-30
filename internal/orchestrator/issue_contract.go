@@ -43,12 +43,14 @@ func (o *Orchestrator) enforceIssueContract(ctx context.Context, state *State, i
 	}
 	action := o.cfg.IssueContract.HumanAction(issue, evaluation)
 	status := struct {
-		Schema      int               `yaml:"schema"`
-		Status      string            `yaml:"status"`
-		Blockers    []workpad.Blocker `yaml:"blockers"`
-		HumanAction string            `yaml:"human_action"`
-		Fields      map[string]string `yaml:"fields"`
-	}{1, workpad.StatusBlocked, []workpad.Blocker{}, action, map[string]string{"issue_contract_return_state": returnState}}
+		BlockKind   string                `yaml:"block_kind"`
+		Options     []workpad.BlockOption `yaml:"options"`
+		Schema      int                   `yaml:"schema"`
+		Status      string                `yaml:"status"`
+		Blockers    []workpad.Blocker     `yaml:"blockers"`
+		HumanAction string                `yaml:"human_action"`
+		Fields      map[string]string     `yaml:"fields"`
+	}{"product_decision", []workpad.BlockOption{{Answer: action}}, 1, workpad.StatusBlocked, []workpad.Blocker{}, action, map[string]string{"issue_contract_return_state": returnState}}
 	raw, err := yaml.Marshal(status)
 	if err != nil {
 		return false, err
@@ -67,7 +69,7 @@ func (o *Orchestrator) enforceIssueContract(ctx context.Context, state *State, i
 		}
 	}
 	issue.State = target
-	issue.WorkpadSignal = &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked, HumanAction: action, RecordedAt: &now}
+	issue.WorkpadSignal = &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked, BlockKind: status.BlockKind, Options: status.Options, HumanAction: action, RecordedAt: &now}
 	issue.IssueContract = &issuecontract.State{HumanAction: action, ReturnState: returnState, RecordedAt: now}
 	if state != nil {
 		state.Blocked[issue.ID] = Blocked{Issue: issue, Source: BlockedSourceProjectStatus, Reason: workpadBlockedUnactionedReason, BlockedAt: now, NeedsHumanAttention: true, Recovery: metadata.BlockedRecovery, RecoveryTarget: returnState}

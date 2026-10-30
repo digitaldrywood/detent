@@ -55,7 +55,15 @@ type ReviewDisposition struct {
 	Evidence    string `json:"evidence" yaml:"evidence"`
 }
 
+type BlockOption struct {
+	Answer               string `json:"answer" yaml:"answer"`
+	ReplacementCriterion string `json:"replacement_criterion,omitempty" yaml:"replacement_criterion,omitempty"`
+}
+
 type Signal struct {
+	BlockKind          string              `json:"block_kind,omitempty" yaml:"block_kind,omitempty"`
+	Criterion          string              `json:"criterion,omitempty" yaml:"criterion,omitempty"`
+	Options            []BlockOption       `json:"options,omitempty" yaml:"options,omitempty"`
 	ReviewDispositions []ReviewDisposition `json:"review_dispositions,omitempty" yaml:"review_dispositions,omitempty"`
 	// UnknownKeys records ignored YAML field paths for diagnostics only.
 	UnknownKeys []string          `json:"unknown_keys,omitempty" yaml:"unknown_keys,omitempty"`
@@ -103,6 +111,9 @@ type Invalid struct {
 }
 
 type statusBlockYAML struct {
+	BlockKind          string               `yaml:"block_kind"`
+	Criterion          string               `yaml:"criterion"`
+	Options            []BlockOption        `yaml:"options"`
 	ReviewDispositions []ReviewDisposition  `yaml:"review_dispositions"`
 	Unknown            map[string]yaml.Node `yaml:",inline"`
 	Schema             int                  `yaml:"schema"`
@@ -363,6 +374,36 @@ func ParseStatusBlock(content string, repo string) (*Signal, error) {
 	if raw.HumanAction != nil {
 		humanAction = strings.TrimSpace(*raw.HumanAction)
 	}
+	raw.BlockKind = strings.TrimSpace(raw.BlockKind)
+	raw.Criterion = strings.TrimSpace(raw.Criterion)
+	if humanAction != "" {
+		switch raw.BlockKind {
+		case "criteria_defect", "product_decision", "missing_authorization", "physical_action":
+		default:
+			problems = append(problems, "human_action requires block_kind: criteria_defect, product_decision, missing_authorization, or physical_action")
+		}
+		if len(raw.Options) == 0 {
+			problems = append(problems, "human_action requires concrete options")
+		}
+		replacement := false
+		for i := range raw.Options {
+			option := &raw.Options[i]
+			option.Answer = strings.TrimSpace(option.Answer)
+			option.ReplacementCriterion = strings.TrimSpace(option.ReplacementCriterion)
+			if option.Answer == "" {
+				problems = append(problems, "options require a nonempty answer")
+			}
+			replacement = replacement || option.ReplacementCriterion != ""
+		}
+		if raw.BlockKind == "criteria_defect" {
+			if raw.Criterion == "" {
+				problems = append(problems, "criteria_defect requires criterion quoting the exact acceptance criterion")
+			}
+			if !replacement {
+				problems = append(problems, "criteria_defect requires an option with replacement_criterion verifiable before merge")
+			}
+		}
+	}
 	reasonCode := normalizeReasonCode(raw.ReasonCode)
 	blockers := make([]Blocker, 0, len(raw.Blockers))
 	for index, blocker := range raw.Blockers {
@@ -482,6 +523,9 @@ func ParseStatusBlock(content string, repo string) (*Signal, error) {
 	}
 	sort.Strings(unknownKeys)
 	signal := &Signal{
+		BlockKind:          raw.BlockKind,
+		Criterion:          raw.Criterion,
+		Options:            raw.Options,
 		ReviewDispositions: raw.ReviewDispositions,
 		UnknownKeys:        unknownKeys,
 		Source:             SourceStructured,

@@ -137,7 +137,7 @@ func TestSignalFromComment(t *testing.T) {
 		},
 		{
 			name:       "blocked by human action only",
-			body:       "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: \"Need owner approval\"\n```",
+			body:       "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: \"Need owner approval\"\nblock_kind: product_decision\noptions:\n  - answer: Approve the requested action\n```",
 			wantOK:     true,
 			wantStatus: StatusBlocked,
 			wantReason: "Need owner approval",
@@ -145,7 +145,7 @@ func TestSignalFromComment(t *testing.T) {
 		},
 		{
 			name:          "last block wins",
-			body:          "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: \"old\"\n```\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```",
+			body:          "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: \"old\"\nblock_kind: product_decision\noptions:\n  - answer: Approve the requested action\n```\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```",
 			wantOK:        true,
 			wantStatus:    StatusComplete,
 			wantLastBlock: true,
@@ -732,6 +732,44 @@ func TestMergedCompletionEvidence(t *testing.T) {
 			signal.Fields["completion_ancestry"] = "failed"
 			if MergedCompletionEvidence(signal) {
 				t.Fatal("accepted failed ancestry")
+			}
+		})
+	}
+}
+
+func TestBlockedQuestionRequiresTypedDecision(t *testing.T) {
+	for _, tt := range []struct{ name, fields, wantError string }{
+		{"missing kind", "", "block_kind"},
+		{"unknown kind", "block_kind: other\noptions:\n  - answer: Proceed\n", "block_kind"},
+		{"missing options", "block_kind: product_decision\n", "options"},
+		{"blank answer", "block_kind: physical_action\noptions:\n  - answer: \" \"\n", "answer"},
+		{"missing criterion", "block_kind: criteria_defect\noptions:\n  - answer: Use fixture\n    replacement_criterion: Fixture passes before merge\n", "criterion"},
+		{"missing replacement", "block_kind: criteria_defect\ncriterion: Run on macOS\noptions:\n  - answer: Supply endpoint\n", "replacement_criterion"},
+		{"criteria", "block_kind: criteria_defect\ncriterion: Run on macOS\noptions:\n  - answer: Use fixture\n    replacement_criterion: Fixture passes before merge\n", ""},
+		{"decision", "block_kind: product_decision\noptions:\n  - answer: Use SQLite\n  - answer: Use PostgreSQL\n", ""},
+		{"authorization", "block_kind: missing_authorization\noptions:\n  - answer: Authorize access\n", ""},
+		{"physical", "block_kind: physical_action\noptions:\n  - answer: Connect device\n", ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			signal, ok := SignalFromComment("```detent-status\nschema: 1\nstatus: blocked\nhuman_action: Choose how to proceed\n"+tt.fields+"```", "", "")
+			if !ok || signal == nil {
+				t.Fatal("missing signal")
+			}
+			if tt.wantError == "" {
+				if signal.BlockKind == "" || len(signal.Options) == 0 {
+					t.Fatalf("typed fields lost: %+v", signal)
+				}
+				if tt.name == "criteria" && (signal.Criterion != "Run on macOS" || signal.Options[0].ReplacementCriterion != "Fixture passes before merge") {
+					t.Fatalf("criterion lost: %+v", signal)
+				}
+				if tt.name == "decision" && (len(signal.Options) != 2 || signal.Options[0].Answer != "Use SQLite" || signal.Options[1].Answer != "Use PostgreSQL") {
+					t.Fatalf("decision changed: %+v", signal)
+				}
+				if signal.Invalid != nil {
+					t.Fatalf("invalid: %+v", signal.Invalid)
+				}
+			} else if signal.Invalid == nil || !strings.Contains(signal.Invalid.Message, tt.wantError) {
+				t.Fatalf("want error containing %q, got %+v", tt.wantError, signal.Invalid)
 			}
 		})
 	}

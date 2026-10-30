@@ -1495,7 +1495,7 @@ func TestBlockedRecoveryRecomputesDispatchWithoutDerivedHolds(t *testing.T) {
 					reason = string(store.WorkAttemptTerminalOperatorStopped)
 				}
 				if tt.signal != nil && tt.signal.HumanAction != "" {
-					metadata.ReasonDetail = "```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: " + tt.signal.HumanAction + "\n```"
+					metadata.ReasonDetail = "```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nblock_kind: product_decision\noptions:\n  - answer: Approve the requested action\nhuman_action: " + tt.signal.HumanAction + "\n```"
 				}
 				data, err := json.Marshal(metadata)
 				if err != nil {

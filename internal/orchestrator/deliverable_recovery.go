@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
@@ -348,7 +350,24 @@ func (o *Orchestrator) blockHumanOwnedWorkerFailure(
 	if issue.NativeLandingHeadSHA != "" {
 		metadata.BlockedRecovery.TargetState = autoPromoteMergingState
 	}
-	metadata.ReasonDetail = fmt.Sprintf("```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: %q\n```", humanAction)
+	signal, _ := workpad.SignalFromComment(event.Result.FinalMessage, "", "")
+	if signal == nil || signal.Invalid != nil || signal.HumanAction == "" {
+		signal = issue.WorkpadSignal
+	}
+	if signal == nil || signal.Invalid != nil || signal.HumanAction == "" {
+		signal = &workpad.Signal{BlockKind: "missing_authorization", Options: []workpad.BlockOption{{Answer: humanAction}}}
+	}
+	question := *signal
+	question.Status = workpad.StatusBlocked
+	question.HumanAction = humanAction
+	raw, err := yaml.Marshal(struct {
+		Schema int            `yaml:"schema"`
+		Signal workpad.Signal `yaml:",inline"`
+	}{1, question})
+	if err != nil {
+		return false
+	}
+	metadata.ReasonDetail = "```detent-status\n" + string(raw) + "```"
 	metadata.BlockedRecovery.WorkAttemptID = running.WorkAttemptID
 	metadata.BlockedRecovery.AttemptNumber = running.Attempt
 	metadata.BlockedRecovery.AttemptError = detail
@@ -362,7 +381,9 @@ func (o *Orchestrator) blockHumanOwnedWorkerFailure(
 	issue.BlockerReason = cause
 	blockedAt := event.CompletedAt.UTC()
 	issue.StageUpdatedAt = &blockedAt
-	issue.WorkpadSignal = &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked, HumanAction: humanAction, RecordedAt: &blockedAt}
+	question.Source = workpad.SourceStructured
+	question.RecordedAt = &blockedAt
+	issue.WorkpadSignal = &question
 	if o.connector != nil {
 		comment := "Detent parked this issue after a non-retryable worker safety failure.\n\n" +
 			"- cause: `" + cause + "`\n" +

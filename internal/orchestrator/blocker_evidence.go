@@ -864,7 +864,7 @@ func (o *Orchestrator) completeRecordedInstanceBlockers(ctx context.Context, sta
 				sameInstanceBlockerSource(progress.WorkspaceDiffStats, running.DiffStats) &&
 				unverifiableInstanceBlockerSignature(previous.Evidence) == signature {
 				action := "Resolve the instance prerequisite or supply the missing evidence before resuming: " + workpad.Reason(signal)
-				return o.parkPermissionWait(ctx, state, event, running, permissionWaitRecord{Question: action, Kind: "approval_or_input", Source: "terminal_detent_status"})
+				return o.parkPermissionWait(ctx, state, event, running, permissionWaitRecord{Question: action, Kind: "missing_authorization", BlockKind: "missing_authorization", Options: []workpad.BlockOption{{Answer: "Supply the prerequisite or missing evidence"}}, Source: "terminal_detent_status"})
 			}
 		}
 	}

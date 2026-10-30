@@ -12,22 +12,24 @@ import (
 )
 
 const (
-	permissionWaitReason                = "permission_wait"
-	permissionWaitCriteriaUnsatisfiable = "acceptance_criteria_unsatisfiable"
+	permissionWaitReason         = "permission_wait"
+	permissionWaitCriteriaDefect = "criteria_defect"
 )
 
 type permissionWaitRecord struct {
-	Question      string   `json:"question"`
-	Kind          string   `json:"kind"`
-	Source        string   `json:"source"`
-	WorkAttemptID int64    `json:"work_attempt_id"`
-	SessionID     string   `json:"session_id,omitempty"`
-	Criteria      []string `json:"criteria,omitempty"`
+	Question      string                `json:"question"`
+	Kind          string                `json:"kind"`
+	Source        string                `json:"source"`
+	WorkAttemptID int64                 `json:"work_attempt_id"`
+	SessionID     string                `json:"session_id,omitempty"`
+	Criterion     string                `json:"criterion,omitempty"`
+	Options       []workpad.BlockOption `json:"options,omitempty"`
+	BlockKind     string                `json:"block_kind"`
 }
 
 func terminalPermissionWait(output string) (permissionWaitRecord, bool) {
 	if signal, ok := workpad.SignalFromComment(output, "", ""); ok && signal != nil && signal.Invalid == nil && signal.Status == workpad.StatusBlocked && strings.TrimSpace(signal.HumanAction) != "" {
-		return permissionWaitRecord{Question: strings.TrimSpace(signal.HumanAction), Kind: "approval_or_input", Source: "terminal_detent_status"}, true
+		return permissionWaitRecord{Question: strings.TrimSpace(signal.HumanAction), Kind: signal.BlockKind, BlockKind: signal.BlockKind, Criterion: signal.Criterion, Options: signal.Options, Source: "terminal_detent_status"}, true
 	}
 	return permissionWaitRecord{}, false
 }
@@ -65,9 +67,9 @@ func (o *Orchestrator) parkPermissionWait(ctx context.Context, state *State, eve
 	detail = nativeCompletionReason(detail, report, event.Result.FinalMessage, nil)
 	remedy := "Record direction for this question, then move the issue to Rework: " + wait.Question
 	switch wait.Kind {
-	case "implementation_permission":
+	case "missing_authorization":
 		remedy = "The worker requested implementation permission. Check the assigned scope and record direction, preserving explicit approval gates, then move the issue to Rework: " + wait.Question
-	case permissionWaitCriteriaUnsatisfiable:
+	case permissionWaitCriteriaDefect:
 		remedy = wait.Question + "\nThen move the issue to Rework."
 	}
 	cause := permissionWaitReason

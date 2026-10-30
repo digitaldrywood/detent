@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -11,12 +12,13 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 func TestHandleRunResultPermissionWait(t *testing.T) {
 	t.Parallel()
 	complete := "## Codex Workpad\n```detent-status\nschema: 1\nstatus: complete\nfields:\n  completion_work_attempt_id: \"5112\"\n  completion_generation: \"169\"\nblockers: []\nhuman_action: null\n```"
-	blocked := "## Codex Workpad\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Choose the storage architecture\n```"
+	blocked := "## Codex Workpad\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Choose the storage architecture\nblock_kind: product_decision\noptions:\n  - answer: Approve the requested action\n```"
 	for _, tt := range []struct {
 		name        string
 		output      string
@@ -87,7 +89,7 @@ func TestTerminalPermissionWait(t *testing.T) {
 		name, output string
 		want         bool
 	}{
-		{"typed human action", "```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Choose the storage architecture\n```", true},
+		{"typed human action", "```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Choose the storage architecture\nblock_kind: product_decision\noptions:\n  - answer: Approve the requested action\n```", true},
 		{"ordinary no progress", "No implementation or tests have run.", false},
 		{"completed", "Implemented the fix and ran tests.", false},
 		{"quoted example", "> May I deploy to production?", false},
@@ -123,6 +125,37 @@ func TestPermissionWaitIgnoresNonterminalOutput(t *testing.T) {
 			orch := &Orchestrator{}
 			if orch.handlePermissionWaitCompletion(t.Context(), nil, runpkg.Completion{Result: tt.result}, Running{}) {
 				t.Fatal("unexpected wait")
+			}
+		})
+	}
+}
+
+func TestRecordedMacOSQuestionRequiresCriterionAndOptions(t *testing.T) {
+	body, err := os.ReadFile("testdata/blocked_question_1883.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		name, output string
+		want         bool
+	}{
+		{"recorded final question", string(body), false},
+		{"criteria defect missing details", strings.Replace(string(body), "status: blocked", "status: blocked\nblock_kind: criteria_defect", 1), false},
+		{"complete criteria defect", strings.Replace(string(body), "status: blocked", "status: blocked\nblock_kind: criteria_defect\ncriterion: Reproduce instruction loading and sandbox denials on macOS\noptions:\n  - answer: Verify before merge with an isolated fixture\n    replacement_criterion: An isolated fixture verifies instruction loading and sandbox denials before merge", 1), true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			wait, ok := terminalPermissionWait(tt.output)
+			if ok != tt.want {
+				t.Fatalf("wait=%+v, accepted=%t", wait, ok)
+			}
+			if tt.name == "criteria defect missing details" {
+				signal, _ := workpad.SignalFromComment(tt.output, "", "")
+				if signal.Invalid == nil || !strings.Contains(signal.Invalid.Message, "criterion") || !strings.Contains(signal.Invalid.Message, "options") {
+					t.Fatalf("missing diagnostic: %+v", signal)
+				}
+			}
+			if tt.want && (wait.Criterion == "" || len(wait.Options) != 1 || wait.Options[0].ReplacementCriterion == "") {
+				t.Fatalf("lost fields: %+v", wait)
 			}
 		})
 	}

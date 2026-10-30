@@ -252,7 +252,8 @@ func (o *Orchestrator) completeNativeChangeRun(
 			validatorRework = true
 		}
 	}
-	unfinished := publicationRefused || (reviewChangesRequested || auditRework || validatorRework || implementationRework || change != nil && reported && report != nil && report.Invalid == nil && report.Status == workpad.StatusInProgress && len(report.Blockers) == 0 && report.HumanAction == "")
+	invalidReport := reported && report != nil && report.Invalid != nil
+	unfinished := invalidReport || publicationRefused || (reviewChangesRequested || auditRework || validatorRework || implementationRework || change != nil && reported && report != nil && report.Invalid == nil && report.Status == workpad.StatusInProgress && len(report.Blockers) == 0 && report.HumanAction == "")
 	start := running.CompletionSourceStart
 	headUnchanged := !changed || start.Captured && start.WorkspaceHeadAvailable && strings.TrimSpace(change.HeadSHA) != "" && strings.TrimSpace(start.Fingerprint.WorkspaceHead) == strings.TrimSpace(change.HeadSHA)
 	staleRework := unfinished && headUnchanged && !blocked && !clearedBlockers && !humanReview && normalizeState(issue.State) == normalizeState(cfg.ReworkState) &&
@@ -415,7 +416,7 @@ func (o *Orchestrator) completeNativeChangeRun(
 	if machineRetry {
 		issue.State = target
 		attempt := nextAttempt(max(running.Attempt, state.Retry[issueID].Attempt))
-		if unfinished && !blocked && !publicationRefused && !reviewChangesRequested && !validatorRework && !implementationRework && !auditRework && unaddressedRefusal == "" && change != nil && change.VersionError == "" && change.VersionID != "" && len(implementProgressSourceKinds(running, issue)) > 0 {
+		if unfinished && !invalidReport && !blocked && !publicationRefused && !reviewChangesRequested && !validatorRework && !implementationRework && !auditRework && unaddressedRefusal == "" && change != nil && change.VersionError == "" && change.VersionID != "" && len(implementProgressSourceKinds(running, issue)) > 0 {
 			attempt = 1
 		}
 		if err := o.retryMachineFailure(ctx, state, issue, attempt, event.CompletedAt, comment, running.WorkerHost); err != nil {
@@ -594,6 +595,9 @@ func nativeCompletionReason(comment string, report *workpad.Signal, finalMessage
 			detail.WriteString("\n\nValidator summary:\n" + summary)
 		}
 		return workpad.FinalSummary(detail.String())
+	}
+	if report != nil && report.Invalid != nil {
+		comment += "\n\nInvalid detent-status: " + report.Invalid.Message
 	}
 	if report != nil && report.Invalid == nil {
 		if reason := workpad.Reason(report); reason != "" {

@@ -240,7 +240,7 @@ func TestQueuedDispatchUsesCurrentWorkpad(t *testing.T) {
 			}
 			action := "null"
 			if tt.current == "blocked" {
-				action = "needs operator input"
+				action = "needs operator input\nblock_kind: product_decision\noptions:\n  - answer: Approve the requested action"
 			}
 			tracker.comments = []connector.IssueComment{comment(tt.current, action)}
 			if err := gate.Release(held); err != nil {

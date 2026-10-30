@@ -384,5 +384,5 @@ func (run Run) CompletionMessage(message string) string {
 	if err != nil {
 		return message
 	}
-	return action + "\n\n" + message + "\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: " + string(encoded) + "\n```"
+	return action + "\n\n" + message + "\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nblock_kind: product_decision\noptions:\n  - answer: Confirm the finding and repair it\n  - answer: Dismiss the finding with supporting evidence\nhuman_action: " + string(encoded) + "\n```"
 }

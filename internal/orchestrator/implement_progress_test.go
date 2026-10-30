@@ -2202,7 +2202,7 @@ func implementProgressWorkpadComment(blockerRef string, humanAction string) stri
 	if strings.TrimSpace(humanAction) == "" {
 		body.WriteString("human_action: null\n```")
 	} else {
-		body.WriteString("human_action: \"")
+		body.WriteString("block_kind: missing_authorization\noptions:\n  - answer: Approve the requested action\nhuman_action: \"")
 		body.WriteString(humanAction)
 		body.WriteString("\"\n```")
 	}
