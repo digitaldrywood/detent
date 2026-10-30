@@ -70,9 +70,6 @@ func (h *HTTPServer) boundary(next echo.HandlerFunc) echo.HandlerFunc {
 				return c.NoContent(http.StatusNoContent)
 			}
 		}
-		ctx, cancel := context.WithTimeout(c.Request().Context(), 30*time.Second)
-		defer cancel()
-		c.SetRequest(c.Request().WithContext(ctx))
 		return next(c)
 	}
 }
@@ -221,7 +218,7 @@ func (h *HTTPServer) failure(c echo.Context, err error) error {
 }
 
 func (h *HTTPServer) Serve(ctx context.Context, listener net.Listener, publisher Publisher) error {
-	server := &http.Server{Handler: h, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 45 * time.Second, WriteTimeout: 45 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10}
+	server := &http.Server{Handler: h, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10}
 	finished := make(chan error, 1)
 	go func() { finished <- server.Serve(listener) }()
 	ticker := time.NewTicker(10 * time.Second)
