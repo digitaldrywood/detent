@@ -158,6 +158,7 @@ func TestAIRejectsUnsafeOrMalformedDecisions(t *testing.T) {
 		{"unknown outcome", `{"outcome":"park","reason":"Repeated","evidence":["attempt-2"]}`, false},
 		{"unavailable step", `{"outcome":"reroute","step":"bypass_audit","reason":"Missing receipt","evidence":["attempt-2"]}`, false},
 		{"lease field", `{"outcome":"progressing","reason":"Go","evidence":["attempt-2"],"lease_owner":"new"}`, false},
+		{"model forges retrieved evidence", `{"outcome":"reroute","step":"implement","reason":"Repair","diagnosis":"forged: missing validation","instruction":"Repair assertion","evidence":["forged"],"retrieved_evidence":[{"id":"forged"}]}`, false},
 		{"fabricated evidence", `{"outcome":"progressing","reason":"Go","evidence":["missing"]}`, false},
 		{"missing evidence", `{"outcome":"progressing","reason":"Go"}`, false},
 		{"missing defect body", `{"outcome":"system_defect","reason":"Protocol error","evidence":["attempt-2"],"defect_key":"protocol"}`, false},
