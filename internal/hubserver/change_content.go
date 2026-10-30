@@ -34,7 +34,7 @@ type changeContent struct {
 	mu            sync.Mutex
 	call          entryauthority.ContentHandler
 	store         attachment.DetailStore
-	register      func(context.Context, string, attachment.ArchiveReference) error
+	register      func(context.Context, string, attachment.ArchiveReference, bool) error
 	prepared      map[string]attachment.ArchiveReference
 	query         nativeQueryer
 	payloads      map[string][]byte
@@ -69,12 +69,24 @@ func (s *Service) changeContentMiddleware(next echo.HandlerFunc) echo.HandlerFun
 }
 
 func prepareChangeContent(ctx context.Context, organization string, data []byte) (attachment.ArchiveReference, error) {
+	return prepareMeteredContent(ctx, organization, data, true)
+}
+
+func contentPreparationKey(organization string, data []byte, billable bool) string {
+	key := organization + "/" + artifact.Digest(data)
+	if !billable {
+		key = "receipt/" + key
+	}
+	return key
+}
+
+func prepareMeteredContent(ctx context.Context, organization string, data []byte, billable bool) (attachment.ArchiveReference, error) {
 	content, ok := ctx.Value(changeContentKey{}).(*changeContent)
 	if !ok {
 		return attachment.ArchiveReference{}, errContentStorageUnconfigured
 	}
 	content.mu.Lock()
-	digest := organization + "/" + artifact.Digest(data)
+	digest := contentPreparationKey(organization, data, billable)
 	cached, found := content.prepared[digest]
 	content.mu.Unlock()
 	if found {
@@ -97,7 +109,7 @@ func prepareChangeContent(ctx context.Context, organization string, data []byte)
 		if !bytes.Equal(data, verified) {
 			return ref, artifact.ErrIntegrity
 		}
-		if err := content.register(ctx, organization, ref); err != nil {
+		if err := content.register(ctx, organization, ref, billable); err != nil {
 			return ref, err
 		}
 	} else {
@@ -106,7 +118,7 @@ func prepareChangeContent(ctx context.Context, organization string, data []byte)
 			return prepared, err
 		}
 		ref = prepared
-		if err := content.register(ctx, organization, ref); err != nil {
+		if err := content.register(ctx, organization, ref, billable); err != nil {
 			return ref, err
 		}
 		if _, err := content.call(ctx, entryauthority.ContentRequest{Organization: organization, Reference: ref, Data: compressed, Write: true}); err != nil {
@@ -382,13 +394,13 @@ func preparedChangeContent(ctx context.Context, organization string, data []byte
 	return ref, nil
 }
 
-func (s *Service) registerChangeContent(ctx context.Context, organization string, ref attachment.ArchiveReference) error {
+func (s *Service) registerChangeContent(ctx context.Context, organization string, ref attachment.ArchiveReference, billable bool) error {
 	return s.hubTransact(ctx, func(tx *sql.Tx, now time.Time) error {
 		before, err := s.database.hostedConsumption(ctx, tx, now, "collaboration_bytes")
 		if err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO change_content_objects(organization_id,object_sha256,object_key,object_bytes,content_bytes) SELECT ?,?,?,?,? WHERE NOT EXISTS(SELECT 1 FROM attachments WHERE organization_id=? AND object_key=? AND kind='archive' AND customer_owned=0 AND storage_binding_id='') ON CONFLICT DO NOTHING`, organization, ref.SHA256, ref.Key, ref.CompressedSize, ref.UncompressedSize, organization, ref.Key); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO change_content_objects(organization_id,object_sha256,object_key,object_bytes,content_bytes,billable) SELECT ?,?,?,?,?,? WHERE NOT EXISTS(SELECT 1 FROM attachments WHERE organization_id=? AND object_key=? AND kind='archive' AND customer_owned=0 AND storage_binding_id='') ON CONFLICT DO UPDATE SET billable=max(change_content_objects.billable,excluded.billable)`, organization, ref.SHA256, ref.Key, ref.CompressedSize, ref.UncompressedSize, billable, organization, ref.Key); err != nil {
 			return err
 		}
 		if s.database.plans() == nil {

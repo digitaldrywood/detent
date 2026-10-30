@@ -22,7 +22,7 @@ func insertNativePayloadCommandReceipt(ctx context.Context, tx *sql.Tx, organiza
 	if err != nil {
 		return nil, err
 	}
-	object, err := storedPayloadKey(ctx, string(organization), []byte(raw))
+	object, err := storedMeteredPayloadKey(ctx, string(organization), []byte(raw), !strings.HasPrefix(operation, "attachment."))
 	if err != nil {
 		return nil, err
 	}
