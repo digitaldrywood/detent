@@ -25,7 +25,7 @@ check_with_evidence scripts python3 -m unittest scripts/nilaway_changed_test.py 
 check_with_evidence nilaway-changed make nilaway-changed
 check_with_evidence race make test-race TEST_PROCS="$procs"
 check_with_evidence subprocess-lifecycle env -u DETENT_API_TOKEN go test -race ./internal/claudecode ./internal/codex -run '^(TestRunTurnCancellationKillsChildProcessGroup|TestRunTurnDetectsExitedParentWithInheritedStdout|TestLocalTransportCloseKillsChildProcessGroup|TestLocalTransportReapsChildAfterParentExits)$' -count=20 -timeout=5m
-check_with_evidence coverage make test-cover TEST_PROCS="$procs"
+check_with_evidence full make test TEST_PROCS="$procs" TEST_TIMEOUT=30m
 check_with_evidence security make security
 check_with_evidence browser bash scripts/check-browser.sh "$procs" true tests/visual
 printf 'Release checks passed.\n'
