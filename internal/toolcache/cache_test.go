@@ -462,14 +462,15 @@ func TestTrimExplicitReportedGrowth(t *testing.T) {
 		managed, removed, directory bool
 		reclaim                     int64
 	}{
-		{"native recent growth", 47 << 10, 5 * time.Hour, false, false, false, 0},
-		{"managed recent growth", 47 << 10, 5 * time.Hour, true, false, false, 0},
-		{"managed recent directory", 47 << 10, 5 * time.Hour, true, false, true, 0},
-		{"managed recent under pressure", 47 << 10, 5 * time.Hour, true, false, false, 100 << 10},
-		{"native recent under pressure", 47 << 10, 5 * time.Hour, false, false, false, 100 << 10},
-		{"managed 25 hour boundary", 47 << 10, 25 * time.Hour, true, false, false, 100 << 10},
-		{"native 25 hour boundary", 47 << 10, 25 * time.Hour, false, false, false, 100 << 10},
-		{"managed old growth", 47 << 10, 26 * time.Hour, true, true, false, 0},
+		{"native recent growth", 47 << 10, 2 * time.Hour, false, false, false, 0},
+		{"managed recent growth", 47 << 10, 2 * time.Hour, true, false, false, 0},
+		{"managed recent directory", 47 << 10, 2 * time.Hour, true, false, true, 0},
+		{"managed recent under pressure", 47 << 10, 2 * time.Hour, true, false, false, 100 << 10},
+		{"native recent under pressure", 47 << 10, 2 * time.Hour, false, false, false, 100 << 10},
+		{"managed window boundary", 47 << 10, sizeEvictionWindow, true, false, false, 100 << 10},
+		{"managed growth past window", 47 << 10, 4 * time.Hour, true, true, false, 0},
+		{"native growth within last day", 47 << 10, 24 * time.Hour, false, false, false, 0},
+		{"native 25 hour boundary", 47 << 10, nativeSizeEvictionWindow, false, false, false, 100 << 10},
 		{"native old growth", 47 << 10, 26 * time.Hour, false, true, false, 0},
 		{"below budget", 1 << 10, 5 * time.Hour, true, false, false, 0},
 		{"expired below budget", 1 << 10, 49 * time.Hour, true, true, false, 0},

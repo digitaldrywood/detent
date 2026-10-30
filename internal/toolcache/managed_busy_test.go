@@ -16,8 +16,8 @@ func TestManagedCacheBusyTrimsOldestEligible(t *testing.T) {
 		reclaim int64
 		old     bool
 	}{
-		{name: "oldest first", cycles: 1, age: 25 * time.Hour, old: true},
-		{name: "oldest first under pressure", cycles: 1, age: 25 * time.Hour, reclaim: 4096, old: true},
+		{name: "oldest first", cycles: 1, age: sizeEvictionWindow, old: true},
+		{name: "oldest first under pressure", cycles: 1, age: sizeEvictionWindow, reclaim: 4096, old: true},
 		{name: "sustained fresh writes", cycles: 24, age: time.Second},
 		{name: "sustained fresh writes under pressure", cycles: 24, age: time.Second, reclaim: 4096},
 	} {
@@ -52,15 +52,15 @@ func TestManagedCacheBusyTrimsOldestEligible(t *testing.T) {
 				}
 				return name
 			}
-			active := write(1, tt.age+4*time.Hour)
+			active := write(1, tt.age+4*time.Minute)
 			pin := filepath.Join(t.TempDir(), "active-output")
 			if err := os.Link(active, pin); err != nil {
 				t.Fatal(err)
 			}
-			newest := write(2, tt.age+time.Hour)
+			newest := write(2, tt.age+time.Minute)
 			for cycle := range tt.cycles {
-				oldest := write(3+cycle*2, tt.age+3*time.Hour)
-				next := write(4+cycle*2, tt.age+2*time.Hour)
+				oldest := write(3+cycle*2, tt.age+3*time.Minute)
+				next := write(4+cycle*2, tt.age+2*time.Minute)
 				policy := Policy{MaxBytes: 6000}.WithReclaimBytes(tt.reclaim)
 				report, err := cache.Maintain(t.Context(), policy, now)
 				var wantEvicted int64

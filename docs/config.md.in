@@ -101,7 +101,8 @@ The effective age is at least 25 hours, preserving Go's last-day cache reuse and
 its one-hour access-time granularity for native operator caches. When the
 runner-owned cache exceeds `max_bytes`, that same cleanup waits under the
 existing admission lock for protected consumers to finish, then reclaims
-eligible entries oldest first under the exclusive consumer lock. New consumers
+entries unused for more than 3 hours, oldest first, under the exclusive consumer
+lock. New consumers
 resume after cleanup. Metadata (`trim.txt`, `README`, and ownership locks) is
 never removed. The module cache is reported and shared but is not trimmed.
 Concurrent builds can grow the managed cache between sweeps and exceed the

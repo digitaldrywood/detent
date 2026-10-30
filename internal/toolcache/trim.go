@@ -57,6 +57,11 @@ func (p Policy) NormalizedForCapacity(capacity uint64) Policy {
 	return p
 }
 
+const (
+	sizeEvictionWindow       = 3 * time.Hour
+	nativeSizeEvictionWindow = 25 * time.Hour
+)
+
 var cacheEntryName = regexp.MustCompile(`^[0-9a-f]{64}-[ad]$`)
 var cacheStagingName = regexp.MustCompile(`^[0-9a-f]{64}-[ad]\.[A-Z2-7]{26}$`)
 var cacheShardName = regexp.MustCompile(`^[0-9a-f]{2}$`)
@@ -116,6 +121,10 @@ func trim(ctx context.Context, root string, policy Policy, now time.Time, report
 		slog.Warn("skip host Go cache trim: cache marker absent", "path", root)
 		return 0, nil
 	}
+	evictionWindow := nativeSizeEvictionWindow
+	if managed {
+		evictionWindow = sizeEvictionWindow
+	}
 	var total int64
 	defer func() { report.BuildBytes = total }()
 	var candidates []trimEntry
@@ -155,7 +164,7 @@ func trim(ctx context.Context, root string, policy Policy, now time.Time, report
 			}
 		}
 		total += bytes
-		if candidate && info.ModTime().Before(now.Add(-25*time.Hour)) {
+		if candidate && info.ModTime().Before(now.Add(-evictionWindow)) {
 			candidates = append(candidates, trimEntry{name: name, bytes: bytes, modified: info.ModTime(), directory: entry.IsDir()})
 		}
 		if entry.IsDir() {

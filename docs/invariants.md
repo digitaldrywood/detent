@@ -402,13 +402,15 @@ Workers inherit the host's native toolchain caches; cache contents may affect
 speed but never correctness for runner jobs. An enrolled local Cloud runner
 manages the host Go build cache resolved by `go env GOCACHE`, including
 `GOCACHE` and `go env -w` settings, using its existing cache program, job scratch
-pins, admission and eviction protocol. Maintenance removes only entries whose
-last-use mtime is more than 25 hours old, allowing for Go's hourly mtime
-refresh and its recommendation to preserve outputs used within a day. Size
-budgets and disk pressure never evict entries within that window, regardless
-of pins. Eligible older entries are reclaimed oldest first toward the budget;
-pinned outputs remain available until job scratch cleanup. Heavy days may grow
-the shared cache above its budget; the budget is not a hard size cap. Runtime
+pins, admission and eviction protocol. Age expiry removes entries whose
+last-use mtime is older than `max_age`, at least 25 hours. Size eviction of
+the managed cache reclaims unpinned entries whose last-use mtime is more than
+3 hours old, oldest first toward the budget; the window covers Go's hourly
+mtime refresh plus native builds of up to two hours. Caches without the cache
+program keep a 25-hour size-eviction window. Size budgets and disk pressure
+never evict entries within the window, and pinned outputs remain available
+until job scratch cleanup. Bursts inside the window may grow the shared cache above its budget;
+the budget is not a hard size cap. Runtime
 stores share maintenance and the cache program without exclusive ownership;
 a persistent owner marker never prevents a second or replacement runtime store
 from participating. Native Go consumers share the same gentle trimming policy, with the same best-effort guarantee as Go's own trimming: an entry older than the window that a native build reuses at the instant it is removed can still be lost.
