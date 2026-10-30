@@ -68,9 +68,9 @@ func (s *Service) convertConversationPayload(ctx context.Context, scope nativeSc
 		if err == nil {
 			metadata, err = messageQueryMetadata(message.Data, message.Actor.Kind)
 		}
-		metadata.add("actor_principal_id", message.Actor.PrincipalID)
-		metadata.add("text_bytes", len(message.Text))
-		metadata.add("stored_text_bytes", len(message.Text))
+		metadata.Add("actor_principal_id", message.Actor.PrincipalID)
+		metadata.Add("text_bytes", len(message.Text))
+		metadata.Add("stored_text_bytes", len(message.Text))
 	} else {
 		if err := s.database.reader.QueryRowContext(ctx, "SELECT body_json,content_attachment_id FROM conversation_events WHERE rowid=?", row).Scan(&original, &oldContent); err != nil {
 			return err
@@ -133,7 +133,7 @@ func (s *Service) convertConversationPayload(ctx context.Context, scope nativeSc
 	if err != nil || changed == 0 {
 		return err
 	}
-	if err := metadata.write(ctx, tx, family.table(), "rowid=?", row); err != nil {
+	if err := metadata.Write(ctx, tx, family.table(), "rowid=?", row); err != nil {
 		return err
 	}
 	if family.name == "messages" {

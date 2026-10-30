@@ -200,7 +200,7 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 		}
 	}
 	if cfg.Conversation != nil && cfg.Conversation.Enabled && !cfg.CredentialMaintenance {
-		service.conversations = newConversationService(service, cfg.Conversation.normalized())
+		service.conversations = newConversationService(service, normalizeConversationConfig(*cfg.Conversation))
 	}
 	if cfg.Workspace != nil && cfg.Workspace.Enabled && !cfg.CredentialMaintenance {
 		if err := cfg.Workspace.validate(); err != nil {

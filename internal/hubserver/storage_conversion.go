@@ -553,8 +553,8 @@ func (s *Service) applyStorageConversion(ctx context.Context, tx *sql.Tx, scope 
 		}
 		switch family.name {
 		case "runs":
-			if metadata.project != nil {
-				if err := metadata.project(ctx, tx); err != nil {
+			if metadata.Project != nil {
+				if err := metadata.Project(ctx, tx); err != nil {
 					return false, err
 				}
 			}
@@ -577,10 +577,10 @@ func (s *Service) applyStorageConversion(ctx context.Context, tx *sql.Tx, scope 
 				return false, err
 			}
 		}
-		if len(metadata.columns) > 0 {
+		if len(metadata.Columns) > 0 {
 			table := "collaboration_events"
 			where := "rowid=?"
-			if err := metadata.write(ctx, tx, table, where, row); err != nil {
+			if err := metadata.Write(ctx, tx, table, where, row); err != nil {
 				return false, err
 			}
 		}
@@ -1084,4 +1084,8 @@ func (f storageConversionFamily) keysetFrom() string {
 		from = strings.Replace(from, " r", " r INDEXED BY "+index, 1)
 	}
 	return strings.ReplaceAll(from, " JOIN ", " CROSS JOIN ")
+}
+
+func (f storageConversionFamily) recordPayload() bool {
+	return f.name == "conversation_records" || f.name == "conversation_questions" || f.name == "conversation_commands" || f.name == "conversation_attachments"
 }

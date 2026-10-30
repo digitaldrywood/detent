@@ -3,9 +3,7 @@ package hubserver
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,7 +17,6 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/conversation"
-	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 // Attachments. An upload belongs to the actor that
@@ -38,238 +35,7 @@ const (
 	conversationAttachmentSweepBatch = 200
 )
 
-// conversationAttachmentRecord is one stored attachment. MessageID is empty
-// while the upload is unsent; ExpiresAt is set only then.
-type conversationAttachmentRecord struct {
-	ID             string
-	ContentID      string
-	ConversationID string
-	OrganizationID tracker.OrganizationID
-	ProjectID      tracker.ProjectID
-	MessageID      string
-	PrincipalID    string
-	Name           string
-	MIME           string
-	Size           int64
-	ArtifactRef    string
-	CreatedAt      time.Time
-	ExpiresAt      *time.Time
-	DeletedAt      *time.Time
-}
-
-// conversationAttachmentURL is the hub path that streams an attachment. It is
-// the `url` every attachment resource carries, so the client and the runner
-// both read the blob through the conversation's audience.
-func conversationAttachmentURL(organization tracker.OrganizationID, project tracker.ProjectID, conversationID, attachmentID string) string {
-	return "/api/v2/organizations/" + string(organization) + "/projects/" + string(project) +
-		"/conversations/" + conversationID + "/attachments/" + attachmentID
-}
-
-func (r conversationAttachmentRecord) resource() conversation.Attachment {
-	return conversation.Attachment{
-		ID: r.ID, Name: r.Name, MIME: r.MIME, Size: r.Size,
-		URL: conversationAttachmentURL(r.OrganizationID, r.ProjectID, r.ConversationID, r.ID),
-	}
-}
-
-// conversationAttachmentRef is the storage key of an upload. It is derived
-// from the conversation, the uploading principal and the idempotency key, so
-// a retried upload lands on the row it already created instead of a second
-// copy, and the unique constraint on the column is the idempotency record.
-func conversationAttachmentRef(conversationID, principalID, key string) string {
-	sum := sha256.Sum256([]byte(conversationID + "\x00" + principalID + "\x00" + key))
-	return "conv:" + conversationID + ":" + hex.EncodeToString(sum[:])
-}
-
-func projectAttachments(records []conversationAttachmentRecord) []conversation.Attachment {
-	projected := make([]conversation.Attachment, 0, len(records))
-	for _, record := range records {
-		projected = append(projected, record.resource())
-	}
-	return projected
-}
-
 // Store.
-
-const conversationAttachmentColumns = `a.id, a.conversation_id, c.organization_id, c.project_id, coalesce(a.message_id, ''), a.principal_id,
- a.name, a.mime, a.size, a.artifact_ref, a.created_at, a.expires_at, a.deleted_at, a.content_attachment_id`
-
-const conversationAttachmentFrom = ` FROM conversation_attachments a JOIN conversations c ON c.id = a.conversation_id WHERE `
-
-func scanConversationAttachment(row conversationScanner) (conversationAttachmentRecord, error) {
-	var record conversationAttachmentRecord
-	var created string
-	var expires, deleted sql.NullString
-	if err := row.Scan(&record.ID, &record.ConversationID, &record.OrganizationID, &record.ProjectID, &record.MessageID,
-		&record.PrincipalID, &record.Name, &record.MIME, &record.Size, &record.ArtifactRef, &created, &expires, &deleted, &record.ContentID); err != nil {
-		return record, err
-	}
-	var err error
-	if record.CreatedAt, err = parseTimeValue(created); err != nil {
-		return record, fmt.Errorf("decode attachment %s created_at: %w", record.ID, err)
-	}
-	if record.ExpiresAt, err = conversationParseNullTime(expires); err != nil {
-		return record, fmt.Errorf("decode attachment %s expires_at: %w", record.ID, err)
-	}
-	if record.DeletedAt, err = conversationParseNullTime(deleted); err != nil {
-		return record, fmt.Errorf("decode attachment %s deleted_at: %w", record.ID, err)
-	}
-	return record, nil
-}
-
-// readAttachment reads one live attachment of a conversation. A tombstone
-// reads as not found: the bytes are gone either way.
-func (s *conversationStore) readAttachment(ctx context.Context, query nativeQueryer, conversationID, id string) (conversationAttachmentRecord, error) {
-	row := query.QueryRowContext(ctx, "SELECT "+conversationAttachmentColumns+conversationAttachmentFrom+
-		"a.id = ? AND a.conversation_id = ? AND a.deleted_at IS NULL", id, conversationID)
-	record, err := scanConversationAttachment(row)
-	if errors.Is(err, sql.ErrNoRows) {
-		return record, sql.ErrNoRows
-	}
-	if err != nil {
-		return record, fmt.Errorf("read attachment: %w", err)
-	}
-	return record, nil
-}
-
-// readAttachmentByRef reads the attachment an upload key already created,
-// including a tombstone: a replay of a key whose attachment is gone is a
-// conflict, not a fresh upload.
-func (s *conversationStore) readAttachmentByRef(ctx context.Context, query nativeQueryer, ref string) (conversationAttachmentRecord, bool, error) {
-	row := query.QueryRowContext(ctx, "SELECT "+conversationAttachmentColumns+conversationAttachmentFrom+"a.artifact_ref = ?", ref)
-	record, err := scanConversationAttachment(row)
-	if errors.Is(err, sql.ErrNoRows) {
-		return record, false, nil
-	}
-	if err != nil {
-		return record, false, fmt.Errorf("read attachment by reference: %w", err)
-	}
-	return record, true, nil
-}
-
-func (s *conversationStore) insertAttachment(ctx context.Context, tx *sql.Tx, record conversationAttachmentRecord, content []byte) error {
-	contentID, err := s.preparedRecordStorage(ctx, tx, string(record.OrganizationID), string(record.ProjectID), record.PrincipalID, content, record.CreatedAt)
-	if err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO conversation_attachments
- (id, conversation_id, message_id, principal_id, name, mime, size, artifact_ref, created_at, expires_at, deleted_at, content_attachment_id,conversion_state)
- VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, NULL, ?,2)`,
-		record.ID, record.ConversationID, record.PrincipalID, record.Name, record.MIME, record.Size,
-		record.ArtifactRef, conversationTime(record.CreatedAt), conversationNullTime(record.ExpiresAt), contentID); err != nil {
-		return fmt.Errorf("insert attachment: %w", err)
-	}
-	return nil
-}
-
-func (s *conversationStore) readAttachmentContent(ctx context.Context, query nativeQueryer, ref string) ([]byte, error) {
-	var organization, contentID string
-	if err := query.QueryRowContext(ctx, `SELECT c.organization_id,a.content_attachment_id FROM conversation_attachments a JOIN conversations c ON c.id=a.conversation_id WHERE a.artifact_ref=? AND a.deleted_at IS NULL`, ref).Scan(&organization, &contentID); err != nil {
-		return nil, err
-	}
-	if contentID != "" {
-		return s.readConversationArchive(ctx, query, organization, contentID)
-	}
-	var content []byte
-	if err := query.QueryRowContext(ctx, "SELECT content FROM conversation_attachment_blobs WHERE artifact_ref = ?", ref).Scan(&content); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, sql.ErrNoRows
-		}
-		return nil, fmt.Errorf("read attachment content: %w", err)
-	}
-	return content, nil
-}
-
-// deleteAttachment tombstones an attachment and drops its bytes.
-func (s *conversationStore) deleteAttachment(ctx context.Context, tx *sql.Tx, id string, now time.Time) error {
-	if _, err := tx.ExecContext(ctx, `DELETE FROM conversation_attachment_blobs WHERE artifact_ref IN
- (SELECT artifact_ref FROM conversation_attachments WHERE id = ?)`, id); err != nil {
-		return fmt.Errorf("delete attachment content: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, "UPDATE conversation_attachments SET deleted_at = ?, expires_at = NULL WHERE id = ?", conversationTime(now), id); err != nil {
-		return fmt.Errorf("delete attachment: %w", err)
-	}
-	return nil
-}
-
-// bindAttachment binds one unsent attachment to a message. The WHERE clause
-// carries the whole rule, so two commands racing for the same attachment
-// cannot both win: the second updates no row.
-func (s *conversationStore) bindAttachment(ctx context.Context, tx *sql.Tx, conversationID, principalID, attachmentID, messageID string) (bool, error) {
-	result, err := tx.ExecContext(ctx, `UPDATE conversation_attachments SET message_id = ?, expires_at = NULL
- WHERE id = ? AND conversation_id = ? AND principal_id = ? AND message_id IS NULL AND deleted_at IS NULL`,
-		messageID, attachmentID, conversationID, principalID)
-	if err != nil {
-		return false, fmt.Errorf("bind attachment: %w", err)
-	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return false, fmt.Errorf("bind attachment: %w", err)
-	}
-	return affected == 1, nil
-}
-
-// resolveMessageAttachments fills the attachments of every message in one
-// query, the way resolveMessageReferences fills references. The hub pool
-// holds a single connection, so the caller must have drained its own rows.
-func resolveMessageAttachments(ctx context.Context, query nativeQueryer, messages []*conversationMessageRecord) error {
-	ids := make([]string, 0, len(messages))
-	for _, message := range messages {
-		ids = append(ids, message.ID)
-	}
-	if len(ids) == 0 {
-		return nil
-	}
-	encoded, err := sqlList(ids)
-	if err != nil {
-		return fmt.Errorf("encode message ids: %w", err)
-	}
-	rows, err := querySQL(ctx, query, "SELECT "+conversationAttachmentColumns+conversationAttachmentFrom+
-		"a.message_id IN (SELECT value FROM sql_rows(?)) AND a.deleted_at IS NULL ORDER BY a.message_id, a.created_at, a.id", encoded)
-	if err != nil {
-		return fmt.Errorf("read message attachments: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	byMessage := map[string][]conversationAttachmentRecord{}
-	for rows.Next() {
-		record, err := scanConversationAttachment(rows)
-		if err != nil {
-			return fmt.Errorf("read message attachments: %w", err)
-		}
-		byMessage[record.MessageID] = append(byMessage[record.MessageID], record)
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("read message attachments: %w", err)
-	}
-	for _, message := range messages {
-		message.Attachments = byMessage[message.ID]
-	}
-	return nil
-}
-
-// listExpiredAttachments returns abandoned uploads: unsent, not deleted and
-// past their expiry.
-func (s *conversationStore) listExpiredAttachments(ctx context.Context, query nativeQueryer, now time.Time, limit int) ([]conversationAttachmentRecord, error) {
-	rows, err := query.QueryContext(ctx, "SELECT "+conversationAttachmentColumns+conversationAttachmentFrom+
-		"a.message_id IS NULL AND a.deleted_at IS NULL AND a.expires_at IS NOT NULL AND a.expires_at <= ? ORDER BY a.expires_at LIMIT ?",
-		conversationTime(now), limit)
-	if err != nil {
-		return nil, fmt.Errorf("list expired attachments: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	expired := make([]conversationAttachmentRecord, 0, limit)
-	for rows.Next() {
-		record, err := scanConversationAttachment(rows)
-		if err != nil {
-			return nil, fmt.Errorf("list expired attachments: %w", err)
-		}
-		expired = append(expired, record)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("list expired attachments: %w", err)
-	}
-	return expired, nil
-}
 
 // Service.
 
@@ -635,5 +401,5 @@ func (s *Service) commandUploadAttachment(ctx context.Context, scope nativeScope
 	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(conversation.AttachmentUpload{Attachment: stored.resource(), ExpiresAt: stored.ExpiresAt})
+	return json.Marshal(conversation.AttachmentUpload{Attachment: stored.Resource(), ExpiresAt: stored.ExpiresAt})
 }
