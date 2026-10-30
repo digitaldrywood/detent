@@ -211,7 +211,7 @@ func TestChangeTypedColumnsOwnEvidenceFilters(t *testing.T) {
 			if err != nil || matched {
 				t.Fatalf("unknown attempt identity authorized receipt: matched=%v error=%v", matched, err)
 			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE change_versions SET record_json='{}' WHERE id=?`, current.ID); err == nil {
+			if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE change_versions SET record_json='{"head_sha":"changed"}' WHERE id=?`, current.ID); err == nil {
 				t.Fatal("typed backfill weakened source immutability")
 			}
 		})
