@@ -881,6 +881,8 @@ type managedConfigHookAgent struct {
 }
 
 func (a *managedConfigHookAgent) RunTurn(_ context.Context, req runnerpkg.AgentTurnRequest, _ runnerpkg.AgentUpdateHandler) (runnerpkg.AgentTurnResult, error) {
-	a.path = req.Workspace
+	if !req.TextOnly {
+		a.path = req.Workspace
+	}
 	return runnerpkg.AgentTurnResult{}, errManagedConfigHookProbe
 }
