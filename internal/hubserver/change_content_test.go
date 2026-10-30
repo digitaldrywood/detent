@@ -325,6 +325,19 @@ func TestChangeContentObjects(t *testing.T) {
 			t.Fatalf("org content unavailable: %v", err)
 		}
 	}
+	t.Run("unconfigured storage", func(t *testing.T) {
+		f.service.config.Content = nil
+		t.Cleanup(func() { f.service.config.Content = objects.call })
+		for _, path := range []string{f.path, f.path + "/versions/" + versions[0].ID + "/source"} {
+			response := performHubAPIRequest(t, f.service, http.MethodGet, path, f.token, nil)
+			requireNativeStatus(t, response, http.StatusServiceUnavailable)
+			var failure apiErrorResponse
+			decodeHubResponse(t, response, &failure)
+			if failure.Code != "storage_unreachable" {
+				t.Fatalf("converted content read without storage = %+v", failure)
+			}
+		}
+	})
 }
 
 func legacyChangeService(t *testing.T, service *Service) *Service {

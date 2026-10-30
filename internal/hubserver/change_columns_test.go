@@ -160,7 +160,7 @@ func TestChangeTypedColumnsOwnEvidenceFilters(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				detail, err := f.service.readRecoveryChange(t.Context(), f.service.database.reader, scope, string(f.issue.WorkItemID), f.changeWithCurrentVersion(t))
+				detail, err := f.service.readRecoveryChange(f.service.runDetailContext(t.Context()), f.service.database.reader, scope, string(f.issue.WorkItemID), f.changeWithCurrentVersion(t))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -200,14 +200,14 @@ func TestChangeTypedColumnsOwnEvidenceFilters(t *testing.T) {
 			if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE change_versions SET attempt_id=? WHERE id=?`, "typed-attempt", current.ID); err != nil {
 				t.Fatal(err)
 			}
-			matched, err := changeArtifactAttemptMatches(t.Context(), f.service.database.reader, scope, current.ID, "typed-attempt")
+			matched, err := changeArtifactAttemptMatches(f.service.runDetailContext(t.Context()), f.service.database.reader, scope, current.ID, "typed-attempt")
 			if err != nil || !matched {
 				t.Fatalf("typed attempt identity ignored: matched=%v error=%v", matched, err)
 			}
 			if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE change_versions SET attempt_id=NULL WHERE id=?`, current.ID); err != nil {
 				t.Fatal(err)
 			}
-			matched, err = changeArtifactAttemptMatches(t.Context(), f.service.database.reader, scope, current.ID, "typed-attempt")
+			matched, err = changeArtifactAttemptMatches(f.service.runDetailContext(t.Context()), f.service.database.reader, scope, current.ID, "typed-attempt")
 			if err != nil || matched {
 				t.Fatalf("unknown attempt identity authorized receipt: matched=%v error=%v", matched, err)
 			}
