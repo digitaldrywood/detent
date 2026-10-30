@@ -18,6 +18,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -578,9 +579,9 @@ func (s *Service) commandUploadAttachment(ctx context.Context, scope nativeScope
 			return nil, err
 		}
 	}
-	ctx, err = service.store.preparePayload(ctx, string(scope.organization), upload.content)
+	archive, _, err := attachment.PrepareArchive(string(scope.organization), 1, bytes.NewReader(upload.content))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("prepare attachment archive: %w", err)
 	}
 	now, err := s.database.currentTime()
 	if err != nil {
@@ -589,6 +590,47 @@ func (s *Service) commandUploadAttachment(ctx context.Context, scope nativeScope
 	plan := &conversationPublicationPlan{service: service, record: record, original: record, now: now}
 	ctx = plan.context(ctx)
 	var stored conversationAttachmentRecord
+	replayed := false
+	err = service.transact(ctx, func(tx *sql.Tx, now time.Time) error {
+		current, err := service.loadConversation(ctx, tx, scope, id)
+		if err != nil {
+			return err
+		}
+		if err := service.authorizeWrite(ctx, tx, scope, current); err != nil {
+			return err
+		}
+		if err := service.requireActorAuthority(ctx, tx, scope, now); err != nil {
+			return err
+		}
+		existing, found, err := service.store.readAttachmentByRef(ctx, tx, conversationAttachmentRef(id, scope.credential.ID, upload.key))
+		if err != nil {
+			return err
+		}
+		if found {
+			same, err := service.sameAttachmentUpload(ctx, tx, existing, name, media, upload.content)
+			if err != nil {
+				return err
+			}
+			if !same {
+				return &nativeError{Code: "idempotency_conflict", Message: "Idempotency key has different content", status: http.StatusConflict, publicMessage: true}
+			}
+			stored, replayed = existing, true
+			return nil
+		}
+		return service.store.recordContentArchive(ctx, tx, string(scope.organization), string(scope.project), scope.credential.ID, archive, now)
+	})
+	if err != nil {
+		return nil, err
+	}
+	if replayed {
+		return json.Marshal(conversation.AttachmentUpload{Attachment: stored.resource(), ExpiresAt: stored.ExpiresAt})
+	}
+	ctx, err = service.store.preparePayload(ctx, string(scope.organization), upload.content)
+	if err != nil {
+		return nil, err
+	}
+	plan.prepared = ctx.Value(conversationContentsKey{}).(preparedConversationContents)
+	ctx = plan.context(ctx)
 	err = service.transact(ctx, func(tx *sql.Tx, now time.Time) error {
 		record, err := service.loadConversation(ctx, tx, scope, id)
 		if err != nil {
