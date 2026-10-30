@@ -23,7 +23,7 @@ const storageConversionVersion = 1
 const storageConversionRows = 100
 const storageConversionBytes = 1 << 20
 
-const storageConversionOwnerPredicate = "family IN ('projection-pages','projection-activity','projection-attempts','projection-leases','projection-ranks','projection-health','projection-runners','runs','attempts','analytics','conversation_events','messages','versions','evidence','sources','diff_files','checkpoints','landings','tool_revisions','conversation_records','conversation_questions','conversation_commands','conversation_attachments')"
+const storageConversionOwnerPredicate = "family IN ('projection-pages','projection-activity','projection-attempts','projection-leases','projection-ranks','projection-health','projection-runners','attachment-receipts','runs','attempts','analytics','conversation_events','messages','versions','evidence','sources','diff_files','checkpoints','landings','tool_revisions','conversation_records','conversation_questions','conversation_commands','conversation_attachments')"
 
 type storageConversionFamily struct {
 	name, column, from, where, aggregate, update string
@@ -722,6 +722,7 @@ func (s *Service) convertStorageBatch(ctx context.Context, now time.Time) error 
 		{"projection-ranks", s.convertNativeBoardRanks},
 		{"projection-health", s.convertHealthProjections},
 		{"projection-runners", s.convertRunnerBoardProjections},
+		{"attachment-receipts", s.convertAttachmentReceiptBilling},
 	}
 	names := make([]string, 0, len(projections)+len(storageConversionFamilies))
 	for _, p := range projections {
@@ -1055,7 +1056,7 @@ func (s *Service) writeStorageProjectionCursor(ctx context.Context, family strin
 
 func storageProjectionStart(ctx context.Context, fallback uint64, count int) int {
 	if budget, ok := ctx.Value(storageBatchKey{}).(*storageBatchBudget); ok {
-		return int(budget.turn/int64(len(storageConversionFamilies)+7)) % count
+		return int(budget.turn/int64(len(storageConversionFamilies)+8)) % count
 	}
 	return int(fallback % uint64(count))
 }
