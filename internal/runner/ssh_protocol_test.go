@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -200,9 +202,55 @@ func TestSSHPeerConcurrentCallbacksAndDisconnect(t *testing.T) {
 		return identity, nil
 	})
 	var privateOwner sync.Mutex
-	for _, mode := range []string{"confirmed", "nested callback", "retained branch", "wrong head", "wrong base", "wrong repository", "wrong branch", "wrong version", "stale invocation", "merge", "cancelled", "lost authority", "ambiguous", "disconnect"} {
+	for _, mode := range []string{"pending empty", "pending previous", "invalid state", "invalid kind", "expected PR", "expected confirmed", "effect head", "effect branch", "effect repository", "effect base", "confirmed", "nested callback", "retained branch", "wrong head", "wrong base", "wrong repository", "wrong branch", "wrong expected ref", "wrong version", "stale invocation", "merge", "cancelled", "lost authority", "ambiguous", "disconnect"} {
 		t.Run("publication/"+mode, func(t *testing.T) {
-			identity.Branch = "detent/rework"
+			identity = workspace.GitHubPublication{Repository: version.Repository, HeadSHA: version.HeadSHA, Branch: "detent/rework", BaseRef: "develop"}
+			pending := strings.HasPrefix(mode, "pending ")
+			checkpointErr := errors.New("checkpoint stored; publication interrupted")
+			expected := ""
+			var producer func(context.Context, tracker.ChangeVersion, workspace.LandOptions) (workspace.GitHubPublication, error)
+			if pending {
+				source := initRunnerSourceRepo(t)
+				previous := strings.TrimSpace(runRunnerGit(t, source, "rev-parse", "HEAD"))
+				remoteDir := filepath.Join(t.TempDir(), "remote.git")
+				runRunnerGit(t, source, "init", "--bare", remoteDir)
+				runRunnerGit(t, remoteDir, "symbolic-ref", "HEAD", "refs/heads/develop")
+				runRunnerGit(t, source, "remote", "add", "origin", identity.Repository+".git")
+				runRunnerGit(t, source, "config", "url.file://"+remoteDir+".insteadOf", identity.Repository+".git")
+				runRunnerGit(t, source, "push", "origin", "HEAD:refs/heads/develop")
+				local, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+				if err != nil {
+					t.Fatal(err)
+				}
+				issue := workspace.Issue{ProjectID: "prj_example", ID: "wi_example", Identifier: "prj_example#1", BranchName: identity.Branch}
+				info, err := local.Create(t.Context(), issue)
+				if err != nil {
+					t.Fatal(err)
+				}
+				runRunnerGit(t, info.Path, "-c", "user.name=Test User", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "immutable source")
+				version.HeadSHA = strings.TrimSpace(runRunnerGit(t, info.Path, "rev-parse", "HEAD"))
+				identity.HeadSHA = version.HeadSHA
+				if mode == "pending previous" {
+					expected = previous
+					runRunnerGit(t, source, "push", "origin", previous+":refs/heads/"+identity.Branch)
+				}
+				client, err := github.NewClient(github.ClientConfig{TokenSource: github.StaticTokenSource("test"), HTTPClient: &http.Client{Transport: nativeExecutionTransport(func(req *http.Request) (*http.Response, error) {
+					if req.Method != http.MethodGet || req.URL.Path != "/repos/example/repo/pulls" {
+						return nil, fmt.Errorf("unexpected publication request: %s %s", req.Method, req.URL.Path)
+					}
+					return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("[]"))}, nil
+				})}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				producer = func(ctx context.Context, received tracker.ChangeVersion, opts workspace.LandOptions) (workspace.GitHubPublication, error) {
+					if received.ID != version.ID || received.HeadSHA != version.HeadSHA {
+						return workspace.GitHubPublication{}, errors.New("retry changed version")
+					}
+					opts.GitHubClient = client
+					return local.PrepareGitHubPublication(ctx, info, issue, opts)
+				}
+			}
 			if mode == "retained branch" {
 				identity.Branch = "manual/recovery"
 			}
@@ -221,6 +269,14 @@ func TestSSHPeerConcurrentCallbacksAndDisconnect(t *testing.T) {
 				return nil
 			}, PublicationEffect: func(_ context.Context, kind, state string, value workspace.GitHubPublication) error {
 				effects.Add(1)
+				if pending {
+					want := identity
+					want.ExpectedHeadSHA = expected
+					if kind != "git_push" || state != "pending" || value != want {
+						t.Errorf("pending checkpoint changed: %s %s %+v; want %+v", kind, state, value, want)
+					}
+					return checkpointErr
+				}
 				if mode == "nested callback" {
 					var result int
 					if err := central.Call(ctx, "nested", &result); err != nil {
@@ -247,6 +303,9 @@ func TestSSHPeerConcurrentCallbacksAndDisconnect(t *testing.T) {
 				if mode == "retained branch" && (opts.External == nil || opts.External.ID != "7" || opts.ExternalHeadSHA != strings.Repeat("b", 40) || len(opts.PublicationPushes) != 1 || opts.PublicationPushes[0] != pushed) {
 					return workspace.GitHubPublication{}, errors.New("publication forwarding lost the retained PR identity")
 				}
+				if producer != nil {
+					return producer(ctx, received, opts)
+				}
 				if mode == "cancelled" {
 					cancel()
 				}
@@ -271,12 +330,42 @@ func TestSSHPeerConcurrentCallbacksAndDisconnect(t *testing.T) {
 						target.Branch += "-other"
 					case "wrong base":
 						target.BaseRef = "main"
+					case "wrong expected ref":
+						target.ExpectedHeadSHA = strings.Repeat("b", 40)
 					case "wrong version":
 						versionID = "replaced"
 					case "stale invocation":
 						id++
 					}
 					return workspace.GitHubPublication{}, remote.Call(ctx, "publication.effect", nil, id, versionID, target, "git_push", "pending", target)
+				}
+				if mode == "invalid state" || mode == "invalid kind" || strings.HasPrefix(mode, "expected ") || strings.HasPrefix(mode, "effect ") {
+					result := identity
+					kind, state := "git_push", "pending"
+					if strings.HasPrefix(mode, "effect ") {
+						result.ExpectedHeadSHA = strings.Repeat("b", 40)
+					}
+					switch mode {
+					case "invalid state":
+						state = "invalid"
+					case "invalid kind":
+						kind = "invalid"
+					case "expected PR":
+						kind = "pr_create"
+						result.ExpectedHeadSHA = strings.Repeat("b", 40)
+					case "expected confirmed":
+						state = "confirmed"
+						result.ExpectedHeadSHA = strings.Repeat("b", 40)
+					case "effect head":
+						result.HeadSHA = strings.Repeat("b", 40)
+					case "effect branch":
+						result.Branch += "-other"
+					case "effect repository":
+						result.Repository += "-other"
+					case "effect base":
+						result.BaseRef = "main"
+					}
+					return workspace.GitHubPublication{}, opts.PublicationEffect(ctx, kind, state, result)
 				}
 				if err := opts.PublicationEffect(ctx, "git_push", "confirmed", identity); err != nil {
 					return workspace.GitHubPublication{}, err
@@ -297,7 +386,18 @@ func TestSSHPeerConcurrentCallbacksAndDisconnect(t *testing.T) {
 			privateOwner.Lock()
 			result, err := publicationOwner.publicationSource(ctx, version, opts)
 			privateOwner.Unlock()
-			if mode == "confirmed" || mode == "nested callback" || mode == "retained branch" {
+			if pending {
+				if err == nil || !strings.Contains(err.Error(), checkpointErr.Error()) || effects.Load() != 1 {
+					t.Fatalf("pending checkpoint refused: effects=%d error=%v", effects.Load(), err)
+				}
+				firstInvocation := invocation.Load()
+				privateOwner.Lock()
+				_, err = publicationOwner.publicationSource(ctx, version, opts)
+				privateOwner.Unlock()
+				if err == nil || !strings.Contains(err.Error(), checkpointErr.Error()) || effects.Load() != 2 || invocation.Load() == firstInvocation {
+					t.Fatalf("checkpoint retry changed source or operation: effects=%d error=%v", effects.Load(), err)
+				}
+			} else if mode == "confirmed" || mode == "nested callback" || mode == "retained branch" {
 				if err != nil || result.External.ID != "7" || effects.Load() != 2 {
 					t.Fatalf("SSH held publication=%s effects=%d error=%v", result.External.ID, effects.Load(), err)
 				}

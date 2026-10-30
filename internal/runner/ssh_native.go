@@ -184,6 +184,9 @@ func (c *SSHCallbacks) BindExecutionSources(peer *SSHPeer, journalRoot string) {
 					return err
 				}
 				actual := result
+				if kind == "git_push" && state == "pending" {
+					actual.ExpectedHeadSHA = ""
+				}
 				actual.External = tracker.ChangeExternalReference{}
 				if actual != identity || kind != "git_push" && kind != "pr_create" || state != "pending" && state != "confirmed" && state != "ambiguous" && state != "none" {
 					return errors.New("SSH publication effect differs from its bound source or checkpoint operation")
