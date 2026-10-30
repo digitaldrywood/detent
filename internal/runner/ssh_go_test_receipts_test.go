@@ -16,6 +16,9 @@ type recordingGoTestReceipts struct {
 	receipts []gotestreceipt.Receipt
 }
 
+func (s *recordingGoTestReceipts) Attest(context.Context) (gotestreceipt.Attestation, error) {
+	return gotestreceipt.Attestation{ID: "attestation", DigestKey: []byte(strings.Repeat("k", gotestreceipt.DigestKeyBytes))}, nil
+}
 func (s *recordingGoTestReceipts) Lookup(_ context.Context, key string) ([]gotestreceipt.Candidate, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -46,6 +49,10 @@ func TestSSHGoTestReceiptsReachTheCentralStore(t *testing.T) {
 	t.Cleanup(remotePeer.Close)
 	remote := SSHGoTestReceipts{Peer: remotePeer}
 
+	attestation, err := remote.Attest(t.Context())
+	if err != nil || attestation.ID != "attestation" || string(attestation.DigestKey) != strings.Repeat("k", gotestreceipt.DigestKeyBytes) {
+		t.Fatalf("attestation = %+v, %v", attestation, err)
+	}
 	receipt := gotestreceipt.Receipt{Key: strings.Repeat("a", 64), Package: "internal/example", Inputs: []string{"env\tHOME"}, Digest: strings.Repeat("b", 64)}
 	if err := remote.Record(t.Context(), receipt); err != nil {
 		t.Fatal(err)

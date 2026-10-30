@@ -28,14 +28,14 @@ func TestReceiptInputRegressions(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			env := Environment{Root: root}
+			env := Environment{DigestKey: testDigestKey, Root: root}
 			inputs := []string{"stat\tm\tfixture"}
 			if kind == "open file mtime" || kind == "open file identity" {
 				inputs = []string{"open\tm\tfixture"}
 			}
 			switch kind {
 			case "temporary root stat":
-				env.TempDirs = []string{root}
+				env.TempDirs = []TempRoot{{"TMPDIR", root}}
 				got, err := ParseTestLog(strings.NewReader("# test log\nstat "+root+"\n"), root, env, time.Now())
 				if err != nil || len(got) != 1 {
 					t.Fatalf("temporary root stat lost: inputs=%v error=%v", got, err)
@@ -45,7 +45,7 @@ func TestReceiptInputRegressions(t *testing.T) {
 				if err := os.Remove(path); err != nil {
 					t.Fatal(err)
 				}
-				env.TempDirs = []string{root}
+				env.TempDirs = []TempRoot{{"TMPDIR", root}}
 				if _, err := ParseTestLog(strings.NewReader("# test log\nopen "+path+"\n"), root, env, time.Now()); err == nil {
 					t.Fatal("removed temporary input accepted")
 				}
@@ -111,12 +111,12 @@ func TestReceiptKeyRegressions(t *testing.T) {
 				t.Fatal(err)
 			}
 			args := []string{"-test.short=true"}
-			getenv := func(string) string { return "" }
+			pwd, root := "/work/repo/pkg", ""
 			if kind == "environment order" {
 				t.Setenv("RECEIPT_ENV_FIRST", "first")
 				t.Setenv("RECEIPT_ENV_SECOND", "second")
 			}
-			before, err := Key(binary, args, getenv)
+			before, err := Key(binary, args, pwd, root, os.Environ())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -127,14 +127,9 @@ func TestReceiptKeyRegressions(t *testing.T) {
 				}
 				args = nil
 			case "working directory":
-				t.Chdir(dir)
+				pwd = dir
 			case "checkout root":
-				getenv = func(name string) string {
-					if name == RootEnvironment {
-						return dir
-					}
-					return ""
-				}
+				root = dir
 			case "environment order":
 				if err := os.Unsetenv("RECEIPT_ENV_FIRST"); err != nil {
 					t.Fatal(err)
@@ -145,7 +140,7 @@ func TestReceiptKeyRegressions(t *testing.T) {
 			case "environment outside log":
 				t.Setenv("RECEIPT_PRE_MAIN_INPUT", "changed")
 			}
-			after, err := Key(binary, args, getenv)
+			after, err := Key(binary, args, pwd, root, os.Environ())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -282,13 +277,22 @@ func main() { data, err := os.ReadFile("input.txt"); if err != nil || string(dat
 					t.Fatal(err)
 				}
 			}
-			binary := filepath.Join(root, "fixture.test")
-			if tc.name == "deleted build input" {
-				build := filepath.Join(root, "go-build-fixture")
-				binary = filepath.Join(build, "b001", "fixture.test")
-				if err := os.MkdirAll(filepath.Dir(binary), 0o700); err != nil {
-					t.Fatal(err)
+			store := &memoryStore{}
+			session, err := Start(t.Context(), store, nil, t.TempDir(), root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				if _, err := session.Close(t.Context()); err != nil {
+					t.Error(err)
 				}
+			}()
+			build := filepath.Join(session.Environment()["GOTMPDIR"], "go-build-fixture")
+			binary := filepath.Join(build, "b001", "fixture.test")
+			if err := os.MkdirAll(filepath.Dir(binary), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if tc.name == "deleted build input" {
 				input := filepath.Join(build, "input.txt")
 				if err := os.WriteFile(input, []byte("pass\n"), 0o600); err != nil {
 					t.Fatal(err)
@@ -306,16 +310,6 @@ func main() { data, err := os.ReadFile("input.txt"); if err != nil || string(dat
 			}
 			t.Chdir(root)
 			t.Setenv("RECEIPT_INPUT", "pass")
-			store := &memoryStore{}
-			session, err := Start(t.Context(), store, nil, t.TempDir())
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer func() {
-				if _, err := session.Close(t.Context()); err != nil {
-					t.Error(err)
-				}
-			}()
 			getenv := func(name string) string {
 				if value, ok := session.Environment()[name]; ok {
 					return value
@@ -341,8 +335,8 @@ func main() { data, err := os.ReadFile("input.txt"); if err != nil || string(dat
 			if code := RunWrapper(args, getenv, strings.NewReader("fail\n"), &output, &output); code != 1 {
 				t.Fatalf("changed input returned %d, want failure: %s", code, &output)
 			}
-			if stats := session.Stats(); stats.Hits != 0 {
-				t.Fatalf("unobserved input reused: %+v", stats)
+			if stats := session.Stats(); stats.Hits != 0 || stats.Lookups != 2 {
+				t.Fatalf("unobserved input reused or bypassed the session: %+v", stats)
 			}
 			if !tc.environment && session.Stats().Records != 0 {
 				t.Fatal("unobserved input recorded")

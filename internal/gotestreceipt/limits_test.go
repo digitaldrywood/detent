@@ -57,7 +57,7 @@ func TestVerifierBoundsInputWork(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := Digest(tt.inputs, Environment{Root: root})
+			_, err := Digest(tt.inputs, Environment{DigestKey: testDigestKey, Root: root})
 			if tt.want == nil && err != nil {
 				t.Fatalf("Digest() error = %v", err)
 			}
@@ -142,7 +142,7 @@ func TestVerifierRejectsInputsChangedDuringLookup(t *testing.T) {
 			if _, err := os.ReadFile(path); err != nil {
 				t.Fatal(err)
 			}
-			verifier := NewVerifier(Environment{Root: root})
+			verifier := NewVerifier(Environment{DigestKey: testDigestKey, Root: root})
 			digest, err := verifier.Digest(inputs)
 			if err != nil {
 				t.Fatal(err)

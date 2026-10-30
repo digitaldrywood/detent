@@ -20,6 +20,9 @@ type memoryGoTestReceipts struct {
 	receipts []gotestreceipt.Receipt
 }
 
+func (s *memoryGoTestReceipts) Attest(context.Context) (gotestreceipt.Attestation, error) {
+	return gotestreceipt.Attestation{ID: "attestation", DigestKey: []byte(strings.Repeat("k", gotestreceipt.DigestKeyBytes))}, nil
+}
 func (s *memoryGoTestReceipts) Lookup(_ context.Context, key string) ([]gotestreceipt.Candidate, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -190,8 +193,11 @@ func TestGoTestReceiptSocketStaysInAssignedScratch(t *testing.T) {
 			if relative, err := filepath.Rel(scratch, socket); err != nil || !filepath.IsLocal(relative) {
 				t.Fatalf("socket %q is outside assigned scratch %q", socket, scratch)
 			}
-			if _, err := gotestreceipt.NewClient(environment[gotestreceipt.SocketEnvironment], environment[gotestreceipt.TokenEnvironment]).Lookup(t.Context(), strings.Repeat("a", 64)); err != nil {
-				t.Fatalf("lookup through socket: %v", err)
+			var stdout, stderr bytes.Buffer
+			probe := []string{filepath.Join(t.TempDir(), "probe.test")}
+			gotestreceipt.RunWrapper(probe, func(name string) string { return environment[name] }, nil, &stdout, &stderr)
+			if !strings.Contains(stderr.String(), "400 Bad Request") {
+				t.Fatalf("receipt session did not answer through its socket: %s", stderr.String())
 			}
 		})
 	}

@@ -5,7 +5,9 @@ import (
 	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hkdf"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -225,4 +227,15 @@ func (k *Keyring) Check(e Envelope, aad []byte) error {
 	key, err := k.unwrap(e, aad)
 	clear(key)
 	return err
+}
+
+func (k *Keyring) Derive(purpose string, size int) ([]byte, error) {
+	if k == nil || len(k.keys[k.version]) != 32 {
+		return nil, ErrUnavailable
+	}
+	key, err := hkdf.Key(sha256.New, k.keys[k.version], nil, purpose, size)
+	if err != nil {
+		return nil, fmt.Errorf("derive hub secret key: %w", err)
+	}
+	return key, nil
 }

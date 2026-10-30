@@ -16,7 +16,7 @@ func (l *LocalGit) startGoTestReceipts(ctx context.Context, cmd *exec.Cmd, root,
 	if !ok {
 		return nil
 	}
-	session, err := gotestreceipt.Start(ctx, config.Store, l.logger, scratch)
+	session, err := gotestreceipt.Start(ctx, config.Store, l.logger, scratch, root)
 	if err != nil {
 		l.logger.Warn("go test receipts unavailable; validation tests execute", "error", err)
 		return nil

@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -13,13 +15,14 @@ const (
 	WrapperName         = "detent-go-test-exec"
 	SocketEnvironment   = "DETENT_GO_TEST_RECEIPTS"
 	RootEnvironment     = "DETENT_GO_TEST_ROOT"
-	TokenEnvironment    = "DETENT_GO_TEST_RECEIPTS_TOKEN"
 	MaxInputs           = 4096
 	MaxCandidates       = 8
 	maxInputLength      = 1024
 	maxInputBytes       = 96 << 10
 	maxPackageLength    = 512
-	protocolFingerprint = "detent-go-test-receipt-v3"
+	maxAttestation      = 128
+	DigestKeyBytes      = 32
+	protocolFingerprint = "detent-go-test-receipt-v4"
 )
 
 var digestPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -29,14 +32,21 @@ type Candidate struct {
 	Digest string   `json:"digest"`
 }
 
+type Attestation struct {
+	ID        string `json:"id"`
+	DigestKey []byte `json:"digest_key"`
+}
+
 type Receipt struct {
-	Key     string   `json:"key"`
-	Package string   `json:"package"`
-	Inputs  []string `json:"inputs"`
-	Digest  string   `json:"digest"`
+	Attestation string   `json:"attestation"`
+	Key         string   `json:"key"`
+	Package     string   `json:"package"`
+	Inputs      []string `json:"inputs"`
+	Digest      string   `json:"digest"`
 }
 
 type Store interface {
+	Attest(ctx context.Context) (Attestation, error)
 	Lookup(ctx context.Context, key string) ([]Candidate, error)
 	Record(ctx context.Context, receipt Receipt) error
 }
@@ -64,7 +74,17 @@ func ValidKey(key string) bool {
 	return digestPattern.MatchString(key)
 }
 
+func (a Attestation) Validate() error {
+	if a.ID == "" || len(a.ID) > maxAttestation || strings.ContainsAny(a.ID, "\t\r\n\x00") || len(a.DigestKey) != DigestKeyBytes {
+		return errors.New("receipt attestation is invalid")
+	}
+	return nil
+}
+
 func (r Receipt) Validate() error {
+	if r.Attestation == "" || len(r.Attestation) > maxAttestation || strings.ContainsAny(r.Attestation, "\t\r\n\x00") {
+		return errors.New("receipt attestation is required")
+	}
 	if !ValidKey(r.Key) || !ValidKey(r.Digest) {
 		return errors.New("receipt key and digest must be sha256 hex")
 	}
@@ -82,6 +102,13 @@ func ValidateInputs(inputs []string) error {
 		if input == "" || len(input) > maxInputLength || strings.ContainsAny(input, "\r\n\x00") {
 			return errors.New("receipt input is invalid")
 		}
+		fields := strings.Split(input, "\t")
+		switch {
+		case len(fields) == 2 && fields[0] == "env" && fields[1] != "" && !strings.ContainsAny(fields[1], "=/\\:"):
+		case len(fields) == 3 && (fields[0] == "open" || fields[0] == "stat") && validPathScope(fields[1]) && validRelativePath(fields[2]):
+		default:
+			return errors.New("receipt input must name an environment variable or checkout-relative path")
+		}
 	}
 	encoded, err := json.Marshal(inputs)
 	if err != nil {
@@ -91,4 +118,17 @@ func ValidateInputs(inputs []string) error {
 		return fmt.Errorf("receipt inputs exceed %d encoded bytes", maxInputBytes)
 	}
 	return nil
+}
+
+var tempRootTokens = []string{"system", "TMPDIR", "TMP", "TEMP", "GOTMPDIR", "tmp", "vartmp"}
+
+func validPathScope(scope string) bool {
+	if token, ok := strings.CutPrefix(scope, scopeTemporary); ok {
+		return slices.Contains(tempRootTokens, token)
+	}
+	return scope == scopeRoot || scope == scopeGoRoot
+}
+
+func validRelativePath(name string) bool {
+	return name != "" && !path.IsAbs(name) && path.Clean(name) == name && name != ".." && !strings.HasPrefix(name, "../") && !strings.ContainsAny(name, "\\:")
 }
