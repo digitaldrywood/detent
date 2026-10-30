@@ -74,6 +74,9 @@ func decodeStorageJSON(ctx context.Context, raw []byte, result any) error {
 	if err != nil {
 		return fmt.Errorf("read converted content: %w", err)
 	}
+	if err := expandStorageConversion(ctx, len(data)); err != nil {
+		return err
+	}
 	return json.Unmarshal(data, result)
 }
 

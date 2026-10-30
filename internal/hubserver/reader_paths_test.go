@@ -411,7 +411,7 @@ func TestHubWriterQueriesRequireAnOwnedReadReason(t *testing.T) {
 		"publishStorageArchive":             "Commits one issue archive pointer and its bounded section metadata after rechecking the exact issue and conversation revisions.",
 		"retireStorageArchiveSections":      "Rechecks the archived issue before atomically retiring at most 500 copied rows and advancing their durable section cursor.",
 		"discoverStorageRow":                "Queues one source row and advances its typed discovery state atomically on the existing conversion tick.",
-		"convertObjectPayloadFamily":        "Replaces one verified payload with its typed reference and conversion progress after comparing the owned source row.",
+		"convertObjectPayloadRow":           "Replaces one verified payload with its typed reference and conversion progress after comparing the owned source row.",
 		"convertStorageAggregate":           "Commits one verified immutable reference and retires its owned inline row with the progress cursor after rechecking the aggregate and source snapshot.",
 		"compactRetainedEvent":              "Deletes one bounded batch of obsolete event history for one aggregate planned on the reader, on the existing maintenance tick.",
 		"compactAnalyticsSamplesWithClock":  "Deletes one bounded batch of skip samples already counted by hourly rollups, on the existing maintenance tick.",

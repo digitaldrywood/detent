@@ -53,7 +53,7 @@ func changeVersionExternalURL(version tracker.ChangeVersion) string {
 
 func (s *Service) convertIssuePageFacts(ctx context.Context) error {
 	ctx = s.runDetailContext(ctx)
-	remaining := storageConversionRows
+	remaining := storageConversionLimit(ctx)
 	var failures error
 	families := []struct{ name, table, key, order, pending string }{
 		{"issue", "issues", "id", "organization_id,project_id,id", "actor_principal_id IS NULL"},
@@ -63,14 +63,18 @@ func (s *Service) convertIssuePageFacts(ctx context.Context) error {
 		{"board-filters", "native_board_items", "work_item_id", "organization_id,project_id,work_item_id", "page_filters_ready IS NULL"},
 		{"version", "change_versions", "id", "id", "external_url IS NULL"},
 	}
-	start := int((s.pageConversionFamily.Add(1) - 1) % uint64(len(families)))
+	start := storageProjectionStart(ctx, s.pageConversionFamily.Add(1)-1, len(families))
 	families = append(families[start:], families[:start]...)
 	for _, family := range families {
 		if remaining == 0 {
 			break
 		}
 		cursor := "page-" + family.name
-		candidates, err := s.storageProjectionPage(ctx, cursor, "SELECT "+family.key+" FROM "+family.table+" WHERE "+family.pending, family.order, remaining)
+		table := family.table
+		if family.name == "version" {
+			table += " INDEXED BY change_versions_external_unknown"
+		}
+		candidates, err := s.storageProjectionPage(ctx, cursor, "SELECT "+family.key+" FROM "+table+" WHERE "+family.pending, family.order, remaining)
 		if err != nil {
 			return errors.Join(failures, err)
 		}
@@ -113,6 +117,9 @@ func (s *Service) convertIssuePageFact(ctx context.Context, family, id string) (
 		return false, nil
 	}
 	if err != nil {
+		return false, err
+	}
+	if err := chargeStorageConversion(ctx, len(raw)+len(actorRaw)); err != nil {
 		return false, err
 	}
 	var actor tracker.Actor

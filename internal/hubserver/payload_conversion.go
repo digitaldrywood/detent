@@ -97,120 +97,10 @@ func (s *Service) convertObjectPayloadFamily(ctx context.Context, family storage
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return err
 	}
-	processed := 0
 	for _, c := range candidates {
-		raw, err := readObjectConversionPayload(ctx, s.database.reader, family, c.row)
-		if errors.Is(err, sql.ErrNoRows) {
-			continue
-		}
-		if err != nil {
+		if err := s.convertObjectPayloadRow(ctx, family, c, now); err != nil {
 			return err
 		}
-		if processed > 0 && processed+len(raw) > storageConversionBytes {
-			return nil
-		}
-		data := raw
-		var run tracker.NativeRunData
-		var checkpoint *tracker.NativeCheckpoint
-		switch family.name {
-		case "attempts":
-			if err := decodeRunDetail(ctx, s.database.reader, string(raw), &run); err != nil {
-				return err
-			}
-			data, err = json.Marshal(run)
-		case "checkpoints":
-			checkpoint, err = decodeRunCheckpoint(ctx, s.database.reader, string(raw))
-			if err == nil {
-				var artifactsRaw string
-				if err := s.database.reader.QueryRowContext(ctx, "SELECT artifact_ids_json FROM native_attempts WHERE rowid=?", c.row).Scan(&artifactsRaw); err != nil {
-					return err
-				}
-				var artifacts []string
-				if err := json.Unmarshal([]byte(artifactsRaw), &artifacts); err != nil {
-					return err
-				}
-				data, err = json.Marshal(checkpointPayload{Checkpoint: checkpoint, ArtifactIDs: artifacts})
-			}
-		case "landings":
-			var receipt tracker.NativeLandingReceipt
-			if err := decodeStorageJSON(ctx, raw, &receipt); err != nil {
-				return err
-			}
-			var document string
-			if err := s.database.reader.QueryRowContext(ctx, "SELECT COALESCE(NULLIF(a.payload_object_key,''),a.data_json) FROM native_attempts a JOIN change_landing_receipts r ON r.attempt_id=a.id WHERE r.rowid=?", c.row).Scan(&document); err != nil {
-				return err
-			}
-			data, err = resolveStorageJSON(ctx, []byte(document))
-			if err == nil {
-				var run tracker.NativeRunData
-				if err := json.Unmarshal(data, &run); err != nil {
-					return err
-				}
-				if run.Runtime == nil || !reflect.DeepEqual(run.Runtime.Landing, &receipt) {
-					data, err = json.Marshal(tracker.NativeRunData{Runtime: &tracker.NativeRuntimeObservation{Landing: &receipt}})
-				}
-			}
-		case "analytics", "versions", "evidence":
-			data, err = resolveStorageJSON(ctx, raw)
-		case "sources":
-			var change, version string
-			if err := s.database.reader.QueryRowContext(ctx, "SELECT v.change_id,v.id FROM change_sources r JOIN change_versions v ON v.id=r.version_id WHERE r.rowid=?", c.row).Scan(&change, &version); err != nil {
-				return err
-			}
-			var versionRaw string
-			if err := s.database.reader.QueryRowContext(ctx, "SELECT COALESCE(NULLIF(payload_object_key,''),record_json) FROM change_versions WHERE change_id=? AND id=?", change, version).Scan(&versionRaw); err != nil {
-				return err
-			}
-			var value tracker.ChangeVersion
-			if err := decodeStorageJSON(ctx, []byte(versionRaw), &value); err != nil {
-				return err
-			}
-			if value.Source == nil {
-				return artifact.ErrIntegrity
-			}
-			data, err = decodeChangeSource(raw, value.Source.Bytes)
-			if err == nil {
-				err = value.Source.Validate(value.BaseSHA, value.HeadSHA, data)
-			}
-		}
-		if err != nil {
-			return err
-		}
-		var analyticsValues []any
-		if family.name == "analytics" {
-			analyticsValues, err = analyticsProjection(string(data))
-			if err != nil {
-				return err
-			}
-			analyticsValues = append(analyticsValues, c.row, string(raw))
-		}
-		ref, err := prepareChangeContent(ctx, string(c.scope.organization), data)
-		if err != nil {
-			return err
-		}
-		restored, err := readChangeContent(ctx, string(c.scope.organization), ref)
-		if err != nil {
-			return err
-		}
-		if !bytes.Equal(data, restored) {
-			return artifact.ErrIntegrity
-		}
-		tx, err := s.database.db.BeginTx(ctx, nil)
-		if err != nil {
-			return err
-		}
-		err = s.applyObjectPayloadConversion(ctx, tx, c.scope, family, c.row, c.aggregate, raw, data, ref, run, checkpoint, analyticsValues, now)
-		if err == nil {
-			err = s.database.commit(ctx, tx)
-		}
-		rollback := tx.Rollback()
-		if err != nil {
-			return err
-		}
-		if rollback != nil && !errors.Is(rollback, sql.ErrTxDone) {
-			return rollback
-		}
-		processed += len(raw)
 	}
 	return nil
 }
@@ -233,15 +123,28 @@ func readObjectConversionPayload(ctx context.Context, q nativeQueryer, family st
 	return json.Marshal(stored)
 }
 
-func (s *Service) applyObjectPayloadConversion(ctx context.Context, tx *sql.Tx, scope nativeScope, family storageConversionFamily, row int64, aggregate string, raw, data []byte, ref attachment.ArchiveReference, run tracker.NativeRunData, checkpoint *tracker.NativeCheckpoint, analyticsValues []any, now time.Time) error {
-	current, err := readObjectConversionPayload(ctx, tx, family, row)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil
+func (s *Service) applyObjectPayloadConversion(ctx context.Context, tx *sql.Tx, scope nativeScope, family storageConversionFamily, row int64, aggregate string, raw, data []byte, ref attachment.ArchiveReference, run tracker.NativeRunData, checkpoint *tracker.NativeCheckpoint, analyticsValues []any, columns changeColumnValues, policyID string, landing tracker.NativeLandingReceipt, now time.Time) error {
+	var unchanged bool
+	var err error
+	if family.name == "diff_files" {
+		current, readErr := readObjectConversionPayload(ctx, tx, family, row)
+		if errors.Is(readErr, sql.ErrNoRows) {
+			return nil
+		}
+		if readErr != nil {
+			return readErr
+		}
+		unchanged = bytes.Equal(current, raw)
+	} else {
+		err = tx.QueryRowContext(ctx, "SELECT storage_conversion_digest("+family.column+")=? FROM "+family.table()+" WHERE rowid=?", storageConversionDigest(raw), row).Scan(&unchanged)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
 	}
-	if err != nil {
-		return err
-	}
-	if !bytes.Equal(current, raw) {
+	if !unchanged {
 		return nil
 	}
 	column := "payload_object_key"
@@ -266,14 +169,6 @@ func (s *Service) applyObjectPayloadConversion(ctx context.Context, tx *sql.Tx, 
 	if family.name == "sources" {
 		before = storageConversionDigest(raw, "", "", int64(0), int64(0))
 		after = storageConversionDigest([]byte{}, ref.Key, ref.SHA256, ref.CompressedSize, ref.UncompressedSize)
-	}
-	var policyID string
-	if family.name == "versions" {
-		var version tracker.ChangeVersion
-		if err := json.Unmarshal(data, &version); err != nil {
-			return err
-		}
-		policyID = version.PolicyID
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO storage_conversion_progress(organization_id,project_id,family,aggregate_id,format_version,through_rowid,updated_at,conversion_rowid,conversion_before_sha256,conversion_after_sha256,conversion_policy_revision_id)
 VALUES(?,?,?,?,2,?,?,?,?,?,?) ON CONFLICT(organization_id,project_id,family,aggregate_id) DO UPDATE SET format_version=2,complete=0,conversion_policy_revision_id=excluded.conversion_policy_revision_id,conversion_rowid=excluded.conversion_rowid,conversion_before_sha256=excluded.conversion_before_sha256,conversion_after_sha256=excluded.conversion_after_sha256,through_rowid=max(through_rowid,excluded.through_rowid),updated_at=excluded.updated_at`, scope.organization, scope.project, family.name, aggregate, row, formatHubTime(now), row, before, after, policyID)
@@ -317,16 +212,8 @@ VALUES(?,?,?,?,2,?,?,?,?,?,?) ON CONFLICT(organization_id,project_id,family,aggr
 		}
 		_, err = tx.ExecContext(ctx, "UPDATE native_attempts SET checkpoint_json='null',artifact_ids_json='[]',checkpoint_object_key=?,checkpoint_preserves_source=? WHERE rowid=?", ref.Key, checkpoint.PreservesSource(), row)
 	case "landings":
-		receipt, decodeErr := decodeLandingReceipt(ctx, string(data), true)
-		if decodeErr != nil {
-			return decodeErr
-		}
-		_, err = tx.ExecContext(ctx, "UPDATE change_landing_receipts SET record_json='{}',payload_object_key=?,merge_sha=?,conversion_state=2 WHERE rowid=?", ref.Key, receipt.MergeSHA, row)
+		_, err = tx.ExecContext(ctx, "UPDATE change_landing_receipts SET record_json='{}',payload_object_key=?,merge_sha=?,conversion_state=2 WHERE rowid=?", ref.Key, landing.MergeSHA, row)
 	case "versions", "evidence":
-		columns, projectionErr := changeRecordColumns(ctx, tx, family.table(), string(data))
-		if projectionErr != nil {
-			return projectionErr
-		}
 		assignments := []string{"record_json='{}'", "payload_object_key=?", "conversion_state=2"}
 		values := []any{ref.Key}
 		for i, column := range columns.columns {
@@ -382,4 +269,141 @@ VALUES(?,?,?,?,2,?,?,?,?,?,?) ON CONFLICT(organization_id,project_id,family,aggr
 	}
 	_, err = tx.ExecContext(ctx, `UPDATE storage_conversion_progress SET complete=?,conversion_policy_revision_id='',conversion_rowid=0,conversion_before_sha256='',conversion_after_sha256='',cursor_rowid=?,converted_rows=converted_rows+1,reclaimed_bytes=reclaimed_bytes+?,updated_at=? WHERE organization_id=? AND project_id=? AND family=? AND aggregate_id=?`, !pending, row, len(raw), formatHubTime(now), scope.organization, scope.project, family.name, aggregate)
 	return err
+}
+
+func (s *Service) convertObjectPayloadRow(ctx context.Context, family storageConversionFamily, c objectPayloadConversionPosition, now time.Time) error {
+	raw, err := readObjectConversionPayload(ctx, s.database.reader, family, c.row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	data := raw
+	var run tracker.NativeRunData
+	var checkpoint *tracker.NativeCheckpoint
+	switch family.name {
+	case "attempts":
+		if err := decodeRunDetail(ctx, s.database.reader, string(raw), &run); err != nil {
+			return err
+		}
+		data, err = json.Marshal(run)
+	case "checkpoints":
+		checkpoint, err = decodeRunCheckpoint(ctx, s.database.reader, string(raw))
+		if err == nil {
+			var artifactsRaw string
+			if err := s.database.reader.QueryRowContext(ctx, "SELECT artifact_ids_json FROM native_attempts WHERE rowid=?", c.row).Scan(&artifactsRaw); err != nil {
+				return err
+			}
+			var artifacts []string
+			if err := json.Unmarshal([]byte(artifactsRaw), &artifacts); err != nil {
+				return err
+			}
+			data, err = json.Marshal(checkpointPayload{Checkpoint: checkpoint, ArtifactIDs: artifacts})
+		}
+	case "landings":
+		var receipt tracker.NativeLandingReceipt
+		if err := decodeStorageJSON(ctx, raw, &receipt); err != nil {
+			return err
+		}
+		var document string
+		if err := s.database.reader.QueryRowContext(ctx, "SELECT COALESCE(NULLIF(a.payload_object_key,''),a.data_json) FROM native_attempts a JOIN change_landing_receipts r ON r.attempt_id=a.id WHERE r.rowid=?", c.row).Scan(&document); err != nil {
+			return err
+		}
+		data, err = resolveStorageJSON(ctx, []byte(document))
+		if err == nil {
+			var run tracker.NativeRunData
+			if err := json.Unmarshal(data, &run); err != nil {
+				return err
+			}
+			if run.Runtime == nil || !reflect.DeepEqual(run.Runtime.Landing, &receipt) {
+				data, err = json.Marshal(tracker.NativeRunData{Runtime: &tracker.NativeRuntimeObservation{Landing: &receipt}})
+			}
+		}
+	case "analytics", "versions", "evidence":
+		data, err = resolveStorageJSON(ctx, raw)
+	case "sources":
+		var change, version string
+		if err := s.database.reader.QueryRowContext(ctx, "SELECT v.change_id,v.id FROM change_sources r JOIN change_versions v ON v.id=r.version_id WHERE r.rowid=?", c.row).Scan(&change, &version); err != nil {
+			return err
+		}
+		var versionRaw string
+		if err := s.database.reader.QueryRowContext(ctx, "SELECT COALESCE(NULLIF(payload_object_key,''),record_json) FROM change_versions WHERE change_id=? AND id=?", change, version).Scan(&versionRaw); err != nil {
+			return err
+		}
+		var value tracker.ChangeVersion
+		if err := decodeStorageJSON(ctx, []byte(versionRaw), &value); err != nil {
+			return err
+		}
+		if value.Source == nil {
+			return artifact.ErrIntegrity
+		}
+		data, err = decodeChangeSource(raw, value.Source.Bytes)
+		if err == nil {
+			err = value.Source.Validate(value.BaseSHA, value.HeadSHA, data)
+		}
+	}
+	if err != nil {
+		return err
+	}
+	var analyticsValues []any
+	if family.name == "analytics" {
+		analyticsValues, err = analyticsProjection(string(data))
+		if err != nil {
+			return err
+		}
+		analyticsValues = append(analyticsValues, c.row, string(raw))
+	}
+	if err := expandStorageConversion(ctx, len(data)); err != nil {
+		return err
+	}
+	ref, err := prepareChangeContent(ctx, string(c.scope.organization), data)
+	if err != nil {
+		return err
+	}
+	restored, err := readChangeContent(ctx, string(c.scope.organization), ref)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(data, restored) {
+		return artifact.ErrIntegrity
+	}
+	var columns changeColumnValues
+	var policyID string
+	var landing tracker.NativeLandingReceipt
+	if family.name == "versions" || family.name == "evidence" {
+		columns, err = changeRecordColumns(ctx, s.database.reader, family.table(), string(data))
+		if err != nil {
+			return err
+		}
+	}
+	if family.name == "versions" {
+		var version tracker.ChangeVersion
+		if err := json.Unmarshal(data, &version); err != nil {
+			return err
+		}
+		policyID = version.PolicyID
+	}
+	if family.name == "landings" {
+		landing, err = decodeLandingReceipt(ctx, string(data), true)
+		if err != nil {
+			return err
+		}
+	}
+	tx, err := s.database.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	err = s.applyObjectPayloadConversion(ctx, tx, c.scope, family, c.row, c.aggregate, raw, data, ref, run, checkpoint, analyticsValues, columns, policyID, landing, now)
+	if err == nil {
+		err = s.database.commit(ctx, tx)
+	}
+	rollback := tx.Rollback()
+	if err != nil {
+		return err
+	}
+	if rollback != nil && !errors.Is(rollback, sql.ErrTxDone) {
+		return rollback
+	}
+	return nil
 }

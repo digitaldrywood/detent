@@ -39,19 +39,26 @@ func credentialDispatchOrganizations(ctx context.Context, db nativeQueryer, id s
 }
 
 func runnerDispatchFingerprint(ctx context.Context, tx *sql.Tx, scope nativeScope, machine string, now time.Time) (string, error) {
-	var routing, raw string
-	err := tx.QueryRowContext(ctx, `SELECT json_array(m.capacity, m.version, r.state, r.capacity_limit, r.reported_capacity,
+	var raw string
+	var values [16]any
+	var routing string
+	err := tx.QueryRowContext(ctx, `SELECT m.capacity, m.version, r.state, r.capacity_limit, r.reported_capacity,
  r.os, r.architecture, r.tags_json, r.operations_json, r.routing_settings_json, r.problems_json,
  r.backend_isolation_json, r.reported_protocol_major, r.settings_rejected,
- julianday(m.last_heartbeat_at) > julianday(?), julianday(r.last_heartbeat_at) > julianday(?)), COALESCE(r.provider_reports_json, '[]')
+ julianday(m.last_heartbeat_at) > julianday(?), julianday(r.last_heartbeat_at) > julianday(?), COALESCE(r.provider_reports_json, '[]')
  FROM machines m LEFT JOIN runner_identities r ON r.machine_id = m.id AND r.id = ?
- WHERE m.id = ?`, formatHubTime(now.Add(-runnerauth.HeartbeatTimeout)), formatHubTime(now.Add(-runnerauth.HeartbeatTimeout)), scope.credential.Runner.RunnerID, machine).Scan(&routing, &raw)
+ WHERE m.id = ?`, formatHubTime(now.Add(-runnerauth.HeartbeatTimeout)), formatHubTime(now.Add(-runnerauth.HeartbeatTimeout)), scope.credential.Runner.RunnerID, machine).Scan(&values[0], &values[1], &values[2], &values[3], &values[4], &values[5], &values[6], &values[7], &values[8], &values[9], &values[10], &values[11], &values[12], &values[13], &values[14], &values[15], &raw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
 	if err != nil {
 		return "", err
 	}
+	encoded, err := json.Marshal(values)
+	if err != nil {
+		return "", err
+	}
+	routing = string(encoded)
 	var reports []providercapacity.Report
 	if err := json.Unmarshal([]byte(raw), &reports); err != nil {
 		return "", err

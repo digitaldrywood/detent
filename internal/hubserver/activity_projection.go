@@ -128,9 +128,9 @@ func (s *Service) convertActivityProjections(ctx context.Context) error {
 		{"activity-changes", `SELECT id FROM change_requests WHERE activity_current_version_id IS NULL`, s.convertActivityChange},
 		{"activity-versions", `SELECT id FROM change_versions WHERE activity_external_url IS NULL`, s.convertActivityVersion},
 	}
-	start := int((s.activityConvertFamily.Add(1) - 1) % uint64(len(families)))
+	start := storageProjectionStart(ctx, s.activityConvertFamily.Add(1)-1, len(families))
 	families = append(families[start:], families[:start]...)
-	remaining := storageConversionRows
+	remaining := storageConversionLimit(ctx)
 	var failures error
 	for _, family := range families {
 		if remaining == 0 {
@@ -162,6 +162,9 @@ func (s *Service) convertActivityAttempt(ctx context.Context, id string) error {
 		return nil
 	}
 	if err != nil {
+		return err
+	}
+	if err := chargeStorageConversion(ctx, len(raw)+len(checkpoint.String)); err != nil {
 		return err
 	}
 	var data tracker.NativeRunData
@@ -207,6 +210,9 @@ func (s *Service) convertActivityActor(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
+	if err := chargeStorageConversion(ctx, len(raw)); err != nil {
+		return err
+	}
 	var actor tracker.Actor
 	if err := decodeStorageJSON(ctx, []byte(raw), &actor); err != nil {
 		return err
@@ -224,6 +230,9 @@ func (s *Service) convertActivityChange(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
+	if err := chargeStorageConversion(ctx, len(raw)); err != nil {
+		return err
+	}
 	var c tracker.ChangeRequest
 	if err := decodeStorageJSON(ctx, []byte(raw), &c); err != nil {
 		return err
@@ -239,6 +248,9 @@ func (s *Service) convertActivityVersion(ctx context.Context, id string) error {
 		return nil
 	}
 	if err != nil {
+		return err
+	}
+	if err := chargeStorageConversion(ctx, len(raw)); err != nil {
 		return err
 	}
 	var v tracker.ChangeVersion

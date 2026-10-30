@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/gate"
@@ -57,10 +58,11 @@ func healthProjectionQueries(family healthProjectionFamily) (string, string, err
 }
 
 func (s *Service) convertHealthProjections(ctx context.Context) error {
-	remaining := storageConversionRows
-	for _, family := range []healthProjectionFamily{
-		"collaboration_events", "issues", "native_comments", "scheduled_validation_reports", "health_findings",
-	} {
+	remaining := storageConversionLimit(ctx)
+	families := []healthProjectionFamily{"collaboration_events", "issues", "native_comments", "scheduled_validation_reports", "health_findings"}
+	start := storageProjectionStart(ctx, 0, len(families))
+	families = append(families[start:], families[:start]...)
+	for _, family := range families {
 		if remaining == 0 {
 			break
 		}
@@ -78,27 +80,32 @@ func (s *Service) convertHealthProjectionFamily(ctx context.Context, family heal
 	if err != nil {
 		return 0, err
 	}
-	rows, err := s.database.reader.QueryContext(ctx, query, limit)
+	base, _, _ := strings.Cut(query, " ORDER BY")
+	keys := "rowid"
+	table := string(family)
+	_, pending, _ := strings.Cut(base, " WHERE ")
+	selected, err := s.storageProjectionPage(ctx, "health-"+table, "SELECT rowid FROM "+table+" INDEXED BY "+table+"_health_conversion_idx WHERE "+pending, keys, limit)
 	if err != nil {
 		return 0, err
 	}
-	defer rows.Close()
 	type candidate struct {
 		row            int64
 		id, raw, actor string
 	}
 	var candidates []candidate
-	for rows.Next() {
+	for _, position := range selected {
 		var c candidate
-		if err := rows.Scan(&c.row, &c.id, &c.raw, &c.actor); err != nil {
+		if err := s.database.reader.QueryRowContext(ctx, base+" AND rowid=?", position.id).Scan(&c.row, &c.id, &c.raw, &c.actor); errors.Is(err, sql.ErrNoRows) {
+			continue
+		} else if err != nil {
 			return 0, err
 		}
 		candidates = append(candidates, c)
 	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return 0, err
-	}
 	for _, c := range candidates {
+		if err := chargeStorageConversion(ctx, len(c.raw)+len(c.actor)); err != nil {
+			return 0, err
+		}
 		apply, err := decodeHealthProjection(family, c.id, c.raw, c.actor)
 		if err != nil {
 			return 0, err

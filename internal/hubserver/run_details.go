@@ -148,6 +148,15 @@ func decodeRunDetail(ctx context.Context, q nativeQueryer, raw string, result *t
 		runtime.Landing = &landing
 		run.Runtime = &runtime
 	}
+	if ctx.Value(storageBatchKey{}) != nil {
+		encoded, err := json.Marshal(run)
+		if err != nil {
+			return err
+		}
+		if err := expandStorageConversion(ctx, len(encoded)); err != nil {
+			return err
+		}
+	}
 	*result = run
 	return nil
 }
