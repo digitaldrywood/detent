@@ -24,6 +24,7 @@ import (
 )
 
 type changeObjectFixture struct {
+	beforeRead  func(context.Context) error
 	writes      int
 	reads       int
 	writerReads int
@@ -32,6 +33,11 @@ type changeObjectFixture struct {
 }
 
 func (f *changeObjectFixture) call(ctx context.Context, request entryauthority.ContentRequest) ([]byte, error) {
+	if !request.Write && f.beforeRead != nil {
+		if err := f.beforeRead(ctx); err != nil {
+			return nil, err
+		}
+	}
 	if measurement, ok := ctx.Value(changeWriterMeasurementKey{}).(*changeWriterMeasurement); ok && measurement.active {
 		measurement.content++
 	}

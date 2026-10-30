@@ -355,7 +355,7 @@ func TestNativeSourceOwnerRunnerPlacement(t *testing.T) {
 					entered := make(chan struct{}, 1)
 					released := make(chan struct{})
 					var first sync.Once
-					details.beforeRead = func(ctx context.Context) error {
+					objects.beforeRead = func(ctx context.Context) error {
 						if claimPrepared(ctx) == nil {
 							return nil
 						}
@@ -371,9 +371,21 @@ func TestNativeSourceOwnerRunnerPlacement(t *testing.T) {
 					}
 					request := tracker.ClaimRequest{WorkItemID: id, MachineID: other.binding.MachineID, SessionID: "saturated", TTL: time.Minute}
 					query := claimCandidateQuery{PolicyID: hubTestPolicy().ID, RequirePolicy: true, NativeScope: &scope, Scope: string(scope.project)}
-					ctx := f.service.runDetailContext(f.service.contentContext(testenv.WaitContext(t, t.Context())))
+					ctx, cancel := context.WithCancel(f.service.runDetailContext(f.service.contentContext(testenv.WaitContext(t, t.Context()))))
 					done := make(chan error, 1)
-					go func() { _, err := db.claimNativePrepared(ctx, request, query, time.Hour); done <- err }()
+					joined := make(chan struct{})
+					var release sync.Once
+					releaseRead := func() { release.Do(func() { close(released) }) }
+					defer func() {
+						cancel()
+						releaseRead()
+						<-joined
+					}()
+					go func() {
+						defer close(joined)
+						_, err := db.claimNativePrepared(ctx, request, query, time.Hour)
+						done <- err
+					}()
 					select {
 					case <-entered:
 					case err := <-done:
@@ -391,7 +403,7 @@ func TestNativeSourceOwnerRunnerPlacement(t *testing.T) {
 					if err := held.Close(); err != nil {
 						t.Fatal(err)
 					}
-					close(released)
+					releaseRead()
 					select {
 					case err := <-done:
 						if err != nil {
@@ -420,7 +432,7 @@ func TestNativeSourceOwnerRunnerPlacement(t *testing.T) {
 				details.mu.Lock()
 				detailReads, detailWriterReads := details.reads, details.writerReads
 				details.mu.Unlock()
-				if contentReads == 0 || detailReads == 0 || contentWriterReads != 0 || detailWriterReads != 0 {
+				if contentReads == 0 || detailReads != 0 || contentWriterReads != 0 || detailWriterReads != 0 {
 					t.Fatalf("content reads=%d writer=%d; detail reads=%d writer=%d", contentReads, contentWriterReads, detailReads, detailWriterReads)
 				}
 			}

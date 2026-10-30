@@ -50,7 +50,8 @@ func readStoredPayload(ctx context.Context, key string) ([]byte, error) {
 	if claimWriting(ctx) {
 		return nil, errClaimHintStale
 	}
-	if writing {
+	prepared := claimPrepared(ctx)
+	if writing || prepared != nil && !prepared.hydrating {
 		return nil, &claimHydration{run: func(ctx context.Context, _ nativeQueryer) error {
 			_, err := readStoredPayload(ctx, key)
 			return err
