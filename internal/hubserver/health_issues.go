@@ -38,6 +38,8 @@ func healthIssueFindings(f healthFinding) []healthFinding {
 	return findings
 }
 
+const healthPriorEpisodeLimit = 8
+
 func healthIssueRequest(f healthFinding) (tracker.CreateIssue, error) {
 	evidence, err := json.MarshalIndent(f.Evidence, "", "  ")
 	if err != nil {
@@ -222,7 +224,17 @@ func reportHealthFindings(ctx context.Context, tx *sql.Tx, organization tracker.
 			if request.State == "" {
 				continue
 			}
-			issue, err := reportHealthIssue(ctx, tx, scope, request, o.finding.Subject, o.item, o.finding.OpenedAt, now, cancellations)
+			linked := o.item
+			if linked == "" {
+				err := tx.QueryRowContext(ctx, `SELECT l.work_item_id FROM (SELECT id,resolved_at FROM health_findings WHERE organization_id=? AND fingerprint=(SELECT fingerprint FROM health_findings WHERE id=? AND organization_id=?) AND id<>? ORDER BY resolved_at DESC,id DESC LIMIT ?) f
+ JOIN health_finding_issues l ON l.finding_id=f.id AND l.project_id=? AND l.intake_fingerprint=?
+ JOIN issues i ON i.native_id=l.work_item_id AND i.organization_id=? AND i.project_id=? AND i.archived=0
+ JOIN workflow_states ws ON ws.id=i.workflow_state_id AND ws.terminal=0 ORDER BY f.resolved_at DESC,f.id DESC LIMIT 1`, organization, o.finding.ID, organization, o.finding.ID, healthPriorEpisodeLimit, o.project, o.fingerprint, organization, o.project).Scan(&linked)
+				if err != nil && !errors.Is(err, sql.ErrNoRows) {
+					return nil, err
+				}
+			}
+			issue, err := reportHealthIssue(ctx, tx, scope, request, o.finding.Subject, linked, o.finding.OpenedAt, now, cancellations)
 			if err != nil {
 				return nil, err
 			}
