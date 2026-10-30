@@ -306,7 +306,7 @@ func (s *Service) publishChangeVersionCommand(ctx context.Context, tx *sql.Tx, s
 			return nil, err
 		}
 	}
-	if err := promotePreparedChange(ctx, tx, scope, change, now); err != nil {
+	if err := s.promotePreparedChange(ctx, tx, scope, change); err != nil {
 		return nil, err
 	}
 	return version, nil
