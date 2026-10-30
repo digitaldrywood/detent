@@ -106,7 +106,7 @@ func (f *releaseStatusTransport) RESTPage(ctx context.Context, path string, out 
 }
 
 func TestNativeReleaseDeliveryReconciliation(t *testing.T) {
-	isolateNativeChangeGit(t)
+	t.Parallel()
 	for _, test := range []struct {
 		name                                                                            string
 		delivered, closed, noTrailer, wrongPatch, moved, truncated, badFrozen, unmerged bool
@@ -122,6 +122,7 @@ func TestNativeReleaseDeliveryReconciliation(t *testing.T) {
 		{name: "unmerged source cannot complete", delivered: true, unmerged: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			f := &releaseStatusTransport{t: t, directory: t.TempDir(), closed: test.closed, wrongPatch: test.wrongPatch, moved: test.moved, truncated: test.truncated}
 			f.git(t.Context(), "init", "-b", "develop")
 			file := filepath.Join(f.directory, "repair.txt")

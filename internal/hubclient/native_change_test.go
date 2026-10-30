@@ -54,6 +54,18 @@ func TestMain(m *testing.M) {
 	if err := testenv.ClearGitEnvironment(); err != nil {
 		panic(err)
 	}
+	for key, value := range map[string]string{
+		"GIT_CONFIG_GLOBAL":   os.DevNull,
+		"GIT_CONFIG_NOSYSTEM": "1",
+		"GIT_AUTHOR_NAME":     "Test User",
+		"GIT_AUTHOR_EMAIL":    "test@example.com",
+		"GIT_COMMITTER_NAME":  "Test User",
+		"GIT_COMMITTER_EMAIL": "test@example.com",
+	} {
+		if err := os.Setenv(key, value); err != nil {
+			panic(err)
+		}
+	}
 	scratch, err := os.MkdirTemp("", "detent-hubclient-test-")
 	if err != nil {
 		panic(err)
