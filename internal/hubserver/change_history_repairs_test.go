@@ -115,7 +115,7 @@ func TestChangeLegacyReadsServeOverflow(t *testing.T) {
 			defer tx.Rollback()
 			if family == "reviews" {
 				review := tracker.ChangeReview{VersionID: version.ID, ImplementationReview: &gate.ValidatorResult{}}
-				if err := insertChangeEvidence(t.Context(), tx, f.change.ID, version.ID, "review", "older-review", review); err != nil {
+				if err := seedLegacyChangeEvidence(t.Context(), tx, f.change.ID, version.ID, "review", "older-review", review); err != nil {
 					t.Fatal(err)
 				}
 			}
