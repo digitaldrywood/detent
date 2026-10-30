@@ -1731,14 +1731,14 @@ func TestHostedNativeRunMutationQuotas(t *testing.T) {
 		status int
 	}{
 		{"unrelated allocation exhaustion", map[string]int64{"projects": 0, "unarchived_issues": 0, "repositories": 0, "registered_runners": 0, "connected_runners": 0}, "run.observed", http.StatusOK},
-		{"storage exhaustion", map[string]int64{"collaboration_bytes": 1}, "run.observed", http.StatusOK},
+		{"storage exhaustion", map[string]int64{"collaboration_bytes": 1}, "run.observed", http.StatusTooManyRequests},
 		{"history exhaustion", map[string]int64{"history_records": 0}, "run.observed", http.StatusTooManyRequests},
 		{"event exhaustion", map[string]int64{"ingested_events": 0}, "run.observed", http.StatusTooManyRequests},
 		{"window exhaustion", map[string]int64{"api_mutations": 0}, "run.observed", http.StatusTooManyRequests},
 		{"failed completion while exhausted", map[string]int64{"collaboration_bytes": 1, "history_records": 0, "ingested_events": 0, "api_mutations": 0}, "run.finished", http.StatusOK},
 		{"checkpoint while exhausted", map[string]int64{"collaboration_bytes": 1, "history_records": 0, "ingested_events": 0, "api_mutations": 0}, "run.checkpointed", http.StatusOK},
 		{"start allowed", nil, "run.started", http.StatusOK},
-		{"start storage exhaustion", map[string]int64{"collaboration_bytes": 1}, "run.started", http.StatusOK},
+		{"start storage exhaustion", map[string]int64{"collaboration_bytes": 1}, "run.started", http.StatusTooManyRequests},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newNativeFixture(t, openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db")}), "", "runtime-quota")
@@ -1769,14 +1769,24 @@ func TestHostedNativeRunMutationQuotas(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			var preparedBefore int64
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT coalesce(sum(object_bytes),0) FROM change_content_objects").Scan(&preparedBefore); err != nil {
+				t.Fatal(err)
+			}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, event), test.status)
 			after, err := f.service.database.hostedConsumption(t.Context(), f.service.database.db, time.Now())
 			if err != nil {
 				t.Fatal(err)
 			}
 			if test.status != http.StatusOK {
-				if !maps.Equal(before, after) {
-					t.Fatalf("rejected observation changed usage: %v -> %v", before, after)
+				var preparedAfter int64
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT coalesce(sum(object_bytes),0) FROM change_content_objects").Scan(&preparedAfter); err != nil {
+					t.Fatal(err)
+				}
+				want := maps.Clone(before)
+				want["collaboration_bytes"] += preparedAfter - preparedBefore
+				if !maps.Equal(want, after) {
+					t.Fatalf("rejected observation usage = %v, want %v including staged content", after, want)
 				}
 				return
 			}
