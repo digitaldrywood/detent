@@ -718,6 +718,37 @@ func conversationExecutionLive(status conversation.ExecutionStatus) bool {
 	}
 }
 
+func (c *conversationService) validateMessageCommand(ctx context.Context, tx *sql.Tx, scope nativeScope, record conversationRecord, command conversation.Command, now time.Time) ([]conversationAttachmentRecord, error) {
+	if record.WorkItemID != "" {
+		if err := conversationRequireOwner(record.Execution.Owner, command.Expected); err != nil {
+			return nil, err
+		}
+		if conversationBetweenTurns(record.Execution) {
+			return nil, conversationStale("No provider turn is active; send the message after the next turn starts or this attempt finishes")
+		}
+	}
+	if err := c.requireQueueCapacity(ctx, tx, record.ID, command.Kind); err != nil {
+		return nil, err
+	}
+	return c.loadCommandAttachments(ctx, tx, scope, record, command.Attachments, now)
+}
+
+func (c *conversationService) validateCommandPublication(ctx context.Context, scope nativeScope, record conversationRecord, command conversation.Command, now time.Time) error {
+	tx, err := c.store.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := c.requireActorAuthority(ctx, tx, scope, now); err != nil {
+		return err
+	}
+	if command.Kind == conversation.CommandMessage {
+		_, err := c.validateMessageCommand(ctx, tx, scope, record, command, now)
+		return err
+	}
+	return nil
+}
+
 // acceptCommand applies a validated, authorized, newly reserved command to
 // the conversation inside tx and returns the receipt to store. Errors roll
 // the whole command back, including its reservation.
@@ -742,33 +773,15 @@ func (c *conversationService) acceptCommand(ctx context.Context, tx *sql.Tx, sco
 	switch command.Kind {
 	case conversation.CommandMessage:
 		message := conversationMessageRecord{Role: conversation.RoleUser, Kind: conversation.MessageText, Text: command.Text, Actor: actor, CommandKey: command.Key, Data: coordinatorConnectionData(ctx)}
-		switch {
-		case !linked:
-			// The hub-side coordinator reads saved messages from the store,
-			// so its backlog is bounded by the same queue as a worker's. A
-			// hub without a coordinator backend keeps the message saved
-			// until the conversation is linked.
-			if err := c.requireQueueCapacity(ctx, tx, record.ID, command.Kind); err != nil {
-				return receipt, err
-			}
-			message.Delivery = conversation.DeliverySaved
-		default:
-			if err := conversationRequireOwner(record.Execution.Owner, command.Expected); err != nil {
-				return receipt, err
-			}
-			if conversationBetweenTurns(record.Execution) {
-				return receipt, conversationStale("No provider turn is active; send the message after the next turn starts or this attempt finishes")
-			}
-			if err := c.requireQueueCapacity(ctx, tx, record.ID, command.Kind); err != nil {
-				return receipt, err
-			}
+		attachments, err := c.validateMessageCommand(ctx, tx, scope, *record, command, now)
+		if err != nil {
+			return receipt, err
+		}
+		message.Delivery = conversation.DeliverySaved
+		if linked {
 			message.Delivery = conversation.DeliveryQueued
 			message.AttemptID = record.Execution.Owner.AttemptID
 			message.TurnID = record.Execution.Owner.TurnID
-		}
-		attachments, err := c.loadCommandAttachments(ctx, tx, scope, *record, command.Attachments, now)
-		if err != nil {
-			return receipt, err
 		}
 		if err := c.appendMessage(ctx, tx, record, &message, now); err != nil {
 			return receipt, err
@@ -1213,6 +1226,9 @@ func (s *Service) commandPostConversation(ctx context.Context, scope nativeScope
 		plan, err := service.newPublicationPlan(ctx, id)
 		if err != nil {
 			return nil, err
+		}
+		if err := service.validateCommandPublication(ctx, scope, plan.record, command, plan.now); err != nil {
+			return nil, conversationStaleExecutionError(string(command.Kind), id, err)
 		}
 		if err := plan.command(ctx, scope, command); err != nil {
 			return nil, err
