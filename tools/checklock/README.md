@@ -102,4 +102,4 @@ no run ID cannot be attributed and are counted separately.
 
 The lock scope is one Git common directory on a host, shared by its worktrees;
 it does not serialize unrelated repositories. No live history is backfilled
-from PR descriptions.
+from Change descriptions.

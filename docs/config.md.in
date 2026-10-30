@@ -111,6 +111,10 @@ not controlled by managed cache reclamation.
 
 ## GitHub completion CI policy
 
+This section applies only to projects whose configured delivery is GitHub pull
+requests. Native projects use no pull requests or forge CI; the finalization
+gate and local validation own their checks.
+
 Omitting `gate.required_status_checks` retains aggregate CI evaluation. Explicit
 `gate.required_status_checks: []` uses the PR base branch's native required
 checks. If the branch requires none, absent or pending optional CI does not

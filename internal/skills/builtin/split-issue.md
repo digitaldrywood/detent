@@ -4,7 +4,7 @@ aliases:
   - decompose-issue
   - break-down-issue
 description: "Break one large Detent issue into small issues that each land on their own, linked by native dependencies so workers can run the independent ones in parallel."
-when_to_use: "Use when an issue spans several packages or surfaces, would produce a PR too large to review in one pass, or bundles independent pieces of work that could run at the same time."
+when_to_use: "Use when an issue spans several packages or surfaces, would produce a Change too large to review in one pass, or bundles independent pieces of work that could run at the same time."
 ---
 
 # Split a large issue into dependent issues
@@ -12,7 +12,7 @@ when_to_use: "Use when an issue spans several packages or surfaces, would produc
 Decide whether to split at all:
 
 - Do not split a Done or Cancelled parent, even when the user names a child lane. Explain that the parent is terminal and has no remaining work to split. Do not propose or file children.
-- Leave the issue whole if it fits in one focused PR that touches one package or surface. Splitting adds dispatch, review and merge overhead to every piece.
+- Leave the issue whole if it fits in one focused Change that touches one package or surface. Splitting adds dispatch, review and merge overhead to every piece.
 - Split when the work crosses packages, layers (store, API, MCP, UI) or products (Hub, runner, local board), or when parts of it can be built without waiting on each other.
 
 Read before you cut:
@@ -40,7 +40,7 @@ Choose the child lane:
 Shape each child issue:
 
 - Each child lands on `develop` by itself with green checks and leaves the product working. Never file a child that only makes sense once a sibling merges unless the sibling is its declared blocker.
-- Keep each child to one reviewable PR, ideally one package or one surface.
+- Keep each child to one reviewable Change, ideally one package or one surface.
 - Give each child a conventional-commit title, a short problem statement, the files it is expected to touch, and concrete acceptance criteria. New or changed Go behavior needs focused table-driven standard-library tests. A UI child also needs new Playwright coverage with unchanged desktop baselines.
 - Carry over the parent's priority. Copy this exact `detent-agent` block into each child; never add a `model`:
 
@@ -56,7 +56,7 @@ Draw the dependency graph:
 - Aim for a wide, shallow graph. Every edge serializes work, so add one only when the child truly cannot be built or merged before its blocker lands, for example a schema before the code that reads it.
 - Siblings that run in parallel must not edit the same files. Shared files cause merge conflicts and send cards to Rework. If two pieces must touch one file, chain them or merge them into one child.
 - Timestamp migrations from parallel children do not collide; regenerate output from combined source inputs and publish generated files through the child's completion contract.
-- Link only issues. A PR cannot gate dispatch; an issue blocked on an open PR waits on nothing.
+- Link only issues. A Change cannot gate dispatch; an issue blocked on an open Change waits on nothing.
 - No epics. A tracking epic is never dispatched, so the parent must not become one.
 
 Respect the scope rules:

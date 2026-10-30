@@ -782,6 +782,10 @@ Existing tools retain their limits and response shapes.
 
 ## Publish a prepared release-pick PR
 
+This tool serves only projects whose release delivery is configured as GitHub
+pull requests. Projects without pull requests, this repository included,
+release-pick with `scripts/release-pick.sh` as signed direct pushes.
+
 The project-scoped `publish_release_pick` operator tool uses the
 [native publication contract](hub-api.md#publish-a-prepared-release-pick-pr).
 Supply the dependent `work_item_id`, current `expected_revision`, stable

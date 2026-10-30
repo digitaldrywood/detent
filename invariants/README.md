@@ -26,7 +26,7 @@ reason-vocabulary, retired-mechanism, and workflow tests from `internal/invarian
 through this same interface. The manifest names the behavioral tests to execute;
 it does not require or inspect a per-change `docs/invariants.md` edit. Only a
 change to an invariant's rule or its enforcing check edits that document.
-Per-change rationale, evidence and verification belong in the Change/PR
+Per-change rationale, evidence and verification belong in the Change
 description or issue comments through the authorized tracker owner (INV-16).
 These tests exercise specific behavior; they cannot prove every
 natural-language product decision or prevent an operator credential

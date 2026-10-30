@@ -50,7 +50,7 @@ The Cloud workspace uses the system font stack with Geist fallbacks and the blue
 Detent's users hand work to agents and come back to check it. The interface tells them what happened, what is waiting on them and what they can do next, in the fewest exact words.
 
 - **Sentence case** for titles, labels, buttons, menu items and toasts: "Sign in to Detent", not "Sign In To Detent". Proper nouns keep their case (Detent Cloud, GitHub, Codex).
-- **Concrete action labels** that name the result, for example "Create pull request" or "Open in editor". Avoid "OK", "Submit" and "Continue" when a verb and object fit. Use the same verb in the confirmation or toast.
+- **Concrete action labels** that name the result, for example "Publish change" or "Open in editor". Avoid "OK", "Submit" and "Continue" when a verb and object fit. Use the same verb in the confirmation or toast.
 - **Distinguish four kinds of nothing**, and never present one as another:
   - *Empty*: there is nothing yet. Explain what will appear and offer the next action, for example "No conversations yet".
   - *Zero*: a measured count of zero. Show the number with its unit, for example "0 runs this week", not a blank.

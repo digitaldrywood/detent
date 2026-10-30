@@ -12,7 +12,6 @@ func TestRepositoryGuidanceRequiresUISurfaceContracts(t *testing.T) {
 	contributing := readRepositoryTextFile(t, "CONTRIBUTING.md")
 	featureTemplate := readRepositoryTextFile(t, ".github/ISSUE_TEMPLATE/feature_request.md")
 	bugTemplate := readRepositoryTextFile(t, ".github/ISSUE_TEMPLATE/bug_report.md")
-	prTemplate := readRepositoryTextFile(t, ".github/PULL_REQUEST_TEMPLATE.md")
 
 	for _, want := range []string{
 		"High-impact UI changes require explicit issue authorization before implementation starts",
@@ -36,15 +35,6 @@ func TestRepositoryGuidanceRequiresUISurfaceContracts(t *testing.T) {
 		} {
 			assertContainsWords(t, content, want)
 		}
-	}
-
-	for _, want := range []string{
-		"## UI Surface Contract",
-		"the linked issue explicitly authorizes any high-impact UI surface, layout, density, first-viewport, or responsive visibility tradeoff",
-		"Persistent top-of-screen messaging is explicitly authorized by the issue",
-		"Visual changes to primary operator screens include screenshot or browser verification below",
-	} {
-		assertContainsWords(t, prTemplate, want)
 	}
 }
 

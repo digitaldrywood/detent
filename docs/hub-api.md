@@ -2707,6 +2707,10 @@ than trusting a stale worker checkpoint to identify the current version.
 
 ### Publish a prepared release-pick PR
 
+These endpoints serve only projects whose release delivery is configured as
+GitHub pull requests. Projects without pull requests, this repository
+included, release-pick with `scripts/release-pick.sh` as signed direct pushes.
+
 `POST /work-items/{delivery}/release-pick/publication`, native client
 `PublishReleasePick`, and operator MCP `publish_release_pick` publish through the
 project's configured GitHub transport. They use the same project write and
@@ -3466,6 +3470,10 @@ landing continue through native Hub operations, including the existing Done
 transaction; any later explicit source action keeps its own write authorization.
 
 ### Trusted scheduled CI imports
+
+This import serves only projects that run CI in GitHub Actions. Projects that
+validate locally, this repository included, run no CI in Actions and report
+through Detent's direct scheduled reporter.
 
 A native project's approved repository workflow may delegate admission of new
 GitHub Actions repair reports through its existing **Scheduled CI repair
