@@ -71,6 +71,7 @@ func (o *Orchestrator) prepareRetryProgress(ctx context.Context, run *RunRequest
 		switch record.Decision.Step {
 		case progresscheck.CompleteStep:
 			run.Mode = RunModeImplement
+			run.PriorAttempt.Reason = strings.TrimSpace(run.PriorAttempt.Reason + "\nVerify the criteria on the current base and report status: no_change_needed with no_change.verified_sha and no_change.evidence. Required review, validation and security audit still apply.")
 		case RunModeImplement, RunModeMerge:
 			run.Mode = record.Decision.Step
 		default:
