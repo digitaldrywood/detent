@@ -81,7 +81,7 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 		{name: "stale runner policy remains eligible", context: true, policy: "stale", outcome: "ready"},
 		{name: "unknown provider allows concurrency but needs model context", context: true, provider: "unknown", outcome: "unknown", unavailable: "provider_candidate_requirement"},
 		{name: "stale provider exhaustion is unknown", context: true, provider: "stale", outcome: "unknown", unavailable: "provider_candidate_requirement"},
-		{name: "exhausted provider refuses", context: true, provider: "exhausted", outcome: "skipped", code: "provider_capacity"},
+		{name: "exhausted provider does not gate admission", context: true, provider: "exhausted", outcome: "unknown", unavailable: "provider_candidate_requirement"},
 		{name: "stale heartbeat refuses", context: true, stale: true, outcome: "skipped", code: "runner_offline"},
 		{name: "old runner version refuses", context: true, oldVersion: true, outcome: "skipped", code: "unavailable"},
 		{name: "removed runner project grant", context: true, authority: "grant", status: http.StatusNotFound},
