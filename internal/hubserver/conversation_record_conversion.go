@@ -149,8 +149,8 @@ func (s *Service) convertConversationRecordPayload(ctx context.Context, scope na
 	if err != nil || changed == 0 {
 		return err
 	}
-	if len(metadata.columns) > 0 {
-		if err := metadata.write(ctx, tx, family.table(), "rowid=?", row); err != nil {
+	if len(metadata.Columns) > 0 {
+		if err := metadata.Write(ctx, tx, family.table(), "rowid=?", row); err != nil {
 			return err
 		}
 	}

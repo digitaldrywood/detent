@@ -402,7 +402,7 @@ func conversationEmitted(t *testing.T, f conversationAPIFixture, id string, want
 // 24 hours.
 func TestConversationDefaultSettleWindow(t *testing.T) {
 	t.Parallel()
-	if got := (ConversationConfig{Enabled: true}).normalized().SettleWindow; got != 24*time.Hour {
+	if got := normalizeConversationConfig(ConversationConfig{Enabled: true}).SettleWindow; got != 24*time.Hour {
 		t.Fatalf("SettleWindow = %s, want 24h", got)
 	}
 }

@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"fmt"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/conversation"
@@ -44,50 +43,6 @@ func boundRunes(value string, limit int) string {
 	return string(runes[:limit]) + "…"
 }
 
-// conversationResumeDecision is the bind's answer to "does this attempt
-// continue the recorded provider thread?", separated from the transcript read
-// so the rule is testable on its own.
-type conversationResumeDecision struct {
-	// RunnerThreadID is the thread the binding runner named on this bind,
-	// empty when it named none.
-	RunnerThreadID string
-	// RecordedRunnerID and RecordedOrigin describe the thread the
-	// conversation carries.
-	RecordedRunnerID string
-	RecordedOrigin   string
-	// BindingRunnerID is the runner holding the lease, empty for a
-	// credential with no runner identity such as a legacy worker token.
-	BindingRunnerID string
-	// Coordinator reports that this bind is a coordinator turn rather than a
-	// worker attempt on a linked issue.
-	Coordinator bool
-}
-
-// resumeThread reports whether the binding attempt may continue the recorded
-// provider thread.
-//
-// A provider thread carries the instructions and the permission set of the
-// turn that opened it. A coordinator thread was opened read-only, with no
-// checkout and no authority to change files, run tests or move issue state;
-// a worker thread was opened with all of them. Resuming across that boundary
-// hands the resuming turn the wrong restrictions in one direction and the
-// wrong authority in the other, so the origin must match the kind of turn
-// that is binding.
-//
-// A runner that names the thread on this bind is opening its own, so the
-// recorded origin does not apply to it. Otherwise the recorded runner must be
-// this runner, and both identifiers must be present so that a credential with
-// no runner identity never inherits another runner's thread.
-func (d conversationResumeDecision) resumeThread() bool {
-	if strings.TrimSpace(d.RunnerThreadID) != "" {
-		return true
-	}
-	if d.RecordedRunnerID == "" || d.RecordedRunnerID != d.BindingRunnerID {
-		return false
-	}
-	return d.RecordedOrigin == conversation.ThreadOriginFor(d.Coordinator)
-}
-
 // resumeFor decides what a binding runner continues from: its own provider
 // thread, or the recent transcript when the thread was produced elsewhere or
 // by the other kind of turn. named reports that this
@@ -103,7 +58,7 @@ func (c *conversationService) resumeFor(ctx context.Context, tx nativeQueryer, r
 	if named {
 		decision.RunnerThreadID = thread
 	}
-	if decision.resumeThread() {
+	if decision.ResumeThread() {
 		return conversationResumeResource{ThreadID: thread, ThreadOrigin: conversation.ThreadOriginFor(coordinator)}, nil
 	}
 	if record.ReadAudience != "" && !coordinator {
