@@ -260,7 +260,8 @@ func TestConversationAttachmentBindsToMessage(t *testing.T) {
 
 func TestConversationAttachmentCommandValidation(t *testing.T) {
 	t.Parallel()
-	f := newConversationAPIFixture(t, nil)
+	objects := &conversationContentFixture{}
+	f := newConversationAPIFixture(t, &ConversationConfig{Enabled: true, ArchiveContents: objects})
 	created := f.create(t, f.token, map[string]any{"title": "Command limits"})
 	id := created.Conversation.ID
 	// A second conversation of the same owner, and a principal that shares
@@ -284,8 +285,17 @@ func TestConversationAttachmentCommandValidation(t *testing.T) {
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
+			objects.mu.Lock()
+			before := objects.publications
+			objects.mu.Unlock()
 			response := f.command(t, f.token, id, conversation.Command{Key: "cmd_" + test.name, Kind: conversation.CommandMessage, Text: "x", Attachments: test.attachments})
 			requireNativeStatus(t, response, test.status)
+			objects.mu.Lock()
+			after := objects.publications
+			objects.mu.Unlock()
+			if test.status != http.StatusOK && after != before {
+				t.Fatalf("rejected command published %d objects; want 0", after-before)
+			}
 		})
 	}
 }
