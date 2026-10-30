@@ -1222,6 +1222,9 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 			}
 			execution := h.scheduler.RunExecution(issue.ID)
 			publicationOwner = execution.(*nativeExecution)
+			if test.disposition != nil || test.publicationRefused || test.mergeResolution {
+				publicationOwner.claim.lease.RunDetailBatching = false
+			}
 			if test.publicationRecovery {
 				publicationOwner.SetChangeSource(publicationCapture)
 			}
