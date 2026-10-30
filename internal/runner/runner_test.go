@@ -1514,6 +1514,9 @@ func TestRunnerRunRecoversPushedPullRequestDeliverable(t *testing.T) {
 					t.Fatalf("Run() interruption = state %q error %T %v, want preserved %v", result.FinalState, runErr, runErr, tt.wantInterrupted)
 				}
 			} else if tt.wantErr {
+				if decision, ok := FailureDecision(runErr); !ok || decision.Outcome != "unknown" {
+					t.Fatalf("failure attribution = %+v, present %v, want unknown", decision, ok)
+				}
 				var recoveryErr *DeliverableRecoveryError
 				if !errors.As(runErr, &recoveryErr) {
 					t.Fatalf("Run() error = %T %v, want DeliverableRecoveryError", runErr, runErr)
@@ -8244,6 +8247,9 @@ func (b *toolUpdateAgentBackend) RunTurn(_ context.Context, _ AgentTurnRequest, 
 }
 
 func (b *deliverableRecoveryAgentBackend) RunTurn(_ context.Context, req AgentTurnRequest, onUpdate AgentUpdateHandler) (AgentTurnResult, error) {
+	if strings.HasPrefix(req.Prompt, progresscheck.FailureInstructions) {
+		return AgentTurnResult{}, onUpdate(AgentUpdate{Type: AgentUpdateMessageDelta, ItemID: "failure", Delta: `{"outcome":"unknown","reason":"fixture failure attribution"}`})
+	}
 	index := len(b.requests)
 	b.requests = append(b.requests, req)
 	if index >= len(b.turns) {
