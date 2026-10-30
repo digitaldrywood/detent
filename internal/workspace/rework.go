@@ -9,8 +9,63 @@ import (
 	"strings"
 )
 
-func (l *LocalGit) PrepareRework(ctx context.Context, info Info, issue Issue, opts MergePrepareOptions, validate func(context.Context) error) (MergePrepareResult, error) {
-	info, err := l.normalizeInfo(info, issue)
+type ReworkPreparationReason string
+
+const (
+	ReworkPreparationFailed           ReworkPreparationReason = "preparation_failed"
+	ReworkPreparationDirtyWorktree    ReworkPreparationReason = "dirty_worktree"
+	ReworkPreparationRebaseInProgress ReworkPreparationReason = "rebase_in_progress"
+	ReworkPreparationSigningFailed    ReworkPreparationReason = "signing_failed"
+	ReworkPreparationFetchFailed      ReworkPreparationReason = "fetch_failed"
+	ReworkPreparationGitFailed        ReworkPreparationReason = "git_failed"
+)
+
+type ReworkPreparationError struct {
+	Reason ReworkPreparationReason
+	Err    error
+}
+
+func (e *ReworkPreparationError) Error() string {
+	return "rework preparation failed: " + string(e.Reason)
+}
+
+func (e *ReworkPreparationError) Unwrap() error {
+	return e.Err
+}
+
+func reworkPreparationError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var preparationErr *ReworkPreparationError
+	if errors.As(err, &preparationErr) {
+		return err
+	}
+	reason := ReworkPreparationFailed
+	var commandErr *CommandError
+	if errors.As(err, &commandErr) {
+		reason = ReworkPreparationGitFailed
+		output := commandErr.Output
+		switch {
+		case strings.Contains(output, "cannot rebase: You have unstaged changes"), strings.Contains(output, "Your index contains uncommitted changes"), strings.Contains(output, "you have staged changes in your working tree"):
+			reason = ReworkPreparationDirtyWorktree
+		case strings.Contains(output, commitSigningFailureMarker), strings.Contains(output, "gpg failed to sign the data"), strings.Contains(output, "signing failed:"):
+			reason = ReworkPreparationSigningFailed
+		case strings.Contains(output, "already a rebase-merge directory"), strings.Contains(output, "already a rebase-apply directory"), strings.Contains(output, "It looks like 'git am' is in progress"):
+			reason = ReworkPreparationRebaseInProgress
+		}
+	}
+	return &ReworkPreparationError{Reason: reason, Err: err}
+}
+
+func reworkWorktreeDirty(ctx context.Context, path string) (bool, error) {
+	status, err := runGitAtWithEnv(ctx, path, []string{"GIT_OPTIONAL_LOCKS=0"}, "status", "--porcelain=v1", "-z", "--untracked-files=normal")
+	return status != "", err
+}
+
+func (l *LocalGit) PrepareRework(ctx context.Context, info Info, issue Issue, opts MergePrepareOptions, validate func(context.Context) error) (result MergePrepareResult, err error) {
+	defer func() { err = reworkPreparationError(err) }()
+	info, err = l.normalizeInfo(info, issue)
 	if err != nil {
 		return MergePrepareResult{}, err
 	}
@@ -162,6 +217,9 @@ func (l *LocalGit) VerifyReworkRecovery(ctx context.Context, info Info, issue Is
 func (l *LocalGit) prepareRework(ctx context.Context, info Info, issue Issue, opts MergePrepareOptions, validate func(context.Context) error) (MergePrepareResult, error) {
 	paused, err := l.verifyReworkBranch(ctx, info, issue)
 	if err != nil {
+		if active, stateErr := rebaseInProgress(ctx, info.Path); stateErr == nil && active {
+			return MergePrepareResult{}, &ReworkPreparationError{Reason: ReworkPreparationRebaseInProgress, Err: err}
+		}
 		return MergePrepareResult{}, err
 	}
 	if validate == nil {
@@ -211,12 +269,29 @@ func (l *LocalGit) prepareRework(ctx context.Context, info Info, issue Issue, op
 		if err := validate(ctx); err != nil {
 			return MergePrepareResult{}, err
 		}
-		_, replayErr := l.runCommit(ctx, info.Path, nil, "rebase", "--continue")
+		_, replayErr := l.runCommit(ctx, info.Path, []string{"LC_ALL=C"}, "-c", "rerere.enabled=false", "rebase", "--continue")
 		replayed, err := reworkRebaseResult(ctx, info.Path, replayErr)
 		if err != nil {
 			return MergePrepareResult{}, err
 		}
-		if replayed.Status == MergePrepareStatusConflict {
+		var commandErr *CommandError
+		if replayed.Status == MergePrepareStatusDirty && errors.As(replayErr, &commandErr) && strings.Contains(commandErr.Output, "you have staged changes in your working tree") {
+			if err := validate(ctx); err != nil {
+				return MergePrepareResult{}, err
+			}
+			if _, err := l.runCommit(ctx, info.Path, nil, "-c", "core.hooksPath="+os.DevNull, "commit", "-m", "fix: complete "+issue.Identifier); err != nil {
+				return MergePrepareResult{}, err
+			}
+			if err := validate(ctx); err != nil {
+				return MergePrepareResult{}, err
+			}
+			_, replayErr = l.runCommit(ctx, info.Path, []string{"LC_ALL=C"}, "-c", "rerere.enabled=false", "rebase", "--continue")
+			replayed, err = reworkRebaseResult(ctx, info.Path, replayErr)
+			if err != nil {
+				return MergePrepareResult{}, err
+			}
+		}
+		if replayed.Status != MergePrepareStatusClean {
 			replayed.BaseSHA = prepared.BaseSHA
 			return replayed, nil
 		}
@@ -238,11 +313,15 @@ func (l *LocalGit) prepareRework(ctx context.Context, info Info, issue Issue, op
 			return MergePrepareResult{}, err
 		}
 	}
-	diff, err := l.DiffStat(ctx, info, issue)
+	dirty, err := reworkWorktreeDirty(ctx, info.Path)
 	if err != nil {
 		return MergePrepareResult{}, err
 	}
-	if !diff.IsEmpty() {
+	if dirty {
+		diff, err := gitDiffStat(ctx, info.Path, true)
+		if err != nil {
+			return MergePrepareResult{}, err
+		}
 		if issue.Checkpoint == nil {
 			return MergePrepareResult{Status: MergePrepareStatusDirty, DiffStat: diff}, nil
 		}
@@ -253,6 +332,19 @@ func (l *LocalGit) prepareRework(ctx context.Context, info Info, issue Issue, op
 		if checkpoint.transaction != nil || !checkpointMatches(ctx, info.Path, &checkpoint) {
 			return MergePrepareResult{Status: MergePrepareStatusDirty, DiffStat: diff}, nil
 		}
+		staged, err := runGitAt(ctx, info.Path, "diff", "--cached", "--raw", "HEAD")
+		if err != nil {
+			return MergePrepareResult{}, err
+		}
+		if staged != "" {
+			staged, err = runGitAt(ctx, info.Path, "diff", "--cached", "--raw", checkpoint.TreeSHA)
+			if err != nil {
+				return MergePrepareResult{}, err
+			}
+			if staged != "" {
+				return MergePrepareResult{Status: MergePrepareStatusDirty, DiffStat: diff}, nil
+			}
+		}
 		if err := validate(ctx); err != nil {
 			return MergePrepareResult{}, err
 		}
@@ -261,6 +353,13 @@ func (l *LocalGit) prepareRework(ctx context.Context, info Info, issue Issue, op
 		}
 		if _, err := l.runCommit(ctx, info.Path, nil, "-c", "core.hooksPath="+os.DevNull, "commit", "-m", "fix: restore "+issue.Identifier+" checkpoint"); err != nil {
 			return MergePrepareResult{}, fmt.Errorf("commit restored rework checkpoint: %w", err)
+		}
+		dirty, err := reworkWorktreeDirty(ctx, info.Path)
+		if err != nil {
+			return MergePrepareResult{}, err
+		}
+		if dirty {
+			return MergePrepareResult{Status: MergePrepareStatusDirty, DiffStat: diff}, nil
 		}
 	}
 	var base string
@@ -280,7 +379,7 @@ func (l *LocalGit) prepareRework(ctx context.Context, info Info, issue Issue, op
 		}
 		ref := "refs/remotes/" + remote + "/" + target
 		if _, err := runGitAt(ctx, info.Path, "fetch", remote, "+refs/heads/"+target+":"+ref); err != nil {
-			return MergePrepareResult{}, err
+			return MergePrepareResult{}, &ReworkPreparationError{Reason: ReworkPreparationFetchFailed, Err: err}
 		}
 		resolved, err := runGitAt(ctx, info.Path, "rev-parse", "--verify", ref+"^{commit}")
 		if err != nil {
@@ -323,7 +422,7 @@ func (l *LocalGit) prepareRework(ctx context.Context, info Info, issue Issue, op
 			}
 		}
 	}
-	_, rebaseErr := l.runCommit(ctx, info.Path, nil, "rebase", "--no-update-refs", "--no-autostash", "--no-rebase-merges", base)
+	_, rebaseErr := l.runCommit(ctx, info.Path, []string{"LC_ALL=C"}, "-c", "rerere.enabled=false", "rebase", "--no-update-refs", "--no-autostash", "--no-rebase-merges", base)
 	prepared, err := reworkRebaseResult(ctx, info.Path, rebaseErr)
 	prepared.BaseSHA = base
 	return prepared, err
@@ -498,7 +597,12 @@ func reworkRebaseResult(ctx context.Context, path string, rebaseErr error) (Merg
 		return MergePrepareResult{Status: MergePrepareStatusConflict, ConflictPaths: conflicts, Message: "Resolve and stage the paused rebase source conflicts: " + strings.Join(conflicts, ", ")}, nil
 	}
 	if rebaseErr != nil {
-		return MergePrepareResult{}, rebaseErr
+		classified := reworkPreparationError(rebaseErr)
+		var preparationErr *ReworkPreparationError
+		if errors.As(classified, &preparationErr) && preparationErr.Reason == ReworkPreparationDirtyWorktree {
+			return MergePrepareResult{Status: MergePrepareStatusDirty, Message: "Preserve the retained source changes and finish the rebase."}, nil
+		}
+		return MergePrepareResult{}, classified
 	}
 	head, err := runGitAt(ctx, path, "rev-parse", "HEAD")
 	if err != nil {

@@ -60,6 +60,7 @@ func TestLocalGitNativeReworkOwnsPausedRebase(t *testing.T) {
 		{name: "restored checkpoint retains work through an earlier conflict", checkpoint: true, checkpointCommitted: true},
 		{name: "restored dirty checkpoint retains source on authority loss", clean: true, checkpoint: true, checkpointRefusal: "authority"},
 		{name: "changed dirty checkpoint is not committed", clean: true, checkpoint: true, checkpointRefusal: "source"},
+		{name: "distinct staged checkpoint work is preserved", clean: true, checkpoint: true, checkpointRefusal: "index"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -181,6 +182,11 @@ func TestLocalGitNativeReworkOwnsPausedRebase(t *testing.T) {
 				if test.checkpointRefusal == "source" {
 					writeCheckpointFile(t, info.Path, "README.md", "unverified source\n")
 				}
+				if test.checkpointRefusal == "index" {
+					writeCheckpointFile(t, info.Path, "retained.txt", "unpublished staged checkpoint content with a different size\n")
+					runGit(t, info.Path, "add", "retained.txt")
+					writeCheckpointFile(t, info.Path, "retained.txt", "latest uncommitted work\n")
+				}
 				before, err := owner.RecoveryState(t.Context(), info, issue)
 				if err != nil {
 					t.Fatal(err)
@@ -196,7 +202,7 @@ func TestLocalGitNativeReworkOwnsPausedRebase(t *testing.T) {
 					}
 					return ctx.Err()
 				})
-				if test.checkpointRefusal == "authority" && !errors.Is(err, authorityErr) || test.checkpointRefusal == "source" && (err != nil || prepared.Status != MergePrepareStatusDirty) {
+				if test.checkpointRefusal == "authority" && !errors.Is(err, authorityErr) || (test.checkpointRefusal == "source" || test.checkpointRefusal == "index") && (err != nil || prepared.Status != MergePrepareStatusDirty) {
 					t.Fatalf("unsafe checkpoint preparation: %+v, %v", prepared, err)
 				}
 				after, err := owner.RecoveryState(t.Context(), info, issue)
@@ -918,6 +924,257 @@ func configureGPGCommitFixture(t *testing.T, source, mode, pinentry string) {
 		key = "unavailable@example.com"
 	}
 	runGit(t, source, "config", "user.signingkey", key)
+}
+
+func TestLocalGitReworkPreparation(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name         string
+		cached       bool
+		signed       bool
+		indexLock    bool
+		hookFails    bool
+		dirty        string
+		paused       string
+		fetchFails   bool
+		signingFails bool
+	}{
+		{name: "unstaged work", dirty: "unstaged"},
+		{name: "staged work", dirty: "staged"},
+		{name: "staged work canceled by unstaged edit", dirty: "canceled"},
+		{name: "paused merge conflict", paused: "merge"},
+		{name: "paused apply conflict", paused: "apply"},
+		{name: "staged paused resolution continues", paused: "resolved"},
+		{name: "paused rebase on another branch is preserved", paused: "foreign"},
+		{name: "incomplete rebase metadata is preserved", paused: "incomplete"},
+		{name: "fetch failure", fetchFails: true},
+		{name: "signing failure on a later pick", signed: true, signingFails: true},
+		{name: "unsigned conflict"},
+		{name: "signed conflict", signed: true},
+		{name: "cached resolution", cached: true},
+		{name: "signed cached resolution", signed: true, cached: true},
+		{name: "index failure", indexLock: true},
+		{name: "rebase exits one without conflict", hookFails: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			source := initSourceRepo(t)
+			remote := initBareRemote(t)
+			runGit(t, source, "remote", "add", "origin", remote)
+			runGit(t, source, "push", "-u", "origin", "main")
+			root := filepath.Join(t.TempDir(), "workspaces")
+			owner, err := NewLocalGit(LocalGitOptions{Root: root, SourceRoot: source, AutoBranch: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			issue := Issue{Identifier: "example#1", NativeRework: true, ProgressBaseRef: "main"}
+			info, err := owner.Create(t.Context(), issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.signingFails {
+				writeCheckpointFile(t, info.Path, "first.txt", "first\n")
+				runGit(t, info.Path, "add", "first.txt")
+				runGit(t, info.Path, "commit", "-m", "first-pick")
+				writeCheckpointFile(t, info.Path, "second.txt", "second\n")
+				runGit(t, info.Path, "add", "second.txt")
+				runGit(t, info.Path, "commit", "-m", "replay-signing-failure")
+			}
+			writeCheckpointFile(t, info.Path, "README.md", "feature\n")
+			runGit(t, info.Path, "add", "README.md")
+			runGit(t, info.Path, "commit", "-m", "feature")
+			writeCheckpointFile(t, source, "README.md", "base\n")
+			runGit(t, source, "add", "README.md")
+			runGit(t, source, "commit", "-m", "base")
+			runGit(t, source, "push", "origin", "main")
+			base := strings.TrimSpace(runGit(t, source, "rev-parse", "HEAD"))
+			if test.cached {
+				runGit(t, source, "config", "rerere.enabled", "true")
+				runGit(t, source, "config", "rerere.autoupdate", "true")
+				if _, err := runGitAt(t.Context(), info.Path, "rebase", base); err == nil {
+					t.Fatal("fixture rebase did not conflict")
+				}
+				writeCheckpointFile(t, info.Path, "README.md", "cached resolution\n")
+				runGit(t, info.Path, "add", "README.md")
+				runGit(t, info.Path, "rerere")
+				runGit(t, info.Path, "rebase", "--abort")
+			}
+			if test.signed {
+				key := filepath.Join(t.TempDir(), "signing-key")
+				if output, err := exec.CommandContext(t.Context(), "ssh-keygen", "-t", "ed25519", "-N", "", "-f", key).CombinedOutput(); err != nil {
+					t.Fatalf("create signing fixture: %v: %s", err, output)
+				}
+				if test.signingFails {
+					program, err := exec.LookPath("ssh-keygen")
+					if err != nil {
+						t.Fatal(err)
+					}
+					signer := filepath.Join(t.TempDir(), "signer")
+					script := "#!/bin/sh\nfor arg do payload=$arg; done\nif test -f \"$payload\"; then\n content=$(cat \"$payload\")\n case \"$content\" in *replay-signing-failure*) exit 1;; esac\nfi\nexec " + shellQuote(program) + " \"$@\"\n"
+					if err := os.WriteFile(signer, []byte(script), 0o700); err != nil {
+						t.Fatal(err)
+					}
+					runGit(t, source, "config", "gpg.ssh.program", signer)
+				}
+				runGit(t, source, "config", "commit.gpgsign", "true")
+				runGit(t, source, "config", "gpg.format", "ssh")
+				runGit(t, source, "config", "user.signingkey", key)
+				owner, err = NewLocalGit(LocalGitOptions{Root: root, SourceRoot: source, AutoBranch: true})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if owner.CommitReport().Signing != "ssh" {
+					t.Fatal("fixture did not enable signing")
+				}
+			}
+			if test.indexLock {
+				lock := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "--git-path", "index.lock"))
+				if err := os.WriteFile(lock, []byte("held\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.hookFails {
+				hook := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "--git-path", "hooks/pre-rebase"))
+				if err := os.WriteFile(hook, []byte("#!/bin/sh\nexit 1\n"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.paused != "" {
+				runGit(t, info.Path, "fetch", "origin")
+				mode := "--merge"
+				if test.paused == "apply" {
+					mode = "--apply"
+				}
+				if _, err := runGitAt(t.Context(), info.Path, "-c", "commit.gpgsign=false", "rebase", mode, "--no-update-refs", "--no-autostash", "--no-rebase-merges", base); err == nil {
+					t.Fatal("fixture did not pause a real rebase")
+				}
+				if test.paused == "resolved" {
+					writeCheckpointFile(t, info.Path, "README.md", "resolved retained work\n")
+					runGit(t, info.Path, "add", "README.md")
+				}
+				if test.paused == "foreign" || test.paused == "incomplete" {
+					name := "head-name"
+					if test.paused == "incomplete" {
+						name = "orig-head"
+					}
+					path := filepath.Join(linkedWorktreeGitDir(t, info.Path), "rebase-merge", name)
+					if test.paused == "incomplete" {
+						if err := os.Rename(path, path+".saved"); err != nil {
+							t.Fatal(err)
+						}
+					} else if err := os.WriteFile(path, []byte("refs/heads/other\n"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				_, rawErr := runGitAt(t.Context(), info.Path, "-c", "rerere.enabled=false", "rebase", "--no-update-refs", "--no-autostash", "--no-rebase-merges", base)
+				var commandErr *CommandError
+				if !errors.As(rawErr, &commandErr) || commandErr.ExitCode == 0 {
+					t.Fatalf("leftover rebase did not refuse another start: %v", rawErr)
+				}
+				var preparationErr *ReworkPreparationError
+				if classified := reworkPreparationError(rawErr); !errors.As(classified, &preparationErr) || preparationErr.Reason != ReworkPreparationRebaseInProgress {
+					t.Fatalf("leftover replay Git failure has no typed reason: %v, output=%s", classified, commandErr.Output)
+				}
+				before := runGit(t, info.Path, "diff", "--binary") + runGit(t, info.Path, "ls-files", "--stage")
+				prepared, err := owner.PrepareRework(t.Context(), info, issue, MergePrepareOptions{TargetBranch: "main"}, func(ctx context.Context) error { return ctx.Err() })
+				if test.paused == "foreign" || test.paused == "incomplete" {
+					var preparationErr *ReworkPreparationError
+					if !errors.As(err, &preparationErr) || preparationErr.Reason != ReworkPreparationRebaseInProgress {
+						t.Fatalf("unverified replay has no typed refusal: %+v, %v", prepared, err)
+					}
+				} else if test.paused == "resolved" {
+					if err != nil || prepared.Status != MergePrepareStatusClean || readFile(t, filepath.Join(info.Path, "README.md")) != "resolved retained work\n" {
+						t.Fatalf("staged replay did not finish safely: %+v, %v", prepared, err)
+					}
+					return
+				} else if err != nil || prepared.Status != MergePrepareStatusConflict || prepared.BaseSHA != base {
+					t.Fatalf("retained conflict did not reach agent: %+v, %v", prepared, err)
+				}
+				if after := runGit(t, info.Path, "diff", "--binary") + runGit(t, info.Path, "ls-files", "--stage"); after != before {
+					t.Fatal("preparation changed retained replay work")
+				}
+				return
+			}
+			if test.fetchFails {
+				runGit(t, info.Path, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "missing.git"))
+			}
+			if test.dirty != "" {
+				writeCheckpointFile(t, info.Path, "README.md", "unpublished work\n")
+				if test.dirty != "unstaged" {
+					runGit(t, info.Path, "add", "README.md")
+				}
+				if test.dirty == "canceled" {
+					writeCheckpointFile(t, info.Path, "README.md", "feature\n")
+				}
+				_, rawErr := owner.runCommit(t.Context(), info.Path, nil, "-c", "rerere.enabled=false", "rebase", "--no-update-refs", "--no-autostash", "--no-rebase-merges", base)
+				var commandErr *CommandError
+				if !errors.As(rawErr, &commandErr) || commandErr.ExitCode != 1 || !strings.Contains(commandErr.Output, "cannot rebase:") {
+					t.Fatalf("dirty fixture did not reproduce Git refusal: %v", rawErr)
+				}
+				conflicts, conflictErr := reworkConflictPaths(t.Context(), info.Path)
+				if conflictErr != nil || len(conflicts) != 0 {
+					t.Fatalf("dirty refusal has unmerged entries: %v, %v", conflicts, conflictErr)
+				}
+				before := runGit(t, info.Path, "diff", "--binary") + runGit(t, info.Path, "diff", "--cached", "--binary")
+				prepared, err := owner.PrepareRework(t.Context(), info, issue, MergePrepareOptions{TargetBranch: "main"}, func(ctx context.Context) error { return ctx.Err() })
+				if err != nil || prepared.Status != MergePrepareStatusDirty {
+					t.Fatalf("dirty work did not reach agent: %+v, %v", prepared, err)
+				}
+				if after := runGit(t, info.Path, "diff", "--binary") + runGit(t, info.Path, "diff", "--cached", "--binary"); after != before {
+					t.Fatal("preparation changed unpublished index or worktree content")
+				}
+				return
+			}
+			prepared, err := owner.PrepareRework(t.Context(), info, issue, MergePrepareOptions{TargetBranch: "main"}, func(ctx context.Context) error { return ctx.Err() })
+			if test.signingFails || test.fetchFails {
+				want := ReworkPreparationSigningFailed
+				if test.fetchFails {
+					want = ReworkPreparationFetchFailed
+				}
+				var preparationErr *ReworkPreparationError
+				var commandErr *CommandError
+				hasCommand := errors.As(err, &commandErr)
+				if !errors.As(err, &preparationErr) || preparationErr.Reason != want || !hasCommand || err.Error() != "rework preparation failed: "+string(want) {
+					t.Fatalf("preparation failure lost bounded reason: %+v, %v", prepared, err)
+				}
+				conflicts, conflictErr := reworkConflictPaths(t.Context(), info.Path)
+				if conflictErr != nil || len(conflicts) != 0 {
+					t.Fatalf("failure unexpectedly has unmerged entries: %v, %v", conflicts, conflictErr)
+				}
+				if test.signingFails {
+					if commandErr.ExitCode != 1 || strings.TrimSpace(runGit(t, info.Path, "log", "-1", "--format=%s")) != "first-pick" {
+						t.Fatal("fixture did not fail signing after the first pick")
+					}
+					owner.commits.report.Signing = "unsigned"
+					before := strings.TrimSpace(runGit(t, info.Path, "write-tree"))
+					retried, err := owner.PrepareRework(t.Context(), info, issue, MergePrepareOptions{TargetBranch: "main"}, func(ctx context.Context) error { return ctx.Err() })
+					if err != nil || retried.Status != MergePrepareStatusConflict || retried.BaseSHA != base {
+						t.Fatalf("signing failure's retained replay did not reach its next conflict: %+v, %v", retried, err)
+					}
+					if after := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD^{tree}")); after != before {
+						t.Fatal("signing retry did not preserve and commit unpublished staged work")
+					}
+				}
+				return
+			}
+			if test.indexLock || test.hookFails {
+				var commandErr *CommandError
+				if !errors.As(err, &commandErr) || prepared.Status == MergePrepareStatusConflict || test.hookFails && commandErr.ExitCode != 1 {
+					t.Fatalf("Git failure became a source conflict: %+v, %v", prepared, err)
+				}
+				return
+			}
+			if err != nil || prepared.Status != MergePrepareStatusConflict || prepared.BaseSHA != base || len(prepared.ConflictPaths) != 1 || prepared.ConflictPaths[0] != "README.md" {
+				t.Fatalf("conflict did not reach resolution: %+v, %v", prepared, err)
+			}
+			if paused, err := owner.verifyReworkBranch(t.Context(), info, issue); err != nil || !paused {
+				t.Fatalf("conflict lost assigned replay: paused=%v, %v", paused, err)
+			}
+			if contents := readFile(t, filepath.Join(info.Path, "README.md")); !strings.Contains(contents, "<<<<<<<") || strings.Contains(contents, "cached resolution") {
+				t.Fatalf("agent did not receive conflict markers: %q", contents)
+			}
+		})
+	}
 }
 
 func warmGPGCommitFixture(t *testing.T, home string) {
