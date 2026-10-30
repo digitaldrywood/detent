@@ -106,6 +106,7 @@ func (f *releaseStatusTransport) RESTPage(ctx context.Context, path string, out 
 }
 
 func TestNativeReleaseDeliveryReconciliation(t *testing.T) {
+	isolateNativeChangeGit(t)
 	for _, test := range []struct {
 		name                                                                            string
 		delivered, closed, noTrailer, wrongPatch, moved, truncated, badFrozen, unmerged bool

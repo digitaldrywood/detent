@@ -835,9 +835,8 @@ func (r *nativePlanObservedRunner) CheckProgress(ctx context.Context, request ru
 func (r *nativePlanObservedRunner) Run(ctx context.Context, request runner.RunRequest) (runner.RunResult, error) {
 	observation := nativePlanRunObservation{mode: request.Mode, state: request.Issue.State, localAttemptID: request.WorkAttemptID}
 	if request.Execution != nil {
-		attempts := request.Execution.Recovery().Attempts
-		if len(attempts) > 0 && attempts[len(attempts)-1].Identity != nil {
-			observation.recordedRole = attempts[len(attempts)-1].Identity.Role
+		if source := request.Execution.Recovery().SourceAttempt(); source != nil && source.Identity != nil {
+			observation.recordedRole = source.Identity.Role
 		}
 	}
 	result, err := r.Runner.Run(ctx, request)
