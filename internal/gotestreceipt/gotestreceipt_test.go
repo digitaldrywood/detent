@@ -57,6 +57,13 @@ func (s *memoryStore) Record(_ context.Context, receipt Receipt) error {
 
 func TestRunWrapperReusesOnlyMatchingReceipts(t *testing.T) {
 	root := t.TempDir()
+	scratch := filepath.Join(root, "scratch with spaces")
+	if err := os.Mkdir(scratch, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"TMPDIR", "TMP", "TEMP"} {
+		t.Setenv(name, scratch)
+	}
 	pkg := filepath.Join(root, "pkg")
 	if err := os.MkdirAll(pkg, 0o755); err != nil {
 		t.Fatal(err)

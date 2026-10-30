@@ -236,7 +236,12 @@ func wrapperEnvironment(root, binary string, getenv func(string) string) Environ
 }
 
 func run(args []string, isolate bool, stdin io.Reader, stdout, stderr io.Writer) int {
-	cmd := exec.CommandContext(context.Background(), args[0], args[1:]...) // #nosec G204 -- the go command supplies the test binary and its arguments via -exec.
+	path, err := exec.LookPath(args[0])
+	if err != nil {
+		fmt.Fprintf(stderr, "%s: locate program: %v\n", WrapperName, err)
+		return 1
+	}
+	cmd := &exec.Cmd{Path: path, Args: slices.Clone(args)}
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, stdout, stderr
 	if isolate {
 		cmd.Env = slices.DeleteFunc(os.Environ(), func(entry string) bool {
@@ -259,7 +264,7 @@ func run(args []string, isolate bool, stdin io.Reader, stdout, stderr io.Writer)
 			}
 		}
 	}()
-	err := cmd.Wait()
+	err = cmd.Wait()
 	signal.Stop(signals)
 	close(signals)
 	<-done
