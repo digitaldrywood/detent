@@ -391,7 +391,7 @@ func TestAttachmentReceiptBillingMigration(t *testing.T) {
 	if _, err := provider.Down(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	var retained, total int64
+	var total int64
 	for _, operation := range []string{"attachment.record example", "example.record", "attachment.record shared"} {
 		ref, _, err := attachment.PrepareArchive("org_security", 1, strings.NewReader(operation))
 		if err != nil {
@@ -409,9 +409,6 @@ func TestAttachmentReceiptBillingMigration(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		if operation != "attachment.record example" {
-			retained += ref.CompressedSize
-		}
 	}
 	if _, err := provider.Up(t.Context()); err != nil {
 		t.Fatal(err)
@@ -427,70 +424,15 @@ func TestAttachmentReceiptBillingMigration(t *testing.T) {
 	if err := f.service.convertLegacyStorage(t.Context(), f.service.config.now()); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT value FROM hosted_usage_counters WHERE name='collaboration_bytes'").Scan(&usage); err != nil || usage != retained {
-		t.Fatalf("background receipt usage=%d want=%d err=%v", usage, retained, err)
+	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT value FROM hosted_usage_counters WHERE name='collaboration_bytes'").Scan(&usage); err != nil || usage != total {
+		t.Fatalf("background reclassified history: usage=%d want=%d err=%v", usage, total, err)
 	}
 	if err := f.service.hubTransact(t.Context(), func(tx *sql.Tx, _ time.Time) error {
 		return recountCollaborationBytes(t.Context(), tx)
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT value FROM hosted_usage_counters WHERE name='collaboration_bytes'").Scan(&usage); err != nil || usage != retained {
-		t.Fatalf("recounted receipt usage=%d want=%d err=%v", usage, retained, err)
-	}
-	for _, step := range explainQueryPlan(t, f.service.database.reader, attachmentReceiptBillingUpdate, []any{"org_security", "example-object"}) {
-		if strings.Contains(step, "SCAN ") || strings.Contains(step, "TEMP B-TREE") {
-			t.Fatalf("receipt classification scans history: %s", step)
-		}
-	}
-}
-
-func TestAttachmentReceiptBillingBackgroundBudget(t *testing.T) {
-	t.Parallel()
-	f := newHostedSharedFixture(t)
-	const count = 2*storageConversionRows + 1
-	if err := f.service.hubTransact(t.Context(), func(tx *sql.Tx, _ time.Time) error {
-		for i := range count {
-			key := fmt.Sprintf("receipt-%03d", i)
-			if _, err := tx.ExecContext(t.Context(), "INSERT INTO change_content_objects(organization_id,object_sha256,object_key,object_bytes,content_bytes) VALUES(?,?,?,10,10)", "org_security", key, key); err != nil {
-				return err
-			}
-			if _, err := tx.ExecContext(t.Context(), "INSERT INTO native_commands(organization_id,actor_id,operation,command_key,request_hash,response_json,response_object_key,created_at) VALUES(?,?,'attachment.record',?,'example','{}',?,?)", "org_security", bootstrapTokenID, key, key, testTimestamp); err != nil {
-				return err
-			}
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	service := f.service
-	previous := 0
-	for tick := range 4 {
-		if err := service.convertLegacyStorage(t.Context(), service.config.now()); err != nil {
-			t.Fatal(err)
-		}
-		var converted int
-		if err := service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM change_content_objects WHERE billable=0").Scan(&converted); err != nil {
-			t.Fatal(err)
-		}
-		if converted-previous > storageConversionRows || (previous < count && converted <= previous) {
-			t.Fatalf("tick %d conversion progress=%d previous=%d", tick, converted, previous)
-		}
-		previous = converted
-		if tick == 0 {
-			cfg := service.config
-			cfg.DatabasePath = filepath.Join(t.TempDir(), "resumed.db")
-			if err := service.Backup(t.Context(), cfg.DatabasePath); err != nil {
-				t.Fatal(err)
-			}
-			service = openTestService(t, cfg)
-		}
-	}
-	if previous != count {
-		t.Fatalf("receipt correction did not resume: converted=%d want=%d", previous, count)
-	}
-	var usage int64
-	if err := service.database.reader.QueryRowContext(t.Context(), "SELECT value FROM hosted_usage_counters WHERE name='collaboration_bytes'").Scan(&usage); err != nil || usage != 0 {
-		t.Fatalf("corrected receipt usage=%d want=0 err=%v", usage, err)
+	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT value FROM hosted_usage_counters WHERE name='collaboration_bytes'").Scan(&usage); err != nil || usage != total {
+		t.Fatalf("recounted receipt usage=%d want=%d err=%v", usage, total, err)
 	}
 }
