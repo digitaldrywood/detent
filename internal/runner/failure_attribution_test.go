@@ -55,6 +55,9 @@ func TestFailureDecisionControlsRetryAndPublication(t *testing.T) {
 		{"transport", "instance", fmt.Errorf("receive: %w", io.ErrUnexpectedEOF), 2, 0},
 		{"startup", "instance", backendcapacity.NewError(backendcapacity.Scope{}, backendcapacity.Details{Type: backendcapacity.ErrorTypeTransientOverload, Kind: backendcapacity.StartupFailureKind}, errors.New("backend exited")), 2, 0},
 		{"prior issue verdict for hook", "instance", RestoreFailureDecision(fmt.Errorf("%w: hook failed", ErrWorkspacePreparation), tracker.FailureAttribution{Outcome: "issue", Reason: "prior verdict"}), 2, 0},
+		{"acceptance rejection", "instance", fmt.Errorf("%w: %w", ErrValidatorInfrastructure, acceptanceRejectionError{}), 2, 0},
+		{"prior issue verdict for rejection", "instance", RestoreFailureDecision(acceptanceRejectionError{}, tracker.FailureAttribution{Outcome: "issue", Reason: "prior verdict"}), 2, 0},
+		{"audit publication", "instance", auditPublicationCarrier{}, 2, 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			backend := &fakeCodexClient{failureOutcome: test.outcome}
