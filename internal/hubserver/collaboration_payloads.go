@@ -220,10 +220,10 @@ func (s *Service) prepareCollaborationPayloadMetadata(ctx context.Context, row i
 	}
 	columns := changeEventColumns(data)
 	for i, column := range columns.columns {
-		m.add(column, columns.values[i])
+		m.Add(column, columns.values[i])
 	}
 	for i, column := range []string{"archive_operation", "archive_from_state", "archive_to_state", "archive_attempt_id", "archive_outcome", "archive_landed_commit"} {
-		m.add(column, archive[i])
+		m.Add(column, archive[i])
 	}
 	decision := tracker.NativeSchedulerDecision{}
 	if data.Decision != nil {
@@ -239,19 +239,19 @@ func (s *Service) prepareCollaborationPayloadMetadata(ctx context.Context, row i
 	}
 	for i, column := range []string{"scheduler_change_id", "scheduler_version_id", "scheduler_head_sha", "scheduler_change_present", "run_outcome", "run_machine_id", "run_session_id", "run_runner_id", "run_attempt_id", "activity_spans_present", "analytics_from_state", "analytics_to_state", "analytics_attempt_id", "analytics_skip_key", "analytics_recorded_ns", "analytics_projection_version"} {
 		values := []any{change.ChangeID, change.VersionID, change.HeadSHA, data.Change != nil, run.Outcome, run.MachineID, run.SessionID, run.RunnerID, nullString(run.AttemptID), false, nullString(data.FromState), nullString(data.ToState), run.AttemptID, analyticsDimension(decision.Source, decision.Reason), recorded.UnixNano(), 1}
-		m.add(column, values[i])
+		m.Add(column, values[i])
 	}
 	checkpoint := tracker.NativeCheckpoint{}
 	if run.Handoff != nil {
 		checkpoint = *run.Handoff
 	}
-	m.add("push_effect_id", checkpoint.EffectID)
-	m.add("push_checkpoint_head_sha", checkpoint.HeadSHA)
+	m.Add("push_effect_id", checkpoint.EffectID)
+	m.Add("push_checkpoint_head_sha", checkpoint.HeadSHA)
 	projected := data
 	if kind != "workflow.transitioned" {
 		projected.ReasonDetail = ""
 	}
-	m.project = func(ctx context.Context, tx *sql.Tx) error {
+	m.Project = func(ctx context.Context, tx *sql.Tx) error {
 		if err := updateHealthEventProjection(ctx, tx, id, actor, projected); err != nil {
 			return err
 		}

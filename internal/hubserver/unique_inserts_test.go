@@ -16,11 +16,13 @@ func TestInsertsNeverWriteConstantUniqueKeys(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	violations, err := testenv.ConstantUniqueInserts(t.Context(), db.db, ".")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, violation := range violations {
-		t.Error(violation)
+	for _, directory := range []string{".", "../hubconversation"} {
+		violations, err := testenv.ConstantUniqueInserts(t.Context(), db.db, directory)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, violation := range violations {
+			t.Error(violation)
+		}
 	}
 }
