@@ -38,12 +38,12 @@ func (s *Service) bindNativeRepositoryCommand(ctx context.Context, scope nativeS
 		}
 	}
 
+	if request.Source == "runner_checkout" {
+		return s.bindRunnerCheckoutCommand(ctx, scope, options, request.Mutation, request.ExpectedRevision, request.Repository)
+	}
 	owner, name, valid := splitRepositoryFullName(request.Repository)
 	if !valid {
 		return nil, nativePublicInvalid("Repository must be owner/name")
-	}
-	if request.Source == "runner_checkout" {
-		return s.bindRunnerCheckoutCommand(ctx, scope, options, request.Mutation, request.ExpectedRevision, owner+"/"+name)
 	}
 	if request.Source != "" {
 		return nil, nativePublicInvalid("Repository source is invalid")

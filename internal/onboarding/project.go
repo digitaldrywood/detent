@@ -32,16 +32,22 @@ type Step struct {
 	Detail string `json:"detail"`
 }
 
+type RepositoryBindingReason struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
 type Project struct {
-	Repository       string                   `json:"repository,omitempty"`
-	LatestRun        string                   `json:"latest_run,omitempty"`
-	Progress         Progress                 `json:"progress"`
-	Policy           *policy.Approval         `json:"policy,omitempty"`
-	ObservedPolicies []policy.ObservedPolicy  `json:"observed_policies,omitempty"`
-	Runners          []runnerauth.Eligibility `json:"runners"`
-	Artifacts        []artifact.Binding       `json:"artifact_services"`
-	Steps            []Step                   `json:"steps"`
-	Ready            bool                     `json:"ready"`
+	RepositoryBindingReason *RepositoryBindingReason `json:"repository_binding_reason,omitempty"`
+	Repository              string                   `json:"repository,omitempty"`
+	LatestRun               string                   `json:"latest_run,omitempty"`
+	Progress                Progress                 `json:"progress"`
+	Policy                  *policy.Approval         `json:"policy,omitempty"`
+	ObservedPolicies        []policy.ObservedPolicy  `json:"observed_policies,omitempty"`
+	Runners                 []runnerauth.Eligibility `json:"runners"`
+	Artifacts               []artifact.Binding       `json:"artifact_services"`
+	Steps                   []Step                   `json:"steps"`
+	Ready                   bool                     `json:"ready"`
 }
 
 func (p *Project) Evaluate() {
@@ -59,7 +65,7 @@ func (p *Project) Evaluate() {
 		})
 	}
 	add("Runner", slices.ContainsFunc(p.Runners, enrolled), "Use a runner you already have. It can work on this project alongside its other projects.")
-	add("Repository", p.Repository != "", "Choose the repository your runner should work on using its own Git sign-in.")
+	add("Repository", p.Repository != "" && p.RepositoryBindingReason == nil, "Choose the repository your runner should work on using its own Git sign-in.")
 	validated := slices.ContainsFunc(p.Runners, func(r runnerauth.Eligibility) bool {
 		return enrolled(r) && (r.Runner.ConnectionHealth == "online" || r.Runner.ConnectionHealth == "" && r.Runner.Health == "online") && r.LocalChecks != nil && r.LocalChecks.Passed()
 	})

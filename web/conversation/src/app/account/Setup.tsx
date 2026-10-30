@@ -576,6 +576,7 @@ function SetupContent({ projectId, onNavigate }: {
   const needsAction = step?.state === "action_required";
   const next = () => setActiveIndex((index) => Math.min(index + 1, steps.length - 1));
   const back = () => setActiveIndex((index) => Math.max(index - 1, 0));
+  const bindingReason = onboarding.value?.repository_binding_reason;
   const checkoutRepository = integration.value?.checkout_repository;
   const associatedRepository = checkoutRepository || integration.value?.repository;
   const preparingRunner = runner;
@@ -594,7 +595,7 @@ function SetupContent({ projectId, onNavigate }: {
           github={githubAvailable ? githubRepositories.value : undefined} connectGitHub={() => void connectGitHub.call()} connecting={connectGitHub.pending}
           refresh={() => { if (preparingRunner) void refreshRepositories.call(preparingRunner.runner.runner_id); void githubRepositories.refresh(); }} />
         <ControlError message={connectGitHub.error?.message ?? null} />
-        <ControlError message={bindRepository.error?.message ?? null} />
+        <ControlError message={bindRepository.error?.message ?? bindingReason?.message ?? null} />
         <ControlError message={integration.error?.message ?? null} />
         {showGitHubApp ? (
           <div className="mb-2.5 flex flex-col gap-2 rounded-xl border border-border/60 bg-muted px-4 py-3.5">
@@ -618,7 +619,7 @@ function SetupContent({ projectId, onNavigate }: {
           const offline = (preparingRunner.runner.connection_health ?? preparingRunner.runner.health) !== "online";
           const configuration = checks?.configuration ?? (checks?.checkout === "passed" ? "passed" : "pending");
           const rows = [
-            { name: `Cloned ${associatedRepository ?? "repository"}`, state: checks?.checkout, at: checks?.checkout_at, detail: `Using ${runnerName}’s Git sign-in`, hint: checks?.checkout_fix || "Check the runner’s Git sign-in and repository access, then retry." },
+            { name: `Cloned ${associatedRepository ?? "repository"}`, state: bindingReason ? "missing" : checks?.checkout, at: checks?.checkout_at, detail: bindingReason?.message || `Using ${runnerName}’s Git sign-in`, hint: bindingReason?.message || checks?.checkout_fix || "Check the runner’s Git sign-in and repository access, then retry." },
             { name: configurationMissing ? "detent.yaml and WORKFLOW.md not found" : "Found detent.yaml and WORKFLOW.md", state: configuration, at: checks?.configuration_at, detail: configurationMissing ? "Looked in the repository root" : "Project settings loaded from the repository", hint: "Check detent.yaml and WORKFLOW.md in the repository, then retry." },
             { name: "detent doctor", state: checks?.doctor, at: checks?.doctor_at, detail: configurationMissing ? "Waiting for settings" : `Checking build tools on ${runnerName}`, hint: "Run detent doctor --config <global.yaml> --project <project> on your runner’s computer to see what needs fixing." },
             { name: "AI coding tool sign-in", state: checks?.provider, at: checks?.provider_at, detail: configurationMissing ? "Waiting for settings" : `Sign-in stays on ${runnerName}`, hint: `Sign in to ${(checks?.provider_kinds ?? []).join(" and ") || "the AI coding tool chosen for this project"} on your runner’s computer, then retry.` },
@@ -802,7 +803,7 @@ function SetupContent({ projectId, onNavigate }: {
           }}>{route.pending ? "Routing…" : `Use ${runner?.runner.display_name ?? "runner"}`}</Button> : null}
         </> : <>
           <Button variant="outline" onClick={back}>Back</Button>
-          {step?.name === "Repository" && checkoutRepository ? <Button onClick={next}>Continue</Button> : step?.name === "Repository" ? <Button disabled={bindRepository.pending || !validRepositoryName(repositoryName.trim()) || Boolean(checkoutRepository)} onClick={() => void bindRepository.call(repositoryName.trim()).then((bound) => { if (bound) next(); })}>{bindRepository.pending ? "Connecting…" : `Use ${repositoryName.trim() || "owner/name"}`}</Button> : step?.name === "Checkout" ? <>
+          {step?.name === "Repository" && checkoutRepository && !bindingReason ? <Button onClick={next}>Continue</Button> : step?.name === "Repository" ? <Button disabled={bindRepository.pending || !validRepositoryName(repositoryName.trim()) || Boolean(checkoutRepository)} onClick={() => void bindRepository.call(repositoryName.trim()).then((bound) => { if (bound) next(); })}>{bindRepository.pending ? "Connecting…" : `Use ${repositoryName.trim() || "owner/name"}`}</Button> : step?.name === "Checkout" ? <>
             {configurationMissing ? <Button disabled={saveProgress.pending} onClick={() => void saveProgress.call({ repository: repository || "generate", doctor: progress?.doctor ?? false, provider: progress?.provider ?? false, artifacts })}>{saveProgress.pending ? "Saving…" : repository === "existing" ? "Wait for files" : "Create starter files"}</Button> : <>
               <Button variant="outline" className="order-last w-full sm:order-none sm:w-auto" onClick={next}>Continue in background</Button>
               <Button disabled={needsAction} onClick={next}>Continue</Button>

@@ -16,7 +16,9 @@ export function orderedSteps(onboarding: Onboarding | undefined, integration?: P
         detail: "",
       },
   );
-  return evaluated.map((step) => step.name === "Repository" && (integration?.checkout_repository || integration?.repository)
-    ? { ...step, state: "ready" as const }
-    : step);
+  return evaluated.map((step) => {
+    if (step.name !== "Repository") return step;
+    if (onboarding?.repository_binding_reason) return { ...step, state: "action_required" as const };
+    return integration?.checkout_repository || integration?.repository ? { ...step, state: "ready" as const } : step;
+  });
 }

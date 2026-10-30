@@ -1151,9 +1151,13 @@ func TestRunnerProjectsNewRepositoryBinding(t *testing.T) {
 			}
 			hub.repositories["prj_new"] = test.repository
 			hub.cloneURLs = map[tracker.ProjectID]string{"prj_new": "https://github.com/" + test.repository + ".git"}
+			logs.Reset()
 			cfg, err = runnerProjectsForIdentity(t.Context(), cfg, client, identity, true, false)
 			if err != nil || (len(cfg.Projects) == 1) != test.wantCheckout {
 				t.Fatalf("bound project checkouts = %+v: %v", cfg.Projects, err)
+			}
+			if strings.Contains(logs.String(), "Waiting for a repository") {
+				t.Fatal("bound project still waits for a repository")
 			}
 			p := &runnerProjects{cfg: cfg}
 			if reported := p.repository(t.Context(), "prj_new"); test.wantCheckout && reported != "acme/private" || !test.wantCheckout && reported != "" {

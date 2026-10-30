@@ -574,3 +574,31 @@ it("saves the choice to add missing configuration without creating files", async
   });
   expect(document.body.textContent).not.toMatch(/restart/i);
 });
+
+it("keeps an unbound Repository incomplete and explains checkout without blaming Git sign-in", async () => {
+  const mount = await mountSetup();
+  const fetch = globalThis.fetch;
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (...args) => {
+    const response = await fetch(...args);
+    if (String(args[0]).endsWith("/onboarding") && response.ok) {
+      const data = await response.json();
+      return Response.json({ ...data, repository: "", repository_binding_reason: {
+        code: "repository_binding_required", message: "Connect a repository in the Repository step before retrying checkout.",
+      }, steps: data.steps.map((step: { name: string }) => step.name === "Repository" ? { ...step, state: "ready" } : step),
+      runners: data.runners.map((row: object) => ({ ...row, local_checks: { checkout: "failed", doctor: "pending", provider: "pending", observed_at: "2026-10-29T12:00:00Z" } })) });
+    }
+    if (String(args[0]).endsWith("/integration") && response.ok) {
+      const data = await response.json();
+      return Response.json({ ...data, checkout_repository: "example-org/example-project", repository: "", github_app_installed: false });
+    }
+    return response;
+  });
+  mount();
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("button", { name: "Repository action required" }));
+  expect(screen.getByRole("alert").textContent).toContain("Connect a repository");
+  await user.click(screen.getByRole("button", { name: /Checkout/ }));
+  const checks = await screen.findByRole("list", { name: "Runner checks" });
+  expect(checks.textContent).toContain("Connect a repository in the Repository step");
+  expect(checks.textContent).not.toContain("Check the runner’s Git sign-in");
+});

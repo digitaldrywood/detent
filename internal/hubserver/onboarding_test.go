@@ -449,10 +449,12 @@ func TestHostedRunnerCheckoutAssociation(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
 		name, report, bound string
+		repository          string
 		status              int
 		appBinding          bool
 	}{
 		{name: "new project without checkout", status: http.StatusOK},
+		{name: "repository name normalized", repository: " Acme / Private ", status: http.StatusOK},
 		{name: "matching checkout", report: "Acme/Private", status: http.StatusOK},
 		{name: "other checkout does not prevent clone", report: "Other/Repository", status: http.StatusOK},
 		{name: "existing binding is immutable", bound: "Other/Repository", status: http.StatusUnprocessableEntity},
@@ -485,7 +487,18 @@ func TestHostedRunnerCheckoutAssociation(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			request := map[string]any{"idempotency_key": "checkout-association", "expected_revision": "1", "repository": "Acme/Private", "source": "runner_checkout"}
+			before := f.setupRequest(t, "owner", http.MethodGet, base+"/onboarding", nil)
+			requireNativeStatus(t, before, http.StatusOK)
+			var setup onboarding.Project
+			decodeHubResponse(t, before, &setup)
+			if test.bound == "" && !test.appBinding && (setup.RepositoryBindingReason == nil || setup.RepositoryBindingReason.Code != "repository_binding_required" || setup.Steps[1].State == "ready") {
+				t.Fatalf("unbound setup = %+v", setup)
+			}
+			repository := "Acme/Private"
+			if test.repository != "" {
+				repository = test.repository
+			}
+			request := map[string]any{"idempotency_key": "checkout-association", "expected_revision": "1", "repository": repository, "source": "runner_checkout"}
 			requireNativeStatus(t, f.setupRequest(t, "viewer", http.MethodPost, base+"/onboarding/repository", request), http.StatusNotFound)
 			response := f.setupRequest(t, "owner", http.MethodPost, base+"/onboarding/repository", request)
 			requireNativeStatus(t, response, test.status)
@@ -512,6 +525,13 @@ func TestHostedRunnerCheckoutAssociation(t *testing.T) {
 			decodeHubResponse(t, response, &definition)
 			if definition.Repository != "Acme/Private" || definition.CloneURL != "https://github.com/Acme/Private.git" {
 				t.Fatalf("runner project = %+v", definition)
+			}
+			response = f.setupRequest(t, "owner", http.MethodGet, base+"/onboarding", nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			setup = onboarding.Project{}
+			decodeHubResponse(t, response, &setup)
+			if setup.RepositoryBindingReason != nil || setup.Repository != definition.Repository || setup.Steps[1].State != "ready" {
+				t.Fatalf("bound setup disagrees with runner project: %+v", setup)
 			}
 			heartbeat["checkout_repository"] = "https://alice:private-secret@github.com/Acme/Private.git"
 			response = performHubAPIRequest(t, f.service, http.MethodPost, path, runner.Credential, heartbeat)
@@ -1168,6 +1188,74 @@ func TestRunnerFirstOnboardingSteps(t *testing.T) {
 			}
 			if setup.Ready != test.files {
 				t.Fatalf("ready = %t", setup.Ready)
+			}
+		})
+	}
+}
+
+func TestRunnerCheckoutBindingRefusals(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, profile, checkout, repository, code string
+		revision                                  tracker.Revision
+	}{
+		{"invalid repository", "native", "", "bad", "repository_invalid", 1},
+		{"wrong profile", "github_compatible", "", "example-org/project", "repository_profile_invalid", 1},
+		{"immutable checkout", "native", "example-org/other", "example-org/project", "repository_already_bound", 1},
+		{"immutable GitHub repository", "native", "", "example-org/project", "repository_already_bound", 1},
+		{"stale revision", "native", "", "example-org/project", "revision_conflict", 2},
+		{"active lease", "native", "", "example-org/project", "repository_binding_busy", 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db")})
+			f := newNativeFixture(t, service, "", "binding-refusal")
+			if _, err := service.database.db.ExecContext(t.Context(), "UPDATE projects SET profile=?,checkout_repository=? WHERE id=?", tt.profile, tt.checkout, f.project.ID); err != nil {
+				t.Fatal(err)
+			}
+			if tt.name == "immutable GitHub repository" {
+				if _, err := service.database.db.ExecContext(t.Context(), "INSERT INTO repositories(id,github_node_id,github_owner,github_name,created_at,updated_at) VALUES(1,'repo_bound','example-org','other',?,?)", formatHubTime(time.Now()), formatHubTime(time.Now())); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := service.database.db.ExecContext(t.Context(), "UPDATE projects SET repository_id=1 WHERE id=?", f.project.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tt.name == "active lease" {
+				issue := f.create(t, "active work")
+				now := time.Now().UTC()
+				at := formatHubTime(now)
+				if _, err := service.database.db.ExecContext(t.Context(), "INSERT INTO machines(id,hostname,capacity,version,last_heartbeat_at,registered_at,updated_at) VALUES('binding-machine','example',1,'test',?,?,?)", at, at, at); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := service.database.db.ExecContext(t.Context(), "INSERT INTO leases(lease_id,issue_id,machine_id,session_id,expires_at,acquired_at,renewed_at,created_at,updated_at) SELECT 'binding-lease',id,'binding-machine','binding-session',?,?,?,?,? FROM issues WHERE native_id=?", formatHubTime(now.Add(time.Hour)), at, at, at, at, issue.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			response := performHubAPIRequest(t, service, http.MethodPost, f.base+"/onboarding/repository", testHubAdminToken, bindNativeRepositoryRequest{Mutation: tracker.Mutation{IdempotencyKey: "refusal"}, ExpectedRevision: tt.revision, Repository: tt.repository, Source: "runner_checkout"})
+			var refusal nativeError
+			decodeHubResponse(t, response, &refusal)
+			if response.Code < 400 || refusal.Code != tt.code || refusal.Message == "" {
+				t.Fatalf("refusal = %d %s", response.Code, response.Body.String())
+			}
+			call := projectCall(t, "bind_native_repository", string(f.project.ID), "tool-refusal", operatortool.RepositoryInput{ExpectedRevision: tt.revision, Repository: tt.repository, Source: "runner_checkout"})
+			response = performHubWorkCall(t, service, "/api/v2/organizations/"+string(f.project.OrganizationID)+"/mcp", testHubAdminToken, call.Name, map[string]any{
+				"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+				"params": map[string]any{"name": call.Name, "arguments": call.Arguments, "_meta": json.RawMessage(fleetProtocolMeta)},
+			})
+			requireNativeStatus(t, response, http.StatusOK)
+			var envelope struct {
+				Result struct {
+					IsError bool `json:"isError"`
+					Content []struct {
+						Text string `json:"text"`
+					} `json:"content"`
+					Failure operatortool.ConflictError `json:"structuredContent"`
+				} `json:"result"`
+			}
+			decodeHubResponse(t, response, &envelope)
+			if !envelope.Result.IsError || envelope.Result.Failure.Code != tt.code || (tt.code != "revision_conflict" && envelope.Result.Failure.Message != refusal.Message) || (tt.code == "revision_conflict" && (envelope.Result.Failure.Message == "" || envelope.Result.Failure.CurrentRevision != 1 || len(envelope.Result.Content) != 1 || !strings.Contains(envelope.Result.Content[0].Text, "revision_conflict"))) {
+				t.Fatalf("tool refusal = %s", response.Body.String())
 			}
 		})
 	}

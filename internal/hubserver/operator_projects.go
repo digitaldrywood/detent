@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -298,7 +299,7 @@ func projectToolError(err error) error {
 	if errors.As(err, &failure) && (failure.status == 401 || failure.status == 403 || failure.status == 404) {
 		return operatortool.ErrAccessDenied
 	}
-	if errors.As(err, &failure) && failure.Code == "invalid_request" && failure.publicMessage {
+	if errors.As(err, &failure) && failure.status == http.StatusUnprocessableEntity && failure.publicMessage {
 		return &operatortool.RequestError{Code: failure.Code, Message: failure.Message}
 	}
 	if errors.As(err, &failure) && (failure.Code == "revision_conflict" || failure.Code == "idempotency_conflict") {
@@ -690,6 +691,9 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 			return nil, err
 		}
 		if !validCheckoutRepository(r.Input.Repository) {
+			if r.Input.Source == "runner_checkout" {
+				return nil, repositoryBindingRefusal("repository_invalid", "Repository must be owner/name")
+			}
 			return nil, operatortool.ErrInvalidArguments
 		}
 		if r.Input.Source != "" && r.Input.Source != "runner_checkout" {
@@ -710,7 +714,14 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 			raw, _, err := s.nativeCommandReplay(ctx, scope, options.OperationID, r.RequestID, request)
 			return raw, err
 		}
-		return s.bindNativeRepositoryCommand(ctx, scope, options, request)
+		result, err := s.bindNativeRepositoryCommand(ctx, scope, options, request)
+		if request.Source == "runner_checkout" {
+			var refusal *nativeError
+			if errors.As(err, &refusal) && refusal.Code == "revision_conflict" {
+				return nil, &operatortool.ConflictError{Code: refusal.Code, Message: "Repository binding changed; refresh project integration and retry with its current revision", CurrentRevision: int64(refusal.CurrentRevision)}
+			}
+		}
+		return result, err
 	case "advance_git_hub_import":
 		r, err := projectCommandInput[operatortool.ImportAdvanceInput](call.Arguments)
 		if err != nil {

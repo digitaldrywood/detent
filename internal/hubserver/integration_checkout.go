@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
+	"net/http"
 	"strings"
 	"time"
 
@@ -62,9 +64,11 @@ ON CONFLICT(runner_id, project_id) DO UPDATE SET repository=excluded.repository,
 }
 
 func (s *Service) bindRunnerCheckoutCommand(ctx context.Context, scope nativeScope, options nativeCommandOptions, command tracker.Mutation, revision tracker.Revision, repository string) (json.RawMessage, error) {
-	if !validCheckoutRepository(repository) {
-		return nil, nativePublicInvalid("Repository must be owner/name")
+	owner, name, valid := splitRepositoryFullName(repository)
+	if !valid || !validCheckoutRepository(owner+"/"+name) {
+		return nil, repositoryBindingRefusal("repository_invalid", "Repository must be owner/name")
 	}
+	repository = owner + "/" + name
 	input := struct {
 		tracker.Mutation
 		ExpectedRevision tracker.Revision `json:"expected_revision,string"`
@@ -80,18 +84,22 @@ func (s *Service) bindRunnerCheckoutCommand(ctx context.Context, scope nativeSco
 			return nil, nativeConflict(current.Revision)
 		}
 		if current.Profile != "native" {
-			return nil, nativePublicInvalid("Only a native project can associate a runner checkout")
+			return nil, repositoryBindingRefusal("repository_profile_invalid", "Only a native project can associate a runner checkout")
 		}
 		if current.CheckoutRepository != "" {
 			if strings.EqualFold(current.CheckoutRepository, repository) {
 				return current, nil
 			}
-			return nil, nativePublicInvalid("This project already has a checkout repository")
+			return nil, repositoryBindingRefusal("repository_already_bound", "This project already has a checkout repository")
 		}
 		if current.Repository != "" && !strings.EqualFold(current.Repository, repository) {
-			return nil, nativePublicInvalid("This project already has a repository")
+			return nil, repositoryBindingRefusal("repository_already_bound", "This project already has a repository")
 		}
 		if err := requireIntegrationIdle(ctx, tx, scope, now); err != nil {
+			var refusal *nativeError
+			if errors.As(err, &refusal) && refusal.Code == "invalid_request" {
+				return nil, repositoryBindingRefusal("repository_binding_busy", refusal.Message)
+			}
 			return nil, err
 		}
 		if _, err := tx.ExecContext(ctx, "UPDATE projects SET checkout_repository=?, integration_revision=integration_revision+1 WHERE id=?", repository, scope.project); err != nil {
@@ -102,4 +110,8 @@ func (s *Service) bindRunnerCheckoutCommand(ctx context.Context, scope nativeSco
 		}
 		return readProjectIntegration(ctx, tx, scope)
 	})
+}
+
+func repositoryBindingRefusal(code, message string) error {
+	return &nativeError{Code: code, Message: message, status: http.StatusUnprocessableEntity, publicMessage: true}
 }

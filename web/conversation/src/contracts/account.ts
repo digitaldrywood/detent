@@ -547,6 +547,7 @@ export type RunnerEligibility = typeof RunnerEligibility.Type;
 
 /** `GET {nativeBase}/onboarding` (`onboarding.Project`). */
 export const Onboarding = Schema.Struct({
+  repository_binding_reason: Schema.optional(Schema.Struct({ code: Schema.String, message: Schema.String })),
   repository: Schema.optional(Schema.String),
   latest_run: Schema.optional(Schema.String),
   progress: OnboardingProgress,

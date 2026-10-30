@@ -55,8 +55,16 @@ func (s *Service) projectOnboarding(ctx context.Context, scope nativeScope) (onb
 		return result, err
 	}
 	var organizationProjects int
-	if err := s.database.reader.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM projects sibling WHERE sibling.organization_id=p.organization_id AND sibling.deleted_at IS NULL AND sibling.id!=p.id), coalesce(nullif(p.checkout_repository,''),r.github_owner||'/'||r.github_name,'') FROM projects p LEFT JOIN repositories r ON r.id=p.repository_id WHERE p.organization_id=? AND p.id=? AND p.deleted_at IS NULL`, scope.organization, scope.project).Scan(&organizationProjects, &result.Repository); err != nil {
+	if err := s.database.reader.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM projects sibling WHERE sibling.organization_id=p.organization_id AND sibling.deleted_at IS NULL AND sibling.id!=p.id) FROM projects p WHERE p.organization_id=? AND p.id=? AND p.deleted_at IS NULL`, scope.organization, scope.project).Scan(&organizationProjects); err != nil {
 		return result, err
+	}
+	project, err := readNativeProject(ctx, s.database.reader, scope)
+	if err != nil {
+		return result, err
+	}
+	result.Repository = project.Repository
+	if project.Repository == "" || project.CloneURL == "" {
+		result.RepositoryBindingReason = &onboarding.RepositoryBindingReason{Code: "repository_binding_required", Message: "Choose and connect a repository in the Repository step before retrying checkout."}
 	}
 	approval, found, err := readProjectPolicy(ctx, s.database.reader, string(scope.organization)+"/"+string(scope.project))
 	if err != nil {
