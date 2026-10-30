@@ -325,7 +325,7 @@ func TestHeartbeatResponseArchivedCleanup(t *testing.T) {
 			if err != nil || checkpoint == nil {
 				t.Fatalf("checkpoint is not archived: %s error=%v", raw, err)
 			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET worker_cleanup_required=NULL WHERE id=?", event.Data.AttemptID); err != nil {
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET worker_cleanup_required=NULL,execution_role='' WHERE id=?", event.Data.AttemptID); err != nil {
 				t.Fatal(err)
 			}
 			if err := f.service.convertAttemptHotProjection(t.Context(), event.Data.AttemptID); err != nil {
@@ -541,13 +541,17 @@ func TestReleasedExecutionPollingBudget(t *testing.T) {
 				}
 				required := i < test.pending || i%2 == 0
 				var acknowledged any
-				if i < test.pending {
+				role := "code"
+				switch {
+				case i < test.pending:
 					pending[id] = true
-				} else if required {
+				case i%4 == 2:
+					role = ""
+				case required:
 					acknowledged = at
 				}
 				checkpoint := `{"worktree_state":"dirty","resume":"checkpoint","ref":"refs/heads/example","sha":"` + strings.Repeat("a", 40) + `"}`
-				if _, err := tx.ExecContext(t.Context(), `INSERT INTO native_attempts(id,organization_id,project_id,work_item_id,lease_id,fencing_token,run_id,sequence,status,data_json,checkpoint_json,started_at,updated_at,runner_id,worker_cleanup_required,cleanup_acknowledged_at) VALUES(?,?,?,?,?,?,?,1,'cancelled','{}',?,?,?,?,?,?)`, id, f.project.OrganizationID, f.project.ID, "wi_"+id, id, fence, id, checkpoint, at, at, r.binding.RunnerID, required, acknowledged); err != nil {
+				if _, err := tx.ExecContext(t.Context(), `INSERT INTO native_attempts(id,organization_id,project_id,work_item_id,lease_id,fencing_token,run_id,sequence,status,data_json,checkpoint_json,started_at,updated_at,runner_id,worker_cleanup_required,cleanup_acknowledged_at,execution_role) VALUES(?,?,?,?,?,?,?,1,'cancelled','{}',?,?,?,?,?,?,?)`, id, f.project.OrganizationID, f.project.ID, "wi_"+id, id, fence, id, checkpoint, at, at, r.binding.RunnerID, required, acknowledged, role); err != nil {
 					t.Fatal(err)
 				}
 			}
