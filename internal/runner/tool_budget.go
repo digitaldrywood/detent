@@ -30,6 +30,7 @@ type AgentToolBudget struct {
 	items              map[string]investigationItem
 	now                func() time.Time
 	readDeadline       time.Time
+	onResult           func(AgentToolCall, AgentToolResult)
 }
 
 func NewAgentToolBudget(maxCalls, maxBytes int) *AgentToolBudget {
@@ -151,6 +152,9 @@ func (b *AgentToolBudget) handler(handle AgentToolHandler) AgentToolHandler {
 		}
 		if budgetErr := b.consume(0, len(result.Content)+len(result.ImageURL)); budgetErr != nil {
 			return AgentToolResult{}, budgetErr
+		}
+		if err == nil && result.Success && b.onResult != nil {
+			b.onResult(call, result)
 		}
 		return result, err
 	}

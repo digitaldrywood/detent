@@ -938,6 +938,13 @@ func (row nativeAttemptRow) hydrate(ctx context.Context, q nativeQueryer, now ti
 }
 
 func (s *Service) getNativeAttempt(c echo.Context) error {
+	if c.QueryParam("view") == "cleanup" {
+		result, err := s.readNativeCleanupAttempt(c.Request().Context(), nativeRequestScope(c), c.Param("item"), c.Param("attempt"))
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		return c.JSON(http.StatusOK, result)
+	}
 	if handled, err := s.archiveView(c, c.Param("item"), "attempt:"+c.Param("attempt"), nil); handled {
 		return err
 	}
@@ -946,6 +953,64 @@ func (s *Service) getNativeAttempt(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	return nativeArchiveJSON(c, http.StatusOK, result)
+}
+
+func (s *Service) readNativeCleanupAttempt(ctx context.Context, scope nativeScope, item, id string) (tracker.NativeAttempt, error) {
+	if !scope.credential.Runner.Valid() {
+		return tracker.NativeAttempt{}, nativeNotFound()
+	}
+	ctx = s.runDetailContext(ctx)
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return tracker.NativeAttempt{}, err
+	}
+	defer tx.Rollback()
+	if _, err := nativeIssueRowID(ctx, tx, scope, item); errors.Is(err, sql.ErrNoRows) {
+		return tracker.NativeAttempt{}, nativeNotFound()
+	} else if err != nil {
+		return tracker.NativeAttempt{}, err
+	}
+	var raw, started, released string
+	var acknowledged sql.NullString
+	var attempt tracker.NativeAttempt
+	err = tx.QueryRowContext(ctx, `SELECT COALESCE(NULLIF(a.payload_object_key,''),a.data_json),a.status,a.started_at,l.released_at,a.cleanup_acknowledged_at
+FROM native_attempts a JOIN leases l ON l.lease_id=a.lease_id
+WHERE a.organization_id=? AND a.project_id=? AND a.work_item_id=? AND a.id=?
+AND a.runner_id=? AND l.machine_id=? AND l.released_at IS NOT NULL AND a.worker_cleanup_required=1`, scope.organization, scope.project, item, id, scope.credential.Runner.RunnerID, scope.credential.Runner.MachineID).Scan(&raw, &attempt.Status, &started, &released, &acknowledged)
+	if errors.Is(err, sql.ErrNoRows) {
+		return tracker.NativeAttempt{}, nativeNotFound()
+	}
+	if err != nil {
+		return tracker.NativeAttempt{}, err
+	}
+	var data tracker.NativeRunData
+	if err := decodeRunDetail(ctx, tx, raw, &data); err != nil {
+		return tracker.NativeAttempt{}, err
+	}
+	attempt.NativeRunData = tracker.NativeRunData{AttemptID: data.AttemptID, RunID: data.RunID, LeaseID: data.LeaseID,
+		FencingToken: data.FencingToken, PolicyID: data.PolicyID, Identity: data.Identity, MachineID: data.MachineID,
+		SessionID: data.SessionID, RunnerID: data.RunnerID, Sequence: data.Sequence, Outcome: data.Outcome}
+	if data.Runtime != nil {
+		attempt.Runtime = &tracker.NativeRuntimeObservation{LocalAttemptID: data.Runtime.LocalAttemptID, Generation: data.Runtime.Generation, WorkerLaunch: data.Runtime.WorkerLaunch}
+	}
+	if attempt.StartedAt, err = parseTimeValue(started); err != nil {
+		return tracker.NativeAttempt{}, err
+	}
+	at, err := parseTimeValue(released)
+	if err != nil {
+		return tracker.NativeAttempt{}, err
+	}
+	attempt.ClaimReleasedAt = &at
+	if acknowledged.Valid {
+		at, err := parseTimeValue(acknowledged.String)
+		if err != nil {
+			return tracker.NativeAttempt{}, err
+		}
+		attempt.CleanupAcknowledgedAt = &at
+	}
+	return attempt, nil
 }
 
 func (s *Service) readNativeAttempt(ctx context.Context, scope nativeScope, item, id string) (tracker.NativeAttempt, error) {

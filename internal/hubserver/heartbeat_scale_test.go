@@ -15,6 +15,8 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/hostmetrics"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -323,7 +325,7 @@ func TestHeartbeatResponseArchivedCleanup(t *testing.T) {
 			if err != nil || checkpoint == nil {
 				t.Fatalf("checkpoint is not archived: %s error=%v", raw, err)
 			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET worker_cleanup_required=NULL WHERE id=?", event.Data.AttemptID); err != nil {
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET worker_cleanup_required=NULL,execution_role='' WHERE id=?", event.Data.AttemptID); err != nil {
 				t.Fatal(err)
 			}
 			if err := f.service.convertAttemptHotProjection(t.Context(), event.Data.AttemptID); err != nil {
@@ -360,6 +362,61 @@ func TestHeartbeatResponseArchivedCleanup(t *testing.T) {
 			store.mu.Unlock()
 			if reads != 0 {
 				t.Fatalf("cleanup polling hydrated %d archive entries", reads)
+			}
+			tables := make([]attachment.ArchiveTable, 0, 4)
+			for _, name := range nativeArchiveTables("run") {
+				table := archiveTestTable(t, f.service, name, "0")
+				if name == "native_attempts" {
+					table = archiveTestTable(t, f.service, name, "id=?", event.Data.AttemptID)
+					index := slices.Index(table.Columns, "analytics_revision")
+					table.Columns = slices.Delete(table.Columns, index, index+1)
+					for i := range table.Rows {
+						table.Rows[i] = slices.Delete(table.Rows[i], index, index+1)
+					}
+				}
+				tables = append(tables, table)
+			}
+			_, archived := publishTestSection(t, f, string(issue.WorkItemID), "run", event.Data.AttemptID, 0, 0, tables...)
+			archiveReads := 0
+			f.service.config.ArchiveReader = func(context.Context, attachment.ArchiveReference, bool) (entryauthority.ArchiveResponse, error) {
+				archiveReads++
+				return entryauthority.ArchiveResponse{Data: archived}, nil
+			}
+			attemptPath := f.base + "/work-items/" + string(issue.WorkItemID) + "/attempts/" + event.Data.AttemptID
+			response = performHubAPIRequest(t, f.service, http.MethodGet, attemptPath, worker, nil)
+			requireNativeStatus(t, response, http.StatusServiceUnavailable)
+			if !strings.Contains(response.Body.String(), "archive_incompatible") {
+				t.Fatalf("expected incompatible archive: %s", response.Body.String())
+			}
+			response = performHubAPIRequest(t, f.service, http.MethodGet, attemptPath+"?view=cleanup", worker, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var attempt tracker.NativeAttempt
+			decodeHubResponse(t, response, &attempt)
+			if attempt.Runtime == nil || attempt.Runtime.WorkerLaunch == nil || attempt.Runtime.LocalAttemptID != 1 || attempt.Identity == nil || *attempt.Identity != *event.Data.Identity || attempt.ClaimReleasedAt == nil || attempt.Checkpoint != nil || len(attempt.ArtifactIDs) != 0 || archiveReads != 1 {
+				t.Fatalf("cleanup projection lost proof or loaded historical evidence: %+v archive reads=%d", attempt, archiveReads)
+			}
+			launch, original := attempt.Runtime.WorkerLaunch, event.Data.Runtime.WorkerLaunch
+			if launch.PID != original.PID || launch.GroupID != original.GroupID || !launch.ProcessStart.Equal(original.ProcessStart) || launch.PolicyID != original.PolicyID || launch.ExecutionSHA256 != original.ExecutionSHA256 {
+				t.Fatalf("cleanup worker proof changed: got=%+v want=%+v", launch, original)
+			}
+			other := prepareRunner(t, f, runnerauth.Read)
+			other.enroll(t)
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, attemptPath+"?view=cleanup", other.redemption.Credential, nil), http.StatusNotFound)
+			event.Type, event.IdempotencyKey = "run.finished", "cleanup-acknowledged"
+			event.Data = tracker.NativeRunData{AttemptID: attempt.AttemptID, RunID: attempt.RunID, LeaseID: attempt.LeaseID, FencingToken: attempt.FencingToken, PolicyID: attempt.PolicyID, Identity: attempt.Identity, Sequence: attempt.Sequence + 1, Outcome: "cancelled"}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, event), http.StatusOK)
+			response = performHubAPIRequest(t, f.service, http.MethodGet, attemptPath+"?view=cleanup", worker, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			decodeHubResponse(t, response, &attempt)
+			if attempt.CleanupAcknowledgedAt == nil || archiveReads != 1 {
+				t.Fatalf("cleanup receipt missing: %+v archive reads=%d", attempt, archiveReads)
+			}
+			response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", worker, map[string]any{"capacity": 1, "version": "test"})
+			requireNativeStatus(t, response, http.StatusOK)
+			var snapshot runnerauth.RoutingSnapshot
+			decodeHubResponse(t, response, &snapshot)
+			if snapshot.ClaimState == nil || len(snapshot.ClaimState.ReleasedExecutions) != 0 {
+				t.Fatalf("acknowledged execution was polled again: %+v", snapshot.ClaimState)
 			}
 		})
 	}
@@ -484,13 +541,17 @@ func TestReleasedExecutionPollingBudget(t *testing.T) {
 				}
 				required := i < test.pending || i%2 == 0
 				var acknowledged any
-				if i < test.pending {
+				role := "code"
+				switch {
+				case i < test.pending:
 					pending[id] = true
-				} else if required {
+				case i%4 == 2:
+					role = ""
+				case required:
 					acknowledged = at
 				}
 				checkpoint := `{"worktree_state":"dirty","resume":"checkpoint","ref":"refs/heads/example","sha":"` + strings.Repeat("a", 40) + `"}`
-				if _, err := tx.ExecContext(t.Context(), `INSERT INTO native_attempts(id,organization_id,project_id,work_item_id,lease_id,fencing_token,run_id,sequence,status,data_json,checkpoint_json,started_at,updated_at,runner_id,worker_cleanup_required,cleanup_acknowledged_at) VALUES(?,?,?,?,?,?,?,1,'cancelled','{}',?,?,?,?,?,?)`, id, f.project.OrganizationID, f.project.ID, "wi_"+id, id, fence, id, checkpoint, at, at, r.binding.RunnerID, required, acknowledged); err != nil {
+				if _, err := tx.ExecContext(t.Context(), `INSERT INTO native_attempts(id,organization_id,project_id,work_item_id,lease_id,fencing_token,run_id,sequence,status,data_json,checkpoint_json,started_at,updated_at,runner_id,worker_cleanup_required,cleanup_acknowledged_at,execution_role) VALUES(?,?,?,?,?,?,?,1,'cancelled','{}',?,?,?,?,?,?,?)`, id, f.project.OrganizationID, f.project.ID, "wi_"+id, id, fence, id, checkpoint, at, at, r.binding.RunnerID, required, acknowledged, role); err != nil {
 					t.Fatal(err)
 				}
 			}

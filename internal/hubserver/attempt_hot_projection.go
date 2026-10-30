@@ -84,7 +84,11 @@ func updateAttemptCleanupProjection(ctx context.Context, tx *sql.Tx, id string, 
 		launch := data.Runtime.WorkerLaunch
 		required = launch.PID > 0 && !launch.ProcessStart.IsZero()
 	}
-	_, err := tx.ExecContext(ctx, "UPDATE native_attempts SET worker_cleanup_required=max(coalesce(worker_cleanup_required,0),?) WHERE id=?", required, id)
+	var role string
+	if data.Identity != nil {
+		role = data.Identity.Role
+	}
+	_, err := tx.ExecContext(ctx, "UPDATE native_attempts SET worker_cleanup_required=max(coalesce(worker_cleanup_required,0),?),execution_role=CASE WHEN execution_role='' THEN ? ELSE execution_role END WHERE id=?", required, role, id)
 	return err
 }
 

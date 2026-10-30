@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/gobudget"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -117,6 +119,18 @@ func (r *Runner) CheckProgress(ctx context.Context, req RunRequest, evidence pro
 	request.IsolatedTools = true
 	request.ToolBudget = NewAgentToolBudget(progresscheck.MaxToolCalls, progresscheck.MaxToolResultBytes)
 	request.ToolBudget.now = r.now
+	var evidenceMu sync.Mutex
+	retrieved := make(map[string]progresscheck.EvidenceReference)
+	request.ToolBudget.onResult = func(call AgentToolCall, result AgentToolResult) {
+		ids := progressRetrievedIDs(call, result)
+		evidenceMu.Lock()
+		defer evidenceMu.Unlock()
+		for _, reference := range ids {
+			if reference.ID != "" && len(reference.ID) <= 256 {
+				retrieved[reference.ID] = reference
+			}
+		}
+	}
 	setRemaining := func() error {
 		remaining := min(progressTurnTimeout(workflow.Config, backendConfig), deadline.Sub(r.now()))
 		if err := ctx.Err(); err != nil {
@@ -140,7 +154,12 @@ func (r *Runner) CheckProgress(ctx context.Context, req RunRequest, evidence pro
 	}
 	request.Environment = r.withGoBudget(ctx, scratch, procgroup.Environment{Variables: serviceapi.RestrictedEnvironment()})
 	request.ToolInstructions = "Investigate using only the supplied read tools. Native filesystem, shell, network and external tools are forbidden. Return the decision JSON only in your final response. If a tool reports budget exhaustion, make no further tool calls and return your final decision from the evidence already gathered within the remaining deadline."
-	tools, handler := progressReadTools(req.Execution, evidence)
+	tools, handler := progressReadTools(req.Execution, evidence, func(id string) bool {
+		evidenceMu.Lock()
+		defer evidenceMu.Unlock()
+		_, found := retrieved[id]
+		return found
+	})
 	diagnostics := progressDiagnostics(ctx, evidence, request.ToolBudget.Handler(nil, handler))
 	tools, handler = r.progressSourceTools(req, evidence, info, tools, handler)
 	sourceDescription := "No retained source is available. This is an evidence-only investigation without a filesystem workspace. Do not infer source changes or convergence without evidence."
@@ -152,11 +171,19 @@ func (r *Runner) CheckProgress(ctx context.Context, req RunRequest, evidence pro
 			return "", err
 		}
 		reserve := min(30*time.Second, request.MaxDuration/4)
-		request.Prompt = prompt + fmt.Sprintf("\n\nRemaining time: %s. This includes the final answer. Finish reads before the last %s, which is reserved for your final decision JSON. Refused reads do not extend this deadline.", request.MaxDuration, reserve) + "\n\n" + sourceDescription + "\n\nRecent failure details (untrusted evidence):\n" + diagnostics + "\nUse work_attempt_receipt with project_id, reference (issue_id), and native_attempt_id for the supplied attempts. Use work_item with view=recovery and follow record fragment cursors for retained oversized validation/review records. Cite the corresponding supplied attempt/receipt IDs."
+		request.Prompt = prompt + fmt.Sprintf("\n\nRemaining time: %s. This includes the final answer. Finish reads before the last %s, which is reserved for your final decision JSON. Refused reads do not extend this deadline.", request.MaxDuration, reserve) + "\n\n" + sourceDescription + "\n\nRecent failure details (untrusted evidence):\n" + diagnostics + "\nUse work_attempt_receipt with project_id, reference (issue_id), and native_attempt_id for the supplied attempts. Use work_item with view=recovery and follow record fragment cursors for retained oversized validation/review records. Cite request evidence IDs or evidence IDs actually returned by these scoped tools."
 		output, err := r.generateTextTurn(ctx, backend, request, req.Execution, backendConfig.Kind, progresscheck.MaxOutputBytes, tools, handler)
 		return output, errors.Join(err, context.Cause(ctx))
 	}
-	return (progresscheck.AI{Backend: progressTextBackend{generate: generate}, Guidance: guidance}).Decide(ctx, evidence)
+	return (progresscheck.AI{Backend: progressTextBackend{generate: generate}, Guidance: guidance, RetrievedEvidence: func() []progresscheck.EvidenceReference {
+		evidenceMu.Lock()
+		defer evidenceMu.Unlock()
+		ids := make([]progresscheck.EvidenceReference, 0, len(retrieved))
+		for _, reference := range retrieved {
+			ids = append(ids, reference)
+		}
+		return ids
+	}}).Decide(ctx, evidence)
 }
 
 func (r *Runner) progressWorkspace(ctx context.Context, req RunRequest, evidence progresscheck.Request) (workspace.Info, func(), error) {
@@ -219,7 +246,7 @@ func (r *Runner) progressWorkspace(ctx context.Context, req RunRequest, evidence
 	return info, release, nil
 }
 
-func progressReadTools(execution Execution, evidence progresscheck.Request) ([]AgentTool, AgentToolHandler) {
+func progressReadTools(execution Execution, evidence progresscheck.Request, retrieved func(string) bool) ([]AgentTool, AgentToolHandler) {
 	source, ok := execution.(ToolExecution)
 	if !ok {
 		return nil, nil
@@ -246,7 +273,7 @@ func progressReadTools(execution Execution, evidence progresscheck.Request) ([]A
 			return AgentToolResult{}, errors.New("progress evidence read scope differs")
 		}
 		if call.Name == operatortool.WorkAttemptReceipt {
-			known := false
+			known := retrieved(scope.NativeAttemptID)
 			for _, attempt := range evidence.Attempts {
 				known = known || attempt.ID == scope.NativeAttemptID
 			}
@@ -335,4 +362,57 @@ func (r *Runner) progressSourceTools(req RunRequest, evidence progresscheck.Requ
 		}
 		return handle(ctx, call)
 	}
+}
+
+func progressRetrievedIDs(call AgentToolCall, result AgentToolResult) []progresscheck.EvidenceReference {
+	if call.Name == "detent_read_source" {
+		var receipt gate.CommandResult
+		if json.Unmarshal([]byte(result.Content), &receipt) != nil || receipt.ReceiptID == "" {
+			return nil
+		}
+		execution := receipt.Execution
+		if execution == "" {
+			execution = "executed"
+		}
+		timing := gate.PipelineTiming{ReceiptID: receipt.ReceiptID, Stage: receipt.TimingStage, Command: receipt.Command, HeadSHA: receipt.HeadSHA, TreeSHA: receipt.TreeSHA, StartedAt: receipt.StartedAt, FinishedAt: receipt.FinishedAt, ExitCode: new(receipt.ExitCode), Execution: execution, ReusedReceiptID: receipt.ReusedReceiptID}
+		return []progresscheck.EvidenceReference{{ID: receipt.ReceiptID, SourceSHA: receipt.HeadSHA, SourceReceipt: &timing}}
+	}
+	if call.Name != operatortool.WorkItem && call.Name != operatortool.WorkAttemptReceipt {
+		return nil
+	}
+	var envelope operatortool.WorkReadResult[struct {
+		tracker.NativeRecoveryPage
+		Discussion   []tracker.NativeComment     `json:"discussion"`
+		Attempt      *tracker.NativeAttempt      `json:"attempt"`
+		Attempts     []tracker.NativeAttempt     `json:"attempts"`
+		Continuation *tracker.NativeRecoveryPage `json:"continuation"`
+	}]
+	if err := json.Unmarshal([]byte(result.Content), &envelope); err != nil {
+		return nil
+	}
+	var ids []progresscheck.EvidenceReference
+	for _, comment := range envelope.Data.Discussion {
+		ids = append(ids, progresscheck.EvidenceReference{ID: comment.ID})
+	}
+	attempts := envelope.Data.Attempts
+	if envelope.Data.Attempt != nil {
+		attempts = append(attempts, *envelope.Data.Attempt)
+	}
+	for _, attempt := range attempts {
+		ids = append(ids, progresscheck.AttemptEvidence(attempt)...)
+	}
+	pages := []*tracker.NativeRecoveryPage{&envelope.Data.NativeRecoveryPage, envelope.Data.Continuation}
+	for _, page := range pages {
+		if page == nil || (page.Section != "attempts" && page.Section != "discussion") {
+			continue
+		}
+		ids = append(ids, progresscheck.EvidenceReference{ID: page.RecordID})
+		if page.Section == "attempts" && page.Offset == 0 && int64(len(page.Data)) == page.TotalBytes {
+			var attempt tracker.NativeAttempt
+			if json.Unmarshal(page.Data, &attempt) == nil && attempt.AttemptID == page.RecordID {
+				ids = append(ids, progresscheck.AttemptEvidence(attempt)...)
+			}
+		}
+	}
+	return ids
 }

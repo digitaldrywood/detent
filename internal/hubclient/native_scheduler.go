@@ -654,7 +654,7 @@ func (s *Scheduler) reconcileReleasedExecution(ctx context.Context, source *Nati
 		return fmt.Errorf("item path: %w", err)
 	}
 	var attempt tracker.NativeAttempt
-	if err := source.client.client.request(ctx, http.MethodGet, source.client.base()+path+"/attempts/"+reference.AttemptID, nil, &attempt); err != nil {
+	if err := source.client.client.request(ctx, http.MethodGet, source.client.base()+path+"/attempts/"+reference.AttemptID+"?view=cleanup", nil, &attempt); err != nil {
 		return fmt.Errorf("read attempt: %w", err)
 	}
 	if attempt.AttemptID != reference.AttemptID || attempt.MachineID != identity.MachineID || attempt.RunnerID != identity.RunnerID || attempt.ClaimReleasedAt == nil || attempt.CleanupAcknowledgedAt != nil || attempt.Identity == nil || attempt.Outcome != "" && attempt.Outcome != "interrupted" && attempt.Outcome != "cancelled" || attempt.Runtime == nil || attempt.Runtime.WorkerLaunch == nil {
@@ -837,6 +837,10 @@ func (s *Scheduler) renewNativeClaim(ctx context.Context, issueID string, claim 
 }
 
 func (s *Scheduler) nativeClaimRenewable(ctx context.Context, claim nativeClaim) (bool, error) {
+	return s.nativeClaimActive(ctx, claim, true)
+}
+
+func (s *Scheduler) nativeClaimActive(ctx context.Context, claim nativeClaim, inspectIssue bool) (bool, error) {
 	var observation *tracker.NativeRuntimeObservation
 	localWorker := false
 	landed := false
@@ -907,40 +911,42 @@ func (s *Scheduler) nativeClaimRenewable(ctx context.Context, claim nativeClaim)
 			}
 		}
 	}
-	issue, err := claim.source.client.Issue(ctx, claim.lease.WorkItemID)
-	if err != nil {
-		return false, err
-	}
-	landed = landed || observation != nil && observation.Landing != nil && observation.Landing.Landed
-	if issue.Terminal && !issue.Archived && !landed && claim.execution != nil {
-		if !claim.execution.mu.TryLock() {
-			return true, nil
+	if inspectIssue {
+		issue, err := claim.source.client.Issue(ctx, claim.lease.WorkItemID)
+		if err != nil {
+			return false, err
 		}
-		landed = claim.execution.landed
-		claim.execution.mu.Unlock()
-	}
-	if !issue.Terminal || issue.Archived || !landed {
-		if issue.SchedulingEligible != nil {
-			if !*issue.SchedulingEligible {
-				return false, nil
+		landed = landed || observation != nil && observation.Landing != nil && observation.Landing.Landed
+		if issue.Terminal && !issue.Archived && !landed && claim.execution != nil {
+			if !claim.execution.mu.TryLock() {
+				return true, nil
 			}
-		} else {
-			if issue.Terminal || issue.Archived || !issue.DependencyReady {
-				return false, nil
-			}
-			project, err := claim.source.client.Project(ctx)
-			if err != nil {
-				return false, err
-			}
-			dispatchable := false
-			for _, state := range project.States {
-				if strings.EqualFold(state.Name, issue.State) {
-					dispatchable = state.Dispatchable && !state.Terminal && !state.OperatorOnly
-					break
+			landed = claim.execution.landed
+			claim.execution.mu.Unlock()
+		}
+		if !issue.Terminal || issue.Archived || !landed {
+			if issue.SchedulingEligible != nil {
+				if !*issue.SchedulingEligible {
+					return false, nil
 				}
-			}
-			if !dispatchable {
-				return false, nil
+			} else {
+				if issue.Terminal || issue.Archived || !issue.DependencyReady {
+					return false, nil
+				}
+				project, err := claim.source.client.Project(ctx)
+				if err != nil {
+					return false, err
+				}
+				dispatchable := false
+				for _, state := range project.States {
+					if strings.EqualFold(state.Name, issue.State) {
+						dispatchable = state.Dispatchable && !state.Terminal && !state.OperatorOnly
+						break
+					}
+				}
+				if !dispatchable {
+					return false, nil
+				}
 			}
 		}
 	}
@@ -956,7 +962,7 @@ func (s *Scheduler) nativeClaimRenewable(ctx context.Context, claim nativeClaim)
 		if err != nil {
 			return false, errors.Join(ErrUnavailable, err)
 		}
-		if alive {
+		if alive && inspectIssue {
 			if err := claim.execution.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{HeartbeatAt: s.now().UTC()}); err != nil {
 				return false, err
 			}

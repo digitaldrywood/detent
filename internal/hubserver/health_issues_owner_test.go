@@ -237,3 +237,34 @@ func TestHealthFindingOpenOwner(t *testing.T) {
 		})
 	}
 }
+
+func TestHealthFindingReusesLinkedIssueWhileSearchRebuilds(t *testing.T) {
+	t.Parallel()
+	f := newNativeFixture(t, nil, "", "health-linked-rebuild")
+	addHealthBacklog(t, f)
+	anchor := f.create(t, "Search rebuild anchor")
+	if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO native_work_search_dirty(issue_id,organization_id,project_id) SELECT id,organization_id,project_id FROM issues WHERE native_id=?`, anchor.WorkItemID); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 10, 6, 18, 30, 0, 0, time.UTC)
+	finding := newHealthFinding("scheduler_loop_behind", "instance", "project", string(f.project.ID), "Scheduler loop is behind.", "Inspect scheduler timing.", []string{string(f.project.ID)}, healthEvidence{Signatures: []string{"first signature"}})
+	countIntake := func() int {
+		t.Helper()
+		var count int
+		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE project_id=? AND title LIKE 'intake(instance): %'", f.project.ID).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		return count
+	}
+	applyTestHealth(t, f, now, []healthFinding{finding})
+	if got := countIntake(); got != 1 {
+		t.Fatalf("intake issues after first report = %d, want 1", got)
+	}
+	for i, signature := range []string{"second signature", "third signature"} {
+		finding.Evidence.Signatures = []string{signature}
+		applyTestHealth(t, f, now.Add(time.Duration(i+1)*time.Minute), []healthFinding{finding})
+		if got := countIntake(); got != 1 {
+			t.Fatalf("intake issues after evidence change %d = %d, want 1", i+1, got)
+		}
+	}
+}

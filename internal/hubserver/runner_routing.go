@@ -874,7 +874,7 @@ func (s *Service) readRunnerClaimState(ctx context.Context, db nativeQueryer, sc
 	}
 	released, err := db.QueryContext(ctx, `SELECT a.work_item_id,a.id FROM native_attempts a JOIN leases l ON l.lease_id=a.lease_id
  WHERE a.organization_id=? AND a.project_id=? AND a.runner_id=? AND l.machine_id=? AND l.released_at IS NOT NULL
- AND a.worker_cleanup_required=1 AND a.cleanup_acknowledged_at IS NULL AND a.status IN ('running','interrupted','cancelled')
+ AND a.worker_cleanup_required=1 AND a.cleanup_acknowledged_at IS NULL AND a.status IN ('running','interrupted','cancelled') AND a.execution_role<>''
  AND a.id>? ORDER BY a.id LIMIT ?`, scope.organization, scope.project, snapshot.RunnerID, scope.credential.Runner.MachineID, after, releasedExecutionsPageSize)
 	if err != nil {
 		return err

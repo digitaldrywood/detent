@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -16,6 +17,52 @@ import (
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
 )
+
+type independentClaimHeartbeat struct {
+	hubSchedulingSource
+	renewed chan time.Duration
+}
+
+type blockedClaimHeartbeatPersistence struct {
+	store.WorkAttemptStore
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (s *blockedClaimHeartbeatPersistence) RecordWorkAttemptHeartbeat(context.Context, store.WorkAttemptHeartbeat) error {
+	close(s.entered)
+	<-s.release
+	return nil
+}
+
+func (s *independentClaimHeartbeat) RenewClaimHeartbeat(ctx context.Context, _ string, _ time.Time) (Claimed, error) {
+	deadline, _ := ctx.Deadline()
+	s.renewed <- time.Until(deadline)
+	return Claimed{}, nil
+}
+
+func TestClaimHeartbeatPrecedesBlockedAttemptPersistence(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		source := &independentClaimHeartbeat{renewed: make(chan time.Duration, 1)}
+		attempts := &blockedClaimHeartbeatPersistence{entered: make(chan struct{}), release: make(chan struct{})}
+		manager := newHeartbeatManager(Config{}, nil, attempts, time.Now, nil, source)
+		target := heartbeatTarget{issueID: "wi_example", workAttemptHeartbeat: store.WorkAttemptHeartbeat{AttemptID: 42}}
+		done := make(chan struct{})
+		go func() { defer close(done); manager.execute(t.Context(), target) }()
+		<-attempts.entered
+		synctest.Wait()
+		select {
+		case budget := <-source.renewed:
+			if budget != heartbeatOperationTimeout {
+				t.Errorf("renewal budget = %s, want %s", budget, heartbeatOperationTimeout)
+			}
+		default:
+			t.Error("claim renewal waited behind attempt persistence")
+		}
+		close(attempts.release)
+		<-done
+	})
+}
 
 type claimCleanupScheduling struct {
 	hubSchedulingSource

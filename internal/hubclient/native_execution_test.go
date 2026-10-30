@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,6 +20,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/procgroup"
@@ -1134,6 +1136,205 @@ func TestNativeMissingClaimNeverRunsUnguarded(t *testing.T) {
 	}
 	if scheduler.RunExecution("github-node") != nil {
 		t.Fatal("legacy execution acquired a native guard")
+	}
+}
+
+func TestDedicatedClaimRenewalDoesNotWaitForOtherWork(t *testing.T) {
+	for _, operation := range []string{"change read", "machine report", "progress admission", "request budget"} {
+		t.Run(operation, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				h := newNativeChangeHubTransport(t, "In Review", []tracker.NativeState{{Name: "In Progress", Dispatchable: true}}, true)
+				issue := h.createInProgress(t, "Independent renewal")
+				h.claim(t, issue.ID)
+				entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+				var once sync.Once
+				defer func() { once.Do(func() { close(release) }); <-done }()
+				transport := h.native.client.httpClient.Transport
+				var renewals atomic.Int64
+				observedTransport := executionRoundTrip(func(r *http.Request) (*http.Response, error) {
+					if r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/changes/") {
+						close(entered)
+						<-release
+						return nil, errors.New("read released")
+					}
+					if strings.HasSuffix(r.URL.Path, "/renew") {
+						renewals.Add(1)
+					}
+					return transport.RoundTrip(r)
+				})
+				h.native.client.httpClient.Transport = observedTransport
+				h.native.client.leaseHTTPClient.Transport = observedTransport
+				switch operation {
+				case "machine report":
+					h.scheduler.isolationReport = func(context.Context) (isolation.Report, []runnerauth.Problem) {
+						close(entered)
+						<-release
+						return nil, nil
+					}
+					h.scheduler.nativeHeartbeats[h.project] = time.Time{}
+				case "progress admission":
+					h.scheduler.sessionID = func() (string, error) {
+						close(entered)
+						<-release
+						return "", errors.New("admission released")
+					}
+				case "request budget":
+					h.native.client.deferRequestBudget(time.Now().Add(time.Minute))
+				}
+				go func() {
+					defer close(done)
+					switch operation {
+					case "change read":
+						_, _ = h.native.Change(t.Context(), tracker.NativeWorkItemID(issue.ID), "change_example")
+					case "machine report":
+						_ = h.scheduler.ensureNativeMachine(t.Context(), h.connector)
+					case "progress admission":
+						_, _, _ = h.scheduler.ReadmitRetryProgress(t.Context(), runner.RunRequest{Issue: issue, Execution: h.scheduler.RunExecution(issue.ID)}, nil)
+					case "request budget":
+						close(entered)
+						<-release
+					}
+				}()
+				<-entered
+				result := make(chan error, 1)
+				started := time.Now()
+				go func() {
+					ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+					defer cancel()
+					var err error
+					if source, ok := any(h.scheduler).(interface {
+						RenewClaimHeartbeat(context.Context, string, time.Time) (orchestrator.Claimed, error)
+					}); ok {
+						_, err = source.RenewClaimHeartbeat(ctx, issue.ID, time.Now())
+					} else {
+						_, err = h.scheduler.RenewClaim(ctx, issue.ID, time.Now())
+					}
+					result <- err
+				}()
+				synctest.Wait()
+				select {
+				case err := <-result:
+					if err != nil || renewals.Load() != 1 || !time.Now().Equal(started) {
+						t.Errorf("renewal waited for %s: calls=%d elapsed=%s error=%v", operation, renewals.Load(), time.Since(started), err)
+					}
+				default:
+					t.Errorf("renewal blocked behind %s", operation)
+					once.Do(func() { close(release) })
+					<-result
+				}
+			})
+		})
+	}
+}
+
+func TestDedicatedClaimRenewalPreservesFencingDuringReadmission(t *testing.T) {
+	for _, outcome := range []string{"rejected during admission", "rejected after replacement", "acknowledged after replacement", "acknowledged after newer renewal", "revoked", "expired runtime"} {
+		t.Run(outcome, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				h := newNativeChangeHubTransport(t, "In Review", []tracker.NativeState{{Name: "In Progress", Dispatchable: true}}, true)
+				issue := h.createInProgress(t, "Fenced renewal")
+				h.claim(t, issue.ID)
+				execution := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+				claim := h.scheduler.nativeClaims[issue.ID]
+				if outcome == "revoked" {
+					if err := h.native.Release(t.Context(), claim.lease, "cancelled"); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if outcome == "expired runtime" {
+					execution.data.Runtime = &tracker.NativeRuntimeObservation{LocalAttemptID: 42, Generation: 1, Phase: "implementation", HeartbeatAt: time.Now().Add(-2 * h.scheduler.leaseTTL)}
+				}
+				if outcome == "rejected during admission" {
+					claim.lifecycle.Lock()
+					defer claim.lifecycle.Unlock()
+				}
+				var successor tracker.NativeLease
+				transport := h.native.client.leaseHTTPClient.Transport
+				h.native.client.leaseHTTPClient.Transport = executionRoundTrip(func(r *http.Request) (*http.Response, error) {
+					if strings.Contains(outcome, "after replacement") || outcome == "acknowledged after newer renewal" {
+						successor = claim.lease
+						if outcome != "acknowledged after newer renewal" {
+							successor.ID = "lease_successor"
+							successor.FencingToken++
+						}
+						successor.RenewedAt = time.Now().Add(time.Second)
+						successor.ExpiresAt = time.Now().Add(2 * time.Minute)
+						h.scheduler.mu.Lock()
+						current := h.scheduler.nativeClaims[issue.ID]
+						current.lease = successor
+						h.scheduler.nativeClaims[issue.ID] = current
+						h.scheduler.claims[issue.ID] = nativeTrackerLease(successor)
+						h.scheduler.mu.Unlock()
+					}
+					if strings.HasPrefix(outcome, "rejected") {
+						return &http.Response{StatusCode: http.StatusConflict, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":"stale_fencing_token"}`)), Request: r}, nil
+					}
+					return transport.RoundTrip(r)
+				})
+				renewed, err := h.scheduler.RenewClaimHeartbeat(t.Context(), issue.ID, time.Now())
+				switch outcome {
+				case "rejected during admission":
+					if !errors.Is(err, ErrUnavailable) || errors.Is(err, orchestrator.ErrSchedulingClaimLost) || h.scheduler.nativeClaims[issue.ID].lost {
+						t.Fatalf("in-flight admission lost its claim: %v", err)
+					}
+				case "rejected after replacement", "acknowledged after replacement", "acknowledged after newer renewal":
+					current := h.scheduler.nativeClaims[issue.ID]
+					if err != nil || current.lost || current.lease.ID != successor.ID || current.lease.FencingToken != successor.FencingToken || !renewed.LeaseExpiresAt.Equal(successor.ExpiresAt) {
+						t.Fatalf("obsolete reply damaged successor: claim=%+v error=%v", current.lease, err)
+					}
+				default:
+					if !errors.Is(err, orchestrator.ErrSchedulingClaimLost) {
+						t.Fatalf("inactive lease retained authority: %v", err)
+					}
+				}
+			})
+		})
+	}
+}
+
+func TestDedicatedClaimRenewalUsesIndependentConnectionPool(t *testing.T) {
+	entered, release := make(chan struct{}), make(chan struct{})
+	lease := tracker.NativeLease{ID: "lease_example", WorkItemID: "wi_example", FencingToken: 5, ServerTime: time.Now(), ExpiresAt: time.Now().Add(time.Minute)}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/changes/") {
+			close(entered)
+			<-release
+			_, _ = w.Write([]byte(`{}`))
+			return
+		}
+		if !strings.HasSuffix(r.URL.Path, "/renew") || r.Method != http.MethodPost {
+			t.Errorf("unexpected heartbeat request: %s %s", r.Method, r.URL.Path)
+		}
+		if err := json.NewEncoder(w).Encode(lease); err != nil {
+			t.Error(err)
+		}
+	}))
+	defer server.Close()
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.MaxConnsPerHost = 1
+	defer transport.CloseIdleConnections()
+	client, err := New(Config{URL: server.URL, TokenSource: func() string { return "example" }, HTTPClient: &http.Client{Transport: transport}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.leaseHTTPClient.CloseIdleConnections()
+	native, err := client.Native("org_example", "prj_example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	scheduler, err := NewScheduler(client, SchedulerConfig{Machine: Machine{ID: "machine_example", Hostname: "example", Capacity: 1, Version: "test"}, HeartbeatInterval: time.Second, LeaseTTL: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scheduler.nativeClaims["wi_example"] = nativeClaim{source: &NativeConnector{client: native}, lease: lease}
+	done := make(chan error, 1)
+	ctx := testenv.WaitContext(t, t.Context())
+	go func() { _, err := native.Change(ctx, "wi_example", "change_example"); done <- err }()
+	defer func() { close(release); <-done }()
+	<-entered
+	renewed, err := scheduler.RenewClaimHeartbeat(ctx, "wi_example", time.Now())
+	if err != nil || !renewed.LeaseExpiresAt.Equal(lease.ExpiresAt) {
+		t.Fatalf("renewal waited behind the occupied connection: %v", err)
 	}
 }
 

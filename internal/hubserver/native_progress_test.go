@@ -5,12 +5,14 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -308,6 +310,94 @@ func TestNativeProgressPublicationIsAtomicAndScoped(t *testing.T) {
 				t.Fatalf("new evidence changed ordinary dependency: %v", err)
 			}
 
+		})
+	}
+}
+
+func TestNativeProgressRetrievedEvidenceIsScoped(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		source    string
+		retrieved bool
+		valid     bool
+	}{
+		{"retrieved same item", "same", true, true},
+		{"source receipt", "source", true, true},
+		{"forged source receipt ID", "source forged", true, false},
+		{"source receipt differs from pinned source", "source mismatch", true, false},
+		{"source receipt missing proof", "source unproven", true, false},
+		{"same item never retrieved", "same", false, false},
+		{"cross item", "item", true, false},
+		{"cross project", "project", true, false},
+		{"nonexistent", "missing", true, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newDefaultNativeFixture(t, Config{})
+			issue := f.createIndependent(t, "Example target")
+			other := f.createIndependent(t, "Example other")
+			source, item := f, issue
+			if test.source == "item" {
+				item = other
+			}
+			if test.source == "project" {
+				source = newNativeFixture(t, f.service, f.project.OrganizationID, "Example other project")
+				item = source.createIndependent(t, "Example project item")
+			}
+			response := performHubAPIRequest(t, f.service, http.MethodPost, source.base+"/work-items/"+string(item.WorkItemID)+"/comments", testHubAdminToken, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "retrieved-comment"}, Body: "Assertion still returns the old value"})
+			requireNativeStatus(t, response, http.StatusOK)
+			var comment tracker.NativeComment
+			decodeHubResponse(t, response, &comment)
+			citation := comment.ID
+			if test.source == "missing" {
+				citation = "comment-missing"
+			}
+			request := progresscheck.Request{ProjectID: string(f.project.ID), IssueID: string(issue.WorkItemID), PolicyID: "policy", EvidenceRevision: "revision", Attempts: []progresscheck.Attempt{{ID: "failed-attempt", Outcome: "failed"}}, AvailableSteps: []string{"implement"}}
+			var sourceReference progresscheck.EvidenceReference
+			if strings.HasPrefix(test.source, "source") {
+				request.SourceSHA = strings.Repeat("a", 40)
+				started := time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)
+				timing := gate.PipelineTiming{Command: "git show HEAD:example.go", HeadSHA: request.SourceSHA, TreeSHA: strings.Repeat("b", 40), StartedAt: started, FinishedAt: started.Add(time.Second), ExitCode: new(0), Execution: "executed"}
+				timing.ReceiptID = timing.ID()
+				citation = timing.ReceiptID
+				sourceReference = progresscheck.EvidenceReference{ID: citation, SourceSHA: request.SourceSHA, SourceReceipt: &timing}
+				if test.source == "source forged" {
+					citation, sourceReference.ID = "timing_forged", "timing_forged"
+				}
+				if test.source == "source mismatch" {
+					request.SourceSHA = strings.Repeat("c", 40)
+				}
+				if test.source == "source unproven" {
+					sourceReference.SourceReceipt = nil
+				}
+			}
+			id, err := request.ID()
+			if err != nil {
+				t.Fatal(err)
+			}
+			decision := progresscheck.Decision{Outcome: progresscheck.Reroute, Step: "implement", Reason: "Repair assertion", Diagnosis: citation + ": assertion returns the old value", Instruction: "Repair the implementation and run TestExample", Evidence: []string{citation}}
+			if test.retrieved {
+				decision.RetrievedEvidence = []progresscheck.EvidenceReference{{ID: citation}}
+			}
+			if strings.HasPrefix(test.source, "source") {
+				decision.RetrievedEvidence = []progresscheck.EvidenceReference{sourceReference}
+			}
+			owner := nativeProgressOwner{service: f.service, scope: nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{ID: bootstrapTokenID, Scope: apiScopeAdmin}}, request: request}
+			record, err := owner.Publish(t.Context(), progresscheck.Record{RequestID: id, ProjectID: request.ProjectID, IssueID: request.IssueID, EvidenceRevision: request.EvidenceRevision, Decision: decision})
+			if (err == nil) != test.valid {
+				t.Fatalf("publication error=%v valid=%v", err, test.valid)
+			}
+			retained, found, err := owner.Load(t.Context(), request.ProjectID, request.IssueID, id)
+			if err != nil || found != test.valid {
+				t.Fatalf("retained invalid publication: found=%v error=%v", found, err)
+			}
+			if test.valid {
+				if err := retained.Validate(request); err != nil {
+					t.Fatal(err)
+				}
+				if !reflect.DeepEqual(record, retained) {
+					t.Fatalf("replay lost retrieved evidence: %+v", retained)
+				}
+			}
 		})
 	}
 }

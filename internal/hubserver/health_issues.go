@@ -222,7 +222,7 @@ func reportHealthFindings(ctx context.Context, tx *sql.Tx, organization tracker.
 			if request.State == "" {
 				continue
 			}
-			issue, err := reportHealthIssue(ctx, tx, scope, request, o.finding.Subject, o.finding.OpenedAt, now, cancellations)
+			issue, err := reportHealthIssue(ctx, tx, scope, request, o.finding.Subject, o.item, o.finding.OpenedAt, now, cancellations)
 			if err != nil {
 				return nil, err
 			}
@@ -243,10 +243,21 @@ func reportHealthFindings(ctx context.Context, tx *sql.Tx, organization tracker.
 	return created, nil
 }
 
-func reportHealthIssue(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.CreateIssue, subject healthSubject, opened, now time.Time, cancellations map[string]healthCancellation) (tracker.NativeIssue, error) {
+func reportHealthIssue(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.CreateIssue, subject healthSubject, linked tracker.NativeWorkItemID, opened, now time.Time, cancellations map[string]healthCancellation) (tracker.NativeIssue, error) {
 	search, err := prepareNativeDuplicates(ctx, tx, scope, request, now, true)
 	if err != nil {
 		return tracker.NativeIssue{}, err
+	}
+	if len(search.matches) == 0 && linked != "" {
+		var owner possibleDuplicate
+		err := tx.QueryRowContext(ctx, `SELECT i.native_id,i.number,i.title,ws.detent_state,i.revision FROM issues i JOIN workflow_states ws ON ws.id=i.workflow_state_id
+ WHERE i.organization_id=? AND i.project_id=? AND i.native_id=? AND i.archived=0 AND ws.terminal=0`, scope.organization, scope.project, linked).Scan(&owner.WorkItemID, &owner.Number, &owner.Title, &owner.State, &owner.revision)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return tracker.NativeIssue{}, err
+		}
+		if err == nil {
+			search.matches = []possibleDuplicate{owner}
+		}
 	}
 	if (len(search.matches) == 0 || search.matches[0].terminal) && subject.Kind == "work_item" {
 		var owner possibleDuplicate

@@ -7,8 +7,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/gate"
 )
 
 const (
@@ -88,17 +91,25 @@ type Request struct {
 	Context          string    `json:"context,omitempty"`
 }
 
+type EvidenceReference struct {
+	ID            string               `json:"id"`
+	AttemptID     string               `json:"attempt_id,omitempty"`
+	SourceSHA     string               `json:"source_sha,omitempty"`
+	SourceReceipt *gate.PipelineTiming `json:"source_receipt,omitempty"`
+}
+
 type Decision struct {
-	Diagnosis   string   `json:"diagnosis,omitempty"`
-	Instruction string   `json:"instruction,omitempty"`
-	Convergence string   `json:"convergence,omitempty"`
-	Outcome     Outcome  `json:"outcome"`
-	Step        string   `json:"step,omitempty"`
-	Reason      string   `json:"reason"`
-	Evidence    []string `json:"evidence"`
-	DefectKey   string   `json:"defect_key,omitempty"`
-	DefectTitle string   `json:"defect_title,omitempty"`
-	DefectBody  string   `json:"defect_body,omitempty"`
+	RetrievedEvidence []EvidenceReference `json:"retrieved_evidence,omitempty"`
+	Diagnosis         string              `json:"diagnosis,omitempty"`
+	Instruction       string              `json:"instruction,omitempty"`
+	Convergence       string              `json:"convergence,omitempty"`
+	Outcome           Outcome             `json:"outcome"`
+	Step              string              `json:"step,omitempty"`
+	Reason            string              `json:"reason"`
+	Evidence          []string            `json:"evidence"`
+	DefectKey         string              `json:"defect_key,omitempty"`
+	DefectTitle       string              `json:"defect_title,omitempty"`
+	DefectBody        string              `json:"defect_body,omitempty"`
 }
 
 type Record struct {
@@ -219,6 +230,11 @@ func (record Record) ValidatePublication(request Request) error {
 	if err := validateRecordBinding(request, id, record); err != nil {
 		return err
 	}
+	for _, reference := range record.Decision.RetrievedEvidence {
+		if reference.SourceSHA != "" && reference.SourceReceipt == nil {
+			return errors.New("progress source citation requires its retrieved receipt")
+		}
+	}
 	return validateDecision(request, record.Decision)
 }
 
@@ -294,15 +310,25 @@ func validateDecisionVersion(request Request, decision Decision, legacy bool) er
 	if err != nil || len(encoded) > MaxOutputBytes || strings.TrimSpace(decision.Reason) == "" || len(decision.Evidence) == 0 || len(decision.Evidence) > MaxReceipts {
 		return errors.New("progress decision requires bounded reasoning and evidence")
 	}
-	known := make(map[string]bool)
-	for _, attempt := range request.Attempts {
-		known[attempt.ID] = true
+	known := request.evidenceIDs()
+	if len(decision.RetrievedEvidence) > MaxReceipts {
+		return errors.New("progress retrieved evidence count outside bounds")
 	}
-	for _, receipt := range request.Receipts {
-		known[receipt.ID] = true
-	}
-	for _, comment := range request.Comments {
-		known[comment.ID] = true
+	retrieved := make(map[string]bool)
+	for _, reference := range decision.RetrievedEvidence {
+		id := reference.ID
+		if len(reference.AttemptID) > 256 || id == "" || len(id) > 256 || retrieved[id] || !slices.Contains(decision.Evidence, id) {
+			return errors.New("progress retrieved evidence requires unique bounded cited IDs")
+		}
+		if reference.SourceSHA != "" && (reference.SourceSHA != request.SourceSHA || reference.AttemptID != "") {
+			return errors.New("progress source citation differs from pinned source")
+		}
+		if receipt := reference.SourceReceipt; receipt != nil {
+			if reference.SourceSHA == "" || receipt.HeadSHA != reference.SourceSHA || receipt.TreeSHA == "" || receipt.ReceiptID != id || receipt.ID() != id || receipt.Command == "" || len(receipt.Command) > 4096 || receipt.ExitCode == nil || *receipt.ExitCode != 0 || receipt.StartedAt.IsZero() || receipt.FinishedAt.Before(receipt.StartedAt) {
+				return errors.New("progress source citation has invalid receipt identity")
+			}
+		}
+		retrieved[id], known[id] = true, true
 	}
 	for _, evidence := range decision.Evidence {
 		if evidence == "" || !known[evidence] {
@@ -369,4 +395,18 @@ func validateDecisionVersion(request Request, decision Decision, legacy bool) er
 		return errors.New("unknown progress decision")
 	}
 	return nil
+}
+
+func (request Request) evidenceIDs() map[string]bool {
+	known := make(map[string]bool)
+	for _, attempt := range request.Attempts {
+		known[attempt.ID] = true
+	}
+	for _, receipt := range request.Receipts {
+		known[receipt.ID] = true
+	}
+	for _, comment := range request.Comments {
+		known[comment.ID] = true
+	}
+	return known
 }
