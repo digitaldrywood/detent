@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -1043,9 +1044,12 @@ func TestRunnerWorkAttemptErrorClass(t *testing.T) {
 		err  error
 		want string
 	}{
+		{name: "decided issue hook", err: decidedTestFailure{runpkg.ErrWorkspacePreparation, "issue"}, want: workAttemptErrorIssue},
+		{name: "unknown hook", err: decidedTestFailure{runpkg.ErrWorkspacePreparation, "unknown"}, want: workAttemptErrorIssue},
+		{name: "decided instance validation", err: decidedTestFailure{errors.New("validation failed"), "instance"}, want: workAttemptErrorWorkspace},
 		{name: "generic runner failure", err: errors.New("runner failed"), want: workAttemptErrorRunner},
 		{name: "typed workspace diagnostic", err: errors.Join(runpkg.ErrWorkspacePreparation, errors.New("workspace diff stat: index unreadable")), want: workAttemptErrorWorkspace},
-		{name: "historical workspace diagnostic", err: errors.New("workspace diff stat: git add intent to add: git -C /tmp/example add --intent-to-add -- . :(top,exclude).detent/worker-tmp/ failed: exit status 1"), want: workAttemptErrorWorkspace},
+		{name: "historical workspace diagnostic", err: errors.New("workspace diff stat: git add intent to add: git -C /tmp/example add --intent-to-add -- . :(top,exclude).detent/worker-tmp/ failed: exit status 1"), want: workAttemptErrorRunner},
 		{name: "worker Git command failure", err: errors.New("run agent turn: git add intent to add: git add failed: exit status 1"), want: workAttemptErrorRunner},
 		{name: "worker cites workspace diagnostic", err: errors.New("run agent turn: workspace diff stat: git add intent to add: git add failed: exit status 1"), want: workAttemptErrorRunner},
 		{name: "unrecognized workspace failure", err: errors.New("workspace diff stat: code failed"), want: workAttemptErrorRunner},
@@ -1059,6 +1063,26 @@ func TestRunnerWorkAttemptErrorClass(t *testing.T) {
 			t.Parallel()
 			if got := runnerWorkAttemptErrorClass(tt.err); got != tt.want {
 				t.Fatalf("runnerWorkAttemptErrorClass() = %q, want %q", got, tt.want)
+			}
+			if decision, ok := runpkg.FailureDecision(tt.err); ok {
+				record := newDeferredCompletion(runpkg.Completion{Err: tt.err}, Running{}, nil, time.Now())
+				data, err := json.Marshal(record)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var restored deferredCompletion
+				if err := json.Unmarshal(data, &restored); err != nil {
+					t.Fatal(err)
+				}
+				replay := restored.completion()
+				got, ok := runpkg.FailureDecision(replay.Err)
+				if !ok || got.Outcome != decision.Outcome || runnerWorkAttemptErrorClass(replay.Err) != tt.want {
+					t.Fatalf("decision lost on completion replay: %+v", got)
+				}
+				attempt := store.WorkAttempt{ErrorClass: tt.want, TerminalState: store.WorkAttemptTerminalFailure, MetricsJSON: `{"turns":0}`}
+				if allowanceInfrastructureAttempt(attempt) != (decision.Outcome == "instance") {
+					t.Fatal("durable retry accounting ignored decision")
+				}
 			}
 		})
 	}

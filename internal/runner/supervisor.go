@@ -160,7 +160,16 @@ func (s *Supervisor) Run(ctx context.Context, request RunRequest) (completion Co
 				slog.Any("panic", recovered),
 			)
 		}
-		if IsTransientOverload(completion.Err) || errors.Is(completion.Err, ErrWorkspaceBranchHeld) || errors.Is(completion.Err, ErrWorkspacePreparation) || errors.Is(completion.Err, ErrExecutionAuthorityUnavailable) || availabilityStopped(request.Execution, completion.Err, s.now()) {
+		decision, attributed := FailureDecision(completion.Err)
+		if attributed {
+			completion.Retryable = true
+			completion.RetryAttempt = nextFailureAttempt(request.Attempt)
+			completion.RetryDelay = s.RetryDelay(completion.RetryAttempt)
+			if decision.Outcome == "instance" {
+				completion.RetryAttempt = request.Attempt
+				completion.RetryDelay = s.OverloadRetryDelay()
+			}
+		} else if IsTransientOverload(completion.Err) || errors.Is(completion.Err, ErrWorkspaceBranchHeld) || errors.Is(completion.Err, ErrWorkspacePreparation) || errors.Is(completion.Err, ErrExecutionAuthorityUnavailable) || availabilityStopped(request.Execution, completion.Err, s.now()) {
 			completion.Retryable = true
 			completion.RetryAttempt = request.Attempt
 			completion.RetryDelay = s.OverloadRetryDelay()

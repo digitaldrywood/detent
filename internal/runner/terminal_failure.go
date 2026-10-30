@@ -23,6 +23,10 @@ func nativeTerminalFailure(err error, at time.Time, turnStartRefused bool) *trac
 	if errors.As(err, &provider) {
 		failure = provider.NativeTerminalFailure()
 	}
+	failure.Decision = certainFailureDecision(err)
+	if decision, ok := FailureDecision(err); ok {
+		failure.Decision = &decision
+	}
 	failure.Error = err.Error()
 	var command *workspace.CommandError
 	if errors.As(err, &command) && command.Command == "git" && isGitPush(command.Args) {

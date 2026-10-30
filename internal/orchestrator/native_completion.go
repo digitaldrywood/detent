@@ -86,7 +86,8 @@ func (o *Orchestrator) completeNativeChangeRun(
 	}
 
 	if event.Err != nil || terminalStateForRun(nil, finalState) != store.WorkAttemptTerminalSuccess {
-		if (preProvider || errors.Is(event.Err, runpkg.ErrValidatorInfrastructure) || errors.Is(event.Err, runpkg.ErrReviewConversationsUnavailable)) && o.handlePreTurnFailure(ctx, state, event, running) {
+		decision, attributed := runpkg.FailureDecision(event.Err)
+		if (preProvider || errors.Is(event.Err, runpkg.ErrValidatorInfrastructure) || errors.Is(event.Err, runpkg.ErrReviewConversationsUnavailable) || attributed && decision.Outcome == "instance") && o.handlePreTurnFailure(ctx, state, event, running) {
 			return true
 		}
 		states, err := reader.WorkflowStates(ctx)
@@ -730,6 +731,9 @@ func shortCommit(sha string) string {
 }
 
 func nativeSourceReviewWait(event runpkg.Completion) bool {
+	if failureUsesIssueRetry(event.Err) {
+		return false
+	}
 	change := event.Result.NativeChange
 	if change == nil || !change.Changed || change.ChangeID == "" || change.VersionID == "" || change.HeadSHA == "" || change.Error != "" || change.VersionError != "" || event.Err != nil && change.ImplementationReviewError == "" && !errors.Is(event.Err, runpkg.ErrValidatorInfrastructure) {
 		return false

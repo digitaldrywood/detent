@@ -638,6 +638,9 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 			if test.optout {
 				issue.Labels = append(issue.Labels, "requires-human-review")
 			}
+			if (test.preInstance || errors.Is(test.runErr, runpkg.ErrWorkspacePreparation) || errors.Is(test.runErr, runpkg.ErrWorkerProcessReap) || errors.Is(test.runErr, runpkg.ErrValidatorInfrastructure) || errors.Is(test.runErr, runpkg.ErrReviewConversationsUnavailable)) && !errors.Is(test.runErr, runpkg.ErrNativeRecoveryRequired) && !errors.Is(test.runErr, runpkg.ErrExecutionAuthorityUnavailable) {
+				test.runErr = decidedTestFailure{test.runErr, "instance"}
+			}
 			tick := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}, updateErr: test.updateErr}
 			if test.handoffState != "" {
 				tick.stateIssues[0].State = test.handoffState
@@ -1383,7 +1386,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 					}
 				}
 				if errors.Is(test.runErr, runpkg.ErrReviewConversationsUnavailable) {
-					if _, retried := state.Retry[issue.ID]; attempts.completions[0].ErrorClass != workAttemptErrorRunner || len(tick.updates) != 0 || !retried {
+					if _, retried := state.Retry[issue.ID]; attempts.completions[0].ErrorClass != workAttemptErrorWorkspace || len(tick.updates) != 0 || !retried {
 						t.Fatalf("unreadable review conversations did not retry as an instance failure: class=%s updates=%v", attempts.completions[0].ErrorClass, tick.updates)
 					}
 				}

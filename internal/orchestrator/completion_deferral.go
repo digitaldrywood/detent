@@ -30,6 +30,7 @@ const (
 )
 
 type deferredCompletion struct {
+	FailureDecision        *tracker.FailureAttribution    `json:"failure_decision,omitempty"`
 	Schema                 int                            `json:"schema"`
 	Running                Running                        `json:"running"`
 	Request                deferredCompletionRequest      `json:"request"`
@@ -131,6 +132,9 @@ func newDeferredCompletion(event runpkg.Completion, running Running, fenceErr er
 		RetryAttempt:           event.RetryAttempt,
 		RetryDelay:             event.RetryDelay,
 		DeferredAt:             deferredAt,
+	}
+	if decision, ok := runpkg.FailureDecision(event.Err); ok {
+		record.FailureDecision = &decision
 	}
 	// Error interfaces do not round-trip through JSON. Retain actual quota
 	// response evidence so completion replay uses the same capacity owner.
@@ -265,6 +269,9 @@ func (r deferredCompletion) completion() runpkg.Completion {
 		case store.WorkAttemptTerminalTimedOut:
 			event.Err = errors.Join(event.Err, context.DeadlineExceeded)
 		}
+	}
+	if r.FailureDecision != nil {
+		event.Err = runpkg.RestoreFailureDecision(event.Err, *r.FailureDecision)
 	}
 	return event
 }

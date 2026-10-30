@@ -487,23 +487,12 @@ func instanceFailureClass(class string) bool {
 	return false
 }
 
-func issueConfigurationFailure(err error, errorClass, message string) bool {
+func issueConfigurationFailure(err error, errorClass, _ string) bool {
 	var configurationErr *runpkg.IssueConfigurationError
 	if errors.As(err, &configurationErr) || errorClass == "issue_configuration" {
 		return true
 	}
-	if err != nil {
-		message += "\n" + err.Error()
-	}
-	for line := range strings.SplitSeq(message, "\n") {
-		_, detail, found := strings.Cut(line, "agent override rejected: ")
-		if !found {
-			continue
-		}
-		if strings.HasPrefix(detail, "block: parse detent-agent YAML:") || detail == "block: detent-agent schema must be 1" {
-			return true
-		}
-	}
+
 	return false
 }
 

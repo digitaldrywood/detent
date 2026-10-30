@@ -451,7 +451,9 @@ func TestNativeCompletedTurnRetry(t *testing.T) {
 
 func (b *completedTurnBackend) RunTurn(ctx context.Context, request AgentTurnRequest, update AgentUpdateHandler) (AgentTurnResult, error) {
 	result, err := b.fakeCodexClient.RunTurn(ctx, request, update)
-	b.afterTurn()
+	if !strings.HasPrefix(request.Prompt, progresscheck.FailureInstructions) {
+		b.afterTurn()
+	}
 	return result, err
 }
 

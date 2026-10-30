@@ -33,6 +33,9 @@ func workspaceDiskExhausted(err error) bool {
 }
 
 func (o *Orchestrator) handleWorkspaceDiskExhaustion(ctx context.Context, state *State, event runpkg.Completion, running Running) bool {
+	if decision, ok := runpkg.FailureDecision(event.Err); ok && decision.Outcome != "instance" {
+		return false
+	}
 	if !workspaceDiskExhausted(event.Err) || event.Result.TurnStarted || running.TurnCount > 0 || running.WorkProductPushed || running.Tokens.TotalTokens > 0 || event.Result.Tokens.TotalTokens > 0 {
 		return false
 	}
@@ -67,46 +70,29 @@ func (o *Orchestrator) handleWorkspaceDiskExhaustion(ctx context.Context, state 
 }
 
 func preTurnFailureClass(event runpkg.Completion, running Running) string {
-	if (errors.Is(event.Err, runpkg.ErrValidatorInfrastructure) || errors.Is(event.Err, runpkg.ErrReviewConversationsUnavailable)) && running.Cancellation == nil && !errors.Is(event.Err, context.Canceled) {
-		return workAttemptErrorRunner
-	}
-
-	if (errors.Is(event.Err, runpkg.ErrWorkerProcessReap) || errors.Is(event.Err, runpkg.ErrWorkspacePreparation)) && !errors.Is(event.Err, context.Canceled) && running.Cancellation == nil && !issueConfigurationFailure(event.Err, "", "") {
-		return workAttemptErrorWorkspace
-	}
-	nativeRecovery := errors.Is(event.Err, runpkg.ErrNativeRecoveryRequired)
-	if nativeRecovery && errors.Is(event.Err, runpkg.ErrExecutionAuthorityUnavailable) {
+	if errors.Is(event.Err, runpkg.ErrExecutionAuthorityUnavailable) {
 		return ""
 	}
-	if issueConfigurationFailure(event.Err, "", "") || event.Err == nil || event.Result.TurnStarted || running.TurnCount > 0 || running.WorkProductPushed || running.Tokens.TotalTokens > 0 || event.Result.Tokens.TotalTokens > 0 {
-		return ""
-	}
-	if capacityErr, ok := backendcapacity.As(event.Err); ok {
-		switch capacityErr.Details.Kind {
-		case backendcapacity.StartupTimeoutKind:
+	preProvider := !event.Result.TurnStarted && running.TurnCount == 0 && !running.WorkProductPushed && running.Tokens.TotalTokens == 0 && event.Result.Tokens.TotalTokens == 0
+	if preProvider {
+		if errors.Is(event.Err, runpkg.ErrMergeWorkerStartupTimeout) {
 			return backendcapacity.StartupTimeoutErrorClass
-		case backendcapacity.StartupFailureKind:
-			return backendcapacity.StartupFailureErrorClass
-		default:
-			return ""
 		}
-	}
-	if errors.Is(event.Err, runpkg.ErrMergeWorkerStartupTimeout) {
-		return backendcapacity.StartupTimeoutErrorClass
+		if capacity, ok := backendcapacity.As(event.Err); ok && capacity.Details.Kind == backendcapacity.StartupTimeoutKind {
+			return backendcapacity.StartupTimeoutErrorClass
+		}
 	}
 	if errors.Is(event.Err, context.Canceled) || running.Cancellation != nil {
 		return ""
 	}
-	var deliverableErr *runpkg.DeliverableCommandError
-	var recoveryErr *runpkg.DeliverableRecoveryError
-	if errors.As(event.Err, &deliverableErr) || errors.As(event.Err, &recoveryErr) || runpkg.IsDeliverableConfigurationError(event.Err) || errors.Is(event.Err, runpkg.ErrSessionTokenCeilingExceeded) || isGitHubRESTBudgetHeadroomError(event.Err) {
+	if decision, ok := runpkg.FailureDecision(event.Err); ok {
+		if decision.Outcome == "instance" {
+			return workAttemptErrorWorkspace
+		}
 		return ""
 	}
-	if nativeRecovery {
+	if (preProvider || errors.Is(event.Err, runpkg.ErrWorkspacePreparation)) && errors.Is(event.Err, runpkg.ErrNativeRecoveryRequired) {
 		return workAttemptErrorWorkspace
-	}
-	if runnerWorkAttemptErrorClass(event.Err) == workAttemptErrorRunner {
-		return workAttemptErrorRunner
 	}
 	return ""
 }
@@ -222,4 +208,9 @@ func (o *Orchestrator) restorePreTurnIssue(ctx context.Context, state *State, ru
 	delete(state.Retry, issue.ID)
 	delete(state.PriorAttempts, issue.ID)
 	return issue, changed, nil
+}
+
+func failureUsesIssueRetry(err error) bool {
+	decision, ok := runpkg.FailureDecision(err)
+	return ok && decision.Outcome != "instance"
 }

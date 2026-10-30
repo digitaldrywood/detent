@@ -177,6 +177,12 @@ ORDER BY a.fencing_token LIMIT 5`
 	} else if found {
 		result.History = []tracker.CollaborationEvent{exit}
 	}
+	if runner := scope.credential.Runner.RunnerID; runner != "" {
+		result.InstanceSuccesses, err = s.readInstanceStepSuccesses(ctx, scope, item, runner)
+		if err != nil {
+			return result, err
+		}
+	}
 	if bounded {
 		slices.Reverse(result.Discussion)
 		if err := projectNativeRecovery(&result); err != nil {

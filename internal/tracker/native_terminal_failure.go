@@ -8,6 +8,7 @@ import (
 )
 
 type NativeTerminalFailure struct {
+	Decision         *FailureAttribution   `json:"decision,omitempty"`
 	Rejection        *PublicationRejection `json:"rejection,omitempty"`
 	Error            string                `json:"error,omitempty"`
 	Stage            string                `json:"stage,omitempty"`
@@ -55,17 +56,22 @@ func (f NativeTerminalFailure) Public() NativeTerminalFailure {
 		f.Rejection = nil
 	}
 	f.Attribution = ""
-	switch f.ErrorClass {
-	case "backend_startup", "protocol", "workspace_hook", "acceptance_publication", "security_audit_publication", "event_publication", "commit", "checkpoint_recovery", "publication", "review", "review_publication", "validator", "validator_publication", "security_audit", "landing":
-		f.Attribution = "instance"
-	case "issue_configuration", "validation":
-		f.Attribution = "issue"
-	case "source_recovery":
-		f.Attribution = "issue"
-		if f.Stage == "pre_provider" || f.Stage == "workspace_preparation" {
-			f.Attribution = "instance"
+	if f.Decision != nil {
+		decision := *f.Decision
+		switch decision.Outcome {
+		case "instance", "issue", "unknown":
+			if decision.Valid() {
+				decision.Reason = text.publicText(decision.Reason)
+				decision.Evidence = decision.Evidence.Public()
+				f.Decision = &decision
+				f.Attribution = decision.Outcome
+			}
+		}
+		if f.Attribution == "" {
+			f.Decision = nil
 		}
 	}
+
 	f.Source = "host_runner_completion"
 	f.Coverage = "recorded_execution_error_only; not_change_publication_or_issue_acceptance_or_lease_release; historical_metadata_not_backfilled"
 	diagnostic := f.Summary

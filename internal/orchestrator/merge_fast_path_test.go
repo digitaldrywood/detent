@@ -16,6 +16,7 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/progresscheck"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -1194,7 +1195,10 @@ type mergeFastPathAgentBackend struct {
 	calls atomic.Int64
 }
 
-func (b *mergeFastPathAgentBackend) RunTurn(context.Context, runpkg.AgentTurnRequest, runpkg.AgentUpdateHandler) (runpkg.AgentTurnResult, error) {
+func (b *mergeFastPathAgentBackend) RunTurn(_ context.Context, request runpkg.AgentTurnRequest, update runpkg.AgentUpdateHandler) (runpkg.AgentTurnResult, error) {
+	if request.TextOnly && request.ReadOnly && strings.HasPrefix(request.Prompt, progresscheck.FailureInstructions) {
+		return runpkg.AgentTurnResult{}, update(runpkg.AgentUpdate{Type: runpkg.AgentUpdateMessageDelta, Delta: `{"outcome":"unknown","reason":"fake failure decision"}`})
+	}
 	b.calls.Add(1)
 	return runpkg.AgentTurnResult{}, errors.New("agent backend should not run during clean merge fast-path")
 }

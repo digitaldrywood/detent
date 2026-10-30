@@ -37,6 +37,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
@@ -5446,6 +5447,10 @@ func (a *committingAgent) RunTurnWithTools(ctx context.Context, request runner.A
 func (*committingAgent) SupportsLiveControl() bool { return true }
 
 func (a *committingAgent) RunTurn(ctx context.Context, request runner.AgentTurnRequest, onUpdate runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
+	if strings.HasPrefix(request.Prompt, progresscheck.FailureInstructions) {
+		return runner.AgentTurnResult{}, onUpdate(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, Delta: `{"outcome":"unknown","reason":"fake failure decision"}`})
+	}
+
 	if a.afterTurn != nil {
 		defer a.afterTurn()
 	}

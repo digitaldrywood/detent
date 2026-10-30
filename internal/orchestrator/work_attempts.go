@@ -27,6 +27,7 @@ const (
 	maxRecentWorkAttemptSnapshots   = 50
 	maxRecentSchedulerDecisions     = 500
 	workAttemptErrorRunner          = "runner_error"
+	workAttemptErrorIssue           = "issue_failure"
 	workAttemptErrorInterrupted     = "runner_interrupted"
 	workAttemptErrorPostPushCommand = "post_push_command_failure"
 	workAttemptErrorWorkspace       = "workspace_preparation"
@@ -1283,6 +1284,12 @@ func terminalStateForRun(err error, finalState string) store.WorkAttemptTerminal
 }
 
 func runnerWorkAttemptErrorClass(err error) string {
+	if decision, ok := runpkg.FailureDecision(err); ok {
+		if decision.Outcome == "instance" {
+			return workAttemptErrorWorkspace
+		}
+		return workAttemptErrorIssue
+	}
 	if errors.Is(err, runpkg.ErrNativeRecoveryRequired) {
 		return workAttemptErrorWorkspace
 	}
@@ -1290,7 +1297,7 @@ func runnerWorkAttemptErrorClass(err error) string {
 	if errors.As(err, &deliverableErr) && deliverableErr != nil && deliverableErr.OperationClass == "post_push" {
 		return workAttemptErrorPostPushCommand
 	}
-	if errors.Is(err, runpkg.ErrWorkerProcessReap) || errors.Is(err, runpkg.ErrWorkspacePreparation) || err != nil && strings.HasPrefix(err.Error(), "workspace diff stat: git add intent to add: git ") {
+	if errors.Is(err, runpkg.ErrWorkerProcessReap) || errors.Is(err, runpkg.ErrWorkspacePreparation) {
 		return workAttemptErrorWorkspace
 	}
 	var statusCarrier interface {

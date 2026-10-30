@@ -331,8 +331,8 @@ func TestObservedLanePreTurnFailureRemainsInstanceOwned(t *testing.T) {
 			orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts}
 			state := newState(cfg)
 			running := Running{Issue: issue, WorkAttemptID: 1, CompletionLane: lane, DispatchSourceState: "Todo", DispatchTargetState: "In Progress"}
-			orch.finishObservedLaneRun(t.Context(), &state, running, runpkg.Completion{IssueID: issue.ID, CompletedAt: at, Err: errors.New("backend failed before turn")})
-			if state.FailureBreaker.Active() || len(attempts.completions) != 1 || attempts.completions[0].ErrorClass != workAttemptErrorRunner {
+			orch.finishObservedLaneRun(t.Context(), &state, running, runpkg.Completion{IssueID: issue.ID, CompletedAt: at, Err: decidedTestFailure{errors.New("backend failed before turn"), "instance"}})
+			if state.FailureBreaker.Active() || len(attempts.completions) != 1 || attempts.completions[0].ErrorClass != workAttemptErrorWorkspace {
 				t.Fatalf("pre-turn failure lost instance attribution: breaker=%#v completions=%#v", state.FailureBreaker, attempts.completions)
 			}
 			_, retried := state.Retry[issue.ID]

@@ -407,17 +407,18 @@ type NativeRecoveryBodyRead struct {
 }
 
 type NativeRecovery struct {
-	Read            *NativeRecoveryRead    `json:"read,omitempty"`
-	Continuation    *NativeRecoveryPage    `json:"continuation,omitempty"`
-	SourceAttemptID string                 `json:"source_attempt_id,omitempty"`
-	SourceVersionID string                 `json:"source_version_id,omitempty"`
-	Lease           NativeLease            `json:"lease"`
-	Issue           NativeIssue            `json:"issue"`
-	Discussion      []NativeComment        `json:"discussion"`
-	History         []CollaborationEvent   `json:"history"`
-	Attempts        []NativeAttempt        `json:"attempts"`
-	Change          *NativeChangeReference `json:"change,omitempty"`
-	ChangeDetail    *ChangeDetail          `json:"change_detail,omitempty"`
+	InstanceSuccesses []FailureStepSuccess   `json:"instance_successes,omitempty"`
+	Read              *NativeRecoveryRead    `json:"read,omitempty"`
+	Continuation      *NativeRecoveryPage    `json:"continuation,omitempty"`
+	SourceAttemptID   string                 `json:"source_attempt_id,omitempty"`
+	SourceVersionID   string                 `json:"source_version_id,omitempty"`
+	Lease             NativeLease            `json:"lease"`
+	Issue             NativeIssue            `json:"issue"`
+	Discussion        []NativeComment        `json:"discussion"`
+	History           []CollaborationEvent   `json:"history"`
+	Attempts          []NativeAttempt        `json:"attempts"`
+	Change            *NativeChangeReference `json:"change,omitempty"`
+	ChangeDetail      *ChangeDetail          `json:"change_detail,omitempty"`
 }
 
 func (c *NativeCheckpoint) PreservesSource() bool {

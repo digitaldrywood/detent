@@ -742,6 +742,13 @@ func (a *nativePlanningAgent) VerifyResume(_ context.Context, _ runner.AgentProc
 }
 
 func (a *nativePlanningAgent) RunTurn(ctx context.Context, req runner.AgentTurnRequest, update runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
+	if req.TextOnly && req.ReadOnly && strings.HasPrefix(req.Prompt, progresscheck.FailureInstructions) {
+		outcome := "instance"
+		if a.failure == "provider" {
+			outcome = "unknown"
+		}
+		return runner.AgentTurnResult{}, update(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, Delta: fmt.Sprintf(`{"outcome":%q,"reason":"fake failure decision"}`, outcome)})
+	}
 	if req.TextOnly && strings.Contains(req.Prompt, progresscheck.Instructions) {
 		a.progressCalls.Add(1)
 		if err := update(runner.AgentUpdate{Type: runner.AgentUpdateTokenUsage, Tokens: runner.AgentTokenUsage{InputTokens: 10, OutputTokens: 1}}); err != nil {

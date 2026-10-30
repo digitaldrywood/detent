@@ -199,6 +199,7 @@ type sshError struct {
 	Kind     string
 	Data     json.RawMessage
 	Children []*sshError
+	Decision *tracker.FailureAttribution    `json:",omitempty"`
 	Failure  *tracker.NativeTerminalFailure `json:",omitempty"`
 }
 
@@ -225,6 +226,12 @@ func encodeSSHError(err error) *sshError {
 		return nil
 	}
 	wire := &sshError{Message: err.Error()}
+	if carrier, ok := err.(interface {
+		FailureAttribution() tracker.FailureAttribution
+	}); ok {
+		decision := carrier.FailureAttribution()
+		wire.Decision = &decision
+	}
 	if provider, ok := err.(interface {
 		NativeTerminalFailure() tracker.NativeTerminalFailure
 	}); ok {
@@ -298,6 +305,9 @@ func (wire *sshError) err() error {
 		}
 	}
 	wrapped := &sshWrappedError{message: wire.Message, children: children}
+	if wire.Decision != nil {
+		return &attributedFailure{err: wrapped, decision: *wire.Decision}
+	}
 	if wire.Failure != nil {
 		return &sshTerminalError{sshWrappedError: wrapped, failure: wire.Failure.Public()}
 	}

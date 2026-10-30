@@ -41,6 +41,10 @@ func (*conversationAgentBackend) VerifyResume(context.Context, AgentProcessReque
 }
 
 func (b *conversationAgentBackend) RunTurn(_ context.Context, req AgentTurnRequest, onUpdate AgentUpdateHandler) (AgentTurnResult, error) {
+	if req.TextOnly {
+		return AgentTurnResult{}, onUpdate(AgentUpdate{Type: AgentUpdateMessageDelta, Delta: `{"outcome":"unknown","reason":"fake decision"}`})
+	}
+
 	b.mu.Lock()
 	b.requests = append(b.requests, req)
 	b.mu.Unlock()

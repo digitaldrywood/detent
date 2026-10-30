@@ -203,7 +203,7 @@ func conversationError(err error) error {
 	case apiErr.Status == http.StatusNotFound:
 		return fmt.Errorf("%w: %w", runner.ErrNoConversation, err)
 	case apiErr.Code == "stale_execution":
-		return fmt.Errorf("%w: %w", ErrStaleConversation, err)
+		return fmt.Errorf("%w: %w: %w", ErrStaleConversation, runner.ErrExecutionAuthorityUnavailable, err)
 	default:
 		return err
 	}

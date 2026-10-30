@@ -3,11 +3,13 @@ package runner
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -17,7 +19,10 @@ type sessionLimitsBackend struct {
 	duringTurn func(AgentTurnRequest, AgentUpdateHandler) error
 }
 
-func (b *sessionLimitsBackend) RunTurn(_ context.Context, req AgentTurnRequest, update AgentUpdateHandler) (AgentTurnResult, error) {
+func (b *sessionLimitsBackend) RunTurn(ctx context.Context, req AgentTurnRequest, update AgentUpdateHandler) (AgentTurnResult, error) {
+	if strings.HasPrefix(req.Prompt, progresscheck.FailureInstructions) {
+		return b.fakeCodexClient.RunTurn(ctx, req, update)
+	}
 	return AgentTurnResult{}, b.duringTurn(req, update)
 }
 

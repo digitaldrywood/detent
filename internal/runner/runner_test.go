@@ -30,6 +30,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/selector"
@@ -8143,6 +8144,9 @@ func (b *fakeMergeWorkspaceBackend) PrepareMerge(
 }
 
 type fakeCodexClient struct {
+	failureOutcome string
+	failureCalls   int
+	failureRequest AgentTurnRequest
 	request        AgentTurnRequest
 	updates        []AgentUpdate
 	result         AgentTurnResult
@@ -8263,6 +8267,15 @@ func (b *deliverableRecoveryAgentBackend) RunTurn(_ context.Context, req AgentTu
 }
 
 func (c *fakeCodexClient) RunTurn(_ context.Context, req AgentTurnRequest, onUpdate AgentUpdateHandler) (AgentTurnResult, error) {
+	if strings.HasPrefix(req.Prompt, progresscheck.FailureInstructions) {
+		c.failureCalls++
+		c.failureRequest = req
+		outcome := c.failureOutcome
+		if outcome == "" {
+			outcome = "unknown"
+		}
+		return AgentTurnResult{}, onUpdate(AgentUpdate{Type: AgentUpdateMessageDelta, ItemID: "failure", Delta: fmt.Sprintf(`{"outcome":%q,"reason":"fake failure decision"}`, outcome)})
+	}
 	c.calls++
 	c.request = req
 	for _, update := range c.updates {
@@ -8308,6 +8321,9 @@ type resumeCapacityAgentBackend struct {
 }
 
 func (b *resumeCapacityAgentBackend) RunTurn(_ context.Context, req AgentTurnRequest, _ AgentUpdateHandler) (AgentTurnResult, error) {
+	if strings.HasPrefix(req.Prompt, progresscheck.FailureInstructions) {
+		return AgentTurnResult{}, nil
+	}
 	b.requests = append(b.requests, req)
 	return AgentTurnResult{}, errors.New("usage limit reached")
 }
@@ -8321,6 +8337,9 @@ func (b *resumeCapacityAgentBackend) ClassifyCapacityError(error, *telemetry.Rat
 }
 
 func (b *resumeFallbackAgentBackend) RunTurn(_ context.Context, req AgentTurnRequest, onUpdate AgentUpdateHandler) (AgentTurnResult, error) {
+	if strings.HasPrefix(req.Prompt, progresscheck.FailureInstructions) {
+		return AgentTurnResult{}, nil
+	}
 	b.requests = append(b.requests, req)
 	if !agentResumeEmpty(req.Resume) {
 		return AgentTurnResult{}, errors.New("resume failed")
@@ -8348,6 +8367,9 @@ type resumeStartedFailureAgentBackend struct {
 }
 
 func (b *resumeStartedFailureAgentBackend) RunTurn(_ context.Context, req AgentTurnRequest, onUpdate AgentUpdateHandler) (AgentTurnResult, error) {
+	if strings.HasPrefix(req.Prompt, progresscheck.FailureInstructions) {
+		return AgentTurnResult{}, nil
+	}
 	b.requests = append(b.requests, req)
 	if onUpdate != nil {
 		if err := onUpdate(AgentUpdate{

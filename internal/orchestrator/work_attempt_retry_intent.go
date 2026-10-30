@@ -312,7 +312,7 @@ func (o *Orchestrator) clearConfigurationFailureEvidence(state *State, issueID s
 	for class, failures := range breaker.Failures {
 		kept := failures[:0]
 		for _, failure := range failures {
-			if failure.IssueID == issueID && !failure.At.After(through) && issueConfigurationFailure(nil, "", failure.ErrorMessage) {
+			if failure.IssueID == issueID && !failure.At.After(through) && issueConfigurationFailure(nil, class, failure.ErrorMessage) {
 				changedActive = changedActive || class == breaker.Class
 				continue
 			}

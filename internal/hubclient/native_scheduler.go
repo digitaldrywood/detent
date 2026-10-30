@@ -881,6 +881,7 @@ func (s *Scheduler) nativeClaimRenewable(ctx context.Context, claim nativeClaim)
 			if outage {
 				execution.preparedFailure.ErrorClass = "publication"
 				execution.preparedFailure.Error = "Hub unavailable during completion finalization"
+				execution.preparedFailure.Decision = &tracker.FailureAttribution{Outcome: "instance", Reason: "Hub transport outage observed during completion finalization"}
 				failure := execution.preparedFailure.Public()
 				execution.preparedFailure = &failure
 			}

@@ -26,6 +26,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -1075,6 +1076,9 @@ type releaseDeliveryAgent struct {
 }
 
 func (a *releaseDeliveryAgent) RunTurn(ctx context.Context, req AgentTurnRequest, update AgentUpdateHandler) (AgentTurnResult, error) {
+	if strings.HasPrefix(req.Prompt, progresscheck.FailureInstructions) {
+		return AgentTurnResult{}, nil
+	}
 	a.calls++
 	head, err := exec.CommandContext(ctx, "git", "-C", req.Workspace, "rev-parse", "HEAD").Output()
 	if err != nil {
@@ -1096,7 +1100,7 @@ func TestNativeReleaseDeliveryWorkspace(t *testing.T) {
 		{name: "advanced release branch keeps frozen head", advancedBase: true},
 		{name: "head outside frozen lineage", wrongBase: true},
 		{name: "moved delivery head", movedHead: true},
-		{name: "workspace failure stays instance owned", hookFailure: true},
+		{name: "workspace failure records unknown decision", hookFailure: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			writer := initRunnerSourceRepo(t)
@@ -1165,8 +1169,8 @@ func TestNativeReleaseDeliveryWorkspace(t *testing.T) {
 						t.Fatalf("workspace failure = %v, want after_create exit 17", err)
 					}
 				}
-				if test.hookFailure && (execution.failure == nil || execution.failure.Attribution != "instance" || execution.failure.ErrorClass != "workspace_hook" || execution.finish != "failed") {
-					t.Fatalf("workspace failure not instance owned: failure=%+v finish=%s error=%v", execution.failure, execution.finish, err)
+				if test.hookFailure && (execution.failure == nil || execution.failure.Attribution != "unknown" || execution.failure.ErrorClass != "workspace_hook" || execution.finish != "failed") {
+					t.Fatalf("workspace failure lost decision: failure=%+v finish=%s error=%v", execution.failure, execution.finish, err)
 				}
 				return
 			}

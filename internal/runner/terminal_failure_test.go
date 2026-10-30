@@ -54,13 +54,13 @@ func TestNativeTerminalFailureSignatureEvidence(t *testing.T) {
 			if got == nil || got.Error != test.want || got.ErrorClass != test.class || got.ObservedAt != now {
 				t.Fatalf("failure=%#v", got)
 			}
-			if (test.name == "issue configuration" || test.name == "source recovery") && (got.Attribution != "issue" || got.Stage != "") {
+			if test.name == "issue configuration" && (got.Attribution != "issue" || got.Stage != "") {
 				t.Fatalf("issue-owned error acquired workspace attribution: %#v", got)
 			}
-			if test.name == "acceptance rejection" && (got.Stage != "acceptance_publication" || got.Attribution != "instance" || got.Rejection == nil || got.Rejection.Field != "validator.session_id") {
+			if test.name == "acceptance rejection" && (got.Stage != "acceptance_publication" || got.Attribution != "" || got.Rejection == nil || got.Rejection.Field != "validator.session_id") {
 				t.Fatalf("acceptance rejection lost: %+v", got)
 			}
-			if test.class == "workspace_hook" && (got.Attribution != "instance" || got.Stage != "workspace_preparation") {
+			if test.class == "workspace_hook" && (got.Stage != "workspace_preparation") {
 				t.Fatalf("hook failure lost instance attribution: %#v", got)
 			}
 			if test.summary != "" && got.Summary != test.summary {

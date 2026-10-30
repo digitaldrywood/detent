@@ -558,21 +558,21 @@ func TestConfigurationRecoveryOnlyClearsMatchingFailures(t *testing.T) {
 			now := time.Now().UTC()
 			host := &Orchestrator{}
 			state := newState(normalizeConfig(Config{FailureBreaker: FailureBreakerConfig{SameClassLimit: 2}}))
-			state.FailureBreaker.Class = "runner_error"
+			state.FailureBreaker.Class = "issue_configuration"
 			state.FailureBreaker.ResumeAt = now.Add(time.Hour)
 			for range 6 {
-				state.FailureBreaker.Failures["runner_error"] = append(state.FailureBreaker.Failures["runner_error"], ProjectFailure{IssueID: "bad", At: now, ErrorMessage: "agent override rejected: block: detent-agent schema must be 1"})
+				state.FailureBreaker.Failures["issue_configuration"] = append(state.FailureBreaker.Failures["issue_configuration"], ProjectFailure{IssueID: "bad", At: now, ErrorMessage: "agent override rejected: block: detent-agent schema must be 1"})
 			}
 			if unrelated {
 				for range 2 {
-					state.FailureBreaker.Failures["runner_error"] = append(state.FailureBreaker.Failures["runner_error"], ProjectFailure{IssueID: "bad", At: now, ErrorMessage: "runner unavailable"})
+					state.FailureBreaker.Failures["issue_configuration"] = append(state.FailureBreaker.Failures["issue_configuration"], ProjectFailure{At: now, IssueID: "other", ErrorMessage: "runner unavailable"})
 				}
 			}
 			host.clearConfigurationFailureEvidence(&state, "bad", now)
 			if state.FailureBreaker.Active() != unrelated {
 				t.Fatalf("breaker active = %v", state.FailureBreaker.Active())
 			}
-			for _, failure := range state.FailureBreaker.Failures["runner_error"] {
+			for _, failure := range state.FailureBreaker.Failures["issue_configuration"] {
 				if strings.Contains(failure.ErrorMessage, "agent override rejected:") {
 					t.Fatal("matching stale evidence retained")
 				}

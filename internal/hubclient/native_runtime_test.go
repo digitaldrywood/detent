@@ -199,7 +199,7 @@ func TestNativeAttemptTerminalActivityReceipts(t *testing.T) {
 				}
 				failure := &tracker.NativeTerminalFailure{Error: "after_create exit status 127: script not found token=private-secret", ErrorClass: "workspace_hook", ObservedAt: clock}
 				if tt.issueOwned {
-					failure = &tracker.NativeTerminalFailure{Error: "agent override rejected: effort: unsupported value", ErrorClass: "issue_configuration", ObservedAt: clock}
+					failure = &tracker.NativeTerminalFailure{Error: "agent override rejected: effort: unsupported value", ErrorClass: "issue_configuration", Decision: &tracker.FailureAttribution{Outcome: "issue", Reason: "typed issue configuration rejection"}, ObservedAt: clock}
 				}
 				if tt.unclassified {
 					failure = &tracker.NativeTerminalFailure{Error: "unclassified setup failure", ObservedAt: clock}

@@ -270,7 +270,11 @@ type sessionBlockingAgentBackend struct {
 	resultErr   error
 }
 
-func (b *sessionBlockingAgentBackend) RunTurn(ctx context.Context, _ AgentTurnRequest, onUpdate AgentUpdateHandler) (AgentTurnResult, error) {
+func (b *sessionBlockingAgentBackend) RunTurn(ctx context.Context, req AgentTurnRequest, onUpdate AgentUpdateHandler) (AgentTurnResult, error) {
+	if req.TextOnly {
+		return AgentTurnResult{}, onUpdate(AgentUpdate{Type: AgentUpdateMessageDelta, Delta: `{"outcome":"unknown","reason":"fake decision"}`})
+	}
+
 	if err := onUpdate(AgentUpdate{
 		Type:     AgentUpdateTurnStarted,
 		ThreadID: "thread-1572",

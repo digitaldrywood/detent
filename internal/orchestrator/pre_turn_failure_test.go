@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestPreTurnFailuresRetryWithoutPausingProject(t *testing.T) {
@@ -56,7 +57,7 @@ func TestPreTurnFailuresRetryWithoutPausingProject(t *testing.T) {
 				issue := terminalRetryTestIssue(strconv.Itoa(index))
 				tracker.issues[issue.ID] = issue
 				state.Running[issue.ID] = Running{Issue: issue, Attempt: 1, WorkAttemptID: int64(index + 1), DispatchSourceState: "Todo", DispatchTargetState: "In Progress", StartedAt: now.Add(-time.Second)}
-				o.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, Err: failure, CompletedAt: now})
+				o.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, Err: decidedTestFailure{failure, "instance"}, CompletedAt: now})
 				retry, retried := state.Retry[issue.ID]
 				if tracker.issues[issue.ID].State != "Todo" || len(state.Blocked) != 0 || len(tracker.comments) != 0 || !retried || retry.Attempt != 2 || !retry.DueAt.After(now) {
 					t.Fatalf("pre-turn failure %d did not retry in its lane: state=%s blocked=%v comments=%v retry=%#v", index+1, tracker.issues[issue.ID].State, state.Blocked, tracker.comments, state.Retry)
@@ -117,4 +118,14 @@ func TestPreTurnRestoresDispatchLane(t *testing.T) {
 			}
 		})
 	}
+}
+
+type decidedTestFailure struct {
+	error
+	outcome string
+}
+
+func (e decidedTestFailure) Unwrap() error { return e.error }
+func (e decidedTestFailure) FailureAttribution() tracker.FailureAttribution {
+	return tracker.FailureAttribution{Outcome: e.outcome, Reason: "fake decision from failure evidence"}
 }
