@@ -161,6 +161,10 @@ func TestGoTestReceiptsRefuseLeasedWorkers(t *testing.T) {
 	if response.Code < 400 || response.Code >= 500 || strings.Contains(response.Body.String(), "digest_key") {
 		t.Fatalf("leased worker attestation: status = %d, want a client error without a digest key: %s", response.Code, response.Body.String())
 	}
+	seedHubAPIToken(t, f.service, "receipt-admin", "receipt-admin-token", apiScopeAdmin)
+	if response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/go-test-receipts/attestations", "receipt-admin-token", nil); response.Code < 400 || response.Code >= 500 || strings.Contains(response.Body.String(), "digest_key") {
+		t.Fatalf("hosted administrator attestation: status = %d, want a client error without a digest key: %s", response.Code, response.Body.String())
+	}
 	forged := gotestreceipt.Receipt{Attestation: runnerAttestation.ID, Key: strings.Repeat("f", 64), Package: "internal/target", Inputs: []string{}, Digest: strings.Repeat("e", 64)}
 	if response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/go-test-receipts", f.worker, forged); response.Code < 400 || response.Code >= 500 {
 		t.Fatalf("leased worker record: status = %d, want a client error: %s", response.Code, response.Body.String())
