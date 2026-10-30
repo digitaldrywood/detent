@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -58,8 +59,11 @@ func ParseTestLog(r io.Reader, pwd string, env Environment, start time.Time) ([]
 			return fmt.Errorf("test read system path %s", path)
 		case pathTemporary:
 			info, err := os.Lstat(path)
-			if err != nil || info.ModTime().After(start) {
-				return nil
+			if err != nil {
+				return fmt.Errorf("temporary input unavailable: %w", err)
+			}
+			if info.ModTime().After(start) {
+				return errors.New("temporary input changed during test")
 			}
 		}
 		seen[op+"\t"+scope+"\t"+name] = struct{}{}
@@ -148,13 +152,10 @@ func ModifiedSince(inputs []string, env Environment, start time.Time) error {
 		for _, stat := range []func(string) (os.FileInfo, error){os.Lstat, os.Stat} {
 			info, err := stat(path)
 			if errors.Is(err, os.ErrNotExist) {
-				continue
+				return errors.New("test input is missing after execution")
 			}
 			if err != nil {
 				return fmt.Errorf("stat test input: %w", err)
-			}
-			if fields[0] == "stat" && info.IsDir() {
-				continue
 			}
 			if info.ModTime().After(start) {
 				return fmt.Errorf("test input %s changed while the test ran", fields[2])
@@ -172,7 +173,7 @@ func (e Environment) observe(input string) (string, error) {
 		if !ok {
 			return "unset", nil
 		}
-		return "set " + sum([]byte(e.normalize(value))), nil
+		return "set " + sum([]byte(value)), nil
 	case len(fields) == 3 && (fields[0] == "open" || fields[0] == "stat"):
 		path, err := e.path(fields[1], fields[2])
 		if err != nil {
@@ -203,8 +204,8 @@ func (e Environment) path(scope, name string) (string, error) {
 
 func observePath(op, path string) (string, error) {
 	info, err := os.Lstat(path)
-	if missing, ok := absence(err); ok {
-		return missing, nil
+	if errors.Is(err, os.ErrNotExist) {
+		return "", errors.New("test input is missing")
 	}
 	if err != nil {
 		return "", fmt.Errorf("stat test input: %w", err)
@@ -218,15 +219,15 @@ func observePath(op, path string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		return "link " + sum([]byte(target)) + " " + resolved, nil
+		return fmt.Sprintf("link %s %d %v %s %s", info.Mode(), info.ModTime().UnixNano(), stableMetadata(info), sum([]byte(target)), resolved), nil
 	}
 	return describe(op, path, info)
 }
 
 func observeTarget(op, path string) (string, error) {
 	info, err := os.Stat(path)
-	if missing, ok := absence(err); ok {
-		return missing, nil
+	if errors.Is(err, os.ErrNotExist) {
+		return "", errors.New("test input is missing")
 	}
 	if err != nil {
 		return "", fmt.Errorf("stat test input: %w", err)
@@ -234,21 +235,11 @@ func observeTarget(op, path string) (string, error) {
 	return describe(op, path, info)
 }
 
-func absence(err error) (string, bool) {
-	switch {
-	case errors.Is(err, os.ErrNotExist):
-		return "missing", true
-	case errors.Is(err, os.ErrPermission):
-		return "denied", true
-	}
-	return "", false
-}
-
 func describe(op, path string, info os.FileInfo) (string, error) {
 	switch {
 	case info.IsDir():
 		if op == "stat" {
-			return "dir " + info.Mode().Perm().String(), nil
+			return fmt.Sprintf("dir %s %d %v", info.Mode(), info.ModTime().UnixNano(), stableMetadata(info)), nil
 		}
 		entries, err := os.ReadDir(path)
 		if err != nil {
@@ -258,17 +249,17 @@ func describe(op, path string, info os.FileInfo) (string, error) {
 		for _, entry := range entries {
 			names = append(names, entry.Name()+"\x00"+entry.Type().String())
 		}
-		return "dir " + info.Mode().Perm().String() + " " + sum([]byte(strings.Join(names, "\n"))), nil
+		return fmt.Sprintf("dir %s %d %v", info.Mode(), info.ModTime().UnixNano(), stableMetadata(info)) + " " + sum([]byte(strings.Join(names, "\n"))), nil
 	case !info.Mode().IsRegular():
-		return "special " + info.Mode().String(), nil
+		return "", errors.New("test input is a special file")
 	case op == "stat":
-		return fmt.Sprintf("file %d %s", info.Size(), info.Mode().Perm()), nil
+		return fmt.Sprintf("file %d %s %d %v", info.Size(), info.Mode(), info.ModTime().UnixNano(), stableMetadata(info)), nil
 	}
 	hash := sha256.New()
 	if err := copyFile(hash, path); err != nil {
 		return "", fmt.Errorf("hash test input: %w", err)
 	}
-	return fmt.Sprintf("file %s %s", info.Mode().Perm(), hex.EncodeToString(hash.Sum(nil))), nil
+	return fmt.Sprintf("file %d %s %d %v %s", info.Size(), info.Mode(), info.ModTime().UnixNano(), stableMetadata(info), hex.EncodeToString(hash.Sum(nil))), nil
 }
 
 func copyFile(w io.Writer, path string) (err error) {
@@ -294,9 +285,6 @@ func (e Environment) classify(path string) (string, string, pathKind) {
 	}
 	temporary := ""
 	for _, dir := range e.TempDirs {
-		if dir != "" && filepath.Clean(dir) == path {
-			return "", "", pathIgnored
-		}
 		if within(dir, path) && len(dir) > len(temporary) {
 			temporary = dir
 		}
@@ -313,20 +301,6 @@ func (e Environment) classify(path string) (string, string, pathKind) {
 		return scopeAbsolute, path, pathTemporary
 	}
 	return scopeAbsolute, path, pathInput
-}
-
-func (e Environment) normalize(value string) string {
-	for _, root := range []string{e.Root, e.RootAlias} {
-		if root != "" {
-			value = strings.ReplaceAll(value, root, "\x00root")
-		}
-	}
-	for _, dir := range e.TempDirs {
-		if dir != "" {
-			value = strings.ReplaceAll(value, dir, "\x00temp")
-		}
-	}
-	return value
 }
 
 func resolve(pwd, name string) string {
@@ -347,4 +321,23 @@ func within(dir, path string) bool {
 func sum(data []byte) string {
 	value := sha256.Sum256(data)
 	return hex.EncodeToString(value[:])
+}
+
+func stableMetadata(info os.FileInfo) string {
+	value := reflect.ValueOf(info.Sys())
+	if value.Kind() == reflect.Pointer {
+		value = value.Elem()
+	}
+	if value.Kind() != reflect.Struct {
+		return fmt.Sprint(info.Sys())
+	}
+	var metadata strings.Builder
+	for i := 0; i < value.NumField(); i++ {
+		name := value.Type().Field(i).Name
+		if strings.HasPrefix(name, "Atim") || name == "LastAccessTime" {
+			continue
+		}
+		fmt.Fprintf(&metadata, "%s=%v;", name, value.Field(i))
+	}
+	return metadata.String()
 }
