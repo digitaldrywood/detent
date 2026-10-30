@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -584,4 +585,181 @@ func TestArchiveQueryExceedsSQLiteParameterCount(t *testing.T) {
 	if len(query.ctes) > maxArchiveSQLBytes {
 		t.Fatal("archive query exceeded its size bound")
 	}
+}
+
+func archiveAddedColumns(t *testing.T, since string) map[string]map[string]string {
+	t.Helper()
+	entries, err := migrationFiles.ReadDir("migrations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := map[string]map[string]string{}
+	added := regexp.MustCompile(`(?i)ALTER TABLE (\w+) ADD COLUMN (\w+) (\w+)([^;]*);`)
+	defaults := regexp.MustCompile(`(?i)DEFAULT\s+('(?:[^']|'')*'|[-0-9]+)`)
+	for _, entry := range entries {
+		if entry.Name() < since {
+			continue
+		}
+		raw, err := migrationFiles.ReadFile("migrations/" + entry.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+		up := strings.Split(string(raw), "-- +goose Down")[0]
+		for _, match := range added.FindAllStringSubmatch(up, -1) {
+			if result[match[1]] == nil {
+				result[match[1]] = map[string]string{}
+			}
+			value := "NULL"
+			if found := defaults.FindStringSubmatch(match[4]); found != nil {
+				value = found[1]
+			}
+			result[match[1]][match[2]] = value
+		}
+	}
+	return result
+}
+
+func TestArchiveMigrationCompatibility(t *testing.T) {
+	f := newNativeFixture(t, nil, "", "archive-schema")
+	added := archiveAddedColumns(t, "20261023000000")
+	for _, kind := range []string{"run", "change", "revision", "conversation", "history"} {
+		for _, table := range nativeArchiveTables(kind) {
+			columns, _, err := nativeArchiveColumns(t.Context(), f.service.database.reader, table)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, column := range columns {
+				expected, later := added[table][column]
+				if !later {
+					continue
+				}
+				raw := archiveProjectionDefault(table, column)
+				if raw == nil {
+					t.Errorf("%s.%s needs an explicit archive compatibility value", table, column)
+					continue
+				}
+				scalar, err := archiveSQLScalar(raw)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var equal bool
+				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT ("+scalar+") IS ("+expected+")").Scan(&equal); err != nil {
+					t.Fatal(err)
+				}
+				if !equal {
+					t.Errorf("%s.%s projects %s, migration gives %s", table, column, scalar, expected)
+				}
+			}
+		}
+	}
+}
+
+func legacyArchiveTestTable(t *testing.T, f nativeFixture, name, condition string, args ...any) attachment.ArchiveTable {
+	t.Helper()
+	table := archiveTestTable(t, f.service, name, condition, args...)
+	if len(table.Rows) == 0 {
+		t.Fatalf("%s fixture is empty", name)
+	}
+	added := archiveAddedColumns(t, "20261027202107")[name]
+	for _, pair := range [][2]string{{"payload_object_key", "record_json"}, {"payload_object_key", "data_json"}} {
+		keyIndex, dataIndex := slices.Index(table.Columns, pair[0]), slices.Index(table.Columns, pair[1])
+		if keyIndex < 0 || dataIndex < 0 {
+			continue
+		}
+		for _, row := range table.Rows {
+			var key string
+			if err := json.Unmarshal(row[keyIndex], &key); err != nil {
+				t.Fatal(err)
+			}
+			if key == "" {
+				continue
+			}
+			var payload json.RawMessage
+			if err := decodeStorageJSON(f.service.contentContext(t.Context()), []byte(key), &payload); err != nil {
+				t.Fatal(err)
+			}
+			var err error
+			row[dataIndex], err = json.Marshal(string(payload))
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	for i := len(table.Columns) - 1; i >= 0; i-- {
+		if _, found := added[table.Columns[i]]; !found {
+			continue
+		}
+		table.Columns = slices.Delete(table.Columns, i, i+1)
+		for n := range table.Rows {
+			table.Rows[n] = slices.Delete(table.Rows[n], i, i+1)
+		}
+	}
+	return table
+}
+
+func TestOlderArchiveViews(t *testing.T) {
+	t.Run("change recovery", func(t *testing.T) {
+		f := newChangeFixture(t, nil)
+		version := f.publish(t, "legacy-version", "")
+		review := tracker.ChangeReview{ID: "legacy-review", VersionID: version.ID, Decision: "commented", Body: "Historical review", CreatedAt: f.service.config.now()}
+		ctx := f.service.contentContext(t.Context())
+		if err := f.service.hubTransact(ctx, func(tx *sql.Tx, _ time.Time) error {
+			return insertChangeEvidence(ctx, tx, f.change.ID, version.ID, "review", review.ID, review)
+		}); err != nil {
+			t.Fatal(err)
+		}
+		tables := []attachment.ArchiveTable{}
+		for _, name := range nativeArchiveTables("change") {
+			tables = append(tables, legacyArchiveTestTable(t, f.nativeFixture, name, "change_id=?", f.change.ID))
+		}
+		ref, data := publishTestSection(t, f.nativeFixture, string(f.issue.WorkItemID), "change", f.change.ID, 1, 1, tables...)
+		f.service.config.ArchiveReader = func(_ context.Context, got attachment.ArchiveReference, _ bool) (entryauthority.ArchiveResponse, error) {
+			if got != ref {
+				t.Fatal("unexpected section")
+			}
+			return entryauthority.ArchiveResponse{Data: data}, nil
+		}
+		response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(f.issue.WorkItemID)+"?view=recovery&detail=full", f.token, nil)
+		requireNativeStatus(t, response, http.StatusOK)
+		var recovery tracker.NativeRecovery
+		decodeHubResponse(t, response, &recovery)
+		if recovery.ChangeDetail == nil || len(recovery.ChangeDetail.Reviews) != 1 || recovery.ChangeDetail.Reviews[0].Body != review.Body {
+			t.Fatalf("lost historical evidence: %s", response.Body.String())
+		}
+	})
+	t.Run("attempt and compacted history", func(t *testing.T) {
+		a := newTerminalAttemptFixture(t)
+		a.finish(t)
+		item, attempt := string(a.issue.WorkItemID), a.start.Data.AttemptID
+		objects := map[string][]byte{}
+		for _, kind := range []string{"run", "history"} {
+			var table attachment.ArchiveTable
+			subject := attempt
+			first, last := int64(1), int64(1)
+			if kind == "run" {
+				table = legacyArchiveTestTable(t, a.nativeFixture, "native_attempts", "id=?", attempt)
+			} else {
+				subject = item
+				table = legacyArchiveTestTable(t, a.nativeFixture, "collaboration_events", "work_item_id=?", item)
+				last = int64(len(table.Rows))
+			}
+			ref, data := publishTestSection(t, a.nativeFixture, item, kind, subject, first, last, table)
+			objects[ref.Key] = data
+		}
+		a.service.config.ArchiveReader = func(_ context.Context, ref attachment.ArchiveReference, _ bool) (entryauthority.ArchiveResponse, error) {
+			return entryauthority.ArchiveResponse{Data: objects[ref.Key]}, nil
+		}
+		for _, statement := range []string{"DROP TRIGGER collaboration_events_no_delete", "DELETE FROM collaboration_events WHERE work_item_id='" + item + "'"} {
+			if _, err := a.service.database.db.ExecContext(t.Context(), statement); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, suffix := range []string{"/runtime?native_attempt_id=" + attempt, "/attempts?view=recovery", "/history?limit=200"} {
+			response := performHubAPIRequest(t, a.service, http.MethodGet, a.base+"/work-items/"+item+suffix, a.token, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			if suffix == "/history?limit=200" && !strings.Contains(response.Body.String(), "run.finished") {
+				t.Fatalf("lost compacted history: %s", response.Body.String())
+			}
+		}
+	})
 }
