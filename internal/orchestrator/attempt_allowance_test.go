@@ -253,17 +253,18 @@ func TestAttemptAllowanceTriageInfrastructureFailure(t *testing.T) {
 
 	t.Parallel()
 	for _, tt := range []struct {
-		name    string
-		failure error
-		started bool
+		name         string
+		failure      error
+		started      bool
+		wantComments int
 	}{
-		{"workspace", fmt.Errorf("%w: cannot create directory", runpkg.ErrWorkspacePreparation), false},
-		{"startup", backendcapacity.NewError(backendcapacity.Scope{}, backendcapacity.Details{Type: backendcapacity.ErrorTypeTransientOverload, Kind: backendcapacity.StartupFailureKind}, errors.New("backend exited")), false},
-		{"transport", io.ErrUnexpectedEOF, false},
-		{"protocol", errors.New("codex turn/start: JSON-RPC -32600 invalid request"), false},
-		{"in-turn transport", io.ErrUnexpectedEOF, true},
-		{"in-turn protocol", &codex.ResponseError{Request: "turn/start", Code: -32600, Message: "invalid request"}, true},
-		{"in-turn overload", backendcapacity.NewError(backendcapacity.Scope{}, backendcapacity.Details{Type: backendcapacity.ErrorTypeTransientOverload}, errors.New("overloaded")), true},
+		{"workspace", fmt.Errorf("%w: cannot create directory", runpkg.ErrWorkspacePreparation), false, 0},
+		{"startup", backendcapacity.NewError(backendcapacity.Scope{}, backendcapacity.Details{Type: backendcapacity.ErrorTypeTransientOverload, Kind: backendcapacity.StartupFailureKind}, errors.New("backend exited")), false, 0},
+		{"transport", io.ErrUnexpectedEOF, false, 0},
+		{"protocol", errors.New("codex turn/start: JSON-RPC -32600 invalid request"), false, 1},
+		{"in-turn transport", io.ErrUnexpectedEOF, true, 0},
+		{"in-turn protocol", &codex.ResponseError{Request: "turn/start", Code: -32600, Message: "invalid request"}, true, 0},
+		{"in-turn overload", backendcapacity.NewError(backendcapacity.Scope{}, backendcapacity.Details{Type: backendcapacity.ErrorTypeTransientOverload}, errors.New("overloaded")), true, 0},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			now := time.Now().UTC()
@@ -310,7 +311,7 @@ func TestAttemptAllowanceTriageInfrastructureFailure(t *testing.T) {
 			}
 			writesBefore := len(tracker.updates)
 			orch.handleRunResult(t.Context(), &state, completion)
-			if len(tracker.comments) != 0 || len(tracker.updates) != writesBefore || len(state.Blocked) != 0 {
+			if len(tracker.comments) != tt.wantComments || len(tracker.updates) != writesBefore || len(state.Blocked) != 0 {
 				t.Fatalf("infrastructure failure produced issue writes: comments=%+v updates=%+v blocked=%+v", tracker.comments, tracker.updates, state.Blocked)
 			}
 			restarted := newLaneMutationTestOrchestrator(cfg, tracker, db, db, now.Add(time.Minute))

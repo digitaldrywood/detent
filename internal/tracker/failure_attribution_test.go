@@ -39,9 +39,23 @@ func TestFailureAttributionPublicRecord(t *testing.T) {
 			}
 		})
 	}
-	for _, class := range []string{"workspace_hook", "validation", "backend_startup", "protocol"} {
-		if failure := (NativeTerminalFailure{ErrorClass: class}).Public(); failure.Attribution != "" {
-			t.Fatalf("error class %s inferred blame", class)
+	for _, test := range []struct {
+		class, outcome string
+	}{
+		{"workspace_hook", "instance"}, {"validation", ""}, {"backend_startup", "instance"}, {"protocol", "instance"},
+	} {
+		for _, outcome := range []string{"", "issue", "unknown"} {
+			input := NativeTerminalFailure{ErrorClass: test.class}
+			if outcome != "" {
+				input.Decision = &FailureAttribution{Outcome: outcome, Reason: "prior decision"}
+			}
+			want := test.outcome
+			if want == "" {
+				want = outcome
+			}
+			if failure := input.Public(); failure.Attribution != want {
+				t.Fatalf("error class %s with decision %s: attribution=%s, want %s", test.class, outcome, failure.Attribution, want)
+			}
 		}
 	}
 }

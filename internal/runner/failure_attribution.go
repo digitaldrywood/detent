@@ -3,11 +3,14 @@ package runner
 import (
 	"context"
 	"errors"
+	"io"
 	"os/exec"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/backendcapacity"
+	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -30,6 +33,9 @@ func RestoreFailureDecision(err error, decision tracker.FailureAttribution) erro
 }
 
 func FailureDecision(err error) (tracker.FailureAttribution, bool) {
+	if decision := infrastructureFailureDecision(err); decision != nil {
+		return *decision, true
+	}
 	var carrier interface {
 		FailureAttribution() tracker.FailureAttribution
 	}
@@ -93,8 +99,8 @@ func (r *Runner) attributeFailure(ctx context.Context, req RunRequest, err error
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if _, ok := FailureDecision(err); ok {
-		return err
+	if decision, ok := FailureDecision(err); ok {
+		return RestoreFailureDecision(err, decision)
 	}
 	if certainFailureDecision(err) != nil || errors.Is(err, context.Canceled) || ctx.Err() != nil {
 		return err
@@ -186,4 +192,32 @@ func certainFailureDecision(err error) *tracker.FailureAttribution {
 		return &tracker.FailureAttribution{Outcome: "issue", Reason: "typed issue configuration rejection"}
 	}
 	return nil
+}
+
+func infrastructureFailureDecision(err error) *tracker.FailureAttribution {
+	if certainFailureDecision(err) != nil {
+		return nil
+	}
+	var hook *workspace.HookError
+	var unavailable *connector.TrackerAvailabilityError
+	var provider interface {
+		NativeTerminalFailure() tracker.NativeTerminalFailure
+	}
+	var failure tracker.NativeTerminalFailure
+	if errors.As(err, &provider) {
+		failure = provider.NativeTerminalFailure()
+		if failure.Rejection.TerminalStage() != "" {
+			return nil
+		}
+	}
+	switch {
+	case errors.Is(err, ErrWorkspacePreparation), errors.As(err, &hook), errors.Is(err, ErrWorkerProcessReap), errors.Is(err, ErrValidatorInfrastructure), errors.Is(err, ErrReviewConversationsUnavailable), errors.As(err, &unavailable):
+		return &tracker.FailureAttribution{Outcome: "instance", Reason: "typed instance infrastructure failure"}
+	case errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF), errors.Is(err, io.ErrClosedPipe):
+		return &tracker.FailureAttribution{Outcome: "instance", Reason: "backend transport unavailable"}
+	}
+	if capacity, ok := backendcapacity.As(err); ok && capacity.Details.Type == backendcapacity.ErrorTypeTransientOverload {
+		return &tracker.FailureAttribution{Outcome: "instance", Reason: "backend startup or service unavailable"}
+	}
+	return failure.InfrastructureDecision()
 }

@@ -391,12 +391,19 @@ func (s *Service) registerChangeContent(ctx context.Context, organization string
 		if _, err := tx.ExecContext(ctx, `INSERT INTO change_content_objects(organization_id,object_sha256,object_key,object_bytes,content_bytes) SELECT ?,?,?,?,? WHERE NOT EXISTS(SELECT 1 FROM attachments WHERE organization_id=? AND object_key=? AND kind='archive' AND customer_owned=0 AND storage_binding_id='') ON CONFLICT DO NOTHING`, organization, ref.SHA256, ref.Key, ref.CompressedSize, ref.UncompressedSize, organization, ref.Key); err != nil {
 			return err
 		}
+		if s.database.plans() == nil {
+			return nil
+		}
 		completion := false
 		if content, ok := ctx.Value(changeContentKey{}).(*changeContent); ok {
 			content.mu.Lock()
 			completion = content.completion
 			content.mu.Unlock()
 		}
-		return s.database.checkHostedGrowth(ctx, tx, before, now, completion, "collaboration_bytes")
+		after, err := s.database.hostedConsumption(ctx, tx, now, "collaboration_bytes")
+		if err != nil {
+			return err
+		}
+		return s.database.validateHostedConsumptionGrowth(ctx, tx, before, after, now, completion)
 	})
 }
