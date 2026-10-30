@@ -128,7 +128,7 @@ func recordRunnerUsageCosts(ctx context.Context, tx *sql.Tx, scope nativeScope, 
 		provider, model := tracker.UsageProviderID(entry.Provider), strings.TrimSpace(entry.Model)
 		currency := entry.Currency
 		if currency == "" {
-			currency = prices.currency()
+			currency = prices.CurrencyName()
 		}
 		source := request.Data.AttemptID + ":" + model
 		if kind == "incremental" {
@@ -139,7 +139,7 @@ func recordRunnerUsageCosts(ctx context.Context, tx *sql.Tx, scope nativeScope, 
 		if entry.CostEstimate > 0 {
 			amount := int64(math.Round(entry.CostEstimate * 1e6))
 			o.EstimatedAmountMicros, o.EstimateSource = &amount, "runner_token_pricing"
-		} else if estimated, estimateCurrency, found := prices.estimate(model, entry.Input, entry.CachedInput, entry.Output); found && estimateCurrency == currency && finiteUsageCost(estimated) {
+		} else if estimated, estimateCurrency, found := prices.Estimate(model, entry.Input, entry.CachedInput, entry.Output); found && estimateCurrency == currency && finiteUsageCost(estimated) {
 			amount := int64(math.Round(estimated * 1e6))
 			o.EstimatedAmountMicros, o.EstimateSource = &amount, "hub_token_pricing"
 		}

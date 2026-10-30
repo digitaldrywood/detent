@@ -14,18 +14,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-type chatUsageSummary struct {
-	Range           usageWindow `json:"range"`
-	Input           int64       `json:"input"`
-	CachedInput     int64       `json:"cached_input"`
-	Output          int64       `json:"output"`
-	ReasoningOutput int64       `json:"reasoning_output"`
-	Tokens          int64       `json:"tokens"`
-	Turns           int64       `json:"turns"`
-	UnpricedTurns   int64       `json:"unpriced_turns"`
-	CostUSD         float64     `json:"cost_usd"`
-}
-
 func chatUsageCost(price UsagePrice, tokens runner.AgentTokenCounts) float64 {
 	return (float64(tokens.InputTokens-tokens.CachedInputTokens)*price.Input + float64(tokens.CachedInputTokens)*price.CachedInput + float64(tokens.OutputTokens)*price.Output) / tokensPerPriceUnit
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/digitaldrywood/detent/internal/issueorigin"
+	"github.com/digitaldrywood/detent/internal/operatorfailure"
 )
 
 // reportsTrackingFingerprints maps the fingerprint a machine-filed issue would
@@ -13,7 +14,7 @@ func reportsTrackingFingerprints(failures []nativeFailure) map[string]string {
 	out := map[string]string{}
 	for _, f := range failures {
 		class := classifyFailure(f.example).Name
-		signature := normalizeFailureSignature(f.example)
+		signature := operatorfailure.Normalize(f.example)
 		for _, fingerprint := range []string{signature, issueorigin.Fingerprint(signature), class, issueorigin.Fingerprint(class)} {
 			if _, taken := out[fingerprint]; !taken && fingerprint != "" {
 				out[fingerprint] = class

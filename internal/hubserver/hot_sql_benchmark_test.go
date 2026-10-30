@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/operatorfailure"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -222,10 +223,10 @@ func readJSONHealthRateAttempts(ctx context.Context, q nativeQueryer, scope nati
 		if f := data.TerminalFailure; a.Status == "failed" && f != nil && f.Stage == "pre_provider" && f.Attribution == "instance" {
 			a.InstanceSetupFailure = true
 		}
-		text, _ := failureFromAttempt(data, a.Status)
+		text, _ := operatorfailure.FromAttempt(data, a.Status)
 		a.Recovery = healthRecoveryReason(text)
 		if text != "" && a.Recovery == "" {
-			a.Signature = normalizeFailureSignature(text)
+			a.Signature = operatorfailure.Normalize(text)
 		}
 		if data.Runtime != nil {
 			a.Heartbeat = data.Runtime.HeartbeatAt

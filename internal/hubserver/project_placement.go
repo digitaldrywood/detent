@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/selector"
+	"github.com/digitaldrywood/detent/internal/spritenames"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -164,7 +165,7 @@ func readPlacementRunners(ctx context.Context, q nativeQueryer, scope nativeScop
 				continue
 			}
 		}
-		current := placementRunner{Runner: r, Enrollment: id.enrollment, Sprite: id.name == r.Hostname && validSpritesSlug(id.name)}
+		current := placementRunner{Runner: r, Enrollment: id.enrollment, Sprite: id.name == r.Hostname && spritenames.ValidSlug(id.name)}
 		current.Paused = current.Sprite && now.Sub(r.LastHeartbeatAt) >= spriteRunnerIdle
 		var at time.Time
 		if id.woke != "" {
@@ -540,7 +541,7 @@ func placementClaimAllowed(ctx context.Context, q nativeQueryer, scope nativeSco
 	if err := q.QueryRowContext(ctx, `SELECT hostname FROM machines WHERE id=? AND organization_id=?`, machine, scope.organization).Scan(&hostname); err != nil {
 		return false, "", err
 	}
-	sprite := name == hostname && validSpritesSlug(name)
+	sprite := name == hostname && spritenames.ValidSlug(name)
 	if !sprite {
 		return placement.Mode != "sprites_only", "Resolved placement " + placement.Mode + " governs local eligibility", nil
 	}

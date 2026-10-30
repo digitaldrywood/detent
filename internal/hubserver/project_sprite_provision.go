@@ -19,6 +19,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/spritenames"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -96,10 +97,10 @@ func (s *Service) poolSpriteRequest(ctx context.Context, scope nativeScope, name
 }
 
 func (s *Service) createPoolSprite(ctx context.Context, scope nativeScope, settings spritePoolSettings, allowOrganization bool) (bool, error) {
-	return s.createPoolSpriteWithNames(ctx, scope, settings, allowOrganization, &spriteNameGenerator{intN: rand.IntN})
+	return s.createPoolSpriteWithNames(ctx, scope, settings, allowOrganization, spritenames.New(rand.IntN))
 }
 
-func (s *Service) createPoolSpriteWithNames(ctx context.Context, scope nativeScope, settings spritePoolSettings, allowOrganization bool, names *spriteNameGenerator) (bool, error) {
+func (s *Service) createPoolSpriteWithNames(ctx context.Context, scope nativeScope, settings spritePoolSettings, allowOrganization bool, names *spritenames.Generator) (bool, error) {
 	if s.config.Hosted == nil || settings.MaxRunners == 0 {
 		return false, nil
 	}
@@ -108,7 +109,7 @@ func (s *Service) createPoolSpriteWithNames(ctx context.Context, scope nativeSco
 	}
 	created := false
 	for {
-		name, err := names.next(func(name string) (bool, error) {
+		name, err := names.Next(func(name string) (bool, error) {
 			readCtx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 			defer cancel()
 			var exists bool
@@ -120,7 +121,7 @@ func (s *Service) createPoolSpriteWithNames(ctx context.Context, scope nativeSco
 		}
 		reserved, err := s.createPoolSpriteNamed(ctx, scope, settings, allowOrganization, name)
 		created = created || reserved
-		if !errors.Is(err, errSpriteNameTaken) {
+		if !errors.Is(err, spritenames.ErrTaken) {
 			return created, err
 		}
 	}
@@ -238,7 +239,7 @@ func (s *Service) createPoolSpriteNamed(ctx context.Context, scope nativeScope, 
 	inserted, err := tx.ExecContext(ctx, `INSERT INTO organization_sprite_members(organization_id,name,provider_organization,enrollment_id,state,idle_since,created_at,allocation_project_id,allocation_revision) SELECT ?,?,organization_slug,?,'bootstrapping',?,?,?,? FROM organization_secrets WHERE organization_id=? AND kind=? ON CONFLICT(organization_id,name) DO NOTHING`, scope.organization, name, enrollment.ID, formatHubTime(now), formatHubTime(now), scope.project, allocationRevision, scope.organization, flySpritesToken)
 	if err == nil {
 		if count, countErr := inserted.RowsAffected(); countErr == nil && count == 0 {
-			return false, errSpriteNameTaken
+			return false, spritenames.ErrTaken
 		}
 	}
 	if err := requireRunnerUpdate(inserted, err); err != nil {
@@ -260,11 +261,11 @@ func (s *Service) createPoolSpriteNamed(ctx context.Context, scope nativeScope, 
 	}
 	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	if errors.Is(err, errSpriteNameTaken) {
+	if errors.Is(err, spritenames.ErrTaken) {
 		if cancelErr := s.cancelPoolSpriteReservation(cleanup, scope, member, err); cancelErr != nil {
 			return true, cancelErr
 		}
-		return true, errSpriteNameTaken
+		return true, spritenames.ErrTaken
 	}
 	stale := errors.Is(err, errSpriteReservationStale)
 	failure := "Sprite provisioning did not complete; check customer setup and retry\n"
@@ -296,7 +297,7 @@ func (s *Service) requireSpriteMemberWanted(ctx context.Context, scope nativeSco
 }
 
 func (s *Service) cancelPoolSpriteReservation(ctx context.Context, scope nativeScope, member spritePoolMember, cause error) error {
-	if !errors.Is(cause, errSpriteReservationStale) && !errors.Is(cause, errSpriteNameTaken) {
+	if !errors.Is(cause, errSpriteReservationStale) && !errors.Is(cause, spritenames.ErrTaken) {
 		return errors.Join(cause, s.retirePoolSpriteReservation(ctx, scope, member.Name, "Sprite provisioning did not start\n", false))
 	}
 	tx, err := s.database.db.BeginTx(ctx, nil)
@@ -364,7 +365,7 @@ func (s *Service) bootstrapPoolSprite(ctx context.Context, scope nativeScope, me
 	data, readErr := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 	_ = response.Body.Close()
 	if response.StatusCode == http.StatusConflict {
-		return errSpriteNameTaken
+		return spritenames.ErrTaken
 	}
 	if response.StatusCode == http.StatusBadRequest && readErr == nil {
 		var failure struct {
@@ -373,7 +374,7 @@ func (s *Service) bootstrapPoolSprite(ctx context.Context, scope nativeScope, me
 		if json.Unmarshal(data, &failure) == nil {
 			message := strings.ToLower(failure.Error)
 			if strings.Contains(message, "already exists") || strings.Contains(message, "already taken") {
-				return errSpriteNameTaken
+				return spritenames.ErrTaken
 			}
 		}
 	}

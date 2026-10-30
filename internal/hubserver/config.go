@@ -108,7 +108,7 @@ func (c Config) normalized() Config {
 		c.RunnerReleaseClient = update.NewGitHubClient(update.GitHubClientConfig{})
 	}
 	if c.Usage != nil {
-		normalized := c.Usage.normalized()
+		normalized := c.Usage.Normalized()
 		c.Usage = &normalized
 	}
 	if c.Workspace != nil {

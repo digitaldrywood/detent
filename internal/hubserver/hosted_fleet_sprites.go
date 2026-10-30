@@ -11,6 +11,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/spritenames"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -22,7 +23,7 @@ func (s *Service) hostedFleetSprite(ctx, statusContext context.Context, credenti
 		return err
 	}
 	name, failed := spriteFactValue(facts.Name), spriteFactValue(facts.WakeFailedAt)
-	if name == "" || name != runner.Hostname || !validSpritesSlug(name) {
+	if name == "" || name != runner.Hostname || !spritenames.ValidSlug(name) {
 		return nil
 	}
 	view.Sprite = &hostedFleetSprite{Name: name, Status: "unknown"}

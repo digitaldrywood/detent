@@ -1,4 +1,4 @@
-package hubserver
+package spritenames
 
 import (
 	"errors"
@@ -19,15 +19,17 @@ var spriteNouns = []string{
 	"robin", "seal", "sparrow", "swan", "turtle", "walrus", "whale", "wren",
 }
 
-var errSpriteNameTaken = errors.New("sprite name is already taken")
-var errSpriteNamesExhausted = errors.New("could not find an available Sprite name")
+var ErrTaken = errors.New("sprite name is already taken")
+var ErrExhausted = errors.New("could not find an available Sprite name")
 
-type spriteNameGenerator struct {
+type Generator struct {
 	intN     func(int) int
 	attempts int
 }
 
-func (g *spriteNameGenerator) next(taken func(string) (bool, error)) (string, error) {
+func New(intN func(int) int) *Generator { return &Generator{intN: intN} }
+
+func (g *Generator) Next(taken func(string) (bool, error)) (string, error) {
 	for g.attempts < 10 {
 		name := "sprite-" + spriteAdjectives[g.intN(len(spriteAdjectives))] + "-" + spriteNouns[g.intN(len(spriteNouns))]
 		if g.attempts >= 5 {
@@ -42,5 +44,17 @@ func (g *spriteNameGenerator) next(taken func(string) (bool, error)) (string, er
 			return name, nil
 		}
 	}
-	return "", errSpriteNamesExhausted
+	return "", ErrExhausted
+}
+
+func ValidSlug(slug string) bool {
+	if len(slug) == 0 || len(slug) > 63 || slug[0] == '-' || slug[len(slug)-1] == '-' {
+		return false
+	}
+	for _, c := range slug {
+		if c != '-' && (c < 'a' || c > 'z') && (c < '0' || c > '9') {
+			return false
+		}
+	}
+	return true
 }

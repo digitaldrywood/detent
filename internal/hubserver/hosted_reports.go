@@ -391,7 +391,7 @@ func (s *Service) readHostedReportsFrom(ctx context.Context, analytics nativeAna
 			continue
 		}
 		usage[row.AttemptID] = append(usage[row.AttemptID], row)
-		out.Tokens += row.tokens()
+		out.Tokens += row.Tokens()
 		out.Input += row.Input
 		out.Cached += row.CachedInput
 	}
@@ -717,7 +717,7 @@ func reportsAttemptTotals(attempts []nativeAnalyticsAttempt, usage map[string][]
 			row.UsageObserved++
 		}
 		for _, u := range usage[a.AttemptID] {
-			row.Tokens += u.tokens()
+			row.Tokens += u.Tokens()
 			row.Input += u.Input
 			row.Cached += u.CachedInput
 			row.Cost += u.Cost

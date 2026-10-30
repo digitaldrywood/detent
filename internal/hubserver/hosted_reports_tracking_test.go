@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/issueorigin"
+	"github.com/digitaldrywood/detent/internal/operatorfailure"
 )
 
 func TestReportsTrackingIssues(t *testing.T) {
@@ -19,7 +20,7 @@ func TestReportsTrackingIssues(t *testing.T) {
 		linked   bool
 	}{
 		{"signature digest", func() string {
-			return issueorigin.Stamp("Hub timeouts", issueorigin.Origin{Kind: "worker", Fingerprint: issueorigin.Fingerprint(normalizeFailureSignature("hub request timed out"))})
+			return issueorigin.Stamp("Hub timeouts", issueorigin.Origin{Kind: "worker", Fingerprint: issueorigin.Fingerprint(operatorfailure.Normalize("hub request timed out"))})
 		}, false, true},
 		{"class name", func() string {
 			return issueorigin.Stamp("Hub timeouts", issueorigin.Origin{Kind: "audit", Fingerprint: "Hub request timed out"})

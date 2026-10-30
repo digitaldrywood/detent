@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/skills"
+	"github.com/digitaldrywood/detent/internal/spritenames"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
@@ -396,7 +397,7 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 		step("sprite")
 		if scope.credential.Runner.RunnerID != "" {
 			if request.SpriteName != "" {
-				if !validSpritesSlug(request.SpriteName) {
+				if !spritenames.ValidSlug(request.SpriteName) {
 					return nil, nativePublicInvalid("Sprite name is invalid")
 				}
 				result, err := tx.ExecContext(ctx, "UPDATE machines SET sprite_name=? WHERE id=? AND organization_id=? AND hostname=?", request.SpriteName, scope.credential.Runner.MachineID, scope.organization, request.SpriteName)
