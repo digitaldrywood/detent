@@ -94,7 +94,7 @@ func (o *Orchestrator) prepareRetryProgress(ctx context.Context, run *RunRequest
 		if !backend.called {
 			return nil
 		}
-		return fmt.Errorf("progress check filed dependency %s", record.DefectIssueID)
+		return fmt.Errorf("progress check reported platform defect %s", record.DefectIssueID)
 	}
 	if backend.called || run.Mode != previousMode {
 		return o.readmitRetryProgress(ctx, run)
