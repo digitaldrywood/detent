@@ -403,6 +403,17 @@ func TestNativeCandidateQueryBound(t *testing.T) {
 				event.Data.CompletionBody = "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, event), http.StatusOK)
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
+				var payloadKey string
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT payload_object_key FROM native_attempts WHERE work_item_id = ?", tail.WorkItemID).Scan(&payloadKey); err != nil {
+					t.Fatal(err)
+				}
+				inline, err := readStoredPayload(f.service.contentContext(t.Context()), payloadKey)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET data_json = ?, payload_object_key = '' WHERE work_item_id = ?", string(inline), tail.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
 				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET data_json = json_remove(data_json, '$.disposition') WHERE work_item_id = ?", tail.WorkItemID); err != nil {
 					t.Fatal(err)
 				}
@@ -475,7 +486,7 @@ FROM native_attempts a JOIN issues i ON i.native_id = ? WHERE a.work_item_id = ?
 			}
 			query := claimCandidateQuery{NativeScope: &scope, Scope: string(scope.project), Limit: 9, AvailableAt: f.service.config.now().Truncate(time.Second), DispatchPriorityByState: []string{"Todo"}, DispatchPriorityByLabel: []string{"hotfix"}}
 			began := time.Now()
-			ids, err := claimCandidateIDs(t.Context(), tx, query, nil, nil, []string{"todo"}, nil, nil, nil, nil, nil)
+			ids, err := claimCandidateIDs(f.service.runDetailContext(t.Context()), tx, query, nil, nil, []string{"todo"}, nil, nil, nil, nil, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -499,7 +510,7 @@ FROM native_attempts a JOIN issues i ON i.native_id = ? WHERE a.work_item_id = ?
 				for len(ids) == query.Limit {
 					query.After = ids[len(ids)-1]
 					before := probe.completionBodies.Load()
-					ids, err = claimCandidateIDs(t.Context(), tx, query, nil, nil, []string{"todo"}, nil, nil, nil, nil, nil)
+					ids, err = claimCandidateIDs(f.service.runDetailContext(t.Context()), tx, query, nil, nil, []string{"todo"}, nil, nil, nil, nil, nil)
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -536,7 +547,7 @@ FROM native_attempts a JOIN issues i ON i.native_id = ? WHERE a.work_item_id = ?
 				}
 				query.After, query.Limit = 0, 1
 				before := probe.completionBodies.Load()
-				ids, err = claimCandidateIDs(t.Context(), tx, query, nil, nil, []string{"todo"}, nil, nil, nil, nil, nil)
+				ids, err = claimCandidateIDs(f.service.runDetailContext(t.Context()), tx, query, nil, nil, []string{"todo"}, nil, nil, nil, nil, nil)
 				if err != nil || !slices.Equal(ids, []tracker.WorkItemID{tailID}) || probe.completionBodies.Load()-before != 200 {
 					t.Fatalf("after nonqualifying reports ids=%v bodies=%d err=%v", ids, probe.completionBodies.Load()-before, err)
 				}
@@ -570,14 +581,14 @@ FROM native_attempts a JOIN issues i ON i.native_id = ? WHERE a.work_item_id = ?
 					t.Fatal(err)
 				}
 				before := probe.completionBodies.Load()
-				if _, err := claimCandidateIDs(t.Context(), tx, query, nil, nil, []string{"todo"}, nil, nil, nil, nil, nil); !isProviderWait(err) || probe.completionBodies.Load()-before != 1 {
+				if _, err := claimCandidateIDs(f.service.runDetailContext(t.Context()), tx, query, nil, nil, []string{"todo"}, nil, nil, nil, nil, nil); !isProviderWait(err) || probe.completionBodies.Load()-before != 1 {
 					t.Fatalf("answered cursor must refresh without reading next page: bodies=%d err=%v", probe.completionBodies.Load()-before, err)
 				}
 			}
 			if _, err := tx.ExecContext(t.Context(), "UPDATE issues SET archived = 1 WHERE id = ?", query.After); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := claimCandidateIDs(t.Context(), tx, query, nil, nil, []string{"todo"}, nil, nil, nil, nil, nil); err == nil {
+			if _, err := claimCandidateIDs(f.service.runDetailContext(t.Context()), tx, query, nil, nil, []string{"todo"}, nil, nil, nil, nil, nil); err == nil {
 				t.Fatal("removed cursor did not request a fresh preview")
 			}
 			t.Logf("queue=%d page_rows=9 select_duration=%s", test.size, elapsed)

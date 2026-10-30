@@ -237,13 +237,13 @@ func TestQualityEscapeApplicationAndRead(t *testing.T) {
 	if !injected {
 		t.Fatal("scheduled evidence edit was not injected")
 	}
-	frozen, err := readChangeVersion(t.Context(), f.service.database.db, f.change.ID, version.ID)
+	frozen, err := readChangeVersion(f.service.contentContext(t.Context()), f.service.database.db, f.change.ID, version.ID)
 	if err != nil || frozen.LandingQuality == nil || frozen.LandingQuality.IssueBody != landing.Quality.IssueBody {
 		t.Fatalf("later issue edits changed landing classification context: %+v, %v", frozen.LandingQuality, err)
 	}
 	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
 	w := operatortool.AnalyticsWindow{From: now.Add(-2 * time.Hour), To: now.Add(time.Second), Bucket: time.Hour}
-	got, err := readAnalyticsQuality(t.Context(), f.service.database.db, scope, operatortool.AnalyticsRequest{Limit: 10}, w)
+	got, err := readAnalyticsQuality(f.service.contentContext(t.Context()), f.service.database.db, scope, operatortool.AnalyticsRequest{Limit: 10}, w)
 	if err != nil || got.Escapes != 2 || got.LandedVersions != 1 || got.Causes["infrastructure"] != 1 || got.Causes["missing_criterion"] != 1 || got.EscapePercent == nil || *got.EscapePercent != 100 {
 		t.Fatalf("quality read = %+v, error = %v", got, err)
 	}

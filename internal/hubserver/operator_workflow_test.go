@@ -272,9 +272,14 @@ func TestHostedPolicyApprovalMCP(t *testing.T) {
 			}
 			call := projectCall(t, "approve_project_policy", string(f.project), "approve", operatortool.PolicyApprovalInput{ExpectedID: previous.ID, Policy: descriptor, RepositoryPolicy: true})
 			var receipt string
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT response_json FROM native_commands WHERE actor_id=? AND command_key=?", key.ID, "approve").Scan(&receipt); err != nil {
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT COALESCE(NULLIF(response_object_key,''),response_json) FROM native_commands WHERE actor_id=? AND command_key=?", key.ID, "approve").Scan(&receipt); err != nil {
 				t.Fatal(err)
 			}
+			resolved, err := resolveStorageJSON(f.service.contentContext(t.Context()), []byte(receipt))
+			if err != nil {
+				t.Fatal(err)
+			}
+			receipt = string(resolved)
 			var durable policy.Approval
 			if err := json.Unmarshal([]byte(receipt), &durable); err != nil || !reflect.DeepEqual(durable, approved) || len(durable.History) != 0 {
 				t.Fatalf("durable approval differs from commit: %v", err)
@@ -322,7 +327,7 @@ func TestHostedPolicyApprovalMCP(t *testing.T) {
 			if err := json.Unmarshal([]byte(toolText(call.Name, call.Arguments)), &action); err != nil || action.Status != chat.ActionSucceeded || action.Result != receipt {
 				t.Fatalf("reconnected receipt differs: %v", err)
 			}
-			operatorSQL(t, f, "UPDATE native_commands SET response_json=? WHERE actor_id=? AND command_key=?", string(fullJSON), key.ID, "approve")
+			operatorSQL(t, f, "UPDATE native_commands SET response_json=?,response_object_key='' WHERE actor_id=? AND command_key=?", string(fullJSON), key.ID, "approve")
 			if err := json.Unmarshal([]byte(toolText(call.Name, call.Arguments)), &action); err != nil || action.Result != receipt {
 				t.Fatalf("legacy oversized receipt replay differs: %v", err)
 			}

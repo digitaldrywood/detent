@@ -119,7 +119,7 @@ func TestTypedAnsweredClaimFacts(t *testing.T) {
 				if kind != test.want {
 					t.Fatalf("typed query depended on opaque payload: %q", kind)
 				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE native_attempts SET data_json=?,checkpoint_json=?,claim_facts_known=NULL WHERE id=?`, string(raw), string(checkpointRaw), data.AttemptID); err != nil {
+				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE native_attempts SET data_json=?,checkpoint_json=?,payload_object_key='',checkpoint_object_key='',claim_facts_known=NULL WHERE id=?`, string(raw), string(checkpointRaw), data.AttemptID); err != nil {
 					t.Fatal(err)
 				}
 				var id tracker.WorkItemID

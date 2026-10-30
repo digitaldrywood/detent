@@ -40,8 +40,9 @@ func TestChangeFindingAttributionPersistsForTwoItems(t *testing.T) {
 			case "security_audit":
 				review.SecurityAudit = &tracker.SecurityAuditReview{Verdict: "rework", Run: securityaudit.Run{BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA, Findings: []securityaudit.Finding{{ID: "invalid-input", Severity: "p1", Body: diagnostic, CheckCommand: command, CheckDiagnostic: diagnostic}}, Checks: []securityaudit.CheckComparison{{Head: gate.CommandObservation(receipt), Base: observation}}}}
 			}
-			if err := f.service.hubTransact(t.Context(), func(tx *sql.Tx, _ time.Time) error {
-				return storeChangeReview(t.Context(), tx, string(f.project.OrganizationID), fixture.change.ID, review)
+			ctx := f.service.contentContext(t.Context())
+			if err := f.service.hubTransact(ctx, func(tx *sql.Tx, _ time.Time) error {
+				return storeChangeReview(ctx, tx, string(f.project.OrganizationID), fixture.change.ID, review)
 			}); err != nil {
 				t.Fatal(err)
 			}

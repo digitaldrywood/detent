@@ -105,6 +105,14 @@ func payloadNativeID(ctx context.Context, prefix string) string {
 	return id
 }
 
+func contentCommitted(ctx context.Context) {
+	if content, ok := ctx.Value(changeContentKey{}).(*changeContent); ok {
+		content.mu.Lock()
+		clear(content.ids)
+		content.mu.Unlock()
+	}
+}
+
 func contentWriting(ctx context.Context, writing bool) {
 	if content, ok := ctx.Value(changeContentKey{}).(*changeContent); ok {
 		content.mu.Lock()

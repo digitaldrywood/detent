@@ -286,7 +286,7 @@ func TestRunnerRequestBudgetHTTP(t *testing.T) {
 	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT coalesce(sum(amount),0) FROM hosted_usage_windows WHERE metric='api_mutations'").Scan(&used); err != nil || used != 0 {
 		t.Fatalf("runner retained the replaced mutation allowance: used=%d err=%v", used, err)
 	}
-	if err := f.service.evaluateOrganizationHealth(t.Context(), f.project.OrganizationID, now.Add(time.Minute)); err != nil {
+	if err := f.service.evaluateOrganizationHealth(f.service.runDetailContext(t.Context()), f.project.OrganizationID, now.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	var summary string

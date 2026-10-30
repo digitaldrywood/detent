@@ -62,7 +62,7 @@ func TestConversationAttachmentPublicationRechecksRevision(t *testing.T) {
 		return tx.Commit()
 	}
 	response := postConversationAttachment(t, f.service, f.base, f.token, record.ID, "example.png", "image/png", attachmentPNG(), "upload")
-	requireNativeError(t, response, http.StatusConflict, "stale_execution")
+	requireNativeError(t, response, http.StatusConflict, "revision_conflict")
 	var rows int
 	if err := store.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM conversation_attachments WHERE conversation_id=?", record.ID).Scan(&rows); err != nil || rows != 0 {
 		t.Fatalf("stale upload committed %d rows: %v", rows, err)

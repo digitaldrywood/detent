@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -444,11 +445,10 @@ func TestOperatorChangeCommands(t *testing.T) {
 				public := tracker.PublicGateResult(*receipt.Gate)
 				receipt.Gate = &public
 			}
-			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := persistAttemptLanding(t.Context(), tx, nativeAttempt, receipt); err != nil {
+			contentCtx := f.service.contentContext(t.Context())
+			if err := f.service.hubTransact(contentCtx, func(tx *sql.Tx, _ time.Time) error {
+				return persistAttemptLanding(contentCtx, tx, nativeAttempt, receipt)
+			}); err != nil {
 				t.Fatal(err)
 			}
 			if len(test.diagnostics) > 0 {
@@ -456,12 +456,17 @@ func TestOperatorChangeCommands(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, err := tx.ExecContext(t.Context(), "UPDATE native_attempts SET data_json=json_set(data_json, '$.runtime.validation', json(?)) WHERE id=?", raw, nativeAttempt); err != nil {
+				var payloadKey string
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT payload_object_key FROM native_attempts WHERE id=?", nativeAttempt).Scan(&payloadKey); err != nil {
 					t.Fatal(err)
 				}
-			}
-			if err := tx.Commit(); err != nil {
-				t.Fatal(err)
+				inline, err := readStoredPayload(contentCtx, payloadKey)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET data_json=json_set(?, '$.runtime.validation', json(?)),payload_object_key='' WHERE id=?", string(inline), raw, nativeAttempt); err != nil {
+					t.Fatal(err)
+				}
 			}
 			result, err := executor.Execute(ctx, changeToolCall(operatortool.GetChange, base))
 			var value operatortool.ChangeResult
@@ -474,7 +479,7 @@ func TestOperatorChangeCommands(t *testing.T) {
 				if len(value.Detail.Versions) != 1 || value.Detail.Versions[0].Landing == nil || !reflect.DeepEqual(value.Detail.Versions[0].Landing.Gate, &want) {
 					t.Fatal("landing receipt lost identity or explicit output excerpt")
 				}
-				stored, err := readVersionLanding(ctx, f.service.database.db, version.ID)
+				stored, err := readVersionLanding(f.service.contentContext(ctx), f.service.database.db, version.ID)
 				if err != nil || !reflect.DeepEqual(stored.Gate, receipt.Gate) {
 					t.Fatalf("bounded landing read changed canonical output: %v", err)
 				}
@@ -493,7 +498,7 @@ func TestOperatorChangeCommands(t *testing.T) {
 					}
 				}
 			}
-			projectAudit, err := readValidationAudit(ctx, f.service.database.db, scope, "", "", f.change.ID, "")
+			projectAudit, err := readValidationAudit(f.service.contentContext(ctx), f.service.database.db, scope, "", "", f.change.ID, "")
 			if err != nil || len(projectAudit.Occurrences) != 1 {
 				t.Fatalf("audit=%+v %v", projectAudit, err)
 			}
@@ -537,7 +542,7 @@ func TestOperatorChangeCommands(t *testing.T) {
 					}
 				}
 			}
-			audit, err := readValidationAudit(t.Context(), f.service.database.db, scope, string(report.WorkItemID), "", "", "")
+			audit, err := readValidationAudit(f.service.contentContext(t.Context()), f.service.database.db, scope, string(report.WorkItemID), "", "", "")
 			if err != nil || len(audit.Occurrences) != 1 || audit.Occurrences[0].Comparisons[0].Outcome != test.want {
 				t.Fatalf("scheduled read=%+v %v", audit, err)
 			}
@@ -558,7 +563,7 @@ func TestOperatorChangeCommands(t *testing.T) {
 		requireNativeStatus(t, response, http.StatusOK)
 		var comment tracker.NativeComment
 		decodeHubResponse(t, response, &comment)
-		audit, err := readValidationAudit(t.Context(), f.service.database.db, scope, string(report.WorkItemID), "", "", "")
+		audit, err := readValidationAudit(f.service.contentContext(t.Context()), f.service.database.db, scope, string(report.WorkItemID), "", "", "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -568,7 +573,7 @@ func TestOperatorChangeCommands(t *testing.T) {
 		}
 	})
 	foreignScope := nativeScope{organization: scope.organization, project: "prj_foreign"}
-	foreignAudit, err := readValidationAudit(t.Context(), f.service.database.db, foreignScope, "", "", "", "")
+	foreignAudit, err := readValidationAudit(f.service.contentContext(t.Context()), f.service.database.db, foreignScope, "", "", "", "")
 	if err != nil || len(foreignAudit.Occurrences) != 0 {
 		t.Fatalf("foreign evidence=%+v %v", foreignAudit, err)
 	}
@@ -668,8 +673,8 @@ func TestOperatorChangeCommands(t *testing.T) {
 		t.Fatal("cross-project Change linkage succeeded")
 	}
 	t.Run("hosted get_change failure logs once", func(t *testing.T) {
-		var snapshot, trigger string
-		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT record_json FROM change_versions WHERE id=?", version.ID).Scan(&snapshot); err != nil {
+		var snapshot, payloadKey, trigger string
+		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT record_json,payload_object_key FROM change_versions WHERE id=?", version.ID).Scan(&snapshot, &payloadKey); err != nil {
 			t.Fatal(err)
 		}
 		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='change_versions_immutable'").Scan(&trigger); err != nil {
@@ -678,12 +683,12 @@ func TestOperatorChangeCommands(t *testing.T) {
 		if _, err := f.service.database.db.ExecContext(t.Context(), "DROP TRIGGER change_versions_immutable"); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE change_versions SET record_json=? WHERE id=?", `["tenant content sentinel"]`, version.ID); err != nil {
+		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE change_versions SET record_json=?,payload_object_key='' WHERE id=?", `["tenant content sentinel"]`, version.ID); err != nil {
 			t.Fatal(err)
 		}
 		cleanupCtx := context.WithoutCancel(t.Context())
 		t.Cleanup(func() {
-			if _, err := f.service.database.db.ExecContext(cleanupCtx, "UPDATE change_versions SET record_json=? WHERE id=?", snapshot, version.ID); err != nil {
+			if _, err := f.service.database.db.ExecContext(cleanupCtx, "UPDATE change_versions SET record_json=?,payload_object_key=? WHERE id=?", snapshot, payloadKey, version.ID); err != nil {
 				t.Error(err)
 			}
 			if _, err := f.service.database.db.ExecContext(cleanupCtx, trigger); err != nil {
