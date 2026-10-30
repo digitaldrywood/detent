@@ -24,6 +24,8 @@ Nothing else is normative. Reference pages under `docs/` describe the product an
 - Do not bind development or tests to `127.0.0.1:4000`; tests that start servers use port 0 and an isolated database and config. Never stop, restart or signal a live Detent service.
 - Read instructions and files in bounded pieces: headings first, then the sections that govern the change; use `rg -n` lookups instead of rereading.
 - Commit only when the workflow or a human asks, with conventional commits: `<type>(<scope>): <subject>`, imperative, about 50 characters, no trailing period.
+- No project uses pull requests. Land work as Detent native Changes or signed direct pushes.
+- Release from a frozen branch, never from develop. Cut `release/vX.Y` from a fixed develop SHA first, land each fix on `develop`, cherry-pick it onto the release branch with `scripts/release-pick.sh`, and validate that exact release head. Develop is a moving target: never hold a cut waiting for fixes, and never validate or tag a develop head.
 - Releases and hotfixes that fix stalled throughput or stability ship without asking Cory for each step: choose the recommended option, have an independent reviewer challenge it, land on `develop`, pick it to the release branch and ship, then report the outcome. Ask only when a choice is irreversible or reaches outside Detent, such as other machines or production data.
 
 ## Code conventions

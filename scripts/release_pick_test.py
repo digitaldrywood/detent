@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 class ReleasePickTest(unittest.TestCase):
-    def test_develop_to_release_pr(self):
+    def test_develop_to_release_branch(self):
         scratch = next((os.environ[key] for key in ("TMPDIR", "TMP", "TEMP") if os.environ.get(key)), None)
         self.assertIsNotNone(scratch, "a supplied scratch directory is required")
         for case in ("pick", "outside develop", "invalid target", "dirty", "conflict"):
@@ -55,26 +55,24 @@ class ReleasePickTest(unittest.TestCase):
                 gh.chmod(0o700)
                 env["PATH"] = str(root) + os.pathsep + env["PATH"]
                 target = "develop" if case == "invalid target" else "release/v1.2"
-                result = subprocess.run(["bash", str(ROOT / "scripts/release-pick.sh"), sha, target], cwd=checkout, env=env, capture_output=True, text=True, timeout=30)
+                result = subprocess.run(["bash", str(ROOT / "scripts/release-pick.sh"), target, sha], cwd=checkout, env=env, capture_output=True, text=True, timeout=30)
                 self.assertEqual(result.returncode == 0, case == "pick", result.stdout + result.stderr)
+                self.assertFalse(log.exists(), "picks must not call GitHub")
+                released = git("ls-remote", "origin", "refs/heads/release/v1.2").split()[0]
                 if case == "pick":
                     self.assertIn("(cherry picked from commit " + sha + ")", git("log", "-1", "--format=%B"))
                     self.assertEqual((checkout / "fix.txt").read_text(), "fixed\n")
-                    calls = [json.loads(line) for line in log.read_text().splitlines()]
-                    self.assertEqual(len(calls), 1)
-                    self.assertEqual(calls[0][:4], ["pr", "create", "--base", "release/v1.2"])
-                    branch = "pick/v1.2/" + sha[:12]
-                    self.assertEqual(git("ls-remote", "origin", "refs/heads/" + branch).split()[0], git("rev-parse", "HEAD"))
+                    self.assertEqual(released, git("rev-parse", "HEAD"))
+                    self.assertEqual(git("rev-parse", "HEAD^"), base)
                     self.assertEqual(git("ls-remote", "origin", "refs/heads/develop").split()[0], sha)
                 else:
-                    self.assertFalse(log.exists(), "rejected picks must not open a PR")
-                    self.assertEqual(git("ls-remote", "origin", "refs/heads/pick/*"), "", "rejected picks must not push")
                     if case == "conflict":
+                        self.assertNotEqual(released, base)
                         self.assertEqual(git("rev-parse", "CHERRY_PICK_HEAD"), sha)
                         self.assertIn("Resolve the cherry-pick", result.stderr)
                     else:
+                        self.assertEqual(released, base, "rejected picks must not push")
                         self.assertEqual(git("branch", "--show-current"), "develop")
-
 
 if __name__ == "__main__":
     unittest.main()
