@@ -149,6 +149,7 @@ func TestNativeDecisionCompletionRefusal(t *testing.T) {
 	lease := claimNativeAttempt(t, f, worker, "machine", "session", issue.WorkItemID)
 	start := nativeStartedEvent(lease)
 	path := f.base + "/work-items/" + string(issue.WorkItemID) + "/events"
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, start), http.StatusOK)
 	for _, tt := range []struct{ name, body string }{
 		{"missing request", "```detent-status\nschema: 1\nstatus: blocked\nhuman_action: Choose a name\n```"},
 		{"malformed request", strings.Replace(decisionCompletion, "  question: Which naming rule should the installer use?\n", "", 1)},
@@ -163,6 +164,25 @@ func TestNativeDecisionCompletionRefusal(t *testing.T) {
 				t.Fatalf("refusal = %s", response.Body.String())
 			}
 		})
+	}
+	finish := start
+	finish.Type, finish.IdempotencyKey, finish.Data.Sequence, finish.Data.Outcome = "run.finished", "record-refusal", 2, "succeeded"
+	finish.Data.CompletionBody = "```detent-status\nschema: 1\nstatus: blocked\nhuman_action: Choose a name\n```"
+	finish.Data.Disposition = &tracker.NativeDisposition{
+		Status: "in_progress", ReasonCode: "invalid_workpad_signal",
+		FinalSummary: "blocked completion with human_action requires decision_request",
+	}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, finish), http.StatusOK)
+	response := performHubAPIRequest(t, f.service, http.MethodGet, strings.TrimSuffix(path, "/events")+"/attempts?view=detail", f.token, nil)
+	requireNativeStatus(t, response, http.StatusOK)
+	var page tracker.Page[tracker.NativeAttempt]
+	decodeHubResponse(t, response, &page)
+	if len(page.Items) != 1 || page.Items[0].AttemptID != finish.Data.AttemptID {
+		t.Fatalf("recorded attempts = %#v", page.Items)
+	}
+	disposition := page.Items[0].Disposition
+	if disposition == nil || disposition.Status != "in_progress" || disposition.HumanAction || disposition.ReasonCode != "invalid_workpad_signal" || disposition.FinalSummary != "blocked completion with human_action requires decision_request" {
+		t.Fatalf("recorded refusal = %#v", disposition)
 	}
 }
 
