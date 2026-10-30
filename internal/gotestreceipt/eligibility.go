@@ -226,6 +226,12 @@ func checkSource(file *ast.File) error {
 				break
 			}
 			path := imports[id.Name]
+			if path == "fmt" {
+				switch n.Sel.Name {
+				case "Scan", "Scanf", "Scanln":
+					refusal = errors.New("test reads unobserved standard input")
+				}
+			}
 			if path == "time" {
 				switch n.Sel.Name {
 				case "Now", "Since", "Until", "Sleep", "After", "AfterFunc", "NewTimer", "NewTicker", "Tick", "Local", "LoadLocation", "Parse", "ParseInLocation":
