@@ -1132,7 +1132,7 @@ func TestNativeReleaseDeliveryWorkspace(t *testing.T) {
 		{name: "advanced release branch keeps frozen head", advancedBase: true},
 		{name: "head outside frozen lineage", wrongBase: true},
 		{name: "moved delivery head", movedHead: true},
-		{name: "workspace failure records unknown decision", hookFailure: true},
+		{name: "workspace failure records instance decision", hookFailure: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			writer := initRunnerSourceRepo(t)
@@ -1201,7 +1201,7 @@ func TestNativeReleaseDeliveryWorkspace(t *testing.T) {
 						t.Fatalf("workspace failure = %v, want after_create exit 17", err)
 					}
 				}
-				if test.hookFailure && (execution.failure == nil || execution.failure.Attribution != "unknown" || execution.failure.ErrorClass != "workspace_hook" || execution.finish != "failed") {
+				if test.hookFailure && (execution.failure == nil || execution.failure.Attribution != "instance" || execution.failure.ErrorClass != "workspace_hook" || execution.finish != "failed") {
 					t.Fatalf("workspace failure lost decision: failure=%+v finish=%s error=%v", execution.failure, execution.finish, err)
 				}
 				return
