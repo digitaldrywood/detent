@@ -775,7 +775,15 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 		}()
 	}
 	finalizationErr := executionCancellation(req)
-	if req.finalizeNativeWork && !req.reviewOnly && finalizationErr == nil && ctx.Err() == nil && !req.retainCheckpoint {
+	if req.noChangeNeeded && finalizationErr == nil {
+		source := req.attemptDiffSource
+		if source == nil {
+			source = r.attemptDiffSource(ctx, info, issue)
+		}
+		diff, available := source(ctx)
+		finalizationErr = verifyNoChangeSource(req.noChangeVerifiedSHA, diff, available)
+	}
+	if req.finalizeNativeWork && !req.noChangeNeeded && !req.reviewOnly && finalizationErr == nil && ctx.Err() == nil && !req.retainCheckpoint {
 		if finalizer, ok := backend.(workspace.NativeWorkFinalizer); ok {
 			if err := req.Execution.Validate(ctx); err != nil {
 				finalizationErr = err
@@ -1504,4 +1512,17 @@ func nativeReviewResumeMatches(recovery tracker.NativeRecovery, local *workspace
 		}
 	}
 	return false
+}
+
+func verifyNoChangeSource(verified string, diff tracker.AttemptDiffRequest, available bool) error {
+	if !available || verified == "" || diff.BaseSHA == "" || diff.HeadSHA == "" {
+		return errors.New("no-change source evidence is unavailable; verify the current base again")
+	}
+	if verified != diff.BaseSHA || verified != diff.HeadSHA {
+		return errors.New("no-change source differs from the base; re-verify the criteria on the current base")
+	}
+	if len(diff.Files) != 0 {
+		return errors.New("no-change report has source changes; preserve and report the source deliverable")
+	}
+	return nil
 }

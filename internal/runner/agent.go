@@ -2759,6 +2759,10 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		}
 		defer afterRunCancel()
 		disposition := NativeDispositionFromMessage(result.FinalMessage)
+		req.noChangeNeeded = disposition != nil && disposition.Status == "no_change_needed"
+		if req.noChangeNeeded {
+			req.noChangeVerifiedSHA = disposition.NoChange.VerifiedSHA
+		}
 		blocked := req.Execution != nil && disposition != nil && disposition.Status == "blocked"
 		req.retainCheckpoint = (turnErr != nil || blocked) && (req.Execution != nil || result.Checkpoint != nil)
 		req.finalizeNativeWork = req.Execution != nil && mode == RunModeImplement && turnErr == nil && !blocked

@@ -674,6 +674,8 @@ type RunRequest struct {
 	sessionTokenOffset        int64
 	retainCheckpoint          bool
 	finalizeNativeWork        bool
+	noChangeNeeded            bool
+	noChangeVerifiedSHA       string
 	reviewOnly                bool
 	repairResume              bool
 	checkpointRefs            *checkpointRefs

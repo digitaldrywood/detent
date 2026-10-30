@@ -185,6 +185,9 @@ func TestEmptyLandingProgressCompletesOrImplements(t *testing.T) {
 			state.Running[issue.ID].cancel()
 			<-o.runResults
 			<-state.Running[issue.ID].done
+			if test.complete && !strings.Contains(request.PriorAttempt.Reason, "status: no_change_needed") {
+				t.Fatalf("completion reroute lost the typed evidence instruction: %+v", request)
+			}
 			if request.Mode != RunModeImplement || !strings.Contains(request.PriorAttempt.Reason, "nothing_to_land") || !strings.Contains(request.PriorAttempt.Reason, "no deliverable to verify") || !strings.Contains(request.PriorAttempt.Reason, decision.Reason) {
 				t.Fatalf("implementation lost refusal feedback: %+v", request)
 			}

@@ -767,3 +767,46 @@ func TestCompletedNativeTurnReapFailure(t *testing.T) {
 		})
 	}
 }
+
+func TestNoChangeCompletionNeverCommitsSource(t *testing.T) {
+	sha := strings.Repeat("a", 40)
+	for _, test := range []struct {
+		name      string
+		verified  string
+		available bool
+		files     []tracker.AttemptDiffFile
+		wantError bool
+	}{
+		{name: "verified unchanged source runs the gate", verified: sha, available: true},
+		{name: "stale evidence requires verification", verified: strings.Repeat("b", 40), available: true, wantError: true},
+		{name: "missing diff fails closed", verified: sha, wantError: true},
+		{name: "uncommitted source is preserved", verified: sha, available: true, files: []tracker.AttemptDiffFile{{Path: "example.go"}}, wantError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			backend := &completedExecutionWorkspace{retainedExecutionWorkspace: retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Branch: "native"}, recoveryStates: []workspace.RecoveryState{{HeadSHA: sha, WorkspaceFingerprint: "digest"}}}}}
+			execution := &finalizingTestExecution{}
+			r := attemptDiffRunner()
+			r.now, r.afterRunTimeout = time.Now, time.Minute
+			r.workspace = backend
+			r.workflow.Config.Gate.Run = "make check-fast"
+			request := RunRequest{Execution: execution, finalizeNativeWork: true, noChangeNeeded: true, noChangeVerifiedSHA: test.verified, attemptDiffSource: func(context.Context) (tracker.AttemptDiffRequest, bool) {
+				return tracker.AttemptDiffRequest{BaseSHA: sha, HeadSHA: sha, Files: test.files}, test.available
+			}}
+			ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+			defer cancel()
+			_, err := r.prepareExecutionCompletion(ctx, request, backend, backend.info, workspace.Issue{BaseRef: sha}, AgentResume{}, true)
+			if (err != nil) != test.wantError {
+				t.Fatalf("completion error = %v, want error %t", err, test.wantError)
+			}
+			if backend.finalizationCalls != 0 {
+				t.Fatalf("no-change report invoked commit finalization %d times", backend.finalizationCalls)
+			}
+			if !test.wantError && (backend.validationCalls != 1 || execution.validation == nil || execution.validation.HeadSHA != sha) {
+				t.Fatalf("no-change report lost required command: calls=%d receipt=%+v", backend.validationCalls, execution.validation)
+			}
+			if test.wantError && (backend.validationCalls != 0 || !backend.retained) {
+				t.Fatalf("invalid source was validated or discarded: calls=%d retained=%t", backend.validationCalls, backend.retained)
+			}
+		})
+	}
+}
