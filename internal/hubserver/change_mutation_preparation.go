@@ -285,7 +285,11 @@ func prepareChangePromotion(ctx context.Context, q nativeQueryer, scope nativeSc
 	return nil
 }
 
-func promotePreparedChange(ctx context.Context, tx *sql.Tx, scope nativeScope, change tracker.ChangeRequest, now time.Time) error {
+func (s *Service) promotePreparedChange(ctx context.Context, tx *sql.Tx, scope nativeScope, change tracker.ChangeRequest) error {
+	now, err := s.database.currentTime()
+	if err != nil {
+		return err
+	}
 	prepared := preparedChangeMutation(ctx)
 	if prepared == nil {
 		return promoteReviewedChange(ctx, tx, scope, change, now)
