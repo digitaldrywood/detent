@@ -954,7 +954,7 @@ func TestLocalGitReworkPreparation(t *testing.T) {
 		{name: "cached resolution", cached: true},
 		{name: "signed cached resolution", signed: true, cached: true},
 		{name: "index failure", indexLock: true},
-		{name: "rebase exits one without conflict", hookFails: true},
+		{name: "rebase hook refusal without conflict", hookFails: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -1159,8 +1159,11 @@ func TestLocalGitReworkPreparation(t *testing.T) {
 			}
 			if test.indexLock || test.hookFails {
 				var commandErr *CommandError
-				if !errors.As(err, &commandErr) || prepared.Status == MergePrepareStatusConflict || test.hookFails && commandErr.ExitCode != 1 {
+				if !errors.As(err, &commandErr) || prepared.Status == MergePrepareStatusConflict || commandErr.ExitCode <= 0 {
 					t.Fatalf("Git failure became a source conflict: %+v, %v", prepared, err)
+				}
+				if test.hookFails && !strings.Contains(commandErr.Output, "pre-rebase hook refused") {
+					t.Fatalf("fixture did not reproduce hook refusal: exit=%d, output=%s", commandErr.ExitCode, commandErr.Output)
 				}
 				return
 			}

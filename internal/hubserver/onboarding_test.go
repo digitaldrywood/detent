@@ -913,6 +913,7 @@ func TestOnboardingRunnerLocalChecks(t *testing.T) {
 	}{
 		{"missing report", "", "", "", "", "", true},
 		{"missing checkout", "failed", "pending", "pending", "", "", true},
+		{"retired configuration", "passed", "pending", "pending", "", "", true},
 		{"failed doctor", "passed", "failed", "passed", "", "", true},
 		{"missing auth", "passed", "passed", "failed", "", "", true},
 		{"checkout timeout", "failed", "pending", "pending", "failed", "context deadline exceeded", true},
@@ -926,6 +927,11 @@ func TestOnboardingRunnerLocalChecks(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			checks := runnerauth.LocalChecks{Checkout: tt.checkout, Doctor: tt.doctor, Provider: tt.provider, ProviderKinds: []string{"codex"}, Setup: tt.setup}
+			if tt.name == "retired configuration" {
+				checks.Configuration = "failed"
+				checks.ConfigurationMessage = "intake: retired configuration key; server.port: retired configuration key"
+				checks.ConfigurationFix = "Run detent config migrate detent.yaml"
+			}
 			body := map[string]any{"capacity": 1, "version": "test"}
 			if tt.cause != "" {
 				checks.CheckoutMessage = "Cannot clone repository: " + tt.cause
@@ -960,6 +966,9 @@ func TestOnboardingRunnerLocalChecks(t *testing.T) {
 			}
 			if tt.valid && tt.checkout != "" && (setup.Runners[0].LocalChecks == nil || setup.Runners[0].LocalChecks.Doctor != tt.doctor || setup.Runners[0].LocalChecks.Setup != tt.setup || setup.Runners[0].LocalChecks.ObservedAt.IsZero()) {
 				t.Fatalf("report=%+v", setup)
+			}
+			if tt.name == "retired configuration" && (setup.Runners[0].LocalChecks.ConfigurationMessage != checks.ConfigurationMessage || setup.Runners[0].LocalChecks.ConfigurationFix != checks.ConfigurationFix) {
+				t.Fatalf("lost configuration guidance: %+v", setup.Runners[0])
 			}
 			if tt.valid && (setup.Steps[2].State == "ready") != (tt.checkout != "" && checks.Passed() && setup.Policy != nil) {
 				t.Fatalf("local validation forged success or lost passed evidence: %+v", setup)

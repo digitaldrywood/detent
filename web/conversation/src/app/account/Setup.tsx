@@ -619,8 +619,8 @@ function SetupContent({ projectId, onNavigate }: {
           const offline = (preparingRunner.runner.connection_health ?? preparingRunner.runner.health) !== "online";
           const configuration = checks?.configuration ?? (checks?.checkout === "passed" ? "passed" : "pending");
           const rows = [
-            { name: `Cloned ${associatedRepository ?? "repository"}`, state: bindingReason ? "missing" : checks?.checkout, at: checks?.checkout_at, detail: bindingReason?.message || `Using ${runnerName}’s Git sign-in`, hint: bindingReason?.message || checks?.checkout_fix || "Check the runner’s Git sign-in and repository access, then retry." },
-            { name: configurationMissing ? "detent.yaml and WORKFLOW.md not found" : "Found detent.yaml and WORKFLOW.md", state: configuration, at: checks?.configuration_at, detail: configurationMissing ? "Looked in the repository root" : "Project settings loaded from the repository", hint: "Check detent.yaml and WORKFLOW.md in the repository, then retry." },
+            { name: `Cloned ${associatedRepository ?? "repository"}`, state: bindingReason ? "missing" : checks?.checkout, at: checks?.checkout_at, message: checks?.checkout_message, detail: bindingReason?.message || `Using ${runnerName}’s Git sign-in`, hint: bindingReason?.message || checks?.checkout_fix || "Check the runner’s Git sign-in and repository access, then retry." },
+            { name: configurationMissing ? "detent.yaml and WORKFLOW.md not found" : "Found detent.yaml and WORKFLOW.md", state: configuration, at: checks?.configuration_at, message: checks?.configuration_message, detail: configurationMissing ? "Looked in the repository root" : "Project settings loaded from the repository", hint: checks?.configuration_fix || "Check detent.yaml and WORKFLOW.md in the repository, then retry." },
             { name: "detent doctor", state: checks?.doctor, at: checks?.doctor_at, detail: configurationMissing ? "Waiting for settings" : `Checking build tools on ${runnerName}`, hint: "Run detent doctor --config <global.yaml> --project <project> on your runner’s computer to see what needs fixing." },
             { name: "AI coding tool sign-in", state: checks?.provider, at: checks?.provider_at, detail: configurationMissing ? "Waiting for settings" : `Sign-in stays on ${runnerName}`, hint: `Sign in to ${(checks?.provider_kinds ?? []).join(" and ") || "the AI coding tool chosen for this project"} on your runner’s computer, then retry.` },
           ];
@@ -637,7 +637,7 @@ function SetupContent({ projectId, onNavigate }: {
                   <div className="min-w-0 flex-1 text-sm">
                     <p className="break-words">{row.name}</p>
                     <p className="break-words text-xs text-muted-foreground">{state === "failed" ? row.hint : row.detail}</p>
-                    {state === "failed" && row.name.startsWith("Cloned") && checks?.checkout_message ? <p className="text-xs text-muted-foreground">{checks.checkout_message}</p> : null}
+                    {state === "failed" && row.message ? <p className="break-words text-xs text-muted-foreground">{row.message}</p> : null}
                     {state === "failed" ? <Button variant="link" size="sm" disabled={saveProgress.pending} onClick={requestChecks} aria-label={`Retry ${row.name}`}>Retry</Button> : null}
                   </div>
                   <div className="shrink-0 text-right text-xs text-muted-foreground">

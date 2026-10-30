@@ -506,6 +506,8 @@ export const RunnerLocalChecks = Schema.Struct({
   checkout_message: Schema.optional(Schema.String),
   checkout_fix: Schema.optional(Schema.String),
   checkout_at: Schema.optional(Schema.String),
+  configuration_message: Schema.optional(Schema.String),
+  configuration_fix: Schema.optional(Schema.String),
   configuration_at: Schema.optional(Schema.String),
   doctor_at: Schema.optional(Schema.String),
   provider_at: Schema.optional(Schema.String),

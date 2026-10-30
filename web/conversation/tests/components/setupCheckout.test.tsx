@@ -602,3 +602,30 @@ it("keeps an unbound Repository incomplete and explains checkout without blaming
   expect(checks.textContent).toContain("Connect a repository in the Repository step");
   expect(checks.textContent).not.toContain("Check the runner’s Git sign-in");
 });
+
+it.each([
+ { message: "intake: retired configuration key; backlog_admission: retired configuration key; tracker.github_status_source: retired configuration key; tracker.status_label_prefix: retired configuration key; server.host: retired configuration key; server.port: retired configuration key", fix: "Run detent config migrate detent.yaml in the repository, review and commit the changes, then retry." },
+ { message: "parse detent.yaml: yaml: line 2: did not find expected node content", fix: "" },
+])("shows configuration failure details and recovery: $message", async ({ message, fix }) => {
+ const mount = await mountSetup();
+ const fetch = globalThis.fetch;
+ vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+  const response = await fetch(input, init);
+  if (String(input).endsWith("/onboarding") && (!init?.method || init.method === "GET") && response.ok) {
+   const data = await response.json();
+   return Response.json({ ...data, runners: data.runners.slice(0, 1).map((entry: object) => ({ ...entry, local_checks: {
+    checkout: "passed", configuration: "failed", configuration_message: message, configuration_fix: fix,
+    doctor: "pending", provider: "pending", observed_at: new Date().toISOString(),
+   } })) });
+  }
+  return response;
+ });
+ mount();
+ const user = userEvent.setup();
+ await user.click(await screen.findByRole("button", { name: /Checkout/ }));
+ const row = screen.getByText("Found detent.yaml and WORKFLOW.md").closest("li")!;
+ expect(within(row).getByText("Failed", { exact: true })).toBeTruthy();
+ expect(within(row).getByText(message)).toBeTruthy();
+ expect(within(row).getByText(fix || "Check detent.yaml and WORKFLOW.md in the repository, then retry.")).toBeTruthy();
+ expect(within(row).getByRole("button", { name: "Retry Found detent.yaml and WORKFLOW.md" })).toBeTruthy();
+});

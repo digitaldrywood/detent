@@ -1,0 +1,19 @@
+schema: 1
+intake: {}
+routines: {}
+retro: {}
+backlog_admission: {}
+tracker:
+  kind: hub_native
+  github_status_source: labels
+  project_slug: example-project
+  status_field: Status
+  status_label_prefix: "status:"
+  write_probe_issue: 1
+  observed_states: [Backlog]
+  active_states: [Todo]
+  terminal_states: [Done]
+server:
+  host: localhost
+  port: 4000
+  board_snapshot_stale_after_seconds: 60

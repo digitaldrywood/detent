@@ -28,6 +28,8 @@ func TestCollectRunnerLocalChecks(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
 		name                                   string
+		configFixture                          bool
+		invalidYAML                            bool
 		pi                                     bool
 		startup                                bool
 		checkout                               bool
@@ -41,6 +43,8 @@ func TestCollectRunnerLocalChecks(t *testing.T) {
 		auth                                   bool
 		wantCheckout, wantDoctor, wantProvider string
 	}{
+		{name: "retired configuration keys", checkout: true, configFixture: true, wantCheckout: "passed", wantDoctor: "pending", wantProvider: "pending"},
+		{name: "invalid configuration YAML", checkout: true, invalidYAML: true, wantCheckout: "passed", wantDoctor: "pending", wantProvider: "pending"},
 		{name: "missing checkout", doctor: doctorOK, auth: true, wantCheckout: "failed", wantDoctor: "pending", wantProvider: "pending"},
 		{name: "failed doctor", checkout: true, doctor: doctorFail, auth: true, wantCheckout: "passed", wantDoctor: "failed", wantProvider: "passed"},
 		{name: "missing provider", checkout: true, doctor: doctorOK, wantCheckout: "passed", wantDoctor: "passed", wantProvider: "failed"},
@@ -96,6 +100,21 @@ func TestCollectRunnerLocalChecks(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
+				if tt.configFixture || tt.invalidYAML {
+					raw, err := os.ReadFile("../config/testdata/local-era.yaml")
+					if err != nil {
+						t.Fatal(err)
+					}
+					if tt.invalidYAML {
+						raw = []byte("schema: 1\nagent:\n  max_turns: PRIVATE\n")
+					}
+					if err := os.WriteFile(filepath.Join(workdir, "detent.yaml"), raw, 0600); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(workflowPath, []byte("Instructions.\n"), 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
 				if err := os.WriteFile(filepath.Join(workdir, "source.go"), []byte("package orders\n"), 0600); err != nil {
 					t.Fatal(err)
 				}
@@ -109,7 +128,7 @@ func TestCollectRunnerLocalChecks(t *testing.T) {
 					}
 					runDoctorWorkflowSourceGit(t, workdir, "remote", "add", "origin", remote)
 				}
-				if !tt.missingWorkflow {
+				if !tt.missingWorkflow && !tt.configFixture && !tt.invalidYAML {
 					if _, _, _, err := resolveRunnerProjectPolicy(t.Context(), cfg, "orders"); err != nil {
 						t.Fatalf("configured workflow cannot resolve: %v", err)
 					}
@@ -142,17 +161,38 @@ func TestCollectRunnerLocalChecks(t *testing.T) {
 			if checks.Checkout != tt.wantCheckout || checks.Doctor != tt.wantDoctor || checks.Provider != tt.wantProvider {
 				t.Fatalf("checks=%+v", checks)
 			}
-			if (checks.RunnerSetupDeclared != nil) != (tt.wantCheckout == "passed" && !tt.missingWorkflow) || checks.RunnerSetupDeclared != nil && *checks.RunnerSetupDeclared != tt.runnerSetup {
+			if (checks.RunnerSetupDeclared != nil) != (tt.wantCheckout == "passed" && !tt.missingWorkflow && !tt.configFixture && !tt.invalidYAML) || checks.RunnerSetupDeclared != nil && *checks.RunnerSetupDeclared != tt.runnerSetup {
 				t.Fatalf("runner setup declaration = %v", checks.RunnerSetupDeclared)
 			}
-			if tt.wantCheckout == "passed" && !tt.missingWorkflow && (doctors != 1 || !tt.pi && auths == 0 || tt.pi && auths != 0) {
+			if tt.wantCheckout == "passed" && !tt.missingWorkflow && !tt.configFixture && !tt.invalidYAML && (doctors != 1 || !tt.pi && auths == 0 || tt.pi && auths != 0) {
 				t.Fatalf("probes doctor=%d auth=%d", doctors, auths)
 			}
-			if (tt.wantCheckout != "passed" || tt.missingWorkflow) && (doctors != 0 || auths != 0) {
+			if (tt.wantCheckout != "passed" || tt.missingWorkflow || tt.configFixture || tt.invalidYAML) && (doctors != 0 || auths != 0) {
 				t.Fatal("probed before checkout")
 			}
 			if tt.missingWorkflow && checks.Configuration != "missing" {
 				t.Fatalf("configuration not missing: %+v", checks)
+			}
+			if tt.configFixture || tt.invalidYAML {
+				if checks.Configuration != "failed" || checks.ConfigurationMessage == "" {
+					t.Fatalf("missing configuration detail: %+v", checks)
+				}
+				if err := checks.Validate(); err != nil {
+					t.Fatal(err)
+				}
+				if tt.invalidYAML && strings.Contains(checks.ConfigurationMessage, "PRIVATE") {
+					t.Fatalf("configuration value escaped: %+v", checks)
+				}
+				if tt.configFixture {
+					for _, key := range []string{"intake", "routines", "retro", "backlog_admission", "tracker.github_status_source", "tracker.project_slug", "tracker.status_field", "tracker.status_label_prefix", "tracker.write_probe_issue", "server.host", "server.port", "server.board_snapshot_stale_after_seconds"} {
+						if !strings.Contains(checks.ConfigurationMessage, key+": retired configuration key") {
+							t.Fatalf("missing %s: %+v", key, checks)
+						}
+					}
+					if !strings.Contains(checks.ConfigurationFix, "detent config migrate detent.yaml") {
+						t.Fatalf("missing fix: %+v", checks)
+					}
+				}
 			}
 			encoded, err := json.Marshal(checks)
 			if err != nil {

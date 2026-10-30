@@ -12,11 +12,16 @@ import (
 
 func TestConfigMigrateCommand(t *testing.T) {
 	t.Parallel()
+	fixture, err := os.ReadFile("../config/testdata/local-era.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, test := range []struct {
 		name, filename, raw string
 		symlinkTarget       string
 		fails               bool
 	}{
+		{"retired", "detent.yaml", string(fixture), "", false},
 		{"yaml", "detent.yaml", "schema: 1\ntracker:\n  observed_states: [Backlog, Blocked]\n  active_states: [Todo]\n  terminal_states: [Done]\n", "", false},
 		{"frontmatter", "WORKFLOW.md", "---\ntracker:\n  active_states: [Todo]\n---\nKeep this prompt.\n", "", false},
 		{"invalid legacy", "detent.yaml", "schema: 1\ntracker:\n  active_states: [Todo, '']\n", "", true},
@@ -53,7 +58,7 @@ func TestConfigMigrateCommand(t *testing.T) {
 			var output bytes.Buffer
 			cmd.SetOut(&output)
 			cmd.SetErr(&output)
-			cmd.SetArgs([]string{"config", "migrate", path})
+			cmd.SetArgs([]string{"--format", "pretty", "config", "migrate", path})
 			err = cmd.Execute()
 			if (err != nil) != test.fails {
 				t.Fatalf("error = %v, output = %s", err, &output)
@@ -68,6 +73,13 @@ func TestConfigMigrateCommand(t *testing.T) {
 				}
 			} else if !strings.Contains(string(raw), "lanes:") || strings.Contains(string(raw), "active_states:") {
 				t.Fatalf("migration output = %s", raw)
+			}
+			if test.name == "retired" {
+				for _, key := range []string{"intake", "routines", "retro", "backlog_admission", "tracker.github_status_source", "tracker.project_slug", "tracker.status_field", "tracker.status_label_prefix", "tracker.write_probe_issue", "server.host", "server.port", "server.board_snapshot_stale_after_seconds"} {
+					if !strings.Contains(output.String(), "removed "+key+"\n") {
+						t.Fatalf("missing removal %s: %s", key, &output)
+					}
+				}
 			}
 			info, err := os.Stat(path)
 			if err != nil {

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -126,10 +127,78 @@ func MigrateTrackerLanes(raw []byte, laneOrder ...string) ([]byte, bool, error) 
 	return out, true, nil
 }
 
-func MigrateTrackerLanesFile(path string) (changed bool, resultErr error) {
+func MigrateWorkflow(raw []byte) ([]byte, []string, bool, error) {
+	document, err := splitProjectWorkflow(raw)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	yamlRaw := raw
+	if document.hasFrontmatter {
+		yamlRaw = document.frontmatter
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(yamlRaw, &doc); err != nil {
+		return nil, nil, false, err
+	}
+	root, err := documentRoot(&doc)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	var removed []string
+	for _, path := range retiredWorkflowKeys {
+		keys := strings.Split(path, ".")
+		current := root
+		for i, key := range keys {
+			if current.Kind == yaml.AliasNode || mappingKeyIndex(current, "<<") >= 0 {
+				expanded, err := expandedTrackerMapping(current)
+				if err != nil {
+					return nil, nil, false, err
+				}
+				*current = *expanded
+			}
+			index := mappingKeyIndex(current, key)
+			if index < 0 {
+				break
+			}
+			if i == len(keys)-1 {
+				current.Content = append(current.Content[:index], current.Content[index+2:]...)
+				removed = append(removed, path)
+				break
+			}
+			current = current.Content[index+1]
+		}
+	}
+	cleaned := raw
+	if len(removed) > 0 {
+		var encoded bytes.Buffer
+		encoder := yaml.NewEncoder(&encoded)
+		encoder.SetIndent(2)
+		if err := encoder.Encode(&doc); err != nil {
+			return nil, nil, false, err
+		}
+		if err := encoder.Close(); err != nil {
+			return nil, nil, false, err
+		}
+		cleaned = encoded.Bytes()
+		if bytes.Contains(yamlRaw, []byte("\r\n")) {
+			cleaned = bytes.ReplaceAll(cleaned, []byte("\n"), []byte("\r\n"))
+		}
+		if document.hasFrontmatter {
+			document.frontmatter = cleaned
+			cleaned = legacyWorkflowBytes(document)
+		}
+		if bytes.HasPrefix(raw, []byte{0xef, 0xbb, 0xbf}) {
+			cleaned = append([]byte{0xef, 0xbb, 0xbf}, cleaned...)
+		}
+	}
+	out, changed, err := MigrateTrackerLanes(cleaned)
+	return out, removed, changed || len(removed) > 0, err
+}
+
+func MigrateWorkflowFile(path string) (removed []string, changed bool, resultErr error) {
 	root, err := os.OpenRoot(filepath.Dir(path))
 	if err != nil {
-		return false, err
+		return nil, false, err
 	}
 	defer func() {
 		resultErr = errors.Join(resultErr, root.Close())
@@ -137,20 +206,25 @@ func MigrateTrackerLanesFile(path string) (changed bool, resultErr error) {
 	name := filepath.Base(path)
 	raw, err := root.ReadFile(name)
 	if err != nil {
-		return false, err
+		return nil, false, err
 	}
-	out, changed, err := MigrateTrackerLanes(raw)
+	out, removed, changed, err := MigrateWorkflow(raw)
 	if err != nil || !changed {
-		return false, err
+		return nil, false, err
 	}
 	info, err := root.Stat(name)
 	if err != nil {
-		return false, err
+		return nil, false, err
 	}
 	if err := root.WriteFile(name, out, info.Mode().Perm()); err != nil {
-		return false, err
+		return nil, false, err
 	}
-	return true, nil
+	return removed, true, nil
+}
+
+func MigrateTrackerLanesFile(path string) (bool, error) {
+	_, changed, err := MigrateWorkflowFile(path)
+	return changed, err
 }
 
 func expandedTrackerMapping(node *yaml.Node) (*yaml.Node, error) {

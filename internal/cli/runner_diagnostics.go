@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -56,6 +57,13 @@ func collectRunnerLocalChecks(ctx context.Context, cfg globalconfig.Config, name
 	checks.ConfigurationAt = time.Now().UTC()
 	if err != nil {
 		checks.Configuration = "failed"
+		checks.ConfigurationMessage = strings.Join(strings.Fields(regexp.MustCompile("\x60[^\x60]*\x60|\x22[^\x22]*\x22|\x27[^\x27]*\x27").ReplaceAllString(err.Error(), "[value]")), " ")
+		if len(checks.ConfigurationMessage) > 8000 {
+			checks.ConfigurationMessage = checks.ConfigurationMessage[:8000]
+		}
+		if strings.Contains(checks.ConfigurationMessage, "retired configuration key") {
+			checks.ConfigurationFix = "Run detent config migrate detent.yaml in the repository, review and commit the changes, then retry."
+		}
 		if errors.Is(err, workflowconfig.ErrNoProjectDefinition) || errors.Is(err, os.ErrNotExist) {
 			checks.Configuration = "missing"
 		}
@@ -196,7 +204,7 @@ func collectRunnerSetupReports(ctx context.Context, cfg globalconfig.Config, cli
 		checks := collectRunnerLocalChecks(ctx, cfg, name, func(ctx context.Context, cfg doctorConfig) doctorReport {
 			return runDoctorStartupPreflight(ctx, cfg, options{}, doctorDeps{})
 		}, probeRunnerProviderAuth)
-		if checks.Checkout == "passed" {
+		if checks.Configuration == "passed" {
 			_, _, descriptor, err := resolveRunnerProjectPolicy(ctx, cfg, name)
 			if err != nil {
 				return nil, err

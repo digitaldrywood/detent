@@ -1,6 +1,9 @@
 package runnerauth
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestLocalChecksValidation(t *testing.T) {
 	t.Parallel()
@@ -12,6 +15,9 @@ func TestLocalChecksValidation(t *testing.T) {
 		{"runner commit policy", LocalChecks{Checkout: "passed", Doctor: "passed", Provider: "passed", CommitName: "Enrolled runner", CommitEmail: "machine@runners.detent.invalid", CommitSigning: "unsigned"}, true},
 		{"invalid signing mode", LocalChecks{Checkout: "passed", Doctor: "passed", Provider: "passed", CommitSigning: "pinentry"}, false},
 		{"multiline commit identity", LocalChecks{Checkout: "passed", Doctor: "passed", Provider: "passed", CommitName: "Runner\nother"}, false},
+		{"configuration detail", LocalChecks{Checkout: "passed", Configuration: "failed", ConfigurationMessage: "intake: retired configuration key", ConfigurationFix: "Run detent config migrate detent.yaml", Doctor: "pending", Provider: "pending"}, true},
+		{"multiline configuration detail", LocalChecks{Checkout: "passed", ConfigurationMessage: "line one\nline two", Doctor: "pending", Provider: "pending"}, false},
+		{"unbounded configuration detail", LocalChecks{Checkout: "passed", ConfigurationMessage: strings.Repeat("x", 8001), Doctor: "pending", Provider: "pending"}, false},
 		{"running configuration", LocalChecks{Checkout: "passed", Configuration: "running", Doctor: "pending", Provider: "pending"}, true},
 		{"raw configuration", LocalChecks{Checkout: "passed", Configuration: "secret-token", Doctor: "pending", Provider: "pending"}, false},
 		{"pending", LocalChecks{Checkout: "failed", Doctor: "pending", Provider: "pending"}, true},

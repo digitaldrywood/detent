@@ -35,13 +35,15 @@ func validateRetiredWorkflowKeys(node *yaml.Node) error {
 	if err := node.Decode(&root); err != nil {
 		return err
 	}
-	problems := RetiredKeyErrors(root, []string{
-		"intake", "routines", "retro", "backlog_admission",
-		"tracker.github_status_source", "tracker.project_slug", "tracker.status_field", "tracker.status_label_prefix", "tracker.write_probe_issue",
-		"server.host", "server.port", "server.board_snapshot_stale_after_seconds",
-	})
+	problems := RetiredKeyErrors(root, retiredWorkflowKeys)
 	if len(problems) > 0 {
 		return errors.New(strings.Join(problems, "; "))
 	}
 	return nil
+}
+
+var retiredWorkflowKeys = []string{
+	"intake", "routines", "retro", "backlog_admission",
+	"tracker.github_status_source", "tracker.project_slug", "tracker.status_field", "tracker.status_label_prefix", "tracker.write_probe_issue",
+	"server.host", "server.port", "server.board_snapshot_stale_after_seconds",
 }
