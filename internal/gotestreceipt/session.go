@@ -15,7 +15,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -62,21 +61,35 @@ type Session struct {
 	refused  atomic.Int64
 }
 
-func Start(ctx context.Context, store Store, logger *slog.Logger) (*Session, error) {
+func Start(ctx context.Context, store Store, logger *slog.Logger, scratch string) (*Session, error) {
 	if store == nil {
 		return nil, errors.New("go test receipt store is required")
+	}
+	if !filepath.IsAbs(scratch) {
+		return nil, errors.New("go test receipt scratch directory must be absolute")
 	}
 	if logger == nil {
 		logger = slog.Default()
 	}
-	dir, err := os.MkdirTemp(socketBase(), "dgtr")
+	dir, err := os.MkdirTemp(scratch, "dgtr")
 	if err != nil {
 		return nil, fmt.Errorf("create receipt socket directory: %w", err)
 	}
 	socket := filepath.Join(dir, socketName)
 	var config net.ListenConfig
-	listener, err := config.Listen(ctx, "unix", socket)
+	var listener net.Listener
+	err = withSocketPath(socket, func(path string) error {
+		var listenErr error
+		listener, listenErr = config.Listen(ctx, "unix", path)
+		return listenErr
+	})
+	if unixListener, ok := listener.(*net.UnixListener); ok {
+		unixListener.SetUnlinkOnClose(false)
+	}
 	if err != nil {
+		if listener != nil {
+			err = errors.Join(err, listener.Close())
+		}
 		return nil, errors.Join(fmt.Errorf("listen for go test receipts: %w", err), os.RemoveAll(dir))
 	}
 	session := &Session{dir: dir, socket: socket, listener: listener, store: store, logger: logger, token: rand.Text(), served: make(chan error, 1)}
@@ -94,14 +107,6 @@ func Start(ctx context.Context, store Store, logger *slog.Logger) (*Session, err
 		session.served <- err
 	}()
 	return session, nil
-}
-
-func socketBase() string {
-	base := os.TempDir()
-	if runtime.GOOS != "windows" && len(filepath.Join(base, "dgtr0123456789", socketName)) > maxSocketPath {
-		return "/tmp"
-	}
-	return base
 }
 
 func (s *Session) authorize(next http.Handler) http.Handler {
@@ -230,7 +235,16 @@ type Client struct {
 func NewClient(socket, token string) *Client {
 	transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 		var dialer net.Dialer
-		return dialer.DialContext(ctx, "unix", socket)
+		var conn net.Conn
+		err := withSocketPath(socket, func(path string) error {
+			var dialErr error
+			conn, dialErr = dialer.DialContext(ctx, "unix", path)
+			return dialErr
+		})
+		if err != nil && conn != nil {
+			return nil, errors.Join(err, conn.Close())
+		}
+		return conn, err
 	}}
 	return &Client{http: &http.Client{Transport: transport, Timeout: requestTimeout}, token: token}
 }

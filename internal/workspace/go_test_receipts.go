@@ -11,12 +11,12 @@ import (
 	"github.com/digitaldrywood/detent/internal/procgroup"
 )
 
-func (l *LocalGit) startGoTestReceipts(ctx context.Context, cmd *exec.Cmd, root string) *gotestreceipt.Session {
+func (l *LocalGit) startGoTestReceipts(ctx context.Context, cmd *exec.Cmd, root, scratch string) *gotestreceipt.Session {
 	config, ok := gotestreceipt.FromContext(ctx)
 	if !ok {
 		return nil
 	}
-	session, err := gotestreceipt.Start(ctx, config.Store, l.logger)
+	session, err := gotestreceipt.Start(ctx, config.Store, l.logger, scratch)
 	if err != nil {
 		l.logger.Warn("go test receipts unavailable; validation tests execute", "error", err)
 		return nil

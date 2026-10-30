@@ -117,7 +117,7 @@ func TestHelperProcess(t *testing.T) {
 	t.Chdir(pkg)
 
 	store := &memoryStore{}
-	session, err := Start(t.Context(), store, nil)
+	session, err := Start(t.Context(), store, nil, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}

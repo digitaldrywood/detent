@@ -5,6 +5,7 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -128,5 +129,70 @@ func TestInputs(t *testing.T) {
 		if code != step.wantCode || !strings.Contains(output, step.wantOutput) {
 			t.Fatalf("%s: exit %d, want %d; output missing %q:\n%s\nreceipt log:\n%s", step.name, code, step.wantCode, step.wantOutput, output, receiptLog.String())
 		}
+	}
+}
+
+func TestGoTestReceiptSocketStaysInAssignedScratch(t *testing.T) {
+	backend, err := NewLocalGit(LocalGitOptions{Root: t.TempDir(), SourceRoot: initSourceRepo(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	long := filepath.Join(t.TempDir(), strings.Repeat("scratch", 20))
+	if err := os.Mkdir(long, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name     string
+		scratch  string
+		want     bool
+		unixOnly bool
+	}{
+		{name: "short scratch", scratch: t.TempDir(), want: true},
+		{name: "scratch longer than a socket address", scratch: long, want: true, unixOnly: true},
+		{name: "no assigned scratch runs without receipts", scratch: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.unixOnly && runtime.GOOS == "windows" {
+				t.Skip("Windows has no per-thread working directory or descriptor path to shorten a socket address, so receipts there need a short scratch")
+			}
+			command := exec.CommandContext(t.Context(), "unused")
+			ctx := gotestreceipt.WithContext(t.Context(), gotestreceipt.Config{Store: &memoryGoTestReceipts{}, Wrapper: "/wrapper"})
+			session := backend.startGoTestReceipts(ctx, command, t.TempDir(), tt.scratch)
+			if !tt.want {
+				if session != nil {
+					t.Fatal("receipt session started without an assigned scratch directory")
+				}
+				return
+			}
+			if session == nil {
+				t.Fatal("receipt session unavailable")
+			}
+			defer func() {
+				if _, err := session.Close(context.WithoutCancel(t.Context())); err != nil {
+					t.Error(err)
+				}
+			}()
+			environment := map[string]string{}
+			for _, entry := range command.Environ() {
+				if key, value, ok := strings.Cut(entry, "="); ok {
+					environment[key] = value
+				}
+			}
+			socket, err := filepath.EvalSymlinks(environment[gotestreceipt.SocketEnvironment])
+			if err != nil {
+				t.Fatal(err)
+			}
+			scratch, err := filepath.EvalSymlinks(tt.scratch)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if relative, err := filepath.Rel(scratch, socket); err != nil || !filepath.IsLocal(relative) {
+				t.Fatalf("socket %q is outside assigned scratch %q", socket, scratch)
+			}
+			if _, err := gotestreceipt.NewClient(environment[gotestreceipt.SocketEnvironment], environment[gotestreceipt.TokenEnvironment]).Lookup(t.Context(), strings.Repeat("a", 64)); err != nil {
+				t.Fatalf("lookup through socket: %v", err)
+			}
+		})
 	}
 }
