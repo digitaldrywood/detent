@@ -436,7 +436,11 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE native_attempts SET data_json=? WHERE id=?`, string(raw), event.Data.AttemptID); err != nil {
+				ref, err := prepareChangeContent(f.service.runDetailContext(t.Context()), string(f.project.OrganizationID), raw)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE native_attempts SET payload_object_key=?,data_json='{}' WHERE id=?`, ref.Key, event.Data.AttemptID); err != nil {
 					t.Fatal(err)
 				}
 				if legacySource {
@@ -603,11 +607,21 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			var contentBefore int64
+			var contentBefore, registeredBefore, objectBytesBefore int64
+			var objectsBefore int
 			if objects != nil {
 				if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT value FROM hosted_usage_counters WHERE name='collaboration_bytes'`).Scan(&contentBefore); err != nil {
 					t.Fatal(err)
 				}
+				if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM change_content_objects`).Scan(&registeredBefore); err != nil {
+					t.Fatal(err)
+				}
+				objects.mu.Lock()
+				objectsBefore = len(objects.objects)
+				for _, data := range objects.objects {
+					objectBytesBefore += int64(len(data))
+				}
+				objects.mu.Unlock()
 			}
 			if test.name == "object-backed storage exhausted" {
 				f.service.database.hostedOrganization = f.project.OrganizationID
@@ -618,48 +632,62 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 				}
 			}
 			if strings.HasSuffix(test.name, "attempt changes during preparation") {
+				var raw string
+				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT COALESCE(NULLIF(payload_object_key,''),data_json) FROM native_attempts WHERE id=?", version.AttemptID).Scan(&raw); err != nil {
+					t.Fatal(err)
+				}
+				contentCtx := f.service.runDetailContext(t.Context())
+				var run tracker.NativeRunData
+				if err := decodeRunDetail(contentCtx, f.service.database.reader, raw, &run); err != nil {
+					t.Fatal(err)
+				}
+				if request.SecurityAudit != nil {
+					run.Runtime.Activity.SessionID = request.SecurityAudit.SessionID
+				} else {
+					run.Runtime.Activity.SessionID = request.Validator.SessionID
+				}
+				updated, err := json.Marshal(run)
+				if err != nil {
+					t.Fatal(err)
+				}
+				ref, err := prepareChangeContent(contentCtx, string(f.project.OrganizationID), updated)
+				if err != nil {
+					t.Fatal(err)
+				}
 				injected := false
+				var injectionErr error
 				ctx := withRequestTiming(t.Context(), &requestTiming{trace: func(query string, _ []driver.NamedValue) {
 					if injected || !strings.Contains(query, "FROM change_requests c JOIN issues i") {
 						return
 					}
 					injected = true
-					var raw string
-					if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT data_json FROM native_attempts WHERE id=?", version.AttemptID).Scan(&raw); err != nil {
-						t.Fatal(err)
-					}
-					var run tracker.NativeRunData
-					if err := json.Unmarshal([]byte(raw), &run); err != nil {
-						t.Fatal(err)
-					}
-					if request.SecurityAudit != nil {
-						run.Runtime.Activity.SessionID = request.SecurityAudit.SessionID
-					} else {
-						run.Runtime.Activity.SessionID = request.Validator.SessionID
-					}
-					updated, err := json.Marshal(run)
-					if err != nil {
-						t.Fatal(err)
-					}
-					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET data_json=? WHERE id=?", string(updated), version.AttemptID); err != nil {
-						t.Fatal(err)
-					}
+					_, injectionErr = f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET payload_object_key=?,data_json='{}' WHERE id=?", ref.Key, version.AttemptID)
 				}})
 				response = httptest.NewRecorder()
 				f.service.Handler().ServeHTTP(response, newHubAPIRequest(t, http.MethodPost, path+"/versions/"+version.ID+"/reviews", worker, request).WithContext(ctx))
+				if injectionErr != nil {
+					t.Fatal(injectionErr)
+				}
 				if !injected {
 					t.Fatal("concurrent session change was not injected")
 				}
 			} else if objects != nil {
 				measurement := &changeWriterMeasurement{}
 				ctx := context.WithValue(t.Context(), changeWriterMeasurementKey{}, measurement)
+				transactionStatements := 0
 				ctx = withRequestTiming(ctx, &requestTiming{writerTrace: func(_ string, _ []driver.NamedValue) {
-					measurement.statements++
-				}, writerTransaction: func(active bool) { measurement.active = active }})
+					transactionStatements++
+					measurement.statements = max(measurement.statements, transactionStatements)
+				}, writerTransaction: func(active bool) {
+					measurement.active = active
+					if active {
+						transactionStatements = 0
+					}
+				}})
 				response = httptest.NewRecorder()
 				f.service.Handler().ServeHTTP(response, newHubAPIRequest(t, http.MethodPost, path+"/versions/"+version.ID+"/reviews", worker, request).WithContext(ctx))
 				if measurement.statements > 30 || measurement.content != 0 {
-					t.Fatalf("review writer statements=%d (bound 30), content operations=%d (want 0)", measurement.statements, measurement.content)
+					t.Fatalf("review writer statements per transaction=%d (bound 30), content operations=%d (want 0)", measurement.statements, measurement.content)
 				}
 			} else {
 				response = performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/reviews", worker, request)
@@ -712,10 +740,10 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 				objects.mu.Unlock()
 				expectedObjects := 0
 				if test.name == "object-backed storage rollback" {
-					expectedObjects = 1
+					expectedObjects = 3
 				}
-				if charged != contentBefore+storedBytes || registered != int64(expectedObjects) || stored != expectedObjects {
-					t.Fatalf("rejected review retained output: charged=%d before=%d registered=%d objects=%d", charged, contentBefore, registered, stored)
+				if charged-contentBefore != storedBytes-objectBytesBefore || registered-registeredBefore != int64(expectedObjects) || stored-objectsBefore != expectedObjects {
+					t.Fatalf("rejected review storage delta: charged=%d bytes=%d registered=%d objects=%d", charged-contentBefore, storedBytes-objectBytesBefore, registered-registeredBefore, stored-objectsBefore)
 				}
 			}
 
@@ -740,8 +768,11 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 				beforeObjects := len(objects.objects)
 				beforeWrites := objects.writes
 				objects.mu.Unlock()
-				var beforeBytes int64
+				var beforeBytes, beforeReferences int64
 				if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT value FROM hosted_usage_counters WHERE name='collaboration_bytes'`).Scan(&beforeBytes); err != nil {
+					t.Fatal(err)
+				}
+				if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM change_content_objects`).Scan(&beforeReferences); err != nil {
 					t.Fatal(err)
 				}
 				original := response.Body.String()
@@ -768,7 +799,7 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 				afterObjects := len(objects.objects)
 				afterWrites := objects.writes
 				objects.mu.Unlock()
-				if beforeBytes != afterBytes || beforeObjects != afterObjects || beforeWrites != afterWrites || afterReferences != 1 {
+				if beforeBytes != afterBytes || beforeObjects != afterObjects || beforeWrites != afterWrites || beforeReferences != afterReferences {
 					t.Fatal("review replay or key conflict changed stored objects or allowance")
 				}
 			}

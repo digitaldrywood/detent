@@ -78,12 +78,17 @@ func (s *Service) populateChangeSession(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	version, err := readChangeVersionSnapshot(ctx, s.database.reader, change, id)
+	if errors.Is(err, sql.ErrNoRows) {
+		_, err = s.database.db.ExecContext(ctx, `UPDATE change_versions SET implementing_session_id=-1 WHERE id=? AND implementing_session_id IS NULL`, id)
+		s.changeSessionAfter = id
+		return true, err
+	}
 	if err != nil {
 		return true, err
 	}
 	var sequence int64
 	var kind, eventRaw string
-	err = s.database.reader.QueryRowContext(ctx, `SELECT sequence,type,COALESCE(NULLIF(payload_object_key,''),data_json) FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND sequence>? ORDER BY sequence LIMIT 1`, organization, project, item, after).Scan(&sequence, &kind, &eventRaw)
+	err = s.database.reader.QueryRowContext(ctx, `SELECT sequence,type,`+collaborationPayloadColumn("")+` FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND sequence>? ORDER BY sequence LIMIT 1`, organization, project, item, after).Scan(&sequence, &kind, &eventRaw)
 	if err == nil {
 		var event tracker.CollaborationData
 		if err := decodeRunHistory(ctx, s.database.reader, eventRaw, &event); err != nil {
