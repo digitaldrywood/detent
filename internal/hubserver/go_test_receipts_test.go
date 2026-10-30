@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"net/http"
 	"path/filepath"
 	"slices"
@@ -298,6 +299,36 @@ func (w *blockedPruneWriter) ExecContext(ctx context.Context, _ string, _ ...any
 	<-ctx.Done()
 	w.cause = context.Cause(ctx)
 	return nil, ctx.Err()
+}
+
+func TestGoTestReceiptsKeepOnlyTheReadableCandidatesPerBinary(t *testing.T) {
+	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db")})
+	db := service.database.db
+	now := time.Now()
+	projects := []string{"prj_evict_first", "prj_evict_second"}
+	key := strings.Repeat("e", 64)
+	writes := gotestreceipt.MaxCandidates + 3
+	for _, project := range projects {
+		for i := range writes {
+			receipt := gotestreceipt.Receipt{Key: key, Digest: fmt.Sprintf("%064x", i), Package: "internal/example", Inputs: []string{}, Attestation: "gtra_example"}
+			if err := storeGoTestReceipt(t.Context(), db, "org_evict", project, "runner", receipt, now.Add(time.Duration(i)*time.Second)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	for _, project := range projects {
+		var count int
+		var oldest string
+		if err := service.database.reader.QueryRowContext(t.Context(), "SELECT count(*), min(inputs_digest) FROM go_test_receipts WHERE organization_id='org_evict' AND project_id=? AND binary_key=?", project, key).Scan(&count, &oldest); err != nil {
+			t.Fatal(err)
+		}
+		if want := fmt.Sprintf("%064x", writes-gotestreceipt.MaxCandidates); count != gotestreceipt.MaxCandidates || oldest != want {
+			t.Fatalf("%s kept %d receipts, oldest %s; want the newest %d, oldest %s", project, count, oldest, gotestreceipt.MaxCandidates, want)
+		}
+	}
+	if joined := receiptQueryPlan(t, db, goTestReceiptEvictQuery, "org_evict", projects[0], key, gotestreceipt.MaxCandidates); !strings.Contains(joined, "INDEX go_test_receipts_lookup") || strings.Contains(joined, "TEMP B-TREE") {
+		t.Fatalf("evict plan %q is not served by go_test_receipts_lookup", joined)
+	}
 }
 
 func TestGoTestReceiptPruningStopsWaitingOnBusyWriterAtBudget(t *testing.T) {

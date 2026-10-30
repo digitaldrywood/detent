@@ -145,12 +145,17 @@ ON CONFLICT(organization_id, project_id, binary_key, inputs_digest) DO UPDATE SE
 	if err != nil {
 		return fmt.Errorf("store go test receipt: %w", err)
 	}
+	if _, err := exec.ExecContext(ctx, goTestReceiptEvictQuery, organization, project, receipt.Key, gotestreceipt.MaxCandidates); err != nil {
+		return fmt.Errorf("evict go test receipt: %w", err)
+	}
 	return nil
 }
 
 const (
 	goTestReceiptLookupQuery = `SELECT inputs, inputs_digest FROM go_test_receipts
 WHERE organization_id=? AND project_id=? AND binary_key=? AND attestation_id <> '' AND recorded_at_ns>=? ORDER BY recorded_at_ns DESC LIMIT ?`
+	goTestReceiptEvictQuery = `DELETE FROM go_test_receipts WHERE rowid IN (SELECT rowid FROM go_test_receipts INDEXED BY go_test_receipts_lookup
+WHERE organization_id=? AND project_id=? AND binary_key=? ORDER BY recorded_at_ns DESC LIMIT 1 OFFSET ?)`
 	goTestReceiptPruneQuery            = "DELETE FROM go_test_receipts WHERE rowid IN (SELECT rowid FROM go_test_receipts INDEXED BY go_test_receipts_recorded WHERE recorded_at_ns < ? ORDER BY recorded_at_ns LIMIT 1)"
 	goTestReceiptAttestationPruneQuery = "DELETE FROM go_test_receipt_attestations WHERE rowid IN (SELECT rowid FROM go_test_receipt_attestations INDEXED BY go_test_receipt_attestations_expiry WHERE expires_at_ns < ? ORDER BY expires_at_ns LIMIT 1)"
 )
