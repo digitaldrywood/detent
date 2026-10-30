@@ -2,7 +2,6 @@ package orchestrator
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -141,13 +140,11 @@ func (e *progressCompletionExecution) Finish(_ context.Context, outcome string) 
 func TestEmptyLandingProgressCompletesOrImplements(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name            string
-		complete        bool
-		deferCompletion bool
+		name     string
+		complete bool
 	}{
-		{name: "1818 repeated successful rework and merge completes on base", complete: true},
+		{name: "progress completion advice requires implementation gates", complete: true},
 		{name: "unmet acceptance implements with refusal feedback"},
-		{name: "completion survives tracker deferral", complete: true, deferCompletion: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			issue := dispatchTestIssue("example-issue", "Rework")
@@ -179,51 +176,20 @@ func TestEmptyLandingProgressCompletesOrImplements(t *testing.T) {
 			}
 			running := state.Running[issue.ID]
 			t.Cleanup(func() { running.cancel(); <-running.done })
-			if !test.complete {
-				var request RunRequest
-				select {
-				case request = <-worker.started:
-				case completion := <-o.runResults:
-					t.Fatalf("unmet acceptance did not reach implementation: %+v", completion)
-				}
-				state.Running[issue.ID].cancel()
-				<-o.runResults
-				<-state.Running[issue.ID].done
-				if request.Mode != RunModeImplement || !strings.Contains(request.PriorAttempt.Reason, "nothing_to_land") || !strings.Contains(request.PriorAttempt.Reason, "no deliverable to verify") || !strings.Contains(request.PriorAttempt.Reason, decision.Reason) {
-					t.Fatalf("implementation lost refusal feedback: %+v", request)
-				}
-			} else {
-				var completion runpkg.Completion
-				select {
-				case completion = <-o.runResults:
-				case <-worker.started:
-					t.Fatal("already delivered work dispatched rework")
-				}
-				<-state.Running[issue.ID].done
-				if completion.Err != nil || completion.Result.FinalState != FinalStateCompleted || completion.Result.NativeLanding != nil || len(execution.outcomes) != 1 || execution.outcomes[0] != "cancelled" {
-					t.Fatalf("progress completion=%+v execution outcomes=%v", completion, execution.outcomes)
-				}
-				select {
-				case <-worker.started:
-					t.Fatal("already delivered work dispatched rework")
-				default:
-				}
-				if test.deferCompletion {
-					record := newDeferredCompletion(completion, state.Running[issue.ID], errors.New("tracker unavailable"), time.Now())
-					encoded, err := json.Marshal(record)
-					if err != nil {
-						t.Fatal(err)
-					}
-					var retained deferredCompletion
-					if err := json.Unmarshal(encoded, &retained); err != nil {
-						t.Fatal(err)
-					}
-					completion = retained.completion()
-				}
-				o.handleRunResult(t.Context(), &state, completion)
-				if len(tick.updates) != 1 || tick.updates[0].state != "Done" || len(state.Retry) != 0 || len(tick.comments) != 1 || !strings.Contains(tick.comments[0].body, "base-evidence") || !strings.Contains(tick.comments[0].body, decision.Reason) {
-					t.Fatalf("completion did not use lane owner: updates=%+v retry=%+v comments=%+v", tick.updates, state.Retry, tick.comments)
-				}
+			var request RunRequest
+			select {
+			case request = <-worker.started:
+			case completion := <-o.runResults:
+				t.Fatalf("progress advice bypassed required gates: %+v", completion)
+			}
+			state.Running[issue.ID].cancel()
+			<-o.runResults
+			<-state.Running[issue.ID].done
+			if request.Mode != RunModeImplement || !strings.Contains(request.PriorAttempt.Reason, "nothing_to_land") || !strings.Contains(request.PriorAttempt.Reason, "no deliverable to verify") || !strings.Contains(request.PriorAttempt.Reason, decision.Reason) {
+				t.Fatalf("implementation lost refusal feedback: %+v", request)
+			}
+			if len(tick.updates) != 0 || len(state.Completed) != 0 {
+				t.Fatalf("progress advice completed without required gates: updates=%+v completed=%+v", tick.updates, state.Completed)
 			}
 			if checker.calls != 1 || source.comments != 1 || len(checker.evidence.Attempts) != 6 || checker.evidence.Attempts[5].Outcome != "success" || !checker.evidence.EmptyDelta {
 				t.Fatalf("history/check publication lost: calls=%d comments=%d request=%+v", checker.calls, source.comments, checker.evidence)

@@ -31,6 +31,7 @@ type ChangeReviewReader interface {
 }
 
 type ChangeReview struct {
+	AcceptedBaseSHA  string
 	AcceptanceOnBase bool
 	RepairPending    bool
 	Current          bool

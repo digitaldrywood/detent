@@ -556,7 +556,7 @@ func incorporatedSourceDelta(ctx context.Context, path, sourceBase, base, head s
 		return nil, err
 	}
 	if strings.TrimSpace(delta) == "" {
-		return nil, refuse(LandRefusalNothing, "the published source has no deliverable to verify")
+		return nil, &LandRefusal{Kind: LandRefusalNothing, Reason: "the published source has no deliverable to verify", BaseSHA: base}
 	}
 	merged, err := runGitAt(ctx, path, "merge-tree", "--write-tree", "--merge-base="+sourceBase, base, head)
 	if err != nil {

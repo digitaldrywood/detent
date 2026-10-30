@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/progresscheck"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -40,10 +39,9 @@ func (o *Orchestrator) completeNativeLandingRun(
 	running Running,
 ) bool {
 	landing := event.Result.NativeLanding
-	progress := event.Request.ProgressDecision
-	completedOnBase := landing == nil && progress.Decision.Outcome == progresscheck.Reroute && progress.Decision.Step == progresscheck.CompleteStep && progress.CommentID != "" && progress.IssueID == event.IssueID
+	completedOnBase := false
 	reader, ok := o.connector.(connector.WorkflowStateReader)
-	if landing == nil && !completedOnBase || !ok {
+	if landing == nil || !ok {
 		return false
 	}
 	issue := running.Issue
@@ -74,7 +72,7 @@ func (o *Orchestrator) completeNativeLandingRun(
 			if err != nil {
 				return handoff(fmt.Errorf("read acceptance on the base: %w", err))
 			}
-			completedOnBase = review.Current && review.Reviewed && !review.ChangesRequested && !review.RepairPending && review.AcceptanceOnBase
+			completedOnBase = review.Current && review.Reviewed && !review.ChangesRequested && !review.RepairPending && review.AcceptanceOnBase && landing.BaseSHA != "" && review.AcceptedBaseSHA == landing.BaseSHA
 		}
 	}
 	finalState := event.Result.FinalState
@@ -154,10 +152,6 @@ func (o *Orchestrator) completeNativeLandingRun(
 	if completedOnBase && landing != nil {
 		comment = fmt.Sprintf("Acceptance criteria already met on the base for Change Request %s, version %s (head %s), with recorded validator approval. Landing refused (%s): %s. Moved from %s to %s.", landing.ChangeID, landing.VersionID, shortCommit(landing.HeadSHA), landing.RefusalKind, landing.Refusal, displayStateName(issue.State), displayStateName(target))
 		message = "verified acceptance on the base for " + issueLabel(issue)
-	} else if completedOnBase {
-		comment = fmt.Sprintf("Acceptance criteria already met on the base. Progress check comment %s: %s\n\nEvidence: %s", progress.CommentID, progress.Decision.Reason, strings.Join(progress.Decision.Evidence, ", "))
-		message = "verified acceptance on the base for " + issueLabel(issue)
-		metadata = map[string]any{"progress_decision": progress}
 	} else {
 		comment = nativeLandingComment(landing, issue.State, target)
 		message = nativeLandingEventMessage(landing, issue, target)

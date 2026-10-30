@@ -342,5 +342,12 @@ func ReviewState(detail tracker.ChangeDetail, versionID, headSHA string) connect
 	result.ChangesRequested = result.ChangesRequested || sourceRework || validatorRework || auditRework
 	result.Reviewed = (detail.Summary.Status == "reviewed" || detail.Summary.Status == "landed") && !result.ChangesRequested
 	result.AcceptanceOnBase = result.Current && result.Reviewed && !result.RepairPending && emptyDelta && acceptanceApproved
+	if result.AcceptanceOnBase {
+		for _, version := range detail.Versions {
+			if version.ID == versionID {
+				result.AcceptedBaseSHA = version.BaseSHA
+			}
+		}
+	}
 	return result
 }
