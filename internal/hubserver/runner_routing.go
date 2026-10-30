@@ -599,6 +599,7 @@ func (s *Service) listRunnerRouting(c echo.Context) error {
 }
 
 func (s *Service) listRunnerRoutingData(ctx context.Context, organization tracker.OrganizationID, limit, offset int) ([]runnerauth.Runner, error) {
+	ctx = s.runDetailContext(ctx)
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})

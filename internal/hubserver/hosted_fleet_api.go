@@ -244,6 +244,7 @@ func (s *Service) readHostedFleet(ctx context.Context, credential apiCredential)
 }
 
 func (s *Service) hostedFleetRunners(ctx context.Context, credential apiCredential, visible map[tracker.ProjectID]bool) ([]hostedFleetRunner, error) {
+	ctx = s.runDetailContext(ctx)
 	organization := tracker.OrganizationID(s.appOrganizationID())
 	rows, err := s.database.reader.QueryContext(ctx, `SELECT r.id, COALESCE(m.version, ''), r.local_checks_json, r.created_at FROM runner_identities r LEFT JOIN machines m ON m.id = r.machine_id
 WHERE r.organization_id = ? AND r.removed_at IS NULL ORDER BY r.display_name, r.id`, organization)
