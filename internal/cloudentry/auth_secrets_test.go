@@ -45,15 +45,6 @@ func entrySecretEnvironment(active int, versions ...int) func(string) string {
 	}
 }
 
-func entrySecretKeys(t *testing.T, active int, versions ...int) *hubsecrets.Keyring {
-	t.Helper()
-	keys, err := hubsecrets.FromEnvironment(entrySecretEnvironment(active, versions...))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return keys
-}
-
 func openSecretEntry(t *testing.T, cfg Config) *Service {
 	t.Helper()
 	s, err := Open(t.Context(), cfg)
@@ -224,16 +215,19 @@ func (g *gatedEntryLegacySeal) Open(dst, nonce, ciphertext, aad []byte) ([]byte,
 func TestEntrySecretResealCASAndSkips(t *testing.T) {
 	t.Parallel()
 	var logs lockedBuffer
-	s := openSecretEntry(t, secretEntryConfig(t, &logs))
+	cfg := secretEntryConfig(t, &logs)
+	cfg.LookupEnv = entrySecretEnvironment(2, 1, 2)
+	s := openSecretEntry(t, cfg)
+	legacy := &Service{config: s.config, auth: &authStore{store: s.auth.store, now: s.auth.now, seal: s.auth.seal}}
 	for _, owner := range []string{"first-user", "second-user"} {
-		if err := s.saveGitHubConnection(t.Context(), owner, &oauth2.Token{AccessToken: "github-" + owner}); err != nil {
+		if err := legacy.saveGitHubConnection(t.Context(), owner, &oauth2.Token{AccessToken: "github-" + owner}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	old := auth.HostedTokens{AccessToken: "old-access", RefreshToken: "old-refresh"}
 	items := map[string]authorization{}
 	for _, name := range []string{"refresh", "revoked", "empty", "partial", "broken", "healthy", "active"} {
-		items[name] = addSecretAuthorization(t, s, name, old)
+		items[name] = addSecretAuthorization(t, legacy, name, old)
 	}
 	for _, row := range []struct {
 		query string
@@ -248,7 +242,6 @@ func TestEntrySecretResealCASAndSkips(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	s.auth.keys = entrySecretKeys(t, 2, 1, 2)
 	if err := s.auth.storeTokens(t.Context(), items["active"].Binding, old); err != nil {
 		t.Fatal(err)
 	}
@@ -318,7 +311,7 @@ func TestEntrySecretResealCASAndSkips(t *testing.T) {
 			}
 		}
 	}
-	cfg := s.config
+	cfg = s.config
 	cfg.LookupEnv = entrySecretEnvironment(2, 2)
 	if err := s.Close(); err != nil {
 		t.Fatal(err)

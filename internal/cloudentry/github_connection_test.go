@@ -7,10 +7,12 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -26,19 +28,29 @@ func (f runtimeTransport) RoundTrip(request *http.Request) (*http.Response, erro
 }
 
 func TestGitHubRepositoryConnection(t *testing.T) {
-	f := newEntryFixture(t)
+	f := newEntryFixture(t, func(cfg *Config) {
+		cfg.LookupEnv = entrySecretEnvironment(1, 1)
+	})
 	s := f.service
-	s.auth.keys = entrySecretKeys(t, 1, 1)
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatal(err)
 	}
 	calls := map[string]int{}
 	reject := false
+	var mu sync.Mutex
+	recordedCalls := func() map[string]int {
+		mu.Lock()
+		defer mu.Unlock()
+		return maps.Clone(calls)
+	}
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
 		calls[r.URL.RequestURI()]++
+		shouldReject := reject
+		mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
-		if reject {
+		if shouldReject {
 			w.WriteHeader(http.StatusUnauthorized)
 			fmt.Fprint(w, `{"message":"customer private repository secret"}`)
 			return
@@ -119,18 +131,18 @@ func TestGitHubRepositoryConnection(t *testing.T) {
 		}
 		return result
 	}
-	if result := read(b); result.Connected || result.Reconnect || !result.Available || len(calls) != 0 {
-		t.Fatalf("unconnected read=%+v calls=%v", result, calls)
+	if result := read(b); result.Connected || result.Reconnect || !result.Available || len(recordedCalls()) != 0 {
+		t.Fatalf("unconnected read=%+v calls=%v", result, recordedCalls())
 	}
 	clientID := s.config.GitHubUserClientID
 	s.config.GitHubUserClientID = ""
-	if result := read(b); result.Available || result.Connected || len(calls) != 0 {
+	if result := read(b); result.Available || result.Connected || len(recordedCalls()) != 0 {
 		t.Fatal("unconfigured App performed discovery")
 	}
 	s.config.GitHubUserClientID = clientID
 	returnTo := "/organizations/org_alpha/projects/project_alpha/setup?setup_step=repository&setup_runner=runner_example"
 	denied := attachmentRequest(t, b, http.MethodPost, githubConnectionBase+"/connect", strings.NewReader(`{"return_to":"`+returnTo+`"}`), map[string]string{"Content-Type": "application/json", "Origin": "https://other.example.test"})
-	if denied.Code != http.StatusUnauthorized || len(calls) != 0 {
+	if denied.Code != http.StatusUnauthorized || len(recordedCalls()) != 0 {
 		t.Fatal("cross-origin connect performed discovery")
 	}
 	start := attachmentRequest(t, b, http.MethodPost, githubConnectionBase+"/connect", strings.NewReader(`{"return_to":"`+returnTo+`"}`), map[string]string{"Content-Type": "application/json", "Origin": testPublicURL})
@@ -179,8 +191,8 @@ func TestGitHubRepositoryConnection(t *testing.T) {
 		t.Fatalf("connected list=%+v", result)
 	}
 	for _, path := range []string{"/user/installations?per_page=100&page=2", "/user/installations/1/repositories?per_page=100&page=2", "/user/installations/101/repositories?per_page=100&page=1"} {
-		if calls[path] != 1 {
-			t.Errorf("pagination %s calls=%d", path, calls[path])
+		if count := recordedCalls()[path]; count != 1 {
+			t.Errorf("pagination %s calls=%d", path, count)
 		}
 	}
 	var sealed string
@@ -210,8 +222,8 @@ func TestGitHubRepositoryConnection(t *testing.T) {
 	if p := b.do(http.MethodDelete, "/api/cloud/account/oauth-grants/"+id, nil, nil); p.StatusCode != 204 {
 		t.Fatalf("revoke=%+v", p)
 	}
-	before := calls["/user/installations?per_page=100&page=1"]
-	if result := read(b); !result.Reconnect || result.Connected || len(result.Repositories) != 0 || calls["/user/installations?per_page=100&page=1"] != before {
+	before := recordedCalls()["/user/installations?per_page=100&page=1"]
+	if result := read(b); !result.Reconnect || result.Connected || len(result.Repositories) != 0 || recordedCalls()["/user/installations?per_page=100&page=1"] != before {
 		t.Fatal("revoked token called GitHub or leaked repositories")
 	}
 	for _, test := range []struct {
@@ -226,8 +238,10 @@ func TestGitHubRepositoryConnection(t *testing.T) {
 			if err := s.saveGitHubConnection(t.Context(), "user_alice", token); err != nil {
 				t.Fatal(err)
 			}
+			mu.Lock()
 			reject = !test.expired
-			before := calls["/user/installations?per_page=100&page=1"]
+			mu.Unlock()
+			before := recordedCalls()["/user/installations?per_page=100&page=1"]
 			p := b.do(http.MethodGet, githubConnectionBase+"/repositories", nil, nil)
 			if strings.Contains(p.Body, "customer") || strings.Contains(p.Body, "user-token") {
 				t.Fatal("listing leaked customer content or credentials")
@@ -236,11 +250,11 @@ func TestGitHubRepositoryConnection(t *testing.T) {
 			if err := json.Unmarshal([]byte(p.Body), &result); err != nil || !result.Reconnect || result.Connected || len(result.Repositories) != 0 {
 				t.Fatalf("fallback=%+v %v", result, err)
 			}
-			if test.expired && calls["/user/installations?per_page=100&page=1"] != before {
+			if test.expired && recordedCalls()["/user/installations?per_page=100&page=1"] != before {
 				t.Fatal("expired token called GitHub")
 			}
-			after := calls["/user/installations?per_page=100&page=1"]
-			if result := read(b); !result.Reconnect || calls["/user/installations?per_page=100&page=1"] != after {
+			after := recordedCalls()["/user/installations?per_page=100&page=1"]
+			if result := read(b); !result.Reconnect || recordedCalls()["/user/installations?per_page=100&page=1"] != after {
 				t.Fatal("inactive connection continued calling GitHub")
 			}
 		})
