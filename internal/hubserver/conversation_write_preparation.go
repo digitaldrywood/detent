@@ -3,7 +3,6 @@ package hubserver
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"strconv"
 	"time"
 
@@ -41,7 +40,7 @@ func (p *conversationPublicationPlan) context(ctx context.Context) context.Conte
 	if p.reads == nil {
 		p.reads = conversationArchiveCache(ctx)
 		if p.reads == nil {
-			p.reads = &conversationArchiveReads{content: map[string][]byte{}}
+			p.reads = &conversationArchiveReads{Content: map[string][]byte{}}
 		}
 	}
 	if p.toolRevisions != nil {
@@ -82,13 +81,6 @@ func conversationWriteTime(ctx context.Context, now time.Time) time.Time {
 func validateConversationPublication(ctx context.Context, tx *sql.Tx) error {
 	if p, ok := ctx.Value(conversationPublicationKey{}).(*conversationPublicationPlan); ok {
 		return p.validate(ctx, tx)
-	}
-	return nil
-}
-
-func rollbackConversationPreparation(tx *sql.Tx) error {
-	if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
-		return err
 	}
 	return nil
 }

@@ -3,7 +3,6 @@ package hubserver
 import (
 	"context"
 	"database/sql"
-	"fmt"
 	"net/http"
 	"time"
 
@@ -63,30 +62,4 @@ func (s *Service) deleteConversation(c echo.Context) error {
 	}
 	service.broker.notify(id)
 	return c.NoContent(http.StatusNoContent)
-}
-
-func (s *conversationStore) deleteConversation(ctx context.Context, tx *sql.Tx, record conversationRecord) error {
-	if _, err := tx.ExecContext(ctx, `DELETE FROM message_references WHERE conversation_id = ? OR (target_kind = 'conversation' AND target_id = ?)`, record.ID, record.ID); err != nil {
-		return fmt.Errorf("delete conversation references: %w", err)
-	}
-	statements := []string{
-		`DELETE FROM conversation_attachment_blobs WHERE artifact_ref IN (SELECT artifact_ref FROM conversation_attachments WHERE conversation_id = ?)`,
-		`DELETE FROM conversation_attachments WHERE conversation_id = ?`,
-		`DELETE FROM conversation_turn_batches WHERE attempt_id IN (SELECT attempt_id FROM conversation_starts WHERE conversation_id = ?)`,
-		`DELETE FROM conversation_starts WHERE conversation_id = ?`,
-		`DELETE FROM conversation_audience_events WHERE conversation_id = ?`,
-		`DELETE FROM conversation_events WHERE conversation_id = ?`,
-		`DELETE FROM conversation_commands WHERE conversation_id = ?`,
-		`DELETE FROM conversation_questions WHERE conversation_id = ?`,
-		`DELETE FROM conversation_messages WHERE conversation_id = ?`,
-	}
-	for _, statement := range statements {
-		if _, err := tx.ExecContext(ctx, statement, record.ID); err != nil {
-			return fmt.Errorf("delete conversation history: %w", err)
-		}
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM conversations WHERE id = ? AND organization_id = ? AND project_id = ?`, record.ID, record.OrganizationID, record.ProjectID); err != nil {
-		return fmt.Errorf("delete conversation: %w", err)
-	}
-	return nil
 }

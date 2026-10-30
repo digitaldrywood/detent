@@ -1131,7 +1131,7 @@ func (f conversationFixture) insertLegacyMessage(t *testing.T, ctx context.Conte
 	if err != nil {
 		return err
 	}
-	if err := metadata.write(ctx, tx, "conversation_messages", "id=?", message.ID); err != nil {
+	if err := metadata.Write(ctx, tx, "conversation_messages", "id=?", message.ID); err != nil {
 		return err
 	}
 	_, err = tx.ExecContext(ctx, "UPDATE conversations SET last_message_at=? WHERE id=?", conversationTime(message.CreatedAt), message.ConversationID)
@@ -1155,7 +1155,7 @@ func (f conversationFixture) insertLegacyEvent(t *testing.T, ctx context.Context
 	if err != nil {
 		return 0, err
 	}
-	return seq, metadata.write(ctx, tx, "conversation_events", "conversation_id=? AND seq=?", id, seq)
+	return seq, metadata.Write(ctx, tx, "conversation_events", "conversation_id=? AND seq=?", id, seq)
 }
 
 func (f conversationFixture) updateLegacyToolMessage(t *testing.T, ctx context.Context, tx *sql.Tx, message conversationMessageRecord, now time.Time) error {
@@ -1171,7 +1171,7 @@ func (f conversationFixture) updateLegacyToolMessage(t *testing.T, ctx context.C
 	if err != nil {
 		return err
 	}
-	if err := metadata.write(ctx, tx, "conversation_messages", "id=?", message.ID); err != nil {
+	if err := metadata.Write(ctx, tx, "conversation_messages", "id=?", message.ID); err != nil {
 		return err
 	}
 	_, err = f.insertLegacyEvent(t, ctx, tx, message.ConversationID, conversation.EventMessageUpdated, projectMessage(message), now)
@@ -1199,7 +1199,7 @@ func (f conversationFixture) createLegacyConversation(t *testing.T, record conve
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := executionQueryMetadata(record.Execution).write(t.Context(), tx, "conversations", "id=?", record.ID); err != nil {
+	if err := executionQueryMetadata(record.Execution).Write(t.Context(), tx, "conversations", "id=?", record.ID); err != nil {
 		t.Fatal(err)
 	}
 	f.commit(t, tx)
