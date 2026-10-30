@@ -269,7 +269,7 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 						wantRefusal = workspace.LandRefusalBaseMoved
 						base := nativeLandingGit(t, t.Context(), journey.remote, "rev-parse", "refs/heads/main")
 						if (!test.currentBase && base == journey.base) || (result.NativeLanding.BaseSHA != "") == test.wantLandingWait || !test.wantLandingWait && result.NativeLanding.BaseSHA != base || !strings.Contains(result.NativeLanding.Refusal, base) || !strings.Contains(result.NativeLanding.Refusal, landingHead) {
-							t.Fatalf("landing wait lost source and refusal evidence: %#v", result.NativeLanding)
+							t.Fatalf("landing wait lost source and refusal evidence: %#v, error %v", result.NativeLanding, runErr)
 						}
 					}
 					if test.sourceConflict {
