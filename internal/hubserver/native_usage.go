@@ -79,7 +79,7 @@ func recordAttemptUsage(ctx context.Context, tx *sql.Tx, scope nativeScope, requ
 	}
 	attempt := request.Data.AttemptID
 	period := usagePeriod(now)
-	currency := prices.currency()
+	currency := prices.CurrencyName()
 	for _, entry := range usage {
 		if entry.UsageKind == "incremental" {
 			continue
@@ -125,11 +125,11 @@ func usageDelta(total, recorded tracker.NativeUsage, prices UsageConfig) tracker
 		Output:      max(total.Output-recorded.Output, 0),
 	}
 	runnerCurrency := strings.ToUpper(strings.TrimSpace(total.Currency))
-	if total.CostEstimate > 0 && (runnerCurrency == "" || runnerCurrency == prices.currency()) {
+	if total.CostEstimate > 0 && (runnerCurrency == "" || runnerCurrency == prices.CurrencyName()) {
 		delta.CostEstimate = max(total.CostEstimate-recorded.CostEstimate, 0)
 		return delta
 	}
-	if estimated, _, found := prices.estimate(strings.TrimSpace(total.Model), delta.Input, delta.CachedInput, delta.Output); found {
+	if estimated, _, found := prices.Estimate(strings.TrimSpace(total.Model), delta.Input, delta.CachedInput, delta.Output); found {
 		delta.CostEstimate = estimated
 	}
 	return delta

@@ -4,6 +4,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/operatorfailure"
 )
 
 const (
@@ -75,7 +77,7 @@ func classifyFailure(text string) reportClass {
 }
 
 func matchReportClass(rules []reportClassRule, text string) reportClass {
-	line := strings.ReplaceAll(strings.ToLower(failureFirstLine(text)), "_", " ")
+	line := strings.ReplaceAll(strings.ToLower(operatorfailure.FirstLine(text)), "_", " ")
 	for _, rule := range rules {
 		if slices.ContainsFunc(rule.contains, func(fragment string) bool { return strings.Contains(line, fragment) }) {
 			return rule.class

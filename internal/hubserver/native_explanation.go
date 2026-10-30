@@ -14,6 +14,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/issuecontract"
+	"github.com/digitaldrywood/detent/internal/operatorfailure"
+	"github.com/digitaldrywood/detent/internal/spritenames"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -120,7 +122,7 @@ func readExplanationFailures(ctx context.Context, q nativeQueryer, scope nativeS
 		if err := decodeStorageJSON(ctx, []byte(raw), &data); err != nil {
 			return nil, false, err
 		}
-		f.example, f.class = failureFromAttempt(data, status)
+		f.example, f.class = operatorfailure.FromAttempt(data, status)
 		if signature != "" {
 			f.example = signature
 		}
@@ -177,7 +179,7 @@ func explanationPlacementAllowed(ctx context.Context, q nativeQueryer, scope nat
 	if err := decodeStorageJSON(ctx, []byte(raw), &capabilities); err != nil {
 		return false, "", err
 	}
-	if capabilities.SpriteName != hostname || !validSpritesSlug(hostname) {
+	if capabilities.SpriteName != hostname || !spritenames.ValidSlug(hostname) {
 		return placement.Mode != "sprites_only", "Resolved placement " + placement.Mode + " governs local eligibility", nil
 	}
 	return true, "placement_capacity_unavailable", nil
@@ -388,10 +390,10 @@ func boundedNativeExplanation(evidence tracker.NativeRuntimeEvidence, failure *e
 	result.Sources = []explain.SourceStatus{{Name: "explanation_evidence_truncated", State: explain.SourceUnavailable}}
 	result.Evidence, result.Reasons, result.LatestTransition, result.FailureSignature = nil, nil, nil, nil
 	result.Eligibility.Refusals, result.Eligibility.Latest, result.Eligibility.Current = nil, nil, nil
-	result.RequiredGate.Reason = boundedFailureText(result.RequiredGate.Reason, 4096)
+	result.RequiredGate.Reason = operatorfailure.BoundedText(result.RequiredGate.Reason, 4096)
 	result.RequiredGate.Failures, result.RequiredGate.Running = nil, nil
 	if result.RequiredGate.ExternalMerge != nil {
-		result.RequiredGate.ExternalMerge.Detail = boundedFailureText(result.RequiredGate.ExternalMerge.Detail, 4096)
+		result.RequiredGate.ExternalMerge.Detail = operatorfailure.BoundedText(result.RequiredGate.ExternalMerge.Detail, 4096)
 	}
 	raw, err = json.Marshal(result)
 	if err != nil {
@@ -426,7 +428,7 @@ func explanationLanding(value *tracker.NativeLandingReceipt) *tracker.NativeLand
 		for _, values := range []*[]string{&ci.RequiredChecks, &ci.PendingChecks, &ci.MissingChecks, &ci.FailedChecks} {
 			*values = slices.Clone((*values)[:min(len(*values), 16)])
 			for i := range *values {
-				(*values)[i] = boundedFailureText((*values)[i], 256)
+				(*values)[i] = operatorfailure.BoundedText((*values)[i], 256)
 			}
 		}
 		result.CI = &ci

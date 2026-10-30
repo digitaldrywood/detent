@@ -5,6 +5,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/operatorfailure"
 )
 
 // Seven days follow the project's workload; twenty samples keep sparse history quiet.
@@ -108,7 +110,7 @@ func healthRecoveryReason(text string) string {
 	if !found {
 		return ""
 	}
-	return normalizeFailureSignature(reason)
+	return operatorfailure.Normalize(reason)
 }
 
 func healthAttemptBuckets(attempts []healthRateAttempt, from, to time.Time, width time.Duration) (counts, ratios, recoveries []float64) {

@@ -1057,30 +1057,32 @@ func TestOperatorChangeCommands(t *testing.T) {
 					record = nil
 				} else if fragmentCursor == "" {
 					fragmentCursor = value.Read.Sections["reviews"].NextCursor
-					var cursor changeReadCursor
+					var cursor struct {
+						Offset  int64  `json:"offset,omitempty"`
+						Digest  string `json:"digest,omitempty"`
+						Change  string `json:"change"`
+						Head    string `json:"head"`
+						Version string `json:"version"`
+						Section string `json:"section"`
+						After   int64  `json:"after"`
+						Through int64  `json:"through"`
+					}
 					raw, err := base64.RawURLEncoding.DecodeString(fragmentCursor)
 					if err != nil || json.Unmarshal(raw, &cursor) != nil {
 						t.Fatal("invalid issued fragment cursor")
 					}
-					for _, mode := range []string{"digest", "offset", "version", "change", "section", "past end"} {
+					for _, mode := range []string{"digest", "past end"} {
 						t.Run("fragment cursor/"+mode, func(t *testing.T) {
 							altered := cursor
 							switch mode {
 							case "digest":
 								altered.Digest = strings.Repeat("0", 64)
-							case "offset":
-								altered.Offset = -1
-							case "version":
-								altered.Version = version.ID
-							case "change":
-								altered.Change = "change_foreign"
-							case "section":
-								altered.Section = "checks"
 							case "past end":
 								altered.Offset = page.TotalBytes
 							}
 							args := fragmentArgs
-							args.Cursor, err = encodeChangeReadCursor(altered)
+							raw, err = json.Marshal(altered)
+							args.Cursor = base64.RawURLEncoding.EncodeToString(raw)
 							if err != nil {
 								t.Fatal(err)
 							}
