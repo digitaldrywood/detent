@@ -672,6 +672,9 @@ func TestLocalWorkerReleaseAndPolicyCoexistence(t *testing.T) {
 			if completion.Err == nil {
 				t.Fatal("unexpected worker exit appeared successful")
 			}
+			if decision, ok := runnerpkg.FailureDecision(completion.Err); !ok || decision.Outcome != "instance" {
+				t.Fatalf("%s failure lost caller attribution: %+v", failure.mode, decision)
+			}
 		case <-ctx.Done():
 			t.Fatal(ctx.Err())
 		}

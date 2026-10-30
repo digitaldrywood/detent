@@ -559,9 +559,9 @@ func TestRunnerExpiredRuntimeProblems(t *testing.T) {
 				if problem.Code != "runtime_expired" || problem.ProjectID != string(f.project.ID) || problem.Subject != event.Data.AttemptID || problem.FirstSeen.IsZero() || !problem.ReportedAt.Equal(now) {
 					t.Fatalf("missing attempt attribution: %+v", problem)
 				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET data_json=json_set(data_json, '$.runtime.heartbeat_at', ?) WHERE id=?", formatHubTime(now), event.Data.AttemptID); err != nil {
-					t.Fatal(err)
-				}
+				event.Type, event.IdempotencyKey, event.Data.Sequence = "run.observed", "fresh-runtime", 2
+				event.Data.Runtime.HeartbeatAt = now
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", r.redemption.Credential, event), http.StatusOK)
 				if fresh := read(r); len(fresh.Problems) != 0 || fresh.Health != "online" {
 					t.Fatalf("runtime warning did not clear: %+v", fresh)
 				}

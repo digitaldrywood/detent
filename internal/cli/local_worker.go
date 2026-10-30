@@ -74,7 +74,12 @@ func (r *sshRunner) runLocalWorkerLaunch(ctx context.Context, request runnerpkg.
 		if execution, ok := request.Execution.(runnerpkg.CompletionExecution); ok {
 			finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 			defer cancel()
-			failure := tracker.NativeTerminalFailure{Error: "Execution worker startup or transport failed", ErrorClass: "protocol", TurnStartRefused: true, ObservedAt: time.Now().UTC()}
+			decision := tracker.FailureAttribution{Outcome: "instance", Reason: "execution worker startup or transport failed"}
+			failure := tracker.NativeTerminalFailure{
+				Error: "Execution worker startup or transport failed", ErrorClass: "protocol", TurnStartRefused: true, ObservedAt: time.Now().UTC(),
+				Decision: &decision,
+			}
+			runErr = runnerpkg.RestoreFailureDecision(runErr, decision)
 			runErr = errors.Join(runErr, execution.PrepareFinish(finishCtx, "failed", result.FinalMessage, &failure))
 		}
 	}()

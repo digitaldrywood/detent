@@ -1421,6 +1421,7 @@ func TestRunnerRunRecoversPushedPullRequestDeliverable(t *testing.T) {
 		wantErr                bool
 		wantInterrupted        error
 		wantPullRequestUpdated bool
+		wantFailureCalls       int
 	}{
 		{
 			name: "retry creates pull request",
@@ -1459,7 +1460,8 @@ func TestRunnerRunRecoversPushedPullRequestDeliverable(t *testing.T) {
 				{Type: AgentUpdateToolCompleted, ItemID: "create", Tool: "codex_apps/github.create_pull_request", Status: "failed", BackendErrorMessage: "HTTP 503: unavailable", BackendErrorBody: `{"status":503,"message":"unavailable"}`},
 				{Type: AgentUpdateTurnCompleted, TurnID: "turn-2", Status: "completed"},
 			},
-			wantErr: true,
+			wantErr:          true,
+			wantFailureCalls: 1,
 		},
 	}
 
@@ -1543,6 +1545,9 @@ func TestRunnerRunRecoversPushedPullRequestDeliverable(t *testing.T) {
 			}
 			if len(backend.requests) != 2 {
 				t.Fatalf("RunTurn requests = %d, want implementation and one deliverable retry", len(backend.requests))
+			}
+			if backend.failureCalls != tt.wantFailureCalls {
+				t.Fatalf("failure decision calls = %d, want %d", backend.failureCalls, tt.wantFailureCalls)
 			}
 			recoveryRequest := backend.requests[1]
 			if recoveryRequest.Resume.ThreadID != "thread-1" || recoveryRequest.Resume.SessionID != "session-1" {
@@ -8169,9 +8174,10 @@ type toolUpdateAgentBackend struct {
 }
 
 type deliverableRecoveryAgentBackend struct {
-	turns    [][]AgentUpdate
-	errors   []error
-	requests []AgentTurnRequest
+	turns        [][]AgentUpdate
+	errors       []error
+	requests     []AgentTurnRequest
+	failureCalls int
 }
 
 type scratchWritingAgentBackend struct {
@@ -8248,6 +8254,10 @@ func (b *toolUpdateAgentBackend) RunTurn(_ context.Context, _ AgentTurnRequest, 
 }
 
 func (b *deliverableRecoveryAgentBackend) RunTurn(_ context.Context, req AgentTurnRequest, onUpdate AgentUpdateHandler) (AgentTurnResult, error) {
+	if strings.HasPrefix(req.Prompt, progresscheck.FailureInstructions) {
+		b.failureCalls++
+		return AgentTurnResult{}, onUpdate(AgentUpdate{Type: AgentUpdateMessageDelta, ItemID: "failure", Delta: `{"outcome":"unknown","reason":"fake failure decision"}`})
+	}
 	index := len(b.requests)
 	b.requests = append(b.requests, req)
 	if index >= len(b.turns) {
