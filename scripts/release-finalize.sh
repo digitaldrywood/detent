@@ -41,7 +41,7 @@ platform_status() {
   ancestors="$(git rev-list --topo-order "$CI_DEVELOP_SHA")" || return 1
   for commit in $ancestors; do
     statuses="$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/commits/$commit/statuses?per_page=100")" || return 1
-    latest="$(jq -c '[.[][] | select(.context == "platform-full-ci")] | max_by(.id)' <<< "$statuses")" || return 1
+    latest="$(jq -c --argjson creators "$status_creators" '[.[][] | select(.context == "platform-full-ci" and (.creator.login as $creator | $creators | index($creator) != null))] | max_by(.id)' <<< "$statuses")" || return 1
     if [ "$latest" = null ]; then continue; fi
     jq -e --argjson now "$now" '
       .state == "success" and (.id | type == "number") and .id > 0

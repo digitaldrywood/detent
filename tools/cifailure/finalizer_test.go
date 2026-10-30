@@ -40,6 +40,7 @@ func TestReleaseFinalizer(t *testing.T) {
 		{name: "platform ancestor succeeds", platform: "ancestor"},
 		{name: "platform invalid timestamp", platform: "invalid", awaitsStatus: true},
 		{name: "platform API failure", platform: "api-error", awaitsStatus: true},
+		{name: "platform foreign creator refused", platform: "foreign", awaitsStatus: true},
 		{name: "reuse missing platform", platform: "missing", unchanged: true, rejectReuse: true},
 		{name: "configured extras recorded", requirements: `["extra"]`},
 		{name: "unset requirements still require audit", unset: true, missingAudit: true, awaitsStatus: true},
@@ -196,7 +197,11 @@ esac
 			case "future":
 				platformTime = platformTime.Add(2 * time.Hour)
 			}
-			platform := []map[string]any{{"context": "platform-full-ci", "id": 200, "state": platformState, "created_at": platformTime.Format(time.RFC3339)}}
+			platformCreator := "example-operator"
+			if tt.platform == "foreign" {
+				platformCreator = "foreign-producer"
+			}
+			platform := []map[string]any{{"context": "platform-full-ci", "id": 200, "state": platformState, "created_at": platformTime.Format(time.RFC3339), "creator": map[string]any{"login": platformCreator}}}
 			if tt.platform == "invalid" {
 				platform[0]["created_at"] = "invalid"
 			}
@@ -204,7 +209,7 @@ esac
 				platform = []map[string]any{}
 			}
 			if tt.platform == "pending" {
-				platform = append(platform, map[string]any{"context": "platform-full-ci", "id": 199, "state": "success", "created_at": platformTime.Format(time.RFC3339)})
+				platform = append(platform, map[string]any{"context": "platform-full-ci", "id": 199, "state": "success", "created_at": platformTime.Format(time.RFC3339), "creator": map[string]any{"login": "example-operator"}})
 			}
 			rawPlatform, err := json.Marshal([]any{platform})
 			if err != nil {
