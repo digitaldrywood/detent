@@ -31,6 +31,7 @@ jobs:
           CI_DEVELOP_SHA: ${{ github.sha }}
           CI_RELEASE_BRANCH: ${{ github.ref_name }}
           TMPDIR: ${{ runner.temp }}
+          DETENT_RELEASE_STATUS_CREATORS_JSON: ${{ vars.DETENT_RELEASE_STATUS_CREATORS_JSON }}
           DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON: ${{ vars.DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON }}
         run: |
           git config user.name 'github-actions[bot]'

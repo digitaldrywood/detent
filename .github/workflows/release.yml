@@ -34,7 +34,7 @@ jobs:
           [[ "$GITHUB_REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
           branch="release/v${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
           git fetch --no-tags origin "$branch:refs/remotes/origin/$branch"
-          git merge-base --is-ancestor "$GITHUB_SHA" "origin/$branch"
+          test "$(git rev-parse "$GITHUB_SHA^{commit}")" = "$(git rev-parse "origin/$branch^{commit}")"
 
   prepare:
     name: Prepare release binaries

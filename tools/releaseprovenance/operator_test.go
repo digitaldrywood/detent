@@ -37,9 +37,11 @@ func TestReleaseSourceHistory(t *testing.T) {
 	}
 	for _, test := range []struct {
 		name, tag, ancestor string
+		stale               bool
 		wantErr             bool
 	}{
 		{name: "develop-only tag refused", tag: "v1.2.3", ancestor: "origin/develop", wantErr: true},
+		{name: "stale release ancestor refused", tag: "v1.2.3", ancestor: "origin/release/v1.2", stale: true, wantErr: true},
 		{name: "release cherry pick", tag: "v1.2.3", ancestor: "origin/release/v1.2"},
 		{name: "develop dispatch refused", tag: "develop", ancestor: "origin/develop", wantErr: true},
 		{name: "wrong release series", tag: "v1.3.0", ancestor: "origin/release/v1.2", wantErr: true},
@@ -53,7 +55,12 @@ func TestReleaseSourceHistory(t *testing.T) {
 set -euo pipefail
 case "$1" in
   fetch) ;;
-  merge-base) test "$3" = "$GITHUB_SHA" && test "$4" = "$FIXTURE_ANCESTOR" ;;
+  rev-parse)
+    if [ "$2" = "$GITHUB_SHA^{commit}" ]; then
+      printf '%s\n' "$GITHUB_SHA"
+    elif [ "$2" = "$FIXTURE_ANCESTOR^{commit}" ]; then
+      if [ "$FIXTURE_STALE" = true ]; then printf 'newer-head\n'; else printf '%s\n' "$GITHUB_SHA"; fi
+    else exit 1; fi ;;
   *) exit 1 ;;
 esac
 `
@@ -61,7 +68,7 @@ esac
 				t.Fatal(err)
 			}
 			command := exec.CommandContext(t.Context(), "bash", "-e", "-c", script)
-			command.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"), "GITHUB_SHA="+strings.Repeat("a", 40), "GITHUB_REF_NAME="+test.tag, "FIXTURE_ANCESTOR="+test.ancestor)
+			command.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"), "GITHUB_SHA="+strings.Repeat("a", 40), "GITHUB_REF_NAME="+test.tag, "FIXTURE_ANCESTOR="+test.ancestor, "FIXTURE_STALE="+map[bool]string{true: "true", false: "false"}[test.stale])
 			output, err := command.CombinedOutput()
 			if (err != nil) != test.wantErr {
 				t.Fatalf("release source = %v: %s", err, output)

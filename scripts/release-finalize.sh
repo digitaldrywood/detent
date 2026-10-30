@@ -53,15 +53,21 @@ platform_status() {
   return 1
 }
 
+status_creators="$(jq -ce '
+  if type == "array" and length > 0 and all(.[]; type == "string" and length > 0)
+  then . else error("release status creators must be a nonempty allowlist") end
+' <<< "${DETENT_RELEASE_STATUS_CREATORS_JSON:-[]}")"
+
 required_statuses() {
   platform_status || return 1
   gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/commits/$CI_DEVELOP_SHA/status?per_page=100" |
-    jq -ce --arg sha "$CI_DEVELOP_SHA" --argjson required "$required_checks" '
+    jq -ce --arg sha "$CI_DEVELOP_SHA" --argjson required "$required_checks" --argjson creators "$status_creators" '
       select(all(.[]; .sha == $sha))
       | [.[].statuses[]] as $statuses
       | [$required[] as $name
           | ($statuses | map(select(.context == $name)) | max_by(.id))
-          | select(.state == "success" and (.id | type == "number") and .id > 0)
+          | select(.state == "success" and (.id | type == "number") and .id > 0
+              and (.creator.login as $creator | $creators | index($creator) != null))
           | {name: .context, status: "completed", conclusion: "success", status_id: .id}]
       | select(length == ($required | length))
     '
@@ -102,6 +108,10 @@ else
   tag="$series.0"
 fi
 
+if ! checks="$(required_statuses)"; then
+  echo "Release $series awaits required statuses; missing, failed, superseded, or untrusted evidence; not tagging."
+  exit 0
+fi
 provenance="$(jq -cn --arg repository "$GITHUB_REPOSITORY" --arg tag "$tag" --arg commit "$CI_DEVELOP_SHA" --argjson checks "$checks" \
   '{schema:1, repository:$repository, tag:$tag, commit:$commit, checks:$checks}')"
 message_file="$scratch_dir/release-tag-message"
@@ -110,6 +120,10 @@ Validated release build $tag
 
 <!-- detent-release-provenance:$provenance -->
 EOF
+if [ "$(git ls-remote origin "refs/heads/$CI_RELEASE_BRANCH" | cut -f1)" != "$head_sha" ]; then
+  echo "Release branch head changed during finalization; skipping release."
+  exit 0
+fi
 git tag -a "$tag" "$CI_DEVELOP_SHA" -F "$message_file"
 git push origin "refs/tags/$tag"
 dispatch_release "$tag"
