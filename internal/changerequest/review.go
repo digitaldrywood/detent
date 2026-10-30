@@ -299,9 +299,11 @@ func summarize(detail tracker.ChangeDetail, policyID, reviewPolicyID string, now
 
 func ReviewState(detail tracker.ChangeDetail, versionID, headSHA string) connector.ChangeReview {
 	result := connector.ChangeReview{}
+	emptyDelta := false
 	for _, version := range detail.Versions {
 		if version.ID == versionID && detail.Change.CurrentVersion == versionID && (headSHA != "" && version.HeadSHA == headSHA) && detail.Summary.Status != "stale_policy" {
 			result.Current = true
+			emptyDelta = version.BaseSHA != "" && version.Source != nil && version.Source.DiffSHA256 == tracker.ChangeSourceDigest(nil)
 		}
 	}
 	if !result.Current {
@@ -321,6 +323,7 @@ func ReviewState(detail tracker.ChangeDetail, versionID, headSHA string) connect
 			}
 		}
 	}
+	acceptanceApproved := false
 	sourceRework, validatorRework, auditRework := false, false, false
 	for _, review := range detail.Reviews {
 		if review.VersionID != versionID {
@@ -331,11 +334,13 @@ func ReviewState(detail tracker.ChangeDetail, versionID, headSHA string) connect
 			sourceRework = review.ImplementationReview.Verdict != gate.ValidatorVerdictPass
 		case review.Validator != nil:
 			validatorRework = review.Validator.Verdict != gate.ValidatorVerdictPass
+			acceptanceApproved = review.Decision == "approved" && !validatorRework
 		case review.SecurityAudit != nil:
 			auditRework = auditRework || review.Decision == "changes_requested"
 		}
 	}
 	result.ChangesRequested = result.ChangesRequested || sourceRework || validatorRework || auditRework
 	result.Reviewed = (detail.Summary.Status == "reviewed" || detail.Summary.Status == "landed") && !result.ChangesRequested
+	result.AcceptanceOnBase = result.Current && result.Reviewed && !result.RepairPending && emptyDelta && acceptanceApproved
 	return result
 }

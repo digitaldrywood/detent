@@ -16,9 +16,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/forgeavailability"
+	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -68,6 +70,7 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 	waiting.RefusalKind = workspace.LandRefusalBaseMoved
 	waiting.Refusal = "GitHub refused PUT repos/example/repo/pulls/7/merge: status 405: Pull Request has merge conflicts; current source is unproven"
 	for _, test := range []struct {
+		baseAcceptance     string
 		absorbed           bool
 		alreadyContains    string
 		name               string
@@ -124,6 +127,14 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 		{name: "a protected refusal prefers Blocked without human review", landing: refused, hubState: "Merging", states: workflow, noHumanReview: true, wantState: "Rework", wantComment: "was not landed", wantMoves: 1},
 		{name: "a moved head prefers Blocked without human review", landing: &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, RefusalKind: workspace.LandRefusalHeadMoved, Refusal: "Head branch was modified"}, hubState: "Merging", states: workflow, noHumanReview: true, wantState: "Rework", wantComment: "Head branch was modified", wantMoves: 1},
 		{name: "a missing head prefers Blocked without human review", landing: &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, RefusalKind: workspace.LandRefusalMissingHead, Refusal: "the reviewed head is missing"}, hubState: "Merging", states: workflow, noHumanReview: true, wantState: "Rework", wantComment: "the reviewed head is missing", wantMoves: 1},
+		{name: "approved empty Change completes on base", baseAcceptance: "approved", landing: &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, RefusalKind: workspace.LandRefusalNothing, Refusal: "the published source has no deliverable to verify"}, hubState: "Merging", states: workflow, wantState: "Done", wantMoves: 1, wantComment: "Acceptance criteria already met on the base"},
+		{name: "empty Change without acceptance returns to implementation", baseAcceptance: "missing", landing: &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, RefusalKind: workspace.LandRefusalNothing, Refusal: "the published source has no deliverable to verify"}, hubState: "Merging", states: workflow, wantState: "Rework", wantMoves: 1, wantComment: "no deliverable to verify"},
+		{name: "empty Change with rejected acceptance returns to implementation", baseAcceptance: "rejected", landing: &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, RefusalKind: workspace.LandRefusalNothing, Refusal: "the published source has no deliverable to verify"}, hubState: "Merging", states: workflow, wantState: "Rework", wantMoves: 1, wantComment: "no deliverable to verify"},
+		{name: "nonempty approved Change retains refusal", baseAcceptance: "nonempty", landing: &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, RefusalKind: workspace.LandRefusalNothing, Refusal: "the published source has no deliverable to verify"}, hubState: "Merging", states: workflow, wantState: "Rework", wantMoves: 1, wantComment: "no deliverable to verify"},
+		{name: "empty Change with missing review retains refusal", baseAcceptance: "unreviewed", landing: &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, RefusalKind: workspace.LandRefusalNothing, Refusal: "the published source has no deliverable to verify"}, hubState: "Merging", states: workflow, wantState: "Rework", wantMoves: 1, wantComment: "no deliverable to verify"},
+		{name: "empty approved Change defers unavailable acceptance read", baseAcceptance: "unavailable", landing: &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, RefusalKind: workspace.LandRefusalNothing}, hubState: "Merging", states: workflow, wantDeferred: true},
+		{name: "empty approved Change with stale head retains refusal", baseAcceptance: "stale", landing: &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, RefusalKind: workspace.LandRefusalNothing, Refusal: "no deliverable to verify"}, hubState: "Merging", states: workflow, wantState: "Rework", wantMoves: 1, wantComment: "no deliverable to verify"},
+		{name: "empty approved Change cannot bypass failed gate", baseAcceptance: "gate failure", landing: &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, RefusalKind: workspace.LandRefusalNothing, GateFailed: true, Refusal: "gate failed"}, hubState: "Merging", states: workflow, wantState: "Rework", wantMoves: 1, wantComment: "gate failed"},
 		{name: "unproven identical content retains rework", landing: &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, RefusalKind: workspace.LandRefusalNothing, Refusal: "the base branch already contains everything"}, hubState: "Merging", states: workflow, noHumanReview: true, wantState: "Rework", wantComment: "already contains everything", wantMoves: 1},
 		{name: "AlreadyContains ancestor completes through landing", alreadyContains: "ancestor", hubState: "Done", states: workflow, noHumanReview: true, wantState: "Done", wantComment: "Landed"},
 		{name: "AlreadyContains squash trailer completes through landing", alreadyContains: "squash", hubState: "Done", states: workflow, noHumanReview: true, wantState: "Done", wantComment: "Landed"},
@@ -289,6 +300,31 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 			hubIssue.State = test.hubState
 			tick := &autoPromoteTickConnector{stateIssues: []connector.Issue{hubIssue}, updateErr: test.updateErr}
 			nativeTracker := &nativeLandingReasonConnector{nativeWorkflowConnector: &nativeWorkflowConnector{autoPromoteTickConnector: tick, states: test.states, statesErr: test.statesErr}}
+
+			if test.baseAcceptance != "" {
+				detail := tracker.ChangeDetail{Change: tracker.ChangeRequest{CurrentVersion: "version_1"}, Versions: []tracker.ChangeVersion{{ID: "version_1", ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: head, BaseSHA: strings.Repeat("b", 40), Source: &tracker.ChangeSource{DiffSHA256: tracker.ChangeSourceDigest(nil)}}}}, Summary: tracker.ChangeSummary{Status: "reviewed"}}
+				if test.baseAcceptance != "missing" {
+					verdict, decision := "pass", "approved"
+					if test.baseAcceptance == "rejected" {
+						verdict, decision = "rework", "changes_requested"
+					}
+					detail.Reviews = []tracker.ChangeReview{{VersionID: "version_1", Decision: decision, Validator: &gate.ValidatorResult{Verdict: verdict}}}
+				}
+				if test.baseAcceptance == "nonempty" {
+					detail.Versions[0].Source.DiffSHA256 = tracker.ChangeSourceDigest([]byte("delta"))
+				}
+				if test.baseAcceptance == "unreviewed" {
+					detail.Summary.Status = "needs_evidence"
+				}
+				if test.baseAcceptance == "stale" {
+					detail.Versions[0].HeadSHA = strings.Repeat("f", 40)
+				}
+				if test.baseAcceptance == "unavailable" {
+					nativeTracker.reviewErr = errors.New("review unavailable")
+				}
+				review := changerequest.ReviewState(detail, "version_1", head)
+				nativeTracker.reviewState = &review
+			}
 			var tracker connector.Connector = nativeTracker
 			if test.plain {
 				tracker = tick
@@ -566,7 +602,7 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 				t.Fatalf("claim retained = %t, releases = %d", claimed, scheduling.releases)
 			}
 			completed, ok := state.Completed[issue.ID]
-			if test.landing.Landed {
+			if test.landing.Landed || test.baseAcceptance == "approved" {
 				if !ok || completed.Issue.State != test.wantState || retried {
 					t.Fatalf("completed = %#v, present = %t, retried = %t", completed, ok, retried)
 				}

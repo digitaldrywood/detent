@@ -68,6 +68,15 @@ func (o *Orchestrator) completeNativeLandingRun(
 		o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
 		return true
 	}
+	if landing != nil && !landing.Landed && !landing.RequiresRework() && landing.RefusalKind == workspace.LandRefusalNothing && landing.ChangeID != "" && landing.VersionID != "" && landing.HeadSHA != "" {
+		if reviews, ok := o.connector.(connector.ChangeReviewReader); ok {
+			review, err := reviews.ReadChangeReview(ctx, issueID, landing.ChangeID, landing.VersionID, landing.HeadSHA)
+			if err != nil {
+				return handoff(fmt.Errorf("read acceptance on the base: %w", err))
+			}
+			completedOnBase = review.Current && review.Reviewed && !review.ChangesRequested && !review.RepairPending && review.AcceptanceOnBase
+		}
+	}
 	finalState := event.Result.FinalState
 	if finalState == "" {
 		finalState = FinalStateCompleted
@@ -142,7 +151,10 @@ func (o *Orchestrator) completeNativeLandingRun(
 	}
 	var comment, message string
 	metadata := nativeLandingMetadata(landing)
-	if completedOnBase {
+	if completedOnBase && landing != nil {
+		comment = fmt.Sprintf("Acceptance criteria already met on the base for Change Request %s, version %s (head %s), with recorded validator approval. Landing refused (%s): %s. Moved from %s to %s.", landing.ChangeID, landing.VersionID, shortCommit(landing.HeadSHA), landing.RefusalKind, landing.Refusal, displayStateName(issue.State), displayStateName(target))
+		message = "verified acceptance on the base for " + issueLabel(issue)
+	} else if completedOnBase {
 		comment = fmt.Sprintf("Acceptance criteria already met on the base. Progress check comment %s: %s\n\nEvidence: %s", progress.CommentID, progress.Decision.Reason, strings.Join(progress.Decision.Evidence, ", "))
 		message = "verified acceptance on the base for " + issueLabel(issue)
 		metadata = map[string]any{"progress_decision": progress}
