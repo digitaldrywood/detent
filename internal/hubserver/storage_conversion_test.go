@@ -407,6 +407,8 @@ func TestStorageConversionImmutability(t *testing.T) {
 			{"change_versions", map[string]bool{
 				"claim_head_sha": true, "gate_github_pull_request": true, "external_url": true, "activity_external_url": true,
 				"created_at": true, "attempt_id": true, "head_sha": true, "repository": true, "external_provider": true, "external_id": true,
+				"implementing_session_id": true, "implementing_machine_id": true, "session_history_sequence": true,
+				"session_history_candidate": true, "session_history_state": true, "session_history_machine_id": true,
 			}},
 			{"change_evidence", map[string]bool{
 				"claim_review_kind": true, "claim_review_actor": true, "claim_review_decision": true, "claim_review_current": true,
