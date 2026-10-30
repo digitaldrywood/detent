@@ -120,7 +120,7 @@ func TestLocalSessionProcessOwnership(t *testing.T) {
 	t.Setenv("TMP", controllerTemp)
 	t.Setenv("TEMP", controllerTemp)
 	recorded := sessions.processes[1]
-	if _, err := workspace.ReapWorkerArtifactProcesses(t.Context(), recorded.CleanupRoot, recorded.CleanupPath, time.Millisecond); err != nil {
+	if _, err := workspace.ReapWorkerArtifactProcesses(workspace.WithProcessSource(t.Context(), emptyProcessSource), recorded.CleanupRoot, recorded.CleanupPath, time.Millisecond); err != nil {
 		t.Fatalf("controller could not reap child scratch: %v", err)
 	}
 	if err := workspace.CleanupOwnedPath(recorded.CleanupRoot, recorded.CleanupPath); err != nil {

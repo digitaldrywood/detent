@@ -77,7 +77,7 @@ func TestNativeReviewPreservesImplementingSource(t *testing.T) {
 			repository := "https://github.com/example-org/example-project"
 			runRunnerGit(t, source, "remote", "add", "origin", repository)
 			runRunnerGit(t, source, "config", "url."+source+".insteadOf", repository)
-			local, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+			local, err := workspace.NewLocalGit(workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -112,7 +112,7 @@ func TestNativeReviewPreservesImplementingSource(t *testing.T) {
 			}
 			before := []string{runRunnerGit(t, implementing.Path, "status", "--porcelain"), runRunnerGit(t, implementing.Path, "diff", "--binary"), runRunnerGit(t, implementing.Path, "diff", "--cached", "--binary")}
 			backend := &fakeCodexClient{updates: []AgentUpdate{{Type: AgentUpdateMessageDelta, Delta: `{"verdict":"pass","score":1,"summary":"Reviewed immutable source","criteria_evidence":[]}`}}}
-			r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: config.Config{Tracker: config.Tracker{Kind: config.TrackerHubNative}, Gate: gate.Config{Run: "git diff --exit-code", SecurityAudit: gate.SecurityAuditConfig{Enabled: false}, AutomatedReview: gate.AutomatedReviewRequired, Validator: gate.ValidatorConfig{Enabled: true}}, Agents: config.Agents{Backends: []config.AgentBackend{{ID: "codex", Kind: "codex", Protocol: "app-server", Command: "codex app-server"}}, Routes: []config.AgentRoute{{Name: "review", Role: RoleCode, Backend: "codex", Model: "example-model"}, {Name: "validator", Role: RoleValidator, Backend: "codex", Model: "example-model"}}}}, Prompt: "Review"}, Workspace: local, AgentBackend: backend})
+			r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: config.Config{Tracker: config.Tracker{Kind: config.TrackerHubNative}, Gate: gate.Config{Run: "git diff --exit-code", SecurityAudit: gate.SecurityAuditConfig{Enabled: false}, AutomatedReview: gate.AutomatedReviewRequired, Validator: gate.ValidatorConfig{Enabled: true}}, Agents: config.Agents{Backends: []config.AgentBackend{{ID: "codex", Kind: "codex", Protocol: "app-server", Command: "codex app-server"}}, Routes: []config.AgentRoute{{Name: "review", Role: RoleCode, Backend: "codex", Model: "example-model"}, {Name: "validator", Role: RoleValidator, Backend: "codex", Model: "example-model"}}}}, Prompt: "Review"}, Workspace: local, AgentBackend: backend})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -253,7 +253,7 @@ func TestNativeValidatorReadsPinnedSourceWithoutRemote(t *testing.T) {
 				input.Version.ID = ""
 			}
 			backend := &fakeCodexClient{updates: []AgentUpdate{{Type: AgentUpdateMessageDelta, Delta: `{"verdict":"pass","score":1,"summary":"Reviewed pinned source"}`}}}
-			runner, err := NewRunner(Dependencies{
+			runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 				Workflow: config.Workflow{Config: config.Config{
 					Tracker: config.Tracker{Kind: config.TrackerHubNative},
 					Gate:    gate.Config{Validator: gate.ValidatorConfig{Enabled: true, MaxInlineDiffBytes: &limit}},

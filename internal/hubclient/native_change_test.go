@@ -876,7 +876,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 				nativeChangeGit(t, source, "remote", "add", "origin", nativeChangeRepository)
 				nativeChangeGit(t, source, "config", "url."+remote+".insteadOf", nativeChangeRepository)
 				nativeChangeGit(t, source, "push", "origin", "main")
-				backend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{Root: filepath.Join(nativeChangeTempDir(t), "workspaces"), SourceRoot: source, AutoBranch: true})
+				backend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: filepath.Join(nativeChangeTempDir(t), "workspaces"), SourceRoot: source, AutoBranch: true})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -3239,7 +3239,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				nativeChangeGit(t, source, "config", "commit.gpgsign", "true")
 				nativeChangeGit(t, source, "config", "gpg.program", filepath.Join(t.TempDir(), "unavailable-signer"))
 			}
-			backend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{Root: filepath.Join(nativeChangeTempDir(t), "workspaces"), SourceRoot: source, AutoBranch: true})
+			backend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: filepath.Join(nativeChangeTempDir(t), "workspaces"), SourceRoot: source, AutoBranch: true})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -3701,7 +3701,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 					t.Log(runLogs.String())
 				}
 			})
-			dependencies := runner.Dependencies{
+			dependencies := runner.Dependencies{ProcessSource: emptyProcessSource,
 				Logger:       slog.New(slog.NewTextHandler(&runLogs, nil)),
 				Store:        runtimeStore,
 				ProjectID:    "local",
@@ -4145,7 +4145,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 					t.Fatal("explicit resume did not receive fresh execution authority")
 				}
 				freshRoot := filepath.Join(nativeChangeTempDir(t), "review-resume")
-				freshBackend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{Root: freshRoot, SourceRoot: source, AutoBranch: true})
+				freshBackend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: freshRoot, SourceRoot: source, AutoBranch: true})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -4582,7 +4582,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 					freshSource := filepath.Join(freshRoot, "source")
 					nativeChangeGit(t, freshSource, "remote", "set-url", "origin", nativeChangeRepository)
 					nativeChangeGit(t, freshSource, "config", "url."+remote+".insteadOf", nativeChangeRepository)
-					dependencies.Workspace, err = workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{Root: filepath.Join(freshRoot, "workspaces"), SourceRoot: freshSource, AutoBranch: true})
+					dependencies.Workspace, err = workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: filepath.Join(freshRoot, "workspaces"), SourceRoot: freshSource, AutoBranch: true})
 					if err != nil {
 						t.Fatal(err)
 					}

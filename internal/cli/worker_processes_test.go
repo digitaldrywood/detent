@@ -401,7 +401,20 @@ func TestReapWorkerProcessesAtStartup(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if err := reapWorkerProcesses(t.Context(), backend, slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)), "startup", time.Second, time.Now, nil); err != nil {
+			if err := reapWorkerProcesses(workspace.WithProcessSource(t.Context(), func(context.Context, string) ([]int, error) {
+				identity, err := procgroup.Inspect(cmd)
+				if errors.Is(err, procgroup.ErrProcessNotRunning) {
+					return nil, nil
+				}
+				if err != nil {
+					return nil, err
+				}
+				alive, err := procgroup.Alive(identity)
+				if !alive {
+					return nil, err
+				}
+				return []int{identity.PID}, err
+			}), backend, slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)), "startup", time.Second, time.Now, nil); err != nil {
 				t.Fatal(err)
 			}
 			select {

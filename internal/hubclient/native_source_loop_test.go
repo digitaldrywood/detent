@@ -158,7 +158,7 @@ func TestNativeSourceReviewLoop(t *testing.T) {
 			nativeChangeGit(t, source, "remote", "add", "origin", nativeChangeRepository)
 			nativeChangeGit(t, source, "config", "url."+remote+".insteadOf", nativeChangeRepository)
 			nativeChangeGit(t, source, "push", "-u", "origin", "main")
-			backend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+			backend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -172,7 +172,7 @@ func TestNativeSourceReviewLoop(t *testing.T) {
 			if test.sourceReview {
 				provider.sourceVerdict = "rework"
 			}
-			agent, err := runner.NewRunner(runner.Dependencies{Store: sessions, ProjectID: "local", Workflow: config.Workflow{Config: config.Config{Agent: config.Agent{MaxTurns: test.limit}, Gate: gate.Config{Run: "git push origin HEAD", SecurityAudit: gate.SecurityAuditConfig{Enabled: test.audit}, AutomatedReview: next.Gates.AutomatedReview, Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: "Complete the issue"}, Workspace: loopWorkspace, AgentBackend: provider, ReapWorkspaceProcesses: func(context.Context, string, time.Duration) (int, error) { return 0, nil }})
+			agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Store: sessions, ProjectID: "local", Workflow: config.Workflow{Config: config.Config{Agent: config.Agent{MaxTurns: test.limit}, Gate: gate.Config{Run: "git push origin HEAD", SecurityAudit: gate.SecurityAuditConfig{Enabled: test.audit}, AutomatedReview: next.Gates.AutomatedReview, Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: "Complete the issue"}, Workspace: loopWorkspace, AgentBackend: provider, ReapWorkspaceProcesses: func(context.Context, string, time.Duration) (int, error) { return 0, nil }})
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -179,7 +179,7 @@ func TestNativeSecurityAuditStage(t *testing.T) {
 			if localProjectID == "" {
 				localProjectID = "prj_example"
 			}
-			runner, err := NewRunner(Dependencies{ProjectID: localProjectID, Workflow: config.Workflow{Config: cfg}, Workspace: &fakeWorkspaceBackend{}, AgentBackends: map[string]AgentBackend{"audit": configuredBackend}, SecurityAuditRoot: t.TempDir(), Store: &fakeSessionStore{sessionID: 73}, Now: func() time.Time { return now.Add(time.Second) }})
+			runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, ProjectID: localProjectID, Workflow: config.Workflow{Config: cfg}, Workspace: &fakeWorkspaceBackend{}, AgentBackends: map[string]AgentBackend{"audit": configuredBackend}, SecurityAuditRoot: t.TempDir(), Store: &fakeSessionStore{sessionID: 73}, Now: func() time.Time { return now.Add(time.Second) }})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -375,7 +375,7 @@ func TestNativeSecurityAuditVerification(t *testing.T) {
 				cfg.Agents.Routes[0].Model = initialModel
 			}
 			sessions := &verificationAuditSessionStore{fakeSessionStore: &fakeSessionStore{sessionID: 73}}
-			runner, err := NewRunner(Dependencies{ProjectID: "prj_example", Workflow: config.Workflow{Config: cfg}, Workspace: &fakeWorkspaceBackend{}, AgentBackends: map[string]AgentBackend{"audit": backend}, SecurityAuditRoot: t.TempDir(), Store: sessions})
+			runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, ProjectID: "prj_example", Workflow: config.Workflow{Config: cfg}, Workspace: &fakeWorkspaceBackend{}, AgentBackends: map[string]AgentBackend{"audit": backend}, SecurityAuditRoot: t.TempDir(), Store: sessions})
 			if err != nil {
 				t.Fatal(err)
 			}

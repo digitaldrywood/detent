@@ -227,7 +227,7 @@ func TestCheckpointRefsCaptureUnchangedSnapshot(t *testing.T) {
 			runRunnerGit(t, source, "init", "--bare", remote)
 			runRunnerGit(t, source, "remote", "add", "origin", remote)
 			runRunnerGit(t, source, "push", "-u", "origin", "main")
-			local, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: filepath.Dir(source), SourceRoot: source})
+			local, err := workspace.NewLocalGit(workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: filepath.Dir(source), SourceRoot: source})
 			if err != nil {
 				t.Fatal(err)
 			}

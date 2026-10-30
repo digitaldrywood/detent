@@ -53,6 +53,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tui"
 	"github.com/digitaldrywood/detent/internal/web"
 	"github.com/digitaldrywood/detent/internal/web/demofixtures"
+	"github.com/digitaldrywood/detent/internal/workspacerunner"
 )
 
 const (
@@ -773,7 +774,7 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		resourceWorkers.Go(func() {
 			persistBoardSnapshots(runCtx, snapshotHub, boardSnapshotStore, deps.boardSnapshotInterval, logger)
 		})
-		for _, workspaceLane := range newWorkspaceLanes(runCtx, cfg.Global, hubScheduling, workerGeneration, logger) {
+		for _, workspaceLane := range newWorkspaceLanes(runCtx, cfg.Global, hubScheduling, workerGeneration, logger, workspacerunner.DefaultSupport()) {
 			resourceWorkers.Go(func() { runWorkspaceLane(runCtx, workspaceLane, logger) })
 		}
 		if err := startRunnerProjects(ctx, manager, hubScheduling); err != nil {

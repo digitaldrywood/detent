@@ -35,7 +35,7 @@ func TestRunnerTriageIsReadOnly(t *testing.T) {
 			update := AgentUpdate{Type: AgentUpdateRateLimits, RateLimits: &telemetry.RateLimits{Primary: &telemetry.RateLimitBucket{WindowKind: "five_hour", PercentUsed: &percent, ObservedAt: &observedAt, ResetAt: &resetAt}}}
 			backend := &fakeCodexClient{updates: append([]AgentUpdate{update}, tt.updates...)}
 			workspace := &fakeWorkspaceBackend{}
-			runner, err := NewRunner(Dependencies{
+			runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 				Workflow: config.Workflow{Config: config.Config{}}, Workspace: workspace,
 				ProviderUsage: providerUsage,
 				AgentBackend:  backend, Store: &fakeSessionStore{sessionID: 2595}, SecurityAuditRoot: t.TempDir(),
@@ -125,7 +125,7 @@ func TestRunnerTriageNativeAdmission(t *testing.T) {
 			cfg := config.Default()
 			cfg.Agents.ModelSelection.Enabled = new(false)
 			backend := &triageCatalogBackend{}
-			r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: cfg}, Workspace: &fakeWorkspaceBackend{}, AgentBackend: backend, SecurityAuditRoot: t.TempDir()})
+			r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: cfg}, Workspace: &fakeWorkspaceBackend{}, AgentBackend: backend, SecurityAuditRoot: t.TempDir()})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -184,7 +184,7 @@ func TestRunnerTriageBudget(t *testing.T) {
 			backend := &fakeCodexClient{updates: []AgentUpdate{{Type: AgentUpdateTokenUsage, Tokens: AgentTokenUsage{InputTokens: 11, TotalTokens: 11}}}}
 			checker := &fakeBudgetChecker{refusal: budget.Refusal{Code: tt.refusal}, projection: &budget.Projection{CostUSD: 0.10, Estimate: budget.TokenEstimate{InputTokens: 10, TotalTokens: 10, Sessions: tt.sessions}}}
 			sessions := &fakeSessionStore{sessionID: 2595}
-			r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: config.Config{Budget: config.Budget{BillingMode: config.BillingModeMetered}}}, Workspace: &fakeWorkspaceBackend{}, AgentBackend: backend, Store: sessions, SecurityAuditRoot: t.TempDir(), BudgetChecker: checker, Pricing: budget.PricingTable{"gpt-budget": {USDPerInputToken: 0.01}}})
+			r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: config.Config{Budget: config.Budget{BillingMode: config.BillingModeMetered}}}, Workspace: &fakeWorkspaceBackend{}, AgentBackend: backend, Store: sessions, SecurityAuditRoot: t.TempDir(), BudgetChecker: checker, Pricing: budget.PricingTable{"gpt-budget": {USDPerInputToken: 0.01}}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -222,7 +222,7 @@ func TestRunnerTriageReportsTurnStart(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			backend := &fakeCodexClient{updates: []AgentUpdate{tt.started, {Type: AgentUpdateToolStarted}}}
-			r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: config.Config{}}, Workspace: &fakeWorkspaceBackend{}, AgentBackend: backend, SecurityAuditRoot: t.TempDir()})
+			r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: config.Config{}}, Workspace: &fakeWorkspaceBackend{}, AgentBackend: backend, SecurityAuditRoot: t.TempDir()})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -253,7 +253,7 @@ func TestRunnerTriageClassifiesProviderFailure(t *testing.T) {
 			if started {
 				backend.updates = []AgentUpdate{{Type: AgentUpdateTurnStarted}, {Type: AgentUpdateTokenUsage, Tokens: AgentTokenUsage{TotalTokens: 1, InputTokens: 1}}}
 			}
-			r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: config.Config{}}, Workspace: &fakeWorkspaceBackend{}, AgentBackend: backend, SecurityAuditRoot: t.TempDir()})
+			r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: config.Config{}}, Workspace: &fakeWorkspaceBackend{}, AgentBackend: backend, SecurityAuditRoot: t.TempDir()})
 			if err != nil {
 				t.Fatal(err)
 			}

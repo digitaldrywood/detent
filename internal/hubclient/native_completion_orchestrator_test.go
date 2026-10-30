@@ -230,7 +230,7 @@ func TestNativeIncorporationConflictResumesPublishedSource(t *testing.T) {
 			nativeChangeGit(t, source, "commit", "-am", "conflicting integration source")
 			nativeChangeGit(t, source, "push", "origin", "main")
 			integrationHead := headAt(source)
-			backend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{Root: filepath.Join(nativeChangeTempDir(t), "workspaces"), SourceRoot: source, AutoBranch: true})
+			backend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: filepath.Join(nativeChangeTempDir(t), "workspaces"), SourceRoot: source, AutoBranch: true})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -327,7 +327,7 @@ func TestNativeIncorporationConflictResumesPublishedSource(t *testing.T) {
 					t.Fatalf("retry replayed implementation instead of bounded resolution: %s", provider.prompt)
 				}
 			}
-			agent, err := runner.NewRunner(runner.Dependencies{
+			agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource,
 				ProjectID: "local", Workspace: backend, AgentBackend: provider,
 				Workflow:               config.Workflow{Config: config.Config{Gate: gate.Config{Run: "git diff --check"}}, Prompt: "Complete the issue"},
 				ReapWorkspaceProcesses: func(context.Context, string, time.Duration) (int, error) { return 0, nil },

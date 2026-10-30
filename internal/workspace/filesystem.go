@@ -21,20 +21,22 @@ import (
 )
 
 type FilesystemOptions struct {
-	Root       string
-	SourceRoot string
-	OutputRoot string
-	Hooks      Hooks
-	Logger     *slog.Logger
+	ProcessSource ProcessSource
+	Root          string
+	SourceRoot    string
+	OutputRoot    string
+	Hooks         Hooks
+	Logger        *slog.Logger
 }
 
 type Filesystem struct {
-	uses       *workspaceUses
-	root       string
-	sourceRoot string
-	outputRoot string
-	hooks      Hooks
-	logger     *slog.Logger
+	processSource ProcessSource
+	uses          *workspaceUses
+	root          string
+	sourceRoot    string
+	outputRoot    string
+	hooks         Hooks
+	logger        *slog.Logger
 }
 
 func NewFilesystem(opts FilesystemOptions) (*Filesystem, error) {
@@ -69,12 +71,13 @@ func NewFilesystem(opts FilesystemOptions) (*Filesystem, error) {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
 	return &Filesystem{
-		uses:       &workspaceUses{},
-		root:       root,
-		sourceRoot: sourceRoot,
-		outputRoot: outputRoot,
-		hooks:      hooks,
-		logger:     logger,
+		processSource: opts.ProcessSource,
+		uses:          &workspaceUses{},
+		root:          root,
+		sourceRoot:    sourceRoot,
+		outputRoot:    outputRoot,
+		hooks:         hooks,
+		logger:        logger,
 	}, nil
 }
 
@@ -162,7 +165,7 @@ func (f *Filesystem) CleanupIssue(ctx context.Context, issue Issue) (CleanupResu
 	if !takeCleanupSlot(ctx) {
 		return result, fmt.Errorf("%w: cleanup batch complete", ErrWorkspacePreserved)
 	}
-	result.Processes = reapWorkspaceProcesses(ctx, info.Path, f.logger)
+	result.Processes = reapWorkspaceProcesses(WithProcessSource(ctx, f.processSource), info.Path, f.logger)
 	if err := f.runHook(ctx, "before_remove", f.hooks.BeforeRemove, info, issue); err != nil {
 		f.logger.Warn("filesystem workspace before_remove hook failed", slog.String("path", info.Path), slog.Any("error", err))
 	}

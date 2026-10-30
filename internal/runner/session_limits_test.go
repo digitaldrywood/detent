@@ -54,7 +54,7 @@ func TestRunnerSelectedSessionLimits(t *testing.T) {
 					duration := &controlledDurationLimit{}
 					backend := &sessionLimitsBackend{fakeCodexClient: fakeCodexClient{models: selectionCatalog()}}
 					sessions := &fakeSessionStore{sessionID: 2597}
-					runner, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: cfg, Prompt: "Work"}, Workspace: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}}, AgentBackend: backend, Store: sessions, sessionLimit: duration.Context, SecurityAuditRoot: t.TempDir()})
+					runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: cfg, Prompt: "Work"}, Workspace: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}}, AgentBackend: backend, Store: sessions, sessionLimit: duration.Context, SecurityAuditRoot: t.TempDir()})
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -162,7 +162,7 @@ func TestMergeSelectedSessionDurationPreservesTurnLimit(t *testing.T) {
 				Stages: map[string]config.ModelSelectionStage{RoleMerge: {Level: new("complex")}},
 			}}}
 			backend := &fakeCodexClient{models: selectionCatalog()}
-			runner, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: cfg}, Workspace: &fakeMergeWorkspaceBackend{fakeWorkspaceBackend: fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}}, prepareResult: workspace.MergePrepareResult{Status: workspace.MergePrepareStatusConflict}}, AgentBackend: backend})
+			runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: cfg}, Workspace: &fakeMergeWorkspaceBackend{fakeWorkspaceBackend: fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}}, prepareResult: workspace.MergePrepareResult{Status: workspace.MergePrepareStatusConflict}}, AgentBackend: backend})
 			if err != nil {
 				t.Fatal(err)
 			}

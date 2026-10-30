@@ -443,7 +443,7 @@ func TestRunnerCloudProjects(t *testing.T) {
 			if test.externalWorkspaces {
 				retainedRoot = filepath.Join(root, "external-workspaces", "orders")
 			}
-			retained, err := workspacepkg.NewBackend(workspacepkg.KindLocalGit, workspacepkg.LocalGitOptions{Root: retainedRoot, SourceRoot: legacy, AutoBranch: true})
+			retained, err := workspacepkg.NewBackend(workspacepkg.KindLocalGit, workspacepkg.LocalGitOptions{ProcessSource: emptyProcessSource, Root: retainedRoot, SourceRoot: legacy, AutoBranch: true})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -547,7 +547,7 @@ func TestRunnerCloudProjects(t *testing.T) {
 						if !filepath.IsAbs(resumedRoot) {
 							resumedRoot = filepath.Join(selected.Workdir, resumedRoot)
 						}
-						resumed, err := workspacepkg.NewBackend(workspacepkg.KindLocalGit, workspacepkg.LocalGitOptions{Root: resumedRoot, SourceRoot: selected.Workdir, AutoBranch: true})
+						resumed, err := workspacepkg.NewBackend(workspacepkg.KindLocalGit, workspacepkg.LocalGitOptions{ProcessSource: emptyProcessSource, Root: resumedRoot, SourceRoot: selected.Workdir, AutoBranch: true})
 						if err != nil {
 							t.Fatal(err)
 						}

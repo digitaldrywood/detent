@@ -75,6 +75,7 @@ func TestHubRunnerRegisterDistinctServices(t *testing.T) {
 							Name: name, GOOS: goos, HomeDir: serviceHome, UID: "501",
 							BinaryPath: "/opt/detent", ConfigPath: configPath, Arguments: []string{"--config", configPath, "--headless"},
 							UserSystemdPath: filepath.Join(serviceHome, name+".service"),
+							UserUnitPaths:   []string{},
 							SystemUnitPaths: []string{filepath.Join(serviceHome, "missing")},
 							InspectManual:   func(string) (servicepkg.Inspection, error) { return servicepkg.Inspection{}, nil },
 							RunCommand: func(context.Context, string, ...string) (string, error) {

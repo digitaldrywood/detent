@@ -186,7 +186,7 @@ func TestRunnerChunkedAudit(t *testing.T) {
 				sessionStore := &scratchReapSessionStore{fakeSessionStore: &fakeSessionStore{sessionID: 73}, process: store.WorkerProcess{SessionID: 73}}
 				reapFailure := errors.New("audit process reap failed")
 				auditRoot := t.TempDir()
-				runner, err := NewRunner(Dependencies{ProjectID: "project", Workflow: config.Workflow{Config: cfg}, Workspace: &fakeWorkspaceBackend{}, AgentBackends: map[string]AgentBackend{"audit": backend}, SecurityAuditRoot: auditRoot, Store: sessionStore, ReapWorkerProcess: func(_ context.Context, identity procgroup.Identity, _ time.Duration) (procgroup.TerminationOutcome, error) {
+				runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, ProjectID: "project", Workflow: config.Workflow{Config: cfg}, Workspace: &fakeWorkspaceBackend{}, AgentBackends: map[string]AgentBackend{"audit": backend}, SecurityAuditRoot: auditRoot, Store: sessionStore, ReapWorkerProcess: func(_ context.Context, identity procgroup.Identity, _ time.Duration) (procgroup.TerminationOutcome, error) {
 					request := backend.requests[len(backend.requests)-1]
 					if mode != "missing process" && identity.PID != 4242 {
 						t.Fatalf("reaped the wrong audit worker: %+v", identity)

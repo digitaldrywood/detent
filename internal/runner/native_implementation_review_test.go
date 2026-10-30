@@ -386,7 +386,7 @@ fi
 				if strings.HasPrefix(command, "go ") {
 					t.Setenv("GOTOOLCHAIN", "go1.26.9")
 				}
-				options := workspace.LocalGitOptions{Root: filepath.Dir(source), SourceRoot: source}
+				options := workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: filepath.Dir(source), SourceRoot: source}
 				local, err := workspace.NewLocalGit(options)
 				if err != nil {
 					t.Fatal(err)
@@ -423,7 +423,7 @@ fi
 			if test.editReceipt != nil {
 				test.editReceipt(&receipt)
 			}
-			r, err := NewRunner(Dependencies{
+			r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 				Workflow: config.Workflow{Config: config.Config{
 					Gate: gate.Config{Run: command, SecurityAudit: gate.SecurityAuditConfig{Enabled: false}, AutomatedReview: gate.AutomatedReviewRequired, Validator: gate.ValidatorConfig{Enabled: test.validator}},
 					Agents: config.Agents{Backends: []config.AgentBackend{{ID: "codex", Kind: "codex", Protocol: "app-server", Command: "codex app-server"}}, Routes: []config.AgentRoute{

@@ -27,7 +27,7 @@ func TestRunnerFollowupPrompt(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			backend := &fakeCodexClient{result: AgentTurnResult{ThreadID: "thread-2661", SessionID: "session-2661"}}
 			full := strings.Repeat("Standing workflow instructions.\n", 2000)
-			runner, err := NewRunner(Dependencies{
+			runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 				Workflow:     config.Workflow{Prompt: full + "\n{{ issue.description }}"},
 				Workspace:    &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Key: "2661", Branch: "detent/2661"}},
 				AgentBackend: backend,

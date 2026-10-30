@@ -256,7 +256,7 @@ func TestRunnerSetupHeartbeatOwnership(t *testing.T) {
 			cfg.Client.ProviderCapacityFile = writeProviderCapacityFixture(t, root)
 			cfg.Client.NativeProjects = map[string]string{"native": "prj_test"}
 			cfg.Projects = []globalconfig.Project{{ID: "native", Workflow: filepath.Join(paths.workspaces, "missing", "WORKFLOW.md"), Workdir: filepath.Join(paths.workspaces, "missing"), Weight: 1}}
-			source, err := newHubScheduling(t.Context(), cfg, "test")
+			source, err := newHubScheduling(t.Context(), cfg, "test", hubSchedulingOptions{workspaceSupport: testWorkspaceSupport})
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -134,10 +134,12 @@ func (m *systemdManager) definitionLocation() (string, string, bool) {
 	if strings.TrimSpace(m.cfg.HomeDir) != "" {
 		userPaths = append(userPaths, filepath.Join(m.cfg.HomeDir, ".local", "share", "systemd", "user", m.unit))
 	}
-	userPaths = append(userPaths,
-		filepath.Join("/etc", "systemd", "user", m.unit),
-		filepath.Join("/usr", "lib", "systemd", "user", m.unit),
-	)
+	if m.cfg.UserUnitPaths == nil {
+		userPaths = append(userPaths,
+			filepath.Join("/etc", "systemd", "user", m.unit),
+			filepath.Join("/usr", "lib", "systemd", "user", m.unit),
+		)
+	}
 	for _, path := range userPaths {
 		if regularFile(path) {
 			return "user", path, true

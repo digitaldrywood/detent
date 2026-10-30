@@ -18,6 +18,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -63,6 +64,10 @@ func TestOfflineCLIUpdateReportsVerifiedController(t *testing.T) {
 	buildCtx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	build := exec.CommandContext(buildCtx, "go", "test", "-c", "-p", "4", "-ldflags", "-s -w -X github.com/digitaldrywood/detent/internal/update.defaultChecksumMinisignPublicKey="+publicKey, "-o", candidate, ".")
+	build.Env = slices.DeleteFunc(os.Environ(), func(entry string) bool { return strings.HasPrefix(entry, "GOCACHE=") })
+	if fixtureBuildCache != "" {
+		build.Env = append(build.Env, "GOCACHE="+fixtureBuildCache)
+	}
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build controller fixture: %v\n%s", err, output)
 	}

@@ -170,7 +170,7 @@ func TestNewWorkspaceLanes(t *testing.T) {
 			if test.scheduling != nil {
 				scheduling = test.scheduling(t)
 			}
-			lanes := newWorkspaceLanes(t.Context(), cfg, scheduling, 1, slog.New(slog.DiscardHandler))
+			lanes := newWorkspaceLanes(t.Context(), cfg, scheduling, 1, slog.New(slog.DiscardHandler), testWorkspaceSupport())
 			if len(lanes) != test.want {
 				t.Fatalf("newWorkspaceLanes() returned %d lanes, want %d", len(lanes), test.want)
 			}
@@ -180,7 +180,7 @@ func TestNewWorkspaceLanes(t *testing.T) {
 
 func TestWorkspaceLaneCapabilities(t *testing.T) {
 	t.Parallel()
-	served := workspacerunner.Capabilities(workspacerunner.DefaultSupport())
+	served := workspacerunner.Capabilities(testWorkspaceSupport())
 	withoutGit := served
 	withoutGit.Git = false
 	tests := []struct {
@@ -214,7 +214,7 @@ func TestWorkspaceLaneCapabilities(t *testing.T) {
 			}
 			cfg := globalconfig.Config{Projects: []globalconfig.Project{orders}}
 			cfg.Client = globalconfig.HubClient{IdentityFile: test.identity, TokenEnvironment: test.token, NativeProjects: test.projects}
-			if got := workspaceLaneCapabilities(t.Context(), cfg); got != test.want {
+			if got := workspaceLaneCapabilities(t.Context(), cfg, testWorkspaceSupport()); got != test.want {
 				t.Fatalf("workspaceLaneCapabilities() = %+v, want %+v", got, test.want)
 			}
 		})

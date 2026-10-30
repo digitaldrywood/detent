@@ -451,9 +451,9 @@ func TestActivityRecorderAuditsActiveAndInterruptedRuns(t *testing.T) {
 			var err error
 			physical := stage == "implementation" || stage == "rework"
 			if physical {
-				backend, err = workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{Root: workspacePath, SourceRoot: initRunnerSourceRepo(t), AutoBranch: true})
+				backend, err = workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: workspacePath, SourceRoot: initRunnerSourceRepo(t), AutoBranch: true})
 			} else {
-				backend, err = workspace.NewFilesystem(workspace.FilesystemOptions{Root: workspacePath})
+				backend, err = workspace.NewFilesystem(workspace.FilesystemOptions{ProcessSource: emptyProcessSource, Root: workspacePath})
 			}
 			if err != nil {
 				t.Fatal(err)

@@ -147,6 +147,7 @@ type Dependencies struct {
 	WorkerReapGrace        time.Duration
 	ReapWorkerProcess      workerProcessReapFunc
 	ReapWorkspaceProcesses workspaceProcessReapFunc
+	ProcessSource          workspace.ProcessSource
 	sessionLimit           durationLimitContextFactory
 	turnLimit              durationLimitContextFactory
 	lookupEnv              func(string) string
@@ -228,7 +229,9 @@ func NewRunner(deps Dependencies) (*Runner, error) {
 		deps.ReapWorkerProcess = procgroup.Terminate
 	}
 	if deps.ReapWorkspaceProcesses == nil {
-		deps.ReapWorkspaceProcesses = workspace.ReapProcesses
+		deps.ReapWorkspaceProcesses = func(ctx context.Context, path string, grace time.Duration) (int, error) {
+			return workspace.ReapProcesses(workspace.WithProcessSource(ctx, deps.ProcessSource), path, grace)
+		}
 	}
 	if deps.sessionLimit == nil {
 		deps.sessionLimit = withAgentDurationLimit
@@ -266,31 +269,34 @@ func NewRunner(deps Dependencies) (*Runner, error) {
 	enforcedBudget, enforcedBudgetKnown := enforcedBudgetConfig(deps.Workflow.Config.Budget, budgetChecker)
 
 	return &Runner{
-		buildCache:                deps.BuildCache,
-		providerUsage:             deps.ProviderUsage,
-		projectID:                 projectID,
-		workflow:                  deps.Workflow,
-		workspace:                 deps.Workspace,
-		workspaceFactory:          deps.WorkspaceFactory,
-		agentRuntime:              runtime,
-		agentBackendFactory:       deps.AgentBackendFactory,
-		store:                     deps.Store,
-		pricing:                   deps.Pricing,
-		budgetChecker:             budgetChecker,
-		dispatchEstimator:         dispatchEstimator,
-		budgetGuardBuilder:        deps.BudgetGuardBuilder,
-		enforcedBudget:            enforcedBudget,
-		enforcedBudgetKnown:       enforcedBudgetKnown,
-		now:                       deps.Now,
-		logger:                    deps.Logger,
-		securityAuditRoot:         filepath.Clean(deps.SecurityAuditRoot),
-		serviceConnection:         deps.ServiceConnection,
-		afterRunTimeout:           deps.AfterRunTimeout,
-		finalizationContext:       deps.FinalizationContext,
-		maxAgentRSSBytes:          deps.MaxAgentRSSBytes,
-		rssPollInterval:           deps.RSSPollInterval,
-		processRSS:                deps.ProcessRSS,
-		workerReapGrace:           deps.WorkerReapGrace,
+		buildCache:          deps.BuildCache,
+		providerUsage:       deps.ProviderUsage,
+		projectID:           projectID,
+		workflow:            deps.Workflow,
+		workspace:           deps.Workspace,
+		workspaceFactory:    deps.WorkspaceFactory,
+		agentRuntime:        runtime,
+		agentBackendFactory: deps.AgentBackendFactory,
+		store:               deps.Store,
+		pricing:             deps.Pricing,
+		budgetChecker:       budgetChecker,
+		dispatchEstimator:   dispatchEstimator,
+		budgetGuardBuilder:  deps.BudgetGuardBuilder,
+		enforcedBudget:      enforcedBudget,
+		enforcedBudgetKnown: enforcedBudgetKnown,
+		now:                 deps.Now,
+		logger:              deps.Logger,
+		securityAuditRoot:   filepath.Clean(deps.SecurityAuditRoot),
+		serviceConnection:   deps.ServiceConnection,
+		afterRunTimeout:     deps.AfterRunTimeout,
+		finalizationContext: deps.FinalizationContext,
+		maxAgentRSSBytes:    deps.MaxAgentRSSBytes,
+		rssPollInterval:     deps.RSSPollInterval,
+		processRSS:          deps.ProcessRSS,
+		workerReapGrace:     deps.WorkerReapGrace,
+		reapArtifactProcesses: func(ctx context.Context, root, path string, grace time.Duration) (int, error) {
+			return workspace.ReapWorkerArtifactProcesses(workspace.WithProcessSource(ctx, deps.ProcessSource), root, path, grace)
+		},
 		reapWorkerProcess:         deps.ReapWorkerProcess,
 		reapWorkspaceProcesses:    deps.ReapWorkspaceProcesses,
 		sleepInhibitor:            inhibitSleep,

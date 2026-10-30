@@ -104,7 +104,20 @@ func TestRestartScratchCleanupWaitsForEscapedDescendant(t *testing.T) {
 				CleanupRoot:           root, CleanupPath: scratch,
 			}}}
 			finished := make(chan error, 1)
-			reapCtx, cancelReap := context.WithCancel(t.Context())
+			reapCtx, cancelReap := context.WithCancel(workspace.WithProcessSource(t.Context(), func(context.Context, string) ([]int, error) {
+				identity, err := procgroup.Inspect(&exec.Cmd{Process: &os.Process{Pid: pid}})
+				if errors.Is(err, procgroup.ErrProcessNotRunning) {
+					return nil, nil
+				}
+				if err != nil {
+					return nil, err
+				}
+				alive, err := procgroup.Alive(identity)
+				if !alive {
+					return nil, err
+				}
+				return []int{pid}, err
+			}))
 			joined := false
 			t.Cleanup(func() {
 				cancelReap()

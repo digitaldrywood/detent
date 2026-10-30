@@ -59,7 +59,7 @@ func TestRunnerEnforcesConfiguredDurationLimits(t *testing.T) {
 			durationLimit := &controlledDurationLimit{}
 			agentBackend := &durationBlockingAgentBackend{expireDuration: durationLimit.Expire, turns: tt.wantTurns}
 			sessionStore := &fakeSessionStore{sessionID: 1496}
-			runner, err := NewRunner(Dependencies{
+			runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 				Workflow: config.Workflow{
 					Config: config.Config{Agent: tt.agent},
 					Prompt: "Work",
@@ -147,7 +147,7 @@ func TestRunnerSessionLifetimeReapsWorkerAndRecordsCause(t *testing.T) {
 	var reaped procgroup.Identity
 	var workspaceReaped string
 	var logs bytes.Buffer
-	runner, err := NewRunner(Dependencies{
+	runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 		Workflow:     config.Workflow{Config: config.Config{Agent: config.Agent{MaxSessionDurationMS: 25}}, Prompt: "Work"},
 		Workspace:    &fakeWorkspaceBackend{info: workspace.Info{Path: workspacePath, Key: "issue-session-lifetime"}},
 		AgentBackend: backend,
@@ -251,7 +251,7 @@ func TestRunnerReapsWorkerAfterTerminalTurn(t *testing.T) {
 				}},
 			}
 			workspaceReaped := ""
-			runner, err := NewRunner(Dependencies{
+			runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 				Workflow:     config.Workflow{Prompt: "Work"},
 				Workspace:    &fakeWorkspaceBackend{info: workspace.Info{Path: workspacePath, Key: "issue-terminal-worker"}},
 				AgentBackend: terminalWorkerAgentBackend{identity: identity, err: tt.turnErr},
@@ -314,7 +314,7 @@ func TestRunnerSessionDurationSpansResumeFallback(t *testing.T) {
 			ProviderSessionID: "session-1495",
 		},
 	}
-	runner, err := NewRunner(Dependencies{
+	runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 		Workflow: config.Workflow{
 			Config: config.Config{
 				Agent: config.Agent{
@@ -389,7 +389,7 @@ func TestRunnerMergeFallbackValidationOutlivesResolutionBudget(t *testing.T) {
 			return workspace.MergePrepareResult{Status: workspace.MergePrepareStatusClean, HeadSHA: "validated-head"}, nil
 		},
 	}
-	runner, err := NewRunner(Dependencies{
+	runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 		Workflow: config.Workflow{Config: config.Config{Agent: config.Agent{
 			MaxSessionDurationMS: 25,
 		}}},
@@ -547,7 +547,7 @@ func TestRunnerValidatorUpdatePersistenceUsesSessionDurationContext(t *testing.T
 		fakeSessionStore: &fakeSessionStore{sessionID: 1496},
 		expireSession:    sessionDurationLimit.Expire,
 	}
-	runner, err := NewRunner(Dependencies{
+	runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 		Workflow: config.Workflow{
 			Config: config.Config{
 				Agent: config.Agent{MaxSessionDurationMS: 25},

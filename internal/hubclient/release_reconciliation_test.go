@@ -196,11 +196,11 @@ func TestNativeReleaseDeliveryReconciliation(t *testing.T) {
 			provider := &committingAgent{}
 			cfg := config.Config{}
 			cfg.Tracker.Kind = config.TrackerHubNative
-			backend, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: f.directory, AutoBranch: true})
+			backend, err := workspace.NewLocalGit(workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: f.directory, AutoBranch: true})
 			if err != nil {
 				t.Fatal(err)
 			}
-			agent, err := runner.NewRunner(runner.Dependencies{ProjectID: "local", Workflow: config.Workflow{Config: cfg, Prompt: "Complete release repair"}, Workspace: backend, AgentBackend: provider, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+			agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, ProjectID: "local", Workflow: config.Workflow{Config: cfg, Prompt: "Complete release repair"}, Workspace: backend, AgentBackend: provider, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 			if err != nil {
 				t.Fatal(err)
 			}

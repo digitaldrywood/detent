@@ -353,7 +353,7 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 		modelUnavailable = "fail"
 	}
 	cfg.Agents.ModelSelection.Unavailable = &modelUnavailable
-	localRunner, err := runner.NewRunner(runner.Dependencies{Workflow: config.Workflow{Config: cfg}, Workspace: &providerPreviewWorkspace{}, AgentBackend: backend})
+	localRunner, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: cfg}, Workspace: &providerPreviewWorkspace{}, AgentBackend: backend})
 	if err != nil {
 		t.Fatal(err)
 	}

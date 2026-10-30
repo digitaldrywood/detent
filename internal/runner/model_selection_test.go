@@ -30,7 +30,7 @@ func TestSelectionReloadAndResume(t *testing.T) {
 	backend := &catalogAgentBackend{models: selectionCatalog()}
 	cfg := config.Default()
 	cfg.Agents.ModelSelection = config.ModelSelection{Preset: new("sol_first")}
-	runner, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: cfg}, Workspace: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}}, AgentBackend: backend})
+	runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: cfg}, Workspace: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}}, AgentBackend: backend})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -283,7 +283,7 @@ func TestModelSelectionCatalogErrorReachesAttemptAndLog(t *testing.T) {
 			}
 			catalogErr := errors.New(tc.message)
 			backend := &catalogAgentBackend{err: catalogErr}
-			run, err := NewRunner(Dependencies{
+			run, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 				ProjectID:    "detent",
 				Workflow:     config.Workflow{Config: cfg, Prompt: "work"},
 				Workspace:    &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}},
@@ -438,7 +438,7 @@ func TestRunnerResumeUsesBoundedEffort(t *testing.T) {
 	cfg.Agents.ModelSelection = config.ModelSelection{Preset: new("sol_first")}
 	backend := &fakeCodexClient{models: selectionCatalog(), result: AgentTurnResult{ThreadID: "thread-1", TurnID: "turn-2", SessionID: "thread-1-turn-2"}}
 	sessionStore := &fakeSessionStore{sessionID: 1}
-	runner, err := NewRunner(Dependencies{
+	runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 		ProjectID:    "detent",
 		Workflow:     config.Workflow{Config: cfg, Prompt: "Work"},
 		Workspace:    &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}},
@@ -476,7 +476,7 @@ func TestRunnerCatalogFailureUsesConfiguredNormalModel(t *testing.T) {
 	}
 	sessions := &fakeSessionStore{sessionID: 1}
 	var logs bytes.Buffer
-	runner, err := NewRunner(Dependencies{
+	runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 		ProjectID:    "detent",
 		Workflow:     config.Workflow{Config: cfg, Prompt: "Work"},
 		Workspace:    &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}},
@@ -733,7 +733,7 @@ func TestOverrideFallbackReachesAgent(t *testing.T) {
 			cfg := config.Default()
 			cfg.Agents.ModelSelection = config.ModelSelection{Preset: new("sol_first"), NormalModel: new("gpt-6-astra"), Levels: map[string]config.ModelSelectionDefaults{"normal": {Effort: new("low")}}}
 			var logs bytes.Buffer
-			r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: cfg, Prompt: "work"}, Workspace: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}}, AgentBackend: backend, Logger: slog.New(slog.NewTextHandler(&logs, nil))})
+			r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: cfg, Prompt: "work"}, Workspace: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}}, AgentBackend: backend, Logger: slog.New(slog.NewTextHandler(&logs, nil))})
 			if err != nil {
 				t.Fatal(err)
 			}

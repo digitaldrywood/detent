@@ -79,7 +79,7 @@ func TestNativeReviewPublicationRetry(t *testing.T) {
 			cfg.Agents.Backends = []config.AgentBackend{{ID: "reviewer", Kind: "codex", Protocol: "app-server", Command: "test-agent"}}
 			cfg.Agents.Routes = []config.AgentRoute{{Name: "review", Backend: "reviewer", Model: "test-model", Default: true}}
 			worktree := &implementationReviewWorkspace{attachmentValidatorWorkspace: attachmentValidatorWorkspace{reviewMutationWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}}, heads: []string{"head"}}}}
-			r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: cfg}, Workspace: worktree, AgentBackends: map[string]AgentBackend{"reviewer": agent}, SecurityAuditRoot: t.TempDir(), Store: &fakeSessionStore{sessionID: 73}, Pricing: budget.PricingTable{"test-model": {USDPerInputToken: 0.001, USDPerOutputToken: 0.002}}})
+			r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: cfg}, Workspace: worktree, AgentBackends: map[string]AgentBackend{"reviewer": agent}, SecurityAuditRoot: t.TempDir(), Store: &fakeSessionStore{sessionID: 73}, Pricing: budget.PricingTable{"test-model": {USDPerInputToken: 0.001, USDPerOutputToken: 0.002}}})
 			if err != nil {
 				t.Fatal(err)
 			}

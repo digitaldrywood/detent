@@ -72,7 +72,7 @@ func TestDispatchCapacityDoesNotLaunchWorkspaceDependentBackend(t *testing.T) {
 			cfg := config.Default()
 			cfg.Agents.ModelSelection.Preset = new("sol_first")
 			cfg.Agents.ModelSelection.Unavailable = &test.unavailable
-			r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: cfg}, Workspace: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}}, AgentBackend: backend})
+			r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: cfg}, Workspace: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}}, AgentBackend: backend})
 			if err != nil {
 				t.Fatal(err)
 			}

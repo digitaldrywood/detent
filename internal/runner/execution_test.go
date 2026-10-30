@@ -151,7 +151,7 @@ func TestRunnerExecutionReadToolsPreserveCodingAndExistingTools(t *testing.T) {
 	execution := &readToolTestExecution{}
 	agent := &executionToolTestBackend{testing: t, fakeCodexClient: fakeCodexClient{updates: []AgentUpdate{{Type: AgentUpdateMessageDelta, Delta: "Verified the page."}, {Type: AgentUpdateTurnCompleted, Status: "completed"}}}}
 	backend := &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Key: "native", Branch: "native"}}
-	r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: config.Config{}, Prompt: "Complete the native issue"}, Workspace: backend, AgentBackend: agent})
+	r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: config.Config{}, Prompt: "Complete the native issue"}, Workspace: backend, AgentBackend: agent})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -288,7 +288,7 @@ func TestNativeRetryResumesPersistedSessionAfterRunnerRestart(t *testing.T) {
 			runRunnerGit(t, source, "remote", "add", "origin", repository)
 			runRunnerGit(t, source, "config", "url."+remote+".insteadOf", repository)
 			runRunnerGit(t, source, "push", "-u", "origin", "main")
-			gitWorkspace, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+			gitWorkspace, err := workspace.NewLocalGit(workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -320,7 +320,7 @@ func TestNativeRetryResumesPersistedSessionAfterRunnerRestart(t *testing.T) {
 			cfg.Tracker.Kind = config.TrackerHubNative
 			cfg.Agent.Effort.Code = test.configuredEffort
 			cfg.Agents.Routes = []config.AgentRoute{{Name: "default", Role: role, Backend: "codex", Model: "example-model", Default: true}}
-			deps := Dependencies{ProjectID: "native", Workflow: config.Workflow{Config: cfg, Prompt: "Continue the issue"}, Store: db, Workspace: backend, AgentBackend: agent}
+			deps := Dependencies{ProcessSource: emptyProcessSource, ProjectID: "native", Workflow: config.Workflow{Config: cfg, Prompt: "Continue the issue"}, Store: db, Workspace: backend, AgentBackend: agent}
 			first, err := NewRunner(deps)
 			if err != nil {
 				t.Fatal(err)
@@ -671,7 +671,7 @@ func TestNativeInterruptedCodeRecoversPersistedSession(t *testing.T) {
 				runRunnerGit(t, source, "remote", "add", "origin", remote)
 				runRunnerGit(t, source, "push", "-u", "origin", "main")
 			}
-			gitWorkspace, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+			gitWorkspace, err := workspace.NewLocalGit(workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -875,7 +875,7 @@ func TestNativeInterruptedCodeRecoversPersistedSession(t *testing.T) {
 				cfg.Agents.Routes[0].Model = model
 			}
 			var logs bytes.Buffer
-			r, err := NewRunner(Dependencies{ProjectID: "native", Workflow: config.Workflow{Config: cfg, Prompt: "Continue the issue"}, Store: db, Workspace: backend, AgentBackend: worker, Logger: slog.New(slog.NewTextHandler(&logs, nil))})
+			r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, ProjectID: "native", Workflow: config.Workflow{Config: cfg, Prompt: "Continue the issue"}, Store: db, Workspace: backend, AgentBackend: worker, Logger: slog.New(slog.NewTextHandler(&logs, nil))})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1134,7 +1134,7 @@ func TestNativeReleaseDeliveryWorkspace(t *testing.T) {
 				runRunnerGit(t, writer, "commit", "--allow-empty", "-m", "moved pick")
 				runRunnerGit(t, writer, "push", remote, "HEAD:refs/heads/operator/release-pick")
 			}
-			options := workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: receiver, AutoBranch: true}
+			options := workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: receiver, AutoBranch: true}
 			if test.hookFailure {
 				options.Hooks.AfterCreate = "exit 17"
 			}
@@ -1147,7 +1147,7 @@ func TestNativeReleaseDeliveryWorkspace(t *testing.T) {
 			agent := &releaseDeliveryAgent{}
 			cfg := config.Config{}
 			cfg.Tracker.Kind = config.TrackerHubNative
-			r, err := NewRunner(Dependencies{ProjectID: "native", Workflow: config.Workflow{Config: cfg, Prompt: "Complete the issue"}, Workspace: backend, AgentBackend: agent, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+			r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, ProjectID: "native", Workflow: config.Workflow{Config: cfg, Prompt: "Complete the issue"}, Workspace: backend, AgentBackend: agent, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1208,7 +1208,7 @@ func TestNativeStartupRecoveryTracksActualProviderTurn(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			gitWorkspace, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: initRunnerSourceRepo(t), AutoBranch: true})
+			gitWorkspace, err := workspace.NewLocalGit(workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: initRunnerSourceRepo(t), AutoBranch: true})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1224,7 +1224,7 @@ func TestNativeStartupRecoveryTracksActualProviderTurn(t *testing.T) {
 			cfg := config.Config{Policy: approved}
 			cfg.Tracker.Kind = config.TrackerHubNative
 			cfg.Agents.Routes = []config.AgentRoute{{Name: "default", Role: "code", Backend: "codex", Default: true}}
-			r, err := NewRunner(Dependencies{ProjectID: "native", Workflow: config.Workflow{Config: cfg, Prompt: "Complete the issue"}, Store: db, Workspace: &resumedExecutionWorkspace{LocalGit: gitWorkspace}, AgentBackend: agent, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+			r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, ProjectID: "native", Workflow: config.Workflow{Config: cfg, Prompt: "Complete the issue"}, Store: db, Workspace: &resumedExecutionWorkspace{LocalGit: gitWorkspace}, AgentBackend: agent, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1774,7 +1774,7 @@ func TestNativeRunnerPublishesOnlyAfterRecovery(t *testing.T) {
 			})}
 			t.Cleanup(func() { http.DefaultClient = originalClient })
 			githubCredentialReads := 0
-			r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: cfg, Prompt: "Complete the native issue"}, Workspace: backend, AgentBackend: agent, lookupEnv: func(key string) string {
+			r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: cfg, Prompt: "Complete the native issue"}, Workspace: backend, AgentBackend: agent, lookupEnv: func(key string) string {
 				if key == "GOFLAGS" || key == "GOMAXPROCS" {
 					return ""
 				}
@@ -2102,7 +2102,7 @@ func TestNativeWorkUsesBackendBudget(t *testing.T) {
 				if test.configure != nil {
 					test.configure(&cfg)
 				}
-				r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: cfg}, Workspace: backend, AgentBackend: &fakeCodexClient{}, AfterRunTimeout: 10 * time.Millisecond})
+				r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: cfg}, Workspace: backend, AgentBackend: &fakeCodexClient{}, AfterRunTimeout: 10 * time.Millisecond})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -2309,7 +2309,7 @@ func TestRunnerAvailabilityInterruptionFinishesAfterCheckpointRef(t *testing.T) 
 	backend := &wipExecutionWorkspace{retainedExecutionWorkspace: retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Key: "native", Branch: "native"}, recoveryStates: []workspace.RecoveryState{{TrackedPaths: []string{"work.go"}}}}}}
 	execution := &deadlineRunExecution{availabilityTestExecution: availabilityTestExecution{deadline: time.Now().Add(-time.Second)}, published: &backend.published}
 	agent := &availabilityStoppingBackend{stop: func() { execution.cancel(context.Canceled) }}
-	r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: config.Config{}, Prompt: "Complete the native issue"}, Workspace: backend, AgentBackend: agent})
+	r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: config.Config{}, Prompt: "Complete the native issue"}, Workspace: backend, AgentBackend: agent})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2366,7 +2366,7 @@ func TestAvailabilityStopRetainsUnreapedWorkspace(t *testing.T) {
 	backend := &wipExecutionWorkspace{retainedExecutionWorkspace: retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Key: "native", Branch: "native"}, recoveryStates: []workspace.RecoveryState{{TrackedPaths: []string{"work.go"}}}}}}
 	execution := &deadlineRunExecution{availabilityTestExecution: availabilityTestExecution{deadline: time.Now().Add(-time.Second)}, published: &backend.retained}
 	agent := &availabilityStoppingBackend{stop: func() { execution.cancel(context.Canceled) }, err: ErrWorkerProcessReap}
-	r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: config.Config{}, Prompt: "Complete the native issue"}, Workspace: backend, AgentBackend: agent})
+	r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: config.Config{}, Prompt: "Complete the native issue"}, Workspace: backend, AgentBackend: agent})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2388,7 +2388,7 @@ func TestAvailabilityStopFinalizesLocalSessionAfterPushFailure(t *testing.T) {
 	execution := &deadlineRunExecution{availabilityTestExecution: availabilityTestExecution{deadline: time.Now().Add(-time.Second)}, published: &backend.published}
 	agent := &availabilityStoppingBackend{stop: func() { execution.cancel(context.Canceled) }}
 	sessionStore := &fakeSessionStore{sessionID: 3169}
-	r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: config.Config{}, Prompt: "Complete the native issue"}, Workspace: backend, AgentBackend: agent, Store: sessionStore})
+	r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: config.Config{}, Prompt: "Complete the native issue"}, Workspace: backend, AgentBackend: agent, Store: sessionStore})
 	if err != nil {
 		t.Fatal(err)
 	}

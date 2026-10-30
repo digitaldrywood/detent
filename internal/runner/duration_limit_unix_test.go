@@ -58,7 +58,7 @@ func TestRunnerTerminalSessionReapsEscapedWorkspaceProcess(t *testing.T) {
 			var reaped int
 			var reapErr error
 
-			runner, err := NewRunner(Dependencies{
+			runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 				Workflow: config.Workflow{
 					Config: config.Config{Agent: config.Agent{MaxSessionDurationMS: 25}},
 					Prompt: "Work",
@@ -75,7 +75,12 @@ func TestRunnerTerminalSessionReapsEscapedWorkspaceProcess(t *testing.T) {
 						observer.command.Process.Pid, observer.command.Dir, observerLockPath)
 
 					reapStarted := time.Now()
-					reaped, reapErr = workspace.ReapProcesses(ctx, path, grace)
+					reaped, reapErr = workspace.ReapProcesses(workspace.WithProcessSource(ctx, func(context.Context, string) ([]int, error) {
+						if processWaitFinished(backend.waitDone) {
+							return nil, nil
+						}
+						return []int{backend.command.Process.Pid}, nil
+					}), path, grace)
 					t.Logf("workspace reap: elapsed=%s count=%d error=%v holder_exited=%t observer_exited=%t",
 						time.Since(reapStarted), reaped, reapErr, processWaitFinished(backend.waitDone), processWaitFinished(observer.waitDone))
 					return reaped, reapErr

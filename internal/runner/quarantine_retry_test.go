@@ -18,7 +18,7 @@ func TestRunnerQuarantinedRebaseReachesFirstTurn(t *testing.T) {
 	t.Parallel()
 	source := initRunnerSourceRepo(t)
 	root := filepath.Join(t.TempDir(), "workspaces")
-	backend, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: root, SourceRoot: source, AutoBranch: true})
+	backend, err := workspace.NewLocalGit(workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: root, SourceRoot: source, AutoBranch: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +37,7 @@ func TestRunnerQuarantinedRebaseReachesFirstTurn(t *testing.T) {
 		t.Fatal("want conflicted rebase")
 	}
 	agent := &committingAgentBackend{}
-	runner, err := NewRunner(Dependencies{Workflow: config.Workflow{Prompt: "Work on {{ issue.identifier }}"}, Workspace: backend, AgentBackend: agent})
+	runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Prompt: "Work on {{ issue.identifier }}"}, Workspace: backend, AgentBackend: agent})
 	if err != nil {
 		t.Fatal(err)
 	}

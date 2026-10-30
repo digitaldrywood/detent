@@ -95,7 +95,7 @@ func TestNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T) {
 			initialBase := head(sourceA)
 			run := func(source string, provider *committingAgent, candidate connector.Issue, execution runner.Execution) runner.RunResult {
 				root := filepath.Join(t.TempDir(), "workspaces")
-				backend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{Root: root, SourceRoot: source, AutoBranch: true})
+				backend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: root, SourceRoot: source, AutoBranch: true})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -121,7 +121,7 @@ func TestNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T) {
 					t.Fatal(err)
 				}
 				defer runtimeStore.Close()
-				agent, err := runner.NewRunner(runner.Dependencies{Store: runtimeStore, ProjectID: "local", Workflow: config.Workflow{Config: config.Config{Plan: gate.PlanConfig{Enabled: test.planning}, Gate: gate.Config{Run: "test -f CHANGE.md", Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: "Complete the issue"}, Workspace: backend, AgentBackend: provider})
+				agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Store: runtimeStore, ProjectID: "local", Workflow: config.Workflow{Config: config.Config{Plan: gate.PlanConfig{Enabled: test.planning}, Gate: gate.Config{Run: "test -f CHANGE.md", Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: "Complete the issue"}, Workspace: backend, AgentBackend: provider})
 				if err != nil {
 					t.Fatal(err)
 				}

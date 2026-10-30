@@ -129,7 +129,7 @@ func TestNativeLandingMergeResolution(t *testing.T) {
 			runRunnerGit(t, source, "config", "url.file://"+remote+".insteadOf", repository+".git")
 			runRunnerGit(t, source, "remote", "add", "origin", repository+".git")
 			runRunnerGit(t, source, "push", "-u", "origin", "main")
-			backend, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+			backend, err := workspace.NewLocalGit(workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -157,7 +157,7 @@ func TestNativeLandingMergeResolution(t *testing.T) {
 			}
 			cfg := config.Config{}
 			cfg.Gate.Run = command
-			deps := Dependencies{Workflow: config.Workflow{Config: cfg}, Workspace: backend, AgentBackend: provider}
+			deps := Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: cfg}, Workspace: backend, AgentBackend: provider}
 			if test.budgetDenied {
 				deps.Workflow.Config.Budget.BillingMode = config.BillingModeMetered
 				deps.BudgetChecker = &fakeBudgetChecker{refusal: budget.Refusal{Code: budget.ReasonPerDayMaxUSD}}

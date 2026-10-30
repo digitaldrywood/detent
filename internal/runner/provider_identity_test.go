@@ -41,7 +41,7 @@ func TestProviderIdentityFailureDoesNotCancelTurn(t *testing.T) {
 				}
 				info := workspace.Info{Path: t.TempDir(), Key: "provider-identity"}
 				var logs bytes.Buffer
-				r, err := NewRunner(Dependencies{
+				r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 					SecurityAuditRoot: t.TempDir(),
 					Logger:            slog.New(slog.NewTextHandler(&logs, nil)),
 					Workflow:          config.Workflow{Config: config.Config{Gate: gate.Config{Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: "Work"},

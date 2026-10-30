@@ -152,7 +152,7 @@ func TestRunnerResolvesLandingBeforeWorkspace(t *testing.T) {
 			cfg.Worker.GitHubToken = test.name
 			cfg.Tracker.Kind = config.TrackerGitHub
 			cfg.Tracker.Endpoint = "https://native-prepare.test/graphql"
-			r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: cfg}, Workspace: &landingBackend{Backend: backend, preparationRequest: test.quota}, AgentBackend: &fakeCodexClient{}})
+			r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: cfg}, Workspace: &landingBackend{Backend: backend, preparationRequest: test.quota}, AgentBackend: &fakeCodexClient{}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -213,7 +213,7 @@ func TestRunnerLandingPreservesCodeAndOperatorOwners(t *testing.T) {
 			runRunnerGit(t, source, "config", "url.file://"+remote+".insteadOf", repository+".git")
 			runRunnerGit(t, source, "remote", "add", "origin", repository+".git")
 			runRunnerGit(t, source, "push", "-u", "origin", "main")
-			backend, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+			backend, err := workspace.NewLocalGit(workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -326,7 +326,7 @@ func TestRunnerLandingPreservesCodeAndOperatorOwners(t *testing.T) {
 			cfg.Tracker.Kind = config.TrackerGitHub
 			cfg.Tracker.Endpoint = "https://native-landing.test/graphql"
 			provider := &fakeCodexClient{}
-			runner, err := NewRunner(Dependencies{ProjectID: "project", Workflow: config.Workflow{Config: cfg}, Workspace: backend, AgentBackend: provider, GoBudget: gobudget.New(8, filepath.Join(t.TempDir(), "budget"), "/opt/example/detent")})
+			runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, ProjectID: "project", Workflow: config.Workflow{Config: cfg}, Workspace: backend, AgentBackend: provider, GoBudget: gobudget.New(8, filepath.Join(t.TempDir(), "budget"), "/opt/example/detent")})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -630,7 +630,7 @@ func TestLandNativeChangeKeepsAnUnreportedLanding(t *testing.T) {
 			runRunnerGit(t, source, "add", "feature.txt")
 			runRunnerGit(t, source, "commit", "-m", "reviewed source")
 			head := strings.TrimSpace(runRunnerGit(t, source, "rev-parse", "HEAD"))
-			backend, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+			backend, err := workspace.NewLocalGit(workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1028,7 +1028,7 @@ func TestNativeLandingAdmissionAndQuotaOutcomes(t *testing.T) {
 				token := "gh" + "p_" + strings.Repeat("x", 36)
 				backend.err = fmt.Errorf("%w: %w", &workspace.LandRefusal{Kind: test.pushRefusal, Reason: "the base branch refused the push"}, &workspace.CommandError{Command: "git", Args: []string{"push", "origin", "HEAD:refs/heads/develop"}, Err: errors.New("exit status 128"), Output: "Permission denied token=" + token})
 			}
-			r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: cfg}, Workspace: backend, AgentBackend: &fakeCodexClient{}})
+			r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: cfg}, Workspace: backend, AgentBackend: &fakeCodexClient{}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1091,7 +1091,7 @@ func TestNativeLandingDoesNotRepublishValidationEvidence(t *testing.T) {
 	execution := &validationLandingExecution{landingRunExecution: landingRunExecution{landingStub: landingStub{target: NativeLandingTarget{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Method: "squash"}}}}
 	workspaceBackend := &fakeWorkspaceBackend{info: workspace.Info{Path: directory}, recoveryStates: []workspace.RecoveryState{{HeadSHA: head}}}
 	backend := &validationLandingBackend{landingBackend{Backend: workspaceBackend, result: workspace.LandResult{MergeSHA: merge, Method: "squash"}}}
-	r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: config.Config{}}, Workspace: backend, AgentBackend: &fakeCodexClient{}})
+	r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: config.Config{}}, Workspace: backend, AgentBackend: &fakeCodexClient{}})
 	if err != nil {
 		t.Fatal(err)
 	}

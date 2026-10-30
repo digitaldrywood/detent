@@ -299,6 +299,7 @@ type Hooks struct {
 }
 
 type LocalGitOptions struct {
+	ProcessSource  ProcessSource
 	CommitIdentity CommitIdentity
 	Root           string
 	SourceRoot     string
@@ -309,6 +310,7 @@ type LocalGitOptions struct {
 }
 
 type LocalGit struct {
+	processSource    ProcessSource
 	cleanupInventory *cleanupInventoryScanner
 
 	commits            commitPolicy
@@ -572,7 +574,12 @@ func newLocalGitContext(ctx context.Context, opts LocalGitOptions, policy *commi
 		}
 	}
 	logger.Info("runner commit policy", "identity", commits.report.Identity, "signing", commits.report.Signing)
+	scan := workspaceProcessIDs
+	if opts.ProcessSource != nil {
+		scan = workspaceProcessScanner(opts.ProcessSource)
+	}
 	return &LocalGit{
+		processSource:      opts.ProcessSource,
 		uses:               &workspaceUses{},
 		cleanupInventory:   &cleanupInventoryScanner{},
 		createMu:           &sync.Mutex{},
@@ -583,7 +590,7 @@ func newLocalGitContext(ctx context.Context, opts LocalGitOptions, policy *commi
 		hooks:              hooks,
 		logger:             logger,
 		removeOwnedPath:    removeWorkspacePath,
-		scanWorkspacePaths: workspaceProcessIDs,
+		scanWorkspacePaths: scan,
 	}, nil
 }
 
@@ -976,7 +983,7 @@ func (l *LocalGit) cleanupWorkspace(ctx context.Context, info Info, issue Issue)
 		l.deleteCheckpointRef(ctx, issue)
 		return result, nil
 	}
-	result.Processes = reapWorkspaceProcesses(ctx, info.Path, l.logger)
+	result.Processes = reapWorkspaceProcesses(WithProcessSource(ctx, l.processSource), info.Path, l.logger)
 	if isDir && l.isSourceWorktree(ctx, info.Path) {
 		if err := l.runHook(ctx, "before_remove", l.hooks.BeforeRemove, info, issue); err != nil {
 			l.logger.Warn("workspace before_remove hook failed", slog.String("path", info.Path), slog.Any("error", err))

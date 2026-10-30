@@ -377,7 +377,7 @@ func TestNativeSecurityAuditRetainsProviderReservation(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	agent, err := runner.NewRunner(runner.Dependencies{Workflow: config.Workflow{Config: cfg}, Workspace: &providerPreviewWorkspace{}, AgentBackends: map[string]runner.AgentBackend{"audit": backend}, Store: sessions, SecurityAuditRoot: t.TempDir()})
+	agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: cfg}, Workspace: &providerPreviewWorkspace{}, AgentBackends: map[string]runner.AgentBackend{"audit": backend}, Store: sessions, SecurityAuditRoot: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -244,7 +244,7 @@ func testNativeStopDuringHostFinalization(t *testing.T, mode string) {
 		t.Fatal(err)
 	}
 	published := h.publishCaptured(t, current.WorkItemID, change.ID, head, &captured, "", base)
-	local, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: filepath.Join(nativeChangeTempDir(t), "workspaces"), SourceRoot: source, AutoBranch: true})
+	local, err := workspace.NewLocalGit(workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: filepath.Join(nativeChangeTempDir(t), "workspaces"), SourceRoot: source, AutoBranch: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -258,7 +258,7 @@ func testNativeStopDuringHostFinalization(t *testing.T, mode string) {
 			t.Error(err)
 		}
 	})
-	agent, err := runner.NewRunner(runner.Dependencies{Store: runtimeStore, ProjectID: "local", Workspace: backend, AgentBackend: &committingAgent{staged: true}, Workflow: config.Workflow{Config: config.Config{Policy: h.descriptor, Tracker: config.Tracker{Kind: config.TrackerHubNative}, Gate: gate.Config{Run: "true"}}, Prompt: "Complete the issue"}})
+	agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Store: runtimeStore, ProjectID: "local", Workspace: backend, AgentBackend: &committingAgent{staged: true}, Workflow: config.Workflow{Config: config.Config{Policy: h.descriptor, Tracker: config.Tracker{Kind: config.TrackerHubNative}, Gate: gate.Config{Run: "true"}}, Prompt: "Complete the issue"}})
 	if err != nil {
 		t.Fatal(err)
 	}

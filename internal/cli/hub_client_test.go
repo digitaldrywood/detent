@@ -62,7 +62,7 @@ func TestNewHubSchedulingRegistersRuntimeCapacityAndVersion(t *testing.T) {
 		Client: globalconfig.HubClient{URL: "http://hub.test", TokenEnvironment: "HUB_WORKER_TOKEN", MachineID: "machine-a"},
 		Global: globalconfig.Settings{MaxConcurrentAgents: 4},
 	}
-	source, err := newHubScheduling(t.Context(), cfg, "")
+	source, err := newHubScheduling(t.Context(), cfg, "", hubSchedulingOptions{workspaceSupport: testWorkspaceSupport})
 	if err != nil {
 		t.Fatalf("newHubScheduling(t.Context(), ) error = %v", err)
 	}
@@ -116,7 +116,7 @@ func TestHubSchedulingUsesEnrolledIdentity(t *testing.T) {
 			}
 			cfg := globalconfig.Config{Client: globalconfig.HubClient{URL: file.HubURL, IdentityFile: path, OrganizationID: "org_example", NativeProjects: map[string]string{"native": "prj_example"}}, Global: globalconfig.Settings{MaxConcurrentAgents: 1}}
 			test.change(&cfg.Client)
-			_, err := newHubScheduling(t.Context(), cfg, "test")
+			_, err := newHubScheduling(t.Context(), cfg, "test", hubSchedulingOptions{workspaceSupport: testWorkspaceSupport})
 			if (err == nil) != test.valid {
 				t.Fatalf("configured=%v, want %v: %v", err == nil, test.valid, err)
 			}

@@ -461,7 +461,7 @@ func testNativeRetryProgressReroute(t *testing.T, reserved, tighten bool) {
 		}
 		provider.duringCheck = func(ctx context.Context) error { return setIsolation(ctx, isolation.Sandbox) }
 	}
-	agent, err := runner.NewRunner(runner.Dependencies{Workflow: config.Workflow{Config: config.Config{Agents: config.Agents{Routes: []config.AgentRoute{
+	agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: config.Config{Agents: config.Agents{Routes: []config.AgentRoute{
 		{Name: "planner", Role: runner.RolePlan, Backend: "codex", Model: "plan-model"},
 		{Name: "implementation", Backend: "codex", Model: "code-model", Default: true},
 	}}}}, Workspace: nativeProgressWorkspace{path: t.TempDir()}, AgentBackend: provider})
@@ -613,7 +613,7 @@ func TestNativeRetryProgressFailureReleasesExecutionIdentity(t *testing.T) {
 			if tt.invalid {
 				provider.decision = &progresscheck.Decision{Outcome: progresscheck.Reroute, Step: "unavailable", Diagnosis: failed.data.AttemptID + ": the retained failure identifies missing validation evidence; the failing step has not produced its required receipt", Instruction: "Repair the missing validation evidence in the source finalization path and verify the previously failing check on the pinned source", Reason: "Continue", Evidence: []string{failed.data.AttemptID}}
 			}
-			agent, err := runner.NewRunner(runner.Dependencies{Workflow: config.Workflow{Config: config.Config{Agents: config.Agents{Routes: []config.AgentRoute{{Name: "implementation", Backend: "codex", Model: "code-model", Default: true}}}}}, Workspace: nativeProgressWorkspace{path: t.TempDir()}, AgentBackend: provider})
+			agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: config.Config{Agents: config.Agents{Routes: []config.AgentRoute{{Name: "implementation", Backend: "codex", Model: "code-model", Default: true}}}}}, Workspace: nativeProgressWorkspace{path: t.TempDir()}, AgentBackend: provider})
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -61,7 +61,7 @@ func TestPreflightCleanupFailurePrecedence(t *testing.T) {
 				cfg.Agents.Routes = []config.AgentRoute{{Name: "default", Role: RoleCode, Backend: "codex", Model: "absent", Default: true}}
 				cfg.Gate.Validator.Model = "absent"
 				cfg.Gate.SecurityAudit.Model = "absent"
-				runner, err := NewRunner(Dependencies{
+				runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 					BuildCache:        cache,
 					Store:             journal,
 					Workflow:          config.Workflow{Config: cfg},
@@ -79,11 +79,11 @@ func TestPreflightCleanupFailurePrecedence(t *testing.T) {
 				}
 				switch role {
 				case RoleCode:
-					_, err = runner.Run(t.Context(), RunRequest{Issue: issue})
+					_, err = runner.Run(workspace.WithProcessSource(t.Context(), emptyProcessSource), RunRequest{Issue: issue})
 				case RoleValidator:
-					_, err = runner.Validate(t.Context(), testValidatorRequest(issue))
+					_, err = runner.Validate(workspace.WithProcessSource(t.Context(), emptyProcessSource), testValidatorRequest(issue))
 				case RoleSecurityAudit:
-					_, err = runner.Audit(t.Context(), SecurityAuditRequest{
+					_, err = runner.Audit(workspace.WithProcessSource(t.Context(), emptyProcessSource), SecurityAuditRequest{
 						Issue: issue,
 						Snapshot: securityaudit.Snapshot{
 							Repository: "digitaldrywood/detent", PRNumber: 2564,

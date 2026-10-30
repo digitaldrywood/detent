@@ -166,6 +166,8 @@ func TestStartRunningPublishesEnrolledUpdateSupport(t *testing.T) {
 	}
 }
 
+var fixtureBuildCache string
+
 func TestMain(m *testing.M) {
 	if gotestreceipt.IsWrapperInvocation(os.Args[0]) {
 		os.Exit(gotestreceipt.RunWrapper(os.Args[1:], os.Getenv, os.Stdin, os.Stdout, os.Stderr))
@@ -180,6 +182,10 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 	if err := os.Setenv("CODEX_HOME", codexHome); err != nil {
+		panic(err)
+	}
+	fixtureBuildCache = os.Getenv("GOCACHE")
+	if err := os.Setenv("GOCACHE", filepath.Join(codexHome, "go-build")); err != nil {
 		panic(err)
 	}
 	if err := testenv.ClearGitEnvironment(); err != nil {

@@ -32,7 +32,7 @@ func TestProgressCheckUsesReadOnlyBackendAndJSONBudget(t *testing.T) {
 	}
 	output := `{"outcome":"reroute","step":"implement","diagnosis":"failed-attempt: TestExample asserts the repaired value but the implementation still returns the old value","instruction":"Update the code exercised by TestExample and rerun the assertion","reason":"` + strings.Repeat("evidence ", 100) + `","evidence":["failed-attempt"]}`
 	backend := &progressPolicyBackend{fakeCodexClient: fakeCodexClient{updates: []AgentUpdate{{Type: AgentUpdateTokenUsage, Tokens: AgentTokenUsage{InputTokens: 100, OutputTokens: 50}}, {Type: AgentUpdateMessageDelta, ItemID: "final", Delta: output}}}}
-	r, err := NewRunner(Dependencies{Workflow: config.Workflow{Prompt: "## Progress Review\nProject-specific assertion investigation.\n## Other\nDo not include this section.", Config: config.Config{Agents: config.Agents{Routes: []config.AgentRoute{{Name: "default", Backend: "codex", Model: "example-model", Default: true}}}}}, Workspace: progressWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: root}}}, AgentBackend: backend})
+	r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Prompt: "## Progress Review\nProject-specific assertion investigation.\n## Other\nDo not include this section.", Config: config.Config{Agents: config.Agents{Routes: []config.AgentRoute{{Name: "default", Backend: "codex", Model: "example-model", Default: true}}}}}, Workspace: progressWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: root}}}, AgentBackend: backend})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,7 +191,7 @@ func TestProgressCheckTimeoutAndAdmissionAccounting(t *testing.T) {
 				if test.rejected {
 					execution.startError = errors.New("provider capacity unavailable")
 				}
-				r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: config.Config{Agent: test.agent, Codex: test.codex, Agents: config.Agents{Routes: []config.AgentRoute{{Name: "default", Backend: "codex", Model: "", Default: true}}}}}, Workspace: progressWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: root}}}, AgentBackend: backend})
+				r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: config.Config{Agent: test.agent, Codex: test.codex, Agents: config.Agents{Routes: []config.AgentRoute{{Name: "default", Backend: "codex", Model: "", Default: true}}}}}, Workspace: progressWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: root}}}, AgentBackend: backend})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -223,7 +223,7 @@ func TestProgressSetupLeavesTimeForDecision(t *testing.T) {
 			now := time.Now()
 			execution := &progressSetupExecution{advance: func() { now = now.Add(test.setup) }}
 			backend := &progressDeadlineBackend{t: t, now: &now, remaining: test.remaining}
-			r, err := NewRunner(Dependencies{Now: func() time.Time { return now }, Workflow: config.Workflow{Config: config.Config{Agent: config.Agent{MaxTurnDurationMS: int(test.limit / time.Millisecond)}}}, Workspace: progressWorkspace{&fakeWorkspaceBackend{}}, AgentBackend: backend})
+			r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Now: func() time.Time { return now }, Workflow: config.Workflow{Config: config.Config{Agent: config.Agent{MaxTurnDurationMS: int(test.limit / time.Millisecond)}}}, Workspace: progressWorkspace{&fakeWorkspaceBackend{}}, AgentBackend: backend})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -317,7 +317,7 @@ func TestProgressCheckMissingCheckoutUsesWorkerScratch(t *testing.T) {
 		t.Setenv(key, "")
 	}
 	backend := &progressScratchBackend{fakeCodexClient: fakeCodexClient{updates: []AgentUpdate{{Type: AgentUpdateMessageDelta, ItemID: "final", Delta: `{"outcome":"progressing","reason":"Assertion repaired","diagnosis":"failed: TestExample returned the old value","convergence":"TestExample now passes on the repaired source","evidence":["failed"]}`}}}}
-	r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: config.Config{Workspace: config.Workspace{Root: root}}}, Workspace: missingProgressWorkspace{progressWorkspace{&fakeWorkspaceBackend{info: workspace.Info{Path: root}}}}, AgentBackend: backend})
+	r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: config.Config{Workspace: config.Workspace{Root: root}}}, Workspace: missingProgressWorkspace{progressWorkspace{&fakeWorkspaceBackend{info: workspace.Info{Path: root}}}}, AgentBackend: backend})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -391,12 +391,12 @@ func TestProgressCheckRestoresPinnedSource(t *testing.T) {
 			if test.mismatch == "metadata" {
 				execution.source.Version.Source = nil
 			}
-			local, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: fresh, AutoBranch: true})
+			local, err := workspace.NewLocalGit(workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: fresh, AutoBranch: true})
 			if err != nil {
 				t.Fatal(err)
 			}
 			backend := &progressInspectBackend{head: head, evidenceOnly: test.mismatch == "missing" || test.mismatch == "metadata"}
-			r, err := NewRunner(Dependencies{Workspace: local, AgentBackend: backend})
+			r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workspace: local, AgentBackend: backend})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -520,7 +520,7 @@ func TestProgressToolBudgetBoundsAllReads(t *testing.T) {
 
 func TestProgressCheckRefusesUnsupportedBackend(t *testing.T) {
 	backend := &fakeCodexClient{}
-	r, err := NewRunner(Dependencies{Workspace: progressWorkspace{&fakeWorkspaceBackend{}}, AgentBackend: backend})
+	r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workspace: progressWorkspace{&fakeWorkspaceBackend{}}, AgentBackend: backend})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -544,7 +544,7 @@ func TestProgressPreparationNeverFallsBackWithoutRetainedSource(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			backend := &progressFallbackWorkspace{progressWorkspace: progressWorkspace{&fakeWorkspaceBackend{}}}
-			r, err := NewRunner(Dependencies{Workspace: backend, AgentBackend: &progressScratchBackend{}})
+			r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workspace: backend, AgentBackend: &progressScratchBackend{}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -660,7 +660,7 @@ func TestProgressCheckWithoutSourceInvestigatesScopedDiagnostics(t *testing.T) {
 	root := t.TempDir()
 	backend := &progressPolicyBackend{fakeCodexClient: fakeCodexClient{updates: []AgentUpdate{{Type: AgentUpdateMessageDelta, ItemID: "final", Delta: `{"outcome":"reroute","step":"implement","reason":"Repair failure","diagnosis":"failed-attempt: TestExample returned the old value","instruction":"Repair the implementation exercised by TestExample and run its validation","evidence":["failed-attempt"]}`}}}}
 	workspaces := &progressFallbackWorkspace{progressWorkspace: progressWorkspace{&fakeWorkspaceBackend{info: workspace.Info{Path: root}}}}
-	r, err := NewRunner(Dependencies{Workspace: workspaces, AgentBackend: backend})
+	r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workspace: workspaces, AgentBackend: backend})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -222,7 +222,7 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 		t.Setenv("WORKSPACE_TEST_PRIVATE_VALUE", "correcthorsebatterystaple")
 		hooks.AfterCreate = "printf '%s\\n' \"$WORKSPACE_TEST_PRIVATE_VALUE\"; exit 127"
 	}
-	backend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{Hooks: hooks, Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+	backend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Hooks: hooks, Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -352,7 +352,7 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 	}
 	plan := gate.PlanConfig{Enabled: failure == "" || planningRecovery, Review: gate.PlanReviewAutomated}
 	provider := &nativePlanningAgent{failure: failure}
-	agent, err := runner.NewRunner(runner.Dependencies{
+	agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource,
 		ProjectID: "local", Store: runtimeStore,
 		Workflow:  config.Workflow{Config: config.Config{Policy: h.descriptor, Plan: plan, Gate: gate.Config{Run: "true"}, Tracker: config.Tracker{Kind: config.TrackerHubNative}}, Prompt: "Complete the issue"},
 		Workspace: backend, AgentBackend: provider,

@@ -81,7 +81,7 @@ func TestNativeRunnerReachesHumanReviewWithoutGitHub(t *testing.T) {
 			}
 			candidate := h.claim(t, issue.ID)
 			execution := h.scheduler.RunExecution(issue.ID)
-			backend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: nativeChangeSourceRepo(t), AutoBranch: true})
+			backend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: nativeChangeSourceRepo(t), AutoBranch: true})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -91,7 +91,7 @@ func TestNativeRunnerReachesHumanReviewWithoutGitHub(t *testing.T) {
 				Gate:        gate.Config{Run: "true"},
 			}.WithRuntimeGitHubToken("instance-canary")
 			agent := &environmentRecordingAgent{committingAgent: committingAgent{commit: true}}
-			run, err := runner.NewRunner(runner.Dependencies{
+			run, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource,
 				Workflow:     config.Workflow{Config: cfg, Prompt: "Keep the Codex Workpad current and open a pull request."},
 				Workspace:    backend,
 				AgentBackend: agent,

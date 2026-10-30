@@ -32,7 +32,7 @@ func TestRunnerStopsSessionBeyondMaxTurns(t *testing.T) {
 	workspaceBackend := &fakeWorkspaceBackend{
 		info: workspace.Info{Path: t.TempDir(), Key: "issue-turn-limit"},
 	}
-	runner, err := NewRunner(Dependencies{
+	runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 		Workflow: config.Workflow{
 			Config: config.Config{Agent: config.Agent{MaxTurns: 2}},
 			Prompt: "Work",
@@ -88,7 +88,7 @@ func TestRunnerNormalizesProviderTurnLimitBreach(t *testing.T) {
 	t.Parallel()
 
 	startedAt := time.Date(2026, 7, 30, 14, 30, 0, 0, time.UTC)
-	runner, err := NewRunner(Dependencies{
+	runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 		Workflow: config.Workflow{
 			Config: config.Config{Agent: config.Agent{MaxTurns: 20}},
 			Prompt: "Work",
@@ -142,7 +142,7 @@ func TestRunnerGateWaitOutlivesFormerNoProgressLimit(t *testing.T) {
 			info:           workspace.Info{Path: t.TempDir(), Key: "issue-no-progress"},
 			recoveryStates: []workspace.RecoveryState{{HeadSHA: "f834f32450227c1b693eadcf92bdccccb6066e4a"}},
 		}
-		runner, err := NewRunner(Dependencies{
+		runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 			Workflow: config.Workflow{
 				Config: config.Config{Agent: config.Agent{
 					MaxTurns: 20,
@@ -215,7 +215,7 @@ func TestRunnerGateFailureReportsCommand(t *testing.T) {
 		release:   releaseGate,
 		resultErr: errors.New("make check-fast: exit status 17"),
 	}
-	runner, err := NewRunner(Dependencies{
+	runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 		Workflow:     config.Workflow{Config: config.Config{Agent: config.Agent{MaxTurns: 20}}, Prompt: "Work"},
 		Workspace:    &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Key: "gate-failure"}},
 		AgentBackend: backend,

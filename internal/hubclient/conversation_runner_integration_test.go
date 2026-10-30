@@ -632,9 +632,10 @@ func (h *conversationRunnerHub) startAttempt(t *testing.T, scheduler *Scheduler,
 		workflow = workflows[0]
 	}
 	agent, err := runner.NewRunner(runner.Dependencies{
-		Workflow:     workflow,
-		Workspace:    &conversationStubWorkspace{info: workspace.Info{Path: t.TempDir(), Key: "native", Branch: "native"}},
-		AgentBackend: backend,
+		ProcessSource: emptyProcessSource,
+		Workflow:      workflow,
+		Workspace:     &conversationStubWorkspace{info: workspace.Info{Path: t.TempDir(), Key: "native", Branch: "native"}},
+		AgentBackend:  backend,
 	})
 	if err != nil {
 		t.Fatal(err)

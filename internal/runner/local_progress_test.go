@@ -73,7 +73,7 @@ func TestSessionLocalCommitProgress(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			source := initRunnerSourceRepo(t)
-			backend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{
+			backend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{ProcessSource: emptyProcessSource,
 				Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true,
 			})
 			if err != nil {

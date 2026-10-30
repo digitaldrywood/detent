@@ -34,7 +34,7 @@ func TestManagedCacheWorkerAdmission(t *testing.T) {
 			t.Fatal(err)
 		}
 		backend := &fakeCodexClient{}
-		r, err := NewRunner(Dependencies{BuildCache: cache, Workflow: config.Workflow{Prompt: "Work"}, Workspace: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}}, AgentBackend: backend})
+		r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, BuildCache: cache, Workflow: config.Workflow{Prompt: "Work"}, Workspace: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}}, AgentBackend: backend})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -75,7 +75,7 @@ func TestManagedCacheWorkerAdmission(t *testing.T) {
 			secondWorkspace := &cacheAdmissionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}}, created: make(chan struct{})}
 			newRunner := func(ws workspace.Backend, backend AgentBackend) *Runner {
 				t.Helper()
-				r, err := NewRunner(Dependencies{BuildCache: cache, Workflow: config.Workflow{Prompt: "Work"}, Workspace: ws, AgentBackend: backend})
+				r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, BuildCache: cache, Workflow: config.Workflow{Prompt: "Work"}, Workspace: ws, AgentBackend: backend})
 				if err != nil {
 					t.Fatal(err)
 				}

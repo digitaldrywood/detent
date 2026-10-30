@@ -60,7 +60,7 @@ func TestNativeCompletionRetainsPostPublicationFailure(t *testing.T) {
 				stageErr := errors.New("post-publication stage unavailable")
 				execution := &nativeStageFailureExecution{stage: stage, err: stageErr}
 				agent := &fakeCodexClient{updates: []AgentUpdate{{Type: AgentUpdateMessageDelta, Delta: "Source is complete."}, {Type: AgentUpdateTurnCompleted, Status: "completed"}}}
-				r, err := NewRunner(Dependencies{
+				r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 					Workflow: config.Workflow{Config: config.Config{Gate: gate.Config{
 						Run: "true", SecurityAudit: gate.SecurityAuditConfig{Enabled: stage == "audit"},
 						AutomatedReview: gate.AutomatedReviewRequired, Validator: gate.ValidatorConfig{Enabled: true},

@@ -50,7 +50,7 @@ func TestAttemptDiffSourceComputesWorktreeDiff(t *testing.T) {
 	isolateAttemptDiffGitConfig(t)
 	source := initRunnerSourceRepo(t)
 	base := strings.TrimSpace(runRunnerGit(t, source, "rev-parse", "HEAD"))
-	backend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{
+	backend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{ProcessSource: emptyProcessSource,
 		Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true,
 	})
 	if err != nil {
@@ -133,7 +133,7 @@ func TestAttemptDiffSourceStripsPatchesWhenTruncated(t *testing.T) {
 	t.Parallel()
 	source := initRunnerSourceRepo(t)
 	base := strings.TrimSpace(runRunnerGit(t, source, "rev-parse", "HEAD"))
-	backend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{
+	backend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{ProcessSource: emptyProcessSource,
 		Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true,
 	})
 	if err != nil {
@@ -182,7 +182,7 @@ func TestAttemptDiffSourceWithoutBaseRefKeepsCommittedWork(t *testing.T) {
 	isolateAttemptDiffGitConfig(t)
 	source := initRunnerSourceRepo(t)
 	start := strings.TrimSpace(runRunnerGit(t, source, "rev-parse", "HEAD"))
-	backend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{
+	backend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{ProcessSource: emptyProcessSource,
 		Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true,
 	})
 	if err != nil {

@@ -357,7 +357,7 @@ func TestNativeValidatorReceivesScopedEvidenceReads(t *testing.T) {
 			t.Run(test.name+"/worker="+strconv.FormatBool(worker), func(t *testing.T) {
 				t.Parallel()
 				backend := &attachmentValidatorBackend{t: t, text: test.text, unread: test.unread, corrupt: test.corrupt}
-				runner, err := NewRunner(Dependencies{
+				runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 					Workflow:  config.Workflow{Config: config.Config{Gate: gate.Config{Validator: gate.ValidatorConfig{Enabled: true}}, Agents: config.Agents{Backends: []config.AgentBackend{{ID: "codex", Kind: "codex", Protocol: "app-server", Command: "codex app-server"}}, Routes: []config.AgentRoute{{Name: "validator", Role: RoleValidator, Backend: "codex", Model: "example-model"}}}}, Prompt: "Review"},
 					Workspace: &attachmentValidatorWorkspace{reviewMutationWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}}, heads: []string{"head"}}}, AgentBackend: backend,
 				})

@@ -177,7 +177,7 @@ func TestRunnerProviderProjectReports(t *testing.T) {
 				}
 				return []runner.AgentModel{{ID: "opus", Model: "design-model"}}, nil
 			}, nil)
-			workspaces, err := workspace.NewFilesystem(workspace.FilesystemOptions{Root: t.TempDir()})
+			workspaces, err := workspace.NewFilesystem(workspace.FilesystemOptions{ProcessSource: emptyProcessSource, Root: t.TempDir()})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -225,7 +225,7 @@ func TestRunnerProviderProjectReports(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					execution, err := runner.NewRunner(runner.Dependencies{Workflow: workflow, Workspace: workspaces, AgentBackendFactory: runner.AgentBackendFactoryFunc(buildAgentBackend)})
+					execution, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Workflow: workflow, Workspace: workspaces, AgentBackendFactory: runner.AgentBackendFactoryFunc(buildAgentBackend)})
 					if err != nil {
 						t.Fatal(err)
 					}

@@ -428,7 +428,7 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 			runRunnerGit(t, source, "init", "--bare", "-b", "main", remote)
 			runRunnerGit(t, source, "remote", "add", "origin", remote)
 			runRunnerGit(t, source, "push", "-u", "origin", "main")
-			backend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+			backend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -541,7 +541,7 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 					}
 					runRunnerGit(t, source, "config", "gpg.ssh.program", program)
 				}
-				backend, err = workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{Root: filepath.Dir(info.Path), SourceRoot: source, AutoBranch: true})
+				backend, err = workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: filepath.Dir(info.Path), SourceRoot: source, AutoBranch: true})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -590,7 +590,7 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 				runRunnerGit(t, source, "clone", remote, clone)
 				runRunnerGit(t, clone, "config", "user.name", "Test")
 				runRunnerGit(t, clone, "config", "user.email", "test@example.com")
-				backend, err = workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "retry-workspaces"), SourceRoot: clone, AutoBranch: true})
+				backend, err = workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: filepath.Join(t.TempDir(), "retry-workspaces"), SourceRoot: clone, AutoBranch: true})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -725,7 +725,7 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 				runRunnerGit(t, freshSource, "config", "user.name", "Test User")
 				runRunnerGit(t, freshSource, "config", "user.email", "test@example.com")
 				runRunnerGit(t, freshSource, "config", "commit.gpgsign", "false")
-				backend, err = workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "fresh-workspaces"), SourceRoot: freshSource, AutoBranch: true})
+				backend, err = workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: filepath.Join(t.TempDir(), "fresh-workspaces"), SourceRoot: freshSource, AutoBranch: true})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -743,7 +743,7 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 				t.Cleanup(func() { db.Close() })
 				cfg := config.Config{Tracker: config.Tracker{Kind: config.TrackerHubNative}, Gate: gate.Config{Run: "true", AutomatedReview: gate.AutomatedReviewRequired, Validator: gate.ValidatorConfig{Enabled: true}}, Agents: config.Agents{Backends: []config.AgentBackend{{ID: "codex", Kind: "codex", Protocol: "app-server", Command: "codex app-server"}}, Routes: []config.AgentRoute{{Name: "implementation", Role: RoleCode, Backend: "codex", Model: "review-model"}, {Name: "rework", Role: RoleRework, Backend: "codex", Model: "review-model"}, {Name: "acceptance", Role: RoleValidator, Backend: "codex", Model: "validator-model"}}}}
 				cfg.Gate.Validator.Enabled = !test.optionalAcceptance
-				r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: cfg, Prompt: "Complete the source"}, Workspace: backend, AgentBackend: agent, Store: db})
+				r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: cfg, Prompt: "Complete the source"}, Workspace: backend, AgentBackend: agent, Store: db})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -893,7 +893,7 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 					cfg.Gate.Run += " && echo actual-final-gate-failure && exit 1"
 				}
 			}
-			r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: cfg, Prompt: "Resolve the source"}, Workspace: backend, AgentBackend: agent})
+			r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: cfg, Prompt: "Resolve the source"}, Workspace: backend, AgentBackend: agent})
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -92,7 +92,7 @@ func TestValidatorRecoveredSourceSearchDoesNotFailRequiredValidation(t *testing.
 		{name: "shell syntax is a literal path", firstRead: "README.md'; touch injected; #", want: gate.ValidatorVerdictPass},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			local, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: filepath.Dir(source), SourceRoot: source})
+			local, err := workspace.NewLocalGit(workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: filepath.Dir(source), SourceRoot: source})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -182,7 +182,7 @@ func TestValidatorRecoveredSourceSearchDoesNotFailRequiredValidation(t *testing.
 			if test.gateFails {
 				command = "git diff --exit-code HEAD~1 HEAD -- README.md"
 			}
-			runner, err := NewRunner(Dependencies{
+			runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 				Workflow: config.Workflow{Config: config.Config{
 					Gate:   gate.Config{Run: command, Validator: gate.ValidatorConfig{Enabled: true}},
 					Agents: config.Agents{Backends: []config.AgentBackend{{ID: "codex", Kind: "codex", Protocol: "app-server", Command: "codex app-server"}}, Routes: []config.AgentRoute{{Name: "validator", Role: RoleValidator, Backend: "codex", Model: "example-model"}}},

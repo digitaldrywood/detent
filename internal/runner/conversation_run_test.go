@@ -216,7 +216,7 @@ func (s *fakeConversationSession) eventTypes() []string {
 func newConversationRunner(t *testing.T, agent AgentBackend) *Runner {
 	t.Helper()
 	backend := &retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Key: "native", Branch: "native"}}}
-	r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: config.Config{}, Prompt: "Complete the native issue"}, Workspace: backend, AgentBackend: agent})
+	r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: config.Config{}, Prompt: "Complete the native issue"}, Workspace: backend, AgentBackend: agent})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -799,7 +799,7 @@ func TestBindConversationLogsResumeMode(t *testing.T) {
 			session.resumeMode, session.resume = test.mode, test.resume
 			execution := &conversationTestExecution{session: session}
 			backend := &retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Key: "native", Branch: "native"}}}
-			r, err := NewRunner(Dependencies{
+			r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 				Workflow:     config.Workflow{Config: config.Config{}, Prompt: "Complete the native issue"},
 				Workspace:    backend,
 				AgentBackend: agent,

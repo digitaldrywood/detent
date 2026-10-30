@@ -130,7 +130,7 @@ func TestIndependentFailureReviewResume(t *testing.T) {
 			}
 			agent := &resolvingReworkAgent{t: t, reviewVerdict: "pass"}
 			cfg := config.Config{Tracker: config.Tracker{Kind: config.TrackerHubNative}, Gate: gate.Config{Run: "check-input", AutomatedReview: gate.AutomatedReviewRequired}}
-			r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: cfg, Prompt: "Complete the source"}, Workspace: backend, AgentBackend: agent})
+			r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: cfg, Prompt: "Complete the source"}, Workspace: backend, AgentBackend: agent})
 			if err != nil {
 				t.Fatal(err)
 			}

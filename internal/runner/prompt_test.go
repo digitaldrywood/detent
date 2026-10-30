@@ -171,7 +171,7 @@ func TestNativeOrphanHandoffPreservesPlanOnly(t *testing.T) {
 	for _, planOnly := range []bool{false, true} {
 		t.Run(strconv.FormatBool(planOnly), func(t *testing.T) {
 			backend := &fakeCodexClient{}
-			run, err := NewRunner(Dependencies{
+			run, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 				Workflow:     config.Workflow{Config: config.Config{Tracker: config.Tracker{Kind: config.TrackerHubNative}, Agent: config.Agent{Followups: config.Followups{Enabled: true}}}, Prompt: "Implement the issue"},
 				Workspace:    &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Key: "wi_example", Branch: "detent/wi_example"}},
 				AgentBackend: backend,

@@ -17,6 +17,10 @@ import (
 )
 
 func workspaceProcessIDs(ctx context.Context, root string) ([]int, error) {
+	if source, ok := ctx.Value(processSourceKey{}).(ProcessSource); ok && source != nil {
+		return source(ctx, root)
+	}
+
 	canonical, err := canonicalExistingPath(root)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil

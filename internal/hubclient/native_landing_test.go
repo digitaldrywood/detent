@@ -120,7 +120,7 @@ func testNativeExecutionLandsAuditedVersion(t *testing.T, scenario string) {
 	nativeChangeGit(t, source, "remote", "add", "origin", nativeChangeRepository)
 	nativeChangeGit(t, source, "config", "url."+remote+".insteadOf", nativeChangeRepository)
 	nativeChangeGit(t, source, "push", "-u", "origin", "main")
-	backend, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: filepath.Join(nativeChangeTempDir(t), "workspaces"), SourceRoot: source, AutoBranch: true})
+	backend, err := workspace.NewLocalGit(workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: filepath.Join(nativeChangeTempDir(t), "workspaces"), SourceRoot: source, AutoBranch: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +134,7 @@ func testNativeExecutionLandsAuditedVersion(t *testing.T, scenario string) {
 		}
 	})
 	provider := &recoveringReviewAgent{committingAgent: committingAgent{staged: true, complete: true, validator: "pass"}, failStage: "unused"}
-	agent, err := runner.NewRunner(runner.Dependencies{
+	agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource,
 		Store: sessions, ProjectID: "local", Workspace: backend, AgentBackend: provider,
 		Workflow: config.Workflow{Config: config.Config{Policy: next, Tracker: config.Tracker{Kind: config.TrackerHubNative}, Gate: gate.Config{Run: "true", AutomatedReview: gate.AutomatedReviewRequired, SecurityAudit: gate.SecurityAuditConfig{Enabled: true}, Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: "Complete the issue"},
 	})

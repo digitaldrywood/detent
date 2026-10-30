@@ -47,9 +47,9 @@ func workspaceLaneEnabled(capabilities workspacesession.Capabilities) bool {
 // lane start both read this, so the two can never disagree. Git is reported
 // only when every native project's worktree backend produces git worktrees,
 // because the report is one answer for the whole runner.
-func workspaceLaneCapabilities(ctx context.Context, cfg globalconfig.Config) workspacesession.Capabilities {
+func workspaceLaneCapabilities(ctx context.Context, cfg globalconfig.Config, support workspacerunner.Support) workspacesession.Capabilities {
 	client := cfg.Client
-	capabilities := workspacerunner.Capabilities(workspacerunner.DefaultSupport())
+	capabilities := workspacerunner.Capabilities(support)
 	if strings.TrimSpace(client.IdentityFile) == "" || len(client.NativeProjects) == 0 || !workspaceLaneEnabled(capabilities) {
 		return workspacesession.Capabilities{}
 	}
@@ -104,11 +104,11 @@ func workspaceSessionIDs(machineID tracker.MachineID, generation int64) func() (
 // with a warning rather than failing the daemon: the workspace surfaces are an
 // addition to a runner whose real job is dispatch, and a misconfigured one
 // must not stop it from running.
-func newWorkspaceLanes(ctx context.Context, cfg globalconfig.Config, scheduling orchestrator.SchedulingSource, generation int64, logger *slog.Logger) []*workspacerunner.Lane {
+func newWorkspaceLanes(ctx context.Context, cfg globalconfig.Config, scheduling orchestrator.SchedulingSource, generation int64, logger *slog.Logger, support workspacerunner.Support) []*workspacerunner.Lane {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	if !workspaceLaneEnabled(workspaceLaneCapabilities(ctx, cfg)) {
+	if !workspaceLaneEnabled(workspaceLaneCapabilities(ctx, cfg, support)) {
 		return nil
 	}
 	scheduler, ok := scheduling.(workspaceLaneScheduler)
@@ -128,7 +128,7 @@ func newWorkspaceLanes(ctx context.Context, cfg globalconfig.Config, scheduling 
 			logger.Warn("workspace.lane_skipped", "project_id", name, "reason", "no hub client for the project")
 			continue
 		}
-		lane, err := newWorkspaceLane(ctx, projects, name, native, machineID, sessionIDs, logger)
+		lane, err := newWorkspaceLane(ctx, projects, name, native, machineID, sessionIDs, logger, support)
 		if err != nil {
 			logger.Warn("workspace.lane_skipped", "project_id", name, "error", err)
 			continue
@@ -148,6 +148,7 @@ func newWorkspaceLane(
 	machineID tracker.MachineID,
 	sessionIDs func() (string, error),
 	logger *slog.Logger,
+	support workspacerunner.Support,
 ) (*workspacerunner.Lane, error) {
 	selected, found := workspaceLaneProject(projects, projectID)
 	if !found {
@@ -203,7 +204,7 @@ func newWorkspaceLane(
 		// The same Support the heartbeat reports (hub_client.go), so the
 		// capability the hub gates a claim on and the one this lane's sessions
 		// bind with can never disagree.
-		Support: workspacerunner.DefaultSupport(),
+		Support: support,
 		Shell:   workflow.Config.Hooks.Shell,
 		// The reporter turns a run nobody watched into a row somebody can read.
 		Reporter: workspaceActionRunReporter{native: claimer.Native()},

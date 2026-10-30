@@ -90,7 +90,7 @@ func TestRunnerHandsServiceConnectionToWorker(t *testing.T) {
 	t.Parallel()
 
 	backend := &fakeCodexClient{result: AgentTurnResult{ThreadID: "thread-1", TurnID: "turn-1", SessionID: "session-1"}}
-	run, err := NewRunner(Dependencies{
+	run, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 		Workflow:          config.Workflow{Prompt: "Work"},
 		Workspace:         &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}},
 		AgentBackend:      backend,
@@ -327,7 +327,7 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	)
 	prNumber := 133
 
-	runner, err := NewRunner(Dependencies{
+	runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 		ProviderUsage: providerUsage,
 		ProjectID:     "detent",
 		Workflow: config.Workflow{
@@ -1246,7 +1246,7 @@ func TestReconcileFailedPushPublicationFromExactRemoteHead(t *testing.T) {
 				runRunnerGit(t, workspacePath, "push", "origin", pushRef)
 			}
 
-			workspaceBackend, err := workspace.NewLocalGit(workspace.LocalGitOptions{
+			workspaceBackend, err := workspace.NewLocalGit(workspace.LocalGitOptions{ProcessSource: emptyProcessSource,
 				Root: fixtureRoot, SourceRoot: source, AutoBranch: true,
 			})
 			if err != nil {
@@ -1487,7 +1487,7 @@ func TestRunnerRunRecoversPushedPullRequestDeliverable(t *testing.T) {
 				},
 				tt.recoveryUpdates,
 			}, errors: []error{nil, tt.recoveryErr}}
-			runner, err := NewRunner(Dependencies{
+			runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 				Workflow:     config.Workflow{Config: config.Config{}, Prompt: "Work on {{ issue.identifier }}"},
 				Workspace:    workspaceBackend,
 				AgentBackend: backend,
@@ -1578,7 +1578,7 @@ func TestRunnerDeliverableRecoveryCountsTurnsAcrossSessionBrake(t *testing.T) {
 	}}
 	probe := &activityCheckpointProbe{SessionStore: &fakeSessionStore{sessionID: 7}, started: make(chan struct{}), release: make(chan struct{}), profiles: make(chan store.WorkflowPhaseEvent, 8)}
 	close(probe.release)
-	runner, err := NewRunner(Dependencies{
+	runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 		Workflow:     config.Workflow{Config: config.Config{Agent: config.Agent{MaxTurns: 1}}, Prompt: "Work"},
 		Workspace:    &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Branch: branch}},
 		AgentBackend: backend,
@@ -2069,7 +2069,7 @@ func TestRunnerRunRefusesDispatchWhenBudgetExceeded(t *testing.T) {
 		},
 	}
 	sessionStore := &fakeSessionStore{sessionID: 855}
-	runner, err := NewRunner(Dependencies{
+	runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 		Workflow: config.Workflow{
 			Config: config.Config{Budget: config.Budget{BillingMode: config.BillingModeMetered}},
 			Prompt: "Work on {{ issue.identifier }}",
@@ -2151,7 +2151,7 @@ func TestRunnerRunRecordsRuntimeModelUpdate(t *testing.T) {
 	}
 	sessionStore := &fakeSessionStore{sessionID: 1103}
 	startedAt := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
-	runner, err := NewRunner(Dependencies{
+	runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 		Workflow:     config.Workflow{Prompt: "Work"},
 		Workspace:    workspaceBackend,
 		AgentBackend: agentBackend,
@@ -2216,7 +2216,7 @@ func TestRunnerRunRetainsEffectiveTurnIdentity(t *testing.T) {
 				result: AgentTurnResult{ThreadID: "thread-2332", TurnID: "turn-1", SessionID: "thread-2332-turn-1"},
 			}
 			sessionStore := &fakeSessionStore{sessionID: 2332}
-			r, err := NewRunner(Dependencies{
+			r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 				Workflow: config.Workflow{Prompt: "Work"},
 				Workspace: &fakeWorkspaceBackend{
 					info:      workspace.Info{Path: t.TempDir(), Key: "issue-2332"},
@@ -2274,7 +2274,7 @@ func TestRunnerRunLogsBudgetRefusalWithDerivedRole(t *testing.T) {
 		},
 	}
 
-	runner, err := NewRunner(Dependencies{
+	runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 		Workflow: config.Workflow{
 			Config: config.Config{
 				Budget: config.Budget{BillingMode: config.BillingModeMetered},
@@ -2343,7 +2343,7 @@ func TestRunnerSubscriptionSkipsUSDBudgetGuards(t *testing.T) {
 	checker := &fakeBudgetChecker{refusal: budget.Refusal{Code: budget.ReasonPerDayMaxUSD}}
 	estimator := &fakeDispatchEstimator{err: errors.New("estimator must not run")}
 	backend := &fakeCodexClient{}
-	runner, err := NewRunner(Dependencies{
+	runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 		Workflow: config.Workflow{Config: workflowCfg, Prompt: "work {{ issue.identifier }}"},
 		Workspace: &fakeWorkspaceBackend{
 			info: workspace.Info{Path: t.TempDir(), Key: "issue-subscription", Branch: "detent/issue-subscription"},
@@ -2390,7 +2390,7 @@ func TestRunnerRunLeavesThreadResumeDisabledByDefault(t *testing.T) {
 		},
 	}
 
-	runner, err := NewRunner(Dependencies{
+	runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 		Workflow:     config.Workflow{Config: config.Config{}, Prompt: "Work"},
 		Workspace:    workspaceBackend,
 		AgentBackend: agentBackend,
@@ -2488,7 +2488,7 @@ func TestRunnerRunRestrictsAutomaticThreadResumeToCurrentPRRework(t *testing.T) 
 					ProviderSessionID: "session-prior",
 				},
 			}
-			runner, err := NewRunner(Dependencies{
+			runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 				ProjectID: "detent",
 				Workflow: config.Workflow{
 					Config: config.Config{Agent: config.Agent{ExperimentalThreadResume: true}},
@@ -2542,7 +2542,7 @@ func TestRunnerRunRoutineRequestsReadOnlyBackendTurn(t *testing.T) {
 	agentBackend := &fakeCodexClient{
 		result: AgentTurnResult{ThreadID: "thread-routine", TurnID: "turn-1", SessionID: "thread-routine-turn-1"},
 	}
-	runner, err := NewRunner(Dependencies{
+	runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 		Workflow:     config.Workflow{Config: config.Config{}},
 		Workspace:    workspaceBackend,
 		AgentBackend: agentBackend,
@@ -2602,7 +2602,7 @@ func TestRunnerRunAdmissionPreservesScratchUntilDescendantsExit(t *testing.T) {
 				process:          store.WorkerProcess{SessionID: 2354},
 			}
 			var fixture string
-			runner, err := NewRunner(Dependencies{
+			runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 				Workflow:     config.Workflow{Config: config.Config{}},
 				Workspace:    &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}},
 				AgentBackend: backend,
@@ -2680,7 +2680,7 @@ func TestRunnerRunAdmissionRequestsTypedReadOnlyBackendTurn(t *testing.T) {
 		result: AgentTurnResult{ThreadID: "thread-admission", TurnID: "turn-1", SessionID: "thread-admission-turn-1"},
 	}
 	sessionStore := &fakeSessionStore{sessionID: 1535}
-	runner, err := NewRunner(Dependencies{
+	runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 		Workflow:     config.Workflow{Config: config.Config{}, Prompt: "Machine-local text must not appear."},
 		Workspace:    workspaceBackend,
 		AgentBackend: agentBackend,
@@ -2800,7 +2800,7 @@ func TestRunnerRunRetryFreshSuppressesThreadResume(t *testing.T) {
 			ProviderSessionID: "session-old",
 		},
 	}
-	runner, err := NewRunner(Dependencies{
+	runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 		Workflow: config.Workflow{
 			Config: config.Config{
 				Agent: config.Agent{ExperimentalThreadResume: true},
@@ -2863,7 +2863,7 @@ func TestRunnerRunRetryResumeUsesRequestedState(t *testing.T) {
 		ProviderThreadID:  "thread-979",
 		ProviderSessionID: "session-979",
 	}
-	runner, err := NewRunner(Dependencies{
+	runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 		Workflow:     config.Workflow{Config: config.Config{}, Prompt: "Work"},
 		Workspace:    workspaceBackend,
 		AgentBackend: agentBackend,
@@ -3010,7 +3010,7 @@ func TestRunnerRunPersistsResumedSessionDeltaAndCumulativeCost(t *testing.T) {
 		result: AgentTurnResult{ThreadID: "thread-1716", TurnID: "turn-2", SessionID: "thread-1716-turn-2"},
 	}
 	sessionStore := &fakeSessionStore{sessionID: 1716}
-	runner, err := NewRunner(Dependencies{
+	runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 		ProjectID: "detent",
 		Workflow:  config.Workflow{Config: config.Config{}, Prompt: "Work"},
 		Workspace: &fakeWorkspaceBackend{
@@ -3099,7 +3099,7 @@ func TestRunnerRunCompletionLeaseOnOrphanResume(t *testing.T) {
 			t.Parallel()
 
 			backend := &fakeCodexClient{}
-			runner, err := NewRunner(Dependencies{
+			runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 				Workflow: config.Workflow{Config: config.Config{}, Prompt: "Implement the issue"},
 				Workspace: &fakeWorkspaceBackend{
 					info: workspace.Info{Path: t.TempDir(), Key: "issue-2355", Branch: "detent/issue-2355"},
@@ -3229,7 +3229,7 @@ func TestRunnerRunResumesOrphanedSessionWithRestartPrompt(t *testing.T) {
 		AgentRole:         RoleCode,
 		Orphaned:          true,
 	}
-	runner, err := NewRunner(Dependencies{
+	runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 		Workflow:     config.Workflow{Config: config.Config{}, Prompt: "Implement the issue"},
 		Workspace:    workspaceBackend,
 		AgentBackend: agentBackend,
@@ -3297,7 +3297,7 @@ func TestRunnerRunOrphanResumePreflightFailureFallsBackFresh(t *testing.T) {
 		result:    AgentTurnResult{ThreadID: "thread-fresh", TurnID: "turn-1", SessionID: "thread-fresh-turn-1"},
 	}
 	sessionStore := &fakeSessionStore{sessionID: 1157}
-	runner, err := NewRunner(Dependencies{
+	runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 		Workflow:     config.Workflow{Config: config.Config{}, Prompt: "Implement the issue"},
 		Workspace:    workspaceBackend,
 		AgentBackend: agentBackend,
@@ -3364,7 +3364,7 @@ func TestRunnerRunOrphanResumeRPCFailureFallsBackWithFullPrompt(t *testing.T) {
 	}
 	agentBackend := &resumeFallbackAgentBackend{}
 	sessionStore := &fakeSessionStore{sessionID: 1158}
-	runner, err := NewRunner(Dependencies{
+	runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 		Workflow:     config.Workflow{Config: config.Config{}, Prompt: "Implement the issue"},
 		Workspace:    workspaceBackend,
 		AgentBackend: agentBackend,
@@ -3423,7 +3423,7 @@ func TestRunnerRunFallsBackFreshWhenResumeFails(t *testing.T) {
 		},
 	}
 
-	runner, err := NewRunner(Dependencies{
+	runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 		Workflow: config.Workflow{
 			Config: config.Config{
 				Agent: config.Agent{ExperimentalThreadResume: true},
@@ -3496,7 +3496,7 @@ func TestRunnerRunDoesNotFallbackFreshForCapacityError(t *testing.T) {
 		},
 	}
 
-	runner, err := NewRunner(Dependencies{
+	runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 		Workflow: config.Workflow{
 			Config: config.Config{
 				Agent: config.Agent{ExperimentalThreadResume: true},
@@ -3548,7 +3548,7 @@ func TestRunnerRunDoesNotFallbackAfterResumedTurnStarts(t *testing.T) {
 		},
 	}
 
-	runner, err := NewRunner(Dependencies{
+	runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 		Workflow: config.Workflow{
 			Config: config.Config{
 				Agent: config.Agent{ExperimentalThreadResume: true},
@@ -3663,7 +3663,7 @@ func TestRunnerRunKillsSessionAtTokenCeilingWithoutLessonWrites(t *testing.T) {
 				startedAt.Add(3*time.Second),
 			)
 
-			runner, err := NewRunner(Dependencies{
+			runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 				Workflow: config.Workflow{
 					Config: config.Config{
 						Agent: config.Agent{
@@ -3780,7 +3780,7 @@ func TestRunnerRunEnforcesOnlyHistoricalBudgetProjection(t *testing.T) {
 				},
 			}}
 			sessionStore := &fakeSessionStore{sessionID: 1943}
-			runner, err := NewRunner(Dependencies{
+			runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 				Workflow: config.Workflow{
 					Config: config.Config{Budget: config.Budget{BillingMode: config.BillingModeMetered}},
 					Prompt: "Work on {{ issue.identifier }}",
@@ -3862,7 +3862,7 @@ func TestRunnerRunLeavesSessionTokenCeilingDisabledByDefault(t *testing.T) {
 	}
 	clock := newFakeClock(startedAt, startedAt.Add(time.Second), startedAt.Add(2*time.Second))
 
-	runner, err := NewRunner(Dependencies{
+	runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 		Workflow:     config.Workflow{Config: config.Config{}, Prompt: "Work"},
 		Workspace:    workspaceBackend,
 		AgentBackend: agentBackend,
@@ -3941,7 +3941,7 @@ func TestRunnerRunSessionTokenOverrideBypassesLimit(t *testing.T) {
 					},
 				}},
 			}
-			runner, err := NewRunner(Dependencies{
+			runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 				Workflow: config.Workflow{
 					Config: config.Config{Agent: tt.cfg},
 					Prompt: "Work",
@@ -4106,7 +4106,7 @@ func TestRunnerMergeModeCleanPrecheckSkipsAgent(t *testing.T) {
 		prepareResult: workspace.MergePrepareResult{Status: workspace.MergePrepareStatusClean, HeadChanged: true},
 	}
 	codexClient := &fakeCodexClient{}
-	runner, err := NewRunner(Dependencies{
+	runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 		Workflow:     config.Workflow{Config: config.Config{}},
 		Workspace:    workspaceBackend,
 		AgentBackend: codexClient,
@@ -4221,7 +4221,7 @@ func TestRunnerMergeBaseSyncSelection(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			backend := &fakeMergeWorkspaceBackend{prepareResult: workspace.MergePrepareResult{Status: workspace.MergePrepareStatusClean}}
-			runner, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: config.Config{}}, Workspace: backend, AgentBackend: &fakeCodexClient{}})
+			runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: config.Config{}}, Workspace: backend, AgentBackend: &fakeCodexClient{}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -4247,7 +4247,7 @@ func TestRunnerMergeCurrentHeadSkipsWorkspace(t *testing.T) {
 	t.Parallel()
 
 	workspaceBackend := &fakeMergeWorkspaceBackend{}
-	runner, err := NewRunner(Dependencies{
+	runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 		Workflow:     config.Workflow{Config: config.Config{}},
 		Workspace:    workspaceBackend,
 		AgentBackend: &fakeCodexClient{},
@@ -4288,7 +4288,7 @@ func TestRunnerPublishesWorkspaceCreateStartedBeforeCreate(t *testing.T) {
 	createErr := errors.New("stop after workspace progress")
 	workspaceBackend := &fakeWorkspaceBackend{createErr: createErr}
 	now := time.Date(2026, 7, 30, 18, 0, 0, 0, time.UTC)
-	runner, err := NewRunner(Dependencies{
+	runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 		Workflow:     config.Workflow{Config: config.Config{}},
 		Workspace:    workspaceBackend,
 		AgentBackend: &fakeCodexClient{},
@@ -4337,7 +4337,7 @@ func TestRunnerWorkspaceTimeoutIsNotForgeUnavailable(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			failure := errors.New(tt.failure)
-			runner, err := NewRunner(Dependencies{Workflow: config.Workflow{}, Workspace: &fakeWorkspaceBackend{createErr: failure}, AgentBackend: &fakeCodexClient{}})
+			runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{}, Workspace: &fakeWorkspaceBackend{createErr: failure}, AgentBackend: &fakeCodexClient{}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -4373,7 +4373,7 @@ func TestRunnerClassifiesWorkspaceBranchHold(t *testing.T) {
 		Branch: "detent/issue-1965",
 		Path:   "/review/PR-1917",
 	}}
-	runner, err := NewRunner(Dependencies{
+	runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 		Workflow:     config.Workflow{Config: config.Config{}},
 		Workspace:    workspaceBackend,
 		AgentBackend: &fakeCodexClient{},
@@ -4439,7 +4439,7 @@ func TestRunnerClassifiesChangeSourceRefusal(t *testing.T) {
 				execution.source = workspace.ChangeSource{Version: tracker.ChangeVersion{ID: "version_1", ChangeID: "change_1"}}
 			}
 			agent := &fakeCodexClient{}
-			runner, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: config.Config{Tracker: config.Tracker{Kind: config.TrackerHubNative}}}, Workspace: &fakeWorkspaceBackend{createErr: refusal}, AgentBackend: agent})
+			runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: config.Config{Tracker: config.Tracker{Kind: config.TrackerHubNative}}}, Workspace: &fakeWorkspaceBackend{createErr: refusal}, AgentBackend: agent})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -4507,7 +4507,7 @@ func TestRunnerMergeModeConflictUsesFocusedPrompt(t *testing.T) {
 	codexClient := &fakeCodexClient{
 		result: AgentTurnResult{ThreadID: "thread-merge", TurnID: "turn-1"},
 	}
-	runner, err := NewRunner(Dependencies{
+	runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 		Workflow: config.Workflow{
 			Config: config.Config{Agent: config.Agent{MaxSessionDurationMS: 20 * 60 * 1000}},
 			Prompt: "Full implement workflow playbook for {{ issue.identifier }}",
@@ -4700,7 +4700,7 @@ func TestRunnerMergeFallbackOutcomes(t *testing.T) {
 				}
 			}
 			agentBackend := &fakeCodexClient{updates: []AgentUpdate{{Type: AgentUpdateMessageDelta, Delta: tt.agentOutput}}}
-			runner, err := NewRunner(Dependencies{
+			runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 				Workflow:     config.Workflow{Config: config.Config{Agent: config.Agent{MaxSessionDurationMS: 20 * 60 * 1000}}},
 				Workspace:    workspaceBackend,
 				AgentBackend: agentBackend,
@@ -4795,7 +4795,7 @@ func TestRunnerClassifiesReportedCredentialBlocker(t *testing.T) {
 				Delta:  tt.output,
 			})
 			agentBackend := &fakeCodexClient{updates: updates}
-			runner, err := NewRunner(Dependencies{
+			runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 				Workflow:     config.Workflow{Config: config.Default()},
 				Workspace:    workspaceBackend,
 				AgentBackend: agentBackend,
@@ -4885,7 +4885,7 @@ func TestRunnerMergeFallbackModelPermit(t *testing.T) {
 				},
 			}
 			agentBackend := &fakeCodexClient{}
-			runner, err := NewRunner(Dependencies{
+			runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 				Workflow:     config.Workflow{Config: config.Config{}},
 				Workspace:    workspaceBackend,
 				AgentBackend: agentBackend,
@@ -4942,7 +4942,7 @@ func TestRunnerRunAddsGitMetadataExtraRootsForManagedWorkspace(t *testing.T) {
 
 	source := initRunnerSourceRepo(t)
 	workspaceRoot := filepath.Join(t.TempDir(), "workspaces")
-	workspaceBackend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{
+	workspaceBackend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{ProcessSource: emptyProcessSource,
 		Root:       workspaceRoot,
 		SourceRoot: source,
 		AutoBranch: true,
@@ -4952,7 +4952,7 @@ func TestRunnerRunAddsGitMetadataExtraRootsForManagedWorkspace(t *testing.T) {
 	}
 
 	agentBackend := &committingAgentBackend{}
-	runner, err := NewRunner(Dependencies{
+	runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 		Workflow: config.Workflow{
 			Config: config.Config{},
 			Prompt: "Work on {{ issue.identifier }}",
@@ -5020,7 +5020,7 @@ func TestRunnerRunReportsGitMetadataFailuresByWorkspaceKind(t *testing.T) {
 			workspacePath := t.TempDir()
 			var logs bytes.Buffer
 			agentBackend := &fakeCodexClient{}
-			runner, err := NewRunner(Dependencies{
+			runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 				Workflow: config.Workflow{Config: config.Config{
 					Workspace: config.Workspace{Kind: tt.kind},
 				}},
@@ -5090,7 +5090,7 @@ func TestRunnerRunLogsLifecycleWithoutPromptOrMessageBody(t *testing.T) {
 		},
 		result: AgentTurnResult{ThreadID: "thread-1", TurnID: "turn-1", SessionID: "session-1"},
 	}
-	runner, err := NewRunner(Dependencies{
+	runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 		Workflow: config.Workflow{Config: config.Config{}},
 		Workspace: &fakeWorkspaceBackend{
 			info: workspace.Info{Path: workspacePath, Key: "issue-726", Branch: "detent/issue-726"},
@@ -5448,7 +5448,7 @@ func TestRunnerRunCompletesSuccessfulTurnWithCleanupError(t *testing.T) {
 		result: AgentTurnResult{ThreadID: "thread-970", TurnID: "turn-1", SessionID: "thread-970-turn-1"},
 		err:    NewAgentTurnCleanupError(errors.New("close codex app-server transport: operation not permitted")),
 	}
-	runner, err := NewRunner(Dependencies{
+	runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 		Workflow: config.Workflow{Config: config.Config{}},
 		Workspace: &fakeWorkspaceBackend{
 			info: workspace.Info{Path: workspacePath, Key: "issue-970", Branch: "detent/issue-970"},
@@ -5502,7 +5502,7 @@ func TestRunnerPlanModeCapturesOutputAndConstrainsPrompt(t *testing.T) {
 			{Type: AgentUpdateMessageDelta, ThreadID: "thread-plan", TurnID: "turn-plan", ItemID: "message-plan", Delta: "- Add tests\n"},
 		},
 	}
-	runner, err := NewRunner(Dependencies{
+	runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 		Workflow: config.Workflow{
 			Config: config.Config{},
 			Prompt: "Implement {{ issue.identifier }}",
@@ -5636,7 +5636,7 @@ func TestRunnerRunRoutesPerStageRoles(t *testing.T) {
 				"codex-merge":  {models: []AgentModel{{ID: "gpt-5-merge", Model: "gpt-5-merge", SupportedReasoningEfforts: []string{"low", "high", "xhigh"}}}},
 			}
 			sessionStore := &fakeSessionStore{sessionID: 861}
-			runner, err := NewRunner(Dependencies{
+			runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 				Workflow: config.Workflow{
 					Config: config.Config{
 						Agent: config.Agent{Effort: tt.projectEffort},
@@ -5739,7 +5739,7 @@ func TestRunnerRunDoesNotResumeMergeRole(t *testing.T) {
 		},
 	}
 
-	runner, err := NewRunner(Dependencies{
+	runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 		Workflow: config.Workflow{
 			Config: config.Config{
 				Agent: config.Agent{ExperimentalThreadResume: true},
@@ -5804,7 +5804,7 @@ func TestRunnerRunUsesStageDefaultModelForReworkFallback(t *testing.T) {
 	checker := &fakeBudgetChecker{}
 	estimator := &fakeDispatchEstimator{}
 
-	runner, err := NewRunner(Dependencies{
+	runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 		Workflow: config.Workflow{
 			Config: config.Config{
 				Budget: config.Budget{BillingMode: config.BillingModeMetered},
@@ -5888,7 +5888,7 @@ func TestRunnerRunUnroutedStageRolesUseCodeDefaultRoute(t *testing.T) {
 			}
 			backend := &fakeCodexClient{}
 			sessionStore := &fakeSessionStore{sessionID: 862}
-			runner, err := NewRunner(Dependencies{
+			runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 				Workflow: config.Workflow{
 					Config: config.Config{
 						Agents: config.Agents{
@@ -5969,7 +5969,7 @@ func TestRunnerRunUnroutedStageRolesUseCodeSelectorRoutes(t *testing.T) {
 			}
 			codeBackend := &fakeCodexClient{}
 			highBackend := &fakeCodexClient{}
-			runner, err := NewRunner(Dependencies{
+			runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 				Workflow: config.Workflow{
 					Config: config.Config{
 						Agents: config.Agents{
@@ -6050,7 +6050,7 @@ func TestRunnerRunUnroutedStageRolesUseCodeModelFieldRouteWithoutDefault(t *test
 				info: workspace.Info{Path: t.TempDir(), Key: "issue-field", Branch: "detent/issue-field"},
 			}
 			backend := &fakeCodexClient{}
-			runner, err := NewRunner(Dependencies{
+			runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 				Workflow: config.Workflow{
 					Config: config.Config{
 						Agents: config.Agents{
@@ -6173,7 +6173,7 @@ func TestRunnerValidateUsesValidatorRouteModelOverrideAndParsesJSON(t *testing.T
 	workspaceReaped := ""
 	sessionStore := &fakeSessionStore{sessionID: 522}
 
-	runner, err := NewRunner(Dependencies{
+	runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 		Store:             sessionStore,
 		ServiceConnection: serviceapi.Connection{Address: "100.111.222.33:4100", DispositionToken: "worker-token"},
 		Workflow: config.Workflow{
@@ -6301,7 +6301,7 @@ func TestRunnerValidateRejectsReviewWorkspaceMutation(t *testing.T) {
 			if tt.output != "" {
 				backend.updates[1].Delta = tt.output
 			}
-			runner, err := NewRunner(Dependencies{
+			runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 				Workflow:  config.Workflow{Config: config.Config{Agents: config.Agents{Backends: []config.AgentBackend{{ID: "codex", Kind: "codex", Protocol: "app-server", Command: "codex app-server"}}, Routes: []config.AgentRoute{{Name: "validator", Role: RoleValidator, Backend: "codex", Model: "test"}}}}, Prompt: "Review"},
 				Workspace: ws, AgentBackend: backend,
 			})
@@ -6338,7 +6338,7 @@ func TestRunnerAuditReturnsCatalogSelectionError(t *testing.T) {
 	catalogErr := errors.New("initialize codex app-server: unexpected EOF")
 	auditBackend := &fakeCodexClient{catalogErr: catalogErr}
 	unavailable := "fail"
-	runner, err := NewRunner(Dependencies{
+	runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 		ProjectID:         "detent",
 		SecurityAuditRoot: t.TempDir(),
 		Workflow: config.Workflow{Config: config.Config{
@@ -6409,7 +6409,7 @@ func TestRunnerAuditUsesConfiguredBackendInReadOnlyWorkspace(t *testing.T) {
 					AuthenticationMode: test.authentication,
 				},
 			}
-			runner, err := NewRunner(Dependencies{
+			runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 				ProjectID:         "prj_example",
 				ProviderUsage:     providerUsage,
 				SecurityAuditRoot: auditRoot,
@@ -6543,7 +6543,7 @@ func TestRunnerAuditRetainsWorkerScratchUntilLaterProcessReapSucceeds(t *testing
 			scanErr := tt.scanErr
 			artifactReaps := 0
 			scratchPresentDuringReap := false
-			runner, err := NewRunner(Dependencies{
+			runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 				SecurityAuditRoot: auditRoot,
 				Workflow: config.Workflow{Config: config.Config{
 					Gate: gate.Config{SecurityAudit: gate.SecurityAuditConfig{Enabled: true}},
@@ -6866,7 +6866,7 @@ func TestRunnerRunKeepsSuccessfulOutcomeAfterArtifactCleanupFailure(t *testing.T
 					var logs bytes.Buffer
 					workspaceReaps := 0
 					cleanupCalls := 0
-					runner, err := NewRunner(Dependencies{
+					runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 						Workflow: config.Workflow{Config: config.Config{}},
 						Workspace: &fakeWorkspaceBackend{
 							info: workspace.Info{Path: workspacePath, Key: "issue-2082", Branch: "detent/issue-2082"},
@@ -7021,7 +7021,7 @@ func TestRunnerUpdateWorkflowAppliesToFutureRuns(t *testing.T) {
 			replacement := &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Key: "issue-42", Branch: "detent/issue-42"}}
 			codexClient := &fakeCodexClient{}
 			workflow := config.Workflow{Config: config.Config{Hooks: config.Hooks{AfterCreate: "hook A"}}, Prompt: "initial {{ issue.identifier }}"}
-			deps := Dependencies{Workflow: workflow, Workspace: initial, AgentBackend: codexClient}
+			deps := Dependencies{ProcessSource: emptyProcessSource, Workflow: workflow, Workspace: initial, AgentBackend: codexClient}
 			factoryErr := errors.New("workspace reload failed")
 			if scenario != "prompt" {
 				deps.WorkspaceFactory = func(cfg config.Config, current workspace.Backend) (workspace.Backend, error) {
@@ -7122,7 +7122,7 @@ func TestRunnerUpdateWorkflowRefreshesBudgetGuards(t *testing.T) {
 		},
 	}
 	var guardCalls []bool
-	runner, err := NewRunner(Dependencies{
+	runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 		Workflow: config.Workflow{
 			Config: config.Config{},
 			Prompt: "initial {{ issue.identifier }}",
@@ -7217,7 +7217,7 @@ func TestRunnerUpdateWorkflowAppliesReloadedDailyBudget(t *testing.T) {
 			}
 			workflowCfg := config.Config{}
 			workflowCfg.Budget = config.Budget{Enabled: true, PerDayMaxUSD: tt.initialCap}
-			runner, err := NewRunner(Dependencies{
+			runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 				Workflow: config.Workflow{Config: workflowCfg},
 				Workspace: &fakeWorkspaceBackend{
 					info: workspace.Info{Path: t.TempDir(), Key: "budget-reload", Branch: "detent/budget-reload"},
@@ -7280,7 +7280,7 @@ func TestRunnerUpdateWorkflowReportsReloadedIssueBudget(t *testing.T) {
 	}}
 	workflowCfg := config.Config{}
 	workflowCfg.Budget = config.Budget{Enabled: true, PerIssueMaxUSD: 1}
-	runner, err := NewRunner(Dependencies{
+	runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 		Workflow:     config.Workflow{Config: workflowCfg},
 		Workspace:    &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Key: "budget-reload", Branch: "detent/budget-reload"}},
 		AgentBackend: &fakeCodexClient{},
@@ -7328,7 +7328,7 @@ func TestRunnerRunUsesSingleConfiguredBackendDefaultRoute(t *testing.T) {
 		info: workspace.Info{Path: t.TempDir(), Key: "issue-55", Branch: "detent/issue-55"},
 	}
 	backend := &fakeCodexClient{}
-	runner, err := NewRunner(Dependencies{
+	runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 		Workflow: config.Workflow{
 			Config: config.Config{
 				Agents: config.Agents{
@@ -7442,7 +7442,7 @@ func TestRunnerRunRoutesAtMeSelectorsWithContext(t *testing.T) {
 					{Backend: "codex", Model: "gpt-5-codex-mini", Default: true},
 				},
 			}
-			runner, err := NewRunner(Dependencies{
+			runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 				Workflow:     config.Workflow{Config: cfg, Prompt: "work {{ issue.identifier }}"},
 				Workspace:    workspaceBackend,
 				AgentBackend: backend,
@@ -7488,7 +7488,7 @@ func TestRunnerRunFinishesFailedSessionAndAfterRunOnCodexError(t *testing.T) {
 			close(probe.release)
 			at := time.Date(2026, 5, 31, 13, 0, 0, 0, time.UTC)
 
-			runner, err := NewRunner(Dependencies{
+			runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 				Workflow:     config.Workflow{Config: config.Config{}},
 				Workspace:    workspaceBackend,
 				AgentBackend: codexClient,
@@ -7571,7 +7571,7 @@ func TestRunnerFailureKeepsSessionDiagnosticsWithoutNotes(t *testing.T) {
 			nowValue := time.Date(2026, 7, 2, 21, 50, 0, 0, time.UTC)
 			now := newFakeClock(nowValue, nowValue, nowValue, nowValue, nowValue)
 
-			runner, err := NewRunner(Dependencies{
+			runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 				Workflow:     config.Workflow{Config: config.Config{}},
 				Workspace:    workspaceBackend,
 				Store:        sessionStore,
@@ -7632,7 +7632,7 @@ func TestRunnerRunTruncatesConfiguredAgentOutputTelemetry(t *testing.T) {
 	workflowConfig := config.Default()
 	workflowConfig.Agent.OutputTruncation.MaxBytes = len(runtimeoutput.Marker) + 10
 
-	runner, err := NewRunner(Dependencies{
+	runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 		Workflow:     config.Workflow{Config: workflowConfig, Prompt: "Prompt"},
 		Workspace:    workspaceBackend,
 		AgentBackend: codexClient,
@@ -7716,7 +7716,7 @@ func TestRunnerRunTreatsMissingWorkspaceFinalDiffAsCompleted(t *testing.T) {
 		completedAt,
 	)
 
-	runner, err := NewRunner(Dependencies{
+	runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 		Workflow:     config.Workflow{Config: config.Config{}},
 		Workspace:    workspaceBackend,
 		AgentBackend: codexClient,
@@ -7783,7 +7783,7 @@ func TestRunnerRunUsesFreshContextForAfterRunCleanup(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	codexClient := &cancelingCodexClient{cancel: cancel}
 
-	runner, err := NewRunner(Dependencies{
+	runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 		Workflow:     config.Workflow{Config: config.Config{}},
 		Workspace:    workspaceBackend,
 		AgentBackend: codexClient,
@@ -7821,7 +7821,7 @@ func TestRunnerReapWorkspaceUsesWorkspaceIssueCleanup(t *testing.T) {
 	workspaceBackend := &fakeWorkspaceBackend{
 		cleanupResult: workspace.CleanupResult{Worktrees: 1, Branches: 1, Processes: 2},
 	}
-	runner, err := NewRunner(Dependencies{
+	runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 		BuildCache:   cache,
 		Workflow:     config.Workflow{Config: config.Config{}},
 		Workspace:    workspaceBackend,
@@ -7874,7 +7874,7 @@ func TestRunnerReconcileWorkspacesUsesResidualReconciler(t *testing.T) {
 			Failures: []workspace.CleanupFailure{{Path: "/workspaces/residual", Error: "permission denied"}},
 		},
 	}
-	runner, err := NewRunner(Dependencies{
+	runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource,
 		BuildCache:   cache,
 		Workflow:     config.Workflow{Config: config.Config{}},
 		Workspace:    workspaceBackend,
@@ -8649,7 +8649,7 @@ func TestRunnerReapSquashLandedWorkspace(t *testing.T) {
 			runRunnerGit(t, source, "remote", "add", "origin", remote)
 			runRunnerGit(t, source, "push", "-u", "origin", "main")
 			runRunnerGit(t, remote, "symbolic-ref", "HEAD", "refs/heads/main")
-			backend, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+			backend, err := workspace.NewLocalGit(workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -8723,7 +8723,7 @@ func TestRunnerMergeFastPathValidatesTheHeadForALocalStatus(t *testing.T) {
 			backend := &fakeMergeWorkspaceBackend{prepareResult: tt.result}
 			cfg := config.Config{}
 			cfg.Gate = gate.Config{Kind: gate.KindCommand, Run: "make check-fast", LocalStatus: tt.localStatus}
-			runner, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: cfg}, Workspace: backend, AgentBackend: &fakeCodexClient{}})
+			runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: cfg}, Workspace: backend, AgentBackend: &fakeCodexClient{}})
 			if err != nil {
 				t.Fatal(err)
 			}

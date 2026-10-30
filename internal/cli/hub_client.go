@@ -28,14 +28,15 @@ import (
 )
 
 type hubSchedulingOptions struct {
-	processStore  releasedExecutionProcessStore
-	providerUsage *runner.ProviderUsage
-	applyProjects func(context.Context, globalconfig.Config) error
-	setupStore    store.ProjectRunnerSetupStore
-	logger        *slog.Logger
-	runtimeConfig func() globalconfig.Config
-	intakeToken   githubconnector.TokenSource
-	problems      func() []runnerauth.Problem
+	workspaceSupport func() workspacerunner.Support
+	processStore     releasedExecutionProcessStore
+	providerUsage    *runner.ProviderUsage
+	applyProjects    func(context.Context, globalconfig.Config) error
+	setupStore       store.ProjectRunnerSetupStore
+	logger           *slog.Logger
+	runtimeConfig    func() globalconfig.Config
+	intakeToken      githubconnector.TokenSource
+	problems         func() []runnerauth.Problem
 }
 
 func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version string, options ...hubSchedulingOptions) (orchestrator.SchedulingSource, error) {
@@ -103,6 +104,11 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 	if len(options) > 0 {
 		setupOptions = options[0]
 	}
+	supportSource := setupOptions.workspaceSupport
+	if supportSource == nil {
+		supportSource = workspacerunner.DefaultSupport
+	}
+	support := supportSource()
 	setup := project.NewRunnerSetup(runnerID, setupOptions.setupStore, setupOptions.logger)
 	projects := &runnerProjects{client: client, cfg: cfg, setup: setup, logger: setupOptions.logger, checks: make(map[string]runnerauth.LocalChecks), apply: setupOptions.applyProjects, runtime: setupOptions.runtimeConfig}
 	if projects.logger == nil {
@@ -215,8 +221,8 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 		Machine: hubclient.Machine{
 			ID: tracker.MachineID(machineID), Hostname: hostname, DisplayName: displayName,
 			Capabilities: hubMachineCapabilities(cfg), Capacity: capacity, Version: strings.TrimSpace(version),
-			WorkspaceCapabilities: workspaceLaneCapabilities(context.Background(), cfg),
-			WorkspaceIsolation:    workspacerunner.DefaultSupport().TerminalIsolation(),
+			WorkspaceCapabilities: workspaceLaneCapabilities(context.Background(), cfg, support),
+			WorkspaceIsolation:    support.TerminalIsolation(),
 		},
 		HeartbeatInterval: min(clientConfig.HeartbeatInterval(), providercapacity.MaxAge/2),
 		LeaseTTL:          clientConfig.LeaseTTL(),

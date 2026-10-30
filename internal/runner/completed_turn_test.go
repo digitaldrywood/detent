@@ -369,7 +369,7 @@ func TestNativeCompletedTurnRetry(t *testing.T) {
 			if test.validations > 0 {
 				cfg.Gate.Run = "make check"
 			}
-			r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: cfg, Prompt: "Complete the native issue"}, Workspace: backend, AgentBackend: agent})
+			r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: cfg, Prompt: "Complete the native issue"}, Workspace: backend, AgentBackend: agent})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -576,7 +576,7 @@ func TestCompletedNativeTurnFinalization(t *testing.T) {
 						cfg.Gate.LandingMode = gate.LandingRollingBarrier
 					}
 				}
-				r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: cfg, Prompt: "Complete the native issue"}, Workspace: backend, AgentBackend: agent})
+				r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: cfg, Prompt: "Complete the native issue"}, Workspace: backend, AgentBackend: agent})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -726,7 +726,7 @@ func TestCompletedNativeTurnReapFailure(t *testing.T) {
 			execution := &finalizingTestExecution{}
 			agent := &completedTurnBackend{fakeCodexClient: fakeCodexClient{err: test.turnErr, result: AgentTurnResult{ThreadID: "finished-thread", SessionID: "finished-session"}, updates: []AgentUpdate{{Type: AgentUpdateProcessStarted, WorkerProcess: procgroup.Identity{PID: 1234}}, {Type: AgentUpdateTurnCompleted, Status: "completed"}}}, afterTurn: func() {}}
 			var logs bytes.Buffer
-			r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: config.Config{}, Prompt: "Complete the native issue"}, Workspace: backend, AgentBackend: agent, Logger: slog.New(slog.NewJSONHandler(&logs, nil))})
+			r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: config.Config{}, Prompt: "Complete the native issue"}, Workspace: backend, AgentBackend: agent, Logger: slog.New(slog.NewJSONHandler(&logs, nil))})
 			if err != nil {
 				t.Fatal(err)
 			}
