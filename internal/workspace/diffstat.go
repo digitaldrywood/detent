@@ -161,12 +161,19 @@ func (l *LocalGit) VerifyReviewTree(ctx context.Context, info Info, issue Issue)
 	if err != nil {
 		return err
 	}
-	changes, err := runGitAt(ctx, normalized.Path, "status", "--porcelain")
+	changes, err := runGitAt(ctx, normalized.Path, "status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all")
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(changes) != "" {
-		return errors.New("review workspace has local changes")
+	if changes != "" {
+		var paths []string
+		for entry := range strings.SplitSeq(changes, "\x00") {
+			if len(entry) > 3 {
+				paths = append(paths, entry[3:])
+			}
+		}
+		slices.Sort(paths)
+		return fmt.Errorf("review workspace has local changes: %q", paths)
 	}
 	return nil
 }

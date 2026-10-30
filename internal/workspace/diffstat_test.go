@@ -468,11 +468,57 @@ func TestLocalGitVerifyReviewTreeAfterSeeding(t *testing.T) {
 			})
 		}
 	}
-	if err := os.WriteFile(filepath.Join(info.Path, "untracked.txt"), []byte("hook change"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := backend.VerifyReviewTree(t.Context(), info, issue); err == nil {
-		t.Fatal("untracked hook change accepted")
+	for i, test := range []struct {
+		name   string
+		paths  []string
+		change func(*testing.T, string)
+	}{
+		{name: "unstaged modification", paths: []string{"README.md"}, change: func(t *testing.T, path string) {
+			if err := os.WriteFile(filepath.Join(path, "README.md"), []byte("private file content"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "staged modification", paths: []string{"README.md"}, change: func(t *testing.T, path string) {
+			if err := os.WriteFile(filepath.Join(path, "README.md"), []byte("private file content"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			runGit(t, path, "add", "README.md")
+		}},
+		{name: "deleted file", paths: []string{"README.md"}, change: func(t *testing.T, path string) {
+			if err := os.Remove(filepath.Join(path, "README.md")); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "staged rename", paths: []string{"README.md", "renamed file.md"}, change: func(t *testing.T, path string) {
+			runGit(t, path, "mv", "README.md", "renamed file.md")
+		}},
+		{name: "untracked nested files", paths: []string{"output/first file.txt", "output/second.txt"}, change: func(t *testing.T, path string) {
+			if err := os.Mkdir(filepath.Join(path, "output"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			for _, name := range []string{"first file.txt", "second.txt"} {
+				if err := os.WriteFile(filepath.Join(path, "output", name), []byte("private file content"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			mutationIssue := Issue{Identifier: fmt.Sprintf("review-mutation-%d", i)}
+			mutationInfo, err := backend.Create(t.Context(), mutationIssue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := backend.VerifyReviewTree(t.Context(), mutationInfo, mutationIssue); err != nil {
+				t.Fatalf("clean review tree: %v", err)
+			}
+			test.change(t, mutationInfo.Path)
+			err = backend.VerifyReviewTree(t.Context(), mutationInfo, mutationIssue)
+			want := fmt.Sprintf("review workspace has local changes: %q", test.paths)
+			if err == nil || err.Error() != want {
+				t.Fatalf("mutation refusal = %v, want %s", err, want)
+			}
+		})
 	}
 }
 

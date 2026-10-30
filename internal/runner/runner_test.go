@@ -6290,6 +6290,7 @@ func TestRunnerValidateRejectsReviewWorkspaceMutation(t *testing.T) {
 		{name: "successful review with survivors", heads: []string{"head", "head", "head"}, reapFailure: true},
 		{name: "failed review with survivors", heads: []string{"head", "head", "head"}, reapFailure: true, turnErr: errors.New("review turn failed")},
 		{name: "changed head before cleanup", heads: []string{"head", "other", "head"}},
+		{name: "dirty tree after successful review", heads: []string{"head", "head", "head"}, verifyErrAt: 2},
 		{name: "dirty tree with turn error", heads: []string{"head", "head", "head"}, verifyErrAt: 2, turnErr: errors.New("turn failed")},
 		{name: "changed head after cleanup with turn error", heads: []string{"head", "head", "other"}, turnErr: errors.New("turn failed")},
 		{name: "garbage output", heads: []string{"head", "head", "head"}, output: "not a verdict"},
@@ -6321,6 +6322,9 @@ func TestRunnerValidateRejectsReviewWorkspaceMutation(t *testing.T) {
 				}
 			} else if !errors.Is(err, ErrValidatorInfrastructure) {
 				t.Fatalf("Validate() error = %v, want infrastructure failure", err)
+			}
+			if tt.verifyErrAt != 0 && (err == nil || !strings.Contains(err.Error(), `review workspace has local changes: ["changed.txt"]`)) {
+				t.Fatalf("mutation diagnostics lost changed paths: %v", err)
 			}
 			if tt.output != "" && (result.Submitted || result.Verdict != "") {
 				t.Fatalf("invalid output produced a verdict: %+v", result)
@@ -8022,7 +8026,7 @@ func (w *reviewMutationWorkspace) Head(context.Context, workspace.Info, workspac
 func (w *reviewMutationWorkspace) VerifyReviewTree(context.Context, workspace.Info, workspace.Issue) error {
 	w.verifyCalls++
 	if w.verifyCalls == w.verifyErrAt {
-		return errors.New("review workspace has local changes")
+		return errors.New(`review workspace has local changes: ["changed.txt"]`)
 	}
 	return nil
 }
