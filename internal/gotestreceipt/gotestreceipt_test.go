@@ -115,6 +115,26 @@ func TestRunWrapperReusesOnlyMatchingReceipts(t *testing.T) {
 	}
 	args := []string{executable, "-test.paniconexit0", "-test.run=^TestHelperProcess$"}
 
+	binaryData, err := os.ReadFile(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pkg, "target.test"), binaryData, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(input, []byte("pass"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, binary := range []string{"./target.test", "target.test"} {
+		var stdout, stderr bytes.Buffer
+		code := requestExecution(session.socket, executionRequest{
+			Args: append([]string{binary}, args[1:]...), Directory: pkg, Root: root, Environment: os.Environ(),
+		}, &stdout, &stderr)
+		if code == 0 || strings.Contains(stdout.String(), helperRan) || len(store.receipts) != 0 {
+			t.Fatalf("relative binary %q: code = %d, stdout = %q, receipts = %d; want refusal without execution or recording", binary, code, stdout.String(), len(store.receipts))
+		}
+	}
+
 	steps := []struct {
 		name     string
 		content  string

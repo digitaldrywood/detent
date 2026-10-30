@@ -57,6 +57,10 @@ func RunWrapper(args []string, getenv func(string) string, stdin io.Reader, stdo
 }
 
 func executeWrapper(ctx context.Context, request executionRequest, client executionStore, stdout, stderr io.Writer) int {
+	if len(request.Args) == 0 || !filepath.IsAbs(request.Args[0]) {
+		fmt.Fprintln(stderr, "test execution requires an absolute executable path")
+		return 2
+	}
 	args, pwd, root := request.Args, request.Directory, request.Root
 	getenv := func(name string) string { value, _ := request.lookup(name); return value }
 	run := func(args []string, _ bool, stdin io.Reader, stdout, stderr io.Writer) int {
