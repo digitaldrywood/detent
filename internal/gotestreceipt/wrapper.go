@@ -40,6 +40,13 @@ func IsWrapperInvocation(arg0 string) bool {
 }
 
 func RunWrapper(args []string, getenv func(string) string, stdin io.Reader, stdout, stderr io.Writer) int {
+	if len(args) >= 3 && args[0] == "--detent-source-digest" {
+		if err := writeBinaryDigest(args[1], args[2]); err != nil {
+			fmt.Fprintf(stderr, "%s: source verifier: %v\n", WrapperName, err)
+			return 1
+		}
+		return 0
+	}
 	if len(args) == 0 {
 		fmt.Fprintf(stderr, "%s: missing program\n", WrapperName)
 		return 2
@@ -61,10 +68,16 @@ func RunWrapper(args []string, getenv func(string) string, stdin io.Reader, stdo
 	}
 	env := wrapperEnvironment(root, args[0], getenv)
 	client := NewClient(socket, token)
+	defer client.http.CloseIdleConnections()
 	ctx := context.Background()
 	candidates, err := client.Lookup(ctx, key)
 	if err != nil {
 		fmt.Fprintf(stderr, "%s: receipt lookup unavailable: %v\n", WrapperName, err)
+	}
+	if err := checkEligibility(ctx, args[0]); err != nil {
+		fmt.Fprintf(stderr, "%s: receipt not eligible: %v\n", WrapperName, err)
+		_ = client.Refuse(ctx, Refusal{Package: packageName(pwd, env), Reason: err.Error()})
+		return run(args, true, stdin, stdout, stderr)
 	}
 	for _, candidate := range candidates {
 		digest, err := Digest(candidate.Inputs, env)
@@ -158,8 +171,24 @@ func readTestLog(path, pwd string, env Environment, start time.Time) (inputs []s
 func Key(binary string, args []string, getenv func(string) string) (string, error) {
 	hash := sha256.New()
 	fmt.Fprintf(hash, "%s\n%s/%s\n", protocolFingerprint, runtime.GOOS, runtime.GOARCH)
-	if err := copyFile(hash, binary); err != nil {
+	binaryHash := sha256.New()
+	if err := copyFile(binaryHash, binary); err != nil {
 		return "", fmt.Errorf("hash test binary: %w", err)
+	}
+	fmt.Fprintf(hash, "binary %x", binaryHash.Sum(nil))
+	pwd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("working directory: %w", err)
+	}
+	for _, value := range []string{pwd, getenv(RootEnvironment)} {
+		fmt.Fprintf(hash, "\npath %d %s", len(value), value)
+	}
+	environment := slices.DeleteFunc(os.Environ(), func(entry string) bool {
+		name, _, _ := strings.Cut(entry, "=")
+		return name == SocketEnvironment || name == TokenEnvironment || name == RootEnvironment
+	})
+	for _, entry := range environment {
+		fmt.Fprintf(hash, "\nenviron %d %s", len(entry), entry)
 	}
 	for _, arg := range args {
 		fmt.Fprintf(hash, "\narg %d %s", len(arg), arg)
@@ -199,7 +228,6 @@ func wrapperEnvironment(root, binary string, getenv func(string) string) Environ
 		}
 	}
 	if runtime.GOOS != "windows" {
-		env.IgnoreDirs = append(env.IgnoreDirs, "/dev/null", "/dev/zero", "/dev/random", "/dev/urandom", "/dev/tty", "/dev/stdin", "/dev/stdout", "/dev/stderr", "/dev/fd")
 		env.UncacheableDirs = []string{"/dev", "/proc", "/sys"}
 	}
 	return env
@@ -242,4 +270,20 @@ func run(args []string, isolate bool, stdin io.Reader, stdout, stderr io.Writer)
 	}
 	fmt.Fprintf(stderr, "%s: %v\n", WrapperName, err)
 	return 1
+}
+
+func writeBinaryDigest(path, binary string) (err error) {
+	hash := sha256.New()
+	if err := copyFile(hash, binary); err != nil {
+		return fmt.Errorf("hash compiled binary: %w", err)
+	}
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return fmt.Errorf("create binary digest: %w", err)
+	}
+	defer func() { err = errors.Join(err, file.Close()) }()
+	if _, err := file.Write(hash.Sum(nil)); err != nil {
+		return fmt.Errorf("write binary digest: %w", err)
+	}
+	return nil
 }
