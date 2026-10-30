@@ -413,10 +413,10 @@ func readPublishedReview(ctx context.Context, q nativeQueryer, id tracker.WorkIt
 	if disposition.Status != workpad.StatusComplete || disposition.Blockers || disposition.HumanAction || disposition.ReasonCode != "" || len(disposition.BlockerEvidence) != 0 {
 		return connector.ChangeReview{}, "", nil
 	}
-	if source.WorktreeState != "clean" && source.WorktreeState != "unpushed" || !validCommitID(source.HeadSHA) {
+	if source == nil {
 		return connector.ChangeReview{}, "", nil
 	}
-	if source == nil {
+	if source.WorktreeState != "clean" && source.WorktreeState != "unpushed" || !validCommitID(source.HeadSHA) {
 		return connector.ChangeReview{}, "", nil
 	}
 	if source.EffectState == "pending" || source.EffectState == "ambiguous" {
