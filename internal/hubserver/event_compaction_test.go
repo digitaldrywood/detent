@@ -15,7 +15,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -42,6 +44,10 @@ func TestEventCompactionWorkHistory(t *testing.T) {
 			t.Parallel()
 			now := time.Date(2026, 10, 7, 8, 0, 0, 0, time.UTC)
 			f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
+			f.service.config.ArchiveReader = func(ctx context.Context, ref attachment.ArchiveReference, _ bool) (entryauthority.ArchiveResponse, error) {
+				data, err := f.service.config.Content(ctx, entryauthority.ContentRequest{Organization: string(f.project.OrganizationID), Reference: ref})
+				return entryauthority.ArchiveResponse{Data: data}, err
+			}
 			issue := f.create(t, "retain history")
 			path := f.base + "/work-items/" + string(issue.WorkItemID)
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "comment"}, Body: "Human decision retained"}), http.StatusOK)
@@ -109,6 +115,9 @@ func TestEventCompactionWorkHistory(t *testing.T) {
 			if before.NextCursor == "" {
 				t.Fatal("missing initial cursor")
 			}
+			if test.extraActivity > 0 {
+				f.service.config.Content = nil
+			}
 			beforeSchema := storageSchemaVersion(t, f.service.database.reader)
 			if err := f.service.maintainNativeRetention(t.Context(), now); err != nil {
 				t.Fatal(err)
@@ -123,8 +132,32 @@ func TestEventCompactionWorkHistory(t *testing.T) {
 						t.Fatal(err)
 					}
 					var remaining, checkpoints int64
-					if err := f.service.database.db.QueryRowContext(t.Context(), `SELECT count(*),coalesce(sum(json_type(data_json,'$.run.runtime.activity.spans') IS NOT NULL),0) FROM collaboration_events WHERE work_item_id=? AND type='run.checkpointed'`, issue.WorkItemID).Scan(&checkpoints, &remaining); err != nil {
+					ctx := f.service.runDetailContext(t.Context())
+					rows, err := f.service.database.reader.QueryContext(ctx, "SELECT "+collaborationPayloadColumn("")+" FROM collaboration_events WHERE work_item_id=? AND type='run.checkpointed'", issue.WorkItemID)
+					if err != nil {
 						t.Fatal(err)
+					}
+					documents := []string{}
+					for rows.Next() {
+						var document string
+						if err := rows.Scan(&document); err != nil {
+							rows.Close()
+							t.Fatal(err)
+						}
+						documents = append(documents, document)
+					}
+					if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+						t.Fatal(err)
+					}
+					for _, document := range documents {
+						var data tracker.CollaborationData
+						if err := decodeRunHistory(ctx, f.service.database.reader, document, &data); err != nil {
+							t.Fatal(err)
+						}
+						checkpoints++
+						if data.Run != nil && data.Run.Runtime != nil && data.Run.Runtime.Activity != nil && len(data.Run.Runtime.Activity.Spans) > 0 {
+							remaining++
+						}
 					}
 					if summary.RemovedEvents != 0 || summary.CompactedActivityEvents != want.compacted || remaining != want.remaining || checkpoints != 501 {
 						t.Fatalf("compaction=%+v remaining=%d checkpoints=%d want=%+v", summary, remaining, checkpoints, want)
@@ -716,8 +749,8 @@ func TestEventCompactionPassIsBoundedAndYieldsToWrites(t *testing.T) {
 		t.Fatalf("removed per pass=%v want %v", removed, want)
 	}
 	var referenced int
-	if err := a.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE work_item_id=? AND payload_version=1 AND payload_attachment_id<>''", a.issue.WorkItemID).Scan(&referenced); err != nil || referenced != 4 {
-		t.Fatalf("archive references=%d, want 4: %v", referenced, err)
+	if err := a.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE work_item_id=? AND payload_version=1 AND payload_object_key<>''", a.issue.WorkItemID).Scan(&referenced); err != nil || referenced != 5 {
+		t.Fatalf("archive references=%d, want 5: %v", referenced, err)
 	}
 	if counts := a.runEvents(t); counts["run.observed"] != backlog+1 || counts["run.checkpointed"] != 1 {
 		t.Fatalf("history after backfill=%v", counts)
