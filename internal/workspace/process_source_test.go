@@ -3,6 +3,7 @@ package workspace
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -19,7 +20,10 @@ func TestReapingUsesInjectedProcessSource(t *testing.T) {
 		{"artifact path", ReapWorkerArtifactPathProcesses},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			root := t.TempDir()
+			root, err := filepath.EvalSymlinks(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
 			scratch, err := PrepareWorkerScratch(t.Context(), root)
 			if err != nil {
 				t.Fatal(err)
