@@ -47,15 +47,22 @@ func (o *Orchestrator) startWorkspaceCleanupPass(ctx context.Context, state *Sta
 	if budget <= 0 {
 		budget = defaultPollInterval
 	}
-	cleanupCtx, cancel := context.WithTimeout(ctx, budget)
+	workerCtx, stop := context.WithCancel(ctx)
 	restScope := &connector.RESTScope{ProjectID: o.cfg.Project.ID, Name: "async_workspace_cleanup"}
-	cleanupCtx = connector.WithRESTScope(cleanupCtx, restScope)
-	cleanupCtx = connector.WithRESTFanoutBudget(cleanupCtx, "workspace_cleanup")
-	cleanupCtx = workspace.WithCleanupBatch(cleanupCtx, workspaceCleanupBatchSize)
-	o.workspaceCleanupCancel = cancel
+	workerCtx = connector.WithRESTScope(workerCtx, restScope)
+	workerCtx = connector.WithRESTFanoutBudget(workerCtx, "workspace_cleanup")
+	workerCtx = workspace.WithCleanupBatch(workerCtx, workspaceCleanupBatchSize)
+	withTimeout := o.workspaceCleanupTimeout
+	if withTimeout == nil {
+		withTimeout = context.WithTimeout
+	}
+	cleanupCtx, cancel := withTimeout(workerCtx, budget)
+	worker.workspaceCleanupContext = workspace.WithCleanupAdmission(workerCtx, cleanupCtx)
+	o.workspaceCleanupCancel = stop
 	o.workspaceCleanupWG.Add(1)
 	go func() {
 		defer o.workspaceCleanupWG.Done()
+		defer cancel()
 		defer connector.LogRESTScope(o.logger, restScope)
 		if maintainer, ok := worker.workAttempts.(store.RuntimeHistoryMaintainer); ok {
 			if err := maintainer.PruneRuntimeHistory(cleanupCtx, now); err != nil {

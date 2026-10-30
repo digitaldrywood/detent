@@ -15,7 +15,9 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/toolcache"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -322,5 +324,125 @@ func TestWorkspaceCleanupMaintainsHistoryBetweenWorkspaceSweeps(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+type cleanupTestClock struct {
+	now    time.Time
+	timers []*cleanupTestDeadline
+}
+
+type cleanupTestDeadline struct {
+	context.Context
+	clock    *cleanupTestClock
+	deadline time.Time
+	cancel   context.CancelFunc
+}
+
+func (c *cleanupTestDeadline) Deadline() (time.Time, bool) { return c.deadline, true }
+func (c *cleanupTestDeadline) Err() error {
+	if !c.clock.now.Before(c.deadline) {
+		return context.DeadlineExceeded
+	}
+	return c.Context.Err()
+}
+func (c *cleanupTestClock) withTimeout(parent context.Context, budget time.Duration) (context.Context, context.CancelFunc) {
+	deadline := c.now.Add(budget)
+	if inherited, ok := parent.Deadline(); ok && inherited.Before(deadline) {
+		deadline = inherited
+	}
+	ctx, cancel := context.WithCancel(parent)
+	timer := &cleanupTestDeadline{Context: ctx, clock: c, deadline: deadline, cancel: cancel}
+	c.timers = append(c.timers, timer)
+	return timer, cancel
+}
+func (c *cleanupTestClock) advance(elapsed time.Duration) {
+	c.now = c.now.Add(elapsed)
+	for _, timer := range c.timers {
+		if !c.now.Before(timer.deadline) {
+			timer.cancel()
+		}
+	}
+}
+
+type deadlineCleanupReaper struct {
+	scan  func(context.Context) error
+	calls int
+}
+
+func (r *deadlineCleanupReaper) ReapWorkspace(ctx context.Context, _ connector.Issue) (WorkspaceReapResult, error) {
+	r.calls++
+	if err := r.scan(ctx); err != nil {
+		return WorkspaceReapResult{}, cleanupDiagnosticError{path: "/workspace/example", message: err.Error()}
+	}
+	return WorkspaceReapResult{Path: "/workspace/example"}, nil
+}
+
+type deadlineResidualReaper struct{ *deadlineCleanupReaper }
+
+func (r *deadlineResidualReaper) WorkspaceCleanupIssues(context.Context, string, int) ([]connector.Issue, string, error) {
+	return nil, "", nil
+}
+func (r *deadlineResidualReaper) ReconcileWorkspaces(ctx context.Context, _ []connector.Issue) (WorkspaceReconcileResult, error) {
+	r.calls++
+	err := r.scan(ctx)
+	if err != nil {
+		return WorkspaceReconcileResult{Failures: []runpkg.WorkspaceCleanupFailure{{Path: "/workspace/example", Error: err.Error()}}}, err
+	}
+	return WorkspaceReconcileResult{}, nil
+}
+
+func TestWorkspaceCleanupScanDeadlines(t *testing.T) {
+	for _, residual := range []bool{false, true} {
+		for _, tt := range []struct {
+			name                    string
+			earlier, scan           time.Duration
+			cancelParent            bool
+			wantCalls, wantFailures int
+		}{
+			{name: "earlier step leaves little budget", earlier: 9 * time.Second, scan: 2 * time.Second, wantCalls: 1},
+			{name: "exhausted pass defers", earlier: 10 * time.Second},
+			{name: "scan exceeds own budget", earlier: 9 * time.Second, scan: 31 * time.Second, wantCalls: 1, wantFailures: 1},
+			{name: "parent cancellation stops scan", earlier: 9 * time.Second, cancelParent: true, wantCalls: 1, wantFailures: 1},
+		} {
+			t.Run(fmt.Sprintf("residual=%v/%s", residual, tt.name), func(t *testing.T) {
+				clock := &cleanupTestClock{now: time.Now()}
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				reaper := &deadlineCleanupReaper{scan: func(ctx context.Context) error {
+					stage, stop := clock.withTimeout(ctx, 30*time.Second)
+					defer stop()
+					if tt.cancelParent {
+						cancel()
+						<-stage.Done()
+						return stage.Err()
+					}
+					clock.advance(tt.scan)
+					return stage.Err()
+				}}
+				cfg := normalizeConfig(Config{PollInterval: 10 * time.Second, TerminalStates: []string{"Done"}, WorkspaceCleanupSweepInterval: time.Hour})
+				tracker := &runningStateConnector{issuesByState: []connector.Issue{{ID: "closed", Identifier: "owner/repository#1", State: "Done"}}}
+				o := &Orchestrator{cfg: cfg, connector: tracker, reaper: reaper, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), workspaceCleanupTimeout: clock.withTimeout}
+				if residual {
+					o.reaper = &deadlineResidualReaper{reaper}
+				}
+				o.trimHostCache = func(context.Context, toolcache.Policy, time.Time) error { clock.advance(tt.earlier); return nil }
+				state := newState(cfg)
+				state.LastWorkspaceCleanupAt = clock.now
+				o.startWorkspaceCleanup(ctx, &state, clock.now)
+				finishTestWorkspaceCleanup(t, o, &state)
+				if reaper.calls != tt.wantCalls || len(state.CleanupFailures) != tt.wantFailures {
+					t.Fatalf("calls=%d failures=%v, want calls=%d failures=%d", reaper.calls, state.CleanupFailures, tt.wantCalls, tt.wantFailures)
+				}
+				if tt.wantCalls == 0 {
+					o.trimHostCache = nil
+					o.startWorkspaceCleanup(ctx, &state, clock.now)
+					finishTestWorkspaceCleanup(t, o, &state)
+					if reaper.calls != 1 || len(state.CleanupFailures) != 0 {
+						t.Fatalf("deferred scan did not succeed next pass: calls=%d failures=%v", reaper.calls, state.CleanupFailures)
+					}
+				}
+			})
+		}
 	}
 }

@@ -373,7 +373,7 @@ func (l *LocalGit) ReconcileResiduals(ctx context.Context, activeIssues []Issue)
 			result.ActiveSkipped++
 			continue
 		}
-		removed, reconcileErr := l.reconcileWorkspace(ctx, record, inventory.recorded[record.Path], &result)
+		removed, reconcileErr := l.reconcileWorkspace(WithCleanupAdmission(ctx, ctx), record, inventory.recorded[record.Path], &result)
 		if reconcileErr != nil {
 			result.Failures = append(result.Failures, CleanupFailure{Path: record.Path, Error: reconcileErr.Error()})
 			if errors.Is(reconcileErr, ErrWorkspacePreserved) {
