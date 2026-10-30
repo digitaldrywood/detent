@@ -57,6 +57,7 @@ func TestSignalFromComment(t *testing.T) {
 		{name: "no change rejects abbreviated source", body: "```detent-status\nschema: 1\nstatus: no_change_needed\nno_change: {verified_sha: abc, evidence: passed}\n```", wantOK: true, wantInvalid: "full lowercase source SHA"},
 		{name: "no change requires evidence", body: "```detent-status\nschema: 1\nstatus: no_change_needed\nno_change: {verified_sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}\n```", wantOK: true, wantInvalid: "evidence must contain"},
 		{name: "ordinary completion rejects no change report", body: "```detent-status\nschema: 1\nstatus: complete\nno_change: {verified_sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, evidence: passed}\n```", wantOK: true, wantInvalid: "only valid when status"},
+		{name: "no change cannot carry reason code", body: "```detent-status\nschema: 1\nstatus: no_change_needed\nno_change: {verified_sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, evidence: passed}\nreason_code: instance_limitation\n```", wantOK: true, wantInvalid: "cannot carry blockers or human_action or reason_code"},
 		{name: "no change cannot request human action", body: "```detent-status\nschema: 1\nstatus: no_change_needed\nno_change: {verified_sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, evidence: passed}\nhuman_action: approval\n```", wantOK: true, wantInvalid: "cannot carry blockers"},
 		{
 			name:   "review dispositions survive completion parsing",

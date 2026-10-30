@@ -61,6 +61,20 @@ type NoChangeReport struct {
 	Evidence    string `json:"evidence" yaml:"evidence"`
 }
 
+func (r *NoChangeReport) Validate() error {
+	if r == nil {
+		return errors.New("no_change_needed requires a no_change report")
+	}
+	sha, err := hex.DecodeString(r.VerifiedSHA)
+	if err != nil || len(sha) != 20 || r.VerifiedSHA != strings.ToLower(r.VerifiedSHA) || r.VerifiedSHA == strings.Repeat("0", 40) {
+		return errors.New("no_change verified_sha must be a full lowercase source SHA")
+	}
+	if strings.TrimSpace(r.Evidence) == "" || len(r.Evidence) > 32768 || !utf8.ValidString(r.Evidence) {
+		return errors.New("no_change evidence must contain 1 to 32768 bytes of UTF-8 text")
+	}
+	return nil
+}
+
 type Signal struct {
 	NoChange           *NoChangeReport     `json:"no_change,omitempty" yaml:"no_change,omitempty"`
 	ReviewDispositions []ReviewDisposition `json:"review_dispositions,omitempty" yaml:"review_dispositions,omitempty"`
@@ -472,21 +486,15 @@ func ParseStatusBlock(content string, repo string) (*Signal, error) {
 		fields = nil
 	}
 	if raw.Status == StatusNoChangeNeeded {
-		if raw.NoChange == nil {
-			problems = append(problems, "no_change_needed requires a no_change report")
-		} else {
+		if raw.NoChange != nil {
 			raw.NoChange.VerifiedSHA = strings.TrimSpace(raw.NoChange.VerifiedSHA)
 			raw.NoChange.Evidence = strings.TrimSpace(raw.NoChange.Evidence)
-			sha, err := hex.DecodeString(raw.NoChange.VerifiedSHA)
-			if err != nil || len(sha) != 20 || raw.NoChange.VerifiedSHA != strings.ToLower(raw.NoChange.VerifiedSHA) || raw.NoChange.VerifiedSHA == strings.Repeat("0", 40) {
-				problems = append(problems, "no_change verified_sha must be a full lowercase source SHA")
-			}
-			if raw.NoChange.Evidence == "" || len(raw.NoChange.Evidence) > 32768 {
-				problems = append(problems, "no_change evidence must contain 1 to 32768 bytes")
-			}
 		}
-		if len(blockers) != 0 || humanAction != "" {
-			problems = append(problems, "no_change_needed cannot carry blockers or human_action")
+		if err := raw.NoChange.Validate(); err != nil {
+			problems = append(problems, err.Error())
+		}
+		if len(blockers) != 0 || humanAction != "" || reasonCode != "" {
+			problems = append(problems, "no_change_needed cannot carry blockers or human_action or reason_code")
 		}
 	} else if raw.NoChange != nil {
 		problems = append(problems, "no_change is only valid when status is no_change_needed")
