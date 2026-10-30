@@ -175,7 +175,7 @@ func (s *conversationStore) messageStorage(ctx context.Context, tx *sql.Tx, mess
 		return "", "", "", err
 	}
 	digest := artifact.Digest(content)
-	if message.ContentID != "" && digest == message.contentHash {
+	if message.ContentID != "" && digest == message.ContentHash {
 		return "", "{}", message.ContentID, nil
 	}
 	var organization, project, uploader string
@@ -212,7 +212,7 @@ func (s *conversationStore) resolveMessageContents(ctx context.Context, query na
 		}
 		key := organization + "/" + message.ContentID
 		if cached, ok := cache[key]; ok {
-			message.Text, message.Data, message.contentHash = cached.content.Text, cached.content.Data, cached.hash
+			message.Text, message.Data, message.ContentHash = cached.content.Text, cached.content.Data, cached.hash
 			continue
 		}
 		content, err := s.readConversationArchive(ctx, query, organization, message.ContentID)
@@ -223,8 +223,8 @@ func (s *conversationStore) resolveMessageContents(ctx context.Context, query na
 		if err := json.Unmarshal(content, &decoded); err != nil {
 			return fmt.Errorf("decode conversation content: %w", err)
 		}
-		message.Text, message.Data, message.contentHash = decoded.Text, decoded.Data, artifact.Digest(content)
-		cache[key] = readConversationContent{content: decoded, hash: message.contentHash}
+		message.Text, message.Data, message.ContentHash = decoded.Text, decoded.Data, artifact.Digest(content)
+		cache[key] = readConversationContent{content: decoded, hash: message.ContentHash}
 	}
 	for _, message := range messages {
 		if message.Role != conversation.RoleAssistant || message.TextBytes <= int64(len(message.Text)) {
@@ -612,7 +612,7 @@ func (b *conversationReadBatch) hydrateMessages(ctx context.Context, store *conv
 			if err := json.Unmarshal(raw, &content); err != nil {
 				return err
 			}
-			message.Text, message.Data, message.contentHash = content.Text, content.Data, artifact.Digest(raw)
+			message.Text, message.Data, message.ContentHash = content.Text, content.Data, artifact.Digest(raw)
 			if message.StoredTextBytes.Valid && message.StoredTextBytes.Int64 != int64(len(message.Text)) {
 				return errors.New("message stored text length does not match content")
 			}

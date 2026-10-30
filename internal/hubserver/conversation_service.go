@@ -13,59 +13,15 @@ import (
 
 	"github.com/labstack/echo/v4"
 
-	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/conversation"
-	"github.com/digitaldrywood/detent/internal/runner"
-	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/hubconversation"
 )
 
-// ConversationConfig enables the conversation product on the hub.
-type ConversationConfig struct {
-	ArchiveContents attachment.ArchiveContentStore `yaml:"-"`
-	// Enabled mounts the conversation API and streams.
-	Enabled bool
-	// Backend runs coordinator turns for conversations without a linked
-	// issue. When nil ordinary chat reports the coordinator as unavailable
-	// and messages in unlinked conversations are saved until a link.
-	Backend      runner.AgentBackend
-	UsageSink    ConversationUsageSink
-	ModelBackend func() (runner.AgentBackend, string, error)
-	// Workspace is the directory coordinator turns run in. It must exist
-	// when Backend is set.
-	Workspace string
-	// Model is the model "auto" resolves to for this hub, offered beside the
-	// models the runners report, and the model coordinator turns use.
-	Model string
-	// ReasoningEffort is the effort coordinator turns use and the effort
-	// "auto" resolves to in the composer.
-	ReasoningEffort string
-	// QuestionTimeout bounds how long a pending runner question waits for
-	// an answer before it expires. Zero selects the runner default.
-	QuestionTimeout time.Duration
-	// ControlQueueSize bounds pending controls per conversation. Zero
-	// selects 64.
-	ControlQueueSize int
-	// SettleWindow is how long a conversation whose execution has ended or
-	// never started may sit without activity before it settles. Zero selects
-	// defaultConversationSettleWindow.
-	SettleWindow time.Duration
-}
+type ConversationConfig = hubconversation.Config
 
-type ConversationUsage struct {
-	OccurredAt     time.Time
-	OrganizationID tracker.OrganizationID
-	ProjectID      tracker.ProjectID
-	ConversationID string
-	TurnID         string
-	Provider       string
-	Model          string
-	Tokens         runner.AgentTokenCounts
-	Outcome        conversation.Delivery
-}
+type ConversationUsage = hubconversation.Usage
 
-type ConversationUsageSink interface {
-	RecordConversationUsage(context.Context, ConversationUsage) error
-}
+type ConversationUsageSink = hubconversation.UsageSink
 
 const (
 	defaultConversationControlQueueSize = 64
@@ -87,7 +43,7 @@ const (
 	conversationSnapshotQuestions = 20
 )
 
-func (c ConversationConfig) normalized() ConversationConfig {
+func normalizeConversationConfig(c ConversationConfig) ConversationConfig {
 	if c.ControlQueueSize <= 0 {
 		c.ControlQueueSize = defaultConversationControlQueueSize
 	}
@@ -548,196 +504,6 @@ func conversationActorFor(scope nativeScope) conversation.Actor {
 
 // Public resource projections (the conversation contract).
 
-type conversationOwnerResource struct {
-	PrincipalID string `json:"principal_id"`
-	Subject     string `json:"subject"`
-}
-
-type conversationExecutionResource struct {
-	Status conversation.ExecutionStatus `json:"status"`
-	// The owner identifiers are null rather than empty when no attempt owns
-	// the conversation; the client tells "absent" from "known" by null.
-	AttemptID *string `json:"attempt_id"`
-	RunID     *string `json:"run_id"`
-	RunnerID  *string `json:"runner_id"`
-	ThreadID  *string `json:"thread_id"`
-	TurnID    *string `json:"turn_id"`
-	// Resume reports what the bound runner continued from: its own provider
-	// thread, a transcript, or nothing.
-	Resume       string                    `json:"resume"`
-	Capabilities conversation.Capabilities `json:"capabilities"`
-	Error        *string                   `json:"error"`
-	UpdatedAt    time.Time                 `json:"updated_at"`
-}
-
-// conversationWorkItemResource is the linked issue as the client renders it:
-// enough to show and open the issue card without a second request.
-type conversationWorkItemResource struct {
-	ID         string `json:"id"`
-	Identifier string `json:"identifier"`
-	Title      string `json:"title"`
-	Lane       string `json:"lane"`
-	// RunnerBound reports that an attempt currently owns the issue, which
-	// is what the client shows instead of "waiting for runner".
-	RunnerBound bool `json:"runner_bound"`
-}
-
-type conversationResource struct {
-	ID             string                  `json:"id"`
-	WebURL         string                  `json:"web_url,omitempty"`
-	OrganizationID tracker.OrganizationID  `json:"organization_id"`
-	ProjectID      tracker.ProjectID       `json:"project_id"`
-	Title          string                  `json:"title"`
-	Visibility     conversation.Visibility `json:"visibility"`
-	Origin         string                  `json:"origin"`
-	Status         conversation.Status     `json:"status"`
-	Archived       bool                    `json:"archived"`
-	// Preferences are the conversation's turn preferences; each field is
-	// "auto" or an explicit value.
-	Preferences       conversation.Preferences      `json:"preferences"`
-	SubjectWorkItemID *string                       `json:"subject_work_item_id,omitempty"`
-	WorkItemID        *string                       `json:"work_item_id"`
-	LinkedAt          *time.Time                    `json:"linked_at"`
-	WorkItem          *conversationWorkItemResource `json:"work_item"`
-	Owner             conversationOwnerResource     `json:"owner"`
-	Execution         conversationExecutionResource `json:"execution"`
-	Revision          int64                         `json:"revision"`
-	EventSeq          int64                         `json:"event_seq"`
-	CreatedAt         time.Time                     `json:"created_at"`
-	UpdatedAt         time.Time                     `json:"updated_at"`
-	LastMessageAt     *time.Time                    `json:"last_message_at"`
-	// MessageCount is the whole history, so the share confirmation can say
-	// how much becomes readable.
-	MessageCount int64 `json:"message_count"`
-}
-
-type conversationMessageResource struct {
-	revision       int64
-	contentID      string
-	ID             string                   `json:"id"`
-	ConversationID string                   `json:"conversation_id"`
-	Seq            int64                    `json:"seq"`
-	Role           conversation.Role        `json:"role"`
-	Kind           conversation.MessageKind `json:"kind"`
-	Text           string                   `json:"text"`
-	Data           any                      `json:"data"`
-	Delivery       conversation.Delivery    `json:"delivery"`
-	AttemptID      *string                  `json:"attempt_id"`
-	TurnID         *string                  `json:"turn_id"`
-	ProviderItemID *string                  `json:"provider_item_id"`
-	Actor          conversation.Actor       `json:"actor"`
-	CommandKey     *string                  `json:"command_key"`
-	// References are the issues and conversations the text names, resolved
-	// against the project.
-	References []conversationReferenceResource `json:"references"`
-	// Attachments are the uploads the message carries, each with the URL
-	// that streams it.
-	Attachments []conversation.Attachment `json:"attachments"`
-	CreatedAt   time.Time                 `json:"created_at"`
-	UpdatedAt   time.Time                 `json:"updated_at"`
-}
-
-// conversationReferenceResource is one resolved reference as the client
-// renders it: a link with a label.
-type conversationReferenceResource struct {
-	Kind  conversation.ReferenceKind `json:"kind"`
-	ID    string                     `json:"id"`
-	Label string                     `json:"label"`
-	URL   string                     `json:"url"`
-}
-
-func projectReferences(references []conversationMessageReference) []conversationReferenceResource {
-	projected := make([]conversationReferenceResource, 0, len(references))
-	for _, reference := range references {
-		projected = append(projected, conversationReferenceResource{
-			Kind: reference.Kind, ID: reference.ID, Label: reference.Label,
-			URL: reference.URL,
-		})
-	}
-	return projected
-}
-
-func conversationOptional(value string) *string {
-	if value == "" {
-		return nil
-	}
-	return &value
-}
-
-func conversationBetweenTurns(execution conversation.Execution) bool {
-	return execution.Status == conversation.ExecutionRunning && execution.Owner.AttemptID != "" && execution.Owner.TurnID == ""
-}
-
-func projectExecution(execution conversation.Execution) conversationExecutionResource {
-	status := execution.Status
-	if status == "" {
-		status = conversation.ExecutionIdle
-	}
-	capabilities := execution.Capabilities
-	if conversationBetweenTurns(execution) {
-		capabilities.Steer = false
-	}
-	return conversationExecutionResource{
-		Status:       status,
-		AttemptID:    conversationOptional(execution.Owner.AttemptID),
-		RunID:        conversationOptional(execution.Owner.RunID),
-		RunnerID:     conversationOptional(execution.Owner.RunnerID),
-		ThreadID:     conversationOptional(execution.Owner.ThreadID),
-		TurnID:       conversationOptional(execution.Owner.TurnID),
-		Resume:       execution.Resume,
-		Capabilities: capabilities,
-		Error:        conversationOptional(execution.Error),
-		UpdatedAt:    execution.UpdatedAt,
-	}
-}
-
-// conversationRunnerBound reports whether an attempt currently owns the
-// conversation: an attempt identifier that has not reached a terminal
-// execution status.
-func conversationRunnerBound(execution conversation.Execution) bool {
-	return execution.Owner.AttemptID != "" && !execution.Status.Terminal()
-}
-
-// projectWorkItem renders the linked issue summary. An unlinked conversation,
-// or one whose issue could not be resolved, projects null.
-func projectWorkItem(record conversationRecord) *conversationWorkItemResource {
-	if record.WorkItemID == "" || record.WorkItem == nil {
-		return nil
-	}
-	return &conversationWorkItemResource{
-		ID:          record.WorkItem.ID,
-		Identifier:  record.WorkItem.Identifier,
-		Title:       record.WorkItem.Title,
-		Lane:        record.WorkItem.Lane,
-		RunnerBound: conversationRunnerBound(record.Execution),
-	}
-}
-
-// conversationIssueResult is the data.issue payload of the status message a
-// completed handoff appends. It survives a reload and reaches other tabs,
-// so the result card does not depend on the linking response.
-func conversationIssueResult(record conversationRecord) map[string]any {
-	item := projectWorkItem(record)
-	if item == nil {
-		return nil
-	}
-	return map[string]any{
-		"id": item.ID, "identifier": item.Identifier, "title": item.Title,
-		"state": item.Lane, "lane": item.Lane, "runner_bound": item.RunnerBound,
-	}
-}
-
-// conversationWorkItem is the linked issue summary cached on a conversation
-// record so that every projection reports the same identity without a
-// second lookup. runner_bound is not cached: it comes from the record's own
-// execution state, which changes far more often than the issue.
-type conversationWorkItem struct {
-	ID         string
-	Identifier string
-	Title      string
-	Lane       string
-}
-
 // resolveConversationWorkItems fills the linked issue summary of every linked
 // record in one query. A record whose issue is no longer readable keeps a nil
 // summary and projects work_item: null rather than failing the read.
@@ -789,60 +555,6 @@ WHERE i.native_id IN (SELECT value FROM sql_rows(?))`, ids)
 
 func conversationWorkItemKey(organization, project, workItem string) string {
 	return organization + "/" + project + "/" + workItem
-}
-
-func projectConversation(record conversationRecord) conversationResource {
-	return conversationResource{
-		ID:                record.ID,
-		OrganizationID:    record.OrganizationID,
-		ProjectID:         record.ProjectID,
-		Title:             record.Title,
-		Visibility:        record.Visibility,
-		Origin:            record.Origin,
-		Status:            record.Status,
-		Archived:          record.Archived,
-		Preferences:       record.Preferences.Normalized(),
-		SubjectWorkItemID: conversationOptional(record.SubjectWorkItemID),
-		WorkItemID:        conversationOptional(record.WorkItemID),
-		LinkedAt:          record.LinkedAt,
-		WorkItem:          projectWorkItem(record),
-		Owner:             conversationOwnerResource{PrincipalID: record.OwnerPrincipalID, Subject: record.OwnerSubject},
-		Execution:         projectExecution(record.Execution),
-		Revision:          record.Revision,
-		EventSeq:          record.EventSeq,
-		CreatedAt:         record.CreatedAt,
-		UpdatedAt:         record.UpdatedAt,
-		LastMessageAt:     record.LastMessageAt,
-		MessageCount:      record.MessageCount,
-	}
-}
-
-func projectMessage(record conversationMessageRecord) conversationMessageResource {
-	var data any = map[string]any{}
-	if len(record.Data) > 0 && string(record.Data) != "null" {
-		data = record.Data
-	}
-	return conversationMessageResource{
-		contentID:      record.ContentID,
-		revision:       record.Revision,
-		ID:             record.ID,
-		ConversationID: record.ConversationID,
-		Seq:            record.Seq,
-		Role:           record.Role,
-		Kind:           record.Kind,
-		Text:           record.Text,
-		Data:           data,
-		Delivery:       record.Delivery,
-		AttemptID:      conversationOptional(record.AttemptID),
-		TurnID:         conversationOptional(record.TurnID),
-		ProviderItemID: conversationOptional(record.ProviderItemID),
-		Actor:          record.Actor,
-		CommandKey:     conversationOptional(record.CommandKey),
-		References:     projectReferences(record.References),
-		Attachments:    projectAttachments(record.Attachments),
-		CreatedAt:      record.CreatedAt,
-		UpdatedAt:      record.UpdatedAt,
-	}
 }
 
 // loadConversation reads a conversation for the request scope and applies

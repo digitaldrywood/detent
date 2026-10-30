@@ -75,7 +75,7 @@ func (p *conversationPublicationPlan) message(ctx context.Context, message conve
 		return message, err
 	}
 	message.ContentID = contentArchiveID(string(p.record.OrganizationID), ref)
-	message.contentHash = artifact.Digest(raw)
+	message.ContentHash = artifact.Digest(raw)
 	return message, nil
 }
 

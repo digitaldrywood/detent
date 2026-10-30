@@ -1,4 +1,4 @@
-package hubserver
+package hubconversation
 
 import (
 	"testing"
@@ -26,12 +26,12 @@ func TestConversationResumeDecision(t *testing.T) {
 	)
 	for _, test := range []struct {
 		name     string
-		decision conversationResumeDecision
+		decision ResumeDecision
 		want     bool
 	}{
 		{
 			name: "a worker attempt is handed a transcript rather than the coordinator's thread",
-			decision: conversationResumeDecision{
+			decision: ResumeDecision{
 				RecordedRunnerID: thisRunner, RecordedOrigin: conversation.ThreadOriginCoordinator,
 				BindingRunnerID: thisRunner, Coordinator: false,
 			},
@@ -39,7 +39,7 @@ func TestConversationResumeDecision(t *testing.T) {
 		},
 		{
 			name: "a worker attempt resumes the worker thread it produced",
-			decision: conversationResumeDecision{
+			decision: ResumeDecision{
 				RecordedRunnerID: thisRunner, RecordedOrigin: conversation.ThreadOriginWorker,
 				BindingRunnerID: thisRunner, Coordinator: false,
 			},
@@ -47,7 +47,7 @@ func TestConversationResumeDecision(t *testing.T) {
 		},
 		{
 			name: "a coordinator turn continues its own coordinator thread",
-			decision: conversationResumeDecision{
+			decision: ResumeDecision{
 				RecordedRunnerID: thisRunner, RecordedOrigin: conversation.ThreadOriginCoordinator,
 				BindingRunnerID: thisRunner, Coordinator: true,
 			},
@@ -55,7 +55,7 @@ func TestConversationResumeDecision(t *testing.T) {
 		},
 		{
 			name: "a coordinator turn does not inherit a worker thread's authority",
-			decision: conversationResumeDecision{
+			decision: ResumeDecision{
 				RecordedRunnerID: thisRunner, RecordedOrigin: conversation.ThreadOriginWorker,
 				BindingRunnerID: thisRunner, Coordinator: true,
 			},
@@ -63,7 +63,7 @@ func TestConversationResumeDecision(t *testing.T) {
 		},
 		{
 			name: "another runner's thread is on another provider login and never resumes",
-			decision: conversationResumeDecision{
+			decision: ResumeDecision{
 				RecordedRunnerID: otherRunner, RecordedOrigin: conversation.ThreadOriginWorker,
 				BindingRunnerID: thisRunner, Coordinator: false,
 			},
@@ -71,7 +71,7 @@ func TestConversationResumeDecision(t *testing.T) {
 		},
 		{
 			name: "a thread recorded before the origin was known never resumes",
-			decision: conversationResumeDecision{
+			decision: ResumeDecision{
 				RecordedRunnerID: thisRunner, RecordedOrigin: "",
 				BindingRunnerID: thisRunner, Coordinator: false,
 			},
@@ -79,7 +79,7 @@ func TestConversationResumeDecision(t *testing.T) {
 		},
 		{
 			name: "a credential with no runner identity inherits the hub-side coordinator's thread from nobody",
-			decision: conversationResumeDecision{
+			decision: ResumeDecision{
 				RecordedRunnerID: "", RecordedOrigin: conversation.ThreadOriginCoordinator,
 				BindingRunnerID: "", Coordinator: true,
 			},
@@ -87,7 +87,7 @@ func TestConversationResumeDecision(t *testing.T) {
 		},
 		{
 			name: "a runner that names the thread on this bind is holding its own",
-			decision: conversationResumeDecision{
+			decision: ResumeDecision{
 				RunnerThreadID: "thread-named-by-the-runner", RecordedRunnerID: otherRunner,
 				RecordedOrigin: conversation.ThreadOriginCoordinator, BindingRunnerID: thisRunner, Coordinator: false,
 			},
@@ -96,7 +96,7 @@ func TestConversationResumeDecision(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			if got := test.decision.resumeThread(); got != test.want {
+			if got := test.decision.ResumeThread(); got != test.want {
 				t.Fatalf("resumeThread() = %v, want %v for %#v", got, test.want, test.decision)
 			}
 		})

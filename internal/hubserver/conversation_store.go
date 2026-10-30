@@ -69,100 +69,6 @@ const (
 	conversationOriginWorker = "worker"
 )
 
-type conversationRecord struct {
-	ContentID         string
-	ID                string
-	ReadAudience      string
-	OrganizationID    tracker.OrganizationID
-	ProjectID         tracker.ProjectID
-	OwnerPrincipalID  string
-	OwnerSubject      string
-	Origin            string
-	Title             string
-	Visibility        conversation.Visibility
-	Status            conversation.Status
-	Archived          bool
-	SubjectWorkItemID string
-	WorkItemID        string
-	LinkedAt          *time.Time
-	// WorkItem caches the linked issue summary the projections report. It
-	// is filled by resolveConversationWorkItems on every read.
-	WorkItem         *conversationWorkItem
-	Revision         int64
-	ProviderThreadID string
-	// ProviderThreadRunnerID names the runner whose provider login produced
-	// ProviderThreadID. It is empty for the transitional hub-side
-	// coordinator, so no runner resumes a thread it cannot reach.
-	ProviderThreadRunnerID string
-	// ProviderThreadOrigin names the kind of turn that produced
-	// ProviderThreadID: conversation.ThreadOriginCoordinator or
-	// conversation.ThreadOriginWorker. A thread carries the instructions and
-	// the permission set of the turn that opened it, so only a turn of the
-	// same kind resumes it. It is empty for threads
-	// recorded before the column existed, which therefore never resume.
-	ProviderThreadOrigin string
-	Execution            conversation.Execution
-	EventSeq             int64
-	CreatedAt            time.Time
-	UpdatedAt            time.Time
-	LastMessageAt        *time.Time
-	// SettledAt is when the conversation last became settled, nil while it
-	// is active.
-	SettledAt *time.Time
-	// Preferences are the conversation's turn preferences. Every field is
-	// "auto" until the user overrides it.
-	Preferences conversation.Preferences
-	// MessageCount is the conversation's whole history, filled by every
-	// read so the audience preview can report it.
-	MessageCount int64
-}
-
-type conversationMessageRecord struct {
-	Revision        int64
-	ID              string
-	ContentID       string
-	contentHash     string
-	TextBytes       int64
-	StoredTextBytes sql.NullInt64
-	ConversationID  string
-	Seq             int64
-	Role            conversation.Role
-	Kind            conversation.MessageKind
-	Text            string
-	Data            json.RawMessage
-	Delivery        conversation.Delivery
-	AttemptID       string
-	ThreadID        string
-	TurnID          string
-	ProviderItemID  string
-	Actor           conversation.Actor
-	CommandKey      string
-	// References are the issues and conversations the message names, filled
-	// by every read that projects the message.
-	References []conversationMessageReference
-	// Attachments are the uploads bound to the message, filled by the same
-	// reads as References.
-	Attachments []conversationAttachmentRecord
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
-}
-
-// conversationMessageReference is one stored, resolved reference: the hub
-// only records targets it could resolve, so a row always names something
-// that exists.
-type conversationMessageReference struct {
-	URL   string
-	Kind  conversation.ReferenceKind
-	ID    string
-	Label string
-}
-
-type conversationQuestionRecord struct {
-	ContentID string
-	conversation.Question
-	RequestID string
-}
-
 // conversationTime renders timestamps for the conversation tables with a
 // fixed width so that ordering and cursor comparison in SQL match time
 // order. The value stays RFC 3339 and parses with parseTimeValue.
@@ -345,7 +251,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 
 	); err != nil {
 		return fmt.Errorf("insert conversation: %w", conversationLinkError(err))
 	}
-	if err := executionQueryMetadata(record.Execution).write(ctx, tx, "conversations", "id=?", record.ID); err != nil {
+	if err := executionQueryMetadata(record.Execution).Write(ctx, tx, "conversations", "id=?", record.ID); err != nil {
 		return err
 	}
 	record.ContentID = contentID
@@ -595,7 +501,7 @@ WHERE id = ? AND organization_id = ? AND project_id = ? AND revision = ?`,
 	if affected == 1 {
 		record.Revision = next
 		record.ContentID = contentID
-		return executionQueryMetadata(record.Execution).write(ctx, tx, "conversations", "id=?", record.ID)
+		return executionQueryMetadata(record.Execution).Write(ctx, tx, "conversations", "id=?", record.ID)
 	}
 	var current int64
 	err = tx.QueryRowContext(ctx, "SELECT revision FROM conversations WHERE id = ? AND organization_id = ? AND project_id = ?", record.ID, record.OrganizationID, record.ProjectID).Scan(&current)
@@ -701,16 +607,16 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		return err
 	}
 	if contentID != "" {
-		metadata.add("actor_principal_id", message.Actor.PrincipalID)
+		metadata.Add("actor_principal_id", message.Actor.PrincipalID)
 	} else {
-		metadata.add("actor_principal_id", nil)
+		metadata.Add("actor_principal_id", nil)
 	}
-	metadata.add("text_bytes", len(message.Text))
-	metadata.add("stored_text_bytes", len(message.Text))
+	metadata.Add("text_bytes", len(message.Text))
+	metadata.Add("stored_text_bytes", len(message.Text))
 	if contentID != "" {
-		metadata.add("conversion_state", 2)
+		metadata.Add("conversion_state", 2)
 	}
-	if err := metadata.write(ctx, tx, "conversation_messages", "id=?", message.ID); err != nil {
+	if err := metadata.Write(ctx, tx, "conversation_messages", "id=?", message.ID); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, "UPDATE conversations SET last_message_at = ? WHERE id = ? AND (last_message_at IS NULL OR last_message_at < ?)", conversationTime(message.CreatedAt), message.ConversationID, conversationTime(message.CreatedAt)); err != nil {
@@ -758,16 +664,16 @@ WHERE id = ? AND conversation_id = ?`,
 		return err
 	}
 	if contentID != "" {
-		metadata.add("actor_principal_id", message.Actor.PrincipalID)
+		metadata.Add("actor_principal_id", message.Actor.PrincipalID)
 	} else {
-		metadata.add("actor_principal_id", nil)
+		metadata.Add("actor_principal_id", nil)
 	}
-	metadata.add("text_bytes", len(message.Text))
-	metadata.add("stored_text_bytes", len(message.Text))
+	metadata.Add("text_bytes", len(message.Text))
+	metadata.Add("stored_text_bytes", len(message.Text))
 	if contentID != "" {
-		metadata.add("conversion_state", 2)
+		metadata.Add("conversion_state", 2)
 	}
-	return metadata.write(ctx, tx, "conversation_messages", "id=?", message.ID)
+	return metadata.Write(ctx, tx, "conversation_messages", "id=?", message.ID)
 }
 
 // listMessages returns up to limit messages with seq below beforeSeq (or the
@@ -1098,7 +1004,7 @@ func (s *conversationStore) appendEvent(ctx context.Context, tx *sql.Tx, convers
 	if err != nil {
 		return 0, err
 	}
-	if err := metadata.write(ctx, tx, "conversation_events", "conversation_id=? AND seq=?", conversationID, seq); err != nil {
+	if err := metadata.Write(ctx, tx, "conversation_events", "conversation_id=? AND seq=?", conversationID, seq); err != nil {
 		return 0, err
 	}
 	return seq, nil

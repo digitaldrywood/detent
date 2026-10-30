@@ -855,9 +855,9 @@ func appendNativeHistory(ctx context.Context, tx *sql.Tx, scope nativeScope, wor
 		return err
 	}
 	if strings.HasPrefix(eventType, "run.") {
-		metadata.values[1] = false
+		metadata.Values[1] = false
 	}
-	args := []any{id, scope.organization, scope.project, workItemID, sequence, eventType, actor, storedPayload, formatHubTime(now), decision.Outcome, decision.Reason, decision.Source, decision.RunnerID, nullString(data.FromState), nullString(data.ToState), attempt, key, now.UnixNano(), metadata.values[0], metadata.values[1]}
+	args := []any{id, scope.organization, scope.project, workItemID, sequence, eventType, actor, storedPayload, formatHubTime(now), decision.Outcome, decision.Reason, decision.Source, decision.RunnerID, nullString(data.FromState), nullString(data.ToState), attempt, key, now.UnixNano(), metadata.Values[0], metadata.Values[1]}
 	args = append(args, eventClaimFacts(data.Run)...)
 	args = append(args, archiveValues...)
 	args = append(args, payloadValues...)

@@ -50,7 +50,7 @@ func compactConversationEvent(body any) any {
 	case conversationMessageResource:
 		raw, ok := value.Data.(json.RawMessage)
 		empty := !ok || len(raw) == 0 || string(raw) == "{}" || string(raw) == "null"
-		return conversationMessageFact{ID: value.ID, TurnID: value.TurnID, EmptyData: empty, Role: value.Role, Kind: value.Kind, AttemptID: value.AttemptID, MessageID: value.ID, ContentID: value.contentID, Revision: value.revision, Delivery: value.Delivery, TextBytes: len(value.Text), UpdatedAt: value.UpdatedAt}
+		return conversationMessageFact{ID: value.ID, TurnID: value.TurnID, EmptyData: empty, Role: value.Role, Kind: value.Kind, AttemptID: value.AttemptID, MessageID: value.ID, ContentID: value.ContentID, Revision: value.Revision, Delivery: value.Delivery, TextBytes: len(value.Text), UpdatedAt: value.UpdatedAt}
 	case conversation.Question:
 		return conversationQuestionFact{QuestionID: value.ID, Status: value.Status, AnsweredBy: value.AnsweredBy, UpdatedAt: value.UpdatedAt, Answered: value.Answers != nil}
 	default:
