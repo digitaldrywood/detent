@@ -144,8 +144,7 @@ record("start")
 print("output from " + stage, flush=True)
 if os.environ.get("BARRIER") and (stage in ("app", "generated") or
         (os.environ.get("BROWSER_BARRIER") and stage in ("full", "browser-test"))):
-    with socket.socket(socket.AF_UNIX) as connection:
-        connection.connect(os.environ["BARRIER"])
+    with socket.create_connection(("127.0.0.1", int(os.environ["BARRIER"]))) as connection:
         connection.sendall(stage.encode())
         assert connection.recv(1) == b"x"
 record("end")
@@ -174,16 +173,15 @@ sys.exit(7 if stage in json.loads(os.environ["FAILURES"]) else 0)
                            REAL_PYTHON=sys.executable, PROBE_TOOL=str(tool), TMPDIR=str(root), FAILURES=json.dumps(failures))
                 env.pop("BARRIER", None)
                 env.pop("BROWSER_BARRIER", None)
-                server = socket.socket(socket.AF_UNIX)
+                server = socket.socket(socket.AF_INET)
                 clients = []
                 errors = []
                 barrier = None
                 if budget > 1:
-                    address = str(root / "barrier")
-                    server.bind(address)
+                    server.bind(("127.0.0.1", 0))
                     server.listen(2)
                     server.settimeout(15)
-                    env["BARRIER"] = address
+                    env["BARRIER"] = str(server.getsockname()[1])
                     if budget >= 4 and "browser-build" not in failures:
                         env["BROWSER_BARRIER"] = "true"
 
