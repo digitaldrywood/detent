@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/releaseprovenance"
 )
@@ -20,15 +21,25 @@ func TestReleaseFinalizer(t *testing.T) {
 	if _, err := exec.LookPath("jq"); err != nil {
 		t.Skip("jq is required for the release shell fixture")
 	}
-	const repository = "digitaldrywood/detent"
+	const repository = "example-org/example-project"
 	for _, tt := range []struct {
 		name, requirements, auditState                            string
 		awaitsStatus, unset, missingAudit, missingSuite, wrongSHA bool
 		superseded, suiteSuperseded, staleHead, newSeries         bool
 		differentSeries, unchanged, releaseRun, oldProvenance     bool
 		rejectReuse                                               bool
+		platform                                                  string
 	}{
 		{name: "green statuses tag and dispatch", requirements: `["scheduled-full-ci", "release-security-audit"]`},
+		{name: "platform missing", platform: "missing", awaitsStatus: true},
+		{name: "platform failed", platform: "failure", awaitsStatus: true},
+		{name: "platform stale", platform: "stale", awaitsStatus: true},
+		{name: "platform pending supersedes success", platform: "pending", awaitsStatus: true},
+		{name: "platform future timestamp", platform: "future", awaitsStatus: true},
+		{name: "platform ancestor succeeds", platform: "ancestor"},
+		{name: "platform invalid timestamp", platform: "invalid", awaitsStatus: true},
+		{name: "platform API failure", platform: "api-error", awaitsStatus: true},
+		{name: "reuse missing platform", platform: "missing", unchanged: true, rejectReuse: true},
 		{name: "configured extras recorded", requirements: `["extra"]`},
 		{name: "unset requirements still require audit", unset: true, missingAudit: true, awaitsStatus: true},
 		{name: "empty requirements still require audit", requirements: `[]`, missingAudit: true, awaitsStatus: true},
@@ -57,6 +68,9 @@ func TestReleaseFinalizer(t *testing.T) {
 set -euo pipefail
 printf 'forge %s\n' "$*" >> "$FIXTURE_LOG"
 case "$*" in
+  *'/commits/'*'/statuses?per_page=100')
+    if [ "$FIXTURE_PLATFORM_MODE" = api-error ]; then exit 1; fi
+    if [[ "$*" == *"/$FIXTURE_PLATFORM_SHA/"* ]]; then cat "$FIXTURE_PLATFORM"; else printf '[[]]'; fi ;;
   *'/commits/'*'/status?per_page=100') cat "$FIXTURE_STATUSES" ;;
   *'/workflows/release.yml/runs?'*)
     if [ "$FIXTURE_RELEASE_RUN" = true ]; then
@@ -72,6 +86,7 @@ esac
 set -euo pipefail
 printf 'repository %s\n' "$*" >> "$FIXTURE_LOG"
 case "$*" in
+  'rev-list '*) printf '%s\n%s\n' "$FIXTURE_HEAD" bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb ;;
   'ls-remote '*) printf '%s\trefs/heads/release/v1.2\n' "$FIXTURE_HEAD" ;;
   'tag --list '*) if [ "$FIXTURE_NEW_SERIES" = false ]; then printf 'v1.2.3\n'; fi ;;
   'tag --points-at '*) if [ "$FIXTURE_UNCHANGED" = true ] && [[ "$*" == *'v1.2.*'* ]]; then printf 'v1.2.3\n'; fi ;;
@@ -119,6 +134,37 @@ esac
 			if err := os.WriteFile(filepath.Join(dir, "statuses"), rawStatuses, 0o600); err != nil {
 				t.Fatal(err)
 			}
+			platformSHA := sha
+			if tt.platform == "ancestor" {
+				platformSHA = strings.Repeat("b", 40)
+			}
+			platformState := "success"
+			platformTime := time.Now().UTC().Add(-time.Hour)
+			switch tt.platform {
+			case "failure", "pending":
+				platformState = tt.platform
+			case "stale":
+				platformTime = platformTime.Add(-24 * time.Hour)
+			case "future":
+				platformTime = platformTime.Add(2 * time.Hour)
+			}
+			platform := []map[string]any{{"context": "platform-full-ci", "id": 200, "state": platformState, "created_at": platformTime.Format(time.RFC3339)}}
+			if tt.platform == "invalid" {
+				platform[0]["created_at"] = "invalid"
+			}
+			if tt.platform == "missing" {
+				platform = []map[string]any{}
+			}
+			if tt.platform == "pending" {
+				platform = append(platform, map[string]any{"context": "platform-full-ci", "id": 199, "state": "success", "created_at": platformTime.Format(time.RFC3339)})
+			}
+			rawPlatform, err := json.Marshal([]any{platform})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "platform"), rawPlatform, 0o600); err != nil {
+				t.Fatal(err)
+			}
 			manifest := releaseprovenance.Manifest{Schema: 1, Repository: repository, Tag: "v1.2.3", Commit: sha,
 				Checks: []releaseprovenance.Check{{Name: "scheduled-full-ci", Status: "completed", Conclusion: "success", StatusID: 123}}}
 			if !tt.oldProvenance {
@@ -146,6 +192,7 @@ esac
 				"GITHUB_REPOSITORY=" + repository, "CI_DEVELOP_SHA=" + sha, "CI_RELEASE_BRANCH=" + releaseBranch,
 				"FIXTURE_LOG=" + filepath.Join(dir, "calls"), "FIXTURE_HEAD=" + head, "FIXTURE_NEW_SERIES=" + flag[tt.newSeries],
 				"FIXTURE_UNCHANGED=" + flag[tt.unchanged], "FIXTURE_RELEASE_RUN=" + flag[tt.releaseRun],
+				"FIXTURE_PLATFORM_MODE=" + tt.platform, "FIXTURE_PLATFORM_SHA=" + platformSHA, "FIXTURE_PLATFORM=" + filepath.Join(dir, "platform"),
 				"FIXTURE_STATUSES=" + filepath.Join(dir, "statuses"), "FIXTURE_PROVENANCE=" + filepath.Join(dir, "provenance")}
 			if !tt.unset {
 				command.Env = append(command.Env, "DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON="+tt.requirements)

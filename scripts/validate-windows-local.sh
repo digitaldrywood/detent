@@ -43,6 +43,12 @@ until ssh_windows 'Test-Path "C:\Program Files\Go\bin\go.exe"' 2> /dev/null | tr
   sleep 20
 done
 
+actual_toolchain="$(ssh_windows "\$env:GOTOOLCHAIN = 'local'; & 'C:\\Program Files\\Go\\bin\\go.exe' env GOVERSION; exit \$LASTEXITCODE" | tr -d '\r')"
+if [ "$actual_toolchain" != "$toolchain" ]; then
+  echo "Windows Go toolchain does not match go.mod: expected $toolchain, got $actual_toolchain" >&2
+  exit 1
+fi
+
 ssh_windows 'if (Test-Path C:\src) { Remove-Item -Recurse -Force C:\src }; New-Item -ItemType Directory C:\src | Out-Null'
 tar -C "$worktree" --exclude=./node_modules --exclude=./web/conversation/node_modules --exclude=./tmp -cf - . | ssh_windows 'tar -xf - -C C:\src'
 ssh_windows "\$env:Path = 'C:\\Program Files\\Go\\bin;' + \$env:Path; \$env:GOTOOLCHAIN = 'local'; Set-Location C:\\src; go test -short -timeout=5m ${packages[*]}; if (\$LASTEXITCODE -ne 0) { exit \$LASTEXITCODE }; go test -timeout=5m -run '^TestPowerShellInstallScript' .; exit \$LASTEXITCODE"
