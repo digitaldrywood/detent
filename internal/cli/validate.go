@@ -43,7 +43,7 @@ func newValidateCommand(lookup func(string) string, httpClient *http.Client, ins
 			command := commandshell.Command(ctx, args[0], "")
 			command.Dir = root
 			command.Stdin, command.Stdout, command.Stderr = os.Stdin, cmd.OutOrStdout(), cmd.ErrOrStderr()
-			command.Env = os.Environ()
+			command.Env = gotestreceipt.ValidationEnvironment(os.Environ())
 			for name, value := range session.Environment() {
 				command.Env = append(command.Env, name+"="+value)
 			}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path"
 	"regexp"
 	"strings"
 )
@@ -19,7 +20,7 @@ const (
 	maxInputLength      = 1024
 	maxInputBytes       = 96 << 10
 	maxPackageLength    = 512
-	protocolFingerprint = "detent-go-test-receipt-v1"
+	protocolFingerprint = "detent-go-test-receipt-v2"
 )
 
 var digestPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -29,11 +30,21 @@ type Candidate struct {
 	Digest string   `json:"digest"`
 }
 
+type Execution struct {
+	ID        string `json:"id"`
+	DigestKey []byte `json:"digest_key"`
+}
+
+type ExecutionStore interface {
+	Begin(context.Context) (Execution, error)
+}
+
 type Receipt struct {
-	Key     string   `json:"key"`
-	Package string   `json:"package"`
-	Inputs  []string `json:"inputs"`
-	Digest  string   `json:"digest"`
+	ExecutionID string   `json:"execution_id,omitempty"`
+	Key         string   `json:"key"`
+	Package     string   `json:"package"`
+	Inputs      []string `json:"inputs"`
+	Digest      string   `json:"digest"`
 }
 
 type Store interface {
@@ -82,6 +93,13 @@ func ValidateInputs(inputs []string) error {
 		if input == "" || len(input) > maxInputLength || strings.ContainsAny(input, "\r\n\x00") {
 			return errors.New("receipt input is invalid")
 		}
+		fields := strings.Split(input, "\t")
+		switch {
+		case len(fields) == 2 && fields[0] == "env" && fields[1] != "" && !strings.ContainsAny(fields[1], "=/\\:"):
+		case len(fields) == 3 && (fields[0] == "open" || fields[0] == "stat") && (fields[1] == scopeRoot || fields[1] == scopeTemporary) && validRelativePath(fields[2]):
+		default:
+			return errors.New("receipt input must name an environment variable or checkout-relative path")
+		}
 	}
 	encoded, err := json.Marshal(inputs)
 	if err != nil {
@@ -91,4 +109,8 @@ func ValidateInputs(inputs []string) error {
 		return fmt.Errorf("receipt inputs exceed %d encoded bytes", maxInputBytes)
 	}
 	return nil
+}
+
+func validRelativePath(name string) bool {
+	return name != "" && !path.IsAbs(name) && path.Clean(name) == name && name != ".." && !strings.HasPrefix(name, "../") && !strings.ContainsAny(name, "\\:")
 }

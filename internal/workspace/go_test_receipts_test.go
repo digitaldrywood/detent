@@ -17,6 +17,9 @@ type memoryGoTestReceipts struct {
 	receipts []gotestreceipt.Receipt
 }
 
+func (s *memoryGoTestReceipts) Begin(context.Context) (gotestreceipt.Execution, error) {
+	return gotestreceipt.Execution{DigestKey: []byte(strings.Repeat("k", 32))}, nil
+}
 func (s *memoryGoTestReceipts) Lookup(_ context.Context, key string) ([]gotestreceipt.Candidate, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

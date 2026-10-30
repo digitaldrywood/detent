@@ -5,7 +5,9 @@ import (
 	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -225,4 +227,13 @@ func (k *Keyring) Check(e Envelope, aad []byte) error {
 	key, err := k.unwrap(e, aad)
 	clear(key)
 	return err
+}
+
+func (k *Keyring) Derive(purpose string) ([]byte, error) {
+	if k == nil || len(k.keys[k.version]) != 32 {
+		return nil, ErrUnavailable
+	}
+	hash := hmac.New(sha256.New, k.keys[k.version])
+	_, _ = hash.Write([]byte(purpose))
+	return hash.Sum(nil), nil
 }

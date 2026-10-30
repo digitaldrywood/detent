@@ -22,11 +22,19 @@ func TestValidateCommandReusesGoTestReceiptsAcrossCheckouts(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX Go command fixture")
 	}
+	t.Setenv(gotestreceipt.TokenEnvironment, "receipt-token-sentinel")
 	var mu sync.Mutex
 	var receipts []gotestreceipt.Receipt
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		defer mu.Unlock()
+		if strings.HasSuffix(r.URL.Path, "/go-test-receipts/executions") {
+			w.WriteHeader(http.StatusCreated)
+			if err := json.NewEncoder(w).Encode(gotestreceipt.Execution{ID: "execution", DigestKey: []byte(strings.Repeat("k", 32))}); err != nil {
+				t.Error(err)
+			}
+			return
+		}
 		if r.URL.Path != "/api/v2/organizations/org_cli/projects/prj_cli/go-test-receipts" || r.Header.Get("Authorization") != "Bearer test-token" {
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
@@ -92,7 +100,7 @@ func TestValidateCommandReusesGoTestReceiptsAcrossCheckouts(t *testing.T) {
 		cmd.SilenceUsage = true
 		cmd.SetOut(&output)
 		cmd.SetErr(&output)
-		cmd.SetArgs([]string{"--project", "prj_cli", "--organization", "org_cli", "--hub-url", "https://cloud.example", "--dir", root, "CGO_ENABLED=0 go test ./..."})
+		cmd.SetArgs([]string{"--project", "prj_cli", "--organization", "org_cli", "--hub-url", "https://cloud.example", "--dir", root, "env; CGO_ENABLED=0 go test ./..."})
 		err := cmd.Execute()
 		return output.String(), err
 	}
@@ -110,6 +118,9 @@ func TestValidateCommandReusesGoTestReceiptsAcrossCheckouts(t *testing.T) {
 		{name: "changed input executes and fails", root: broken, want: "0 of 1 test binaries reused, 0 recorded", wantErr: true},
 	} {
 		output, err := run(step.root)
+		if strings.Contains(output, gotestreceipt.TokenEnvironment+"=") || strings.Contains(output, strings.Repeat("k", 32)) {
+			t.Fatal("validation script received receipt credentials")
+		}
 		if (err != nil) != step.wantErr || !strings.Contains(output, step.want) {
 			t.Fatalf("%s: err = %v, output missing %q:\n%s", step.name, err, step.want, output)
 		}

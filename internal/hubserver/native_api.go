@@ -272,6 +272,7 @@ func (s *Service) registerNativeRoutes(e *echo.Echo) {
 	e.POST(nativeBase+"/leases/:lease/release", s.releaseNativeLease, worker)
 	e.POST(nativeBase+"/machines/register", s.registerNativeMachine, worker)
 	e.POST(nativeBase+"/work-items/:item/events", s.appendNativeRunEvent, worker)
+	e.POST(nativeBase+"/go-test-receipts/executions", s.beginGoTestReceiptExecution, worker)
 	e.GET(nativeBase+"/go-test-receipts", s.lookupGoTestReceipts, worker)
 	e.POST(nativeBase+"/go-test-receipts", s.recordGoTestReceipt, worker)
 	// Stored attempt diffs and the pull request panel.

@@ -73,3 +73,19 @@ func (s nativeGoTestReceipts) Lookup(ctx context.Context, key string) ([]gotestr
 func (s nativeGoTestReceipts) Record(ctx context.Context, receipt gotestreceipt.Receipt) error {
 	return s.client.RecordGoTestReceipt(ctx, receipt)
 }
+
+func (s nativeGoTestReceipts) Begin(ctx context.Context) (gotestreceipt.Execution, error) {
+	return s.client.beginGoTestReceiptExecution(ctx)
+}
+func (s schedulerGoTestReceipts) Begin(ctx context.Context) (gotestreceipt.Execution, error) {
+	native, err := s.native()
+	if err != nil {
+		return gotestreceipt.Execution{}, err
+	}
+	return native.beginGoTestReceiptExecution(ctx)
+}
+func (c *NativeClient) beginGoTestReceiptExecution(ctx context.Context) (gotestreceipt.Execution, error) {
+	var execution gotestreceipt.Execution
+	err := c.client.request(ctx, http.MethodPost, c.base()+"/go-test-receipts/executions", nil, &execution)
+	return execution, err
+}

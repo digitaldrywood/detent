@@ -59,7 +59,7 @@ func runnerOperationAllowed(c echo.Context, operations []string) bool {
 		operation = runnerauth.Events
 	case path == nativeBase+"/attempts/:attempt/evidence", path == nativeBase+"/attempts/:attempt/evidence/check":
 		operation = runnerauth.Events
-	case path == nativeBase+"/go-test-receipts":
+	case path == nativeBase+"/go-test-receipts", path == nativeBase+"/go-test-receipts/executions":
 		operation = runnerauth.Events
 	case strings.HasPrefix(path, nativeBase+"/work-items"):
 		operation = runnerauth.Collaborate

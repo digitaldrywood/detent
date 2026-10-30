@@ -22,6 +22,11 @@ func TestHelperProcess(t *testing.T) {
 	if os.Getenv(helperEnvironment) == "" {
 		t.Skip("helper process only")
 	}
+	for _, entry := range os.Environ() {
+		if strings.Contains(entry, strings.Repeat("k", 32)) {
+			t.Fatal("test binary received digest key")
+		}
+	}
 	fmt.Println(helperRan)
 	for _, name := range []string{SocketEnvironment, TokenEnvironment, RootEnvironment} {
 		if _, ok := os.LookupEnv(name); ok {
@@ -46,6 +51,10 @@ func TestHelperProcess(t *testing.T) {
 type memoryStore struct {
 	mu       sync.Mutex
 	receipts []Receipt
+}
+
+func (s *memoryStore) Begin(context.Context) (Execution, error) {
+	return Execution{DigestKey: []byte(strings.Repeat("k", 32))}, nil
 }
 
 func (s *memoryStore) Lookup(_ context.Context, key string) ([]Candidate, error) {
@@ -93,7 +102,7 @@ func TestRunWrapperReusesOnlyMatchingReceipts(t *testing.T) {
 		case SocketEnvironment:
 			return session.socket
 		case TokenEnvironment:
-			return session.token
+			return "unused-token"
 		case RootEnvironment:
 			return root
 		}
@@ -137,9 +146,18 @@ func TestRunWrapperReusesOnlyMatchingReceipts(t *testing.T) {
 	if stats.Hits != 2 || stats.Records != 1 || stats.Refused != 1 || stats.Failures != 0 {
 		t.Fatalf("stats = %+v, want 2 hits, 1 record and 1 refusal", stats)
 	}
-	forged := NewClient(session.socket, "forged").Record(t.Context(), Receipt{Key: strings.Repeat("a", 64), Digest: strings.Repeat("b", 64)})
-	if forged == nil || len(store.receipts) != 1 {
-		t.Fatalf("record without the session token = %v, receipts %d", forged, len(store.receipts))
+	if _, ok := session.Environment()[TokenEnvironment]; ok {
+		t.Fatal("validation command receives receipt token")
+	}
+	client := newExecutionClient(session.socket)
+	defer client.CloseIdleConnections()
+	response, err := client.Post(clientBaseURL+"/record", "application/json", strings.NewReader(`{"key":"`+strings.Repeat("a", 64)+`","inputs":[],"digest":"`+strings.Repeat("b", 64)+`"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode < 400 || len(store.receipts) != 1 {
+		t.Fatalf("forged receipt: status %d, receipts %d", response.StatusCode, len(store.receipts))
 	}
 	if got := store.receipts[0].Package; got != "pkg" {
 		t.Fatalf("package = %q, want pkg", got)
@@ -161,7 +179,7 @@ func TestParseTestLog(t *testing.T) {
 	if err := os.Chtimes(kept, start.Add(-time.Hour), start.Add(-time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	env := Environment{Root: "/work/repo", TempDirs: []string{scratch, "/work/repo/tmp"}, IgnoreDirs: []string{"/dev/null"}, UncacheableDirs: []string{"/dev", "/proc"}}
+	env := Environment{DigestKey: []byte(strings.Repeat("k", 32)), Root: "/work/repo", TempDirs: []string{scratch, "/work/repo/tmp"}, IgnoreDirs: []string{"/dev/null"}, UncacheableDirs: []string{"/dev", "/proc"}}
 	tests := []struct {
 		name    string
 		log     string
@@ -179,18 +197,18 @@ func TestParseTestLog(t *testing.T) {
 			want: []string{"open\tm\tdocs/invariants.md", "stat\tm\tdocs"},
 		},
 		{
-			name: "temporary roots, removed temporary files and device paths are not inputs",
-			log:  "# test log\nopen " + scratch + "\nopen " + filepath.Join(scratch, "TestX", "001", "db") + "\nopen /dev/null\nopen /etc/hosts\n",
-			want: []string{"open\ta\t/etc/hosts"},
+			name:    "temporary roots, removed temporary files and device paths are not inputs",
+			log:     "# test log\nopen " + scratch + "\nopen " + filepath.Join(scratch, "TestX", "001", "db") + "\nopen /dev/null\nopen /etc/hosts\n",
+			wantErr: true,
 		},
 		{
-			name: "temporary files that predate the test are absolute inputs and files it wrote are not",
+			name: "temporary files that predate the test use normalized names",
 			log:  "# test log\nopen " + kept + "\nopen " + written + "\nopen /work/repo/tmp/config\n",
-			want: []string{"open\ta\t" + kept},
+			want: []string{"open\tt\tkept"},
 		},
 		{name: "impossible paths are not inputs", log: "# test log\nopen bad\x00name\n", want: []string{}},
 		{name: "system reads are uncacheable", log: "# test log\nopen /proc/cpuinfo\n", wantErr: true},
-		{name: "a stat of the device directory itself is an input", log: "# test log\nstat /dev\n", want: []string{"stat\ta\t/dev"}},
+		{name: "a stat of the device directory itself is an input", log: "# test log\nstat /dev\n", wantErr: true},
 		{name: "device reads beyond the standard streams are uncacheable", log: "# test log\nopen /dev/shm/fixture\n", wantErr: true},
 		{name: "missing header", log: "open a\n", wantErr: true},
 		{name: "unknown operation", log: "# test log\nexec a\n", wantErr: true},
@@ -219,7 +237,7 @@ func TestDigestIgnoresCheckoutLocation(t *testing.T) {
 	inputs := []string{"open\tm\tdata.txt", "stat\tm\tmissing", "env\tDETENT_WORKSPACE"}
 	digest := func(root, workspace string) string {
 		t.Helper()
-		value, err := Digest(inputs, Environment{Root: root, LookupEnv: func(string) (string, bool) { return workspace, true }})
+		value, err := Digest(inputs, Environment{DigestKey: []byte(strings.Repeat("k", 32)), Root: root, LookupEnv: func(string) (string, bool) { return workspace, true }})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -234,7 +252,7 @@ func TestDigestIgnoresCheckoutLocation(t *testing.T) {
 	if digest(first, first) == digest(second, second) {
 		t.Fatal("digest ignores a changed input file")
 	}
-	if _, err := Digest([]string{"open\tm\t../escape"}, Environment{Root: first}); err == nil {
+	if _, err := Digest([]string{"open\tm\t../escape"}, Environment{DigestKey: []byte(strings.Repeat("k", 32)), Root: first}); err == nil {
 		t.Fatal("digest accepts a path outside the module root")
 	}
 }
@@ -245,7 +263,7 @@ func TestModifiedSince(t *testing.T) {
 		t.Fatal(err)
 	}
 	inputs := []string{"open\tm\tinput.txt", "stat\tm\tmissing", "stat\tm\t.", "env\tHOME"}
-	env := Environment{Root: root}
+	env := Environment{DigestKey: []byte(strings.Repeat("k", 32)), Root: root}
 	if err := ModifiedSince(inputs, env, time.Now().Add(time.Hour)); err != nil {
 		t.Fatalf("unchanged inputs: %v", err)
 	}
@@ -317,5 +335,43 @@ func TestGoflags(t *testing.T) {
 		if got := Goflags(tt.goflags, "/w"); got != tt.want {
 			t.Errorf("Goflags(%q) = %q, want %q", tt.goflags, got, tt.want)
 		}
+	}
+}
+
+func TestValidateInputsRejectsHostPaths(t *testing.T) {
+	for _, input := range []string{
+		"open\ta\t/etc/hosts",
+		"open\tm\t/etc/hosts",
+		"stat\tm\t../outside",
+		"open\tm\tC:/Users/example/input",
+		"open\tm\tC:\\Users\\example\\input",
+		"open\tm\t//server/share/input",
+	} {
+		t.Run(input, func(t *testing.T) {
+			if err := ValidateInputs([]string{input}); err == nil {
+				t.Fatalf("accepted host path %q", input)
+			}
+		})
+	}
+}
+
+func TestEnvironmentDigestsRequireSecretKey(t *testing.T) {
+	inputs := []string{"env\tEXAMPLE_SECRET"}
+	env := Environment{LookupEnv: func(string) (string, bool) { return "1234", true }}
+	if _, err := Digest(inputs, env); err == nil {
+		t.Fatal("accepted unkeyed secret digest")
+	}
+	env.DigestKey = []byte(strings.Repeat("a", 32))
+	first, err := Digest(inputs, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env.DigestKey = []byte(strings.Repeat("b", 32))
+	second, err := Digest(inputs, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second {
+		t.Fatal("digest does not depend on secret key")
 	}
 }

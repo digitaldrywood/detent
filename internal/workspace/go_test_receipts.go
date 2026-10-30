@@ -27,6 +27,7 @@ func (l *LocalGit) startGoTestReceipts(ctx context.Context, cmd *exec.Cmd, root 
 			goflags = value
 		}
 	}
+	cmd.Env = gotestreceipt.ValidationEnvironment(cmd.Environ())
 	variables := session.Environment()
 	variables[gotestreceipt.RootEnvironment] = root
 	variables["GOFLAGS"] = gotestreceipt.Goflags(goflags, config.Wrapper)

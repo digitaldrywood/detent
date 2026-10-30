@@ -16,6 +16,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/procgroup"
 )
 
 var runtimeEnvironment = []string{"GODEBUG", "GOGC", "GOMEMLIMIT", "GOMAXPROCS", "GOTRACEBACK", "GORACE", "GOFIPS140", "CGO_ENABLED"}
@@ -44,24 +46,36 @@ func RunWrapper(args []string, getenv func(string) string, stdin io.Reader, stdo
 		fmt.Fprintf(stderr, "%s: missing program\n", WrapperName)
 		return 2
 	}
-	socket, token, root := getenv(SocketEnvironment), getenv(TokenEnvironment), getenv(RootEnvironment)
+	socket, root := getenv(SocketEnvironment), getenv(RootEnvironment)
+	if socket != "" && root != "" && isTestBinary(args[0]) {
+		pwd, err := os.Getwd()
+		if err == nil {
+			return requestExecution(socket, executionRequest{Args: args, Directory: pwd, Root: root, Environment: os.Environ()}, stdout, stderr)
+		}
+	}
+	return run(args, true, stdin, stdout, stderr)
+}
+
+func executeWrapper(ctx context.Context, request executionRequest, client executionStore, stdout, stderr io.Writer) int {
+	args, pwd, root := request.Args, request.Directory, request.Root
+	getenv := func(name string) string { value, _ := request.lookup(name); return value }
+	run := func(args []string, _ bool, stdin io.Reader, stdout, stderr io.Writer) int {
+		return runEnvironment(ctx, args, request.Directory, request.Environment, stdin, stdout, stderr)
+	}
+	var stdin io.Reader
 	if !isTestBinary(args[0]) {
 		return run(args, false, stdin, stdout, stderr)
 	}
-	if socket == "" || token == "" || root == "" || !Cacheable(args[1:]) {
+	if root == "" || !Cacheable(args[1:]) {
 		return run(args, true, stdin, stdout, stderr)
 	}
 	key, err := Key(args[0], args[1:], getenv)
 	if err != nil {
 		return run(args, true, stdin, stdout, stderr)
 	}
-	pwd, err := os.Getwd()
-	if err != nil {
-		return run(args, true, stdin, stdout, stderr)
-	}
 	env := wrapperEnvironment(root, args[0], getenv)
-	client := NewClient(socket, token)
-	ctx := context.Background()
+	env.LookupEnv = request.lookup
+	env.DigestKey = client.session.execution.DigestKey
 	candidates, err := client.Lookup(ctx, key)
 	if err != nil {
 		fmt.Fprintf(stderr, "%s: receipt lookup unavailable: %v\n", WrapperName, err)
@@ -102,7 +116,7 @@ func RunWrapper(args []string, getenv func(string) string, stdin io.Reader, stdo
 	return code
 }
 
-func record(ctx context.Context, client *Client, key, pwd, logPath string, env Environment, start time.Time) error {
+func record(ctx context.Context, client executionStore, key, pwd, logPath string, env Environment, start time.Time) error {
 	inputs, err := readTestLog(logPath, pwd, env, start)
 	if err != nil {
 		return err
@@ -206,10 +220,16 @@ func wrapperEnvironment(root, binary string, getenv func(string) string) Environ
 }
 
 func run(args []string, isolate bool, stdin io.Reader, stdout, stderr io.Writer) int {
-	cmd := exec.CommandContext(context.Background(), args[0], args[1:]...) // #nosec G204 -- the go command supplies the test binary and its arguments via -exec.
+	return runEnvironment(context.Background(), args, "", os.Environ(), stdin, stdout, stderr)
+}
+
+func runEnvironment(ctx context.Context, args []string, directory string, environment []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	cmd := exec.CommandContext(ctx, args[0], args[1:]...) // #nosec G204 -- the go command supplies the test binary and its arguments via -exec.
+	procgroup.Configure(ctx, cmd)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, stdout, stderr
-	if isolate {
-		cmd.Env = slices.DeleteFunc(os.Environ(), func(entry string) bool {
+	cmd.Dir = directory
+	{
+		cmd.Env = slices.DeleteFunc(slices.Clone(environment), func(entry string) bool {
 			name, _, _ := strings.Cut(entry, "=")
 			return name == SocketEnvironment || name == TokenEnvironment || name == RootEnvironment
 		})

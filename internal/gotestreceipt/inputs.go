@@ -2,6 +2,7 @@ package gotestreceipt
 
 import (
 	"bufio"
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -15,8 +16,9 @@ import (
 )
 
 const (
-	scopeRoot     = "m"
-	scopeAbsolute = "a"
+	scopeRoot      = "m"
+	scopeTemporary = "t"
+	scopeAbsolute  = "a"
 )
 
 type pathKind int
@@ -29,6 +31,7 @@ const (
 )
 
 type Environment struct {
+	DigestKey       []byte
 	Root            string
 	RootAlias       string
 	TempDirs        []string
@@ -172,7 +175,12 @@ func (e Environment) observe(input string) (string, error) {
 		if !ok {
 			return "unset", nil
 		}
-		return "set " + sum([]byte(e.normalize(value))), nil
+		if len(e.DigestKey) < 32 {
+			return "", errors.New("environment digest key is unavailable")
+		}
+		hash := hmac.New(sha256.New, e.DigestKey)
+		fmt.Fprintf(hash, "%s\x00%s", fields[1], e.normalize(value))
+		return "set " + hex.EncodeToString(hash.Sum(nil)), nil
 	case len(fields) == 3 && (fields[0] == "open" || fields[0] == "stat"):
 		path, err := e.path(fields[1], fields[2])
 		if err != nil {
@@ -186,16 +194,22 @@ func (e Environment) observe(input string) (string, error) {
 
 func (e Environment) path(scope, name string) (string, error) {
 	switch scope {
+	case scopeTemporary:
+		if !validRelativePath(name) || len(e.TempDirs) == 0 {
+			return "", errors.New("invalid temporary input")
+		}
+		for _, root := range e.TempDirs {
+			candidate := filepath.Join(root, filepath.FromSlash(name))
+			if _, err := os.Lstat(candidate); err == nil {
+				return candidate, nil
+			}
+		}
+		return filepath.Join(e.TempDirs[0], filepath.FromSlash(name)), nil
 	case scopeRoot:
 		if e.Root == "" || !filepath.IsLocal(filepath.FromSlash(name)) {
 			return "", fmt.Errorf("receipt path %q is not local to the module root", name)
 		}
 		return filepath.Join(e.Root, filepath.FromSlash(name)), nil
-	case scopeAbsolute:
-		if !filepath.IsAbs(name) {
-			return "", fmt.Errorf("receipt path %q is not absolute", name)
-		}
-		return name, nil
 	default:
 		return "", fmt.Errorf("receipt path scope %q is unknown", scope)
 	}
@@ -310,7 +324,8 @@ func (e Environment) classify(path string) (string, string, pathKind) {
 		}
 	}
 	if temporary != "" {
-		return scopeAbsolute, path, pathTemporary
+		relative, _ := filepath.Rel(temporary, path)
+		return scopeTemporary, filepath.ToSlash(relative), pathTemporary
 	}
 	return scopeAbsolute, path, pathInput
 }
