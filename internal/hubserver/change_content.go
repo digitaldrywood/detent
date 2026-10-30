@@ -394,6 +394,39 @@ func preparedChangeContent(ctx context.Context, organization string, data []byte
 	return ref, nil
 }
 
+const attachmentReceiptBillingUpdate = `UPDATE change_content_objects AS o SET billable=0
+WHERE organization_id=? AND object_key=? AND billable=1
+AND EXISTS (SELECT 1 FROM native_commands WHERE organization_id=o.organization_id AND response_object_key=o.object_key AND response_object_key<>'' AND operation GLOB 'attachment.*')
+AND NOT EXISTS (SELECT 1 FROM native_commands WHERE organization_id=o.organization_id AND response_object_key=o.object_key AND response_object_key<>'' AND operation NOT GLOB 'attachment.*')
+AND NOT EXISTS (SELECT 1 FROM change_sources WHERE object_key=o.object_key AND object_key<>'')
+AND NOT EXISTS (SELECT 1 FROM attempt_diffs WHERE object_key=o.object_key AND object_key<>'')
+AND NOT EXISTS (SELECT 1 FROM change_command_outputs WHERE object_key=o.object_key AND object_key<>'')
+AND NOT EXISTS (SELECT 1 FROM native_attempts WHERE payload_object_key=o.object_key AND payload_object_key<>'')
+AND NOT EXISTS (SELECT 1 FROM native_attempts WHERE checkpoint_object_key=o.object_key AND checkpoint_object_key<>'')
+AND NOT EXISTS (SELECT 1 FROM change_versions WHERE payload_object_key=o.object_key AND payload_object_key<>'')
+AND NOT EXISTS (SELECT 1 FROM change_evidence WHERE payload_object_key=o.object_key AND payload_object_key<>'')
+AND NOT EXISTS (SELECT 1 FROM collaboration_events WHERE payload_object_key=o.object_key AND payload_object_key<>'')
+AND NOT EXISTS (SELECT 1 FROM change_landing_receipts WHERE payload_object_key=o.object_key AND payload_object_key<>'')
+AND NOT EXISTS (SELECT 1 FROM analytics_hourly_rollups WHERE payload_object_key=o.object_key AND payload_object_key<>'')
+AND NOT EXISTS (SELECT 1 FROM attachments WHERE object_key=o.object_key AND object_key<>'')`
+
+func (s *Service) convertAttachmentReceiptBilling(ctx context.Context) error {
+	rows, err := s.storageProjectionPage(ctx, "attachment-receipts", "SELECT object_key FROM change_content_objects WHERE 1", "organization_id,object_key", 1)
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		organization := row.cursor[0].(string)
+		if err := chargeStorageConversion(ctx, len(organization)+len(row.id)); err != nil {
+			return err
+		}
+		if _, err := s.database.db.ExecContext(ctx, attachmentReceiptBillingUpdate, organization, row.id); err != nil {
+			return fmt.Errorf("reclassify attachment receipt: %w", err)
+		}
+	}
+	return nil
+}
+
 func (s *Service) registerChangeContent(ctx context.Context, organization string, ref attachment.ArchiveReference, billable bool) error {
 	return s.hubTransact(ctx, func(tx *sql.Tx, now time.Time) error {
 		before, err := s.database.hostedConsumption(ctx, tx, now, "collaboration_bytes")
