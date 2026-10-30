@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
@@ -211,6 +212,8 @@ func infrastructureFailureDecision(err error) *tracker.FailureAttribution {
 		}
 	}
 	switch {
+	case errors.Is(err, artifact.ErrStorage):
+		return &tracker.FailureAttribution{Outcome: "instance", Reason: "artifact storage unavailable"}
 	case errors.Is(err, ErrWorkspacePreparation), errors.As(err, &hook), errors.Is(err, ErrWorkerProcessReap), errors.Is(err, ErrValidatorInfrastructure), errors.Is(err, ErrReviewConversationsUnavailable), errors.As(err, &unavailable):
 		return &tracker.FailureAttribution{Outcome: "instance", Reason: "typed instance infrastructure failure"}
 	case errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF), errors.Is(err, io.ErrClosedPipe):

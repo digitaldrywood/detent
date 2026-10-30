@@ -194,13 +194,11 @@ func (e *nativeExecution) ArtifactLog(ctx context.Context, delta string) error {
 }
 
 func (a *nativeArtifacts) flush(ctx context.Context, final bool) (resultErr error) {
-	if a.log.ArtifactID == "" {
-		u, err := a.client.Reserve(ctx, a.reservation)
-		if err != nil {
-			return err
-		}
-		a.log = u
+	u, err := a.client.Reserve(ctx, a.reservation)
+	if err != nil {
+		return err
 	}
+	a.log = u
 	if a.log.State == "complete" || a.log.State == "interrupted" {
 		return nil
 	}
