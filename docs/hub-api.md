@@ -102,8 +102,11 @@ belongs to the project and was opened by the same credential, and lookups return
 only attested receipts. Runner identities read with `read` and attest and record
 with `events`.
 
-The key is the SHA-256 of the test binary and its test flags. `inputs` lists the
-environment variables and files the test read, as recorded by Go's test log, with
+The key is the SHA-256 of the test binary, its test flags, its package directory
+relative to the checkout and the Go runtime environment variables. `inputs` lists the
+environment variables and files the test read, as recorded by Go's test log and by
+inspecting the package code that runs before the log starts, plus `environ` when
+the package lists the whole environment, with
 files inside the checkout stored relative to the checkout root, files under the
 toolchain's GOROOT stored relative to GOROOT, and files that predate the test in a
 temporary directory stored relative to that directory with a token naming which

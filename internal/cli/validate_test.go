@@ -16,7 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gotestreceipt"
 )
 
-func TestValidateCommandSeparatesReceiptCheckouts(t *testing.T) {
+func TestValidateCommandReusesGoTestReceiptsAcrossCheckouts(t *testing.T) {
 	if testing.Short() {
 		t.Skip("subprocess Go toolchain fixture")
 	}
@@ -118,7 +118,7 @@ func TestValidateCommandSeparatesReceiptCheckouts(t *testing.T) {
 	}{
 		{name: "first checkout records", root: first, want: "0 of 1 test binaries reused, 1 recorded"},
 		{name: "same checkout reuses", root: first, want: "1 of 1 test binaries reused, 0 recorded"},
-		{name: "second checkout executes", root: second, want: "0 of 1 test binaries reused, 1 recorded"},
+		{name: "second checkout reuses", root: second, want: "1 of 1 test binaries reused, 0 recorded"},
 		{name: "changed input executes and fails", root: broken, want: "0 of 1 test binaries reused, 0 recorded", wantErr: true},
 	} {
 		output, err := run(step.root)

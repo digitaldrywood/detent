@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"time"
@@ -19,10 +20,13 @@ const (
 	maxDirectoryEntries = 4096
 	maxListedEntries    = 64 << 10
 	maxHashedBytes      = 64 << 20
+	maxSnapshotEntries  = 64 << 10
+	maxSnapshotTime     = 2 * time.Second
 	scopeRoot           = "m"
 	scopeGoRoot         = "g"
 	scopeTemporary      = "t:"
 	scopeAbsolute       = "a"
+	environInput        = "environ"
 )
 
 type pathKind int
@@ -39,8 +43,10 @@ type Environment struct {
 	RootAlias       string
 	GoRoot          string
 	TempDirs        []TempRoot
+	TempEntries     map[string]bool
 	UncacheableDirs []string
 	LookupEnv       func(string) (string, bool)
+	Environ         func() []string
 }
 
 type TempRoot struct {
@@ -61,17 +67,23 @@ func ParseTestLog(r io.Reader, pwd string, env Environment, start time.Time) ([]
 		if strings.ContainsRune(path, 0) {
 			return nil
 		}
+		if op == "open" && executable(path) {
+			return fmt.Errorf("test started subprocess %s whose inputs are not observable", filepath.Base(path))
+		}
 		scope, name, kind := env.classify(path)
 		switch kind {
 		case pathUncacheable:
 			return fmt.Errorf("test read system path %s", path)
 		case pathTemporary:
+			if !env.preexisting(path) {
+				return nil
+			}
 			info, err := os.Lstat(path)
 			if err != nil {
-				return fmt.Errorf("temporary input unavailable: %w", err)
+				return fmt.Errorf("temporary input %s disappeared during the test", filepath.Base(path))
 			}
 			if info.ModTime().After(start) {
-				return errors.New("temporary input changed during test")
+				return fmt.Errorf("temporary input %s changed during the test", filepath.Base(path))
 			}
 		}
 		seen[op+"\t"+scope+"\t"+name] = struct{}{}
@@ -101,7 +113,11 @@ func ParseTestLog(r io.Reader, pwd string, env Environment, start time.Time) ([]
 			pwd = resolve(pwd, name)
 			err = add("stat", pwd)
 		case "open", "stat":
-			err = add(op, resolve(pwd, name))
+			path := resolve(pwd, name)
+			if _, statErr := os.Lstat(path); op == "open" && !filepath.IsAbs(name) && errors.Is(statErr, os.ErrNotExist) {
+				return nil, fmt.Errorf("test opened missing relative path %s, possibly from another directory", filepath.Base(name))
+			}
+			err = add(op, path)
 		default:
 			return nil, fmt.Errorf("test log operation %q is unknown", op)
 		}
@@ -193,10 +209,16 @@ func ModifiedSince(inputs []string, env Environment, start time.Time) error {
 		for _, stat := range []func(string) (os.FileInfo, error){os.Lstat, os.Stat} {
 			info, err := stat(path)
 			if errors.Is(err, os.ErrNotExist) {
-				return errors.New("test input is missing after execution")
+				if changedAncestor(path, start) {
+					return fmt.Errorf("test input %s is missing and its directory changed while the test ran", fields[2])
+				}
+				continue
 			}
 			if err != nil {
 				return fmt.Errorf("stat test input: %w", err)
+			}
+			if fields[0] == "stat" && info.IsDir() {
+				continue
 			}
 			if info.ModTime().After(start) {
 				return fmt.Errorf("test input %s changed while the test ran", fields[2])
@@ -235,19 +257,26 @@ func (v *Verifier) observe(input string) (string, error) {
 func (v *Verifier) observeInput(input string) observation {
 	fields := strings.Split(input, "\t")
 	switch {
+	case len(fields) == 1 && fields[0] == environInput:
+		var entries []string
+		for _, entry := range isolatedEnvironment(v.env.environ()) {
+			name, value, _ := strings.Cut(entry, "=")
+			entries = append(entries, name+"="+v.env.normalize(value))
+		}
+		return observation{value: "environ " + sum([]byte(strings.Join(entries, "\x00")))}
 	case len(fields) == 2 && fields[0] == "env":
 		value, ok := v.env.lookup(fields[1])
 		if !ok {
 			return observation{value: "unset"}
 		}
-		return observation{value: "set " + sum([]byte(value))}
+		return observation{value: "set " + sum([]byte(v.env.normalize(value)))}
 	case len(fields) == 3 && (fields[0] == "open" || fields[0] == "stat"):
 		path, err := v.env.path(fields[1], fields[2])
 		if err != nil {
 			return observation{err: err}
 		}
 		state := statPath(path)
-		value, err := v.observePath(fields[0], path)
+		value, err := v.observePath(fields[0], path, strings.HasPrefix(fields[1], scopeTemporary))
 		return observation{value: value, err: err, path: path, state: state}
 	default:
 		return observation{err: fmt.Errorf("receipt input %q is malformed", input)}
@@ -304,10 +333,10 @@ func (e Environment) path(scope, name string) (string, error) {
 	}
 }
 
-func (v *Verifier) observePath(op, path string) (string, error) {
+func (v *Verifier) observePath(op, path string, host bool) (string, error) {
 	info, err := os.Lstat(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return "", errors.New("test input is missing")
+	if missing, ok := absence(err); ok {
+		return missing, nil
 	}
 	if err != nil {
 		return "", fmt.Errorf("stat test input: %w", err)
@@ -317,31 +346,41 @@ func (v *Verifier) observePath(op, path string) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("read test input link: %w", err)
 		}
-		resolved, err := v.observeTarget(op, path)
+		resolved, err := v.observeTarget(op, path, host)
 		if err != nil {
 			return "", err
 		}
-		return fmt.Sprintf("link %s %d %v %s %s", info.Mode(), info.ModTime().UnixNano(), info.Sys(), sum([]byte(target)), resolved), nil
+		return fmt.Sprintf("link %s %s %s", info.Mode().Perm(), sum([]byte(target)), resolved), nil
 	}
-	return v.describe(op, path, info)
+	return v.describe(op, path, info, host)
 }
 
-func (v *Verifier) observeTarget(op, path string) (string, error) {
+func (v *Verifier) observeTarget(op, path string, host bool) (string, error) {
 	info, err := os.Stat(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return "", errors.New("test input is missing")
+	if missing, ok := absence(err); ok {
+		return missing, nil
 	}
 	if err != nil {
 		return "", fmt.Errorf("stat test input: %w", err)
 	}
-	return v.describe(op, path, info)
+	return v.describe(op, path, info, host)
 }
 
-func (v *Verifier) describe(op, path string, info os.FileInfo) (string, error) {
+func absence(err error) (string, bool) {
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return "missing", true
+	case errors.Is(err, os.ErrPermission):
+		return "denied", true
+	}
+	return "", false
+}
+
+func (v *Verifier) describe(op, path string, info os.FileInfo, host bool) (string, error) {
 	switch {
 	case info.IsDir():
 		if op == "stat" {
-			return fmt.Sprintf("dir %s %d %v", info.Mode(), info.ModTime().UnixNano(), info.Sys()), nil
+			return "dir " + info.Mode().String(), nil
 		}
 		dir, err := os.Open(path)
 		if err != nil {
@@ -357,11 +396,13 @@ func (v *Verifier) describe(op, path string, info os.FileInfo) (string, error) {
 		for _, entry := range entries {
 			names = append(names, entry.Name()+"\x00"+entry.Type().String())
 		}
-		return fmt.Sprintf("dir %s %d %v", info.Mode(), info.ModTime().UnixNano(), info.Sys()) + " " + sum([]byte(strings.Join(names, "\n"))), nil
+		return "dir " + info.Mode().String() + " " + sum([]byte(strings.Join(names, "\n"))), nil
 	case !info.Mode().IsRegular():
 		return "", errors.New("test input is a special file")
+	case op == "stat" && host:
+		return fmt.Sprintf("file %d %s %d", info.Size(), info.Mode(), info.ModTime().UnixNano()), nil
 	case op == "stat":
-		return fmt.Sprintf("file %d %s %d %v", info.Size(), info.Mode(), info.ModTime().UnixNano(), info.Sys()), nil
+		return fmt.Sprintf("file %d %s", info.Size(), info.Mode()), nil
 	}
 	if info.Size() > v.bytes {
 		return "", errInputBytes
@@ -371,7 +412,7 @@ func (v *Verifier) describe(op, path string, info os.FileInfo) (string, error) {
 	if err := v.hashFile(hash, path); err != nil {
 		return "", fmt.Errorf("hash test input: %w", err)
 	}
-	return fmt.Sprintf("file %d %s %d %v %s", info.Size(), info.Mode(), info.ModTime().UnixNano(), info.Sys(), hex.EncodeToString(hash.Sum(nil))), nil
+	return fmt.Sprintf("file %d %s %s", info.Size(), info.Mode(), hex.EncodeToString(hash.Sum(nil))), nil
 }
 
 var (
@@ -448,6 +489,114 @@ func (e Environment) classify(path string) (string, string, pathKind) {
 		return scopeAbsolute, path, pathInput
 	}
 	return scope, filepath.ToSlash(relative), kind
+}
+
+func (e Environment) environ() []string {
+	if e.Environ == nil {
+		return os.Environ()
+	}
+	return e.Environ()
+}
+
+func (e Environment) normalize(value string) string {
+	for _, root := range []string{e.Root, e.RootAlias} {
+		if root != "" {
+			value = strings.ReplaceAll(value, root, fmt.Sprintf("\x00root%d\x00", len(root)))
+		}
+	}
+	for _, root := range e.TempDirs {
+		if root.Dir != "" {
+			value = strings.ReplaceAll(value, root.Dir, fmt.Sprintf("\x00temp%d\x00", len(root.Dir)))
+		}
+	}
+	return value
+}
+
+func (e Environment) preexisting(path string) bool {
+	if e.TempEntries == nil {
+		return true
+	}
+	for _, root := range e.TempDirs {
+		if !within(root.Dir, path) {
+			continue
+		}
+		relative, err := filepath.Rel(filepath.Clean(root.Dir), path)
+		if err != nil {
+			return true
+		}
+		first, _, _ := strings.Cut(filepath.ToSlash(relative), "/")
+		if e.TempEntries[filepath.Join(filepath.Clean(root.Dir), first)] {
+			return true
+		}
+	}
+	return false
+}
+
+func SnapshotTempEntries(roots []TempRoot) (map[string]bool, error) {
+	deadline := time.Now().Add(maxSnapshotTime)
+	entries := make(map[string]bool)
+	for _, root := range roots {
+		dir := filepath.Clean(root.Dir)
+		file, err := os.Open(dir)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("list temporary root: %w", err)
+		}
+		entries[dir] = true
+		for {
+			names, err := file.ReadDir(1024)
+			for _, name := range names {
+				entries[filepath.Join(dir, name.Name())] = true
+			}
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			if err == nil && (len(entries) > maxSnapshotEntries || time.Now().After(deadline)) {
+				err = errors.New("temporary roots exceed the snapshot bound")
+			}
+			if err != nil {
+				return nil, errors.Join(fmt.Errorf("list temporary root: %w", err), file.Close())
+			}
+		}
+		if err := file.Close(); err != nil {
+			return nil, fmt.Errorf("list temporary root: %w", err)
+		}
+	}
+	return entries, nil
+}
+
+func executable(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return false
+	}
+	if runtime.GOOS != "windows" {
+		return info.Mode().Perm()&0o111 != 0
+	}
+	extensions := os.Getenv("PATHEXT")
+	if extensions == "" {
+		extensions = ".com;.exe;.bat;.cmd"
+	}
+	for _, extension := range strings.Split(extensions, ";") {
+		if extension != "" && strings.EqualFold(filepath.Ext(path), extension) {
+			return true
+		}
+	}
+	return false
+}
+
+func changedAncestor(path string, start time.Time) bool {
+	for dir := filepath.Dir(path); ; dir = filepath.Dir(dir) {
+		info, err := os.Stat(dir)
+		if err == nil {
+			return info.ModTime().After(start)
+		}
+		if parent := filepath.Dir(dir); parent == dir {
+			return true
+		}
+	}
 }
 
 func resolve(pwd, name string) string {

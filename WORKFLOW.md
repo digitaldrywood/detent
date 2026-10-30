@@ -88,15 +88,7 @@ Contradictory or unverifiable acceptance criteria use the existing Issue Contrac
 
 Evidence must prove the criterion: a host-observed command receipt must match the reviewed head and tree, and a named test must assert the required behavior. Reuse genuine receipts the native version or its reviews already hold when command, head, tree and relevant inputs and environment match; a fresh validator session needs no fresh executions. Rerun only for changed behavior or inputs, missing applicable evidence or a concrete risk; a receipt for older source never validates a changed candidate. Go test binaries inside a gate or validator command are reused per binary from Hub go test receipts when the binary, its test flags and every file and environment variable Go's test log recorded still match; that follows Go's own test cache input model, and the command's `go test receipts:` line counts reused binaries. An assumed, skipped or unrelated check is not verified. A not-verified criterion that repository rework can satisfy requires Rework and is named in the summary. An outside-system, deployment or human-verification criterion is an authoring defect handled by the Issue Contract correction path, never Blocked. Only a genuine unresolved decision, missing authority or physical prerequisite uses Blocked with a concrete `human_action`. Historical diagnosis evidence keeps its original source identity and is assessed separately from candidate evidence.
 
-Go test receipt reuse requires hermetic tests. Tests whose results depend on network
-services, clocks, subprocess inputs or host state must either capture their complete
-input set or execute without receipt reuse. `internal/gotestreceipt` enforces this
-before reuse or recording with a conservative source dependency eligibility check,
-an exact hash comparison against a binary rebuilt from those sources, and a
-post-build source recheck. Unavailable sources, unsupported dependencies and
-unmatched build settings execute normally. Receipt keys include the
-literal working directory, checkout root and complete inherited environment, and
-missing post-run inputs prevent recording.
+Go test receipt reuse requires hermetic test binaries, as [INV-5](docs/invariants.md#inv-5--local-validation-and-release-evidence) defines.
 
 Workers do not approve workflow revisions or load credentials. Feature-branch and uncommitted definitions are not approved policy.
 

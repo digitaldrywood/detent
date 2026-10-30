@@ -44,13 +44,6 @@ func IsWrapperInvocation(arg0 string) bool {
 }
 
 func RunWrapper(args []string, getenv func(string) string, stdin io.Reader, stdout, stderr io.Writer) int {
-	if len(args) >= 3 && args[0] == "--detent-source-digest" {
-		if err := writeBinaryDigest(args[1], args[2]); err != nil {
-			fmt.Fprintf(stderr, "%s: source verifier: %v\n", WrapperName, err)
-			return 1
-		}
-		return 0
-	}
 	if len(args) == 0 {
 		fmt.Fprintf(stderr, "%s: missing program\n", WrapperName)
 		return 2
@@ -137,15 +130,11 @@ func (s *Session) executeTest(ctx context.Context, request executionRequest, std
 	}
 	env := wrapperEnvironment(s.root, s.goRoot(ctx), request.getenv)
 	env.LookupEnv = request.lookup
+	env.Environ = func() []string { return request.Environment }
 	env.DigestKey = attestation.DigestKey
 	candidates, err := s.lookup(ctx, key)
 	if err != nil {
 		fmt.Fprintf(stderr, "%s: receipt lookup unavailable: %v\n", WrapperName, err)
-	}
-	if err := checkEligibility(ctx, args[0], request.Directory, s.dir, request.Environment); err != nil {
-		fmt.Fprintf(stderr, "%s: receipt not eligible: %v\n", WrapperName, err)
-		s.refuse(packageName(request.Directory, env), err)
-		return 0, true
 	}
 	verifier := NewVerifier(env)
 	for _, candidate := range candidates {
@@ -168,24 +157,42 @@ func (s *Session) executeTest(ctx context.Context, request executionRequest, std
 	if err := logFile.Close(); err != nil {
 		return 0, true
 	}
+	source, sourceErr := SourceDigest(request.Directory)
+	entries, snapshotErr := SnapshotTempEntries(env.TempDirs)
+	env.TempEntries = entries
 	start := time.Now()
 	code := runTest(ctx, request, append(slices.Clone(args), "-test.testlogfile="+logPath), stdout, stderr)
 	if code != 0 {
 		return code, false
 	}
-	if err := s.recordRun(ctx, key, request, logPath, env, start); err != nil {
+	err = errors.Join(sourceErr, snapshotErr)
+	if err == nil {
+		err = s.recordRun(ctx, key, request, logPath, env, start, source)
+	}
+	if err != nil {
 		fmt.Fprintf(stderr, "%s: receipt not recorded: %v\n", WrapperName, err)
 		s.refuse(packageName(request.Directory, env), err)
 	}
 	return code, false
 }
 
-func (s *Session) recordRun(ctx context.Context, key string, request executionRequest, logPath string, env Environment, start time.Time) error {
+func (s *Session) recordRun(ctx context.Context, key string, request executionRequest, logPath string, env Environment, start time.Time, source string) error {
 	if after, err := request.key(); err != nil || after != key {
 		return errors.New("test binary changed while the test ran")
 	}
 	inputs, err := readTestLog(logPath, request.Directory, env, start)
 	if err != nil {
+		return err
+	}
+	early, err := PreWindowInputs(request.Directory)
+	if err != nil {
+		return err
+	}
+	if after, err := SourceDigest(request.Directory); err != nil || after != source {
+		return errors.Join(errors.New("test package source changed while the test ran"), err)
+	}
+	inputs = slices.Compact(slices.Sorted(slices.Values(append(inputs, early...))))
+	if err := ValidateInputs(inputs); err != nil {
 		return err
 	}
 	if err := ModifiedSince(inputs, env, start); err != nil {
@@ -237,24 +244,22 @@ func readTestLog(path, pwd string, env Environment, start time.Time) (inputs []s
 }
 
 func (r executionRequest) key() (string, error) {
-	return Key(r.Args[0], r.Args[1:], r.Directory, r.Root, r.Environment)
+	workdir := filepath.Clean(r.Directory)
+	if relative, err := filepath.Rel(filepath.Clean(r.Root), workdir); err == nil && (relative == "." || filepath.IsLocal(relative)) {
+		workdir = scopeRoot + "\t" + filepath.ToSlash(relative)
+	}
+	return Key(r.Args[0], r.Args[1:], workdir, r.Environment)
 }
 
-func Key(binary string, args []string, pwd, root string, environ []string) (string, error) {
-	hash := sha256.New()
-	fmt.Fprintf(hash, "%s\n%s/%s\n", protocolFingerprint, runtime.GOOS, runtime.GOARCH)
-	binaryHash := sha256.New()
-	if err := copyFile(binaryHash, binary); err != nil {
+func Key(binary string, args []string, workdir string, environ []string) (string, error) {
+	contents := sha256.New()
+	if err := copyFile(contents, binary); err != nil {
 		return "", fmt.Errorf("hash test binary: %w", err)
 	}
-	fmt.Fprintf(hash, "binary %x", binaryHash.Sum(nil))
-	for _, value := range []string{pwd, root} {
-		fmt.Fprintf(hash, "\npath %d %s", len(value), value)
-	}
-	environment := isolatedEnvironment(environ)
-	values := make(map[string]string, len(environment))
-	for _, entry := range environment {
-		fmt.Fprintf(hash, "\nenviron %d %s", len(entry), entry)
+	hash := sha256.New()
+	fmt.Fprintf(hash, "%s\n%s/%s\nbinary %x\nworkdir %d %s\nargs %d", protocolFingerprint, runtime.GOOS, runtime.GOARCH, contents.Sum(nil), len(workdir), workdir, len(args))
+	values := make(map[string]string)
+	for _, entry := range isolatedEnvironment(environ) {
 		name, value, _ := strings.Cut(entry, "=")
 		values[name] = value
 	}
@@ -382,20 +387,4 @@ func copyExecutable(destination, source string) (err error) {
 		return errors.Join(fmt.Errorf("copy test binary: %w", err), output.Close())
 	}
 	return output.Close()
-}
-
-func writeBinaryDigest(path, binary string) (err error) {
-	hash := sha256.New()
-	if err := copyFile(hash, binary); err != nil {
-		return fmt.Errorf("hash compiled binary: %w", err)
-	}
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		return fmt.Errorf("create binary digest: %w", err)
-	}
-	defer func() { err = errors.Join(err, file.Close()) }()
-	if _, err := file.Write(hash.Sum(nil)); err != nil {
-		return fmt.Errorf("write binary digest: %w", err)
-	}
-	return nil
 }
