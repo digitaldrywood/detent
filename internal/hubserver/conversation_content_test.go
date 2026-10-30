@@ -613,7 +613,7 @@ func TestConversationEventStorageFootprint(t *testing.T) {
 					metadata, metadataErr := eventQueryMetadata([]byte(raw))
 					err = metadataErr
 					if err == nil {
-						err = metadata.write(ctx, tx, "conversation_events", "conversation_id=? AND seq=?", record.ID, index+1)
+						err = metadata.Write(ctx, tx, "conversation_events", "conversation_id=? AND seq=?", record.ID, index+1)
 					}
 				}
 			}
@@ -710,7 +710,7 @@ func TestConversationUsesExistingArchiveBackend(t *testing.T) {
 		}
 		return bytes.Clone(data), nil
 	}
-	chat := newConversationService(f.service, (ConversationConfig{Enabled: true}).normalized())
+	chat := newConversationService(f.service, normalizeConversationConfig(ConversationConfig{Enabled: true}))
 	t.Cleanup(chat.stop)
 	for index := range 2 {
 		now := time.Date(2026, 10, 28, 12, index, 0, 0, time.UTC)

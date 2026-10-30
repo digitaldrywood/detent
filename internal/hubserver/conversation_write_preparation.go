@@ -41,7 +41,7 @@ func (p *conversationPublicationPlan) context(ctx context.Context) context.Conte
 	if p.reads == nil {
 		p.reads = conversationArchiveCache(ctx)
 		if p.reads == nil {
-			p.reads = &conversationArchiveReads{content: map[string][]byte{}}
+			p.reads = &conversationArchiveReads{Content: map[string][]byte{}}
 		}
 	}
 	if p.toolRevisions != nil {
@@ -86,12 +86,7 @@ func validateConversationPublication(ctx context.Context, tx *sql.Tx) error {
 	return nil
 }
 
-func rollbackConversationPreparation(tx *sql.Tx) error {
-	if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
-		return err
-	}
-	return nil
-}
+
 
 func conversationQuestionID(ctx context.Context) string {
 	if p, ok := ctx.Value(conversationPublicationKey{}).(*conversationPublicationPlan); ok && p.questionCursor < len(p.questionIDs) {

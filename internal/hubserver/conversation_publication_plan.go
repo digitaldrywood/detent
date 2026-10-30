@@ -52,7 +52,7 @@ func (p *conversationPublicationPlan) prepare(ctx context.Context, content []byt
 	organization := string(p.record.OrganizationID)
 	key := organization + "/" + artifact.Digest(content)
 	if ref, ok := p.prepared[key]; ok {
-		p.reads.store(organization+"/"+contentArchiveID(organization, ref), content)
+		p.reads.Store(organization+"/"+contentArchiveID(organization, ref), content)
 		return ref, nil
 	}
 	ref, err := p.service.store.publishPayload(ctx, organization, content)
@@ -60,7 +60,7 @@ func (p *conversationPublicationPlan) prepare(ctx context.Context, content []byt
 		return ref, err
 	}
 	p.prepared[key] = ref
-	p.reads.store(organization+"/"+contentArchiveID(organization, ref), content)
+	p.reads.Store(organization+"/"+contentArchiveID(organization, ref), content)
 	return ref, nil
 }
 
@@ -75,7 +75,7 @@ func (p *conversationPublicationPlan) message(ctx context.Context, message conve
 		return message, err
 	}
 	message.ContentID = contentArchiveID(string(p.record.OrganizationID), ref)
-	message.contentHash = artifact.Digest(raw)
+	message.ContentHash = artifact.Digest(raw)
 	return message, nil
 }
 
