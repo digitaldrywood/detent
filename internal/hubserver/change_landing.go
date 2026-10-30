@@ -16,7 +16,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 // landingLane is the lane a reviewed Change Request waits in for the runner
@@ -253,20 +252,13 @@ func (s *Service) landChange(c echo.Context) error {
 		return s.invalidAPIRequest(c, err)
 	}
 	if request.Receipt != nil && request.Receipt.Incorporation != nil {
-		ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
-		defer cancel()
+		ctx := c.Request().Context()
 		if err := s.authorizeLandingIncorporation(ctx, nativeRequestScope(c), c.Param("item"), c.Param("change"), c.Param("version"), request); err != nil {
 			return s.nativeAPIError(c, err)
 		}
-		select {
-		case s.sourceVerification <- struct{}{}:
-		case <-ctx.Done():
-			return s.nativeAPIError(c, ctx.Err())
-		}
-		err := workspace.VerifyLandingIncorporation(ctx, *request.Receipt.Incorporation, request.IncorporationObjects)
-		<-s.sourceVerification
+		err := s.verifyLandingIncorporation(ctx, *request.Receipt.Incorporation, request.IncorporationObjects)
 		if err != nil {
-			return s.nativeAPIError(c, nativePublicInvalid("landing incorporation objects do not prove the reviewed range"))
+			return s.nativeAPIError(c, err)
 		}
 	}
 	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
