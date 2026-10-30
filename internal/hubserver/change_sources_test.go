@@ -79,6 +79,12 @@ func TestChangeSourceSurvivesRestartAndPreservesScope(t *testing.T) {
 			t.Fatalf("occupied verification slot ignored cancellation: %v", err)
 		}
 	})
+	f.service.sourceVerifier = func(ctx context.Context, source tracker.ChangeSource, bundle []byte) error {
+		if _, bounded := ctx.Deadline(); bounded {
+			return errors.New("publication added a verification deadline")
+		}
+		return workspace.VerifyChangeSource(ctx, source, bundle)
+	}
 	response := performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", f.token, request)
 	requireNativeStatus(t, response, http.StatusOK)
 	var version tracker.ChangeVersion
