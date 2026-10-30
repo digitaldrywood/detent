@@ -594,12 +594,13 @@ type NativeLeaseMutation struct {
 }
 
 type NativeDisposition struct {
-	Status          string            `json:"status"`
-	Blockers        bool              `json:"blockers"`
-	HumanAction     bool              `json:"human_action"`
-	ReasonCode      string            `json:"reason_code,omitempty"`
-	FinalSummary    string            `json:"final_summary,omitempty"`
-	BlockerEvidence []workpad.Blocker `json:"blocker_evidence,omitempty"`
+	NoChange        *workpad.NoChangeReport `json:"no_change,omitempty"`
+	Status          string                  `json:"status"`
+	Blockers        bool                    `json:"blockers"`
+	HumanAction     bool                    `json:"human_action"`
+	ReasonCode      string                  `json:"reason_code,omitempty"`
+	FinalSummary    string                  `json:"final_summary,omitempty"`
+	BlockerEvidence []workpad.Blocker       `json:"blocker_evidence,omitempty"`
 }
 
 type NativeRunData struct {

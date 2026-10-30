@@ -23,9 +23,10 @@ const (
 	SourceProseSection = "prose_section"
 	SourceProsePhrase  = "prose_phrase"
 
-	StatusInProgress = "in_progress"
-	StatusBlocked    = "blocked"
-	StatusComplete   = "complete"
+	StatusInProgress     = "in_progress"
+	StatusBlocked        = "blocked"
+	StatusComplete       = "complete"
+	StatusNoChangeNeeded = "no_change_needed"
 
 	FieldCompletionKind                  = "completion_kind"
 	FieldCompletionEvidence              = "completion_evidence"
@@ -55,7 +56,13 @@ type ReviewDisposition struct {
 	Evidence    string `json:"evidence" yaml:"evidence"`
 }
 
+type NoChangeReport struct {
+	VerifiedSHA string `json:"verified_sha" yaml:"verified_sha"`
+	Evidence    string `json:"evidence" yaml:"evidence"`
+}
+
 type Signal struct {
+	NoChange           *NoChangeReport     `json:"no_change,omitempty" yaml:"no_change,omitempty"`
 	ReviewDispositions []ReviewDisposition `json:"review_dispositions,omitempty" yaml:"review_dispositions,omitempty"`
 	// UnknownKeys records ignored YAML field paths for diagnostics only.
 	UnknownKeys []string          `json:"unknown_keys,omitempty" yaml:"unknown_keys,omitempty"`
@@ -103,6 +110,7 @@ type Invalid struct {
 }
 
 type statusBlockYAML struct {
+	NoChange           *NoChangeReport      `yaml:"no_change"`
 	ReviewDispositions []ReviewDisposition  `yaml:"review_dispositions"`
 	Unknown            map[string]yaml.Node `yaml:",inline"`
 	Schema             int                  `yaml:"schema"`
@@ -350,12 +358,12 @@ func ParseStatusBlock(content string, repo string) (*Signal, error) {
 	}
 	raw.Status = strings.TrimSpace(raw.Status)
 	switch raw.Status {
-	case StatusInProgress, StatusBlocked, StatusComplete:
+	case StatusInProgress, StatusBlocked, StatusComplete, StatusNoChangeNeeded:
 	default:
 		if raw.Status == "" {
-			problems = append(problems, "status must be one of in_progress, blocked, complete")
+			problems = append(problems, "status must be one of in_progress, blocked, complete, no_change_needed")
 		} else {
-			problems = append(problems, fmt.Sprintf("status %q must be one of in_progress, blocked, complete", raw.Status))
+			problems = append(problems, fmt.Sprintf("status %q must be one of in_progress, blocked, complete, no_change_needed", raw.Status))
 		}
 	}
 
@@ -463,6 +471,26 @@ func ParseStatusBlock(content string, repo string) (*Signal, error) {
 	if len(fields) == 0 {
 		fields = nil
 	}
+	if raw.Status == StatusNoChangeNeeded {
+		if raw.NoChange == nil {
+			problems = append(problems, "no_change_needed requires a no_change report")
+		} else {
+			raw.NoChange.VerifiedSHA = strings.TrimSpace(raw.NoChange.VerifiedSHA)
+			raw.NoChange.Evidence = strings.TrimSpace(raw.NoChange.Evidence)
+			sha, err := hex.DecodeString(raw.NoChange.VerifiedSHA)
+			if err != nil || len(sha) != 20 || raw.NoChange.VerifiedSHA != strings.ToLower(raw.NoChange.VerifiedSHA) || raw.NoChange.VerifiedSHA == strings.Repeat("0", 40) {
+				problems = append(problems, "no_change verified_sha must be a full lowercase source SHA")
+			}
+			if raw.NoChange.Evidence == "" || len(raw.NoChange.Evidence) > 32768 {
+				problems = append(problems, "no_change evidence must contain 1 to 32768 bytes")
+			}
+		}
+		if len(blockers) != 0 || humanAction != "" {
+			problems = append(problems, "no_change_needed cannot carry blockers or human_action")
+		}
+	} else if raw.NoChange != nil {
+		problems = append(problems, "no_change is only valid when status is no_change_needed")
+	}
 	if len(problems) > refProblems {
 		return nil, errors.New(strings.Join(problems, "; "))
 	}
@@ -482,6 +510,7 @@ func ParseStatusBlock(content string, repo string) (*Signal, error) {
 	}
 	sort.Strings(unknownKeys)
 	signal := &Signal{
+		NoChange:           raw.NoChange,
 		ReviewDispositions: raw.ReviewDispositions,
 		UnknownKeys:        unknownKeys,
 		Source:             SourceStructured,
@@ -812,6 +841,10 @@ func CloneSignal(signal *Signal) *Signal {
 		return nil
 	}
 	cloned := *signal
+	if signal.NoChange != nil {
+		report := *signal.NoChange
+		cloned.NoChange = &report
+	}
 	cloned.ReviewDispositions = append([]ReviewDisposition(nil), signal.ReviewDispositions...)
 	cloned.UnknownKeys = append([]string(nil), signal.UnknownKeys...)
 	cloned.Blockers = make([]Blocker, len(signal.Blockers))

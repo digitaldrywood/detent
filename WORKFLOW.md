@@ -31,6 +31,16 @@ Read `AGENTS.md` and the governing sections of `docs/invariants.md` before chang
 - If you cannot finish, explain the blocker plainly in your final message. Unfinished acceptance stays on this issue; never delegate it to a follow-up issue.
 - End with a short summary: what changed, how you validated it, and what a reviewer should check. Record pending host publication without claiming it succeeded.
 
+A verified no-change report uses `status: no_change_needed` and a `no_change`
+object with `verified_sha` (the full lowercase source commit SHA) and `evidence`
+(commands, results and attachment references, up to 32768 bytes). It carries no
+blockers, human action or reason code. The report is evidence for the completion
+owner, not approval to close the issue. Required review, validation and configured
+security audit must accept that evidence on the current base before completion.
+A changed base requires re-verification; rejection returns to implementation with
+the gate feedback and the existing retry accounting. Do not create an empty
+commit to represent the report.
+
 ## Isolation Contract
 
 Detent supplies the workspace and source checkout locations in the runtime isolation context. Never edit the source checkout, the human's primary checkout or another issue's workspace. Use the provided worker TMPDIR/TMP/TEMP. Do not use git stash or change shared refs. Do not stop, restart or signal any live Detent service. Tests that need a server use port 0 and an isolated database and config. Detent owns cleanup.

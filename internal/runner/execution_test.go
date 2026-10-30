@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
@@ -30,6 +31,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workpad"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -2588,10 +2590,11 @@ func TestNativePublicationRecoveryOnAnyRunner(t *testing.T) {
 func TestNativeDispositionFromMessageHostPublication(t *testing.T) {
 	report := func(body string) string { return "Done.\n\n```detent-status\nschema: 1\n" + body + "```" }
 	for _, tt := range []struct {
-		name       string
-		message    string
-		wantStatus string
-		wantReason string
+		name         string
+		message      string
+		wantStatus   string
+		wantReason   string
+		wantNoChange *workpad.NoChangeReport
 	}{
 		{name: "publication only is complete", message: report("status: blocked\nreason_code: publication_blocked\nblockers: []\nhuman_action: null\n"), wantStatus: "complete"},
 		{name: "pending publish is complete", message: report("status: blocked\nreason_code: awaiting_host_publish\nblockers: []\nhuman_action: null\n"), wantStatus: "complete"},
@@ -2604,12 +2607,27 @@ func TestNativeDispositionFromMessageHostPublication(t *testing.T) {
 		{name: "publication with a blocker stays blocked", message: report("status: blocked\nreason_code: publication_blocked\nblockers:\n  - ref: '#42'\n    reason: Await dependency\nhuman_action: null\n"), wantStatus: "blocked", wantReason: "publication_blocked"},
 		{name: "publication with human action stays blocked", message: report("status: blocked\nreason_code: publication_blocked\nblockers: []\nhuman_action: Approve the release\n"), wantStatus: "blocked", wantReason: "publication_blocked"},
 		{name: "other reason stays blocked", message: report("status: blocked\nreason_code: validation_failed\nblockers: []\nhuman_action: null\n"), wantStatus: "blocked", wantReason: "validation_failed"},
+		{name: "no change evidence survives disposition", message: report("status: no_change_needed\nno_change: {verified_sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, evidence: focused regression passed}\n"), wantStatus: "no_change_needed", wantNoChange: &workpad.NoChangeReport{VerifiedSHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Evidence: "focused regression passed"}},
 		{name: "complete stays complete", message: report("status: complete\nblockers: []\nhuman_action: null\n"), wantStatus: "complete"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			got := NativeDispositionFromMessage(tt.message)
 			if got == nil || got.Status != tt.wantStatus || got.ReasonCode != tt.wantReason || tt.wantStatus == "complete" && (got.Blockers || len(got.BlockerEvidence) != 0) {
 				t.Fatalf("disposition = %+v, want status %q reason %q", got, tt.wantStatus, tt.wantReason)
+			}
+			encoded, err := json.Marshal(got)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var recovered tracker.NativeDisposition
+			if err := json.Unmarshal(encoded, &recovered); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(recovered.NoChange, tt.wantNoChange) {
+				t.Fatalf("recovered no change report = %#v, want %#v", recovered.NoChange, tt.wantNoChange)
+			}
+			if !reflect.DeepEqual(got.NoChange, tt.wantNoChange) {
+				t.Fatalf("no change report = %#v, want %#v", got.NoChange, tt.wantNoChange)
 			}
 		})
 	}
