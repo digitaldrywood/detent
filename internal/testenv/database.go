@@ -35,7 +35,7 @@ func DatabaseTemplate(open func(context.Context, string) (io.Closer, error)) fun
 		if err != nil {
 			t.Fatalf("build migrated database fixture: %v", err)
 		}
-		path := filepath.Join(t.TempDir(), "database.db")
+		path := filepath.Join(TempDir(t), "database.db")
 		if err := os.WriteFile(path, data, 0o600); err != nil {
 			t.Fatalf("write migrated database fixture: %v", err)
 		}
