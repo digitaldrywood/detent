@@ -265,8 +265,8 @@ numbers and comment sequences do not determine user page order.
 `WorkItemPage` and `CommentPage` order ascending by `(created_at, numeric ID)`.
 An empty cursor starts a query. Version 2 cursors carry that tuple and its
 organization, project and optional work-item scope. Version 1 carries a preserved
-numeric rowid and the same scope; a tenant-scoped identity lookup translates it
-into the current tuple. Missing legacy anchors, unsupported versions and scope
+numeric rowid and the same scope, and its continuation keeps ascending rowid
+order for the whole result set so no unseen record is skipped. Missing legacy anchors, unsupported versions and scope
 changes require restarting the query. Version 2 continuation works after its
 anchor is deleted. Callers retain the existing signed, authorized HTTP cursor
 envelope; these storage cursors are not authentication tokens. Legacy numeric
