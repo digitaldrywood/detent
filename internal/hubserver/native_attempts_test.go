@@ -846,6 +846,41 @@ func TestNativeConcurrentOrderedEvents(t *testing.T) {
 	}
 }
 
+func TestNativePreProviderCancellationValidation(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name   string
+		change func(*tracker.NativeRunData)
+		valid  bool
+	}{
+		{name: "before runtime observation", valid: true},
+		{name: "after runtime observation", change: func(data *tracker.NativeRunData) {
+			data.Runtime = &tracker.NativeRuntimeObservation{LocalAttemptID: 1, Generation: 1}
+		}, valid: true},
+		{name: "partial runtime identity", change: func(data *tracker.NativeRunData) {
+			data.Runtime = &tracker.NativeRuntimeObservation{LocalAttemptID: 1}
+		}},
+		{name: "missing failure", change: func(data *tracker.NativeRunData) { data.TerminalFailure = nil }},
+		{name: "unobserved unrelated failure", change: func(data *tracker.NativeRunData) { data.TerminalFailure.ErrorClass = "workspace_hook" }},
+		{name: "provider success", change: func(data *tracker.NativeRunData) { data.Outcome = "succeeded" }},
+		{name: "unobserved setup failure", change: func(data *tracker.NativeRunData) { data.Outcome = "failed" }},
+		{name: "later sequence", change: func(data *tracker.NativeRunData) { data.Sequence = 2 }},
+		{name: "unobserved source", change: func(data *tracker.NativeRunData) { data.Handoff = nativeTestCheckpoint() }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			data := tracker.NativeRunData{Sequence: 1, Outcome: "cancelled", TerminalFailure: &tracker.NativeTerminalFailure{
+				ObservedAt: time.Now().UTC(), Stage: "pre_provider", ErrorClass: "lease_released", Error: "attempt cancelled before provider start; release reason: dispatch_deferred",
+			}}
+			if test.change != nil {
+				test.change(&data)
+			}
+			if err := validateNativeExecution(data, "run.finished"); (err == nil) != test.valid {
+				t.Fatalf("cancellation validation = %v, want valid %t", err, test.valid)
+			}
+		})
+	}
+}
+
 func TestNativeDispositionValidation(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {

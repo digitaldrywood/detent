@@ -136,11 +136,21 @@ func TestRetiredControllerRenewsClaimsWithoutReportingOldBuild(t *testing.T) {
 
 func TestPreProviderCancellationRecordsReleaseReason(t *testing.T) {
 	t.Parallel()
-	for _, reason := range []string{"dispatch_deferred", "provider_capacity_unavailable"} {
-		t.Run(reason, func(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		reason  string
+		runtime bool
+	}{
+		{name: "dispatch_deferred", reason: "dispatch_deferred", runtime: true},
+		{name: "provider_capacity_unavailable", reason: "provider_capacity_unavailable", runtime: true},
+		{name: "dispatch_deferred_without_runtime", reason: "dispatch_deferred"},
+		{name: "provider_capacity_unavailable_without_runtime", reason: "provider_capacity_unavailable"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			var events []tracker.NativeRunEvent
 			released := false
+			var release tracker.NativeLeaseMutation
 			client, err := New(Config{URL: "https://hub.example.test", TokenSource: func() string { return "fixture-token" }, HTTPClient: &http.Client{Transport: executionRoundTrip(func(request *http.Request) (*http.Response, error) {
 				body := "{}"
 				switch {
@@ -153,6 +163,9 @@ func TestPreProviderCancellationRecordsReleaseReason(t *testing.T) {
 					}
 					events = append(events, event)
 				case request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/release"):
+					if err := json.NewDecoder(request.Body).Decode(&release); err != nil {
+						return nil, err
+					}
 					released = true
 				default:
 					return nil, errors.New("unexpected cancellation fixture request")
@@ -171,20 +184,29 @@ func TestPreProviderCancellationRecordsReleaseReason(t *testing.T) {
 			scheduler := &Scheduler{client: client, now: func() time.Time { return at }, leaseTTL: time.Minute, claims: map[string]tracker.Lease{string(lease.WorkItemID): nativeTrackerLease(lease)}, nativeClaims: make(map[string]nativeClaim)}
 			claim := nativeClaim{source: &NativeConnector{client: native}, lease: lease, deadline: at.Add(time.Minute)}
 			execution := &nativeExecution{scheduler: scheduler, claim: claim, data: tracker.NativeRunData{AttemptID: "attempt_example", RunID: "run_example", LeaseID: lease.ID, FencingToken: lease.FencingToken, PolicyID: lease.PolicyID, Runtime: &tracker.NativeRuntimeObservation{LocalAttemptID: 42, Generation: 1, Phase: "completed", HeartbeatAt: at}}}
+			if !test.runtime {
+				execution.data.Runtime = nil
+			}
 			claim.execution = execution
 			scheduler.nativeClaims[string(lease.WorkItemID)] = claim
-			if err := scheduler.ReleaseClaim(t.Context(), string(lease.WorkItemID), reason); err != nil {
+			if err := scheduler.ReleaseClaim(t.Context(), string(lease.WorkItemID), test.reason); err != nil {
 				t.Fatal(err)
 			}
-			if !released || len(events) != 1 {
+			if !released || release.Reason != "released" || release.FencingToken != lease.FencingToken || release.CancelAttempt {
+				t.Fatalf("release lost execution fencing: released=%v mutation=%+v", released, release)
+			}
+			if len(events) != 1 {
 				t.Fatalf("pre-provider cancellation missing: released=%v events=%+v", released, events)
 			}
 			event := events[0]
-			if event.Type != "run.finished" || event.Data.Outcome != "cancelled" || event.Data.Identity != nil || event.Data.TerminalFailure == nil || event.Data.TerminalFailure.Stage != "pre_provider" || !strings.HasSuffix(event.Data.TerminalFailure.Error, "release reason: "+reason) {
+			if event.Type != "run.finished" || event.Data.Outcome != "cancelled" || event.Data.Identity != nil || event.Data.TerminalFailure == nil || event.Data.TerminalFailure.Stage != "pre_provider" || !strings.HasSuffix(event.Data.TerminalFailure.Error, "release reason: "+test.reason) {
 				t.Fatalf("pre-provider cancellation lost its cause: %+v", event.Data)
 			}
 			if event.Data.LeaseID != lease.ID || event.Data.FencingToken != 7 || event.Data.Sequence != 1 {
 				t.Fatalf("cancellation lost execution fencing: %+v", event.Data)
+			}
+			if (event.Data.Runtime != nil) != test.runtime {
+				t.Fatalf("cancellation changed runtime presence: %+v", event.Data.Runtime)
 			}
 		})
 	}
