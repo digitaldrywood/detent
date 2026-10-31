@@ -1049,8 +1049,17 @@ func RunSettlement(t *testing.T, scenarios []SettlementScenario, factories Const
 
 			if test.PublicationWriteRefusal != "" {
 				owner := execution.(*ownedExecution)
+				source := publicationSource
+				entries := 0
+				var sourceError error
+				owner.SetPublicationSource(func(ctx context.Context, version tracker.ChangeVersion, opts workspace.LandOptions) (workspace.GitHubPublication, error) {
+					entries++
+					publication, err := source(ctx, version, opts)
+					sourceError = err
+					return publication, err
+				})
 				if err := owner.PrepareFinish(guarded, test.Outcome, "", nil); err != nil || owner.CompletionSnapshot().Publication == nil {
-					t.Fatalf("prepare held publication: %v, change=%+v, calls=%d", err, owner.NativeChange(), publicationCalls)
+					t.Fatalf("prepare held publication: %v, change=%+v, calls=%d, context=%v, source_entries=%d, source_error=%v, stored_seq=%d, finish_seq=%d", err, owner.NativeChange(), publicationCalls, guarded.Err(), entries, sourceError, owner.CompletionSnapshot().StoredSeq, owner.CompletionData().Sequence+1)
 				}
 				switch test.PublicationWriteRefusal {
 				case "version":
