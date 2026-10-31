@@ -371,6 +371,9 @@ func TestRunnerSessionDurationSpansResumeFallback(t *testing.T) {
 func TestRunnerMergeFallbackValidationOutlivesResolutionBudget(t *testing.T) {
 	t.Parallel()
 
+	callerDeadline := time.Now().Add(4 * time.Hour)
+	callerCtx, cancel := context.WithDeadline(t.Context(), callerDeadline)
+	defer cancel()
 	durationLimit := &controlledDurationLimit{}
 	workspaceBackend := &fakeMergeWorkspaceBackend{
 		fakeWorkspaceBackend: fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Key: "issue-merge-fallback-verify"}},
@@ -379,8 +382,8 @@ func TestRunnerMergeFallbackValidationOutlivesResolutionBudget(t *testing.T) {
 				return workspace.MergePrepareResult{Status: workspace.MergePrepareStatusConflict}, nil
 			}
 			deadline, bounded := ctx.Deadline()
-			if !bounded || time.Until(deadline) > time.Hour {
-				t.Fatal("deterministic validation must have a separate bounded context")
+			if !bounded || !deadline.Equal(callerDeadline) {
+				t.Fatalf("validation deadline = %v, want caller deadline %v", deadline, callerDeadline)
 			}
 			durationLimit.Expire()
 			if err := ctx.Err(); err != nil {
@@ -404,7 +407,7 @@ func TestRunnerMergeFallbackValidationOutlivesResolutionBudget(t *testing.T) {
 		t.Fatalf("NewRunner() error = %v", err)
 	}
 
-	result, err := runner.Run(t.Context(), RunRequest{
+	result, err := runner.Run(callerCtx, RunRequest{
 		Issue: connector.Issue{
 			ID:          "issue-merge-fallback-verify",
 			Identifier:  "digitaldrywood/detent#1809",

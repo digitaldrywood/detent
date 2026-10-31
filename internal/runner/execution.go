@@ -583,7 +583,7 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 		result.ReviewConversationsCleared = cleared
 	}
 	if runErr == nil && result.landingCleanup != nil && result.NativeChange != nil && result.NativeChange.VersionID != "" && result.NativeChange.Error == "" && result.NativeChange.VersionError == "" {
-		cleanupCtx, cancel := context.WithCancel(guarded)
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(guarded), r.afterRunTimeout)
 		if err := result.landingCleanup(cleanupCtx); err != nil {
 			r.logger.Warn("landing workspace left behind", "issue_id", req.Issue.ID, "error", err)
 		}

@@ -237,13 +237,18 @@ func TestCheckpointPullRequestAssociation(t *testing.T) {
 
 func TestCheckpointBoundedPeriodicAndTerminalTurns(t *testing.T) {
 	t.Parallel()
-	for _, scenario := range []string{"duration", "cancelled", "hard reap failure", "completed with survivors", "periodic", "checkpoint timeout", "duration during checkpoint"} {
+	for _, scenario := range []string{"duration", "cancelled", "hard reap failure", "completed with survivors", "periodic", "caller deadline during checkpoint", "duration during checkpoint"} {
 		t.Run(scenario, func(t *testing.T) {
 			t.Parallel()
 			runner, checkpoint, publication := checkpointRunnerFixture(t)
 			synctest.Test(t, func(t *testing.T) {
 				parent, cancel := context.WithCancel(t.Context())
 				defer cancel()
+				if scenario == "caller deadline during checkpoint" {
+					var stop context.CancelFunc
+					parent, stop = context.WithTimeout(parent, 3*time.Second)
+					defer stop()
+				}
 				session := parent
 				cfg := config.Agent{}
 				if scenario == "periodic" || scenario == "duration during checkpoint" {
@@ -259,7 +264,7 @@ func TestCheckpointBoundedPeriodicAndTerminalTurns(t *testing.T) {
 				run := func(ctx context.Context, turn AgentTurnRequest, req RunRequest) agentTurnExecution {
 					if turn.ReadOnly {
 						handshakes++
-						if scenario == "checkpoint timeout" {
+						if scenario == "caller deadline during checkpoint" {
 							<-ctx.Done()
 							return agentTurnExecution{err: ctx.Err()}
 						}
@@ -271,7 +276,7 @@ func TestCheckpointBoundedPeriodicAndTerminalTurns(t *testing.T) {
 					}
 					calls++
 					switch scenario {
-					case "duration", "checkpoint timeout":
+					case "duration", "caller deadline during checkpoint":
 						return agentTurnExecution{err: ErrSessionDurationExceeded, result: RunResult{FinalState: FinalStateSessionDurationExceeded}}
 					case "cancelled":
 						cancel()
@@ -305,8 +310,8 @@ func TestCheckpointBoundedPeriodicAndTerminalTurns(t *testing.T) {
 						t.Fatal("unreachable epilogue ran")
 					}
 				}
-				if scenario == "checkpoint timeout" && publication.calls != 0 {
-					t.Fatal("timed out checkpoint published")
+				if scenario == "caller deadline during checkpoint" && (publication.calls != 0 || handshakes != 1 || !errors.Is(parent.Err(), context.DeadlineExceeded)) {
+					t.Fatalf("caller deadline did not stop checkpoint: publications=%d handshakes=%d error=%v", publication.calls, handshakes, parent.Err())
 				}
 				if scenario == "duration during checkpoint" && !errors.Is(result.err, ErrSessionDurationExceeded) {
 					t.Fatalf("session deadline extended: %v", result.err)
