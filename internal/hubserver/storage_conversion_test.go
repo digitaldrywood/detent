@@ -742,6 +742,17 @@ func TestStorageConversionDiscoveryInitialization(t *testing.T) {
 	if !ok {
 		t.Fatal("missing stored text migration rollback")
 	}
+	indexMigration, err := migrationFiles.ReadFile("migrations/20261030211617_conversation_archive_reference_indexes.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	indexUp, indexDown, ok := strings.Cut(string(indexMigration), "-- +goose Down")
+	if !ok {
+		t.Fatal("missing archive reference index migration rollback")
+	}
+	if _, err := db.db.ExecContext(ctx, indexDown); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := db.db.ExecContext(ctx, storedTextDown); err != nil {
 		t.Fatal(err)
 	}
@@ -766,6 +777,9 @@ SELECT ?,?,n,'attempt','legacy-'||n,1,'{"obsolete":"payload"}' FROM history`, fi
 		t.Fatal(err)
 	}
 	if _, err := db.db.ExecContext(ctx, storedTextUp); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.db.ExecContext(ctx, indexUp); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.db.ExecContext(ctx, "DROP TRIGGER storage_conversion_enqueue_analytics"); err != nil {
