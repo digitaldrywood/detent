@@ -1444,7 +1444,7 @@ func TestHostedNativeMutationConsumption(t *testing.T) {
 			{"run completion", hostedNativeMutationMetrics(tracker.NativeRunEvent{Type: "run.finished"}, true), 2},
 			{"lease validation", hostedRunnerTransactionMetrics(nativeBase + "/leases/:lease/validate"), 2},
 			{"provider preview", hostedRunnerTransactionMetrics(nativeBase + "/claims/preview"), 2},
-			{"heartbeat", hostedRunnerTransactionMetrics(nativeBase + "/machines/:machine/heartbeat"), 3},
+			{"heartbeat", hostedRunnerTransactionMetrics(nativeBase + "/machines/:machine/heartbeat"), 4},
 			{"enrollment redemption", hostedRunnerTransactionMetrics(enrollmentBase + "/redeem"), 13},
 			{"runner mutation", hostedRunnerTransactionMetrics(runnerBase + "/:runner/rotate"), 13},
 			{"attachment preflight", []string{"collaboration_bytes"}, 1},
@@ -1472,8 +1472,8 @@ func TestHostedNativeMutationConsumption(t *testing.T) {
 				if test.name == "lease validation" || test.name == "provider preview" || test.name == "heartbeat" {
 					wantMetrics, wantRows := 3, int64(3)
 					if test.name == "heartbeat" {
-						wantMetrics++
-						wantRows += int64(retained)
+						wantMetrics += 2
+						wantRows += int64(retained) + 1
 					}
 					if actual["api_mutations"] != 7 || actual["ingested_events"] != 3 || len(actual) != wantMetrics || queries.resultRows != wantRows {
 						t.Fatalf("%s accounting=%v rows=%d", test.name, actual, queries.resultRows)
@@ -1607,7 +1607,7 @@ func TestHostedNativeMutationConsumption(t *testing.T) {
 				if err != nil || !maps.Equal(after, full) {
 					t.Fatalf("local=%v full=%v error=%v", after, full, err)
 				}
-				if len(queries.statements) != 7 || queries.resultRows != 9 {
+				if len(queries.statements) != 8 || queries.resultRows != 10 {
 					t.Fatalf("queries=%d rows=%d", len(queries.statements), queries.resultRows)
 				}
 				for _, statement := range []string{queries.statements[4], queries.statements[5]} {
