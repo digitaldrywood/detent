@@ -19,7 +19,7 @@ func verificationCommandError(ctx context.Context, err error, message string) er
 		return ctx.Err()
 	}
 	var exit *exec.ExitError
-	if errors.As(err, &exit) && exit.ProcessState != nil && exit.ProcessState.Exited() {
+	if errors.As(err, &exit) && exit.ProcessState != nil && exit.Exited() {
 		stderr := strings.ToLower(string(exit.Stderr))
 		for _, diagnostic := range []string{
 			"pack is corrupted", "unknown revision or path not in the working tree", "unknown revision or path not in working tree", "expected oid, not a ref", "pack checksum mismatch", "pack signature mismatch", "pack version",
