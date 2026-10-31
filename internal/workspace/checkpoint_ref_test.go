@@ -20,6 +20,7 @@ func TestCheckpointRefRestoresOnAnotherRunner(t *testing.T) {
 	for _, test := range []struct {
 		name        string
 		finalize    bool
+		fresh       bool
 		edit        func(t *testing.T, path string)
 		validate    func(context.Context) error
 		want        error
@@ -28,6 +29,7 @@ func TestCheckpointRefRestoresOnAnotherRunner(t *testing.T) {
 		transaction *portableReworkCheckpointCase
 	}{
 		{name: "runner killed mid-stage resumes elsewhere", validate: owned},
+		{name: "explicit fresh checkout reconstructs matching dirty cache", validate: owned, fresh: true},
 		{name: "completed source finalizes apart from survivors", validate: owned, finalize: true},
 		{name: "clean environment templates restore elsewhere", validate: owned, templates: map[string]string{".env.example": "API_TOKEN=''\n", ".envrc.example": "export API_TOKEN=''\n"}},
 		{name: "unfinished two-commit rework restores exact transaction", validate: owned, transaction: &portableReworkCheckpointCase{}},
@@ -144,11 +146,18 @@ func TestCheckpointRefRestoresOnAnotherRunner(t *testing.T) {
 				t.Fatalf("unchanged tree pushed again: %v %v", again, err)
 			}
 
-			again, err := source.Create(t.Context(), Issue{ID: issue.ID, Identifier: issue.Identifier, Checkpoint: &CheckpointRef{Ref: checkpoint.Ref, CommitSHA: checkpoint.CommitSHA, TreeSHA: checkpoint.TreeSHA}})
-			if err != nil || again.Path != info.Path || runGit(t, info.Path, "status", "--porcelain") != status {
+			again, err := source.Create(t.Context(), Issue{ID: issue.ID, Identifier: issue.Identifier, Checkpoint: &CheckpointRef{Ref: checkpoint.Ref, CommitSHA: checkpoint.CommitSHA, TreeSHA: checkpoint.TreeSHA}, FreshCheckout: test.fresh})
+			if err != nil || again.Path != info.Path {
 				t.Fatalf("same runner did not reuse its matching worktree: %v", err)
 			}
-			if quarantined := runGit(t, first, "worktree", "list", "--porcelain"); strings.Count(quarantined, "worktree ") != 2 {
+			if test.fresh {
+				if !again.Created || runGit(t, again.Path, "diff", "--cached", "--name-only") != "" {
+					t.Fatal("explicit refresh reused a partially staged dirty cache")
+				}
+			} else if runGit(t, info.Path, "status", "--porcelain") != status {
+				t.Fatal("matching cache changed without a refresh request")
+			}
+			if quarantined := runGit(t, first, "worktree", "list", "--porcelain"); !test.fresh && strings.Count(quarantined, "worktree ") != 2 {
 				t.Fatalf("matching worktree was quarantined:\n%s", quarantined)
 			}
 

@@ -756,12 +756,13 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 		if err := l.bindCheckpointBranch(issue, info, &checkpoint); err != nil {
 			return Info{}, err
 		}
+		fresh := issue.FreshCheckout
 		issue.Checkpoint, issue.FreshCheckout = &checkpoint, true
 		exists, isDir, err := pathExists(info.Path)
 		if err != nil {
 			return Info{}, err
 		}
-		if exists && isDir && l.isSourceWorktree(ctx, info.Path) && checkpointMatches(ctx, info.Path, &checkpoint) {
+		if !fresh && exists && isDir && l.isSourceWorktree(ctx, info.Path) && checkpointMatches(ctx, info.Path, &checkpoint) {
 			issue.Checkpoint, issue.FreshCheckout = nil, false
 		}
 	}

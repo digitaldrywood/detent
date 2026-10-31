@@ -335,6 +335,125 @@ func (e *reworkReviewExecution) RecordValidator(_ context.Context, result gate.V
 	return nil
 }
 
+func TestDirtyCheckpointReworkMakesProgress(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name           string
+		staged         bool
+		missing        bool
+		legacy         bool
+		prepareFailure bool
+	}{
+		{name: "retained dirty checkpoint"},
+		{name: "retained partially staged checkpoint", staged: true},
+		{name: "unavailable checkpoint retries before provider", missing: true},
+		{name: "legacy dirty source requires retained checkpoint", legacy: true},
+		{name: "rework preparation outage belongs to instance", prepareFailure: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			source := initRunnerSourceRepo(t)
+			remote := filepath.Join(t.TempDir(), "origin.git")
+			runRunnerGit(t, source, "init", "--bare", "-b", "main", remote)
+			runRunnerGit(t, source, "remote", "add", "origin", remote)
+			runRunnerGit(t, source, "push", "-u", "origin", "main")
+			backend, err := workspace.NewLocalGit(workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			issue := connector.Issue{ID: "work", Identifier: "example#1", State: "Rework"}
+			ownedIssue := workspaceIssue("default", issue)
+			info, err := backend.Create(t.Context(), ownedIssue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			base := strings.TrimSpace(runRunnerGit(t, info.Path, "rev-parse", "HEAD"))
+			if err := os.WriteFile(filepath.Join(info.Path, "checkpoint.md"), []byte("recorded work\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if test.staged {
+				runRunnerGit(t, info.Path, "add", "checkpoint.md")
+			}
+			if err := os.WriteFile(filepath.Join(info.Path, "unstaged.md"), []byte("retained work\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			ref, pushed, err := backend.PushCheckpointRef(t.Context(), info, ownedIssue, workspace.CheckpointRef{}, func(ctx context.Context) error { return ctx.Err() })
+			if err != nil || !pushed {
+				t.Fatalf("publish fixture: %+v, %v", ref, err)
+			}
+			state, err := backend.RecoveryState(t.Context(), info, ownedIssue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			checkpoint := executionCheckpoint(&state)
+			checkpoint.Storage, checkpoint.Ref, checkpoint.CommitSHA, checkpoint.BaseSHA, checkpoint.TreeSHA = "git_ref", ref.Ref, ref.CommitSHA, ref.BaseSHA, ref.TreeSHA
+			if checkpoint.WorktreeState != "dirty" {
+				t.Fatalf("fixture is not dirty: %+v", checkpoint)
+			}
+			if test.legacy {
+				checkpoint.Storage, checkpoint.Ref, checkpoint.CommitSHA, checkpoint.BaseSHA, checkpoint.TreeSHA = "local_only", "", "", "", ""
+			}
+			if test.missing {
+				checkpoint.CommitSHA = strings.Repeat("f", 40)
+			}
+			execution := &reworkArtifactsExecution{base: base, testExecution: testExecution{recovery: tracker.NativeRecovery{
+				Lease:    tracker.NativeLease{MachineID: "machine"},
+				Attempts: []tracker.NativeAttempt{{Status: "succeeded", NativeRunData: tracker.NativeRunData{AttemptID: "source", MachineID: "machine", Identity: &tracker.NativeExecutionIdentity{Role: RoleRework}}, Checkpoint: &checkpoint}},
+			}}}
+			agent := &resolvingReworkAgent{staged: true, t: t}
+			agent.beforeStage = func() {
+				if test.missing || test.legacy || test.prepareFailure {
+					t.Fatal("provider started without the recorded checkpoint")
+				}
+				path := agent.request.Workspace
+				if status := runRunnerGit(t, path, "status", "--porcelain"); status != "" {
+					t.Fatalf("dirty checkpoint reached provider without preparation: %s", status)
+				}
+				if got := runRunnerGit(t, path, "show", "HEAD:checkpoint.md"); got != "recorded work\n" {
+					t.Fatalf("checkpoint source lost: %q", got)
+				}
+				if got := runRunnerGit(t, path, "show", "HEAD:unstaged.md"); got != "retained work\n" {
+					t.Fatalf("unstaged checkpoint source lost: %q", got)
+				}
+			}
+			runWorkspace := &resumedExecutionWorkspace{LocalGit: backend}
+			if test.prepareFailure {
+				runWorkspace.beforePreparation = func() {
+					runRunnerGit(t, info.Path, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "missing.git"))
+				}
+			}
+			r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: config.Config{Tracker: config.Tracker{Kind: config.TrackerHubNative}}, Prompt: "Apply the requested rework"}, Workspace: runWorkspace, AgentBackend: agent})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := r.Run(t.Context(), RunRequest{Mode: RunModeImplement, Issue: issue, Execution: execution})
+			if test.legacy {
+				failure := nativeTerminalFailure(err, time.Now(), false)
+				if !errors.Is(err, ErrNativeRecoveryRequired) || failure == nil || failure.Attribution != "instance" || agent.calls != 0 || execution.finish != "interrupted" {
+					t.Fatalf("legacy dirty source reached provider: err=%v failure=%+v calls=%d", err, failure, agent.calls)
+				}
+				return
+			}
+			if test.missing || test.prepareFailure {
+				decision, ok := FailureDecision(err)
+				if !errors.Is(err, ErrWorkspacePreparation) || !ok || decision.Outcome != "instance" || agent.calls != 0 || execution.finish == "succeeded" {
+					t.Fatalf("refresh failure lost instance retry: err=%v decision=%+v calls=%d outcome=%s", err, decision, agent.calls, execution.finish)
+				}
+				return
+			}
+			if err != nil || result.FinalState != FinalStateCompleted || execution.finish != "succeeded" || agent.calls != 1 {
+				t.Fatalf("rework did not progress: result=%+v err=%v outcome=%s calls=%d", result, err, execution.finish, agent.calls)
+			}
+			if execution.head == "" || execution.head == base {
+				t.Fatal("rework produced no finalized source")
+			}
+			if got := runRunnerGit(t, agent.request.Workspace, "show", execution.head+":repair.md"); got != "resolved\n" {
+				t.Fatalf("rework product missing: %q", got)
+			}
+		})
+	}
+}
+
 func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 	if testing.Short() {
 		t.Skip("git subprocess integration")

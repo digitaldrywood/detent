@@ -772,13 +772,20 @@ func (e *nativeExecution) finalizationFailure(err error) *tracker.NativeTerminal
 	return &public
 }
 
-func (e *nativeExecution) finishPrepared(ctx context.Context) (err error) {
+func (e *nativeExecution) finishPrepared(ctx context.Context, reason string) (err error) {
 	defer func() {
 		e.mu.Lock()
 		defer e.mu.Unlock()
 		e.observeCompletionOutage(err)
 	}()
 	e.mu.Lock()
+	if e.preparedOutcome == "" && e.data.Identity == nil && e.data.Outcome == "" && e.data.Runtime != nil && e.data.Runtime.LocalAttemptID > 0 && e.data.Runtime.Generation > 0 {
+		e.preparedOutcome = "cancelled"
+		if e.preparedFailure == nil {
+			failure := (tracker.NativeTerminalFailure{ErrorClass: "lease_released", Stage: "pre_provider", ObservedAt: e.scheduler.now().UTC(), Error: "attempt cancelled before provider start; release reason: " + reason}).Public()
+			e.preparedFailure = &failure
+		}
+	}
 	outcome := e.preparedOutcome
 	finished := e.data.Outcome != ""
 	interrupted := e.data.Outcome == "interrupted"

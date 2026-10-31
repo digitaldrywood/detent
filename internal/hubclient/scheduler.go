@@ -448,7 +448,7 @@ func (s *Scheduler) ReleaseClaim(ctx context.Context, issueID string, reason str
 	var err error
 	if isNative {
 		if native.execution != nil {
-			err = native.execution.finishPrepared(ctx)
+			err = native.execution.finishPrepared(ctx, reason)
 			var rejection *nativeCompletionRejection
 			if err != nil && !errors.As(err, &rejection) {
 				return err
