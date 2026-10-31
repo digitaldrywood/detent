@@ -39,7 +39,7 @@ func (r *Repository) Register(ctx context.Context, o Organization) (bool, error)
 	err := r.transaction(ctx, corestore.Serving, false, func(tx *sql.Tx) error {
 
 		now := r.now()
-		inserted, err := tx.ExecContext(ctx, `INSERT INTO platform.organizations(id,provider_id,name,state,endpoint,generation,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$7) ON CONFLICT(id) DO NOTHING`, o.ID, o.ProviderID, o.Name, o.State, o.Endpoint, o.Generation, now)
+		inserted, err := tx.ExecContext(ctx, `INSERT INTO platform.organizations(id,provider_id,name,state,endpoint,generation,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$7) ON CONFLICT DO NOTHING`, o.ID, o.ProviderID, o.Name, o.State, o.Endpoint, o.Generation, now)
 		if err != nil {
 			return err
 		}
@@ -50,6 +50,8 @@ func (r *Repository) Register(ctx context.Context, o Organization) (bool, error)
 		if count == 0 {
 			current, err := scanOrganization(tx.QueryRowContext(ctx, `SELECT `+organizationColumns+` FROM platform.organizations WHERE id=$1 FOR UPDATE`, o.ID))
 			switch {
+			case errors.Is(err, sql.ErrNoRows):
+				return ErrOrganizationConflict
 			case err != nil:
 				return err
 			case current.ProviderID != o.ProviderID || o.Generation < current.Generation || current.Managed || current.State == "deleted":

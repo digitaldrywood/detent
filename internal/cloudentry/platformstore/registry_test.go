@@ -65,38 +65,76 @@ func TestRegistryMappingAndGenerations(t *testing.T) {
 }
 
 func TestConcurrentRegistryRegistrationIsIdempotent(t *testing.T) {
-	db := template.Database(t)
-	cfg := testConfig(t)
-	first := repository(t, db, cfg)
-	second := replicaRepository(t, first, cfg)
-	o := Organization{ID: "org_example", ProviderID: "provider_example", Name: "Example", Endpoint: "unix:/example/tenant.sock", Generation: 1}
-	type outcome struct {
-		changed bool
-		err     error
+	cases := []struct {
+		name     string
+		change   func(*Organization)
+		conflict bool
+	}{
+		{"identical", func(*Organization) {}, false},
+		{"different organization", func(o *Organization) { o.ID = "org_other" }, true},
+		{"different provider", func(o *Organization) { o.ProviderID = "provider_other" }, true},
+		{"different endpoint", func(o *Organization) { o.Endpoint = "unix:/example/other.sock" }, true},
 	}
-	results := make(chan outcome, 2)
-	start := make(chan struct{})
-	var workers sync.WaitGroup
-	for _, r := range []*Repository{first, second} {
-		workers.Go(func() { <-start; changed, err := r.Register(t.Context(), o); results <- outcome{changed, err} })
-	}
-	close(start)
-	workers.Wait()
-	close(results)
-	changed := 0
-	for result := range results {
-		if result.err != nil {
-			t.Fatal(result.err)
-		}
-		if result.changed {
-			changed++
-		}
-	}
-	if changed != 1 {
-		t.Fatalf("changed registrations=%d", changed)
-	}
-	var events int
-	if err := db.QueryRowContext(t.Context(), `SELECT count(*) FROM platform.organization_events WHERE organization_id=$1`, o.ID).Scan(&events); err != nil || events != 1 {
-		t.Fatalf("events=%d err=%v", events, err)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db := template.Database(t)
+			cfg := testConfig(t)
+			first := repository(t, db, cfg)
+			second := repository(t, db, cfg)
+			o := Organization{ID: "org_example", ProviderID: "provider_example", Name: "Example", Endpoint: "unix:/example/tenant.sock", Generation: 1}
+			type outcome struct {
+				organization Organization
+				changed      bool
+				err          error
+			}
+			replicas := []*Repository{first, second}
+			results := make(chan outcome, len(replicas))
+			start := make(chan struct{})
+			var workers sync.WaitGroup
+			other := o
+			tc.change(&other)
+			for i, r := range replicas {
+				input := o
+				if i == 1 {
+					input = other
+				}
+				workers.Go(func() {
+					<-start
+					changed, err := r.Register(t.Context(), input)
+					results <- outcome{input, changed, err}
+				})
+			}
+			close(start)
+			workers.Wait()
+			close(results)
+			changed := 0
+			conflicts := 0
+			var winner Organization
+			for result := range results {
+				if errors.Is(result.err, ErrOrganizationConflict) && tc.conflict && !result.changed {
+					conflicts++
+				} else if result.err != nil {
+					t.Fatal(result.err)
+				}
+				if result.changed {
+					changed++
+					winner = result.organization
+				}
+			}
+			if changed != 1 {
+				t.Fatalf("changed registrations=%d", changed)
+			}
+			if (conflicts == 1) != tc.conflict {
+				t.Fatalf("conflicts=%d want conflict=%v", conflicts, tc.conflict)
+			}
+			stored, err := first.ByProvider(t.Context(), winner.ProviderID)
+			if err != nil || stored.ID != winner.ID || stored.Endpoint != winner.Endpoint || stored.Generation != winner.Generation {
+				t.Fatalf("stored registration: %+v err=%v", stored, err)
+			}
+			var events int
+			if err := db.QueryRowContext(t.Context(), `SELECT count(*) FROM platform.organization_events`).Scan(&events); err != nil || events != 1 {
+				t.Fatalf("events=%d err=%v", events, err)
+			}
+		})
 	}
 }
