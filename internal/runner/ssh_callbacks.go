@@ -6,7 +6,6 @@ import (
 	"errors"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/budget"
@@ -274,7 +273,7 @@ func (b SSHBudgetGuard) EstimateDispatch(ctx context.Context, project string) (b
 // before crossing SSH. Configuration and secrets are sent only over stdin.
 func ResolveSSHWorkflow(ctx context.Context, workflow config.Workflow) (config.Workflow, error) {
 	cfg := &workflow.Config
-	token, err := resolveWorkerGitHubSecret(ctx, cfg.Worker.GitHubToken, os.Getenv, defaultWorkerGitHubToken, workerGitHubTokenResolutionOptions{Timeout: time.Duration(cfg.Worker.GitHubTokenResolutionTimeoutMS) * time.Millisecond, MaxAttempts: workerGitHubTokenResolutionDefaultAttempts, RetryBackoff: workerGitHubTokenResolutionDefaultRetryDelay})
+	token, err := resolveWorkerGitHubSecret(ctx, cfg.Worker.GitHubToken, os.Getenv, defaultWorkerGitHubToken)
 	if err != nil {
 		return config.Workflow{}, err
 	}

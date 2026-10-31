@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -434,4 +435,30 @@ func TestSameMachineWorkspaceRetained(t *testing.T) {
 			}
 		})
 	}
+}
+
+type slowCheckpointPublisher struct {
+	*wipExecutionWorkspace
+}
+
+func (w *slowCheckpointPublisher) PushCheckpointRef(ctx context.Context, info workspace.Info, issue workspace.Issue, previous workspace.CheckpointRef, validate func(context.Context) error) (workspace.CheckpointRef, bool, error) {
+	time.Sleep(3 * time.Minute)
+	if err := ctx.Err(); err != nil {
+		return previous, false, err
+	}
+	return w.wipExecutionWorkspace.PushCheckpointRef(ctx, info, issue, previous, validate)
+}
+
+func TestCheckpointRefSlowPublicationUsesCallerLifetime(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		backend := &slowCheckpointPublisher{wipExecutionWorkspace: &wipExecutionWorkspace{retainedExecutionWorkspace: retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{}}}}
+		execution := &testExecution{}
+		refs := newCheckpointRefs(backend, execution, workspace.Info{}, workspace.Issue{}, nil)
+		r := &Runner{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+		r.finishCheckpointRef(t.Context(), refs, RunRequest{})
+		if refs.lastPushFailed() || refs.last.CommitSHA == "" || backend.pushes != 1 {
+			t.Fatalf("slow publication lost completed source: failed=%t checkpoint=%+v pushes=%d", refs.lastPushFailed(), refs.last, backend.pushes)
+		}
+	})
 }

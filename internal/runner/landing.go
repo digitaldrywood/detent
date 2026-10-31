@@ -422,7 +422,7 @@ func (r *Runner) nativeLandingGitHubClient(ctx context.Context, req RunRequest, 
 	}
 	token := policy.Token
 	if token == "" {
-		token, err = resolveWorkerGitHubToken(ctx, defaultWorkerGitHubToken, workerGitHubTokenResolutionOptions{})
+		token, err = resolveWorkerGitHubToken(ctx, defaultWorkerGitHubToken)
 		if err != nil {
 			return nil, policy, err
 		}
