@@ -171,7 +171,7 @@ func TestNativeBulkExportItemFailure(t *testing.T) {
 				t.Fatal(err)
 			}
 			var logs bytes.Buffer
-			f.service.config.Logger = slog.New(slog.NewJSONHandler(&logs, nil))
+			f.service.config.Logger = slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelError}))
 			ctx := changeOperatorContext(t, f.service, f.token, string(f.project.OrganizationID))
 			for _, transport := range []string{"native", "stdio", "http"} {
 				t.Run(transport, func(t *testing.T) {

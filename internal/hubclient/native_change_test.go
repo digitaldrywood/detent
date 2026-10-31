@@ -5668,7 +5668,7 @@ func nativeChangeGitWithContext(ctx context.Context, t *testing.T, dir string, a
 
 func isolateNativeChangeGit(t *testing.T) {
 	t.Helper()
-	scratch := t.TempDir()
+	scratch := testenv.TempDir(t)
 	for _, key := range []string{"TMPDIR", "TMP", "TEMP"} {
 		t.Setenv(key, scratch)
 	}
