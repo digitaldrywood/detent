@@ -58,6 +58,7 @@ func TestFailureDecisionControlsRetryAndPublication(t *testing.T) {
 		{"acceptance rejection", "instance", fmt.Errorf("%w: %w", ErrValidatorInfrastructure, acceptanceRejectionError{}), 2, 0},
 		{"prior issue verdict for rejection", "instance", RestoreFailureDecision(acceptanceRejectionError{}, tracker.FailureAttribution{Outcome: "issue", Reason: "prior verdict"}), 2, 0},
 		{"audit publication", "instance", auditPublicationCarrier{}, 2, 0},
+		{"implementation review provider", "instance", failedStep("validator", &NativeImplementationReviewError{Err: fmt.Errorf("run validator turn: %w", errors.New("provider startup failed"))}), 2, 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			backend := &fakeCodexClient{failureOutcome: test.outcome}

@@ -200,6 +200,7 @@ func infrastructureFailureDecision(err error) *tracker.FailureAttribution {
 	}
 	var hook *workspace.HookError
 	var unavailable *connector.TrackerAvailabilityError
+	var implementationReview *NativeImplementationReviewError
 	var provider interface {
 		NativeTerminalFailure() tracker.NativeTerminalFailure
 	}
@@ -211,7 +212,7 @@ func infrastructureFailureDecision(err error) *tracker.FailureAttribution {
 		}
 	}
 	switch {
-	case errors.Is(err, ErrWorkspacePreparation), errors.As(err, &hook), errors.Is(err, ErrWorkerProcessReap), errors.Is(err, ErrValidatorInfrastructure), errors.Is(err, ErrReviewConversationsUnavailable), errors.As(err, &unavailable):
+	case errors.Is(err, ErrWorkspacePreparation), errors.As(err, &hook), errors.Is(err, ErrWorkerProcessReap), errors.Is(err, ErrValidatorInfrastructure), errors.Is(err, ErrReviewConversationsUnavailable), errors.As(err, &unavailable), errors.As(err, &implementationReview):
 		return &tracker.FailureAttribution{Outcome: "instance", Reason: "typed instance infrastructure failure"}
 	case errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF), errors.Is(err, io.ErrClosedPipe):
 		return &tracker.FailureAttribution{Outcome: "instance", Reason: "backend transport unavailable"}
