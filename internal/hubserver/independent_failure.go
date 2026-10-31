@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/failureattribution"
@@ -96,27 +97,80 @@ func attachIndependentRepairs(ctx context.Context, tx *sql.Tx, scope nativeScope
 	return dependencies, "", err
 }
 
-func recordIndependentRunFailure(ctx context.Context, tx *sql.Tx, scope nativeScope, issue tracker.NativeIssue, data *tracker.NativeRunData, now time.Time) error {
+func independentRunFailures(ctx context.Context, q nativeQueryer, issue tracker.NativeIssue, data tracker.NativeRunData) ([]failureattribution.Evidence, error) {
 	if data.Outcome != "failed" || data.Runtime == nil || data.Runtime.Validation == nil || data.Runtime.Landing != nil || data.Runtime.Validation.ExitCode == 0 || data.Runtime.Validation.BaseReproduction == nil || issue.Archived || issue.Terminal {
-		return nil
+		return nil, nil
 	}
 	command := data.Runtime.Validation
 	var raw string
-	if err := tx.QueryRowContext(ctx, "SELECT COALESCE(COALESCE(NULLIF(checkpoint_object_key,''),checkpoint_json),'null') FROM native_attempts WHERE id=?", data.AttemptID).Scan(&raw); err != nil {
-		return err
+	if err := q.QueryRowContext(ctx, "SELECT COALESCE(COALESCE(NULLIF(checkpoint_object_key,''),checkpoint_json),'null') FROM native_attempts WHERE id=?", data.AttemptID).Scan(&raw); err != nil {
+		return nil, err
 	}
-	checkpoint, err := decodeRunCheckpoint(ctx, tx, raw)
+	checkpoint, err := decodeRunCheckpoint(ctx, q, raw)
 	if err != nil {
-		return fmt.Errorf("decode failure source: %w", err)
+		return nil, fmt.Errorf("decode failure source: %w", err)
 	}
 	if checkpoint == nil || checkpoint.HeadSHA != command.HeadSHA || checkpoint.UncertainForgeEffect() {
-		return nil
+		return nil, nil
 	}
 	result := &gate.ValidatorResult{Verdict: gate.ValidatorVerdictRework, BaseSHA: command.BaseReproduction.HeadSHA, HeadSHA: command.HeadSHA, Commands: []gate.CommandResult{*command}}
 	gate.NormalizeAttribution(result)
-	failures := tracker.IndependentGateFailures(result)
-	if len(failures) == 0 {
-		return nil
+	return tracker.IndependentGateFailures(result), nil
+}
+
+func prepareIndependentRunFailure(ctx context.Context, q nativeQueryer, scope nativeScope, issue tracker.NativeIssue, data *tracker.NativeRunData, now time.Time) error {
+	failures, err := independentRunFailures(ctx, q, issue, *data)
+	if err != nil || len(failures) == 0 {
+		return err
+	}
+	var dependencies []tracker.NativeWorkItemID
+	seen := map[string]bool{}
+	for _, failure := range failures {
+		request := independentRepairRequest(failure, data.AttemptID)
+		origin, _ := issueorigin.Parse(request.Body)
+		if seen[origin.Fingerprint] {
+			continue
+		}
+		seen[origin.Fingerprint] = true
+		matches, err := resolveNativeDuplicates(ctx, q, scope, request, now, true)
+		if err != nil {
+			return err
+		}
+		var repair tracker.NativeIssue
+		if len(matches) != 0 {
+			repair, _, err = readNativeIssue(ctx, q, scope, string(matches[0].WorkItemID))
+			if err != nil {
+				return err
+			}
+		}
+		if repair.WorkItemID == "" || repair.Terminal && repair.State != "Cancelled" && !strings.Contains(strings.ToLower(repair.Body), "detent:no-dispatch") {
+			repair = tracker.NativeIssue{NativeReference: tracker.NativeReference{WorkItemID: tracker.NativeWorkItemID(payloadNativeID(ctx, "wi"))}}
+		} else {
+			if repair.Terminal || repair.WorkItemID == issue.WorkItemID {
+				return nil
+			}
+			var cycle int
+			if err := q.QueryRowContext(ctx, `WITH RECURSIVE reachable(id) AS (
+SELECT dependent_issue_id FROM issue_dependencies WHERE blocker_issue_id=(SELECT id FROM issues WHERE organization_id=? AND native_id=?)
+UNION SELECT d.dependent_issue_id FROM issue_dependencies d JOIN reachable r ON d.blocker_issue_id=r.id)
+SELECT count(*) FROM reachable WHERE id=(SELECT id FROM issues WHERE organization_id=? AND native_id=?)`, scope.organization, issue.WorkItemID, scope.organization, repair.WorkItemID).Scan(&cycle); err != nil {
+				return err
+			}
+			if cycle != 0 {
+				return nil
+			}
+		}
+		dependencies = append(dependencies, repair.WorkItemID)
+	}
+	slices.Sort(dependencies)
+	data.Runtime.RepairDependencies = dependencies
+	return nil
+}
+
+func recordIndependentRunFailure(ctx context.Context, tx *sql.Tx, scope nativeScope, issue tracker.NativeIssue, data *tracker.NativeRunData, now time.Time) error {
+	failures, err := independentRunFailures(ctx, tx, issue, *data)
+	if err != nil || len(failures) == 0 {
+		return err
 	}
 	dependencies, _, err := attachIndependentRepairs(ctx, tx, scope, issue, failures, data.AttemptID, now)
 	if err != nil {

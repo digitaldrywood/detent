@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -15,112 +16,129 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 func TestNativeEventWriterBudget(t *testing.T) {
-	now := time.Date(2026, 10, 31, 18, 0, 0, 0, time.UTC)
-	f := newDefaultNativeFixture(t, Config{RunDetails: &memoryRunDetails{}, now: func() time.Time { return now }})
-	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
-	item := f.create(t, "Event writer budget")
-	dependency := f.create(t, "Event prerequisite")
-	runner := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
-	runner.enroll(t)
-	worker := runner.redemption.Credential
-	claimed := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, tracker.NativeClaim{PolicyID: hubTestPolicy().ID, WorkItemID: item.WorkItemID, MachineID: runner.binding.MachineID, SessionID: "event-budget", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}})
-	requireNativeStatus(t, claimed, http.StatusOK)
-	var lease tracker.NativeLease
-	decodeHubResponse(t, claimed, &lease)
-	path := f.base + "/work-items/" + string(item.WorkItemID) + "/events"
-	event := nativeStartedEvent(lease)
-	f.service.config.Hosted = &HostedConfig{OrganizationID: string(f.project.OrganizationID)}
-	f.service.database.hostedOrganization = f.project.OrganizationID
-	hostedTestPlans(t, f.service, map[string]int64{"concurrent_work": 100, "registered_runners": 100, "connected_runners": 100})
-	metrics, err := openRequestMetrics(t.Context(), filepath.Join(t.TempDir(), "requests.sqlite"), f.project.OrganizationID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	f.service.requestMetrics = metrics
-	f.service.echo.Use(f.service.hostedBoundary)
-	var writer *writerTiming
-	f.service.echo.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
-		return func(c echo.Context) error {
-			err := next(c)
-			writer = writerTimingFrom(c.Request().Context())
-			return err
-		}
-	})
-	for _, name := range []string{"start", "batch", "replay", "landing", "maximum batch", "finish"} {
-		t.Run(name, func(t *testing.T) {
-			switch name {
-			case "batch":
-				event.Type, event.IdempotencyKey, event.Data.Sequence = "run.observed", "prior", 2
-				event.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", HeartbeatAt: now}
-				prior := event
-				event.Type, event.IdempotencyKey, event.Data.Sequence = "run.checkpointed", "checkpoint", 3
-				event.Data.Handoff = nativeTestCheckpoint()
-				event.PriorEvents = []tracker.NativeRunEvent{prior}
-			case "landing":
-				event.Type, event.IdempotencyKey, event.Data.Sequence = "run.observed", "landing", 4
-				event.Data.Handoff, event.PriorEvents = nil, nil
-				event.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "merging", HeartbeatAt: now, Landing: &tracker.NativeLandingReceipt{RefusalKind: "nothing_to_land", ObservedAt: now}}
-			case "maximum batch":
-				event.PriorEvents = nil
-				event.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", HeartbeatAt: now}
-				for i := range 7 {
-					prior := event
-					prior.PriorEvents = nil
-					prior.IdempotencyKey, prior.Data.Sequence = fmt.Sprintf("maximum-prior-%d", i), int64(5+i)
-					event.PriorEvents = append(event.PriorEvents, prior)
-				}
-				event.Type, event.IdempotencyKey, event.Data.Sequence = "run.checkpointed", "maximum-checkpoint", 12
-				event.Data.Handoff = nativeTestCheckpoint()
-			case "finish":
-				event.Type, event.IdempotencyKey, event.Data.Sequence, event.Data.Outcome = "run.finished", "finish", 13, "succeeded"
-				event.Data.Handoff, event.PriorEvents = nil, nil
-				reference := fmt.Sprintf("%s#%d", f.project.ID, dependency.Number)
-				event.Data.Disposition = &tracker.NativeDisposition{Status: workpad.StatusBlocked, Blockers: true, BlockerEvidence: []workpad.Blocker{{Ref: reference, Owner: workpad.BlockerOwnerOrchestrator, Predicate: &workpad.Predicate{Type: workpad.PredicateIssueState, Identifier: reference, States: []string{"open"}}}}}
-			}
-			f.service.tokenUseWork.Wait()
-			statements := 0
-			timing := &requestTiming{writerTrace: func(_ string, _ []driver.NamedValue) { statements++ }}
-			request := newHubAPIRequest(t, http.MethodPost, path, worker, event)
-			response := httptest.NewRecorder()
-			f.service.Handler().ServeHTTP(response, request.WithContext(withRequestTiming(request.Context(), timing)))
-			requireNativeStatus(t, response, http.StatusOK)
-			var inline int
-			if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT
-				(SELECT count(*) FROM native_attempts WHERE id=? AND (payload_object_key='' OR data_json<>'{}')) +
-				(SELECT count(*) FROM collaboration_events WHERE work_item_id=? AND type LIKE 'run.%' AND (payload_version<>1 OR payload_object_key='' OR data_json<>'{}'))`, event.Data.AttemptID, item.WorkItemID).Scan(&inline); err != nil {
+	for _, outcome := range []string{"succeeded", "failed", "cancelled"} {
+		t.Run(outcome, func(t *testing.T) {
+			now := time.Date(2026, 10, 31, 18, 0, 0, 0, time.UTC)
+			f := newDefaultNativeFixture(t, Config{RunDetails: &memoryRunDetails{}, now: func() time.Time { return now }})
+			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
+			item := f.create(t, "Event writer budget")
+			dependency := f.create(t, "Event prerequisite")
+			runner := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
+			runner.enroll(t)
+			worker := runner.redemption.Credential
+			claimed := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, tracker.NativeClaim{PolicyID: hubTestPolicy().ID, WorkItemID: item.WorkItemID, MachineID: runner.binding.MachineID, SessionID: "event-budget", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}})
+			requireNativeStatus(t, claimed, http.StatusOK)
+			var lease tracker.NativeLease
+			decodeHubResponse(t, claimed, &lease)
+			path := f.base + "/work-items/" + string(item.WorkItemID) + "/events"
+			event := nativeStartedEvent(lease)
+			f.service.config.Hosted = &HostedConfig{OrganizationID: string(f.project.OrganizationID)}
+			f.service.database.hostedOrganization = f.project.OrganizationID
+			hostedTestPlans(t, f.service, map[string]int64{"concurrent_work": 100, "registered_runners": 100, "connected_runners": 100})
+			metrics, err := openRequestMetrics(t.Context(), filepath.Join(t.TempDir(), "requests.sqlite"), f.project.OrganizationID)
+			if err != nil {
 				t.Fatal(err)
 			}
-			if inline != 0 {
-				t.Fatalf("%d run payloads lack immediate object references", inline)
+			f.service.requestMetrics = metrics
+			f.service.echo.Use(f.service.hostedBoundary)
+			var writer *writerTiming
+			f.service.echo.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
+				return func(c echo.Context) error {
+					err := next(c)
+					writer = writerTimingFrom(c.Request().Context())
+					return err
+				}
+			})
+			for _, name := range []string{"start", "batch", "replay", "landing", "maximum batch", "finish", "finish replay"} {
+				t.Run(name, func(t *testing.T) {
+					switch name {
+					case "batch":
+						event.Type, event.IdempotencyKey, event.Data.Sequence = "run.observed", "prior", 2
+						event.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", HeartbeatAt: now}
+						prior := event
+						event.Type, event.IdempotencyKey, event.Data.Sequence = "run.checkpointed", "checkpoint", 3
+						event.Data.Handoff = nativeTestCheckpoint()
+						event.PriorEvents = []tracker.NativeRunEvent{prior}
+					case "landing":
+						event.Type, event.IdempotencyKey, event.Data.Sequence = "run.observed", "landing", 4
+						event.Data.Handoff, event.PriorEvents = nil, nil
+						event.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "merging", HeartbeatAt: now, Landing: &tracker.NativeLandingReceipt{RefusalKind: "nothing_to_land", ObservedAt: now}}
+					case "maximum batch":
+						event.PriorEvents = nil
+						event.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", HeartbeatAt: now}
+						for i := range 7 {
+							prior := event
+							prior.PriorEvents = nil
+							prior.IdempotencyKey, prior.Data.Sequence = fmt.Sprintf("maximum-prior-%d", i), int64(5+i)
+							event.PriorEvents = append(event.PriorEvents, prior)
+						}
+						event.Type, event.IdempotencyKey, event.Data.Sequence = "run.checkpointed", "maximum-checkpoint", 12
+						event.Data.Handoff = nativeTestCheckpoint()
+						event.Data.Handoff.HeadSHA = strings.Repeat("b", 40)
+					case "finish":
+						event.Type, event.IdempotencyKey, event.Data.Sequence, event.Data.Outcome = "run.finished", "finish", 13, "succeeded"
+						event.Data.Handoff, event.PriorEvents = nil, nil
+						reference := fmt.Sprintf("%s#%d", f.project.ID, dependency.Number)
+						event.Data.Disposition = &tracker.NativeDisposition{Status: workpad.StatusBlocked, Blockers: true, BlockerEvidence: []workpad.Blocker{{Ref: reference, Owner: workpad.BlockerOwnerOrchestrator, Predicate: &workpad.Predicate{Type: workpad.PredicateIssueState, Identifier: reference, States: []string{"open"}}}}}
+						if outcome != "succeeded" {
+							event.Data.Outcome, event.Data.Disposition = outcome, nil
+							result := independentRepairReview(tracker.ChangeVersion{ChangeVersionInput: tracker.ChangeVersionInput{BaseSHA: strings.Repeat("a", 40), HeadSHA: strings.Repeat("b", 40)}}, now).Validator.Commands[0]
+							result.Stage, result.TreeSHA, result.DurationNS, result.StartedAt = gate.StageSourceFinalization, strings.Repeat("c", 40), int64(time.Second), now.Add(-time.Second)
+							event.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "completed", HeartbeatAt: now, Validation: &result}
+						}
+					case "finish replay":
+						event.IdempotencyKey = "finish-replayed"
+					}
+					f.service.tokenUseWork.Wait()
+					statements := 0
+					timing := &requestTiming{writerTrace: func(_ string, _ []driver.NamedValue) { statements++ }}
+					request := newHubAPIRequest(t, http.MethodPost, path, worker, event)
+					response := httptest.NewRecorder()
+					f.service.Handler().ServeHTTP(response, request.WithContext(withRequestTiming(request.Context(), timing)))
+					requireNativeStatus(t, response, http.StatusOK)
+					var inline int
+					if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT
+						(SELECT count(*) FROM native_attempts WHERE id=? AND (payload_object_key='' OR data_json<>'{}')) +
+						(SELECT count(*) FROM collaboration_events WHERE work_item_id=? AND type LIKE 'run.%' AND (payload_version<>1 OR payload_object_key='' OR data_json<>'{}'))`, event.Data.AttemptID, item.WorkItemID).Scan(&inline); err != nil {
+						t.Fatal(err)
+					}
+					if inline != 0 {
+						t.Fatalf("%d run payloads lack immediate object references", inline)
+					}
+					if writer == nil {
+						t.Fatal("missing writer timing")
+					}
+					t.Logf("writer_txs=%d writer_statements=%d", writer.txs.Load(), statements)
+					bound := 90 + 55*len(event.PriorEvents)
+					if name == "finish" && outcome == "failed" {
+						bound += 80
+					}
+					if event.Data.Disposition != nil {
+						bound += 40 * len(event.Data.Disposition.BlockerEvidence)
+					}
+					if writer.txs.Load() != 1 || statements > bound {
+						t.Errorf("writer_txs=%d (want 1), writer_statements=%d (bound %d)", writer.txs.Load(), statements, bound)
+					}
+				})
 			}
-			if writer == nil {
-				t.Fatal("missing writer timing")
+			var sequence, events int
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT sequence FROM native_attempts WHERE id=?", event.Data.AttemptID).Scan(&sequence); err != nil {
+				t.Fatal(err)
 			}
-			t.Logf("writer_txs=%d writer_statements=%d", writer.txs.Load(), statements)
-			bound := 90 + 55*len(event.PriorEvents)
-			if event.Data.Disposition != nil {
-				bound += 40 * len(event.Data.Disposition.BlockerEvidence)
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM native_attempt_events WHERE attempt_id=?", event.Data.AttemptID).Scan(&events); err != nil {
+				t.Fatal(err)
 			}
-			if writer.txs.Load() != 1 || statements > bound {
-				t.Errorf("writer_txs=%d (want 1), writer_statements=%d (bound %d)", writer.txs.Load(), statements, bound)
+			if sequence != 13 || events != 13 {
+				t.Fatalf("sequence=%d events=%d, want 13/13", sequence, events)
 			}
 		})
-	}
-	var sequence, events int
-	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT sequence FROM native_attempts WHERE id=?", event.Data.AttemptID).Scan(&sequence); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM native_attempt_events WHERE attempt_id=?", event.Data.AttemptID).Scan(&events); err != nil {
-		t.Fatal(err)
-	}
-	if sequence != 13 || events != 13 {
-		t.Fatalf("sequence=%d events=%d, want 13/13", sequence, events)
 	}
 }
 
