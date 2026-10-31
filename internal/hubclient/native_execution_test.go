@@ -137,14 +137,17 @@ func TestRetiredControllerRenewsClaimsWithoutReportingOldBuild(t *testing.T) {
 func TestPreProviderCancellationRecordsReleaseReason(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name    string
-		reason  string
-		runtime bool
+		name      string
+		reason    string
+		runtime   bool
+		unstarted bool
 	}{
 		{name: "dispatch_deferred", reason: "dispatch_deferred", runtime: true},
 		{name: "provider_capacity_unavailable", reason: "provider_capacity_unavailable", runtime: true},
 		{name: "dispatch_deferred_without_runtime", reason: "dispatch_deferred"},
 		{name: "provider_capacity_unavailable_without_runtime", reason: "provider_capacity_unavailable"},
+		{name: "unstarted deferred claim", reason: "dispatch_deferred", unstarted: true},
+		{name: "unstarted released claim", reason: "released", unstarted: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -185,7 +188,13 @@ func TestPreProviderCancellationRecordsReleaseReason(t *testing.T) {
 			claim := nativeClaim{source: &NativeConnector{client: native}, lease: lease, deadline: at.Add(time.Minute)}
 			execution := &nativeExecution{scheduler: scheduler, claim: claim, data: tracker.NativeRunData{AttemptID: "attempt_example", RunID: "run_example", LeaseID: lease.ID, FencingToken: lease.FencingToken, PolicyID: lease.PolicyID, Runtime: &tracker.NativeRuntimeObservation{LocalAttemptID: 42, Generation: 1, Phase: "completed", HeartbeatAt: at}}}
 			if !test.runtime {
+				observation := *execution.data.Runtime
 				execution.data.Runtime = nil
+				if !test.unstarted {
+					if err := execution.ObserveRuntime(t.Context(), observation); err != nil {
+						t.Fatal(err)
+					}
+				}
 			}
 			claim.execution = execution
 			scheduler.nativeClaims[string(lease.WorkItemID)] = claim
@@ -194,6 +203,12 @@ func TestPreProviderCancellationRecordsReleaseReason(t *testing.T) {
 			}
 			if !released || release.Reason != "released" || release.FencingToken != lease.FencingToken || release.CancelAttempt {
 				t.Fatalf("release lost execution fencing: released=%v mutation=%+v", released, release)
+			}
+			if test.unstarted {
+				if len(events) != 0 {
+					t.Fatalf("unstarted claim published execution events: %+v", events)
+				}
+				return
 			}
 			if len(events) != 1 {
 				t.Fatalf("pre-provider cancellation missing: released=%v events=%+v", released, events)
