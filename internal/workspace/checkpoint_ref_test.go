@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -629,5 +630,45 @@ func verifyPortableReworkCheckpoint(t *testing.T, source *LocalGit, info Info, i
 	}
 	if got := readFile(t, filepath.Join(restored.Path, "staged.txt")); got != "unstaged alternative\n" {
 		t.Fatalf("remaining source lost: %q", got)
+	}
+}
+
+func TestCheckpointPublicationReconcilesRemote(t *testing.T) {
+	for _, test := range []struct {
+		name, initial, after string
+		pushErr, wantErr     bool
+		wantPush             bool
+	}{
+		{name: "already committed", initial: "intended"},
+		{name: "rejected", initial: "previous", after: "previous", pushErr: true, wantErr: true, wantPush: true},
+		{name: "uncertain committed", initial: "previous", after: "intended", pushErr: true, wantPush: true},
+		{name: "moved ref", initial: "other", wantErr: true},
+		{name: "compare and swap", initial: "previous", wantPush: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			reads, pushes := 0, 0
+			git := func(_ context.Context, args ...string) (string, error) {
+				if args[0] == "ls-remote" {
+					reads++
+					sha := test.initial
+					if reads > 1 {
+						sha = test.after
+					}
+					return sha + "\trefs/detent/checkpoints/work", nil
+				}
+				pushes++
+				if !slices.Contains(args, "--force-with-lease=refs/detent/checkpoints/work:previous") {
+					t.Fatalf("push lacks expected remote identity: %v", args)
+				}
+				if test.pushErr {
+					return "", errors.New("transport lost")
+				}
+				return "", nil
+			}
+			err := publishCheckpointRef(t.Context(), git, "refs/detent/checkpoints/work", "intended", "previous")
+			if (err != nil) != test.wantErr || (pushes > 0) != test.wantPush {
+				t.Fatalf("error=%v pushes=%d", err, pushes)
+			}
+		})
 	}
 }

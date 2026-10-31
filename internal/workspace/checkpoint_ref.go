@@ -150,8 +150,8 @@ func (l *LocalGit) PushCheckpointRef(ctx context.Context, info Info, issue Issue
 	if err := validate(ctx); err != nil {
 		return previous, false, err
 	}
-	if _, err := git(ctx, "-c", "core.hooksPath="+os.DevNull, "-c", "push.followTags=false", "push", "--no-verify", "--force", "--recurse-submodules=no", defaultGitRemote, commit+":"+ref); err != nil {
-		return previous, false, fmt.Errorf("push checkpoint ref: %w", err)
+	if err := publishCheckpointRef(ctx, git, ref, commit, previous.CommitSHA); err != nil {
+		return previous, false, err
 	}
 	return CheckpointRef{Ref: ref, CommitSHA: commit, HeadSHA: head, BaseSHA: base, TreeSHA: tree}, true, nil
 }
@@ -314,6 +314,38 @@ func restoreCheckpointTree(ctx context.Context, path string, checkpoint *Checkpo
 	}
 	if _, err := runGitAt(ctx, path, "reset", "-q", "HEAD"); err != nil {
 		return fmt.Errorf("unstage restored checkpoint: %w", err)
+	}
+	return nil
+}
+
+func publishCheckpointRef(ctx context.Context, git checkpointGitRunner, ref, commit, expected string) error {
+	read := func() (string, error) {
+		output, err := git(ctx, "ls-remote", defaultGitRemote, ref)
+		if err != nil {
+			return "", fmt.Errorf("read checkpoint ref: %w", err)
+		}
+		fields := strings.Fields(output)
+		if len(fields) == 0 {
+			return "", nil
+		}
+		return fields[0], nil
+	}
+	remote, err := read()
+	if err != nil {
+		return err
+	}
+	if remote == commit {
+		return nil
+	}
+	if expected != "" && remote != expected {
+		return fmt.Errorf("%w: checkpoint ref moved", ErrCheckpointUnsafe)
+	}
+	if _, err := git(ctx, "-c", "core.hooksPath="+os.DevNull, "-c", "push.followTags=false", "push", "--no-verify", "--force-with-lease="+ref+":"+remote, "--recurse-submodules=no", defaultGitRemote, commit+":"+ref); err != nil {
+		observed, readErr := read()
+		if readErr == nil && observed == commit {
+			return nil
+		}
+		return errors.Join(fmt.Errorf("push checkpoint ref: %w", err), readErr)
 	}
 	return nil
 }
