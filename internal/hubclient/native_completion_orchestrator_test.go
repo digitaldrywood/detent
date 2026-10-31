@@ -61,6 +61,7 @@ type nativeCompletionRunner struct {
 	prepared  *runner.RunResult
 	completed chan nativeCompletionRun
 	calls     atomic.Int32
+	gate      gate.Config
 }
 
 func (r *nativeCompletionRunner) Run(ctx context.Context, request runner.RunRequest) (runner.RunResult, error) {
@@ -90,7 +91,7 @@ func runNativeCompletionOrchestrator(t *testing.T, h *nativeChangeHub, agent *ru
 
 func runNativeCompletionBackend(t *testing.T, h *nativeChangeHub, backend *nativeCompletionRunner, request runner.RunRequest, target string) (runner.RunResult, connector.Issue, error) {
 	t.Helper()
-	if state := h.state(t, request.Issue.ID); state != "Rework" {
+	if state := h.state(t, request.Issue.ID); state != "Rework" && state != "In Progress" {
 		t.Fatalf("no-change settlement must start from active work: %s", state)
 	}
 	for _, change := range h.changes(t, request.Issue.ID) {
@@ -103,8 +104,8 @@ func runNativeCompletionBackend(t *testing.T, h *nativeChangeHub, backend *nativ
 	orch, err := orchestrator.New(orchestrator.Config{
 		Project: scheduler.ProjectCandidate{ID: "local"}, Policy: h.descriptor,
 		PollInterval: time.Hour, MaxConcurrentAgents: 1,
-		ActiveStates: []string{"Rework"}, TerminalStates: []string{"Done"},
-		AutoPromote: orchestrator.AutoPromoteConfig{HumanReview: new(false)},
+		ActiveStates: []string{"Rework", "In Progress"}, TerminalStates: []string{"Done"},
+		AutoPromote: orchestrator.AutoPromoteConfig{HumanReview: new(false), Gate: backend.gate},
 	}, orchestrator.Dependencies{Connector: h.connector, Scheduling: source, Runner: backend, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	if err != nil {
 		t.Fatal(err)
@@ -147,14 +148,15 @@ func runNativeCompletionBackend(t *testing.T, h *nativeChangeHub, backend *nativ
 	for _, event := range state.RecentEvents {
 		landed = landed || event.Event == "completed_native_landing"
 	}
-	if err != nil || target == "Done" && !landed || h.state(t, request.Issue.ID) != target || len(state.Retry) != wantRetries || len(state.Claimed) != 0 || len(state.Running) != 0 {
+	noChange := completed.result.NativeChange.NoChangeAccepted(backend.gate)
+	if err != nil || target == "Done" && !landed && !noChange || h.state(t, request.Issue.ID) != target || len(state.Retry) != wantRetries || len(state.Claimed) != 0 || len(state.Running) != 0 {
 		t.Fatalf("delivery did not complete through the orchestrator: retry=%+v blocked=%+v running=%+v events=%+v error=%v", state.Retry, state.Blocked, state.Running, state.RecentEvents, err)
 	}
 	landing := completed.result.NativeLanding
 	if change := completed.result.NativeChange; change != nil && change.Landing != nil {
 		landing = change.Landing
 	}
-	if completed.err != nil || target == "Done" && (landing == nil || !landing.Landed || len(state.Blocked) != 0) || backend.calls.Load() != 1 {
+	if completed.err != nil || target == "Done" && ((!noChange && (landing == nil || !landing.Landed)) || len(state.Blocked) != 0) || backend.calls.Load() != 1 {
 		t.Fatalf("no-change settlement did not reconcile delivery: landing=%+v calls=%d error=%v", landing, backend.calls.Load(), completed.err)
 	}
 	return completed.result, state.Retry[request.Issue.ID].Issue, completed.err

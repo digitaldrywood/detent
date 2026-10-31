@@ -3,6 +3,8 @@ package hubclient
 import (
 	"context"
 	"errors"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +14,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -21,7 +24,7 @@ import (
 )
 
 func TestNoChangeCompletionSuppliesCurrentBaseToRequiredGates(t *testing.T) {
-	for _, reported := range []string{"current", "stale", "empty Change already integrated"} {
+	for _, reported := range []string{"current", "stale", "empty Change already integrated", "restored without verification target"} {
 		t.Run(reported, func(t *testing.T) {
 			h := newNativeChangeHub(t, true)
 			issue := h.createInProgress(t, "Verify existing behavior")
@@ -98,6 +101,14 @@ func TestNoChangeCompletionSuppliesCurrentBaseToRequiredGates(t *testing.T) {
 			if got := e.NativeChange(); got.ImplementationReview == nil || got.ImplementationReview.Summary != result.Summary || got.Reviewed {
 				t.Fatalf("rejection feedback was lost: %+v", got)
 			}
+			if reported == "restored without verification target" {
+				e.RetainCompletion()
+				change, err := e.SourceReview(t.Context())
+				if err != nil || change.VersionError == "" || change.ImplementationReview != nil || change.Validator != nil || change.SecurityAudit != nil {
+					t.Fatalf("restored completion did not request fresh source verification: %+v, %v", change, err)
+				}
+				return
+			}
 			if _, err := e.SourceReview(t.Context()); !errors.Is(err, runner.ErrValidatorInfrastructure) {
 				t.Fatalf("unavailable source verification was not instance-owned: %v", err)
 			}
@@ -137,7 +148,18 @@ func TestNoChangeRunnerExecutesIndependentRequiredGates(t *testing.T) {
 		ssh                 bool
 		advance             bool
 		advanceDuringReview bool
-	}{{name: "review and validation"}, {name: "base advances during implementation", advance: true}, {name: "base advances during review", advanceDuringReview: true}, {name: "security audit", audit: true}, {name: "SSH security audit", audit: true, ssh: true}} {
+		restart             bool
+		advanceAfterRun     bool
+	}{
+		{name: "review and validation"},
+		{name: "base advances during implementation", advance: true},
+		{name: "base advances during review", advanceDuringReview: true},
+		{name: "security audit", audit: true},
+		{name: "SSH security audit", audit: true, ssh: true},
+		{name: "restart deferred completion", audit: true, restart: true},
+		{name: "SSH base moves after exit", ssh: true, advanceAfterRun: true},
+		{name: "base moves during restart", restart: true, advanceAfterRun: true},
+	} {
 		t.Run(test.name, func(t *testing.T) {
 			h := newNativeChangeHub(t, true)
 			next := h.descriptor
@@ -161,6 +183,9 @@ func TestNoChangeRunnerExecutesIndependentRequiredGates(t *testing.T) {
 			nativeChangeGit(t, source, "remote", "add", "origin", nativeChangeRepository)
 			nativeChangeGit(t, source, "config", "url."+remote+".insteadOf", nativeChangeRepository)
 			nativeChangeGit(t, source, "push", "-u", "origin", "main")
+			gitConfig := filepath.Join(t.TempDir(), "gitconfig")
+			t.Setenv("GIT_CONFIG_GLOBAL", gitConfig)
+			nativeChangeGit(t, source, "config", "--global", "url."+remote+".insteadOf", nativeChangeRepository)
 			backend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
 			if err != nil {
 				t.Fatal(err)
@@ -199,8 +224,8 @@ func TestNoChangeRunnerExecutesIndependentRequiredGates(t *testing.T) {
 				t.Fatal(err)
 			}
 			runExecution := execution
+			closePeers := func() {}
 			if test.ssh {
-				var closePeers func()
 				runExecution, closePeers = nativeSSHExecution(t, t.Context(), execution, t.TempDir())
 				defer closePeers()
 			}
@@ -239,6 +264,73 @@ func TestNoChangeRunnerExecutesIndependentRequiredGates(t *testing.T) {
 			if err != nil || current.Change.ID != "" {
 				t.Fatalf("no-change run published a Change: %+v, %v", current, err)
 			}
+			closePeers()
+			if !test.ssh && !test.restart {
+				return
+			}
+			if test.restart {
+				client := owner.claim.source.client.client
+				transport := client.httpClient.Transport
+				transitionAttempts := 0
+				client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+					if request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/workflow") {
+						transitionAttempts++
+						return &http.Response{StatusCode: http.StatusServiceUnavailable, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("completion unavailable")), Request: request}, nil
+					}
+					return transport.RoundTrip(request)
+				})
+				if err := h.connector.UpdateIssueState(t.Context(), issue.ID, "Done"); err == nil || transitionAttempts == 0 {
+					t.Fatalf("completion transition was not deferred: requests=%d error=%v", transitionAttempts, err)
+				}
+				client.httpClient.Transport = transport
+				owner.RetainCompletion()
+				saved := owner.CompletionState()
+				h.scheduler, err = NewScheduler(h.native.client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: h.scheduler.machine, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second, LeaseHold: h.leaseHold})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := h.scheduler.RestoreCompletion(t.Context(), orchestrator.SchedulingRequest{ProjectID: "local", Policy: h.descriptor, Repository: nativeChangeRepository}, candidate, saved); err != nil {
+					t.Fatal(err)
+				}
+				owner = h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+			}
+			if test.advanceAfterRun {
+				if err := os.WriteFile(filepath.Join(source, "AFTER.md"), []byte("advanced after worker exit\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				nativeChangeGit(t, source, "add", "AFTER.md")
+				nativeChangeGit(t, source, "commit", "-m", "advance after worker exit")
+				nativeChangeGit(t, source, "push", "origin", "main")
+			}
+			verified, err := owner.SourceReview(t.Context())
+			if err != nil {
+				t.Fatalf("completion could not verify source after worker exit or restart: %v", err)
+			}
+			if test.advanceAfterRun {
+				if verified.NoChangeAccepted(gateCfg) || !strings.Contains(verified.VersionError, "base advanced") {
+					t.Fatalf("completion accepted a moved base: %+v", verified)
+				}
+				return
+			}
+			if !verified.NoChangeAccepted(gateCfg) {
+				t.Fatalf("completion lost accepted gate receipts: %+v", verified)
+			}
+			if test.restart {
+				if err := h.connector.UpdateIssueState(t.Context(), issue.ID, "Done"); err != nil {
+					t.Fatal(err)
+				}
+				if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); err != nil {
+					t.Fatal(err)
+				}
+				if err := owner.Validate(t.Context()); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+					t.Fatalf("restored completion retained execution authority: %v", err)
+				}
+				if state := h.state(t, issue.ID); state != "Done" || provider.calls != 3+boolCount(test.audit) {
+					t.Fatalf("restored completion did not finish without another worker turn: state=%s calls=%d", state, provider.calls)
+				}
+				return
+			}
+			runNativeCompletionBackend(t, h, &nativeCompletionRunner{Runner: agent, prepared: &result, gate: gateCfg, completed: make(chan nativeCompletionRun, 1)}, runner.RunRequest{Execution: owner, ProjectID: "local", Issue: candidate, Mode: runner.RunModeImplement}, "Done")
 		})
 	}
 }
