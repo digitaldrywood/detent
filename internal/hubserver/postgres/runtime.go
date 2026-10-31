@@ -48,6 +48,9 @@ func NewRuntime(ctx context.Context, reader, writer *sql.DB) (*Runtime, error) {
 				'public.request_metric_windows'::regclass,
 				'public.request_metric_callers'::regclass,
 				'public.request_minutes'::regclass,
+				'public.machines'::regclass, 'public.leases'::regclass,
+				'public.native_attempts'::regclass, 'public.native_attempt_events'::regclass,
+				'public.native_attempt_runs'::regclass,
 				'public.request_hours'::regclass, 'public.request_days'::regclass
 				)
 				AND (pg_has_role(session_user, c.relowner, 'MEMBER') OR NOT c.relrowsecurity OR NOT c.relforcerowsecurity)

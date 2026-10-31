@@ -359,3 +359,67 @@ the database (INV-20); tracker history and provenance remain authoritative (INV-
 The SQLite runtime, backend selection, whole-database import, run/attempt records,
 change source bundles, policies, landing receipts, session attribution and other
 record families remain separate follow-on work.
+
+## Attempt claims and leases
+
+`../leasestore` defines the lease transaction boundary on the existing repository
+and serving/background budgets. `ReadLeases` and `WriteLeases` bind the authorized
+organization exactly as the core family does. A write callback is the complete
+idempotent transaction: return its first failure and retry the entire callback
+through the application's existing retry owner when classified as
+`corestore.ErrSerializationFailure`. The repository never retries a statement
+or callback. Both statement and commit failures preserve `40001`/`40P01` and
+`mutation.ErrConflict`; all preceding writes roll back together. Keep lease,
+session, run and attempt identifiers and object references stable across retries.
+
+The family contains `machines`, `leases`, `native_attempt_runs`, `native_attempts`
+and `native_attempt_events`. Every key, relationship and access index starts
+with `organization_id`; all five tables force RLS and are checked during runtime
+construction. Leases reference their tenant's numeric issue identity and machine.
+Attempts reference the exact lease, fence, issue and captured work-item revision.
+Native project and item identities resolve through that issue, without a second
+independently writable scope. Run identity binds to one item while allowing
+successive attempts of the same run on that item. Attempt payloads, checkpoints
+and artifact manifests are object references, never inline encoded content.
+Machine routing/capabilities, attempt projections and event payload history
+remain with their owning families; this schema does not activate the backend
+or import legacy SQLite data.
+
+`Claim` locks only its requested issue with `FOR NO KEY UPDATE`, checks the current
+revision and archive state, and locks its unreleased lease if present. An active
+claim by the same machine and session replays the original lease without extending
+it; another owner conflicts. A replacement expires the previous lease, cancels
+its running attempt and inserts a fresh, increasing fence in the same transaction.
+The partial unique index independently enforces one unreleased lease per item.
+Session IDs cannot be reused within an organization. PostgreSQL time is sampled
+after row-lock acquisition. Renewal, expiry and release use conditional
+`UPDATE ... WHERE ... RETURNING` checks on the tenant, lease, fence and expiry.
+No tenant-wide writer lock, sweeper, brake or retry owner is introduced (INV-3).
+
+`RecordAttempt` holds the lease row while checking live authority, advancing the
+next sequence and writing its content digest receipt. Exact receipt replay is
+read-only, including after release; conflicting content, run identity, generation
+or sequence is rejected. Completion does not release a lease. Explicit release
+or expiry removes its capacity usage and cancels only a still-running attempt;
+a completed attempt retains its outcome. `Usage` counts only unexpired,
+unreleased leases for the requested machine through the tenant/machine/expiry
+index. Expired leases consume no capacity even before replacement or expiry
+recording. The authenticated caller still owns claim eligibility, policy,
+routing and capacity admission before this storage transaction; its captured
+item revision must match at claim time.
+
+Capacity reservation is a separate follow-on family in
+[#2025](https://cloud.detent.build/drywood-creek-consulting/detent/issues/2025): provider-account admission,
+runner and project limits, monthly budget admission, retained expired renewal
+and grouped landing reservations require their typed policy/routing tables and
+must be checked and reserved atomically before backend activation. This port
+does not replace those existing SQLite owners or reinterpret their limits.
+
+At INV-21 scale, 10,000 tenants and runners share the existing fixed pool. Each
+claim, renewal, release, expiry or attempt event uses a fixed number of indexed
+point operations and touches only that request's issue, machine, lease, run,
+attempt and receipt. Release/expiry cancel at most one attempt through the
+unique tenant/lease key. Usage reads only the requested machine's live leases,
+bounded by its admitted execution capacity, with no expired-history walk.
+Callbacks never perform external I/O or derived projection work while locked
+(INV-18). There is no tenant registry, periodic scan or fleet fan-out.

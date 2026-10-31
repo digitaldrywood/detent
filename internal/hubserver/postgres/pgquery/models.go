@@ -136,6 +136,65 @@ type Issue struct {
 	NativeUpdatedAt        time.Time
 }
 
+type Lease struct {
+	OrganizationID   tracker.OrganizationID
+	LeaseID          string
+	FencingToken     int64
+	IssueID          int64
+	MachineID        string
+	SessionID        string
+	WorkItemRevision int64
+	LandingCapacity  int64
+	AcquiredAt       time.Time
+	RenewedAt        time.Time
+	ExpiresAt        time.Time
+	ReleasedAt       *time.Time
+	ReleaseReason    string
+}
+
+type Machine struct {
+	OrganizationID  tracker.OrganizationID
+	ID              string
+	Hostname        string
+	DisplayName     string
+	Capacity        int64
+	Version         string
+	LastHeartbeatAt time.Time
+	RegisteredAt    time.Time
+	UpdatedAt       time.Time
+}
+
+type NativeAttempt struct {
+	OrganizationID      tracker.OrganizationID
+	ID                  string
+	IssueID             int64
+	LeaseID             string
+	FencingToken        int64
+	RunID               string
+	Sequence            int64
+	Status              string
+	WorkItemRevision    int64
+	DispatchGeneration  int64
+	PayloadObjectKey    string
+	CheckpointObjectKey *string
+	ArtifactsObjectKey  *string
+	StartedAt           time.Time
+	UpdatedAt           time.Time
+}
+
+type NativeAttemptEvent struct {
+	OrganizationID tracker.OrganizationID
+	AttemptID      string
+	Sequence       int64
+	RequestHash    string
+}
+
+type NativeAttemptRun struct {
+	OrganizationID tracker.OrganizationID
+	RunID          string
+	IssueID        int64
+}
+
 type NativeCommand struct {
 	OrganizationID      tracker.OrganizationID
 	ActorID             string
