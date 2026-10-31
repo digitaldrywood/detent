@@ -20,7 +20,11 @@ import (
 	"github.com/digitaldrywood/detent/internal/procgroup"
 )
 
-const testWaitDelay = 10 * time.Second
+const (
+	testWaitDelay     = 10 * time.Second
+	maxClockTickWait  = 2 * time.Second
+	clockTickInterval = 100 * time.Microsecond
+)
 
 var runtimeEnvironment = []string{"GODEBUG", "GOGC", "GOMEMLIMIT", "GOMAXPROCS", "GOTRACEBACK", "GORACE", "GOFIPS140", "CGO_ENABLED"}
 
@@ -160,12 +164,12 @@ func (s *Session) executeTest(ctx context.Context, request executionRequest, std
 	source, sourceErr := SourceDigest(request.Directory)
 	entries, snapshotErr := SnapshotTempEntries(env.TempDirs)
 	env.TempEntries = entries
-	start := time.Now()
+	start, startErr := filesystemStart(ctx, s.dir)
 	code := runTest(ctx, request, append(slices.Clone(args), "-test.testlogfile="+logPath), stdout, stderr)
 	if code != 0 {
 		return code, false
 	}
-	err = errors.Join(sourceErr, snapshotErr)
+	err = errors.Join(sourceErr, snapshotErr, startErr)
 	if err == nil {
 		err = s.recordRun(ctx, key, request, logPath, env, start, source)
 	}
@@ -174,6 +178,40 @@ func (s *Session) executeTest(ctx context.Context, request executionRequest, std
 		s.refuse(packageName(request.Directory, env), err)
 	}
 	return code, false
+}
+
+func filesystemStart(ctx context.Context, dir string) (start time.Time, err error) {
+	probe, err := os.CreateTemp(dir, "detent-clock-*")
+	if err != nil {
+		return time.Time{}, fmt.Errorf("create clock probe: %w", err)
+	}
+	defer func() { err = errors.Join(err, probe.Close(), os.Remove(probe.Name())) }()
+	info, err := probe.Stat()
+	if err != nil {
+		return time.Time{}, fmt.Errorf("stat clock probe: %w", err)
+	}
+	start = info.ModTime()
+	deadline := time.Now().Add(maxClockTickWait)
+	for {
+		if _, err := probe.Write([]byte{0}); err != nil {
+			return time.Time{}, fmt.Errorf("write clock probe: %w", err)
+		}
+		info, err := probe.Stat()
+		if err != nil {
+			return time.Time{}, fmt.Errorf("stat clock probe: %w", err)
+		}
+		if info.ModTime().After(start) {
+			return start, nil
+		}
+		if time.Now().After(deadline) {
+			return time.Time{}, errors.New("filesystem clock did not advance")
+		}
+		select {
+		case <-ctx.Done():
+			return time.Time{}, fmt.Errorf("wait for filesystem clock: %w", ctx.Err())
+		case <-time.After(clockTickInterval):
+		}
+	}
 }
 
 func (s *Session) recordRun(ctx context.Context, key string, request executionRequest, logPath string, env Environment, start time.Time, source string) error {
