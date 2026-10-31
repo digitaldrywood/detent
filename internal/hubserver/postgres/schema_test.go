@@ -21,6 +21,17 @@ import (
 )
 
 var template = pgtest.NewTemplate(func(ctx context.Context, db *sql.DB) error {
+	roles, err := os.ReadFile("roles.sql")
+	if err != nil {
+		return err
+	}
+	if _, err := db.ExecContext(ctx, string(roles)); err != nil {
+		return fmt.Errorf("provision PostgreSQL test roles: %w", err)
+	}
+	db.SetMaxOpenConns(1)
+	if _, err := db.ExecContext(ctx, `SET ROLE detent_migration`); err != nil {
+		return err
+	}
 	provider, err := migrationProvider(db)
 	if err != nil {
 		return err

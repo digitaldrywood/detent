@@ -56,3 +56,13 @@ Failed migration and fixture setup close their connection pools and drop their
 databases, preserving the primary error. Cleanup detaches cancellation while
 retaining the test deadline. Process readiness and parallel test coordination
 use signals, without polling, sleeps, or fixture-specific timeouts.
+
+`template.OpenRole(t, fixture, role, password)` opens a separately authenticated
+single-connection pool to an owned fixture database, using only the template's
+explicit server configuration. Provision the disposable test login and its
+grants through the fixture first. The helper registers pool cleanup before the
+fixture is dropped and never prints connection credentials. It disables idle
+fixture administrator connections so two restricted pools can share the existing
+two-connection database limit. Close role pools before dropping their test
+logins. With role pools, budget one active setup connection and two restricted
+connections per fixture in addition to the template's administrative connection.

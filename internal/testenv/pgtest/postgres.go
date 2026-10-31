@@ -75,6 +75,49 @@ func (p *Template) Database(t *testing.T) *sql.DB {
 	return db
 }
 
+func (p *Template) OpenRole(t *testing.T, fixture *sql.DB, role, password string) *sql.DB {
+	t.Helper()
+	ctx, cancel := testContext(t)
+	defer cancel()
+	var name string
+	if err := fixture.QueryRowContext(ctx, `SELECT current_database()`).Scan(&name); err != nil {
+		t.Fatal(err)
+	}
+	if p.server == nil {
+		t.Fatal("PostgreSQL template is not initialized")
+	}
+	p.server.mu.Lock()
+	_, owned := p.server.owned[name]
+	p.server.mu.Unlock()
+	if !owned || name == p.name {
+		t.Fatal("PostgreSQL role connection requires an owned fixture")
+	}
+	fixture.SetMaxIdleConns(0)
+	fixture.SetMaxOpenConns(1)
+	config := p.server.config.Clone()
+	config.Database, config.User, config.Password = name, role, password
+	connector, err := pq.NewConnectorConfig(config)
+	if err != nil {
+		t.Fatal("configure PostgreSQL fixture role connector")
+	}
+	db := sql.OpenDB(connector)
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("close PostgreSQL fixture role connection: %v", err)
+		}
+	})
+	if err := db.PingContext(ctx); err != nil {
+		var pgerr *pq.Error
+		if errors.As(err, &pgerr) {
+			t.Fatalf("connect PostgreSQL fixture role: SQLSTATE %s", pgerr.Code)
+		}
+		t.Fatal("connect PostgreSQL fixture role")
+	}
+	return db
+}
+
 func testContext(t *testing.T) (context.Context, context.CancelFunc) {
 	t.Helper()
 	deadline, ok := t.Deadline()
