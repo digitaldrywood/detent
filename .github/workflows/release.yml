@@ -74,6 +74,13 @@ jobs:
           DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON: ${{ vars.DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON }}
         run: |
           set -euo pipefail
+          for variable in ${!GIT_@}; do
+            unset "$variable"
+          done
+          export GIT_NO_REPLACE_OBJECTS=1 GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_GLOBAL=/dev/null
+          git() {
+            command git --no-replace-objects -C "$GITHUB_WORKSPACE" "$@"
+          }
           tag_message="$RUNNER_TEMP/detent-release-tag-message"
           check_runs="$RUNNER_TEMP/detent-release-check-runs.json"
           statuses="$RUNNER_TEMP/detent-release-statuses.json"

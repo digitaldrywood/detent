@@ -325,6 +325,37 @@ sys.exit(7 if stage in json.loads(os.environ["FAILURES"]) else 0)
             git("tag", "-a", "v1.0.0", "-m", "<!-- detent-release-provenance:" + json.dumps(provenance) + " -->")
             expected = sorted(CHECK_RELEASE.SMOKE_SPECS)
             self.assertEqual(select(), expected)
+            git_fixture = tempfile.TemporaryDirectory(dir=scratch)
+            self.addCleanup(git_fixture.cleanup)
+            foreign = Path(git_fixture.name) / "foreign.git"
+            git("init", "--bare", str(foreign))
+            invalid_config = Path(git_fixture.name) / "invalid-config"
+            invalid_config.write_text("[invalid\n")
+            for overrides in (
+                {"GIT_DIR": str(foreign)},
+                {"GIT_COMMON_DIR": str(foreign)},
+                {"GIT_OBJECT_DIRECTORY": str(foreign / "objects")},
+                {"GIT_CONFIG_COUNT": "invalid"},
+                {"GIT_CONFIG_PARAMETERS": "invalid"},
+                {"GIT_CONFIG_GLOBAL": str(invalid_config)},
+                {"GIT_CONFIG_NOSYSTEM": "0", "GIT_CONFIG_SYSTEM": str(invalid_config)},
+            ):
+                with self.subTest(environment=overrides), mock.patch.dict(env, overrides):
+                    self.assertEqual(select(), expected)
+            blob = git("rev-parse", f"{commit}:tests/visual/affected.spec.js")
+            forged = subprocess.check_output(["git", "hash-object", "-w", "--stdin"],
+                                             input=b"forged journey\n", cwd=root, env=env).decode().strip()
+            git("replace", blob, forged)
+            try:
+                with mock.patch.dict(os.environ, env, clear=True):
+                    previous = Path.cwd()
+                    try:
+                        os.chdir(root)
+                        self.assertEqual(CHECK_RELEASE.git("show", f"{commit}:tests/visual/affected.spec.js"), "test fixture\n")
+                    finally:
+                        os.chdir(previous)
+            finally:
+                git("replace", "-d", blob)
             for path in ("docs/browser.md", "docs/browser.svg", "README.md", "internal/hubserver/preview_test.go",
                          "scripts/check_release_test.py", "tests/test_release.py", "scripts/browser_test.sh"):
                 with self.subTest(path=path):

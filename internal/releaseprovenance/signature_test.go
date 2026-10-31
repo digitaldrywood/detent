@@ -55,6 +55,8 @@ func TestOverrideTagRequiresAllowlistedSignature(t *testing.T) {
 		return strings.TrimSpace(string(output))
 	}
 	run("git", "init", "--quiet")
+	run("git", "config", "maintenance.auto", "false")
+	run("git", "config", "gc.auto", "0")
 	run("git", "config", "user.name", "Example Operator")
 	run("git", "config", "user.email", "operator@example.com")
 	keys := make([]string, 0, 2)
@@ -78,12 +80,21 @@ func TestOverrideTagRequiresAllowlistedSignature(t *testing.T) {
 	for index, test := range []struct {
 		name, list                                                                        string
 		signer                                                                            int
+		gitAttack                                                                         string
 		missing, wrongCommit, tamper, wrongReason, forged, uncommitted, blank, missingKey bool
 		wantError                                                                         bool
 	}{
 		{name: "listed primary key authorizes signing subkey", signer: 0},
 		{name: "unsigned annotation fails", signer: -1, wantError: true},
 		{name: "unlisted key in committed keyring fails", signer: 1, wantError: true},
+		{name: "replacement commit cannot authorize unlisted key", signer: 1, gitAttack: "replace", wantError: true},
+		{name: "inherited object directory cannot authorize unlisted key", signer: 1, gitAttack: "objects", wantError: true},
+		{name: "inherited alternates cannot authorize unlisted key", signer: 1, gitAttack: "alternates", wantError: true},
+		{name: "mismatched commit content cannot authorize unlisted key", signer: 1, gitAttack: "content", wantError: true},
+		{name: "inherited repository cannot redirect approval", gitAttack: "repository"},
+		{name: "inherited config cannot affect approval", gitAttack: "config"},
+		{name: "global config cannot affect approval", gitAttack: "global"},
+		{name: "system config cannot affect approval", gitAttack: "system"},
 		{name: "ambient keyring cannot supply a missing committed public key", signer: 1, list: keys[1], missingKey: true, wantError: true},
 		{name: "missing approval fails", missing: true, wantError: true},
 		{name: "different commit fails", wrongCommit: true, wantError: true},
@@ -157,6 +168,86 @@ func TestOverrideTagRequiresAllowlistedSignature(t *testing.T) {
 			if test.forged {
 				for name, value := range map[string]string{"DETENT_RELEASE_OVERRIDE": reason, "RELEASE_OVERRIDE_ACTORS": `["example-owner"]`, "GITHUB_ACTIONS": "true", "GITHUB_ACTOR": "example-owner", "GITHUB_RUN_ID": "12345", "WORKFLOW_OVERRIDE_ACTORS": `["example-owner"]`} {
 					t.Setenv(name, value)
+				}
+			}
+			switch test.gitAttack {
+			case "replace", "objects", "alternates", "content":
+				if _, err := VerifyOverrideTag(t.Context(), directory, manifest); err == nil {
+					t.Fatal("unlisted key authorized before Git object attack")
+				}
+				if err := os.WriteFile(filepath.Join(directory, ".github/release-override-signers"), []byte(keys[1]+"\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				run("git", "add", ".github")
+				run("git", "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "attacker signer list")
+				attacker := run("git", "rev-parse", "HEAD")
+				if test.gitAttack == "replace" {
+					run("git", "replace", commit, attacker)
+				} else {
+					objects := filepath.Join(directory, ".git", "objects")
+					alternate := t.TempDir()
+					if err := os.CopyFS(alternate, os.DirFS(objects)); err != nil {
+						t.Fatal(err)
+					}
+					forged, err := os.ReadFile(filepath.Join(objects, attacker[:2], attacker[2:]))
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(filepath.Join(alternate, commit[:2], commit[2:]), forged, 0o600); err != nil {
+						t.Fatal(err)
+					}
+					switch test.gitAttack {
+					case "objects":
+						t.Setenv("GIT_OBJECT_DIRECTORY", alternate)
+					case "content":
+						original := filepath.Join(objects, commit[:2], commit[2:])
+						contents, err := os.ReadFile(original)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if err := os.Chmod(original, 0o600); err != nil {
+							t.Fatal(err)
+						}
+						t.Cleanup(func() {
+							if err := os.WriteFile(original, contents, 0o600); err != nil {
+								t.Error(err)
+							}
+						})
+						if err := os.WriteFile(original, forged, 0o600); err != nil {
+							t.Fatal(err)
+						}
+					case "alternates":
+						original := filepath.Join(objects, commit[:2], commit[2:])
+						backup := filepath.Join(t.TempDir(), "commit")
+						if err := os.Rename(original, backup); err != nil {
+							t.Fatal(err)
+						}
+						t.Cleanup(func() {
+							if err := os.Rename(backup, original); err != nil {
+								t.Error(err)
+							}
+						})
+						t.Setenv("GIT_ALTERNATE_OBJECT_DIRECTORIES", alternate)
+					}
+				}
+			case "repository":
+				foreign := t.TempDir()
+				run("git", "init", "--bare", foreign)
+				t.Setenv("GIT_DIR", foreign)
+				t.Setenv("GIT_COMMON_DIR", foreign)
+			case "config", "global", "system":
+				config := filepath.Join(t.TempDir(), "config")
+				if err := os.WriteFile(config, []byte("[invalid\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				switch test.gitAttack {
+				case "config":
+					t.Setenv("GIT_CONFIG_PARAMETERS", "invalid")
+				case "global":
+					t.Setenv("GIT_CONFIG_GLOBAL", config)
+				case "system":
+					t.Setenv("GIT_CONFIG_NOSYSTEM", "0")
+					t.Setenv("GIT_CONFIG_SYSTEM", config)
 				}
 			}
 			signature, signatureErr := VerifyOverrideTag(t.Context(), directory, manifest)

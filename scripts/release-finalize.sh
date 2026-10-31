@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+for variable in ${!GIT_@}; do
+  unset "$variable"
+done
+export GIT_NO_REPLACE_OBJECTS=1 GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_GLOBAL=/dev/null
+release_git_directory="$(pwd -P)"
+git() {
+  command git --no-replace-objects -C "$release_git_directory" "$@"
+}
+
 scratch_dir="${TMPDIR:-${TMP:-${TEMP:?release finalization requires provided scratch}}}"
 : "${CI_RELEASE_BRANCH:?release finalization requires a release branch}"
 : "${CI_DEVELOP_SHA:?release finalization requires the validated commit}"

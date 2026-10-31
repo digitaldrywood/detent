@@ -147,7 +147,11 @@ def run_checks(total):
 
 
 def git(*args):
-    return subprocess.check_output(["git", *args], stderr=subprocess.PIPE).decode()
+    env = {key: value for key, value in os.environ.items() if not key.upper().startswith("GIT_")}
+    env.update(GIT_NO_REPLACE_OBJECTS="1", GIT_CONFIG_NOSYSTEM="1",
+               GIT_CONFIG_SYSTEM=os.devnull, GIT_CONFIG_GLOBAL=os.devnull)
+    return subprocess.check_output(["git", "--no-replace-objects", "-C", str(Path.cwd()), *args],
+                                   env=env, stderr=subprocess.PIPE).decode()
 
 
 def validated_release_base():

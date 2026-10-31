@@ -82,8 +82,10 @@ func TestReleaseFinalizer(t *testing.T) {
 		platform, override, recordedOverride, suiteState                    string
 		signatureType                                                       string
 		forgedEnvironment, forgedArguments, missingApproval                 bool
+		gitEnvironment                                                      bool
 	}{
 		{name: "signed approval permits failed suite", override: "Owner directs release", suiteState: "failure"},
+		{name: "inherited Git environment cannot affect approval", override: "Owner directs release", suiteState: "failure", gitEnvironment: true},
 		{name: "unsigned approval fails", override: "Owner directs release", signatureType: "unsigned", rejectOverride: true},
 		{name: "unlisted approval fails", override: "Owner directs release", signatureType: "unlisted", rejectOverride: true},
 		{name: "approval for another commit fails", override: "Owner directs release", signatureType: "wrong-commit", rejectOverride: true},
@@ -187,9 +189,28 @@ exec "$FIXTURE_VERIFIER" "$@"
 `,
 				"git": `#!/usr/bin/env bash
 set -euo pipefail
+if [ "${FIXTURE_GIT_ISOLATION:-false}" = true ]; then
+  test "$1" = --no-replace-objects
+  test "$2" = -C
+  test -d "$3"
+  test "$GIT_NO_REPLACE_OBJECTS" = 1
+  test "$GIT_CONFIG_NOSYSTEM" = 1
+  test "$GIT_CONFIG_SYSTEM" = /dev/null
+  test "$GIT_CONFIG_GLOBAL" = /dev/null
+  for variable in ${!GIT_@}; do
+    case "$variable" in
+      GIT_NO_REPLACE_OBJECTS | GIT_CONFIG_NOSYSTEM | GIT_CONFIG_SYSTEM | GIT_CONFIG_GLOBAL) ;;
+      *) exit 11 ;;
+    esac
+  done
+fi
+if [ "$1" = --no-replace-objects ]; then
+  test "$2" = -C
+  shift 3
+fi
 printf 'repository %s\n' "$*" >> "$FIXTURE_LOG"
 case "$*" in
-  'show-ref '* | 'rev-parse '* | 'show '* | 'cat-file tag '*) exec "$FIXTURE_GIT" -C "$FIXTURE_REPO" "$@" ;;
+  'show-ref '* | 'rev-parse '* | 'show '* | 'cat-file tag '* | 'cat-file commit '* | 'hash-object '*) exec "$FIXTURE_GIT" -C "$FIXTURE_REPO" "$@" ;;
   'rev-list '*) printf '%s\n%s\n' "$FIXTURE_HEAD" bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb ;;
   'ls-remote '*)
     if [ -f "$FIXTURE_STATUS_READ" ] && [ "$FIXTURE_MOVE_DURING_CHECK" = true ]; then
@@ -408,6 +429,12 @@ esac
 			}
 			if tt.forgedEnvironment {
 				command.Env = append(command.Env, "DETENT_RELEASE_OVERRIDE=forged reason", "GITHUB_ACTIONS=true", "GITHUB_ACTOR=example-owner", "GITHUB_RUN_ID=12345", `RELEASE_OVERRIDE_ACTORS=["example-owner"]`)
+			}
+			if tt.gitEnvironment {
+				command.Env = append(command.Env, "FIXTURE_GIT_ISOLATION=true", "GIT_DIR="+dir, "GIT_COMMON_DIR="+dir,
+					"GIT_WORK_TREE="+dir, "GIT_OBJECT_DIRECTORY="+dir, "GIT_ALTERNATE_OBJECT_DIRECTORIES="+dir,
+					"GIT_NAMESPACE=example", "GIT_CONFIG_COUNT=invalid", "GIT_CONFIG_PARAMETERS=invalid",
+					"GIT_CONFIG_GLOBAL="+dir, "GIT_CONFIG_SYSTEM="+dir, "GIT_NO_REPLACE_OBJECTS=0")
 			}
 			if tt.forgedArguments {
 				command.Args = append(command.Args, "example-operator", `["example-operator"]`)
