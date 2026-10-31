@@ -63,21 +63,38 @@ func VerifyOverrideApproval(ctx context.Context, directory, version, commit stri
 	if err != nil {
 		return "", fmt.Errorf("override approval commit: %w", err)
 	}
-	git := func(args ...string) ([]byte, error) {
-		command := exec.CommandContext(ctx, "git")
+	if directory == "" {
+		directory = "."
+	}
+	directory, err = filepath.Abs(directory)
+	if err != nil {
+		return "", fmt.Errorf("resolve override repository: %w", err)
+	}
+	environment := make([]string, 0, len(os.Environ())+4)
+	for _, variable := range os.Environ() {
+		if !strings.HasPrefix(strings.ToUpper(variable), "GIT_") {
+			environment = append(environment, variable)
+		}
+	}
+	environment = append(environment, "GIT_NO_REPLACE_OBJECTS=1", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_SYSTEM="+os.DevNull, "GIT_CONFIG_GLOBAL="+os.DevNull)
+	git := func(input []byte, args ...string) ([]byte, error) {
+		command := exec.CommandContext(ctx, "git", "--no-replace-objects")
+		command.Args = append(command.Args, "-C", directory)
 		command.Args = append(command.Args, args...)
 		command.Dir = directory
+		command.Env = environment
+		command.Stdin = bytes.NewReader(input)
 		output, err := command.Output()
 		if err != nil {
 			return nil, fmt.Errorf("read override approval git object: %w", err)
 		}
 		return output, nil
 	}
-	object, err := git("rev-parse", "--verify", "refs/tags/release-override/"+version+"^{tag}")
+	object, err := git(nil, "rev-parse", "--verify", "refs/tags/release-override/"+version+"^{tag}")
 	if err != nil {
 		return "", err
 	}
-	raw, err := git("cat-file", "tag", strings.TrimSpace(string(object)))
+	raw, err := git(nil, "cat-file", "tag", strings.TrimSpace(string(object)))
 	if err != nil {
 		return "", err
 	}
@@ -97,7 +114,18 @@ func VerifyOverrideApproval(ctx context.Context, directory, version, commit stri
 	if strings.TrimSpace(reason) == "" {
 		return "", errors.New("release override requires a nonempty reason")
 	}
-	listing, err := git("show", expected+":.github/release-override-signers")
+	commitObject, err := git(nil, "cat-file", "commit", expected)
+	if err != nil {
+		return "", err
+	}
+	actual, err := git(commitObject, "hash-object", "-t", "commit", "--stdin")
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(string(actual)) != expected {
+		return "", errors.New("override signer commit differs from the exact release head")
+	}
+	listing, err := git(nil, "show", expected+":.github/release-override-signers")
 	if err != nil {
 		return "", err
 	}
@@ -116,7 +144,7 @@ func VerifyOverrideApproval(ctx context.Context, directory, version, commit stri
 	if len(fingerprints) == 0 {
 		return "", errors.New("override signer list is empty")
 	}
-	keys, err := git("show", expected+":.github/release-override-signers.asc")
+	keys, err := git(nil, "show", expected+":.github/release-override-signers.asc")
 	if err != nil {
 		return "", err
 	}
