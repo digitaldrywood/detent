@@ -29,7 +29,6 @@ func TestNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T) {
 	if testing.Short() {
 		t.Skip("git subprocess integration")
 	}
-	t.Setenv("TMPDIR", t.TempDir())
 	isolateNativeChangeGit(t)
 	for _, test := range []struct {
 		name             string
@@ -116,7 +115,7 @@ func TestNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T) {
 						}
 					}
 				}
-				runtimeStore, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "runtime.db")})
+				runtimeStore, err := store.Open(t.Context(), store.Config{Path: nativeRuntimeDatabasePath(t)})
 				if err != nil {
 					t.Fatal(err)
 				}
