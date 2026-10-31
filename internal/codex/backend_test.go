@@ -549,7 +549,7 @@ func TestAgentBackendTextOnlyTurn(t *testing.T) {
 			if err := json.Unmarshal(sent[3].Params, &params); err != nil {
 				t.Fatal(err)
 			}
-			for _, key := range []string{"features.shell_tool", "features.unified_exec", "features.view_image", "features.apps", "features.plugins", "features.browser_use", "features.computer_use", "features.code_mode", "features.code_mode_host", "features.multi_agent", "features.hooks"} {
+			for _, key := range []string{"features.shell_tool", "features.unified_exec", "features.view_image", "features.apps", "features.plugins", "features.browser_use", "features.computer_use", "features.code_mode", "features.code_mode_host", "features.multi_agent", "features.hooks", "features.shell_snapshot", "features.image_generation", "features.multi_agent_v2", "features.goals", "features.tool_suggest", "features.skill_search", "features.memories", "features.sleep_tool", "features.network_proxy"} {
 				want := test.investigation && (key == "features.shell_tool" || key == "features.unified_exec")
 				if value, ok := params.Config[key]; !ok || value != want {
 					t.Fatalf("tool remains available: %s=%v", key, value)
