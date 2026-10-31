@@ -344,6 +344,11 @@ func (s *Service) prepareRunDetailSnapshot(ctx context.Context, snapshot nativeQ
 			if data.Runtime != nil && !update.usageCorrection {
 				data.Runtime.RepairDependencies = nil
 			}
+			if !termination && !update.usageCorrection && event.Type == "run.finished" {
+				if err := prepareIndependentRunFailure(ctx, snapshot, scope, issue, &data, now); err != nil {
+					return nil, err
+				}
+			}
 			raw, err := json.Marshal(data)
 			if err != nil {
 				return nil, err
