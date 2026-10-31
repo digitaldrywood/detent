@@ -7,6 +7,8 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -132,6 +134,13 @@ func (f *LocalTransportFactory) NewTransport(ctx context.Context) (Transport, er
 	cmd := f.newCommand(ctx)
 	if cmd == nil {
 		return nil, errors.New("command factory returned nil command")
+	}
+	if runtime.GOOS == "darwin" {
+		path, err := filepath.EvalSymlinks(cmd.Path)
+		if err != nil {
+			return nil, fmt.Errorf("resolve codex executable: %w", err)
+		}
+		cmd.Path = path
 	}
 	workspace := workerWorkspace(ctx)
 	if workspace != "" {
