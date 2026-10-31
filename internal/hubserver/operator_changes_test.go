@@ -468,7 +468,6 @@ func TestOperatorChangeCommands(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-
 			result, err := executor.Execute(ctx, changeToolCall(operatortool.GetChange, base))
 			var value operatortool.ChangeResult
 			if err != nil || json.Unmarshal(result.Content, &value) != nil || value.ValidationAudit != nil {

@@ -470,6 +470,9 @@ func TestIssuePagePullRequestBackfill(t *testing.T) {
 			t.Run(operation+"/"+projection, func(t *testing.T) {
 				unknown := projection == "unknown"
 				f := newPullRequestFixture(t, true)
+				if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+					t.Fatal(err)
+				}
 				linked := f.create(t, "Linked example")
 				unrelated := f.create(t, "Unrelated example")
 				path := f.base + "/work-items/" + string(f.issue.WorkItemID) + "/changes"

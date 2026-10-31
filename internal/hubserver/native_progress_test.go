@@ -95,7 +95,6 @@ func TestNativeProgressPublicationIsAtomicAndScoped(t *testing.T) {
 				}); err != nil {
 					t.Fatal(err)
 				}
-
 				current, err := progressRevision(t.Context(), f.service.database.reader, scope, request.IssueID)
 				if err != nil {
 					t.Fatal(err)
