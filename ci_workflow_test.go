@@ -37,17 +37,6 @@ func TestReleaseWorkflowAuthenticatesExactCommitProvenance(t *testing.T) {
 		}
 	}
 
-	finalizer := readNormalizedFile(t, ".github/workflows/release-finalize.yml")
-	for _, marker := range []string{
-		"DETENT_RELEASE_OVERRIDE:",
-		"required: false",
-		"DETENT_RELEASE_OVERRIDE: ${{ inputs.DETENT_RELEASE_OVERRIDE }}",
-	} {
-		if !strings.Contains(finalizer, marker) {
-			t.Fatalf("release finalizer missing explicit operator input %q", marker)
-		}
-	}
-
 	collector := readNormalizedFile(t, "scripts/collect-release-rulesets.sh")
 	for _, marker := range []string{
 		"set -euo pipefail",

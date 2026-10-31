@@ -62,43 +62,24 @@ if [ "$#" != 0 ]; then
   echo "Release finalization does not accept arguments." >&2
   exit 1
 fi
-override_reason="${DETENT_RELEASE_OVERRIDE:-}"
-authorize_override() {
-  local identities actors run
-  if [ "${GITHUB_ACTIONS:-}" = true ]; then
-    [[ "${GITHUB_RUN_ID:-}" =~ ^[0-9]+$ ]] && [ -n "${GITHUB_REPOSITORY:-}" ] || return 1
-    run="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID")" || return 1
-    identities="$(jq -ce --arg head "$head_sha" '
-      select(.status == "in_progress"
-        and .path == ".github/workflows/release-finalize.yml"
-        and .head_sha == $head)
-      | [.triggering_actor, .actor]
-    ' <<< "$run")" || return 1
-  else
-    identities="$(gh api user | jq -ce '[.]')" || return 1
+override_reason=""
+load_override() {
+  local version="$1" required="$2"
+  override_reason=""
+  if ! git show-ref --verify --quiet "refs/tags/release-override/$version"; then
+    if [ "$required" = true ]; then
+      echo "Release $version lacks its signed override approval; refusing to redispatch." >&2
+      return 1
+    fi
+    return 0
   fi
-  actors="$(gh api "repos/$GITHUB_REPOSITORY/actions/variables/RELEASE_OVERRIDE_ACTORS" --jq '.value')" || return 1
-  jq -en --argjson identities "$identities" --argjson actors "$actors" '
-    ($actors | type == "array" and length > 0 and all(.[]; type == "string" and length > 0))
-    and all($identities[];
-      .type == "User"
-      and (.login | test("^[A-Za-z0-9][A-Za-z0-9-]*$"))
-      and (.login as $actor | $actors | map(ascii_downcase) | index($actor | ascii_downcase) != null))
-  ' > /dev/null
-}
-
-require_override_authority() {
-  if [ -n "$override_reason" ] && ! authorize_override; then
-    echo "Release override requires an authorized human in repository variable RELEASE_OVERRIDE_ACTORS." >&2
-    exit 1
+  local reason_file="$scratch_dir/release-override-reason"
+  if ! go run ./tools/releaseprovenance -verify-override -tag "$version" -commit "$CI_DEVELOP_SHA" -output "$reason_file"; then
+    echo "Release $version has invalid signed override approval; refusing to publish or redispatch." >&2
+    return 1
   fi
+  override_reason="$(cat "$reason_file")"
 }
-
-if [ -n "$override_reason" ] && ! jq -en --arg reason "$override_reason" '$reason | test("\\S")' > /dev/null; then
-  echo "Release override requires a nonempty reason." >&2
-  exit 1
-fi
-require_override_authority
 
 required_evidence() {
   platform_status || return 1
@@ -127,16 +108,15 @@ for existing in $(git tag --points-at "$CI_DEVELOP_SHA" --list "$series.*"); do
     existing_message="$(git for-each-ref --format='%(contents)' "refs/tags/$existing")"
     if [[ "$existing_message" == *'<!-- detent-release-provenance:'* ]]; then
       existing_provenance="$(sed -n 's/^<!-- detent-release-provenance:\(.*\) -->$/\1/p' <<< "$existing_message")"
-      if ! override_reason="$(jq -er '
-          if .validation_override == null then ""
-          elif (.validation_override.reason | type == "string" and test("\\S"))
-          then .validation_override.reason
-          else error("release override requires a nonempty reason") end
-        ' <<< "$existing_provenance")"; then
-        echo "Release $existing has invalid provenance; refusing to redispatch its immutable tag." >&2
-        exit 1
+      if jq -e '.validation_override != null' <<< "$existing_provenance" > /dev/null; then
+        load_override "$existing" true
+        if ! jq -e --arg reason "$override_reason" '.validation_override.reason == $reason' <<< "$existing_provenance" > /dev/null; then
+          echo "Release $existing override differs from signed approval; refusing to redispatch." >&2
+          exit 1
+        fi
+      else
+        override_reason=""
       fi
-      require_override_authority
       if ! evidence="$(required_evidence)" || ! jq -e \
         --arg repository "$GITHUB_REPOSITORY" --arg tag "$existing" --arg commit "$CI_DEVELOP_SHA" \
         --argjson evidence "$evidence" '
@@ -152,10 +132,6 @@ for existing in $(git tag --points-at "$CI_DEVELOP_SHA" --list "$series.*"); do
     fi
   fi
 done
-if ! evidence="$(required_evidence)"; then
-  echo "Release $series awaits required statuses scheduled-full-ci, release-security-audit and all configured checks on $CI_DEVELOP_SHA; missing, failed, stale platform-full-ci (24h on an ancestor), or superseded evidence; not tagging."
-  exit 0
-fi
 git config user.name 'github-actions[bot]'
 git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
 latest="$(git tag --list "$series.*" --sort=-v:refname | awk '/^v[0-9]+\.[0-9]+\.[0-9]+$/ { print; exit }')"
@@ -163,6 +139,12 @@ if [[ "$latest" =~ ^v[0-9]+\.[0-9]+\.([0-9]+)$ ]]; then
   tag="$series.$((BASH_REMATCH[1] + 1))"
 else
   tag="$series.0"
+fi
+
+load_override "$tag" false
+if ! evidence="$(required_evidence)"; then
+  echo "Release $series awaits required statuses scheduled-full-ci, release-security-audit and all configured checks on $CI_DEVELOP_SHA; missing, failed, stale platform-full-ci (24h on an ancestor), or superseded evidence; not tagging."
+  exit 0
 fi
 
 if ! evidence="$(required_evidence)"; then

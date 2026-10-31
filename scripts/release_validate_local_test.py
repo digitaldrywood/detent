@@ -293,6 +293,24 @@ sys.exit(7 if stage in json.loads(os.environ["FAILURES"]) else 0)
             git("init", "-q", "-b", "develop")
             git("config", "user.name", "Example")
             git("config", "user.email", "example@example.com")
+            signing_home = tempfile.TemporaryDirectory(prefix="rb-", dir="/tmp")
+            self.addCleanup(signing_home.cleanup)
+            self.addCleanup(lambda: subprocess.run(["gpgconf", "--homedir", signing_home.name, "--kill", "gpg-agent"], check=True))
+            env["GNUPGHOME"] = signing_home.name
+
+            def gpg(*args):
+                return subprocess.check_output(["gpg", "--batch", *args], env=env, stderr=subprocess.PIPE).decode()
+
+            gpg("--pinentry-mode", "loopback", "--passphrase", "", "--quick-generate-key", "owner@example.com", "ed25519", "sign", "0")
+            fingerprint = next(line.split(":")[9] for line in gpg("--with-colons", "--list-keys").splitlines() if line.startswith("fpr:"))
+            (root / ".github").mkdir()
+            (root / ".github/release-override-signers").write_text(fingerprint + "\n")
+            (root / ".github/release-override-signers.asc").write_text(gpg("--armor", "--export", fingerprint))
+            git("config", "user.signingkey", fingerprint)
+
+            def approve(version, reason):
+                git("-c", "gpg.format=openpgp", "tag", "-s", "release-override/" + version, "HEAD", "-m", reason)
+
             specs = (*CHECK_RELEASE.SMOKE_SPECS, "tests/visual/affected.spec.js", "tests/visual/unrelated.spec.js")
             for spec in specs:
                 path = root / spec
@@ -345,6 +363,7 @@ sys.exit(7 if stage in json.loads(os.environ["FAILURES"]) else 0)
                               checks=[{"name": "release-security-audit", "status": "completed", "conclusion": "success", "status_id": 2}],
                               validation_override={"reason": "Owner accepts failed validation --> investigate", "status": "failure",
                                                    "status_id": 3, "status_url": "https://example.com/validation/3"})
+            approve("v1.0.2", provenance["validation_override"]["reason"])
             git("tag", "-a", "v1.0.2", "-m", "<!-- detent-release-provenance:" + json.dumps(provenance) + " -->")
             self.assertEqual(select(), ["tests/visual"])
             (root / "README.md").write_text("next release documentation\n")
@@ -367,7 +386,10 @@ sys.exit(7 if stage in json.loads(os.environ["FAILURES"]) else 0)
             git("commit", "-qm", "documentation only override")
             provenance.update(tag="v1.0.5", commit=git("rev-parse", "HEAD"),
                               validation_override={"reason": "Owner accepts missing validation"})
+            self.assertEqual(select(), expected)
             git("tag", "-a", "v1.0.5", "-m", "<!-- detent-release-provenance:" + json.dumps(provenance) + " -->")
+            self.assertEqual(select(), ["tests/visual"])
+            approve("v1.0.5", provenance["validation_override"]["reason"])
             self.assertEqual(select(), ["tests/visual"])
             (root / "tests/visual/unrelated.spec.js").write_text("uncommitted change\n")
             self.assertEqual(select(), ["tests/visual"])

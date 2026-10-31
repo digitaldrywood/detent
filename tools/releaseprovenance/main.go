@@ -37,13 +37,27 @@ func run(args []string, stderr io.Writer) error {
 	statusesPath := flags.String("github-statuses", "", "authenticated GitHub combined-status response")
 	rulesetsPath := flags.String("github-rulesets", "", "authenticated active branch rulesets as JSON values")
 	requiredCheckNamesJSON := flags.String("required-check-names-json", "", "authoritative JSON array of release-only required check names")
-	overrideActorsJSON := flags.String("override-actors-json", "", "explicit workflow repository override allowlist; local calls read the repository API")
+	gitDirectory := flags.String("git-directory", "", "Git worktree containing release and approval tags")
+	verifyOverride := flags.Bool("verify-override", false, "verify the signed release override approval and write its reason")
 	outputPath := flags.String("output", "", "path for canonical release provenance JSON")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	if flags.NArg() != 0 {
 		return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
+	}
+	if *verifyOverride {
+		if strings.TrimSpace(*outputPath) == "" {
+			return errors.New("-output is required")
+		}
+		reason, err := provenance.VerifyOverrideApproval(context.Background(), *gitDirectory, *tag, *commit)
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(*outputPath, []byte(reason+"\n"), 0o600); err != nil {
+			return fmt.Errorf("write verified override reason: %w", err)
+		}
+		return nil
 	}
 	if strings.TrimSpace(*tagMessagePath) == "" {
 		return errors.New("-tag-message is required")
@@ -80,7 +94,7 @@ func run(args []string, stderr io.Writer) error {
 		evidence.RequiredChecks = append(evidence.RequiredChecks, provenance.RepositoryRequirement{Name: name})
 	}
 	if manifest.ValidationOverride != nil {
-		evidence.OverrideSignature, err = provenance.VerifyOverrideTag(context.Background(), "", manifest, *overrideActorsJSON)
+		evidence.OverrideSignature, err = provenance.VerifyOverrideTag(context.Background(), *gitDirectory, manifest)
 		if err != nil {
 			return fmt.Errorf("verify override tag signature: %w", err)
 		}

@@ -4,11 +4,11 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
@@ -23,7 +23,7 @@ func newGPGHome() (string, error) {
 	if runtime.GOOS != "windows" {
 		directory = "/tmp"
 	}
-	return os.MkdirTemp(directory, "release-gpg-")
+	return os.MkdirTemp(directory, "ro-")
 }
 
 func (signature *OverrideSignature) matches(manifest Manifest) bool {
@@ -34,141 +34,129 @@ func (signature *OverrideSignature) matches(manifest Manifest) bool {
 	return err == nil && signature.manifestHash == sha256.Sum256(raw)
 }
 
-func VerifyOverrideTag(ctx context.Context, directory string, manifest Manifest, workflowActorsJSON string) (_ *OverrideSignature, resultErr error) {
+func VerifyOverrideTag(ctx context.Context, directory string, manifest Manifest) (*OverrideSignature, error) {
 	if err := Validate(manifest, manifest.Repository, manifest.Tag, manifest.Commit); err != nil {
 		return nil, err
 	}
-	run := func(input string, environment []string, name string, args ...string) ([]byte, error) {
-		var command *exec.Cmd
-		switch name {
-		case "git":
-			command = exec.CommandContext(ctx, "git")
-		case "gh":
-			command = exec.CommandContext(ctx, "gh")
-		case "gpg":
-			command = exec.CommandContext(ctx, "gpg")
-		default:
-			return nil, errors.New("unsupported override signature command")
-		}
+	if manifest.ValidationOverride == nil {
+		return nil, errors.New("release provenance has no validation override")
+	}
+	reason, err := VerifyOverrideApproval(ctx, directory, manifest.Tag, manifest.Commit)
+	if err != nil {
+		return nil, err
+	}
+	if manifest.ValidationOverride.Reason != reason {
+		return nil, errors.New("release override reason differs from signed approval")
+	}
+	raw, err := Marshal(manifest)
+	if err != nil {
+		return nil, err
+	}
+	return &OverrideSignature{manifestHash: sha256.Sum256(raw)}, nil
+}
+
+func VerifyOverrideApproval(ctx context.Context, directory, version, commit string) (_ string, resultErr error) {
+	if !regexp.MustCompile(`^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`).MatchString(version) {
+		return "", errors.New("override approval requires a stable release version")
+	}
+	expected, err := fullCommit(commit)
+	if err != nil {
+		return "", fmt.Errorf("override approval commit: %w", err)
+	}
+	git := func(args ...string) ([]byte, error) {
+		command := exec.CommandContext(ctx, "git")
 		command.Args = append(command.Args, args...)
 		command.Dir = directory
-		command.Env = append(os.Environ(), environment...)
-		command.Stdin = strings.NewReader(input)
 		output, err := command.Output()
 		if err != nil {
-			return nil, fmt.Errorf("run override signature %s: %w", name, err)
+			return nil, fmt.Errorf("read override approval git object: %w", err)
 		}
 		return output, nil
 	}
-	object, err := run("", nil, "git", "rev-parse", "--verify", "refs/tags/"+manifest.Tag+"^{tag}")
+	object, err := git("rev-parse", "--verify", "refs/tags/release-override/"+version+"^{tag}")
 	if err != nil {
-		return nil, err
+		return "", err
 	}
-	objectID := strings.TrimSpace(string(object))
-	commit, err := run("", nil, "git", "rev-parse", "--verify", objectID+"^{commit}")
+	raw, err := git("cat-file", "tag", strings.TrimSpace(string(object)))
 	if err != nil {
-		return nil, err
+		return "", err
 	}
-	message, err := run("", nil, "git", "cat-file", "tag", objectID)
+	header, body, ok := bytes.Cut(raw, []byte("\n\n"))
+	if !ok {
+		return "", errors.New("override approval has no tag message")
+	}
+	headers := strings.Split(string(header), "\n")
+	if len(headers) < 3 || headers[0] != "object "+expected || headers[1] != "type commit" || headers[2] != "tag release-override/"+version {
+		return "", errors.New("override approval does not name the exact release head and version")
+	}
+	message, signature, ok := bytes.Cut(body, []byte("-----BEGIN PGP SIGNATURE-----"))
+	if !ok {
+		return "", errors.New("override approval requires an OpenPGP signature")
+	}
+	reason := strings.TrimRight(string(message), "\n")
+	if strings.TrimSpace(reason) == "" {
+		return "", errors.New("release override requires a nonempty reason")
+	}
+	listing, err := git("show", expected+":.github/release-override-signers")
 	if err != nil {
-		return nil, err
+		return "", err
 	}
-	actual, err := FromTagMessage(string(message), manifest.Repository, manifest.Tag, strings.TrimSpace(string(commit)))
-	if err != nil {
-		return nil, err
-	}
-	raw, err := Marshal(actual)
-	if err != nil {
-		return nil, err
-	}
-	signature := &OverrideSignature{manifestHash: sha256.Sum256(raw)}
-	if !signature.matches(manifest) {
-		return nil, errors.New("override signature does not cover the supplied release provenance")
-	}
-	actorsJSON := []byte(workflowActorsJSON)
-	if workflowActorsJSON == "" {
-		actorsJSON, err = run("", nil, "gh", "api", "repos/"+manifest.Repository+"/actions/variables/RELEASE_OVERRIDE_ACTORS", "--jq", ".value")
-		if err != nil {
-			return nil, err
+	fingerprints := make(map[string]bool)
+	fingerprintPattern := regexp.MustCompile(`^([A-Fa-f0-9]{40}|[A-Fa-f0-9]{64})$`)
+	for line := range strings.SplitSeq(string(listing), "\n") {
+		fingerprint := strings.TrimSpace(line)
+		if fingerprint == "" {
+			continue
 		}
-	}
-	var actors []string
-	if err := json.Unmarshal(actorsJSON, &actors); err != nil {
-		return nil, fmt.Errorf("decode override owner allowlist: %w", err)
-	}
-	loginPattern := regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]*$`)
-	for _, actor := range actors {
-		if !loginPattern.MatchString(actor) {
-			return nil, errors.New("invalid override owner allowlist")
+		if !fingerprintPattern.MatchString(fingerprint) {
+			return "", errors.New("override signer list requires full OpenPGP fingerprints")
 		}
+		fingerprints[strings.ToUpper(fingerprint)] = true
+	}
+	if len(fingerprints) == 0 {
+		return "", errors.New("override signer list is empty")
+	}
+	keys, err := git("show", expected+":.github/release-override-signers.asc")
+	if err != nil {
+		return "", err
+	}
+	if !bytes.HasPrefix(bytes.TrimSpace(keys), []byte("-----BEGIN PGP PUBLIC KEY BLOCK-----")) || bytes.Contains(keys, []byte("PRIVATE KEY")) {
+		return "", errors.New("override keyring requires armored public keys")
 	}
 	home, err := newGPGHome()
 	if err != nil {
-		return nil, fmt.Errorf("create override verification keyring: %w", err)
+		return "", fmt.Errorf("create override verification keyring: %w", err)
 	}
 	defer func() { resultErr = errors.Join(resultErr, os.RemoveAll(home)) }()
-	environment := []string{"GNUPGHOME=" + home}
-	keyIDs := make(map[string]bool)
-	for _, actor := range actors {
-		identityJSON, err := run("", nil, "gh", "api", "users/"+actor)
+	gpg := func(input []byte, args ...string) ([]byte, error) {
+		command := exec.CommandContext(ctx, "gpg")
+		command.Args = append(command.Args, "--no-options", "--batch", "--no-autostart", "--homedir", home, "--no-auto-key-retrieve")
+		command.Args = append(command.Args, args...)
+		command.Env = append(os.Environ(), "GNUPGHOME="+home)
+		command.Stdin = bytes.NewReader(input)
+		output, err := command.Output()
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("verify override approval OpenPGP signature: %w", err)
 		}
-		var identity struct {
-			Login string `json:"login"`
-			Type  string `json:"type"`
-		}
-		if err := json.Unmarshal(identityJSON, &identity); err != nil {
-			return nil, fmt.Errorf("decode override owner identity: %w", err)
-		}
-		if identity.Type != "User" || !strings.EqualFold(identity.Login, actor) {
-			continue
-		}
-		keysJSON, err := run("", nil, "gh", "api", "--paginate", "--slurp", "users/"+actor+"/gpg_keys?per_page=100")
-		if err != nil {
-			return nil, err
-		}
-		var pages [][]struct {
-			KeyID   string `json:"key_id"`
-			RawKey  string `json:"raw_key"`
-			Revoked bool   `json:"revoked"`
-		}
-		if err := json.Unmarshal(keysJSON, &pages); err != nil {
-			return nil, fmt.Errorf("decode override owner signing keys: %w", err)
-		}
-		for _, page := range pages {
-			for _, key := range page {
-				if len(key.KeyID) != 16 || key.RawKey == "" || key.Revoked {
-					continue
-				}
-				if _, err := run(key.RawKey, environment, "gpg", "--no-options", "--batch", "--no-autostart", "--homedir", home, "--import"); err != nil {
-					return nil, err
-				}
-				keyIDs[strings.ToUpper(key.KeyID)] = true
-			}
-		}
+		return output, nil
 	}
-	if len(keyIDs) == 0 {
-		return nil, errors.New("override tag has no allowlisted owner signing keys")
+	if _, err := gpg(keys, "--import"); err != nil {
+		return "", err
 	}
-	command := exec.CommandContext(ctx, "git")
-	command.Args = append(command.Args, "-c", "gpg.format=openpgp", "-c", "gpg.openpgp.program=gpg", "-c", "gpg.program=gpg", "verify-tag", "--raw", objectID)
-	command.Dir = directory
-	command.Env = append(os.Environ(), environment...)
-	var status bytes.Buffer
-	command.Stderr = &status
-	if err := command.Run(); err != nil {
-		return nil, fmt.Errorf("verify override tag signature: %w", err)
+	signaturePath := filepath.Join(home, "signature.asc")
+	if err := os.WriteFile(signaturePath, append([]byte("-----BEGIN PGP SIGNATURE-----"), signature...), 0o600); err != nil {
+		return "", fmt.Errorf("write override approval signature: %w", err)
 	}
-	for line := range strings.SplitSeq(status.String(), "\n") {
+	signed := raw[:len(raw)-len(body)+len(message)]
+	status, err := gpg(signed, "--status-fd=1", "--verify", signaturePath, "-")
+	if err != nil {
+		return "", err
+	}
+	for line := range strings.SplitSeq(string(status), "\n") {
 		fields := strings.Fields(line)
-		if len(fields) < 12 || fields[0] != "[GNUPG:]" || fields[1] != "VALIDSIG" {
-			continue
-		}
-		fingerprint := fields[len(fields)-1]
-		if len(fingerprint) >= 40 && keyIDs[strings.ToUpper(fingerprint[len(fingerprint)-16:])] {
-			return signature, nil
+		if len(fields) == 12 && fields[0] == "[GNUPG:]" && fields[1] == "VALIDSIG" && fingerprints[strings.ToUpper(fields[11])] {
+			return reason, nil
 		}
 	}
-	return nil, errors.New("override tag signature is not from an allowlisted owner key")
+	return "", errors.New("override approval signature is not from a listed primary key")
 }
