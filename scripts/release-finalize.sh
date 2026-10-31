@@ -58,17 +58,30 @@ status_creators="$(jq -ce '
   then . else error("release status creators must be a nonempty allowlist") end
 ' <<< "${DETENT_RELEASE_STATUS_CREATORS_JSON:-[]}")"
 
-required_statuses() {
+override_reason="${DETENT_RELEASE_OVERRIDE:-}"
+if [ -n "$override_reason" ] && ! jq -en --arg reason "$override_reason" '$reason | test("\\S")' > /dev/null; then
+  echo "Release override requires a nonempty reason." >&2
+  exit 1
+fi
+
+required_evidence() {
   platform_status || return 1
   gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/commits/$CI_DEVELOP_SHA/statuses?per_page=100" |
-    jq -ce --argjson required "$required_checks" --argjson creators "$status_creators" '
+    jq -ce --argjson required "$required_checks" --argjson creators "$status_creators" --arg reason "$override_reason" '
       [.[][]] as $statuses
-      | [$required[] as $name
+      | ($required | map(select(. != "scheduled-full-ci" or $reason == ""))) as $mandatory
+      | [$mandatory[] as $name
           | ($statuses | map(select(.context == $name)) | max_by(.id))
           | select(.state == "success" and (.id | type == "number") and .id > 0
               and (.creator.login as $creator | $creators | index($creator) != null))
           | {name: .context, status: "completed", conclusion: "success", status_id: .id}]
-      | select(length == ($required | length))
+      | select(length == ($mandatory | length))
+      | {checks: .}
+      + if $reason == "" then {} else
+          ($statuses | map(select(.context == "scheduled-full-ci")) | max_by(.id)) as $suite
+          | {validation_override: {reason: $reason, status: ($suite.state // "missing"),
+              status_id: ($suite.id // 0), status_url: ($suite.target_url // "")}}
+        end
     '
 }
 
@@ -76,14 +89,22 @@ git fetch --tags --force origin
 for existing in $(git tag --points-at "$CI_DEVELOP_SHA" --list "$series.*"); do
   if [[ "$existing" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] && [ "$(git cat-file -t "refs/tags/$existing")" = tag ]; then
     existing_message="$(git for-each-ref --format='%(contents)' "refs/tags/$existing")"
-    if [[ "$existing_message" == *'"name":"scheduled-full-ci"'* ]]; then
-      existing_provenance="${existing_message#*<!-- detent-release-provenance:}"
-      existing_provenance="${existing_provenance%% -->*}"
-      if ! checks="$(required_statuses)" || ! jq -e \
+    if [[ "$existing_message" == *'<!-- detent-release-provenance:'* ]]; then
+      existing_provenance="$(sed -n 's/^<!-- detent-release-provenance:\(.*\) -->$/\1/p' <<< "$existing_message")"
+      if ! override_reason="$(jq -er '
+          if .validation_override == null then ""
+          elif (.validation_override.reason | type == "string" and test("\\S"))
+          then .validation_override.reason
+          else error("release override requires a nonempty reason") end
+        ' <<< "$existing_provenance")"; then
+        echo "Release $existing has invalid provenance; refusing to redispatch its immutable tag." >&2
+        exit 1
+      fi
+      if ! evidence="$(required_evidence)" || ! jq -e \
         --arg repository "$GITHUB_REPOSITORY" --arg tag "$existing" --arg commit "$CI_DEVELOP_SHA" \
-        --argjson checks "$checks" '
+        --argjson evidence "$evidence" '
           .schema == 1 and .repository == $repository and .tag == $tag and .commit == $commit
-          and (.checks | sort_by(.name)) == ($checks | sort_by(.name))
+          and (.checks | sort_by(.name)) == ($evidence.checks | sort_by(.name))
         ' <<< "$existing_provenance" > /dev/null; then
         echo "Release $existing required status evidence is missing, failed, superseded, or incompatible with its provenance; refusing to redispatch its immutable tag." >&2
         false
@@ -94,7 +115,7 @@ for existing in $(git tag --points-at "$CI_DEVELOP_SHA" --list "$series.*"); do
     fi
   fi
 done
-if ! checks="$(required_statuses)"; then
+if ! evidence="$(required_evidence)"; then
   echo "Release $series awaits required statuses scheduled-full-ci, release-security-audit and all configured checks on $CI_DEVELOP_SHA; missing, failed, stale platform-full-ci (24h on an ancestor), or superseded evidence; not tagging."
   exit 0
 fi
@@ -107,18 +128,24 @@ else
   tag="$series.0"
 fi
 
-if ! checks="$(required_statuses)"; then
+if ! evidence="$(required_evidence)"; then
   echo "Release $series awaits required statuses; missing, failed, superseded, or untrusted evidence; not tagging."
   exit 0
 fi
-provenance="$(jq -cn --arg repository "$GITHUB_REPOSITORY" --arg tag "$tag" --arg commit "$CI_DEVELOP_SHA" --argjson checks "$checks" \
-  '{schema:1, repository:$repository, tag:$tag, commit:$commit, checks:$checks}')"
+provenance="$(jq -cn --arg repository "$GITHUB_REPOSITORY" --arg tag "$tag" --arg commit "$CI_DEVELOP_SHA" --argjson evidence "$evidence" \
+  '{schema:1, repository:$repository, tag:$tag, commit:$commit} + $evidence')"
 message_file="$scratch_dir/release-tag-message"
-cat > "$message_file" <<EOF
-Validated release build $tag
-
-<!-- detent-release-provenance:$provenance -->
-EOF
+{
+  if [ -n "$override_reason" ]; then
+    printf 'Release build %s with full-validation override\n\n' "$tag"
+    jq -r '.validation_override | "Full validation (scheduled-full-ci): " + .status,
+      "Owner override reason: " + (.reason | tojson),
+      (if .status_url != "" then "Validation status URL: " + .status_url else empty end)' <<< "$evidence"
+  else
+    printf 'Validated release build %s\n' "$tag"
+  fi
+  printf '\n<!-- detent-release-provenance:%s -->\n' "$provenance"
+} > "$message_file"
 if [ "$(git ls-remote origin "refs/heads/$CI_RELEASE_BRANCH" | cut -f1)" != "$head_sha" ]; then
   echo "Release branch head changed during finalization; skipping release."
   exit 0

@@ -27,10 +27,25 @@ func TestReleaseFinalizer(t *testing.T) {
 		awaitsStatus, unset, missingAudit, missingSuite, wrongSHA        bool
 		superseded, suiteSuperseded, staleHead, newSeries                bool
 		differentSeries, unchanged, releaseRun, oldProvenance            bool
-		rejectReuse, badAllowlist                                        bool
+		rejectReuse, badAllowlist, badOverride, failedExtra              bool
 		moveDuringCheck, failDuringCheck, foreignCreator, missingCreator bool
-		platform                                                         string
+		platform, override, recordedOverride, suiteState                 string
 	}{
+		{name: "reuse recorded override without ambient input", recordedOverride: "Owner previously accepted failed validation --> investigate", suiteState: "failure", unchanged: true},
+		{name: "reuse recorded override retains audit requirement", recordedOverride: "Owner previously accepted failed validation", auditState: "failure", unchanged: true, rejectReuse: true},
+		{name: "ambient override cannot retrofit ordinary tag", override: "Owner directs release", suiteState: "failure", unchanged: true, rejectReuse: true},
+		{name: "override still requires configured checks", override: "Owner directs release", requirements: `["extra"]`, failedExtra: true, awaitsStatus: true},
+		{name: "blank override is rejected", override: " \t", badOverride: true},
+		{name: "override reason preserves quotes and annotation suffix", override: "Owner accepts \"known\" failure --> investigate\nnext", suiteState: "failure"},
+		{name: "override failed validation tags reason and URL", override: "Owner accepts known validation failure", suiteState: "failure"},
+		{name: "override missing validation", override: "Owner accepts missing validation", missingSuite: true},
+		{name: "override stale validation", override: "Owner accepts stale validation", suiteState: "stale"},
+		{name: "override superseded validation", override: "Owner accepts superseded validation", suiteSuperseded: true},
+		{name: "override still requires audit", override: "Owner directs release", missingAudit: true, awaitsStatus: true},
+		{name: "override refuses failed audit", override: "Owner directs release", auditState: "failure", awaitsStatus: true},
+		{name: "override refuses late audit failure", override: "Owner directs release", failDuringCheck: true, lateContext: "release-security-audit", awaitsStatus: true},
+		{name: "override still requires platform", override: "Owner directs release", platform: "missing", awaitsStatus: true},
+		{name: "failed validation without override", suiteState: "failure", awaitsStatus: true},
 		{name: "green statuses tag and dispatch", requirements: `["scheduled-full-ci", "release-security-audit"]`},
 		{name: "platform missing", platform: "missing", awaitsStatus: true},
 		{name: "platform failed", platform: "failure", awaitsStatus: true},
@@ -138,9 +153,13 @@ esac
 			if auditState == "" {
 				auditState = "success"
 			}
+			suiteState := tt.suiteState
+			if suiteState == "" {
+				suiteState = "success"
+			}
 			var statuses []map[string]any
 			if !tt.missingSuite {
-				statuses = append(statuses, map[string]any{"context": "scheduled-full-ci", "id": 123, "state": "success"})
+				statuses = append(statuses, map[string]any{"context": "scheduled-full-ci", "id": 123, "state": suiteState, "target_url": "https://example.com/validation/123"})
 			}
 			if tt.suiteSuperseded {
 				statuses = append(statuses, map[string]any{"context": "scheduled-full-ci", "id": 124, "state": "failure"})
@@ -151,7 +170,11 @@ esac
 			if tt.superseded {
 				statuses = append(statuses, map[string]any{"context": "release-security-audit", "id": 126, "state": "failure"})
 			}
-			statuses = append(statuses, map[string]any{"context": "extra", "id": 127, "state": "success"})
+			extraState := "success"
+			if tt.failedExtra {
+				extraState = "failure"
+			}
+			statuses = append(statuses, map[string]any{"context": "extra", "id": 127, "state": extraState})
 			for _, status := range statuses {
 				if tt.missingCreator {
 					continue
@@ -236,6 +259,10 @@ esac
 			if !tt.oldProvenance {
 				manifest.Checks = append(manifest.Checks, releaseprovenance.Check{Name: "release-security-audit", Status: "completed", Conclusion: "success", StatusID: 125})
 			}
+			if tt.recordedOverride != "" {
+				manifest.Checks = manifest.Checks[1:]
+				manifest.ValidationOverride = &releaseprovenance.ValidationOverride{Reason: tt.recordedOverride, Status: "failure", StatusID: 123, StatusURL: "https://example.com/validation/123"}
+			}
 			annotation, err := releaseprovenance.Annotation(manifest)
 			if err != nil {
 				t.Fatal(err)
@@ -273,8 +300,9 @@ esac
 			if !tt.unset {
 				command.Env = append(command.Env, "DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON="+tt.requirements)
 			}
+			command.Env = append(command.Env, "DETENT_RELEASE_OVERRIDE="+tt.override)
 			output, err := command.CombinedOutput()
-			if (err != nil) != (tt.rejectReuse || tt.badAllowlist) {
+			if (err != nil) != (tt.rejectReuse || tt.badAllowlist || tt.badOverride) {
 				t.Fatalf("finalizer = %v: %s", err, output)
 			}
 			calls, err := os.ReadFile(filepath.Join(dir, "calls"))
@@ -286,6 +314,10 @@ esac
 				t.Fatalf("finalizer posted a status: %s", text)
 			}
 			switch {
+			case tt.badOverride:
+				if !strings.Contains(string(output), "override requires a nonempty reason") || strings.Contains(text, "tag -a ") || strings.Contains(text, "/dispatches") {
+					t.Fatalf("invalid override produced release effects: %s: %s", text, output)
+				}
 			case tt.badAllowlist:
 				if !strings.Contains(string(output), "jq:") || strings.Contains(text, "tag -a ") || strings.Contains(text, "/dispatches") {
 					t.Fatalf("invalid allowlist produced release effects: %s: %s", text, output)
@@ -324,6 +356,27 @@ esac
 				produced, err := releaseprovenance.FromTagMessage(string(message), repository, tag, sha)
 				if err != nil {
 					t.Fatal(err)
+				}
+				if tt.override != "" {
+					recorded := produced.ValidationOverride
+					if recorded == nil || recorded.Reason != tt.override {
+						t.Fatalf("override reason lost: %s", message)
+					}
+					summary := strings.Split(string(message), "\n<!-- detent-release-provenance:")[0]
+					if !strings.Contains(summary, "with full-validation override") || !strings.Contains(summary, "Owner override reason:") {
+						t.Fatalf("override missing from visible tag message: %s", message)
+					}
+					if !tt.missingSuite && !tt.suiteSuperseded && !strings.Contains(summary, "https://example.com/validation/123") {
+						t.Fatalf("validation status URL missing from visible tag message: %s", message)
+					}
+					if !tt.missingSuite && !tt.suiteSuperseded && (recorded.Status != suiteState || recorded.StatusID != 123 || recorded.StatusURL != "https://example.com/validation/123") {
+						t.Fatalf("override validation evidence lost: %s", message)
+					}
+					if tt.missingSuite && (recorded.Status != "missing" || recorded.StatusID != 0 || recorded.StatusURL != "") {
+						t.Fatalf("missing validation was misrepresented: %s", message)
+					}
+				} else if produced.ValidationOverride != nil {
+					t.Fatalf("ordinary release acquired an override: %s", message)
 				}
 				evidence := releaseprovenance.GitHubEvidence{RequiredChecks: []releaseprovenance.RepositoryRequirement{{Name: "scheduled-full-ci"}, {Name: "release-security-audit"}}}
 				if tt.requirements == `["extra"]` {

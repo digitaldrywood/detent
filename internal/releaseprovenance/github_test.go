@@ -26,6 +26,28 @@ func TestVerifyGitHubEvidence(t *testing.T) {
 		wantErr        string
 	}{
 		{name: "exact authenticated evidence"},
+		{name: "recorded override permits failed suite with authenticated audit", mutateManifest: func(m *Manifest) {
+			m.ValidationOverride = &ValidationOverride{Reason: "Owner accepts failed validation", Status: "failure", StatusID: 9}
+			m.Checks[0].Name = "release-security-audit"
+		}, mutateEvidence: func(e *GitHubEvidence) {
+			e.RequiredChecks = []RepositoryRequirement{{Name: "scheduled-full-ci"}, {Name: "release-security-audit"}}
+			e.Checks[0].Name = "release-security-audit"
+			e.Checks = append(e.Checks, ObservedCheck{Name: "scheduled-full-ci", Commit: testCommit, Status: "completed", Conclusion: "failure", StatusID: 9})
+		}},
+		{name: "recorded override cannot waive missing authenticated audit", mutateManifest: func(m *Manifest) {
+			m.ValidationOverride = &ValidationOverride{Reason: "Owner accepts missing validation", Status: "missing"}
+			m.Checks[0].Name = "release-security-audit"
+		}, mutateEvidence: func(e *GitHubEvidence) {
+			e.RequiredChecks = []RepositoryRequirement{{Name: "scheduled-full-ci"}, {Name: "release-security-audit"}}
+		}, wantErr: "no authenticated"},
+		{name: "recorded override cannot waive failed authenticated audit", mutateManifest: func(m *Manifest) {
+			m.ValidationOverride = &ValidationOverride{Reason: "Owner accepts failed validation"}
+			m.Checks[0].Name = "release-security-audit"
+		}, mutateEvidence: func(e *GitHubEvidence) {
+			e.RequiredChecks = []RepositoryRequirement{{Name: "scheduled-full-ci"}, {Name: "release-security-audit"}}
+			e.Checks[0].Name = "release-security-audit"
+			e.Checks[0].Conclusion = "failure"
+		}, wantErr: "no authenticated"},
 		{name: "no repository requirements", mutateEvidence: func(e *GitHubEvidence) { e.RequiredChecks = nil }, wantErr: "no mandatory checks"},
 		{name: "fabricated annotation omits required check", mutateEvidence: func(e *GitHubEvidence) {
 			e.RequiredChecks = []RepositoryRequirement{{Name: "CI", IntegrationID: 15368}, {Name: "Security", IntegrationID: 15368}}

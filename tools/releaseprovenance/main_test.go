@@ -51,6 +51,15 @@ func TestRun(t *testing.T) {
 		t.Fatalf("Annotation(legacy status) error = %v", err)
 	}
 
+	override := manifest
+	override.ValidationOverride = &provenance.ValidationOverride{Reason: "Owner accepts failed validation", Status: "failure", StatusID: 9, StatusURL: "https://example.com/validation/9"}
+	override.Checks = append(override.Checks, provenance.Check{Name: "release-security-audit", Status: "completed", Conclusion: "success", CheckRunID: 201})
+	overrideAnnotation, err := provenance.Annotation(override)
+	if err != nil {
+		t.Fatal(err)
+	}
+	overrideChecks := `{"total_count":2,"check_runs":[{"id":101,"name":"CI","head_sha":"` + commit + `","status":"completed","conclusion":"success","app":{"id":15368}},{"id":201,"name":"release-security-audit","head_sha":"` + commit + `","status":"completed","conclusion":"success","app":{"id":15368}}]}`
+
 	tests := []struct {
 		name           string
 		message        string
@@ -62,6 +71,11 @@ func TestRun(t *testing.T) {
 		wantErr        string
 	}{
 		{name: "valid", message: annotation, commit: commit},
+		{name: "recorded override permits failed suite", message: overrideAnnotation, commit: commit, checks: overrideChecks,
+			requiredChecks: `["scheduled-full-ci", "release-security-audit"]`,
+			statuses:       `{"sha":"` + commit + `","total_count":1,"statuses":[{"id":9,"context":"scheduled-full-ci","state":"failure"}]}`},
+		{name: "recorded override permits missing suite", message: overrideAnnotation, commit: commit, checks: overrideChecks,
+			requiredChecks: `["scheduled-full-ci", "release-security-audit"]`},
 		{name: "missing evidence", message: "manual tag", commit: commit, wantErr: "missing provenance annotation"},
 		{name: "wrong candidate", message: annotation, commit: "89abcdef0123456789abcdef0123456789abcdef", wantErr: "want"},
 		{name: "fabricated successful check", message: forgedAnnotation, commit: commit, wantErr: "omits authenticated repository requirement"},
@@ -163,6 +177,9 @@ func TestRun(t *testing.T) {
 			got, err := provenance.Parse(raw, manifest.Repository, manifest.Tag, manifest.Commit)
 			if err != nil || got.Commit != manifest.Commit {
 				t.Fatalf("output provenance = %#v, error = %v", got, err)
+			}
+			if tt.message == overrideAnnotation && (got.ValidationOverride == nil || *got.ValidationOverride != *override.ValidationOverride) {
+				t.Fatalf("output lost recorded validation override: %s", raw)
 			}
 		})
 	}
