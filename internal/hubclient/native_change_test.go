@@ -1745,8 +1745,17 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 
 			if test.publicationWriteRefusal != "" {
 				owner := execution.(*nativeExecution)
+				source := owner.publicationSource
+				entries := 0
+				var sourceError error
+				owner.SetPublicationSource(func(ctx context.Context, version tracker.ChangeVersion, opts workspace.LandOptions) (workspace.GitHubPublication, error) {
+					entries++
+					publication, err := source(ctx, version, opts)
+					sourceError = err
+					return publication, err
+				})
 				if err := owner.PrepareFinish(guarded, test.outcome, "", nil); err != nil || owner.publication == nil {
-					t.Fatalf("prepare held publication: %v, change=%+v, calls=%d", err, owner.change, publicationCalls)
+					t.Fatalf("prepare held publication: %v, change=%+v, calls=%d, context=%v, source_entries=%d, source_error=%v, stored_seq=%d, finish_seq=%d", err, owner.change, publicationCalls, guarded.Err(), entries, sourceError, owner.storedSeq, owner.data.Sequence+1)
 				}
 				switch test.publicationWriteRefusal {
 				case "version":
