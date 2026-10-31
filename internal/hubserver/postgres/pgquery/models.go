@@ -52,6 +52,7 @@ type NativeComment struct {
 	Deleted              bool
 	CreatedAt            time.Time
 	UpdatedAt            time.Time
+	RecordID             int64
 }
 
 type Project struct {

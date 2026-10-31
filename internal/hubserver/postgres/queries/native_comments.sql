@@ -7,6 +7,10 @@ WHERE organization_id=sqlc.arg(organization_id)
 
 -- name: CreateComment :one
 INSERT INTO native_comments (
+    record_id,
+    created_at,
+    updated_at,
+    revision,
     organization_id,
     id,
     project_id,
@@ -23,6 +27,10 @@ INSERT INTO native_comments (
     deleted
 )
 VALUES (
+    COALESCE(NULLIF(sqlc.arg(imported_id)::bigint, 0), nextval('native_comments_record_id_seq')),
+    COALESCE(sqlc.narg(created_at)::timestamptz, CURRENT_TIMESTAMP),
+    COALESCE(sqlc.narg(updated_at)::timestamptz, CURRENT_TIMESTAMP),
+    COALESCE(NULLIF(sqlc.arg(revision)::bigint, 0), 1),
     sqlc.arg(organization_id),
     sqlc.arg(id),
     sqlc.arg(project_id),
@@ -62,10 +70,39 @@ WHERE organization_id=sqlc.arg(organization_id)
   AND work_item_id=sqlc.arg(work_item_id)
   AND id=sqlc.arg(id);
 
--- name: ListComments :many
+-- name: GetCommentLegacyCursor :one
+SELECT created_at, record_id FROM native_comments
+WHERE organization_id=sqlc.arg(organization_id)
+  AND project_id=sqlc.arg(project_id)
+  AND work_item_id=sqlc.arg(work_item_id)
+  AND sequence=sqlc.arg(after);
+
+-- name: GetCommentCursor :one
+SELECT created_at, record_id FROM native_comments
+WHERE organization_id=sqlc.arg(organization_id)
+  AND project_id=sqlc.arg(project_id)
+  AND work_item_id=sqlc.arg(work_item_id)
+  AND record_id=sqlc.arg(id);
+
+-- name: PageComments :many
 SELECT * FROM native_comments
 WHERE organization_id=sqlc.arg(organization_id)
   AND project_id=sqlc.arg(project_id)
   AND work_item_id=sqlc.arg(work_item_id)
-  AND sequence>sqlc.arg(after)
-ORDER BY sequence LIMIT sqlc.arg(page_limit);
+  AND (created_at, record_id) > (sqlc.arg(after_created_at)::timestamptz, sqlc.arg(after_id)::bigint)
+ORDER BY created_at, record_id LIMIT sqlc.arg(page_limit);
+
+-- name: ScanComments :many
+SELECT * FROM native_comments
+WHERE organization_id=sqlc.arg(organization_id)
+  AND project_id=sqlc.arg(project_id)
+  AND work_item_id=sqlc.arg(work_item_id)
+  AND record_id>sqlc.arg(after_id) AND record_id<=sqlc.arg(through_id)
+ORDER BY record_id LIMIT sqlc.arg(page_limit);
+
+-- name: CommentScanThrough :one
+SELECT record_id FROM native_comments
+WHERE organization_id=sqlc.arg(organization_id)
+  AND project_id=sqlc.arg(project_id)
+  AND work_item_id=sqlc.arg(work_item_id)
+ORDER BY record_id DESC LIMIT 1;

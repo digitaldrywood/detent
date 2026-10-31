@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
@@ -22,6 +23,13 @@ func (s *session) CreateWorkItem(ctx context.Context, record corestore.WorkItem)
 		return corestore.WorkItem{}, err
 	}
 	row, err := s.queries.CreateWorkItem(ctx, pgquery.CreateWorkItemParams{
+		ImportedID:             record.ID,
+		CreatedAt:              optionalTime(record.CreatedAt),
+		UpdatedAt:              optionalTime(record.UpdatedAt),
+		Revision:               record.Revision,
+		NativeCreatedAt:        optionalTime(record.NativeCreatedAt),
+		NativeUpdatedAt:        optionalTime(record.NativeUpdatedAt),
+		EventSequence:          record.EventSequence,
 		OrganizationID:         record.OrganizationID,
 		NativeID:               record.NativeID,
 		ProjectID:              record.ProjectID,
@@ -78,18 +86,23 @@ func (s *session) WorkItems(ctx context.Context, project tracker.ProjectID, afte
 	if err := checkPage(limit); err != nil {
 		return nil, err
 	}
-	rows, err := s.queries.ListWorkItems(ctx, pgquery.ListWorkItemsParams{
-		OrganizationID: s.organization,
-		ProjectID:      project,
-		After:          after,
-		PageLimit:      int32(limit),
-	})
-	if err != nil {
-		return nil, mapError(ctx, err)
+	var cursor corestore.Cursor
+	if after != 0 {
+		row, err := s.queries.GetWorkItemLegacyCursor(ctx, pgquery.GetWorkItemLegacyCursorParams{
+			OrganizationID: s.organization, ProjectID: project, After: after,
+		})
+		if err != nil {
+			return nil, mapError(ctx, err)
+		}
+		cursor = s.cursor(project, "", row.CreatedAt, row.ID)
 	}
-	records := make([]corestore.WorkItem, len(rows))
-	for i, row := range rows {
-		records[i] = corestore.WorkItem(row)
+	page, err := s.WorkItemPage(ctx, project, cursor, limit)
+	return page.Items, err
+}
+
+func optionalTime(value time.Time) *time.Time {
+	if value.IsZero() {
+		return nil
 	}
-	return records, nil
+	return &value
 }

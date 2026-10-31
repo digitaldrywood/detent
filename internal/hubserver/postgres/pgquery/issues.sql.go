@@ -7,12 +7,20 @@ package pgquery
 
 import (
 	"context"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 const createWorkItem = `-- name: CreateWorkItem :one
 INSERT INTO issues (
+    id,
+    created_at,
+    updated_at,
+    revision,
+    native_created_at,
+    native_updated_at,
+    event_sequence,
     organization_id,
     native_id,
     project_id,
@@ -29,12 +37,12 @@ INSERT INTO issues (
     archived
 )
 VALUES (
-    $1,
-    $2,
-    $3,
-    $4,
-    $5,
-    $6,
+    COALESCE(NULLIF($1::bigint, 0), nextval('issues_id_seq')),
+    COALESCE($2::timestamptz, CURRENT_TIMESTAMP),
+    COALESCE($3::timestamptz, CURRENT_TIMESTAMP),
+    COALESCE(NULLIF($4::bigint, 0), 1),
+    COALESCE($5::timestamptz, CURRENT_TIMESTAMP),
+    COALESCE($6::timestamptz, CURRENT_TIMESTAMP),
     $7,
     $8,
     $9,
@@ -42,11 +50,25 @@ VALUES (
     $11,
     $12,
     $13,
-    $14
+    $14,
+    $15,
+    $16,
+    $17,
+    $18,
+    $19,
+    $20,
+    $21
 ) RETURNING organization_id, id, native_id, project_id, number, revision, event_sequence, native_source_key, title, body_object_key, issue_contract_object_key, report_context_object_key, actor_kind, actor_principal_id, provenance_provider, provenance_external_id, archived, created_at, updated_at, native_created_at, native_updated_at
 `
 
 type CreateWorkItemParams struct {
+	ImportedID             int64
+	CreatedAt              *time.Time
+	UpdatedAt              *time.Time
+	Revision               int64
+	NativeCreatedAt        *time.Time
+	NativeUpdatedAt        *time.Time
+	EventSequence          int64
 	OrganizationID         tracker.OrganizationID
 	NativeID               tracker.NativeWorkItemID
 	ProjectID              tracker.ProjectID
@@ -65,6 +87,13 @@ type CreateWorkItemParams struct {
 
 func (q *Queries) CreateWorkItem(ctx context.Context, arg CreateWorkItemParams) (Issue, error) {
 	row := q.db.QueryRowContext(ctx, createWorkItem,
+		arg.ImportedID,
+		arg.CreatedAt,
+		arg.UpdatedAt,
+		arg.Revision,
+		arg.NativeCreatedAt,
+		arg.NativeUpdatedAt,
+		arg.EventSequence,
 		arg.OrganizationID,
 		arg.NativeID,
 		arg.ProjectID,
@@ -170,26 +199,145 @@ func (q *Queries) GetWorkItem(ctx context.Context, arg GetWorkItemParams) (Issue
 	return i, err
 }
 
-const listWorkItems = `-- name: ListWorkItems :many
-SELECT organization_id, id, native_id, project_id, number, revision, event_sequence, native_source_key, title, body_object_key, issue_contract_object_key, report_context_object_key, actor_kind, actor_principal_id, provenance_provider, provenance_external_id, archived, created_at, updated_at, native_created_at, native_updated_at FROM issues
+const getWorkItemCursor = `-- name: GetWorkItemCursor :one
+SELECT created_at, id FROM issues
 WHERE organization_id=$1
   AND project_id=$2
-  AND number>$3
-ORDER BY number LIMIT $4
+  AND id=$3
 `
 
-type ListWorkItemsParams struct {
+type GetWorkItemCursorParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	ID             int64
+}
+
+type GetWorkItemCursorRow struct {
+	CreatedAt time.Time
+	ID        int64
+}
+
+func (q *Queries) GetWorkItemCursor(ctx context.Context, arg GetWorkItemCursorParams) (GetWorkItemCursorRow, error) {
+	row := q.db.QueryRowContext(ctx, getWorkItemCursor, arg.OrganizationID, arg.ProjectID, arg.ID)
+	var i GetWorkItemCursorRow
+	err := row.Scan(&i.CreatedAt, &i.ID)
+	return i, err
+}
+
+const getWorkItemLegacyCursor = `-- name: GetWorkItemLegacyCursor :one
+SELECT created_at, id FROM issues
+WHERE organization_id=$1
+  AND project_id=$2
+  AND number=$3
+`
+
+type GetWorkItemLegacyCursorParams struct {
 	OrganizationID tracker.OrganizationID
 	ProjectID      tracker.ProjectID
 	After          int64
+}
+
+type GetWorkItemLegacyCursorRow struct {
+	CreatedAt time.Time
+	ID        int64
+}
+
+func (q *Queries) GetWorkItemLegacyCursor(ctx context.Context, arg GetWorkItemLegacyCursorParams) (GetWorkItemLegacyCursorRow, error) {
+	row := q.db.QueryRowContext(ctx, getWorkItemLegacyCursor, arg.OrganizationID, arg.ProjectID, arg.After)
+	var i GetWorkItemLegacyCursorRow
+	err := row.Scan(&i.CreatedAt, &i.ID)
+	return i, err
+}
+
+const pageWorkItems = `-- name: PageWorkItems :many
+SELECT organization_id, id, native_id, project_id, number, revision, event_sequence, native_source_key, title, body_object_key, issue_contract_object_key, report_context_object_key, actor_kind, actor_principal_id, provenance_provider, provenance_external_id, archived, created_at, updated_at, native_created_at, native_updated_at FROM issues
+WHERE organization_id=$1
+  AND project_id=$2
+  AND (created_at, id) > ($3::timestamptz, $4::bigint)
+ORDER BY created_at, id LIMIT $5
+`
+
+type PageWorkItemsParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	AfterCreatedAt time.Time
+	AfterID        int64
 	PageLimit      int32
 }
 
-func (q *Queries) ListWorkItems(ctx context.Context, arg ListWorkItemsParams) ([]Issue, error) {
-	rows, err := q.db.QueryContext(ctx, listWorkItems,
+func (q *Queries) PageWorkItems(ctx context.Context, arg PageWorkItemsParams) ([]Issue, error) {
+	rows, err := q.db.QueryContext(ctx, pageWorkItems,
 		arg.OrganizationID,
 		arg.ProjectID,
-		arg.After,
+		arg.AfterCreatedAt,
+		arg.AfterID,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Issue{}
+	for rows.Next() {
+		var i Issue
+		if err := rows.Scan(
+			&i.OrganizationID,
+			&i.ID,
+			&i.NativeID,
+			&i.ProjectID,
+			&i.Number,
+			&i.Revision,
+			&i.EventSequence,
+			&i.NativeSourceKey,
+			&i.Title,
+			&i.BodyObjectKey,
+			&i.IssueContractObjectKey,
+			&i.ReportContextObjectKey,
+			&i.ActorKind,
+			&i.ActorPrincipalID,
+			&i.ProvenanceProvider,
+			&i.ProvenanceExternalID,
+			&i.Archived,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.NativeCreatedAt,
+			&i.NativeUpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const scanWorkItems = `-- name: ScanWorkItems :many
+SELECT organization_id, id, native_id, project_id, number, revision, event_sequence, native_source_key, title, body_object_key, issue_contract_object_key, report_context_object_key, actor_kind, actor_principal_id, provenance_provider, provenance_external_id, archived, created_at, updated_at, native_created_at, native_updated_at FROM issues
+WHERE organization_id=$1
+  AND project_id=$2
+  AND id>$3 AND id<=$4
+ORDER BY id LIMIT $5
+`
+
+type ScanWorkItemsParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	AfterID        int64
+	ThroughID      int64
+	PageLimit      int32
+}
+
+func (q *Queries) ScanWorkItems(ctx context.Context, arg ScanWorkItemsParams) ([]Issue, error) {
+	rows, err := q.db.QueryContext(ctx, scanWorkItems,
+		arg.OrganizationID,
+		arg.ProjectID,
+		arg.AfterID,
+		arg.ThroughID,
 		arg.PageLimit,
 	)
 	if err != nil {
@@ -318,4 +466,23 @@ func (q *Queries) UpdateWorkItem(ctx context.Context, arg UpdateWorkItemParams) 
 		&i.NativeUpdatedAt,
 	)
 	return i, err
+}
+
+const workItemScanThrough = `-- name: WorkItemScanThrough :one
+SELECT id FROM issues
+WHERE organization_id=$1
+  AND project_id=$2
+ORDER BY id DESC LIMIT 1
+`
+
+type WorkItemScanThroughParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+}
+
+func (q *Queries) WorkItemScanThrough(ctx context.Context, arg WorkItemScanThroughParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, workItemScanThrough, arg.OrganizationID, arg.ProjectID)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
 }

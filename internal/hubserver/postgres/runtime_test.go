@@ -17,6 +17,17 @@ import (
 
 func rolePool(t *testing.T, admin *sql.DB, group, attributes string) *sql.DB {
 	t.Helper()
+	admin.SetMaxIdleConns(1)
+	var database string
+	var limit int
+	if err := admin.QueryRowContext(t.Context(), `SELECT datname,datconnlimit FROM pg_database WHERE datname=current_database()`).Scan(&database, &limit); err != nil {
+		t.Fatal(err)
+	}
+	if limit >= 0 && limit < 3 {
+		if _, err := admin.ExecContext(t.Context(), "ALTER DATABASE "+pq.QuoteIdentifier(database)+" CONNECTION LIMIT 3"); err != nil {
+			t.Fatal(err)
+		}
+	}
 	name := "example_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 	password := uuid.NewString()
 	quoted := pq.QuoteIdentifier(name)

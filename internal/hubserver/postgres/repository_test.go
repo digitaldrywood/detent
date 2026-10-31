@@ -23,7 +23,7 @@ func repositoryFor(t *testing.T, admin *sql.DB, config postgres.PoolConfig) (*po
 	if err := admin.QueryRowContext(t.Context(), `SELECT current_database()`).Scan(&database); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := admin.ExecContext(t.Context(), "ALTER DATABASE "+pq.QuoteIdentifier(database)+fmt.Sprintf(" CONNECTION LIMIT %d", config.MaxConnections)); err != nil {
+	if _, err := admin.ExecContext(t.Context(), "ALTER DATABASE "+pq.QuoteIdentifier(database)+fmt.Sprintf(" CONNECTION LIMIT %d", config.MaxConnections+1)); err != nil {
 		t.Fatal(err)
 	}
 	pool := rolePool(t, admin, "detent_runtime", "")
@@ -82,7 +82,7 @@ func seedRepository(t *testing.T, repository corestore.Repository, organization 
 					if stored.CreatedAt.IsZero() || stored.UpdatedAt.IsZero() {
 						t.Error("comment generated metadata is missing")
 					}
-					comment.Revision, comment.CreatedAt, comment.UpdatedAt = 1, stored.CreatedAt, stored.UpdatedAt
+					comment.Revision, comment.CreatedAt, comment.UpdatedAt, comment.RecordID = 1, stored.CreatedAt, stored.UpdatedAt, stored.RecordID
 					if !reflect.DeepEqual(stored, comment) {
 						t.Errorf("created comment = %+v, want %+v", stored, comment)
 					}
@@ -110,6 +110,30 @@ func TestInsertsNeverWriteConstantUniqueKeys(t *testing.T) {
 					}
 					if project.OrganizationID != organization || project.Name != suffix || project.WorkflowObjectKey == nil || *project.WorkflowObjectKey != "example/workflow" {
 						t.Fatalf("project fields = %+v", project)
+					}
+					page, err := r.WorkItemPage(t.Context(), project.ID, corestore.Cursor{}, 2)
+					if err != nil {
+						return err
+					}
+					if len(page.Items) != 2 {
+						t.Fatalf("work item page has %d rows, want two", len(page.Items))
+					}
+					for _, row := range page.Items {
+						if row.OrganizationID != organization || row.ProjectID != project.ID {
+							t.Fatalf("work item page escaped scope: %+v", row)
+						}
+						comments, err := r.CommentPage(t.Context(), project.ID, row.NativeID, corestore.Cursor{}, 2)
+						if err != nil {
+							return err
+						}
+						if len(comments.Items) != 2 {
+							t.Fatalf("comment page has %d rows, want two", len(comments.Items))
+						}
+						for _, comment := range comments.Items {
+							if comment.OrganizationID != organization || comment.ProjectID != project.ID || comment.WorkItemID != row.NativeID {
+								t.Fatalf("comment page escaped scope: %+v", comment)
+							}
+						}
 					}
 					for number := int64(1); number <= 2; number++ {
 						itemID := tracker.NativeWorkItemID(fmt.Sprintf("wi_%s_%d", suffix, number))

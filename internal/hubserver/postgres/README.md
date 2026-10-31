@@ -131,8 +131,11 @@ payload classification come from `../testdata/hub_classification.json`.
 table keeps the existing name `issues`, its numeric `id`, and its text
 `native_id`. Project and comment IDs remain text. Explicit IDs can be imported
 unchanged; generated project and work item text IDs retain `prj_` and `wi_`
-prefixes. Numeric issue IDs accept imported values; an importer must advance
-the identity sequence past imported IDs before enabling generated writes.
+prefixes. Numeric issue IDs and comment `record_id` values accept imported rowids through
+the repository create methods. Zero requests a generated identity. An importer
+must advance both identity sequences past all imported IDs before enabling
+generated writes. Imported revisions, event sequences and timestamps remain
+explicit inputs; zero revisions and omitted timestamps use current-write defaults.
 
 The baseline includes core identity, project name and slug, revision and
 sequence, source deduplication, title, actor and provenance scalars, archive
@@ -191,7 +194,7 @@ its ID in every tenant query and transaction.
 
 INV-18 and INV-20 require typed columns and object references. INV-21 requires
 tenant-bounded access: core identity lookups and parent checks use tenant-leading
-B-tree keys, and comment pages use the tenant/project/work-item/sequence index.
+B-tree keys, and comment pages use tenant/project/work-item/creation-time/record-ID indexes.
 At 10,000 tenants these operations use indexed lookups rather than tenant or
 history walks. Later readers must bound page sizes; this schema introduces no
 request handlers, periodic jobs, fleet scans or shared application locks.
@@ -247,3 +250,38 @@ tenant-leading keys. Per retention call, at most 200 one-record compactions,
 two 200-row deletes and 200 one-window deletions occur. Each window deletion
 removes at most 200 caller keys in one short transaction. This is a fixed tick
 budget independent of history or fleet size (INV-18, INV-20, INV-21).
+
+## Record pagination and background sweeps
+
+Work items retain their numeric `id` and native text identity. Comments retain
+text `id` for event identity and add bigint `record_id` for imported SQLite
+rowids. Both numeric keys are unique within an organization and immutable, as
+is `created_at`. Identity allocation is not commit ordering. Mutable item
+numbers and comment sequences do not determine user page order.
+
+`WorkItemPage` and `CommentPage` order ascending by `(created_at, numeric ID)`.
+An empty cursor starts a query. Version 2 cursors carry that tuple and its
+organization, project and optional work-item scope. Version 1 carries a preserved
+numeric rowid and the same scope; a tenant-scoped identity lookup translates it
+into the current tuple. Missing legacy anchors, unsupported versions and scope
+changes require restarting the query. Version 2 continuation works after its
+anchor is deleted. Callers retain the existing signed, authorized HTTP cursor
+envelope; these storage cursors are not authentication tokens. Legacy numeric
+`WorkItems` and `Comments` arguments resolve the old number or sequence once,
+then use the same tuple page query.
+
+`ScanWorkItems` and `ScanComments` perform repeating bounded sweeps. A zero scan
+cursor captures the highest visible numeric ID for that sweep. Each call reads
+at most the requested budget, capped at 200, through that fixed upper bound.
+The returned zero cursor ends the sweep and starts the next sweep on the next
+tick. Consumers must keep repeating and apply results idempotently by tenant,
+native identity and revision; the cursor is never a durable commit watermark.
+A transaction that commits behind a sweep's position is revisited next sweep.
+New inserts above its upper bound cannot prevent a sweep from completing.
+
+At INV-21 scale, each page uses a tenant-leading B-tree range and returns at
+most 200 rows. A sweep start adds one reverse index lookup; subsequent ticks
+read at most 200 rows without walking previous pages. No transaction, lock or
+connection survives the repository callback. Sweeps introduce no persistent
+queue, retry owner or derived writes (INV-18), and all new columns remain typed
+(INV-20).

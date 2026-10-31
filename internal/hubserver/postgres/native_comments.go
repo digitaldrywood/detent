@@ -23,6 +23,10 @@ func (s *session) CreateComment(ctx context.Context, record corestore.Comment) (
 		return corestore.Comment{}, err
 	}
 	row, err := s.queries.CreateComment(ctx, pgquery.CreateCommentParams{
+		ImportedID:           record.RecordID,
+		CreatedAt:            optionalTime(record.CreatedAt),
+		UpdatedAt:            optionalTime(record.UpdatedAt),
+		Revision:             record.Revision,
 		OrganizationID:       record.OrganizationID,
 		ID:                   record.ID,
 		ProjectID:            record.ProjectID,
@@ -79,19 +83,16 @@ func (s *session) Comments(ctx context.Context, project tracker.ProjectID, item 
 	if err := checkPage(limit); err != nil {
 		return nil, err
 	}
-	rows, err := s.queries.ListComments(ctx, pgquery.ListCommentsParams{
-		OrganizationID: s.organization,
-		ProjectID:      project,
-		WorkItemID:     item,
-		After:          after,
-		PageLimit:      int32(limit),
-	})
-	if err != nil {
-		return nil, mapError(ctx, err)
+	var cursor corestore.Cursor
+	if after != 0 {
+		row, err := s.queries.GetCommentLegacyCursor(ctx, pgquery.GetCommentLegacyCursorParams{
+			OrganizationID: s.organization, ProjectID: project, WorkItemID: item, After: after,
+		})
+		if err != nil {
+			return nil, mapError(ctx, err)
+		}
+		cursor = s.cursor(project, item, row.CreatedAt, row.RecordID)
 	}
-	records := make([]corestore.Comment, len(rows))
-	for i, row := range rows {
-		records[i] = corestore.Comment(row)
-	}
-	return records, nil
+	page, err := s.CommentPage(ctx, project, item, cursor, limit)
+	return page.Items, err
 }

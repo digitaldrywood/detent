@@ -17,6 +17,7 @@ var (
 	ErrNotFound             = errors.New("resource was not found")
 	ErrTenantMismatch       = errors.New("resource organization does not match transaction")
 	ErrInvalidPage          = errors.New("page limit must be between 1 and 200")
+	ErrInvalidCursor        = errors.New("cursor scope or version is invalid; restart the query")
 )
 
 const MaxPageSize = 200
@@ -40,6 +41,10 @@ type Reader interface {
 	Projects(context.Context, tracker.ProjectID, int) ([]Project, error)
 	WorkItems(context.Context, tracker.ProjectID, int64, int) ([]WorkItem, error)
 	Comments(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, int64, int) ([]Comment, error)
+	WorkItemPage(context.Context, tracker.ProjectID, Cursor, int) (Page[WorkItem], error)
+	CommentPage(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, Cursor, int) (Page[Comment], error)
+	ScanWorkItems(context.Context, tracker.ProjectID, ScanCursor, int) (Scan[WorkItem], error)
+	ScanComments(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, ScanCursor, int) (Scan[Comment], error)
 }
 
 type Writer interface {
@@ -115,4 +120,29 @@ type Comment struct {
 	Deleted              bool
 	CreatedAt            time.Time
 	UpdatedAt            time.Time
+	RecordID             int64
+}
+
+type Cursor struct {
+	Version        int
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	WorkItemID     tracker.NativeWorkItemID
+	CreatedAt      time.Time
+	ID             int64
+}
+
+type Page[T any] struct {
+	Items []T
+	Next  Cursor
+}
+
+type Scan[T any] struct {
+	Items []T
+	Next  ScanCursor
+}
+
+type ScanCursor struct {
+	After   int64
+	Through int64
 }

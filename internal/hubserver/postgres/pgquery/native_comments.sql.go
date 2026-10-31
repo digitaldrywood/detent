@@ -7,12 +7,38 @@ package pgquery
 
 import (
 	"context"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+const commentScanThrough = `-- name: CommentScanThrough :one
+SELECT record_id FROM native_comments
+WHERE organization_id=$1
+  AND project_id=$2
+  AND work_item_id=$3
+ORDER BY record_id DESC LIMIT 1
+`
+
+type CommentScanThroughParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	WorkItemID     tracker.NativeWorkItemID
+}
+
+func (q *Queries) CommentScanThrough(ctx context.Context, arg CommentScanThroughParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, commentScanThrough, arg.OrganizationID, arg.ProjectID, arg.WorkItemID)
+	var record_id int64
+	err := row.Scan(&record_id)
+	return record_id, err
+}
+
 const createComment = `-- name: CreateComment :one
 INSERT INTO native_comments (
+    record_id,
+    created_at,
+    updated_at,
+    revision,
     organization_id,
     id,
     project_id,
@@ -29,10 +55,10 @@ INSERT INTO native_comments (
     deleted
 )
 VALUES (
-    $1,
-    $2,
-    $3,
-    $4,
+    COALESCE(NULLIF($1::bigint, 0), nextval('native_comments_record_id_seq')),
+    COALESCE($2::timestamptz, CURRENT_TIMESTAMP),
+    COALESCE($3::timestamptz, CURRENT_TIMESTAMP),
+    COALESCE(NULLIF($4::bigint, 0), 1),
     $5,
     $6,
     $7,
@@ -42,11 +68,19 @@ VALUES (
     $11,
     $12,
     $13,
-    $14
-) RETURNING organization_id, id, project_id, work_item_id, revision, sequence, body_object_key, actor_kind, actor_principal_id, edited_by_kind, edited_by_principal_id, provenance_provider, provenance_external_id, source_key, deleted, created_at, updated_at
+    $14,
+    $15,
+    $16,
+    $17,
+    $18
+) RETURNING organization_id, id, project_id, work_item_id, revision, sequence, body_object_key, actor_kind, actor_principal_id, edited_by_kind, edited_by_principal_id, provenance_provider, provenance_external_id, source_key, deleted, created_at, updated_at, record_id
 `
 
 type CreateCommentParams struct {
+	ImportedID           int64
+	CreatedAt            *time.Time
+	UpdatedAt            *time.Time
+	Revision             int64
 	OrganizationID       tracker.OrganizationID
 	ID                   string
 	ProjectID            tracker.ProjectID
@@ -65,6 +99,10 @@ type CreateCommentParams struct {
 
 func (q *Queries) CreateComment(ctx context.Context, arg CreateCommentParams) (NativeComment, error) {
 	row := q.db.QueryRowContext(ctx, createComment,
+		arg.ImportedID,
+		arg.CreatedAt,
+		arg.UpdatedAt,
+		arg.Revision,
 		arg.OrganizationID,
 		arg.ID,
 		arg.ProjectID,
@@ -99,6 +137,7 @@ func (q *Queries) CreateComment(ctx context.Context, arg CreateCommentParams) (N
 		&i.Deleted,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.RecordID,
 	)
 	return i, err
 }
@@ -132,7 +171,7 @@ func (q *Queries) DeleteComment(ctx context.Context, arg DeleteCommentParams) (i
 }
 
 const getComment = `-- name: GetComment :one
-SELECT organization_id, id, project_id, work_item_id, revision, sequence, body_object_key, actor_kind, actor_principal_id, edited_by_kind, edited_by_principal_id, provenance_provider, provenance_external_id, source_key, deleted, created_at, updated_at FROM native_comments
+SELECT organization_id, id, project_id, work_item_id, revision, sequence, body_object_key, actor_kind, actor_principal_id, edited_by_kind, edited_by_principal_id, provenance_provider, provenance_external_id, source_key, deleted, created_at, updated_at, record_id FROM native_comments
 WHERE organization_id=$1
   AND project_id=$2
   AND work_item_id=$3
@@ -172,33 +211,100 @@ func (q *Queries) GetComment(ctx context.Context, arg GetCommentParams) (NativeC
 		&i.Deleted,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.RecordID,
 	)
 	return i, err
 }
 
-const listComments = `-- name: ListComments :many
-SELECT organization_id, id, project_id, work_item_id, revision, sequence, body_object_key, actor_kind, actor_principal_id, edited_by_kind, edited_by_principal_id, provenance_provider, provenance_external_id, source_key, deleted, created_at, updated_at FROM native_comments
+const getCommentCursor = `-- name: GetCommentCursor :one
+SELECT created_at, record_id FROM native_comments
 WHERE organization_id=$1
   AND project_id=$2
   AND work_item_id=$3
-  AND sequence>$4
-ORDER BY sequence LIMIT $5
+  AND record_id=$4
 `
 
-type ListCommentsParams struct {
+type GetCommentCursorParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	WorkItemID     tracker.NativeWorkItemID
+	ID             int64
+}
+
+type GetCommentCursorRow struct {
+	CreatedAt time.Time
+	RecordID  int64
+}
+
+func (q *Queries) GetCommentCursor(ctx context.Context, arg GetCommentCursorParams) (GetCommentCursorRow, error) {
+	row := q.db.QueryRowContext(ctx, getCommentCursor,
+		arg.OrganizationID,
+		arg.ProjectID,
+		arg.WorkItemID,
+		arg.ID,
+	)
+	var i GetCommentCursorRow
+	err := row.Scan(&i.CreatedAt, &i.RecordID)
+	return i, err
+}
+
+const getCommentLegacyCursor = `-- name: GetCommentLegacyCursor :one
+SELECT created_at, record_id FROM native_comments
+WHERE organization_id=$1
+  AND project_id=$2
+  AND work_item_id=$3
+  AND sequence=$4
+`
+
+type GetCommentLegacyCursorParams struct {
 	OrganizationID tracker.OrganizationID
 	ProjectID      tracker.ProjectID
 	WorkItemID     tracker.NativeWorkItemID
 	After          int64
-	PageLimit      int32
 }
 
-func (q *Queries) ListComments(ctx context.Context, arg ListCommentsParams) ([]NativeComment, error) {
-	rows, err := q.db.QueryContext(ctx, listComments,
+type GetCommentLegacyCursorRow struct {
+	CreatedAt time.Time
+	RecordID  int64
+}
+
+func (q *Queries) GetCommentLegacyCursor(ctx context.Context, arg GetCommentLegacyCursorParams) (GetCommentLegacyCursorRow, error) {
+	row := q.db.QueryRowContext(ctx, getCommentLegacyCursor,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.WorkItemID,
 		arg.After,
+	)
+	var i GetCommentLegacyCursorRow
+	err := row.Scan(&i.CreatedAt, &i.RecordID)
+	return i, err
+}
+
+const pageComments = `-- name: PageComments :many
+SELECT organization_id, id, project_id, work_item_id, revision, sequence, body_object_key, actor_kind, actor_principal_id, edited_by_kind, edited_by_principal_id, provenance_provider, provenance_external_id, source_key, deleted, created_at, updated_at, record_id FROM native_comments
+WHERE organization_id=$1
+  AND project_id=$2
+  AND work_item_id=$3
+  AND (created_at, record_id) > ($4::timestamptz, $5::bigint)
+ORDER BY created_at, record_id LIMIT $6
+`
+
+type PageCommentsParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	WorkItemID     tracker.NativeWorkItemID
+	AfterCreatedAt time.Time
+	AfterID        int64
+	PageLimit      int32
+}
+
+func (q *Queries) PageComments(ctx context.Context, arg PageCommentsParams) ([]NativeComment, error) {
+	rows, err := q.db.QueryContext(ctx, pageComments,
+		arg.OrganizationID,
+		arg.ProjectID,
+		arg.WorkItemID,
+		arg.AfterCreatedAt,
+		arg.AfterID,
 		arg.PageLimit,
 	)
 	if err != nil {
@@ -226,6 +332,74 @@ func (q *Queries) ListComments(ctx context.Context, arg ListCommentsParams) ([]N
 			&i.Deleted,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.RecordID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const scanComments = `-- name: ScanComments :many
+SELECT organization_id, id, project_id, work_item_id, revision, sequence, body_object_key, actor_kind, actor_principal_id, edited_by_kind, edited_by_principal_id, provenance_provider, provenance_external_id, source_key, deleted, created_at, updated_at, record_id FROM native_comments
+WHERE organization_id=$1
+  AND project_id=$2
+  AND work_item_id=$3
+  AND record_id>$4 AND record_id<=$5
+ORDER BY record_id LIMIT $6
+`
+
+type ScanCommentsParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	WorkItemID     tracker.NativeWorkItemID
+	AfterID        int64
+	ThroughID      int64
+	PageLimit      int32
+}
+
+func (q *Queries) ScanComments(ctx context.Context, arg ScanCommentsParams) ([]NativeComment, error) {
+	rows, err := q.db.QueryContext(ctx, scanComments,
+		arg.OrganizationID,
+		arg.ProjectID,
+		arg.WorkItemID,
+		arg.AfterID,
+		arg.ThroughID,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []NativeComment{}
+	for rows.Next() {
+		var i NativeComment
+		if err := rows.Scan(
+			&i.OrganizationID,
+			&i.ID,
+			&i.ProjectID,
+			&i.WorkItemID,
+			&i.Revision,
+			&i.Sequence,
+			&i.BodyObjectKey,
+			&i.ActorKind,
+			&i.ActorPrincipalID,
+			&i.EditedByKind,
+			&i.EditedByPrincipalID,
+			&i.ProvenanceProvider,
+			&i.ProvenanceExternalID,
+			&i.SourceKey,
+			&i.Deleted,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.RecordID,
 		); err != nil {
 			return nil, err
 		}
@@ -254,7 +428,7 @@ UPDATE native_comments SET
     deleted=$10,
     revision=revision+1,
     updated_at=CURRENT_TIMESTAMP
-WHERE organization_id=$11 AND project_id=$12 AND work_item_id=$13 AND id=$14 AND revision=$15 RETURNING organization_id, id, project_id, work_item_id, revision, sequence, body_object_key, actor_kind, actor_principal_id, edited_by_kind, edited_by_principal_id, provenance_provider, provenance_external_id, source_key, deleted, created_at, updated_at
+WHERE organization_id=$11 AND project_id=$12 AND work_item_id=$13 AND id=$14 AND revision=$15 RETURNING organization_id, id, project_id, work_item_id, revision, sequence, body_object_key, actor_kind, actor_principal_id, edited_by_kind, edited_by_principal_id, provenance_provider, provenance_external_id, source_key, deleted, created_at, updated_at, record_id
 `
 
 type UpdateCommentParams struct {
@@ -312,6 +486,7 @@ func (q *Queries) UpdateComment(ctx context.Context, arg UpdateCommentParams) (N
 		&i.Deleted,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.RecordID,
 	)
 	return i, err
 }
