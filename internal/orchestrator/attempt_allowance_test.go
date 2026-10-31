@@ -439,7 +439,7 @@ func TestAttemptAllowanceLiveHead(t *testing.T) {
 					body = strings.ReplaceAll(body, "origin/main", "origin/feature")
 				}
 				if tt.receipt == "human action" {
-					body = strings.ReplaceAll(body, "human_action: null", "human_action: approve release")
+					body = strings.ReplaceAll(body, "human_action: null", "block_kind: missing_authorization\noptions:\n  - answer: Approve release\nhuman_action: approve release")
 				}
 				tracker.refreshed.Comments = []connector.IssueComment{{Body: body, CreatedAt: &now, UpdatedAt: &now, AuthorAuthorized: true}}
 				merged := &connector.PullRequest{Number: 12, URL: "https://github.com/owner/repo/pull/12", State: "merged", HeadSHA: "merged-head", BaseRef: "main", CIStatus: "success"}

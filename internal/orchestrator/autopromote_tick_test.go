@@ -1612,7 +1612,7 @@ func TestTickAutoPromoteHydratesWorkpadBlockerBeforeTransition(t *testing.T) {
 		stateIssues: []connector.Issue{issue},
 		issueComments: map[string][]connector.IssueComment{
 			issue.ID: {{
-				Body: "## Codex Workpad\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Approve copying the assets\n```",
+				Body: "## Codex Workpad\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nblock_kind: missing_authorization\noptions:\n  - answer: Authorize the requested action\nhuman_action: Approve copying the assets\n```",
 			}},
 		},
 	}
@@ -2882,7 +2882,7 @@ func TestTickReconcilesStaleTodoHydratesWorkpadBlockerBeforePromotion(t *testing
 		stateIssues: []connector.Issue{issue},
 		issueComments: map[string][]connector.IssueComment{
 			issue.ID: {{
-				Body: "## Codex Workpad\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Approve copying the assets\n```",
+				Body: "## Codex Workpad\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nblock_kind: missing_authorization\noptions:\n  - answer: Authorize the requested action\nhuman_action: Approve copying the assets\n```",
 			}},
 		},
 	}
@@ -6886,7 +6886,7 @@ func TestTickWorkpadHumanDecisionLane(t *testing.T) {
 			}
 			tracker := &autoPromoteTickConnector{
 				stateIssues:   []connector.Issue{issue},
-				issueComments: map[string][]connector.IssueComment{issue.ID: {{Body: "## Codex Workpad\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Approve copying the assets\n```"}}},
+				issueComments: map[string][]connector.IssueComment{issue.ID: {{Body: "## Codex Workpad\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nblock_kind: missing_authorization\noptions:\n  - answer: Authorize the requested action\nhuman_action: Approve copying the assets\n```"}}},
 			}
 			var logs strings.Builder
 			orch := &Orchestrator{cfg: cfg, connector: tracker, logger: slog.New(slog.NewTextHandler(&logs, nil))}

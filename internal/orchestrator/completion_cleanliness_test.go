@@ -362,7 +362,7 @@ func TestHandleRunResultRejectsDirtyCompletionAndEscalates(t *testing.T) {
 			if tt.intentional {
 				completionLane = ""
 				issue.Comments = []connector.IssueComment{{
-					Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: preserve debug.log for operator inspection\n```",
+					Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nblock_kind: missing_authorization\noptions:\n  - answer: Authorize the requested action\nhuman_action: preserve debug.log for operator inspection\n```",
 				}}
 			}
 			tracker := &implementProgressConnector{refreshed: issue}
@@ -488,7 +488,7 @@ func TestHandleRunResultCleanRetryUsesPRGate(t *testing.T) {
 			if tt.blocked {
 				issue.PullRequest.HeadSHA = "head"
 				issue.PullRequest.UnresolvedReviewThreads = nil
-				issue.Comments[0].Body = fmt.Sprintf("## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nfields:\n  completion_work_attempt_id: \"2493\"\n  completion_generation: \"7\"\n  completion_cleanliness_resolution: %q\nblockers: []\nhuman_action: approve the worker merge tool\n```", tt.resolution)
+				issue.Comments[0].Body = fmt.Sprintf("## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nfields:\n  completion_work_attempt_id: \"2493\"\n  completion_generation: \"7\"\n  completion_cleanliness_resolution: %q\nblockers: []\nblock_kind: missing_authorization\noptions:\n  - answer: Authorize the worker merge tool\nhuman_action: approve the worker merge tool\n```", tt.resolution)
 				if tt.resolution == "" {
 					issue.Comments[0].Body = strings.ReplaceAll(issue.Comments[0].Body, "  completion_cleanliness_resolution: \"\"\n", "")
 				}

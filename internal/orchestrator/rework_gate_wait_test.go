@@ -87,7 +87,7 @@ func TestReworkGateWaitHistoryCannotResurrectSupersededWait(t *testing.T) {
 			if tt.status != "" {
 				refreshed.Comments = reworkGateWaitTestIssue(tt.status).Comments
 				if tt.status == workpad.StatusBlocked {
-					refreshed.Comments[0].Body = strings.Replace(refreshed.Comments[0].Body, "human_action: null", "human_action: approve current work", 1)
+					refreshed.Comments[0].Body = strings.Replace(refreshed.Comments[0].Body, "human_action: null", "block_kind: missing_authorization\noptions:\n  - answer: Approve current work\nhuman_action: approve current work", 1)
 				}
 			}
 			refreshed.CommentsComplete = tt.complete
@@ -761,7 +761,7 @@ func TestReworkCapabilityBlockerIsBoundedWithDependentTodo(t *testing.T) {
 			t.Parallel()
 			issue := reworkGateWaitTestIssue(workpad.StatusBlocked)
 			action := "Restore worker-github-cli-auth under the configured credential policy."
-			declaration := "human_action: " + action
+			declaration := "block_kind: missing_authorization\noptions:\n  - answer: Authorize restoring access\nhuman_action: " + action
 			if !humanAction {
 				declaration = "human_action: null\nblockers:\n  - reason: " + action + "\n    owner: human\n    recheck_interval: tick"
 			}

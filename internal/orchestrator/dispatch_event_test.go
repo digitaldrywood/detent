@@ -55,7 +55,7 @@ func TestCompletionRefillsProjectSlotWithoutRefresh(t *testing.T) {
 			}
 			tracker.mu.Unlock()
 			if tt.staleKind == "workpad" {
-				tracker.setIssueComments(second.ID, []connector.IssueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: needs operator input\n```"}})
+				tracker.setIssueComments(second.ID, []connector.IssueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nblock_kind: missing_authorization\noptions:\n  - answer: Authorize the requested action\nhuman_action: needs operator input\n```"}})
 			}
 			close(runner.release)
 			select {

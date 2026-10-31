@@ -2441,7 +2441,7 @@ func TestCheckDoctorAutoPromoteCandidateDiagnostics(t *testing.T) {
 					CIStatus:       "success",
 				})
 				issue.Comments = []connector.IssueComment{{
-					Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Owner approval is still required.\n```",
+					Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Owner approval is still required.\nblock_kind: missing_authorization\noptions:\n  - answer: Authorize the requested action\n```",
 				}}
 				return issue
 			}(),
