@@ -30,19 +30,23 @@ func nativeSourceRework(change *NativeChange, message string) string {
 	if disposition == nil || disposition.Status != "complete" || disposition.Blockers || disposition.HumanAction || disposition.ReasonCode != "" {
 		return ""
 	}
-	if change == nil || change.Reviewed || change.VersionID == "" || change.Error != "" || change.VersionError != "" || change.ImplementationReviewError != "" || change.Landing != nil {
+	if change == nil || change.Reviewed || change.VersionID == "" && change.NoChange == nil || change.Error != "" || change.VersionError != "" || change.ImplementationReviewError != "" || change.Landing != nil {
 		return ""
+	}
+	version := change.VersionID
+	if change.NoChange != nil {
+		version = change.NoChange.VersionID()
 	}
 	var findings []string
 	for _, result := range []*gate.ValidatorResult{change.ImplementationReview, change.Validator} {
-		if result != nil && result.Verdict == gate.ValidatorVerdictRework && result.VersionID == change.VersionID && result.HeadSHA == change.HeadSHA {
+		if result != nil && result.Verdict == gate.ValidatorVerdictRework && result.VersionID == version && result.HeadSHA == change.HeadSHA {
 			body, err := json.Marshal(result)
 			if err == nil {
 				findings = append(findings, string(body))
 			}
 		}
 	}
-	if audit := change.SecurityAudit; audit != nil && audit.Verdict == "rework" && audit.VersionID == change.VersionID && audit.Run.HeadSHA == change.HeadSHA {
+	if audit := change.SecurityAudit; audit != nil && audit.Verdict == "rework" && audit.VersionID == version && audit.Run.HeadSHA == change.HeadSHA {
 		body, err := json.Marshal(audit)
 		if err == nil {
 			findings = append(findings, string(body))

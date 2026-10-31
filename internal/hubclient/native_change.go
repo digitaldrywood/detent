@@ -32,7 +32,7 @@ func (e *nativeExecution) ownsIssueCompletion() bool {
 }
 
 func (e *nativeExecution) ownsChangeCompletion() bool {
-	return (e.ownsIssueCompletion() || e.mergeResolution) && e.worktreeState != "dirty" && (e.preparedDisposition == nil || e.preparedDisposition.Status != "blocked")
+	return (e.ownsIssueCompletion() || e.mergeResolution || e.change != nil && e.change.NoChange != nil) && e.worktreeState != "dirty" && (e.preparedDisposition == nil || e.preparedDisposition.Status != "blocked")
 }
 
 func (e *nativeExecution) PrepareMergeResolution() error {
@@ -92,6 +92,10 @@ func (e *nativeExecution) settle(ctx context.Context, outcome string, finish int
 	if err != nil {
 		change.Error = err.Error()
 		return err
+	}
+	if e.prepareNoChange(diff, detail) {
+		e.settled = true
+		return nil
 	}
 	if err := e.requireRecoveredSource(detail, diff); err != nil {
 		return err

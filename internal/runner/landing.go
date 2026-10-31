@@ -295,6 +295,22 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 			}
 			var refusal *workspace.LandRefusal
 			if errors.As(err, &refusal) {
+				if refusal.Kind == workspace.LandRefusalNothing {
+					if execution, ok := req.Execution.(NoChangeExecution); ok {
+						message, eligible, err := execution.PrepareNoChange(ctx, refusal.BaseSHA)
+						if err != nil {
+							return RunResult{}, err
+						}
+						if eligible {
+							err := r.validateNativeChange(ctx, req)
+							completion := RunResult{FinalState: FinalStateCompleted, FinalMessage: message}
+							if changes, ok := req.Execution.(ChangeExecution); ok {
+								completion.NativeChange = changes.NativeChange()
+							}
+							return completion, err
+						}
+					}
+				}
 				if refusal.Kind == workspace.LandRefusalBaseMoved {
 					waiting := r.refusedLanding(req, target, refusal.Kind, err.Error())
 					waiting.NativeLanding.BaseSHA = refusal.BaseSHA

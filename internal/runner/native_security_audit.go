@@ -87,7 +87,7 @@ func (r *Runner) auditNativeChange(ctx context.Context, req RunRequest) (approve
 		err := execution.RecordSecurityAudit(ctx, *previous.SecurityAudit)
 		return previous.SecurityAudit.Verdict == "pass", failedStep("security_audit_publication", err)
 	}
-	snapshot, err := connector.SecurityAuditSnapshot(string(req.Execution.Recovery().Issue.ProjectID), req.Issue, *input.Diff)
+	snapshot, err := connector.SecurityAuditSnapshot(string(req.Execution.Recovery().Issue.ProjectID), noChangeReviewIssue(req.Issue, input.NoChange), *input.Diff)
 	if err != nil {
 		return false, err
 	}

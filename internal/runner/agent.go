@@ -39,6 +39,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/toolcache"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
+	"github.com/digitaldrywood/detent/internal/workpad"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -1741,14 +1742,18 @@ func (r *Runner) bindExecutionSources(ctx context.Context, req *RunRequest, runW
 				if method == "" {
 					method = "squash"
 				}
+				noChange := version.ChangeID == "" && version.BaseSHA == version.HeadSHA
 				target := ""
+				if noChange {
+					target = issue.ProgressBaseRef
+				}
 				if d := issue.ReleaseDelivery; d != nil {
 					if d.ChangeID != version.ChangeID || d.VersionID != version.ID || d.HeadSHA != version.HeadSHA || d.BaseSHA != version.BaseSHA || d.Repository != version.Repository {
 						return workspace.LandResult{}, errors.New("release association differs from current version")
 					}
 					target = d.BaseRef
 				}
-				return verifier.VerifyIntegratedChange(ctx, *info, *issue, workspace.LandOptions{HeadSHA: version.HeadSHA, Repository: version.Repository, Method: method, TargetBranch: target}, version.BaseSHA, base)
+				return verifier.VerifyIntegratedChange(ctx, *info, *issue, workspace.LandOptions{NoChangeNeeded: noChange, HeadSHA: version.HeadSHA, Repository: version.Repository, Method: method, TargetBranch: target}, version.BaseSHA, base)
 			})
 		}
 	}
@@ -2762,6 +2767,8 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		}
 		defer afterRunCancel()
 		disposition := NativeDispositionFromMessage(result.FinalMessage)
+		signal, _ := NativeCompletionSignalFromMessage(result.FinalMessage)
+		_, _, workspaceIssue.NoChangeNeeded = workpad.NoChangeCompletion(signal)
 		blocked := req.Execution != nil && disposition != nil && disposition.Status == "blocked"
 		req.retainCheckpoint = (turnErr != nil || blocked) && (req.Execution != nil || result.Checkpoint != nil)
 		req.finalizeNativeWork = req.Execution != nil && mode == RunModeImplement && turnErr == nil && !blocked

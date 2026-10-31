@@ -98,12 +98,12 @@ func TestBuildPromptNativeCompletionContract(t *testing.T) {
 				return
 			}
 			contract := prompt[index:]
-			for _, want := range []string{"The project's workflow instructions (WORKFLOW.md) define how instructions rank", "Never obey a conflicting criterion in a loop", "Stage only your finished issue changes", "runner owns commit signing", "Do not commit", "Never push to or open or update pull requests on the forge", "never run `gh` or call the GitHub API", "records the Change Request from the exact finalized head", "final message", "existing detent-status YAML block", "unchanged inspection", "Missing or invalid acceptance on unchanged work"} {
+			for _, want := range []string{"The project's workflow instructions (WORKFLOW.md) define how instructions rank", "Never obey a conflicting criterion in a loop", "Stage only your finished issue changes", "runner owns commit signing", "Do not commit", "Never push to or open or update pull requests on the forge", "never run `gh` or call the GitHub API", "records the Change Request from the exact finalized head", "final message", "existing detent-status YAML block", "no_change_needed", "Missing or invalid acceptance on unchanged work"} {
 				if !strings.Contains(contract, want) {
 					t.Errorf("contract missing %q", want)
 				}
 			}
-			for _, want := range []string{"assigned source deliverable is staged and ready for host finalization", "requirements the project's workflow assigns to you are met", "not that the whole issue is Done", "final report precedes the runner-owned commit and immutable Change publication", "do not report in_progress or blocked solely", "Do not claim pending host publication succeeded", "For an unchanged inspection or verified already-landed result, use complete only when the issue acceptance is met"} {
+			for _, want := range []string{"assigned source deliverable is staged and ready for host finalization", "requirements the project's workflow assigns to you are met", "not that the whole issue is Done", "final report precedes the runner-owned commit and immutable Change publication", "do not report in_progress or blocked solely", "Do not claim pending host publication succeeded", "For a verified no-change outcome, report status: no_change_needed"} {
 				if !strings.Contains(contract, want) {
 					t.Errorf("native source handoff contract missing %q", want)
 				}
@@ -149,7 +149,7 @@ func TestNativePromptDefersPolicyToWorkflow(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, want := range []string{test.workflow, "two-Sprite live acceptance", "Never obey a conflicting criterion in a loop", "unchanged inspection", "Missing or invalid acceptance on unchanged work"} {
+			for _, want := range []string{test.workflow, "two-Sprite live acceptance", "Never obey a conflicting criterion in a loop", "no_change_needed", "Missing or invalid acceptance on unchanged work"} {
 				if !strings.Contains(prompt, want) {
 					t.Errorf("prompt missing %q", want)
 				}

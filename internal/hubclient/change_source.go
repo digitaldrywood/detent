@@ -53,6 +53,13 @@ func (e *nativeExecution) RecoverChangeSource(ctx context.Context) (workspace.Ch
 	if err := e.Validate(ctx); err != nil {
 		return workspace.ChangeSource{}, err
 	}
+	e.mu.Lock()
+	if e.change != nil && e.change.NoChange != nil {
+		version := e.noChangeVersion()
+		e.mu.Unlock()
+		return workspace.ChangeSource{Version: version}, nil
+	}
+	e.mu.Unlock()
 	detail, err := e.claim.source.client.currentChange(ctx, e.claim.lease.WorkItemID)
 	if err != nil {
 		return workspace.ChangeSource{}, err

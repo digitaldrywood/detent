@@ -33,6 +33,8 @@ const (
 	FieldCompletionGeneration            = "completion_generation"
 	FieldCompletionCleanlinessResolution = "completion_cleanliness_resolution"
 	CompletionOperational                = "operational"
+	CompletionNoChange                   = "no_change_needed"
+	FieldCompletionVerifiedSHA           = "completion_verified_sha"
 
 	BlockerOwnerOrchestrator = "orchestrator"
 	BlockerOwnerHuman        = "human"
@@ -350,12 +352,18 @@ func ParseStatusBlock(content string, repo string) (*Signal, error) {
 	}
 	raw.Status = strings.TrimSpace(raw.Status)
 	switch raw.Status {
+	case CompletionNoChange, "no change needed":
+		raw.Status = StatusComplete
+		if raw.Fields == nil {
+			raw.Fields = make(map[string]string)
+		}
+		raw.Fields[FieldCompletionKind] = CompletionNoChange
 	case StatusInProgress, StatusBlocked, StatusComplete:
 	default:
 		if raw.Status == "" {
-			problems = append(problems, "status must be one of in_progress, blocked, complete")
+			problems = append(problems, "status must be one of in_progress, blocked, complete, no_change_needed")
 		} else {
-			problems = append(problems, fmt.Sprintf("status %q must be one of in_progress, blocked, complete", raw.Status))
+			problems = append(problems, fmt.Sprintf("status %q must be one of in_progress, blocked, complete, no_change_needed", raw.Status))
 		}
 	}
 
@@ -882,4 +890,13 @@ func statusFenceClosing(line string, char byte, length int) bool {
 		index++
 	}
 	return index >= length && strings.TrimSpace(line[index:]) == ""
+}
+
+func NoChangeCompletion(signal *Signal) (string, string, bool) {
+	if signal == nil || signal.Invalid != nil || signal.Source != SourceStructured || signal.Status != StatusComplete || signal.HumanAction != "" || len(signal.Blockers) != 0 || signal.ReasonCode != "" || signal.Fields[FieldCompletionKind] != CompletionNoChange {
+		return "", "", false
+	}
+	sha := strings.TrimSpace(signal.Fields[FieldCompletionVerifiedSHA])
+	evidence := strings.TrimSpace(signal.Fields[FieldCompletionEvidence])
+	return sha, evidence, sha != "" && evidence != ""
 }

@@ -31,6 +31,8 @@ Read `AGENTS.md` and the governing sections of `docs/invariants.md` before chang
 - If you cannot finish, explain the blocker plainly in your final message. Unfinished acceptance stays on this issue; never delegate it to a follow-up issue.
 - End with a short summary: what changed, how you validated it, and what a reviewer should check. Record pending host publication without claiming it succeeded.
 
+For a verified outcome requiring no source change, report `status: no_change_needed` in the final `detent-status` block, with `fields.completion_verified_sha` identifying the full inspected SHA and `fields.completion_evidence` recording commands, results and attachment references. Detent runs the required review, validation and security audit on the current base; stale evidence must be re-verified. Accepted evidence is the closure reason without a Change, commit or landing. Rejections return to implementation with the findings. Empty Changes require the same accepted evidence.
+
 ## Isolation Contract
 
 Detent supplies the workspace and source checkout locations in the runtime isolation context. Never edit the source checkout, the human's primary checkout or another issue's workspace. Use the provided worker TMPDIR/TMP/TEMP. Do not use git stash or change shared refs. Do not stop, restart or signal any live Detent service. Tests that need a server use port 0 and an isolated database and config. Detent owns cleanup.

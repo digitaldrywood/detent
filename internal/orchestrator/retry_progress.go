@@ -70,6 +70,7 @@ func (o *Orchestrator) prepareRetryProgress(ctx context.Context, run *RunRequest
 	case progresscheck.Reroute:
 		switch record.Decision.Step {
 		case progresscheck.CompleteStep:
+			run.Mode = RunModeImplement
 		case RunModeImplement, RunModeMerge:
 			run.Mode = record.Decision.Step
 		default:
@@ -94,14 +95,6 @@ func (o *Orchestrator) prepareRetryProgress(ctx context.Context, run *RunRequest
 			return nil
 		}
 		return fmt.Errorf("progress check filed dependency %s", record.DefectIssueID)
-	}
-	if record.Decision.Outcome == progresscheck.Reroute && record.Decision.Step == progresscheck.CompleteStep {
-		if run.Execution != nil {
-			if err := run.Execution.Finish(ctx, "cancelled"); err != nil {
-				return fmt.Errorf("finish progress execution: %w", err)
-			}
-		}
-		return nil
 	}
 	if backend.called || run.Mode != previousMode {
 		return o.readmitRetryProgress(ctx, run)

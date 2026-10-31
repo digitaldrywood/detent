@@ -179,6 +179,26 @@ func NewSSHCallbackHandler(request RunRequest, sessions SessionStore, checker Bu
 					return NativeValidation{}, nil
 				}
 				return invokeSSHMethod(ctx, request.Execution, name, arguments)
+			case "PrepareNoChange":
+				execution, ok := request.Execution.(NoChangeExecution)
+				if !ok {
+					return struct {
+						Message  string
+						Eligible bool
+					}{}, nil
+				}
+				if len(arguments) != 1 {
+					return nil, errors.New("invalid no-change source arguments")
+				}
+				var base string
+				if err := json.Unmarshal(arguments[0], &base); err != nil {
+					return nil, err
+				}
+				message, eligible, err := execution.PrepareNoChange(ctx, base)
+				return struct {
+					Message  string
+					Eligible bool
+				}{message, eligible}, err
 			case "SourceReview", "PrepareSourceIteration", "PrepareReview", "RecordSourceValidation", "Validate", "Start", "Checkpoint", "RecordValidator", "RecordReview", "RecordSecurityAudit", "PrepareArtifacts", "ArtifactLog", "FinalizeArtifacts", "PublishValidationEvidence", "SetRepository", "LandingTarget", "RecordLanding", "RecordUsage", "AvailabilityDeadline", "ObserveRuntime", "StartLanding", "ObserveLanding", "RecoverChangeSource", "ReconcileReleaseDelivery":
 				return invokeSSHMethod(ctx, request.Execution, name, arguments)
 			}

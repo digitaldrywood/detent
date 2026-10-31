@@ -8,10 +8,12 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type releaseErrorSafetyScheduler struct {
@@ -44,7 +46,8 @@ func FuzzSafetyCriticalOrchestratorBoundaries(f *testing.F) {
 	f.Add(2, 0, 0, "new-output", "new-deliverable", int64(1), "same-receipt", "recut", int64(2), "same-receipt", "pending_review", int64(0), int64(0), false, int64(0), int64(0), int64(0), false, false, uint8(1))
 	f.Add(1, 0, 0, "tracked-output", "changed", int64(1), "same-head", "recut", int64(1), "same-head", "pending_review", int64(0), int64(0), false, int64(0), int64(0), int64(0), false, true, uint8(1))
 	f.Add(0, 0, 0, "", "clean", int64(1), "enhancement", "", int64(2), "bug", "", int64(0), int64(0), false, int64(10), int64(0), int64(0), false, false, uint8(0))
-	for _, scenario := range []uint8{4, 5, 6, 7, 31, 255} {
+	f.Add(0, 0, 0, "no change evidence", "no_change_needed", int64(1), "verified-head", "", int64(1), "verified-head", "", int64(0), int64(0), false, int64(0), int64(0), int64(0), true, false, uint8(8))
+	for _, scenario := range []uint8{4, 5, 6, 7, 8, 31, 255} {
 		f.Add(0, 0, 0, "", "clean", int64(0), "", "", int64(0), "", "", int64(0), int64(0), false, int64(0), int64(0), int64(0), false, false, scenario)
 	}
 
@@ -215,6 +218,10 @@ func FuzzSafetyCriticalOrchestratorBoundaries(f *testing.F) {
 			t.Fatalf("priority then age selected %s, want %s", forward[0].ID, wantFirst)
 		}
 
+		noChange := &runpkg.NativeChange{NoChange: &tracker.NativeNoChangeCompletion{ReportedSHA: leftHead, VerifiedSHA: rightHead, Evidence: fingerprint, PolicyID: "policy", Repository: "https://github.com/example-org/example-project", Validation: &gate.CommandResult{Command: gate.DefaultCommand, HeadSHA: rightHead, TreeSHA: "tree"}}, BaseSHA: rightHead, HeadSHA: rightHead, Reviewed: accepted}
+		if noChange.NoChangeAccepted(gate.Config{AutomatedReview: gate.AutomatedReviewRequired, Validator: gate.ValidatorConfig{Enabled: true}}) {
+			t.Fatal("no-change report without gate receipts bypassed completion authority")
+		}
 		assertPriorityOnlyCapacity(t, gateScenario%4, now)
 	})
 }

@@ -453,13 +453,16 @@ func (l *LocalGit) FinalizeNativeWork(ctx context.Context, info Info, issue Issu
 		if err != nil {
 			return "", err
 		}
+		if staged != "" && issue.NoChangeNeeded {
+			return "", errors.New("no-change completion requires no staged source changes")
+		}
 		if staged != "" {
 			if _, err := l.runCommit(ctx, info.Path, nil, "-c", "core.hooksPath="+os.DevNull, "commit", "-m", "fix: complete "+issue.Identifier); err != nil {
 				return "", err
 			}
 		}
 	}
-	if !issue.NativeRework {
+	if !issue.NativeRework && !issue.NoChangeNeeded {
 		if paused {
 			return "", fmt.Errorf("%w: native code completion has a paused rebase", ErrMergeResolutionInvalid)
 		}
@@ -487,7 +490,7 @@ func (l *LocalGit) FinalizeNativeWork(ctx context.Context, info Info, issue Issu
 	if prepared.Status == MergePrepareStatusConflict {
 		return "", nil
 	}
-	if issue.Source != nil && prepared.HeadSHA == prepared.BaseSHA && prepared.HeadSHA != issue.Source.Version.HeadSHA {
+	if !issue.NoChangeNeeded && issue.Source != nil && prepared.HeadSHA == prepared.BaseSHA && prepared.HeadSHA != issue.Source.Version.HeadSHA {
 		if err := validate(ctx); err != nil {
 			return "", err
 		}

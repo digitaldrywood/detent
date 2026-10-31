@@ -145,7 +145,7 @@ func TestEmptyLandingProgressCompletesOrImplements(t *testing.T) {
 		complete        bool
 		deferCompletion bool
 	}{
-		{name: "1818 repeated successful rework and merge completes on base", complete: true},
+		{name: "1818 repeated empty landing requests gated no-change verification", complete: true},
 		{name: "unmet acceptance implements with refusal feedback"},
 		{name: "completion survives tracker deferral", complete: true, deferCompletion: true},
 	} {
@@ -179,34 +179,21 @@ func TestEmptyLandingProgressCompletesOrImplements(t *testing.T) {
 			}
 			running := state.Running[issue.ID]
 			t.Cleanup(func() { running.cancel(); <-running.done })
-			if !test.complete {
-				var request RunRequest
-				select {
-				case request = <-worker.started:
-				case completion := <-o.runResults:
-					t.Fatalf("unmet acceptance did not reach implementation: %+v", completion)
-				}
-				state.Running[issue.ID].cancel()
-				<-o.runResults
-				<-state.Running[issue.ID].done
-				if request.Mode != RunModeImplement || !strings.Contains(request.PriorAttempt.Reason, "nothing_to_land") || !strings.Contains(request.PriorAttempt.Reason, "no deliverable to verify") || !strings.Contains(request.PriorAttempt.Reason, decision.Reason) {
-					t.Fatalf("implementation lost refusal feedback: %+v", request)
-				}
-			} else {
-				var completion runpkg.Completion
-				select {
-				case completion = <-o.runResults:
-				case <-worker.started:
-					t.Fatal("already delivered work dispatched rework")
-				}
-				<-state.Running[issue.ID].done
-				if completion.Err != nil || completion.Result.FinalState != FinalStateCompleted || completion.Result.NativeLanding != nil || len(execution.outcomes) != 1 || execution.outcomes[0] != "cancelled" {
-					t.Fatalf("progress completion=%+v execution outcomes=%v", completion, execution.outcomes)
-				}
-				select {
-				case <-worker.started:
-					t.Fatal("already delivered work dispatched rework")
-				default:
+			var request RunRequest
+			select {
+			case request = <-worker.started:
+			case completion := <-o.runResults:
+				t.Fatalf("acceptance verification did not reach implementation: %+v", completion)
+			}
+			state.Running[issue.ID].cancel()
+			completion := <-o.runResults
+			<-state.Running[issue.ID].done
+			if request.Mode != RunModeImplement || !strings.Contains(request.PriorAttempt.Reason, "nothing_to_land") || !strings.Contains(request.PriorAttempt.Reason, "no deliverable to verify") || !strings.Contains(request.PriorAttempt.Reason, decision.Reason) {
+				t.Fatalf("implementation lost refusal or evidence feedback: %+v", request)
+			}
+			if test.complete {
+				if request.ProgressDecision.Decision.Step != progresscheck.CompleteStep || request.ProgressDecision.CommentID == "" {
+					t.Fatalf("no-change verification lost its progress evidence: %+v", request.ProgressDecision)
 				}
 				if test.deferCompletion {
 					record := newDeferredCompletion(completion, state.Running[issue.ID], errors.New("tracker unavailable"), time.Now())
@@ -220,11 +207,12 @@ func TestEmptyLandingProgressCompletesOrImplements(t *testing.T) {
 					}
 					completion = retained.completion()
 				}
-				o.handleRunResult(t.Context(), &state, completion)
-				if len(tick.updates) != 1 || tick.updates[0].state != "Done" || len(state.Retry) != 0 || len(tick.comments) != 1 || !strings.Contains(tick.comments[0].body, "base-evidence") || !strings.Contains(tick.comments[0].body, decision.Reason) {
-					t.Fatalf("completion did not use lane owner: updates=%+v retry=%+v comments=%+v", tick.updates, state.Retry, tick.comments)
+				completion.Result.NativeLanding = nil
+				if o.completeNativeLandingRun(t.Context(), &state, completion, running) || len(tick.updates) != 0 {
+					t.Fatalf("progress evidence bypassed required gate receipts: %+v", tick.updates)
 				}
 			}
+
 			if checker.calls != 1 || source.comments != 1 || len(checker.evidence.Attempts) != 6 || checker.evidence.Attempts[5].Outcome != "success" || !checker.evidence.EmptyDelta {
 				t.Fatalf("history/check publication lost: calls=%d comments=%d request=%+v", checker.calls, source.comments, checker.evidence)
 			}

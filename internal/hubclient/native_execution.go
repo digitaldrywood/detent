@@ -551,7 +551,7 @@ func (e *nativeExecution) PrepareFinish(ctx context.Context, outcome, finalMessa
 	}
 	e.preparedDisposition = nil
 	planning := e.role == runner.RolePlan && !e.conversationContinuation
-	if e.ownsIssueCompletion() || planning {
+	if e.ownsIssueCompletion() || planning || e.change != nil && e.change.NoChange != nil {
 		e.preparedDisposition = runner.NativeDispositionFromMessage(finalMessage)
 	}
 	if e.role == runner.RoleMerge {
@@ -663,8 +663,8 @@ func (e *nativeExecution) preparedFinalization() *tracker.NativeFinalization {
 		return nil
 	}
 	finalization := (tracker.NativeFinalization{
-		Publication: e.publication,
-		ObservedAt:  e.scheduler.now().UTC(), Settled: e.settled,
+		NoChange: change.NoChange, Publication: e.publication,
+		ObservedAt: e.scheduler.now().UTC(), Settled: e.settled,
 		Changed: change.Changed, Files: change.Files, ChangeID: change.ChangeID,
 		VersionID: change.VersionID, BaseSHA: change.BaseSHA, HeadSHA: change.HeadSHA,
 		Reviewed: change.Reviewed, VersionError: change.VersionError, VersionCode: change.VersionCode,

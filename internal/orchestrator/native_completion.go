@@ -49,8 +49,8 @@ func (o *Orchestrator) completeNativeChangeRun(
 	recoveryRequired := errors.Is(event.Err, runpkg.ErrNativeRecoveryRequired)
 	preProvider := !event.Result.TurnStarted && running.TurnCount == 0 && !running.WorkProductPushed && running.Tokens.TotalTokens == 0 && event.Result.Tokens.TotalTokens == 0
 	recoveryRefusal := recoveryRequired && preProvider && running.Cancellation == nil && !errors.Is(event.Err, context.Canceled) && !errors.Is(event.Err, context.DeadlineExceeded)
-	mergeResolution := change != nil && change.MergeResolution && mode == runpkg.RunModeMerge
-	if !mergeResolution && (mergeWorkerIssue(running.Issue) || mode != "" && mode != runpkg.RunModeImplement && (mode != runpkg.RunModePlan || !recoveryRefusal)) {
+	mergeSourceCompletion := change != nil && (change.MergeResolution || change.NoChange != nil) && mode == runpkg.RunModeMerge
+	if !mergeSourceCompletion && (mergeWorkerIssue(running.Issue) || mode != "" && mode != runpkg.RunModeImplement && (mode != runpkg.RunModePlan || !recoveryRefusal)) {
 		return false
 	}
 	if finalState == "" {
@@ -79,7 +79,7 @@ func (o *Orchestrator) completeNativeChangeRun(
 	retryReason := terminalAttemptWithoutWorkProductReason
 	retryErrorClass := terminalAttemptWithoutWorkProductReason
 	retryMessage := noWorkProductMessage
-	if change != nil && change.VersionID != "" {
+	if change != nil && (change.VersionID != "" || change.NoChange != nil) {
 		retryReason = "state_transition"
 		retryErrorClass = ""
 		retryMessage = "published source requires further work"
@@ -145,6 +145,26 @@ func (o *Orchestrator) completeNativeChangeRun(
 		o.recordCompletionUsage(ctx, state, event, issue)
 		return true
 	}
+	if change != nil && change.NoChange != nil {
+		if source, ok := event.Request.Execution.(runpkg.NativeSourceIterationExecution); ok {
+			current, err := source.SourceReview(ctx)
+			if err != nil {
+				return handoff(err)
+			}
+			if current.NoChange == nil || current.NoChange.VersionID() != change.NoChange.VersionID() {
+				return handoff(runpkg.ErrNativeRecoveryRequired)
+			}
+			change = &current
+		}
+	}
+	if change != nil && change.NoChange != nil {
+		retryMessage = firstNonBlank(change.VersionError, "no-change evidence requires review and validation")
+		retryMessage = nativeCompletionReason(retryMessage, nil, "", change.ImplementationReview)
+		retryMessage = nativeCompletionReason(retryMessage, nil, "", change.Validator)
+		if change.SecurityAudit != nil {
+			retryMessage += "\n\n" + change.SecurityAudit.Run.Summary
+		}
+	}
 	report, reported := runpkg.NativeCompletionSignalFromMessage(event.Result.FinalMessage)
 	if reported && report != nil && report.Invalid == nil && strings.TrimSpace(report.HumanAction) != "" {
 		issue.WorkpadSignal = report
@@ -189,7 +209,7 @@ func (o *Orchestrator) completeNativeChangeRun(
 	}
 	reviewChangesRequested := false
 	repairPending := false
-	if change != nil {
+	if change != nil && change.NoChange == nil {
 		var reviewErr error
 		var review connector.ChangeReview
 		change, review, reviewErr = o.refreshNativeChangeReview(ctx, issueID, change)
@@ -219,7 +239,15 @@ func (o *Orchestrator) completeNativeChangeRun(
 		o.recordCompletionUsage(ctx, state, event, issue)
 		return true
 	}
-	needsReview := change != nil && change.VersionError != "" || !changed || reported && !accepted
+	noChangeAccepted := !humanReview && accepted && change.NoChangeAccepted(cfg.Gate)
+	if noChangeAccepted {
+		sha, evidence, valid := workpad.NoChangeCompletion(report)
+		noChangeAccepted = valid && sha == change.NoChange.ReportedSHA && evidence == change.NoChange.Evidence
+	}
+	if noChangeAccepted && event.Request.Execution != nil {
+		noChangeAccepted = event.Request.Execution.Recovery().Lease.PolicyID == change.NoChange.PolicyID
+	}
+	needsReview := change != nil && change.VersionError != "" || !changed && !noChangeAccepted || reported && !accepted
 	review := cfg.reviewTargetState()
 	if explicitHumanAction(issue) != "" {
 		review = blockedStatusState
@@ -372,6 +400,8 @@ func (o *Orchestrator) completeNativeChangeRun(
 	} else if unaddressedRefusal != "" {
 		comment = fmt.Sprintf("Rework returned Change Request %s (head %s) unchanged and resolved none of the review conversations that blocked its landing, so it was not sent back to Merging. Moved from %s to %s. Address or dismiss each conversation on the pull request, then move the item to Merging.\n\n%s",
 			change.ChangeID, shortCommit(change.HeadSHA), displayStateName(issue.State), displayStateName(target), unaddressedRefusal)
+	} else if noChangeAccepted {
+		comment = fmt.Sprintf("No change needed: required review and validation accepted the evidence on base %s. Moved from %s to %s.\n\n%s", change.NoChange.VerifiedSHA, displayStateName(issue.State), displayStateName(target), change.NoChange.Evidence)
 	} else {
 		comment = nativeCompletionComment(change, issue.State, target)
 		if resolvedRefusal {
@@ -380,6 +410,10 @@ func (o *Orchestrator) completeNativeChangeRun(
 	}
 	if needsReview {
 		comment = nativeCompletionReason(comment, report, event.Result.FinalMessage, nil)
+		if change != nil && change.NoChange != nil {
+			comment = nativeCompletionReason(comment, nil, "", change.ImplementationReview)
+			comment = nativeCompletionReason(comment, nil, "", change.Validator)
+		}
 		if change != nil && change.VersionError != "" {
 			comment += "\n\n" + change.VersionError
 		}
@@ -661,6 +695,9 @@ func nativeChangeMetadata(change *runpkg.NativeChange) map[string]any {
 		securityaudit.NormalizeAttribution(&change.SecurityAudit.Run)
 	}
 	metadata := map[string]any{"native_changed": change.Changed, "native_files": change.Files}
+	if change.NoChange != nil {
+		metadata["no_change_completion"] = change.NoChange
+	}
 	if change.ChangeID != "" {
 		metadata["native_change_id"] = change.ChangeID
 	}

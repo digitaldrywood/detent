@@ -258,6 +258,7 @@ type Issue struct {
 	Source                  *ChangeSource
 	Checkpoint              *CheckpointRef
 	Landing                 *LandOptions
+	NoChangeNeeded          bool
 	NativeRework            bool
 	FreshCheckout           bool
 	ProjectID               string
