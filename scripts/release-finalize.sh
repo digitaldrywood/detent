@@ -59,10 +59,39 @@ status_creators="$(jq -ce '
 ' <<< "${DETENT_RELEASE_STATUS_CREATORS_JSON:-[]}")"
 
 override_reason="${DETENT_RELEASE_OVERRIDE:-}"
+authorize_override() {
+  local actor identity actors
+  if [ "${GITHUB_ACTIONS:-}" = true ]; then
+    actor="${GITHUB_ACTOR:-}"
+    [ -n "$actor" ] || return 1
+    actors="${RELEASE_OVERRIDE_ACTORS:-[]}"
+    identity="$(gh api "users/$actor")" || return 1
+  else
+    identity="$(gh api user)" || return 1
+    actor="$(jq -er '.login' <<< "$identity")" || return 1
+    actors="$(gh api "repos/$GITHUB_REPOSITORY/actions/variables/RELEASE_OVERRIDE_ACTORS" --jq '.value')" || return 1
+  fi
+  jq -en --arg actor "$actor" --argjson identity "$identity" --argjson actors "$actors" '
+    ($actors | type == "array" and length > 0 and all(.[]; type == "string" and length > 0))
+    and ($identity.type == "User")
+    and ($actor | test("^[A-Za-z0-9][A-Za-z0-9-]*$"))
+    and (($identity.login | ascii_downcase) == ($actor | ascii_downcase))
+    and ($actors | map(ascii_downcase) | index($actor | ascii_downcase) != null)
+  ' > /dev/null
+}
+
+require_override_authority() {
+  if [ -n "$override_reason" ] && ! authorize_override; then
+    echo "Release override requires an authorized human in repository variable RELEASE_OVERRIDE_ACTORS." >&2
+    exit 1
+  fi
+}
+
 if [ -n "$override_reason" ] && ! jq -en --arg reason "$override_reason" '$reason | test("\\S")' > /dev/null; then
   echo "Release override requires a nonempty reason." >&2
   exit 1
 fi
+require_override_authority
 
 required_evidence() {
   platform_status || return 1
@@ -100,6 +129,7 @@ for existing in $(git tag --points-at "$CI_DEVELOP_SHA" --list "$series.*"); do
         echo "Release $existing has invalid provenance; refusing to redispatch its immutable tag." >&2
         exit 1
       fi
+      require_override_authority
       if ! evidence="$(required_evidence)" || ! jq -e \
         --arg repository "$GITHUB_REPOSITORY" --arg tag "$existing" --arg commit "$CI_DEVELOP_SHA" \
         --argjson evidence "$evidence" '
