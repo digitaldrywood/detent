@@ -2,11 +2,6 @@ name: Release Finalize
 
 on:
   workflow_dispatch:
-    inputs:
-      DETENT_RELEASE_OVERRIDE:
-        description: 'Human owner reason for waiving scheduled-full-ci; agents require Cory direction'
-        required: false
-        type: string
 
 permissions:
   contents: read
@@ -30,28 +25,16 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.10'
+          cache: false
       - name: Publish the validated tag
         env:
-          DETENT_RELEASE_OVERRIDE: ${{ inputs.DETENT_RELEASE_OVERRIDE }}
-          RELEASE_OVERRIDE_GPG_PRIVATE_KEY: ${{ secrets.RELEASE_OVERRIDE_GPG_PRIVATE_KEY }}
           GH_TOKEN: ${{ github.token }}
           CI_DEVELOP_SHA: ${{ github.sha }}
           CI_RELEASE_BRANCH: ${{ github.ref_name }}
           TMPDIR: ${{ runner.temp }}
           DETENT_RELEASE_STATUS_CREATORS_JSON: ${{ vars.DETENT_RELEASE_STATUS_CREATORS_JSON }}
           DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON: ${{ vars.DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON }}
-        run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          if [ -n "$DETENT_RELEASE_OVERRIDE" ]; then
-            export GNUPGHOME
-            GNUPGHOME="$(mktemp -d "$TMPDIR/release-override-signing.XXXXXX")"
-            chmod 700 "$GNUPGHOME"
-            printf '%s' "$RELEASE_OVERRIDE_GPG_PRIVATE_KEY" | gpg --batch --import
-            signing_key="$(gpg --batch --with-colons --list-secret-keys | awk -F: '$1 == "fpr" { print $10; exit }')"
-            test -n "$signing_key"
-            git config gpg.format openpgp
-            git config user.signingkey "$signing_key"
-            git config tag.gpgsign true
-          fi
-          bash scripts/release-finalize.sh
+        run: bash scripts/release-finalize.sh

@@ -240,7 +240,8 @@ branch, fixes land on develop first and are cherry-picked with `-x` by
 path exists. Stable tags are created only by `release-finalize.yml` in GitHub
 Actions, after the latest `scheduled-full-ci` and `release-security-audit`
 statuses on the current release head are successful (a human owner's recorded
-`DETENT_RELEASE_OVERRIDE` may waive only `scheduled-full-ci`), and the latest
+`release-override/<version>` tag signed by a primary key listed at the exact
+release head may waive only `scheduled-full-ci`), and the latest
 `platform-full-ci` status on the nearest validated ancestor (including the head)
 is successful and no older than 24 hours. Platform validation runs daily on
 local Colima, using the validated source and pinned toolchain. Release API calls belong

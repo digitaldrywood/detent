@@ -72,7 +72,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TMPDIR: ${{ runner.temp }}
           DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON: ${{ vars.DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON }}
-          WORKFLOW_OVERRIDE_ACTORS: ${{ vars.RELEASE_OVERRIDE_ACTORS }}
         run: |
           set -euo pipefail
           tag_message="$RUNNER_TEMP/detent-release-tag-message"
@@ -89,6 +88,9 @@ jobs:
           scripts/collect-release-rulesets.sh "$GITHUB_REPOSITORY" "$rulesets"
           release_tag="$GITHUB_REF_NAME"
           git fetch --force origin "+refs/tags/$release_tag:refs/tags/$release_tag"
+          if git ls-remote --exit-code origin "refs/tags/release-override/$release_tag" > /dev/null; then
+            git fetch --force origin "+refs/tags/release-override/$release_tag:refs/tags/release-override/$release_tag"
+          fi
           DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON="$(jq -c 'if type == "array" then . + ["scheduled-full-ci", "release-security-audit"] | unique else error("release requirements must be a JSON array") end' <<< "${DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON:-[]}")"
           test "$(git cat-file -t "refs/tags/$release_tag")" = tag
           git for-each-ref --format='%(contents)' "refs/tags/$release_tag" > "$tag_message"
@@ -102,7 +104,6 @@ jobs:
             -github-statuses "$statuses" \
             -github-rulesets "$rulesets" \
             -required-check-names-json "$DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON" \
-            -override-actors-json "${WORKFLOW_OVERRIDE_ACTORS:-[]}" \
             -output tmp/detent_release_provenance.json
           echo "version=$release_tag" >> "$GITHUB_OUTPUT"
 

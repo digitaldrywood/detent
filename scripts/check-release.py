@@ -155,7 +155,7 @@ def validated_release_base():
         return None
     tags = git("tag", "--merged", "HEAD", "--list", "v*", "--sort=-version:refname").splitlines()
     validated = {}
-    overridden = set()
+    overridden = {}
     for tag in tags:
         if not re.fullmatch(r"v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)", tag):
             continue
@@ -173,7 +173,7 @@ def validated_release_base():
                     or provenance["commit"] != commit):
                 continue
             if provenance.get("validation_override") is not None:
-                overridden.add(commit)
+                overridden[commit] = (tag, provenance["validation_override"]["reason"])
                 continue
             checks = provenance["checks"]
             if any(check["name"] == "scheduled-full-ci"
@@ -187,6 +187,18 @@ def validated_release_base():
         return None
     for commit in git("rev-list", "--topo-order", "HEAD").splitlines():
         if commit in overridden:
+            tag, reason = overridden[commit]
+            scratch = Path("tmp")
+            scratch.mkdir(exist_ok=True)
+            with tempfile.TemporaryDirectory(dir=scratch) as directory:
+                reason_file = Path(directory).resolve() / "reason"
+                subprocess.run([
+                    "go", "run", "./tools/releaseprovenance", "-verify-override",
+                    "-git-directory", str(Path.cwd()), "-tag", tag, "-commit", commit,
+                    "-output", str(reason_file),
+                ], cwd=Path(__file__).resolve().parents[1], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                if reason_file.read_text().rstrip("\n") != reason:
+                    return None
             print("Browser comparison: release override requires full validation.", file=sys.stderr)
             return None
         if commit in validated:

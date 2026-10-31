@@ -21,49 +21,80 @@ func TestReleaseFinalizer(t *testing.T) {
 	if _, err := exec.LookPath("jq"); err != nil {
 		t.Skip("jq is required for the release shell fixture")
 	}
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier := filepath.Join(t.TempDir(), "releaseprovenance")
+	build := exec.CommandContext(t.Context(), "go", "build", "-o", verifier, "./tools/releaseprovenance")
+	build.Dir = root
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build verifier: %v: %s", err, output)
+	}
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	signingHome, err := os.MkdirTemp("/tmp", "rt-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if output, err := exec.Command("gpgconf", "--homedir", signingHome, "--kill", "gpg-agent").CombinedOutput(); err != nil {
+			t.Errorf("stop signing agent: %v: %s", err, output)
+		}
+		if err := os.RemoveAll(signingHome); err != nil {
+			t.Error(err)
+		}
+	})
+	fixtureRun := func(t *testing.T, directory, program string, args ...string) string {
+		t.Helper()
+		command := exec.CommandContext(t.Context(), program, args...)
+		command.Dir = directory
+		command.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + directory, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=" + os.DevNull, "GNUPGHOME=" + signingHome}
+		output, err := command.CombinedOutput()
+		if err != nil {
+			t.Fatalf("fixture %s: %v: %s", program, err, output)
+		}
+		return strings.TrimSpace(string(output))
+	}
+	keys := make([]string, 0, 2)
+	for _, email := range []string{"owner@example.com", "other@example.com"} {
+		fixtureRun(t, root, "gpg", "--batch", "--pinentry-mode", "loopback", "--passphrase", "", "--quick-generate-key", email, "ed25519", "sign", "0")
+		listing := fixtureRun(t, root, "gpg", "--with-colons", "--list-keys", email)
+		for line := range strings.SplitSeq(listing, "\n") {
+			fields := strings.Split(line, ":")
+			if fields[0] == "fpr" {
+				keys = append(keys, fields[9])
+				break
+			}
+		}
+	}
+	public := fixtureRun(t, root, "gpg", "--armor", "--export", keys[0], keys[1])
 	const repository = "example-org/example-project"
 	for _, tt := range []struct {
-		name, requirements, auditState, creators, lateContext             string
-		awaitsStatus, unset, missingAudit, missingSuite, wrongSHA         bool
-		superseded, suiteSuperseded, staleHead, newSeries                 bool
-		differentSeries, unchanged, releaseRun, oldProvenance             bool
-		rejectReuse, badAllowlist, badOverride, failedExtra               bool
-		moveDuringCheck, failDuringCheck, foreignCreator, missingCreator  bool
-		platform, override, recordedOverride, suiteState                  string
-		actor, actorType, overrideActors                                  string
-		triggeringActor, triggeringActorType, runStatus, runPath, runHead string
-		local, noOverrideActors, rejectOverride, identityFailure          bool
-		forgedEnvironment, forgedArguments, missingRunID                  bool
+		name, requirements, auditState, creators, lateContext               string
+		awaitsStatus, unset, missingAudit, missingSuite, wrongSHA           bool
+		superseded, suiteSuperseded, staleHead, newSeries                   bool
+		differentSeries, unchanged, releaseRun, oldProvenance               bool
+		rejectReuse, badAllowlist, badOverride, failedExtra, rejectOverride bool
+		moveDuringCheck, failDuringCheck, foreignCreator, missingCreator    bool
+		platform, override, recordedOverride, suiteState                    string
+		signatureType                                                       string
+		forgedEnvironment, forgedArguments, missingApproval                 bool
 	}{
-		{name: "allowlisted Actions triggering actor can override", triggeringActor: "example-owner", overrideActors: `["example-operator", "example-owner"]`, override: "Owner directs release", suiteState: "failure"},
-		{name: "non-allowlisted triggering actor cannot override", triggeringActor: "other-user", override: "Owner directs release", rejectOverride: true},
-		{name: "completed Actions run cannot override", runStatus: "completed", override: "Owner directs release", rejectOverride: true},
-		{name: "Actions run for another head cannot override", runHead: strings.Repeat("b", 40), override: "Owner directs release", rejectOverride: true},
-		{name: "different Actions workflow cannot override", runPath: ".github/workflows/release.yml", override: "Owner directs release", rejectOverride: true},
-		{name: "bot triggering actor cannot override", triggeringActorType: "Bot", override: "Owner directs release", rejectOverride: true},
-		{name: "allowlisted triggering actor cannot authorize another actor", actor: "other-user", triggeringActor: "example-operator", override: "Owner directs release", rejectOverride: true},
-		{name: "allowlisted triggering actor cannot authorize bot actor", actorType: "Bot", triggeringActorType: "User", override: "Owner directs release", rejectOverride: true},
-		{name: "Actions run ID is required", missingRunID: true, override: "Owner directs release", rejectOverride: true},
-		{name: "forged arguments cannot impersonate owner", local: true, forgedArguments: true, actor: "other-user", override: "Owner directs release", suiteState: "failure", rejectOverride: true},
-		{name: "forged arguments cannot replace repository allowlist", local: true, forgedArguments: true, overrideActors: `["other-user"]`, override: "Owner directs release", suiteState: "failure", rejectOverride: true},
-		{name: "forged Actions environment cannot impersonate owner", local: true, forgedEnvironment: true, actor: "other-user", override: "Owner directs release", suiteState: "failure", rejectOverride: true},
-		{name: "forged environment cannot replace repository allowlist", local: true, forgedEnvironment: true, overrideActors: `["other-user"]`, override: "Owner directs release", suiteState: "failure", rejectOverride: true},
-		{name: "unauthorized actor cannot override", actor: "other-user", override: "Owner directs release", suiteState: "failure", rejectOverride: true},
-		{name: "partial actor match cannot override", overrideActors: `["example-operator-extra"]`, override: "Owner directs release", rejectOverride: true},
-		{name: "missing override allowlist denies everyone", noOverrideActors: true, override: "Owner directs release", rejectOverride: true},
-		{name: "empty override allowlist denies everyone", overrideActors: `[]`, override: "Owner directs release", rejectOverride: true},
-		{name: "malformed override allowlist is rejected", overrideActors: `{`, override: "Owner directs release", rejectOverride: true},
-		{name: "bot actor rejected even when allowlisted", actor: "release[bot]", actorType: "Bot", overrideActors: `["release[bot]"]`, override: "Owner directs release", rejectOverride: true},
-		{name: "automation account rejected even when allowlisted", actorType: "Bot", override: "Owner directs release", rejectOverride: true},
-		{name: "identity lookup failure denies override", identityFailure: true, override: "Owner directs release", rejectOverride: true},
-		{name: "allowlisted local operator can override", local: true, override: "Owner directs release", suiteState: "failure"},
-		{name: "unauthorized local operator rejected", local: true, actor: "other-user", override: "Owner directs release", rejectOverride: true},
-		{name: "local automation credential rejected", local: true, actorType: "Bot", override: "Owner directs release", rejectOverride: true},
-		{name: "local missing repository allowlist denies override", local: true, noOverrideActors: true, override: "Owner directs release", rejectOverride: true},
-		{name: "unauthorized actor cannot reuse recorded override", actor: "other-user", recordedOverride: "Owner previously accepted validation failure", suiteState: "failure", unchanged: true, rejectOverride: true},
+		{name: "signed approval permits failed suite", override: "Owner directs release", suiteState: "failure"},
+		{name: "unsigned approval fails", override: "Owner directs release", signatureType: "unsigned", rejectOverride: true},
+		{name: "unlisted approval fails", override: "Owner directs release", signatureType: "unlisted", rejectOverride: true},
+		{name: "approval for another commit fails", override: "Owner directs release", signatureType: "wrong-commit", rejectOverride: true},
+		{name: "empty signer list fails", override: "Owner directs release", signatureType: "empty", rejectOverride: true},
+		{name: "forged environment without approval has no effect", forgedEnvironment: true, suiteState: "failure", awaitsStatus: true},
+		{name: "forged environment cannot replace signed reason", override: "Signed reason", forgedEnvironment: true, suiteState: "failure"},
+		{name: "forged arguments cannot authorize override", forgedArguments: true, rejectOverride: true},
+		{name: "recorded override without approval cannot redispatch", recordedOverride: "Owner previously approved", unchanged: true, missingApproval: true, rejectReuse: true},
 		{name: "reuse recorded override without ambient input", recordedOverride: "Owner previously accepted failed validation --> investigate", suiteState: "failure", unchanged: true},
 		{name: "reuse recorded override retains audit requirement", recordedOverride: "Owner previously accepted failed validation", auditState: "failure", unchanged: true, rejectReuse: true},
-		{name: "ambient override cannot retrofit ordinary tag", override: "Owner directs release", suiteState: "failure", unchanged: true, rejectReuse: true},
+		{name: "ambient override cannot retrofit ordinary tag", forgedEnvironment: true, suiteState: "failure", unchanged: true, rejectReuse: true},
 		{name: "override still requires configured checks", override: "Owner directs release", requirements: `["extra"]`, failedExtra: true, awaitsStatus: true},
 		{name: "blank override is rejected", override: " \t", badOverride: true},
 		{name: "override reason preserves quotes and annotation suffix", override: "Owner accepts \"known\" failure --> investigate\nnext", suiteState: "failure"},
@@ -125,18 +156,6 @@ func TestReleaseFinalizer(t *testing.T) {
 set -euo pipefail
 printf 'forge %s\n' "$*" >> "$FIXTURE_LOG"
 case "$*" in
-  'api user' | 'api users/'*)
-    if [ "${GITHUB_ACTIONS:-}" = true ]; then exit 1; fi
-    if [ "$FIXTURE_IDENTITY_FAILURE" = true ]; then exit 1; fi
-    actor="$FIXTURE_ACTOR"
-    if [[ "$*" == 'api users/'* ]]; then actor="${2#users/}"; fi
-    printf '{"login":"%s","type":"%s"}\n' "$actor" "$FIXTURE_ACTOR_TYPE" ;;
-  'api repos/example-org/example-project/actions/runs/12345')
-    if [ "$FIXTURE_IDENTITY_FAILURE" = true ]; then exit 1; fi
-    cat "$FIXTURE_RUN" ;;
-  *'/actions/variables/RELEASE_OVERRIDE_ACTORS'*)
-    if [ "$FIXTURE_NO_OVERRIDE_ACTORS" = true ]; then exit 1; fi
-    printf '%s\n' "$FIXTURE_OVERRIDE_ACTORS" ;;
   *"/commits/$CI_DEVELOP_SHA/statuses?per_page=100")
     if [ "$FIXTURE_PLATFORM_MODE" = api-error ]; then exit 1; fi
     if [ -f "$FIXTURE_STATUS_READ" ] && [ "$FIXTURE_FAIL_DURING_CHECK" = true ]; then
@@ -159,10 +178,18 @@ case "$*" in
   *) exit 9 ;;
 esac
 `,
+				"go": `#!/usr/bin/env bash
+set -euo pipefail
+test "$1" = run
+test "$2" = ./tools/releaseprovenance
+shift 2
+exec "$FIXTURE_VERIFIER" "$@"
+`,
 				"git": `#!/usr/bin/env bash
 set -euo pipefail
 printf 'repository %s\n' "$*" >> "$FIXTURE_LOG"
 case "$*" in
+  'show-ref '* | 'rev-parse '* | 'show '* | 'cat-file tag '*) exec "$FIXTURE_GIT" -C "$FIXTURE_REPO" "$@" ;;
   'rev-list '*) printf '%s\n%s\n' "$FIXTURE_HEAD" bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb ;;
   'ls-remote '*)
     if [ -f "$FIXTURE_STATUS_READ" ] && [ "$FIXTURE_MOVE_DURING_CHECK" = true ]; then
@@ -182,11 +209,47 @@ esac
 					t.Fatal(err)
 				}
 			}
-			root, err := filepath.Abs(filepath.Join("..", ".."))
-			if err != nil {
+			repo := filepath.Join(dir, "source")
+			if err := os.MkdirAll(filepath.Join(repo, ".github"), 0o700); err != nil {
 				t.Fatal(err)
 			}
-			sha := scheduledEnv("CI_DEVELOP_SHA")
+			signers := keys[0] + "\n"
+			if tt.signatureType == "empty" {
+				signers = ""
+			}
+			for name, contents := range map[string]string{"release-override-signers": signers, "release-override-signers.asc": public} {
+				if err := os.WriteFile(filepath.Join(repo, ".github", name), []byte(contents), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			fixtureRun(t, repo, realGit, "init", "--quiet")
+			fixtureRun(t, repo, realGit, "config", "user.name", "Example Operator")
+			fixtureRun(t, repo, realGit, "config", "user.email", "operator@example.com")
+			fixtureRun(t, repo, realGit, "add", ".github")
+			fixtureRun(t, repo, realGit, "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "example source")
+			sha := fixtureRun(t, repo, realGit, "rev-parse", "HEAD")
+			reason := tt.override
+			version := "v1.2.4"
+			if tt.recordedOverride != "" {
+				reason = tt.recordedOverride
+				version = "v1.2.3"
+			}
+			if reason != "" && !tt.missingApproval {
+				target := sha
+				if tt.signatureType == "wrong-commit" {
+					fixtureRun(t, repo, realGit, "-c", "commit.gpgsign=false", "commit", "--quiet", "--allow-empty", "-m", "another source")
+					target = fixtureRun(t, repo, realGit, "rev-parse", "HEAD")
+				}
+				signer := keys[0]
+				if tt.signatureType == "unlisted" {
+					signer = keys[1]
+				}
+				args := []string{"-c", "gpg.format=openpgp", "-c", "tag.gpgsign=false", "-c", "user.signingkey=" + signer, "tag", "--cleanup=verbatim", "-s", "release-override/" + version, target, "-m", reason}
+				if tt.signatureType == "unsigned" {
+					args[8] = "-a"
+				}
+				fixtureRun(t, repo, realGit, args...)
+			}
 			statusSHA := sha
 			if tt.wrongSHA {
 				statusSHA = strings.Repeat("b", 40)
@@ -321,55 +384,12 @@ esac
 				head = strings.Repeat("b", 40)
 			}
 			flag := map[bool]string{true: "true", false: "false"}
-			actor := tt.actor
-			if actor == "" {
-				actor = "example-operator"
-			}
-			actorType := tt.actorType
-			if actorType == "" {
-				actorType = "User"
-			}
-			overrideActors := tt.overrideActors
-			if overrideActors == "" && !tt.noOverrideActors {
-				overrideActors = `["example-operator"]`
-			}
-			triggeringActor := tt.triggeringActor
-			if triggeringActor == "" {
-				triggeringActor = actor
-			}
-			triggeringActorType := tt.triggeringActorType
-			if triggeringActorType == "" {
-				triggeringActorType = actorType
-			}
-			runStatus := tt.runStatus
-			if runStatus == "" {
-				runStatus = "in_progress"
-			}
-			runPath := tt.runPath
-			if runPath == "" {
-				runPath = ".github/workflows/release-finalize.yml"
-			}
-			runHead := tt.runHead
-			if runHead == "" {
-				runHead = sha
-			}
-			run, err := json.Marshal(map[string]any{
-				"id": 12345, "status": runStatus, "path": runPath, "head_sha": runHead,
-				"actor":            map[string]string{"login": actor, "type": actorType},
-				"triggering_actor": map[string]string{"login": triggeringActor, "type": triggeringActorType},
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(filepath.Join(dir, "run"), run, 0o600); err != nil {
-				t.Fatal(err)
-			}
 			command := exec.CommandContext(t.Context(), "bash", "scripts/release-finalize.sh")
 			command.Dir = root
 			command.Env = []string{"PATH=" + dir + string(os.PathListSeparator) + os.Getenv("PATH"), "HOME=" + dir, "TMPDIR=" + dir,
+				"FIXTURE_VERIFIER=" + verifier, "FIXTURE_GIT=" + realGit, "FIXTURE_REPO=" + repo,
 				"FIXTURE_STATUS_READ=" + filepath.Join(dir, "status-read"), "FIXTURE_HEAD_READ=" + filepath.Join(dir, "head-read"),
 				"FIXTURE_LATE_STATUSES=" + filepath.Join(dir, "late-statuses"),
-				"FIXTURE_RUN=" + filepath.Join(dir, "run"),
 				"FIXTURE_MOVE_DURING_CHECK=" + flag[tt.moveDuringCheck], "FIXTURE_FAIL_DURING_CHECK=" + flag[tt.failDuringCheck],
 				"GITHUB_REPOSITORY=" + repository, "CI_DEVELOP_SHA=" + sha, "CI_RELEASE_BRANCH=" + releaseBranch,
 				"FIXTURE_LOG=" + filepath.Join(dir, "calls"), "FIXTURE_HEAD=" + head, "FIXTURE_NEW_SERIES=" + flag[tt.newSeries],
@@ -386,22 +406,8 @@ esac
 			if !tt.unset {
 				command.Env = append(command.Env, "DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON="+tt.requirements)
 			}
-			command.Env = append(command.Env, "DETENT_RELEASE_OVERRIDE="+tt.override)
-			command.Env = append(command.Env, "FIXTURE_ACTOR="+actor, "FIXTURE_ACTOR_TYPE="+actorType,
-				"FIXTURE_OVERRIDE_ACTORS="+overrideActors, "FIXTURE_NO_OVERRIDE_ACTORS="+flag[tt.noOverrideActors],
-				"FIXTURE_IDENTITY_FAILURE="+flag[tt.identityFailure])
-			if !tt.local {
-				command.Env = append(command.Env, "GITHUB_ACTIONS=true", "GITHUB_ACTOR="+actor)
-				if !tt.missingRunID {
-					command.Env = append(command.Env, "GITHUB_RUN_ID=12345")
-				}
-				if !tt.noOverrideActors {
-					command.Env = append(command.Env, "RELEASE_OVERRIDE_ACTORS="+overrideActors)
-				}
-			}
 			if tt.forgedEnvironment {
-				command.Env = append(command.Env, "GITHUB_ACTIONS=true", "GITHUB_ACTOR=example-operator", `RELEASE_OVERRIDE_ACTORS=["example-operator"]`,
-					"WORKFLOW_OVERRIDE_ACTOR=example-operator", `WORKFLOW_OVERRIDE_ACTORS=["example-operator"]`)
+				command.Env = append(command.Env, "DETENT_RELEASE_OVERRIDE=forged reason", "GITHUB_ACTIONS=true", "GITHUB_ACTOR=example-owner", "GITHUB_RUN_ID=12345", `RELEASE_OVERRIDE_ACTORS=["example-owner"]`)
 			}
 			if tt.forgedArguments {
 				command.Args = append(command.Args, "example-operator", `["example-operator"]`)
@@ -424,7 +430,7 @@ esac
 					t.Fatalf("forged arguments produced release effects: %s: %s", text, output)
 				}
 			case tt.rejectOverride:
-				if !strings.Contains(string(output), "Release override requires an authorized human") || strings.Contains(text, "tag -a ") || strings.Contains(text, "push ") || strings.Contains(text, "/dispatches") {
+				if !strings.Contains(string(output), "invalid signed override approval") || strings.Contains(text, "tag -a ") || strings.Contains(text, "push ") || strings.Contains(text, "/dispatches") {
 					t.Fatalf("unauthorized override produced release effects: %s: %s", text, output)
 				}
 			case tt.badOverride:
@@ -498,13 +504,15 @@ esac
 				for _, status := range statuses {
 					evidence.Checks = append(evidence.Checks, releaseprovenance.ObservedCheck{Name: status["context"].(string), Status: "completed", Conclusion: status["state"].(string), Commit: statusSHA, StatusID: int64(status["id"].(int))})
 				}
-				verificationErr := releaseprovenance.VerifyGitHubEvidence(produced, evidence)
 				if produced.ValidationOverride != nil {
-					if verificationErr == nil || !strings.Contains(verificationErr.Error(), "verified override tag signature") {
-						t.Fatalf("mock tag without signature verification accepted: %v", verificationErr)
+					signature, err := releaseprovenance.VerifyOverrideTag(t.Context(), repo, produced)
+					if err != nil {
+						t.Fatal(err)
 					}
-				} else if verificationErr != nil {
-					t.Fatalf("finalizer provenance rejected: %v", verificationErr)
+					evidence.OverrideSignature = signature
+				}
+				if err := releaseprovenance.VerifyGitHubEvidence(produced, evidence); err != nil {
+					t.Fatalf("finalizer provenance rejected: %v", err)
 				}
 				if !strings.Contains(text, "repository tag -a "+tag+" "+sha) || !strings.Contains(text, "refs/tags/"+tag) || !strings.Contains(text, "/release.yml/dispatches") {
 					t.Fatalf("release tag evidence lost: %s", text)

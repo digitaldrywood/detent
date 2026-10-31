@@ -1,7 +1,6 @@
 package releaseprovenance
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -29,11 +28,6 @@ func TestMain(m *testing.M) {
 
 func TestOverrideTagRequiresAllowlistedSignature(t *testing.T) {
 	directory := t.TempDir()
-	scratch := filepath.Join(directory, strings.Repeat("worktree-scratch-", 8))
-	if err := os.Mkdir(scratch, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("TMPDIR", scratch)
 	home, err := newGPGHome()
 	if err != nil {
 		t.Fatal(err)
@@ -50,7 +44,7 @@ func TestOverrideTagRequiresAllowlistedSignature(t *testing.T) {
 	t.Setenv("HOME", directory)
 	t.Setenv("GNUPGHOME", home)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
-	run := func(t *testing.T, name string, args ...string) string {
+	run := func(name string, args ...string) string {
 		t.Helper()
 		command := exec.CommandContext(t.Context(), name, args...)
 		command.Dir = directory
@@ -60,15 +54,13 @@ func TestOverrideTagRequiresAllowlistedSignature(t *testing.T) {
 		}
 		return strings.TrimSpace(string(output))
 	}
-	run(t, "git", "init", "--quiet")
-	run(t, "git", "config", "user.name", "Example Operator")
-	run(t, "git", "config", "user.email", "operator@example.com")
-	run(t, "git", "-c", "commit.gpgsign=false", "commit", "--quiet", "--allow-empty", "-m", "example source")
-	commit := run(t, "git", "rev-parse", "HEAD")
+	run("git", "init", "--quiet")
+	run("git", "config", "user.name", "Example Operator")
+	run("git", "config", "user.email", "operator@example.com")
 	keys := make([]string, 0, 2)
 	for _, email := range []string{"owner@example.com", "other@example.com"} {
-		run(t, "gpg", "--batch", "--pinentry-mode", "loopback", "--passphrase", "", "--quick-generate-key", email, "ed25519", "sign", "0")
-		listing := run(t, "gpg", "--batch", "--with-colons", "--list-keys", email)
+		run("gpg", "--batch", "--pinentry-mode", "loopback", "--passphrase", "", "--quick-generate-key", email, "ed25519", "cert", "0")
+		listing := run("gpg", "--batch", "--with-colons", "--list-keys", email)
 		for line := range strings.SplitSeq(listing, "\n") {
 			fields := strings.Split(line, ":")
 			if fields[0] == "fpr" {
@@ -76,94 +68,102 @@ func TestOverrideTagRequiresAllowlistedSignature(t *testing.T) {
 				break
 			}
 		}
+		run("gpg", "--batch", "--pinentry-mode", "loopback", "--passphrase", "", "--quick-add-key", keys[len(keys)-1], "ed25519", "sign", "0")
 	}
-	if len(keys) != 2 {
-		t.Fatalf("fixture signing keys = %d, want 2", len(keys))
-	}
-	public := run(t, "gpg", "--armor", "--export", keys[0])
-	keyJSON, err := json.Marshal([][]map[string]string{{{"key_id": keys[0][len(keys[0])-16:], "raw_key": public}}})
-	if err != nil {
+	public := run("gpg", "--armor", "--export", keys[0], keys[1])
+	ownerPublic := run("gpg", "--armor", "--export", keys[0])
+	if err := os.Mkdir(filepath.Join(directory, ".github"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	for name, contents := range map[string]string{
-		"keys.json": string(keyJSON),
-		"gh": `#!/usr/bin/env bash
-set -euo pipefail
-case "$*" in
-  *'/actions/variables/RELEASE_OVERRIDE_ACTORS'*) cat "$HOME/actors.json" ;;
-  *'users/example-operator/gpg_keys?'*) cat "$HOME/keys.json" ;;
-  'api users/example-operator') printf '{"login":"example-operator","type":"User"}' ;;
-  *) exit 1 ;;
-esac
-`,
-	} {
-		if err := os.WriteFile(filepath.Join(directory, name), []byte(contents), 0o700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	t.Setenv("PATH", directory+string(os.PathListSeparator)+os.Getenv("PATH"))
 	for index, test := range []struct {
-		name, actors, workflowActors string
-		signer                       int
-		tamper, revoked              bool
-		wantError                    bool
+		name, list                                                                        string
+		signer                                                                            int
+		missing, wrongCommit, tamper, wrongReason, forged, uncommitted, blank, missingKey bool
+		wantError                                                                         bool
 	}{
-		{name: "unsigned annotation cannot waive failed suite", signer: -1, wantError: true},
-		{name: "signature from another key cannot waive failed suite", signer: 1, wantError: true},
-		{name: "allowlisted owner signature waives only failed suite", signer: 0},
-		{name: "changed signed reason invalidates signature", signer: 0, tamper: true, wantError: true},
-		{name: "empty allowlist rejects valid signature", signer: 0, actors: `[]`, wantError: true},
-		{name: "different owner allowlist rejects valid signature", signer: 0, actors: `["other-user"]`, wantError: true},
-		{name: "malformed allowlist rejects valid signature", signer: 0, actors: `{`, wantError: true},
-		{name: "explicit workflow allowlist is authoritative", signer: 0, actors: `{`, workflowActors: `["example-operator"]`},
-		{name: "revoked owner key rejects valid signature", signer: 0, revoked: true, wantError: true},
+		{name: "listed primary key authorizes signing subkey", signer: 0},
+		{name: "unsigned annotation fails", signer: -1, wantError: true},
+		{name: "unlisted key in committed keyring fails", signer: 1, wantError: true},
+		{name: "ambient keyring cannot supply a missing committed public key", signer: 1, list: keys[1], missingKey: true, wantError: true},
+		{name: "missing approval fails", missing: true, wantError: true},
+		{name: "different commit fails", wrongCommit: true, wantError: true},
+		{name: "tampered signed reason fails", tamper: true, wantError: true},
+		{name: "provenance reason must match approval", wrongReason: true, wantError: true},
+		{name: "empty signer list fails", list: "\n", wantError: true},
+		{name: "short key ID fails", list: keys[0][24:], wantError: true},
+		{name: "forged environment cannot authorize unlisted key", signer: 1, forged: true, wantError: true},
+		{name: "caller identity has no effect on valid approval", forged: true},
+		{name: "working tree signer changes have no effect", signer: 1, uncommitted: true, wantError: true},
+		{name: "blank reason fails", blank: true, wantError: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			list := test.list
+			if list == "" {
+				list = keys[0] + "\n"
+			}
+			committedPublic := public
+			if test.missingKey {
+				committedPublic = ownerPublic
+			}
+			for name, contents := range map[string]string{"release-override-signers": list, "release-override-signers.asc": committedPublic} {
+				if err := os.WriteFile(filepath.Join(directory, ".github", name), []byte(contents), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			run("git", "add", ".github")
+			run("git", "-c", "commit.gpgsign=false", "commit", "--quiet", "--allow-empty", "-m", "example source")
+			commit := run("git", "rev-parse", "HEAD")
+			reason := "Owner accepts \"known\" failure --> investigate\nnext"
 			manifest := Manifest{Schema: Schema, Repository: "example-org/example-project", Tag: fmt.Sprintf("v1.2.%d", index), Commit: commit,
 				Checks:             []Check{{Name: "release-security-audit", Status: "completed", Conclusion: "success", StatusID: 10}},
-				ValidationOverride: &ValidationOverride{Reason: "Owner accepts failed validation", Status: "failure", StatusID: 9}}
-			annotation, err := Annotation(manifest)
-			if err != nil {
-				t.Fatal(err)
+				ValidationOverride: &ValidationOverride{Reason: reason, Status: "failure", StatusID: 9}}
+			target := commit
+			if test.wrongCommit {
+				run("git", "-c", "commit.gpgsign=false", "commit", "--quiet", "--allow-empty", "-m", "different source")
+				target = run("git", "rev-parse", "HEAD")
 			}
-			args := []string{"-c", "gpg.format=openpgp", "-c", "tag.gpgsign=false", "tag", "-a", manifest.Tag, commit, "-m", annotation}
-			if test.signer >= 0 {
-				args[3] = "tag.gpgsign=true"
-				args = append([]string{"-c", "user.signingkey=" + keys[test.signer]}, args...)
+			approvalTag := "release-override/" + manifest.Tag
+			if !test.missing {
+				message := reason
+				if test.blank {
+					message = " "
+				}
+				args := []string{"-c", "gpg.format=openpgp", "-c", "tag.gpgsign=false", "tag", "--cleanup=verbatim", "-a", approvalTag, target, "-m", message}
+				if test.signer >= 0 {
+					args[3] = "tag.gpgsign=true"
+					args = append([]string{"-c", "user.signingkey=" + keys[test.signer]}, args...)
+				}
+				run("git", args...)
 			}
-			run(t, "git", args...)
 			if test.tamper {
-				object := run(t, "git", "cat-file", "tag", "refs/tags/"+manifest.Tag)
-				object = strings.Replace(object, "Owner accepts", "Owner rejects", 1)
+				object := run("git", "cat-file", "tag", "refs/tags/"+approvalTag)
 				command := exec.CommandContext(t.Context(), "git", "hash-object", "-t", "tag", "-w", "--stdin")
 				command.Dir = directory
-				command.Stdin = strings.NewReader(object + "\n")
+				command.Stdin = strings.NewReader(strings.Replace(object, "Owner accepts", "Owner rejects", 1) + "\n")
 				output, err := command.Output()
 				if err != nil {
 					t.Fatal(err)
 				}
-				run(t, "git", "update-ref", "refs/tags/"+manifest.Tag, strings.TrimSpace(string(output)))
-				manifest.ValidationOverride.Reason = "Owner rejects failed validation"
+				run("git", "update-ref", "refs/tags/"+approvalTag, strings.TrimSpace(string(output)))
 			}
-			actors := test.actors
-			if actors == "" {
-				actors = `["example-operator"]`
+			if test.wrongReason {
+				manifest.ValidationOverride.Reason = "A forged reason"
 			}
-			if err := os.WriteFile(filepath.Join(directory, "actors.json"), []byte(actors), 0o600); err != nil {
-				t.Fatal(err)
+			if test.uncommitted {
+				if err := os.WriteFile(filepath.Join(directory, ".github/release-override-signers"), []byte(keys[1]+"\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
 			}
-			keysJSON := string(keyJSON)
-			if test.revoked {
-				keysJSON = strings.Replace(keysJSON, `"raw_key":`, `"revoked":true,"raw_key":`, 1)
+			if test.forged {
+				for name, value := range map[string]string{"DETENT_RELEASE_OVERRIDE": reason, "RELEASE_OVERRIDE_ACTORS": `["example-owner"]`, "GITHUB_ACTIONS": "true", "GITHUB_ACTOR": "example-owner", "GITHUB_RUN_ID": "12345", "WORKFLOW_OVERRIDE_ACTORS": `["example-owner"]`} {
+					t.Setenv(name, value)
+				}
 			}
-			if err := os.WriteFile(filepath.Join(directory, "keys.json"), []byte(keysJSON), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			signature, signatureErr := VerifyOverrideTag(t.Context(), directory, manifest, test.workflowActors)
+			signature, signatureErr := VerifyOverrideTag(t.Context(), directory, manifest)
 			if (signatureErr != nil) != test.wantError {
 				var exitError *exec.ExitError
 				if errors.As(signatureErr, &exitError) {
-					t.Logf("fixture command stderr: %s", exitError.Stderr)
+					t.Logf("fixture stderr: %s", exitError.Stderr)
 				}
 				t.Fatalf("VerifyOverrideTag() = %v, want error %t", signatureErr, test.wantError)
 			}
@@ -172,12 +172,6 @@ esac
 					{Name: "release-security-audit", Commit: commit, Status: "completed", Conclusion: "success", StatusID: 10}}, OverrideSignature: signature}
 			if err := VerifyGitHubEvidence(manifest, evidence); (err != nil) != test.wantError {
 				t.Fatalf("VerifyGitHubEvidence() = %v, want error %t", err, test.wantError)
-			}
-			if !test.wantError {
-				manifest.ValidationOverride.Reason = "Different reason"
-				if err := VerifyGitHubEvidence(manifest, evidence); err == nil {
-					t.Fatal("verified signature authorized a different override reason")
-				}
 			}
 		})
 	}
