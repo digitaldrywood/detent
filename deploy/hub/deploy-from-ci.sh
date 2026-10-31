@@ -9,26 +9,16 @@ DOMAIN=cloud.detent.build
 OPT=/opt/$NAME
 STATE=/var/lib/$NAME
 read -r verb sha extra <<<"${SSH_ORIGINAL_COMMAND:-}"
-if { [ "${verb:-}" != deploy ] && [ "${verb:-}" != deploy-bundle ]; } || [ -n "${extra:-}" ] || ! [[ "${sha:-}" =~ ^[0-9a-f]{40}$ ]]; then
-  echo "usage: deploy|deploy-bundle <40-hex commit sha> < upload" >&2
+if [ "${verb:-}" != deploy ] || [ -n "${extra:-}" ] || ! [[ "${sha:-}" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "usage: deploy <40-hex commit sha> < binary" >&2
   exit 2
 fi
 short=${sha:0:9}
 exec 9>/run/lock/$NAME-deploy.lock
 flock -w 600 9 || { echo "another production deploy holds the lock" >&2; exit 1; }
 staged=$(mktemp /tmp/$NAME-upload.XXXXXX)
-upload=$(mktemp /tmp/$NAME-bundle.XXXXXX)
-restore_script=$(mktemp /tmp/$NAME-restore.XXXXXX)
-trap 'rm -f "$staged" "$upload" "$restore_script"' EXIT
-if [ "$verb" = deploy-bundle ]; then
-  head -c 314572800 > "$upload"
-  tar -xOf "$upload" detent > "$staged"
-  tar -xOf "$upload" restore-test.sh > "$restore_script"
-  [ -s "$restore_script" ] || { echo "restore script is empty" >&2; exit 1; }
-  bash -n "$restore_script"
-else
-  head -c 314572800 > "$staged"
-fi
+trap 'rm -f "$staged"' EXIT
+head -c 314572800 > "$staged"
 size=$(stat -c %s "$staged")
 [ "$size" -gt 1000000 ] || { echo "upload too small ($size bytes)" >&2; exit 1; }
 chmod 0755 "$staged"
@@ -66,9 +56,6 @@ healthy() {
 }
 for _ in $(seq 1 30); do
   if healthy; then
-    if [ "$verb" = deploy-bundle ]; then
-      sudo -n install -m 0755 -o root -g root "$restore_script" /usr/local/sbin/detent-restore-test
-    fi
     echo "$sha" | sudo -n tee "$STATE/DEPLOYED_SHA" >/dev/null
     ls -1t $OPT/releases | grep "^detent-ci-" | tail -n +6 | sed "s|^|$OPT/releases/|" | grep -vxF "$release" | xargs -r sudo -n rm -f || true
     echo "production deployed $short via $unit"
