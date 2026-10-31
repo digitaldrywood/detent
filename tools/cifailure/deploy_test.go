@@ -1,9 +1,6 @@
 package main
 
 import (
-	"archive/tar"
-	"bytes"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -82,35 +79,8 @@ func TestReleaseDeployBindsBinaryAndRestrictedSSH(t *testing.T) {
 					}
 				}
 				streamed, err := os.ReadFile(filepath.Join(dir, "calls.binary"))
-				if err != nil {
-					t.Fatal(err)
-				}
-				if test.environment == "production" {
-					archive := tar.NewReader(bytes.NewReader(streamed))
-					files := make(map[string]string)
-					for {
-						header, err := archive.Next()
-						if err == io.EOF {
-							break
-						}
-						if err != nil {
-							t.Fatal(err)
-						}
-						data, err := io.ReadAll(archive)
-						if err != nil {
-							t.Fatal(err)
-						}
-						files[header.Name] = string(data)
-					}
-					config, err := os.ReadFile(filepath.Join(root, "deploy", "hub", "litestream-production.json"))
-					if err != nil {
-						t.Fatal(err)
-					}
-					if len(files) != 2 || files["detent"] != binary || files["litestream-production.json"] != string(config) {
-						t.Fatal("deployment did not bundle the verified binary and tracked Litestream config")
-					}
-				} else if string(streamed) != binary {
-					t.Fatal("staging deployment streamed a different binary")
+				if err != nil || string(streamed) != binary {
+					t.Fatal("deployment streamed a different binary")
 				}
 			}
 			keys, err := filepath.Glob(filepath.Join(dir, "release-ssh.*"))

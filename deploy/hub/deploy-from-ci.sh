@@ -1,5 +1,6 @@
 #!/bin/bash
 # Forced command for the GitHub Actions production deploy key. Production paths only.
+# Usage (via SSH): ssh ... deploy <full-commit-sha> < detent-linux-amd64
 set -euo pipefail
 umask 022
 NAME=detent-hub
@@ -15,19 +16,14 @@ fi
 short=${sha:0:9}
 exec 9>/run/lock/$NAME-deploy.lock
 flock -w 600 9 || { echo "another production deploy holds the lock" >&2; exit 1; }
-staging=$(mktemp -d "${TMPDIR:-/tmp}/$NAME-upload.XXXXXX")
-trap 'rm -rf "$staging"' EXIT
-head -c 314572800 > "$staging/deploy.tar"
-staged="$staging/detent"
-tar -xOf "$staging/deploy.tar" detent > "$staged"
-tar -xOf "$staging/deploy.tar" litestream-production.json > "$staging/production.yml"
+staged=$(mktemp /tmp/$NAME-upload.XXXXXX)
+trap 'rm -f "$staged"' EXIT
+head -c 314572800 > "$staged"
 size=$(stat -c %s "$staged")
 [ "$size" -gt 1000000 ] || { echo "upload too small ($size bytes)" >&2; exit 1; }
-chmod 0755 "$staging" "$staged"
+chmod 0755 "$staged"
 reported=$(sudo -n -u $NAME "$staged" version --format json 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin).get("commit",""))')
 [[ "$reported" == "$short"* ]] || { echo "binary reports commit '$reported', want $short" >&2; exit 1; }
-sudo -n install -m 0644 -o root -g root "$staging/production.yml" /etc/litestream-detent/production.yml
-sudo -n systemctl restart litestream-detent@production.service
 release=$OPT/releases/detent-ci-$short-$(date -u +%Y%m%dT%H%M%SZ)
 sudo -n install -m 0755 -o root -g root "$staged" "$release"
 previous=$(readlink "$OPT/detent" || true)
