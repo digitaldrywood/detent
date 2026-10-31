@@ -2175,6 +2175,18 @@ func WorkerScratchRoot(workspacePath string) string {
 	return filepath.Join(workerScratchGroup(filepath.Dir(workspacePath)), filepath.Base(workspacePath))
 }
 
+// workerScratchRoots lists the external scratch roots a workspace may own:
+// the current per-user root and the root under the base an earlier runner
+// shared between users.
+func workerScratchRoots(workspacePath string) []string {
+	workspacePath = bestEffortCanonicalPath(workspacePath)
+	roots := []string{WorkerScratchRoot(workspacePath)}
+	if shared := filepath.Join(workerScratchGroupIn(sharedWorkerScratchBase(), filepath.Dir(workspacePath)), filepath.Base(workspacePath)); shared != roots[0] {
+		roots = append(roots, shared)
+	}
+	return roots
+}
+
 // ensurePrivateDirectories creates base and every directory down to path, and
 // refuses any component that is a symlink or writable by others, because the
 // OS temp root may be shared between users.
@@ -2213,16 +2225,24 @@ func ensurePrivateDirectories(base string, path string) error {
 }
 
 func workerScratchGroup(workspaceParent string) string {
+	return workerScratchGroupIn(workerScratchBase(), workspaceParent)
+}
+
+func workerScratchGroupIn(base string, workspaceParent string) string {
 	sum := sha256.Sum256([]byte(bestEffortCanonicalPath(workspaceParent)))
-	return filepath.Join(workerScratchBase(), hex.EncodeToString(sum[:8]))
+	return filepath.Join(base, hex.EncodeToString(sum[:8]))
 }
 
 func workerScratchBase() string {
-	name := workerScratchBaseName
+	base := sharedWorkerScratchBase()
 	if uid := os.Getuid(); uid >= 0 {
-		name += "-" + strconv.Itoa(uid)
+		base += "-" + strconv.Itoa(uid)
 	}
-	return filepath.Join(bestEffortCanonicalPath(os.TempDir()), name)
+	return base
+}
+
+func sharedWorkerScratchBase() string {
+	return filepath.Join(bestEffortCanonicalPath(os.TempDir()), workerScratchBaseName)
 }
 
 func bestEffortCanonicalPath(path string) string {
@@ -2236,11 +2256,12 @@ func bestEffortCanonicalPath(path string) string {
 }
 
 // workerScratchParent returns the directory that owns scratchPath: the
-// external scratch root, or the legacy in-workspace scratch directory for
-// attempts started before scratch moved out of the workspace.
+// external scratch root, the root under the base an earlier runner shared
+// between users, or the legacy in-workspace scratch directory for attempts
+// started before scratch moved out of the workspace.
 func workerScratchParent(workspacePath string, scratchPath string) (string, bool) {
 	scratchPath = filepath.Clean(scratchPath)
-	for _, parent := range []string{WorkerScratchRoot(workspacePath), filepath.Join(workspacePath, filepath.FromSlash(workerScratchRelativePath))} {
+	for _, parent := range append(workerScratchRoots(workspacePath), filepath.Join(workspacePath, filepath.FromSlash(workerScratchRelativePath))) {
 		if scratchPath == parent || pathWithin(parent, scratchPath) {
 			return parent, true
 		}
@@ -2287,7 +2308,10 @@ func CleanupOwnedPath(root string, path string) error {
 	if strings.TrimSpace(root) == "" || strings.TrimSpace(path) == "" {
 		return nil
 	}
-	if scratchRoot := WorkerScratchRoot(root); pathWithin(scratchRoot, filepath.Clean(path)) {
+	for _, scratchRoot := range workerScratchRoots(root) {
+		if !pathWithin(scratchRoot, filepath.Clean(path)) {
+			continue
+		}
 		if _, err := os.Lstat(scratchRoot); errors.Is(err, fs.ErrNotExist) {
 			return nil
 		}
@@ -2328,7 +2352,10 @@ func ReapWorkerArtifactProcesses(ctx context.Context, root string, path string, 
 	if strings.TrimSpace(root) == "" || strings.TrimSpace(path) == "" {
 		return 0, nil
 	}
-	if scratchRoot := WorkerScratchRoot(root); pathWithin(scratchRoot, filepath.Clean(path)) {
+	for _, scratchRoot := range workerScratchRoots(root) {
+		if !pathWithin(scratchRoot, filepath.Clean(path)) {
+			continue
+		}
 		if _, err := os.Lstat(root); errors.Is(err, fs.ErrNotExist) {
 			return ReapProcesses(ctx, filepath.Clean(path), grace)
 		}

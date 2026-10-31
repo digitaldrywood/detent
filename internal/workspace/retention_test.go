@@ -333,9 +333,9 @@ func TestRetentionAttempts(t *testing.T) {
 		{name: "lookup failed", fail: true, age: 24 * time.Hour},
 	} {
 		for _, location := range []struct {
-			name              string
-			external, removed bool
-		}{{name: "legacy"}, {name: "external", external: true}, {name: "external removed workspace", external: true, removed: true}} {
+			name                      string
+			external, removed, shared bool
+		}{{name: "legacy"}, {name: "external", external: true}, {name: "external removed workspace", external: true, removed: true}, {name: "shared external", external: true, shared: true}} {
 			t.Run(test.name+"/"+location.name, func(t *testing.T) {
 				backend := retentionBackend(t)
 				workspacePath := filepath.Join(backend.root, "workspace")
@@ -351,6 +351,16 @@ func TestRetentionAttempts(t *testing.T) {
 						t.Fatal(err)
 					}
 					path = filepath.Join(WorkerScratchRoot(workspacePath), "attempt-test")
+					if location.shared {
+						group := workerScratchGroupIn(sharedWorkerScratchBase(), backend.root)
+						t.Cleanup(func() { _ = os.RemoveAll(group) })
+						if err := ensurePrivateDirectories(sharedWorkerScratchBase(), filepath.Join(group, "workspace")); errors.Is(err, fs.ErrPermission) {
+							t.Skip("another user owns the shared scratch base")
+						} else if err != nil {
+							t.Fatal(err)
+						}
+						path = filepath.Join(group, "workspace", "attempt-test")
+					}
 				}
 				retentionFixture(t, filepath.Join(path, "file"), now)
 				if err := os.Chtimes(path, now.Add(-test.age), now.Add(-test.age)); err != nil {
