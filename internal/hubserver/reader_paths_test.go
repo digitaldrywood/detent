@@ -441,7 +441,7 @@ func TestHubWriterQueriesRequireAnOwnedReadReason(t *testing.T) {
 		"prepareRestore":                    "Offline restore replaces the administrator credential and writes recovery state.",
 		"runnerAdminTransaction":            "Applies a runner administration mutation with allowance checks.",
 		"updateRunnerCapacityCommand":       "Writes capacity configuration with its revision and command receipt.",
-		"runnerTransaction":                 "Applies a runner protocol mutation under current runner authority.",
+		"commitRunnerTransaction":           "Applies a runner protocol mutation under current runner authority.",
 		"chargeRunnerRead":                  "Charges runner read consumption as an explicit accounting write.",
 		"applyRunnerUpdateCommand":          "Writes the selected runner update and its command receipt.",
 		"processSlackDelivery":              "Claims and records a Slack delivery attempt.",
