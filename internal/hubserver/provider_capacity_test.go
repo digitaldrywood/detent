@@ -41,48 +41,50 @@ func TestProviderCapacityClaimObservations(t *testing.T) {
 		name   string
 		change func(*providercapacity.Report, *tracker.NativeClaim)
 		want   int
+		code   string
 	}{
-		{"available", func(*providercapacity.Report, *tracker.NativeClaim) {}, http.StatusOK},
+		{"available", func(*providercapacity.Report, *tracker.NativeClaim) {}, http.StatusOK, ""},
 		{"multiple candidates retain selection", func(_ *providercapacity.Report, c *tracker.NativeClaim) {
 			c.WorkItemID = ""
 			missing := c.ProviderCandidates[0]
 			missing.WorkItemID = "wi_missing"
 			c.ProviderCandidates = append([]tracker.NativeCapacityCandidate{missing}, c.ProviderCandidates...)
-		}, http.StatusOK},
-		{"unknown", func(r *providercapacity.Report, _ *tracker.NativeClaim) { r.Availability = "unknown" }, http.StatusOK},
+		}, http.StatusOK, ""},
+		{"unknown", func(r *providercapacity.Report, _ *tracker.NativeClaim) { r.Availability = "unknown" }, http.StatusOK, ""},
 		{"default report without account limit", func(r *providercapacity.Report, _ *tracker.NativeClaim) {
 			r.MaxConcurrent, r.Availability = 0, "unknown"
-		}, http.StatusOK},
+		}, http.StatusOK, ""},
 		{"stale exhaustion", func(r *providercapacity.Report, _ *tracker.NativeClaim) {
 			r.Availability = "exhausted"
 			r.ObservedAt = r.ObservedAt.Add(-providercapacity.MaxAge)
-		}, http.StatusOK},
+		}, http.StatusOK, ""},
 		{"future observation", func(r *providercapacity.Report, _ *tracker.NativeClaim) {
 			r.Availability = "exhausted"
 			r.ObservedAt = r.ObservedAt.Add(time.Second)
-		}, http.StatusOK},
-		{"exhausted", func(r *providercapacity.Report, _ *tracker.NativeClaim) { r.Availability = "exhausted" }, http.StatusOK},
+		}, http.StatusOK, ""},
+		{"exhausted", func(r *providercapacity.Report, _ *tracker.NativeClaim) { r.Availability = "exhausted" }, http.StatusOK, ""},
 		{"reset", func(r *providercapacity.Report, _ *tracker.NativeClaim) {
 			r.Availability = "exhausted"
 			r.ResetAt = r.ObservedAt
 			r.ObservedAt = r.ObservedAt.Add(-time.Minute)
-		}, http.StatusOK},
+		}, http.StatusOK, ""},
 		{"explicit model unavailable", func(_ *providercapacity.Report, c *tracker.NativeClaim) {
 			c.ProviderCandidates[0].Requirement.Model = "expensive"
-		}, http.StatusConflict},
+		}, http.StatusConflict, "provider_incompatible"},
 		{"wrong backend", func(_ *providercapacity.Report, c *tracker.NativeClaim) {
 			c.ProviderCandidates[0].Requirement.Backend = "other"
-		}, http.StatusConflict},
-		{"changed issue", func(_ *providercapacity.Report, c *tracker.NativeClaim) { c.ProviderCandidates[0].Revision++ }, http.StatusConflict},
-		{"missing requirements", func(_ *providercapacity.Report, c *tracker.NativeClaim) { c.ProviderCandidates = nil }, http.StatusConflict},
+		}, http.StatusConflict, "provider_incompatible"},
+		{"changed issue", func(_ *providercapacity.Report, c *tracker.NativeClaim) { c.ProviderCandidates[0].Revision++ }, http.StatusConflict, "provider_candidate_changed"},
+		{"missing requirements", func(_ *providercapacity.Report, c *tracker.NativeClaim) { c.ProviderCandidates = nil }, http.StatusConflict, "provider_incompatible"},
 		{"invalid requirements", func(_ *providercapacity.Report, c *tracker.NativeClaim) {
 			c.ProviderCandidates[0].Requirement.Model = ""
-		}, http.StatusUnprocessableEntity},
+		}, http.StatusUnprocessableEntity, ""},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
-			f := newNativeFixture(t, openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }}), "", "provider")
+			clock := &leaseTestClock{value: now}
+			f := newNativeFixture(t, openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: clock.Now}), "", "provider")
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
 			r.enroll(t)
 			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
@@ -93,7 +95,8 @@ func TestProviderCapacityClaimObservations(t *testing.T) {
 			publishCapacity(t, f, r, report)
 			if report.MaxConcurrent == 0 {
 				for range 6 {
-					now = now.Add(30 * time.Second)
+					clock.Advance(30 * time.Second)
+					now = clock.Now()
 					report.ObservedAt = now
 					config := runnerauth.CapacityConfig{Revision: strings.Repeat("a", 64), LocalLimit: 2, ClientLimit: 2, RuntimeLimit: 2, Manageable: true, ObservedAt: now}
 					response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{
@@ -112,6 +115,13 @@ func TestProviderCapacityClaimObservations(t *testing.T) {
 			assertRunnerAdmissionFacts(t, f, r)
 			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim)
 			requireNativeStatus(t, response, test.want)
+			if test.code != "" {
+				var refusal nativeError
+				decodeHubResponse(t, response, &refusal)
+				if refusal.Code != test.code {
+					t.Fatalf("refusal = %s, want %s", refusal.Code, test.code)
+				}
+			}
 			var count int
 			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM provider_reservations").Scan(&count); err != nil {
 				t.Fatal(err)
@@ -364,7 +374,7 @@ func TestProviderQueueOrderAndSelectors(t *testing.T) {
 		winner      int
 		targeted    bool
 	}{
-		{name: "single provider candidate bypasses unrequested project head", states: []string{"Todo", "Todo", "Todo"}, priorities: []int{0, 1, 2}, want: []int{0, 1, 2}, winner: 1, targeted: true},
+		{name: "single provider candidate honors project rank and selectors", states: []string{"Todo", "Todo", "Todo"}, priorities: []int{0, 1, 2}, want: []int{0, 1, 2}, winner: 1, targeted: true},
 		{name: "resolved health finding leaves preview read-only", states: []string{"Todo", "Todo", "Todo"}, priorities: []int{0, 1, 2}, unavailable: "resolved health", want: []int{0, 1, 2}},
 		{name: "legacy numeric order", states: []string{"Todo", "Todo", "Todo"}, priorities: []int{0, 1, 2}, unavailable: "provider", want: []int{0, 1, 2}, winner: 1},
 		{name: "reviewed merging beats higher priority implementation", states: []string{"Todo", "Merging", "Todo"}, priorities: []int{0, 3, 2}, order: []string{"Merging", "Rework", "In Progress", "Todo"}, want: []int{1, 0, 2}, winner: 1},
@@ -396,7 +406,7 @@ func TestProviderQueueOrderAndSelectors(t *testing.T) {
 			if test.targeted {
 				higher := newNativeFixture(t, f.service, f.project.OrganizationID, "higher-ranked")
 				approveHubTestPolicy(t, f.service, higher.base+"/policy", hubTestPolicy())
-				higher.create(t, "unrequested head")
+				patchLabels(t, higher, higher.create(t, "unrequested head"), "head-label", []string{"excluded"})
 				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET scheduling_rank=CASE WHEN id=? THEN 0 ELSE 1 END WHERE organization_id=?", higher.project.ID, f.project.OrganizationID); err != nil {
 					t.Fatal(err)
 				}
@@ -586,6 +596,14 @@ func TestProviderQueueOrderAndSelectors(t *testing.T) {
 			}
 			if test.targeted {
 				claim.ProviderCandidates = claim.ProviderCandidates[test.winner : test.winner+1]
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim)
+				requireNativeStatus(t, response, http.StatusConflict)
+				var refusal nativeError
+				decodeHubResponse(t, response, &refusal)
+				if refusal.Code != "no_claimable_work" {
+					t.Fatalf("higher-ranked project refusal = %s, want no_claimable_work", refusal.Code)
+				}
+				claim.LabelExclude = []string{"excluded"}
 			}
 			response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim)
 			requireNativeStatus(t, response, http.StatusOK)

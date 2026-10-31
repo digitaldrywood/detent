@@ -51,6 +51,7 @@ func (d *database) runnerAllowedSelection(ctx context.Context, tx *sql.Tx, query
 	headPositions := make(map[tracker.WorkItemID]selectionPosition)
 	incomplete := make([]selectionPosition, 0, len(projects))
 	var contractRefusal error
+	var providerRefusal error
 	quota := max(1, claimPreparationLimit/len(projects))
 projects:
 	for _, project := range projects {
@@ -195,6 +196,9 @@ projects:
 					return false, nil
 				}
 				if _, _, err := selectProviderCapacity(ctx, tx, capacityQuery, id, now); err != nil {
+					if project == query.NativeScope.project && isProviderWait(err) {
+						providerRefusal = err
+					}
 					if errors.Is(err, ErrNoClaimableWork) || isProviderWait(err) {
 						return false, nil
 					}
@@ -262,6 +266,9 @@ projects:
 	}
 	if selected == 0 && contractRefusal != nil {
 		return 0, true, contractRefusal
+	}
+	if selected == 0 && providerRefusal != nil {
+		return 0, true, providerRefusal
 	}
 	return selected, true, nil
 }
