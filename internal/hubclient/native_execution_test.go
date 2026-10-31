@@ -137,10 +137,11 @@ func TestRetiredControllerRenewsClaimsWithoutReportingOldBuild(t *testing.T) {
 func TestPreProviderCancellationRecordsReleaseReason(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name      string
-		reason    string
-		runtime   bool
-		unstarted bool
+		name           string
+		reason         string
+		runtime        bool
+		unstarted      bool
+		partialRuntime bool
 	}{
 		{name: "dispatch_deferred", reason: "dispatch_deferred", runtime: true},
 		{name: "provider_capacity_unavailable", reason: "provider_capacity_unavailable", runtime: true},
@@ -148,6 +149,7 @@ func TestPreProviderCancellationRecordsReleaseReason(t *testing.T) {
 		{name: "provider_capacity_unavailable_without_runtime", reason: "provider_capacity_unavailable"},
 		{name: "unstarted deferred claim", reason: "dispatch_deferred", unstarted: true},
 		{name: "unstarted released claim", reason: "released", unstarted: true},
+		{name: "partial recovery observation", reason: "dispatch_deferred", runtime: true, partialRuntime: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -187,6 +189,11 @@ func TestPreProviderCancellationRecordsReleaseReason(t *testing.T) {
 			scheduler := &Scheduler{client: client, now: func() time.Time { return at }, leaseTTL: time.Minute, claims: map[string]tracker.Lease{string(lease.WorkItemID): nativeTrackerLease(lease)}, nativeClaims: make(map[string]nativeClaim)}
 			claim := nativeClaim{source: &NativeConnector{client: native}, lease: lease, deadline: at.Add(time.Minute)}
 			execution := &nativeExecution{scheduler: scheduler, claim: claim, data: tracker.NativeRunData{AttemptID: "attempt_example", RunID: "run_example", LeaseID: lease.ID, FencingToken: lease.FencingToken, PolicyID: lease.PolicyID, Runtime: &tracker.NativeRuntimeObservation{LocalAttemptID: 42, Generation: 1, Phase: "completed", HeartbeatAt: at}}}
+			if test.partialRuntime {
+				execution.data.Runtime.Phase = ""
+				execution.data.Runtime.HeartbeatAt = time.Time{}
+				execution.data.Runtime.Phases = []tracker.NativePhase{{Name: "implementation", StartedAt: at.Add(-time.Second)}, {}}
+			}
 			if !test.runtime {
 				observation := *execution.data.Runtime
 				execution.data.Runtime = nil
@@ -222,6 +229,19 @@ func TestPreProviderCancellationRecordsReleaseReason(t *testing.T) {
 			}
 			if (event.Data.Runtime != nil) != test.runtime {
 				t.Fatalf("cancellation changed runtime presence: %+v", event.Data.Runtime)
+			}
+			if runtime := event.Data.Runtime; runtime != nil {
+				if runtime.Phase != "completed" || !runtime.HeartbeatAt.Equal(at) {
+					t.Fatalf("cancellation retained an incomplete runtime: %+v", runtime)
+				}
+				for _, phase := range runtime.Phases {
+					if phase.Name == "" {
+						t.Fatal("cancellation published an unobserved phase")
+					}
+				}
+				if test.partialRuntime && (len(runtime.Phases) != 1 || runtime.Phases[0].Name != "implementation" || runtime.PhasesDropped != 1) {
+					t.Fatalf("cancellation lost recorded phase history: %+v", runtime)
+				}
 			}
 		})
 	}
