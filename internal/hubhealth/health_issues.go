@@ -53,8 +53,8 @@ func (d *Store) ReportFindings(ctx context.Context, tx *sql.Tx, organization tra
 		if err := json.Unmarshal([]byte(rawEvidence), &f.Evidence); err != nil {
 			return nil, err
 		}
-		f.Evidence = ScopeEvidence(f.Evidence, o.project)
-		o.digest, err = IssueDigest(*f)
+		f.Evidence = scopeEvidence(f.Evidence, o.project)
+		o.digest, err = issueDigest(*f)
 		if err != nil {
 			return nil, err
 		}
@@ -102,7 +102,7 @@ func (d *Store) ReportFindings(ctx context.Context, tx *sql.Tx, organization tra
 				next = occurrence{project: o.project}
 			}
 			next.finding, next.fingerprint = finding, finding.Fingerprint
-			next.digest, err = IssueDigest(finding)
+			next.digest, err = issueDigest(finding)
 			if err != nil {
 				return nil, err
 			}
@@ -236,7 +236,7 @@ func IssueRequest(f Finding) (tracker.CreateIssue, error) {
 	return request, nil
 }
 
-func IssueDigest(f Finding) (string, error) {
+func issueDigest(f Finding) (string, error) {
 	signatures := slices.Clone(f.Evidence.Signatures)
 	slices.Sort(signatures)
 	signatures = slices.Compact(signatures)

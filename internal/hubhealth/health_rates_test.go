@@ -147,7 +147,7 @@ func TestHealthRateSignals(t *testing.T) {
 			if fired := slices.Contains(healthRateSignals(now, noBaseline), test.signal); fired != test.absolute || fired != floor {
 				t.Fatalf("missing baseline fired %s=%v floor=%v want %v", test.signal, fired, floor, test.absolute)
 			}
-			gaps := BaselineGaps(noBaseline, BuildRateBaseline(now, noBaseline))
+			gaps := baselineGaps(noBaseline, buildRateBaseline(now, noBaseline))
 			if !slices.ContainsFunc(gaps, func(g BaselineUnavailable) bool { return g.Signal == test.signal }) {
 				t.Fatalf("missing unavailable marker for %s", test.signal)
 			}
@@ -354,8 +354,8 @@ func TestHealthRateBoundaries(t *testing.T) {
 		p.Attempts = slices.Clone(p.Attempts[:19])
 		p.Timelines = p.Timelines[:19]
 		failing(&p, now.Add(-time.Minute), healthRetryCount-1)
-		b := BuildRateBaseline(now, p)
-		if gaps := BaselineGaps(p, b); len(gaps) != 9 || len(evaluateHealthRates(now, []RateProject{p})) != 0 {
+		b := buildRateBaseline(now, p)
+		if gaps := baselineGaps(p, b); len(gaps) != 9 || len(evaluateHealthRates(now, []RateProject{p})) != 0 {
 			t.Fatalf("nineteen samples not silent: %+v", gaps)
 		}
 	})

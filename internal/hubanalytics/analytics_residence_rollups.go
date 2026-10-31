@@ -76,7 +76,7 @@ func (d *Store) ProjectResidenceRollups(ctx context.Context, q hubsql.Queryer, s
 	} else if frames.Clipped {
 		out.Unavailable = append(out.Unavailable, "lane_residence_complete_population", "queue_time_complete_population")
 	}
-	if err := d.AddResidenceHours(ctx, q, scope, out); err != nil {
+	if err := d.addResidenceHours(ctx, q, scope, out); err != nil {
 		return err
 	}
 	return d.ProjectResidencePipelineRollups(ctx, q, scope, frames, out)
@@ -207,7 +207,7 @@ func (d *Store) ReadReportsCompletionRollups(ctx context.Context, q hubsql.Query
 				out.Partial = true
 				continue
 			}
-			item := ResidenceSampleItem(sample, states, sample.At)
+			item := residenceSampleItem(sample, states, sample.At)
 			system = append(system, item.SystemSeconds)
 			lead = append(lead, sample.At.Sub(sample.Created).Seconds())
 			working = append(working, item.LaneSeconds["In Progress"])
@@ -378,7 +378,7 @@ func WriteResidenceSample(ctx context.Context, tx hubsql.Execer, scope Scope, me
 	return err
 }
 
-func RefreshResidence(ctx context.Context, tx ProjectionQuery, scope Scope, id string, after int64, before ...int64) error {
+func refreshResidence(ctx context.Context, tx ProjectionQuery, scope Scope, id string, after int64, before ...int64) error {
 	states, err := ResidenceStates(ctx, tx, scope)
 	if err != nil {
 		return err
@@ -591,7 +591,7 @@ type MergeSample struct {
 	Claim    *time.Time
 }
 
-func ResidenceSampleItem(sample ResidenceSample, states map[string]tracker.NativeState, at time.Time) operatortool.AnalyticsIssueResidence {
+func residenceSampleItem(sample ResidenceSample, states map[string]tracker.NativeState, at time.Time) operatortool.AnalyticsIssueResidence {
 	item := operatortool.AnalyticsIssueResidence{WorkItemID: sample.ID, SystemStartedAt: sample.Started, LaneSeconds: map[string]float64{}, QueueSeconds: sample.Queue, Partial: sample.Partial}
 	for lane, seconds := range sample.Lanes {
 		item.LaneSeconds[lane] = seconds
@@ -844,7 +844,7 @@ JOIN analytics_hourly_rollups r ON r.rowid=(SELECT rowid FROM analytics_hourly_r
 	if len(clipped) == 0 {
 		return out, nil
 	}
-	return out, ReadResidenceCutoffs(ctx, q, scope, clipped, out.cutoffs)
+	return out, readResidenceCutoffs(ctx, q, scope, clipped, out.cutoffs)
 }
 
 func residenceHour(ns int64) int64 {
@@ -893,7 +893,7 @@ type residenceClip struct {
 
 // readResidenceCutoffs reads, for each clipped issue and its allowed event
 // count, the earliest edge at that count in one statement.
-func ReadResidenceCutoffs(ctx context.Context, q hubsql.Queryer, scope Scope, clipped []residenceClip, cutoffs map[string]residenceCutoff) error {
+func readResidenceCutoffs(ctx context.Context, q hubsql.Queryer, scope Scope, clipped []residenceClip, cutoffs map[string]residenceCutoff) error {
 	var tuples [][]any
 	for _, clip := range clipped {
 		tuples = append(tuples, []any{clip.ID, clip.Allowed})
@@ -948,7 +948,7 @@ func SummarizeResidenceFrames(frames ResidenceFrames, from, to time.Time) (opera
 		}
 		end := frames.At(to, id)
 		begin := frames.At(from, id)
-		item := ResidenceSampleItem(end, frames.States, to)
+		item := residenceSampleItem(end, frames.States, to)
 		item.WorkItemID = id
 		endLanes, endQueue := residenceSampleNanoseconds(end, frames.States, to)
 		beginLanes, beginQueue := residenceSampleNanoseconds(begin, frames.States, from)

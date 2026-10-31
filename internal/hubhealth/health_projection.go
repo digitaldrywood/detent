@@ -76,7 +76,7 @@ func UpdateEventProjection(ctx context.Context, tx *sql.Tx, id string, actor tra
 
 type ProjectionFamily string
 
-func ProjectionQueries(family ProjectionFamily) (string, string, error) {
+func projectionQueries(family ProjectionFamily) (string, string, error) {
 	switch family {
 	case "collaboration_events":
 		return `SELECT rowid,id,data_json,actor_json FROM collaboration_events WHERE health_projected IS NULL ORDER BY rowid LIMIT ?`, `UPDATE collaboration_events SET health_projected=health_projected WHERE rowid=? AND health_projected IS NULL AND data_json=?`, nil
@@ -147,7 +147,7 @@ func (d *Store) DecodeProjection(f ProjectionFamily, id, raw, actorRaw string) (
 }
 
 func (s *Store) ApplyProjection(ctx context.Context, f ProjectionFamily, row int64, raw string, apply func(context.Context, *sql.Tx, int64) error) error {
-	_, fence, err := ProjectionQueries(f)
+	_, fence, err := projectionQueries(f)
 	if err != nil {
 		return err
 	}
@@ -175,7 +175,7 @@ type Cancellation struct {
 	Automatic         bool
 }
 
-func ReadCancellations(ctx context.Context, q hubsql.Queryer, organization tracker.OrganizationID) (map[string]Cancellation, error) {
+func readCancellations(ctx context.Context, q hubsql.Queryer, organization tracker.OrganizationID) (map[string]Cancellation, error) {
 	rows, err := q.QueryContext(ctx, `SELECT id,actor_json,data_json FROM collaboration_events
  WHERE organization_id=? AND type='workflow.transitioned' AND health_projected IS NULL
  ORDER BY id LIMIT ?`, organization, ReadLimit+1)
@@ -224,7 +224,7 @@ func (s *Store) ConvertProjections(ctx context.Context, remaining, start int) er
 }
 
 func (s *Store) ConvertProjectionFamily(ctx context.Context, family ProjectionFamily, limit int) (int, error) {
-	query, _, err := ProjectionQueries(family)
+	query, _, err := projectionQueries(family)
 	if err != nil {
 		return 0, err
 	}

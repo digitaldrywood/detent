@@ -360,10 +360,10 @@ func (d *Store) RefreshIssue(ctx context.Context, tx *sql.Tx, statements *Statem
 	if err := RefreshAttempts(ctx, tx, statements, organization, project, id); err != nil {
 		return err
 	}
-	if err := RefreshSkipSamples(ctx, tx, Scope{Organization: tracker.OrganizationID(organization), Project: tracker.ProjectID(project)}, id, through); err != nil {
+	if err := refreshSkipSamples(ctx, tx, Scope{Organization: tracker.OrganizationID(organization), Project: tracker.ProjectID(project)}, id, through); err != nil {
 		return err
 	}
-	if err := RefreshClaims(ctx, tx, Scope{Organization: tracker.OrganizationID(organization), Project: tracker.ProjectID(project)}, id, through); err != nil {
+	if err := refreshClaims(ctx, tx, Scope{Organization: tracker.OrganizationID(organization), Project: tracker.ProjectID(project)}, id, through); err != nil {
 		return err
 	}
 	var residenceChanged bool
@@ -371,7 +371,7 @@ func (d *Store) RefreshIssue(ctx context.Context, tx *sql.Tx, statements *Statem
 		return err
 	}
 	if residenceChanged {
-		if err := RefreshResidence(ctx, tx, Scope{Organization: tracker.OrganizationID(organization), Project: tracker.ProjectID(project)}, id, through); err != nil {
+		if err := refreshResidence(ctx, tx, Scope{Organization: tracker.OrganizationID(organization), Project: tracker.ProjectID(project)}, id, through); err != nil {
 			return err
 		}
 	}

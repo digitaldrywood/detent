@@ -13,7 +13,7 @@ type analyticsSkipSample struct {
 	AtNS           int64
 }
 
-func RefreshSkipSamples(ctx context.Context, tx ProjectionQuery, scope Scope, id string, through int64, before ...int64) error {
+func refreshSkipSamples(ctx context.Context, tx ProjectionQuery, scope Scope, id string, through int64, before ...int64) error {
 	rows, err := tx.QueryContext(ctx, `SELECT id,recorded_at,coalesce(scheduler_source,''),coalesce(scheduler_reason,'') FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND sequence>? AND sequence<=? AND type='scheduler.decision' AND scheduler_outcome='skipped'`, scope.Organization, scope.Project, id, through, projectionUpper(before))
 	if err != nil {
 		return err

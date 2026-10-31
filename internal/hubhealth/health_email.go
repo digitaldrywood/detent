@@ -22,7 +22,7 @@ import (
 )
 
 func (s *Store) CommitEvaluation(ctx context.Context, organization tracker.OrganizationID, now time.Time, findings []Finding, unavailable []BaselineUnavailable, emailUnavailable bool) error {
-	cancellations, err := ReadCancellations(ctx, s.reader, organization)
+	cancellations, err := readCancellations(ctx, s.reader, organization)
 	if err != nil {
 		return err
 	}
