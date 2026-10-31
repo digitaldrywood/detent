@@ -65,6 +65,13 @@ func readNativeProgress(ctx context.Context, q nativeQueryer, scope nativeScope,
 }
 
 func (o nativeProgressOwner) Publish(ctx context.Context, record progresscheck.Record) (progresscheck.Record, error) {
+	ctx = o.service.runDetailContext(ctx)
+	return prepareContentMutation(ctx, o.service.database.reader, func() (progresscheck.Record, error) {
+		return o.publishPrepared(ctx, record)
+	})
+}
+
+func (o nativeProgressOwner) publishPrepared(ctx context.Context, record progresscheck.Record) (progresscheck.Record, error) {
 	if record.ProjectID != string(o.scope.project) || record.IssueID != o.request.IssueID {
 		return progresscheck.Record{}, errors.New("progress decision scope differs")
 	}
@@ -186,17 +193,28 @@ func (o nativeProgressOwner) Publish(ctx context.Context, record progresscheck.R
 	}
 	body += "\n\nEvidence: " + strings.Join(record.Decision.Evidence, ", ")
 	if record.Decision.Outcome == progresscheck.SystemDefect {
-		defectBody := issueorigin.Stamp(record.Decision.DefectBody, issueorigin.Origin{Kind: "worker", Instance: "progress-check", Source: record.RequestID, Fingerprint: issueorigin.Fingerprint("progress-check:" + record.Decision.DefectKey)})
-		defect, err := createNativeMachineIntakeTx(ctx, tx, o.scope, tracker.CreateIssue{Title: record.Decision.DefectTitle, Body: defectBody, State: "Backlog", Mutation: tracker.Mutation{LeaseID: o.leaseID, FencingToken: o.fencingToken}}, now, false)
-		if err != nil {
-			return progresscheck.Record{}, fmt.Errorf("file progress defect: %w", err)
+		defectScope := nativeScope{credential: apiCredential{Scope: apiScopeAdmin}, project: tracker.ProjectID(issueorigin.DetentCloudProjectID), sourceActor: o.scope.sourceActor}
+		err := tx.QueryRowContext(ctx, "SELECT organization_id FROM projects WHERE id=? AND deleted_at IS NULL", defectScope.project).Scan(&defectScope.organization)
+		if errors.Is(err, sql.ErrNoRows) {
+			body += "\n\nPlatform defect filing unavailable: the platform project is not provisioned. Diagnosis retained on this item."
+		} else if err != nil {
+			return progresscheck.Record{}, fmt.Errorf("resolve platform project: %w", err)
+		} else {
+			actor := o.scope.actor()
+			actor.Kind, actor.Agent = "machine", "progress-check"
+			defectScope.sourceActor = &actor
+			defectBody := issueorigin.Stamp(record.Decision.DefectBody, issueorigin.Origin{Kind: "worker", Instance: "progress-check", Source: record.RequestID, Fingerprint: issueorigin.Fingerprint("progress-check:" + record.Decision.DefectKey)})
+			defect, err := createNativeMachineIntakeTx(ctx, tx, defectScope, tracker.CreateIssue{Title: record.Decision.DefectTitle, Body: defectBody, State: "Backlog"}, now, false)
+			if err != nil {
+				return progresscheck.Record{}, fmt.Errorf("file progress defect: %w", err)
+			}
+			record.DefectIssueID = string(defect.WorkItemID)
+			defect, _, err = readNativeIssue(ctx, tx, defectScope, record.DefectIssueID)
+			if err != nil {
+				return progresscheck.Record{}, fmt.Errorf("read platform defect link: %w", err)
+			}
+			body += fmt.Sprintf("\n\nSystem defect: [#%d](%s)", defect.Number, defect.WebURL)
 		}
-		record.DefectIssueID = string(defect.WorkItemID)
-		defect, _, err = readNativeIssue(ctx, tx, o.scope, record.DefectIssueID)
-		if err != nil {
-			return progresscheck.Record{}, fmt.Errorf("read progress defect link: %w", err)
-		}
-		body += fmt.Sprintf("\n\nSystem defect: [#%d](%s)", defect.Number, defect.WebURL)
 	}
 	commentScope := o.scope
 	actor := o.scope.actor()
@@ -214,27 +232,10 @@ func (o nativeProgressOwner) Publish(ctx context.Context, record progresscheck.R
 	if _, err := tx.ExecContext(ctx, "UPDATE native_comments SET progress_request_id=? WHERE id=?", record.RequestID, comment.ID); err != nil {
 		return progresscheck.Record{}, fmt.Errorf("bind progress comment: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM issue_dependencies WHERE dependent_issue_id=(SELECT id FROM issues WHERE organization_id=? AND project_id=? AND native_id=?) AND provenance='progress_check' AND source_version<>?`, o.scope.organization, o.scope.project, record.IssueID, record.RequestID); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM issue_dependencies WHERE dependent_issue_id=(SELECT id FROM issues WHERE organization_id=? AND project_id=? AND native_id=?) AND provenance='progress_check'`, o.scope.organization, o.scope.project, record.IssueID); err != nil {
 		return progresscheck.Record{}, err
 	}
-	if record.Decision.Outcome == progresscheck.SystemDefect {
-		var exists bool
-		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM issue_dependencies d JOIN issues b ON b.id=d.blocker_issue_id JOIN issues i ON i.id=d.dependent_issue_id WHERE i.organization_id=? AND i.project_id=? AND i.native_id=? AND b.native_id=?)`, o.scope.organization, o.scope.project, record.IssueID, record.DefectIssueID).Scan(&exists); err != nil {
-			return progresscheck.Record{}, err
-		}
-		if !exists {
-			current, _, err := readNativeIssue(ctx, tx, o.scope, record.IssueID)
-			if err != nil {
-				return progresscheck.Record{}, err
-			}
-			if _, err := changeNativeDependencyTx(ctx, tx, commentScope, record.IssueID, tracker.DependencyMutation{ExpectedRevision: current.Revision, Operation: "add", RelationshipType: "dependency", RelatedWorkItemID: tracker.NativeWorkItemID(record.DefectIssueID)}, now); err != nil {
-				return progresscheck.Record{}, fmt.Errorf("link progress dependency: %w", err)
-			}
-			if _, err := tx.ExecContext(ctx, `UPDATE issue_dependencies SET provenance='progress_check',source_version=? WHERE dependent_issue_id=(SELECT id FROM issues WHERE organization_id=? AND project_id=? AND native_id=?) AND blocker_issue_id=(SELECT id FROM issues WHERE organization_id=? AND project_id=? AND native_id=?)`, record.RequestID, o.scope.organization, o.scope.project, record.IssueID, o.scope.organization, o.scope.project, record.DefectIssueID); err != nil {
-				return progresscheck.Record{}, err
-			}
-		}
-	}
+
 	_, err = tx.ExecContext(ctx, `INSERT INTO native_progress_decisions
  (organization_id, project_id, work_item_id, request_id, evidence_revision, outcome, step, reason, defect_key, defect_title, defect_body, comment_id, defect_issue_id, created_at, diagnosis, instruction, convergence)
  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, o.scope.organization, o.scope.project, record.IssueID, record.RequestID, record.EvidenceRevision,

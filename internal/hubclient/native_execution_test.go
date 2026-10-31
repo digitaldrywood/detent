@@ -2242,7 +2242,7 @@ func TestNativeRejectedReviewCheckpointReleasesClaim(t *testing.T) {
 			if attempt.Status != "failed" || attempt.ClaimReleasedAt == nil || attempt.TerminalFailure == nil || attempt.TerminalFailure.Rejection == nil || *attempt.TerminalFailure.Rejection != want {
 				t.Fatalf("unsettled attempt: %+v", attempt)
 			}
-			if attempt.TerminalFailure.Stage != "event_publication" || attempt.TerminalFailure.Attribution != "" || attempt.TerminalFailure.Error != want.DiagnosticError() || e.data.Outcome != "failed" || e.pending != nil {
+			if attempt.TerminalFailure.Stage != "event_publication" || attempt.TerminalFailure.Attribution != "instance" || attempt.TerminalFailure.Error != want.DiagnosticError() || e.data.Outcome != "failed" || e.pending != nil {
 				t.Fatalf("local and Hub failure evidence differ: %+v", attempt.TerminalFailure)
 			}
 			if !reflect.DeepEqual(attempt.Steps, accepted.Attempts[0].Steps) || !reflect.DeepEqual(attempt.Checkpoint, accepted.Attempts[0].Checkpoint) {
