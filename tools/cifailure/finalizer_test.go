@@ -80,15 +80,18 @@ func TestReleaseFinalizer(t *testing.T) {
 set -euo pipefail
 printf 'forge %s\n' "$*" >> "$FIXTURE_LOG"
 case "$*" in
-  *'/commits/'*'/statuses?per_page=100')
+  *"/commits/$CI_DEVELOP_SHA/statuses?per_page=100")
     if [ "$FIXTURE_PLATFORM_MODE" = api-error ]; then exit 1; fi
-    if [[ "$*" == *"/$FIXTURE_PLATFORM_SHA/"* ]]; then cat "$FIXTURE_PLATFORM"; else printf '[[]]'; fi ;;
-  *'/commits/'*'/status?per_page=100') if [ -f "$FIXTURE_STATUS_READ" ] && [ "$FIXTURE_FAIL_DURING_CHECK" = true ]; then
+    if [ -f "$FIXTURE_STATUS_READ" ] && [ "$FIXTURE_FAIL_DURING_CHECK" = true ]; then
       cat "$FIXTURE_LATE_STATUSES"
     else
       cat "$FIXTURE_STATUSES"
     fi
-    touch "$FIXTURE_STATUS_READ" ;;
+    if [ -f "$FIXTURE_HEAD_READ" ]; then touch "$FIXTURE_STATUS_READ"; fi
+    touch "$FIXTURE_HEAD_READ" ;;
+  *'/commits/'*'/statuses?per_page=100')
+    if [ "$FIXTURE_PLATFORM_MODE" = api-error ]; then exit 1; fi
+    if [[ "$*" == *"/$FIXTURE_PLATFORM_SHA/"* ]]; then cat "$FIXTURE_PLATFORM"; else printf '[[]]'; fi ;;
   *'/workflows/release.yml/runs?'*)
     if [ "$FIXTURE_RELEASE_RUN" = true ]; then
       printf '[{"workflow_runs":[{"head_branch":"v1.2.3"}]}]\n'
@@ -169,20 +172,6 @@ esac
 				lateContext = "scheduled-full-ci"
 			}
 			lateStatuses := append(append([]map[string]any{}, statuses...), map[string]any{"context": lateContext, "id": 128, "state": "failure", "creator": map[string]any{"login": "example-operator"}})
-			lateRaw, err := json.Marshal([]any{map[string]any{"sha": statusSHA, "statuses": lateStatuses}})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(filepath.Join(dir, "late-statuses"), lateRaw, 0o600); err != nil {
-				t.Fatal(err)
-			}
-			rawStatuses, err := json.Marshal([]any{map[string]any{"sha": statusSHA, "statuses": statuses}})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(filepath.Join(dir, "statuses"), rawStatuses, 0o600); err != nil {
-				t.Fatal(err)
-			}
 			platformSHA := sha
 			if tt.platform == "ancestor" {
 				platformSHA = strings.Repeat("b", 40)
@@ -218,6 +207,30 @@ esac
 			if err := os.WriteFile(filepath.Join(dir, "platform"), rawPlatform, 0o600); err != nil {
 				t.Fatal(err)
 			}
+			var headPlatform []map[string]any
+			if platformSHA == sha {
+				headPlatform = platform
+			}
+			headStatuses := func(listed []map[string]any) []map[string]any {
+				if statusSHA != sha {
+					return headPlatform
+				}
+				return append(append([]map[string]any{}, listed...), headPlatform...)
+			}
+			lateRaw, err := json.Marshal([]any{headStatuses(lateStatuses)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "late-statuses"), lateRaw, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			rawStatuses, err := json.Marshal([]any{headStatuses(statuses)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "statuses"), rawStatuses, 0o600); err != nil {
+				t.Fatal(err)
+			}
 			manifest := releaseprovenance.Manifest{Schema: 1, Repository: repository, Tag: "v1.2.3", Commit: sha,
 				Checks: []releaseprovenance.Check{{Name: "scheduled-full-ci", Status: "completed", Conclusion: "success", StatusID: 123}}}
 			if !tt.oldProvenance {
@@ -242,7 +255,7 @@ esac
 			command := exec.CommandContext(t.Context(), "bash", "scripts/release-finalize.sh")
 			command.Dir = root
 			command.Env = []string{"PATH=" + dir + string(os.PathListSeparator) + os.Getenv("PATH"), "HOME=" + dir, "TMPDIR=" + dir,
-				"FIXTURE_STATUS_READ=" + filepath.Join(dir, "status-read"),
+				"FIXTURE_STATUS_READ=" + filepath.Join(dir, "status-read"), "FIXTURE_HEAD_READ=" + filepath.Join(dir, "head-read"),
 				"FIXTURE_LATE_STATUSES=" + filepath.Join(dir, "late-statuses"),
 				"FIXTURE_MOVE_DURING_CHECK=" + flag[tt.moveDuringCheck], "FIXTURE_FAIL_DURING_CHECK=" + flag[tt.failDuringCheck],
 				"GITHUB_REPOSITORY=" + repository, "CI_DEVELOP_SHA=" + sha, "CI_RELEASE_BRANCH=" + releaseBranch,
