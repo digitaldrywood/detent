@@ -26,7 +26,20 @@ base="$(git merge-base "refs/remotes/origin/$previous" "$sha")"
 repository="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
 scope=full
 creators="${DETENT_RELEASE_STATUS_CREATORS_JSON:-$(gh variable get DETENT_RELEASE_STATUS_CREATORS_JSON --repo "$repository" 2>/dev/null || true)}"
-if [ -n "$creators" ] && [ "$sha" != "$base" ]; then
+if [ -n "${DETENT_AUDIT_BASE:-}" ]; then
+  override="$(git rev-parse --verify "${DETENT_AUDIT_BASE}^{commit}")"
+  if ! git merge-base --is-ancestor "$base" "$override" || ! git merge-base --is-ancestor "$override" "$sha" || [ "$override" = "$sha" ]; then
+    echo "DETENT_AUDIT_BASE must be a strict ancestor of $branch inside the series." >&2
+    exit 1
+  fi
+  if ! gh api "repos/$repository/commits/$override/statuses?per_page=100" |
+    jq -e --argjson creators "${creators:-[]}" 'any(.[]; .context == "release-security-audit" and (.creator.login as $login | $creators | index($login)) != null)' > /dev/null; then
+    echo "DETENT_AUDIT_BASE $override has no release-security-audit status from an allowlisted creator." >&2
+    exit 1
+  fi
+  base="$override"
+  scope=delta
+elif [ -n "$creators" ] && [ "$sha" != "$base" ]; then
   for candidate in $(git rev-list --first-parent --max-count=100 "$sha^" "^$base"); do
     if gh api "repos/$repository/commits/$candidate/statuses?per_page=100" |
       jq -e --argjson creators "$creators" 'any(.[]; .context == "release-security-audit" and (.creator.login as $login | $creators | index($login)) != null)' > /dev/null; then
