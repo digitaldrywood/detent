@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -222,6 +223,51 @@ func TestRunnerCommandFacts(t *testing.T) {
 	_, err := readUrgentCommandReceipt(ctx, db.reader, f.project.OrganizationID, "absent")
 	if !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("absent request err=%v", err)
+	}
+}
+
+func TestConfigurationReceiptsExcludeExpiredHistory(t *testing.T) {
+	for _, history := range []int{100, 10000} {
+		t.Run(fmt.Sprint(history), func(t *testing.T) {
+			f := newDefaultNativeFixture(t, Config{})
+			db := f.service.database
+			ctx := f.service.contentContext(t.Context())
+			operations := []string{"drain_local_project example-runner example-project", "resume_local_project example-runner example-project"}
+			for _, operation := range operations {
+				if _, err := db.db.ExecContext(ctx, `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<?)
+INSERT INTO native_commands(organization_id,actor_id,operation,command_key,request_hash,response_json,created_at,response_pending,response_expired)
+SELECT ?,?,?,i,'hash','{}','2026-10-31T12:00:00Z',0,1 FROM n`, history, f.project.OrganizationID, bootstrapTokenID, operation); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, live := range []bool{false, true} {
+				t.Run(fmt.Sprintf("live=%t", live), func(t *testing.T) {
+					if live {
+						for i, pending := range []any{nil, false, true} {
+							if _, err := db.db.ExecContext(ctx, `INSERT INTO native_commands(organization_id,actor_id,operation,command_key,request_hash,response_json,created_at,response_pending) VALUES(?,?,?,?,'hash',?,'2026-10-30T12:00:00Z',?)`, f.project.OrganizationID, bootstrapTokenID, operations[0], fmt.Sprintf("live-%d", i), fmt.Sprintf(`{"pending":%t,"order":%d}`, i == 2, i), pending); err != nil {
+								t.Fatal(err)
+							}
+						}
+					}
+					reader := &backgroundCPUReader{nativeQueryer: db.reader}
+					raw, operation, err := readCompletedConfigurationReceipt(ctx, reader, f.project.OrganizationID, operations)
+					if live {
+						if err != nil || raw != `{"pending":false,"order":1}` || operation != operations[0] {
+							t.Fatalf("latest live receipt: raw=%s operation=%s error=%v", raw, operation, err)
+						}
+					} else if !errors.Is(err, sql.ErrNoRows) {
+						t.Fatalf("expired history returned a receipt: raw=%s error=%v", raw, err)
+					}
+					plans := reader.plans(t)
+					if strings.Count(plans, "response_expired=?") != len(operations) {
+						t.Errorf("configuration lookup scans expired history: %s", plans)
+					}
+					if strings.Contains(plans, "RIGHT PART OF ORDER BY") || strings.Contains(plans, "LAST TERM OF ORDER BY") {
+						t.Errorf("configuration lookup sorts tied history: %s", plans)
+					}
+				})
+			}
+		})
 	}
 }
 
