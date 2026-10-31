@@ -205,6 +205,8 @@ func TestClientRequestBudgetExemptions(t *testing.T) {
 		{"claim exempt", http.MethodPost, "/projects/project/claims", 0},
 		{"lease renewal exempt", http.MethodPost, "/projects/project/leases/lease/renew", 0},
 		{"credential renewal exempt", http.MethodPost, "/organizations/org/runners/runner/renew", 0},
+		{"receipt lookup has its own window", http.MethodGet, "/projects/project/go-test-receipts?key=key", 0},
+		{"receipt attestation has its own window", http.MethodPost, "/projects/project/go-test-receipts/attestations", 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {

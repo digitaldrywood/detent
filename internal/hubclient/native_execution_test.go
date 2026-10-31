@@ -1179,7 +1179,7 @@ func TestDedicatedClaimRenewalDoesNotWaitForOtherWork(t *testing.T) {
 						return "", errors.New("admission released")
 					}
 				case "request budget":
-					h.native.client.deferRequestBudget(time.Now().Add(time.Minute))
+					h.native.client.deferRequestBudget("/items", time.Now().Add(time.Minute))
 				}
 				go func() {
 					defer close(done)

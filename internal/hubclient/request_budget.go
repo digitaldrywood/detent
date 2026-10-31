@@ -31,7 +31,7 @@ func (c *Client) withinRequestBudget(ctx context.Context, method, path string, s
 		if !errors.As(err, &apiErr) || apiErr == nil || apiErr.Status != http.StatusTooManyRequests || apiErr.Code != requestBudgetCode {
 			return err
 		}
-		c.deferRequestBudget(apiErr.retryAfter)
+		c.deferRequestBudget(path, apiErr.retryAfter)
 		if !replayable || attempt >= maxRequestBudgetRetries {
 			return err
 		}
@@ -45,7 +45,7 @@ func (c *Client) waitRequestBudget(ctx context.Context, method, path string) err
 	}
 	for {
 		c.requestBudgetMu.Lock()
-		delay := time.Until(c.requestBudgetUntil)
+		delay := time.Until(*c.requestBudgetWindow(path))
 		c.requestBudgetMu.Unlock()
 		if delay <= 0 {
 			return nil
@@ -63,14 +63,23 @@ func (c *Client) waitRequestBudget(ctx context.Context, method, path string) err
 // deferRequestBudget records the refused window. The Hub's budget window is
 // the current minute, so a refusal without a usable Retry-After waits for the
 // next one.
-func (c *Client) deferRequestBudget(until time.Time) {
+func (c *Client) deferRequestBudget(path string, until time.Time) {
 	now := time.Now()
 	if !until.After(now) {
 		until = now.Truncate(time.Minute).Add(time.Minute)
 	}
 	c.requestBudgetMu.Lock()
-	c.requestBudgetUntil = maxTime(c.requestBudgetUntil, until)
+	window := c.requestBudgetWindow(path)
+	*window = maxTime(*window, until)
 	c.requestBudgetMu.Unlock()
+}
+
+func (c *Client) requestBudgetWindow(path string) *time.Time {
+	path, _, _ = strings.Cut(path, "?")
+	if strings.HasSuffix(path, "/go-test-receipts") || strings.HasSuffix(path, "/go-test-receipts/attestations") {
+		return &c.receiptBudgetUntil
+	}
+	return &c.requestBudgetUntil
 }
 
 func parseRetryAfter(header string) time.Time {
