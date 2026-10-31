@@ -190,7 +190,9 @@
       "TestReviewConversationHistoryDoesNotVetoLanding",
       "TestINV18RequestCommitDoesNoDerivedWork",
       "TestINV18HubMigrationsUseTypedColumns",
-      "TestINV20NoSQLOverJSON"
+      "TestINV20NoSQLOverJSON",
+      "TestINV20HubTableLifecycles",
+      "TestTableLifecycleViolations"
     ],
     "./internal/web": [
       "TestOperationsWorkpadHumanAction"
