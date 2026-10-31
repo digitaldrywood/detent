@@ -767,7 +767,7 @@ func TestBackgroundStorageCancellationProgress(t *testing.T) {
 		committed  []int
 	}{
 		{"conversion aggregates", false, 3, []int{3}},
-		{"conversion rows", false, 1, []int{2, 3}},
+		{"conversion rows", false, 1, []int{3}},
 		{"archive", true, 3, []int{3}},
 	} {
 		archive := test.archive
