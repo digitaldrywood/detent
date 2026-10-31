@@ -1355,7 +1355,11 @@ func TestLandingIncorporationRejectsForgedObjects(t *testing.T) {
 			case "missing pack":
 				pack = nil
 			}
-			if err := VerifyLandingIncorporation(t.Context(), candidate, pack); (err == nil) != (test == "valid") {
+			if err := VerifyLandingIncorporation(t.Context(), candidate, pack); (err == nil) != (test == "valid") || err != nil && !errors.Is(err, ErrInvalidVerification) {
+				var exit *exec.ExitError
+				if errors.As(err, &exit) {
+					t.Logf("git stderr: %s", exit.Stderr)
+				}
 				t.Fatalf("verification error = %v", err)
 			}
 		})
