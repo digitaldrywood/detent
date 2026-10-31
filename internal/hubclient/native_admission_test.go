@@ -559,7 +559,7 @@ func TestNativeRecordedDependencyAdmission(t *testing.T) {
 			}
 			human := "null"
 			if test.refusal == "human" {
-				human = "Approve the release"
+				human = "Approve the release\nblock_kind: missing_authorization\noptions:\n  - answer: Authorize the release"
 			}
 			report := fmt.Sprintf("```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: '%s'\n    reason: prerequisite must finish\n    owner: orchestrator\n    predicate:\n      type: issue_state\n      states: [open]\nhuman_action: %s\n```", reference, human)
 			if test.dirty {

@@ -45,7 +45,7 @@ func TestNativePlanContinuation(t *testing.T) {
 		candidate   bool
 	}{
 		{name: "published plan continues immediately", outcome: "succeeded", disposition: &tracker.NativeDisposition{Status: "in_progress"}, candidate: true},
-		{name: "human action remains held", outcome: "succeeded", report: "status: blocked\nhuman_action: Approve the plan", disposition: &tracker.NativeDisposition{Status: "blocked", HumanAction: true}},
+		{name: "human action remains held", outcome: "succeeded", report: "status: blocked\nhuman_action: Approve the plan\nblock_kind: missing_authorization\noptions:\n  - answer: Authorize the plan", disposition: &tracker.NativeDisposition{Status: "blocked", HumanAction: true}},
 		{name: "permission remains held", outcome: "succeeded", report: "status: blocked\nreason_code: permission_wait", disposition: &tracker.NativeDisposition{Status: "blocked", ReasonCode: "permission_wait"}},
 		{name: "untyped external blocker stays claimable", candidate: true, outcome: "succeeded", report: "status: blocked\nblockers:\n  - reason: Await upstream approval", disposition: &tracker.NativeDisposition{Status: "blocked", Blockers: true, BlockerEvidence: []workpad.Blocker{{Reason: "Await upstream approval", Owner: workpad.BlockerOwnerHuman, Unverifiable: true}}}},
 		{name: "instance limitation leaves admission to the runner", candidate: true, outcome: "succeeded", report: "status: blocked\nreason_code: instance_limitation", disposition: &tracker.NativeDisposition{Status: "blocked", ReasonCode: "instance_limitation"}},
@@ -62,7 +62,7 @@ func TestNativePlanContinuation(t *testing.T) {
 				t.Fatal(err)
 			}
 			owner.SetDiffSource(nativeChangeDiff(nativeChangeFixtureHead("c")))
-			if err := owner.PrepareFinish(t.Context(), "succeeded", "```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Approve the work\n```", nil); err != nil {
+			if err := owner.PrepareFinish(t.Context(), "succeeded", "```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Approve the work\nblock_kind: missing_authorization\noptions:\n  - answer: Authorize the work\n```", nil); err != nil {
 				t.Fatal(err)
 			}
 			if err := h.scheduler.ReleaseClaim(t.Context(), held.ID, "completed"); err != nil {

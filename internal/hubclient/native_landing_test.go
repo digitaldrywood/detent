@@ -835,7 +835,7 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 	}
 	if len(refusalKinds) > 0 && refusalKinds[0] != "" {
 		action := fmt.Sprintf("Allow the runner to push to branch main in repository %s, or enable GitHub pull request mode for this project.", target.Repository)
-		message := fmt.Sprintf("%s\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: %q\n```", action, action)
+		message := fmt.Sprintf("%s\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nblock_kind: missing_authorization\noptions:\n  - answer: Authorize landing under the configured policy\nhuman_action: %q\n```", action, action)
 		if refusalKind == workspace.LandRefusalProtected {
 			if err := landing.(runner.CompletionExecution).PrepareFinish(guarded, "succeeded", message, nil); err != nil {
 				t.Fatal(err)
