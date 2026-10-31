@@ -102,10 +102,12 @@ class ReleaseAuditLocalTest(unittest.TestCase):
 
     def test_audit_scope(self):
         source = Path(__file__).resolve().parent
-        for name, audited_by, expect in (
-            ("first audit covers the series", {}, "base"),
-            ("later audit covers the delta from the last allowlisted audit", {"cut": "stranger", "pick": "operator"}, "pick"),
-            ("audits by other creators are ignored", {"pick": "stranger"}, "base"),
+        for name, audited_by, expect, override in (
+            ("first audit covers the series", {}, "base", None),
+            ("later audit covers the delta from the last allowlisted audit", {"cut": "stranger", "pick": "operator"}, "pick", None),
+            ("audits by other creators are ignored", {"pick": "stranger"}, "base", None),
+            ("an operator can choose an earlier audited base", {"cut": "operator", "pick": "operator"}, "cut", "cut"),
+            ("an unaudited override is refused", {"pick": "operator"}, None, "cut"),
         ):
             with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory).resolve()
@@ -159,7 +161,13 @@ class ReleaseAuditLocalTest(unittest.TestCase):
                 prompt = root / "prompt"
                 env.update(PATH=str(binaries) + os.pathsep + env["PATH"], HEAD=commits["head"], PROMPT=str(prompt),
                            AUDITED=json.dumps({commits[label]: login for label, login in audited_by.items()}))
+                if override:
+                    env["DETENT_AUDIT_BASE"] = commits[override]
                 result = subprocess.run(["bash", str(scripts / "release-audit-local.sh"), "release/v1.10"], cwd=repo, env=env, text=True, capture_output=True)
+                if expect is None:
+                    self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertFalse(prompt.exists())
+                    continue
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertIn(f"git diff {commits[expect]}..{commits['head']}", prompt.read_text().replace("\n", " "))
 
