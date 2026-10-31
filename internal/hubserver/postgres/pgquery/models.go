@@ -71,3 +71,51 @@ type Project struct {
 	CreatedAt               time.Time
 	DeletedAt               *time.Time
 }
+
+type RequestDay struct {
+	OrganizationID tracker.OrganizationID
+	Day            time.Time
+	Route          string
+	CallerKind     string
+	StatusClass    int64
+	Count          int64
+	SumMs          float64
+	MaxMs          float64
+}
+
+type RequestHour struct {
+	OrganizationID tracker.OrganizationID
+	Hour           time.Time
+	Route          string
+	StatusClass    int64
+	Count          int64
+	SumMs          float64
+	MaxMs          float64
+	Histogram      []int64
+}
+
+type RequestMetricCaller struct {
+	OrganizationID tracker.OrganizationID
+	Minute         time.Time
+	CallerKind     string
+	CallerID       string
+}
+
+type RequestMetricWindow struct {
+	OrganizationID tracker.OrganizationID
+	Minute         time.Time
+	CallerCount    int64
+}
+
+type RequestMinute struct {
+	OrganizationID tracker.OrganizationID
+	Minute         time.Time
+	Route          string
+	CallerKind     string
+	CallerID       string
+	StatusClass    int64
+	Count          int64
+	SumMs          float64
+	MaxMs          float64
+	Histogram      []int64
+}

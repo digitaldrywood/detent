@@ -35,7 +35,14 @@ func NewRuntime(ctx context.Context, reader, writer *sql.DB) (*Runtime, error) {
 			AND NOT pg_has_role(session_user, 'detent_migration', 'MEMBER')
 			AND NOT EXISTS (
 				SELECT 1 FROM pg_class c
-				WHERE c.oid IN ('public.projects'::regclass, 'public.issues'::regclass, 'public.native_comments'::regclass)
+				WHERE c.oid IN (
+				'public.projects'::regclass, 'public.issues'::regclass,
+				'public.native_comments'::regclass,
+				'public.request_metric_windows'::regclass,
+				'public.request_metric_callers'::regclass,
+				'public.request_minutes'::regclass,
+				'public.request_hours'::regclass, 'public.request_days'::regclass
+				)
 				AND (pg_has_role(session_user, c.relowner, 'MEMBER') OR NOT c.relrowsecurity OR NOT c.relforcerowsecurity)
 			)`).Scan(&allowed)
 		if err != nil {

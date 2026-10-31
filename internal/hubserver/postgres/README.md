@@ -1,7 +1,7 @@
 # Hub PostgreSQL schema
 
 This directory owns the PostgreSQL schema and transaction boundary for the
-projects, work items and comments family. Provision `roles.sql` as a database
+core records and request metrics families. Provision `roles.sql` as a database
 administrator, then apply `migrations/` with the Goose PostgreSQL dialect as
 `detent_migration` on an empty PostgreSQL 17 database. Existing installations
 apply only the new timestamp migration after provisioning the roles. The
@@ -199,3 +199,51 @@ Transaction startup adds one constant-size setting statement, independent of
 tenant and history counts, and writes no application rows (INV-18). RLS compares
 the setting against the indexed leading tenant key (INV-21); runtime role and
 core-table catalog checks run only during pool initialization.
+
+## Request metrics family
+
+`../metricsstore` defines the metrics persistence boundary implemented by the
+same `Repository`. Invoke `MergeRequestMetrics` from the background flush owner,
+with at most 200 minute observations in one atomic transaction. Each observation
+supplies an exact count, sum in milliseconds, maximum and 64 integer histogram
+buckets. Bucket zero covers up to one microsecond; subsequent buckets double
+the upper bound. `Latency.Percentiles` derives the existing bounded p50 and p95
+from the merged buckets. The database stores checked `bigint[]` values, never
+serialized histograms or stored percentile estimates. Histogram, count and sum
+upserts add to the current row; the maximum uses `greatest`.
+
+`RequestMetrics` uses the serving connection budget and reads tenant-scoped
+keyset pages of at most 200 rows within an inclusive/exclusive time range.
+Minute, hour and day cursors use the last returned record's complete grain key.
+The authenticated organization is an explicit argument to every operation,
+and all five metrics tables enable and force RLS. Runtime construction validates
+these tables alongside the core family. The migration installs under
+`detent_migration`; platform access remains restricted to `detent_platform`.
+This family boundary follows the core port: backend selection and legacy SQLite
+import remain separate integration work.
+
+Detailed minutes retain 14 days, hourly route histograms retain 90 days, and
+daily route/caller-kind totals retain 400 days. The cutoff is truncated to its
+grain in UTC; rows exactly at the cutoff survive. `RetainRequestMetrics` compacts
+at most 200 expired minute records per call, each in its own transaction,
+atomically deleting the detail and adding its count, sum and maximum to a daily
+row without caller identifiers. It discards records beyond daily retention,
+expires at most 200 hourly and 200 daily records, and removes at most 200 empty
+expired caller windows in separate transactions. Repeated calls resume the
+backlog; there are no fleet or tenant scans.
+
+Caller attribution retains at most 200 distinct kind/ID pairs per tenant-minute.
+New pairs beyond that bound merge into `other` with an empty caller ID, preserving
+all counts, sums, maxima and buckets. Existing callers continue to accumulate
+under their identities. Caller admission serializes on the tenant-minute row,
+with window, minute and hour keys acquired in deterministic order. These locks
+cover bounded database work only; callers do not perform external I/O in these
+transactions. Expired caller windows cascade to their at-most-200 registry rows.
+
+At INV-21 scale, 10,000 tenants and runners reuse the existing fixed pool and
+workload budgets. A merge performs indexed operations for at most 200 input
+records, with fixed 64-bucket arithmetic; reads return at most 200 records using
+tenant-leading keys. Per retention call, at most 200 one-record compactions,
+two 200-row deletes and 200 one-window deletions occur. Each window deletion
+removes at most 200 caller keys in one short transaction. This is a fixed tick
+budget independent of history or fleet size (INV-18, INV-20, INV-21).
