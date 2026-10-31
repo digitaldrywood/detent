@@ -787,6 +787,13 @@ func (e *nativeExecution) finishPrepared(ctx context.Context, reason string) (er
 	}
 	if e.preparedOutcome == "" && e.data.Identity == nil && e.data.Outcome == "" && localAttemptStarted {
 		e.preparedOutcome = "cancelled"
+		if e.data.Runtime != nil {
+			observation := *e.data.Runtime
+			observation.Phase, observation.HeartbeatAt = "completed", e.scheduler.now().UTC()
+			observation.Phases = slices.DeleteFunc(slices.Clone(observation.Phases), func(phase tracker.NativePhase) bool { return phase.Name == "" })
+			observation.PhasesDropped += len(e.data.Runtime.Phases) - len(observation.Phases)
+			e.data.Runtime = &observation
+		}
 		if e.preparedFailure == nil {
 			failure := (tracker.NativeTerminalFailure{ErrorClass: "lease_released", Stage: "pre_provider", ObservedAt: e.scheduler.now().UTC(), Error: "attempt cancelled before provider start; release reason: " + reason}).Public()
 			e.preparedFailure = &failure
