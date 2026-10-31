@@ -158,9 +158,22 @@ func TestRunnerCommandFacts(t *testing.T) {
 		t.Fatal(err)
 	}
 	db := f.service.database
-	for _, typed := range []bool{false, true} {
+	ctx := f.service.contentContext(t.Context())
+	store := func(raw string, referenced bool) (string, string) {
+		t.Helper()
+		if !referenced {
+			return raw, ""
+		}
+		ref, err := prepareMeteredContent(ctx, string(f.project.OrganizationID), []byte(raw), true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return "{}", ref.Key
+	}
+	for _, format := range []struct{ typed, referenced bool }{{false, false}, {true, false}, {false, true}, {true, true}} {
+		typed := format.typed
 		for i := range 2 {
-			key := fmt.Sprintf("command-%t-%d", typed, i)
+			key := fmt.Sprintf("command-%t-%t-%d", typed, format.referenced, i)
 			request := "request-" + key
 			raw := fmt.Sprintf(`{"request":{"id":%q},"pending":true}`, request)
 			var pending any
@@ -169,10 +182,11 @@ func TestRunnerCommandFacts(t *testing.T) {
 				pending, requestID = true, request
 				raw = `{"request":{"id":"contradictory"}}`
 			}
-			if _, err := db.db.ExecContext(t.Context(), `INSERT INTO native_commands(organization_id,actor_id,operation,command_key,request_hash,response_json,created_at,response_pending,response_request_id) VALUES(?,?,'urgent_runner_update',?,'hash',?,?,?,?)`, f.project.OrganizationID, bootstrapTokenID, key, raw, formatHubTime(f.service.config.now()), pending, requestID); err != nil {
+			inline, object := store(raw, format.referenced)
+			if _, err := db.db.ExecContext(ctx, `INSERT INTO native_commands(organization_id,actor_id,operation,command_key,request_hash,response_json,response_object_key,created_at,response_pending,response_request_id) VALUES(?,?,'urgent_runner_update',?,'hash',?,?,?,?,?)`, f.project.OrganizationID, bootstrapTokenID, key, inline, object, formatHubTime(f.service.config.now()), pending, requestID); err != nil {
 				t.Fatal(err)
 			}
-			got, err := readUrgentCommandReceipt(t.Context(), db.reader, f.project.OrganizationID, request)
+			got, err := readUrgentCommandReceipt(ctx, db.reader, f.project.OrganizationID, request)
 			if err != nil || got != raw {
 				t.Fatalf("typed=%t receipt=%s err=%v", typed, got, err)
 			}
@@ -187,24 +201,25 @@ func TestRunnerCommandFacts(t *testing.T) {
 				raw     string
 				pending any
 			}{{completed, donePending}, {running, runningPending}} {
-				if _, err := db.db.ExecContext(t.Context(), `INSERT INTO native_commands(organization_id,actor_id,operation,command_key,request_hash,response_json,created_at,response_pending) VALUES(?,?,?,?,'hash',?,?,?)`, f.project.OrganizationID, bootstrapTokenID, operation, fmt.Sprintf("%s-%d", key, j), entry.raw, formatHubTime(f.service.config.now().Add(time.Duration(j)*time.Second)), entry.pending); err != nil {
+				inline, object := store(entry.raw, format.referenced)
+				if _, err := db.db.ExecContext(ctx, `INSERT INTO native_commands(organization_id,actor_id,operation,command_key,request_hash,response_json,response_object_key,created_at,response_pending) VALUES(?,?,?,?,'hash',?,?,?,?)`, f.project.OrganizationID, bootstrapTokenID, operation, fmt.Sprintf("%s-%d", key, j), inline, object, formatHubTime(f.service.config.now().Add(time.Duration(j)*time.Second)), entry.pending); err != nil {
 					t.Fatal(err)
 				}
 			}
-			got, gotOperation, err := readCompletedConfigurationReceipt(t.Context(), db.reader, f.project.OrganizationID, []string{operation, "unused-one", "unused-two", "unused-three"})
+			got, gotOperation, err := readCompletedConfigurationReceipt(ctx, db.reader, f.project.OrganizationID, []string{operation, "unused-one", "unused-two", "unused-three"})
 			if err != nil || got != completed || gotOperation != operation {
 				t.Fatalf("typed=%t completed=%s operation=%s err=%v", typed, got, gotOperation, err)
 			}
 		}
 	}
-	if err := db.populateRunnerFacts(t.Context()); err != nil {
+	if err := db.populateRunnerFacts(ctx); err != nil {
 		t.Fatal(err)
 	}
 	var unknown int
 	if err := db.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM native_commands WHERE response_pending IS NULL`).Scan(&unknown); err != nil || unknown != 0 {
 		t.Fatalf("unknown commands=%d err=%v", unknown, err)
 	}
-	_, err := readUrgentCommandReceipt(t.Context(), db.reader, f.project.OrganizationID, "absent")
+	_, err := readUrgentCommandReceipt(ctx, db.reader, f.project.OrganizationID, "absent")
 	if !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("absent request err=%v", err)
 	}

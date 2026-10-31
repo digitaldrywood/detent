@@ -23,6 +23,13 @@ func (e hubProjectExecutor) localProjectConfiguration(ctx context.Context, name 
 }
 
 func (e hubProjectExecutor) projectConfigurationCommand(ctx context.Context, name string, args operatortool.LocalProjectArguments, preview bool) (operatortool.Result, error) {
+	ctx = e.service.contentContext(ctx)
+	return prepareContentMutation(ctx, e.service.database.reader, func() (operatortool.Result, error) {
+		return e.commitProjectConfiguration(ctx, name, args, preview)
+	})
+}
+
+func (e hubProjectExecutor) commitProjectConfiguration(ctx context.Context, name string, args operatortool.LocalProjectArguments, preview bool) (operatortool.Result, error) {
 	scope, err := e.projectScope(ctx)
 	if err != nil {
 		return operatortool.Result{}, err
@@ -478,7 +485,11 @@ func (s *Service) runnerProjectConfiguration(ctx context.Context, tx *sql.Tx, sc
 			return runnerauth.ProjectConfigurationRequest{}, err
 		}
 		operation := request.Operation + " " + r.RunnerID + " " + string(scope.project)
-		if _, err := tx.ExecContext(ctx, "UPDATE native_commands SET response_json = ?,response_pending=0 WHERE organization_id = ? AND actor_id = ? AND operation = ? AND command_key = ?", string(raw), scope.organization, credential.ID, operation, request.RequestID); err != nil {
+		object, err := storedMeteredPayloadKey(commandCompletionContent(ctx), string(scope.organization), raw, true)
+		if err != nil {
+			return runnerauth.ProjectConfigurationRequest{}, err
+		}
+		if _, err := tx.ExecContext(ctx, "UPDATE native_commands SET response_json='{}',response_object_key=?,response_pending=0,created_at=?,response_replay_until_ns=? WHERE organization_id = ? AND actor_id = ? AND operation = ? AND command_key = ?", object, formatHubTime(now), now.Add(commandReceiptRetention).UnixNano(), scope.organization, credential.ID, operation, request.RequestID); err != nil {
 			return runnerauth.ProjectConfigurationRequest{}, err
 		}
 		settings := settingsFromRouting(r.Routing)

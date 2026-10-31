@@ -55,6 +55,9 @@ func TestHotQueryPlans(t *testing.T) {
 	if _, err := readNativeRelated(t.Context(), q, scope, f.issue.WorkItemID); err != nil {
 		t.Fatal(err)
 	}
+	if _, found, err := nativeCommandReceiptReference(t.Context(), q, scope, "POST /example", "missing", "hash"); err != nil || found {
+		t.Fatalf("missing command receipt found=%t: %v", found, err)
+	}
 	for _, key := range []string{"diff_" + string(f.issue.WorkItemID), "missing"} {
 		var exists bool
 		if err := q.QueryRowContext(t.Context(), attemptDiffBodyExistsSQL(key), key).Scan(&exists); err != nil {
@@ -89,6 +92,8 @@ func assertHotQueryPlan(t *testing.T, statement string, plans []string) {
 	t.Helper()
 	var lookups map[string][]string
 	switch {
+	case strings.Contains(statement, "FROM native_commands WHERE organization_id"):
+		lookups = map[string][]string{"native_commands": {"organization_id=?", "actor_id=?", "command_key=?", "operation>?", "operation<?"}}
 	case strings.Contains(statement, "FROM attempt_diff_files WHERE patch_object"):
 		lookups = map[string][]string{"attempt_diff_files": {"patch_object=?"}}
 	case strings.Contains(statement, "CROSS JOIN issue_relationships"):

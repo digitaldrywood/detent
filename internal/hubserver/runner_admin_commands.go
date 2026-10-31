@@ -12,6 +12,13 @@ import (
 // runnerAdminTransaction is the extracted administration application boundary.
 // Worker claim/lease/heartbeat transactions keep their existing protocol path.
 func (s *Service) runnerAdminTransaction(ctx context.Context, scope nativeScope, completion bool, operation func(context.Context, *sql.Tx, time.Time) (any, error)) (any, error) {
+	ctx = s.contentContext(ctx)
+	return prepareContentMutation(ctx, s.database.reader, func() (any, error) {
+		return s.commitRunnerAdminTransaction(ctx, scope, completion, operation)
+	})
+}
+
+func (s *Service) commitRunnerAdminTransaction(ctx context.Context, scope nativeScope, completion bool, operation func(context.Context, *sql.Tx, time.Time) (any, error)) (any, error) {
 	tx, err := s.database.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err

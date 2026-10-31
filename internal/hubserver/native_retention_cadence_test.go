@@ -96,7 +96,7 @@ VALUES(?,?,'POST /example',?,'hash','{}',?,?)`, f.project.OrganizationID, defaul
 				t.Fatalf("metrics waited for hourly cleanup: rows=%d err=%v", metrics, err)
 			}
 			var commands, unfinished, pending int
-			if err := s.database.reader.QueryRowContext(t.Context(), `SELECT count(*),count(*) FILTER (WHERE response_pending IS NULL) FROM native_commands WHERE operation='POST /example'`).Scan(&commands, &unfinished); err != nil {
+			if err := s.database.reader.QueryRowContext(t.Context(), `SELECT count(*),count(*) FILTER (WHERE response_pending IS NULL) FROM native_commands WHERE operation='POST /example' AND response_expired=0`).Scan(&commands, &unfinished); err != nil {
 				t.Fatal(err)
 			}
 			if commands != test.commands || unfinished != test.unfinished {

@@ -83,6 +83,13 @@ func (s *Service) readRunnerUpdate(ctx context.Context, scope nativeScope, resou
 }
 
 func (s *Service) applyRunnerUpdateCommand(ctx context.Context, scope nativeScope, resource string, request runnerUpdateChange) (any, error) {
+	ctx = s.contentContext(ctx)
+	return prepareContentMutation(ctx, s.database.reader, func() (any, error) {
+		return s.persistRunnerUpdateCommand(ctx, scope, resource, request)
+	})
+}
+
+func (s *Service) persistRunnerUpdateCommand(ctx context.Context, scope nativeScope, resource string, request runnerUpdateChange) (any, error) {
 	if request.ExpectedRevision < 1 || request.delivery("validate", s.config.now()).Validate() != nil || strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 {
 		return nil, nativePublicInvalid("A selected service, observed runner/build revision, release version and idempotency key are required")
 	}

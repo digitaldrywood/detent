@@ -10,6 +10,23 @@ Cloud members get one scoped key for direct API and MCP access from
 private credential handling, agent prompts and the browser approval contract.
 Cloud keys do not authorize compatibility, worker, runner or instance-admin routes.
 
+## Command response retention
+
+Completed command responses have a 24-hour replay horizon, measured from receipt
+completion. Exact retries within that horizon return the original response.
+Responses are stored by object reference; background retention converts legacy
+inline bodies and clears expired bodies across HTTP, MCP, conversation and runner
+operations. Cleanup processes bounded batches, so physical removal can lag the
+horizon. After cleanup, an exact retry returns `410 idempotency_expired` instead
+of executing the command again. A changed request with the same key still
+returns an idempotency conflict.
+
+The typed idempotency tombstone retains organization, actor, operation, key,
+request hash and expiry state. Pending and uncertain external-write receipts
+keep their reservation and response until reconciliation; their age never
+authorizes a second external effect. Reconciliation starts the completed
+response's replay horizon.
+
 ## Team threads
 
 Threads are informational discussions, separate from private conversations,

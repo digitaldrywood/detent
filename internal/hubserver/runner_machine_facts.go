@@ -117,6 +117,9 @@ func writeAttemptUsageFacts(ctx context.Context, tx *sql.Tx, id string, data tra
 }
 
 func commandResponseFacts(raw string) (bool, string, error) {
+	if raw == hostedPendingCommand {
+		return true, "", nil
+	}
 	var response map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(raw), &response); err != nil {
 		if !json.Valid([]byte(raw)) {

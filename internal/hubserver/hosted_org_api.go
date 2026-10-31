@@ -453,18 +453,11 @@ func (s *Service) claimHostedOperation(ctx context.Context, command hostedComman
 	if count == 1 {
 		return true, nil, nil
 	}
-	// Read back the idempotent command inserted by this request on the writer.
-	var storedHash, raw string
-	if err := s.database.db.QueryRowContext(ctx, `SELECT request_hash,response_json FROM native_commands WHERE organization_id=? AND actor_id=? AND operation=? AND command_key=?`, s.commandOrganization(ctx, command), command.actor, command.operation, command.key).Scan(&storedHash, &raw); err != nil {
-		return false, nil, err
+	response, found, err := s.readHostedOperation(ctx, command)
+	if err == nil && !found {
+		err = sql.ErrNoRows
 	}
-	if storedHash != hash {
-		return false, nil, mutation.ErrConflict
-	}
-	if raw == hostedPendingCommand {
-		return false, nil, mutation.ErrUncertain
-	}
-	return false, json.RawMessage(raw), nil
+	return false, response, err
 }
 
 func (s *Service) claimHostedCommand(c echo.Context, command hostedCommand, status int) (bool, error) {
@@ -490,13 +483,18 @@ func (s *Service) completeHostedOperation(ctx context.Context, command hostedCom
 	if err != nil {
 		return nil, err
 	}
-	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), hubReadTimeout)
 	defer cancel()
 	pending, request, err := commandResponseFacts(response)
 	if err != nil {
 		return nil, err
 	}
-	result, err := s.database.db.ExecContext(persistCtx, `UPDATE native_commands SET response_json=?,response_pending=?,response_request_id=? WHERE organization_id=? AND actor_id=? AND operation=? AND command_key=? AND response_json=?`, response, pending, request, s.commandOrganization(ctx, command), command.actor, command.operation, command.key, hostedPendingCommand)
+	ref, err := prepareMeteredContent(commandCompletionContent(isolateContentContext(s.contentContext(persistCtx))), s.commandOrganization(ctx, command), []byte(response), !strings.HasPrefix(command.operation, "attachment."))
+	if err != nil {
+		return nil, err
+	}
+	now := s.config.now()
+	result, err := s.database.db.ExecContext(persistCtx, `UPDATE native_commands SET response_json='{}',response_object_key=?,response_pending=?,response_request_id=?,created_at=?,response_replay_until_ns=? WHERE organization_id=? AND actor_id=? AND operation=? AND command_key=? AND response_json=?`, ref.Key, pending, request, formatHubTime(now), now.Add(commandReceiptRetention).UnixNano(), s.commandOrganization(ctx, command), command.actor, command.operation, command.key, hostedPendingCommand)
 	if err != nil {
 		return nil, err
 	}
@@ -808,7 +806,8 @@ func (s *Service) readHostedOperation(ctx context.Context, command hostedCommand
 		return nil, false, err
 	}
 	var storedHash, raw string
-	err = s.database.reader.QueryRowContext(ctx, `SELECT request_hash,response_json FROM native_commands WHERE organization_id=? AND actor_id=? AND operation=? AND command_key=?`, s.commandOrganization(ctx, command), command.actor, command.operation, command.key).Scan(&storedHash, &raw)
+	var expired bool
+	err = s.database.reader.QueryRowContext(ctx, `SELECT request_hash,COALESCE(NULLIF(response_object_key,''),response_json),response_expired FROM native_commands WHERE organization_id=? AND actor_id=? AND operation=? AND command_key=?`, s.commandOrganization(ctx, command), command.actor, command.operation, command.key).Scan(&storedHash, &raw, &expired)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, false, nil
 	}
@@ -818,8 +817,12 @@ func (s *Service) readHostedOperation(ctx context.Context, command hostedCommand
 	if storedHash != hash {
 		return nil, true, mutation.ErrConflict
 	}
+	if expired {
+		return nil, true, commandResponseExpired()
+	}
 	if raw == hostedPendingCommand {
 		return nil, true, mutation.ErrUncertain
 	}
-	return json.RawMessage(raw), true, nil
+	resolved, err := resolveStorageJSON(s.contentContext(ctx), []byte(raw))
+	return json.RawMessage(resolved), true, err
 }

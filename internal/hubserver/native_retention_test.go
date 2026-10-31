@@ -238,9 +238,9 @@ func TestNativeRetention(t *testing.T) {
 			{"POST " + base + "/landing-barrier", "old", 25 * time.Hour, false},
 			{"PATCH " + base + "/work-items/x", "old-patch", 25 * time.Hour, false},
 			{"POST " + base + "/landing-barrier", "recent", time.Hour, true},
-			{"POST " + base + "/conversations", "create-conversation", 25 * time.Hour, true},
-			{"POST " + base + "/conversations/c/link", "link", 25 * time.Hour, true},
-			{"mcp update_runner_routing", "mcp", 25 * time.Hour, true},
+			{"POST " + base + "/conversations", "create-conversation", 25 * time.Hour, false},
+			{"POST " + base + "/conversations/c/link", "link", 25 * time.Hour, false},
+			{"mcp update_runner_routing", "mcp", 25 * time.Hour, false},
 		}
 		for _, receipt := range receipts {
 			if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO native_commands(organization_id,actor_id,operation,command_key,request_hash,response_json,created_at) VALUES(?,?,?,?,'hash',?,?)", f.project.OrganizationID, actor, receipt.operation, receipt.key, `{"output":"`+fmt.Sprintf("%0512d", 0)+`"}`, formatHubTime(now.Add(-receipt.age))); err != nil {
@@ -271,12 +271,12 @@ func TestNativeRetention(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, receipt := range receipts {
-			var count int
-			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM native_commands WHERE command_key=?", receipt.key).Scan(&count); err != nil {
+			var expired bool
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT response_expired FROM native_commands WHERE command_key=?", receipt.key).Scan(&expired); err != nil {
 				t.Fatal(err)
 			}
-			if (count == 1) != receipt.kept {
-				t.Fatalf("receipt %s %s kept=%v", receipt.operation, receipt.key, count == 1)
+			if !expired != receipt.kept {
+				t.Fatalf("receipt %s %s body kept=%v", receipt.operation, receipt.key, !expired)
 			}
 		}
 	})

@@ -59,6 +59,13 @@ func (s *Service) readRunnerCapacity(ctx context.Context, scope nativeScope, res
 }
 
 func (s *Service) updateRunnerCapacityCommand(ctx context.Context, scope nativeScope, resource string, request runnerCapacityChange) (any, error) {
+	ctx = s.contentContext(ctx)
+	return prepareContentMutation(ctx, s.database.reader, func() (any, error) {
+		return s.persistRunnerCapacityCommand(ctx, scope, resource, request)
+	})
+}
+
+func (s *Service) persistRunnerCapacityCommand(ctx context.Context, scope nativeScope, resource string, request runnerCapacityChange) (any, error) {
 	if request.ExpectedRevision < 1 || request.Validate() != nil || strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 {
 		return nil, nativePublicInvalid("A bounded capacity, configuration revision, runner revision and idempotency key are required")
 	}

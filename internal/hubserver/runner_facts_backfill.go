@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -68,13 +69,29 @@ func prepareRunnerFactBackfill(ctx context.Context, q nativeQueryer) (runnerFact
 		return runnerFactBackfill{}, err
 	}
 	var row int64
-	err = q.QueryRowContext(ctx, `SELECT rowid,response_json FROM native_commands WHERE response_pending IS NULL ORDER BY rowid LIMIT 1`).Scan(&row, &raw)
+	var at string
+	var pending sql.NullBool
+	var request sql.NullString
+	err = q.QueryRowContext(ctx, `SELECT rowid,COALESCE(NULLIF(response_object_key,''),response_json),created_at,response_pending,response_request_id FROM native_commands WHERE rowid=COALESCE((SELECT rowid FROM native_commands WHERE response_pending IS NULL LIMIT 1),(SELECT rowid FROM native_commands WHERE response_replay_until_ns IS NULL LIMIT 1))`).Scan(&row, &raw, &at, &pending, &request)
 	if err == nil {
-		pending, request, err := commandResponseFacts(raw)
-		return runnerFactBackfill{verify: `SELECT EXISTS(SELECT 1 FROM native_commands WHERE rowid=? AND response_json=? AND response_pending IS NULL)`, args: []any{row, raw}, write: func(ctx context.Context, tx *sql.Tx) error {
-			_, err := tx.ExecContext(ctx, `UPDATE native_commands SET response_pending=?,response_request_id=? WHERE rowid=?`, pending, request, row)
+		created, err := time.Parse(time.RFC3339Nano, at)
+		if err != nil {
+			return runnerFactBackfill{}, err
+		}
+		if !pending.Valid || raw == hostedPendingCommand {
+			resolved, err := resolveStorageJSON(ctx, []byte(raw))
+			if err != nil {
+				return runnerFactBackfill{}, err
+			}
+			pending.Bool, request.String, err = commandResponseFacts(string(resolved))
+			if err != nil {
+				return runnerFactBackfill{}, err
+			}
+		}
+		return runnerFactBackfill{verify: `SELECT EXISTS(SELECT 1 FROM native_commands WHERE rowid=? AND COALESCE(NULLIF(response_object_key,''),response_json)=? AND created_at=? AND (response_pending IS NULL OR response_replay_until_ns IS NULL))`, args: []any{row, raw, at}, write: func(ctx context.Context, tx *sql.Tx) error {
+			_, err := tx.ExecContext(ctx, `UPDATE native_commands SET response_pending=?,response_request_id=?,response_replay_until_ns=? WHERE rowid=?`, pending.Bool, request.String, created.Add(commandReceiptRetention).UnixNano(), row)
 			return err
-		}}, err
+		}}, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return runnerFactBackfill{}, err

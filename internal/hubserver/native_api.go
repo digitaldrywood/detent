@@ -762,7 +762,8 @@ func nativeCommandReceipt(ctx context.Context, query nativeQueryer, scope native
 
 func nativeCommandReceiptReference(ctx context.Context, query nativeQueryer, scope nativeScope, operation, key, hash string) (string, bool, error) {
 	var storedHash, response string
-	err := query.QueryRowContext(ctx, `SELECT request_hash, COALESCE(NULLIF(response_object_key,''),response_json) FROM native_commands WHERE organization_id = ? AND actor_id = ? AND command_key = ? AND (operation = ? OR substr(operation, 1, length(?) + 1) = ? || ' ') ORDER BY created_at, operation LIMIT 1`, scope.organization, scope.credential.ID, key, operation, operation, operation).Scan(&storedHash, &response)
+	var expired bool
+	err := query.QueryRowContext(ctx, `SELECT request_hash, COALESCE(NULLIF(response_object_key,''),response_json),response_expired FROM native_commands WHERE organization_id = ? AND actor_id = ? AND command_key = ? AND operation>=? AND operation<? AND (operation = ? OR substr(operation, 1, length(?) + 1) = ? || ' ') ORDER BY created_at, operation LIMIT 1`, scope.organization, scope.credential.ID, key, operation, operation+"!", operation, operation, operation).Scan(&storedHash, &response, &expired)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", false, nil
 	}
@@ -771,6 +772,9 @@ func nativeCommandReceiptReference(ctx context.Context, query nativeQueryer, sco
 	}
 	if storedHash != hash {
 		return "", false, &nativeError{Code: "idempotency_conflict", Message: "Idempotency key has different content", status: http.StatusConflict, publicMessage: true}
+	}
+	if expired {
+		return "", true, commandResponseExpired()
 	}
 	return response, true, nil
 }

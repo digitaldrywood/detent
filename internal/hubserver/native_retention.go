@@ -79,11 +79,8 @@ AND event IN ('action','administration','key_call','billing_viewed','billing_exp
 WHERE recorded_at_ns<? ORDER BY recorded_at_ns,audit_id LIMIT ?)`, now.Add(-hostedAuditRetention).UnixNano(), commandReceiptPruneBatch); err != nil {
 		return fmt.Errorf("expire hosted audit: %w", err)
 	}
-	if _, err := s.database.db.ExecContext(ctx, `DELETE FROM native_commands WHERE rowid IN (SELECT rowid FROM native_commands
-WHERE (operation LIKE 'POST /%' OR operation LIKE 'PUT /%' OR operation LIKE 'PATCH /%' OR operation LIKE 'DELETE /%')
-AND operation NOT LIKE '%/conversations' AND instr(operation, '/conversations/')=0
-AND julianday(created_at)<julianday(?) LIMIT ?)`, formatHubTime(now.Add(-commandReceiptRetention)), commandReceiptPruneBatch); err != nil {
-		return fmt.Errorf("expire command receipts: %w", err)
+	if err := s.retainCommandPayloads(ctx, now); err != nil {
+		return fmt.Errorf("retain command payloads: %w", err)
 	}
 	if _, err := s.database.db.ExecContext(ctx, `DELETE FROM native_duplicate_challenges WHERE rowid IN (
 SELECT rowid FROM native_duplicate_challenges WHERE consumed_at IS NOT NULL OR julianday(created_at)<=julianday(?) LIMIT ?)`, formatHubTime(now.Add(-duplicateChallengeLifetime)), commandReceiptPruneBatch); err != nil {
