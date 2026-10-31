@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 func (e *nativeExecution) ValidatorVersion(ctx context.Context) (runner.NativeValidation, error) {
@@ -32,6 +33,12 @@ func (e *nativeExecution) PrepareReview(ctx context.Context, expected tracker.Na
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.change != nil && e.change.NoChange != nil {
+		if expected.ChangeID != "" || expected.VersionID != "" || expected.HeadSHA != e.change.HeadSHA {
+			return fmt.Errorf("%w: no-change review source changed", runner.ErrNativeRecoveryRequired)
+		}
+		return nil
+	}
 	if e.change == nil || e.change.Landing != nil || e.change.ChangeID != expected.ChangeID || e.change.VersionID != expected.VersionID || e.change.HeadSHA != expected.HeadSHA || e.preparedDisposition == nil || e.preparedDisposition.Status != "complete" || e.preparedDisposition.Blockers || e.preparedDisposition.HumanAction || e.preparedDisposition.ReasonCode != "" {
 		return fmt.Errorf("%w: published review source or disposition changed", runner.ErrNativeRecoveryRequired)
 	}
@@ -67,6 +74,9 @@ func (e *nativeExecution) PrepareReview(ctx context.Context, expected tracker.Na
 func (e *nativeExecution) validationVersion(ctx context.Context, stage string) (runner.NativeValidation, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.change != nil && e.change.NoChange != nil {
+		return e.noChangeValidation(ctx, stage)
+	}
 	if e.change == nil || e.change.Landing != nil || e.change.VersionID == "" || e.lastDiff == nil {
 		return runner.NativeValidation{}, nil
 	}
@@ -213,6 +223,13 @@ func (e *nativeExecution) RecordReview(ctx context.Context, result gate.Validato
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.change != nil && e.change.NoChange != nil {
+		if !e.noChangeResultMatches(result) {
+			return errors.New("no-change review differs from the verified source")
+		}
+		e.change.ImplementationReview = &result
+		return nil
+	}
 	if e.change == nil || e.lastDiff == nil || e.change.VersionID != result.VersionID || e.lastDiff.HeadSHA != result.HeadSHA || e.lastDiff.BaseSHA != result.BaseSHA {
 		return errors.New("native implementation review differs from the published source")
 	}
@@ -259,6 +276,13 @@ func (e *nativeExecution) RecordValidator(ctx context.Context, result gate.Valid
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.change != nil && e.change.NoChange != nil {
+		if !e.noChangeResultMatches(result) {
+			return errors.New("no-change review differs from the verified source")
+		}
+		e.change.Validator = &result
+		return nil
+	}
 	if e.change == nil || e.change.VersionID != result.VersionID {
 		return &APIError{Status: 422, Code: "invalid_request", Rejection: &tracker.PublicationRejection{Category: "acceptance_validation", Field: "validator.version_id"}}
 	}
@@ -353,6 +377,15 @@ func (e *nativeExecution) RecordSecurityAudit(ctx context.Context, result tracke
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.change != nil && e.change.NoChange != nil && !result.Landing {
+		version := e.noChangeVersion()
+		if result.VersionID != version.ID || result.Run.HeadSHA != version.HeadSHA || result.Run.BaseSHA != version.BaseSHA || result.Run.Repository != version.Repository || result.SessionID <= 0 {
+			return errors.New("no-change audit differs from the verified source")
+		}
+		e.change.SecurityAudit = &result
+		e.applySecurityAuditHumanAction(&result)
+		return nil
+	}
 	var changeID, versionID string
 	if result.Landing {
 		if e.data.Identity == nil || e.data.Identity.Role != runner.RoleMerge {
@@ -438,6 +471,36 @@ func (e *nativeExecution) SourceReview(ctx context.Context) (runner.NativeChange
 	defer e.mu.Unlock()
 	if e.change == nil {
 		return runner.NativeChange{}, nil
+	}
+	if e.change.NoChange != nil {
+		if e.integrationSource == nil {
+			return runner.NativeChange{}, fmt.Errorf("%w: no-change completion requires current-base verification on the source-owning runner", runner.ErrValidatorInfrastructure)
+		}
+		verified, err := e.integrationSource(ctx, e.noChangeVersion(), e.change.NoChange.VerifiedSHA)
+		if err != nil {
+			var refusal *workspace.LandRefusal
+			if !errors.As(err, &refusal) || refusal.Kind != workspace.LandRefusalBaseMoved {
+				return runner.NativeChange{}, fmt.Errorf("%w: no-change base verification: %w", runner.ErrValidatorInfrastructure, err)
+			}
+			e.change.ImplementationReview, e.change.Validator, e.change.SecurityAudit = nil, nil, nil
+			e.change.VersionError = refusal.Reason
+			return *e.change, nil
+		}
+		if verified.BaseBefore != e.change.NoChange.VerifiedSHA {
+			return runner.NativeChange{}, fmt.Errorf("%w: no-change source verification differs from the reviewed base", runner.ErrValidatorInfrastructure)
+		}
+		current, err := e.claim.source.client.Recovery(ctx, e.claim.lease.WorkItemID)
+		if err != nil {
+			return runner.NativeChange{}, fmt.Errorf("%w: no-change review state: %w", runner.ErrValidatorInfrastructure, err)
+		}
+		expected := tracker.NativeStepReviewState(current)
+		for _, receipt := range e.data.Steps {
+			if (receipt.Step == "review" || receipt.Step == "validator" || receipt.Step == "security_audit") && receipt.ReviewState != expected {
+				e.change.ImplementationReview, e.change.Validator, e.change.SecurityAudit = nil, nil, nil
+				e.change.VersionError = "issue criteria or human feedback changed during no-change review; verify the current evidence again"
+				break
+			}
+		}
 	}
 	if e.change.Error != "" && e.data.Handoff.UncertainForgeEffect() {
 		return *e.change, fmt.Errorf("%w: %s", ErrUnavailable, e.change.Error)

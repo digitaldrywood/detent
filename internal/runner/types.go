@@ -935,6 +935,7 @@ func (l NativeLanding) RequiresRework() bool {
 // native item has no pull request; the runner opens the Change Request under
 // the run's lease and reports it here, and the orchestrator moves the item.
 type NativeChange struct {
+	NoChange                   *tracker.NativeNoChangeCompletion
 	MergeResolution            bool
 	ReusedDispositionAttemptID string
 	SecurityAudit              *tracker.SecurityAuditReview

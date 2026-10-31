@@ -192,7 +192,7 @@ func (s *Scheduler) RestoreCompletion(ctx context.Context, request orchestrator.
 	}
 	if finalization := state.PreparedFinalization; finalization != nil {
 		execution.change = &runner.NativeChange{
-			Landing: state.PreparedLanding,
+			NoChange: finalization.NoChange, Landing: state.PreparedLanding,
 			Changed: finalization.Changed, Files: finalization.Files,
 			ChangeID: finalization.ChangeID, VersionID: finalization.VersionID,
 			BaseSHA: finalization.BaseSHA, HeadSHA: finalization.HeadSHA,
@@ -202,6 +202,22 @@ func (s *Scheduler) RestoreCompletion(ctx context.Context, request orchestrator.
 		execution.settled = finalization.Settled
 		execution.finalizationSource = finalization.SourceVersion
 		execution.finalizationAttempt = finalization.SourceAttemptID
+	}
+	if execution.change != nil && execution.change.NoChange != nil {
+		for _, receipt := range execution.data.Steps {
+			restored, err := execution.restoreStep(ctx, receipt)
+			if err != nil {
+				return orchestrator.Claimed{}, err
+			}
+			switch restored.Step {
+			case "review":
+				execution.change.ImplementationReview = restored.Validator
+			case "validator":
+				execution.change.Validator = restored.Validator
+			case "security_audit":
+				execution.change.SecurityAudit = restored.SecurityAudit
+			}
+		}
 	}
 	execution.RetainCompletion()
 	claim.execution = execution

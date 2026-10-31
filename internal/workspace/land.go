@@ -72,6 +72,7 @@ type GitHubRESTClient interface {
 }
 
 type LandOptions struct {
+	NoChangeNeeded        bool
 	Resolution            *LandingResolution
 	ChangeID              string
 	ReviewDispositions    []tracker.ReviewDisposition
@@ -447,7 +448,13 @@ func (l *LocalGit) LandChange(ctx context.Context, info Info, issue Issue, opts 
 	return result, nil
 }
 
-func deliveredLanding(ctx context.Context, path string, opts LandOptions, base, target, method string) (LandResult, error) {
+func deliveredLanding(ctx context.Context, path string, opts LandOptions, base, target, method string) (result LandResult, resultErr error) {
+	defer func() {
+		var refusal *LandRefusal
+		if errors.As(resultErr, &refusal) && refusal.Kind == LandRefusalNothing {
+			refusal.BaseSHA, refusal.TargetBranch = base, target
+		}
+	}()
 	merge := ""
 	var incorporation *tracker.LandingIncorporation
 	if _, err := runGitAt(ctx, path, "merge-base", "--is-ancestor", opts.HeadSHA, base); err == nil {
@@ -495,7 +502,7 @@ func (l *LocalGit) VerifyIntegratedChange(ctx context.Context, info Info, issue 
 	if opts.Repository == "" {
 		return LandResult{}, refuse(LandRefusalProtected, "integration requires the published repository identity")
 	}
-	if !validLandingHead(sourceBase) || !validLandingHead(opts.HeadSHA) || !validLandingHead(integratedBase) || sourceBase == opts.HeadSHA {
+	if !validLandingHead(sourceBase) || !validLandingHead(opts.HeadSHA) || !validLandingHead(integratedBase) || sourceBase == opts.HeadSHA && !opts.NoChangeNeeded || opts.NoChangeNeeded && (sourceBase != opts.HeadSHA || sourceBase != integratedBase) {
 		return LandResult{}, refuse(LandRefusalNothing, "integration requires the published source delta and final base")
 	}
 	release, err := l.acquireSourceOperation(ctx)
@@ -530,6 +537,12 @@ func (l *LocalGit) VerifyIntegratedChange(ctx context.Context, info Info, issue 
 	}
 	if _, err := runGitAt(ctx, normalized.Path, "fetch", "--no-tags", "--no-write-fetch-head", remote, base); err != nil {
 		return LandResult{}, err
+	}
+	if opts.NoChangeNeeded {
+		if base != sourceBase {
+			return LandResult{}, &LandRefusal{Kind: LandRefusalBaseMoved, BaseSHA: base, TargetBranch: target, Reason: "the no-change verification base advanced; verify acceptance on the current base"}
+		}
+		return LandResult{BaseBefore: base, BaseRef: target}, nil
 	}
 	ancestries := [][2]string{{sourceBase, integratedBase}, {sourceBase, opts.HeadSHA}}
 	if integratedBase != opts.HeadSHA {

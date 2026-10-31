@@ -1,6 +1,8 @@
 package tracker
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"slices"
 	"strings"
@@ -131,27 +133,37 @@ type NativeCompletionObservation struct {
 	ObservedAt         time.Time `json:"observed_at"`
 }
 
+type NativeNoChangeCompletion struct {
+	Repository  string              `json:"repository"`
+	Validation  *gate.CommandResult `json:"validation,omitempty"`
+	ReportedSHA string              `json:"reported_sha"`
+	VerifiedSHA string              `json:"verified_sha"`
+	Evidence    string              `json:"evidence"`
+	PolicyID    string              `json:"policy_id"`
+}
+
 type NativeFinalization struct {
-	Publication     *NativePRPublication   `json:"publication,omitempty"`
-	Unavailable     []string               `json:"unavailable"`
-	ObservedAt      time.Time              `json:"observed_at"`
-	Source          string                 `json:"source"`
-	Coverage        string                 `json:"coverage"`
-	Settled         bool                   `json:"settled"`
-	Changed         bool                   `json:"changed"`
-	Files           int                    `json:"files"`
-	ChangeID        string                 `json:"change_id,omitempty"`
-	VersionID       string                 `json:"version_id,omitempty"`
-	BaseSHA         string                 `json:"base_sha,omitempty"`
-	HeadSHA         string                 `json:"head_sha,omitempty"`
-	Reviewed        bool                   `json:"reviewed"`
-	VersionError    string                 `json:"version_error,omitempty"`
-	VersionCode     string                 `json:"version_code,omitempty"`
-	Error           string                 `json:"error,omitempty"`
-	TextTruncated   bool                   `json:"text_truncated"`
-	TextRedacted    bool                   `json:"text_redacted"`
-	SourceVersion   *NativeChangeReference `json:"source_version,omitempty"`
-	SourceAttemptID string                 `json:"source_attempt_id,omitempty"`
+	NoChange        *NativeNoChangeCompletion `json:"no_change,omitempty"`
+	Publication     *NativePRPublication      `json:"publication,omitempty"`
+	Unavailable     []string                  `json:"unavailable"`
+	ObservedAt      time.Time                 `json:"observed_at"`
+	Source          string                    `json:"source"`
+	Coverage        string                    `json:"coverage"`
+	Settled         bool                      `json:"settled"`
+	Changed         bool                      `json:"changed"`
+	Files           int                       `json:"files"`
+	ChangeID        string                    `json:"change_id,omitempty"`
+	VersionID       string                    `json:"version_id,omitempty"`
+	BaseSHA         string                    `json:"base_sha,omitempty"`
+	HeadSHA         string                    `json:"head_sha,omitempty"`
+	Reviewed        bool                      `json:"reviewed"`
+	VersionError    string                    `json:"version_error,omitempty"`
+	VersionCode     string                    `json:"version_code,omitempty"`
+	Error           string                    `json:"error,omitempty"`
+	TextTruncated   bool                      `json:"text_truncated"`
+	TextRedacted    bool                      `json:"text_redacted"`
+	SourceVersion   *NativeChangeReference    `json:"source_version,omitempty"`
+	SourceAttemptID string                    `json:"source_attempt_id,omitempty"`
 }
 
 type NativePRPublication struct {
@@ -476,4 +488,9 @@ type NativeSourceRecovery struct {
 type NativeSourceRecoveryRunner struct {
 	ID   string `json:"runner_id"`
 	Name string `json:"name"`
+}
+
+func (n NativeNoChangeCompletion) VersionID() string {
+	key := sha256.Sum256([]byte(n.PolicyID + ":" + n.Repository + ":" + n.VerifiedSHA + ":" + n.ReportedSHA + ":" + n.Evidence))
+	return "version_" + hex.EncodeToString(key[:16])
 }
