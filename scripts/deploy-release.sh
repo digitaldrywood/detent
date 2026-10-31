@@ -31,6 +31,11 @@ chmod 600 "$ssh_dir/id" "$ssh_dir/known_hosts"
 chmod 700 "$scratch/release-hub/detent"
 identity="$("$scratch/release-hub/detent" version --format json)"
 jq -e --arg version "${version#v}" --arg commit "$commit" '.version == $version and .commit == $commit' <<< "$identity" > /dev/null
+upload="$scratch/release-hub/detent"
+if [ "$environment" = production ]; then
+  upload="$ssh_dir/deploy.tar"
+  COPYFILE_DISABLE=1 tar -cf "$upload" -C "$scratch/release-hub" detent -C "$PWD/deploy/hub" litestream-production.json
+fi
 ssh -i "$ssh_dir/id" \
   -o IdentitiesOnly=yes \
   -o HostKeyAlias="$alias" \
@@ -38,4 +43,4 @@ ssh -i "$ssh_dir/id" \
   -o StrictHostKeyChecking=yes \
   -o BatchMode=yes \
   -o ConnectTimeout=20 \
-  "apprunner@$host" "deploy $commit" < "$scratch/release-hub/detent"
+  "apprunner@$host" "deploy $commit" < "$upload"
