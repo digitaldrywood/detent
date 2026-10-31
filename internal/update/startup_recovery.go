@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 )
 
 const startupCrashLoopThreshold = 3
@@ -170,6 +172,12 @@ func (r *StartupRecovery) HandleFailure(ctx context.Context, cause error) {
 	if r == nil || cause == nil {
 		return
 	}
+	var definitionErr *workflowconfig.ProjectDefinitionError
+	var pathErr *os.PathError
+	if errors.As(cause, &definitionErr) && !errors.As(cause, &pathErr) {
+		r.cfg.Logger.Error("project configuration prevents startup", "error", cause)
+		return
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -266,12 +274,20 @@ func (r *StartupRecovery) recordFailure(cause error) (StartupFailure, *PendingUp
 	return *failure, pending, shouldUpdate, err
 }
 
+func (r *StartupRecovery) rejectedRecoveryVersion(version string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.state.LastRollback != nil && strings.TrimSpace(version) == strings.TrimSpace(r.state.LastRollback.FromVersion)
+}
+
 func (r *StartupRecovery) applyRecoveryUpdate(ctx context.Context) {
 	status, err := r.cfg.Updater.Check(ctx)
 	manualInstall := false
 	if err == nil {
 		switch {
 		case !status.UpdateAvailable:
+			status.Action = ActionUpToDate
+		case r.rejectedRecoveryVersion(status.LatestVersion):
 			status.Action = ActionUpToDate
 		case status.InstallSource != InstallSourceRelease:
 			manualInstall = true

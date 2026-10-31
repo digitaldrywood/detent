@@ -56,14 +56,7 @@ func collectRunnerLocalChecks(ctx context.Context, cfg globalconfig.Config, name
 	_, workflow, _, err := resolveRunnerProjectPolicy(ctx, cfg, name)
 	checks.ConfigurationAt = time.Now().UTC()
 	if err != nil {
-		checks.Configuration = "failed"
-		checks.ConfigurationMessage = strings.Join(strings.Fields(regexp.MustCompile("\x60[^\x60]*\x60|\x22[^\x22]*\x22|\x27[^\x27]*\x27").ReplaceAllString(err.Error(), "[value]")), " ")
-		if len(checks.ConfigurationMessage) > 8000 {
-			checks.ConfigurationMessage = checks.ConfigurationMessage[:8000]
-		}
-		if strings.Contains(checks.ConfigurationMessage, "retired configuration key") {
-			checks.ConfigurationFix = "Run detent config migrate detent.yaml in the repository, review and commit the changes, then retry."
-		}
+		checks = failedRunnerConfiguration(checks, err)
 		if errors.Is(err, workflowconfig.ErrNoProjectDefinition) || errors.Is(err, os.ErrNotExist) {
 			checks.Configuration = "missing"
 		}
@@ -207,7 +200,8 @@ func collectRunnerSetupReports(ctx context.Context, cfg globalconfig.Config, cli
 		if checks.Configuration == "passed" {
 			_, _, descriptor, err := resolveRunnerProjectPolicy(ctx, cfg, name)
 			if err != nil {
-				return nil, err
+				reports[name] = failedRunnerConfiguration(checks, err)
+				continue
 			}
 			if err := native.ReportObservedPolicy(ctx, descriptor); err != nil {
 				return nil, err
@@ -223,6 +217,19 @@ func collectRunnerSetupReports(ctx context.Context, cfg globalconfig.Config, cli
 // validation of everything except absent project paths.
 func readRunnerSetupConfig(path string) (globalconfig.Config, error) {
 	return globalconfig.Read(path, globalconfig.WithMissingProjectPaths())
+}
+
+func failedRunnerConfiguration(checks runnerauth.LocalChecks, err error) runnerauth.LocalChecks {
+	checks.ConfigurationAt = time.Now().UTC()
+	checks.Configuration = "failed"
+	checks.ConfigurationMessage = strings.Join(strings.Fields(regexp.MustCompile("\x60[^\x60]*\x60|\x22[^\x22]*\x22|\x27[^\x27]*\x27").ReplaceAllString(err.Error(), "[value]")), " ")
+	if len(checks.ConfigurationMessage) > 8000 {
+		checks.ConfigurationMessage = checks.ConfigurationMessage[:8000]
+	}
+	if strings.Contains(checks.ConfigurationMessage, "retired configuration key") {
+		checks.ConfigurationFix = "Run detent config migrate detent.yaml in the repository, review and commit the changes, then retry."
+	}
+	return checks
 }
 
 func resolveRunnerProjectPolicy(ctx context.Context, cfg globalconfig.Config, name string) (globalconfig.Config, workflowconfig.Workflow, policy.Descriptor, error) {

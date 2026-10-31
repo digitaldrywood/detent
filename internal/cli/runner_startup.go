@@ -89,7 +89,14 @@ func startRunnerProjects(ctx context.Context, manager *project.Manager, heartbea
 		if selected.LastError == "" || !selected.NextRetryAt.IsZero() && !selected.RetryStopped {
 			return nil
 		}
-		startupErr = errors.Join(startupErr, fmt.Errorf("project %s: %s", selected.Project.ID, selected.LastError))
+		cause := fmt.Errorf("project %s: %s", selected.Project.ID, selected.LastError)
+		if _, err := project.LoadWorkflowContext(ctx, selected.Project); err != nil {
+			var definitionErr *workflowconfig.ProjectDefinitionError
+			if errors.As(err, &definitionErr) {
+				cause = fmt.Errorf("project %s: %w", selected.Project.ID, err)
+			}
+		}
+		startupErr = errors.Join(startupErr, cause)
 	}
 	if len(health) == 0 {
 		return nil

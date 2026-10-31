@@ -347,3 +347,34 @@ func TestRunnerProviderTimeoutsRecoverWithBackoff(t *testing.T) {
 		t.Fatalf("recovered runner did not advertise its provider: %+v %v", reports, err)
 	}
 }
+
+func TestRunnerStartupRetainsConfigurationFailureForRecovery(t *testing.T) {
+	t.Parallel()
+	path := writeWorkflowFile(t)
+	if err := os.WriteFile(filepath.Join(filepath.Dir(path), "detent.yaml"), []byte("schema: 1\nroutines: {}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("Work the issue.\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	selected := globalconfig.Project{ID: "invalid", Workflow: path, Workdir: filepath.Dir(path), Weight: 1}
+	manager, err := projectfixture.NewManager(project.ManagerConfig{Projects: []globalconfig.Project{selected}}, project.ManagerDependencies{
+		ProjectFactory: func(cfg globalconfig.Project) (*project.Project, error) {
+			_, err := project.LoadWorkflowContext(t.Context(), cfg)
+			return nil, err
+		},
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reported := false
+	err = startRunnerProjects(t.Context(), manager, runnerHeartbeatFunc(func(context.Context) error {
+		reported = true
+		return nil
+	}))
+	var definitionErr *workflowconfig.ProjectDefinitionError
+	if !errors.As(err, &definitionErr) || !strings.Contains(err.Error(), "retired configuration key") || !reported {
+		t.Fatalf("startup lost actionable configuration failure: %v, reported=%v", err, reported)
+	}
+}

@@ -134,6 +134,9 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 		checks.Setup = firstNonBlankString(setupResults[name], "failed")
 		localChecks[name] = checks
 		projects.checks[name] = checks
+		if checks.Configuration == "failed" {
+			projects.recordSettingsProblem(name, checks, errors.New(checks.ConfigurationMessage))
+		}
 	}
 	tokenSource := githubconnector.StaticTokenSource("")
 	if len(options) > 0 && options[0].intakeToken != nil {

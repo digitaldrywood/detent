@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -12,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 )
 
 const (
@@ -526,4 +529,54 @@ func (u *startupRecoveryUpdater) Check(context.Context) (Status, error) {
 func (u *startupRecoveryUpdater) Apply(context.Context, ApplyOptions) (Status, error) {
 	u.applyCalls++
 	return u.applyStatus, u.applyErr
+}
+
+func TestStartupRecoveryExcludesProjectConfiguration(t *testing.T) {
+	t.Parallel()
+	for _, pending := range []bool{false, true} {
+		t.Run(fmt.Sprintf("pending=%v", pending), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), startupRecoveryStateName)
+			if pending {
+				if err := recordPendingUpdate(path, PendingUpdate{AppliedAt: time.Now(), FromVersion: "0.93.0", ToVersion: "0.94.0", FromCommit: testPreviousCommit, ToCommit: testUpdatedCommit, ExecutablePath: "/opt/detent/bin/detent", PreviousBinaryPath: "/opt/detent/bin/detent.previous", InstallSource: InstallSourceRelease}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			updater := &startupRecoveryUpdater{checkStatus: Status{UpdateAvailable: true, InstallSource: InstallSourceRelease}}
+			rollbacks := 0
+			recovery := newTestStartupRecovery(t, StartupRecoveryConfig{StatePath: path, CurrentVersion: "0.94.0", AutoUpdate: true, Updater: updater, Rollback: func(context.Context, PendingUpdate) error { rollbacks++; return nil }})
+			cause := fmt.Errorf("load runner project setup: %w", &workflowconfig.ProjectDefinitionError{Err: errors.New("routines: retired configuration key")})
+			for range startupCrashLoopThreshold + 1 {
+				recovery.HandleFailure(t.Context(), cause)
+			}
+			if rollbacks != 0 || updater.checkCalls != 0 || updater.applyCalls != 0 {
+				t.Fatalf("configuration failure mutated installation: rollback=%d check=%d apply=%d", rollbacks, updater.checkCalls, updater.applyCalls)
+			}
+			state, _, err := loadStartupRecoveryState(path)
+			if err != nil || state.ActiveFailure != nil || (state.PendingUpdate != nil) != pending {
+				t.Fatalf("configuration failure changed recovery state: %+v, %v", state, err)
+			}
+		})
+	}
+}
+
+func TestStartupRecoveryDoesNotReinstallRolledBackVersion(t *testing.T) {
+	t.Parallel()
+	for _, target := range []string{"0.94.0", "0.95.0"} {
+		t.Run(target, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), startupRecoveryStateName)
+			if err := saveStartupRecoveryState(path, startupRecoveryState{Schema: startupRecoveryStateSchema, LastRollback: &StartupRollback{FromVersion: "0.94.0", ToVersion: "0.93.0"}}); err != nil {
+				t.Fatal(err)
+			}
+			updater := &startupRecoveryUpdater{checkStatus: Status{UpdateAvailable: true, LatestVersion: target, InstallSource: InstallSourceRelease}}
+			recovery := newTestStartupRecovery(t, StartupRecoveryConfig{StatePath: path, CurrentVersion: "0.93.0", AutoUpdate: true, Updater: updater})
+			recovery.HandleFailure(t.Context(), errors.New("binary cannot start"))
+			want := 0
+			if target == "0.95.0" {
+				want = 1
+			}
+			if updater.checkCalls != 1 || updater.applyCalls != want {
+				t.Fatalf("recovery calls: check=%d apply=%d, want apply=%d", updater.checkCalls, updater.applyCalls, want)
+			}
+		})
+	}
 }
