@@ -236,16 +236,19 @@ func TestRestoreScriptBoundsAndResumesTenantRotation(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, test := range []struct {
-		name    string
-		tenants int
-		runs    int
-		fail    bool
+		name              string
+		tenants           int
+		runs              int
+		fail              bool
+		mixedProvisioning bool
 	}{
-		{"wrap rotation", 23, 3, false},
-		{"ten thousand tenants", 10000, 1, false},
-		{"small fleet", 3, 2, false},
-		{"empty fleet", 0, 1, false},
-		{"corrupt tenant does not starve rotation", 23, 2, true},
+		{"wrap rotation", 23, 3, false, false},
+		{"ten thousand tenants", 10000, 1, false, false},
+		{"small fleet", 3, 2, false, false},
+		{"empty fleet", 0, 1, false, false},
+		{"corrupt tenant does not starve rotation", 23, 2, true, false},
+		{"mixed provisioning states", 23, 3, false, true},
+		{"no provisioned tenants", 0, 1, false, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -256,11 +259,16 @@ func TestRestoreScriptBoundsAndResumesTenantRotation(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { db.Close() })
-			if _, err := db.ExecContext(t.Context(), "CREATE TABLE organizations (id TEXT PRIMARY KEY)"); err != nil {
+			if _, err := db.ExecContext(t.Context(), "CREATE TABLE organizations (id TEXT PRIMARY KEY, state TEXT NOT NULL)"); err != nil {
 				t.Fatal(err)
 			}
 			if test.tenants > 0 {
-				if _, err := db.ExecContext(t.Context(), `WITH RECURSIVE ids(n) AS (SELECT 0 UNION ALL SELECT n+1 FROM ids WHERE n+1 < ?) INSERT INTO organizations SELECT printf('org_%05d', n) FROM ids`, test.tenants); err != nil {
+				if _, err := db.ExecContext(t.Context(), `WITH RECURSIVE ids(n) AS (SELECT 0 UNION ALL SELECT n+1 FROM ids WHERE n+1 < ?) INSERT INTO organizations SELECT printf('org_%05d', n), CASE WHEN n % 2 = 0 THEN 'ready' ELSE 'disabled' END FROM ids`, test.tenants); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.mixedProvisioning {
+				if _, err := db.ExecContext(t.Context(), `INSERT INTO organizations VALUES ('org_00000_requested','requested'), ('org_00000_allocating','allocating'), ('org_00000_failed','failed'), ('org_00000_deleting','deleting'), ('org_00000_deleted','deleted')`); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -285,6 +293,7 @@ source "$WORK/restore.sh"
 restore_target() {
   printf '%s\n' "$1"
   if [ "$1" = cloud/registry.db ]; then cp "$WORK/registry.db" "$2/cloud_registry.db"; fi
+  case "$1" in tenants/*) [ -d "$WORK/${1%/hub.db}" ] || return 1;; esac
   if [ "$FAIL" = true ] && [ "$1" = tenants/org_00000/hub.db ]; then return 1; fi
 }
 main

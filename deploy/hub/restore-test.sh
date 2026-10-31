@@ -42,9 +42,9 @@ except FileNotFoundError:
 if cursor and not re.fullmatch(r"org_[a-zA-Z0-9_-]{1,60}", cursor):
     raise ValueError("invalid restore cursor")
 with sqlite3.connect(registry.resolve().as_uri() + "?mode=ro&immutable=1", uri=True) as db:
-    batch = db.execute("SELECT id FROM organizations WHERE id > ? ORDER BY id LIMIT 10", (cursor,)).fetchall()
+    batch = db.execute("SELECT id FROM organizations WHERE state IN ('ready', 'disabled') AND id > ? ORDER BY id LIMIT 10", (cursor,)).fetchall()
     if len(batch) < 10:
-        batch += db.execute("SELECT id FROM organizations WHERE id <= ? ORDER BY id LIMIT ?", (cursor, 10 - len(batch))).fetchall()
+        batch += db.execute("SELECT id FROM organizations WHERE state IN ('ready', 'disabled') AND id <= ? ORDER BY id LIMIT ?", (cursor, 10 - len(batch))).fetchall()
 for (tenant,) in batch:
     if not re.fullmatch(r"org_[a-zA-Z0-9_-]{1,60}", tenant):
         raise ValueError("invalid restore tenant ID")
