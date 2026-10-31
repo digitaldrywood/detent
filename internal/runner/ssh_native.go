@@ -454,3 +454,9 @@ func (e *sshNativeExecution) ReconcileReleaseDelivery(ctx context.Context, attem
 	err := e.peer.Call(ctx, "execution.ReconcileReleaseDelivery", &result, attempt, generation)
 	return result, err
 }
+
+func (e *sshNativeExecution) NoChangeResult(ctx context.Context) (*NativeNoChange, error) {
+	var result *NativeNoChange
+	err := e.peer.Call(ctx, "execution.NoChangeResult", &result)
+	return result, err
+}

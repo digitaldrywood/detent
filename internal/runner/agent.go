@@ -3778,7 +3778,9 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 		}
 		workspaceIssue.PullRequestHeadSHA = req.NativeVersion.HeadSHA
 		workspaceIssue.ReviewVersionID = req.NativeVersion.ID
-		workspaceIssue.Source = &workspace.ChangeSource{Version: *req.NativeVersion}
+		if req.NativeVersion.ChangeID != "" {
+			workspaceIssue.Source = &workspace.ChangeSource{Version: *req.NativeVersion}
+		}
 		if req.source != nil {
 			recovered, err := req.source.RecoverChangeSource(ctx)
 			if err != nil {

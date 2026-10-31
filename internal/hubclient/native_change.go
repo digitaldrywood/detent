@@ -78,6 +78,14 @@ func (e *nativeExecution) settle(ctx context.Context, outcome string, finish int
 		return errors.New("the hub has not stored the run's final attempt diff")
 	}
 	diff := *e.lastDiff
+	if d := e.preparedDisposition; d != nil && d.Status == workpad.StatusNoChangeNeeded {
+		if d.NoChange.Validate() != nil || diff.BaseSHA != d.NoChange.VerifiedSHA || diff.HeadSHA != d.NoChange.VerifiedSHA || len(diff.Files) != 0 {
+			return errors.New("no-change evidence differs from the final source")
+		}
+		e.change = nil
+		e.settled = true
+		return nil
+	}
 	if e.worktreeHead != "" && diff.HeadSHA != e.worktreeHead {
 		return errors.New("the attempt diff does not match the final checkpoint head")
 	}

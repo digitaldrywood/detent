@@ -218,7 +218,11 @@ func validationStepBinding(execution Execution, input NativeValidation, step str
 		return tracker.NativeStepReceipt{}, fmt.Errorf("encode step inputs: %w", err)
 	}
 	source.WorkspaceDigest += ":" + policy.Digest(raw)
-	return stepBinding(execution, step, source, tracker.NativeChangeReference{ChangeID: version.ChangeID, VersionID: version.ID, HeadSHA: version.HeadSHA}), nil
+	change := tracker.NativeChangeReference{}
+	if version.ChangeID != "" {
+		change = tracker.NativeChangeReference{ChangeID: version.ChangeID, VersionID: version.ID, HeadSHA: version.HeadSHA}
+	}
+	return stepBinding(execution, step, source, change), nil
 }
 
 func nativeIndependentGateResume(recovery tracker.NativeRecovery) bool {

@@ -37,6 +37,8 @@ type completedExecutionWorkspace struct {
 	onValidation      func()
 	validationCalls   int
 	finalizationCalls int
+	currentBase       string
+	currentBaseError  error
 }
 
 func (*completedExecutionWorkspace) Use(ctx context.Context, _ workspace.Issue) (func(), error) {
@@ -44,6 +46,10 @@ func (*completedExecutionWorkspace) Use(ctx context.Context, _ workspace.Issue) 
 		return nil, err
 	}
 	return func() {}, nil
+}
+
+func (w *completedExecutionWorkspace) CurrentBase(context.Context, workspace.Info, workspace.Issue) (string, error) {
+	return w.currentBase, w.currentBaseError
 }
 
 func (w *completedExecutionWorkspace) Head(context.Context, workspace.Info, workspace.Issue) (string, error) {
@@ -771,19 +777,36 @@ func TestCompletedNativeTurnReapFailure(t *testing.T) {
 func TestNoChangeCompletionNeverCommitsSource(t *testing.T) {
 	sha := strings.Repeat("a", 40)
 	for _, test := range []struct {
-		name      string
-		verified  string
-		available bool
-		files     []tracker.AttemptDiffFile
-		wantError bool
+		name                string
+		verified            string
+		available           bool
+		files               []tracker.AttemptDiffFile
+		wantError           bool
+		movedBase           bool
+		baseError           bool
+		moveDuringGate      bool
+		wantValidationCalls int
 	}{
-		{name: "verified unchanged source runs the gate", verified: sha, available: true},
+		{name: "verified unchanged source runs the gate", verified: sha, available: true, wantValidationCalls: 1},
 		{name: "stale evidence requires verification", verified: strings.Repeat("b", 40), available: true, wantError: true},
+		{name: "remote base advanced", verified: sha, available: true, movedBase: true, wantError: true},
+		{name: "remote unavailable", verified: sha, available: true, baseError: true, wantError: true},
+		{name: "remote advances during gate", verified: sha, available: true, moveDuringGate: true, wantError: true, wantValidationCalls: 1},
 		{name: "missing diff fails closed", verified: sha, wantError: true},
 		{name: "uncommitted source is preserved", verified: sha, available: true, files: []tracker.AttemptDiffFile{{Path: "example.go"}}, wantError: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			backend := &completedExecutionWorkspace{retainedExecutionWorkspace: retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Branch: "native"}, recoveryStates: []workspace.RecoveryState{{HeadSHA: sha, WorkspaceFingerprint: "digest"}}}}}
+			backend.currentBase = sha
+			if test.movedBase {
+				backend.currentBase = strings.Repeat("b", 40)
+			}
+			if test.baseError {
+				backend.currentBaseError = errors.New("remote unavailable")
+			}
+			if test.moveDuringGate {
+				backend.onValidation = func() { backend.currentBase = strings.Repeat("b", 40) }
+			}
 			execution := &finalizingTestExecution{}
 			r := attemptDiffRunner()
 			r.now, r.afterRunTimeout = time.Now, time.Minute
@@ -804,7 +827,7 @@ func TestNoChangeCompletionNeverCommitsSource(t *testing.T) {
 			if !test.wantError && (backend.validationCalls != 1 || execution.validation == nil || execution.validation.HeadSHA != sha) {
 				t.Fatalf("no-change report lost required command: calls=%d receipt=%+v", backend.validationCalls, execution.validation)
 			}
-			if test.wantError && (backend.validationCalls != 0 || !backend.retained) {
+			if test.wantError && (backend.validationCalls != test.wantValidationCalls || !backend.retained) {
 				t.Fatalf("invalid source was validated or discarded: calls=%d retained=%t", backend.validationCalls, backend.retained)
 			}
 		})

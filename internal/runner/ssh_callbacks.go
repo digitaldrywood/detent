@@ -164,6 +164,11 @@ func NewSSHCallbackHandler(request RunRequest, sessions SessionStore, checker Bu
 				}
 				_, handler := source.AgentTools()
 				return invokeSSHMethod(ctx, handler, "", arguments)
+			case "NoChangeResult":
+				if _, ok := request.Execution.(NativeNoChangeExecution); !ok {
+					return nil, nil
+				}
+				return invokeSSHMethod(ctx, request.Execution, name, arguments)
 			case "ValidatorVersion":
 				if _, ok := request.Execution.(NativeValidatorExecution); !ok {
 					return NativeValidation{}, nil

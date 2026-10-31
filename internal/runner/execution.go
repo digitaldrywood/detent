@@ -568,6 +568,25 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 			result.NativeChange.ImplementationReviewError = reviewErr.Error()
 		}
 	}
+	if source, ok := req.Execution.(NativeNoChangeExecution); ok && runErr == nil {
+		var err error
+		result.NativeNoChange, err = source.NoChangeResult(guarded)
+		runErr = errors.Join(runErr, err)
+		if result.NativeNoChange != nil && result.NativeNoChange.VerifiedSHA == "" {
+			result.NativeNoChange = nil
+		}
+		if result.NativeNoChange != nil {
+			_, _, _, _, backend := r.runtimeSnapshotWithWorkspace()
+			issue := workspaceIssue(r.projectID, req.Issue)
+			info, err := backend.Create(guarded, issue)
+			if err == nil {
+				req.noChangeVerifiedSHA = result.NativeNoChange.VerifiedSHA
+				err = verifyNoChangeBase(guarded, req, backend, info, issue)
+			}
+			runErr = errors.Join(runErr, err)
+			result.NativeNoChange.CurrentBase = err == nil
+		}
+	}
 	if runErr == nil && result.FinalState == FinalStateCompleted {
 		readCtx, readCancel := context.WithTimeout(context.WithoutCancel(guarded), r.afterRunTimeout)
 		cleared, err := r.nativeReviewConversationsCleared(readCtx, req, result.NativeChange)
@@ -782,6 +801,9 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 		}
 		diff, available := source(ctx)
 		finalizationErr = verifyNoChangeSource(req.noChangeVerifiedSHA, diff, available)
+		if finalizationErr == nil {
+			finalizationErr = verifyNoChangeBase(ctx, req, backend, info, issue)
+		}
 	}
 	if req.finalizeNativeWork && !req.noChangeNeeded && !req.reviewOnly && finalizationErr == nil && ctx.Err() == nil && !req.retainCheckpoint {
 		if finalizer, ok := backend.(workspace.NativeWorkFinalizer); ok {
@@ -857,6 +879,9 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 				}
 			}
 		}
+	}
+	if req.noChangeNeeded && finalizationErr == nil {
+		finalizationErr = verifyNoChangeBase(ctx, req, backend, info, issue)
 	}
 	finalizationErr = errors.Join(finalizationErr, executionCancellation(req))
 	deadlineExpired := availabilityStopped(req.Execution, context.Cause(ctx), time.Now())
@@ -1295,8 +1320,8 @@ func (r *Runner) validateNativeChange(ctx context.Context, req RunRequest) (err 
 	if routeErr != nil {
 		return routeErr
 	}
-	request := ValidatorRequest{usageExecution: req.Execution, workspacePrepared: req.workspacePrepared, SecurityAudit: input.SecurityAudit, Issue: req.Issue, NativeVersion: input.Version, Diff: input.Diff, Evidence: input.Evidence, Commands: input.Commands, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate}
-	if source, ok := req.Execution.(ChangeSourceExecution); ok {
+	request := ValidatorRequest{usageExecution: req.Execution, workspacePrepared: req.workspacePrepared, SecurityAudit: input.SecurityAudit, Discussion: input.Discussion, Issue: req.Issue, NativeVersion: input.Version, Diff: input.Diff, Evidence: input.Evidence, Commands: input.Commands, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate}
+	if source, ok := req.Execution.(ChangeSourceExecution); ok && input.Version.ChangeID != "" {
 		request.source = source
 	}
 	if source, ok := req.Execution.(ToolExecution); ok {
@@ -1358,7 +1383,7 @@ func (r *Runner) reviewNativeChange(ctx context.Context, req RunRequest) (approv
 		return false, routeErr
 	}
 	request := ValidatorRequest{usageExecution: req.Execution, workspacePrepared: req.workspacePrepared, implementationReview: true, Discussion: input.Discussion, Issue: req.Issue, NativeVersion: input.Version, Diff: input.Diff, Evidence: input.Evidence, Commands: input.Commands, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate}
-	if source, ok := req.Execution.(ChangeSourceExecution); ok {
+	if source, ok := req.Execution.(ChangeSourceExecution); ok && input.Version.ChangeID != "" {
 		request.source = source
 	}
 	if source, ok := req.Execution.(ToolExecution); ok {
@@ -1523,6 +1548,24 @@ func verifyNoChangeSource(verified string, diff tracker.AttemptDiffRequest, avai
 	}
 	if len(diff.Files) != 0 {
 		return errors.New("no-change report has source changes; preserve and report the source deliverable")
+	}
+	return nil
+}
+
+func verifyNoChangeBase(ctx context.Context, req RunRequest, backend workspace.Backend, info workspace.Info, issue workspace.Issue) error {
+	if err := req.Execution.Validate(ctx); err != nil {
+		return err
+	}
+	provider, ok := backend.(workspace.CurrentBaseProvider)
+	if !ok {
+		return errors.New("workspace cannot observe the current completion base")
+	}
+	base, err := provider.CurrentBase(ctx, info, issue)
+	if err != nil {
+		return fmt.Errorf("verify no-change base: %w", err)
+	}
+	if base != req.noChangeVerifiedSHA {
+		return errors.New("completion base advanced; re-verify the criteria on the current base")
 	}
 	return nil
 }

@@ -25,6 +25,7 @@ type implementationReviewExecution struct {
 	attachmentValidatorExecution
 	events            *[]string
 	validatorDisabled bool
+	noChange          bool
 	auditResult       tracker.SecurityAuditReview
 	reviewResult      gate.ValidatorResult
 	validatorResult   gate.ValidatorResult
@@ -60,6 +61,12 @@ func (e *implementationReviewExecution) ReviewVersion(context.Context) (NativeVa
 		input.Version.HeadSHA = e.head
 		input.Diff.HeadSHA = e.head
 	}
+	if e.noChange {
+		input.Version.ID, input.Version.ChangeID = "attempt_example", ""
+		input.Version.BaseSHA = input.Version.HeadSHA
+		input.Diff.BaseSHA = input.Diff.HeadSHA
+		input.Diff.Files, input.Diff.Patch = nil, ""
+	}
 	input.Commands = e.commands
 	input.Discussion = e.discussion
 	if e.validation != nil {
@@ -81,7 +88,7 @@ func (e *implementationReviewExecution) RecordSecurityAudit(_ context.Context, r
 
 func (e *implementationReviewExecution) RecordReview(_ context.Context, result gate.ValidatorResult) error {
 	*e.events = append(*e.events, "record review")
-	if result.VersionID != "version_example" {
+	if result.VersionID != "version_example" && (!e.noChange || result.VersionID != "attempt_example") {
 		return fmt.Errorf("independent review did not identify the expected immutable version: %+v", result)
 	}
 	e.reviewResult = result
@@ -94,6 +101,12 @@ func (e *implementationReviewExecution) ValidatorVersion(ctx context.Context) (N
 	if e.head != "" {
 		input.Version.HeadSHA = e.head
 		input.Diff.HeadSHA = e.head
+	}
+	if e.noChange {
+		input.Version.ID, input.Version.ChangeID = "attempt_example", ""
+		input.Version.BaseSHA = input.Version.HeadSHA
+		input.Diff.BaseSHA = input.Diff.HeadSHA
+		input.Diff.Files, input.Diff.Patch = nil, ""
 	}
 	input.Commands = append(input.Commands, e.commands...)
 	input.Commands = append(input.Commands, e.reviewResult.Commands...)
@@ -247,6 +260,7 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 	isolateAttemptDiffGitConfig(t)
 	for _, test := range []struct {
 		name             string
+		noChange         bool
 		ssh              bool
 		validator        bool
 		verdict          string
@@ -269,6 +283,10 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 		unsatisfiable    bool
 	}{
 		{name: "separate source and acceptance passes reuse source receipt", validator: true, verdict: "pass"},
+		{name: "no-change evidence runs independent producers", noChange: true, validator: true, verdict: "pass"},
+		{name: "no-change review rejection stops acceptance", noChange: true, validator: true, verdict: "rework"},
+		{name: "no-change evidence producers cross SSH", noChange: true, ssh: true, validator: true, verdict: "pass"},
+
 		{name: "1245 production criterion publishes wait", validator: true, verdict: "pass", unsatisfiable: true},
 		{name: "1245 production criterion publishes wait over SSH", validator: true, verdict: "pass", unsatisfiable: true, ssh: true},
 		{name: "accepted audit reaches validator", validator: true, verdict: "pass", securityAudit: true},
@@ -437,7 +455,7 @@ fi
 			if err != nil {
 				t.Fatal(err)
 			}
-			execution := &implementationReviewExecution{events: &events, validatorDisabled: !test.validator, recordError: test.recordError, validation: &receipt}
+			execution := &implementationReviewExecution{events: &events, validatorDisabled: !test.validator, noChange: test.noChange, recordError: test.recordError, validation: &receipt}
 			if test.securityAudit {
 				execution.securityAudit = &NativeSecurityAuditEvidence{ReviewID: "review_security_accepted", VersionID: "version_example", Repository: "example-org/example-project", BaseSHA: "base", HeadSHA: "head", DiffDigest: "digest", Verdict: "pass", SessionID: 123, ReviewerVersion: "2", ReviewerDigest: "security-reviewer-digest"}
 				backend.securityAudit = execution.securityAudit
