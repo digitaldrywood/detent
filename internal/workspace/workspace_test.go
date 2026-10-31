@@ -4410,11 +4410,14 @@ func TestCleanupOwnedPathRemovesExternalWorkerScratch(t *testing.T) {
 		name             string
 		removeWorkspace  bool
 		otherWorkspace   bool
+		shared           bool
 		wantErr          bool
 		wantScratchGone  bool
 		wantParentExists bool
 	}{
 		{name: "workspace present", wantScratchGone: true, wantParentExists: true},
+		{name: "shared base scratch", shared: true, wantScratchGone: true, wantParentExists: true},
+		{name: "shared base scratch with workspace removed", shared: true, removeWorkspace: true, wantScratchGone: true, wantParentExists: true},
 		{name: "workspace removed", removeWorkspace: true, wantScratchGone: true, wantParentExists: true},
 		{name: "other workspace scratch", otherWorkspace: true, wantErr: true, wantParentExists: true},
 	}
@@ -4438,6 +4441,16 @@ func TestCleanupOwnedPathRemovesExternalWorkerScratch(t *testing.T) {
 			scratchPath, err := PrepareWorkerScratch(t.Context(), owner)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if tt.shared {
+				group := workerScratchGroupIn(sharedWorkerScratchBase(), bestEffortCanonicalPath(parent))
+				t.Cleanup(func() { _ = os.RemoveAll(group) })
+				scratchPath = filepath.Join(group, "workspace", "attempt-test")
+				if err := ensurePrivateDirectories(sharedWorkerScratchBase(), scratchPath); errors.Is(err, os.ErrPermission) {
+					t.Skip("another user owns the shared scratch base")
+				} else if err != nil {
+					t.Fatal(err)
+				}
 			}
 			if tt.removeWorkspace {
 				if err := os.RemoveAll(workspacePath); err != nil {
@@ -4562,6 +4575,37 @@ func TestPrepareWorkerScratchToleratesConcurrentSiblingCleanup(t *testing.T) {
 			close(errs)
 			for err := range errs {
 				t.Errorf("concurrent scratch lifecycle: %v", err)
+			}
+		})
+	}
+}
+
+func TestWorkerArtifactCleanupRootScratchBases(t *testing.T) {
+	t.Parallel()
+	workspacePath := filepath.Join(bestEffortCanonicalPath(t.TempDir()), "workspace")
+	shared := filepath.Join(workerScratchGroupIn(sharedWorkerScratchBase(), filepath.Dir(workspacePath)), "workspace")
+	for _, test := range []struct {
+		name, parent string
+		refused      bool
+	}{
+		{name: "per-user base", parent: WorkerScratchRoot(workspacePath)},
+		{name: "base shared by an earlier runner", parent: shared},
+		{name: "unrelated temporary directory", parent: filepath.Join(bestEffortCanonicalPath(os.TempDir()), "unrelated"), refused: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			root, err := WorkerArtifactCleanupRoot(workspacePath, filepath.Join(test.parent, "attempt-test"))
+			if errors.Is(err, os.ErrPermission) {
+				t.Skip("another user owns the scratch base")
+			}
+			if test.refused {
+				if err == nil {
+					t.Fatalf("cleanup root = %q, want refusal", root)
+				}
+				return
+			}
+			if err != nil || root != test.parent {
+				t.Fatalf("cleanup root = %q, %v; want %q", root, err, test.parent)
 			}
 		})
 	}

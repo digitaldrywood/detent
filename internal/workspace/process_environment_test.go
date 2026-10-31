@@ -22,6 +22,7 @@ func TestWorkerScratchEnvironmentMatches(t *testing.T) {
 		{name: "unrelated reference", env: []string{"PATH=" + root}},
 		{name: "changed temp retains owner", env: []string{"TMPDIR=" + t.TempDir(), "DETENT_WORKER_SCRATCH=" + root}, want: true},
 		{name: "external scratch", env: []string{"TMPDIR=" + filepath.Join(WorkerScratchRoot(root), "attempt-1")}, want: true},
+		{name: "shared base scratch marker", env: []string{"DETENT_WORKER_SCRATCH=" + filepath.Join(workerScratchGroupIn(sharedWorkerScratchBase(), filepath.Dir(bestEffortCanonicalPath(root))), filepath.Base(root), "attempt-1")}, want: true},
 		{name: "external scratch marker", env: []string{"DETENT_WORKER_SCRATCH=" + filepath.Join(WorkerScratchRoot(root), "attempt-1")}, want: true},
 		{name: "other workspace external scratch", env: []string{"DETENT_WORKER_SCRATCH=" + filepath.Join(WorkerScratchRoot(root+"-neighbor"), "attempt-1")}},
 		{name: "explicit other owner", env: []string{"TMPDIR=" + root, "DETENT_WORKER_SCRATCH=" + t.TempDir()}},

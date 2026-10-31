@@ -7,9 +7,9 @@ import (
 )
 
 // workerScratchOwnerRoots lists the directories whose scratch marks a process
-// as owned by root: root itself and its external worker scratch root.
+// as owned by root: root itself and its external worker scratch roots.
 func workerScratchOwnerRoots(root string) []string {
-	return []string{root, WorkerScratchRoot(root)}
+	return append([]string{root}, workerScratchRoots(root)...)
 }
 
 func workerScratchEnvironmentMatches(roots []string, environment []string) bool {

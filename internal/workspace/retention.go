@@ -422,13 +422,25 @@ func (l *LocalGit) sweepAttempts(ctx context.Context, root *os.Root, request Ret
 }
 
 // sweepExternalScratch sweeps the OS temp scratch of every workspace under
-// this root, including workspaces that no longer exist.
+// this root, including workspaces that no longer exist, and the scratch an
+// earlier runner left under the base shared by every user.
 func (l *LocalGit) sweepExternalScratch(ctx context.Context, request RetentionRequest, total *RemovalTotal) error {
-	group := workerScratchGroup(l.root)
+	current := workerScratchBase()
+	err := l.sweepScratchBase(ctx, current, request, total)
+	if shared := sharedWorkerScratchBase(); shared != current {
+		if _, statErr := os.Lstat(workerScratchGroupIn(shared, l.root)); !errors.Is(statErr, fs.ErrPermission) {
+			err = errors.Join(err, l.sweepScratchBase(ctx, shared, request, total))
+		}
+	}
+	return err
+}
+
+func (l *LocalGit) sweepScratchBase(ctx context.Context, base string, request RetentionRequest, total *RemovalTotal) error {
+	group := workerScratchGroupIn(base, l.root)
 	if _, err := os.Lstat(group); errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
-	if err := ensurePrivateDirectories(workerScratchBase(), group); err != nil {
+	if err := ensurePrivateDirectories(base, group); err != nil {
 		return err
 	}
 	root, err := os.OpenRoot(group)
