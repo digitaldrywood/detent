@@ -77,11 +77,12 @@ WHERE organization_id=sqlc.arg(organization_id)
   AND project_id=sqlc.arg(project_id)
   AND native_id=sqlc.arg(native_id);
 
--- name: GetWorkItemLegacyCursor :one
-SELECT created_at, id FROM issues
+-- name: ListLegacyWorkItems :many
+SELECT * FROM issues
 WHERE organization_id=sqlc.arg(organization_id)
   AND project_id=sqlc.arg(project_id)
-  AND number=sqlc.arg(after);
+  AND number>sqlc.arg(after)
+ORDER BY number LIMIT sqlc.arg(page_limit);
 
 -- name: GetWorkItemCursor :one
 SELECT created_at, id FROM issues

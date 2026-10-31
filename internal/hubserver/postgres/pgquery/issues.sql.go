@@ -224,29 +224,69 @@ func (q *Queries) GetWorkItemCursor(ctx context.Context, arg GetWorkItemCursorPa
 	return i, err
 }
 
-const getWorkItemLegacyCursor = `-- name: GetWorkItemLegacyCursor :one
-SELECT created_at, id FROM issues
+const listLegacyWorkItems = `-- name: ListLegacyWorkItems :many
+SELECT organization_id, id, native_id, project_id, number, revision, event_sequence, native_source_key, title, body_object_key, issue_contract_object_key, report_context_object_key, actor_kind, actor_principal_id, provenance_provider, provenance_external_id, archived, created_at, updated_at, native_created_at, native_updated_at FROM issues
 WHERE organization_id=$1
   AND project_id=$2
-  AND number=$3
+  AND number>$3
+ORDER BY number LIMIT $4
 `
 
-type GetWorkItemLegacyCursorParams struct {
+type ListLegacyWorkItemsParams struct {
 	OrganizationID tracker.OrganizationID
 	ProjectID      tracker.ProjectID
 	After          int64
+	PageLimit      int32
 }
 
-type GetWorkItemLegacyCursorRow struct {
-	CreatedAt time.Time
-	ID        int64
-}
-
-func (q *Queries) GetWorkItemLegacyCursor(ctx context.Context, arg GetWorkItemLegacyCursorParams) (GetWorkItemLegacyCursorRow, error) {
-	row := q.db.QueryRowContext(ctx, getWorkItemLegacyCursor, arg.OrganizationID, arg.ProjectID, arg.After)
-	var i GetWorkItemLegacyCursorRow
-	err := row.Scan(&i.CreatedAt, &i.ID)
-	return i, err
+func (q *Queries) ListLegacyWorkItems(ctx context.Context, arg ListLegacyWorkItemsParams) ([]Issue, error) {
+	rows, err := q.db.QueryContext(ctx, listLegacyWorkItems,
+		arg.OrganizationID,
+		arg.ProjectID,
+		arg.After,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Issue{}
+	for rows.Next() {
+		var i Issue
+		if err := rows.Scan(
+			&i.OrganizationID,
+			&i.ID,
+			&i.NativeID,
+			&i.ProjectID,
+			&i.Number,
+			&i.Revision,
+			&i.EventSequence,
+			&i.NativeSourceKey,
+			&i.Title,
+			&i.BodyObjectKey,
+			&i.IssueContractObjectKey,
+			&i.ReportContextObjectKey,
+			&i.ActorKind,
+			&i.ActorPrincipalID,
+			&i.ProvenanceProvider,
+			&i.ProvenanceExternalID,
+			&i.Archived,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.NativeCreatedAt,
+			&i.NativeUpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const pageWorkItems = `-- name: PageWorkItems :many

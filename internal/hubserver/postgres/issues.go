@@ -86,18 +86,17 @@ func (s *session) WorkItems(ctx context.Context, project tracker.ProjectID, afte
 	if err := checkPage(limit); err != nil {
 		return nil, err
 	}
-	var cursor corestore.Cursor
-	if after != 0 {
-		row, err := s.queries.GetWorkItemLegacyCursor(ctx, pgquery.GetWorkItemLegacyCursorParams{
-			OrganizationID: s.organization, ProjectID: project, After: after,
-		})
-		if err != nil {
-			return nil, mapError(ctx, err)
-		}
-		cursor = s.cursor(project, "", row.CreatedAt, row.ID)
+	rows, err := s.queries.ListLegacyWorkItems(ctx, pgquery.ListLegacyWorkItemsParams{
+		OrganizationID: s.organization, ProjectID: project, After: after, PageLimit: int32(limit),
+	})
+	if err != nil {
+		return nil, mapError(ctx, err)
 	}
-	page, err := s.WorkItemPage(ctx, project, cursor, limit)
-	return page.Items, err
+	items := make([]corestore.WorkItem, len(rows))
+	for i, row := range rows {
+		items[i] = corestore.WorkItem(row)
+	}
+	return items, nil
 }
 
 func optionalTime(value time.Time) *time.Time {

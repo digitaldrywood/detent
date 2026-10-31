@@ -270,8 +270,9 @@ into the current tuple. Missing legacy anchors, unsupported versions and scope
 changes require restarting the query. Version 2 continuation works after its
 anchor is deleted. Callers retain the existing signed, authorized HTTP cursor
 envelope; these storage cursors are not authentication tokens. Legacy numeric
-`WorkItems` and `Comments` arguments resolve the old number or sequence once,
-then use the same tuple page query.
+`WorkItems` and `Comments` arguments retain number and sequence ordering,
+respectively, including continuations whose anchor has been deleted. Their
+queries use the existing tenant-leading number and sequence indexes.
 
 `ScanWorkItems` and `ScanComments` perform repeating bounded sweeps. A zero scan
 cursor captures the highest visible numeric ID for that sweep. Each call reads

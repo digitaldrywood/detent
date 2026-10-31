@@ -361,6 +361,75 @@ func TestImportedIDsDoNotCollideWithAutomaticInserts(t *testing.T) {
 	}
 }
 
+func TestLegacyPagesKeepNumberOrdering(t *testing.T) {
+	created := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+	for _, family := range recordFamilies() {
+		t.Run(family.name, func(t *testing.T) {
+			repository, _ := repositoryFor(t, template.Database(t), smallPool())
+			for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+				prepareRecords(t, repository, org, family.name == "comments")
+				if err := repository.Write(t.Context(), org, corestore.Serving, func(w corestore.Writer) error {
+					for sequence := int64(1); sequence <= 3; sequence++ {
+						_, err := family.create(t.Context(), w, org, recordIdentity{Name: fmt.Sprintf("record_%d", sequence), Sequence: sequence, CreatedAt: created.Add(-time.Duration(sequence) * time.Hour)})
+						if err != nil {
+							return err
+						}
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, tc := range []struct {
+				after        int64
+				deleteAnchor bool
+			}{{0, false}, {1, false}, {2, false}, {3, false}, {1, true}} {
+				after := tc.after
+				if tc.deleteAnchor {
+					if err := repository.Write(t.Context(), "org_first", corestore.Serving, func(w corestore.Writer) error {
+						if family.name == "work items" {
+							return w.DeleteWorkItem(t.Context(), "prj_records", "record_1")
+						}
+						return w.DeleteComment(t.Context(), "prj_records", "wi_parent", "record_1")
+					}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := repository.Read(t.Context(), "org_first", corestore.Serving, func(r corestore.Reader) error {
+					var names []string
+					if family.name == "work items" {
+						rows, err := r.WorkItems(t.Context(), "prj_records", after, 1)
+						if err != nil {
+							return err
+						}
+						for _, row := range rows {
+							names = append(names, string(row.NativeID))
+						}
+					} else {
+						rows, err := r.Comments(t.Context(), "prj_records", "wi_parent", after, 1)
+						if err != nil {
+							return err
+						}
+						for _, row := range rows {
+							names = append(names, row.ID)
+						}
+					}
+					var want []string
+					if after < 3 {
+						want = []string{fmt.Sprintf("record_%d", after+1)}
+					}
+					if !reflect.DeepEqual(names, want) {
+						t.Errorf("after %d = %v, want %v", after, names, want)
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
 func TestImportedIDsWaitForConcurrentAllocations(t *testing.T) {
 	for _, family := range recordFamilies() {
 		t.Run(family.name, func(t *testing.T) {

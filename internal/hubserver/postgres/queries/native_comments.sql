@@ -70,12 +70,13 @@ WHERE organization_id=sqlc.arg(organization_id)
   AND work_item_id=sqlc.arg(work_item_id)
   AND id=sqlc.arg(id);
 
--- name: GetCommentLegacyCursor :one
-SELECT created_at, record_id FROM native_comments
+-- name: ListLegacyComments :many
+SELECT * FROM native_comments
 WHERE organization_id=sqlc.arg(organization_id)
   AND project_id=sqlc.arg(project_id)
   AND work_item_id=sqlc.arg(work_item_id)
-  AND sequence=sqlc.arg(after);
+  AND sequence>sqlc.arg(after)
+ORDER BY sequence LIMIT sqlc.arg(page_limit);
 
 -- name: GetCommentCursor :one
 SELECT created_at, record_id FROM native_comments

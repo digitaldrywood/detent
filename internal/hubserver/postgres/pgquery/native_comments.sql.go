@@ -248,36 +248,69 @@ func (q *Queries) GetCommentCursor(ctx context.Context, arg GetCommentCursorPara
 	return i, err
 }
 
-const getCommentLegacyCursor = `-- name: GetCommentLegacyCursor :one
-SELECT created_at, record_id FROM native_comments
+const listLegacyComments = `-- name: ListLegacyComments :many
+SELECT organization_id, id, project_id, work_item_id, revision, sequence, body_object_key, actor_kind, actor_principal_id, edited_by_kind, edited_by_principal_id, provenance_provider, provenance_external_id, source_key, deleted, created_at, updated_at, record_id FROM native_comments
 WHERE organization_id=$1
   AND project_id=$2
   AND work_item_id=$3
-  AND sequence=$4
+  AND sequence>$4
+ORDER BY sequence LIMIT $5
 `
 
-type GetCommentLegacyCursorParams struct {
+type ListLegacyCommentsParams struct {
 	OrganizationID tracker.OrganizationID
 	ProjectID      tracker.ProjectID
 	WorkItemID     tracker.NativeWorkItemID
 	After          int64
+	PageLimit      int32
 }
 
-type GetCommentLegacyCursorRow struct {
-	CreatedAt time.Time
-	RecordID  int64
-}
-
-func (q *Queries) GetCommentLegacyCursor(ctx context.Context, arg GetCommentLegacyCursorParams) (GetCommentLegacyCursorRow, error) {
-	row := q.db.QueryRowContext(ctx, getCommentLegacyCursor,
+func (q *Queries) ListLegacyComments(ctx context.Context, arg ListLegacyCommentsParams) ([]NativeComment, error) {
+	rows, err := q.db.QueryContext(ctx, listLegacyComments,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.WorkItemID,
 		arg.After,
+		arg.PageLimit,
 	)
-	var i GetCommentLegacyCursorRow
-	err := row.Scan(&i.CreatedAt, &i.RecordID)
-	return i, err
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []NativeComment{}
+	for rows.Next() {
+		var i NativeComment
+		if err := rows.Scan(
+			&i.OrganizationID,
+			&i.ID,
+			&i.ProjectID,
+			&i.WorkItemID,
+			&i.Revision,
+			&i.Sequence,
+			&i.BodyObjectKey,
+			&i.ActorKind,
+			&i.ActorPrincipalID,
+			&i.EditedByKind,
+			&i.EditedByPrincipalID,
+			&i.ProvenanceProvider,
+			&i.ProvenanceExternalID,
+			&i.SourceKey,
+			&i.Deleted,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.RecordID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const pageComments = `-- name: PageComments :many
