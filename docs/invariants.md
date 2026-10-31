@@ -587,6 +587,11 @@ columns are typed, never JSON.
 **Enforcement:** `TestINV18RequestCommitDoesNoDerivedWork` and
 `TestINV18HubMigrationsUseTypedColumns` in `internal/hubserver`. Review applies
 the history bound and reader rule to Hub persistence changes.
+`TestINV20HubTableLifecycles` checks every application table in the migrated Hub
+template against `internal/invariants/table_lifecycle_policy.json`. Each table
+declares immutable payload in object storage, derived data with an explicit
+retention contract, hot state, or an index. SQLite-owned shadow and system
+tables are excluded; new application tables require declarations.
 
 ## INV-19 — No flaky tests
 
@@ -633,6 +638,16 @@ existing calls are baseline debt and new migrations have no allowance. The scan
 conservatively counts function calls even on parameters or literals. It does not
 recognize `->` or `->>` operators, to avoid false positives outside SQL strings;
 review enforces these operators and conversion of edited queries to typed columns.
+
+`TestINV20HubTableLifecycles` also rejects inline history and derived payload
+columns unless their exact table and column appear in the frozen
+`legacy_payloads` list in `internal/invariants/table_lifecycle_policy.json`.
+Each debt entry names its owning conversion family, including families whose
+conversion is still pending. This list may only shrink: never add entries,
+broaden an entry to a table or pattern, or relabel history as hot state or an
+index to bypass it. Removing a payload column requires removing its debt entry
+in the same change. `TestTableLifecycleViolations` mutates copies of the migrated
+template to verify unknown tables, inline payloads and stale debt are rejected.
 
 ## INV-21 — Designs hold at ten thousand tenants and runners
 
