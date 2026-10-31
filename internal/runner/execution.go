@@ -468,7 +468,11 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 		outcome = "interrupted"
 		runErr = errors.Join(runErr, context.Cause(guarded))
 	}
-	finishCtx, cancel := context.WithTimeout(context.WithoutCancel(guarded), r.afterRunTimeout)
+	finishCtx, cancel := context.WithCancel(guarded)
+	if outcome != "succeeded" {
+		cancel()
+		finishCtx, cancel = context.WithTimeout(context.WithoutCancel(guarded), r.afterRunTimeout)
+	}
 	defer cancel()
 	if runtime, ok := req.Execution.(RuntimeExecution); ok {
 		observation := tracker.NativeRuntimeObservation{LocalAttemptID: req.WorkAttemptID, Generation: req.Generation, Phase: "completed", HeartbeatAt: r.now(), Identity: result.RuntimeIdentity}
@@ -495,7 +499,7 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 				runErr = errors.Join(runErr, routeErr)
 				outcome = "failed"
 			} else {
-				prepareCtx, prepareCancel = r.finalizationContext(context.WithoutCancel(guarded), r.nativeWorkTimeout(workflow.Config, backend, 0), NewCancellationCause(context.DeadlineExceeded, "runner.finalization"))
+				prepareCtx, prepareCancel = r.finalizationContext(guarded, r.nativeWorkTimeout(workflow.Config, backend, 0), NewCancellationCause(context.DeadlineExceeded, "runner.finalization"))
 			}
 		}
 		failure := nativeTerminalFailure(runErr, r.now(), result.TurnStartRefused)
@@ -521,7 +525,7 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 				}
 				// Deferred lease release publishes the prepared outcome after Run returns.
 				runErr = r.attributeFailure(guarded, req, runErr)
-				reprepareCtx, reprepareCancel := context.WithTimeout(context.WithoutCancel(guarded), r.afterRunTimeout)
+				reprepareCtx, reprepareCancel := context.WithCancel(finishCtx)
 				reprepareErr := prepared.PrepareFinish(reprepareCtx, outcome, result.FinalMessage, nativeTerminalFailure(runErr, r.now(), result.TurnStartRefused))
 				reprepareCancel()
 				runErr = errors.Join(runErr, reprepareErr)
@@ -533,7 +537,7 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 		if change != nil && change.Landing != nil {
 			result.NativeLanding = change.Landing
 			if runtime, ok := req.Execution.(LandingRuntimeExecution); ok {
-				landingCtx, landingCancel := context.WithTimeout(context.WithoutCancel(guarded), r.afterRunTimeout)
+				landingCtx, landingCancel := context.WithCancel(guarded)
 				err := runtime.ObserveLanding(landingCtx, *result.NativeLanding)
 				landingCancel()
 				if err != nil {
@@ -548,7 +552,7 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 		outcome = "interrupted"
 	}
 	if !req.DeferExecutionFinish || !prepared {
-		finalCtx, finalCancel := context.WithTimeout(context.WithoutCancel(guarded), r.afterRunTimeout)
+		finalCtx, finalCancel := context.WithCancel(finishCtx)
 		defer finalCancel()
 		if err := req.Execution.Finish(finalCtx, outcome); err != nil {
 			runErr = errors.Join(runErr, err)
@@ -569,7 +573,7 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 		}
 	}
 	if runErr == nil && result.FinalState == FinalStateCompleted {
-		readCtx, readCancel := context.WithTimeout(context.WithoutCancel(guarded), r.afterRunTimeout)
+		readCtx, readCancel := context.WithCancel(guarded)
 		cleared, err := r.nativeReviewConversationsCleared(readCtx, req, result.NativeChange)
 		readCancel()
 		if err != nil {
@@ -578,7 +582,7 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 		result.ReviewConversationsCleared = cleared
 	}
 	if runErr == nil && result.landingCleanup != nil && result.NativeChange != nil && result.NativeChange.VersionID != "" && result.NativeChange.Error == "" && result.NativeChange.VersionError == "" {
-		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(guarded), r.afterRunTimeout)
+		cleanupCtx, cancel := context.WithCancel(guarded)
 		if err := result.landingCleanup(cleanupCtx); err != nil {
 			r.logger.Warn("landing workspace left behind", "issue_id", req.Issue.ID, "error", err)
 		}
@@ -852,10 +856,14 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 	}
 	finalizationErr = errors.Join(finalizationErr, executionCancellation(req))
 	deadlineExpired := availabilityStopped(req.Execution, context.Cause(ctx), time.Now())
-	r.finishCheckpointRef(ctx, req.checkpointRefs, req)
-	recoveryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
+	recoveryCtx, cancel := context.WithCancel(ctx)
+	if ctx.Err() != nil {
+		cancel()
+		recoveryCtx, cancel = context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
+	}
+	defer cancel()
+	r.finishCheckpointRef(recoveryCtx, req.checkpointRefs, req)
 	state := r.workspaceRecoveryState(backend, recoveryCtx, info, issue, "native_checkpoint")
-	cancel()
 	checkpoint := executionCheckpointPreservingPublication(req.Execution, state)
 	if state != nil && !agentResumeEmpty(resume) {
 		checkpoint.Resume = "resume_session"
@@ -866,7 +874,7 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 	artifactCtx := ctx
 	if deadlineExpired {
 		var cancel context.CancelFunc
-		artifactCtx, cancel = context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
+		artifactCtx, cancel = context.WithCancel(ctx)
 		defer cancel()
 	}
 	var artifactErr error
@@ -915,7 +923,7 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 			return false, errors.Join(completionErr, ErrWorkspacePreparation, ErrNativeRecoveryRequired, err)
 		}
 	}
-	checkpointCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
+	checkpointCtx, cancel := context.WithCancel(recoveryCtx)
 	defer cancel()
 	if err := req.Execution.Validate(checkpointCtx); err != nil {
 		return false, errors.Join(completionErr, err)
@@ -1251,7 +1259,7 @@ func (r *Runner) nativeWorkTimeout(cfg config.Config, backend config.AgentBacken
 			workBudget = durationFromMillis(backend.AntigravityOptions().TurnTimeoutMS)
 		}
 	}
-	return max(r.afterRunTimeout, workBudget, validatorTimeout)
+	return max(workBudget, validatorTimeout)
 }
 
 func (r *Runner) validateNativeChange(ctx context.Context, req RunRequest) (err error) {
@@ -1275,7 +1283,7 @@ func (r *Runner) validateNativeChange(ctx context.Context, req RunRequest) (err 
 		return nil
 	}
 	_, _, backend, routeErr := runtime.selectBackendForRole(req.Issue, selectorContext(req.SelectorContext, workflow), RoleValidator)
-	ctx, cancel := r.finalizationContext(context.WithoutCancel(ctx), r.nativeWorkTimeout(workflow.Config, backend, durationFromMillis(cfg.TurnTimeoutMS)), NewCancellationCause(context.DeadlineExceeded, "runner.finalization"))
+	ctx, cancel := r.finalizationContext(ctx, r.nativeWorkTimeout(workflow.Config, backend, durationFromMillis(cfg.TurnTimeoutMS)), NewCancellationCause(context.DeadlineExceeded, "runner.finalization"))
 	defer cancel()
 	input, err := execution.ValidatorVersion(ctx)
 	if err != nil || input.Version == nil {
@@ -1340,7 +1348,7 @@ func (r *Runner) reviewNativeChange(ctx context.Context, req RunRequest) (approv
 		return false, errors.New("required native implementation review producer is unavailable")
 	}
 	_, _, backend, routeErr := runtime.selectBackendForRole(req.Issue, selectorContext(req.SelectorContext, workflow), RoleCode)
-	ctx, cancel := r.finalizationContext(context.WithoutCancel(ctx), r.nativeWorkTimeout(workflow.Config, backend, 0), NewCancellationCause(context.DeadlineExceeded, "runner.finalization"))
+	ctx, cancel := r.finalizationContext(ctx, r.nativeWorkTimeout(workflow.Config, backend, 0), NewCancellationCause(context.DeadlineExceeded, "runner.finalization"))
 	defer cancel()
 	input, err := execution.ReviewVersion(ctx)
 	if err != nil || input.Version == nil {
