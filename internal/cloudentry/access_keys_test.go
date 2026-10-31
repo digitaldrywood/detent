@@ -46,6 +46,27 @@ func createTestAccessKey(t *testing.T, b *browser, context string, organizations
 	return key
 }
 
+func TestAccessKeyActive(t *testing.T) {
+	now := time.Date(2026, 10, 31, 8, 0, 0, 0, time.UTC)
+	past, future := now.Add(-time.Second), now.Add(time.Hour)
+	for _, test := range []struct {
+		name string
+		key  accessKey
+		want bool
+	}{
+		{"wall clock stepped back after creation", accessKey{CreatedAt: now.Add(100 * time.Millisecond), ExpiresAt: &future}, true},
+		{"never expires", accessKey{CreatedAt: past}, true},
+		{"expired", accessKey{CreatedAt: past, ExpiresAt: &now}, false},
+		{"revoked", accessKey{CreatedAt: past, ExpiresAt: &future, RevokedAt: &past}, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := test.key.active(now); got != test.want {
+				t.Fatalf("active=%v want %v", got, test.want)
+			}
+		})
+	}
+}
+
 func TestAccessKeyCrossOrganizationMCP(t *testing.T) {
 	f := newEntryFixture(t)
 	for id, tenant := range f.fixtures {

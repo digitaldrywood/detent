@@ -144,7 +144,7 @@ func (s *Service) oauthKey(ctx context.Context, column, value string, requireAcc
 		return k, errNoSession
 	}
 	k.CreatedAt, err = parseTime(created)
-	if err != nil || k.CreatedAt.After(s.config.now()) {
+	if err != nil {
 		return k, errNoSession
 	}
 	if requireAccess {
