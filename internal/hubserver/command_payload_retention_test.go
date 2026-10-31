@@ -31,7 +31,21 @@ func TestCommandPayloadRetentionNeverRepeatsEffects(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, organization := range []tracker.OrganizationID{f.project.OrganizationID, "org_example_second"} {
-		for _, operation := range []string{"example"} {
+		for _, operation := range []string{
+			"POST /example",
+			"PUT /example",
+			"PATCH /example",
+			"DELETE /example",
+			"runner_routing example-runner",
+			"runner_capacity example-runner",
+			"runner_update example-runner",
+			"urgent_runner_update",
+			"drain_local_project example-runner example-project",
+			"resume_local_project example-runner example-project",
+			nativeOperation(nativeScope{organization: organization, project: "example-project"}, "POST", "/conversations/example-conversation/messages"),
+			"mcp file_issue",
+			"attachment.record example-attachment",
+		} {
 			t.Run(string(organization)+"/"+operation, func(t *testing.T) {
 				clock.Store(start.UnixNano())
 				ctx := s.contentContext(t.Context())
@@ -41,7 +55,7 @@ func TestCommandPayloadRetentionNeverRepeatsEffects(t *testing.T) {
 					t.Fatal(err)
 				}
 				scope := nativeScope{organization: organization, credential: apiCredential{ID: defaultHubOperatorID}}
-				raw := `{"output":"` + strings.Repeat("x", 64<<10) + `"}`
+				raw := fmt.Sprintf(`{"organization":%q,"output":%q}`, organization, strings.Repeat("x", 64<<10))
 				command := hostedCommand{organization: string(organization), actor: scope.credential.ID, operation: operation, key: "external", input: input}
 				effects := 0
 				run := func() ([]byte, error) {
