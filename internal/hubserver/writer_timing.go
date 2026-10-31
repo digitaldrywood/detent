@@ -219,11 +219,11 @@ func writerHoldOwnerFrame(frame runtime.Frame) bool {
 		return false
 	}
 	name := strings.TrimPrefix(frame.Function, "github.com/digitaldrywood/detent/internal/hubserver.")
-	if strings.HasPrefix(name, "prepareContentMutation[") || strings.HasPrefix(name, "(*Service).executeNativeMutation.func") || strings.HasPrefix(name, "(*Service).hubTransact.func") || strings.HasPrefix(name, "(*Service).runnerTransaction.func") {
+	if strings.HasPrefix(name, "prepareContentMutation[") || strings.HasPrefix(name, "(*Service).executeNativeMutation.func") || strings.HasPrefix(name, "(*Service).hubTransact.func") {
 		return false
 	}
 	switch name {
-	case "(*Service).runnerTransaction", "(*Service).commitRunnerTransaction", "(*Service).runnerAdminTransaction", "(*Service).runnerReadTransaction",
+	case "(*Service).runnerTransaction", "(*Service).runnerAdminTransaction", "(*Service).runnerReadTransaction",
 		"(*Service).hubTransact", "(*Service).commitHubTransaction", "(*conversationService).transact", "(*conversationTurnCoordinator).write",
 		"(*Service).executeNativeMutation", "(*Service).commitNativeMutation", "(*Service).nativeMutation", "(*Service).nativeMutationStatus",
 		"(*Service).commitOutbox", "(*Service).secretMutation":

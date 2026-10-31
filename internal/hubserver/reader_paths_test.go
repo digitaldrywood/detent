@@ -329,8 +329,7 @@ func TestHubWriterQueriesRequireAnOwnedReadReason(t *testing.T) {
 		"nativeIssueJSON":              "The mutation response reads back the browser path of the issue this request just wrote.",
 	}
 	transactionReasons := map[string]string{
-		"nativeProgressOwner.publishPrepared": "Atomically publishes one fenced progress decision, its bounded evidence and comment, and one deduplicated machine intake occurrence.",
-
+		"nativeProgressOwner.Publish":       "Atomically publishes one fenced progress decision, its bounded evidence and comment, and one deduplicated machine intake occurrence.",
 		"requestTeamUnread":                 "Writes only the caller's unread refresh intent and supplied project scope; history projection runs in maintenance and summary reads use the reader.",
 		"advanceTeamUnread":                 "Publishes one reader-planned, bounded unread summary page and its cursor under the existing board maintenance owner.",
 		"teamThreadOperation":               "Updates one thread's status after rechecking the caller's mutation authority.",
@@ -442,7 +441,7 @@ func TestHubWriterQueriesRequireAnOwnedReadReason(t *testing.T) {
 		"prepareRestore":                    "Offline restore replaces the administrator credential and writes recovery state.",
 		"runnerAdminTransaction":            "Applies a runner administration mutation with allowance checks.",
 		"updateRunnerCapacityCommand":       "Writes capacity configuration with its revision and command receipt.",
-		"commitRunnerTransaction":           "Applies a runner protocol mutation under current runner authority.",
+		"runnerTransaction":                 "Applies a runner protocol mutation under current runner authority.",
 		"chargeRunnerRead":                  "Charges runner read consumption as an explicit accounting write.",
 		"applyRunnerUpdateCommand":          "Writes the selected runner update and its command receipt.",
 		"processSlackDelivery":              "Claims and records a Slack delivery attempt.",

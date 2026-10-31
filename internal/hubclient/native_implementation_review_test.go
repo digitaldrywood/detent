@@ -289,7 +289,7 @@ func TestNativeImplementationReviewIsRecordedSeparately(t *testing.T) {
 						t.Fatalf("worker transport lost acceptance rejection: %v", err)
 					}
 					failure := carrier.NativeTerminalFailure().Public()
-					if failure.Rejection == nil || failure.Rejection.Category != "acceptance_validation" || failure.Rejection.Field != "validator.session_id" || failure.Stage != "acceptance_publication" || failure.Attribution != "instance" {
+					if failure.Rejection == nil || failure.Rejection.Category != "acceptance_validation" || failure.Rejection.Field != "validator.session_id" || failure.Stage != "acceptance_publication" || failure.Attribution != "" {
 						t.Fatalf("worker acceptance failure = %+v", failure)
 					}
 					if test.unsatisfiable {

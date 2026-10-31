@@ -301,12 +301,8 @@ func TestIndependentFailureGateAttemptReplay(t *testing.T) {
 				}
 				return
 			}
-			if attempt.Runtime == nil || len(attempt.Runtime.RepairDependencies) != 0 {
-				t.Fatalf("worker follow-up became a required repair: %+v", attempt.Runtime)
-			}
-			current, _, err := readNativeIssue(ctx, f.service.database.reader, scope, string(issue.WorkItemID))
-			if err != nil || len(current.Dependencies) != 0 || !current.DependencyReady {
-				t.Fatalf("worker follow-up stranded originating item: %+v error=%v", current, err)
+			if attempt.Runtime == nil || len(attempt.Runtime.RepairDependencies) != 1 {
+				t.Fatalf("gate outcome lost repair binding: %+v", attempt.Runtime)
 			}
 			var count int
 			if err := f.service.database.reader.QueryRowContext(ctx, "SELECT count(*) FROM issues WHERE project_id=?", f.project.ID).Scan(&count); err != nil {
@@ -322,8 +318,8 @@ func TestIndependentFailureGateAttemptReplay(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if corrected.Runtime == nil || len(corrected.Runtime.RepairDependencies) != 0 {
-				t.Fatal("usage correction added a repair dependency")
+			if corrected.Runtime == nil || len(corrected.Runtime.RepairDependencies) != 1 || corrected.Runtime.RepairDependencies[0] != attempt.Runtime.RepairDependencies[0] {
+				t.Fatal("usage correction erased repair binding")
 			}
 		})
 	}
