@@ -64,16 +64,26 @@ if [ "$#" != 0 ]; then
 fi
 override_reason="${DETENT_RELEASE_OVERRIDE:-}"
 authorize_override() {
-  local actor identity actors
-  identity="$(gh api user)" || return 1
-  actor="$(jq -er '.login' <<< "$identity")" || return 1
+  local identities actors run
+  if [ "${GITHUB_ACTIONS:-}" = true ]; then
+    [[ "${GITHUB_RUN_ID:-}" =~ ^[0-9]+$ ]] && [ -n "${GITHUB_REPOSITORY:-}" ] || return 1
+    run="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID")" || return 1
+    identities="$(jq -ce --arg head "$head_sha" '
+      select(.status == "in_progress"
+        and .path == ".github/workflows/release-finalize.yml"
+        and .head_sha == $head)
+      | [.triggering_actor, .actor]
+    ' <<< "$run")" || return 1
+  else
+    identities="$(gh api user | jq -ce '[.]')" || return 1
+  fi
   actors="$(gh api "repos/$GITHUB_REPOSITORY/actions/variables/RELEASE_OVERRIDE_ACTORS" --jq '.value')" || return 1
-  jq -en --arg actor "$actor" --argjson identity "$identity" --argjson actors "$actors" '
+  jq -en --argjson identities "$identities" --argjson actors "$actors" '
     ($actors | type == "array" and length > 0 and all(.[]; type == "string" and length > 0))
-    and ($identity.type == "User")
-    and ($actor | test("^[A-Za-z0-9][A-Za-z0-9-]*$"))
-    and (($identity.login | ascii_downcase) == ($actor | ascii_downcase))
-    and ($actors | map(ascii_downcase) | index($actor | ascii_downcase) != null)
+    and all($identities[];
+      .type == "User"
+      and (.login | test("^[A-Za-z0-9][A-Za-z0-9-]*$"))
+      and (.login as $actor | $actors | map(ascii_downcase) | index($actor | ascii_downcase) != null))
   ' > /dev/null
 }
 
