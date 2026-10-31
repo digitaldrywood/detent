@@ -55,7 +55,7 @@ INSERT INTO native_comments (
     deleted
 )
 VALUES (
-    COALESCE(NULLIF($1::bigint, 0), nextval('native_comments_record_id_seq')),
+    public.allocate_core_record_id('public.native_comments_record_id_seq'::regclass, $1::bigint),
     COALESCE($2::timestamptz, CURRENT_TIMESTAMP),
     COALESCE($3::timestamptz, CURRENT_TIMESTAMP),
     COALESCE(NULLIF($4::bigint, 0), 1),

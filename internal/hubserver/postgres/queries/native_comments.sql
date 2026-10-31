@@ -27,7 +27,7 @@ INSERT INTO native_comments (
     deleted
 )
 VALUES (
-    COALESCE(NULLIF(sqlc.arg(imported_id)::bigint, 0), nextval('native_comments_record_id_seq')),
+    public.allocate_core_record_id('public.native_comments_record_id_seq'::regclass, sqlc.arg(imported_id)::bigint),
     COALESCE(sqlc.narg(created_at)::timestamptz, CURRENT_TIMESTAMP),
     COALESCE(sqlc.narg(updated_at)::timestamptz, CURRENT_TIMESTAMP),
     COALESCE(NULLIF(sqlc.arg(revision)::bigint, 0), 1),

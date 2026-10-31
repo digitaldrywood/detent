@@ -132,9 +132,12 @@ table keeps the existing name `issues`, its numeric `id`, and its text
 `native_id`. Project and comment IDs remain text. Explicit IDs can be imported
 unchanged; generated project and work item text IDs retain `prj_` and `wi_`
 prefixes. Numeric issue IDs and comment `record_id` values accept imported rowids through
-the repository create methods. Zero requests a generated identity. An importer
-must advance both identity sequences past all imported IDs before enabling
-generated writes. Imported revisions, event sequences and timestamps remain
+the repository create methods. Zero requests a generated identity. A restricted
+sequence allocator advances past imported IDs without moving backward. Generated
+allocations share a transaction lock; imports take its exclusive counterpart,
+so advancement cannot race with another repository allocation. Runtime roles
+can call the allocator only for the two core record sequences and cannot call
+`setval` directly. Imported revisions, event sequences and timestamps remain
 explicit inputs; zero revisions and omitted timestamps use current-write defaults.
 
 The baseline includes core identity, project name and slug, revision and

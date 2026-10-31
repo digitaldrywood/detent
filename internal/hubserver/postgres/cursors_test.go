@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -317,6 +318,126 @@ func TestRecordPagesPreserveImportsAndTranslateCursors(t *testing.T) {
 						t.Fatal(err)
 					}
 				})
+			}
+		})
+	}
+}
+
+func TestImportedIDsDoNotCollideWithAutomaticInserts(t *testing.T) {
+	for _, family := range recordFamilies() {
+		t.Run(family.name, func(t *testing.T) {
+			for _, imports := range [][]int64{{1}, {100, 2}} {
+				t.Run(fmt.Sprint(imports), func(t *testing.T) {
+					repository, _ := repositoryFor(t, template.Database(t), smallPool())
+					prepareRecords(t, repository, "org_first", family.name == "comments")
+					var maximum int64
+					for i, id := range imports {
+						maximum = max(maximum, id)
+						if err := repository.Write(t.Context(), "org_first", corestore.Serving, func(w corestore.Writer) error {
+							got, err := family.create(t.Context(), w, "org_first", recordIdentity{ID: id, Name: fmt.Sprintf("import_%d", i), Sequence: int64(i + 1)})
+							if err == nil && got.ID != id {
+								t.Errorf("imported ID = %d, want %d", got.ID, id)
+							}
+							return err
+						}); err != nil {
+							t.Fatal(err)
+						}
+					}
+					for i := range 2 {
+						if err := repository.Write(t.Context(), "org_first", corestore.Serving, func(w corestore.Writer) error {
+							got, err := family.create(t.Context(), w, "org_first", recordIdentity{Name: fmt.Sprintf("automatic_%d", i), Sequence: int64(len(imports) + i + 1)})
+							if err == nil && got.ID <= maximum {
+								t.Errorf("automatic ID = %d, want greater than %d", got.ID, maximum)
+							}
+							maximum = got.ID
+							return err
+						}); err != nil {
+							t.Fatalf("automatic insert after import: %v", err)
+						}
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestImportedIDsWaitForConcurrentAllocations(t *testing.T) {
+	for _, family := range recordFamilies() {
+		t.Run(family.name, func(t *testing.T) {
+			admin := template.Database(t)
+			repository, _ := repositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 3, ServingConnections: 2, BackgroundConnections: 1})
+			prepareRecords(t, repository, "org_first", family.name == "comments")
+			ctx, cancel := context.WithCancel(t.Context())
+			release := make(chan struct{})
+			ready := make(chan recordIdentity, 1)
+			allocated := make(chan struct{})
+			imported := make(chan struct{})
+			var allocationErr, importErr error
+			go func() {
+				defer close(allocated)
+				allocationErr = repository.Write(ctx, "org_first", corestore.Serving, func(w corestore.Writer) error {
+					row, err := family.create(ctx, w, "org_first", recordIdentity{Name: "automatic_first", Sequence: 1})
+					if err != nil {
+						return err
+					}
+					ready <- row
+					select {
+					case <-release:
+						return nil
+					case <-ctx.Done():
+						return ctx.Err()
+					}
+				})
+			}()
+			t.Cleanup(func() { cancel(); <-allocated })
+			select {
+			case row := <-ready:
+				if row.ID <= 0 {
+					t.Fatal("automatic allocation is missing")
+				}
+			case <-allocated:
+				t.Fatalf("automatic allocation: %v", allocationErr)
+			}
+			go func() {
+				defer close(imported)
+				importErr = repository.Write(ctx, "org_first", corestore.Serving, func(w corestore.Writer) error {
+					_, err := family.create(ctx, w, "org_first", recordIdentity{ID: 100, Name: "imported", Sequence: 2})
+					return err
+				})
+			}()
+			t.Cleanup(func() { cancel(); <-imported })
+			testenv.WaitUntil(t, ctx, func() error {
+				select {
+				case <-imported:
+					t.Fatalf("import completed before concurrent allocation committed: %v", importErr)
+				default:
+				}
+				var waiting bool
+				if err := admin.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype='advisory' AND NOT granted AND database=(SELECT oid FROM pg_database WHERE datname=current_database()))`).Scan(&waiting); err != nil {
+					return err
+				}
+				if !waiting {
+					return errors.New("import has not reached concurrent allocation")
+				}
+				return nil
+			})
+			close(release)
+			<-allocated
+			if allocationErr != nil {
+				t.Fatal(allocationErr)
+			}
+			<-imported
+			if importErr != nil {
+				t.Fatal(importErr)
+			}
+			if err := repository.Write(t.Context(), "org_first", corestore.Serving, func(w corestore.Writer) error {
+				row, err := family.create(t.Context(), w, "org_first", recordIdentity{Name: "automatic_next", Sequence: 3})
+				if err == nil && row.ID <= 100 {
+					t.Errorf("automatic ID = %d, want greater than imported 100", row.ID)
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
 			}
 		})
 	}

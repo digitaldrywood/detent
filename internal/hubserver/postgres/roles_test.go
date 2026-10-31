@@ -53,6 +53,8 @@ func TestDatabaseRolesHaveSeparateAuthority(t *testing.T) {
 			for _, statement := range []string{
 				`ALTER TABLE projects DISABLE ROW LEVEL SECURITY`,
 				`CREATE TABLE example_migration (id text PRIMARY KEY)`,
+				`SELECT setval('public.issues_id_seq', 100)`,
+				`SELECT setval('public.native_comments_record_id_seq', 100)`,
 			} {
 				t.Run(statement, func(t *testing.T) {
 					tx, err := pool.BeginTx(t.Context(), nil)
@@ -70,6 +72,10 @@ func TestDatabaseRolesHaveSeparateAuthority(t *testing.T) {
 					}
 				})
 			}
+			t.Run("allocator refuses other relations", func(t *testing.T) {
+				_, err := pool.ExecContext(t.Context(), `SELECT public.allocate_core_record_id('public.projects'::regclass, 100)`)
+				requireSQLState(t, err, "42501")
+			})
 			if group == "detent_runtime" {
 				for _, statement := range []string{
 					`TRUNCATE native_comments`,

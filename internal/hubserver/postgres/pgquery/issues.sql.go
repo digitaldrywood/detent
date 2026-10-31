@@ -37,7 +37,7 @@ INSERT INTO issues (
     archived
 )
 VALUES (
-    COALESCE(NULLIF($1::bigint, 0), nextval('issues_id_seq')),
+    public.allocate_core_record_id('public.issues_id_seq'::regclass, $1::bigint),
     COALESCE($2::timestamptz, CURRENT_TIMESTAMP),
     COALESCE($3::timestamptz, CURRENT_TIMESTAMP),
     COALESCE(NULLIF($4::bigint, 0), 1),
