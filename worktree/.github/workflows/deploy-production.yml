@@ -1,0 +1,85 @@
+name: Deploy production
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy and smoke production
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: production
+      url: https://cloud.detent.build
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.10'
+          cache: true
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-hub-binary
+          path: ${{ runner.temp }}/release-hub
+      - name: Identify release commit
+        id: source
+        run: echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Deploy signed release
+        id: deploy
+        env:
+          TMPDIR: ${{ runner.temp }}
+          SSH_KEY: ${{ secrets.PRODUCTION_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.PRODUCTION_SSH_KNOWN_HOSTS }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_COMMIT: ${{ steps.source.outputs.commit }}
+        run: |
+          set -euo pipefail
+          bash scripts/deploy-release.sh production "$RELEASE_COMMIT" "$RELEASE_VERSION" 2>&1 | tee "$RUNNER_TEMP/release-production.log"
+      - name: Smoke deployed release
+        id: smoke
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_COMMIT: ${{ steps.source.outputs.commit }}
+        run: |
+          set -euo pipefail
+          python3 scripts/cloud-origin-smoke.py --environment production --expected-version "$RELEASE_VERSION" --expected-commit "$RELEASE_COMMIT" 2>&1 | tee -a "$RUNNER_TEMP/release-production.log"
+      - name: Exercise production MCP tools
+        id: mcp_smoke
+        env:
+          TMPDIR: ${{ runner.temp }}
+          DETENT_RELEASE_ENVIRONMENT: production
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_COMMIT: ${{ steps.source.outputs.commit }}
+          DETENT_SMOKE_API_KEY: ${{ secrets.DETENT_SMOKE_API_KEY }}
+          DETENT_MCP_URL: ${{ vars.DETENT_MCP_URL }}
+        run: |
+          set -euo pipefail
+          go run ./tools/cifailure 2>&1 | tee -a "$RUNNER_TEMP/release-production.log"
+      - name: Report release failure at High
+        if: failure() && (steps.deploy.outcome == 'failure' || steps.smoke.outcome == 'failure' || steps.mcp_smoke.outcome == 'failure')
+        env:
+          DETENT_RELEASE_ENVIRONMENT: production
+          DETENT_RELEASE_TAG: ${{ inputs.version }}
+          CI_DEVELOP_SHA: ${{ steps.source.outputs.commit }}
+          DETENT_RELEASE_FAILURE_PHASE: ${{ steps.deploy.outcome == 'failure' && 'deploy' || 'smoke' }}
+          DETENT_MCP_URL: https://cloud.detent.build/organizations/org_9e0e65eec07a6639979a/mcp
+          DETENT_PROJECT_ID: prj_6d4919bebd73446798e6cd807feda10e
+          DETENT_API_KEY: ${{ secrets.DETENT_API_KEY }}
+        run: go run ./tools/cifailure < "$RUNNER_TEMP/release-production.log" > "$RUNNER_TEMP/release-production-report.jsonl"
+      - name: Retain deployment evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-production-evidence
+          path: ${{ runner.temp }}/release-production*
+          if-no-files-found: warn
+          retention-days: 14

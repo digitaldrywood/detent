@@ -1,0 +1,19 @@
+package primitives
+
+// EmptyLine is the only empty-state treatment: one muted 12px line centered
+// in its container. No dashed boxes, no explanations of the future.
+templ EmptyLine(message string) {
+	<p class="grid flex-1 place-items-center px-4 py-6 text-center text-xs text-dim">{ message }</p>
+}
+
+// FilteredEmptyLine distinguishes "your filters hid everything" from
+// healthy-empty by offering a clear-filters link (accent = interactivity).
+templ FilteredEmptyLine(message string, clearLabel string, clearAttrs templ.Attributes) {
+	<p class="grid flex-1 place-items-center px-4 py-6 text-center text-xs text-dim">
+		<span>
+			{ message }
+			{ " " }
+			<a class="cursor-pointer text-accent hover:underline" { clearAttrs... }>{ clearLabel }</a>
+		</span>
+	</p>
+}

@@ -1,0 +1,331 @@
+package cli
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/url"
+	"path/filepath"
+	"strings"
+
+	"github.com/spf13/cobra"
+
+	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/instancelock"
+	"github.com/digitaldrywood/detent/internal/serviceapi"
+)
+
+type capacityClearResult struct {
+	RecoveryRequested string `json:"recovery_requested,omitempty"`
+	RecoveryApplied   string `json:"recovery_applied,omitempty"`
+	Status            string `json:"status"`
+	Project           string `json:"project,omitempty"`
+	Scope             string `json:"scope,omitempty"`
+	Cleared           int    `json:"cleared,omitempty"`
+	Requested         int    `json:"requested,omitempty"`
+}
+
+type dashboardAddress struct {
+	Value      string
+	HostSource string
+	PortSource string
+}
+
+const (
+	dashboardAddressSourceServiceFlag       = "service flag"
+	dashboardAddressSourceListener          = "running listener"
+	dashboardAddressSourceWorkerEnvironment = "worker environment"
+)
+
+func (a dashboardAddress) String() string {
+	if a.Value == "" {
+		return ""
+	}
+	if a.HostSource == a.PortSource {
+		return fmt.Sprintf("%s (from %s)", a.Value, a.HostSource)
+	}
+	return fmt.Sprintf("%s (host from %s, port from %s)", a.Value, a.HostSource, a.PortSource)
+}
+
+func newCapacityCommand(configPath *string, host *string, port *int, opts options) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "capacity",
+		Short:   "Manage provider capacity outages",
+		Example: "detent capacity clear --scope codex",
+	}
+	cmd.AddCommand(newCapacityClearCommand(configPath, host, port, opts))
+	return cmd
+}
+
+func newCapacityClearCommand(configPath *string, host *string, port *int, opts options) *cobra.Command {
+	var projectID string
+	var scope string
+	var recovery string
+	cmd := &cobra.Command{
+		Use:     "clear",
+		Short:   "Clear recorded provider capacity outages",
+		Example: "detent capacity clear\n  detent capacity clear --project detent --scope codex",
+		Args:    NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			result, err := runCapacityClear(cmd.Context(), derefString(configPath), derefString(host), derefInt(port, -1), flagChanged(cmd, "port"), projectID, scope, opts, recovery)
+			if err != nil {
+				return err
+			}
+			out, err := OutputForCommand(cmd)
+			if err != nil {
+				return err
+			}
+			return out.Write(func(writer io.Writer) error {
+				if result.Status == "requested" {
+					_, err := fmt.Fprintf(writer, "requested capacity clear for %d project(s); recovery requested: %s, applied: %s\n", result.Requested, result.RecoveryRequested, result.RecoveryApplied)
+					return err
+				}
+				_, err := fmt.Fprintf(writer, "cleared %d capacity outage(s)\n", result.Cleared)
+				return err
+			}, result)
+		},
+	}
+	cmd.Flags().StringVar(&projectID, "project", "", "limit the clear to one project ID")
+	cmd.Flags().StringVar(&recovery, "recovery", "ramping", "dispatch recovery mode: ramping or immediate")
+	cmd.Flags().StringVar(&scope, "scope", "", "limit the clear to a backend ID, kind, provider, or backend/provider")
+	return cmd
+}
+
+func runCapacityClear(
+	ctx context.Context,
+	configPath string,
+	host string,
+	port int,
+	portSet bool,
+	projectID string,
+	scope string,
+	opts options,
+	recovery ...string,
+) (capacityClearResult, error) {
+	mode := "ramping"
+	if len(recovery) > 0 {
+		mode = recovery[0]
+	}
+	if mode != "ramping" && mode != "immediate" {
+		return capacityClearResult{}, fmt.Errorf("invalid recovery mode %q: want ramping or immediate", mode)
+	}
+	boot, address, err := resolveDashboardBoot(ctx, configPath, host, port, portSet, opts)
+	if err != nil {
+		return capacityClearResult{}, err
+	}
+	form := url.Values{}
+	form.Set("recovery", mode)
+	form.Set("project_id", strings.TrimSpace(projectID))
+	form.Set("scope", strings.TrimSpace(scope))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+dashboardServerAddr(boot)+"/api/v1/capacity/clear", strings.NewReader(form.Encode()))
+	if err != nil {
+		return capacityClearResult{}, fmt.Errorf("create capacity clear request: %w", err)
+	}
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	apiToken := strings.TrimSpace(opts.lookupEnv(serviceapi.TokenEnvironment))
+	if apiToken == "" {
+		apiToken = strings.TrimSpace(boot.Global.APIToken)
+	}
+	if apiToken != "" {
+		request.Header.Set("Authorization", "Bearer "+apiToken)
+	}
+	response, err := opts.httpDo(request)
+	if err != nil {
+		return capacityClearResult{}, fmt.Errorf("clear capacity outage via %s: %w", address, err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		body, readErr := io.ReadAll(io.LimitReader(response.Body, 4096))
+		if readErr != nil {
+			return capacityClearResult{}, fmt.Errorf("clear capacity outage: HTTP %d", response.StatusCode)
+		}
+		return capacityClearResult{}, fmt.Errorf("clear capacity outage: HTTP %d: %s", response.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var result capacityClearResult
+	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+		return capacityClearResult{}, fmt.Errorf("decode capacity clear response: %w", err)
+	}
+	if mode == "immediate" && result.RecoveryRequested != mode {
+		return capacityClearResult{}, errors.New("server did not acknowledge immediate recovery; upgrade the running Detent service before retrying")
+	}
+	return result, nil
+}
+
+func dashboardServerAddr(boot BootConfig) string {
+	host := unbracketIPv6Host(strings.TrimSpace(boot.Host))
+	switch host {
+	case "", "0.0.0.0", "::":
+		host = defaultWebHost
+	}
+	boot.Host = host
+	return serverAddr(boot)
+}
+
+func resolveDashboardBoot(
+	ctx context.Context,
+	configPath string,
+	host string,
+	port int,
+	portSet bool,
+	opts options,
+) (BootConfig, dashboardAddress, error) {
+	resolution, err := resolveConfigPathResolution(configPath, opts)
+	if err != nil {
+		return BootConfig{}, dashboardAddress{}, err
+	}
+	cfg, err := opts.read(resolution.Path)
+	if err != nil {
+		return BootConfig{}, dashboardAddress{}, err
+	}
+	cfg, err = resolveRunnerProjectsReadOnly(ctx, cfg)
+	if err != nil {
+		return BootConfig{}, dashboardAddress{}, err
+	}
+	return resolveDashboardBootConfig(ctx, resolution, cfg, host, port, portSet, opts)
+}
+
+func resolveDashboardBootConfig(
+	ctx context.Context,
+	resolution globalconfig.PathResolution,
+	cfg globalconfig.Config,
+	host string,
+	port int,
+	portSet bool,
+	opts options,
+) (BootConfig, dashboardAddress, error) {
+	portSetting, err := resolveRuntimePort(ctx, runtimeInput{
+		Config:     &cfg,
+		ConfigPath: resolution,
+		Workflow:   firstGlobalWorkflowPath(cfg),
+		Flags: runtimeFlags{
+			Port: runtimeIntFlag{Value: port, Set: portSet},
+		},
+	}, runtimeDepsFromOptions(opts))
+	if err != nil {
+		return BootConfig{}, dashboardAddress{}, err
+	}
+	hostSetting := resolveDashboardHost(ctx, host, firstGlobalProject(cfg))
+	if dashboardAddressMayUseWorkerEnvironment(hostSetting.Source) || dashboardAddressMayUseWorkerEnvironment(portSetting.Source) {
+		workerHost, workerPort, workerAddressSet, workerAddressErr := workerServiceAddress(opts.lookupEnv)
+		if workerAddressErr != nil {
+			return BootConfig{}, dashboardAddress{}, workerAddressErr
+		}
+		if workerAddressSet {
+			if dashboardAddressMayUseWorkerEnvironment(hostSetting.Source) {
+				hostSetting = RuntimeValue{Value: workerHost, Source: dashboardAddressSourceWorkerEnvironment}
+			}
+			if dashboardAddressMayUseWorkerEnvironment(portSetting.Source) {
+				portSetting = RuntimeIntValue{Value: workerPort, Source: dashboardAddressSourceWorkerEnvironment}
+			}
+		}
+	}
+	if inspection, err := instancelock.Inspect(filepath.Join(filepath.Dir(resolution.Path), "detent.db.lock")); err == nil && inspection.Status == instancelock.StatusHeld && inspection.MetadataError == nil {
+		listenerHost, listenerPort, splitErr := net.SplitHostPort(inspection.Owner.DashboardAddress)
+		if p, valid := validServicePort(listenerPort); splitErr == nil && listenerHost != "" && valid && p > 0 && p <= 65535 {
+			if dashboardAddressMayUseServiceFlag(hostSetting.Source) {
+				hostSetting = RuntimeValue{Value: listenerHost, Source: dashboardAddressSourceListener}
+			}
+			if dashboardAddressMayUseServiceFlag(portSetting.Source) {
+				portSetting = RuntimeIntValue{Value: p, Source: dashboardAddressSourceListener}
+			}
+		}
+	}
+	if dashboardAddressMayUseServiceFlag(hostSetting.Source) || dashboardAddressMayUseServiceFlag(portSetting.Source) {
+		serviceArguments := runningServiceArguments(ctx, resolution.Path, opts)
+		if dashboardAddressMayUseServiceFlag(hostSetting.Source) {
+			if serviceHost, ok := serviceStringFlag(serviceArguments, "--host"); ok {
+				hostSetting = RuntimeValue{Value: serviceHost, Source: dashboardAddressSourceServiceFlag}
+			}
+		}
+		if dashboardAddressMayUseServiceFlag(portSetting.Source) {
+			if servicePort, ok := serviceIntFlag(serviceArguments, "--port"); ok {
+				portSetting = RuntimeIntValue{Value: servicePort, Source: dashboardAddressSourceServiceFlag}
+			}
+		}
+	}
+	resolvedPort := portSetting.Value
+	boot := BootConfig{
+		Mode:           BootModeRunning,
+		Global:         cfg,
+		ConfigPathRule: resolution.Rule,
+		Host:           hostSetting.Value,
+		Port:           &resolvedPort,
+	}
+	return boot, dashboardAddress{
+		Value:      dashboardServerAddr(boot),
+		HostSource: dashboardAddressSource(hostSetting.Source),
+		PortSource: dashboardAddressSource(portSetting.Source),
+	}, nil
+}
+
+func dashboardAddressMayUseWorkerEnvironment(source string) bool {
+	return source != runtimeSourceFlag
+}
+
+func dashboardAddressMayUseServiceFlag(source string) bool {
+	return source != runtimeSourceFlag && source != dashboardAddressSourceWorkerEnvironment && source != dashboardAddressSourceListener
+}
+
+func workerServiceAddress(lookupEnv func(string) string) (string, int, bool, error) {
+	if lookupEnv == nil {
+		return "", 0, false, nil
+	}
+	raw := strings.TrimSpace(lookupEnv(serviceapi.AddressEnvironment))
+	if raw == "" {
+		return "", 0, false, nil
+	}
+	host, portText, err := net.SplitHostPort(raw)
+	if err != nil {
+		return "", 0, false, fmt.Errorf("invalid %s %q: %w", serviceapi.AddressEnvironment, raw, err)
+	}
+	port, ok := validServicePort(portText)
+	if strings.TrimSpace(host) == "" || !ok || port == 0 || port > 65535 {
+		return "", 0, false, fmt.Errorf("invalid %s %q: want host:port with a nonzero TCP port", serviceapi.AddressEnvironment, raw)
+	}
+	return host, port, true, nil
+}
+
+func resolveDashboardHost(ctx context.Context, host string, project globalconfig.Project) RuntimeValue {
+	if host = strings.TrimSpace(host); host != "" {
+		return RuntimeValue{Value: host, Source: runtimeSourceFlag}
+	}
+	if host = bootHost(ctx, "", project); host != "" {
+		return RuntimeValue{Value: host, Source: runtimeSourceConfig}
+	}
+	return RuntimeValue{Value: defaultWebHost, Source: runtimeSourceDefault}
+}
+
+func dashboardAddressSource(source string) string {
+	if source == runtimeSourceWorkflow {
+		return runtimeSourceConfig
+	}
+	return sourceDetail(source)
+}
+
+func serviceStringFlag(arguments []string, name string) (string, bool) {
+	var value string
+	var found bool
+	for index, argument := range arguments {
+		if argument == name && index+1 < len(arguments) {
+			value = strings.TrimSpace(arguments[index+1])
+			found = value != ""
+		}
+		if raw, ok := strings.CutPrefix(argument, name+"="); ok {
+			value = strings.TrimSpace(raw)
+			found = value != ""
+		}
+	}
+	return value, found
+}
+
+func serviceIntFlag(arguments []string, name string) (int, bool) {
+	raw, ok := serviceStringFlag(arguments, name)
+	if !ok {
+		return 0, false
+	}
+	return validServicePort(raw)
+}

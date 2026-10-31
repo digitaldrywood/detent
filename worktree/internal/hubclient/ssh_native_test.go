@@ -1,0 +1,456 @@
+package hubclient
+
+import (
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+
+	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspace"
+)
+
+// nativeSSHExecution uses the same bootstrap serialization and bidirectional
+// callbacks as a remote worker, with no access to central filesystem paths.
+func nativeSSHExecution(t *testing.T, ctx context.Context, execution runner.Execution, journalRoot string) (runner.Execution, func()) {
+	t.Helper()
+	left, right := net.Pipe()
+	request := runner.RunRequest{Execution: execution}
+	callbacks := (&runner.Runner{}).SSHRunCallbacks(request)
+	central := runner.NewSSHPeer(ctx, left, left, callbacks.Handle)
+	sources := &runner.SSHExecutionSources{}
+	remote := runner.NewSSHPeer(ctx, right, right, sources.Handle)
+	callbacks.BindExecutionSources(central, journalRoot)
+	closePeers := func() {
+		central.Close()
+		remote.Close()
+		left.Close()
+		right.Close()
+	}
+	t.Cleanup(closePeers)
+	data, err := json.Marshal(runner.NewSSHRunRequest(request))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire runner.SSHRunRequest
+	if err := json.Unmarshal(data, &wire); err != nil {
+		t.Fatal(err)
+	}
+	wire.Sources = sources
+	return wire.Bind(ctx, remote).Execution, closePeers
+}
+
+func TestSSHNativeEvidenceSource(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
+	t.Parallel()
+	h := newNativeChangeHub(t, true)
+	next := h.descriptor
+	next.Gates.Validator = true
+	next = next.WithID()
+	if _, err := h.admin.ApproveProjectPolicy(t.Context(), policy.Change{ExpectedID: h.descriptor.ID, Policy: next}); err != nil {
+		t.Fatal(err)
+	}
+	h.descriptor = next
+	issue := h.createInProgress(t, "Remote evidence")
+	h.claim(t, issue.ID)
+	e := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+	ctx, stop, err := e.Guard(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	e.SetDiffSource(nativeChangeDiff(strings.Repeat("c", 40), "README.md"))
+	e.SetRepository(nativeChangeRepository)
+	if err := e.Start(ctx, tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Checkpoint(ctx, tracker.NativeCheckpoint{Resume: "fresh_checkout", Storage: "local_only", Availability: "unverified", WorktreeState: "unpushed", HeadSHA: strings.Repeat("c", 40), ExternalEffect: "none", EffectState: "none"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.PrepareFinish(ctx, "succeeded", "Finished source", nil); err != nil {
+		t.Fatal(err)
+	}
+	if e.change == nil || e.change.VersionID == "" {
+		t.Fatalf("validator fixture has no published version: %+v", e.change)
+	}
+	remote, closePeers := nativeSSHExecution(t, t.Context(), e, t.TempDir())
+	defer closePeers()
+	published := map[string]string{}
+	attachments := map[string]operatortool.AttachmentContentResult{}
+	uploadTransport := h.native.client.httpClient.Transport
+	h.native.client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+		if request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/comments") {
+			var input tracker.CreateComment
+			if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
+				return nil, err
+			}
+			if _, exists := published[input.IdempotencyKey]; !exists {
+				published[input.IdempotencyKey] = input.Body
+			}
+			return &http.Response{StatusCode: http.StatusCreated, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(`{}`))}, nil
+		}
+		if request.Method == http.MethodGet {
+			for id, content := range attachments {
+				if strings.HasSuffix(request.URL.Path, "/attachments/"+id) {
+					encoded, err := json.Marshal(content)
+					if err != nil {
+						return nil, err
+					}
+					return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(string(encoded)))}, nil
+				}
+			}
+		}
+		if request.Method != http.MethodPost || !strings.HasSuffix(request.URL.Path, "/attachments") {
+			return uploadTransport.RoundTrip(request)
+		}
+		content, err := io.ReadAll(request.Body)
+		if err != nil {
+			return nil, err
+		}
+		metadata := attachment.Metadata{ID: "att_" + policy.Digest(content)[:32], ProjectID: string(h.native.project), Name: request.Header.Get("X-Attachment-Name"), ContentType: request.Header.Get("Content-Type"), Size: int64(len(content)), SHA256: policy.Digest(content)}
+		metadata.Reference = metadata.Markdown(string(h.native.organization))
+		attachments[metadata.ID] = operatortool.AttachmentContentResult{Metadata: metadata, ContentBase64: base64.StdEncoding.EncodeToString(content), ReturnedBytes: len(content), EOF: true, MaxContentBytes: operatortool.AttachmentContentBytes}
+		encoded, err := json.Marshal(metadata)
+		if err != nil {
+			return nil, err
+		}
+		return &http.Response{StatusCode: http.StatusCreated, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(string(encoded)))}, nil
+	})
+	t.Cleanup(func() { h.native.client.httpClient.Transport = uploadTransport })
+	files := []runner.ValidationEvidence{
+		{Name: "baseline.log", ContentType: "text/plain", Content: []byte("source=baseline-head\nclaim failed: 409 host_capacity\n")},
+		{Name: "security-audit-source.json", ContentType: "application/json", Content: []byte(`{"error":"run.invocation_id is missing"}`)},
+		{Name: "security-audit-landing.json", ContentType: "application/json", Content: []byte(`{"error":"run.worker_pid is missing"}`)},
+	}
+	for _, file := range files {
+		if err := remote.(runner.ValidationEvidenceExecution).PublishValidationEvidence(ctx, []runner.ValidationEvidence{file}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, file := range files {
+		found := false
+		for _, body := range published {
+			found = found || strings.Contains(body, file.Name)
+		}
+		if !found {
+			t.Fatalf("published audit evidence %s is unavailable: %+v", file.Name, published)
+		}
+	}
+	tools, handler := remote.(runner.ToolExecution).AgentTools()
+	foundRead := false
+	for _, tool := range tools {
+		foundRead = foundRead || tool.Name == operatortool.ReadAttachment
+	}
+	if !foundRead || handler == nil {
+		t.Fatal("worker lost authenticated attachment reader")
+	}
+	log := files[0]
+	id := "att_" + policy.Digest(log.Content)[:32]
+	for _, project := range []string{string(h.project), "prj_other"} {
+		arguments, err := json.Marshal(map[string]any{"project_id": project, "attachment_id": id, "offset": 0, "length": operatortool.AttachmentContentBytes})
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := handler(ctx, runner.AgentToolCall{Name: operatortool.ReadAttachment, Arguments: arguments})
+		if project != string(h.project) {
+			if err == nil || result.Success {
+				t.Fatal("worker attachment reader lost project scope")
+			}
+			continue
+		}
+		var content operatortool.AttachmentContentResult
+		if err != nil || !result.Success || json.Unmarshal([]byte(result.Content), &content) != nil {
+			t.Fatalf("worker attachment read: %+v %v", result, err)
+		}
+		decoded, err := base64.StdEncoding.Strict().DecodeString(content.ContentBase64)
+		if err != nil || string(decoded) != string(log.Content) || content.Metadata.SHA256 != policy.Digest(log.Content) || !content.EOF {
+			t.Fatalf("worker attachment content changed: %+v %v", content, err)
+		}
+	}
+	remote.(runner.EvidenceSourceExecution).SetEvidenceSource(func(_ context.Context, path string) (runner.ValidationEvidence, error) {
+		if path != "page.png" {
+			return runner.ValidationEvidence{}, os.ErrPermission
+		}
+		return runner.ValidationEvidence{Name: "page.png", ContentType: "image/png", Content: []byte("remote pixels")}, nil
+	})
+	file, err := e.evidenceSource(t.Context(), "page.png")
+	if err != nil || file.Name != "page.png" || string(file.Content) != "remote pixels" {
+		t.Fatalf("remote evidence: %+v, %v", file, err)
+	}
+	if _, err := e.evidenceSource(t.Context(), "../private.png"); err == nil {
+		t.Fatal("remote source refusal was lost")
+	}
+	original := h.native.client.httpClient.Transport
+	for _, mismatch := range []string{"", "project", "item", "attempt", "lease", "fence"} {
+		t.Run(mismatch, func(t *testing.T) {
+			h.native.client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+				response, err := original.RoundTrip(request)
+				if err != nil || !strings.HasSuffix(request.URL.Path, "/runtime") {
+					return response, err
+				}
+				defer response.Body.Close()
+				var evidence tracker.NativeRuntimeEvidence
+				if err := json.NewDecoder(response.Body).Decode(&evidence); err != nil {
+					return nil, err
+				}
+				evidence.Attempt.Evidence = []tracker.NativeEvidence{{AttachmentID: "att_0123456789abcdef0123456789abcdef", Caption: "Reproduced before editing"}}
+				switch mismatch {
+				case "project":
+					evidence.Issue.ProjectID = "prj_other"
+				case "item":
+					evidence.Issue.WorkItemID = "wi_other"
+				case "attempt":
+					evidence.Attempt.AttemptID = "attempt_other"
+				case "lease":
+					evidence.Attempt.LeaseID = "lease_other"
+				case "fence":
+					evidence.Attempt.FencingToken++
+				}
+				encoded, err := json.Marshal(evidence)
+				if err != nil {
+					return nil, err
+				}
+				response.Body = io.NopCloser(strings.NewReader(string(encoded)))
+				return response, nil
+			})
+			defer func() { h.native.client.httpClient.Transport = original }()
+			input, err := remote.(runner.NativeValidatorExecution).ValidatorVersion(ctx)
+			if mismatch != "" {
+				if err == nil {
+					t.Fatal("mismatched evidence accepted")
+				}
+			} else if err != nil || len(input.Evidence) != 1 || input.Evidence[0].AttachmentID != "att_0123456789abcdef0123456789abcdef" {
+				t.Fatalf("current attempt evidence unavailable through SSH: %+v, %v", input.Evidence, err)
+			}
+		})
+	}
+}
+
+func TestSSHNativePublication(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
+	isolateNativeChangeGit(t)
+	for _, scenario := range []string{"complete", "capture disconnected", "upload acknowledgment lost"} {
+		t.Run(scenario, func(t *testing.T) {
+			h := newNativeChangeHub(t)
+			issue := h.createInProgress(t, "Remote diff")
+			h.claim(t, issue.ID)
+			e := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+			ctx, stop, err := e.Guard(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer stop()
+			root, checkout := t.TempDir(), t.TempDir()
+			git := func(args ...string) string {
+				t.Helper()
+				command := exec.CommandContext(ctx, "git", args...)
+				command.Dir = checkout
+				command.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_CONFIG_NOSYSTEM=1", "GIT_AUTHOR_NAME=SSH", "GIT_AUTHOR_EMAIL=ssh@example.test", "GIT_COMMITTER_NAME=SSH", "GIT_COMMITTER_EMAIL=ssh@example.test")
+				data, err := command.CombinedOutput()
+				if err != nil {
+					t.Fatalf("git %v: %s: %v", args, data, err)
+				}
+				return strings.TrimSpace(string(data))
+			}
+			git("init", "-b", "main")
+			if err := os.WriteFile(filepath.Join(checkout, "README.md"), []byte("base\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			git("add", "README.md")
+			git("-c", "commit.gpgsign=false", "commit", "-m", "base")
+			base := git("rev-parse", "HEAD")
+			parts := map[string][]artifact.Part{}
+			lost := scenario == "upload acknowledgment lost"
+			store := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("Authorization") != "Bearer "+h.native.client.tokenSource() {
+					t.Error("artifact credential left central ownership")
+				}
+				if r.URL.Path == "/v1/uploads" {
+					var reservation artifact.Reservation
+					if err := json.NewDecoder(r.Body).Decode(&reservation); err != nil {
+						t.Error(err)
+						return
+					}
+					if reservation.LeaseID != string(e.claim.lease.ID) || reservation.FencingToken != int64(e.claim.lease.FencingToken) || reservation.AttemptID != e.data.AttemptID {
+						t.Error("artifact fencing identity changed")
+					}
+					id := "artifact_" + strings.Repeat("a", 32)
+					if reservation.Kind == "diff" {
+						id = "artifact_" + strings.Repeat("b", 32)
+					}
+					_ = json.NewEncoder(w).Encode(artifact.Upload{ArtifactID: id, State: "uploading"})
+					return
+				}
+				id := strings.Split(r.URL.Path, "/")[3]
+				if strings.HasSuffix(r.URL.Path, "/parts") {
+					var part artifact.Part
+					if err := json.NewDecoder(r.Body).Decode(&part); err != nil {
+						t.Error(err)
+						return
+					}
+					if part.Sequence < len(parts[id]) {
+						if !reflect.DeepEqual(part, parts[id][part.Sequence]) {
+							t.Error("artifact retry changed bytes")
+						}
+					} else {
+						parts[id] = append(parts[id], part)
+					}
+					if lost && strings.HasSuffix(id, "b") {
+						lost = false
+						w.WriteHeader(503)
+						return
+					}
+					_ = json.NewEncoder(w).Encode(artifact.Object{})
+					return
+				}
+				_ = json.NewEncoder(w).Encode(artifact.Reference{})
+			}))
+			defer store.Close()
+			var publisher struct {
+				ID    string `json:"id"`
+				Token string `json:"token"`
+			}
+			if err := h.admin.client.request(ctx, http.MethodPost, "/api/v1/tokens", map[string]string{"name": "artifacts", "scope": "worker"}, &publisher); err != nil {
+				t.Fatal(err)
+			}
+			if err := h.admin.client.request(ctx, http.MethodPost, "/api/v2/tokens/"+publisher.ID+"/grants", map[string]any{"organization_id": h.organization, "project_id": h.project}, nil); err != nil {
+				t.Fatal(err)
+			}
+			binding := artifact.Binding{ServiceID: artifact.NewID("service"), Origin: store.URL, Mode: "customer", PublisherTokenID: publisher.ID}
+			if err := h.admin.client.request(ctx, http.MethodPut, h.admin.base()+"/artifact-services/"+binding.ServiceID, binding, nil); err != nil {
+				t.Fatal(err)
+			}
+			h.scheduler.client.artifactServiceID, h.scheduler.client.artifactBytes = binding.ServiceID, 4<<20
+			remote, disconnect := nativeSSHExecution(t, ctx, e, root)
+			remote.(runner.RepositoryExecution).SetRepository(nativeChangeRepository)
+			remote.(runner.DiffExecution).SetDiffSource(func(ctx context.Context) (tracker.AttemptDiffRequest, bool) {
+				diff, err := workspace.GitFileDiffs(ctx, checkout, base, tracker.MaxDiffBytes)
+				if err != nil {
+					return tracker.AttemptDiffRequest{}, false
+				}
+				request := tracker.AttemptDiffRequest{BaseSHA: diff.BaseSHA, HeadSHA: diff.HeadSHA}
+				for _, f := range diff.Files {
+					request.Files = append(request.Files, tracker.AttemptDiffFile{Path: f.Path, Status: f.Status, Additions: f.Additions, Deletions: f.Deletions, Patch: f.Patch})
+				}
+				return request, true
+			})
+			if err := remote.Start(ctx, tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
+				t.Fatal(err)
+			}
+			artifacts := remote.(runner.ArtifactExecution)
+			if err := artifacts.PrepareArtifacts(ctx, checkout); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(checkout, "README.md"), []byte("exact remote bytes\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			git("add", "README.md")
+			git("-c", "commit.gpgsign=false", "commit", "-m", "remote")
+			head := git("rev-parse", "HEAD")
+			if err := artifacts.ArtifactLog(ctx, "remote log 🌲\n"); err != nil {
+				t.Fatal(err)
+			}
+			if err := remote.Checkpoint(ctx, tracker.NativeCheckpoint{Resume: "resume_session", Storage: "local_only", Availability: "available", WorktreeState: "unpushed", HeadSHA: head, ExternalEffect: "none", EffectState: "none"}); err != nil {
+				t.Fatal(err)
+			}
+			if scenario == "capture disconnected" {
+				disconnect()
+				if err := e.FinalizeArtifacts(ctx, checkout); err == nil || !e.artifacts.incomplete || e.artifacts.finished {
+					t.Fatalf("lost capture was finalized: %v", err)
+				}
+				if data, err := os.ReadFile(filepath.Join(e.artifacts.directory, "log")); err != nil || string(data) != "remote log 🌲\n" {
+					t.Fatalf("lost journal: %q %v", data, err)
+				}
+				if _, err := os.Stat(filepath.Join(checkout, ".detent", "artifacts")); !errors.Is(err, os.ErrNotExist) {
+					t.Fatal("central journal written remotely")
+				}
+				remote, _ = nativeSSHExecution(t, ctx, e, root)
+				artifacts = remote.(runner.ArtifactExecution)
+				if err := artifacts.PrepareArtifacts(ctx, checkout); err != nil {
+					t.Fatal(err)
+				}
+			}
+			err = artifacts.FinalizeArtifacts(ctx, checkout)
+			if scenario == "upload acknowledgment lost" {
+				if err == nil {
+					t.Fatal("upload failure not injected")
+				}
+				disconnect()
+				// Frozen captures can finish centrally with no SSH connection.
+				err = e.FinalizeArtifacts(ctx, "unavailable remote checkout")
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			bundle, err := artifact.CaptureGit(ctx, checkout, base, head, 3)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := parts["artifact_"+strings.Repeat("b", 32)]; !reflect.DeepEqual(got, bundle.Parts) {
+				t.Fatalf("remote artifact changed: %#v", got)
+			}
+			if got := parts["artifact_"+strings.Repeat("a", 32)]; len(got) != 1 || string(got[0].Data) != "remote log 🌲\n" {
+				t.Fatalf("remote log changed: %#v", got)
+			}
+			if !strings.HasPrefix(e.artifacts.directory, root+string(filepath.Separator)) {
+				t.Fatal("journal is not central")
+			}
+			if err := e.Finish(ctx, "succeeded"); err != nil {
+				t.Fatal(err)
+			}
+			change := e.NativeChange()
+			if change == nil || change.VersionID == "" {
+				t.Fatalf("no published change: %#v", change)
+			}
+			detail, err := h.admin.Change(ctx, tracker.NativeWorkItemID(issue.ID), change.ChangeID)
+			if err != nil || len(detail.Versions) != 1 || detail.Versions[0].HeadSHA != head || detail.Versions[0].Repository != nativeChangeRepository {
+				t.Fatalf("wrong remote version: %#v %v", detail, err)
+			}
+			version := detail.Versions[0]
+			if version.Source == nil || version.Source.BaseSHA != base || version.Source.HeadSHA != head || version.Source.Bytes == 0 {
+				t.Fatalf("remote Change source was not retained: %#v", version.Source)
+			}
+			source, err := h.native.ChangeSource(ctx, tracker.NativeWorkItemID(issue.ID), change.ChangeID, change.VersionID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := version.Source.Validate(base, head, source); err != nil {
+				t.Fatalf("remote Change source lost its immutable identity: %v", err)
+			}
+			if e.lastDiff == nil || e.lastDiff.HeadSHA != head || len(e.lastDiff.Files) != 1 || !strings.Contains(e.lastDiff.Files[0].Patch, "exact remote bytes") {
+				t.Fatalf("wrong stored remote diff: %#v", e.lastDiff)
+			}
+			var stored tracker.AttemptDiff
+			if err := h.native.client.request(ctx, http.MethodGet, h.native.base()+"/attempts/"+e.data.AttemptID+"/diff", nil, &stored); err != nil {
+				t.Fatal(err)
+			}
+			if stored.HeadSHA != head || stored.Producer.LeaseID != e.claim.lease.ID || stored.Producer.FencingToken != e.claim.lease.FencingToken || stored.Generation.Seq != e.data.Sequence || len(stored.Files) != 1 || !strings.Contains(stored.Files[0].Patch, "exact remote bytes") {
+				t.Fatalf("remote diff lost fencing or bytes: %#v", stored)
+			}
+			if state := h.state(t, issue.ID); state != "In Progress" {
+				t.Fatalf("worker wrote tracker lane: %s", state)
+			}
+		})
+	}
+}

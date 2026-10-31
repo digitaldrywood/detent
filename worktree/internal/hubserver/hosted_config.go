@@ -1,0 +1,127 @@
+package hubserver
+
+import (
+	"context"
+	"errors"
+	"net/url"
+	"slices"
+	"strings"
+
+	"github.com/digitaldrywood/detent/internal/auth"
+)
+
+type HostedDestination struct {
+	OrganizationID       string `yaml:"organization_id"`
+	WorkOSOrganizationID string `yaml:"workos_organization_id"`
+	PublicURL            string `yaml:"public_url"`
+}
+
+type HostedConfig struct {
+	EmailSender              auth.EmailSender
+	Billing                  *HostedBillingConfig
+	EntitlementAdministrator string
+	EntitlementAdminToken    []byte
+	Plans                    *HostedPlansConfig
+	OrganizationID           string
+	WorkOSOrganizationID     string
+	BootstrapSubject         string
+	PublicURL                string
+	StaffEmails              []string
+	SupportActors            []string
+	Directory                []HostedDestination
+	SharedEntry              *HostedSharedEntry
+	Provider                 auth.HostedProvider
+	PlanID                   string
+	StorageQuotaBytes        int64
+	EventQuota               int64
+}
+
+func ValidateHostedConfig(c *HostedConfig) error {
+	return c.validate()
+}
+
+func (c *HostedConfig) validate() error {
+	if c == nil {
+		return nil
+	}
+	if c.Plans.IsZero() {
+		c.Plans = nil
+	}
+	if len(c.EntitlementAdminToken) > 0 && (len(c.EntitlementAdminToken) < 32 || !hostedSafeID(c.EntitlementAdministrator)) || len(c.EntitlementAdminToken) == 0 && c.EntitlementAdministrator != "" {
+		return errors.New("entitlement administration requires an actor ID and a separate token of at least 32 bytes")
+	}
+	if !strings.HasPrefix(c.OrganizationID, "org_") || len(c.OrganizationID) > 64 || !hostedSafeID(c.OrganizationID) || c.Provider == nil {
+		return errors.New("hosted organization identity and identity provider are required")
+	}
+	if c.WorkOSOrganizationID == "" && c.BootstrapSubject == "" {
+		return errors.New("unallocated hosted Hub requires a bootstrap user ID")
+	}
+	if !hostedPublicURL(c.PublicURL) {
+		return errors.New("hosted public URL must use HTTPS or loopback HTTP without a path, query or fragment")
+	}
+	if c.PlanID != "" && !hostedSafeID(c.PlanID) || c.StorageQuotaBytes < 0 || c.EventQuota < 0 {
+		return errors.New("hosted plan metadata is invalid")
+	}
+	if c.SharedEntry != nil && len(c.Directory) != 0 {
+		return errors.New("shared-entry tenants use the shared organization chooser instead of a directory")
+	}
+	if err := c.SharedEntry.validate(c.OrganizationID); err != nil {
+		return err
+	}
+	seen := make(map[string]bool)
+	for _, destination := range c.Directory {
+		if !hostedSafeID(destination.OrganizationID) || !hostedSafeID(destination.WorkOSOrganizationID) || !hostedPublicURL(destination.PublicURL) || seen[destination.OrganizationID] {
+			return errors.New("hosted organization directory is invalid")
+		}
+		seen[destination.OrganizationID] = true
+	}
+	for _, actor := range c.SupportActors {
+		if !hostedEmailListed(c.StaffEmails, actor) {
+			return errors.New("hosted support actors must also be declared staff identities")
+		}
+	}
+	if c.Plans != nil {
+		if c.PlanID != "" || c.StorageQuotaBytes != 0 || c.EventQuota != 0 {
+			return errors.New("use entitlements instead of legacy plan metadata fields")
+		}
+		if err := c.Plans.validate(); err != nil {
+			return err
+		}
+	}
+	plans := c.Plans
+	if plans == nil {
+		defaults := defaultHostedPlans(c)
+		plans = &defaults
+	}
+	return c.Billing.validate(plans)
+}
+
+func (c *HostedConfig) deployment() (string, int64) {
+	if c.SharedEntry != nil {
+		return "shared", c.SharedEntry.Generation
+	}
+	return "origin", 0
+}
+
+func hostedPublicURL(value string) bool {
+	u, err := url.Parse(value)
+	return err == nil && u != nil && u.Host != "" && u.User == nil && u.Path == "" && u.RawQuery == "" && u.Fragment == "" && (u.Scheme == "https" || u.Scheme == "http" && listenerAddressLoopback(u.Host))
+}
+
+func hostedSafeID(value string) bool {
+	return value != "" && len(value) <= 128 && strings.IndexFunc(value, func(r rune) bool {
+		return (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '_' && r != '-'
+	}) == -1
+}
+
+func hostedEmailListed(emails []string, value string) bool {
+	return slices.ContainsFunc(emails, func(email string) bool { return strings.EqualFold(strings.TrimSpace(email), strings.TrimSpace(value)) })
+}
+
+func (s *Service) hostedProviderOrganization(ctx context.Context) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	var id string
+	err := s.database.auth().QueryRowContext(ctx, "SELECT provider_id FROM hosted_tenant WHERE singleton = 1").Scan(&id)
+	return id, err
+}

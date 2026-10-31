@@ -1,0 +1,205 @@
+package templates
+
+import "github.com/digitaldrywood/detent/internal/web/ui/primitives"
+
+// Settings is the read-only view of the running configuration, rendered as
+// definition lists: key / mono value / copy action. Theme and density
+// preferences live here, and the full build string retires to the footer.
+templ Settings(data SettingsData) {
+	@AppShell(settingsDashboardShellData(data), nil) {
+		@settingsCopyScript()
+		if settingsProjectTabsVisible(data) {
+			<nav class="flex flex-none gap-5.5 border-b border-line px-5" aria-label="Project views">
+				for _, tab := range projectTabs(DashboardData{ProjectID: data.ProjectID}, "configuration") {
+					<a href={ templ.SafeURL(tab.Href) } class={ projectTabClass(tab) } { sidebarAriaCurrent(tab.Active)... }>{ tab.Label }</a>
+				}
+			</nav>
+		}
+		<main class="flex min-h-0 min-w-0 flex-1 flex-col">
+			<div class="flex min-h-0 min-w-0 flex-1 flex-col gap-5 overflow-y-auto overflow-x-hidden px-5 py-5">
+				<p class="flex-none text-xs text-sec">
+					Read-only view of the running configuration.
+					<span class="md:hidden">Tap Copy beside a value.</span>
+					<span class="hidden md:inline">Copy appears on row hover.</span>
+				</p>
+				@settingsSection("settings-preferences", "Preferences") {
+					<div class={ settingsRowClass(false) }>
+						<span class="col-span-2 text-xs text-sec md:col-span-1">Theme</span>
+						<div class="flex min-h-11 items-center gap-4 text-xs text-text md:min-h-0" role="radiogroup" aria-label="Theme">
+							@settingsRadio("theme", "dark", "Dark", settingsThemeChecked(data, "dark"))
+							@settingsRadio("theme", "light", "Light", settingsThemeChecked(data, "light"))
+						</div>
+						<span class="hidden md:block"></span>
+					</div>
+					<div class={ settingsRowClass(true) }>
+						<span class="col-span-2 text-xs text-sec md:col-span-1">Density</span>
+						<div class="flex min-h-11 items-center gap-4 text-xs text-text md:min-h-0" role="radiogroup" aria-label="Density">
+							@settingsRadio("density", "compact", "Compact", settingsDensityChecked(data, "compact"))
+							@settingsRadio("density", "cozy", "Cozy", settingsDensityChecked(data, "cozy"))
+							@settingsRadio("density", "comfy", "Comfy", settingsDensityChecked(data, "comfy"))
+						</div>
+						<span class="hidden md:block"></span>
+					</div>
+				}
+				@settingsSection("settings-global", "Global") {
+					@settingsRow("Instance", data.InstanceName, false, false)
+					@settingsRow("Version", settingsVersionLabel(data), false, false)
+					@settingsRow("Resolved global config path", data.Global.ConfigPath, true, false)
+					@settingsRow("Discovery rule", settingsPathRule(data.Global.PathRule), false, true)
+				}
+				if len(data.Projects) == 0 {
+					@settingsSection("settings-projects", "Projects") {
+						@primitives.EmptyLine("No projects loaded")
+					}
+				}
+				for _, project := range data.Projects {
+					<div
+						class="flex flex-none flex-col gap-2.5"
+						if project.ID == data.Projects[0].ID {
+							id="settings-projects"
+						}
+					>
+						<div class="flex items-center justify-between gap-3">
+							<h2 class="text-sm font-semibold text-text">{ "Project · " + settingsText(project.ID) }</h2>
+							if hasSettingsValue(project.WorkflowDetailsURL) {
+								<a
+									href={ templ.SafeURL(project.WorkflowDetailsURL) }
+									target="_blank"
+									rel="noopener noreferrer"
+									class="flex-none text-xs font-medium text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+									aria-label={ "Open " + settingsText(project.ID) + " workflow details" }
+								>View workflow ↗</a>
+							} else {
+								<span class="flex-none text-xs text-dim">Workflow details unavailable</span>
+							}
+						</div>
+						<section id={ "settings-project-" + project.ID } class="flex flex-col overflow-hidden rounded-card border border-line bg-surface">
+							@settingsRow("Tracker", settingsText(project.TrackerKind), false, false)
+							@settingsRow("Project URL", project.TrackerProject, true, false)
+							@settingsRow("Workflow path", project.WorkflowPath, true, false)
+							@settingsRow("Workdir", project.Workdir, true, false)
+							if project.Policy.ID != "" {
+								@settingsRow("Approved policy", project.Policy.ID, true, false)
+								@settingsRow("Policy revision", project.Policy.SourceRevision, true, false)
+								@settingsRow("Runner profile", settingsText(project.Policy.Profile), false, false)
+								@settingsRow("Review gate", project.Policy.Gates.Kind, false, false)
+								@settingsRow("Automatic promotion", settingsBool(project.Policy.Gates.AutoPromote), false, false)
+								@settingsRow("Merge method", project.Policy.Gates.MergeMethod, false, false)
+							}
+							if project.PolicyError != "" {
+								<div class={ settingsRowClass(false) }>
+									<span class="col-span-2 text-xs text-sec md:col-span-1">Definition reload</span>
+									<span class="col-span-2 min-w-0 font-mono text-xs text-text [overflow-wrap:anywhere]">{ project.PolicyError }</span>
+								</div>
+							}
+							@settingsRow("Worktree root", project.WorktreeRoot, true, false)
+							@settingsRow("Weight", settingsInt(project.Weight), false, false)
+							@settingsRow("Priority", settingsInt(project.Priority), false, false)
+							@settingsRow("Paused", settingsBool(project.Paused), false, false)
+							@settingsRow("Dependency auto-unblock", settingsText(project.DependencyAutoUnblock), false, true)
+						</section>
+					</div>
+				}
+				@settingsSection("settings-runtime", "Runtime paths") {
+					@settingsRow("SQLite db path", data.Runtime.DBPath, true, false)
+					@settingsRow("Log file path", data.Runtime.LogPath, true, false)
+					@settingsRow("Server host:port", data.Runtime.ServerAddress, true, true)
+				}
+				@settingsSection("settings-reload", "Configuration reload") {
+					@settingsRow("Live reload", "project list and settings · credentials · startup · instance_name · identity · max_concurrent_agents · log_level", false, false)
+					@settingsRow("Restart required", "port · env · log rotation", false, true)
+				}
+				<p class="flex-none font-mono text-2xs text-dim">{ settingsBuildFooter(data) }</p>
+			</div>
+		</main>
+	}
+}
+
+templ settingsSection(id string, title string) {
+	<div class="flex flex-none flex-col gap-2.5">
+		<h2 class="text-sm font-semibold text-text">{ title }</h2>
+		<section id={ id } class="flex flex-col overflow-hidden rounded-card border border-line bg-surface">
+			{ children... }
+		</section>
+	</div>
+}
+
+// settingsRow is one definition row: key (12px sec), mono value that
+// ellipsizes with the full value in its title, and a copy control.
+templ settingsRow(key string, value string, copyable bool, last bool) {
+	<div class={ settingsRowClass(last) }>
+		<span class="col-span-2 text-xs text-sec md:col-span-1">{ key }</span>
+		<span class="min-w-0 break-all font-mono text-xs text-text tabular-nums md:truncate" title={ settingsText(value) }>{ settingsText(value) }</span>
+		<span class="self-start text-right md:self-auto">
+			if copyable && hasSettingsValue(value) {
+				<button
+					type="button"
+					class="inline-flex min-h-11 min-w-11 items-center justify-center text-2xs font-medium text-accent md:min-h-0 md:min-w-0 md:opacity-0 md:transition-opacity md:group-hover:opacity-100 md:focus-visible:opacity-100"
+					data-copy={ value }
+					data-label="Copy"
+					aria-label={ "Copy " + key }
+				>
+					<span data-copy-label>Copy</span>
+				</button>
+			}
+		</span>
+	</div>
+}
+
+templ settingsRadio(name string, value string, label string, checked bool) {
+	<label class="flex cursor-pointer items-center gap-1.5">
+		<input
+			type="radio"
+			name={ name }
+			value={ value }
+			class="accent-accent"
+			checked?={ checked }
+			data-preference={ name }
+		/>
+		{ label }
+	</label>
+}
+
+// settingsCopyScript is one delegated listener outside any live region:
+// copy on click, preference radios persist via cookie and apply live.
+templ settingsCopyScript() {
+	<script>
+		(function () {
+			document.addEventListener("click", function (event) {
+				var button = event.target.closest("[data-copy]");
+				if (!button) return;
+				var value = button.getAttribute("data-copy") || "";
+				var label = button.querySelector("[data-copy-label]");
+				var done = function () {
+					if (!label) return;
+					label.textContent = "Copied!";
+					clearTimeout(button._copyTimer);
+					button._copyTimer = setTimeout(function () {
+						label.textContent = button.getAttribute("data-label") || "Copy";
+					}, 1200);
+				};
+				if (navigator.clipboard && navigator.clipboard.writeText) {
+					navigator.clipboard.writeText(value).then(done, done);
+					return;
+				}
+				done();
+			});
+			document.addEventListener("change", function (event) {
+				var radio = event.target.closest("[data-preference]");
+				if (!radio || !radio.checked) return;
+				var name = radio.getAttribute("data-preference");
+				document.cookie = name + "=" + radio.value + "; path=/; max-age=31536000; samesite=lax";
+				if (name === "theme") {
+					if (radio.value === "light") {
+						document.documentElement.setAttribute("data-theme", "light");
+					} else {
+						document.documentElement.removeAttribute("data-theme");
+					}
+				}
+				if (name === "density") {
+					document.documentElement.setAttribute("data-density", radio.value);
+				}
+			});
+		})();
+	</script>
+}

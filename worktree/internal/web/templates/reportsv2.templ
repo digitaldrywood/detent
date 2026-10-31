@@ -1,0 +1,302 @@
+package templates
+
+import "github.com/digitaldrywood/detent/internal/web/ui/primitives"
+
+// ReportsPageV2 is where history lives: KPI figures (never wrapping),
+// server-rendered SVG charts, top-consumer tables, and the budget and
+// cycle-time trends. The Board and Fleet are for now; this page is for
+// trends.
+templ ReportsPageV2(data ReportsData) {
+	@AppShell(ReportsShellDataFromData(data), nil) {
+		<main class="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden">
+			<div
+				id="snapshot"
+				class="flex min-w-0 flex-none flex-col gap-5 px-5 py-5"
+			>
+				@ReportsSnapshotV2(data)
+			</div>
+			@reportsCostPerOutcomeSection(reportsCostPerOutcomeView(data))
+		</main>
+	}
+}
+
+templ reportsCostPerOutcomeSection(view reportsCostPerOutcome) {
+	<section id="reports-cost-outcomes" class="flex flex-none flex-col gap-3 px-5 pb-5" aria-labelledby="reports-cost-outcomes-title">
+		<div class="flex flex-wrap items-center justify-between gap-3">
+			<div>
+				<h2 id="reports-cost-outcomes-title" class="text-sm font-semibold text-text">Notional USD per outcome</h2>
+				<p class="mt-1 text-xs text-sec">Project usage divided by merged pull requests and closed issues.</p>
+			</div>
+			<nav class="flex overflow-hidden rounded-card border border-line" aria-label="Cost per outcome window">
+				for _, option := range view.Options {
+					<a
+						href={ templ.SafeURL(option.Href) }
+						class={ reportsOutcomeWindowClass(option.Active) }
+						data-outcome-window={ option.Label }
+						if option.Active {
+							aria-current="true"
+						}
+					>{ option.Label }</a>
+				}
+			</nav>
+		</div>
+		if len(view.Projects) == 0 {
+			@primitives.Panel(primitives.PanelProps{ID: "reports-cost-outcomes-empty", Title: "Project outcomes · " + view.Window}) {
+				@primitives.EmptyLine("No usage or completed outcomes in this window")
+			}
+		} else {
+			for _, project := range view.Projects {
+				<article data-outcome-project={ project.ID } class="rounded-card border border-line bg-surface">
+					<header class="flex flex-wrap items-center justify-between gap-2 border-b border-line px-4 py-3">
+						<h3 class="text-sm font-semibold text-text">{ project.Name }</h3>
+						<p class="font-mono text-2xs text-dim tabular-nums">{ project.MergedPRs } merged PRs · { project.Closed } closed issues</p>
+					</header>
+					<div class="grid grid-cols-2 gap-x-5 gap-y-4 p-4 lg:grid-cols-3">
+						for _, metric := range project.Metrics {
+							<div data-outcome-metric={ metric.ID }>
+								<p class="font-mono text-lg font-semibold text-text tabular-nums">{ metric.Value }</p>
+								<p class="text-xs text-sec">{ metric.Label }</p>
+								<p class="text-2xs text-dim">{ metric.Detail }</p>
+							</div>
+						}
+					</div>
+					if project.HasTrend {
+						<div class="grid grid-cols-1 gap-3 border-t border-line p-4 lg:grid-cols-2">
+							<div>
+								<p class="mb-2 text-xs font-medium text-sec">Tokens per outcome</p>
+								@SplitSeriesChart(project.TokenChart)
+							</div>
+							<div>
+								<p class="mb-2 text-xs font-medium text-sec">Notional USD per outcome</p>
+								@SplitSeriesChart(project.SpendChart)
+							</div>
+							<p class="flex items-center gap-4 text-2xs text-dim lg:col-span-2">
+								<span class="flex items-center gap-1.5"><span class="size-2 rounded-full bg-accent"></span>Merged PR</span>
+								<span class="flex items-center gap-1.5"><span class="size-2 rounded-full bg-ok"></span>Closed issue</span>
+							</p>
+						</div>
+					}
+				</article>
+			}
+		}
+	</section>
+}
+
+templ ReportsSnapshotV2(data ReportsData) {
+	{{ view := reportsViewFromData(data) }}
+	if !reportsHasUsage(data) {
+		<p id="reports-empty" class="flex-none text-xs text-sec">No usage events recorded yet — charts populate after the first completed session.</p>
+	}
+	<div id="reports-kpis" class="grid flex-none grid-cols-2 gap-x-6 gap-y-4 md:flex md:flex-wrap md:gap-x-14">
+		for _, kpi := range view.KPIs {
+			<div id={ kpi.ID } class="flex flex-col gap-1">
+				<span
+					class="whitespace-nowrap text-xl font-semibold text-text tabular-nums"
+					if kpi.Full != "" {
+						title={ kpi.Full }
+					}
+				>{ kpi.Value }</span>
+				<span class="text-xs text-sec">{ kpi.Label }</span>
+			</div>
+		}
+	</div>
+	@reportsDailyDigest(view.Digest)
+	<div class="grid flex-none grid-cols-1 gap-3 md:grid-cols-2">
+		@primitives.Panel(primitives.PanelProps{ID: "reports-spend", Title: "Notional USD · by day"}) {
+			if view.Spend.Annotation != "" {
+				<p class="px-4 pt-2.5 text-2xs text-dim">{ view.Spend.Annotation }</p>
+			}
+			<div class="p-4">
+				if view.HasSeries && view.Spend.HasSpend {
+					@MiniBarChart(view.Spend.Chart)
+				} else {
+					@primitives.EmptyLine("No notional USD recorded in this window")
+				}
+			</div>
+		}
+		@primitives.Panel(primitives.PanelProps{ID: "reports-tokens", Title: "Tokens · cumulative", Count: view.TokensTotal}) {
+			<div class="p-4">
+				if view.HasSeries {
+					@SparklineChart(view.TokenChart)
+				} else {
+					@primitives.EmptyLine("No token trend yet")
+				}
+			</div>
+		}
+	</div>
+	@primitives.Panel(primitives.PanelProps{ID: "reports-efficiency", Title: "Fleet efficiency · merged issues", Count: view.Efficiency.Issues}) {
+		if view.Efficiency.Available {
+			<div class="grid grid-cols-1 gap-4 p-4 lg:grid-cols-[minmax(0,1.4fr)_minmax(260px,0.6fr)]">
+				<div class="overflow-x-auto">
+					<div class="min-w-[540px]">
+						<div class="grid grid-cols-[minmax(0,1fr)_100px_100px_70px] gap-3 border-b border-line pb-2 text-2xs font-semibold uppercase text-dim">
+							<span>Metric</span><span class="text-right">Current</span><span class="text-right">Baseline</span><span class="text-right">Δ</span>
+						</div>
+						for _, row := range view.Efficiency.Rows {
+							<div class="grid grid-cols-[minmax(0,1fr)_100px_100px_70px] gap-3 border-b border-line/70 py-2 text-xs last:border-0">
+								<span class="text-sec">{ row.Label }</span>
+								<span class="text-right font-mono text-text tabular-nums">{ row.Current }</span>
+								<span class="text-right font-mono text-sec tabular-nums">{ row.Baseline }</span>
+								<span class="text-right font-mono text-sec tabular-nums">{ row.Delta }</span>
+							</div>
+						}
+					</div>
+				</div>
+				<div class="flex flex-col gap-3">
+					<div class="grid grid-cols-2 gap-2">
+						for _, dwell := range view.Efficiency.Dwell {
+							<div class="rounded-card border border-line bg-elev p-2.5">
+								<p class="text-2xs uppercase text-dim">{ dwell.Label }</p>
+								<p class="font-mono text-sm text-text tabular-nums">{ dwell.Current }</p>
+								<p class="text-2xs text-sec">baseline { dwell.Baseline }</p>
+							</div>
+						}
+					</div>
+					if view.Efficiency.HasTrend {
+						@SparklineChart(view.Efficiency.CacheChart)
+					}
+					<p class="text-xs text-sec"><span class="font-mono text-warn tabular-nums">{ view.Efficiency.Anomalies }</span> anomaly receipts in this window</p>
+				</div>
+			</div>
+		} else {
+			@primitives.EmptyLine("No merged issue receipts in this window")
+		}
+	}
+	<div class="grid flex-none grid-cols-1 gap-3 md:grid-cols-2">
+		@reportsTopTable("reports-top-issues", "Top issues by tokens", view.TopIssues)
+		@reportsTopTable("reports-top-prs", "Top PRs by tokens", view.TopPRs)
+	</div>
+	<div class="grid flex-none grid-cols-1 gap-3 md:grid-cols-2">
+		@primitives.Panel(primitives.PanelProps{ID: "reports-budget", Title: "Daily budget"}) {
+			if view.Budget.State == "ok" {
+				<div class="flex flex-col gap-2.5 p-4">
+					<div class="flex items-baseline justify-between gap-2">
+						<span class="text-xs text-sec">Notional USD today</span>
+						<span class="whitespace-nowrap font-mono text-sm font-medium text-text tabular-nums">{ view.Budget.Value }</span>
+					</div>
+					if view.Budget.Percent > 0 {
+						<div class="h-1 overflow-hidden rounded-xs bg-line">
+							<div class={ fleetMeterClass(view.Budget.Warn) } style={ fleetProgressStyle(view.Budget.Percent) }></div>
+						</div>
+					}
+					if view.Budget.HasDays {
+						@MiniBarChart(view.Budget.Chart)
+					}
+				</div>
+			} else {
+				@primitives.EmptyLine(view.Budget.Detail)
+			}
+		}
+		@primitives.Panel(primitives.PanelProps{ID: "reports-cycle-time", Title: "Cycle time", Count: view.CycleTime.Completed}) {
+			if view.CycleTime.Available {
+				<div class="flex flex-col gap-2.5 p-4">
+					<div class="flex items-baseline justify-between gap-2">
+						<span class="text-xs text-sec">Average issue cycle</span>
+						<span class="whitespace-nowrap font-mono text-sm font-medium text-text tabular-nums">{ view.CycleTime.Average }</span>
+					</div>
+					if len(view.CycleTime.Chart.Bars) > 0 {
+						@MiniBarChart(view.CycleTime.Chart)
+					}
+				</div>
+			} else {
+				@primitives.EmptyLine("No completed issues in the current window")
+			}
+		}
+	</div>
+	if view.Release.Available {
+		@primitives.Panel(primitives.PanelProps{ID: "reports-release", Title: "Release cadence", Count: view.Release.State}) {
+			<div class="grid grid-cols-1 gap-3 p-4 sm:grid-cols-3">
+				<div class="flex flex-col gap-1"><span class="text-2xs uppercase text-dim">Last release</span><span class="font-mono text-sm text-text">{ view.Release.Last }</span></div>
+				<div class="flex flex-col gap-1"><span class="text-2xs uppercase text-dim">Unreleased merges</span><span class="font-mono text-sm text-text">{ view.Release.Merges }</span></div>
+				<div class="flex flex-col gap-1"><span class="text-2xs uppercase text-dim">Next age trigger</span><span class="font-mono text-sm text-text">{ view.Release.Next }</span></div>
+			</div>
+		}
+	}
+}
+
+templ reportsDailyDigest(digest reportsDigest) {
+	<script>
+		(function () {
+			var url = new URL(window.location.href);
+			if (url.searchParams.has("tz")) return;
+			var timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+			if (!timezone) return;
+			url.searchParams.set("tz", timezone);
+			window.location.replace(url.toString());
+		})();
+	</script>
+	@primitives.Panel(primitives.PanelProps{ID: "reports-daily-digest", Title: "Daily digest", Count: digest.Timezone, Class: "flex-none"}) {
+		<div class="flex flex-col divide-y divide-line">
+			for _, day := range digest.Days {
+				<article data-digest-day data-digest-date={ day.Date } class="flex flex-col gap-3 p-4">
+					<div class="flex flex-wrap items-center justify-between gap-2">
+						<h3 class="text-sm font-semibold text-text">{ day.Label }</h3>
+						<span class="font-mono text-2xs text-dim tabular-nums">{ day.Date }</span>
+					</div>
+					<p class="text-2xs text-sec">{ day.Scope }</p>
+					<div class="grid grid-cols-2 gap-x-5 gap-y-3 sm:grid-cols-3 lg:grid-cols-6">
+						for _, metric := range day.Metrics {
+							<div data-digest-metric={ metric.ID } data-digest-trend={ metric.Trend } class="min-w-0">
+								<div class="flex items-baseline justify-between gap-2">
+									<span
+										class="truncate font-mono text-sm font-medium text-text tabular-nums"
+										if metric.Full != "" {
+											title={ metric.Full }
+										}
+									>{ metric.Value }</span>
+									<span class={ "whitespace-nowrap text-2xs tabular-nums " + reportsDigestDeltaClass(metric.Trend) }>{ metric.Delta }</span>
+								</div>
+								<div class="truncate text-2xs text-sec" title={ metric.Label }>{ metric.Label }</div>
+								if metric.Detail != "" {
+									<div class="truncate text-2xs text-dim" title={ metric.Detail }>{ metric.Detail }</div>
+								}
+							</div>
+						}
+					</div>
+					if len(day.Projects) > 0 {
+						<div class="overflow-x-auto">
+							<table class="w-full min-w-[420px] text-left text-2xs">
+								<thead class="text-dim">
+									<tr><th class="pb-1 font-medium">Project</th><th class="pb-1 text-right font-medium">Shipped</th><th class="pb-1 text-right font-medium">Filed</th><th class="pb-1 text-right font-medium">Releases</th></tr>
+								</thead>
+								<tbody class="text-sec">
+									for _, project := range day.Projects {
+										<tr data-digest-project={ project.ID }><td class="py-0.5 text-text">{ project.Name }</td><td class="py-0.5 text-right font-mono tabular-nums">{ formatInt(project.Shipped) }</td><td class="py-0.5 text-right font-mono tabular-nums">{ formatInt(project.Filed) }</td><td class="py-0.5 text-right font-mono tabular-nums"><span title="Durable release history unavailable; external releases unobserved">—</span></td></tr>
+									}
+								</tbody>
+							</table>
+						</div>
+					}
+				</article>
+			}
+		</div>
+	}
+}
+
+templ reportsTopTable(id string, title string, rows []reportsTopRow) {
+	@primitives.Panel(primitives.PanelProps{ID: id, Title: title}) {
+		<div class="overflow-x-auto">
+			<div class="min-w-[550px] md:min-w-0">
+				<div class="grid grid-cols-[70px_minmax(0,1fr)_70px_80px_100px] gap-3.5 border-b border-line px-4 py-2">
+					<span class="text-2xs font-semibold uppercase text-dim">ID</span>
+					<span class="text-2xs font-semibold uppercase text-dim">Title</span>
+					<span class="text-right text-2xs font-semibold uppercase text-dim">Tokens</span>
+					<span class="text-right text-2xs font-semibold uppercase text-dim">Token USD</span>
+					<span class="text-right text-2xs font-semibold uppercase text-dim">Compute USD</span>
+				</div>
+				if len(rows) == 0 {
+					@primitives.EmptyLine("No usage buckets yet")
+				}
+				for i, row := range rows {
+					<div id={ row.ID } class={ reportsTopRowClass(i == len(rows)-1) }>
+						@primitives.TrackerReferenceLink(row.Ref, row.URL, "truncate font-mono text-xs font-medium text-text tabular-nums")
+						<span class="truncate text-sm text-text">{ row.Title }</span>
+						<span class="whitespace-nowrap text-right font-mono text-xs text-sec tabular-nums">{ row.Tokens }</span>
+						<span class="whitespace-nowrap text-right font-mono text-xs text-sec tabular-nums">{ row.Cost }</span>
+						<span class="whitespace-nowrap text-right font-mono text-xs text-sec tabular-nums">{ row.Compute }</span>
+					</div>
+				}
+			</div>
+		</div>
+	}
+}

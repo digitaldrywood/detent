@@ -1,0 +1,19 @@
+tmp/
+/detent
+node_modules/
+/scripts/__pycache__/
+/WORKFLOW.local.md
+/detent.local.yaml
+/.detent/workspaces/
+
+# Release signing secrets — NEVER commit the private key or the password
+.envrc
+detent-release.key
+*.key
+
+/static/app/conversation/
+/static/css/output.css
+/docs/config.md
+/config.reference.yaml
+
+/static/release-notes.json

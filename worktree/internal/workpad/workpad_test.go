@@ -1,0 +1,738 @@
+package workpad
+
+import (
+	"reflect"
+	"strings"
+	"testing"
+	"time"
+	"unicode/utf8"
+)
+
+func TestFinalSummary(t *testing.T) {
+	t.Parallel()
+	status := "```detent-status\nschema: 1\nstatus: blocked\nreason_code: instance_limitation\n```"
+	for _, test := range []struct {
+		name string
+		body string
+		want string
+	}{
+		{"blocked summary excludes disposition and trailing text", "Sandbox forbids TCP listeners.\n\n" + status + "\nTrailing text", "Sandbox forbids TCP listeners."},
+		{"no disposition", "  Still implementing. \n", "Still implementing."},
+		{"empty summary", status, ""},
+		{"last disposition", status + "\nFinal reason\n" + status, status + "\nFinal reason"},
+		{"CRLF tilde fence", "Needs approval.\r\n~~~detent-status\r\nstatus: blocked\r\n~~~", "Needs approval."},
+		{"exact byte bound", strings.Repeat("x", MaxFinalSummaryBytes) + "\n" + status, strings.Repeat("x", MaxFinalSummaryBytes)},
+		{"long unicode summary", strings.Repeat("界", MaxFinalSummaryBytes) + "\n" + status, strings.Repeat("界", (MaxFinalSummaryBytes-len("…"))/3) + "…"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got := FinalSummary(test.body)
+			if got != test.want || len(got) > MaxFinalSummaryBytes || !utf8.ValidString(got) {
+				t.Fatalf("summary = %q (%d bytes), want %q", got, len(got), test.want)
+			}
+		})
+	}
+}
+
+func TestSignalFromComment(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		body             string
+		wantOK           bool
+		wantInvalid      string
+		wantStatus       string
+		wantReasonCode   string
+		wantReason       string
+		wantBlockers     []string
+		wantHuman        string
+		wantComment      string
+		wantDispositions []ReviewDisposition
+		wantFields       map[string]string
+		wantLastBlock    bool
+	}{
+		{
+			name:   "review dispositions survive completion parsing",
+			body:   "```detent-status\nschema: 1\nstatus: complete\nreview_dispositions:\n  - thread_id: T1\n    disposition: fixed\n    evidence: source.go:17 and regression pass\n  - thread_id: T2\n    disposition: dismissed\n    evidence: source.go:29 already checks the head\n```",
+			wantOK: true, wantStatus: StatusComplete,
+			wantDispositions: []ReviewDisposition{{ThreadID: "T1", Disposition: "fixed", Evidence: "source.go:17 and regression pass"}, {ThreadID: "T2", Disposition: "dismissed", Evidence: "source.go:29 already checks the head"}},
+		},
+		{
+			name:   "review disposition needs evidence",
+			body:   "```detent-status\nschema: 1\nstatus: complete\nreview_dispositions: [{thread_id: T1, disposition: fixed}]\n```",
+			wantOK: true, wantInvalid: "require unique thread IDs",
+		},
+		{
+			name:   "review disposition rejects unknown decisions",
+			body:   "```detent-status\nschema: 1\nstatus: complete\nreview_dispositions: [{thread_id: T1, disposition: surfaced, evidence: seen}]\n```",
+			wantOK: true, wantInvalid: "require unique thread IDs",
+		},
+		{
+			name:   "review disposition rejects conflicting duplicate threads",
+			body:   "```detent-status\nschema: 1\nstatus: complete\nreview_dispositions: [{thread_id: T1, disposition: fixed, evidence: fix}, {thread_id: T1, disposition: dismissed, evidence: dismissal}]\n```",
+			wantOK: true, wantInvalid: "require unique thread IDs",
+		},
+
+		{
+			name:         "valid block",
+			body:         "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: \"#1462\"\n    reason: \"needs migration\"\nhuman_action: null\n```",
+			wantOK:       true,
+			wantStatus:   StatusBlocked,
+			wantReason:   "digitaldrywood/detent#1462: needs migration",
+			wantBlockers: []string{"digitaldrywood/detent#1462"},
+			wantComment:  "https://github.test/comment/1",
+		},
+		{
+			name:           "valid blocked recovery reason",
+			body:           "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nreason_code: merge-conflict\nblockers: []\nhuman_action: null\n```",
+			wantOK:         true,
+			wantStatus:     StatusBlocked,
+			wantReasonCode: "merge_conflict",
+			wantReason:     "merge_conflict",
+			wantComment:    "https://github.test/comment/1",
+		},
+		{
+			name:        "valid gate field",
+			body:        "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nfields:\n  render_status: pending_review\nblockers: []\nhuman_action: null\n```",
+			wantOK:      true,
+			wantStatus:  StatusComplete,
+			wantFields:  map[string]string{"render_status": "pending_review"},
+			wantComment: "https://github.test/comment/1",
+		},
+		{
+			name:        "reason code requires blocked status",
+			body:        "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nreason_code: merge_conflict\nblockers: []\nhuman_action: null\n```",
+			wantOK:      true,
+			wantInvalid: "reason_code is only valid when status is blocked",
+		},
+		{
+			name:        "malformed yaml",
+			body:        "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: \"#1462\"\n    reason: [unterminated\nhuman_action: null\n```",
+			wantOK:      true,
+			wantInvalid: "parse detent-status YAML",
+		},
+		{
+			name:       "unknown field",
+			body:       "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\nextra: nope\n```",
+			wantOK:     true,
+			wantStatus: StatusComplete,
+		},
+		{
+			name:        "invalid status value",
+			body:        "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: human-review\nblockers: []\nhuman_action: null\n```",
+			wantOK:      true,
+			wantInvalid: `status "human-review" must be one of in_progress, blocked, complete`,
+		},
+		{
+			name:        "bad ref",
+			body:        "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: \"not-a-ref\"\nhuman_action: null\n```",
+			wantOK:      true,
+			wantInvalid: "blockers[0].ref",
+		},
+		{
+			name:        "empty blockers blocked malformation",
+			body:        "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: null\n```",
+			wantOK:      true,
+			wantInvalid: "status blocked requires",
+		},
+		{
+			name:       "blocked by human action only",
+			body:       "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: \"Need owner approval\"\n```",
+			wantOK:     true,
+			wantStatus: StatusBlocked,
+			wantReason: "Need owner approval",
+			wantHuman:  "Need owner approval",
+		},
+		{
+			name:          "last block wins",
+			body:          "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: \"old\"\n```\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```",
+			wantOK:        true,
+			wantStatus:    StatusComplete,
+			wantLastBlock: true,
+		},
+		{
+			name: "no block",
+			body: "## Codex Workpad\n\n### Blockers\n- Blocked by: #1462",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, ok := SignalFromComment(tt.body, "https://github.test/comment/1", "digitaldrywood/detent")
+			if ok != tt.wantOK {
+				t.Fatalf("SignalFromComment() ok = %v, want %v", ok, tt.wantOK)
+			}
+			if !ok {
+				return
+			}
+			if got.CommentURL != tt.wantComment && tt.wantComment != "" {
+				t.Fatalf("CommentURL = %q, want %q", got.CommentURL, tt.wantComment)
+			}
+			if tt.wantInvalid != "" {
+				if got.Invalid == nil {
+					t.Fatalf("Invalid = nil, want message containing %q", tt.wantInvalid)
+				}
+				if !strings.Contains(got.Invalid.Message, tt.wantInvalid) {
+					t.Fatalf("Invalid.Message = %q, want containing %q", got.Invalid.Message, tt.wantInvalid)
+				}
+				if got.Invalid.Hash == "" {
+					t.Fatal("Invalid.Hash is empty")
+				}
+				return
+			}
+			if got.Invalid != nil {
+				t.Fatalf("Invalid = %#v, want nil", got.Invalid)
+			}
+			if !reflect.DeepEqual(got.ReviewDispositions, tt.wantDispositions) {
+				t.Fatalf("ReviewDispositions = %#v, want %#v", got.ReviewDispositions, tt.wantDispositions)
+			}
+			if got.Status != tt.wantStatus {
+				t.Fatalf("Status = %q, want %q", got.Status, tt.wantStatus)
+			}
+			if got.ReasonCode != tt.wantReasonCode {
+				t.Fatalf("ReasonCode = %q, want %q", got.ReasonCode, tt.wantReasonCode)
+			}
+			if got.HumanAction != tt.wantHuman {
+				t.Fatalf("HumanAction = %q, want %q", got.HumanAction, tt.wantHuman)
+			}
+			if !reflect.DeepEqual(got.Fields, tt.wantFields) {
+				t.Fatalf("Fields = %#v, want %#v", got.Fields, tt.wantFields)
+			}
+			if Reason(got) != tt.wantReason {
+				t.Fatalf("Reason() = %q, want %q", Reason(got), tt.wantReason)
+			}
+			if len(got.Blockers) != len(tt.wantBlockers) {
+				t.Fatalf("Blockers len = %d, want %d", len(got.Blockers), len(tt.wantBlockers))
+			}
+			for index, want := range tt.wantBlockers {
+				if got.Blockers[index].Identifier != want {
+					t.Fatalf("Blockers[%d].Identifier = %q, want %q", index, got.Blockers[index].Identifier, want)
+				}
+			}
+			if tt.wantLastBlock && len(got.Blockers) != 0 {
+				t.Fatalf("Blockers = %#v, want none from last block", got.Blockers)
+			}
+		})
+	}
+}
+
+func TestCurrentAttemptCompletion(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		signal     *Signal
+		attemptID  int64
+		generation uint64
+		want       bool
+	}{
+		{
+			name: "current structured completion",
+			signal: &Signal{
+				Source: SourceStructured,
+				Status: StatusComplete,
+				Fields: map[string]string{
+					FieldCompletionAttempt:    "3295",
+					FieldCompletionGeneration: "7",
+				},
+			},
+			attemptID:  3295,
+			generation: 7,
+			want:       true,
+		},
+		{
+			name: "stale attempt",
+			signal: &Signal{
+				Source: SourceStructured,
+				Status: StatusComplete,
+				Fields: map[string]string{
+					FieldCompletionAttempt:    "3238",
+					FieldCompletionGeneration: "6",
+				},
+			},
+			attemptID:  3295,
+			generation: 7,
+		},
+		{
+			name: "operator move without handshake",
+			signal: &Signal{
+				Source: SourceStructured,
+				Status: StatusComplete,
+			},
+			attemptID:  3295,
+			generation: 7,
+		},
+		{
+			name: "blocked completion is not accepted",
+			signal: &Signal{
+				Source:   SourceStructured,
+				Status:   StatusComplete,
+				Blockers: []Blocker{{Reason: "waiting"}},
+				Fields: map[string]string{
+					FieldCompletionAttempt:    "3295",
+					FieldCompletionGeneration: "7",
+				},
+			},
+			attemptID:  3295,
+			generation: 7,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := CurrentAttemptCompletion(tt.signal, tt.attemptID, tt.generation); got != tt.want {
+				t.Fatalf("CurrentAttemptCompletion() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestOperationalCompletion(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		signal       *Signal
+		wantEvidence string
+		want         bool
+	}{
+		{
+			name: "structured complete declaration",
+			signal: &Signal{
+				Source: SourceStructured,
+				Status: StatusComplete,
+				Fields: map[string]string{
+					"completion_kind":     "operational",
+					"completion_evidence": "Runner service is healthy and accepting jobs.",
+				},
+			},
+			wantEvidence: "Runner service is healthy and accepting jobs.",
+			want:         true,
+		},
+		{
+			name: "missing evidence",
+			signal: &Signal{
+				Source: SourceStructured,
+				Status: StatusComplete,
+				Fields: map[string]string{"completion_kind": "operational"},
+			},
+		},
+		{
+			name: "ordinary completion",
+			signal: &Signal{
+				Source: SourceStructured,
+				Status: StatusComplete,
+			},
+		},
+		{
+			name: "blocked declaration",
+			signal: &Signal{
+				Source: SourceStructured,
+				Status: StatusBlocked,
+				Fields: map[string]string{
+					"completion_kind":     "operational",
+					"completion_evidence": "Runner service is healthy.",
+				},
+			},
+		},
+		{
+			name: "completion with blocker",
+			signal: &Signal{
+				Source:   SourceStructured,
+				Status:   StatusComplete,
+				Blockers: []Blocker{{Reason: "waiting for verification"}},
+				Fields: map[string]string{
+					"completion_kind":     "operational",
+					"completion_evidence": "Runner service is healthy.",
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			gotEvidence, got := OperationalCompletion(tt.signal)
+			if got != tt.want {
+				t.Fatalf("OperationalCompletion() ok = %t, want %t", got, tt.want)
+			}
+			if gotEvidence != tt.wantEvidence {
+				t.Fatalf("OperationalCompletion() evidence = %q, want %q", gotEvidence, tt.wantEvidence)
+			}
+		})
+	}
+}
+
+func TestCompletionAuthorizationFromIssueBody(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		body      string
+		wantKind  string
+		wantFound bool
+		wantError string
+	}{
+		{
+			name:      "operational completion authorized",
+			body:      "## Completion contract\n\n```detent-completion\nschema: 1\ncompletion_kind: operational\n```",
+			wantKind:  CompletionOperational,
+			wantFound: true,
+		},
+		{
+			name:      "last authorization wins",
+			body:      "```detent-completion\nschema: 1\ncompletion_kind: unsupported\n```\n\n```detent-completion\nschema: 1\ncompletion_kind: operational\n```",
+			wantKind:  CompletionOperational,
+			wantFound: true,
+		},
+		{name: "ordinary issue body"},
+		{
+			name:      "unsupported completion kind",
+			body:      "```detent-completion\nschema: 1\ncompletion_kind: repository\n```",
+			wantFound: true,
+			wantError: `completion_kind "repository" must be operational`,
+		},
+		{
+			name:      "unknown field",
+			body:      "```detent-completion\nschema: 1\ncompletion_kind: operational\nextra: nope\n```",
+			wantFound: true,
+			wantError: "field extra not found",
+		},
+		{
+			name:      "wrong schema",
+			body:      "```detent-completion\nschema: 2\ncompletion_kind: operational\n```",
+			wantFound: true,
+			wantError: "schema must be 1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			kind, found, err := CompletionAuthorizationFromIssueBody(tt.body)
+			if found != tt.wantFound {
+				t.Fatalf("found = %t, want %t", found, tt.wantFound)
+			}
+			if tt.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantError) {
+					t.Fatalf("error = %v, want containing %q", err, tt.wantError)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("CompletionAuthorizationFromIssueBody() error = %v", err)
+			}
+			if kind != tt.wantKind {
+				t.Fatalf("kind = %q, want %q", kind, tt.wantKind)
+			}
+			if got := OperationalCompletionAuthorized(tt.body); got != (tt.wantKind == CompletionOperational) {
+				t.Fatalf("OperationalCompletionAuthorized() = %t", got)
+			}
+		})
+	}
+}
+
+func TestParseRef(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		ref     string
+		repo    string
+		want    string
+		wantErr bool
+	}{
+		{name: "native project issue", ref: "prj_012abc#336", repo: "prj_other", want: "prj_012abc#336"},
+		{name: "local native issue", ref: "#336", repo: "prj_012abc", want: "prj_012abc#336"},
+		{name: "local issue", ref: "#42", repo: "digitaldrywood/detent", want: "digitaldrywood/detent#42"},
+		{name: "owner repo issue", ref: "digitaldrywood/pyroapex#1462", repo: "digitaldrywood/detent", want: "digitaldrywood/pyroapex#1462"},
+		{name: "local issue without repo", ref: "#42", want: "#42"},
+		{name: "zero issue rejected", ref: "#0", repo: "digitaldrywood/detent", wantErr: true},
+		{name: "url rejected", ref: "https://github.com/digitaldrywood/detent/issues/42", repo: "digitaldrywood/detent", wantErr: true},
+		{name: "missing repo rejected", ref: "detent#42", repo: "digitaldrywood/detent", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := ParseRef(tt.ref, tt.repo)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("ParseRef() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if got != tt.want {
+				t.Fatalf("ParseRef() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseStatusBlockTypedBlockers(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name               string
+		blocker            string
+		wantType           string
+		wantOwner          string
+		wantIdentifier     string
+		wantState          string
+		wantCheck          string
+		wantScope          string
+		wantFingerprint    string
+		wantPresent        *bool
+		wantUnverifiable   bool
+		wantRecheck        string
+		wantExpiry         string
+		wantErrorSubstring string
+	}{
+		{
+			name:           "issue state",
+			blocker:        "ref: '#42'\n    reason: waiting for closure\n    owner: orchestrator\n    predicate:\n      type: issue_state\n      states: [open]\n    recheck_interval: 30s",
+			wantType:       PredicateIssueState,
+			wantOwner:      BlockerOwnerOrchestrator,
+			wantIdentifier: "digitaldrywood/detent#42",
+			wantState:      "open",
+			wantRecheck:    "30s",
+		},
+		{
+			name:        "pull request state",
+			blocker:     "owner: orchestrator\n    predicate:\n      kind: pull-request-state\n      state: open",
+			wantType:    PredicatePullRequestState,
+			wantOwner:   BlockerOwnerOrchestrator,
+			wantState:   "open",
+			wantRecheck: "tick",
+		},
+		{
+			name:        "check presence",
+			blocker:     "owner: orchestrator\n    predicate:\n      type: check_presence\n      check: Test\n      present: false",
+			wantType:    PredicateCheckPresence,
+			wantOwner:   BlockerOwnerOrchestrator,
+			wantCheck:   "Test",
+			wantPresent: boolPointer(false),
+			wantRecheck: "tick",
+		},
+		{
+			name:        "budget capacity",
+			blocker:     "owner: orchestrator\n    predicate:\n      type: budget_capacity\n      scope: daily-budget\n      condition: exhausted",
+			wantType:    PredicateBudgetCapacity,
+			wantOwner:   BlockerOwnerOrchestrator,
+			wantScope:   "daily_budget",
+			wantRecheck: "tick",
+		},
+		{
+			name:            "config fingerprint",
+			blocker:         "owner: orchestrator\n    predicate:\n      type: config_fingerprint\n      fingerprint: config-a\n    expires_at: '2026-08-17T12:00:00Z'",
+			wantType:        PredicateConfigFingerprint,
+			wantOwner:       BlockerOwnerOrchestrator,
+			wantFingerprint: "config-a",
+			wantRecheck:     "tick",
+			wantExpiry:      "2026-08-17T12:00:00Z",
+		},
+		{
+			name:             "free text accepted and flagged",
+			blocker:          "reason: waiting for somebody to investigate",
+			wantOwner:        BlockerOwnerHuman,
+			wantUnverifiable: true,
+		},
+		{
+			name:               "typed predicate validation",
+			blocker:            "owner: orchestrator\n    predicate:\n      type: check_presence\n      check: Test",
+			wantErrorSubstring: "predicate.present is required",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			content := "schema: 1\nstatus: blocked\nblockers:\n  - " + tt.blocker + "\nhuman_action: null"
+			signal, err := ParseStatusBlock(content, "digitaldrywood/detent")
+			if tt.wantErrorSubstring != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErrorSubstring) {
+					t.Fatalf("ParseStatusBlock() error = %v, want containing %q", err, tt.wantErrorSubstring)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ParseStatusBlock() error = %v", err)
+			}
+			if len(signal.Blockers) != 1 {
+				t.Fatalf("Blockers = %#v, want one", signal.Blockers)
+			}
+			blocker := signal.Blockers[0]
+			if blocker.Owner != tt.wantOwner || blocker.Unverifiable != tt.wantUnverifiable || blocker.RecheckInterval != tt.wantRecheck {
+				t.Fatalf("blocker metadata = %#v", blocker)
+			}
+			if tt.wantExpiry != "" && (blocker.ExpiresAt == nil || blocker.ExpiresAt.Format(time.RFC3339) != tt.wantExpiry) {
+				t.Fatalf("ExpiresAt = %v, want %s", blocker.ExpiresAt, tt.wantExpiry)
+			}
+			if tt.wantType == "" {
+				if blocker.Predicate != nil {
+					t.Fatalf("Predicate = %#v, want nil", blocker.Predicate)
+				}
+				return
+			}
+			predicate := blocker.Predicate
+			if predicate == nil {
+				t.Fatal("Predicate = nil")
+			}
+			if predicate.Type != tt.wantType || predicate.Identifier != tt.wantIdentifier || predicate.Check != tt.wantCheck || predicate.Scope != tt.wantScope || predicate.Fingerprint != tt.wantFingerprint {
+				t.Fatalf("Predicate = %#v", predicate)
+			}
+			if tt.wantState != "" && (len(predicate.States) != 1 || predicate.States[0] != tt.wantState) {
+				t.Fatalf("States = %#v, want %q", predicate.States, tt.wantState)
+			}
+			if tt.wantPresent != nil && (predicate.Present == nil || *predicate.Present != *tt.wantPresent) {
+				t.Fatalf("Present = %v, want %t", predicate.Present, *tt.wantPresent)
+			}
+		})
+	}
+}
+
+func boolPointer(value bool) *bool {
+	return &value
+}
+
+func TestSignalUnknownPredicateKeys(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct{ name, extra string }{
+		{"scalar", "      repository: private/project\n      pull_request: 42\n      head_sha: abc123\n"},
+		{"sequence", "      checks: [CI, security-audit]\n"},
+		{"mapping", "      checks: {CI: pending}\n"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			body := "```detent-status\nschema: 1\nstatus: complete\nblockers:\n  - reason: waiting for CI\n    predicate:\n      type: check_presence\n      check: CI\n      present: false\n" + tt.extra + "```"
+			signal, ok := SignalFromComment(body, "", "digitaldrywood/detent")
+			if !ok || signal.Invalid != nil {
+				t.Fatalf("signal = %#v", signal)
+			}
+			wantKeys := []string{"blockers[0].predicate.checks"}
+			if tt.name == "scalar" {
+				wantKeys = []string{"blockers[0].predicate.head_sha", "blockers[0].predicate.pull_request", "blockers[0].predicate.repository"}
+			}
+			if !reflect.DeepEqual(signal.UnknownKeys, wantKeys) {
+				t.Fatalf("unknown keys = %v, want %v", signal.UnknownKeys, wantKeys)
+			}
+			clone := CloneSignal(signal)
+			clone.UnknownKeys[0] = "changed"
+			if !reflect.DeepEqual(signal.UnknownKeys, wantKeys) {
+				t.Fatal("clone shares unknown keys")
+			}
+			p := signal.Blockers[0].Predicate
+			if p.Type != PredicateCheckPresence || p.Check != "CI" || p.Present == nil || *p.Present {
+				t.Fatalf("predicate = %#v", p)
+			}
+		})
+	}
+}
+
+func TestMalformedRefPartialSignal(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, status, extra string
+		partial             bool
+	}{
+		{"refs only", "blocked", "", true},
+		{"inherited issue ref", "blocked", "    predicate:\n      type: issue_state\n", true},
+		{"inherited PR ref", "blocked", "    predicate:\n      type: pull_request_state\n      state: open\n", true},
+		{"missing PR state", "blocked", "    predicate:\n      type: pull_request_state\n", false},
+		{"explicit invalid predicate ref", "blocked", "    predicate:\n      type: issue_state\n      ref: malformed other\n", false},
+		{"invalid predicate type", "blocked", "    predicate:\n      type: invalid\n", false},
+		{"invalid status", "human-review", "", false},
+		{"invalid owner", "blocked", "    owner: invalid\n", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			body := "```detent-status\nschema: 1\nstatus: " + tt.status + "\nblockers:\n  - ref: malformed text\n    reason: local test\n" + tt.extra + "  - ref: '#42'\n    reason: dependency\nhuman_action: null\n```"
+			got, ok := SignalFromComment(body, "comment-url", "owner/repo")
+			if !ok || got.Invalid == nil || got.Invalid.BlockerRefsOnly != tt.partial {
+				t.Fatalf("signal = %#v, want partial %v", got, tt.partial)
+			}
+			if tt.partial && (len(got.Blockers) != 2 || got.Blockers[1].Identifier != "owner/repo#42") {
+				t.Fatalf("valid dependency lost: %#v", got.Blockers)
+			}
+			if !tt.partial && len(got.Blockers) != 0 {
+				t.Fatalf("invalid schema retained blockers: %#v", got.Blockers)
+			}
+		})
+	}
+}
+
+func TestSymbolicBlockerReferences(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		ref               string
+		symbolic, invalid bool
+	}{
+		{"#42", false, false}, {"owner/repo#42", false, false},
+		{"instance:chrome-devtools", true, false}, {"go-workflow:ship-state-bootstrap", true, false},
+		{"not a reference", false, true},
+	} {
+		t.Run(tt.ref, func(t *testing.T) {
+			for _, predicate := range []string{"", "    predicate:\n      type: issue_state\n", "    predicate:\n      type: issue_state\n      ref: '" + tt.ref + "'\n"} {
+				body := "```detent-status\nschema: 1\nstatus: blocked\nfields:\n  render_status: passed\nblockers:\n  - ref: '" + tt.ref + "'\n    reason: waiting for tool\n" + predicate + "  - ref: '#43'\n```"
+				got, ok := SignalFromComment(body, "", "owner/repo")
+				if !ok || (got.Invalid != nil) != tt.invalid {
+					t.Fatalf("signal = %#v", got)
+				}
+				if tt.invalid {
+					continue
+				}
+				if len(got.Blockers) != 2 || got.Fields["render_status"] != "passed" || got.Blockers[1].Identifier != "owner/repo#43" {
+					t.Fatalf("lost status data: %#v", got)
+				}
+				b := got.Blockers[0]
+				if b.Ref != tt.ref || b.Reason != "waiting for tool" {
+					t.Fatalf("blocker = %#v", b)
+				}
+				if tt.symbolic && (b.Owner != "instance" || !b.Unverifiable || b.Predicate != nil || b.Identifier != "") {
+					t.Fatalf("symbolic blocker = %#v", b)
+				}
+				if !tt.symbolic && (b.Predicate == nil || b.Identifier == "") {
+					t.Fatalf("issue blocker = %#v", b)
+				}
+			}
+		})
+	}
+}
+
+func TestSymbolicBlockerPreservesSchemaErrors(t *testing.T) {
+	t.Parallel()
+	for _, extra := range []string{"    owner: invalid\n", "    expires_at: invalid\n", "    predicate:\n      type: invalid\n"} {
+		t.Run(extra, func(t *testing.T) {
+			body := "```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: instance:chrome-devtools\n" + extra + "```"
+			got, ok := SignalFromComment(body, "", "owner/repo")
+			if !ok || got.Invalid == nil {
+				t.Fatalf("invalid schema accepted: %#v", got)
+			}
+		})
+	}
+}
+
+func TestMergedCompletionEvidence(t *testing.T) {
+	t.Parallel()
+	for _, missing := range []string{"", FieldCompletionEvidence, "completion_merged_pr", "completion_merge_commit", "completion_branch", "completion_branch_head", "completion_ancestry"} {
+		t.Run("missing_"+missing, func(t *testing.T) {
+			t.Parallel()
+			signal := &Signal{Source: SourceStructured, Status: StatusComplete, Fields: map[string]string{
+				FieldCompletionKind: CompletionOperational, FieldCompletionEvidence: "Acceptance regression passed; merge-base exited 0.",
+				"completion_merged_pr": "https://github.com/example/repo/pull/12", "completion_merge_commit": "abc", "completion_branch": "origin/main", "completion_branch_head": "def", "completion_ancestry": "verified",
+			}}
+			if missing != "" {
+				signal.Fields[missing] = " "
+			}
+			if got := MergedCompletionEvidence(signal); got != (missing == "") {
+				t.Fatalf("accepted = %v", got)
+			}
+			signal.Fields["completion_ancestry"] = "failed"
+			if MergedCompletionEvidence(signal) {
+				t.Fatal("accepted failed ancestry")
+			}
+		})
+	}
+}

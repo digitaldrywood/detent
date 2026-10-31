@@ -1,0 +1,12 @@
+{
+  "key": "cmd_01J8Z0V6C3N6",
+  "kind": "answer",
+  "question_id": "q_4f81ba07",
+  "answers": {
+    "renewal-window": ["Half the lease"]
+  },
+  "expected": {
+    "attempt_id": "att_18f4",
+    "turn_id": "turn_5"
+  }
+}

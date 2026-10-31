@@ -1,0 +1,346 @@
+//go:build !windows
+
+package cloudentry
+
+import (
+	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"slices"
+	"strconv"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/billing"
+	"github.com/digitaldrywood/detent/internal/chat"
+	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/operatortool"
+)
+
+type fakeBilling struct {
+	mu        sync.Mutex
+	customers map[string]string
+	creates   int
+	checkouts int
+	returnURL string
+}
+
+func (f *fakeBilling) Reconcile(context.Context, billing.Binding) (billing.Snapshot, error) {
+	return billing.Snapshot{}, nil
+}
+
+func (f *fakeBilling) Checkout(_ context.Context, request billing.CheckoutRequest) (billing.Session, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.checkouts++
+	f.returnURL = request.ReturnURL
+	return billing.Session{ID: "cs_test_" + request.CustomerID, URL: "https://checkout.stripe.com/c/pay/" + request.CustomerID, ExpiresAt: time.Now().Add(time.Hour)}, nil
+}
+
+func (f *fakeBilling) Portal(context.Context, billing.Binding, string, string) (billing.Session, error) {
+	return billing.Session{ID: "bps_test", URL: "https://billing.stripe.com/p/session/test"}, nil
+}
+
+func (f *fakeBilling) EnsureCustomer(_ context.Context, request billing.CustomerRequest) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for customer, organization := range f.customers {
+		if organization == request.OrganizationID {
+			return customer, nil
+		}
+	}
+	f.creates++
+	customer := "cus_" + strings.TrimPrefix(request.OrganizationID, "org_")
+	f.customers[customer] = request.OrganizationID
+	return customer, nil
+}
+
+func (f *fakeBilling) ChargeCustomer(_ context.Context, charge string) (string, error) {
+	return "cus_" + strings.TrimPrefix(charge, "ch_"), nil
+}
+
+func (f *fakeBilling) CustomerOrganization(_ context.Context, customer string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	organization, ok := f.customers[customer]
+	if !ok {
+		return "", billing.ErrCustomerConflict
+	}
+	return organization, nil
+}
+
+const testWebhookSecret = "whsec_fixture_webhook_secret"
+
+func signedEvent(body string) (string, string) {
+	stamp := strconv.FormatInt(time.Now().Unix(), 10)
+	mac := hmac.New(sha256.New, []byte(testWebhookSecret))
+	mac.Write([]byte(stamp + "." + body))
+	return body, "t=" + stamp + ",v1=" + hex.EncodeToString(mac.Sum(nil))
+}
+
+func TestSharedBillingJourney(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live service integration")
+	}
+
+	t.Parallel()
+	stripe := &fakeBilling{customers: map[string]string{}}
+	allowances := func(projects int64) map[string]int64 {
+		return map[string]int64{"members": 10, "projects": projects, "repositories": 10, "registered_runners": 10, "connected_runners": 10, "concurrent_work": 5,
+			"api_mutations": 10000, "ingested_events": 10000, "collaboration_bytes": 64 << 20, "history_records": 10000}
+	}
+	plans := &hubserver.HostedPlansConfig{
+		Base: hubserver.PlanReference{ID: "free", Version: 1}, WindowSeconds: 3600, RetentionWindows: 24, ConnectedSeconds: 90, InvitationSeconds: 86400,
+		Plans: []hubserver.HostedPlan{
+			{PlanReference: hubserver.PlanReference{ID: "free", Version: 1}, Features: []string{"collaboration"}, Allowances: allowances(3)},
+			{PlanReference: hubserver.PlanReference{ID: "team", Version: 1}, Features: []string{"collaboration"}, Allowances: allowances(30)},
+		},
+	}
+	f := newProvisioningFixtureWith(t, 3, func(a *AllocationConfig) {
+		a.Prices = []hubserver.HostedBillingPrice{{PriceID: "price_team", Label: "Team", Plan: hubserver.PlanReference{ID: "team", Version: 1}}}
+	}, func(f *provisioningFixture) {
+		f.launcher.plans = plans
+		f.launcher.billing = func() *hubserver.HostedBillingConfig {
+			return &hubserver.HostedBillingConfig{Mode: "test", AccountID: "acct_fixture", PortalConfigurationID: "bpc_fixture", WebhookSecret: []byte(testWebhookSecret),
+				GraceSeconds: 3600, ReconcileSeconds: 60, Provider: stripe, Prices: []hubserver.HostedBillingPrice{{PriceID: "price_team", Label: "Team", Plan: hubserver.PlanReference{ID: "team", Version: 1}}}}
+		}
+		f.billing = &BillingConfig{Mode: "test", AccountID: "acct_fixture", WebhookSecret: []byte(testWebhookSecret), Provider: stripe}
+	})
+	member := newBrowser(t, f.service.Handler())
+	member.login("/auth/oidc/start", "user_member:")
+	id := organizationFromLocation(t, f.create(t, member, "Delta").Header.Get("Location"))
+	f.waitState(t, id, "ready")
+	if stripe.creates != 0 {
+		t.Fatal("free signup created a Stripe customer")
+	}
+	member.login("/organizations/"+id+"/organization", "user_member:porg_"+id)
+	response, page := member.get("/organizations/" + id + "/organization/billing")
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("billing page = %d %s", response.StatusCode, page)
+	}
+	if portal := member.do(http.MethodPost, "/organizations/"+id+"/organization/billing/portal", url.Values{"csrf": {csrfFrom(t, page)}}, nil); portal.StatusCode != http.StatusConflict {
+		t.Fatalf("portal before a customer = %d", portal.StatusCode)
+	}
+	// Catches losing the original billing authority/CSRF binding through the
+	// real organization proxy, or creating a provider effect before approval.
+	var session string
+	mcpCall := func(body string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodPost, testPublicURL+"/organizations/"+id+"/mcp", strings.NewReader(body))
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Origin", testPublicURL)
+		request.Header.Set("X-CSRF-Token", csrfFrom(t, page))
+		if session != "" {
+			request.Header.Set("Mcp-Session-Id", session)
+			request.Header.Set("Mcp-Protocol-Version", "2025-11-25")
+		}
+		base, _ := url.Parse(testPublicURL)
+		for _, cookie := range member.jar.Cookies(base) {
+			request.AddCookie(cookie)
+		}
+		response := httptest.NewRecorder()
+		f.service.Handler().ServeHTTP(response, request)
+		return response
+	}
+	initialized := mcpCall(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"shared-billing","version":"1"}}}`)
+	session = initialized.Header().Get("Mcp-Session-Id")
+	if initialized.Code != http.StatusOK || session == "" {
+		t.Fatalf("MCP initialize=%d %s", initialized.Code, initialized.Body.String())
+	}
+	mcpCall(`{"jsonrpc":"2.0","method":"notifications/initialized"}`)
+	args := `{"price":"price_team","request_id":"shared-purchase"}`
+	checkoutCall := `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"` + operatortool.BillingCheckout + `","arguments":` + args + `}}`
+	preview := mcpCall(checkoutCall)
+	var reply struct {
+		Result struct {
+			Structured struct {
+				Preview chat.Action `json:"preview"`
+			} `json:"structuredContent"`
+		} `json:"result"`
+	}
+	if json.Unmarshal(preview.Body.Bytes(), &reply) != nil || reply.Result.Structured.Preview.Status != chat.ActionSucceeded || stripe.creates != 1 || stripe.checkouts != 1 {
+		t.Fatalf("shared preview=%s", preview.Body.String())
+	}
+	replayed := mcpCall(checkoutCall)
+	if !strings.Contains(replayed.Body.String(), `"status":"succeeded"`) || stripe.checkouts != 1 {
+		t.Fatalf("shared replay=%s", replayed.Body.String())
+	}
+	for range 2 {
+		checkout := member.do(http.MethodPost, "/organizations/"+id+"/organization/billing/checkout", url.Values{"price": {"price_team"}, "csrf": {csrfFrom(t, page)}}, nil)
+		if checkout.StatusCode != http.StatusSeeOther || !strings.HasPrefix(checkout.Header.Get("Location"), "https://checkout.stripe.com/") {
+			t.Fatalf("checkout = %d %q %s", checkout.StatusCode, checkout.Header.Get("Location"), checkout.Body)
+		}
+	}
+	if stripe.creates != 1 {
+		t.Fatalf("customer creates = %d, want 1", stripe.creates)
+	}
+	stripe.mu.Lock()
+	returnURL := stripe.returnURL
+	stripe.mu.Unlock()
+	parsedReturn, err := url.Parse(returnURL)
+	if err != nil || parsedReturn.Scheme+"://"+parsedReturn.Host != testPublicURL {
+		t.Fatalf("checkout return URL = %q: %v", returnURL, err)
+	}
+	outsider := newBrowser(t, f.service.Handler())
+	for _, suffix := range []string{"?checkout=returned", ""} {
+		t.Run("checkout return "+suffix, func(t *testing.T) {
+			target := parsedReturn.RequestURI() + suffix
+			headers := map[string]string{"Sec-Fetch-Site": "cross-site", "Referer": "https://checkout.stripe.com/"}
+			returned := member.do(http.MethodGet, target, nil, headers)
+			if returned.StatusCode == http.StatusPermanentRedirect {
+				location, err := url.Parse(returned.Header.Get("Location"))
+				if err != nil || location.IsAbs() || location.Host != "" || location.RawQuery != strings.TrimPrefix(suffix, "?") {
+					t.Fatalf("checkout return redirect = %q: %v", returned.Header.Get("Location"), err)
+				}
+				returned = member.do(http.MethodGet, location.RequestURI(), nil, headers)
+			}
+			if returned.StatusCode != http.StatusOK || !strings.Contains(returned.Body, `<div id="root">`) {
+				t.Fatalf("owner checkout return = %d %s", returned.StatusCode, returned.Body)
+			}
+			f.provider.member("user_eve", "porg_"+id, "member")
+			outsider.login("/organizations/"+id+"/organization", "user_eve:porg_"+id)
+			f.provider.removeMember("user_eve", "porg_"+id)
+			f.provider.expireAccess()
+			denied := outsider.do(http.MethodGet, target, nil, headers)
+			if denied.StatusCode != http.StatusForbidden || !strings.Contains(denied.Body, "Access unavailable") {
+				t.Fatalf("non-member checkout return = %d %s", denied.StatusCode, denied.Body)
+			}
+		})
+	}
+	customer := "cus_" + strings.TrimPrefix(id, "org_")
+	status := func(eventID string) string {
+		var value string
+		_ = f.service.registry.store.db.QueryRowContext(t.Context(), "SELECT status FROM billing_events WHERE event_id = ?", eventID).Scan(&value)
+		return value
+	}
+	post := func(mode, body, signature string) int {
+		request, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, testPublicURL+"/webhooks/stripe/"+mode, strings.NewReader(body))
+		request.Header.Set("Stripe-Signature", signature)
+		recorder := &responseRecorder{header: http.Header{}}
+		f.service.Handler().ServeHTTP(recorder, request)
+		return recorder.status
+	}
+	event := func(eventID, livemode, customer string) (string, string) {
+		return signedEvent(`{"id":"` + eventID + `","type":"customer.subscription.updated","livemode":` + livemode + `,"data":{"object":{"id":"sub_1","object":"subscription","customer":"` + customer + `"}}}`)
+	}
+	body, signature := event("evt_known", "false", customer)
+	if code := post("test", body, signature); code != http.StatusOK || status("evt_known") != "delivered" {
+		t.Fatalf("known customer event = %d %q", code, status("evt_known"))
+	}
+	if code := post("test", body, signature); code != http.StatusOK {
+		t.Fatalf("duplicate event = %d", code)
+	}
+	refund, refundSignature := signedEvent(`{"id":"evt_refund","type":"charge.refunded","livemode":false,"data":{"object":{"id":"re_1","object":"refund","charge":"ch_` + strings.TrimPrefix(id, "org_") + `"}}}`)
+	if code := post("test", refund, refundSignature); code != http.StatusOK || status("evt_refund") != "delivered" {
+		t.Fatalf("refund routed through its charge = %d %q", code, status("evt_refund"))
+	}
+	body, signature = event("evt_unknown", "false", "cus_unknown")
+	if post("test", body, signature); status("evt_unknown") != "quarantined" {
+		t.Fatalf("unknown customer status = %q", status("evt_unknown"))
+	}
+	body, signature = event("evt_live", "true", customer)
+	if code := post("test", body, signature); code != http.StatusBadRequest {
+		t.Fatalf("live event on test endpoint = %d", code)
+	}
+	if code := post("live", body, signature); code != http.StatusNotFound {
+		t.Fatalf("inactive live endpoint = %d", code)
+	}
+	if code := post("test", body, "t=1,v1=00"); code != http.StatusBadRequest {
+		t.Fatalf("bad signature = %d", code)
+	}
+	var mapped string
+	if err := f.service.registry.store.db.QueryRowContext(t.Context(), "SELECT organization_id FROM billing_customers WHERE customer_id = ?", customer).Scan(&mapped); err != nil || mapped != id {
+		t.Fatalf("customer mapping = %q %v", mapped, err)
+	}
+	response, page = member.get("/organizations/new")
+	if response.StatusCode != http.StatusOK || !strings.Contains(page, "Your Free organization slot is used") || !strings.Contains(page, "price_team") {
+		t.Fatalf("paid creation form = %d %s", response.StatusCode, page)
+	}
+	_, rest, _ := strings.Cut(page, `name="creation_key" value="`)
+	creationKey, _, _ := strings.Cut(rest, `"`)
+	created := member.do(http.MethodPost, "/organizations", url.Values{"name": {"Second paid organization"}, "creation_key": {creationKey}, "price": {"price_team"}, "csrf": {csrfFrom(t, page)}}, nil)
+	if created.StatusCode != http.StatusSeeOther {
+		t.Fatalf("paid creation = %d %s", created.StatusCode, created.Body)
+	}
+	secondID := organizationFromLocation(t, created.Header.Get("Location"))
+	second := f.waitState(t, secondID, "ready")
+	binding, err := f.service.tenantBillingState(t.Context(), second, false)
+	if err != nil || binding.FreeOrganization {
+		t.Fatalf("paid creation consumed Free allowance: %+v %v", binding, err)
+	}
+	destination := member.login("/organizations/"+secondID+"/organization/billing", "user_member:porg_"+secondID)
+	if destination != "/organizations/"+secondID+"/organization/billing?checkout_price=price_team" {
+		t.Fatalf("paid creation login destination = %q", destination)
+	}
+	response, page = member.get(destination)
+	if response.StatusCode != http.StatusOK || !strings.Contains(page, "Complete checkout to activate") || strings.Contains(page, "Complimentary access") || !strings.Contains(page, `value="price_team" selected`) {
+		t.Fatalf("paid creation billing = %d %s", response.StatusCode, page)
+	}
+	view := member.do(http.MethodGet, "/api/v2/organizations/"+secondID+"/billing", nil, map[string]string{"Accept": "application/json"})
+	var report struct {
+		Entitlement hubserver.HostedEntitlement `json:"entitlement"`
+	}
+	if view.StatusCode != http.StatusOK || json.Unmarshal([]byte(view.Body), &report) != nil || report.Entitlement.Base.ID != "payment_pending" || report.Entitlement.Allowances["projects"] != 0 || report.Entitlement.Allowances["unarchived_issues"] != 0 || slices.Contains(report.Entitlement.Features, "native_execution") {
+		t.Fatalf("unpaid creation allowances = %d %s", view.StatusCode, view.Body)
+	}
+	checkout := member.do(http.MethodPost, "/organizations/"+secondID+"/organization/billing/checkout", url.Values{"price": {"price_team"}, "csrf": {csrfFrom(t, page)}}, nil)
+	if checkout.StatusCode != http.StatusSeeOther || !strings.HasPrefix(checkout.Header.Get("Location"), "https://checkout.stripe.com/") {
+		t.Fatalf("paid creation checkout = %d %s", checkout.StatusCode, checkout.Body)
+	}
+}
+
+type responseRecorder struct {
+	header http.Header
+	status int
+}
+
+func (r *responseRecorder) Header() http.Header { return r.header }
+
+func (r *responseRecorder) Write(body []byte) (int, error) {
+	if r.status == 0 {
+		r.status = http.StatusOK
+	}
+	return len(body), nil
+}
+
+func (r *responseRecorder) WriteHeader(status int) {
+	if r.status == 0 {
+		r.status = status
+	}
+}
+
+func TestBillingBlocksDeletion(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+	for _, test := range []struct {
+		state tenantBilling
+		want  bool
+	}{
+		{tenantBilling{Status: "free"}, false},
+		{tenantBilling{Status: "canceled"}, false},
+		{tenantBilling{Status: "canceled", AccessUntil: now.Add(time.Hour)}, true},
+		{tenantBilling{Status: "active"}, true},
+		{tenantBilling{Status: "grace"}, true},
+		{tenantBilling{Status: "free", CheckoutPending: true}, true},
+	} {
+		if got := billingBlocksDeletion(test.state, now); got != test.want {
+			t.Errorf("billingBlocksDeletion(%+v) = %v", test.state, got)
+		}
+	}
+	for _, config := range []*BillingConfig{
+		{Mode: "prod", AccountID: "acct_a", WebhookSecret: []byte(testWebhookSecret), Provider: &fakeBilling{}},
+		{Mode: "test", AccountID: "bad", WebhookSecret: []byte(testWebhookSecret), Provider: &fakeBilling{}},
+		{Mode: "test", AccountID: "acct_a", WebhookSecret: []byte("short"), Provider: &fakeBilling{}},
+		{Mode: "live", AccountID: "acct_a", WebhookSecret: []byte(testWebhookSecret)},
+	} {
+		if err := config.validate(); err == nil {
+			t.Errorf("invalid billing config accepted: %+v", config)
+		}
+	}
+}
