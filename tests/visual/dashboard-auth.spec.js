@@ -1,12 +1,15 @@
 const http = require("node:http");
+const os = require("node:os");
 const { test, expect } = require("@playwright/test");
 const { startDetentRuntime } = require("./detent-runtime");
 
 const dashboardHost = "dashboard.detent.test";
+const loopbackHost = Object.values(os.networkInterfaces()).flat().some((entry) => entry.internal && entry.address === "::1") ? "::1" : "127.0.0.1";
+const loopbackURLHost = loopbackHost.includes(":") ? `[${loopbackHost}]` : loopbackHost;
 
 test.use({
   launchOptions: {
-    args: [`--host-resolver-rules=MAP ${dashboardHost} 127.0.0.1`],
+    args: [`--host-resolver-rules=MAP ${dashboardHost} ${loopbackURLHost}`],
   },
 });
 
@@ -37,7 +40,7 @@ for (const mode of authModes) {
 
       try {
         await expect.poll(async () => {
-          const health = await (await page.request.get(`${runtime.url}/health`)).json();
+          const health = await (await page.request.get(`${loopbackURL(runtime.url)}/health`)).json();
           return health.ready && Boolean(health.snapshot_generated_at) && !health.snapshot_generated_at.startsWith("0001-");
         }).toBe(true);
         const dashboardURL = nonLoopbackDashboardURL(runtime.url);
@@ -229,6 +232,10 @@ function actionDialog(page, title) {
   return page.getByRole("dialog").filter({ hasText: title }).first();
 }
 
+function loopbackURL(runtimeURL) {
+  return `http://${loopbackURLHost}:${new URL(runtimeURL).port}`;
+}
+
 function nonLoopbackDashboardURL(runtimeURL) {
   const url = new URL(runtimeURL);
   return `http://${dashboardHost}:${url.port}`;
@@ -238,7 +245,7 @@ async function rawHTTPStatus(baseURL, options) {
   const target = new URL(baseURL);
   return new Promise((resolve, reject) => {
     const req = http.request({
-      hostname: "127.0.0.1",
+      hostname: loopbackHost,
       port: target.port,
       method: options.method || "GET",
       path: options.path,
