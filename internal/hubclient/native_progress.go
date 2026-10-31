@@ -62,7 +62,7 @@ func (s *Scheduler) ReadmitRetryProgress(ctx context.Context, run runner.RunRequ
 		return nil, nil, err
 	}
 	claim.execution.RetainCompletion()
-	if err := claim.execution.finishPrepared(ctx); err != nil {
+	if err := claim.execution.finishPrepared(ctx, "released"); err != nil {
 		return nil, nil, err
 	}
 	defer func() {

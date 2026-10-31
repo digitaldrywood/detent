@@ -1664,11 +1664,14 @@ func restoreRunWorkspaceCheckpoint(req RunRequest, runWorkspace workspace.Backen
 		}
 	}
 	if req.Execution != nil && !nativeLanding {
-		if !sameMachineWorkspaceRetained(runWorkspace, req.Execution.Recovery(), *issue) {
+		if issue.NativeRework || !sameMachineWorkspaceRetained(runWorkspace, req.Execution.Recovery(), *issue) {
 			issue.Checkpoint = nativeRestorableCheckpoint(req.Execution.Recovery(), issue.Source)
 			if previous := req.Execution.Recovery().SourceAttempt(); issue.Checkpoint != nil && normalizeRunMode(req.Mode) == RunModeImplement && previous != nil && previous.Identity != nil && previous.Identity.Role == RoleRework {
 				issue.NativeRework = true
 			}
+		}
+		if previous := req.Execution.Recovery().SourceAttempt(); previous != nil && previous.Checkpoint != nil && issue.NativeRework && issue.Checkpoint != nil && (previous.Checkpoint.WorktreeState == "dirty" || previous.Checkpoint.Resume == "fresh_checkout") {
+			issue.FreshCheckout = true
 		}
 		if previous := req.Execution.Recovery().SourceAttempt(); previous != nil && cleanLocalCheckpoint(previous.Checkpoint) {
 			issue.FreshCheckout = true
@@ -2323,7 +2326,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 				}()
 			}
 			if err != nil {
-				return RunResult{}, nativeGitError("prepare native rework", err)
+				return RunResult{}, fmt.Errorf("%w: %w", ErrWorkspacePreparation, nativeGitError("prepare native rework", err))
 			}
 			resumeSource := recoveryState
 			recoveryState = r.workspaceRecoveryState(runWorkspace, ctx, info, workspaceIssue, "rework_prepared")

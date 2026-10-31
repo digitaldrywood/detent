@@ -134,6 +134,62 @@ func TestRetiredControllerRenewsClaimsWithoutReportingOldBuild(t *testing.T) {
 	}
 }
 
+func TestPreProviderCancellationRecordsReleaseReason(t *testing.T) {
+	t.Parallel()
+	for _, reason := range []string{"dispatch_deferred", "provider_capacity_unavailable"} {
+		t.Run(reason, func(t *testing.T) {
+			t.Parallel()
+			var events []tracker.NativeRunEvent
+			released := false
+			client, err := New(Config{URL: "https://hub.example.test", TokenSource: func() string { return "fixture-token" }, HTTPClient: &http.Client{Transport: executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+				body := "{}"
+				switch {
+				case request.Method == http.MethodGet && request.URL.Path == "/api/v2/capabilities":
+					body = `{"features":["native_pre_provider_failure"]}`
+				case request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/events"):
+					var event tracker.NativeRunEvent
+					if err := json.NewDecoder(request.Body).Decode(&event); err != nil {
+						return nil, err
+					}
+					events = append(events, event)
+				case request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/release"):
+					released = true
+				default:
+					return nil, errors.New("unexpected cancellation fixture request")
+				}
+				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
+			})}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			native, err := client.Native("org_example", "prj_example")
+			if err != nil {
+				t.Fatal(err)
+			}
+			at := time.Date(2026, 10, 31, 15, 14, 0, 0, time.UTC)
+			lease := tracker.NativeLease{ID: "lease_example", WorkItemID: "wi_example", FencingToken: 7, PolicyID: "policy_example"}
+			scheduler := &Scheduler{client: client, now: func() time.Time { return at }, leaseTTL: time.Minute, claims: map[string]tracker.Lease{string(lease.WorkItemID): nativeTrackerLease(lease)}, nativeClaims: make(map[string]nativeClaim)}
+			claim := nativeClaim{source: &NativeConnector{client: native}, lease: lease, deadline: at.Add(time.Minute)}
+			execution := &nativeExecution{scheduler: scheduler, claim: claim, data: tracker.NativeRunData{AttemptID: "attempt_example", RunID: "run_example", LeaseID: lease.ID, FencingToken: lease.FencingToken, PolicyID: lease.PolicyID, Runtime: &tracker.NativeRuntimeObservation{LocalAttemptID: 42, Generation: 1, Phase: "completed", HeartbeatAt: at}}}
+			claim.execution = execution
+			scheduler.nativeClaims[string(lease.WorkItemID)] = claim
+			if err := scheduler.ReleaseClaim(t.Context(), string(lease.WorkItemID), reason); err != nil {
+				t.Fatal(err)
+			}
+			if !released || len(events) != 1 {
+				t.Fatalf("pre-provider cancellation missing: released=%v events=%+v", released, events)
+			}
+			event := events[0]
+			if event.Type != "run.finished" || event.Data.Outcome != "cancelled" || event.Data.Identity != nil || event.Data.TerminalFailure == nil || event.Data.TerminalFailure.Stage != "pre_provider" || !strings.HasSuffix(event.Data.TerminalFailure.Error, "release reason: "+reason) {
+				t.Fatalf("pre-provider cancellation lost its cause: %+v", event.Data)
+			}
+			if event.Data.LeaseID != lease.ID || event.Data.FencingToken != 7 || event.Data.Sequence != 1 {
+				t.Fatalf("cancellation lost execution fencing: %+v", event.Data)
+			}
+		})
+	}
+}
+
 func TestNativeClaimLossReleasesStoppedWorker(t *testing.T) {
 	for _, test := range []struct {
 		name           string

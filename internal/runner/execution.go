@@ -1070,6 +1070,9 @@ func nativeRecoveryAction(recovery tracker.NativeRecovery, local *workspace.Reco
 		}
 		return "fresh_checkout", "session_restart_required"
 	}
+	if identity.Role == RoleRework && checkpoint.WorktreeState == "dirty" && checkpoint.Resume == "fresh_checkout" {
+		return "manual_recovery", "checkpoint_unavailable"
+	}
 	if localAvailable && checkpoint.WorktreeState != "clean" && (checkpoint.HeadSHA != local.HeadSHA || checkpoint.WorkspaceDigest != "" && checkpoint.WorkspaceDigest != local.WorkspaceFingerprint) {
 		if nativeInterruptedResumeAttempt(recovery) == nil && (len(local.TrackedPaths) != 0 || len(local.UntrackedPaths) != 0 || local.UnpushedCommits > 0) {
 			return "fresh_checkout", "local_work_preserved"
