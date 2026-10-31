@@ -39,14 +39,8 @@ func (r *Runner) dependencyReasonGenerator(backend AgentBackend, template AgentT
 func (r *Runner) textGenerator(backend AgentBackend, template AgentTurnRequest, execution Execution, backendKind string, maxBytes int, instructions string) DependencyReasonGenerator {
 	return func(ctx context.Context, prompt string) (textResult string, returnErr error) {
 		scratchRoot := template.TempDir
-		for _, key := range []string{"TMPDIR", "TMP", "TEMP"} {
-			if value := os.Getenv(key); scratchRoot == "" && value != "" {
-				scratchRoot = value
-				break
-			}
-		}
 		if scratchRoot == "" {
-			return "", errors.New("dependency reason worker scratch is unavailable")
+			scratchRoot = os.TempDir()
 		}
 		scratch, err := os.MkdirTemp(scratchRoot, "detent-reason-")
 		if err != nil {
