@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -355,7 +356,14 @@ func TestRunnerAllowedOrdering(t *testing.T) {
 		{"empty allowlist runs nothing", 1, 4, 0, 1, -time.Hour, time.Hour, "empty", false, "", "", false, false, false},
 		{"project capacity yields to another project", 1, 4, 0, 1, -time.Hour, time.Hour, "project-full", false, "", "", false, false, false},
 		{"project rank beats issue priority", 2, 1, 0, 1, -time.Hour, time.Hour, "both", true, "", "", false, false, false},
-		{"targeted work item bypasses unrequested project head", 2, 1, 0, 1, -time.Hour, time.Hour, "targeted", true, "", "", false, false, false},
+		{"targeted work item honors project rank", 2, 1, 1, 3, -time.Hour, time.Hour, "targeted", true, "", "", false, false, false},
+		{"targeted lower project in progress yields", 3, 1, 3, 1, time.Hour, -time.Hour, "targeted-in-progress", false, "", "", false, false, false},
+		{"targeted lower project rework yields", 3, 1, 3, 1, time.Hour, -time.Hour, "targeted", false, "", "", false, true, false},
+		{"targeted lower project landing yields", 3, 1, 3, 1, time.Hour, -time.Hour, "targeted", false, "reviewed", "", false, false, false},
+		{"single provider candidate honors project rank", 2, 1, 1, 3, -time.Hour, time.Hour, "single-provider", true, "", "", false, false, false},
+		{"single provider lower project in progress yields", 3, 1, 3, 1, time.Hour, -time.Hour, "single-provider-in-progress", false, "", "", false, false, false},
+		{"single provider lower project rework yields", 3, 1, 3, 1, time.Hour, -time.Hour, "single-provider", false, "", "", false, true, false},
+		{"single provider lower project landing yields", 3, 1, 3, 1, time.Hour, -time.Hour, "single-provider", false, "reviewed", "", false, false, false},
 		{"foreign provider candidate competes", 2, 1, 1, 2, -time.Hour, time.Hour, "provider", true, "", "", false, false, false},
 		{"provider claim honors runner rank override", 1, 2, 1, 2, -time.Hour, time.Hour, "provider-override", false, "", "", false, false, false},
 		{"project rank breaks priority ties", 2, 2, 0, 1, time.Hour, -time.Hour, "both", true, "", "", false, false, false},
@@ -381,6 +389,7 @@ func TestRunnerAllowedOrdering(t *testing.T) {
 		{"higher project in progress beats lower project rework", 1, 3, 1, 3, -time.Hour, time.Hour, "in-progress", true, "", "", false, false, true},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
+			targetMode := strings.TrimSuffix(scenario.allowed, "-in-progress")
 			first := newDefaultNativeFixture(t, Config{})
 			second := newNativeFixture(t, first.service, first.project.OrganizationID, "second")
 			if scenario.firstLanding != "" || scenario.secondLanding != "" {
@@ -436,7 +445,7 @@ func TestRunnerAllowedOrdering(t *testing.T) {
 					}
 				}
 				issue := project.fixture.create(t, "ready")
-				if scenario.allowed == "in-progress" && project.fixture.project.ID == first.project.ID {
+				if (scenario.allowed == "in-progress" || strings.HasSuffix(scenario.allowed, "-in-progress")) && project.fixture.project.ID == first.project.ID {
 					if _, err := first.service.database.db.ExecContext(t.Context(), "UPDATE workflow_states SET source_name='Active' WHERE project_id=? AND detent_state='In Progress'", first.project.ID); err != nil {
 						t.Fatal(err)
 					}
@@ -538,7 +547,7 @@ func TestRunnerAllowedOrdering(t *testing.T) {
 			if scenario.wantFirst {
 				loser, winner = second, first
 			}
-			if scenario.allowed == "provider" || scenario.allowed == "provider-override" {
+			if scenario.allowed == "provider" || scenario.allowed == "provider-override" || targetMode == "single-provider" {
 				report := capacityReport(now)
 				report.Models = append(report.Models, "gpt-6.1-sol")
 				publishCapacity(t, first, r, report)
@@ -546,28 +555,42 @@ func TestRunnerAllowedOrdering(t *testing.T) {
 				claim.WorkItemID = ""
 				claim.ProviderCandidates = append(claim.ProviderCandidates, providerClaim(r, issues[winner.project.ID], "").ProviderCandidates[0])
 			}
-			if scenario.allowed == "targeted" {
-				claim.WorkItemID = issues[loser.project.ID].WorkItemID
+			requestClaim := func(project nativeFixture) tracker.NativeClaim {
+				if targetMode != "targeted" && targetMode != "single-provider" {
+					return claim
+				}
+				preview := claim
+				preview.WorkItemID, preview.ProviderCandidates = "", nil
+				response := performHubAPIRequest(t, first.service, http.MethodPost, project.base+"/claims/preview", r.redemption.Credential, tracker.NativeCapacityPreview{NativeClaim: preview})
+				requireNativeStatus(t, response, http.StatusOK)
+				var page tracker.NativeCapacityPage
+				decodeHubResponse(t, response, &page)
+				for _, issue := range page.Items {
+					if issue.WorkItemID != issues[project.project.ID].WorkItemID {
+						continue
+					}
+					if targetMode == "single-provider" {
+						target := providerClaim(r, issue, claim.SessionID)
+						target.WorkItemID = ""
+						return target
+					}
+					preview.WorkItemID = issue.WorkItemID
+					return preview
+				}
+				t.Fatal("project preview omitted its claimable work")
+				return tracker.NativeClaim{}
 			}
 			assertRunnerAdmissionFacts(t, first, r)
 			assertRunnerAdmissionFacts(t, second, r)
-			response := performHubAPIRequest(t, first.service, http.MethodPost, loser.base+"/claims", r.redemption.Credential, claim)
-			if scenario.allowed == "targeted" {
-				requireNativeStatus(t, response, http.StatusOK)
-				var lease tracker.NativeLease
-				decodeHubResponse(t, response, &lease)
-				if lease.WorkItemID != issues[loser.project.ID].WorkItemID {
-					t.Fatalf("claimed %s, want requested %s", lease.WorkItemID, issues[loser.project.ID].WorkItemID)
-				}
-				return
-			}
+			response := performHubAPIRequest(t, first.service, http.MethodPost, loser.base+"/claims", r.redemption.Credential, requestClaim(loser))
 			if response.Code == http.StatusOK {
 				t.Fatalf("lower-ranked or unauthorized project acquired work: %s", response.Body.String())
 			}
+			assertRunnerAdmissionFacts(t, first, r)
 			if scenario.allowed == "provider" || scenario.allowed == "provider-override" {
 				claim.SessionID = "higher-provider"
 			}
-			response = performHubAPIRequest(t, first.service, http.MethodPost, winner.base+"/claims", r.redemption.Credential, claim)
+			response = performHubAPIRequest(t, first.service, http.MethodPost, winner.base+"/claims", r.redemption.Credential, requestClaim(winner))
 			if scenario.allowed == "empty" {
 				if response.Code == http.StatusOK {
 					t.Fatal("empty allowlist acquired work")
@@ -583,15 +606,29 @@ func TestRunnerAllowedOrdering(t *testing.T) {
 					for round := range 2 {
 						requireNativeStatus(t, performHubAPIRequest(t, first.service, http.MethodPost, winner.base+"/leases/"+string(lease.ID)+"/release", r.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "released"}), http.StatusNoContent)
 						claim.SessionID = fmt.Sprintf("freed-slot-%d", round)
-						response = performHubAPIRequest(t, first.service, http.MethodPost, loser.base+"/claims", r.redemption.Credential, claim)
+						response = performHubAPIRequest(t, first.service, http.MethodPost, loser.base+"/claims", r.redemption.Credential, requestClaim(loser))
 						requireNativeStatus(t, response, http.StatusConflict)
-						response = performHubAPIRequest(t, first.service, http.MethodPost, winner.base+"/claims", r.redemption.Credential, claim)
+						response = performHubAPIRequest(t, first.service, http.MethodPost, winner.base+"/claims", r.redemption.Credential, requestClaim(winner))
 						requireNativeStatus(t, response, http.StatusOK)
 						decodeHubResponse(t, response, &lease)
 						if lease.WorkItemID != issues[winner.project.ID].WorkItemID {
 							t.Fatalf("freed slot claimed %s, want %s", lease.WorkItemID, issues[winner.project.ID].WorkItemID)
 						}
 					}
+				}
+				if targetMode == "targeted" || targetMode == "single-provider" {
+					requireNativeStatus(t, performHubAPIRequest(t, first.service, http.MethodPost, winner.base+"/leases/"+string(lease.ID)+"/release", r.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "released"}), http.StatusNoContent)
+					if _, err := first.service.database.db.ExecContext(t.Context(), "UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='Done') WHERE native_id=?", winner.project.ID, issues[winner.project.ID].WorkItemID); err != nil {
+						t.Fatal(err)
+					}
+					claim.SessionID = "lower-project-fallback"
+					response = performHubAPIRequest(t, first.service, http.MethodPost, loser.base+"/claims", r.redemption.Credential, requestClaim(loser))
+					requireNativeStatus(t, response, http.StatusOK)
+					decodeHubResponse(t, response, &lease)
+					if lease.WorkItemID != issues[loser.project.ID].WorkItemID || targetMode == "single-provider" && lease.ProviderReservation == nil {
+						t.Fatalf("fallback claim = %+v", lease)
+					}
+					assertRunnerAdmissionFacts(t, first, r)
 				}
 			}
 		})
