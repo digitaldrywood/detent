@@ -766,7 +766,7 @@ func TestMergeFallbackValidationBoundaries(t *testing.T) {
 		{name: "gate failure", prepareErr: errors.New("merge resolution gate failed: exit status 1")},
 		{name: "push failure", prepareErr: errors.New("push validated merge resolution: rejected")},
 		{name: "invalid resolution", prepareErr: errors.Join(workspace.ErrMergeResolutionInvalid, errors.New("source dirty")), wantRework: true},
-		{name: "validation deadline"},
+		{name: "slow successful validation"},
 		{name: "lease or shutdown cancellation", cancel: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -781,8 +781,11 @@ func TestMergeFallbackValidationBoundaries(t *testing.T) {
 					if tt.cancel {
 						cancel()
 					}
-					<-ctx.Done()
-					return workspace.MergePrepareResult{}, ctx.Err()
+					if tt.cancel {
+						return workspace.MergePrepareResult{}, ctx.Err()
+					}
+					time.Sleep(2 * time.Hour)
+					return workspace.MergePrepareResult{Status: workspace.MergePrepareStatusClean, HeadSHA: strings.Repeat("a", 40)}, ctx.Err()
 				}}
 				started := time.Now()
 				result, err := (&Runner{}).verifyMergeFallback(ctx, backend, workspace.Info{}, workspace.Issue{}, workspace.MergePrepareOptions{}, RunResult{
@@ -798,11 +801,15 @@ func TestMergeFallbackValidationBoundaries(t *testing.T) {
 					if err != nil || result.Output != RunOutputMergeFallbackRework || !strings.Contains(result.MergeFallbackFindings, "Deterministic validation failed") {
 						t.Fatalf("verification = %#v, %v; want actionable Rework", result, err)
 					}
+				} else if tt.prepareErr == nil {
+					if err != nil || result.Output != RunOutputMergeFallbackResolved {
+						t.Fatalf("slow verification = %#v, %v", result, err)
+					}
 				} else if err == nil || result.Output != RunOutputMergeFallbackResolved {
 					t.Fatalf("verification = %#v, %v; want failed resolved attempt", result, err)
 				}
-				if tt.prepareErr == nil && time.Since(started) != mergeFallbackValidationTimeout {
-					t.Fatalf("validation elapsed = %v, want bounded deadline %v", time.Since(started), mergeFallbackValidationTimeout)
+				if tt.prepareErr == nil && time.Since(started) != 2*time.Hour {
+					t.Fatalf("validation elapsed = %v, want bounded deadline %v", time.Since(started), 2*time.Hour)
 				}
 			})
 		})

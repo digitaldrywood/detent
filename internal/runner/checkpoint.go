@@ -18,8 +18,6 @@ import (
 
 var errPeriodicCheckpoint = errors.New("periodic worker checkpoint requested")
 
-const checkpointTimeout = 2 * time.Minute
-
 type workerCheckpoint struct {
 	backend         workspace.CheckpointBackend
 	plan            workspace.CheckpointPlan
@@ -35,8 +33,7 @@ func (r *Runner) prepareWorkerCheckpoint(ctx context.Context, req RunRequest, tr
 	if !ok || normalizeRunMode(req.Mode) != RunModeImplement || trackerKind == config.TrackerHubNative && req.checkpointRefs != nil {
 		return nil
 	}
-	prepareCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
+	prepareCtx := ctx
 	plan, err := checkpointBackend.PrepareCheckpoint(prepareCtx, info, issue)
 	checkpoint := &workerCheckpoint{backend: checkpointBackend, plan: plan, request: req}
 	if reader, ok := backend.(workspace.RecoveryStateProvider); ok {
@@ -82,8 +79,7 @@ func (r *Runner) saveWorkerCheckpoint(c *workerCheckpoint, record workspace.Chec
 }
 
 func (r *Runner) workerCheckpoint(ctx context.Context, c *workerCheckpoint, reason string, backend AgentBackend, turn AgentTurnRequest, run func(context.Context, AgentTurnRequest, RunRequest) agentTurnExecution) agentTurnExecution {
-	checkpointCtx, cancel := context.WithTimeout(ctx, checkpointTimeout)
-	defer cancel()
+	checkpointCtx := ctx
 	if c.fingerprint != nil {
 		fingerprint, err := c.fingerprint(checkpointCtx)
 		delivered := c.record != nil && (c.record.Published || c.record.Status == "unchanged")
@@ -118,7 +114,7 @@ func (r *Runner) workerCheckpoint(ctx context.Context, c *workerCheckpoint, reas
 	turn.ReadOnly = true
 	turn.SupplementalTools = true
 	turn.MaxTurns = 2
-	turn.MaxDuration = checkpointTimeout
+	turn.MaxDuration = 0
 	turn.ToolInstructions = "Inspect only. Submit the checkpoint selection once through detent_checkpoint_selection and return. Do not edit files, stage, commit, push, create a PR, or change tracker state."
 	turn.Prompt = fmt.Sprintf("Detent requests a bounded recovery checkpoint for %s (%s). Review the retained worktree and ALL commits after base %s. Submit the exact HEAD and a complete list of intended issue file paths safe to publish, including paths in existing local commits. Exclude credentials, unrelated changes and scratch files. Set reviewed=true only after reviewing their contents and history. This is incomplete work; do not claim validated delivery or completion. If unsafe or uncertain, return without submitting.\n\n%s", c.request.Issue.Identifier, reason, c.plan.BaseSHA, turn.ToolInstructions)
 	var selection workspace.CheckpointSelection
