@@ -608,6 +608,11 @@ func TestParseTestLog(t *testing.T) {
 	env := Environment{DigestKey: testDigestKey, Root: repo, GoRoot: "/opt/go", TempDirs: []TempRoot{{"TMPDIR", scratch}, {"TMP", repo + "/tmp"}}, UncacheableDirs: []string{"/dev", "/proc"}}
 	snapshot := env
 	snapshot.TempEntries = map[string]bool{kept: true, tool: true, filepath.Join(scratch, "shared"): true}
+	rooted := env
+	rooted.TempEntries = map[string]bool{scratch: true, kept: true, filepath.Join(scratch, "shared"): true}
+	if err := os.Mkdir(filepath.Join(scratch, "shared"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	tests := []struct {
 		name    string
 		log     string
@@ -623,6 +628,9 @@ func TestParseTestLog(t *testing.T) {
 		},
 		{name: "a removed temporary file under an entry that predates the test is refused", log: "# test log\nopen " + filepath.Join(scratch, "shared", "fixture") + "\n", env: &snapshot, wantErr: true},
 		{name: "a started program is refused", log: "# test log\nopen " + tool + "\n", env: &snapshot, wantErr: true},
+		{name: "a stat of a temporary root that parallel tests changed keeps the receipt", log: "# test log\nstat " + scratch + "\nopen " + kept + "\n", env: &rooted, want: []string{"open\tt:TMPDIR\tkept", "stat\tt:TMPDIR\t."}},
+		{name: "a listing of a temporary root that changed during the test is refused", log: "# test log\nopen " + scratch + "\n", env: &rooted, wantErr: true},
+		{name: "a stat of a temporary directory changed during the test is refused", log: "# test log\nstat " + filepath.Join(scratch, "shared") + "\n", env: &rooted, wantErr: true},
 		{name: "a missing relative open, which a subprocess may resolve elsewhere, is refused", log: "# test log\nopen tool.sh\n", wantErr: true},
 		{name: "a missing relative stat is an input", log: "# test log\nstat optional.yaml\n", want: []string{"stat\tm\tpkg/optional.yaml"}},
 		{
