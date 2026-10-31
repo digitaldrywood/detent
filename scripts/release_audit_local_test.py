@@ -102,12 +102,14 @@ class ReleaseAuditLocalTest(unittest.TestCase):
 
     def test_audit_scope(self):
         source = Path(__file__).resolve().parent
-        for name, audited_by, expect, override in (
-            ("first audit covers the series", {}, "base", None),
-            ("later audit covers the delta from the last allowlisted audit", {"cut": "stranger", "pick": "operator"}, "pick", None),
-            ("audits by other creators are ignored", {"pick": "stranger"}, "base", None),
-            ("an operator can choose an earlier audited base", {"cut": "operator", "pick": "operator"}, "cut", "cut"),
-            ("an unaudited override is refused", {"pick": "operator"}, None, "cut"),
+        for name, audited_by, expect, override, filed in (
+            ("first audit covers the series", {}, "base", None, None),
+            ("later audit covers the delta from the last allowlisted audit", {"cut": "stranger", "pick": "operator"}, "pick", None, "#1939"),
+            ("audits by other creators are ignored", {"pick": "stranger"}, "base", None, None),
+            ("an operator can choose an earlier audited base", {"cut": "operator", "pick": "operator"}, "cut", "cut", "#1939,#1959"),
+            ("an unaudited override is refused", {"pick": "operator"}, None, "cut", "#1939"),
+            ("a failed base needs its findings filed", {"pick": "operator"}, None, None, None),
+            ("a passing base needs nothing filed", {"pick": "operator:success"}, "pick", None, None),
         ):
             with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory).resolve()
@@ -146,7 +148,8 @@ class ReleaseAuditLocalTest(unittest.TestCase):
                     'elif any("/statuses?" in a for a in args):\n'
                     '    audited = json.loads(os.environ["AUDITED"])\n'
                     '    sha = next(a for a in args if "/commits/" in a).split("/commits/")[1].split("/")[0]\n'
-                    '    print(json.dumps([{"context": "release-security-audit", "state": "failure", "creator": {"login": audited[sha]}}] if sha in audited else []))\n'
+                    '    login, _, state = audited.get(sha, ":").partition(":")\n'
+                    '    print(json.dumps([{"id": 1, "context": "release-security-audit", "state": state or "failure", "creator": {"login": login}}] if sha in audited else []))\n'
                     'elif any("/status?" in a for a in args): print(json.dumps([{"sha": os.environ["HEAD"], "statuses": []}]))\n'
                 )
                 (binaries / "codex").write_text(
@@ -161,8 +164,12 @@ class ReleaseAuditLocalTest(unittest.TestCase):
                 prompt = root / "prompt"
                 env.update(PATH=str(binaries) + os.pathsep + env["PATH"], HEAD=commits["head"], PROMPT=str(prompt),
                            AUDITED=json.dumps({commits[label]: login for label, login in audited_by.items()}))
+                env.pop("DETENT_AUDIT_BASE", None)
+                env.pop("DETENT_AUDIT_FILED", None)
                 if override:
                     env["DETENT_AUDIT_BASE"] = commits[override]
+                if filed:
+                    env["DETENT_AUDIT_FILED"] = filed
                 result = subprocess.run(["bash", str(scripts / "release-audit-local.sh"), "release/v1.10"], cwd=repo, env=env, text=True, capture_output=True)
                 if expect is None:
                     self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)

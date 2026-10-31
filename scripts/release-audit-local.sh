@@ -49,7 +49,19 @@ elif [ -n "$creators" ] && [ "$sha" != "$base" ]; then
     fi
   done
 fi
-echo "Audit scope: $scope ${base:0:7}..${sha:0:7}"
+filed=""
+if [ "$scope" = delta ]; then
+  base_state="$(gh api "repos/$repository/commits/$base/statuses?per_page=100" |
+    jq -r --argjson creators "${creators:-[]}" '[.[] | select(.context == "release-security-audit" and (.creator.login as $login | $creators | index($login)) != null)] | max_by(.id) | .state')"
+  if [ "$base_state" != success ]; then
+    filed="${DETENT_AUDIT_FILED:-}"
+    if [[ ! "$filed" =~ ^#?[0-9]+(,#?[0-9]+)*$ ]]; then
+      echo "The audit base ${base:0:7} failed its audit; set DETENT_AUDIT_FILED to the issues that track its unresolved findings (for example #1939,#1959)." >&2
+      exit 1
+    fi
+  fi
+fi
+echo "Audit scope: $scope ${base:0:7}..${sha:0:7}${filed:+; base findings filed in $filed}"
 mkdir -p "$root/tmp"
 output_dir="$(mktemp -d "$root/tmp/release-audit.XXXXXX")"
 worktree="$output_dir/source"
@@ -88,7 +100,7 @@ fi
 jq . "$last_message" > "$findings"
 count="$(jq '[.findings[] | select(.severity == "p1" or .severity == "p2")] | length' "$findings")"
 state=success
-description="No P1/P2 findings in $scope audit ${base:0:7}..${sha:0:7}"
+description="No P1/P2 findings in $scope audit ${base:0:7}..${sha:0:7}${filed:+; base findings filed in $filed}"
 if [ "$count" -gt 0 ]; then
   state=failure
   description="$count P1/P2 findings in $scope audit ${base:0:7}..${sha:0:7}"
