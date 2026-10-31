@@ -559,15 +559,22 @@ func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, 
 			ctx = preparedCtx
 		}
 	}
-	if _, ok := input.(tracker.NativeRunEvent); ok {
-		contentWriting(ctx, true)
-		defer contentWriting(ctx, false)
-		result, err := s.commitNativeMutation(ctx, scope, options, command, input, operation, requestHash, preparationErr)
-		var hydration *claimHydration
-		if errors.As(err, &hydration) {
-			return nil, nativeExecutionConflict("Execution evidence changed during preparation")
+	if event, ok := input.(tracker.NativeRunEvent); ok {
+		for {
+			contentWriting(ctx, true)
+			result, err := s.commitNativeMutation(ctx, scope, options, command, input, operation, requestHash, preparationErr)
+			contentWriting(ctx, false)
+			var hydration *claimHydration
+			if !errors.As(err, &hydration) {
+				return result, err
+			}
+			if _, err := s.prepareRunDetail(ctx, scope, options.Item, event); err != nil {
+				return nil, err
+			}
+			if err := hydration.run(ctx, s.database.reader); err != nil {
+				return nil, err
+			}
 		}
-		return result, err
 	}
 	return prepareContentMutation(ctx, s.database.reader, func() (json.RawMessage, error) {
 		return s.commitNativeMutation(ctx, scope, options, command, input, operation, requestHash, preparationErr)
