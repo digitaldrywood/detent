@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"time"
@@ -124,8 +125,19 @@ WHERE a.organization_id = ? AND l.lease_id IN (`+placeholders(len(projects))+`) 
 		return err
 	}
 	defer rows.Close()
+	var stored []nativeAttemptRow
 	for rows.Next() {
-		attempt, err := scanNativeAttempt(ctx, db, rows, now)
+		row, err := scanNativeAttemptRow(rows)
+		if err != nil {
+			return err
+		}
+		stored = append(stored, row)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return err
+	}
+	for _, row := range stored {
+		attempt, err := row.hydrate(ctx, db, now)
 		if err != nil {
 			return err
 		}

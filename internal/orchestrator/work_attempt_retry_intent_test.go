@@ -59,7 +59,7 @@ func TestDurableRecoveryConvergesThroughPublicAPI(t *testing.T) {
 				attemptID = startRecoveryWorkAttempt(t, ctx, db, issue, store.WorkAttemptStatusActive, "", at)
 				if err := db.CompleteWorkAttempt(ctx, store.WorkAttemptCompletion{AttemptID: attemptID, CompletedAt: at.Add(time.Second),
 					Status: store.WorkAttemptStatusTerminal, TerminalState: store.WorkAttemptTerminalFailure,
-					ErrorClass: "runner_error", ErrorMessage: "agent override rejected: block: detent-agent schema must be 1"}); err != nil {
+					ErrorClass: "issue_configuration", ErrorMessage: "agent override rejected: block: detent-agent schema must be 1"}); err != nil {
 					t.Fatal(err)
 				}
 			}
