@@ -44,9 +44,6 @@ type routeLatencyHistory struct {
 // per-route history, inside the metrics store's own transaction.
 func writeRequestHours(ctx context.Context, tx *sql.Tx, now time.Time, pending map[requestMetricKey]requestLatency) error {
 	cutoff := now.Add(-requestHourRetention).Unix() / 3600 * 3600
-	if _, err := tx.ExecContext(ctx, "DELETE FROM request_hours WHERE hour < ?", cutoff); err != nil {
-		return fmt.Errorf("prune request hours: %w", err)
-	}
 	hours := make(map[requestHourKey]requestLatency)
 	for key, l := range pending {
 		hour := requestHourKey{key.Minute / 3600 * 3600, key.Route, key.Status}
