@@ -195,10 +195,7 @@ func (m *tenantRequestMetrics) write(ctx context.Context, now time.Time, pending
 		return err
 	}
 	defer tx.Rollback()
-	cutoff := now.Add(-14*24*time.Hour).Unix() / 60 * 60
-	if _, err := tx.ExecContext(ctx, "DELETE FROM request_minutes WHERE minute < ?", cutoff); err != nil {
-		return err
-	}
+	cutoff := now.Add(-requestMinuteRetention).Unix() / 60 * 60
 	for key, l := range pending {
 		if key.Minute < cutoff {
 			continue

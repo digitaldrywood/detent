@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -22,6 +23,9 @@ func TestNativeRetentionWebhookMaintenanceCadence(t *testing.T) {
 	if err := s.stopGitHubReconciliation(); err != nil {
 		t.Fatal(err)
 	}
+	m := testRequestMetrics(t, filepath.Join(t.TempDir(), "metrics.sqlite"), f.project.OrganizationID)
+	s.requestMetrics = m
+	t.Cleanup(func() { s.requestMetrics = nil })
 	issue := f.create(t, "closed issue")
 	tx, err := s.database.db.BeginTx(t.Context(), nil)
 	if err != nil {
@@ -82,7 +86,15 @@ VALUES(?,?,'POST /example',?,'hash','{}',?,?)`, f.project.OrganizationID, defaul
 					t.Fatal(err)
 				}
 			}
+			seedRequestRetentionRow(t, m.db, "request_hours", now.Add(-91*24*time.Hour).Truncate(time.Hour), "GET /between-cleanups", "runner", "", 2)
+			seedRequestRetentionRow(t, m.db, "request_minutes", now.Add(-15*24*time.Hour).Truncate(time.Minute), "GET /between-cleanups", "runner", "example", 2)
 			s.maintainGitHubWebhooks(t.Context())
+			var metrics int
+			if err := m.db.QueryRowContext(t.Context(), `SELECT
+(SELECT count(*) FROM request_minutes WHERE route='GET /between-cleanups')+
+(SELECT count(*) FROM request_hours WHERE route='GET /between-cleanups')`).Scan(&metrics); err != nil || metrics != 0 {
+				t.Fatalf("metrics waited for hourly cleanup: rows=%d err=%v", metrics, err)
+			}
 			var commands, unfinished, pending int
 			if err := s.database.reader.QueryRowContext(t.Context(), `SELECT count(*),count(*) FILTER (WHERE response_pending IS NULL) FROM native_commands WHERE operation='POST /example'`).Scan(&commands, &unfinished); err != nil {
 				t.Fatal(err)

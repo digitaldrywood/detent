@@ -59,6 +59,9 @@ func TestRequestMetricsPersistence(t *testing.T) {
 	if err := m.flush(t.Context(), now); err != nil {
 		t.Fatal(err)
 	}
+	if err := (&Service{requestMetrics: m}).expireRequestMetrics(t.Context(), now); err != nil {
+		t.Fatal(err)
+	}
 	if err := m.db.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -179,15 +182,34 @@ func TestRequestMetricsFlushDoesNotUseTenantWriter(t *testing.T) {
 		t.Fatal("tenant Hub did not open metrics")
 	}
 	now := time.Now().UTC().Truncate(time.Minute)
+	m.record(now.Add(-15*24*time.Hour), "GET /expired", "runner", "old-runner", 200, time.Millisecond)
+	if err := m.flush(t.Context(), now.Add(-15*24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
 	m.record(now.Add(-time.Minute), "GET /items/:item", "runner", "runner", 200, time.Millisecond)
 	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
+	if _, err := tx.ExecContext(t.Context(), "INSERT INTO hosted_billing_events(event_id,event_type,received_at) VALUES('example-metrics-event','example',?)", formatHubTime(now.Add(-500*24*time.Hour))); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.ExecContext(t.Context(), "INSERT INTO hosted_usage_counters(name,value) VALUES('example_metrics_usage',37)"); err != nil {
+		t.Fatal(err)
+	}
 	ctx := testenv.WaitContext(t, t.Context())
 	if err := m.flush(ctx, now); err != nil {
 		t.Fatalf("metrics flush waited for tenant writer: %v", err)
+	}
+	if err := f.service.expireRequestMetrics(ctx, now); err != nil {
+		t.Fatalf("metrics retention waited for tenant writer: %v", err)
+	}
+	var billing, usage int
+	if err := tx.QueryRowContext(t.Context(), `SELECT
+(SELECT count(*) FROM hosted_billing_events WHERE event_id='example-metrics-event'),
+(SELECT value FROM hosted_usage_counters WHERE name='example_metrics_usage')`).Scan(&billing, &usage); err != nil || billing != 1 || usage != 37 {
+		t.Fatalf("metrics changed billing or usage: billing=%d usage=%d err=%v", billing, usage, err)
 	}
 	var count int
 	if err := tx.QueryRowContext(t.Context(), "SELECT count(*) FROM sqlite_master WHERE name='request_minutes'").Scan(&count); err != nil || count != 0 {
