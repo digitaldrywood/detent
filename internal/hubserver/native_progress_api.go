@@ -130,7 +130,7 @@ func (s *Service) nativeProgressRequest(ctx context.Context, scope nativeScope, 
 
 func readNativeProgressDefect(ctx context.Context, q nativeQueryer, scope nativeScope, item string) (string, string, error) {
 	var defect, state string
-	err := q.QueryRowContext(ctx, `SELECT d.defect_issue_id,ws.detent_state FROM native_progress_decisions d JOIN issues i ON i.native_id=d.defect_issue_id AND i.organization_id=d.organization_id AND i.project_id=d.project_id JOIN workflow_states ws ON ws.id=i.workflow_state_id
+	err := q.QueryRowContext(ctx, `SELECT d.defect_issue_id,ws.detent_state FROM native_progress_decisions d JOIN issues i ON i.native_id=d.defect_issue_id JOIN workflow_states ws ON ws.id=i.workflow_state_id
  WHERE d.organization_id=? AND d.project_id=? AND d.work_item_id=? AND d.outcome='system_defect' ORDER BY d.created_at DESC,d.request_id DESC LIMIT 1`, scope.organization, scope.project, item).Scan(&defect, &state)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", "", nil

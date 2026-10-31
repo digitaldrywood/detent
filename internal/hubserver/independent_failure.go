@@ -61,6 +61,9 @@ func attachIndependentRepairs(ctx context.Context, tx *sql.Tx, scope nativeScope
 		if err != nil {
 			return nil, "", err
 		}
+		if scope.credential.Scope == apiScopeWorker {
+			continue
+		}
 		if repair.Terminal || repair.WorkItemID == issue.WorkItemID {
 			if _, err := tx.ExecContext(ctx, "ROLLBACK TO independent_repairs"); err != nil {
 				return nil, "", err

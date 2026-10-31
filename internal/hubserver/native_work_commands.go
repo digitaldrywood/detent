@@ -397,6 +397,15 @@ AND (`+condition+`)`, args...).Scan(&blockerID, &blockerProject)
 	if blockerID == dependentID {
 		return tracker.NativeIssue{}, nativePublicInvalid("Dependencies cannot form a cycle")
 	}
+	if request.Operation == "add" && scope.credential.Scope == apiScopeWorker {
+		blocker, _, err := readNativeIssue(ctx, tx, nativeScope{organization: scope.organization, project: blockerProject}, string(request.RelatedWorkItemID))
+		if err != nil {
+			return tracker.NativeIssue{}, err
+		}
+		if origin, ok := issueorigin.Parse(blocker.Body); ok && origin.Kind == "worker" {
+			return tracker.NativeIssue{}, nativePublicInvalid("Worker follow-ups cannot become required dependencies; report the finding on the originating item")
+		}
+	}
 	if request.Operation == "add" {
 		var cycle int
 		err := tx.QueryRowContext(ctx, `WITH RECURSIVE reachable(id) AS (SELECT dependent_issue_id FROM issue_dependencies WHERE blocker_issue_id = ? UNION SELECT d.dependent_issue_id FROM issue_dependencies d JOIN reachable r ON d.blocker_issue_id = r.id) SELECT count(*) FROM reachable WHERE id = ?`, dependentID, blockerID).Scan(&cycle)

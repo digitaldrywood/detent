@@ -156,17 +156,17 @@ func TestEmptyLandingProgressCompletesOrImplements(t *testing.T) {
 			if !test.complete {
 				recovery.Discussion[0].Body = "Acceptance regression still fails on base; the required behavior is missing"
 			}
-			for i := range 3 {
+			for i := range 2 {
 				recovery.Attempts = append(recovery.Attempts,
 					tracker.NativeAttempt{NativeRunData: tracker.NativeRunData{AttemptID: fmt.Sprintf("rework-%d", i), Outcome: "succeeded", Identity: &tracker.NativeExecutionIdentity{Role: "rework"}}},
-					tracker.NativeAttempt{NativeRunData: tracker.NativeRunData{AttemptID: fmt.Sprintf("merge-%d", i), Outcome: "succeeded", Identity: &tracker.NativeExecutionIdentity{Role: "merge"}, Runtime: &tracker.NativeRuntimeObservation{Landing: &tracker.NativeLandingReceipt{RefusalKind: "nothing_to_land", Refusal: "the published source has no deliverable to verify", HeadSHA: "empty-head", BaseSHA: "base"}}}},
+					tracker.NativeAttempt{NativeRunData: tracker.NativeRunData{AttemptID: fmt.Sprintf("merge-%d", i), Outcome: "succeeded", Identity: &tracker.NativeExecutionIdentity{Role: "merge"}, Runtime: &tracker.NativeRuntimeObservation{Landing: &tracker.NativeLandingReceipt{RefusalKind: "nothing_to_land", Refusal: "the published source has no deliverable to verify", VersionID: "empty-version", HeadSHA: "empty-head", BaseSHA: "base"}}}},
 				)
 			}
 			execution := &progressCompletionExecution{}
 			source := &progressScheduling{hubSchedulingSource: hubSchedulingSource{execution: execution}, request: progresscheck.NativeRequest(recovery, "policy", "instance"), records: map[string]progresscheck.Record{}}
-			decision := progresscheck.Decision{Outcome: progresscheck.Reroute, Step: RunModeImplement, Diagnosis: "merge-2:landing contains no acceptance regression evidence", Instruction: "Add and run the missing acceptance regression", Reason: "Produce the missing acceptance regression", Evidence: []string{"merge-2:landing"}}
+			decision := progresscheck.Decision{Outcome: progresscheck.Reroute, Step: RunModeImplement, Diagnosis: "merge-1:landing contains no acceptance regression evidence", Instruction: "Add and run the missing acceptance regression", Reason: "Produce the missing acceptance regression", Evidence: []string{"merge-1:landing"}}
 			if test.complete {
-				decision = progresscheck.Decision{Outcome: progresscheck.Reroute, Step: progresscheck.CompleteStep, Diagnosis: "base-evidence confirms the reviewed fix and passing acceptance regression are already on base", Instruction: "Complete the issue using the verified base acceptance evidence", Reason: "The reviewed fix and passing acceptance regression are already on base", Evidence: []string{"merge-2:landing", "base-evidence"}}
+				decision = progresscheck.Decision{Outcome: progresscheck.Reroute, Step: progresscheck.CompleteStep, Diagnosis: "base-evidence confirms the reviewed fix and passing acceptance regression are already on base", Instruction: "Complete the issue using the verified base acceptance evidence", Reason: "The reviewed fix and passing acceptance regression are already on base", Evidence: []string{"merge-1:landing", "base-evidence"}}
 			}
 			checker := &progressRunner{decision: decision}
 			worker := newWorkerHostRunner()
@@ -225,7 +225,7 @@ func TestEmptyLandingProgressCompletesOrImplements(t *testing.T) {
 					t.Fatalf("completion did not use lane owner: updates=%+v retry=%+v comments=%+v", tick.updates, state.Retry, tick.comments)
 				}
 			}
-			if checker.calls != 1 || source.comments != 1 || len(checker.evidence.Attempts) != 6 || checker.evidence.Attempts[5].Outcome != "success" || !checker.evidence.EmptyDelta {
+			if checker.calls != 1 || source.comments != 1 || len(checker.evidence.Attempts) != 4 || checker.evidence.Attempts[3].Outcome != "success" || !checker.evidence.EmptyDelta {
 				t.Fatalf("history/check publication lost: calls=%d comments=%d request=%+v", checker.calls, source.comments, checker.evidence)
 			}
 		})
