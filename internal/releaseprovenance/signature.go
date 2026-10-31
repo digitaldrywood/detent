@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -114,18 +115,49 @@ func VerifyOverrideApproval(ctx context.Context, directory, version, commit stri
 	if strings.TrimSpace(reason) == "" {
 		return "", errors.New("release override requires a nonempty reason")
 	}
-	commitObject, err := git(nil, "cat-file", "commit", expected)
+	readObject := func(kind, oid string) ([]byte, error) {
+		contents, err := git(nil, "cat-file", kind, oid)
+		if err != nil {
+			return nil, err
+		}
+		actual, err := git(contents, "hash-object", "-t", kind, "--stdin")
+		if err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(string(actual)) != oid {
+			return nil, fmt.Errorf("override policy %s object hash mismatch", kind)
+		}
+		return contents, nil
+	}
+	commitObject, err := readObject("commit", expected)
 	if err != nil {
 		return "", err
 	}
-	actual, err := git(commitObject, "hash-object", "-t", "commit", "--stdin")
+	firstLine, _, _ := bytes.Cut(commitObject, []byte("\n"))
+	rootID, ok := strings.CutPrefix(string(firstLine), "tree ")
+	if !ok {
+		return "", errors.New("override signer commit has no root tree")
+	}
+	root, err := readObject("tree", rootID)
 	if err != nil {
 		return "", err
 	}
-	if strings.TrimSpace(string(actual)) != expected {
-		return "", errors.New("override signer commit differs from the exact release head")
+	policyID, err := policyTreeObjectID(root, ".github", len(expected)/2)
+	if err != nil {
+		return "", err
 	}
-	listing, err := git(nil, "show", expected+":.github/release-override-signers")
+	policy, err := readObject("tree", policyID)
+	if err != nil {
+		return "", err
+	}
+	readPolicy := func(name string) ([]byte, error) {
+		oid, err := policyTreeObjectID(policy, name, len(expected)/2)
+		if err != nil {
+			return nil, err
+		}
+		return readObject("blob", oid)
+	}
+	listing, err := readPolicy("release-override-signers")
 	if err != nil {
 		return "", err
 	}
@@ -144,7 +176,7 @@ func VerifyOverrideApproval(ctx context.Context, directory, version, commit stri
 	if len(fingerprints) == 0 {
 		return "", errors.New("override signer list is empty")
 	}
-	keys, err := git(nil, "show", expected+":.github/release-override-signers.asc")
+	keys, err := readPolicy("release-override-signers.asc")
 	if err != nil {
 		return "", err
 	}
@@ -187,4 +219,22 @@ func VerifyOverrideApproval(ctx context.Context, directory, version, commit stri
 		}
 	}
 	return "", errors.New("override approval signature is not from a listed primary key")
+}
+
+func policyTreeObjectID(tree []byte, name string, hashSize int) (string, error) {
+	for len(tree) > 0 {
+		header, rest, ok := bytes.Cut(tree, []byte{0})
+		if !ok || len(rest) < hashSize {
+			return "", errors.New("override policy tree has an invalid entry")
+		}
+		_, entryName, ok := bytes.Cut(header, []byte(" "))
+		if !ok {
+			return "", errors.New("override policy tree has an invalid header")
+		}
+		if string(entryName) == name {
+			return hex.EncodeToString(rest[:hashSize]), nil
+		}
+		tree = rest[hashSize:]
+	}
+	return "", errors.New("override policy tree entry is missing")
 }

@@ -88,6 +88,7 @@ func TestReleaseFinalizer(t *testing.T) {
 		{name: "inherited Git environment cannot affect approval", override: "Owner directs release", suiteState: "failure", gitEnvironment: true},
 		{name: "unsigned approval fails", override: "Owner directs release", signatureType: "unsigned", rejectOverride: true},
 		{name: "unlisted approval fails", override: "Owner directs release", signatureType: "unlisted", rejectOverride: true},
+		{name: "loose signer blob cannot authorize approval", override: "Owner directs release", signatureType: "loose-signer", rejectOverride: true},
 		{name: "approval for another commit fails", override: "Owner directs release", signatureType: "wrong-commit", rejectOverride: true},
 		{name: "empty signer list fails", override: "Owner directs release", signatureType: "empty", rejectOverride: true},
 		{name: "forged environment without approval has no effect", forgedEnvironment: true, suiteState: "failure", awaitsStatus: true},
@@ -210,7 +211,7 @@ if [ "$1" = --no-replace-objects ]; then
 fi
 printf 'repository %s\n' "$*" >> "$FIXTURE_LOG"
 case "$*" in
-  'show-ref '* | 'rev-parse '* | 'show '* | 'cat-file tag '* | 'cat-file commit '* | 'hash-object '*) exec "$FIXTURE_GIT" -C "$FIXTURE_REPO" "$@" ;;
+  'show-ref '* | 'rev-parse '* | 'show '* | 'cat-file tag '* | 'cat-file commit '* | 'cat-file tree '* | 'cat-file blob '* | 'hash-object '*) exec "$FIXTURE_GIT" -C "$FIXTURE_REPO" "$@" ;;
   'rev-list '*) printf '%s\n%s\n' "$FIXTURE_HEAD" bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb ;;
   'ls-remote '*)
     if [ -f "$FIXTURE_STATUS_READ" ] && [ "$FIXTURE_MOVE_DURING_CHECK" = true ]; then
@@ -262,7 +263,7 @@ esac
 					target = fixtureRun(t, repo, realGit, "rev-parse", "HEAD")
 				}
 				signer := keys[0]
-				if tt.signatureType == "unlisted" {
+				if tt.signatureType == "unlisted" || tt.signatureType == "loose-signer" {
 					signer = keys[1]
 				}
 				args := []string{"-c", "gpg.format=openpgp", "-c", "tag.gpgsign=false", "-c", "user.signingkey=" + signer, "tag", "--cleanup=verbatim", "-s", "release-override/" + version, target, "-m", reason}
@@ -270,6 +271,32 @@ esac
 					args[8] = "-a"
 				}
 				fixtureRun(t, repo, realGit, args...)
+			}
+			if tt.signatureType == "loose-signer" {
+				if _, err := releaseprovenance.VerifyOverrideApproval(t.Context(), repo, version, sha); err == nil {
+					t.Fatal("unlisted key authorized before loose object attack")
+				}
+				originalID := fixtureRun(t, repo, realGit, "rev-parse", sha+":.github/release-override-signers")
+				forgedPath := filepath.Join(dir, "forged-signers")
+				if err := os.WriteFile(forgedPath, []byte(keys[1]+"\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				forgedID := fixtureRun(t, repo, realGit, "hash-object", "-w", forgedPath)
+				objects := filepath.Join(repo, ".git", "objects")
+				forged, err := os.ReadFile(filepath.Join(objects, forgedID[:2], forgedID[2:]))
+				if err != nil {
+					t.Fatal(err)
+				}
+				original := filepath.Join(objects, originalID[:2], originalID[2:])
+				if _, err := os.ReadFile(original); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(original, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(original, forged, 0o600); err != nil {
+					t.Fatal(err)
+				}
 			}
 			statusSHA := sha
 			if tt.wrongSHA {

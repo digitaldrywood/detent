@@ -8,6 +8,7 @@ import sys
 import tempfile
 import threading
 import unittest
+import zlib
 from unittest import mock
 from pathlib import Path
 
@@ -397,6 +398,27 @@ sys.exit(7 if stage in json.loads(os.environ["FAILURES"]) else 0)
             approve("v1.0.2", provenance["validation_override"]["reason"])
             git("tag", "-a", "v1.0.2", "-m", "<!-- detent-release-provenance:" + json.dumps(provenance) + " -->")
             self.assertEqual(select(), ["tests/visual"])
+            for policy in ("release-override-signers", "release-override-signers.asc"):
+                with self.subTest(tampered_policy=policy):
+                    oid = git("rev-parse", f"HEAD:.github/{policy}")
+                    object_path = root / ".git/objects" / oid[:2] / oid[2:]
+                    original = object_path.read_bytes()
+                    _, contents = zlib.decompress(original).split(b"\0", 1)
+                    contents += b"\n"
+                    object_path.chmod(0o600)
+                    object_path.write_bytes(zlib.compress(f"blob {len(contents)}\0".encode() + contents))
+                    try:
+                        with mock.patch.dict(os.environ, env, clear=True):
+                            previous = Path.cwd()
+                            try:
+                                os.chdir(root)
+                                with self.assertRaises(subprocess.CalledProcessError):
+                                    CHECK_RELEASE.validated_release_base()
+                            finally:
+                                os.chdir(previous)
+                        self.assertEqual(select(), ["tests/visual"])
+                    finally:
+                        object_path.write_bytes(original)
             (root / "README.md").write_text("next release documentation\n")
             git("add", ".")
             git("commit", "-qm", "next release after override")

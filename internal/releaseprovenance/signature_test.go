@@ -91,6 +91,10 @@ func TestOverrideTagRequiresAllowlistedSignature(t *testing.T) {
 		{name: "inherited object directory cannot authorize unlisted key", signer: 1, gitAttack: "objects", wantError: true},
 		{name: "inherited alternates cannot authorize unlisted key", signer: 1, gitAttack: "alternates", wantError: true},
 		{name: "mismatched commit content cannot authorize unlisted key", signer: 1, gitAttack: "content", wantError: true},
+		{name: "mismatched root tree cannot authorize unlisted key", signer: 1, gitAttack: "root-tree", wantError: true},
+		{name: "mismatched policy tree cannot authorize unlisted key", signer: 1, gitAttack: "policy-tree", wantError: true},
+		{name: "mismatched signer blob cannot authorize unlisted key", signer: 1, gitAttack: "signer-blob", wantError: true},
+		{name: "mismatched public key blob invalidates approval", gitAttack: "keyring-blob", wantError: true},
 		{name: "inherited repository cannot redirect approval", gitAttack: "repository"},
 		{name: "inherited config cannot affect approval", gitAttack: "config"},
 		{name: "global config cannot affect approval", gitAttack: "global"},
@@ -171,6 +175,47 @@ func TestOverrideTagRequiresAllowlistedSignature(t *testing.T) {
 				}
 			}
 			switch test.gitAttack {
+			case "root-tree", "policy-tree", "signer-blob", "keyring-blob":
+				if _, err := VerifyOverrideTag(t.Context(), directory, manifest); (err != nil) != (test.signer == 1) {
+					t.Fatalf("unexpected approval before loose object attack: %v", err)
+				}
+				if err := os.WriteFile(filepath.Join(directory, ".github/release-override-signers"), []byte(keys[1]+"\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if test.gitAttack == "keyring-blob" {
+					if err := os.WriteFile(filepath.Join(directory, ".github/release-override-signers.asc"), []byte(ownerPublic), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				run("git", "add", ".github")
+				run("git", "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "attacker policy")
+				path := map[string]string{
+					"root-tree": ":", "policy-tree": ":.github",
+					"signer-blob": ":.github/release-override-signers", "keyring-blob": ":.github/release-override-signers.asc",
+				}[test.gitAttack]
+				originalID := run("git", "rev-parse", commit+path)
+				forgedID := run("git", "rev-parse", "HEAD"+path)
+				objects := filepath.Join(directory, ".git", "objects")
+				original := filepath.Join(objects, originalID[:2], originalID[2:])
+				contents, err := os.ReadFile(original)
+				if err != nil {
+					t.Fatal(err)
+				}
+				forged, err := os.ReadFile(filepath.Join(objects, forgedID[:2], forgedID[2:]))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(original, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() {
+					if err := os.WriteFile(original, contents, 0o600); err != nil {
+						t.Error(err)
+					}
+				})
+				if err := os.WriteFile(original, forged, 0o600); err != nil {
+					t.Fatal(err)
+				}
 			case "replace", "objects", "alternates", "content":
 				if _, err := VerifyOverrideTag(t.Context(), directory, manifest); err == nil {
 					t.Fatal("unlisted key authorized before Git object attack")
