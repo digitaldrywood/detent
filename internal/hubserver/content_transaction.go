@@ -3,7 +3,6 @@ package hubserver
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"maps"
 	"slices"
 
@@ -67,16 +66,5 @@ func insertContentRegistration(ctx context.Context, tx *sql.Tx, organization str
 
 func storedRunPayload(ctx context.Context, organization string, raw []byte) (string, string, error) {
 	key, err := storedPayloadKey(ctx, organization, raw)
-	var hydration *claimHydration
-	if errors.As(err, &hydration) {
-		if content, ok := ctx.Value(changeContentKey{}).(*changeContent); ok {
-			content.mu.Lock()
-			deferred := content.registrations != nil
-			content.mu.Unlock()
-			if deferred {
-				return "", string(raw), nil
-			}
-		}
-	}
 	return key, "{}", err
 }

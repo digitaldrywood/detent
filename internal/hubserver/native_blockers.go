@@ -193,21 +193,29 @@ func normalizeNativeDependencyBlockers(ctx context.Context, q nativeQueryer, sco
 	return nil
 }
 
-func recordNativeDependencyBlockers(ctx context.Context, tx *sql.Tx, scope nativeScope, issue tracker.NativeIssue, disposition *tracker.NativeDisposition, now time.Time) (tracker.NativeIssue, error) {
+func prepareNativeDependencyBlockers(ctx context.Context, q nativeQueryer, scope nativeScope, issue tracker.NativeIssue, disposition *tracker.NativeDisposition) ([]tracker.NativeWorkItemID, error) {
 	if disposition == nil || disposition.HumanAction {
-		return issue, nil
+		return nil, nil
 	}
 	refs := workpad.IssueDependencyRefs(&workpad.Signal{Status: disposition.Status, ReasonCode: disposition.ReasonCode, Blockers: disposition.BlockerEvidence}, string(scope.project))
 	dependencies := make([]tracker.NativeWorkItemID, 0, len(refs))
 	for _, ref := range refs {
-		dependency, err := resolveNativeBlockerReference(ctx, tx, scope, ref)
+		dependency, err := resolveNativeBlockerReference(ctx, q, scope, ref)
 		if errors.Is(err, sql.ErrNoRows) || dependency.WorkItemID == issue.WorkItemID {
-			return issue, nil
+			return nil, nil
 		}
 		if err != nil {
-			return issue, err
+			return nil, err
 		}
 		dependencies = append(dependencies, dependency.WorkItemID)
+	}
+	return dependencies, nil
+}
+
+func recordNativeDependencyBlockers(ctx context.Context, tx *sql.Tx, scope nativeScope, issue tracker.NativeIssue, disposition *tracker.NativeDisposition, now time.Time) (tracker.NativeIssue, error) {
+	dependencies, err := prepareNativeDependencyBlockers(ctx, tx, scope, issue, disposition)
+	if err != nil {
+		return issue, err
 	}
 	for _, id := range dependencies {
 		if slices.Contains(issue.Dependencies, id) {

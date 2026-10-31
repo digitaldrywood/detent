@@ -111,29 +111,7 @@ func persistAttemptLanding(ctx context.Context, tx *sql.Tx, attempt string, rece
 	if err := decodeStorageJSON(ctx, []byte(document), &data); err != nil {
 		return err
 	}
-	var object map[string]json.RawMessage
-	if err := decodeStorageJSON(ctx, []byte(document), &object); err != nil {
-		return err
-	}
-	if object == nil {
-		object = map[string]json.RawMessage{}
-	}
-	var runtime map[string]json.RawMessage
-	if value := object["runtime"]; len(value) > 0 && string(value) != "null" {
-		if err := json.Unmarshal(value, &runtime); err != nil {
-			return err
-		}
-	}
-	if runtime == nil {
-		runtime = map[string]json.RawMessage{}
-	}
-	runtime["landing"] = json.RawMessage(raw)
-	encodedRuntime, err := json.Marshal(runtime)
-	if err != nil {
-		return err
-	}
-	object["runtime"] = encodedRuntime
-	encoded, err := json.Marshal(object)
+	encoded, err := attemptLandingPayload([]byte(document), json.RawMessage(raw))
 	if err != nil {
 		return err
 	}
@@ -161,15 +139,36 @@ func persistAttemptLanding(ctx context.Context, tx *sql.Tx, attempt string, rece
 	if receipt.VersionID == "" {
 		return nil
 	}
-	if key != "" {
-		raw = "{}"
-	}
+	raw = "{}"
 	_, err = tx.ExecContext(ctx, `INSERT INTO change_landing_receipts (attempt_id, version_id, record_json, payload_object_key, merge_sha) VALUES (?, ?, ?, ?, ?)
 ON CONFLICT(attempt_id) DO UPDATE SET version_id=excluded.version_id, record_json=excluded.record_json, payload_object_key=excluded.payload_object_key, merge_sha=excluded.merge_sha,conversion_state=0`, attempt, receipt.VersionID, raw, key, receipt.MergeSHA)
-	if err != nil {
-		return err
+	return err
+}
+
+func attemptLandingPayload(document []byte, receipt json.RawMessage) ([]byte, error) {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(document, &object); err != nil {
+		return nil, err
 	}
-	return nil
+	if object == nil {
+		object = map[string]json.RawMessage{}
+	}
+	var runtime map[string]json.RawMessage
+	if value := object["runtime"]; len(value) > 0 && string(value) != "null" {
+		if err := json.Unmarshal(value, &runtime); err != nil {
+			return nil, err
+		}
+	}
+	if runtime == nil {
+		runtime = map[string]json.RawMessage{}
+	}
+	runtime["landing"] = receipt
+	encodedRuntime, err := json.Marshal(runtime)
+	if err != nil {
+		return nil, err
+	}
+	object["runtime"] = encodedRuntime
+	return json.Marshal(object)
 }
 
 func recordLandingTransition(ctx context.Context, tx *sql.Tx, scope nativeScope, issue tracker.NativeIssue, from string) error {
