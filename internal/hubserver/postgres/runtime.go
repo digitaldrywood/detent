@@ -38,6 +38,13 @@ func NewRuntime(ctx context.Context, reader, writer *sql.DB) (*Runtime, error) {
 				WHERE c.oid IN (
 				'public.projects'::regclass, 'public.issues'::regclass,
 				'public.native_comments'::regclass,
+				'public.collaboration_events'::regclass,
+				'public.native_commands'::regclass,
+				'public.collaboration_versions'::regclass,
+				'public.change_requests'::regclass,
+				'public.change_issue_links'::regclass,
+				'public.change_versions'::regclass,
+				'public.change_evidence'::regclass,
 				'public.request_metric_windows'::regclass,
 				'public.request_metric_callers'::regclass,
 				'public.request_minutes'::regclass,

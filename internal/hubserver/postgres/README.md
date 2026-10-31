@@ -305,3 +305,57 @@ secret envelopes, permission boundary and concurrent session/revocation behavior
 Platform storage is not a tenant repository and must never be injected into a
 tenant-scoped request handler. Backend selection and existing-file import belong
 to the shared-database runtime cutover, alongside the other PostgreSQL families.
+
+## Events, changes and command receipts
+
+`../eventstore` defines the event and change persistence boundary on the existing
+`Repository`. `ReadRecords` and `WriteRecords` share its tenant transactions,
+connection budgets, cancellation and error classification. This family contains
+`collaboration_events`, `collaboration_versions`, `change_requests`,
+`change_issue_links`, `change_versions`, `change_evidence` and `native_commands`.
+All seven tables force RLS and use tenant-leading keys. Version relationships
+include the owning change, preventing evidence or current-version references
+from naming another change's version. Current-version validation is deferred to
+commit so an import can insert the change and its versions in one transaction.
+
+Use `eventstore.Content` with the existing compressed `attachment.DetailStore`.
+Its preparation methods decode legacy JSON in Go, project typed identity,
+actor, source, revision, timestamp and provenance fields, write the payload
+object and verify it before returning the row to insert. Complete payloads retain
+fields that are not query keys, including actor attribution and evidence bodies.
+Objects use tenant-bound content-addressed keys, compressed digests and checked
+compressed and original sizes. No inline payload or SQL JSON operation is used.
+Prepare objects before a repository callback and hydrate returned rows after the
+callback ends; neither object reads nor writes belong inside a database transaction.
+Missing, corrupt and mismatched objects fail with `artifact.ErrIntegrity`.
+
+`AppendEvent` locks only its owning issue and allocates its next sequence in the
+same transaction as the event insert. Imported positive sequences remain exact
+and advance the counter only when larger. Evidence uses the same rule on its
+owning change. Rollback restores allocation. Event IDs, collaboration revisions,
+version IDs and evidence source keys replay unchanged receipts; a changed receipt
+conflicts. Imported evidence without a source key replays by its explicit sequence.
+Events, collaboration versions, change versions, evidence and command receipts
+reject every update and delete, including changes to object references.
+`UpdateChange` compares and increments its revision. Linked issues are explicit
+rows and must belong to the same tenant and project as the change.
+
+Command receipts retain the organization/actor/operation/key identity and typed
+request hash. `PutReceipt` atomically inserts or returns the existing response
+reference for the same hash; another hash conflicts. A writer losing a concurrent
+insert reads the committed receipt in a subsequent `READ COMMITTED` statement.
+Callers check existing receipts before applying a command and publish the response
+in the command's write transaction. Authentication and authorization still belong
+to the existing application owner; actor credential foreign keys await the access
+family. Receipt payloads retain the original response across retries.
+
+Event and evidence pages seek by sequence, versions by number, changes by ID and
+links by work item ID. Every page contains at most 200 records. At INV-21 scale,
+10,000 tenants and runners share the fixed pool. Each append performs a constant
+number of indexed reads and writes and holds one parent lock across database work
+only; receipt insertion holds one unique-key lock. No history scan, fleet lock,
+periodic task or derived write is introduced (INV-18). Object payloads stay outside
+the database (INV-20); tracker history and provenance remain authoritative (INV-16).
+The SQLite runtime, backend selection, whole-database import, run/attempt records,
+change source bundles, policies, landing receipts, session attribution and other
+record families remain separate follow-on work.

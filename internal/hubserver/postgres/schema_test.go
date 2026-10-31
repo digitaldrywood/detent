@@ -84,7 +84,7 @@ func TestCoreMigrationsFromEmpty(t *testing.T) {
 			} else if _, err := provider.Up(t.Context()); err != nil {
 				t.Fatal(err)
 			}
-			for _, table := range []string{"projects", "issues", "native_comments"} {
+			for _, table := range []string{"projects", "issues", "native_comments", "collaboration_events", "collaboration_versions", "change_requests", "change_issue_links", "change_versions", "change_evidence", "native_commands"} {
 				var exists bool
 				if err := db.QueryRowContext(t.Context(), `SELECT to_regclass($1) IS NOT NULL`, table).Scan(&exists); err != nil {
 					t.Fatal(err)
@@ -275,11 +275,11 @@ func requireSQLState(t *testing.T, err error, state string) {
 func TestCoreSchemaUsesTenantLeadingTypedColumns(t *testing.T) {
 	db := template.Database(t)
 	for _, tc := range []struct{ name, query string }{
-		{"tenant required", `SELECT table_name FROM information_schema.columns WHERE table_schema='public' AND table_name IN ('projects','issues','native_comments') AND column_name='organization_id' AND (is_nullable<>'NO' OR data_type<>'text')`},
-		{"typed columns", `SELECT table_name || '.' || column_name FROM information_schema.columns WHERE table_schema='public' AND table_name IN ('projects','issues','native_comments') AND (data_type NOT IN ('text','bigint','boolean','timestamp with time zone') OR column_name LIKE '%\_json' ESCAPE '\' OR column_name IN ('body','workflow_markdown'))`},
-		{"tenant leading indexes", `SELECT indexrelid::regclass::text FROM pg_index i JOIN pg_class c ON c.oid=i.indrelid JOIN pg_attribute a ON a.attrelid=c.oid AND a.attnum=i.indkey[0] WHERE c.relname IN ('projects','issues','native_comments') AND a.attname<>'organization_id'`},
-		{"tenant foreign keys", `SELECT conname FROM pg_constraint WHERE conrelid IN ('projects'::regclass,'issues'::regclass,'native_comments'::regclass) AND contype='f' AND (array_length(conkey,1)<2 OR (SELECT attname FROM pg_attribute WHERE attrelid=conrelid AND attnum=conkey[1])<>'organization_id' OR (SELECT attname FROM pg_attribute WHERE attrelid=confrelid AND attnum=confkey[1])<>'organization_id')`},
-		{"typed timestamps", `SELECT table_name || '.' || column_name FROM information_schema.columns WHERE table_schema='public' AND table_name IN ('projects','issues','native_comments') AND column_name LIKE '%\_at' ESCAPE '\' AND data_type<>'timestamp with time zone'`},
+		{"tenant required", `SELECT table_name FROM information_schema.columns WHERE table_schema='public' AND table_name IN ('projects','issues','native_comments','collaboration_events','collaboration_versions','change_requests','change_issue_links','change_versions','change_evidence','native_commands') AND column_name='organization_id' AND (is_nullable<>'NO' OR data_type<>'text')`},
+		{"typed columns", `SELECT table_name || '.' || column_name FROM information_schema.columns WHERE table_schema='public' AND table_name IN ('projects','issues','native_comments','collaboration_events','collaboration_versions','change_requests','change_issue_links','change_versions','change_evidence','native_commands') AND (data_type NOT IN ('text','bigint','boolean','timestamp with time zone') OR column_name LIKE '%\_json' ESCAPE '\' OR column_name IN ('body','workflow_markdown'))`},
+		{"tenant leading indexes", `SELECT indexrelid::regclass::text FROM pg_index i JOIN pg_class c ON c.oid=i.indrelid JOIN pg_attribute a ON a.attrelid=c.oid AND a.attnum=i.indkey[0] WHERE c.relname IN ('projects','issues','native_comments','collaboration_events','collaboration_versions','change_requests','change_issue_links','change_versions','change_evidence','native_commands') AND a.attname<>'organization_id'`},
+		{"tenant foreign keys", `SELECT conname FROM pg_constraint WHERE conrelid IN ('projects'::regclass,'issues'::regclass,'native_comments'::regclass,'collaboration_events'::regclass,'collaboration_versions'::regclass,'change_requests'::regclass,'change_issue_links'::regclass,'change_versions'::regclass,'change_evidence'::regclass,'native_commands'::regclass) AND contype='f' AND (array_length(conkey,1)<2 OR (SELECT attname FROM pg_attribute WHERE attrelid=conrelid AND attnum=conkey[1])<>'organization_id' OR (SELECT attname FROM pg_attribute WHERE attrelid=confrelid AND attnum=confkey[1])<>'organization_id')`},
+		{"typed timestamps", `SELECT table_name || '.' || column_name FROM information_schema.columns WHERE table_schema='public' AND table_name IN ('projects','issues','native_comments','collaboration_events','collaboration_versions','change_requests','change_issue_links','change_versions','change_evidence','native_commands') AND column_name LIKE '%\_at' ESCAPE '\' AND data_type<>'timestamp with time zone'`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rows, err := db.QueryContext(t.Context(), tc.query)

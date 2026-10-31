@@ -9,6 +9,12 @@ sql:
         out: "pgquery"
         sql_package: "database/sql"
         emit_empty_slices: true
+        rename:
+          payload_sha256: "PayloadSHA256"
+          head_sha: "HeadSHA"
+          base_sha: "BaseSHA"
+          merge_base_sha: "MergeBaseSHA"
+          external_url: "ExternalURL"
         overrides:
           - db_type: "text"
             nullable: true
@@ -38,6 +44,22 @@ sql:
               import: "github.com/digitaldrywood/detent/internal/tracker"
               type: "NativeWorkItemID"
           - column: "native_comments.work_item_id"
+            go_type:
+              import: "github.com/digitaldrywood/detent/internal/tracker"
+              type: "NativeWorkItemID"
+          - column: "collaboration_events.work_item_id"
+            go_type:
+              import: "github.com/digitaldrywood/detent/internal/tracker"
+              type: "NativeWorkItemID"
+          - column: "collaboration_versions.work_item_id"
+            go_type:
+              import: "github.com/digitaldrywood/detent/internal/tracker"
+              type: "NativeWorkItemID"
+          - column: "change_requests.work_item_id"
+            go_type:
+              import: "github.com/digitaldrywood/detent/internal/tracker"
+              type: "NativeWorkItemID"
+          - column: "change_issue_links.work_item_id"
             go_type:
               import: "github.com/digitaldrywood/detent/internal/tracker"
               type: "NativeWorkItemID"

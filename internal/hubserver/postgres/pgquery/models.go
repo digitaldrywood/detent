@@ -11,6 +11,107 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+type ChangeEvidence struct {
+	OrganizationID      tracker.OrganizationID
+	ChangeID            string
+	Sequence            int64
+	VersionID           *string
+	Kind                string
+	SourceKey           *string
+	ActorKind           string
+	ActorPrincipalID    string
+	Decision            string
+	CreatedAt           time.Time
+	PayloadObjectKey    string
+	PayloadSHA256       string
+	PayloadBytes        int64
+	PayloadContentBytes int64
+}
+
+type ChangeIssueLink struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	WorkItemID     tracker.NativeWorkItemID
+	ChangeID       string
+}
+
+type ChangeRequest struct {
+	OrganizationID      tracker.OrganizationID
+	ProjectID           tracker.ProjectID
+	WorkItemID          tracker.NativeWorkItemID
+	ID                  string
+	Revision            int64
+	Title               string
+	CurrentVersionID    *string
+	EvidenceSequence    int64
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
+	PayloadObjectKey    string
+	PayloadSHA256       string
+	PayloadBytes        int64
+	PayloadContentBytes int64
+}
+
+type ChangeVersion struct {
+	OrganizationID      tracker.OrganizationID
+	ID                  string
+	ChangeID            string
+	Number              int64
+	HeadSHA             string
+	BaseSHA             string
+	MergeBaseSHA        string
+	Repository          string
+	PolicyRevisionID    string
+	AttemptID           string
+	ActorKind           string
+	ActorPrincipalID    string
+	ExternalProvider    string
+	ExternalID          string
+	ExternalURL         string
+	CreatedAt           time.Time
+	PayloadObjectKey    string
+	PayloadSHA256       string
+	PayloadBytes        int64
+	PayloadContentBytes int64
+}
+
+type CollaborationEvent struct {
+	OrganizationID      tracker.OrganizationID
+	ProjectID           tracker.ProjectID
+	WorkItemID          tracker.NativeWorkItemID
+	ID                  string
+	Sequence            int64
+	Type                string
+	SchemaVersion       int64
+	ActorKind           string
+	ActorPrincipalID    string
+	EventRevision       int64
+	ChangeID            string
+	VersionID           string
+	HeadSHA             string
+	RunID               string
+	AttemptID           string
+	FromState           string
+	ToState             string
+	RecordedAt          time.Time
+	PayloadObjectKey    string
+	PayloadSHA256       string
+	PayloadBytes        int64
+	PayloadContentBytes int64
+}
+
+type CollaborationVersion struct {
+	OrganizationID      tracker.OrganizationID
+	ProjectID           tracker.ProjectID
+	WorkItemID          tracker.NativeWorkItemID
+	RecordID            string
+	Revision            int64
+	PayloadObjectKey    string
+	PayloadSHA256       string
+	PayloadBytes        int64
+	PayloadContentBytes int64
+}
+
 type Issue struct {
 	OrganizationID         tracker.OrganizationID
 	ID                     int64
@@ -33,6 +134,19 @@ type Issue struct {
 	UpdatedAt              time.Time
 	NativeCreatedAt        time.Time
 	NativeUpdatedAt        time.Time
+}
+
+type NativeCommand struct {
+	OrganizationID      tracker.OrganizationID
+	ActorID             string
+	Operation           string
+	CommandKey          string
+	RequestHash         string
+	CreatedAt           time.Time
+	PayloadObjectKey    string
+	PayloadSHA256       string
+	PayloadBytes        int64
+	PayloadContentBytes int64
 }
 
 type NativeComment struct {
