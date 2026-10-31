@@ -122,7 +122,7 @@ func (s *Service) convertConversationPayload(ctx context.Context, scope nativeSc
 	contentID := contentArchiveID(string(scope.organization), ref)
 	var result sql.Result
 	if family.name == "messages" {
-		result, err = tx.ExecContext(ctx, `UPDATE conversation_messages SET text='',data_json='{}',actor_json='{}',content_attachment_id=?,conversion_state=2 WHERE rowid=? AND revision=? AND text=? AND data_json=? AND content_attachment_id=? AND actor_principal_id IS NULL`, contentID, row, message.Revision, original, actor, oldContent)
+		result, err = tx.ExecContext(ctx, `UPDATE conversation_messages SET text='',data_json='{}',actor_json='{}',content_attachment_id=?,conversion_state=2 WHERE rowid=? AND revision=? AND text=? AND data_json=? AND content_attachment_id=? AND (content_attachment_id='' OR actor_principal_id IS NULL)`, contentID, row, message.Revision, original, actor, oldContent)
 	} else {
 		result, err = tx.ExecContext(ctx, `UPDATE conversation_events SET body_json='{}',content_attachment_id=?,conversion_state=2 WHERE rowid=? AND body_json=? AND content_attachment_id=? AND content_attachment_id=''`, contentID, row, original, oldContent)
 	}

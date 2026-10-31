@@ -173,7 +173,7 @@ func (f storageConversionFamily) conversationPayloadCompletion() string {
 	const suffix = `),updated_at=? WHERE organization_id=? AND project_id=? AND family=? AND aggregate_id=?`
 	switch f.name {
 	case "messages":
-		return prefix + `SELECT 1 FROM conversation_messages WHERE conversation_id=? AND actor_principal_id IS NULL` + suffix
+		return prefix + `SELECT 1 FROM conversation_messages WHERE conversation_id=? AND (content_attachment_id='' OR actor_principal_id IS NULL)` + suffix
 	case "conversation_events":
 		return prefix + `SELECT 1 FROM conversation_events WHERE conversation_id=? AND content_attachment_id=''` + suffix
 	case "conversation_records":

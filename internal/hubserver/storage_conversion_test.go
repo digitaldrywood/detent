@@ -1576,3 +1576,230 @@ func TestStorageConversionChargesPublishedLegacyRuns(t *testing.T) {
 		t.Fatalf("deferred runs stalled: converted=%d err=%v", converted, err)
 	}
 }
+
+func TestStorageConversionDrainsEveryLegacyFamily(t *testing.T) {
+	for _, state := range []int{0, 2} {
+		t.Run(strconv.Itoa(state), func(t *testing.T) {
+			f := newStorageArchiveFixture(t)
+			f.service.outbox.stop()
+			f.store.contents = convertedConversationContent{service: f.service}
+			if _, err := f.store.db.ExecContext(t.Context(), `INSERT INTO machines(id,hostname,capacity,version,last_heartbeat_at,registered_at,updated_at) VALUES('example-machine','example',1,'test',?,?,?)`, formatHubTime(f.now), formatHubTime(f.now), formatHubTime(f.now)); err != nil {
+				t.Fatal(err)
+			}
+			response := performHubAPIRequest(t, f.service, http.MethodPost, "/api/v2/organizations", testHubAdminToken, map[string]string{"name": "Example other organization"})
+			requireNativeStatus(t, response, http.StatusCreated)
+			var organization nativeOrganization
+			decodeHubResponse(t, response, &organization)
+			other := newNativeFixture(t, f.service, organization.ID, "example-other")
+			fixtures := []nativeFixture{f.nativeFixture, newNativeFixture(t, f.service, f.organization, "example-sibling"), other, newNativeFixture(t, f.service, other.project.OrganizationID, "example-other-sibling")}
+			for _, fixture := range fixtures {
+				seedStorageDrainFamilies(t, f, fixture, state)
+			}
+			pending := func(family storageConversionFamily, fixture nativeFixture) int {
+				t.Helper()
+				predicate := "r.content_attachment_id=''"
+				switch family.name {
+				case "runs":
+					predicate = family.where
+				case "attempts", "analytics", "versions", "evidence", "landings":
+					predicate = "r.payload_object_key=''"
+				case "sources":
+					predicate = "r.object_key=''"
+				case "checkpoints":
+					predicate = "r.checkpoint_object_key=''"
+				case "diff_files":
+					predicate = "1"
+				}
+				var count int
+				query := "SELECT count(*) FROM " + family.from + " WHERE " + family.scope() + ".organization_id=? AND " + family.scope() + ".project_id=? AND (" + predicate + ")"
+				if err := f.service.database.reader.QueryRowContext(t.Context(), query, fixture.project.OrganizationID, fixture.project.ID).Scan(&count); err != nil {
+					t.Fatal(err)
+				}
+				return count
+			}
+			rows := 0
+			for _, family := range storageConversionFamilies {
+				for _, fixture := range fixtures {
+					count := pending(family, fixture)
+					if count < 2 {
+						t.Fatalf("%s fixture has only %d legacy rows", family.name, count)
+					}
+					rows += count
+				}
+			}
+			maxTicks := (rows*8+storageConversionRows-1)/storageConversionRows + 1
+			previousRows, previousBytes := 0, 0
+			for tick := range maxTicks {
+				f.now = f.now.Add(time.Minute)
+				if err := f.service.convertStorageBatch(t.Context(), f.service.config.now()); err != nil {
+					t.Fatalf("tick %d: %v", tick, err)
+				}
+				var examined, bytes int
+				if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT coalesce(sum(examined_rows),0),coalesce(sum(examined_bytes),0) FROM storage_conversion_cursors`).Scan(&examined, &bytes); err != nil {
+					t.Fatal(err)
+				}
+				if examined-previousRows > storageConversionRows || bytes-previousBytes > storageConversionBytes {
+					t.Fatalf("unbounded tick: rows=%d bytes=%d", examined-previousRows, bytes-previousBytes)
+				}
+				previousRows, previousBytes = examined, bytes
+			}
+			for _, family := range storageConversionFamilies {
+				t.Run(family.name, func(t *testing.T) {
+					for _, fixture := range fixtures {
+						if count := pending(family, fixture); count != 0 {
+							t.Errorf("%s/%s still has %d inline rows after %d ticks", fixture.project.OrganizationID, fixture.project.ID, count, maxTicks)
+						}
+					}
+				})
+			}
+		})
+	}
+}
+
+func seedStorageDrainFamilies(t *testing.T, f *storageArchiveFixture, fixture nativeFixture, state int) {
+	t.Helper()
+	ctx := t.Context()
+	scope := nativeScope{organization: fixture.project.OrganizationID, project: fixture.project.ID}
+	for index := range 2 {
+		issue := fixture.create(t, fmt.Sprintf("example legacy drain %d", index))
+		record := f.record(f.owner, "example legacy conversation", f.now)
+		record.OrganizationID, record.ProjectID = scope.organization, scope.project
+		record.Status = conversation.StatusSettled
+		record.Execution = conversation.Execution{Status: conversation.ExecutionCompleted, Owner: conversation.Owner{LeaseID: "example-" + record.ID}, Settled: true, UpdatedAt: f.now}
+		record = f.createLegacyConversation(t, record)
+		tx := f.tx(t)
+		attempt := seedHealthRateAttempt(t, tx, scope, issue, "example-machine", "failed", tracker.NativeRunData{CompletionBody: "example output"}, f.now, -1)
+		change, version, diff := newNativeID("change"), newNativeID("version"), newNativeID("diff")
+		bundle := []byte("# v2 git bundle\n-example-base prerequisite\nexample-head HEAD\n\nexample data")
+		source, err := json.Marshal(tracker.ChangeSource{Format: "git-bundle", BaseSHA: "example-base", HeadSHA: "example-head", BundleSHA256: tracker.ChangeSourceDigest(bundle), DiffSHA256: strings.Repeat("a", 64), Bytes: int64(len(bundle))})
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw := `{"base_sha":"example-base","head_sha":"example-head","source":` + string(source) + `}`
+		for _, insert := range []struct {
+			query string
+			args  []any
+		}{
+			{`UPDATE native_attempts SET checkpoint_json='{"head_sha":"example-head"}' WHERE id=?`, []any{attempt}},
+			{`INSERT INTO change_requests(id,organization_id,project_id,work_item_id,record_json) VALUES(?,?,?,?,'{}')`, []any{change, scope.organization, scope.project, issue.WorkItemID}},
+			{`INSERT INTO change_versions(id,change_id,number,record_json) VALUES(?,?,1,?)`, []any{version, change, raw}},
+			{`INSERT INTO change_evidence(change_id,version_id,kind,source_key,record_json) VALUES(?,?,'review',?,'{"decision":"approved"}')`, []any{change, version, newNativeID("review")}},
+			{`INSERT INTO change_sources(version_id,bundle) VALUES(?,?)`, []any{version, bundle}},
+			{`INSERT INTO change_landing_receipts(attempt_id,version_id,record_json) VALUES(?,?,'{"landed":true,"merge_sha":"example-head"}')`, []any{attempt, version}},
+			{`INSERT INTO analytics_hourly_rollups(organization_id,project_id,hour,metric,dimension,value,data_json) VALUES(?,?,0,'attempt',?,1,'{"status":"failed","completion_body":"example"}')`, []any{scope.organization, scope.project, attempt}},
+			{`INSERT INTO attempt_diffs(id,attempt_id,organization_id,project_id,work_item_id,source,seq,base_sha,head_sha,producer_kind,producer_id,producer_runner_id,producer_lease_id,producer_fencing_token,created_at) VALUES(?,?,?,?,?,'attempt',1,'example-base','example-head','attempt',?,'example-runner','example-lease',1,?)`, []any{diff, attempt, scope.organization, scope.project, issue.WorkItemID, attempt, formatHubTime(f.now)}},
+			{`INSERT INTO attempt_diff_files(diff_id,position,path,status,patch) VALUES(?,0,'example.go','modified','example patch')`, []any{diff}},
+			{`INSERT INTO conversation_questions(id,conversation_id,status,prompts_json,answers_json,created_at,updated_at) VALUES(?,?,'answered','[]','{}',?,?)`, []any{conversation.NewQuestionID(), record.ID, conversationTime(f.now), conversationTime(f.now)}},
+			{`INSERT INTO conversation_commands(conversation_id,key,kind,request_hash,receipt_json,created_at,updated_at) VALUES(?,'example','message','hash','{"status":"delivered"}',?,?)`, []any{record.ID, conversationTime(f.now), conversationTime(f.now)}},
+			{`INSERT INTO conversation_attachments(id,conversation_id,principal_id,name,mime,size,artifact_ref,created_at) VALUES(?,?,?,'example.txt','text/plain',7,?,?)`, []any{conversation.NewAttachmentID(), record.ID, f.owner, record.ID, conversationTime(f.now)}},
+			{`INSERT INTO conversation_attachment_blobs(artifact_ref,content) VALUES(?,?)`, []any{record.ID, []byte("example")}},
+		} {
+			if _, err := tx.ExecContext(ctx, insert.query, insert.args...); err != nil {
+				t.Fatalf("seed %s: %v", insert.query, err)
+			}
+		}
+		message := conversationMessageRecord{ID: conversation.NewMessageID(), ConversationID: record.ID, Role: conversation.RoleAssistant, Kind: conversation.MessageText, Text: "example output", Data: json.RawMessage(`{}`), Delivery: conversation.DeliveryCompleted, Actor: conversation.Actor{Kind: conversation.ActorRunner, PrincipalID: "example-runner"}, CreatedAt: f.now, UpdatedAt: f.now}
+		if err := f.insertLegacyMessage(t, ctx, tx, &message); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO conversation_tool_revisions(conversation_id,message_id,revision,text,tool,item_id,status) VALUES(?,?,1,'example tool output','example','example-item','completed')`, record.ID, message.ID); err != nil {
+			t.Fatal(err)
+		}
+		if index == 1 {
+			if _, err := tx.ExecContext(ctx, `UPDATE conversation_messages SET actor_principal_id='example-runner' WHERE id=?`, message.ID); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := f.insertLegacyEvent(t, ctx, tx, record.ID, conversation.EventMessageAccepted, projectMessage(message), f.now); err != nil {
+			t.Fatal(err)
+		}
+		if err := appendLegacyNativeHistory(ctx, tx, scope, string(issue.WorkItemID), "run.finished", tracker.CollaborationData{Run: &tracker.NativeRunData{CompletionBody: "example output"}}, f.now); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE collaboration_events SET conversion_state=? WHERE organization_id=? AND project_id=? AND payload_version=0 AND type='run.finished'`, state, scope.organization, scope.project); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE storage_conversion_progress SET complete=1,cursor_rowid=through_rowid WHERE organization_id=? AND project_id=?`, scope.organization, scope.project); err != nil {
+			t.Fatal(err)
+		}
+		f.commit(t, tx)
+	}
+}
+
+func TestStorageConversionRetriesPayloadOnNextTick(t *testing.T) {
+	for _, phase := range []string{"missing object", "corrupt object", "concurrent edit"} {
+		t.Run(phase, func(t *testing.T) {
+			f := newStorageArchiveFixture(t)
+			f.service.outbox.stop()
+			raw := `{"status":"failed","completion_body":"original"}`
+			if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO analytics_hourly_rollups(organization_id,project_id,hour,metric,dimension,value,data_json) VALUES(?,?,0,'attempt','example-first',1,?)`, f.organization, f.project.ID, raw); err != nil {
+				t.Fatal(err)
+			}
+			other := newNativeFixture(t, f.service, f.organization, "example-healthy-drain")
+			healthy := `{"status":"failed","completion_body":"healthy"}`
+			for index := range storageConversionRows + 1 {
+				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO analytics_hourly_rollups(organization_id,project_id,hour,metric,dimension,value,data_json) VALUES(?,?,0,'attempt',?,1,?)`, other.project.OrganizationID, other.project.ID, fmt.Sprintf("example-healthy-%d", index), healthy); err != nil {
+					t.Fatal(err)
+				}
+			}
+			writes := 0
+			replacement := `{"status":"failed","completion_body":"edited"}`
+			f.hook = func(r entryauthority.ContentRequest) error {
+				if !r.Write {
+					return nil
+				}
+				if string(archiveTestBytes(t, r.Data)) == healthy {
+					return nil
+				}
+				writes++
+				if writes != 1 {
+					return nil
+				}
+				switch phase {
+				case "missing object":
+					delete(f.objects, r.Reference.Key)
+				case "corrupt object":
+					f.objects[r.Reference.Key] = []byte("corrupt")
+				case "concurrent edit":
+					_, err := f.service.database.db.ExecContext(t.Context(), `UPDATE analytics_hourly_rollups SET data_json=? WHERE dimension='example-first'`, replacement)
+					return err
+				}
+				return nil
+			}
+			err := f.service.convertStorageBatch(t.Context(), f.service.config.now())
+			if (err != nil) != (phase != "concurrent edit") {
+				t.Fatalf("first tick error=%v", err)
+			}
+			var inline, key string
+			if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT data_json,payload_object_key FROM analytics_hourly_rollups WHERE dimension='example-first'`).Scan(&inline, &key); err != nil {
+				t.Fatal(err)
+			}
+			want := raw
+			if phase == "concurrent edit" {
+				want = replacement
+			}
+			if key != "" || inline != want {
+				t.Fatalf("failed verification or CAS cleared inline source: key=%q inline=%q want=%q", key, inline, want)
+			}
+			if writes != 1 {
+				t.Fatalf("retried the same failed row within a tick: %d writes", writes)
+			}
+			var converted int
+			if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM analytics_hourly_rollups WHERE payload_object_key<>''`).Scan(&converted); err != nil || converted < storageConversionRows/2 {
+				t.Fatalf("failed row starved healthy row: converted=%d error=%v", converted, err)
+			}
+			f.hook = nil
+			f.now = f.now.Add(time.Minute)
+			if err := f.service.convertStorageBatch(t.Context(), f.service.config.now()); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT data_json,payload_object_key FROM analytics_hourly_rollups WHERE dimension='example-first'`).Scan(&inline, &key); err != nil {
+				t.Fatal(err)
+			}
+			restored, err := readStoredPayload(f.service.contentContext(t.Context()), key)
+			if err != nil || string(restored) != want || inline != "{}" {
+				t.Fatalf("next tick did not archive current source: inline=%q restored=%q error=%v", inline, restored, err)
+			}
+		})
+	}
+}

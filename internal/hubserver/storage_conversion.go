@@ -34,7 +34,7 @@ var storageConversionFamilies = []storageConversionFamily{
 	{name: "attempts", update: "UPDATE native_attempts SET data_json=?,analytics_revision=analytics_revision+1 WHERE rowid=?", column: "data_json", from: "native_attempts r", where: "1", aggregate: "r.work_item_id"},
 	{name: "analytics", update: "UPDATE analytics_hourly_rollups SET data_json=? WHERE rowid=?", column: "data_json", from: "analytics_hourly_rollups r", where: "r.metric='attempt'", aggregate: "''"},
 	{name: "conversation_events", update: "UPDATE conversation_events SET body_json=? WHERE rowid=?", column: "body_json", from: "conversation_events r JOIN conversations c ON c.id=r.conversation_id", where: "r.content_attachment_id=''", aggregate: "r.conversation_id"},
-	{name: "messages", column: "data_json", from: "conversation_messages r JOIN conversations c ON c.id=r.conversation_id", where: "r.actor_principal_id IS NULL", aggregate: "r.conversation_id"},
+	{name: "messages", column: "data_json", from: "conversation_messages r JOIN conversations c ON c.id=r.conversation_id", where: "(r.content_attachment_id='' OR r.actor_principal_id IS NULL)", aggregate: "r.conversation_id"},
 	{name: "versions", update: "UPDATE change_versions SET record_json=? WHERE rowid=?", column: "record_json", from: "change_versions r JOIN change_requests c ON c.id=r.change_id", where: "1", aggregate: "c.work_item_id"},
 	{name: "evidence", update: "UPDATE change_evidence SET record_json=? WHERE rowid=?", column: "record_json", from: "change_evidence r JOIN change_requests c ON c.id=r.change_id", where: "1", aggregate: "c.work_item_id"},
 	{name: "sources", column: "bundle", from: "change_sources r JOIN change_versions v ON v.id=r.version_id JOIN change_requests c ON c.id=v.change_id", where: "r.object_key=''", aggregate: "c.work_item_id"},
@@ -622,6 +622,11 @@ func readStorageConversionProgress(ctx context.Context, q nativeQueryer, scope n
 type storageBatchKey struct{}
 type storageSelectedRowKey struct{}
 
+type storageRowPosition struct {
+	family string
+	row    int64
+}
+
 type storageBatchBudget struct {
 	bytes     int64
 	rows      int
@@ -630,7 +635,7 @@ type storageBatchBudget struct {
 	reserve   func() error
 	advance   func(context.Context) error
 	itemBytes int
-	visited   map[string]bool
+	visited   map[storageRowPosition]bool
 }
 
 var errStorageBatchFull = errors.New("storage conversion batch is full")
@@ -859,8 +864,7 @@ func (s *Service) convertStorageFamilyTurn(ctx context.Context, family storageCo
 				scan = append(scan, &next.keys[i])
 			}
 		}
-		wrapped := false
-		for positioned := cursor.positioned; ; positioned, wrapped = false, true {
+		for positioned := cursor.positioned; ; positioned = false {
 			selection := base
 			var args []any
 			if positioned {
@@ -878,9 +882,6 @@ func (s *Service) convertStorageFamilyTurn(ctx context.Context, family storageCo
 				break
 			}
 		}
-		if err == nil && wrapped && storageAggregateVisited(ctx, family, c) {
-			err = sql.ErrNoRows
-		}
 		if errors.Is(err, sql.ErrNoRows) {
 			_, err = s.database.db.ExecContext(ctx, `UPDATE storage_conversion_cursors SET positioned=0 WHERE family=? AND positioned<>0`, family.name)
 			return err
@@ -888,6 +889,9 @@ func (s *Service) convertStorageFamilyTurn(ctx context.Context, family storageCo
 		if err != nil {
 			return err
 		}
+	}
+	if storageRowVisited(ctx, family, c) {
+		return nil
 	}
 	sizeQuery := "SELECT " + family.payloadSize() + " FROM " + family.from + " WHERE r.rowid=?"
 	var size int
@@ -902,9 +906,9 @@ func (s *Service) convertStorageFamilyTurn(ctx context.Context, family storageCo
 		return errors.New("storage conversion budget is unavailable")
 	}
 	if budget.visited == nil {
-		budget.visited = make(map[string]bool)
+		budget.visited = make(map[storageRowPosition]bool)
 	}
-	budget.visited[storageAggregateKey(family, c)] = true
+	budget.visited[storageRowKey(family, c)] = true
 	budget.advance = func(ctx context.Context) error {
 		if family.name == "analytics" {
 			if err := s.writeStorageProjectionCursor(ctx, storageAnalyticsCursor(c.scope), []any{next.sequence}); err != nil {
@@ -927,13 +931,13 @@ func (s *Service) convertStorageFamilyTurn(ctx context.Context, family storageCo
 	return s.convertStorageAggregate(ctx, c.scope, family, c.aggregate, now)
 }
 
-func storageAggregateKey(family storageConversionFamily, c objectPayloadConversionPosition) string {
-	return family.name + "/" + string(c.scope.organization) + "/" + string(c.scope.project) + "/" + c.aggregate
+func storageRowKey(family storageConversionFamily, c objectPayloadConversionPosition) storageRowPosition {
+	return storageRowPosition{family: family.name, row: c.row}
 }
 
-func storageAggregateVisited(ctx context.Context, family storageConversionFamily, c objectPayloadConversionPosition) bool {
+func storageRowVisited(ctx context.Context, family storageConversionFamily, c objectPayloadConversionPosition) bool {
 	budget, ok := ctx.Value(storageBatchKey{}).(*storageBatchBudget)
-	return ok && budget.visited[storageAggregateKey(family, c)]
+	return ok && budget.visited[storageRowKey(family, c)]
 }
 
 func storageAnalyticsCursor(scope nativeScope) string {
@@ -943,11 +947,28 @@ func storageAnalyticsCursor(scope nativeScope) string {
 func (s *Service) selectStorageAnalyticsRow(ctx context.Context, family storageConversionFamily, cursor storageFamilyCursor) (objectPayloadConversionPosition, storageFamilyCursor, error) {
 	var c objectPayloadConversionPosition
 	var next storageFamilyCursor
-	query := "SELECT r.organization_id,r.project_id FROM " + family.keysetFrom() + " WHERE " + family.payloadPredicate()
+	predicate := family.payloadPredicate()
+	var visited []int64
+	if budget, ok := ctx.Value(storageBatchKey{}).(*storageBatchBudget); ok {
+		for position := range budget.visited {
+			if position.family == family.name {
+				visited = append(visited, position.row)
+			}
+		}
+	}
+	slices.Sort(visited)
+	var args []any
+	for _, row := range visited {
+		args = append(args, row)
+	}
+	if len(args) > 0 {
+		predicate += " AND r.rowid NOT IN (" + strings.TrimSuffix(strings.Repeat("?,", len(args)), ",") + ")"
+	}
+	query := "SELECT r.organization_id,r.project_id FROM " + family.keysetFrom() + " WHERE " + predicate
 	order := " ORDER BY r.organization_id,r.project_id LIMIT 1"
-	err := s.database.reader.QueryRowContext(ctx, query+" AND (r.organization_id,r.project_id)>(?,?)"+order, cursor.keys[0], cursor.keys[1]).Scan(&c.scope.organization, &c.scope.project)
+	err := s.database.reader.QueryRowContext(ctx, query+" AND (r.organization_id,r.project_id)>(?,?)"+order, append(slices.Clone(args), cursor.keys[0], cursor.keys[1])...).Scan(&c.scope.organization, &c.scope.project)
 	if errors.Is(err, sql.ErrNoRows) {
-		err = s.database.reader.QueryRowContext(ctx, query+order).Scan(&c.scope.organization, &c.scope.project)
+		err = s.database.reader.QueryRowContext(ctx, query+order, args...).Scan(&c.scope.organization, &c.scope.project)
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return c, next, nil
@@ -963,10 +984,11 @@ func (s *Service) selectStorageAnalyticsRow(ctx context.Context, family storageC
 	if len(position) > 0 {
 		after = position[0]
 	}
-	query = "SELECT r.rowid FROM " + family.keysetFrom() + " WHERE " + family.payloadPredicate() + " AND r.organization_id=? AND r.project_id=?"
-	err = s.database.reader.QueryRowContext(ctx, query+" AND r.rowid>? ORDER BY r.rowid LIMIT 1", c.scope.organization, c.scope.project, after).Scan(&c.row)
+	query = "SELECT r.rowid FROM " + family.keysetFrom() + " WHERE " + predicate + " AND r.organization_id=? AND r.project_id=?"
+	args = append(args, c.scope.organization, c.scope.project)
+	err = s.database.reader.QueryRowContext(ctx, query+" AND r.rowid>? ORDER BY r.rowid LIMIT 1", append(slices.Clone(args), after)...).Scan(&c.row)
 	if errors.Is(err, sql.ErrNoRows) {
-		err = s.database.reader.QueryRowContext(ctx, query+" ORDER BY r.rowid LIMIT 1", c.scope.organization, c.scope.project).Scan(&c.row)
+		err = s.database.reader.QueryRowContext(ctx, query+" ORDER BY r.rowid LIMIT 1", args...).Scan(&c.row)
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return c, next, nil
