@@ -1,0 +1,7 @@
+internal/hubserver/migration_steps/20261006023000_sprite_placement.sql 1
+internal/hubserver/migrations/20261015044000_publication_push_lookup.sql 5
+internal/hubserver/migrations/20261017153000_board_execution_expiry.sql 1
+internal/hubserver/migrations/20261018234500_policy_landing_provenance.sql 2
+internal/hubserver/migrations/20261021130000_hosted_plan_storage.sql 6
+internal/hubserver/migrations/20261021140000_health_intake_signatures.sql 1
+internal/hubserver/migrations/20261021170000_conversation_content.sql 1

@@ -1,0 +1,191 @@
+const { test, expect } = require("@playwright/test");
+const { startHostedHub, STARTUP_TIMEOUT_MS } = require("./hosted-hub");
+
+let hub;
+
+test.beforeAll(async () => {
+  test.setTimeout(STARTUP_TIMEOUT_MS + 30_000);
+  hub = await startHostedHub("conversation-actions", {
+    env: { DETENT_HOSTED_BROWSER_CHAT_ACTIONS: "1" },
+  });
+});
+
+test.afterAll(async () => {
+  await hub?.stop();
+});
+
+async function projectRead(page, suffix, fixture = hub.fixture) {
+  return page.evaluate(async ({ project, suffix }) => {
+    const bootstrap = await (await fetch("/chat/bootstrap")).json();
+    const response = await fetch(`${bootstrap.api_base}/projects/${project}/${suffix}`);
+    if (!response.ok) throw new Error(`Project read failed: ${response.status}`);
+    return response.json();
+  }, { project: fixture.project_id, suffix });
+}
+
+async function askLuna(page, text) {
+  await page.getByRole("textbox", { name: "Message" }).focus();
+  await page.keyboard.type(text);
+  await page.getByRole("button", { name: "Send message", exact: true }).click();
+}
+
+test("workflow chat approval persists across a reload", async ({ page }, testInfo) => {
+  test.setTimeout(STARTUP_TIMEOUT_MS + 60_000);
+  const workflowHub = await startHostedHub("conversation-workflow", {
+    env: { DETENT_HOSTED_BROWSER_CHAT_WORKFLOW: "1" },
+  });
+  try {
+    const fixture = workflowHub.fixture;
+    const read = (suffix) => projectRead(page, suffix, fixture);
+    await page.goto(fixture.accounts.owner);
+    await page.goto(`${fixture.chat}/p/${fixture.project_id}`);
+    const original = await read("policy");
+
+    await askLuna(page, "Approve workflow policy.");
+    const approval = page.getByTestId("operator-action-card").last();
+    await approval.scrollIntoViewIfNeeded();
+    await expect(approval.getByText(/gates.github_pull_request: false → true/)).toBeVisible();
+    await approval.screenshot({ path: testInfo.outputPath("workflow-approval-preview.png") });
+    await approval.getByRole("button", { name: "Approve", exact: true }).click();
+    await expect(approval.getByText("Change completed.", { exact: true })).toBeVisible();
+
+    await page.reload();
+    const persisted = page.getByTestId("operator-action-card").last();
+    await persisted.scrollIntoViewIfNeeded();
+    await expect(persisted.getByText("Change completed.", { exact: true })).toBeVisible();
+    const approved = await read("policy");
+    expect(approved.policy.policy_id).not.toBe(original.policy.policy_id);
+    expect(approved.policy.gates.github_pull_request).toBe(true);
+    expect(approved.policy.gates.validator).toBe(true);
+  } finally {
+    await workflowHub.stop();
+  }
+});
+
+test("unavailable Hub PR mode is refused and the owner can retry a blocked issue", async ({ page }) => {
+  await page.goto(hub.fixture.accounts.owner);
+  await page.goto(`${hub.fixture.chat}/p/${hub.fixture.project_id}`);
+  expect((await projectRead(page, "integration")).repository_enabled).toBe(false);
+  expect((await projectRead(page, `work-items/${hub.fixture.work_item}`)).state).toBe("Blocked");
+
+  await askLuna(page, "Can you enable the GitHub pull request mode?");
+  await expect(page.getByText(/Hub GitHub integration is unavailable/).first()).toBeVisible();
+  await expect(page.getByTestId("operator-action-card")).toHaveCount(0);
+  expect((await projectRead(page, "integration")).repository_enabled).toBe(false);
+
+  await askLuna(page, "Please retry the blocked issue.");
+  await expect(page.getByTestId("operator-action-card")).toHaveCount(1);
+  const retry = page.getByTestId("operator-action-card").last();
+  await expect(retry.getByText(/Blocked.*Todo/)).toBeVisible();
+  expect((await projectRead(page, `work-items/${hub.fixture.work_item}`)).state).toBe("Blocked");
+  await retry.getByRole("button", { name: "Approve" }).click();
+  await expect.poll(async () => (await projectRead(page, `work-items/${hub.fixture.work_item}`)).state).toBe("Todo");
+  await expect(page.getByText(/move item: succeeded/)).toBeVisible();
+});
+
+test("an issue split renders Markdown and grouped dependencies, cancels without filing, and confirms atomically", async ({ page }, testInfo) => {
+  await page.goto(hub.fixture.accounts.owner);
+  await page.goto(`${hub.fixture.chat}/p/${hub.fixture.project_id}`);
+  const workItems = async () => (await projectRead(page, "work-items")).items;
+  const initial = await workItems();
+  const parentBefore = await projectRead(page, `work-items/${hub.fixture.work_item}`);
+
+  await askLuna(page, "Propose a cyclic split.");
+  await expect(page.getByText(/Dependencies cannot form a cycle/).first()).toBeVisible();
+  await expect(page.getByTestId("operator-action-card")).toHaveCount(0);
+  expect((await workItems()).length).toBe(initial.length);
+
+  await askLuna(page, "Split this issue into six children in Todo.");
+  const cancelled = page.getByTestId("operator-action-card").last();
+  await expect(cancelled.getByTestId("issue-split-proposal")).toBeVisible();
+  await expect(cancelled.getByRole("heading", { name: "1. Split storage", exact: true })).toBeVisible();
+  await expect(cancelled.getByRole("heading", { name: "2. Split API", exact: true })).toBeVisible();
+  await expect(cancelled.getByRole("heading", { name: "3. Split UI", exact: true })).toBeVisible();
+  await expect(page.getByText("All 6 children will be created in Todo, as requested; work starts as soon as a runner is free.").first()).toBeVisible();
+  const proposal = cancelled.getByTestId("issue-split-proposal");
+  await expect(proposal.getByTestId("issue-split-lane-summary")).toHaveText("Children will be created in Todo · work starts as soon as a runner is free");
+  await expect(proposal.getByRole("heading", { level: 3, name: /^\d+\. Split / })).toHaveCount(6);
+  await expect(proposal.locator("strong")).toHaveText("storage layer");
+  await expect(proposal.getByRole("listitem")).toHaveText(["Preserve existing records.", "Add the migration."]);
+  await expect(proposal.locator("pre code")).toContainText("schema: 1\neffort: high");
+  await expect(proposal).not.toContainText("```detent-agent");
+  const graph = proposal.getByRole("group", { name: "Dependency graph" });
+  await expect(graph.locator("p").filter({ hasText: "Blocked by:" })).toHaveCount(6);
+  await expect(graph).toContainText("1. Split storage — Blocked by: None");
+  await expect(graph).toContainText("2. Split API — Blocked by: 1. Split storage");
+  await expect(graph).toContainText("3. Split UI — Blocked by: 1. Split storage, 2. Split API");
+  await expect(graph).toContainText("6. Split integration — Blocked by: 3. Split UI, 5. Split reporting");
+  await expect(graph.locator("p").filter({ hasText: "waits for all" })).toHaveText(`#${parentBefore.number} waits for all 6 children · ${parentBefore.title}`);
+  await expect(cancelled).not.toContainText(hub.fixture.work_item);
+  await expect(graph).not.toContainText("→");
+  await cancelled.getByText("Proposed change", { exact: true }).click();
+  await expect(cancelled.locator("details pre")).toContainText(`#${parentBefore.number}: ${parentBefore.title}`);
+  await cancelled.getByText("Proposed change", { exact: true }).click();
+  await proposal.screenshot({ path: testInfo.outputPath("issue-split-six-children.png") });
+  expect((await workItems()).length).toBe(initial.length);
+  await cancelled.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(page.getByText(/Cancelled\./).first()).toBeVisible();
+  expect((await workItems()).length).toBe(initial.length);
+
+  await askLuna(page, "Split this issue now, with the same six children in Todo.");
+  const confirmed = page.getByTestId("operator-action-card").last();
+  await expect(confirmed.getByTestId("issue-split-proposal").last()).toBeVisible();
+  await confirmed.getByRole("button", { name: "Approve", exact: true }).click();
+  await expect.poll(async () => (await workItems()).length).toBe(initial.length + 6);
+  const children = (await workItems()).filter((item) => item.title.startsWith("Split "));
+  const storage = children.find((item) => item.title === "Split storage");
+  const api = await projectRead(page, `work-items/${children.find((item) => item.title === "Split API").work_item_id}`);
+  expect(api.state).toBe("Todo");
+  expect(api.dependencies).toEqual([storage.work_item_id]);
+  const parent = await projectRead(page, `work-items/${hub.fixture.work_item}`);
+  expect(new Set(parent.dependencies)).toEqual(new Set(children.map((item) => item.work_item_id)));
+  const comments = await projectRead(page, `work-items/${hub.fixture.work_item}/comments`);
+  const comment = comments.items.find((item) => item.body.includes("Approved issue split:"));
+  for (const child of children) expect(comment.body).toContain(child.work_item_id);
+});
+
+
+test("five issues are archived with one confirmation and cancellation preserves the set", async ({ page }) => {
+  await page.goto(hub.fixture.accounts.owner);
+  await page.goto(`${hub.fixture.chat}/p/${hub.fixture.project_id}`);
+  const active = async () => (await projectRead(page, "work-items")).items;
+  const initial = await active();
+  const targets = initial.filter((item) => /^Seed [0-4]$/.test(item.title));
+  expect(targets).toHaveLength(5);
+
+  await askLuna(page, "Archive the running issue too.");
+  await expect(page.getByText(/Finish or stop the running issue before archiving/).first()).toBeVisible();
+  await expect(page.getByTestId("operator-action-card")).toHaveCount(0);
+  expect(await active()).toHaveLength(initial.length);
+
+  await askLuna(page, "Archive the test issues.");
+  const cancelled = page.getByTestId("operator-action-card").last();
+  const preview = cancelled.getByTestId("issue-archive-proposal");
+  await expect(preview).toBeVisible();
+  await expect(preview.getByRole("listitem")).toHaveCount(5);
+  for (const item of targets) {
+    await expect(preview).toContainText(`#${item.number}: ${item.title}`);
+  }
+  await expect(preview).toContainText("They can be restored.");
+  expect(await active()).toHaveLength(initial.length);
+  await cancelled.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(cancelled.getByText("Cancelled.", { exact: true })).toBeVisible();
+  expect(await active()).toHaveLength(initial.length);
+  expect((await projectRead(page, "work-items?archived=true")).items).toHaveLength(0);
+
+  await askLuna(page, "Archive the test issues now.");
+  const confirmed = page.getByTestId("operator-action-card").last();
+  await expect(confirmed.getByTestId("issue-archive-proposal").last()).toBeVisible();
+  await confirmed.getByRole("button", { name: "Approve", exact: true }).click();
+  await expect.poll(async () => (await active()).length).toBe(initial.length - 5);
+  await expect(page.getByText(/Archive 5 issues: succeeded/).first()).toBeVisible();
+  const archived = (await projectRead(page, "work-items?archived=true")).items;
+  expect(new Set(archived.map((item) => item.work_item_id))).toEqual(new Set(targets.map((item) => item.work_item_id)));
+  for (const item of archived) expect(item.archived).toBe(true);
+
+  await page.goto(new URL(`/work?project=${hub.fixture.project_id}`, hub.fixture.url).toString());
+  await expect(page.getByTestId("work-board")).toBeVisible();
+  for (const item of targets) await expect(page.getByRole("button", { name: item.title, exact: true })).toHaveCount(0);
+  await page.getByTestId("work-archived").click();
+  for (const item of targets) await expect(page.getByRole("button", { name: item.title, exact: true })).toBeVisible();
+});
