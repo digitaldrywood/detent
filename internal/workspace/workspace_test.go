@@ -4355,6 +4355,24 @@ func TestPrepareWorkerScratchIsOutsideWorkspace(t *testing.T) {
 	}
 }
 
+func TestPrepareWorkerScratchIgnoresAnotherAccountsScratchBase(t *testing.T) {
+	tempRoot := t.TempDir()
+	for _, key := range []string{"TMPDIR", "TMP", "TEMP"} {
+		t.Setenv(key, tempRoot)
+	}
+	if err := os.Mkdir(filepath.Join(tempRoot, workerScratchBaseName), 0o500); err != nil {
+		t.Fatal(err)
+	}
+	workspacePath := t.TempDir()
+	scratchPath, err := PrepareWorkerScratch(t.Context(), workspacePath)
+	if err != nil {
+		t.Fatalf("PrepareWorkerScratch() error = %v, want scratch outside the shared base another account owns", err)
+	}
+	if err := CleanupWorkerScratch(workspacePath, scratchPath); err != nil {
+		t.Fatalf("CleanupWorkerScratch() error = %v", err)
+	}
+}
+
 func TestWorkerScratchRootSeparatesWorkspaces(t *testing.T) {
 	t.Parallel()
 
