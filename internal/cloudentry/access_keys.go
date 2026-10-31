@@ -128,7 +128,7 @@ func (s *Service) activeAccessKey(ctx context.Context, hash string) (accessKey, 
 }
 
 func (k accessKey) active(now time.Time) bool {
-	return k.RevokedAt == nil && (k.ExpiresAt == nil || k.ExpiresAt.After(now)) && !k.CreatedAt.After(now)
+	return k.RevokedAt == nil && (k.ExpiresAt == nil || k.ExpiresAt.After(now))
 }
 
 func (k accessKey) credentialBinding() string {
