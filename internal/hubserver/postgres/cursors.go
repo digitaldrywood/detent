@@ -37,11 +37,20 @@ func (s *session) WorkItemPage(ctx context.Context, project tracker.ProjectID, c
 		return page, err
 	}
 	if cursor.Version == 1 {
-		row, err := s.queries.GetWorkItemCursor(ctx, pgquery.GetWorkItemCursorParams{OrganizationID: s.organization, ProjectID: project, ID: cursor.ID})
+		_, err := s.queries.GetWorkItemCursor(ctx, pgquery.GetWorkItemCursorParams{OrganizationID: s.organization, ProjectID: project, ID: cursor.ID})
 		if err != nil {
 			return page, cursorError(ctx, err)
 		}
-		cursor.CreatedAt = row.CreatedAt
+		scan, err := s.ScanWorkItems(ctx, project, corestore.ScanCursor{After: cursor.ID, Through: math.MaxInt64}, limit)
+		if err != nil {
+			return page, err
+		}
+		page.Items = scan.Items
+		if len(page.Items) == limit {
+			cursor.ID = page.Items[len(page.Items)-1].ID
+			page.Next = cursor
+		}
+		return page, nil
 	}
 	rows, err := s.queries.PageWorkItems(ctx, pgquery.PageWorkItemsParams{OrganizationID: s.organization, ProjectID: project, AfterCreatedAt: cursor.CreatedAt, AfterID: cursor.ID, PageLimit: int32(limit)})
 	if err != nil {
@@ -67,11 +76,20 @@ func (s *session) CommentPage(ctx context.Context, project tracker.ProjectID, it
 		return page, err
 	}
 	if cursor.Version == 1 {
-		row, err := s.queries.GetCommentCursor(ctx, pgquery.GetCommentCursorParams{OrganizationID: s.organization, ProjectID: project, WorkItemID: item, ID: cursor.ID})
+		_, err := s.queries.GetCommentCursor(ctx, pgquery.GetCommentCursorParams{OrganizationID: s.organization, ProjectID: project, WorkItemID: item, ID: cursor.ID})
 		if err != nil {
 			return page, cursorError(ctx, err)
 		}
-		cursor.CreatedAt = row.CreatedAt
+		scan, err := s.ScanComments(ctx, project, item, corestore.ScanCursor{After: cursor.ID, Through: math.MaxInt64}, limit)
+		if err != nil {
+			return page, err
+		}
+		page.Items = scan.Items
+		if len(page.Items) == limit {
+			cursor.ID = page.Items[len(page.Items)-1].RecordID
+			page.Next = cursor
+		}
+		return page, nil
 	}
 	rows, err := s.queries.PageComments(ctx, pgquery.PageCommentsParams{OrganizationID: s.organization, ProjectID: project, WorkItemID: item, AfterCreatedAt: cursor.CreatedAt, AfterID: cursor.ID, PageLimit: int32(limit)})
 	if err != nil {

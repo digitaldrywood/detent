@@ -217,7 +217,7 @@ func prepareRecords(t *testing.T, repository corestore.Repository, org tracker.O
 	}
 }
 
-func TestRecordPagesPreserveImportsAndTranslateCursors(t *testing.T) {
+func TestRecordPagesPreserveImportsAndCursorOrdering(t *testing.T) {
 	created := time.Date(2020, 1, 2, 3, 4, 5, 123456000, time.UTC)
 	for _, family := range recordFamilies() {
 		t.Run(family.name, func(t *testing.T) {
@@ -225,7 +225,7 @@ func TestRecordPagesPreserveImportsAndTranslateCursors(t *testing.T) {
 			for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 				prepareRecords(t, repository, org, family.name == "comments")
 				if err := repository.Write(t.Context(), org, corestore.Serving, func(w corestore.Writer) error {
-					for _, want := range []recordIdentity{{103, "third", created.Add(time.Second), 7, 1}, {102, "second", created, 8, 2}, {101, "first", created, 9, 3}} {
+					for _, want := range []recordIdentity{{103, "third", created.Add(24 * time.Hour), 7, 1}, {102, "second", created.Add(-24 * time.Hour), 8, 2}, {101, "first", created, 9, 3}, {104, "fourth", created.Add(-24 * time.Hour), 10, 4}} {
 						got, err := family.create(t.Context(), w, org, want)
 						if err != nil {
 							return err
@@ -239,7 +239,7 @@ func TestRecordPagesPreserveImportsAndTranslateCursors(t *testing.T) {
 					t.Fatal(err)
 				}
 				err := repository.Write(t.Context(), org, corestore.Serving, func(w corestore.Writer) error {
-					_, err := family.create(t.Context(), w, org, recordIdentity{ID: 101, Name: "duplicate", Sequence: 4})
+					_, err := family.create(t.Context(), w, org, recordIdentity{ID: 101, Name: "duplicate", Sequence: 5})
 					return err
 				})
 				if !errors.Is(err, corestore.ErrUniqueViolation) {
@@ -249,7 +249,7 @@ func TestRecordPagesPreserveImportsAndTranslateCursors(t *testing.T) {
 			var cursor corestore.Cursor
 			if err := repository.Read(t.Context(), "org_first", corestore.Serving, func(r corestore.Reader) error {
 				rows, next, err := family.page(t.Context(), r, corestore.Cursor{}, 1)
-				if err == nil && (len(rows) != 1 || rows[0].Name != "first" || next.Version != 2) {
+				if err == nil && (len(rows) != 1 || rows[0].Name != "second" || next.Version != 2) {
 					t.Fatalf("first page = %+v, next = %+v", rows, next)
 				}
 				cursor = next
@@ -257,24 +257,34 @@ func TestRecordPagesPreserveImportsAndTranslateCursors(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			for _, version := range []int{1, 2} {
-				t.Run(fmt.Sprintf("version %d", version), func(t *testing.T) {
+			for _, tc := range []struct {
+				version int
+				want    []string
+			}{
+				{1, []string{"second", "third", "fourth"}},
+				{2, []string{"fourth", "first", "third"}},
+			} {
+				t.Run(fmt.Sprintf("version %d", tc.version), func(t *testing.T) {
 					after := cursor
-					after.Version = version
-					if version == 1 {
+					after.Version = tc.version
+					if tc.version == 1 {
+						after.ID = 101
 						after.CreatedAt = time.Time{}
 					}
 					if err := repository.Read(t.Context(), "org_first", corestore.Serving, func(r corestore.Reader) error {
-						rows, next, err := family.page(t.Context(), r, after, 1)
-						if err != nil {
-							return err
+						for _, want := range tc.want[:2] {
+							rows, next, err := family.page(t.Context(), r, after, 1)
+							if err != nil {
+								return err
+							}
+							if len(rows) != 1 || rows[0].Name != want || next.Version != tc.version || next.ID != rows[0].ID || next.OrganizationID != after.OrganizationID || next.ProjectID != after.ProjectID || next.WorkItemID != after.WorkItemID || next.CreatedAt.IsZero() != (tc.version == 1) {
+								t.Fatalf("continued page after %+v = %+v, next = %+v, want %s", after, rows, next, want)
+							}
+							after = next
 						}
-						if len(rows) != 1 || rows[0].Name != "second" || next.Version != 2 || next.ID != 102 {
-							t.Fatalf("continued page = %+v, next = %+v", rows, next)
-						}
-						rows, next, err = family.page(t.Context(), r, next, 2)
-						if err == nil && (len(rows) != 1 || rows[0].Name != "third" || next != (corestore.Cursor{})) {
-							t.Fatalf("last page = %+v, next = %+v", rows, next)
+						rows, next, err := family.page(t.Context(), r, after, 2)
+						if err == nil && (len(rows) != 1 || rows[0].Name != tc.want[2] || next != (corestore.Cursor{})) {
+							t.Fatalf("last page = %+v, next = %+v, want %s", rows, next, tc.want[2])
 						}
 						return err
 					}); err != nil {
