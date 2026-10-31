@@ -779,7 +779,7 @@ func (e *nativeExecution) finishPrepared(ctx context.Context, reason string) (er
 		e.observeCompletionOutage(err)
 	}()
 	e.mu.Lock()
-	if e.preparedOutcome == "" && e.data.Identity == nil && e.data.Outcome == "" && e.data.Runtime != nil && e.data.Runtime.LocalAttemptID > 0 && e.data.Runtime.Generation > 0 {
+	if e.preparedOutcome == "" && e.data.Identity == nil && e.data.Outcome == "" && (e.data.Runtime == nil || e.data.Runtime.LocalAttemptID > 0 && e.data.Runtime.Generation > 0) {
 		e.preparedOutcome = "cancelled"
 		if e.preparedFailure == nil {
 			failure := (tracker.NativeTerminalFailure{ErrorClass: "lease_released", Stage: "pre_provider", ObservedAt: e.scheduler.now().UTC(), Error: "attempt cancelled before provider start; release reason: " + reason}).Public()
