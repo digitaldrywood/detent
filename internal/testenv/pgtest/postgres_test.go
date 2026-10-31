@@ -1,20 +1,27 @@
 package pgtest
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/testenv"
 )
 
@@ -104,7 +111,7 @@ func TestConnectionConfig(t *testing.T) {
 				}
 				return
 			}
-			if config.Host != tc.host || config.Database != "postgres" || config.TLSConfig != nil || len(config.Fallbacks) != 0 {
+			if config.Host != tc.host || config.Database != "postgres" || config.SSLMode != "disable" || config.Passfile != "" || config.Password == "" || len(config.Multi) != 0 {
 				t.Fatal("connection did not preserve isolated local settings")
 			}
 		})
@@ -118,6 +125,137 @@ func TestConnectionConfig(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestConnectionConfigDoesNotScanHost(t *testing.T) {
+	if os.Getenv("DETENT_TEST_CONFIG_CHILD") == "1" {
+		if _, err := fmt.Fprintln(os.Stdout, "ready"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := io.ReadFull(os.Stdin, make([]byte, 1)); err != nil {
+			t.Fatal(err)
+		}
+		for _, selection := range []string{
+			"postgres://example:fake@127.0.0.1:5432/postgres",
+			"postgresql://example:fake@[::1]:5432/postgres",
+			"postgres://example@localhost:5432/postgres",
+			"postgres://example@localhost:5432/postgres?host=/example",
+		} {
+			config, err := connectionConfig(selection)
+			if err != nil {
+				t.Fatal(err)
+			}
+			s := &server{config: config}
+			db, err := s.database("postgres")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Close(); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	logPath := filepath.Join(t.TempDir(), "actions.log")
+	t.Setenv("DETENT_TEST_CONFIG_CHILD", "1")
+	t.Setenv("GOCOVERDIR", t.TempDir())
+	cmd := exec.CommandContext(t.Context(), executable, "-test.run=^TestConnectionConfigDoesNotScanHost$", "-test.testlogfile="+logPath, "-test.timeout="+flag.Lookup("test.timeout").Value.String())
+	procgroup.Configure(t.Context(), cmd)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waited := false
+	t.Cleanup(func() {
+		if !waited {
+			stdin.Close()
+			if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+				t.Error(err)
+			}
+			if err := cmd.Wait(); err != nil {
+				t.Logf("stop configuration helper: %v", err)
+			}
+		}
+	})
+	scanner := bufio.NewScanner(stdout)
+	if !scanner.Scan() || scanner.Text() != "ready" {
+		t.Fatalf("configuration helper did not become ready: %v", scanner.Err())
+	}
+	if _, err := stdin.Write([]byte{1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := stdin.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for scanner.Scan() {
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatal(err)
+	}
+	err = cmd.Wait()
+	waited = true
+	if err != nil {
+		t.Fatalf("configuration helper: %v; %s", err, stderr.String())
+	}
+	log, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(log), "getenv DETENT_TEST_CONFIG_CHILD\n") {
+		t.Fatal("configuration helper did not record filesystem actions")
+	}
+	for line := range strings.SplitSeq(string(log), "\n") {
+		if strings.HasPrefix(line, "stat ") || strings.HasPrefix(line, "open ") {
+			t.Errorf("explicit connection settings scanned the filesystem: %s", line)
+		}
+	}
+}
+
+func TestFixtureAdmissionWaitsBeforeCancellation(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		p := NewTemplate(nil)
+		for range fixtureLimit {
+			p.slots <- struct{}{}
+		}
+		ctx, cancel := context.WithCancel(t.Context())
+		result := make(chan error, 1)
+		go func() {
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					result <- fmt.Errorf("fixture bypassed admission: %v", recovered)
+				}
+			}()
+			_, _, err := p.clone(ctx, nil)
+			result <- err
+		}()
+		t.Cleanup(func() {
+			cancel()
+			synctest.Wait()
+		})
+		synctest.Wait()
+		select {
+		case err := <-result:
+			t.Fatalf("active fifth fixture did not wait for capacity: %v", err)
+		default:
+		}
+		cancel()
+		if err := <-result; !errors.Is(err, context.Canceled) {
+			t.Fatalf("waiting fixture cancellation = %v", err)
+		}
+	})
 }
 
 func TestUnconfiguredPostgresSkips(t *testing.T) {
@@ -269,6 +407,17 @@ func serverSelection(s *server) string {
 	return u.String()
 }
 
+type admissionContext struct {
+	context.Context
+	reached chan struct{}
+	once    sync.Once
+}
+
+func (c *admissionContext) Done() <-chan struct{} {
+	c.once.Do(func() { close(c.reached) })
+	return c.Context.Done()
+}
+
 func TestPostgresFixtureBounds(t *testing.T) {
 	processTemplate.Database(t)
 	p := NewTemplate(migrateFixture)
@@ -322,44 +471,50 @@ func TestPostgresFixtureBounds(t *testing.T) {
 		second.Close()
 	}
 	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
-	if _, _, err := p.clone(ctx, nil); !errors.Is(err, context.Canceled) {
-		t.Fatalf("exhausted fixture limit error = %v", err)
+	attempt := &admissionContext{Context: ctx, reached: make(chan struct{})}
+	type cloneResult struct {
+		release func(context.Context) error
+		err     error
 	}
+	result := make(chan cloneResult, 1)
+	go func() {
+		_, release, err := p.clone(attempt, func(context.Context, *sql.DB) error { return nil })
+		result <- cloneResult{release: release, err: err}
+	}()
+	joined := false
+	t.Cleanup(func() {
+		cancel()
+		if !joined {
+			pending := <-result
+			if pending.release != nil {
+				ctx, cancel := testContext(t)
+				defer cancel()
+				if err := pending.release(ctx); err != nil {
+					t.Error(err)
+				}
+			}
+		}
+	})
+	<-attempt.reached
 	if err := releases[0](t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	releases = releases[1:]
-	_, release, err := p.clone(t.Context(), func(context.Context, *sql.DB) error { return nil })
-	if err != nil {
-		t.Fatalf("released fixture capacity was not reusable: %v", err)
+	admitted := <-result
+	joined = true
+	if admitted.err != nil {
+		t.Fatalf("releasing fixture capacity did not admit the active fifth request: %v", admitted.err)
 	}
-	releases = append(releases, release)
+	releases = append(releases, admitted.release)
 }
 
 func TestPostgresParallelIsolation(t *testing.T) {
 	var names sync.Map
-	var opened atomic.Int32
-	var release sync.Once
-	ready := make(chan struct{})
 	t.Run("parallel fixtures", func(t *testing.T) {
 		for _, name := range []string{"one", "two", "three", "four", "five", "six", "seven", "eight"} {
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
-				t.Cleanup(func() {
-					if t.Failed() {
-						release.Do(func() { close(ready) })
-					}
-				})
 				db := processTemplate.Database(t)
-				if opened.Add(1) == fixtureLimit {
-					release.Do(func() { close(ready) })
-				}
-				select {
-				case <-ready:
-				case <-t.Context().Done():
-					t.Fatal(t.Context().Err())
-				}
 				var databaseName string
 				if err := db.QueryRowContext(t.Context(), "SELECT current_database()").Scan(&databaseName); err != nil {
 					t.Fatal(err)
@@ -401,7 +556,10 @@ func TestPostgresParallelIsolation(t *testing.T) {
 	if allowed {
 		t.Fatal("template still permits connections during cloning")
 	}
-	db := processTemplate.server.database(processTemplate.name)
+	db, err := processTemplate.server.database(processTemplate.name)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer db.Close()
 	if err := db.PingContext(t.Context()); err == nil {
 		t.Fatal("template accepted a connection")

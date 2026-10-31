@@ -2,6 +2,7 @@ package pgtest
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
@@ -11,14 +12,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/stdlib"
+	"github.com/lib/pq"
 
 	"github.com/digitaldrywood/detent/internal/procgroup"
 )
@@ -39,7 +39,7 @@ type Template struct {
 }
 
 type server struct {
-	config *pgx.ConnConfig
+	config *pq.Config
 	admin  *sql.DB
 	stop   func() error
 	mu     sync.Mutex
@@ -110,7 +110,10 @@ func (p *Template) initialize(ctx context.Context, selection string) (resultErr 
 		return err
 	}
 	p.name = name
-	db := s.database(name)
+	db, err := s.database(name)
+	if err != nil {
+		return err
+	}
 	defer db.Close()
 	err = db.PingContext(ctx)
 	if err == nil {
@@ -138,7 +141,14 @@ func (p *Template) clone(ctx context.Context, setup func(context.Context, *sql.D
 		<-p.slots
 		return nil, nil, err
 	}
-	db := p.server.database(name)
+	db, err := p.server.database(name)
+	if err != nil {
+		cleanupCtx, cancel := cleanupContext(ctx)
+		defer cancel()
+		err = errors.Join(err, p.server.drop(cleanupCtx, name))
+		<-p.slots
+		return nil, nil, err
+	}
 	cleanup := func(ctx context.Context) error {
 		err := errors.Join(db.Close(), p.server.drop(ctx, name))
 		<-p.slots
@@ -188,17 +198,23 @@ func (p *Template) Close(ctx context.Context) error {
 	return err
 }
 
-func (s *server) database(name string) *sql.DB {
-	config := s.config.Copy()
+func (s *server) database(name string) (*sql.DB, error) {
+	config := s.config.Clone()
 	config.Database = name
-	db := stdlib.OpenDB(*config)
+	connector, err := pq.NewConnectorConfig(config)
+	if err != nil {
+		return nil, fmt.Errorf("configure PostgreSQL fixture connector: %w", err)
+	}
+	db := sql.OpenDB(connector)
 	db.SetMaxOpenConns(connectionLimit)
 	db.SetMaxIdleConns(connectionLimit)
-	return db
+	return db, nil
 }
 
 func identifier(name string) string {
-	return pgx.Identifier{name}.Sanitize()
+	var quoted bytes.Buffer
+	pq.BufferQuoteIdentifier(name, &quoted)
+	return quoted.String()
 }
 
 func (s *server) create(ctx context.Context, template string) (string, error) {
@@ -208,7 +224,7 @@ func (s *server) create(ctx context.Context, template string) (string, error) {
 	s.mu.Unlock()
 	_, err := s.admin.ExecContext(ctx, "CREATE DATABASE "+identifier(name)+" TEMPLATE "+identifier(template)+fmt.Sprintf(" CONNECTION LIMIT %d", connectionLimit))
 	if err != nil {
-		var pgErr *pgconn.PgError
+		var pgErr *pq.Error
 		if errors.As(err, &pgErr) {
 			s.mu.Lock()
 			delete(s.owned, name)
@@ -238,7 +254,7 @@ func (s *server) drop(ctx context.Context, name string) error {
 	return err
 }
 
-func connectionConfig(selection string) (*pgx.ConnConfig, error) {
+func connectionConfig(selection string) (*pq.Config, error) {
 	u, err := url.Parse(selection)
 	if err != nil || u == nil || (u.Scheme != "postgres" && u.Scheme != "postgresql") || u.User == nil || u.User.Username() == "" || u.Fragment != "" {
 		return nil, errors.New("PostgreSQL fixture requires a local postgres://user:password@127.0.0.1:port/postgres URL")
@@ -267,23 +283,30 @@ func connectionConfig(selection string) (*pgx.ConnConfig, error) {
 			return nil, fmt.Errorf("unset ambient PostgreSQL setting %s for isolated fixtures", key)
 		}
 	}
-	u.Host = net.JoinHostPort(host, u.Port())
-	u.Path = "/postgres"
+	port, err := strconv.ParseUint(u.Port(), 10, 16)
+	if err != nil {
+		return nil, errors.New("invalid PostgreSQL fixture port")
+	}
 	password, present := u.User.Password()
 	if !present || password == "" {
 		password = "detent-test-only"
 	}
-	u.User = url.UserPassword(u.User.Username(), password)
-	u.RawQuery = url.Values{"sslmode": {"disable"}, "passfile": {""}, "application_name": {"detent_test"}}.Encode()
-	config, err := pgx.ParseConfig(u.String())
-	if err != nil {
-		return nil, errors.New("invalid PostgreSQL fixture connection settings")
-	}
 	if socket != "" {
-		config.Host = socket
-		config.Fallbacks = nil
+		host = socket
 	}
-	return config, nil
+	return &pq.Config{
+		Host:               host,
+		Port:               uint16(port),
+		Database:           "postgres",
+		User:               u.User.Username(),
+		Password:           password,
+		SSLMode:            pq.SSLModeDisable,
+		ApplicationName:    "detent_test",
+		ClientEncoding:     "UTF8",
+		Datestyle:          "ISO, MDY",
+		MinProtocolVersion: "3.0",
+		MaxProtocolVersion: "3.0",
+	}, nil
 }
 
 func openServer(ctx context.Context, selection string) (_ *server, resultErr error) {
@@ -308,7 +331,10 @@ func openServer(ctx context.Context, selection string) (_ *server, resultErr err
 		return nil, err
 	}
 	s := &server{config: config, stop: stop, owned: make(map[string]struct{})}
-	s.admin = s.database("postgres")
+	s.admin, err = s.database("postgres")
+	if err != nil {
+		return nil, err
+	}
 	s.admin.SetMaxOpenConns(1)
 	s.admin.SetMaxIdleConns(1)
 	var version int

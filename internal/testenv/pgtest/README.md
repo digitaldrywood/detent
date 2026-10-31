@@ -33,7 +33,8 @@ Select the server explicitly with `DETENT_TEST_POSTGRES`:
   fail instead of skipping.
 
 Unset ambient `PG*` variables before using a configured server. The helper
-rejects them and ignores default password files; connection settings come only
+rejects them and constructs the driver configuration directly, without probing
+standard socket directories or user account files. Connection settings come only
 from the explicit test selection. Attachment URLs accept only loopback addresses
 and the optional Unix socket parameter. Error messages do not print URLs or
 passwords. Never point this helper at a production server.
