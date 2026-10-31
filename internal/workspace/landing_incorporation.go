@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -69,15 +70,10 @@ func captureIncorporationObjects(ctx context.Context, directory, base, head, tar
 }
 
 func VerifyLandingIncorporation(ctx context.Context, proof tracker.LandingIncorporation, pack []byte) (err error) {
-	return verifyLandingIncorporation(ctx, proof, pack, runVerificationCommand)
-}
-
-func verifyLandingIncorporation(ctx context.Context, proof tracker.LandingIncorporation, pack []byte, run func(context.Context, *exec.Cmd) ([]byte, error)) (err error) {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
 	if !validLandingHead(proof.SourceBaseSHA) || !validLandingHead(proof.SourceHeadSHA) || !validLandingHead(proof.TargetHeadSHA) || len(pack) == 0 || len(pack) > tracker.MaxChangeSourceBytes {
-		return invalidVerification("incorporation requires immutable identities and bounded objects")
+		return errors.New("incorporation requires immutable identities and bounded objects")
 	}
 	if err := changeSourcePackBudget(ctx, pack); err != nil {
 		return err
@@ -87,7 +83,7 @@ func verifyLandingIncorporation(ctx context.Context, proof tracker.LandingIncorp
 		return err
 	}
 	defer func() { err = errors.Join(err, os.RemoveAll(scratch)) }()
-	env := []string{"LC_ALL=C", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=" + os.DevNull, "GIT_NO_REPLACE_OBJECTS=1"}
+	env := []string{"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=" + os.DevNull, "GIT_NO_REPLACE_OBJECTS=1"}
 	git := func(input []byte, args ...string) (string, error) {
 		command := exec.CommandContext(ctx, "git")
 		command.Args = append(command.Args, "-C", scratch)
@@ -101,31 +97,22 @@ func verifyLandingIncorporation(ctx context.Context, proof tracker.LandingIncorp
 		command.Stdin = bytes.NewReader(input)
 		command.WaitDelay = workspaceCommandWaitDelay
 		procgroup.Configure(ctx, command)
-		output, err := run(ctx, command)
-		if ctx.Err() != nil {
-			return "", ctx.Err()
-		}
+		output, err := command.Output()
 		return string(output), err
 	}
 	if _, err := git(nil, "init", "--bare", "--template="); err != nil {
 		return err
 	}
 	if _, err := git(pack, "-c", "pack.threads=1", "index-pack", "--stdin", "--fsck-objects"); err != nil {
-		return verificationCommandError(ctx, err, "invalid incorporation objects")
+		return errors.New("invalid incorporation objects")
 	}
 	tree, err := git(nil, "rev-parse", proof.TargetHeadSHA+"^{tree}")
-	if err != nil {
-		return verificationCommandError(ctx, err, "incorporation target tree differs")
-	}
-	if strings.TrimSpace(tree) != proof.TargetTreeSHA {
-		return invalidVerification("incorporation target tree differs")
+	if err != nil || strings.TrimSpace(tree) != proof.TargetTreeSHA {
+		return errors.New("incorporation target tree differs")
 	}
 	merged, err := git(nil, "merge-tree", "--write-tree", "--merge-base="+proof.SourceBaseSHA, proof.TargetHeadSHA, proof.SourceHeadSHA)
-	if err != nil {
-		return verificationCommandError(ctx, err, "reviewed source is not incorporated into target")
-	}
-	if strings.TrimSpace(merged) != proof.MergeTreeSHA || proof.MergeTreeSHA != proof.TargetTreeSHA {
-		return invalidVerification("reviewed source is not incorporated into target")
+	if err != nil || strings.TrimSpace(merged) != proof.MergeTreeSHA || proof.MergeTreeSHA != proof.TargetTreeSHA {
+		return errors.New("reviewed source is not incorporated into target")
 	}
 	return nil
 }
