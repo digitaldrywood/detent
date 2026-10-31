@@ -32,7 +32,10 @@ func TestReleaseFinalizer(t *testing.T) {
 		platform, override, recordedOverride, suiteState                 string
 		actor, actorType, overrideActors                                 string
 		local, noOverrideActors, rejectOverride, identityFailure         bool
+		forgedEnvironment                                                bool
 	}{
+		{name: "forged Actions environment cannot impersonate owner", local: true, forgedEnvironment: true, actor: "other-user", override: "Owner directs release", suiteState: "failure", rejectOverride: true},
+		{name: "forged environment cannot replace repository allowlist", local: true, forgedEnvironment: true, overrideActors: `["other-user"]`, override: "Owner directs release", suiteState: "failure", rejectOverride: true},
 		{name: "unauthorized actor cannot override", actor: "other-user", override: "Owner directs release", suiteState: "failure", rejectOverride: true},
 		{name: "partial actor match cannot override", overrideActors: `["example-operator-extra"]`, override: "Owner directs release", rejectOverride: true},
 		{name: "missing override allowlist denies everyone", noOverrideActors: true, override: "Owner directs release", rejectOverride: true},
@@ -112,7 +115,9 @@ printf 'forge %s\n' "$*" >> "$FIXTURE_LOG"
 case "$*" in
   'api user' | 'api users/'*)
     if [ "$FIXTURE_IDENTITY_FAILURE" = true ]; then exit 1; fi
-    printf '{"login":"%s","type":"%s"}\n' "$FIXTURE_ACTOR" "$FIXTURE_ACTOR_TYPE" ;;
+    actor="$FIXTURE_ACTOR"
+    if [[ "$*" == 'api users/'* ]]; then actor="${2#users/}"; fi
+    printf '{"login":"%s","type":"%s"}\n' "$actor" "$FIXTURE_ACTOR_TYPE" ;;
   *'/actions/variables/RELEASE_OVERRIDE_ACTORS'*)
     if [ "$FIXTURE_NO_OVERRIDE_ACTORS" = true ]; then exit 1; fi
     printf '%s\n' "$FIXTURE_OVERRIDE_ACTORS" ;;
@@ -338,10 +343,13 @@ esac
 				"FIXTURE_OVERRIDE_ACTORS="+overrideActors, "FIXTURE_NO_OVERRIDE_ACTORS="+flag[tt.noOverrideActors],
 				"FIXTURE_IDENTITY_FAILURE="+flag[tt.identityFailure])
 			if !tt.local {
-				command.Env = append(command.Env, "GITHUB_ACTIONS=true", "GITHUB_ACTOR="+actor)
+				command.Args = append(command.Args, actor, overrideActors)
 				if !tt.noOverrideActors {
 					command.Env = append(command.Env, "RELEASE_OVERRIDE_ACTORS="+overrideActors)
 				}
+			}
+			if tt.forgedEnvironment {
+				command.Env = append(command.Env, "GITHUB_ACTIONS=true", "GITHUB_ACTOR=example-operator", `RELEASE_OVERRIDE_ACTORS=["example-operator"]`)
 			}
 			output, err := command.CombinedOutput()
 			if (err != nil) != (tt.rejectReuse || tt.badAllowlist || tt.badOverride || tt.rejectOverride) {
@@ -431,8 +439,13 @@ esac
 				for _, status := range statuses {
 					evidence.Checks = append(evidence.Checks, releaseprovenance.ObservedCheck{Name: status["context"].(string), Status: "completed", Conclusion: status["state"].(string), Commit: statusSHA, StatusID: int64(status["id"].(int))})
 				}
-				if err := releaseprovenance.VerifyGitHubEvidence(produced, evidence); err != nil {
-					t.Fatalf("finalizer provenance rejected: %v", err)
+				verificationErr := releaseprovenance.VerifyGitHubEvidence(produced, evidence)
+				if produced.ValidationOverride != nil {
+					if verificationErr == nil || !strings.Contains(verificationErr.Error(), "verified override tag signature") {
+						t.Fatalf("mock tag without signature verification accepted: %v", verificationErr)
+					}
+				} else if verificationErr != nil {
+					t.Fatalf("finalizer provenance rejected: %v", verificationErr)
 				}
 				if !strings.Contains(text, "repository tag -a "+tag+" "+sha) || !strings.Contains(text, "refs/tags/"+tag) || !strings.Contains(text, "/release.yml/dispatches") {
 					t.Fatalf("release tag evidence lost: %s", text)

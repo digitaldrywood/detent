@@ -72,6 +72,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TMPDIR: ${{ runner.temp }}
           DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON: ${{ vars.DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON }}
+          WORKFLOW_OVERRIDE_ACTORS: ${{ vars.RELEASE_OVERRIDE_ACTORS }}
         run: |
           set -euo pipefail
           tag_message="$RUNNER_TEMP/detent-release-tag-message"
@@ -101,6 +102,7 @@ jobs:
             -github-statuses "$statuses" \
             -github-rulesets "$rulesets" \
             -required-check-names-json "$DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON" \
+            -override-actors-json "${WORKFLOW_OVERRIDE_ACTORS:-[]}" \
             -output tmp/detent_release_provenance.json
           echo "version=$release_tag" >> "$GITHUB_OUTPUT"
 
