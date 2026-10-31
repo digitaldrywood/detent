@@ -132,7 +132,7 @@ func TestGitHubAppBatchImport385IssuesEndToEnd(t *testing.T) {
 	}))
 	t.Cleanup(source.Close)
 	transport := NewAppTransport(connectorgithub.InstallationTokenConfig{Endpoint: source.URL + "/graphql", AppID: "123", PrivateKey: privateKey, HTTPClient: source.Client()})
-	service, err := hubserver.Open(t.Context(), hubserver.Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), InitialAdminToken: []byte(adminToken), ImportBackend: NewImporter(transport), ReconcileBackend: NewReconciler(transport), Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	service, err := hubserver.Open(t.Context(), hubserver.Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), InitialAdminToken: []byte(adminToken), ImportBackend: NewImporter(transport), ReconcileBackend: NewReconciler(transport), Content: newContentStore(), Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	if err != nil {
 		t.Fatal(err)
 	}
