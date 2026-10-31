@@ -155,13 +155,13 @@ func TestChangeLegacyReadsServeOverflow(t *testing.T) {
 				}
 			case "attempts":
 				var attempts []any
-				attempts, err = readLegacyChangeAttempts(t.Context(), tx, scope, string(f.issue.WorkItemID))
+				attempts, err = readLegacyChangeAttempts(f.service.contentContext(t.Context()), tx, scope, string(f.issue.WorkItemID))
 				if err == nil && len(attempts) != changeLegacyReadLimit+1 {
 					t.Fatalf("lost legacy attempts: %d", len(attempts))
 				}
 			case "side data":
 				issue := f.issue
-				err = readLegacyIssueChangeSideData(t.Context(), tx, scope, string(f.issue.WorkItemID), &issue)
+				err = readLegacyIssueChangeSideData(f.service.contentContext(t.Context()), tx, scope, string(f.issue.WorkItemID), &issue)
 			case "policy":
 				_, _, err = readNativePolicyLanding(t.Context(), tx, string(scope.organization), string(scope.project), &policy.RepositorySource{Repository: "owner/repository", Commit: strings.Repeat("a", 40), DefaultBranch: "develop"})
 			case "escape":
@@ -704,7 +704,7 @@ func TestLegacyClaimReviewsRetainGateAuthority(t *testing.T) {
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
-	selected, err := readClaimReviews(t.Context(), f.service.database.reader, f.change.ID, version.ID)
+	selected, err := readClaimReviews(f.service.contentContext(t.Context()), f.service.database.reader, f.change.ID, version.ID)
 	if err != nil {
 		t.Fatal(err)
 	}

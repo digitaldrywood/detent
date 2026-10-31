@@ -67,6 +67,7 @@ func TestTypedAnsweredClaimFacts(t *testing.T) {
 		{name: "ambiguous permission", present: true, status: "blocked", reason: "permission_wait", effect: "pr_create", state: "ambiguous"},
 		{name: "confirmed human", present: true, status: "blocked", human: true, effect: "git_push", state: "confirmed", want: "human_action"},
 		{name: "plain success"},
+		{name: "completed without checkpoint", present: true, status: "complete"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			for _, execution := range executions {
@@ -76,6 +77,9 @@ func TestTypedAnsweredClaimFacts(t *testing.T) {
 					data.Disposition = &tracker.NativeDisposition{Status: test.status, HumanAction: test.human, Blockers: test.blockers, ReasonCode: test.reason}
 				}
 				checkpoint := &tracker.NativeCheckpoint{ExternalEffect: test.effect, EffectState: test.state}
+				if test.name == "completed without checkpoint" {
+					checkpoint = nil
+				}
 				data.Handoff = checkpoint
 				raw, err := json.Marshal(data)
 				if err != nil {
@@ -90,7 +94,7 @@ func TestTypedAnsweredClaimFacts(t *testing.T) {
 					t.Fatal(err)
 				}
 				defer tx.Rollback()
-				if _, err := tx.ExecContext(t.Context(), `UPDATE native_attempts SET data_json=?,checkpoint_json=?,status='succeeded' WHERE id=?`, string(raw), string(checkpointRaw), data.AttemptID); err != nil {
+				if _, err := tx.ExecContext(t.Context(), `UPDATE native_attempts SET payload_object_key='',checkpoint_object_key='',data_json=?,checkpoint_json=?,status='succeeded' WHERE id=?`, string(raw), string(checkpointRaw), data.AttemptID); err != nil {
 					t.Fatal(err)
 				}
 				if err := updateAttemptDisposition(t.Context(), tx, data.AttemptID, data); err != nil {
@@ -126,14 +130,20 @@ func TestTypedAnsweredClaimFacts(t *testing.T) {
 				if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT id FROM issues WHERE native_id=?`, execution.issue.WorkItemID).Scan(&id); err != nil {
 					t.Fatal(err)
 				}
-				legacy, err := readUnknownAnsweredClaim(t.Context(), f.service.database.reader, id)
+				legacy, err := readUnknownAnsweredClaim(f.service.contentContext(t.Context()), f.service.database.reader, id)
 				if err != nil {
 					t.Fatal(err)
+				}
+				if test.name == "completed without checkpoint" {
+					review, reason, err := readPublishedReview(f.service.contentContext(t.Context()), f.service.database.reader, id, f.service.config.now())
+					if err != nil || reason != "" || !reflect.ValueOf(review).IsZero() {
+						t.Fatalf("completion without source offered a published review: %+v %q %v", review, reason, err)
+					}
 				}
 				if legacy.Kind != test.want {
 					t.Fatalf("legacy classification=%q want %q", legacy.Kind, test.want)
 				}
-				if err := f.service.database.populateClaimFacts(t.Context()); err != nil {
+				if err := f.service.database.populateClaimFacts(f.service.contentContext(t.Context())); err != nil {
 					t.Fatal(err)
 				}
 				if err := f.service.database.reader.QueryRowContext(t.Context(), query, execution.issue.WorkItemID).Scan(&kind); err != nil {

@@ -103,15 +103,15 @@ func TestNativeRuntimeReadHistoryCost(t *testing.T) {
 	for _, history := range []int{1, 64, 256} {
 		t.Run(strconv.Itoa(history), func(t *testing.T) {
 			for i := previous; i < history; i++ {
-				decisionTx, err := db.BeginTx(t.Context(), nil)
-				if err != nil {
+				data := tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Outcome: "skipped", Reason: "recorded refusal", At: now}}
+				prepared := &claimPreparation{decisions: []preparedClaimDecision{{scope: scope, item: string(f.issue.WorkItemID), data: data}}}
+				ctx := context.WithValue(f.service.contentContext(t.Context()), claimPreparationKey{}, prepared)
+				if err := prepareClaimDecisionPayloads(ctx, prepared); err != nil {
 					t.Fatal(err)
 				}
-				if err := appendLegacyNativeHistory(t.Context(), decisionTx, scope, string(f.issue.WorkItemID), "scheduler.decision", tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Outcome: "skipped", Reason: "recorded refusal", At: now}}, now); err != nil {
-					decisionTx.Rollback()
-					t.Fatal(err)
-				}
-				if err := decisionTx.Commit(); err != nil {
+				if err := f.service.hubTransact(ctx, func(tx *sql.Tx, _ time.Time) error {
+					return appendNativeHistory(ctx, tx, scope, string(f.issue.WorkItemID), "scheduler.decision", data, now)
+				}); err != nil {
 					t.Fatal(err)
 				}
 				old := version
@@ -120,7 +120,7 @@ func TestNativeRuntimeReadHistoryCost(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, err := db.ExecContext(t.Context(), "INSERT INTO change_versions (id, change_id, number, record_json) VALUES (?, ?, ?, ?)", old.ID, old.ChangeID, old.Number, raw); err != nil {
+				if _, err := db.ExecContext(t.Context(), "INSERT INTO change_versions (id, change_id, number, record_json, policy_revision_id) VALUES (?, ?, ?, ?, ?)", old.ID, old.ChangeID, old.Number, raw, old.PolicyID); err != nil {
 					t.Fatal(err)
 				}
 				for kind, record := range map[string]any{

@@ -789,16 +789,17 @@ func (s *Service) convertStorageBatch(ctx context.Context, now time.Time) error 
 			_, restoreErr := s.database.db.ExecContext(ctx, `UPDATE storage_conversion_cursors SET turn=? WHERE family=?`, cursor.turn, cursor.family)
 			return errors.Join(failures, restoreErr)
 		}
-		if budget.rows > beforeRows && budget.advance != nil {
-			advanceCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), backgroundStorageBudget)
-			advanceErr := budget.advance(advanceCtx)
-			cancel()
-			if advanceErr != nil {
-				return errors.Join(failures, err, advanceErr)
-			}
-		}
 		if budget.rows > beforeRows {
-			if _, recordErr := s.database.db.ExecContext(ctx, `UPDATE storage_conversion_cursors SET examined_rows=examined_rows+?,examined_bytes=examined_bytes+?,oversized_rows=oversized_rows+? WHERE family=?`, budget.rows-beforeRows, budget.bytes-beforeBytes, budget.oversized-beforeOversized, cursor.family); recordErr != nil {
+			progressCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), backgroundStorageBudget)
+			if budget.advance != nil {
+				if advanceErr := budget.advance(progressCtx); advanceErr != nil {
+					cancel()
+					return errors.Join(failures, err, advanceErr)
+				}
+			}
+			_, recordErr := s.database.db.ExecContext(progressCtx, `UPDATE storage_conversion_cursors SET examined_rows=examined_rows+?,examined_bytes=examined_bytes+?,oversized_rows=oversized_rows+? WHERE family=?`, budget.rows-beforeRows, budget.bytes-beforeBytes, budget.oversized-beforeOversized, cursor.family)
+			cancel()
+			if recordErr != nil {
 				return errors.Join(failures, err, recordErr)
 			}
 		} else {

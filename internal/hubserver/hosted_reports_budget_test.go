@@ -17,6 +17,11 @@ import (
 
 func TestReportsLongRangeReadBudget(t *testing.T) {
 	f := newUsageHostedFixture(t)
+	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
+	f.service.stopHealthDetector()
+	f.service.tokenUseWork.Wait()
 	now := time.Date(2026, 10, 13, 0, 0, 0, 0, time.UTC)
 	f.service.config.now = func() time.Time { return now }
 	scope := nativeScope{organization: "org_browser_preview", project: tracker.ProjectID(f.project)}
@@ -31,6 +36,7 @@ FROM change_requests c JOIN change_versions v ON v.change_id=c.id CROSS JOIN n W
 		t.Fatal(err)
 	}
 	projectTestChangeColumns(t, f.service)
+	rebuildTestAnalyticsRollups(t, f.service, scope)
 	for _, test := range []struct {
 		name      string
 		rangeName string

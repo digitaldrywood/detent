@@ -254,6 +254,8 @@ func TestConversationSnapshotIgnoresStoredDeltas(t *testing.T) {
 		} {
 			t.Run(endpoint+"/"+tt.name, func(t *testing.T) {
 				f := newStorageArchiveFixture(t)
+				f.service.outbox.stop()
+				f.service.stopHealthDetector()
 				objects := &conversationContentFixture{}
 				f.store.contents = objects
 				record := f.create(t, f.record(f.owner, "retained deltas", f.now))
@@ -335,6 +337,7 @@ func TestConversationSnapshotIgnoresStoredDeltas(t *testing.T) {
 					t.Fatal(err)
 				}
 				scope := nativeScope{organization: f.organization, project: f.project.ID, credential: apiCredential{ID: f.owner, Scope: apiScopeOperator}}
+				f.service.tokenUseWork.Wait()
 				objects.onIO = func() error {
 					if occupied := f.store.reader.Stats().InUse + f.store.db.Stats().InUse; occupied != 0 {
 						t.Errorf("object read holds %d database connections", occupied)

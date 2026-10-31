@@ -546,15 +546,31 @@ func latestNativeRuntimeEvent(ctx context.Context, q nativeQueryer, scope native
 	defer rows.Close()
 	found := false
 	legacy := 0
+	type candidate struct {
+		event                                               tracker.CollaborationEvent
+		actor, data, at                                     string
+		version                                             int
+		present, changePresent                              sql.NullBool
+		source, reason, decisionOutcome, runner, decisionAt sql.NullString
+		revision, eventRevision                             sql.NullInt64
+		change                                              tracker.NativeChangeReference
+	}
+	var candidates []candidate
 	for rows.Next() {
-		var version int
-		var present, changePresent sql.NullBool
-		var source, reason, decisionOutcome, runner, decisionAt sql.NullString
-		var revision, eventRevision sql.NullInt64
-		var change tracker.NativeChangeReference
-		if err := rows.Scan(&e.ID, &e.AggregateSequence, &e.Type, &e.SchemaVersion, &actor, &data, &at, &version, &present, &decisionOutcome, &reason, &source, &runner, &decisionAt, &revision, &change.ChangeID, &change.VersionID, &change.HeadSHA, &changePresent, &eventRevision); err != nil {
+		c := candidate{event: e}
+		if err := rows.Scan(&c.event.ID, &c.event.AggregateSequence, &c.event.Type, &c.event.SchemaVersion, &c.actor, &c.data, &c.at, &c.version, &c.present, &c.decisionOutcome, &c.reason, &c.source, &c.runner, &c.decisionAt, &c.revision, &c.change.ChangeID, &c.change.VersionID, &c.change.HeadSHA, &c.changePresent, &c.eventRevision); err != nil {
 			return tracker.CollaborationEvent{}, err
 		}
+		candidates = append(candidates, c)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return tracker.CollaborationEvent{}, err
+	}
+	for _, c := range candidates {
+		e, actor, data, at = c.event, c.actor, c.data, c.at
+		version, present, changePresent := c.version, c.present, c.changePresent
+		source, reason, decisionOutcome, runner, decisionAt := c.source, c.reason, c.decisionOutcome, c.runner, c.decisionAt
+		revision, eventRevision, change := c.revision, c.eventRevision, c.change
 		if version == 1 && e.Type == "scheduler.decision" && explanationRead(ctx) {
 			projected := tracker.CollaborationData{Revision: tracker.Revision(eventRevision.Int64)}
 			if present.Bool {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -399,22 +400,20 @@ func TestNativeCandidateQueryBound(t *testing.T) {
 				event.Data.Handoff.WorkspaceDigest = strings.Repeat("d", 64)
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, event), http.StatusOK)
 				event.Type, event.IdempotencyKey, event.Data.Sequence = "run.finished", "finish", 3
+				checkpointRaw, err := json.Marshal(event.Data.Handoff)
+				if err != nil {
+					t.Fatal(err)
+				}
 				event.Data.Handoff, event.Data.Outcome = nil, "succeeded"
 				event.Data.CompletionBody = "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, event), http.StatusOK)
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
-				var payloadKey string
-				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT payload_object_key FROM native_attempts WHERE work_item_id = ?", tail.WorkItemID).Scan(&payloadKey); err != nil {
-					t.Fatal(err)
-				}
-				inline, err := readStoredPayload(f.service.contentContext(t.Context()), payloadKey)
+				event.Data.Disposition = nil
+				raw, err := json.Marshal(event.Data)
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET data_json = ?, payload_object_key = '' WHERE work_item_id = ?", string(inline), tail.WorkItemID); err != nil {
-					t.Fatal(err)
-				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET data_json = json_remove(data_json, '$.disposition') WHERE work_item_id = ?", tail.WorkItemID); err != nil {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET payload_object_key='',checkpoint_object_key='',data_json=?,checkpoint_json=? WHERE work_item_id=?", string(raw), string(checkpointRaw), tail.WorkItemID); err != nil {
 					t.Fatal(err)
 				}
 				for _, issue := range issues[:len(issues)-1] {
@@ -577,7 +576,20 @@ FROM native_attempts a JOIN issues i ON i.native_id = ? WHERE a.work_item_id = ?
 			}
 			query.After = ids[0]
 			if test.unpublished {
-				if _, err := tx.ExecContext(t.Context(), `UPDATE native_attempts SET data_json = json_set(data_json, '$.completion_body', ?) WHERE work_item_id = ?`, "```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Approve scope\n```", tail.WorkItemID); err != nil {
+				var raw string
+				if err := tx.QueryRowContext(t.Context(), "SELECT data_json FROM native_attempts WHERE work_item_id=?", tail.WorkItemID).Scan(&raw); err != nil {
+					t.Fatal(err)
+				}
+				var data tracker.NativeRunData
+				if err := json.Unmarshal([]byte(raw), &data); err != nil {
+					t.Fatal(err)
+				}
+				data.CompletionBody = "```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Approve scope\n```"
+				encoded, err := json.Marshal(data)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := tx.ExecContext(t.Context(), "UPDATE native_attempts SET data_json=? WHERE work_item_id=?", string(encoded), tail.WorkItemID); err != nil {
 					t.Fatal(err)
 				}
 				before := probe.completionBodies.Load()

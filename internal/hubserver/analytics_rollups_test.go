@@ -550,7 +550,7 @@ func drainTestAnalytics(t *testing.T, s *Service) {
 	t.Helper()
 	convertTestAnalyticsProjections(t, s)
 	for {
-		more, err := s.database.drainAnalyticsDirty(t.Context(), s.config.now())
+		more, err := s.database.drainAnalyticsDirty(s.contentContext(t.Context()), s.config.now())
 		if err != nil {
 			t.Log(err)
 		}

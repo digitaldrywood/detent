@@ -113,7 +113,7 @@ func TestRunnerRemoval(t *testing.T) {
 			if removedAt.Valid != removed || revokedAt.Valid != removed || name != "Runner" {
 				t.Fatalf("identity after removal: removed=%v revoked=%v name=%q", removedAt, revokedAt, name)
 			}
-			runners, err := f.service.listRunnerRoutingData(t.Context(), f.project.OrganizationID, 0, 0)
+			runners, err := f.service.listRunnerRoutingData(f.service.contentContext(t.Context()), f.project.OrganizationID, 0, 0)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -123,7 +123,7 @@ func TestRunnerRemoval(t *testing.T) {
 				}
 			}
 			f.service.config.Hosted = &HostedConfig{OrganizationID: string(f.project.OrganizationID)}
-			fleet, err := f.service.hostedFleetRunners(t.Context(), apiCredential{}, map[tracker.ProjectID]bool{f.project.ID: true})
+			fleet, err := f.service.hostedFleetRunners(f.service.contentContext(t.Context()), apiCredential{}, map[tracker.ProjectID]bool{f.project.ID: true})
 			if err != nil {
 				t.Fatal(err)
 			}

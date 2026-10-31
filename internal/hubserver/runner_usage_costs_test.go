@@ -105,7 +105,7 @@ func TestRunnerUsageCosts(t *testing.T) {
 				if _, err := tx.ExecContext(t.Context(), `UPDATE native_attempts SET machine_id=?,usage_facts_ready=?,data_json=?,payload_object_key='' WHERE id=?`, machine, ready, string(raw), finish.Data.AttemptID); err != nil {
 					t.Fatal(err)
 				}
-				if err := recordRunnerUsageCosts(t.Context(), tx, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, probe, UsageConfig{}, now); err != nil {
+				if err := recordRunnerUsageCosts(f.service.contentContext(t.Context()), tx, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, probe, UsageConfig{}, now); err != nil {
 					t.Fatal(err)
 				}
 				if err := tx.QueryRowContext(t.Context(), `SELECT observation_json FROM usage_cost_observations WHERE organization_id=? AND metric='attribution-probe' LIMIT 1`, f.project.OrganizationID).Scan(&raw); err != nil {
