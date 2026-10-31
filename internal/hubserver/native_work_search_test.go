@@ -2045,6 +2045,17 @@ func TestNativeSearchPostingRefreshRejectsReusedDocumentID(t *testing.T) {
 			if _, err := f.service.database.db.ExecContext(t.Context(), `DELETE FROM native_work_documents WHERE issue_id IN (SELECT id FROM issues WHERE native_id IN (?,?))`, first.WorkItemID, second.WorkItemID); err != nil {
 				t.Fatal(err)
 			}
+			var deletedScoped, deletedTotal int
+			if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*),count(*) FILTER (WHERE organization_id=? AND project_id=?) FROM native_work_search_refresh`, f.project.OrganizationID, f.project.ID).Scan(&deletedTotal, &deletedScoped); err != nil {
+				t.Fatal(err)
+			}
+			wantDeleted := 2
+			if name == "comment identity" {
+				wantDeleted = 4
+			}
+			if deletedTotal != wantDeleted || deletedScoped != wantDeleted {
+				t.Fatalf("deleted refresh total=%d scoped=%d want=%d", deletedTotal, deletedScoped, wantDeleted)
+			}
 			insert := `INSERT INTO native_work_documents(issue_id,comment_id) SELECT id,? FROM issues WHERE native_id=?`
 			result, err := f.service.database.db.ExecContext(t.Context(), insert, comment, first.WorkItemID)
 			if err != nil {
@@ -2128,7 +2139,15 @@ func TestNativeSearchPostingRefreshMigrationPreservesQueuedSearch(t *testing.T) 
 	if !ok {
 		t.Fatal("missing rollback section")
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), down); err != nil {
+	scopeMigration, err := migrationFiles.ReadFile("migrations/20261031222239_native_search_refresh_scope.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	scopeUp, scopeDown, ok := strings.Cut(string(scopeMigration), "-- +goose Down")
+	if !ok {
+		t.Fatal("missing scope rollback section")
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), scopeDown+down); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.service.database.db.ExecContext(t.Context(), `DROP TRIGGER native_work_search_refresh_insert;
@@ -2136,7 +2155,7 @@ func TestNativeSearchPostingRefreshMigrationPreservesQueuedSearch(t *testing.T) 
  UPDATE native_comments SET body='Current quasar' WHERE body='Obsolete narwhal';`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), up); err != nil {
+	if _, err := f.service.database.db.ExecContext(t.Context(), up+scopeUp); err != nil {
 		t.Fatal(err)
 	}
 	for _, fixture := range []nativeFixture{f, other} {
@@ -2165,7 +2184,7 @@ func TestNativeSearchCleanupMigration(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, file := range files {
-		if file.Name() == "20261031202051_native_search_revision_cleanup.sql" || file.Name() == "20261031211642_native_search_deferred_deletion.sql" {
+		if file.Name() == "20261031202051_native_search_revision_cleanup.sql" || file.Name() == "20261031211642_native_search_deferred_deletion.sql" || file.Name() == "20261031222239_native_search_refresh_scope.sql" {
 			continue
 		}
 		data, err := migrationFiles.ReadFile("migrations/" + file.Name())
