@@ -33,7 +33,9 @@ jobs:
       - name: Publish the validated tag
         env:
           DETENT_RELEASE_OVERRIDE: ${{ inputs.DETENT_RELEASE_OVERRIDE }}
-          RELEASE_OVERRIDE_ACTORS: ${{ vars.RELEASE_OVERRIDE_ACTORS }}
+          WORKFLOW_OVERRIDE_ACTOR: ${{ github.actor }}
+          WORKFLOW_OVERRIDE_ACTORS: ${{ vars.RELEASE_OVERRIDE_ACTORS }}
+          RELEASE_OVERRIDE_GPG_PRIVATE_KEY: ${{ secrets.RELEASE_OVERRIDE_GPG_PRIVATE_KEY }}
           GH_TOKEN: ${{ github.token }}
           CI_DEVELOP_SHA: ${{ github.sha }}
           CI_RELEASE_BRANCH: ${{ github.ref_name }}
@@ -43,4 +45,15 @@ jobs:
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          bash scripts/release-finalize.sh
+          if [ -n "$DETENT_RELEASE_OVERRIDE" ]; then
+            export GNUPGHOME
+            GNUPGHOME="$(mktemp -d "$TMPDIR/release-override-signing.XXXXXX")"
+            chmod 700 "$GNUPGHOME"
+            printf '%s' "$RELEASE_OVERRIDE_GPG_PRIVATE_KEY" | gpg --batch --import
+            signing_key="$(gpg --batch --with-colons --list-secret-keys | awk -F: '$1 == "fpr" { print $10; exit }')"
+            test -n "$signing_key"
+            git config gpg.format openpgp
+            git config user.signingkey "$signing_key"
+            git config tag.gpgsign true
+          fi
+          bash scripts/release-finalize.sh "$WORKFLOW_OVERRIDE_ACTOR" "${WORKFLOW_OVERRIDE_ACTORS:-[]}"

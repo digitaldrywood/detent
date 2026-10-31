@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -36,6 +37,7 @@ func run(args []string, stderr io.Writer) error {
 	statusesPath := flags.String("github-statuses", "", "authenticated GitHub combined-status response")
 	rulesetsPath := flags.String("github-rulesets", "", "authenticated active branch rulesets as JSON values")
 	requiredCheckNamesJSON := flags.String("required-check-names-json", "", "authoritative JSON array of release-only required check names")
+	overrideActorsJSON := flags.String("override-actors-json", "", "explicit workflow repository override allowlist; local calls read the repository API")
 	outputPath := flags.String("output", "", "path for canonical release provenance JSON")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -76,6 +78,12 @@ func run(args []string, stderr io.Writer) error {
 	}
 	for _, name := range requiredCheckNames {
 		evidence.RequiredChecks = append(evidence.RequiredChecks, provenance.RepositoryRequirement{Name: name})
+	}
+	if manifest.ValidationOverride != nil {
+		evidence.OverrideSignature, err = provenance.VerifyOverrideTag(context.Background(), "", manifest, *overrideActorsJSON)
+		if err != nil {
+			return fmt.Errorf("verify override tag signature: %w", err)
+		}
 	}
 	if err := provenance.VerifyGitHubEvidence(manifest, evidence); err != nil {
 		return fmt.Errorf("verify authenticated GitHub release evidence: %w", err)

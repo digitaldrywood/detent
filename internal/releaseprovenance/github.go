@@ -23,14 +23,19 @@ type RepositoryRequirement struct {
 }
 
 type GitHubEvidence struct {
-	RequiredChecks []RepositoryRequirement
-	Checks         []ObservedCheck
+	RequiredChecks    []RepositoryRequirement
+	Checks            []ObservedCheck
+	OverrideSignature *OverrideSignature
 }
 
 func VerifyGitHubEvidence(manifest Manifest, evidence GitHubEvidence) error {
 	if err := Validate(manifest, manifest.Repository, manifest.Tag, manifest.Commit); err != nil {
 		return err
 	}
+	if manifest.ValidationOverride != nil && !evidence.OverrideSignature.matches(manifest) {
+		return errors.New("release validation override requires a verified override tag signature by an allowlisted owner")
+	}
+
 	required, err := normalizedRequirements(evidence.RequiredChecks)
 	if err != nil {
 		return err

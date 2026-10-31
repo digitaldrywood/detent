@@ -71,10 +71,10 @@ func TestRun(t *testing.T) {
 		wantErr        string
 	}{
 		{name: "valid", message: annotation, commit: commit},
-		{name: "recorded override permits failed suite", message: overrideAnnotation, commit: commit, checks: overrideChecks,
+		{name: "unsigned override cannot waive failed suite", wantErr: "verify override tag signature", message: overrideAnnotation, commit: commit, checks: overrideChecks,
 			requiredChecks: `["scheduled-full-ci", "release-security-audit"]`,
 			statuses:       `{"sha":"` + commit + `","total_count":1,"statuses":[{"id":9,"context":"scheduled-full-ci","state":"failure"}]}`},
-		{name: "recorded override permits missing suite", message: overrideAnnotation, commit: commit, checks: overrideChecks,
+		{name: "unsigned override cannot waive missing suite", wantErr: "verify override tag signature", message: overrideAnnotation, commit: commit, checks: overrideChecks,
 			requiredChecks: `["scheduled-full-ci", "release-security-audit"]`},
 		{name: "missing evidence", message: "manual tag", commit: commit, wantErr: "missing provenance annotation"},
 		{name: "wrong candidate", message: annotation, commit: "89abcdef0123456789abcdef0123456789abcdef", wantErr: "want"},

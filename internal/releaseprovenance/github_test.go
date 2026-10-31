@@ -1,6 +1,7 @@
 package releaseprovenance
 
 import (
+	"crypto/sha256"
 	"strings"
 	"testing"
 )
@@ -26,6 +27,14 @@ func TestVerifyGitHubEvidence(t *testing.T) {
 		wantErr        string
 	}{
 		{name: "exact authenticated evidence"},
+		{name: "unsigned override annotation cannot waive failed suite", mutateManifest: func(m *Manifest) {
+			m.ValidationOverride = &ValidationOverride{Reason: "Forged owner reason", Status: "failure", StatusID: 9}
+			m.Checks[0].Name = "release-security-audit"
+		}, mutateEvidence: func(e *GitHubEvidence) {
+			e.RequiredChecks = []RepositoryRequirement{{Name: "scheduled-full-ci"}, {Name: "release-security-audit"}}
+			e.Checks[0].Name = "release-security-audit"
+			e.Checks = append(e.Checks, ObservedCheck{Name: "scheduled-full-ci", Commit: testCommit, Status: "completed", Conclusion: "failure", StatusID: 9})
+		}, wantErr: "verified override tag signature"},
 		{name: "recorded override permits failed suite with authenticated audit", mutateManifest: func(m *Manifest) {
 			m.ValidationOverride = &ValidationOverride{Reason: "Owner accepts failed validation", Status: "failure", StatusID: 9}
 			m.Checks[0].Name = "release-security-audit"
@@ -91,6 +100,13 @@ func TestVerifyGitHubEvidence(t *testing.T) {
 			}
 			if tt.mutateEvidence != nil {
 				tt.mutateEvidence(&evidence)
+			}
+			if candidate.ValidationOverride != nil && !strings.HasPrefix(tt.name, "unsigned override") {
+				raw, err := Marshal(candidate)
+				if err != nil {
+					t.Fatal(err)
+				}
+				evidence.OverrideSignature = &OverrideSignature{manifestHash: sha256.Sum256(raw)}
 			}
 			err := VerifyGitHubEvidence(candidate, evidence)
 			if tt.wantErr == "" {
