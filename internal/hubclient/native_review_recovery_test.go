@@ -287,7 +287,9 @@ func TestNativeReviewProducerRecoversAfterTemporaryFailure(t *testing.T) {
 					provider.validator = test.verdict
 				}
 			}
-			agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Logger: logger, Store: runtimeStore, ProjectID: "local", Workspace: backend, AgentBackend: provider, Workflow: config.Workflow{Config: config.Config{Policy: h.descriptor, Tracker: config.Tracker{Kind: config.TrackerHubNative}, Gate: gate.Config{Run: gateCommand, AutomatedReview: gate.AutomatedReviewRequired, SecurityAudit: gate.SecurityAuditConfig{Enabled: true}, Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: "Complete the issue"}})
+			agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Logger: logger, Store: runtimeStore, ProjectID: "local", Workspace: backend, AgentBackend: provider, Workflow: config.Workflow{Config: config.Config{Policy: h.descriptor, Tracker: config.Tracker{Kind: config.TrackerHubNative}, Gate: gate.Config{Run: gateCommand, AutomatedReview: gate.AutomatedReviewRequired, SecurityAudit: gate.SecurityAuditConfig{Enabled: true}, Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: "Complete the issue"}, FinalizationContext: func(ctx context.Context, _ time.Duration, _ error) (context.Context, context.CancelFunc) {
+				return context.WithCancel(testenv.WaitContext(t, ctx))
+			}})
 			if err != nil {
 				t.Fatal(err)
 			}
