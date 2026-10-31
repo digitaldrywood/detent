@@ -627,31 +627,34 @@ func TestNativeRetryProgressFailureReleasesExecutionIdentity(t *testing.T) {
 				}
 			})
 			var started nativeProgressRerouteRun
+			var admissionErr error
 			select {
 			case started = <-backend.started:
 				if started.err != nil {
 					t.Fatal(started.err)
 				}
 			case err := <-source.refused:
-				t.Fatalf("ordinary retry admission failed: %v", err)
+				admissionErr = err
 			case err := <-source.released:
 				t.Fatalf("ordinary retry stopped after progress failure: %v", err)
 			case <-testenv.WaitContext(t, t.Context()).Done():
 				t.Fatal("ordinary retry did not start")
 			}
-			if started.request.Mode != runner.RunModeImplement || started.request.ProgressDecision.RequestID != "" || strings.Count(started.request.PriorAttempt.Reason, tt.reason) != 1 {
-				t.Fatalf("ordinary retry lost advisory failure: %+v", started.request)
-			}
-			if tt.conflict && conflicts != 2 {
-				t.Fatalf("old Hub conflict made %d publications, want 2", conflicts)
-			}
-
 			check, err := h.admin.NativeAttempt(t.Context(), tracker.NativeWorkItemID(issue.ID), original.data.AttemptID)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if check.Identity == nil || check.Identity.Role != runner.RoleRework || check.Outcome != "cancelled" || check.ClaimReleasedAt == nil {
 				t.Fatalf("failed progress check retained its rework identity: %+v", check)
+			}
+			if admissionErr != nil {
+				t.Fatalf("ordinary retry admission failed: %v", admissionErr)
+			}
+			if started.request.Mode != runner.RunModeImplement || started.request.ProgressDecision.RequestID != "" || strings.Count(started.request.PriorAttempt.Reason, tt.reason) != 1 {
+				t.Fatalf("ordinary retry lost advisory failure: %+v", started.request)
+			}
+			if tt.conflict && conflicts != 2 {
+				t.Fatalf("old Hub conflict made %d publications, want 2", conflicts)
 			}
 			if check.Runtime == nil || check.Runtime.Recovery == nil || strings.Count(check.Runtime.Recovery.Reason, tt.reason) != 1 {
 				t.Fatalf("progress failure evidence missing: %+v", check.Runtime)
