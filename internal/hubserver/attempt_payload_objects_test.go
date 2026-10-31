@@ -837,6 +837,15 @@ func TestArchivedBlockerHistoryAuthorizesDependencyRecovery(t *testing.T) {
 			decodeHubResponse(t, response, &issue)
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(f.lease.ID)+"/release", f.worker, tracker.NativeLeaseMutation{FencingToken: f.lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(dependency.WorkItemID)+"/workflow", f.token, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "dependency-done"}, ExpectedRevision: dependency.Revision, State: "Done", Reason: "user_requested"}), http.StatusOK)
+			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{ID: bootstrapTokenID}}
+			var row int64
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT rowid FROM collaboration_events WHERE work_item_id=? AND type='run.finished' ORDER BY sequence DESC LIMIT 1", issue.WorkItemID).Scan(&row); err != nil {
+				t.Fatal(err)
+			}
+			conversionContext := context.WithValue(f.service.freshRunDetailContext(t.Context()), storageSelectedRowKey{}, row)
+			if err := f.service.convertStorageAggregate(conversionContext, scope, storageConversionFamilies[0], string(issue.WorkItemID), f.service.config.now()); err != nil {
+				t.Fatal(err)
+			}
 			var inline, key string
 			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT data_json,payload_object_key FROM collaboration_events WHERE work_item_id=? AND type='run.finished' ORDER BY sequence DESC LIMIT 1", issue.WorkItemID).Scan(&inline, &key); err != nil {
 				t.Fatal(err)
@@ -849,7 +858,6 @@ func TestArchivedBlockerHistoryAuthorizesDependencyRecovery(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{ID: bootstrapTokenID}}
 			if test.postRunEdits > 0 {
 				keys := make([]string, test.postRunEdits)
 				for index := range keys {

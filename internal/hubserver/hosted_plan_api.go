@@ -280,7 +280,7 @@ func hostedRunnerTransactionMetrics(path string) []string {
 	case nativeBase + "/leases/:lease/validate", nativeBase + "/claims/preview":
 		return []string{"events_total", "usage_windows"}
 	case nativeBase + "/machines/:machine/heartbeat":
-		return []string{"connected_runners", "events_total", "usage_windows"}
+		return []string{"connected_runners", "events_total", "usage_windows", "collaboration_bytes"}
 	}
 	return nil
 }

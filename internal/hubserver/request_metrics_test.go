@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -194,6 +195,103 @@ func TestRequestMetricsFlushDoesNotUseTenantWriter(t *testing.T) {
 	}
 	if _, err := m.report(ctx, now); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestHeartbeatTelemetryFlushPreservesCounters(t *testing.T) {
+	now := time.Date(2026, 10, 31, 18, 0, 0, 0, time.UTC)
+	f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
+	f.service.stopHealthDetector()
+	runner := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
+	runner.enroll(t)
+	path := f.base + "/machines/" + string(runner.binding.MachineID) + "/heartbeat"
+	body := map[string]any{"capacity": 2, "version": "test", "backend_isolation": runner.redemption.BackendIsolation}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, runner.redemption.Credential, body), http.StatusOK)
+	f.service.tokenUseWork.Wait()
+	f.service.config.Hosted = &HostedConfig{OrganizationID: string(f.project.OrganizationID)}
+	f.service.database.hostedOrganization = f.project.OrganizationID
+	hostedTestPlans(t, f.service, nil)
+	m, err := openRequestMetrics(t.Context(), filepath.Join(t.TempDir(), "requests.sqlite"), f.project.OrganizationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.service.requestMetrics = m
+	f.service.echo.Use(f.service.hostedBoundary)
+	request := newHubAPIRequest(t, http.MethodPost, path, runner.redemption.Credential, body)
+	response := httptest.NewRecorder()
+	f.service.Handler().ServeHTTP(response, request)
+	requireNativeStatus(t, response, http.StatusOK)
+	usage := func() map[string]int64 {
+		t.Helper()
+		values := make(map[string]int64)
+		rows, err := f.service.database.reader.QueryContext(t.Context(), "SELECT metric,sum(amount) FROM hosted_usage_windows WHERE metric IN ('http_requests','http_duration_microseconds','http_response_bytes','http_request_bytes','http_request_bytes_known') GROUP BY metric")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var metric string
+			var amount int64
+			if err := rows.Scan(&metric, &amount); err != nil {
+				t.Fatal(err)
+			}
+			values[metric] = amount
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+		return values
+	}
+	if got := usage(); len(got) != 0 {
+		t.Fatalf("request wrote HTTP telemetry before background flush: %v", got)
+	}
+	held, err := f.service.database.db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	completed := false
+	t.Cleanup(func() {
+		cancel()
+		_ = held.Rollback()
+		if !completed {
+			<-done
+		}
+	})
+	waits := f.service.database.db.Stats().WaitCount
+	go func() { done <- m.flush(ctx, now) }()
+	testenv.WaitUntil(t, t.Context(), func() error {
+		if f.service.database.db.Stats().WaitCount > waits {
+			return nil
+		}
+		return errors.New("telemetry flush has not reached the tenant writer")
+	})
+	cancel()
+	err = <-done
+	completed = true
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled telemetry flush=%v", err)
+	}
+	if err := held.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.flush(t.Context(), now); err != nil {
+		t.Fatal(err)
+	}
+	got := usage()
+	if got["http_requests"] != 1 || got["http_duration_microseconds"] <= 0 || got["http_response_bytes"] != int64(response.Body.Len()) || got["http_request_bytes"] != request.ContentLength || got["http_request_bytes_known"] != 1 {
+		t.Fatalf("flushed HTTP counters=%v, request bytes=%d response bytes=%d", got, request.ContentLength, response.Body.Len())
+	}
+	if err := m.flush(t.Context(), now); err != nil {
+		t.Fatal(err)
+	}
+	if repeated := usage(); !maps.Equal(got, repeated) {
+		t.Fatalf("telemetry flush counted twice: %v -> %v", got, repeated)
+	}
+	var recorded int64
+	if err := m.db.QueryRowContext(t.Context(), "SELECT sum(count) FROM request_minutes").Scan(&recorded); err != nil || recorded != 1 {
+		t.Fatalf("request latency counted after sink retry=%d, error=%v", recorded, err)
 	}
 }
 

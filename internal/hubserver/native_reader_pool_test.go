@@ -2,9 +2,15 @@ package hubserver
 
 import (
 	"database/sql"
+	"database/sql/driver"
 	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/testenv"
@@ -46,6 +52,14 @@ func TestNativeReadsDoNotWaitForTheWriter(t *testing.T) {
 func TestAPITokenUseIsRecordedOncePerInterval(t *testing.T) {
 	f := newNativeFixture(t, nil, "", "token-use")
 	hash := apikey.HashToken(f.token)
+	var writer *writerTiming
+	f.service.echo.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			err := next(c)
+			writer = writerTimingFrom(c.Request().Context())
+			return err
+		}
+	})
 	lastUsed := func() sql.NullString {
 		t.Helper()
 		f.service.tokenUseWork.Wait()
@@ -57,7 +71,20 @@ func TestAPITokenUseIsRecordedOncePerInterval(t *testing.T) {
 	}
 	read := func() {
 		t.Helper()
-		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items?limit=1", f.token, nil), http.StatusOK)
+		var backgroundStatements atomic.Int64
+		timing := &requestTiming{trace: func(query string, _ []driver.NamedValue) {
+			if strings.HasPrefix(query, "UPDATE api_tokens SET last_used_at") {
+				backgroundStatements.Add(1)
+			}
+		}}
+		request := newHubAPIRequest(t, http.MethodGet, f.base+"/work-items?limit=1", f.token, nil)
+		response := httptest.NewRecorder()
+		f.service.Handler().ServeHTTP(response, request.WithContext(withRequestTiming(request.Context(), timing)))
+		requireNativeStatus(t, response, http.StatusOK)
+		f.service.tokenUseWork.Wait()
+		if writer == nil || writer.txs.Load() != 0 || backgroundStatements.Load() != 0 {
+			t.Fatalf("token use inherited request timing: writer=%+v, statements=%d", writer, backgroundStatements.Load())
+		}
 	}
 	stale := formatHubTime(time.Now().Add(-2 * tokenUseInterval))
 	tests := []struct {

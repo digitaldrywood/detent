@@ -63,20 +63,22 @@ func collaborationPayloadValues(ctx context.Context, tx *sql.Tx, scope nativeSco
 		if err != nil {
 			return "", nil, err
 		}
-		key, err := storedPayloadKey(ctx, string(scope.organization), payload)
+		key, _, err := storedRunPayload(ctx, string(scope.organization), payload)
 		if err != nil {
 			return "", nil, err
 		}
-		ref, err = readPayloadReference(ctx, tx, string(scope.organization), key)
-		if err != nil {
-			return "", nil, err
-		}
-		if scope.credential.ID != "" {
-			if _, err := recordPayloadAttachment(ctx, tx, scope, tracker.NativeWorkItemID(item), ref, formatHubTime(now)); err != nil {
+		if key != "" {
+			ref, err = readPayloadReference(ctx, tx, string(scope.organization), key)
+			if err != nil {
 				return "", nil, err
 			}
+			if scope.credential.ID != "" {
+				if _, err := recordPayloadAttachment(ctx, tx, scope, tracker.NativeWorkItemID(item), ref, formatHubTime(now)); err != nil {
+					return "", nil, err
+				}
+			}
+			version, raw = 1, "{}"
 		}
-		version, raw = 1, "{}"
 	}
 	change := tracker.NativeChangeReference{}
 	if data.Change != nil {

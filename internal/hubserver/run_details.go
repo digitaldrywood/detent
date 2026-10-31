@@ -57,6 +57,29 @@ func runDetailEntry(data tracker.NativeRunData) string {
 	return data.AttemptID + ":" + strconv.FormatInt(data.Sequence, 10)
 }
 
+func nativeHistoryID(ctx context.Context, kind string, data tracker.CollaborationData) string {
+	content, ok := ctx.Value(changeContentKey{}).(*changeContent)
+	if !ok || data.Run == nil || data.Run.Sequence <= 0 {
+		return payloadNativeID(ctx, "evt")
+	}
+	key := kind + ":" + runDetailEntry(*data.Run)
+	content.mu.Lock()
+	if content.registrations == nil {
+		content.mu.Unlock()
+		return payloadNativeID(ctx, "evt")
+	}
+	defer content.mu.Unlock()
+	if content.ids == nil {
+		content.ids = make(map[string]string)
+	}
+	if id := content.ids[key]; id != "" {
+		return id
+	}
+	id := newNativeID("evt")
+	content.ids[key] = id
+	return id
+}
+
 func (s *Service) runDetailStore() attachment.DetailStore {
 	if s.config.RunDetails != nil {
 		return s.config.RunDetails
@@ -267,7 +290,9 @@ func (s *Service) prepareRunDetail(ctx context.Context, scope nativeScope, item 
 	if err != nil {
 		return ctx, err
 	}
+	now = payloadTimestamp(ctx, now)
 	var prior *nativeAttemptUpdate
+	var payloads [][]byte
 	for i, event := range events {
 		if len(event.PriorEvents) != 0 && i < len(events)-1 || event.Data.AttemptID != request.Data.AttemptID || event.Data.LeaseID != request.Data.LeaseID || event.Data.FencingToken != request.Data.FencingToken || i < len(events)-1 && event.Type != "run.observed" {
 			return ctx, nativeInvalid("Run detail batch must contain ordered observations for one execution")
@@ -276,6 +301,7 @@ func (s *Service) prepareRunDetail(ctx context.Context, scope nativeScope, item 
 		if err != nil {
 			return ctx, err
 		}
+		history := true
 		if event.Data.Sequence > 0 {
 			update, err := prepareNativeAttempt(ctx, s.database.reader, scope, issue.WorkItemID, &event, now, termination, prior)
 			if err != nil {
@@ -284,7 +310,71 @@ func (s *Service) prepareRunDetail(ctx context.Context, scope nativeScope, item 
 			if update.duplicate {
 				continue
 			}
+			data := update.data
+			if data.Runtime != nil && !update.usageCorrection {
+				data.Runtime.RepairDependencies = nil
+			}
+			raw, err := json.Marshal(data)
+			if err != nil {
+				return ctx, err
+			}
+			payloads = append(payloads, raw)
+			if data.Handoff != nil {
+				raw, err := json.Marshal(checkpointPayload{Checkpoint: data.Handoff, ArtifactIDs: data.ArtifactIDs})
+				if err != nil {
+					return ctx, err
+				}
+				payloads = append(payloads, raw)
+			}
 			prior = &update
+			history = update.history
+			if !termination && event.Data.Runtime != nil {
+				if landing := event.Data.Runtime.Landing; landing != nil {
+					if _, err := prepareAttemptLanding(ctx, s.database.reader, scope, issue.WorkItemID, event.Data.AttemptID, *landing); err != nil {
+						return ctx, err
+					}
+				}
+				if validation := event.Data.Runtime.Validation; validation != nil && validation.BaseReproduction != nil && event.Type == "run.finished" {
+					var raw string
+					if err := s.database.reader.QueryRowContext(ctx, "SELECT COALESCE(NULLIF(checkpoint_object_key,''),checkpoint_json,'null') FROM native_attempts WHERE id=?", event.Data.AttemptID).Scan(&raw); err != nil && !errors.Is(err, sql.ErrNoRows) {
+						return ctx, err
+					}
+					if raw != "" {
+						if _, err := decodeRunCheckpoint(ctx, s.database.reader, raw); err != nil {
+							return ctx, err
+						}
+					}
+				}
+			}
+		}
+		if history {
+			data := tracker.CollaborationData{Run: &event.Data}
+			if event.Type == "run.finished" {
+				data.Revision = issue.Revision
+			}
+			raw, err := json.Marshal(data)
+			if err != nil {
+				return ctx, err
+			}
+			id := nativeHistoryID(ctx, event.Type, data)
+			payload, err := json.Marshal(storageJSONPayload{Organization: string(scope.organization), Project: string(scope.project), Family: event.Type + ":" + id, Data: raw})
+			if err != nil {
+				return ctx, err
+			}
+			payloads = append(payloads, payload)
+		}
+	}
+	payloads = append(payloads, []byte(`{"accepted":true}`))
+	for _, payload := range payloads {
+		if _, err := prepareChangeContent(ctx, string(scope.organization), payload); err != nil {
+			return ctx, err
+		}
+		now, err := s.database.currentTime()
+		if err != nil {
+			return ctx, err
+		}
+		if _, _, err := s.validateNativeRunOwner(ctx, s.database.reader, scope, item, &request, now); err != nil {
+			return ctx, err
 		}
 	}
 	return ctx, nil

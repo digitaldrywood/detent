@@ -322,7 +322,54 @@ func (s *Service) prepareProjectConfiguration(ctx context.Context, scope nativeS
 		}
 		prepared.policy = string(raw)
 	}
+	if observation.Diagnostics != nil {
+		if err := s.prepareAdmissionPayloads(ctx, scope, observation.Diagnostics.Admissions, now); err != nil {
+			return preparedProjectConfiguration{}, err
+		}
+	}
 	return prepareLegacyProjectConfiguration(ctx, s.database.reader, scope, prepared)
+}
+
+func (s *Service) prepareAdmissionPayloads(ctx context.Context, scope nativeScope, admissions []runnerauth.DiagnosticAdmission, now time.Time) error {
+	for _, admission := range admissions {
+		if admission.Result != "skipped" || admission.WorkItemRevision <= 0 || admission.ObservedAt.After(now) {
+			continue
+		}
+		var id tracker.WorkItemID
+		err := s.database.reader.QueryRowContext(ctx, `SELECT id FROM issues WHERE organization_id=? AND project_id=? AND native_id=? AND revision=?`, scope.organization, scope.project, admission.IssueID, admission.WorkItemRevision).Scan(&id)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		newer, err := hasNewerRunnerDecision(ctx, s.database.reader, scope, admission.IssueID, scope.credential.Runner.RunnerID, admission.ObservedAt)
+		if err != nil {
+			return err
+		}
+		if newer {
+			continue
+		}
+		_, data, changed, err := prepareNativeSchedulingOutcome(ctx, s.database.reader, &scope, id, tracker.NativeSchedulerDecision{Source: "native_runner_admission", Outcome: admission.Result, Reason: admission.Predicate}, admission.ObservedAt)
+		if err != nil {
+			return err
+		}
+		if !changed {
+			continue
+		}
+		raw, err := marshalNative(data)
+		if err != nil {
+			return err
+		}
+		payload, err := schedulerPayloadArchive(scope, raw)
+		if err != nil {
+			return err
+		}
+		if _, err := prepareChangeContent(ctx, string(scope.organization), payload); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func pruneExpiredProjectDiagnostics(diagnostics *runnerauth.ProjectDiagnostics, now time.Time) bool {

@@ -35,6 +35,7 @@ type changeContent struct {
 	call          entryauthority.ContentHandler
 	store         attachment.DetailStore
 	register      func(context.Context, string, attachment.ArchiveReference, bool) error
+	registrations map[string]contentRegistration
 	prepared      map[string]attachment.ArchiveReference
 	query         nativeQueryer
 	payloads      map[string][]byte
@@ -109,7 +110,7 @@ func prepareMeteredContent(ctx context.Context, organization string, data []byte
 		if !bytes.Equal(data, verified) {
 			return ref, artifact.ErrIntegrity
 		}
-		if err := content.register(ctx, organization, ref, billable); err != nil {
+		if err := registerContent(ctx, content, organization, ref, billable); err != nil {
 			return ref, err
 		}
 	} else {
@@ -118,7 +119,7 @@ func prepareMeteredContent(ctx context.Context, organization string, data []byte
 			return prepared, err
 		}
 		ref = prepared
-		if err := content.register(ctx, organization, ref, billable); err != nil {
+		if err := registerContent(ctx, content, organization, ref, billable); err != nil {
 			return ref, err
 		}
 		if _, err := content.call(ctx, entryauthority.ContentRequest{Organization: organization, Reference: ref, Data: compressed, Write: true}); err != nil {
@@ -404,7 +405,7 @@ func (s *Service) registerChangeContent(ctx context.Context, organization string
 		if err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO change_content_objects(organization_id,object_sha256,object_key,object_bytes,content_bytes,billable) SELECT ?,?,?,?,?,? WHERE NOT EXISTS(SELECT 1 FROM attachments WHERE organization_id=? AND object_key=? AND kind='archive' AND customer_owned=0 AND storage_binding_id='') ON CONFLICT DO UPDATE SET billable=max(change_content_objects.billable,excluded.billable)`, organization, ref.SHA256, ref.Key, ref.CompressedSize, ref.UncompressedSize, billableValue, organization, ref.Key); err != nil {
+		if err := insertContentRegistration(ctx, tx, organization, ref, billableValue); err != nil {
 			return err
 		}
 		if s.database.plans() == nil {

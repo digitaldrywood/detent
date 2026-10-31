@@ -401,7 +401,7 @@ func TestHubWriterQueriesRequireAnOwnedReadReason(t *testing.T) {
 		"sharedHostedSession":               "Creates a missing shared-entry session and its support audit.",
 		"revokeHostedSharedBinding":         "Revokes the shared session and its conversation authority.",
 		"MigrateHostedSharedOrigin":         "Offline migration writes the shared-entry origin bindings.",
-		"recordHostedRequest":               "Hosted GET accounting updates consumption in its own write transaction.",
+		"writeHostedRequestWindow":          "The existing request metrics owner publishes one aggregated HTTP usage window per short background transaction.",
 		"reserveHostedInvitationSeat":       "Reserves an invitation seat while checking the plan allowance.",
 		"commitNativeMutation":              "Runs a native mutation with authority, event and replay receipt in one transaction.",
 		"populateArchiveFact":               "Writes one unknown archive projection after reader-pool decoding, fenced by its unchanged source payload.",

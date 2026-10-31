@@ -48,6 +48,14 @@ func decodeLandingReceipt(ctx context.Context, raw string, object bool) (tracker
 }
 
 func recordAttemptLanding(ctx context.Context, tx *sql.Tx, scope nativeScope, item tracker.NativeWorkItemID, attempt string, receipt tracker.NativeLandingReceipt) error {
+	receipt, err := prepareAttemptLanding(ctx, tx, scope, item, attempt, receipt)
+	if err != nil {
+		return err
+	}
+	return persistAttemptLanding(ctx, tx, attempt, receipt)
+}
+
+func prepareAttemptLanding(ctx context.Context, tx nativeQueryer, scope nativeScope, item tracker.NativeWorkItemID, attempt string, receipt tracker.NativeLandingReceipt) (tracker.NativeLandingReceipt, error) {
 	var previous tracker.NativeLandingReceipt
 	var storedRaw string
 	var object bool
@@ -55,10 +63,10 @@ func recordAttemptLanding(ctx context.Context, tx *sql.Tx, scope nativeScope, it
 	if err == nil {
 		previous, err = decodeLandingReceipt(ctx, storedRaw, object)
 		if err != nil {
-			return err
+			return receipt, err
 		}
 	} else if !errors.Is(err, sql.ErrNoRows) {
-		return err
+		return receipt, err
 	}
 	left, right := previous, receipt
 	left.ObservedAt, right.ObservedAt = time.Time{}, time.Time{}
@@ -69,20 +77,20 @@ func recordAttemptLanding(ctx context.Context, tx *sql.Tx, scope nativeScope, it
 	} else {
 		issue, _, err := readNativeIssue(ctx, tx, scope, string(item))
 		if err != nil {
-			return err
+			return receipt, err
 		}
 		receipt.FromState = issue.State
 		if receipt.Landed {
 			transition, err := latestNativeRuntimeEvent(ctx, tx, scope, string(item), "workflow.transitioned", "")
 			if err != nil {
-				return err
+				return receipt, err
 			}
 			if transition.Actor == scope.actor() && transition.Data.ToState == issue.State {
 				receipt.FromState, receipt.TargetState = transition.Data.FromState, transition.Data.ToState
 			}
 		}
 	}
-	return persistAttemptLanding(ctx, tx, attempt, receipt)
+	return receipt, nil
 }
 
 func persistAttemptLanding(ctx context.Context, tx *sql.Tx, attempt string, receipt tracker.NativeLandingReceipt) error {
@@ -133,11 +141,11 @@ func persistAttemptLanding(ctx context.Context, tx *sql.Tx, attempt string, rece
 	if err := tx.QueryRowContext(ctx, "SELECT organization_id FROM native_attempts WHERE id=?", attempt).Scan(&organization); err != nil {
 		return err
 	}
-	key, err := storedPayloadKey(ctx, organization, encoded)
+	key, stored, err := storedRunPayload(ctx, organization, encoded)
 	if err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, "UPDATE native_attempts SET data_json='{}',payload_object_key=?,analytics_revision=analytics_revision+1 WHERE id=?", key, attempt); err != nil {
+	if _, err := tx.ExecContext(ctx, "UPDATE native_attempts SET data_json=?,payload_object_key=?,detail_attachment_id=NULL,conversion_state=CASE WHEN ?='' THEN 0 ELSE 2 END,analytics_revision=analytics_revision+1 WHERE id=?", stored, key, key, attempt); err != nil {
 		return err
 	}
 	if data.Runtime == nil {
@@ -153,8 +161,11 @@ func persistAttemptLanding(ctx context.Context, tx *sql.Tx, attempt string, rece
 	if receipt.VersionID == "" {
 		return nil
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO change_landing_receipts (attempt_id, version_id, record_json, payload_object_key, merge_sha) VALUES (?, ?, '{}', ?, ?)
-ON CONFLICT(attempt_id) DO UPDATE SET version_id=excluded.version_id, record_json='{}', payload_object_key=excluded.payload_object_key, merge_sha=excluded.merge_sha`, attempt, receipt.VersionID, key, receipt.MergeSHA)
+	if key != "" {
+		raw = "{}"
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO change_landing_receipts (attempt_id, version_id, record_json, payload_object_key, merge_sha) VALUES (?, ?, ?, ?, ?)
+ON CONFLICT(attempt_id) DO UPDATE SET version_id=excluded.version_id, record_json=excluded.record_json, payload_object_key=excluded.payload_object_key, merge_sha=excluded.merge_sha,conversion_state=0`, attempt, receipt.VersionID, raw, key, receipt.MergeSHA)
 	if err != nil {
 		return err
 	}

@@ -664,20 +664,20 @@ func (d *database) recordNativeClaimRefusal(ctx context.Context, tx *sql.Tx, que
 	return refusal
 }
 
-func recordNativeSchedulingOutcome(ctx context.Context, tx *sql.Tx, scope *nativeScope, id tracker.WorkItemID, decision tracker.NativeSchedulerDecision, now time.Time) error {
+func prepareNativeSchedulingOutcome(ctx context.Context, tx nativeQueryer, scope *nativeScope, id tracker.WorkItemID, decision tracker.NativeSchedulerDecision, now time.Time) (string, tracker.CollaborationData, bool, error) {
 	if scope == nil || id <= 0 {
-		return nil
+		return "", tracker.CollaborationData{}, false, nil
 	}
 	var item string
 	if err := tx.QueryRowContext(ctx, "SELECT native_id, revision FROM issues WHERE id=? AND organization_id=? AND project_id=?", id, scope.organization, scope.project).Scan(&item, &decision.WorkItemRevision); err != nil {
-		return err
+		return "", tracker.CollaborationData{}, false, err
 	}
 	decision.At = now
 	decision.RunnerID = scope.credential.Runner.RunnerID
 	data := tracker.CollaborationData{Decision: &decision}
 	reference, err := readClaimReference(ctx, tx, *scope, item)
 	if err != nil {
-		return err
+		return "", tracker.CollaborationData{}, false, err
 	}
 	if reference.ChangeID != "" {
 		data.Change = &reference
@@ -685,12 +685,12 @@ func recordNativeSchedulingOutcome(ctx context.Context, tx *sql.Tx, scope *nativ
 	if decision.Outcome != "claimed" {
 		raw, err := previousSchedulingDecision(ctx, tx, *scope, item, decision)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return err
+			return "", tracker.CollaborationData{}, false, err
 		}
 		if err == nil {
 			var previous tracker.CollaborationData
 			if err := decodeRunHistory(ctx, tx, raw, &previous); err != nil {
-				return err
+				return "", tracker.CollaborationData{}, false, err
 			}
 			if previous.Decision != nil {
 				before, after := *previous.Decision, decision
@@ -699,11 +699,20 @@ func recordNativeSchedulingOutcome(ctx context.Context, tx *sql.Tx, scope *nativ
 					before.Source = after.Source
 				}
 				if before == after && reflect.DeepEqual(previous.Change, data.Change) {
-					return nil
+					return "", tracker.CollaborationData{}, false, nil
 				}
 			}
 		}
 	}
+	return item, data, true, nil
+}
+
+func recordNativeSchedulingOutcome(ctx context.Context, tx *sql.Tx, scope *nativeScope, id tracker.WorkItemID, decision tracker.NativeSchedulerDecision, now time.Time) error {
+	item, data, changed, err := prepareNativeSchedulingOutcome(ctx, tx, scope, id, decision, now)
+	if err != nil || !changed {
+		return err
+	}
+	decision = *data.Decision
 	if prepared := claimPrepared(ctx); prepared != nil && !claimWriting(ctx) {
 		if len(prepared.decisions) < claimPreparationLimit {
 			prepared.decisions = append(prepared.decisions, preparedClaimDecision{scope: *scope, id: id, item: item, data: data})

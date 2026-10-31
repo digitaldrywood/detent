@@ -534,6 +534,19 @@ func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, 
 		return nil, err
 	}
 	operationID := options.OperationID
+	if event, ok := input.(tracker.NativeRunEvent); ok {
+		deferContentRegistration(ctx)
+		_, replay, err := s.nativeCommandReplay(ctx, scope, operationID, command.IdempotencyKey, input)
+		if err != nil {
+			return nil, err
+		}
+		if !replay {
+			ctx, err = s.prepareRunDetail(ctx, scope, options.Item, event)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
 	preparedCtx, preparationErr := prepareContentMutation(ctx, s.database.reader, func() (context.Context, error) { return s.prepareHostedImportMutation(ctx, scope, operationID, input) })
 	if preparationErr == nil {
 		ctx = preparedCtx
@@ -545,6 +558,16 @@ func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, 
 		if preparationErr == nil {
 			ctx = preparedCtx
 		}
+	}
+	if _, ok := input.(tracker.NativeRunEvent); ok {
+		contentWriting(ctx, true)
+		defer contentWriting(ctx, false)
+		result, err := s.commitNativeMutation(ctx, scope, options, command, input, operation, requestHash, preparationErr)
+		var hydration *claimHydration
+		if errors.As(err, &hydration) {
+			return nil, nativeExecutionConflict("Execution evidence changed during preparation")
+		}
+		return result, err
 	}
 	return prepareContentMutation(ctx, s.database.reader, func() (json.RawMessage, error) {
 		return s.commitNativeMutation(ctx, scope, options, command, input, operation, requestHash, preparationErr)
@@ -613,6 +636,9 @@ func (s *Service) commitNativeMutation(ctx context.Context, scope nativeScope, o
 	metrics := hostedNativeMutationMetrics(input, options.Completion)
 	before, err := s.database.hostedConsumption(ctx, tx, now, metrics...)
 	if err != nil {
+		return nil, err
+	}
+	if err := registerPreparedContent(ctx, tx); err != nil {
 		return nil, err
 	}
 	completion := options.Completion

@@ -73,19 +73,7 @@ func (s *Service) appendNativeRunEvent(c echo.Context) error {
 	if err := validateNativeRunEvent(request); err != nil {
 		return s.nativeRunEventError(c, request, err)
 	}
-	ctx := c.Request().Context()
-	_, replay, err := s.nativeCommandReplay(ctx, nativeRequestScope(c), c.Request().Method+" "+c.Request().URL.EscapedPath(), request.IdempotencyKey, request)
-	if err != nil {
-		return s.nativeRunEventError(c, request, err)
-	}
-	if !replay {
-		ctx, err = s.prepareRunDetail(ctx, nativeRequestScope(c), c.Param("item"), request)
-		if err != nil {
-			return s.nativeRunEventError(c, request, err)
-		}
-		c.SetRequest(c.Request().WithContext(ctx))
-	}
-	err = s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
+	err := s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		events := append(append([]tracker.NativeRunEvent{}, request.PriorEvents...), request)
 		for _, event := range events {
 			if _, err := s.recordNativeRunEvent(ctx, tx, scope, c.Param("item"), event, now); err != nil {
