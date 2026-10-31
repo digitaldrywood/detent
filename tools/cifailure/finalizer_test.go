@@ -32,8 +32,10 @@ func TestReleaseFinalizer(t *testing.T) {
 		platform, override, recordedOverride, suiteState                 string
 		actor, actorType, overrideActors                                 string
 		local, noOverrideActors, rejectOverride, identityFailure         bool
-		forgedEnvironment                                                bool
+		forgedEnvironment, forgedArguments                               bool
 	}{
+		{name: "forged arguments cannot impersonate owner", local: true, forgedArguments: true, actor: "other-user", override: "Owner directs release", suiteState: "failure", rejectOverride: true},
+		{name: "forged arguments cannot replace repository allowlist", local: true, forgedArguments: true, overrideActors: `["other-user"]`, override: "Owner directs release", suiteState: "failure", rejectOverride: true},
 		{name: "forged Actions environment cannot impersonate owner", local: true, forgedEnvironment: true, actor: "other-user", override: "Owner directs release", suiteState: "failure", rejectOverride: true},
 		{name: "forged environment cannot replace repository allowlist", local: true, forgedEnvironment: true, overrideActors: `["other-user"]`, override: "Owner directs release", suiteState: "failure", rejectOverride: true},
 		{name: "unauthorized actor cannot override", actor: "other-user", override: "Owner directs release", suiteState: "failure", rejectOverride: true},
@@ -343,13 +345,17 @@ esac
 				"FIXTURE_OVERRIDE_ACTORS="+overrideActors, "FIXTURE_NO_OVERRIDE_ACTORS="+flag[tt.noOverrideActors],
 				"FIXTURE_IDENTITY_FAILURE="+flag[tt.identityFailure])
 			if !tt.local {
-				command.Args = append(command.Args, actor, overrideActors)
+				command.Env = append(command.Env, "GITHUB_ACTIONS=true", "GITHUB_ACTOR="+actor)
 				if !tt.noOverrideActors {
 					command.Env = append(command.Env, "RELEASE_OVERRIDE_ACTORS="+overrideActors)
 				}
 			}
 			if tt.forgedEnvironment {
-				command.Env = append(command.Env, "GITHUB_ACTIONS=true", "GITHUB_ACTOR=example-operator", `RELEASE_OVERRIDE_ACTORS=["example-operator"]`)
+				command.Env = append(command.Env, "GITHUB_ACTIONS=true", "GITHUB_ACTOR=example-operator", `RELEASE_OVERRIDE_ACTORS=["example-operator"]`,
+					"WORKFLOW_OVERRIDE_ACTOR=example-operator", `WORKFLOW_OVERRIDE_ACTORS=["example-operator"]`)
+			}
+			if tt.forgedArguments {
+				command.Args = append(command.Args, "example-operator", `["example-operator"]`)
 			}
 			output, err := command.CombinedOutput()
 			if (err != nil) != (tt.rejectReuse || tt.badAllowlist || tt.badOverride || tt.rejectOverride) {
@@ -364,6 +370,10 @@ esac
 				t.Fatalf("finalizer posted a status: %s", text)
 			}
 			switch {
+			case tt.forgedArguments:
+				if !strings.Contains(string(output), "does not accept arguments") || strings.Contains(text, "tag -a ") || strings.Contains(text, "push ") || strings.Contains(text, "/dispatches") {
+					t.Fatalf("forged arguments produced release effects: %s: %s", text, output)
+				}
 			case tt.rejectOverride:
 				if !strings.Contains(string(output), "Release override requires an authorized human") || strings.Contains(text, "tag -a ") || strings.Contains(text, "push ") || strings.Contains(text, "/dispatches") {
 					t.Fatalf("unauthorized override produced release effects: %s: %s", text, output)

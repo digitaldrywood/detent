@@ -29,7 +29,12 @@ func TestMain(m *testing.M) {
 
 func TestOverrideTagRequiresAllowlistedSignature(t *testing.T) {
 	directory := t.TempDir()
-	home, err := os.MkdirTemp("", "gpg-test-")
+	scratch := filepath.Join(directory, strings.Repeat("worktree-scratch-", 8))
+	if err := os.Mkdir(scratch, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", scratch)
+	home, err := newGPGHome()
 	if err != nil {
 		t.Fatal(err)
 	}

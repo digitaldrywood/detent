@@ -33,8 +33,6 @@ jobs:
       - name: Publish the validated tag
         env:
           DETENT_RELEASE_OVERRIDE: ${{ inputs.DETENT_RELEASE_OVERRIDE }}
-          WORKFLOW_OVERRIDE_ACTOR: ${{ github.actor }}
-          WORKFLOW_OVERRIDE_ACTORS: ${{ vars.RELEASE_OVERRIDE_ACTORS }}
           RELEASE_OVERRIDE_GPG_PRIVATE_KEY: ${{ secrets.RELEASE_OVERRIDE_GPG_PRIVATE_KEY }}
           GH_TOKEN: ${{ github.token }}
           CI_DEVELOP_SHA: ${{ github.sha }}
@@ -56,4 +54,4 @@ jobs:
             git config user.signingkey "$signing_key"
             git config tag.gpgsign true
           fi
-          bash scripts/release-finalize.sh "$WORKFLOW_OVERRIDE_ACTOR" "${WORKFLOW_OVERRIDE_ACTORS:-[]}"
+          bash scripts/release-finalize.sh

@@ -58,26 +58,16 @@ status_creators="$(jq -ce '
   then . else error("release status creators must be a nonempty allowlist") end
 ' <<< "${DETENT_RELEASE_STATUS_CREATORS_JSON:-[]}")"
 
-if [ "$#" != 0 ] && [ "$#" != 2 ]; then
-  echo "Expected explicit workflow actor and allowlist, or no arguments for local authorization." >&2
+if [ "$#" != 0 ]; then
+  echo "Release finalization does not accept arguments." >&2
   exit 1
 fi
-workflow_argument_count="$#"
-workflow_actor="${1:-}"
-workflow_actors="${2:-[]}"
 override_reason="${DETENT_RELEASE_OVERRIDE:-}"
 authorize_override() {
   local actor identity actors
-  if [ "$workflow_argument_count" = 2 ]; then
-    actor="$workflow_actor"
-    [ -n "$actor" ] || return 1
-    actors="$workflow_actors"
-    identity="$(gh api "users/$actor")" || return 1
-  else
-    identity="$(gh api user)" || return 1
-    actor="$(jq -er '.login' <<< "$identity")" || return 1
-    actors="$(gh api "repos/$GITHUB_REPOSITORY/actions/variables/RELEASE_OVERRIDE_ACTORS" --jq '.value')" || return 1
-  fi
+  identity="$(gh api user)" || return 1
+  actor="$(jq -er '.login' <<< "$identity")" || return 1
+  actors="$(gh api "repos/$GITHUB_REPOSITORY/actions/variables/RELEASE_OVERRIDE_ACTORS" --jq '.value')" || return 1
   jq -en --arg actor "$actor" --argjson identity "$identity" --argjson actors "$actors" '
     ($actors | type == "array" and length > 0 and all(.[]; type == "string" and length > 0))
     and ($identity.type == "User")
