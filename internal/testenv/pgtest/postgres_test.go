@@ -508,6 +508,88 @@ func TestPostgresFixtureBounds(t *testing.T) {
 	releases = append(releases, admitted.release)
 }
 
+func TestPostgresRoleWaitsForOwnerBackendExit(t *testing.T) {
+	fixture := processTemplate.Database(t)
+	ctx, cancel := testContext(t)
+	defer cancel()
+	var name string
+	if err := fixture.QueryRowContext(ctx, "SELECT current_database()").Scan(&name); err != nil {
+		t.Fatal(err)
+	}
+	role := name + "_role"
+	if _, err := processTemplate.server.admin.ExecContext(ctx, "CREATE ROLE "+identifier(role)+" LOGIN"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := testContext(t)
+		defer cancel()
+		if _, err := processTemplate.server.admin.ExecContext(ctx, "DROP ROLE "+identifier(role)); err != nil {
+			t.Error(err)
+		}
+	})
+	first := processTemplate.OpenRole(t, fixture, role, "detent-test-only")
+	owner, err := fixture.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { owner.Close() })
+	fixture.SetMaxOpenConns(2)
+	observer, err := processTemplate.server.database("postgres")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { observer.Close() })
+	var adminPID int
+	if err := processTemplate.server.admin.QueryRowContext(ctx, "SELECT pg_backend_pid()").Scan(&adminPID); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	var second *sql.DB
+	go func() {
+		defer close(done)
+		second = processTemplate.OpenRole(t, fixture, role, "detent-test-only")
+	}()
+	t.Cleanup(func() {
+		owner.Close()
+		<-done
+	})
+	for {
+		select {
+		case <-done:
+			t.Fatal("second role connection completed before the owner backend exited")
+		default:
+		}
+		var waiting bool
+		if err := observer.QueryRowContext(ctx, `SELECT EXISTS (
+			SELECT 1 FROM pg_stat_activity WHERE pid = $1 AND query LIKE '%pg_stat_activity%'
+		)`, adminPID).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting {
+			break
+		}
+	}
+	if err := owner.Close(); err != nil {
+		t.Fatal(err)
+	}
+	<-done
+	for _, db := range []*sql.DB{first, second} {
+		if db == nil {
+			t.Fatal("role connection was not opened after the owner backend exited")
+		}
+		if err := db.PingContext(ctx); err != nil {
+			t.Fatalf("role connection is unusable: %v", err)
+		}
+	}
+	var limit int
+	if err := observer.QueryRowContext(ctx, "SELECT datconnlimit FROM pg_database WHERE datname = $1", name).Scan(&limit); err != nil {
+		t.Fatal(err)
+	}
+	if limit != 2 {
+		t.Fatalf("database connection limit = %d, want 2", limit)
+	}
+}
+
 func TestPostgresParallelIsolation(t *testing.T) {
 	var names sync.Map
 	t.Run("parallel fixtures", func(t *testing.T) {

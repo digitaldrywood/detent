@@ -94,6 +94,17 @@ func (p *Template) OpenRole(t *testing.T, fixture *sql.DB, role, password string
 	}
 	fixture.SetMaxIdleConns(0)
 	fixture.SetMaxOpenConns(1)
+	for {
+		var connected bool
+		if err := p.server.admin.QueryRowContext(ctx, `SELECT EXISTS (
+			SELECT 1 FROM pg_stat_activity WHERE datname = $1 AND usename = $2
+		)`, name, p.server.config.User).Scan(&connected); err != nil {
+			t.Fatalf("wait for PostgreSQL fixture owner backends: %v", err)
+		}
+		if !connected {
+			break
+		}
+	}
 	config := p.server.config.Clone()
 	config.Database, config.User, config.Password = name, role, password
 	connector, err := pq.NewConnectorConfig(config)
