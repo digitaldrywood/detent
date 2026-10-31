@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -34,6 +35,11 @@ func TestHeartbeatTransactionTiming(t *testing.T) {
 			}
 			f.service.config.Hosted = &HostedConfig{OrganizationID: string(f.project.OrganizationID)}
 			f.service.database.hostedOrganization = f.project.OrganizationID
+			metrics, err := openRequestMetrics(t.Context(), filepath.Join(t.TempDir(), "requests.sqlite"), f.project.OrganizationID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f.service.requestMetrics = metrics
 			hostedTestPlans(t, f.service, nil)
 			now := f.service.config.now()
 			descriptor := hubTestPolicy()
@@ -93,6 +99,9 @@ func TestHeartbeatTransactionTiming(t *testing.T) {
 				requireNativeStatus(t, response, http.StatusOK)
 				if writer == nil {
 					t.Fatal("missing writer timing")
+				}
+				if writer.txs.Load() != 1 {
+					t.Fatalf("heartbeat writer_txs=%d, want 1", writer.txs.Load())
 				}
 				if i > 0 {
 					for _, span := range timing.spans {

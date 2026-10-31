@@ -260,7 +260,9 @@ func (s *Service) recordTokenUse(ctx context.Context, id string, now time.Time) 
 	go func() {
 		defer s.tokenUseWork.Done()
 		defer s.tokenUse.Delete(id)
-		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		background := context.WithValue(ctx, writerTimingKey{}, (*writerTiming)(nil))
+		background = context.WithValue(background, requestTimingKey{}, (*requestTiming)(nil))
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(background), 5*time.Second)
 		defer cancel()
 		if _, err := s.database.db.ExecContext(ctx, "UPDATE api_tokens SET last_used_at = ? WHERE id = ?", formatHubTime(now), id); err != nil {
 			s.config.Logger.Warn("record hub API token use failed", "token_id", id, "error", err)

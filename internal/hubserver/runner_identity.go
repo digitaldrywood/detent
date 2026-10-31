@@ -336,6 +336,9 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
+	ctx := s.runDetailContext(c.Request().Context())
+	deferContentRegistration(ctx)
+	c.SetRequest(c.Request().WithContext(ctx))
 	var configuration preparedProjectConfiguration
 	if scope.credential.Runner.RunnerID != "" {
 		configuration, err = s.prepareProjectConfiguration(c.Request().Context(), scope, request.ProjectConfiguration, receivedAt)

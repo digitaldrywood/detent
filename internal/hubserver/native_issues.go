@@ -832,7 +832,7 @@ func appendNativeHistory(ctx context.Context, tx *sql.Tx, scope nativeScope, wor
 	if err != nil {
 		return err
 	}
-	id := payloadNativeID(ctx, "evt")
+	id := nativeHistoryID(ctx, eventType, data)
 	decision := tracker.NativeSchedulerDecision{}
 	if data.Decision != nil {
 		decision = *data.Decision

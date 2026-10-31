@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"slices"
 	"strings"
@@ -68,9 +69,20 @@ func (s *Service) runnerTransaction(c echo.Context, status int, operation func(c
 	c.SetRequest(c.Request().WithContext(ctx))
 	contentMutation(ctx, true)
 	defer contentMutation(ctx, false)
-	_, err := prepareContentMutation(ctx, s.database.reader, func() (struct{}, error) {
-		return struct{}{}, s.commitRunnerTransaction(c, status, operation)
-	})
+	var err error
+	if strings.HasSuffix(c.Path(), "/heartbeat") {
+		contentWriting(ctx, true)
+		defer contentWriting(ctx, false)
+		err = s.commitRunnerTransaction(c, status, operation)
+		var hydration *claimHydration
+		if errors.As(err, &hydration) {
+			err = nativeExecutionConflict("Heartbeat evidence changed during preparation")
+		}
+	} else {
+		_, err = prepareContentMutation(ctx, s.database.reader, func() (struct{}, error) {
+			return struct{}{}, s.commitRunnerTransaction(c, status, operation)
+		})
+	}
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -107,6 +119,9 @@ func (s *Service) commitRunnerTransaction(c echo.Context, status int, operation 
 	step("consumption_before")
 	before, err := s.database.hostedConsumption(ctx, tx, now, metrics...)
 	if err != nil {
+		return err
+	}
+	if err := registerPreparedContent(ctx, tx); err != nil {
 		return err
 	}
 	step("dispatch_before")

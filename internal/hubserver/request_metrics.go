@@ -29,6 +29,7 @@ type requestMetricKey struct {
 }
 
 type requestLatency struct {
+	http      hostedRequestUsage
 	Count     int64     `json:"count"`
 	Sum       float64   `json:"sum_ms"`
 	P50       float64   `json:"p50_ms"`
@@ -52,6 +53,7 @@ func (l *requestLatency) observe(elapsed time.Duration) {
 }
 
 func (l *requestLatency) merge(other requestLatency) {
+	l.http.merge(other.http)
 	l.Count += other.Count
 	l.Sum += other.Sum
 	l.Max = max(l.Max, other.Max)
@@ -101,6 +103,7 @@ type runnerRequestWindow struct {
 }
 
 type tenantRequestMetrics struct {
+	usage        *database
 	db           *sql.DB
 	organization tracker.OrganizationID
 	mu           sync.Mutex
@@ -153,19 +156,36 @@ func (m *tenantRequestMetrics) flush(ctx context.Context, now time.Time) error {
 	m.flushMu.Lock()
 	defer m.flushMu.Unlock()
 	m.mu.Lock()
-	pending := m.pending
+	pending, owner := m.pending, m.usage
 	m.pending = make(map[requestMetricKey]requestLatency)
 	m.mu.Unlock()
-	err := m.write(ctx, now, pending)
-	if err != nil {
-		m.mu.Lock()
-		for key, l := range pending {
-			current := m.pending[key]
-			current.merge(l)
-			m.pending[key] = current
+	latencies := make(map[requestMetricKey]requestLatency)
+	for key, value := range pending {
+		if value.Count > 0 {
+			latencies[key] = value
 		}
-		m.mu.Unlock()
 	}
+	err := m.write(ctx, now, latencies)
+	if err == nil {
+		for key, value := range pending {
+			pending[key] = requestLatency{http: value.http}
+		}
+		if owner != nil {
+			err = writeHostedRequestUsage(ctx, owner, now, pending)
+		} else {
+			clear(pending)
+		}
+	}
+	m.mu.Lock()
+	for key, value := range pending {
+		if value.Count == 0 && value.http.requests == 0 {
+			continue
+		}
+		current := m.pending[key]
+		current.merge(value)
+		m.pending[key] = current
+	}
+	m.mu.Unlock()
 	return err
 }
 

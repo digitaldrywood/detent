@@ -256,6 +256,10 @@ func TestNativeRunDetailReferences(t *testing.T) {
 	if input != 100 || cached != 20 || output != 10 || cost != 1.5 {
 		t.Fatalf("usage summary reset or double counted: %d/%d/%d cost=%g", input, cached, output, cost)
 	}
+	conversionContext := f.service.freshRunDetailContext(t.Context())
+	if err := f.service.convertStorageAggregate(conversionContext, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, storageConversionFamilies[0], string(issue.WorkItemID), now); err != nil {
+		t.Fatal(err)
+	}
 	if store.uploads != 18 {
 		t.Fatalf("uploaded %d objects, want eighteen attempt, checkpoint and history payloads", store.uploads)
 	}

@@ -435,7 +435,7 @@ func recordNativeAttempt(ctx context.Context, tx *sql.Tx, scope nativeScope, ite
 	if err != nil {
 		return false, false, err
 	}
-	key, err := storedPayloadKey(ctx, string(scope.organization), []byte(storedEncoded))
+	key, storedEncoded, err := storedRunPayload(ctx, string(scope.organization), []byte(storedEncoded))
 	if err != nil {
 		return false, false, err
 	}
@@ -462,7 +462,7 @@ func recordNativeAttempt(ctx context.Context, tx *sql.Tx, scope nativeScope, ite
 			status = data.Outcome
 		}
 		_, err = tx.ExecContext(ctx, `INSERT INTO native_attempts (id, organization_id, project_id, work_item_id, lease_id, fencing_token, run_id, sequence, status, data_json, started_at, updated_at, work_item_revision, dispatch_generation, checkpoint_preserves_source, payload_object_key, conversion_state, implementing_session_id)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?, ?, ?, 0, ?, 2, ?)`, data.AttemptID, scope.organization, scope.project, item, data.LeaseID, data.FencingToken, data.RunID, data.Sequence, status, formatHubTime(now), formatHubTime(now), revision, dispatch.generation, key, nativeImplementingSession(data))
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, CASE WHEN ?='' THEN 0 ELSE 2 END, ?)`, data.AttemptID, scope.organization, scope.project, item, data.LeaseID, data.FencingToken, data.RunID, data.Sequence, status, storedEncoded, formatHubTime(now), formatHubTime(now), revision, dispatch.generation, key, key, nativeImplementingSession(data))
 		if err != nil {
 			return false, false, err
 		}
@@ -473,10 +473,10 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?, ?, ?, 0, ?, 2, ?)`, data.AttemptI
 			}
 		}
 		if update.usageCorrection {
-			if _, err := tx.ExecContext(ctx, "UPDATE native_attempts SET sequence=?,payload_object_key=?,data_json='{}',analytics_revision=analytics_revision+1 WHERE id=?", data.Sequence, key, data.AttemptID); err != nil {
+			if _, err := tx.ExecContext(ctx, "UPDATE native_attempts SET sequence=?,payload_object_key=?,data_json=?,detail_attachment_id=NULL,conversion_state=CASE WHEN ?='' THEN 0 ELSE 2 END,analytics_revision=analytics_revision+1 WHERE id=?", data.Sequence, key, storedEncoded, key, data.AttemptID); err != nil {
 				return false, false, err
 			}
-		} else if _, err := tx.ExecContext(ctx, "UPDATE native_attempts SET sequence = ?, status = ?, payload_object_key = ?, data_json = '{}', updated_at = ?, analytics_revision = analytics_revision + 1 WHERE id = ?", data.Sequence, update.status, key, formatHubTime(now), data.AttemptID); err != nil {
+		} else if _, err := tx.ExecContext(ctx, "UPDATE native_attempts SET sequence = ?, status = ?, payload_object_key = ?, data_json = ?, detail_attachment_id=NULL, conversion_state=CASE WHEN ?='' THEN 0 ELSE 2 END, updated_at = ?, analytics_revision = analytics_revision + 1 WHERE id = ?", data.Sequence, update.status, key, storedEncoded, key, formatHubTime(now), data.AttemptID); err != nil {
 			return false, false, err
 		}
 	}

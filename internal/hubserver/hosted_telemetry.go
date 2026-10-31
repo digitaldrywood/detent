@@ -3,48 +3,109 @@ package hubserver
 import (
 	"context"
 	"errors"
+	"maps"
+	"slices"
 	"time"
 
 	"github.com/labstack/echo/v4"
+
+	"github.com/digitaldrywood/detent/internal/auth"
 )
 
+type hostedRequestUsage struct {
+	requests, duration, responseBytes, requestBytes, knownRequests int64
+}
+
+func (u *hostedRequestUsage) merge(other hostedRequestUsage) {
+	u.requests += other.requests
+	u.duration += other.duration
+	u.responseBytes += other.responseBytes
+	u.requestBytes += other.requestBytes
+	u.knownRequests += other.knownRequests
+}
+
 func (s *Service) recordHostedRequest(c echo.Context, started time.Time) {
-	if explanationRead(c.Request().Context()) {
+	m := s.requestMetrics
+	if m == nil || explanationRead(c.Request().Context()) {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(c.Request().Context()), 2*time.Second)
-	defer cancel()
-	tx, err := s.database.db.BeginTx(ctx, nil)
+	credential := apiCredential{}
+	if current, ok := c.Get("hub_api_credential").(apiCredential); ok {
+		credential = current
+	}
+	kind, caller := metricCaller(credential)
+	if kind == "anonymous" {
+		if session, ok := c.Get("hosted_session").(auth.Session); ok && session.Identity != nil {
+			kind, caller = "browser", session.Identity.Subject
+		}
+	}
+	now := s.config.now()
+	key := requestMetricKey{now.Unix() / 60 * 60, metricRoute(m.knownRoutes(s.echo), c.Request().Method, c.Path()), kind, caller, c.Response().Status / 100}
+	usage := hostedRequestUsage{requests: 1, duration: max(int64(0), time.Since(started).Microseconds()), responseBytes: max(int64(0), c.Response().Size)}
+	if c.Request().ContentLength >= 0 {
+		usage.requestBytes, usage.knownRequests = c.Request().ContentLength, 1
+	}
+	m.mu.Lock()
+	m.usage = s.database
+	pending := m.pending[key]
+	pending.http.merge(usage)
+	m.pending[key] = pending
+	m.mu.Unlock()
+}
+
+func writeHostedRequestUsage(ctx context.Context, owner *database, now time.Time, pending map[requestMetricKey]requestLatency) error {
+	plans := owner.plans()
+	if plans == nil {
+		clear(pending)
+		return nil
+	}
+	windows := make(map[int64]hostedRequestUsage)
+	cutoff := now.Unix()/plans.WindowSeconds*plans.WindowSeconds - plans.RetentionWindows*plans.WindowSeconds
+	for key, value := range pending {
+		window := key.Minute / plans.WindowSeconds * plans.WindowSeconds
+		if window <= cutoff || value.http.requests == 0 {
+			delete(pending, key)
+			continue
+		}
+		usage := windows[window]
+		usage.merge(value.http)
+		windows[window] = usage
+	}
+	ordered := slices.Sorted(maps.Keys(windows))
+	for _, window := range ordered[:min(4, len(ordered))] {
+		if err := writeHostedRequestWindow(ctx, owner, window, windows[window]); err != nil {
+			return err
+		}
+		for key := range pending {
+			if key.Minute/plans.WindowSeconds*plans.WindowSeconds == window {
+				delete(pending, key)
+			}
+		}
+	}
+	return nil
+}
+
+func writeHostedRequestWindow(ctx context.Context, owner *database, window int64, usage hostedRequestUsage) error {
+	tx, err := owner.db.BeginTx(ctx, nil)
 	if err != nil {
-		s.config.Logger.Warn("hosted request metrics unavailable")
-		return
+		return err
 	}
 	defer tx.Rollback()
-	now := s.config.now()
 	for _, sample := range []struct {
 		metric string
 		amount int64
 	}{
-		{"http_requests", 1},
-		{"http_duration_microseconds", max(int64(0), time.Since(started).Microseconds())},
-		{"http_response_bytes", max(int64(0), c.Response().Size)},
+		{"http_requests", usage.requests},
+		{"http_duration_microseconds", usage.duration},
+		{"http_response_bytes", usage.responseBytes},
+		{"http_request_bytes", usage.requestBytes},
+		{"http_request_bytes_known", usage.knownRequests},
 	} {
-		if err := s.database.recordHostedUsage(ctx, tx, now, sample.metric, sample.amount); err != nil {
-			s.config.Logger.Warn("hosted request metrics unavailable")
-			return
+		if err := owner.recordHostedUsage(ctx, tx, time.Unix(window, 0), sample.metric, sample.amount); err != nil {
+			return err
 		}
 	}
-	if c.Request().ContentLength >= 0 {
-		for metric, amount := range map[string]int64{"http_request_bytes": c.Request().ContentLength, "http_request_bytes_known": 1} {
-			if err := s.database.recordHostedUsage(ctx, tx, now, metric, amount); err != nil {
-				s.config.Logger.Warn("hosted request metrics unavailable")
-				return
-			}
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		s.config.Logger.Warn("hosted request metrics unavailable")
-	}
+	return tx.Commit()
 }
 
 func (s *Service) reserveHostedInvitation(ctx context.Context, email string) error {
