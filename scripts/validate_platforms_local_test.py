@@ -93,6 +93,7 @@ if 'build' in args:
     assert dockerfile.read_text() == 'validated Dockerfile\\n'
     assert dockerfile.parent == Path(args[-1])
     assert dockerfile.parent.parent.name == 'source'
+if 'run' in args: sys.exit(int(os.environ.get('DOCKER_RUN_EXIT', '0')))
 ''')
             env.update(PATH=str(binaries) + os.pathsep + env['PATH'], CALLS=str(root / 'calls'),
                        DOCKER_CALLS=str(root / 'docker-calls'), WINDOWS_CALL=str(root / 'windows-call'),
@@ -108,6 +109,18 @@ if 'build' in args:
             posts = [json.loads(line) for line in (root / 'calls').read_text().splitlines() if 'POST' in line]
             self.assertIn('state=success', posts[-1])
             self.assertIn('repos/example-org/example-project/statuses/' + head, posts[-1])
+            for windows, linux_ok, state in (('unprovisioned', True, 'success'), ('unprovisioned', False, 'failure')):
+                with self.subTest(windows=windows, linux_ok=linux_ok):
+                    (root / 'windows-call').unlink(missing_ok=True)
+                    (root / 'calls').unlink()
+                    run_env = dict(env, DETENT_PLATFORM_WINDOWS=windows, DOCKER_RUN_EXIT='0' if linux_ok else '1')
+                    result = subprocess.run(['bash', 'scripts/validate-platforms-local.sh', 'develop'], cwd=repo,
+                                            env=run_env, capture_output=True, text=True, timeout=30)
+                    self.assertEqual(result.returncode == 0, state == 'success', result.stdout + result.stderr)
+                    self.assertFalse((root / 'windows-call').exists())
+                    posts = [json.loads(line) for line in (root / 'calls').read_text().splitlines() if 'POST' in line]
+                    self.assertIn(f'state={state}', posts[-1])
+                    self.assertTrue(any('Windows unprovisioned' in arg for arg in posts[-1]))
 
 
 if __name__ == '__main__':
