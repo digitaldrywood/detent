@@ -383,6 +383,11 @@ func TestNativeOrderedAttemptLifecycle(t *testing.T) {
 	invalidValidation := invalid
 	invalidValidation.IdempotencyKey = "invalid-validation"
 	invalidValidation.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "completed", Validation: &gate.CommandResult{Command: "sentinel-private-value", Output: "sentinel-private-output"}}
+	foreignPreProvider := start
+	foreignPreProvider.Type, foreignPreProvider.IdempotencyKey, foreignPreProvider.Data.Outcome = "run.finished", "foreign-pre-provider-session", "cancelled"
+	foreignPreProvider.Data.Identity = nil
+	foreignPreProvider.Data.SessionID = "another-session"
+	foreignPreProvider.Data.TerminalFailure = &tracker.NativeTerminalFailure{ObservedAt: time.Now().UTC(), Stage: "pre_provider", ErrorClass: "lease_released", Error: "dispatch deferred"}
 
 	lifecycleTest := t
 	for _, test := range []struct {
@@ -396,6 +401,7 @@ func TestNativeOrderedAttemptLifecycle(t *testing.T) {
 		{"invalid runtime observation", invalid, http.StatusUnprocessableEntity, false, 0},
 		{"invalid checkpoint observation", invalidCheckpoint, http.StatusUnprocessableEntity, false, 0},
 		{"invalid source validation", invalidValidation, http.StatusUnprocessableEntity, false, 0},
+		{"foreign pre-provider session", foreignPreProvider, http.StatusUnprocessableEntity, false, 0},
 		{"checkpoint before start", checkpoint, http.StatusConflict, false, 0},
 		{"start", start, http.StatusOK, false, 0},
 		{"same command", start, http.StatusOK, false, 0},
@@ -429,6 +435,17 @@ func TestNativeOrderedAttemptLifecycle(t *testing.T) {
 			}
 			response := performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, test.event)
 			requireNativeStatus(t, response, test.status)
+			if test.name == "foreign pre-provider session" {
+				var result struct {
+					Details struct {
+						Rejection struct{ Category, Field string }
+					}
+				}
+				decodeHubResponse(t, response, &result)
+				if result.Details.Rejection.Category != "owner_validation" || result.Details.Rejection.Field != "data" {
+					t.Fatalf("foreign session bypassed lease ownership: %+v", result)
+				}
+			}
 			var revision int64
 			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT coalesce((SELECT analytics_revision FROM native_attempts WHERE id=?),0)", start.Data.AttemptID).Scan(&revision); err != nil {
 				t.Fatal(err)
@@ -854,6 +871,7 @@ func TestNativePreProviderCancellationValidation(t *testing.T) {
 		valid  bool
 	}{
 		{name: "before runtime observation", valid: true},
+		{name: "lease session identity", change: func(data *tracker.NativeRunData) { data.SessionID = "session_example" }, valid: true},
 		{name: "after runtime observation", change: func(data *tracker.NativeRunData) {
 			data.Runtime = &tracker.NativeRuntimeObservation{LocalAttemptID: 1, Generation: 1}
 		}, valid: true},

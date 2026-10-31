@@ -195,7 +195,7 @@ func validateNativeExecution(data tracker.NativeRunData, eventType string) error
 	if data.Identity == nil && eventType == "run.finished" && data.Sequence == 1 && data.TerminalFailure != nil &&
 		(data.Runtime == nil && data.Outcome == "cancelled" && data.TerminalFailure.ErrorClass == "lease_released" ||
 			data.Runtime != nil && data.Runtime.LocalAttemptID > 0 && data.Runtime.Generation > 0 &&
-				data.Runtime.Activity == nil && data.Runtime.Validation == nil && data.Runtime.Landing == nil && data.Runtime.Completion == nil) && data.SessionID == "" &&
+				data.Runtime.Activity == nil && data.Runtime.Validation == nil && data.Runtime.Landing == nil && data.Runtime.Completion == nil) &&
 		(len(data.Usage) == 0 || data.TerminalFailure.Decision != nil && data.TerminalFailure.Decision.Valid()) && data.Handoff == nil && data.Finalization == nil && data.Disposition == nil && data.CompletionBody == "" {
 		data.TerminalFailure.Stage = "pre_provider"
 		*data.TerminalFailure = data.TerminalFailure.Public()
