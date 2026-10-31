@@ -14,6 +14,11 @@ security. The operator, the operator's machine and Detent runners are trusted:
 do not report scenarios whose only precondition is that the operator's own
 code, machine, runner or credentials act against the operator.
 
+In delta scope, report defects the diff newly introduces or newly makes
+reachable. Behavior that was already present at the audit base, including
+behavior a revert restores, is out of scope. Still report any change that looks
+malicious, backdoored or deliberately weakens security.
+
 Report confirmed findings only. Do not turn missing evidence into a realistic
 exploit path. Use these per-change audit severity definitions:
 
