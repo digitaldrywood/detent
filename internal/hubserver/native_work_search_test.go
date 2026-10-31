@@ -10,11 +10,14 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
+	"testing/fstest"
 	"time"
 	"unicode/utf8"
 
@@ -362,7 +365,7 @@ func TestNativeSearchLegacyRowsPrunedInBoundedBatches(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			up, down, ok := strings.Cut(string(migration), "-- +goose Down")
+			_, down, ok := strings.Cut(string(migration), "-- +goose Down")
 			if !ok {
 				t.Fatal("missing migration rollback")
 			}
@@ -387,9 +390,6 @@ func TestNativeSearchLegacyRowsPrunedInBoundedBatches(t *testing.T) {
 				if err := db.reader.QueryRowContext(t.Context(), "SELECT id FROM native_work_documents WHERE comment_id='missing-comment'").Scan(&id); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := db.db.ExecContext(t.Context(), "DELETE FROM native_comments WHERE id='missing-comment'"); err != nil {
-					t.Fatal(err)
-				}
 			}
 			if kind == "orphan lengths" || kind == "orphan comment" {
 				if _, err := db.db.ExecContext(t.Context(), "INSERT INTO native_work_search_lengths(document_id,scope,tokens) VALUES(?,?,1)", id, searchScope); err != nil {
@@ -412,22 +412,16 @@ func TestNativeSearchLegacyRowsPrunedInBoundedBatches(t *testing.T) {
 			if _, err := db.db.ExecContext(t.Context(), "PRAGMA foreign_keys=ON"); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := db.db.ExecContext(t.Context(), up); err != nil {
+			if _, err := db.db.ExecContext(t.Context(), "DELETE FROM hub_schema_version WHERE version_id IN(20261031202051,20261031211642)"); err != nil {
 				t.Fatal(err)
 			}
-			deferred, err := migrationFiles.ReadFile("migrations/20261031211642_native_search_deferred_deletion.sql")
-			if err != nil {
+			if _, err := runMigrations(t.Context(), db.db, discardLogger()); err != nil {
 				t.Fatal(err)
 			}
-			deferredUp, _, _ := strings.Cut(string(deferred), "-- +goose Down")
-			if _, err := db.db.ExecContext(t.Context(), "PRAGMA foreign_keys=OFF"); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := db.db.ExecContext(t.Context(), deferredUp); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := db.db.ExecContext(t.Context(), "PRAGMA foreign_keys=ON"); err != nil {
-				t.Fatal(err)
+			if kind == "orphan comment" {
+				if _, err := db.db.ExecContext(t.Context(), "PRAGMA foreign_keys=OFF; DELETE FROM native_comments WHERE id='missing-comment'; PRAGMA foreign_keys=ON"); err != nil {
+					t.Fatal(err)
+				}
 			}
 			var last int64
 			if err := db.reader.QueryRowContext(t.Context(), "SELECT last_id FROM native_work_search_rebuild").Scan(&last); err != nil || last < id {
@@ -1950,6 +1944,7 @@ func TestNativeSearchPostingWriterWork(t *testing.T) {
 		t.Fatal("missing legacy refresh trigger")
 	}
 	legacy, _, _ = strings.Cut(legacy, "-- +goose StatementEnd")
+	legacy = strings.Replace(legacy, "DELETE FROM native_work_search_lengths WHERE document_id=NEW.document_id;", "DELETE FROM native_work_search_postings WHERE document_id=NEW.document_id; DELETE FROM native_work_search_lengths WHERE document_id=NEW.document_id;", 1)
 	if _, err := pool.ExecContext(t.Context(), "CREATE TRIGGER native_work_search_refresh_insert"+legacy); err != nil {
 		t.Fatal(err)
 	}
@@ -2160,5 +2155,170 @@ func TestNativeSearchPostingRefreshMigrationPreservesQueuedSearch(t *testing.T) 
 				t.Errorf("project=%s queued query=%s items=%d want=%d err=%v", fixture.project.ID, query, len(page.Items), want, err)
 			}
 		}
+	}
+}
+
+func TestNativeSearchCleanupMigration(t *testing.T) {
+	legacyFiles := fstest.MapFS{}
+	files, err := migrationFiles.ReadDir("migrations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range files {
+		if file.Name() == "20261031202051_native_search_revision_cleanup.sql" || file.Name() == "20261031211642_native_search_deferred_deletion.sql" {
+			continue
+		}
+		data, err := migrationFiles.ReadFile("migrations/" + file.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+		legacyFiles[file.Name()] = &fstest.MapFile{Data: data}
+	}
+	open := func(t *testing.T, path string) *sql.DB {
+		t.Helper()
+		db, err := sql.Open("sqlite", sqliteDSN(path, defaultBusyTimeout))
+		if err != nil {
+			t.Fatal(err)
+		}
+		db.SetMaxOpenConns(1)
+		t.Cleanup(func() {
+			if err := db.Close(); err != nil {
+				t.Error(err)
+			}
+		})
+		return db
+	}
+	legacyPath := filepath.Join(t.TempDir(), "legacy.db")
+	legacy := open(t, legacyPath)
+	if _, err := runMigrationsFromFS(t.Context(), legacy, legacyFiles, discardLogger(), hubGoMigrations(discardLogger())); err != nil {
+		t.Fatal(err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatal(err)
+	}
+	image, err := os.ReadFile(legacyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name      string
+		documents int
+		orphan    string
+		reject    bool
+	}{
+		{"orphan postings", 2, "native_work_search_postings", false},
+		{"orphan lengths", 2, "native_work_search_lengths", false},
+		{"orphan refresh", 2, "native_work_search_refresh", false},
+		{"invalid source rejected", 2, "native_work_documents", true},
+		{"small history", 2, "", false},
+		{"large history", 1025, "", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "hub.db")
+			if err := os.WriteFile(path, image, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			db := open(t, path)
+			exec := func(query string, args ...any) {
+				t.Helper()
+				if _, err := db.ExecContext(t.Context(), query, args...); err != nil {
+					t.Fatal(err)
+				}
+			}
+			integer := func(query string) int64 {
+				t.Helper()
+				var value int64
+				if err := db.QueryRowContext(t.Context(), query).Scan(&value); err != nil {
+					t.Fatal(err)
+				}
+				return value
+			}
+			exec(`INSERT INTO projects(id,organization_id,name,profile,created_at,github_repository_enabled)
+ SELECT 'prj_migration',id,'Migration project','native',created_at,0 FROM organizations WHERE local=1;
+ INSERT INTO issues(native_id,organization_id,project_id,number,title,body,url,github_state,source_version,source_updated_at,synchronized_at,created_at,updated_at)
+ WITH RECURSIVE seed(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM seed WHERE n<?)
+ SELECT 'wi_migration_'||n,o.id,'prj_migration',n,'Retained narwhal','Retained body','','open','1',o.created_at,o.created_at,o.created_at,o.created_at
+ FROM seed CROSS JOIN organizations o WHERE o.local=1`, test.documents)
+			exec(`INSERT INTO native_work_search_lengths(document_id,scope,tokens) SELECT id,'legacy-'||id,2 FROM native_work_documents;
+ INSERT INTO native_work_search_postings(scope,term,document_id,frequency,impact) SELECT scope,'narwhal',document_id,1,1 FROM native_work_search_lengths`)
+			if test.orphan != "" {
+				exec("PRAGMA foreign_keys=OFF")
+				switch test.orphan {
+				case "native_work_search_postings":
+					exec("INSERT INTO native_work_search_postings VALUES('orphan','obsolete',9000,1,1)")
+				case "native_work_search_lengths":
+					exec("INSERT INTO native_work_search_lengths VALUES(9000,'orphan',1)")
+				case "native_work_search_refresh":
+					exec("INSERT INTO native_work_search_refresh VALUES(9000,'','')")
+				case "native_work_documents":
+					exec("UPDATE native_work_documents SET comment_id='missing-comment' WHERE id=(SELECT min(id) FROM native_work_documents)")
+				}
+				exec("PRAGMA foreign_keys=ON")
+				if got := integer("SELECT count(*) FROM pragma_foreign_key_check"); got != 1 {
+					t.Fatalf("legacy foreign key violations=%d want=1", got)
+				}
+			}
+			const rootsQuery = `SELECT group_concat(name||':'||rootpage,';') FROM (
+ SELECT name,rootpage FROM sqlite_schema WHERE tbl_name IN('native_work_search_lengths','native_work_search_postings','native_work_search_refresh')
+ AND type IN('table','index') ORDER BY name)`
+			var rootsBefore, rootsAfter string
+			if err := db.QueryRowContext(t.Context(), rootsQuery).Scan(&rootsBefore); err != nil {
+				t.Fatal(err)
+			}
+			before := integer("SELECT total_changes()")
+			_, err := runMigrations(t.Context(), db, discardLogger())
+			if test.reject {
+				if err == nil || !strings.Contains(err.Error(), "foreign key violations") {
+					t.Fatalf("invalid source migration err=%v", err)
+				}
+				if integer("PRAGMA foreign_keys") != 1 || integer("PRAGMA writable_schema") != 0 {
+					t.Fatal("rejected migration left schema writes enabled or foreign keys disabled")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("upgrade through validating migration runner: %v", err)
+			}
+			changes := integer("SELECT total_changes()") - before
+			t.Logf("migration documents=%d row_changes=%d", test.documents, changes)
+			if changes > 64 {
+				t.Errorf("migration rewrote history: documents=%d changes=%d want<=64", test.documents, changes)
+			}
+			if err := db.QueryRowContext(t.Context(), rootsQuery).Scan(&rootsAfter); err != nil || rootsAfter != rootsBefore {
+				t.Errorf("migration rebuilt search tables or indexes: before=%s after=%s err=%v", rootsBefore, rootsAfter, err)
+			}
+			for _, check := range []struct {
+				query string
+				want  int64
+			}{
+				{"SELECT count(*) FROM pragma_foreign_key_check", 0},
+				{"PRAGMA foreign_keys", 1},
+				{"PRAGMA writable_schema", 0},
+				{"SELECT count(*) FROM native_work_documents", int64(test.documents)},
+				{"SELECT count(*) FROM native_work_search_lengths WHERE tokens=2", int64(test.documents)},
+				{"SELECT count(*) FROM native_work_search_postings WHERE term='narwhal'", int64(test.documents)},
+				{"SELECT count(*) FROM native_work_search_refresh WHERE organization_id<>'' AND project_id='prj_migration'", int64(test.documents)},
+				{"SELECT sum(documents) FROM native_work_search_frequencies WHERE term='narwhal'", int64(test.documents)},
+				{"SELECT sum(documents) FROM native_work_search_population WHERE tokens=2", int64(test.documents)},
+			} {
+				if got := integer(check.query); got != check.want {
+					t.Errorf("%s: got=%d want=%d", check.query, got, check.want)
+				}
+			}
+			if test.orphan != "" && integer("SELECT count(*) FROM "+test.orphan+" WHERE document_id=9000") != 1 {
+				t.Fatal("migration eagerly removed orphan history")
+			}
+			if err := db.Close(); err != nil {
+				t.Fatal(err)
+			}
+			db = open(t, path)
+			if _, err := runMigrations(t.Context(), db, discardLogger()); err != nil {
+				t.Fatalf("reopen upgraded database: %v", err)
+			}
+			var integrity string
+			if err := db.QueryRowContext(t.Context(), "PRAGMA integrity_check").Scan(&integrity); err != nil || integrity != "ok" {
+				t.Fatalf("reopened integrity=%q err=%v", integrity, err)
+			}
+		})
 	}
 }
