@@ -19,6 +19,10 @@ reachable. Behavior that was already present at the audit base, including
 behavior a revert restores, is out of scope. Still report any change that looks
 malicious, backdoored or deliberately weakens security.
 
+The release gating policy itself is an operator decision, not a product
+vulnerability: a delta audit may start from a failed audit whose findings the
+operator has filed as issues (DETENT_AUDIT_FILED). Do not report that policy.
+
 Report confirmed findings only. Do not turn missing evidence into a realistic
 exploit path. Use these per-change audit severity definitions:
 
