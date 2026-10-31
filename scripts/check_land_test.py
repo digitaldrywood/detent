@@ -82,6 +82,8 @@ elif args[0] in ("build", "vet", "test"):
 else:
     stage = "workspace" if "./tools/testgate" in args else "docs" if "./internal/config/cmd/configdoc" in args else "migrations" if "./tools/migrationcheck" in args else "invariant-manifest" if "./tools/invariantcheck" in args else "sqlc"
     budget = int(os.environ["GOMAXPROCS"])
+    if stage == "sqlc" and "internal/hubserver/postgres/sqlc.yaml" in args:
+        stage = "hub-sqlc"
 
 def record(action):
     with open("trace", "a") as output:
@@ -139,7 +141,7 @@ class LandingGateTest(unittest.TestCase):
     def test_stage_budget_and_failures(self):
         scratch = next((os.environ[key] for key in ("TMPDIR", "TMP", "TEMP") if os.environ.get(key)), None)
         self.assertIsNotNone(scratch, "a supplied scratch directory is required")
-        cases = [("check-land", budget, failure, "") for budget, failure in ((1, ""), (2, ""), (4, ""), (7, ""), (4, "lint"), (4, "vet"), (4, "build"), (4, "unit-short"), (4, "docs"), (4, "sqlc"), (4, "invariant-manifest"), (4, "invariants"), (4, "migrations"))]
+        cases = [("check-land", budget, failure, "") for budget, failure in ((1, ""), (2, ""), (4, ""), (7, ""), (4, "lint"), (4, "vet"), (4, "build"), (4, "unit-short"), (4, "docs"), (4, "sqlc"), (4, "hub-sqlc"), (4, "invariant-manifest"), (4, "invariants"), (4, "migrations"))]
         cases += [(target, 4, "", "") for target in ("test", "test-fast", "test-race", "test-cover")]
         cases += [("test-cover", 4, failure, shard) for failure, shard in (("", "2/3"), ("", "3/3"), ("hub-2", "2/3"))]
         cases += [("test-race", 4, "", shard) for shard in ("1/3", "2/3", "hub-2")]
@@ -179,7 +181,7 @@ class LandingGateTest(unittest.TestCase):
                 self.assertEqual(result.returncode == 0, not failed, result.stdout + result.stderr)
                 events = [json.loads(line) for line in (root / "trace").read_text().splitlines()]
                 tests = [event for event in events if event["action"] == "start" and event["stage"] in ("unit-short", "invariants")]
-                if failure not in ("app", "docs", "sqlc"):
+                if failure not in ("app", "docs", "sqlc", "hub-sqlc"):
                     self.assertTrue(tests)
                 for event in tests:
                     self.assertNotIn("-count=1", event["args"], event)
@@ -199,10 +201,20 @@ class LandingGateTest(unittest.TestCase):
                     self.assertIn("deliberate app failure", result.stderr)
                     continue
                 self.assertEqual(starts.count("docs"), 1)
-                if failure in ("docs", "sqlc"):
+                generated = ["docs", "sqlc", "hub-sqlc"]
+                if failure in generated:
+                    generated = generated[:generated.index(failure) + 1]
+                self.assertEqual(starts[:len(generated)], generated)
+                sqlc_commands = [event["args"][-3:] for event in events if event["action"] == "start" and event["stage"] in ("sqlc", "hub-sqlc")]
+                configs = {"sqlc": "sqlc/sqlc.yaml", "hub-sqlc": "internal/hubserver/postgres/sqlc.yaml"}
+                self.assertEqual(sqlc_commands, [["diff", "-f", configs[stage]] for stage in generated if stage in configs])
+                evidence = [json.loads(line.split(": ", 1)[1]) for line in result.stdout.splitlines() if line.startswith("detent-check-evidence:")]
+                if failure in generated:
                     self.assertFalse(set(starts) & {"lint", "vet", "build", "unit-short"})
+                    self.assertEqual([item["scope"] for item in evidence], (["app"] if app_changed else []) + ["generated"])
+                    self.assertNotEqual(evidence[-1]["exit_code"], 0)
                     continue
-                self.assertEqual(starts[:2], ["docs", "sqlc"])
+                starts = starts[len(generated):]
                 active = {}
                 for event in events:
                     if event["stage"] not in ("lint", "vet", "build", "unit-short"):
@@ -214,18 +226,17 @@ class LandingGateTest(unittest.TestCase):
                     else:
                         del active[event["stage"]]
                 self.assertFalse(active)
-                self.assertEqual(set(starts[2:6]), {"lint", "vet", "build", "unit-short"})
+                self.assertEqual(set(starts[:4]), {"lint", "vet", "build", "unit-short"})
                 tail = ["invariant-manifest", "invariants", "migrations"]
                 if failure in tail:
                     tail = tail[:tail.index(failure) + 1]
                 elif failure:
                     tail = []
-                self.assertEqual(starts[6:], tail)
+                self.assertEqual(starts[4:], tail)
                 output = result.stdout.replace(str(root), "<fixture>")
                 self.assertNotIn("npm", output)
                 self.assertNotIn("nilaway", output)
                 self.assertFalse((root / "static/app/conversation/app.js").exists())
-                evidence = [json.loads(line.split(": ", 1)[1]) for line in result.stdout.splitlines() if line.startswith("detent-check-evidence:")]
                 expected_scopes = {"generated", "lint", "vet", "build", "unit-short"}
                 expected_scopes.update(tail)
                 if app_changed:
