@@ -112,11 +112,130 @@ func TestNativeSearchRevisionRowsStayBounded(t *testing.T) {
 			if _, err := db.db.ExecContext(t.Context(), "DELETE FROM native_work_documents WHERE issue_id=(SELECT id FROM issues WHERE native_id=?)", first.WorkItemID); err != nil {
 				t.Fatal(err)
 			}
+			drainTestNativeSearch(t, f.service)
 			counts(6, 1)
 			if _, err := db.db.ExecContext(t.Context(), "DELETE FROM native_work_documents WHERE issue_id=(SELECT id FROM issues WHERE native_id=?)", second.WorkItemID); err != nil {
 				t.Fatal(err)
 			}
+			drainTestNativeSearch(t, f.service)
 			counts(0, 0)
+		})
+	}
+}
+
+func TestNativeSearchLegacyDeletionPrunedInBoundedBatches(t *testing.T) {
+	for _, test := range []struct {
+		kind                 string
+		foreignKeys, started bool
+	}{
+		{"document", true, false},
+		{"document", true, true},
+		{"document", false, false},
+		{"issue", true, false},
+		{"comment", true, false},
+		{"comment", false, true},
+	} {
+		kind, foreignKeys, started := test.kind, test.foreignKeys, test.started
+		t.Run(fmt.Sprintf("%s/foreign_keys=%t/started=%t", kind, foreignKeys, started), func(t *testing.T) {
+			f := newDefaultNativeFixture(t, Config{})
+			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+				t.Fatal(err)
+			}
+			retained := f.create(t, "Retained quasar")
+			db := f.service.database
+			item := tracker.NativeReference{WorkItemID: "wi_legacy_deletable"}
+			if _, err := db.db.ExecContext(t.Context(), `INSERT INTO issues
+ (native_id,organization_id,project_id,number,title,body,url,github_state,source_version,source_updated_at,synchronized_at,created_at,updated_at)
+ SELECT ?,organization_id,project_id,1000,'Legacy narwhal','','','open','1',source_updated_at,synchronized_at,created_at,updated_at
+ FROM issues WHERE native_id=?`, item.WorkItemID, retained.WorkItemID); err != nil {
+				t.Fatal(err)
+			}
+			if kind == "comment" {
+				if _, err := db.db.ExecContext(t.Context(), `INSERT INTO native_comments(id,organization_id,project_id,work_item_id,revision,sequence,body,actor_json,created_at,updated_at)
+ SELECT 'legacy-comment',organization_id,project_id,native_id,1,1,'Legacy narwhal','{}',native_created_at,native_created_at FROM issues WHERE native_id=?`, item.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			drainTestNativeSearch(t, f.service)
+			var id int64
+			if err := db.reader.QueryRowContext(t.Context(), `SELECT d.id FROM native_work_documents d JOIN issues i ON i.id=d.issue_id
+ WHERE i.native_id=? AND ((?='comment' AND d.comment_id='legacy-comment') OR (?<>'comment' AND d.comment_id IS NULL))`, item.WorkItemID, kind, kind).Scan(&id); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.db.ExecContext(t.Context(), `UPDATE native_work_search_lengths SET search_revision=-1 WHERE document_id=?;
+ INSERT INTO native_work_search_postings(scope,term,document_id,frequency,impact)
+ WITH RECURSIVE seed(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM seed WHERE n<1025)
+ SELECT l.scope,printf('legacy%05d',n),l.document_id,1,1 FROM seed CROSS JOIN native_work_search_lengths l WHERE l.document_id=?;
+ INSERT INTO native_work_search_refresh SELECT d.id,i.organization_id,i.project_id FROM native_work_documents d JOIN issues i ON i.id=d.issue_id WHERE d.id=?;
+ UPDATE native_work_search_rebuild SET through_id=last_id`, id, id, id); err != nil {
+				t.Fatal(err)
+			}
+			if started {
+				if more, err := db.backfillNativeSearch(t.Context()); err != nil || !more {
+					t.Fatalf("start pruning: more=%t err=%v", more, err)
+				}
+			}
+			count := func(query string, args ...any) int {
+				t.Helper()
+				var got int
+				if err := db.reader.QueryRowContext(t.Context(), query, args...).Scan(&got); err != nil {
+					t.Fatal(err)
+				}
+				return got
+			}
+			postings := count("SELECT count(*) FROM native_work_search_postings WHERE document_id=?", id)
+			frequencies := count("SELECT sum(documents) FROM native_work_search_frequencies")
+			if !foreignKeys {
+				if _, err := db.db.ExecContext(t.Context(), "PRAGMA foreign_keys=OFF"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			statement := "DELETE FROM native_work_documents WHERE id=?"
+			var argument any = id
+			switch kind {
+			case "issue":
+				statement, argument = "DELETE FROM issues WHERE native_id=?", item.WorkItemID
+			case "comment":
+				statement, argument = "DELETE FROM native_comments WHERE id=?", "legacy-comment"
+			}
+			if _, err := db.db.ExecContext(t.Context(), statement, argument); err != nil {
+				t.Fatal(err)
+			}
+			if got := count("SELECT count(*) FROM native_work_search_postings WHERE document_id=?", id); got != postings {
+				t.Fatalf("deletion synchronously removed %d legacy postings, want 0", postings-got)
+			}
+			if got := count("SELECT sum(documents) FROM native_work_search_frequencies"); got != frequencies {
+				t.Fatalf("deletion changed frequency aggregates: got=%d want=%d", got, frequencies)
+			}
+			if got := count("SELECT count(*) FROM native_work_search_refresh WHERE document_id=?", id); got != 1 {
+				t.Fatalf("pending deletion entries=%d want=1", got)
+			}
+			for postings > 0 {
+				if more, err := db.backfillNativeSearch(t.Context()); err != nil || !more {
+					t.Fatalf("prune deletion: more=%t err=%v", more, err)
+				}
+				got := count("SELECT count(*) FROM native_work_search_postings WHERE document_id=?", id)
+				if removed := postings - got; removed != min(postings, 256) {
+					t.Fatalf("prune removed=%d want=%d", removed, min(postings, 256))
+				}
+				postings = got
+			}
+			drainTestNativeSearch(t, f.service)
+			for _, table := range []string{"native_work_search_lengths", "native_work_search_refresh"} {
+				if got := count("SELECT count(*) FROM "+table+" WHERE document_id=?", id); got != 0 {
+					t.Fatalf("%s retained %d deleted document rows", table, got)
+				}
+			}
+			if got := count("SELECT count(*) FROM native_work_search_postings INDEXED BY native_work_search_impact WHERE document_id=?", id); got != 0 {
+				t.Fatalf("retained impact rows=%d", got)
+			}
+			if got, want := count("SELECT sum(documents) FROM native_work_search_frequencies"), count("SELECT count(*) FROM native_work_search_postings"); got != want {
+				t.Fatalf("frequency total=%d want=%d", got, want)
+			}
+			page, err := f.service.readIssues(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, url.Values{"q": {"quasar"}})
+			if err != nil || len(page.Items) != 1 || page.Items[0].WorkItemID != retained.WorkItemID {
+				t.Fatalf("retained search items=%v err=%v", page.Items, err)
+			}
 		})
 	}
 }
@@ -294,6 +413,20 @@ func TestNativeSearchLegacyRowsPrunedInBoundedBatches(t *testing.T) {
 				t.Fatal(err)
 			}
 			if _, err := db.db.ExecContext(t.Context(), up); err != nil {
+				t.Fatal(err)
+			}
+			deferred, err := migrationFiles.ReadFile("migrations/20261031211642_native_search_deferred_deletion.sql")
+			if err != nil {
+				t.Fatal(err)
+			}
+			deferredUp, _, _ := strings.Cut(string(deferred), "-- +goose Down")
+			if _, err := db.db.ExecContext(t.Context(), "PRAGMA foreign_keys=OFF"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.db.ExecContext(t.Context(), deferredUp); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.db.ExecContext(t.Context(), "PRAGMA foreign_keys=ON"); err != nil {
 				t.Fatal(err)
 			}
 			var last int64
@@ -1949,6 +2082,12 @@ func TestNativeSearchPostingRefreshRejectsReusedDocumentID(t *testing.T) {
 			replacementID, err := result.LastInsertId()
 			if err != nil || replacementID != id {
 				t.Fatalf("replacement id=%d want=%d err=%v", replacementID, id, err)
+			}
+			var scoped int
+			if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM native_work_search_refresh q
+ JOIN native_work_documents d ON d.id=q.document_id JOIN issues i ON i.id=d.issue_id
+ WHERE q.document_id=? AND q.organization_id=i.organization_id AND q.project_id=i.project_id`, id).Scan(&scoped); err != nil || scoped != 1 {
+				t.Fatalf("replacement refresh scoped=%d want=1 err=%v", scoped, err)
 			}
 			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
 			if err != nil {
