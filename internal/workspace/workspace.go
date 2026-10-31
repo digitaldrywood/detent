@@ -2217,7 +2217,11 @@ func workerScratchGroup(workspaceParent string) string {
 }
 
 func workerScratchBase() string {
-	return filepath.Join(bestEffortCanonicalPath(os.TempDir()), workerScratchBaseName)
+	name := workerScratchBaseName
+	if uid := os.Getuid(); uid >= 0 {
+		name += "-" + strconv.Itoa(uid)
+	}
+	return filepath.Join(bestEffortCanonicalPath(os.TempDir()), name)
 }
 
 func bestEffortCanonicalPath(path string) string {
