@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"net/http"
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -76,12 +77,10 @@ func (s *Service) authorizeChangeSource(ctx context.Context, scope nativeScope, 
 }
 
 func (s *Service) verifyChangeSource(ctx context.Context, source tracker.ChangeSource, bundle []byte) error {
-	select {
-	case s.sourceVerification <- struct{}{}:
-		defer func() { <-s.sourceVerification }()
-	case <-ctx.Done():
-		return ctx.Err()
+	if err := s.acquireSourceVerification(ctx); err != nil {
+		return err
 	}
+	defer func() { <-s.sourceVerification }()
 	verify := s.sourceVerifier
 	if verify == nil {
 		verify = workspace.VerifyChangeSource
@@ -96,12 +95,10 @@ func (s *Service) verifyChangeSource(ctx context.Context, source tracker.ChangeS
 }
 
 func (s *Service) verifyLandingIncorporation(ctx context.Context, proof tracker.LandingIncorporation, pack []byte) error {
-	select {
-	case s.sourceVerification <- struct{}{}:
-		defer func() { <-s.sourceVerification }()
-	case <-ctx.Done():
-		return ctx.Err()
+	if err := s.acquireSourceVerification(ctx); err != nil {
+		return err
 	}
+	defer func() { <-s.sourceVerification }()
 	verify := s.incorporationVerifier
 	if verify == nil {
 		verify = workspace.VerifyLandingIncorporation
@@ -113,4 +110,16 @@ func (s *Service) verifyLandingIncorporation(ctx context.Context, proof tracker.
 		return err
 	}
 	return nil
+}
+
+func (s *Service) acquireSourceVerification(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	select {
+	case s.sourceVerification <- struct{}{}:
+		return nil
+	default:
+		return &nativeError{Code: "source_verification_busy", Message: "Source verification is busy; retry the request", status: http.StatusServiceUnavailable, publicMessage: true}
+	}
 }
