@@ -90,7 +90,18 @@ func runnerUpdateReceiptMatches(ctx context.Context, tx *sql.Tx, scope nativeSco
 	if !request.Urgent {
 		return false, nil
 	}
-	raw, err := readUrgentCommandReceipt(ctx, tx, scope.organization, request.ID)
+	hash, err := nativeCommandHash(request)
+	if err != nil {
+		return false, err
+	}
+	var matches bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM native_commands WHERE organization_id=? AND operation='urgent_runner_update' AND response_request_id=? AND response_reconciliation_hash=?)`, scope.organization, request.ID, hash).Scan(&matches); err != nil {
+		return false, err
+	}
+	if matches {
+		return true, nil
+	}
+	raw, err = readUrgentCommandReceipt(ctx, tx, scope.organization, request.ID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -176,7 +187,7 @@ func (s *Service) markUrgentRunnerUpdateCommand(ctx context.Context, scope nativ
 				return nil, nativePublicInvalid("An urgent release cannot lower the existing update target")
 			}
 		}
-		value := urgentRunnerUpdate{Revision: current.Revision + 1, Request: &runnerauth.UpdateRequest{ID: newNativeID("update"), RequestedAt: now, Service: "detent", Version: request.Version, Release: true, Urgent: true}}
+		value := urgentRunnerUpdate{Revision: current.Revision + 1, Request: &runnerauth.UpdateRequest{ID: payloadNativeID(ctx, "update"), RequestedAt: now, Service: "detent", Version: request.Version, Release: true, Urgent: true}}
 		if current.Request != nil && current.Request.Version == request.Version {
 			value.Request = current.Request
 		}

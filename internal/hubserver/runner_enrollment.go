@@ -159,6 +159,11 @@ func (s *Service) commitRunnerTransaction(c echo.Context, status int, operation 
 		}
 		completion = active > 0
 	}
+	if content, ok := ctx.Value(changeContentKey{}).(*changeContent); ok {
+		content.mu.Lock()
+		completion = completion || content.completion
+		content.mu.Unlock()
+	}
 	if err := s.database.checkHostedGrowth(ctx, tx, before, now, completion, metrics...); err != nil {
 		return err
 	}

@@ -105,6 +105,7 @@ func (s *Service) persistRunnerUpdateCommand(ctx context.Context, scope nativeSc
 	if err != nil {
 		return nil, err
 	}
+	now = payloadTimestamp(ctx, now)
 	if err := s.requireRunnerAdministration(ctx, tx, scope, now); err != nil {
 		return nil, err
 	}
@@ -131,7 +132,7 @@ func (s *Service) persistRunnerUpdateCommand(ctx context.Context, scope nativeSc
 	if err != nil {
 		return nil, err
 	}
-	delivery := request.delivery(newNativeID("update"), now)
+	delivery := request.delivery(payloadNativeID(ctx, "update"), now)
 	runner.UpdateRequest = &delivery
 	settings, err := marshalNative(settingsFromRouting(runner.Routing))
 	if err != nil {

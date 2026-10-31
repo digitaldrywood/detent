@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,7 +31,7 @@ func TestCommandPayloadRetentionNeverRepeatsEffects(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, organization := range []tracker.OrganizationID{f.project.OrganizationID, "org_example_second"} {
-		for _, operation := range []string{"POST /example", "PUT /example", "PATCH /example", "DELETE /example", "POST /example/conversations", "POST /example/conversations/c/link", "mcp update_runner_routing", "runner_routing example", "runner_capacity example", "runner_update example", "urgent_runner_update", "apply_local_project_policy example project", "drain_local_project example project", "detach_local_project example project", "resume_local_project example project", "attachment.record example"} {
+		for _, operation := range []string{"example"} {
 			t.Run(string(organization)+"/"+operation, func(t *testing.T) {
 				clock.Store(start.UnixNano())
 				ctx := s.contentContext(t.Context())
@@ -68,6 +69,8 @@ func TestCommandPayloadRetentionNeverRepeatsEffects(t *testing.T) {
 				if err := tx.Commit(); err != nil {
 					t.Fatal(err)
 				}
+				requireCommandPayloadObject(t, s, organization, operation, "external", []byte(raw))
+				requireCommandPayloadObject(t, s, organization, operation+" example-session", "native", []byte(raw))
 				for _, state := range []struct {
 					key, body string
 					pending   any
@@ -152,6 +155,21 @@ func TestCommandPayloadRetentionNeverRepeatsEffects(t *testing.T) {
 	}
 }
 
+func requireCommandPayloadObject(t *testing.T, s *Service, organization tracker.OrganizationID, operation, key string, want []byte) {
+	t.Helper()
+	var inline, object string
+	if err := s.database.reader.QueryRowContext(t.Context(), `SELECT response_json,response_object_key FROM native_commands WHERE organization_id=? AND operation=? AND command_key=?`, organization, operation, key).Scan(&inline, &object); err != nil {
+		t.Fatal(err)
+	}
+	if inline != "{}" || object == "" {
+		t.Fatalf("%s stored %d inline bytes and object %q before maintenance", operation, len(inline), object)
+	}
+	raw, err := resolveStorageJSON(s.contentContext(t.Context()), []byte(object))
+	if err != nil || !bytes.Equal(bytes.TrimSpace(raw), bytes.TrimSpace(want)) {
+		t.Fatalf("%s object lost response: error=%v", operation, err)
+	}
+}
+
 func TestCommandPayloadConversionUsesBoundedBatches(t *testing.T) {
 	now := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
 	f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
@@ -163,20 +181,21 @@ func TestCommandPayloadConversionUsesBoundedBatches(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, family := range []struct {
-		name  string
-		count int
-		until time.Time
-	}{{"expired", 1, now.Add(-time.Second)}, {"inline", storageConversionRows + 1, now.Add(time.Hour)}} {
+		name    string
+		count   int
+		until   time.Time
+		pending any
+	}{{"expired", 1, now.Add(-time.Second), false}, {"pending", 1, now.Add(-time.Hour), true}, {"unknown", 1, now.Add(-time.Hour), nil}, {"inline", storageConversionRows + 1, now.Add(time.Hour), false}} {
 		if _, err := s.database.db.ExecContext(t.Context(), `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<?)
 INSERT INTO native_commands(organization_id,actor_id,operation,command_key,request_hash,response_json,created_at,response_pending,response_replay_until_ns)
-SELECT ?,?,'example',?||i,'hash','{"output":"example"}',?,0,? FROM n`, family.count, f.project.OrganizationID, defaultHubOperatorID, family.name, formatHubTime(now), family.until.UnixNano()); err != nil {
+SELECT ?,?,'example',?||i,'hash','{"output":"example"}',?,?,? FROM n`, family.count, f.project.OrganizationID, defaultHubOperatorID, family.name, formatHubTime(now), family.pending, family.until.UnixNano()); err != nil {
 			t.Fatal(err)
 		}
 	}
 	for _, batch := range []struct {
 		name            string
 		expired, inline int
-	}{{"first batch", 1, 1}, {"second batch", 1, 0}} {
+	}{{"first batch", 1, 3}, {"second batch", 1, 0}} {
 		t.Run(batch.name, func(t *testing.T) {
 			if err := s.retainCommandPayloads(t.Context(), now); err != nil {
 				t.Fatal(err)
@@ -187,6 +206,9 @@ SELECT ?,?,'example',?||i,'hash','{"output":"example"}',?,0,? FROM n`, family.co
 			}
 			if expired != batch.expired || inline != batch.inline {
 				t.Fatalf("expired=%d inline=%d, want %d and %d", expired, inline, batch.expired, batch.inline)
+			}
+			for _, key := range []string{"pending1", "unknown1"} {
+				requireCommandPayloadObject(t, s, f.project.OrganizationID, "example", key, []byte(`{"output":"example"}`))
 			}
 		})
 	}

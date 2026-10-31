@@ -49,6 +49,7 @@ func TestRunnerCapacityApplication(t *testing.T) {
 	request := runnerCapacityChange{CapacityRequest: runnerauth.CapacityRequest{ExpectedConfigRevision: config.Revision, Capacity: 6, Backend: "codex"}, ExpectedRevision: before.Revision, IdempotencyKey: "six-workers"}
 	response := performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/capacity", testHubAdminToken, request)
 	requireNativeStatus(t, response, http.StatusOK)
+	requireCommandPayloadObject(t, f.service, f.project.OrganizationID, "runner_capacity "+r.binding.RunnerID, request.IdempotencyKey, response.Body.Bytes())
 	var view runnerauth.CapacityView
 	decodeHubResponse(t, response, &view)
 	if view.Desired != 6 || view.Effective == nil || *view.Effective != 2 || view.Status != "partially_applied" {

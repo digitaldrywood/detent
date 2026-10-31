@@ -34,12 +34,12 @@ func (s *Service) retainCommandPayloads(ctx context.Context, now time.Time) erro
 		return err
 	}
 	for _, id := range expired {
-		if _, err := s.database.db.ExecContext(ctx, `UPDATE native_commands SET response_json='{}',response_object_key='',response_expired=1 WHERE rowid=? AND response_pending=0 AND response_expired=0 AND response_replay_until_ns<?`, id, cutoff); err != nil {
+		if _, err := s.database.db.ExecContext(ctx, `UPDATE native_commands SET response_json='{}',response_object_key='',response_expired=1 WHERE rowid=? AND response_pending=0 AND response_expired=0 AND response_replay_until_ns<? AND (operation<>'urgent_runner_update' OR response_reconciliation_hash IS NOT NULL)`, id, cutoff); err != nil {
 			return err
 		}
 	}
 	for range storageConversionRows {
-		more, err := s.convertCommandPayload(s.freshRunDetailContext(ctx), now)
+		more, err := s.convertCommandPayload(s.freshRunDetailContext(ctx))
 		if err != nil || !more {
 			return err
 		}
@@ -47,10 +47,10 @@ func (s *Service) retainCommandPayloads(ctx context.Context, now time.Time) erro
 	return nil
 }
 
-func (s *Service) convertCommandPayload(ctx context.Context, now time.Time) (bool, error) {
+func (s *Service) convertCommandPayload(ctx context.Context) (bool, error) {
 	var id int64
 	var organization, operation, raw string
-	err := s.database.reader.QueryRowContext(ctx, `SELECT rowid,organization_id,operation,response_json FROM native_commands WHERE response_pending=0 AND response_expired=0 AND response_object_key='' AND response_json<>'{}' AND response_replay_until_ns>=? LIMIT 1`, now.UnixNano()).Scan(&id, &organization, &operation, &raw)
+	err := s.database.reader.QueryRowContext(ctx, `SELECT rowid,organization_id,operation,response_json FROM native_commands WHERE response_expired=0 AND response_object_key='' AND response_json<>'{}' AND response_json<>'{"detent_pending_command":true}' LIMIT 1`).Scan(&id, &organization, &operation, &raw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -61,7 +61,7 @@ func (s *Service) convertCommandPayload(ctx context.Context, now time.Time) (boo
 	if err != nil {
 		return false, fmt.Errorf("store command payload: %w", err)
 	}
-	_, err = s.database.db.ExecContext(ctx, `UPDATE native_commands SET response_json='{}',response_object_key=? WHERE rowid=? AND organization_id=? AND response_json=? AND response_pending=0 AND response_expired=0 AND response_object_key=''`, ref.Key, id, organization, raw)
+	_, err = s.database.db.ExecContext(ctx, `UPDATE native_commands SET response_json='{}',response_object_key=? WHERE rowid=? AND organization_id=? AND response_json=? AND response_expired=0 AND response_object_key=''`, ref.Key, id, organization, raw)
 	return true, err
 }
 

@@ -397,6 +397,7 @@ func TestRunnerUpdateApplication(t *testing.T) {
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, r.identityPath()+"/update/apply", testHubAdminToken, noConfirm), http.StatusPreconditionRequired)
 	response := performHubAPIRequest(t, f.service, http.MethodPost, r.identityPath()+"/update/apply", testHubAdminToken, request)
 	requireNativeStatus(t, response, http.StatusAccepted)
+	requireCommandPayloadObject(t, f.service, f.project.OrganizationID, "runner_update "+r.binding.RunnerID, request.IdempotencyKey, response.Body.Bytes())
 	replay := performHubAPIRequest(t, f.service, http.MethodPost, r.identityPath()+"/update/apply", testHubAdminToken, request)
 	requireNativeStatus(t, replay, http.StatusAccepted)
 	if !bytes.Equal(response.Body.Bytes(), replay.Body.Bytes()) {

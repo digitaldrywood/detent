@@ -278,7 +278,11 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				return executor.Execute(ctx, operatortool.Call{Name: name, Arguments: raw})
+				result, err := executor.Execute(ctx, operatortool.Call{Name: name, Arguments: raw})
+				if err == nil && name != operatortool.LocalProjectConfiguration && strings.Contains(string(result.Content), `"pending":true`) {
+					requireCommandPayloadObject(t, f.service, f.project.OrganizationID, name+" "+args.RunnerID+" "+args.ProjectID, args.RequestID, result.Content)
+				}
+				return result, err
 			}
 			result, err := call(operatortool.LocalProjectConfiguration, operatortool.LocalProjectArguments{ProjectID: view.ProjectID})
 			if err != nil {
@@ -328,7 +332,20 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 						entryClaims.Key.CredentialBinding = strings.Repeat("c", 64)
 					}
 				}
+				var objectsBefore int
+				if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM change_content_objects WHERE organization_id=?`, f.project.OrganizationID).Scan(&objectsBefore); err != nil {
+					t.Fatal(err)
+				}
 				request := heartbeat().ProjectConfigurationRequest
+				if request != nil {
+					var objectsAfter int
+					if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM change_content_objects WHERE organization_id=?`, f.project.OrganizationID).Scan(&objectsAfter); err != nil {
+						t.Fatal(err)
+					}
+					if objectsAfter != objectsBefore {
+						t.Fatal("delivery heartbeat stored an unused completion payload")
+					}
+				}
 				if strings.HasPrefix(scenario, "entry ") && entryResolutions == 0 {
 					t.Fatal("queued entry authority was not resolved from its current owner")
 				}

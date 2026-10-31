@@ -69,6 +69,24 @@ func prepareRunnerFactBackfill(ctx context.Context, q nativeQueryer) (runnerFact
 		return runnerFactBackfill{}, err
 	}
 	var row int64
+	err = q.QueryRowContext(ctx, `SELECT rowid,COALESCE(NULLIF(response_object_key,''),response_json) FROM native_commands WHERE operation='urgent_runner_update' AND response_reconciliation_hash IS NULL AND response_expired=0 LIMIT 1`).Scan(&row, &raw)
+	if err == nil {
+		resolved, err := resolveStorageJSON(ctx, []byte(raw))
+		if err != nil {
+			return runnerFactBackfill{}, err
+		}
+		hash, err := commandReconciliationHash("urgent_runner_update", string(resolved))
+		if err != nil {
+			return runnerFactBackfill{}, err
+		}
+		return runnerFactBackfill{verify: `SELECT EXISTS(SELECT 1 FROM native_commands WHERE rowid=? AND COALESCE(NULLIF(response_object_key,''),response_json)=? AND response_reconciliation_hash IS NULL AND response_expired=0)`, args: []any{row, raw}, write: func(ctx context.Context, tx *sql.Tx) error {
+			_, err := tx.ExecContext(ctx, `UPDATE native_commands SET response_reconciliation_hash=? WHERE rowid=?`, hash, row)
+			return err
+		}}, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return runnerFactBackfill{}, err
+	}
 	var at string
 	var pending sql.NullBool
 	var request sql.NullString

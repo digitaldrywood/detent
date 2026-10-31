@@ -679,7 +679,7 @@ func (s *Service) commitNativeMutation(ctx context.Context, scope nativeScope, o
 	if err != nil {
 		return nil, err
 	}
-	if _, err := insertNativePayloadCommandReceipt(ctx, tx, scope.organization, scope.credential.ID, options.OperationID, command.IdempotencyKey, requestHash, response, formatHubTime(now)); err != nil {
+	if _, err := insertNativeCommandReceipt(ctx, tx, scope.organization, scope.credential.ID, options.OperationID, command.IdempotencyKey, requestHash, response, formatHubTime(now)); err != nil {
 		return nil, err
 	}
 	if consolidateRunEvent {

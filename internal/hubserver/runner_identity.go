@@ -393,6 +393,9 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
+	if err := s.prepareProjectConfigurationReceipt(ctx, scope, configuration.view, configurationIssuer, receivedAt); err != nil {
+		return s.nativeAPIError(c, err)
+	}
 	return s.runnerTransaction(c, status, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
 		step := heartbeatWriterSteps(ctx)
 		defer step("")

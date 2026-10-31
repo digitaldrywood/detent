@@ -5,12 +5,99 @@ import (
 	"net/http"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+func TestUrgentRunnerUpdateReceiptSurvivesReplayExpiry(t *testing.T) {
+	for _, format := range []string{"current", "legacy inline", "legacy object", "legacy typed"} {
+		t.Run(format, func(t *testing.T) {
+			start := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
+			var clock atomic.Int64
+			clock.Store(start.UnixNano())
+			f := newDefaultNativeFixture(t, Config{now: func() time.Time { return time.Unix(0, clock.Load()).UTC() }, retentionTimeout: frozenRetentionTimeout})
+			s := f.service
+			if err := s.stopGitHubWebhookMaintenance(); err != nil {
+				t.Fatal(err)
+			}
+			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
+			r.enroll(t)
+			if _, err := s.database.db.ExecContext(t.Context(), `UPDATE api_tokens SET expires_at=? WHERE id=(SELECT token_id FROM runner_identities WHERE id=?)`, formatHubTime(start.Add(48*time.Hour)), r.binding.RunnerID); err != nil {
+				t.Fatal(err)
+			}
+			path := "/api/v2/organizations/" + string(f.project.OrganizationID) + "/runner-update/urgent"
+			first := urgentRunnerUpdateChange{Version: "1.2.4", Confirm: true, IdempotencyKey: "first"}
+			response := performHubAPIRequest(t, s, http.MethodPut, path, testHubAdminToken, first)
+			requireNativeStatus(t, response, http.StatusAccepted)
+			var urgent urgentRunnerUpdate
+			decodeHubResponse(t, response, &urgent)
+			requireCommandPayloadObject(t, s, f.project.OrganizationID, "urgent_runner_update", "first", response.Body.Bytes())
+			if format != "current" {
+				inline, object := response.Body.String(), ""
+				if format == "legacy object" {
+					ref, err := prepareMeteredContent(s.contentContext(t.Context()), string(f.project.OrganizationID), response.Body.Bytes(), true)
+					if err != nil {
+						t.Fatal(err)
+					}
+					inline, object = "{}", ref.Key
+				}
+				if _, err := s.database.db.ExecContext(t.Context(), `UPDATE native_commands SET response_json=?,response_object_key=?,response_pending=NULL,response_request_id=NULL,response_replay_until_ns=NULL,response_reconciliation_hash=NULL WHERE organization_id=? AND operation='urgent_runner_update' AND command_key='first'`, inline, object, f.project.OrganizationID); err != nil {
+					t.Fatal(err)
+				}
+				if format == "legacy typed" {
+					if _, err := s.database.db.ExecContext(t.Context(), `UPDATE native_commands SET response_pending=0,response_request_id=?,response_replay_until_ns=? WHERE organization_id=? AND operation='urgent_runner_update' AND command_key='first'`, urgent.Request.ID, start.Add(commandReceiptRetention).UnixNano(), f.project.OrganizationID); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			requireNativeStatus(t, performHubAPIRequest(t, s, http.MethodPut, path, testHubAdminToken, urgentRunnerUpdateChange{ExpectedRevision: urgent.Revision, Version: "1.2.5", Confirm: true, IdempotencyKey: "second"}), http.StatusAccepted)
+			clock.Store(start.Add(commandReceiptRetention + time.Second).UnixNano())
+			ctx := s.contentContext(t.Context())
+			if err := s.retainCommandPayloads(ctx, s.config.now()); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.database.populateRunnerFacts(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.retainCommandPayloads(ctx, s.config.now()); err != nil {
+				t.Fatal(err)
+			}
+			requireNativeStatus(t, performHubAPIRequest(t, s, http.MethodPut, path, testHubAdminToken, first), http.StatusGone)
+			var inline, object string
+			if err := s.database.reader.QueryRowContext(t.Context(), `SELECT response_json,response_object_key FROM native_commands WHERE organization_id=? AND operation='urgent_runner_update' AND command_key='first'`, f.project.OrganizationID).Scan(&inline, &object); err != nil {
+				t.Fatal(err)
+			}
+			if inline != "{}" || object != "" {
+				t.Fatal("expired urgent update retained its replay payload")
+			}
+			now := s.config.now()
+			receipt := &runnerauth.UpdateReceipt{Request: *urgent.Request, Status: "refused", FailureReason: "Update was not applied", ObservedAt: now}
+			build := runnerauth.BuildEvidence{Version: "1.2.3", Commit: strings.Repeat("a", 40), Source: "release", SHA256: strings.Repeat("b", 64), OS: "linux", Architecture: "amd64", ObservedAt: now}
+			report := &runnerauth.UpdateObservation{Discovery: "unknown", Protocol: 1, Service: "detent", Supported: true, Running: build, ObservedAt: now, Receipt: receipt}
+			report.Revision = report.BuildRevision()
+			forged := *receipt
+			forged.Request.Version = "1.2.6"
+			report.Receipt = &forged
+			response = performHubAPIRequest(t, s, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "runner", "capacity": 2, "version": build.Version, "os": build.OS, "architecture": build.Architecture, "protocol_major": 2, "update": report, "backend_isolation": r.redemption.BackendIsolation})
+			requireNativeStatus(t, response, http.StatusOK)
+			stored, err := readRunner(ctx, s.database.reader, f.project.OrganizationID, r.binding.RunnerID, now)
+			if err != nil || stored.Update == nil || stored.Update.Receipt != nil {
+				t.Fatalf("expired receipt authenticated a changed request: observation=%+v error=%v", stored.Update, err)
+			}
+			report.Receipt = receipt
+			response = performHubAPIRequest(t, s, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "runner", "capacity": 2, "version": build.Version, "os": build.OS, "architecture": build.Architecture, "protocol_major": 2, "update": report, "backend_isolation": r.redemption.BackendIsolation})
+			requireNativeStatus(t, response, http.StatusOK)
+			stored, err = readRunner(ctx, s.database.reader, f.project.OrganizationID, r.binding.RunnerID, now)
+			if err != nil || stored.Update == nil || !reflect.DeepEqual(stored.Update.Receipt, receipt) {
+				t.Fatalf("expired superseded urgent update lost runner receipt: observation=%+v error=%v", stored.Update, err)
+			}
+		})
+	}
+}
 
 func TestUrgentRunnerUpdateFleet(t *testing.T) {
 	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)

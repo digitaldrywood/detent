@@ -303,6 +303,120 @@ type preparedProjectConfiguration struct {
 	mapRevision  int64
 }
 
+func (s *Service) prepareProjectConfigurationReceipt(ctx context.Context, scope nativeScope, observation *runnerauth.ProjectConfiguration, issuer projectConfigurationIssuer, now time.Time) error {
+	if scope.credential.Runner.RunnerID == "" {
+		return nil
+	}
+	command, err := readConfigurationCommandFacts(ctx, s.database.reader, scope.organization, scope.credential.Runner.RunnerID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if command == nil || command.Request.ProjectID != string(scope.project) {
+		return nil
+	}
+	decision, err := s.readProjectConfigurationDecision(ctx, scope, command, observation, issuer, now)
+	if err != nil || !decision.complete {
+		return err
+	}
+	var view runnerauth.ProjectConfiguration
+	if observation != nil {
+		view = *observation
+	} else {
+		raw, err := readProjectConfigurationEntry(ctx, s.database.reader, scope, scope.credential.Runner.RunnerID)
+		if err != nil {
+			return err
+		}
+		if err := json.Unmarshal([]byte(raw.String), &view); err != nil {
+			return err
+		}
+		if err := overlayProjectConfigurationObservation(ctx, s.database.reader, scope, scope.credential.Runner.RunnerID, &view); err != nil {
+			return err
+		}
+	}
+	if observation == nil || observation.RequestID != command.Request.RequestID {
+		view = refusedProjectConfiguration(view, command.Request.RequestID)
+	}
+	view.RunnerID, view.RunnerRevision = scope.credential.Runner.RunnerID, command.RunnerRevision
+	raw, err := json.Marshal(view)
+	if err != nil {
+		return err
+	}
+	_, err = prepareMeteredContent(ctx, string(scope.organization), raw, true)
+	return err
+}
+
+type projectConfigurationDecision struct {
+	actor    string
+	complete bool
+	request  runnerauth.ProjectConfigurationRequest
+}
+
+func (s *Service) readProjectConfigurationDecision(ctx context.Context, scope nativeScope, command *runnerauth.ProjectConfigurationCommand, observation *runnerauth.ProjectConfiguration, issuer projectConfigurationIssuer, now time.Time) (projectConfigurationDecision, error) {
+	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return projectConfigurationDecision{}, err
+	}
+	defer tx.Rollback()
+	r, err := readRunner(ctx, tx, scope.organization, scope.credential.Runner.RunnerID, now)
+	if err != nil {
+		return projectConfigurationDecision{}, err
+	}
+	return s.decideProjectConfiguration(ctx, tx, scope, r, command, observation, issuer, now)
+}
+
+func (s *Service) decideProjectConfiguration(ctx context.Context, tx *sql.Tx, scope nativeScope, r runnerauth.Runner, command *runnerauth.ProjectConfigurationCommand, observation *runnerauth.ProjectConfiguration, preparedIssuer projectConfigurationIssuer, now time.Time) (projectConfigurationDecision, error) {
+	var identity operatorChatIdentity
+	var credential apiCredential
+	if json.Unmarshal(command.Issuer, &identity) != nil {
+		return projectConfigurationDecision{}, nativePublicInvalid("Invalid project configuration request")
+	}
+	entryIssuer := identity.Origin != "" || identity.Valid()
+	if entryIssuer {
+		credential.ID = identity.PrincipalID
+	} else if json.Unmarshal(command.Issuer, &credential) != nil {
+		return projectConfigurationDecision{}, nativePublicInvalid("Invalid project configuration request")
+	}
+	decision := projectConfigurationDecision{actor: credential.ID, complete: true}
+	request := command.Request
+	if observation != nil && observation.RequestID == request.RequestID {
+		return decision, nil
+	}
+	if r.Revision != command.RunnerRevision || !slices.Contains(r.ProjectIDs, scope.project) || request.ProjectID != string(scope.project) {
+		return decision, nil
+	}
+	if entryIssuer {
+		if preparedIssuer.requestID != request.RequestID || preparedIssuer.runnerRevision != command.RunnerRevision {
+			return projectConfigurationDecision{}, nil
+		}
+		if operatorIdentity(preparedIssuer.credential, string(scope.organization)) != identity.Identity {
+			return decision, nil
+		}
+		credential = preparedIssuer.credential
+	} else if credential.EntryKey != nil {
+		return decision, nil
+	}
+	issuer := nativeScope{organization: scope.organization, project: scope.project, credential: credential}
+	if s.configurationRequestAuthority(ctx, tx, issuer, now, request.Operation) != nil {
+		return decision, nil
+	}
+	if request.Operation == "apply_local_project_policy" {
+		approval, err := requireProjectPolicy(ctx, tx, string(scope.organization)+"/"+string(scope.project))
+		if err != nil || approval.Policy.ID != request.PolicyID {
+			return decision, nil
+		}
+	}
+	return projectConfigurationDecision{actor: credential.ID, request: request}, nil
+}
+
+func refusedProjectConfiguration(view runnerauth.ProjectConfiguration, request string) runnerauth.ProjectConfiguration {
+	view.RequestID, view.Applied, view.Saved, view.Pending = request, false, false, false
+	view.Constraint = "The selected policy was not applied; verify approval and supported workflow through the existing policy owner."
+	return view
+}
+
 func (s *Service) prepareProjectConfiguration(ctx context.Context, scope nativeScope, observation *runnerauth.ProjectConfiguration, now time.Time) (preparedProjectConfiguration, error) {
 	if observation == nil {
 		return preparedProjectConfiguration{}, nil
@@ -467,16 +581,12 @@ func (s *Service) runnerProjectConfiguration(ctx context.Context, tx *sql.Tx, sc
 		return runnerauth.ProjectConfigurationRequest{}, nil
 	}
 	request := command.Request
-	var identity operatorChatIdentity
-	var credential apiCredential
-	if json.Unmarshal(command.Issuer, &identity) != nil {
-		return runnerauth.ProjectConfigurationRequest{}, nativePublicInvalid("Invalid project configuration request")
+	decision, err := s.decideProjectConfiguration(ctx, tx, scope, r, command, observation, preparedIssuer, now)
+	if err != nil {
+		return runnerauth.ProjectConfigurationRequest{}, err
 	}
-	entryIssuer := identity.Origin != "" || identity.Valid()
-	if entryIssuer {
-		credential.ID = identity.PrincipalID
-	} else if json.Unmarshal(command.Issuer, &credential) != nil {
-		return runnerauth.ProjectConfigurationRequest{}, nativePublicInvalid("Invalid project configuration request")
+	if !decision.complete {
+		return decision.request, nil
 	}
 	finish := func(view runnerauth.ProjectConfiguration) (runnerauth.ProjectConfigurationRequest, error) {
 		view.RunnerID, view.RunnerRevision = r.RunnerID, command.RunnerRevision
@@ -489,7 +599,7 @@ func (s *Service) runnerProjectConfiguration(ctx context.Context, tx *sql.Tx, sc
 		if err != nil {
 			return runnerauth.ProjectConfigurationRequest{}, err
 		}
-		if _, err := tx.ExecContext(ctx, "UPDATE native_commands SET response_json='{}',response_object_key=?,response_pending=0,created_at=?,response_replay_until_ns=? WHERE organization_id = ? AND actor_id = ? AND operation = ? AND command_key = ?", object, formatHubTime(now), now.Add(commandReceiptRetention).UnixNano(), scope.organization, credential.ID, operation, request.RequestID); err != nil {
+		if _, err := tx.ExecContext(ctx, "UPDATE native_commands SET response_json='{}',response_object_key=?,response_pending=0,created_at=?,response_replay_until_ns=? WHERE organization_id = ? AND actor_id = ? AND operation = ? AND command_key = ?", object, formatHubTime(now), now.Add(commandReceiptRetention).UnixNano(), scope.organization, decision.actor, operation, request.RequestID); err != nil {
 			return runnerauth.ProjectConfigurationRequest{}, err
 		}
 		settings := settingsFromRouting(r.Routing)
@@ -513,47 +623,18 @@ func (s *Service) runnerProjectConfiguration(ctx context.Context, tx *sql.Tx, sc
 	if observation != nil && observation.RequestID == request.RequestID {
 		return finish(*observation)
 	}
-	refuse := func() (runnerauth.ProjectConfigurationRequest, error) {
-		raw, err := readProjectConfigurationEntry(ctx, tx, scope, r.RunnerID)
-		if err != nil {
-			return runnerauth.ProjectConfigurationRequest{}, err
-		}
-		var view runnerauth.ProjectConfiguration
-		if err := json.Unmarshal([]byte(raw.String), &view); err != nil {
-			return runnerauth.ProjectConfigurationRequest{}, err
-		}
-		if err := overlayProjectConfigurationObservation(ctx, tx, scope, r.RunnerID, &view); err != nil {
-			return runnerauth.ProjectConfigurationRequest{}, err
-		}
-		view.RequestID, view.Applied, view.Saved, view.Pending = request.RequestID, false, false, false
-		view.Constraint = "The selected policy was not applied; verify approval and supported workflow through the existing policy owner."
-		return finish(view)
+	raw, err := readProjectConfigurationEntry(ctx, tx, scope, r.RunnerID)
+	if err != nil {
+		return runnerauth.ProjectConfigurationRequest{}, err
 	}
-	if r.Revision != command.RunnerRevision || !slices.Contains(r.ProjectIDs, scope.project) || request.ProjectID != string(scope.project) {
-		return refuse()
+	var view runnerauth.ProjectConfiguration
+	if err := json.Unmarshal([]byte(raw.String), &view); err != nil {
+		return runnerauth.ProjectConfigurationRequest{}, err
 	}
-	if entryIssuer {
-		if preparedIssuer.requestID != request.RequestID || preparedIssuer.runnerRevision != command.RunnerRevision {
-			return runnerauth.ProjectConfigurationRequest{}, nil
-		}
-		if operatorIdentity(preparedIssuer.credential, string(scope.organization)) != identity.Identity {
-			return refuse()
-		}
-		credential = preparedIssuer.credential
-	} else if credential.EntryKey != nil {
-		return refuse()
+	if err := overlayProjectConfigurationObservation(ctx, tx, scope, r.RunnerID, &view); err != nil {
+		return runnerauth.ProjectConfigurationRequest{}, err
 	}
-	issuer := nativeScope{organization: scope.organization, project: scope.project, credential: credential}
-	if s.configurationRequestAuthority(ctx, tx, issuer, now, request.Operation) != nil {
-		return refuse()
-	}
-	if request.Operation == "apply_local_project_policy" {
-		approval, err := requireProjectPolicy(ctx, tx, string(scope.organization)+"/"+string(scope.project))
-		if err != nil || approval.Policy.ID != request.PolicyID {
-			return refuse()
-		}
-	}
-	return request, nil
+	return finish(refusedProjectConfiguration(view, request.RequestID))
 }
 
 func jsonPathKey(key string) string {

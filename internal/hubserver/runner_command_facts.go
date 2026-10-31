@@ -3,8 +3,10 @@ package hubserver
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -14,19 +16,33 @@ func insertNativeCommandReceipt(ctx context.Context, tx *sql.Tx, organization tr
 	if err != nil {
 		return nil, err
 	}
-	return tx.ExecContext(ctx, `INSERT INTO native_commands(organization_id,actor_id,operation,command_key,request_hash,response_json,created_at,response_pending,response_request_id) VALUES(?,?,?,?,?,?,?,?,?)`, organization, actor, operation, key, hash, raw, at, pending, request)
-}
-
-func insertNativePayloadCommandReceipt(ctx context.Context, tx *sql.Tx, organization tracker.OrganizationID, actor, operation, key, hash, raw, at string) (sql.Result, error) {
-	pending, request, err := commandResponseFacts(raw)
-	if err != nil {
-		return nil, err
-	}
 	object, err := storedMeteredPayloadKey(ctx, string(organization), []byte(raw), !strings.HasPrefix(operation, "attachment."))
 	if err != nil {
 		return nil, err
 	}
-	return tx.ExecContext(ctx, `INSERT INTO native_commands(organization_id,actor_id,operation,command_key,request_hash,response_json,response_object_key,created_at,response_pending,response_request_id) VALUES(?,?,?,?,?,'{}',?,?,?,?)`, organization, actor, operation, key, hash, object, at, pending, request)
+	reconciliation, err := commandReconciliationHash(operation, raw)
+	if err != nil {
+		return nil, err
+	}
+	created, err := time.Parse(time.RFC3339Nano, at)
+	if err != nil {
+		return nil, err
+	}
+	return tx.ExecContext(ctx, `INSERT INTO native_commands(organization_id,actor_id,operation,command_key,request_hash,response_json,response_object_key,created_at,response_pending,response_request_id,response_reconciliation_hash,response_replay_until_ns) VALUES(?,?,?,?,?,'{}',?,?,?,?,?,?)`, organization, actor, operation, key, hash, object, at, pending, request, reconciliation, created.Add(commandReceiptRetention).UnixNano())
+}
+
+func commandReconciliationHash(operation, raw string) (string, error) {
+	if operation != "urgent_runner_update" {
+		return "", nil
+	}
+	var response urgentRunnerUpdate
+	if err := json.Unmarshal([]byte(raw), &response); err != nil {
+		return "", err
+	}
+	if response.Request == nil {
+		return "", nil
+	}
+	return nativeCommandHash(*response.Request)
 }
 
 func readUrgentCommandReceipt(ctx context.Context, q nativeQueryer, organization tracker.OrganizationID, request string) (string, error) {

@@ -28,6 +28,7 @@ func (s *Service) commitRunnerAdminTransaction(ctx context.Context, scope native
 	if err != nil {
 		return nil, err
 	}
+	now = payloadTimestamp(ctx, now)
 	if err := s.requireRunnerAdministration(ctx, tx, scope, now); err != nil {
 		return nil, err
 	}
