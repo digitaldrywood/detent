@@ -54,6 +54,7 @@ type Config struct {
 type Client struct {
 	requestBudgetMu    sync.Mutex
 	requestBudgetUntil time.Time
+	receiptBudgetUntil time.Time
 	heartbeatProjects  map[string]*heartbeatProject
 	heartbeatMu        sync.Mutex
 	capabilitiesDigest string

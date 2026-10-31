@@ -90,6 +90,7 @@ type requestMetricsReport struct {
 type runnerRequestWindow struct {
 	Minute       int64
 	Count        int
+	ReceiptCount int
 	Budget       int
 	Routes       map[string]int
 	Projects     []string
@@ -308,18 +309,23 @@ func (m *tenantRequestMetrics) admit(now time.Time, runner, route string, capaci
 	if w.Minute != minute {
 		w.Minute = minute
 		w.Count = 0
+		w.ReceiptCount = 0
 		w.Routes = make(map[string]int)
 	}
 	w.Budget = 120 + 60*min(10000, max(0, capacity))
 	w.Projects = slices.Clone(projects)
-	w.Count++
 	w.Routes[route]++
-	if w.Count <= w.Budget {
+	count, budget := &w.Count, w.Budget
+	if strings.Contains(route, "/go-test-receipts") {
+		count, budget = &w.ReceiptCount, 10*w.Budget
+	}
+	*count++
+	if *count <= budget {
 		return 0
 	}
 	w.ExcessAt = now
-	w.ExcessCount = w.Count
-	w.ExcessBudget = w.Budget
+	w.ExcessCount = *count
+	w.ExcessBudget = budget
 	top := make([]string, 0, len(w.Routes))
 	for route := range w.Routes {
 		top = append(top, route)

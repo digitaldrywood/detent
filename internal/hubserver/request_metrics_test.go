@@ -217,6 +217,14 @@ func TestRunnerRequestBudget(t *testing.T) {
 			if retry := m.admit(now, "runner_two", "GET /items", test.capacity, nil); retry != 0 {
 				t.Fatal("other runner throttled")
 			}
+			for range 10 * test.budget {
+				if retry := m.admit(now, "runner_one", "GET /go-test-receipts", test.capacity, nil); retry != 0 {
+					t.Fatalf("receipt lookup within its budget throttled: %d", retry)
+				}
+			}
+			if retry := m.admit(now, "runner_one", "POST /go-test-receipts", test.capacity, nil); retry != 45 {
+				t.Fatalf("receipt retry=%d", retry)
+			}
 			findings := m.findings(now.Add(time.Minute))
 			if len(findings) != 1 || findings[0].Subject.ID != "runner_one" || !strings.Contains(findings[0].Summary, "GET /items") {
 				t.Fatalf("findings=%+v", findings)
@@ -261,6 +269,9 @@ func TestRunnerRequestBudgetHTTP(t *testing.T) {
 	if response.Header().Get("Retry-After") != "40" {
 		t.Fatalf("retry=%q", response.Header().Get("Retry-After"))
 	}
+	if response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/go-test-receipts?key="+strings.Repeat("a", 64), r.redemption.Credential, nil); response.Code != http.StatusOK {
+		t.Fatalf("receipt lookup after the request budget: %d %s", response.Code, response.Body)
+	}
 	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET reported_capacity=capacity_limit WHERE id=?", r.binding.RunnerID); err != nil {
 		t.Fatal(err)
 	}
@@ -297,7 +308,7 @@ func TestRunnerRequestBudgetHTTP(t *testing.T) {
 		t.Fatal(err)
 	}
 	report, err := m.report(t.Context(), now.Add(time.Minute))
-	if err != nil || len(report.Callers) != 1 || report.Callers[0].Kind != "runner" || report.Callers[0].Count != 245 {
+	if err != nil || len(report.Callers) != 1 || report.Callers[0].Kind != "runner" || report.Callers[0].Count != 246 {
 		t.Fatalf("report=%+v err=%v", report, err)
 	}
 }
