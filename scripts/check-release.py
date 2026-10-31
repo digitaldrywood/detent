@@ -155,6 +155,7 @@ def validated_release_base():
         return None
     tags = git("tag", "--merged", "HEAD", "--list", "v*", "--sort=-version:refname").splitlines()
     validated = {}
+    overridden = set()
     for tag in tags:
         if not re.fullmatch(r"v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)", tag):
             continue
@@ -168,26 +169,26 @@ def validated_release_base():
         try:
             provenance = json.loads(match[1])
             commit = git("rev-parse", f"{ref}^{{commit}}").strip()
+            if (provenance["schema"] != 1 or provenance["tag"] != tag
+                    or provenance["commit"] != commit):
+                continue
+            if provenance.get("validation_override") is not None:
+                overridden.add(commit)
+                continue
             checks = provenance["checks"]
-            override = provenance.get("validation_override")
-            recorded_override = (isinstance(override, dict) and isinstance(override.get("reason"), str)
-                                 and bool(override["reason"].strip())
-                                 and any(check["name"] == "release-security-audit"
-                                         and check["status"] == "completed" and check["conclusion"] == "success"
-                                         and isinstance(check["status_id"], int) and check["status_id"] > 0
-                                         for check in checks))
-            if (provenance["schema"] == 1 and provenance["tag"] == tag
-                    and provenance["commit"] == commit
-                    and (recorded_override or any(check["name"] == "scheduled-full-ci"
-                            and check["status"] == "completed" and check["conclusion"] == "success"
-                            and isinstance(check["status_id"], int) and check["status_id"] > 0
-                            for check in checks))):
+            if any(check["name"] == "scheduled-full-ci"
+                   and check["status"] == "completed" and check["conclusion"] == "success"
+                   and isinstance(check["status_id"], int) and check["status_id"] > 0
+                   for check in checks):
                 validated.setdefault(commit, tag)
         except (KeyError, TypeError, ValueError):
             continue
     if not validated:
         return None
     for commit in git("rev-list", "--topo-order", "HEAD").splitlines():
+        if commit in overridden:
+            print("Browser comparison: release override requires full validation.", file=sys.stderr)
+            return None
         if commit in validated:
             print(f"Browser comparison: validated release={validated[commit]} base={commit}", file=sys.stderr)
             return commit

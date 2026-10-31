@@ -30,7 +30,22 @@ func TestReleaseFinalizer(t *testing.T) {
 		rejectReuse, badAllowlist, badOverride, failedExtra              bool
 		moveDuringCheck, failDuringCheck, foreignCreator, missingCreator bool
 		platform, override, recordedOverride, suiteState                 string
+		actor, actorType, overrideActors                                 string
+		local, noOverrideActors, rejectOverride, identityFailure         bool
 	}{
+		{name: "unauthorized actor cannot override", actor: "other-user", override: "Owner directs release", suiteState: "failure", rejectOverride: true},
+		{name: "partial actor match cannot override", overrideActors: `["example-operator-extra"]`, override: "Owner directs release", rejectOverride: true},
+		{name: "missing override allowlist denies everyone", noOverrideActors: true, override: "Owner directs release", rejectOverride: true},
+		{name: "empty override allowlist denies everyone", overrideActors: `[]`, override: "Owner directs release", rejectOverride: true},
+		{name: "malformed override allowlist is rejected", overrideActors: `{`, override: "Owner directs release", rejectOverride: true},
+		{name: "bot actor rejected even when allowlisted", actor: "release[bot]", actorType: "Bot", overrideActors: `["release[bot]"]`, override: "Owner directs release", rejectOverride: true},
+		{name: "automation account rejected even when allowlisted", actorType: "Bot", override: "Owner directs release", rejectOverride: true},
+		{name: "identity lookup failure denies override", identityFailure: true, override: "Owner directs release", rejectOverride: true},
+		{name: "allowlisted local operator can override", local: true, override: "Owner directs release", suiteState: "failure"},
+		{name: "unauthorized local operator rejected", local: true, actor: "other-user", override: "Owner directs release", rejectOverride: true},
+		{name: "local automation credential rejected", local: true, actorType: "Bot", override: "Owner directs release", rejectOverride: true},
+		{name: "local missing repository allowlist denies override", local: true, noOverrideActors: true, override: "Owner directs release", rejectOverride: true},
+		{name: "unauthorized actor cannot reuse recorded override", actor: "other-user", recordedOverride: "Owner previously accepted validation failure", suiteState: "failure", unchanged: true, rejectOverride: true},
 		{name: "reuse recorded override without ambient input", recordedOverride: "Owner previously accepted failed validation --> investigate", suiteState: "failure", unchanged: true},
 		{name: "reuse recorded override retains audit requirement", recordedOverride: "Owner previously accepted failed validation", auditState: "failure", unchanged: true, rejectReuse: true},
 		{name: "ambient override cannot retrofit ordinary tag", override: "Owner directs release", suiteState: "failure", unchanged: true, rejectReuse: true},
@@ -95,6 +110,12 @@ func TestReleaseFinalizer(t *testing.T) {
 set -euo pipefail
 printf 'forge %s\n' "$*" >> "$FIXTURE_LOG"
 case "$*" in
+  'api user' | 'api users/'*)
+    if [ "$FIXTURE_IDENTITY_FAILURE" = true ]; then exit 1; fi
+    printf '{"login":"%s","type":"%s"}\n' "$FIXTURE_ACTOR" "$FIXTURE_ACTOR_TYPE" ;;
+  *'/actions/variables/RELEASE_OVERRIDE_ACTORS'*)
+    if [ "$FIXTURE_NO_OVERRIDE_ACTORS" = true ]; then exit 1; fi
+    printf '%s\n' "$FIXTURE_OVERRIDE_ACTORS" ;;
   *"/commits/$CI_DEVELOP_SHA/statuses?per_page=100")
     if [ "$FIXTURE_PLATFORM_MODE" = api-error ]; then exit 1; fi
     if [ -f "$FIXTURE_STATUS_READ" ] && [ "$FIXTURE_FAIL_DURING_CHECK" = true ]; then
@@ -279,6 +300,18 @@ esac
 				head = strings.Repeat("b", 40)
 			}
 			flag := map[bool]string{true: "true", false: "false"}
+			actor := tt.actor
+			if actor == "" {
+				actor = "example-operator"
+			}
+			actorType := tt.actorType
+			if actorType == "" {
+				actorType = "User"
+			}
+			overrideActors := tt.overrideActors
+			if overrideActors == "" && !tt.noOverrideActors {
+				overrideActors = `["example-operator"]`
+			}
 			command := exec.CommandContext(t.Context(), "bash", "scripts/release-finalize.sh")
 			command.Dir = root
 			command.Env = []string{"PATH=" + dir + string(os.PathListSeparator) + os.Getenv("PATH"), "HOME=" + dir, "TMPDIR=" + dir,
@@ -301,8 +334,17 @@ esac
 				command.Env = append(command.Env, "DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON="+tt.requirements)
 			}
 			command.Env = append(command.Env, "DETENT_RELEASE_OVERRIDE="+tt.override)
+			command.Env = append(command.Env, "FIXTURE_ACTOR="+actor, "FIXTURE_ACTOR_TYPE="+actorType,
+				"FIXTURE_OVERRIDE_ACTORS="+overrideActors, "FIXTURE_NO_OVERRIDE_ACTORS="+flag[tt.noOverrideActors],
+				"FIXTURE_IDENTITY_FAILURE="+flag[tt.identityFailure])
+			if !tt.local {
+				command.Env = append(command.Env, "GITHUB_ACTIONS=true", "GITHUB_ACTOR="+actor)
+				if !tt.noOverrideActors {
+					command.Env = append(command.Env, "RELEASE_OVERRIDE_ACTORS="+overrideActors)
+				}
+			}
 			output, err := command.CombinedOutput()
-			if (err != nil) != (tt.rejectReuse || tt.badAllowlist || tt.badOverride) {
+			if (err != nil) != (tt.rejectReuse || tt.badAllowlist || tt.badOverride || tt.rejectOverride) {
 				t.Fatalf("finalizer = %v: %s", err, output)
 			}
 			calls, err := os.ReadFile(filepath.Join(dir, "calls"))
@@ -314,6 +356,10 @@ esac
 				t.Fatalf("finalizer posted a status: %s", text)
 			}
 			switch {
+			case tt.rejectOverride:
+				if !strings.Contains(string(output), "Release override requires an authorized human") || strings.Contains(text, "tag -a ") || strings.Contains(text, "push ") || strings.Contains(text, "/dispatches") {
+					t.Fatalf("unauthorized override produced release effects: %s: %s", text, output)
+				}
 			case tt.badOverride:
 				if !strings.Contains(string(output), "override requires a nonempty reason") || strings.Contains(text, "tag -a ") || strings.Contains(text, "/dispatches") {
 					t.Fatalf("invalid override produced release effects: %s: %s", text, output)

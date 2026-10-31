@@ -33,6 +33,7 @@ jobs:
       - name: Publish the validated tag
         env:
           DETENT_RELEASE_OVERRIDE: ${{ inputs.DETENT_RELEASE_OVERRIDE }}
+          RELEASE_OVERRIDE_ACTORS: ${{ vars.RELEASE_OVERRIDE_ACTORS }}
           GH_TOKEN: ${{ github.token }}
           CI_DEVELOP_SHA: ${{ github.sha }}
           CI_RELEASE_BRANCH: ${{ github.ref_name }}
