@@ -39,7 +39,7 @@ func (nativeOutageProgressBackend) Decide(_ context.Context, evidence progressch
 	return progresscheck.Decision{Outcome: progresscheck.SystemDefect, Diagnosis: last.ID + " records a shared backend protocol outage", Reason: "Shared backend protocol outage", Evidence: []string{last.ID}, DefectKey: "shared-backend-protocol", DefectTitle: "Shared backend protocol outage", DefectBody: "Repair the backend protocol." + issueContractTestSections}, nil
 }
 
-func TestNativeRetryProgressMissingPlatformRetainsDiagnosis(t *testing.T) {
+func TestNativeRetryProgressSharedOutagePersistsOneDefect(t *testing.T) {
 	t.Parallel()
 	h := newNativeChangeHubTransport(t, "In Review", []tracker.NativeState{
 		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}},
@@ -48,6 +48,7 @@ func TestNativeRetryProgressMissingPlatformRetainsDiagnosis(t *testing.T) {
 		{Name: "In Review", Transitions: []string{"In Progress", "Done"}},
 		{Name: "Done", Terminal: true},
 	}, true)
+	var defectID tracker.NativeWorkItemID
 	for index := range 6 {
 		issue := h.createInProgress(t, fmt.Sprintf("Backend outage issue %d", index))
 		h.claim(t, issue.ID)
@@ -67,14 +68,19 @@ func TestNativeRetryProgressMissingPlatformRetainsDiagnosis(t *testing.T) {
 			t.Fatal(err)
 		}
 		record, checked, err := progresscheck.Check(t.Context(), request, nativeOutageProgressBackend{}, owner)
-		if err != nil || !checked {
+		if err != nil || !checked || record.DefectIssueID == "" {
 			t.Fatalf("outage progress publication failed: record=%+v checked=%v error=%v", record, checked, err)
 		}
 		persisted, err := h.admin.Issue(t.Context(), tracker.NativeWorkItemID(issue.ID))
-		if err != nil || len(persisted.Dependencies) != 0 || record.CommentID == "" || record.DefectIssueID != "" || record.Decision.Diagnosis == "" {
+		if err != nil || len(persisted.Dependencies) != 1 || string(persisted.Dependencies[0]) != record.DefectIssueID {
 			t.Fatalf("missing persisted defect reference: issue=%+v record=%+v error=%v", persisted, record, err)
 		}
-
+		if defectID == "" {
+			defectID = persisted.Dependencies[0]
+		}
+		if persisted.Dependencies[0] != defectID {
+			t.Fatalf("outage created another defect: got %s want %s", persisted.Dependencies[0], defectID)
+		}
 		if err := h.connector.UpdateIssueState(t.Context(), issue.ID, "In Review"); err != nil {
 			t.Fatal(err)
 		}
@@ -92,8 +98,8 @@ func TestNativeRetryProgressMissingPlatformRetainsDiagnosis(t *testing.T) {
 			defects++
 		}
 	}
-	if defects != 0 {
-		t.Fatalf("persisted %d customer-project platform defects, want 0", defects)
+	if defects != 1 {
+		t.Fatalf("persisted %d shared outage defects, want 1", defects)
 	}
 }
 

@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
@@ -207,9 +206,6 @@ func recordNativeDependencyBlockers(ctx context.Context, tx *sql.Tx, scope nativ
 		}
 		if err != nil {
 			return issue, err
-		}
-		if origin, ok := issueorigin.Parse(dependency.Body); ok && origin.Kind == "worker" {
-			continue
 		}
 		dependencies = append(dependencies, dependency.WorkItemID)
 	}

@@ -249,7 +249,7 @@ func validateRecordBinding(request Request, id string, record Record) error {
 	if record.RequestID != id || record.ProjectID != request.ProjectID || record.IssueID != request.IssueID || record.EvidenceRevision != request.EvidenceRevision {
 		return errors.New("progress decision binding differs")
 	}
-	if record.CommentID == "" {
+	if record.CommentID == "" || record.Decision.Outcome == SystemDefect && record.DefectIssueID == "" {
 		return errors.New("progress decision publication receipts missing")
 	}
 	return nil
