@@ -494,6 +494,23 @@ func deliveredLanding(ctx context.Context, path string, opts LandOptions, base, 
 	return LandResult{Incorporation: incorporation, MergeSHA: merge, BaseRef: target, BaseBefore: base, Method: method}, nil
 }
 
+func VerifyNoChangeBase(ctx context.Context, repository, target, reviewedBase string) (LandResult, error) {
+	if repository == "" || target == "" || !validLandingHead(reviewedBase) {
+		return LandResult{}, refuse(LandRefusalMissingHead, "no-change verification requires the reviewed repository, branch and base")
+	}
+	base, exists, err := remoteBranchHead(ctx, "", repository, target)
+	if err != nil {
+		return LandResult{}, err
+	}
+	if !exists {
+		return LandResult{}, refuse(LandRefusalMissingHead, "the integration branch is unavailable")
+	}
+	if base != reviewedBase {
+		return LandResult{}, &LandRefusal{Kind: LandRefusalBaseMoved, BaseSHA: base, TargetBranch: target, Reason: "the no-change verification base advanced; verify acceptance on the current base"}
+	}
+	return LandResult{BaseBefore: base, BaseRef: target}, nil
+}
+
 func (l *LocalGit) VerifyIntegratedChange(ctx context.Context, info Info, issue Issue, opts LandOptions, sourceBase, integratedBase string) (LandResult, error) {
 	normalized, err := l.normalizeInfo(info, issue)
 	if err != nil {

@@ -473,10 +473,21 @@ func (e *nativeExecution) SourceReview(ctx context.Context) (runner.NativeChange
 		return runner.NativeChange{}, nil
 	}
 	if e.change.NoChange != nil {
-		if e.integrationSource == nil {
+		n := e.change.NoChange
+		var verified workspace.LandResult
+		var err error
+		switch {
+		case n.BaseRef != "":
+			verified, err = workspace.VerifyNoChangeBase(ctx, n.Repository, n.BaseRef, n.VerifiedSHA)
+		case e.integrationSource != nil:
+			verified, err = e.integrationSource(ctx, e.noChangeVersion(), n.VerifiedSHA)
+		case e.completionOwner.Load():
+			e.change.ImplementationReview, e.change.Validator, e.change.SecurityAudit = nil, nil, nil
+			e.change.VersionError = "no-change verification target is unavailable; verify acceptance on the current base again"
+			return *e.change, nil
+		default:
 			return runner.NativeChange{}, fmt.Errorf("%w: no-change completion requires current-base verification on the source-owning runner", runner.ErrValidatorInfrastructure)
 		}
-		verified, err := e.integrationSource(ctx, e.noChangeVersion(), e.change.NoChange.VerifiedSHA)
 		if err != nil {
 			var refusal *workspace.LandRefusal
 			if !errors.As(err, &refusal) || refusal.Kind != workspace.LandRefusalBaseMoved {
@@ -489,6 +500,7 @@ func (e *nativeExecution) SourceReview(ctx context.Context) (runner.NativeChange
 		if verified.BaseBefore != e.change.NoChange.VerifiedSHA {
 			return runner.NativeChange{}, fmt.Errorf("%w: no-change source verification differs from the reviewed base", runner.ErrValidatorInfrastructure)
 		}
+		n.BaseRef = verified.BaseRef
 		current, err := e.claim.source.client.Recovery(ctx, e.claim.lease.WorkItemID)
 		if err != nil {
 			return runner.NativeChange{}, fmt.Errorf("%w: no-change review state: %w", runner.ErrValidatorInfrastructure, err)

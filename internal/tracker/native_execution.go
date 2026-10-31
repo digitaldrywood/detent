@@ -135,6 +135,7 @@ type NativeCompletionObservation struct {
 
 type NativeNoChangeCompletion struct {
 	Repository  string              `json:"repository"`
+	BaseRef     string              `json:"base_ref,omitempty"`
 	Validation  *gate.CommandResult `json:"validation,omitempty"`
 	ReportedSHA string              `json:"reported_sha"`
 	VerifiedSHA string              `json:"verified_sha"`
