@@ -399,7 +399,7 @@ func (l *LocalGit) pushReworkCheckpoint(ctx context.Context, info Info, issue Is
 		return previous, false, err
 	}
 	ref := CheckpointRefName(issue)
-	if _, err := git(ctx, "-c", "core.hooksPath="+os.DevNull, "-c", "push.followTags=false", "push", "--no-verify", "--force", "--recurse-submodules=no", defaultGitRemote, commit+":"+ref); err != nil {
+	if err := publishCheckpointRef(ctx, git, ref, commit, previous.CommitSHA); err != nil {
 		return previous, false, err
 	}
 	return CheckpointRef{Ref: ref, CommitSHA: commit, HeadSHA: t.Head, BaseSHA: t.Onto, TreeSHA: digest, transaction: t}, true, nil
