@@ -42,13 +42,16 @@ if docker --context "$linux_context" run --rm --platform linux/amd64 \
 fi
 
 windows=failure
-if bash "$worktree/scripts/validate-windows-local.sh" "$worktree" > "$output_dir/windows.log" 2>&1; then
+if [ "${DETENT_PLATFORM_WINDOWS:-}" = unprovisioned ]; then
+  windows=unprovisioned
+  echo "Windows validation skipped: DETENT_PLATFORM_WINDOWS=unprovisioned" > "$output_dir/windows.log"
+elif bash "$worktree/scripts/validate-windows-local.sh" "$worktree" > "$output_dir/windows.log" 2>&1; then
   windows=success
 fi
 
 minutes=$(((SECONDS - started + 59) / 60))
 state=success
-if [ "$linux" != success ] || [ "$windows" != success ]; then state=failure; fi
+if [ "$linux" != success ] || { [ "$windows" != success ] && [ "$windows" != unprovisioned ]; }; then state=failure; fi
 gh api -X POST "repos/$repository/statuses/$sha" -f context=platform-full-ci -f state="$state" -f description="Linux $linux, Windows $windows on $host in ${minutes}m" > /dev/null
 echo "Posted platform-full-ci=$state on $sha (linux=$linux windows=$windows). Logs: $output_dir"
 [ "$state" = success ]
