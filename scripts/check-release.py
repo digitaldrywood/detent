@@ -162,19 +162,26 @@ def validated_release_base():
         if git("cat-file", "-t", ref).strip() != "tag":
             continue
         contents = git("for-each-ref", "--format=%(contents)", ref)
-        match = re.search(r"<!-- detent-release-provenance:(.*?) -->", contents)
+        match = re.search(r"^<!-- detent-release-provenance:(.*) -->$", contents, re.MULTILINE)
         if not match:
             continue
         try:
             provenance = json.loads(match[1])
             commit = git("rev-parse", f"{ref}^{{commit}}").strip()
             checks = provenance["checks"]
+            override = provenance.get("validation_override")
+            recorded_override = (isinstance(override, dict) and isinstance(override.get("reason"), str)
+                                 and bool(override["reason"].strip())
+                                 and any(check["name"] == "release-security-audit"
+                                         and check["status"] == "completed" and check["conclusion"] == "success"
+                                         and isinstance(check["status_id"], int) and check["status_id"] > 0
+                                         for check in checks))
             if (provenance["schema"] == 1 and provenance["tag"] == tag
                     and provenance["commit"] == commit
-                    and any(check["name"] == "scheduled-full-ci"
+                    and (recorded_override or any(check["name"] == "scheduled-full-ci"
                             and check["status"] == "completed" and check["conclusion"] == "success"
                             and isinstance(check["status_id"], int) and check["status_id"] > 0
-                            for check in checks)):
+                            for check in checks))):
                 validated.setdefault(commit, tag)
         except (KeyError, TypeError, ValueError):
             continue

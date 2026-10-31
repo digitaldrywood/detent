@@ -37,6 +37,17 @@ func TestReleaseWorkflowAuthenticatesExactCommitProvenance(t *testing.T) {
 		}
 	}
 
+	finalizer := readNormalizedFile(t, ".github/workflows/release-finalize.yml")
+	for _, marker := range []string{
+		"DETENT_RELEASE_OVERRIDE:",
+		"required: false",
+		"DETENT_RELEASE_OVERRIDE: ${{ inputs.DETENT_RELEASE_OVERRIDE }}",
+	} {
+		if !strings.Contains(finalizer, marker) {
+			t.Fatalf("release finalizer missing explicit operator input %q", marker)
+		}
+	}
+
 	collector := readNormalizedFile(t, "scripts/collect-release-rulesets.sh")
 	for _, marker := range []string{
 		"set -euo pipefail",
@@ -236,7 +247,7 @@ func TestDeployStagingRunsFromReleaseOnHostedRunner(t *testing.T) {
 	prepare := workflowBetween(t, release, "\n  prepare:\n", "\n  release:")
 	for _, want := range []string{
 		"    needs: source\n",
-		"- name: Verify release-branch full-suite provenance\n",
+		"- name: Verify release-branch full-suite provenance or recorded owner override\n",
 		"args: build --single-target --clean\n",
 		"          GOOS: linux\n",
 		"          GOARCH: amd64\n",

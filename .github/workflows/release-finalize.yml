@@ -2,6 +2,11 @@ name: Release Finalize
 
 on:
   workflow_dispatch:
+    inputs:
+      DETENT_RELEASE_OVERRIDE:
+        description: 'Human owner reason for waiving scheduled-full-ci; agents require Cory direction'
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -27,6 +32,7 @@ jobs:
           fetch-depth: 0
       - name: Publish the validated tag
         env:
+          DETENT_RELEASE_OVERRIDE: ${{ inputs.DETENT_RELEASE_OVERRIDE }}
           GH_TOKEN: ${{ github.token }}
           CI_DEVELOP_SHA: ${{ github.sha }}
           CI_RELEASE_BRANCH: ${{ github.ref_name }}

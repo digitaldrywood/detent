@@ -338,6 +338,15 @@ sys.exit(7 if stage in json.loads(os.environ["FAILURES"]) else 0)
             provenance.update(tag="v1.0.1", commit=git("rev-parse", "HEAD"))
             git("tag", "-a", "v1.0.1", "-m", "<!-- detent-release-provenance:" + json.dumps(provenance) + " -->")
             self.assertEqual(select(), expected)
+            (root / "tests/visual/affected.spec.js").write_text("override journey change\n")
+            git("add", ".")
+            git("commit", "-qm", "override candidate")
+            provenance.update(tag="v1.0.2", commit=git("rev-parse", "HEAD"),
+                              checks=[{"name": "release-security-audit", "status": "completed", "conclusion": "success", "status_id": 2}],
+                              validation_override={"reason": "Owner accepts failed validation --> investigate", "status": "failure",
+                                                   "status_id": 3, "status_url": "https://example.com/validation/3"})
+            git("tag", "-a", "v1.0.2", "-m", "<!-- detent-release-provenance:" + json.dumps(provenance) + " -->")
+            self.assertEqual(select(), expected)
             (root / "tests/visual/unrelated.spec.js").write_text("uncommitted change\n")
             self.assertEqual(select(), ["tests/visual"])
             (root / "tests/visual/unrelated.spec.js").write_text("test fixture\n")

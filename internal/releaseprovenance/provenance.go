@@ -24,12 +24,20 @@ type Check struct {
 	StatusID   int64  `json:"status_id,omitempty"`
 }
 
+type ValidationOverride struct {
+	Reason    string `json:"reason"`
+	Status    string `json:"status"`
+	StatusID  int64  `json:"status_id,omitempty"`
+	StatusURL string `json:"status_url,omitempty"`
+}
+
 type Manifest struct {
-	Schema     int     `json:"schema"`
-	Repository string  `json:"repository"`
-	Tag        string  `json:"tag"`
-	Commit     string  `json:"commit"`
-	Checks     []Check `json:"checks"`
+	Schema             int                 `json:"schema"`
+	Repository         string              `json:"repository"`
+	Tag                string              `json:"tag"`
+	Commit             string              `json:"commit"`
+	Checks             []Check             `json:"checks"`
+	ValidationOverride *ValidationOverride `json:"validation_override,omitempty"`
 }
 
 func Validate(manifest Manifest, repository string, tag string, commit string) error {
@@ -58,6 +66,9 @@ func Validate(manifest Manifest, repository string, tag string, commit string) e
 	if len(manifest.Checks) == 0 {
 		return errors.New("release provenance has no mandatory check evidence")
 	}
+	if manifest.ValidationOverride != nil && strings.TrimSpace(manifest.ValidationOverride.Reason) == "" {
+		return errors.New("release validation override requires a nonempty reason")
+	}
 	seen := make(map[string]struct{}, len(manifest.Checks))
 	for _, check := range manifest.Checks {
 		name := strings.TrimSpace(check.Name)
@@ -76,6 +87,11 @@ func Validate(manifest Manifest, repository string, tag string, commit string) e
 		}
 		if check.CheckRunID > 0 && check.StatusID > 0 {
 			return fmt.Errorf("release provenance mandatory check %q has ambiguous immutable evidence IDs", name)
+		}
+	}
+	if manifest.ValidationOverride != nil {
+		if _, ok := seen["release-security-audit"]; !ok {
+			return errors.New("release validation override requires release-security-audit evidence")
 		}
 	}
 	return nil

@@ -239,7 +239,8 @@ branch, fixes land on develop first and are cherry-picked with `-x` by
 `scripts/release-pick.sh` as direct signed pushes with no pull request, and no develop prerelease or source-gate-only deployment
 path exists. Stable tags are created only by `release-finalize.yml` in GitHub
 Actions, after the latest `scheduled-full-ci` and `release-security-audit`
-statuses on the current release head are successful, and the latest
+statuses on the current release head are successful (a human owner's recorded
+`DETENT_RELEASE_OVERRIDE` may waive only `scheduled-full-ci`), and the latest
 `platform-full-ci` status on the nearest validated ancestor (including the head)
 is successful and no older than 24 hours. Platform validation runs daily on
 local Colima, using the validated source and pinned toolchain. Release API calls belong
@@ -252,7 +253,8 @@ triggers on `pull_request`, `merge_group` or `schedule`, `pull_request_target`
 is limited to the `cla.yml` exception, and no workflow step runs validation
 commands; `release-finalize.yml` triggers only on `workflow_dispatch` and runs
 `scripts/release-finalize.sh`; the finalizer tags only when every required
-status is green on the exact current release head and never redispatches a tag
+status is green on the exact current release head, except `scheduled-full-ci`
+with a recorded owner override, and never redispatches a tag
 whose provenance no longer matches; and `release.yml` verifies provenance of the
 exact tagged commit before building.
 `TestRepositoryWorkflow`, `TestRepositoryHasNoPullRequestActions`, and

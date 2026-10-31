@@ -48,6 +48,9 @@ func VerifyGitHubEvidence(manifest Manifest, evidence GitHubEvidence) error {
 	}
 	declaredNames = normalizedNames(declaredNames)
 	for _, requirement := range required {
+		if requirement.Name == "scheduled-full-ci" && manifest.ValidationOverride != nil {
+			continue
+		}
 		if !slices.Contains(declaredNames, requirement.Name) {
 			return fmt.Errorf("release provenance omits authenticated repository requirement %q", requirement.Name)
 		}
