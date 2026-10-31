@@ -2,15 +2,19 @@ package web_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -22,7 +26,7 @@ func TestNativeWorkFormsPersistWithoutGitHub(t *testing.T) {
 	}
 
 	t.Parallel()
-	service, err := hubserver.Open(t.Context(), hubserver.Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), InitialAdminToken: []byte("integration-admin")})
+	service, err := hubserver.Open(t.Context(), hubserver.Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), InitialAdminToken: []byte("integration-admin"), Content: newContentStore()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,5 +148,29 @@ func TestNativeWorkFormsPersistWithoutGitHub(t *testing.T) {
 	changes, err := native.Changes(t.Context(), blocker.WorkItemID)
 	if err != nil || len(changes) != 1 || len(changes[0].LinkedIssues) != 2 {
 		t.Fatalf("linked changes: %#v, %v", changes, err)
+	}
+}
+
+func newContentStore() entryauthority.ContentHandler {
+	var contentMu sync.Mutex
+	contentObjects := make(map[string][]byte)
+	return func(ctx context.Context, request entryauthority.ContentRequest) ([]byte, error) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if err := request.Reference.Validate(request.Organization); err != nil {
+			return nil, err
+		}
+		contentMu.Lock()
+		defer contentMu.Unlock()
+		if request.Write {
+			contentObjects[request.Reference.Key] = bytes.Clone(request.Data)
+			return nil, nil
+		}
+		data, found := contentObjects[request.Reference.Key]
+		if !found {
+			return nil, errors.New("archive unavailable")
+		}
+		return bytes.Clone(data), nil
 	}
 }
