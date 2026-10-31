@@ -1,4 +1,4 @@
-package hubdeploy
+package hub
 
 import (
 	"bytes"
