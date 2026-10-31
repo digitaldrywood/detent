@@ -60,10 +60,9 @@ status_creators="$(jq -ce '
 
 required_statuses() {
   platform_status || return 1
-  gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/commits/$CI_DEVELOP_SHA/status?per_page=100" |
-    jq -ce --arg sha "$CI_DEVELOP_SHA" --argjson required "$required_checks" --argjson creators "$status_creators" '
-      select(all(.[]; .sha == $sha))
-      | [.[].statuses[]] as $statuses
+  gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/commits/$CI_DEVELOP_SHA/statuses?per_page=100" |
+    jq -ce --argjson required "$required_checks" --argjson creators "$status_creators" '
+      [.[][]] as $statuses
       | [$required[] as $name
           | ($statuses | map(select(.context == $name)) | max_by(.id))
           | select(.state == "success" and (.id | type == "number") and .id > 0
