@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"modernc.org/sqlite"
 
@@ -17,6 +18,8 @@ import (
 )
 
 const nativeSearchRebuildBatch = 1
+const nativeSearchDocumentBytes = 64 * 1024
+const nativeSearchPruneBatch = 256
 
 var registerNativeSearchText = sync.OnceValue(func() error {
 	if err := registerNativeSearchTokenizer(); err != nil {
@@ -34,6 +37,16 @@ var registerNativeSearchText = sync.OnceValue(func() error {
 
 func nativeSearchText(content, scope string) string {
 	return scope + "_" + content
+}
+
+func nativeSearchBytePrefix(content string, budget int) string {
+	if len(content) <= budget {
+		return content
+	}
+	for budget > 0 && !utf8.RuneStart(content[budget]) {
+		budget--
+	}
+	return content[:budget]
 }
 
 func nativeSearchIndexPending(scope nativeScope) (string, []any) {
@@ -95,11 +108,18 @@ func (d *database) prepareNativeSearchDocument(ctx context.Context, id int64) (n
 	document := nativeSearchDocument{id: id}
 	var postings string
 	err := d.reader.QueryRowContext(ctx, `SELECT d.search_revision,d.issue_id,d.comment_id,i.organization_id,i.project_id,i.archived,COALESCE(i.actor_principal_id,''),
- c.title,c.body,native_search_tokens(c.title,'')+native_search_tokens(c.body,''),native_search_postings(c.title,c.body)
- FROM native_work_documents d JOIN issues i ON i.id=d.issue_id JOIN native_work_search_content c ON c.id=d.id WHERE d.id=?`, id).Scan(
-		&document.revision, &document.issue, &document.comment, &document.organization, &document.project, &document.archived, &document.principal, &document.title, &document.body, &document.tokens, &postings)
+ c.title,c.body
+ FROM native_work_documents d JOIN issues i ON i.id=d.issue_id JOIN native_work_search_content c ON c.id=d.id
+ WHERE d.id=? AND (d.comment_id IS NULL OR EXISTS(SELECT 1 FROM native_comments WHERE id=d.comment_id))`, id).Scan(
+		&document.revision, &document.issue, &document.comment, &document.organization, &document.project, &document.archived, &document.principal, &document.title, &document.body)
 	if err != nil {
 		return document, err
+	}
+	title := nativeSearchBytePrefix(document.title, nativeSearchDocumentBytes)
+	body := nativeSearchBytePrefix(document.body, nativeSearchDocumentBytes-len(title))
+	if err := d.reader.QueryRowContext(ctx, `SELECT native_search_tokens(?,'')+native_search_tokens(?,''),native_search_postings(?,?)`,
+		title, body, title, body).Scan(&document.tokens, &postings); err != nil {
+		return document, fmt.Errorf("tokenize bounded search content: %w", err)
 	}
 	scope := nativeScope{organization: tracker.OrganizationID(document.organization), project: tracker.ProjectID(document.project)}
 	archive := strconv.FormatBool(document.archived != 0)
@@ -112,7 +132,7 @@ func (d *database) prepareNativeSearchDocument(ctx context.Context, id int64) (n
 		document.scopes[1] = strings.TrimSuffix(prefix, "v") + "rv"
 	}
 	for variant, scope := range document.scopes {
-		document.ftsArgs = append(document.ftsArgs, document.id*2+int64(variant), nativeSearchText(document.title, scope), nativeSearchText(document.body, scope), scope)
+		document.ftsArgs = append(document.ftsArgs, document.id*2+int64(variant), nativeSearchText(title, scope), nativeSearchText(body, scope), scope)
 	}
 	records := strings.Fields(postings)
 	for _, scope := range document.scopes {
@@ -154,11 +174,14 @@ func (d *database) publishNativeSearchDocument(ctx context.Context, tx *sql.Tx, 
  ON CONFLICT(document_id) DO UPDATE SET organization_id=excluded.organization_id,project_id=excluded.project_id`, document.id)
 		return false, err
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM native_work_search_lengths WHERE document_id=?`, document.id); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM native_work_search_postings WHERE document_id=?`, document.id); err != nil {
 		return false, fmt.Errorf("remove stale search postings: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO native_work_search_lengths(document_id,scope,tokens) VALUES(?,?,?),(?,?,?)`,
-		document.id, document.scopes[0], document.tokens, document.id, document.scopes[1], document.tokens); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM native_work_search_lengths WHERE document_id=?`, document.id); err != nil {
+		return false, fmt.Errorf("remove stale search lengths: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO native_work_search_lengths(document_id,scope,tokens,search_revision) VALUES(?,?,?,?),(?,?,?,?)`,
+		document.id, document.scopes[0], document.tokens, document.revision, document.id, document.scopes[1], document.tokens, document.revision); err != nil {
 		return false, fmt.Errorf("index search lengths: %w", err)
 	}
 	for _, batch := range document.batches {
@@ -177,6 +200,52 @@ func (d *database) publishNativeSearchDocument(ctx context.Context, tx *sql.Tx, 
 		return false, fmt.Errorf("complete search refresh: %w", err)
 	}
 	return true, nil
+}
+
+type nativeSearchObsoletePosting struct {
+	scope, term string
+}
+
+const nativeSearchPostingRetained = `EXISTS(SELECT 1 FROM native_work_search_lengths l
+ JOIN native_work_documents d ON d.id=l.document_id JOIN issues i ON i.id=d.issue_id
+ WHERE l.document_id=native_work_search_postings.document_id AND l.scope=native_work_search_postings.scope AND l.search_revision>=0
+ AND (d.comment_id IS NULL OR EXISTS(SELECT 1 FROM native_comments WHERE id=d.comment_id)))`
+
+const nativeSearchDocumentSourceExists = `EXISTS(SELECT 1 FROM native_work_documents d JOIN issues i ON i.id=d.issue_id
+ WHERE d.id=? AND (d.comment_id IS NULL OR EXISTS(SELECT 1 FROM native_comments WHERE id=d.comment_id)))`
+
+func (d *database) obsoleteNativeSearchPostings(ctx context.Context, id int64) ([]nativeSearchObsoletePosting, error) {
+	const query = `SELECT scope,term FROM native_work_search_postings
+ WHERE document_id=? AND NOT ` + nativeSearchPostingRetained + ` ORDER BY scope,term LIMIT ?`
+	rows, err := d.reader.QueryContext(ctx, query, id, nativeSearchPruneBatch)
+	if err != nil {
+		return nil, fmt.Errorf("select obsolete search postings: %w", err)
+	}
+	defer rows.Close()
+	var postings []nativeSearchObsoletePosting
+	for rows.Next() {
+		var posting nativeSearchObsoletePosting
+		if err := rows.Scan(&posting.scope, &posting.term); err != nil {
+			return nil, err
+		}
+		postings = append(postings, posting)
+	}
+	return postings, rows.Err()
+}
+
+func pruneNativeSearchPostings(ctx context.Context, tx *sql.Tx, id int64, postings []nativeSearchObsoletePosting) error {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO native_work_search_refresh SELECT d.id,i.organization_id,i.project_id
+ FROM native_work_documents d JOIN issues i ON i.id=d.issue_id WHERE d.id=?
+ ON CONFLICT(document_id) DO UPDATE SET organization_id=excluded.organization_id,project_id=excluded.project_id`, id); err != nil {
+		return fmt.Errorf("queue pruned search document: %w", err)
+	}
+	for _, posting := range postings {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM native_work_search_postings WHERE document_id=? AND scope=? AND term=? AND NOT `+nativeSearchPostingRetained,
+			id, posting.scope, posting.term); err != nil {
+			return fmt.Errorf("prune obsolete search posting: %w", err)
+		}
+	}
+	return nil
 }
 
 func (d *database) backfillNativeSearch(ctx context.Context) (bool, error) {
@@ -199,7 +268,11 @@ func (d *database) backfillNativeSearch(ctx context.Context) (bool, error) {
 			if through >= last {
 				return false, nil
 			}
-			err = d.reader.QueryRowContext(ctx, `SELECT id FROM native_work_documents WHERE id>? AND id<=? ORDER BY id LIMIT 1`, through, last).Scan(&next)
+			err = d.reader.QueryRowContext(ctx, `SELECT min(id) FROM (
+ SELECT (SELECT id FROM native_work_documents WHERE id>? AND id<=? ORDER BY id LIMIT 1) AS id
+ UNION ALL SELECT (SELECT document_id FROM native_work_search_lengths WHERE document_id>? AND document_id<=? ORDER BY document_id LIMIT 1)
+ UNION ALL SELECT (SELECT document_id FROM native_work_search_postings WHERE document_id>? AND document_id<=? ORDER BY document_id LIMIT 1)
+ ) HAVING min(id) IS NOT NULL`, through, last, through, last, through, last).Scan(&next)
 		} else {
 			err = d.reader.QueryRowContext(ctx, `SELECT id FROM native_work_documents WHERE issue_id=? AND id>? ORDER BY id LIMIT 1`, issue, through).Scan(&next)
 		}
@@ -209,11 +282,23 @@ func (d *database) backfillNativeSearch(ctx context.Context) (bool, error) {
 	}
 	var document nativeSearchDocument
 	if next != 0 {
-		document, err = d.prepareNativeSearchDocument(ctx, next)
+		postings, err := d.obsoleteNativeSearchPostings(ctx, next)
 		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				return true, nil
+			return false, err
+		}
+		if len(postings) != 0 {
+			tx, err := d.db.BeginTx(ctx, nil)
+			if err != nil {
+				return false, err
 			}
+			defer tx.Rollback()
+			if err := pruneNativeSearchPostings(ctx, tx, next, postings); err != nil {
+				return false, err
+			}
+			return true, d.commit(ctx, tx)
+		}
+		document, err = d.prepareNativeSearchDocument(ctx, next)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return false, fmt.Errorf("prepare search document: %w", err)
 		}
 	}
@@ -222,13 +307,24 @@ func (d *database) backfillNativeSearch(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	defer tx.Rollback()
-	if next != 0 {
+	if next != 0 && document.issue != 0 {
 		published, err := d.publishNativeSearchDocument(ctx, tx, document)
 		if err != nil {
 			return false, err
 		}
 		if !published {
 			return true, d.commit(ctx, tx)
+		}
+	} else if next != 0 {
+		for _, batch := range []nativeSearchPostingBatch{
+			{`DELETE FROM native_work_search_lengths WHERE document_id=? AND NOT ` + nativeSearchDocumentSourceExists, []any{next, next}},
+			{`DELETE FROM native_work_search_refresh WHERE document_id=? AND NOT ` + nativeSearchDocumentSourceExists, []any{next, next}},
+			{`DELETE FROM native_work_scoped_fts WHERE rowid IN(?*2,?*2+1) AND NOT ` + nativeSearchDocumentSourceExists, []any{next, next, next}},
+			{`DELETE FROM native_work_documents WHERE id=? AND NOT ` + nativeSearchDocumentSourceExists, []any{next, next}},
+		} {
+			if _, err := tx.ExecContext(ctx, batch.statement, batch.args...); err != nil {
+				return false, fmt.Errorf("prune orphaned search document: %w", err)
+			}
 		}
 	}
 	if queued {

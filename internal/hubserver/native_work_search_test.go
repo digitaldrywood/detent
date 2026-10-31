@@ -16,6 +16,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"modernc.org/libc"
 	sqlite3 "modernc.org/sqlite/lib"
@@ -46,6 +47,375 @@ func TestNativeSearchExpressionsBound(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			if got := nativeSearchExpressions(test.query); !slices.Equal(got, test.want) {
 				t.Fatalf("expressions=%v want=%v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestNativeSearchRevisionRowsStayBounded(t *testing.T) {
+	for _, foreignKeys := range []bool{true, false} {
+		t.Run(fmt.Sprintf("foreign_keys=%t", foreignKeys), func(t *testing.T) {
+			f := newDefaultNativeFixture(t, Config{})
+			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+				t.Fatal(err)
+			}
+			first := f.create(t, "Retained narwhal")
+			second := f.create(t, "Retained quasar")
+			db := f.service.database
+			if _, err := db.db.ExecContext(t.Context(), "UPDATE issues SET body='revision00'"); err != nil {
+				t.Fatal(err)
+			}
+			drainTestNativeSearch(t, f.service)
+			if !foreignKeys {
+				if _, err := db.db.ExecContext(t.Context(), "PRAGMA foreign_keys=OFF"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			counts := func(wantPostings, wantDocuments int) {
+				t.Helper()
+				for _, check := range []struct {
+					query string
+					want  int
+				}{
+					{"SELECT count(*) FROM native_work_search_postings", wantPostings},
+					{"SELECT COALESCE(sum(documents),0) FROM native_work_search_frequencies", wantPostings},
+					{"SELECT count(*) FROM native_work_search_lengths", wantDocuments * 2},
+					{"SELECT COALESCE(sum(documents),0) FROM native_work_search_population", wantDocuments * 2},
+					{"SELECT count(*) FROM native_work_scoped_fts", wantDocuments * 2},
+					{"SELECT count(*) FROM native_work_search_refresh", 0},
+				} {
+					var got int
+					if err := db.reader.QueryRowContext(t.Context(), check.query).Scan(&got); err != nil || got != check.want {
+						t.Fatalf("%s: rows=%d want=%d err=%v", check.query, got, check.want, err)
+					}
+				}
+			}
+			counts(12, 2)
+			for revision := 1; revision <= 20; revision++ {
+				if _, err := db.db.ExecContext(t.Context(), "UPDATE issues SET body=?,archived=? WHERE native_id=?", fmt.Sprintf("revision%02d", revision), revision%2, first.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+				drainTestNativeSearch(t, f.service)
+				counts(12, 2)
+			}
+			var current int
+			if err := db.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM native_work_search_postings WHERE term='erevision20'").Scan(&current); err != nil || current != 2 {
+				t.Fatalf("current revision postings=%d want=2 err=%v", current, err)
+			}
+			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+			for _, query := range []string{"narwhal", "quasar", "revision20"} {
+				page, err := f.service.readIssues(t.Context(), scope, url.Values{"q": {query}})
+				if err != nil || len(page.Items) != 1 {
+					t.Fatalf("query=%s items=%d err=%v", query, len(page.Items), err)
+				}
+			}
+			if _, err := db.db.ExecContext(t.Context(), "DELETE FROM native_work_documents WHERE issue_id=(SELECT id FROM issues WHERE native_id=?)", first.WorkItemID); err != nil {
+				t.Fatal(err)
+			}
+			counts(6, 1)
+			if _, err := db.db.ExecContext(t.Context(), "DELETE FROM native_work_documents WHERE issue_id=(SELECT id FROM issues WHERE native_id=?)", second.WorkItemID); err != nil {
+				t.Fatal(err)
+			}
+			counts(0, 0)
+		})
+	}
+}
+
+func TestNativeSearchDocumentByteBudget(t *testing.T) {
+	const budget = 64 * 1024
+	for _, test := range []struct {
+		name, title, body string
+	}{
+		{"body", "Titlemarker", strings.Repeat("narwhal ", budget/4) + " tailmarker"},
+		{"unicode boundary", "Titlemarker", strings.Repeat("界 ", budget/2) + " tailmarker"},
+		{"title priority", "Titlemarker " + strings.Repeat("narwhal ", budget/4), "tailmarker"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newDefaultNativeFixture(t, Config{})
+			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+				t.Fatal(err)
+			}
+			item := f.create(t, "Budget fixture")
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET title=?,body=? WHERE native_id=?", test.title, test.body, item.WorkItemID); err != nil {
+				t.Fatal(err)
+			}
+			drainTestNativeSearch(t, f.service)
+			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+			for _, query := range []string{"Titlemarker", "#" + strconv.Itoa(item.Number)} {
+				page, err := f.service.readIssues(t.Context(), scope, url.Values{"q": {query}})
+				if err != nil || len(page.Items) != 1 {
+					t.Fatalf("query=%s items=%d want=1 err=%v", query, len(page.Items), err)
+				}
+			}
+			var tail int
+			expression := nativeScopedExpression(nativeSearchScopes(scope, ""), []string{`"tailmarker"*`}, " OR ")
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM native_work_scoped_fts WHERE native_work_scoped_fts MATCH ?", expression).Scan(&tail); err != nil || tail != 0 {
+				t.Fatalf("indexed tail matches=%d err=%v", tail, err)
+			}
+			if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM native_work_search_postings
+ WHERE term>=native_search_key(?) AND term<native_search_key_end(?)`, `"tailmarker"*`, `"tailmarker"*`).Scan(&tail); err != nil || tail != 0 {
+				t.Fatalf("tail postings=%d err=%v", tail, err)
+			}
+			var id int64
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT id FROM native_work_documents WHERE comment_id IS NULL").Scan(&id); err != nil {
+				t.Fatal(err)
+			}
+			prepared, err := f.service.database.prepareNativeSearchDocument(t.Context(), id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			title := strings.TrimPrefix(prepared.ftsArgs[1].(string), prepared.scopes[0]+"_")
+			body := strings.TrimPrefix(prepared.ftsArgs[2].(string), prepared.scopes[0]+"_")
+			if len(title)+len(body) > budget || !utf8.ValidString(title) || !utf8.ValidString(body) {
+				t.Fatalf("indexed bytes: title=%d body=%d; valid UTF-8=%t", len(title), len(body), utf8.ValidString(title+body))
+			}
+			var tokens int
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT max(tokens) FROM native_work_search_lengths").Scan(&tokens); err != nil || tokens > budget/2 {
+				t.Fatalf("indexed tokens=%d err=%v", tokens, err)
+			}
+		})
+	}
+}
+
+func TestNativeSearchLegacyRowsPrunedInBoundedBatches(t *testing.T) {
+	for _, kind := range []string{"orphan postings", "orphan lengths", "orphan comment", "superseded revision"} {
+		t.Run(kind, func(t *testing.T) {
+			f := newDefaultNativeFixture(t, Config{})
+			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+				t.Fatal(err)
+			}
+			active := f.create(t, "Narwhal active")
+			archived := f.create(t, "Narwhal archived")
+			other := newNativeFixture(t, f.service, f.project.OrganizationID, "other-search-project")
+			otherItem := other.create(t, "Narwhal isolated")
+			response := performHubAPIRequest(t, f.service, http.MethodPost, "/api/v2/organizations", testHubAdminToken, map[string]any{"name": "Other search tenant"})
+			requireNativeStatus(t, response, http.StatusCreated)
+			var organization nativeOrganization
+			decodeHubResponse(t, response, &organization)
+			otherTenant := newNativeFixture(t, f.service, organization.ID, "other-search-tenant")
+			otherTenantItem := otherTenant.create(t, "Narwhal foreign")
+			db := f.service.database
+			if _, err := db.db.ExecContext(t.Context(), "UPDATE issues SET body='retained'; UPDATE issues SET archived=1 WHERE native_id=?", archived.WorkItemID); err != nil {
+				t.Fatal(err)
+			}
+			drainTestNativeSearch(t, f.service)
+			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+			assertSearch := func() {
+				t.Helper()
+				for _, test := range []struct {
+					archived string
+					want     []tracker.NativeWorkItemID
+				}{
+					{"", []tracker.NativeWorkItemID{active.WorkItemID}},
+					{"true", []tracker.NativeWorkItemID{archived.WorkItemID}},
+					{"all", []tracker.NativeWorkItemID{active.WorkItemID, archived.WorkItemID}},
+				} {
+					page, err := f.service.readIssues(t.Context(), scope, url.Values{"q": {"narwhal"}, "archived": {test.archived}})
+					if err != nil {
+						t.Fatal(err)
+					}
+					var got []tracker.NativeWorkItemID
+					for _, item := range page.Items {
+						got = append(got, item.WorkItemID)
+					}
+					slices.Sort(got)
+					slices.Sort(test.want)
+					if !slices.Equal(got, test.want) {
+						t.Fatalf("archived=%q items=%v want=%v", test.archived, got, test.want)
+					}
+				}
+				for _, isolated := range []struct {
+					fixture nativeFixture
+					item    tracker.NativeIssue
+				}{
+					{other, otherItem},
+					{otherTenant, otherTenantItem},
+				} {
+					project := isolated.fixture.project
+					page, err := f.service.readIssues(t.Context(), nativeScope{organization: project.OrganizationID, project: project.ID}, url.Values{"q": {"narwhal"}})
+					if err != nil || len(page.Items) != 1 || page.Items[0].WorkItemID != isolated.item.WorkItemID {
+						t.Fatalf("isolated project=%s items=%v err=%v", project.ID, page.Items, err)
+					}
+				}
+			}
+			assertSearch()
+			migration, err := migrationFiles.ReadFile("migrations/20261031202051_native_search_revision_cleanup.sql")
+			if err != nil {
+				t.Fatal(err)
+			}
+			up, down, ok := strings.Cut(string(migration), "-- +goose Down")
+			if !ok {
+				t.Fatal("missing migration rollback")
+			}
+			if _, err := db.db.ExecContext(t.Context(), down); err != nil {
+				t.Fatal(err)
+			}
+			id := int64(9000)
+			searchScope := nativeSearchScopes(scope, "")[0]
+			if kind == "superseded revision" {
+				if err := db.reader.QueryRowContext(t.Context(), "SELECT d.id FROM native_work_documents d JOIN issues i ON i.id=d.issue_id WHERE i.native_id=?", active.WorkItemID).Scan(&id); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := db.db.ExecContext(t.Context(), "PRAGMA foreign_keys=OFF"); err != nil {
+				t.Fatal(err)
+			}
+			if kind == "orphan comment" {
+				if _, err := db.db.ExecContext(t.Context(), `INSERT INTO native_comments(id,organization_id,project_id,work_item_id,revision,sequence,body,actor_json,created_at,updated_at)
+ SELECT 'missing-comment',organization_id,project_id,native_id,1,1,'Legacy narwhal','{}',native_created_at,native_created_at FROM issues WHERE native_id=?`, active.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+				if err := db.reader.QueryRowContext(t.Context(), "SELECT id FROM native_work_documents WHERE comment_id='missing-comment'").Scan(&id); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := db.db.ExecContext(t.Context(), "DELETE FROM native_comments WHERE id='missing-comment'"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if kind == "orphan lengths" || kind == "orphan comment" {
+				if _, err := db.db.ExecContext(t.Context(), "INSERT INTO native_work_search_lengths(document_id,scope,tokens) VALUES(?,?,1)", id, searchScope); err != nil {
+					t.Fatal(err)
+				}
+			}
+			tx, err := db.db.BeginTx(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			for index := range 513 {
+				if _, err := tx.ExecContext(t.Context(), "INSERT INTO native_work_search_postings(scope,term,document_id,frequency,impact) VALUES(?,?,?,1,1)", searchScope, fmt.Sprintf("eobsolete%04d", index), id); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := tx.Commit(); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.db.ExecContext(t.Context(), "PRAGMA foreign_keys=ON"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.db.ExecContext(t.Context(), up); err != nil {
+				t.Fatal(err)
+			}
+			var last int64
+			if err := db.reader.QueryRowContext(t.Context(), "SELECT last_id FROM native_work_search_rebuild").Scan(&last); err != nil || last < id {
+				t.Fatalf("rebuild last=%d target=%d err=%v", last, id, err)
+			}
+			count := func() int {
+				t.Helper()
+				var count int
+				if err := db.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM native_work_search_postings WHERE document_id=?", id).Scan(&count); err != nil {
+					t.Fatal(err)
+				}
+				return count
+			}
+			before := count()
+			for count() == before {
+				more, err := db.backfillNativeSearch(t.Context())
+				if err != nil || !more {
+					t.Fatalf("legacy cleanup stopped: more=%t err=%v", more, err)
+				}
+			}
+			if removed := before - count(); removed != 256 {
+				t.Fatalf("first prune removed=%d want=256", removed)
+			}
+			assertSearch()
+			drainTestNativeSearch(t, f.service)
+			for _, check := range []struct {
+				query string
+				want  int
+			}{
+				{"SELECT count(*) FROM native_work_search_postings WHERE term LIKE 'eobsolete%'", 0},
+				{"SELECT count(*) FROM native_work_search_postings", 24},
+				{"SELECT count(*) FROM native_work_search_postings INDEXED BY native_work_search_impact", 24},
+				{"SELECT sum(documents) FROM native_work_search_frequencies", 24},
+				{"SELECT count(*) FROM native_work_search_lengths", 8},
+				{"SELECT sum(documents) FROM native_work_search_population", 8},
+				{"SELECT count(*) FROM native_work_documents", 4},
+			} {
+				var got int
+				if err := db.reader.QueryRowContext(t.Context(), check.query).Scan(&got); err != nil || got != check.want {
+					t.Fatalf("%s: got=%d want=%d err=%v", check.query, got, check.want, err)
+				}
+			}
+			assertSearch()
+		})
+	}
+}
+
+func TestNativeSearchPrunePreservesPublishedRevision(t *testing.T) {
+	for _, publishFirst := range []bool{false, true} {
+		t.Run(fmt.Sprintf("publish_first=%t", publishFirst), func(t *testing.T) {
+			f := newDefaultNativeFixture(t, Config{})
+			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+				t.Fatal(err)
+			}
+			item := f.create(t, "Revision narwhal")
+			second := f.create(t, "Retained quasar")
+			db := f.service.database
+			if _, err := db.db.ExecContext(t.Context(), "UPDATE issues SET body='narwhal original'"); err != nil {
+				t.Fatal(err)
+			}
+			drainTestNativeSearch(t, f.service)
+			var id int64
+			if err := db.reader.QueryRowContext(t.Context(), "SELECT d.id FROM native_work_documents d JOIN issues i ON i.id=d.issue_id WHERE i.native_id=?", item.WorkItemID).Scan(&id); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.db.ExecContext(t.Context(), "UPDATE native_work_search_lengths SET search_revision=-1 WHERE document_id=?", id); err != nil {
+				t.Fatal(err)
+			}
+			obsolete, err := db.obsoleteNativeSearchPostings(t.Context(), id)
+			if err != nil || len(obsolete) == 0 {
+				t.Fatalf("obsolete rows=%d err=%v", len(obsolete), err)
+			}
+			if _, err := db.db.ExecContext(t.Context(), "UPDATE issues SET body='narwhal replacement' WHERE native_id=?", item.WorkItemID); err != nil {
+				t.Fatal(err)
+			}
+			publish := func() {
+				t.Helper()
+				prepared, err := db.prepareNativeSearchDocument(t.Context(), id)
+				if err != nil {
+					t.Fatal(err)
+				}
+				tx, err := db.db.BeginTx(t.Context(), nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer tx.Rollback()
+				published, err := db.publishNativeSearchDocument(t.Context(), tx, prepared)
+				if err != nil || !published {
+					t.Fatalf("published=%t err=%v", published, err)
+				}
+				if err := tx.Commit(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if publishFirst {
+				publish()
+			}
+			tx, err := db.db.BeginTx(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			if err := pruneNativeSearchPostings(t.Context(), tx, id, obsolete); err != nil {
+				t.Fatal(err)
+			}
+			if err := tx.Commit(); err != nil {
+				t.Fatal(err)
+			}
+			if !publishFirst {
+				publish()
+			}
+			var shared, replacement int
+			if err := db.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM native_work_search_postings WHERE document_id=? AND term='enarwhal'", id).Scan(&shared); err != nil || shared != 2 {
+				t.Fatalf("current shared postings=%d want=2 err=%v", shared, err)
+			}
+			if err := db.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM native_work_search_postings WHERE document_id=? AND term='ereplac'", id).Scan(&replacement); err != nil || replacement != 2 {
+				t.Fatalf("current replacement postings=%d want=2 err=%v", replacement, err)
+			}
+			page, err := f.service.readIssues(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, url.Values{"q": {"quasar"}})
+			if err != nil || len(page.Items) != 1 || page.Items[0].WorkItemID != second.WorkItemID {
+				t.Fatalf("retained issue items=%v err=%v", page.Items, err)
 			}
 		})
 	}
@@ -1383,8 +1753,15 @@ func TestNativeSearchPostingWriterWork(t *testing.T) {
 		}
 	})
 	var baseline int64
-	for _, size := range []int{1024, 200 * 1024} {
-		t.Run(strconv.Itoa(size), func(t *testing.T) {
+	for _, test := range []struct {
+		size              int
+		tokens, frequency int64
+	}{
+		{1024, 131, 128},
+		{200 * 1024, 8193, 8189},
+	} {
+		t.Run(strconv.Itoa(test.size), func(t *testing.T) {
+			size := test.size
 			functions = 0
 			if _, err := pool.ExecContext(t.Context(), "UPDATE issues SET body=? WHERE native_id=?", strings.Repeat("narwhal ", size/8), issue.WorkItemID); err != nil {
 				t.Fatal(err)
@@ -1416,7 +1793,7 @@ func TestNativeSearchPostingWriterWork(t *testing.T) {
  WHERE l.document_id=? AND p.term='enarwhal' LIMIT 1`, id).Scan(&tokens, &frequency, &queued); err != nil {
 				t.Fatal(err)
 			}
-			if tokens != int64(size/8+3) || frequency != int64(size/8) || queued != 0 {
+			if tokens != test.tokens || frequency != test.frequency || queued != 0 {
 				t.Fatalf("tokens=%d frequency=%d queued=%d", tokens, frequency, queued)
 			}
 		})
