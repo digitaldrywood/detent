@@ -2,9 +2,13 @@ package testenv
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"io"
 	"os"
+	"path/filepath"
 	"runtime"
+	"strings"
 	"sync/atomic"
 	"testing"
 )
@@ -12,6 +16,48 @@ import (
 type databaseFixtureCloser func() error
 
 func (f databaseFixtureCloser) Close() error { return f() }
+
+func TestDatabaseTemplateCopiesOpenInDeepScratch(t *testing.T) {
+	root, err := filepath.EvalSymlinks(TempDir(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for len(root) < 440 {
+		root = filepath.Join(root, strings.Repeat("d", max(1, min(60, 439-len(root)))))
+	}
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"TMPDIR", "TMP", "TEMP", "GOTMPDIR"} {
+		t.Setenv(key, root)
+	}
+	pathForTest := DatabaseTemplate(func(ctx context.Context, path string) (io.Closer, error) {
+		db, err := sql.Open("sqlite", path)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := db.ExecContext(ctx, "CREATE TABLE fixture (id INTEGER PRIMARY KEY)"); err != nil {
+			return nil, errors.Join(err, db.Close())
+		}
+		return db, nil
+	})
+	for _, name := range []string{"first", "second"} {
+		t.Run(strings.Repeat(name, 20), func(t *testing.T) {
+			db, err := sql.Open("sqlite", pathForTest(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := db.Close(); err != nil {
+					t.Error(err)
+				}
+			})
+			if _, err := db.ExecContext(t.Context(), "INSERT INTO fixture (id) VALUES (1)"); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
 
 func TestDatabaseTemplateKeepsClosedImageAndPrivateCopies(t *testing.T) {
 	t.Parallel()
