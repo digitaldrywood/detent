@@ -1,0 +1,1489 @@
+{
+  "activity_attempt_durations": {
+    "ownership": "organization-owned",
+    "scope": "activity_attempt_durations.organization_id",
+    "inline_payloads": []
+  },
+  "activity_attempt_phases": {
+    "ownership": "organization-owned",
+    "scope": "activity_attempt_phases.attempt_id -> native_attempts.id; native_attempts.organization_id",
+    "inline_payloads": []
+  },
+  "ai_credit_accounts": {
+    "ownership": "organization-owned",
+    "scope": "ai_credit_accounts.organization_id",
+    "inline_payloads": []
+  },
+  "ai_credit_packs": {
+    "ownership": "global",
+    "scope": "Shared provider pricing or billing plan catalog",
+    "inline_payloads": []
+  },
+  "ai_credit_periods": {
+    "ownership": "organization-owned",
+    "scope": "ai_credit_periods.organization_id",
+    "inline_payloads": []
+  },
+  "ai_credit_purchases": {
+    "ownership": "organization-owned",
+    "scope": "ai_credit_purchases.organization_id",
+    "inline_payloads": [
+      "session_json"
+    ]
+  },
+  "ai_credit_transactions": {
+    "ownership": "organization-owned",
+    "scope": "ai_credit_transactions.organization_id",
+    "inline_payloads": []
+  },
+  "analytics_attempt_usage": {
+    "ownership": "organization-owned",
+    "scope": "analytics_attempt_usage.organization_id",
+    "inline_payloads": []
+  },
+  "analytics_hourly_rollups": {
+    "ownership": "organization-owned",
+    "scope": "analytics_hourly_rollups.organization_id",
+    "inline_payloads": [
+      "data_json"
+    ]
+  },
+  "analytics_issues": {
+    "ownership": "organization-owned",
+    "scope": "analytics_issues.organization_id",
+    "inline_payloads": []
+  },
+  "analytics_leases": {
+    "ownership": "organization-owned",
+    "scope": "analytics_leases.organization_id",
+    "inline_payloads": []
+  },
+  "analytics_maintenance_cursor": {
+    "ownership": "platform",
+    "scope": "SQLite catalog, migration bookkeeping, or database-wide maintenance",
+    "inline_payloads": []
+  },
+  "analytics_native_attempts": {
+    "ownership": "organization-owned",
+    "scope": "analytics_native_attempts.organization_id",
+    "inline_payloads": [
+      "data_json"
+    ]
+  },
+  "analytics_residence_retention": {
+    "ownership": "organization-owned",
+    "scope": "analytics_residence_retention.organization_id",
+    "inline_payloads": []
+  },
+  "analytics_rollup_backfill": {
+    "ownership": "organization-owned",
+    "scope": "analytics_rollup_backfill.organization_id",
+    "inline_payloads": []
+  },
+  "analytics_rollup_dirty": {
+    "ownership": "organization-owned",
+    "scope": "analytics_rollup_dirty.work_item_id -> issues.native_id -> issues.organization_id",
+    "inline_payloads": []
+  },
+  "analytics_rollup_positions": {
+    "ownership": "organization-owned",
+    "scope": "analytics_rollup_positions.organization_id",
+    "inline_payloads": []
+  },
+  "analytics_sample_hours": {
+    "ownership": "organization-owned",
+    "scope": "analytics_sample_hours.organization_id",
+    "inline_payloads": []
+  },
+  "analytics_slot_retention": {
+    "ownership": "organization-owned",
+    "scope": "analytics_slot_retention.organization_id",
+    "inline_payloads": []
+  },
+  "api_tokens": {
+    "ownership": "global",
+    "scope": "Credentials span organizations through token_grants; hosted_organization_id narrows hosted keys",
+    "inline_payloads": []
+  },
+  "artifact_grants": {
+    "ownership": "organization-owned",
+    "scope": "artifact_grants.organization_id",
+    "inline_payloads": []
+  },
+  "artifact_references": {
+    "ownership": "organization-owned",
+    "scope": "artifact_references.organization_id",
+    "inline_payloads": [
+      "reference_json"
+    ]
+  },
+  "artifact_services": {
+    "ownership": "organization-owned",
+    "scope": "artifact_services.organization_id",
+    "inline_payloads": [
+      "binding_json"
+    ]
+  },
+  "attachment_archive_references": {
+    "ownership": "organization-owned",
+    "scope": "attachment_archive_references.organization_id",
+    "inline_payloads": []
+  },
+  "attachment_references": {
+    "ownership": "organization-owned",
+    "scope": "attachment_references.attachment_id -> attachments.id; attachments.organization_id",
+    "inline_payloads": []
+  },
+  "attachments": {
+    "ownership": "organization-owned",
+    "scope": "attachments.organization_id",
+    "inline_payloads": []
+  },
+  "attempt_diff_body_migration": {
+    "ownership": "platform",
+    "scope": "SQLite catalog, migration bookkeeping, or database-wide maintenance",
+    "inline_payloads": []
+  },
+  "attempt_diff_file_archives": {
+    "ownership": "organization-owned",
+    "scope": "attempt_diff_file_archives.organization_id",
+    "inline_payloads": []
+  },
+  "attempt_diff_files": {
+    "ownership": "organization-owned",
+    "scope": "attempt_diff_files.diff_id -> attempt_diffs.id; attempt_diffs.organization_id",
+    "inline_payloads": [
+      "patch"
+    ]
+  },
+  "attempt_diffs": {
+    "ownership": "organization-owned",
+    "scope": "attempt_diffs.organization_id",
+    "inline_payloads": []
+  },
+  "attempt_usage": {
+    "ownership": "organization-owned",
+    "scope": "attempt_usage.organization_id",
+    "inline_payloads": []
+  },
+  "change_command_outputs": {
+    "ownership": "organization-owned",
+    "scope": "change_command_outputs.organization_id",
+    "inline_payloads": []
+  },
+  "change_content_objects": {
+    "ownership": "organization-owned",
+    "scope": "change_content_objects.organization_id",
+    "inline_payloads": []
+  },
+  "change_evidence": {
+    "ownership": "organization-owned",
+    "scope": "change_evidence.change_id -> change_requests.id; change_requests.organization_id",
+    "inline_payloads": [
+      "record_json"
+    ]
+  },
+  "change_finding_attributions": {
+    "ownership": "organization-owned",
+    "scope": "change_finding_attributions.version_id -> change_versions.id; change_versions.change_id -> change_requests.id; change_requests.organization_id",
+    "inline_payloads": []
+  },
+  "change_issue_links": {
+    "ownership": "organization-owned",
+    "scope": "change_issue_links.organization_id",
+    "inline_payloads": []
+  },
+  "change_landing_receipts": {
+    "ownership": "organization-owned",
+    "scope": "change_landing_receipts.attempt_id -> native_attempts.id; native_attempts.organization_id",
+    "inline_payloads": [
+      "record_json"
+    ]
+  },
+  "change_requests": {
+    "ownership": "organization-owned",
+    "scope": "change_requests.organization_id",
+    "inline_payloads": [
+      "record_json"
+    ]
+  },
+  "change_review_policies": {
+    "ownership": "organization-owned",
+    "scope": "change_review_policies.organization_id",
+    "inline_payloads": [
+      "policy_json"
+    ]
+  },
+  "change_sources": {
+    "ownership": "organization-owned",
+    "scope": "change_sources.version_id -> change_versions.id; change_versions.change_id -> change_requests.id; change_requests.organization_id",
+    "inline_payloads": [
+      "bundle"
+    ]
+  },
+  "change_versions": {
+    "ownership": "organization-owned",
+    "scope": "change_versions.change_id -> change_requests.id; change_requests.organization_id",
+    "inline_payloads": [
+      "record_json"
+    ]
+  },
+  "change_viewed_files": {
+    "ownership": "organization-owned",
+    "scope": "change_viewed_files.version_id -> change_versions.id; change_versions.change_id -> change_requests.id; change_requests.organization_id",
+    "inline_payloads": []
+  },
+  "collaboration_events": {
+    "ownership": "organization-owned",
+    "scope": "collaboration_events.organization_id",
+    "inline_payloads": [
+      "actor_json",
+      "data_json"
+    ]
+  },
+  "collaboration_versions": {
+    "ownership": "organization-owned",
+    "scope": "collaboration_versions.organization_id",
+    "inline_payloads": [
+      "record_json"
+    ]
+  },
+  "conversation_attachment_blobs": {
+    "ownership": "organization-owned",
+    "scope": "conversation_attachment_blobs.artifact_ref -> conversation_attachments.artifact_ref -> conversations.organization_id",
+    "inline_payloads": [
+      "artifact_ref",
+      "content"
+    ]
+  },
+  "conversation_attachments": {
+    "ownership": "organization-owned",
+    "scope": "conversation_attachments.conversation_id -> conversations.id; conversations.organization_id",
+    "inline_payloads": [
+      "artifact_ref"
+    ]
+  },
+  "conversation_audience_events": {
+    "ownership": "organization-owned",
+    "scope": "conversation_audience_events.conversation_id -> conversations.id; conversations.organization_id",
+    "inline_payloads": []
+  },
+  "conversation_commands": {
+    "ownership": "organization-owned",
+    "scope": "conversation_commands.conversation_id -> conversations.id; conversations.organization_id",
+    "inline_payloads": [
+      "receipt_json"
+    ]
+  },
+  "conversation_events": {
+    "ownership": "organization-owned",
+    "scope": "conversation_events.conversation_id -> conversations.id; conversations.organization_id",
+    "inline_payloads": [
+      "body_json"
+    ]
+  },
+  "conversation_messages": {
+    "ownership": "organization-owned",
+    "scope": "conversation_messages.conversation_id -> conversations.id; conversations.organization_id",
+    "inline_payloads": [
+      "actor_json",
+      "data_json",
+      "text"
+    ]
+  },
+  "conversation_prices": {
+    "ownership": "global",
+    "scope": "Shared provider pricing or billing plan catalog",
+    "inline_payloads": []
+  },
+  "conversation_questions": {
+    "ownership": "organization-owned",
+    "scope": "conversation_questions.conversation_id -> conversations.id; conversations.organization_id",
+    "inline_payloads": [
+      "answers_json",
+      "prompts_json"
+    ]
+  },
+  "conversation_starts": {
+    "ownership": "organization-owned",
+    "scope": "conversation_starts.conversation_id -> conversations.id; conversations.organization_id",
+    "inline_payloads": []
+  },
+  "conversation_tool_revisions": {
+    "ownership": "organization-owned",
+    "scope": "conversation_tool_revisions.message_id -> conversation_messages.id; conversation_messages.conversation_id -> conversations.id; conversations.organization_id",
+    "inline_payloads": [
+      "text"
+    ]
+  },
+  "conversation_turn_batches": {
+    "ownership": "organization-owned",
+    "scope": "conversation_turn_batches.attempt_id -> native_attempts.id -> native_attempts.organization_id",
+    "inline_payloads": []
+  },
+  "conversation_usage": {
+    "ownership": "organization-owned",
+    "scope": "conversation_usage.organization_id",
+    "inline_payloads": []
+  },
+  "conversations": {
+    "ownership": "organization-owned",
+    "scope": "conversations.organization_id",
+    "inline_payloads": [
+      "execution_json",
+      "preferences_json"
+    ]
+  },
+  "daily_summary_preferences": {
+    "ownership": "organization-owned",
+    "scope": "daily_summary_preferences.organization_id",
+    "inline_payloads": []
+  },
+  "daily_summary_receipts": {
+    "ownership": "organization-owned",
+    "scope": "daily_summary_receipts.organization_id",
+    "inline_payloads": []
+  },
+  "dashboard_delivery_authorization": {
+    "ownership": "platform",
+    "scope": "SQLite catalog, migration bookkeeping, or database-wide maintenance",
+    "inline_payloads": []
+  },
+  "derived_refresh_revisions": {
+    "ownership": "organization-owned",
+    "scope": "derived_refresh_revisions.work_item_id -> issues.native_id -> issues.organization_id",
+    "inline_payloads": []
+  },
+  "event_compactions": {
+    "ownership": "organization-owned",
+    "scope": "event_compactions.organization_id",
+    "inline_payloads": [
+      "summary_json"
+    ]
+  },
+  "github_cutovers": {
+    "ownership": "organization-owned",
+    "scope": "github_cutovers.project_id -> projects.id; projects.organization_id",
+    "inline_payloads": [
+      "receipt_json"
+    ]
+  },
+  "github_hydration_requests": {
+    "ownership": "global",
+    "scope": "Source repository ingress shared by projects; tenant access follows projects.repository_id and projects.organization_id",
+    "inline_payloads": []
+  },
+  "github_import_records": {
+    "ownership": "organization-owned",
+    "scope": "github_import_records.import_id -> github_imports.id; github_imports.work_item_id -> issues.native_id; issues.organization_id",
+    "inline_payloads": [
+      "record_json"
+    ]
+  },
+  "github_imports": {
+    "ownership": "organization-owned",
+    "scope": "github_imports.work_item_id -> issues.native_id; issues.organization_id",
+    "inline_payloads": [
+      "gaps_json"
+    ]
+  },
+  "github_outbox": {
+    "ownership": "organization-owned",
+    "scope": "github_outbox.issue_id -> issues.id; issues.organization_id",
+    "inline_payloads": [
+      "desired_json"
+    ]
+  },
+  "github_webhook_inbox": {
+    "ownership": "global",
+    "scope": "Source repository ingress shared by projects; tenant access follows projects.repository_id and projects.organization_id",
+    "inline_payloads": [
+      "headers_json"
+    ]
+  },
+  "github_webhook_payloads": {
+    "ownership": "global",
+    "scope": "Source repository ingress shared by projects; tenant access follows projects.repository_id and projects.organization_id",
+    "inline_payloads": [
+      "body"
+    ]
+  },
+  "go_test_receipt_attestations": {
+    "ownership": "organization-owned",
+    "scope": "go_test_receipt_attestations.organization_id",
+    "inline_payloads": []
+  },
+  "go_test_receipts": {
+    "ownership": "organization-owned",
+    "scope": "go_test_receipts.organization_id",
+    "inline_payloads": []
+  },
+  "health_detector_ticks": {
+    "ownership": "organization-owned",
+    "scope": "health_detector_ticks.organization_id",
+    "inline_payloads": [
+      "baseline_unavailable_json"
+    ]
+  },
+  "health_event_times": {
+    "ownership": "organization-owned",
+    "scope": "health_event_times.organization_id",
+    "inline_payloads": []
+  },
+  "health_finding_issues": {
+    "ownership": "organization-owned",
+    "scope": "health_finding_issues.work_item_id -> issues.native_id; issues.organization_id",
+    "inline_payloads": []
+  },
+  "health_finding_projects": {
+    "ownership": "organization-owned",
+    "scope": "health_finding_projects.organization_id",
+    "inline_payloads": []
+  },
+  "health_findings": {
+    "ownership": "organization-owned",
+    "scope": "health_findings.organization_id",
+    "inline_payloads": [
+      "evidence_json",
+      "projects_json",
+      "subject_json"
+    ]
+  },
+  "health_slack_deliveries": {
+    "ownership": "organization-owned",
+    "scope": "health_slack_deliveries.finding_id -> health_findings.id; health_findings.organization_id",
+    "inline_payloads": []
+  },
+  "hosted_artifact_usage": {
+    "ownership": "organization-owned",
+    "scope": "hosted_tenant.organization_id (tenant-bound Hub database)",
+    "inline_payloads": [
+      "usage_json"
+    ]
+  },
+  "hosted_audit": {
+    "ownership": "organization-owned",
+    "scope": "hosted_audit.organization_id",
+    "inline_payloads": [
+      "mutation_json"
+    ]
+  },
+  "hosted_audit_times": {
+    "ownership": "organization-owned",
+    "scope": "hosted_audit_times.audit_id -> hosted_audit.id; hosted_audit.organization_id",
+    "inline_payloads": []
+  },
+  "hosted_billing_accounts": {
+    "ownership": "organization-owned",
+    "scope": "hosted_billing_accounts.organization_id",
+    "inline_payloads": [
+      "checkout_json",
+      "state_json"
+    ]
+  },
+  "hosted_billing_audit": {
+    "ownership": "organization-owned",
+    "scope": "hosted_billing_audit.organization_id",
+    "inline_payloads": [
+      "record_json"
+    ]
+  },
+  "hosted_billing_customer_intents": {
+    "ownership": "organization-owned",
+    "scope": "hosted_billing_customer_intents.organization_id",
+    "inline_payloads": []
+  },
+  "hosted_billing_events": {
+    "ownership": "organization-owned",
+    "scope": "hosted_tenant.organization_id (tenant-bound Hub database)",
+    "inline_payloads": []
+  },
+  "hosted_billing_prices": {
+    "ownership": "global",
+    "scope": "Shared provider pricing or billing plan catalog",
+    "inline_payloads": []
+  },
+  "hosted_billing_retired": {
+    "ownership": "organization-owned",
+    "scope": "hosted_billing_retired.organization_id",
+    "inline_payloads": [
+      "state_json"
+    ]
+  },
+  "hosted_binding_migrations": {
+    "ownership": "organization-owned",
+    "scope": "hosted_binding_migrations.organization_id",
+    "inline_payloads": []
+  },
+  "hosted_complimentary_grants": {
+    "ownership": "organization-owned",
+    "scope": "hosted_tenant.organization_id (tenant-bound Hub database)",
+    "inline_payloads": [
+      "record_json"
+    ]
+  },
+  "hosted_invitations": {
+    "ownership": "organization-owned",
+    "scope": "hosted_invitations.organization_id",
+    "inline_payloads": [
+      "grants_json"
+    ]
+  },
+  "hosted_member_reservations": {
+    "ownership": "organization-owned",
+    "scope": "hosted_tenant.organization_id (tenant-bound Hub database)",
+    "inline_payloads": []
+  },
+  "hosted_members": {
+    "ownership": "organization-owned",
+    "scope": "hosted_tenant.organization_id (tenant-bound Hub database)",
+    "inline_payloads": []
+  },
+  "hosted_plan_assignments": {
+    "ownership": "organization-owned",
+    "scope": "hosted_plan_assignments.organization_id",
+    "inline_payloads": []
+  },
+  "hosted_plan_audit": {
+    "ownership": "global",
+    "scope": "Global plan catalog administration",
+    "inline_payloads": [
+      "record_json"
+    ]
+  },
+  "hosted_plans": {
+    "ownership": "global",
+    "scope": "Shared provider pricing or billing plan catalog",
+    "inline_payloads": [
+      "record_json"
+    ]
+  },
+  "hosted_project_grants": {
+    "ownership": "organization-owned",
+    "scope": "hosted_project_grants.organization_id",
+    "inline_payloads": []
+  },
+  "hosted_release_preferences": {
+    "ownership": "organization-owned",
+    "scope": "hosted_release_preferences.organization_id",
+    "inline_payloads": []
+  },
+  "hosted_sessions": {
+    "ownership": "global",
+    "scope": "User identity before organization selection",
+    "inline_payloads": [
+      "identity_json"
+    ]
+  },
+  "hosted_tenant": {
+    "ownership": "organization-owned",
+    "scope": "hosted_tenant.organization_id",
+    "inline_payloads": []
+  },
+  "hosted_transactions": {
+    "ownership": "organization-owned",
+    "scope": "hosted_transactions.organization_id",
+    "inline_payloads": []
+  },
+  "hosted_usage_counters": {
+    "ownership": "organization-owned",
+    "scope": "hosted_tenant.organization_id (tenant-bound Hub database)",
+    "inline_payloads": []
+  },
+  "hosted_usage_windows": {
+    "ownership": "organization-owned",
+    "scope": "hosted_tenant.organization_id (tenant-bound Hub database)",
+    "inline_payloads": []
+  },
+  "hosted_work_view_favorites": {
+    "ownership": "organization-owned",
+    "scope": "hosted_work_view_favorites.view_id -> hosted_work_views.id; hosted_work_views.organization_id",
+    "inline_payloads": []
+  },
+  "hosted_work_view_preferences": {
+    "ownership": "organization-owned",
+    "scope": "hosted_work_view_preferences.organization_id",
+    "inline_payloads": []
+  },
+  "hosted_work_view_projects": {
+    "ownership": "organization-owned",
+    "scope": "hosted_work_view_projects.project_id -> projects.id; projects.organization_id",
+    "inline_payloads": []
+  },
+  "hosted_work_view_values": {
+    "ownership": "organization-owned",
+    "scope": "hosted_work_view_values.view_id -> hosted_work_views.id; hosted_work_views.organization_id",
+    "inline_payloads": []
+  },
+  "hosted_work_views": {
+    "ownership": "organization-owned",
+    "scope": "hosted_work_views.organization_id",
+    "inline_payloads": []
+  },
+  "hub_identity": {
+    "ownership": "platform",
+    "scope": "SQLite catalog, migration bookkeeping, or database-wide maintenance",
+    "inline_payloads": []
+  },
+  "hub_schema_version": {
+    "ownership": "platform",
+    "scope": "SQLite catalog, migration bookkeeping, or database-wide maintenance",
+    "inline_payloads": []
+  },
+  "issue_archive_sections": {
+    "ownership": "organization-owned",
+    "scope": "issue_archive_sections.organization_id",
+    "inline_payloads": []
+  },
+  "issue_dependencies": {
+    "ownership": "organization-owned",
+    "scope": "issue_dependencies.dependent_issue_id -> issues.id; issues.organization_id",
+    "inline_payloads": []
+  },
+  "issue_filter_values": {
+    "ownership": "organization-owned",
+    "scope": "issue_filter_values.issue_id -> issues.id; issues.organization_id",
+    "inline_payloads": []
+  },
+  "issue_notification_batches": {
+    "ownership": "organization-owned",
+    "scope": "issue_notification_batches.work_item_id -> issue_subscriptions.work_item_id; issue_subscriptions.work_item_id -> issues.native_id; issues.organization_id",
+    "inline_payloads": [
+      "notices_json"
+    ]
+  },
+  "issue_notification_cursors": {
+    "ownership": "organization-owned",
+    "scope": "issue_notification_cursors.work_item_id -> issues.native_id; issues.organization_id",
+    "inline_payloads": []
+  },
+  "issue_relationships": {
+    "ownership": "organization-owned",
+    "scope": "issue_relationships.second_issue_id -> issues.id; issues.organization_id",
+    "inline_payloads": []
+  },
+  "issue_storage_archives": {
+    "ownership": "organization-owned",
+    "scope": "issue_storage_archives.organization_id",
+    "inline_payloads": []
+  },
+  "issue_subscriptions": {
+    "ownership": "organization-owned",
+    "scope": "issue_subscriptions.work_item_id -> issues.native_id; issues.organization_id",
+    "inline_payloads": []
+  },
+  "issues": {
+    "ownership": "organization-owned",
+    "scope": "issues.organization_id",
+    "inline_payloads": [
+      "actor_json",
+      "assignees_json",
+      "body",
+      "issue_contract_json",
+      "labels_json",
+      "provenance_json",
+      "report_context_json",
+      "verified_by_json"
+    ]
+  },
+  "landing_barrier_receipts": {
+    "ownership": "organization-owned",
+    "scope": "landing_barrier_receipts.organization_id",
+    "inline_payloads": [
+      "record_json"
+    ]
+  },
+  "landing_barriers": {
+    "ownership": "organization-owned",
+    "scope": "landing_barriers.organization_id",
+    "inline_payloads": [
+      "record_json"
+    ]
+  },
+  "lease_policies": {
+    "ownership": "organization-owned",
+    "scope": "lease_policies.scope -> policy_revisions.scope; policy_revisions.scope encodes organization and project policy authority",
+    "inline_payloads": []
+  },
+  "lease_runners": {
+    "ownership": "organization-owned",
+    "scope": "lease_runners.runner_id -> runner_identities.id; runner_identities.organization_id",
+    "inline_payloads": [
+      "isolation_policy_json"
+    ]
+  },
+  "leases": {
+    "ownership": "organization-owned",
+    "scope": "leases.machine_id -> machines.id; machines.organization_id",
+    "inline_payloads": []
+  },
+  "linked_issue_sources": {
+    "ownership": "organization-owned",
+    "scope": "linked_issue_sources.work_item_id -> issues.native_id; issues.organization_id",
+    "inline_payloads": [
+      "snapshot_json"
+    ]
+  },
+  "local_board_imports": {
+    "ownership": "organization-owned",
+    "scope": "local_board_imports.organization_id",
+    "inline_payloads": []
+  },
+  "machines": {
+    "ownership": "organization-owned",
+    "scope": "machines.organization_id",
+    "inline_payloads": [
+      "capabilities_json"
+    ]
+  },
+  "message_references": {
+    "ownership": "organization-owned",
+    "scope": "message_references.conversation_id -> conversations.id; conversations.organization_id",
+    "inline_payloads": []
+  },
+  "monthly_budget_admissions": {
+    "ownership": "organization-owned",
+    "scope": "monthly_budget_admissions.issue_id -> issues.id; issues.organization_id",
+    "inline_payloads": []
+  },
+  "monthly_budget_leases": {
+    "ownership": "organization-owned",
+    "scope": "monthly_budget_leases.lease_id -> leases.lease_id; leases.machine_id -> machines.id; machines.organization_id",
+    "inline_payloads": [
+      "exposure_json"
+    ]
+  },
+  "monthly_budget_policies": {
+    "ownership": "organization-owned",
+    "scope": "monthly_budget_policies.organization_id",
+    "inline_payloads": [
+      "policy_json"
+    ]
+  },
+  "native_archive_sections": {
+    "ownership": "organization-owned",
+    "scope": "native_archive_sections.organization_id",
+    "inline_payloads": []
+  },
+  "native_attempt_events": {
+    "ownership": "organization-owned",
+    "scope": "native_attempt_events.attempt_id -> native_attempts.id; native_attempts.organization_id",
+    "inline_payloads": []
+  },
+  "native_attempts": {
+    "ownership": "organization-owned",
+    "scope": "native_attempts.organization_id",
+    "inline_payloads": [
+      "artifact_ids_json",
+      "checkpoint_json",
+      "data_json"
+    ]
+  },
+  "native_board_counts": {
+    "ownership": "organization-owned",
+    "scope": "native_board_counts.organization_id",
+    "inline_payloads": []
+  },
+  "native_board_deltas": {
+    "ownership": "organization-owned",
+    "scope": "native_board_deltas.organization_id",
+    "inline_payloads": [
+      "current_json",
+      "previous_json"
+    ]
+  },
+  "native_board_dirty": {
+    "ownership": "organization-owned",
+    "scope": "native_board_dirty.work_item_id -> issues.native_id -> issues.organization_id",
+    "inline_payloads": []
+  },
+  "native_board_filter_facts": {
+    "ownership": "organization-owned",
+    "scope": "native_board_filter_facts.work_item_id -> issues.native_id -> issues.organization_id",
+    "inline_payloads": []
+  },
+  "native_board_filter_values": {
+    "ownership": "organization-owned",
+    "scope": "native_board_filter_values.work_item_id -> native_board_items.work_item_id; native_board_items.organization_id",
+    "inline_payloads": []
+  },
+  "native_board_items": {
+    "ownership": "organization-owned",
+    "scope": "native_board_items.organization_id",
+    "inline_payloads": [
+      "record_json"
+    ]
+  },
+  "native_board_sequences": {
+    "ownership": "organization-owned",
+    "scope": "native_board_sequences.organization_id",
+    "inline_payloads": []
+  },
+  "native_commands": {
+    "ownership": "organization-owned",
+    "scope": "native_commands.organization_id",
+    "inline_payloads": [
+      "response_json"
+    ]
+  },
+  "native_comments": {
+    "ownership": "organization-owned",
+    "scope": "native_comments.organization_id",
+    "inline_payloads": [
+      "actor_json",
+      "body",
+      "edited_by_json",
+      "provenance_json"
+    ]
+  },
+  "native_duplicate_challenges": {
+    "ownership": "organization-owned",
+    "scope": "native_duplicate_challenges.organization_id",
+    "inline_payloads": [
+      "matches_json"
+    ]
+  },
+  "native_issue_actors": {
+    "ownership": "organization-owned",
+    "scope": "native_issue_actors.id -> issues.id -> issues.organization_id",
+    "inline_payloads": []
+  },
+  "native_issue_page_filter_values": {
+    "ownership": "organization-owned",
+    "scope": "native_issue_page_filter_values.issue_id -> issues.id; issues.organization_id",
+    "inline_payloads": []
+  },
+  "native_issue_page_items": {
+    "ownership": "organization-owned",
+    "scope": "native_issue_page_items.page_id -> native_issue_pages.id; native_issue_pages.scope encodes organization and project for issue page snapshots",
+    "inline_payloads": []
+  },
+  "native_issue_pages": {
+    "ownership": "organization-owned",
+    "scope": "native_issue_pages.scope encodes organization and project for issue page snapshots",
+    "inline_payloads": []
+  },
+  "native_pr_publications": {
+    "ownership": "organization-owned",
+    "scope": "native_pr_publications.recorder_attempt_id -> native_attempts.id; native_attempts.organization_id",
+    "inline_payloads": []
+  },
+  "native_progress_decisions": {
+    "ownership": "organization-owned",
+    "scope": "native_progress_decisions.organization_id",
+    "inline_payloads": []
+  },
+  "native_progress_evidence": {
+    "ownership": "organization-owned",
+    "scope": "native_progress_evidence.organization_id",
+    "inline_payloads": []
+  },
+  "native_transition_facts": {
+    "ownership": "organization-owned",
+    "scope": "native_transition_facts.organization_id",
+    "inline_payloads": []
+  },
+  "native_work_documents": {
+    "ownership": "organization-owned",
+    "scope": "native_work_documents.comment_id -> native_comments.id; native_comments.organization_id",
+    "inline_payloads": []
+  },
+  "native_work_fts": {
+    "ownership": "organization-owned",
+    "scope": "FTS index of native_work_documents -> issues.organization_id",
+    "inline_payloads": []
+  },
+  "native_work_fts_config": {
+    "ownership": "organization-owned",
+    "scope": "FTS index of native_work_documents -> issues.organization_id",
+    "inline_payloads": []
+  },
+  "native_work_fts_data": {
+    "ownership": "organization-owned",
+    "scope": "FTS index of native_work_documents -> issues.organization_id",
+    "inline_payloads": []
+  },
+  "native_work_fts_docsize": {
+    "ownership": "organization-owned",
+    "scope": "FTS index of native_work_documents -> issues.organization_id",
+    "inline_payloads": []
+  },
+  "native_work_fts_idx": {
+    "ownership": "organization-owned",
+    "scope": "FTS index of native_work_documents -> issues.organization_id",
+    "inline_payloads": []
+  },
+  "native_work_scoped_content": {
+    "ownership": "organization-owned",
+    "scope": "native_work_scoped_content.scope encodes organization and project; source_id -> native_work_documents.id",
+    "inline_payloads": []
+  },
+  "native_work_scoped_fts": {
+    "ownership": "organization-owned",
+    "scope": "FTS index of native_work_scoped_content.scope",
+    "inline_payloads": []
+  },
+  "native_work_scoped_fts_config": {
+    "ownership": "organization-owned",
+    "scope": "FTS index of native_work_scoped_content.scope",
+    "inline_payloads": []
+  },
+  "native_work_scoped_fts_data": {
+    "ownership": "organization-owned",
+    "scope": "FTS index of native_work_scoped_content.scope",
+    "inline_payloads": []
+  },
+  "native_work_scoped_fts_docsize": {
+    "ownership": "organization-owned",
+    "scope": "FTS index of native_work_scoped_content.scope",
+    "inline_payloads": []
+  },
+  "native_work_scoped_fts_idx": {
+    "ownership": "organization-owned",
+    "scope": "FTS index of native_work_scoped_content.scope",
+    "inline_payloads": []
+  },
+  "native_work_search_content": {
+    "ownership": "organization-owned",
+    "scope": "native_work_search_content.id -> native_work_documents.id -> issues.organization_id",
+    "inline_payloads": []
+  },
+  "native_work_search_dirty": {
+    "ownership": "organization-owned",
+    "scope": "native_work_search_dirty.organization_id",
+    "inline_payloads": []
+  },
+  "native_work_search_frequencies": {
+    "ownership": "organization-owned",
+    "scope": "native_work_search_frequencies.scope encodes organization and project search partition",
+    "inline_payloads": []
+  },
+  "native_work_search_lengths": {
+    "ownership": "organization-owned",
+    "scope": "native_work_search_lengths.document_id -> native_work_documents.id; native_work_documents.comment_id -> native_comments.id; native_comments.organization_id",
+    "inline_payloads": []
+  },
+  "native_work_search_population": {
+    "ownership": "organization-owned",
+    "scope": "native_work_search_population.scope encodes organization and project search partition",
+    "inline_payloads": []
+  },
+  "native_work_search_postings": {
+    "ownership": "organization-owned",
+    "scope": "native_work_search_postings.document_id -> native_work_search_lengths.document_id; native_work_search_lengths.document_id -> native_work_documents.id; native_work_documents.comment_id -> native_comments.id; native_comments.organization_id",
+    "inline_payloads": []
+  },
+  "native_work_search_rebuild": {
+    "ownership": "platform",
+    "scope": "SQLite catalog, migration bookkeeping, or database-wide maintenance",
+    "inline_payloads": []
+  },
+  "native_work_search_refresh": {
+    "ownership": "organization-owned",
+    "scope": "native_work_search_refresh.organization_id",
+    "inline_payloads": []
+  },
+  "native_workflow_ranks": {
+    "ownership": "organization-owned",
+    "scope": "native_workflow_ranks.id -> workflow_states.id -> workflow_states.project_id -> projects.organization_id",
+    "inline_payloads": []
+  },
+  "onboarding_issue_intake": {
+    "ownership": "organization-owned",
+    "scope": "onboarding_issue_intake.project_id -> projects.id; projects.organization_id",
+    "inline_payloads": [
+      "request_json"
+    ]
+  },
+  "operator_chat_sessions": {
+    "ownership": "organization-owned",
+    "scope": "operator_chat_sessions.organization_id",
+    "inline_payloads": [
+      "identity_json"
+    ]
+  },
+  "organization_secret_audit": {
+    "ownership": "organization-owned",
+    "scope": "organization_secret_audit.organization_id",
+    "inline_payloads": []
+  },
+  "organization_secrets": {
+    "ownership": "organization-owned",
+    "scope": "organization_secrets.organization_id",
+    "inline_payloads": []
+  },
+  "organization_slugs": {
+    "ownership": "organization-owned",
+    "scope": "organization_slugs.organization_id",
+    "inline_payloads": []
+  },
+  "organization_sprite_members": {
+    "ownership": "organization-owned",
+    "scope": "organization_sprite_members.organization_id",
+    "inline_payloads": []
+  },
+  "organization_sprite_pools": {
+    "ownership": "organization-owned",
+    "scope": "organization_sprite_pools.organization_id",
+    "inline_payloads": [
+      "placement_json"
+    ]
+  },
+  "organizations": {
+    "ownership": "organization-owned",
+    "scope": "organizations.id",
+    "inline_payloads": [
+      "model_selection_json",
+      "urgent_runner_update_json"
+    ]
+  },
+  "policy_revisions": {
+    "ownership": "organization-owned",
+    "scope": "policy_revisions.scope encodes organization and project policy authority",
+    "inline_payloads": [
+      "metadata_json"
+    ]
+  },
+  "project_action_runs": {
+    "ownership": "organization-owned",
+    "scope": "project_action_runs.organization_id",
+    "inline_payloads": []
+  },
+  "project_actions": {
+    "ownership": "organization-owned",
+    "scope": "project_actions.organization_id",
+    "inline_payloads": []
+  },
+  "project_observed_policies": {
+    "ownership": "organization-owned",
+    "scope": "project_observed_policies.scope encodes organization and project policy authority",
+    "inline_payloads": [
+      "descriptor_json",
+      "source_json"
+    ]
+  },
+  "project_onboarding": {
+    "ownership": "organization-owned",
+    "scope": "project_onboarding.organization_id",
+    "inline_payloads": [
+      "progress_json"
+    ]
+  },
+  "project_policies": {
+    "ownership": "organization-owned",
+    "scope": "project_policies.scope -> policy_revisions.scope; policy_revisions.scope encodes organization and project policy authority",
+    "inline_payloads": []
+  },
+  "project_secret_audit": {
+    "ownership": "organization-owned",
+    "scope": "project_secret_audit.organization_id",
+    "inline_payloads": []
+  },
+  "project_secrets": {
+    "ownership": "organization-owned",
+    "scope": "project_secrets.organization_id",
+    "inline_payloads": []
+  },
+  "project_slugs": {
+    "ownership": "organization-owned",
+    "scope": "project_slugs.organization_id",
+    "inline_payloads": []
+  },
+  "project_sprite_allocations": {
+    "ownership": "organization-owned",
+    "scope": "project_sprite_allocations.organization_id",
+    "inline_payloads": []
+  },
+  "project_workflow_applies": {
+    "ownership": "organization-owned",
+    "scope": "project_workflow_applies.scope encodes organization and project workflow authority",
+    "inline_payloads": []
+  },
+  "projects": {
+    "ownership": "organization-owned",
+    "scope": "projects.organization_id",
+    "inline_payloads": [
+      "model_selection_json",
+      "states_json",
+      "workflow_markdown"
+    ]
+  },
+  "provider_reservations": {
+    "ownership": "organization-owned",
+    "scope": "provider_reservations.organization_id",
+    "inline_payloads": [
+      "reservation_json"
+    ]
+  },
+  "pull_requests": {
+    "ownership": "organization-owned",
+    "scope": "pull_requests.issue_id -> issues.id; issues.organization_id",
+    "inline_payloads": [
+      "checks_summary_json",
+      "reviews_summary_json"
+    ]
+  },
+  "quality_landings": {
+    "ownership": "organization-owned",
+    "scope": "quality_landings.version_id -> change_versions.id; change_versions.change_id -> change_requests.id; change_requests.organization_id",
+    "inline_payloads": [
+      "record_json"
+    ]
+  },
+  "queue_entries": {
+    "ownership": "organization-owned",
+    "scope": "queue_entries.issue_id -> issues.id; issues.organization_id",
+    "inline_payloads": []
+  },
+  "release_audit_checkpoints": {
+    "ownership": "organization-owned",
+    "scope": "release_audit_checkpoints.organization_id",
+    "inline_payloads": []
+  },
+  "release_audit_parts": {
+    "ownership": "organization-owned",
+    "scope": "release_audit_parts.organization_id",
+    "inline_payloads": []
+  },
+  "release_deliveries": {
+    "ownership": "organization-owned",
+    "scope": "release_deliveries.organization_id",
+    "inline_payloads": []
+  },
+  "report_issue_hours": {
+    "ownership": "organization-owned",
+    "scope": "report_issue_hours.organization_id",
+    "inline_payloads": []
+  },
+  "report_issue_labels": {
+    "ownership": "organization-owned",
+    "scope": "report_issue_labels.organization_id",
+    "inline_payloads": []
+  },
+  "report_issue_runners": {
+    "ownership": "organization-owned",
+    "scope": "report_issue_runners.organization_id",
+    "inline_payloads": []
+  },
+  "report_issue_summaries": {
+    "ownership": "organization-owned",
+    "scope": "report_issue_summaries.organization_id",
+    "inline_payloads": []
+  },
+  "repositories": {
+    "ownership": "global",
+    "scope": "GitHub source identity shared by projects; tenant access follows projects.organization_id",
+    "inline_payloads": [
+      "config_json"
+    ]
+  },
+  "runner_admission_observations": {
+    "ownership": "organization-owned",
+    "scope": "runner_admission_observations.runner_id -> runner_identities.id; runner_identities.organization_id",
+    "inline_payloads": []
+  },
+  "runner_admission_selectors": {
+    "ownership": "organization-owned",
+    "scope": "runner_admission_selectors.runner_id -> runner_admission_observations.runner_id; runner_admission_observations.runner_id -> runner_identities.id; runner_identities.organization_id",
+    "inline_payloads": []
+  },
+  "runner_checkout_repositories": {
+    "ownership": "organization-owned",
+    "scope": "runner_checkout_repositories.project_id -> projects.id; projects.organization_id",
+    "inline_payloads": []
+  },
+  "runner_configuration_requests": {
+    "ownership": "organization-owned",
+    "scope": "runner_configuration_requests.runner_id -> runner_identities.id; runner_identities.organization_id",
+    "inline_payloads": []
+  },
+  "runner_enrollment_projects": {
+    "ownership": "organization-owned",
+    "scope": "runner_enrollment_projects.organization_id",
+    "inline_payloads": []
+  },
+  "runner_enrollments": {
+    "ownership": "organization-owned",
+    "scope": "runner_enrollments.organization_id",
+    "inline_payloads": [
+      "operations_json"
+    ]
+  },
+  "runner_host_hours": {
+    "ownership": "organization-owned",
+    "scope": "runner_host_hours.organization_id",
+    "inline_payloads": [
+      "segment_ids_json",
+      "summary_json"
+    ]
+  },
+  "runner_identities": {
+    "ownership": "organization-owned",
+    "scope": "runner_identities.organization_id",
+    "inline_payloads": [
+      "backend_isolation_json",
+      "capacity_configuration_json",
+      "local_checks_json",
+      "operations_json",
+      "problems_json",
+      "project_configuration_json",
+      "provider_reports_json",
+      "routing_settings_json",
+      "tags_json",
+      "update_observation_json",
+      "workspace_capabilities_json"
+    ]
+  },
+  "runner_identity_events": {
+    "ownership": "organization-owned",
+    "scope": "runner_identity_events.runner_id -> runner_identities.id; runner_identities.organization_id",
+    "inline_payloads": []
+  },
+  "runner_local_check_providers": {
+    "ownership": "organization-owned",
+    "scope": "runner_local_check_providers.runner_id -> runner_local_checks.runner_id; runner_local_checks.runner_id -> runner_identities.id; runner_identities.organization_id",
+    "inline_payloads": []
+  },
+  "runner_local_checks": {
+    "ownership": "organization-owned",
+    "scope": "runner_local_checks.runner_id -> runner_identities.id; runner_identities.organization_id",
+    "inline_payloads": []
+  },
+  "runner_operations": {
+    "ownership": "organization-owned",
+    "scope": "runner_operations.runner_id -> runner_identities.id; runner_identities.organization_id",
+    "inline_payloads": []
+  },
+  "runner_project_capacity_limits": {
+    "ownership": "organization-owned",
+    "scope": "runner_project_capacity_limits.organization_id",
+    "inline_payloads": []
+  },
+  "runner_project_diagnostic_attempts": {
+    "ownership": "organization-owned",
+    "scope": "runner_project_diagnostic_attempts.organization_id",
+    "inline_payloads": []
+  },
+  "runner_project_observations": {
+    "ownership": "organization-owned",
+    "scope": "runner_project_observations.organization_id",
+    "inline_payloads": []
+  },
+  "runner_project_ranks": {
+    "ownership": "organization-owned",
+    "scope": "runner_project_ranks.runner_id -> runner_identities.id; runner_identities.organization_id",
+    "inline_payloads": []
+  },
+  "runner_project_skills": {
+    "ownership": "organization-owned",
+    "scope": "runner_project_skills.project_id -> projects.id; projects.organization_id",
+    "inline_payloads": [
+      "skills_json"
+    ]
+  },
+  "runner_provider_billing": {
+    "ownership": "organization-owned",
+    "scope": "runner_provider_billing.runner_id -> runner_identities.id; runner_identities.organization_id",
+    "inline_payloads": []
+  },
+  "runner_provider_usage_windows": {
+    "ownership": "organization-owned",
+    "scope": "runner_provider_usage_windows.runner_id -> runner_identities.id; runner_identities.organization_id",
+    "inline_payloads": []
+  },
+  "runner_repositories": {
+    "ownership": "organization-owned",
+    "scope": "runner_repositories.runner_id -> runner_identities.id; runner_identities.organization_id",
+    "inline_payloads": []
+  },
+  "runner_repository_lists": {
+    "ownership": "organization-owned",
+    "scope": "runner_repository_lists.runner_id -> runner_identities.id; runner_identities.organization_id",
+    "inline_payloads": []
+  },
+  "runner_selection_cursors": {
+    "ownership": "organization-owned",
+    "scope": "runner_selection_cursors.project_id -> projects.id; projects.organization_id",
+    "inline_payloads": []
+  },
+  "scheduled_ci_decisions": {
+    "ownership": "organization-owned",
+    "scope": "scheduled_ci_decisions.organization_id",
+    "inline_payloads": []
+  },
+  "scheduled_validation_reports": {
+    "ownership": "organization-owned",
+    "scope": "scheduled_validation_reports.organization_id",
+    "inline_payloads": [
+      "record_json"
+    ]
+  },
+  "slack_integrations": {
+    "ownership": "organization-owned",
+    "scope": "slack_integrations.organization_id",
+    "inline_payloads": []
+  },
+  "sqlite_schema": {
+    "ownership": "platform",
+    "scope": "SQLite catalog, migration bookkeeping, or database-wide maintenance",
+    "inline_payloads": []
+  },
+  "sqlite_sequence": {
+    "ownership": "platform",
+    "scope": "SQLite catalog, migration bookkeeping, or database-wide maintenance",
+    "inline_payloads": []
+  },
+  "sqlite_stat1": {
+    "ownership": "platform",
+    "scope": "SQLite catalog, migration bookkeeping, or database-wide maintenance",
+    "inline_payloads": []
+  },
+  "sqlite_stat4": {
+    "ownership": "platform",
+    "scope": "SQLite catalog, migration bookkeeping, or database-wide maintenance",
+    "inline_payloads": []
+  },
+  "storage_conversion_cursors": {
+    "ownership": "platform",
+    "scope": "SQLite catalog, migration bookkeeping, or database-wide maintenance",
+    "inline_payloads": []
+  },
+  "storage_conversion_progress": {
+    "ownership": "organization-owned",
+    "scope": "storage_conversion_progress.organization_id",
+    "inline_payloads": []
+  },
+  "sync_checkpoints": {
+    "ownership": "global",
+    "scope": "Source repository ingress shared by projects; tenant access follows projects.repository_id and projects.organization_id",
+    "inline_payloads": [
+      "state_json"
+    ]
+  },
+  "team_thread_fts": {
+    "ownership": "organization-owned",
+    "scope": "FTS index of team_threads.organization_id",
+    "inline_payloads": []
+  },
+  "team_thread_fts_config": {
+    "ownership": "organization-owned",
+    "scope": "FTS index of team_threads.organization_id",
+    "inline_payloads": []
+  },
+  "team_thread_fts_data": {
+    "ownership": "organization-owned",
+    "scope": "FTS index of team_threads.organization_id",
+    "inline_payloads": []
+  },
+  "team_thread_fts_docsize": {
+    "ownership": "organization-owned",
+    "scope": "FTS index of team_threads.organization_id",
+    "inline_payloads": []
+  },
+  "team_thread_fts_idx": {
+    "ownership": "organization-owned",
+    "scope": "FTS index of team_threads.organization_id",
+    "inline_payloads": []
+  },
+  "team_thread_participants": {
+    "ownership": "organization-owned",
+    "scope": "team_thread_participants.thread_id -> team_threads.id; team_threads.organization_id",
+    "inline_payloads": []
+  },
+  "team_thread_posts": {
+    "ownership": "organization-owned",
+    "scope": "team_thread_posts.thread_id -> team_threads.id; team_threads.organization_id",
+    "inline_payloads": [
+      "body"
+    ]
+  },
+  "team_thread_reads": {
+    "ownership": "organization-owned",
+    "scope": "team_thread_reads.thread_id -> team_threads.id; team_threads.organization_id",
+    "inline_payloads": []
+  },
+  "team_thread_references": {
+    "ownership": "organization-owned",
+    "scope": "team_thread_references.thread_id -> team_threads.id; team_threads.organization_id",
+    "inline_payloads": []
+  },
+  "team_thread_unread_projects": {
+    "ownership": "organization-owned",
+    "scope": "team_thread_unread_projects.summary_id -> team_thread_unread_summaries.id; team_thread_unread_summaries.organization_id",
+    "inline_payloads": []
+  },
+  "team_thread_unread_summaries": {
+    "ownership": "organization-owned",
+    "scope": "team_thread_unread_summaries.organization_id",
+    "inline_payloads": []
+  },
+  "team_threads": {
+    "ownership": "organization-owned",
+    "scope": "team_threads.organization_id",
+    "inline_payloads": []
+  },
+  "time_index_progress": {
+    "ownership": "platform",
+    "scope": "SQLite catalog, migration bookkeeping, or database-wide maintenance",
+    "inline_payloads": []
+  },
+  "token_grants": {
+    "ownership": "organization-owned",
+    "scope": "token_grants.organization_id",
+    "inline_payloads": []
+  },
+  "usage_cost_observations": {
+    "ownership": "organization-owned",
+    "scope": "usage_cost_observations.organization_id",
+    "inline_payloads": [
+      "observation_json"
+    ]
+  },
+  "work_events": {
+    "ownership": "organization-owned",
+    "scope": "work_events.machine_id -> machines.id; machines.organization_id",
+    "inline_payloads": [
+      "payload_json"
+    ]
+  },
+  "workflow_states": {
+    "ownership": "organization-owned",
+    "scope": "workflow_states.project_id -> projects.id; projects.organization_id",
+    "inline_payloads": []
+  },
+  "workspace_items": {
+    "ownership": "organization-owned",
+    "scope": "workspace_items.organization_id",
+    "inline_payloads": []
+  },
+  "workspace_occupancy": {
+    "ownership": "organization-owned",
+    "scope": "workspace_occupancy.organization_id",
+    "inline_payloads": []
+  },
+  "workspace_relay_sessions": {
+    "ownership": "organization-owned",
+    "scope": "workspace_relay_sessions.organization_id",
+    "inline_payloads": [
+      "channels_json"
+    ]
+  },
+  "workspace_relay_tickets": {
+    "ownership": "organization-owned",
+    "scope": "workspace_relay_tickets.workspace_id -> workspace_sessions.id; workspace_sessions.organization_id",
+    "inline_payloads": []
+  },
+  "workspace_sessions": {
+    "ownership": "organization-owned",
+    "scope": "workspace_sessions.organization_id",
+    "inline_payloads": [
+      "capabilities_json",
+      "requires_json"
+    ]
+  },
+  "workspace_terminal_recordings": {
+    "ownership": "organization-owned",
+    "scope": "workspace_terminal_recordings.organization_id",
+    "inline_payloads": []
+  }
+}

@@ -1,0 +1,105 @@
+{
+  "access_key_notifications": {
+    "ownership": "organization-owned",
+    "scope": "access_key_notifications.organization_id (delivery target)",
+    "inline_payloads": []
+  },
+  "access_key_organizations": {
+    "ownership": "organization-owned",
+    "scope": "access_key_organizations.organization_id",
+    "inline_payloads": [
+      "blocked_projects_json"
+    ]
+  },
+  "access_keys": {
+    "ownership": "global",
+    "scope": "Subject or OAuth client identity shared across organizations",
+    "inline_payloads": [
+      "organizations_json"
+    ]
+  },
+  "audit": {
+    "ownership": "platform",
+    "scope": "Cross-organization authentication audit; organization_id records an optional target",
+    "inline_payloads": []
+  },
+  "authorizations": {
+    "ownership": "organization-owned",
+    "scope": "authorizations.organization_id",
+    "inline_payloads": [
+      "identity_json"
+    ]
+  },
+  "entry_schema_version": {
+    "ownership": "platform",
+    "scope": "SQLite catalog and migration bookkeeping",
+    "inline_payloads": []
+  },
+  "github_user_connections": {
+    "ownership": "global",
+    "scope": "Subject or OAuth client identity shared across organizations",
+    "inline_payloads": []
+  },
+  "oauth_client_redirect_uris": {
+    "ownership": "global",
+    "scope": "Subject or OAuth client identity shared across organizations",
+    "inline_payloads": []
+  },
+  "oauth_clients": {
+    "ownership": "global",
+    "scope": "Subject or OAuth client identity shared across organizations",
+    "inline_payloads": []
+  },
+  "oauth_grants": {
+    "ownership": "organization-owned",
+    "scope": "oauth_grants.organization_id",
+    "inline_payloads": []
+  },
+  "oauth_refresh_tokens": {
+    "ownership": "organization-owned",
+    "scope": "oauth_refresh_tokens.grant_id -> oauth_grants.organization_id",
+    "inline_payloads": []
+  },
+  "oauth_requests": {
+    "ownership": "global",
+    "scope": "OAuth authorization exchange before an organization grant exists",
+    "inline_payloads": []
+  },
+  "oauth_spent_refresh_tokens": {
+    "ownership": "organization-owned",
+    "scope": "oauth_spent_refresh_tokens.grant_id -> oauth_grants.organization_id",
+    "inline_payloads": []
+  },
+  "organization_key_policy": {
+    "ownership": "organization-owned",
+    "scope": "organization_key_policy.organization_id",
+    "inline_payloads": []
+  },
+  "platform_notifications": {
+    "ownership": "platform",
+    "scope": "Cross-organization platform administration and delivery",
+    "inline_payloads": []
+  },
+  "sessions": {
+    "ownership": "global",
+    "scope": "Subject or OAuth client identity shared across organizations",
+    "inline_payloads": [
+      "identity_json"
+    ]
+  },
+  "sqlite_schema": {
+    "ownership": "platform",
+    "scope": "SQLite catalog and migration bookkeeping",
+    "inline_payloads": []
+  },
+  "sqlite_sequence": {
+    "ownership": "platform",
+    "scope": "SQLite catalog and migration bookkeeping",
+    "inline_payloads": []
+  },
+  "transactions": {
+    "ownership": "global",
+    "scope": "Subject or OAuth client identity shared across organizations",
+    "inline_payloads": []
+  }
+}
