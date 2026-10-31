@@ -146,7 +146,7 @@ func TestQueuedDispatchRanksIndependentRequests(t *testing.T) {
 		higherAge, lowerAge           time.Duration
 		refresh                       bool
 	}{
-		{"project rank beats issue priority", 1, 2, 2, 1, time.Hour, -time.Hour, false},
+		{"rank 1 beats rank 3 issue priority", 1, 3, 2, 1, time.Hour, -time.Hour, false},
 		{"project rank breaks priority ties", 1, 4, 2, 2, time.Hour, -time.Hour, false},
 		{"oldest issue breaks remaining ties", 1, 1, 2, 2, -time.Hour, time.Hour, false},
 		{"local refresh preserves Cloud rank", 1, 4, 2, 2, time.Hour, -time.Hour, true},
