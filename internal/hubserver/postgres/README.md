@@ -1,8 +1,9 @@
 # Hub PostgreSQL schema
 
 This directory owns the PostgreSQL schema and transaction boundary for the
-core records and request metrics families. Provision `roles.sql` as a database
-administrator, then apply `migrations/` with the Goose PostgreSQL dialect as
+core records, request metrics and platform registry/authentication families.
+Provision `roles.sql` as a database administrator, then apply `migrations/`
+with the Goose PostgreSQL dialect as
 `detent_migration` on an empty PostgreSQL 17 database. Existing installations
 apply only the new timestamp migration after provisioning the roles. The
 SQLite migration chain and runtime remain separate; this package does not
@@ -289,3 +290,18 @@ read at most 200 rows without walking previous pages. No transaction, lock or
 connection survives the repository callback. Sweeps introduce no persistent
 queue, retry owner or derived writes (INV-18), and all new columns remain typed
 (INV-20).
+
+## Platform registry and authentication
+
+The platform family lives under the `platform` schema, provisioned by `roles.sql`
+with `detent_migration` ownership and only `detent_platform` usage. Its migration
+shares this directory and Goose ledger with the tenant families. Tenant runtime
+roles receive no platform access. The `roles.sql` schema definition is also an
+input to sqlc; generated platform models stay in `pgquery`.
+
+`../../cloudentry/platformstore` owns the typed registry/authentication adapter
+and its separate platform pool. Its README defines the preserved identifiers,
+secret envelopes, permission boundary and concurrent session/revocation behavior.
+Platform storage is not a tenant repository and must never be injected into a
+tenant-scoped request handler. Backend selection and existing-file import belong
+to the shared-database runtime cutover, alongside the other PostgreSQL families.

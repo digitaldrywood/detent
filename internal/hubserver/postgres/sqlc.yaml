@@ -2,7 +2,7 @@ version: "2"
 sql:
   - engine: "postgresql"
     queries: "queries"
-    schema: "migrations"
+    schema: ["roles.sql", "migrations"]
     gen:
       go:
         package: "pgquery"

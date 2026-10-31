@@ -30,3 +30,7 @@ $roles$;
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 GRANT USAGE, CREATE ON SCHEMA public TO detent_migration;
 GRANT USAGE ON SCHEMA public TO detent_runtime, detent_platform;
+
+CREATE SCHEMA IF NOT EXISTS platform AUTHORIZATION detent_migration;
+REVOKE ALL ON SCHEMA platform FROM PUBLIC, detent_runtime;
+GRANT USAGE ON SCHEMA platform TO detent_platform;

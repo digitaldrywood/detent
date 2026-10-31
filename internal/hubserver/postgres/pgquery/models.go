@@ -5,6 +5,7 @@
 package pgquery
 
 import (
+	"database/sql"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -53,6 +54,337 @@ type NativeComment struct {
 	CreatedAt            time.Time
 	UpdatedAt            time.Time
 	RecordID             int64
+}
+
+type PlatformAccessKey struct {
+	ID                    string
+	TokenHash             string
+	Name                  string
+	Kind                  string
+	OwnerSubject          string
+	OwnerEmail            string
+	Permission            string
+	AccessContext         string
+	ServiceOrganizationID *string
+	CreatedAt             time.Time
+	ExpiresAt             *time.Time
+	RevokedAt             *time.Time
+}
+
+type PlatformAccessKeyBlockedProject struct {
+	OrganizationID string
+	KeyID          string
+	ProjectID      string
+}
+
+type PlatformAccessKeyNotification struct {
+	ID             int64
+	OwnerSubject   string
+	KeyID          string
+	OrganizationID string
+	ProjectID      string
+	CreatedAt      time.Time
+}
+
+type PlatformAccessKeyOrganization struct {
+	KeyID          string
+	OrganizationID string
+	Blocked        bool
+	ProjectAccess  string
+	Selected       bool
+	ReachedAt      *time.Time
+	LastUsedAt     *time.Time
+	ApprovedAt     *time.Time
+}
+
+type PlatformAccessKeyProject struct {
+	OrganizationID string
+	KeyID          string
+	ProjectID      string
+}
+
+type PlatformArchiveDeletionFailure struct {
+	OrganizationID string
+	BindingID      string
+	Ordinal        int64
+	ObjectKey      string
+	VersionID      string
+	ErrorCode      string
+}
+
+type PlatformArchiveDeletionReceipt struct {
+	OrganizationID string
+	BindingID      string
+	Complete       bool
+	Truncated      bool
+	Attempts       int64
+	UpdatedAt      time.Time
+}
+
+type PlatformArchiveStorageBinding struct {
+	OrganizationID      string
+	ID                  string
+	Revision            int64
+	Backend             string
+	Endpoint            string
+	Region              string
+	Bucket              string
+	Prefix              string
+	CredentialReference string
+	Versioned           sql.NullBool
+}
+
+type PlatformAudit struct {
+	ID             int64
+	Subject        string
+	OrganizationID string
+	Event          string
+	EventObjectKey *string
+	RetryIdentity  *string
+	AmountUsd      sql.NullString
+	Reason         *string
+	RecordedAt     time.Time
+	QueryLength    sql.NullInt64
+}
+
+type PlatformAuthNotification struct {
+	Event       string
+	EntityID    string
+	Email       string
+	Name        string
+	Plan        string
+	OccurredAt  time.Time
+	AttemptedAt *time.Time
+}
+
+type PlatformAuthorization struct {
+	Binding                string
+	SessionHash            string
+	OrganizationID         string
+	IdentitySubject        string
+	ProviderOrganizationID string
+	ProviderSessionID      string
+	IdentityCreatedAt      time.Time
+	IdentityExpiresAt      time.Time
+	SupportActor           string
+	SupportReason          string
+	CreatedAt              time.Time
+	ExpiresAt              time.Time
+	RevokedAt              *time.Time
+	Support                bool
+	EffectiveEmail         string
+	AccessToken            string
+	RefreshToken           string
+}
+
+type PlatformBillingCustomer struct {
+	Mode           string
+	AccountID      string
+	CustomerID     string
+	OrganizationID string
+	CreatedAt      time.Time
+}
+
+type PlatformBillingEvent struct {
+	EventID        string
+	Mode           string
+	EventType      string
+	CustomerID     string
+	ChargeID       string
+	OrganizationID string
+	Status         string
+	Attempts       int64
+	ReceivedAt     time.Time
+	UpdatedAt      time.Time
+}
+
+type PlatformEntitlementChange struct {
+	OrganizationID string
+	IdempotencyKey string
+	Action         string
+	GrantID        string
+	PlanID         string
+	PlanVersion    int64
+	ExpiresAt      *time.Time
+	Reason         string
+	StaffEmail     string
+	StaffSubject   string
+	RecordedAt     time.Time
+}
+
+type PlatformGithubUserConnection struct {
+	OwnerSubject string
+	ID           string
+	AccessToken  string
+	ExpiresAt    *time.Time
+	CreatedAt    time.Time
+	RevokedAt    *time.Time
+}
+
+type PlatformOauthClient struct {
+	ID         string
+	Name       string
+	AuthMethod string
+	SecretHash string
+	CreatedAt  time.Time
+}
+
+type PlatformOauthClientRedirectUri struct {
+	ClientID string
+	Position int64
+	Uri      string
+}
+
+type PlatformOauthGrant struct {
+	ID              string
+	ClientID        string
+	OwnerSubject    string
+	OwnerEmail      string
+	OrganizationID  string
+	Permission      string
+	Resource        string
+	CreatedAt       time.Time
+	LastUsedAt      *time.Time
+	RevokedAt       *time.Time
+	AccessHash      *string
+	AccessExpiresAt *time.Time
+}
+
+type PlatformOauthRefreshToken struct {
+	TokenHash      string
+	GrantID        string
+	ExpiresAt      time.Time
+	OrganizationID string
+}
+
+type PlatformOauthRequest struct {
+	ID             string
+	ClientID       string
+	RedirectUri    string
+	Challenge      string
+	Resource       string
+	CodeHash       string
+	CodeExpiresAt  time.Time
+	GrantID        string
+	ConsumedAt     *time.Time
+	OrganizationID string
+}
+
+type PlatformOauthSpentRefreshToken struct {
+	TokenHash      string
+	GrantID        string
+	ExpiresAt      time.Time
+	OrganizationID string
+}
+
+type PlatformOrganization struct {
+	ID             string
+	ProviderID     string
+	Name           string
+	State          string
+	Endpoint       string
+	Generation     int64
+	Managed        bool
+	CreatorSubject string
+	CreatorEmail   string
+	Step           string
+	Attempts       int64
+	NextAttemptAt  *time.Time
+	ErrorCode      string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+	ErrorDetail    string
+	Slug           string
+	CheckoutPrice  string
+}
+
+type PlatformOrganizationEvent struct {
+	ID             int64
+	OrganizationID string
+	Event          string
+	Generation     int64
+	RecordedAt     time.Time
+}
+
+type PlatformOrganizationIntent struct {
+	Subject        string
+	IdempotencyKey string
+	Fingerprint    string
+	OrganizationID string
+	CreatedAt      time.Time
+}
+
+type PlatformOrganizationKeyPolicy struct {
+	OrganizationID string
+	PersonalKeys   string
+}
+
+type PlatformOrganizationSlug struct {
+	Slug           string
+	OrganizationID string
+}
+
+type PlatformPlatformMember struct {
+	Email     string
+	Role      string
+	AddedBy   string
+	AddedAt   time.Time
+	UpdatedAt time.Time
+}
+
+type PlatformPlatformMemberChange struct {
+	ID           int64
+	Email        string
+	Action       string
+	PreviousRole string
+	Role         string
+	ActorEmail   string
+	ActorSubject string
+	Reason       string
+	RecordedAt   time.Time
+}
+
+type PlatformPlatformNotification struct {
+	Event       string
+	EntityID    string
+	Email       string
+	Name        string
+	Plan        string
+	OccurredAt  time.Time
+	AttemptedAt *time.Time
+}
+
+type PlatformSession struct {
+	TokenHash              string
+	Subject                string
+	Email                  string
+	CsrfSecret             string
+	IdentitySubject        string
+	ProviderOrganizationID string
+	ProviderSessionID      string
+	IdentityCreatedAt      time.Time
+	IdentityExpiresAt      time.Time
+	SupportActor           string
+	SupportReason          string
+	CreatedAt              time.Time
+	ExpiresAt              time.Time
+	RevokedAt              *time.Time
+}
+
+type PlatformTransaction struct {
+	TokenHash              string
+	TransactionID          string
+	State                  string
+	Verifier               string
+	OrganizationID         string
+	ReturnPath             string
+	InvitationToken        string
+	InvitationOrganization string
+	ExpiresAt              time.Time
+	ConsumedAt             *time.Time
+	SupportActor           string
+	SupportSession         string
+	SupportReason          string
 }
 
 type Project struct {
