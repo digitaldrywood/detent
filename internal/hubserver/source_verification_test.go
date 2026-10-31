@@ -13,7 +13,7 @@ import (
 
 func TestSourceVerificationLifetimeAndFailureClass(t *testing.T) {
 	for _, kind := range []string{"source", "landing"} {
-		for _, outcome := range []string{"slow valid", "cancelled", "deadline", "infrastructure", "invalid"} {
+		for _, outcome := range []string{"slow valid", "cancelled", "deadline", "infrastructure", "invalid", "busy"} {
 			t.Run(kind+"/"+outcome, func(t *testing.T) {
 				synctest.Test(t, func(t *testing.T) {
 					ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
@@ -37,6 +37,10 @@ func TestSourceVerificationLifetimeAndFailureClass(t *testing.T) {
 					s := &Service{sourceVerification: make(chan struct{}, 1),
 						sourceVerifier:        func(ctx context.Context, _ tracker.ChangeSource, _ []byte) error { return verify(ctx) },
 						incorporationVerifier: func(ctx context.Context, _ tracker.LandingIncorporation, _ []byte) error { return verify(ctx) },
+					}
+					if outcome == "busy" {
+						s.sourceVerification <- struct{}{}
+						s.sourceVerifier, s.incorporationVerifier = nil, nil
 					}
 					var err error
 					if kind == "source" {
@@ -65,6 +69,11 @@ func TestSourceVerificationLifetimeAndFailureClass(t *testing.T) {
 						var invalid *nativeError
 						if !errors.As(err, &invalid) || invalid.status != 422 {
 							t.Fatalf("invalid proof = %v", err)
+						}
+					case "busy":
+						var busy *nativeError
+						if !errors.As(err, &busy) || busy.status != 503 {
+							t.Fatalf("occupied verification slot = %v", err)
 						}
 					}
 				})
