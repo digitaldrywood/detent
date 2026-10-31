@@ -28,12 +28,13 @@ started=$SECONDS
 (cd "$worktree" && make app TEST_PROCS="$procs") > "$output_dir/app.log" 2>&1
 
 linux_context="${DETENT_LINUX_CONTEXT:-colima}"
-docker --context "$linux_context" build -q --platform linux/amd64 --build-arg GO_VERSION="$toolchain" --build-arg UID="$(id -u)" \
+linux_platform="linux/$(docker --context "$linux_context" version -f '{{.Server.Arch}}')"
+docker --context "$linux_context" build -q --platform "$linux_platform" --build-arg GO_VERSION="$toolchain" --build-arg UID="$(id -u)" \
   -t "$image" -f "$worktree/scripts/linux-validate.Dockerfile" "$worktree/scripts" > /dev/null
 linux_source="$output_dir/linux-source"
 rsync -a --exclude=.git --exclude=node_modules "$worktree/" "$linux_source/"
 linux=failure
-if docker --context "$linux_context" run --rm --platform linux/amd64 \
+if docker --context "$linux_context" run --rm --platform "$linux_platform" \
   -v "$linux_source:/src" -v "$cache/linux:/cache" -w /src \
   -e GOCACHE=/cache/go-build -e GOMODCACHE=/cache/mod -e GOTOOLCHAIN=local -e "GOFLAGS=-trimpath -buildvcs=false" \
   "$image" bash -c "set -euo pipefail; git init -q; git add -A; git commit -qm validation; go vet -p $procs ./...; env -u DETENT_API_TOKEN go test -p $procs -short -race -timeout=30m ./..." \

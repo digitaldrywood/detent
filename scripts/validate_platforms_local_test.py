@@ -49,7 +49,7 @@ elif command.startswith('tar '): sys.stdin.buffer.read()
                 if actual != 'go1.26.10':
                     self.assertIn('does not match go.mod', result.stderr)
 
-    def test_validated_sources_and_linux_amd64(self):
+    def test_validated_sources_and_native_linux_platform(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             repo = root / 'repo'
@@ -93,6 +93,7 @@ if 'build' in args:
     assert dockerfile.read_text() == 'validated Dockerfile\\n'
     assert dockerfile.parent == Path(args[-1])
     assert dockerfile.parent.parent.name == 'source'
+if 'version' in args: print('arm64')
 if 'run' in args: sys.exit(int(os.environ.get('DOCKER_RUN_EXIT', '0')))
 ''')
             env.update(PATH=str(binaries) + os.pathsep + env['PATH'], CALLS=str(root / 'calls'),
@@ -103,9 +104,10 @@ if 'run' in args: sys.exit(int(os.environ.get('DOCKER_RUN_EXIT', '0')))
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertEqual((root / 'windows-call').read_text(), 'validated\n')
             docker_calls = [json.loads(line) for line in (root / 'docker-calls').read_text().splitlines()]
-            self.assertEqual(len(docker_calls), 2)
-            for args in docker_calls:
-                self.assertEqual(args[args.index('--platform') + 1], 'linux/amd64')
+            platform_calls = [args for args in docker_calls if 'build' in args or 'run' in args]
+            self.assertEqual(len(platform_calls), 2)
+            for args in platform_calls:
+                self.assertEqual(args[args.index('--platform') + 1], 'linux/arm64')
             posts = [json.loads(line) for line in (root / 'calls').read_text().splitlines() if 'POST' in line]
             self.assertIn('state=success', posts[-1])
             self.assertIn('repos/example-org/example-project/statuses/' + head, posts[-1])
