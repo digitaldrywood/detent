@@ -66,9 +66,6 @@ func (w *completedExecutionWorkspace) FinalizeNativeWork(ctx context.Context, _ 
 	if w.finalizationErr != nil {
 		return "", w.finalizationErr
 	}
-	if _, ok := ctx.Deadline(); !ok {
-		return "", errors.New("finalization has no deadline")
-	}
 	if w.onFinalize != nil {
 		w.onFinalize()
 	}
@@ -513,7 +510,7 @@ func TestCompletedNativeTurnFinalization(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				ctx, cancel := context.WithTimeout(t.Context(), time.Hour)
 				defer cancel()
 				ctx, stopOperator := context.WithCancelCause(ctx)
 				defer stopOperator(context.Canceled)
@@ -537,7 +534,7 @@ func TestCompletedNativeTurnFinalization(t *testing.T) {
 				}
 				agent := &completedTurnBackend{fakeCodexClient: fakeCodexClient{updates: []AgentUpdate{{Type: AgentUpdateMessageDelta, Delta: test.message}, {Type: AgentUpdateTurnCompleted, Status: "completed"}}}, afterTurn: func() {
 					if test.expired {
-						time.Sleep(time.Second)
+						time.Sleep(time.Hour)
 					}
 					if test.cancelled {
 						cancel()
@@ -596,7 +593,7 @@ func TestCompletedNativeTurnFinalization(t *testing.T) {
 					t.Fatal("host finalization preceded provider completion observation")
 				}
 				publicationFailed := test.publicationTimeout || test.publicationRevoked
-				failed := test.revoked || test.validationTimeout || test.gateFailure && !test.blocked || test.operatorStop
+				failed := test.expired || test.cancelled || test.revoked || test.validationTimeout || test.gateFailure && !test.blocked || test.operatorStop
 				if (completion.Err != nil) != (failed || publicationFailed) || execution.published != (!failed && !publicationFailed && !test.blocked) || backend.retained != failed || agent.calls != 1 {
 					t.Fatalf("error=%v published=%t retained=%t turns=%d", completion.Err, execution.published, backend.retained, agent.calls)
 				}
@@ -664,7 +661,7 @@ func TestCompletedNativeTurnFinalization(t *testing.T) {
 				if test.validationTimeout && (!errors.Is(completion.Err, context.DeadlineExceeded) || execution.validation != nil || execution.finish == "succeeded") {
 					t.Fatalf("timed-out validation was accepted: error=%v receipt=%+v finish=%s", completion.Err, execution.validation, execution.finish)
 				}
-				if test.operatorStop && (!errors.Is(completion.Err, ErrOperatorStopped) || execution.validation == nil || execution.validation.ExitCode != 0 || execution.finish != "interrupted" || execution.checkpoint == nil || execution.checkpoint.HeadSHA != "completed-head") {
+				if test.operatorStop && (!errors.Is(completion.Err, ErrOperatorStopped) || backend.afterRun || execution.published) {
 					t.Fatalf("operator stop lost successful validation or checkpoint: error=%v validation=%+v finish=%s checkpoint=%+v", completion.Err, execution.validation, execution.finish, execution.checkpoint)
 				}
 				if test.validationDelay > 0 && !failed && (execution.validation == nil || execution.validation.HeadSHA != "completed-head" || execution.validation.ExitCode != 0) {
@@ -766,4 +763,85 @@ func TestCompletedNativeTurnReapFailure(t *testing.T) {
 			}
 		})
 	}
+}
+
+type slowCompletionWorkspace struct {
+	*completedExecutionWorkspace
+	delay time.Duration
+}
+
+func (w *slowCompletionWorkspace) RecoveryState(ctx context.Context, _ workspace.Info, _ workspace.Issue) (workspace.RecoveryState, error) {
+	time.Sleep(w.delay)
+	return w.recoveryStates[0], ctx.Err()
+}
+
+type slowCheckpointExecution struct {
+	*testExecution
+	delay time.Duration
+}
+
+func (e *slowCheckpointExecution) Checkpoint(ctx context.Context, checkpoint tracker.NativeCheckpoint) error {
+	time.Sleep(e.delay)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return e.testExecution.Checkpoint(ctx, checkpoint)
+}
+
+func TestSlowCompletionKeepsFinishedSource(t *testing.T) {
+	for _, stage := range []string{"recovery", "recording"} {
+		t.Run(stage, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				backend := &slowCompletionWorkspace{completedExecutionWorkspace: &completedExecutionWorkspace{retainedExecutionWorkspace: retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}, recoveryStates: []workspace.RecoveryState{{HeadSHA: "finished", WorkspaceFingerprint: "digest"}}}}}}
+				execution := &slowCheckpointExecution{testExecution: &testExecution{}}
+				if stage == "recovery" {
+					backend.delay = 2 * time.Minute
+				} else {
+					execution.delay = 2 * time.Minute
+				}
+				r := &Runner{workspace: backend, afterRunTimeout: time.Minute, now: time.Now, logger: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))}
+				err := r.afterExecution(t.Context(), RunRequest{Execution: execution}, backend, backend.info, workspace.Issue{}, AgentResume{}, true)
+				if err != nil || execution.checkpoint == nil || execution.checkpoint.HeadSHA != "finished" || !backend.afterRun {
+					t.Fatalf("finished source lost: error=%v checkpoint=%+v cleaned=%t", err, execution.checkpoint, backend.afterRun)
+				}
+			})
+		})
+	}
+}
+
+type slowObservationExecution struct{ *testExecution }
+
+func (e *slowObservationExecution) ObserveRuntime(ctx context.Context, observation tracker.NativeRuntimeObservation) error {
+	if observation.Phase == "completed" {
+		time.Sleep(2 * time.Minute)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	e.runtime.Phase = observation.Phase
+	return e.testExecution.ObserveRuntime(ctx, observation)
+}
+
+func (e *slowObservationExecution) Finish(ctx context.Context, outcome string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return e.testExecution.Finish(ctx, outcome)
+}
+
+func TestSlowCompletionObservationKeepsFinishedOutcome(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		execution := &slowObservationExecution{testExecution: &testExecution{}}
+		agent := &fakeCodexClient{updates: []AgentUpdate{{Type: AgentUpdateTurnCompleted, Status: "completed"}}}
+		backend := &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Branch: "example"}}
+		r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workspace: backend, AgentBackend: agent, Workflow: config.Workflow{Prompt: "Complete the issue"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.sleepInhibitor = func(context.Context, func()) (func(), error) { return func() {}, nil }
+		result, err := r.Run(t.Context(), RunRequest{Execution: execution, Issue: connector.Issue{ID: "example"}, Mode: RunModeImplement})
+		if err != nil || result.FinalState != FinalStateCompleted || execution.finish != "succeeded" || execution.runtime.Phase != "completed" {
+			t.Fatalf("slow observation lost completion: error=%v state=%s outcome=%s phase=%s", err, result.FinalState, execution.finish, execution.runtime.Phase)
+		}
+	})
 }

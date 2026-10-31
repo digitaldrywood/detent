@@ -15,7 +15,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -115,83 +114,35 @@ func TestNewWorkerGitHubPolicy(t *testing.T) {
 	}
 }
 
-func TestResolveWorkerGitHubSecretRetries(t *testing.T) {
+func TestResolveWorkerGitHubSecretUsesCallerLifetime(t *testing.T) {
 	t.Parallel()
-
-	tests := []struct {
-		name         string
-		resolve      workerGitHubTokenResolver
-		wantToken    string
-		wantCalls    int
-		wantSleeps   []time.Duration
-		wantErr      bool
-		wantDeadline bool
-	}{
-		{
-			name: "transient failures recover",
-			resolve: func() workerGitHubTokenResolver {
+	for _, failed := range []bool{false, true} {
+		t.Run(fmt.Sprint(failed), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
 				calls := 0
-				return func(context.Context) (string, error) {
+				failure := errors.New("credential service unavailable")
+				token, err := resolveWorkerGitHubSecret(t.Context(), "gh", nil, func(ctx context.Context) (string, error) {
 					calls++
-					if calls < 3 {
-						return "", errors.New("keychain busy")
+					time.Sleep(time.Minute)
+					if err := ctx.Err(); err != nil {
+						return "", err
+					}
+					if failed {
+						return "", failure
 					}
 					return "resolved-token", nil
+				})
+				if calls != 1 {
+					t.Fatalf("resolver calls = %d, want one; retry belongs to instance owner", calls)
 				}
-			}(),
-			wantToken:  "resolved-token",
-			wantCalls:  3,
-			wantSleeps: []time.Duration{10 * time.Millisecond, 20 * time.Millisecond},
-		},
-		{
-			name: "per-attempt deadlines exhaust",
-			resolve: func(ctx context.Context) (string, error) {
-				<-ctx.Done()
-				return "", ctx.Err()
-			},
-			wantCalls:    3,
-			wantSleeps:   []time.Duration{10 * time.Millisecond, 20 * time.Millisecond},
-			wantErr:      true,
-			wantDeadline: true,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			calls := 0
-			var sleeps []time.Duration
-			resolver := func(ctx context.Context) (string, error) {
-				calls++
-				return tt.resolve(ctx)
-			}
-			token, err := resolveWorkerGitHubSecret(t.Context(), "gh", nil, resolver, workerGitHubTokenResolutionOptions{
-				Timeout:      5 * time.Millisecond,
-				MaxAttempts:  3,
-				RetryBackoff: 10 * time.Millisecond,
-				Sleep: func(_ context.Context, delay time.Duration) error {
-					sleeps = append(sleeps, delay)
-					return nil
-				},
+				if failed {
+					if !errors.Is(err, failure) || !errors.Is(err, ErrWorkerGitHubTokenResolution) {
+						t.Fatalf("error = %v", err)
+					}
+				} else if err != nil || token != "resolved-token" {
+					t.Fatalf("token = %q, error = %v", token, err)
+				}
 			})
-			if token != tt.wantToken || (err != nil) != tt.wantErr {
-				t.Fatalf("resolveWorkerGitHubSecret() = %q, %v; want %q, error %t", token, err, tt.wantToken, tt.wantErr)
-			}
-			if calls != tt.wantCalls {
-				t.Fatalf("resolver calls = %d, want %d", calls, tt.wantCalls)
-			}
-			if !slices.Equal(sleeps, tt.wantSleeps) {
-				t.Fatalf("retry sleeps = %v, want %v", sleeps, tt.wantSleeps)
-			}
-			if !tt.wantErr {
-				return
-			}
-			resolutionErr, ok := AsWorkerGitHubTokenResolutionError(err)
-			if !ok || resolutionErr.Attempts != 3 || resolutionErr.Timeout != 5*time.Millisecond {
-				t.Fatalf("error = %#v, want typed resolution error with retry evidence", err)
-			}
-			if tt.wantDeadline && !errors.Is(err, context.DeadlineExceeded) {
-				t.Fatalf("error = %v, want context deadline exceeded", err)
-			}
 		})
 	}
 }
@@ -205,7 +156,7 @@ func TestResolveWorkerGitHubSecretHonorsParentCancellation(t *testing.T) {
 	_, err := resolveWorkerGitHubSecret(ctx, "gh", nil, func(context.Context) (string, error) {
 		calls++
 		return "", errors.New("unexpected call")
-	}, workerGitHubTokenResolutionOptions{})
+	})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("resolveWorkerGitHubSecret() error = %v, want context canceled", err)
 	}

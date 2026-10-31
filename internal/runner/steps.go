@@ -129,18 +129,23 @@ func (r *Runner) recordAgentStep(ctx context.Context, req RunRequest, backend wo
 		return nil
 	}
 	req.checkpointRefs.halt()
-	r.finishCheckpointRef(ctx, req.checkpointRefs, req)
 	state := r.workspaceRecoveryState(backend, ctx, info, issue, "agent_turn_receipt")
 	if state == nil {
 		return failedStep("checkpoint_recovery", ErrNativeRecoveryRequired)
 	}
-	source := executionCheckpoint(state)
-	req.checkpointRefs.apply(&source)
-	if source.HeadSHA != state.HeadSHA || source.WorkspaceDigest != state.WorkspaceFingerprint {
+	receipt := stepBinding(req.Execution, "agent_turn", executionCheckpoint(state), tracker.NativeChangeReference{})
+	receipt.CompletedAt, receipt.CompletionBody = r.now(), message
+	if err := recordStep(ctx, req.Execution, receipt); err != nil {
+		return err
+	}
+	r.finishCheckpointRef(ctx, req.checkpointRefs, req)
+	if req.checkpointRefs != nil && req.checkpointRefs.lastPushFailed() {
 		return failedStep("checkpoint_recovery", ErrNativeRecoveryRequired)
 	}
-	receipt := stepBinding(req.Execution, "agent_turn", source, tracker.NativeChangeReference{})
-	receipt.CompletedAt, receipt.CompletionBody = r.now(), message
+	req.checkpointRefs.apply(&receipt.Source)
+	if receipt.Source.HeadSHA != state.HeadSHA || receipt.Source.WorkspaceDigest != state.WorkspaceFingerprint {
+		return failedStep("checkpoint_recovery", ErrNativeRecoveryRequired)
+	}
 	return recordStep(ctx, req.Execution, receipt)
 }
 

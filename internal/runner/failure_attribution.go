@@ -195,6 +195,13 @@ func certainFailureDecision(err error) *tracker.FailureAttribution {
 }
 
 func infrastructureFailureDecision(err error) *tracker.FailureAttribution {
+	var step *stepError
+	switch {
+	case errors.Is(err, ErrWorkerGitHubTokenResolution):
+		return &tracker.FailureAttribution{Outcome: "instance", Reason: "runner credential resolution unavailable"}
+	case errors.As(err, &step) && (step.step == "checkpoint_recovery" || step.step == "publication"):
+		return &tracker.FailureAttribution{Outcome: "instance", Reason: "runner checkpoint or publication unavailable"}
+	}
 	if certainFailureDecision(err) != nil {
 		return nil
 	}

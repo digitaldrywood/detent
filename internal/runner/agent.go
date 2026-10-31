@@ -215,7 +215,12 @@ func NewRunner(deps Dependencies) (*Runner, error) {
 		deps.AfterRunTimeout = defaultAfterRunTimeout
 	}
 	if deps.FinalizationContext == nil {
-		deps.FinalizationContext = context.WithTimeoutCause
+		deps.FinalizationContext = func(ctx context.Context, duration time.Duration, cause error) (context.Context, context.CancelFunc) {
+			if duration <= 0 {
+				return context.WithCancel(ctx)
+			}
+			return context.WithTimeoutCause(ctx, duration, cause)
+		}
 	}
 	if deps.RSSPollInterval <= 0 {
 		deps.RSSPollInterval = time.Second
@@ -810,8 +815,6 @@ func mergeFallbackResult(output string) string {
 	return RunOutputMergeFallbackRework
 }
 
-const mergeFallbackValidationTimeout = time.Hour
-
 func (r *Runner) verifyMergeFallback(
 	ctx context.Context,
 	backend workspace.Backend,
@@ -830,8 +833,7 @@ func (r *Runner) verifyMergeFallback(
 		result.Output = RunOutputMergeFallbackRework
 		return result, nil
 	}
-	validationCtx, cancel := context.WithTimeout(ctx, mergeFallbackValidationTimeout)
-	defer cancel()
+	validationCtx := ctx
 	precheck, err := preparer.PrepareMerge(validationCtx, info, issue, opts)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -2303,7 +2305,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			}
 		}
 		afterRunPending = false
-		resumeCtx, resumeCancel := r.finalizationContext(context.WithoutCancel(ctx), r.nativeWorkTimeout(workflow.Config, backendConfig, 0), NewCancellationCause(context.DeadlineExceeded, "runner.finalization"))
+		resumeCtx, resumeCancel := r.finalizationContext(ctx, r.nativeWorkTimeout(workflow.Config, backendConfig, 0), NewCancellationCause(context.DeadlineExceeded, "runner.finalization"))
 		defer resumeCancel()
 		err := r.afterExecution(resumeCtx, req, runWorkspace, info, workspaceIssue, AgentResume{}, false)
 		if reviewRecovery != nil || turnRecovery != nil {
@@ -2701,7 +2703,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			if req.Issue.PullRequest != nil {
 				expectedRemoteHead = req.Issue.PullRequest.HeadSHA
 			}
-			result, turnErr = r.verifyMergeFallback(context.WithoutCancel(ctx), runWorkspace, info, workspaceIssue, workspace.MergePrepareOptions{
+			result, turnErr = r.verifyMergeFallback(ctx, runWorkspace, info, workspaceIssue, workspace.MergePrepareOptions{
 				TargetBranch:       targetBranch,
 				VerifyResolution:   true,
 				IssueDescription:   req.Issue.Description,
@@ -2759,13 +2761,8 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		afterRunCtx := ctx
 		afterRunCancel := func() {}
 		if turnErr == nil {
-			timeout := r.afterRunTimeout
-			if req.Execution != nil && mode == RunModeImplement {
-				// Native finalization runs the configured source gate on the
-				// finalized head. It needs the work budget, not the cleanup budget.
-				timeout = r.nativeWorkTimeout(workflow.Config, backendConfig, 0)
-			}
-			afterRunCtx, afterRunCancel = r.finalizationContext(context.WithoutCancel(ctx), timeout, NewCancellationCause(context.DeadlineExceeded, "runner.finalization"))
+			timeout := r.nativeWorkTimeout(workflow.Config, backendConfig, 0)
+			afterRunCtx, afterRunCancel = r.finalizationContext(ctx, timeout, NewCancellationCause(context.DeadlineExceeded, "runner.finalization"))
 		}
 		defer afterRunCancel()
 		disposition := NativeDispositionFromMessage(result.FinalMessage)
@@ -2861,7 +2858,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		finalizationCtx := ctx
 		finalizationCancel := func() {}
 		if turnErr == nil {
-			finalizationCtx, finalizationCancel = r.finalizationContext(context.WithoutCancel(ctx), r.afterRunTimeout, NewCancellationCause(context.DeadlineExceeded, "runner.finalization"))
+			finalizationCtx, finalizationCancel = context.WithCancel(ctx)
 		}
 		defer finalizationCancel()
 		if mode == RunModeImplement && workflow.Config.Deliverable.Kind == config.DeliverableArtifact {

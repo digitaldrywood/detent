@@ -110,11 +110,11 @@ func TestWorkerCheckpointHandshake(t *testing.T) {
 			}
 			run := func(ctx context.Context, turn AgentTurnRequest, req RunRequest) agentTurnExecution {
 				calls++
-				if !turn.ReadOnly || !turn.SupplementalTools || req.sessionBrake != nil || turn.MaxDuration != checkpointTimeout {
+				if !turn.ReadOnly || !turn.SupplementalTools || req.sessionBrake != nil || turn.MaxDuration != 0 {
 					t.Fatalf("unbounded or writable checkpoint: %+v", turn)
 				}
-				if _, ok := ctx.Deadline(); !ok {
-					t.Fatal("checkpoint lacks deadline")
+				if _, ok := ctx.Deadline(); ok {
+					t.Fatal("checkpoint installed a deadline instead of using caller lifetime")
 				}
 				if scenario == "provider unavailable" {
 					return agentTurnExecution{err: errors.New("provider unavailable")}
@@ -710,4 +710,43 @@ func TestAgentTurnDeliverableNativeTracker(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestWorkerCheckpointSlowHandshakeUsesCallerLifetime(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		r, checkpoint, _ := checkpointRunnerFixture(t)
+		execution := r.workerCheckpoint(t.Context(), checkpoint, "periodic", checkpointAgentStub{}, AgentTurnRequest{}, func(ctx context.Context, turn AgentTurnRequest, _ RunRequest) agentTurnExecution {
+			time.Sleep(3 * time.Minute)
+			return agentTurnExecution{err: ctx.Err()}
+		})
+		if execution.err != nil {
+			t.Fatalf("slow handshake ended the turn: %v", execution.err)
+		}
+		if checkpoint.record == nil || checkpoint.record.Status != "local_only" {
+			t.Fatalf("unfinished work was not retained: %+v", checkpoint.record)
+		}
+	})
+}
+
+type slowCheckpointPreparation struct{ *fakeWorkspaceBackend }
+
+func (b *slowCheckpointPreparation) PrepareCheckpoint(ctx context.Context, _ workspace.Info, _ workspace.Issue) (workspace.CheckpointPlan, error) {
+	time.Sleep(time.Minute)
+	return workspace.CheckpointPlan{}, ctx.Err()
+}
+
+func (b *slowCheckpointPreparation) Checkpoint(context.Context, workspace.CheckpointPlan, workspace.CheckpointSelection, func(context.Context) error, procgroup.Environment) (string, error) {
+	return "", nil
+}
+
+func TestSlowCheckpointPreparationKeepsPublication(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		r, _, _ := checkpointRunnerFixture(t)
+		backend := &slowCheckpointPreparation{fakeWorkspaceBackend: &fakeWorkspaceBackend{}}
+		checkpoint := r.prepareWorkerCheckpoint(t.Context(), RunRequest{Mode: RunModeImplement}, "", backend, workspace.Info{}, workspace.Issue{})
+		if checkpoint == nil || checkpoint.prepareFailed {
+			t.Fatal("slow preparation disabled publication")
+		}
+	})
 }

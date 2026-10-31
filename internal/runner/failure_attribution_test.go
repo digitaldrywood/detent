@@ -59,6 +59,9 @@ func TestFailureDecisionControlsRetryAndPublication(t *testing.T) {
 		{"prior issue verdict for rejection", "instance", RestoreFailureDecision(acceptanceRejectionError{}, tracker.FailureAttribution{Outcome: "issue", Reason: "prior verdict"}), 2, 0},
 		{"audit publication", "instance", auditPublicationCarrier{}, 2, 0},
 		{"implementation review provider", "instance", failedStep("validator", &NativeImplementationReviewError{Err: fmt.Errorf("run validator turn: %w", errors.New("provider startup failed"))}), 2, 0},
+		{"checkpoint recording", "instance", failedStep("checkpoint_recovery", errors.New("recording unavailable")), 2, 0},
+		{"completion publication", "instance", failedStep("publication", errors.New("publication unavailable")), 2, 0},
+		{"credential resolution", "instance", &WorkerGitHubTokenResolutionError{Attempts: 1, Err: errors.New("credential unavailable")}, 2, 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			backend := &fakeCodexClient{failureOutcome: test.outcome}

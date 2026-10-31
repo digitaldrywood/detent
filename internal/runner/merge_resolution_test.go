@@ -196,7 +196,7 @@ func TestNativeLandingMergeResolution(t *testing.T) {
 				}
 				return
 			}
-			if permits != 1 || result.Tokens.TotalTokens != 7 || provider.calls != 1 || provider.request.MaxTurns != 1 || provider.request.MaxDuration <= 0 || !result.TurnStarted || !strings.Contains(provider.request.Prompt, "only the conflicting hunks") {
+			if permits != 1 || result.Tokens.TotalTokens != 7 || provider.calls != 1 || provider.request.MaxTurns != 1 || provider.request.MaxDuration != 0 || !result.TurnStarted || !strings.Contains(provider.request.Prompt, "only the conflicting hunks") {
 				t.Fatalf("resolution was not one bounded merge turn: %#v, %#v", provider, result)
 			}
 			remoteHead := strings.TrimSpace(runRunnerGit(t, remote, "rev-parse", "refs/heads/main"))

@@ -14,11 +14,6 @@ import (
 // checkpointRefInterval bounds how much changing work a dead runner can lose.
 const checkpointRefInterval = 5 * time.Minute
 
-const (
-	checkpointRefFinalAttempts = 3
-	checkpointRefRetryDelay    = 500 * time.Millisecond
-)
-
 // checkpointRefs publishes a run's work to the item's Detent-owned git ref
 // (INV-17) and remembers the newest pushed checkpoint so every Hub checkpoint
 // names it. A failed push is logged and retried at the next trigger.
@@ -124,8 +119,7 @@ func (r *Runner) pushCheckpointRef(ctx context.Context, c *checkpointRefs, req R
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	pushCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), checkpointTimeout)
-	defer cancel()
+	pushCtx := ctx
 	next, pushed, err := c.publisher.PushCheckpointRef(pushCtx, c.info, c.issue, c.last, c.execution.Validate)
 	c.failed = err != nil
 	if err != nil {
@@ -144,18 +138,8 @@ func (r *Runner) pushCheckpointRef(ctx context.Context, c *checkpointRefs, req R
 	return pushed
 }
 
-// finishCheckpointRef retries the stage-end push so a transient failure does
-// not leave the newest work only on this machine.
 func (r *Runner) finishCheckpointRef(ctx context.Context, c *checkpointRefs, req RunRequest) {
-	for attempt := range checkpointRefFinalAttempts {
-		if attempt > 0 {
-			time.Sleep(time.Duration(attempt) * checkpointRefRetryDelay)
-		}
-		r.pushCheckpointRef(ctx, c, req, "stage_finished")
-		if c == nil || !c.lastPushFailed() {
-			return
-		}
-	}
+	r.pushCheckpointRef(ctx, c, req, "stage_finished")
 }
 
 func (c *checkpointRefs) lastPushFailed() bool {

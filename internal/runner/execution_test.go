@@ -2255,16 +2255,12 @@ func TestStageEndPushesCheckpointRef(t *testing.T) {
 			}
 			execution := &availabilityTestExecution{deadline: time.Now().Add(-time.Second)}
 			ctx, cancel := context.WithCancelCause(t.Context())
-			cancel(context.Canceled)
 			defer cancel(context.Canceled)
 			r := &Runner{workspace: backend, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), afterRunTimeout: time.Second}
 			req := RunRequest{Execution: execution, Issue: connector.Issue{ID: "work"}}
 			req.checkpointRefs = newCheckpointRefs(backend, execution, workspace.Info{}, workspace.Issue{Checkpoint: test.restored}, nil)
 			err := r.afterExecution(ctx, req, backend, workspace.Info{}, workspace.Issue{}, AgentResume{}, true)
 			wantPushes := 1
-			if test.failed {
-				wantPushes = checkpointRefFinalAttempts
-			}
 			if backend.pushes != wantPushes || backend.afterRun || errors.Is(err, backend.publishErr) && backend.publishErr != nil {
 				t.Fatalf("pushes=%d cleaned=%t err=%v", backend.pushes, backend.afterRun, err)
 			}

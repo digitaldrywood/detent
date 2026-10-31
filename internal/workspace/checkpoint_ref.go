@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -81,6 +82,7 @@ func (l *LocalGit) PushCheckpointRef(ctx context.Context, info Info, issue Issue
 	if err != nil {
 		return previous, false, err
 	}
+	release = sync.OnceFunc(release)
 	defer release()
 	git := checkpointRefGit(info.Path)
 	for _, pending := range []string{"MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD"} {
@@ -91,7 +93,7 @@ func (l *LocalGit) PushCheckpointRef(ctx context.Context, info Info, issue Issue
 	if paused, pauseErr := rebaseInProgress(ctx, info.Path); pauseErr != nil {
 		return previous, false, pauseErr
 	} else if paused && issue.NativeRework {
-		return l.pushReworkCheckpoint(ctx, info, issue, previous, validate)
+		return l.pushReworkCheckpoint(ctx, info, issue, previous, validate, release)
 	}
 	if _, err := git(ctx, "symbolic-ref", "-q", "HEAD"); err != nil {
 		return previous, false, fmt.Errorf("%w: worktree is not on its branch (rebase or detached HEAD in progress)", ErrCheckpointUnsafe)
@@ -150,8 +152,9 @@ func (l *LocalGit) PushCheckpointRef(ctx context.Context, info Info, issue Issue
 	if err := validate(ctx); err != nil {
 		return previous, false, err
 	}
-	if _, err := git(ctx, "-c", "core.hooksPath="+os.DevNull, "-c", "push.followTags=false", "push", "--no-verify", "--force", "--recurse-submodules=no", defaultGitRemote, commit+":"+ref); err != nil {
-		return previous, false, fmt.Errorf("push checkpoint ref: %w", err)
+	release()
+	if err := publishCheckpointRef(ctx, git, ref, commit, previous.CommitSHA); err != nil {
+		return previous, false, err
 	}
 	return CheckpointRef{Ref: ref, CommitSHA: commit, HeadSHA: head, BaseSHA: base, TreeSHA: tree}, true, nil
 }
@@ -314,6 +317,38 @@ func restoreCheckpointTree(ctx context.Context, path string, checkpoint *Checkpo
 	}
 	if _, err := runGitAt(ctx, path, "reset", "-q", "HEAD"); err != nil {
 		return fmt.Errorf("unstage restored checkpoint: %w", err)
+	}
+	return nil
+}
+
+func publishCheckpointRef(ctx context.Context, git checkpointGitRunner, ref, commit, expected string) error {
+	read := func() (string, error) {
+		output, err := git(ctx, "ls-remote", defaultGitRemote, ref)
+		if err != nil {
+			return "", fmt.Errorf("read checkpoint ref: %w", err)
+		}
+		fields := strings.Fields(output)
+		if len(fields) == 0 {
+			return "", nil
+		}
+		return fields[0], nil
+	}
+	remote, err := read()
+	if err != nil {
+		return err
+	}
+	if remote == commit {
+		return nil
+	}
+	if expected != "" && remote != expected {
+		return fmt.Errorf("%w: checkpoint ref moved", ErrCheckpointUnsafe)
+	}
+	if _, err := git(ctx, "-c", "core.hooksPath="+os.DevNull, "-c", "push.followTags=false", "push", "--no-verify", "--force-with-lease="+ref+":"+remote, "--recurse-submodules=no", defaultGitRemote, commit+":"+ref); err != nil {
+		observed, readErr := read()
+		if readErr == nil && observed == commit {
+			return nil
+		}
+		return errors.Join(fmt.Errorf("push checkpoint ref: %w", err), readErr)
 	}
 	return nil
 }

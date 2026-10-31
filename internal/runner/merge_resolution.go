@@ -94,7 +94,11 @@ func (r *Runner) resolveNativeLanding(ctx context.Context, req RunRequest, sourc
 			}
 		}
 		limit := r.nativeWorkTimeout(workflow.Config, backendConfig, 0)
-		turnCtx, cancel := context.WithTimeout(ctx, limit)
+		turnCtx, cancel := context.WithCancel(ctx)
+		if limit > 0 {
+			cancel()
+			turnCtx, cancel = context.WithTimeout(ctx, limit)
+		}
 		defer cancel()
 		prompt := fmt.Sprintf("Resolve only the conflicting hunks of the approved Change in this isolated integration worktree. The reviewed head is %s; HEAD is the current base. Conflict files: %s. Preserve both the reviewed intent and unrelated base changes. Follow repository instructions. Regenerate generated files from combined inputs; never hand-merge generated output. Stage the resolution with git add. Do not commit, rebase, change branches or refs, push, or implement any other issue work. The runner will verify the resolved diff and run the approved gate. This is one bounded merge-resolution turn; if it cannot be completed, leave the conflict unresolved.", opts.HeadSHA, strings.Join(files, ", "))
 		provider, tier, effort := agentTurnIdentityOptions(backendConfig)

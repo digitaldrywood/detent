@@ -31,11 +31,8 @@ import (
 )
 
 const (
-	workerGitHubRateLimitBodyMaxBytes            = 64 * 1024
-	workerGitHubProbeTimeout                     = 10 * time.Second
-	workerGitHubTokenResolutionDefaultTimeout    = 15 * time.Second
-	workerGitHubTokenResolutionDefaultAttempts   = 3
-	workerGitHubTokenResolutionDefaultRetryDelay = 250 * time.Millisecond
+	workerGitHubRateLimitBodyMaxBytes = 64 * 1024
+	workerGitHubProbeTimeout          = 10 * time.Second
 )
 
 var (
@@ -62,15 +59,6 @@ type workerGitHubHTTPClient interface {
 type workerGitHubProbeContextFactory func(context.Context) (context.Context, context.CancelFunc)
 
 type workerGitHubTokenResolver func(context.Context) (string, error)
-
-type workerGitHubTokenResolutionSleeper func(context.Context, time.Duration) error
-
-type workerGitHubTokenResolutionOptions struct {
-	Timeout      time.Duration
-	MaxAttempts  int
-	RetryBackoff time.Duration
-	Sleep        workerGitHubTokenResolutionSleeper
-}
 
 type WorkerGitHubTokenResolutionError struct {
 	Attempts int
@@ -336,9 +324,7 @@ func newWorkerGitHubPolicy(ctx context.Context, cfg config.Config, projectID str
 		}, nil
 	}
 
-	workerToken, err := resolveWorkerGitHubSecret(ctx, rawWorkerToken, lookupEnv, resolveGHAuthToken, workerGitHubTokenResolutionOptions{
-		Timeout: time.Duration(cfg.Worker.GitHubTokenResolutionTimeoutMS) * time.Millisecond,
-	})
+	workerToken, err := resolveWorkerGitHubSecret(ctx, rawWorkerToken, lookupEnv, resolveGHAuthToken)
 	if err != nil {
 		return workerGitHubPolicy{}, err
 	}
@@ -389,14 +375,13 @@ func resolveWorkerGitHubSecret(
 	value string,
 	lookupEnv func(string) string,
 	resolveGHAuthToken workerGitHubTokenResolver,
-	options workerGitHubTokenResolutionOptions,
 ) (string, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return "", nil
 	}
 	if config.IsGitHubTokenSentinel(value) {
-		return resolveWorkerGitHubToken(ctx, resolveGHAuthToken, options)
+		return resolveWorkerGitHubToken(ctx, resolveGHAuthToken)
 	}
 	return resolveWorkerGitHubSecretReference(value, lookupEnv)
 }
@@ -404,58 +389,25 @@ func resolveWorkerGitHubSecret(
 func resolveWorkerGitHubToken(
 	ctx context.Context,
 	resolve workerGitHubTokenResolver,
-	options workerGitHubTokenResolutionOptions,
 ) (string, error) {
-	if options.Timeout <= 0 {
-		options.Timeout = workerGitHubTokenResolutionDefaultTimeout
+	if err := ctx.Err(); err != nil {
+		return "", err
 	}
-	if options.MaxAttempts <= 0 {
-		options.MaxAttempts = workerGitHubTokenResolutionDefaultAttempts
+	resolved, err := resolve(ctx)
+	if ctx.Err() != nil {
+		return "", ctx.Err()
 	}
-	if options.RetryBackoff <= 0 {
-		options.RetryBackoff = workerGitHubTokenResolutionDefaultRetryDelay
+	resolved = strings.TrimSpace(resolved)
+	if err == nil && resolved != "" {
+		return resolved, nil
 	}
-	if options.Sleep == nil {
-		options.Sleep = sleepWorkerGitHubTokenResolution
+	if err == nil {
+		err = errors.New("gh auth token returned an empty token")
 	}
-	var lastErr error
-	for attempt := 1; attempt <= options.MaxAttempts; attempt++ {
-		if err := ctx.Err(); err != nil {
-			return "", err
-		}
-		attemptCtx, cancel := context.WithTimeout(ctx, options.Timeout)
-		resolved, err := resolve(attemptCtx)
-		attemptErr := attemptCtx.Err()
-		cancel()
-		if err == nil {
-			resolved = strings.TrimSpace(resolved)
-			if resolved != "" {
-				return resolved, nil
-			}
-			err = errors.New("gh auth token returned an empty token")
-		} else if attemptErr != nil && ctx.Err() == nil {
-			err = attemptErr
-		}
-		lastErr = err
-		if err := ctx.Err(); err != nil {
-			return "", err
-		}
-		if attempt == options.MaxAttempts {
-			break
-		}
-		delay := options.RetryBackoff * time.Duration(attempt)
-		if err := options.Sleep(ctx, delay); err != nil {
-			return "", err
-		}
-	}
-	return "", &WorkerGitHubTokenResolutionError{
-		Attempts: options.MaxAttempts,
-		Timeout:  options.Timeout,
-		Err:      lastErr,
-	}
+	return "", &WorkerGitHubTokenResolutionError{Attempts: 1, Err: err}
 }
 
-func sleepWorkerGitHubTokenResolution(ctx context.Context, delay time.Duration) error {
+func waitWorkerGitHubCooldown(ctx context.Context, delay time.Duration) error {
 	timer := time.NewTimer(delay)
 	defer timer.Stop()
 	select {
@@ -893,7 +845,7 @@ func (p workerGitHubPolicy) authenticatedPrincipal(ctx context.Context, token st
 		if errors.As(err, &statusErr) && statusErr.RetryAfter > 0 {
 			delay = statusErr.RetryAfter
 		}
-		if err := sleepWorkerGitHubTokenResolution(ctx, delay); err != nil {
+		if err := waitWorkerGitHubCooldown(ctx, delay); err != nil {
 			return 0, connector.IssueActor{}, err
 		}
 	}
