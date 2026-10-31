@@ -15,6 +15,7 @@ func newHubRecoveryCommands(lookupEnv func(string) string) []*cobra.Command {
 	var commands []*cobra.Command
 	for _, operation := range []string{"backup", "verify", "restore"} {
 		var source, destination, tokenEnv string
+		var integrityOnly bool
 		cmd := &cobra.Command{
 			Use: operation,
 			Short: map[string]string{
@@ -48,6 +49,15 @@ func newHubRecoveryCommands(lookupEnv func(string) string) []*cobra.Command {
 					}
 					return json.NewEncoder(cmd.OutOrStdout()).Encode(result)
 				default:
+					if integrityOnly {
+						tables, err := hubserver.VerifyDatabaseIntegrity(cmd.Context(), source)
+						if err != nil {
+							return err
+						}
+						return json.NewEncoder(cmd.OutOrStdout()).Encode(struct {
+							Tables int `json:"tables"`
+						}{Tables: tables})
+					}
 					result, err := hubserver.VerifyDatabase(cmd.Context(), source)
 					if err != nil {
 						return err
@@ -57,6 +67,9 @@ func newHubRecoveryCommands(lookupEnv func(string) string) []*cobra.Command {
 			},
 		}
 		cmd.Flags().StringVar(&source, "database", "", "existing stopped Hub database or snapshot")
+		if operation == "verify" {
+			cmd.Flags().BoolVar(&integrityOnly, "integrity-only", false, "check SQLite integrity with Hub tokenizers without requiring a Hub schema")
+		}
 		if operation != "verify" {
 			cmd.Flags().StringVar(&destination, "output", "", "new destination database; existing paths are never replaced")
 		}

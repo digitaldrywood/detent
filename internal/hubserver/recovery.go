@@ -39,33 +39,27 @@ func VerifyDatabase(ctx context.Context, source string) (result RecoveryResult, 
 	return RecoveryResult{DatabasePath: db.path, SchemaVersion: db.schemaVersion}, nil
 }
 
+func VerifyDatabaseIntegrity(ctx context.Context, source string) (tables int, resultErr error) {
+	db, err := openRecoveryDatabase(source)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { resultErr = errors.Join(resultErr, db.Close()) }()
+	if err := verifySQLiteIntegrity(ctx, db.reader); err != nil {
+		return 0, err
+	}
+	if err := db.reader.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_schema WHERE type = 'table'").Scan(&tables); err != nil {
+		return 0, fmt.Errorf("count restored database tables: %w", err)
+	}
+	return tables, nil
+}
+
 func openRecoverySource(ctx context.Context, source string) (*database, error) {
-	cfg := (Config{DatabasePath: source}).normalized()
-	path, err := canonicalDatabasePath(source)
+	owner, err := openRecoveryDatabase(source)
 	if err != nil {
 		return nil, err
 	}
-	info, err := os.Stat(path)
-	if err != nil {
-		return nil, fmt.Errorf("inspect hub recovery source: %w", err)
-	}
-	if !info.Mode().IsRegular() {
-		return nil, errors.New("hub recovery source must be an existing regular database file")
-	}
-	if err := cfg.validateDatabaseFilesystem(filepath.Dir(path)); err != nil {
-		return nil, err
-	}
-	lock, err := instancelock.Acquire(path + ".lock")
-	if err != nil {
-		return nil, fmt.Errorf("stop the owning Hub before offline maintenance: %w", err)
-	}
-	db, err := sql.Open("sqlite", sqliteReaderDSN(path, cfg.BusyTimeout))
-	if err != nil {
-		return nil, errors.Join(err, lock.Close())
-	}
-	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(1)
-	owner := &database{db: db, reader: db, lock: lock, path: path}
+	db := owner.reader
 	if err := verifyRecoveryDatabase(ctx, db); err != nil {
 		return nil, errors.Join(err, owner.Close())
 	}
@@ -84,6 +78,38 @@ func openRecoverySource(ctx context.Context, source string) (*database, error) {
 	return owner, nil
 }
 
+func openRecoveryDatabase(source string) (*database, error) {
+	cfg := (Config{DatabasePath: source}).normalized()
+	path, err := canonicalDatabasePath(source)
+	if err != nil {
+		return nil, err
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("inspect hub recovery source: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, errors.New("hub recovery source must be an existing regular database file")
+	}
+	if info.Size() == 0 {
+		return nil, errors.New("hub recovery source must not be empty")
+	}
+	if err := cfg.validateDatabaseFilesystem(filepath.Dir(path)); err != nil {
+		return nil, err
+	}
+	lock, err := instancelock.Acquire(path + ".lock")
+	if err != nil {
+		return nil, fmt.Errorf("stop the owning Hub before offline maintenance: %w", err)
+	}
+	db, err := openTimedReader(sqliteReaderDSN(path, cfg.BusyTimeout))
+	if err != nil {
+		return nil, errors.Join(err, lock.Close())
+	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	return &database{db: db, reader: db, lock: lock, path: path}, nil
+}
+
 func verifyRecoveryDatabase(ctx context.Context, db *sql.DB) error {
 	var identity int64
 	if err := db.QueryRowContext(ctx, "PRAGMA application_id").Scan(&identity); err != nil {
@@ -92,12 +118,8 @@ func verifyRecoveryDatabase(ctx context.Context, db *sql.DB) error {
 	if identity != hubApplicationID {
 		return ErrDatabaseIdentity
 	}
-	var integrity string
-	if err := db.QueryRowContext(ctx, "PRAGMA integrity_check").Scan(&integrity); err != nil {
+	if err := verifySQLiteIntegrity(ctx, db); err != nil {
 		return err
-	}
-	if integrity != "ok" {
-		return errors.New("hub database integrity check failed")
 	}
 	var violations int
 	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM pragma_foreign_key_check").Scan(&violations); err != nil {
@@ -105,6 +127,17 @@ func verifyRecoveryDatabase(ctx context.Context, db *sql.DB) error {
 	}
 	if violations != 0 {
 		return errors.New("hub database foreign key check failed")
+	}
+	return nil
+}
+
+func verifySQLiteIntegrity(ctx context.Context, db *sql.DB) error {
+	var integrity string
+	if err := db.QueryRowContext(ctx, "PRAGMA integrity_check").Scan(&integrity); err != nil {
+		return fmt.Errorf("check database integrity: %w", err)
+	}
+	if integrity != "ok" {
+		return errors.New("database integrity check failed")
 	}
 	return nil
 }

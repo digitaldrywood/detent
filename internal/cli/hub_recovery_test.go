@@ -2,13 +2,63 @@ package cli
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/hubserver"
 )
+
+func TestHubIntegrityOnlyAcceptsNonHubSnapshots(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, schema string
+		corrupt      bool
+	}{
+		{"registry", "CREATE TABLE tenants (id TEXT PRIMARY KEY)", false},
+		{"auth", "CREATE TABLE sessions (id TEXT PRIMARY KEY)", false},
+		{"corrupt", "CREATE TABLE records (id TEXT PRIMARY KEY)", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), "restored.db")
+			db, err := sql.Open("sqlite", path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { db.Close() })
+			if _, err := db.ExecContext(t.Context(), test.schema); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if test.corrupt {
+				if err := os.WriteFile(path, []byte("corrupted restore"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cmd := newHubCommandWithRun("test", func(string) string { return "" }, nil)
+			var output bytes.Buffer
+			cmd.SetOut(&output)
+			cmd.SetErr(&output)
+			cmd.SetArgs([]string{"verify", "--integrity-only", "--database", path})
+			err = cmd.ExecuteContext(t.Context())
+			if (err != nil) != test.corrupt {
+				t.Fatalf("verify error = %v, output = %s", err, &output)
+			}
+			if !test.corrupt {
+				var result struct{ Tables int }
+				if err := json.Unmarshal(output.Bytes(), &result); err != nil || result.Tables != 1 {
+					t.Fatalf("verify output = %s, error = %v", &output, err)
+				}
+			}
+		})
+	}
+}
 
 func TestHubRecoveryCommands(t *testing.T) {
 	if testing.Short() {
