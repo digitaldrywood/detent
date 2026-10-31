@@ -110,11 +110,11 @@ func TestWorkerCheckpointHandshake(t *testing.T) {
 			}
 			run := func(ctx context.Context, turn AgentTurnRequest, req RunRequest) agentTurnExecution {
 				calls++
-				if !turn.ReadOnly || !turn.SupplementalTools || req.sessionBrake != nil || turn.MaxDuration != checkpointTimeout {
+				if !turn.ReadOnly || !turn.SupplementalTools || req.sessionBrake != nil || turn.MaxDuration != 0 {
 					t.Fatalf("unbounded or writable checkpoint: %+v", turn)
 				}
-				if _, ok := ctx.Deadline(); !ok {
-					t.Fatal("checkpoint lacks deadline")
+				if _, ok := ctx.Deadline(); ok {
+					t.Fatal("checkpoint installed a deadline instead of using caller lifetime")
 				}
 				if scenario == "provider unavailable" {
 					return agentTurnExecution{err: errors.New("provider unavailable")}
@@ -710,4 +710,21 @@ func TestAgentTurnDeliverableNativeTracker(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestWorkerCheckpointSlowHandshakeUsesCallerLifetime(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		r, checkpoint, _ := checkpointRunnerFixture(t)
+		execution := r.workerCheckpoint(t.Context(), checkpoint, "periodic", checkpointAgentStub{}, AgentTurnRequest{}, func(ctx context.Context, turn AgentTurnRequest, _ RunRequest) agentTurnExecution {
+			time.Sleep(3 * time.Minute)
+			return agentTurnExecution{err: ctx.Err()}
+		})
+		if execution.err != nil {
+			t.Fatalf("slow handshake ended the turn: %v", execution.err)
+		}
+		if checkpoint.record == nil || checkpoint.record.Status != "local_only" {
+			t.Fatalf("unfinished work was not retained: %+v", checkpoint.record)
+		}
+	})
 }

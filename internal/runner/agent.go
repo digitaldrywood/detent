@@ -809,8 +809,6 @@ func mergeFallbackResult(output string) string {
 	return RunOutputMergeFallbackRework
 }
 
-const mergeFallbackValidationTimeout = time.Hour
-
 func (r *Runner) verifyMergeFallback(
 	ctx context.Context,
 	backend workspace.Backend,
@@ -829,8 +827,7 @@ func (r *Runner) verifyMergeFallback(
 		result.Output = RunOutputMergeFallbackRework
 		return result, nil
 	}
-	validationCtx, cancel := context.WithTimeout(ctx, mergeFallbackValidationTimeout)
-	defer cancel()
+	validationCtx := ctx
 	precheck, err := preparer.PrepareMerge(validationCtx, info, issue, opts)
 	if err != nil {
 		if ctx.Err() != nil {
