@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -161,18 +162,16 @@ func verifyChangeBundle(ctx context.Context, directory, path string) error {
 }
 
 func VerifyChangeSource(ctx context.Context, source tracker.ChangeSource, bundle []byte) (err error) {
-	return verifyChangeSource(ctx, source, bundle, runVerificationCommand)
-}
-
-func verifyChangeSource(ctx context.Context, source tracker.ChangeSource, bundle []byte, run func(context.Context, *exec.Cmd) ([]byte, error)) (err error) {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if !validLandingHead(source.BaseSHA) || !validLandingHead(source.HeadSHA) {
-		return invalidVerification("change source verification requires immutable base and head")
+		return errors.New("change source verification requires immutable base and head")
 	}
 	if err := source.Validate(source.BaseSHA, source.HeadSHA, bundle); err != nil {
-		return invalidVerification(err.Error())
+		return err
 	}
 	_, pack, _ := bytes.Cut(bundle, []byte("\n\n"))
 	if err := changeSourcePackBudget(ctx, pack); err != nil {
@@ -192,24 +191,20 @@ func verifyChangeSource(ctx context.Context, source tracker.ChangeSource, bundle
 				command.Env = append(command.Env, value)
 			}
 		}
-		command.Env = append(command.Env, "LC_ALL=C", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_NO_REPLACE_OBJECTS=1")
+		command.Env = append(command.Env, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_NO_REPLACE_OBJECTS=1")
 		command.Stdin = bytes.NewReader(input)
 		command.WaitDelay = workspaceCommandWaitDelay
 		procgroup.Configure(ctx, command)
-		_, err := run(ctx, command)
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		return err
+		return command.Run()
 	}
 	if err := git(nil, "init", "--bare", "--object-format=sha1", "--template="); err != nil {
 		return err
 	}
 	if err := git(pack, "-c", "pack.threads=1", "-c", "core.deltaBaseCacheLimit=16m", "index-pack", "--stdin", "--fsck-objects"); err != nil {
-		return verificationCommandError(ctx, err, "source bundle pack is invalid; recreate it with git bundle create <path> HEAD ^<base>")
+		return errors.Join(ctx.Err(), errors.New("source bundle pack is invalid; recreate it with git bundle create <path> HEAD ^<base>"))
 	}
 	if err := git(nil, "cat-file", "-e", source.HeadSHA+"^{commit}"); err != nil {
-		return verificationCommandError(ctx, err, "source bundle pack lacks the reviewed commit; recreate it with git bundle create <path> HEAD ^<base>")
+		return errors.Join(ctx.Err(), errors.New("source bundle pack lacks the reviewed commit; recreate it with git bundle create <path> HEAD ^<base>"))
 	}
 	return nil
 }
