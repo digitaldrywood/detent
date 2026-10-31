@@ -8,6 +8,51 @@ apply only the new timestamp migration after provisioning the roles. The
 SQLite migration chain and runtime remain separate; this package does not
 switch the Hub database backend or import tenant data.
 
+## Core persistence boundary
+
+`../corestore` defines the domain records and repository contracts for projects,
+work items and comments. `sqlc.yaml` and `queries/` generate the private SQL
+adapter in `pgquery/`; the local store's sqlc configuration is independent.
+`make generate` regenerates both adapters and `make check-generated` checks both.
+
+Construct one `NewRepository` at Hub startup with a single runtime `sql.DB` and
+operator-supplied `PoolConfig`. Inject that repository into serving and background
+owners, and close it once at shutdown. Never construct a repository or pool per
+organization. The repository owns the supplied pool after successful construction;
+the caller closes it on construction failure. `MaxConnections` bounds physical
+connections; positive serving and background connection budgets must fit together
+within that limit. Each workload waits cancellably for its own budget before
+acquiring a connection, reserving capacity for the other workload. Both reads and
+writes reuse the same pool, with read-only transactions for reads.
+
+`Read` and `Write` bind one authenticated organization for the callback transaction
+and explicitly select `READ COMMITTED`, including when a server or login defaults
+to another isolation level. Callbacks perform only request-bounded database work;
+never hold a transaction across object-storage calls, network calls or history
+walks. Store compressed payload objects before writing their typed references.
+Callback errors, panics and context cancellation roll back the transaction. Retain
+neither the reader nor writer beyond the callback, and do not nest repository
+callbacks. Transaction methods also take the request context so statement waits
+cancel with the caller.
+
+Updates compare the supplied revision and increment it atomically. Keyset pages
+require a limit from 1 through 200. Unique violations map to
+`corestore.ErrUniqueViolation`, and PostgreSQL `40001` and `40P01` map to
+`corestore.ErrSerializationFailure`; both retain `mutation.ErrConflict`
+classification. Cancellation preserves `context.Canceled` or
+`context.DeadlineExceeded`. Missing records retain `sql.ErrNoRows` and map to
+`corestore.ErrNotFound`. Error chains preserve the database cause for diagnostics
+without rendering PostgreSQL detail or customer content in the error message.
+The repository does not retry transactions; the application retry owner chooses
+the next attempt from the classified primary failure.
+
+At INV-21 scale, pool and budget sizes remain constant across 10,000 tenants and
+10,000 runners. Identity reads and writes use tenant-leading indexed keys and
+touch one requested entity. A page reads at most 200 matching rows through its
+tenant-leading keyset index. Startup validates the runtime role, and each
+transaction adds one tenant-setting statement. No periodic work, tenant pool
+registry, history scan or derived write is introduced (INV-18).
+
 ## Roles and transaction scope
 
 `roles.sql` provisions three cluster-wide group roles without login, superuser,
