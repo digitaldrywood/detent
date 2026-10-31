@@ -79,6 +79,19 @@ func (o *Orchestrator) completeNativeChangeRun(
 	retryReason := terminalAttemptWithoutWorkProductReason
 	retryErrorClass := terminalAttemptWithoutWorkProductReason
 	retryMessage := noWorkProductMessage
+	noChangeReport, hasNoChangeReport := runpkg.NativeCompletionSignalFromMessage(event.Result.FinalMessage)
+	if hasNoChangeReport && noChangeReport != nil && noChangeReport.Invalid == nil && noChangeReport.Status == workpad.StatusNoChangeNeeded {
+		retryReason = "state_transition"
+		retryErrorClass = ""
+		retryMessage = "no-change evidence requires independent review and validation"
+		if evidence := event.Result.NativeNoChange; evidence != nil {
+			retryMessage = nativeCompletionReason(retryMessage, nil, "", evidence.Review)
+			retryMessage = nativeCompletionReason(retryMessage, nil, "", evidence.Validator)
+			if evidence.Audit != nil {
+				retryMessage += "\n\n" + evidence.Audit.Run.Summary
+			}
+		}
+	}
 	if change != nil && change.VersionID != "" {
 		retryReason = "state_transition"
 		retryErrorClass = ""
@@ -170,6 +183,9 @@ func (o *Orchestrator) completeNativeChangeRun(
 	}
 	publicationRefused := !humanReview && change != nil && change.VersionCode == workspace.LandRefusalHeadMoved
 	accepted := reported && report != nil && report.Invalid == nil && report.Status == workpad.StatusComplete && len(report.Blockers) == 0 && report.HumanAction == ""
+	noChangeAccepted := reported && report != nil && report.Invalid == nil && report.Status == workpad.StatusNoChangeNeeded && report.NoChange != nil && event.Result.NativeNoChange != nil && event.Result.NativeNoChange.VerifiedSHA == report.NoChange.VerifiedSHA && event.Result.NativeNoChange.Accepted(running.Policy, o.cfg.AutoPromote.Gate.Run)
+	accepted = accepted || noChangeAccepted
+
 	if change == nil && !blocked && !clearedBlockers && (humanReview || running.DiffStats.Status != "clean" || running.DiffStats.UnpushedCommits > 0) {
 		return false
 	}
@@ -219,7 +235,7 @@ func (o *Orchestrator) completeNativeChangeRun(
 		o.recordCompletionUsage(ctx, state, event, issue)
 		return true
 	}
-	needsReview := change != nil && change.VersionError != "" || !changed || reported && !accepted
+	needsReview := change != nil && change.VersionError != "" || !changed && !noChangeAccepted || reported && !accepted
 	review := cfg.reviewTargetState()
 	if explicitHumanAction(issue) != "" {
 		review = blockedStatusState
@@ -373,7 +389,11 @@ func (o *Orchestrator) completeNativeChangeRun(
 		comment = fmt.Sprintf("Rework returned Change Request %s (head %s) unchanged and resolved none of the review conversations that blocked its landing, so it was not sent back to Merging. Moved from %s to %s. Address or dismiss each conversation on the pull request, then move the item to Merging.\n\n%s",
 			change.ChangeID, shortCommit(change.HeadSHA), displayStateName(issue.State), displayStateName(target), unaddressedRefusal)
 	} else {
-		comment = nativeCompletionComment(change, issue.State, target)
+		if noChangeAccepted {
+			comment = "Verified no change needed at " + report.NoChange.VerifiedSHA + ". Required gates accepted the evidence.\n\n" + event.Result.FinalMessage
+		} else {
+			comment = nativeCompletionComment(change, issue.State, target)
+		}
 		if resolvedRefusal {
 			comment += " " + workspace.ReviewConversationsResolvedText
 		}

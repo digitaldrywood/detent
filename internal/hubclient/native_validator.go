@@ -67,6 +67,9 @@ func (e *nativeExecution) PrepareReview(ctx context.Context, expected tracker.Na
 func (e *nativeExecution) validationVersion(ctx context.Context, stage string) (runner.NativeValidation, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.preparedDisposition != nil && e.preparedDisposition.Status == "no_change_needed" {
+		return e.noChangeValidation(ctx)
+	}
 	if e.change == nil || e.change.Landing != nil || e.change.VersionID == "" || e.lastDiff == nil {
 		return runner.NativeValidation{}, nil
 	}
@@ -213,6 +216,12 @@ func (e *nativeExecution) RecordReview(ctx context.Context, result gate.Validato
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.preparedDisposition != nil && e.preparedDisposition.Status == "no_change_needed" {
+		if e.lastDiff == nil || result.HeadSHA != e.lastDiff.HeadSHA || result.BaseSHA != e.lastDiff.BaseSHA {
+			return errors.New("no-change review differs from the verified source")
+		}
+		return nil
+	}
 	if e.change == nil || e.lastDiff == nil || e.change.VersionID != result.VersionID || e.lastDiff.HeadSHA != result.HeadSHA || e.lastDiff.BaseSHA != result.BaseSHA {
 		return errors.New("native implementation review differs from the published source")
 	}
@@ -259,6 +268,12 @@ func (e *nativeExecution) RecordValidator(ctx context.Context, result gate.Valid
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.preparedDisposition != nil && e.preparedDisposition.Status == "no_change_needed" {
+		if e.lastDiff == nil || result.HeadSHA != e.lastDiff.HeadSHA || result.BaseSHA != e.lastDiff.BaseSHA {
+			return errors.New("no-change review differs from the verified source")
+		}
+		return nil
+	}
 	if e.change == nil || e.change.VersionID != result.VersionID {
 		return &APIError{Status: 422, Code: "invalid_request", Rejection: &tracker.PublicationRejection{Category: "acceptance_validation", Field: "validator.version_id"}}
 	}
@@ -353,6 +368,12 @@ func (e *nativeExecution) RecordSecurityAudit(ctx context.Context, result tracke
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.preparedDisposition != nil && e.preparedDisposition.Status == "no_change_needed" {
+		if e.lastDiff == nil || result.Run.HeadSHA != e.lastDiff.HeadSHA || result.Run.BaseSHA != e.lastDiff.BaseSHA {
+			return errors.New("no-change review differs from the verified source")
+		}
+		return nil
+	}
 	var changeID, versionID string
 	if result.Landing {
 		if e.data.Identity == nil || e.data.Identity.Role != runner.RoleMerge {

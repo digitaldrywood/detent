@@ -824,6 +824,8 @@ type SecurityAuditExecution struct {
 }
 
 type RunResult struct {
+	NativeNoChange *NativeNoChange
+
 	BillingMode                string
 	ReportedCostMicros         *int64
 	CostSource                 string
