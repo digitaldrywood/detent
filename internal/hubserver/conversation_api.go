@@ -1281,7 +1281,7 @@ func (s *Service) commandPostConversation(ctx context.Context, scope nativeScope
 	})
 	if err != nil {
 		var stale *nativeError
-		if errors.As(err, &stale) && stale.Code == "stale_execution" {
+		if errors.As(err, &stale) && (stale.Code == "stale_execution" || stale.Code == "revision_conflict") {
 			if raw, found, reconcileErr := service.reconcilePublishedCommand(ctx, scope, id, command); reconcileErr != nil {
 				return nil, reconcileErr
 			} else if found {
