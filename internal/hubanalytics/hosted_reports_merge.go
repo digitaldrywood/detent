@@ -11,7 +11,7 @@ func MergeDurations(durations ...operatortool.AnalyticsDuration) operatortool.An
 	var samples []float64
 	for _, d := range durations {
 		if len(d.Histogram) > 0 {
-			return MergeHistogramDurations(durations...)
+			return mergeHistogramDurations(durations...)
 		}
 		samples = append(samples, d.Samples...)
 	}

@@ -151,7 +151,7 @@ func (s *Store) ReadFindings(ctx context.Context, scope Scope, state, since, cur
 			}
 			f.ResolvedAt = &at
 		}
-		f.Evidence = ScopeEvidence(f.Evidence, scope.Project)
+		f.Evidence = scopeEvidence(f.Evidence, scope.Project)
 		if slackFailed.Valid {
 			at, err := parseTimeValue(slackFailed.String)
 			if err != nil {

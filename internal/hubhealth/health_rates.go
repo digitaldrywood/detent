@@ -172,7 +172,7 @@ func healthConflictBuckets(attempts []RateAttempt, from, to time.Time, width tim
 	return values
 }
 
-func BuildRateBaseline(now time.Time, p RateProject) healthRateBaseline {
+func buildRateBaseline(now time.Time, p RateProject) healthRateBaseline {
 	to := now.Add(-LongWindow)
 	from := to.Add(-BaselineWindow)
 	b := healthRateBaseline{Lanes: map[string][]float64{}}
@@ -210,7 +210,7 @@ func BuildRateBaseline(now time.Time, p RateProject) healthRateBaseline {
 	return b
 }
 
-func BaselineGaps(p RateProject, b healthRateBaseline) []BaselineUnavailable {
+func baselineGaps(p RateProject, b healthRateBaseline) []BaselineUnavailable {
 	out := []BaselineUnavailable{}
 	add := func(signal, lane string, available bool) {
 		if !available {
@@ -233,7 +233,7 @@ func evaluateHealthRates(now time.Time, projects []RateProject) []Finding {
 	out := []Finding{}
 	capacity := map[string]int{}
 	for _, p := range projects {
-		b := BuildRateBaseline(now, p)
+		b := buildRateBaseline(now, p)
 		out = append(out, ProductivityFindings(now, p)...)
 		out = append(out, healthRetryFindings(now, p, b)...)
 		out = append(out, healthRecoveryFindings(now, p, b)...)

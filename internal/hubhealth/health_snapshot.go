@@ -70,7 +70,7 @@ func (reader *SnapshotReader) ReadSnapshotWithContracts(ctx context.Context, q h
 		}
 		policyID := ""
 		if contracts != nil && len(revisions) > 0 {
-			if policyID, err = ReadContractPolicyID(ctx, q, scope); err != nil {
+			if policyID, err = readContractPolicyID(ctx, q, scope); err != nil {
 				return snapshot, err
 			}
 		}

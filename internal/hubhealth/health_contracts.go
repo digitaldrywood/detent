@@ -29,7 +29,7 @@ type ContractCache struct {
 	oldest  int
 }
 
-func ReadContractPolicyID(ctx context.Context, q hubsql.Queryer, scope Scope) (string, error) {
+func readContractPolicyID(ctx context.Context, q hubsql.Queryer, scope Scope) (string, error) {
 	var id string
 	err := q.QueryRowContext(ctx, `SELECT r.policy_id FROM project_policies p
  JOIN policy_revisions r ON r.scope=p.scope AND r.policy_id=p.policy_id WHERE p.scope=?`, string(scope.Organization)+"/"+string(scope.Project)).Scan(&id)

@@ -56,7 +56,7 @@ func (d *Store) ReadResidenceHours(ctx context.Context, q hubsql.Queryer, scope 
 		durations[metric+":"+dimension] = append(durations[metric+":"+dimension], d)
 	}
 	for key, values := range durations {
-		d := MergeHistogramDurations(values...)
+		d := mergeHistogramDurations(values...)
 		switch key {
 		case "residence_system:":
 			out.SystemTotal = d
@@ -83,7 +83,7 @@ func (d *Store) ReadResidenceHours(ctx context.Context, q hubsql.Queryer, scope 
 	return out, observed, found, rows.Err()
 }
 
-func (d *Store) AddResidenceHours(ctx context.Context, q hubsql.Queryer, scope Scope, out *Project) error {
+func (d *Store) addResidenceHours(ctx context.Context, q hubsql.Queryer, scope Scope, out *Project) error {
 	hourly, observed, found, err := d.ReadResidenceHours(ctx, q, scope, out.Window.From, out.Window.To)
 	if err != nil || !found {
 		return err
@@ -93,7 +93,7 @@ func (d *Store) AddResidenceHours(ctx context.Context, q hubsql.Queryer, scope S
 		out.Unavailable = append(out.Unavailable, "older_hourly_issue_filter_unavailable")
 		return nil
 	}
-	out.LaneResidence.AnalyticsResidenceSummary = AddResidenceHours(out.LaneResidence.AnalyticsResidenceSummary, hourly)
+	out.LaneResidence.AnalyticsResidenceSummary = addResidenceHours(out.LaneResidence.AnalyticsResidenceSummary, hourly)
 	out.LaneResidence.Coverage += "; older_detail_hourly; counts_are_issue_hours; quantiles_log_histogram_16_bins_per_octave"
 	out.LaneResidence.IssuesObserved = max(out.LaneResidence.IssuesObserved, observed)
 	if !hourly.Partial {
@@ -112,7 +112,7 @@ func (d *Store) AddResidenceHours(ctx context.Context, q hubsql.Queryer, scope S
 		if err != nil {
 			return err
 		}
-		b.LaneResidence = AddResidenceHours(b.LaneResidence, h)
+		b.LaneResidence = addResidenceHours(b.LaneResidence, h)
 		b.QueueSeconds = b.LaneResidence.QueueTotal.Seconds
 	}
 	return nil
@@ -263,7 +263,7 @@ func (d *Store) ReadDiagnosticsResidenceHours(ctx context.Context, q hubsql.Quer
 	return hours, rows.Err()
 }
 
-func MergeHistogramDurations(durations ...operatortool.AnalyticsDuration) operatortool.AnalyticsDuration {
+func mergeHistogramDurations(durations ...operatortool.AnalyticsDuration) operatortool.AnalyticsDuration {
 	out := operatortool.AnalyticsDuration{}
 	bins := map[int]operatortool.AnalyticsDurationBucket{}
 	add := func(b operatortool.AnalyticsDurationBucket) {
@@ -323,7 +323,7 @@ func MergeHistogramDurations(durations ...operatortool.AnalyticsDuration) operat
 	return out
 }
 
-func AddResidenceHours(exact, hourly operatortool.AnalyticsResidenceSummary) operatortool.AnalyticsResidenceSummary {
+func addResidenceHours(exact, hourly operatortool.AnalyticsResidenceSummary) operatortool.AnalyticsResidenceSummary {
 	exact.Lanes = MergeLaneDurations(exact.Lanes, hourly.Lanes)
 	exact.SystemTotal = MergeDurations(exact.SystemTotal, hourly.SystemTotal)
 	exact.HeldTotal = MergeDurations(exact.HeldTotal, hourly.HeldTotal)

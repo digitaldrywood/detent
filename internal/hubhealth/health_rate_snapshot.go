@@ -69,7 +69,7 @@ func (reader *SnapshotReader) ReadRates(ctx context.Context, q hubsql.Queryer, o
 				}
 			}
 		}
-		snapshot.BaselineUnavailable = append(snapshot.BaselineUnavailable, BaselineGaps(p, BuildRateBaseline(now, p))...)
+		snapshot.BaselineUnavailable = append(snapshot.BaselineUnavailable, baselineGaps(p, buildRateBaseline(now, p))...)
 		snapshot.Rates = append(snapshot.Rates, p)
 	}
 	return nil

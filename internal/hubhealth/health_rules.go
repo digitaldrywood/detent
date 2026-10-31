@@ -92,7 +92,7 @@ type FindingIssue struct {
 	WorkItemID tracker.NativeWorkItemID `json:"work_item_id"`
 }
 
-func ScopeEvidence(evidence Evidence, project tracker.ProjectID) Evidence {
+func scopeEvidence(evidence Evidence, project tracker.ProjectID) Evidence {
 	if len(evidence.Queues) == 0 {
 		return evidence
 	}

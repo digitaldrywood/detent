@@ -192,7 +192,7 @@ func (d *Store) planPage(ctx context.Context, plan *ProjectionPlan, id string, n
 			if !errors.Is(err, sql.ErrNoRows) {
 				return err
 			}
-			return RefreshResidence(ctx, plan, p.Scope, id, 0, 0)
+			return refreshResidence(ctx, plan, p.Scope, id, 0, 0)
 		}
 		var last sql.NullInt64
 		var complete bool
@@ -213,10 +213,10 @@ func (d *Store) planPage(ctx context.Context, plan *ProjectionPlan, id string, n
 		if _, err := plan.ExecContext(ctx, analyticsEventsRefresh, p.Scope.Organization, p.Scope.Project, id, p.sequence, sequence); err != nil {
 			return err
 		}
-		if err := RefreshSkipSamples(ctx, plan, p.Scope, id, p.sequence, sequence); err != nil {
+		if err := refreshSkipSamples(ctx, plan, p.Scope, id, p.sequence, sequence); err != nil {
 			return err
 		}
-		if err := RefreshClaims(ctx, plan, p.Scope, id, p.sequence, sequence); err != nil {
+		if err := refreshClaims(ctx, plan, p.Scope, id, p.sequence, sequence); err != nil {
 			return err
 		}
 		var changed bool
@@ -231,7 +231,7 @@ func (d *Store) planPage(ctx context.Context, plan *ProjectionPlan, id string, n
 			if checkpoint {
 				return nil
 			}
-			if err := RefreshResidence(ctx, plan, p.Scope, id, p.sequence, sequence); err != nil {
+			if err := refreshResidence(ctx, plan, p.Scope, id, p.sequence, sequence); err != nil {
 				if errors.Is(err, errAnalyticsResidenceReset) {
 					plan.Writes = nil
 					p.Phase, p.sequence, p.offset = DrainResidenceCleanup, 0, 0
@@ -389,7 +389,7 @@ func planAnalyticsAttempts(ctx context.Context, plan *ProjectionPlan, id string,
 		if !failed.Valid {
 			failed = FailureTime(observation.Runtime.Landing, status, updated)
 		}
-		payload, err := ProjectAttempt(raw, attempt, item, lease, status, started, updated, failed)
+		payload, err := projectAttempt(raw, attempt, item, lease, status, started, updated, failed)
 		if err != nil {
 			return err
 		}

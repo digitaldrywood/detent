@@ -94,7 +94,7 @@ type CapacitySample struct {
 	Valid     bool
 }
 
-func RefreshClaims(ctx context.Context, tx ProjectionQuery, scope Scope, id string, through int64, before ...int64) error {
+func refreshClaims(ctx context.Context, tx ProjectionQuery, scope Scope, id string, through int64, before ...int64) error {
 	rows, err := tx.QueryContext(ctx, `SELECT e.id,CASE WHEN e.scheduler_present IS NULL THEN e.data_json ELSE 'null' END,e.recorded_at,CASE WHEN p.scheduler_present IS NULL THEN coalesce(p.data_json,'null') ELSE 'null' END,coalesce(p.type,''),coalesce(p.recorded_at,''),coalesce(e.scheduler_source,''),coalesce(e.scheduler_outcome,''),coalesce(e.scheduler_runner_id,''),coalesce(e.scheduler_at,''),coalesce(e.scheduler_revision,0),coalesce(p.scheduler_source,''),coalesce(p.scheduler_outcome,''),coalesce(p.scheduler_runner_id,''),coalesce(p.scheduler_at,''),coalesce(p.scheduler_revision,0) FROM collaboration_events e LEFT JOIN collaboration_events p ON p.organization_id=e.organization_id AND p.project_id=e.project_id AND p.work_item_id=e.work_item_id AND p.sequence=e.sequence-1 WHERE e.organization_id=? AND e.project_id=? AND e.work_item_id=? AND e.sequence>? AND e.sequence<=? AND e.type='scheduler.decision' AND e.scheduler_source='native_claim' AND e.scheduler_outcome='claimed'`, scope.Organization, scope.Project, id, through, projectionUpper(before))
 	if err != nil {
 		return err

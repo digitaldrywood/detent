@@ -13,7 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
-func AddHour(ctx context.Context, tx *sql.Tx, scope Scope, hour int64, metric, dimension string, count int, total, minimum, maximum float64, unavailable int, last int64) error {
+func addHour(ctx context.Context, tx *sql.Tx, scope Scope, hour int64, metric, dimension string, count int, total, minimum, maximum float64, unavailable int, last int64) error {
 	bucket := 0
 	if maximum > 0 {
 		bucket = int(math.Ceil(math.Log2(maximum+1) * 16))
@@ -119,7 +119,7 @@ ORDER BY hour,metric,dimension,rowid LIMIT 1`, after.hour, after.metric, after.d
 				return false, err
 			}
 		case "slots":
-			if err := AddHour(ctx, tx, scope, hour, "slots", "", 1, value, value, value, 0, 0); err != nil {
+			if err := addHour(ctx, tx, scope, hour, "slots", "", 1, value, value, value, 0, 0); err != nil {
 				return false, err
 			}
 		case "capacity_claim", "capacity_wait":
@@ -129,7 +129,7 @@ ORDER BY hour,metric,dimension,rowid LIMIT 1`, after.hour, after.metric, after.d
 			}
 			if metric == "capacity_wait" {
 				dimension = strconv.FormatInt(sample.At.Truncate(time.Hour).Unix(), 10)
-				if err := AddHour(ctx, tx, scope, hour, metric, dimension, 1, value, value, value, 0, sample.AtNS); err != nil {
+				if err := addHour(ctx, tx, scope, hour, metric, dimension, 1, value, value, value, 0, sample.AtNS); err != nil {
 					return false, err
 				}
 			} else {
@@ -138,7 +138,7 @@ ORDER BY hour,metric,dimension,rowid LIMIT 1`, after.hour, after.metric, after.d
 					unavailable = 1
 				}
 				seconds := float64(sample.SecondsNS) / 1e9
-				if err := AddHour(ctx, tx, scope, hour, metric, "", 1, seconds, seconds, seconds, unavailable, sample.AtNS); err != nil {
+				if err := addHour(ctx, tx, scope, hour, metric, "", 1, seconds, seconds, seconds, unavailable, sample.AtNS); err != nil {
 					return false, err
 				}
 			}
@@ -208,7 +208,7 @@ WHERE r.metric='residence_hour' AND r.hour<? GROUP BY r.organization_id,r.projec
 	}
 	save := func(metric, dimension string, duration operatortool.AnalyticsDuration) error {
 		for _, seconds := range duration.Samples {
-			if err := AddHour(ctx, tx, scope, hour, metric, dimension, 1, seconds, seconds, seconds, unavailable, end.AtNS); err != nil {
+			if err := addHour(ctx, tx, scope, hour, metric, dimension, 1, seconds, seconds, seconds, unavailable, end.AtNS); err != nil {
 				return err
 			}
 		}
@@ -232,19 +232,19 @@ WHERE r.metric='residence_hour' AND r.hour<? GROUP BY r.organization_id,r.projec
 		if err != nil {
 			return false, err
 		}
-		if err := AddHour(ctx, tx, scope, hour, "residence_cause", string(key), cause.Count, 0, 0, 0, unavailable, end.AtNS); err != nil {
+		if err := addHour(ctx, tx, scope, hour, "residence_cause", string(key), cause.Count, 0, 0, 0, unavailable, end.AtNS); err != nil {
 			return false, err
 		}
 	}
 	begin := frames.At(from, id)
-	if err := AddHour(ctx, tx, scope, hour, "residence_coverage", "", 1, float64(end.Transitions-begin.Transitions), 0, 0, unavailable, end.AtNS); err != nil {
+	if err := addHour(ctx, tx, scope, hour, "residence_coverage", "", 1, float64(end.Transitions-begin.Transitions), 0, 0, unavailable, end.AtNS); err != nil {
 		return false, err
 	}
 	todo := 0
 	if end.State == "Todo" {
 		todo = 1
 	}
-	if err := AddHour(ctx, tx, scope, hour, "diagnostics_todo", "", 1, float64(todo), 0, 0, unavailable, end.AtNS); err != nil {
+	if err := addHour(ctx, tx, scope, hour, "diagnostics_todo", "", 1, float64(todo), 0, 0, unavailable, end.AtNS); err != nil {
 		return false, err
 	}
 	next := hour + 3600

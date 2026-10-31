@@ -51,7 +51,7 @@ func RefreshAttempts(ctx context.Context, tx *sql.Tx, statements *Statements, or
 		if !failed.Valid {
 			failed = FailureTime(observation.Runtime.Landing, status, updated)
 		}
-		payload, err := ProjectAttempt(raw, id, workItem, lease, status, started, updated, failed)
+		payload, err := projectAttempt(raw, id, workItem, lease, status, started, updated, failed)
 		if err != nil {
 			return err
 		}
@@ -156,7 +156,7 @@ type AttemptProjection struct {
 	Runtime    attemptRuntime         `json:"runtime"`
 }
 
-func ProjectAttempt(raw, id, item, lease, status, started, updated string, failed sql.NullString) (string, error) {
+func projectAttempt(raw, id, item, lease, status, started, updated string, failed sql.NullString) (string, error) {
 	var payload AttemptProjection
 	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
 		return "", fmt.Errorf("decode analytics attempt source: %w", err)
