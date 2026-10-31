@@ -206,7 +206,7 @@ func drainTestNativeClosedTimes(t *testing.T, service *Service) {
 
 func TestNativeWorkPageOperationalScope(t *testing.T) {
 	t.Parallel()
-	f := newDefaultNativeFixture(t, Config{})
+	f := newDefaultNativeFixture(t, Config{WebhookMaintenanceInterval: time.Hour})
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
 	history := seedArchiveIssues(t, f.service, scope, 130, "Done")
