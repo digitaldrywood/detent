@@ -254,14 +254,18 @@ projects:
 		head := headPositions[selected]
 		for _, pending := range incomplete {
 			switch {
+			case head.preferred && head.lane <= pending.lane:
+			case pending.preferred && pending.lane <= head.lane:
+				return 0, true, nil
+			case pending.rank != head.rank:
+				if pending.rank < head.rank {
+					return 0, true, nil
+				}
 			case pending.lane != head.lane:
 				if pending.lane < head.lane {
 					return 0, true, nil
 				}
-			case head.preferred:
-			case pending.preferred,
-				pending.rank < head.rank,
-				pending.rank == head.rank && pending.priority < head.priority:
+			case pending.priority < head.priority:
 				return 0, true, nil
 			}
 		}
