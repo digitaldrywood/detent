@@ -82,7 +82,7 @@ func ParseTestLog(r io.Reader, pwd string, env Environment, start time.Time) ([]
 			if err != nil {
 				return fmt.Errorf("temporary input %s disappeared during the test", filepath.Base(path))
 			}
-			if info.ModTime().After(start) {
+			if info.ModTime().After(start) && (op != "stat" || !env.tempRoot(path)) {
 				return fmt.Errorf("temporary input %s changed during the test", filepath.Base(path))
 			}
 		}
@@ -530,6 +530,10 @@ func (e Environment) normalize(value string) string {
 		}
 	}
 	return value
+}
+
+func (e Environment) tempRoot(path string) bool {
+	return slices.ContainsFunc(e.TempDirs, func(root TempRoot) bool { return root.Dir != "" && filepath.Clean(root.Dir) == filepath.Clean(path) })
 }
 
 func (e Environment) preexisting(path string) bool {
