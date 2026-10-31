@@ -830,6 +830,25 @@ func TestNoChangeCompletionNeverCommitsSource(t *testing.T) {
 			if test.wantError && (backend.validationCalls != test.wantValidationCalls || !backend.retained) {
 				t.Fatalf("invalid source was validated or discarded: calls=%d retained=%t", backend.validationCalls, backend.retained)
 			}
+			if test.movedBase || test.moveDuringGate {
+				if err == nil || !strings.Contains(err.Error(), "re-verify") {
+					t.Fatalf("advanced base lost verification feedback: %v", err)
+				}
+				current := backend.currentBase
+				backend.onValidation = nil
+				backend.recoveryStates[0].HeadSHA = current
+				request.noChangeVerifiedSHA = current
+				request.attemptDiffSource = func(context.Context) (tracker.AttemptDiffRequest, bool) {
+					return tracker.AttemptDiffRequest{BaseSHA: current, HeadSHA: current}, true
+				}
+				_, err = r.prepareExecutionCompletion(ctx, request, backend, backend.info, workspace.Issue{BaseRef: current}, AgentResume{}, true)
+				if err != nil {
+					t.Fatalf("current-base verification failed after stale rejection: %v", err)
+				}
+				if backend.validationCalls != test.wantValidationCalls+1 || execution.validation == nil || execution.validation.HeadSHA != current || backend.finalizationCalls != 0 {
+					t.Fatalf("current-base verification reused stale evidence or committed: calls=%d receipt=%+v commits=%d", backend.validationCalls, execution.validation, backend.finalizationCalls)
+				}
+			}
 		})
 	}
 }
