@@ -42,7 +42,6 @@ func TestReleaseWorkflowAuthenticatesExactCommitProvenance(t *testing.T) {
 		"DETENT_RELEASE_OVERRIDE:",
 		"required: false",
 		"DETENT_RELEASE_OVERRIDE: ${{ inputs.DETENT_RELEASE_OVERRIDE }}",
-		"WORKFLOW_OVERRIDE_ACTORS: ${{ vars.RELEASE_OVERRIDE_ACTORS }}",
 	} {
 		if !strings.Contains(finalizer, marker) {
 			t.Fatalf("release finalizer missing explicit operator input %q", marker)

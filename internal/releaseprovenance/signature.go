@@ -10,11 +10,20 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"runtime"
 	"strings"
 )
 
 type OverrideSignature struct {
 	manifestHash [sha256.Size]byte
+}
+
+func newGPGHome() (string, error) {
+	directory := os.TempDir()
+	if runtime.GOOS != "windows" {
+		directory = "/tmp"
+	}
+	return os.MkdirTemp(directory, "release-gpg-")
 }
 
 func (signature *OverrideSignature) matches(manifest Manifest) bool {
@@ -93,7 +102,7 @@ func VerifyOverrideTag(ctx context.Context, directory string, manifest Manifest,
 			return nil, errors.New("invalid override owner allowlist")
 		}
 	}
-	home, err := os.MkdirTemp("", "verify-")
+	home, err := newGPGHome()
 	if err != nil {
 		return nil, fmt.Errorf("create override verification keyring: %w", err)
 	}
