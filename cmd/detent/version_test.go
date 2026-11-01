@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/digitaldrywood/detent/internal/hubserver"
 )
 
 func TestFormatVersionInfo(t *testing.T) {
@@ -95,21 +97,44 @@ func TestVersionCommandDefaultsJSONForNonTTY(t *testing.T) {
 	}
 
 	var got struct {
-		Version   string `json:"version"`
-		Commit    string `json:"commit"`
-		BuildDate string `json:"build_date"`
-		GoVersion string `json:"go_version"`
-		OS        string `json:"os"`
-		Arch      string `json:"arch"`
+		HubSchemaVersion      int64  `json:"hub_schema_version"`
+		HubSchemaFingerprint  string `json:"hub_schema_fingerprint"`
+		RegistrySchemaVersion int64  `json:"registry_schema_version"`
+		RegistryFingerprint   string `json:"registry_schema_fingerprint"`
+		AuthSchemaVersion     int64  `json:"auth_schema_version"`
+		AuthFingerprint       string `json:"auth_schema_fingerprint"`
+		PlatformSchemaVersion int64  `json:"platform_schema_version"`
+		PlatformFingerprint   string `json:"platform_schema_fingerprint"`
+		Version               string `json:"version"`
+		Commit                string `json:"commit"`
+		BuildDate             string `json:"build_date"`
+		GoVersion             string `json:"go_version"`
+		OS                    string `json:"os"`
+		Arch                  string `json:"arch"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
 		t.Fatalf("version output is not JSON: %v\n%s", err, stdout.String())
+	}
+	latest, err := hubserver.LatestSchemaVersion()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.HubSchemaVersion != latest || latest == 0 {
+		t.Fatalf("hub schema version = %d, want %d", got.HubSchemaVersion, latest)
 	}
 	if got.Version != "v1.2.3" || got.Commit != "abc1234" || got.BuildDate != "2026-05-31T18:30:00Z" {
 		t.Fatalf("version metadata = %#v, want build metadata", got)
 	}
 	if got.GoVersion != runtime.Version() || got.OS != runtime.GOOS || got.Arch != runtime.GOARCH {
 		t.Fatalf("runtime metadata = %#v, want current runtime", got)
+	}
+	if got.RegistrySchemaVersion < 1 || got.AuthSchemaVersion < 1 || got.PlatformSchemaVersion < 1 {
+		t.Fatalf("entry schema versions = %d/%d/%d, want positive versions", got.RegistrySchemaVersion, got.AuthSchemaVersion, got.PlatformSchemaVersion)
+	}
+	for name, fingerprint := range map[string]string{"hub": got.HubSchemaFingerprint, "registry": got.RegistryFingerprint, "auth": got.AuthFingerprint, "platform": got.PlatformFingerprint} {
+		if len(fingerprint) != 64 {
+			t.Fatalf("%s schema fingerprint length = %d, want 64", name, len(fingerprint))
+		}
 	}
 }
 

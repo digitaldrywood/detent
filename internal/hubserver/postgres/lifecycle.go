@@ -84,7 +84,10 @@ func validateSchema(ctx context.Context, pool *sql.DB, migrations fs.FS) error {
 	if !owned {
 		return ErrSchema
 	}
-	rows, err := pool.QueryContext(ctx, `SELECT version_id FROM public.goose_db_version WHERE is_applied AND version_id > 0 ORDER BY version_id`)
+	rows, err := pool.QueryContext(ctx, `SELECT version_id FROM (
+		SELECT version_id, is_applied, ROW_NUMBER() OVER (PARTITION BY version_id ORDER BY id DESC) AS state_rank
+		FROM public.goose_db_version WHERE version_id > 0
+	) AS migration_state WHERE state_rank = 1 AND is_applied ORDER BY version_id`)
 	if err != nil {
 		return err
 	}

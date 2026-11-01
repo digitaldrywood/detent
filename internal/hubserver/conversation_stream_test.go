@@ -333,6 +333,52 @@ func TestConversationStreamClosesOnRevocationAndShutdown(t *testing.T) {
 	})
 }
 
+func TestShutdownClosesConversationStreamBeforeOuterServerDrain(t *testing.T) {
+	f := newStreamFixture(t)
+	created := f.create(t, f.token, map[string]any{"first_message": map[string]any{"key": "first", "text": "Hold the stream open"}})
+	stream := f.open(t, f.token, created.Conversation.ID, 2)
+	if heartbeat := stream.next(t); heartbeat.Event != string(conversation.EventHeartbeat) {
+		t.Fatalf("active stream frame = %#v, want heartbeat", heartbeat)
+	}
+	closed := make(chan sseFrame, 1)
+	go func() {
+		for {
+			frame, err := readSSEFrame(stream.reader)
+			if err != nil {
+				closed <- sseFrame{}
+				return
+			}
+			if frame.Event == string(conversation.EventClosed) {
+				closed <- frame
+				return
+			}
+		}
+	}()
+	serviceShutdownDone := make(chan struct{})
+	shutdownErr := shutdownServiceAndServer(t.Context(), func(ctx context.Context) error {
+		defer close(serviceShutdownDone)
+		return f.service.Shutdown(ctx)
+	}, func(ctx context.Context) error {
+		select {
+		case <-serviceShutdownDone:
+		default:
+			return errors.New("outer server drain started before service shutdown")
+		}
+		select {
+		case frame := <-closed:
+			if frame.Event != string(conversation.EventClosed) || !strings.Contains(frame.Data, conversationClosedShutdown) {
+				return errors.New("conversation stream ended without shutdown event")
+			}
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		return f.server.Config.Shutdown(ctx)
+	})
+	if shutdownErr != nil {
+		t.Fatalf("shutdown active conversation stream: %v", shutdownErr)
+	}
+}
+
 type streamMembershipFailureProvider struct {
 	auth.HostedProvider
 	err error

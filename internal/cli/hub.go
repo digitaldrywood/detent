@@ -53,7 +53,7 @@ func newHubCommand(opts options) *cobra.Command {
 		cfg.GitHubRequestCounts = transport.Counts
 		return hubserver.Run(ctx, cfg)
 	}
-	cmd := newHubCommandWithRun(opts.version, opts.lookupEnv, run)
+	cmd := newHubCommandWithRun(opts.version, opts.lookupEnv, run, opts.build.Commit)
 	cmd.AddCommand(newCITriggerLabelCommand(opts))
 	for _, child := range cmd.Commands() {
 		if child.Name() == "runner" {
@@ -89,9 +89,13 @@ func runnerServiceStarterForOS(opts options, goos string) runnerServiceStarter {
 	}
 }
 
-func newHubCommandWithRun(version string, lookupEnv func(string) string, run hubRunFunc) *cobra.Command {
+func newHubCommandWithRun(version string, lookupEnv func(string) string, run hubRunFunc, buildCommit ...string) *cobra.Command {
 	if lookupEnv == nil {
 		lookupEnv = os.Getenv
+	}
+	commit := ""
+	if len(buildCommit) != 0 {
+		commit = buildCommit[0]
 	}
 	cmd := &cobra.Command{
 		Use:     "hub",
@@ -99,7 +103,7 @@ func newHubCommandWithRun(version string, lookupEnv func(string) string, run hub
 		Example: "detent hub serve --database /var/lib/detent/hub.db",
 		Args:    NoArgs,
 	}
-	cmd.AddCommand(newHubServeCommand(version, lookupEnv, run))
+	cmd.AddCommand(newHubServeCommand(version, commit, lookupEnv, run))
 	cmd.AddCommand(newHubRunnerCommand(version, lookupEnv))
 	cmd.AddCommand(newHubPolicyCommand(lookupEnv))
 	cmd.AddCommand(newHubIssueCommand(lookupEnv))
@@ -109,7 +113,7 @@ func newHubCommandWithRun(version string, lookupEnv func(string) string, run hub
 	return cmd
 }
 
-func newHubServeCommand(version string, lookupEnv func(string) string, run hubRunFunc) *cobra.Command {
+func newHubServeCommand(version, commit string, lookupEnv func(string) string, run hubRunFunc) *cobra.Command {
 	var hostedConfigPath string
 	var credentialMaintenance bool
 	var githubDisabled bool
@@ -253,6 +257,7 @@ func newHubServeCommand(version string, lookupEnv func(string) string, run hubRu
 				FullRepairInterval:         fullRepairInterval,
 				Logger:                     logger,
 				Version:                    version,
+				Commit:                     commit,
 			})
 		},
 	}

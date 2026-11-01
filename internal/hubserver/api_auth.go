@@ -167,8 +167,12 @@ func (s *Service) requireAPIScope(allowed ...apiScope) echo.MiddlewareFunc {
 }
 
 func (s *Service) authenticateAPIRequest(c echo.Context) (apiCredential, int, error) {
+	return s.authenticateAPIRequestContext(c.Request().Context(), c)
+}
+
+func (s *Service) authenticateAPIRequestContext(ctx context.Context, c echo.Context) (apiCredential, int, error) {
 	if s.config.Hosted == nil && (c.Request().Header.Get(echo.HeaderAuthorization) == "" || strings.HasPrefix(c.Request().Header.Get(echo.HeaderAuthorization), "Basic ")) {
-		credential, status, err := s.localAppCredential(c)
+		credential, status, err := s.localAppCredentialContext(ctx, c)
 		if status == http.StatusUnauthorized {
 			c.Response().Header().Set("WWW-Authenticate", `Basic realm="Detent Hub", charset="UTF-8"`)
 		}
@@ -188,7 +192,7 @@ func (s *Service) authenticateAPIRequest(c echo.Context) (apiCredential, int, er
 	if c.Request().Method == http.MethodPost && c.Path() == runnerBase+"/:runner/renew" {
 		renewalRunner, renewalOrganization = c.Param("runner"), c.Param("organization")
 	}
-	return s.authenticateAPIToken(c.Request().Context(), token, renewalRunner, renewalOrganization)
+	return s.authenticateAPIToken(ctx, token, renewalRunner, renewalOrganization)
 }
 
 // authenticateAPIToken is shared by HTTP authentication and operator execution.

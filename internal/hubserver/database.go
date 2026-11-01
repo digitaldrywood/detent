@@ -61,6 +61,7 @@ type database struct {
 	lock                   *instancelock.Lock
 	path                   string
 	schemaVersion          int64
+	schemaFingerprint      string
 	hostedOrganization     tracker.OrganizationID
 	hostedRuntime          atomic.Pointer[hostedRuntimeConfig]
 	runtimeReadMu          sync.Mutex
@@ -149,11 +150,25 @@ func openDatabase(ctx context.Context, cfg Config) (*database, error) {
 	if err := store.openReader(ctx, cfg.BusyTimeout); err != nil {
 		return nil, errors.Join(err, store.Close())
 	}
-	version, err := runMigrations(ctx, db, cfg.Logger)
+	migrate := cfg.migrate
+	if migrate == nil {
+		migrate = runMigrations
+	}
+	if cfg.startup != nil {
+		cfg.startup.database.Store(store.reader)
+		if cfg.Hosted == nil || cfg.Hosted.SharedEntry == nil {
+			cfg.startup.auth.Store(&Service{config: cfg, database: store})
+		}
+	}
+	version, err := migrate(ctx, db, cfg.Logger)
 	if err != nil {
 		return nil, errors.Join(err, store.Close())
 	}
 	store.schemaVersion = version
+	store.schemaFingerprint, err = currentSchemaFingerprint(ctx, store.db)
+	if err != nil {
+		return nil, errors.Join(err, store.Close())
+	}
 	store.analytics = prepareAnalyticsStatements(ctx, db, cfg.Logger)
 	if err := store.optimize(ctx, "PRAGMA optimize=0x10002"); err != nil {
 		cfg.Logger.Warn("optimize hub database at startup", "error", err)

@@ -2,6 +2,8 @@ package cloudentry
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -9,31 +11,42 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
+
+	"github.com/digitaldrywood/detent/internal/hubserver"
 )
 
-func (s *Service) checkTenant(ctx context.Context, organization Organization) error {
-	status, err := s.serviceRequest(ctx, organization, "/internal/v1/health", map[string]string{}, nil)
+var errTenantMigrating = errors.New("tenant migrations are running")
+
+func (s *Service) tenantMigrationHealth(ctx context.Context, organization Organization) (hubserver.MigrationHealth, error) {
+	status, body, err := s.serviceCall(ctx, organization, "/internal/v1/health", map[string]string{}, nil)
+	var health hubserver.MigrationHealth
 	if err != nil {
-		return err
+		return health, err
 	}
-	if status != http.StatusNoContent {
-		return fmt.Errorf("tenant health returned HTTP %d", status)
+	if status == http.StatusNoContent {
+		return health, nil
 	}
-	return nil
+	if err := json.Unmarshal(body, &health); err != nil {
+		return health, fmt.Errorf("decode tenant health: %w", err)
+	}
+	if status == http.StatusServiceUnavailable && health.MigrationsRunning {
+		return health, errTenantMigrating
+	}
+	if status != http.StatusOK {
+		return health, fmt.Errorf("tenant health returned HTTP %d", status)
+	}
+	return health, nil
 }
 
-func (s *Service) servingTenants(ctx context.Context, organizations []Organization) (int, int) {
-	rows := s.tenantHealth(ctx, organizations)
-	running := 0
-	for _, row := range rows {
-		if row.Running {
-			running++
-		}
-	}
-	return len(rows), running
+func (s *Service) checkTenant(ctx context.Context, organization Organization) error {
+	_, err := s.tenantMigrationHealth(ctx, organization)
+	return err
 }
 
 type platformTenantHealth struct {
+	migration     hubserver.MigrationHealth
+	schemaKnown   bool
+	schemaSet     string
 	ID            string `json:"id"`
 	Name          string `json:"name"`
 	Running       bool   `json:"running"`
@@ -53,7 +66,11 @@ func (s *Service) tenantHealth(ctx context.Context, organizations []Organization
 	}
 	s.eachReadyTenant(ctx, ids, func(call context.Context, index int, organization Organization) {
 		row := &rows[index]
-		row.Running = s.checkTenant(call, organization) == nil
+		var err error
+		row.migration, err = s.tenantMigrationHealth(call, organization)
+		row.Running = err == nil
+		row.schemaSet = row.migration.SchemaFingerprint
+		row.schemaKnown = err == nil && row.migration.SchemaFactsComplete && row.migration.SchemaVersion > 0 && row.schemaSet != "" && !row.migration.MigrationsRunning
 		if allocation := s.config.Allocation; allocation != nil && organization.Managed {
 			if reader, ok := allocation.Launcher.(interface {
 				Health(string, time.Time) (*int64, *int)
@@ -88,10 +105,92 @@ func (s *Service) health(c echo.Context) error {
 	ctx := c.Request().Context()
 	organizations, err := s.registry.List(ctx)
 	status, code := "unavailable", http.StatusServiceUnavailable
+	var migration hubserver.MigrationHealth
+	var registrySchema, authSchema, platformSchema int64
+	var registryFingerprint, authFingerprint, platformFingerprint string
+	registryApplicable, authApplicable := s.config.Storage.Backend != "postgres", s.config.Storage.Backend != "postgres"
+	platformApplicable := s.config.Storage.Backend == "postgres"
+	hubApplicable := false
+	readyOrganizations := 0
+	var factsComplete bool
 	if err == nil && s.auth.store.db.PingContext(ctx) == nil {
-		if expected, running := s.servingTenants(ctx, organizations); expected == running {
+		factsComplete = true
+		for _, organization := range organizations {
+			switch organization.State {
+			case "ready":
+				hubApplicable = true
+				readyOrganizations++
+			case "requested", "allocating":
+				hubApplicable = true
+				factsComplete = false
+			case "failed", "disabled", "deleting", "deleted":
+			default:
+				hubApplicable = true
+				factsComplete = false
+			}
+		}
+		rows := s.tenantHealth(ctx, organizations)
+		running := 0
+		var hubFingerprint string
+		for _, row := range rows {
+			if row.Running {
+				running++
+			}
+			migration.SchemaVersion = max(migration.SchemaVersion, row.migration.SchemaVersion)
+			migration.MigrationsRunning = migration.MigrationsRunning || row.migration.MigrationsRunning
+			factsComplete = factsComplete && row.schemaKnown
+			if row.schemaKnown {
+				if hubFingerprint == "" {
+					hubFingerprint = row.schemaSet
+				} else if hubFingerprint != row.schemaSet {
+					factsComplete = false
+				}
+			}
+		}
+		migration.SchemaFingerprint = hubFingerprint
+		factsComplete = factsComplete && len(rows) == readyOrganizations
+		if running == len(rows) {
 			status, code = "ok", http.StatusOK
 		}
+		if registryApplicable {
+			registrySchema, err = s.registry.store.schemaVersion(ctx)
+			if err == nil {
+				registryFingerprint, err = s.registry.store.schemaFingerprint(ctx)
+			}
+			if err == nil {
+				authSchema, err = s.auth.store.schemaVersion(ctx)
+			}
+			if err == nil {
+				authFingerprint, err = s.auth.store.schemaFingerprint(ctx)
+			}
+		} else {
+			platformSchema, err = s.registry.store.schemaVersion(ctx)
+			if err == nil {
+				platformFingerprint, err = s.registry.store.schemaFingerprint(ctx)
+			}
+		}
+		if err != nil {
+			status, code = "unavailable", http.StatusServiceUnavailable
+			factsComplete = false
+		}
+	} else {
+		factsComplete = false
 	}
-	return c.JSON(code, map[string]string{"status": status, "version": s.config.Build.Version, "commit": s.config.Build.Commit})
+	return c.JSON(code, struct {
+		hubserver.MigrationHealth
+		HubSchemaApplicable       bool   `json:"hub_schema_applicable"`
+		RegistrySchemaVersion     int64  `json:"registry_schema_version"`
+		RegistrySchemaFingerprint string `json:"registry_schema_fingerprint"`
+		RegistrySchemaApplicable  bool   `json:"registry_schema_applicable"`
+		AuthSchemaVersion         int64  `json:"auth_schema_version"`
+		AuthSchemaFingerprint     string `json:"auth_schema_fingerprint"`
+		AuthSchemaApplicable      bool   `json:"auth_schema_applicable"`
+		PlatformSchemaVersion     int64  `json:"platform_schema_version"`
+		PlatformSchemaFingerprint string `json:"platform_schema_fingerprint"`
+		PlatformSchemaApplicable  bool   `json:"platform_schema_applicable"`
+		SchemaFactsComplete       bool   `json:"schema_facts_complete"`
+		Status                    string `json:"status"`
+		Version                   string `json:"version"`
+		Commit                    string `json:"commit"`
+	}{migration, hubApplicable, registrySchema, registryFingerprint, registryApplicable, authSchema, authFingerprint, authApplicable, platformSchema, platformFingerprint, platformApplicable, factsComplete, status, s.config.Build.Version, s.config.Build.Commit})
 }
