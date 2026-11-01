@@ -357,3 +357,23 @@ func readJSONLocalAttemptMatches(ctx context.Context, q nativeQueryer, scope nat
 	}
 	return matches, rows.Err()
 }
+
+func BenchmarkNativeIssueProjection(b *testing.B) {
+	f := benchmarkAnalyticsFixture(b, 0)
+	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+	var item string
+	if err := f.service.database.reader.QueryRowContext(b.Context(), "SELECT native_id FROM issues WHERE project_id=?", scope.project).Scan(&item); err != nil {
+		b.Fatal(err)
+	}
+	for _, compact := range []bool{false, true} {
+		b.Run(fmt.Sprintf("compact=%t", compact), func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				got, _, err := readNativeIssueProjection(b.Context(), f.service.database.reader, scope, item, compact)
+				if err != nil || string(got.WorkItemID) != item {
+					b.Fatalf("read projection: item=%s error=%v", got.WorkItemID, err)
+				}
+			}
+		})
+	}
+}

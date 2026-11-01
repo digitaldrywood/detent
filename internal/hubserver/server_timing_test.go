@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
+	"modernc.org/sqlite"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -406,4 +407,75 @@ func toAny(attrs []slog.Attr) []any {
 		out = append(out, attr)
 	}
 	return out
+}
+
+func TestNativeIssueProjectionStatementsReadFreshBindings(t *testing.T) {
+	t.Parallel()
+	for _, writer := range []bool{false, true} {
+		t.Run(fmt.Sprintf("writer=%t", writer), func(t *testing.T) {
+			t.Parallel()
+			db := sql.OpenDB(timedConnector{driver: &sqlite.Driver{}, dsn: ":memory:", writer: writer})
+			db.SetMaxOpenConns(1)
+			t.Cleanup(func() {
+				if err := db.Close(); err != nil {
+					t.Error(err)
+				}
+			})
+			if _, err := db.ExecContext(t.Context(), "CREATE TABLE records(organization TEXT NOT NULL,id INTEGER NOT NULL,value TEXT NOT NULL,PRIMARY KEY(organization,id))"); err != nil {
+				t.Fatal(err)
+			}
+			for _, org := range []string{"org_alpha", "org_beta"} {
+				for id := range 2 {
+					if _, err := db.ExecContext(t.Context(), "INSERT INTO records VALUES(?,?,?)", org, id, fmt.Sprintf("%s-%d", org, id)); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			ctx := t.Context()
+			query := "SELECT value FROM records WHERE organization=? ORDER BY id"
+			tx, err := db.BeginTx(ctx, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			rows, err := tx.QueryContext(ctx, query, "org_alpha")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer rows.Close()
+			if !rows.Next() {
+				t.Fatal("missing first organization row")
+			}
+			var first string
+			if err := rows.Scan(&first); err != nil || first != "org_alpha-0" {
+				t.Fatalf("first row = %q, error=%v", first, err)
+			}
+			var nested string
+			if err := tx.QueryRowContext(ctx, query, "org_beta").Scan(&nested); err != nil || nested != "org_beta-0" {
+				t.Fatalf("nested scope = %q, error=%v", nested, err)
+			}
+			if !rows.Next() {
+				t.Fatal("nested query consumed the active projection")
+			}
+			if err := rows.Scan(&first); err != nil || first != "org_alpha-1" {
+				t.Fatalf("remaining row = %q, error=%v", first, err)
+			}
+			if err := rows.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := tx.ExecContext(ctx, "UPDATE records SET value=? WHERE organization=? AND id=0", "updated", "org_beta"); err != nil {
+				t.Fatal(err)
+			}
+			if err := tx.QueryRowContext(ctx, query, "org_beta").Scan(&nested); err != nil || nested != "updated" {
+				t.Fatalf("stale projection = %q, error=%v", nested, err)
+			}
+			alternate := query + " LIMIT 1"
+			if err := tx.QueryRowContext(ctx, alternate, "org_alpha").Scan(&first); err != nil || first != "org_alpha-0" {
+				t.Fatalf("changed query = %q, error=%v", first, err)
+			}
+			if err := tx.QueryRowContext(ctx, query, "org_beta").Scan(&nested); err != nil || nested != "updated" {
+				t.Fatalf("rebound scope = %q, error=%v", nested, err)
+			}
+		})
+	}
 }

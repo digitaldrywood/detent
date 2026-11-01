@@ -14,6 +14,8 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"modernc.org/sqlite"
+
+	"github.com/digitaldrywood/detent/internal/sqlstmt"
 )
 
 // writerTiming accumulates how long one request held the single writer
@@ -143,12 +145,17 @@ func (c timedConnector) Connect(context.Context) (driver.Conn, error) {
 func (c timedConnector) Driver() driver.Driver { return c.driver }
 
 type timedConn struct {
-	committed chan struct{}
+	statements sqlstmt.Cache
+	committed  chan struct{}
 	driver.Conn
 	inTx   bool
 	writer bool
 	logger *slog.Logger
 	now    func() time.Time
+}
+
+func (c *timedConn) Close() error {
+	return errors.Join(c.statements.Close(), c.Conn.Close())
 }
 
 type timedTx struct {
@@ -291,13 +298,13 @@ func (c *timedConn) PrepareContext(ctx context.Context, query string) (driver.St
 }
 
 func (c *timedConn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
-	execer, ok := c.Conn.(driver.ExecerContext)
+	_, ok := c.Conn.(driver.ExecerContext)
 	if !ok {
 		return nil, driver.ErrSkip
 	}
 	start := time.Now()
 	holder := c.startWriterHold(ctx)
-	result, err := execer.ExecContext(ctx, query, args)
+	result, err := c.statements.ExecContext(ctx, c.Conn, query, args)
 	timing := requestTimingFrom(ctx)
 	timing.statement(start, query, args)
 	if c.writer && c.inTx && timing != nil && timing.writerTrace != nil {
@@ -314,14 +321,14 @@ func (c *timedConn) ExecContext(ctx context.Context, query string, args []driver
 }
 
 func (c *timedConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
-	queryer, ok := c.Conn.(driver.QueryerContext)
+	_, ok := c.Conn.(driver.QueryerContext)
 	if !ok {
 		return nil, driver.ErrSkip
 	}
 	timing := requestTimingFrom(ctx)
 	start := time.Now()
 	holder := c.startWriterHold(ctx)
-	rows, err := queryer.QueryContext(ctx, query, args)
+	rows, err := c.statements.QueryContext(ctx, c.Conn, query, args)
 	timing.statement(start, query, args)
 	if c.writer && c.inTx && timing != nil && timing.writerTrace != nil {
 		timing.writerTrace(query, args)
