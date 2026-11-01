@@ -6,12 +6,15 @@ restore_target() {
   local out started tables bytes result check
   out="$work/${target//\//_}"
   started=$(date +%s)
-  result=corrupt
+  result=restore_failed
   tables=0
   rm -f "$out" "$out.log" "$out.check.log" "$out.lock" "$out-wal" "$out-shm" || return 1
+  : > "$out.check.log"
   if /usr/local/bin/litestream-detent restore -o "$out" "$bucket/$target?$endpoint" >"$out.log" 2>&1; then
+    result=verify_failed
     if check=$(/opt/detent-hub/detent hub verify --integrity-only --database "$out" 2>"$out.check.log"); then
-      if tables=$(python3 -c 'import json,sys; n=json.load(sys.stdin)["tables"]; assert type(n) is int and n > 0; print(n)' <<<"$check"); then
+      result=invalid_result
+      if tables=$(python3 -c 'import json,sys; n=json.load(sys.stdin)["tables"]; assert type(n) is int and n > 0; print(n)' <<<"$check" 2>>"$out.check.log"); then
         result=ok
       else
         tables=0
@@ -20,7 +23,10 @@ restore_target() {
   fi
   bytes=$(stat -c %s "$out" 2>/dev/null) || bytes=0
   echo "restore_test target=$target result=$result bytes=$bytes tables=$tables seconds=$(( $(date +%s) - started ))"
-  rm -f "$out.log" "$out.check.log" "$out.lock" "$out-wal" "$out-shm" || return 1
+  rm -f "$out.lock" "$out-wal" "$out-shm" || return 1
+  if [ "$result" = ok ]; then
+    rm -f "$out.log" "$out.check.log" || return 1
+  fi
   if [ "$keep" != true ] || [ "$result" != ok ]; then
     rm -f "$out" || return 1
   fi
@@ -60,6 +66,7 @@ main() {
   set +a
   local work=/var/tmp/detent-restore-test
   mkdir -p "$work" || return 1
+  chmod 0700 "$work" || return 1
   local endpoint="endpoint=https://nyc3.digitaloceanspaces.com&region=nyc3"
   local bucket=s3://drywood-detent-litestream/production
   local failed=0 tenant batch registry_ok=0

@@ -92,10 +92,10 @@ func TestRestoreScriptReportsVerificationOutcome(t *testing.T) {
 		tables                 string
 	}{
 		{"verified", `{"tables":6}`, "ok", false, false, "6"},
-		{"corruption", "", "corrupt", false, true, "0"},
-		{"empty schema", `{"tables":0}`, "corrupt", false, false, "0"},
-		{"invalid output", "invalid", "corrupt", false, false, "0"},
-		{"restore failure", "", "corrupt", true, false, "0"},
+		{"verification failure", "", "verify_failed", false, true, "0"},
+		{"empty schema", `{"tables":0}`, "invalid_result", false, false, "0"},
+		{"invalid output", "invalid", "invalid_result", false, false, "0"},
+		{"restore failure", "", "restore_failed", true, false, "0"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -127,8 +127,17 @@ restore_target tenants/example/hub.db "$WORK" s3://example/production endpoint=e
 				t.Fatalf("missing journal outcome: %s", output)
 			}
 			entries, err := os.ReadDir(work)
-			if err != nil || len(entries) != 0 {
-				t.Fatalf("restored data not cleaned up: %v, %v", entries, err)
+			wantLogs := 0
+			if test.result != "ok" {
+				wantLogs = 2
+			}
+			if err != nil || len(entries) != wantLogs {
+				t.Fatalf("retained diagnostics = %v, %v; want %d logs", entries, err, wantLogs)
+			}
+			for _, entry := range entries {
+				if !strings.HasSuffix(entry.Name(), ".log") {
+					t.Fatalf("retained restored data: %s", entry.Name())
+				}
 			}
 			if strings.Contains(string(output), "fixture") {
 				t.Fatal("journal exposed restored content")
@@ -334,7 +343,7 @@ main
 	}
 }
 
-func TestRestoreInstallerChecksAndRollsBack(t *testing.T) {
+func TestRestoreInstallerPreservesVerifierOnBackupFailure(t *testing.T) {
 	t.Parallel()
 	installer, err := os.ReadFile("install-restore-test.sh")
 	if err != nil {
@@ -345,15 +354,17 @@ func TestRestoreInstallerChecksAndRollsBack(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, test := range []struct {
-		name     string
-		check    bool
-		fail     bool
-		previous bool
+		name        string
+		check       bool
+		fail        bool
+		previous    bool
+		unsupported bool
 	}{
-		{"dry run", true, false, true},
-		{"idempotent install", false, false, true},
-		{"rollback", false, true, true},
-		{"failed first install", false, true, false},
+		{"dry run", true, false, true, false},
+		{"idempotent install", false, false, true, false},
+		{"failed backup retains verifier", false, true, true, false},
+		{"failed first backup retains verifier", false, true, false, false},
+		{"unsupported binary preserves previous", false, false, true, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -364,14 +375,23 @@ func TestRestoreInstallerChecksAndRollsBack(t *testing.T) {
 			writeDeployFixture(t, filepath.Join(work, "restore-test.sh"), string(restore))
 			writeDeployFixture(t, filepath.Join(work, "installer.sh"), strings.NewReplacer(
 				"destination=/usr/local/sbin/detent-restore-test", `destination="$WORK/installed"`,
+				"verifier=/opt/detent-hub/detent", `verifier="$WORK/bin/detent"`,
 				`[ "$EUID" -eq 0 ]`, "true",
 			).Replace(string(installer)))
+			writeDeployFixture(t, filepath.Join(work, "bin/detent"), `#!/bin/bash
+[ "$UNSUPPORTED" = false ] || exit 1
+echo --integrity-only
+`)
 			writeDeployFixture(t, filepath.Join(work, "bin/systemctl"), `#!/bin/bash
 printf '%s\n' "$*" >> "$WORK/services"
+if [ "$1" = show ]; then
+  if [ -e "$WORK/failed" ] && [ ! -e "$WORK/recovered" ]; then echo exit-code; else echo success; fi
+fi
 if [ "$1" = restart ] && [ "$FAIL" = true ] && [ ! -e "$WORK/failed" ]; then
   touch "$WORK/failed"
   exit 1
 fi
+[ "$1" != restart ] || touch "$WORK/recovered"
 `)
 			installedPath := filepath.Join(work, "installed")
 			if test.previous {
@@ -383,15 +403,15 @@ fi
 					args = append(args, "--check")
 				}
 				cmd := exec.CommandContext(t.Context(), "bash", args...)
-				cmd.Env = []string{"PATH=" + filepath.Join(work, "bin") + ":" + os.Getenv("PATH"), "TMPDIR=" + work, "WORK=" + work, "FAIL=" + strconv.FormatBool(test.fail)}
+				cmd.Env = []string{"PATH=" + filepath.Join(work, "bin") + ":" + os.Getenv("PATH"), "TMPDIR=" + work, "WORK=" + work, "FAIL=" + strconv.FormatBool(test.fail), "UNSUPPORTED=" + strconv.FormatBool(test.unsupported)}
 				output, err := cmd.CombinedOutput()
-				if (err != nil) != test.fail {
+				if (err != nil) != (test.fail && run == 0 || test.unsupported) {
 					t.Fatalf("install error = %v, output = %s", err, output)
 				}
-				if test.check || test.fail {
+				if test.check || test.unsupported {
 					break
 				}
-				if run == 0 {
+				if run == 0 && test.previous {
 					backup, err := os.ReadFile(installedPath + ".previous")
 					if err != nil || string(backup) != "previous verifier\n" {
 						t.Fatalf("backup = %q, %v", backup, err)
@@ -399,28 +419,23 @@ fi
 				}
 			}
 			installed, err := os.ReadFile(installedPath)
-			if test.fail && !test.previous {
-				if !os.IsNotExist(err) {
-					t.Fatalf("failed installation remained: %q, %v", installed, err)
-				}
-			} else {
-				want := string(restore)
-				if test.check || test.fail {
-					want = "previous verifier\n"
-				}
-				if err != nil || string(installed) != want {
-					t.Fatalf("installed = %q, %v; want %q", installed, err, want)
-				}
+			want := string(restore)
+			if test.check || test.unsupported {
+				want = "previous verifier\n"
+			}
+			if err != nil || string(installed) != want {
+				t.Fatalf("installed verifier differs from expected version: %v", err)
 			}
 			services, err := os.ReadFile(filepath.Join(work, "services"))
 			if err != nil {
 				t.Fatal(err)
 			}
 			wantRestarts := 1
-			if test.check {
-				wantRestarts = 0
-			} else if test.fail && test.previous {
+			if test.fail {
 				wantRestarts = 2
+			}
+			if test.check || test.unsupported {
+				wantRestarts = 0
 			}
 			if got := strings.Count(string(services), "restart detent-restore-test.service\n"); got != wantRestarts {
 				t.Fatalf("restarts = %d, want %d: %s", got, wantRestarts, services)
