@@ -491,16 +491,17 @@ scan runner files, tenants or attempt history to discover source. PostgreSQL
 uses the existing shared pool and tenant-leading keys. No new hot path, shared
 lock, periodic task, retry owner or fleet fan-out is introduced.
 
+
 ## Bounded storage conversion
 
-`../storageconversion.Owner` is the conversion owner for the PostgreSQL families
-already handled by the SQLite storage converter: run/scheduler collaboration
-events (`runs`), change versions (`versions`) and change evidence (`evidence`).
+The single conversion owner remains `../storage_conversion.go`. Its tick drives
+SQLite and PostgreSQL through `storageconversion.Storage`, preserving fair
+family cursors, row/byte budgets and the existing background cadence. The Hub
+continues selecting SQLite until backend cutover (#2020). `ConversionStorage`
+implements storage operations for the PostgreSQL `runs`, `versions` and
+`evidence` families; it has no scheduling loop or retry owner (INV-3).
 It uses the existing `Repository`, background connection budget and compressed
-`attachment.DetailStore`. Backend selection remains cutover work: select this
-owner for PostgreSQL and the existing SQLite owner for SQLite. There is no new
-background loop, retry scheduler, lease or second owner for these families
-(INV-3). Other SQLite conversion families remain with their unported stores.
+`attachment.DetailStore`. Other SQLite families remain with their unported stores.
 
 Current writes and existing PostgreSQL records use `payload_format_version=2`.
 An import can explicitly preserve a historical object reference with version 1;
@@ -511,21 +512,22 @@ of its archive codec/schema and event schema. Conversion accepts a deterministic
 family transform that preserves domain identity and produces the current payload.
 The original reference and object remain readable after conversion.
 
-Each batch names an authenticated organization, project, family and owning work
-item or change. Pages contain at most 100 old-format records through a fixed
-visible `(record ID, sequence/number)` upper bound. Cursors carry this complete
-scope and position; reuse in another scope is rejected. An empty next cursor
-starts another sweep. Repeat sweeps even after an empty result: allocation and
-lexical ID ordering are not commit ordering. Pending partial indexes keep late
-commits discoverable, including commits behind the previous cursor. Failures
-advance the current sweep position and remain pending for the next sweep. A
-restart can start at zero because converted rows leave the pending index;
-progress counters remain durable and duplicates do not increment them twice.
+Each PostgreSQL adapter is bound to an authenticated organization and supplies
+three durable family cursors. Pending partial indexes return one old-format
+record per family turn across that organization's projects and aggregates.
+Cursor reads and writes are tenant restricted. Exhausted keysets wrap, including
+after empty ticks, so late commits behind a cursor remain discoverable. Failed
+records advance the current sweep and remain pending for the next tick; the
+owner's per-tick visited set prevents retrying them within that tick. Restarting
+an adapter resumes durable cursors, and converted rows leave the pending indexes.
+Scoped repository pages additionally support bounded import inspection through
+a fixed visible upper bound, rejecting cursor reuse in another scope.
 
 Object reads, transformation, uploads and verification happen after the reader
-transaction ends and before the writer transaction starts. The owner derives the
-exact content-addressed target key before upload, checks it before publishing,
-and reconciles even a failed upload by reading and verifying that same key.
+transaction ends and before the writer transaction starts. The converter
+derives the exact content-addressed target key before upload, checks it before
+publishing, and reconciles even a failed upload by reading and verifying that
+same key.
 A lost database acknowledgement is recovered from the current record version.
 No database transaction, connection budget slot or shared lock spans object I/O.
 Missing or corrupt sources and unverified targets leave the old reference intact.
@@ -542,9 +544,10 @@ rolls both changes back, and concurrent conversions count only the winner.
 Runtime connections can read progress but cannot fabricate it (INV-18).
 
 At 10,000 tenants and runners, pool and background budgets stay fixed. Each
-batch uses tenant/project/aggregate-scoped index seeks and returns at most 100
-records. Object work stops at a 1 MiB source-plus-target byte budget, allowing
-one final archive-sized record to avoid starving large payloads; an individual
+tick uses tenant-scoped pending-index seeks and examines at most 100 records
+across the three families, independent of tenant, project and history counts.
+Object work stops at a 1 MiB source-plus-target byte budget, allowing one final
+archive-sized record to avoid starving large payloads; an individual
 source or target cannot exceed the existing 32 MiB archive limit. Each successful
 conversion holds one history row and one aggregate progress row only during
 bounded database work. There are no fleet scans, history walks, per-tenant pools,

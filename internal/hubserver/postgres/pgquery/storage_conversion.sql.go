@@ -9,7 +9,38 @@ import (
 	"context"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/lib/pq"
 )
+
+const conversionAdvanceCursor = `-- name: ConversionAdvanceCursor :exec
+UPDATE storage_conversion_cursors SET positioned=$1,key_1=$2,key_2=$3,key_3=$4,key_4=$5,sequence=$6
+WHERE organization_id=$7 AND family=$8
+`
+
+type ConversionAdvanceCursorParams struct {
+	Positioned     bool
+	Key1           string
+	Key2           string
+	Key3           string
+	Key4           string
+	Sequence       int64
+	OrganizationID tracker.OrganizationID
+	Family         string
+}
+
+func (q *Queries) ConversionAdvanceCursor(ctx context.Context, arg ConversionAdvanceCursorParams) error {
+	_, err := q.db.ExecContext(ctx, conversionAdvanceCursor,
+		arg.Positioned,
+		arg.Key1,
+		arg.Key2,
+		arg.Key3,
+		arg.Key4,
+		arg.Sequence,
+		arg.OrganizationID,
+		arg.Family,
+	)
+	return err
+}
 
 const conversionBounds = `-- name: ConversionBounds :one
 SELECT record_id, record_sequence FROM (
@@ -110,6 +141,209 @@ func (q *Queries) ConversionCommit(ctx context.Context, arg ConversionCommitPara
 	var committed bool
 	err := row.Scan(&committed)
 	return committed, err
+}
+
+const conversionInitializeCursors = `-- name: ConversionInitializeCursors :exec
+INSERT INTO storage_conversion_cursors (organization_id, family)
+SELECT $1::text, family FROM unnest(ARRAY['runs', 'versions', 'evidence']) AS family
+ON CONFLICT DO NOTHING
+`
+
+func (q *Queries) ConversionInitializeCursors(ctx context.Context, organizationID string) error {
+	_, err := q.db.ExecContext(ctx, conversionInitializeCursors, organizationID)
+	return err
+}
+
+const conversionNextCursor = `-- name: ConversionNextCursor :one
+SELECT family, turn, positioned, key_1, key_2, key_3, key_4, sequence
+FROM storage_conversion_cursors
+WHERE organization_id=$1 AND family=ANY($2::text[])
+ORDER BY turn, family LIMIT 1
+`
+
+type ConversionNextCursorParams struct {
+	OrganizationID tracker.OrganizationID
+	Families       []string
+}
+
+type ConversionNextCursorRow struct {
+	Family     string
+	Turn       int64
+	Positioned bool
+	Key1       string
+	Key2       string
+	Key3       string
+	Key4       string
+	Sequence   int64
+}
+
+func (q *Queries) ConversionNextCursor(ctx context.Context, arg ConversionNextCursorParams) (ConversionNextCursorRow, error) {
+	row := q.db.QueryRowContext(ctx, conversionNextCursor, arg.OrganizationID, pq.Array(arg.Families))
+	var i ConversionNextCursorRow
+	err := row.Scan(
+		&i.Family,
+		&i.Turn,
+		&i.Positioned,
+		&i.Key1,
+		&i.Key2,
+		&i.Key3,
+		&i.Key4,
+		&i.Sequence,
+	)
+	return i, err
+}
+
+const conversionNextEvidence = `-- name: ConversionNextEvidence :one
+SELECT c.project_id, r.change_id AS aggregate_id, r.change_id AS record_id, r.sequence AS record_sequence,
+ r.payload_format_version, r.payload_object_key, r.payload_sha256, r.payload_bytes, r.payload_content_bytes
+FROM (
+ SELECT change_id,sequence,payload_format_version,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,organization_id
+ FROM change_evidence AS pending
+ WHERE pending.organization_id=$1 AND payload_format_version=1
+  AND (change_id,sequence)>($2::text,$3::bigint)
+ ORDER BY change_id,sequence LIMIT 1
+) r JOIN change_requests c ON c.organization_id=r.organization_id AND c.id=r.change_id
+`
+
+type ConversionNextEvidenceParams struct {
+	OrganizationID tracker.OrganizationID
+	AggregateID    string
+	Sequence       int64
+}
+
+type ConversionNextEvidenceRow struct {
+	ProjectID            tracker.ProjectID
+	AggregateID          string
+	RecordID             string
+	RecordSequence       int64
+	PayloadFormatVersion int64
+	PayloadObjectKey     string
+	PayloadSHA256        string
+	PayloadBytes         int64
+	PayloadContentBytes  int64
+}
+
+func (q *Queries) ConversionNextEvidence(ctx context.Context, arg ConversionNextEvidenceParams) (ConversionNextEvidenceRow, error) {
+	row := q.db.QueryRowContext(ctx, conversionNextEvidence, arg.OrganizationID, arg.AggregateID, arg.Sequence)
+	var i ConversionNextEvidenceRow
+	err := row.Scan(
+		&i.ProjectID,
+		&i.AggregateID,
+		&i.RecordID,
+		&i.RecordSequence,
+		&i.PayloadFormatVersion,
+		&i.PayloadObjectKey,
+		&i.PayloadSHA256,
+		&i.PayloadBytes,
+		&i.PayloadContentBytes,
+	)
+	return i, err
+}
+
+const conversionNextRun = `-- name: ConversionNextRun :one
+SELECT project_id, work_item_id AS aggregate_id, id AS record_id, sequence AS record_sequence,
+ payload_format_version, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes
+FROM collaboration_events
+WHERE organization_id=$1 AND payload_format_version=1
+ AND type IN ('run.started','run.checkpointed','run.observed','run.finished','scheduler.decision')
+ AND (project_id,work_item_id,id,sequence)>($2::text,$3::text,$4::text,$5::bigint)
+ORDER BY project_id,work_item_id,id,sequence LIMIT 1
+`
+
+type ConversionNextRunParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      string
+	AggregateID    string
+	RecordID       string
+	Sequence       int64
+}
+
+type ConversionNextRunRow struct {
+	ProjectID            tracker.ProjectID
+	AggregateID          tracker.NativeWorkItemID
+	RecordID             string
+	RecordSequence       int64
+	PayloadFormatVersion int64
+	PayloadObjectKey     string
+	PayloadSHA256        string
+	PayloadBytes         int64
+	PayloadContentBytes  int64
+}
+
+func (q *Queries) ConversionNextRun(ctx context.Context, arg ConversionNextRunParams) (ConversionNextRunRow, error) {
+	row := q.db.QueryRowContext(ctx, conversionNextRun,
+		arg.OrganizationID,
+		arg.ProjectID,
+		arg.AggregateID,
+		arg.RecordID,
+		arg.Sequence,
+	)
+	var i ConversionNextRunRow
+	err := row.Scan(
+		&i.ProjectID,
+		&i.AggregateID,
+		&i.RecordID,
+		&i.RecordSequence,
+		&i.PayloadFormatVersion,
+		&i.PayloadObjectKey,
+		&i.PayloadSHA256,
+		&i.PayloadBytes,
+		&i.PayloadContentBytes,
+	)
+	return i, err
+}
+
+const conversionNextVersion = `-- name: ConversionNextVersion :one
+SELECT c.project_id, r.change_id AS aggregate_id, r.id AS record_id, r.number AS record_sequence,
+ r.payload_format_version, r.payload_object_key, r.payload_sha256, r.payload_bytes, r.payload_content_bytes
+FROM (
+ SELECT change_id,id,number,payload_format_version,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,organization_id
+ FROM change_versions AS pending
+ WHERE pending.organization_id=$1 AND payload_format_version=1
+  AND (change_id,id,number)>($2::text,$3::text,$4::bigint)
+ ORDER BY change_id,id,number LIMIT 1
+) r JOIN change_requests c ON c.organization_id=r.organization_id AND c.id=r.change_id
+`
+
+type ConversionNextVersionParams struct {
+	OrganizationID tracker.OrganizationID
+	AggregateID    string
+	RecordID       string
+	Sequence       int64
+}
+
+type ConversionNextVersionRow struct {
+	ProjectID            tracker.ProjectID
+	AggregateID          string
+	RecordID             string
+	RecordSequence       int64
+	PayloadFormatVersion int64
+	PayloadObjectKey     string
+	PayloadSHA256        string
+	PayloadBytes         int64
+	PayloadContentBytes  int64
+}
+
+func (q *Queries) ConversionNextVersion(ctx context.Context, arg ConversionNextVersionParams) (ConversionNextVersionRow, error) {
+	row := q.db.QueryRowContext(ctx, conversionNextVersion,
+		arg.OrganizationID,
+		arg.AggregateID,
+		arg.RecordID,
+		arg.Sequence,
+	)
+	var i ConversionNextVersionRow
+	err := row.Scan(
+		&i.ProjectID,
+		&i.AggregateID,
+		&i.RecordID,
+		&i.RecordSequence,
+		&i.PayloadFormatVersion,
+		&i.PayloadObjectKey,
+		&i.PayloadSHA256,
+		&i.PayloadBytes,
+		&i.PayloadContentBytes,
+	)
+	return i, err
 }
 
 const conversionPage = `-- name: ConversionPage :many
@@ -235,4 +469,60 @@ func (q *Queries) ConversionProgress(ctx context.Context, arg ConversionProgress
 	var i ConversionProgressRow
 	err := row.Scan(&i.ConvertedRows, &i.ConvertedBytes)
 	return i, err
+}
+
+const conversionRecordUsage = `-- name: ConversionRecordUsage :exec
+UPDATE storage_conversion_cursors SET examined_rows=examined_rows+$1::bigint,
+ examined_bytes=examined_bytes+$2::bigint, oversized_rows=oversized_rows+$3::bigint
+WHERE organization_id=$4 AND family=$5
+`
+
+type ConversionRecordUsageParams struct {
+	Rows           int64
+	Bytes          int64
+	Oversized      int64
+	OrganizationID tracker.OrganizationID
+	Family         string
+}
+
+func (q *Queries) ConversionRecordUsage(ctx context.Context, arg ConversionRecordUsageParams) error {
+	_, err := q.db.ExecContext(ctx, conversionRecordUsage,
+		arg.Rows,
+		arg.Bytes,
+		arg.Oversized,
+		arg.OrganizationID,
+		arg.Family,
+	)
+	return err
+}
+
+const conversionReserveCursor = `-- name: ConversionReserveCursor :exec
+UPDATE storage_conversion_cursors AS target SET turn=(SELECT max(c.turn)+1 FROM storage_conversion_cursors c WHERE c.organization_id=$1)
+WHERE target.organization_id=$1 AND target.family=$2
+`
+
+type ConversionReserveCursorParams struct {
+	OrganizationID tracker.OrganizationID
+	Family         string
+}
+
+func (q *Queries) ConversionReserveCursor(ctx context.Context, arg ConversionReserveCursorParams) error {
+	_, err := q.db.ExecContext(ctx, conversionReserveCursor, arg.OrganizationID, arg.Family)
+	return err
+}
+
+const conversionRestoreCursor = `-- name: ConversionRestoreCursor :exec
+UPDATE storage_conversion_cursors SET turn=$1
+WHERE organization_id=$2 AND family=$3
+`
+
+type ConversionRestoreCursorParams struct {
+	Turn           int64
+	OrganizationID tracker.OrganizationID
+	Family         string
+}
+
+func (q *Queries) ConversionRestoreCursor(ctx context.Context, arg ConversionRestoreCursorParams) error {
+	_, err := q.db.ExecContext(ctx, conversionRestoreCursor, arg.Turn, arg.OrganizationID, arg.Family)
+	return err
 }

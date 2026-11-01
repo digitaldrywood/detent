@@ -67,3 +67,62 @@ SELECT public.convert_history_payload(
 SELECT converted_rows, converted_bytes FROM storage_conversion_progress
 WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_id)
   AND family=sqlc.arg(family) AND aggregate_id=sqlc.arg(aggregate_id);
+
+-- name: ConversionInitializeCursors :exec
+INSERT INTO storage_conversion_cursors (organization_id, family)
+SELECT sqlc.arg(organization_id)::text, family FROM unnest(ARRAY['runs', 'versions', 'evidence']) AS family
+ON CONFLICT DO NOTHING;
+
+-- name: ConversionNextCursor :one
+SELECT family, turn, positioned, key_1, key_2, key_3, key_4, sequence
+FROM storage_conversion_cursors
+WHERE organization_id=sqlc.arg(organization_id) AND family=ANY(sqlc.arg(families)::text[])
+ORDER BY turn, family LIMIT 1;
+
+-- name: ConversionReserveCursor :exec
+UPDATE storage_conversion_cursors AS target SET turn=(SELECT max(c.turn)+1 FROM storage_conversion_cursors c WHERE c.organization_id=sqlc.arg(organization_id))
+WHERE target.organization_id=sqlc.arg(organization_id) AND target.family=sqlc.arg(family);
+
+-- name: ConversionRestoreCursor :exec
+UPDATE storage_conversion_cursors SET turn=sqlc.arg(turn)
+WHERE organization_id=sqlc.arg(organization_id) AND family=sqlc.arg(family);
+
+-- name: ConversionRecordUsage :exec
+UPDATE storage_conversion_cursors SET examined_rows=examined_rows+sqlc.arg(rows)::bigint,
+ examined_bytes=examined_bytes+sqlc.arg(bytes)::bigint, oversized_rows=oversized_rows+sqlc.arg(oversized)::bigint
+WHERE organization_id=sqlc.arg(organization_id) AND family=sqlc.arg(family);
+
+-- name: ConversionAdvanceCursor :exec
+UPDATE storage_conversion_cursors SET positioned=sqlc.arg(positioned),key_1=sqlc.arg(key_1),key_2=sqlc.arg(key_2),key_3=sqlc.arg(key_3),key_4=sqlc.arg(key_4),sequence=sqlc.arg(sequence)
+WHERE organization_id=sqlc.arg(organization_id) AND family=sqlc.arg(family);
+
+-- name: ConversionNextRun :one
+SELECT project_id, work_item_id AS aggregate_id, id AS record_id, sequence AS record_sequence,
+ payload_format_version, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes
+FROM collaboration_events
+WHERE organization_id=sqlc.arg(organization_id) AND payload_format_version=1
+ AND type IN ('run.started','run.checkpointed','run.observed','run.finished','scheduler.decision')
+ AND (project_id,work_item_id,id,sequence)>(sqlc.arg(project_id)::text,sqlc.arg(aggregate_id)::text,sqlc.arg(record_id)::text,sqlc.arg(sequence)::bigint)
+ORDER BY project_id,work_item_id,id,sequence LIMIT 1;
+
+-- name: ConversionNextVersion :one
+SELECT c.project_id, r.change_id AS aggregate_id, r.id AS record_id, r.number AS record_sequence,
+ r.payload_format_version, r.payload_object_key, r.payload_sha256, r.payload_bytes, r.payload_content_bytes
+FROM (
+ SELECT change_id,id,number,payload_format_version,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,organization_id
+ FROM change_versions AS pending
+ WHERE pending.organization_id=sqlc.arg(organization_id) AND payload_format_version=1
+  AND (change_id,id,number)>(sqlc.arg(aggregate_id)::text,sqlc.arg(record_id)::text,sqlc.arg(sequence)::bigint)
+ ORDER BY change_id,id,number LIMIT 1
+) r JOIN change_requests c ON c.organization_id=r.organization_id AND c.id=r.change_id;
+
+-- name: ConversionNextEvidence :one
+SELECT c.project_id, r.change_id AS aggregate_id, r.change_id AS record_id, r.sequence AS record_sequence,
+ r.payload_format_version, r.payload_object_key, r.payload_sha256, r.payload_bytes, r.payload_content_bytes
+FROM (
+ SELECT change_id,sequence,payload_format_version,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,organization_id
+ FROM change_evidence AS pending
+ WHERE pending.organization_id=sqlc.arg(organization_id) AND payload_format_version=1
+  AND (change_id,sequence)>(sqlc.arg(aggregate_id)::text,sqlc.arg(sequence)::bigint)
+ ORDER BY change_id,sequence LIMIT 1
+) r JOIN change_requests c ON c.organization_id=r.organization_id AND c.id=r.change_id;

@@ -13,7 +13,6 @@ import (
 
 const CurrentVersion int64 = 2
 const MaxRows = 100
-const MaxBytes int64 = 1 << 20
 
 type Family string
 
@@ -79,86 +78,50 @@ type Repository interface {
 
 type Transform func(context.Context, Candidate, []byte) ([]byte, error)
 
-type Owner struct {
+type Converter struct {
 	repository Repository
 	objects    attachment.DetailStore
 	transform  Transform
 }
 
-func New(repository Repository, objects attachment.DetailStore, transform Transform) *Owner {
-	return &Owner{repository: repository, objects: objects, transform: transform}
+func New(repository Repository, objects attachment.DetailStore, transform Transform) *Converter {
+	return &Converter{repository: repository, objects: objects, transform: transform}
 }
 
-type Result struct {
-	Next      Cursor
-	Visited   int
-	Converted int
-	Bytes     int64
-}
-
-func (o *Owner) Batch(ctx context.Context, scope Scope, cursor Cursor, limit int) (Result, error) {
-	if o.repository == nil || o.objects == nil || o.transform == nil || limit < 1 || limit > MaxRows {
-		return Result{}, ErrInvalid
+func (c *Converter) Convert(ctx context.Context, candidate Candidate, expand func(int) error) (bool, int64, error) {
+	if c.repository == nil || c.objects == nil || c.transform == nil {
+		return false, 0, ErrInvalid
 	}
-	page, err := o.repository.ConversionPage(ctx, scope, cursor, limit)
-	if err != nil {
-		return Result{}, fmt.Errorf("read conversion page: %w", err)
-	}
-	result := Result{Next: page.Next}
-	var failures error
-	for _, candidate := range page.Items {
-		if result.Visited > 0 && result.Bytes+candidate.Source.UncompressedSize > MaxBytes {
-			result.Next.After = page.Items[result.Visited-1].Position
-			return result, failures
-		}
-		result.Visited++
-		result.Bytes += candidate.Source.UncompressedSize
-		converted, targetBytes, err := o.convert(ctx, candidate)
-		result.Bytes += targetBytes
-		if err != nil {
-			failures = errors.Join(failures, err)
-		} else if converted {
-			result.Converted++
-		}
-		if err := ctx.Err(); err != nil {
-			return result, errors.Join(failures, err)
-		}
-		if result.Bytes >= MaxBytes {
-			result.Next.After = candidate.Position
-			return result, failures
-		}
-	}
-	return result, failures
-}
-
-func (o *Owner) convert(ctx context.Context, candidate Candidate) (bool, int64, error) {
 	organization := string(candidate.Scope.Organization)
 	if candidate.Scope.Validate() != nil || candidate.FormatVersion != CurrentVersion-1 || candidate.Source.Validate(organization) != nil {
 		return false, 0, ErrInvalid
 	}
-	raw, err := o.objects.ReadDetail(ctx, organization, candidate.Source)
+	raw, err := c.objects.ReadDetail(ctx, organization, candidate.Source)
 	if err != nil {
 		return false, 0, fmt.Errorf("read conversion source: %w", err)
 	}
 	if int64(len(raw)) != candidate.Source.UncompressedSize {
 		return false, 0, artifact.ErrIntegrity
 	}
-	converted, err := o.transform(ctx, candidate, raw)
+	converted, err := c.transform(ctx, candidate, raw)
 	if err != nil {
 		return false, 0, fmt.Errorf("convert storage payload: %w", err)
 	}
 	targetBytes := int64(len(converted))
+	if err := expand(len(raw) + len(converted)); err != nil {
+		return false, 0, err
+	}
 	ref, _, err := attachment.PrepareArchive(organization, 1, bytes.NewReader(converted))
 	if err != nil {
 		return false, targetBytes, fmt.Errorf("prepare conversion object: %w", err)
 	}
-	stored, readErr := o.objects.ReadDetail(ctx, organization, ref)
+	stored, readErr := c.objects.ReadDetail(ctx, organization, ref)
 	if readErr != nil || !bytes.Equal(stored, converted) {
-		published, uploadErr := o.objects.StoreDetail(ctx, organization, converted)
+		published, uploadErr := c.objects.StoreDetail(ctx, organization, converted)
 		if uploadErr == nil && published != ref {
 			return false, targetBytes, artifact.ErrIntegrity
 		}
-		stored, readErr = o.objects.ReadDetail(ctx, organization, ref)
+		stored, readErr = c.objects.ReadDetail(ctx, organization, ref)
 		if readErr != nil {
 			return false, targetBytes, fmt.Errorf("reconcile conversion upload: %w", errors.Join(uploadErr, readErr))
 		}
@@ -166,7 +129,7 @@ func (o *Owner) convert(ctx context.Context, candidate Candidate) (bool, int64, 
 			return false, targetBytes, artifact.ErrIntegrity
 		}
 	}
-	committed, err := o.repository.CommitConversion(ctx, candidate, ref)
+	committed, err := c.repository.CommitConversion(ctx, candidate, ref)
 	if err != nil {
 		return false, targetBytes, fmt.Errorf("commit storage conversion: %w", err)
 	}

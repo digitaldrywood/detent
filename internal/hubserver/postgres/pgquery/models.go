@@ -629,6 +629,21 @@ type RequestMinute struct {
 	Histogram      []int64
 }
 
+type StorageConversionCursor struct {
+	OrganizationID tracker.OrganizationID
+	Family         string
+	Turn           int64
+	Positioned     bool
+	Key1           string
+	Key2           string
+	Key3           string
+	Key4           string
+	Sequence       int64
+	ExaminedRows   int64
+	ExaminedBytes  int64
+	OversizedRows  int64
+}
+
 type StorageConversionProgress struct {
 	OrganizationID tracker.OrganizationID
 	ProjectID      tracker.ProjectID

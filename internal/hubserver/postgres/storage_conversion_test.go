@@ -11,6 +11,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -188,7 +189,7 @@ func TestStorageConversionTenantRecovery(t *testing.T) {
 					}
 					var cursor storageconversion.Cursor
 					for turn := range 2 {
-						owner := storageconversion.New(r, objects, convertPayload)
+						owner := newConversionBatch(r, objects, convertPayload)
 						result, err := owner.Batch(t.Context(), scope, cursor, 1)
 						if err != nil || result.Converted != 1 || result.Visited != 1 {
 							t.Fatalf("turn %d = %+v, %v", turn, result, err)
@@ -197,7 +198,7 @@ func TestStorageConversionTenantRecovery(t *testing.T) {
 					}
 					assertConversionProgress(t, r, scope, 2, page.Items[0].Source.UncompressedSize+page.Items[1].Source.UncompressedSize)
 					assertConvertedRecords(t, objects, scope, before, conversionRecords(t, r, scope))
-					replay, err := storageconversion.New(r, objects, convertPayload).Batch(t.Context(), scope, storageconversion.Cursor{}, 100)
+					replay, err := newConversionBatch(r, objects, convertPayload).Batch(t.Context(), scope, storageconversion.Cursor{}, 100)
 					if err != nil || replay.Converted != 0 || replay.Next != (storageconversion.Cursor{}) {
 						t.Fatalf("replay = %+v, %v", replay, err)
 					}
@@ -286,7 +287,7 @@ func TestStorageConversionCrashPoints(t *testing.T) {
 				if point == "transform failure" {
 					transform = func(context.Context, storageconversion.Candidate, []byte) ([]byte, error) { return nil, injected }
 				}
-				result, err := storageconversion.New(repository, storage, transform).Batch(t.Context(), scope, storageconversion.Cursor{}, 100)
+				result, err := newConversionBatch(repository, storage, transform).Batch(t.Context(), scope, storageconversion.Cursor{}, 100)
 				wantRows := int64(0)
 				if point == "uncertain upload" || point == "uncertain commit" {
 					wantRows = 1
@@ -304,7 +305,7 @@ func TestStorageConversionCrashPoints(t *testing.T) {
 					retryUploads++
 					return objects.StoreDetail(ctx, org, raw)
 				}}
-				retry, err := storageconversion.New(r, retryStorage, convertPayload).Batch(t.Context(), scope, storageconversion.Cursor{}, 100)
+				retry, err := newConversionBatch(r, retryStorage, convertPayload).Batch(t.Context(), scope, storageconversion.Cursor{}, 100)
 				if err != nil || retry.Converted != 1-int(wantRows) {
 					t.Fatalf("restart = %+v, %v", retry, err)
 				}
@@ -345,13 +346,13 @@ func TestStorageConversionConcurrentRuns(t *testing.T) {
 			var workers sync.WaitGroup
 			t.Cleanup(func() { unblock.Do(func() { close(release) }); workers.Wait() })
 			type outcome struct {
-				result storageconversion.Result
+				result conversionResult
 				err    error
 			}
 			finished := make(chan outcome, 2)
 			for range 2 {
 				workers.Go(func() {
-					owner := storageconversion.New(r, objects, func(ctx context.Context, candidate storageconversion.Candidate, raw []byte) ([]byte, error) {
+					owner := newConversionBatch(r, objects, func(ctx context.Context, candidate storageconversion.Candidate, raw []byte) ([]byte, error) {
 						arrived <- struct{}{}
 						select {
 						case <-release:
@@ -442,7 +443,7 @@ func TestStorageConversionLateCommit(t *testing.T) {
 			if err != nil || len(end.Items) != 0 || end.Next != (storageconversion.Cursor{}) {
 				t.Fatalf("bounded sweep did not end = %+v, %v", end, err)
 			}
-			owner := storageconversion.New(r, objects, convertPayload)
+			owner := newConversionBatch(r, objects, convertPayload)
 			result, err := owner.Batch(t.Context(), scope, end.Next, 100)
 			if err != nil || result.Converted != 3 {
 				t.Fatalf("next sweep missed committed records = %+v, %v", result, err)
@@ -565,7 +566,7 @@ func TestStorageConversionRollbackAndAuthority(t *testing.T) {
 CREATE TRIGGER reject_conversion_progress BEFORE INSERT OR UPDATE ON storage_conversion_progress FOR EACH ROW EXECUTE FUNCTION reject_conversion_progress()`); err != nil {
 				t.Fatal(err)
 			}
-			owner := storageconversion.New(r, objects, convertPayload)
+			owner := newConversionBatch(r, objects, convertPayload)
 			result, err := owner.Batch(t.Context(), scope, storageconversion.Cursor{}, 100)
 			if err == nil || result.Converted != 0 {
 				t.Fatalf("rejected progress write committed: %+v, %v", result, err)
@@ -628,14 +629,15 @@ func TestStorageConversionBudgets(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				owner := storageconversion.New(r, objects, convertPayload)
-				var cursor storageconversion.Cursor
+				storage := postgres.NewConversionStorage(r, scope.Organization, objects, convertPayload)
 				for turn := range 3 {
-					result, err := owner.Batch(t.Context(), scope, cursor, 100)
-					if err != nil || result.Converted != 1 || result.Visited != 1 {
-						t.Fatalf("budget turn %d = %+v, %v", turn, result, err)
+					if err := hubserver.ConvertStorageBatch(t.Context(), storage); err != nil {
+						t.Fatal(err)
 					}
-					cursor = result.Next
+					progress, err := r.ConversionProgress(t.Context(), scope)
+					if err != nil || progress.Rows != int64(turn+1) {
+						t.Fatalf("budget turn %d = %+v, %v", turn, progress, err)
+					}
 				}
 				assertConversionProgress(t, r, scope, 3, 3*ref.UncompressedSize)
 			})
@@ -690,7 +692,7 @@ func TestStorageConversionValidationAndFailedRowProgress(t *testing.T) {
 				}
 			}
 			injected := errors.New("failed first record")
-			owner := storageconversion.New(r, objects, func(ctx context.Context, candidate storageconversion.Candidate, raw []byte) ([]byte, error) {
+			owner := newConversionBatch(r, objects, func(ctx context.Context, candidate storageconversion.Candidate, raw []byte) ([]byte, error) {
 				if candidate.Position.Sequence == 1 {
 					return nil, injected
 				}
@@ -704,10 +706,197 @@ func TestStorageConversionValidationAndFailedRowProgress(t *testing.T) {
 			if err != nil || continued.Converted != 1 {
 				t.Fatalf("failure starved the next record = %+v, %v", continued, err)
 			}
-			recovered, err := storageconversion.New(r, objects, convertPayload).Batch(t.Context(), scope, storageconversion.Cursor{}, 100)
+			recovered, err := newConversionBatch(r, objects, convertPayload).Batch(t.Context(), scope, storageconversion.Cursor{}, 100)
 			if err != nil || recovered.Converted != 1 {
 				t.Fatalf("failed record did not recover = %+v, %v", recovered, err)
 			}
 		})
 	}
+}
+
+func TestStorageConversionOwnerTick(t *testing.T) {
+	admin := template.Database(t)
+	r, _ := repositoryFor(t, admin, smallPool())
+	objects := newHistoryObjects()
+	organizations := []tracker.OrganizationID{"org_first", "org_second"}
+	for _, org := range organizations {
+		seedRepository(t, r, org)
+		for _, family := range conversionFamilies() {
+			for _, second := range []bool{false, true} {
+				scope := conversionScope(org, family, second)
+				conversionParent(t, r, objects, scope)
+				count := 2
+				if family == storageconversion.Runs {
+					count = 101
+				}
+				for i := range count {
+					seedConversion(t, r, objects, scope, fmt.Sprintf("record_%s_%03d", scope.AggregateID, i+2), int64(i+2), 1)
+				}
+			}
+		}
+	}
+	injected := errors.New("retry pending payload")
+	fail := true
+	transform := func(ctx context.Context, candidate storageconversion.Candidate, raw []byte) ([]byte, error) {
+		if fail && candidate.Scope.Family == storageconversion.Runs && candidate.Position.Sequence == 2 {
+			return nil, injected
+		}
+		return convertPayload(ctx, candidate, raw)
+	}
+	usage := func(org tracker.OrganizationID) (rows, bytes int64) {
+		t.Helper()
+		if err := admin.QueryRowContext(t.Context(), `SELECT coalesce(sum(examined_rows),0),coalesce(sum(examined_bytes),0) FROM storage_conversion_cursors WHERE organization_id=$1`, org).Scan(&rows, &bytes); err != nil {
+			t.Fatal(err)
+		}
+		return rows, bytes
+	}
+	for orgIndex, org := range organizations {
+		for tick := range 5 {
+			beforeRows, beforeBytes := usage(org)
+			storage := postgres.NewConversionStorage(r, org, objects, transform)
+			err := hubserver.ConvertStorageBatch(t.Context(), storage)
+			afterRows, afterBytes := usage(org)
+			if afterRows-beforeRows > 100 || afterBytes-beforeBytes > 1<<20 {
+				t.Fatalf("owner exceeded tick budget: rows=%d bytes=%d", afterRows-beforeRows, afterBytes-beforeBytes)
+			}
+			if tick == 0 && afterRows-beforeRows != 100 {
+				t.Fatalf("first tick examined %d rows, want 100", afterRows-beforeRows)
+			}
+			if orgIndex == 0 && tick == 0 {
+				if !errors.Is(err, injected) {
+					t.Fatalf("failed payload was not reported: %v", err)
+				}
+				for _, family := range conversionFamilies()[1:] {
+					for _, second := range []bool{false, true} {
+						scope := conversionScope(org, family, second)
+						progress, err := r.ConversionProgress(t.Context(), scope)
+						if err != nil || progress.Rows != 2 {
+							t.Fatalf("family starved on owner tick: %s %+v, %v", family, progress, err)
+						}
+					}
+				}
+				for _, family := range conversionFamilies() {
+					for _, second := range []bool{false, true} {
+						scope := conversionScope("org_second", family, second)
+						assertConversionProgress(t, r, scope, 0, 0)
+						scope.Organization = org
+						seedConversion(t, r, objects, scope, "000_"+scope.AggregateID, 1, 1)
+					}
+				}
+				fail = false
+			} else if err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, family := range conversionFamilies() {
+			for _, second := range []bool{false, true} {
+				scope := conversionScope(org, family, second)
+				want := int64(2)
+				if family == storageconversion.Runs {
+					want = 101
+				}
+				if orgIndex == 0 {
+					want++
+				}
+				progress, err := r.ConversionProgress(t.Context(), scope)
+				if err != nil || progress.Rows != want {
+					t.Fatalf("owner missed retry, restart or late record: %+v = %+v, %v; want %d", scope, progress, err, want)
+				}
+				page, err := r.ConversionPage(t.Context(), scope, storageconversion.Cursor{}, 100)
+				if err != nil || len(page.Items) != 0 {
+					t.Fatalf("owner left pending records: %+v, %v", page, err)
+				}
+			}
+		}
+		for _, family := range conversionFamilies() {
+			scope := conversionScope(org, family, false)
+			seedConversion(t, r, objects, scope, "000_after_idle_"+scope.AggregateID, 500, 1)
+		}
+		if err := hubserver.ConvertStorageBatch(t.Context(), postgres.NewConversionStorage(r, org, objects, convertPayload)); err != nil {
+			t.Fatal(err)
+		}
+		for _, family := range conversionFamilies() {
+			scope := conversionScope(org, family, false)
+			want := int64(3)
+			if family == storageconversion.Runs {
+				want = 102
+			}
+			if orgIndex == 0 {
+				want++
+			}
+			progress, err := r.ConversionProgress(t.Context(), scope)
+			if err != nil || progress.Rows != want {
+				t.Fatalf("idle tick stopped future sweeps: %+v = %+v, %v; want %d", scope, progress, err, want)
+			}
+		}
+
+	}
+}
+
+type conversionResult struct {
+	Next      storageconversion.Cursor
+	Visited   int
+	Converted int
+	Bytes     int64
+}
+
+type conversionBatch struct {
+	repository storageconversion.Repository
+	converter  *storageconversion.Converter
+	scope      storageconversion.Scope
+	cursor     storageconversion.Cursor
+	limit      int
+	result     conversionResult
+}
+
+func newConversionBatch(repository storageconversion.Repository, objects attachment.DetailStore, transform storageconversion.Transform) *conversionBatch {
+	return &conversionBatch{repository: repository, converter: storageconversion.New(repository, objects, transform)}
+}
+
+func (b *conversionBatch) Batch(ctx context.Context, scope storageconversion.Scope, cursor storageconversion.Cursor, limit int) (conversionResult, error) {
+	b.scope, b.cursor, b.limit, b.result = scope, cursor, limit, conversionResult{}
+	err := hubserver.ConvertStorageBatch(ctx, b)
+	return b.result, err
+}
+
+func (b *conversionBatch) Start(context.Context) ([]string, error) {
+	if b.limit < 1 || b.limit > storageconversion.MaxRows {
+		return nil, storageconversion.ErrInvalid
+	}
+	return []string{string(b.scope.Family)}, nil
+}
+
+func (b *conversionBatch) Next(context.Context, []string) (storageconversion.FamilyCursor, error) {
+	return storageconversion.FamilyCursor{Family: string(b.scope.Family)}, nil
+}
+
+func (b *conversionBatch) Update(context.Context, storageconversion.FamilyCursor, storageconversion.CursorUpdate, storageconversion.Usage) error {
+	return nil
+}
+
+func (b *conversionBatch) Convert(ctx context.Context, _ storageconversion.FamilyCursor, turn storageconversion.Turn) error {
+	if b.result.Visited >= b.limit {
+		return nil
+	}
+	page, err := b.repository.ConversionPage(ctx, b.scope, b.cursor, 1)
+	if err != nil {
+		return err
+	}
+	if len(page.Items) == 0 {
+		b.result.Next = storageconversion.Cursor{}
+		return nil
+	}
+	candidate := page.Items[0]
+	if err := turn.Charge(int(candidate.Source.UncompressedSize)); err != nil {
+		return err
+	}
+	b.result.Visited++
+	b.result.Bytes += candidate.Source.UncompressedSize
+	turn.Advance(func(context.Context) error { b.cursor = page.Next; b.result.Next = page.Next; return nil })
+	converted, targetBytes, err := b.converter.Convert(ctx, candidate, turn.Expand)
+	b.result.Bytes += targetBytes
+	if converted {
+		b.result.Converted++
+	}
+	return err
 }

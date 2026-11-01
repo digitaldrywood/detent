@@ -14,6 +14,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/hubserver/storageconversion"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -623,8 +624,9 @@ type storageBatchKey struct{}
 type storageSelectedRowKey struct{}
 
 type storageRowPosition struct {
-	family string
-	row    int64
+	family    string
+	row       int64
+	candidate storageconversion.Candidate
 }
 
 type storageBatchBudget struct {
@@ -713,85 +715,48 @@ func (f storageConversionFamily) payloadPredicate() string {
 }
 
 func (s *Service) convertStorageBatch(ctx context.Context, now time.Time) error {
-	ctx = s.freshRunDetailContext(ctx)
+	return ConvertStorageBatch(s.freshRunDetailContext(ctx), sqliteConversionStorage{service: s, now: now})
+}
+
+func ConvertStorageBatch(ctx context.Context, storage storageconversion.Storage) error {
 	budget := &storageBatchBudget{}
 	ctx = context.WithValue(ctx, storageBatchKey{}, budget)
-	projections := []struct {
-		name    string
-		convert func(context.Context) error
-	}{
-		{"projection-pages", s.convertIssuePageFacts},
-		{"projection-activity", s.convertActivityProjections},
-		{"projection-attempts", s.convertAttemptHotProjections},
-		{"projection-leases", s.convertAttemptLeases},
-		{"projection-ranks", s.convertNativeBoardRanks},
-		{"projection-health", s.convertHealthProjections},
-		{"projection-runners", s.convertRunnerBoardProjections},
-	}
-	names := make([]string, 0, len(projections)+len(storageConversionFamilies))
-	for _, p := range projections {
-		names = append(names, p.name)
-	}
-	for _, f := range storageConversionFamilies {
-		names = append(names, f.name)
-	}
-	rows, err := s.database.reader.QueryContext(ctx, "SELECT family FROM storage_conversion_cursors WHERE "+storageConversionOwnerPredicate)
+	names, err := storage.Start(ctx)
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
-	existing := map[string]bool{}
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			return errors.Join(err, rows.Close())
-		}
-		existing[name] = true
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return err
-	}
-	for _, name := range names {
-		if !existing[name] {
-			if _, err := s.database.db.ExecContext(ctx, `INSERT INTO storage_conversion_cursors(family) VALUES(?) ON CONFLICT DO NOTHING`, name); err != nil {
-				return err
-			}
-		}
-	}
+	familyCount := len(names)
 	var failures error
-	for turns := 0; turns < storageConversionRows*(len(storageConversionFamilies)+len(projections)) && budget.rows < storageConversionRows && len(names) > 0; turns++ {
-		var cursor storageFamilyCursor
-		err := s.database.reader.QueryRowContext(ctx, `SELECT family,turn,positioned,key_1,key_2,key_3,key_4,sequence FROM storage_conversion_cursors WHERE family IN (`+strings.TrimSuffix(strings.Repeat("?,", len(names)), ",")+`) ORDER BY turn,family LIMIT 1`, stringArguments(names)...).Scan(&cursor.family, &cursor.turn, &cursor.positioned, &cursor.keys[0], &cursor.keys[1], &cursor.keys[2], &cursor.keys[3], &cursor.sequence)
+	for turns := 0; turns < storageConversionRows*familyCount && budget.rows < storageConversionRows && len(names) > 0; turns++ {
+		cursor, err := storage.Next(ctx, names)
 		if err != nil {
 			return errors.Join(failures, err)
 		}
-		budget.reserve = func() error {
-			_, err := s.database.db.ExecContext(ctx, "UPDATE storage_conversion_cursors SET turn=(SELECT max(turn)+1 FROM storage_conversion_cursors WHERE "+storageConversionOwnerPredicate+") WHERE family=?", cursor.family)
-			return err
-		}
+		budget.reserve = func() error { return storage.Update(ctx, cursor, storageconversion.Reserve, storageconversion.Usage{}) }
+
 		budget.advance = nil
 		budget.itemBytes = 0
-		budget.turn = cursor.turn
+		budget.turn = cursor.Turn
 		beforeRows, beforeBytes, beforeOversized := budget.rows, budget.bytes, budget.oversized
-		index := slices.IndexFunc(projections, func(p struct {
-			name    string
-			convert func(context.Context) error
-		}) bool {
-			return p.name == cursor.family
+		err = storage.Convert(ctx, cursor, storageconversion.Turn{
+			Visit: func(candidate storageconversion.Candidate) bool {
+				if budget.visited == nil {
+					budget.visited = make(map[storageRowPosition]bool)
+				}
+				key := storageRowPosition{candidate: candidate}
+				visited := budget.visited[key]
+				budget.visited[key] = true
+				return visited
+			},
+			Charge:  func(size int) error { return chargeStorageConversion(ctx, size) },
+			Expand:  func(size int) error { return expandStorageConversion(ctx, size) },
+			Advance: func(advance func(context.Context) error) { budget.advance = advance },
 		})
-		if index >= 0 {
-			err = projections[index].convert(ctx)
-		} else {
-			family := storageConversionFamilies[slices.IndexFunc(storageConversionFamilies, func(f storageConversionFamily) bool { return f.name == cursor.family })]
-			if (objectPayloadFamily(family.name) && (s.runDetailStore() != nil || s.storageArchiveContent() != nil)) || (!objectPayloadFamily(family.name) && s.storageArchiveContent() != nil) {
-				err = s.convertStorageFamilyTurn(ctx, family, cursor, now)
-			}
-		}
 		if errors.Is(err, errStorageBatchFull) {
 			if budget.reserve != nil {
 				return failures
 			}
-			_, restoreErr := s.database.db.ExecContext(ctx, `UPDATE storage_conversion_cursors SET turn=? WHERE family=?`, cursor.turn, cursor.family)
+			restoreErr := storage.Update(ctx, cursor, storageconversion.Restore, storageconversion.Usage{})
 			return errors.Join(failures, restoreErr)
 		}
 		if budget.rows > beforeRows && budget.advance != nil {
@@ -803,15 +768,15 @@ func (s *Service) convertStorageBatch(ctx context.Context, now time.Time) error 
 			}
 		}
 		if budget.rows > beforeRows {
-			if _, recordErr := s.database.db.ExecContext(ctx, `UPDATE storage_conversion_cursors SET examined_rows=examined_rows+?,examined_bytes=examined_bytes+?,oversized_rows=oversized_rows+? WHERE family=?`, budget.rows-beforeRows, budget.bytes-beforeBytes, budget.oversized-beforeOversized, cursor.family); recordErr != nil {
+			if recordErr := storage.Update(ctx, cursor, storageconversion.Record, storageconversion.Usage{Rows: budget.rows - beforeRows, Bytes: budget.bytes - beforeBytes, Oversized: budget.oversized - beforeOversized}); recordErr != nil {
 				return errors.Join(failures, err, recordErr)
 			}
 		} else {
-			names = slices.DeleteFunc(names, func(name string) bool { return name == cursor.family })
+			names = slices.DeleteFunc(names, func(name string) bool { return name == cursor.Family })
 		}
 
 		if err != nil {
-			failures = errors.Join(failures, fmt.Errorf("convert legacy %s: %w", cursor.family, err))
+			failures = errors.Join(failures, fmt.Errorf("convert legacy %s: %w", cursor.Family, err))
 		}
 		if ctx.Err() != nil {
 			return errors.Join(failures, ctx.Err())

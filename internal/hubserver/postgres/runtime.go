@@ -46,6 +46,7 @@ func NewRuntime(ctx context.Context, reader, writer *sql.DB) (*Runtime, error) {
 				'public.change_versions'::regclass,
 				'public.change_evidence'::regclass,
 				'public.storage_conversion_progress'::regclass,
+'public.storage_conversion_cursors'::regclass,
 				'public.request_metric_windows'::regclass,
 				'public.request_metric_callers'::regclass,
 				'public.request_minutes'::regclass,
