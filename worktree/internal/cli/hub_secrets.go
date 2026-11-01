@@ -1,0 +1,195 @@
+package cli
+
+import (
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+
+	"github.com/spf13/cobra"
+
+	"github.com/digitaldrywood/detent/internal/cloudentry"
+	"github.com/digitaldrywood/detent/internal/hubsecrets"
+	"github.com/digitaldrywood/detent/internal/hubserver"
+)
+
+const hubSecretsRewrapProcedure = "the Hub rewraps provider secrets automatically after restart. Add the new key while retaining old versions, set it active, restart the Hub, then run detent hub secrets status until exit 0 before retiring old keys. See docs/hub-self-hosting.md"
+
+func newHubSecretsCommand(lookupEnv func(string) string) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "secrets",
+		Short:   "Maintain encrypted Hub provider secrets",
+		Example: "detent hub secrets status --database /var/lib/detent/hub.db",
+		Args: func(_ *cobra.Command, args []string) error {
+			if len(args) != 0 {
+				return errors.New(hubSecretsRewrapProcedure)
+			}
+			return nil
+		},
+	}
+	cmd.FParseErrWhitelist.UnknownFlags = true
+	cmd.RunE = func(cmd *cobra.Command, _ []string) error {
+		_, err := cmd.OutOrStdout().Write([]byte(hubSecretsRewrapProcedure + "\n"))
+		return err
+	}
+	cmd.AddCommand(newHubSecretsStatusCommand(lookupEnv))
+	return cmd
+}
+
+type hubSecretsStatusError struct {
+	code int
+}
+
+func (e *hubSecretsStatusError) Error() string {
+	if e.code == 3 {
+		return "Hub secret rotation is incomplete"
+	}
+	return "Hub secret preflight failed"
+}
+
+type hubSecretsStatus struct {
+	AuthDatabase       *cloudentry.AuthSecretDatabaseStatus `json:"auth_database,omitempty"`
+	ActiveVersion      int                                  `json:"active_version"`
+	ConfiguredVersions []int                                `json:"configured_versions"`
+	Databases          []hubserver.SecretDatabaseStatus     `json:"databases"`
+	MissingVersions    []int                                `json:"missing_versions"`
+	Retirable          []int                                `json:"retirable"`
+	Problems           []hubserver.SecretRowProblem         `json:"problems"`
+	Problem            string                               `json:"problem,omitempty"`
+}
+
+func newHubSecretsStatusCommand(lookupEnv func(string) string) *cobra.Command {
+	var databasePath, tenantRoot, authDatabasePath string
+	cmd := &cobra.Command{
+		Use:          "status",
+		Short:        "Check encrypted Hub secrets with the proposed environment keyring without writing",
+		Example:      "detent hub secrets status --database /var/lib/detent/hub.db",
+		Args:         NoArgs,
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			report := hubSecretsStatus{
+				ConfiguredVersions: []int{}, Databases: []hubserver.SecretDatabaseStatus{},
+				MissingVersions: []int{}, Retirable: []int{}, Problems: []hubserver.SecretRowProblem{},
+			}
+			code := 0
+			keys, err := hubsecrets.FromEnvironment(lookupEnv)
+			switch {
+			case strings.TrimSpace(databasePath) != "" && strings.TrimSpace(tenantRoot) != "" || strings.TrimSpace(databasePath) == "" && strings.TrimSpace(tenantRoot) == "" && strings.TrimSpace(authDatabasePath) == "":
+				report.Problem = "select --database or --tenant-root, optionally with --auth-database, or --auth-database alone"
+				code = 2
+			case err != nil:
+				report.Problem = "invalid_keyring"
+				code = 2
+			default:
+				report.ActiveVersion = keys.Version()
+				report.ConfiguredVersions = keys.Versions()
+				paths := []string{}
+				if strings.TrimSpace(databasePath) != "" {
+					paths = append(paths, databasePath)
+				}
+				if strings.TrimSpace(tenantRoot) != "" {
+					paths, err = hubSecretTenantDatabases(tenantRoot)
+					if err != nil {
+						report.Problem = "unreadable_tenant_root"
+						code = 2
+					}
+				}
+				referenced := make(map[int]bool)
+				missing := make(map[int]bool)
+				complete := err == nil
+				for _, path := range paths {
+					status := hubserver.SecretStatus(cmd.Context(), path, keys)
+					report.Databases = append(report.Databases, status)
+					if status.Problem != "" {
+						complete = false
+						code = 2
+					}
+					for _, count := range status.Counts {
+						referenced[count.MasterKeyVersion] = true
+					}
+					for _, problem := range status.Problems {
+						report.Problems = append(report.Problems, problem)
+						if problem.Problem == "missing_key" {
+							missing[problem.MasterKeyVersion] = true
+						}
+						if problem.Problem != "not_active_version" {
+							code = 2
+						} else if code == 0 {
+							code = 3
+						}
+					}
+				}
+				if strings.TrimSpace(authDatabasePath) != "" {
+					status := cloudentry.AuthSecretStatus(cmd.Context(), authDatabasePath, keys)
+					report.AuthDatabase = &status
+					if status.Problem != "" {
+						complete = false
+						code = 2
+					}
+					for _, count := range status.Counts {
+						if count.Format == "hk1" && count.Version > 0 {
+							referenced[count.Version] = true
+						}
+					}
+					for _, problem := range status.Problems {
+						if problem.Problem == "missing_key" {
+							missing[problem.Version] = true
+						}
+						if problem.Problem != "not_active_version" && problem.Problem != "legacy" {
+							code = 2
+						} else if code == 0 {
+							code = 3
+						}
+					}
+				}
+				for version := range missing {
+					report.MissingVersions = append(report.MissingVersions, version)
+				}
+				slices.Sort(report.MissingVersions)
+				if complete {
+					for _, version := range report.ConfiguredVersions {
+						if !referenced[version] {
+							report.Retirable = append(report.Retirable, version)
+						}
+					}
+				}
+			}
+			if err := json.NewEncoder(cmd.OutOrStdout()).Encode(report); err != nil {
+				return &hubSecretsStatusError{code: 2}
+			}
+			if code != 0 {
+				return &hubSecretsStatusError{code: code}
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&authDatabasePath, "auth-database", "", "Cloud entry auth database to inspect read-only")
+	cmd.Flags().StringVar(&databasePath, "database", "", "Hub database to inspect read-only")
+	cmd.Flags().StringVar(&tenantRoot, "tenant-root", "", "scan every tenant directory's hub.db read-only")
+	return cmd
+}
+
+func hubSecretTenantDatabases(root string) ([]string, error) {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil, err
+	}
+	paths := []string{}
+	for _, entry := range entries {
+		if !entry.IsDir() && entry.Type()&os.ModeSymlink == 0 {
+			continue
+		}
+		tenant := filepath.Join(root, entry.Name())
+		if info, err := os.Stat(tenant); err == nil && !info.IsDir() {
+			continue
+		}
+		path := filepath.Join(tenant, "hub.db")
+		if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		paths = append(paths, path)
+	}
+	return paths, nil
+}

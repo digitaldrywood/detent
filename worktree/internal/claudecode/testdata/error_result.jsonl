@@ -1,0 +1,3 @@
+{"type":"system","subtype":"init","session_id":"session-error","model":"fable"}
+{"type":"assistant","session_id":"session-error","message":{"id":"msg-error","type":"message","role":"assistant","model":"fable","content":[{"type":"text","text":"working"}],"usage":{"input_tokens":7,"output_tokens":2}}}
+{"type":"result","subtype":"error_max_turns","session_id":"session-error","duration_ms":50,"total_cost_usd":0.0002,"usage":{"input_tokens":8,"output_tokens":3}}

@@ -1,0 +1,122 @@
+package cloudentry
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/cloudentry/platformstore"
+	"github.com/digitaldrywood/detent/internal/tracker"
+)
+
+func entryAuthError(err error) error {
+	if errors.Is(err, platformstore.ErrNoSession) {
+		return errNoSession
+	}
+	return err
+}
+
+func (a *authStore) postgresAuthorize(ctx context.Context, session accountSession, organization string, identity auth.HostedIdentity, tokens auth.HostedTokens, email string) (authorization, []authorization, error) {
+	item, previous, err := a.store.db.postgres.Authorize(ctx, session.Hash, tracker.OrganizationID(organization), identity, tokens, email)
+	if err != nil {
+		return authorization{}, nil, entryAuthError(err)
+	}
+	result := entryAuthorization(item)
+	var stale []authorization
+	if previous != nil && previous.Binding != result.Binding {
+		stale = append(stale, entryAuthorization(*previous))
+	}
+	return result, stale, nil
+}
+
+func entryAuthorization(item platformstore.Authorization) authorization {
+	return authorization{Binding: item.Binding, Organization: string(item.OrganizationID), Identity: item.Identity, Support: item.Support, EffectiveEmail: item.EffectiveEmail}
+}
+
+func (d *entryDatabase) isPostgres() bool    { return d.postgres != nil }
+func (t *entryTransaction) isPostgres() bool { return t.owner.isPostgres() }
+
+func postgresAuthorizations(ctx context.Context, query queryer, where string, args ...any) (_ []authorization, resultErr error) {
+	clock, ok := query.(interface{ entryNow() time.Time })
+	if !ok {
+		return nil, platformstore.ErrInvalid
+	}
+	args = append(args, clock.entryNow())
+	rows, err := query.QueryContext(ctx, `SELECT binding,organization_id,identity_subject,provider_organization_id,provider_session_id,identity_created_at,identity_expires_at,support_actor,support_reason,support,effective_email,access_token,refresh_token FROM authorizations WHERE `+where+` AND EXISTS(SELECT 1 FROM sessions s WHERE s.token_hash=authorizations.session_hash AND s.revoked_at IS NULL AND s.expires_at>?)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer closeEntryRows(rows, &resultErr)
+	var result []authorization
+	for rows.Next() {
+		var item authorization
+		if err := rows.Scan(&item.Binding, &item.Organization, &item.Identity.Subject, &item.Identity.OrganizationID, &item.Identity.SessionID, &item.Identity.CreatedAt, &item.Identity.ExpiresAt, &item.Identity.SupportActor, &item.Identity.SupportReason, &item.Support, &item.EffectiveEmail, &item.sealedAccess, &item.sealedRefresh); err != nil {
+			return nil, err
+		}
+		result = append(result, item)
+	}
+	return result, rows.Err()
+}
+
+func (a *authStore) postgresSession(ctx context.Context, hash string) (accountSession, time.Time, error) {
+	item, err := a.store.db.postgres.Session(ctx, hash)
+	if err != nil {
+		return accountSession{}, time.Time{}, errNoSession
+	}
+	return accountSession{Hash: item.Hash, Subject: item.Subject, Email: item.Email, CSRFSecret: item.CSRFSecret, Identity: item.Identity}, item.ExpiresAt, nil
+}
+
+func (a *authStore) postgresLogin(ctx context.Context, hash string, item loginTransaction) error {
+	return a.store.db.postgres.CreateLogin(ctx, platformstore.LoginTransaction{Hash: hash, ID: item.ID, State: item.State, Verifier: item.Verifier, OrganizationID: item.Organization, ReturnPath: item.ReturnPath, InvitationToken: item.InvitationToken, InvitationOrganization: item.InvitationOrganization, SupportActor: item.SupportActor, SupportSession: item.SupportSession, SupportReason: item.SupportReason, ExpiresAt: a.now().Add(10 * time.Minute)})
+}
+
+func (a *authStore) postgresConsumeLogin(ctx context.Context, hash, id string) (loginTransaction, error) {
+	item, err := a.store.db.postgres.ConsumeLogin(ctx, hash, id)
+	return loginTransaction{ID: item.ID, State: item.State, Verifier: item.Verifier, Organization: item.OrganizationID, ReturnPath: item.ReturnPath, InvitationToken: item.InvitationToken, InvitationOrganization: item.InvitationOrganization, SupportActor: item.SupportActor, SupportSession: item.SupportSession, SupportReason: item.SupportReason}, entryAuthError(err)
+}
+
+func (a *authStore) postgresRevokeSession(ctx context.Context, hash string) ([]authorization, error) {
+	items, err := activeAuthorizations(ctx, a.store.db, "session_hash=? AND revoked_at IS NULL", hash)
+	if err != nil {
+		return nil, err
+	}
+	return items, a.store.db.postgres.RevokeSession(ctx, hash)
+}
+
+func (a *authStore) postgresStoreTokens(ctx context.Context, binding string, tokens auth.HostedTokens, expected ...auth.HostedTokens) error {
+	var hash, organization string
+	err := a.store.reader.QueryRowContext(ctx, "SELECT session_hash,organization_id FROM authorizations WHERE binding=? AND revoked_at IS NULL", binding).Scan(&hash, &organization)
+	if err != nil {
+		return errNoSession
+	}
+	previous, err := a.store.db.postgres.Tokens(ctx, hash, tracker.OrganizationID(organization), binding)
+	if err != nil {
+		return entryAuthError(err)
+	}
+	if len(expected) > 0 {
+		previous = expected[0]
+	}
+	return entryAuthError(a.store.db.postgres.RotateTokens(ctx, hash, tracker.OrganizationID(organization), binding, previous, tokens))
+}
+
+type entryOptionalTime struct{ value *string }
+
+func (v entryOptionalTime) Scan(source any) error {
+	switch at := source.(type) {
+	case nil:
+		*v.value = ""
+	case time.Time:
+		*v.value = formatTime(at)
+	case string:
+		*v.value = at
+	case []byte:
+		*v.value = string(at)
+	default:
+		return errors.New("invalid stored timestamp")
+	}
+	return nil
+}
+
+var _ sql.Scanner = entryOptionalTime{}
