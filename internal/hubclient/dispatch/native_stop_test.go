@@ -46,8 +46,12 @@ func (w *stoppedFinalizationWorkspace) RunReviewCommand(ctx context.Context, inf
 }
 
 func TestNativeStopDuringHostFinalization(t *testing.T) {
+	isolateNativeChangeGit(t)
 	for _, mode := range []string{"stop", "drain during validation", "drain during publication", "drain during validation with pending status", "drain during publication with pending status", "drain before dispatch with released status", "drain before dispatch with pending status"} {
-		t.Run(mode, func(t *testing.T) { testNativeStopDuringHostFinalization(t, mode) })
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			testNativeStopDuringHostFinalization(t, mode)
+		})
 	}
 }
 
@@ -150,7 +154,6 @@ func testNativeStopDuringHostFinalization(t *testing.T, mode string) {
 	if testing.Short() {
 		t.Skip("git subprocess integration")
 	}
-	isolateNativeChangeGit(t)
 	h := newNativeChangeHubTransport(t, "In Review", []tracker.NativeState{
 		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress"}},
 		{Name: "In Progress", Dispatchable: true, Transitions: []string{"In Review", "Merging", "Blocked"}},
@@ -412,12 +415,30 @@ func testNativeStopDuringHostFinalization(t *testing.T, mode string) {
 			t.Fatal(err)
 		}
 		_, active := state.Running[issue.ID]
-		_, pending := state.Blocked[issue.ID]
+		blocked, held := state.Blocked[issue.ID]
+		pending := held && blocked.Source == orchestrator.BlockedSourceOperatorStop
 		if active || pending {
 			return fmt.Errorf("stop did not settle after host check success: running=%+v blocked=%+v", state.Running, state.Blocked)
 		}
 		return nil
 	})
+	if _, err := orch.RequestRefresh(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	testenv.WaitUntil(t, t.Context(), func() error {
+		state, err = orch.State(t.Context())
+		if err != nil {
+			return err
+		}
+		blocked, held := state.Blocked[issue.ID]
+		if !held || blocked.Source != orchestrator.BlockedSourceProjectStatus {
+			return fmt.Errorf("completed stop has no projected operator hold: %+v", blocked)
+		}
+		return nil
+	})
+	if _, active := state.Running[issue.ID]; active {
+		t.Fatal("completed stop remained active after project refresh")
+	}
 	if lane, changes := h.state(t, issue.ID), h.changes(t, issue.ID); lane != "Blocked" || len(changes) != 1 {
 		t.Fatalf("stopped host check published source or lost its destination: lane=%s changes=%+v", lane, changes)
 	}
