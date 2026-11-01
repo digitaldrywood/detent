@@ -239,7 +239,7 @@ type sharedOriginPilot struct {
 	configure []func(*Config)
 }
 
-func (p *sharedOriginPilot) restartWithQueuedRunnerRequests(t *testing.T, organization pilotOrganization, runner pilotRunner, claim tracker.NativeClaim, expectedLease tracker.LeaseID) {
+func (p *sharedOriginPilot) restartWithQueuedRunnerRequests(t *testing.T, organization pilotOrganization, runner pilotRunner, claim tracker.NativeClaim, expectedLease tracker.NativeLease) {
 	t.Helper()
 	if !p.launcher.useUnix {
 		t.Skip("rollout route test requires a real tenant Unix socket")
@@ -286,6 +286,10 @@ func (p *sharedOriginPilot) restartWithQueuedRunnerRequests(t *testing.T, organi
 		{name: "project API", method: http.MethodGet, path: organization.projectAPI() + "/work-items", token: runner.credential},
 		{name: "MCP initialize", method: http.MethodPost, path: "/organizations/" + organization.id + "/mcp", browser: organization.owner, headers: map[string]string{"Content-Type": "application/json", "Origin": p.base, "Sec-Fetch-Site": "same-origin", "X-CSRF-Token": organization.ownerCSRF}, body: json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"rollout-runner","version":"1"}}}`)},
 		{name: "runner heartbeat", method: http.MethodPost, path: organization.projectAPI() + "/machines/" + string(runner.MachineID) + "/heartbeat", token: runner.credential, body: runnerV0172Heartbeat{BackendIsolation: map[string]any{}, Problems: []json.RawMessage{}, ProtocolMajor: 2, DisplayName: "Runner", Capacity: 1, Version: "v0.172.12", OS: runtime.GOOS, Architecture: runtime.GOARCH}},
+		{name: "in-flight lease renewal", method: http.MethodPost, path: organization.projectAPI() + "/leases/" + string(expectedLease.ID) + "/renew", token: runner.credential, body: struct {
+			FencingToken string `json:"fencing_token"`
+			TTLSeconds   int64  `json:"ttl_seconds"`
+		}{FencingToken: fmt.Sprint(expectedLease.FencingToken), TTLSeconds: claim.TTLSeconds}},
 		{name: "in-flight claim retry", method: http.MethodPost, path: organization.projectAPI() + "/claims", token: runner.credential, body: runnerV0172Claim{PolicyID: claim.PolicyID, WorkItemID: claim.WorkItemID, MachineID: claim.MachineID, SessionID: claim.SessionID, TTLSeconds: claim.TTLSeconds, ProtocolMajor: claim.ProtocolMajor, Capabilities: claim.Capabilities}},
 	}
 	written := make(chan error, len(calls))
@@ -366,12 +370,12 @@ func (p *sharedOriginPilot) restartWithQueuedRunnerRequests(t *testing.T, organi
 			if response.RunnerID != runner.RunnerID || response.Revision < 1 {
 				t.Fatalf("v0.172.12 heartbeat response identity = %q revision %d", response.RunnerID, response.Revision)
 			}
-		case "in-flight claim retry":
+		case "in-flight claim retry", "in-flight lease renewal":
 			var response runnerV0172Lease
 			if err := json.Unmarshal([]byte(result.response.body), &response); err != nil {
 				t.Fatalf("v0.172.12 claim response decode: %v", err)
 			}
-			if response.LeaseID != string(expectedLease) || response.FencingToken == "" || response.WorkItemID == "" {
+			if response.LeaseID != string(expectedLease.ID) || response.FencingToken != fmt.Sprint(expectedLease.FencingToken) || response.WorkItemID != string(expectedLease.WorkItemID) {
 				t.Fatalf("v0.172.12 in-flight claim response = lease %q item %q fencing %q", response.LeaseID, response.WorkItemID, response.FencingToken)
 			}
 		}
@@ -1134,7 +1138,7 @@ func TestSharedOriginPilotAcceptance(t *testing.T) {
 		finish.Type, finish.IdempotencyKey, finish.Data.Sequence, finish.Data.Outcome = "run.finished", "finish", 2, "succeeded"
 		events := alpha.projectAPI() + "/work-items/" + string(alphaIssue.WorkItemID) + "/events"
 		pilotStatus(t, start.Type, p.machine(t, http.MethodPost, events, alphaRunner.credential, start), http.StatusOK)
-		p.restartWithQueuedRunnerRequests(t, alpha, alphaRunner, claim, lease.ID)
+		p.restartWithQueuedRunnerRequests(t, alpha, alphaRunner, claim, lease)
 		pilotStatus(t, finish.Type, p.machine(t, http.MethodPost, events, alphaRunner.credential, finish), http.StatusOK)
 		pilotStatus(t, "release", p.machine(t, http.MethodPost, alpha.projectAPI()+"/leases/"+string(lease.ID)+"/release", alphaRunner.credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
 		attempts := alpha.owner.get(alpha.projectAPI() + "/work-items/" + string(alphaIssue.WorkItemID) + "/attempts")
