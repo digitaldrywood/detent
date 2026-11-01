@@ -34,6 +34,7 @@ type TenantSpec struct {
 
 type Launcher interface {
 	Start(context.Context, TenantSpec) error
+	WaitReady(context.Context, string) error
 	Stop(string) error
 	Close() error
 	Failure(string) error
@@ -65,17 +66,72 @@ type ExecLauncher struct {
 	Logger       *slog.Logger
 	RestartLimit int
 
-	mu       sync.Mutex
-	closed   bool
-	running  map[string]*supervisedTenant
-	failures map[string]error
-	health   map[string]*tenantProcessHealth
+	mu               sync.Mutex
+	closed           bool
+	running          map[string]*supervisedTenant
+	failures         map[string]error
+	health           map[string]*tenantProcessHealth
+	readinessChanged chan struct{}
 }
 
 type tenantProcessHealth struct {
 	startedAt time.Time
 	starts    []time.Time
 	observed  bool
+	serving   bool
+	checked   bool
+}
+
+func (l *ExecLauncher) WaitReady(ctx context.Context, id string) error {
+	for {
+		l.mu.Lock()
+		entry := l.health[id]
+		if entry != nil && entry.serving {
+			l.mu.Unlock()
+			return nil
+		}
+		if failure := l.failures[id]; failure != nil {
+			l.mu.Unlock()
+			return failure
+		}
+		if entry != nil && !entry.checked {
+			l.mu.Unlock()
+			return errors.New("tenant Hub has no readiness check")
+		}
+		if _, ok := l.running[id]; !ok {
+			l.mu.Unlock()
+			return errors.New("tenant Hub is not supervised")
+		}
+		if l.readinessChanged == nil {
+			l.readinessChanged = make(chan struct{})
+		}
+		changed := l.readinessChanged
+		l.mu.Unlock()
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-changed:
+		}
+	}
+}
+
+func (l *ExecLauncher) setServing(id string, serving bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	entry := l.health[id]
+	if entry == nil || entry.serving == serving {
+		return
+	}
+	entry.serving = serving
+	l.signalReadinessLocked()
+}
+
+func (l *ExecLauncher) signalReadinessLocked() {
+	if l.readinessChanged != nil {
+		close(l.readinessChanged)
+	}
+	l.readinessChanged = make(chan struct{})
 }
 
 func (l *ExecLauncher) Health(id string, now time.Time) (*int64, *int) {
@@ -122,6 +178,17 @@ func (l *ExecLauncher) Start(_ context.Context, spec TenantSpec) error {
 	if _, ok := l.running[spec.Organization.ID]; ok {
 		return nil
 	}
+	if l.health == nil {
+		l.health = make(map[string]*tenantProcessHealth)
+	}
+	entry := l.health[spec.Organization.ID]
+	if entry == nil {
+		entry = &tenantProcessHealth{}
+		l.health[spec.Organization.ID] = entry
+	}
+	entry.checked = spec.Check != nil
+	entry.serving = false
+	l.signalReadinessLocked()
 	delete(l.failures, spec.Organization.ID)
 	config, err := l.Configure(spec)
 	if err != nil {
@@ -248,14 +315,17 @@ func (l *ExecLauncher) waitTenant(ctx context.Context, spec TenantSpec, result <
 	for {
 		select {
 		case err := <-result:
+			l.setServing(spec.Organization.ID, false)
 			return err
 		case <-ctx.Done():
+			l.setServing(spec.Organization.ID, false)
 			return <-result
 		case <-ticker.C:
 			probe, stop := context.WithTimeout(ctx, platformCallTimeout)
 			err := spec.Check(probe)
 			stop()
 			if ctx.Err() != nil {
+				l.setServing(spec.Organization.ID, false)
 				return <-result
 			}
 			if errors.Is(err, errTenantMigrating) {
@@ -263,9 +333,11 @@ func (l *ExecLauncher) waitTenant(ctx context.Context, spec TenantSpec, result <
 				continue
 			}
 			if err == nil {
+				l.setServing(spec.Organization.ID, true)
 				lastHealthy, served = time.Now(), true
 				continue
 			}
+			l.setServing(spec.Organization.ID, false)
 			window := tenantUnavailableTimeout
 			if !served {
 				window = tenantStartupGrace
@@ -296,6 +368,10 @@ func (l *ExecLauncher) giveUp(id string, tenant *supervisedTenant, failure error
 		return
 	}
 	delete(l.running, id)
+	if entry := l.health[id]; entry != nil {
+		entry.serving = false
+	}
+	l.signalReadinessLocked()
 	if l.failures == nil {
 		l.failures = make(map[string]error)
 	}
@@ -321,6 +397,10 @@ func (l *ExecLauncher) Stop(id string) error {
 	l.mu.Lock()
 	tenant, ok := l.running[id]
 	delete(l.failures, id)
+	if entry := l.health[id]; entry != nil {
+		entry.serving = false
+	}
+	l.signalReadinessLocked()
 	l.mu.Unlock()
 	if !ok {
 		return nil
@@ -331,6 +411,7 @@ func (l *ExecLauncher) Stop(id string) error {
 	if l.running[id] == tenant {
 		delete(l.running, id)
 	}
+	l.signalReadinessLocked()
 	l.mu.Unlock()
 	return nil
 }

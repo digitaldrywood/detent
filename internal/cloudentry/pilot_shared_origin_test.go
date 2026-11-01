@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -16,9 +17,11 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -38,10 +41,44 @@ import (
 
 const pilotOperatorToken = "detent_pilot_entitlement_operator_0123456789abcdef"
 
+type runnerV0172Claim struct {
+	PolicyID      string                   `json:"policy_id"`
+	WorkItemID    tracker.NativeWorkItemID `json:"work_item_id,omitempty"`
+	MachineID     tracker.MachineID        `json:"machine_id"`
+	SessionID     string                   `json:"session_id"`
+	TTLSeconds    int64                    `json:"ttl_seconds"`
+	ProtocolMajor int                      `json:"protocol_major"`
+	Capabilities  []string                 `json:"capabilities"`
+}
+
+type runnerV0172Lease struct {
+	PolicyID     string `json:"policy_id"`
+	LeaseID      string `json:"lease_id"`
+	WorkItemID   string `json:"work_item_id"`
+	MachineID    string `json:"machine_id"`
+	SessionID    string `json:"session_id"`
+	FencingToken string `json:"fencing_token"`
+	AcquiredAt   string `json:"acquired_at"`
+	RenewedAt    string `json:"renewed_at"`
+	ExpiresAt    string `json:"expires_at"`
+}
+
+type runnerV0172Heartbeat struct {
+	BackendIsolation map[string]any    `json:"backend_isolation"`
+	Problems         []json.RawMessage `json:"problems"`
+	ProtocolMajor    int               `json:"protocol_major,omitempty"`
+	DisplayName      string            `json:"display_name"`
+	Capacity         int               `json:"capacity"`
+	Version          string            `json:"version"`
+	OS               string            `json:"os"`
+	Architecture     string            `json:"architecture"`
+}
+
 type pilotTenantLauncher struct {
 	databaseTemplate string
 	provider         *fakeProvider
 	billing          billing.Provider
+	version          string
 	mu               sync.Mutex
 	running          map[string]func()
 	transports       map[string]*http.Transport
@@ -69,7 +106,7 @@ func (l *pilotTenantLauncher) Start(_ context.Context, spec TenantSpec) error {
 	}
 	content := &conversationArchiveFixture{}
 	config := hubserver.Config{
-		DatabasePath: filepath.Join(spec.Directory, "hub.db"), GitHubDisabled: true,
+		DatabasePath: filepath.Join(spec.Directory, "hub.db"), GitHubDisabled: true, Version: l.version,
 		InitialAdminToken: []byte(pilotAdminToken(spec.Organization.ID)), Logger: slog.New(slog.DiscardHandler),
 		Content: content.handleContent,
 		Hosted: &hubserver.HostedConfig{
@@ -130,6 +167,28 @@ func (l *pilotTenantLauncher) transport(organization Organization) (http.RoundTr
 	return transport, nil
 }
 
+func (l *pilotTenantLauncher) WaitReady(ctx context.Context, id string) error {
+	l.mu.Lock()
+	spec, ok := l.specs[id]
+	running := l.running[id] != nil
+	l.mu.Unlock()
+	if !running || !ok || spec.Check == nil {
+		return fmt.Errorf("tenant fixture %s is not running", id)
+	}
+	for {
+		if err := spec.Check(ctx); err == nil {
+			return nil
+		}
+		timer := time.NewTimer(tenantProbeInterval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
 func (l *pilotTenantLauncher) Stop(id string) error {
 	l.mu.Lock()
 	stop, ok := l.running[id]
@@ -168,6 +227,9 @@ type sharedOriginPilot struct {
 	provider  *fakeProvider
 	launcher  *pilotTenantLauncher
 	server    *httptest.Server
+	ingress   net.Listener
+	serveDone chan error
+	serveStop context.CancelFunc
 	handler   *swappableHandler
 	base      string
 	state     string
@@ -175,6 +237,198 @@ type sharedOriginPilot struct {
 	key       ed25519.PrivateKey
 	client    fs.FS
 	configure []func(*Config)
+}
+
+func (p *sharedOriginPilot) restartWithQueuedRunnerRequests(t *testing.T, organization pilotOrganization, runner pilotRunner, claim tracker.NativeClaim, expectedLease tracker.LeaseID) {
+	t.Helper()
+	if !p.launcher.useUnix {
+		t.Skip("rollout route test requires a real tenant Unix socket")
+	}
+	file, err := p.server.Listener.(*net.TCPListener).File()
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.FileListener(file)
+	fileErr := file.Close()
+	if err != nil || fileErr != nil {
+		t.Fatal(errors.Join(err, fileErr))
+	}
+
+	requestCancels := []context.CancelFunc{}
+	var requestWait sync.WaitGroup
+	t.Cleanup(func() {
+		for _, cancel := range requestCancels {
+			cancel()
+		}
+		_ = listener.Close()
+		requestWait.Wait()
+	})
+	p.ingress = listener
+
+	p.server.Close()
+	if err := p.service.CloseContext(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+
+	type rolloutCall struct {
+		name, method, path string
+		body               any
+		token              string
+		browser            *pilotBrowser
+		headers            map[string]string
+	}
+	type rolloutResult struct {
+		name     string
+		response pilotResponse
+		err      error
+	}
+	calls := []rolloutCall{
+		{name: "project API", method: http.MethodGet, path: organization.projectAPI() + "/work-items", token: runner.credential},
+		{name: "MCP initialize", method: http.MethodPost, path: "/organizations/" + organization.id + "/mcp", browser: organization.owner, headers: map[string]string{"Content-Type": "application/json", "Origin": p.base, "Sec-Fetch-Site": "same-origin", "X-CSRF-Token": organization.ownerCSRF}, body: json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"rollout-runner","version":"1"}}}`)},
+		{name: "runner heartbeat", method: http.MethodPost, path: organization.projectAPI() + "/machines/" + string(runner.MachineID) + "/heartbeat", token: runner.credential, body: runnerV0172Heartbeat{BackendIsolation: map[string]any{}, Problems: []json.RawMessage{}, ProtocolMajor: 2, DisplayName: "Runner", Capacity: 1, Version: "v0.172.12", OS: runtime.GOOS, Architecture: runtime.GOARCH}},
+		{name: "in-flight claim retry", method: http.MethodPost, path: organization.projectAPI() + "/claims", token: runner.credential, body: runnerV0172Claim{PolicyID: claim.PolicyID, WorkItemID: claim.WorkItemID, MachineID: claim.MachineID, SessionID: claim.SessionID, TTLSeconds: claim.TTLSeconds, ProtocolMajor: claim.ProtocolMajor, Capabilities: claim.Capabilities}},
+	}
+	written := make(chan error, len(calls))
+	results := make(chan rolloutResult, len(calls))
+	for _, call := range calls {
+		var body io.Reader
+		if call.body != nil {
+			raw, err := json.Marshal(call.body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body = bytes.NewReader(raw)
+		}
+		ctx, cancel := context.WithCancel(t.Context())
+		requestCancels = append(requestCancels, cancel)
+		request, err := http.NewRequestWithContext(ctx, call.method, p.base+call.path, body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for key, value := range call.headers {
+			request.Header.Set(key, value)
+		}
+		if call.token != "" {
+			request.Header.Set("Authorization", "Bearer "+call.token)
+		}
+		if call.body != nil && request.Header.Get("Content-Type") == "" {
+			request.Header.Set("Content-Type", "application/json")
+		}
+		trace := &httptrace.ClientTrace{WroteRequest: func(info httptrace.WroteRequestInfo) { written <- info.Err }}
+		request = request.WithContext(httptrace.WithClientTrace(request.Context(), trace))
+		client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+		if call.browser != nil {
+			client.Jar = call.browser.client.Jar
+		}
+		requestWait.Add(1)
+		go func(name string) {
+			defer requestWait.Done()
+			response, err := client.Do(request)
+			if err != nil {
+				results <- rolloutResult{name: name, err: err}
+				return
+			}
+			defer response.Body.Close()
+			data, err := io.ReadAll(io.LimitReader(response.Body, 4<<20))
+			if err != nil {
+				results <- rolloutResult{name: name, err: err}
+				return
+			}
+			results <- rolloutResult{name: name, response: pilotResponse{status: response.StatusCode, body: string(data)}}
+		}(call.name)
+	}
+	for range calls {
+		if err := <-written; err != nil {
+			t.Fatalf("write rollout request: %v", err)
+		}
+	}
+
+	p.launcher.version = "v0.173.0"
+	p.open(t, 2, 1)
+	p.startServing(t, listener)
+	for range calls {
+		result := <-results
+		if result.err != nil {
+			t.Fatalf("%s during rollout: %v", result.name, result.err)
+		}
+		if result.response.status != http.StatusOK {
+			t.Fatalf("%s during rollout = %d %s; want %d", result.name, result.response.status, result.response.body, http.StatusOK)
+		}
+		if strings.Contains(result.response.body, "tenant_unavailable") || strings.Contains(result.response.body, "archive_incompatible") {
+			t.Fatalf("%s during rollout returned a tenant or archive incompatibility: %s", result.name, result.response.body)
+		}
+		switch result.name {
+		case "runner heartbeat":
+			var response runnerauth.RoutingSnapshot
+			if err := json.Unmarshal([]byte(result.response.body), &response); err != nil {
+				t.Fatalf("v0.172.12 heartbeat response decode: %v", err)
+			}
+			if response.RunnerID != runner.RunnerID || response.Revision < 1 {
+				t.Fatalf("v0.172.12 heartbeat response identity = %q revision %d", response.RunnerID, response.Revision)
+			}
+		case "in-flight claim retry":
+			var response runnerV0172Lease
+			if err := json.Unmarshal([]byte(result.response.body), &response); err != nil {
+				t.Fatalf("v0.172.12 claim response decode: %v", err)
+			}
+			if response.LeaseID != string(expectedLease) || response.FencingToken == "" || response.WorkItemID == "" {
+				t.Fatalf("v0.172.12 in-flight claim response = lease %q item %q fencing %q", response.LeaseID, response.WorkItemID, response.FencingToken)
+			}
+		}
+	}
+}
+
+func (p *sharedOriginPilot) startServing(t *testing.T, listener net.Listener) {
+	t.Helper()
+	file, err := listener.(*net.TCPListener).File()
+	if err != nil {
+		t.Fatal(err)
+	}
+	serveListener, err := net.FileListener(file)
+	fileErr := file.Close()
+	if err != nil || fileErr != nil {
+		t.Fatal(errors.Join(err, fileErr))
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	started := make(chan struct{})
+	p.serveDone, p.serveStop = done, cancel
+	t.Cleanup(func() {
+		if p.serveDone != done {
+			return
+		}
+		cancel()
+		if err := <-done; err != nil {
+			t.Errorf("serve after tenant readiness: %v", err)
+		}
+		_ = serveListener.Close()
+		p.serveDone, p.serveStop = nil, nil
+	})
+	go func() {
+		done <- p.service.serveAfterTenantReadiness(ctx, func(context.Context) (net.Listener, error) {
+			close(started)
+			return serveListener, nil
+		})
+	}()
+	select {
+	case err := <-done:
+		_ = serveListener.Close()
+		p.serveDone, p.serveStop = nil, nil
+		t.Fatalf("Cloud startup readiness: %v", err)
+	case <-started:
+	}
+}
+
+func (p *sharedOriginPilot) stopServing(t *testing.T) {
+	t.Helper()
+	if p.serveStop == nil {
+		return
+	}
+	p.serveStop()
+	if err := <-p.serveDone; err != nil {
+		t.Fatalf("stop shared entry listener: %v", err)
+	}
+	p.serveDone, p.serveStop = nil, nil
 }
 
 func newSharedOriginPilot(t *testing.T, maxTenants, retryLimit int) *sharedOriginPilot {
@@ -399,8 +653,12 @@ func (o pilotOrganization) projectAPI() string {
 	return o.api() + "/projects/" + o.project
 }
 
-func (p *sharedOriginPilot) enrollRunner(t *testing.T, o, other pilotOrganization, hostname string) pilotRunner {
+func (p *sharedOriginPilot) enrollRunner(t *testing.T, o, other pilotOrganization, hostname string, versions ...string) pilotRunner {
 	t.Helper()
+	version := "test"
+	if len(versions) > 0 {
+		version = versions[0]
+	}
 	binding := runnerauth.NewBinding()
 	request := runnerauth.EnrollmentRequest{Binding: binding, ProjectIDs: []tracker.ProjectID{tracker.ProjectID(o.project)}, Operations: []string{runnerauth.Read, runnerauth.Collaborate, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events}, TTLSeconds: 900}
 	response := o.owner.json(http.MethodPost, o.api()+"/runner-enrollments", o.ownerCSRF, request)
@@ -411,7 +669,7 @@ func (p *sharedOriginPilot) enrollRunner(t *testing.T, o, other pilotOrganizatio
 	if err != nil {
 		t.Fatal(err)
 	}
-	redemption := runnerauth.Redemption{BackendIsolation: isolation.Report{"codex": {isolation.Sandbox, isolation.NativeTrusted}}, Binding: binding, Credential: credential, Hostname: hostname, DisplayName: hostname, Capacity: 1, Version: "test", OS: "linux", Architecture: "amd64"}
+	redemption := runnerauth.Redemption{BackendIsolation: isolation.Report{"codex": {isolation.Sandbox, isolation.NativeTrusted}}, Binding: binding, Credential: credential, Hostname: hostname, DisplayName: hostname, Capacity: 1, Version: version, OS: "linux", Architecture: "amd64"}
 	machine := p.browser(t)
 	wrong := machine.request(http.MethodPost, other.api()+"/runner-enrollments/redeem", jsonBody(t, redemption), map[string]string{"Authorization": "Bearer " + enrollment.Token, "Content-Type": "application/json"})
 	pilotStatus(t, "redeem enrollment at another organization", wrong, http.StatusUnauthorized)
@@ -504,6 +762,7 @@ func TestSharedOriginPilotAcceptance(t *testing.T) {
 	}
 
 	p := newSharedOriginPilot(t, 2, 1)
+	p.launcher.version = "v0.172.12"
 	origin, err := url.Parse(p.base)
 	if err != nil {
 		t.Fatal(err)
@@ -838,7 +1097,7 @@ func TestSharedOriginPilotAcceptance(t *testing.T) {
 		}
 		pilotStatus(t, "second project runner grant", alpha.owner.form("/organizations/"+alpha.id+"/organization/grants", url.Values{"user": {"user_member"}, "project": {alphaSecondProject}, "write": {"true"}, "runner": {"true"}, "csrf": {alpha.ownerCSRF}}), http.StatusSeeOther)
 		pilotStatus(t, "foreign enrollment", beta.owner.json(http.MethodPost, alpha.api()+"/runner-enrollments", beta.ownerCSRF, runnerauth.EnrollmentRequest{Binding: runnerauth.NewBinding(), ProjectIDs: []tracker.ProjectID{tracker.ProjectID(alpha.project)}, Operations: []string{runnerauth.Read}, TTLSeconds: 60}), http.StatusUnauthorized)
-		alphaRunner = p.enrollRunner(t, alpha, beta, "alpha-runner.example.test")
+		alphaRunner = p.enrollRunner(t, alpha, beta, "alpha-runner.example.test", "v0.172.12")
 		betaRunner = p.enrollRunner(t, beta, alpha, "beta-runner.example.test")
 		identity := map[string]int{}
 		for _, test := range []struct {
@@ -874,9 +1133,9 @@ func TestSharedOriginPilotAcceptance(t *testing.T) {
 		finish := start
 		finish.Type, finish.IdempotencyKey, finish.Data.Sequence, finish.Data.Outcome = "run.finished", "finish", 2, "succeeded"
 		events := alpha.projectAPI() + "/work-items/" + string(alphaIssue.WorkItemID) + "/events"
-		for _, event := range []tracker.NativeRunEvent{start, finish} {
-			pilotStatus(t, event.Type, p.machine(t, http.MethodPost, events, alphaRunner.credential, event), http.StatusOK)
-		}
+		pilotStatus(t, start.Type, p.machine(t, http.MethodPost, events, alphaRunner.credential, start), http.StatusOK)
+		p.restartWithQueuedRunnerRequests(t, alpha, alphaRunner, claim, lease.ID)
+		pilotStatus(t, finish.Type, p.machine(t, http.MethodPost, events, alphaRunner.credential, finish), http.StatusOK)
 		pilotStatus(t, "release", p.machine(t, http.MethodPost, alpha.projectAPI()+"/leases/"+string(lease.ID)+"/release", alphaRunner.credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
 		attempts := alpha.owner.get(alpha.projectAPI() + "/work-items/" + string(alphaIssue.WorkItemID) + "/attempts")
 		pilotStatus(t, "attempt history", attempts, http.StatusOK)
@@ -987,10 +1246,12 @@ func TestSharedOriginPilotAcceptance(t *testing.T) {
 
 	pilotStage(t, "entry restart relaunches tenants and keeps sessions", func() {
 		starts := p.launcher.starts
+		p.stopServing(t)
 		if err := p.service.Close(); err != nil {
 			t.Fatal(err)
 		}
 		p.open(t, 2, 1)
+		p.startServing(t, p.ingress)
 		deadline := time.Now().Add(30 * time.Second)
 		for _, tenant := range []struct {
 			name    string

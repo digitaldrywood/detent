@@ -294,11 +294,20 @@ func Run(ctx context.Context, cfg Config) (resultErr error) {
 		resultErr = errors.Join(resultErr, service.CloseContext(ctx))
 	}()
 	var listenConfig net.ListenConfig
-	listener, err := activation.Listen(ctx, "tcp", cfg.ListenAddress, listenConfig.Listen)
+	return service.serveAfterTenantReadiness(ctx, func(ctx context.Context) (net.Listener, error) {
+		return activation.Listen(ctx, "tcp", cfg.ListenAddress, listenConfig.Listen)
+	})
+}
+
+func (s *Service) serveAfterTenantReadiness(ctx context.Context, listen func(context.Context) (net.Listener, error)) error {
+	if err := s.waitForTenantReadiness(ctx); err != nil {
+		return fmt.Errorf("wait for tenant Hubs before serving entry requests: %w", err)
+	}
+	listener, err := listen(ctx)
 	if err != nil {
 		return fmt.Errorf("listen for shared entry requests: %w", err)
 	}
-	return service.serve(ctx, listener)
+	return s.serve(ctx, listener)
 }
 
 func (s *Service) serve(ctx context.Context, listener net.Listener) error {

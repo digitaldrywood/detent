@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/cloudassert"
@@ -85,6 +86,116 @@ func TestExecLauncherWritesPrivateFilesAndStops(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestExecLauncherWaitReadyTracksProcessHealth(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const id = "org_ready"
+		tenant := &supervisedTenant{done: make(chan struct{})}
+		launcher := &ExecLauncher{
+			Logger:           slog.New(slog.DiscardHandler),
+			running:          map[string]*supervisedTenant{id: tenant},
+			health:           map[string]*tenantProcessHealth{id: {checked: true}},
+			readinessChanged: make(chan struct{}),
+		}
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		wait := func() <-chan error {
+			result := make(chan error, 1)
+			go func() { result <- launcher.WaitReady(ctx, id) }()
+			synctest.Wait()
+			return result
+		}
+
+		initial := wait()
+		select {
+		case err := <-initial:
+			t.Fatalf("unready tenant returned immediately: %v", err)
+		default:
+		}
+		launcher.setServing(id, true)
+		if err := <-initial; err != nil {
+			t.Fatalf("ready tenant: %v", err)
+		}
+
+		launcher.setServing(id, false)
+		restarted := wait()
+		select {
+		case err := <-restarted:
+			t.Fatalf("previous process readiness survived restart: %v", err)
+		default:
+		}
+		launcher.setServing(id, true)
+		if err := <-restarted; err != nil {
+			t.Fatalf("replacement tenant: %v", err)
+		}
+
+		launcher.setServing(id, false)
+		cancelled := wait()
+		cancel()
+		if err := <-cancelled; !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled readiness wait = %v", err)
+		}
+	})
+
+	synctest.Test(t, func(t *testing.T) {
+		const id = "org_starting"
+		tenantContext, cancelTenant := context.WithCancel(t.Context())
+		defer cancelTenant()
+		tenant := &supervisedTenant{cancel: cancelTenant, done: make(chan struct{})}
+		launcher := &ExecLauncher{
+			Logger:           slog.New(slog.DiscardHandler),
+			running:          map[string]*supervisedTenant{id: tenant},
+			health:           map[string]*tenantProcessHealth{id: {checked: true}},
+			readinessChanged: make(chan struct{}),
+		}
+		result := make(chan error, 1)
+		go func() { result <- launcher.WaitReady(t.Context(), id) }()
+		synctest.Wait()
+		failure := errors.New("startup failed")
+		launcher.giveUp(id, tenant, failure)
+		if err := <-result; !errors.Is(err, failure) {
+			t.Fatalf("failed tenant readiness = %v", err)
+		}
+		if tenantContext.Err() == nil {
+			t.Fatal("failed tenant remains running")
+		}
+	})
+
+	synctest.Test(t, func(t *testing.T) {
+		const id = "org_stopping"
+		done := make(chan struct{})
+		tenantContext, cancelTenant := context.WithCancel(t.Context())
+		defer cancelTenant()
+		tenant := &supervisedTenant{cancel: cancelTenant, done: done}
+		launcher := &ExecLauncher{
+			Logger:           slog.New(slog.DiscardHandler),
+			running:          map[string]*supervisedTenant{id: tenant},
+			health:           map[string]*tenantProcessHealth{id: {checked: true}},
+			readinessChanged: make(chan struct{}),
+		}
+		waitResult := make(chan error, 1)
+		go func() { waitResult <- launcher.WaitReady(t.Context(), id) }()
+		synctest.Wait()
+		stopResult := make(chan error, 1)
+		go func() { stopResult <- launcher.Stop(id) }()
+		synctest.Wait()
+		select {
+		case err := <-waitResult:
+			t.Fatalf("wait returned before stop removed tenant: %v", err)
+		default:
+		}
+		close(done)
+		if err := <-stopResult; err != nil {
+			t.Fatalf("stop tenant: %v", err)
+		}
+		if err := <-waitResult; err == nil {
+			t.Fatal("readiness wait remained blocked after tenant stop")
+		}
+		if tenantContext.Err() == nil {
+			t.Fatal("stopped tenant remains running")
+		}
+	})
 }
 
 func TestExecLauncherStopsSupervisingAfterRestartLimit(t *testing.T) {

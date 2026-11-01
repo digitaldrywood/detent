@@ -2,6 +2,7 @@ package cloudentry
 
 import (
 	"context"
+	"errors"
 	"sync"
 )
 
@@ -22,6 +23,18 @@ func (l *silentLauncher) Start(_ context.Context, spec TenantSpec) error {
 	}
 	l.running[spec.Organization.ID] = true
 	l.launches++
+	return nil
+}
+
+func (l *silentLauncher) WaitReady(ctx context.Context, id string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if !l.running[id] {
+		return errors.New("tenant fixture is not running")
+	}
 	return nil
 }
 
