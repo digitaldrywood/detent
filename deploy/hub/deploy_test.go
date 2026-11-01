@@ -2,6 +2,7 @@ package hub
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -212,11 +213,13 @@ func TestProductionDeployAcceptsBinaryWithoutReceiverUpgrade(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, test := range []struct {
-		name        string
-		wrongBinary bool
+		name           string
+		wrongBinary    bool
+		socketInactive bool
 	}{
 		{name: "existing binary protocol"},
 		{name: "wrong binary refuses deployment", wrongBinary: true},
+		{name: "bootstrap deploy works before socket installation", socketInactive: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -240,6 +243,7 @@ esac
 				"systemctl": `printf '%s\n' "$*" >> "$FIXTURE_ROOT/systemctl.log"
 case "$1" in
   show) printf '1\n' ;;
+  is-active) if [ "$3" = detent-cloud.socket ]; then [ "$FIXTURE_SOCKET_ACTIVE" = true ]; fi ;;
 esac
 `,
 				"pgrep": "exit 1\n",
@@ -270,6 +274,7 @@ esac
 				"PATH=" + filepath.Join(dir, "bin") + string(os.PathListSeparator) + "/usr/bin:/bin:/usr/sbin:/sbin",
 				"TMPDIR=" + dir,
 				"SSH_ORIGINAL_COMMAND=deploy " + commit,
+				"FIXTURE_SOCKET_ACTIVE=" + fmt.Sprint(!test.socketInactive),
 				"FIXTURE_ROOT=" + dir,
 			}
 			output, err := command.CombinedOutput()
@@ -303,5 +308,42 @@ esac
 				t.Fatalf("upload retained: %v %v", staged, err)
 			}
 		})
+	}
+}
+
+func TestSocketActivationInstallerIsRepeatable(t *testing.T) {
+	t.Parallel()
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	destination := t.TempDir()
+	for _, attempt := range []string{"first", "repeat"} {
+		command := exec.CommandContext(t.Context(), "bash", "install-socket-activation.sh")
+		command.Env = append(os.Environ(), "DESTDIR="+destination)
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("%s install = %v: %s", attempt, err, output)
+		}
+	}
+	for _, file := range []struct {
+		destination string
+		source      string
+	}{
+		{destination: "detent-cloud.socket", source: "cloud/detent-cloud.socket"},
+		{destination: "detent-cloud.service.d/socket.conf", source: "cloud/detent-cloud.service.d/socket.conf"},
+		{destination: "detent-hub.socket", source: "hub/detent-hub.socket"},
+		{destination: "detent-hub.service.d/socket.conf", source: "hub/detent-hub.service.d/socket.conf"},
+	} {
+		installed, err := os.ReadFile(filepath.Join(destination, "etc/systemd/system", file.destination))
+		if err != nil {
+			t.Fatalf("read installed %s: %v", file.destination, err)
+		}
+		expected, err := os.ReadFile(filepath.Join(root, "docs/examples", file.source))
+		if err != nil {
+			t.Fatalf("read source %s: %v", file.source, err)
+		}
+		if !bytes.Equal(installed, expected) {
+			t.Errorf("installed %s differs from source", file.destination)
+		}
 	}
 }

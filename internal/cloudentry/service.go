@@ -21,6 +21,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent"
+	"github.com/digitaldrywood/detent/internal/activation"
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/auth"
@@ -293,7 +294,7 @@ func Run(ctx context.Context, cfg Config) (resultErr error) {
 		resultErr = errors.Join(resultErr, service.CloseContext(ctx))
 	}()
 	var listenConfig net.ListenConfig
-	listener, err := listenConfig.Listen(ctx, "tcp", cfg.ListenAddress)
+	listener, err := activation.Listen(ctx, "tcp", cfg.ListenAddress, listenConfig.Listen)
 	if err != nil {
 		return fmt.Errorf("listen for shared entry requests: %w", err)
 	}
