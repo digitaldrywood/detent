@@ -950,9 +950,39 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 			}
 			transport := fixtureClient(h.native.Transport()).requests.Load()
 			var postedSource atomic.Bool
+			if test.BudgetSummary {
+				var mu sync.Mutex
+				now := time.Now()
+				fixture := fixtureClient(h.native.Transport())
+				fixture.budgetNow = func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
+				fixture.budgetTimer = func(delay time.Duration) (<-chan time.Time, func()) {
+					if delay != time.Minute {
+						t.Fatalf("Retry-After not honored: %s", delay)
+					}
+					mu.Lock()
+					now = now.Add(delay)
+					firedAt := now
+					mu.Unlock()
+					fired := make(chan time.Time, 1)
+					fired <- firedAt
+					return fired, func() {}
+				}
+				validationCalls := 0
+				provider.duringValidation = func(runner.AgentTurnRequest) { validationCalls++ }
+				t.Cleanup(func() {
+					if provider.writableCalls != 1 || validationCalls != 1 {
+						t.Errorf("budget replay repeated implementation or validation: writable=%d validation=%d", provider.writableCalls, validationCalls)
+					}
+				})
+			}
+
 			if test.SummaryFailure {
 				fixtureClient(h.native.Transport()).requests.Store(executionRoundTrip(func(request *http.Request) (*http.Response, error) {
 					if postedSource.Load() && request.Method == http.MethodGet && strings.Contains(request.URL.Path, "/changes/") {
+						if test.BudgetSummary {
+							return &http.Response{StatusCode: http.StatusTooManyRequests, Header: http.Header{"Retry-After": {"60"}}, Body: io.NopCloser(strings.NewReader(`{"code":"runner_request_budget"}`)), Request: request}, nil
+						}
+
 						return &http.Response{StatusCode: http.StatusServiceUnavailable, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("summary unavailable")), Request: request}, nil
 					}
 					response, err := transport.RoundTrip(request)

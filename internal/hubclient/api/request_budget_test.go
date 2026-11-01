@@ -132,7 +132,7 @@ func TestClientFailsFastOnOtherRefusals(t *testing.T) {
 				start := time.Now()
 				err := client.request(t.Context(), http.MethodGet, "/items", nil, nil)
 				var apiErr *APIError
-				if !errors.As(err, &apiErr) || apiErr.Status != test.status || *calls != 1 {
+				if !errors.As(err, &apiErr) || apiErr.Status != test.status || NativeTransportUnavailable(err) || *calls != 1 {
 					t.Fatalf("calls=%d err=%v", *calls, err)
 				}
 				if err := client.request(t.Context(), http.MethodGet, "/other", nil, nil); err != nil || *calls != 2 {
@@ -184,7 +184,7 @@ func TestClientDoesNotReplayMutationsAfterBudgetRefusal(t *testing.T) {
 				client, calls := budgetClient(t, func(_ int, response *httptest.ResponseRecorder) { refuseBudget(response, "60") })
 				start := time.Now()
 				err := client.request(t.Context(), test.method, "/items", test.input, nil)
-				if !isBudgetRefusal(err) || *calls != 1 {
+				if !isBudgetRefusal(err) || !NativeTransportUnavailable(err) || !errors.Is(err, ErrUnavailable) || *calls != 1 {
 					t.Fatalf("calls=%d err=%v", *calls, err)
 				}
 				if elapsed := time.Since(start); elapsed != 0 {

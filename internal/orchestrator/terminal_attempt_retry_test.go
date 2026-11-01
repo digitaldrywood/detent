@@ -35,17 +35,19 @@ func TestHandleRunResultRoutesTerminalRetryByWorkProduct(t *testing.T) {
 	secondBackendBody := backendPrefix + "second failure" + backendPrefix
 	capacityReset := time.Date(2026, 7, 18, 16, 0, 0, 0, time.UTC)
 	tests := []struct {
-		name            string
-		limit           *int
-		wantBlocked     bool
-		completionErr   bool
-		noStore         bool
-		noAttemptID     bool
-		issue           connector.Issue
-		result          runpkg.RunResult
-		runError        error
-		wantState       string
-		wantTransitions []string
+		name             string
+		limit            *int
+		wantBlocked      bool
+		completionErr    bool
+		noStore          bool
+		preservedProduct bool
+		preservedError   error
+		noAttemptID      bool
+		issue            connector.Issue
+		result           runpkg.RunResult
+		runError         error
+		wantState        string
+		wantTransitions  []string
 	}{
 		{name: "distinct backend bodies retry", issue: terminalRetryTestIssue("distinct-backend"), runError: outageBackendError{body: secondBackendBody}, wantState: "Todo", wantTransitions: []string{"Todo"}},
 		{name: "identical backend bodies retry", issue: terminalRetryTestIssue("identical-backend"), runError: outageBackendError{body: firstBackendBody}, wantState: "Todo", wantTransitions: []string{"Todo"}},
@@ -62,6 +64,13 @@ func TestHandleRunResultRoutesTerminalRetryByWorkProduct(t *testing.T) {
 		{name: "zero preserves transient overload", limit: new(0), issue: terminalRetryTestIssue("zero-overload"), runError: backendcapacity.NewError(scope, backendcapacity.Details{Type: backendcapacity.ErrorTypeTransientOverload, Kind: "serverOverloaded"}, errors.New("provider overloaded")), wantState: "In Progress"},
 		{name: "zero preserves capacity wait", limit: new(0), issue: terminalRetryTestIssue("zero-capacity"), runError: backendcapacity.NewError(scope, backendcapacity.Details{Kind: "usageLimitExceeded", ResetAt: &capacityReset}, errors.New("provider usage limit reached")), wantState: "Todo", wantTransitions: []string{"Todo"}},
 		{name: "zero preserves pushed work", limit: new(0), issue: terminalRetryTestIssue("zero-pushed"), result: runpkg.RunResult{PullRequestHeadPushed: true}, runError: errors.New("runner failed"), wantState: "In Progress"},
+		{name: "native Change source keeps in progress", issue: func() connector.Issue {
+			i := terminalRetryTestIssue("native-source")
+			i.NativeChangeHeadSHA = strings.Repeat("a", 40)
+			return i
+		}(), runError: errors.New("publication unavailable"), wantState: "In Progress"},
+		{name: "checkpoint only keeps in progress", issue: terminalRetryTestIssue("checkpoint"), preservedProduct: true, runError: errors.New("publication unavailable"), wantState: "In Progress"},
+		{name: "unavailable checkpoint authority keeps in progress", issue: terminalRetryTestIssue("checkpoint-unavailable"), preservedError: errors.New("Hub unavailable"), runError: errors.New("publication unavailable"), wantState: "In Progress"},
 		{name: "zero preserves linked PR", limit: new(0), issue: terminalRetryTestIssueWithPullRequest("zero-pr"), runError: errors.New("runner failed"), wantState: "In Progress"},
 		{
 			name:            "no pushed work returns to todo",
@@ -109,7 +118,7 @@ func TestHandleRunResultRoutesTerminalRetryByWorkProduct(t *testing.T) {
 			t.Parallel()
 
 			now := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
-			tracker := &terminalRetryConnector{issues: map[string]connector.Issue{tt.issue.ID: cloneIssue(tt.issue)}}
+			tracker := &terminalRetryConnector{issues: map[string]connector.Issue{tt.issue.ID: cloneIssue(tt.issue)}, preservedProduct: tt.preservedProduct, preservedError: tt.preservedError}
 			attempts := &terminalRetryWorkAttemptStore{}
 			if tt.completionErr {
 				attempts.completionErr = errors.New("store unavailable")
@@ -1109,6 +1118,8 @@ func terminalRetryTestIssueWithPullRequest(suffix string) connector.Issue {
 }
 
 type terminalRetryConnector struct {
+	preservedProduct bool
+	preservedError   error
 	updateErrors     map[string]error
 	issues           map[string]connector.Issue
 	transitions      []string
@@ -1845,4 +1856,8 @@ func TestMachineRetrySurvivesStoreRestart(t *testing.T) {
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func (c *terminalRetryConnector) HasPreservedWorkProduct(context.Context, string) (bool, error) {
+	return c.preservedProduct, c.preservedError
 }

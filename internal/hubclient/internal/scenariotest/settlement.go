@@ -15,10 +15,12 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubclient/api"
+	checkpointstate "github.com/digitaldrywood/detent/internal/hubclient/checkpoint"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -36,6 +38,8 @@ import (
 )
 
 type SettlementScenario struct {
+	BudgetStage             string
+	BudgetChangedSource     bool
 	MergeResolution         bool
 	Name                    string
 	TransitionReason        string
@@ -173,6 +177,7 @@ func RunSettlement(t *testing.T, scenarios []SettlementScenario, factories Const
 			var publicationHead func() string
 			publicationCleared := false
 			var replacePublicationHead func()
+			var budgetCheckpoint *tracker.NativeCheckpoint
 			var publicationCapture func(context.Context, string, string) (tracker.ChangeSourceCapture, error)
 			stalePublication := test.PublicationRecovery
 			publicationUnavailable := test.ResumedPush
@@ -267,6 +272,15 @@ func RunSettlement(t *testing.T, scenarios []SettlementScenario, factories Const
 					}
 				}
 				test.Published, test.CheckpointHead = head, head
+				if test.BudgetStage != "" {
+					ref := tracker.CheckpointRefPrefix + issue.ID
+					nativeChangeGit(t, info.Path, "update-ref", ref, head)
+					tree, err := exec.CommandContext(t.Context(), "git", "-C", info.Path, "rev-parse", head+"^{tree}").Output()
+					if err != nil {
+						t.Fatal(err)
+					}
+					budgetCheckpoint = &tracker.NativeCheckpoint{Resume: "fresh_checkout", Availability: "available", Storage: "git_ref", WorktreeState: "unpushed", HeadSHA: head, CommitSHA: head, BaseSHA: base, TreeSHA: strings.TrimSpace(string(tree)), Ref: ref, ExternalEffect: "none", EffectState: "none"}
+				}
 				publicationHead = func() string {
 					output, err := exec.CommandContext(t.Context(), "git", "-C", remote, "rev-parse", "refs/heads/"+publicationBranch).Output()
 					if err != nil {
@@ -327,7 +341,7 @@ func RunSettlement(t *testing.T, scenarios []SettlementScenario, factories Const
 						if test.PublicationFailure == "auth" {
 							return &http.Response{StatusCode: http.StatusForbidden, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"message":"Resource not accessible by integration"}`))}, nil
 						}
-						if test.LostPRResponse && publicationCalls == 1 {
+						if (test.LostPRResponse || test.BudgetStage == "ambiguous") && publicationCalls == 1 {
 							return nil, errors.New("GitHub create response lost after publication")
 						}
 						response = pull
@@ -394,7 +408,7 @@ func RunSettlement(t *testing.T, scenarios []SettlementScenario, factories Const
 				}
 				t.Cleanup(func() {
 					wantCalls := 1
-					if test.PublicationReference != "" && !test.PublicationLanded || test.PublicationUncertain || test.LostPush == "diverged" || test.PublicationFailure == "push" || test.PublicationFenceLoss > 0 && test.PublicationFenceLoss < 4 {
+					if test.PublicationReference != "" && !test.PublicationLanded || test.PublicationUncertain || test.LostPush == "diverged" || test.PublicationFailure == "push" || test.BudgetChangedSource || test.PublicationFenceLoss > 0 && test.PublicationFenceLoss < 4 {
 						wantCalls = 0
 					}
 					if readHead(info.Path) != head || readHead(source) != base || publicationCalls != wantCalls {
@@ -613,6 +627,9 @@ func RunSettlement(t *testing.T, scenarios []SettlementScenario, factories Const
 				}
 			}
 			checkpoint := tracker.NativeCheckpoint{Resume: "fresh_checkout", Storage: "local_only", Availability: "unverified", WorktreeState: test.Worktree, HeadSHA: test.CheckpointHead, ExternalEffect: "none", EffectState: "none"}
+			if budgetCheckpoint != nil {
+				checkpoint = *budgetCheckpoint
+			}
 			if test.PublicationUncertain {
 				checkpoint.ExternalEffect, checkpoint.EffectState, checkpoint.EffectID = "provider_turn", "ambiguous", "effect_"+strings.Repeat("a", 32)
 			}
@@ -1028,6 +1045,146 @@ func RunSettlement(t *testing.T, scenarios []SettlementScenario, factories Const
 					return
 				}
 			}
+			if test.BudgetStage != "" {
+				owner := execution.(*ownedExecution)
+				transport := fixtureClient(h.native.Transport()).requests.Load()
+				refused, replayed := false, false
+				var rejected tracker.NativeRunEvent
+				var clockMu sync.Mutex
+				clockNow := time.Now()
+				budgetClient := h.native.Transport()
+				budgetFixture := fixtureClient(budgetClient)
+				budgetFixture.budgetNow = func() time.Time { clockMu.Lock(); defer clockMu.Unlock(); return clockNow }
+				waits, maintenanceCalls, renewals, readRefusals := 0, 0, 0, 0
+				budgetFixture.budgetTimer = func(delay time.Duration) (<-chan time.Time, func()) {
+					if delay != time.Minute {
+						t.Fatalf("budget timer did not honor Retry-After: %s", delay)
+					}
+					clockMu.Lock()
+					clockNow = clockNow.Add(delay)
+					now := clockNow
+					clockMu.Unlock()
+					waits++
+					if err := budgetClient.Request(guarded, http.MethodPost, "/projects/example/leases/lease/renew", nil, nil); err != nil {
+						t.Fatal(err)
+					}
+					if err := budgetClient.Request(guarded, http.MethodGet, "/budget-maintenance", nil, nil); err != nil {
+						t.Fatal(err)
+					}
+					fired := make(chan time.Time, 1)
+					fired <- now
+					return fired, func() {}
+				}
+				fixtureClient(h.native.Transport()).requests.Store(executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+					if request.URL.Path == "/projects/example/leases/lease/renew" {
+						renewals++
+						return &http.Response{StatusCode: http.StatusNoContent, Header: make(http.Header), Body: http.NoBody, Request: request}, nil
+					}
+					if request.URL.Path == "/budget-maintenance" {
+						maintenanceCalls++
+						if maintenanceCalls == 1 {
+							return &http.Response{StatusCode: http.StatusTooManyRequests, Header: http.Header{"Retry-After": {"60"}}, Body: io.NopCloser(strings.NewReader(`{"code":"runner_request_budget"}`)), Request: request}, nil
+						}
+						return &http.Response{StatusCode: http.StatusNoContent, Header: make(http.Header), Body: http.NoBody, Request: request}, nil
+					}
+					if test.BudgetStage == "read" && request.Method == http.MethodGet && strings.Contains(request.URL.Path, "/changes/") && readRefusals <= 3 {
+						readRefusals++
+						refused = true
+						return &http.Response{StatusCode: http.StatusTooManyRequests, Header: http.Header{"Retry-After": {"60"}}, Body: io.NopCloser(strings.NewReader(`{"code":"runner_request_budget"}`)), Request: request}, nil
+					}
+					if request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/events") {
+						payload, err := io.ReadAll(request.Body)
+						if err != nil {
+							return nil, err
+						}
+						request.Body = io.NopCloser(bytes.NewReader(payload))
+						var event tracker.NativeRunEvent
+						if err := json.Unmarshal(payload, &event); err != nil {
+							return nil, err
+						}
+						checkpoint := event.Data.Handoff
+						matches := test.BudgetStage == "completion" && event.Type == "run.finished"
+						if checkpoint != nil && event.Type == "run.checkpointed" {
+							matches = matches || test.BudgetStage == "receipt" && checkpoint.Publication != nil || checkpoint.ExternalEffect == "pr_create" && checkpoint.EffectState == test.BudgetStage
+						}
+						if matches && !refused {
+							refused, rejected = true, event
+							return &http.Response{StatusCode: http.StatusTooManyRequests, Header: http.Header{"Retry-After": {"60"}}, Body: io.NopCloser(strings.NewReader(`{"code":"runner_request_budget"}`)), Request: request}, nil
+						}
+						if refused && !replayed && test.BudgetStage != "read" {
+							if event.Data.Sequence != rejected.Data.Sequence || event.IdempotencyKey != rejected.IdempotencyKey || !reflect.DeepEqual(event, rejected) {
+								t.Fatal("replay changed event sequence, idempotency or payload")
+							}
+							replayed = true
+						}
+					}
+					return transport.RoundTrip(request)
+				}))
+				if err := owner.PrepareFinish(guarded, test.Outcome, "", nil); err != nil {
+					t.Fatal(err)
+				}
+				var finishErr error
+				if test.BudgetStage == "completion" {
+					finishErr = owner.Finish(guarded, test.Outcome)
+				} else if owner.NativeChange().Error != "" {
+					finishErr = fmt.Errorf("%w: %s", api.ErrUnavailable, owner.NativeChange().Error)
+				}
+				if !refused || !nativeTransportUnavailable(finishErr) || owner.CompletionData().Outcome == "failed" || owner.NativeChange().VersionError != "" {
+					t.Fatalf("budget refusal became terminal: change=%+v error=%v refused=%v", owner.NativeChange(), finishErr, refused)
+				}
+				saved := owner.CompletionState()
+				if test.BudgetChangedSource {
+					advancePublication()
+				}
+				var before checkpointstate.State
+				if err := json.Unmarshal(saved, &before); err != nil {
+					t.Fatal(err)
+				}
+				machine := fixtureSchedulerMachine(h.scheduler)
+				h.scheduler, err = newTestScheduler(h.native.Transport(), SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: machine, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second, LeaseHold: h.leaseHold})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := h.scheduler.RestoreCompletion(t.Context(), orchestrator.SchedulingRequest{ProjectID: "local", Policy: h.descriptor, Repository: nativeChangeRepository}, candidate, saved); err != nil {
+					t.Fatal(err)
+				}
+				execution = h.scheduler.RunExecution(issue.ID)
+				guarded = t.Context()
+				var restored checkpointstate.State
+				if err := json.Unmarshal(execution.(*ownedExecution).CompletionState(), &restored); err != nil {
+					t.Fatal(err)
+				}
+				if !reflect.DeepEqual(restored.Data.Handoff, before.Data.Handoff) || !reflect.DeepEqual(restored.Pending, before.Pending) || !reflect.DeepEqual(restored.Diff, before.Diff) || restored.WorktreeHead != before.WorktreeHead || restored.Repository != before.Repository {
+					t.Fatal("restart changed source, effect, pending event or publication binding")
+				}
+				if after := execution.(*ownedExecution); after.CompletionData().AttemptID != owner.CompletionData().AttemptID || after.CompletionData().RunID != owner.CompletionData().RunID {
+					t.Fatal("budget restart changed source attempt")
+				}
+				if test.BudgetStage == "ambiguous" {
+					if _, err := execution.(runner.ChangeSourceExecution).RecoverChangeSource(guarded); err != nil {
+						t.Fatal(err)
+					}
+				}
+				execution.(runner.PublicationSourceExecution).SetPublicationSource(publicationSource)
+				finish = execution.Finish
+				if test.BudgetChangedSource {
+					if err := execution.(runner.CompletionExecution).PrepareFinish(guarded, test.Outcome, "", nil); err != nil {
+						t.Fatal(err)
+					}
+					after := execution.(*ownedExecution)
+					if after.CompletionSnapshot().Publication != nil || after.NativeChange().VersionError == "" || publicationCalls != 0 {
+						t.Fatalf("changed source authorized publication: change=%+v publication=%+v creates=%d", after.NativeChange(), after.CompletionSnapshot().Publication, publicationCalls)
+					}
+					return
+				}
+				if err := execution.(runner.CompletionExecution).PrepareFinish(guarded, test.Outcome, "", nil); err != nil || execution.(*ownedExecution).NativeChange().Error != "" || execution.(*ownedExecution).NativeChange().VersionError != "" {
+					t.Fatalf("resume failed: change=%+v checkpoint=%+v recovered=%+v diff=%+v error=%v", execution.(*ownedExecution).NativeChange(), execution.(*ownedExecution).CompletionData().Handoff, execution.(*ownedExecution).CompletionSnapshot().RecoveredSource, execution.(*ownedExecution).CompletionSnapshot().Diff, err)
+				}
+				if waits < 2 || maintenanceCalls < 2 || renewals != waits || test.BudgetStage != "read" && !replayed {
+					t.Fatalf("cooldown/maintenance/replay missing: waits=%d maintenance=%d renewals=%d replayed=%t", waits, maintenanceCalls, renewals, replayed)
+				}
+			}
+
 			if test.LostPRResponse {
 				if err := execution.(runner.CompletionExecution).PrepareFinish(guarded, test.Outcome, "", nil); err != nil {
 					t.Fatal(err)

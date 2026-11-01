@@ -686,6 +686,9 @@ func IssueFromNative(native tracker.NativeIssue) connector.Issue {
 	issue.Identifier = NativeIssueIdentifier(native)
 	issue.Number = native.Number
 	issue.Title, issue.Description, issue.State = native.Title, native.Body, native.State
+	if native.ListChange != nil {
+		issue.NativeChangeHeadSHA = native.ListChange.HeadSHA
+	}
 	if native.ListChange != nil && native.ListChange.LandingPending {
 		issue.NativeLandingHeadSHA = native.ListChange.HeadSHA
 	}
@@ -746,4 +749,22 @@ func (c *NativeConnector) DispatchProjectRank() int {
 		return rank
 	}
 	return 2147483647
+}
+
+func (c *NativeConnector) HasPreservedWorkProduct(ctx context.Context, issueID string) (bool, error) {
+	evidence, err := c.client.RuntimeEvidence(ctx, tracker.NativeWorkItemID(issueID), "")
+	if err != nil {
+		return false, fmt.Errorf("read preserved work product: %w", err)
+	}
+	if evidence.Issue.OrganizationID != c.client.organization || evidence.Issue.ProjectID != c.client.project || string(evidence.Issue.WorkItemID) != issueID {
+		return false, errors.New("preserved work product scope differs")
+	}
+	if version := evidence.CurrentVersion; version != nil && version.ChangeID != "" && version.VersionID != "" && version.HeadSHA != "" {
+		return true, nil
+	}
+	if evidence.Attempt == nil {
+		return false, nil
+	}
+	checkpoint := evidence.Attempt.Checkpoint
+	return checkpoint != nil && checkpoint.Availability == "available" && checkpoint.GitRef() && checkpoint.HeadSHA == checkpoint.CommitSHA && checkpoint.BaseSHA != "" && strings.HasPrefix(checkpoint.Ref, tracker.CheckpointRefPrefix), nil
 }

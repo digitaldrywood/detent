@@ -537,7 +537,7 @@ func (e *nativeExecution) prepareFinish(ctx context.Context, outcome string) err
 				e.change = &runner.NativeChange{}
 			}
 			if nativeTransportUnavailable(err) {
-				e.change.VersionID, e.change.VersionError, e.change.VersionCode, e.change.Reviewed = "", "", "", false
+				e.change.VersionError, e.change.VersionCode, e.change.Reviewed = "", "", false
 				e.change.Error = err.Error()
 			} else {
 				e.change.Error = ""

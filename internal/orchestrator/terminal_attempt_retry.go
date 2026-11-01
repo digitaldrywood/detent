@@ -34,7 +34,7 @@ func (o *Orchestrator) demoteTerminalAttemptRetry(
 ) (connector.Issue, bool, bool) {
 	if o == nil || o.connector == nil ||
 		normalizeState(issue.State) != normalizeState(planImplementationState) ||
-		terminalAttemptHasWorkProduct(issue, workProductPushed) ||
+		o.terminalAttemptHasWorkProduct(ctx, issue, workProductPushed) ||
 		pullRequestHydrationBlocksProgress(issue.PullRequest) ||
 		o.terminalAttemptClaimBlocksDemotion(ctx, issue, at) {
 		return issue, false, false
@@ -162,7 +162,7 @@ func (o *Orchestrator) reconcileTerminalAttemptRetryStates(
 		}
 		legacyRESTCapacity := strings.TrimSpace(attempt.ErrorClass) == githubRESTCapacityError && terminalAttemptRetryableFailure(attempt)
 		if preTurnAttempt(attempt) || strings.TrimSpace(attempt.ErrorClass) == "service_restart" || legacyRESTCapacity {
-			if terminalAttemptHasWorkProduct(issue, workAttemptHasPushedProduct(attempt)) || pullRequestHydrationBlocksProgress(issue.PullRequest) || o.terminalAttemptClaimBlocksDemotion(ctx, issue, now) {
+			if o.terminalAttemptHasWorkProduct(ctx, issue, workAttemptHasPushedProduct(attempt)) || pullRequestHydrationBlocksProgress(issue.PullRequest) || o.terminalAttemptClaimBlocksDemotion(ctx, issue, now) {
 				continue
 			}
 			var metadata struct {
@@ -305,7 +305,19 @@ func terminalAttemptTodoState(activeStates []string) string {
 }
 
 func terminalAttemptHasWorkProduct(issue connector.Issue, pushed bool) bool {
-	return pushed || implementProgressLinkedPullRequest(issue)
+	return pushed || strings.TrimSpace(issue.NativeChangeHeadSHA) != "" || implementProgressLinkedPullRequest(issue)
+}
+
+func (o *Orchestrator) terminalAttemptHasWorkProduct(ctx context.Context, issue connector.Issue, pushed bool) bool {
+	if terminalAttemptHasWorkProduct(issue, pushed) {
+		return true
+	}
+	reader, ok := o.connector.(connector.PreservedWorkProductReader)
+	if !ok {
+		return false
+	}
+	preserved, err := reader.HasPreservedWorkProduct(ctx, issue.ID)
+	return err != nil || preserved
 }
 
 func workAttemptHasPushedProduct(attempt telemetry.WorkAttempt) bool {
