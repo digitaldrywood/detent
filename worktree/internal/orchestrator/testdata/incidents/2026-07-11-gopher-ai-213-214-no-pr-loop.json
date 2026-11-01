@@ -1,0 +1,3530 @@
+{
+  "schema": 1,
+  "source": {
+    "kind": "historical_incident_export",
+    "extracted_at": "2026-07-11T12:52:55Z",
+    "database_table": "codex_sessions joined to work_attempts",
+    "issue": "digitaldrywood/detent#1233",
+    "notes": "Literal session and diffstat rows for the incident windows. pull_request_present and functional_diff_group preserve the incident-time classification recorded in #1233; mutable work_attempt PR fields are intentionally excluded."
+  },
+  "incidents": [
+    {
+      "identifier": "gopherguides/gopher-ai#213",
+      "expected_sessions": 31,
+      "expected_total_tokens": 21333525,
+      "functional_diff_group": "gopherguides/gopher-ai#213-staged-no-pr-diff",
+      "attempts": [
+        {
+          "session_id": 1239,
+          "work_attempt_id": 702,
+          "started_at": "2026-07-10T21:03:10Z",
+          "completed_at": "2026-07-10T21:05:10Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 420804,
+            "cached_input": 352768,
+            "output": 4049,
+            "reasoning_output": 2151,
+            "total": 424853
+          },
+          "diffstat": {
+            "files_changed": 13,
+            "added_lines": 576,
+            "removed_lines": 59,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1242,
+          "work_attempt_id": 704,
+          "started_at": "2026-07-10T21:05:16Z",
+          "completed_at": "2026-07-10T21:08:49Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 740397,
+            "cached_input": 648704,
+            "output": 8024,
+            "reasoning_output": 4867,
+            "total": 748421
+          },
+          "diffstat": {
+            "files_changed": 13,
+            "added_lines": 576,
+            "removed_lines": 59,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1243,
+          "work_attempt_id": 706,
+          "started_at": "2026-07-10T21:09:29Z",
+          "completed_at": "2026-07-10T21:12:56Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 559012,
+            "cached_input": 473856,
+            "output": 6004,
+            "reasoning_output": 2879,
+            "total": 565016
+          },
+          "diffstat": {
+            "files_changed": 13,
+            "added_lines": 576,
+            "removed_lines": 59,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1245,
+          "work_attempt_id": 707,
+          "started_at": "2026-07-10T21:14:22Z",
+          "completed_at": "2026-07-10T21:18:13Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 711827,
+            "cached_input": 628736,
+            "output": 7668,
+            "reasoning_output": 3786,
+            "total": 719495
+          },
+          "diffstat": {
+            "files_changed": 13,
+            "added_lines": 576,
+            "removed_lines": 59,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1251,
+          "work_attempt_id": 713,
+          "started_at": "2026-07-10T21:20:41Z",
+          "completed_at": "2026-07-10T21:24:21Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 552270,
+            "cached_input": 430080,
+            "output": 6164,
+            "reasoning_output": 3034,
+            "total": 558434
+          },
+          "diffstat": {
+            "files_changed": 13,
+            "added_lines": 576,
+            "removed_lines": 59,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1255,
+          "work_attempt_id": 718,
+          "started_at": "2026-07-10T21:25:35Z",
+          "completed_at": "2026-07-10T21:28:26Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 451260,
+            "cached_input": 408832,
+            "output": 4180,
+            "reasoning_output": 2631,
+            "total": 455440
+          },
+          "diffstat": {
+            "files_changed": 13,
+            "added_lines": 576,
+            "removed_lines": 59,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1258,
+          "work_attempt_id": 721,
+          "started_at": "2026-07-10T21:29:47Z",
+          "completed_at": "2026-07-10T21:33:11Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 398167,
+            "cached_input": 343040,
+            "output": 5148,
+            "reasoning_output": 2240,
+            "total": 403315
+          },
+          "diffstat": {
+            "files_changed": 13,
+            "added_lines": 576,
+            "removed_lines": 59,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1263,
+          "work_attempt_id": 725,
+          "started_at": "2026-07-10T21:34:40Z",
+          "completed_at": "2026-07-10T21:38:35Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 794368,
+            "cached_input": 697344,
+            "output": 7155,
+            "reasoning_output": 3282,
+            "total": 801523
+          },
+          "diffstat": {
+            "files_changed": 13,
+            "added_lines": 576,
+            "removed_lines": 59,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1267,
+          "work_attempt_id": 730,
+          "started_at": "2026-07-10T21:38:52Z",
+          "completed_at": "2026-07-10T21:41:21Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 545256,
+            "cached_input": 497664,
+            "output": 4894,
+            "reasoning_output": 2602,
+            "total": 550150
+          },
+          "diffstat": {
+            "files_changed": 13,
+            "added_lines": 576,
+            "removed_lines": 59,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1270,
+          "work_attempt_id": 733,
+          "started_at": "2026-07-10T21:45:48Z",
+          "completed_at": "2026-07-10T21:50:14Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 1075308,
+            "cached_input": 1007616,
+            "output": 8257,
+            "reasoning_output": 4450,
+            "total": 1083565
+          },
+          "diffstat": {
+            "files_changed": 13,
+            "added_lines": 576,
+            "removed_lines": 59,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1277,
+          "work_attempt_id": 739,
+          "started_at": "2026-07-10T21:52:06Z",
+          "completed_at": "2026-07-10T21:55:21Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 1202393,
+            "cached_input": 1082112,
+            "output": 7921,
+            "reasoning_output": 3937,
+            "total": 1210314
+          },
+          "diffstat": {
+            "files_changed": 13,
+            "added_lines": 576,
+            "removed_lines": 59,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1283,
+          "work_attempt_id": 745,
+          "started_at": "2026-07-10T21:56:59Z",
+          "completed_at": "2026-07-10T21:59:39Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 433205,
+            "cached_input": 381184,
+            "output": 5094,
+            "reasoning_output": 2951,
+            "total": 438299
+          },
+          "diffstat": {
+            "files_changed": 13,
+            "added_lines": 576,
+            "removed_lines": 59,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1286,
+          "work_attempt_id": 749,
+          "started_at": "2026-07-10T22:01:12Z",
+          "completed_at": "2026-07-10T22:03:50Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 768347,
+            "cached_input": 666624,
+            "output": 5467,
+            "reasoning_output": 2128,
+            "total": 773814
+          },
+          "diffstat": {
+            "files_changed": 13,
+            "added_lines": 576,
+            "removed_lines": 59,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1290,
+          "work_attempt_id": 753,
+          "started_at": "2026-07-10T22:05:25Z",
+          "completed_at": "2026-07-10T22:08:43Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 620790,
+            "cached_input": 535040,
+            "output": 5884,
+            "reasoning_output": 3039,
+            "total": 626674
+          },
+          "diffstat": {
+            "files_changed": 13,
+            "added_lines": 576,
+            "removed_lines": 59,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1294,
+          "work_attempt_id": 756,
+          "started_at": "2026-07-10T22:10:18Z",
+          "completed_at": "2026-07-10T22:12:31Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 298108,
+            "cached_input": 260096,
+            "output": 4131,
+            "reasoning_output": 2877,
+            "total": 302239
+          },
+          "diffstat": {
+            "files_changed": 13,
+            "added_lines": 576,
+            "removed_lines": 59,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1317,
+          "work_attempt_id": 780,
+          "started_at": "2026-07-11T03:29:28Z",
+          "completed_at": "2026-07-11T03:32:37Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 407954,
+            "cached_input": 358144,
+            "output": 4092,
+            "reasoning_output": 2345,
+            "total": 412046
+          },
+          "diffstat": {
+            "files_changed": 13,
+            "added_lines": 576,
+            "removed_lines": 59,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1320,
+          "work_attempt_id": 783,
+          "started_at": "2026-07-11T03:36:25Z",
+          "completed_at": "2026-07-11T03:39:53Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 803502,
+            "cached_input": 741888,
+            "output": 6459,
+            "reasoning_output": 3833,
+            "total": 809961
+          },
+          "diffstat": {
+            "files_changed": 13,
+            "added_lines": 576,
+            "removed_lines": 59,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1323,
+          "work_attempt_id": 785,
+          "started_at": "2026-07-11T03:40:38Z",
+          "completed_at": "2026-07-11T03:44:25Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 521781,
+            "cached_input": 474112,
+            "output": 5522,
+            "reasoning_output": 3236,
+            "total": 527303
+          },
+          "diffstat": {
+            "files_changed": 13,
+            "added_lines": 576,
+            "removed_lines": 59,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1327,
+          "work_attempt_id": 790,
+          "started_at": "2026-07-11T03:45:33Z",
+          "completed_at": "2026-07-11T03:47:46Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 536833,
+            "cached_input": 453632,
+            "output": 4954,
+            "reasoning_output": 2440,
+            "total": 541787
+          },
+          "diffstat": {
+            "files_changed": 13,
+            "added_lines": 576,
+            "removed_lines": 59,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1330,
+          "work_attempt_id": 791,
+          "started_at": "2026-07-11T03:53:58Z",
+          "completed_at": "2026-07-11T03:57:19Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 486607,
+            "cached_input": 440576,
+            "output": 5539,
+            "reasoning_output": 3549,
+            "total": 492146
+          },
+          "diffstat": {
+            "files_changed": 13,
+            "added_lines": 576,
+            "removed_lines": 59,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1332,
+          "work_attempt_id": 794,
+          "started_at": "2026-07-11T04:02:24Z",
+          "completed_at": "2026-07-11T04:05:47Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 635055,
+            "cached_input": 552192,
+            "output": 5354,
+            "reasoning_output": 2399,
+            "total": 640409
+          },
+          "diffstat": {
+            "files_changed": 13,
+            "added_lines": 576,
+            "removed_lines": 59,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1334,
+          "work_attempt_id": 796,
+          "started_at": "2026-07-11T04:07:22Z",
+          "completed_at": "2026-07-11T04:10:36Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 688700,
+            "cached_input": 599296,
+            "output": 5356,
+            "reasoning_output": 2585,
+            "total": 694056
+          },
+          "diffstat": {
+            "files_changed": 13,
+            "added_lines": 576,
+            "removed_lines": 59,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1339,
+          "work_attempt_id": 801,
+          "started_at": "2026-07-11T04:15:49Z",
+          "completed_at": "2026-07-11T04:21:03Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 742733,
+            "cached_input": 685568,
+            "output": 7250,
+            "reasoning_output": 3695,
+            "total": 749983
+          },
+          "diffstat": {
+            "files_changed": 13,
+            "added_lines": 576,
+            "removed_lines": 59,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1341,
+          "work_attempt_id": 804,
+          "started_at": "2026-07-11T04:24:58Z",
+          "completed_at": "2026-07-11T04:28:18Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 388107,
+            "cached_input": 336896,
+            "output": 3514,
+            "reasoning_output": 1497,
+            "total": 391621
+          },
+          "diffstat": {
+            "files_changed": 13,
+            "added_lines": 576,
+            "removed_lines": 59,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1345,
+          "work_attempt_id": 807,
+          "started_at": "2026-07-11T04:29:53Z",
+          "completed_at": "2026-07-11T04:33:44Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 563701,
+            "cached_input": 496384,
+            "output": 3203,
+            "reasoning_output": 1171,
+            "total": 566904
+          },
+          "diffstat": {
+            "files_changed": 13,
+            "added_lines": 576,
+            "removed_lines": 59,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1346,
+          "work_attempt_id": 809,
+          "started_at": "2026-07-11T04:36:07Z",
+          "completed_at": "2026-07-11T04:38:34Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 545473,
+            "cached_input": 513024,
+            "output": 4064,
+            "reasoning_output": 1883,
+            "total": 549537
+          },
+          "diffstat": {
+            "files_changed": 13,
+            "added_lines": 576,
+            "removed_lines": 59,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1349,
+          "work_attempt_id": 812,
+          "started_at": "2026-07-11T04:41:00Z",
+          "completed_at": "2026-07-11T04:43:59Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 826503,
+            "cached_input": 722944,
+            "output": 6017,
+            "reasoning_output": 3083,
+            "total": 832520
+          },
+          "diffstat": {
+            "files_changed": 13,
+            "added_lines": 576,
+            "removed_lines": 59,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1351,
+          "work_attempt_id": 814,
+          "started_at": "2026-07-11T04:47:13Z",
+          "completed_at": "2026-07-11T04:49:37Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 697020,
+            "cached_input": 617728,
+            "output": 4971,
+            "reasoning_output": 2393,
+            "total": 701991
+          },
+          "diffstat": {
+            "files_changed": 13,
+            "added_lines": 576,
+            "removed_lines": 59,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1354,
+          "work_attempt_id": 817,
+          "started_at": "2026-07-11T04:52:07Z",
+          "completed_at": "2026-07-11T04:54:19Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 565397,
+            "cached_input": 490240,
+            "output": 4904,
+            "reasoning_output": 2404,
+            "total": 570301
+          },
+          "diffstat": {
+            "files_changed": 13,
+            "added_lines": 576,
+            "removed_lines": 59,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1357,
+          "work_attempt_id": 819,
+          "started_at": "2026-07-11T04:56:16Z",
+          "completed_at": "2026-07-11T05:01:53Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 2625766,
+            "cached_input": 2532608,
+            "output": 11708,
+            "reasoning_output": 2518,
+            "total": 2637474
+          },
+          "diffstat": {
+            "files_changed": 0,
+            "added_lines": 0,
+            "removed_lines": 0,
+            "status": "clean"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1360,
+          "work_attempt_id": 823,
+          "started_at": "2026-07-11T05:07:38Z",
+          "completed_at": "2026-07-11T05:09:43Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 549446,
+            "cached_input": 509952,
+            "output": 4488,
+            "reasoning_output": 1310,
+            "total": 553934
+          },
+          "diffstat": null,
+          "pull_request_present": false
+        }
+      ]
+    },
+    {
+      "identifier": "gopherguides/gopher-ai#214",
+      "expected_sessions": 136,
+      "expected_total_tokens": 24978626,
+      "functional_diff_group": "gopherguides/gopher-ai#214-staged-no-pr-diff",
+      "attempts": [
+        {
+          "session_id": 1318,
+          "work_attempt_id": 781,
+          "started_at": "2026-07-11T03:32:12Z",
+          "completed_at": "2026-07-11T03:32:58Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 173688,
+            "cached_input": 128000,
+            "output": 1601,
+            "reasoning_output": 666,
+            "total": 175289
+          },
+          "diffstat": {
+            "files_changed": 6,
+            "added_lines": 153,
+            "removed_lines": 32,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1321,
+          "work_attempt_id": 784,
+          "started_at": "2026-07-11T03:36:25Z",
+          "completed_at": "2026-07-11T03:38:55Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 658721,
+            "cached_input": 603904,
+            "output": 6604,
+            "reasoning_output": 2376,
+            "total": 665325
+          },
+          "diffstat": {
+            "files_changed": 6,
+            "added_lines": 153,
+            "removed_lines": 32,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1322,
+          "work_attempt_id": 786,
+          "started_at": "2026-07-11T03:40:38Z",
+          "completed_at": "2026-07-11T03:42:06Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 167052,
+            "cached_input": 125952,
+            "output": 1657,
+            "reasoning_output": 586,
+            "total": 168709
+          },
+          "diffstat": {
+            "files_changed": 6,
+            "added_lines": 153,
+            "removed_lines": 32,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1325,
+          "work_attempt_id": 788,
+          "started_at": "2026-07-11T03:43:26Z",
+          "completed_at": "2026-07-11T03:44:39Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 161447,
+            "cached_input": 120832,
+            "output": 1498,
+            "reasoning_output": 639,
+            "total": 162945
+          },
+          "diffstat": {
+            "files_changed": 6,
+            "added_lines": 153,
+            "removed_lines": 32,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1329,
+          "work_attempt_id": 792,
+          "started_at": "2026-07-11T03:53:58Z",
+          "completed_at": "2026-07-11T03:54:55Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 195610,
+            "cached_input": 159488,
+            "output": 2078,
+            "reasoning_output": 823,
+            "total": 197688
+          },
+          "diffstat": {
+            "files_changed": 6,
+            "added_lines": 153,
+            "removed_lines": 32,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1331,
+          "work_attempt_id": 795,
+          "started_at": "2026-07-11T04:02:24Z",
+          "completed_at": "2026-07-11T04:03:50Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 155048,
+            "cached_input": 119808,
+            "output": 1336,
+            "reasoning_output": 408,
+            "total": 156384
+          },
+          "diffstat": {
+            "files_changed": 6,
+            "added_lines": 153,
+            "removed_lines": 32,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1333,
+          "work_attempt_id": 797,
+          "started_at": "2026-07-11T04:07:22Z",
+          "completed_at": "2026-07-11T04:07:42Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 32060,
+            "cached_input": 9984,
+            "output": 264,
+            "reasoning_output": 152,
+            "total": 32324
+          },
+          "diffstat": {
+            "files_changed": 6,
+            "added_lines": 153,
+            "removed_lines": 32,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1336,
+          "work_attempt_id": 799,
+          "started_at": "2026-07-11T04:09:28Z",
+          "completed_at": "2026-07-11T04:09:51Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 65262,
+            "cached_input": 41472,
+            "output": 557,
+            "reasoning_output": 159,
+            "total": 65819
+          },
+          "diffstat": {
+            "files_changed": 6,
+            "added_lines": 153,
+            "removed_lines": 32,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1338,
+          "work_attempt_id": 802,
+          "started_at": "2026-07-11T04:15:49Z",
+          "completed_at": "2026-07-11T04:17:39Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 214604,
+            "cached_input": 192256,
+            "output": 2130,
+            "reasoning_output": 1001,
+            "total": 216734
+          },
+          "diffstat": {
+            "files_changed": 6,
+            "added_lines": 153,
+            "removed_lines": 32,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1340,
+          "work_attempt_id": 803,
+          "started_at": "2026-07-11T04:18:45Z",
+          "completed_at": "2026-07-11T04:19:31Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 163411,
+            "cached_input": 122880,
+            "output": 1726,
+            "reasoning_output": 777,
+            "total": 165137
+          },
+          "diffstat": {
+            "files_changed": 6,
+            "added_lines": 153,
+            "removed_lines": 32,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1342,
+          "work_attempt_id": 805,
+          "started_at": "2026-07-11T04:24:58Z",
+          "completed_at": "2026-07-11T04:25:35Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 103128,
+            "cached_input": 76032,
+            "output": 1069,
+            "reasoning_output": 359,
+            "total": 104197
+          },
+          "diffstat": {
+            "files_changed": 6,
+            "added_lines": 153,
+            "removed_lines": 32,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1343,
+          "work_attempt_id": 806,
+          "started_at": "2026-07-11T04:27:03Z",
+          "completed_at": "2026-07-11T04:28:27Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 165144,
+            "cached_input": 123904,
+            "output": 1338,
+            "reasoning_output": 445,
+            "total": 166482
+          },
+          "diffstat": {
+            "files_changed": 6,
+            "added_lines": 153,
+            "removed_lines": 32,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1344,
+          "work_attempt_id": 808,
+          "started_at": "2026-07-11T04:29:53Z",
+          "completed_at": "2026-07-11T04:30:34Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 177269,
+            "cached_input": 134144,
+            "output": 1494,
+            "reasoning_output": 422,
+            "total": 178763
+          },
+          "diffstat": {
+            "files_changed": 6,
+            "added_lines": 153,
+            "removed_lines": 32,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1347,
+          "work_attempt_id": 810,
+          "started_at": "2026-07-11T04:36:07Z",
+          "completed_at": "2026-07-11T04:37:30Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 332103,
+            "cached_input": 282880,
+            "output": 3369,
+            "reasoning_output": 1211,
+            "total": 335472
+          },
+          "diffstat": {
+            "files_changed": 6,
+            "added_lines": 153,
+            "removed_lines": 32,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1348,
+          "work_attempt_id": 811,
+          "started_at": "2026-07-11T04:38:11Z",
+          "completed_at": "2026-07-11T04:39:21Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 65826,
+            "cached_input": 48640,
+            "output": 806,
+            "reasoning_output": 318,
+            "total": 66632
+          },
+          "diffstat": {
+            "files_changed": 6,
+            "added_lines": 153,
+            "removed_lines": 32,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1350,
+          "work_attempt_id": 813,
+          "started_at": "2026-07-11T04:41:00Z",
+          "completed_at": "2026-07-11T04:41:28Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 99149,
+            "cached_input": 73984,
+            "output": 744,
+            "reasoning_output": 183,
+            "total": 99893
+          },
+          "diffstat": {
+            "files_changed": 6,
+            "added_lines": 153,
+            "removed_lines": 32,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1352,
+          "work_attempt_id": 815,
+          "started_at": "2026-07-11T04:47:13Z",
+          "completed_at": "2026-07-11T04:47:35Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 64986,
+            "cached_input": 41472,
+            "output": 529,
+            "reasoning_output": 213,
+            "total": 65515
+          },
+          "diffstat": {
+            "files_changed": 6,
+            "added_lines": 153,
+            "removed_lines": 32,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1353,
+          "work_attempt_id": 816,
+          "started_at": "2026-07-11T04:49:18Z",
+          "completed_at": "2026-07-11T04:50:55Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 265639,
+            "cached_input": 223744,
+            "output": 1939,
+            "reasoning_output": 632,
+            "total": 267578
+          },
+          "diffstat": {
+            "files_changed": 6,
+            "added_lines": 153,
+            "removed_lines": 32,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1355,
+          "work_attempt_id": 818,
+          "started_at": "2026-07-11T04:52:07Z",
+          "completed_at": "2026-07-11T04:52:33Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 104546,
+            "cached_input": 84224,
+            "output": 657,
+            "reasoning_output": 143,
+            "total": 105203
+          },
+          "diffstat": {
+            "files_changed": 6,
+            "added_lines": 153,
+            "removed_lines": 32,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1356,
+          "work_attempt_id": 820,
+          "started_at": "2026-07-11T04:56:16Z",
+          "completed_at": "2026-07-11T04:57:05Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 170565,
+            "cached_input": 135168,
+            "output": 1881,
+            "reasoning_output": 660,
+            "total": 172446
+          },
+          "diffstat": {
+            "files_changed": 6,
+            "added_lines": 153,
+            "removed_lines": 32,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1358,
+          "work_attempt_id": 821,
+          "started_at": "2026-07-11T04:58:20Z",
+          "completed_at": "2026-07-11T04:58:56Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 118582,
+            "cached_input": 80128,
+            "output": 1109,
+            "reasoning_output": 455,
+            "total": 119691
+          },
+          "diffstat": {
+            "files_changed": 6,
+            "added_lines": 153,
+            "removed_lines": 32,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1359,
+          "work_attempt_id": 822,
+          "started_at": "2026-07-11T05:00:25Z",
+          "completed_at": "2026-07-11T05:02:25Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 230167,
+            "cached_input": 183040,
+            "output": 2013,
+            "reasoning_output": 725,
+            "total": 232180
+          },
+          "diffstat": {
+            "files_changed": 6,
+            "added_lines": 153,
+            "removed_lines": 32,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1361,
+          "work_attempt_id": 824,
+          "started_at": "2026-07-11T05:07:38Z",
+          "completed_at": "2026-07-11T05:08:40Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 208461,
+            "cached_input": 175872,
+            "output": 2019,
+            "reasoning_output": 841,
+            "total": 210480
+          },
+          "diffstat": {
+            "files_changed": 6,
+            "added_lines": 153,
+            "removed_lines": 32,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1362,
+          "work_attempt_id": 825,
+          "started_at": "2026-07-11T05:11:53Z",
+          "completed_at": "2026-07-11T05:13:19Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 105882,
+            "cached_input": 82176,
+            "output": 1159,
+            "reasoning_output": 428,
+            "total": 107041
+          },
+          "diffstat": {
+            "files_changed": 6,
+            "added_lines": 153,
+            "removed_lines": 32,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1363,
+          "work_attempt_id": 826,
+          "started_at": "2026-07-11T05:20:58Z",
+          "completed_at": "2026-07-11T05:22:38Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 425226,
+            "cached_input": 377600,
+            "output": 3571,
+            "reasoning_output": 795,
+            "total": 428797
+          },
+          "diffstat": {
+            "files_changed": 6,
+            "added_lines": 153,
+            "removed_lines": 32,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1364,
+          "work_attempt_id": 827,
+          "started_at": "2026-07-11T05:23:02Z",
+          "completed_at": "2026-07-11T05:25:01Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 322812,
+            "cached_input": 283904,
+            "output": 2635,
+            "reasoning_output": 884,
+            "total": 325447
+          },
+          "diffstat": {
+            "files_changed": 6,
+            "added_lines": 153,
+            "removed_lines": 32,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1365,
+          "work_attempt_id": 828,
+          "started_at": "2026-07-11T05:30:02Z",
+          "completed_at": "2026-07-11T05:30:59Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 263141,
+            "cached_input": 219648,
+            "output": 1920,
+            "reasoning_output": 672,
+            "total": 265061
+          },
+          "diffstat": {
+            "files_changed": 6,
+            "added_lines": 153,
+            "removed_lines": 32,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1366,
+          "work_attempt_id": 829,
+          "started_at": "2026-07-11T05:34:11Z",
+          "completed_at": "2026-07-11T05:35:43Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 168267,
+            "cached_input": 126976,
+            "output": 1587,
+            "reasoning_output": 566,
+            "total": 169854
+          },
+          "diffstat": {
+            "files_changed": 6,
+            "added_lines": 153,
+            "removed_lines": 32,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1367,
+          "work_attempt_id": 830,
+          "started_at": "2026-07-11T05:41:09Z",
+          "completed_at": "2026-07-11T05:41:52Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 151042,
+            "cached_input": 119808,
+            "output": 1281,
+            "reasoning_output": 456,
+            "total": 152323
+          },
+          "diffstat": {
+            "files_changed": 6,
+            "added_lines": 153,
+            "removed_lines": 32,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1368,
+          "work_attempt_id": 831,
+          "started_at": "2026-07-11T05:43:14Z",
+          "completed_at": "2026-07-11T05:44:07Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 218958,
+            "cached_input": 176896,
+            "output": 1932,
+            "reasoning_output": 667,
+            "total": 220890
+          },
+          "diffstat": {
+            "files_changed": 6,
+            "added_lines": 153,
+            "removed_lines": 32,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1369,
+          "work_attempt_id": 832,
+          "started_at": "2026-07-11T05:45:18Z",
+          "completed_at": "2026-07-11T05:47:32Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 333175,
+            "cached_input": 285952,
+            "output": 3433,
+            "reasoning_output": 1297,
+            "total": 336608
+          },
+          "diffstat": {
+            "files_changed": 6,
+            "added_lines": 153,
+            "removed_lines": 32,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1370,
+          "work_attempt_id": 833,
+          "started_at": "2026-07-11T05:48:10Z",
+          "completed_at": "2026-07-11T05:49:00Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 166147,
+            "cached_input": 131072,
+            "output": 1638,
+            "reasoning_output": 866,
+            "total": 167785
+          },
+          "diffstat": {
+            "files_changed": 6,
+            "added_lines": 153,
+            "removed_lines": 32,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1371,
+          "work_attempt_id": 834,
+          "started_at": "2026-07-11T05:50:13Z",
+          "completed_at": "2026-07-11T05:51:08Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 251427,
+            "cached_input": 211456,
+            "output": 1959,
+            "reasoning_output": 675,
+            "total": 253386
+          },
+          "diffstat": {
+            "files_changed": 6,
+            "added_lines": 153,
+            "removed_lines": 32,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1372,
+          "work_attempt_id": 835,
+          "started_at": "2026-07-11T05:52:17Z",
+          "completed_at": "2026-07-11T05:52:58Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 113821,
+            "cached_input": 87296,
+            "output": 1411,
+            "reasoning_output": 406,
+            "total": 115232
+          },
+          "diffstat": {
+            "files_changed": 6,
+            "added_lines": 153,
+            "removed_lines": 32,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1373,
+          "work_attempt_id": 836,
+          "started_at": "2026-07-11T05:56:25Z",
+          "completed_at": "2026-07-11T05:58:14Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 223468,
+            "cached_input": 171776,
+            "output": 2322,
+            "reasoning_output": 1004,
+            "total": 225790
+          },
+          "diffstat": {
+            "files_changed": 6,
+            "added_lines": 153,
+            "removed_lines": 32,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1374,
+          "work_attempt_id": 837,
+          "started_at": "2026-07-11T06:03:25Z",
+          "completed_at": "2026-07-11T06:04:19Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 225077,
+            "cached_input": 157440,
+            "output": 2034,
+            "reasoning_output": 695,
+            "total": 227111
+          },
+          "diffstat": {
+            "files_changed": 6,
+            "added_lines": 153,
+            "removed_lines": 32,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1375,
+          "work_attempt_id": 838,
+          "started_at": "2026-07-11T06:05:29Z",
+          "completed_at": "2026-07-11T06:05:58Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 112564,
+            "cached_input": 80128,
+            "output": 904,
+            "reasoning_output": 289,
+            "total": 113468
+          },
+          "diffstat": {
+            "files_changed": 6,
+            "added_lines": 153,
+            "removed_lines": 32,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1376,
+          "work_attempt_id": 839,
+          "started_at": "2026-07-11T06:07:33Z",
+          "completed_at": "2026-07-11T06:09:47Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 297039,
+            "cached_input": 244224,
+            "output": 3497,
+            "reasoning_output": 1146,
+            "total": 300536
+          },
+          "diffstat": {
+            "files_changed": 6,
+            "added_lines": 153,
+            "removed_lines": 32,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1377,
+          "work_attempt_id": 840,
+          "started_at": "2026-07-11T06:12:27Z",
+          "completed_at": "2026-07-11T06:15:20Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 859858,
+            "cached_input": 798464,
+            "output": 7103,
+            "reasoning_output": 1923,
+            "total": 866961
+          },
+          "diffstat": {
+            "files_changed": 5,
+            "added_lines": 150,
+            "removed_lines": 31,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1378,
+          "work_attempt_id": 841,
+          "started_at": "2026-07-11T06:23:36Z",
+          "completed_at": "2026-07-11T06:24:17Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 119108,
+            "cached_input": 81152,
+            "output": 1482,
+            "reasoning_output": 528,
+            "total": 120590
+          },
+          "diffstat": {
+            "files_changed": 5,
+            "added_lines": 150,
+            "removed_lines": 31,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1379,
+          "work_attempt_id": 842,
+          "started_at": "2026-07-11T06:25:41Z",
+          "completed_at": "2026-07-11T06:26:26Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 161242,
+            "cached_input": 129024,
+            "output": 1365,
+            "reasoning_output": 473,
+            "total": 162607
+          },
+          "diffstat": {
+            "files_changed": 5,
+            "added_lines": 150,
+            "removed_lines": 31,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1380,
+          "work_attempt_id": 843,
+          "started_at": "2026-07-11T06:27:45Z",
+          "completed_at": "2026-07-11T06:28:26Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 112161,
+            "cached_input": 86272,
+            "output": 1259,
+            "reasoning_output": 496,
+            "total": 113420
+          },
+          "diffstat": {
+            "files_changed": 5,
+            "added_lines": 150,
+            "removed_lines": 31,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1381,
+          "work_attempt_id": 844,
+          "started_at": "2026-07-11T06:34:43Z",
+          "completed_at": "2026-07-11T06:35:15Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 112508,
+            "cached_input": 78080,
+            "output": 1001,
+            "reasoning_output": 346,
+            "total": 113509
+          },
+          "diffstat": {
+            "files_changed": 5,
+            "added_lines": 150,
+            "removed_lines": 31,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1382,
+          "work_attempt_id": 845,
+          "started_at": "2026-07-11T06:36:47Z",
+          "completed_at": "2026-07-11T06:37:11Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 71794,
+            "cached_input": 49664,
+            "output": 553,
+            "reasoning_output": 151,
+            "total": 72347
+          },
+          "diffstat": {
+            "files_changed": 5,
+            "added_lines": 150,
+            "removed_lines": 31,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1383,
+          "work_attempt_id": 846,
+          "started_at": "2026-07-11T06:38:51Z",
+          "completed_at": "2026-07-11T06:39:27Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 117857,
+            "cached_input": 88320,
+            "output": 1240,
+            "reasoning_output": 412,
+            "total": 119097
+          },
+          "diffstat": {
+            "files_changed": 5,
+            "added_lines": 150,
+            "removed_lines": 31,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1384,
+          "work_attempt_id": 847,
+          "started_at": "2026-07-11T06:43:54Z",
+          "completed_at": "2026-07-11T06:44:34Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 175356,
+            "cached_input": 130048,
+            "output": 1339,
+            "reasoning_output": 507,
+            "total": 176695
+          },
+          "diffstat": {
+            "files_changed": 5,
+            "added_lines": 150,
+            "removed_lines": 31,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1385,
+          "work_attempt_id": 848,
+          "started_at": "2026-07-11T06:45:58Z",
+          "completed_at": "2026-07-11T06:46:42Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 111015,
+            "cached_input": 100608,
+            "output": 1354,
+            "reasoning_output": 516,
+            "total": 112369
+          },
+          "diffstat": {
+            "files_changed": 5,
+            "added_lines": 150,
+            "removed_lines": 31,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1386,
+          "work_attempt_id": 849,
+          "started_at": "2026-07-11T06:48:02Z",
+          "completed_at": "2026-07-11T06:48:51Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 168206,
+            "cached_input": 128000,
+            "output": 1538,
+            "reasoning_output": 506,
+            "total": 169744
+          },
+          "diffstat": {
+            "files_changed": 5,
+            "added_lines": 150,
+            "removed_lines": 31,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1387,
+          "work_attempt_id": 850,
+          "started_at": "2026-07-11T06:50:06Z",
+          "completed_at": "2026-07-11T06:50:54Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 176004,
+            "cached_input": 134144,
+            "output": 1585,
+            "reasoning_output": 602,
+            "total": 177589
+          },
+          "diffstat": {
+            "files_changed": 5,
+            "added_lines": 150,
+            "removed_lines": 31,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1388,
+          "work_attempt_id": 851,
+          "started_at": "2026-07-11T06:57:05Z",
+          "completed_at": "2026-07-11T06:57:44Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 124481,
+            "cached_input": 82176,
+            "output": 1232,
+            "reasoning_output": 423,
+            "total": 125713
+          },
+          "diffstat": {
+            "files_changed": 5,
+            "added_lines": 150,
+            "removed_lines": 31,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1389,
+          "work_attempt_id": 852,
+          "started_at": "2026-07-11T06:59:11Z",
+          "completed_at": "2026-07-11T06:59:52Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 114484,
+            "cached_input": 103680,
+            "output": 1378,
+            "reasoning_output": 518,
+            "total": 115862
+          },
+          "diffstat": {
+            "files_changed": 5,
+            "added_lines": 150,
+            "removed_lines": 31,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1390,
+          "work_attempt_id": 853,
+          "started_at": "2026-07-11T07:01:15Z",
+          "completed_at": "2026-07-11T07:02:05Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 165026,
+            "cached_input": 123904,
+            "output": 1743,
+            "reasoning_output": 650,
+            "total": 166769
+          },
+          "diffstat": {
+            "files_changed": 5,
+            "added_lines": 150,
+            "removed_lines": 31,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1391,
+          "work_attempt_id": 854,
+          "started_at": "2026-07-11T07:03:19Z",
+          "completed_at": "2026-07-11T07:05:13Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 227930,
+            "cached_input": 179968,
+            "output": 1977,
+            "reasoning_output": 614,
+            "total": 229907
+          },
+          "diffstat": {
+            "files_changed": 5,
+            "added_lines": 150,
+            "removed_lines": 31,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1392,
+          "work_attempt_id": 855,
+          "started_at": "2026-07-11T07:06:11Z",
+          "completed_at": "2026-07-11T07:06:43Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 120787,
+            "cached_input": 81152,
+            "output": 980,
+            "reasoning_output": 326,
+            "total": 121767
+          },
+          "diffstat": {
+            "files_changed": 5,
+            "added_lines": 150,
+            "removed_lines": 31,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1393,
+          "work_attempt_id": 856,
+          "started_at": "2026-07-11T07:08:14Z",
+          "completed_at": "2026-07-11T07:09:25Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 159677,
+            "cached_input": 120832,
+            "output": 1490,
+            "reasoning_output": 585,
+            "total": 161167
+          },
+          "diffstat": {
+            "files_changed": 5,
+            "added_lines": 150,
+            "removed_lines": 31,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1394,
+          "work_attempt_id": 857,
+          "started_at": "2026-07-11T07:10:19Z",
+          "completed_at": "2026-07-11T07:10:57Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 162765,
+            "cached_input": 132096,
+            "output": 1147,
+            "reasoning_output": 299,
+            "total": 163912
+          },
+          "diffstat": {
+            "files_changed": 5,
+            "added_lines": 150,
+            "removed_lines": 31,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1395,
+          "work_attempt_id": 858,
+          "started_at": "2026-07-11T07:12:23Z",
+          "completed_at": "2026-07-11T07:12:48Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 72553,
+            "cached_input": 42496,
+            "output": 699,
+            "reasoning_output": 305,
+            "total": 73252
+          },
+          "diffstat": {
+            "files_changed": 5,
+            "added_lines": 150,
+            "removed_lines": 31,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1396,
+          "work_attempt_id": 859,
+          "started_at": "2026-07-11T07:19:21Z",
+          "completed_at": "2026-07-11T07:19:55Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 118776,
+            "cached_input": 81152,
+            "output": 999,
+            "reasoning_output": 420,
+            "total": 119775
+          },
+          "diffstat": {
+            "files_changed": 5,
+            "added_lines": 150,
+            "removed_lines": 31,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1397,
+          "work_attempt_id": 860,
+          "started_at": "2026-07-11T07:21:25Z",
+          "completed_at": "2026-07-11T07:22:01Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 164876,
+            "cached_input": 149504,
+            "output": 1182,
+            "reasoning_output": 312,
+            "total": 166058
+          },
+          "diffstat": {
+            "files_changed": 5,
+            "added_lines": 150,
+            "removed_lines": 31,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1398,
+          "work_attempt_id": 861,
+          "started_at": "2026-07-11T07:23:28Z",
+          "completed_at": "2026-07-11T07:23:56Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 71241,
+            "cached_input": 42496,
+            "output": 678,
+            "reasoning_output": 267,
+            "total": 71919
+          },
+          "diffstat": {
+            "files_changed": 5,
+            "added_lines": 150,
+            "removed_lines": 31,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1399,
+          "work_attempt_id": 862,
+          "started_at": "2026-07-11T07:28:23Z",
+          "completed_at": "2026-07-11T07:29:22Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 169595,
+            "cached_input": 126976,
+            "output": 1816,
+            "reasoning_output": 787,
+            "total": 171411
+          },
+          "diffstat": {
+            "files_changed": 5,
+            "added_lines": 150,
+            "removed_lines": 31,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1400,
+          "work_attempt_id": 863,
+          "started_at": "2026-07-11T07:32:32Z",
+          "completed_at": "2026-07-11T07:33:10Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 120620,
+            "cached_input": 103680,
+            "output": 1310,
+            "reasoning_output": 417,
+            "total": 121930
+          },
+          "diffstat": {
+            "files_changed": 5,
+            "added_lines": 150,
+            "removed_lines": 31,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1401,
+          "work_attempt_id": 864,
+          "started_at": "2026-07-11T07:39:32Z",
+          "completed_at": "2026-07-11T07:40:13Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 171725,
+            "cached_input": 130048,
+            "output": 1258,
+            "reasoning_output": 404,
+            "total": 172983
+          },
+          "diffstat": {
+            "files_changed": 5,
+            "added_lines": 150,
+            "removed_lines": 31,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1402,
+          "work_attempt_id": 865,
+          "started_at": "2026-07-11T07:43:40Z",
+          "completed_at": "2026-07-11T07:44:25Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 171669,
+            "cached_input": 129024,
+            "output": 1318,
+            "reasoning_output": 323,
+            "total": 172987
+          },
+          "diffstat": {
+            "files_changed": 5,
+            "added_lines": 150,
+            "removed_lines": 31,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1403,
+          "work_attempt_id": 866,
+          "started_at": "2026-07-11T07:50:37Z",
+          "completed_at": "2026-07-11T07:51:20Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 155550,
+            "cached_input": 121856,
+            "output": 1366,
+            "reasoning_output": 471,
+            "total": 156916
+          },
+          "diffstat": {
+            "files_changed": 5,
+            "added_lines": 150,
+            "removed_lines": 31,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1404,
+          "work_attempt_id": 867,
+          "started_at": "2026-07-11T07:52:41Z",
+          "completed_at": "2026-07-11T07:53:33Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 175187,
+            "cached_input": 138240,
+            "output": 1834,
+            "reasoning_output": 673,
+            "total": 177021
+          },
+          "diffstat": {
+            "files_changed": 5,
+            "added_lines": 150,
+            "removed_lines": 31,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1405,
+          "work_attempt_id": 868,
+          "started_at": "2026-07-11T07:54:45Z",
+          "completed_at": "2026-07-11T07:55:39Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 226794,
+            "cached_input": 177920,
+            "output": 1729,
+            "reasoning_output": 553,
+            "total": 228523
+          },
+          "diffstat": {
+            "files_changed": 5,
+            "added_lines": 150,
+            "removed_lines": 31,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1406,
+          "work_attempt_id": 869,
+          "started_at": "2026-07-11T07:58:53Z",
+          "completed_at": "2026-07-11T08:00:25Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 168750,
+            "cached_input": 128000,
+            "output": 1317,
+            "reasoning_output": 350,
+            "total": 170067
+          },
+          "diffstat": {
+            "files_changed": 5,
+            "added_lines": 150,
+            "removed_lines": 31,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1407,
+          "work_attempt_id": 870,
+          "started_at": "2026-07-11T08:01:43Z",
+          "completed_at": "2026-07-11T08:02:42Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 164748,
+            "cached_input": 149504,
+            "output": 1821,
+            "reasoning_output": 608,
+            "total": 166569
+          },
+          "diffstat": {
+            "files_changed": 5,
+            "added_lines": 150,
+            "removed_lines": 31,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1408,
+          "work_attempt_id": 871,
+          "started_at": "2026-07-11T08:03:47Z",
+          "completed_at": "2026-07-11T08:05:50Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 477688,
+            "cached_input": 422656,
+            "output": 4560,
+            "reasoning_output": 1150,
+            "total": 482248
+          },
+          "diffstat": {
+            "files_changed": 5,
+            "added_lines": 150,
+            "removed_lines": 31,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1409,
+          "work_attempt_id": 872,
+          "started_at": "2026-07-11T08:12:51Z",
+          "completed_at": "2026-07-11T08:13:27Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 106620,
+            "cached_input": 85248,
+            "output": 645,
+            "reasoning_output": 226,
+            "total": 107265
+          },
+          "diffstat": {
+            "files_changed": 5,
+            "added_lines": 150,
+            "removed_lines": 31,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1410,
+          "work_attempt_id": 873,
+          "started_at": "2026-07-11T08:14:55Z",
+          "completed_at": "2026-07-11T08:17:08Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 700446,
+            "cached_input": 643584,
+            "output": 4484,
+            "reasoning_output": 1315,
+            "total": 704930
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1411,
+          "work_attempt_id": 874,
+          "started_at": "2026-07-11T08:21:08Z",
+          "completed_at": "2026-07-11T08:22:31Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 171217,
+            "cached_input": 131072,
+            "output": 1175,
+            "reasoning_output": 346,
+            "total": 172392
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1412,
+          "work_attempt_id": 875,
+          "started_at": "2026-07-11T08:23:57Z",
+          "completed_at": "2026-07-11T08:24:39Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 113307,
+            "cached_input": 87296,
+            "output": 1204,
+            "reasoning_output": 530,
+            "total": 114511
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1413,
+          "work_attempt_id": 876,
+          "started_at": "2026-07-11T08:26:01Z",
+          "completed_at": "2026-07-11T08:26:48Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 221216,
+            "cached_input": 178944,
+            "output": 1439,
+            "reasoning_output": 379,
+            "total": 222655
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1414,
+          "work_attempt_id": 877,
+          "started_at": "2026-07-11T08:28:05Z",
+          "completed_at": "2026-07-11T08:28:33Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 71358,
+            "cached_input": 43520,
+            "output": 759,
+            "reasoning_output": 319,
+            "total": 72117
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1415,
+          "work_attempt_id": 878,
+          "started_at": "2026-07-11T08:35:04Z",
+          "completed_at": "2026-07-11T08:35:32Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 73999,
+            "cached_input": 43520,
+            "output": 779,
+            "reasoning_output": 294,
+            "total": 74778
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1416,
+          "work_attempt_id": 879,
+          "started_at": "2026-07-11T08:37:08Z",
+          "completed_at": "2026-07-11T08:38:17Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 317195,
+            "cached_input": 256512,
+            "output": 2642,
+            "reasoning_output": 916,
+            "total": 319837
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1417,
+          "work_attempt_id": 880,
+          "started_at": "2026-07-11T08:48:15Z",
+          "completed_at": "2026-07-11T08:49:20Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 223519,
+            "cached_input": 177920,
+            "output": 2096,
+            "reasoning_output": 836,
+            "total": 225615
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1418,
+          "work_attempt_id": 881,
+          "started_at": "2026-07-11T08:57:19Z",
+          "completed_at": "2026-07-11T08:58:12Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 223510,
+            "cached_input": 177920,
+            "output": 1593,
+            "reasoning_output": 446,
+            "total": 225103
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1419,
+          "work_attempt_id": 882,
+          "started_at": "2026-07-11T09:01:27Z",
+          "completed_at": "2026-07-11T09:02:04Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 171321,
+            "cached_input": 136192,
+            "output": 1244,
+            "reasoning_output": 255,
+            "total": 172565
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1420,
+          "work_attempt_id": 883,
+          "started_at": "2026-07-11T09:05:35Z",
+          "completed_at": "2026-07-11T09:06:53Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 107495,
+            "cached_input": 85248,
+            "output": 907,
+            "reasoning_output": 280,
+            "total": 108402
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1421,
+          "work_attempt_id": 884,
+          "started_at": "2026-07-11T09:08:30Z",
+          "completed_at": "2026-07-11T09:09:36Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 166851,
+            "cached_input": 125952,
+            "output": 1770,
+            "reasoning_output": 520,
+            "total": 168621
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1422,
+          "work_attempt_id": 885,
+          "started_at": "2026-07-11T09:10:34Z",
+          "completed_at": "2026-07-11T09:11:17Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 220944,
+            "cached_input": 176896,
+            "output": 1475,
+            "reasoning_output": 473,
+            "total": 222419
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1423,
+          "work_attempt_id": 886,
+          "started_at": "2026-07-11T09:14:42Z",
+          "completed_at": "2026-07-11T09:15:12Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 113202,
+            "cached_input": 82176,
+            "output": 798,
+            "reasoning_output": 239,
+            "total": 114000
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1424,
+          "work_attempt_id": 887,
+          "started_at": "2026-07-11T09:16:46Z",
+          "completed_at": "2026-07-11T09:18:11Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 114446,
+            "cached_input": 78080,
+            "output": 1098,
+            "reasoning_output": 401,
+            "total": 115544
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1425,
+          "work_attempt_id": 888,
+          "started_at": "2026-07-11T09:19:40Z",
+          "completed_at": "2026-07-11T09:20:14Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 163754,
+            "cached_input": 126976,
+            "output": 1090,
+            "reasoning_output": 276,
+            "total": 164844
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1426,
+          "work_attempt_id": 889,
+          "started_at": "2026-07-11T09:21:44Z",
+          "completed_at": "2026-07-11T09:22:07Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 68273,
+            "cached_input": 43520,
+            "output": 579,
+            "reasoning_output": 161,
+            "total": 68852
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1427,
+          "work_attempt_id": 890,
+          "started_at": "2026-07-11T09:27:56Z",
+          "completed_at": "2026-07-11T09:29:09Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 120045,
+            "cached_input": 106752,
+            "output": 836,
+            "reasoning_output": 300,
+            "total": 120881
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1428,
+          "work_attempt_id": 891,
+          "started_at": "2026-07-11T09:30:46Z",
+          "completed_at": "2026-07-11T09:31:35Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 176572,
+            "cached_input": 131072,
+            "output": 1714,
+            "reasoning_output": 570,
+            "total": 178286
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1429,
+          "work_attempt_id": 892,
+          "started_at": "2026-07-11T09:34:54Z",
+          "completed_at": "2026-07-11T09:35:43Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 178775,
+            "cached_input": 134144,
+            "output": 1862,
+            "reasoning_output": 711,
+            "total": 180637
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1430,
+          "work_attempt_id": 893,
+          "started_at": "2026-07-11T09:36:57Z",
+          "completed_at": "2026-07-11T09:37:43Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 207369,
+            "cached_input": 191232,
+            "output": 1468,
+            "reasoning_output": 430,
+            "total": 208837
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1431,
+          "work_attempt_id": 894,
+          "started_at": "2026-07-11T09:39:01Z",
+          "completed_at": "2026-07-11T09:40:36Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 189382,
+            "cached_input": 140288,
+            "output": 1743,
+            "reasoning_output": 709,
+            "total": 191125
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1432,
+          "work_attempt_id": 895,
+          "started_at": "2026-07-11T09:41:52Z",
+          "completed_at": "2026-07-11T09:42:44Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 224102,
+            "cached_input": 178944,
+            "output": 1937,
+            "reasoning_output": 663,
+            "total": 226039
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1433,
+          "work_attempt_id": 896,
+          "started_at": "2026-07-11T09:43:56Z",
+          "completed_at": "2026-07-11T09:44:59Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 290654,
+            "cached_input": 247296,
+            "output": 2470,
+            "reasoning_output": 649,
+            "total": 293124
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1434,
+          "work_attempt_id": 897,
+          "started_at": "2026-07-11T09:50:08Z",
+          "completed_at": "2026-07-11T09:51:16Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 71058,
+            "cached_input": 43520,
+            "output": 622,
+            "reasoning_output": 204,
+            "total": 71680
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1435,
+          "work_attempt_id": 898,
+          "started_at": "2026-07-11T09:52:59Z",
+          "completed_at": "2026-07-11T09:54:00Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 254367,
+            "cached_input": 206592,
+            "output": 2201,
+            "reasoning_output": 567,
+            "total": 256568
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1436,
+          "work_attempt_id": 899,
+          "started_at": "2026-07-11T09:59:11Z",
+          "completed_at": "2026-07-11T09:59:52Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 158910,
+            "cached_input": 131072,
+            "output": 1359,
+            "reasoning_output": 467,
+            "total": 160269
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1437,
+          "work_attempt_id": 900,
+          "started_at": "2026-07-11T10:01:15Z",
+          "completed_at": "2026-07-11T10:02:41Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 179142,
+            "cached_input": 142336,
+            "output": 1277,
+            "reasoning_output": 406,
+            "total": 180419
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1438,
+          "work_attempt_id": 901,
+          "started_at": "2026-07-11T10:06:11Z",
+          "completed_at": "2026-07-11T10:06:47Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 158066,
+            "cached_input": 123904,
+            "output": 1228,
+            "reasoning_output": 431,
+            "total": 159294
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1439,
+          "work_attempt_id": 902,
+          "started_at": "2026-07-11T10:10:19Z",
+          "completed_at": "2026-07-11T10:10:47Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 72279,
+            "cached_input": 67072,
+            "output": 907,
+            "reasoning_output": 349,
+            "total": 73186
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1440,
+          "work_attempt_id": 903,
+          "started_at": "2026-07-11T10:12:23Z",
+          "completed_at": "2026-07-11T10:13:44Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 71002,
+            "cached_input": 43520,
+            "output": 1003,
+            "reasoning_output": 511,
+            "total": 72005
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1441,
+          "work_attempt_id": 904,
+          "started_at": "2026-07-11T10:17:21Z",
+          "completed_at": "2026-07-11T10:18:09Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 165063,
+            "cached_input": 125952,
+            "output": 1503,
+            "reasoning_output": 496,
+            "total": 166566
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1442,
+          "work_attempt_id": 905,
+          "started_at": "2026-07-11T10:23:33Z",
+          "completed_at": "2026-07-11T10:25:08Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 268198,
+            "cached_input": 224768,
+            "output": 1735,
+            "reasoning_output": 461,
+            "total": 269933
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1443,
+          "work_attempt_id": 906,
+          "started_at": "2026-07-11T10:26:25Z",
+          "completed_at": "2026-07-11T10:27:14Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 160746,
+            "cached_input": 123904,
+            "output": 1210,
+            "reasoning_output": 399,
+            "total": 161956
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1444,
+          "work_attempt_id": 907,
+          "started_at": "2026-07-11T10:30:33Z",
+          "completed_at": "2026-07-11T10:31:15Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 164152,
+            "cached_input": 147456,
+            "output": 1305,
+            "reasoning_output": 459,
+            "total": 165457
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1445,
+          "work_attempt_id": 908,
+          "started_at": "2026-07-11T10:32:37Z",
+          "completed_at": "2026-07-11T10:33:22Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 178305,
+            "cached_input": 129024,
+            "output": 1410,
+            "reasoning_output": 575,
+            "total": 179715
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1446,
+          "work_attempt_id": 909,
+          "started_at": "2026-07-11T10:34:41Z",
+          "completed_at": "2026-07-11T10:36:19Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 224665,
+            "cached_input": 182016,
+            "output": 1816,
+            "reasoning_output": 474,
+            "total": 226481
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1447,
+          "work_attempt_id": 910,
+          "started_at": "2026-07-11T10:37:32Z",
+          "completed_at": "2026-07-11T10:38:16Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 181862,
+            "cached_input": 141312,
+            "output": 1602,
+            "reasoning_output": 506,
+            "total": 183464
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1448,
+          "work_attempt_id": 911,
+          "started_at": "2026-07-11T10:43:44Z",
+          "completed_at": "2026-07-11T10:44:21Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 167170,
+            "cached_input": 136192,
+            "output": 1270,
+            "reasoning_output": 352,
+            "total": 168440
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1449,
+          "work_attempt_id": 912,
+          "started_at": "2026-07-11T10:45:48Z",
+          "completed_at": "2026-07-11T10:47:14Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 125035,
+            "cached_input": 83200,
+            "output": 1315,
+            "reasoning_output": 544,
+            "total": 126350
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1450,
+          "work_attempt_id": 913,
+          "started_at": "2026-07-11T10:50:41Z",
+          "completed_at": "2026-07-11T10:51:20Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 110490,
+            "cached_input": 103680,
+            "output": 1078,
+            "reasoning_output": 390,
+            "total": 111568
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1451,
+          "work_attempt_id": 914,
+          "started_at": "2026-07-11T10:52:45Z",
+          "completed_at": "2026-07-11T10:53:26Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 175532,
+            "cached_input": 154624,
+            "output": 1389,
+            "reasoning_output": 434,
+            "total": 176921
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1452,
+          "work_attempt_id": 915,
+          "started_at": "2026-07-11T10:54:50Z",
+          "completed_at": "2026-07-11T10:55:40Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 234811,
+            "cached_input": 207616,
+            "output": 1888,
+            "reasoning_output": 641,
+            "total": 236699
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1453,
+          "work_attempt_id": 916,
+          "started_at": "2026-07-11T10:56:54Z",
+          "completed_at": "2026-07-11T10:58:30Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 187384,
+            "cached_input": 160768,
+            "output": 1816,
+            "reasoning_output": 650,
+            "total": 189200
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1454,
+          "work_attempt_id": 917,
+          "started_at": "2026-07-11T10:59:46Z",
+          "completed_at": "2026-07-11T11:00:50Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 267256,
+            "cached_input": 246272,
+            "output": 2398,
+            "reasoning_output": 818,
+            "total": 269654
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1455,
+          "work_attempt_id": 918,
+          "started_at": "2026-07-11T11:05:59Z",
+          "completed_at": "2026-07-11T11:06:44Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 274857,
+            "cached_input": 225792,
+            "output": 1582,
+            "reasoning_output": 387,
+            "total": 276439
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1456,
+          "work_attempt_id": 919,
+          "started_at": "2026-07-11T11:08:03Z",
+          "completed_at": "2026-07-11T11:09:35Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 167722,
+            "cached_input": 125952,
+            "output": 1381,
+            "reasoning_output": 576,
+            "total": 169103
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1457,
+          "work_attempt_id": 920,
+          "started_at": "2026-07-11T11:15:04Z",
+          "completed_at": "2026-07-11T11:15:39Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 116500,
+            "cached_input": 89344,
+            "output": 1197,
+            "reasoning_output": 471,
+            "total": 117697
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1458,
+          "work_attempt_id": 921,
+          "started_at": "2026-07-11T11:19:12Z",
+          "completed_at": "2026-07-11T11:20:34Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 127564,
+            "cached_input": 87296,
+            "output": 1126,
+            "reasoning_output": 427,
+            "total": 128690
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1459,
+          "work_attempt_id": 922,
+          "started_at": "2026-07-11T11:26:13Z",
+          "completed_at": "2026-07-11T11:26:52Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 116371,
+            "cached_input": 89344,
+            "output": 1220,
+            "reasoning_output": 459,
+            "total": 117591
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1460,
+          "work_attempt_id": 923,
+          "started_at": "2026-07-11T11:30:21Z",
+          "completed_at": "2026-07-11T11:32:02Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 269125,
+            "cached_input": 218624,
+            "output": 1807,
+            "reasoning_output": 523,
+            "total": 270932
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1461,
+          "work_attempt_id": 924,
+          "started_at": "2026-07-11T11:37:21Z",
+          "completed_at": "2026-07-11T11:37:53Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 118204,
+            "cached_input": 83200,
+            "output": 821,
+            "reasoning_output": 262,
+            "total": 119025
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1462,
+          "work_attempt_id": 925,
+          "started_at": "2026-07-11T11:39:25Z",
+          "completed_at": "2026-07-11T11:41:22Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 238416,
+            "cached_input": 170752,
+            "output": 1738,
+            "reasoning_output": 503,
+            "total": 240154
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1463,
+          "work_attempt_id": 926,
+          "started_at": "2026-07-11T11:46:24Z",
+          "completed_at": "2026-07-11T11:47:08Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 165785,
+            "cached_input": 148480,
+            "output": 1374,
+            "reasoning_output": 366,
+            "total": 167159
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1464,
+          "work_attempt_id": 927,
+          "started_at": "2026-07-11T11:48:28Z",
+          "completed_at": "2026-07-11T11:49:12Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 161177,
+            "cached_input": 132096,
+            "output": 1455,
+            "reasoning_output": 629,
+            "total": 162632
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1465,
+          "work_attempt_id": 928,
+          "started_at": "2026-07-11T11:50:32Z",
+          "completed_at": "2026-07-11T11:51:00Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 112065,
+            "cached_input": 82176,
+            "output": 776,
+            "reasoning_output": 222,
+            "total": 112841
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1466,
+          "work_attempt_id": 929,
+          "started_at": "2026-07-11T11:52:36Z",
+          "completed_at": "2026-07-11T11:54:19Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 281930,
+            "cached_input": 257536,
+            "output": 1988,
+            "reasoning_output": 626,
+            "total": 283918
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1467,
+          "work_attempt_id": 930,
+          "started_at": "2026-07-11T11:59:35Z",
+          "completed_at": "2026-07-11T12:00:08Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 71787,
+            "cached_input": 50688,
+            "output": 848,
+            "reasoning_output": 328,
+            "total": 72635
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1468,
+          "work_attempt_id": 931,
+          "started_at": "2026-07-11T12:01:39Z",
+          "completed_at": "2026-07-11T12:02:20Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 177018,
+            "cached_input": 130048,
+            "output": 1269,
+            "reasoning_output": 421,
+            "total": 178287
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1469,
+          "work_attempt_id": 932,
+          "started_at": "2026-07-11T12:06:36Z",
+          "completed_at": "2026-07-11T12:07:01Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 74274,
+            "cached_input": 43520,
+            "output": 661,
+            "reasoning_output": 330,
+            "total": 74935
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1470,
+          "work_attempt_id": 933,
+          "started_at": "2026-07-11T12:08:40Z",
+          "completed_at": "2026-07-11T12:09:14Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 115917,
+            "cached_input": 105728,
+            "output": 1105,
+            "reasoning_output": 445,
+            "total": 117022
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1471,
+          "work_attempt_id": 934,
+          "started_at": "2026-07-11T12:10:44Z",
+          "completed_at": "2026-07-11T12:11:38Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 159436,
+            "cached_input": 126976,
+            "output": 1340,
+            "reasoning_output": 549,
+            "total": 160776
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1472,
+          "work_attempt_id": 935,
+          "started_at": "2026-07-11T12:12:48Z",
+          "completed_at": "2026-07-11T12:13:53Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 345820,
+            "cached_input": 315648,
+            "output": 2182,
+            "reasoning_output": 560,
+            "total": 348002
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1473,
+          "work_attempt_id": 936,
+          "started_at": "2026-07-11T12:14:52Z",
+          "completed_at": "2026-07-11T12:16:13Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 163880,
+            "cached_input": 132096,
+            "output": 1128,
+            "reasoning_output": 315,
+            "total": 165008
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        },
+        {
+          "session_id": 1478,
+          "work_attempt_id": 941,
+          "started_at": "2026-07-11T12:23:47Z",
+          "completed_at": "2026-07-11T12:24:05Z",
+          "final_state": "completed",
+          "tokens": {
+            "input": 34378,
+            "cached_input": 17152,
+            "output": 299,
+            "reasoning_output": 204,
+            "total": 34677
+          },
+          "diffstat": {
+            "files_changed": 9,
+            "added_lines": 168,
+            "removed_lines": 35,
+            "status": "changed"
+          },
+          "pull_request_present": false
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "id": "msg_6a20f1c4",
+  "conversation_id": "conv_9f2c41a0b7d84e6fa1c35d92e4780b16",
+  "seq": 7,
+  "role": "user",
+  "kind": "text",
+  "text": "Check whether the lock renewal waits on a healthy handoff.",
+  "data": {},
+  "delivery": "delivered",
+  "attempt_id": "att_18f4",
+  "turn_id": "turn_5",
+  "provider_item_id": null,
+  "actor": {
+    "kind": "human",
+    "principal_id": "tok_7b21"
+  },
+  "command_key": "cmd_01J8Z0V6C3N4",
+  "references": [],
+  "created_at": "2026-09-09T10:02:41Z",
+  "updated_at": "2026-09-09T10:02:43Z"
+}

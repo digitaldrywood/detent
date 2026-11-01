@@ -1,0 +1,42 @@
+{
+  "scope": "runner_configuration_ceiling",
+  "dispatch_constraint": "Actual claims also require project, provider and plan admission.",
+  "runner_id": "rnr_macbook",
+  "revision": 7,
+  "desired": 6,
+  "applied": {
+    "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "local_limit": 6,
+    "client_limit": 6,
+    "runtime_limit": 6,
+    "manageable": true,
+    "observed_at": "2026-09-10T12:09:00Z"
+  },
+  "effective": 6,
+  "status": "applied",
+  "limits": [
+    {
+      "owner": "cloud_runner",
+      "limit": 6
+    },
+    {
+      "owner": "shared_host",
+      "limit": 8,
+      "constraint": "Change the existing host capacity setting if this operator-owned ceiling is too small."
+    }
+  ],
+  "projects": {
+    "prj_known": {
+      "desired": null,
+      "applied": null,
+      "effective": 6,
+      "used": 2
+    },
+    "prj_second": {
+      "desired": 0,
+      "applied": 0,
+      "effective": 0,
+      "used": 1
+    }
+  }
+}

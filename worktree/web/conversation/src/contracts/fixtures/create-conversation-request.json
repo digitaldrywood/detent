@@ -1,0 +1,8 @@
+{
+  "key": "cmd_01J8Z0V6C3N2",
+  "title": "Flaky checkout lock renewal",
+  "first_message": {
+    "key": "cmd_01J8Z0V6C3N3",
+    "text": "The checkout lock lapses under load. Where does the renewal happen?"
+  }
+}

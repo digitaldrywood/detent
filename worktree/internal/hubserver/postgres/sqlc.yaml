@@ -1,0 +1,65 @@
+version: "2"
+sql:
+  - engine: "postgresql"
+    queries: "queries"
+    schema: ["roles.sql", "migrations"]
+    gen:
+      go:
+        package: "pgquery"
+        out: "pgquery"
+        sql_package: "database/sql"
+        emit_empty_slices: true
+        rename:
+          payload_sha256: "PayloadSHA256"
+          head_sha: "HeadSHA"
+          base_sha: "BaseSHA"
+          merge_base_sha: "MergeBaseSHA"
+          external_url: "ExternalURL"
+        overrides:
+          - db_type: "text"
+            nullable: true
+            go_type:
+              type: "string"
+              pointer: true
+          - db_type: "timestamptz"
+            nullable: true
+            go_type:
+              import: "time"
+              type: "Time"
+              pointer: true
+          - column: "*.organization_id"
+            go_type:
+              import: "github.com/digitaldrywood/detent/internal/tracker"
+              type: "OrganizationID"
+          - column: "projects.id"
+            go_type:
+              import: "github.com/digitaldrywood/detent/internal/tracker"
+              type: "ProjectID"
+          - column: "*.project_id"
+            go_type:
+              import: "github.com/digitaldrywood/detent/internal/tracker"
+              type: "ProjectID"
+          - column: "issues.native_id"
+            go_type:
+              import: "github.com/digitaldrywood/detent/internal/tracker"
+              type: "NativeWorkItemID"
+          - column: "native_comments.work_item_id"
+            go_type:
+              import: "github.com/digitaldrywood/detent/internal/tracker"
+              type: "NativeWorkItemID"
+          - column: "collaboration_events.work_item_id"
+            go_type:
+              import: "github.com/digitaldrywood/detent/internal/tracker"
+              type: "NativeWorkItemID"
+          - column: "collaboration_versions.work_item_id"
+            go_type:
+              import: "github.com/digitaldrywood/detent/internal/tracker"
+              type: "NativeWorkItemID"
+          - column: "change_requests.work_item_id"
+            go_type:
+              import: "github.com/digitaldrywood/detent/internal/tracker"
+              type: "NativeWorkItemID"
+          - column: "change_issue_links.work_item_id"
+            go_type:
+              import: "github.com/digitaldrywood/detent/internal/tracker"
+              type: "NativeWorkItemID"
