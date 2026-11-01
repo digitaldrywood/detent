@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -57,7 +58,7 @@ func TestDailySummarySchedule(t *testing.T) {
 
 			f := newDailySummaryFixture(t, 0)
 			clock := parse(tt.after)
-			f.service.config.now = func() time.Time { return clock }
+			f.clock.Store(clock.UnixNano())
 			value := dailySummaryPreference{Enabled: true, SendTime: "06:00", TimeZone: "America/Chicago", Days: "every_day"}
 			if tt.weekdays {
 				value.Days = "weekdays"
@@ -68,6 +69,7 @@ func TestDailySummarySchedule(t *testing.T) {
 			sent := 0
 			f.service.config.Hosted.EmailSender = healthEmailSenderFunc(func(context.Context, auth.EmailMessage) error { sent++; return nil })
 			clock = next.Add(-time.Second)
+			f.clock.Store(clock.UnixNano())
 			if err := f.service.deliverDailySummaries(t.Context(), f.service.config.now()); err != nil {
 				t.Fatal(err)
 			}
@@ -75,6 +77,7 @@ func TestDailySummarySchedule(t *testing.T) {
 				t.Fatal("summary fired before scheduled time")
 			}
 			clock = next.Add(3 * time.Minute)
+			f.clock.Store(clock.UnixNano())
 			for range 2 {
 				if err := f.service.deliverDailySummaries(t.Context(), f.service.config.now()); err != nil {
 					t.Fatal(err)
@@ -238,18 +241,22 @@ type dailySummaryFixture struct {
 	user      hostedSecurityUser
 	recipient summaryRecipient
 	ids       map[string]string
+	clock     *atomic.Int64
 }
 
 func newDailySummaryFixture(t *testing.T, numberOffset int) dailySummaryFixture {
 	t.Helper()
-	f := newHostedSharedFixture(t)
-	user := f.user(t, "owner", "owner", "owner@example.test", "write", "")
 	zone, err := time.LoadLocation("America/Chicago")
 	if err != nil {
 		t.Fatal(err)
 	}
 	end := time.Date(2026, 10, 27, 6, 0, 0, 0, zone).UTC()
-	f.service.config.now = func() time.Time { return end }
+	clock := &atomic.Int64{}
+	clock.Store(end.UnixNano())
+	f := newHostedSharedFixture(t, func(cfg *Config) {
+		cfg.now = func() time.Time { return time.Unix(0, clock.Load()).UTC() }
+	})
+	user := f.user(t, "owner", "owner", "owner@example.test", "write", "")
 	r := summaryRecipient{user: user.identity.Subject, organization: "org_security", email: "owner@example.test", role: "owner", minute: 360, zone: zone, end: end, token: newNativeID("unsub")}
 	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT principal_id FROM hosted_members WHERE user_id=?", r.user).Scan(&r.principal); err != nil {
 		t.Fatal(err)
@@ -341,7 +348,7 @@ func newDailySummaryFixture(t *testing.T, numberOffset int) dailySummaryFixture 
 	exec(`INSERT INTO native_comments(id,organization_id,project_id,work_item_id,revision,sequence,body,actor_json,created_at,updated_at) VALUES(?,'org_security',?,?,1,2,'private-comment-text-sentinel','{"kind":"human","principal_id":"fixture"}',?,?)`, newNativeID("cmt"), f.project, blocked, formatHubTime(end.Add(-time.Hour)), formatHubTime(end.Add(-time.Hour)))
 	drainTestNativeClosedTimes(t, f.service)
 	drainTestNativeBoard(t, f.service)
-	return dailySummaryFixture{f, user, r, ids}
+	return dailySummaryFixture{f, user, r, ids, clock}
 }
 
 func TestDailySummaryContentAndAccess(t *testing.T) {
@@ -519,7 +526,7 @@ func TestDailySummaryContentAndAccess(t *testing.T) {
 			f := newDailySummaryFixture(t, 1000)
 			r := f.recipient
 			r.end = r.end.AddDate(0, 0, 20)
-			f.service.config.now = func() time.Time { return r.end }
+			f.clock.Store(r.end.UnixNano())
 			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
 			if err != nil {
 				t.Fatal(err)

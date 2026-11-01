@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -382,10 +383,10 @@ func TestRunnerCachedProbeProblemsHeartbeat(t *testing.T) {
 		{name: "cached probe with settings failure", code: "backend_probe_failed", cached: true, mixed: true, visible: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			f := newDefaultNativeFixture(t, Config{})
-			now := f.service.config.now()
-			f.service.config.now = func() time.Time { return now }
-			f.service.database.now = f.service.config.now
+			now := time.Now().UTC()
+			var clock atomic.Int64
+			clock.Store(now.UnixNano())
+			f := newDefaultNativeFixture(t, Config{now: func() time.Time { return time.Unix(0, clock.Load()).UTC() }})
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
 			r.enroll(t)
 			problem := runnerauth.NewProblem(test.code)
@@ -416,6 +417,7 @@ func TestRunnerCachedProbeProblemsHeartbeat(t *testing.T) {
 			first := now
 			for _, age := range []time.Duration{0, time.Minute, 2*time.Minute - time.Nanosecond, 2 * time.Minute, 3 * time.Minute} {
 				now = first.Add(age)
+				clock.Store(now.UnixNano())
 				if age == 2*time.Minute && !test.visible {
 					if view := read(); view.Health != "needs_attention" || len(view.Problems) != 1 {
 						t.Fatalf("persistent failure did not age into visibility: %+v", view)
@@ -465,6 +467,7 @@ func TestRunnerCachedProbeProblemsHeartbeat(t *testing.T) {
 				t.Fatalf("completed probe did not clear failure: %+v", view)
 			}
 			now = now.Add(time.Second)
+			clock.Store(now.UnixNano())
 			heartbeat["problems"] = problems
 			post()
 			view := read()
