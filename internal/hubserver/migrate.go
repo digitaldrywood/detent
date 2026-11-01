@@ -18,7 +18,7 @@ import (
 
 const hubSchemaTable = "hub_schema_version"
 
-//go:embed migrations/*.sql migration_steps/*.sql
+//go:embed migrations/*.sql migration_steps/*.sql postgres/migrations/*.sql
 var migrationFiles embed.FS
 
 func runMigrations(ctx context.Context, db *sql.DB, logger *slog.Logger) (int64, error) {

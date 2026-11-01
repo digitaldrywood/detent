@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/update"
 )
 
@@ -67,6 +68,8 @@ type Config struct {
 	GitHubDisabled             bool
 	ImportBackend              ImportBackend
 	DatabasePath               string
+	DatabaseBackend            DatabaseBackend
+	Postgres                   *postgres.Config
 	ListenAddress              string
 	TLSCertFile                string
 	TLSKeyFile                 string

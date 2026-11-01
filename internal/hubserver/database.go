@@ -16,6 +16,7 @@ import (
 
 	"github.com/shirou/gopsutil/v4/process"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/instancelock"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -52,6 +53,7 @@ type database struct {
 	analyticsRetryCursor   string
 	linkedSourceBase       string
 	db                     *sql.DB
+	postgres               *postgres.Repository
 	reader                 *sql.DB
 	authReader             *sql.DB
 	claimReader            *sql.DB
@@ -84,6 +86,15 @@ type database struct {
 }
 
 func openDatabase(ctx context.Context, cfg Config) (*database, error) {
+	if err := validateDatabaseBackend(cfg); err != nil {
+		return nil, err
+	}
+	if cfg.DatabaseBackend == DatabasePostgres {
+		return openPostgresDatabase(ctx, *cfg.Postgres)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	path, err := canonicalDatabasePath(cfg.DatabasePath)
 	if err != nil {
 		return nil, err
@@ -491,6 +502,10 @@ func (d *database) Close() error {
 		return nil
 	}
 	d.closeOnce.Do(func() {
+		if d.postgres != nil {
+			d.closeErr = d.postgres.Close()
+			return
+		}
 		var readerErr, authErr, claimReaderErr error
 		if d.reader != nil && d.reader != d.db {
 			readerErr = d.reader.Close()

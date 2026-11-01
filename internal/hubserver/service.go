@@ -131,6 +131,9 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
+	if database.postgres != nil {
+		return nil, errors.Join(ErrPostgresServingUnavailable, database.Close())
+	}
 	ctx = database.policyContext(ctx)
 	database.configureRuntimePublication(cfg)
 	if err := database.checkProjectSecretKeys(ctx, cfg.SecretKeys); err != nil {

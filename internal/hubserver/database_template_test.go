@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"net/http"
 	"os"
@@ -61,6 +62,17 @@ func seedHostedSecurityDatabaseTemplate(t *testing.T, cfg Config) {
 }
 
 func TestMain(m *testing.M) {
+	flag.Parse()
+	timeout, err := time.ParseDuration(flag.Lookup("test.timeout").Value.String())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	ctx := context.Background()
+	cancel := func() {}
+	if timeout > 0 {
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+	}
 	if err := registerNativeSearchText(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -70,9 +82,14 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	code := m.Run()
+	if err := postgresStartupTemplate.Close(ctx); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		code = 1
+	}
 	if hubDatabaseTemplate.dir != "" {
 		_ = os.RemoveAll(hubDatabaseTemplate.dir)
 	}
+	cancel()
 	os.Exit(code)
 }
 

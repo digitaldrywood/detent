@@ -606,3 +606,48 @@ verify objects before committing references and receipts within P01's atomic
 groups. This catalog adds no schema, serving path, migration execution, network
 work or SQL JSON extraction. Its per-row cost depends only on the supplied row,
 with constant-time tenant membership checks, independently of fleet size.
+
+## Tenant startup selection (P03)
+
+Hub `Config.DatabaseBackend` selects `sqlite` (also the empty default) or
+`postgres`. PostgreSQL requires `Config.Postgres` and forbids `DatabasePath`,
+SQLite credential maintenance and SQLite binding migration. Supplying PostgreSQL
+settings without selecting that backend is an error. Selection happens before
+any filesystem access, lock, SQLite connection or migration; failures never fall
+back to SQLite. Existing local startup and file ownership remain unchanged.
+
+`postgres.Config` supplies a concrete `pq.Config` and fixed `PoolConfig`.
+Host, port, database, login and TLS mode must be explicit. Use
+`pq.NewConnectorConfig` semantics, without environment parsing, service files,
+password files, startup options, tenant settings or caller-supplied session
+parameters. Install configuration supplies credentials; startup discovers none
+from other checkouts or host caches (INV-17). The lifecycle owns one pool and
+the shared tenant repository, closes failed construction immediately, and closes
+successful construction once when the Hub database owner shuts down. Connection
+and statement waits use caller cancellation, with no added timeout policy.
+
+Runtime startup performs the existing restricted-role and forced-RLS checks,
+then requires the migration-owned public Goose ledger to contain exactly the
+embedded migration versions. Missing, pending or newer migrations fail closed.
+Runtime has read access to that ledger, never migration authority. Startup
+does not apply migrations or provision roles. `hubserver.MigratePostgres` is a
+separate installation operation with its own explicit connection configuration,
+one connection and a migration-only login. Every migration connection assumes
+`detent_migration`, including reconnections; runtime, platform, combined and
+elevated identities are rejected. Provision `roles.sql` separately before this
+operation. Migration connections never enter serving or background owners.
+
+The database lifecycle can initialize and use the ported repository contracts.
+Full `hubserver.Open` currently closes that lifecycle and returns
+`ErrPostgresServingUnavailable` before constructing the tracker, handlers or
+workers. Remaining family ports and the cutover owner must wire all enabled
+operations before removing this refusal. No PostgreSQL selection can currently
+dispatch work, allocate a lease, run SQLite maintenance or open a SQLite file.
+
+At 10,000 tenants and runners, one fixed pool and serving/background budgets
+cover all tenant callbacks. Startup checks build-sized schema metadata and
+role catalogs once, with no tenant enumeration, periodic work, derived writes
+or per-tenant pools (INV-18, INV-21). Isolated PostgreSQL 17 fixtures cover
+backend/configuration rejection, role authority, schema drift, cancellation,
+connection release, separate migrations and refusal to start unported workers;
+they use only private fixture endpoints and generated credentials (INV-22).
