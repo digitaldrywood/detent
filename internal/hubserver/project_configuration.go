@@ -334,11 +334,28 @@ func (s *Service) prepareProjectConfiguration(ctx context.Context, scope nativeS
 	return prepared, nil
 }
 
-func (s *Service) prepareAdmissionPayloads(ctx context.Context, scope nativeScope, admissions []runnerauth.DiagnosticAdmission, now time.Time) error {
+func latestSkippedAdmissions(admissions []runnerauth.DiagnosticAdmission, now time.Time) []runnerauth.DiagnosticAdmission {
+	latest := make(map[string]int)
+	var selected []runnerauth.DiagnosticAdmission
 	for _, admission := range admissions {
 		if admission.Result != "skipped" || admission.WorkItemRevision <= 0 || admission.ObservedAt.After(now) {
 			continue
 		}
+		index, found := latest[admission.IssueID]
+		if !found {
+			latest[admission.IssueID] = len(selected)
+			selected = append(selected, admission)
+			continue
+		}
+		if !admission.ObservedAt.Before(selected[index].ObservedAt) {
+			selected[index] = admission
+		}
+	}
+	return selected
+}
+
+func (s *Service) prepareAdmissionPayloads(ctx context.Context, scope nativeScope, admissions []runnerauth.DiagnosticAdmission, now time.Time) error {
+	for _, admission := range latestSkippedAdmissions(admissions, now) {
 		var id tracker.WorkItemID
 		err := s.database.reader.QueryRowContext(ctx, `SELECT id FROM issues WHERE organization_id=? AND project_id=? AND native_id=? AND revision=?`, scope.organization, scope.project, admission.IssueID, admission.WorkItemRevision).Scan(&id)
 		if errors.Is(err, sql.ErrNoRows) {
@@ -413,10 +430,7 @@ func (s *Service) runnerProjectConfiguration(ctx context.Context, tx *sql.Tx, sc
 					}
 				}
 			}
-			for _, admission := range observation.Diagnostics.Admissions {
-				if admission.Result != "skipped" || admission.WorkItemRevision <= 0 || admission.ObservedAt.After(now) {
-					continue
-				}
+			for _, admission := range latestSkippedAdmissions(observation.Diagnostics.Admissions, now) {
 				var id tracker.WorkItemID
 				err := tx.QueryRowContext(ctx, `SELECT id FROM issues WHERE organization_id=? AND project_id=? AND native_id=? AND revision=?`, scope.organization, scope.project, admission.IssueID, admission.WorkItemRevision).Scan(&id)
 				if errors.Is(err, sql.ErrNoRows) {
