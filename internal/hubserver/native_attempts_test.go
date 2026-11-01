@@ -1370,6 +1370,9 @@ func TestNativeLeaseLossTerminalizesAttempts(t *testing.T) {
 			now := time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)
 			details := &memoryRunDetails{}
 			f := newDefaultNativeFixture(t, Config{RunDetails: details, now: func() time.Time { return now }})
+			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+				t.Fatal(err)
+			}
 			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 			owner := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
 			owner.enroll(t)

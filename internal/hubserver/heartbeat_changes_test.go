@@ -14,6 +14,14 @@ import (
 
 func TestRunnerHeartbeatChanges(t *testing.T) {
 	f := newNativeFixture(t, nil, "", "heartbeat-changes")
+	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.stopGitHubReconciliation(); err != nil {
+		t.Fatal(err)
+	}
+	f.service.stopHealthDetector()
+	f.service.outbox.stop()
 	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 	r.enroll(t)
 	approved := hubTestPolicy()
