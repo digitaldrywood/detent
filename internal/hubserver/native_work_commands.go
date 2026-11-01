@@ -369,6 +369,9 @@ func (s *Service) changeNativeDependencyCommand(ctx context.Context, scope nativ
 		return s.executeWorkItemRecordMutation(ctx, scope, options, request.Mutation, request, "")
 	}
 	return s.executeNativeIssueMutation(ctx, scope, options, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
+		if scope.credential.Scope == apiScopeWorker && request.LeaseID == "" {
+			return nil, tracker.ErrStaleFencingToken
+		}
 		return changeNativeDependencyTx(ctx, tx, scope, item, request, now)
 	})
 }

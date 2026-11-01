@@ -43,6 +43,16 @@ func readNativeProgress(ctx context.Context, q nativeQueryer, scope nativeScope,
 	if err != nil {
 		return progresscheck.Record{}, false, fmt.Errorf("read progress decision: %w", err)
 	}
+	if record.DefectIssueID != "" {
+		condition, args := scope.credential.projectGrantSQL("i.organization_id", "i.project_id")
+		var visible bool
+		if err := q.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM issues i WHERE i.native_id=? AND ("+condition+"))", append([]any{record.DefectIssueID}, args...)...).Scan(&visible); err != nil {
+			return progresscheck.Record{}, false, err
+		}
+		if !visible {
+			record.DefectIssueID = ""
+		}
+	}
 	rows, err := q.QueryContext(ctx, `SELECT evidence_id, retrieved, retrieved_attempt_id, retrieved_source_sha FROM native_progress_evidence
  WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND request_id = ? ORDER BY position LIMIT ?`, scope.organization, scope.project, issue, id, progresscheck.MaxReceipts+1)
 	if err != nil {
@@ -116,12 +126,39 @@ func (o nativeProgressOwner) publishPrepared(ctx context.Context, record progres
 	for i := range record.Decision.RetrievedEvidence {
 		record.Decision.RetrievedEvidence[i].SourceReceipt = nil
 	}
+	var defectScope nativeScope
+	var defectRequest tracker.CreateIssue
+	if record.Decision.Outcome == progresscheck.SystemDefect {
+		defectScope = nativeScope{credential: apiCredential{Scope: apiScopeAdmin}, project: tracker.ProjectID(issueorigin.DetentCloudProjectID), sourceActor: &tracker.Actor{Kind: "machine", PrincipalID: "hub-progress-check", Agent: "progress-check"}}
+		err := o.service.database.reader.QueryRowContext(ctx, "SELECT organization_id FROM projects WHERE id=? AND deleted_at IS NULL", defectScope.project).Scan(&defectScope.organization)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return progresscheck.Record{}, fmt.Errorf("resolve platform project: %w", err)
+		}
+		if err == nil {
+			defectRequest = progressDefectRequest(o.request)
+			origin, _ := issueorigin.Parse(defectRequest.Body)
+			searchRequest := tracker.CreateIssue{Body: issueorigin.Stamp("", origin)}
+			defectScope.duplicateSearch, err = prepareNativeDuplicates(ctx, o.service.database.reader, defectScope, searchRequest, o.service.config.now(), true)
+			if err != nil {
+				return progresscheck.Record{}, fmt.Errorf("prepare platform duplicate search: %w", err)
+			}
+		}
+	}
 	tx, err := o.service.database.db.BeginTx(ctx, nil)
 	if err != nil {
 		return progresscheck.Record{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
 	now := o.service.config.now()
+	metrics := hostedNativeMutationMetrics(tracker.CreateIssue{}, false)
+	beforeConsumption, err := o.service.database.hostedConsumption(ctx, tx, now, metrics...)
+	if err != nil {
+		return progresscheck.Record{}, err
+	}
+	if err := o.service.database.requireHostedFeature(ctx, tx, "collaboration", now); err != nil {
+		return progresscheck.Record{}, err
+	}
+
 	if o.scope.credential.Scope == apiScopeWorker {
 		if _, err := validateRunnerLeaseTx(ctx, tx, o.scope, o.leaseID, o.fencingToken, now); err != nil {
 			return progresscheck.Record{}, err
@@ -193,27 +230,15 @@ func (o nativeProgressOwner) publishPrepared(ctx context.Context, record progres
 	}
 	body += "\n\nEvidence: " + strings.Join(record.Decision.Evidence, ", ")
 	if record.Decision.Outcome == progresscheck.SystemDefect {
-		defectScope := nativeScope{credential: apiCredential{Scope: apiScopeAdmin}, project: tracker.ProjectID(issueorigin.DetentCloudProjectID), sourceActor: o.scope.sourceActor}
-		err := tx.QueryRowContext(ctx, "SELECT organization_id FROM projects WHERE id=? AND deleted_at IS NULL", defectScope.project).Scan(&defectScope.organization)
-		if errors.Is(err, sql.ErrNoRows) {
+		if defectScope.organization == "" {
 			body += "\n\nPlatform defect filing unavailable: the platform project is not provisioned. Diagnosis retained on this item."
-		} else if err != nil {
-			return progresscheck.Record{}, fmt.Errorf("resolve platform project: %w", err)
 		} else {
-			actor := o.scope.actor()
-			actor.Kind, actor.Agent = "machine", "progress-check"
-			defectScope.sourceActor = &actor
-			defectBody := issueorigin.Stamp(record.Decision.DefectBody, issueorigin.Origin{Kind: "worker", Instance: "progress-check", Source: record.RequestID, Fingerprint: issueorigin.Fingerprint("progress-check:" + record.Decision.DefectKey)})
-			defect, err := createNativeMachineIntakeTx(ctx, tx, defectScope, tracker.CreateIssue{Title: record.Decision.DefectTitle, Body: defectBody, State: "Backlog"}, now, false)
+			defect, err := createNativeMachineIntakeTx(ctx, tx, defectScope, defectRequest, now, false)
 			if err != nil {
 				return progresscheck.Record{}, fmt.Errorf("file progress defect: %w", err)
 			}
 			record.DefectIssueID = string(defect.WorkItemID)
-			defect, _, err = readNativeIssue(ctx, tx, defectScope, record.DefectIssueID)
-			if err != nil {
-				return progresscheck.Record{}, fmt.Errorf("read platform defect link: %w", err)
-			}
-			body += fmt.Sprintf("\n\nSystem defect: [#%d](%s)", defect.Number, defect.WebURL)
+			body += "\n\nPlatform diagnosis recorded by the Hub; it does not block this item."
 		}
 	}
 	commentScope := o.scope
@@ -257,6 +282,9 @@ func (o nativeProgressOwner) publishPrepared(ctx context.Context, record progres
 			return progresscheck.Record{}, fmt.Errorf("write progress evidence: %w", err)
 		}
 	}
+	if err := o.service.database.checkHostedGrowth(ctx, tx, beforeConsumption, now, false, metrics...); err != nil {
+		return progresscheck.Record{}, err
+	}
 	if err := tx.Commit(); err != nil {
 		return progresscheck.Record{}, fmt.Errorf("commit progress decision: %w", err)
 	}
@@ -284,4 +312,20 @@ func expireNativeProgressDependencies(ctx context.Context, tx *sql.Tx, scope nat
 	}
 	_, err := tx.ExecContext(ctx, `DELETE FROM issue_dependencies WHERE dependent_issue_id=(SELECT id FROM issues WHERE organization_id=? AND project_id=? AND native_id=?) AND provenance='progress_check'`, scope.organization, scope.project, item)
 	return err
+}
+
+func progressDefectRequest(request progresscheck.Request) tracker.CreateIssue {
+	material := "platform progress failure"
+	for _, attempt := range request.Attempts {
+		if attempt.Outcome == "failed" {
+			material = attempt.Step + ":" + attempt.Attribution + ":" + attempt.Error
+		}
+	}
+	fingerprint := issueorigin.Fingerprint("progress-check:" + material)
+	body := "The Hub recorded unsuccessful execution while checking progress. Retained attempts identify the observation; the diagnosis remains on the originating item."
+	for _, attempt := range request.Attempts {
+		body += "\n\nRecorded attempt: `" + attempt.ID + "`"
+	}
+	body = issueorigin.Stamp(body, issueorigin.Origin{Kind: "worker", Instance: "progress-check", Source: request.ProjectID + "/" + request.IssueID, Fingerprint: fingerprint})
+	return tracker.CreateIssue{Title: "Platform progress failure " + fingerprint[:12], Body: body, State: "Backlog"}
 }

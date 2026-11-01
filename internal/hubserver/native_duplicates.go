@@ -107,12 +107,12 @@ func resolveNativeDuplicates(ctx context.Context, query nativeQueryer, scope nat
 			rows, err := query.QueryContext(ctx, `WITH candidates AS MATERIALIZED (
 SELECT d.issue_id,d.comment_id FROM native_work_scoped_fts JOIN native_work_documents d ON d.id=native_work_scoped_fts.rowid/2
 JOIN issues i ON i.id=d.issue_id JOIN workflow_states ws ON ws.id=i.workflow_state_id
-WHERE native_work_scoped_fts MATCH ? AND i.organization_id=? AND i.project_id=?`+window+`
+WHERE native_work_scoped_fts MATCH ? AND i.organization_id=? AND i.project_id=?`+window+` LIMIT 100
  )
 SELECT i.native_id,i.number,i.title,ws.detent_state,i.revision,ws.terminal,i.body || char(10) || COALESCE(c.body,'')
 FROM candidates d JOIN issues i ON i.id=d.issue_id
 JOIN workflow_states ws ON ws.id=i.workflow_state_id LEFT JOIN native_comments c ON c.id=d.comment_id
-WHERE i.organization_id=? AND i.project_id=?`+window+` ORDER BY ws.terminal,i.number DESC`, searchArgs...)
+WHERE i.organization_id=? AND i.project_id=?`+window+` ORDER BY ws.terminal,i.number DESC LIMIT 100`, searchArgs...)
 			if err != nil {
 				return nil, err
 			}

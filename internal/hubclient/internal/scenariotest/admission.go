@@ -106,7 +106,11 @@ func RunNativeRecordedDependencyAdmission(t *testing.T, factories Constructors) 
 					t.Fatal(err)
 				}
 				unrelated = other
-				if err := h.connector.AddIssueDependency(t.Context(), issue.ID, string(other.WorkItemID)); err != nil {
+				current, err := h.admin.Issue(t.Context(), tracker.NativeWorkItemID(issue.ID))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := h.admin.Dependency(t.Context(), current.WorkItemID, tracker.DependencyMutation{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, RelatedWorkItemID: other.WorkItemID, Operation: "add"}); err != nil {
 					t.Fatal(err)
 				}
 			}

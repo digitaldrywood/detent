@@ -130,8 +130,10 @@ func (s *Service) nativeProgressRequest(ctx context.Context, scope nativeScope, 
 
 func readNativeProgressDefect(ctx context.Context, q nativeQueryer, scope nativeScope, item string) (string, string, error) {
 	var defect, state string
+	condition, grantArgs := scope.credential.projectGrantSQL("i.organization_id", "i.project_id")
+	args := append([]any{scope.organization, scope.project, item}, grantArgs...)
 	err := q.QueryRowContext(ctx, `SELECT d.defect_issue_id,ws.detent_state FROM native_progress_decisions d JOIN issues i ON i.native_id=d.defect_issue_id JOIN workflow_states ws ON ws.id=i.workflow_state_id
- WHERE d.organization_id=? AND d.project_id=? AND d.work_item_id=? AND d.outcome='system_defect' ORDER BY d.created_at DESC,d.request_id DESC LIMIT 1`, scope.organization, scope.project, item).Scan(&defect, &state)
+ WHERE d.organization_id=? AND d.project_id=? AND d.work_item_id=? AND d.outcome='system_defect' AND (`+condition+`) ORDER BY d.created_at DESC,d.request_id DESC LIMIT 1`, args...).Scan(&defect, &state)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", "", nil
 	}
@@ -183,6 +185,10 @@ func (s *Service) publishNativeProgress(c echo.Context) error {
 	}
 	owner := nativeProgressOwner{service: s, scope: scope, request: request, leaseID: input.LeaseID, fencingToken: input.FencingToken, guardRevision: &sequence, expectedRevision: input.ExpectedRevision}
 	record, err := owner.Publish(c.Request().Context(), progresscheck.Record{RequestID: id, ProjectID: request.ProjectID, IssueID: request.IssueID, EvidenceRevision: request.EvidenceRevision, Decision: input.Decision})
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	record, _, err = readNativeProgress(c.Request().Context(), s.database.reader, scope, request.IssueID, id)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}

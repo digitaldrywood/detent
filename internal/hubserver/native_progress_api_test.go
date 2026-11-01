@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubclient"
+	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
@@ -450,6 +451,8 @@ func TestNativeProgressRequestReplayAndFencing(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
 		name           string
+		platform       bool
+		foreign        bool
 		changed        bool
 		released       bool
 		editedOlder    bool
@@ -464,6 +467,8 @@ func TestNativeProgressRequestReplayAndFencing(t *testing.T) {
 		evidenceChange string
 	}{
 		{name: "decision comment does not create new evidence"},
+		{name: "worker cannot write caller content to platform project or read its private receipt", platform: true},
+		{name: "worker cannot write caller content to another organization", platform: true, foreign: true},
 		{name: "successful empty landing checks and replays decision", emptyLanding: true},
 		{name: "decision without diagnosis is refused on publication", legacy: true},
 		{name: "succeeded without change is checked", success: true},
@@ -482,6 +487,38 @@ func TestNativeProgressRequestReplayAndFencing(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newDispatchGuardFixture(t)
+			platformOrganization := f.project.OrganizationID
+			if test.platform {
+				for _, statement := range []string{
+					"INSERT INTO projects (id, organization_id, name, profile, states_json, require_dependencies, created_at) SELECT ?, organization_id, 'platform', profile, states_json, require_dependencies, created_at FROM projects WHERE id=?",
+					"INSERT INTO workflow_states (project_id, source_name, detent_state, terminal, dispatchable, created_at, updated_at) SELECT ?, source_name, detent_state, terminal, dispatchable, created_at, updated_at FROM workflow_states WHERE project_id=?",
+				} {
+					if _, err := f.service.database.db.ExecContext(t.Context(), statement, issueorigin.DetentCloudProjectID, f.project.ID); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO workflow_states(project_id,source_name,detent_state,terminal,dispatchable,created_at,updated_at) VALUES(?,'Backlog','Backlog',0,0,?,?)", issueorigin.DetentCloudProjectID, testTimestamp, testTimestamp); err != nil {
+					t.Fatal(err)
+				}
+				states, err := json.Marshal(append(f.project.States, tracker.NativeState{Name: "Backlog", Transitions: []string{"Todo"}}))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET states_json=? WHERE id=?", string(states), issueorigin.DetentCloudProjectID); err != nil {
+					t.Fatal(err)
+				}
+				if test.foreign {
+					platformOrganization = "org_example_platform"
+					if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO organizations(id,name,created_at) VALUES(?,'Platform organization',?)", platformOrganization, testTimestamp); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET organization_id=? WHERE id=?", platformOrganization, issueorigin.DetentCloudProjectID); err != nil {
+						t.Fatal(err)
+					}
+				}
+				seedNativeFixturePolicy(t, f.service, string(platformOrganization)+"/"+issueorigin.DetentCloudProjectID)
+			}
+
 			event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: newNativeID("finish")}, Type: "run.finished", SchemaVersion: 1, Data: tracker.NativeRunData{
 				Sequence: 2, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "gpt-6-astra"}, LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken, RunID: f.run, AttemptID: f.attempt, PolicyID: f.policy, Outcome: "failed",
 				TerminalFailure: &tracker.NativeTerminalFailure{Error: "422: landing requires security audit evidence for its exact base and head", ErrorClass: "publication", Stage: "publication", ObservedAt: f.now},
@@ -601,6 +638,10 @@ func TestNativeProgressRequestReplayAndFencing(t *testing.T) {
 			if test.released {
 				f.release(t)
 			}
+			if test.platform {
+				input.Decision.Outcome, input.Decision.Step = progresscheck.SystemDefect, ""
+				input.Decision.DefectKey, input.Decision.DefectTitle, input.Decision.DefectBody = "attacker-key", "attacker-title", "attacker-body"
+			}
 			response = performHubAPIRequest(t, f.service, http.MethodPost, path+"/progress", f.worker, input)
 			if test.changed || test.released || test.staleRevision || test.legacy {
 				if response.Code == http.StatusOK {
@@ -621,6 +662,37 @@ func TestNativeProgressRequestReplayAndFencing(t *testing.T) {
 			replayID, err := replay.Request.ID()
 			if err != nil || replayID != id || replay.Record == nil {
 				t.Fatalf("decision self-invalidated: id=%s want=%s record=%+v err=%v", replayID, id, replay.Record, err)
+			}
+			if test.platform {
+				if replay.Record.DefectIssueID != "" {
+					t.Fatal("worker read private platform issue ID")
+				}
+				ctx := f.service.runDetailContext(t.Context())
+				admin := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{Scope: apiScopeAdmin}}
+				retained, _, err := readNativeProgress(ctx, f.service.database.reader, admin, string(f.issue.WorkItemID), id)
+				if err != nil || retained.DefectIssueID == "" {
+					t.Fatalf("missing platform receipt: %+v %v", retained, err)
+				}
+				admin.project = tracker.ProjectID(issueorigin.DetentCloudProjectID)
+				admin.organization = platformOrganization
+				defect, _, err := readNativeIssue(ctx, f.service.database.reader, admin, retained.DefectIssueID)
+				if err != nil || strings.Contains(defect.Title+defect.Body, "attacker-") || defect.Actor.PrincipalID != "hub-progress-check" {
+					t.Fatalf("caller controlled platform write: %+v %v", defect, err)
+				}
+				if _, err := f.service.database.db.ExecContext(ctx, "UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='Done') WHERE native_id=?", admin.project, retained.DefectIssueID); err != nil {
+					t.Fatal(err)
+				}
+				workerCredential, _, err := f.service.authenticateAPIToken(ctx, f.worker, "", "")
+				if err != nil {
+					t.Fatal(err)
+				}
+				reader := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: workerCredential}
+				for _, scoped := range []nativeScope{reader, {organization: reader.organization, project: reader.project, credential: apiCredential{Scope: apiScopeAdmin}}} {
+					linked, state, err := readNativeProgressDefect(ctx, f.service.database.reader, scoped, string(f.issue.WorkItemID))
+					if err != nil || (linked != "" && state == "Done") != (scoped.credential.Scope == apiScopeAdmin) {
+						t.Fatalf("private completion visibility: %q %q %v", linked, state, err)
+					}
+				}
 			}
 			var comments int
 			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM native_comments WHERE work_item_id=?", f.issue.WorkItemID).Scan(&comments); err != nil {
