@@ -344,7 +344,7 @@ func (s *Service) prepareProjectConfigurationReceipt(ctx context.Context, scope 
 	if err != nil {
 		return err
 	}
-	_, err = prepareMeteredContent(ctx, string(scope.organization), raw, true)
+	_, err = prepareMeteredContent(commandCompletionContent(ctx), string(scope.organization), raw, true)
 	return err
 }
 
