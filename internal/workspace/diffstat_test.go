@@ -739,8 +739,8 @@ func TestLocalGitDiffStat(t *testing.T) {
 			t.Fatalf("diff is not pinned to captured head: %v", event.Argv)
 		}
 	}
-	if commands != 4 {
-		t.Fatalf("Git processes per nonempty refresh = %d, want 4", commands)
+	if commands != 5 {
+		t.Fatalf("Git processes per nonempty refresh = %d, want 5", commands)
 	}
 	originalFingerprint := got.Fingerprint
 

@@ -749,7 +749,7 @@ func gitIndexLookup(ctx context.Context, workspacePath string, observeHead bool)
 	}
 	args := []string{"rev-parse", "--git-path", "index"}
 	if observeHead {
-		args = append(args, "HEAD", "HEAD^{tree}")
+		args = append(args, "HEAD")
 	}
 	output, err := runGitAtWithEnv(ctx, workspacePath, []string{"GIT_CEILING_DIRECTORIES=" + filepath.Dir(path)}, args...)
 	if err != nil {
@@ -760,17 +760,19 @@ func gitIndexLookup(ctx context.Context, workspacePath string, observeHead bool)
 	if observeHead {
 		separator := strings.LastIndexByte(indexPath, '\n')
 		if separator < 0 || separator == len(indexPath)-1 {
-			return gitIndexObservation{}, errors.New("git index tree is empty")
-		}
-		index.TreeSHA = indexPath[separator+1:]
-		indexPath = indexPath[:separator]
-		separator = strings.LastIndexByte(indexPath, '\n')
-		if separator < 0 || separator == len(indexPath)-1 {
 			return gitIndexObservation{}, errors.New("git index head is empty")
 		}
 		index.HeadSHA = indexPath[separator+1:]
 		index.HeadObservedAt = time.Now()
 		indexPath = indexPath[:separator]
+		tree, err := runGitAtWithEnv(ctx, workspacePath, []string{"GIT_CEILING_DIRECTORIES=" + filepath.Dir(path)}, "rev-parse", index.HeadSHA+"^{tree}")
+		if err != nil {
+			return gitIndexObservation{}, fmt.Errorf("git index tree: %w", err)
+		}
+		index.TreeSHA = strings.TrimSpace(tree)
+		if index.TreeSHA == "" {
+			return gitIndexObservation{}, errors.New("git index tree is empty")
+		}
 	}
 	if indexPath == "" {
 		return gitIndexObservation{}, errors.New("git index path is empty")
