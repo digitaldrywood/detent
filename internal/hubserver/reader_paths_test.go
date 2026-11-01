@@ -396,7 +396,6 @@ func TestHubWriterQueriesRequireAnOwnedReadReason(t *testing.T) {
 		"commitHostedBilling":                       "Commits the reconciled billing state and consumed events.",
 		"acceptHostedInvitationReference":           "Consumes an invitation and installs the accepted membership.",
 		"applyHostedPlanCommand":                    "Changes the plan and records its command receipt.",
-		"executeWorkItemRecordMutation":             "Prepares immutable work-item content before one tenant transaction rechecks access, project revision and billing feature, then commits the record, event, version and command receipt.",
 		"publishChangeVersionRecord":                "Prepares immutable version and source content before one tenant transaction rechecks authority and commits the version, Change revision, events and receipt.",
 		"intakeLinkedIssueRecord":                   "Archives one source snapshot before one tenant transaction rechecks access, lease and billing authority and commits source state, comments, events and receipt.",
 		"configureHostedPlans":                      "Installs hosted plan configuration at startup.",
@@ -463,6 +462,8 @@ func TestHubWriterQueriesRequireAnOwnedReadReason(t *testing.T) {
 		"syncOrganizationSlug":                      "Writes the organization slug received from the shared entry.",
 		"savedWorkViews":                            "Writes one owned saved view, its selections and the current user's favorite; GET uses the reader.",
 		"slugSettings":                              "Updates the organization or project slug under current authority; GET uses the reader.",
+
+		"executeWorkItemRecordMutationWithConversationLink": "Prepares immutable work-item content before one tenant transaction rechecks access, project revision and billing feature, then commits the record, event, version and command receipt; the fallback policy transaction holds the request's authority checks until that write completes.",
 	}
 	files, err := filepath.Glob("*.go")
 	if err != nil {
