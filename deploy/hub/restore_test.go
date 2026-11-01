@@ -154,7 +154,7 @@ func TestReleaseDeploysToLegacyReceiver(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			work := t.TempDir()
-			for _, dir := range []string{"bin", "opt/releases", "state", "lock", "release-hub"} {
+			for _, dir := range []string{"bin", "etc/systemd/system/detent-cloud.service.d", "opt/releases", "state", "lock", "release-hub"} {
 				if err := os.MkdirAll(filepath.Join(work, dir), 0o700); err != nil {
 					t.Fatal(err)
 				}
@@ -171,11 +171,14 @@ func TestReleaseDeploysToLegacyReceiver(t *testing.T) {
 				reported = strings.Repeat("f", 40)
 			}
 			write("release-hub/detent", "#!/bin/sh\nprintf '%s\\n' '{\"version\":\"1.2.3\",\"commit\":\""+reported+"\",\"socket_activation_supported\":true}'\n"+strings.Repeat("\n", 1000000))
+			write("etc/systemd/system/detent-cloud.socket", "[Unit]\nDescription=Detent detent-cloud listener\n\n[Socket]\nListenStream=127.0.0.1:8017\nAccept=no\nBacklog=65535\n\n[Install]\nWantedBy=sockets.target\n")
+			write("etc/systemd/system/detent-cloud.service.d/socket.conf", "[Unit]\nRequires=detent-cloud.socket\nAfter=detent-cloud.socket\n\n[Service]\nSockets=detent-cloud.socket\n")
 			write("restore-installed", "previous script")
 			rewritten := strings.NewReplacer(
 				"OPT=/opt/$NAME", "OPT=\"$WORK/opt\"",
 				"STATE=/var/lib/$NAME", "STATE=\"$WORK/state\"",
 				"/run/lock/$NAME-deploy.lock", "\"$WORK/lock/deploy.lock\"",
+				"/etc/", "$WORK/etc/",
 				"/tmp/$NAME-", "$WORK/temporary-",
 				"/usr/local/sbin/detent-restore-test", "\"$WORK/restore-installed\"",
 			).Replace(string(owner))
@@ -201,7 +204,8 @@ if [ "$1" = -u ]; then shift 2; fi
 if [ "$1" = install ]; then
   shift
   mode=$2
-  shift 6
+  shift 2
+  while [ "$1" = -o ] || [ "$1" = -g ]; do shift 2; done
   exec install -m "$mode" "$@"
 fi
 if [ "$1" = readlink ]; then exec readlink "$WORK/opt/detent"; fi

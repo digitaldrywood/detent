@@ -271,12 +271,119 @@ socket_address() {
 	printf '127.0.0.1:7777'
 }
 
+render_socket_unit() {
+	cat <<EOF
+[Unit]
+Description=Detent $unit listener
+
+[Socket]
+ListenStream=$1
+Accept=no
+Backlog=65535
+
+[Install]
+WantedBy=sockets.target
+EOF
+}
+
+render_socket_dropin() {
+	local include_type=$1
+	cat <<EOF
+[Unit]
+Requires=$socket_unit
+After=$socket_unit
+
+[Service]
+EOF
+	if [ "$include_type" = true ]; then printf 'Type=exec\n'; fi
+	printf 'Sockets=%s\n' "$socket_unit"
+}
+
+install_socket_dropin_atomically() {
+	local source=$1
+	socket_dropin_stage="$socket_dropin.deploy.$$"
+	if sudo -n test -e "$socket_dropin_stage"; then
+		socket_dropin_stage=
+		return 1
+	fi
+	if ! sudo -n install -m 0644 "$source" "$socket_dropin_stage"; then
+		sudo -n rm -f "$socket_dropin_stage"
+		socket_dropin_stage=
+		return 1
+	fi
+	if ! sudo -n mv -f "$socket_dropin_stage" "$socket_dropin"; then
+		sudo -n rm -f "$socket_dropin_stage"
+		socket_dropin_stage=
+		return 1
+	fi
+	socket_dropin_stage=
+}
+
+prepare_active_socket() {
+	local address socket_file_status dropin_file_status
+	address=$(socket_address) || { echo "no socket address is configured for $unit" >&2; return 1; }
+	socket_file=$(mktemp "${TMPDIR:-/tmp}/$NAME-socket.XXXXXX")
+	dropin_file=$(mktemp "${TMPDIR:-/tmp}/$NAME-dropin.XXXXXX")
+	legacy_dropin_file=$(mktemp "${TMPDIR:-/tmp}/$NAME-legacy-dropin.XXXXXX")
+	render_socket_unit "$address" > "$socket_file"
+	render_socket_dropin true > "$dropin_file"
+	render_socket_dropin false > "$legacy_dropin_file"
+	if sudo -n test -L "$socket_path" || ! sudo -n test -f "$socket_path" || ! sudo -n cmp -s "$socket_file" "$socket_path"; then
+		echo "active socket unit is not receiver-owned; refusing to replace its service configuration" >&2
+		return 1
+	fi
+	if sudo -n test -L "$socket_dropin" || ! sudo -n test -f "$socket_dropin"; then
+		echo "active socket service drop-in is not receiver-owned; refusing to replace it" >&2
+		return 1
+	fi
+	if sudo -n cmp -s "$dropin_file" "$socket_dropin"; then
+		sudo -n systemctl daemon-reload || { echo "active socket service configuration could not be reloaded" >&2; return 1; }
+		return 0
+	else
+		dropin_file_status=$?
+	fi
+	if [ "$dropin_file_status" -ne 1 ]; then
+		echo "active socket service drop-in could not be verified" >&2
+		return 1
+	fi
+	if sudo -n cmp -s "$legacy_dropin_file" "$socket_dropin"; then
+		if ! install_socket_dropin_atomically "$dropin_file"; then
+			echo "active socket service drop-in could not be upgraded" >&2
+			return 1
+		fi
+		if sudo -n systemctl daemon-reload; then return 0; fi
+		if ! install_socket_dropin_atomically "$legacy_dropin_file" || ! sudo -n systemctl daemon-reload; then
+			echo "active socket service drop-in reload failed; previous service remains running" >&2
+			return 1
+		fi
+		echo "active socket service configuration reload failed; previous configuration restored" >&2
+		return 1
+	else
+		socket_file_status=$?
+	fi
+	if [ "$socket_file_status" -ne 1 ]; then
+		echo "active socket service drop-in could not be verified" >&2
+	else
+		echo "active socket service drop-in is not receiver-owned; refusing to replace it" >&2
+	fi
+	return 1
+}
+
 prepare_socket_activation() {
 	socket_unit="$unit.socket"
 	socket_path="/etc/systemd/system/$socket_unit"
 	socket_dropin="/etc/systemd/system/$unit.service.d/socket.conf"
 	socket_bootstrap=false
-	systemctl is-active --quiet "$socket_unit" && return 0
+	if systemctl is-active --quiet "$socket_unit"; then
+		prepare_active_socket
+		return $?
+	else
+		local active_status=$?
+		if [ "$active_status" -ne 3 ] && [ "$active_status" -ne 4 ]; then
+			echo "socket activation state could not be verified" >&2
+			return 1
+		fi
+	fi
 	if sudo -n test -e "$socket_path" || sudo -n test -e "$socket_dropin"; then
 		echo "inactive socket activation files already exist; refusing to replace them" >&2
 		return 1
@@ -286,26 +393,8 @@ prepare_socket_activation() {
 	socket_file=$(mktemp "${TMPDIR:-/tmp}/$NAME-socket.XXXXXX")
 	dropin_file=$(mktemp "${TMPDIR:-/tmp}/$NAME-dropin.XXXXXX")
 	dropin_directory=${socket_dropin%/*}
-	cat > "$socket_file" <<EOF
-[Unit]
-Description=Detent $unit listener
-
-[Socket]
-ListenStream=$address
-Accept=no
-Backlog=65535
-
-[Install]
-WantedBy=sockets.target
-EOF
-	cat > "$dropin_file" <<EOF
-[Unit]
-Requires=$socket_unit
-After=$socket_unit
-
-[Service]
-Sockets=$socket_unit
-EOF
+	render_socket_unit "$address" > "$socket_file"
+	render_socket_dropin true > "$dropin_file"
 	if ! sudo -n install -d -m 0755 "$dropin_directory" || ! sudo -n install -m 0644 "$socket_file" "$socket_path" || ! sudo -n install -m 0644 "$dropin_file" "$socket_dropin" || ! sudo -n systemctl daemon-reload; then
 		sudo -n rm -f "$socket_dropin" "$socket_path"
 		sudo -n systemctl daemon-reload || true
@@ -360,8 +449,8 @@ short=${sha:0:9}
 exec 9>/run/lock/$NAME-deploy.lock
 flock -w 600 9 || { echo "another production deploy holds the lock" >&2; exit 1; }
 staged=$(mktemp "${TMPDIR:-/tmp}/$NAME-upload.XXXXXX")
-socket_file= dropin_file=
-trap 'rm -f "$staged" "${socket_file:-}" "${dropin_file:-}"' EXIT
+socket_file= dropin_file= legacy_dropin_file= socket_dropin_stage=
+trap 'rm -f "$staged" "${socket_file:-}" "${dropin_file:-}" "${legacy_dropin_file:-}"; if [ -n "${socket_dropin_stage:-}" ]; then sudo -n rm -f "$socket_dropin_stage" || true; fi' EXIT
 head -c 314572800 > "$staged"
 size=$(stat -c %s "$staged")
 [ "$size" -gt 1000000 ] || { echo "upload too small ($size bytes)" >&2; exit 1; }
@@ -389,7 +478,7 @@ release=$candidate_release
 short=$candidate_short
 if ! prepare_socket_activation; then
 	if [ -n "$previous" ]; then sudo -n ln -sfn "$previous" "$OPT/detent"; fi
-	echo "socket activation bootstrap could not be prepared; previous service remains selected" >&2
+	echo "socket activation configuration could not be prepared; previous service remains selected" >&2
 	exit 1
 fi
 if ! sudo -n ln -sfn "$release" "$OPT/detent"; then
