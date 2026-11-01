@@ -317,6 +317,44 @@ func TestHeartbeatTelemetryFlushPreservesCounters(t *testing.T) {
 	}
 }
 
+func TestHostedRequestUsageSaturatesOversizedLengths(t *testing.T) {
+	now := time.Date(2026, 10, 31, 18, 0, 0, 0, time.UTC)
+	for _, test := range []struct {
+		name    string
+		lengths []int64
+		want    int64
+	}{
+		{"single oversized length", []int64{1 << 62}, 1 << 50},
+		{"overflowing sum", []int64{1 << 62, 1 << 62}, 1 << 50},
+		{"ordinary lengths", []int64{3, 4}, 7},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
+			f.service.config.Hosted = &HostedConfig{OrganizationID: string(f.project.OrganizationID)}
+			f.service.database.hostedOrganization = f.project.OrganizationID
+			hostedTestPlans(t, f.service, nil)
+			pending := make(map[requestMetricKey]requestLatency)
+			for i, length := range test.lengths {
+				request := httptest.NewRequest(http.MethodGet, "/health", nil)
+				request.ContentLength = length
+				c := f.service.echo.NewContext(request, httptest.NewRecorder())
+				key := requestMetricKey{Minute: now.Unix() / 60 * 60, Route: fmt.Sprintf("/health/%d", i), Kind: "anonymous", Status: 2}
+				pending[key] = requestLatency{http: hostedRequestUsageFor(c, time.Duration(0))}
+			}
+			if err := writeHostedRequestUsage(t.Context(), f.service.database, now, pending); err != nil {
+				t.Fatalf("oversized request lengths blocked usage flush: %v", err)
+			}
+			var amount int64
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT amount FROM hosted_usage_windows WHERE metric='http_request_bytes'").Scan(&amount); err != nil || amount != test.want {
+				t.Fatalf("http_request_bytes=%d, want %d, err=%v", amount, test.want, err)
+			}
+			if len(pending) != 0 {
+				t.Fatalf("flushed usage stayed pending: %d", len(pending))
+			}
+		})
+	}
+}
+
 func TestRunnerRequestBudget(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
