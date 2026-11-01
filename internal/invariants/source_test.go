@@ -67,7 +67,8 @@ func laneWriterAllowed(file string) bool {
 	switch file {
 	case "internal/orchestrator/lane_ledger.go", "internal/testutil/fakehub/fakehub.go", "internal/hubclient/api/native_connector.go":
 		return true
-	case "internal/hubclient/internal/scenariotest/delivery.go",
+	case "internal/hubclient/internal/scenariotest/admission.go",
+		"internal/hubclient/internal/scenariotest/delivery.go",
 		"internal/hubclient/internal/scenariotest/landing_flow.go",
 		"internal/hubclient/internal/scenariotest/landing_targets.go",
 		"internal/hubclient/internal/scenariotest/native_change.go",
