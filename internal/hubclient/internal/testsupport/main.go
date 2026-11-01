@@ -11,7 +11,7 @@ func RunMain(m *testing.M) int {
 	if err := testenv.ClearGitEnvironment(); err != nil {
 		panic(err)
 	}
-	scratch, err := os.MkdirTemp("", "detent-hubclient-test-")
+	scratch, err := os.MkdirTemp("", "hub-")
 	if err != nil {
 		panic(err)
 	}
