@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"sort"
 	"time"
 
 	"github.com/lib/pq"
@@ -256,6 +258,22 @@ func (s *session) RunnerActiveLeaseIDs(ctx context.Context, runnerID string, now
 		return nil, runnerstore.ErrLimitExceeded
 	}
 	return ids, nil
+}
+
+func (s *session) RunnerProjectUsage(ctx context.Context, runnerID string, project tracker.ProjectID, now time.Time) (int64, int64, error) {
+	if runnerID == "" || project == "" || now.IsZero() {
+		return 0, 0, runnerstore.ErrInvalidRecord
+	}
+	var runnerUsed, projectUsed int64
+	err := s.db.QueryRowContext(ctx, `SELECT
+    (SELECT count(*) FROM runner_lease_assignments a
+     JOIN leases l ON l.organization_id=a.organization_id AND l.lease_id=a.lease_id
+     WHERE a.organization_id=$1 AND a.runner_id=$2 AND l.released_at IS NULL AND l.expires_at>$4),
+    (SELECT count(*) FROM runner_lease_assignments a
+     JOIN leases l ON l.organization_id=a.organization_id AND l.lease_id=a.lease_id
+     JOIN issues i ON i.organization_id=l.organization_id AND i.id=l.issue_id
+     WHERE a.organization_id=$1 AND a.runner_id=$2 AND i.project_id=$3 AND l.released_at IS NULL AND l.expires_at>$4)`, s.organization, runnerID, project, now).Scan(&runnerUsed, &projectUsed)
+	return runnerUsed, projectUsed, mapError(ctx, err)
 }
 
 func (s *session) RunnerBindingAvailable(ctx context.Context, runnerID string, machineID tracker.MachineID, shared bool) error {
@@ -628,12 +646,76 @@ func (s *session) RunnerProviderReports(ctx context.Context, runnerID string) ([
 	return reports, nil
 }
 
+func (s *session) LockRunnerProviderAccount(ctx context.Context, key runnerstore.ProviderAccountKey, now time.Time) (runnerstore.ProviderAccountCapacity, error) {
+	if key.RunnerID == "" || len(key.RunnerID) > 256 || key.Provider == "" || len(key.Provider) > 128 || key.Backend == "" || len(key.Backend) > 128 || key.AccountAlias == "" || len(key.AccountAlias) > 64 || len(key.SharedAccountAlias) > 64 || now.IsZero() {
+		return runnerstore.ProviderAccountCapacity{}, runnerstore.ErrInvalidRecord
+	}
+	if err := s.lockRunnerProviderSharedAccount(ctx, key.Provider, key.SharedAccountAlias); err != nil {
+		return runnerstore.ProviderAccountCapacity{}, err
+	}
+	var result runnerstore.ProviderAccountCapacity
+	err := s.db.QueryRowContext(ctx, `SELECT
+    COALESCE(bool_or(p.runner_id=$4 AND p.backend=$7 AND p.account_alias=$6),false),
+    COALESCE(min(NULLIF(p.max_concurrent,0)),0)::integer,
+    CASE
+        WHEN count(*)=0 THEN 'unknown'
+        WHEN bool_or(CASE WHEN p.observed_at>$3 OR p.observed_at+interval '2 minutes'<=$3 OR p.reset_at<=$3 THEN 'unknown' ELSE p.availability END='exhausted') THEN 'exhausted'
+        WHEN bool_or(CASE WHEN p.observed_at>$3 OR p.observed_at+interval '2 minutes'<=$3 OR p.reset_at<=$3 THEN 'unknown' ELSE p.availability END='unknown') THEN 'unknown'
+        ELSE 'available'
+    END
+FROM runner_provider_reports p
+JOIN runner_identities r ON r.organization_id=p.organization_id AND r.runner_id=p.runner_id AND r.removed_at IS NULL AND r.expires_at>$3
+JOIN api_tokens t ON t.organization_id=r.organization_id AND t.id=r.token_id AND t.scope='worker' AND t.key_kind='service' AND t.revoked_at IS NULL AND t.created_at<=$3 AND (t.expires_at IS NULL OR t.expires_at>$3)
+WHERE p.organization_id=$1 AND p.provider=$2
+AND (($5<>'' AND p.shared_account_alias=$5) OR ($5='' AND p.runner_id=$4 AND p.account_alias=$6))`, s.organization, key.Provider, now, key.RunnerID, key.SharedAccountAlias, key.AccountAlias, key.Backend).Scan(&result.SelectedReport, &result.MaxConcurrent, &result.State)
+	return result, mapError(ctx, err)
+}
+
 func (s *session) ReplaceRunnerProviderReports(ctx context.Context, runnerID string, reports []providercapacity.Report) error {
 	if runnerID == "" || len(reports) > 32 || providercapacity.Validate(reports) != nil {
 		return runnerstore.ErrInvalidRecord
 	}
 	if _, err := s.RunnerIdentity(ctx, runnerID); err != nil {
 		return err
+	}
+	keys := make(map[providerAccountLockKey]struct{})
+	err := func() (resultErr error) {
+		rows, err := s.db.QueryContext(ctx, `SELECT provider,shared_account_alias FROM runner_provider_reports WHERE organization_id=$1 AND runner_id=$2 AND shared_account_alias<>''`, s.organization, runnerID)
+		if err != nil {
+			return mapError(ctx, err)
+		}
+		defer func() { resultErr = errors.Join(resultErr, mapError(ctx, rows.Close())) }()
+		for rows.Next() {
+			var key providerAccountLockKey
+			if err := rows.Scan(&key.provider, &key.alias); err != nil {
+				return mapError(ctx, err)
+			}
+			keys[key] = struct{}{}
+		}
+		return mapError(ctx, rows.Err())
+	}()
+	if err != nil {
+		return err
+	}
+	for _, report := range reports {
+		if report.SharedAccountAlias != "" {
+			keys[providerAccountLockKey{provider: report.Provider, alias: report.SharedAccountAlias}] = struct{}{}
+		}
+	}
+	ordered := make([]providerAccountLockKey, 0, len(keys))
+	for key := range keys {
+		ordered = append(ordered, key)
+	}
+	sort.Slice(ordered, func(i, j int) bool {
+		if ordered[i].provider != ordered[j].provider {
+			return ordered[i].provider < ordered[j].provider
+		}
+		return ordered[i].alias < ordered[j].alias
+	})
+	for _, key := range ordered {
+		if err := s.lockRunnerProviderSharedAccount(ctx, key.provider, key.alias); err != nil {
+			return err
+		}
 	}
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM runner_provider_reports WHERE organization_id=$1 AND runner_id=$2`, s.organization, runnerID); err != nil {
 		return mapError(ctx, err)
@@ -679,6 +761,20 @@ func (s *session) ReplaceRunnerProviderReports(ctx context.Context, runnerID str
 		}
 	}
 	return nil
+}
+
+type providerAccountLockKey struct {
+	provider string
+	alias    string
+}
+
+func (s *session) lockRunnerProviderSharedAccount(ctx context.Context, provider, alias string) error {
+	if alias == "" {
+		return nil
+	}
+	key := fmt.Sprintf("%d:%s%d:%s%d:%s", len(s.organization), s.organization, len(provider), provider, len(alias), alias)
+	var acquired any
+	return mapError(ctx, s.db.QueryRowContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, key).Scan(&acquired))
 }
 
 func (s *session) UpdateRunnerCapacityConfig(ctx context.Context, runnerID string, config runnerauth.CapacityConfig) error {

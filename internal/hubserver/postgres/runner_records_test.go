@@ -18,9 +18,269 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+func TestRunnerProviderAccountLockScopesCurrentReports(t *testing.T) {
+	repository, _ := repositoryFor(t, template.Database(t), smallPool())
+	now := historyAt()
+	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
+		count := 1
+		if organization == "org_first" {
+			count = 2
+		}
+		for index := 1; index <= count; index++ {
+			runnerID := fmt.Sprintf("runner_%d", index)
+			machineID := fmt.Sprintf("machine_%d", index)
+			seedRunnerIdentity(t, repository, organization, runnerID, machineID, now, true)
+			maxConcurrent := 6
+			if organization == "org_second" {
+				maxConcurrent = 2
+			}
+			if index == 1 && organization == "org_first" {
+				maxConcurrent = 4
+			}
+			if index == 2 && organization == "org_first" {
+				maxConcurrent = 0
+			}
+			report := providercapacity.Report{Backend: "example", Provider: "example-provider", AccountAlias: "account_shared", SharedAccountAlias: "shared_account", Billing: "api_key", MaxConcurrent: maxConcurrent, Availability: "available", ObservedAt: now, Models: []string{"example-model"}}
+			if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+				return w.ReplaceRunnerProviderReports(t.Context(), runnerID, []providercapacity.Report{report})
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	for _, check := range []struct {
+		organization tracker.OrganizationID
+		key          runnerstore.ProviderAccountKey
+		wantSelected bool
+		wantCapacity int
+		wantState    string
+	}{
+		{organization: "org_first", key: runnerstore.ProviderAccountKey{RunnerID: "runner_2", Provider: "example-provider", Backend: "example", AccountAlias: "account_shared", SharedAccountAlias: "shared_account"}, wantSelected: true, wantCapacity: 4, wantState: "available"},
+		{organization: "org_second", key: runnerstore.ProviderAccountKey{RunnerID: "runner_1", Provider: "example-provider", Backend: "example", AccountAlias: "account_shared", SharedAccountAlias: "shared_account"}, wantSelected: true, wantCapacity: 2, wantState: "available"},
+		{organization: "org_first", key: runnerstore.ProviderAccountKey{RunnerID: "runner_2", Provider: "example-provider", Backend: "example", AccountAlias: "account_shared"}, wantSelected: true, wantCapacity: 0, wantState: "available"},
+		{organization: "org_first", key: runnerstore.ProviderAccountKey{RunnerID: "runner_2", Provider: "example-provider", Backend: "other", AccountAlias: "account_shared", SharedAccountAlias: "shared_account"}, wantSelected: false, wantCapacity: 4, wantState: "available"},
+	} {
+		err := repository.WriteTenant(t.Context(), check.organization, corestore.Serving, func(w tenantstore.Writer) error {
+			capacity, err := w.LockRunnerProviderAccount(t.Context(), check.key, now)
+			if err != nil {
+				return err
+			}
+			if capacity.SelectedReport != check.wantSelected || capacity.MaxConcurrent != check.wantCapacity || capacity.State != check.wantState {
+				t.Errorf("provider account capacity=%+v, want selected=%t max_concurrent=%d state=%q", capacity, check.wantSelected, check.wantCapacity, check.wantState)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, check := range []struct {
+		name      string
+		mutate    func() providercapacity.Report
+		wantState string
+	}{
+		{name: "current exhausted dominates available", mutate: func() providercapacity.Report {
+			return providercapacity.Report{Backend: "example", Provider: "example-provider", AccountAlias: "account_shared", SharedAccountAlias: "shared_account", Billing: "api_key", MaxConcurrent: 4, Availability: "exhausted", ObservedAt: now, Models: []string{"example-model"}}
+		}, wantState: "exhausted"},
+		{name: "stale exhausted is unknown", mutate: func() providercapacity.Report {
+			return providercapacity.Report{Backend: "example", Provider: "example-provider", AccountAlias: "account_shared", SharedAccountAlias: "shared_account", Billing: "api_key", MaxConcurrent: 4, Availability: "exhausted", ObservedAt: now.Add(-3 * time.Minute), Models: []string{"example-model"}}
+		}, wantState: "unknown"},
+		{name: "future report is unknown", mutate: func() providercapacity.Report {
+			return providercapacity.Report{Backend: "example", Provider: "example-provider", AccountAlias: "account_shared", SharedAccountAlias: "shared_account", Billing: "api_key", MaxConcurrent: 4, Availability: "available", ObservedAt: now.Add(time.Minute), Models: []string{"example-model"}}
+		}, wantState: "unknown"},
+		{name: "reset report is unknown", mutate: func() providercapacity.Report {
+			return providercapacity.Report{Backend: "example", Provider: "example-provider", AccountAlias: "account_shared", SharedAccountAlias: "shared_account", Billing: "api_key", MaxConcurrent: 4, Availability: "available", ObservedAt: now.Add(-time.Minute), ResetAt: now.Add(-time.Second), Models: []string{"example-model"}}
+		}, wantState: "unknown"},
+	} {
+		t.Run(check.name, func(t *testing.T) {
+			err := repository.WriteTenant(t.Context(), "org_first", corestore.Serving, func(w tenantstore.Writer) error {
+				if err := w.ReplaceRunnerProviderReports(t.Context(), "runner_1", []providercapacity.Report{check.mutate()}); err != nil {
+					return err
+				}
+				capacity, err := w.LockRunnerProviderAccount(t.Context(), runnerstore.ProviderAccountKey{RunnerID: "runner_2", Provider: "example-provider", Backend: "example", AccountAlias: "account_shared", SharedAccountAlias: "shared_account"}, now)
+				if err != nil {
+					return err
+				}
+				if !capacity.SelectedReport || capacity.MaxConcurrent != 4 || capacity.State != check.wantState {
+					t.Errorf("provider account capacity=%+v, want selected=true max_concurrent=4 state=%q", capacity, check.wantState)
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestRunnerProjectUsageCountsLiveRunnerAndProjectLeases(t *testing.T) {
+	admin := template.Database(t)
+	repository, _ := repositoryFor(t, admin, smallPool())
+	const organization tracker.OrganizationID = "org_usage"
+	seedLeaseFamily(t, repository, organization)
+	if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+		_, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: organization, ID: 3, ProjectID: "prj_1", NativeID: "wi_3", Number: 2, Title: "Example"})
+		if err != nil {
+			return err
+		}
+		_, err = w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: organization, ID: 4, ProjectID: "prj_1", NativeID: "wi_4", Number: 3, Title: "Example"})
+		if err != nil {
+			return err
+		}
+		return w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: organization, ID: "machine_3", Hostname: "example", Capacity: 1, Version: "example"})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	leases := []leasestore.Lease{
+		claimLease(t, repository, organization, leasestore.Claim{IssueID: 1, ExpectedRevision: 1, MachineID: "machine_1", SessionID: "usage_1", LeaseID: "lease_usage_1", TTL: time.Hour}),
+		claimLease(t, repository, organization, leasestore.Claim{IssueID: 3, ExpectedRevision: 1, MachineID: "machine_2", SessionID: "usage_2", LeaseID: "lease_usage_2", TTL: time.Hour}),
+		claimLease(t, repository, organization, leasestore.Claim{IssueID: 4, ExpectedRevision: 1, MachineID: "machine_3", SessionID: "usage_3", LeaseID: "lease_usage_3", TTL: time.Hour}),
+	}
+	for index, lease := range leases {
+		runnerID := fmt.Sprintf("runner_%d", index+1)
+		seedRunnerIdentity(t, repository, organization, runnerID, string(lease.MachineID), now, false)
+		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+			return w.AssignRunnerLease(t.Context(), runnerstore.LeaseAssignment{OrganizationID: organization, LeaseID: lease.LeaseID, RunnerID: runnerID, AssignedAt: now})
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, check := range []struct {
+		runner  string
+		project tracker.ProjectID
+		now     time.Time
+		wantRun int64
+		wantPrj int64
+	}{
+		{runner: "runner_2", project: "prj_1", now: now, wantRun: 1, wantPrj: 1},
+		{runner: "runner_2", project: "prj_1", now: now.Add(2 * time.Hour), wantRun: 0, wantPrj: 0},
+	} {
+		err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+			runnerUsed, projectUsed, err := r.RunnerProjectUsage(t.Context(), check.runner, check.project, check.now)
+			if err != nil {
+				return err
+			}
+			if runnerUsed != check.wantRun || projectUsed != check.wantPrj {
+				t.Errorf("usage runner=%d project=%d, want runner=%d project=%d", runnerUsed, projectUsed, check.wantRun, check.wantPrj)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestRunnerSharedProviderAccountSerializesFirstReportJoin(t *testing.T) {
+	admin := template.Database(t)
+	repository, _ := repositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 3, ServingConnections: 2, BackgroundConnections: 1})
+	const organization tracker.OrganizationID = "org_shared_account"
+	now := time.Now().UTC()
+	seedRunnerIdentity(t, repository, organization, "runner_first", "machine_first", now, true)
+	seedRunnerIdentity(t, repository, organization, "runner_second", "machine_second", now, true)
+	report := providercapacity.Report{Backend: "example", Provider: "example-provider", AccountAlias: "account_shared", SharedAccountAlias: "shared_account", Billing: "api_key", MaxConcurrent: 4, Availability: "available", ObservedAt: now, Models: []string{"example-model"}}
+	if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+		return w.ReplaceRunnerProviderReports(t.Context(), "runner_first", []providercapacity.Report{report})
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	locked := make(chan struct{})
+	release := make(chan struct{})
+	lookup := startRepositoryTask(t, func(ctx context.Context) error {
+		return repository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
+			if _, err := w.LockRunnerProviderAccount(ctx, runnerstore.ProviderAccountKey{RunnerID: "runner_second", Provider: report.Provider, Backend: report.Backend, AccountAlias: report.AccountAlias, SharedAccountAlias: report.SharedAccountAlias}, now); err != nil {
+				return err
+			}
+			close(locked)
+			select {
+			case <-release:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		})
+	})
+	t.Cleanup(func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	})
+	waitRepositorySignal(t, locked)
+	update := startRepositoryTask(t, func(ctx context.Context) error {
+		return repository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
+			return w.ReplaceRunnerProviderReports(ctx, "runner_second", []providercapacity.Report{report})
+		})
+	})
+	testenv.WaitUntil(t, t.Context(), func() error {
+		select {
+		case <-update.done:
+			t.Fatalf("shared account report update completed before acquiring the claim's account lock: %v", update.err)
+		default:
+		}
+		var waiting int
+		if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%pg_advisory_xact_lock%'`).Scan(&waiting); err != nil {
+			return err
+		}
+		if waiting == 0 {
+			return fmt.Errorf("shared account report update is not waiting on the claim's account lock")
+		}
+		return nil
+	})
+	close(release)
+	if err := lookup.wait(t); err != nil {
+		t.Fatal(err)
+	}
+	if err := update.wait(t); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+		capacity, err := w.LockRunnerProviderAccount(t.Context(), runnerstore.ProviderAccountKey{RunnerID: "runner_second", Provider: report.Provider, Backend: report.Backend, AccountAlias: report.AccountAlias, SharedAccountAlias: report.SharedAccountAlias}, now)
+		if err != nil {
+			return err
+		}
+		if !capacity.SelectedReport || capacity.MaxConcurrent != 4 || capacity.State != "available" {
+			t.Fatalf("shared account capacity=%+v, want selected report with max concurrency 4 available", capacity)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func seedRunnerIdentity(t *testing.T, repository *postgres.Repository, organization tracker.OrganizationID, runnerID, machineID string, now time.Time, registerMachine bool) {
+	t.Helper()
+	err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if registerMachine {
+			if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: organization, ID: machineID, Hostname: "example", Capacity: 1, Version: "example"}); err != nil {
+				return err
+			}
+		}
+		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: runnerID, Name: runnerID, Hash: apikey.HashToken("credential_" + string(organization) + "_" + runnerID), Scope: "worker", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ExpiresAt: timePointer(now.Add(time.Hour)), ProjectAccess: "all", Kind: "service"}); err != nil {
+			return err
+		}
+		enrollment := runnerstore.Enrollment{OrganizationID: organization, ID: "enrollment_" + runnerID, RunnerID: runnerID, MachineID: tracker.MachineID(machineID), TokenHash: apikey.HashToken("enrollment_" + string(organization) + "_" + runnerID), Scope: "organization", Operations: []string{"read", "claim"}, CreatedAt: now, ExpiresAt: now.Add(time.Hour), CreatedBy: "admin"}
+		if err := w.CreateRunnerEnrollment(t.Context(), enrollment); err != nil {
+			return err
+		}
+		if err := w.RedeemRunnerEnrollment(t.Context(), enrollment.ID, runnerID, tracker.MachineID(machineID), now); err != nil {
+			return err
+		}
+		return w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: organization, RunnerID: runnerID, MachineID: tracker.MachineID(machineID), TokenID: runnerID, EnrollmentID: enrollment.ID, Scope: "organization", Operations: enrollment.Operations, CapacityLimit: 1, ReportedCapacity: 1, CreatedAt: now, ExpiresAt: now.Add(time.Hour), LastHeartbeatAt: now})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestRunnerIdentityEnrollmentRevocationIsTenantScoped(t *testing.T) {
 	admin := template.Database(t)

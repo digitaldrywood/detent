@@ -145,6 +145,20 @@ type LeaseAssignment struct {
 	AssignedAt     time.Time
 }
 
+type ProviderAccountKey struct {
+	RunnerID           string
+	Provider           string
+	Backend            string
+	AccountAlias       string
+	SharedAccountAlias string
+}
+
+type ProviderAccountCapacity struct {
+	SelectedReport bool
+	MaxConcurrent  int
+	State          string
+}
+
 type ProjectObservation struct {
 	OrganizationID    tracker.OrganizationID
 	RunnerID          string
@@ -199,6 +213,7 @@ type Reader interface {
 	RunnerProjects(context.Context, string, int) ([]tracker.ProjectID, error)
 	RunnerProjectAuthorized(context.Context, string, tracker.ProjectID, time.Time) (bool, error)
 	RunnerActiveLeaseIDs(context.Context, string, time.Time, int) ([]string, error)
+	RunnerProjectUsage(context.Context, string, tracker.ProjectID, time.Time) (runnerUsed, runnerProjectUsed int64, err error)
 	RunnerBindingAvailable(context.Context, string, tracker.MachineID, bool) error
 	RunnerRepositoryList(context.Context, string) (RepositoryList, error)
 	RunnerRepositories(context.Context, string, int) ([]Repository, error)
@@ -221,5 +236,6 @@ type Writer interface {
 	ReplaceRunnerRepositories(context.Context, RepositoryList, []Repository) error
 	ReplaceRunnerProjectObservation(context.Context, ProjectObservation, []ProjectDiagnosticAttempt) error
 	ReplaceRunnerProviderReports(context.Context, string, []providercapacity.Report) error
+	LockRunnerProviderAccount(context.Context, ProviderAccountKey, time.Time) (ProviderAccountCapacity, error)
 	UpdateRunnerCapacityConfig(context.Context, string, runnerauth.CapacityConfig) error
 }

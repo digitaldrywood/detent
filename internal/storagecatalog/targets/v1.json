@@ -41,7 +41,8 @@
     "internal/hubserver/postgres/migrations/20261101224723_request_usage_retention.sql",
     "internal/hubserver/postgres/migrations/20261101225000_runner_provider_reports.sql",
     "internal/hubserver/postgres/migrations/20261101225500_runner_capacity_configuration.sql",
-    "internal/hubserver/postgres/migrations/20261101231201_search_refresh_progress.sql"
+    "internal/hubserver/postgres/migrations/20261101231201_search_refresh_progress.sql",
+    "internal/hubserver/postgres/migrations/20261101232125_runner_provider_account_lookup.sql"
   ],
   "tables": {
     "public.ai_credit_reason_references": {
