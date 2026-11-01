@@ -102,3 +102,16 @@ repository size, independently of the 10,000-tenant/runner fleet (INV-21). The
 contracts preserve shared tracker knowledge (INV-16), bounded writes (INV-18) and
 typed SQL/object references (INV-20). Runtime behavior and safety-critical
 orchestrator files remain unchanged.
+
+## Raw source column mappings
+
+`mappings/v1.json` extends routing with a versioned, explicit entry for every
+source column. The normal command validates both contracts; `-catalog` selects
+another reviewed version. `-scan` remains a read-only owner/table inventory and
+does not assign column transforms. Unknown or changed source definitions reject
+validation. Unsupported target fields are explicit pending mappings that reject
+row import, not evidence of complete target coverage.
+
+See [the catalog contract](../../internal/storagecatalog/README.md) for source
+organization bindings, encodings, precision, object preparation, rebuild/retired
+dispositions and the distinction between catalog coverage and import readiness.

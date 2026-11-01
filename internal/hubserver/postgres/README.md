@@ -587,3 +587,22 @@ history size. Work and row locks inside the callback are bounded by the command'
 participants. No per-tenant pool, fleet scan, object I/O or derived refresh is
 introduced (INV-16, INV-18, INV-21). SQLite remains on its existing transaction
 implementation; this boundary does not enable unported serving paths.
+
+## Raw source mappings (P28)
+
+The [source catalog](../../storagecatalog/README.md) pins all P01 inventory
+columns and their source definitions in `tools/storageinventory/mappings/v1.json`.
+The storage inventory command rejects unmapped or changed columns as well as
+unmapped tables and owners. Each supported mapping names existing typed target
+columns; the PostgreSQL tests verify those declarations against the migrated
+schema. Unsupported family fields and relational/object extractions remain
+explicitly pending and reject import. Catalog coverage is not import coverage.
+
+Source schema/version and organization bindings are explicit. Decoding preserves
+IDs, revisions, fencing tokens, receipt identities and encrypted bytes; it rejects
+malformed values, ambiguous encodings and timestamp precision loss. Payload
+mappings preserve exact bytes and require the later importer to prepare and
+verify objects before committing references and receipts within P01's atomic
+groups. This catalog adds no schema, serving path, migration execution, network
+work or SQL JSON extraction. Its per-row cost depends only on the supplied row,
+with constant-time tenant membership checks, independently of fleet size.
