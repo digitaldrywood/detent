@@ -23,10 +23,6 @@ import (
 )
 
 func TestCompletionFenceDeferralOutcomes(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
 	t.Parallel()
 
 	tests := []struct {
