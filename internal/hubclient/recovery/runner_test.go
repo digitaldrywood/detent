@@ -15,3 +15,7 @@ func TestRunnerHistory(t *testing.T) {
 		{Name: "growing multi-page machine history keeps fresh conflict recovery compact", Rework: true, StaleBase: true, Land: true, WantChanged: true, WantState: "Merging", WantChanges: 1},
 	}, scenariotest.Constructors{New: nativechange.NewExecution, Recovered: nativechange.NewRecoveredExecution}, scenariotest.Checks{})
 }
+
+func TestNativeRunnerReconnectsRetainedAttempt(t *testing.T) {
+	scenariotest.RunNativeRunnerReconnectsRetainedAttempt(t, scenariotest.Constructors{New: nativechange.NewExecution, Recovered: nativechange.NewRecoveredExecution})
+}

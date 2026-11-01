@@ -5,6 +5,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubclient/checkpoint"
 	executioncontract "github.com/digitaldrywood/detent/internal/hubclient/execution"
+	"github.com/digitaldrywood/detent/internal/hubclient/recovery"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -16,20 +17,17 @@ func NewExecution(host executioncontract.ExecutionHost, view executioncontract.E
 		RunID: executionID("run", string(claim.lease.WorkItemID)), AttemptID: executionID("attempt", string(claim.lease.ID)),
 		PolicyID: claim.lease.PolicyID, LeaseID: claim.lease.ID, FencingToken: claim.lease.FencingToken,
 	}}
-	for _, attempt := range claim.recovery.Attempts {
-		if attempt.Identity != nil && attempt.LeaseID == claim.lease.ID && attempt.FencingToken == claim.lease.FencingToken && (attempt.Status == "running" || attempt.Status == "interrupted") {
-			execution.data = attempt.NativeRunData
-			if attempt.Runtime != nil {
-				execution.runtimePublishedAt = attempt.Runtime.HeartbeatAt
-			}
-			execution.usageStartedAt = attempt.StartedAt
-			execution.role = attempt.Identity.Role
-			execution.reconnecting = true
-			if attempt.Checkpoint != nil {
-				execution.worktreeState = attempt.Checkpoint.WorktreeState
-				execution.worktreeHead = attempt.Checkpoint.HeadSHA
-			}
-			break
+	if attempt, ok := recovery.ActiveAttempt(claim.recovery.Attempts, claim.lease); ok {
+		execution.data = attempt.NativeRunData
+		if attempt.Runtime != nil {
+			execution.runtimePublishedAt = attempt.Runtime.HeartbeatAt
+		}
+		execution.usageStartedAt = attempt.StartedAt
+		execution.role = attempt.Identity.Role
+		execution.reconnecting = true
+		if attempt.Checkpoint != nil {
+			execution.worktreeState = attempt.Checkpoint.WorktreeState
+			execution.worktreeHead = attempt.Checkpoint.HeadSHA
 		}
 	}
 	return execution

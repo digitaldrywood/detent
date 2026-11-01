@@ -74,6 +74,7 @@ func laneWriterAllowed(file string) bool {
 		"internal/hubclient/internal/scenariotest/native_implementation_review.go",
 		"internal/hubclient/internal/scenariotest/no_change.go",
 		"internal/hubclient/internal/scenariotest/provider_progress.go",
+		"internal/hubclient/internal/scenariotest/reconnect.go",
 		"internal/hubclient/internal/scenariotest/settlement.go":
 		return true
 	}

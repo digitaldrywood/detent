@@ -1,4 +1,4 @@
-package nativechange
+package scenariotest
 
 import (
 	"context"
@@ -17,14 +17,28 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/hubclient/api"
+	"github.com/digitaldrywood/detent/internal/hubclient/changecreation"
+	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"os"
 )
 
-func TestNativeRunnerReconnectsRetainedAttempt(t *testing.T) {
+func RunNativeRunnerReconnectsRetainedAttempt(t *testing.T, factories Constructors) {
+	repositoryRootOnce.Do(func() { nativeChangeFixtureRoot = os.Getenv("TMPDIR") })
+	newTestClient := func(t testing.TB, config Config) (*Client, error) { return createTestClient(t, config, factories) }
+	schedulerFixturesValue := func(scheduler *Scheduler) SchedulerConfig {
+		value, ok := schedulerFixtures.Load(scheduler)
+		if !ok {
+			t.Fatal("fixture lost recovery scheduler")
+		}
+		return value.(*schedulerFixture).config
+	}
 	t.Parallel()
 	for _, test := range []struct {
 		name                string
@@ -64,13 +78,13 @@ func TestNativeRunnerReconnectsRetainedAttempt(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			h := newNativeChangeHubDependencies(t, "In Review", []tracker.NativeState{
+			h := newNativeChangeHubConfigured(t, "In Review", []tracker.NativeState{
 				{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}},
 				{Name: "In Progress", Dispatchable: true, Transitions: []string{"In Review", "Done", "Todo", "Blocked"}},
 				{Name: "Blocked", Transitions: []string{"In Progress"}},
 				{Name: "In Review", Transitions: []string{"In Progress", "Done"}},
 				{Name: "Done", Terminal: true, Transitions: []string{"Todo"}},
-			}, true, true)
+			}, true, true, hubserver.Config{DatabasePath: hubDatabasePath(t), InitialAdminToken: []byte(nativeChangeAdminToken)}, factories)
 			fixtureClient(h.admin.Transport()).baseURL.Scheme = "https"
 			issue := h.createInProgress(t, "Retained execution")
 			path := filepath.Join(t.TempDir(), "private", "identity.json")
@@ -140,7 +154,7 @@ func TestNativeRunnerReconnectsRetainedAttempt(t *testing.T) {
 			otherScheduler := h.scheduler
 			h.scheduler = newScheduler()
 			h.claim(t, issue.ID)
-			execution := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+			execution := h.scheduler.RunExecution(issue.ID).(*ownedExecution)
 			executionIdentity := tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test", ReasoningEffort: test.effort}
 			if err := execution.Start(t.Context(), executionIdentity); err != nil {
 				t.Fatal(err)
@@ -200,11 +214,22 @@ func TestNativeRunnerReconnectsRetainedAttempt(t *testing.T) {
 				execution.SetChangeSource(func(ctx context.Context, base, head string) (tracker.ChangeSourceCapture, error) {
 					return nativeChangeSourceFixture(ctx, t, base, head), nil
 				})
-				change, err := execution.openChange(t.Context(), diff)
+				change, err := changecreation.Open(t.Context(), execution.claim.source.NativeClient(), changecreation.Input{Item: execution.claim.lease.WorkItemID, AttemptID: execution.CompletionData().AttemptID, Title: execution.claim.recovery.Issue.Title, Lease: execution.claim.lease, Diff: diff})
 				if err != nil {
 					t.Fatal(err)
 				}
-				version, _, err := execution.publishChangeVersion(t.Context(), change, diff)
+				captured := nativeChangeSourceFixture(t.Context(), t, diff.BaseSHA, diff.HeadSHA)
+				data := execution.CompletionData()
+				published, err := execution.claim.source.NativeClient().PublishChangeVersion(t.Context(), execution.claim.lease.WorkItemID, change, tracker.PublishChangeVersion{
+					Mutation:     tracker.Mutation{IdempotencyKey: "seed-version-" + data.AttemptID, LeaseID: execution.claim.lease.ID, FencingToken: execution.claim.lease.FencingToken},
+					SourceBundle: captured.Bundle,
+					ChangeVersionInput: tracker.ChangeVersionInput{
+						BaseSHA: diff.BaseSHA, HeadSHA: diff.HeadSHA, MergeBaseSHA: diff.BaseSHA, Repository: nativeChangeRepository,
+						Code:      tracker.ChangeArtifact{Kind: "code", URI: nativeChangeRepository + "/commit/" + diff.HeadSHA, SHA256: policy.Digest([]byte(diff.HeadSHA)), Availability: "unverified"},
+						Artifacts: []tracker.ChangeArtifact{}, RunID: data.RunID, AttemptID: data.AttemptID, PolicyID: data.PolicyID, Source: &captured.Source,
+					},
+				})
+				version := published.ID
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -223,14 +248,14 @@ func TestNativeRunnerReconnectsRetainedAttempt(t *testing.T) {
 				}
 			}
 			original := execution.claim.lease
-			sequence := execution.data.Sequence
+			sequence := execution.CompletionData().Sequence
 			if test.released {
 				if err := execution.claim.source.NativeClient().Release(t.Context(), original, "cancelled"); err != nil {
 					t.Fatal(err)
 				}
 				h.scheduler = newScheduler()
 				h.claim(t, issue.ID)
-				newer := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+				newer := h.scheduler.RunExecution(issue.ID).(*ownedExecution)
 				if err := newer.Start(t.Context(), executionIdentity); err != nil {
 					t.Fatal(err)
 				}
@@ -284,10 +309,10 @@ func TestNativeRunnerReconnectsRetainedAttempt(t *testing.T) {
 
 			if test.released {
 				var replacement tracker.NativeLease
-				var successor *nativeExecution
+				var successor *ownedExecution
 				if test.replacement {
 					h.claim(t, issue.ID)
-					successor = h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+					successor = h.scheduler.RunExecution(issue.ID).(*ownedExecution)
 					if err := successor.Start(t.Context(), executionIdentity); err != nil {
 						t.Fatal(err)
 					}
@@ -349,7 +374,7 @@ func TestNativeRunnerReconnectsRetainedAttempt(t *testing.T) {
 					t.Fatalf("cleanup acknowledgment sequence=%d want=%d acknowledged=%v", after.Attempts[0].Sequence, wantSequence, after.Attempts[0].CleanupAcknowledgedAt)
 				}
 				if cleanupExpected {
-					if err := cancelNativeReleasedAttempt(t.Context(), execution.claim.source.NativeClient(), current.WorkItemID, before.Attempts[0]); err != nil {
+					if err := api.CancelNativeReleasedAttempt(t.Context(), execution.claim.source.NativeClient(), current.WorkItemID, before.Attempts[0]); err != nil {
 						t.Fatalf("duplicate termination acknowledgment: %v", err)
 					}
 					h.scheduler = newScheduler()
@@ -381,7 +406,7 @@ func TestNativeRunnerReconnectsRetainedAttempt(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				var independent *nativeExecution
+				var independent *ownedExecution
 				candidates, err := h.scheduler.FetchCandidateIssues(t.Context(), orchestrator.SchedulingRequest{
 					Policy: h.descriptor, ProjectID: "local", WorkflowStates: []string{"Todo", "In Progress"},
 					CandidateReady: func(_ context.Context, candidate connector.Issue) bool { return candidate.ID == unrelated.ID },
@@ -396,7 +421,7 @@ func TestNativeRunnerReconnectsRetainedAttempt(t *testing.T) {
 					if _, err := h.scheduler.AdoptClaim(t.Context(), candidate, time.Now()); err != nil {
 						t.Fatal(err)
 					}
-					independent = h.scheduler.RunExecution(unrelated.ID).(*nativeExecution)
+					independent = h.scheduler.RunExecution(unrelated.ID).(*ownedExecution)
 				}
 				if independent == nil {
 					t.Fatal("released reconciliation prevented unrelated dispatch")
@@ -431,9 +456,9 @@ func TestNativeRunnerReconnectsRetainedAttempt(t *testing.T) {
 
 				if want == "cancelled" && !test.hold {
 					h.claim(t, issue.ID)
-					resumed := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+					resumed := h.scheduler.RunExecution(issue.ID).(*ownedExecution)
 					recovered := resumed.Recovery().SourceAttempt()
-					if recovered == nil || recovered.AttemptID != execution.data.AttemptID || recovered.Checkpoint.Change.VersionID != retained.Change.CurrentVersion || resumed.claim.lease.FencingToken <= original.FencingToken {
+					if recovered == nil || recovered.AttemptID != execution.CompletionData().AttemptID || recovered.Checkpoint.Change.VersionID != retained.Change.CurrentVersion || resumed.claim.lease.FencingToken <= original.FencingToken {
 						t.Fatalf("ordinary claim lost retained source: %+v", recovered)
 					}
 					if err := resumed.Validate(t.Context()); err != nil {
@@ -497,9 +522,9 @@ func TestNativeRunnerReconnectsRetainedAttempt(t *testing.T) {
 				return
 			}
 			h.claim(t, issue.ID)
-			resumed := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
-			if !sameCompletionLease(resumed.claim.lease, original) || resumed.data.Sequence != sequence || resumed.worktreeState != "dirty" || resumed.worktreeHead != checkpoint.HeadSHA {
-				t.Fatalf("reconnect replaced authority or checkpoint: lease=%s original=%s sequence=%d want=%d", resumed.claim.lease.ID, original.ID, resumed.data.Sequence, sequence)
+			resumed := h.scheduler.RunExecution(issue.ID).(*ownedExecution)
+			if !sameCompletionLease(resumed.claim.lease, original) || resumed.CompletionData().Sequence != sequence || resumed.CompletionSnapshot().WorktreeState != "dirty" || resumed.CompletionSnapshot().WorktreeHead != checkpoint.HeadSHA {
+				t.Fatalf("reconnect replaced authority or checkpoint: lease=%s original=%s sequence=%d want=%d", resumed.claim.lease.ID, original.ID, resumed.CompletionData().Sequence, sequence)
 			}
 			if err := resumed.ObserveRuntime(t.Context(), tracker.NativeRuntimeObservation{LocalAttemptID: 42, Generation: 2, HeartbeatAt: time.Now(), Phase: "implementation"}); err != nil {
 				t.Fatal(err)

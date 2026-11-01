@@ -273,14 +273,6 @@ func fixtureRawToken(client *Client) string {
 	return fixture.config.TokenSource()
 }
 
-func schedulerFixturesValue(scheduler *Scheduler) SchedulerConfig {
-	value, ok := schedulerFixtures.Load(scheduler)
-	if !ok {
-		panic("scheduler fixture is not registered")
-	}
-	return value.(*schedulerFixture).config
-}
-
 func fixtureDiagnostics(scheduler *Scheduler, source *NativeConnector) []runnerauth.DiagnosticAttempt {
 	return diagnostics.Claims(scheduler.ActiveExecutions(), source, scheduler.Now(), scheduler.LeaseDuration())
 }
