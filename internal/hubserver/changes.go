@@ -130,6 +130,9 @@ func readChangePolicy(ctx context.Context, query nativeQueryer, scope nativeScop
 }
 
 func (s *Service) getChangeReviewPolicy(c echo.Context) error {
+	if s.config.TenantRepository != nil {
+		return s.nativeAPIError(c, workItemStorageUnavailable())
+	}
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 	defer cancel()
 	result, err := readChangePolicy(ctx, s.database.reader, nativeRequestScope(c))
@@ -140,6 +143,9 @@ func (s *Service) getChangeReviewPolicy(c echo.Context) error {
 }
 
 func (s *Service) approveChangeReviewPolicy(c echo.Context) error {
+	if s.config.TenantRepository != nil {
+		return s.nativeAPIError(c, workItemStorageUnavailable())
+	}
 	var request tracker.ApproveChangeReviewPolicy
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
@@ -377,6 +383,9 @@ func (s *Service) listChanges(c echo.Context) error {
 }
 
 func (s *Service) readChanges(ctx context.Context, scope nativeScope, item string) ([]tracker.ChangeRequest, error) {
+	if s.config.TenantRepository != nil {
+		return s.listChangeRecords(ctx, scope, item)
+	}
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	if _, _, err := readNativeIssue(ctx, s.database.reader, scope, item); err != nil {
@@ -408,12 +417,24 @@ func (s *Service) createChange(c echo.Context) error {
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
+	if s.config.TenantRepository != nil {
+		return s.createChangeRecord(c, request)
+	}
 	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		return s.createChangeCommand(ctx, tx, scope, c.Param("item"), request, now)
 	})
 }
 
 func (s *Service) getChange(c echo.Context) error {
+	if s.config.TenantRepository != nil {
+		ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+		defer cancel()
+		result, err := s.selectedChangeDetail(ctx, nativeRequestScope(c), c.Param("item"), c.Param("change"), s.config.now())
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		return nativeArchiveJSON(c, http.StatusOK, result)
+	}
 	if handled, err := s.archiveView(c, c.Param("item"), "change:"+c.Param("change"), nil); handled {
 		return err
 	}

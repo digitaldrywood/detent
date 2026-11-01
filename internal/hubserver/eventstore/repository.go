@@ -92,6 +92,10 @@ type Version struct {
 	PayloadBytes         int64
 	PayloadContentBytes  int64
 	PayloadFormatVersion int64
+	SourceObjectKey      string
+	SourceSHA256         string
+	SourceBytes          int64
+	SourceContentBytes   int64
 }
 
 type Evidence struct {
@@ -110,6 +114,22 @@ type Evidence struct {
 	PayloadBytes         int64
 	PayloadContentBytes  int64
 	PayloadFormatVersion int64
+}
+
+type LinkedSource struct {
+	OrganizationID         tracker.OrganizationID
+	ProjectID              tracker.ProjectID
+	WorkItemID             tracker.NativeWorkItemID
+	URL                    string
+	TitleSupplied          bool
+	BodySupplied           bool
+	TitleOwned             bool
+	BodyOwned              bool
+	SnapshotObjectKey      string
+	SnapshotSHA256         string
+	SnapshotBytes          int64
+	SnapshotContentBytes   int64
+	ExpectedSnapshotSHA256 *string
 }
 
 type Receipt struct {
@@ -132,7 +152,11 @@ type Reader interface {
 	Change(context.Context, string) (Change, error)
 	Changes(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, string, int) ([]Change, error)
 	Versions(context.Context, string, int64, int) ([]Version, error)
+	Version(context.Context, string, string) (Version, error)
 	Evidence(context.Context, string, int64, int) ([]Evidence, error)
+	EvidenceBySource(context.Context, string, string, string) (Evidence, error)
+	LinkedSource(context.Context, tracker.ProjectID, tracker.NativeWorkItemID) (LinkedSource, error)
+	LinkedSourceByURL(context.Context, tracker.ProjectID, string) (LinkedSource, error)
 	Links(context.Context, string, tracker.NativeWorkItemID, int) ([]Link, error)
 }
 type Writer interface {
@@ -144,6 +168,8 @@ type Writer interface {
 	UpdateChange(context.Context, Change) (Change, error)
 	CreateVersion(context.Context, Version) (Version, error)
 	AppendEvidence(context.Context, Evidence) (Evidence, error)
+	CreateLinkedSource(context.Context, LinkedSource) (LinkedSource, error)
+	UpdateLinkedSource(context.Context, LinkedSource) (LinkedSource, error)
 	LinkIssue(context.Context, Link) error
 }
 type Repository interface {

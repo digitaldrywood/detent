@@ -23,7 +23,9 @@ INSERT INTO change_requests (organization_id, project_id, work_item_id, id, revi
 VALUES (sqlc.arg(organization_id), sqlc.arg(project_id), sqlc.arg(work_item_id), sqlc.arg(id), sqlc.arg(revision), sqlc.arg(title), sqlc.narg(current_version_id), sqlc.arg(evidence_sequence), sqlc.arg(created_at), sqlc.arg(updated_at), sqlc.arg(payload_object_key), sqlc.arg(payload_sha256), sqlc.arg(payload_bytes), sqlc.arg(payload_content_bytes)) RETURNING *;
 
 -- name: RecordListChange :many
-SELECT * FROM change_requests WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_id) AND work_item_id=sqlc.arg(work_item_id) AND id>sqlc.arg(after) ORDER BY id LIMIT sqlc.arg(page_limit);
+SELECT c.* FROM change_requests c WHERE c.organization_id=sqlc.arg(organization_id) AND c.project_id=sqlc.arg(project_id) AND c.id>sqlc.arg(after)
+AND EXISTS (SELECT 1 FROM change_issue_links l WHERE l.organization_id=c.organization_id AND l.project_id=c.project_id AND l.change_id=c.id AND l.work_item_id=sqlc.arg(work_item_id))
+ORDER BY c.id LIMIT sqlc.arg(page_limit);
 
 -- name: RecordGetLink :one
 SELECT * FROM change_issue_links WHERE organization_id=sqlc.arg(organization_id) AND change_id=sqlc.arg(change_id) AND work_item_id=sqlc.arg(work_item_id);
@@ -36,13 +38,19 @@ VALUES (sqlc.arg(organization_id), sqlc.arg(project_id), sqlc.arg(work_item_id),
 SELECT * FROM change_versions WHERE organization_id=sqlc.arg(organization_id) AND change_id=sqlc.arg(change_id) AND id=sqlc.arg(id);
 
 -- name: RecordInsertVersion :one
-INSERT INTO change_versions (organization_id, id, change_id, number, head_sha, base_sha, merge_base_sha, repository, policy_revision_id, attempt_id, actor_kind, actor_principal_id, external_provider, external_id, external_url, created_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version)
-VALUES (sqlc.arg(organization_id), sqlc.arg(id), sqlc.arg(change_id), sqlc.arg(number), sqlc.arg(head_sha), sqlc.arg(base_sha), sqlc.arg(merge_base_sha), sqlc.arg(repository), sqlc.arg(policy_revision_id), sqlc.arg(attempt_id), sqlc.arg(actor_kind), sqlc.arg(actor_principal_id), sqlc.arg(external_provider), sqlc.arg(external_id), sqlc.arg(external_url), sqlc.arg(created_at), sqlc.arg(payload_object_key), sqlc.arg(payload_sha256), sqlc.arg(payload_bytes), sqlc.arg(payload_content_bytes), sqlc.arg(payload_format_version)) RETURNING *;
+INSERT INTO change_versions (organization_id, id, change_id, number, head_sha, base_sha, merge_base_sha, repository, policy_revision_id, attempt_id, actor_kind, actor_principal_id, external_provider, external_id, external_url, created_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, source_object_key, source_sha256, source_bytes, source_content_bytes)
+VALUES (sqlc.arg(organization_id), sqlc.arg(id), sqlc.arg(change_id), sqlc.arg(number), sqlc.arg(head_sha), sqlc.arg(base_sha), sqlc.arg(merge_base_sha), sqlc.arg(repository), sqlc.arg(policy_revision_id), sqlc.arg(attempt_id), sqlc.arg(actor_kind), sqlc.arg(actor_principal_id), sqlc.arg(external_provider), sqlc.arg(external_id), sqlc.arg(external_url), sqlc.arg(created_at), sqlc.arg(payload_object_key), sqlc.arg(payload_sha256), sqlc.arg(payload_bytes), sqlc.arg(payload_content_bytes), sqlc.arg(payload_format_version), sqlc.narg(source_object_key), sqlc.narg(source_sha256), sqlc.narg(source_bytes), sqlc.narg(source_content_bytes)) RETURNING *;
 
 -- name: RecordListVersion :many
 SELECT * FROM change_versions WHERE organization_id=sqlc.arg(organization_id) AND change_id=sqlc.arg(change_id) AND number>sqlc.arg(after) ORDER BY number LIMIT sqlc.arg(page_limit);
 
+-- name: RecordGetVersionByID :one
+SELECT * FROM change_versions WHERE organization_id=sqlc.arg(organization_id) AND change_id=sqlc.arg(change_id) AND id=sqlc.arg(id);
+
 -- name: RecordGetEvidence :one
+SELECT * FROM change_evidence WHERE organization_id=sqlc.arg(organization_id) AND change_id=sqlc.arg(change_id) AND kind=sqlc.arg(kind) AND source_key=sqlc.arg(source_key);
+
+-- name: RecordGetEvidenceBySource :one
 SELECT * FROM change_evidence WHERE organization_id=sqlc.arg(organization_id) AND change_id=sqlc.arg(change_id) AND kind=sqlc.arg(kind) AND source_key=sqlc.arg(source_key);
 
 -- name: RecordInsertEvidence :one
@@ -87,3 +95,18 @@ SELECT * FROM native_commands WHERE organization_id=$1 AND actor_id=$2 AND opera
 INSERT INTO native_commands (organization_id,actor_id,operation,command_key,request_hash,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes)
 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
 ON CONFLICT (organization_id,actor_id,operation,command_key) DO NOTHING RETURNING *;
+
+-- name: RecordGetLinkedIssueSource :one
+SELECT * FROM linked_issue_sources WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_id) AND work_item_id=sqlc.arg(work_item_id);
+
+-- name: RecordGetLinkedIssueSourceByURL :one
+SELECT * FROM linked_issue_sources WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_id) AND source_url=sqlc.arg(source_url);
+
+-- name: RecordInsertLinkedIssueSource :one
+INSERT INTO linked_issue_sources (organization_id,project_id,work_item_id,source_url,title_supplied,body_supplied,title_owned,body_owned,snapshot_object_key,snapshot_sha256,snapshot_bytes,snapshot_content_bytes)
+VALUES (sqlc.arg(organization_id),sqlc.arg(project_id),sqlc.arg(work_item_id),sqlc.arg(source_url),sqlc.arg(title_supplied),sqlc.arg(body_supplied),sqlc.arg(title_owned),sqlc.arg(body_owned),sqlc.narg(snapshot_object_key),sqlc.narg(snapshot_sha256),sqlc.narg(snapshot_bytes),sqlc.narg(snapshot_content_bytes)) RETURNING *;
+
+-- name: RecordUpdateLinkedIssueSource :one
+UPDATE linked_issue_sources SET title_owned=sqlc.arg(title_owned),body_owned=sqlc.arg(body_owned),snapshot_object_key=sqlc.narg(snapshot_object_key),snapshot_sha256=sqlc.narg(snapshot_sha256),snapshot_bytes=sqlc.narg(snapshot_bytes),snapshot_content_bytes=sqlc.narg(snapshot_content_bytes)
+WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_id) AND work_item_id=sqlc.arg(work_item_id) AND source_url=sqlc.arg(source_url) AND snapshot_sha256 IS NOT DISTINCT FROM sqlc.narg(expected_snapshot_sha256)
+RETURNING *;

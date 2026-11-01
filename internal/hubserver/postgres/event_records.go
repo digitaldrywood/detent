@@ -61,9 +61,52 @@ func (s *session) Versions(ctx context.Context, change string, after int64, limi
 	}
 	records := make([]eventstore.Version, len(rows))
 	for i, row := range rows {
-		records[i] = eventstore.Version(row)
+		records[i] = versionRecord(row)
 	}
 	return records, nil
+}
+func (s *session) Version(ctx context.Context, change, id string) (eventstore.Version, error) {
+	row, err := s.queries.RecordGetVersionByID(ctx, pgquery.RecordGetVersionByIDParams{OrganizationID: s.organization, ChangeID: change, ID: id})
+	return versionRecord(row), mapError(ctx, err)
+}
+
+func versionRecord(row pgquery.ChangeVersion) eventstore.Version {
+	record := eventstore.Version{
+		OrganizationID:       row.OrganizationID,
+		ID:                   row.ID,
+		ChangeID:             row.ChangeID,
+		Number:               row.Number,
+		HeadSHA:              row.HeadSHA,
+		BaseSHA:              row.BaseSHA,
+		MergeBaseSHA:         row.MergeBaseSHA,
+		Repository:           row.Repository,
+		PolicyRevisionID:     row.PolicyRevisionID,
+		AttemptID:            row.AttemptID,
+		ActorKind:            row.ActorKind,
+		ActorPrincipalID:     row.ActorPrincipalID,
+		ExternalProvider:     row.ExternalProvider,
+		ExternalID:           row.ExternalID,
+		ExternalURL:          row.ExternalURL,
+		CreatedAt:            row.CreatedAt,
+		PayloadObjectKey:     row.PayloadObjectKey,
+		PayloadSHA256:        row.PayloadSHA256,
+		PayloadBytes:         row.PayloadBytes,
+		PayloadContentBytes:  row.PayloadContentBytes,
+		PayloadFormatVersion: row.PayloadFormatVersion,
+	}
+	if row.SourceObjectKey != nil {
+		record.SourceObjectKey = *row.SourceObjectKey
+	}
+	if row.SourceSha256 != nil {
+		record.SourceSHA256 = *row.SourceSha256
+	}
+	if row.SourceBytes.Valid {
+		record.SourceBytes = row.SourceBytes.Int64
+	}
+	if row.SourceContentBytes.Valid {
+		record.SourceContentBytes = row.SourceContentBytes.Int64
+	}
+	return record
 }
 func (s *session) Evidence(ctx context.Context, change string, after int64, limit int) ([]eventstore.Evidence, error) {
 	if err := checkPage(limit); err != nil {
@@ -78,6 +121,10 @@ func (s *session) Evidence(ctx context.Context, change string, after int64, limi
 		records[i] = eventstore.Evidence(row)
 	}
 	return records, nil
+}
+func (s *session) EvidenceBySource(ctx context.Context, change, kind, source string) (eventstore.Evidence, error) {
+	row, err := s.queries.RecordGetEvidenceBySource(ctx, pgquery.RecordGetEvidenceBySourceParams{OrganizationID: s.organization, ChangeID: change, Kind: kind, SourceKey: &source})
+	return eventstore.Evidence(row), mapError(ctx, err)
 }
 func (s *session) Links(ctx context.Context, change string, after tracker.NativeWorkItemID, limit int) ([]eventstore.Link, error) {
 	if err := checkPage(limit); err != nil {
@@ -129,8 +176,16 @@ func (s *session) insertRecordChange(ctx context.Context, record eventstore.Chan
 	return eventstore.Change(row), mapError(ctx, err)
 }
 func (s *session) insertRecordVersion(ctx context.Context, record eventstore.Version) (eventstore.Version, error) {
-	row, err := s.queries.RecordInsertVersion(ctx, pgquery.RecordInsertVersionParams{OrganizationID: record.OrganizationID, ID: record.ID, ChangeID: record.ChangeID, Number: record.Number, HeadSHA: record.HeadSHA, BaseSHA: record.BaseSHA, MergeBaseSHA: record.MergeBaseSHA, Repository: record.Repository, PolicyRevisionID: record.PolicyRevisionID, AttemptID: record.AttemptID, ActorKind: record.ActorKind, ActorPrincipalID: record.ActorPrincipalID, ExternalProvider: record.ExternalProvider, ExternalID: record.ExternalID, ExternalURL: record.ExternalURL, CreatedAt: record.CreatedAt, PayloadObjectKey: record.PayloadObjectKey, PayloadSHA256: record.PayloadSHA256, PayloadBytes: record.PayloadBytes, PayloadContentBytes: record.PayloadContentBytes, PayloadFormatVersion: record.PayloadFormatVersion})
-	return eventstore.Version(row), mapError(ctx, err)
+	var sourceKey, sourceDigest *string
+	var sourceBytes, sourceContentBytes sql.NullInt64
+	if record.SourceObjectKey != "" {
+		sourceKey = &record.SourceObjectKey
+		sourceDigest = &record.SourceSHA256
+		sourceBytes = sql.NullInt64{Int64: record.SourceBytes, Valid: true}
+		sourceContentBytes = sql.NullInt64{Int64: record.SourceContentBytes, Valid: true}
+	}
+	row, err := s.queries.RecordInsertVersion(ctx, pgquery.RecordInsertVersionParams{OrganizationID: record.OrganizationID, ID: record.ID, ChangeID: record.ChangeID, Number: record.Number, HeadSHA: record.HeadSHA, BaseSHA: record.BaseSHA, MergeBaseSHA: record.MergeBaseSHA, Repository: record.Repository, PolicyRevisionID: record.PolicyRevisionID, AttemptID: record.AttemptID, ActorKind: record.ActorKind, ActorPrincipalID: record.ActorPrincipalID, ExternalProvider: record.ExternalProvider, ExternalID: record.ExternalID, ExternalURL: record.ExternalURL, CreatedAt: record.CreatedAt, PayloadObjectKey: record.PayloadObjectKey, PayloadSHA256: record.PayloadSHA256, PayloadBytes: record.PayloadBytes, PayloadContentBytes: record.PayloadContentBytes, PayloadFormatVersion: record.PayloadFormatVersion, SourceObjectKey: sourceKey, SourceSha256: sourceDigest, SourceBytes: sourceBytes, SourceContentBytes: sourceContentBytes})
+	return versionRecord(row), mapError(ctx, err)
 }
 func (s *session) insertRecordEvidence(ctx context.Context, record eventstore.Evidence) (eventstore.Evidence, error) {
 	row, err := s.queries.RecordInsertEvidence(ctx, pgquery.RecordInsertEvidenceParams{OrganizationID: record.OrganizationID, ChangeID: record.ChangeID, Sequence: record.Sequence, VersionID: record.VersionID, Kind: record.Kind, SourceKey: record.SourceKey, ActorKind: record.ActorKind, ActorPrincipalID: record.ActorPrincipalID, Decision: record.Decision, CreatedAt: record.CreatedAt, PayloadObjectKey: record.PayloadObjectKey, PayloadSHA256: record.PayloadSHA256, PayloadBytes: record.PayloadBytes, PayloadContentBytes: record.PayloadContentBytes, PayloadFormatVersion: record.PayloadFormatVersion})
@@ -280,6 +335,13 @@ func (s *session) CreateVersion(ctx context.Context, record eventstore.Version) 
 	if err := validRecordPayload(record.OrganizationID, record.PayloadObjectKey, record.PayloadSHA256, record.PayloadBytes, record.PayloadContentBytes); err != nil {
 		return eventstore.Version{}, err
 	}
+	if record.SourceObjectKey != "" {
+		if err := validRecordPayload(record.OrganizationID, record.SourceObjectKey, record.SourceSHA256, record.SourceBytes, record.SourceContentBytes); err != nil {
+			return eventstore.Version{}, eventstore.ErrInvalidRecord
+		}
+	} else if record.SourceSHA256 != "" || record.SourceBytes != 0 || record.SourceContentBytes != 0 {
+		return eventstore.Version{}, eventstore.ErrInvalidRecord
+	}
 	if _, err := s.queries.RecordLockChange(ctx, pgquery.RecordLockChangeParams{OrganizationID: s.organization, ID: record.ChangeID}); err != nil {
 		return eventstore.Version{}, mapError(ctx, err)
 	}
@@ -289,10 +351,10 @@ func (s *session) CreateVersion(ctx context.Context, record eventstore.Version) 
 		if requested.CreatedAt.IsZero() || recordTime(requested.CreatedAt).Equal(previous.CreatedAt) {
 			requested.CreatedAt = previous.CreatedAt
 		}
-		if !reflect.DeepEqual(eventstore.Version(previous), requested) {
+		if !reflect.DeepEqual(versionRecord(previous), requested) {
 			return eventstore.Version{}, corestore.ErrRevisionConflict
 		}
-		return eventstore.Version(previous), nil
+		return versionRecord(previous), nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return eventstore.Version{}, mapError(ctx, err)

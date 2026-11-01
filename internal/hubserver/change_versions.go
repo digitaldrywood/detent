@@ -61,6 +61,18 @@ func validateChangeVersion(input tracker.ChangeVersionInput) error {
 	return nil
 }
 
+func validateChangeVersionEvidence(scope nativeScope, item string, request tracker.PublishChangeVersion) error {
+	validation := request.Validation
+	if validation == nil || validation.EvidenceArtifact == nil {
+		return nil
+	}
+	ref := validation.EvidenceArtifact
+	if ref.Validate() != nil || ref.SchemaVersion != 1 || !artifact.ValidID(ref.ServiceID, "service") || !artifact.ValidID(ref.ArtifactID, "artifact") || !artifact.ValidID(ref.ManifestID, "manifest") || !artifact.ValidHash(ref.SHA256, 64) || ref.Revision < 1 || ref.Kind != "log" || ref.State != "complete" || ref.Availability != "available" || ref.Bytes <= 0 || ref.Bytes > artifact.MaxArtifactBytes || ref.Objects < 1 || ref.Objects > artifact.MaxObjects || ref.ExpiresAt.IsZero() || ref.ObservedAt.IsZero() || ref.OrganizationID != string(scope.organization) || ref.ProjectID != string(scope.project) || ref.WorkItemID != item || ref.RunID != request.RunID || ref.AttemptID != request.AttemptID {
+		return nativeRejection(nativeInvalid("Validation artifact must identify complete evidence from the publishing attempt"), "version_validation", "validation")
+	}
+	return nil
+}
+
 func requireChangeRun(ctx context.Context, tx *sql.Tx, scope nativeScope, change tracker.ChangeRequest, request tracker.PublishChangeVersion) error {
 	if request.RunID == "" {
 		if scope.credential.Scope == apiScopeWorker {
@@ -80,6 +92,9 @@ func requireChangeRun(ctx context.Context, tx *sql.Tx, scope nativeScope, change
 }
 
 func (s *Service) publishChangeVersion(c echo.Context) error {
+	if s.config.TenantRepository != nil {
+		return s.publishChangeVersionRecord(c)
+	}
 	var request tracker.PublishChangeVersion
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
@@ -111,11 +126,8 @@ func (s *Service) prepareChangeVersion(ctx context.Context, tx *sql.Tx, scope na
 	if change.WorkItemID != tracker.NativeWorkItemID(item) {
 		return nil, nativePublicInvalid("Publish through the Change Request's primary issue")
 	}
-	if validation := request.Validation; validation != nil && validation.EvidenceArtifact != nil {
-		ref := validation.EvidenceArtifact
-		if ref.Validate() != nil || ref.SchemaVersion != 1 || !artifact.ValidID(ref.ServiceID, "service") || !artifact.ValidID(ref.ArtifactID, "artifact") || !artifact.ValidID(ref.ManifestID, "manifest") || !artifact.ValidHash(ref.SHA256, 64) || ref.Revision < 1 || ref.Kind != "log" || ref.State != "complete" || ref.Availability != "available" || ref.Bytes <= 0 || ref.Bytes > artifact.MaxArtifactBytes || ref.Objects < 1 || ref.Objects > artifact.MaxObjects || ref.ExpiresAt.IsZero() || ref.ObservedAt.IsZero() || ref.OrganizationID != string(scope.organization) || ref.ProjectID != string(scope.project) || ref.WorkItemID != item || ref.RunID != request.RunID || ref.AttemptID != request.AttemptID {
-			return nil, nativeRejection(nativeInvalid("Validation artifact must identify complete evidence from the publishing attempt"), "version_validation", "validation")
-		}
+	if err := validateChangeVersionEvidence(scope, item, request); err != nil {
+		return nil, err
 	}
 	if change.CurrentVersion != request.ExpectedVersionID {
 		return nil, nativeConflict(change.Revision)

@@ -43,6 +43,16 @@ func (c *Content) prepare(ctx context.Context, organization tracker.Organization
 	return ref, nil
 }
 
+func (c *Content) PrepareLinkedIssueSnapshot(ctx context.Context, organization tracker.OrganizationID, value tracker.GitHubIssueSnapshot) (attachment.ArchiveReference, error) {
+	return c.prepare(ctx, organization, value)
+}
+
+func (c *Content) LinkedIssueSnapshot(ctx context.Context, organization tracker.OrganizationID, ref attachment.ArchiveReference) (tracker.GitHubIssueSnapshot, error) {
+	var value tracker.GitHubIssueSnapshot
+	err := c.read(ctx, organization, ref, &value)
+	return value, err
+}
+
 func (c *Content) read(ctx context.Context, organization tracker.OrganizationID, ref attachment.ArchiveReference, value any) error {
 	if c.store == nil {
 		return artifact.ErrStorage
@@ -141,10 +151,52 @@ func (c *Content) PrepareVersion(ctx context.Context, organization tracker.Organ
 	return row, err
 }
 
+func (c *Content) PrepareSourceBundle(ctx context.Context, organization tracker.OrganizationID, bundle []byte) (attachment.ArchiveReference, error) {
+	if len(bundle) == 0 || len(bundle) > tracker.MaxChangeSourceBytes || c.store == nil {
+		return attachment.ArchiveReference{}, ErrInvalidRecord
+	}
+	ref, err := c.store.StoreDetail(ctx, string(organization), bundle)
+	if err != nil {
+		return attachment.ArchiveReference{}, fmt.Errorf("store change source: %w", err)
+	}
+	if ref.Validate(string(organization)) != nil || ref.BindingID != "" || ref.CustomerOwned || ref.SchemaVersion != 1 || ref.UncompressedSize != int64(len(bundle)) {
+		return attachment.ArchiveReference{}, artifact.ErrIntegrity
+	}
+	verified, err := c.store.ReadDetail(ctx, string(organization), ref)
+	if err != nil {
+		return attachment.ArchiveReference{}, fmt.Errorf("verify change source: %w", errors.Join(artifact.ErrIntegrity, err))
+	}
+	if !bytes.Equal(verified, bundle) {
+		return attachment.ArchiveReference{}, artifact.ErrIntegrity
+	}
+	return ref, nil
+}
+
+func (c *Content) SourceBundle(ctx context.Context, organization tracker.OrganizationID, row Version, source tracker.ChangeSource) ([]byte, error) {
+	if c.store == nil || row.SourceObjectKey == "" || row.SourceSHA256 == "" || row.SourceBytes <= 0 || row.SourceContentBytes <= 0 {
+		return nil, artifact.ErrIntegrity
+	}
+	ref := Reference(row.SourceObjectKey, row.SourceSHA256, row.SourceBytes, row.SourceContentBytes)
+	if ref.Validate(string(organization)) != nil {
+		return nil, artifact.ErrIntegrity
+	}
+	bundle, err := c.store.ReadDetail(ctx, string(organization), ref)
+	if err != nil {
+		return nil, fmt.Errorf("read change source: %w", errors.Join(artifact.ErrIntegrity, err))
+	}
+	if int64(len(bundle)) != ref.UncompressedSize || source.Validate(row.BaseSHA, row.HeadSHA, bundle) != nil {
+		return nil, artifact.ErrIntegrity
+	}
+	return bundle, nil
+}
+
 func (c *Content) Version(ctx context.Context, row Version) (tracker.ChangeVersion, error) {
 	var value tracker.ChangeVersion
 	err := c.read(ctx, row.OrganizationID, Reference(row.PayloadObjectKey, row.PayloadSHA256, row.PayloadBytes, row.PayloadContentBytes), &value)
 	if err == nil && (value.ID != row.ID || value.ChangeID != row.ChangeID || value.Number != row.Number || value.HeadSHA != row.HeadSHA || value.PolicyID != row.PolicyRevisionID || value.Actor.Kind != row.ActorKind || value.Actor.PrincipalID != row.ActorPrincipalID) {
+		return value, artifact.ErrIntegrity
+	}
+	if err == nil && (value.Source == nil && (row.SourceObjectKey != "" || row.SourceSHA256 != "" || row.SourceBytes != 0 || row.SourceContentBytes != 0) || value.Source != nil && (row.SourceObjectKey == "" || row.SourceSHA256 == "" || row.SourceBytes <= 0 || value.Source.Bytes != row.SourceContentBytes)) {
 		return value, artifact.ErrIntegrity
 	}
 	value.CreatedAt = row.CreatedAt

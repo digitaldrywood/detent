@@ -144,6 +144,9 @@ func (s *Service) intakeLinkedIssue(c echo.Context) error {
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
+	if s.config.TenantRepository != nil {
+		return s.intakeLinkedIssueRecord(c, request)
+	}
 	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		return intakeLinkedIssueTx(ctx, tx, scope, c.Param("item"), request.Snapshot, now)
 	})

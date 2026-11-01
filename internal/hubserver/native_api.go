@@ -385,7 +385,7 @@ func (s *Service) requireNativeScope(roles ...apiScope) echo.MiddlewareFunc {
 						return s.nativeAPIError(c, operatortool.ErrAccessDenied)
 					}
 				}
-				if s.config.TenantRepository != nil && (projectRecordRoute(c.Path()) || workItemRecordRoute(c.Path())) {
+				if s.config.TenantRepository != nil && (projectRecordRoute(c.Path()) || workItemRecordRoute(c.Path()) || selectedChangeRecordRoute(c.Path())) {
 					if err := s.authorizeProjectRecord(readCtx, scope, write); err != nil {
 						return s.nativeAPIError(c, err)
 					}
@@ -403,7 +403,7 @@ func (s *Service) requireNativeScope(roles ...apiScope) echo.MiddlewareFunc {
 			}
 			if item := c.Param("item"); item != "" {
 				var visibilityErr error
-				if s.config.TenantRepository != nil && workItemRecordRoute(c.Path()) {
+				if s.config.TenantRepository != nil && (workItemRecordRoute(c.Path()) || selectedChangeRecordRoute(c.Path())) {
 					_, _, visibilityErr = s.readWorkItemRecord(readCtx, scope, item)
 				} else {
 					visibilityErr = requireReporterItem(readCtx, s.database.reader, scope, item)

@@ -7,10 +7,37 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func (s *Service) changeSource(c echo.Context) error {
+	if s.config.TenantRepository != nil {
+		ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+		defer cancel()
+		scope := nativeRequestScope(c)
+		change, err := s.readChangeRecord(ctx, scope, c.Param("item"), c.Param("change"))
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		row, err := s.readChangeVersionRecord(ctx, scope.organization, change.ID, c.Param("version"))
+		if err != nil {
+			return s.nativeAPIError(c, projectRecordError(err))
+		}
+		content := eventstore.NewContent(s.runDetailStore())
+		version, err := content.Version(ctx, row)
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		if version.Source == nil {
+			return s.nativeAPIError(c, nativeNotFound())
+		}
+		bundle, err := content.SourceBundle(ctx, scope.organization, row, *version.Source)
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		return c.Blob(http.StatusOK, "application/x-git-bundle", bundle)
+	}
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 	defer cancel()
 	change, err := readChange(ctx, s.database.reader, nativeRequestScope(c), c.Param("item"), c.Param("change"))

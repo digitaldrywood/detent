@@ -397,6 +397,8 @@ func TestHubWriterQueriesRequireAnOwnedReadReason(t *testing.T) {
 		"acceptHostedInvitationReference":           "Consumes an invitation and installs the accepted membership.",
 		"applyHostedPlanCommand":                    "Changes the plan and records its command receipt.",
 		"executeWorkItemRecordMutation":             "Prepares immutable work-item content before one tenant transaction rechecks access, project revision and billing feature, then commits the record, event, version and command receipt.",
+		"publishChangeVersionRecord":                "Prepares immutable version and source content before one tenant transaction rechecks authority and commits the version, Change revision, events and receipt.",
+		"intakeLinkedIssueRecord":                   "Archives one source snapshot before one tenant transaction rechecks access, lease and billing authority and commits source state, comments, events and receipt.",
 		"configureHostedPlans":                      "Installs hosted plan configuration at startup.",
 		"applyHostedRuntime":                        "Applies the signed hosted runtime update and revocations.",
 		"sharedHostedSession":                       "Creates a missing shared-entry session and its support audit.",

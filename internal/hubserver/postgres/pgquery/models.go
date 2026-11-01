@@ -182,6 +182,10 @@ type ChangeVersion struct {
 	PayloadBytes         int64
 	PayloadContentBytes  int64
 	PayloadFormatVersion int64
+	SourceObjectKey      *string
+	SourceSha256         *string
+	SourceBytes          sql.NullInt64
+	SourceContentBytes   sql.NullInt64
 }
 
 type CollaborationEvent struct {
@@ -608,6 +612,21 @@ type Lease struct {
 	ExpiresAt        time.Time
 	ReleasedAt       *time.Time
 	ReleaseReason    string
+}
+
+type LinkedIssueSource struct {
+	OrganizationID       tracker.OrganizationID
+	ProjectID            tracker.ProjectID
+	WorkItemID           string
+	SourceUrl            string
+	TitleSupplied        bool
+	BodySupplied         bool
+	TitleOwned           bool
+	BodyOwned            bool
+	SnapshotObjectKey    *string
+	SnapshotSha256       *string
+	SnapshotBytes        sql.NullInt64
+	SnapshotContentBytes sql.NullInt64
 }
 
 type Machine struct {

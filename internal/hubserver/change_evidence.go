@@ -58,6 +58,9 @@ func (s *Service) reviewChange(c echo.Context) error {
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
+	if s.config.TenantRepository != nil {
+		return s.changeRecordEvidenceMutation(c, "review", c.Param("version"), "", request)
+	}
 	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		return s.reviewChangeCommand(ctx, tx, scope, c.Param("item"), c.Param("change"), c.Param("version"), request, now)
 	})
@@ -70,6 +73,9 @@ func (s *Service) submitChangeCheck(c echo.Context) error {
 	}
 	if s.config.Hosted != nil && nativeRequestScope(c).credential.Runner.RunnerID == "" && request.Source != "independent" {
 		return s.nativeAPIError(c, nativeNotFound())
+	}
+	if s.config.TenantRepository != nil {
+		return s.changeCheckRecordMutation(c, request)
 	}
 	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		change, err := readChange(ctx, tx, scope, c.Param("item"), c.Param("change"))
@@ -136,6 +142,9 @@ func (s *Service) discussChange(c echo.Context) error {
 	var request tracker.DiscussChange
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
+	}
+	if s.config.TenantRepository != nil {
+		return s.changeRecordEvidenceMutation(c, "discussion", request.VersionID, "", request)
 	}
 	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		return s.discussChangeCommand(ctx, tx, scope, c.Param("item"), c.Param("change"), request, now)

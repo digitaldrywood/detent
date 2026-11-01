@@ -33,6 +33,9 @@ func validateReviewBundle(ctx context.Context, tx *sql.Tx, scope nativeScope, ch
 }
 
 func (s *Service) changeViewedFiles(c echo.Context) error {
+	if s.config.TenantRepository != nil {
+		return s.nativeAPIError(c, workItemStorageUnavailable())
+	}
 	result, err := s.changeViewedFilesCommand(c.Request().Context(), nativeRequestScope(c), c.Param("item"), c.Param("change"), c.Param("version"))
 	if err != nil {
 		return s.nativeAPIError(c, err)
@@ -70,6 +73,9 @@ func (s *Service) changeViewedFilesCommand(ctx context.Context, scope nativeScop
 }
 
 func (s *Service) viewChangeFile(c echo.Context) error {
+	if s.config.TenantRepository != nil {
+		return s.nativeAPIError(c, workItemStorageUnavailable())
+	}
 	var request tracker.ViewChangeFile
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)

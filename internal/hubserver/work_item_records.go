@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"maps"
 	"net/http"
 	"slices"
@@ -31,7 +32,7 @@ type workItemArchive struct {
 
 func workItemRecordRoute(path string) bool {
 	switch path {
-	case nativeBase + "/labels", nativeBase + "/work-items", nativeBase + "/work-items/:item", nativeBase + "/work-items/:item/comments", nativeBase + "/work-items/:item/comments/:comment", nativeBase + "/work-items/:item/archive", nativeBase + "/work-items/:item/restore", nativeBase + "/work-items/:item/dependencies":
+	case nativeBase + "/labels", nativeBase + "/work-items", nativeBase + "/work-items/:item", nativeBase + "/work-items/:item/comments", nativeBase + "/work-items/:item/comments/:comment", nativeBase + "/work-items/:item/archive", nativeBase + "/work-items/:item/restore", nativeBase + "/work-items/:item/dependencies", nativeBase + "/work-items/:item/source-intake":
 		return true
 	}
 	return false
@@ -86,6 +87,12 @@ func (s *Service) hydrateWorkItemRecord(ctx context.Context, row corestore.WorkI
 	}
 	issue.ChangeSequence = 0
 	issue.LastActivityAt = row.LastActivityAt
+	if source, found, err := s.readLinkedIssueSourceRecord(ctx, row.OrganizationID, row.ProjectID, row.NativeID); err != nil {
+		return issue, err
+	} else if found {
+		issue.LinkedSource = &source
+		issue.ExternalReferences = append(issue.ExternalReferences, tracker.GitHubIssueSourceReference(source.URL, source.URL))
+	}
 	return s.nativeIssueResponse(issue), nil
 }
 
@@ -131,6 +138,7 @@ type workItemRecordPlan struct {
 	relationshipType    string
 	relationshipOperate string
 	issue               tracker.NativeIssue
+	linkedSource        *eventstore.LinkedSource
 	comment             tracker.NativeComment
 	commentRow          corestore.Comment
 	eventType           string
@@ -167,6 +175,25 @@ func (s *Service) loadWorkItemPlan(ctx context.Context, scope nativeScope, item,
 			}
 			if err := validateWorkItemRecordCreateInput(ctx, scope, plan.project, request); err != nil {
 				return err
+			}
+			if request.GitHubIssueURL != "" {
+				canonical, _, _, err := tracker.ParseGitHubIssueURL(request.GitHubIssueURL)
+				if err != nil {
+					return nativeInvalid(err.Error())
+				}
+				source, err := r.LinkedSourceByURL(ctx, scope.project, canonical)
+				if err == nil {
+					plan.current, err = r.WorkItem(ctx, scope.project, source.WorkItemID)
+					if err != nil {
+						return err
+					}
+					plan.existing = true
+					version, err = r.CollaborationVersion(ctx, string(plan.current.NativeID), plan.current.Revision)
+					return err
+				}
+				if !errors.Is(err, corestore.ErrNotFound) {
+					return err
+				}
 			}
 			if request.Provenance != nil {
 				plan.current, err = r.WorkItemBySource(ctx, scope.project, request.Provenance.Provider+":"+request.Provenance.ExternalID)
@@ -253,8 +280,21 @@ func (s *Service) loadWorkItemPlan(ctx context.Context, scope nativeScope, item,
 }
 
 func validateWorkItemRecordCreateInput(ctx context.Context, scope nativeScope, project projectstore.Record, request tracker.CreateIssue) error {
-	if request.GitHubIssueURL != "" || request.ChallengeToken != "" || request.ScheduledFailure != nil || request.ScheduledValidation != nil || len(request.NotDuplicateOf) > 0 {
+	if request.ChallengeToken != "" || request.ScheduledFailure != nil || request.ScheduledValidation != nil || len(request.NotDuplicateOf) > 0 {
 		return workItemStorageUnavailable()
+	}
+	if request.GitHubIssueURL != "" {
+		canonical, repository, _, err := tracker.ParseGitHubIssueURL(request.GitHubIssueURL)
+		if err != nil {
+			return nativeInvalid(err.Error())
+		}
+		if request.Provenance != nil {
+			return nativePublicInvalid("Linked issues obtain provenance during runner intake")
+		}
+		if err := validateLinkedIssueRepository(projectIntegrationRecord(project), repository); err != nil {
+			return err
+		}
+		request.GitHubIssueURL = canonical
 	}
 	if _, machine := issueorigin.Parse(request.Body); machine && scope.credential.HostedRole != "reporter" {
 		return workItemStorageUnavailable()
@@ -268,18 +308,37 @@ func validateWorkItemRecordCreateInput(ctx context.Context, scope nativeScope, p
 	if err := validateNativeProvenance(scope, request.Provenance); err != nil {
 		return err
 	}
-	if err := validateNativeContent(request.Title, request.Body, request.Labels, request.Assignees, request.Priority); err != nil {
+	title := request.Title
+	if request.GitHubIssueURL != "" && title == "" {
+		canonical, repository, number, err := tracker.ParseGitHubIssueURL(request.GitHubIssueURL)
+		if err != nil || canonical == "" {
+			return nativeInvalid("GitHub issue URL is invalid")
+		}
+		title = fmt.Sprintf("GitHub issue %s#%d", repository, number)
+	}
+	if err := validateNativeContent(title, request.Body, request.Labels, request.Assignees, request.Priority); err != nil {
 		return err
 	}
 	if err := requireUnreservedLabels(ctx, request.Labels); err != nil {
 		return err
 	}
 	state := request.State
+	if request.GitHubIssueURL != "" {
+		state = "Triage"
+	}
 	if state == "" {
 		state = defaultNativeIssueState(project.States)
 	}
 	if scope.credential.HostedRole == "reporter" {
 		state = "Triage"
+	}
+	if request.GitHubIssueURL != "" {
+		for _, configured := range project.States {
+			if configured.Name == "Triage" {
+				return validateNativeIssueState(scope, tracker.NativeProject{Profile: project.Core.Profile, States: project.States}, state, false)
+			}
+		}
+		return nil
 	}
 	return validateNativeIssueState(scope, tracker.NativeProject{Profile: project.Core.Profile, States: project.States}, state, false)
 }
@@ -292,13 +351,27 @@ func (s *Service) planWorkItemRecord(ctx context.Context, scope nativeScope, pla
 	switch request := input.(type) {
 	case tracker.CreateIssue:
 		state := request.State
+		if request.GitHubIssueURL != "" {
+			state = "Triage"
+		}
 		if state == "" {
 			state = defaultNativeIssueState(plan.project.States)
 		}
 		if scope.credential.HostedRole == "reporter" {
 			state = "Triage"
 		}
-		plan.issue = tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: tracker.NativeWorkItemID(newNativeID("wi")), Number: plan.issue.Number, Revision: 1, Profile: "native"}, Type: request.Type, ReportContext: request.ReportContext, Title: request.Title, Body: request.Body, State: state, Priority: request.Priority, Labels: request.Labels, Assignees: request.Assignees, Actor: scope.actor(), Provenance: request.Provenance, CreatedAt: now, UpdatedAt: now, LastActivityAt: now, Dependencies: []tracker.NativeWorkItemID{}, Blockers: []tracker.NativeDependency{}, Dependents: []tracker.NativeDependency{}, IgnoreDependencies: !plan.project.Core.RequireDependencies, DependencyReady: true, IssueContract: &issuecontract.State{}}
+		title := request.Title
+		if request.GitHubIssueURL != "" {
+			canonical, repository, number, err := tracker.ParseGitHubIssueURL(request.GitHubIssueURL)
+			if err != nil {
+				return plan, nativeInvalid(err.Error())
+			}
+			if title == "" {
+				title = fmt.Sprintf("GitHub issue %s#%d", repository, number)
+			}
+			plan.linkedSource = &eventstore.LinkedSource{OrganizationID: scope.organization, ProjectID: scope.project, URL: canonical, TitleSupplied: request.Title != "", BodySupplied: request.Body != ""}
+		}
+		plan.issue = tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: tracker.NativeWorkItemID(newNativeID("wi")), Number: plan.issue.Number, Revision: 1, Profile: "native"}, Type: request.Type, ReportContext: request.ReportContext, Title: title, Body: request.Body, State: state, Priority: request.Priority, Labels: request.Labels, Assignees: request.Assignees, Actor: scope.actor(), Provenance: request.Provenance, CreatedAt: now, UpdatedAt: now, LastActivityAt: now, Dependencies: []tracker.NativeWorkItemID{}, Blockers: []tracker.NativeDependency{}, Dependents: []tracker.NativeDependency{}, IgnoreDependencies: !plan.project.Core.RequireDependencies, DependencyReady: true, IssueContract: &issuecontract.State{}}
 		if plan.issue.Actor.Kind == "human" && scope.credential.HostedRole != "reporter" && request.Provenance == nil {
 			plan.issue.IssueContract.ConfirmedSections = config.IssueContractSectionDigests(request.Body)
 		}
@@ -312,6 +385,10 @@ func (s *Service) planWorkItemRecord(ctx context.Context, scope nativeScope, pla
 			plan.issue.ReportContext = plan.issue.ReportContext.Normalized()
 		}
 		plan.issue.ExternalReferences = nativeSourceReferences("", "", "", 0, "", "", plan.issue.Provenance)
+		if plan.linkedSource != nil {
+			plan.issue.LinkedSource = &tracker.LinkedIssueSource{URL: plan.linkedSource.URL, Status: "pending"}
+			plan.issue.ExternalReferences = append(plan.issue.ExternalReferences, tracker.GitHubIssueSourceReference(plan.linkedSource.URL, plan.linkedSource.URL))
+		}
 		for _, state := range plan.project.States {
 			if state.Name == plan.issue.State {
 				plan.issue.Terminal = state.Terminal
@@ -800,6 +877,16 @@ func (s *Service) executeWorkItemRecordMutation(ctx context.Context, scope nativ
 			if !sameWorkItemProjectPlan(plan.project, project) {
 				return corestore.ErrSerializationFailure
 			}
+			if plan.linkedSource != nil {
+				hasTriage := slices.ContainsFunc(project.States, func(state tracker.NativeState) bool { return state.Name == "Triage" })
+				if !hasTriage || project.Settings.Intake != "manual" {
+					project.States = nativeTriageStates(project.States)
+					project.Settings.Intake = "manual"
+					if _, err := w.UpdateProjectRecord(ctx, project); err != nil {
+						return err
+					}
+				}
+			}
 			previous, err := w.Receipt(ctx, scope.credential.ID, options.OperationID, command.IdempotencyKey)
 			if err == nil {
 				if previous.RequestHash != hash {
@@ -838,6 +925,21 @@ func (s *Service) executeWorkItemRecordMutation(ctx context.Context, scope nativ
 				}
 				if err := writeWorkItemRecord(ctx, w, plan, fields); err != nil {
 					return err
+				}
+				if plan.comment.ID == "" && plan.current.ID != 0 && (slices.Contains(plan.fields, "title") || slices.Contains(plan.fields, "body")) {
+					source, err := w.LinkedSource(ctx, scope.project, plan.issue.WorkItemID)
+					if err == nil {
+						if source.SnapshotSHA256 != "" {
+							source.ExpectedSnapshotSHA256 = new(source.SnapshotSHA256)
+						}
+						source.TitleOwned = source.TitleOwned || slices.Contains(plan.fields, "title")
+						source.BodyOwned = source.BodyOwned || slices.Contains(plan.fields, "body")
+						if _, err := w.UpdateLinkedSource(ctx, source); err != nil {
+							return err
+						}
+					} else if !errors.Is(err, corestore.ErrNotFound) {
+						return err
+					}
 				}
 				if _, err := w.CreateCollaborationVersion(ctx, version); err != nil {
 					return err
@@ -963,7 +1065,17 @@ func writeWorkItemRecord(ctx context.Context, w tenantstore.Writer, plan workIte
 		if _, err := w.CreateWorkItem(ctx, row); err != nil {
 			return err
 		}
-		return w.SetWorkItemLabels(ctx, row.ProjectID, row.NativeID, issue.Labels)
+		if err := w.SetWorkItemLabels(ctx, row.ProjectID, row.NativeID, issue.Labels); err != nil {
+			return err
+		}
+		if plan.linkedSource != nil {
+			source := *plan.linkedSource
+			source.WorkItemID = row.NativeID
+			if _, err := w.CreateLinkedSource(ctx, source); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 	current, err := w.LockWorkItem(ctx, row.ProjectID, row.NativeID)
 	if err != nil {
