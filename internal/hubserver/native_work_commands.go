@@ -21,6 +21,10 @@ import (
 )
 
 func (s *Service) createNativeIssueCommand(ctx context.Context, scope nativeScope, request tracker.CreateIssue) (json.RawMessage, error) {
+	if s.config.TenantRepository != nil {
+		scope.action = operatortool.FileIssue
+		return s.executeWorkItemRecordMutation(ctx, scope, nativeCommandOptions{OperationID: "POST /api/v2/organizations/" + string(scope.organization) + "/projects/" + string(scope.project) + "/work-items", Feature: "collaboration"}, request.Mutation, request, "")
+	}
 	if request.ScheduledFailure != nil {
 		return s.attributeScheduledFailure(ctx, scope, request)
 	}
@@ -267,6 +271,9 @@ func recordNativeMachineOccurrenceTx(ctx context.Context, tx *sql.Tx, scope nati
 func (s *Service) updateNativeIssueCommand(ctx context.Context, scope nativeScope, item string, request tracker.UpdateIssue) (json.RawMessage, error) {
 	scope.action, scope.actionItem = operatortool.EditItem, item
 	options := nativeCommandOptions{OperationID: "PATCH /api/v2/organizations/" + string(scope.organization) + "/projects/" + string(scope.project) + "/work-items" + "/" + item, Item: item, RequireLease: true, Feature: "collaboration"}
+	if s.config.TenantRepository != nil {
+		return s.executeWorkItemRecordMutation(ctx, scope, options, request.Mutation, request, "")
+	}
 	return s.executeNativeIssueMutation(ctx, scope, options, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		issue, _, err := readNativeIssue(ctx, tx, scope, item)
 		if err != nil {
@@ -426,6 +433,9 @@ AND (`+condition+`)`, args...).Scan(&blockerID, &blockerProject)
 func (s *Service) createNativeCommentCommand(ctx context.Context, scope nativeScope, item string, request tracker.CreateComment) (json.RawMessage, error) {
 	scope.action, scope.actionItem = operatortool.AddComment, item
 	options := nativeCommandOptions{OperationID: "POST /api/v2/organizations/" + string(scope.organization) + "/projects/" + string(scope.project) + "/work-items" + "/" + item + "/comments", Item: item, RequireLease: true, Feature: "collaboration"}
+	if s.config.TenantRepository != nil {
+		return s.executeWorkItemRecordMutation(ctx, scope, options, request.Mutation, request, "")
+	}
 	return s.executeNativeMutation(ctx, scope, options, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		issue, _, err := readNativeIssue(ctx, tx, scope, item)
 		if err != nil {
@@ -458,6 +468,9 @@ func (s *Service) updateNativeCommentCommand(ctx context.Context, scope nativeSc
 	scope.action = operatortool.EditComment
 	scope.actionItem, scope.actionComment = item, comment
 	options := nativeCommandOptions{OperationID: "PATCH /api/v2/organizations/" + string(scope.organization) + "/projects/" + string(scope.project) + "/work-items" + "/" + item + "/comments/" + comment, Item: item, RequireLease: true, Feature: "collaboration"}
+	if s.config.TenantRepository != nil {
+		return s.executeWorkItemRecordMutation(ctx, scope, options, request.Mutation, request, comment)
+	}
 	return s.executeNativeMutation(ctx, scope, options, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		comment, err := readNativeComment(ctx, tx, scope, item, comment)
 		if err != nil {
@@ -522,12 +535,18 @@ func (s *Service) setNativeArchiveCommand(ctx context.Context, scope nativeScope
 		operation = "archive"
 	}
 	options := nativeCommandOptions{OperationID: "POST /api/v2/organizations/" + string(scope.organization) + "/projects/" + string(scope.project) + "/work-items/" + item + "/" + operation, Item: item, RequireLease: true, Feature: "collaboration", Completion: archived}
+	if s.config.TenantRepository != nil {
+		return s.executeWorkItemRecordMutation(ctx, scope, options, request.Mutation, workItemArchive{archiveIssueRequest: request, Archived: archived}, "")
+	}
 	return s.executeNativeIssueMutation(ctx, scope, options, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		return setNativeArchiveTx(ctx, tx, scope, item, request.ExpectedRevision, archived, now)
 	})
 }
 
 func (s *Service) nativeWorkObservation(ctx context.Context, scope nativeScope, item string) (tracker.NativeIssue, error) {
+	if s.config.TenantRepository != nil {
+		return s.readWorkItem(ctx, scope, item)
+	}
 	issue, _, err := readNativeIssue(ctx, s.database.reader, scope, item)
 	return s.nativeIssueResponse(issue), err
 }

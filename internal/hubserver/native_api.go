@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -135,7 +136,7 @@ func (s *Service) nativeAPIError(c echo.Context, err error, attributes ...any) e
 		message := operatortool.ErrAccessDenied.Error()
 		return s.refusedAPIError(c, http.StatusForbidden, "access_denied", message, apiErrorResponse{Code: "access_denied", Message: message})
 	}
-	if errors.Is(err, auth.ErrHostedIdentity) || errors.Is(err, auth.ErrInvalidSession) {
+	if errors.Is(err, accessstore.ErrDenied) || errors.Is(err, auth.ErrHostedIdentity) || errors.Is(err, auth.ErrInvalidSession) {
 		return s.refusedAPIError(c, http.StatusForbidden, "access_denied", "Access is no longer available", apiErrorResponse{Code: "access_denied", Message: "Access is no longer available"})
 	}
 	var limit *hostedLimitError
@@ -382,7 +383,7 @@ func (s *Service) requireNativeScope(roles ...apiScope) echo.MiddlewareFunc {
 						return s.nativeAPIError(c, operatortool.ErrAccessDenied)
 					}
 				}
-				if s.config.TenantRepository != nil && projectRecordRoute(c.Path()) {
+				if s.config.TenantRepository != nil && (projectRecordRoute(c.Path()) || workItemRecordRoute(c.Path())) {
 					if err := s.authorizeProjectRecord(readCtx, scope, write); err != nil {
 						return s.nativeAPIError(c, err)
 					}
@@ -399,7 +400,13 @@ func (s *Service) requireNativeScope(roles ...apiScope) echo.MiddlewareFunc {
 				}
 			}
 			if item := c.Param("item"); item != "" {
-				if err := requireReporterItem(readCtx, s.database.reader, scope, item); err != nil {
+				var visibilityErr error
+				if s.config.TenantRepository != nil && workItemRecordRoute(c.Path()) {
+					_, _, visibilityErr = s.readWorkItemRecord(readCtx, scope, item)
+				} else {
+					visibilityErr = requireReporterItem(readCtx, s.database.reader, scope, item)
+				}
+				if err := visibilityErr; err != nil {
 					return s.nativeAPIError(c, err)
 				}
 			}

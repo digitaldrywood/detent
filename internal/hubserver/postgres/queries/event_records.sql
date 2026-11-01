@@ -56,7 +56,7 @@ SELECT * FROM change_evidence WHERE organization_id=sqlc.arg(organization_id) AN
 SELECT event_sequence FROM issues WHERE organization_id=$1 AND project_id=$2 AND native_id=$3 FOR UPDATE;
 
 -- name: RecordAdvanceIssue :one
-UPDATE issues SET event_sequence=greatest(event_sequence, sqlc.arg(imported_sequence)::bigint) + CASE WHEN sqlc.arg(imported_sequence)::bigint = 0 THEN 1 ELSE 0 END
+UPDATE issues SET last_activity_at=greatest(last_activity_at,sqlc.arg(activity_at)::timestamptz), event_sequence=greatest(event_sequence, sqlc.arg(imported_sequence)::bigint) + CASE WHEN sqlc.arg(imported_sequence)::bigint = 0 THEN 1 ELSE 0 END
 WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_id) AND native_id=sqlc.arg(native_id)
 RETURNING event_sequence;
 

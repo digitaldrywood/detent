@@ -173,7 +173,7 @@ func (s *session) AppendEvent(ctx context.Context, record eventstore.Event) (eve
 	if !errors.Is(err, sql.ErrNoRows) {
 		return eventstore.Event{}, mapError(ctx, err)
 	}
-	sequence, err := s.queries.RecordAdvanceIssue(ctx, pgquery.RecordAdvanceIssueParams{OrganizationID: s.organization, ProjectID: record.ProjectID, NativeID: record.WorkItemID, ImportedSequence: record.Sequence})
+	sequence, err := s.queries.RecordAdvanceIssue(ctx, pgquery.RecordAdvanceIssueParams{OrganizationID: s.organization, ProjectID: record.ProjectID, NativeID: record.WorkItemID, ImportedSequence: record.Sequence, ActivityAt: recordTime(record.RecordedAt)})
 	if err != nil {
 		return eventstore.Event{}, mapError(ctx, err)
 	}

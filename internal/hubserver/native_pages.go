@@ -241,6 +241,9 @@ func (s *Service) readIssues(ctx context.Context, scope nativeScope, params url.
 }
 
 func (s *Service) readIssuesProjection(ctx context.Context, scope nativeScope, params url.Values, compact bool) (tracker.NativeIssuePage, error) {
+	if s.config.TenantRepository != nil {
+		return tracker.NativeIssuePage{}, workItemStorageUnavailable()
+	}
 	ctx = s.runDetailContext(ctx)
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
@@ -442,6 +445,9 @@ func (s *Service) listNativeComments(c echo.Context) error {
 }
 
 func (s *Service) readComments(ctx context.Context, scope nativeScope, item string, params url.Values) (tracker.Page[tracker.NativeComment], error) {
+	if s.config.TenantRepository != nil {
+		return s.readCommentRecords(ctx, scope, item, params)
+	}
 	ctx = s.runDetailContext(ctx)
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()

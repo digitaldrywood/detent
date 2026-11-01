@@ -68,6 +68,7 @@ func seedRepository(t *testing.T, repository corestore.Repository, organization 
 				if created.ID <= 0 || created.CreatedAt.IsZero() || created.UpdatedAt.IsZero() || created.NativeCreatedAt.IsZero() || created.NativeUpdatedAt.IsZero() {
 					t.Error("work item generated metadata is missing")
 				}
+				item.LastActivityAt = created.LastActivityAt
 				item.ID, item.Revision = created.ID, 1
 				item.CreatedAt, item.UpdatedAt, item.NativeCreatedAt, item.NativeUpdatedAt = created.CreatedAt, created.UpdatedAt, created.NativeCreatedAt, created.NativeUpdatedAt
 				if !reflect.DeepEqual(created, item) {

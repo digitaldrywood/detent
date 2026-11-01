@@ -35,6 +35,11 @@ type Repository interface {
 }
 
 type Reader interface {
+	WorkItemHasActiveLease(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, time.Time) (bool, error)
+	NextWorkItemNumber(context.Context, tracker.ProjectID) (int64, error)
+	WorkItemBySource(context.Context, tracker.ProjectID, string) (WorkItem, error)
+	CommentBySource(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, string) (Comment, error)
+	SelectComments(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, int64, bool, int) ([]Comment, error)
 	Project(context.Context, tracker.ProjectID) (Project, error)
 	WorkItem(context.Context, tracker.ProjectID, tracker.NativeWorkItemID) (WorkItem, error)
 	Comment(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, string) (Comment, error)
@@ -49,6 +54,8 @@ type Reader interface {
 
 type Writer interface {
 	Reader
+	LockWorkItemProject(context.Context, tracker.ProjectID) error
+	LockWorkItem(context.Context, tracker.ProjectID, tracker.NativeWorkItemID) (WorkItem, error)
 	CreateProject(context.Context, Project) (Project, error)
 	CreateWorkItem(context.Context, WorkItem) (WorkItem, error)
 	CreateComment(context.Context, Comment) (Comment, error)
@@ -101,6 +108,7 @@ type WorkItem struct {
 	NativeCreatedAt        time.Time
 	NativeUpdatedAt        time.Time
 	WorkflowStateName      *string
+	LastActivityAt         time.Time
 }
 
 type Comment struct {

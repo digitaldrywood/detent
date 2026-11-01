@@ -6,6 +6,7 @@ WHERE organization_id=sqlc.arg(organization_id)
 
 -- name: CreateWorkItem :one
 INSERT INTO issues (
+    last_activity_at,
     id,
     created_at,
     updated_at,
@@ -30,6 +31,7 @@ INSERT INTO issues (
     workflow_state_name
 )
 VALUES (
+    COALESCE(sqlc.narg(last_activity_at)::timestamptz, CURRENT_TIMESTAMP),
     public.allocate_core_record_id('public.issues_id_seq'::regclass, sqlc.arg(imported_id)::bigint),
     COALESCE(sqlc.narg(created_at)::timestamptz, CURRENT_TIMESTAMP),
     COALESCE(sqlc.narg(updated_at)::timestamptz, CURRENT_TIMESTAMP),
@@ -56,6 +58,7 @@ VALUES (
 
 -- name: UpdateWorkItem :one
 UPDATE issues SET
+    last_activity_at=greatest(last_activity_at,COALESCE(sqlc.narg(last_activity_at)::timestamptz,last_activity_at)),
     number=sqlc.arg(number),
     event_sequence=sqlc.arg(event_sequence),
     native_source_key=sqlc.arg(native_source_key),

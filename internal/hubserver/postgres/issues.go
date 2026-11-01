@@ -26,6 +26,7 @@ func (s *session) CreateWorkItem(ctx context.Context, record corestore.WorkItem)
 		return corestore.WorkItem{}, mapError(ctx, err)
 	}
 	row, err := s.queries.CreateWorkItem(ctx, pgquery.CreateWorkItemParams{
+		LastActivityAt:         optionalTime(record.LastActivityAt),
 		ImportedID:             record.ID,
 		CreatedAt:              optionalTime(record.CreatedAt),
 		UpdatedAt:              optionalTime(record.UpdatedAt),
@@ -57,6 +58,7 @@ func (s *session) UpdateWorkItem(ctx context.Context, record corestore.WorkItem)
 		return corestore.WorkItem{}, err
 	}
 	row, err := s.queries.UpdateWorkItem(ctx, pgquery.UpdateWorkItemParams{
+		LastActivityAt:         optionalTime(record.LastActivityAt),
 		Number:                 record.Number,
 		EventSequence:          record.EventSequence,
 		NativeSourceKey:        record.NativeSourceKey,

@@ -912,3 +912,51 @@ connection before cryptographic work. A mutation locks only its submitted access
 secret and command participants; it performs no history projection, derived
 refresh or network/object I/O while holding those locks. These boundaries preserve
 INV-16, INV-18, INV-20 and INV-21.
+
+## Work item and comment serving (P05)
+
+`Config.TenantRepository` routes individual native issue reads, issue creation and
+editing, archive and restore, and comment creation, editing, tombstoning and
+sequence pagination through core storage. SQLite remains the owner when no tenant
+repository is selected. Core record cursors retain their existing timestamp and
+identity boundaries. Ordered issue-page projections, relationships, readable URLs,
+search, project-wide change watermarks and public event-history reads belong to their respective serving owners;
+this selection does not authorize a SQLite fallback for those PostgreSQL records.
+Individual issue reads mark the unavailable project-wide watermark as omitted.
+
+Body object payloads encode text as a JSON string, preserving empty issue bodies
+and comment tombstones without zero-byte archive objects. Issue contract and
+report-context keys reference their own JSON object payloads.
+
+A command prepares and verifies its full immutable version, event and command
+result in object storage before opening a writer. Core row changes, immutable
+versions, aggregate sequence advancement and command receipts share one tenant
+transaction. A failed participant rolls back all database writes, including number
+allocation. Object preparation can leave unreferenced objects after rejection.
+A replay returns its original receipt; a different request using the same key
+conflicts. Provenance keys deduplicate within the tenant, project and issue scope.
+
+Number allocation locks the live project and reads the highest indexed number.
+The prepared candidate is compared under that lock; a competing allocation causes
+preparation to restart outside the transaction. Comment creation similarly checks
+the issue's current aggregate sequence. Explicit issue and comment revision fences
+remain conflicts rather than silently rebasing an edit. Comment deletion retains
+the original sequence and immutable versions. Archive checks the issue's active
+lease and never releases work. Retired projects and reporter ownership remain
+visibility boundaries for reads and writes.
+
+The current access owner checks authority before preparation. With tenant access
+storage selected, it rechecks access inside the shared writer, including receipt
+replay; legacy authority holds its existing transaction through the tenant commit.
+Worker mutations, attachment bindings and repository-policy-backed content fail
+closed until their own participant ports are available. No object I/O occurs while
+an authority transaction or the tenant writer is held. Content hydration validates
+tenant, project, record identity and revision against the typed row outside the
+database callback.
+
+At 10,000 tenants and runners, an allocation uses one project row lock and an
+indexed number lookup. A mutation writes only its issue or comment, version, event
+and receipt; it never walks history or rebuilds a projection. A comment read loads
+at most one page plus its boundary record and hydrates those versions after
+releasing the reader. Shared locks cover database work only. These contracts
+preserve INV-1, INV-16, INV-18 and INV-21 without changing orchestrator controls.

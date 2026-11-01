@@ -31,12 +31,13 @@ func (q *Queries) RecordAdvanceEvidence(ctx context.Context, arg RecordAdvanceEv
 }
 
 const recordAdvanceIssue = `-- name: RecordAdvanceIssue :one
-UPDATE issues SET event_sequence=greatest(event_sequence, $1::bigint) + CASE WHEN $1::bigint = 0 THEN 1 ELSE 0 END
-WHERE organization_id=$2 AND project_id=$3 AND native_id=$4
+UPDATE issues SET last_activity_at=greatest(last_activity_at,$1::timestamptz), event_sequence=greatest(event_sequence, $2::bigint) + CASE WHEN $2::bigint = 0 THEN 1 ELSE 0 END
+WHERE organization_id=$3 AND project_id=$4 AND native_id=$5
 RETURNING event_sequence
 `
 
 type RecordAdvanceIssueParams struct {
+	ActivityAt       time.Time
 	ImportedSequence int64
 	OrganizationID   tracker.OrganizationID
 	ProjectID        tracker.ProjectID
@@ -45,6 +46,7 @@ type RecordAdvanceIssueParams struct {
 
 func (q *Queries) RecordAdvanceIssue(ctx context.Context, arg RecordAdvanceIssueParams) (int64, error) {
 	row := q.db.QueryRowContext(ctx, recordAdvanceIssue,
+		arg.ActivityAt,
 		arg.ImportedSequence,
 		arg.OrganizationID,
 		arg.ProjectID,

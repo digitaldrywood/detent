@@ -288,6 +288,7 @@ type Issue struct {
 	NativeCreatedAt        time.Time
 	NativeUpdatedAt        time.Time
 	WorkflowStateName      *string
+	LastActivityAt         time.Time
 }
 
 type Lease struct {

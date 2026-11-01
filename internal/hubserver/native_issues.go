@@ -316,6 +316,17 @@ WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id = ? AND (`+visi
 }
 
 func (s *Service) getNativeIssue(c echo.Context) error {
+	if s.config.TenantRepository != nil {
+		params, err := nativeReadQuery(c)
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		issue, err := s.workItemResource(c.Request().Context(), nativeRequestScope(c), c.Param("item"), params)
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		return c.JSON(http.StatusOK, issue)
+	}
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 	defer cancel()
 	scope := nativeRequestScope(c)
