@@ -190,6 +190,22 @@ func (s *Service) validateNativeRunOwner(ctx context.Context, tx nativeQueryer, 
 		request.Data.SessionID = lease.session.SessionID
 		request.Data.RunnerID = scope.credential.Runner.RunnerID
 	}
+	if request.Data.Sequence <= 0 {
+		_, reserved, err := readProviderReservation(ctx, tx, request.Data.LeaseID)
+		if err != nil {
+			return tracker.NativeIssue{}, false, err
+		}
+		if reserved {
+			return tracker.NativeIssue{}, false, nativeRejection(nativeInvalid("Provider reservations require ordered execution events"), "owner_validation", "data.sequence")
+		}
+		var ordered int
+		if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM native_attempts WHERE id = ? OR lease_id = ?", request.Data.AttemptID, request.Data.LeaseID).Scan(&ordered); err != nil {
+			return tracker.NativeIssue{}, false, err
+		}
+		if ordered != 0 {
+			return tracker.NativeIssue{}, false, nativeExecutionConflict("Ordered attempts cannot accept legacy events")
+		}
+	}
 	return issue, termination, nil
 }
 
@@ -222,21 +238,6 @@ func (s *Service) recordNativeRunEvent(ctx context.Context, tx *sql.Tx, scope na
 			return struct {
 				Accepted bool `json:"accepted"`
 			}{true}, nil
-		}
-	} else {
-		_, reserved, err := readProviderReservation(ctx, tx, request.Data.LeaseID)
-		if err != nil {
-			return nil, err
-		}
-		if reserved {
-			return nil, nativeRejection(nativeInvalid("Provider reservations require ordered execution events"), "owner_validation", "data.sequence")
-		}
-		var ordered int
-		if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM native_attempts WHERE id = ? OR lease_id = ?", request.Data.AttemptID, request.Data.LeaseID).Scan(&ordered); err != nil {
-			return nil, err
-		}
-		if ordered != 0 {
-			return nil, nativeExecutionConflict("Ordered attempts cannot accept legacy events")
 		}
 	}
 	if !termination {

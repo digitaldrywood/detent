@@ -277,21 +277,33 @@ func (s *Service) prepareRunDetail(ctx context.Context, scope nativeScope, item 
 			return nil, err
 		}
 		defer snapshot.Rollback()
+		now, err := s.database.currentTime()
+		if err != nil {
+			return nil, err
+		}
+		if err := requireRunnerAuthority(ctx, snapshot, scope, now); err != nil {
+			return nil, err
+		}
 		return s.prepareRunDetailSnapshot(ctx, snapshot, scope, item, request)
 	})
 	if err != nil {
 		return ctx, err
 	}
 
+	if content, ok := ctx.Value(changeContentKey{}).(*changeContent); ok {
+		content.mu.Lock()
+		content.completion = request.Type == "run.finished" || request.Type == "run.checkpointed"
+		content.mu.Unlock()
+	}
 	for _, payload := range payloads {
-		if _, err := prepareChangeContent(ctx, string(scope.organization), payload); err != nil {
-			return ctx, err
-		}
 		now, err := s.database.currentTime()
 		if err != nil {
 			return ctx, err
 		}
 		if _, _, err := s.validateNativeRunOwner(ctx, s.database.reader, scope, item, &request, now); err != nil {
+			return ctx, err
+		}
+		if _, err := prepareChangeContent(ctx, string(scope.organization), payload); err != nil {
 			return ctx, err
 		}
 	}

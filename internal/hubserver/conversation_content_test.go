@@ -771,3 +771,82 @@ func TestConversationPublicationRechecksTokenExpiry(t *testing.T) {
 		t.Fatalf("expired write left messages=%d events=%d error=%v", messages, events, err)
 	}
 }
+
+func TestConversationRejectedCreateDoesNotPublish(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		key       string
+		subject   string
+		noFeature bool
+		status    int
+	}{
+		{name: "missing feature", key: "create-feature", noFeature: true, status: http.StatusTooManyRequests},
+		{name: "missing key", status: http.StatusUnprocessableEntity},
+		{name: "long key", key: strings.Repeat("k", 129), status: http.StatusUnprocessableEntity},
+		{name: "missing subject", key: "create-subject", subject: "wi_missing", status: http.StatusNotFound},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			objects := &conversationContentFixture{}
+			f := newConversationAPIFixture(t, &ConversationConfig{Enabled: true, ArchiveContents: objects})
+			if test.noFeature {
+				config := pilotHostedPlans()
+				for i := range config.Plans {
+					config.Plans[i].Features = []string{}
+				}
+				f.service.database.hostedOrganization = f.project.OrganizationID
+				if err := f.service.database.configureHostedPlans(t.Context(), &HostedConfig{Plans: &config}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before := objects.publications
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/conversations", f.token, map[string]any{
+				"key": test.key, "subject_work_item_id": test.subject,
+				"first_message": map[string]string{"key": "first-message", "text": "rejected opening message"},
+			})
+			requireNativeStatus(t, response, test.status)
+			if objects.publications != before {
+				t.Fatalf("rejected conversation published %d objects; want 0", objects.publications-before)
+			}
+		})
+	}
+}
+
+func TestConversationRejectedTurnBatchDoesNotPublish(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		event  map[string]any
+		status int
+	}{
+		{name: "unknown event", event: map[string]any{"type": "unknown"}, status: http.StatusUnprocessableEntity},
+		{name: "invalid execution status", event: map[string]any{"type": "execution_status", "status": "invalid"}, status: http.StatusUnprocessableEntity},
+		{name: "missing turn", event: map[string]any{"type": "turn_started"}, status: http.StatusUnprocessableEntity},
+		{name: "another turn", event: map[string]any{"type": "turn_started", "turn_id": "other-turn"}, status: http.StatusConflict},
+		{name: "missing item", event: map[string]any{"type": "delta", "text": "suffix"}, status: http.StatusUnprocessableEntity},
+		{name: "long delta", event: map[string]any{"type": "delta", "provider_item_id": "delta", "text": strings.Repeat("x", conversationMaxDeltaBytes+1)}, status: http.StatusUnprocessableEntity},
+		{name: "invalid kind", event: map[string]any{"type": "item", "kind": "unknown", "summary": "invalid"}, status: http.StatusUnprocessableEntity},
+		{name: "invalid item data", event: map[string]any{"type": "item", "kind": "tool", "data": []string{"invalid"}}, status: http.StatusUnprocessableEntity},
+		{name: "missing question request", event: map[string]any{"type": "question_opened"}, status: http.StatusUnprocessableEntity},
+		{name: "invalid prompts", event: map[string]any{"type": "question_opened", "request_id": "question"}, status: http.StatusUnprocessableEntity},
+		{name: "missing control key", event: map[string]any{"type": "control_result", "status": "delivered"}, status: http.StatusUnprocessableEntity},
+		{name: "unknown control key", event: map[string]any{"type": "control_result", "key": "missing-control", "status": "delivered"}, status: http.StatusUnprocessableEntity},
+		{name: "missing completed turn", event: map[string]any{"type": "turn_completed", "status": "completed"}, status: http.StatusUnprocessableEntity},
+		{name: "completed another turn", event: map[string]any{"type": "turn_completed", "turn_id": "other-turn", "status": "completed"}, status: http.StatusConflict},
+		{name: "invalid completion status", event: map[string]any{"type": "turn_completed", "turn_id": "active-turn", "status": "unknown"}, status: http.StatusUnprocessableEntity},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			objects := &conversationContentFixture{}
+			f := newConversationWorkerFixture(t, objects)
+			requireNativeStatus(t, f.bind(t, nil), http.StatusOK)
+			requireNativeStatus(t, f.turnEvents(t, map[string]any{"type": "turn_started", "turn_id": "active-turn"}), http.StatusAccepted)
+			before := objects.publications
+			response := f.turnEvents(t,
+				map[string]any{"type": "item", "kind": "tool", "summary": "valid earlier event", "data": map[string]string{"output": "payload"}},
+				test.event,
+			)
+			requireNativeStatus(t, response, test.status)
+			if objects.publications != before {
+				t.Fatalf("rejected batch published %d objects; want 0", objects.publications-before)
+			}
+		})
+	}
+}

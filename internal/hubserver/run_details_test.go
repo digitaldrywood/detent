@@ -528,7 +528,9 @@ func TestNativeRunDetailAdmission(t *testing.T) {
 		duringUpload bool
 		replay       bool
 		batchGap     bool
+		legacyFinish bool
 	}{
+		{name: "repeated legacy finish after ordered start", legacyFinish: true, status: http.StatusConflict},
 		{name: "lease expires during upload", duringUpload: true, sequence: 2, status: http.StatusConflict},
 		{name: "expired durable replay", expired: true, replay: true, status: http.StatusOK},
 		{name: "released durable replay", released: true, replay: true, status: http.StatusOK},
@@ -552,6 +554,12 @@ func TestNativeRunDetailAdmission(t *testing.T) {
 			path := f.base + "/work-items/" + string(issue.WorkItemID) + "/events"
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, event), http.StatusOK)
 			initialUploads := store.uploads
+			if test.legacyFinish {
+				f.service.config.Hosted = &HostedConfig{}
+				f.service.database.hostedOrganization = f.project.OrganizationID
+				hostedTestPlans(t, f.service, map[string]int64{"collaboration_bytes": 1})
+				f.service.config.Hosted = nil
+			}
 			original := event
 			if test.released {
 				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE leases SET released_at=? WHERE lease_id=?", formatHubTime(now), lease.ID); err != nil {
@@ -568,6 +576,9 @@ func TestNativeRunDetailAdmission(t *testing.T) {
 			if test.cancelled {
 				event.Type, event.Data.Outcome, event.Data.Handoff = "run.finished", "cancelled", nil
 				event.Data.CompletionBody = test.body
+			}
+			if test.legacyFinish {
+				event.Type, event.Data.Outcome, event.Data.Handoff, event.Data.Identity = "run.finished", "failed", nil, nil
 			}
 			if test.replay {
 				event = original
@@ -593,7 +604,16 @@ func TestNativeRunDetailAdmission(t *testing.T) {
 					}
 				}
 			}
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, event), test.status)
+			repeats := 1
+			if test.legacyFinish {
+				repeats = 4
+			}
+			for i := range repeats {
+				if test.legacyFinish {
+					event.IdempotencyKey = fmt.Sprintf("next-%d", i)
+				}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, event), test.status)
+			}
 			wantUploads := initialUploads
 			if test.duringUpload {
 				wantUploads++

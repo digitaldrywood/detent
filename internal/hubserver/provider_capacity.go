@@ -40,7 +40,7 @@ func validateProviderCandidates(candidates []tracker.NativeCapacityCandidate) er
 	return nil
 }
 
-func updateProviderReports(ctx context.Context, tx *sql.Tx, scope nativeScope, reports []providercapacity.Report, now time.Time) error {
+func validateProviderReports(reports []providercapacity.Report) error {
 	if reports == nil {
 		return nil
 	}
@@ -49,6 +49,16 @@ func updateProviderReports(ctx context.Context, tx *sql.Tx, scope nativeScope, r
 	}
 	if len(reports) == 0 {
 		return nativePublicInvalid("An enabled provider reporter must retain at least one backend")
+	}
+	return nil
+}
+
+func updateProviderReports(ctx context.Context, tx *sql.Tx, scope nativeScope, reports []providercapacity.Report, now time.Time) error {
+	if err := validateProviderReports(reports); err != nil {
+		return err
+	}
+	if reports == nil {
+		return nil
 	}
 	previous, err := readProviderReports(ctx, tx, scope.credential.Runner.RunnerID)
 	if err != nil {

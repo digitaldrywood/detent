@@ -443,6 +443,10 @@ func (s *Service) prepareProjectConfiguration(ctx context.Context, scope nativeS
 		}
 		prepared.policy = string(raw)
 	}
+	prepared, err = prepareLegacyProjectConfiguration(ctx, s.database.reader, scope, prepared)
+	if err != nil {
+		return preparedProjectConfiguration{}, err
+	}
 	if observation.Diagnostics != nil {
 		_, err := prepareContentMutation(ctx, s.database.reader, func() (struct{}, error) {
 			return struct{}{}, s.prepareAdmissionPayloads(ctx, scope, observation.Diagnostics.Admissions, now)
@@ -451,7 +455,7 @@ func (s *Service) prepareProjectConfiguration(ctx context.Context, scope nativeS
 			return preparedProjectConfiguration{}, err
 		}
 	}
-	return prepareLegacyProjectConfiguration(ctx, s.database.reader, scope, prepared)
+	return prepared, nil
 }
 
 func (s *Service) prepareAdmissionPayloads(ctx context.Context, scope nativeScope, admissions []runnerauth.DiagnosticAdmission, now time.Time) error {

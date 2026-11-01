@@ -342,6 +342,15 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 	var hostSummaries []hostmetrics.Summary
 	var admission, isolationRaw, workspaceRaw, skillsRaw, capacityRaw, checksRaw string
 	if scope.credential.Runner.RunnerID != "" {
+		if err := validateRunnerUpdateObservation(request.Update, request.ProtocolMajor, request.Version, request.OS, request.Architecture); err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		if err := validateProviderReports(request.ProviderReports); err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		if err := validateRunnerCheckoutReport(scope, request.CheckoutRepository); err != nil {
+			return s.nativeAPIError(c, err)
+		}
 		hostSummaries = prepareRunnerHostMetrics(request.HostMetrics)
 		admission, err = prepareRunnerAdmissionObservation(request.Admission, receivedAt)
 		if err != nil {
@@ -397,16 +406,16 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 			return s.nativeAPIError(c, nativeInvalid(err.Error()))
 		}
 	}
+	configurationIssuer, err := s.prepareProjectConfigurationIssuer(c.Request().Context(), scope, request.ProjectConfiguration)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
 	var configuration preparedProjectConfiguration
 	if scope.credential.Runner.RunnerID != "" {
 		configuration, err = s.prepareProjectConfiguration(c.Request().Context(), scope, request.ProjectConfiguration, receivedAt)
 		if err != nil {
 			return s.nativeAPIError(c, err)
 		}
-	}
-	configurationIssuer, err := s.prepareProjectConfigurationIssuer(c.Request().Context(), scope, request.ProjectConfiguration)
-	if err != nil {
-		return s.nativeAPIError(c, err)
 	}
 	if err := s.prepareProjectConfigurationReceipt(ctx, scope, configuration.view, configurationIssuer, receivedAt); err != nil {
 		return s.nativeAPIError(c, err)

@@ -1822,7 +1822,8 @@ func TestConversationInterruptedTurnStaysInterrupted(t *testing.T) {
 // item twice.
 func TestConversationTurnEventBatchIsIdempotent(t *testing.T) {
 	t.Parallel()
-	f := newConversationWorkerFixture(t)
+	objects := &conversationContentFixture{}
+	f := newConversationWorkerFixture(t, objects)
 	requireNativeStatus(t, f.bind(t, nil), http.StatusOK)
 	batch := func(key string, events ...map[string]any) *httptest.ResponseRecorder {
 		t.Helper()
@@ -1874,6 +1875,30 @@ func TestConversationTurnEventBatchIsIdempotent(t *testing.T) {
 			if message.ProviderItemID == "item-1" && message.Text != "the renewal returns early under load" {
 				t.Fatalf("text = %q, want both deltas applied once", message.Text)
 			}
+		}
+	})
+
+	t.Run("a replay survives the next turn", func(t *testing.T) {
+		requireNativeStatus(t, f.turnEvents(t,
+			map[string]any{"type": "turn_completed", "turn_id": "turn-1", "status": "completed"},
+			map[string]any{"type": "turn_started", "turn_id": "turn-2"},
+		), http.StatusAccepted)
+		before := f.load(t)
+		objects.mu.Lock()
+		publications := objects.publications
+		objects.mu.Unlock()
+		replay := batch("batch-1", events...)
+		requireNativeStatus(t, replay, http.StatusAccepted)
+		var again conversationTurnEventsResponse
+		decodeHubResponse(t, replay, &again)
+		after := f.load(t)
+		if again.EventSeq != applied.EventSeq || after.EventSeq != before.EventSeq || after.Execution.Owner.TurnID != "turn-2" {
+			t.Fatalf("replay after next turn changed state: response=%+v before=%+v after=%+v", again, before.Execution, after.Execution)
+		}
+		objects.mu.Lock()
+		defer objects.mu.Unlock()
+		if objects.publications != publications {
+			t.Fatalf("replayed batch published %d objects; want 0", objects.publications-publications)
 		}
 	})
 
