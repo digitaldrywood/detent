@@ -458,7 +458,7 @@ func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *s
 				return tracker.Lease{}, policyMismatch("Existing claim is pinned to a different policy; release it before requesting a new attempt")
 			}
 		}
-		if err := checkMonthlyLease(ctx, tx, existing, now); err != nil {
+		if err := checkMonthlyLease(ctx, tx, existing, now, d.billingRepository); err != nil {
 			return tracker.Lease{}, err
 		}
 		if query.NativeScope != nil && query.LandingCapacity > 0 {
@@ -653,7 +653,7 @@ func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *s
 			}
 		}
 		if query.NativeScope != nil && !query.WorkspaceLane {
-			allowed, reason, err := placementClaimAllowed(ctx, tx, *query.NativeScope, request.MachineID, id, now, query.ProviderCandidates, query.LandingBatchGroup)
+			allowed, reason, err := placementClaimAllowed(ctx, tx, *query.NativeScope, request.MachineID, id, now, d.billingRepository, query.ProviderCandidates, query.LandingBatchGroup)
 			if mode.preflight && errors.Is(err, errClaimHintStale) {
 				continue
 			}
@@ -693,7 +693,7 @@ func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *s
 		}
 		var exposure budget.CostExposure
 		if query.NativeScope != nil {
-			decision, currentExposure, err := checkMonthlyClaim(ctx, tx, *query.NativeScope, request.MachineID, id, workspaceGate.skipsProviderReservation(id), now)
+			decision, currentExposure, err := checkMonthlyClaim(ctx, tx, *query.NativeScope, request.MachineID, id, workspaceGate.skipsProviderReservation(id), now, d.billingRepository)
 			if err != nil {
 				return tracker.Lease{}, err
 			}

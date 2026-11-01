@@ -17,6 +17,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -691,19 +692,21 @@ func TestWorkItemRecordMutationRequiresHostedFeature(t *testing.T) {
 	f.service.config.TenantRepository = repository
 
 	plans := hostedTestPlans(t, f.service, nil)
-	unentitled := plans.Plans[0]
-	unentitled.Version++
-	unentitled.Features = slices.DeleteFunc(slices.Clone(unentitled.Features), func(feature string) bool { return feature == "collaboration" })
-	plans.Plans = append(plans.Plans, unentitled)
-	plans.Base = unentitled.PlanReference
-	hosted := *f.service.config.Hosted
-	hosted.Plans = &plans
-	if err := f.service.database.configureHostedPlans(t.Context(), &hosted); err != nil {
+	free := plans.Plans[0]
+	freePG := billingstore.Plan{OrganizationID: scope.organization, PlanReference: billingstore.PlanReference{ID: free.ID, Version: free.Version}, Name: free.Name, MonthlyUSDCents: free.MonthlyUSDCents, RuntimeID: free.ID, Allowances: free.Allowances, Features: free.Features}
+	if err := repository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.CreateBillingPlan(t.Context(), freePG); err != nil {
+			return err
+		}
+		return w.SetBillingAssignment(t.Context(), billingstore.Assignment{OrganizationID: scope.organization, Base: freePG.PlanReference}, 0)
+	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE hosted_plan_assignments SET base_version=?", unentitled.Version); err != nil {
-		t.Fatal(err)
-	}
+	f.service.database.billingRepository = repository
+	withoutCollaboration := freePG
+	withoutCollaboration.PlanReference = billingstore.PlanReference{ID: "test_free_without_collaboration", Version: 1}
+	withoutCollaboration.Features = slices.DeleteFunc(slices.Clone(freePG.Features), func(feature string) bool { return feature == "collaboration" })
+	f.service.config.TenantRepository = &downgradeBillingPlanRepository{Repository: repository, plan: withoutCollaboration}
 	path := f.base + "/work-items"
 	request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "issue"}, Title: "Example issue", Body: workItemRecordBody}
 	response := f.request(t, owner, http.MethodPost, path, request)
@@ -720,6 +723,31 @@ func TestWorkItemRecordMutationRequiresHostedFeature(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+}
+
+type downgradeBillingPlanRepository struct {
+	tenantstore.Repository
+	plan       billingstore.Plan
+	downgraded bool
+}
+
+func (r *downgradeBillingPlanRepository) WriteTenant(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, write func(tenantstore.Writer) error) error {
+	return r.Repository.WriteTenant(ctx, organization, workload, func(w tenantstore.Writer) error {
+		if !r.downgraded {
+			assignment, err := w.BillingAssignment(ctx)
+			if err != nil {
+				return err
+			}
+			if err := w.CreateBillingPlan(ctx, r.plan); err != nil {
+				return err
+			}
+			if err := w.SetBillingAssignment(ctx, billingstore.Assignment{OrganizationID: organization, Base: r.plan.PlanReference}, assignment.Revision); err != nil {
+				return err
+			}
+			r.downgraded = true
+		}
+		return write(w)
+	})
 }
 
 type rejectedWorkItemRepository struct {

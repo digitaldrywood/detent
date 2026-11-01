@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -241,11 +242,11 @@ func (c *placementCapacity) available(r placementRunner, project tracker.Project
 	return free
 }
 
-func readPlacementSnapshot(ctx context.Context, q nativeQueryer, scope nativeScope, now time.Time, overrides []tracker.NativeCapacityCandidate) (placementSnapshot, error) {
-	return readPlacementSnapshotWithCapacity(ctx, q, scope, now, overrides, newPlacementCapacity(), make(map[string]bool))
+func readPlacementSnapshot(ctx context.Context, q nativeQueryer, scope nativeScope, now time.Time, overrides []tracker.NativeCapacityCandidate, selected ...tenantstore.Repository) (placementSnapshot, error) {
+	return readPlacementSnapshotWithCapacity(ctx, q, scope, now, overrides, newPlacementCapacity(), make(map[string]bool), selected...)
 }
 
-func readPlacementSnapshotWithCapacity(ctx context.Context, q nativeQueryer, scope nativeScope, now time.Time, overrides []tracker.NativeCapacityCandidate, localCapacity *placementCapacity, counted map[string]bool) (placementSnapshot, error) {
+func readPlacementSnapshotWithCapacity(ctx context.Context, q nativeQueryer, scope nativeScope, now time.Time, overrides []tracker.NativeCapacityCandidate, localCapacity *placementCapacity, counted map[string]bool, selected ...tenantstore.Repository) (placementSnapshot, error) {
 	var result placementSnapshot
 	placement, ceiling, err := readPlacementPolicy(ctx, q, scope)
 	if err != nil {
@@ -295,7 +296,7 @@ func readPlacementSnapshotWithCapacity(ctx context.Context, q nativeQueryer, sco
 		query.After = page[len(page)-1]
 	}
 	exposure := budget.CostExposure{SpriteInfrastructure: true, RunnerAPI: workflow.Config.Budget.EffectiveBillingMode() == config.BillingModeMetered}
-	budgetDecision, err := checkMonthlyBudget(ctx, q, scope, exposure, false, now)
+	budgetDecision, err := checkMonthlyBudget(ctx, q, scope, exposure, false, now, selected...)
 	if err != nil {
 		return result, err
 	}
@@ -315,7 +316,7 @@ func readPlacementSnapshotWithCapacity(ctx context.Context, q nativeQueryer, sco
 				if !admitted {
 					continue
 				}
-				decision, err := checkMonthlyBudget(ctx, q, scope, exposure, true, now)
+				decision, err := checkMonthlyBudget(ctx, q, scope, exposure, true, now, selected...)
 				if err != nil {
 					return result, err
 				}
@@ -513,7 +514,7 @@ func readPlacementSnapshotWithCapacity(ctx context.Context, q nativeQueryer, sco
 	return result, nil
 }
 
-func placementClaimAllowed(ctx context.Context, q nativeQueryer, scope nativeScope, machine tracker.MachineID, id tracker.WorkItemID, now time.Time, overrides []tracker.NativeCapacityCandidate, joining ...string) (bool, string, error) {
+func placementClaimAllowed(ctx context.Context, q nativeQueryer, scope nativeScope, machine tracker.MachineID, id tracker.WorkItemID, now time.Time, selected tenantstore.Repository, overrides []tracker.NativeCapacityCandidate, joining ...string) (bool, string, error) {
 	if explanationRead(ctx) {
 		return explanationPlacementAllowed(ctx, q, scope, machine, id)
 	}
@@ -556,7 +557,7 @@ func placementClaimAllowed(ctx context.Context, q nativeQueryer, scope nativeSco
 	if placement.Mode != "local_first" {
 		return true, "Resolved placement " + placement.Mode + " permits Sprite runners", nil
 	}
-	snapshot, err := readPlacementSnapshot(ctx, q, scope, now, overrides)
+	snapshot, err := readPlacementSnapshot(ctx, q, scope, now, overrides, selected)
 	if err != nil {
 		return false, "", err
 	}
@@ -601,7 +602,7 @@ func placementClaimAllowed(ctx context.Context, q nativeQueryer, scope nativeSco
 	return allowed, fmt.Sprintf("%s: ready Todo=%d, threshold=%d, local free=%d, Sprite used=%d, overflow slots=%d", reason, snapshot.ReadyTodo, placement.TodoThreshold, snapshot.LocalFree, snapshot.SpriteUsed, placement.OverflowSlots), nil
 }
 
-func readOrganizationPlacementSnapshot(ctx context.Context, q nativeQueryer, scope nativeScope, now time.Time) (placementSnapshot, error) {
+func readOrganizationPlacementSnapshot(ctx context.Context, q nativeQueryer, scope nativeScope, now time.Time, selected ...tenantstore.Repository) (placementSnapshot, error) {
 	result := placementSnapshot{Items: make(map[tracker.WorkItemID]providercapacity.Requirement), Local: make(map[tracker.WorkItemID]int)}
 	placement, _, err := readPlacementPolicy(ctx, q, scope)
 	if err != nil {
@@ -629,7 +630,7 @@ func readOrganizationPlacementSnapshot(ctx context.Context, q nativeQueryer, sco
 	for _, project := range projects {
 		projectScope := scope
 		projectScope.project = project
-		snapshot, err := readPlacementSnapshotWithCapacity(ctx, q, projectScope, now, nil, capacity, counted)
+		snapshot, err := readPlacementSnapshotWithCapacity(ctx, q, projectScope, now, nil, capacity, counted, selected...)
 		if err != nil {
 			return result, err
 		}

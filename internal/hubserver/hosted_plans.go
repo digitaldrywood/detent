@@ -3,18 +3,25 @@ package hubserver
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"maps"
+	"reflect"
 	"slices"
 	"time"
 
 	"gopkg.in/yaml.v3"
 
 	"github.com/google/uuid"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
 type PlanReference struct {
@@ -304,6 +311,65 @@ func (d *database) configureHostedPlans(ctx context.Context, cfg *HostedConfig) 
 	if err := config.validate(); err != nil {
 		return err
 	}
+	if d.billingRepository != nil {
+		if d.billingAuditStore == nil {
+			return errors.New("hosted billing audit storage is unavailable")
+		}
+		audits := make(map[PlanReference]billingstore.PlanAudit, len(config.Plans))
+		for _, configured := range config.Plans {
+			configured = normalizeHostedPlan(configured)
+			ref := configured.PlanReference
+			command := hostedPlanCommand{ID: fmt.Sprintf("seed_%s_%d", ref.ID, ref.Version), Action: "create_plan", Plan: ref, Definition: &configured, Reason: "startup seed"}
+			raw, err := json.Marshal(command)
+			if err != nil {
+				return err
+			}
+			archive, err := d.billingAuditStore.StoreDetail(ctx, string(d.hostedOrganization), raw)
+			if err != nil {
+				return fmt.Errorf("store hosted plan seed audit: %w", err)
+			}
+			digest := sha256.Sum256(raw)
+			audits[ref] = billingstore.PlanAudit{OrganizationID: d.hostedOrganization, CommandID: command.ID, RequestHash: hex.EncodeToString(digest[:]), ActorID: "configuration", Action: command.Action, RecordedAt: d.now().UTC(), Reference: billingstore.AuditReferenceFromArchive(archive)}
+		}
+		err := d.writeBillingTenant(ctx, func(writer tenantstore.Writer) error {
+			for _, configured := range config.Plans {
+				configured = normalizeHostedPlan(configured)
+				record := billingstore.Plan{OrganizationID: d.hostedOrganization, PlanReference: billingstore.PlanReference{ID: configured.ID, Version: configured.Version}, Name: configured.Name, MonthlyUSDCents: configured.MonthlyUSDCents, RuntimeID: "", Allowances: configured.Allowances, Features: configured.Features}
+				stored, err := writer.BillingPlan(ctx, record.PlanReference)
+				if errors.Is(err, corestore.ErrNotFound) {
+					if err := writer.CreateBillingPlan(ctx, record); err != nil {
+						return err
+					}
+					if _, err := writer.CreateBillingPlanAudit(ctx, audits[configured.PlanReference]); err != nil {
+						return err
+					}
+				} else if err != nil {
+					return err
+				} else {
+					storedPlan := HostedPlan{PlanReference: PlanReference{ID: stored.ID, Version: stored.Version}, Name: stored.Name, MonthlyUSDCents: stored.MonthlyUSDCents, Allowances: stored.Allowances, Features: stored.Features}
+					if !reflect.DeepEqual(normalizeHostedPlan(storedPlan), configured) {
+						d.logger.WarnContext(ctx, "hosted plan seed differs from immutable stored version; keeping stored version", "plan", configured.ID, "version", configured.Version, "actor", "configuration", "reason", "startup seed")
+					}
+					if !d.runtimeVisible(stored.RuntimeID) {
+						if err := writer.SetBillingPlanRuntime(ctx, record.PlanReference, ""); err != nil {
+							return err
+						}
+					}
+				}
+			}
+			assignment := billingstore.Assignment{OrganizationID: d.hostedOrganization, Base: billingstore.PlanReference{ID: config.Base.ID, Version: config.Base.Version}}
+			if _, err := writer.BillingAssignment(ctx); errors.Is(err, corestore.ErrNotFound) {
+				return writer.SetBillingAssignment(ctx, assignment, 0)
+			} else {
+				return err
+			}
+		})
+		if err != nil {
+			return err
+		}
+		d.hostedRuntime.Store(&hostedRuntimeConfig{Plans: config})
+		return nil
+	}
 	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -382,6 +448,31 @@ func (d *database) seedHostedPlans(ctx context.Context, tx *sql.Tx, config Hoste
 }
 
 func (d *database) readHostedPlans(ctx context.Context, query nativeQueryer) ([]HostedPlan, error) {
+	if d.billingRepository != nil {
+		var plans []HostedPlan
+		err := d.readBillingTenant(ctx, func(reader tenantstore.Reader) error {
+			after := billingstore.PlanReference{}
+			for {
+				records, err := reader.BillingPlans(ctx, after, corestore.MaxPageSize)
+				if err != nil {
+					return err
+				}
+				for _, record := range records {
+					plan, err := d.readHostedPlanRecord(ctx, reader, PlanReference{ID: record.ID, Version: record.Version})
+					if err != nil {
+						return err
+					}
+					plans = append(plans, plan)
+				}
+				if len(records) < corestore.MaxPageSize {
+					return nil
+				}
+				last := records[len(records)-1]
+				after = billingstore.PlanReference{ID: last.ID, Version: last.Version}
+			}
+		})
+		return plans, err
+	}
 	rows, err := query.QueryContext(ctx, "SELECT id,version,runtime_id FROM hosted_plans ORDER BY id, version")
 	if err != nil {
 		return nil, err
@@ -413,42 +504,58 @@ func (d *database) readHostedPlans(ctx context.Context, query nativeQueryer) ([]
 }
 
 func (d *database) readHostedPlan(ctx context.Context, query nativeQueryer, ref PlanReference) (HostedPlan, error) {
-	var raw, runtimeID string
-	var plan HostedPlan
-	if err := query.QueryRowContext(ctx, "SELECT record_json,runtime_id FROM hosted_plans WHERE id = ? AND version = ?", ref.ID, ref.Version).Scan(&raw, &runtimeID); err != nil {
+	if d.billingRepository != nil {
+		var plan HostedPlan
+		err := d.readBillingTenant(ctx, func(reader tenantstore.Reader) error {
+			var err error
+			plan, err = d.readHostedPlanRecord(ctx, reader, ref)
+			return err
+		})
+		return plan, err
+	}
+	return d.loadHostedPlan(ctx, ref, func(ctx context.Context, ref PlanReference) (HostedPlan, string, error) {
+		var raw, runtimeID string
+		var plan HostedPlan
+		if err := query.QueryRowContext(ctx, "SELECT record_json,runtime_id FROM hosted_plans WHERE id = ? AND version = ?", ref.ID, ref.Version).Scan(&raw, &runtimeID); err != nil {
+			return plan, runtimeID, err
+		}
+		err := json.Unmarshal([]byte(raw), &plan)
+		return plan, runtimeID, err
+	})
+}
+
+func (d *database) loadHostedPlan(ctx context.Context, ref PlanReference, read func(context.Context, PlanReference) (HostedPlan, string, error)) (HostedPlan, error) {
+	plan, runtimeID, err := read(ctx, ref)
+	if err != nil {
 		return plan, err
 	}
 	if !d.runtimeVisible(runtimeID) {
 		return plan, sql.ErrNoRows
 	}
-	err := json.Unmarshal([]byte(raw), &plan)
-	if err == nil {
-		if plan.Allowances == nil {
-			plan.Allowances = make(map[string]int64)
+	if plan.Allowances == nil {
+		plan.Allowances = make(map[string]int64)
+	}
+	if _, exists := plan.Allowances["unarchived_issues"]; !exists {
+		plan.Allowances["unarchived_issues"] = hostedOpenIssueGuard
+	}
+	if tier, ok := hostedTierFor(ref); ok {
+		return tier.apply(plan), nil
+	}
+	if ref.Version == 1 && slices.Contains([]string{"pilot_free", "comp_team"}, ref.ID) {
+		_, capacityRuntime, err := read(ctx, PlanReference{ID: "starter", Version: 1})
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return plan, err
 		}
-		if _, exists := plan.Allowances["unarchived_issues"]; !exists {
-			plan.Allowances["unarchived_issues"] = hostedOpenIssueGuard
-		}
-		if tier, ok := hostedTierFor(ref); ok {
-			return tier.apply(plan), nil
-		}
-		if ref.Version == 1 && slices.Contains([]string{"pilot_free", "comp_team"}, ref.ID) {
-			var capacityRuntime string
-			err := query.QueryRowContext(ctx, "SELECT runtime_id FROM hosted_plans WHERE id='starter' AND version=1").Scan(&capacityRuntime)
-			if err != nil && !errors.Is(err, sql.ErrNoRows) {
-				return plan, err
+		if err == nil && d.runtimeVisible(capacityRuntime) {
+			plan.Allowances["unarchived_issues"] = max(plan.Allowances["unarchived_issues"], hostedOpenIssueGuard)
+			plan.Allowances["history_records"] = max(plan.Allowances["history_records"], 2000000)
+			for _, resource := range []string{"members", "projects", "repositories", "registered_runners", "connected_runners", "concurrent_work"} {
+				delete(plan.Allowances, resource)
 			}
-			if err == nil && d.runtimeVisible(capacityRuntime) {
-				plan.Allowances["unarchived_issues"] = max(plan.Allowances["unarchived_issues"], hostedOpenIssueGuard)
-				plan.Allowances["history_records"] = max(plan.Allowances["history_records"], 2000000)
-				for _, resource := range []string{"members", "projects", "repositories", "registered_runners", "connected_runners", "concurrent_work"} {
-					delete(plan.Allowances, resource)
-				}
-				if plan.Name == "" {
-					plan.Name = "Legacy complimentary pilot"
-					if ref.ID == "comp_team" {
-						plan.Name = "Legacy Team"
-					}
+			if plan.Name == "" {
+				plan.Name = "Legacy complimentary pilot"
+				if ref.ID == "comp_team" {
+					plan.Name = "Legacy Team"
 				}
 			}
 		}
@@ -457,6 +564,15 @@ func (d *database) readHostedPlan(ctx context.Context, query nativeQueryer, ref 
 }
 
 func (d *database) hostedEntitlement(ctx context.Context, query nativeQueryer, now time.Time) (HostedEntitlement, error) {
+	if d.billingRepository != nil {
+		var entitlement HostedEntitlement
+		err := d.readBillingTenant(ctx, func(reader tenantstore.Reader) error {
+			var err error
+			entitlement, err = d.hostedEntitlementRecord(ctx, reader, now)
+			return err
+		})
+		return entitlement, err
+	}
 	runtimePlans := d.plans()
 	result := HostedEntitlement{OrganizationID: string(d.hostedOrganization), Source: "base", Grants: []HostedGrant{}}
 	if runtimePlans == nil {
@@ -478,19 +594,6 @@ func (d *database) hostedEntitlement(ctx context.Context, query nativeQueryer, n
 			result.Source = "subscription"
 		}
 	}
-	base, err := d.readHostedPlan(ctx, query, result.EffectiveBase)
-	if err != nil {
-		return result, err
-	}
-	result.Allowances, result.Features = base.Allowances, base.Features
-	result.Name, result.MonthlyUSDCents = base.Name, base.MonthlyUSDCents
-	result.IncludedAICreditMicros = new(int64)
-	if result.Source == "subscription" {
-		result.IncludedAICreditMicros = base.includedAICreditMicros()
-	}
-	if result.Name == "" {
-		result.Name = fmt.Sprintf("%s · version %d", base.ID, base.Version)
-	}
 	rows, err := query.QueryContext(ctx, "SELECT record_json FROM hosted_complimentary_grants ORDER BY id")
 	if err != nil {
 		return result, err
@@ -510,11 +613,31 @@ func (d *database) hostedEntitlement(ctx context.Context, query nativeQueryer, n
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return result, err
 	}
+	return d.resolveHostedEntitlement(ctx, now, result, func(ctx context.Context, ref PlanReference) (HostedPlan, error) {
+		return d.readHostedPlan(ctx, query, ref)
+	})
+}
+
+func (d *database) resolveHostedEntitlement(ctx context.Context, now time.Time, result HostedEntitlement, readPlan func(context.Context, PlanReference) (HostedPlan, error)) (HostedEntitlement, error) {
+	runtimePlans := d.plans()
+	base, err := readPlan(ctx, result.EffectiveBase)
+	if err != nil {
+		return result, err
+	}
+	result.Allowances, result.Features = base.Allowances, base.Features
+	result.Name, result.MonthlyUSDCents = base.Name, base.MonthlyUSDCents
+	result.IncludedAICreditMicros = new(int64)
+	if result.Source == "subscription" {
+		result.IncludedAICreditMicros = base.includedAICreditMicros()
+	}
+	if result.Name == "" {
+		result.Name = fmt.Sprintf("%s · version %d", base.ID, base.Version)
+	}
 	for _, grant := range result.Grants {
 		if grant.RevokedAt != nil || grant.StartsAt.After(now) || grant.ExpiresAt != nil && !grant.ExpiresAt.After(now) {
 			continue
 		}
-		plan, err := d.readHostedPlan(ctx, query, grant.Plan)
+		plan, err := readPlan(ctx, grant.Plan)
 		if err != nil {
 			return result, err
 		}
@@ -559,6 +682,34 @@ func (d *database) requireHostedFeature(ctx context.Context, query nativeQueryer
 	if err != nil {
 		return err
 	}
+	return requireHostedFeatureInEntitlement(entitlement, feature)
+}
+
+func (d *database) requireHostedFeatureRecord(ctx context.Context, reader billingstore.Reader, feature string, now time.Time) error {
+	if d.plans() == nil {
+		return nil
+	}
+	runtimeIDs := []string{""}
+	if state := d.runtimeState(); state != nil {
+		runtimeIDs = append(runtimeIDs, state.Published...)
+	}
+	capacityPlanRefs := make([]string, 0, len(hostedTiers()))
+	for _, tier := range hostedTiers() {
+		if hostedCapacityPlan(tier.PlanReference) {
+			capacityPlanRefs = append(capacityPlanRefs, fmt.Sprintf("%s:%d", tier.ID, tier.Version))
+		}
+	}
+	enabled, err := reader.BillingFeatureEnabled(ctx, feature, now, runtimeIDs, capacityPlanRefs)
+	if err != nil {
+		return err
+	}
+	if !enabled {
+		return &hostedLimitError{Resource: feature}
+	}
+	return nil
+}
+
+func requireHostedFeatureInEntitlement(entitlement HostedEntitlement, feature string) error {
 	if !slices.Contains(entitlement.Features, feature) {
 		return &hostedLimitError{Resource: feature}
 	}

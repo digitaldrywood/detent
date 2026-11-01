@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -81,7 +82,7 @@ func readRunnerAdmissionObservation(ctx context.Context, q nativeQueryer, scope 
 	return &observed.Context, nil
 }
 
-func readNativeAdmission(ctx context.Context, q nativeQueryer, scope nativeScope, id tracker.WorkItemID, policyID string, requirements policy.Requirements, runners []runnerauth.Runner, truncated, ready bool, evidence *tracker.NativeRuntimeEvidence, contexts []tracker.NativeAdmissionContext, minimumVersion, nonExecutableReason string) error {
+func readNativeAdmission(ctx context.Context, q nativeQueryer, scope nativeScope, id tracker.WorkItemID, policyID string, requirements policy.Requirements, runners []runnerauth.Runner, truncated, ready bool, evidence *tracker.NativeRuntimeEvidence, contexts []tracker.NativeAdmissionContext, minimumVersion, nonExecutableReason string, billingRepository tenantstore.Repository) error {
 	now := evidence.ObservedAt
 	query := claimCandidateQuery{NativeScope: &scope, Scope: string(scope.project), WorkItemID: id, AvailableAt: now, Limit: 1}
 	candidate, err := readNativeCandidateSnapshot(ctx, q, query, evidence.Issue)
@@ -175,7 +176,7 @@ func readNativeAdmission(ctx context.Context, q nativeQueryer, scope nativeScope
 			}
 			candidateScope := scope
 			candidateScope.credential.Runner.Binding = r.Binding
-			allowed, reason, err := placementClaimAllowed(ctx, q, candidateScope, r.MachineID, id, now, nil)
+			allowed, reason, err := placementClaimAllowed(ctx, q, candidateScope, r.MachineID, id, now, billingRepository, nil)
 			if err != nil {
 				return err
 			}
@@ -196,7 +197,7 @@ func readNativeAdmission(ctx context.Context, q nativeQueryer, scope nativeScope
 					a.Unavailable = append(a.Unavailable, "monthly_budget_admission")
 				}
 			} else {
-				decision, _, err := checkMonthlyClaim(ctx, q, scope, r.MachineID, id, false, now)
+				decision, _, err := checkMonthlyClaim(ctx, q, scope, r.MachineID, id, false, now, billingRepository)
 				if err != nil {
 					return err
 				}

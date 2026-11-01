@@ -171,7 +171,7 @@ projects:
 					capacityQuery.NativeScope = &candidateScope
 					capacityQuery.ProviderCandidates = []tracker.NativeCapacityCandidate{{WorkItemID: native, Revision: issue.Revision, Requirement: providercapacity.Requirement{Role: identity.Role, Backend: identity.BackendKind, Model: identity.RequestedModel.Value}}}
 				}
-				allowed, reason, err := placementClaimAllowed(ctx, tx, candidateScope, r.MachineID, id, now, capacityQuery.ProviderCandidates, joining)
+				allowed, reason, err := placementClaimAllowed(ctx, tx, candidateScope, r.MachineID, id, now, d.billingRepository, capacityQuery.ProviderCandidates, joining)
 				if errors.Is(err, errClaimHintStale) && !claimWriting(ctx) {
 					return false, nil
 				}
@@ -185,7 +185,7 @@ projects:
 					return false, nil
 				}
 
-				decision, _, err := checkMonthlyClaim(ctx, tx, candidateScope, r.MachineID, id, false, now)
+				decision, _, err := checkMonthlyClaim(ctx, tx, candidateScope, r.MachineID, id, false, now, d.billingRepository)
 				if err != nil {
 					return false, err
 				}

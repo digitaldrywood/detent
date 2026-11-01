@@ -11,6 +11,92 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+type AccessImport struct {
+	OrganizationID tracker.OrganizationID
+	SourceSchema   string
+	SnapshotID     string
+	CatalogDigest  string
+	Stage          int64
+	Processed      int64
+	Revision       int64
+	AfterKey1      string
+	AfterKey2      string
+	AfterKey3      string
+	HasAfter       bool
+	Done           bool
+}
+
+type AiCreditAccount struct {
+	OrganizationID tracker.OrganizationID
+	Mode           string
+	BalanceMicros  int64
+	AutoEnabled    bool
+	ThresholdCents int64
+	PriceID        string
+	PaymentMethod  string
+	Failure        string
+}
+
+type AiCreditPack struct {
+	OrganizationID tracker.OrganizationID
+	PriceID        string
+	Mode           string
+	UsdCents       int64
+}
+
+type AiCreditPeriod struct {
+	OrganizationID  tracker.OrganizationID
+	Mode            string
+	PeriodStart     time.Time
+	PeriodEnd       time.Time
+	AllowanceMicros int64
+	UsedMicros      int64
+}
+
+type AiCreditPurchase struct {
+	OrganizationID   tracker.OrganizationID
+	PurchaseKey      string
+	Mode             string
+	PriceID          string
+	UsdCents         int64
+	Automatic        bool
+	PaymentMethod    string
+	State            string
+	PaymentID        string
+	SessionID        string
+	SessionUrl       string
+	SessionExpiresAt *time.Time
+	CreatedAt        time.Time
+}
+
+type AiCreditReasonReference struct {
+	OrganizationID  tracker.OrganizationID
+	Mode            string
+	Source          string
+	BindingID       string
+	CustomerOwned   bool
+	ObjectKey       string
+	Sha256          string
+	CompressedBytes int64
+	ContentBytes    int64
+	Codec           string
+	FormatVersion   int32
+	Kind            string
+	Retention       string
+}
+
+type AiCreditTransaction struct {
+	OrganizationID       tracker.OrganizationID
+	ID                   int64
+	Mode                 string
+	Source               string
+	AmountMicros         int64
+	IncludedAmountMicros int64
+	Kind                 string
+	Actor                string
+	RecordedAt           time.Time
+}
+
 type ApiToken struct {
 	OrganizationID        tracker.OrganizationID
 	ID                    string
@@ -170,6 +256,103 @@ type HostedAuditTime struct {
 	RecordedAtNs   int64
 }
 
+type HostedBillingAccount struct {
+	OrganizationID           tracker.OrganizationID
+	AccountID                string
+	CustomerID               string
+	Mode                     string
+	Status                   string
+	PlanID                   string
+	PlanVersion              int64
+	PaidThrough              *time.Time
+	AccessUntil              *time.Time
+	GraceUntil               *time.Time
+	SubscriptionID           string
+	PriceID                  string
+	SubscriptionStatus       string
+	InvoiceID                string
+	InvoiceStatus            string
+	InvoiceCreatedAt         *time.Time
+	PeriodStart              *time.Time
+	PeriodEnd                *time.Time
+	TrialEnd                 *time.Time
+	CancelAt                 *time.Time
+	CancelAtPeriodEnd        bool
+	PaymentHold              string
+	CheckoutKey              string
+	CheckoutPriceID          string
+	CheckoutExpiresAt        *time.Time
+	CheckoutSessionID        string
+	CheckoutUrl              string
+	CheckoutSessionExpiresAt *time.Time
+	ReconciledAt             *time.Time
+}
+
+type HostedBillingAudit struct {
+	OrganizationID  tracker.OrganizationID
+	ID              int64
+	ActorID         string
+	Action          string
+	RecordedAt      time.Time
+	BindingID       string
+	CustomerOwned   bool
+	ObjectKey       string
+	Sha256          string
+	CompressedBytes int64
+	ContentBytes    int64
+	Codec           string
+	FormatVersion   int32
+	Kind            string
+	Retention       string
+}
+
+type HostedBillingCustomerIntent struct {
+	OrganizationID tracker.OrganizationID
+	AccountID      string
+	Mode           string
+	IdempotencyKey string
+	State          string
+	CustomerID     string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+}
+
+type HostedBillingEvent struct {
+	OrganizationID  tracker.OrganizationID
+	Sequence        int64
+	EventID         string
+	EventType       string
+	ReceivedAt      time.Time
+	ProcessedAt     *time.Time
+	CreditProcessed bool
+}
+
+type HostedBillingPrice struct {
+	OrganizationID tracker.OrganizationID
+	PriceID        string
+	PlanID         string
+	PlanVersion    int64
+}
+
+type HostedBillingRetired struct {
+	OrganizationID  tracker.OrganizationID
+	ID              int64
+	AccountID       string
+	CustomerID      string
+	Mode            string
+	RetiredAt       time.Time
+	BindingID       string
+	CustomerOwned   bool
+	ObjectKey       string
+	Sha256          string
+	CompressedBytes int64
+	ContentBytes    int64
+	Codec           string
+	FormatVersion   int32
+	Kind            string
+	Retention       string
+}
+
 type HostedBindingMigration struct {
 	OrganizationID tracker.OrganizationID
 	ID             int64
@@ -180,6 +363,22 @@ type HostedBindingMigration struct {
 	ToGeneration   int64
 	MigratedAt     time.Time
 	Applied        bool
+}
+
+type HostedComplimentaryGrant struct {
+	OrganizationID tracker.OrganizationID
+	ID             string
+	PlanID         string
+	PlanVersion    int64
+	StartsAt       time.Time
+	ExpiresAt      *time.Time
+	RevokedAt      *time.Time
+}
+
+type HostedComplimentaryGrantScope struct {
+	OrganizationID tracker.OrganizationID
+	GrantID        string
+	Scope          string
 }
 
 type HostedInvitation struct {
@@ -217,6 +416,60 @@ type HostedMemberReservation struct {
 	OrganizationID tracker.OrganizationID
 	Email          string
 	ExpiresAt      time.Time
+}
+
+type HostedPlan struct {
+	OrganizationID  tracker.OrganizationID
+	ID              string
+	Version         int64
+	Name            string
+	MonthlyUsdCents sql.NullInt64
+	RuntimeID       string
+}
+
+type HostedPlanAllowance struct {
+	OrganizationID tracker.OrganizationID
+	PlanID         string
+	PlanVersion    int64
+	Metric         string
+	Amount         int64
+}
+
+type HostedPlanAssignment struct {
+	OrganizationID        tracker.OrganizationID
+	BaseID                string
+	BaseVersion           int64
+	SubscriptionID        *string
+	SubscriptionVersion   sql.NullInt64
+	SubscriptionExpiresAt *time.Time
+	Revision              int64
+}
+
+type HostedPlanAudit struct {
+	OrganizationID  tracker.OrganizationID
+	ID              int64
+	CommandID       string
+	RequestHash     string
+	ActorID         string
+	Action          string
+	RecordedAt      time.Time
+	BindingID       string
+	CustomerOwned   bool
+	ObjectKey       string
+	Sha256          string
+	CompressedBytes int64
+	ContentBytes    int64
+	Codec           string
+	FormatVersion   int32
+	Kind            string
+	Retention       string
+}
+
+type HostedPlanFeature struct {
+	OrganizationID tracker.OrganizationID
+	PlanID         string
+	PlanVersion    int64
+	Feature        string
 }
 
 type HostedProjectGrant struct {
@@ -263,6 +516,27 @@ type HostedTransaction struct {
 	InvitationToken        string
 	ExpiresAt              time.Time
 	ConsumedAt             *time.Time
+}
+
+type HostedUsageCounter struct {
+	OrganizationID tracker.OrganizationID
+	Name           string
+	Value          int64
+}
+
+type HostedUsageReceipt struct {
+	OrganizationID tracker.OrganizationID
+	ReceiptID      string
+	WindowStart    time.Time
+	Metric         string
+	Amount         int64
+}
+
+type HostedUsageWindow struct {
+	OrganizationID tracker.OrganizationID
+	WindowStart    time.Time
+	Metric         string
+	Amount         int64
 }
 
 type Issue struct {
@@ -317,6 +591,34 @@ type Machine struct {
 	LastHeartbeatAt time.Time
 	RegisteredAt    time.Time
 	UpdatedAt       time.Time
+}
+
+type MonthlyBudgetAdmission struct {
+	OrganizationID tracker.OrganizationID
+	IssueID        int64
+	AdmittedAt     time.Time
+}
+
+type MonthlyBudgetLease struct {
+	OrganizationID       tracker.OrganizationID
+	LeaseID              string
+	LunaApi              bool
+	RunnerApi            bool
+	SpriteInfrastructure bool
+}
+
+type MonthlyBudgetPolicy struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	Revision       int64
+	Enabled        bool
+	Mode           string
+	LunaMicros     sql.NullInt64
+	RunnerMicros   sql.NullInt64
+	SpriteMicros   sql.NullInt64
+	TotalMicros    sql.NullInt64
+	ActorID        string
+	UpdatedAt      time.Time
 }
 
 type NativeAttempt struct {

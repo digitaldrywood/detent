@@ -13,6 +13,9 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
 func (s *Service) platformTenantAICreditBalance(c echo.Context) error {
@@ -30,10 +33,41 @@ func (s *Service) platformTenantAICreditBalance(c echo.Context) error {
 		AutoEnabled   bool                  `json:"auto_enabled"`
 		History       []aiCreditTransaction `json:"history"`
 	}
+	var creditRows []billingstore.CreditTransaction
 	now := d.now().UTC()
 	start := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
 	result.Month = start.Format("2006-01")
 	result.History = []aiCreditTransaction{}
+	if d.billingRepository != nil {
+		err := d.readBillingTenant(ctx, func(reader tenantstore.Reader) error {
+			account, err := reader.BillingCreditAccount(ctx, d.aiCreditMode)
+			if err != nil {
+				return err
+			}
+			result.BalanceMicros, result.AutoEnabled = account.BalanceMicros, account.AutoEnabled
+			result.SpentMicros, err = reader.BillingCreditUsage(ctx, d.aiCreditMode, start, start.AddDate(0, 1, 0))
+			if err != nil {
+				return err
+			}
+			rows, err := reader.BillingRecentCreditTransactions(ctx, d.aiCreditMode, 50)
+			if err != nil {
+				return err
+			}
+			creditRows = rows
+			return nil
+		})
+		if err != nil {
+			return s.internalAPIError(c, "ai_credits_unavailable", "AI credits are unavailable", err)
+		}
+		for _, row := range creditRows {
+			reason, err := d.readBillingReason(ctx, row.ReasonReference)
+			if err != nil {
+				return s.internalAPIError(c, "ai_credits_unavailable", "AI credits are unavailable", err)
+			}
+			result.History = append(result.History, aiCreditTransaction{AmountMicros: row.AmountMicros, Kind: row.Kind, Actor: row.Actor, Reason: reason, At: row.RecordedAt.UTC()})
+		}
+		return c.JSON(http.StatusOK, result)
+	}
 	if err := d.reader.QueryRowContext(ctx, "SELECT balance_micros,auto_enabled FROM ai_credit_accounts WHERE organization_id=? AND mode=?", d.hostedOrganization, d.aiCreditMode).Scan(&result.BalanceMicros, &result.AutoEnabled); err != nil {
 		return s.internalAPIError(c, "ai_credits_unavailable", "AI credits are unavailable", err)
 	}
@@ -89,6 +123,40 @@ func (d *database) adjustAICredits(ctx context.Context, actor string, adjustment
 	}
 	if d.aiCreditMode == "" {
 		return 0, nativePublicInvalid("AI credits are not configured for this organization")
+	}
+	if d.billingRepository != nil {
+		reference, err := d.archiveBillingReason(ctx, adjustment.Reason)
+		if err != nil {
+			return 0, err
+		}
+		var balance int64
+		err = d.writeBillingTenant(ctx, func(writer tenantstore.Writer) error {
+			account, err := writer.BillingCreditAccount(ctx, d.aiCreditMode)
+			if err != nil {
+				return err
+			}
+			balance = account.BalanceMicros
+			source := "adjustment:" + adjustment.IdempotencyKey
+			previous, err := writer.BillingCreditTransactionBySource(ctx, d.aiCreditMode, source)
+			if err == nil {
+				if previous.AmountMicros != amount || previous.Actor != actor || previous.ReasonReference.SHA256 != reference.SHA256 {
+					return &nativeError{status: http.StatusConflict, Code: "idempotency_conflict", Message: "That idempotency key was used for a different credit adjustment", publicMessage: true}
+				}
+				return nil
+			}
+			if !errors.Is(err, corestore.ErrNotFound) {
+				return err
+			}
+			if amount > 0 && balance > math.MaxInt64-amount || amount < 0 && balance < math.MinInt64-amount {
+				return nativePublicInvalid("The adjusted balance is out of range")
+			}
+			_, err = writer.PostBillingCredit(ctx, billingstore.CreditTransaction{OrganizationID: d.hostedOrganization, Mode: d.aiCreditMode, Source: source, AmountMicros: amount, Kind: "complimentary", Actor: actor, ReasonReference: reference, RecordedAt: d.now().UTC()})
+			if err == nil {
+				balance += amount
+			}
+			return err
+		})
+		return balance, err
 	}
 	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {

@@ -174,7 +174,7 @@ func (s *Service) scheduleSpriteLifecycle(ctx context.Context, scope nativeScope
 		return
 	}
 	if state != "" {
-		allowed, err := monthlySpriteAllowed(ctx, s.database.reader, nativeScope{organization: scope.organization}, s.config.now())
+		allowed, err := monthlySpriteAllowed(ctx, s.database.reader, nativeScope{organization: scope.organization}, s.config.now(), s.database.billingRepository)
 		if err != nil {
 			s.config.Logger.Warn("Check Sprite lifecycle monthly budget", "error", err)
 			return
@@ -386,7 +386,7 @@ func (s *Service) spriteWakeSecret(ctx context.Context, db nativeQueryer, scope 
 }
 
 func (s *Service) wakeSpriteRunnerWithSecret(ctx context.Context, scope, secretScope nativeScope, client *http.Client, name string, envelope hubsecrets.Envelope) (bool, error) {
-	allowed, err := monthlySpriteAllowed(ctx, s.database.reader, scope, s.config.now())
+	allowed, err := monthlySpriteAllowed(ctx, s.database.reader, scope, s.config.now(), s.database.billingRepository)
 	if err != nil || !allowed {
 		return false, err
 	}

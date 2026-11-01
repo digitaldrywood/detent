@@ -3,6 +3,7 @@ package postgres_test
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"github.com/lib/pq"
 	"github.com/pressly/goose/v3"
 
+	"github.com/digitaldrywood/detent/internal/storagecatalog"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
 )
@@ -104,6 +106,86 @@ func TestCoreMigrationsFromEmpty(t *testing.T) {
 		if _, err := time.Parse("20060102150405", stamp); err != nil || !ok {
 			t.Errorf("migration %s needs a UTC timestamp name", file)
 		}
+	}
+}
+
+func TestTargetOnlyBillingSchemaMatchesContracts(t *testing.T) {
+	db := template.Database(t)
+	catalog, err := storagecatalog.ReadTargetCatalog(os.DirFS("../../.."), "internal/storagecatalog/targets/v1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	classificationData, err := os.ReadFile("testdata/target_classification.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var classification map[string]storagecatalog.TargetClassification
+	if err := json.Unmarshal(classificationData, &classification); err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.ValidateClassification(classification); err != nil {
+		t.Fatal(err)
+	}
+	sourceData, err := os.ReadFile("../testdata/hub_classification.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sourceTables map[string]json.RawMessage
+	if err := json.Unmarshal(sourceData, &sourceTables); err != nil {
+		t.Fatal(err)
+	}
+	sourceInventory := make(map[string]json.RawMessage, len(sourceTables))
+	for name, definition := range sourceTables {
+		sourceInventory["hub/"+name] = definition
+	}
+	if err := catalog.ValidateMigrations(os.DirFS("../../.."), sourceInventory); err != nil {
+		t.Fatal(err)
+	}
+	for table, contract := range catalog.Tables {
+		table := table
+		contract := contract
+		t.Run(table, func(t *testing.T) {
+			schema, name, _ := strings.Cut(table, ".")
+			rows, err := db.QueryContext(t.Context(), `SELECT column_name,data_type FROM information_schema.columns WHERE table_schema=$1 AND table_name=$2 ORDER BY ordinal_position`, schema, name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			columns := make(map[string]string, len(contract.Columns))
+			for rows.Next() {
+				var column, kind string
+				if err := rows.Scan(&column, &kind); err != nil {
+					t.Fatal(err)
+				}
+				columns[column] = kind
+			}
+			if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+				t.Fatal(err)
+			}
+			if len(columns) != len(contract.Columns) {
+				t.Fatalf("columns=%v want %v", columns, contract.Columns)
+			}
+			for column, kind := range contract.Columns {
+				if columns[column] != kind {
+					t.Errorf("%s type=%q want %q", column, columns[column], kind)
+				}
+			}
+			if contract.Organization == "organization-owned" {
+				var rowSecurity, forced bool
+				if err := db.QueryRowContext(t.Context(), `SELECT relrowsecurity,relforcerowsecurity FROM pg_class WHERE oid=to_regclass($1)`, table).Scan(&rowSecurity, &forced); err != nil {
+					t.Fatal(err)
+				}
+				if !rowSecurity || !forced {
+					t.Errorf("row security enabled=%t forced=%t", rowSecurity, forced)
+				}
+				var tenantLeading bool
+				if err := db.QueryRowContext(t.Context(), `SELECT EXISTS(SELECT 1 FROM pg_index i JOIN pg_attribute a ON a.attrelid=i.indrelid AND a.attnum=i.indkey[0] WHERE i.indrelid=to_regclass($1) AND i.indisprimary AND a.attname='organization_id')`, table).Scan(&tenantLeading); err != nil {
+					t.Fatal(err)
+				}
+				if !tenantLeading {
+					t.Error("primary key is not tenant-leading")
+				}
+			}
+		})
 	}
 }
 

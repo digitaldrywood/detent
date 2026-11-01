@@ -22,6 +22,10 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/testenv"
@@ -333,6 +337,84 @@ func TestHostedPlanReportRequiresEntitlementAdministrator(t *testing.T) {
 	recorded := report.Grants[0]
 	if recorded.ID != "comp_report" || recorded.Reason != "design partner" || recorded.GrantedBy != "test-operator" || recorded.GrantedAt == nil || recorded.ExpiresAt == nil || !recorded.ExpiresAt.Equal(until) || recorded.Plan != config.Plans[1].PlanReference {
 		t.Fatalf("grant = %+v", recorded)
+	}
+}
+
+func TestHostedPlanReportPaginatesGrantHistory(t *testing.T) {
+	t.Parallel()
+	f := newHostedSecurityFixture(t)
+	config := hostedTestPlans(t, f.service, nil)
+	path := "/api/v2/organizations/org_security/entitlements"
+	until := time.Now().UTC().Add(24 * time.Hour).Truncate(time.Second)
+	for i := 1; i <= 3; i++ {
+		grant := hostedPlanCommand{ID: fmt.Sprintf("history-grant-%d", i), Action: "grant", ExpectedRevision: int64(i), GrantID: fmt.Sprintf("history-%d", i), Plan: config.Plans[1].PlanReference, Scope: []string{"projects"}, ExpiresAt: &until, Reason: "history example"}
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, testHostedPlanAdminToken, grant), http.StatusNoContent)
+	}
+	after := ""
+	for i := 1; i <= 3; i++ {
+		target := path + "?history_limit=1"
+		if after != "" {
+			target += "&history_after=" + after
+		}
+		response := performHubAPIRequest(t, f.service, http.MethodGet, target, testHostedPlanAdminToken, nil)
+		requireNativeStatus(t, response, http.StatusOK)
+		var report hostedEntitlementReport
+		if err := json.Unmarshal(response.Body.Bytes(), &report); err != nil {
+			t.Fatal(err)
+		}
+		if len(report.GrantHistory) != 1 || report.GrantHistory[0].ID != fmt.Sprintf("history-%d", i) {
+			t.Fatalf("grant history page %d = %+v", i, report.GrantHistory)
+		}
+		if i < 3 && report.NextGrantHistory == "" {
+			t.Fatalf("grant history page %d has no continuation", i)
+		}
+		if i == 3 && report.NextGrantHistory != "" {
+			t.Fatalf("final grant history page has continuation %q", report.NextGrantHistory)
+		}
+		after = report.NextGrantHistory
+	}
+}
+
+func TestHostedLegacyTierFeaturesSurviveSelectedPostgresAdapter(t *testing.T) {
+	t.Parallel()
+	f := newHostedSharedFixture(t)
+	d := f.service.database
+	org := tracker.OrganizationID(d.hostedOrganization)
+	repository := projectRecordPostgres(t)
+	d.billingRepository = repository
+	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	d.now = func() time.Time { return now }
+	if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+		return w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: "Example organization", CreatedAt: now})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	legacy := HostedPlan{PlanReference: PlanReference{ID: "starter", Version: 1}, Name: "Starter", Features: []string{}, Allowances: map[string]int64{}}
+	if len(legacy.Features) != 0 {
+		t.Fatalf("historical plan unexpectedly has features: %v", legacy.Features)
+	}
+	loaded, err := d.loadHostedPlan(t.Context(), legacy.PlanReference, func(context.Context, PlanReference) (HostedPlan, string, error) {
+		return legacy, "", nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(loaded.Features, "hosted_artifacts") {
+		t.Fatalf("shared legacy tier resolution features=%v", loaded.Features)
+	}
+	if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+		plan := billingstore.Plan{OrganizationID: org, PlanReference: billingstore.PlanReference{ID: loaded.ID, Version: loaded.Version}, Name: loaded.Name, RuntimeID: "", Features: loaded.Features, Allowances: loaded.Allowances}
+		if err := w.CreateBillingPlan(t.Context(), plan); err != nil {
+			return err
+		}
+		return w.SetBillingAssignment(t.Context(), billingstore.Assignment{OrganizationID: org, Base: plan.PlanReference}, 0)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+		return d.requireHostedFeatureRecord(t.Context(), r, "hosted_artifacts", now)
+	}); err != nil {
+		t.Fatalf("selected PostgreSQL adapter lost derived historical tier feature: %v", err)
 	}
 }
 

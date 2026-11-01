@@ -10,12 +10,43 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type monthlyBudgetSettings struct {
 	Revision tracker.Revision     `json:"revision,string"`
 	Policy   budget.MonthlyPolicy `json:"policy"`
+}
+
+var ErrBillingBudgetUnavailable = errors.New("monthly budget enforcement requires the selected billing transaction")
+
+func readBillingMonthlySettings(ctx context.Context, repository tenantstore.Repository, scope nativeScope) (monthlyBudgetSettings, error) {
+	var settings monthlyBudgetSettings
+	err := repository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		row, err := reader.BillingMonthlyPolicy(ctx, scope.project)
+		if errors.Is(err, corestore.ErrNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		settings = monthlyBudgetSettings{Revision: row.Revision, Policy: row.Policy}
+		return nil
+	})
+	return settings, err
+}
+
+func selectedBillingBudgetState(ctx context.Context, repository tenantstore.Repository, scope nativeScope) (monthlyBudgetSettings, monthlyBudgetSettings, error) {
+	orgScope := scope
+	orgScope.project = ""
+	organization, err := readBillingMonthlySettings(ctx, repository, orgScope)
+	if err != nil {
+		return monthlyBudgetSettings{}, monthlyBudgetSettings{}, err
+	}
+	project, err := readBillingMonthlySettings(ctx, repository, scope)
+	return organization, project, err
 }
 
 func readMonthlyBudgetSettings(ctx context.Context, q nativeQueryer, scope nativeScope) (monthlyBudgetSettings, error) {
@@ -49,7 +80,17 @@ func monthlyBudgetSpend(totals []monthlyCostTotal) budget.MonthlySpend {
 	return spend
 }
 
-func checkMonthlyBudget(ctx context.Context, q nativeQueryer, scope nativeScope, exposure budget.CostExposure, admitted bool, now time.Time) (budget.MonthlyDecision, error) {
+func checkMonthlyBudget(ctx context.Context, q nativeQueryer, scope nativeScope, exposure budget.CostExposure, admitted bool, now time.Time, selected ...tenantstore.Repository) (budget.MonthlyDecision, error) {
+	if len(selected) > 0 && selected[0] != nil {
+		organization, project, err := selectedBillingBudgetState(ctx, selected[0], scope)
+		if err != nil {
+			return budget.MonthlyDecision{}, err
+		}
+		if !organization.Policy.Enabled && !project.Policy.Enabled {
+			return budget.MonthlyDecision{Allowed: true}, nil
+		}
+		return budget.MonthlyDecision{}, ErrBillingBudgetUnavailable
+	}
 	orgScope := scope
 	orgScope.project = ""
 	organization, err := readMonthlyBudgetSettings(ctx, q, orgScope)
@@ -136,7 +177,11 @@ func monthlyIssueAdmitted(ctx context.Context, q nativeQueryer, id tracker.WorkI
 	return admitted, err
 }
 
-func checkMonthlyClaim(ctx context.Context, q nativeQueryer, scope nativeScope, machine tracker.MachineID, id tracker.WorkItemID, workspace bool, now time.Time) (budget.MonthlyDecision, budget.CostExposure, error) {
+func checkMonthlyClaim(ctx context.Context, q nativeQueryer, scope nativeScope, machine tracker.MachineID, id tracker.WorkItemID, workspace bool, now time.Time, selected ...tenantstore.Repository) (budget.MonthlyDecision, budget.CostExposure, error) {
+	if len(selected) > 0 && selected[0] != nil {
+		decision, err := checkMonthlyBudget(ctx, q, scope, budget.CostExposure{}, false, now, selected[0])
+		return decision, budget.CostExposure{}, err
+	}
 	exposure, err := monthlyClaimExposure(ctx, q, scope, machine, workspace)
 	if err != nil {
 		return budget.MonthlyDecision{}, exposure, err
@@ -161,7 +206,7 @@ func recordMonthlyAdmission(ctx context.Context, tx *sql.Tx, id tracker.WorkItem
 	return err
 }
 
-func checkMonthlyLease(ctx context.Context, q nativeQueryer, record leaseRecord, now time.Time) error {
+func checkMonthlyLease(ctx context.Context, q nativeQueryer, record leaseRecord, now time.Time, selected ...tenantstore.Repository) error {
 	var scope nativeScope
 	var raw sql.NullString
 	var profile string
@@ -174,6 +219,16 @@ func checkMonthlyLease(ctx context.Context, q nativeQueryer, record leaseRecord,
 	}
 	if profile != "native" {
 		return nil
+	}
+	if len(selected) > 0 && selected[0] != nil {
+		organization, project, err := selectedBillingBudgetState(ctx, selected[0], scope)
+		if err != nil {
+			return err
+		}
+		if !organization.Policy.Enabled && !project.Policy.Enabled {
+			return nil
+		}
+		return ErrBillingBudgetUnavailable
 	}
 	var exposure budget.CostExposure
 	if raw.Valid {
@@ -209,13 +264,13 @@ func checkMonthlyLease(ctx context.Context, q nativeQueryer, record leaseRecord,
 	return nil
 }
 
-func monthlySpriteAllowed(ctx context.Context, q nativeQueryer, scope nativeScope, now time.Time) (bool, error) {
+func monthlySpriteAllowed(ctx context.Context, q nativeQueryer, scope nativeScope, now time.Time, selected ...tenantstore.Repository) (bool, error) {
 	exposure := budget.CostExposure{SpriteInfrastructure: true}
-	decision, err := checkMonthlyBudget(ctx, q, scope, exposure, false, now)
+	decision, err := checkMonthlyBudget(ctx, q, scope, exposure, false, now, selected...)
 	if err != nil || decision.Allowed {
 		return decision.Allowed, err
 	}
-	decision, err = checkMonthlyBudget(ctx, q, scope, exposure, true, now)
+	decision, err = checkMonthlyBudget(ctx, q, scope, exposure, true, now, selected...)
 	if err != nil || !decision.Allowed {
 		return false, err
 	}
@@ -296,7 +351,7 @@ func (s *Service) stopMonthlyBudgetTurns(ctx context.Context, organization track
 		if err != nil || record.OrganizationID != organization {
 			continue
 		}
-		decision, err := checkMonthlyBudget(ctx, s.database.reader, nativeScope{organization: organization, project: record.ProjectID}, budget.CostExposure{LunaAPI: true}, true, s.config.now())
+		decision, err := checkMonthlyBudget(ctx, s.database.reader, nativeScope{organization: organization, project: record.ProjectID}, budget.CostExposure{LunaAPI: true}, true, s.config.now(), s.database.billingRepository)
 		if err != nil {
 			s.config.Logger.Warn("Check active conversation monthly budget", "error", err)
 			continue
@@ -326,7 +381,7 @@ func (s *Service) stopMonthlyBudgetSpritePasses(ctx context.Context, organizatio
 	}
 	s.spriteWakeMu.Unlock()
 	for _, key := range keys {
-		decision, err := checkMonthlyBudget(ctx, s.database.reader, nativeScope{organization: key.organization}, budget.CostExposure{SpriteInfrastructure: true}, true, s.config.now())
+		decision, err := checkMonthlyBudget(ctx, s.database.reader, nativeScope{organization: key.organization}, budget.CostExposure{SpriteInfrastructure: true}, true, s.config.now(), s.database.billingRepository)
 		if err != nil {
 			s.config.Logger.Warn("Check active Sprite lifecycle monthly budget", "error", err)
 			continue
@@ -343,8 +398,11 @@ func (s *Service) stopMonthlyBudgetSpritePasses(ctx context.Context, organizatio
 	}
 }
 
-func checkMonthlyIssueBudget(ctx context.Context, q nativeQueryer, scope nativeScope, id tracker.WorkItemID, exposure budget.CostExposure, admitted bool, now time.Time) (budget.MonthlyDecision, error) {
-	decision, err := checkMonthlyBudget(ctx, q, scope, exposure, admitted, now)
+func checkMonthlyIssueBudget(ctx context.Context, q nativeQueryer, scope nativeScope, id tracker.WorkItemID, exposure budget.CostExposure, admitted bool, now time.Time, selected ...tenantstore.Repository) (budget.MonthlyDecision, error) {
+	decision, err := checkMonthlyBudget(ctx, q, scope, exposure, admitted, now, selected...)
+	if len(selected) > 0 && selected[0] != nil {
+		return decision, err
+	}
 	if err != nil || !decision.Allowed || admitted {
 		return decision, err
 	}
@@ -370,7 +428,14 @@ func checkMonthlyIssueBudget(ctx context.Context, q nativeQueryer, scope nativeS
 	return decision, nil
 }
 
-func monthlyBudgetRetainsRunner(ctx context.Context, q nativeQueryer, scope nativeScope, machine tracker.MachineID) (bool, error) {
+func monthlyBudgetRetainsRunner(ctx context.Context, q nativeQueryer, scope nativeScope, machine tracker.MachineID, selected ...tenantstore.Repository) (bool, error) {
+	if len(selected) > 0 && selected[0] != nil {
+		organization, project, err := selectedBillingBudgetState(ctx, selected[0], scope)
+		if err != nil || !organization.Policy.Enabled && !project.Policy.Enabled {
+			return false, err
+		}
+		return false, ErrBillingBudgetUnavailable
+	}
 	orgScope := scope
 	orgScope.project = ""
 	orgPolicy, err := readMonthlyBudgetSettings(ctx, q, orgScope)

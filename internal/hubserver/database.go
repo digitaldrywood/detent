@@ -16,7 +16,9 @@ import (
 
 	"github.com/shirou/gopsutil/v4/process"
 
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/instancelock"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -54,6 +56,8 @@ type database struct {
 	linkedSourceBase       string
 	db                     *sql.DB
 	postgres               *postgres.Repository
+	billingRepository      tenantstore.Repository
+	billingAuditStore      attachment.DetailStore
 	reader                 *sql.DB
 	authReader             *sql.DB
 	claimReader            *sql.DB
@@ -91,7 +95,16 @@ func openDatabase(ctx context.Context, cfg Config) (*database, error) {
 		return nil, err
 	}
 	if cfg.DatabaseBackend == DatabasePostgres {
-		return openPostgresDatabase(ctx, *cfg.Postgres)
+		store, err := openPostgresDatabase(ctx, *cfg.Postgres)
+		if err != nil {
+			return nil, err
+		}
+		store.billingRepository = cfg.BillingRepository
+		if store.billingRepository == nil {
+			store.billingRepository = store.postgres
+		}
+		store.billingAuditStore = cfg.RunDetails
+		return store, nil
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -124,7 +137,7 @@ func openDatabase(ctx context.Context, cfg Config) (*database, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	store := &database{dashboardCommitted: dashboardCommitted, logger: logger, db: db, lock: lock, path: path, now: cfg.now, newLeaseID: cfg.newLeaseID, aiCreditCostMultiplier: defaultAICreditCostMultiplier}
+	store := &database{dashboardCommitted: dashboardCommitted, logger: logger, db: db, lock: lock, path: path, now: cfg.now, newLeaseID: cfg.newLeaseID, aiCreditCostMultiplier: defaultAICreditCostMultiplier, billingRepository: cfg.BillingRepository, billingAuditStore: cfg.RunDetails}
 	if cfg.Hosted != nil {
 		store.linkedSourceBase = cfg.Hosted.PublicURL
 		if cfg.Hosted.SharedEntry != nil {

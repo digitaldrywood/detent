@@ -7,6 +7,9 @@ import (
 	"errors"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -40,6 +43,9 @@ func (d *database) includedAICredits(ctx context.Context, query nativeQueryer, o
 	if d.plans() == nil {
 		return result, nil
 	}
+	if d.billingRepository != nil {
+		return d.includedAICreditsRecord(ctx, organization, at)
+	}
 	var raw string
 	err := query.QueryRowContext(ctx, "SELECT state_json FROM hosted_billing_accounts WHERE organization_id=?", organization).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -70,6 +76,50 @@ func (d *database) includedAICredits(ctx context.Context, query nativeQueryer, o
 		err = nil
 	}
 	return result, err
+}
+
+func (d *database) includedAICreditsRecord(ctx context.Context, organization tracker.OrganizationID, at time.Time) (includedAICredits, error) {
+	var result includedAICredits
+	err := d.billingRepository.ReadTenant(ctx, organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		var err error
+		result, err = d.includedAICreditsFromReader(ctx, reader, at)
+		return err
+	})
+	return result, err
+}
+
+func (d *database) includedAICreditsFromReader(ctx context.Context, reader billingstore.Reader, at time.Time) (includedAICredits, error) {
+	var result includedAICredits
+	account, err := reader.BillingAccount(ctx)
+	if errors.Is(err, corestore.ErrNotFound) {
+		return result, nil
+	}
+	if err != nil {
+		return result, err
+	}
+	state := hostedBillingState{Snapshot: account.Snapshot, Plan: PlanReference{ID: account.Plan.ID, Version: account.Plan.Version}, AccessUntil: account.AccessUntil}
+	if !state.AccessUntil.After(at) || state.Snapshot.PeriodStart.IsZero() || state.Snapshot.PeriodStart.After(at) || !state.Snapshot.PeriodEnd.After(at) {
+		return result, nil
+	}
+	plan, err := d.readHostedPlanRecord(ctx, reader, state.Plan)
+	if err != nil {
+		return result, err
+	}
+	amount := plan.includedAICreditMicros()
+	if amount == nil || *amount == 0 {
+		return result, nil
+	}
+	window := chatBillingWindow(at, state.Snapshot)
+	result = includedAICredits{AllowanceMicros: *amount, PeriodStart: window.From, PeriodEnd: window.To, PlanName: plan.Name}
+	period, err := reader.BillingCreditPeriod(ctx, d.aiCreditMode, window.From, window.To)
+	if errors.Is(err, corestore.ErrNotFound) {
+		return result, nil
+	}
+	if err != nil {
+		return result, err
+	}
+	result.UsedMicros = period.UsedMicros
+	return result, nil
 }
 
 func (d *database) spendIncludedAICredits(ctx context.Context, tx *sql.Tx, organization tracker.OrganizationID, at time.Time, amount int64) (int64, error) {

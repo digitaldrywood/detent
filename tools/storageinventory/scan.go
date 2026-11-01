@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -12,12 +13,15 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/digitaldrywood/detent/internal/storagecatalog"
 )
 
 type sourceInventory struct {
-	Tables map[string]json.RawMessage `json:"tables"`
-	Owners map[string]sourceOwner     `json:"owners"`
-	Tests  map[string]bool            `json:"-"`
+	Tables       map[string]json.RawMessage                     `json:"tables"`
+	TargetTables map[string]storagecatalog.TargetClassification `json:"target_tables"`
+	Owners       map[string]sourceOwner                         `json:"owners"`
+	Tests        map[string]bool                                `json:"-"`
 }
 
 type sourceOwner struct {
@@ -27,7 +31,7 @@ type sourceOwner struct {
 }
 
 func scanRepository(files fs.FS) (sourceInventory, error) {
-	result := sourceInventory{Tables: make(map[string]json.RawMessage), Owners: make(map[string]sourceOwner), Tests: make(map[string]bool)}
+	result := sourceInventory{Tables: make(map[string]json.RawMessage), TargetTables: make(map[string]storagecatalog.TargetClassification), Owners: make(map[string]sourceOwner), Tests: make(map[string]bool)}
 	for _, source := range []struct{ name, file string }{
 		{"hub", "internal/hubserver/testdata/hub_classification.json"},
 		{"metrics", "internal/hubserver/testdata/metrics_classification.json"},
@@ -45,6 +49,16 @@ func scanRepository(files fs.FS) (sourceInventory, error) {
 		for table, classification := range tables {
 			result.Tables[source.name+"/"+table] = classification
 		}
+	}
+	targetData, err := fs.ReadFile(files, "internal/hubserver/postgres/testdata/target_classification.json")
+	if err != nil {
+		return result, fmt.Errorf("read target table classification: %w", err)
+	}
+	if err := json.Unmarshal(targetData, &result.TargetTables); err != nil {
+		return result, fmt.Errorf("decode target table classification: %w", err)
+	}
+	if result.TargetTables == nil {
+		return result, errors.New("decode target table classification: empty map")
 	}
 	for _, root := range []string{"internal", "cmd", "db"} {
 		err := fs.WalkDir(files, root, func(name string, entry fs.DirEntry, walkErr error) error {
@@ -80,6 +94,23 @@ func scanRepository(files fs.FS) (sourceInventory, error) {
 			if err != nil {
 				return err
 			}
+			if strings.Contains(name, "/postgres/migrations/") {
+				matches := targetCreateTable.FindAllSubmatch(data, -1)
+				if len(matches) != len(targetCreateTableToken.FindAll(data, -1)) {
+					return fmt.Errorf("scan PostgreSQL migration %s: unrecognized CREATE TABLE declaration", name)
+				}
+				for _, match := range matches {
+					schema, table := "public", strings.Trim(string(match[1]), `"`)
+					if len(match[2]) != 0 {
+						schema, table = strings.Trim(string(match[1]), `"`), strings.Trim(string(match[2]), `"`)
+					}
+					route := schema + "/" + table
+					if _, covered := result.TargetTables[route]; covered {
+						owner.Tables = append(owner.Tables, route)
+					}
+				}
+				slices.Sort(owner.Tables)
+			}
 			if len(owner.Operations) != 0 {
 				result.Owners[name] = owner
 			}
@@ -93,6 +124,8 @@ func scanRepository(files fs.FS) (sourceInventory, error) {
 }
 
 var sqlStart = regexp.MustCompile(`(?is)^\s*(?:(?:--[^\n]*\n|/\*.*?\*/)\s*)*(?:SELECT\s|WITH\s|INSERT\s+(?:OR\s+\w+\s+)?INTO\s|REPLACE\s+INTO\s|UPDATE\s+\S+(?:\s+(?:AS\s+)?\w+)?\s+SET\s|DELETE\s+FROM\s|(?:CREATE|ALTER|DROP)\s+(?:(?:VIRTUAL|TEMP|TEMPORARY|UNIQUE)\s+)?(?:TABLE|INDEX|VIEW|TRIGGER|FUNCTION|SCHEMA|ROLE|DATABASE)\s|TRUNCATE\s|PRAGMA\s)`)
+var targetCreateTable = regexp.MustCompile(`(?i)CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?("[A-Za-z_][A-Za-z_0-9]*"|[A-Za-z_][A-Za-z_0-9]*)(?:\s*\.\s*("[A-Za-z_][A-Za-z_0-9]*"|[A-Za-z_][A-Za-z_0-9]*))?`)
+var targetCreateTableToken = regexp.MustCompile(`(?i)\bCREATE\s+TABLE\b`)
 var sqlWord = regexp.MustCompile(`[A-Za-z_][A-Za-z_0-9]*`)
 var namedQuery = regexp.MustCompile(`(?m)^\s*--\s*name:\s+(\w+)\s+:(\w+)`)
 

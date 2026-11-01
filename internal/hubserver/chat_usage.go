@@ -10,6 +10,9 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/billing"
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -84,6 +87,22 @@ func (d *database) recordConversationUsage(ctx context.Context, tx *sql.Tx, usag
 	if err != nil {
 		return err
 	}
+	if count == 0 && d.billingRepository != nil && d.aiCreditMode != "" && usage.Provider == "openai" {
+		var priorCost sql.NullFloat64
+		if err := tx.QueryRowContext(ctx, `SELECT cost_usd FROM conversation_usage WHERE organization_id=? AND turn_id=?`, usage.OrganizationID, usage.TurnID).Scan(&priorCost); err != nil {
+			return err
+		}
+		if priorCost.Valid {
+			costUSD = priorCost.Float64
+			cost = priorCost.Float64
+		} else {
+			cost = nil
+		}
+	}
+	if d.billingRepository != nil && d.aiCreditMode != "" && usage.Provider == "openai" && cost != nil {
+		micros := int64(math.Ceil(costUSD * 1000000 * d.aiCreditCostMultiplier))
+		return d.recordConversationCredit(ctx, usage.OrganizationID, usage.TurnID, at, micros)
+	}
 	if count == 1 && d.aiCreditMode != "" && usage.Provider == "openai" && cost != nil {
 		micros := int64(math.Ceil(costUSD * 1000000 * d.aiCreditCostMultiplier))
 		included, err := d.spendIncludedAICredits(ctx, tx, usage.OrganizationID, at, micros)
@@ -98,6 +117,24 @@ func (d *database) recordConversationUsage(ctx context.Context, tx *sql.Tx, usag
 		}
 	}
 	return nil
+}
+
+func (d *database) recordConversationCredit(ctx context.Context, organization tracker.OrganizationID, turnID string, at time.Time, micros int64) error {
+	if micros < 0 {
+		return errors.New("invalid conversation credit amount")
+	}
+	const sourcePrefix = "usage:"
+	source := sourcePrefix + turnID
+	return d.billingRepository.WriteTenant(ctx, organization, corestore.Serving, func(writer tenantstore.Writer) error {
+		included, err := d.includedAICreditsFromReader(ctx, writer, at)
+		if err != nil {
+			return err
+		}
+		period := billingstore.CreditPeriod{OrganizationID: organization, Mode: d.aiCreditMode, StartsAt: included.PeriodStart, EndsAt: included.PeriodEnd, AllowanceMicros: included.AllowanceMicros, UsedMicros: included.UsedMicros}
+		row := billingstore.CreditTransaction{OrganizationID: organization, Mode: d.aiCreditMode, Source: source, AmountMicros: -micros, Kind: "usage", RecordedAt: at.UTC()}
+		_, err = writer.PostBillingUsageCredit(ctx, period, row, micros)
+		return err
+	})
 }
 
 func chatBillingWindow(now time.Time, subscription billing.Snapshot) usageWindow {

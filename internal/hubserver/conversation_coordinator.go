@@ -574,7 +574,7 @@ func (c *conversationTurnCoordinator) runTurn(conversationID string) (bool, erro
 		if len(pending) == 0 {
 			return errCoordinatorNothingPending
 		}
-		decision, err := checkMonthlyBudget(ctx, tx, nativeScope{organization: record.OrganizationID, project: record.ProjectID}, budget.CostExposure{LunaAPI: true}, false, now)
+		decision, err := checkMonthlyBudget(ctx, tx, nativeScope{organization: record.OrganizationID, project: record.ProjectID}, budget.CostExposure{LunaAPI: true}, false, now, c.service.server.database.billingRepository)
 		if err != nil {
 			return err
 		}

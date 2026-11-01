@@ -10,11 +10,15 @@ import (
 	"errors"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -46,29 +50,46 @@ type hostedGrantRecord struct {
 }
 
 type hostedEntitlementReport struct {
-	OrganizationID string              `json:"organization_id"`
-	Base           PlanReference       `json:"base"`
-	EffectiveBase  PlanReference       `json:"effective_base"`
-	Source         string              `json:"source"`
-	Revision       int64               `json:"revision"`
-	Features       []string            `json:"features"`
-	Grants         []hostedGrantRecord `json:"grants"`
-	GrantHistory   []hostedGrantRecord `json:"grant_history"`
-	Plans          []HostedPlan        `json:"plans"`
+	OrganizationID   string              `json:"organization_id"`
+	Base             PlanReference       `json:"base"`
+	EffectiveBase    PlanReference       `json:"effective_base"`
+	Source           string              `json:"source"`
+	Revision         int64               `json:"revision"`
+	Features         []string            `json:"features"`
+	Grants           []hostedGrantRecord `json:"grants"`
+	GrantHistory     []hostedGrantRecord `json:"grant_history"`
+	NextGrantHistory string              `json:"next_grant_history,omitempty"`
+	Plans            []HostedPlan        `json:"plans"`
 }
 
 func (s *Service) hostedPlanReport(c echo.Context) error {
 	if !s.entitlementAdministrator(c) || c.Param("organization") != s.config.Hosted.OrganizationID {
 		return s.hostedJSONError(c, http.StatusForbidden, "Entitlement administrator access is required")
 	}
-	report, err := s.database.hostedEntitlementReport(c.Request().Context())
+	after := int64(0)
+	if value := c.QueryParam("history_after"); value != "" {
+		parsed, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || parsed < 0 {
+			return s.invalidAPIRequest(c, errors.New("invalid grant history cursor"))
+		}
+		after = parsed
+	}
+	limit := 100
+	if value := c.QueryParam("history_limit"); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed < 1 || parsed > 100 {
+			return s.invalidAPIRequest(c, errors.New("grant history limit must be between 1 and 100"))
+		}
+		limit = parsed
+	}
+	report, err := s.database.hostedEntitlementReport(c.Request().Context(), after, limit)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	return c.JSON(http.StatusOK, report)
 }
 
-func (d *database) hostedEntitlementReport(ctx context.Context) (hostedEntitlementReport, error) {
+func (d *database) hostedEntitlementReport(ctx context.Context, historyAfter int64, historyLimit int) (hostedEntitlementReport, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	var report hostedEntitlementReport
@@ -88,17 +109,40 @@ func (d *database) hostedEntitlementReport(ctx context.Context) (hostedEntitleme
 	if err != nil {
 		return report, err
 	}
-	granted := make(map[string]hostedGrantRecord)
-	audits, err := d.reader.QueryContext(ctx, "SELECT actor_id,reason,recorded_at,record_json FROM hosted_plan_audit WHERE action = 'grant'")
+	if d.billingRepository != nil {
+		if d.billingAuditStore == nil {
+			return report, errors.New("hosted plan audit storage is unavailable")
+		}
+		history, next, err := d.readHostedGrantAudits(ctx, historyAfter, historyLimit)
+		if err != nil {
+			return report, err
+		}
+		report = d.finishHostedEntitlementReport(report, entitlement, now)
+		report.GrantHistory = history
+		d.mergeHostedGrantAuditDetails(&report, history)
+		if next > 0 {
+			report.NextGrantHistory = strconv.FormatInt(next, 10)
+		}
+		return report, nil
+	}
+	granted := make([]hostedGrantRecord, 0, historyLimit)
+	audits, err := d.reader.QueryContext(ctx, "SELECT id,actor_id,reason,recorded_at,record_json FROM hosted_plan_audit WHERE action = 'grant' AND id > ? ORDER BY id LIMIT ?", historyAfter, historyLimit+1)
 	if err != nil {
 		return report, err
 	}
 	defer audits.Close()
+	var lastID int64
+	var included int
 	for audits.Next() {
+		var id int64
 		var actor, reason, recorded, raw string
 		var command hostedPlanCommand
-		if err := audits.Scan(&actor, &reason, &recorded, &raw); err != nil {
+		if err := audits.Scan(&id, &actor, &reason, &recorded, &raw); err != nil {
 			return report, err
+		}
+		if included == historyLimit {
+			report.NextGrantHistory = strconv.FormatInt(lastID, 10)
+			break
 		}
 		if err := json.Unmarshal([]byte(raw), &command); err != nil {
 			return report, err
@@ -107,20 +151,111 @@ func (d *database) hostedEntitlementReport(ctx context.Context) (hostedEntitleme
 		if at, err := parseTimeValue(recorded); err == nil {
 			record.GrantedAt = &at
 		}
-		granted[command.GrantID] = record
+		grant, err := d.readHostedGrant(ctx, command.GrantID)
+		if err != nil {
+			return report, err
+		}
+		record.HostedGrant = grant
+		granted = append(granted, record)
+		included++
+		lastID = id
 	}
 	if err := audits.Err(); err != nil {
 		return report, err
 	}
+	report = d.finishHostedEntitlementReport(report, entitlement, now)
+	report.GrantHistory = granted
+	d.mergeHostedGrantAuditDetails(&report, granted)
+	return report, nil
+}
+
+func (d *database) finishHostedEntitlementReport(report hostedEntitlementReport, entitlement HostedEntitlement, now time.Time) hostedEntitlementReport {
 	for _, grant := range entitlement.Grants {
-		record := granted[grant.ID]
-		record.HostedGrant = grant
-		report.GrantHistory = append(report.GrantHistory, record)
 		if grant.RevokedAt == nil && !grant.StartsAt.After(now) && (grant.ExpiresAt == nil || grant.ExpiresAt.After(now)) {
-			report.Grants = append(report.Grants, record)
+			report.Grants = append(report.Grants, hostedGrantRecord{HostedGrant: grant})
 		}
 	}
-	return report, nil
+	return report
+}
+
+func (d *database) mergeHostedGrantAuditDetails(report *hostedEntitlementReport, history []hostedGrantRecord) {
+	byID := make(map[string]hostedGrantRecord, len(history))
+	for _, record := range history {
+		byID[record.ID] = record
+	}
+	for i := range report.Grants {
+		if record, ok := byID[report.Grants[i].ID]; ok {
+			report.Grants[i].Reason = record.Reason
+			report.Grants[i].GrantedBy = record.GrantedBy
+			report.Grants[i].GrantedAt = record.GrantedAt
+		}
+	}
+}
+
+func (d *database) readHostedGrantAudits(ctx context.Context, after int64, limit int) ([]hostedGrantRecord, int64, error) {
+	granted := make([]hostedGrantRecord, 0, limit)
+	var audits []billingstore.PlanAudit
+	var hasMore bool
+	err := d.readBillingTenant(ctx, func(reader tenantstore.Reader) error {
+		var err error
+		audits, err = reader.BillingPlanAudits(ctx, after, limit)
+		if err != nil || len(audits) < limit {
+			return err
+		}
+		following, err := reader.BillingPlanAudits(ctx, audits[len(audits)-1].ID, 1)
+		hasMore = len(following) > 0
+		return err
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+	var next int64
+	if hasMore {
+		next = audits[limit-1].ID
+	}
+	for _, audit := range audits {
+		if audit.Action != "grant" {
+			continue
+		}
+		archive, err := d.billingAuditStore.ReadDetail(ctx, string(d.hostedOrganization), audit.Reference.ArchiveReference())
+		if err != nil {
+			return nil, 0, err
+		}
+		var command hostedPlanCommand
+		if err := json.Unmarshal(archive, &command); err != nil {
+			return nil, 0, err
+		}
+		grant, err := d.readHostedGrant(ctx, command.GrantID)
+		if err != nil {
+			return nil, 0, err
+		}
+		granted = append(granted, hostedGrantRecord{HostedGrant: grant, Reason: command.Reason, GrantedBy: audit.ActorID, GrantedAt: &audit.RecordedAt})
+	}
+	return granted, next, nil
+}
+
+func (d *database) readHostedGrant(ctx context.Context, id string) (HostedGrant, error) {
+	if d.billingRepository != nil {
+		var result HostedGrant
+		err := d.readBillingTenant(ctx, func(reader tenantstore.Reader) error {
+			grant, err := reader.BillingGrant(ctx, id)
+			if err != nil {
+				return err
+			}
+			result = HostedGrant{ID: grant.ID, Plan: PlanReference{ID: grant.Plan.ID, Version: grant.Plan.Version}, Scope: grant.Scope, StartsAt: grant.StartsAt, ExpiresAt: grant.ExpiresAt, RevokedAt: grant.RevokedAt}
+			return nil
+		})
+		return result, err
+	}
+	var raw string
+	if err := d.reader.QueryRowContext(ctx, "SELECT record_json FROM hosted_complimentary_grants WHERE id = ?", id).Scan(&raw); err != nil {
+		return HostedGrant{}, err
+	}
+	var grant HostedGrant
+	if err := json.Unmarshal([]byte(raw), &grant); err != nil {
+		return HostedGrant{}, err
+	}
+	return grant, nil
 }
 
 func (s *Service) updateHostedPlan(c echo.Context) error {
@@ -151,6 +286,13 @@ func (d *database) applyHostedPlanCommand(ctx context.Context, actor string, com
 	}
 	digest := sha256.Sum256(raw)
 	hash := hex.EncodeToString(digest[:])
+	if d.billingRepository != nil {
+		now, err := d.currentTime()
+		if err != nil {
+			return err
+		}
+		return d.applyHostedPlanCommandRecord(ctx, actor, command, hash, raw, now)
+	}
 	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -240,6 +382,124 @@ func (d *database) applyHostedPlanCommand(ctx context.Context, actor string, com
 		return err
 	}
 	return tx.Commit()
+}
+
+func (d *database) applyHostedPlanCommandRecord(ctx context.Context, actor string, command hostedPlanCommand, hash string, raw []byte, now time.Time) error {
+	if d.billingAuditStore == nil {
+		return errors.New("hosted plan audit storage is unavailable")
+	}
+	archive, err := d.billingAuditStore.StoreDetail(ctx, string(d.hostedOrganization), raw)
+	if err != nil {
+		return err
+	}
+	reference := billingstore.AuditReferenceFromArchive(archive)
+	return d.writeBillingTenant(ctx, func(writer tenantstore.Writer) error {
+		previous, err := writer.BillingPlanAudit(ctx, command.ID)
+		if err == nil {
+			if previous.RequestHash != hash {
+				return nativeConflict(tracker.Revision(command.ExpectedRevision))
+			}
+			return nil
+		}
+		if !errors.Is(err, corestore.ErrNotFound) {
+			return err
+		}
+		assignment, err := writer.BillingAssignment(ctx)
+		if err != nil {
+			return err
+		}
+		if assignment.Revision != command.ExpectedRevision {
+			return nativeConflict(tracker.Revision(assignment.Revision))
+		}
+		if slices.Contains([]string{"base", "subscription", "grant"}, command.Action) {
+			if _, err := d.readHostedPlanRecord(ctx, writer, command.Plan); err != nil {
+				return nativePublicInvalid("The plan version must exist")
+			}
+		}
+		switch command.Action {
+		case "create_plan":
+			if command.Definition == nil || command.Plan != command.Definition.PlanReference || validateHostedPlan(*command.Definition) != nil {
+				return nativePublicInvalid("A valid new plan definition matching the plan reference is required")
+			}
+			plan := normalizeHostedPlan(*command.Definition)
+			var price *int64
+			if plan.MonthlyUSDCents != nil {
+				value := *plan.MonthlyUSDCents
+				price = &value
+			}
+			if err := writer.CreateBillingPlan(ctx, billingstore.Plan{OrganizationID: d.hostedOrganization, PlanReference: billingstore.PlanReference{ID: plan.ID, Version: plan.Version}, Name: plan.Name, MonthlyUSDCents: price, Allowances: plan.Allowances, Features: plan.Features}); err != nil {
+				return err
+			}
+			assignment.Revision++
+			if err := writer.SetBillingAssignment(ctx, assignment, command.ExpectedRevision); err != nil {
+				return err
+			}
+		case "base":
+			assignment.Base = billingstore.PlanReference{ID: command.Plan.ID, Version: command.Plan.Version}
+			assignment.Revision++
+			if err := writer.SetBillingAssignment(ctx, assignment, command.ExpectedRevision); err != nil {
+				return err
+			}
+		case "subscription":
+			if command.ExpiresAt == nil || !command.ExpiresAt.After(now) {
+				return nativePublicInvalid("Subscription-derived access requires a future validity deadline")
+			}
+			assignment.Subscription = &billingstore.PlanReference{ID: command.Plan.ID, Version: command.Plan.Version}
+			assignment.ExpiresAt = command.ExpiresAt
+			assignment.Revision++
+			if err := writer.SetBillingAssignment(ctx, assignment, command.ExpectedRevision); err != nil {
+				return err
+			}
+		case "end_subscription":
+			assignment.Subscription = nil
+			assignment.ExpiresAt = nil
+			assignment.Revision++
+			if err := writer.SetBillingAssignment(ctx, assignment, command.ExpectedRevision); err != nil {
+				return err
+			}
+		case "grant":
+			startsAt, err := validateHostedGrantCommand(command, now)
+			if err != nil {
+				return err
+			}
+			if err := writer.CreateBillingGrant(ctx, billingstore.Grant{OrganizationID: d.hostedOrganization, ID: command.GrantID, Plan: billingstore.PlanReference{ID: command.Plan.ID, Version: command.Plan.Version}, Scope: command.Scope, StartsAt: startsAt, ExpiresAt: command.ExpiresAt}); err != nil {
+				return err
+			}
+			assignment.Revision++
+			if err := writer.SetBillingAssignment(ctx, assignment, command.ExpectedRevision); err != nil {
+				return err
+			}
+		case "revoke":
+			if err := writer.RevokeBillingGrant(ctx, command.GrantID, now.UTC()); err != nil {
+				return err
+			}
+			assignment.Revision++
+			if err := writer.SetBillingAssignment(ctx, assignment, command.ExpectedRevision); err != nil {
+				return err
+			}
+		}
+		_, err = writer.CreateBillingPlanAudit(ctx, billingstore.PlanAudit{OrganizationID: d.hostedOrganization, CommandID: command.ID, RequestHash: hash, ActorID: actor, Action: command.Action, RecordedAt: now.UTC(), Reference: reference})
+		return err
+	})
+}
+
+func validateHostedGrantCommand(command hostedPlanCommand, now time.Time) (time.Time, error) {
+	if !hostedSafeID(command.GrantID) || len(command.Scope) == 0 || len(command.Scope) > len(hostedAllowanceNames())+len(hostedFeatureNames()) {
+		return time.Time{}, nativePublicInvalid("A grant ID and explicit allowance or feature scope are required")
+	}
+	for _, scope := range command.Scope {
+		if !slices.Contains(hostedAllowanceNames(), scope) && !slices.Contains(hostedFeatureNames(), scope) {
+			return time.Time{}, nativePublicInvalid("Grant scope is unknown")
+		}
+	}
+	startsAt := command.StartsAt
+	if startsAt.IsZero() {
+		startsAt = now.UTC()
+	}
+	if command.ExpiresAt != nil && (!command.ExpiresAt.After(now) || !command.ExpiresAt.After(startsAt)) {
+		return time.Time{}, nativePublicInvalid("Grant expiry must follow its start and the current time")
+	}
+	return startsAt, nil
 }
 
 func (d *database) auditHostedPlanCommand(ctx context.Context, tx *sql.Tx, actor string, command hostedPlanCommand, now time.Time) error {

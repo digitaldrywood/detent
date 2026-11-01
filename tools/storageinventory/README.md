@@ -9,13 +9,23 @@ constants and database lifecycle code. A target route
 means work belongs to that family; it does not mean its serving adapter is wired.
 Tenant access and billing remain distinct from global platform authority.
 
+Target-only PostgreSQL tables are listed separately in
+`internal/hubserver/postgres/testdata/target_classification.json`,
+`internal/storagecatalog/targets/v1.json` and the `target_tables` section here.
+The checker requires the three contracts to agree and includes newly covered
+target tables in their migration owner's inventory without treating them as SQLite
+source tables. Every PostgreSQL migration file is enumerated: existing files are
+pinned by digest as the legacy boundary, while each new migration requires explicit
+target contract coverage. This does not claim complete PostgreSQL inventory
+coverage; reconcile the pre-existing target-only schema before cutover.
+
 Run `go run ./tools/storageinventory` from the repository root. The same check runs
 in `go test -timeout=120s ./tools/storageinventory`. `-scan` prints discovered
 inventory for comparison; it never assigns routes or updates the contract.
 
-The checker reads the four existing `*_classification.json` inventories without
-changing their schema or storage-class checks. Those checks continue to reject
-schema changes without classification. Routing rejects newly classified tables,
+The checker reads the four existing SQLite source classification inventories
+without changing their schema or storage-class checks, plus the separate
+PostgreSQL target-only classification. These checks reject schema changes without classification. Routing rejects newly classified tables,
 new SQL owner files, changed per-symbol execution/preparation inventories, new
 named SQL queries and stale entries. Route families, transaction participants and
 existing parity-test references must resolve. Updating an inventory requires

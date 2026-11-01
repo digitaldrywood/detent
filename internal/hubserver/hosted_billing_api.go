@@ -13,6 +13,9 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/billing"
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 )
 
@@ -78,6 +81,28 @@ func (s *Service) prepareHostedCheckout(ctx context.Context, actor, price string
 	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancelRead()
 	var checkout hostedCheckout
+	if s.database.billingRepository != nil {
+		err := s.database.readBillingTenant(readCtx, func(reader tenantstore.Reader) error {
+			account, err := reader.BillingAccount(readCtx)
+			if err != nil {
+				return err
+			}
+			checkout = hostedCheckout{Key: account.Checkout.Key, PriceID: account.Checkout.PriceID, ExpiresAt: account.Checkout.ExpiresAt, Session: account.Checkout.Session}
+			return nil
+		})
+		if err != nil {
+			return checkout, err
+		}
+		now := s.config.now()
+		if checkout.ExpiresAt.After(now) {
+			if checkout.PriceID != price {
+				return checkout, errors.New("a different checkout is pending")
+			}
+			return checkout, nil
+		}
+		checkout = hostedCheckout{Key: "detent_" + s.config.newLeaseID(), PriceID: price, ExpiresAt: now.Truncate(time.Second).Add(time.Hour)}
+		return checkout, s.saveHostedCheckout(ctx, actor, checkout, "checkout_requested")
+	}
 	var raw string
 	if err := s.database.reader.QueryRowContext(readCtx, "SELECT checkout_json FROM hosted_billing_accounts WHERE organization_id=?", s.config.Hosted.OrganizationID).Scan(&raw); err != nil {
 		return checkout, err
@@ -107,6 +132,26 @@ func (s *Service) saveHostedCheckout(ctx context.Context, actor string, checkout
 	}{checkout.Key, checkout.PriceID})
 	if err != nil {
 		return err
+	}
+	if s.database.billingRepository != nil {
+		if s.database.billingAuditStore == nil {
+			return errors.New("hosted billing audit storage is unavailable")
+		}
+		archive, err := s.database.billingAuditStore.StoreDetail(ctx, string(s.database.hostedOrganization), audit)
+		if err != nil {
+			return err
+		}
+		return s.database.writeBillingTenant(ctx, func(writer tenantstore.Writer) error {
+			account, err := writer.BillingAccount(ctx)
+			if err != nil {
+				return err
+			}
+			account.Checkout = billingstore.Checkout{Key: checkout.Key, PriceID: checkout.PriceID, ExpiresAt: checkout.ExpiresAt, Session: checkout.Session}
+			if err := writer.SetBillingAccount(ctx, account); err != nil {
+				return err
+			}
+			return writer.CreateBillingAudit(ctx, billingstore.Audit{OrganizationID: s.database.hostedOrganization, ActorID: actor, Action: action, RecordedAt: s.config.now().UTC(), Reference: billingstore.AuditReferenceFromArchive(archive)})
+		})
 	}
 	tx, err := s.database.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -161,6 +206,22 @@ func (s *Service) hostedBillingPortal(c echo.Context) error {
 }
 
 func (s *Service) recordBillingAction(ctx context.Context, actor, action string) error {
+	if s.database.billingRepository != nil {
+		if s.database.billingAuditStore == nil {
+			return errors.New("hosted billing audit storage is unavailable")
+		}
+		raw, err := json.Marshal(map[string]string{"action": action})
+		if err != nil {
+			return err
+		}
+		archive, err := s.database.billingAuditStore.StoreDetail(ctx, string(s.database.hostedOrganization), raw)
+		if err != nil {
+			return err
+		}
+		return s.database.writeBillingTenant(ctx, func(writer tenantstore.Writer) error {
+			return writer.CreateBillingAudit(ctx, billingstore.Audit{OrganizationID: s.database.hostedOrganization, ActorID: actor, Action: action, RecordedAt: s.config.now().UTC(), Reference: billingstore.AuditReferenceFromArchive(archive)})
+		})
+	}
 	tx, err := s.database.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -186,6 +247,9 @@ func (s *Service) ensureHostedCustomer(ctx context.Context, actor string) (billi
 		return billing.Binding{}, errors.New("billing provider cannot create customers")
 	}
 	organization := s.config.Hosted.OrganizationID
+	if s.database.billingRepository != nil {
+		return s.ensureHostedCustomerRecord(ctx, actor, cfg, provider, organization)
+	}
 	key := "detent-customer-" + cfg.AccountID + "-" + cfg.mode() + "-" + organization
 	now := formatHubTime(s.config.now())
 	if _, err := s.database.db.ExecContext(ctx, "INSERT INTO hosted_billing_customer_intents(organization_id,account_id,mode,idempotency_key,state,created_at,updated_at) VALUES(?,?,?,?,'pending',?,?) ON CONFLICT DO NOTHING", organization, cfg.AccountID, cfg.mode(), key, now, now); err != nil {
@@ -236,6 +300,74 @@ func (s *Service) ensureHostedCustomer(ctx context.Context, actor string) (billi
 	}
 	// Read back the customer binding installed by this request on the writer.
 	return readHostedBillingBinding(ctx, s.database.db, s.database.hostedOrganization, cfg)
+}
+
+func (s *Service) ensureHostedCustomerRecord(ctx context.Context, actor string, cfg *HostedBillingConfig, provider billing.CustomerProvider, organization string) (billing.Binding, error) {
+	d := s.database
+	key := "detent-customer-" + cfg.AccountID + "-" + cfg.mode() + "-" + organization
+	now := s.config.now().UTC()
+	intent := billingstore.CustomerIntent{OrganizationID: d.hostedOrganization, AccountID: cfg.AccountID, Mode: cfg.mode(), IdempotencyKey: key, State: "pending", CreatedAt: now, UpdatedAt: now}
+	if err := d.writeBillingTenant(ctx, func(writer tenantstore.Writer) error { return writer.CreateBillingCustomerIntent(ctx, intent) }); err != nil {
+		return billing.Binding{}, err
+	}
+	var existing billingstore.CustomerIntent
+	if err := d.readBillingTenant(ctx, func(reader tenantstore.Reader) error {
+		var err error
+		existing, err = reader.BillingCustomerIntent(ctx)
+		return err
+	}); err != nil {
+		return billing.Binding{}, err
+	}
+	if existing.State == "conflict" {
+		return billing.Binding{}, billing.ErrCustomerConflict
+	}
+	if existing.AccountID != cfg.AccountID || existing.Mode != cfg.mode() || existing.IdempotencyKey != key {
+		return billing.Binding{}, errors.New("a pending billing customer belongs to a different account or mode")
+	}
+	customer, err := provider.EnsureCustomer(ctx, billing.CustomerRequest{AccountID: cfg.AccountID, OrganizationID: organization, IdempotencyKey: key})
+	if errors.Is(err, billing.ErrCustomerConflict) {
+		existing.State, existing.UpdatedAt = "conflict", s.config.now().UTC()
+		if updateErr := d.writeBillingTenant(ctx, func(writer tenantstore.Writer) error { return writer.SetBillingCustomerIntent(ctx, existing) }); updateErr != nil {
+			return billing.Binding{}, errors.Join(err, updateErr)
+		}
+		return billing.Binding{}, err
+	}
+	if err != nil {
+		return billing.Binding{}, err
+	}
+	audit, err := json.Marshal(map[string]string{"status": "customer_bound", "mode": cfg.mode()})
+	if err != nil {
+		return billing.Binding{}, err
+	}
+	if d.billingAuditStore == nil {
+		return billing.Binding{}, errors.New("hosted billing audit storage is unavailable")
+	}
+	archive, err := d.billingAuditStore.StoreDetail(ctx, organization, audit)
+	if err != nil {
+		return billing.Binding{}, err
+	}
+	existing.State, existing.CustomerID, existing.UpdatedAt = "bound", customer, s.config.now().UTC()
+	err = d.writeBillingTenant(ctx, func(writer tenantstore.Writer) error {
+		account, err := writer.BillingAccount(ctx)
+		if errors.Is(err, corestore.ErrNotFound) {
+			account = billingstore.Account{OrganizationID: d.hostedOrganization, Mode: cfg.mode(), Binding: billing.Binding{OrganizationID: organization, AccountID: cfg.AccountID, CustomerID: customer}, Status: "free"}
+		} else if err != nil {
+			return err
+		} else if account.Binding.AccountID != cfg.AccountID || account.Binding.CustomerID != customer || account.Mode != cfg.mode() {
+			return billing.ErrCustomerConflict
+		}
+		if err := writer.SetBillingAccount(ctx, account); err != nil {
+			return err
+		}
+		if err := writer.SetBillingCustomerIntent(ctx, existing); err != nil {
+			return err
+		}
+		return writer.CreateBillingAudit(ctx, billingstore.Audit{OrganizationID: d.hostedOrganization, ActorID: actor, Action: "customer_bound", RecordedAt: s.config.now().UTC(), Reference: billingstore.AuditReferenceFromArchive(archive)})
+	})
+	if err != nil {
+		return billing.Binding{}, err
+	}
+	return d.hostedBillingBinding(ctx, cfg)
 }
 
 func hostedBillingAPI(c echo.Context) bool {

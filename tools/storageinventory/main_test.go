@@ -37,6 +37,9 @@ func TestUnmappedStorageFailsClosed(t *testing.T) {
 		{"new classified table", func(files fstest.MapFS, _ *routingManifest) {
 			files["internal/hubserver/testdata/hub_classification.json"] = &fstest.MapFile{Data: []byte(`{"projects":{},"unmapped":{}}`)}
 		}, "hub/unmapped: unmapped table"},
+		{"new target-only table", func(files fstest.MapFS, _ *routingManifest) {
+			files["internal/hubserver/postgres/testdata/target_classification.json"] = &fstest.MapFile{Data: []byte(`{"public/new_table":{"ownership":"organization-owned","scope":"new_table.organization_id","inline_payloads":[]}}`)}
+		}, "public/new_table: unmapped target table"},
 		{"direct owner", func(files fstest.MapFS, _ *routingManifest) {
 			files["internal/hubserver/new.go"] = &fstest.MapFile{Data: []byte("package fixture; func direct() { db.ExecContext(ctx, statement) }")}
 		}, "internal/hubserver/new.go: unmapped SQL owner"},
@@ -160,21 +163,23 @@ func TestUnmappedStorageFailsClosed(t *testing.T) {
 func routingFixture(t *testing.T) (fstest.MapFS, routingManifest) {
 	t.Helper()
 	files := fstest.MapFS{
-		"cmd": {Mode: fs.ModeDir}, "db": {Mode: fs.ModeDir},
+		"cmd": {Mode: fs.ModeDir}, "db": {Mode: fs.ModeDir}, "internal/hubserver/postgres/migrations": {Mode: fs.ModeDir},
 		"internal/hubserver/fixture.go": {Data: []byte("package fixture; func read() { db.QueryContext(ctx, `SELECT id FROM projects`) }")},
 	}
 	for _, name := range []string{"internal/hubserver/testdata/hub", "internal/hubserver/testdata/metrics", "internal/cloudentry/testdata/registry", "internal/cloudentry/testdata/auth"} {
 		files[name+"_classification.json"] = &fstest.MapFile{Data: []byte(`{}`)}
 	}
 	files["internal/hubserver/testdata/hub_classification.json"].Data = []byte(`{"projects":{}}`)
+	files["internal/hubserver/postgres/testdata/target_classification.json"] = &fstest.MapFile{Data: []byte(`{}`)}
 	inventory, err := scanRepository(files)
 	if err != nil {
 		t.Fatal(err)
 	}
 	manifest := routingManifest{
-		Families: map[string]string{"core": "Tenant core records"},
-		Tables:   map[string]tableRoute{"hub/projects": {Family: "core", Disposition: "target", Contract: "Preserve project identity"}},
-		Owners:   map[string]ownerRoute{"internal/hubserver/fixture.go": {Families: []string{"core"}, Disposition: "serving", Inventory: inventory.Owners["internal/hubserver/fixture.go"]}},
+		Families:     map[string]string{"core": "Tenant core records"},
+		Tables:       map[string]tableRoute{"hub/projects": {Family: "core", Disposition: "target", Contract: "Preserve project identity"}},
+		TargetTables: map[string]tableRoute{},
+		Owners:       map[string]ownerRoute{"internal/hubserver/fixture.go": {Families: []string{"core"}, Disposition: "serving", Inventory: inventory.Owners["internal/hubserver/fixture.go"]}},
 	}
 	return files, manifest
 }

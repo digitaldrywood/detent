@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/budget"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -61,7 +62,7 @@ func (d *database) claimInTransaction(ctx context.Context, tx *sql.Tx, request t
 	}
 	if found && current.session.ExpiresAt.After(now) {
 		if current.session.Machine.ID == request.MachineID && current.session.SessionID == request.SessionID {
-			if err := checkMonthlyLease(ctx, tx, current, now); err != nil {
+			if err := checkMonthlyLease(ctx, tx, current, now, d.billingRepository); err != nil {
 				return tracker.Lease{}, err
 			}
 			return leaseFromRecord(current), nil
@@ -106,7 +107,11 @@ func (d *database) claimInTransaction(ctx context.Context, tx *sql.Tx, request t
 	}
 	var exposure budget.CostExposure
 	if profile == "native" {
-		if len(exposures) > 0 {
+		if len(exposures) > 0 && d.billingRepository != nil {
+			if _, err := checkMonthlyBudget(ctx, tx, scope, exposures[0], false, now, d.billingRepository); err != nil {
+				return tracker.Lease{}, err
+			}
+		} else if len(exposures) > 0 {
 			exposure = exposures[0]
 		} else {
 			exposure, err = monthlyClaimExposure(ctx, tx, scope, request.MachineID, false)
@@ -132,7 +137,7 @@ func (d *database) claimInTransaction(ctx context.Context, tx *sql.Tx, request t
 		if err != nil {
 			return tracker.Lease{}, err
 		}
-		decision, err := checkMonthlyIssueBudget(ctx, tx, scope, request.WorkItemID, exposure, admitted, now)
+		decision, err := checkMonthlyIssueBudget(ctx, tx, scope, request.WorkItemID, exposure, admitted, now, d.billingRepository)
 		if err != nil {
 			return tracker.Lease{}, err
 		}
@@ -222,7 +227,7 @@ func (d *database) renew(ctx context.Context, request tracker.RenewRequest, poli
 	if !found {
 		return tracker.Lease{}, fmt.Errorf("%w: %s", tracker.ErrLeaseNotFound, request.LeaseID)
 	}
-	if err := requireRenewableLease(ctx, tx, record, request.FencingToken, now, policyRequired, landingCapacity, scopes...); err != nil {
+	if err := requireRenewableLease(ctx, tx, record, request.FencingToken, now, policyRequired, landingCapacity, d.billingRepository, scopes...); err != nil {
 		return tracker.Lease{}, err
 	}
 	if landingCapacity > 0 {
@@ -675,7 +680,7 @@ WHERE lease_id = ? AND fencing_token = ? AND released_at IS NULL`,
 	return cancelNativeLeaseAttempt(ctx, tx, record, now)
 }
 
-func requireRenewableLease(ctx context.Context, tx *sql.Tx, record leaseRecord, token tracker.FencingToken, now time.Time, policyRequired bool, landingCapacity int, scopes ...nativeScope) error {
+func requireRenewableLease(ctx context.Context, tx *sql.Tx, record leaseRecord, token tracker.FencingToken, now time.Time, policyRequired bool, landingCapacity int, selected tenantstore.Repository, scopes ...nativeScope) error {
 	if record.session.FencingToken != token || record.session.ReleasedAt != nil ||
 		!record.session.ExpiresAt.After(now) && (!policyRequired || len(scopes) == 0) {
 		return fmt.Errorf("%w: lease %s", tracker.ErrStaleFencingToken, record.session.ID)
@@ -709,7 +714,7 @@ func requireRenewableLease(ctx context.Context, tx *sql.Tx, record leaseRecord, 
 		}
 	}
 
-	return checkMonthlyLease(ctx, tx, record, now)
+	return checkMonthlyLease(ctx, tx, record, now, selected)
 }
 
 func requireCurrentLease(record leaseRecord, token tracker.FencingToken, now time.Time) error {

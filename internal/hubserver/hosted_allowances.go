@@ -9,7 +9,11 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
+
+var ErrBillingUsageUnavailable = errors.New("billing usage requires the selected tenant transaction")
 
 const customerContentEvent = `type NOT LIKE 'run.%' AND type <> 'scheduler.decision'`
 
@@ -56,6 +60,26 @@ func (d *database) hostedConsumption(ctx context.Context, query nativeQueryer, n
 	runtimePlans := d.plans()
 	result := make(map[string]int64)
 	if runtimePlans == nil {
+		return result, nil
+	}
+	if d.billingRepository != nil {
+		if len(metrics) != 1 || metrics[0] != "usage_windows" {
+			return nil, ErrBillingUsageUnavailable
+		}
+		window := now.Unix() / runtimePlans.WindowSeconds * runtimePlans.WindowSeconds
+		start := time.Unix(window, 0).UTC()
+		if err := d.readBillingTenant(ctx, func(reader tenantstore.Reader) error {
+			rows, err := reader.BillingUsages(ctx, start, 64)
+			if err != nil {
+				return err
+			}
+			for _, row := range rows {
+				result[row.Metric] = row.Amount
+			}
+			return nil
+		}); err != nil {
+			return nil, err
+		}
 		return result, nil
 	}
 	queries := map[string]string{
@@ -165,6 +189,9 @@ func (d *database) recordHostedUsage(ctx context.Context, tx *sql.Tx, now time.T
 	if runtimePlans == nil || amount == 0 {
 		return nil
 	}
+	if d.billingRepository != nil {
+		return ErrBillingUsageUnavailable
+	}
 	window := now.Unix() / runtimePlans.WindowSeconds * runtimePlans.WindowSeconds
 	if _, err := tx.ExecContext(ctx, "DELETE FROM hosted_usage_windows WHERE window_start <= ?", window-runtimePlans.RetentionWindows*runtimePlans.WindowSeconds); err != nil {
 		return err
@@ -250,11 +277,11 @@ func (d *database) checkHostedClaim(ctx context.Context, tx *sql.Tx, now time.Ti
 	if ctx.Value(runnerRequestBudgetContext{}) == true {
 		return nil
 	}
-	window := now.Unix() / runtimePlans.WindowSeconds * runtimePlans.WindowSeconds
-	var used int64
-	if err := tx.QueryRowContext(ctx, "SELECT coalesce(sum(amount),0) FROM hosted_usage_windows WHERE window_start = ? AND metric = 'api_mutations'", window).Scan(&used); err != nil {
+	usage, err := d.hostedConsumption(ctx, tx, now, "usage_windows")
+	if err != nil {
 		return err
 	}
+	used := usage["api_mutations"]
 	if used >= entitlement.Allowances["api_mutations"] {
 		return &hostedLimitError{Resource: "api_mutations", Allowance: entitlement.Allowances["api_mutations"], Consumption: used}
 	}

@@ -14,6 +14,8 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 )
 
@@ -86,6 +88,47 @@ func (s *Service) readCreditHistory(ctx context.Context, view *aiCreditView, p c
 	}
 	cursor := creditHistoryCursor{At: math.MaxInt64, ID: math.MaxInt64, From: from, To: to}
 	d := s.database
+	if d.billingRepository != nil {
+		if p.Cursor != "" {
+			raw, decodeErr := base64.RawURLEncoding.DecodeString(p.Cursor)
+			if decodeErr != nil || json.Unmarshal(raw, &cursor) != nil || cursor.Snapshot < 0 || cursor.At < 0 || cursor.ID <= 0 || cursor.From != from || cursor.To != to {
+				return nativeInvalid("invalid credit transaction cursor")
+			}
+		}
+		if cursor.At == math.MaxInt64 {
+			cursor.At = 253402300799999999
+		}
+		var rows []billingstore.CreditHistoryEntry
+		err := d.readBillingTenant(ctx, func(reader tenantstore.Reader) error {
+			var snapshot int64
+			var err error
+			snapshot, view.TotalRows, rows, err = reader.BillingCreditHistory(ctx, d.aiCreditMode, cursor.Snapshot, from, to, cursor.At, cursor.ID, p.Limit+1)
+			cursor.Snapshot = snapshot
+			return err
+		})
+		if err != nil {
+			return err
+		}
+		var lastID, lastAt int64
+		for _, row := range rows {
+			if len(view.History) == p.Limit {
+				cursor.At, cursor.ID = lastAt, lastID
+				raw, err := json.Marshal(cursor)
+				if err != nil {
+					return err
+				}
+				view.NextCursor = base64.RawURLEncoding.EncodeToString(raw)
+				break
+			}
+			reason, err := d.readBillingReason(ctx, row.ReasonReference)
+			if err != nil {
+				return err
+			}
+			view.History = append(view.History, aiCreditTransaction{AmountMicros: row.AmountMicros, IncludedAmountMicros: row.IncludedAmountMicros, Kind: row.Kind, Actor: row.Actor, Reason: reason, At: row.RecordedAt.UTC(), Turns: row.Turns})
+			lastID, lastAt = row.ID, row.RecordedAt.UnixMicro()
+		}
+		return nil
+	}
 	if p.Cursor == "" {
 		err = d.reader.QueryRowContext(ctx, `SELECT coalesce(max(id),0) FROM ai_credit_transactions WHERE organization_id=? AND mode=?`, d.hostedOrganization, d.aiCreditMode).Scan(&cursor.Snapshot)
 		if err != nil {
@@ -152,6 +195,9 @@ func (s *Service) hostedCreditTransactions(c echo.Context) error {
 }
 
 func (s *Service) exportCreditTransactions(ctx context.Context, c echo.Context, credential apiCredential, p creditPageRequest) error {
+	if s.database.billingRepository != nil {
+		return s.nativeAPIError(c, ErrBillingUsageUnavailable)
+	}
 	from, to, err := p.bounds()
 	if err != nil {
 		return s.nativeAPIError(c, err)

@@ -11,6 +11,9 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/billing"
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
 type hostedBillingWorker struct {
@@ -64,25 +67,52 @@ func (w *hostedBillingWorker) reconcile(ctx context.Context) error {
 	defer cancel()
 	s := w.service
 	var through int64
-	if err := s.database.reader.QueryRowContext(ctx, "SELECT coalesce(max(sequence),0) FROM hosted_billing_events").Scan(&through); err != nil {
-		return err
-	}
-	rows, err := s.database.reader.QueryContext(ctx, "SELECT event_id,event_type FROM hosted_billing_events WHERE credit_processed=0 AND sequence<=? ORDER BY sequence", through)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
+	var unprocessedEventIDs []string
 	type pendingEvent struct{ id, kind string }
 	var events []pendingEvent
-	for rows.Next() {
-		var event pendingEvent
-		if err := rows.Scan(&event.id, &event.kind); err != nil {
+	if s.database.billingRepository != nil {
+		if err := s.database.readBillingTenant(ctx, func(reader tenantstore.Reader) error {
+			unprocessed, err := reader.UnprocessedBillingEvents(ctx, corestore.MaxPageSize)
+			if err != nil {
+				return err
+			}
+			for _, row := range unprocessed {
+				through = row.Sequence
+				unprocessedEventIDs = append(unprocessedEventIDs, row.ID)
+			}
+			pending, err := reader.PendingBillingEvents(ctx, corestore.MaxPageSize)
+			if err != nil {
+				return err
+			}
+			for _, row := range pending {
+				if row.Sequence > through {
+					through = row.Sequence
+				}
+				events = append(events, pendingEvent{id: row.ID, kind: row.Type})
+			}
+			return nil
+		}); err != nil {
 			return err
 		}
-		events = append(events, event)
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return err
+	} else {
+		if err := s.database.reader.QueryRowContext(ctx, "SELECT coalesce(max(sequence),0) FROM hosted_billing_events").Scan(&through); err != nil {
+			return err
+		}
+		rows, err := s.database.reader.QueryContext(ctx, "SELECT event_id,event_type FROM hosted_billing_events WHERE credit_processed=0 AND sequence<=? ORDER BY sequence", through)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var event pendingEvent
+			if err := rows.Scan(&event.id, &event.kind); err != nil {
+				return err
+			}
+			events = append(events, event)
+		}
+		if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+			return err
+		}
 	}
 	var creditErr error
 	for _, event := range events {
@@ -90,8 +120,14 @@ func (w *hostedBillingWorker) reconcile(ctx context.Context) error {
 			creditErr = errors.Join(creditErr, err)
 			continue
 		}
-		if _, err := s.database.db.ExecContext(ctx, "UPDATE hosted_billing_events SET credit_processed=1 WHERE event_id=?", event.id); err != nil {
-			return err
+		if s.database.billingRepository != nil {
+			if err := s.database.writeBillingTenant(ctx, func(writer tenantstore.Writer) error { return writer.SetBillingEventCreditProcessed(ctx, event.id) }); err != nil {
+				return err
+			}
+		} else {
+			if _, err := s.database.db.ExecContext(ctx, "UPDATE hosted_billing_events SET credit_processed=1 WHERE event_id=?", event.id); err != nil {
+				return err
+			}
 		}
 	}
 	creditErr = errors.Join(creditErr, w.autoFund(ctx))
@@ -115,7 +151,7 @@ func (w *hostedBillingWorker) reconcile(ctx context.Context) error {
 		return err
 	}
 	now := s.config.now().UTC()
-	return errors.Join(creditErr, s.database.commitHostedBilling(ctx, resolveHostedBilling(cfg, previous, snapshot, now), through, now))
+	return errors.Join(creditErr, s.database.commitHostedBilling(ctx, resolveHostedBilling(cfg, previous, snapshot, now), through, unprocessedEventIDs, now))
 }
 
 func (s *Service) hostedStripeWebhook(c echo.Context) error {
@@ -132,6 +168,16 @@ func (s *Service) hostedStripeWebhook(c echo.Context) error {
 		return s.hostedJSONError(c, http.StatusBadRequest, "Billing webhook signature, timestamp or mode is invalid")
 	}
 	if !event.Relevant() {
+		return c.NoContent(http.StatusOK)
+	}
+	if s.database.billingRepository != nil {
+		err := s.database.writeBillingTenant(c.Request().Context(), func(writer tenantstore.Writer) error {
+			_, err := writer.CreateBillingEvent(c.Request().Context(), billingstore.Event{OrganizationID: s.database.hostedOrganization, ID: event.ID, Type: event.Type, ReceivedAt: s.config.now().UTC()})
+			return err
+		})
+		if err != nil {
+			return c.NoContent(http.StatusServiceUnavailable)
+		}
 		return c.NoContent(http.StatusOK)
 	}
 	if _, err := s.database.db.ExecContext(c.Request().Context(), "INSERT INTO hosted_billing_events(event_id,event_type,received_at) VALUES(?,?,?) ON CONFLICT(event_id) DO NOTHING", event.ID, event.Type, formatHubTime(s.config.now())); err != nil {

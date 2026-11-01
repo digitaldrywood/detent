@@ -112,7 +112,7 @@ func (s *Service) spritePoolResponse(ctx context.Context, scope nativeScope) (sp
 	if err != nil {
 		return view, err
 	}
-	decision, err := readOrganizationPlacementSnapshot(ctx, s.database.reader, scope, s.config.now())
+	decision, err := readOrganizationPlacementSnapshot(ctx, s.database.reader, scope, s.config.now(), s.database.billingRepository)
 	if err != nil {
 		return view, err
 	}
@@ -351,17 +351,17 @@ func (s *Service) spritePoolSnapshot(ctx context.Context, scope nativeScope, vie
 	}
 	input := spriteScaleInput{Floor: view.MinRunners, Ceiling: view.MaxRunners}
 	now := s.config.now()
-	placement, err := readOrganizationPlacementSnapshot(readCtx, s.database.reader, scope, now)
+	placement, err := readOrganizationPlacementSnapshot(readCtx, s.database.reader, scope, now, s.database.billingRepository)
 	if err != nil {
 		return input, nil, err
 	}
 	input.Depth, input.Free, input.Pending = placement.SpriteTarget, placement.SpriteFree, placement.Pending
 	input.CreateLimit = placement.ProviderFree
-	allowed, err := monthlySpriteAllowed(readCtx, s.database.reader, scope, now)
+	allowed, err := monthlySpriteAllowed(readCtx, s.database.reader, scope, now, s.database.billingRepository)
 	if err != nil {
 		return input, nil, err
 	}
-	decision, err := checkMonthlyBudget(readCtx, s.database.reader, scope, budget.CostExposure{SpriteInfrastructure: true}, false, now)
+	decision, err := checkMonthlyBudget(readCtx, s.database.reader, scope, budget.CostExposure{SpriteInfrastructure: true}, false, now, s.database.billingRepository)
 	cancelRead()
 	if err != nil {
 		return input, nil, err
@@ -455,7 +455,7 @@ func (s *Service) spritePoolMemberRetention(ctx context.Context, scope nativeSco
 	if err != nil {
 		return runner, false, err
 	}
-	retained, err := monthlyBudgetRetainsRunner(ctx, s.database.reader, scope, runner.MachineID)
+	retained, err := monthlyBudgetRetainsRunner(ctx, s.database.reader, scope, runner.MachineID, s.database.billingRepository)
 	return runner, retained, err
 }
 

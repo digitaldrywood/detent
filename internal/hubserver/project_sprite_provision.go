@@ -68,7 +68,7 @@ func (s *Service) spritePoolClient() *http.Client {
 
 func (s *Service) poolSpriteRequest(ctx context.Context, scope nativeScope, name, method, path string, body []byte) (*http.Response, error) {
 	if method != http.MethodDelete && method != http.MethodGet {
-		allowed, err := monthlySpriteAllowed(ctx, s.database.reader, scope, s.config.now())
+		allowed, err := monthlySpriteAllowed(ctx, s.database.reader, scope, s.config.now(), s.database.billingRepository)
 		if err != nil {
 			return nil, err
 		}
@@ -147,11 +147,11 @@ func (s *Service) createPoolSpriteNamed(ctx context.Context, scope nativeScope, 
 		return false, nil
 	}
 	now := s.config.now()
-	allowed, err := monthlySpriteAllowed(ctx, tx, scope, now)
+	allowed, err := monthlySpriteAllowed(ctx, tx, scope, now, s.database.billingRepository)
 	if err != nil || !allowed {
 		return false, err
 	}
-	placement, err := readOrganizationPlacementSnapshot(ctx, tx, scope, now)
+	placement, err := readOrganizationPlacementSnapshot(ctx, tx, scope, now, s.database.billingRepository)
 	if err != nil {
 		return false, err
 	}
@@ -175,7 +175,7 @@ func (s *Service) createPoolSpriteNamed(ctx context.Context, scope nativeScope, 
 			if !valid {
 				continue
 			}
-			decision, err := checkMonthlyBudget(ctx, tx, allocationScope, budget.CostExposure{SpriteInfrastructure: true}, false, now)
+			decision, err := checkMonthlyBudget(ctx, tx, allocationScope, budget.CostExposure{SpriteInfrastructure: true}, false, now, s.database.billingRepository)
 			if err != nil {
 				return false, err
 			}
@@ -196,7 +196,7 @@ func (s *Service) createPoolSpriteNamed(ctx context.Context, scope nativeScope, 
 		return false, err
 	}
 	input := spriteScaleInput{Depth: placement.SpriteTarget, Free: placement.SpriteFree, Pending: placement.Pending, Floor: settings.MinRunners, Ceiling: ceiling, Count: ownerCount, CreateLimit: placement.ProviderFree}
-	decision, err := checkMonthlyBudget(ctx, tx, scope, budget.CostExposure{SpriteInfrastructure: true}, false, now)
+	decision, err := checkMonthlyBudget(ctx, tx, scope, budget.CostExposure{SpriteInfrastructure: true}, false, now, s.database.billingRepository)
 	if err != nil {
 		return false, err
 	}

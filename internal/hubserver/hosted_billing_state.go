@@ -5,9 +5,14 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/billing"
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 )
 
@@ -82,6 +87,22 @@ func resolveHostedBilling(config *HostedBillingConfig, previous hostedBillingSta
 func (d *database) readHostedBilling(ctx context.Context) (hostedBillingState, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
+	if d.billingRepository != nil {
+		var result hostedBillingState
+		err := d.readBillingTenant(ctx, func(reader tenantstore.Reader) error {
+			account, err := reader.BillingAccount(ctx)
+			if errors.Is(err, corestore.ErrNotFound) {
+				result.Status = "free"
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			result = hostedBillingState{Snapshot: account.Snapshot, Status: account.Status, Plan: PlanReference{ID: account.Plan.ID, Version: account.Plan.Version}, PaidThrough: account.PaidThrough, AccessUntil: account.AccessUntil, GraceUntil: account.GraceUntil}
+			return nil
+		})
+		return result, err
+	}
 	var state hostedBillingState
 	var raw string
 	err := d.reader.QueryRowContext(ctx, "SELECT state_json FROM hosted_billing_accounts WHERE organization_id=?", d.hostedOrganization).Scan(&raw)
@@ -98,10 +119,68 @@ func (d *database) readHostedBilling(ctx context.Context) (hostedBillingState, e
 	return state, err
 }
 
-func (d *database) commitHostedBilling(ctx context.Context, state hostedBillingState, through int64, now time.Time) error {
+func (d *database) commitHostedBilling(ctx context.Context, state hostedBillingState, through int64, unprocessedEventIDs []string, now time.Time) error {
 	raw, err := json.Marshal(state)
 	if err != nil {
 		return err
+	}
+	if d.billingRepository != nil {
+		if d.billingAuditStore == nil {
+			return errors.New("hosted billing audit storage is unavailable")
+		}
+		if len(unprocessedEventIDs) > corestore.MaxPageSize {
+			return errors.New("hosted billing reconcile batch exceeds its page size")
+		}
+		archive, err := d.billingAuditStore.StoreDetail(ctx, string(d.hostedOrganization), raw)
+		if err != nil {
+			return fmt.Errorf("store hosted billing reconciliation audit: %w", err)
+		}
+		ref := billingstore.AuditReferenceFromArchive(archive)
+		return d.writeBillingTenant(ctx, func(writer tenantstore.Writer) error {
+			account, err := writer.BillingAccount(ctx)
+			if err != nil {
+				return err
+			}
+			previous := hostedBillingState{Snapshot: account.Snapshot, Status: account.Status, Plan: PlanReference{ID: account.Plan.ID, Version: account.Plan.Version}, PaidThrough: account.PaidThrough, AccessUntil: account.AccessUntil, GraceUntil: account.GraceUntil}
+			if !reflect.DeepEqual(previous, state) {
+				if err := writer.CreateBillingAudit(ctx, billingstore.Audit{OrganizationID: d.hostedOrganization, ActorID: "stripe", Action: "subscription_reconciled", RecordedAt: now, Reference: ref}); err != nil {
+					return err
+				}
+			}
+			account.Status = state.Status
+			account.Plan = billingstore.PlanReference{ID: state.Plan.ID, Version: state.Plan.Version}
+			account.PaidThrough, account.AccessUntil, account.GraceUntil = state.PaidThrough, state.AccessUntil, state.GraceUntil
+			account.Snapshot = state.Snapshot
+			account.ReconciledAt = &now
+			if state.Snapshot.SubscriptionID != "" {
+				account.Checkout = billingstore.Checkout{}
+			}
+			if err := writer.SetBillingAccount(ctx, account); err != nil {
+				return err
+			}
+			assignment, err := writer.BillingAssignment(ctx)
+			if err != nil {
+				return err
+			}
+			var subscription *billingstore.PlanReference
+			var expiry *time.Time
+			if state.Plan.ID != "" && !state.AccessUntil.IsZero() {
+				subscription = &billingstore.PlanReference{ID: state.Plan.ID, Version: state.Plan.Version}
+				expiry = &state.AccessUntil
+			}
+			if !reflect.DeepEqual(assignment.Subscription, subscription) || !reflect.DeepEqual(assignment.ExpiresAt, expiry) {
+				assignment.Subscription, assignment.ExpiresAt = subscription, expiry
+				if err := writer.SetBillingAssignment(ctx, assignment, assignment.Revision); err != nil {
+					return err
+				}
+			}
+			for _, eventID := range unprocessedEventIDs {
+				if err := writer.SetBillingEventProcessed(ctx, eventID, now); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
 	}
 	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {

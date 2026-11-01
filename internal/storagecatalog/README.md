@@ -16,6 +16,15 @@ silently applied to legacy rows. Tests exercise explicitly different synthetic
 legacy and current catalogs. Version 1 describes only the checked-in source
 snapshots, not arbitrary historical databases or live staging schemas.
 
+Target-only PostgreSQL objects have a separate typed contract in
+`internal/storagecatalog/targets/v1.json`. It records family, tenant ownership
+and every target column without inventing a SQLite source row. The Hub target
+classification and storage routing inventory must cover the same target-only
+tables. Existing PostgreSQL migrations are pinned by digest as a legacy boundary;
+new migrations are enumerated and require explicit target contract coverage,
+including schema-qualified table names. This scoped contract is not a complete
+inventory of the pre-existing PostgreSQL schema, which remains a cutover prerequisite.
+
 Every column declares its codec, SQL NULL policy, empty-value policy and one of
 these dispositions:
 

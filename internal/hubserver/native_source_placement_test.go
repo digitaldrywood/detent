@@ -224,7 +224,7 @@ func TestNativeSourceOwnerRunnerPlacement(t *testing.T) {
 				reason  string
 			}{{owner, true, ""}, {other, test.otherAllowed, test.otherReason}} {
 				scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{Runner: candidate.runner.identity}}
-				allowed, reason, err := placementClaimAllowed(f.service.runDetailContext(t.Context()), f.service.database.db, scope, candidate.runner.binding.MachineID, id, at, nil)
+				allowed, reason, err := placementClaimAllowed(f.service.runDetailContext(t.Context()), f.service.database.db, scope, candidate.runner.binding.MachineID, id, at, nil, nil)
 				if err != nil || allowed != candidate.allowed {
 					t.Fatalf("%s allowed=%v reason=%q error=%v", candidate.runner.binding.RunnerID, allowed, reason, err)
 				}

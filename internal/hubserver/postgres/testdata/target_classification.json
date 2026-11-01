@@ -1,0 +1,27 @@
+{
+  "public/ai_credit_reason_references": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "ai_credit_reason_references.organization_id; mode and source reference ai_credit_transactions"
+  },
+  "public/hosted_complimentary_grant_scopes": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "hosted_complimentary_grant_scopes.organization_id; grant_id references hosted_complimentary_grants"
+  },
+  "public/hosted_plan_allowances": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "hosted_plan_allowances.organization_id; plan_id and plan_version reference hosted_plans"
+  },
+  "public/hosted_plan_features": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "hosted_plan_features.organization_id; plan_id and plan_version reference hosted_plans"
+  },
+  "public/hosted_usage_receipts": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "hosted_usage_receipts.organization_id; receipt_id is unique within the organization"
+  }
+}

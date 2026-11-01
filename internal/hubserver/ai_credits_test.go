@@ -8,14 +8,20 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -32,6 +38,8 @@ type hostedCreditProvider struct {
 	chargeKeys      []string
 	savedMethod     string
 	savedError      error
+	duringCheckout  func(context.Context, billing.CreditRequest) error
+	duringCharge    func(context.Context, billing.CreditRequest) error
 }
 
 func (p *hostedCreditProvider) SavedCreditPaymentMethod(context.Context, billing.Binding) (string, error) {
@@ -44,22 +52,31 @@ func (p *hostedCreditProvider) SavedCreditPaymentMethod(context.Context, billing
 	return p.savedMethod, nil
 }
 
-func (p *hostedCreditProvider) CreditCheckout(_ context.Context, r billing.CreditRequest) (billing.Session, error) {
+func (p *hostedCreditProvider) CreditCheckout(ctx context.Context, r billing.CreditRequest) (billing.Session, error) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	p.creditCheckouts = append(p.creditCheckouts, r)
+	hook := p.duringCheckout
 	if p.checkoutError != nil {
-		return billing.Session{}, p.checkoutError
+		err := p.checkoutError
+		p.mu.Unlock()
+		return billing.Session{}, err
 	}
-	if session, ok := p.creditSessions[r.IdempotencyKey]; ok {
-		return session, nil
+	session, ok := p.creditSessions[r.IdempotencyKey]
+	if !ok {
+		session = billing.Session{ID: "cs_test_credit", URL: "https://checkout.stripe.com/c/pay/test_credit", ExpiresAt: r.ExpiresAt}
+		if p.creditSessions == nil {
+			p.creditSessions = map[string]billing.Session{}
+		}
+		p.creditSessions[r.IdempotencyKey] = session
 	}
-	session := billing.Session{ID: "cs_test_credit", URL: "https://checkout.stripe.com/c/pay/test_credit", ExpiresAt: r.ExpiresAt}
-	if p.creditSessions == nil {
-		p.creditSessions = map[string]billing.Session{}
+	lost := p.checkoutLoss
+	p.mu.Unlock()
+	if hook != nil {
+		if err := hook(ctx, r); err != nil {
+			return billing.Session{}, err
+		}
 	}
-	p.creditSessions[r.IdempotencyKey] = session
-	if p.checkoutLoss {
+	if lost {
 		return billing.Session{}, errors.New("lost response pm_sensitive_secret")
 	}
 	return session, nil
@@ -71,11 +88,17 @@ func (p *hostedCreditProvider) CreditEvent(context.Context, billing.Binding, str
 	return p.payment, nil
 }
 
-func (p *hostedCreditProvider) CreditCharge(_ context.Context, r billing.CreditRequest, _ string) (billing.CreditPayment, error) {
+func (p *hostedCreditProvider) CreditCharge(ctx context.Context, r billing.CreditRequest, _ string) (billing.CreditPayment, error) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	p.chargeKeys = append(p.chargeKeys, r.IdempotencyKey)
-	return billing.CreditPayment{Key: r.IdempotencyKey, ID: "pi_auto", PriceID: r.PriceID, USDCents: r.USDCents, Status: p.chargeStatus}, p.chargeError
+	hook, payment, err := p.duringCharge, billing.CreditPayment{Key: r.IdempotencyKey, ID: "pi_auto", PriceID: r.PriceID, USDCents: r.USDCents, Status: p.chargeStatus}, p.chargeError
+	p.mu.Unlock()
+	if hook != nil {
+		if hookErr := hook(ctx, r); hookErr != nil {
+			return billing.CreditPayment{}, hookErr
+		}
+	}
+	return payment, err
 }
 
 func configureTestCredits(t *testing.T, f *browserHostedFixture, base *hostedBillingProvider) *hostedCreditProvider {
@@ -136,6 +159,124 @@ func TestAICreditPaymentConfirmation(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestAICreditCheckoutSessionDoesNotRegressWebhookPayment(t *testing.T) {
+	t.Parallel()
+	service, p, repository := newPostgresAICreditFixture(t, false)
+	d := service.database
+	p.payment = billing.CreditPayment{ID: "pi_checkout_race", PriceID: "price_credit", USDCents: 500, Status: "succeeded", PaymentMethod: "pm_webhook"}
+	p.duringCheckout = func(ctx context.Context, request billing.CreditRequest) error {
+		p.payment.Key = request.IdempotencyKey
+		if err := d.writeBillingTenant(ctx, func(writer tenantstore.Writer) error {
+			_, err := writer.CreateBillingEvent(ctx, billingstore.Event{OrganizationID: d.hostedOrganization, ID: "evt_checkout_race", Type: "checkout.session.completed", ReceivedAt: d.now().UTC()})
+			return err
+		}); err != nil {
+			return err
+		}
+		return service.billing.creditEvent(ctx, "evt_checkout_race", "checkout.session.completed")
+	}
+	if _, err := service.checkoutCredits(t.Context(), func(context.Context) (apiCredential, error) {
+		return apiCredential{Hosted: &auth.HostedIdentity{Subject: "user_browser_owner"}}, nil
+	}, "price_credit", "checkout-race"); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.ReadTenant(t.Context(), d.hostedOrganization, corestore.Serving, func(reader tenantstore.Reader) error {
+		purchase, err := reader.BillingCreditPurchase(t.Context(), p.payment.Key)
+		if err != nil {
+			return err
+		}
+		account, err := reader.BillingCreditAccount(t.Context(), billing.ModeTest)
+		if err != nil {
+			return err
+		}
+		rows, err := reader.BillingCreditTransactions(t.Context(), billing.ModeTest, 0, 10)
+		if err != nil {
+			return err
+		}
+		if purchase.State != "paid" || purchase.PaymentID != "pi_checkout_race" || purchase.Session.ID != "cs_test_credit" || account.BalanceMicros != 5000000 || account.PaymentMethod != "pm_webhook" || account.ThresholdCents != 100 || account.PriceID != "price_credit" || len(rows) != 1 {
+			return fmt.Errorf("checkout session update regressed or duplicated the webhook payment: purchase=%+v account=%+v rows=%+v", purchase, account, rows)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAICreditAutoFundFailureDoesNotRegressWebhookPayment(t *testing.T) {
+	t.Parallel()
+	service, p, repository := newPostgresAICreditFixture(t, true)
+	d := service.database
+	p.chargeError = billing.ErrPaymentFailed
+	p.duringCharge = func(ctx context.Context, request billing.CreditRequest) error {
+		p.payment = billing.CreditPayment{Key: request.IdempotencyKey, ID: "pi_autofund_race", PriceID: request.PriceID, USDCents: request.USDCents, Status: "succeeded"}
+		if err := d.writeBillingTenant(ctx, func(writer tenantstore.Writer) error {
+			_, err := writer.CreateBillingEvent(ctx, billingstore.Event{OrganizationID: d.hostedOrganization, ID: "evt_autofund_race", Type: "payment_intent.succeeded", ReceivedAt: d.now().UTC()})
+			return err
+		}); err != nil {
+			return err
+		}
+		return service.billing.creditEvent(ctx, "evt_autofund_race", "payment_intent.succeeded")
+	}
+	if err := service.billing.autoFund(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.ReadTenant(t.Context(), d.hostedOrganization, corestore.Serving, func(reader tenantstore.Reader) error {
+		purchase, err := reader.BillingCreditPurchase(t.Context(), p.payment.Key)
+		if err != nil {
+			return err
+		}
+		account, err := reader.BillingCreditAccount(t.Context(), billing.ModeTest)
+		if err != nil {
+			return err
+		}
+		rows, err := reader.BillingCreditTransactions(t.Context(), billing.ModeTest, 0, 10)
+		if err != nil {
+			return err
+		}
+		if purchase.State != "paid" || purchase.PaymentID != "pi_autofund_race" || !account.AutoEnabled || account.Failure != "" || account.BalanceMicros != 5000000 || account.ThresholdCents != 100 || account.PriceID != "price_credit" || account.PaymentMethod != "pm_credit" || len(rows) != 1 {
+			return errors.New("failed charge response regressed or duplicated the webhook payment")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func newPostgresAICreditFixture(t *testing.T, automatic bool) (*Service, *hostedCreditProvider, tenantstore.Repository) {
+	t.Helper()
+	f := newHostedSharedFixture(t)
+	base := &hostedBillingProvider{snapshot: billing.Snapshot{Status: "free"}}
+	plan := f.service.config.Hosted.Plans.Plans[1].PlanReference
+	f.service.config.Hosted.Billing = &HostedBillingConfig{
+		AccountID: "acct_fixture", CustomerID: "cus_fixture", PortalConfigurationID: "bpc_fixture", WebhookSecret: []byte("whsec_fixture_2196_secret"), GraceSeconds: 3600, ReconcileSeconds: 60, Provider: base,
+		Prices: []HostedBillingPrice{{PriceID: "price_fixture", Label: "Extended pilot", Plan: plan}},
+	}
+	if err := f.service.config.Hosted.validate(); err != nil {
+		t.Fatal(err)
+	}
+	p := configureTestCredits(t, &browserHostedFixture{service: f.service}, base)
+	d := f.service.database
+	repository := projectRecordPostgres(t)
+	d.billingRepository = repository
+	seedHostedBillingRecordAccount(t, repository, d.hostedOrganization, billingstore.Account{
+		OrganizationID: d.hostedOrganization,
+		Mode:           billing.ModeTest,
+		Binding:        billing.Binding{OrganizationID: string(d.hostedOrganization), AccountID: "acct_fixture", CustomerID: "cus_fixture"},
+		Status:         "free",
+	})
+	if err := repository.WriteTenant(t.Context(), d.hostedOrganization, corestore.Serving, func(writer tenantstore.Writer) error {
+		if err := writer.CreateBillingCreditAccount(t.Context(), billingstore.CreditAccount{OrganizationID: d.hostedOrganization, Mode: billing.ModeTest, AutoEnabled: automatic, ThresholdCents: 100, PriceID: "price_credit", PaymentMethod: "pm_credit"}); err != nil {
+			return err
+		}
+		return writer.CreateCreditPack(t.Context(), billingstore.CreditPack{OrganizationID: d.hostedOrganization, Mode: billing.ModeTest, PriceID: "price_credit", USDCents: 500})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	close(done)
+	f.service.billing = &hostedBillingWorker{service: f.service, cancel: func() {}, done: done}
+	return f.service, p, repository
 }
 
 func TestPlatformAICreditAdjustments(t *testing.T) {
@@ -345,6 +486,109 @@ func TestPlatformAICreditBalanceRead(t *testing.T) {
 
 			}
 		})
+	}
+}
+
+func TestPlatformAICreditBalanceReadsPostgresTenantLedger(t *testing.T) {
+	f := newHostedSharedFixture(t)
+	d := f.service.database
+	d.aiCreditMode = billing.ModeTest
+	d.now = func() time.Time { return time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC) }
+	repository := projectRecordPostgres(t)
+	now := d.now()
+	err := repository.WriteTenant(t.Context(), d.hostedOrganization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: d.hostedOrganization, Name: string(d.hostedOrganization), CreatedAt: now}); err != nil {
+			return err
+		}
+		if err := w.CreateBillingCreditAccount(t.Context(), billingstore.CreditAccount{OrganizationID: d.hostedOrganization, Mode: billing.ModeTest, AutoEnabled: true}); err != nil {
+			return err
+		}
+		for _, row := range []billingstore.CreditTransaction{
+			{OrganizationID: d.hostedOrganization, Mode: billing.ModeTest, Source: "purchase:example", AmountMicros: 11000000, Kind: "purchase", Actor: "staff@example.test", RecordedAt: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)},
+			{OrganizationID: d.hostedOrganization, Mode: billing.ModeTest, Source: "usage:example", AmountMicros: -750000, Kind: "usage", RecordedAt: time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC)},
+		} {
+			if _, err := w.PostBillingCredit(t.Context(), row); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.billingRepository = repository
+	request := httptest.NewRequest(http.MethodPost, "/internal/v1/platform/ai-credits/balance", strings.NewReader(`{}`)).WithContext(t.Context())
+	response := httptest.NewRecorder()
+	c := f.service.echo.NewContext(request, response)
+	c.Set(hostedSharedClaimsKey, cloudassert.Claims{Kind: cloudassert.KindService})
+	if err := f.service.platformTenantAICreditBalance(c); err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var result struct {
+		Balance int64                 `json:"balance_micros"`
+		Spent   int64                 `json:"spent_micros"`
+		Month   string                `json:"month"`
+		Auto    bool                  `json:"auto_enabled"`
+		History []aiCreditTransaction `json:"history"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Balance != 10250000 || result.Spent != 750000 || result.Month != "2026-10" || !result.Auto || len(result.History) != 1 || result.History[0].Kind != "purchase" || result.History[0].AmountMicros != 11000000 {
+		t.Fatalf("PostgreSQL billing response=%+v", result)
+	}
+}
+
+func TestHostedUsageUsesSelectedPostgresWindowsAndRefusesSQLiteWrites(t *testing.T) {
+	f := newHostedSharedFixture(t)
+	d := f.service.database
+	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	d.now = func() time.Time { return now }
+	plans := hostedTestPlans(t, f.service, map[string]int64{"api_mutations": 10})
+	cfg := *f.service.config.Hosted
+	cfg.Plans = &plans
+	if err := d.configureHostedPlans(t.Context(), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	repository := projectRecordPostgres(t)
+	window := time.Unix(now.Unix()/plans.WindowSeconds*plans.WindowSeconds, 0).UTC()
+	if err := repository.WriteTenant(t.Context(), d.hostedOrganization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: d.hostedOrganization, Name: string(d.hostedOrganization), CreatedAt: now}); err != nil {
+			return err
+		}
+		_, err := w.ApplyBillingUsage(t.Context(), billingstore.UsageReceipt{OrganizationID: d.hostedOrganization, ID: "request_example", WindowStart: window, Metric: "api_mutations", Amount: 1}, 10)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	d.billingRepository = repository
+	usage, err := d.hostedConsumption(t.Context(), d.db, now, "usage_windows")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usage["api_mutations"] != 1 {
+		t.Fatalf("PostgreSQL usage window=%v", usage)
+	}
+	if _, err := d.hostedConsumption(t.Context(), d.db, now, "collaboration_bytes"); !errors.Is(err, ErrBillingUsageUnavailable) {
+		t.Fatalf("unsupported PG usage read error=%v", err)
+	}
+	tx, err := d.db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if err := d.recordHostedUsage(t.Context(), tx, now, "api_mutations", 1); !errors.Is(err, ErrBillingUsageUnavailable) {
+		t.Fatalf("selected PG usage write error=%v", err)
+	}
+	var sqliteRows int
+	if err := tx.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_usage_windows").Scan(&sqliteRows); err != nil {
+		t.Fatal(err)
+	}
+	if sqliteRows != 0 {
+		t.Fatalf("selected PG request wrote %d SQLite usage rows", sqliteRows)
 	}
 }
 

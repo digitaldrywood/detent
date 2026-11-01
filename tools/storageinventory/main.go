@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/digitaldrywood/detent/internal/storagecatalog"
 )
@@ -43,11 +44,31 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
+	targetCatalog, err := storagecatalog.ReadTargetCatalog(os.DirFS(*root), "internal/storagecatalog/targets/v1.json")
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	if err := targetCatalog.ValidateClassification(inventory.TargetTables); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	if err := targetCatalog.ValidateMigrations(os.DirFS(*root), inventory.Tables); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
 	if problems := routingProblems(inventory, manifest); len(problems) != 0 {
 		for _, problem := range problems {
 			fmt.Fprintln(stderr, problem)
 		}
 		return 1
+	}
+	for table, contract := range targetCatalog.Tables {
+		route := manifest.TargetTables[strings.ReplaceAll(table, ".", "/")]
+		if route.Family != contract.Family {
+			fmt.Fprintf(stderr, "%s: target route family disagrees with target schema contract\n", table)
+			return 1
+		}
 	}
 	catalog, err := storagecatalog.Read(os.DirFS(*root), *catalogPath)
 	if err == nil {
@@ -57,6 +78,6 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "Storage routing verified: %d tables, %d SQL owners, %d atomic groups\n", len(inventory.Tables), len(inventory.Owners), len(manifest.AtomicGroups))
+	fmt.Fprintf(stdout, "Storage routing verified: %d source tables, %d newly covered target schema tables, %d SQL owners, %d atomic groups\n", len(inventory.Tables), len(inventory.TargetTables), len(inventory.Owners), len(manifest.AtomicGroups))
 	return 0
 }

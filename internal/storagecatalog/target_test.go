@@ -1,0 +1,57 @@
+package storagecatalog
+
+import (
+	"encoding/json"
+	"errors"
+	"io/fs"
+	"os"
+	"testing"
+	"testing/fstest"
+)
+
+func TestTargetCatalogMatchesBillingTargetClassification(t *testing.T) {
+	catalog, err := ReadTargetCatalog(os.DirFS("."), "targets/v1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile("../hubserver/postgres/testdata/target_classification.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var classification map[string]TargetClassification
+	if err := json.Unmarshal(data, &classification); err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.ValidateClassification(classification); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNewSchemaQualifiedMigrationNeedsTargetContract(t *testing.T) {
+	const migration = "internal/hubserver/postgres/migrations/20990101000000_future.sql"
+	files := fstest.MapFS{
+		"internal/hubserver/postgres/migrations": {Mode: fs.ModeDir},
+		migration:                                {Data: []byte(`CREATE TABLE "audit" . "events" (organization_id text NOT NULL, event_id text NOT NULL);`)},
+	}
+	catalog := TargetCatalog{Version: "1", LegacyMigrations: map[string]string{}, Tables: map[string]TargetTable{}}
+	if err := catalog.ValidateMigrations(files, nil); !errors.Is(err, ErrCatalog) {
+		t.Fatalf("uncovered new migration error = %v", err)
+	}
+	catalog.Migrations = []string{migration}
+	catalog.Tables = map[string]TargetTable{"audit.events": {
+		Family: "audit", Contract: "Retain tenant-owned event records.", Organization: "organization-owned",
+		Columns: map[string]string{"organization_id": "text", "event_id": "text"},
+	}}
+	if err := catalog.ValidateMigrations(files, nil); err != nil {
+		t.Fatalf("covered schema-qualified migration: %v", err)
+	}
+	if err := catalog.ValidateClassification(map[string]TargetClassification{
+		"audit/events": {Ownership: "organization-owned", Scope: "audit.events.organization_id", InlinePayloads: []string{}},
+	}); err != nil {
+		t.Fatalf("schema-qualified classification: %v", err)
+	}
+	files[migration].Data = []byte(`CREATE TABLE "bad-name" (id text);`)
+	if err := catalog.ValidateMigrations(files, nil); !errors.Is(err, ErrCatalog) {
+		t.Fatalf("unrecognized table declaration error = %v", err)
+	}
+}

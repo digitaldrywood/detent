@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
@@ -236,7 +237,7 @@ func (s *Service) readNativeRuntime(ctx context.Context, scope nativeScope, item
 			return tracker.NativeRuntimeEvidence{}, err
 		}
 		prepared.collecting = true
-		result, readErr := readNativeRuntimeWithAdmission(ctx, tx, scope, item, attemptID, s.config.now().UTC(), minimumRunnerVersion(s.config.Version), admission...)
+		result, readErr := readNativeRuntimeWithAdmission(ctx, tx, scope, item, attemptID, s.config.now().UTC(), minimumRunnerVersion(s.config.Version), s.database.billingRepository, admission...)
 		prepared.collecting = false
 		if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
 			return tracker.NativeRuntimeEvidence{}, errors.Join(readErr, err)
@@ -299,10 +300,10 @@ func readRuntimeObject[T any](ctx context.Context, key nativeRuntimeObjectKey, r
 }
 
 func readNativeRuntime(ctx context.Context, query nativeQueryer, scope nativeScope, item, attemptID string, now time.Time, admission ...tracker.NativeAdmissionContext) (tracker.NativeRuntimeEvidence, error) {
-	return readNativeRuntimeWithAdmission(ctx, query, scope, item, attemptID, now, "", admission...)
+	return readNativeRuntimeWithAdmission(ctx, query, scope, item, attemptID, now, "", nil, admission...)
 }
 
-func readNativeRuntimeWithAdmission(ctx context.Context, query nativeQueryer, scope nativeScope, item, attemptID string, now time.Time, minimumVersion string, admission ...tracker.NativeAdmissionContext) (tracker.NativeRuntimeEvidence, error) {
+func readNativeRuntimeWithAdmission(ctx context.Context, query nativeQueryer, scope nativeScope, item, attemptID string, now time.Time, minimumVersion string, selected tenantstore.Repository, admission ...tracker.NativeAdmissionContext) (tracker.NativeRuntimeEvidence, error) {
 	issue, id, err := readNativeIssue(ctx, query, scope, item)
 	if err != nil {
 		return tracker.NativeRuntimeEvidence{}, err
@@ -519,7 +520,7 @@ func readNativeRuntimeWithAdmission(ctx context.Context, query nativeQueryer, sc
 		e.Unavailable = append(e.Unavailable, "runner_capacity")
 	}
 	if e.CurrentLease == nil {
-		if err := readNativeAdmission(ctx, query, scope, id, approval.Policy.ID, approval.Policy.Requirements, runners, truncated, ready, &e, admission, minimumVersion, nonExecutableReason); err != nil {
+		if err := readNativeAdmission(ctx, query, scope, id, approval.Policy.ID, approval.Policy.Requirements, runners, truncated, ready, &e, admission, minimumVersion, nonExecutableReason, selected); err != nil {
 			return e, err
 		}
 	}

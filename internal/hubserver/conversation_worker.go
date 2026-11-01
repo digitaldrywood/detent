@@ -323,7 +323,7 @@ func (c *conversationService) requireExecutionOwner(ctx context.Context, tx *sql
 		return leaseRecord{}, conversationStale("The lease fencing token does not match")
 	}
 	if !allowReleased {
-		if err := requireRenewableLease(ctx, tx, lease, identity.FencingToken, now, true, 0, scope); err != nil {
+		if err := requireRenewableLease(ctx, tx, lease, identity.FencingToken, now, true, 0, c.server.database.billingRepository, scope); err != nil {
 			return leaseRecord{}, conversationWorkerError(err)
 		}
 	}

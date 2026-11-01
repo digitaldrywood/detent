@@ -11,6 +11,9 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/billing"
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
 type creditFundingInput struct {
@@ -59,6 +62,49 @@ func (s *Service) checkoutCredits(ctx context.Context, authorize billingAuthoriz
 	if requestID != "" {
 		digest := sha256.Sum256([]byte(s.config.Hosted.OrganizationID + "\x00" + cfg.mode() + "\x00" + requestID))
 		key = fmt.Sprintf("detent-credit-%x", digest)
+	}
+	if s.database.billingRepository != nil {
+		var purchase billingstore.CreditPurchase
+		err := s.database.readBillingTenant(readCtx, func(reader tenantstore.Reader) error {
+			var err error
+			purchase, err = reader.BillingCreditPurchase(readCtx, key)
+			return err
+		})
+		if errors.Is(err, corestore.ErrNotFound) {
+			purchase = billingstore.CreditPurchase{OrganizationID: s.database.hostedOrganization, Key: key, Mode: cfg.mode(), PriceID: pack.PriceID, USDCents: pack.USDCents, State: "pending", CreatedAt: s.config.now().UTC()}
+			if err := s.database.writeBillingTenant(ctx, func(writer tenantstore.Writer) error { return writer.CreateBillingCreditPurchase(ctx, purchase) }); err != nil {
+				return billingDestination{}, err
+			}
+		} else if err != nil {
+			return billingDestination{}, err
+		}
+		if purchase.PriceID != pack.PriceID || purchase.USDCents != pack.USDCents || purchase.Mode != cfg.mode() || purchase.Automatic {
+			return billingDestination{}, billingFailure(http.StatusConflict, "The purchase key already refers to another credit pack")
+		}
+		session := purchase.Session
+		if session.URL == "" {
+			if purchase.State != "pending" || s.config.now().Sub(purchase.CreatedAt) >= 23*time.Hour {
+				return billingDestination{}, billingFailure(http.StatusConflict, "This purchase needs billing review")
+			}
+			provider, ok := cfg.Provider.(billing.CreditProvider)
+			if !ok {
+				return billingDestination{}, billingFailure(http.StatusServiceUnavailable, "AI credit purchases are unavailable")
+			}
+			session, err = provider.CreditCheckout(ctx, billing.CreditRequest{CheckoutRequest: billing.CheckoutRequest{Binding: binding, PriceID: purchase.PriceID, IdempotencyKey: key, ReturnURL: s.hostedBillingReturn(true), ExpiresAt: purchase.CreatedAt.Truncate(time.Second).Add(time.Hour)}, USDCents: purchase.USDCents})
+			if err != nil {
+				return billingDestination{}, errors.Join(billingFailure(http.StatusServiceUnavailable, "Credit checkout is temporarily unavailable; retry the same purchase"), fmt.Errorf("create credit checkout: %w", err))
+			}
+			if err := s.database.writeBillingTenant(ctx, func(writer tenantstore.Writer) error {
+				stored, err := writer.SetBillingCreditPurchaseSession(ctx, purchase.Key, session)
+				if err == nil {
+					session = stored
+				}
+				return err
+			}); err != nil {
+				return billingDestination{}, err
+			}
+		}
+		return billingDestination{ID: session.ID, URL: session.URL, ExpiresAt: session.ExpiresAt}, nil
 	}
 	var raw string
 	var cents, at int64
@@ -145,7 +191,16 @@ func (s *Service) configureCreditFunding(ctx context.Context, authorize billingA
 		if !ok || request.Threshold <= 0 || request.Threshold >= pack.USDCents {
 			return creditFundingInput{}, billingFailure(http.StatusBadRequest, "Choose a threshold greater than zero and smaller than the credit pack")
 		}
-		if err := s.database.reader.QueryRowContext(readCtx, "SELECT payment_method FROM ai_credit_accounts WHERE organization_id=? AND mode=?", s.database.hostedOrganization, s.database.aiCreditMode).Scan(&method); err != nil {
+		if s.database.billingRepository != nil {
+			err := s.database.readBillingTenant(readCtx, func(reader tenantstore.Reader) error {
+				account, err := reader.BillingCreditAccount(readCtx, s.database.aiCreditMode)
+				method = account.PaymentMethod
+				return err
+			})
+			if err != nil {
+				return creditFundingInput{}, err
+			}
+		} else if err := s.database.reader.QueryRowContext(readCtx, "SELECT payment_method FROM ai_credit_accounts WHERE organization_id=? AND mode=?", s.database.hostedOrganization, s.database.aiCreditMode).Scan(&method); err != nil {
 			return creditFundingInput{}, err
 		}
 		binding, err := s.database.hostedBillingBinding(ctx, cfg)
@@ -170,16 +225,39 @@ func (s *Service) configureCreditFunding(ctx context.Context, authorize billingA
 			return creditFundingInput{}, err
 		}
 	}
-	result, err := s.database.db.ExecContext(ctx, `UPDATE ai_credit_accounts SET auto_enabled=?,threshold_cents=?,price_id=?,failure='',payment_method=CASE WHEN ? THEN ? ELSE payment_method END WHERE organization_id=? AND mode=? AND (?=0 OR ?<>'')`, request.Enabled, max(request.Threshold, 0), request.Price, request.Enabled, method, s.database.hostedOrganization, s.database.aiCreditMode, request.Enabled, method)
-	if err != nil {
-		return creditFundingInput{}, err
-	}
-	n, err := result.RowsAffected()
-	if err != nil {
-		return creditFundingInput{}, err
-	}
-	if n != 1 {
-		return creditFundingInput{}, billingFailure(http.StatusConflict, "Buy credits or save a payment method in the billing portal first")
+	if s.database.billingRepository != nil {
+		err = s.database.writeBillingTenant(ctx, func(writer tenantstore.Writer) error {
+			account, err := writer.BillingCreditAccount(ctx, s.database.aiCreditMode)
+			if err != nil {
+				return err
+			}
+			if request.Enabled && method == "" {
+				return billingFailure(http.StatusConflict, "Buy credits or save a payment method in the billing portal first")
+			}
+			account.AutoEnabled = request.Enabled
+			account.ThresholdCents = max(request.Threshold, 0)
+			account.PriceID = request.Price
+			account.Failure = ""
+			if request.Enabled {
+				account.PaymentMethod = method
+			}
+			return writer.SetBillingCreditFunding(ctx, account)
+		})
+		if err != nil {
+			return creditFundingInput{}, err
+		}
+	} else {
+		result, err := s.database.db.ExecContext(ctx, `UPDATE ai_credit_accounts SET auto_enabled=?,threshold_cents=?,price_id=?,failure='',payment_method=CASE WHEN ? THEN ? ELSE payment_method END WHERE organization_id=? AND mode=? AND (?=0 OR ?<>'')`, request.Enabled, max(request.Threshold, 0), request.Price, request.Enabled, method, s.database.hostedOrganization, s.database.aiCreditMode, request.Enabled, method)
+		if err != nil {
+			return creditFundingInput{}, err
+		}
+		n, err := result.RowsAffected()
+		if err != nil {
+			return creditFundingInput{}, err
+		}
+		if n != 1 {
+			return creditFundingInput{}, billingFailure(http.StatusConflict, "Buy credits or save a payment method in the billing portal first")
+		}
 	}
 	completed = true
 	request.Threshold = max(request.Threshold, 0)

@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/readableurl"
 )
@@ -378,6 +379,16 @@ func (s *Service) hostedSharedBillingEvent(c echo.Context) error {
 	binding, err := s.database.hostedBillingBinding(c.Request().Context(), cfg)
 	if err != nil || binding.CustomerID != request.CustomerID {
 		return s.refusedAPIError(c, http.StatusConflict, "customer_mismatch", "The event customer is not bound to this organization", apiErrorResponse{Code: "customer_mismatch", Message: "The event customer is not bound to this organization"})
+	}
+	if s.database.billingRepository != nil {
+		err := s.database.writeBillingTenant(c.Request().Context(), func(writer tenantstore.Writer) error {
+			_, err := writer.CreateBillingEvent(c.Request().Context(), billingstore.Event{OrganizationID: s.database.hostedOrganization, ID: request.EventID, Type: request.EventType, ReceivedAt: s.config.now().UTC()})
+			return err
+		})
+		if err != nil {
+			return s.internalAPIError(c, "billing_unavailable", "Billing event could not be recorded", err)
+		}
+		return c.NoContent(http.StatusNoContent)
 	}
 	if _, err := s.database.db.ExecContext(c.Request().Context(), "INSERT INTO hosted_billing_events(event_id,event_type,received_at) VALUES(?,?,?) ON CONFLICT(event_id) DO NOTHING", request.EventID, request.EventType, formatHubTime(s.config.now())); err != nil {
 		return s.internalAPIError(c, "billing_unavailable", "Billing event could not be recorded", err)

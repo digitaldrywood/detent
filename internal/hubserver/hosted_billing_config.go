@@ -3,11 +3,16 @@ package hubserver
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/billing"
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -106,6 +111,24 @@ var errHostedBillingUnbound = errors.New("organization has no billing customer y
 func (d *database) hostedBillingBinding(ctx context.Context, c *HostedBillingConfig) (billing.Binding, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
+	if d.billingRepository != nil {
+		var result billing.Binding
+		err := d.readBillingTenant(ctx, func(reader tenantstore.Reader) error {
+			account, err := reader.BillingAccount(ctx)
+			if err != nil {
+				return err
+			}
+			if account.Binding.AccountID != c.AccountID || account.Mode != c.mode() {
+				return errors.New("hosted Stripe binding belongs to a different account or mode")
+			}
+			result = account.Binding
+			return nil
+		})
+		if errors.Is(err, corestore.ErrNotFound) {
+			return billing.Binding{}, errHostedBillingUnbound
+		}
+		return result, err
+	}
 	return readHostedBillingBinding(ctx, d.reader, d.hostedOrganization, c)
 }
 
@@ -129,6 +152,9 @@ func (d *database) configureHostedBilling(ctx context.Context, cfg *HostedConfig
 		return nil
 	}
 	c := cfg.Billing
+	if d.billingRepository != nil {
+		return d.configureHostedBillingRecords(ctx, c)
+	}
 	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -199,6 +225,142 @@ func (d *database) configureHostedBilling(ctx context.Context, cfg *HostedConfig
 		d.aiCreditMode = ""
 	}
 	d.hostedBilling = true
+	return nil
+}
+
+func (d *database) configureHostedBillingRecords(ctx context.Context, config *HostedBillingConfig) error {
+	var existing billingstore.Account
+	var hasExisting bool
+	if err := d.readBillingTenant(ctx, func(reader tenantstore.Reader) error {
+		var err error
+		existing, err = reader.BillingAccount(ctx)
+		if errors.Is(err, corestore.ErrNotFound) {
+			return nil
+		}
+		if err == nil {
+			hasExisting = true
+		}
+		return err
+	}); err != nil {
+		return err
+	}
+	retire := hasExisting && existing.Mode == billing.ModeTest && config.mode() == billing.ModeLive && config.CustomerID == ""
+	var retiredReference billingstore.AuditReference
+	if retire {
+		if d.billingAuditStore == nil {
+			return errors.New("hosted billing audit storage is unavailable")
+		}
+		raw, err := json.Marshal(existing)
+		if err != nil {
+			return err
+		}
+		archive, err := d.billingAuditStore.StoreDetail(ctx, string(d.hostedOrganization), raw)
+		if err != nil {
+			return fmt.Errorf("store retired billing account: %w", err)
+		}
+		retiredReference = billingstore.AuditReferenceFromArchive(archive)
+	}
+	now := d.now().UTC()
+	err := d.writeBillingTenant(ctx, func(writer tenantstore.Writer) error {
+		current, err := writer.BillingAccount(ctx)
+		currentExists := err == nil
+		if errors.Is(err, corestore.ErrNotFound) {
+			err = nil
+		}
+		if err != nil {
+			return err
+		}
+		if hasExisting {
+			if !currentExists || current.Binding.AccountID != existing.Binding.AccountID || current.Binding.CustomerID != existing.Binding.CustomerID || current.Mode != existing.Mode {
+				return errors.New("hosted Stripe binding changed during configuration")
+			}
+		} else if currentExists && (config.CustomerID == "" || current.Binding.AccountID != config.AccountID || current.Binding.CustomerID != config.CustomerID || current.Mode != config.mode()) {
+			return errors.New("hosted Stripe binding changed during configuration")
+		}
+		if retire {
+			if err := writer.DeleteBillingAccountIfMatches(ctx, existing.Binding.AccountID, existing.Binding.CustomerID, existing.Mode); err != nil {
+				return err
+			}
+			row := billingstore.RetiredAccount{OrganizationID: d.hostedOrganization, AccountID: existing.Binding.AccountID, CustomerID: existing.Binding.CustomerID, Mode: existing.Mode, RetiredAt: now, Reference: retiredReference}
+			if err := writer.CreateRetiredBillingAccount(ctx, row); err != nil {
+				return err
+			}
+			if err := writer.DeleteBillingCustomerIntent(ctx, existing.Mode); err != nil {
+				return err
+			}
+			currentExists = false
+		}
+		if config.CustomerID != "" {
+			if !currentExists {
+				account := billingstore.Account{OrganizationID: d.hostedOrganization, Mode: config.mode(), Binding: billing.Binding{OrganizationID: string(d.hostedOrganization), AccountID: config.AccountID, CustomerID: config.CustomerID}, Status: "free"}
+				if _, err := writer.CreateBillingAccountIfAbsent(ctx, account); err != nil {
+					return err
+				}
+				current, err = writer.BillingAccount(ctx)
+				if err != nil {
+					return err
+				}
+			}
+			if current.Binding.AccountID != config.AccountID || current.Binding.CustomerID != config.CustomerID || current.Mode != config.mode() {
+				return errors.New("hosted Stripe account, customer and mode binding is immutable; a mode change cannot reinterpret existing billing records")
+			}
+		} else if hasExisting && !retire && (existing.Binding.AccountID != config.AccountID || existing.Mode != config.mode()) {
+			return errors.New("hosted Stripe account, customer and mode binding is immutable; a mode change cannot reinterpret existing billing records")
+		}
+		for _, price := range config.Prices {
+			stored, err := writer.BillingPrice(ctx, price.PriceID)
+			if errors.Is(err, corestore.ErrNotFound) {
+				if err := writer.CreateBillingPrice(ctx, billingstore.Price{OrganizationID: d.hostedOrganization, PriceID: price.PriceID, Plan: billingstore.PlanReference{ID: price.Plan.ID, Version: price.Plan.Version}}); err != nil {
+					return err
+				}
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			if stored.Plan != (billingstore.PlanReference{ID: price.Plan.ID, Version: price.Plan.Version}) {
+				return errors.New("hosted Stripe price mappings are immutable; configure a new price")
+			}
+		}
+		for _, pack := range config.CreditPacks {
+			stored, err := writer.CreditPack(ctx, pack.PriceID, config.mode())
+			if errors.Is(err, corestore.ErrNotFound) {
+				if err := writer.CreateCreditPack(ctx, billingstore.CreditPack{OrganizationID: d.hostedOrganization, PriceID: pack.PriceID, Mode: config.mode(), USDCents: pack.USDCents}); err != nil {
+					return err
+				}
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			if stored.USDCents != pack.USDCents {
+				return errors.New("AI credit pack amounts are immutable; configure a new Stripe price")
+			}
+		}
+		creditAccount, err := writer.BillingCreditAccount(ctx, config.mode())
+		if errors.Is(err, corestore.ErrNotFound) && len(config.CreditPacks) > 0 {
+			return writer.CreateBillingCreditAccount(ctx, billingstore.CreditAccount{OrganizationID: d.hostedOrganization, Mode: config.mode()})
+		}
+		if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+			return err
+		}
+		if len(config.CreditPacks) > 0 || creditAccount.OrganizationID != "" {
+			if _, ok := config.Provider.(billing.CreditProvider); !ok {
+				return errors.New("existing AI credits require a credit-capable billing provider")
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	d.hostedBilling = true
+	if len(config.CreditPacks) > 0 {
+		d.aiCreditMode = config.mode()
+		d.aiCreditCostMultiplier = config.CreditCostMultiplier
+	} else {
+		d.aiCreditMode = ""
+	}
 	return nil
 }
 

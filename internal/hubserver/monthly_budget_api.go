@@ -22,7 +22,14 @@ type monthlyBudgetRequest struct {
 func (s *Service) getMonthlyBudget(c echo.Context) error {
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 	defer cancel()
-	result, err := readMonthlyBudgetSettings(ctx, s.database.reader, nativeRequestScope(c))
+	scope := nativeRequestScope(c)
+	var result monthlyBudgetSettings
+	var err error
+	if s.database.billingRepository != nil {
+		result, err = readBillingMonthlySettings(ctx, s.database.billingRepository, scope)
+	} else {
+		result, err = readMonthlyBudgetSettings(ctx, s.database.reader, scope)
+	}
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -41,6 +48,9 @@ func (s *Service) updateMonthlyBudget(c echo.Context) error {
 	}
 	scope.requireHostedAdmin = true
 	c.Set("native_scope", scope)
+	if s.database.billingRepository != nil {
+		return s.nativeAPIError(c, ErrBillingBudgetUnavailable)
+	}
 	result, err := s.executeNativeMutation(c.Request().Context(), scope, nativeCommandOptions{OperationID: "PUT " + c.Request().URL.EscapedPath(), Feature: "collaboration"}, request.Mutation, request, updateMonthlyBudgetOperation(request))
 	if err != nil {
 		return s.nativeAPIError(c, err)

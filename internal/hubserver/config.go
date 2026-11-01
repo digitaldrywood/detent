@@ -51,6 +51,7 @@ type Config struct {
 	startup                        *startupHealth
 	migrate                        func(context.Context, *sql.DB, *slog.Logger) (int64, error)
 	TenantRepository               tenantstore.Repository
+	BillingRepository              tenantstore.Repository
 	AccessRepository               tenantstore.Repository
 	ProjectParticipants            tenantstore.ProjectParticipants
 	Clock                          func() time.Time

@@ -12,6 +12,7 @@ import (
 type routingManifest struct {
 	Families     map[string]string      `json:"families"`
 	Tables       map[string]tableRoute  `json:"tables"`
+	TargetTables map[string]tableRoute  `json:"target_tables"`
 	Owners       map[string]ownerRoute  `json:"owners"`
 	AtomicGroups map[string]atomicGroup `json:"atomic_groups"`
 }
@@ -65,6 +66,22 @@ func routingProblems(inventory sourceInventory, manifest routingManifest) []stri
 	for table := range manifest.Tables {
 		if _, ok := inventory.Tables[table]; !ok {
 			problems = append(problems, table+": stale table route")
+		}
+	}
+	for name := range inventory.TargetTables {
+		table := name
+		route, ok := manifest.TargetTables[table]
+		if !ok {
+			problems = append(problems, table+": unmapped target table")
+			continue
+		}
+		if manifest.Families[route.Family] == "" || route.Disposition != "target-only" || strings.TrimSpace(route.Contract) == "" {
+			problems = append(problems, table+": incomplete target table route")
+		}
+	}
+	for table := range manifest.TargetTables {
+		if _, ok := inventory.TargetTables[table]; !ok {
+			problems = append(problems, table+": stale target table route")
 		}
 	}
 	for name, owner := range inventory.Owners {

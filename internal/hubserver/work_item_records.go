@@ -637,7 +637,7 @@ func (s *Service) executeWorkItemRecordMutation(ctx context.Context, scope nativ
 			}
 			authorityQuery = policyTx
 		}
-		if options.Feature != "" && !options.Completion {
+		if options.Feature != "" && !options.Completion && s.database.billingRepository == nil {
 			now, err := s.database.currentTime()
 			if err == nil {
 				err = s.database.requireHostedFeature(ctx, authorityQuery, options.Feature, now)
@@ -659,6 +659,15 @@ func (s *Service) executeWorkItemRecordMutation(ctx context.Context, scope nativ
 			}
 			if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
 				return err
+			}
+			if options.Feature != "" && !options.Completion && s.database.billingRepository != nil {
+				now, err := s.database.currentTime()
+				if err != nil {
+					return err
+				}
+				if err := s.database.requireHostedFeatureRecord(ctx, w, options.Feature, now); err != nil {
+					return err
+				}
 			}
 			project, err := w.ProjectRecord(ctx, scope.project)
 			if err != nil {

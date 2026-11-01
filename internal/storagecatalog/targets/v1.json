@@ -1,0 +1,94 @@
+{
+  "legacy_migrations": {
+    "internal/hubserver/postgres/migrations/20261031220442_core_tenant_schema.sql": "55cf981a2476db53ed891a5619dee975ac91cb7ad42b7c612c440de9c13e22f3",
+    "internal/hubserver/postgres/migrations/20261031221613_tenant_context.sql": "43fd6c40d2e7663860c702eb78409763ba5030a4c3c9d6710ca04a8fbd8945bd",
+    "internal/hubserver/postgres/migrations/20261031225402_tenant_record_cursors.sql": "4c459f74005fe80797904354e7f98748b83ae5d21b413d957baf6affecbba7ab",
+    "internal/hubserver/postgres/migrations/20261031225433_typed_request_metrics.sql": "d31412489abb9cdea80aa0a50343c0436d99e6c07d19067a49b8bd5dc4e63a1a",
+    "internal/hubserver/postgres/migrations/20261031225501_platform_registry_auth.sql": "902e9c9b79f07c96a4dc0f2bf43fa336e1d49a4e33429bc8b13c6ab437e54010",
+    "internal/hubserver/postgres/migrations/20261031231035_import_identity_allocation.sql": "2267635732ad8ac6faa9954d48e8b80de8dd8ff16cd7bd535f5762df53c952d3",
+    "internal/hubserver/postgres/migrations/20261031233325_event_change_records.sql": "4d120a98f587e457ece65ba75a868aeb1e4b1abd4ccaa5881d51b10df84c3a35",
+    "internal/hubserver/postgres/migrations/20261031233437_attempt_leases.sql": "57a671a7d3f12345532c4242e941cac9855b8d53917c9af1754b768f6c2dee22",
+    "internal/hubserver/postgres/migrations/20261031235718_bounded_storage_conversion.sql": "7abe5a36276718787a1c3ed2b379763682a3908b8758413060ddf18a79353c9a",
+    "internal/hubserver/postgres/migrations/20261101001936_storage_conversion_cursors.sql": "1cc204bbdfc9047e3e6109324c29d58fc164c799acdc43e40cf0ab5055289c93",
+    "internal/hubserver/postgres/migrations/20261101144536_platform_entry_receipts.sql": "8b1d6818e4b23921835b1d49b8946a598ed24b6beb58ad4c71510c1720262de5",
+    "internal/hubserver/postgres/migrations/20261101145015_runtime_schema_read.sql": "f72fc10539f3010a38eb3bbc11d20e3aa7024d9aeb8c411ad9014855a1d0c377",
+    "internal/hubserver/postgres/migrations/20261101145110_project_records.sql": "d18b7f208fa1d412f6cea9f501a6847905dc043a86a78d59427c13c00f67d532",
+    "internal/hubserver/postgres/migrations/20261101152957_request_metric_aggregates.sql": "84987aaca50009cf9de67822f91e68885a1b650847854af322842f46c6234833",
+    "internal/hubserver/postgres/migrations/20261101155000_request_metric_import.sql": "7cf466458b08ca1cc1e9de8c529161e2ac2ca32307966de3af4a02c3a6de68f2",
+    "internal/hubserver/postgres/migrations/20261101160521_tenant_access_secrets.sql": "b482e04d09dacac1a786a3b6d42bbb26078b45fd78110d341d819e15e9c8943a",
+    "internal/hubserver/postgres/migrations/20261101160820_work_item_serving.sql": "c54a6ffdb1fac786f0bcce60b09ccafc80506f700274085971908076d9e474af",
+    "internal/hubserver/postgres/migrations/20261101162429_platform_import.sql": "e6dc68952e0985400499b9ccee2de326db243fefd8e82fea4ce32793cba1d23d",
+    "internal/hubserver/postgres/migrations/20261101173526_access_import_checkpoint.sql": "b903abf0828fe30a2a7faf15a75bbf47cf5d3682b9d81a029dae6fd7a35101fa"
+  },
+  "migrations": [
+    "internal/hubserver/postgres/migrations/20261101173425_tenant_billing.sql"
+  ],
+  "tables": {
+    "public.ai_credit_reason_references": {
+      "columns": {
+        "binding_id": "text",
+        "codec": "text",
+        "compressed_bytes": "bigint",
+        "content_bytes": "bigint",
+        "customer_owned": "boolean",
+        "format_version": "integer",
+        "kind": "text",
+        "mode": "text",
+        "object_key": "text",
+        "organization_id": "text",
+        "retention": "text",
+        "sha256": "text",
+        "source": "text"
+      },
+      "contract": "Store immutable reason-object metadata beside the idempotent typed credit transaction; never retain reason text inline.",
+      "family": "billing",
+      "organization": "organization-owned"
+    },
+    "public.hosted_complimentary_grant_scopes": {
+      "columns": {
+        "grant_id": "text",
+        "organization_id": "text",
+        "scope": "text"
+      },
+      "contract": "Retain each typed complimentary grant scope under its tenant and grant identity.",
+      "family": "billing",
+      "organization": "organization-owned"
+    },
+    "public.hosted_plan_allowances": {
+      "columns": {
+        "amount": "bigint",
+        "metric": "text",
+        "organization_id": "text",
+        "plan_id": "text",
+        "plan_version": "bigint"
+      },
+      "contract": "Retain each typed plan allowance under its tenant and immutable plan version.",
+      "family": "billing",
+      "organization": "organization-owned"
+    },
+    "public.hosted_plan_features": {
+      "columns": {
+        "feature": "text",
+        "organization_id": "text",
+        "plan_id": "text",
+        "plan_version": "bigint"
+      },
+      "contract": "Retain each typed plan feature under its tenant and immutable plan version.",
+      "family": "billing",
+      "organization": "organization-owned"
+    },
+    "public.hosted_usage_receipts": {
+      "columns": {
+        "amount": "bigint",
+        "metric": "text",
+        "organization_id": "text",
+        "receipt_id": "text",
+        "window_start": "timestamp with time zone"
+      },
+      "contract": "Deduplicate typed usage receipts by tenant and receipt identity before updating a usage window.",
+      "family": "billing",
+      "organization": "organization-owned"
+    }
+  },
+  "version": "1"
+}

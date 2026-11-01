@@ -116,7 +116,7 @@ func (s *Service) validateNativeRunOwner(ctx context.Context, tx nativeQueryer, 
 		}
 	}
 	if request.Type == "run.started" {
-		if err := checkMonthlyLease(ctx, tx, lease, now); err != nil {
+		if err := checkMonthlyLease(ctx, tx, lease, now, s.database.billingRepository); err != nil {
 			return tracker.NativeIssue{}, false, err
 		}
 	}

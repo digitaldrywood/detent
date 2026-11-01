@@ -100,7 +100,7 @@ func TestHostedBillingPreservesRunningLease(t *testing.T) {
 		t.Fatal(err)
 	}
 	paid := resolveHostedBilling(cfg, hostedBillingState{}, activeBillingSnapshot(now), now)
-	if err := f.service.database.commitHostedBilling(t.Context(), paid, 0, now); err != nil {
+	if err := f.service.database.commitHostedBilling(t.Context(), paid, 0, nil, now); err != nil {
 		t.Fatal(err)
 	}
 	requests := make([]tracker.ClaimRequest, 2)
@@ -121,7 +121,7 @@ func TestHostedBillingPreservesRunningLease(t *testing.T) {
 		t.Fatal(err)
 	}
 	canceled := resolveHostedBilling(cfg, paid, billing.Snapshot{Status: "canceled"}, now)
-	if err := f.service.database.commitHostedBilling(t.Context(), canceled, 0, now); err != nil {
+	if err := f.service.database.commitHostedBilling(t.Context(), canceled, 0, nil, now); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.service.Tracker().Renew(t.Context(), tracker.RenewRequest{LeaseID: lease.ID, FencingToken: lease.FencingToken, TTL: time.Minute}); err != nil {

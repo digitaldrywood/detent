@@ -14,6 +14,8 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/web/templates"
 )
 
@@ -55,11 +57,65 @@ func (s *Service) hostedBillingReport(ctx context.Context, pages ...creditPageRe
 		if err != nil {
 			return report, err
 		}
-		window := report.ChatUsage.Range
-		if err := s.database.reader.QueryRowContext(ctx, `SELECT coalesce(-sum(amount_micros),0) FROM ai_credit_transactions
- WHERE organization_id=? AND mode=? AND kind='usage' AND recorded_at>=? AND recorded_at<?`, s.database.hostedOrganization, s.database.aiCreditMode, window.From.UnixMicro(), window.To.UnixMicro()).Scan(&report.ChargedAIMicros); err != nil {
+		if s.database.billingRepository != nil {
+			err = s.database.readBillingTenant(ctx, func(reader tenantstore.Reader) error {
+				var err error
+				report.ChargedAIMicros, err = reader.BillingCreditUsage(ctx, s.database.aiCreditMode, report.ChatUsage.Range.From, report.ChatUsage.Range.To)
+				return err
+			})
+		} else {
+			window := report.ChatUsage.Range
+			err = s.database.reader.QueryRowContext(ctx, `SELECT coalesce(-sum(amount_micros),0) FROM ai_credit_transactions
+ WHERE organization_id=? AND mode=? AND kind='usage' AND recorded_at>=? AND recorded_at<?`, s.database.hostedOrganization, s.database.aiCreditMode, window.From.UnixMicro(), window.To.UnixMicro()).Scan(&report.ChargedAIMicros)
+		}
+		if err != nil {
 			return report, err
 		}
+	}
+	if s.database.billingRepository != nil {
+		if s.database.billingAuditStore == nil {
+			return report, errors.New("hosted billing audit storage is unavailable")
+		}
+		var account billingstore.Account
+		var pending []billingstore.Event
+		var audits []billingstore.Audit
+		err = s.database.readBillingTenant(ctx, func(reader tenantstore.Reader) error {
+			var err error
+			account, err = reader.BillingAccount(ctx)
+			if err != nil {
+				return err
+			}
+			pending, err = reader.BillingEvents(ctx, 0, int64(^uint64(0)>>1), 1)
+			if err != nil {
+				return err
+			}
+			audits, err = reader.BillingAudits(ctx, int64(^uint64(0)>>1), 50)
+			return err
+		})
+		if err != nil {
+			return report, err
+		}
+		if account.ReconciledAt != nil {
+			report.ReconciledAt = account.ReconciledAt.UTC().Format(time.RFC3339Nano)
+		}
+		if len(pending) > 0 {
+			report.PendingEvents = 1
+		}
+		for _, audit := range audits {
+			raw, err := s.database.billingAuditStore.ReadDetail(ctx, string(s.database.hostedOrganization), audit.Reference.ArchiveReference())
+			if err != nil {
+				return report, err
+			}
+			var summary struct {
+				Status  string `json:"status"`
+				PriceID string `json:"price_id"`
+			}
+			if err := json.Unmarshal(raw, &summary); err != nil {
+				return report, err
+			}
+			report.Audit = append(report.Audit, templates.HostedBillingAudit{Actor: audit.ActorID, Action: audit.Action, Summary: strings.TrimSpace(summary.Status + " " + summary.PriceID), At: audit.RecordedAt.UTC().Format(time.RFC3339Nano)})
+		}
+		return report, nil
 	}
 	var checked sql.NullString
 	err = s.database.reader.QueryRowContext(ctx, "SELECT reconciled_at FROM hosted_billing_accounts WHERE organization_id=?", s.config.Hosted.OrganizationID).Scan(&checked)
@@ -403,10 +459,22 @@ func (s *Service) readBillingView(ctx context.Context, pages ...creditPageReques
 		if _, err := s.database.hostedBillingBinding(ctx, cfg); err == nil {
 			view.CanManage = true
 		}
-		var raw string
-		if err := s.database.reader.QueryRowContext(ctx, "SELECT checkout_json FROM hosted_billing_accounts WHERE organization_id=?", s.config.Hosted.OrganizationID).Scan(&raw); err == nil {
-			var checkout hostedCheckout
-			view.CheckoutPending = json.Unmarshal([]byte(raw), &checkout) == nil && checkout.ExpiresAt.After(s.config.now())
+		if s.database.billingRepository != nil {
+			var account billingstore.Account
+			if err := s.database.readBillingTenant(ctx, func(reader tenantstore.Reader) error {
+				var err error
+				account, err = reader.BillingAccount(ctx)
+				return err
+			}); err != nil {
+				return hostedBillingView{}, err
+			}
+			view.CheckoutPending = account.Checkout.ExpiresAt.After(s.config.now())
+		} else {
+			var raw string
+			if err := s.database.reader.QueryRowContext(ctx, "SELECT checkout_json FROM hosted_billing_accounts WHERE organization_id=?", s.config.Hosted.OrganizationID).Scan(&raw); err == nil {
+				var checkout hostedCheckout
+				view.CheckoutPending = json.Unmarshal([]byte(raw), &checkout) == nil && checkout.ExpiresAt.After(s.config.now())
+			}
 		}
 	}
 	if view.Audit == nil {

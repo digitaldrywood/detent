@@ -13,6 +13,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -29,6 +33,54 @@ func setMonthlyBudgetFixture(t *testing.T, f nativeFixture, organization bool, p
 	decodeHubResponse(t, response, &current)
 	request := monthlyBudgetRequest{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("budget-%t-%d", organization, current.Revision)}, ExpectedRevision: current.Revision, Policy: p}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, path, testHubAdminToken, request), http.StatusOK)
+}
+
+func TestSelectedBillingLeaseAllowsDisabledPolicyAndFailsClosedWhenEnabled(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
+	r := placementFixtureRunner(t, f, "selected-budget", "budget", true, 2, "test-model", "gpt-6.1-sol")
+	scope := setPlacementFixture(t, f, policy.Placement{Mode: "blended"}, 2)
+	issue := f.create(t, "selected-budget")
+	var lease tracker.NativeLease
+	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, providerClaim(r, issue, "selected-budget"))
+	requireNativeStatus(t, response, http.StatusOK)
+	decodeHubResponse(t, response, &lease)
+	repository := projectRecordPostgres(t)
+	if err := repository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(writer tenantstore.Writer) error {
+		return writer.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: scope.organization, Name: "Example organization", CreatedAt: now})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	check := func() error {
+		t.Helper()
+		tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+		record, found, err := readLeaseByID(t.Context(), tx, lease.ID)
+		if err != nil || !found {
+			return errors.Join(err, errors.New("claimed lease was not found"))
+		}
+		return checkMonthlyLease(t.Context(), tx, record, now, repository)
+	}
+	if err := check(); err != nil {
+		t.Fatalf("disabled selected policy refused existing lease: %v", err)
+	}
+	if err := repository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(writer tenantstore.Writer) error {
+		return writer.SetBillingMonthlyPolicy(t.Context(), billingstore.MonthlyPolicy{
+			OrganizationID: scope.organization,
+			Policy:         budget.MonthlyPolicy{Enabled: true, Mode: budget.HardStop, TotalMicros: new(int64(1000))},
+			Actor:          "example-operator",
+			UpdatedAt:      now,
+		}, tracker.Revision(0))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := check(); !errors.Is(err, ErrBillingBudgetUnavailable) {
+		t.Fatalf("enabled selected policy error = %v", err)
+	}
 }
 
 func monthlyPolicyFixture(t *testing.T, f nativeFixture, subscription bool) policy.Descriptor {
