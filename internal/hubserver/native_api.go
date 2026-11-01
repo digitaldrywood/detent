@@ -534,10 +534,22 @@ func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, 
 		return nil, err
 	}
 	operationID := options.OperationID
-	_, runEvent := input.(tracker.NativeRunEvent)
+	event, runEvent := input.(tracker.NativeRunEvent)
 	var pending *pendingContentMutation
 	if runEvent {
-		pending = &pendingContentMutation{}
+		pending = &pendingContentMutation{authorize: func(ctx context.Context, tx *sql.Tx, now time.Time) error {
+			if err := requireLeaseRunner(ctx, tx, event.Data.LeaseID, scope); err != nil {
+				return err
+			}
+			lease, found, err := readLeaseByID(ctx, tx, event.Data.LeaseID)
+			if err != nil {
+				return err
+			}
+			if !found {
+				return tracker.ErrStaleFencingToken
+			}
+			return requireCurrentLease(lease, event.Data.FencingToken, now)
+		}}
 		ctx = context.WithValue(ctx, pendingContentKey{}, pending)
 	}
 	replay := false

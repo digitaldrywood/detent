@@ -211,29 +211,83 @@ func TestNativeEventRejectionsLeaveNoContent(t *testing.T) {
 
 func TestNativeEventUploadsOnlyAfterCommit(t *testing.T) {
 	t.Parallel()
-	store := &memoryRunDetails{}
-	f := claimedAttemptDiffFixture(t, false, Config{RunDetails: store})
-	f.start(t)
-	var writing bool
-	timing := &requestTiming{writerTransaction: func(active bool) { writing = active }}
-	store.afterStore = func(ref attachment.ArchiveReference) {
-		if writing {
-			t.Error("uploaded while holding the writer")
-		}
-		var sequence int
-		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT sequence FROM native_attempts WHERE id=?", f.attempt).Scan(&sequence); err != nil || sequence != 2 {
-			t.Errorf("uploaded before commit: sequence=%d error=%v", sequence, err)
-		}
-		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE leases SET fencing_token=fencing_token+1 WHERE lease_id=?", f.lease.ID); err != nil {
-			t.Error(err)
-		}
+	for _, change := range []struct {
+		name      string
+		statement string
+	}{
+		{"fencing generation", "UPDATE leases SET fencing_token=fencing_token+1 WHERE lease_id=?"},
+		{"owner", "UPDATE leases SET machine_id='replacement-machine' WHERE lease_id=?"},
+		{"lease expiry", "UPDATE leases SET expires_at='2020-01-01T00:00:00Z' WHERE lease_id=?"},
+		{"lease release", "UPDATE leases SET released_at='2020-01-01T00:00:00Z' WHERE lease_id=?"},
+	} {
+		t.Run(change.name, func(t *testing.T) {
+			store := &memoryRunDetails{}
+			f := claimedAttemptDiffFixture(t, false, Config{RunDetails: store})
+			f.start(t)
+			if change.name == "owner" {
+				worker := f.nativeFixture.worker(t, "replacement-worker")
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker,
+					map[string]any{"id": "replacement-machine", "hostname": "replacement", "display_name": "Replacement", "version": "test", "capacity": 1}), http.StatusOK)
+			}
+			var writing bool
+			timing := &requestTiming{writerTransaction: func(active bool) { writing = active }}
+			uploaded, resume, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			var pause, release sync.Once
+			store.afterStore = func(attachment.ArchiveReference) {
+				if writing {
+					t.Error("uploaded while holding the writer")
+				}
+				pause.Do(func() {
+					close(uploaded)
+					<-resume
+				})
+			}
+			event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "committed-finish"}, Type: "run.finished", SchemaVersion: 1,
+				Data: tracker.NativeRunData{Sequence: 2, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "gpt-6-astra"}, LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken, RunID: f.run, AttemptID: f.attempt, PolicyID: f.policy, Outcome: "succeeded"}}
+			request := newHubAPIRequest(t, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/events", f.worker, event)
+			response := httptest.NewRecorder()
+			go func() {
+				defer close(done)
+				f.service.Handler().ServeHTTP(response, request.WithContext(withRequestTiming(request.Context(), timing)))
+			}()
+			t.Cleanup(func() {
+				release.Do(func() { close(resume) })
+				<-done
+			})
+			select {
+			case <-uploaded:
+			case <-done:
+				t.Fatalf("request returned before upload: status=%d body=%s", response.Code, response.Body.String())
+			}
+			var sequence int
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT sequence FROM native_attempts WHERE id=?", f.attempt).Scan(&sequence); err != nil || sequence != 2 {
+				t.Fatalf("uploaded before commit: sequence=%d error=%v", sequence, err)
+			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), change.statement, f.lease.ID); err != nil {
+				t.Fatal(err)
+			}
+			release.Do(func() { close(resume) })
+			<-done
+			requireNativeStatus(t, response, http.StatusOK)
+			var pending int
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM attachments WHERE pending_content IS NOT NULL").Scan(&pending); err != nil || pending != 2 {
+				t.Fatalf("superseded publisher cleared pending content: pending=%d want=2 error=%v", pending, err)
+			}
+			if got := readReferencedRun(t, f.service, f.attempt); got.Sequence != 2 || got.Outcome != "succeeded" {
+				t.Fatal("supersession lost committed run history")
+			}
+			uploads := store.uploads
+			if err := f.service.convertStorageBatch(t.Context(), f.service.config.now()); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM attachments WHERE pending_content IS NOT NULL").Scan(&pending); err != nil || pending != 0 {
+				t.Fatalf("conversion left pending=%d: %v", pending, err)
+			}
+			if store.uploads != uploads {
+				t.Fatal("conversion repeated a stable-key upload")
+			}
+		})
 	}
-	event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "committed-finish"}, Type: "run.finished", SchemaVersion: 1,
-		Data: tracker.NativeRunData{Sequence: 2, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "gpt-6-astra"}, LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken, RunID: f.run, AttemptID: f.attempt, PolicyID: f.policy, Outcome: "succeeded"}}
-	request := newHubAPIRequest(t, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/events", f.worker, event)
-	response := httptest.NewRecorder()
-	f.service.Handler().ServeHTTP(response, request.WithContext(withRequestTiming(request.Context(), timing)))
-	requireNativeStatus(t, response, http.StatusOK)
 }
 
 func TestNativeEventPendingPublicationRecovery(t *testing.T) {
