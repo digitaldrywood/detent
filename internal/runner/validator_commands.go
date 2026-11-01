@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/digitaldrywood/detent/internal/changerequest"
+	"github.com/digitaldrywood/detent/internal/failureattribution"
 	"github.com/digitaldrywood/detent/internal/gate"
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -20,10 +21,12 @@ type validatorCommands struct {
 	mu               sync.Mutex
 	results          []gate.CommandResult
 	failure          error
-	failedValidation map[string]bool
+	failedValidation map[string]gate.CommandResult
 	run              workspace.ReviewCommandRunner
 	info             workspace.Info
 	issue            workspace.Issue
+	tree             string
+	policy           string
 	base             string
 	shell            string
 }
@@ -100,9 +103,9 @@ func (v *validatorCommands) execute(ctx context.Context, command string, validat
 			delete(v.failedValidation, key)
 		} else {
 			if v.failedValidation == nil {
-				v.failedValidation = make(map[string]bool)
+				v.failedValidation = make(map[string]gate.CommandResult)
 			}
-			v.failedValidation[key] = true
+			v.failedValidation[key] = result
 		}
 	}
 	return result, nil
@@ -110,37 +113,45 @@ func (v *validatorCommands) execute(ctx context.Context, command string, validat
 
 func (v *validatorCommands) tools() ([]AgentTool, AgentToolHandler) {
 	return []AgentTool{
-			{Name: "detent_run_validation", Description: "Run one required acceptance validation command through the host on the immutable reviewed head; a failed command prevents a passing review unless a later run of the same command passes on the same head and tree. Use detent_read_source for source inspection.", InputSchema: json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"}},"required":["command"],"additionalProperties":false}`)},
-			{Name: "detent_read_source", Description: "Read a file or list files from the pinned review head or base. Returns a host command receipt for source inspection, never test execution. Pages start at byte offset 0 and default to 16384 bytes; length must be 1..16384. Text boundaries align to complete UTF-8 characters; a short length may return one whole character and an offset within a character includes its beginning. Receipts identify the actual byte range, total size, next_offset and eof; request subsequent relevant pages explicitly. A failed read is retained but may be recovered by a successful read; missing criterion evidence remains unverified.", InputSchema: json.RawMessage(`{"type":"object","properties":{"operation":{"type":"string","enum":["read","list"]},"revision":{"type":"string","enum":["head","base"]},"path":{"type":"string"},"offset":{"type":"integer","minimum":0},"length":{"type":"integer","minimum":1,"maximum":16384}},"required":["operation","revision","path"],"additionalProperties":false}`)},
-		}, func(ctx context.Context, call AgentToolCall) (AgentToolResult, error) {
-			var command string
-			switch call.Name {
-			case "detent_run_validation":
-				var input struct {
-					Command string `json:"command"`
-				}
-				if err := json.Unmarshal(call.Arguments, &input); err != nil {
-					return AgentToolResult{}, err
-				}
-				command = input.Command
-			case "detent_read_source":
-				var err error
-				var selection workspace.ReviewOutputRange
-				command, selection, err = v.sourceCommand(call.Arguments)
-				if err != nil {
-					return AgentToolResult{Content: err.Error()}, nil
-				}
-				ctx = workspace.WithReviewOutputRange(ctx, selection)
-			default:
-				return AgentToolResult{Content: "unsupported tool"}, nil
+		{Name: "detent_run_validation", Description: "Run one required acceptance validation command through the host on the immutable reviewed head; a failed command prevents a passing review unless a later run passes on the same head and tree or an explicit project-policy baseline exception is independently assessed against complete host head/base observations. Retain failed exits and all raw output; baseline_exceptions must bind the exact receipt and both output digests. Use detent_read_source for source inspection.", InputSchema: json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"}},"required":["command"],"additionalProperties":false}`)},
+		{Name: "detent_read_source", Description: "Read a file or list files from the pinned review head or base. Returns a host command receipt for source inspection, never test execution. Pages start at byte offset 0 and default to 16384 bytes; length must be 1..16384. Text boundaries align to complete UTF-8 characters; a short length may return one whole character and an offset within a character includes its beginning. Receipts identify the actual byte range, total size, next_offset and eof; request subsequent relevant pages explicitly. A failed read is retained but may be recovered by a successful read; missing criterion evidence remains unverified.", InputSchema: json.RawMessage(`{"type":"object","properties":{"operation":{"type":"string","enum":["read","list"]},"revision":{"type":"string","enum":["head","base"]},"path":{"type":"string"},"offset":{"type":"integer","minimum":0},"length":{"type":"integer","minimum":1,"maximum":16384}},"required":["operation","revision","path"],"additionalProperties":false}`)},
+	}, func(ctx context.Context, call AgentToolCall) (AgentToolResult, error) {
+		var command string
+		switch call.Name {
+		case "detent_run_validation":
+			var input struct {
+				Command string `json:"command"`
 			}
-			result, err := v.execute(ctx, command, call.Name == "detent_run_validation")
-			if err != nil {
+			if err := json.Unmarshal(call.Arguments, &input); err != nil {
 				return AgentToolResult{}, err
 			}
-			data, err := json.Marshal(result)
-			return AgentToolResult{Success: result.ExitCode == 0, Content: string(data)}, err
+			command = input.Command
+		case "detent_read_source":
+			var err error
+			var selection workspace.ReviewOutputRange
+			command, selection, err = v.sourceCommand(call.Arguments)
+			if err != nil {
+				return AgentToolResult{Content: err.Error()}, nil
+			}
+			ctx = workspace.WithReviewOutputRange(ctx, selection)
+		default:
+			return AgentToolResult{Content: "unsupported tool"}, nil
 		}
+		result, err := v.execute(ctx, command, call.Name == "detent_run_validation")
+		if err != nil {
+			return AgentToolResult{}, err
+		}
+		response := struct {
+			gate.CommandResult
+			HeadOutputDigest string `json:"head_output_digest"`
+			BaseOutputDigest string `json:"base_output_digest,omitempty"`
+		}{CommandResult: result, HeadOutputDigest: failureattribution.Digest(result.Output)}
+		if result.BaseReproduction != nil {
+			response.BaseOutputDigest = failureattribution.Digest(result.BaseReproduction.Output)
+		}
+		data, err := json.Marshal(response)
+		return AgentToolResult{Success: result.ExitCode == 0, Content: string(data)}, err
+	}
 }
 
 func (v *validatorCommands) sourceCommand(raw json.RawMessage) (string, workspace.ReviewOutputRange, error) {
@@ -193,11 +204,44 @@ func (v *validatorCommands) apply(result *gate.ValidatorResult) error {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	result.Commands = slices.Clone(v.results)
-	if len(v.failedValidation) != 0 && result.Verdict == gate.ValidatorVerdictPass {
+	blocked := false
+	for _, receipt := range v.failedValidation {
+		if !v.acceptsBaseline(&receipt, result.BaselineExceptions) {
+			blocked = true
+			continue
+		}
+		for i := range result.Commands {
+			if result.Commands[i].ReceiptID == receipt.ReceiptID {
+				result.Commands[i] = receipt
+			}
+		}
+	}
+	if blocked && result.Verdict == gate.ValidatorVerdictPass {
 		result.Verdict = gate.ValidatorVerdictWait
 		result.Summary += "\nHost validation command failed; passing test evidence is required."
 	}
 	return v.failure
+}
+
+func (v *validatorCommands) acceptsBaseline(receipt *gate.CommandResult, exceptions []gate.BaselineException) bool {
+	if receipt.ReceiptID == "" || receipt.HeadSHA != v.issue.PullRequestHeadSHA || v.tree == "" || receipt.TreeSHA != v.tree || receipt.BaseReproduction == nil {
+		return false
+	}
+	for _, exception := range exceptions {
+		if exception.ReceiptID != receipt.ReceiptID || strings.TrimSpace(exception.PolicyQuote) == "" || !strings.Contains(v.policy, exception.PolicyQuote) || strings.TrimSpace(exception.Assessment) == "" || len(exception.Diagnostics) == 0 || exception.HeadOutputDigest != failureattribution.Digest(receipt.Output) || exception.BaseOutputDigest != failureattribution.Digest(receipt.BaseReproduction.Output) {
+			continue
+		}
+		findings := make([]gate.Finding, 0, len(exception.Diagnostics))
+		for _, diagnostic := range exception.Diagnostics {
+			findings = append(findings, gate.Finding{CheckCommand: receipt.Command, CheckDiagnostic: diagnostic})
+		}
+		if gate.AttributeFindings(v.base, v.issue.PullRequestHeadSHA, findings, []gate.CommandResult{*receipt}) == failureattribution.Independent {
+			receipt.Findings = findings
+			receipt.Attribution = failureattribution.Independent
+			return true
+		}
+	}
+	return false
 }
 
 func (v *validatorCommands) evidence() ([]gate.CommandResult, error) {
