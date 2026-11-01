@@ -15,8 +15,9 @@ import (
 )
 
 type secretCipher struct {
-	legacy cipher.AEAD
-	keys   *hubsecrets.Keyring
+	legacy     cipher.AEAD
+	keys       *hubsecrets.Keyring
+	signingKey ed25519.PublicKey
 }
 
 func newSecretCipher(key ed25519.PrivateKey, keys *hubsecrets.Keyring) (*secretCipher, error) {
@@ -33,7 +34,11 @@ func newSecretCipher(key ed25519.PrivateKey, keys *hubsecrets.Keyring) (*secretC
 	if err != nil {
 		return nil, err
 	}
-	return &secretCipher{legacy: legacy, keys: keys}, nil
+	publicKey, ok := key.Public().(ed25519.PublicKey)
+	if !ok {
+		return nil, ErrInvalid
+	}
+	return &secretCipher{legacy: legacy, keys: keys, signingKey: append(ed25519.PublicKey(nil), publicKey...)}, nil
 }
 
 func secretAAD(purpose, binding string) []byte {

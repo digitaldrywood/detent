@@ -4608,7 +4608,7 @@
         "object_key": {"source":"[3,\"object_key\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"platform.archive_deletion_failures","column":"object_key","type":"text"}]},
         "ordinal": {"source":"[2,\"ordinal\",\"INTEGER\",1,null,3,0]","disposition":"column","codec":"int64","null":"reject","empty":"reject","targets":[{"table":"platform.archive_deletion_failures","column":"ordinal","type":"bigint"}]},
         "organization_id": {"source":"[0,\"organization_id\",\"TEXT\",1,null,1,0]","disposition":"column","codec":"text","null":"reject","empty":"reject","targets":[{"table":"platform.archive_deletion_failures","column":"organization_id","type":"text"}]},
-        "version_id": {"source":"[4,\"version_id\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"reject","targets":[{"table":"platform.archive_deletion_failures","column":"version_id","type":"text"}]}
+        "version_id": {"source":"[4,\"version_id\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"platform.archive_deletion_failures","column":"version_id","type":"text"}]}
       }
     },
     "registry/archive_deletion_receipts": {
@@ -4663,12 +4663,12 @@
       "organization": "platform",
       "columns": {
         "attempts": {"source":"[7,\"attempts\",\"INTEGER\",1,\"0\",0,0]","disposition":"column","codec":"int64","null":"reject","empty":"reject","targets":[{"table":"platform.billing_events","column":"attempts","type":"bigint"}]},
-        "charge_id": {"source":"[4,\"charge_id\",\"TEXT\",1,\"''\",0,0]","disposition":"column","codec":"text","null":"reject","empty":"reject","targets":[{"table":"platform.billing_events","column":"charge_id","type":"text"}]},
-        "customer_id": {"source":"[3,\"customer_id\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"reject","targets":[{"table":"platform.billing_events","column":"customer_id","type":"text"}]},
+        "charge_id": {"source":"[4,\"charge_id\",\"TEXT\",1,\"''\",0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"platform.billing_events","column":"charge_id","type":"text"}]},
+        "customer_id": {"source":"[3,\"customer_id\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"platform.billing_events","column":"customer_id","type":"text"}]},
         "event_id": {"source":"[0,\"event_id\",\"TEXT\",0,null,1,0]","disposition":"column","codec":"text","null":"reject","empty":"reject","targets":[{"table":"platform.billing_events","column":"event_id","type":"text"}]},
         "event_type": {"source":"[2,\"event_type\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"platform.billing_events","column":"event_type","type":"text"}]},
         "mode": {"source":"[1,\"mode\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"platform.billing_events","column":"mode","type":"text"}],"allowed":["test","live"]},
-        "organization_id": {"source":"[5,\"organization_id\",\"TEXT\",1,\"''\",0,0]","disposition":"column","codec":"text","null":"reject","empty":"reject","targets":[{"table":"platform.billing_events","column":"organization_id","type":"text"}]},
+        "organization_id": {"source":"[5,\"organization_id\",\"TEXT\",1,\"''\",0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"platform.billing_events","column":"organization_id","type":"text"}]},
         "received_at": {"source":"[8,\"received_at\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"timestamp","null":"reject","empty":"reject","targets":[{"table":"platform.billing_events","column":"received_at","type":"timestamp with time zone"}]},
         "status": {"source":"[6,\"status\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"platform.billing_events","column":"status","type":"text"}],"allowed":["pending","delivered","quarantined","ignored"]},
         "updated_at": {"source":"[9,\"updated_at\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"timestamp","null":"reject","empty":"reject","targets":[{"table":"platform.billing_events","column":"updated_at","type":"timestamp with time zone"}]}
@@ -4682,10 +4682,10 @@
       "columns": {
         "action": {"source":"[2,\"action\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"platform.entitlement_changes","column":"action","type":"text"}],"allowed":["grant","revoke","create_plan","base","subscription","end_subscription"]},
         "expires_at": {"source":"[6,\"expires_at\",\"TEXT\",1,\"''\",0,0]","disposition":"column","codec":"timestamp","null":"reject","empty":"null","targets":[{"table":"platform.entitlement_changes","column":"expires_at","type":"timestamp with time zone"}]},
-        "grant_id": {"source":"[3,\"grant_id\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"reject","targets":[{"table":"platform.entitlement_changes","column":"grant_id","type":"text"}]},
+        "grant_id": {"source":"[3,\"grant_id\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"platform.entitlement_changes","column":"grant_id","type":"text"}]},
         "idempotency_key": {"source":"[1,\"idempotency_key\",\"TEXT\",1,null,2,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"platform.entitlement_changes","column":"idempotency_key","type":"text"}]},
         "organization_id": {"source":"[0,\"organization_id\",\"TEXT\",1,null,1,0]","disposition":"column","codec":"text","null":"reject","empty":"reject","targets":[{"table":"platform.entitlement_changes","column":"organization_id","type":"text"}]},
-        "plan_id": {"source":"[4,\"plan_id\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"reject","targets":[{"table":"platform.entitlement_changes","column":"plan_id","type":"text"}]},
+        "plan_id": {"source":"[4,\"plan_id\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"platform.entitlement_changes","column":"plan_id","type":"text"}]},
         "plan_version": {"source":"[5,\"plan_version\",\"INTEGER\",1,null,0,0]","disposition":"column","codec":"int64","null":"reject","empty":"reject","targets":[{"table":"platform.entitlement_changes","column":"plan_version","type":"bigint"}]},
         "reason": {"source":"[7,\"reason\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"platform.entitlement_changes","column":"reason","type":"text"}]},
         "recorded_at": {"source":"[10,\"recorded_at\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"timestamp","null":"reject","empty":"reject","targets":[{"table":"platform.entitlement_changes","column":"recorded_at","type":"timestamp with time zone"}]},
@@ -4760,7 +4760,7 @@
         "managed": {"source":"[6,\"managed\",\"INTEGER\",1,\"0\",0,0]","disposition":"column","codec":"bool01","null":"reject","empty":"reject","targets":[{"table":"platform.organizations","column":"managed","type":"boolean"}]},
         "name": {"source":"[2,\"name\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"platform.organizations","column":"name","type":"text"}]},
         "next_attempt_at": {"source":"[11,\"next_attempt_at\",\"TEXT\",1,\"''\",0,0]","disposition":"column","codec":"timestamp","null":"reject","empty":"null","targets":[{"table":"platform.organizations","column":"next_attempt_at","type":"timestamp with time zone"}]},
-        "provider_id": {"source":"[1,\"provider_id\",\"TEXT\",1,\"''\",0,0]","disposition":"column","codec":"text","null":"reject","empty":"reject","targets":[{"table":"platform.organizations","column":"provider_id","type":"text"}]},
+        "provider_id": {"source":"[1,\"provider_id\",\"TEXT\",1,\"''\",0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"platform.organizations","column":"provider_id","type":"text"}]},
         "slug": {"source":"[16,\"slug\",\"TEXT\",1,\"''\",0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"platform.organizations","column":"slug","type":"text"}]},
         "state": {"source":"[3,\"state\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"platform.organizations","column":"state","type":"text"}],"allowed":["requested","allocating","ready","failed","disabled","deleting","deleted"]},
         "step": {"source":"[9,\"step\",\"TEXT\",1,\"''\",0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"platform.organizations","column":"step","type":"text"}]},
@@ -4846,7 +4846,7 @@
         "key_id": {"source":"[2,\"key_id\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"reject","targets":[{"table":"platform.access_key_notifications","column":"key_id","type":"text"}]},
         "organization_id": {"source":"[3,\"organization_id\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"reject","targets":[{"table":"platform.access_key_notifications","column":"organization_id","type":"text"}]},
         "owner_subject": {"source":"[1,\"owner_subject\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"platform.access_key_notifications","column":"owner_subject","type":"text"}]},
-        "project_id": {"source":"[4,\"project_id\",\"TEXT\",1,\"''\",0,0]","disposition":"column","codec":"text","null":"reject","empty":"reject","targets":[{"table":"platform.access_key_notifications","column":"project_id","type":"text"}]}
+        "project_id": {"source":"[4,\"project_id\",\"TEXT\",1,\"''\",0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"platform.access_key_notifications","column":"project_id","type":"text"}]}
       }
     },
     "auth/access_key_organizations": {
@@ -4893,7 +4893,7 @@
       "columns": {
         "event": {"source":"[3,\"event\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"platform.audit","column":"event","type":"text"}]},
         "id": {"source":"[0,\"id\",\"INTEGER\",0,null,1,0]","disposition":"column","codec":"int64","null":"reject","empty":"reject","targets":[{"table":"platform.audit","column":"id","type":"bigint"}]},
-        "organization_id": {"source":"[2,\"organization_id\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"reject","targets":[{"table":"platform.audit","column":"organization_id","type":"text"}]},
+        "organization_id": {"source":"[2,\"organization_id\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"platform.audit","column":"organization_id","type":"text"}]},
         "query_length": {"source":"[5,\"query_length\",\"INTEGER\",0,null,0,0]","disposition":"column","codec":"int64","null":"preserve","empty":"reject","targets":[{"table":"platform.audit","column":"query_length","type":"bigint"}]},
         "recorded_at": {"source":"[4,\"recorded_at\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"timestamp","null":"reject","empty":"reject","targets":[{"table":"platform.audit","column":"recorded_at","type":"timestamp with time zone"}]},
         "subject": {"source":"[1,\"subject\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"platform.audit","column":"subject","type":"text"}]}
@@ -5043,13 +5043,13 @@
       "family": "platform",
       "organization": "platform",
       "columns": {
-        "attempted_at": {"source":"[6,\"attempted_at\",\"TEXT\",0,null,0,0]","disposition":"column","codec":"timestamp","null":"preserve","empty":"null","targets":[{"table":"platform.platform_notifications","column":"attempted_at","type":"timestamp with time zone"}]},
-        "email": {"source":"[2,\"email\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"platform.platform_notifications","column":"email","type":"text"}]},
-        "entity_id": {"source":"[1,\"entity_id\",\"TEXT\",1,null,2,0]","disposition":"column","codec":"text","null":"reject","empty":"reject","targets":[{"table":"platform.platform_notifications","column":"entity_id","type":"text"}]},
-        "event": {"source":"[0,\"event\",\"TEXT\",1,null,1,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"platform.platform_notifications","column":"event","type":"text"}],"allowed":["signup","organization"]},
-        "name": {"source":"[3,\"name\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"platform.platform_notifications","column":"name","type":"text"}]},
-        "occurred_at": {"source":"[5,\"occurred_at\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"timestamp","null":"reject","empty":"reject","targets":[{"table":"platform.platform_notifications","column":"occurred_at","type":"timestamp with time zone"}]},
-        "plan": {"source":"[4,\"plan\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"platform.platform_notifications","column":"plan","type":"text"}]}
+        "attempted_at": {"source":"[6,\"attempted_at\",\"TEXT\",0,null,0,0]","disposition":"column","codec":"timestamp","null":"preserve","empty":"null","targets":[{"table":"platform.auth_notifications","column":"attempted_at","type":"timestamp with time zone"}]},
+        "email": {"source":"[2,\"email\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"platform.auth_notifications","column":"email","type":"text"}]},
+        "entity_id": {"source":"[1,\"entity_id\",\"TEXT\",1,null,2,0]","disposition":"column","codec":"text","null":"reject","empty":"reject","targets":[{"table":"platform.auth_notifications","column":"entity_id","type":"text"}]},
+        "event": {"source":"[0,\"event\",\"TEXT\",1,null,1,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"platform.auth_notifications","column":"event","type":"text"}],"allowed":["signup","organization"]},
+        "name": {"source":"[3,\"name\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"platform.auth_notifications","column":"name","type":"text"}]},
+        "occurred_at": {"source":"[5,\"occurred_at\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"timestamp","null":"reject","empty":"reject","targets":[{"table":"platform.auth_notifications","column":"occurred_at","type":"timestamp with time zone"}]},
+        "plan": {"source":"[4,\"plan\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"platform.auth_notifications","column":"plan","type":"text"}]}
       }
     },
     "auth/sessions": {
@@ -5101,7 +5101,7 @@
         "expires_at": {"source":"[8,\"expires_at\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"timestamp","null":"reject","empty":"reject","targets":[{"table":"platform.transactions","column":"expires_at","type":"timestamp with time zone"}]},
         "invitation_organization": {"source":"[7,\"invitation_organization\",\"TEXT\",1,\"''\",0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"platform.transactions","column":"invitation_organization","type":"text"}]},
         "invitation_token": {"source":"[6,\"invitation_token\",\"TEXT\",1,\"''\",0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"platform.transactions","column":"invitation_token","type":"text"}]},
-        "organization_id": {"source":"[4,\"organization_id\",\"TEXT\",1,\"''\",0,0]","disposition":"column","codec":"text","null":"reject","empty":"reject","targets":[{"table":"platform.transactions","column":"organization_id","type":"text"}]},
+        "organization_id": {"source":"[4,\"organization_id\",\"TEXT\",1,\"''\",0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"platform.transactions","column":"organization_id","type":"text"}]},
         "return_path": {"source":"[5,\"return_path\",\"TEXT\",1,\"''\",0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"platform.transactions","column":"return_path","type":"text"}]},
         "state": {"source":"[2,\"state\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"platform.transactions","column":"state","type":"text"}]},
         "support_actor": {"source":"[10,\"support_actor\",\"TEXT\",1,\"''\",0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"platform.transactions","column":"support_actor","type":"text"}]},

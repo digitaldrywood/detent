@@ -295,6 +295,7 @@ type PlatformAdministrationReceipt struct {
 	AuditRecorded     bool
 	OutputObjectKey   string
 	RecordedAt        time.Time
+	ImportSourceID    int64
 }
 
 type PlatformArchiveDeletionFailure struct {
@@ -413,6 +414,19 @@ type PlatformGithubUserConnection struct {
 	ExpiresAt    *time.Time
 	CreatedAt    time.Time
 	RevokedAt    *time.Time
+}
+
+type PlatformImportCheckpoint struct {
+	Singleton     bool
+	SnapshotID    string
+	CatalogDigest string
+	Stage         int64
+	Processed     int64
+	Revision      int64
+	AfterKey1     string
+	AfterKey2     string
+	AfterKey3     string
+	Started       bool
 }
 
 type PlatformOauthClient struct {
