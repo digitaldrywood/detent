@@ -90,6 +90,9 @@ func (s *Service) listNativeLabels(c echo.Context) error {
 	if err := validateNativeQuery(c.QueryParams()); err != nil {
 		return s.nativeAPIError(c, err)
 	}
+	if s.config.TenantRepository != nil {
+		return s.nativeAPIError(c, workItemStorageUnavailable())
+	}
 	labels, err := readNativeLabels(ctx, s.database.reader, nativeRequestScope(c))
 	if err != nil {
 		return s.nativeAPIError(c, err)

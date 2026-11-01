@@ -22,7 +22,8 @@
   },
   "migrations": [
     "internal/hubserver/postgres/migrations/20261101172130_expose_platform_schema_version.sql",
-    "internal/hubserver/postgres/migrations/20261101173425_tenant_billing.sql"
+    "internal/hubserver/postgres/migrations/20261101173425_tenant_billing.sql",
+    "internal/hubserver/postgres/migrations/20261101184348_work_item_relationships.sql"
   ],
   "tables": {
     "public.ai_credit_reason_references": {
@@ -88,6 +89,17 @@
       },
       "contract": "Deduplicate typed usage receipts by tenant and receipt identity before updating a usage window.",
       "family": "billing",
+      "organization": "organization-owned"
+    },
+    "public.issue_labels": {
+      "columns": {
+        "label": "text",
+        "organization_id": "text",
+        "project_id": "text",
+        "work_item_id": "text"
+      },
+      "contract": "Exact typed per-issue label membership; bounded indexed reads preserve organization and project isolation.",
+      "family": "core",
       "organization": "organization-owned"
     }
   },

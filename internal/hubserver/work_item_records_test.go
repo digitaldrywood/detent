@@ -24,6 +24,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/issuecontract"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -284,6 +285,361 @@ func TestWorkItemRecordBackendParity(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPostgresWorkItemRelationshipsAndLabels(t *testing.T) {
+	repository := projectRecordPostgres(t)
+	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}, TenantRepository: repository})
+	createProject := func(name, key string) (nativeOrganization, tracker.NativeProject) {
+		t.Helper()
+		organization, err := service.createNativeOrganizationFor(t.Context(), name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+			return w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization.ID, Name: organization.Name, Slug: organization.Slug, Local: true, CreatedAt: service.config.now()})
+		}); err != nil {
+			t.Fatal(err)
+		}
+		projects := "/api/v2/organizations/" + string(organization.ID) + "/projects"
+		response := performHubAPIRequest(t, service, http.MethodPost, projects, testHubAdminToken, map[string]any{"idempotency_key": key, "name": name + " project", "states": nativeFixtureStates()})
+		requireNativeStatus(t, response, http.StatusOK)
+		var project tracker.NativeProject
+		decodeHubResponse(t, response, &project)
+		if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+			record, err := w.ProjectRecord(t.Context(), project.ID)
+			if err != nil {
+				return err
+			}
+			record.Settings.DuplicateChallenge = false
+			_, err = w.UpdateProjectRecord(t.Context(), record)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return organization, project
+	}
+	firstOrganization, firstProject := createProject("First organization", "first-project")
+	secondOrganization, secondProject := createProject("Second organization", "second-project")
+	createIssue := func(organization nativeOrganization, project tracker.NativeProject, key, title string, labels []string) tracker.NativeIssue {
+		t.Helper()
+		path := "/api/v2/organizations/" + string(organization.ID) + "/projects/" + string(project.ID) + "/work-items"
+		response := performHubAPIRequest(t, service, http.MethodPost, path, testHubAdminToken, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: key}, Title: title, Body: workItemRecordBody, Labels: labels})
+		requireNativeStatus(t, response, http.StatusOK)
+		var issue tracker.NativeIssue
+		decodeHubResponse(t, response, &issue)
+		return issue
+	}
+	source := createIssue(firstOrganization, firstProject, "source", "Source issue", []string{"feature"})
+	target := createIssue(firstOrganization, firstProject, "target", "Target issue", nil)
+	foreign := createIssue(secondOrganization, secondProject, "foreign", "Foreign issue", nil)
+	if err := repository.ReadTenant(t.Context(), firstOrganization.ID, corestore.Serving, func(r tenantstore.Reader) error {
+		labels, err := r.LabelNames(t.Context(), firstProject.ID, corestore.LabelCursor{}, 10)
+		if err != nil {
+			return err
+		}
+		if !slices.Equal(labels.Items, []string{"feature"}) {
+			t.Fatalf("label membership=%+v", labels)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	firstBase := "/api/v2/organizations/" + string(firstOrganization.ID) + "/projects/" + string(firstProject.ID)
+	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, firstBase+"/labels", testHubAdminToken, nil), http.StatusServiceUnavailable)
+	updatedLabels := []string{"planning"}
+	labelUpdate := tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "update-labels"}, ExpectedRevision: 1, Labels: &updatedLabels}
+	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPatch, itemPathFor(firstOrganization.ID, firstProject.ID, source.WorkItemID), testHubAdminToken, labelUpdate), http.StatusOK)
+	if err := repository.ReadTenant(t.Context(), firstOrganization.ID, corestore.Serving, func(r tenantstore.Reader) error {
+		labels, err := r.LabelNames(t.Context(), firstProject.ID, corestore.LabelCursor{}, 10)
+		if err != nil {
+			return err
+		}
+		if !slices.Equal(labels.Items, []string{"planning"}) {
+			t.Fatalf("updated label membership=%+v", labels)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	itemPath := itemPathFor(firstOrganization.ID, firstProject.ID, source.WorkItemID)
+	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, itemPath, testHubAdminToken, nil), http.StatusOK)
+	if err := repository.ReadTenant(t.Context(), firstOrganization.ID, corestore.Serving, func(r tenantstore.Reader) error {
+		if _, err := r.WorkItemByNativeID(t.Context(), source.WorkItemID); err != nil {
+			return err
+		}
+		if _, err := r.WorkItemByNativeID(t.Context(), target.WorkItemID); err != nil {
+			return err
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("read relationship endpoints: %v", err)
+	}
+	dependency := tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: "add-dependency"}, ExpectedRevision: 2, RelatedWorkItemID: target.WorkItemID, Operation: "add"}
+	var rejectedItem tracker.NativeWorkItemID
+	service.config.TenantRepository = rejectedWorkItemRepository{Repository: repository, err: errors.New("reject relationship event"), phase: "event", item: &rejectedItem}
+	rejected := performHubAPIRequest(t, service, http.MethodPost, itemPath+"/dependencies", testHubAdminToken, dependency)
+	requireNativeStatus(t, rejected, http.StatusInternalServerError)
+	service.config.TenantRepository = repository
+	credential, _, err := service.authenticateAPIToken(t.Context(), testHubAdminToken, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rejectedItem != source.WorkItemID {
+		t.Fatalf("rejected event item=%q want=%q", rejectedItem, source.WorkItemID)
+	}
+	if err := repository.ReadTenant(t.Context(), firstOrganization.ID, corestore.Serving, func(r tenantstore.Reader) error {
+		stored, err := r.WorkItem(t.Context(), firstProject.ID, source.WorkItemID)
+		if err != nil {
+			return err
+		}
+		if stored.Revision != 2 {
+			t.Fatalf("revision after rejected event=%d want=2", stored.Revision)
+		}
+		relations, err := r.Relationships(t.Context(), firstProject.ID, source.WorkItemID, corestore.RelationshipCursor{}, 10)
+		if err != nil {
+			return err
+		}
+		if len(relations.Items) != 0 {
+			t.Fatalf("relationships after rejected event=%+v", relations.Items)
+		}
+		events, err := r.Events(t.Context(), firstProject.ID, source.WorkItemID, 0, 10)
+		if err != nil {
+			return err
+		}
+		if len(events) != 2 || events[0].Type != "issue.created" || events[1].Type != "issue.edited" {
+			t.Fatalf("events after rejected event=%+v", events)
+		}
+		if _, err := r.CollaborationVersion(t.Context(), string(source.WorkItemID), 3); !errors.Is(err, corestore.ErrNotFound) {
+			t.Fatalf("version after rejected event=%v", err)
+		}
+		if _, err := r.Receipt(t.Context(), credential.ID, "POST "+itemPath+"/dependencies", dependency.IdempotencyKey); !errors.Is(err, corestore.ErrNotFound) {
+			t.Fatalf("receipt after rejected event=%v", err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	response := performHubAPIRequest(t, service, http.MethodPost, itemPath+"/dependencies", testHubAdminToken, dependency)
+	requireNativeStatus(t, response, http.StatusOK)
+	var linked tracker.NativeIssue
+	decodeHubResponse(t, response, &linked)
+	if linked.Revision != 3 || !slices.Equal(linked.Dependencies, []tracker.NativeWorkItemID{target.WorkItemID}) {
+		t.Fatalf("dependency mutation=%+v", linked)
+	}
+	var sourceRead tracker.NativeIssue
+	decodeHubResponse(t, performHubAPIRequest(t, service, http.MethodGet, itemPath, testHubAdminToken, nil), &sourceRead)
+	if !slices.Equal(sourceRead.Dependencies, []tracker.NativeWorkItemID{target.WorkItemID}) || len(sourceRead.Blockers) != 1 || sourceRead.Blockers[0].ID != target.WorkItemID || sourceRead.DependencyReady {
+		t.Fatalf("source relationship hydration=%+v", sourceRead)
+	}
+	targetPath := itemPathFor(firstOrganization.ID, firstProject.ID, target.WorkItemID)
+	var targetRead tracker.NativeIssue
+	decodeHubResponse(t, performHubAPIRequest(t, service, http.MethodGet, targetPath, testHubAdminToken, nil), &targetRead)
+	if len(targetRead.Dependents) != 1 || targetRead.Dependents[0].ID != source.WorkItemID {
+		t.Fatalf("target relationship hydration=%+v", targetRead)
+	}
+	var targetRow corestore.WorkItem
+	var targetVersion eventstore.CollaborationVersion
+	if err := repository.ReadTenant(t.Context(), firstOrganization.ID, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		targetRow, err = r.WorkItem(t.Context(), firstProject.ID, target.WorkItemID)
+		if err != nil {
+			return err
+		}
+		targetVersion, err = r.CollaborationVersion(t.Context(), string(target.WorkItemID), targetRow.Revision)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	content := eventstore.NewContent(service.runDetailStore())
+	targetRaw, err := content.CollaborationVersion(t.Context(), targetVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(targetRaw, &targetRead); err != nil {
+		t.Fatal(err)
+	}
+	targetRead.State = "Done"
+	targetRead.Revision++
+	targetRead.UpdatedAt = service.config.now()
+	targetRead.LastActivityAt = targetRead.UpdatedAt
+	targetRaw, err = json.Marshal(targetRead)
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetVersion.Revision = int64(targetRead.Revision)
+	targetVersion, err = content.PrepareCollaborationVersion(t.Context(), targetVersion, targetRaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.WriteTenant(t.Context(), firstOrganization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+		current, err := w.LockWorkItem(t.Context(), firstProject.ID, target.WorkItemID)
+		if err != nil {
+			return err
+		}
+		state := "Done"
+		current.WorkflowStateName = &state
+		if _, err := w.UpdateWorkItem(t.Context(), current); err != nil {
+			return err
+		}
+		_, err = w.CreateCollaborationVersion(t.Context(), targetVersion)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var refreshedSource tracker.NativeIssue
+	decodeHubResponse(t, performHubAPIRequest(t, service, http.MethodGet, itemPath, testHubAdminToken, nil), &refreshedSource)
+	if !refreshedSource.DependencyReady || len(refreshedSource.Blockers) != 1 || refreshedSource.Blockers[0].State != "Done" || !refreshedSource.Blockers[0].Terminal {
+		t.Fatalf("refreshed relationship facts=%+v", refreshedSource)
+	}
+	replay := performHubAPIRequest(t, service, http.MethodPost, itemPath+"/dependencies", testHubAdminToken, dependency)
+	requireNativeStatus(t, replay, http.StatusOK)
+	if response.Body.String() != replay.Body.String() {
+		t.Fatal("dependency replay changed response")
+	}
+	related := tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: "add-related"}, ExpectedRevision: 3, RelatedWorkItemID: target.WorkItemID, RelationshipType: "related", Operation: "add"}
+	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, itemPath+"/dependencies", testHubAdminToken, related), http.StatusOK)
+	scope := nativeScope{organization: firstOrganization.ID, project: firstProject.ID, credential: apiCredential{ID: "example-operator", Scope: apiScopeAdmin}}
+	firstPage, err := service.readWorkItemRelationshipPage(t.Context(), scope, operatortool.WorkReadRequest{Reference: string(source.WorkItemID), Limit: 1}, linked)
+	if err != nil || firstPage.NextCursor == "" || !slices.Equal(firstPage.Dependencies, []tracker.NativeWorkItemID{target.WorkItemID}) {
+		t.Fatalf("first relationship page=%+v error=%v", firstPage, err)
+	}
+	secondPage, err := service.readWorkItemRelationshipPage(t.Context(), scope, operatortool.WorkReadRequest{Reference: string(source.WorkItemID), Limit: 1, Cursor: firstPage.NextCursor}, linked)
+	if err != nil || secondPage.NextCursor != "" || len(secondPage.Related) != 1 || secondPage.Related[0].ID != target.WorkItemID {
+		t.Fatalf("second relationship page=%+v error=%v", secondPage, err)
+	}
+	remove := tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: "remove-dependency"}, ExpectedRevision: 4, RelatedWorkItemID: target.WorkItemID, Operation: "remove"}
+	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, itemPath+"/dependencies", testHubAdminToken, remove), http.StatusOK)
+	var sourceAfterRemove tracker.NativeIssue
+	decodeHubResponse(t, performHubAPIRequest(t, service, http.MethodGet, itemPath, testHubAdminToken, nil), &sourceAfterRemove)
+	if len(sourceAfterRemove.Dependencies) != 0 || len(sourceAfterRemove.Blockers) != 0 || !sourceAfterRemove.DependencyReady {
+		t.Fatalf("source relationship removal=%+v", sourceAfterRemove)
+	}
+	reverse := tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: "reverse-dependency"}, ExpectedRevision: 2, RelatedWorkItemID: source.WorkItemID, Operation: "add"}
+	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, targetPath+"/dependencies", testHubAdminToken, reverse), http.StatusOK)
+	var reversedTarget tracker.NativeIssue
+	decodeHubResponse(t, performHubAPIRequest(t, service, http.MethodGet, targetPath, testHubAdminToken, nil), &reversedTarget)
+	if !slices.Equal(reversedTarget.Dependencies, []tracker.NativeWorkItemID{source.WorkItemID}) || len(reversedTarget.Blockers) != 1 || reversedTarget.DependencyReady {
+		t.Fatalf("reverse endpoint hydration=%+v", reversedTarget)
+	}
+	var reversedSource tracker.NativeIssue
+	decodeHubResponse(t, performHubAPIRequest(t, service, http.MethodGet, itemPath, testHubAdminToken, nil), &reversedSource)
+	if len(reversedSource.Dependents) != 1 || reversedSource.Dependents[0].ID != target.WorkItemID {
+		t.Fatalf("reverse endpoint dependent hydration=%+v", reversedSource)
+	}
+	cycle := tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: "dependency-cycle"}, ExpectedRevision: 5, RelatedWorkItemID: target.WorkItemID, Operation: "add"}
+	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, itemPath+"/dependencies", testHubAdminToken, cycle), http.StatusUnprocessableEntity)
+	removeReverse := tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: "remove-reverse-dependency"}, ExpectedRevision: 3, RelatedWorkItemID: source.WorkItemID, Operation: "remove"}
+	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, targetPath+"/dependencies", testHubAdminToken, removeReverse), http.StatusOK)
+	crossTenant := tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: "foreign-dependency"}, ExpectedRevision: 5, RelatedWorkItemID: foreign.WorkItemID, Operation: "add"}
+	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, itemPath+"/dependencies", testHubAdminToken, crossTenant), http.StatusNotFound)
+	projectsPath := "/api/v2/organizations/" + string(firstOrganization.ID) + "/projects"
+	response = performHubAPIRequest(t, service, http.MethodPost, projectsPath, testHubAdminToken, map[string]any{"idempotency_key": "sibling-project", "name": "Sibling project", "states": nativeFixtureStates()})
+	requireNativeStatus(t, response, http.StatusOK)
+	var siblingProject tracker.NativeProject
+	decodeHubResponse(t, response, &siblingProject)
+	if err := repository.WriteTenant(t.Context(), firstOrganization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+		record, err := w.ProjectRecord(t.Context(), siblingProject.ID)
+		if err != nil {
+			return err
+		}
+		record.Settings.DuplicateChallenge = false
+		_, err = w.UpdateProjectRecord(t.Context(), record)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	siblingTarget := createIssue(firstOrganization, siblingProject, "sibling-target", "Sibling target", nil)
+	var sourceForGrant tracker.NativeIssue
+	decodeHubResponse(t, performHubAPIRequest(t, service, http.MethodGet, itemPath, testHubAdminToken, nil), &sourceForGrant)
+	siblingDependency := tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: "sibling-dependency"}, ExpectedRevision: sourceForGrant.Revision, RelatedWorkItemID: siblingTarget.WorkItemID, Operation: "add"}
+	response = performHubAPIRequest(t, service, http.MethodPost, itemPath+"/dependencies", testHubAdminToken, siblingDependency)
+	requireNativeStatus(t, response, http.StatusOK)
+	var siblingLinked tracker.NativeIssue
+	decodeHubResponse(t, response, &siblingLinked)
+	siblingRelated := tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: "sibling-related"}, ExpectedRevision: siblingLinked.Revision, RelatedWorkItemID: siblingTarget.WorkItemID, RelationshipType: "related", Operation: "add"}
+	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, itemPath+"/dependencies", testHubAdminToken, siblingRelated), http.StatusOK)
+	seedHubAPIToken(t, service, "source-only", "source-only-token", apiScopeOperator)
+	for _, project := range []tracker.NativeProject{firstProject, siblingProject} {
+		if _, err := service.database.db.ExecContext(t.Context(), `INSERT INTO projects (id, organization_id, name, profile, states_json, created_at) VALUES (?, ?, ?, 'native', '[]', ?) ON CONFLICT(id) DO NOTHING`, project.ID, firstOrganization.ID, "Authorization mirror "+string(project.ID), testTimestamp); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := service.database.db.ExecContext(t.Context(), "INSERT INTO token_grants (token_id, organization_id, project_id) VALUES (?, ?, ?)", "source-only", firstOrganization.ID, firstProject.ID); err != nil {
+		t.Fatal(err)
+	}
+	var sourceOnlyRead tracker.NativeIssue
+	response = performHubAPIRequest(t, service, http.MethodGet, itemPath, "source-only-token", nil)
+	requireNativeStatus(t, response, http.StatusOK)
+	decodeHubResponse(t, response, &sourceOnlyRead)
+	if slices.Contains(sourceOnlyRead.Dependencies, siblingTarget.WorkItemID) || slices.ContainsFunc(sourceOnlyRead.Blockers, func(blocker tracker.NativeDependency) bool { return blocker.ID == siblingTarget.WorkItemID }) || slices.ContainsFunc(sourceOnlyRead.Dependents, func(dependent tracker.NativeDependency) bool { return dependent.ID == siblingTarget.WorkItemID }) || slices.ContainsFunc(sourceOnlyRead.Related, func(related tracker.NativeDependency) bool { return related.ID == siblingTarget.WorkItemID }) {
+		t.Fatalf("source-only credential exposed ungranted target: %+v", sourceOnlyRead)
+	}
+	if err := repository.WriteTenant(t.Context(), firstOrganization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+		current, err := w.LockWorkItem(t.Context(), firstProject.ID, target.WorkItemID)
+		if err != nil {
+			return err
+		}
+		current.ActorPrincipalID = nil
+		_, err = w.UpdateWorkItem(t.Context(), current)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	reporterScope := scope
+	reporterScope.credential.HostedRole = "reporter"
+	reporterScope.sourceActor = &tracker.Actor{Kind: "human", PrincipalID: "example-reporter"}
+	reporterRead := sourceOnlyRead
+	if err := service.hydrateWorkItemRelationshipFacts(t.Context(), reporterScope, &reporterRead); err != nil {
+		t.Fatal(err)
+	}
+	if slices.ContainsFunc(reporterRead.Related, func(related tracker.NativeDependency) bool { return related.ID == target.WorkItemID }) {
+		t.Fatalf("reporter relationship read exposed unowned target: %+v", reporterRead.Related)
+	}
+	bulkCount := corestore.MaxPageSize + 1
+	now := service.config.now()
+	if err := repository.WriteTenant(t.Context(), firstOrganization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+		for index := range bulkCount {
+			id := tracker.NativeWorkItemID(fmt.Sprintf("wi_bulk_%03d", index))
+			principal := source.Actor.PrincipalID
+			state := "Todo"
+			if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{
+				OrganizationID:    firstOrganization.ID,
+				ProjectID:         firstProject.ID,
+				NativeID:          id,
+				Number:            int64(index + 10),
+				Revision:          1,
+				Title:             fmt.Sprintf("Bulk related issue %03d", index),
+				WorkflowStateName: &state,
+				ActorKind:         new("human"),
+				ActorPrincipalID:  &principal,
+			}); err != nil {
+				return err
+			}
+			if err := w.SetRelationship(t.Context(), corestore.Relationship{
+				OrganizationID:    firstOrganization.ID,
+				ProjectID:         firstProject.ID,
+				WorkItemID:        source.WorkItemID,
+				RelatedProjectID:  firstProject.ID,
+				RelatedWorkItemID: id,
+				Type:              "related",
+			}, "add", now); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var allRelated tracker.NativeIssue
+	decodeHubResponse(t, performHubAPIRequest(t, service, http.MethodGet, itemPath, testHubAdminToken, nil), &allRelated)
+	if len(allRelated.Related) != bulkCount+2 {
+		t.Fatalf("relationship hydration truncated at one storage page: got=%d want=%d", len(allRelated.Related), bulkCount+2)
+	}
+}
+
+func itemPathFor(organization tracker.OrganizationID, project tracker.ProjectID, item tracker.NativeWorkItemID) string {
+	return "/api/v2/organizations/" + string(organization) + "/projects/" + string(project) + "/work-items/" + string(item)
 }
 
 type projectUpdateBeforeWriteRepository struct {

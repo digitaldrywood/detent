@@ -23,5 +23,10 @@
     "inline_payloads": [],
     "ownership": "organization-owned",
     "scope": "hosted_usage_receipts.organization_id; receipt_id is unique within the organization"
+  },
+  "public/issue_labels": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "issue_labels.organization_id; project_id and work_item_id reference issues"
   }
 }

@@ -367,6 +367,8 @@ func (s *Service) requireNativeScope(roles ...apiScope) echo.MiddlewareFunc {
 						scope.action = operatortool.FileIssue
 					case "POST " + nativeBase + "/work-items/:item/comments":
 						scope.action = operatortool.AddComment
+					case "POST " + nativeBase + "/work-items/:item/dependencies":
+						scope.action = operatortool.SetDependency
 					case "PATCH " + nativeBase + "/work-items/:item/comments/:comment":
 						scope.action = operatortool.EditComment
 					case "POST " + nativeBase + "/work-items/:item/workflow":

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -30,7 +31,7 @@ type workItemArchive struct {
 
 func workItemRecordRoute(path string) bool {
 	switch path {
-	case nativeBase + "/work-items", nativeBase + "/work-items/:item", nativeBase + "/work-items/:item/comments", nativeBase + "/work-items/:item/comments/:comment", nativeBase + "/work-items/:item/archive", nativeBase + "/work-items/:item/restore":
+	case nativeBase + "/labels", nativeBase + "/work-items", nativeBase + "/work-items/:item", nativeBase + "/work-items/:item/comments", nativeBase + "/work-items/:item/comments/:comment", nativeBase + "/work-items/:item/archive", nativeBase + "/work-items/:item/restore", nativeBase + "/work-items/:item/dependencies":
 		return true
 	}
 	return false
@@ -94,6 +95,9 @@ func (s *Service) readWorkItem(ctx context.Context, scope nativeScope, id string
 		return tracker.NativeIssue{}, err
 	}
 	issue, err := s.hydrateWorkItemRecord(ctx, row, version)
+	if err == nil {
+		err = s.hydrateWorkItemRelationshipFacts(ctx, scope, &issue)
+	}
 	issue.OmittedFields = append(issue.OmittedFields, "change_sequence")
 	return scope.reporterIssue(issue), err
 }
@@ -120,15 +124,19 @@ type workItemRecordFields struct {
 }
 
 type workItemRecordPlan struct {
-	project    projectstore.Record
-	current    corestore.WorkItem
-	issue      tracker.NativeIssue
-	comment    tracker.NativeComment
-	commentRow corestore.Comment
-	eventType  string
-	fields     []string
-	create     bool
-	existing   bool
+	project             projectstore.Record
+	current             corestore.WorkItem
+	related             corestore.WorkItem
+	relationship        *corestore.Relationship
+	relationshipType    string
+	relationshipOperate string
+	issue               tracker.NativeIssue
+	comment             tracker.NativeComment
+	commentRow          corestore.Comment
+	eventType           string
+	fields              []string
+	create              bool
+	existing            bool
 }
 
 func sameWorkItemProjectPlan(planned, current projectstore.Record) bool {
@@ -204,6 +212,29 @@ func (s *Service) loadWorkItemPlan(ctx context.Context, scope nativeScope, item,
 				return err
 			}
 			version, err = r.CollaborationVersion(ctx, comment, plan.commentRow.Revision)
+		}
+		if request, ok := input.(tracker.DependencyMutation); ok {
+			plan.related, err = r.WorkItemByNativeID(ctx, request.RelatedWorkItemID)
+			if err != nil {
+				return err
+			}
+			if !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(plan.related.ActorPrincipalID)}) {
+				return corestore.ErrNotFound
+			}
+			relationshipType := request.RelationshipType
+			if relationshipType == "" {
+				relationshipType = "dependency"
+			}
+			plan.relationshipType = relationshipType
+			plan.relationshipOperate = request.Operation
+			plan.relationship = &corestore.Relationship{
+				OrganizationID:    scope.organization,
+				ProjectID:         plan.current.ProjectID,
+				WorkItemID:        plan.current.NativeID,
+				RelatedProjectID:  plan.related.ProjectID,
+				RelatedWorkItemID: plan.related.NativeID,
+				Type:              relationshipType,
+			}
 		}
 		return err
 	})
@@ -378,6 +409,40 @@ func (s *Service) planWorkItemRecord(ctx context.Context, scope nativeScope, pla
 		plan.issue.UpdatedAt = now
 		plan.issue.LastActivityAt = now
 		plan.eventType = "issue.edited"
+	case tracker.DependencyMutation:
+		if err := requireNativeEdit(plan.issue, request.ExpectedRevision); err != nil {
+			return plan, err
+		}
+		relationshipType := request.RelationshipType
+		if relationshipType == "" {
+			relationshipType = "dependency"
+		}
+		if relationshipType != "dependency" && relationshipType != "related" {
+			return plan, nativePublicInvalid("Relationship type must be dependency or related")
+		}
+		if request.Operation != "add" && request.Operation != "remove" {
+			return plan, nativePublicInvalid("Relationship operation must be add or remove")
+		}
+		if plan.current.NativeID == plan.related.NativeID && plan.current.ProjectID == plan.related.ProjectID {
+			return plan, nativePublicInvalid("An issue cannot be related to itself")
+		}
+		if relationshipType == "dependency" {
+			if request.Operation == "add" {
+				if !slices.Contains(plan.issue.Dependencies, plan.related.NativeID) {
+					plan.issue.Dependencies = append(plan.issue.Dependencies, plan.related.NativeID)
+					slices.Sort(plan.issue.Dependencies)
+				}
+			} else {
+				plan.issue.Dependencies = slices.DeleteFunc(plan.issue.Dependencies, func(id tracker.NativeWorkItemID) bool { return id == plan.related.NativeID })
+			}
+			plan.eventType = "dependency.changed"
+		} else {
+			plan.fields = []string{"related"}
+			plan.eventType = "issue.edited"
+		}
+		plan.issue.Revision++
+		plan.issue.UpdatedAt = now
+		plan.issue.LastActivityAt = now
 	case tracker.CreateComment:
 		if strings.TrimSpace(request.Body) == "" || len(request.Body) > 64<<10 {
 			return plan, nativePublicInvalid("Comment body must contain 1 byte to 64 KiB")
@@ -615,6 +680,10 @@ func (s *Service) executeWorkItemRecordMutation(ctx context.Context, scope nativ
 			if plan.comment.ID != "" {
 				data.CommentID = plan.comment.ID
 			}
+			if plan.relationship != nil {
+				data.RelatedWorkItemID = plan.related.NativeID
+				data.Operation = plan.relationshipOperate
+			}
 			eventRaw, err := json.Marshal(tracker.CollaborationEvent{OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: item, ID: newNativeID("evt"), Type: plan.eventType, SchemaVersion: 1, Actor: scope.actor(), RecordedAt: at, Data: data})
 			if err != nil {
 				return nil, err
@@ -652,6 +721,58 @@ func (s *Service) executeWorkItemRecordMutation(ctx context.Context, scope nativ
 			}
 		}
 		err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+			if plan.relationship != nil {
+				if err := w.LockRelationshipGraph(ctx); err != nil {
+					return err
+				}
+				projects := []tracker.ProjectID{plan.current.ProjectID, plan.related.ProjectID}
+				slices.Sort(projects)
+				projects = slices.Compact(projects)
+				for _, projectID := range projects {
+					if err := w.LockWorkItemProject(ctx, projectID); err != nil {
+						return err
+					}
+				}
+				targetProject, err := w.ProjectRecord(ctx, plan.related.ProjectID)
+				if err != nil {
+					return err
+				}
+				if targetProject.Core.DeletedAt != nil || targetProject.Core.Profile != "native" {
+					return corestore.ErrNotFound
+				}
+				targetScope := scope
+				targetScope.project = plan.related.ProjectID
+				if s.config.AccessRepository != nil {
+					if err := s.authorizeAccessScope(ctx, w, targetScope, false); err != nil {
+						return err
+					}
+				}
+				if targetScope.credential.EntryKey != nil && !targetScope.credential.EntryKey.Allows(string(targetScope.project)) {
+					return auth.ErrHostedIdentity
+				}
+				endpoints := []corestore.WorkItem{plan.current, plan.related}
+				slices.SortFunc(endpoints, func(a, b corestore.WorkItem) int {
+					if a.ProjectID != b.ProjectID {
+						return strings.Compare(string(a.ProjectID), string(b.ProjectID))
+					}
+					return strings.Compare(string(a.NativeID), string(b.NativeID))
+				})
+				locked := make([]corestore.WorkItem, 0, len(endpoints))
+				for _, endpoint := range endpoints {
+					current, err := w.LockWorkItem(ctx, endpoint.ProjectID, endpoint.NativeID)
+					if err != nil {
+						return err
+					}
+					locked = append(locked, current)
+				}
+				currentRelated := locked[0]
+				if currentRelated.ProjectID == plan.current.ProjectID && currentRelated.NativeID == plan.current.NativeID {
+					currentRelated = locked[1]
+				}
+				if !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(currentRelated.ActorPrincipalID)}) {
+					return corestore.ErrNotFound
+				}
+			}
 			if s.config.AccessRepository != nil {
 				if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
 					return err
@@ -710,6 +831,11 @@ func (s *Service) executeWorkItemRecordMutation(ctx context.Context, scope nativ
 				}
 			}
 			if !plan.existing {
+				if plan.relationship != nil {
+					if err := w.SetRelationship(ctx, *plan.relationship, plan.relationshipOperate, plan.issue.UpdatedAt); err != nil {
+						return err
+					}
+				}
 				if err := writeWorkItemRecord(ctx, w, plan, fields); err != nil {
 					return err
 				}
@@ -834,8 +960,10 @@ func writeWorkItemRecord(ctx context.Context, w tenantstore.Writer, plan workIte
 		row.NativeSourceKey = new(issue.Provenance.Provider + ":" + issue.Provenance.ExternalID)
 	}
 	if plan.create {
-		_, err := w.CreateWorkItem(ctx, row)
-		return err
+		if _, err := w.CreateWorkItem(ctx, row); err != nil {
+			return err
+		}
+		return w.SetWorkItemLabels(ctx, row.ProjectID, row.NativeID, issue.Labels)
 	}
 	current, err := w.LockWorkItem(ctx, row.ProjectID, row.NativeID)
 	if err != nil {
@@ -854,6 +982,11 @@ func writeWorkItemRecord(ctx context.Context, w tenantstore.Writer, plan workIte
 		return nativeConflict(tracker.Revision(current.Revision))
 	}
 	row.EventSequence = current.EventSequence
-	_, err = w.UpdateWorkItem(ctx, row)
-	return err
+	if _, err := w.UpdateWorkItem(ctx, row); err != nil {
+		return err
+	}
+	if slices.Contains(plan.fields, "labels") {
+		return w.SetWorkItemLabels(ctx, row.ProjectID, row.NativeID, issue.Labels)
+	}
+	return nil
 }

@@ -18,6 +18,11 @@ func (s *session) WorkItem(ctx context.Context, project tracker.ProjectID, id tr
 	return corestore.WorkItem(row), mapError(ctx, err)
 }
 
+func (s *session) WorkItemByNativeID(ctx context.Context, id tracker.NativeWorkItemID) (corestore.WorkItem, error) {
+	row, err := s.queries.GetWorkItemByNativeID(ctx, pgquery.GetWorkItemByNativeIDParams{OrganizationID: s.organization, NativeID: id})
+	return corestore.WorkItem(row), mapError(ctx, err)
+}
+
 func (s *session) CreateWorkItem(ctx context.Context, record corestore.WorkItem) (corestore.WorkItem, error) {
 	if err := s.checkOrganization(record.OrganizationID); err != nil {
 		return corestore.WorkItem{}, err

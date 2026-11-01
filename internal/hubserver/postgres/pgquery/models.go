@@ -565,6 +565,35 @@ type Issue struct {
 	LastActivityAt         time.Time
 }
 
+type IssueDependency struct {
+	OrganizationID     tracker.OrganizationID
+	DependentProjectID string
+	DependentIssueID   int64
+	BlockerProjectID   string
+	BlockerIssueID     int64
+	Provenance         string
+	SourceVersion      *string
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+}
+
+type IssueLabel struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	WorkItemID     string
+	Label          string
+}
+
+type IssueRelationship struct {
+	OrganizationID   tracker.OrganizationID
+	FirstProjectID   string
+	FirstIssueID     int64
+	SecondProjectID  string
+	SecondIssueID    int64
+	RelationshipType string
+	CreatedAt        time.Time
+}
+
 type Lease struct {
 	OrganizationID   tracker.OrganizationID
 	LeaseID          string

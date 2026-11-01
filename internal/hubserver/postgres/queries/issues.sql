@@ -4,6 +4,11 @@ WHERE organization_id=sqlc.arg(organization_id)
   AND project_id=sqlc.arg(project_id)
   AND native_id=sqlc.arg(native_id);
 
+-- name: GetWorkItemByNativeID :one
+SELECT * FROM issues
+WHERE organization_id=sqlc.arg(organization_id)
+  AND native_id=sqlc.arg(native_id);
+
 -- name: CreateWorkItem :one
 INSERT INTO issues (
     last_activity_at,

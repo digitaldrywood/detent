@@ -135,6 +135,12 @@ func (s *Service) recheckProjectRecordMutation(ctx context.Context, scope native
 }
 
 func projectRecordError(err error) error {
+	if errors.Is(err, corestore.ErrInvalidRelationship) {
+		return nativePublicInvalid("Relationship type, operation, or endpoints are invalid")
+	}
+	if errors.Is(err, corestore.ErrDependencyCycle) {
+		return nativePublicInvalid("Dependencies cannot form a cycle")
+	}
 	if errors.Is(err, corestore.ErrNotFound) {
 		return nativeNotFound()
 	}

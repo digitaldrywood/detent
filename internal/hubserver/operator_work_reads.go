@@ -183,6 +183,13 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 	case operatortool.WorkExport:
 		return hubWorkResult(r, request, item, nil)
 	case operatortool.WorkRelationships:
+		if s.config.TenantRepository != nil {
+			related, err := s.readWorkItemRelationshipPage(ctx, scope, request, item)
+			if err != nil {
+				return operatortool.Result{}, safeWorkReadError(err)
+			}
+			return hubWorkResult(r, request, related, nil)
+		}
 		related, err := readNativeRelated(ctx, s.database.reader, scope, item.WorkItemID)
 		if err != nil {
 			return operatortool.Result{}, safeWorkReadError(err)

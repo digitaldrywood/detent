@@ -18,6 +18,8 @@ var (
 	ErrTenantMismatch       = errors.New("resource organization does not match transaction")
 	ErrInvalidPage          = errors.New("page limit must be between 1 and 200")
 	ErrInvalidCursor        = errors.New("cursor scope or version is invalid; restart the query")
+	ErrInvalidRelationship  = errors.New("work item relationship is invalid")
+	ErrDependencyCycle      = errors.New("work item dependency would form a cycle")
 )
 
 const MaxPageSize = 200
@@ -42,18 +44,23 @@ type Reader interface {
 	SelectComments(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, int64, bool, int) ([]Comment, error)
 	Project(context.Context, tracker.ProjectID) (Project, error)
 	WorkItem(context.Context, tracker.ProjectID, tracker.NativeWorkItemID) (WorkItem, error)
+	WorkItemByNativeID(context.Context, tracker.NativeWorkItemID) (WorkItem, error)
 	Comment(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, string) (Comment, error)
 	Projects(context.Context, tracker.ProjectID, int) ([]Project, error)
 	WorkItems(context.Context, tracker.ProjectID, int64, int) ([]WorkItem, error)
 	Comments(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, int64, int) ([]Comment, error)
 	WorkItemPage(context.Context, tracker.ProjectID, Cursor, int) (Page[WorkItem], error)
 	CommentPage(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, Cursor, int) (Page[Comment], error)
+	Relationships(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, RelationshipCursor, int) (RelationshipPage, error)
+	LabelNames(context.Context, tracker.ProjectID, LabelCursor, int) (LabelPage, error)
+	WorkItemLabels(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, LabelCursor, int) (LabelPage, error)
 	ScanWorkItems(context.Context, tracker.ProjectID, ScanCursor, int) (Scan[WorkItem], error)
 	ScanComments(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, ScanCursor, int) (Scan[Comment], error)
 }
 
 type Writer interface {
 	Reader
+	LockRelationshipGraph(context.Context) error
 	LockWorkItemProject(context.Context, tracker.ProjectID) error
 	LockWorkItem(context.Context, tracker.ProjectID, tracker.NativeWorkItemID) (WorkItem, error)
 	CreateProject(context.Context, Project) (Project, error)
@@ -62,6 +69,8 @@ type Writer interface {
 	UpdateProject(context.Context, Project) (Project, error)
 	UpdateWorkItem(context.Context, WorkItem) (WorkItem, error)
 	UpdateComment(context.Context, Comment) (Comment, error)
+	SetRelationship(context.Context, Relationship, string, time.Time) error
+	SetWorkItemLabels(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, []string) error
 	DeleteProject(context.Context, tracker.ProjectID) error
 	DeleteWorkItem(context.Context, tracker.ProjectID, tracker.NativeWorkItemID) error
 	DeleteComment(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, string) error
@@ -149,6 +158,48 @@ type Page[T any] struct {
 type Scan[T any] struct {
 	Items []T
 	Next  ScanCursor
+}
+
+type Relationship struct {
+	OrganizationID    tracker.OrganizationID
+	ProjectID         tracker.ProjectID
+	WorkItemID        tracker.NativeWorkItemID
+	RelatedProjectID  tracker.ProjectID
+	RelatedWorkItemID tracker.NativeWorkItemID
+	Type              string
+	Direction         string
+	CreatedAt         time.Time
+	Number            int
+	Title             string
+	State             string
+	Terminal          bool
+	Dispatchable      bool
+	ActorPrincipalID  *string
+	OrganizationSlug  string
+	ProjectSlug       string
+	ClosedAt          *time.Time
+	StartedAt         *time.Time
+}
+
+type RelationshipCursor struct {
+	Type              string
+	Direction         string
+	RelatedProjectID  tracker.ProjectID
+	RelatedWorkItemID tracker.NativeWorkItemID
+}
+
+type RelationshipPage struct {
+	Items []Relationship
+	Next  RelationshipCursor
+}
+
+type LabelCursor struct {
+	After string
+}
+
+type LabelPage struct {
+	Items []string
+	Next  LabelCursor
 }
 
 type ScanCursor struct {

@@ -364,6 +364,10 @@ func (s *Service) updateNativeIssueCommand(ctx context.Context, scope nativeScop
 
 func (s *Service) changeNativeDependencyCommand(ctx context.Context, scope nativeScope, item string, request tracker.DependencyMutation) (json.RawMessage, error) {
 	options := nativeCommandOptions{OperationID: "POST /api/v2/organizations/" + string(scope.organization) + "/projects/" + string(scope.project) + "/work-items" + "/" + item + "/dependencies", Item: item, RequireLease: true, Feature: "collaboration"}
+	if s.config.TenantRepository != nil {
+		scope.action = operatortool.SetDependency
+		return s.executeWorkItemRecordMutation(ctx, scope, options, request.Mutation, request, "")
+	}
 	return s.executeNativeIssueMutation(ctx, scope, options, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		return changeNativeDependencyTx(ctx, tx, scope, item, request, now)
 	})
