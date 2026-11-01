@@ -156,25 +156,35 @@ const (
 	StageLanding                   = "landing"
 )
 
+type BaselineException struct {
+	ReceiptID        string   `json:"receipt_id"`
+	PolicyQuote      string   `json:"policy_quote"`
+	Assessment       string   `json:"assessment"`
+	Diagnostics      []string `json:"diagnostics"`
+	HeadOutputDigest string   `json:"head_output_digest"`
+	BaseOutputDigest string   `json:"base_output_digest"`
+}
+
 type ValidatorResult struct {
-	Attribution      string              `json:"attribution"`
-	AttachmentReads  []AttachmentRead    `json:"attachment_reads,omitempty"`
-	CriteriaEvidence []CriterionEvidence `json:"criteria_evidence,omitempty"`
-	NotVerified      []string            `json:"not_verified,omitempty"`
-	Commands         []CommandResult     `json:"commands,omitempty"`
-	VersionID        string              `json:"version_id,omitempty"`
-	SessionID        int64               `json:"session_id,string,omitempty"`
-	Submitted        bool
-	Verdict          string
-	Score            float64
-	Summary          string
-	Findings         []Finding
-	Repository       string
-	PRNumber         int
-	BaseSHA          string
-	HeadSHA          string
-	DiffDigest       string
-	DiffFiles        []string
+	BaselineExceptions []BaselineException `json:"baseline_exceptions,omitempty"`
+	Attribution        string              `json:"attribution"`
+	AttachmentReads    []AttachmentRead    `json:"attachment_reads,omitempty"`
+	CriteriaEvidence   []CriterionEvidence `json:"criteria_evidence,omitempty"`
+	NotVerified        []string            `json:"not_verified,omitempty"`
+	Commands           []CommandResult     `json:"commands,omitempty"`
+	VersionID          string              `json:"version_id,omitempty"`
+	SessionID          int64               `json:"session_id,string,omitempty"`
+	Submitted          bool
+	Verdict            string
+	Score              float64
+	Summary            string
+	Findings           []Finding
+	Repository         string
+	PRNumber           int
+	BaseSHA            string
+	HeadSHA            string
+	DiffDigest         string
+	DiffFiles          []string
 }
 
 type EvaluationOptions struct {
