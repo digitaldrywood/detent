@@ -444,7 +444,10 @@ func (s *Service) prepareProjectConfiguration(ctx context.Context, scope nativeS
 		prepared.policy = string(raw)
 	}
 	if observation.Diagnostics != nil {
-		if err := s.prepareAdmissionPayloads(ctx, scope, observation.Diagnostics.Admissions, now); err != nil {
+		_, err := prepareContentMutation(ctx, s.database.reader, func() (struct{}, error) {
+			return struct{}{}, s.prepareAdmissionPayloads(ctx, scope, observation.Diagnostics.Admissions, now)
+		})
+		if err != nil {
 			return preparedProjectConfiguration{}, err
 		}
 	}

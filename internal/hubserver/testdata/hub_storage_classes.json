@@ -1505,6 +1505,7 @@
   "native_work_search_frequencies/term": "[]",
   "native_work_search_lengths/document_id": "[]",
   "native_work_search_lengths/scope": "[]",
+  "native_work_search_lengths/search_revision": "[]",
   "native_work_search_lengths/tokens": "[]",
   "native_work_search_population/documents": "[]",
   "native_work_search_population/scope": "[]",

@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -41,11 +42,13 @@ func TestSlackFindingDelivery(t *testing.T) {
 	for _, test := range []struct {
 		name             string
 		watch, unset     bool
+		locked           bool
 		issue            bool
 		failure          int
 		timeout, recover bool
 	}{
 		{name: "open and resolve once"}, {name: "work item uses current slugs", issue: true}, {name: "watch never posts", watch: true}, {name: "unset never calls HTTP", unset: true},
+		{name: "locked keys retain pending delivery", locked: true},
 		{name: "4xx retries once", failure: 403}, {name: "5xx retries once", failure: 503}, {name: "redirect is not followed", failure: 302}, {name: "timeout retries once", timeout: true}, {name: "retry recovers", failure: 503, recover: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -113,6 +116,17 @@ func TestSlackFindingDelivery(t *testing.T) {
 			}
 			if test.issue {
 				setSlugs("example-org", "example-project")
+			}
+			if test.locked {
+				keys := f.service.config.SecretKeys
+				f.service.config.SecretKeys = nil
+				ctx, cancel := context.WithCancel(t.Context())
+				cancel()
+				processed, err := f.service.processSlackDelivery(ctx)
+				f.service.config.SecretKeys = keys
+				if err != nil || processed || len(calls) != 0 {
+					t.Fatalf("locked delivery touched storage or HTTP: processed=%t calls=%d error=%v", processed, len(calls), err)
+				}
 			}
 			process()
 			enabled := !test.watch && !test.unset

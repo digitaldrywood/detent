@@ -157,6 +157,9 @@ func (s *Service) recordSlackResult(ctx context.Context, db hostedExecer, organi
 }
 
 func (s *Service) processSlackDelivery(ctx context.Context) (bool, error) {
+	if s.config.SecretKeys == nil {
+		return false, nil
+	}
 	readCtx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	var pending int
