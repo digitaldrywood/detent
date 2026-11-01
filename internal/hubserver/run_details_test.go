@@ -529,8 +529,10 @@ func TestNativeRunDetailAdmission(t *testing.T) {
 		replay       bool
 		batchGap     bool
 		legacyFinish bool
+		reversed     bool
 	}{
 		{name: "repeated legacy finish after ordered start", legacyFinish: true, status: http.StatusConflict},
+		{name: "repeated finish with reversed usage interval", reversed: true, sequence: 2, status: http.StatusUnprocessableEntity},
 		{name: "lease expires during upload", duringUpload: true, sequence: 2, status: http.StatusConflict},
 		{name: "expired durable replay", expired: true, replay: true, status: http.StatusOK},
 		{name: "released durable replay", released: true, replay: true, status: http.StatusOK},
@@ -580,6 +582,10 @@ func TestNativeRunDetailAdmission(t *testing.T) {
 			if test.legacyFinish {
 				event.Type, event.Data.Outcome, event.Data.Handoff, event.Data.Identity = "run.finished", "failed", nil, nil
 			}
+			if test.reversed {
+				event.Type, event.Data.Outcome, event.Data.Handoff = "run.finished", "succeeded", nil
+				event.Data.Usage = []tracker.NativeUsage{{Provider: "openai", Model: "example-model", Input: 1, From: now.Add(-time.Minute), To: now.Add(-2 * time.Minute)}}
+			}
 			if test.replay {
 				event = original
 			}
@@ -605,11 +611,11 @@ func TestNativeRunDetailAdmission(t *testing.T) {
 				}
 			}
 			repeats := 1
-			if test.legacyFinish {
+			if test.legacyFinish || test.reversed {
 				repeats = 4
 			}
 			for i := range repeats {
-				if test.legacyFinish {
+				if test.legacyFinish || test.reversed {
 					event.IdempotencyKey = fmt.Sprintf("next-%d", i)
 				}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, event), test.status)

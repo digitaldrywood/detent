@@ -343,6 +343,13 @@ func (s *Service) prepareRunDetailSnapshot(ctx context.Context, snapshot nativeQ
 		if err != nil {
 			return nil, err
 		}
+		current, err := s.database.currentTime()
+		if err != nil {
+			return nil, err
+		}
+		if err := validateRunnerUsageCosts(ctx, snapshot, scope, event, s.usagePrices(), current); err != nil {
+			return nil, err
+		}
 		history := true
 		if event.Data.Sequence > 0 {
 			update, err := prepareNativeAttempt(ctx, snapshot, scope, issue.WorkItemID, &event, now, termination, prior)
