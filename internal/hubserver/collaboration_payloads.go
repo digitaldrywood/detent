@@ -96,6 +96,7 @@ func collaborationPayloadValues(ctx context.Context, tx *sql.Tx, scope nativeSco
 }
 
 func resolveCollaborationPayload(ctx context.Context, q nativeQueryer, raw string) (string, error) {
+	ctx = payloadQueryContext(ctx, q)
 	id, referenced := strings.CutPrefix(raw, "event:")
 	if !referenced {
 		resolved, err := resolveStorageJSON(ctx, []byte(raw))

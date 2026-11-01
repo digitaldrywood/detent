@@ -22,6 +22,7 @@ type storageProjection struct {
 
 func (s sqliteConversionStorage) projections() []storageProjection {
 	return []storageProjection{
+		{"projection-content", s.service.convertPendingContent},
 		{"projection-pages", s.service.convertIssuePageFacts},
 		{"projection-activity", s.service.convertActivityProjections},
 		{"projection-attempts", s.service.convertAttemptHotProjections},

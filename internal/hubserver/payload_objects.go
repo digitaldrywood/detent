@@ -22,6 +22,9 @@ func storedPayloadKey(ctx context.Context, organization string, raw []byte) (str
 }
 
 func storedMeteredPayloadKey(ctx context.Context, organization string, raw []byte, billable bool) (string, error) {
+	if pending, ok := ctx.Value(pendingContentKey{}).(*pendingContentMutation); ok && pending.tx != nil {
+		return pending.stage(ctx, organization, raw, billable)
+	}
 	content, ok := ctx.Value(changeContentKey{}).(*changeContent)
 	if !ok {
 		return "", errContentStorageUnconfigured

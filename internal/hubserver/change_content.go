@@ -187,6 +187,36 @@ func readChangeContentObject(ctx context.Context, organization string, ref attac
 			return content.rememberPayload(ref, raw)
 		}}
 	}
+	data, readErr := readPublishedContent(ctx, content, organization, ref)
+	if readErr == nil {
+		return data, nil
+	}
+	query := content.query
+	if scoped, ok := ctx.Value(payloadQueryKey{}).(nativeQueryer); ok {
+		query = scoped
+	}
+	if query == nil {
+		return nil, readErr
+	}
+	var pending []byte
+	err := query.QueryRowContext(ctx, pendingContentSelection, organization, ref.Key, organization, ref.Key).Scan(&pending)
+	if errors.Is(err, sql.ErrTxDone) && content.query != nil {
+		err = content.query.QueryRowContext(ctx, pendingContentSelection, organization, ref.Key, organization, ref.Key).Scan(&pending)
+	}
+	if err == nil {
+		prepared, _, err := attachment.PrepareArchive(organization, 1, bytes.NewReader(pending))
+		if err != nil || prepared != ref {
+			return nil, artifact.ErrIntegrity
+		}
+		return pending, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
+	return nil, readErr
+}
+
+func readPublishedContent(ctx context.Context, content *changeContent, organization string, ref attachment.ArchiveReference) ([]byte, error) {
 	if content.call == nil {
 		raw, err := content.store.ReadDetail(ctx, organization, ref)
 		if err != nil {
@@ -250,6 +280,7 @@ func persistCommandOutput(ctx context.Context, tx *sql.Tx, organization string, 
 }
 
 func hydrateChangeRecord(ctx context.Context, query nativeQueryer, value any) error {
+	ctx = payloadQueryContext(ctx, query)
 	var version, review string
 	var commands map[string][]gate.CommandResult
 	switch record := value.(type) {

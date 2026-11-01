@@ -420,8 +420,8 @@ func recordPayloadAttachment(ctx context.Context, tx *sql.Tx, scope nativeScope,
 		return "", nil
 	}
 	id := newRunDetailReference(ref, string(scope.organization), "").AttachmentID
-	_, err := tx.ExecContext(ctx, `INSERT INTO attachments(id,organization_id,project_id,uploader,name,content_type,size,sha256,created_at,kind,retention_class,object_key,uncompressed_size,codec,schema_version)
-VALUES(?,?,?,?,'archive.gz','application/gzip',?,?,?,'archive',?,?,?,?,?) ON CONFLICT DO NOTHING`, id, scope.organization, scope.project, scope.credential.ID, ref.CompressedSize, ref.SHA256, now, ref.Retention, ref.Key, ref.UncompressedSize, ref.Codec, ref.SchemaVersion)
+	_, err := tx.ExecContext(ctx, `INSERT INTO attachments(id,organization_id,project_id,uploader,name,content_type,size,sha256,created_at,kind,retention_class,object_key,uncompressed_size,codec,schema_version,pending_content)
+VALUES(?,?,?,?,'archive.gz','application/gzip',?,?,?,'archive',?,?,?,?,?,(SELECT pending_content FROM change_content_objects WHERE organization_id=? AND object_key=?)) ON CONFLICT DO NOTHING`, id, scope.organization, scope.project, scope.credential.ID, ref.CompressedSize, ref.SHA256, now, ref.Retention, ref.Key, ref.UncompressedSize, ref.Codec, ref.SchemaVersion, scope.organization, ref.Key)
 	if err != nil {
 		return "", err
 	}

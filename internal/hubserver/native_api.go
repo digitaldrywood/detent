@@ -535,6 +535,11 @@ func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, 
 	}
 	operationID := options.OperationID
 	_, runEvent := input.(tracker.NativeRunEvent)
+	var pending *pendingContentMutation
+	if runEvent {
+		pending = &pendingContentMutation{}
+		ctx = context.WithValue(ctx, pendingContentKey{}, pending)
+	}
 	replay := false
 	if runEvent || !options.Completion && !options.ArtifactRead && s.database.plans() != nil {
 		_, replay, err = s.nativeCommandReplay(ctx, scope, operationID, command.IdempotencyKey, input)
@@ -572,9 +577,15 @@ func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, 
 			ctx = preparedCtx
 		}
 	}
-	return prepareContentMutation(ctx, s.database.reader, func() (json.RawMessage, error) {
+	result, err = prepareContentMutation(ctx, s.database.reader, func() (json.RawMessage, error) {
 		return s.commitNativeMutation(ctx, scope, options, command, input, operation, requestHash, preparationErr)
 	})
+	if err == nil && pending != nil {
+		if err := s.publishPendingContent(ctx, pending.objects); err != nil {
+			s.config.Logger.Warn("publish run content", "error", err)
+		}
+	}
+	return result, err
 }
 
 func (s *Service) commitNativeMutation(ctx context.Context, scope nativeScope, options nativeCommandOptions, command tracker.Mutation, input any, operation func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error), requestHash string, preparationErr error) (result json.RawMessage, resultErr error) {
@@ -587,6 +598,10 @@ func (s *Service) commitNativeMutation(ctx context.Context, scope nativeScope, o
 			resultErr = errors.Join(resultErr, err)
 		}
 	}()
+	if pending, ok := ctx.Value(pendingContentKey{}).(*pendingContentMutation); ok {
+		pending.tx, pending.objects = tx, nil
+		defer func() { pending.tx = nil }()
+	}
 	if options.ArtifactRead {
 		if err := s.recheckHostedArtifactReader(ctx, tx, scope); err != nil {
 			return nil, err

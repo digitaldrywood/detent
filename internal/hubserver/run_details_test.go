@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/operatortool"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
@@ -86,7 +87,7 @@ func (m *memoryRunDetails) ReadDetail(ctx context.Context, organization string, 
 	}
 	data, ok := m.data[ref.Key]
 	if !ok {
-		return nil, attachment.ErrInvalid
+		return nil, artifact.ErrMissing
 	}
 	return bytes.Clone(data), nil
 }
@@ -450,66 +451,42 @@ func TestNativeRunDetailReferences(t *testing.T) {
 
 func TestNativeRunDetailUploadFailures(t *testing.T) {
 	t.Parallel()
-	store := &memoryRunDetails{}
-	f := newDefaultNativeFixture(t, Config{RunDetails: store})
-	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
-	issue := f.create(t, "upload failure")
-	worker := f.worker(t, "worker")
-	lease := claimNativeAttempt(t, f, worker, "machine", "session", issue.WorkItemID)
-	start := nativeStartedEvent(lease)
-	checkpoint := start
-	checkpoint.Type, checkpoint.IdempotencyKey, checkpoint.Data.Sequence, checkpoint.Data.Handoff = "run.checkpointed", "checkpoint", 2, nativeTestCheckpoint()
-	finish := start
-	finish.Type, finish.IdempotencyKey, finish.Data.Sequence, finish.Data.Outcome = "run.finished", "finish", 3, "succeeded"
-	path := f.base + "/work-items/" + string(issue.WorkItemID) + "/events"
-	for _, event := range []tracker.NativeRunEvent{start, checkpoint, finish} {
-		t.Run(event.Type, func(t *testing.T) {
-			var before string
-			err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT coalesce(group_concat(data_json), '') FROM native_attempts").Scan(&before)
-			if err != nil {
-				t.Fatal(err)
+	for _, failure := range []string{"upload unavailable", "verification unavailable", "verification mismatch"} {
+		t.Run(failure, func(t *testing.T) {
+			store := &memoryRunDetails{}
+			f := newDefaultNativeFixture(t, Config{RunDetails: store})
+			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
+			issue := f.create(t, "upload failure")
+			worker := f.worker(t, "worker")
+			lease := claimNativeAttempt(t, f, worker, "machine", "session", issue.WorkItemID)
+			start := nativeStartedEvent(lease)
+			checkpoint := start
+			checkpoint.Type, checkpoint.IdempotencyKey, checkpoint.Data.Sequence, checkpoint.Data.Handoff = "run.checkpointed", "checkpoint", 2, nativeTestCheckpoint()
+			finish := start
+			finish.Type, finish.IdempotencyKey, finish.Data.Sequence, finish.Data.Outcome = "run.finished", "finish", 3, "succeeded"
+			switch failure {
+			case "upload unavailable":
+				store.fail = true
+			case "verification unavailable":
+				store.beforeRead = func(context.Context) error { return errors.New("read unavailable") }
+			case "verification mismatch":
+				store.afterStore = func(ref attachment.ArchiveReference) {
+					store.mu.Lock()
+					defer store.mu.Unlock()
+					store.data[ref.Key] = []byte("different payload")
+				}
 			}
-			store.fail = true
-			response := performHubAPIRequest(t, f.service, http.MethodPost, path, worker, event)
-			requireNativeStatus(t, response, http.StatusServiceUnavailable)
-			var after string
-			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT coalesce(group_concat(data_json), '') FROM native_attempts").Scan(&after); err != nil {
-				t.Fatal(err)
+			path := f.base + "/work-items/" + string(issue.WorkItemID) + "/events"
+			for _, event := range []tracker.NativeRunEvent{start, checkpoint, finish} {
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, event), http.StatusOK)
+				stored := readReferencedRun(t, f.service, event.Data.AttemptID)
+				if stored.Detail == nil || stored.Sequence != event.Data.Sequence {
+					t.Fatalf("pending event lost its readable reference: %+v", stored)
+				}
 			}
-			if before != after {
-				t.Fatal("failed upload changed the attempt or stored an inline fallback")
-			}
-			store.fail = false
-			for _, failure := range []string{"verification unavailable", "verification mismatch"} {
-				t.Run(failure, func(t *testing.T) {
-					if failure == "verification unavailable" {
-						store.beforeRead = func(context.Context) error { return errors.New("read unavailable") }
-					} else {
-						store.afterStore = func(ref attachment.ArchiveReference) {
-							store.mu.Lock()
-							defer store.mu.Unlock()
-							store.data[ref.Key] = []byte("different payload")
-						}
-					}
-					t.Cleanup(func() { store.beforeRead, store.afterStore = nil, nil })
-					status := http.StatusInternalServerError
-					if failure == "verification unavailable" {
-						status = http.StatusServiceUnavailable
-					}
-					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, event), status)
-					if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT coalesce(group_concat(data_json), '') FROM native_attempts").Scan(&after); err != nil || before != after {
-						t.Fatalf("unverified upload changed the attempt: %v", err)
-					}
-				})
-			}
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, event), http.StatusOK)
-			var raw string
-			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT COALESCE(NULLIF(payload_object_key,''),data_json) FROM native_attempts WHERE id=?", event.Data.AttemptID).Scan(&raw); err != nil {
-				t.Fatal(err)
-			}
-			stored := readReferencedRun(t, f.service, event.Data.AttemptID)
-			if stored.Detail == nil || stored.Sequence != event.Data.Sequence {
-				t.Fatalf("attempt failed to progress from reference after upload recovery: %v", err)
+			var pending int
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM attachments WHERE pending_content IS NOT NULL").Scan(&pending); err != nil || pending == 0 {
+				t.Fatalf("unverified storage lost pending bytes: pending=%d error=%v", pending, err)
 			}
 		})
 	}
@@ -533,7 +510,7 @@ func TestNativeRunDetailAdmission(t *testing.T) {
 	}{
 		{name: "repeated legacy finish after ordered start", legacyFinish: true, status: http.StatusConflict},
 		{name: "repeated finish with reversed usage interval", reversed: true, sequence: 2, status: http.StatusUnprocessableEntity},
-		{name: "lease expires during upload", duringUpload: true, sequence: 2, status: http.StatusConflict},
+		{name: "lease expires after commit", duringUpload: true, sequence: 2, status: http.StatusOK},
 		{name: "expired durable replay", expired: true, replay: true, status: http.StatusOK},
 		{name: "released durable replay", released: true, replay: true, status: http.StatusOK},
 		{name: "batch sequence gap", batchGap: true, sequence: 4, status: http.StatusConflict},
@@ -622,7 +599,7 @@ func TestNativeRunDetailAdmission(t *testing.T) {
 			}
 			wantUploads := initialUploads
 			if test.duringUpload {
-				wantUploads++
+				wantUploads += 3
 			}
 			if test.cancelled && test.status == http.StatusOK {
 				wantUploads += 2
@@ -638,6 +615,9 @@ func TestNativeRunDetailAdmission(t *testing.T) {
 			if test.cancelled && test.status == http.StatusOK {
 				wantReferences = 4
 			}
+			if test.duringUpload {
+				wantReferences = 5
+			}
 			if references != wantReferences {
 				t.Fatalf("event committed %d references, want %d", references, wantReferences)
 			}
@@ -649,6 +629,10 @@ func TestNativeRunDetailAdmission(t *testing.T) {
 			if test.cancelled && test.status == http.StatusOK {
 				if sequence != 2 || status != "cancelled" {
 					t.Fatalf("cancellation acknowledgment lost: %d %s", sequence, status)
+				}
+			} else if test.duringUpload {
+				if sequence != 2 || status != "running" {
+					t.Fatalf("committed checkpoint lost: %d %s", sequence, status)
 				}
 			} else if sequence != 1 || status != "running" {
 				t.Fatalf("rejected event changed attempt: %d %s", sequence, status)

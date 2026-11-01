@@ -142,7 +142,7 @@ func TestNativeEventWriterBudget(t *testing.T) {
 						t.Fatal("missing writer timing")
 					}
 					t.Logf("writer_txs=%d writer_statements=%d maximum_transaction_statements=%d", writer.txs.Load(), statements, maximumStatements)
-					bound := 90 + 55*len(event.PriorEvents)
+					bound := 100 + 55*len(event.PriorEvents)
 					if name == "finish" && outcome == "failed" {
 						bound += 80
 					}
@@ -150,10 +150,16 @@ func TestNativeEventWriterBudget(t *testing.T) {
 						bound += 40 * len(event.Data.Disposition.BlockerEvidence)
 					}
 					uploads := uploaded.Load() - uploadsBefore
-					bound += 6 * int(uploads)
-					wantTransactions := 1 + 2*uploads
-					if writer.txs.Load() != wantTransactions || maximumStatements > bound {
-						t.Errorf("writer_txs=%d (want %d for %d uploads), maximum_transaction_statements=%d (bound %d)", writer.txs.Load(), wantTransactions, uploads, maximumStatements, bound)
+					wantTransactions := int64(2)
+					if name == "replay" || name == "finish replay" {
+						wantTransactions = 1
+					}
+					if writer.txs.Load() != wantTransactions || statements > bound {
+						t.Errorf("writer_txs=%d (want %d for %d uploads), writer_statements=%d (bound %d)", writer.txs.Load(), wantTransactions, uploads, statements, bound)
+					}
+					var pending int
+					if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT (SELECT count(*) FROM attachments WHERE pending_content IS NOT NULL)+(SELECT count(*) FROM change_content_objects WHERE pending_content IS NOT NULL)`).Scan(&pending); err != nil || pending != 0 {
+						t.Fatalf("unpublished content=%d: %v", pending, err)
 					}
 				})
 			}
@@ -166,83 +172,6 @@ func TestNativeEventWriterBudget(t *testing.T) {
 			}
 			if sequence != 13 || events != 13 {
 				t.Fatalf("sequence=%d events=%d, want 13/13", sequence, events)
-			}
-		})
-	}
-}
-
-func TestNativeEventChangedPayloadPreparesAfterRollback(t *testing.T) {
-	t.Parallel()
-	for _, uploadFails := range []bool{false, true} {
-		t.Run(fmt.Sprintf("upload_fails=%t", uploadFails), func(t *testing.T) {
-			store := &memoryRunDetails{}
-			f := claimedAttemptDiffFixture(t, false, Config{RunDetails: store})
-			f.start(t)
-			var writing, registering, rolledBack, reprepared atomic.Bool
-			changed := false
-			store.afterStore = func(attachment.ArchiveReference) {
-				if writing.Load() {
-					t.Error("payload uploaded inside the writer transaction")
-				}
-				if !rolledBack.Load() {
-					t.Error("payload uploaded before the writer transaction could reject it")
-				}
-				if rolledBack.Load() {
-					reprepared.Store(true)
-				}
-				if !changed {
-					changed = true
-					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET revision=revision+1 WHERE native_id=?", f.issue.WorkItemID); err != nil {
-						t.Fatal(err)
-					}
-				}
-			}
-			timing := &requestTiming{writerTrace: func(query string, _ []driver.NamedValue) {
-				if strings.HasPrefix(query, "INSERT INTO change_content_objects") {
-					registering.Store(true)
-				}
-			}, writerTransaction: func(active bool) {
-				writing.Store(active)
-				if active {
-					registering.Store(false)
-				} else if !registering.Load() {
-					rolledBack.Store(true)
-					if uploadFails {
-						store.mu.Lock()
-						store.fail = true
-						store.mu.Unlock()
-					}
-				}
-			}}
-			event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "changed-finish"}, Type: "run.finished", SchemaVersion: 1,
-				Data: tracker.NativeRunData{Sequence: 2, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "gpt-6-astra"}, LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken, RunID: f.run, AttemptID: f.attempt, PolicyID: f.policy, Outcome: "succeeded"}}
-			request := newHubAPIRequest(t, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/events", f.worker, event)
-			response := httptest.NewRecorder()
-			f.service.Handler().ServeHTTP(response, request.WithContext(withRequestTiming(request.Context(), timing)))
-			status, sequence := http.StatusOK, 2
-			if uploadFails {
-				status, sequence = http.StatusServiceUnavailable, 1
-			} else if !reprepared.Load() {
-				t.Fatal("changed finish payload was not prepared after rollback")
-			}
-			requireNativeStatus(t, response, status)
-			var gotSequence, inline int
-			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT sequence,payload_object_key='' OR data_json<>'{}' FROM native_attempts WHERE id=?", f.attempt).Scan(&gotSequence, &inline); err != nil {
-				t.Fatal(err)
-			}
-			if gotSequence != sequence || inline != 0 {
-				t.Fatalf("sequence=%d inline=%d, want %d/0", gotSequence, inline, sequence)
-			}
-			var finished, referenced int
-			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*),coalesce(sum(payload_version=1 AND payload_object_key<>'' AND data_json='{}'),0) FROM collaboration_events WHERE work_item_id=? AND type='run.finished'", f.issue.WorkItemID).Scan(&finished, &referenced); err != nil {
-				t.Fatal(err)
-			}
-			want := 1
-			if uploadFails {
-				want = 0
-			}
-			if finished != want || referenced != want {
-				t.Fatalf("finish events=%d referenced=%d, want %d/%d", finished, referenced, want, want)
 			}
 		})
 	}
@@ -307,7 +236,6 @@ func TestNativeEventConcurrentWriterBudget(t *testing.T) {
 	}
 	responses := make([]*httptest.ResponseRecorder, len(requests))
 	requestErrors := make([]error, len(requests))
-	registrations := make([]int64, len(requests))
 	completed := make(chan int, len(requests))
 	var ready, finished sync.WaitGroup
 	t.Cleanup(func() {
@@ -322,12 +250,7 @@ func TestNativeEventConcurrentWriterBudget(t *testing.T) {
 			ctx, cancel := context.WithTimeout(request.Context(), 30*time.Second)
 			defer cancel()
 			responses[i] = httptest.NewRecorder()
-			timing := &requestTiming{writerTrace: func(query string, _ []driver.NamedValue) {
-				if strings.HasPrefix(query, "INSERT INTO change_content_objects") {
-					registrations[i]++
-				}
-			}}
-			f.service.Handler().ServeHTTP(responses[i], request.WithContext(withRequestTiming(ctx, timing)))
+			f.service.Handler().ServeHTTP(responses[i], request.WithContext(ctx))
 			requestErrors[i] = ctx.Err()
 			completed <- i
 		})
@@ -340,7 +263,7 @@ func TestNativeEventConcurrentWriterBudget(t *testing.T) {
 		case i := <-completed:
 			t.Fatalf("request %d ended before all requests prepared: status=%d error=%v", i, responses[i].Code, requestErrors[i])
 		case <-t.Context().Done():
-			t.Fatal("requests did not prepare content concurrently after rollback")
+			t.Fatal("requests did not upload content concurrently after commit")
 		}
 	}
 	unblock()
@@ -359,11 +282,8 @@ func TestNativeEventConcurrentWriterBudget(t *testing.T) {
 		transactions += writer.txs.Load()
 	}
 	t.Logf("runners=%d writer_txs=%d", len(requests), transactions)
-	wantTransactions := int64(len(requests))
-	for _, registered := range registrations {
-		wantTransactions += 2 * registered
-	}
-	if transactions != wantTransactions || transactions != int64(len(requests))+2*uploaded.Load() {
+	wantTransactions := int64(2 * len(requests))
+	if transactions != wantTransactions {
 		t.Fatalf("writer_txs=%d, want %d for %d requests and %d uploads", transactions, wantTransactions, len(requests), uploaded.Load())
 	}
 }
