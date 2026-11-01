@@ -119,7 +119,14 @@ func (s *Service) readNativePageLimit(ctx context.Context, scope nativeScope, pa
 
 func (s *Service) readNativeCursorKey(ctx context.Context, organization tracker.OrganizationID) ([]byte, error) {
 	if s.config.AccessRepository == nil {
-		return nil, nativeRunEventStorageUnavailable()
+		var key []byte
+		if err := s.database.reader.QueryRowContext(ctx, "SELECT cursor_key FROM hub_identity").Scan(&key); err != nil {
+			return nil, err
+		}
+		if len(key) != sha256.Size {
+			return nil, errors.New("native cursor key has invalid length")
+		}
+		return key, nil
 	}
 	var secret accessstore.Secret
 	if err := s.accessRead(ctx, organization, func(r tenantstore.Reader) error {
