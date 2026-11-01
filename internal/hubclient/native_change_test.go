@@ -3730,6 +3730,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				})
 			}
 			runExecution := execution
+			stopPublicationGuard := func() {}
 			if test.ssh {
 				remote, closePeers := nativeSSHExecution(t, t.Context(), execution, t.TempDir())
 				defer closePeers()
@@ -3799,7 +3800,10 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				runExecution = &nativePublicationFixtureExecution{nativeExecution: execution.(*nativeExecution), forge: forge, losePush: &losePush}
+				runExecution = &nativePublicationFixtureExecution{nativeExecution: execution.(*nativeExecution), forge: forge, losePush: &losePush, keepGuard: func(stop func()) {
+					stopPublicationGuard = sync.OnceFunc(stop)
+					t.Cleanup(stopPublicationGuard)
+				}}
 			}
 			runCtx, cancelRun := context.WithCancelCause(t.Context())
 			defer cancelRun(context.Canceled)
@@ -4453,6 +4457,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 						}
 					}
 				}
+				stopPublicationGuard()
 				if err := h.native.Release(t.Context(), oldLease, "released"); err != nil {
 					t.Fatal(err)
 				}
@@ -5751,11 +5756,59 @@ func versionsWithoutLanding(versions []tracker.ChangeVersion) []tracker.ChangeVe
 
 type nativePublicationFixtureExecution struct {
 	*nativeExecution
+	keepGuard         func(func())
 	forge             *github.Client
 	losePush          *bool
 	retainedHead      string
 	beforePublication func()
 	publicationFault  func(*workspace.LandOptions) func()
+}
+
+func TestNativePublicationFixtureKeepsLeaseUntilHandoff(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		h := newNativeChangeHub(t, true)
+		issue := h.createInProgress(t, "Publication handoff")
+		h.claim(t, issue.ID)
+		owner := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+		stopGuard := func() {}
+		fixture := &nativePublicationFixtureExecution{nativeExecution: owner, keepGuard: func(stop func()) {
+			stopGuard = sync.OnceFunc(stop)
+			t.Cleanup(stopGuard)
+		}}
+		guarded, returned, err := fixture.Guard(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer returned()
+		if err := fixture.Start(guarded, tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := fixture.Finish(guarded, "interrupted"); err != nil {
+			t.Fatal(err)
+		}
+		returned()
+		time.Sleep(2 * h.scheduler.leaseTTL)
+		if guarded.Err() != nil {
+			t.Fatalf("runner return stopped the publication guard: %v", context.Cause(guarded))
+		}
+		stopGuard()
+		if !errors.Is(guarded.Err(), context.Canceled) {
+			t.Fatalf("handoff left the old guard running: %v", guarded.Err())
+		}
+		if err := h.native.Release(t.Context(), owner.claim.lease, "released"); err != nil {
+			t.Fatalf("publication handoff lost its lease: %v", err)
+		}
+	})
+}
+
+func (e *nativePublicationFixtureExecution) Guard(ctx context.Context) (context.Context, func(), error) {
+	guarded, stop, err := e.nativeExecution.Guard(ctx)
+	if err != nil || e.keepGuard == nil {
+		return guarded, stop, err
+	}
+	e.keepGuard(stop)
+	return guarded, func() {}, nil
 }
 
 func (e *nativePublicationFixtureExecution) SetPublicationSource(source func(context.Context, tracker.ChangeVersion, workspace.LandOptions) (workspace.GitHubPublication, error)) {
