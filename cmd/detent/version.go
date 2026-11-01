@@ -9,17 +9,28 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/buildinfo"
 	"github.com/digitaldrywood/detent/internal/cli"
+	"github.com/digitaldrywood/detent/internal/cloudentry"
+	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 )
 
 var version, commit, date = "dev", "none", "unknown"
 
 type versionInfo struct {
-	Version   string `json:"version"`
-	Commit    string `json:"commit"`
-	Date      string `json:"build_date"`
-	GoVersion string `json:"go_version"`
-	OS        string `json:"os"`
-	Arch      string `json:"arch"`
+	HubSchemaVersion          int64  `json:"hub_schema_version"`
+	HubSchemaFingerprint      string `json:"hub_schema_fingerprint"`
+	RegistrySchemaVersion     int64  `json:"registry_schema_version"`
+	RegistrySchemaFingerprint string `json:"registry_schema_fingerprint"`
+	AuthSchemaVersion         int64  `json:"auth_schema_version"`
+	AuthSchemaFingerprint     string `json:"auth_schema_fingerprint"`
+	PlatformSchemaVersion     int64  `json:"platform_schema_version"`
+	PlatformSchemaFingerprint string `json:"platform_schema_fingerprint"`
+	Version                   string `json:"version"`
+	Commit                    string `json:"commit"`
+	Date                      string `json:"build_date"`
+	GoVersion                 string `json:"go_version"`
+	OS                        string `json:"os"`
+	Arch                      string `json:"arch"`
 }
 
 func newVersionCommand() *cobra.Command {
@@ -30,6 +41,29 @@ func newVersionCommand() *cobra.Command {
 		Args:    cli.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			info := currentVersionInfo()
+			var err error
+			info.HubSchemaVersion, err = hubserver.LatestSchemaVersion()
+			if err != nil {
+				return err
+			}
+			info.HubSchemaFingerprint, err = hubserver.LatestSchemaFingerprint()
+			if err != nil {
+				return err
+			}
+			entrySchemas, err := cloudentry.LatestSchemaVersions()
+			if err != nil {
+				return err
+			}
+			info.RegistrySchemaVersion, info.AuthSchemaVersion = entrySchemas.Registry, entrySchemas.Auth
+			info.RegistrySchemaFingerprint, info.AuthSchemaFingerprint = entrySchemas.RegistryFingerprint, entrySchemas.AuthFingerprint
+			info.PlatformSchemaVersion, err = postgres.LatestSchemaVersion()
+			if err != nil {
+				return err
+			}
+			info.PlatformSchemaFingerprint, err = postgres.LatestSchemaFingerprint()
+			if err != nil {
+				return err
+			}
 			out, err := cli.OutputForCommand(cmd)
 			if err != nil {
 				return err

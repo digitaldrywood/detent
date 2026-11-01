@@ -11,6 +11,8 @@ import (
 
 	"github.com/pressly/goose/v3"
 	goosedb "github.com/pressly/goose/v3/database"
+
+	"github.com/digitaldrywood/detent/internal/schemafingerprint"
 )
 
 func TestHubMigrationVerificationScope(t *testing.T) {
@@ -143,6 +145,30 @@ func TestHubMigrationVerificationScope(t *testing.T) {
 				t.Fatalf("foreign key enforcement=%d error=%v", foreignKeys, err)
 			}
 		})
+	}
+}
+
+func TestCurrentSchemaFingerprintUsesLatestMigrationState(t *testing.T) {
+	f := newNativeFixture(t, nil, "", "schema-fingerprint")
+	versions, err := hubSchemaVersions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := currentSchemaFingerprint(t.Context(), f.service.database.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO hub_schema_version(version_id, is_applied) VALUES (64, 0)"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := currentSchemaFingerprint(t.Context(), f.service.database.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedVersions := slices.DeleteFunc(slices.Clone(versions), func(version int64) bool { return version == 64 })
+	want := schemafingerprint.Versions(expectedVersions)
+	if got == before || got != want {
+		t.Fatalf("fingerprint after latest down record = %q, want %q (before %q)", got, want, before)
 	}
 }
 

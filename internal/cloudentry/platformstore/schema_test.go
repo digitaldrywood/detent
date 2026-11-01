@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/schemafingerprint"
 )
 
 func TestPlatformInventoryAndRoleSeparation(t *testing.T) {
@@ -85,6 +87,46 @@ func TestPlatformInventoryAndRoleSeparation(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+func TestSchemaFingerprintUsesLatestMigrationState(t *testing.T) {
+	db := template.Database(t)
+	r := repository(t, db, testConfig(t))
+	rows, err := db.QueryContext(t.Context(), `SELECT version_id FROM (
+		SELECT version_id, is_applied, ROW_NUMBER() OVER (PARTITION BY version_id ORDER BY id DESC) AS state_rank
+		FROM public.goose_db_version WHERE version_id > 0
+	) AS migration_state WHERE state_rank = 1 AND is_applied ORDER BY version_id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var versions []int64
+	for rows.Next() {
+		var version int64
+		if err := rows.Scan(&version); err != nil {
+			t.Fatal(err)
+		}
+		versions = append(versions, version)
+	}
+	if err := rows.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if len(versions) < 2 {
+		t.Fatalf("applied migration versions = %v", versions)
+	}
+	wantBefore := schemafingerprint.Versions(versions)
+	gotBefore, err := r.SchemaFingerprint(t.Context())
+	if err != nil || gotBefore != wantBefore {
+		t.Fatalf("initial fingerprint = %q, want %q: %v", gotBefore, wantBefore, err)
+	}
+	if _, err := db.ExecContext(t.Context(), `INSERT INTO public.goose_db_version(version_id,is_applied) VALUES($1,false)`, versions[0]); err != nil {
+		t.Fatal(err)
+	}
+	expected := slices.DeleteFunc(slices.Clone(versions), func(version int64) bool { return version == versions[0] })
+	wantAfter := schemafingerprint.Versions(expected)
+	gotAfter, err := r.SchemaFingerprint(t.Context())
+	if err != nil || gotAfter != wantAfter || gotAfter == gotBefore {
+		t.Fatalf("fingerprint after down record = %q, want %q (before %q): %v", gotAfter, wantAfter, gotBefore, err)
 	}
 }
 

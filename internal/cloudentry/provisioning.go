@@ -309,8 +309,8 @@ func (s *Service) runStep(ctx context.Context, organization *Organization, step 
 		}
 		deadline := time.Now().Add(s.config.tenantStartTimeout)
 		for {
-			status, err := s.serviceRequest(ctx, *organization, "/internal/v1/health", map[string]string{}, nil)
-			if err == nil && status == http.StatusNoContent {
+			err := s.checkTenant(ctx, *organization)
+			if err == nil {
 				return s.refreshGitHubRoutes(ctx, *organization)
 			}
 			if failure := allocation.Launcher.Failure(organization.ID); failure != nil {

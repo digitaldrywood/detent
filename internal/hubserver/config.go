@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"log/slog"
 	"net"
@@ -47,6 +48,8 @@ var (
 )
 
 type Config struct {
+	startup                        *startupHealth
+	migrate                        func(context.Context, *sql.DB, *slog.Logger) (int64, error)
 	TenantRepository               tenantstore.Repository
 	AccessRepository               tenantstore.Repository
 	ProjectParticipants            tenantstore.ProjectParticipants
@@ -87,6 +90,7 @@ type Config struct {
 	WebhookMaintenanceInterval time.Duration
 	Logger                     *slog.Logger
 	Version                    string
+	Commit                     string
 	OutboxBackend              OutboxBackend
 	OutboxPollInterval         time.Duration
 	OutboxBaseBackoff          time.Duration

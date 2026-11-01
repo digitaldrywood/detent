@@ -8,12 +8,14 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"sort"
 	"strings"
 
 	"github.com/pressly/goose/v3"
 	goosedb "github.com/pressly/goose/v3/database"
 
 	hubmigrations "github.com/digitaldrywood/detent/internal/hubserver/migrations"
+	"github.com/digitaldrywood/detent/internal/schemafingerprint"
 )
 
 const hubSchemaTable = "hub_schema_version"
@@ -117,32 +119,80 @@ func (s hubMigrationStore) Insert(ctx context.Context, db goosedb.DBTxConn, requ
 	return s.Store.Insert(ctx, db, request)
 }
 
+func LatestSchemaVersion() (int64, error) {
+	return latestHubSchemaVersion()
+}
+
 func latestHubSchemaVersion() (int64, error) {
-	files, err := migrationFiles.ReadDir("migrations")
+	versions, err := hubSchemaVersions()
 	if err != nil {
-		return 0, fmt.Errorf("read embedded hub migrations: %w", err)
+		return 0, err
 	}
 	var latest int64
-	for _, file := range files {
-		version, err := goose.NumericComponent(file.Name())
-		if err != nil {
-			return 0, err
-		}
+	for _, version := range versions {
 		latest = max(latest, version)
-	}
-	for _, migration := range hubGoMigrations() {
-		latest = max(latest, migration.Version)
 	}
 	return latest, nil
 }
 
+func hubSchemaVersions() ([]int64, error) {
+	files, err := migrationFiles.ReadDir("migrations")
+	if err != nil {
+		return nil, fmt.Errorf("read embedded hub migrations: %w", err)
+	}
+	versions := make([]int64, 0, len(files)+len(hubGoMigrations()))
+	for _, file := range files {
+		version, err := goose.NumericComponent(file.Name())
+		if err != nil {
+			return nil, err
+		}
+		versions = append(versions, version)
+	}
+	for _, migration := range hubGoMigrations() {
+		versions = append(versions, migration.Version)
+	}
+	sort.Slice(versions, func(i, j int) bool { return versions[i] < versions[j] })
+	return versions, nil
+}
+
+func LatestSchemaFingerprint() (string, error) {
+	versions, err := hubSchemaVersions()
+	if err != nil {
+		return "", err
+	}
+	return schemafingerprint.Versions(versions), nil
+}
+
 func currentSchemaVersion(ctx context.Context, db *sql.DB) (int64, error) {
 	var version int64
-	query := fmt.Sprintf("SELECT COALESCE(MAX(version_id), 0) FROM %s WHERE is_applied = 1", hubSchemaTable)
+	query := fmt.Sprintf("SELECT COALESCE(MAX(version_id), 0) FROM (SELECT version_id, is_applied, ROW_NUMBER() OVER (PARTITION BY version_id ORDER BY id DESC) AS state_rank FROM %s) WHERE state_rank = 1 AND is_applied = 1", hubSchemaTable)
 	if err := db.QueryRowContext(ctx, query).Scan(&version); err != nil {
 		return 0, fmt.Errorf("read hub schema version: %w", err)
 	}
 	return version, nil
+}
+
+func currentSchemaFingerprint(ctx context.Context, db *sql.DB) (string, error) {
+	rows, err := db.QueryContext(ctx, `SELECT version_id FROM (
+		SELECT version_id, is_applied, ROW_NUMBER() OVER (PARTITION BY version_id ORDER BY id DESC) AS state_rank
+		FROM hub_schema_version
+	) WHERE state_rank = 1 AND is_applied = 1 AND version_id > 0 ORDER BY version_id`)
+	if err != nil {
+		return "", fmt.Errorf("read applied hub migration versions: %w", err)
+	}
+	defer rows.Close()
+	var versions []int64
+	for rows.Next() {
+		var version int64
+		if err := rows.Scan(&version); err != nil {
+			return "", err
+		}
+		versions = append(versions, version)
+	}
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+	return schemafingerprint.Versions(versions), nil
 }
 
 func hubGoMigrations(loggers ...*slog.Logger) []*goose.Migration {

@@ -104,11 +104,22 @@ type Service struct {
 }
 
 type healthResponse struct {
-	Status        string                  `json:"status"`
-	SchemaVersion int64                   `json:"schema_version,omitempty"`
-	Version       string                  `json:"version,omitempty"`
-	Outbox        OutboxHealth            `json:"outbox"`
-	Repositories  RepositoryHealthSummary `json:"repositories"`
+	Status                   string                  `json:"status"`
+	MigrationsRunning        bool                    `json:"migrations_running"`
+	SchemaVersion            int64                   `json:"schema_version,omitempty"`
+	SchemaFingerprint        string                  `json:"schema_fingerprint,omitempty"`
+	HubSchemaApplicable      bool                    `json:"hub_schema_applicable"`
+	RegistrySchemaVersion    int64                   `json:"registry_schema_version"`
+	RegistrySchemaApplicable bool                    `json:"registry_schema_applicable"`
+	AuthSchemaVersion        int64                   `json:"auth_schema_version"`
+	AuthSchemaApplicable     bool                    `json:"auth_schema_applicable"`
+	PlatformSchemaVersion    int64                   `json:"platform_schema_version"`
+	PlatformSchemaApplicable bool                    `json:"platform_schema_applicable"`
+	SchemaFactsComplete      bool                    `json:"schema_facts_complete"`
+	Version                  string                  `json:"version,omitempty"`
+	Commit                   string                  `json:"commit,omitempty"`
+	Outbox                   OutboxHealth            `json:"outbox"`
+	Repositories             RepositoryHealthSummary `json:"repositories"`
 }
 
 func Open(ctx context.Context, cfg Config) (*Service, error) {
@@ -297,13 +308,9 @@ func Run(ctx context.Context, cfg Config) (resultErr error) {
 	if err := validateListenerSecurity(cfg); err != nil {
 		return err
 	}
-	service, err := Open(ctx, cfg)
-	if err != nil {
+	if err := validateCredentialMaintenance(cfg); err != nil {
 		return err
 	}
-	defer func() {
-		resultErr = errors.Join(resultErr, service.Close())
-	}()
 
 	network, address := "tcp", cfg.ListenAddress
 	if path, ok := listenerUnixPath(cfg.ListenAddress); ok {
@@ -316,34 +323,79 @@ func Run(ctx context.Context, cfg Config) (resultErr error) {
 	if err != nil {
 		return fmt.Errorf("listen for hub requests: %w", err)
 	}
+	if cfg.CredentialMaintenance && !listenerAddressLoopback(listener.Addr().String()) {
+		return errors.Join(ErrInsecureListener, listener.Close())
+	}
 	if network == "unix" {
 		if err := os.Chmod(address, 0o600); err != nil {
 			return errors.Join(fmt.Errorf("restrict hub socket: %w", err), listener.Close())
 		}
 	}
-	cfg.Logger.Info("hub serving", "address", listener.Addr().String())
-
-	serveResult := make(chan error, 1)
+	if err := cfg.Hosted.validate(); err != nil {
+		return errors.Join(err, listener.Close())
+	}
+	progress := &startupHealth{config: cfg}
+	if cfg.Hosted != nil && cfg.Hosted.SharedEntry != nil {
+		progress.verifier = cfg.Hosted.SharedEntry.verifier
+	}
+	progress.running.Store(true)
+	cfg.startup = progress
+	var service *Service
+	server := &http.Server{Handler: progress, ReadHeaderTimeout: defaultHTTPReadHeaderTimeout, IdleTimeout: defaultHTTPIdleTimeout}
+	serveDone := make(chan struct{})
+	var serveErr error
+	ctx, cancelStartup := context.WithCancel(ctx)
+	defer cancelStartup()
 	go func() {
+		defer close(serveDone)
+		defer cancelStartup()
 		if cfg.TLSCertFile != "" {
-			serveResult <- service.ServeTLS(listener, cfg.TLSCertFile, cfg.TLSKeyFile)
+			serveErr = server.ServeTLS(listener, cfg.TLSCertFile, cfg.TLSKeyFile)
 			return
 		}
-		serveResult <- service.Serve(listener)
+		serveErr = server.Serve(listener)
 	}()
-
-	select {
-	case err := <-serveResult:
-		return err
-	case <-ctx.Done():
-		shutdownContext, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
-		shutdownErr := service.Shutdown(shutdownContext)
-		cancel()
+	defer func() {
+		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), cfg.ShutdownTimeout)
+		defer cancel()
+		shutdownErr := server.Shutdown(cleanup)
 		if shutdownErr != nil {
-			shutdownErr = errors.Join(shutdownErr, service.Close())
+			shutdownErr = errors.Join(shutdownErr, server.Close())
 		}
-		return errors.Join(shutdownErr, <-serveResult)
+		<-serveDone
+		err := serveErr
+		if errors.Is(err, http.ErrServerClosed) {
+			err = nil
+		}
+		resultErr = errors.Join(resultErr, shutdownErr, err)
+		if service != nil {
+			resultErr = errors.Join(resultErr, service.CloseContext(cleanup))
+		}
+	}()
+	service, err = Open(ctx, cfg)
+	if err != nil {
+		if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
+			return nil
+		}
+		return err
 	}
+	progress.service.Store(service)
+	progress.running.Store(false)
+	service.signalSecretRewrap()
+	cfg.Logger.Info("hub serving", "address", listener.Addr().String())
+	select {
+	case <-ctx.Done():
+	case <-serveDone:
+	}
+	shutdownContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), cfg.ShutdownTimeout)
+	defer cancel()
+	return shutdownServiceAndServer(shutdownContext, service.Shutdown, server.Shutdown)
+}
+
+func shutdownServiceAndServer(ctx context.Context, shutdownService, shutdownServer func(context.Context) error) error {
+	serviceErr := shutdownService(ctx)
+	serverErr := shutdownServer(ctx)
+	return errors.Join(serviceErr, serverErr)
 }
 
 func validateListenerSecurity(cfg Config) error {
@@ -617,10 +669,14 @@ func (s *Service) readInstanceHealth(ctx context.Context) (healthResponse, int) 
 		status = "degraded"
 	}
 	return healthResponse{
-		Status:        status,
-		SchemaVersion: s.database.schemaVersion,
-		Version:       s.config.Version,
-		Outbox:        outbox,
-		Repositories:  repositories.Summary,
+		Status:              status,
+		SchemaVersion:       s.database.schemaVersion,
+		SchemaFingerprint:   s.database.schemaFingerprint,
+		HubSchemaApplicable: true,
+		SchemaFactsComplete: true,
+		Version:             s.config.Version,
+		Commit:              s.config.Commit,
+		Outbox:              outbox,
+		Repositories:        repositories.Summary,
 	}, http.StatusOK
 }

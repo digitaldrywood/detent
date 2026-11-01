@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/schemafingerprint"
 )
 
 var (
@@ -80,6 +81,40 @@ func New(ctx context.Context, pool *sql.DB, config Config) (*Repository, error) 
 }
 
 func (r *Repository) Close() error { return r.pool.Close() }
+
+func (r *Repository) SchemaVersion(ctx context.Context) (int64, error) {
+	var version int64
+	if err := r.pool.QueryRowContext(ctx, `SELECT COALESCE(MAX(version_id), 0) FROM (
+		SELECT version_id, is_applied, ROW_NUMBER() OVER (PARTITION BY version_id ORDER BY id DESC) AS state_rank
+		FROM public.goose_db_version
+	) AS migration_state WHERE state_rank = 1 AND is_applied`).Scan(&version); err != nil {
+		return 0, mapError(ctx, err)
+	}
+	return version, nil
+}
+
+func (r *Repository) SchemaFingerprint(ctx context.Context) (string, error) {
+	rows, err := r.pool.QueryContext(ctx, `SELECT version_id FROM (
+		SELECT version_id, is_applied, ROW_NUMBER() OVER (PARTITION BY version_id ORDER BY id DESC) AS state_rank
+		FROM public.goose_db_version WHERE version_id > 0
+	) AS migration_state WHERE state_rank = 1 AND is_applied ORDER BY version_id`)
+	if err != nil {
+		return "", mapError(ctx, err)
+	}
+	defer rows.Close()
+	var versions []int64
+	for rows.Next() {
+		var version int64
+		if err := rows.Scan(&version); err != nil {
+			return "", err
+		}
+		versions = append(versions, version)
+	}
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+	return schemafingerprint.Versions(versions), nil
+}
 
 func (r *Repository) transaction(ctx context.Context, workload corestore.Workload, readOnly bool, run func(*sql.Tx) error) (resultErr error) {
 	tx, err := r.BeginEntry(ctx, workload, readOnly)

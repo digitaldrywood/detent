@@ -15,6 +15,7 @@ import (
 	"github.com/pressly/goose/v3"
 
 	"github.com/digitaldrywood/detent/internal/instancelock"
+	"github.com/digitaldrywood/detent/internal/schemafingerprint"
 )
 
 const (
@@ -30,6 +31,48 @@ type store struct {
 	reader *entryDatabase
 	lock   *instancelock.Lock
 	close  func() error
+}
+
+func (s *store) schemaVersion(ctx context.Context) (int64, error) {
+	if s.db.postgres != nil {
+		return s.db.postgres.SchemaVersion(ctx)
+	}
+	var version int64
+	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(version_id), 0) FROM (
+		SELECT version_id, is_applied, ROW_NUMBER() OVER (PARTITION BY version_id ORDER BY id DESC) AS state_rank
+		FROM entry_schema_version
+	) WHERE state_rank = 1 AND is_applied = 1`).Scan(&version); err != nil {
+		return 0, fmt.Errorf("read entry schema version: %w", err)
+	}
+	return version, nil
+}
+
+func (s *store) schemaFingerprint(ctx context.Context) (string, error) {
+	if s.db.postgres != nil {
+		return s.db.postgres.SchemaFingerprint(ctx)
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT version_id FROM (
+		SELECT version_id, is_applied, ROW_NUMBER() OVER (PARTITION BY version_id ORDER BY id DESC) AS state_rank
+		FROM entry_schema_version
+	) WHERE state_rank = 1 AND is_applied = 1 ORDER BY version_id`)
+	if err != nil {
+		return "", fmt.Errorf("read applied entry migration versions: %w", err)
+	}
+	var versions []int64
+	for rows.Next() {
+		var version int64
+		if err := rows.Scan(&version); err != nil {
+			return "", errors.Join(err, rows.Close())
+		}
+		versions = append(versions, version)
+	}
+	if err := rows.Err(); err != nil {
+		return "", errors.Join(err, rows.Close())
+	}
+	if err := rows.Close(); err != nil {
+		return "", fmt.Errorf("close entry migration versions: %w", err)
+	}
+	return schemafingerprint.Versions(versions), nil
 }
 
 func openStore(ctx context.Context, path string, applicationID int64, directory string) (*store, error) {
