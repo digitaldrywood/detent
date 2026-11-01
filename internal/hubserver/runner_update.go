@@ -154,11 +154,18 @@ func (s *Service) applyRunnerUpdateCommand(ctx context.Context, scope nativeScop
 	return view, nil
 }
 
+func validateRunnerUpdateObservation(report *runnerauth.UpdateObservation, protocol int, version, platform, architecture string) error {
+	if report != nil && (report.Validate() != nil || protocol != 2 || strings.TrimPrefix(report.Running.Version, "v") != strings.TrimPrefix(version, "v") || report.Running.OS != platform || report.Running.Architecture != architecture) {
+		return nativePublicInvalid("Update observation must identify this runner's actual process and supported protocol")
+	}
+	return nil
+}
+
 func (s *Service) storeRunnerUpdateObservation(ctx context.Context, tx *sql.Tx, scope nativeScope, report *runnerauth.UpdateObservation, protocol int, version, platform, architecture string, now time.Time) error {
+	if err := validateRunnerUpdateObservation(report, protocol, version, platform, architecture); err != nil {
+		return err
+	}
 	if report != nil {
-		if report.Validate() != nil || protocol != 2 || strings.TrimPrefix(report.Running.Version, "v") != strings.TrimPrefix(version, "v") || report.Running.OS != platform || report.Running.Architecture != architecture {
-			return nativePublicInvalid("Update observation must identify this runner's actual process and supported protocol")
-		}
 		runner, err := readRunner(ctx, tx, scope.organization, scope.credential.Runner.RunnerID, now)
 		if err != nil {
 			return err

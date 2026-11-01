@@ -514,7 +514,8 @@ func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, 
 	ctx = isolateContentContext(s.runDetailContext(s.linkedSourceContext(ctx)))
 	if content, ok := ctx.Value(changeContentKey{}).(*changeContent); ok {
 		content.mu.Lock()
-		content.completion = options.Completion
+		_, runEvent := input.(tracker.NativeRunEvent)
+		content.completion = options.Completion && !runEvent
 		content.mu.Unlock()
 	}
 	contentMutation(ctx, true)
@@ -534,12 +535,25 @@ func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, 
 		return nil, err
 	}
 	operationID := options.OperationID
-	if event, ok := input.(tracker.NativeRunEvent); ok {
-		useStableRunHistoryIDs(ctx)
-		_, replay, err := s.nativeCommandReplay(ctx, scope, operationID, command.IdempotencyKey, input)
+	_, runEvent := input.(tracker.NativeRunEvent)
+	replay := false
+	if runEvent || !options.Completion && !options.ArtifactRead && s.database.plans() != nil {
+		_, replay, err = s.nativeCommandReplay(ctx, scope, operationID, command.IdempotencyKey, input)
 		if err != nil {
 			return nil, err
 		}
+	}
+	if !replay && !options.Completion && !options.ArtifactRead && s.database.plans() != nil {
+		now, err := s.database.currentTime()
+		if err != nil {
+			return nil, err
+		}
+		if err := s.database.requireHostedFeature(ctx, s.database.reader, options.Feature, now); err != nil {
+			return nil, err
+		}
+	}
+	if event, ok := input.(tracker.NativeRunEvent); ok {
+		useStableRunHistoryIDs(ctx)
 		if !replay {
 			ctx, err = s.prepareRunDetail(ctx, scope, options.Item, event)
 			if err != nil {

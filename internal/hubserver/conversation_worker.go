@@ -1128,6 +1128,99 @@ type conversationTurn struct {
 	now       time.Time
 }
 
+func (c *conversationService) validateTurnEvent(ctx context.Context, q nativeQueryer, record conversationRecord, execution conversation.Execution, event conversationTurnEvent) error {
+	switch event.Type {
+	case "execution_status":
+		if !conversation.ExecutionStatus(event.Status).Valid() {
+			return nativePublicInvalid("execution_status carries an unknown status")
+		}
+	case "turn_started":
+		turnID := strings.TrimSpace(event.TurnID)
+		if turnID == "" {
+			return nativePublicInvalid("turn_started requires a turn_id")
+		}
+		if current := execution.Owner.TurnID; current != "" && current != turnID {
+			return conversationStale("Another turn is still in progress")
+		}
+	case "delta":
+		if strings.TrimSpace(event.ProviderItemID) == "" {
+			return nativePublicInvalid("delta requires a provider_item_id")
+		}
+		if len(event.Text) > conversationMaxDeltaBytes {
+			return nativePublicInvalid("delta text is too long")
+		}
+	case "item":
+		kind := conversation.MessageKind(event.Kind)
+		if kind != conversation.MessageTool && kind != conversation.MessageStatus {
+			return nativePublicInvalid("item kind must be tool or status")
+		}
+		_, err := conversationItemData(event.Data)
+		return err
+	case "question_opened":
+		if strings.TrimSpace(event.RequestID) == "" {
+			return nativePublicInvalid("question_opened requires a request_id and prompts")
+		}
+		if err := conversation.ValidatePrompts(event.Prompts); err != nil {
+			return nativeInvalid(err.Error())
+		}
+		if turnID := strings.TrimSpace(event.TurnID); turnID != "" && execution.Owner.TurnID != "" && turnID != execution.Owner.TurnID {
+			return conversationStale("The question belongs to another turn")
+		}
+	case "control_result":
+		key := strings.TrimSpace(event.Key)
+		if key == "" {
+			return nativePublicInvalid("control_result requires a key")
+		}
+		messages, err := c.queryMessages(ctx, q, conversationMessageQuery+"conversation_id = ? AND role = 'user' AND command_key = ? ORDER BY seq", record.ID, key)
+		if err != nil {
+			return err
+		}
+		if len(messages) == 0 {
+			return nativeInvalid("Unknown control key " + strconv.Quote(key))
+		}
+		if messages[0].AttemptID != execution.Owner.AttemptID {
+			return conversationStale("The control was handed to another attempt")
+		}
+		switch event.Status {
+		case "delivered", "rejected", "unknown":
+		default:
+			return nativePublicInvalid("control_result status must be delivered, rejected or unknown")
+		}
+	case "turn_completed":
+		turnID := strings.TrimSpace(event.TurnID)
+		if turnID == "" {
+			return nativePublicInvalid("turn_completed requires a turn_id")
+		}
+		if current := execution.Owner.TurnID; current != "" && current != turnID {
+			return conversationStale("The completed turn is not the current turn")
+		}
+		switch event.Status {
+		case "completed", "interrupted", "failed":
+		default:
+			return nativePublicInvalid("turn_completed status must be completed, interrupted or failed")
+		}
+	default:
+		return nativeInvalid("Unknown turn event type " + strconv.Quote(event.Type))
+	}
+	return nil
+}
+
+func (c *conversationService) validateTurnEvents(ctx context.Context, record conversationRecord, events []conversationTurnEvent) error {
+	execution := record.Execution
+	for _, event := range events {
+		if err := c.validateTurnEvent(ctx, c.store.reader, record, execution, event); err != nil {
+			return err
+		}
+		switch event.Type {
+		case "turn_started":
+			execution.Owner.TurnID = strings.TrimSpace(event.TurnID)
+		case "turn_completed":
+			execution.Owner.TurnID = ""
+		}
+	}
+	return nil
+}
+
 func (r *conversationWorkerRouter) turnEvents(e echo.Context) error {
 	c, s := r.service, r.service.server
 	var request conversationTurnEventsRequest
@@ -1147,19 +1240,32 @@ func (r *conversationWorkerRouter) turnEvents(e echo.Context) error {
 	ctx := e.Request().Context()
 	scope := nativeRequestScope(e)
 	id := e.Param("conversation")
-	if c.store.contents != nil {
-		if err := c.authorizeWorkerContent(ctx, scope, id, "", request.conversationWorkerIdentity, false); err != nil {
-			return s.nativeAPIError(e, conversationStaleExecutionError("turn_events", id, err))
+	if err := c.authorizeWorkerContent(ctx, scope, id, "", request.conversationWorkerIdentity, false); err != nil {
+		return s.nativeAPIError(e, conversationStaleExecutionError("turn_events", id, err))
+	}
+	if request.BatchKey != "" {
+		var stored int64
+		err := c.store.reader.QueryRowContext(ctx, "SELECT event_seq FROM conversation_turn_batches WHERE attempt_id = ? AND batch_key = ?", request.AttemptID, request.BatchKey).Scan(&stored)
+		if err == nil {
+			return e.JSON(http.StatusAccepted, conversationTurnEventsResponse{EventSeq: stored})
 		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return s.nativeAPIError(e, fmt.Errorf("read turn batch: %w", err))
+		}
+	}
+	plan, err := c.newPublicationPlan(ctx, id)
+	if err != nil {
+		return s.nativeAPIError(e, conversationStaleExecutionError("turn_events", id, err))
+	}
+	if err := c.validateTurnEvents(ctx, plan.record, request.Events); err != nil {
+		return s.nativeAPIError(e, conversationStaleExecutionError("turn_events", id, err))
+	}
+	if c.store.contents != nil {
 		prepared, err := c.prepareTurnContents(ctx, string(scope.organization), id, request.Events, false)
 		if err != nil {
 			return s.nativeAPIError(e, conversationStaleExecutionError("turn_events", id, err))
 		}
 		ctx = prepared
-	}
-	plan, err := c.newPublicationPlan(ctx, id)
-	if err != nil {
-		return s.nativeAPIError(e, conversationStaleExecutionError("turn_events", id, err))
 	}
 	if err := plan.turnEvents(ctx, scope, request.Events); err != nil {
 		return s.nativeAPIError(e, conversationStaleExecutionError("turn_events", id, err))
@@ -1230,6 +1336,9 @@ func (r *conversationWorkerRouter) turnEvents(e echo.Context) error {
 }
 
 func (c *conversationService) applyTurnEvent(ctx context.Context, tx *sql.Tx, turn *conversationTurn, event conversationTurnEvent) error {
+	if err := c.validateTurnEvent(ctx, tx, *turn.record, turn.execution, event); err != nil {
+		return err
+	}
 	switch event.Type {
 	case "turn_started":
 		return c.applyTurnStarted(ctx, tx, turn, event)
@@ -1245,9 +1354,6 @@ func (c *conversationService) applyTurnEvent(ctx context.Context, tx *sql.Tx, tu
 		return c.applyTurnCompleted(ctx, tx, turn, event)
 	case "execution_status":
 		status := conversation.ExecutionStatus(event.Status)
-		if !status.Valid() {
-			return nativePublicInvalid("execution_status carries an unknown status")
-		}
 		turn.execution.Status = status
 		turn.execution.Error = strings.TrimSpace(event.Error)
 		turn.changed = true
@@ -1259,12 +1365,6 @@ func (c *conversationService) applyTurnEvent(ctx context.Context, tx *sql.Tx, tu
 
 func (c *conversationService) applyTurnStarted(ctx context.Context, tx *sql.Tx, turn *conversationTurn, event conversationTurnEvent) error {
 	turnID := strings.TrimSpace(event.TurnID)
-	if turnID == "" {
-		return nativePublicInvalid("turn_started requires a turn_id")
-	}
-	if current := turn.execution.Owner.TurnID; current != "" && current != turnID {
-		return conversationStale("Another turn is still in progress")
-	}
 	if thread := strings.TrimSpace(event.ThreadID); thread != "" {
 		turn.execution.Owner.ThreadID = thread
 		turn.record.ProviderThreadID = thread
@@ -1296,12 +1396,6 @@ func (c *conversationService) applyTurnStarted(ctx context.Context, tx *sql.Tx, 
 
 func (c *conversationService) applyDelta(ctx context.Context, tx *sql.Tx, turn *conversationTurn, event conversationTurnEvent) error {
 	item := strings.TrimSpace(event.ProviderItemID)
-	if item == "" {
-		return nativePublicInvalid("delta requires a provider_item_id")
-	}
-	if len(event.Text) > conversationMaxDeltaBytes {
-		return nativePublicInvalid("delta text is too long")
-	}
 	owner := turn.execution.Owner
 	// Only the message identity and its stored length are needed: the
 	// delta is appended in place, never by reading and rewriting the text.
@@ -1334,9 +1428,6 @@ func (c *conversationService) applyDelta(ctx context.Context, tx *sql.Tx, turn *
 
 func (c *conversationService) applyItem(ctx context.Context, tx *sql.Tx, turn *conversationTurn, event conversationTurnEvent) error {
 	kind := conversation.MessageKind(event.Kind)
-	if kind != conversation.MessageTool && kind != conversation.MessageStatus {
-		return nativePublicInvalid("item kind must be tool or status")
-	}
 	data, err := conversationItemData(event.Data)
 	if err != nil {
 		return err
@@ -1379,17 +1470,8 @@ func conversationTruncate(value string, limit int) string {
 
 func (c *conversationService) applyQuestionOpened(ctx context.Context, tx *sql.Tx, turn *conversationTurn, event conversationTurnEvent) error {
 	requestID := strings.TrimSpace(event.RequestID)
-	if requestID == "" {
-		return nativePublicInvalid("question_opened requires a request_id and prompts")
-	}
-	if err := conversation.ValidatePrompts(event.Prompts); err != nil {
-		return nativeInvalid(err.Error())
-	}
 	owner := turn.execution.Owner
 	turnID := strings.TrimSpace(event.TurnID)
-	if turnID != "" && owner.TurnID != "" && turnID != owner.TurnID {
-		return conversationStale("The question belongs to another turn")
-	}
 	if turnID == "" {
 		turnID = owner.TurnID
 	}
@@ -1431,20 +1513,11 @@ func (c *conversationService) applyQuestionOpened(ctx context.Context, tx *sql.T
 
 func (c *conversationService) applyControlResult(ctx context.Context, tx *sql.Tx, turn *conversationTurn, event conversationTurnEvent) error {
 	key := strings.TrimSpace(event.Key)
-	if key == "" {
-		return nativePublicInvalid("control_result requires a key")
-	}
 	messages, err := c.queryMessages(ctx, tx, conversationMessageQuery+"conversation_id = ? AND role = 'user' AND command_key = ? ORDER BY seq", turn.record.ID, key)
 	if err != nil {
 		return err
 	}
-	if len(messages) == 0 {
-		return nativeInvalid("Unknown control key " + strconv.Quote(key))
-	}
 	message := &messages[0]
-	if message.AttemptID != turn.execution.Owner.AttemptID {
-		return conversationStale("The control was handed to another attempt")
-	}
 	var delivery conversation.Delivery
 	var failure *conversation.ReceiptError
 	var questionStatus conversation.QuestionStatus
@@ -1504,12 +1577,6 @@ func (c *conversationService) applyControlResult(ctx context.Context, tx *sql.Tx
 
 func (c *conversationService) applyTurnCompleted(ctx context.Context, tx *sql.Tx, turn *conversationTurn, event conversationTurnEvent) error {
 	turnID := strings.TrimSpace(event.TurnID)
-	if turnID == "" {
-		return nativePublicInvalid("turn_completed requires a turn_id")
-	}
-	if current := turn.execution.Owner.TurnID; current != "" && current != turnID {
-		return conversationStale("The completed turn is not the current turn")
-	}
 	var delivery conversation.Delivery
 	switch event.Status {
 	case "completed":

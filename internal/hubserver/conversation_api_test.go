@@ -527,7 +527,8 @@ func TestConversationAPIMessagesPagination(t *testing.T) {
 
 func TestConversationAPICommands(t *testing.T) {
 	t.Parallel()
-	f := newConversationAPIFixture(t, nil)
+	objects := &conversationContentFixture{}
+	f := newConversationAPIFixture(t, &ConversationConfig{Enabled: true, ArchiveContents: objects})
 	record := f.create(t, f.token, map[string]any{"title": "Commands"}).Conversation
 	message := conversation.Command{Key: "hello", Kind: conversation.CommandMessage, Text: "Hello"}
 	t.Run("validation", func(t *testing.T) {
@@ -562,13 +563,23 @@ func TestConversationAPICommands(t *testing.T) {
 		}
 	})
 	t.Run("unsupported and rejected controls", func(t *testing.T) {
-		response := f.command(t, f.token, record.ID, conversation.Command{Key: "cont", Kind: conversation.CommandContinue})
-		requireNativeError(t, response, http.StatusUnprocessableEntity, "unsupported_control")
-		response = f.command(t, f.token, record.ID, conversation.Command{Key: "intr", Kind: conversation.CommandInterrupt, Expected: conversation.Expected{AttemptID: "att_x"}})
-		requireNativeError(t, response, http.StatusConflict, "stale_execution")
-		response = f.command(t, f.token, record.ID, conversation.Command{Key: "ans", Kind: conversation.CommandAnswer, QuestionID: "q_missing", Answers: map[string][]string{"p": {"a"}}})
-		requireNativeError(t, response, http.StatusNotFound, "not_found")
-		response = f.command(t, f.token, record.ID, conversation.Command{Key: "cancel", Kind: conversation.CommandCancel})
+		for _, test := range []struct {
+			command conversation.Command
+			status  int
+			code    string
+		}{
+			{conversation.Command{Key: "cont", Kind: conversation.CommandContinue}, http.StatusUnprocessableEntity, "unsupported_control"},
+			{conversation.Command{Key: "intr", Kind: conversation.CommandInterrupt, Expected: conversation.Expected{AttemptID: "att_x"}}, http.StatusConflict, "stale_execution"},
+			{conversation.Command{Key: "ans", Kind: conversation.CommandAnswer, QuestionID: "q_missing", Answers: map[string][]string{"p": {"a"}}}, http.StatusNotFound, "not_found"},
+			{conversation.Command{Key: "retry", Kind: conversation.CommandRetry, MessageID: conversation.NewMessageID()}, http.StatusUnprocessableEntity, "invalid_request"},
+		} {
+			before := objects.publications
+			requireNativeError(t, f.command(t, f.token, record.ID, test.command), test.status, test.code)
+			if objects.publications != before {
+				t.Errorf("rejected %s published %d objects", test.command.Kind, objects.publications-before)
+			}
+		}
+		response := f.command(t, f.token, record.ID, conversation.Command{Key: "cancel", Kind: conversation.CommandCancel})
 		requireNativeStatus(t, response, http.StatusOK)
 		var receipt conversation.Receipt
 		decodeHubResponse(t, response, &receipt)
@@ -597,7 +608,8 @@ func TestConversationAPICommands(t *testing.T) {
 
 func TestConversationAPIAnswer(t *testing.T) {
 	t.Parallel()
-	f := newConversationAPIFixture(t, nil)
+	objects := &conversationContentFixture{}
+	f := newConversationAPIFixture(t, &ConversationConfig{Enabled: true, ArchiveContents: objects})
 	record := f.create(t, f.token, map[string]any{"title": "Questions"}).Conversation
 	requireNativeStatus(t, f.link(t, f.token, record.ID, "link", true, "Ask me"), http.StatusOK)
 	store := f.service.conversations.store
@@ -654,9 +666,13 @@ func TestConversationAPIAnswer(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			before := objects.publications
 			response := f.command(t, f.token, record.ID, tt.command)
 			if tt.code != "" {
 				requireNativeError(t, response, tt.status, tt.code)
+				if objects.publications != before {
+					t.Errorf("rejected answer published %d objects", objects.publications-before)
+				}
 				return
 			}
 			requireNativeStatus(t, response, tt.status)
@@ -686,13 +702,18 @@ func TestConversationAPILink(t *testing.T) {
 	t.Parallel()
 	// The first message queues a coordinator control before the link, so the
 	// queue holds one control already.
-	f := newConversationAPIFixture(t, &ConversationConfig{Enabled: true, ControlQueueSize: 3})
+	objects := &conversationContentFixture{}
+	f := newConversationAPIFixture(t, &ConversationConfig{Enabled: true, ControlQueueSize: 3, ArchiveContents: objects})
 	record := f.create(t, f.token, map[string]any{"title": "Ship it", "first_message": map[string]any{"key": "first", "text": "Please ship the release"}}).Conversation
 	t.Run("requires share_history", func(t *testing.T) {
 		response := f.link(t, f.token, record.ID, "no-share", false, "Ship the release")
 		requireNativeError(t, response, http.StatusUnprocessableEntity, "share_history_required")
+		before := objects.publications
 		response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/conversations/"+record.ID+"/link", f.token, map[string]any{"key": "no-title", "share_history": true, "issue": map[string]any{"title": " "}})
 		requireNativeError(t, response, http.StatusUnprocessableEntity, "invalid_request")
+		if objects.publications != before {
+			t.Fatalf("rejected handoff published %d objects; want 0", objects.publications-before)
+		}
 	})
 	var linked conversationLinkResponse
 	t.Run("links and shares", func(t *testing.T) {

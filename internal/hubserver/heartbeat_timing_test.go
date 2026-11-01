@@ -187,6 +187,10 @@ func TestHeartbeatPreparationBeforeWriter(t *testing.T) {
 			view.Diagnostics = &runnerauth.ProjectDiagnostics{}
 			return view
 		}()},
+		{"invalid update", "update", runnerauth.UpdateObservation{}},
+		{"invalid provider reports", "provider_reports", []providercapacity.Report{}},
+		{"invalid checkout", "checkout_repository", "invalid"},
+		{"invalid workspace isolation", "workspace_isolation", "invalid"},
 		{"invalid admission", "admission", tracker.NativeAdmissionObservation{}},
 		{"invalid capacity", "capacity_configuration", runnerauth.CapacityConfig{}},
 		{"invalid local checks", "local_checks", runnerauth.LocalChecks{}},

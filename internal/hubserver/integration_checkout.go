@@ -44,19 +44,29 @@ WHERE cr.project_id=? AND cr.repository=? COLLATE NOCASE AND r.state='active' AN
 	return verified, err
 }
 
-func updateRunnerCheckoutReport(ctx context.Context, tx *sql.Tx, scope nativeScope, report *string, now time.Time) error {
+func validateRunnerCheckoutReport(scope nativeScope, report *string) error {
 	if report == nil {
-		return nil // older runners do not modify the last report
+		return nil
 	}
 	if scope.credential.Runner.RunnerID == "" {
 		return nativePublicInvalid("Checkout reports require an enrolled runner")
 	}
+	if *report != "" && (!validCheckoutRepository(*report) || *report != strings.TrimSpace(*report)) {
+		return nativePublicInvalid("Checkout repository must be owner/name")
+	}
+	return nil
+}
+
+func updateRunnerCheckoutReport(ctx context.Context, tx *sql.Tx, scope nativeScope, report *string, now time.Time) error {
+	if err := validateRunnerCheckoutReport(scope, report); err != nil {
+		return err
+	}
+	if report == nil {
+		return nil
+	}
 	if *report == "" {
 		_, err := tx.ExecContext(ctx, "DELETE FROM runner_checkout_repositories WHERE runner_id = ? AND project_id = ?", scope.credential.Runner.RunnerID, scope.project)
 		return err
-	}
-	if !validCheckoutRepository(*report) || *report != strings.TrimSpace(*report) {
-		return nativePublicInvalid("Checkout repository must be owner/name")
 	}
 	_, err := tx.ExecContext(ctx, `INSERT INTO runner_checkout_repositories (runner_id, project_id, repository, reported_at) VALUES (?, ?, ?, ?)
 ON CONFLICT(runner_id, project_id) DO UPDATE SET repository=excluded.repository, reported_at=excluded.reported_at`, scope.credential.Runner.RunnerID, scope.project, *report, formatHubTime(now))
