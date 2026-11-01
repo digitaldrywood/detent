@@ -92,9 +92,12 @@ func runnerUsageObservations(ctx context.Context, q nativeQueryer, scope nativeS
 			return "", "", nil, nil
 		}
 		organization, project = string(scope.organization), string(scope.project)
-		started, ended = formatHubTime(*newAttemptAt), formatHubTime(*newAttemptAt)
+		started = formatHubTime(*newAttemptAt)
 	} else if err != nil {
 		return "", "", nil, fmt.Errorf("read usage attribution: %w", err)
+	}
+	if newAttemptAt != nil {
+		ended = formatHubTime(*newAttemptAt)
 	}
 	if legacy.Valid {
 		var data tracker.NativeRunData

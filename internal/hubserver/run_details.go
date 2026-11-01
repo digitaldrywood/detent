@@ -320,12 +320,14 @@ func (s *Service) prepareRunDetailSnapshot(ctx context.Context, snapshot nativeQ
 		if err != nil {
 			return err
 		}
-		current, err := s.database.currentTime()
-		if err != nil {
-			return err
-		}
-		if err := validateRunnerUsageCosts(ctx, snapshot, scope, event, s.usagePrices(), current); err != nil {
-			return err
+		if !termination {
+			current, err := s.database.currentTime()
+			if err != nil {
+				return err
+			}
+			if err := validateRunnerUsageCosts(ctx, snapshot, scope, event, s.usagePrices(), current); err != nil {
+				return err
+			}
 		}
 		history := true
 		if event.Data.Sequence > 0 {
