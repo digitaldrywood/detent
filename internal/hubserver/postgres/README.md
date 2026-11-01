@@ -427,8 +427,8 @@ Callbacks never perform external I/O or derived projection work while locked
 ## Runner runtime state
 
 The runner's `internal/store` SQLite file has three responsibilities: disposable
-observations, a cache of durable records whose native authority belongs in the
-Hub, and local process cleanup. Classification is by field and consumer, rather
+observations, a cache of durable records and policy whose native authority belongs
+in the Hub, and local process cleanup. Classification is by field and consumer, rather
 than by database file: `codex_sessions` and `work_attempts` contain both durable
 history and local cleanup identities. Opening a fresh local database is supported
 for both the enrolled runner and the local CLI/board. This classification does
@@ -440,7 +440,8 @@ not switch either runtime's database backend or remove the local board's store.
 | `worker_generations`; worker PID, PGID, start time, owner generation, scratch reservation and reap outcome in `codex_sessions`; active process ownership in `work_attempts` | Needed for local process cleanup | Local ownership identifies which processes and scratch paths this controller may clean up. Keep PID plus start-time checks and live sibling-generation exclusion. Neither a missing database nor a reused numeric attempt ID proves that an old worker exited. |
 | `project_runner_setup` | Disposable | A setup hash is an observation of a checkout and hook configuration. Re-run setup in a fresh workspace; never use an old hash to authorize a different checkout. Native dependency removal belongs to #2033. |
 | `session_progress`, `scheduler_decisions`, `project_dispatch_status`, `health_notification_states`, `staleness_warning_states` | Disposable | Recompute current progress, dispatch and health observations. Local diagnostics may retain them, but later jobs cannot require them. Required historical diagnostic evidence belongs in Hub runtime receipts (#2028); native dependency removal belongs to #2033. |
-| `lane_ledger`, `lane_ledger_instance`, `lane_observations`, `workflow_history_revision`, `issue_contract_rollout` | Disposable | Local projections and installation observations do not replace tracker history, workflow intent or the current issue contract. Rebuild from their authorities (#2033). |
+| `lane_ledger`, `lane_ledger_instance`, `lane_observations`, `workflow_history_revision` | Disposable | Local projections and installation observations do not replace tracker history, workflow intent or the current issue contract. Rebuild from their authorities (#2033). |
+| `issue_contract_rollout.activated_at` | Published to the Hub as durable policy | The original cutoff controls contract enforcement for issues without explicit contract state. Preserve it across store and runner replacement through the existing Hub policy authority, or explicitly retire the cutoff dependency in #2033. Recreating the SQLite store must not silently grant exemptions to previously enforced issues. |
 | `issue_progress_credits`, `issue_park_acknowledgements`, `merge_required_check_streaks` | Disposable | Historical hints never veto a native claim. Re-evaluate source, review and current external facts through the existing owner; remove obsolete native dependencies (#2033). |
 | `detent_runs`; session identity, completion and usage in `codex_sessions`; attempt history in `work_attempts`; `work_attempt_sequence`, `usage_events`, `workflow_phase_events`, `efficiency_receipts`, `provenance_attribution_boundaries` | Published to the Hub | Existing native attempt/runtime observations provide partial publication. Complete durable diagnostics, timing, usage and provenance publication and native report reads in #2028. Local numeric IDs remain diagnostic attributes, never global job identities. |
 | Provider thread/session identity and session configuration in `codex_sessions` and `work_attempts` | Published to the Hub when required for continuation | Bare provider IDs do not make a session portable. Required continuation identity and provider-supported artifacts need Hub publication (#2027). Until then, verified source recovery can start a fresh provider conversation; existing same-machine session reuse remains an optional optimization. |
@@ -452,6 +453,15 @@ not switch either runtime's database backend or remove the local board's store.
 | `human_questions`, `budget_overrides` | Published to the Hub for native work | Human intent and spending policy come from their existing Hub authorities. Preserve local CLI/board intent in the local store; isolate native consumers in #2033. Subscription quota never determines eligibility or retries. |
 | `organizations`, `projects`, `token_grants`, `api_keys`, `api_usage_logs`, `auth_magic_links`, `auth_sessions` | Published to the Hub for native work | Native organization/project access and authentication come from authenticated Hub context and declared runner enrollment. These local tables retain local CLI/board configuration, authorization and audit behavior; they are not credentials to copy into jobs (#2033). |
 | Goose migration bookkeeping and SQLite internal tables | Disposable | Database-local implementation metadata has no job continuation meaning. |
+
+Opening a fresh SQLite file alone does not preserve issue contract rollout
+policy: its migration initializes `activated_at` to the current time. An issue
+without explicit contract state whose creation or stage-update time falls between
+the original and replacement cutoffs would become exempt. Until #2033 publishes
+the original cutoff or explicitly retires that dependency while preserving
+enforcement, replacing the store requires preserving this policy. The fresh-store
+process-cleanup tests do not establish policy portability; this classification
+does not change runtime enforcement or implement policy transfer.
 
 The local cleanup exception does not permit storing the only copy of unfinished
 work on a runner. Process ownership is not source custody. A missing cleanup

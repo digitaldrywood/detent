@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"database/sql"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -10,9 +11,95 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/issuecontract"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/store/storetest"
 	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
+
+func TestIssueContractRolloutPolicyOnFreshStore(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name           string
+		preservePolicy bool
+	}{
+		{name: "replacement cutoff loses enforcement"},
+		{name: "preserved cutoff keeps enforcement", preservePolicy: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			path := storetest.NewDatabasePath(t)
+			backend, err := store.Open(t.Context(), store.Config{Path: path})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := backend.Close(); err != nil {
+					t.Error(err)
+				}
+			})
+			contract, err := workflowconfig.ResolveIssueContract("Run `make check-land`.")
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg := laneMutationTestConfig()
+			cfg.IssueContract = &contract
+			deps := Dependencies{Connector: fakehub.New(fakehub.Config{Stateful: true}), WorkflowMetrics: backend}
+			replacement, err := New(cfg, deps)
+			if err != nil {
+				t.Fatal(err)
+			}
+			replacementCutoff := replacement.cfg.IssueContractRolloutAt
+			if replacementCutoff.IsZero() {
+				t.Fatal("fresh store has no rollout cutoff")
+			}
+			originalCutoff := replacementCutoff.Add(-2 * time.Hour)
+			betweenCutoffs := originalCutoff.Add(time.Hour)
+			if test.preservePolicy {
+				db, err := sql.Open("sqlite", path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() {
+					if err := db.Close(); err != nil {
+						t.Error(err)
+					}
+				})
+				if _, err := db.ExecContext(t.Context(), "UPDATE issue_contract_rollout SET activated_at = ?", originalCutoff.Format(time.RFC3339Nano)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			orch, err := New(cfg, deps)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, stageUpdated := range []bool{false, true} {
+				issue := connector.NewIssue()
+				issue.ID, issue.State = "issue", "Todo"
+				issue.CreatedAt = &betweenCutoffs
+				if stageUpdated {
+					beforeRollout := originalCutoff.Add(-time.Hour)
+					issue.CreatedAt, issue.StageUpdatedAt = &beforeRollout, &betweenCutoffs
+				}
+				original := &Orchestrator{cfg: cfg}
+				original.cfg.IssueContractRolloutAt = originalCutoff
+				if !original.issueContractApplies(issue) {
+					t.Fatalf("stageUpdated=%t: original policy did not enforce the contract", stageUpdated)
+				}
+				if applies := orch.issueContractApplies(issue); applies != test.preservePolicy {
+					t.Fatalf("stageUpdated=%t: contract applies=%t, want %t", stageUpdated, applies, test.preservePolicy)
+				}
+				state := newState(orch.cfg)
+				candidates := orch.filterIssueContracts(t.Context(), &state, []connector.Issue{issue}, replacementCutoff)
+				if held := len(candidates) == 0; held != test.preservePolicy {
+					t.Fatalf("stageUpdated=%t: incomplete issue held=%t, want %t", stageUpdated, held, test.preservePolicy)
+				}
+				if test.preservePolicy && !state.Blocked[issue.ID].NeedsHumanAttention {
+					t.Fatalf("stageUpdated=%t: incomplete issue has no contract confirmation request", stageUpdated)
+				}
+			}
+		})
+	}
+}
 
 func TestIssueContractDispatchAndRecovery(t *testing.T) {
 	t.Parallel()
