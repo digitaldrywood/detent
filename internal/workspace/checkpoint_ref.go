@@ -340,7 +340,7 @@ func publishCheckpointRef(ctx context.Context, git checkpointGitRunner, ref, com
 	if remote == commit {
 		return nil
 	}
-	if expected != "" && remote != expected {
+	if expected != "" && remote != "" && remote != expected {
 		return fmt.Errorf("%w: checkpoint ref moved", ErrCheckpointUnsafe)
 	}
 	if _, err := git(ctx, "-c", "core.hooksPath="+os.DevNull, "-c", "push.followTags=false", "push", "--no-verify", "--force-with-lease="+ref+":"+remote, "--recurse-submodules=no", defaultGitRemote, commit+":"+ref); err != nil {

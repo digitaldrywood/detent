@@ -3,7 +3,6 @@ package orchestrator
 import (
 	"context"
 	"encoding/json"
-	"log/slog"
 	"strings"
 	"time"
 
@@ -31,63 +30,10 @@ func (o *Orchestrator) handleWorkerGitHubTokenResolutionCompletion(
 	event runpkg.Completion,
 	running Running,
 ) bool {
-	resolutionErr, unavailable := runpkg.AsWorkerGitHubTokenResolutionError(event.Err)
-	if !unavailable {
+	if _, unavailable := runpkg.AsWorkerGitHubTokenResolutionError(event.Err); !unavailable {
 		return false
 	}
-	detectedAt := event.CompletedAt.UTC()
-	delay := o.cfg.OverloadRetryDelay
-	if delay <= 0 {
-		delay = defaultOverloadRetryDelay
-	}
-	nextRetryAt := detectedAt.Add(delay)
-	o.finishForgeAvailabilityProbe(state, event, running)
-	o.deferBackendCapacityProbe(state, running, detectedAt, event.Err)
-	o.releaseTerminalAttemptClaim(ctx, state, running.Issue, detectedAt)
-	releaseDispatchRecoveryAdmission(state, event.IssueID)
-	metadata := workerGitHubTokenResolutionWaitMetadata{
-		Attempts:    resolutionErr.Attempts,
-		TimeoutMS:   resolutionErr.Timeout.Milliseconds(),
-		DetectedAt:  detectedAt,
-		NextRetryAt: nextRetryAt,
-	}
-	o.completeDurableWorkAttemptWithMetadata(
-		ctx,
-		state,
-		running,
-		detectedAt,
-		store.WorkAttemptTerminalCapacity,
-		workerGitHubTokenResolutionErrorClass,
-		errorString(event.Err),
-		"waiting",
-		"waiting for worker GitHub token resolution",
-		map[string]any{"worker_github_token_resolution_wait": metadata},
-	)
-	if !workspaceIssueTerminal(running.Issue, o.cfg.TerminalStates) {
-		state.Retry[running.Issue.ID] = Retry{
-			Issue:      cloneIssue(running.Issue),
-			Attempt:    running.Attempt,
-			DueAt:      nextRetryAt,
-			Error:      errorString(event.Err),
-			WorkerHost: running.WorkerHost,
-			Wait: RetryWait{
-				Kind:      workerGitHubTokenResolutionWaitKind,
-				StartedAt: detectedAt,
-			},
-		}
-	}
-	recordStateEvent(state, telemetry.ActivityEvent{
-		At:      detectedAt,
-		Event:   workerGitHubTokenResolutionErrorClass,
-		Message: "worker GitHub token resolution unavailable; host credential store may be slow; retrying " + issueLabel(running.Issue) + " at " + nextRetryAt.Format(time.RFC3339),
-	})
-	telemetry.LogLifecycleMessage(o.logger, slog.LevelWarn, telemetry.LifecycleSafetyControl, workerGitHubTokenResolutionErrorClass, "worker GitHub token resolution unavailable; host credential store may be slow", o.runningLifecycleCorrelation(running.Issue, running),
-		"resolution_attempts", resolutionErr.Attempts,
-		"resolution_timeout_ms", resolutionErr.Timeout.Milliseconds(),
-		"next_retry_at", nextRetryAt,
-		"error", event.Err,
-	)
-	return true
+	return o.handlePreTurnFailure(ctx, state, event, running)
 }
 
 func (o *Orchestrator) recoverWorkerGitHubTokenResolutionWaits(ctx context.Context, state *State, attempts []store.WorkAttempt, now time.Time) {

@@ -3,7 +3,7 @@ package orchestrator
 import (
 	"bytes"
 	"context"
-	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"strings"
@@ -16,7 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/store"
 )
 
-func TestWorkerGitHubTokenResolutionCompletionPreservesAttemptBudget(t *testing.T) {
+func TestWorkerGitHubTokenResolutionUsesInstanceRetryOwner(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
@@ -46,9 +46,8 @@ func TestWorkerGitHubTokenResolutionCompletionPreservesAttemptBudget(t *testing.
 	state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: now.Add(-time.Minute)}
 
 	resolutionErr := &runpkg.WorkerGitHubTokenResolutionError{
-		Attempts: 3,
-		Timeout:  15 * time.Second,
-		Err:      context.DeadlineExceeded,
+		Attempts: 1,
+		Err:      errors.New("credential store unavailable"),
 	}
 	supervisor, err := runpkg.NewSupervisor(staticWorkerGitHubTokenResolutionBackend{err: resolutionErr}, runpkg.SupervisorConfig{
 		Now: func() time.Time { return now },
@@ -57,7 +56,7 @@ func TestWorkerGitHubTokenResolutionCompletionPreservesAttemptBudget(t *testing.
 		t.Fatalf("NewSupervisor() error = %v", err)
 	}
 	completion := supervisor.Run(t.Context(), runpkg.RunRequest{Issue: issue, Attempt: 4, Mode: runpkg.RunModeImplement})
-	if completion.Retryable || completion.RetryAttempt != 0 || completion.RetryDelay != 0 {
+	if !completion.Retryable || completion.RetryAttempt != 4 || completion.RetryDelay != 45*time.Second {
 		t.Fatalf("runner completion = %#v, want infrastructure-owned retry", completion)
 	}
 	orch.handleRunResult(t.Context(), &state, completion)
@@ -66,30 +65,18 @@ func TestWorkerGitHubTokenResolutionCompletionPreservesAttemptBudget(t *testing.
 		t.Fatalf("completions = %#v, want one durable infrastructure wait", attempts.completions)
 	}
 	completed := attempts.completions[0]
-	if completed.TerminalState != store.WorkAttemptTerminalCapacity || completed.ErrorClass != workerGitHubTokenResolutionErrorClass {
-		t.Fatalf("completion = %#v, want token-resolution capacity classification", completed)
-	}
-	var persisted struct {
-		Wait workerGitHubTokenResolutionWaitMetadata `json:"worker_github_token_resolution_wait"`
-	}
-	if err := json.Unmarshal([]byte(completed.WorkerMetadataJSON), &persisted); err != nil {
-		t.Fatalf("decode worker metadata: %v", err)
-	}
-	if persisted.Wait.Attempts != 3 || persisted.Wait.TimeoutMS != 15000 || !persisted.Wait.NextRetryAt.Equal(now.Add(45*time.Second)) {
-		t.Fatalf("resolution wait = %#v, want attempts, timeout, and retry deadline", persisted.Wait)
+	if completed.TerminalState != store.WorkAttemptTerminalFailure || completed.ErrorClass != workAttemptErrorWorkspace {
+		t.Fatalf("completion = %#v, want instance classification", completed)
 	}
 	retry, ok := state.Retry[issue.ID]
-	if !ok || retry.Attempt != 4 || !retry.DueAt.Equal(now.Add(45*time.Second)) || retry.Wait.Kind != workerGitHubTokenResolutionWaitKind {
-		t.Fatalf("retry = %#v, want same-attempt token-resolution wait", retry)
+	if !ok || retry.Attempt != 5 || !retry.DueAt.After(now) || retry.DueAt.After(now.Add(cfg.MaxRetryBackoff)) || retry.Wait.Kind != "" {
+		t.Fatalf("retry = %#v, want growing machine retry", retry)
 	}
 	if _, blocked := state.Blocked[issue.ID]; blocked {
-		t.Fatalf("issue %q was blocked by machine-recoverable token resolution", issue.ID)
+		t.Fatal("credential failure blocked the issue")
 	}
-	if strings.Contains(completed.WorkerMetadataJSON, "completion_progress") {
-		t.Fatalf("worker metadata = %s, infrastructure failure reached progress processing", completed.WorkerMetadataJSON)
-	}
-	if !strings.Contains(logs.String(), workerGitHubTokenResolutionErrorClass) || !strings.Contains(logs.String(), "host credential store may be slow") {
-		t.Fatalf("logs = %q, want distinct token-resolution infrastructure event", logs.String())
+	if strings.Contains(completed.WorkerMetadataJSON, "worker_github_token_resolution_wait") || strings.Contains(completed.WorkerMetadataJSON, "completion_progress") {
+		t.Fatalf("instance failure reached a separate retry owner: %s", completed.WorkerMetadataJSON)
 	}
 }
 

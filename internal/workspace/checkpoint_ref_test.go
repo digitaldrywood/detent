@@ -653,6 +653,7 @@ func TestCheckpointPublicationReconcilesRemote(t *testing.T) {
 		{name: "uncertain committed", initial: "previous", after: "intended", pushErr: true, wantPush: true},
 		{name: "moved ref", initial: "other", wantErr: true},
 		{name: "compare and swap", initial: "previous", wantPush: true},
+		{name: "absent ref", wantPush: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			reads, pushes := 0, 0
@@ -663,10 +664,13 @@ func TestCheckpointPublicationReconcilesRemote(t *testing.T) {
 					if reads > 1 {
 						sha = test.after
 					}
+					if sha == "" {
+						return "", nil
+					}
 					return sha + "\trefs/detent/checkpoints/work", nil
 				}
 				pushes++
-				if !slices.Contains(args, "--force-with-lease=refs/detent/checkpoints/work:previous") {
+				if !slices.Contains(args, "--force-with-lease=refs/detent/checkpoints/work:"+test.initial) {
 					t.Fatalf("push lacks expected remote identity: %v", args)
 				}
 				if test.pushErr {
