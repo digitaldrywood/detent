@@ -208,6 +208,11 @@ func (s *session) Change(ctx context.Context, id string) (eventstore.Change, err
 	return eventstore.Change(row), mapError(ctx, err)
 }
 
+func (s *session) LockChange(ctx context.Context, id string) (eventstore.Change, error) {
+	row, err := s.queries.RecordLockChange(ctx, pgquery.RecordLockChangeParams{OrganizationID: s.organization, ID: id})
+	return eventstore.Change(row), mapError(ctx, err)
+}
+
 func (s *session) LatestChange(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID) (eventstore.Change, error) {
 	row, err := s.queries.RecordLatestChange(ctx, pgquery.RecordLatestChangeParams{OrganizationID: s.organization, ProjectID: project, WorkItemID: item})
 	return eventstore.Change(row), mapError(ctx, err)

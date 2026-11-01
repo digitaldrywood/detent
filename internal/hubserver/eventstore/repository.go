@@ -195,6 +195,7 @@ type Reader interface {
 type Writer interface {
 	PutReceipt(context.Context, Receipt) (Receipt, error)
 	Reader
+	LockChange(context.Context, string) (Change, error)
 	SetReviewPolicy(context.Context, ReviewPolicy, string) error
 	CreateLandingReceipt(context.Context, LandingReceipt) (LandingReceipt, error)
 	AppendEvent(context.Context, Event) (Event, error)
