@@ -66,6 +66,9 @@ func (s *Service) commandDeleteAction(ctx context.Context, scope nativeScope, id
 }
 
 func (s *Service) readAttachment(ctx context.Context, scope nativeScope, conversationID, id string) (conversationAttachmentRecord, []byte, error) {
+	if s.conversationRecordsSelected() {
+		return conversationAttachmentRecord{}, nil, conversationUnsupported("Conversation attachments require the PostgreSQL attachment owner")
+	}
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	record, err := s.conversations.loadConversation(ctx, s.database.reader, scope, conversationID)

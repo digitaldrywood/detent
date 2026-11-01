@@ -183,6 +183,81 @@ func (s *session) Conversations(ctx context.Context, filter conversationstore.Co
 	return page, nil
 }
 
+func (s *session) LifecycleConversations(ctx context.Context, filter conversationstore.LifecycleQuery) (conversationstore.ConversationPage, error) {
+	if err := checkPage(filter.Limit); err != nil {
+		return conversationstore.ConversationPage{}, err
+	}
+	where := ` WHERE c.organization_id=$1`
+	args := []any{s.organization}
+	switch filter.Kind {
+	case conversationstore.LifecycleRestart:
+		where += ` AND c.work_item_id IS NULL`
+	case conversationstore.LifecycleExecution:
+		where += ` AND (c.execution_status IN ('starting','running','waiting_input','interrupting') OR (c.execution_status IN ('completed','interrupted','failed','unknown') AND c.execution_settled=false AND c.execution_lease_id IS NOT NULL))`
+	case conversationstore.LifecycleSettle:
+		if filter.Before.IsZero() {
+			return conversationstore.ConversationPage{}, corestore.ErrInvalidPage
+		}
+		args = append(args, filter.Before)
+		where += fmt.Sprintf(` AND c.status='active' AND COALESCE(c.last_message_at,c.updated_at)<$%d AND c.execution_status IN ('idle','completed','interrupted','failed','unknown')`, len(args))
+	default:
+		return conversationstore.ConversationPage{}, corestore.ErrInvalidPage
+	}
+	if filter.AfterID != "" {
+		args = append(args, filter.AfterID)
+		where += fmt.Sprintf(" AND c.id>$%d", len(args))
+	}
+	args = append(args, filter.Limit+1)
+	rows, err := s.db.QueryContext(ctx, conversationSelect+where+fmt.Sprintf(" ORDER BY c.id LIMIT $%d", len(args)), args...)
+	if err != nil {
+		return conversationstore.ConversationPage{}, mapError(ctx, err)
+	}
+	defer rows.Close()
+	page := conversationstore.ConversationPage{Items: make([]conversationstore.Conversation, 0, filter.Limit)}
+	for rows.Next() {
+		record, err := scanPGConversation(rows)
+		if err != nil {
+			return page, err
+		}
+		page.Items = append(page.Items, record)
+	}
+	if err := rows.Err(); err != nil {
+		return page, mapError(ctx, err)
+	}
+	if len(page.Items) > filter.Limit {
+		page.Items = page.Items[:filter.Limit]
+		page.Next = page.Items[len(page.Items)-1].ID
+	}
+	return page, nil
+}
+
+func (s *session) PendingConversations(ctx context.Context, afterID string, limit int) (conversationstore.PendingConversationPage, error) {
+	if err := checkPage(limit); err != nil {
+		return conversationstore.PendingConversationPage{}, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT c.id,c.work_item_id IS NOT NULL FROM conversations c WHERE c.organization_id=$1 AND c.id>$2 AND EXISTS (SELECT 1 FROM conversation_messages m WHERE m.organization_id=c.organization_id AND m.conversation_id=c.id AND m.role='user' AND m.delivery IN ('saved','queued')) ORDER BY c.id LIMIT $3`, s.organization, afterID, limit+1)
+	if err != nil {
+		return conversationstore.PendingConversationPage{}, mapError(ctx, err)
+	}
+	defer rows.Close()
+	page := conversationstore.PendingConversationPage{Items: make([]conversationstore.PendingConversation, 0, limit)}
+	for rows.Next() {
+		var item conversationstore.PendingConversation
+		if err := rows.Scan(&item.ID, &item.Linked); err != nil {
+			return page, mapError(ctx, err)
+		}
+		page.Items = append(page.Items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return page, mapError(ctx, err)
+	}
+	if len(page.Items) > limit {
+		page.Items = page.Items[:limit]
+		page.Next = page.Items[len(page.Items)-1].ID
+	}
+	return page, nil
+}
+
 type pgConversationCursor struct {
 	Activity string `json:"a"`
 	ID       string `json:"i"`
@@ -266,6 +341,9 @@ func (s *session) FilteredMessages(ctx context.Context, filter conversationstore
 	}
 	if filter.Role != "" {
 		add("role=$%d", filter.Role)
+	}
+	if filter.Kind != "" {
+		add("kind=$%d", filter.Kind)
 	}
 	if filter.BeforeSequence > 0 {
 		add("seq<$%d", filter.BeforeSequence)
@@ -426,6 +504,33 @@ func (s *session) OutstandingQuestions(ctx context.Context, conversationID, atte
 	return page, nil
 }
 
+func (s *session) RestartQuestions(ctx context.Context, conversationID, afterID string, limit int) (conversationstore.QuestionPage, error) {
+	if err := checkPage(limit); err != nil {
+		return conversationstore.QuestionPage{}, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT organization_id,conversation_id,id,message_id,request_id,attempt_id,thread_id,turn_id,status,prompts_json,answers_json,answered_by,expires_at,created_at,updated_at,content_attachment_id FROM conversation_questions WHERE organization_id=$1 AND conversation_id=$2 AND id>$3 AND status IN ('pending','sending') ORDER BY id LIMIT $4`, s.organization, conversationID, afterID, limit+1)
+	if err != nil {
+		return conversationstore.QuestionPage{}, mapError(ctx, err)
+	}
+	defer rows.Close()
+	page := conversationstore.QuestionPage{Items: make([]conversationstore.Question, 0, limit)}
+	for rows.Next() {
+		question, err := scanPGQuestion(ctx, rows)
+		if err != nil {
+			return page, err
+		}
+		page.Items = append(page.Items, question)
+	}
+	if err := rows.Err(); err != nil {
+		return page, mapError(ctx, err)
+	}
+	if len(page.Items) > limit {
+		page.Next = page.Items[limit-1].ID
+		page.Items = page.Items[:limit]
+	}
+	return page, nil
+}
+
 func scanPGQuestion(ctx context.Context, row interface{ Scan(...any) error }) (conversationstore.Question, error) {
 	var q conversationstore.Question
 	var prompts, answers []byte
@@ -460,6 +565,37 @@ func (s *session) Command(ctx context.Context, conversationID, key string) (conv
 		return c, false, fmt.Errorf("decode command receipt: %w", err)
 	}
 	return c, true, nil
+}
+
+func (s *session) PendingCommands(ctx context.Context, conversationID, afterKey string, limit int) (conversationstore.CommandPage, error) {
+	if err := checkPage(limit); err != nil {
+		return conversationstore.CommandPage{}, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT organization_id,conversation_id,key,kind,request_hash,receipt_json,created_at,updated_at,content_attachment_id FROM conversation_commands WHERE organization_id=$1 AND conversation_id=$2 AND key>$3 AND receipt_status=ANY($4) ORDER BY key LIMIT $5`, s.organization, conversationID, afterKey, pq.Array([]string{"sending", "sent", "responding"}), limit+1)
+	if err != nil {
+		return conversationstore.CommandPage{}, mapError(ctx, err)
+	}
+	defer rows.Close()
+	page := conversationstore.CommandPage{Items: make([]conversationstore.Command, 0, limit)}
+	for rows.Next() {
+		var command conversationstore.Command
+		var receipt []byte
+		if err := rows.Scan(&command.OrganizationID, &command.ConversationID, &command.Key, &command.Kind, &command.RequestHash, &receipt, &command.CreatedAt, &command.UpdatedAt, &command.ContentReference); err != nil {
+			return page, mapError(ctx, err)
+		}
+		if err := json.Unmarshal(receipt, &command.Receipt); err != nil {
+			return page, fmt.Errorf("decode command receipt: %w", err)
+		}
+		page.Items = append(page.Items, command)
+	}
+	if err := rows.Err(); err != nil {
+		return page, mapError(ctx, err)
+	}
+	if len(page.Items) > limit {
+		page.Items = page.Items[:limit]
+		page.Next = page.Items[len(page.Items)-1].Key
+	}
+	return page, nil
 }
 
 func (s *session) TurnBatch(ctx context.Context, attemptID, batchKey string) (int64, bool, error) {
@@ -694,7 +830,7 @@ func (s *session) ReserveCommand(ctx context.Context, c conversationstore.Comman
 	if err != nil {
 		return c, false, err
 	}
-	result, err := s.db.ExecContext(ctx, `INSERT INTO conversation_commands (organization_id,conversation_id,key,kind,request_hash,receipt_json,created_at,updated_at,content_attachment_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (organization_id,conversation_id,key) DO NOTHING`, c.OrganizationID, c.ConversationID, c.Key, c.Kind, c.RequestHash, string(receipt), c.CreatedAt, c.UpdatedAt, c.ContentReference)
+	result, err := s.db.ExecContext(ctx, `INSERT INTO conversation_commands (organization_id,conversation_id,key,kind,request_hash,receipt_json,created_at,updated_at,content_attachment_id,receipt_status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT (organization_id,conversation_id,key) DO NOTHING`, c.OrganizationID, c.ConversationID, c.Key, c.Kind, c.RequestHash, string(receipt), c.CreatedAt, c.UpdatedAt, c.ContentReference, c.Receipt.Status)
 	if err != nil {
 		return c, false, mapError(ctx, err)
 	}

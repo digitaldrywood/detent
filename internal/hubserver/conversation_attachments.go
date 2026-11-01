@@ -304,6 +304,9 @@ func (s *conversationStore) listExpiredAttachments(ctx context.Context, query na
 // conversation, the actor owns it, it is still unsent and neither deleted nor
 // expired, and the set is within the per-message total.
 func (c *conversationService) loadCommandAttachments(ctx context.Context, tx *sql.Tx, scope nativeScope, record conversationRecord, ids []string, now time.Time) ([]conversationAttachmentRecord, error) {
+	if c.server.conversationRecordsSelected() {
+		return nil, conversationUnsupported("Conversation attachments require the PostgreSQL attachment owner")
+	}
 	if len(ids) == 0 {
 		return nil, nil
 	}
@@ -357,6 +360,9 @@ func (c *conversationService) bindMessageAttachments(ctx context.Context, tx *sq
 // sweepAttachments deletes abandoned uploads and their bytes, and reports how
 // many it removed.
 func (c *conversationService) sweepAttachments(ctx context.Context) (int, error) {
+	if c.server.conversationRecordsSelected() {
+		return 0, conversationUnsupported("Conversation attachment cleanup requires the PostgreSQL attachment owner")
+	}
 	swept := 0
 	err := c.transact(ctx, func(tx *sql.Tx, now time.Time) error {
 		expired, err := c.store.listExpiredAttachments(ctx, tx, now, conversationAttachmentSweepBatch)
@@ -532,6 +538,9 @@ func (s *Service) deleteConversationAttachment(c echo.Context) error {
 }
 
 func (s *Service) commandDeleteAttachment(ctx context.Context, scope nativeScope, conversationID, id string) (json.RawMessage, error) {
+	if s.conversationRecordsSelected() {
+		return nil, conversationUnsupported("Conversation attachments require the PostgreSQL attachment owner")
+	}
 	service := s.conversations
 	ctx = newConversationArchiveReads(ctx)
 	record, err := service.loadConversation(ctx, service.store.reader, scope, conversationID)
@@ -575,6 +584,9 @@ func (s *Service) commandDeleteAttachment(ctx context.Context, scope nativeScope
 }
 
 func (s *Service) commandUploadAttachment(ctx context.Context, scope nativeScope, id string, upload conversationAttachmentUpload) (json.RawMessage, error) {
+	if s.conversationRecordsSelected() {
+		return nil, conversationUnsupported("Conversation attachments require the PostgreSQL attachment owner")
+	}
 	name, err := conversation.SanitizeAttachmentName(upload.name)
 	if err != nil {
 		return nil, nativeInvalid(err.Error())

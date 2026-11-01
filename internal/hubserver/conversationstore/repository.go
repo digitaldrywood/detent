@@ -152,6 +152,31 @@ type ConversationPage struct {
 	Next  string
 }
 
+type LifecycleKind string
+
+const (
+	LifecycleRestart   LifecycleKind = "restart"
+	LifecycleExecution LifecycleKind = "execution"
+	LifecycleSettle    LifecycleKind = "settle"
+)
+
+type LifecycleQuery struct {
+	Kind    LifecycleKind
+	AfterID string
+	Before  time.Time
+	Limit   int
+}
+
+type PendingConversation struct {
+	ID     string
+	Linked bool
+}
+
+type PendingConversationPage struct {
+	Items []PendingConversation
+	Next  string
+}
+
 type MessagePage struct {
 	Items []Message
 	Next  int64
@@ -162,6 +187,7 @@ type MessageFilter struct {
 	AttemptID      string
 	TurnID         string
 	Role           conversation.Role
+	Kind           conversation.MessageKind
 	Deliveries     []conversation.Delivery
 	BeforeSequence int64
 	AfterSequence  int64
@@ -173,6 +199,11 @@ type EventPage struct {
 	Next  int64
 }
 
+type CommandPage struct {
+	Items []Command
+	Next  string
+}
+
 type Reader interface {
 	Conversation(context.Context, tracker.ProjectID, string) (Conversation, error)
 	ConversationByID(context.Context, string) (Conversation, error)
@@ -180,6 +211,8 @@ type Reader interface {
 	ConversationByWorkItem(context.Context, tracker.ProjectID, string) (Conversation, error)
 	ConversationByCreationKey(context.Context, string, string) (Conversation, error)
 	Conversations(context.Context, ConversationQuery) (ConversationPage, error)
+	LifecycleConversations(context.Context, LifecycleQuery) (ConversationPage, error)
+	PendingConversations(context.Context, string, int) (PendingConversationPage, error)
 	Messages(context.Context, string, int64, int) (MessagePage, error)
 	FilteredMessages(context.Context, MessageFilter) (MessagePage, error)
 	Message(context.Context, string, string) (Message, error)
@@ -188,6 +221,8 @@ type Reader interface {
 	Question(context.Context, string, string) (Question, error)
 	Questions(context.Context, string, string, int) ([]Question, error)
 	OutstandingQuestions(context.Context, string, string, string, string, int) (QuestionPage, error)
+	RestartQuestions(context.Context, string, string, int) (QuestionPage, error)
+	PendingCommands(context.Context, string, string, int) (CommandPage, error)
 	Command(context.Context, string, string) (Command, bool, error)
 	TurnBatch(context.Context, string, string) (int64, bool, error)
 	HasConversationStart(context.Context, string) (bool, error)

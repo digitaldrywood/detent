@@ -72,7 +72,17 @@ func (r *conversationWorkerRouter) reconcileLoop() {
 		case <-r.stop:
 			return
 		case <-ticker.C:
-			if err := r.service.reconcileExecutions(context.Background()); err != nil {
+			var err error
+			if r.service.server.conversationRecordsSelected() {
+				var organization tracker.OrganizationID
+				organization, err = r.service.lifecycleOrganization()
+				if err == nil {
+					err = r.service.reconcileExecutionsPG(context.Background(), organization)
+				}
+			} else {
+				err = r.service.reconcileExecutions(context.Background())
+			}
+			if err != nil {
 				r.service.logger.Warn("conversation execution reconcile failed", "error", err)
 			}
 		}
@@ -1642,6 +1652,16 @@ func (c *conversationService) applyTurnCompleted(ctx context.Context, tx *sql.Tx
 // lease's release committed. Failures are logged: the release itself has
 // already succeeded and the reconcile loop retries.
 func (c *conversationService) leaseReleased(ctx context.Context, leaseID tracker.LeaseID) {
+	if c.server.conversationRecordsSelected() {
+		organization, err := c.lifecycleOrganization()
+		if err == nil {
+			err = c.reconcileExecutionsPG(ctx, organization)
+		}
+		if err != nil {
+			c.logger.Warn("conversation lease release reconcile failed", "lease", leaseID, "error", err)
+		}
+		return
+	}
 	candidates, err := c.inFlightExecutions(ctx, conversationInFlightQuery+"AND (query_metadata_version=0 OR execution_lease_id = ?)", leaseID)
 	if err != nil {
 		c.logger.Warn("conversation lease release lookup failed", "lease", leaseID, "error", err)
@@ -1655,6 +1675,13 @@ func (c *conversationService) leaseReleased(ctx context.Context, leaseID tracker
 }
 
 func (c *conversationService) reconcileExecutions(ctx context.Context) error {
+	if c.server.conversationRecordsSelected() {
+		organization, err := c.lifecycleOrganization()
+		if err != nil {
+			return err
+		}
+		return c.reconcileExecutionsPG(ctx, organization)
+	}
 	candidates, err := c.inFlightExecutions(ctx, conversationInFlightQuery)
 	if err != nil {
 		return err

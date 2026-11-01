@@ -118,7 +118,12 @@ type conversationService struct {
 	// settle stops the settle sweep; settled waits for it to exit.
 	settle              chan struct{}
 	settled             chan struct{}
+	settleCancel        context.CancelFunc
+	settleTicks         <-chan time.Time
+	stopSettleTicker    func()
 	monthlyBudgetPeriod string
+	lifecycleMu         sync.Mutex
+	lifecycleCursors    map[string]string
 	once                sync.Once
 }
 
@@ -148,12 +153,17 @@ func newConversationService(server *Service, cfg ConversationConfig) *conversati
 	if cfg.UsageSink == nil {
 		cfg.UsageSink = server.database
 	}
+	settleContext, settleCancel := context.WithCancel(context.Background())
+	ticker := time.NewTicker(conversationSettleInterval)
 	service := &conversationService{
-		server: server,
-		store:  newConversationStore(server.database.db),
-		broker: server.notifications,
-		config: cfg,
-		logger: server.config.Logger.With("component", "conversation"),
+		server:           server,
+		store:            newConversationStore(server.database.db),
+		broker:           server.notifications,
+		config:           cfg,
+		logger:           server.config.Logger.With("component", "conversation"),
+		settleCancel:     settleCancel,
+		settleTicks:      ticker.C,
+		stopSettleTicker: ticker.Stop,
 	}
 	service.store.reader = server.database.reader
 	service.store.database = server.database
@@ -174,7 +184,7 @@ func newConversationService(server *Service, cfg ConversationConfig) *conversati
 	service.controls = newConversationControlRouter(service)
 	service.settle = make(chan struct{})
 	service.settled = make(chan struct{})
-	go service.settleLoop()
+	go service.settleLoop(settleContext)
 	return service
 }
 
@@ -190,6 +200,24 @@ func (c *conversationService) committed(record conversationRecord) {
 }
 
 func (c *conversationService) start(ctx context.Context) error {
+	if c.server.conversationRecordsSelected() {
+		organization, err := c.lifecycleOrganization()
+		if err != nil {
+			return err
+		}
+		now := c.server.config.now()
+		summary, err := c.normalizeAfterRestartPG(ctx, organization, now)
+		if err != nil {
+			return err
+		}
+		c.logger.Info("conversation.restart_normalized",
+			"conversations", summary.Conversations, "messages", summary.Messages,
+			"questions", summary.Questions, "receipts", summary.Receipts)
+		if err := c.reconcileExecutionsPG(ctx, organization); err != nil {
+			return err
+		}
+		return c.wakePendingPG(ctx, organization)
+	}
 	now, err := c.server.database.currentTime()
 	if err != nil {
 		return err
@@ -211,15 +239,41 @@ func (c *conversationService) start(ctx context.Context) error {
 // project's settle window. The sweep is periodic rather than scheduled: a
 // conversation that wakes in the meantime is simply not a candidate when the
 // sweep next runs.
-func (c *conversationService) settleLoop() {
+func (c *conversationService) settleLoop(ctx context.Context) {
 	defer close(c.settled)
-	ticker := time.NewTicker(conversationSettleInterval)
-	defer ticker.Stop()
+	if c.stopSettleTicker != nil {
+		defer c.stopSettleTicker()
+	}
 	for {
 		select {
 		case <-c.settle:
 			return
-		case <-ticker.C:
+		case <-ctx.Done():
+			return
+		case <-c.settleTicks:
+			if c.server.conversationRecordsSelected() {
+				organization, err := c.lifecycleOrganization()
+				if err != nil {
+					c.logger.Warn("conversation.settle_sweep_failed", "error", err)
+					continue
+				}
+				now := c.server.config.now()
+				if err := c.wakePendingPG(ctx, organization); err != nil {
+					c.logger.Warn("conversation.pending_wake_failed", "error", err)
+				}
+				settled, err := c.settleIdleConversationsPG(ctx, organization, now)
+				if err != nil {
+					c.logger.Warn("conversation.settle_sweep_failed", "error", err)
+					continue
+				}
+				if settled > 0 {
+					c.logger.Info("conversation.settle_sweep", "settled", settled)
+				}
+				if _, err := c.sweepAttachments(ctx); err != nil {
+					c.logger.Warn("conversation.attachment_sweep_failed", "error", err)
+				}
+				continue
+			}
 			now, err := c.server.database.currentTime()
 			if err != nil {
 				c.logger.Warn("conversation.settle_sweep_failed", "error", err)
@@ -228,11 +282,11 @@ func (c *conversationService) settleLoop() {
 			period := now.UTC().Format("2006-01")
 			if c.monthlyBudgetPeriod != period {
 				c.monthlyBudgetPeriod = period
-				if err := c.wakePending(context.Background()); err != nil {
+				if err := c.wakePending(ctx); err != nil {
 					c.logger.Warn("conversation.budget_rollover", "error", err)
 				}
 			}
-			settled, err := c.settleIdleConversations(context.Background(), now)
+			settled, err := c.settleIdleConversations(ctx, now)
 			if err != nil {
 				c.logger.Warn("conversation.settle_sweep_failed", "error", err)
 				continue
@@ -242,7 +296,7 @@ func (c *conversationService) settleLoop() {
 			}
 			// Abandoned uploads go with the same tick: nobody sent them and
 			// their bytes are the expensive part.
-			swept, err := c.sweepAttachments(context.Background())
+			swept, err := c.sweepAttachments(ctx)
 			if err != nil {
 				c.logger.Warn("conversation.attachment_sweep_failed", "error", err)
 				continue
@@ -259,6 +313,13 @@ func (c *conversationService) settleLoop() {
 // linked conversations with queued controls to the control router. Nothing
 // is replayed; the components re-read durable state.
 func (c *conversationService) wakePending(ctx context.Context) error {
+	if c.server.conversationRecordsSelected() {
+		organization, err := c.lifecycleOrganization()
+		if err != nil {
+			return err
+		}
+		return c.wakePendingPG(ctx, organization)
+	}
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	rows, err := c.store.reader.QueryContext(ctx, `SELECT DISTINCT m.conversation_id, c.work_item_id IS NOT NULL FROM conversation_messages m
@@ -301,6 +362,9 @@ WHERE m.role = 'user' AND m.delivery IN ('saved', 'queued')`)
 func (c *conversationService) stop() {
 	c.once.Do(func() {
 		close(c.settle)
+		if c.settleCancel != nil {
+			c.settleCancel()
+		}
 		<-c.settled
 	})
 	c.coordinator.Stop()

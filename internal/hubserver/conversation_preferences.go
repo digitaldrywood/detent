@@ -297,6 +297,13 @@ var conversationSettleInterval = 5 * time.Minute
 // has ended or never started and whose last activity is older than the
 // settle window. It returns how many settled.
 func (c *conversationService) settleIdleConversations(ctx context.Context, now time.Time) (int, error) {
+	if c.server.conversationRecordsSelected() {
+		organization, err := c.lifecycleOrganization()
+		if err != nil {
+			return 0, err
+		}
+		return c.settleIdleConversationsPG(ctx, organization, now)
+	}
 	before := now.Add(-c.config.SettleWindow)
 	candidates, err := c.store.listSettleCandidates(ctx, c.store.reader, before, conversationSettleBatch)
 	if err != nil {
