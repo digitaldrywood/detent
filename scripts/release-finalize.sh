@@ -91,7 +91,9 @@ load_override() {
 }
 
 required_evidence() {
-  platform_status || return 1
+  if [ -z "$override_reason" ]; then
+    platform_status || return 1
+  fi
   gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/commits/$CI_DEVELOP_SHA/statuses?per_page=100" |
     jq -ce --argjson required "$required_checks" --argjson creators "$status_creators" --arg reason "$override_reason" '
       [.[][]] as $statuses
