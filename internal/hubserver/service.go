@@ -19,6 +19,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent"
+	"github.com/digitaldrywood/detent/internal/activation"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/chat"
@@ -311,7 +312,7 @@ func Run(ctx context.Context, cfg Config) (resultErr error) {
 		}
 		network, address = "unix", path
 	}
-	listener, err := cfg.listen(ctx, network, address)
+	listener, err := activation.Listen(ctx, network, address, cfg.listen)
 	if err != nil {
 		return fmt.Errorf("listen for hub requests: %w", err)
 	}
