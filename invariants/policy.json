@@ -89,8 +89,10 @@
       "TestStoredHoldRequiresProvenance",
       "TestPruneBudgetRefusalsReevaluatesDailyCap"
     ],
-    "./internal/hubclient": [
-      "TestNativePlannerAutomaticHandoff",
+    "./internal/hubclient/planner": [
+      "TestNativePlannerAutomaticHandoff"
+    ],
+    "./internal/hubclient/nativechange": [
       "TestNativeExecutionSettlesFinishedRun"
     ],
     "./internal/runner": [
