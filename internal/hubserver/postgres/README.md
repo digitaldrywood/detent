@@ -810,3 +810,53 @@ At 10,000 tenants and runners, each request uses the shared fixed connection
 budget, indexed tenant/project lookups and rows bounded by the submitted workflow.
 No fleet walk, per-tenant pool, derived refresh, inline payload or SQL JSON
 operation is added (INV-16, INV-18, INV-20, INV-21).
+
+## P42: retained request metrics import
+
+`Repository.NewMetricsImporter` binds a frozen raw metrics snapshot to its exact
+organization, staging schema, snapshot ID, P28 catalog and source schema
+definitions. The source pool must have a fixed positive connection limit and
+read access to that schema; the target uses the repository's background budget
+and tenant-scoped transactions. Writers and metrics maintenance must remain
+fenced throughout the import. Snapshot refresh, writer fencing and cutover belong
+to their separate migration owners; this importer never starts or stops them.
+
+Stage `tenant`, `request_days`, `request_minutes` and `request_hours` with exactly
+their catalog columns. Scalar staging values use text; histogram values may use
+text or bytea containing the original UTF-8 array. Cursor columns use text with
+`C` collation and an ascending B-tree primary key matching the source key order:
+`day,route,caller_kind,status_class`,
+`minute,route,caller_kind,caller_id,status_class`, or `hour,route,status_class`.
+The constructor rejects missing cursor indexes, extra or missing columns and a
+tenant row that does not match the explicit organization binding. Source engine
+bookkeeping stays source-only under the P28 catalog.
+
+Each `Step` reads at most 200 raw rows using that keyset index, outside a target
+transaction. It decodes values through the catalog, then commits the page and
+its typed `request_metric_imports` checkpoint together. Checkpoints use forced
+RLS and retain a catalog/schema digest, snapshot identity, fixed retention time,
+stage, source key and processed count. Concurrent stale pages return the existing
+revision-conflict classification. Restart or an uncertain commit resumes from
+the durable checkpoint; completed imports are no-ops. Changed snapshot identity,
+retention time or mapping rejects replay. Initial import requires empty target
+metrics for that tenant, and conflicting target keys reject the page.
+
+Daily history imports first. Minute rows at or after the 14-day boundary retain
+their exact caller, status, count, sum, maximum and all 64 histogram buckets.
+Older minute rows compact once into retained daily totals, including days that
+already have compacted source rows. Existing daily totals retain 400 days;
+hourly histograms retain 90 days and import independently of minutes, without
+reconstructing or adding hourly observations again. Boundaries are inclusive
+and aligned to UTC grains. Stored percentiles rebuild from count, maximum and
+histogram; daily rows have no source histogram to invent. Empty anonymous and
+overflow caller IDs remain empty. Every historical caller is preserved, even
+when its minute exceeds today's caller budget; restored admission counters
+saturate at 200 so later unknown callers use the existing overflow identity.
+
+At 10,000 tenants and runners (INV-18, INV-21), each step processes one tenant,
+one grain and at most 200 rows with fixed 64-bucket arithmetic. Source and target
+key lookups cost a B-tree seek plus the bounded page, independently of fleet
+size. Expired source history is traversed in bounded pages, never scanned in one
+transaction. Checkpoint locking covers only that tenant's target page commit;
+no target connection or lock spans raw-source reads or object I/O. Import writes
+only metrics and their checkpoint and cannot affect claim eligibility.

@@ -4552,7 +4552,7 @@
       "family": "metrics",
       "organization": "binding",
       "columns": {
-        "caller_id": {"source":"[3,\"caller_id\",\"TEXT\",1,null,4,0]","disposition":"column","codec":"text","null":"reject","empty":"reject","targets":[{"table":"public.request_minutes","column":"caller_id","type":"text"}]},
+        "caller_id": {"source":"[3,\"caller_id\",\"TEXT\",1,null,4,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.request_minutes","column":"caller_id","type":"text"}]},
         "caller_kind": {"source":"[2,\"caller_kind\",\"TEXT\",1,null,3,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.request_minutes","column":"caller_kind","type":"text"}],"allowed":["runner","browser","mcp","ci","anonymous","other"]},
         "count": {"source":"[5,\"count\",\"INTEGER\",1,null,0,0]","disposition":"column","codec":"int64","null":"reject","empty":"reject","targets":[{"table":"public.request_minutes","column":"count","type":"bigint"}],"minimum":1},
         "histogram": {"source":"[10,\"histogram\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"histogram","null":"reject","empty":"reject","targets":[{"table":"public.request_minutes","column":"histogram","type":"ARRAY"}]},
@@ -4594,7 +4594,7 @@
       "family": "metrics",
       "organization": "binding",
       "columns": {
-        "organization": {"source":"[0,\"organization\",\"TEXT\",0,null,1,0]","disposition":"pending","codec":"text","null":"preserve","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."}
+        "organization": {"source": "[0,\"organization\",\"TEXT\",0,null,1,0]", "disposition": "column", "codec": "text", "null": "reject", "empty": "reject", "targets": [{"table": "public.request_metric_imports", "column": "organization_id", "type": "text"}]}
       }
     },
     "registry/archive_deletion_failures": {

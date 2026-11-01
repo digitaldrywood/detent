@@ -660,6 +660,22 @@ type RequestMetricCaller struct {
 	CallerID       string
 }
 
+type RequestMetricImport struct {
+	OrganizationID tracker.OrganizationID
+	SourceSchema   string
+	SnapshotID     string
+	CatalogDigest  string
+	RetainAt       time.Time
+	Stage          int64
+	AfterTime      string
+	AfterRoute     string
+	AfterKind      string
+	AfterCaller    string
+	AfterStatus    string
+	Processed      int64
+	Revision       int64
+}
+
 type RequestMetricWindow struct {
 	OrganizationID tracker.OrganizationID
 	Minute         time.Time

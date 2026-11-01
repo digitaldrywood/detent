@@ -161,7 +161,7 @@ func TestRequestMetricsMergeRollsBackHourFailure(t *testing.T) {
 }
 
 func TestRequestMetricsRuntimeRejectsUnsafeTables(t *testing.T) {
-	for _, table := range []string{"request_metric_windows", "request_metric_callers", "request_minutes", "request_hours", "request_days"} {
+	for _, table := range []string{"request_metric_windows", "request_metric_callers", "request_minutes", "request_hours", "request_days", "request_metric_imports"} {
 		t.Run(table, func(t *testing.T) {
 			admin := template.Database(t)
 			pool := rolePool(t, admin, "detent_runtime", "")
