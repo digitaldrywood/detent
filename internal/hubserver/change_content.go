@@ -213,7 +213,7 @@ func readChangeContentObject(ctx context.Context, organization string, ref attac
 	if !errors.Is(err, sql.ErrNoRows) {
 		return nil, err
 	}
-	return nil, readErr
+	return readPublishedContent(ctx, content, organization, ref)
 }
 
 func readPublishedContent(ctx context.Context, content *changeContent, organization string, ref attachment.ArchiveReference) ([]byte, error) {

@@ -1,10 +1,14 @@
 package hubserver
 
 import (
+	"bytes"
 	"context"
+	"database/sql"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -12,6 +16,80 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+type pausedMissingRunDetails struct {
+	*memoryRunDetails
+	missing chan struct{}
+	resume  chan struct{}
+	once    sync.Once
+}
+
+func (s *pausedMissingRunDetails) ReadDetail(ctx context.Context, organization string, ref attachment.ArchiveReference) ([]byte, error) {
+	raw, err := s.memoryRunDetails.ReadDetail(ctx, organization, ref)
+	if errors.Is(err, artifact.ErrMissing) {
+		s.once.Do(func() {
+			close(s.missing)
+			<-s.resume
+		})
+	}
+	return raw, err
+}
+
+func TestChangeContentReadSurvivesPendingPublication(t *testing.T) {
+	t.Parallel()
+	store := &memoryRunDetails{}
+	f := claimedAttemptDiffFixture(t, false, Config{RunDetails: store})
+	f.start(t)
+	store.fail = true
+	event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "reader-publication"}, Type: "run.finished", SchemaVersion: 1,
+		Data: tracker.NativeRunData{Sequence: 2, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "gpt-6-astra"}, LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken, RunID: f.run, AttemptID: f.attempt, PolicyID: f.policy, Outcome: "succeeded"}}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/events", f.worker, event), http.StatusOK)
+	store.fail = false
+	var key string
+	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT payload_object_key FROM native_attempts WHERE id=?", f.attempt).Scan(&key); err != nil {
+		t.Fatal(err)
+	}
+	organization := string(f.project.OrganizationID)
+	ref, err := readPayloadReference(t.Context(), f.service.database.reader, organization, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want []byte
+	if err := f.service.database.reader.QueryRowContext(t.Context(), pendingContentSelection, organization, key, organization, key).Scan(&want); err != nil {
+		t.Fatal(err)
+	}
+	paused := &pausedMissingRunDetails{memoryRunDetails: store, missing: make(chan struct{}), resume: make(chan struct{})}
+	ctx := context.WithValue(t.Context(), changeContentKey{}, &changeContent{store: paused, query: f.service.database.reader})
+	done := make(chan struct{})
+	var resume sync.Once
+	var got []byte
+	var readErr error
+	go func() {
+		defer close(done)
+		got, readErr = readChangeContentObject(ctx, organization, ref)
+	}()
+	t.Cleanup(func() {
+		resume.Do(func() { close(paused.resume) })
+		<-done
+	})
+	select {
+	case <-paused.missing:
+	case <-done:
+		t.Fatalf("reader returned before the publication race: %v", readErr)
+	}
+	if err := f.service.convertStorageBatch(t.Context(), f.service.config.now()); err != nil {
+		t.Fatal(err)
+	}
+	var pending []byte
+	if err := f.service.database.reader.QueryRowContext(t.Context(), pendingContentSelection, organization, key, organization, key).Scan(&pending); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("publication did not clear pending content: %v", err)
+	}
+	resume.Do(func() { close(paused.resume) })
+	<-done
+	if readErr != nil || !bytes.Equal(got, want) {
+		t.Fatalf("committed content disappeared during publication: bytes=%d want=%d error=%v", len(got), len(want), readErr)
+	}
+}
 
 type uncertainRunDetails struct {
 	*memoryRunDetails
