@@ -177,7 +177,7 @@ func (f *conversationWorkerFixture) turnEvents(t *testing.T, events ...map[strin
 
 func (f *conversationWorkerFixture) controls(t *testing.T, after int64, wait int) *httptest.ResponseRecorder {
 	t.Helper()
-	request := httptest.NewRequest(http.MethodGet, f.base+"/conversations/"+f.record.ID+"/controls?after="+strconv.FormatInt(after, 10)+"&wait="+strconv.Itoa(wait), nil)
+	request := httptest.NewRequestWithContext(t.Context(), http.MethodGet, f.base+"/conversations/"+f.record.ID+"/controls?after="+strconv.FormatInt(after, 10)+"&wait="+strconv.Itoa(wait), nil)
 	request.Header.Set("Authorization", "Bearer "+f.worker)
 	request.Header.Set("X-Detent-Lease", string(f.lease.ID))
 	request.Header.Set("X-Detent-Fencing-Token", strconv.FormatInt(int64(f.lease.FencingToken), 10))
@@ -707,18 +707,41 @@ func TestConversationWorkerControlsLongPoll(t *testing.T) {
 	})
 
 	t.Run("waits for a queued control", func(t *testing.T) {
-		done := make(chan workerControlsResponse, 1)
+		writer, err := f.chat.store.db.Conn(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		waiters := f.chat.store.db.Stats().WaitCount
+		done := make(chan *httptest.ResponseRecorder, 1)
+		exited := make(chan struct{})
+		t.Cleanup(func() {
+			writer.Close()
+			<-exited
+		})
 		go func() {
-			response := f.controls(t, first.Seq, 10)
-			var page workerControlsResponse
-			_ = json.Unmarshal(response.Body.Bytes(), &page)
-			done <- page
+			defer close(exited)
+			done <- f.controls(t, first.Seq, 10)
 		}()
 		f.awaitControlSubscribers(t, 1)
+		testenv.WaitUntil(t, t.Context(), func() error {
+			if f.chat.store.db.Stats().WaitCount > waiters {
+				return nil
+			}
+			return errors.New("control preparation has not reached the writer")
+		})
+		if _, err := writer.ExecContext(t.Context(), "UPDATE conversations SET revision=revision+1 WHERE id=?", f.record.ID); err != nil {
+			t.Fatal(err)
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatal(err)
+		}
 		started := time.Now()
 		second := f.queue(t, conversation.MessageInterrupt, "stop-1", "", nil)
 		select {
-		case page := <-done:
+		case response := <-done:
+			requireNativeStatus(t, response, http.StatusOK)
+			var page workerControlsResponse
+			decodeHubResponse(t, response, &page)
 			if len(page.Controls) != 1 || page.Controls[0].MessageID != second.ID || page.Controls[0].Kind != "interrupt" {
 				t.Fatalf("controls = %#v", page)
 			}
