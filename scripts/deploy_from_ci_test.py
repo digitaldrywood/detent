@@ -19,9 +19,9 @@ class DeployHealthTest(unittest.TestCase):
     def test_rollback_requires_known_compatible_schema(self):
         for supported, candidate, applied, allowed in [
             (100, 200, 200, False),
-            (100, 200, 100, True),
+            (100, 100, 100, True),
             (200, 200, 200, True),
-            (300, 200, 200, True),
+            (300, 200, 200, False),
             (200, 200, 300, False),
             ('unknown', 200, 200, False),
         ]:
@@ -30,9 +30,14 @@ class DeployHealthTest(unittest.TestCase):
 previous=previous release=candidate applied={applied}
 applied_known=true applied_final=true applied_registry={applied} applied_auth={applied} applied_platform={applied}
 applied_registry_applicable=true applied_auth_applicable=true applied_platform_applicable=true
+rollback_schema_known=true rollback_schema_version={applied} rollback_registry_schema_version={applied} rollback_auth_schema_version={applied} rollback_platform_schema_version={applied}
+rollback_hub_applicable=true rollback_registry_applicable=true rollback_auth_applicable=true rollback_platform_applicable=true
+rollback_schema_fingerprint=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa rollback_registry_schema_fingerprint=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb rollback_auth_schema_fingerprint=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc rollback_platform_schema_fingerprint=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
 applied_hub_fingerprint=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa applied_registry_fingerprint=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb applied_auth_fingerprint=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc applied_platform_fingerprint=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
 binary_schema() {{
-  echo '{supported} {supported} {supported} {supported} aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd'
+  local version={supported}
+  [ "$1" != candidate ] || version={candidate}
+  echo "$version $version $version $version aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
 }}
 if rollback_compatible; then echo allowed; else echo refused; fi
 ''')
@@ -60,6 +65,52 @@ wait_healthy
 [ "$probe" = 65 ] && [ "$applied" = 200 ]
 ''')
 
+    def test_predeploy_health_allows_same_schema_candidate_crash_before_health(self):
+        self.shell('''
+previous=previous release=previous short=123456789 unit=detent-hub
+read_health() {
+  if [ "$release" = previous ]; then
+    echo '{"status":"ok","commit":"123456789","schema_version":200,"registry_schema_version":10,"auth_schema_version":20,"platform_schema_version":30,"schema_fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","registry_schema_fingerprint":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","auth_schema_fingerprint":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","platform_schema_fingerprint":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","hub_schema_applicable":true,"registry_schema_applicable":true,"auth_schema_applicable":true,"platform_schema_applicable":true,"schema_facts_complete":true,"migrations_running":false}'
+  else
+    return 1
+  fi
+}
+capture_previous_schema
+release=candidate short=abcdef123
+probe=0
+systemctl() { if (( probe < 1 )); then echo 1; else echo 0; fi; }
+sleep() { probe=$((probe + 1)); }
+if wait_healthy; then exit 1; fi
+[ "$applied_final" = false ] && [ "$rollback_schema_known" = true ]
+binary_schema() { echo '200 10 20 30 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd'; }
+rollback_compatible
+''')
+
+    def test_predeploy_health_requires_complete_previous_schema_facts(self):
+        self.shell('''
+previous=previous release=previous short=123456789 unit=detent-hub
+read_health() { echo '{"status":"ok","commit":"123456789","schema_version":200,"migrations_running":false}'; }
+if capture_previous_schema; then exit 1; fi
+[ "$rollback_schema_known" = false ]
+''')
+
+    def test_empty_registry_refuses_rollback_with_changed_hub_source_set(self):
+        self.shell('''
+previous=previous release=previous short=123456789 unit=detent-cloud
+read_health() {
+  echo '{"status":"ok","commit":"123456789","schema_version":0,"registry_schema_version":10,"auth_schema_version":20,"platform_schema_version":0,"schema_fingerprint":"","registry_schema_fingerprint":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","auth_schema_fingerprint":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","platform_schema_fingerprint":"","hub_schema_applicable":false,"registry_schema_applicable":true,"auth_schema_applicable":true,"platform_schema_applicable":false,"schema_facts_complete":true,"migrations_running":false}'
+}
+capture_previous_schema
+release=candidate short=abcdef123
+systemctl() { echo 0; }
+if wait_healthy; then exit 1; fi
+binary_schema() {
+  if [ "$1" = candidate ]; then echo '201 10 20 30 eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd';
+  else echo '200 10 20 30 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd'; fi
+}
+if rollback_compatible; then exit 1; fi
+''')
+
     def test_empty_tenant_registry_is_complete_without_hub_schema(self):
         self.shell('''
 short=abcdef123 probe=0
@@ -76,6 +127,9 @@ previous=previous release=candidate applied=0
 applied_known=true applied_final=true applied_hub_applicable=false
 applied_registry=10 applied_auth=20 applied_platform=0
 applied_registry_applicable=true applied_auth_applicable=true applied_platform_applicable=false
+rollback_schema_known=true rollback_hub_applicable=false rollback_registry_applicable=true rollback_auth_applicable=true rollback_platform_applicable=false
+rollback_registry_schema_version=10 rollback_auth_schema_version=20
+rollback_registry_schema_fingerprint=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb rollback_auth_schema_fingerprint=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
 applied_registry_fingerprint=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb applied_auth_fingerprint=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
 binary_schema() { echo '1 10 20 30 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd'; }
 if rollback_compatible; then echo allowed; else echo refused; fi
@@ -124,11 +178,17 @@ rollback_previous
 previous=previous release=candidate applied=17
 applied_known=true applied_final=true applied_registry=10 applied_auth=20 applied_platform=30
 applied_registry_applicable=true applied_auth_applicable=true applied_platform_applicable=true
-applied_hub_fingerprint=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+rollback_schema_known=true rollback_schema_version=17 rollback_registry_schema_version=10 rollback_auth_schema_version=20 rollback_platform_schema_version=30
+rollback_hub_applicable=true rollback_registry_applicable=true rollback_auth_applicable=true rollback_platform_applicable=true
+rollback_schema_fingerprint=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee rollback_registry_schema_fingerprint=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb rollback_auth_schema_fingerprint=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc rollback_platform_schema_fingerprint=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+applied_hub_fingerprint=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
 applied_registry_fingerprint=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 applied_auth_fingerprint=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
 applied_platform_fingerprint=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
-binary_schema() { echo '17 10 20 30 eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd'; }
+binary_schema() {
+  if [ "$1" = candidate ]; then echo '17 10 20 30 eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd';
+  else echo '17 10 20 30 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd'; fi
+}
 if rollback_compatible; then echo allowed; else echo refused; fi
 '''), 'refused')
 
@@ -160,21 +220,51 @@ binary_schema() { echo '500 500 500 500 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 if rollback_compatible; then exit 1; fi
 ''')
 
-    def test_process_exit_invalidates_last_complete_health_sample(self):
+    def test_wait_failure_allows_rollback_when_migration_sets_match(self):
         self.shell('''
 short=abcdef123 previous=previous release=candidate probe=0
 read_health() {
-  echo '{"status":"unavailable","commit":"abcdef123","schema_version":200,"registry_schema_version":10,"auth_schema_version":20,"platform_schema_version":30,"schema_fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","registry_schema_fingerprint":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","auth_schema_fingerprint":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","platform_schema_fingerprint":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","hub_schema_applicable":true,"registry_schema_applicable":true,"auth_schema_applicable":true,"platform_schema_applicable":true,"schema_facts_complete":true,"migrations_running":false}'
+  echo '{"status":"degraded","commit":"abcdef123","schema_version":200,"registry_schema_version":10,"auth_schema_version":20,"platform_schema_version":30,"schema_fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","registry_schema_fingerprint":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","auth_schema_fingerprint":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","platform_schema_fingerprint":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","hub_schema_applicable":true,"registry_schema_applicable":true,"auth_schema_applicable":true,"platform_schema_applicable":true,"schema_facts_complete":true,"migrations_running":false}'
 }
 systemctl() { if (( probe < 1 )); then echo 1; else echo 0; fi; }
 sleep() { probe=$((probe + 1)); }
 if wait_healthy; then exit 1; fi
-[ "$applied_final" = false ]
-applied_known=true applied_final=true applied_registry=10 applied_auth=20 applied_platform=30
-applied_registry_applicable=true applied_auth_applicable=true applied_platform_applicable=true
-applied_hub_fingerprint=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa applied_registry_fingerprint=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb applied_auth_fingerprint=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc applied_platform_fingerprint=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
-binary_schema() { echo '100 10 20 30 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd'; }
+[ "$applied_final" = false ] && [ "$rollback_schema_known" = true ]
+binary_schema() { echo '200 10 20 30 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd'; }
+rollback_compatible
+''')
+
+    def test_wait_failure_rejects_rollback_when_same_max_set_differs(self):
+        self.shell('''
+short=abcdef123 previous=previous release=candidate probe=0
+read_health() {
+  echo '{"status":"degraded","commit":"abcdef123","schema_version":17,"registry_schema_version":10,"auth_schema_version":20,"platform_schema_version":30,"schema_fingerprint":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","registry_schema_fingerprint":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","auth_schema_fingerprint":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","platform_schema_fingerprint":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","hub_schema_applicable":true,"registry_schema_applicable":true,"auth_schema_applicable":true,"platform_schema_applicable":true,"schema_facts_complete":true,"migrations_running":false}'
+}
+systemctl() { if (( probe < 1 )); then echo 1; else echo 0; fi; }
+sleep() { probe=$((probe + 1)); }
+if wait_healthy; then exit 1; fi
+[ "$applied_final" = false ] && [ "$rollback_schema_known" = true ]
+binary_schema() {
+  if [ "$1" = candidate ]; then echo '17 10 20 30 eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd';
+  else echo '17 10 20 30 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd'; fi
+}
 if rollback_compatible; then exit 1; fi
+''')
+
+    def test_later_incomplete_sample_invalidates_rollback_evidence(self):
+        self.shell('''
+short=abcdef123 previous=previous release=candidate probe=0
+read_health() {
+  if (( probe == 0 )); then
+    echo '{"status":"degraded","commit":"abcdef123","schema_version":200,"registry_schema_version":10,"auth_schema_version":20,"platform_schema_version":30,"schema_fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","registry_schema_fingerprint":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","auth_schema_fingerprint":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","platform_schema_fingerprint":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","hub_schema_applicable":true,"registry_schema_applicable":true,"auth_schema_applicable":true,"platform_schema_applicable":true,"schema_facts_complete":true,"migrations_running":false}'
+  else
+    echo '{"status":"unavailable","commit":"abcdef123","schema_version":100,"registry_schema_version":10,"auth_schema_version":20,"platform_schema_version":30,"schema_fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","registry_schema_fingerprint":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","auth_schema_fingerprint":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","platform_schema_fingerprint":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","hub_schema_applicable":true,"registry_schema_applicable":true,"auth_schema_applicable":true,"platform_schema_applicable":true,"schema_facts_complete":false,"migrations_running":true}'
+  fi
+}
+systemctl() { if (( probe < 2 )); then echo 1; else echo 0; fi; }
+sleep() { probe=$((probe + 1)); }
+if wait_healthy; then exit 1; fi
+[ "$rollback_schema_known" = false ]
 ''')
 
     def test_shallow_health_or_other_commit_cannot_pass(self):
