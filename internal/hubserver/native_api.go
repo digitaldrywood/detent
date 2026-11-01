@@ -529,6 +529,12 @@ type nativeCommandOptions struct {
 // executeNativeMutation owns the shared transaction, current native authority,
 // hosted allowances, audit history and durable business replay for all callers.
 func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, options nativeCommandOptions, command tracker.Mutation, input any, operation func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error)) (result json.RawMessage, resultErr error) {
+	if s.config.TenantRepository != nil && scope.project == "" {
+		if request, ok := input.(cloudModelSelectionRequest); ok {
+			scope.requireHostedAdmin = true
+			return s.updateOrganizationModelRecord(ctx, scope, options.OperationID, request)
+		}
+	}
 	if s.config.TenantRepository != nil && (scope.project != "" || isProjectCreation(input)) && isProjectRecordCommand(input) {
 		return s.executeProjectRecordMutation(ctx, scope, options, command, input)
 	}

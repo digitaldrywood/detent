@@ -10,6 +10,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/projectsettings"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -28,6 +29,24 @@ func readCloudModelSelection(ctx context.Context, query nativeQueryer, scope nat
 }
 
 func (s *Service) getCloudModelSelection(c echo.Context) error {
+	if s.config.TenantRepository != nil {
+		scope := nativeRequestScope(c)
+		if s.config.AccessRepository == nil {
+			return s.nativeAPIError(c, nativeNotFound())
+		}
+		if err := s.accessRead(c.Request().Context(), scope.organization, func(r tenantstore.Reader) error {
+			return s.authorizeAccessScope(c.Request().Context(), r, scope, false)
+		}); err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		if scope.project == "" {
+			value, err := s.readOrganizationModels(c.Request().Context(), scope.organization)
+			if err != nil {
+				return s.nativeAPIError(c, err)
+			}
+			return c.JSON(http.StatusOK, value)
+		}
+	}
 	if s.config.TenantRepository != nil && nativeRequestScope(c).project != "" {
 		record, err := s.readProjectRecord(c.Request().Context(), nativeRequestScope(c))
 		if err != nil {

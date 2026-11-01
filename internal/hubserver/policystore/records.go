@@ -20,10 +20,12 @@ type Revision struct {
 }
 
 type Reader interface {
+	ModelReader
 	ProjectPolicy(context.Context, tracker.ProjectID) (Revision, error)
 }
 
 type Writer interface {
+	ModelWriter
 	Reader
 	ApproveProjectPolicy(context.Context, Revision, string) error
 }

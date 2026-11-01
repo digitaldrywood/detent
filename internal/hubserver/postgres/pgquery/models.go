@@ -975,11 +975,16 @@ type NativeComment struct {
 }
 
 type Organization struct {
-	OrganizationID tracker.OrganizationID
-	Name           string
-	Slug           string
-	Local          bool
-	CreatedAt      time.Time
+	OrganizationID             tracker.OrganizationID
+	Name                       string
+	Slug                       string
+	Local                      bool
+	CreatedAt                  time.Time
+	ModelSelectionRevision     int64
+	ModelSelectionObjectKey    *string
+	ModelSelectionSha256       *string
+	ModelSelectionBytes        sql.NullInt64
+	ModelSelectionContentBytes sql.NullInt64
 }
 
 type OrganizationSecret struct {
@@ -1540,6 +1545,82 @@ type RequestMinute struct {
 	SumMs          float64
 	MaxMs          float64
 	Histogram      []int64
+}
+
+type RunnerEnrollment struct {
+	OrganizationID tracker.OrganizationID
+	ID             string
+	RunnerID       string
+	MachineID      string
+	TokenHash      string
+	Scope          string
+	SharedMachine  bool
+	Operations     []string
+	CreatedAt      time.Time
+	ExpiresAt      time.Time
+	CreatedBy      string
+	RedeemedAt     *time.Time
+	RevokedAt      *time.Time
+}
+
+type RunnerEnrollmentProject struct {
+	OrganizationID tracker.OrganizationID
+	EnrollmentID   string
+	ProjectID      tracker.ProjectID
+}
+
+type RunnerIdentity struct {
+	OrganizationID   tracker.OrganizationID
+	RunnerID         string
+	MachineID        string
+	TokenID          string
+	EnrollmentID     string
+	Scope            string
+	Operations       []string
+	DisplayName      string
+	CapacityLimit    int64
+	ReportedCapacity int64
+	Os               string
+	Architecture     string
+	CreatedAt        time.Time
+	ExpiresAt        time.Time
+	LastHeartbeatAt  time.Time
+	RemovedAt        *time.Time
+}
+
+type RunnerIdentityEvent struct {
+	OrganizationID tracker.OrganizationID
+	EventID        int64
+	RunnerID       string
+	ActorID        string
+	Kind           string
+	OccurredAt     time.Time
+}
+
+type RunnerLeaseAssignment struct {
+	OrganizationID tracker.OrganizationID
+	LeaseID        string
+	RunnerID       string
+	AssignedAt     time.Time
+}
+
+type RunnerRepository struct {
+	OrganizationID tracker.OrganizationID
+	RunnerID       string
+	Owner          string
+	Name           string
+	Private        bool
+	PushedAt       *time.Time
+	ListedAt       time.Time
+}
+
+type RunnerRepositoryList struct {
+	OrganizationID tracker.OrganizationID
+	RunnerID       string
+	RequestID      string
+	Pending        bool
+	Reason         string
+	ListedAt       *time.Time
 }
 
 type StorageConversionCursor struct {

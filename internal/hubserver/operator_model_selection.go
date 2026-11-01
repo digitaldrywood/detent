@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -36,6 +37,15 @@ func (e hubProjectExecutor) modelSelectionScope(ctx context.Context, name, proje
 	} else if project == "" {
 		return scope, operatortool.ErrInvalidArguments
 	}
+	if e.service.config.TenantRepository != nil {
+		if e.service.config.AccessRepository == nil {
+			return scope, operatortool.ErrAccessDenied
+		}
+		if write {
+			return scope, e.service.recheckProjectRecordMutation(ctx, scope)
+		}
+		return scope, e.service.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error { return e.service.authorizeAccessScope(ctx, r, scope, false) })
+	}
 	if write {
 		if scope.credential.Scope != apiScopeOperator && scope.credential.Scope != apiScopeAdmin {
 			return scope, operatortool.ErrAccessDenied
@@ -63,7 +73,20 @@ func (e hubProjectExecutor) readModelSelection(ctx context.Context, call operato
 	if err != nil {
 		return operatortool.Result{}, err
 	}
-	selection, err := readCloudModelSelection(ctx, e.service.database.reader, scope)
+	var selection cloudModelSelection
+	if e.service.config.TenantRepository != nil {
+		if scope.project == "" {
+			selection, err = e.service.readOrganizationModels(ctx, scope.organization)
+		} else {
+			record, readErr := e.service.readProjectRecord(ctx, scope)
+			if readErr != nil {
+				return operatortool.Result{}, projectToolError(readErr)
+			}
+			selection, err = e.service.projectRecordModel(ctx, record)
+		}
+	} else {
+		selection, err = readCloudModelSelection(ctx, e.service.database.reader, scope)
+	}
 	if err != nil {
 		return operatortool.Result{}, projectToolError(err)
 	}
@@ -96,6 +119,14 @@ func (e hubProjectExecutor) modelSelectionCommand(ctx context.Context, call oper
 		operation = http.MethodPut + " /api/v2/organizations/" + string(scope.organization) + "/model-selection"
 	}
 	if mode == projectCommandReplay {
+		if e.service.config.TenantRepository != nil {
+			hash, err := nativeCommandHash(request)
+			if err != nil {
+				return nil, err
+			}
+			raw, _, err := e.service.changeRecordReceipt(ctx, scope, operation, input.RequestID, hash)
+			return raw, err
+		}
 		raw, _, err := e.service.nativeCommandReplay(ctx, scope, operation, input.RequestID, request)
 		return raw, err
 	}

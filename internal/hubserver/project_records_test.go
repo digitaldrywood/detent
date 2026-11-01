@@ -13,6 +13,8 @@ import (
 
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -98,11 +100,26 @@ func TestProjectRecordBackendParity(t *testing.T) {
 				cfg.TenantRepository = repository
 			}
 			service := openTestService(t, cfg)
+			service.config.AccessRepository = repository
 			for _, orgName := range []string{"First organization", "Second organization"} {
 				t.Run(orgName, func(t *testing.T) {
 					org, err := service.createNativeOrganizationFor(t.Context(), orgName)
 					if err != nil {
 						t.Fatal(err)
+					}
+					if repository != nil {
+						now := service.config.now()
+						if err := repository.WriteTenant(t.Context(), org.ID, corestore.Serving, func(w tenantstore.Writer) error {
+							if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org.ID, Name: orgName, CreatedAt: now}); err != nil {
+								return err
+							}
+							if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: org.ID, ProviderID: "provider_" + string(org.ID), AllocationGeneration: 1}); err != nil {
+								return err
+							}
+							return w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: org.ID, ID: "admin", Name: "Example admin", Hash: apikey.HashToken(testHubAdminToken), Scope: "admin", KeyScope: "admin", ProjectAccess: "all", Kind: "service", CreatedAt: now, UpdatedAt: now})
+						}); err != nil {
+							t.Fatal(err)
+						}
 					}
 					base := "/api/v2/organizations/" + string(org.ID) + "/projects"
 					input := map[string]any{"idempotency_key": "create", "name": "Example project", "states": nativeFixtureStates()}
@@ -181,12 +198,26 @@ func TestProjectRecordBackendParity(t *testing.T) {
 					if integration.Revision != 4 || integration.WorkflowMarkdown != markdown {
 						t.Fatalf("workflow=%+v", integration)
 					}
-					tokenReply := performHubAPIRequest(t, service, http.MethodPost, "/api/v1/tokens", testHubAdminToken, map[string]any{"name": "ungranted-" + string(org.ID), "scope": "operator"})
-					requireNativeStatus(t, tokenReply, http.StatusCreated)
 					var token tokenResponse
-					decodeHubResponse(t, tokenReply, &token)
-					requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, base, token.Token, nil), http.StatusNotFound)
-					requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPatch, base, token.Token, map[string]any{"idempotency_key": "unauthorized", "name": "Rejected", "expected_revision": "3"}), http.StatusNotFound)
+					if repository != nil {
+						token.Token = "example-ungranted-" + string(org.ID)
+						now := service.config.now()
+						if err := repository.WriteTenant(t.Context(), org.ID, corestore.Serving, func(w tenantstore.Writer) error {
+							return w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: org.ID, ID: "ungranted", Name: "Example ungranted", Hash: apikey.HashToken(token.Token), Scope: "operator", ProjectAccess: "selected", Kind: "service", CreatedAt: now, UpdatedAt: now})
+						}); err != nil {
+							t.Fatal(err)
+						}
+					} else {
+						tokenReply := performHubAPIRequest(t, service, http.MethodPost, "/api/v1/tokens", testHubAdminToken, map[string]any{"name": "ungranted-" + string(org.ID), "scope": "operator"})
+						requireNativeStatus(t, tokenReply, http.StatusCreated)
+						decodeHubResponse(t, tokenReply, &token)
+					}
+					deniedStatus := http.StatusNotFound
+					if repository != nil {
+						deniedStatus = http.StatusForbidden
+					}
+					requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, base, token.Token, nil), deniedStatus)
+					requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPatch, base, token.Token, map[string]any{"idempotency_key": "unauthorized", "name": "Rejected", "expected_revision": "3"}), deniedStatus)
 					read = performHubAPIRequest(t, service, http.MethodGet, base, testHubAdminToken, nil)
 					requireNativeStatus(t, read, http.StatusOK)
 					decodeHubResponse(t, read, &got)

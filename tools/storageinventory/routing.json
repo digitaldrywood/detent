@@ -345,6 +345,8 @@
     "public/runner_lease_assignments": {"contract": "Retain the runner owner and assignment time for each tenant-scoped lease.", "disposition": "target-only", "family": "fleet"}
   },
   "owners": {
+    "internal/hubserver/postgres/organization_models.go": {"disposition": "target-adapter", "families": ["policy"], "inventory": {"operations": {"session.OrganizationModels:QueryRowContext": 1, "session.OrganizationModels:SQL": 1, "session.RequireOrganizationModels:QueryRowContext": 1, "session.RequireOrganizationModels:SQL": 1, "session.SetOrganizationModels:ExecContext": 1, "session.SetOrganizationModels:SQL": 1}, "tables": ["hub/organizations"]}},
+    "internal/hubserver/postgres/migrations/20261101215802_organization_model_selection.sql": {"disposition": "target-schema", "families": ["policy"], "inventory": {"operations": {"SQL": 1}, "tables": ["hub/organizations"]}},
     "cmd/detent/restart_posix.go": {"disposition": "non-storage", "families": ["non-storage"], "inventory": {"operations": {"restartProcess:Exec": 1}, "tables": []}},
     "db/queries/lane_ledger.sql": {"disposition": "local-only", "families": ["local-runtime"], "inventory": {"operations": {"SQL": 1, "query:LaneLedgerIdentity:one": 1, "query:LaneObservation:one": 1, "query:LatestLaneWrite:one": 1, "query:PrepareLaneWrite:one": 1, "query:RecordLaneWriteAction:execrows": 1, "query:ResolveLaneWrite:execrows": 1, "query:SaveLaneObservation:exec": 1}, "tables": []}},
     "db/queries/project_runner_setup.sql": {"disposition": "local-only", "families": ["local-runtime"], "inventory": {"operations": {"SQL": 1, "query:GetProjectRunnerSetupHash:one": 1, "query:SetProjectRunnerSetupHash:exec": 1}, "tables": []}},

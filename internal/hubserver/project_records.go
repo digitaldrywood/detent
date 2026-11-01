@@ -224,6 +224,9 @@ func (s *Service) projectRecordNative(ctx context.Context, record projectstore.R
 }
 
 func (s *Service) executeProjectRecordMutation(ctx context.Context, scope nativeScope, options nativeCommandOptions, command tracker.Mutation, input any) (json.RawMessage, error) {
+	if _, ok := input.(cloudModelSelectionRequest); ok && s.config.AccessRepository == nil {
+		return nil, nativeNotFound()
+	}
 	if strings.TrimSpace(command.IdempotencyKey) == "" || len(command.IdempotencyKey) > 128 {
 		return nil, nativePublicInvalid("An idempotency key of at most 128 bytes is required")
 	}
@@ -241,6 +244,7 @@ func (s *Service) executeProjectRecordMutation(ctx context.Context, scope native
 		return nil, err
 	}
 	var current projectstore.Record
+	var organizationModelRevision int64
 	var receipt eventstore.Receipt
 	var replay bool
 	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
@@ -254,6 +258,13 @@ func (s *Service) executeProjectRecordMutation(ctx context.Context, scope native
 			return err
 		}
 		if scope.project != "" {
+			if _, ok := input.(cloudModelSelectionRequest); ok {
+				models, readErr := r.OrganizationModels(ctx)
+				if readErr != nil {
+					return readErr
+				}
+				organizationModelRevision = models.Revision
+			}
 			current, err = r.ProjectRecord(ctx, scope.project)
 			return err
 		}
@@ -314,7 +325,10 @@ func (s *Service) executeProjectRecordMutation(ctx context.Context, scope native
 		case cloudContentSettingsRequest:
 			err = w.UpdateProjectContent(ctx, scope.project, int64(request.ExpectedRevision), request.RequireVisualAttachments)
 		case cloudModelSelectionRequest:
-			err = w.UpdateProjectModel(ctx, planned.Settings)
+			err = w.RequireOrganizationModels(ctx, organizationModelRevision)
+			if err == nil {
+				err = w.UpdateProjectModel(ctx, planned.Settings)
+			}
 		case deleteCloudProjectRequest:
 			if s.config.ProjectParticipants == nil {
 				return ErrProjectParticipants

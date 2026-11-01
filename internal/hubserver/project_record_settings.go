@@ -121,7 +121,7 @@ func projectIntegrationChanges(current projectstore.Record, request updateProjec
 }
 
 func (s *Service) projectRecordModel(ctx context.Context, record projectstore.Record) (cloudModelSelection, error) {
-	inherited, err := readCloudModelSelection(ctx, s.database.reader, nativeScope{organization: record.Core.OrganizationID})
+	inherited, err := s.readOrganizationModels(ctx, record.Core.OrganizationID)
 	if err != nil {
 		return cloudModelSelection{}, err
 	}
@@ -150,7 +150,7 @@ func (s *Service) planProjectRecordModel(ctx context.Context, record projectstor
 	if request.ExpectedRevision != tracker.Revision(record.Settings.ModelRevision) {
 		return record, nil, nativeConflict(tracker.Revision(record.Settings.ModelRevision))
 	}
-	inherited, err := readCloudModelSelection(ctx, s.database.reader, nativeScope{organization: record.Core.OrganizationID})
+	inherited, err := s.readOrganizationModels(ctx, record.Core.OrganizationID)
 	if err != nil {
 		return record, nil, err
 	}
