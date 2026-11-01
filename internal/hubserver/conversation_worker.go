@@ -1517,6 +1517,9 @@ func (c *conversationService) applyControlResult(ctx context.Context, tx *sql.Tx
 	if err != nil {
 		return err
 	}
+	if len(messages) == 0 {
+		return nativeInvalid("Unknown control key " + strconv.Quote(key))
+	}
 	message := &messages[0]
 	var delivery conversation.Delivery
 	var failure *conversation.ReceiptError

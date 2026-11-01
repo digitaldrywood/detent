@@ -151,6 +151,7 @@ for (const theme of ["light", "dark"]) {
   test(`Reports filters by chip, custom range and prior period, and keeps them in the URL ${theme}`, async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 1100 });
     await page.emulateMedia({ colorScheme: theme });
+    await page.clock.setFixedTime(new Date("2026-10-15T12:00:00Z"));
     const errors = [];
     page.on("pageerror", (error) => errors.push(String(error)));
     const requests = await routeReportRequests(page, (report, params) => {

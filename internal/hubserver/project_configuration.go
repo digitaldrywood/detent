@@ -460,7 +460,7 @@ func (s *Service) prepareProjectConfiguration(ctx context.Context, scope nativeS
 
 func latestSkippedAdmissions(admissions []runnerauth.DiagnosticAdmission, now time.Time) []runnerauth.DiagnosticAdmission {
 	latest := make(map[string]int)
-	var selected []runnerauth.DiagnosticAdmission
+	selected := make([]runnerauth.DiagnosticAdmission, 0, len(admissions))
 	for _, admission := range admissions {
 		if admission.Result != "skipped" || admission.WorkItemRevision <= 0 || admission.ObservedAt.After(now) {
 			continue
