@@ -65,9 +65,16 @@ func validateRunnerUsageCosts(ctx context.Context, q nativeQueryer, scope native
 	if err != nil {
 		return err
 	}
-	for _, item := range observations {
-		if err := normalizeCostObservation(&item.observation, now); err != nil {
+	for i := range observations {
+		observation := &observations[i].observation
+		if err := normalizeCostObservation(observation, now); err != nil {
 			return err
+		}
+		for _, prior := range observations[:i] {
+			previous := prior.observation
+			if observation.Provider == previous.Provider && observation.Metric == previous.Metric && observation.From.Before(previous.To) && previous.From.Before(observation.To) {
+				return nativePublicInvalid("Overlapping usage must correct the original source period instead of adding another source")
+			}
 		}
 	}
 	return nil

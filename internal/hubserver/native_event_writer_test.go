@@ -101,8 +101,30 @@ func TestNativeEventWriterBudget(t *testing.T) {
 					}
 					f.service.tokenUseWork.Wait()
 					uploadsBefore := uploaded.Load()
-					statements := 0
-					timing := &requestTiming{writerTrace: func(_ string, _ []driver.NamedValue) { statements++ }}
+					var statements, transactionStatements, maximumStatements int
+					var transactionEntered atomic.Bool
+					recordUpload := store.afterStore
+					store.afterStore = func(ref attachment.ArchiveReference) {
+						recordUpload(ref)
+						if !transactionEntered.Load() {
+							t.Error("run event uploaded content before its writer transaction")
+						}
+					}
+					defer func() { store.afterStore = recordUpload }()
+					timing := &requestTiming{
+						writerTrace: func(_ string, _ []driver.NamedValue) {
+							statements++
+							transactionStatements++
+						},
+						writerTransaction: func(active bool) {
+							if active {
+								transactionEntered.Store(true)
+								transactionStatements = 0
+							} else {
+								maximumStatements = max(maximumStatements, transactionStatements)
+							}
+						},
+					}
 					request := newHubAPIRequest(t, http.MethodPost, path, worker, event)
 					response := httptest.NewRecorder()
 					f.service.Handler().ServeHTTP(response, request.WithContext(withRequestTiming(request.Context(), timing)))
@@ -119,7 +141,7 @@ func TestNativeEventWriterBudget(t *testing.T) {
 					if writer == nil {
 						t.Fatal("missing writer timing")
 					}
-					t.Logf("writer_txs=%d writer_statements=%d", writer.txs.Load(), statements)
+					t.Logf("writer_txs=%d writer_statements=%d maximum_transaction_statements=%d", writer.txs.Load(), statements, maximumStatements)
 					bound := 90 + 55*len(event.PriorEvents)
 					if name == "finish" && outcome == "failed" {
 						bound += 80
@@ -129,9 +151,9 @@ func TestNativeEventWriterBudget(t *testing.T) {
 					}
 					uploads := uploaded.Load() - uploadsBefore
 					bound += 6 * int(uploads)
-					wantTransactions := 1 + uploads
-					if writer.txs.Load() != wantTransactions || statements > bound {
-						t.Errorf("writer_txs=%d (want %d for %d uploads), writer_statements=%d (bound %d)", writer.txs.Load(), wantTransactions, uploads, statements, bound)
+					wantTransactions := 1 + 2*uploads
+					if writer.txs.Load() != wantTransactions || maximumStatements > bound {
+						t.Errorf("writer_txs=%d (want %d for %d uploads), maximum_transaction_statements=%d (bound %d)", writer.txs.Load(), wantTransactions, uploads, maximumStatements, bound)
 					}
 				})
 			}
@@ -161,6 +183,9 @@ func TestNativeEventChangedPayloadPreparesAfterRollback(t *testing.T) {
 			store.afterStore = func(attachment.ArchiveReference) {
 				if writing.Load() {
 					t.Error("payload uploaded inside the writer transaction")
+				}
+				if !rolledBack.Load() {
+					t.Error("payload uploaded before the writer transaction could reject it")
 				}
 				if rolledBack.Load() {
 					reprepared.Store(true)
@@ -280,23 +305,13 @@ func TestNativeEventConcurrentWriterBudget(t *testing.T) {
 		preparing <- struct{}{}
 		<-release
 	}
-	connection, err := f.service.database.db.Conn(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
 	responses := make([]*httptest.ResponseRecorder, len(requests))
 	requestErrors := make([]error, len(requests))
 	registrations := make([]int64, len(requests))
 	completed := make(chan int, len(requests))
-	connectionClosed := false
 	var ready, finished sync.WaitGroup
 	t.Cleanup(func() {
 		unblock()
-		if !connectionClosed {
-			if err := connection.Close(); err != nil {
-				t.Error(err)
-			}
-		}
 		finished.Wait()
 	})
 	ready.Add(len(requests))
@@ -325,13 +340,9 @@ func TestNativeEventConcurrentWriterBudget(t *testing.T) {
 		case i := <-completed:
 			t.Fatalf("request %d ended before all requests prepared: status=%d error=%v", i, responses[i].Code, requestErrors[i])
 		case <-t.Context().Done():
-			t.Fatal("requests did not prepare content outside the occupied writer")
+			t.Fatal("requests did not prepare content concurrently after rollback")
 		}
 	}
-	if err := connection.Close(); err != nil {
-		t.Fatal(err)
-	}
-	connectionClosed = true
 	unblock()
 	finished.Wait()
 	for i, response := range responses {
@@ -350,9 +361,9 @@ func TestNativeEventConcurrentWriterBudget(t *testing.T) {
 	t.Logf("runners=%d writer_txs=%d", len(requests), transactions)
 	wantTransactions := int64(len(requests))
 	for _, registered := range registrations {
-		wantTransactions += registered
+		wantTransactions += 2 * registered
 	}
-	if transactions != wantTransactions || transactions != int64(len(requests))+uploaded.Load() {
+	if transactions != wantTransactions || transactions != int64(len(requests))+2*uploaded.Load() {
 		t.Fatalf("writer_txs=%d, want %d for %d requests and %d uploads", transactions, wantTransactions, len(requests), uploaded.Load())
 	}
 }
