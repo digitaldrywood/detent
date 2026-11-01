@@ -61,7 +61,7 @@ type runnerUsageObservation struct {
 }
 
 func validateRunnerUsageCosts(ctx context.Context, q nativeQueryer, scope nativeScope, request tracker.NativeRunEvent, prices UsageConfig, now time.Time) error {
-	_, _, observations, err := runnerUsageObservations(ctx, q, scope, request, prices)
+	_, _, observations, err := runnerUsageObservations(ctx, q, scope, request, prices, &now)
 	if err != nil {
 		return err
 	}
@@ -73,7 +73,7 @@ func validateRunnerUsageCosts(ctx context.Context, q nativeQueryer, scope native
 	return nil
 }
 
-func runnerUsageObservations(ctx context.Context, q nativeQueryer, scope nativeScope, request tracker.NativeRunEvent, prices UsageConfig) (string, string, []runnerUsageObservation, error) {
+func runnerUsageObservations(ctx context.Context, q nativeQueryer, scope nativeScope, request tracker.NativeRunEvent, prices UsageConfig, newAttemptAt *time.Time) (string, string, []runnerUsageObservation, error) {
 	if request.Type != "run.finished" || len(request.Data.Usage) == 0 {
 		return "", "", nil, nil
 	}
@@ -81,9 +81,12 @@ func runnerUsageObservations(ctx context.Context, q nativeQueryer, scope nativeS
 	var legacy sql.NullString
 	err := q.QueryRowContext(ctx, `SELECT a.organization_id,a.project_id,a.work_item_id,a.started_at,a.updated_at,coalesce(lr.runner_id,''),coalesce(a.machine_id,''),CASE WHEN a.usage_facts_ready IS NULL THEN COALESCE(NULLIF(a.payload_object_key,''),a.data_json) END FROM native_attempts a LEFT JOIN lease_runners lr ON lr.lease_id=a.lease_id WHERE a.id=?`, request.Data.AttemptID).Scan(&organization, &project, &item, &started, &ended, &runnerID, &machineID, &legacy)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", "", nil, nil
-	}
-	if err != nil {
+		if newAttemptAt == nil {
+			return "", "", nil, nil
+		}
+		organization, project = string(scope.organization), string(scope.project)
+		started, ended = formatHubTime(*newAttemptAt), formatHubTime(*newAttemptAt)
+	} else if err != nil {
 		return "", "", nil, fmt.Errorf("read usage attribution: %w", err)
 	}
 	if legacy.Valid {
@@ -178,7 +181,7 @@ func runnerUsageObservations(ctx context.Context, q nativeQueryer, scope nativeS
 }
 
 func recordRunnerUsageCosts(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.NativeRunEvent, prices UsageConfig, now time.Time) error {
-	organization, project, observations, err := runnerUsageObservations(ctx, tx, scope, request, prices)
+	organization, project, observations, err := runnerUsageObservations(ctx, tx, scope, request, prices, nil)
 	if err != nil {
 		return err
 	}
