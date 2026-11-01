@@ -3861,8 +3861,9 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 		if !ok {
 			return gate.ValidatorResult{}, fmt.Errorf("%w: native validation requires host command execution", ErrValidatorInfrastructure)
 		}
-		commands = &validatorCommands{run: commandRunner, info: info, issue: workspaceIssue, base: req.Diff.BaseSHA, shell: workflow.Config.Hooks.Shell}
+		commands = &validatorCommands{run: commandRunner, info: info, issue: workspaceIssue, base: req.Diff.BaseSHA, shell: workflow.Config.Hooks.Shell, policy: workflow.SharedPrompt}
 		if req.NativeVersion.Validation != nil {
+			commands.tree = req.NativeVersion.Validation.TreeSHA
 			receipts := append([]gate.CommandResult{*req.NativeVersion.Validation}, req.Commands...)
 			commands.reuse(req.NativeVersion.Validation.TreeSHA, receipts)
 		}
@@ -4330,13 +4331,14 @@ func validatorMaxInlineDiffBytes(cfg gate.ValidatorConfig) int {
 }
 
 type validatorJSONResult struct {
-	CriteriaEvidence []gate.CriterionEvidence `json:"criteria_evidence"`
-	Verdict          string                   `json:"verdict"`
-	Score            float64                  `json:"score"`
-	Confidence       float64                  `json:"confidence"`
-	TrustScore       float64                  `json:"trust_score"`
-	Summary          string                   `json:"summary"`
-	Findings         []validatorJSONFinding   `json:"findings"`
+	BaselineExceptions []gate.BaselineException `json:"baseline_exceptions"`
+	CriteriaEvidence   []gate.CriterionEvidence `json:"criteria_evidence"`
+	Verdict            string                   `json:"verdict"`
+	Score              float64                  `json:"score"`
+	Confidence         float64                  `json:"confidence"`
+	TrustScore         float64                  `json:"trust_score"`
+	Summary            string                   `json:"summary"`
+	Findings           []validatorJSONFinding   `json:"findings"`
 }
 
 type validatorJSONFinding struct {
@@ -4388,12 +4390,13 @@ func parseValidatorResult(output string) (gate.ValidatorResult, error) {
 	}
 
 	return gate.ValidatorResult{
-		CriteriaEvidence: decoded.CriteriaEvidence,
-		Submitted:        true,
-		Verdict:          strings.TrimSpace(decoded.Verdict),
-		Score:            score,
-		Summary:          strings.TrimSpace(decoded.Summary),
-		Findings:         findings,
+		CriteriaEvidence:   decoded.CriteriaEvidence,
+		BaselineExceptions: decoded.BaselineExceptions,
+		Submitted:          true,
+		Verdict:            strings.TrimSpace(decoded.Verdict),
+		Score:              score,
+		Summary:            strings.TrimSpace(decoded.Summary),
+		Findings:           findings,
 	}, nil
 }
 
