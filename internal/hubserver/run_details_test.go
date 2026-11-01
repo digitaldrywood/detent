@@ -665,6 +665,10 @@ func TestNativeRunFirstFinishValidatesUsageBeforeUpload(t *testing.T) {
 		status int
 	}{
 		{"reversed interval", []tracker.NativeUsage{{Provider: "openai", Model: "example-model", Input: 1, From: time.Date(2026, 10, 21, 11, 59, 0, 0, time.UTC), To: time.Date(2026, 10, 21, 11, 58, 0, 0, time.UTC)}}, http.StatusUnprocessableEntity},
+		{"overlapping incremental sources", []tracker.NativeUsage{
+			{Provider: "openai", Model: "example-model", UsageKind: "incremental", SourceID: "first", Revision: 1, Input: 1, From: time.Date(2026, 10, 21, 11, 57, 0, 0, time.UTC), To: time.Date(2026, 10, 21, 11, 59, 0, 0, time.UTC)},
+			{Provider: "openai", Model: "example-model", UsageKind: "incremental", SourceID: "second", Revision: 1, Input: 1, From: time.Date(2026, 10, 21, 11, 58, 0, 0, time.UTC), To: time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)},
+		}, http.StatusUnprocessableEntity},
 		{"valid interval", []tracker.NativeUsage{{Provider: "openai", Model: "example-model", Input: 1, From: time.Date(2026, 10, 21, 11, 58, 0, 0, time.UTC), To: time.Date(2026, 10, 21, 11, 59, 0, 0, time.UTC)}}, http.StatusOK},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -686,12 +690,25 @@ func TestNativeRunFirstFinishValidatesUsageBeforeUpload(t *testing.T) {
 				repeats = 3
 			}
 			initialUploads := store.uploads
+			var initialObjects int
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM change_content_objects").Scan(&initialObjects); err != nil {
+				t.Fatal(err)
+			}
 			for i := range repeats {
 				event.IdempotencyKey = fmt.Sprintf("first-finish-%d", i)
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, event), test.status)
 			}
 			if test.status != http.StatusOK && store.uploads != initialUploads {
-				t.Fatalf("rejected first finish uploaded %d history objects", store.uploads-initialUploads)
+				t.Fatalf("rejected first finish uploaded %d payload objects", store.uploads-initialUploads)
+			}
+			if test.status != http.StatusOK {
+				var objects int
+				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM change_content_objects").Scan(&objects); err != nil {
+					t.Fatal(err)
+				}
+				if objects != initialObjects {
+					t.Fatalf("rejected first finish registered %d payload objects", objects-initialObjects)
+				}
 			}
 			if test.status == http.StatusOK && store.uploads == initialUploads {
 				t.Fatal("accepted first finish uploaded no history")

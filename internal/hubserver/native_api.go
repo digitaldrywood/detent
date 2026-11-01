@@ -514,8 +514,7 @@ func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, 
 	ctx = isolateContentContext(s.runDetailContext(s.linkedSourceContext(ctx)))
 	if content, ok := ctx.Value(changeContentKey{}).(*changeContent); ok {
 		content.mu.Lock()
-		_, runEvent := input.(tracker.NativeRunEvent)
-		content.completion = options.Completion && !runEvent
+		content.completion = options.Completion
 		content.mu.Unlock()
 	}
 	contentMutation(ctx, true)
@@ -571,23 +570,6 @@ func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, 
 		})
 		if preparationErr == nil {
 			ctx = preparedCtx
-		}
-	}
-	if event, ok := input.(tracker.NativeRunEvent); ok {
-		for {
-			contentWriting(ctx, true)
-			result, err := s.commitNativeMutation(ctx, scope, options, command, input, operation, requestHash, preparationErr)
-			contentWriting(ctx, false)
-			var hydration *claimHydration
-			if !errors.As(err, &hydration) {
-				return result, err
-			}
-			if _, err := s.prepareRunDetail(ctx, scope, options.Item, event); err != nil {
-				return nil, err
-			}
-			if err := hydration.run(ctx, s.database.reader); err != nil {
-				return nil, err
-			}
 		}
 	}
 	return prepareContentMutation(ctx, s.database.reader, func() (json.RawMessage, error) {

@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -271,90 +270,68 @@ func compactRun(data tracker.NativeRunData) tracker.NativeRunData {
 
 func (s *Service) prepareRunDetail(ctx context.Context, scope nativeScope, item string, request tracker.NativeRunEvent) (context.Context, error) {
 	ctx = s.runDetailContext(ctx)
-	payloads, err := prepareContentMutation(ctx, s.database.reader, func() ([][]byte, error) {
+	_, err := prepareContentMutation(ctx, s.database.reader, func() (struct{}, error) {
 		snapshot, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 		if err != nil {
-			return nil, err
+			return struct{}{}, err
 		}
 		defer snapshot.Rollback()
 		now, err := s.database.currentTime()
 		if err != nil {
-			return nil, err
+			return struct{}{}, err
 		}
 		if err := requireRunnerAuthority(ctx, snapshot, scope, now); err != nil {
-			return nil, err
+			return struct{}{}, err
 		}
-		return s.prepareRunDetailSnapshot(ctx, snapshot, scope, item, request)
+		return struct{}{}, s.prepareRunDetailSnapshot(ctx, snapshot, scope, item, request)
 	})
-	if err != nil {
-		return ctx, err
-	}
-
-	if content, ok := ctx.Value(changeContentKey{}).(*changeContent); ok {
-		content.mu.Lock()
-		content.completion = request.Type == "run.finished" || request.Type == "run.checkpointed"
-		content.mu.Unlock()
-	}
-	for _, payload := range payloads {
-		now, err := s.database.currentTime()
-		if err != nil {
-			return ctx, err
-		}
-		if _, _, err := s.validateNativeRunOwner(ctx, s.database.reader, scope, item, &request, now); err != nil {
-			return ctx, err
-		}
-		if _, err := prepareChangeContent(ctx, string(scope.organization), payload); err != nil {
-			return ctx, err
-		}
-	}
-	return ctx, nil
+	return ctx, err
 }
 
-func (s *Service) prepareRunDetailSnapshot(ctx context.Context, snapshot nativeQueryer, scope nativeScope, item string, request tracker.NativeRunEvent) ([][]byte, error) {
+func (s *Service) prepareRunDetailSnapshot(ctx context.Context, snapshot nativeQueryer, scope nativeScope, item string, request tracker.NativeRunEvent) error {
 	if request.Data.Sequence <= 0 {
 		if len(request.PriorEvents) != 0 {
-			return nil, nativeInvalid("Run detail batches require ordered execution")
+			return nativeInvalid("Run detail batches require ordered execution")
 		}
 	}
 	raw, err := json.Marshal(request)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	request = tracker.NativeRunEvent{}
 	if err := json.Unmarshal(raw, &request); err != nil {
-		return nil, err
+		return err
 	}
 	events := append(append([]tracker.NativeRunEvent{}, request.PriorEvents...), request)
 	if len(events) > 8 {
-		return nil, nativeInvalid("Run detail batches are limited to eight events")
+		return nativeInvalid("Run detail batches are limited to eight events")
 	}
 	now, err := s.database.currentTime()
 	if err != nil {
-		return nil, err
+		return err
 	}
 	now = payloadTimestamp(ctx, now)
 	var prior *nativeAttemptUpdate
-	var payloads [][]byte
 	for i, event := range events {
 		if len(event.PriorEvents) != 0 && i < len(events)-1 || event.Data.AttemptID != request.Data.AttemptID || event.Data.LeaseID != request.Data.LeaseID || event.Data.FencingToken != request.Data.FencingToken || i < len(events)-1 && event.Type != "run.observed" {
-			return nil, nativeInvalid("Run detail batch must contain ordered observations for one execution")
+			return nativeInvalid("Run detail batch must contain ordered observations for one execution")
 		}
 		issue, termination, err := s.validateNativeRunOwner(ctx, snapshot, scope, item, &event, now)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		current, err := s.database.currentTime()
 		if err != nil {
-			return nil, err
+			return err
 		}
 		if err := validateRunnerUsageCosts(ctx, snapshot, scope, event, s.usagePrices(), current); err != nil {
-			return nil, err
+			return err
 		}
 		history := true
 		if event.Data.Sequence > 0 {
 			update, err := prepareNativeAttempt(ctx, snapshot, scope, issue.WorkItemID, &event, now, termination, prior)
 			if err != nil {
-				return nil, err
+				return err
 			}
 			if update.duplicate {
 				continue
@@ -365,88 +342,39 @@ func (s *Service) prepareRunDetailSnapshot(ctx context.Context, snapshot nativeQ
 			}
 			if !termination && !update.usageCorrection && event.Type == "run.finished" {
 				if err := prepareIndependentRunFailure(ctx, snapshot, scope, issue, &data, now); err != nil {
-					return nil, err
+					return err
 				}
-			}
-			raw, err := json.Marshal(data)
-			if err != nil {
-				return nil, err
-			}
-			payloads = append(payloads, raw)
-			if data.Handoff != nil {
-				raw, err := json.Marshal(checkpointPayload{Checkpoint: data.Handoff, ArtifactIDs: data.ArtifactIDs})
-				if err != nil {
-					return nil, err
-				}
-				payloads = append(payloads, raw)
 			}
 			history = update.history
 			if !termination && event.Data.Runtime != nil {
 				if landing := event.Data.Runtime.Landing; landing != nil {
-					receipt, err := prepareAttemptLanding(ctx, snapshot, scope, issue.WorkItemID, event.Data.AttemptID, *landing)
+					_, err := prepareAttemptLanding(ctx, snapshot, scope, issue.WorkItemID, event.Data.AttemptID, *landing)
 					if err != nil {
-						return nil, err
+						return err
 					}
-					receiptRaw, err := json.Marshal(receipt)
-					if err != nil {
-						return nil, err
-					}
-					payload, err := attemptLandingPayload(raw, receiptRaw)
-					if err != nil {
-						return nil, err
-					}
-					payloads = append(payloads, payload)
-					raw = payload
 				}
 				if validation := event.Data.Runtime.Validation; validation != nil && validation.BaseReproduction != nil && event.Type == "run.finished" {
 					var raw string
 					if err := snapshot.QueryRowContext(ctx, "SELECT COALESCE(NULLIF(checkpoint_object_key,''),checkpoint_json,'null') FROM native_attempts WHERE id=?", event.Data.AttemptID).Scan(&raw); err != nil && !errors.Is(err, sql.ErrNoRows) {
-						return nil, err
+						return err
 					}
 					if raw != "" {
 						if _, err := decodeRunCheckpoint(ctx, snapshot, raw); err != nil {
-							return nil, err
+							return err
 						}
 					}
 				}
 			}
-			update.data = tracker.NativeRunData{}
-			if err := json.Unmarshal(raw, &update.data); err != nil {
-				return nil, err
-			}
+			update.data = data
 			prior = &update
 		}
-		if history {
-			if !termination && event.Type == "run.finished" && event.Data.Outcome == "succeeded" && event.Data.Sequence > 0 {
-				dependencies, err := prepareNativeDependencyBlockers(ctx, snapshot, scope, issue, event.Data.Disposition)
-				if err != nil {
-					return nil, err
-				}
-				for _, dependency := range dependencies {
-					if !slices.Contains(issue.Dependencies, dependency) {
-						issue.Dependencies = append(issue.Dependencies, dependency)
-						issue.Revision++
-					}
-				}
+		if history && !termination && event.Type == "run.finished" && event.Data.Outcome == "succeeded" && event.Data.Sequence > 0 {
+			if _, err := prepareNativeDependencyBlockers(ctx, snapshot, scope, issue, event.Data.Disposition); err != nil {
+				return err
 			}
-			data := tracker.CollaborationData{Run: &event.Data}
-			if event.Type == "run.finished" {
-				data.Revision = issue.Revision
-			}
-			raw, err := json.Marshal(data)
-			if err != nil {
-				return nil, err
-			}
-			id := nativeHistoryID(ctx, event.Type, data)
-			payload, err := json.Marshal(storageJSONPayload{Organization: string(scope.organization), Project: string(scope.project), Family: event.Type + ":" + id, Data: raw})
-			if err != nil {
-				return nil, err
-			}
-			payloads = append(payloads, payload)
 		}
 	}
-	payloads = append(payloads, []byte(`{"accepted":true}`))
-	return payloads, nil
+	return nil
 }
 
 func recordRunDetailReference(ctx context.Context, tx *sql.Tx, scope nativeScope, item tracker.NativeWorkItemID, data tracker.NativeRunData, now string) error {
