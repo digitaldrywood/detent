@@ -811,6 +811,45 @@ func TestConversationRejectedCreateDoesNotPublish(t *testing.T) {
 	}
 }
 
+func TestConversationTurnBatchValidationReadsEachControlOnce(t *testing.T) {
+	reads := make(map[string]int)
+	for _, test := range []struct {
+		name    string
+		repeats int
+	}{
+		{"single control result", 1},
+		{"repeated control results", conversationMaxTurnEvents - 1},
+	} {
+		func() {
+			objects := &conversationContentFixture{}
+			f := newConversationWorkerFixture(t, objects)
+			requireNativeStatus(t, f.bind(t, nil), http.StatusOK)
+			requireNativeStatus(t, f.turnEvents(t, map[string]any{"type": "turn_started", "thread_id": "thread-1", "turn_id": "turn-1"}), http.StatusAccepted)
+			f.queue(t, conversation.MessageText, "steer-1", "Keep going", nil)
+			requireNativeStatus(t, f.controls(t, 0, 0), http.StatusOK)
+			var count int
+			objects.mu.Lock()
+			objects.onIO = func() error {
+				count++
+				return nil
+			}
+			objects.mu.Unlock()
+			events := make([]map[string]any, 0, test.repeats+1)
+			for range test.repeats {
+				events = append(events, map[string]any{"type": "control_result", "key": "steer-1", "status": "delivered"})
+			}
+			events = append(events, map[string]any{"type": "unknown"})
+			requireNativeStatus(t, f.turnEvents(t, events...), http.StatusUnprocessableEntity)
+			objects.mu.Lock()
+			reads[test.name] = count
+			objects.mu.Unlock()
+		}()
+	}
+	if reads["repeated control results"] != reads["single control result"] {
+		t.Fatalf("rejected batch content reads: repeated=%d single=%d", reads["repeated control results"], reads["single control result"])
+	}
+}
+
 func TestConversationRejectedTurnBatchDoesNotPublish(t *testing.T) {
 	for _, test := range []struct {
 		name   string

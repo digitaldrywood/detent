@@ -1257,7 +1257,7 @@ func (r *conversationWorkerRouter) turnEvents(e echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(e, conversationStaleExecutionError("turn_events", id, err))
 	}
-	if err := c.validateTurnEvents(ctx, plan.record, request.Events); err != nil {
+	if err := c.validateTurnEvents(plan.context(ctx), plan.record, request.Events); err != nil {
 		return s.nativeAPIError(e, conversationStaleExecutionError("turn_events", id, err))
 	}
 	if c.store.contents != nil {
