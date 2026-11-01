@@ -528,8 +528,8 @@ func TestCompletedNativeTurnFinalization(t *testing.T) {
 					backend.validationOutput = strings.Repeat("earlier test output\n", 5000) + "TestFailure: failing test output with token=private-secret"
 				}
 				backend.onValidation = func() {
-					if !execution.operationPending || execution.operation != "workspace.finalize_native_work" {
-						t.Fatal("source validation lost active host finalization ownership")
+					if !execution.operationPending || execution.operation != "workspace.run_source_validation" {
+						t.Fatalf("source validation lost its pending operation: operation=%s pending=%t", execution.operation, execution.operationPending)
 					}
 					if test.operatorStop {
 						stopOperator(NewCancellationCause(ErrOperatorStopped, "operator.stop_run"))
