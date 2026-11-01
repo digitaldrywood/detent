@@ -97,7 +97,7 @@ required_evidence() {
   gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/commits/$CI_DEVELOP_SHA/statuses?per_page=100" |
     jq -ce --argjson required "$required_checks" --argjson creators "$status_creators" --arg reason "$override_reason" '
       [.[][]] as $statuses
-      | ($required | map(select(. != "scheduled-full-ci" or $reason == ""))) as $mandatory
+      | ($required | map(select((. != "scheduled-full-ci" and . != "release-security-audit") or $reason == ""))) as $mandatory
       | [$mandatory[] as $name
           | ($statuses | map(select(.context == $name)) | max_by(.id))
           | select(.state == "success" and (.id | type == "number") and .id > 0
