@@ -94,7 +94,6 @@ func Validate(manifest Manifest, repository string, tag string, commit string) e
 
 func Parse(raw []byte, repository string, tag string, commit string) (Manifest, error) {
 	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
 	var manifest Manifest
 	if err := decoder.Decode(&manifest); err != nil {
 		return Manifest{}, fmt.Errorf("decode release provenance: %w", err)

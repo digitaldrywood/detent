@@ -107,7 +107,9 @@ func TestParseRejectsTamperedOrAmbiguousJSON(t *testing.T) {
 		raw  string
 		want string
 	}{
-		{name: "unknown field", raw: `{"schema":1,"repository":"digitaldrywood/detent","tag":"v1.2.3","commit":"` + testCommit + `","checks":[],"extra":true}`, want: "unknown field"},
+		{name: "additive field", raw: `{"schema":1,"repository":"digitaldrywood/detent","tag":"v1.2.3","commit":"` + testCommit + `","checks":[{"name":"CI","status":"completed","conclusion":"success","status_id":42}],"future_metadata":{"enabled":true}}`},
+		{name: "additive field cannot replace checks", raw: `{"schema":1,"repository":"digitaldrywood/detent","tag":"v1.2.3","commit":"` + testCommit + `","checks":[],"future_metadata":true}`, want: "no mandatory check evidence"},
+		{name: "additive field cannot hide tampered commit", raw: `{"schema":1,"repository":"digitaldrywood/detent","tag":"v1.2.3","commit":"` + testOtherCommit + `","checks":[{"name":"CI","status":"completed","conclusion":"success","status_id":42}],"future_metadata":true}`, want: "want"},
 		{name: "multiple values", raw: `{}` + "\n{}", want: "multiple JSON values"},
 		{name: "missing annotation", raw: "ordinary tag message", want: "missing provenance annotation"},
 	}
@@ -119,6 +121,12 @@ func TestParseRejectsTamperedOrAmbiguousJSON(t *testing.T) {
 				_, err = FromTagMessage(tt.raw, "digitaldrywood/detent", "v1.2.3", testCommit)
 			} else {
 				_, err = Parse([]byte(tt.raw), "digitaldrywood/detent", "v1.2.3", testCommit)
+			}
+			if tt.want == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				return
 			}
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("error = %v, want containing %q", err, tt.want)

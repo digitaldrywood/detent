@@ -456,7 +456,7 @@ func (s *Scheduler) applyWorkerReleaseLocked(ctx context.Context, opts ApplyOpti
 		return s.applyExceptionalWorkerUpdateLocked(ctx, opts, err)
 	}
 	if err != nil {
-		return Status{FailureReason: "Execution release preparation failed"}, errors.Join(err, s.recordFailure(s.cfg.Now(), err))
+		return Status{FailureReason: workerReleaseFailureReason(err)}, errors.Join(err, s.recordFailure(s.cfg.Now(), err))
 	}
 	applied := artifact.Status
 	if err := artifact.Release(); err != nil {

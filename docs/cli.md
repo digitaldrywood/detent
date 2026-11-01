@@ -390,6 +390,48 @@ the signed checksums, contains them and the build flags, so it builds with Go
 alone. The shell and PowerShell installers fall back to that archive when no
 platform binary is published.
 
+### Bootstrap an older runner from a verified release
+
+If an older runner refuses a Hub-requested release before it can update itself,
+install the signed release archive directly. This example bootstraps Apple
+silicon macOS from `v0.173.4`; change the version and archive name to the
+Hub-required release and the host platform. Stop the runner before running it.
+The command verifies the signed checksum file, verifies the archive checksum,
+checks the staged version, and keeps a `.previous` binary for rollback. It
+requires `curl`, `minisign`, `shasum`, and `tar`.
+
+```sh
+set -eu
+version=0.173.4
+tag="v$version"
+asset="detent_${version}_darwin_arm64.tar.gz"
+base="https://github.com/digitaldrywood/detent/releases/download/$tag"
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+
+curl -fsSL "$base/detent_${version}_checksums.txt" -o "$tmp/checksums"
+curl -fsSL "$base/detent_${version}_checksums.txt.minisig" -o "$tmp/checksums.minisig"
+minisign -Vm "$tmp/checksums" -x "$tmp/checksums.minisig" -P 'RWR9LKG/4dIAmbeS4Ow7XOSjxOE7GKiwQ0OPHNoViW5V0FSo4WU0vucx'
+curl -fsSL "$base/$asset" -o "$tmp/$asset"
+expected="$(awk -v name="$asset" '{file=$2; sub(/^[*]/, "", file); if (file == name) {print $1; exit}}' "$tmp/checksums")"
+actual="$(shasum -a 256 "$tmp/$asset" | awk '{print $1}')"
+test -n "$expected" && test "$actual" = "$expected"
+mkdir "$tmp/unpacked"
+tar -xzf "$tmp/$asset" -C "$tmp/unpacked"
+reported_version="$("$tmp/unpacked/detent" --format pretty version | awk -F': ' '$1 == "version" {print $2; exit}')"
+test "$reported_version" = "v$version"
+binary="/absolute/path/to/installed/detent"
+test -x "$binary" && test ! -e "$binary.previous" && test ! -e "$binary.new"
+install -m 0755 "$tmp/unpacked/detent" "$binary.new"
+mv "$binary" "$binary.previous"
+mv "$binary.new" "$binary"
+```
+
+Restart the runner and verify it reports the new version before removing the
+previous binary. The checksum signature verifies the release checksum file,
+and the checksum comparison verifies the platform archive before replacing
+the installed binary.
+
 ## Windows runners
 
 Windows has two runner paths:
