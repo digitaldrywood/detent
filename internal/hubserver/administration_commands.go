@@ -103,12 +103,12 @@ func (s *Service) inviteHostedMemberFor(ctx context.Context, credential apiCrede
 		err := json.Unmarshal(raw, &view)
 		return view, err
 	}
-	reserved, err := s.reserveHostedInvitationSeatFor(ctx, credential, email)
+	_, err = s.reserveHostedInvitationSeatFor(ctx, credential, email)
 	if err != nil {
 		s.abandonHostedOperation(ctx, command)
 		return hostedInvitationView{}, err
 	}
-	view, err := s.sendReservedHostedInvitationFor(ctx, credential, email, role, reserved, grants)
+	view, err := s.sendReservedHostedInvitationFor(ctx, credential, email, role, grants)
 	if err != nil {
 		return hostedInvitationView{}, err
 	}
@@ -249,25 +249,20 @@ func (s *Service) pendingHostedInvitationFor(ctx context.Context, query nativeQu
 	return view, nil
 }
 
-func (s *Service) sendReservedHostedInvitationFor(ctx context.Context, credential apiCredential, email, role string, reserved bool, grants []hostedMemberGrant) (view hostedInvitationView, resultErr error) {
+func (s *Service) sendReservedHostedInvitationFor(ctx context.Context, credential apiCredential, email, role string, grants []hostedMemberGrant) (view hostedInvitationView, resultErr error) {
 	grants = append([]hostedMemberGrant{}, grants...)
 	if s.config.AccessRepository != nil {
 		if err := s.validateHostedInvitationGrants(ctx, s.database.reader, credential, email, grants); err != nil {
 			return hostedInvitationView{}, err
 		}
-		return s.createAccessInvitation(ctx, credential, email, role, reserved, grants)
+		return s.createAccessInvitation(ctx, credential, email, role, grants)
 	}
 	if err := s.validateHostedInvitationGrants(ctx, s.database.db, credential, email, grants); err != nil {
 		return hostedInvitationView{}, err
 	}
 	invitation, err := s.config.Hosted.Provider.Invite(ctx, credential.Hosted.OrganizationID, email, role, credential.Hosted.Subject)
 	if err != nil || invitation.OrganizationID != credential.Hosted.OrganizationID || !strings.EqualFold(invitation.Email, email) || invitation.State != "pending" {
-		if reserved {
-			if releaseErr := s.releaseHostedInvitation(ctx, email); releaseErr != nil {
-				return hostedInvitationView{}, operatoradmin.ErrUnavailable
-			}
-		}
-		return hostedInvitationView{}, errors.Join(mutation.ErrUncertain, &nativeError{Code: "unavailable", Message: "The invitation could not be sent", status: 503})
+		return hostedInvitationView{}, errors.Join(mutation.ErrUncertain, err, &nativeError{Code: "unavailable", Message: "The invitation could not be sent", status: 503})
 	}
 	created := formatHubTime(s.config.now())
 	view = hostedInvitationView{ID: invitation.ID, Email: email, Role: role, CreatedAt: created, Grants: grants}
@@ -276,11 +271,11 @@ func (s *Service) sendReservedHostedInvitationFor(ctx context.Context, credentia
 	}
 	encoded, err := json.Marshal(grants)
 	if err != nil {
-		return hostedInvitationView{}, err
+		return hostedInvitationView{}, errors.Join(mutation.ErrUncertain, err)
 	}
 	tx, err := s.database.db.BeginTx(ctx, nil)
 	if err != nil {
-		return hostedInvitationView{}, err
+		return hostedInvitationView{}, errors.Join(mutation.ErrUncertain, err)
 	}
 	defer func() {
 		if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
@@ -288,16 +283,16 @@ func (s *Service) sendReservedHostedInvitationFor(ctx context.Context, credentia
 		}
 	}()
 	if err := s.recheckHostedMutation(ctx, tx, &nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), credential: credential, requireHostedAdmin: true}); err != nil {
-		return hostedInvitationView{}, err
+		return hostedInvitationView{}, errors.Join(mutation.ErrUncertain, err)
 	}
 	if err := s.validateHostedInvitationGrants(ctx, tx, credential, email, grants); err != nil {
-		return hostedInvitationView{}, err
+		return hostedInvitationView{}, errors.Join(mutation.ErrUncertain, err)
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO hosted_invitations(id,email,organization_id,role,created_at,expires_at,grants_json) VALUES (?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING`, invitation.ID, email, s.config.Hosted.OrganizationID, role, created, view.ExpiresAt, string(encoded)); err != nil {
-		return hostedInvitationView{}, err
+		return hostedInvitationView{}, errors.Join(mutation.ErrUncertain, err)
 	}
 	if err := tx.Commit(); err != nil {
-		return hostedInvitationView{}, err
+		return hostedInvitationView{}, errors.Join(mutation.ErrUncertain, err)
 	}
 	return view, nil
 }

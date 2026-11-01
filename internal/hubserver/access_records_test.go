@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/platformusers"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -203,11 +204,11 @@ func TestAccessInvitationLifecycleIsTenantScoped(t *testing.T) {
 		}
 	}
 
-	first, err := services["org_first"].createAccessInvitation(t.Context(), credentials["org_first"], "member@example.test", "member", false, []hostedMemberGrant{{ProjectID: "project_first", Write: true}})
+	first, err := services["org_first"].createAccessInvitation(t.Context(), credentials["org_first"], "member@example.test", "member", []hostedMemberGrant{{ProjectID: "project_first", Write: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := services["org_second"].createAccessInvitation(t.Context(), credentials["org_second"], "member@example.test", "member", false, []hostedMemberGrant{{ProjectID: "project_second", Runner: true}})
+	second, err := services["org_second"].createAccessInvitation(t.Context(), credentials["org_second"], "member@example.test", "member", []hostedMemberGrant{{ProjectID: "project_second", Runner: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -299,6 +300,37 @@ func TestAccessInvitationLifecycleIsTenantScoped(t *testing.T) {
 		row, err := r.AccessInvitation(t.Context(), first.ID)
 		if err != nil || row.AcceptedUserID != accepted.Subject {
 			t.Fatalf("other tenant revoke changed accepted invitation=%+v error=%v", row, err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	lostResponseEmail := "lost-response@example.test"
+	if err := repository.WriteTenant(t.Context(), "org_first", corestore.Serving, func(w tenantstore.Writer) error {
+		return w.CreateAccessMemberReservation(t.Context(), accessstore.MemberReservation{OrganizationID: "org_first", Email: lostResponseEmail, ExpiresAt: now.Add(time.Hour)})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	provider.mu.Lock()
+	provider.inviteErrAfterCreate = errors.New("response lost after provider accepted invitation")
+	provider.mu.Unlock()
+	_, err = services["org_first"].createAccessInvitation(t.Context(), credentials["org_first"], lostResponseEmail, "member", nil)
+	if !errors.Is(err, mutation.ErrUncertain) {
+		t.Fatalf("lost provider response error=%v, want uncertain outcome", err)
+	}
+	provider.mu.Lock()
+	lostResponseCount := len(provider.invitations)
+	provider.mu.Unlock()
+	if lostResponseCount != 3 {
+		t.Fatalf("provider invitations=%d, want the invitation committed before response loss", lostResponseCount)
+	}
+	if err := services["org_first"].accessRead(t.Context(), "org_first", func(r tenantstore.Reader) error {
+		reservation, err := r.AccessMemberReservation(t.Context(), lostResponseEmail)
+		if err != nil {
+			return err
+		}
+		if reservation.Email != lostResponseEmail || reservation.OrganizationID != "org_first" {
+			t.Fatalf("uncertain invitation reservation=%+v", reservation)
 		}
 		return nil
 	}); err != nil {

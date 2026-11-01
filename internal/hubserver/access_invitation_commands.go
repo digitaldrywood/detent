@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -177,18 +178,13 @@ func (s *Service) pendingAccessInvitationFor(ctx context.Context, credential api
 	return view, nil
 }
 
-func (s *Service) createAccessInvitation(ctx context.Context, credential apiCredential, email, role string, reserved bool, grants []hostedMemberGrant) (view hostedInvitationView, resultErr error) {
+func (s *Service) createAccessInvitation(ctx context.Context, credential apiCredential, email, role string, grants []hostedMemberGrant) (view hostedInvitationView, resultErr error) {
 	if err := s.validateHostedInvitationGrants(ctx, nil, credential, email, grants); err != nil {
 		return hostedInvitationView{}, err
 	}
 	invitation, err := s.config.Hosted.Provider.Invite(ctx, credential.Hosted.OrganizationID, email, role, credential.Hosted.Subject)
 	if err != nil || invitation.ID == "" || invitation.OrganizationID != credential.Hosted.OrganizationID || !strings.EqualFold(invitation.Email, email) || invitation.State != "pending" {
-		if reserved {
-			if releaseErr := s.releaseHostedInvitation(ctx, email); releaseErr != nil {
-				return hostedInvitationView{}, errors.Join(operatorUnavailable(), releaseErr)
-			}
-		}
-		return hostedInvitationView{}, errors.Join(err, nativeUnavailable("The invitation could not be sent"))
+		return hostedInvitationView{}, errors.Join(mutation.ErrUncertain, err, nativeUnavailable("The invitation could not be sent"))
 	}
 	now := s.config.now()
 	expires := invitation.ExpiresAt
@@ -215,7 +211,10 @@ func (s *Service) createAccessInvitation(ctx context.Context, credential apiCred
 		}
 		return nil
 	})
-	return view, err
+	if err != nil {
+		return hostedInvitationView{}, errors.Join(mutation.ErrUncertain, err)
+	}
+	return view, nil
 }
 
 func (s *Service) editAccessInvitation(ctx context.Context, credential apiCredential, id string, grants []hostedMemberGrant) error {
@@ -345,7 +344,6 @@ func (s *Service) releaseAccessInvitation(ctx context.Context, email string) err
 	return s.accessWrite(ctx, s.accessOrganization(), func(w tenantstore.Writer) error { return w.DeleteAccessMemberReservation(ctx, strings.ToLower(email)) })
 }
 
-func operatorUnavailable() error { return errors.New("hosted invitation reservation cleanup failed") }
 func nativeUnavailable(message string) error {
 	return &nativeError{Code: "unavailable", Message: message, status: 503}
 }

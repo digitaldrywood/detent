@@ -163,7 +163,7 @@ func (s *Service) inviteHostedMember(c echo.Context) error {
 	if err := s.validateHostedInvitationGrants(readCtx, s.database.reader, credential, email, nil); err != nil {
 		return s.hostedError(c, http.StatusForbidden, "You cannot replace this member's project access")
 	}
-	reserved, err := s.reserveHostedInvitationSeatFor(ctx, credential, email)
+	_, err = s.reserveHostedInvitationSeatFor(ctx, credential, email)
 	if err != nil {
 		var limit *hostedLimitError
 		if errors.As(err, &limit) {
@@ -171,7 +171,7 @@ func (s *Service) inviteHostedMember(c echo.Context) error {
 		}
 		return s.hostedError(c, http.StatusServiceUnavailable, "The invitation could not be reserved")
 	}
-	if _, err := s.sendReservedHostedInvitationFor(ctx, credential, email, role, reserved, nil); err != nil {
+	if _, err := s.sendReservedHostedInvitationFor(ctx, credential, email, role, nil); err != nil {
 		return s.hostedError(c, http.StatusServiceUnavailable, "The invitation could not be sent")
 	}
 

@@ -31,15 +31,16 @@ import (
 )
 
 type hostedSecurityProvider struct {
-	mu              sync.Mutex
-	sessions        map[string]auth.HostedIdentity
-	members         map[string]auth.Membership
-	codes           map[string]auth.Identity
-	invitations     map[string]auth.Invitation
-	invitationRoles map[string]string
-	exchanges       int
-	revokeErr       error
-	revoked         []string
+	mu                   sync.Mutex
+	sessions             map[string]auth.HostedIdentity
+	members              map[string]auth.Membership
+	codes                map[string]auth.Identity
+	invitations          map[string]auth.Invitation
+	invitationRoles      map[string]string
+	inviteErrAfterCreate error
+	exchanges            int
+	revokeErr            error
+	revoked              []string
 }
 
 func newHostedSecurityProvider() *hostedSecurityProvider {
@@ -137,7 +138,7 @@ func (p *hostedSecurityProvider) Invite(_ context.Context, organization, email, 
 	invitation := auth.Invitation{ID: fmt.Sprintf("invitation_%d", len(p.invitations)+1), Email: email, OrganizationID: organization, State: "pending", ExpiresAt: time.Now().Add(time.Hour)}
 	p.invitations[invitation.ID] = invitation
 	p.invitationRoles[invitation.ID] = role
-	return invitation, nil
+	return invitation, p.inviteErrAfterCreate
 }
 
 func (p *hostedSecurityProvider) Invitation(_ context.Context, token string) (auth.Invitation, error) {
