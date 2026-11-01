@@ -19,6 +19,9 @@ func (s *Service) expireRequestMetrics(ctx context.Context, now time.Time) error
 	if m == nil {
 		return nil
 	}
+	if m.repository != nil {
+		return m.repository.RetainRequestMetrics(ctx, m.organization, now)
+	}
 	minuteCutoff := now.Add(-requestMinuteRetention).UTC().Truncate(time.Minute).Unix()
 	dayCutoff := now.Add(-requestDayRetention).UTC().Truncate(24 * time.Hour).Unix()
 	if _, err := m.db.ExecContext(ctx, `DELETE FROM request_hours WHERE rowid IN (

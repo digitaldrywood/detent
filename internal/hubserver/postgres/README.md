@@ -719,3 +719,44 @@ request transactions, fixed pool budgets and retry ownership are unchanged.
 The harness uses generated logins and owned disposable databases only (INV-22).
 No safety-critical orchestrator file, serving cutover, migration or SQL input
 changes are part of this contract.
+
+## P23: request metrics serving integration
+
+The Hub database owner selects its request metrics collector from the configured
+backend. PostgreSQL collectors share the tenant repository and never open a
+metrics SQLite file or own the shared pool. SQLite collectors retain their
+existing file binding and schema. Full PostgreSQL Hub startup remains subject to
+the existing refusal until all serving families are ported.
+
+A background flush submits at most 200 minute observations. Remaining records
+stay pending for the next tick; failed batches retain their exact histograms.
+HTTP usage accounting keeps an independent pending payload, so retrying that
+sink cannot replay a committed latency batch or discard an unflushed batch.
+Shutdown drains pending batches under the caller's cancellation before closing
+the metrics file or shared Hub lifecycle. Collection and runner request admission
+remain in memory; a storage failure does not change dispatch eligibility.
+
+Repository totals return at most 20 callers and 20 routes from the previous
+complete hour. Route history returns the busiest 20 routes in at most 240 time
+buckets and ten status classes, within the retained hourly window. Both use the
+serving budget and explicit tenant predicates plus forced RLS. The typed
+`request_histogram_sum(bigint[])` aggregate preserves every imported minute and
+hour bucket when computing percentiles. Imported daily totals remain available
+through the existing grain reader; this integration does not reingest historical
+rows through the live collector or reconstruct histograms from percentiles.
+
+Retention uses the repository's existing background budget: at most 200 expired
+minutes compact individually, at most 200 hours and days expire, and at most 200
+empty caller windows expire per tick. Repeated ticks resume the backlog.
+`runner_host_hours` remains in its mapped analytics family and heartbeat
+transaction, including segment deduplication and acknowledgment. It is not part
+of the request metrics repository or a separately opened metrics file.
+
+For INV-18 and INV-21 at 10,000 tenants and runners, request collection performs
+one in-memory aggregation with no database I/O. Each flush transaction contains
+at most 200 observations and fixed 64-bucket arithmetic. Each retention tick has
+the fixed bounds above and touches no other tenant. Serving queries aggregate
+only the selected tenant's indexed time window and return the fixed result
+bounds above; their scan cost depends on that tenant's retained observations in
+the requested window. They perform no tenant/fleet enumeration, derived writes,
+external I/O or locks held across network calls.

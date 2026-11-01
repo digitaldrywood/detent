@@ -421,6 +421,136 @@ func (q *Queries) RequestMetricCallerExists(ctx context.Context, arg RequestMetr
 	return exists, err
 }
 
+const requestMetricRouteHistory = `-- name: RequestMetricRouteHistory :many
+WITH top AS (
+ SELECT route FROM request_hours WHERE organization_id=$3
+ AND hour>=$2 AND hour<$4
+ GROUP BY route ORDER BY sum(count) DESC,route LIMIT 20
+)
+SELECT date_bin(($1::bigint * interval '1 second'),h.hour,$2::timestamptz)::timestamptz AS bucket_time,h.route,h.status_class,
+ sum(h.count)::bigint AS count,sum(h.sum_ms)::double precision AS sum_ms,max(h.max_ms)::double precision AS max_ms,request_histogram_sum(h.histogram)::bigint[] AS histogram
+FROM request_hours h JOIN top ON top.route=h.route
+WHERE h.organization_id=$3 AND h.hour>=$2 AND h.hour<$4
+GROUP BY bucket_time,h.route,h.status_class ORDER BY bucket_time,h.route,h.status_class
+`
+
+type RequestMetricRouteHistoryParams struct {
+	BucketSeconds  int64
+	FromTime       time.Time
+	OrganizationID tracker.OrganizationID
+	ToTime         time.Time
+}
+
+type RequestMetricRouteHistoryRow struct {
+	BucketTime  time.Time
+	Route       string
+	StatusClass int64
+	Count       int64
+	SumMs       float64
+	MaxMs       float64
+	Histogram   []int64
+}
+
+func (q *Queries) RequestMetricRouteHistory(ctx context.Context, arg RequestMetricRouteHistoryParams) ([]RequestMetricRouteHistoryRow, error) {
+	rows, err := q.db.QueryContext(ctx, requestMetricRouteHistory,
+		arg.BucketSeconds,
+		arg.FromTime,
+		arg.OrganizationID,
+		arg.ToTime,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []RequestMetricRouteHistoryRow{}
+	for rows.Next() {
+		var i RequestMetricRouteHistoryRow
+		if err := rows.Scan(
+			&i.BucketTime,
+			&i.Route,
+			&i.StatusClass,
+			&i.Count,
+			&i.SumMs,
+			&i.MaxMs,
+			pq.Array(&i.Histogram),
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const requestMetricTotals = `-- name: RequestMetricTotals :many
+WITH scoped AS MATERIALIZED (
+ SELECT organization_id, minute, route, caller_kind, caller_id, status_class, count, sum_ms, max_ms, histogram FROM request_minutes WHERE organization_id=$1
+ AND minute>=$2 AND minute<$3
+), callers AS (
+ SELECT true AS caller_group,''::text AS route,caller_kind,caller_id,sum(count)::bigint AS count,sum(sum_ms)::double precision AS sum_ms,max(max_ms)::double precision AS max_ms,request_histogram_sum(histogram)::bigint[] AS histogram
+ FROM scoped GROUP BY caller_kind,caller_id ORDER BY sum(count) DESC,caller_kind,caller_id LIMIT 20
+), routes AS (
+ SELECT false AS caller_group,route,''::text AS caller_kind,''::text AS caller_id,sum(count)::bigint AS count,sum(sum_ms)::double precision AS sum_ms,max(max_ms)::double precision AS max_ms,request_histogram_sum(histogram)::bigint[] AS histogram
+ FROM scoped GROUP BY route ORDER BY sum(count) DESC,route LIMIT 20
+)
+SELECT caller_group, route, caller_kind, caller_id, count, sum_ms, max_ms, histogram FROM callers UNION ALL SELECT caller_group, route, caller_kind, caller_id, count, sum_ms, max_ms, histogram FROM routes
+ORDER BY caller_group DESC,count DESC,caller_kind,caller_id,route
+`
+
+type RequestMetricTotalsParams struct {
+	OrganizationID tracker.OrganizationID
+	FromTime       time.Time
+	ToTime         time.Time
+}
+
+type RequestMetricTotalsRow struct {
+	CallerGroup bool
+	Route       string
+	CallerKind  string
+	CallerID    string
+	Count       int64
+	SumMs       float64
+	MaxMs       float64
+	Histogram   []int64
+}
+
+func (q *Queries) RequestMetricTotals(ctx context.Context, arg RequestMetricTotalsParams) ([]RequestMetricTotalsRow, error) {
+	rows, err := q.db.QueryContext(ctx, requestMetricTotals, arg.OrganizationID, arg.FromTime, arg.ToTime)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []RequestMetricTotalsRow{}
+	for rows.Next() {
+		var i RequestMetricTotalsRow
+		if err := rows.Scan(
+			&i.CallerGroup,
+			&i.Route,
+			&i.CallerKind,
+			&i.CallerID,
+			&i.Count,
+			&i.SumMs,
+			&i.MaxMs,
+			pq.Array(&i.Histogram),
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const reserveRequestMetricCaller = `-- name: ReserveRequestMetricCaller :execrows
 UPDATE request_metric_windows SET caller_count=caller_count+1
 WHERE organization_id=$1 AND minute=$2 AND caller_count<200

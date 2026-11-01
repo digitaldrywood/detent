@@ -293,3 +293,44 @@ func (r *Repository) RetainRequestMetrics(ctx context.Context, organization trac
 
 	return nil
 }
+
+func (r *Repository) RequestMetricTotals(ctx context.Context, organization tracker.OrganizationID, from, to time.Time) ([]metricsstore.Metric, []metricsstore.Metric, error) {
+	if !from.Before(to) || to.Sub(from) > time.Hour {
+		return nil, nil, metricsstore.ErrInvalidMetric
+	}
+	callers, routes := []metricsstore.Metric{}, []metricsstore.Metric{}
+	err := r.transaction(ctx, organization, corestore.Serving, true, func(s *session) error {
+		rows, err := s.queries.RequestMetricTotals(ctx, pgquery.RequestMetricTotalsParams{OrganizationID: organization, FromTime: from, ToTime: to})
+		if err != nil {
+			return err
+		}
+		for _, row := range rows {
+			metric := metricsstore.Metric{Route: row.Route, CallerKind: row.CallerKind, CallerID: row.CallerID, Latency: metricLatency(row.Count, row.SumMs, row.MaxMs, row.Histogram)}
+			if row.CallerGroup {
+				callers = append(callers, metric)
+			} else {
+				routes = append(routes, metric)
+			}
+		}
+		return nil
+	})
+	return callers, routes, err
+}
+
+func (r *Repository) RequestMetricHistory(ctx context.Context, organization tracker.OrganizationID, from, to time.Time, bucket time.Duration) ([]metricsstore.Metric, error) {
+	if !from.Before(to) || from.Before(to.Add(-metricsstore.HourRetention).UTC().Truncate(time.Hour)) || bucket < time.Hour || bucket%time.Hour != 0 || (to.Sub(from)+bucket-1)/bucket > metricsstore.BucketLimit {
+		return nil, metricsstore.ErrInvalidMetric
+	}
+	records := []metricsstore.Metric{}
+	err := r.transaction(ctx, organization, corestore.Serving, true, func(s *session) error {
+		rows, err := s.queries.RequestMetricRouteHistory(ctx, pgquery.RequestMetricRouteHistoryParams{OrganizationID: organization, FromTime: from, ToTime: to, BucketSeconds: int64(bucket / time.Second)})
+		if err != nil {
+			return err
+		}
+		for _, row := range rows {
+			records = append(records, metricsstore.Metric{At: row.BucketTime.UTC(), Route: row.Route, StatusClass: row.StatusClass, Latency: metricLatency(row.Count, row.SumMs, row.MaxMs, row.Histogram)})
+		}
+		return nil
+	})
+	return records, err
+}

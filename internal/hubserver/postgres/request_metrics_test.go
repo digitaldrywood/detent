@@ -511,3 +511,73 @@ func TestRequestMetricsRetentionBatchLimits(t *testing.T) {
 		}
 	}
 }
+
+func TestRequestMetricsImportedAggregates(t *testing.T) {
+	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	r, pool := repositoryFor(t, template.Database(t), smallPool())
+	for tenant, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		for i := range tenant + 1 {
+			at := now.Add(-time.Duration(i+1) * time.Minute)
+			for _, grain := range []metricsstore.Grain{metricsstore.Minute, metricsstore.Hour} {
+				sample := metricSample(at, "GET /imported", "imported_caller")
+				if grain == metricsstore.Hour {
+					sample.At = at.Truncate(time.Hour)
+					sample.Route = fmt.Sprintf("GET /imported/%d", i)
+				}
+				seedMetric(t, pool, org, grain, sample)
+			}
+		}
+	}
+	for tenant, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		t.Run(string(org), func(t *testing.T) {
+			callers, routes, err := r.RequestMetricTotals(t.Context(), org, now.Add(-time.Hour), now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(callers) != 1 || len(routes) != 1 {
+				t.Fatalf("totals: %+v, %+v", callers, routes)
+			}
+			expected := metricSample(now, "", "").Latency
+			expected.Count *= int64(tenant + 1)
+			expected.Sum *= float64(tenant + 1)
+			for i := range expected.Histogram {
+				expected.Histogram[i] *= int64(tenant + 1)
+			}
+			if callers[0].Latency != expected || routes[0].Latency != expected {
+				t.Fatalf("imported histograms: %+v, %+v; want %+v", callers, routes, expected)
+			}
+			history, err := r.RequestMetricHistory(t.Context(), org, now.Add(-time.Hour), now, time.Hour)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(history) != tenant+1 {
+				t.Fatalf("imported history: %+v", history)
+			}
+			for _, row := range history {
+				if row.Latency != metricSample(now, "", "").Latency {
+					t.Fatalf("hour histogram: %+v", row)
+				}
+				if p50, p95 := row.Percentiles(); p50 != 1.024 || p95 != 16 {
+					t.Fatalf("imported percentiles: %v, %v", p50, p95)
+				}
+			}
+		})
+	}
+	for _, tc := range []struct {
+		from, to time.Time
+		bucket   time.Duration
+	}{
+		{now, now, time.Hour},
+		{now.Add(-time.Hour), now, 0},
+		{now.Add(-time.Hour), now, time.Hour + time.Second},
+		{now.Add(-metricsstore.HourRetention - time.Hour), now, 24 * time.Hour},
+		{now.Add(-(metricsstore.BucketLimit + 1) * time.Hour), now, time.Hour},
+	} {
+		if _, err := r.RequestMetricHistory(t.Context(), "org_first", tc.from, tc.to, tc.bucket); !errors.Is(err, metricsstore.ErrInvalidMetric) {
+			t.Fatalf("unbounded history accepted: %v", err)
+		}
+	}
+	if _, _, err := r.RequestMetricTotals(t.Context(), "org_first", now.Add(-2*time.Hour), now); !errors.Is(err, metricsstore.ErrInvalidMetric) {
+		t.Fatalf("unbounded totals accepted: %v", err)
+	}
+}

@@ -16,6 +16,8 @@ const (
 	CallerLimit     = 200
 	MergeLimit      = 200
 	RetentionLimit  = 200
+	RouteLimit      = 20
+	BucketLimit     = 240
 	OverflowKind    = "other"
 	OverflowCaller  = ""
 )
@@ -89,4 +91,6 @@ type Repository interface {
 	MergeRequestMetrics(context.Context, tracker.OrganizationID, time.Time, []Metric) error
 	RequestMetrics(context.Context, tracker.OrganizationID, Page) ([]Metric, error)
 	RetainRequestMetrics(context.Context, tracker.OrganizationID, time.Time) error
+	RequestMetricTotals(context.Context, tracker.OrganizationID, time.Time, time.Time) ([]Metric, []Metric, error)
+	RequestMetricHistory(context.Context, tracker.OrganizationID, time.Time, time.Time, time.Duration) ([]Metric, error)
 }

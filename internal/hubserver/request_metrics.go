@@ -18,6 +18,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/hubserver/metricsstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -106,6 +107,7 @@ type runnerRequestWindow struct {
 type tenantRequestMetrics struct {
 	usage        *database
 	db           *sql.DB
+	repository   metricsstore.Repository
 	organization tracker.OrganizationID
 	mu           sync.Mutex
 	flushMu      sync.Mutex
@@ -168,15 +170,24 @@ func (m *tenantRequestMetrics) flush(ctx context.Context, now time.Time) error {
 		}
 	}
 	err := m.write(ctx, now, latencies)
+	if err == nil && m.repository == nil {
+		clear(latencies)
+	}
+	usagePending := make(map[requestMetricKey]requestLatency, len(pending))
+	for key, value := range pending {
+		usagePending[key] = requestLatency{http: value.http}
+	}
 	if err == nil {
-		for key, value := range pending {
-			pending[key] = requestLatency{http: value.http}
-		}
 		if owner != nil {
-			err = writeHostedRequestUsage(ctx, owner, now, pending)
+			err = writeHostedRequestUsage(ctx, owner, now, usagePending)
 		} else {
-			clear(pending)
+			clear(usagePending)
 		}
+	}
+	for key := range pending {
+		remaining := latencies[key]
+		remaining.http = usagePending[key].http
+		pending[key] = remaining
 	}
 	m.mu.Lock()
 	for key, value := range pending {
@@ -192,6 +203,9 @@ func (m *tenantRequestMetrics) flush(ctx context.Context, now time.Time) error {
 }
 
 func (m *tenantRequestMetrics) write(ctx context.Context, now time.Time, pending map[requestMetricKey]requestLatency) error {
+	if m.repository != nil {
+		return m.writeRepository(ctx, now, pending)
+	}
 	tx, err := m.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -234,6 +248,9 @@ func (m *tenantRequestMetrics) write(ctx context.Context, now time.Time, pending
 }
 
 func (m *tenantRequestMetrics) report(ctx context.Context, now time.Time) (requestMetricsReport, error) {
+	if m.repository != nil {
+		return m.repositoryReport(ctx, now)
+	}
 	to := now.UTC().Truncate(time.Minute)
 	out := requestMetricsReport{From: to.Add(-time.Hour), To: to, Callers: []requestMetricTop{}, Routes: []requestMetricTop{}}
 	callers := make(map[[2]string]requestLatency)

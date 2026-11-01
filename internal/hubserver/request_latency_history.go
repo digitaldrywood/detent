@@ -85,6 +85,9 @@ func (m *tenantRequestMetrics) history(ctx context.Context, from, to time.Time, 
 	start := from.UTC().Truncate(time.Hour)
 	bucket = max(time.Hour, bucket.Truncate(time.Hour), (to.Sub(start)/routeLatencyBucketLimit + time.Hour - 1).Truncate(time.Hour))
 	out := routeLatencyHistory{From: start, To: to.UTC(), Bucket: bucket.String(), Buckets: []routeLatencyBucket{}}
+	if m.repository != nil {
+		return m.repositoryHistory(ctx, out, bucket)
+	}
 	rows, err := m.db.QueryContext(ctx, `WITH top AS (SELECT route FROM request_hours WHERE hour>=:from AND hour<:to GROUP BY route ORDER BY sum(count) DESC, route LIMIT :limit)
 SELECT h.hour,h.route,h.status_class,h.count,h.sum_ms,h.max_ms,h.histogram FROM request_hours h JOIN top ON top.route=h.route WHERE h.hour>=:from AND h.hour<:to`,
 		sql.Named("from", start.Unix()), sql.Named("to", to.Unix()), sql.Named("limit", routeLatencyRouteLimit))

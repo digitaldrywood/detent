@@ -228,7 +228,7 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 		}
 	}
 	if cfg.Hosted != nil && !cfg.CredentialMaintenance {
-		service.requestMetrics, err = openRequestMetrics(ctx, database.path+".metrics.sqlite", tracker.OrganizationID(cfg.Hosted.OrganizationID))
+		service.requestMetrics, err = database.openRequestMetrics(ctx, tracker.OrganizationID(cfg.Hosted.OrganizationID))
 		if err != nil {
 			workerCancel()
 			reconcileCancel()
@@ -500,7 +500,7 @@ func (s *Service) CloseContext(ctx context.Context) error {
 		s.tokenUseWork.Wait()
 		var metricsErr error
 		if s.requestMetrics != nil {
-			metricsErr = errors.Join(s.requestMetrics.flush(ctx, s.config.now()), s.requestMetrics.db.Close())
+			metricsErr = errors.Join(s.requestMetrics.drain(ctx, s.config.now()), s.requestMetrics.close())
 		}
 		s.closeErr = errors.Join(mcpErr, httpErr, webhookErr, reconcileErr, metricsErr, s.database.Close())
 	})
