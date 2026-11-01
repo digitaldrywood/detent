@@ -490,3 +490,62 @@ version and its size-bounded bundle, or one exact checkpoint ref. It does not
 scan runner files, tenants or attempt history to discover source. PostgreSQL
 uses the existing shared pool and tenant-leading keys. No new hot path, shared
 lock, periodic task, retry owner or fleet fan-out is introduced.
+
+## Bounded storage conversion
+
+`../storageconversion.Owner` is the conversion owner for the PostgreSQL families
+already handled by the SQLite storage converter: run/scheduler collaboration
+events (`runs`), change versions (`versions`) and change evidence (`evidence`).
+It uses the existing `Repository`, background connection budget and compressed
+`attachment.DetailStore`. Backend selection remains cutover work: select this
+owner for PostgreSQL and the existing SQLite owner for SQLite. There is no new
+background loop, retry scheduler, lease or second owner for these families
+(INV-3). Other SQLite conversion families remain with their unported stores.
+
+Current writes and existing PostgreSQL records use `payload_format_version=2`.
+An import can explicitly preserve a historical object reference with version 1;
+zero-valued repository inputs select the current format. Import payloads are
+compressed objects before insertion, never inline staging columns (INV-20).
+The format version describes the record's payload representation, independently
+of its archive codec/schema and event schema. Conversion accepts a deterministic
+family transform that preserves domain identity and produces the current payload.
+The original reference and object remain readable after conversion.
+
+Each batch names an authenticated organization, project, family and owning work
+item or change. Pages contain at most 100 old-format records through a fixed
+visible `(record ID, sequence/number)` upper bound. Cursors carry this complete
+scope and position; reuse in another scope is rejected. An empty next cursor
+starts another sweep. Repeat sweeps even after an empty result: allocation and
+lexical ID ordering are not commit ordering. Pending partial indexes keep late
+commits discoverable, including commits behind the previous cursor. Failures
+advance the current sweep position and remain pending for the next sweep. A
+restart can start at zero because converted rows leave the pending index;
+progress counters remain durable and duplicates do not increment them twice.
+
+Object reads, transformation, uploads and verification happen after the reader
+transaction ends and before the writer transaction starts. The owner derives the
+exact content-addressed target key before upload, checks it before publishing,
+and reconciles even a failed upload by reading and verifying that same key.
+A lost database acknowledgement is recovered from the current record version.
+No database transaction, connection budget slot or shared lock spans object I/O.
+Missing or corrupt sources and unverified targets leave the old reference intact.
+
+`convert_history_payload` is the only runtime path that replaces an immutable
+history reference. It uses a fixed search path and the migration owner's forced
+RLS policies, requires the bound organization to match, and conditionally compares
+project, aggregate, explicit record identity, source key, digest, both sizes and
+format version. Only a matching version-1 record advances to version 2. Its
+trigger permits this reference-only transition under the migration identity;
+ordinary runtime updates, deletes and metadata changes remain forbidden. The
+same transaction updates one aggregate's typed progress row. A rejected write
+rolls both changes back, and concurrent conversions count only the winner.
+Runtime connections can read progress but cannot fabricate it (INV-18).
+
+At 10,000 tenants and runners, pool and background budgets stay fixed. Each
+batch uses tenant/project/aggregate-scoped index seeks and returns at most 100
+records. Object work stops at a 1 MiB source-plus-target byte budget, allowing
+one final archive-sized record to avoid starving large payloads; an individual
+source or target cannot exceed the existing 32 MiB archive limit. Each successful
+conversion holds one history row and one aggregate progress row only during
+bounded database work. There are no fleet scans, history walks, per-tenant pools,
+unbounded transactions or SQL JSON operations (INV-18, INV-20, INV-21).

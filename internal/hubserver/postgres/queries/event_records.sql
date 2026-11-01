@@ -2,8 +2,8 @@
 SELECT * FROM collaboration_events WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_id) AND work_item_id=sqlc.arg(work_item_id) AND id=sqlc.arg(id);
 
 -- name: RecordInsertEvent :one
-INSERT INTO collaboration_events (organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes)
-VALUES (sqlc.arg(organization_id), sqlc.arg(project_id), sqlc.arg(work_item_id), sqlc.arg(id), sqlc.arg(sequence), sqlc.arg(type), sqlc.arg(schema_version), sqlc.arg(actor_kind), sqlc.arg(actor_principal_id), sqlc.arg(event_revision), sqlc.arg(change_id), sqlc.arg(version_id), sqlc.arg(head_sha), sqlc.arg(run_id), sqlc.arg(attempt_id), sqlc.arg(from_state), sqlc.arg(to_state), sqlc.arg(recorded_at), sqlc.arg(payload_object_key), sqlc.arg(payload_sha256), sqlc.arg(payload_bytes), sqlc.arg(payload_content_bytes)) RETURNING *;
+INSERT INTO collaboration_events (organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version)
+VALUES (sqlc.arg(organization_id), sqlc.arg(project_id), sqlc.arg(work_item_id), sqlc.arg(id), sqlc.arg(sequence), sqlc.arg(type), sqlc.arg(schema_version), sqlc.arg(actor_kind), sqlc.arg(actor_principal_id), sqlc.arg(event_revision), sqlc.arg(change_id), sqlc.arg(version_id), sqlc.arg(head_sha), sqlc.arg(run_id), sqlc.arg(attempt_id), sqlc.arg(from_state), sqlc.arg(to_state), sqlc.arg(recorded_at), sqlc.arg(payload_object_key), sqlc.arg(payload_sha256), sqlc.arg(payload_bytes), sqlc.arg(payload_content_bytes), sqlc.arg(payload_format_version)) RETURNING *;
 
 -- name: RecordListEvent :many
 SELECT * FROM collaboration_events WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_id) AND work_item_id=sqlc.arg(work_item_id) AND sequence>sqlc.arg(after) ORDER BY sequence LIMIT sqlc.arg(page_limit);
@@ -36,8 +36,8 @@ VALUES (sqlc.arg(organization_id), sqlc.arg(project_id), sqlc.arg(work_item_id),
 SELECT * FROM change_versions WHERE organization_id=sqlc.arg(organization_id) AND change_id=sqlc.arg(change_id) AND id=sqlc.arg(id);
 
 -- name: RecordInsertVersion :one
-INSERT INTO change_versions (organization_id, id, change_id, number, head_sha, base_sha, merge_base_sha, repository, policy_revision_id, attempt_id, actor_kind, actor_principal_id, external_provider, external_id, external_url, created_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes)
-VALUES (sqlc.arg(organization_id), sqlc.arg(id), sqlc.arg(change_id), sqlc.arg(number), sqlc.arg(head_sha), sqlc.arg(base_sha), sqlc.arg(merge_base_sha), sqlc.arg(repository), sqlc.arg(policy_revision_id), sqlc.arg(attempt_id), sqlc.arg(actor_kind), sqlc.arg(actor_principal_id), sqlc.arg(external_provider), sqlc.arg(external_id), sqlc.arg(external_url), sqlc.arg(created_at), sqlc.arg(payload_object_key), sqlc.arg(payload_sha256), sqlc.arg(payload_bytes), sqlc.arg(payload_content_bytes)) RETURNING *;
+INSERT INTO change_versions (organization_id, id, change_id, number, head_sha, base_sha, merge_base_sha, repository, policy_revision_id, attempt_id, actor_kind, actor_principal_id, external_provider, external_id, external_url, created_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version)
+VALUES (sqlc.arg(organization_id), sqlc.arg(id), sqlc.arg(change_id), sqlc.arg(number), sqlc.arg(head_sha), sqlc.arg(base_sha), sqlc.arg(merge_base_sha), sqlc.arg(repository), sqlc.arg(policy_revision_id), sqlc.arg(attempt_id), sqlc.arg(actor_kind), sqlc.arg(actor_principal_id), sqlc.arg(external_provider), sqlc.arg(external_id), sqlc.arg(external_url), sqlc.arg(created_at), sqlc.arg(payload_object_key), sqlc.arg(payload_sha256), sqlc.arg(payload_bytes), sqlc.arg(payload_content_bytes), sqlc.arg(payload_format_version)) RETURNING *;
 
 -- name: RecordListVersion :many
 SELECT * FROM change_versions WHERE organization_id=sqlc.arg(organization_id) AND change_id=sqlc.arg(change_id) AND number>sqlc.arg(after) ORDER BY number LIMIT sqlc.arg(page_limit);
@@ -46,8 +46,8 @@ SELECT * FROM change_versions WHERE organization_id=sqlc.arg(organization_id) AN
 SELECT * FROM change_evidence WHERE organization_id=sqlc.arg(organization_id) AND change_id=sqlc.arg(change_id) AND kind=sqlc.arg(kind) AND source_key=sqlc.arg(source_key);
 
 -- name: RecordInsertEvidence :one
-INSERT INTO change_evidence (organization_id, change_id, sequence, version_id, kind, source_key, actor_kind, actor_principal_id, decision, created_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes)
-VALUES (sqlc.arg(organization_id), sqlc.arg(change_id), sqlc.arg(sequence), sqlc.narg(version_id), sqlc.arg(kind), sqlc.narg(source_key), sqlc.arg(actor_kind), sqlc.arg(actor_principal_id), sqlc.arg(decision), sqlc.arg(created_at), sqlc.arg(payload_object_key), sqlc.arg(payload_sha256), sqlc.arg(payload_bytes), sqlc.arg(payload_content_bytes)) RETURNING *;
+INSERT INTO change_evidence (organization_id, change_id, sequence, version_id, kind, source_key, actor_kind, actor_principal_id, decision, created_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version)
+VALUES (sqlc.arg(organization_id), sqlc.arg(change_id), sqlc.arg(sequence), sqlc.narg(version_id), sqlc.arg(kind), sqlc.narg(source_key), sqlc.arg(actor_kind), sqlc.arg(actor_principal_id), sqlc.arg(decision), sqlc.arg(created_at), sqlc.arg(payload_object_key), sqlc.arg(payload_sha256), sqlc.arg(payload_bytes), sqlc.arg(payload_content_bytes), sqlc.arg(payload_format_version)) RETURNING *;
 
 -- name: RecordListEvidence :many
 SELECT * FROM change_evidence WHERE organization_id=sqlc.arg(organization_id) AND change_id=sqlc.arg(change_id) AND sequence>sqlc.arg(after) ORDER BY sequence LIMIT sqlc.arg(page_limit);

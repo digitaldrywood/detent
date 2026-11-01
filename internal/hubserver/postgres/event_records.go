@@ -117,7 +117,7 @@ func (s *session) CollaborationVersion(ctx context.Context, id string, revision 
 	return eventstore.CollaborationVersion(row), mapError(ctx, err)
 }
 func (s *session) insertRecordEvent(ctx context.Context, record eventstore.Event) (eventstore.Event, error) {
-	row, err := s.queries.RecordInsertEvent(ctx, pgquery.RecordInsertEventParams{OrganizationID: record.OrganizationID, ProjectID: record.ProjectID, WorkItemID: record.WorkItemID, ID: record.ID, Sequence: record.Sequence, Type: record.Type, SchemaVersion: record.SchemaVersion, ActorKind: record.ActorKind, ActorPrincipalID: record.ActorPrincipalID, EventRevision: record.EventRevision, ChangeID: record.ChangeID, VersionID: record.VersionID, HeadSHA: record.HeadSHA, RunID: record.RunID, AttemptID: record.AttemptID, FromState: record.FromState, ToState: record.ToState, RecordedAt: record.RecordedAt, PayloadObjectKey: record.PayloadObjectKey, PayloadSHA256: record.PayloadSHA256, PayloadBytes: record.PayloadBytes, PayloadContentBytes: record.PayloadContentBytes})
+	row, err := s.queries.RecordInsertEvent(ctx, pgquery.RecordInsertEventParams{OrganizationID: record.OrganizationID, ProjectID: record.ProjectID, WorkItemID: record.WorkItemID, ID: record.ID, Sequence: record.Sequence, Type: record.Type, SchemaVersion: record.SchemaVersion, ActorKind: record.ActorKind, ActorPrincipalID: record.ActorPrincipalID, EventRevision: record.EventRevision, ChangeID: record.ChangeID, VersionID: record.VersionID, HeadSHA: record.HeadSHA, RunID: record.RunID, AttemptID: record.AttemptID, FromState: record.FromState, ToState: record.ToState, RecordedAt: record.RecordedAt, PayloadObjectKey: record.PayloadObjectKey, PayloadSHA256: record.PayloadSHA256, PayloadBytes: record.PayloadBytes, PayloadContentBytes: record.PayloadContentBytes, PayloadFormatVersion: record.PayloadFormatVersion})
 	return eventstore.Event(row), mapError(ctx, err)
 }
 func (s *session) insertRecordCollaborationVersion(ctx context.Context, record eventstore.CollaborationVersion) (eventstore.CollaborationVersion, error) {
@@ -129,11 +129,11 @@ func (s *session) insertRecordChange(ctx context.Context, record eventstore.Chan
 	return eventstore.Change(row), mapError(ctx, err)
 }
 func (s *session) insertRecordVersion(ctx context.Context, record eventstore.Version) (eventstore.Version, error) {
-	row, err := s.queries.RecordInsertVersion(ctx, pgquery.RecordInsertVersionParams{OrganizationID: record.OrganizationID, ID: record.ID, ChangeID: record.ChangeID, Number: record.Number, HeadSHA: record.HeadSHA, BaseSHA: record.BaseSHA, MergeBaseSHA: record.MergeBaseSHA, Repository: record.Repository, PolicyRevisionID: record.PolicyRevisionID, AttemptID: record.AttemptID, ActorKind: record.ActorKind, ActorPrincipalID: record.ActorPrincipalID, ExternalProvider: record.ExternalProvider, ExternalID: record.ExternalID, ExternalURL: record.ExternalURL, CreatedAt: record.CreatedAt, PayloadObjectKey: record.PayloadObjectKey, PayloadSHA256: record.PayloadSHA256, PayloadBytes: record.PayloadBytes, PayloadContentBytes: record.PayloadContentBytes})
+	row, err := s.queries.RecordInsertVersion(ctx, pgquery.RecordInsertVersionParams{OrganizationID: record.OrganizationID, ID: record.ID, ChangeID: record.ChangeID, Number: record.Number, HeadSHA: record.HeadSHA, BaseSHA: record.BaseSHA, MergeBaseSHA: record.MergeBaseSHA, Repository: record.Repository, PolicyRevisionID: record.PolicyRevisionID, AttemptID: record.AttemptID, ActorKind: record.ActorKind, ActorPrincipalID: record.ActorPrincipalID, ExternalProvider: record.ExternalProvider, ExternalID: record.ExternalID, ExternalURL: record.ExternalURL, CreatedAt: record.CreatedAt, PayloadObjectKey: record.PayloadObjectKey, PayloadSHA256: record.PayloadSHA256, PayloadBytes: record.PayloadBytes, PayloadContentBytes: record.PayloadContentBytes, PayloadFormatVersion: record.PayloadFormatVersion})
 	return eventstore.Version(row), mapError(ctx, err)
 }
 func (s *session) insertRecordEvidence(ctx context.Context, record eventstore.Evidence) (eventstore.Evidence, error) {
-	row, err := s.queries.RecordInsertEvidence(ctx, pgquery.RecordInsertEvidenceParams{OrganizationID: record.OrganizationID, ChangeID: record.ChangeID, Sequence: record.Sequence, VersionID: record.VersionID, Kind: record.Kind, SourceKey: record.SourceKey, ActorKind: record.ActorKind, ActorPrincipalID: record.ActorPrincipalID, Decision: record.Decision, CreatedAt: record.CreatedAt, PayloadObjectKey: record.PayloadObjectKey, PayloadSHA256: record.PayloadSHA256, PayloadBytes: record.PayloadBytes, PayloadContentBytes: record.PayloadContentBytes})
+	row, err := s.queries.RecordInsertEvidence(ctx, pgquery.RecordInsertEvidenceParams{OrganizationID: record.OrganizationID, ChangeID: record.ChangeID, Sequence: record.Sequence, VersionID: record.VersionID, Kind: record.Kind, SourceKey: record.SourceKey, ActorKind: record.ActorKind, ActorPrincipalID: record.ActorPrincipalID, Decision: record.Decision, CreatedAt: record.CreatedAt, PayloadObjectKey: record.PayloadObjectKey, PayloadSHA256: record.PayloadSHA256, PayloadBytes: record.PayloadBytes, PayloadContentBytes: record.PayloadContentBytes, PayloadFormatVersion: record.PayloadFormatVersion})
 	return eventstore.Evidence(row), mapError(ctx, err)
 }
 
@@ -142,6 +142,12 @@ func (s *session) AppendEvent(ctx context.Context, record eventstore.Event) (eve
 		return eventstore.Event{}, err
 	}
 	if record.ID == "" || record.Type == "" || record.SchemaVersion != 1 || record.Sequence < 0 || record.ActorKind == "" || record.ActorPrincipalID == "" {
+		return eventstore.Event{}, eventstore.ErrInvalidRecord
+	}
+	if record.PayloadFormatVersion == 0 {
+		record.PayloadFormatVersion = 2
+	}
+	if record.PayloadFormatVersion < 1 || record.PayloadFormatVersion > 2 {
 		return eventstore.Event{}, eventstore.ErrInvalidRecord
 	}
 	if err := validRecordPayload(record.OrganizationID, record.PayloadObjectKey, record.PayloadSHA256, record.PayloadBytes, record.PayloadContentBytes); err != nil {
@@ -265,6 +271,12 @@ func (s *session) CreateVersion(ctx context.Context, record eventstore.Version) 
 	if record.ID == "" || record.Number < 1 || record.HeadSHA == "" || record.PolicyRevisionID == "" {
 		return eventstore.Version{}, eventstore.ErrInvalidRecord
 	}
+	if record.PayloadFormatVersion == 0 {
+		record.PayloadFormatVersion = 2
+	}
+	if record.PayloadFormatVersion < 1 || record.PayloadFormatVersion > 2 {
+		return eventstore.Version{}, eventstore.ErrInvalidRecord
+	}
 	if err := validRecordPayload(record.OrganizationID, record.PayloadObjectKey, record.PayloadSHA256, record.PayloadBytes, record.PayloadContentBytes); err != nil {
 		return eventstore.Version{}, err
 	}
@@ -294,6 +306,12 @@ func (s *session) AppendEvidence(ctx context.Context, record eventstore.Evidence
 		return eventstore.Evidence{}, err
 	}
 	if record.Sequence < 0 || record.SourceKey != nil && *record.SourceKey == "" {
+		return eventstore.Evidence{}, eventstore.ErrInvalidRecord
+	}
+	if record.PayloadFormatVersion == 0 {
+		record.PayloadFormatVersion = 2
+	}
+	if record.PayloadFormatVersion < 1 || record.PayloadFormatVersion > 2 {
 		return eventstore.Evidence{}, eventstore.ErrInvalidRecord
 	}
 	if err := validRecordPayload(record.OrganizationID, record.PayloadObjectKey, record.PayloadSHA256, record.PayloadBytes, record.PayloadContentBytes); err != nil {

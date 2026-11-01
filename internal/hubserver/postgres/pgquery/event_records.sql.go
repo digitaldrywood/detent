@@ -114,7 +114,7 @@ func (q *Queries) RecordGetCollaborationVersion(ctx context.Context, arg RecordG
 }
 
 const recordGetEvent = `-- name: RecordGetEvent :one
-SELECT organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND id=$4
+SELECT organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND id=$4
 `
 
 type RecordGetEventParams struct {
@@ -155,12 +155,13 @@ func (q *Queries) RecordGetEvent(ctx context.Context, arg RecordGetEventParams) 
 		&i.PayloadSHA256,
 		&i.PayloadBytes,
 		&i.PayloadContentBytes,
+		&i.PayloadFormatVersion,
 	)
 	return i, err
 }
 
 const recordGetEvidence = `-- name: RecordGetEvidence :one
-SELECT organization_id, change_id, sequence, version_id, kind, source_key, actor_kind, actor_principal_id, decision, created_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes FROM change_evidence WHERE organization_id=$1 AND change_id=$2 AND kind=$3 AND source_key=$4
+SELECT organization_id, change_id, sequence, version_id, kind, source_key, actor_kind, actor_principal_id, decision, created_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version FROM change_evidence WHERE organization_id=$1 AND change_id=$2 AND kind=$3 AND source_key=$4
 `
 
 type RecordGetEvidenceParams struct {
@@ -193,12 +194,13 @@ func (q *Queries) RecordGetEvidence(ctx context.Context, arg RecordGetEvidencePa
 		&i.PayloadSHA256,
 		&i.PayloadBytes,
 		&i.PayloadContentBytes,
+		&i.PayloadFormatVersion,
 	)
 	return i, err
 }
 
 const recordGetEvidenceSequence = `-- name: RecordGetEvidenceSequence :one
-SELECT organization_id, change_id, sequence, version_id, kind, source_key, actor_kind, actor_principal_id, decision, created_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes FROM change_evidence WHERE organization_id=$1 AND change_id=$2 AND sequence=$3
+SELECT organization_id, change_id, sequence, version_id, kind, source_key, actor_kind, actor_principal_id, decision, created_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version FROM change_evidence WHERE organization_id=$1 AND change_id=$2 AND sequence=$3
 `
 
 type RecordGetEvidenceSequenceParams struct {
@@ -225,6 +227,7 @@ func (q *Queries) RecordGetEvidenceSequence(ctx context.Context, arg RecordGetEv
 		&i.PayloadSHA256,
 		&i.PayloadBytes,
 		&i.PayloadContentBytes,
+		&i.PayloadFormatVersion,
 	)
 	return i, err
 }
@@ -286,7 +289,7 @@ func (q *Queries) RecordGetReceipt(ctx context.Context, arg RecordGetReceiptPara
 }
 
 const recordGetVersion = `-- name: RecordGetVersion :one
-SELECT organization_id, id, change_id, number, head_sha, base_sha, merge_base_sha, repository, policy_revision_id, attempt_id, actor_kind, actor_principal_id, external_provider, external_id, external_url, created_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes FROM change_versions WHERE organization_id=$1 AND change_id=$2 AND id=$3
+SELECT organization_id, id, change_id, number, head_sha, base_sha, merge_base_sha, repository, policy_revision_id, attempt_id, actor_kind, actor_principal_id, external_provider, external_id, external_url, created_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version FROM change_versions WHERE organization_id=$1 AND change_id=$2 AND id=$3
 `
 
 type RecordGetVersionParams struct {
@@ -319,6 +322,7 @@ func (q *Queries) RecordGetVersion(ctx context.Context, arg RecordGetVersionPara
 		&i.PayloadSHA256,
 		&i.PayloadBytes,
 		&i.PayloadContentBytes,
+		&i.PayloadFormatVersion,
 	)
 	return i, err
 }
@@ -427,33 +431,34 @@ func (q *Queries) RecordInsertCollaborationVersion(ctx context.Context, arg Reco
 }
 
 const recordInsertEvent = `-- name: RecordInsertEvent :one
-INSERT INTO collaboration_events (organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22) RETURNING organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes
+INSERT INTO collaboration_events (organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23) RETURNING organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version
 `
 
 type RecordInsertEventParams struct {
-	OrganizationID      tracker.OrganizationID
-	ProjectID           tracker.ProjectID
-	WorkItemID          tracker.NativeWorkItemID
-	ID                  string
-	Sequence            int64
-	Type                string
-	SchemaVersion       int64
-	ActorKind           string
-	ActorPrincipalID    string
-	EventRevision       int64
-	ChangeID            string
-	VersionID           string
-	HeadSHA             string
-	RunID               string
-	AttemptID           string
-	FromState           string
-	ToState             string
-	RecordedAt          time.Time
-	PayloadObjectKey    string
-	PayloadSHA256       string
-	PayloadBytes        int64
-	PayloadContentBytes int64
+	OrganizationID       tracker.OrganizationID
+	ProjectID            tracker.ProjectID
+	WorkItemID           tracker.NativeWorkItemID
+	ID                   string
+	Sequence             int64
+	Type                 string
+	SchemaVersion        int64
+	ActorKind            string
+	ActorPrincipalID     string
+	EventRevision        int64
+	ChangeID             string
+	VersionID            string
+	HeadSHA              string
+	RunID                string
+	AttemptID            string
+	FromState            string
+	ToState              string
+	RecordedAt           time.Time
+	PayloadObjectKey     string
+	PayloadSHA256        string
+	PayloadBytes         int64
+	PayloadContentBytes  int64
+	PayloadFormatVersion int64
 }
 
 func (q *Queries) RecordInsertEvent(ctx context.Context, arg RecordInsertEventParams) (CollaborationEvent, error) {
@@ -480,6 +485,7 @@ func (q *Queries) RecordInsertEvent(ctx context.Context, arg RecordInsertEventPa
 		arg.PayloadSHA256,
 		arg.PayloadBytes,
 		arg.PayloadContentBytes,
+		arg.PayloadFormatVersion,
 	)
 	var i CollaborationEvent
 	err := row.Scan(
@@ -505,30 +511,32 @@ func (q *Queries) RecordInsertEvent(ctx context.Context, arg RecordInsertEventPa
 		&i.PayloadSHA256,
 		&i.PayloadBytes,
 		&i.PayloadContentBytes,
+		&i.PayloadFormatVersion,
 	)
 	return i, err
 }
 
 const recordInsertEvidence = `-- name: RecordInsertEvidence :one
-INSERT INTO change_evidence (organization_id, change_id, sequence, version_id, kind, source_key, actor_kind, actor_principal_id, decision, created_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING organization_id, change_id, sequence, version_id, kind, source_key, actor_kind, actor_principal_id, decision, created_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes
+INSERT INTO change_evidence (organization_id, change_id, sequence, version_id, kind, source_key, actor_kind, actor_principal_id, decision, created_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING organization_id, change_id, sequence, version_id, kind, source_key, actor_kind, actor_principal_id, decision, created_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version
 `
 
 type RecordInsertEvidenceParams struct {
-	OrganizationID      tracker.OrganizationID
-	ChangeID            string
-	Sequence            int64
-	VersionID           *string
-	Kind                string
-	SourceKey           *string
-	ActorKind           string
-	ActorPrincipalID    string
-	Decision            string
-	CreatedAt           time.Time
-	PayloadObjectKey    string
-	PayloadSHA256       string
-	PayloadBytes        int64
-	PayloadContentBytes int64
+	OrganizationID       tracker.OrganizationID
+	ChangeID             string
+	Sequence             int64
+	VersionID            *string
+	Kind                 string
+	SourceKey            *string
+	ActorKind            string
+	ActorPrincipalID     string
+	Decision             string
+	CreatedAt            time.Time
+	PayloadObjectKey     string
+	PayloadSHA256        string
+	PayloadBytes         int64
+	PayloadContentBytes  int64
+	PayloadFormatVersion int64
 }
 
 func (q *Queries) RecordInsertEvidence(ctx context.Context, arg RecordInsertEvidenceParams) (ChangeEvidence, error) {
@@ -547,6 +555,7 @@ func (q *Queries) RecordInsertEvidence(ctx context.Context, arg RecordInsertEvid
 		arg.PayloadSHA256,
 		arg.PayloadBytes,
 		arg.PayloadContentBytes,
+		arg.PayloadFormatVersion,
 	)
 	var i ChangeEvidence
 	err := row.Scan(
@@ -564,6 +573,7 @@ func (q *Queries) RecordInsertEvidence(ctx context.Context, arg RecordInsertEvid
 		&i.PayloadSHA256,
 		&i.PayloadBytes,
 		&i.PayloadContentBytes,
+		&i.PayloadFormatVersion,
 	)
 	return i, err
 }
@@ -646,31 +656,32 @@ func (q *Queries) RecordInsertReceipt(ctx context.Context, arg RecordInsertRecei
 }
 
 const recordInsertVersion = `-- name: RecordInsertVersion :one
-INSERT INTO change_versions (organization_id, id, change_id, number, head_sha, base_sha, merge_base_sha, repository, policy_revision_id, attempt_id, actor_kind, actor_principal_id, external_provider, external_id, external_url, created_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20) RETURNING organization_id, id, change_id, number, head_sha, base_sha, merge_base_sha, repository, policy_revision_id, attempt_id, actor_kind, actor_principal_id, external_provider, external_id, external_url, created_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes
+INSERT INTO change_versions (organization_id, id, change_id, number, head_sha, base_sha, merge_base_sha, repository, policy_revision_id, attempt_id, actor_kind, actor_principal_id, external_provider, external_id, external_url, created_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21) RETURNING organization_id, id, change_id, number, head_sha, base_sha, merge_base_sha, repository, policy_revision_id, attempt_id, actor_kind, actor_principal_id, external_provider, external_id, external_url, created_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version
 `
 
 type RecordInsertVersionParams struct {
-	OrganizationID      tracker.OrganizationID
-	ID                  string
-	ChangeID            string
-	Number              int64
-	HeadSHA             string
-	BaseSHA             string
-	MergeBaseSHA        string
-	Repository          string
-	PolicyRevisionID    string
-	AttemptID           string
-	ActorKind           string
-	ActorPrincipalID    string
-	ExternalProvider    string
-	ExternalID          string
-	ExternalURL         string
-	CreatedAt           time.Time
-	PayloadObjectKey    string
-	PayloadSHA256       string
-	PayloadBytes        int64
-	PayloadContentBytes int64
+	OrganizationID       tracker.OrganizationID
+	ID                   string
+	ChangeID             string
+	Number               int64
+	HeadSHA              string
+	BaseSHA              string
+	MergeBaseSHA         string
+	Repository           string
+	PolicyRevisionID     string
+	AttemptID            string
+	ActorKind            string
+	ActorPrincipalID     string
+	ExternalProvider     string
+	ExternalID           string
+	ExternalURL          string
+	CreatedAt            time.Time
+	PayloadObjectKey     string
+	PayloadSHA256        string
+	PayloadBytes         int64
+	PayloadContentBytes  int64
+	PayloadFormatVersion int64
 }
 
 func (q *Queries) RecordInsertVersion(ctx context.Context, arg RecordInsertVersionParams) (ChangeVersion, error) {
@@ -695,6 +706,7 @@ func (q *Queries) RecordInsertVersion(ctx context.Context, arg RecordInsertVersi
 		arg.PayloadSHA256,
 		arg.PayloadBytes,
 		arg.PayloadContentBytes,
+		arg.PayloadFormatVersion,
 	)
 	var i ChangeVersion
 	err := row.Scan(
@@ -718,6 +730,7 @@ func (q *Queries) RecordInsertVersion(ctx context.Context, arg RecordInsertVersi
 		&i.PayloadSHA256,
 		&i.PayloadBytes,
 		&i.PayloadContentBytes,
+		&i.PayloadFormatVersion,
 	)
 	return i, err
 }
@@ -779,7 +792,7 @@ func (q *Queries) RecordListChange(ctx context.Context, arg RecordListChangePara
 }
 
 const recordListEvent = `-- name: RecordListEvent :many
-SELECT organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND sequence>$4 ORDER BY sequence LIMIT $5
+SELECT organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND sequence>$4 ORDER BY sequence LIMIT $5
 `
 
 type RecordListEventParams struct {
@@ -828,6 +841,7 @@ func (q *Queries) RecordListEvent(ctx context.Context, arg RecordListEventParams
 			&i.PayloadSHA256,
 			&i.PayloadBytes,
 			&i.PayloadContentBytes,
+			&i.PayloadFormatVersion,
 		); err != nil {
 			return nil, err
 		}
@@ -843,7 +857,7 @@ func (q *Queries) RecordListEvent(ctx context.Context, arg RecordListEventParams
 }
 
 const recordListEvidence = `-- name: RecordListEvidence :many
-SELECT organization_id, change_id, sequence, version_id, kind, source_key, actor_kind, actor_principal_id, decision, created_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes FROM change_evidence WHERE organization_id=$1 AND change_id=$2 AND sequence>$3 ORDER BY sequence LIMIT $4
+SELECT organization_id, change_id, sequence, version_id, kind, source_key, actor_kind, actor_principal_id, decision, created_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version FROM change_evidence WHERE organization_id=$1 AND change_id=$2 AND sequence>$3 ORDER BY sequence LIMIT $4
 `
 
 type RecordListEvidenceParams struct {
@@ -882,6 +896,7 @@ func (q *Queries) RecordListEvidence(ctx context.Context, arg RecordListEvidence
 			&i.PayloadSHA256,
 			&i.PayloadBytes,
 			&i.PayloadContentBytes,
+			&i.PayloadFormatVersion,
 		); err != nil {
 			return nil, err
 		}
@@ -941,7 +956,7 @@ func (q *Queries) RecordListLink(ctx context.Context, arg RecordListLinkParams) 
 }
 
 const recordListVersion = `-- name: RecordListVersion :many
-SELECT organization_id, id, change_id, number, head_sha, base_sha, merge_base_sha, repository, policy_revision_id, attempt_id, actor_kind, actor_principal_id, external_provider, external_id, external_url, created_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes FROM change_versions WHERE organization_id=$1 AND change_id=$2 AND number>$3 ORDER BY number LIMIT $4
+SELECT organization_id, id, change_id, number, head_sha, base_sha, merge_base_sha, repository, policy_revision_id, attempt_id, actor_kind, actor_principal_id, external_provider, external_id, external_url, created_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version FROM change_versions WHERE organization_id=$1 AND change_id=$2 AND number>$3 ORDER BY number LIMIT $4
 `
 
 type RecordListVersionParams struct {
@@ -986,6 +1001,7 @@ func (q *Queries) RecordListVersion(ctx context.Context, arg RecordListVersionPa
 			&i.PayloadSHA256,
 			&i.PayloadBytes,
 			&i.PayloadContentBytes,
+			&i.PayloadFormatVersion,
 		); err != nil {
 			return nil, err
 		}

@@ -12,20 +12,21 @@ import (
 )
 
 type ChangeEvidence struct {
-	OrganizationID      tracker.OrganizationID
-	ChangeID            string
-	Sequence            int64
-	VersionID           *string
-	Kind                string
-	SourceKey           *string
-	ActorKind           string
-	ActorPrincipalID    string
-	Decision            string
-	CreatedAt           time.Time
-	PayloadObjectKey    string
-	PayloadSHA256       string
-	PayloadBytes        int64
-	PayloadContentBytes int64
+	OrganizationID       tracker.OrganizationID
+	ChangeID             string
+	Sequence             int64
+	VersionID            *string
+	Kind                 string
+	SourceKey            *string
+	ActorKind            string
+	ActorPrincipalID     string
+	Decision             string
+	CreatedAt            time.Time
+	PayloadObjectKey     string
+	PayloadSHA256        string
+	PayloadBytes         int64
+	PayloadContentBytes  int64
+	PayloadFormatVersion int64
 }
 
 type ChangeIssueLink struct {
@@ -53,51 +54,53 @@ type ChangeRequest struct {
 }
 
 type ChangeVersion struct {
-	OrganizationID      tracker.OrganizationID
-	ID                  string
-	ChangeID            string
-	Number              int64
-	HeadSHA             string
-	BaseSHA             string
-	MergeBaseSHA        string
-	Repository          string
-	PolicyRevisionID    string
-	AttemptID           string
-	ActorKind           string
-	ActorPrincipalID    string
-	ExternalProvider    string
-	ExternalID          string
-	ExternalURL         string
-	CreatedAt           time.Time
-	PayloadObjectKey    string
-	PayloadSHA256       string
-	PayloadBytes        int64
-	PayloadContentBytes int64
+	OrganizationID       tracker.OrganizationID
+	ID                   string
+	ChangeID             string
+	Number               int64
+	HeadSHA              string
+	BaseSHA              string
+	MergeBaseSHA         string
+	Repository           string
+	PolicyRevisionID     string
+	AttemptID            string
+	ActorKind            string
+	ActorPrincipalID     string
+	ExternalProvider     string
+	ExternalID           string
+	ExternalURL          string
+	CreatedAt            time.Time
+	PayloadObjectKey     string
+	PayloadSHA256        string
+	PayloadBytes         int64
+	PayloadContentBytes  int64
+	PayloadFormatVersion int64
 }
 
 type CollaborationEvent struct {
-	OrganizationID      tracker.OrganizationID
-	ProjectID           tracker.ProjectID
-	WorkItemID          tracker.NativeWorkItemID
-	ID                  string
-	Sequence            int64
-	Type                string
-	SchemaVersion       int64
-	ActorKind           string
-	ActorPrincipalID    string
-	EventRevision       int64
-	ChangeID            string
-	VersionID           string
-	HeadSHA             string
-	RunID               string
-	AttemptID           string
-	FromState           string
-	ToState             string
-	RecordedAt          time.Time
-	PayloadObjectKey    string
-	PayloadSHA256       string
-	PayloadBytes        int64
-	PayloadContentBytes int64
+	OrganizationID       tracker.OrganizationID
+	ProjectID            tracker.ProjectID
+	WorkItemID           tracker.NativeWorkItemID
+	ID                   string
+	Sequence             int64
+	Type                 string
+	SchemaVersion        int64
+	ActorKind            string
+	ActorPrincipalID     string
+	EventRevision        int64
+	ChangeID             string
+	VersionID            string
+	HeadSHA              string
+	RunID                string
+	AttemptID            string
+	FromState            string
+	ToState              string
+	RecordedAt           time.Time
+	PayloadObjectKey     string
+	PayloadSHA256        string
+	PayloadBytes         int64
+	PayloadContentBytes  int64
+	PayloadFormatVersion int64
 }
 
 type CollaborationVersion struct {
@@ -624,4 +627,13 @@ type RequestMinute struct {
 	SumMs          float64
 	MaxMs          float64
 	Histogram      []int64
+}
+
+type StorageConversionProgress struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	Family         string
+	AggregateID    string
+	ConvertedRows  int64
+	ConvertedBytes int64
 }
