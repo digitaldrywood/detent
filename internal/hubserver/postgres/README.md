@@ -651,3 +651,71 @@ or per-tenant pools (INV-18, INV-21). Isolated PostgreSQL 17 fixtures cover
 backend/configuration rejection, role authority, schema drift, cancellation,
 connection release, separate migrations and refusal to start unported workers;
 they use only private fixture endpoints and generated credentials (INV-22).
+
+## Deployment capability contract (P27)
+
+A deployment must pass this contract on a disposable PostgreSQL 17 environment
+with the same role permissions, connection path and pooling mode intended for
+the Hub. A local binary pass establishes upstream PostgreSQL compatibility only;
+it does not establish a managed provider's compatibility. A provider that cannot
+meet any requirement is a cutover blocker. Record the failing test, SQLSTATE and
+capability difference without credentials; resolve it before enabling serving.
+Never substitute an owner, administrator, platform or RLS-bypassing runtime login.
+
+| Required capability | Executable proof |
+| --- | --- |
+| Administrator provisions three separate unprivileged groups; runtime cannot assume migration/platform authority or change schema. | `TestDatabaseRolesHaveSeparateAuthority`, `TestRuntimeRejectsCombinedAuthority`, `TestPlatformInventoryAndRoleSeparation` |
+| A separately authenticated migration login applies the complete Goose chain to an empty database, can reapply it, and owns the schema and ledger. Runtime cannot migrate. | `TestPostgresMigrationAuthorityIsSeparate`, `TestCoreMigrationsFromEmpty` |
+| Tenant tables enable and force RLS, including for their owner. Missing/unknown scope denies reads and writes; overlapping keys in two tenants stay isolated. | `TestCoreRowSecurity`, `TestCoreRowSecurityRejectsCrossTenantWrites`, `TestDatabaseRolesHaveSeparateAuthority`, `TestTenantTransactionIsolation` |
+| Parameterized `set_config(..., true)` stays local to one transaction. Commit, rollback, statement errors and failed binding release it before reuse. | `TestTenantTransactionsDoNotLeakContext`, `TestTenantBindingFailureReleasesConnection` |
+| The connection path preserves explicit read-committed/read-only transactions, cancellation, bounded serving/background budgets and pool reuse. It retains no tenant state between transactions. | `TestRepositoryReadCommittedAndReadOnly`, `TestRepositoryCancellation`, `TestRepositoryPoolBudgetsAndReuse` |
+| PostgreSQL typed keys, identity sequences, partial indexes, deferred tenant foreign keys, PL/pgSQL triggers/security-definer functions, `ON CONFLICT`, `RETURNING`, row locks and `SKIP LOCKED` work through the actual connection path. No additional extension or JSON column is required. | Schema migrations plus core, event, lease, metrics, conversion and platform repository tests |
+| Unsupported role grants, session defaults and schema drift refuse startup, release connections and expose no service capable of claiming work. | `TestDeploymentRejectsUnsupportedRuntimeCapabilities`, `TestPostgresStartupRejectsUnsafeRoles`, `TestPostgresStartupRejectsSessionDefaults`, `TestPostgresStartupRejectsSchemaDrift`, `TestPostgresStartupOwnsPoolWithoutSQLiteOrWorkers` |
+
+`NewRuntime` checks both supplied pools before returning a transaction boundary.
+It requires PostgreSQL major version 17, `row_security=on`, an empty session
+tenant binding and an effective application search path of `public` or
+`public, pg_catalog`. It verifies required tenant SELECT/INSERT/UPDATE/DELETE
+grants, preserving the read-only conversion-progress and non-deletable cursor
+exceptions, USAGE without UPDATE on identity/fencing sequences and EXECUTE on
+the scoped allocator and history conversion functions. It rejects
+TRUNCATE, public/catalog schema creation, database schema creation and platform schema
+access, including permissions inherited from PUBLIC. The existing elevated-role,
+owner-membership and forced-RLS checks remain authoritative. P03 additionally
+checks the exact migration ledger and closes the pool on failure. Credentials,
+grants and server settings must remain fixed while that runtime is in use.
+
+Run the disposable binary proof from this worktree, with no ambient `PG*`
+settings and a nonzero test-process deadline:
+
+```sh
+mkdir -p "$PWD/tmp"
+export TMPDIR="$PWD/tmp"
+export PATH="/opt/homebrew/opt/postgresql@17/bin:$PATH"
+export DETENT_TEST_POSTGRES=binary
+go test -race -v -timeout=10m ./internal/testenv/pgtest \
+  ./internal/hubserver/postgres ./internal/hubserver/corestore \
+  ./internal/hubserver/eventstore ./internal/hubserver/leasestore \
+  ./internal/hubserver/metricsstore ./internal/cloudentry/platformstore
+go test -race -v -timeout=10m ./internal/hubserver \
+  -run '^(TestPostgres|TestDatabaseStartupCancellation)'
+```
+
+For a disposable provider equivalent, use the same commands with the explicit
+loopback PostgreSQL URL supported by `internal/testenv/pgtest`; never use a
+production endpoint, credential or tunnel. The fixture rejects remote endpoints,
+ambient credential discovery and other PostgreSQL major versions. It requires
+permission to provision test roles and clone/drop only its own databases; a
+provider equivalent must supply these disposable administrative capabilities as
+well as the three application authorities. Match the intended connection path
+for restricted logins. Session pooling is supported by the backend-PID reuse
+assertions. A transaction-pooling proxy must preserve the transaction contract;
+if it cannot satisfy the same suite, that deployment mode remains blocked.
+Skipped tests are not evidence of compatibility.
+
+At INV-21 scale, validation queries only build-sized relation lists and role
+catalog metadata at startup. No tenant data, runner history or fleet is scanned;
+request transactions, fixed pool budgets and retry ownership are unchanged.
+The harness uses generated logins and owned disposable databases only (INV-22).
+No safety-critical orchestrator file, serving cutover, migration or SQL input
+changes are part of this contract.

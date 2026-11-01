@@ -25,7 +25,19 @@ func NewRuntime(ctx context.Context, reader, writer *sql.DB) (*Runtime, error) {
 		}
 		var allowed bool
 		err := pool.QueryRowContext(ctx, `
-			SELECT pg_has_role(current_user, 'detent_runtime', 'USAGE')
+			SELECT current_setting('server_version_num')::integer / 10000 = 17
+			AND current_setting('row_security') = 'on'
+			AND COALESCE(current_setting('detent.organization_id', true), '') = ''
+			AND current_schemas(false) IN (ARRAY['public']::name[], ARRAY['public', 'pg_catalog']::name[])
+			AND pg_has_role(current_user, 'detent_runtime', 'USAGE')
+			AND has_schema_privilege(current_user, 'public', 'USAGE')
+			AND NOT has_schema_privilege(current_user, 'public', 'CREATE')
+			AND NOT has_schema_privilege(current_user, 'pg_catalog', 'CREATE')
+			AND NOT has_schema_privilege(current_user, 'platform', 'USAGE')
+			AND NOT has_schema_privilege(current_user, 'platform', 'CREATE')
+			AND NOT has_database_privilege(current_user, current_database(), 'CREATE')
+			AND has_function_privilege(current_user, 'public.allocate_core_record_id(regclass,bigint)', 'EXECUTE')
+			AND has_function_privilege(current_user, 'public.convert_history_payload(text,text,text,text,bigint,text,bigint,text,text,bigint,bigint,text,text,bigint,bigint)', 'EXECUTE')
 			AND NOT EXISTS (
 				SELECT 1 FROM pg_roles r
 				WHERE (r.rolname = current_user OR pg_has_role(session_user, r.oid, 'MEMBER'))
@@ -46,7 +58,7 @@ func NewRuntime(ctx context.Context, reader, writer *sql.DB) (*Runtime, error) {
 				'public.change_versions'::regclass,
 				'public.change_evidence'::regclass,
 				'public.storage_conversion_progress'::regclass,
-'public.storage_conversion_cursors'::regclass,
+				'public.storage_conversion_cursors'::regclass,
 				'public.request_metric_windows'::regclass,
 				'public.request_metric_callers'::regclass,
 				'public.request_minutes'::regclass,
@@ -55,7 +67,20 @@ func NewRuntime(ctx context.Context, reader, writer *sql.DB) (*Runtime, error) {
 				'public.native_attempt_runs'::regclass,
 				'public.request_hours'::regclass, 'public.request_days'::regclass
 				)
-				AND (pg_has_role(session_user, c.relowner, 'MEMBER') OR NOT c.relrowsecurity OR NOT c.relforcerowsecurity)
+				AND (pg_has_role(session_user, c.relowner, 'MEMBER') OR NOT c.relrowsecurity OR NOT c.relforcerowsecurity
+					OR NOT has_table_privilege(current_user, c.oid, 'SELECT')
+					OR has_table_privilege(current_user, c.oid, 'TRUNCATE')
+					OR (c.oid <> 'public.storage_conversion_progress'::regclass
+						AND (NOT has_table_privilege(current_user, c.oid, 'INSERT')
+							OR NOT has_table_privilege(current_user, c.oid, 'UPDATE')))
+					OR (c.oid NOT IN ('public.storage_conversion_progress'::regclass, 'public.storage_conversion_cursors'::regclass)
+						AND NOT has_table_privilege(current_user, c.oid, 'DELETE')))
+			)
+			AND NOT EXISTS (
+				SELECT 1 FROM pg_class c
+				WHERE c.oid IN ('public.issues_id_seq'::regclass, 'public.native_comments_record_id_seq'::regclass, 'public.leases_fencing_token_seq'::regclass)
+				AND (NOT has_sequence_privilege(current_user, c.oid, 'USAGE')
+					OR has_sequence_privilege(current_user, c.oid, 'UPDATE'))
 			)`).Scan(&allowed)
 		if err != nil {
 			return nil, fmt.Errorf("validate PostgreSQL runtime role: %w", err)

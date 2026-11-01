@@ -185,6 +185,8 @@ func TestPostgresStartupRejectsUnsafeRoles(t *testing.T) {
 		{"ungranted", "", ""},
 		{"superuser", "detent_runtime", "SUPERUSER"},
 		{"bypass RLS", "detent_runtime", "BYPASSRLS"},
+		{"database administrator", "detent_runtime", "CREATEDB"},
+		{"replication", "detent_runtime", "REPLICATION"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			admin := postgresStartupTemplate.Database(t)
@@ -248,6 +250,9 @@ func TestPostgresStartupRejectsSchemaDrift(t *testing.T) {
 		{"missing migration", `DELETE FROM public.goose_db_version WHERE version_id = (SELECT max(version_id) FROM public.goose_db_version)`},
 		{"newer schema", `INSERT INTO public.goose_db_version(version_id, is_applied) VALUES (99999999999999, true)`},
 		{"disabled RLS", `ALTER TABLE public.projects DISABLE ROW LEVEL SECURITY`},
+		{"unforced RLS", `ALTER TABLE public.projects NO FORCE ROW LEVEL SECURITY`},
+		{"missing runtime grant", `REVOKE SELECT ON public.projects FROM detent_runtime`},
+		{"schema creation", `GRANT CREATE ON SCHEMA public TO detent_runtime`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			admin := postgresStartupTemplate.Database(t)
@@ -258,6 +263,26 @@ func TestPostgresStartupRejectsSchemaDrift(t *testing.T) {
 			store, err := openDatabase(t.Context(), startupConfig(connection))
 			if store != nil || err == nil {
 				t.Fatalf("open drifted schema = %v, %v", store, err)
+			}
+			assertStartupDisconnected(t, admin, connection)
+		})
+	}
+}
+
+func TestPostgresStartupRejectsSessionDefaults(t *testing.T) {
+	for _, setting := range []string{
+		`row_security = off`,
+		`"detent.organization_id" = 'org_first'`,
+	} {
+		t.Run(setting, func(t *testing.T) {
+			admin := postgresStartupTemplate.Database(t)
+			connection := startupConnection(t, admin, "detent_runtime", "")
+			if _, err := admin.ExecContext(t.Context(), "ALTER ROLE "+pq.QuoteIdentifier(connection.User)+" SET "+setting); err != nil {
+				t.Fatal(err)
+			}
+			service, err := Open(t.Context(), startupConfig(connection))
+			if service != nil || !errors.Is(err, postgres.ErrRuntimeRole) {
+				t.Fatalf("unsafe session default returned service=%v error=%v", service, err)
 			}
 			assertStartupDisconnected(t, admin, connection)
 		})
@@ -307,6 +332,9 @@ func TestPostgresMigrationAuthorityIsSeparate(t *testing.T) {
 	}
 	if err := MigratePostgres(t.Context(), migration); err != nil {
 		t.Fatal(err)
+	}
+	if err := MigratePostgres(t.Context(), migration); err != nil {
+		t.Fatalf("reapply migrated deployment: %v", err)
 	}
 	assertStartupDisconnected(t, admin, migration)
 	store, err = openDatabase(t.Context(), startupConfig(runtime))
