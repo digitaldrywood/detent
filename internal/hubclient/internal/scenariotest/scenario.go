@@ -6,6 +6,7 @@ import (
 )
 
 type Scenario struct {
+	BudgetSummary        bool
 	SourceFixture        string
 	ImportedVersion      bool
 	FinalMessage         string

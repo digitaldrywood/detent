@@ -26,3 +26,23 @@ func TestIssueFromNativeCarriesCompletionTime(t *testing.T) {
 		})
 	}
 }
+
+func TestIssueFromNativeCarriesChangeWorkProduct(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name   string
+		change *tracker.NativeListChange
+		want   string
+	}{
+		{name: "no source"},
+		{name: "unpublished Change", change: &tracker.NativeListChange{HeadSHA: "head"}, want: "head"},
+		{name: "landing Change", change: &tracker.NativeListChange{HeadSHA: "head", LandingPending: true}, want: "head"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			issue := IssueFromNative(tracker.NativeIssue{ListChange: test.change})
+			if issue.NativeChangeHeadSHA != test.want {
+				t.Fatalf("work product head = %q, want %q", issue.NativeChangeHeadSHA, test.want)
+			}
+		})
+	}
+}

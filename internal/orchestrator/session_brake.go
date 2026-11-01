@@ -53,7 +53,7 @@ func (o *Orchestrator) handleSessionBrake(
 		event.Result.PullRequestUpdated
 	resumable := brake.Resumable ||
 		running.WorkProductPushed ||
-		terminalAttemptHasWorkProduct(running.Issue, running.WorkProductPushed) ||
+		o.terminalAttemptHasWorkProduct(ctx, running.Issue, running.WorkProductPushed) ||
 		sessionBrakeDiffResumable(running.DiffStats)
 	targetState := sessionBrakeTargetState(o.cfg, resumable)
 

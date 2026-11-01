@@ -15,6 +15,7 @@ func TestRunnerRecovery(t *testing.T) {
 		{Name: "enrolled source evidence hold releases capacity and resumes with fresh authority", Enrolled: true, SummaryFailure: true, Staged: true, Validator: "pass"},
 		{Name: "deferred interrupted source summary failure survives Scheduler restart", RestartCompletion: true, Enrolled: true, SummaryFailure: true, Staged: true},
 		{Name: "deferred interrupted source summary failure restores separate required acceptance", RestartCompletion: true, Enrolled: true, SummaryFailure: true, Staged: true, Validator: "pass"},
+		{Name: "budget cooldown resumes without repeated source work or validation", BudgetSummary: true, RestartCompletion: true, Enrolled: true, SummaryFailure: true, Staged: true, Validator: "pass"},
 		{Name: "deferred interrupted source wait survives Scheduler restart", RestartCompletion: true, Enrolled: true, SummaryFailure: true, InitialSourceWait: true, Staged: true},
 		{Name: "acknowledged interrupted completion survives legacy recapture restart", LegacyReleaseRestart: true, Enrolled: true, SummaryFailure: true, Staged: true},
 		{Name: "deferred source summary failure releases interrupted and resumes without coding", SummaryFailure: true, Staged: true},

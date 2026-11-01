@@ -1,6 +1,7 @@
 package connector
 
 import (
+	"context"
 	"strings"
 	"time"
 
@@ -50,6 +51,7 @@ type LaneSignalStatus struct {
 }
 
 type Issue struct {
+	NativeChangeHeadSHA  string               `json:"native_change_head_sha,omitempty" yaml:"-"`
 	NativeLandingHeadSHA string               `json:"native_landing_head_sha,omitempty" yaml:"-"`
 	IssueContract        *issuecontract.State `json:"issue_contract,omitempty" yaml:"issue_contract,omitempty"`
 	// CleanupDeliveredHeadSHA is fresh delivery evidence for one cleanup call, never tracker state.
@@ -319,4 +321,8 @@ func (p *PullRequest) AutomatedReviewPending() bool {
 	default:
 		return true
 	}
+}
+
+type PreservedWorkProductReader interface {
+	HasPreservedWorkProduct(context.Context, string) (bool, error)
 }

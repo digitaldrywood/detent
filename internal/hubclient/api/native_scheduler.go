@@ -29,7 +29,7 @@ func NativeTransportUnavailable(err error) bool {
 	}
 	var apiErr *APIError
 	if errors.As(err, &apiErr) {
-		return apiErr.Status >= http.StatusInternalServerError
+		return apiErr.Status >= http.StatusInternalServerError || apiErr.Status == http.StatusTooManyRequests && apiErr.Code == requestBudgetCode
 	}
 	return errors.Is(err, ErrUnavailable) || errors.Is(err, context.DeadlineExceeded)
 }

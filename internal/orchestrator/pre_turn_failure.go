@@ -181,7 +181,7 @@ func (o *Orchestrator) restorePreTurnIssue(ctx context.Context, state *State, ru
 	if target == "" {
 		target = strings.TrimSpace(running.DispatchSourceState)
 	}
-	if target == "" && normalizeState(issue.State) == normalizeState(planImplementationState) && !terminalAttemptHasWorkProduct(issue, running.WorkProductPushed) {
+	if target == "" && normalizeState(issue.State) == normalizeState(planImplementationState) && !o.terminalAttemptHasWorkProduct(ctx, issue, running.WorkProductPushed) {
 		target = terminalAttemptTodoState(o.cfg.ActiveStates)
 	}
 	reader, native := o.connector.(connector.WorkflowStateReader)

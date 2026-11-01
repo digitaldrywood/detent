@@ -319,7 +319,12 @@ func (o *Orchestrator) deferTrackerUnavailableCompletion(
 	}
 	o.captureDeferredExecution(&record)
 	record.AuthorityRestored = true
-	record.FenceRetryAt = o.completionFenceRetryAt(state, fenceErr, deferredAt, event.RetryDelay)
+	retryDelay := event.RetryDelay
+	if availability, ok := connector.AsTrackerAvailability(fenceErr); ok {
+		evidence := state.trackerEvidence[availability.Scope.Key(availability.Class)]
+		retryDelay = max(retryDelay, o.machineRetryDelay(evidence.Count))
+	}
+	record.FenceRetryAt = o.completionFenceRetryAt(state, fenceErr, deferredAt, retryDelay)
 	record.Persisted = o.persistDeferredCompletion(ctx, state, record)
 
 	if !running.CompletionOwnershipReleased {

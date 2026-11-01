@@ -43,20 +43,22 @@ func (e *responseSizeError) Unwrap() error {
 }
 
 type Config struct {
-	Enrollment        *RunnerState
-	ArtifactSettings  func() (string, int64)
-	Now               func() time.Time
-	SessionTimings    SessionTimings
-	ArtifactServiceID string
-	ArtifactBytes     int64
-	URL               string
-	IdentityFile      string
-	TokenSource       func() string
-	HTTPClient        *http.Client
-	LeaseHTTPClient   *http.Client
+	RequestBudgetTimer func(time.Duration) (<-chan time.Time, func())
+	Enrollment         *RunnerState
+	ArtifactSettings   func() (string, int64)
+	Now                func() time.Time
+	SessionTimings     SessionTimings
+	ArtifactServiceID  string
+	ArtifactBytes      int64
+	URL                string
+	IdentityFile       string
+	TokenSource        func() string
+	HTTPClient         *http.Client
+	LeaseHTTPClient    *http.Client
 }
 
 type Client struct {
+	requestBudgetTimer func(time.Duration) (<-chan time.Time, func())
 	artifactSettings   func() (string, int64)
 	now                func() time.Time
 	sessionTimings     SessionTimings
@@ -224,7 +226,7 @@ func New(config Config) (*Client, error) {
 	if config.Now == nil {
 		config.Now = time.Now
 	}
-	client := &Client{runner: config.Enrollment, artifactSettings: config.ArtifactSettings, now: config.Now, sessionTimings: config.SessionTimings, reads: newNativeReadCache(), baseURL: baseURL, tokenSource: config.TokenSource, httpClient: httpClient, leaseHTTPClient: &leaseHTTPClient, artifactServiceID: config.ArtifactServiceID, artifactBytes: config.ArtifactBytes}
+	client := &Client{requestBudgetTimer: config.RequestBudgetTimer, runner: config.Enrollment, artifactSettings: config.ArtifactSettings, now: config.Now, sessionTimings: config.SessionTimings, reads: newNativeReadCache(), baseURL: baseURL, tokenSource: config.TokenSource, httpClient: httpClient, leaseHTTPClient: &leaseHTTPClient, artifactServiceID: config.ArtifactServiceID, artifactBytes: config.ArtifactBytes}
 	if config.IdentityFile != "" {
 		file, err := runnerauth.Load(config.IdentityFile)
 		if err != nil {
@@ -385,18 +387,18 @@ func (c *Client) requestWithToken(ctx context.Context, httpClient *http.Client, 
 	}
 	if err != nil {
 		if response.StatusCode < 200 || response.StatusCode >= 300 {
-			return errors.Join(&APIError{Status: response.StatusCode, retryAfter: parseRetryAfter(response.Header.Get("Retry-After"))}, err)
+			return errors.Join(&APIError{Status: response.StatusCode, retryAfter: c.parseRetryAfter(response.Header.Get("Retry-After"))}, err)
 		}
 		return err
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		apiErr := &APIError{Status: response.StatusCode, retryAfter: parseRetryAfter(response.Header.Get("Retry-After"))}
+		apiErr := &APIError{Status: response.StatusCode, retryAfter: c.parseRetryAfter(response.Header.Get("Retry-After"))}
 		if len(payload) > 0 {
 			if err := json.Unmarshal(payload, apiErr); err != nil {
 				return errors.Join(apiErr, fmt.Errorf("%w: decode error response: %w", ErrUnavailable, err))
 			}
 		}
-		if response.StatusCode >= 500 {
+		if response.StatusCode >= 500 || apiErr.Status == http.StatusTooManyRequests && apiErr.Code == requestBudgetCode {
 			return errors.Join(ErrUnavailable, apiErr)
 		}
 		return apiErr
@@ -518,13 +520,13 @@ func (c *Client) downloadOnce(ctx context.Context, target string, limit int64) (
 		return nil, "", fmt.Errorf("%w: download exceeds %d bytes", ErrUnavailable, limit)
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		apiErr := &APIError{Status: response.StatusCode, retryAfter: parseRetryAfter(response.Header.Get("Retry-After"))}
+		apiErr := &APIError{Status: response.StatusCode, retryAfter: c.parseRetryAfter(response.Header.Get("Retry-After"))}
 		if len(payload) > 0 && strings.HasPrefix(response.Header.Get("Content-Type"), "application/json") {
 			if err := json.Unmarshal(payload, apiErr); err != nil {
 				return nil, "", fmt.Errorf("%w: decode error response: %w", ErrUnavailable, err)
 			}
 		}
-		if response.StatusCode >= 500 {
+		if response.StatusCode >= 500 || apiErr.Status == http.StatusTooManyRequests && apiErr.Code == requestBudgetCode {
 			return nil, "", errors.Join(ErrUnavailable, apiErr)
 		}
 		return nil, "", apiErr

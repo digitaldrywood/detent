@@ -46,7 +46,19 @@ func createTestClient(t testing.TB, config Config, constructors ...Constructors)
 	if clock == nil {
 		clock = time.Now
 	}
-	config.Now = func() time.Time { return clock().Add(time.Duration(fixture.offset.Load())) }
+	config.Now = func() time.Time {
+		if fixture.budgetNow != nil {
+			return fixture.budgetNow()
+		}
+		return clock().Add(time.Duration(fixture.offset.Load()))
+	}
+	config.RequestBudgetTimer = func(delay time.Duration) (<-chan time.Time, func()) {
+		if fixture.budgetTimer != nil {
+			return fixture.budgetTimer(delay)
+		}
+		timer := time.NewTimer(delay)
+		return timer.C, func() { timer.Stop() }
+	}
 	config.ArtifactSettings = func() (string, int64) {
 		fixture.mu.RLock()
 		defer fixture.mu.RUnlock()
@@ -175,6 +187,8 @@ func fixtureRunnerRequest(t testing.TB, client *Client, token, method, path stri
 }
 
 type clientFixture struct {
+	budgetNow       func() time.Time
+	budgetTimer     func(time.Duration) (<-chan time.Time, func())
 	requests        *testsupport.Transport
 	renewals        *testsupport.Transport
 	constructors    Constructors

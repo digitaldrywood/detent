@@ -36,6 +36,7 @@ func TestCompletionFenceDeferralOutcomes(t *testing.T) {
 		rejected bool
 	}{
 		{name: "503", fenceErr: completionDeferralAvailabilityError()},
+		{name: "runner request budget", fenceErr: connector.NewTrackerAvailabilityError(connector.TrackerAvailabilityScope{Connector: "hub_native", Operation: "publication"}, connector.TrackerAvailabilityClassServer, errors.New("runner_request_budget: retry after current minute"))},
 		{name: "403", fenceErr: &github.StatusError{StatusCode: 403, Err: github.ErrAuthenticationFailed}},
 		{name: "primary rate limit", fenceErr: &github.StatusError{StatusCode: 429, Err: github.ErrRateLimited}},
 		{name: "secondary rate limit", fenceErr: &github.StatusError{StatusCode: 403, Err: github.ErrRateLimited, RateLimitKind: "secondary"}},
@@ -62,6 +63,9 @@ func TestCompletionFenceDeferralOutcomes(t *testing.T) {
 			}
 			runtimeStore := openCompletionDeferralStore(t, filepath.Join(t.TempDir(), "detent.db"))
 			cfg := completionDeferralConfig()
+			if tt.name == "runner request budget" {
+				cfg.PollInterval = time.Second
+			}
 			orch := Orchestrator{cfg: cfg, connector: tracker, workAttempts: runtimeStore, now: func() time.Time { return now }}
 			state := newState(cfg)
 			attemptID := startCompletionDeferralAttempt(t, runtimeStore, issue, now)
@@ -112,6 +116,9 @@ func TestCompletionFenceDeferralOutcomes(t *testing.T) {
 			if receipt.Status != store.WorkAttemptStatusActive || receipt.Phase != deferredCompletionPhase || receipt.WaitReason != connector.TrackerUnavailableCondition || receipt.NextAction != deferredCompletionNextAction {
 				t.Fatalf("deferred work attempt = %#v, want active tracker wait", receipt)
 			}
+			if !allowanceInfrastructureAttempt(receipt) || receipt.Status != store.WorkAttemptStatusActive || receipt.TerminalState != "" {
+				t.Fatalf("deferred completion consumed failure allowance: %+v", receipt)
+			}
 			if !receipt.LeaseExpiresAt.After(now) {
 				t.Fatal("completion persistence removed its lease expiry")
 			}
@@ -130,6 +137,20 @@ func TestCompletionFenceDeferralOutcomes(t *testing.T) {
 			}
 			if reason := knownDispatchWaitReason(issue, &state, nil, cfg.TerminalStates); reason != dispatchSkipRetryPending {
 				t.Fatalf("dispatch while completion deferred = %q, want pending replay", reason)
+			}
+			if tt.name == "runner request budget" {
+				retry := state.Retry[issue.ID]
+				delay := retry.DueAt.Sub(now)
+				if delay < cfg.FailureRetryBaseDelay*7/8 || delay > cfg.MaxRetryBackoff {
+					t.Fatalf("completion did not use capped jittered retry: %s", delay)
+				}
+				if !orch.retryDeferredCompletions(t.Context(), &state, retry.DueAt.Add(time.Second)) {
+					t.Fatal("budget recovery did not complete through its owner")
+				}
+				after, err := runtimeStore.WorkAttempt(t.Context(), attemptID)
+				if err != nil || after.TerminalState != store.WorkAttemptTerminalSuccess || after.ErrorClass != "" || len(state.deferredCompletions) != 0 {
+					t.Fatalf("budget recovery consumed failure allowance or lost completion: receipt=%+v error=%v", after, err)
+				}
 			}
 		})
 	}

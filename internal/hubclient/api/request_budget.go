@@ -45,17 +45,18 @@ func (c *Client) waitRequestBudget(ctx context.Context, method, path string) err
 	}
 	for {
 		c.requestBudgetMu.Lock()
-		delay := time.Until(*c.requestBudgetWindow(path))
+		delay := c.requestBudgetWindow(path).Sub(c.budgetNow())
 		c.requestBudgetMu.Unlock()
 		if delay <= 0 {
 			return nil
 		}
-		timer := time.NewTimer(delay)
+		fired, stop := c.budgetTimer(delay)
 		select {
 		case <-ctx.Done():
-			timer.Stop()
+			stop()
 			return ctx.Err()
-		case <-timer.C:
+		case <-fired:
+			stop()
 		}
 	}
 }
@@ -64,7 +65,7 @@ func (c *Client) waitRequestBudget(ctx context.Context, method, path string) err
 // the current minute, so a refusal without a usable Retry-After waits for the
 // next one.
 func (c *Client) DeferRequestBudget(path string, until time.Time) {
-	now := time.Now()
+	now := c.budgetNow()
 	if !until.After(now) {
 		until = now.Truncate(time.Minute).Add(time.Minute)
 	}
@@ -82,9 +83,9 @@ func (c *Client) requestBudgetWindow(path string) *time.Time {
 	return &c.requestBudgetUntil
 }
 
-func parseRetryAfter(header string) time.Time {
+func (c *Client) parseRetryAfter(header string) time.Time {
 	if seconds, err := strconv.ParseInt(header, 10, 64); err == nil && seconds > 0 && seconds <= int64((1<<63-1)/time.Second) {
-		return time.Now().Add(time.Duration(seconds) * time.Second)
+		return c.budgetNow().Add(time.Duration(seconds) * time.Second)
 	}
 	if parsed, err := http.ParseTime(header); err == nil {
 		return parsed
@@ -97,4 +98,19 @@ func maxTime(a, b time.Time) time.Time {
 		return a
 	}
 	return b
+}
+
+func (c *Client) budgetTimer(delay time.Duration) (<-chan time.Time, func()) {
+	if c.requestBudgetTimer != nil {
+		return c.requestBudgetTimer(delay)
+	}
+	timer := time.NewTimer(delay)
+	return timer.C, func() { timer.Stop() }
+}
+
+func (c *Client) budgetNow() time.Time {
+	if c.now != nil {
+		return c.now()
+	}
+	return time.Now()
 }
