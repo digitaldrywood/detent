@@ -350,22 +350,23 @@ func (s *Service) prepareAdmissionPayloads(ctx context.Context, scope nativeScop
 		if newer {
 			continue
 		}
-		_, data, changed, err := prepareNativeSchedulingOutcome(ctx, s.database.reader, &scope, id, tracker.NativeSchedulerDecision{Source: "native_runner_admission", Outcome: admission.Result, Reason: admission.Predicate}, admission.ObservedAt)
+		_, err = prepareContentMutation(ctx, s.database.reader, func() (struct{}, error) {
+			_, data, changed, err := prepareNativeSchedulingOutcome(ctx, s.database.reader, &scope, id, tracker.NativeSchedulerDecision{Source: "native_runner_admission", Outcome: admission.Result, Reason: admission.Predicate}, admission.ObservedAt)
+			if err != nil || !changed {
+				return struct{}{}, err
+			}
+			raw, err := marshalNative(data)
+			if err != nil {
+				return struct{}{}, err
+			}
+			payload, err := schedulerPayloadArchive(scope, raw)
+			if err != nil {
+				return struct{}{}, err
+			}
+			_, err = prepareChangeContent(ctx, string(scope.organization), payload)
+			return struct{}{}, err
+		})
 		if err != nil {
-			return err
-		}
-		if !changed {
-			continue
-		}
-		raw, err := marshalNative(data)
-		if err != nil {
-			return err
-		}
-		payload, err := schedulerPayloadArchive(scope, raw)
-		if err != nil {
-			return err
-		}
-		if _, err := prepareChangeContent(ctx, string(scope.organization), payload); err != nil {
 			return err
 		}
 	}
