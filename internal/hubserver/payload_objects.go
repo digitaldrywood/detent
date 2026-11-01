@@ -186,14 +186,6 @@ func contentMutation(ctx context.Context, active bool) {
 }
 
 func readPayloadReference(ctx context.Context, q nativeQueryer, organization, key string) (attachment.ArchiveReference, error) {
-	if content, ok := ctx.Value(changeContentKey{}).(*changeContent); ok {
-		content.mu.Lock()
-		pending, found := content.registrations[organization+"/"+key]
-		content.mu.Unlock()
-		if found {
-			return pending.reference, nil
-		}
-	}
 	ref := contentReference()
 	err := q.QueryRowContext(ctx, `SELECT object_key,object_sha256,object_bytes,content_bytes FROM change_content_objects WHERE organization_id=? AND object_key=?
  UNION ALL SELECT object_key,sha256,size,uncompressed_size FROM attachments WHERE organization_id=? AND object_key=? AND kind='archive' AND customer_owned=0 AND storage_binding_id='' LIMIT 1`, organization, key, organization, key).Scan(&ref.Key, &ref.SHA256, &ref.CompressedSize, &ref.UncompressedSize)
@@ -243,7 +235,7 @@ func prepareContentMutation[T any](ctx context.Context, q nativeQueryer, operati
 func isolateContentContext(ctx context.Context) context.Context {
 	if current, ok := ctx.Value(changeContentKey{}).(*changeContent); ok {
 		current.mu.Lock()
-		isolated := &changeContent{call: current.call, store: current.store, register: current.register, registrations: maps.Clone(current.registrations), query: current.query, prepared: maps.Clone(current.prepared), payloads: maps.Clone(current.payloads), references: maps.Clone(current.references), payloadBytes: current.payloadBytes, organization: current.organization}
+		isolated := &changeContent{call: current.call, store: current.store, register: current.register, query: current.query, prepared: maps.Clone(current.prepared), payloads: maps.Clone(current.payloads), references: maps.Clone(current.references), payloadBytes: current.payloadBytes, organization: current.organization, stableHistory: current.stableHistory}
 		current.mu.Unlock()
 		ctx = context.WithValue(ctx, changeContentKey{}, isolated)
 	}

@@ -65,7 +65,7 @@ func nativeHistoryID(ctx context.Context, kind string, data tracker.Collaboratio
 	}
 	key := kind + ":" + runDetailEntry(*data.Run)
 	content.mu.Lock()
-	if content.registrations == nil {
+	if !content.stableHistory {
 		content.mu.Unlock()
 		return payloadNativeID(ctx, "evt")
 	}

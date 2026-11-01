@@ -535,7 +535,7 @@ func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, 
 	}
 	operationID := options.OperationID
 	if event, ok := input.(tracker.NativeRunEvent); ok {
-		deferContentRegistration(ctx)
+		useStableRunHistoryIDs(ctx)
 		_, replay, err := s.nativeCommandReplay(ctx, scope, operationID, command.IdempotencyKey, input)
 		if err != nil {
 			return nil, err
@@ -643,9 +643,6 @@ func (s *Service) commitNativeMutation(ctx context.Context, scope nativeScope, o
 	metrics := hostedNativeMutationMetrics(input, options.Completion)
 	before, err := s.database.hostedConsumption(ctx, tx, now, metrics...)
 	if err != nil {
-		return nil, err
-	}
-	if err := registerPreparedContent(ctx, tx); err != nil {
 		return nil, err
 	}
 	completion := options.Completion

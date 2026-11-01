@@ -121,9 +121,6 @@ func (s *Service) commitRunnerTransaction(c echo.Context, status int, operation 
 	if err != nil {
 		return err
 	}
-	if err := registerPreparedContent(ctx, tx); err != nil {
-		return err
-	}
 	step("dispatch_before")
 	var dispatchBefore string
 	if heartbeat {
