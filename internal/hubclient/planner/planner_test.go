@@ -16,3 +16,11 @@ func TestNativePlanContinuation(t *testing.T) {
 func TestNativePlannerAutomaticHandoff(t *testing.T) {
 	scenariotest.RunPlannerAutomaticHandoff(t, scenariotest.Constructors{New: nativechange.NewExecution, Recovered: nativechange.NewRecoveredExecution})
 }
+
+func TestRunnerDisposition(t *testing.T) {
+	scenariotest.Run(t, []scenariotest.Scenario{
+		{Name: "blocked native729 first unchanged Rework preserves dependency", FinalMessage: scenariotest.DependencyMessage, WantDisposition: scenariotest.DependencyDisposition(), Rework: true},
+		{Name: "blocked native825 unchanged Rework preserves instance gate blocker", FinalMessage: scenariotest.InstanceMessage, WantDisposition: scenariotest.InstanceDisposition(), Rework: true},
+		{Name: "blocked SSH Rework retains staged source", FinalMessage: scenariotest.InstanceMessage, WantDisposition: scenariotest.InstanceDisposition(), Rework: true, SSH: true, Staged: true},
+	}, scenariotest.Constructors{New: nativechange.NewExecution, Recovered: nativechange.NewRecoveredExecution}, scenariotest.Checks{})
+}

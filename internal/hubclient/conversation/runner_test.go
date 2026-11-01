@@ -17,3 +17,12 @@ func TestConversationRunnerExecutesLiveTurns(t *testing.T) {
 func TestConversationRunnerNegotiatesPreStartBinding(t *testing.T) {
 	scenariotest.RunConversationRunnerNegotiatesPreStartBinding(t, scenariotest.Constructors{New: nativechange.NewExecution, Recovered: nativechange.NewRecoveredExecution})
 }
+
+func TestRunnerContinuation(t *testing.T) {
+	scenariotest.Run(t, []scenariotest.Scenario{
+		{Name: "authenticated Continue delivers after retained source pass summary failure", ContinueMessage: true, SummaryFailure: true, Staged: true},
+		{Name: "authenticated Continue delivers after completed source and acceptance feedback", ContinueMessage: true, CompletedContinue: true, SummaryFailure: true, Feedback: "technical", Validator: "pass", Staged: true},
+		{Name: "authenticated Continue delivers after optional completed source feedback", ContinueMessage: true, CompletedContinue: true, SummaryFailure: true, Feedback: "technical", Staged: true},
+		{Name: "authenticated Continue delivers after source wait summary failure", ContinueMessage: true, InitialSourceWait: true, SummaryFailure: true, Staged: true},
+	}, scenariotest.Constructors{New: nativechange.NewExecution, Recovered: nativechange.NewRecoveredExecution}, scenariotest.Checks{})
+}

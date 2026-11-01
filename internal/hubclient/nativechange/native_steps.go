@@ -4,6 +4,7 @@ import (
 	"context"
 	"slices"
 
+	"github.com/digitaldrywood/detent/internal/hubclient/evidence"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -75,20 +76,9 @@ func (e *nativeExecution) Step(ctx context.Context, binding tracker.NativeStepRe
 }
 
 func (e *nativeExecution) stepReviewState() string {
-	recovery := e.claim.recovery
-	if e.stepReviews != nil {
-		recovery.ChangeDetail = e.stepReviews
-	}
-	if e.stepDiscussion != nil {
-		recovery.Discussion = e.stepDiscussion
-	}
-	return tracker.NativeStepReviewState(recovery)
+	return evidence.ReviewState(e.claim.recovery, e.stepReviews, e.stepDiscussion)
 }
 
 func (e *nativeExecution) stepReviewEpoch() tracker.FencingToken {
-	epoch := tracker.NativeStepReviewEpoch(e.claim.recovery)
-	for _, receipt := range e.data.Steps {
-		epoch = max(epoch, receipt.ReviewEpoch)
-	}
-	return epoch
+	return evidence.ReviewEpoch(e.claim.recovery, e.data.Steps)
 }

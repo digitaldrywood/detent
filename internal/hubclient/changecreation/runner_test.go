@@ -27,3 +27,10 @@ func TestRunnerCreation(t *testing.T) {
 		{Name: "no commits", WantState: "Done"},
 	}, scenariotest.Constructors{New: nativechange.NewExecution, Recovered: nativechange.NewRecoveredExecution}, scenariotest.Checks{})
 }
+
+func TestRunnerImportedVersion(t *testing.T) {
+	scenariotest.Run(t, []scenariotest.Scenario{
+		{Name: "imported unchanged Rework records implementing attempt before validation", ImportedVersion: true, Rework: true, Validator: "pass", Land: true, WantChanged: true, WantState: "Merging", WantChanges: 1},
+		{Name: "imported unchanged Rework cannot clear existing human rejection", ImportedVersion: true, Rework: true, Formal: true, Validator: "pass", Land: true},
+	}, scenariotest.Constructors{New: nativechange.NewExecution, Recovered: nativechange.NewRecoveredExecution}, scenariotest.Checks{})
+}
