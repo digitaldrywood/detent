@@ -316,61 +316,211 @@ func TestNativeSearchDocumentByteBudget(t *testing.T) {
 	}
 }
 
-func TestNativeSearchBoundedFTSMigration(t *testing.T) {
-	f := newDefaultNativeFixture(t, Config{})
-	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+func nativeSearchTransactionPages(t *testing.T, db *sql.DB, path string, run func()) (int64, int64) {
+	t.Helper()
+	integer := func(query string) int64 {
+		t.Helper()
+		var value int64
+		if err := db.QueryRowContext(t.Context(), query).Scan(&value); err != nil {
+			t.Fatal(err)
+		}
+		return value
+	}
+	if _, err := db.ExecContext(t.Context(), "PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0"); err != nil {
 		t.Fatal(err)
 	}
-	first := f.create(t, "Retained narwhal")
-	second := f.create(t, "Second retained narwhal")
-	body := strings.Repeat("narwhal ", 20*1024) + " tailmarker"
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET body=? WHERE native_id IN(?,?)", body, first.WorkItemID, second.WorkItemID); err != nil {
-		t.Fatal(err)
+	var busy, logged, checkpointed int
+	if err := db.QueryRowContext(t.Context(), "PRAGMA wal_checkpoint(TRUNCATE)").Scan(&busy, &logged, &checkpointed); err != nil || busy != 0 {
+		t.Fatalf("reset WAL: busy=%d err=%v", busy, err)
 	}
-	drainTestNativeSearch(t, f.service)
-	migration, err := migrationFiles.ReadFile("migrations/20261101000817_native_search_bounded_fts.sql")
+	before := integer("PRAGMA freelist_count")
+	pageSize := integer("PRAGMA page_size")
+	run()
+	freed := integer("PRAGMA freelist_count") - before
+	wal, err := os.Stat(path + "-wal")
 	if err != nil {
 		t.Fatal(err)
 	}
-	up, down, ok := strings.Cut(string(migration), "-- +goose Down")
-	if !ok {
-		t.Fatal("missing rollback section")
+	var touched int64
+	if wal.Size() > 0 {
+		touched = (wal.Size() - 32) / (pageSize + 24)
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), down); err != nil {
-		t.Fatal(err)
-	}
-	var legacy int
-	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM native_work_fts WHERE native_work_fts MATCH 'tailmarker'").Scan(&legacy); err != nil || legacy != 2 {
-		t.Fatalf("legacy tail matches=%d want=2 err=%v", legacy, err)
-	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), up); err != nil {
-		t.Fatal(err)
-	}
-	assertRetained := func() {
-		t.Helper()
-		scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-		page, err := f.service.readIssues(t.Context(), scope, url.Values{"q": {"retained"}})
-		if err != nil || len(page.Items) != 2 {
-			t.Fatalf("retained results=%d want=2 err=%v", len(page.Items), err)
-		}
-	}
-	assertRetained()
-	if _, err := f.service.database.backfillNativeSearch(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	var indexed int
-	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM native_work_fts").Scan(&indexed); err != nil || indexed != 1 {
-		t.Fatalf("one refresh indexed=%d want=1 err=%v", indexed, err)
-	}
-	drainTestNativeSearch(t, f.service)
-	assertRetained()
-	for _, test := range []struct {
-		term string
-		want int
-	}{{"retained", 2}, {"tailmarker", 0}} {
-		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM native_work_fts WHERE native_work_fts MATCH ?", test.term).Scan(&indexed); err != nil || indexed != test.want {
-			t.Fatalf("term=%s indexed=%d want=%d err=%v", test.term, indexed, test.want, err)
-		}
+	return freed, touched
+}
+
+func TestNativeSearchBoundedFTSMigration(t *testing.T) {
+	for _, documents := range []int{2, 1025} {
+		t.Run(strconv.Itoa(documents), func(t *testing.T) {
+			f := newDefaultNativeFixture(t, Config{})
+			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+				t.Fatal(err)
+			}
+			first := f.create(t, "Retained narwhal")
+			second := tracker.NativeWorkItemID("wi_legacy_second")
+			if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO issues
+(native_id,organization_id,project_id,number,title,body,url,github_state,source_version,source_updated_at,synchronized_at,created_at,updated_at)
+SELECT ?,organization_id,project_id,1000,'Second retained narwhal','','','open','1',source_updated_at,synchronized_at,created_at,updated_at
+FROM issues WHERE native_id=?`, second, first.WorkItemID); err != nil {
+				t.Fatal(err)
+			}
+			body := strings.Repeat("narwhal ", 20*1024) + " tailmarker"
+			db := f.service.database
+			exec := func(query string, args ...any) {
+				t.Helper()
+				if _, err := db.db.ExecContext(t.Context(), query, args...); err != nil {
+					t.Fatal(err)
+				}
+			}
+			exec("UPDATE issues SET body=? WHERE native_id IN(?,?)", body, first.WorkItemID, second)
+			drainTestNativeSearch(t, f.service)
+			migration, err := migrationFiles.ReadFile("migrations/20261101000817_native_search_bounded_fts.sql")
+			if err != nil {
+				t.Fatal(err)
+			}
+			up, down, ok := strings.Cut(string(migration), "-- +goose Down")
+			if !ok {
+				t.Fatal("missing rollback section")
+			}
+			exec(down)
+			exec(`INSERT INTO native_work_fts(rowid,title,body)
+ WITH RECURSIVE seed(n) AS (VALUES(3) UNION ALL SELECT n+1 FROM seed WHERE n<?)
+ SELECT n+1000000,'Retired document',? FROM seed WHERE n<=?`, documents, body, documents)
+			var legacy int
+			if err := db.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM native_work_fts WHERE native_work_fts MATCH 'tailmarker'").Scan(&legacy); err != nil || legacy != documents {
+				t.Fatalf("legacy tail matches=%d want=%d err=%v", legacy, documents, err)
+			}
+			freed, touched := nativeSearchTransactionPages(t, db.db, db.path, func() {
+				tx, err := db.db.BeginTx(t.Context(), nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer tx.Rollback()
+				if _, err := tx.ExecContext(t.Context(), up); err != nil {
+					t.Fatal(err)
+				}
+				if err := tx.Commit(); err != nil {
+					t.Fatal(err)
+				}
+			})
+			t.Logf("migration documents=%d pages freed=%d touched=%d", documents, freed, touched)
+			if freed > 64 || touched > 64 {
+				t.Fatalf("migration rewrote legacy history: freed=%d touched=%d want<=64", freed, touched)
+			}
+			assertRetained := func(want int) {
+				t.Helper()
+				scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+				page, err := f.service.readIssues(t.Context(), scope, url.Values{"q": {"retained"}})
+				if err != nil || len(page.Items) != want {
+					t.Fatalf("retained results=%d want=%d err=%v", len(page.Items), want, err)
+				}
+			}
+			assertRetained(2)
+			legacyRows := func() int {
+				t.Helper()
+				var exists bool
+				if err := db.reader.QueryRowContext(t.Context(), "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='native_work_legacy_fts')").Scan(&exists); err != nil {
+					t.Fatal(err)
+				}
+				if !exists {
+					return -1
+				}
+				var rows int
+				if err := db.reader.QueryRowContext(t.Context(), `SELECT
+ (SELECT count(*) FROM native_work_legacy_fts_data WHERE id>10)+
+ (SELECT count(*) FROM native_work_legacy_fts_idx)+
+ (SELECT count(*) FROM native_work_legacy_fts_docsize)`).Scan(&rows); err != nil {
+					t.Fatal(err)
+				}
+				return rows
+			}
+			previous := legacyRows()
+			var ticks, cleanupTicks int
+			mutated, reopened := false, false
+			var maxFreed, maxTouched int64
+			for {
+				more := false
+				freed, touched = nativeSearchTransactionPages(t, db.db, db.path, func() {
+					var err error
+					more, err = db.backfillNativeSearch(t.Context())
+					if err != nil {
+						t.Fatal(err)
+					}
+				})
+				maxFreed, maxTouched = max(maxFreed, freed), max(maxTouched, touched)
+				if freed > 128 || touched > 128 {
+					t.Fatalf("cleanup tick=%d freed=%d touched=%d want<=128", ticks, freed, touched)
+				}
+				remaining := legacyRows()
+				if remaining < 0 && previous > 0 {
+					t.Fatalf("dropped legacy index containing %d storage records", previous)
+				}
+				if remaining >= 0 {
+					removed := previous - remaining
+					if removed < 0 || removed > 32 {
+						t.Fatalf("legacy storage removals=%d want=0..32", removed)
+					}
+					if removed > 0 {
+						cleanupTicks++
+					}
+				}
+				previous = remaining
+				if !more {
+					break
+				}
+				ticks++
+				if cleanupTicks == 1 && !mutated {
+					exec("UPDATE issues SET title='Updated retained narwhal' WHERE native_id=?", first.WorkItemID)
+					exec("DELETE FROM issues WHERE native_id=?", second)
+					mutated = true
+				}
+				if mutated {
+					assertRetained(1)
+				} else {
+					assertRetained(2)
+				}
+				if cleanupTicks == 2 && !reopened {
+					reopened = true
+					if err := db.reader.Close(); err != nil {
+						t.Fatal(err)
+					}
+					if err := db.db.Close(); err != nil {
+						t.Fatal(err)
+					}
+					pool, err := sql.Open("sqlite", sqliteDSN(db.path, defaultBusyTimeout))
+					if err != nil {
+						t.Fatal(err)
+					}
+					db.db = pool
+					db.db.SetMaxOpenConns(1)
+					db.reader, err = sql.Open("sqlite", sqliteDSN(db.path, defaultBusyTimeout))
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			t.Logf("cleanup documents=%d ticks=%d max pages freed=%d touched=%d", documents, ticks, maxFreed, maxTouched)
+			if !mutated || !reopened || (documents > 2 && cleanupTicks < 4) {
+				t.Fatalf("legacy cleanup ticks=%d mutated=%t reopened=%t", cleanupTicks, mutated, reopened)
+			}
+			assertRetained(1)
+			page, err := f.service.readIssues(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, url.Values{"q": {"updated"}})
+			if err != nil || len(page.Items) != 1 || page.Items[0].WorkItemID != first.WorkItemID {
+				t.Fatalf("updated search results=%v err=%v", page.Items, err)
+			}
+			var tables int
+			if err := db.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM sqlite_schema WHERE name GLOB 'native_work_legacy_fts*'").Scan(&tables); err != nil || tables != 0 {
+				t.Fatalf("retired FTS tables=%d want=0 err=%v", tables, err)
+			}
+			var indexed int
+			for _, test := range []struct {
+				term string
+				want int
+			}{{"updated", 1}, {"tailmarker", 0}} {
+				if err := db.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM native_work_fts WHERE native_work_fts MATCH ?", test.term).Scan(&indexed); err != nil || indexed != test.want {
+					t.Fatalf("term=%s indexed=%d want=%d err=%v", test.term, indexed, test.want, err)
+				}
+			}
+		})
 	}
 }
 
@@ -2360,8 +2510,11 @@ func TestNativeSearchCleanupMigration(t *testing.T) {
 			if err := db.QueryRowContext(t.Context(), rootsQuery).Scan(&rootsBefore); err != nil {
 				t.Fatal(err)
 			}
-			before := integer("SELECT total_changes()")
-			_, err := runMigrations(t.Context(), db, discardLogger())
+			var migrationErr error
+			freed, touched := nativeSearchTransactionPages(t, db, path, func() {
+				_, migrationErr = runMigrations(t.Context(), db, discardLogger())
+			})
+			err := migrationErr
 			if test.reject {
 				if err == nil || !strings.Contains(err.Error(), "foreign key violations") {
 					t.Fatalf("invalid source migration err=%v", err)
@@ -2374,10 +2527,9 @@ func TestNativeSearchCleanupMigration(t *testing.T) {
 			if err != nil {
 				t.Fatalf("upgrade through validating migration runner: %v", err)
 			}
-			changes := integer("SELECT total_changes()") - before
-			t.Logf("migration documents=%d row_changes=%d", test.documents, changes)
-			if changes > 64 {
-				t.Errorf("migration rewrote history: documents=%d changes=%d want<=64", test.documents, changes)
+			t.Logf("migration documents=%d pages freed=%d touched=%d", test.documents, freed, touched)
+			if freed > 128 || touched > 128 {
+				t.Errorf("migration rewrote history: documents=%d freed=%d touched=%d want<=128", test.documents, freed, touched)
 			}
 			if err := db.QueryRowContext(t.Context(), rootsQuery).Scan(&rootsAfter); err != nil || rootsAfter != rootsBefore {
 				t.Errorf("migration rebuilt search tables or indexes: before=%s after=%s err=%v", rootsBefore, rootsAfter, err)

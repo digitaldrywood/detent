@@ -913,6 +913,31 @@
     "scope": "FTS index of native_work_documents -> issues.organization_id",
     "inline_payloads": []
   },
+  "native_work_legacy_fts": {
+    "ownership": "organization-owned",
+    "scope": "FTS index of native_work_documents -> issues.organization_id",
+    "inline_payloads": []
+  },
+  "native_work_legacy_fts_config": {
+    "ownership": "organization-owned",
+    "scope": "FTS index of native_work_documents -> issues.organization_id",
+    "inline_payloads": []
+  },
+  "native_work_legacy_fts_data": {
+    "ownership": "organization-owned",
+    "scope": "FTS index of native_work_documents -> issues.organization_id",
+    "inline_payloads": []
+  },
+  "native_work_legacy_fts_docsize": {
+    "ownership": "organization-owned",
+    "scope": "FTS index of native_work_documents -> issues.organization_id",
+    "inline_payloads": []
+  },
+  "native_work_legacy_fts_idx": {
+    "ownership": "organization-owned",
+    "scope": "FTS index of native_work_documents -> issues.organization_id",
+    "inline_payloads": []
+  },
   "native_work_scoped_content": {
     "ownership": "organization-owned",
     "scope": "native_work_scoped_content.scope encodes organization and project; source_id -> native_work_documents.id",

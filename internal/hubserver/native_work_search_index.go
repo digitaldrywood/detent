@@ -20,6 +20,7 @@ import (
 const nativeSearchRebuildBatch = 1
 const nativeSearchDocumentBytes = 64 * 1024
 const nativeSearchPruneBatch = 256
+const nativeSearchLegacyPruneBatch = 32
 
 var registerNativeSearchText = sync.OnceValue(func() error {
 	if err := registerNativeSearchTokenizer(); err != nil {
@@ -256,6 +257,52 @@ func pruneNativeSearchPostings(ctx context.Context, tx *sql.Tx, id int64, postin
 	return nil
 }
 
+func (d *database) retireLegacyNativeSearch(ctx context.Context) (bool, error) {
+	var exists bool
+	if err := d.reader.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='native_work_legacy_fts')`).Scan(&exists); err != nil {
+		return false, fmt.Errorf("read legacy search retirement: %w", err)
+	}
+	if !exists {
+		return false, nil
+	}
+	for _, batch := range []struct {
+		pending, remove string
+	}{
+		{`SELECT EXISTS(SELECT 1 FROM native_work_legacy_fts_data WHERE id>10)`,
+			`DELETE FROM native_work_legacy_fts_data WHERE id IN(SELECT id FROM native_work_legacy_fts_data WHERE id>10 ORDER BY id LIMIT ?)`},
+		{`SELECT EXISTS(SELECT 1 FROM native_work_legacy_fts_idx)`,
+			`DELETE FROM native_work_legacy_fts_idx WHERE (segid,term) IN(SELECT segid,term FROM native_work_legacy_fts_idx ORDER BY segid,term LIMIT ?)`},
+		{`SELECT EXISTS(SELECT 1 FROM native_work_legacy_fts_docsize)`,
+			`DELETE FROM native_work_legacy_fts_docsize WHERE id IN(SELECT id FROM native_work_legacy_fts_docsize ORDER BY id LIMIT ?)`},
+	} {
+		var pending bool
+		if err := d.reader.QueryRowContext(ctx, batch.pending).Scan(&pending); err != nil {
+			return false, fmt.Errorf("read legacy search storage: %w", err)
+		}
+		if !pending {
+			continue
+		}
+		tx, err := d.db.BeginTx(ctx, nil)
+		if err != nil {
+			return false, err
+		}
+		defer tx.Rollback()
+		if _, err := tx.ExecContext(ctx, batch.remove, nativeSearchLegacyPruneBatch); err != nil {
+			return false, fmt.Errorf("retire legacy search storage: %w", err)
+		}
+		return true, d.commit(ctx, tx)
+	}
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DROP TABLE native_work_legacy_fts`); err != nil {
+		return false, fmt.Errorf("drop retired search index: %w", err)
+	}
+	return true, d.commit(ctx, tx)
+}
+
 func (d *database) backfillNativeSearch(ctx context.Context) (bool, error) {
 	var issue, through, last, next int64
 	queued := true
@@ -274,7 +321,7 @@ func (d *database) backfillNativeSearch(ctx context.Context) (bool, error) {
 				return false, fmt.Errorf("select search rebuild cursor: %w", err)
 			}
 			if through >= last {
-				return false, nil
+				return d.retireLegacyNativeSearch(ctx)
 			}
 			err = d.reader.QueryRowContext(ctx, `SELECT min(id) FROM (
  SELECT (SELECT id FROM native_work_documents WHERE id>? AND id<=? ORDER BY id LIMIT 1) AS id

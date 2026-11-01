@@ -5,7 +5,7 @@ DROP TRIGGER native_work_issue_delete;
 DROP TRIGGER native_work_comment_insert;
 DROP TRIGGER native_work_comment_update;
 DROP TRIGGER native_work_comment_delete;
-DROP TABLE native_work_fts;
+ALTER TABLE native_work_fts RENAME TO native_work_legacy_fts;
 CREATE VIRTUAL TABLE native_work_fts USING fts5(title, body, content='', contentless_delete=1, tokenize='porter unicode61');
 
 -- +goose StatementBegin
@@ -41,6 +41,7 @@ DROP TRIGGER native_work_issue_insert;
 DROP TRIGGER native_work_issue_delete;
 DROP TRIGGER native_work_comment_insert;
 DROP TABLE native_work_fts;
+DROP TABLE IF EXISTS native_work_legacy_fts;
 CREATE VIRTUAL TABLE native_work_fts USING fts5(title, body, content='native_work_search_content', content_rowid='id', tokenize='porter unicode61');
 
 -- +goose StatementBegin
