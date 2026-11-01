@@ -111,6 +111,7 @@ func TestVersionCommandDefaultsJSONForNonTTY(t *testing.T) {
 		GoVersion             string `json:"go_version"`
 		OS                    string `json:"os"`
 		Arch                  string `json:"arch"`
+		SocketActivation      bool   `json:"socket_activation_supported"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
 		t.Fatalf("version output is not JSON: %v\n%s", err, stdout.String())
@@ -127,6 +128,9 @@ func TestVersionCommandDefaultsJSONForNonTTY(t *testing.T) {
 	}
 	if got.GoVersion != runtime.Version() || got.OS != runtime.GOOS || got.Arch != runtime.GOARCH {
 		t.Fatalf("runtime metadata = %#v, want current runtime", got)
+	}
+	if !got.SocketActivation {
+		t.Fatal("socket activation support = false, want true")
 	}
 	if got.RegistrySchemaVersion < 1 || got.AuthSchemaVersion < 1 || got.PlatformSchemaVersion < 1 {
 		t.Fatalf("entry schema versions = %d/%d/%d, want positive versions", got.RegistrySchemaVersion, got.AuthSchemaVersion, got.PlatformSchemaVersion)

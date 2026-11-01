@@ -176,14 +176,171 @@ rollback_previous() {
 	[ -n "$previous" ] || return 1
 	short=$(release_commit "$previous")
 	[ -n "$short" ] || { echo "previous release commit is unknown; candidate remains selected; recovery required" >&2; return 1; }
+	if [ "${socket_bootstrap:-false}" = true ]; then
+		if ! stop_unit; then
+			echo "candidate service could not be stopped; recovery required" >&2
+			return 1
+		fi
+		sudo -n systemctl stop "$socket_unit" || true
+		sudo -n systemctl disable "$socket_unit" || true
+		sudo -n rm -f "$socket_dropin" "$socket_path"
+		sudo -n systemctl daemon-reload || true
+		socket_bootstrap=false
+	fi
 	release=$previous
 	sudo -n ln -sfn "$previous" "$OPT/detent"
-	restart_unit
+	if ! restart_unit; then
+		echo "previous service could not be restarted; recovery required" >&2
+		return 1
+	fi
 	if wait_healthy; then
 		echo "rolled back to $short" >&2
 	else
 		echo "previous binary is unhealthy; database left untouched; recovery required" >&2
 	fi
+}
+
+restore_previous_before_candidate() {
+	[ -n "$previous" ] || return 1
+	short=$(release_commit "$previous")
+	[ -n "$short" ] || return 1
+	if ! stop_unit; then
+		echo "candidate service could not be stopped before restoration" >&2
+		return 1
+	fi
+	if [ "${socket_bootstrap:-false}" = true ]; then
+		sudo -n systemctl stop "$socket_unit" || true
+		sudo -n systemctl disable "$socket_unit" || true
+		sudo -n rm -f "$socket_dropin" "$socket_path"
+		sudo -n systemctl daemon-reload || true
+		socket_bootstrap=false
+	fi
+	release=$previous
+	sudo -n ln -sfn "$previous" "$OPT/detent" || return 1
+	sudo -n systemctl start "$unit" || return 1
+	if wait_previous_healthy_before_candidate; then
+		echo "restored previous service before candidate startup" >&2
+		return 0
+	fi
+	echo "previous service did not recover; database left untouched; recovery required" >&2
+	return 1
+}
+
+wait_previous_healthy_before_candidate() {
+	local raw_health pid
+	while :; do
+		pid=$(systemctl show -p MainPID --value "$unit")
+		[ "${pid:-0}" != 0 ] && [ "$(sudo -n readlink "/proc/$pid/exe")" = "$release" ] || return 1
+		raw_health=$(read_health 2>/dev/null) || raw_health=
+		if [ -n "$raw_health" ] && printf '%s' "$raw_health" | python3 -c 'import json,sys; h=json.load(sys.stdin); commit=h.get("commit"); sys.exit(0 if h.get("status") == "ok" and isinstance(commit,str) and commit.startswith(sys.argv[1]) else 1)' "$short"; then
+			return 0
+		fi
+		sleep 2
+	done
+}
+
+stop_unit() {
+	local active_state pgrep_status
+	sudo -n systemctl stop "$unit" || return 1
+	for _ in $(seq 1 60); do
+		if pgrep -u "$NAME" -f "$OPT/" >/dev/null; then
+			sleep 1
+			continue
+		else
+			pgrep_status=$?
+		fi
+		[ "$pgrep_status" = 1 ] || return 1
+		break
+	done
+	if pgrep -u "$NAME" -f "$OPT/" >/dev/null; then return 1; else pgrep_status=$?; fi
+	[ "$pgrep_status" = 1 ] || return 1
+	active_state=$(systemctl show -p ActiveState --value "$unit") || return 1
+	[ "$active_state" = inactive ] || return 1
+	return 0
+}
+
+socket_address() {
+	if [ "$unit" = "$CLOUD" ]; then
+		case "$DOMAIN" in
+			cloud.detent.build) printf '127.0.0.1:8017' ;;
+			staging.cloud.detent.build) printf '127.0.0.1:8018' ;;
+			*) return 1 ;;
+		esac
+		return
+	fi
+	printf '127.0.0.1:7777'
+}
+
+prepare_socket_activation() {
+	socket_unit="$unit.socket"
+	socket_path="/etc/systemd/system/$socket_unit"
+	socket_dropin="/etc/systemd/system/$unit.service.d/socket.conf"
+	socket_bootstrap=false
+	systemctl is-active --quiet "$socket_unit" && return 0
+	if sudo -n test -e "$socket_path" || sudo -n test -e "$socket_dropin"; then
+		echo "inactive socket activation files already exist; refusing to replace them" >&2
+		return 1
+	fi
+	local address dropin_directory
+	address=$(socket_address) || { echo "no socket address is configured for $unit" >&2; return 1; }
+	socket_file=$(mktemp "${TMPDIR:-/tmp}/$NAME-socket.XXXXXX")
+	dropin_file=$(mktemp "${TMPDIR:-/tmp}/$NAME-dropin.XXXXXX")
+	dropin_directory=${socket_dropin%/*}
+	cat > "$socket_file" <<EOF
+[Unit]
+Description=Detent $unit listener
+
+[Socket]
+ListenStream=$address
+Accept=no
+Backlog=65535
+
+[Install]
+WantedBy=sockets.target
+EOF
+	cat > "$dropin_file" <<EOF
+[Unit]
+Requires=$socket_unit
+After=$socket_unit
+
+[Service]
+Sockets=$socket_unit
+EOF
+	if ! sudo -n install -d -m 0755 "$dropin_directory" || ! sudo -n install -m 0644 "$socket_file" "$socket_path" || ! sudo -n install -m 0644 "$dropin_file" "$socket_dropin" || ! sudo -n systemctl daemon-reload; then
+		sudo -n rm -f "$socket_dropin" "$socket_path"
+		sudo -n systemctl daemon-reload || true
+		rm -f "$socket_file" "$dropin_file"
+		socket_file= dropin_file=
+		return 1
+	fi
+	rm -f "$socket_file" "$dropin_file"
+	socket_file= dropin_file=
+	socket_bootstrap=true
+}
+
+restart_unit() {
+	candidate_start_state=not_started
+	if [ "${socket_bootstrap:-false}" != true ]; then
+		candidate_start_state=may_have_started
+	fi
+	if ! stop_unit; then
+		candidate_start_state=may_have_started
+		echo "service stop could not be verified" >&2
+		return 1
+	fi
+	if [ "${socket_bootstrap:-false}" = true ]; then
+		if ! sudo -n systemctl enable "$socket_unit"; then
+			echo "socket activation could not be enabled" >&2
+			return 1
+		fi
+		candidate_start_state=may_have_started
+		if ! sudo -n systemctl start "$socket_unit"; then
+			echo "socket activation could not be started" >&2
+			return 1
+		fi
+	fi
+	sudo -n systemctl start "$unit" || return 1
+	candidate_start_state=started
 }
 
 main() {
@@ -203,13 +360,16 @@ short=${sha:0:9}
 exec 9>/run/lock/$NAME-deploy.lock
 flock -w 600 9 || { echo "another production deploy holds the lock" >&2; exit 1; }
 staged=$(mktemp "${TMPDIR:-/tmp}/$NAME-upload.XXXXXX")
-trap 'rm -f "$staged"' EXIT
+socket_file= dropin_file=
+trap 'rm -f "$staged" "${socket_file:-}" "${dropin_file:-}"' EXIT
 head -c 314572800 > "$staged"
 size=$(stat -c %s "$staged")
 [ "$size" -gt 1000000 ] || { echo "upload too small ($size bytes)" >&2; exit 1; }
 chmod 0755 "$staged"
 reported=$(sudo -n -u $NAME "$staged" version --format json 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin).get("commit",""))')
 [[ "$reported" == "$short"* ]] || { echo "binary reports commit '$reported', want $short" >&2; exit 1; }
+socket_activation_supported=$(sudo -n -u "$NAME" "$staged" version --format json 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin).get("socket_activation_supported") is True)')
+[ "$socket_activation_supported" = True ] || { echo "candidate binary does not declare socket activation support" >&2; exit 1; }
 release=$OPT/releases/detent-ci-$short-$(date -u +%Y%m%dT%H%M%SZ)
 sudo -n install -m 0755 -o root -g root "$staged" "$release"
 candidate_release=$release
@@ -227,13 +387,28 @@ if [ -n "$previous" ]; then
 fi
 release=$candidate_release
 short=$candidate_short
-sudo -n ln -sfn "$release" "$OPT/detent"
-restart_unit() {
-  sudo -n systemctl stop $unit || true
-  for _ in $(seq 1 60); do pgrep -u $NAME -f "$OPT/" >/dev/null || break; sleep 1; done
-  sudo -n systemctl start $unit || true
-}
-restart_unit
+if ! prepare_socket_activation; then
+	if [ -n "$previous" ]; then sudo -n ln -sfn "$previous" "$OPT/detent"; fi
+	echo "socket activation bootstrap could not be prepared; previous service remains selected" >&2
+	exit 1
+fi
+if ! sudo -n ln -sfn "$release" "$OPT/detent"; then
+	if [ "$socket_bootstrap" = true ]; then
+		sudo -n rm -f "$socket_dropin" "$socket_path"
+		sudo -n systemctl daemon-reload || true
+		socket_bootstrap=false
+	fi
+	echo "candidate release could not be selected; previous service remains selected" >&2
+	exit 1
+fi
+if ! restart_unit; then
+	if [ "$candidate_start_state" = not_started ]; then
+		echo "candidate could not start; restoring previous direct-binding service" >&2
+		restore_previous_before_candidate || exit 1
+		exit 1
+	fi
+	echo "candidate startup reported a failure; checking health before rollback" >&2
+fi
 if wait_healthy; then
   echo "$sha" | sudo -n tee "$STATE/DEPLOYED_SHA" >/dev/null
   ls -1t $OPT/releases | grep "^detent-ci-" | tail -n +6 | sed "s|^|$OPT/releases/|" | grep -vxF "$release" | xargs -r sudo -n rm -f || true

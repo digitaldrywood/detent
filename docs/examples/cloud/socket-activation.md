@@ -1,47 +1,49 @@
-# Retaining the ingress listener during a service restart
+# Keeping the ingress listener during restarts
 
-The Cloud entry and standalone Hub accept one systemd socket through
-`LISTEN_PID` and `LISTEN_FDS`. Its TCP address must equal the configured listen
-address. Without socket activation they bind their configured address directly.
-An invalid activated descriptor fails startup rather than silently binding a
-different listener.
+Cloud entry and standalone Hub support systemd socket activation through
+`LISTEN_PID` and `LISTEN_FDS`. The socket address must match the address in the
+application configuration. Without an activated socket, the application binds
+its configured address directly. An invalid activated descriptor fails
+startup instead of silently binding a different listener.
 
-The example `detent-cloud.socket` and `detent-cloud.service.d/socket.conf`
-retain the production entry's loopback listener on port 8017. The corresponding
-Hub examples retain port 7777. Adjust both the socket and the application's
-configured address together for another environment. Keep the socket active
-when restarting the service; do not attach its lifetime to the service with
-`PartOf=`. The service requires the socket, but stopping the service does not
-stop its socket.
+Release deployments use the restricted CI receiver. On the first deployment
+where the selected Cloud or standalone Hub socket is not active, the receiver
+renders and installs only that service's socket unit and service drop-in, then
+enables the socket and starts the service with the candidate binary. It does
+not start the unused standalone Hub while deploying Cloud entry. Before
+installation, the receiver requires the candidate's version JSON to declare
+`socket_activation_supported: true`; older or unknown binaries are rejected
+before the service is stopped. The production
+Cloud service and socket are `detent-cloud.service` and `detent-cloud.socket`
+on `127.0.0.1:8017`. Staging uses `detent-cloud-staging.service` and
+`detent-cloud-staging.socket` on `127.0.0.1:8018`. Standalone Hub uses
+`detent-hub.service` or `detent-hub-staging.service` and listens on
+`127.0.0.1:7777`.
 
-Roll out socket activation in two steps. First, deploy a build that supports
-socket activation through the existing CI receiver while the current direct-bind
-units are still installed. The new build falls back to binding its configured
-address when systemd does not pass an activated socket. Wait for that deployment
-to pass its health check before changing the units. This step is required for
-hosts running a binary that does not support `LISTEN_PID` and `LISTEN_FDS`.
+The first direct-bind handoff cannot guarantee zero connection refusals: the
+existing service must stop before systemd can bind the same address. This
+one-time bootstrap is performed by the authorized release receiver and can
+briefly refuse new connections. The socket remains active afterward. Later
+deployments restart only the selected service; the socket keeps accepting and
+queues connections while the process opens its databases and waits for ready
+tenant Hubs. The receiver reports deployment success only after the candidate
+process and complete schema health facts are ready. A transport handoff alone
+does not make a deployment healthy.
 
-Then install the units and service drop-ins from the repository with
-`sudo ./deploy/hub/install-socket-activation.sh`. Perform the one-time listener
-handoff for each service:
+If the first candidate fails health and the receiver's schema compatibility
+check permits rollback, it stops the candidate, disables the new socket,
+removes the service drop-in and socket unit, and restores the previous
+direct-binding service. If the schema evidence is unknown or incompatible, the
+candidate remains selected for recovery rather than starting a binary that may
+not open the migrated databases.
 
-```sh
-sudo systemctl stop detent-cloud.service
-sudo systemctl enable --now detent-cloud.socket
-sudo systemctl start detent-cloud.service
+The example `detent-cloud.socket` and
+`detent-cloud.service.d/socket.conf` retain the production Cloud listener. The
+corresponding Hub examples retain the standalone Hub listener. For a local
+systemd deployment outside the restricted release path, install these examples
+with `deploy/hub/install-socket-activation.sh`; update the socket and
+application addresses together when using a different port.
 
-sudo systemctl stop detent-hub.service
-sudo systemctl enable --now detent-hub.socket
-sudo systemctl start detent-hub.service
-```
-
-The installer is repeatable and reloads systemd's unit definitions. The one-time
-handoff must stop each directly bound service before starting its socket so the
-socket can bind the configured port. Subsequent service restarts inherit that
-socket. Merely deploying a binary does not install or activate the units.
-
-The socket queues new connections while the service is stopped or opening its
-databases. It does not preserve accepted connections, provide tenant readiness,
-or authorize running two processes against the same database. Request and
-ingress timeouts still apply. A successful transport handoff alone is not a
-successful deployment health check.
+The socket does not preserve already accepted connections, bypass request
+timeouts, or authorize two processes to use the same database. Keep it active
+when restarting the service, and do not bind another service to its address.
