@@ -8,10 +8,15 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func (s *Service) createAPITokenFor(ctx context.Context, request tokenRequest) (tokenResponse, error) {
+	if s.config.AccessRepository != nil {
+		return s.createAccessToken(ctx, request)
+	}
 	request.Name = strings.TrimSpace(request.Name)
 	if request.Name == "" || len(request.Name) > 200 || !validAPIScope(request.Scope) {
 		return tokenResponse{}, &nativeError{Code: "invalid_token", Message: "Token name and scope are required", status: 422, publicMessage: true}
@@ -110,6 +115,9 @@ func (s *Service) createAPITokenFor(ctx context.Context, request tokenRequest) (
 }
 
 func (s *Service) rotateAPITokenFor(ctx context.Context, id string) (tokenResponse, error) {
+	if s.config.AccessRepository != nil {
+		return s.rotateAccessToken(ctx, id)
+	}
 	organizations, err := credentialDispatchOrganizations(ctx, s.database.db, id)
 	if err != nil {
 		return tokenResponse{}, err
@@ -145,6 +153,9 @@ func (s *Service) rotateAPITokenFor(ctx context.Context, id string) (tokenRespon
 }
 
 func (s *Service) revokeAPITokenFor(ctx context.Context, id string) error {
+	if s.config.AccessRepository != nil {
+		return s.accessWrite(ctx, s.accessOrganization(), func(w tenantstore.Writer) error { return w.RevokeAccessCredential(ctx, id, s.config.now()) })
+	}
 	organizations, err := credentialDispatchOrganizations(ctx, s.database.db, id)
 	if err != nil {
 		return err
@@ -171,6 +182,11 @@ func (s *Service) revokeAPITokenFor(ctx context.Context, id string) error {
 }
 
 func (s *Service) grantNativeTokenFor(ctx context.Context, id, organization, project string) error {
+	if s.config.AccessRepository != nil {
+		return s.accessWrite(ctx, tracker.OrganizationID(organization), func(w tenantstore.Writer) error {
+			return w.SetAccessTokenGrant(ctx, accessstore.TokenGrant{OrganizationID: tracker.OrganizationID(organization), TokenID: id, ProjectID: tracker.ProjectID(project)})
+		})
+	}
 	if id == bootstrapTokenID {
 		return nativePublicInvalid("Bootstrap administrator cannot be converted to a project token")
 	}

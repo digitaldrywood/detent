@@ -124,6 +124,13 @@ func (s *Service) reserveHostedInvitation(ctx context.Context, email string) err
 	return err
 }
 
+func (s *Service) reserveHostedInvitationSeatFor(ctx context.Context, credential apiCredential, email string) (bool, error) {
+	if s.config.AccessRepository != nil {
+		return s.reserveAccessInvitationSeat(ctx, credential, email)
+	}
+	return s.reserveHostedInvitationSeat(ctx, email)
+}
+
 // reserveHostedInvitationSeat holds a member seat for the invited address and
 // reports whether this call created the reservation. A reservation that was
 // already held belongs to an earlier pending invitation, so a failed attempt
@@ -164,6 +171,9 @@ func (s *Service) reserveHostedInvitationSeat(ctx context.Context, email string)
 }
 
 func (s *Service) releaseHostedInvitation(ctx context.Context, email string) error {
+	if s.config.AccessRepository != nil {
+		return s.releaseAccessInvitation(ctx, email)
+	}
 	_, err := s.database.db.ExecContext(ctx, "DELETE FROM hosted_member_reservations WHERE email = ?", email)
 	return err
 }

@@ -15,6 +15,8 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/web/templates"
 )
@@ -56,7 +58,13 @@ func (s *Service) newHostedTransaction(c echo.Context, organization, actor, sess
 		verifier = ""
 	}
 	expires := s.config.now().Add(10 * time.Minute)
-	_, err = s.database.db.ExecContext(c.Request().Context(), `INSERT INTO hosted_transactions(token_hash,state,verifier,organization_id,support_actor,support_session,expires_at) VALUES (?,?,?,?,?,?,?)`, apikey.HashToken(token), state, verifier, organization, actor, session, formatHubTime(expires))
+	if s.config.AccessRepository != nil {
+		err = s.accessWrite(c.Request().Context(), s.accessOrganization(), func(w tenantstore.Writer) error {
+			return w.CreateAccessLoginTransaction(c.Request().Context(), accessstore.LoginTransaction{OrganizationID: s.accessOrganization(), Hash: apikey.HashToken(token), State: state, Verifier: verifier, ProviderOrganizationID: organization, SupportActor: actor, SupportSession: session, ExpiresAt: expires})
+		})
+	} else {
+		_, err = s.database.db.ExecContext(c.Request().Context(), `INSERT INTO hosted_transactions(token_hash,state,verifier,organization_id,support_actor,support_session,expires_at) VALUES (?,?,?,?,?,?,?)`, apikey.HashToken(token), state, verifier, organization, actor, session, formatHubTime(expires))
+	}
 	if err != nil {
 		return hostedTransaction{}, err
 	}
@@ -96,6 +104,16 @@ func (s *Service) consumeHostedTransaction(c echo.Context) (hostedTransaction, e
 	s.hostedSetCookie(c, hostedTransactionCookie, "", "/auth/oidc", time.Unix(1, 0))
 	if err != nil {
 		return hostedTransaction{}, auth.ErrHostedIdentity
+	}
+
+	if s.config.AccessRepository != nil {
+		var transaction accessstore.LoginTransaction
+		err := s.accessWrite(c.Request().Context(), s.accessOrganization(), func(w tenantstore.Writer) error {
+			var err error
+			transaction, err = w.ConsumeAccessTransaction(c.Request().Context(), apikey.HashToken(cookie.Value), c.QueryParam("state"), s.config.now())
+			return err
+		})
+		return hostedTransaction{State: transaction.State, Verifier: transaction.Verifier, Organization: transaction.ProviderOrganizationID, SupportActor: transaction.SupportActor, SupportSession: transaction.SupportSession, InvitationToken: transaction.InvitationToken, TokenHash: transaction.Hash, ExpiresAt: transaction.ExpiresAt}, err
 	}
 	var transaction hostedTransaction
 	err = s.database.db.QueryRowContext(c.Request().Context(), `UPDATE hosted_transactions SET consumed_at = ? WHERE token_hash = ? AND consumed_at IS NULL AND julianday(expires_at) > julianday(?) RETURNING state,verifier,organization_id,support_actor,support_session,invitation_token`, formatHubTime(s.config.now()), apikey.HashToken(cookie.Value), formatHubTime(s.config.now())).Scan(&transaction.State, &transaction.Verifier, &transaction.Organization, &transaction.SupportActor, &transaction.SupportSession, &transaction.InvitationToken)
@@ -367,6 +385,9 @@ func (s *Service) acceptHostedInvitationIDFor(ctx context.Context, identity auth
 	return s.acceptHostedInvitationReference(ctx, identity, id, true)
 }
 func (s *Service) acceptHostedInvitationReference(ctx context.Context, identity auth.Identity, token string, byID bool) (resultErr error) {
+	if s.config.AccessRepository != nil {
+		return s.acceptAccessInvitation(ctx, identity, token, byID)
+	}
 	if identity.Hosted == nil || token == "" || len(token) > 512 {
 		return auth.ErrHostedIdentity
 	}
@@ -483,7 +504,18 @@ func (s *Service) startHostedInvitation(c echo.Context) error {
 	var accepted string
 	readCtx, cancelRead := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 	defer cancelRead()
-	err = s.database.reader.QueryRowContext(readCtx, "SELECT accepted_user_id FROM hosted_invitations WHERE id = ? AND organization_id = ? AND email = ?", invitation.ID, s.config.Hosted.OrganizationID, strings.ToLower(invitation.Email)).Scan(&accepted)
+	if s.config.AccessRepository != nil {
+		err = s.accessRead(readCtx, s.accessOrganization(), func(r tenantstore.Reader) error {
+			row, err := r.AccessInvitation(readCtx, invitation.ID)
+			if err != nil || !strings.EqualFold(row.Email, invitation.Email) || !row.ExpiresAt.After(s.config.now()) {
+				return auth.ErrHostedIdentity
+			}
+			accepted = row.AcceptedUserID
+			return nil
+		})
+	} else {
+		err = s.database.reader.QueryRowContext(readCtx, "SELECT accepted_user_id FROM hosted_invitations WHERE id = ? AND organization_id = ? AND email = ?", invitation.ID, s.config.Hosted.OrganizationID, strings.ToLower(invitation.Email)).Scan(&accepted)
+	}
 	if err != nil {
 		return s.hostedInvitationDenied(c, auth.InvitationUnavailable, denial)
 	}
@@ -494,7 +526,14 @@ func (s *Service) startHostedInvitation(c echo.Context) error {
 	if err != nil {
 		return s.hostedDenied(c, http.StatusServiceUnavailable, "Sign-in is temporarily unavailable", auth.HostedDenial{Flow: "invitation_start", Reason: "transaction_failed"})
 	}
-	if _, err := s.database.db.ExecContext(ctx, "UPDATE hosted_transactions SET invitation_token = ? WHERE token_hash = ?", token, transaction.TokenHash); err != nil {
+	if s.config.AccessRepository != nil {
+		err = s.accessWrite(ctx, s.accessOrganization(), func(w tenantstore.Writer) error {
+			return w.SetAccessTransactionInvitation(ctx, transaction.TokenHash, token)
+		})
+	} else {
+		_, err = s.database.db.ExecContext(ctx, "UPDATE hosted_transactions SET invitation_token = ? WHERE token_hash = ?", token, transaction.TokenHash)
+	}
+	if err != nil {
 		return s.hostedDenied(c, http.StatusServiceUnavailable, "Sign-in is temporarily unavailable", auth.HostedDenial{Flow: "invitation_start", Reason: "transaction_failed"})
 	}
 	target, err := auth.InvitationAuthorizationURL(ctx, s.config.Hosted.Provider, invitation, token, transaction.State, transaction.Verifier)
@@ -514,6 +553,9 @@ func (s *Service) hostedSupportPage(c echo.Context) error {
 
 // logoutHostedFor retains the browser's current-session revocation semantics.
 func (s *Service) logoutHostedFor(ctx context.Context, hash string, identity *auth.HostedIdentity) (operatortool.SignOutResult, error) {
+	if s.config.AccessRepository != nil {
+		return s.logoutAccessSession(ctx, hash, identity)
+	}
 	if _, err := s.database.db.ExecContext(ctx, "UPDATE hosted_sessions SET revoked_at = COALESCE(revoked_at, ?) WHERE token_hash = ?", formatHubTime(s.config.now()), hash); err != nil {
 		return operatortool.SignOutResult{}, err
 	}

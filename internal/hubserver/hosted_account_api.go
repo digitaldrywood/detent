@@ -9,6 +9,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
 type hostedNextResponse struct {
@@ -138,7 +139,20 @@ func (s *Service) hostedInvitationAcceptedBySession(c echo.Context, token string
 	var accepted int
 	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancelRead()
-	err = s.database.reader.QueryRowContext(readCtx, "SELECT count(*) FROM hosted_invitations WHERE id = ? AND organization_id = ? AND accepted_user_id = ?", invitation.ID, s.config.Hosted.OrganizationID, session.Identity.Subject).Scan(&accepted)
+	if s.config.AccessRepository != nil {
+		err = s.accessRead(readCtx, s.accessOrganization(), func(r tenantstore.Reader) error {
+			row, err := r.AccessInvitation(readCtx, invitation.ID)
+			if err != nil {
+				return err
+			}
+			if row.AcceptedUserID == session.Identity.Subject {
+				accepted = 1
+			}
+			return nil
+		})
+	} else {
+		err = s.database.reader.QueryRowContext(readCtx, "SELECT count(*) FROM hosted_invitations WHERE id = ? AND organization_id = ? AND accepted_user_id = ?", invitation.ID, s.config.Hosted.OrganizationID, session.Identity.Subject).Scan(&accepted)
+	}
 	return err == nil && accepted == 1
 }
 

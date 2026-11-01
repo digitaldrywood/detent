@@ -210,8 +210,13 @@ func (s *Service) projectRecordSlugSettings(c echo.Context, scope nativeScope) e
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	defer authority.Rollback()
+	defer s.releaseProjectRecordAuthority(ctx, authority)
 	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if s.config.AccessRepository != nil {
+			if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
+				return err
+			}
+		}
 		return w.UpdateProjectSlug(ctx, scope.project, input.ExpectedSlug, input.Slug)
 	})
 	err = errors.Join(err, authority.Rollback())

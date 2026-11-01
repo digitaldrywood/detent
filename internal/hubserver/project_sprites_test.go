@@ -177,7 +177,7 @@ func TestSpriteWakeSecret(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			secretScope, envelope, err := spriteWakeSecret(t.Context(), f.service.database.db, scope, "customer-host")
+			secretScope, envelope, err := f.service.spriteWakeSecret(t.Context(), f.service.database.db, scope, "customer-host")
 			if tt.want == "" {
 				if !errors.Is(err, sql.ErrNoRows) {
 					t.Fatalf("err = %v, want no usable token", err)

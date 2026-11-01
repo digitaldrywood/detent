@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
@@ -12,6 +13,7 @@ import (
 )
 
 type Reader interface {
+	accessstore.Reader
 	corestore.Reader
 	projectstore.Reader
 	eventstore.Reader
@@ -19,6 +21,7 @@ type Reader interface {
 }
 
 type Writer interface {
+	accessstore.Writer
 	corestore.Writer
 	projectstore.Writer
 	eventstore.Writer

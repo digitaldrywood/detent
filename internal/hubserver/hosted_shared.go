@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/readableurl"
 )
 
@@ -192,6 +193,9 @@ func (s *Service) sharedHostedSession(ctx context.Context, c echo.Context) (auth
 	claims, ok := hostedSharedClaims(c)
 	if !ok || claims.Kind != cloudassert.KindBrowser {
 		return auth.Session{}, "", auth.ErrInvalidSession
+	}
+	if s.config.AccessRepository != nil {
+		return s.sharedAccessSession(ctx, c, claims)
 	}
 	identity := auth.HostedIdentity{
 		Subject: claims.Subject, OrganizationID: claims.ProviderOrganization, SessionID: claims.ProviderSession,
@@ -461,6 +465,13 @@ func (s *Service) revokeHostedSharedSessions(c echo.Context) error {
 }
 
 func (s *Service) revokeHostedSharedBinding(ctx context.Context, binding, now string) error {
+	if s.config.AccessRepository != nil {
+		at, err := parseTimeValue(now)
+		if err != nil {
+			return err
+		}
+		return s.accessWrite(ctx, s.accessOrganization(), func(w tenantstore.Writer) error { return w.RevokeAccessSession(ctx, binding, at) })
+	}
 	tx, err := s.database.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err

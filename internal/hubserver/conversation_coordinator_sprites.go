@@ -187,7 +187,7 @@ func (s *Service) validateCoordinatorSpriteChange(ctx context.Context, scope nat
 		if s.config.SecretKeys == nil || s.config.Hosted == nil {
 			return nativePublicInvalid("Sprite pools require hosted configuration and the organization secret store")
 		}
-		status, err := readSecretStatus(ctx, s.database.reader, scope)
+		status, err := s.readSecretStatus(ctx, s.database.reader, scope)
 		if err != nil {
 			return err
 		}
@@ -265,7 +265,7 @@ func (s *Service) executeCoordinatorSpriteAction(ctx context.Context, action cha
 }
 
 func (s *Service) coordinatorSpritePoolStatus(ctx context.Context, scope nativeScope, view spritePoolView, connector string, project tracker.ProjectID) (any, error) {
-	secret, err := readSecretStatus(ctx, s.database.reader, scope)
+	secret, err := s.readSecretStatus(ctx, s.database.reader, scope)
 	if err != nil {
 		return nil, err
 	}

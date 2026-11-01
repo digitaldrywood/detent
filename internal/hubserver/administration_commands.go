@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatoradmin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -41,7 +42,12 @@ func (s *Service) hostedMembersFor(ctx context.Context, credential apiCredential
 		// Local removal/downgrade is authoritative even before provider propagation.
 		var active bool
 		var role string
-		err := s.database.reader.QueryRowContext(readCtx, "SELECT active,role FROM hosted_members WHERE user_id=?", member.UserID).Scan(&active, &role)
+		var err error
+		if s.config.AccessRepository != nil {
+			active, role, err = s.accessLocalMember(ctx, member.UserID)
+		} else {
+			err = s.database.reader.QueryRowContext(readCtx, "SELECT active,role FROM hosted_members WHERE user_id=?", member.UserID).Scan(&active, &role)
+		}
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return response, err
 		}
@@ -97,7 +103,7 @@ func (s *Service) inviteHostedMemberFor(ctx context.Context, credential apiCrede
 		err := json.Unmarshal(raw, &view)
 		return view, err
 	}
-	reserved, err := s.reserveHostedInvitationSeat(ctx, email)
+	reserved, err := s.reserveHostedInvitationSeatFor(ctx, credential, email)
 	if err != nil {
 		s.abandonHostedOperation(ctx, command)
 		return hostedInvitationView{}, err
@@ -155,7 +161,10 @@ func (s *Service) changeHostedGrantFor(ctx context.Context, credential apiCreden
 	return s.hostedMemberResponse(ctx, member)
 }
 
-func (s *Service) revokeHostedInvitationFor(ctx context.Context, id string) error {
+func (s *Service) revokeHostedInvitationFor(ctx context.Context, credential apiCredential, id string) error {
+	if s.config.AccessRepository != nil {
+		return s.revokeAccessInvitation(ctx, credential, id)
+	}
 	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancelRead()
 	var email string
@@ -198,6 +207,9 @@ func (s *Service) resendHostedInvitationFor(ctx context.Context, credential apiC
 
 func (s *Service) pendingHostedInvitationFor(ctx context.Context, query nativeQueryer, credential apiCredential, id string) (hostedInvitationView, error) {
 	var view hostedInvitationView
+	if s.config.AccessRepository != nil {
+		return s.pendingAccessInvitationFor(ctx, credential, id)
+	}
 	var grants string
 	var providerID string
 	err := query.QueryRowContext(ctx, "SELECT provider_id FROM hosted_tenant WHERE singleton=1").Scan(&providerID)
@@ -239,6 +251,12 @@ func (s *Service) pendingHostedInvitationFor(ctx context.Context, query nativeQu
 
 func (s *Service) sendReservedHostedInvitationFor(ctx context.Context, credential apiCredential, email, role string, reserved bool, grants []hostedMemberGrant) (view hostedInvitationView, resultErr error) {
 	grants = append([]hostedMemberGrant{}, grants...)
+	if s.config.AccessRepository != nil {
+		if err := s.validateHostedInvitationGrants(ctx, s.database.reader, credential, email, grants); err != nil {
+			return hostedInvitationView{}, err
+		}
+		return s.createAccessInvitation(ctx, credential, email, role, reserved, grants)
+	}
 	if err := s.validateHostedInvitationGrants(ctx, s.database.db, credential, email, grants); err != nil {
 		return hostedInvitationView{}, err
 	}
@@ -285,6 +303,31 @@ func (s *Service) sendReservedHostedInvitationFor(ctx context.Context, credentia
 }
 
 func (s *Service) validateHostedGrants(ctx context.Context, query nativeQueryer, credential apiCredential, grants []hostedMemberGrant) error {
+	if s.config.AccessRepository != nil {
+		return s.accessRead(ctx, s.accessOrganization(), func(r tenantstore.Reader) error {
+			if credential.Hosted == nil || credential.HostedRole != "owner" && credential.HostedRole != "admin" {
+				return &nativeError{Code: "forbidden", Message: "You cannot manage project grants", status: 403, publicMessage: true}
+			}
+			if err := s.authorizeAccessScope(ctx, r, nativeScope{organization: s.accessOrganization(), credential: credential, requireHostedAdmin: true}, true); err != nil {
+				return err
+			}
+			tenant, err := r.AccessTenant(ctx)
+			if err != nil || credential.Hosted == nil || tenant.ProviderID != credential.Hosted.OrganizationID {
+				return operatortool.ErrAccessDenied
+			}
+			seen := map[string]bool{}
+			for _, grant := range grants {
+				if !hostedSafeID(grant.ProjectID) || seen[grant.ProjectID] {
+					return nativePublicInvalid("Select each project only once")
+				}
+				seen[grant.ProjectID] = true
+				if err := s.validateAccessInvitationGrant(ctx, r, credential, tracker.ProjectID(grant.ProjectID), grant.Write, grant.Runner); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+	}
 	if credential.Hosted == nil || credential.HostedRole != "owner" && credential.HostedRole != "admin" {
 		return &nativeError{Code: "forbidden", Message: "You cannot manage project grants", status: 403, publicMessage: true}
 	}
@@ -320,6 +363,11 @@ WHERE p.organization_id=? AND p.id=? AND g.user_id=? AND (?=0 OR g.can_write=1) 
 }
 
 func (s *Service) validateHostedInvitationGrants(ctx context.Context, query nativeQueryer, credential apiCredential, email string, grants []hostedMemberGrant) error {
+	if s.config.AccessRepository != nil {
+		return s.accessRead(ctx, s.accessOrganization(), func(r tenantstore.Reader) error {
+			return s.validateAccessInvitationGrants(ctx, r, credential, email, grants)
+		})
+	}
 	if err := s.validateHostedGrants(ctx, query, credential, grants); err != nil {
 		return err
 	}
@@ -350,6 +398,9 @@ UNION SELECT g.project_id FROM hosted_members m JOIN token_grants g ON g.token_i
 }
 
 func (s *Service) editHostedInvitationFor(ctx context.Context, credential apiCredential, id string, grants []hostedMemberGrant) (resultErr error) {
+	if s.config.AccessRepository != nil {
+		return s.editAccessInvitation(ctx, credential, id, grants)
+	}
 	tx, err := s.database.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err

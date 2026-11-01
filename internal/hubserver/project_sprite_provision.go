@@ -43,7 +43,7 @@ func (s *Service) poolSpriteToken(ctx context.Context, scope nativeScope, name s
 		return nil, err
 	}
 	scope.project = project
-	scope, slug, envelope, err := resolveSpritesSecret(readCtx, s.database.reader, scope)
+	scope, slug, envelope, err := s.resolveSpritesSecret(readCtx, s.database.reader, scope)
 	if err != nil {
 		return nil, err
 	}

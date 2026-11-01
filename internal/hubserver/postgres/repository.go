@@ -65,7 +65,7 @@ func (r *Repository) transaction(ctx context.Context, organization tracker.Organ
 		return mapError(ctx, err)
 	}
 	defer tx.Rollback()
-	if err := run(&session{organization: organization, queries: pgquery.New(tx)}); err != nil {
+	if err := run(&session{organization: organization, queries: pgquery.New(tx), db: tx, readOnly: readOnly}); err != nil {
 		return mapError(ctx, err)
 	}
 	if err := ctx.Err(); err != nil {
@@ -95,6 +95,8 @@ func (r *Repository) acquire(ctx context.Context, workload corestore.Workload) (
 }
 
 type session struct {
+	db           pgquery.DBTX
+	readOnly     bool
 	organization tracker.OrganizationID
 	queries      *pgquery.Queries
 }

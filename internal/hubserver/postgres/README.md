@@ -860,3 +860,55 @@ size. Expired source history is traversed in bounded pages, never scanned in one
 transaction. Checkpoint locking covers only that tenant's target page commit;
 no target connection or lock spans raw-source reads or object I/O. Import writes
 only metrics and their checkpoint and cannot affect claim eligibility.
+## Tenant access and secrets (P14)
+
+`accessstore` is the tenant access contract embedded in the shared tenant reader
+and writer. Hosted tenant bindings, organizations, member principals, sessions,
+login transactions, invitations and relational grants, key references,
+reservations, binding migration receipts, audit records and encrypted provider
+credentials use organization-leading keys and forced RLS. The runtime can access
+only its bound tenant. The platform role has no grants on these tables; global
+entry sessions, signing keys and credential uniqueness remain platform authority.
+
+`Config.AccessRepository` selects these access operations. Supply the same shared
+repository as `Config.TenantRepository`. Authentication, session storage and
+revocation, member storage, invitation acceptance, credential commands, access
+reads, secret mutations and startup key verification use tenant callbacks.
+Project record mutations recheck access inside their shared writer, including
+receipt replay. Legacy callbacks accepting SQLite transactions reject access
+mutations when PostgreSQL access is selected. Other family command owners must
+use the scoped access methods in their shared writer; separate access callbacks
+are not atomic participants in billing, fleet, claim or completion commands.
+Full PostgreSQL startup retains its existing refusal until serving integration
+has selected every enabled family.
+
+Authorization checks the current credential hash and validity, member and
+principal revocation, membership identity, local role, session binding and project
+grants. Mutation reads share-lock these rows until the protected write commits,
+so revocation and grant changes serialize with that write. A locally recorded
+downgrade takes effect even when an entry assertion carries an older role.
+Reporter permissions use the existing action policy. Session revocation creates
+a tombstone even before the binding exists, and replay cannot overwrite it.
+Login state and invitation acceptance consume conditionally once. Invitation
+grants and member replacement commit in the same tenant transaction.
+
+Secret envelopes retain their ciphertext, nonce, wrapped data key and master key
+version without decoding or rewriting imported bytes. Their existing JSON-array
+AAD framing binds organization, project and kind; this encoding is authenticated
+data, never a stored JSON column. Startup verifies every retained envelope using
+the supplied keyring and fails on missing keys or authentication failure.
+Provider validation, sealing, envelope verification and rewrapping occur outside
+the writer. A secret change and its audit row commit together. Rewrap compares
+the old envelope and update stamp before replacing only its wrapped key and
+version, so a concurrent replacement wins. Audit mutation payloads are verified
+object references; entry key metadata and all filterable fields are typed.
+
+At 10,000 tenants and runners, authorization uses a fixed number of indexed
+lookups in one tenant, with no fleet enumeration or per-tenant pool. Keyset pages
+contain at most 200 records. Administrative lists read only the selected tenant's
+requested result, releasing the connection between pages. Startup key validation
+and rewrap likewise read at most 200 envelopes per transaction and release the
+connection before cryptographic work. A mutation locks only its submitted access,
+secret and command participants; it performs no history projection, derived
+refresh or network/object I/O while holding those locks. These boundaries preserve
+INV-16, INV-18, INV-20 and INV-21.

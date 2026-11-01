@@ -138,7 +138,16 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	}
 	ctx = database.policyContext(ctx)
 	database.configureRuntimePublication(cfg)
-	if err := database.checkProjectSecretKeys(ctx, cfg.SecretKeys); err != nil {
+	var secretKeysErr error
+	if cfg.AccessRepository != nil {
+		if cfg.Hosted == nil {
+			return nil, errors.Join(auth.ErrHostedIdentity, database.Close())
+		}
+		secretKeysErr = (&Service{config: cfg}).checkAccessSecretKeys(ctx)
+	} else {
+		secretKeysErr = database.checkProjectSecretKeys(ctx, cfg.SecretKeys)
+	}
+	if err := secretKeysErr; err != nil {
 		return nil, errors.Join(err, database.Close())
 	}
 	if !cfg.CredentialMaintenance {

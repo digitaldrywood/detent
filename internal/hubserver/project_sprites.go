@@ -120,7 +120,7 @@ func validSpritesSlug(slug string) bool {
 // call, audit before the call, and clear the byte buffer on every exit. No API
 // or coordinator tool exposes a plaintext reader or an arbitrary callback.
 func (s *Service) checkProjectSprites(ctx context.Context, scope nativeScope) (string, error) {
-	scope, _, envelope, err := resolveSpritesSecret(ctx, s.database.reader, scope)
+	scope, _, envelope, err := s.resolveSpritesSecret(ctx, s.database.reader, scope)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", err
 	}
@@ -358,7 +358,7 @@ ORDER BY m.hostname LIMIT 1`, scope.organization, cutoff, formatHubTime(s.config
 				continue
 			}
 		}
-		candidate.secretScope, candidate.envelope, err = spriteWakeSecret(ctx, s.database.reader, scope, candidate.name)
+		candidate.secretScope, candidate.envelope, err = s.spriteWakeSecret(ctx, s.database.reader, scope, candidate.name)
 		if errors.Is(err, sql.ErrNoRows) {
 			continue
 		}
@@ -369,13 +369,13 @@ ORDER BY m.hostname LIMIT 1`, scope.organization, cutoff, formatHubTime(s.config
 	}
 }
 
-func spriteWakeSecret(ctx context.Context, db nativeQueryer, scope nativeScope, name string) (nativeScope, hubsecrets.Envelope, error) {
+func (s *Service) spriteWakeSecret(ctx context.Context, db nativeQueryer, scope nativeScope, name string) (nativeScope, hubsecrets.Envelope, error) {
 	var provider string
 	member := db.QueryRowContext(ctx, `SELECT token_project_id,provider_organization FROM organization_sprite_members WHERE organization_id=? AND name=? AND state<>'deleted'`, scope.organization, name).Scan(&scope.project, &provider)
 	if member != nil && !errors.Is(member, sql.ErrNoRows) {
 		return nativeScope{}, hubsecrets.Envelope{}, member
 	}
-	secretScope, slug, envelope, err := resolveSpritesSecret(ctx, db, scope)
+	secretScope, slug, envelope, err := s.resolveSpritesSecret(ctx, db, scope)
 	if err != nil {
 		return nativeScope{}, hubsecrets.Envelope{}, err
 	}

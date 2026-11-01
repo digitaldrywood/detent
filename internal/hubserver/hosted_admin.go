@@ -12,6 +12,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -162,7 +163,7 @@ func (s *Service) inviteHostedMember(c echo.Context) error {
 	if err := s.validateHostedInvitationGrants(readCtx, s.database.reader, credential, email, nil); err != nil {
 		return s.hostedError(c, http.StatusForbidden, "You cannot replace this member's project access")
 	}
-	reserved, err := s.reserveHostedInvitationSeat(ctx, email)
+	reserved, err := s.reserveHostedInvitationSeatFor(ctx, credential, email)
 	if err != nil {
 		var limit *hostedLimitError
 		if errors.As(err, &limit) {
@@ -214,6 +215,9 @@ func (s *Service) revokeHostedMember(c echo.Context) error {
 }
 
 func (s *Service) revokeHostedMemberLocally(ctx context.Context, user string) (resultErr error) {
+	if s.config.AccessRepository != nil {
+		return s.accessWrite(ctx, s.accessOrganization(), func(w tenantstore.Writer) error { return w.RevokeAccessMember(ctx, user, s.config.now()) })
+	}
 	legacy, err := legacyHostedSessions(ctx, s.database.reader, user)
 	if err != nil {
 		return err
@@ -279,6 +283,9 @@ func (s *Service) changeHostedGrant(c echo.Context) error {
 }
 
 func (s *Service) hostedGrant(ctx context.Context, credential apiCredential, user, project string, write, runner, revoke bool) (resultErr error) {
+	if s.config.AccessRepository != nil {
+		return s.changeAccessGrant(ctx, credential, user, project, write, runner, revoke)
+	}
 	tx, err := s.database.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err

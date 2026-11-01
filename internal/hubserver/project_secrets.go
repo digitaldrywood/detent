@@ -11,6 +11,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -99,6 +100,16 @@ func canManageProjectSecrets(credential apiCredential) bool {
 }
 
 func (s *Service) projectSecretMetadata(c echo.Context) error {
+	if s.config.AccessRepository != nil {
+		if c.Param("kind") != flySpritesToken {
+			return s.nativeAPIError(c, nativeNotFound())
+		}
+		status, err := s.readAccessSecretStatus(c.Request().Context(), nativeRequestScope(c))
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		return c.JSON(http.StatusOK, status)
+	}
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 	defer cancel()
 	if c.Param("kind") != flySpritesToken {
@@ -150,6 +161,11 @@ func secretAudit(ctx context.Context, exec hostedExecer, organization, project, 
 }
 
 func (s *Service) auditSecretUse(ctx context.Context, scope nativeScope, version int) error {
+	if s.config.AccessRepository != nil {
+		return s.accessWrite(ctx, scope.organization, func(w tenantstore.Writer) error {
+			return w.RecordAccessSecretAudit(ctx, s.accessSecretAudit(scope, "use", version))
+		})
+	}
 	return secretAudit(ctx, s.database.db, string(scope.organization), string(scope.project), secretActor(scope), flySpritesToken, "use", version, formatHubTime(s.config.now()))
 }
 
@@ -176,6 +192,9 @@ func (s *Service) setProjectSecret(c echo.Context) error {
 	}
 	scope := nativeRequestScope(c)
 	ctx := c.Request().Context()
+	if s.config.AccessRepository != nil {
+		return s.setAccessProjectSecret(c, scope, token)
+	}
 	// Recheck current membership before making any provider call; the same
 	// authority is rechecked again in the write transaction after validation.
 	if err := s.secretMutation(ctx, scope, func(tx *sql.Tx) error {
@@ -228,6 +247,12 @@ func (s *Service) removeProjectSecret(c echo.Context) error {
 		return s.nativeAPIError(c, nativeNotFound())
 	}
 	scope, ctx := nativeRequestScope(c), c.Request().Context()
+	if s.config.AccessRepository != nil {
+		if err := s.removeAccessProjectSecret(ctx, scope); err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		return c.NoContent(http.StatusNoContent)
+	}
 	err := s.secretMutation(ctx, scope, func(tx *sql.Tx) error {
 		return removeProjectSecretInTx(ctx, tx, scope, s.config.now())
 	})

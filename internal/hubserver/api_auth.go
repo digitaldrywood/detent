@@ -197,6 +197,9 @@ func (s *Service) authenticateAPIToken(ctx context.Context, token, renewalRunner
 }
 
 func (s *Service) authenticateAPIHash(ctx context.Context, hash, renewalRunner, renewalOrganization string) (apiCredential, int, error) {
+	if s.config.AccessRepository != nil {
+		return s.authenticateAccessHash(ctx, hash)
+	}
 	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancelRead()
 	var credential apiCredential

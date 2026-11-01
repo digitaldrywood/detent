@@ -11,6 +11,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -28,6 +29,9 @@ func isProjectRecordCommand(input any) bool {
 }
 
 func (s *Service) authorizeProjectRecord(ctx context.Context, scope nativeScope, write bool) error {
+	if s.config.AccessRepository != nil {
+		return s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error { return s.authorizeAccessScope(ctx, r, scope, write) })
+	}
 	return s.authorizeProjectRecordWith(ctx, s.database.auth(), scope, write)
 }
 
@@ -68,7 +72,19 @@ func (s *Service) authorizeProjectRecordWith(ctx context.Context, query nativeQu
 	return nil
 }
 
-func (s *Service) beginProjectRecordAuthority(ctx context.Context, scope nativeScope) (*sql.Tx, error) {
+type projectAccessAuthority struct{}
+
+func (projectAccessAuthority) Rollback() error { return nil }
+
+func (s *Service) beginProjectRecordAuthority(ctx context.Context, scope nativeScope) (interface{ Rollback() error }, error) {
+	if s.config.AccessRepository != nil {
+		if scope.credential.Hosted != nil {
+			if _, _, err := s.hostedMutationIdentity(ctx, scope.credential); err != nil {
+				return nil, err
+			}
+		}
+		return projectAccessAuthority{}, nil
+	}
 	tx, err := s.database.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -98,6 +114,19 @@ func (s *Service) beginProjectRecordAuthority(ctx context.Context, scope nativeS
 }
 
 func (s *Service) recheckProjectRecordMutation(ctx context.Context, scope nativeScope) error {
+	if s.config.AccessRepository != nil {
+		if scope.credential.Hosted != nil {
+			_, membership, err := s.hostedMutationIdentity(ctx, scope.credential)
+			if err != nil {
+				return err
+			}
+			if membership.ID != scope.credential.HostedMembership {
+				return accessstore.ErrDenied
+			}
+			scope.credential.HostedRole = lesserHostedRole(scope.credential.HostedRole, membership.Role.Slug)
+		}
+		return s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error { return s.authorizeAccessScope(ctx, r, scope, true) })
+	}
 	tx, err := s.beginProjectRecordAuthority(ctx, scope)
 	if err != nil {
 		return err
@@ -250,9 +279,14 @@ func (s *Service) executeProjectRecordMutation(ctx context.Context, scope native
 	if err != nil {
 		return nil, err
 	}
-	defer authority.Rollback()
+	defer s.releaseProjectRecordAuthority(ctx, authority)
 	var existing *eventstore.Receipt
 	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if s.config.AccessRepository != nil {
+			if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
+				return err
+			}
+		}
 		previous, err := w.Receipt(ctx, scope.credential.ID, options.OperationID, command.IdempotencyKey)
 		if err == nil {
 			if previous.RequestHash != hash {
@@ -459,4 +493,10 @@ func projectRecordRoute(path string) bool {
 		return true
 	}
 	return false
+}
+
+func (s *Service) releaseProjectRecordAuthority(ctx context.Context, authority interface{ Rollback() error }) {
+	if err := authority.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+		s.config.Logger.ErrorContext(ctx, "release project authority", "error", err)
+	}
 }

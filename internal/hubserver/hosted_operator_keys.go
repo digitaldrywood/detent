@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -78,29 +79,7 @@ func hostedKeyAllows(scope, required apikey.Scope) bool {
 }
 
 func hostedRoleAllows(role string, scope apikey.Scope, action ...string) bool {
-	if !auth.ValidOrganizationRole(role) {
-		return false
-	}
-	if role == "reporter" && len(action) == 1 && operatortool.IsAdministration(action[0]) {
-		return false
-	}
-	if scope == apikey.ScopeRead {
-		return true
-	}
-	if scope == apikey.ScopeWrite {
-		if role == "reporter" {
-			if len(action) != 1 {
-				return false
-			}
-			switch action[0] {
-			case operatortool.EditItem, operatortool.FileIssue, operatortool.UploadAttachment, operatortool.ReferenceAttachment, operatortool.AddComment, operatortool.EditComment, operatortool.MoveItem, operatortool.VerifyFix, "create_thread", "post_to_thread", "resolve_thread", "credentials":
-				return true
-			}
-			return false
-		}
-		return role != "viewer"
-	}
-	return scope == apikey.ScopeAdmin && (role == "owner" || role == "admin")
+	return accessstore.RoleAllows(role, scope, action...)
 }
 
 func (s *Service) hostedAPITokenCredential(ctx context.Context, credential apiCredential, created string, expires sql.NullString) (apiCredential, error) {
@@ -214,6 +193,9 @@ func (s *Service) hostedAPIKeys(c echo.Context) error {
 }
 
 func (s *Service) hostedAPIKeysFor(ctx context.Context, credential apiCredential) ([]hostedAPIKey, error) {
+	if s.config.AccessRepository != nil {
+		return s.accessHostedKeys(ctx, credential)
+	}
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	credential, err := s.hostedKeyCredentialFor(ctx, credential)

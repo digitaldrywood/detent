@@ -32,6 +32,14 @@ func (s *Service) runSecretRewrap(ctx context.Context) {
 }
 
 func (s *Service) rewrapSecrets(ctx context.Context) {
+	if s.config.AccessRepository != nil {
+		if s.config.SecretKeys != nil {
+			if err := s.rewrapAccessSecrets(ctx); err != nil && ctx.Err() == nil {
+				s.config.Logger.Error("rewrap tenant secrets", "error", err)
+			}
+		}
+		return
+	}
 	if s.config.SecretKeys == nil {
 		return
 	}

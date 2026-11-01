@@ -11,6 +11,8 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatoradmin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -234,7 +236,20 @@ func (a hubAdministration) Authorize(ctx context.Context, name string, in operat
 			return operatortool.ErrAccessDenied
 		}
 		var count int
-		if err := s.database.reader.QueryRowContext(readCtx, "SELECT count(*) FROM hosted_invitations WHERE id=? AND organization_id=? AND (accepted_user_id='' OR accepted_user_id=?)", in.InvitationID, s.config.Hosted.OrganizationID, credential.Hosted.Subject).Scan(&count); err != nil || count != 1 {
+		var invitationErr error
+		if s.config.AccessRepository != nil {
+			invitationErr = s.accessRead(readCtx, s.accessOrganization(), func(r tenantstore.Reader) error {
+				row, err := r.AccessInvitation(readCtx, in.InvitationID)
+				if err != nil || row.AcceptedUserID != "" && row.AcceptedUserID != credential.Hosted.Subject {
+					return operatortool.ErrAccessDenied
+				}
+				count = 1
+				return nil
+			})
+		} else {
+			invitationErr = s.database.reader.QueryRowContext(readCtx, "SELECT count(*) FROM hosted_invitations WHERE id=? AND organization_id=? AND (accepted_user_id='' OR accepted_user_id=?)", in.InvitationID, s.config.Hosted.OrganizationID, credential.Hosted.Subject).Scan(&count)
+		}
+		if invitationErr != nil || count != 1 {
 			return operatortool.ErrAccessDenied
 		}
 	}
@@ -286,7 +301,20 @@ func (a hubAdministration) Authorize(ctx context.Context, name string, in operat
 	}
 	if invitation != "" {
 		var count int
-		if err := s.database.reader.QueryRowContext(readCtx, "SELECT count(*) FROM hosted_invitations WHERE id=? AND organization_id=? AND accepted_user_id=''", invitation, s.config.Hosted.OrganizationID).Scan(&count); err != nil || count != 1 {
+		var invitationErr error
+		if s.config.AccessRepository != nil {
+			invitationErr = s.accessRead(readCtx, s.accessOrganization(), func(r tenantstore.Reader) error {
+				row, err := r.AccessInvitation(readCtx, invitation)
+				if err != nil || row.AcceptedUserID != "" || !row.ExpiresAt.After(s.config.now()) {
+					return operatortool.ErrAccessDenied
+				}
+				count = 1
+				return nil
+			})
+		} else {
+			invitationErr = s.database.reader.QueryRowContext(readCtx, "SELECT count(*) FROM hosted_invitations WHERE id=? AND organization_id=? AND accepted_user_id=''", invitation, s.config.Hosted.OrganizationID).Scan(&count)
+		}
+		if invitationErr != nil || count != 1 {
 			return operatortool.ErrAccessDenied
 		}
 	}
@@ -419,6 +447,15 @@ func (a hubAdministration) Preview(ctx context.Context, name string, in operator
 			Input  operatoradmin.Input `json:"input"`
 		}{view, in}
 	case operatortool.InvitationRevoke:
+		if s.config.AccessRepository != nil {
+			view, err := s.pendingHostedInvitationFor(ctx, s.database.reader, credential, in.InvitationID)
+			if err != nil {
+				return preview, err
+			}
+			preview.ResourceID = view.ID
+			preview.Current = struct{ Email, Role string }{view.Email, view.Role}
+			break
+		}
 		var email, role string
 		err := s.database.reader.QueryRowContext(ctx, "SELECT email,role FROM hosted_invitations WHERE id=? AND organization_id=? AND accepted_user_id=''", in.InvitationID, s.config.Hosted.OrganizationID).Scan(&email, &role)
 		if err != nil {
@@ -443,7 +480,19 @@ func (a hubAdministration) Preview(ctx context.Context, name string, in operator
 	case operatortool.InvitationAccept:
 		// The ID identifies the provider invitation, not an identity exchange token.
 		var id, email, role string
-		err := s.database.reader.QueryRowContext(ctx, "SELECT i.id,i.email,i.role FROM hosted_invitations i WHERE i.id=? AND i.organization_id=? AND (i.accepted_user_id='' OR i.accepted_user_id=?)", in.InvitationID, s.config.Hosted.OrganizationID, credential.Hosted.Subject).Scan(&id, &email, &role)
+		var err error
+		if s.config.AccessRepository != nil {
+			err = s.accessRead(ctx, s.accessOrganization(), func(r tenantstore.Reader) error {
+				row, err := r.AccessInvitation(ctx, in.InvitationID)
+				if err != nil || row.AcceptedUserID != "" && row.AcceptedUserID != credential.Hosted.Subject {
+					return nativeNotFound()
+				}
+				id, email, role = row.ID, row.Email, row.Role
+				return nil
+			})
+		} else {
+			err = s.database.reader.QueryRowContext(ctx, "SELECT i.id,i.email,i.role FROM hosted_invitations i WHERE i.id=? AND i.organization_id=? AND (i.accepted_user_id='' OR i.accepted_user_id=?)", in.InvitationID, s.config.Hosted.OrganizationID, credential.Hosted.Subject).Scan(&id, &email, &role)
+		}
 		if err != nil {
 			return preview, err
 		}
@@ -527,7 +576,7 @@ func (a hubAdministration) Execute(ctx context.Context, name string, in operator
 	case operatortool.MemberGrant:
 		data, err = s.changeHostedGrantFor(ctx, credential, in.MemberID, in.ProjectID, in.Write, in.Runner, in.Revoke)
 	case operatortool.InvitationRevoke:
-		err = s.revokeHostedInvitationFor(ctx, in.InvitationID)
+		err = s.revokeHostedInvitationFor(ctx, credential, in.InvitationID)
 	case operatortool.InvitationEdit:
 		err = s.editHostedInvitationFor(ctx, credential, in.InvitationID, in.Grants)
 	case operatortool.InvitationResend:
@@ -723,6 +772,11 @@ func (s *Service) tokenMetadata(ctx context.Context, in operatoradmin.Input) (an
 }
 
 func (s *Service) tokenMetadataByID(ctx context.Context, id string) (tokenResponse, error) {
+	if s.config.AccessRepository != nil {
+		var row accessstore.Credential
+		err := s.accessRead(ctx, s.accessOrganization(), func(r tenantstore.Reader) error { var err error; row, err = r.AccessCredential(ctx, id); return err })
+		return accessTokenResponse(row), err
+	}
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	var view tokenResponse

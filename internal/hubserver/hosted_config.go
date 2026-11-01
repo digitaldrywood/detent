@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
 type HostedDestination struct {
@@ -119,6 +120,15 @@ func hostedEmailListed(emails []string, value string) bool {
 }
 
 func (s *Service) hostedProviderOrganization(ctx context.Context) (string, error) {
+	if s.config.AccessRepository != nil {
+		var id string
+		err := s.accessRead(ctx, s.accessOrganization(), func(r tenantstore.Reader) error {
+			tenant, err := r.AccessTenant(ctx)
+			id = tenant.ProviderID
+			return err
+		})
+		return id, err
+	}
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	var id string

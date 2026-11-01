@@ -17,6 +17,9 @@ import (
 )
 
 func (s *Service) entryKeyCredential(ctx context.Context, claims cloudassert.Claims) (apiCredential, int, error) {
+	if s.config.AccessRepository != nil {
+		return s.entryAccessKeyCredential(ctx, claims)
+	}
 	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancelRead()
 	if !s.hostedShared() || claims.Kind != cloudassert.KindKey || claims.Key == nil || !claims.Key.Valid() || !claims.ExpiresAt.After(s.config.now()) || claims.Audience != s.config.Hosted.OrganizationID {
@@ -82,6 +85,9 @@ func (a *entryKeyAudit) readOnly() bool {
 }
 
 func (s *Service) auditEntryKey(ctx context.Context, exec hostedExecer, audit *entryKeyAudit, status int) error {
+	if s.config.AccessRepository != nil {
+		return s.recordEntryAccessKeyAudit(ctx, audit, status)
+	}
 	if audit.readOnly() && status < http.StatusBadRequest {
 		return nil
 	}
@@ -135,7 +141,13 @@ func (s *Service) entryKeyAdmin(c echo.Context) error {
 		return s.hostedJSONError(c, http.StatusForbidden, "Organization administrator service access is required")
 	}
 	var role string
-	err := s.database.reader.QueryRowContext(ctx, "SELECT m.role FROM hosted_members m JOIN api_tokens t ON t.id=m.principal_id WHERE m.user_id=? AND m.active=1 AND t.revoked_at IS NULL", claims.Subject).Scan(&role)
+	var err error
+	if s.config.AccessRepository != nil {
+		member, readErr := s.activeAccessMember(ctx, claims.Subject)
+		role, err = member.Role, readErr
+	} else {
+		err = s.database.reader.QueryRowContext(ctx, "SELECT m.role FROM hosted_members m JOIN api_tokens t ON t.id=m.principal_id WHERE m.user_id=? AND m.active=1 AND t.revoked_at IS NULL", claims.Subject).Scan(&role)
+	}
 	if err != nil || role != "owner" && role != "admin" {
 		return s.hostedJSONError(c, http.StatusForbidden, "Active organization administrator membership is required")
 	}
@@ -311,7 +323,13 @@ func (s *Service) entryKeyContext(c echo.Context) error {
 		return s.hostedJSONError(c, http.StatusForbidden, "Shared service identity is required to read key context")
 	}
 	var local string
-	err := s.database.auth().QueryRowContext(c.Request().Context(), "SELECT m.role FROM hosted_members m JOIN api_tokens t ON t.id=m.principal_id WHERE m.user_id=? AND m.active=1 AND t.revoked_at IS NULL", claims.Subject).Scan(&local)
+	var err error
+	if s.config.AccessRepository != nil {
+		member, readErr := s.activeAccessMember(c.Request().Context(), claims.Subject)
+		local, err = member.Role, readErr
+	} else {
+		err = s.database.auth().QueryRowContext(c.Request().Context(), "SELECT m.role FROM hosted_members m JOIN api_tokens t ON t.id=m.principal_id WHERE m.user_id=? AND m.active=1 AND t.revoked_at IS NULL", claims.Subject).Scan(&local)
+	}
 	if err != nil || !auth.ValidOrganizationRole(local) || !auth.ValidOrganizationRole(claims.Role) {
 		return s.hostedJSONError(c, http.StatusForbidden, "Active organization membership and a valid role are required")
 	}

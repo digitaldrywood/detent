@@ -11,6 +11,27 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+type ApiToken struct {
+	OrganizationID        tracker.OrganizationID
+	ID                    string
+	Name                  string
+	TokenHash             string
+	TokenFingerprint      string
+	Scope                 string
+	NativeOnly            bool
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
+	RotatedAt             *time.Time
+	RevokedAt             *time.Time
+	ExpiresAt             *time.Time
+	LastUsedAt            *time.Time
+	HostedUserID          string
+	HostedMembershipID    string
+	OperatorKeyScope      string
+	OperatorProjectAccess string
+	KeyKind               string
+}
+
 type ChangeEvidence struct {
 	OrganizationID       tracker.OrganizationID
 	ChangeID             string
@@ -113,6 +134,135 @@ type CollaborationVersion struct {
 	PayloadSHA256       string
 	PayloadBytes        int64
 	PayloadContentBytes int64
+}
+
+type HostedAudit struct {
+	OrganizationID        tracker.OrganizationID
+	ID                    int64
+	SessionID             string
+	ActualActor           string
+	EffectiveUser         string
+	Reason                string
+	Event                 string
+	Route                 string
+	ProjectID             tracker.ProjectID
+	Status                int32
+	StartedAt             time.Time
+	ExpiresAt             time.Time
+	RecordedAt            time.Time
+	RecordedAtNs          int64
+	MutationObjectKey     *string
+	MutationSha256        *string
+	MutationBytes         sql.NullInt64
+	MutationContentBytes  sql.NullInt64
+	MutationFormatVersion sql.NullInt32
+	KeyID                 string
+	KeyKind               string
+	KeyOwner              string
+	Resource              string
+	AccountKind           string
+	AccountRetry          string
+}
+
+type HostedAuditTime struct {
+	OrganizationID tracker.OrganizationID
+	AuditID        int64
+	RecordedAtNs   int64
+}
+
+type HostedBindingMigration struct {
+	OrganizationID tracker.OrganizationID
+	ID             int64
+	FromPublicUrl  string
+	ToPublicUrl    string
+	FromDeployment string
+	FromGeneration int64
+	ToGeneration   int64
+	MigratedAt     time.Time
+	Applied        bool
+}
+
+type HostedInvitation struct {
+	OrganizationID tracker.OrganizationID
+	ID             string
+	Email          string
+	Role           string
+	AcceptedUserID string
+	CreatedAt      time.Time
+	ExpiresAt      time.Time
+}
+
+type HostedInvitationGrant struct {
+	OrganizationID tracker.OrganizationID
+	InvitationID   string
+	ProjectID      tracker.ProjectID
+	CanWrite       bool
+	ManageRunner   bool
+}
+
+type HostedMember struct {
+	OrganizationID tracker.OrganizationID
+	UserID         string
+	Email          string
+	MembershipID   string
+	Role           string
+	Active         bool
+	PrincipalID    string
+	NotifyIssues   bool
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+}
+
+type HostedMemberReservation struct {
+	OrganizationID tracker.OrganizationID
+	Email          string
+	ExpiresAt      time.Time
+}
+
+type HostedProjectGrant struct {
+	OrganizationID tracker.OrganizationID
+	UserID         string
+	ProjectID      tracker.ProjectID
+	CanWrite       bool
+	ManageRunner   bool
+}
+
+type HostedSession struct {
+	OrganizationID         tracker.OrganizationID
+	TokenHash              string
+	Email                  string
+	IdentitySubject        string
+	ProviderOrganizationID string
+	SessionID              string
+	IdentityCreatedAt      time.Time
+	IdentityExpiresAt      time.Time
+	SupportActor           string
+	SupportReason          string
+	CreatedAt              time.Time
+	ExpiresAt              time.Time
+	RevokedAt              *time.Time
+}
+
+type HostedTenant struct {
+	OrganizationID       tracker.OrganizationID
+	ProviderID           string
+	BootstrapSubject     string
+	Deployment           string
+	PublicUrl            string
+	AllocationGeneration int64
+}
+
+type HostedTransaction struct {
+	OrganizationID         tracker.OrganizationID
+	TokenHash              string
+	State                  string
+	Verifier               string
+	ProviderOrganizationID string
+	SupportActor           string
+	SupportSession         string
+	InvitationToken        string
+	ExpiresAt              time.Time
+	ConsumedAt             *time.Time
 }
 
 type Issue struct {
@@ -231,6 +381,35 @@ type NativeComment struct {
 	CreatedAt            time.Time
 	UpdatedAt            time.Time
 	RecordID             int64
+}
+
+type Organization struct {
+	OrganizationID tracker.OrganizationID
+	Name           string
+	Slug           string
+	Local          bool
+	CreatedAt      time.Time
+}
+
+type OrganizationSecret struct {
+	OrganizationID   tracker.OrganizationID
+	Kind             string
+	OrganizationSlug string
+	Ciphertext       []byte
+	Nonce            []byte
+	WrappedDataKey   []byte
+	MasterKeyVersion int32
+	UpdatedAt        time.Time
+}
+
+type OrganizationSecretAudit struct {
+	OrganizationID tracker.OrganizationID
+	ID             int64
+	Actor          string
+	Kind           string
+	KeyVersion     int32
+	Event          string
+	RecordedAt     time.Time
 }
 
 type PlatformAccessKey struct {
@@ -618,6 +797,29 @@ type Project struct {
 	DeletedAt               *time.Time
 }
 
+type ProjectSecret struct {
+	OrganizationID   tracker.OrganizationID
+	ProjectID        tracker.ProjectID
+	Kind             string
+	OrganizationSlug string
+	Ciphertext       []byte
+	Nonce            []byte
+	WrappedDataKey   []byte
+	MasterKeyVersion int32
+	UpdatedAt        time.Time
+}
+
+type ProjectSecretAudit struct {
+	OrganizationID tracker.OrganizationID
+	ID             int64
+	ProjectID      tracker.ProjectID
+	Actor          string
+	Kind           string
+	KeyVersion     int32
+	Event          string
+	RecordedAt     time.Time
+}
+
 type ProjectSetting struct {
 	OrganizationID            tracker.OrganizationID
 	ProjectID                 tracker.ProjectID
@@ -753,4 +955,10 @@ type StorageConversionProgress struct {
 	AggregateID    string
 	ConvertedRows  int64
 	ConvertedBytes int64
+}
+
+type TokenGrant struct {
+	OrganizationID tracker.OrganizationID
+	TokenID        string
+	ProjectID      tracker.ProjectID
 }

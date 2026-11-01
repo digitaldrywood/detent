@@ -241,6 +241,9 @@ func (s *Service) listHostedMembers(c echo.Context) error {
 }
 
 func (s *Service) hostedMemberEmails(ctx context.Context) (map[string]string, error) {
+	if s.config.AccessRepository != nil {
+		return s.accessMemberEmails(ctx)
+	}
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	emails := map[string]string{}
@@ -260,6 +263,9 @@ func (s *Service) hostedMemberEmails(ctx context.Context) (map[string]string, er
 }
 
 func (s *Service) hostedMemberGrants(ctx context.Context) (map[string][]hostedMemberGrant, error) {
+	if s.config.AccessRepository != nil {
+		return s.accessMemberGrants(ctx)
+	}
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	grants := map[string][]hostedMemberGrant{}
@@ -280,6 +286,9 @@ func (s *Service) hostedMemberGrants(ctx context.Context) (map[string][]hostedMe
 }
 
 func (s *Service) hostedPendingInvitations(ctx context.Context) ([]hostedInvitationView, error) {
+	if s.config.AccessRepository != nil {
+		return s.accessPendingInvitations(ctx)
+	}
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	invitations := []hostedInvitationView{}
@@ -713,10 +722,11 @@ func (s *Service) revokeHostedInvitationJSON(c echo.Context) error {
 	if err := request.validate(false); err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	if _, err := s.hostedAdministrator(c); err != nil {
+	credential, err := s.hostedAdministrator(c)
+	if err != nil {
 		return s.hostedJSONError(c, http.StatusForbidden, "You cannot revoke invitations")
 	}
-	if err := s.revokeHostedInvitationFor(c.Request().Context(), c.Param("invitation")); err != nil {
+	if err := s.revokeHostedInvitationFor(c.Request().Context(), credential, c.Param("invitation")); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return s.hostedJSONError(c, http.StatusNotFound, "This invitation is no longer pending")
 		}

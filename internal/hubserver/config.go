@@ -48,6 +48,7 @@ var (
 
 type Config struct {
 	TenantRepository               tenantstore.Repository
+	AccessRepository               tenantstore.Repository
 	ProjectParticipants            tenantstore.ProjectParticipants
 	Clock                          func() time.Time
 	dashboardDelivery              *dashboardDeliveryConfig
