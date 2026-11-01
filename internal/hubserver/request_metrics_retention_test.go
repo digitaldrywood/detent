@@ -247,3 +247,37 @@ func TestRequestMetricsRetentionPreservesUncommittedTotals(t *testing.T) {
 		})
 	}
 }
+
+func TestRequestMinuteRetentionKeepsPaceWithIngestion(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name    string
+		callers int
+	}{
+		{"within one batch", 3},
+		{"beyond one batch", requestRetentionBatch + 3},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			m := testRequestMetrics(t, filepath.Join(t.TempDir(), "metrics.sqlite"), "org_one")
+			written := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+			for i := range test.callers {
+				m.record(written, "GET /items/:item", "mcp", fmt.Sprintf("key_%d", i), 200, time.Millisecond)
+			}
+			if err := m.flush(t.Context(), written.Add(time.Minute)); err != nil {
+				t.Fatal(err)
+			}
+			expired := written.Add(requestMinuteRetention + 2*time.Minute)
+			if err := (&Service{requestMetrics: m}).expireRequestMetrics(t.Context(), expired); err != nil {
+				t.Fatal(err)
+			}
+			var remaining int
+			if err := m.db.QueryRowContext(t.Context(), "SELECT count(*) FROM request_minutes WHERE minute < ?", expired.Add(-requestMinuteRetention).Unix()).Scan(&remaining); err != nil {
+				t.Fatal(err)
+			}
+			if remaining != 0 {
+				t.Fatalf("expired request minutes left after one tick: %d of %d", remaining, test.callers)
+			}
+		})
+	}
+}
