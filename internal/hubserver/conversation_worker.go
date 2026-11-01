@@ -980,6 +980,17 @@ func (r *conversationWorkerRouter) controls(e echo.Context) error {
 	}
 	for {
 		page, err := c.pollControls(ctx, scope, id, identity, after)
+		if isNativeConflict(err) {
+			select {
+			case <-subscription.closed:
+			case <-r.stop:
+			case <-deadline:
+			case <-ctx.Done():
+			default:
+				continue
+			}
+			return e.JSON(http.StatusOK, page)
+		}
 		if err != nil {
 			err = conversationStaleExecutionError("controls", id, err)
 			return s.nativeAPIError(e, err)
