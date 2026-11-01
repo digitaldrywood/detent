@@ -81,7 +81,13 @@ func (s *Service) startSupport(c echo.Context) error {
 	if err := s.auth.createTransaction(c.Request().Context(), apikey.HashToken(token), transaction); err != nil {
 		return s.loginDenied(c, http.StatusServiceUnavailable, "Support access is temporarily unavailable", denial)
 	}
-	if err := s.auth.audit(c.Request().Context(), session.Subject, organization.ID, requested); err != nil {
+	var auditErr error
+	if s.auth.store.db.postgres != nil {
+		auditErr = s.postgresSupportRequest(c.Request().Context(), session, organization.ID, reason, requested)
+	} else {
+		auditErr = s.auth.audit(c.Request().Context(), session.Subject, organization.ID, requested)
+	}
+	if err := auditErr; err != nil {
 		return s.loginDenied(c, http.StatusServiceUnavailable, "Support access is temporarily unavailable", denial)
 	}
 	s.setCookie(c, supportCookie, token, s.config.now().Add(10*time.Minute))
@@ -93,12 +99,20 @@ func supportAuditEvent(event, reason string) string {
 	return event + ":" + reason
 }
 
-func (a *authStore) consumeSupportTransaction(ctx context.Context, hash string) (loginTransaction, error) {
+func (a *authStore) consumeSupportTransaction(ctx context.Context, hash string) (_ loginTransaction, resultErr error) {
+	if a.store.db.postgres != nil {
+		var id string
+		if err := a.store.reader.QueryRowContext(ctx, "SELECT transaction_id FROM transactions WHERE token_hash=? AND support_actor<>''", hash).Scan(&id); err != nil {
+			return loginTransaction{}, errNoSession
+		}
+		return a.postgresConsumeLogin(ctx, hash, id)
+	}
+
 	tx, err := a.store.db.BeginTx(ctx, nil)
 	if err != nil {
 		return loginTransaction{}, err
 	}
-	defer tx.Rollback()
+	defer tx.cleanup(&resultErr)
 	var result loginTransaction
 	var expires string
 	var consumed sql.NullString

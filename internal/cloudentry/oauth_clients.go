@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-func (s *Service) oauthRegistration(ctx context.Context, id string) (oauthRegistration, error) {
+func (s *Service) oauthRegistration(ctx context.Context, id string) (_ oauthRegistration, resultErr error) {
 	var registration oauthRegistration
 	sealed, ok := strings.CutPrefix(id, "oauth_client_")
 	if !ok || len(id) > 2048 {
@@ -17,7 +17,7 @@ func (s *Service) oauthRegistration(ctx context.Context, id string) (oauthRegist
 	if err != nil {
 		return registration, err
 	}
-	defer rows.Close()
+	defer closeEntryRows(rows, &resultErr)
 	for rows.Next() {
 		var uri string
 		if err := rows.Scan(&registration.Name, &registration.AuthMethod, &registration.SecretHash, &uri); err != nil {
@@ -35,7 +35,7 @@ func (s *Service) oauthRegistration(ctx context.Context, id string) (oauthRegist
 	return registration, err
 }
 
-func insertOAuthRedirectURIs(ctx context.Context, tx *sql.Tx, id string, uris []string) error {
+func insertOAuthRedirectURIs(ctx context.Context, tx *entryTransaction, id string, uris []string) error {
 	for position, uri := range uris {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO oauth_client_redirect_uris(client_id,position,uri) VALUES(?,?,?) ON CONFLICT DO NOTHING`, id, position, uri); err != nil {
 			return err
@@ -46,6 +46,7 @@ func insertOAuthRedirectURIs(ctx context.Context, tx *sql.Tx, id string, uris []
 
 func (s *Service) startOAuthClientBackfill(parent context.Context) {
 	ctx, cancel := context.WithCancel(context.WithoutCancel(parent))
+	ctx = entryBackground(ctx)
 	s.stopOAuthBackfill = cancel
 	s.oauthBackfillDone = make(chan struct{})
 	go func() {
@@ -80,12 +81,12 @@ func (s *Service) backfillOAuthClients(ctx context.Context) error {
 	}
 }
 
-func (s *Service) backfillOAuthClient(ctx context.Context, id string, uris []string) error {
+func (s *Service) backfillOAuthClient(ctx context.Context, id string, uris []string) (resultErr error) {
 	tx, err := s.auth.store.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer tx.cleanup(&resultErr)
 	if err := insertOAuthRedirectURIs(ctx, tx, id, uris); err != nil {
 		return err
 	}

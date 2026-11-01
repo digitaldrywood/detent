@@ -79,7 +79,7 @@ func (s *Service) sessionPlatformRole(ctx context.Context, session accountSessio
 	return s.platformRole(ctx, session.Email)
 }
 
-func (r *Registry) seedPlatformMembers(ctx context.Context, cfg Config) error {
+func (r *Registry) seedPlatformMembers(ctx context.Context, cfg Config) (resultErr error) {
 	bootstrap := platformEmail(cfg.Platform.BootstrapAdminEmail)
 	if bootstrap != "" && !validPlatformEmail(bootstrap) {
 		return errors.New("platform.bootstrap_admin_email must be an email address")
@@ -88,7 +88,12 @@ func (r *Registry) seedPlatformMembers(ctx context.Context, cfg Config) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer tx.cleanup(&resultErr)
+	if r.store.db.postgres != nil {
+		if _, err := tx.ExecContext(ctx, "LOCK TABLE platform_members IN SHARE ROW EXCLUSIVE MODE"); err != nil {
+			return err
+		}
+	}
 	var count int
 	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM platform_members").Scan(&count); err != nil {
 		return err
@@ -151,18 +156,18 @@ func platformMemberOperation(name string) bool {
 	return name == platformMemberList || name == platformMemberAdd || name == platformMemberChange || name == platformMemberRemove
 }
 
-func (s *Service) readPlatformMembers(ctx context.Context, session accountSession) (platformMembersResult, error) {
+func (s *Service) readPlatformMembers(ctx context.Context, session accountSession) (_ platformMembersResult, resultErr error) {
 	result := platformMembersResult{Members: []platformMember{}}
 	tx, err := s.registry.store.db.BeginTx(ctx, nil)
 	if err != nil {
 		return result, err
 	}
-	defer tx.Rollback()
+	defer tx.cleanup(&resultErr)
 	rows, err := tx.QueryContext(ctx, "SELECT email,role,added_by,added_at,updated_at FROM platform_members ORDER BY email")
 	if err != nil {
 		return result, err
 	}
-	defer rows.Close()
+	defer closeEntryRows(rows, &resultErr)
 	for rows.Next() {
 		var member platformMember
 		if err := rows.Scan(&member.Email, &member.Role, &member.AddedBy, &member.AddedAt, &member.UpdatedAt); err != nil {
@@ -184,7 +189,7 @@ func (s *Service) readPlatformMembers(ctx context.Context, session accountSessio
 	return result, tx.Commit()
 }
 
-func (a entryAdministration) executePlatformMember(ctx context.Context, name string, in operatoradmin.Input, m mutation.Metadata, session accountSession) (operatoradmin.Output, error) {
+func (a entryAdministration) executePlatformMember(ctx context.Context, name string, in operatoradmin.Input, m mutation.Metadata, session accountSession) (_ operatoradmin.Output, resultErr error) {
 	s := a.service
 	if name != platformMemberAdd && name != platformMemberChange && name != platformMemberRemove || in.Email != platformEmail(in.Email) || !validPlatformEmail(in.Email) || strings.TrimSpace(in.Reason) == "" || utf8.RuneCountInString(in.Reason) > 500 || in.ExpectedRevision < 0 || name != platformMemberRemove && (in.Role == "" || !cloudassert.ValidPlatformRole(in.Role)) || name == platformMemberRemove && in.Role != "" {
 		return operatoradmin.Output{}, operatortool.ErrInvalidArguments
@@ -201,7 +206,12 @@ func (a entryAdministration) executePlatformMember(ctx context.Context, name str
 	if err != nil {
 		return operatoradmin.Output{}, err
 	}
-	defer tx.Rollback()
+	defer tx.cleanup(&resultErr)
+	if s.registry.store.db.postgres != nil {
+		if _, err := tx.ExecContext(ctx, "LOCK TABLE platform_members IN SHARE ROW EXCLUSIVE MODE"); err != nil {
+			return operatoradmin.Output{}, err
+		}
+	}
 	var revision int64
 	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM platform_member_changes").Scan(&revision); err != nil {
 		return operatoradmin.Output{}, err
@@ -235,7 +245,13 @@ func (a entryAdministration) executePlatformMember(ctx context.Context, name str
 			return operatoradmin.Output{}, operatortool.ErrAccessDenied
 		}
 	}
-	if err := s.recordAdministrationReceipt(ctx, session, m, "pending", operatoradmin.Output{}); err != nil {
+	var pendingErr error
+	if s.auth.store.db.postgres != nil {
+		pendingErr = s.writePostgresAdministrationReceipt(ctx, tx, session, m, "pending", operatoradmin.Output{}, "", operatortool.SignOutResult{})
+	} else {
+		pendingErr = s.recordAdministrationReceipt(ctx, session, m, "pending", operatoradmin.Output{})
+	}
+	if err := pendingErr; err != nil {
 		return operatoradmin.Output{}, err
 	}
 	now := formatTime(s.config.now())

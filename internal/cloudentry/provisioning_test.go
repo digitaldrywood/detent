@@ -27,6 +27,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/testenv"
 )
 
 const provisioningFixtureTimeout = 2 * time.Minute
@@ -64,7 +65,7 @@ func (l *processLauncher) Start(_ context.Context, spec TenantSpec) error {
 		Hosted: &hubserver.HostedConfig{
 			OrganizationID: spec.Organization.ID, WorkOSOrganizationID: spec.Organization.ProviderID, PublicURL: spec.PublicURL, Provider: l.provider,
 			StaffEmails: []string{"staff@example.test", "support@example.test"}, SupportActors: []string{"support@example.test"},
-			SharedEntry: &hubserver.HostedSharedEntry{Issuer: spec.Issuer, PublicKeys: []ed25519.PublicKey{public}, Generation: spec.Organization.Generation},
+			SharedEntry: &hubserver.HostedSharedEntry{Issuer: spec.Issuer, PublicKeys: []ed25519.PublicKey{public}, Generation: spec.Organization.Generation, ResolveKey: spec.ResolveKey, ArchiveContents: spec.ArchiveContents, Content: spec.Content, RunDetails: spec.RunDetails, Icons: spec.Icons, ReadArchive: spec.ReadArchive},
 			Plans:       l.plans,
 		},
 	}
@@ -158,15 +159,17 @@ func (l *processLauncher) Close() error {
 }
 
 type provisioningFixture struct {
-	billing  *BillingConfig
-	service  *Service
-	provider *fakeProvider
-	launcher *processLauncher
-	state    string
-	roots    [2]string
-	key      ed25519.PrivateKey
-	timeout  time.Duration
-	now      func() time.Time
+	configureEntry []func(*Config)
+	objects        *spacesFixture
+	billing        *BillingConfig
+	service        *Service
+	provider       *fakeProvider
+	launcher       *processLauncher
+	state          string
+	roots          [2]string
+	key            ed25519.PrivateKey
+	timeout        time.Duration
+	now            func() time.Time
 }
 
 func shortTempDir(t *testing.T) string {
@@ -184,11 +187,11 @@ func socketFixtureFits(root string) bool {
 	return len(path) < len(syscall.RawSockaddrUnix{}.Path)
 }
 
-func newProvisioningFixture(t *testing.T, maxTenants int, mutate func(*AllocationConfig)) *provisioningFixture {
-	return newProvisioningFixtureWith(t, maxTenants, mutate, nil)
+func newProvisioningFixture(t *testing.T, maxTenants int, mutate func(*AllocationConfig), configureEntry ...func(*Config)) *provisioningFixture {
+	return newProvisioningFixtureWith(t, maxTenants, mutate, nil, configureEntry...)
 }
 
-func newProvisioningFixtureWith(t *testing.T, maxTenants int, mutate func(*AllocationConfig), configure func(*provisioningFixture)) *provisioningFixture {
+func newProvisioningFixtureWith(t *testing.T, maxTenants int, mutate func(*AllocationConfig), configure func(*provisioningFixture), configureEntry ...func(*Config)) *provisioningFixture {
 	t.Helper()
 	if testing.Short() {
 		t.Skip("SQLite tenant provisioning integration")
@@ -205,6 +208,8 @@ func newProvisioningFixtureWith(t *testing.T, maxTenants int, mutate func(*Alloc
 	if configure != nil {
 		configure(f)
 	}
+	f.objects = newSpacesFixture(t, false)
+	f.configureEntry = configureEntry
 	f.open(t, maxTenants, mutate)
 	return f
 }
@@ -219,6 +224,12 @@ func (f *provisioningFixture) open(t *testing.T, maxTenants int, mutate func(*Al
 		StaffEmails: []string{"staff@example.test"}, StateDir: f.state, Logger: slog.New(slog.DiscardHandler), clientFS: fstest.MapFS{}, Allocation: allocation, Billing: f.billing, tenantStartTimeout: f.timeout, now: f.now}
 	if !f.launcher.useUnix {
 		config.transport = f.launcher.transport
+	}
+	storage := f.objects.config()
+	storage.Endpoint = "https://storage.example.test"
+	config.Attachments, config.attachmentTransport = &storage, f.objects.transport
+	for _, configure := range f.configureEntry {
+		configure(&config)
 	}
 	service, err := Open(t.Context(), config)
 	if err != nil {
@@ -241,21 +252,21 @@ func (f *provisioningFixture) create(t *testing.T, b *browser, name string) page
 
 func (f *provisioningFixture) waitState(t *testing.T, id string, states ...string) Organization {
 	t.Helper()
-	deadline := time.Now().Add(provisioningFixtureTimeout)
-	for {
-		organization, err := f.service.registry.Organization(t.Context(), id)
-		if err == nil {
-			for _, state := range states {
-				if organization.State == state {
-					return organization
-				}
+	var organization Organization
+	testenv.WaitUntil(t, t.Context(), func() error {
+		var err error
+		organization, err = f.service.registry.Organization(t.Context(), id)
+		if err != nil {
+			return err
+		}
+		for _, state := range states {
+			if organization.State == state {
+				return nil
 			}
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("organization %s state = %+v, want %v (%v)", id, organization, states, err)
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+		return fmt.Errorf("organization state = %s, want %v", organization.State, states)
+	})
+	return organization
 }
 
 func organizationFromLocation(t *testing.T, location string) string {
@@ -269,12 +280,18 @@ func organizationFromLocation(t *testing.T, location string) string {
 }
 
 func TestProvisioningSelfServiceJourney(t *testing.T) {
+	for _, backend := range []string{"sqlite", "postgres"} {
+		t.Run(backend, func(t *testing.T) { testProvisioningSelfServiceJourney(t, entryBackendConfig(t, backend)) })
+	}
+}
+
+func testProvisioningSelfServiceJourney(t *testing.T, configureStorage func(*Config)) {
 	if testing.Short() {
 		t.Skip("live service integration")
 	}
 
 	t.Parallel()
-	f := newProvisioningFixture(t, 3, nil)
+	f := newProvisioningFixture(t, 3, nil, configureStorage)
 	member := newBrowser(t, f.service.Handler())
 	member.login("/auth/oidc/start", "user_member:")
 	_, chooser := member.get("/organizations")

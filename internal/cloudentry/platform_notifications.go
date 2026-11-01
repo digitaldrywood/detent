@@ -38,6 +38,7 @@ func (s *Service) startPlatformNotifications(parent context.Context) error {
 		}
 	}
 	ctx, cancel := context.WithCancel(context.WithoutCancel(parent))
+	ctx = entryBackground(ctx)
 	n := &platformNotifications{sender: sender, wake: make(chan struct{}, 1), cancel: cancel, done: make(chan struct{})}
 	s.notifications = n
 	go func() {
@@ -70,18 +71,18 @@ func (s *Service) wakePlatformNotifications() {
 	}
 }
 
-func enqueuePlatformNotification(ctx context.Context, tx *sql.Tx, event, id, email, name, plan, at string) error {
+func enqueuePlatformNotification(ctx context.Context, tx *entryTransaction, event, id, email, name, plan, at string) error {
 	_, err := tx.ExecContext(ctx, `INSERT INTO platform_notifications(event,entity_id,email,name,plan,occurred_at)
 VALUES(?,?,?,?,?,?) ON CONFLICT(event,entity_id) DO NOTHING`, event, id, email, name, plan, at)
 	return err
 }
 
-func (s *Service) recordSignIn(ctx context.Context, identity auth.Identity) error {
+func (s *Service) recordSignIn(ctx context.Context, identity auth.Identity) (resultErr error) {
 	tx, err := s.auth.store.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer tx.cleanup(&resultErr)
 	at := formatTime(s.config.now())
 	if s.notifications != nil && identity.Hosted.SupportActor == "" {
 		var earlier bool
@@ -109,7 +110,7 @@ func (s *Service) deliverPlatformNotifications(ctx context.Context) {
 		for ctx.Err() == nil {
 			var event, id, email, name, plan, at string
 			err := source.db.QueryRowContext(ctx, `UPDATE platform_notifications SET attempted_at=?
-WHERE (event,entity_id)=(SELECT event,entity_id FROM platform_notifications WHERE attempted_at IS NULL ORDER BY occurred_at LIMIT 1)
+WHERE attempted_at IS NULL AND (event,entity_id)=(SELECT event,entity_id FROM platform_notifications WHERE attempted_at IS NULL ORDER BY occurred_at LIMIT 1)
 RETURNING event,entity_id,email,name,plan,occurred_at`, formatTime(s.config.now())).Scan(&event, &id, &email, &name, &plan, &at)
 			if errors.Is(err, sql.ErrNoRows) {
 				break
@@ -168,12 +169,12 @@ func (s *Service) platformNotificationMessage(event, id, email, name, plan, at s
 	return message, nil
 }
 
-func (s *Service) sendPlatformNotification(ctx context.Context, message auth.EmailMessage) error {
+func (s *Service) sendPlatformNotification(ctx context.Context, message auth.EmailMessage) (resultErr error) {
 	rows, err := s.registry.store.reader.QueryContext(ctx, "SELECT email FROM platform_members WHERE role='admin' ORDER BY email")
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
+	defer closeEntryRows(rows, &resultErr)
 	var recipients []string
 	for rows.Next() {
 		var email string

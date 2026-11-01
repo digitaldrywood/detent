@@ -24,17 +24,26 @@ const archiveBindingSelect = `SELECT organization_id,id,revision,backend,endpoin
 const maxArchiveOrigins = 16
 const maxArchiveOriginBytes = 4096
 
-func archiveBindingOrigins(ctx context.Context, q queryer, organization, candidate string) ([]string, error) {
-	rows, err := q.QueryContext(ctx, `WITH RECURSIVE origins(endpoint) AS (
+func archiveBindingOrigins(ctx context.Context, q queryer, organization, candidate string) (_ []string, resultErr error) {
+	query := `WITH RECURSIVE origins(endpoint) AS (
  SELECT (SELECT endpoint FROM archive_storage_bindings WHERE organization_id=? ORDER BY endpoint COLLATE NOCASE LIMIT 1)
  UNION ALL
  SELECT (SELECT endpoint FROM archive_storage_bindings WHERE organization_id=? AND endpoint>origins.endpoint COLLATE NOCASE ORDER BY endpoint COLLATE NOCASE LIMIT 1)
  FROM origins WHERE endpoint IS NOT NULL LIMIT ?
-) SELECT substr(endpoint,1,?) FROM origins WHERE endpoint IS NOT NULL`, organization, organization, maxArchiveOrigins+1, maxArchiveOriginBytes+1)
+) SELECT substr(endpoint,1,?) FROM origins WHERE endpoint IS NOT NULL`
+	if dialect, ok := q.(interface{ isPostgres() bool }); ok && dialect.isPostgres() {
+		query = `WITH RECURSIVE origins(endpoint,ordinal) AS (
+ SELECT (SELECT min(lower(endpoint)) FROM archive_storage_bindings WHERE organization_id=?),1
+ UNION ALL
+ SELECT (SELECT min(lower(endpoint)) FROM archive_storage_bindings WHERE organization_id=? AND lower(endpoint)>origins.endpoint),ordinal+1
+ FROM origins WHERE endpoint IS NOT NULL AND ordinal<?
+ ) SELECT substr(endpoint,1,?) FROM origins WHERE endpoint IS NOT NULL`
+	}
+	rows, err := q.QueryContext(ctx, query, organization, organization, maxArchiveOrigins+1, maxArchiveOriginBytes+1)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer closeEntryRows(rows, &resultErr)
 	origins := make([]string, 0, maxArchiveOrigins)
 	total := 0
 	add := func(endpoint string) error {
@@ -95,7 +104,7 @@ func scanArchiveBinding(row rowScanner) (attachment.StorageBinding, error) {
 	return b, err
 }
 
-func (s *Service) ensureLegacyArchiveBinding(ctx context.Context, organization string) error {
+func (s *Service) ensureLegacyArchiveBinding(ctx context.Context, organization string) (resultErr error) {
 	if s.config.Attachments == nil {
 		return nil
 	}
@@ -116,7 +125,7 @@ func (s *Service) ensureLegacyArchiveBinding(ctx context.Context, organization s
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer tx.cleanup(&resultErr)
 	if _, err := archiveBindingOrigins(ctx, tx, organization, b.Endpoint); err != nil {
 		return err
 	}
@@ -140,7 +149,7 @@ func (s *Service) currentArchiveBinding(ctx context.Context, organization string
 	return b, err
 }
 
-func (s *Service) saveArchiveBinding(ctx context.Context, b attachment.StorageBinding, expected int64) (attachment.StorageBinding, error) {
+func (s *Service) saveArchiveBinding(ctx context.Context, b attachment.StorageBinding, expected int64) (_ attachment.StorageBinding, resultErr error) {
 	if b.Validate() != nil {
 		return b, attachment.ErrInvalid
 	}
@@ -148,7 +157,7 @@ func (s *Service) saveArchiveBinding(ctx context.Context, b attachment.StorageBi
 	if err != nil {
 		return b, err
 	}
-	defer tx.Rollback()
+	defer tx.cleanup(&resultErr)
 	var current int64
 	if err := tx.QueryRowContext(ctx, `SELECT coalesce(max(revision),0) FROM archive_storage_bindings WHERE organization_id=?`, b.Organization).Scan(&current); err != nil {
 		return b, err

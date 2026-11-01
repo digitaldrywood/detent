@@ -25,7 +25,7 @@ func TestInsertsNeverWriteConstantUniqueKeys(t *testing.T) {
 					t.Error(err)
 				}
 			})
-			violations, err := testenv.ConstantUniqueInserts(t.Context(), s.db, ".")
+			violations, err := testenv.ConstantUniqueInserts(t.Context(), s.db.DB, ".")
 			if err != nil {
 				t.Fatal(err)
 			}

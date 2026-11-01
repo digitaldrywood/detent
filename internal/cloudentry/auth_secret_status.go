@@ -64,15 +64,15 @@ func AuthSecretStatus(ctx context.Context, path string, keys *hubsecrets.Keyring
 		status.Problem = "unreadable_database"
 		return status
 	}
-	if err := readAuthSecretStatus(ctx, db, keys, &status); err != nil {
+	if err := readAuthSecretStatus(ctx, &entryDatabase{DB: db}, keys, &status); err != nil {
 		status.Problem = "unreadable_auth_tables"
 	}
 	return status
 }
 
-func readAuthSecretStatus(ctx context.Context, db *sql.DB, keys *hubsecrets.Keyring, status *AuthSecretDatabaseStatus) error {
+func readAuthSecretStatus(ctx context.Context, db *entryDatabase, keys *hubsecrets.Keyring, status *AuthSecretDatabaseStatus) (resultErr error) {
 	var hasGitHubConnections bool
-	if err := db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='github_user_connections')`).Scan(&hasGitHubConnections); err != nil {
+	if err := db.QueryRowContext(ctx, db.choose(`SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='github_user_connections')`, `SELECT to_regclass('platform.github_user_connections') IS NOT NULL`)).Scan(&hasGitHubConnections); err != nil {
 		return err
 	}
 	query := `SELECT binding,'provider-access',access_token FROM authorizations UNION ALL SELECT binding,'provider-refresh',refresh_token FROM authorizations`
@@ -83,7 +83,7 @@ func readAuthSecretStatus(ctx context.Context, db *sql.DB, keys *hubsecrets.Keyr
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
+	defer closeEntryRows(rows, &resultErr)
 	counts := make(map[AuthSecretCount]int)
 	for rows.Next() {
 		var binding, kind, value string
@@ -131,4 +131,12 @@ func readAuthSecretStatus(ctx context.Context, db *sql.DB, keys *hubsecrets.Keyr
 		return err
 	}
 	return db.QueryRowContext(ctx, `SELECT count(CASE WHEN EXISTS(SELECT 1 FROM oauth_client_redirect_uris u WHERE u.client_id=c.id) THEN 1 END),count(CASE WHEN NOT EXISTS(SELECT 1 FROM oauth_client_redirect_uris u WHERE u.client_id=c.id) THEN 1 END) FROM oauth_clients c`).Scan(&status.ClientsWithRedirectURIs, &status.ClientsWithoutRedirectURIs)
+}
+
+func (s *Service) AuthSecretStatus(ctx context.Context) AuthSecretDatabaseStatus {
+	status := AuthSecretDatabaseStatus{Database: s.config.Storage.Backend, Counts: []AuthSecretCount{}, Problems: []AuthSecretProblem{}}
+	if err := readAuthSecretStatus(ctx, s.auth.store.reader, s.auth.keys, &status); err != nil {
+		status.Problem = "unreadable_auth_tables"
+	}
+	return status
 }

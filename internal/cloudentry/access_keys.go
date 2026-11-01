@@ -15,10 +15,12 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
+	"github.com/lib/pq"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type keyOrganization struct {
@@ -80,6 +82,9 @@ func (k accessKey) valid() bool {
 }
 
 func (a *authStore) accessKey(ctx context.Context, column, value string) (accessKey, error) {
+	if a.store.db.postgres != nil {
+		return a.postgresKey(ctx, column, value)
+	}
 	if column != "id" && column != "token_hash" {
 		return accessKey{}, errors.New("invalid key selector")
 	}
@@ -189,14 +194,20 @@ func (s *Service) keyClaims(ctx context.Context, k accessKey, organization Organ
 	}
 	var blocked bool
 	var blockedJSON string
-	err := s.auth.store.db.QueryRowContext(ctx, "SELECT blocked,blocked_projects_json FROM access_key_organizations WHERE key_id=? AND organization_id=?", k.ID, organization.ID).Scan(&blocked, &blockedJSON)
+	var excluded []string
+	var err error
+	if s.auth.store.db.postgres != nil {
+		blocked, excluded, err = s.keyRestrictions(ctx, k.ID, organization.ID)
+	} else {
+		err = s.auth.store.db.QueryRowContext(ctx, "SELECT blocked,blocked_projects_json FROM access_key_organizations WHERE key_id=? AND organization_id=?", k.ID, organization.ID).Scan(&blocked, &blockedJSON)
+	}
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return cloudassert.Claims{}, err
 	}
 	if blocked {
 		return cloudassert.Claims{}, &apikey.Refusal{Code: "organization_key_blocked", Message: "An organization administrator blocked this key"}
 	}
-	key := &apikey.KeyAuthority{ID: k.ID, CredentialBinding: k.credentialBinding(), Kind: k.Kind, Permission: k.Permission, ProjectContext: projects}
+	key := &apikey.KeyAuthority{ID: k.ID, CredentialBinding: k.credentialBinding(), Kind: k.Kind, Permission: k.Permission, ProjectContext: projects, BlockedProjects: excluded}
 	if blockedJSON != "" && json.Unmarshal([]byte(blockedJSON), &key.BlockedProjects) != nil {
 		return cloudassert.Claims{}, errors.New("stored project exclusions are invalid")
 	}
@@ -328,7 +339,11 @@ func (s *Service) createAccountKey(c echo.Context) error {
 	if k.ExpiresAt != nil {
 		expiry = formatTime(*k.ExpiresAt)
 	}
-	_, err = s.auth.store.db.ExecContext(c.Request().Context(), `INSERT INTO access_keys(id,token_hash,name,kind,owner_subject,owner_email,permission,access_context,organizations_json,service_organization_id,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, k.ID, k.Hash, k.Name, k.Kind, k.Owner, k.OwnerEmail, k.Permission, k.AccessContext, string(organizations), k.ServiceOrganization, formatTime(k.CreatedAt), expiry)
+	if s.auth.store.db.postgres != nil {
+		err = s.auth.postgresCreateKey(c.Request().Context(), k)
+	} else {
+		_, err = s.auth.store.db.ExecContext(c.Request().Context(), `INSERT INTO access_keys(id,token_hash,name,kind,owner_subject,owner_email,permission,access_context,organizations_json,service_organization_id,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, k.ID, k.Hash, k.Name, k.Kind, k.Owner, k.OwnerEmail, k.Permission, k.AccessContext, string(organizations), k.ServiceOrganization, formatTime(k.CreatedAt), expiry)
+	}
 	if err != nil {
 		return keyError(c, err)
 	}
@@ -383,12 +398,12 @@ func (s *Service) accountKeys(c echo.Context) error {
 	}{views})
 }
 
-func (s *Service) listAccessKeys(ctx context.Context, query string, args ...any) ([]accessKey, error) {
+func (s *Service) listAccessKeys(ctx context.Context, query string, args ...any) (_ []accessKey, resultErr error) {
 	rows, err := s.auth.store.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer closeEntryRows(rows, &resultErr)
 	ids := []string{}
 	for rows.Next() {
 		var id string
@@ -581,11 +596,16 @@ func (s *Service) organizationKeys(c echo.Context) error {
 	if err != nil {
 		return keyError(c, err)
 	}
-	keys, err := s.listAccessKeys(ctx, `SELECT id FROM access_keys INDEXED BY access_keys_owner
+	var keys []accessKey
+	if s.auth.store.db.postgres != nil {
+		keys, err = s.listAccessKeys(ctx, `SELECT id FROM access_keys WHERE owner_subject = ANY(?) AND kind='personal' AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>?) AND id>? AND (access_context='global' OR EXISTS(SELECT 1 FROM access_key_organizations o WHERE o.key_id=access_keys.id AND o.organization_id=? AND o.selected)) ORDER BY id LIMIT 51`, pq.Array(owners), formatTime(s.config.now()), cursor, org.ID)
+	} else {
+		keys, err = s.listAccessKeys(ctx, `SELECT id FROM access_keys INDEXED BY access_keys_owner
 		WHERE owner_subject IN (SELECT value FROM json_each(?)) AND kind='personal'
 		AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>?) AND id>?
 		AND (access_context='global' OR EXISTS (SELECT 1 FROM json_each(organizations_json) WHERE json_extract(value,'$.organization_id')=?))
 		ORDER BY id LIMIT 51`, string(encoded), formatTime(s.config.now()), cursor, org.ID)
+	}
 	if err != nil {
 		return keyError(c, err)
 	}
@@ -618,7 +638,7 @@ func (s *Service) organizationKeys(c echo.Context) error {
 	}{result, nextCursor})
 }
 
-func (s *Service) blockOrganizationKey(c echo.Context) error {
+func (s *Service) blockOrganizationKey(c echo.Context) (resultErr error) {
 	session, err := s.accountKeySession(c)
 	if err != nil {
 		return keyError(c, err)
@@ -643,11 +663,20 @@ func (s *Service) blockOrganizationKey(c echo.Context) error {
 	if len(input.ProjectID) > 256 {
 		return c.NoContent(http.StatusBadRequest)
 	}
+	if s.auth.store.db.postgres != nil {
+		if err := s.auth.store.db.postgres.BlockKey(c.Request().Context(), tracker.OrganizationID(org.ID), k.ID, tracker.ProjectID(input.ProjectID)); err != nil {
+			return keyError(c, err)
+		}
+		if err := s.keyAudit(c.Request().Context(), org, k.ID, session.Subject, "personal_key_blocked"); err != nil {
+			return keyError(c, err)
+		}
+		return c.NoContent(http.StatusNoContent)
+	}
 	tx, err := s.auth.store.db.BeginTx(c.Request().Context(), nil)
 	if err != nil {
 		return keyError(c, err)
 	}
-	defer tx.Rollback()
+	defer tx.cleanup(&resultErr)
 	if _, err := tx.ExecContext(c.Request().Context(), "INSERT INTO access_key_organizations(key_id,organization_id) VALUES(?,?) ON CONFLICT DO NOTHING", k.ID, org.ID); err != nil {
 		return keyError(c, err)
 	}
@@ -684,7 +713,7 @@ func (s *Service) blockOrganizationKey(c echo.Context) error {
 	return c.NoContent(http.StatusNoContent)
 }
 
-func (s *Service) keyNotifications(c echo.Context) error {
+func (s *Service) keyNotifications(c echo.Context) (resultErr error) {
 	session, err := s.accountKeySession(c)
 	if err != nil {
 		return keyError(c, err)
@@ -693,7 +722,7 @@ func (s *Service) keyNotifications(c echo.Context) error {
 	if err != nil {
 		return keyError(c, err)
 	}
-	defer rows.Close()
+	defer closeEntryRows(rows, &resultErr)
 	type notice struct {
 		KeyID          string `json:"key_id"`
 		OrganizationID string `json:"organization_id"`

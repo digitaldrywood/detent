@@ -128,10 +128,16 @@ func memberRequest(t *testing.T, b *browser, method, email string, body map[stri
 }
 
 func TestPlatformMembersAPI(t *testing.T) {
+	for _, backend := range []string{"sqlite", "postgres"} {
+		t.Run(backend, func(t *testing.T) { testPlatformMembersAPI(t, entryBackendConfig(t, backend)) })
+	}
+}
+
+func testPlatformMembersAPI(t *testing.T, configureStorage func(*Config)) {
 	t.Parallel()
-	f := newEntryFixture(t)
+	f := newEntryFixture(t, configureStorage)
 	for email, role := range map[string]string{"admin@example.test": "admin", "supporter@example.test": "support", "billing@example.test": "billing", "viewer@example.test": "viewer"} {
-		if _, err := f.service.registry.store.db.ExecContext(t.Context(), "INSERT INTO platform_members VALUES(?,?, 'fixture','time','time')", email, role); err != nil {
+		if _, err := f.service.registry.store.db.ExecContext(t.Context(), "INSERT INTO platform_members VALUES(?,?, 'fixture',?,?)", email, role, formatTime(f.service.config.now()), formatTime(f.service.config.now())); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -151,8 +157,14 @@ func TestPlatformMembersAPI(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, err := f.service.auth.store.db.ExecContext(t.Context(), "UPDATE sessions SET identity_json=? WHERE token_hash=?", string(identityRaw), session.Hash); err != nil {
-					t.Fatal(err)
+				if f.service.auth.store.db.postgres != nil {
+					if _, err := f.service.auth.store.db.ExecContext(t.Context(), "UPDATE sessions SET support_actor=? WHERE token_hash=?", session.Identity.SupportActor, session.Hash); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					if _, err := f.service.auth.store.db.ExecContext(t.Context(), "UPDATE sessions SET identity_json=? WHERE token_hash=?", string(identityRaw), session.Hash); err != nil {
+						t.Fatal(err)
+					}
 				}
 			}
 			response, raw := b.get("/api/cloud/platform/members")

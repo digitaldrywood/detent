@@ -3,7 +3,6 @@ package cloudentry
 import (
 	"cmp"
 	"context"
-	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -127,13 +126,13 @@ plan_id || ' v' || plan_version || CASE WHEN expires_at='' THEN '' ELSE ' until 
 email || CASE WHEN action='role_changed' THEN ' from ' || previous_role || ' to ' || role WHEN role!='' THEN ' as ' || role ELSE '' END || ' · ' || reason AS detail FROM platform_member_changes`
 )
 
-func readAuditRows(ctx context.Context, db *sql.DB, query, source string, f platformAuditFilter) ([]platformAuditRow, error) {
+func readAuditRows(ctx context.Context, db *entryDatabase, query, source string, f platformAuditFilter) (_ []platformAuditRow, resultErr error) {
 	rows, err := db.QueryContext(ctx, query, f.Tenant, f.Tenant, f.Actor, f.Actor, f.Event, f.Event, f.From, f.From, f.To, f.To,
 		f.Cursor.At, source, f.Cursor.At, f.Cursor.Source, f.Cursor.ID, f.Limit+1)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer closeEntryRows(rows, &resultErr)
 	result := []platformAuditRow{}
 	for rows.Next() {
 		row := platformAuditRow{Source: source}
@@ -150,12 +149,12 @@ func readAuditRows(ctx context.Context, db *sql.DB, query, source string, f plat
 	return result, rows.Err()
 }
 
-func readAuditEvents(ctx context.Context, db *sql.DB, query string) ([]string, error) {
+func readAuditEvents(ctx context.Context, db *entryDatabase, query string) (_ []string, resultErr error) {
 	rows, err := db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer closeEntryRows(rows, &resultErr)
 	result := []string{}
 	for rows.Next() {
 		var event string
@@ -167,17 +166,24 @@ func readAuditEvents(ctx context.Context, db *sql.DB, query string) ([]string, e
 	return result, rows.Err()
 }
 
-func (s *Service) readPlatformAudit(ctx context.Context, f platformAuditFilter) (platformAuditResult, error) {
+func (s *Service) readPlatformAudit(ctx context.Context, f platformAuditFilter) (_ platformAuditResult, resultErr error) {
 	result := platformAuditResult{Rows: []platformAuditRow{}, Events: []string{}, Tenants: []platformAuditTenant{}}
 	sources := []struct {
 		name                   string
-		db                     *sql.DB
+		db                     *entryDatabase
 		pageQuery, eventsQuery string
 	}{
 		{"audit", s.auth.store.db, auditPagePrefix + authAuditEvents + auditPageSuffix, "SELECT DISTINCT event FROM (" + authAuditEvents + ")"},
 		{"entitlement_changes", s.registry.store.db, auditPagePrefix + entitlementAuditEvents + auditPageSuffix, "SELECT DISTINCT event FROM (" + entitlementAuditEvents + ")"},
 		{"organization_events", s.registry.store.db, auditPagePrefix + organizationAuditEvents + auditPageSuffix, "SELECT DISTINCT event FROM (" + organizationAuditEvents + ")"},
 		{"platform_member_changes", s.registry.store.db, auditPagePrefix + memberAuditEvents + auditPageSuffix, "SELECT DISTINCT event FROM (" + memberAuditEvents + ")"},
+	}
+	if s.auth.store.db.postgres != nil {
+		definitions := []string{postgresAuthAuditEvents, postgresEntitlementAuditEvents, organizationAuditEvents, memberAuditEvents}
+		for i := range sources {
+			sources[i].pageQuery = auditPagePrefix + definitions[i] + postgresAuditPageSuffix
+			sources[i].eventsQuery = "SELECT DISTINCT event FROM (" + definitions[i] + ") AS events"
+		}
 	}
 	events := map[string]bool{}
 	for _, source := range sources {
@@ -223,7 +229,7 @@ func (s *Service) readPlatformAudit(ctx context.Context, f platformAuditFilter) 
 	if err != nil {
 		return result, err
 	}
-	defer rows.Close()
+	defer closeEntryRows(rows, &resultErr)
 	tenants := map[string]platformAuditTenant{}
 	for rows.Next() {
 		var tenant platformAuditTenant
@@ -259,3 +265,17 @@ func (s *Service) platformAuditJSON(c echo.Context) error {
 	}
 	return c.JSON(http.StatusOK, result)
 }
+
+const postgresAuditPageSuffix = `), keyed AS (SELECT *,to_char(recorded_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US') || '000' AS at FROM events)
+SELECT id,recorded_at,organization_id,actor,event,detail FROM keyed
+WHERE (?='' OR organization_id=?) AND (?='' OR strpos(lower(actor),lower(?))>0)
+AND (?='' OR event=?) AND (?='' OR at>=?) AND (?='' OR at<=?)
+AND (?='' OR (at,?::text,id)<(?,?,?)) ORDER BY at DESC,id DESC LIMIT ?`
+const postgresAuthAuditEvents = `SELECT CAST(id AS TEXT) AS id,recorded_at,organization_id,
+COALESCE((SELECT email FROM sessions WHERE subject=a.subject ORDER BY created_at DESC,token_hash DESC LIMIT 1),subject) AS actor,
+CASE WHEN event LIKE 'support_requested:%' OR event LIKE 'support_started:%' THEN split_part(event,':',1) ELSE event END AS event,
+CASE WHEN event='support_requested' THEN coalesce(reason,'') WHEN event='ai_credits_adjusted' THEN '$' || amount_usd::text || ' · ' || coalesce(reason,'') WHEN event LIKE 'support_requested:%' OR event LIKE 'support_started:%' THEN substr(event,strpos(event,':')+1) ELSE '' END AS detail FROM audit a
+WHERE event<>'operator_administration'`
+const postgresEntitlementAuditEvents = `SELECT organization_id || ':' || idempotency_key AS id,recorded_at,organization_id,staff_email AS actor,
+CASE action WHEN 'grant' THEN 'plan_granted' WHEN 'create_plan' THEN 'plan_created' WHEN 'base' THEN 'plan_base_changed' WHEN 'subscription' THEN 'plan_subscription_changed' WHEN 'end_subscription' THEN 'plan_subscription_ended' ELSE 'plan_revoked' END AS event,
+plan_id || ' v' || plan_version || CASE WHEN expires_at IS NULL THEN '' ELSE ' until ' || expires_at::text END || ' · ' || reason AS detail FROM entitlement_changes`

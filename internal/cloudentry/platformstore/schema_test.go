@@ -32,6 +32,8 @@ func TestPlatformInventoryAndRoleSeparation(t *testing.T) {
 			tables[name] = true
 		}
 	}
+	tables["administration_receipts"] = true
+	tables["organization_slug_counters"] = true
 	tables["access_key_projects"] = true
 	tables["access_key_blocked_projects"] = true
 	var untyped int

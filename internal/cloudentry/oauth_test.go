@@ -243,7 +243,13 @@ func TestOAuthDiscoveryAndRegistration(t *testing.T) {
 }
 
 func TestOAuthCodeExchangeAndRotation(t *testing.T) {
-	f := newEntryFixture(t)
+	for _, backend := range []string{"sqlite", "postgres"} {
+		t.Run(backend, func(t *testing.T) { testOAuthCodeExchangeAndRotation(t, entryBackendConfig(t, backend)) })
+	}
+}
+
+func testOAuthCodeExchangeAndRotation(t *testing.T, configureStorage func(*Config)) {
+	f := newEntryFixture(t, configureStorage)
 	owner := newBrowser(t, f.service.Handler())
 	owner.login("/organizations", "user_alice:")
 	client := registerTestOAuth(t, owner, "ChatGPT", "none")
@@ -290,8 +296,16 @@ func TestOAuthCodeExchangeAndRotation(t *testing.T) {
 			}
 		}
 		refresh := url.Values{"client_id": {c.ID}, "client_secret": {c.Secret}, "grant_type": {"refresh_token"}, "refresh_token": {token.RefreshToken}, "resource": {testPublicURL + "/mcp"}}
-		if _, err := f.service.auth.store.db.ExecContext(t.Context(), `CREATE TRIGGER fail_spent_refresh_insert BEFORE INSERT ON oauth_spent_refresh_tokens BEGIN SELECT RAISE(ABORT,'injected insert failure'); END`); err != nil {
-			t.Fatal(err)
+		restoreToken := f.service.config.generateToken
+		if f.service.auth.store.db.postgres != nil {
+			if _, err := f.service.auth.store.db.ExecContext(t.Context(), `INSERT INTO oauth_grants(id,client_id,owner_subject,owner_email,organization_id,permission,resource,created_at,access_hash) VALUES('example_collision',?,'user_alice','alice@example.test','org_beta','read',?,?,?)`, c.ID, testPublicURL+"/mcp", f.service.config.now(), apikey.HashToken(oauthAccessPrefix+"example_collision")); err != nil {
+				t.Fatal(err)
+			}
+			f.service.config.generateToken = func() (string, error) { return "example_collision", nil }
+		} else {
+			if _, err := f.service.auth.store.db.ExecContext(t.Context(), `CREATE TRIGGER fail_spent_refresh_insert BEFORE INSERT ON oauth_spent_refresh_tokens BEGIN SELECT RAISE(ABORT,'injected insert failure'); END`); err != nil {
+				t.Fatal(err)
+			}
 		}
 		if response := owner.do(http.MethodPost, "/oauth/token", refresh, nil); response.StatusCode < 400 {
 			t.Fatal("rotation succeeded without retaining spent token")
@@ -299,8 +313,15 @@ func TestOAuthCodeExchangeAndRotation(t *testing.T) {
 		if err := f.service.auth.store.reader.QueryRowContext(t.Context(), "SELECT token_hash FROM oauth_refresh_tokens WHERE grant_id=?", key.ID).Scan(&stored); err != nil || stored != apikey.HashToken(token.RefreshToken) {
 			t.Fatalf("failed rotation changed current token: %v", err)
 		}
-		if _, err := f.service.auth.store.db.ExecContext(t.Context(), "DROP TRIGGER fail_spent_refresh_insert"); err != nil {
-			t.Fatal(err)
+		f.service.config.generateToken = restoreToken
+		if f.service.auth.store.db.postgres != nil {
+			if _, err := f.service.auth.store.db.ExecContext(t.Context(), "DELETE FROM oauth_grants WHERE id='example_collision' AND organization_id='org_beta'"); err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			if _, err := f.service.auth.store.db.ExecContext(t.Context(), "DROP TRIGGER fail_spent_refresh_insert"); err != nil {
+				t.Fatal(err)
+			}
 		}
 		rotated := exchangeTestOAuth(t, owner, refresh)
 		if token.RefreshToken == rotated.RefreshToken || token.AccessToken == rotated.AccessToken {

@@ -280,6 +280,23 @@ type PlatformAccessKeyProject struct {
 	ProjectID      string
 }
 
+type PlatformAdministrationReceipt struct {
+	Subject           string
+	OrganizationID    string
+	RetryIdentity     string
+	InputHash         string
+	Outcome           string
+	ResourceID        string
+	Url               string
+	Reconnect         bool
+	SignOut           bool
+	SignedOut         bool
+	ProviderConfirmed bool
+	AuditRecorded     bool
+	OutputObjectKey   string
+	RecordedAt        time.Time
+}
+
 type PlatformArchiveDeletionFailure struct {
 	OrganizationID string
 	BindingID      string
@@ -499,6 +516,11 @@ type PlatformOrganizationKeyPolicy struct {
 type PlatformOrganizationSlug struct {
 	Slug           string
 	OrganizationID string
+}
+
+type PlatformOrganizationSlugCounter struct {
+	Base   string
+	Suffix int64
 }
 
 type PlatformPlatformMember struct {

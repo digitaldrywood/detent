@@ -665,11 +665,17 @@ func TestAccessKeyMembershipAndPolicyMatrix(t *testing.T) {
 }
 
 func TestAccessKeyLifecycleAndREST(t *testing.T) {
-	f := newEntryFixture(t)
+	for _, backend := range []string{"sqlite", "postgres"} {
+		t.Run(backend, func(t *testing.T) { testAccessKeyLifecycleAndREST(t, entryBackendConfig(t, backend)) })
+	}
+}
+
+func testAccessKeyLifecycleAndREST(t *testing.T, configureStorage func(*Config)) {
+	f := newEntryFixture(t, configureStorage)
 	owner := newBrowser(t, f.service.Handler())
 	owner.login("/organizations", "user_alice:")
 	key := createTestAccessKey(t, owner, "global", nil, "")
-	if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE organizations SET managed=1 WHERE id='org_alpha'"); err != nil {
+	if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE organizations SET managed=true WHERE id='org_alpha'"); err != nil {
 		t.Fatal(err)
 	}
 	allocation, err := f.service.registry.Organization(t.Context(), "org_alpha")

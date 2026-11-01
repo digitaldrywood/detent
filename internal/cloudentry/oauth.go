@@ -283,7 +283,7 @@ func (s *Service) oauthConsent(c echo.Context) error {
 	return s.render(c, http.StatusOK, data)
 }
 
-func (s *Service) oauthApprove(c echo.Context) error {
+func (s *Service) oauthApprove(c echo.Context) (resultErr error) {
 	session, err := s.accountKeySession(c)
 	if err != nil {
 		return oauthError(c, 403, "access_denied")
@@ -347,7 +347,7 @@ func (s *Service) oauthApprove(c echo.Context) error {
 	if err != nil {
 		return oauthError(c, 503, "server_error")
 	}
-	defer tx.Rollback()
+	defer tx.cleanup(&resultErr)
 	_, err = tx.ExecContext(ctx, "INSERT INTO oauth_clients(id,name,auth_method,secret_hash,created_at) VALUES(?,?,?,?,?) ON CONFLICT(id) DO NOTHING", r.Client, r.Registration.Name, r.Registration.AuthMethod, r.Registration.SecretHash, formatTime(s.config.now()))
 	if err != nil {
 		return oauthError(c, 503, "server_error")
@@ -359,7 +359,12 @@ func (s *Service) oauthApprove(c echo.Context) error {
 	if err != nil {
 		return oauthError(c, 503, "server_error")
 	}
-	result, err := tx.ExecContext(ctx, `INSERT INTO oauth_requests(id,client_id,redirect_uri,challenge,resource,code_hash,code_expires_at,grant_id) SELECT ?,?,?,?,?,?,?,? WHERE julianday(?)>julianday(?) ON CONFLICT(id) DO NOTHING`, r.ID, r.Client, r.Redirect, r.Challenge, r.Resource, apikey.HashToken(code), formatTime(s.config.now().Add(5*time.Minute)), id, formatTime(r.ExpiresAt), formatTime(s.config.now()))
+	var result sql.Result
+	if s.auth.store.db.postgres != nil {
+		result, err = tx.ExecContext(ctx, `INSERT INTO oauth_requests(id,client_id,redirect_uri,challenge,resource,code_hash,code_expires_at,grant_id,organization_id) SELECT ?,?,?,?,?,?,?,?,? WHERE ?::timestamptz>?::timestamptz ON CONFLICT(id) DO NOTHING`, r.ID, r.Client, r.Redirect, r.Challenge, r.Resource, apikey.HashToken(code), formatTime(s.config.now().Add(5*time.Minute)), id, org.ID, formatTime(r.ExpiresAt), formatTime(s.config.now()))
+	} else {
+		result, err = tx.ExecContext(ctx, `INSERT INTO oauth_requests(id,client_id,redirect_uri,challenge,resource,code_hash,code_expires_at,grant_id) SELECT ?,?,?,?,?,?,?,? WHERE julianday(?)>julianday(?) ON CONFLICT(id) DO NOTHING`, r.ID, r.Client, r.Redirect, r.Challenge, r.Resource, apikey.HashToken(code), formatTime(s.config.now().Add(5*time.Minute)), id, formatTime(r.ExpiresAt), formatTime(s.config.now()))
+	}
 	if err != nil {
 		return oauthError(c, 503, "server_error")
 	}

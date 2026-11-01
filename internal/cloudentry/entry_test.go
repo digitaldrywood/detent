@@ -570,12 +570,18 @@ func csrfFrom(t *testing.T, body string) string {
 }
 
 func TestSharedEntryTwoOrganizationsOneOrigin(t *testing.T) {
+	for _, backend := range []string{"sqlite", "postgres"} {
+		t.Run(backend, func(t *testing.T) { testSharedEntryTwoOrganizationsOneOrigin(t, entryBackendConfig(t, backend)) })
+	}
+}
+
+func testSharedEntryTwoOrganizationsOneOrigin(t *testing.T, configureStorage func(*Config)) {
 	if testing.Short() {
 		t.Skip("durable SQLite integration")
 	}
 
 	t.Parallel()
-	f := newEntryFixture(t)
+	f := newEntryFixture(t, configureStorage)
 	alice := newBrowser(t, f.service.Handler())
 	if location := alice.login("/organizations/org_alpha/organization", "user_alice:porg_alpha"); location != "/organizations/org_alpha/organization" {
 		t.Fatalf("post-login location = %q", location)
@@ -1435,12 +1441,18 @@ func TestConfigRequiresLoopbackListener(t *testing.T) {
 }
 
 func TestSharedEntrySupportAccess(t *testing.T) {
+	for _, backend := range []string{"sqlite", "postgres"} {
+		t.Run(backend, func(t *testing.T) { testSharedEntrySupportAccess(t, entryBackendConfig(t, backend)) })
+	}
+}
+
+func testSharedEntrySupportAccess(t *testing.T, configureStorage func(*Config)) {
 	if testing.Short() {
 		t.Skip("durable SQLite integration")
 	}
 
 	t.Parallel()
-	f := newEntryFixture(t)
+	f := newEntryFixture(t, configureStorage)
 	support := newBrowser(t, f.service.Handler())
 	support.login("/organizations", "user_support:")
 	if response, _ := support.get("/organizations/org_alpha/organization"); response.StatusCode == http.StatusOK {

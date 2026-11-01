@@ -5,11 +5,13 @@ import (
 	"database/sql"
 	"errors"
 
+	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 )
 
 func (r *Repository) CreateLogin(ctx context.Context, item LoginTransaction) error {
-	if item.Hash == "" || item.ID == "" || item.State == "" || item.Verifier == "" || !item.ExpiresAt.After(r.now()) {
+	support := item.SupportActor != "" && item.SupportSession != "" && auth.ValidSupportReason(item.SupportReason) && item.State == "" && item.Verifier == ""
+	if item.Hash == "" || item.ID == "" || (!support && (item.State == "" || item.Verifier == "")) || !item.ExpiresAt.After(r.now()) {
 		return ErrInvalid
 	}
 	verifier, err := r.secrets.seal("login-verifier", item.Hash, item.Verifier)

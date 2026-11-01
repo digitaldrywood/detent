@@ -79,7 +79,10 @@ func (r *Registry) Close() error {
 	return r.store.Close()
 }
 
-func (r *Registry) Register(ctx context.Context, organization Organization) (bool, error) {
+func (r *Registry) Register(ctx context.Context, organization Organization) (_ bool, resultErr error) {
+	if r.store.db.postgres != nil {
+		return r.postgresRegister(ctx, organization)
+	}
 	if organization.State == "" {
 		organization.State = "ready"
 	}
@@ -90,7 +93,7 @@ func (r *Registry) Register(ctx context.Context, organization Organization) (boo
 	if err != nil {
 		return false, err
 	}
-	defer tx.Rollback()
+	defer tx.cleanup(&resultErr)
 	existing, err := scanOrganization(tx.QueryRowContext(ctx, organizationSelect+" WHERE id = ? OR provider_id = ?", organization.ID, organization.ProviderID))
 	now := formatTime(r.now())
 	switch {
@@ -129,7 +132,7 @@ func scanOrganization(row rowScanner) (Organization, error) {
 	var organization Organization
 	var updated string
 	if err := row.Scan(&organization.Slug, &organization.ID, &organization.ProviderID, &organization.Name, &organization.State, &organization.Endpoint, &organization.Generation, &organization.Managed,
-		&organization.CreatorSubject, &organization.CreatorEmail, &organization.Step, &organization.Attempts, &organization.NextAttemptAt, &organization.ErrorCode, &organization.ErrorDetail, &organization.CheckoutPrice, &updated); err != nil {
+		&organization.CreatorSubject, &organization.CreatorEmail, &organization.Step, &organization.Attempts, entryOptionalTime{&organization.NextAttemptAt}, &organization.ErrorCode, &organization.ErrorDetail, &organization.CheckoutPrice, &updated); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Organization{}, ErrOrganizationNotFound
 		}
@@ -154,12 +157,12 @@ func (r *Registry) ByProvider(ctx context.Context, providerID string) (Organizat
 	return scanOrganization(r.store.db.QueryRowContext(ctx, organizationSelect+" WHERE provider_id = ?", providerID))
 }
 
-func (r *Registry) List(ctx context.Context) ([]Organization, error) {
+func (r *Registry) List(ctx context.Context) (_ []Organization, resultErr error) {
 	rows, err := r.store.db.QueryContext(ctx, organizationSelect+" ORDER BY id")
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer closeEntryRows(rows, &resultErr)
 	var result []Organization
 	for rows.Next() {
 		organization, err := scanOrganization(rows)

@@ -26,9 +26,10 @@ const (
 var migrationFiles embed.FS
 
 type store struct {
-	db     *sql.DB
-	reader *sql.DB
+	db     *entryDatabase
+	reader *entryDatabase
 	lock   *instancelock.Lock
+	close  func() error
 }
 
 func openStore(ctx context.Context, path string, applicationID int64, directory string) (*store, error) {
@@ -55,14 +56,15 @@ func openStore(ctx context.Context, path string, applicationID int64, directory 
 		return nil, errors.Join(err, lock.Close())
 	}
 	db.SetMaxOpenConns(1)
-	result := &store{db: db, lock: lock}
+	result := &store{db: &entryDatabase{DB: db}, lock: lock}
 	if err := result.prepare(ctx, applicationID, directory); err != nil {
 		return nil, errors.Join(err, result.Close())
 	}
-	result.reader, err = sql.Open("sqlite", storeDSN(path)+"&_pragma=query_only(1)")
+	reader, err := sql.Open("sqlite", storeDSN(path)+"&_pragma=query_only(1)")
 	if err != nil {
 		return nil, errors.Join(err, result.Close())
 	}
+	result.reader = &entryDatabase{DB: reader}
 	result.reader.SetMaxOpenConns(4)
 	if err := result.reader.PingContext(ctx); err != nil {
 		return nil, errors.Join(err, result.Close())
@@ -95,7 +97,7 @@ func (s *store) prepare(ctx context.Context, applicationID int64, directory stri
 	if err != nil {
 		return err
 	}
-	provider, err := goose.NewProvider(goose.DialectSQLite3, s.db, migrations, goose.WithDisableGlobalRegistry(true), goose.WithTableName("entry_schema_version"), goose.WithAllowOutofOrder(true))
+	provider, err := goose.NewProvider(goose.DialectSQLite3, s.db.DB, migrations, goose.WithDisableGlobalRegistry(true), goose.WithTableName("entry_schema_version"), goose.WithAllowOutofOrder(true))
 	if err != nil {
 		return err
 	}
@@ -108,6 +110,9 @@ func (s *store) prepare(ctx context.Context, applicationID int64, directory stri
 func (s *store) Close() error {
 	if s == nil {
 		return nil
+	}
+	if s.close != nil {
+		return s.close()
 	}
 	var err error
 	if s.reader != nil {

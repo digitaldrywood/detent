@@ -9,6 +9,8 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/tracker"
+
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
@@ -28,13 +30,13 @@ type oauthGrantPage struct {
 	NextCursor string       `json:"next_cursor,omitempty"`
 }
 
-func (s *Service) oauthGrants(ctx context.Context, owner, cursor string) (oauthGrantPage, error) {
+func (s *Service) oauthGrants(ctx context.Context, owner, cursor string) (_ oauthGrantPage, resultErr error) {
 	rows, err := s.auth.store.reader.QueryContext(ctx, `SELECT g.id,g.client_id,c.name,g.organization_id,g.created_at,g.last_used_at,g.revoked_at FROM oauth_grants g JOIN oauth_clients c ON c.id=g.client_id WHERE g.owner_subject=? AND g.id>?
 UNION ALL SELECT id,'github-app','Detent Cloud GitHub App','',created_at,NULL,revoked_at FROM github_user_connections WHERE owner_subject=? AND id>? ORDER BY id LIMIT 201`, owner, cursor, owner, cursor)
 	if err != nil {
 		return oauthGrantPage{}, err
 	}
-	defer rows.Close()
+	defer closeEntryRows(rows, &resultErr)
 	grants := []oauthGrant{}
 	for rows.Next() {
 		var g oauthGrant
@@ -68,6 +70,27 @@ func (s *Service) revokeOAuthGrant(ctx context.Context, owner, id string) error 
 			return sql.ErrNoRows
 		}
 		return nil
+	}
+	if s.auth.store.db.postgres != nil {
+		rows, err := s.auth.store.reader.QueryContext(ctx, "SELECT organization_id FROM oauth_grants WHERE id=? AND owner_subject=? LIMIT 2", id, owner)
+		if err != nil {
+			return err
+		}
+		var organizations []string
+		for rows.Next() {
+			var organization string
+			if err := rows.Scan(&organization); err != nil {
+				return errors.Join(err, rows.Close())
+			}
+			organizations = append(organizations, organization)
+		}
+		if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+			return err
+		}
+		if len(organizations) != 1 {
+			return sql.ErrNoRows
+		}
+		return s.auth.store.db.postgres.RevokeOAuthGrant(ctx, tracker.OrganizationID(organizations[0]), owner, id)
 	}
 	result, err := s.auth.store.db.ExecContext(ctx, "UPDATE oauth_grants SET revoked_at=COALESCE(revoked_at,?) WHERE id=? AND owner_subject=?", formatTime(s.config.now()), id, owner)
 	if err != nil {

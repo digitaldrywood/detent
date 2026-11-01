@@ -10,14 +10,14 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 )
 
-func (s *Service) recordArchiveDeletion(ctx context.Context, organization, binding string, receipt attachment.DeletionReceipt, started bool) error {
+func (s *Service) recordArchiveDeletion(ctx context.Context, organization, binding string, receipt attachment.DeletionReceipt, started bool) (resultErr error) {
 	tx, err := s.registry.store.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer tx.cleanup(&resultErr)
 	if _, err := tx.ExecContext(ctx, `INSERT INTO archive_deletion_receipts(organization_id,binding_id,complete,truncated,attempts,updated_at) VALUES(?,?,?,?,1,?)
-ON CONFLICT(organization_id,binding_id) DO UPDATE SET complete=excluded.complete,truncated=excluded.truncated,attempts=attempts+?,updated_at=excluded.updated_at`, organization, binding, receipt.Complete, receipt.Truncated, formatTime(s.config.now()), started); err != nil {
+ON CONFLICT(organization_id,binding_id) DO UPDATE SET complete=excluded.complete,truncated=excluded.truncated,attempts=archive_deletion_receipts.attempts+CASE WHEN ? THEN 1 ELSE 0 END,updated_at=excluded.updated_at`, organization, binding, receipt.Complete, receipt.Truncated, formatTime(s.config.now()), started); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM archive_deletion_failures WHERE organization_id=? AND binding_id=?`, organization, binding); err != nil {
@@ -61,7 +61,7 @@ func (s *Service) eraseBinding(ctx context.Context, organization string, b attac
 	return err
 }
 
-func (s *Service) eraseOrganizationStorage(ctx context.Context, organization string) error {
+func (s *Service) eraseOrganizationStorage(ctx context.Context, organization string) (resultErr error) {
 	if err := s.ensureLegacyArchiveBinding(ctx, organization); err != nil {
 		return err
 	}
@@ -69,7 +69,7 @@ func (s *Service) eraseOrganizationStorage(ctx context.Context, organization str
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
+	defer closeEntryRows(rows, &resultErr)
 	var bindings []attachment.StorageBinding
 	for rows.Next() {
 		b, err := scanArchiveBinding(rows)
@@ -101,7 +101,7 @@ func (s *Service) eraseOrganizationStorage(ctx context.Context, organization str
 	return nil
 }
 
-func (s *Service) archiveDeletionReceipt(c echo.Context) error {
+func (s *Service) archiveDeletionReceipt(c echo.Context) (resultErr error) {
 	ctx := c.Request().Context()
 	session, err := s.session(c)
 	if err != nil {
@@ -128,7 +128,7 @@ func (s *Service) archiveDeletionReceipt(c echo.Context) error {
 	if err != nil {
 		return attachmentError(c, http.StatusServiceUnavailable, "receipt_unavailable", "Deletion receipt is unavailable")
 	}
-	defer rows.Close()
+	defer closeEntryRows(rows, &resultErr)
 	type record struct {
 		Binding   string `json:"binding_id"`
 		Backend   string `json:"backend"`

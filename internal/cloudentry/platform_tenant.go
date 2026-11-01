@@ -153,7 +153,7 @@ func (p *platformOrganization) applySections(sections platformTenantSections, bi
 	}
 }
 
-func (s *Service) platformOrganizationJSON(c echo.Context) error {
+func (s *Service) platformOrganizationJSON(c echo.Context) (resultErr error) {
 	session, allowed, err := s.platformSession(c, "platform_organization_viewed")
 	if !allowed {
 		return err
@@ -177,7 +177,7 @@ func (s *Service) platformOrganizationJSON(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusServiceUnavailable, map[string]string{"code": "registry_unavailable", "message": "The provisioning timeline is temporarily unavailable"})
 	}
-	defer rows.Close()
+	defer closeEntryRows(rows, &resultErr)
 	for rows.Next() {
 		var event platformOrganizationEvent
 		if err := rows.Scan(&event.Event, &event.Generation, &event.RecordedAt); err != nil {

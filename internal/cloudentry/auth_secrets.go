@@ -70,6 +70,7 @@ func (a *authStore) resealToken(purpose, binding, value string) (string, error) 
 
 func (s *Service) startAuthReseal(parent context.Context) {
 	ctx, cancel := context.WithCancel(context.WithoutCancel(parent))
+	ctx = entryBackground(ctx)
 	s.stopAuthReseal = cancel
 	s.authResealDone = make(chan struct{})
 	go func() {

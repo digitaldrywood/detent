@@ -385,6 +385,9 @@ type administrationReceipt struct {
 }
 
 func (s *Service) administrationReceipt(ctx context.Context, session accountSession, m mutation.Metadata) (operatoradmin.Output, bool, error) {
+	if s.auth.store.db.postgres != nil {
+		return s.postgresAdministrationReceipt(ctx, session, m)
+	}
 	var raw string
 	err := s.auth.store.db.QueryRowContext(ctx, `SELECT event FROM audit WHERE subject=? AND organization_id=? AND CASE WHEN json_valid(event) THEN json_extract(event,'$.kind') END='operator_administration' AND json_extract(CASE WHEN json_valid(event) THEN event ELSE '{}' END,'$.retry')=? ORDER BY id DESC LIMIT 1`, session.Subject, m.OrganizationID, m.RetryIdentity).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -406,6 +409,9 @@ func (s *Service) administrationReceipt(ctx context.Context, session accountSess
 	return receipt.Output, true, nil
 }
 func (s *Service) recordAdministrationReceipt(ctx context.Context, session accountSession, m mutation.Metadata, outcome string, out operatoradmin.Output) error {
+	if s.auth.store.db.postgres != nil {
+		return s.postgresRecordAdministrationReceipt(ctx, session, m, outcome, out)
+	}
 	raw, err := json.Marshal(administrationReceipt{Kind: "operator_administration", Retry: m.RetryIdentity, Hash: m.InputHash, Outcome: outcome, Output: out})
 	if err != nil {
 		return err

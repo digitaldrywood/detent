@@ -145,7 +145,20 @@ func (s *Service) describeKeyWithReachCache(ctx context.Context, key accessKey, 
 		var blocked, approved bool
 		var blockedJSON string
 		var used sql.NullString
-		err = s.auth.store.db.QueryRowContext(ctx, "SELECT blocked,approved_at IS NOT NULL,blocked_projects_json,last_used_at FROM access_key_organizations WHERE key_id=? AND organization_id=?", key.ID, org.ID).Scan(&blocked, &approved, &blockedJSON, &used)
+		if s.auth.store.db.postgres != nil {
+			var exclusions []string
+			blocked, exclusions, err = s.keyRestrictions(ctx, key.ID, org.ID)
+			if err == nil {
+				var encoded []byte
+				encoded, err = json.Marshal(exclusions)
+				blockedJSON = string(encoded)
+			}
+			if err == nil {
+				err = s.auth.store.reader.QueryRowContext(ctx, "SELECT approved_at IS NOT NULL,last_used_at FROM access_key_organizations WHERE key_id=? AND organization_id=?", key.ID, org.ID).Scan(&approved, &used)
+			}
+		} else {
+			err = s.auth.store.db.QueryRowContext(ctx, "SELECT blocked,approved_at IS NOT NULL,blocked_projects_json,last_used_at FROM access_key_organizations WHERE key_id=? AND organization_id=?", key.ID, org.ID).Scan(&blocked, &approved, &blockedJSON, &used)
+		}
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return view, err
 		}
@@ -234,7 +247,7 @@ func (s *Service) approveOrganizationKey(c echo.Context) error {
 	if _, err := s.ownerKeyReach(c.Request().Context(), key.Owner, key.OwnerEmail, org); err != nil {
 		return keyError(c, err)
 	}
-	result, err := s.auth.store.db.ExecContext(c.Request().Context(), "INSERT INTO access_key_organizations(key_id,organization_id,approved_at) VALUES(?,?,?) ON CONFLICT(key_id,organization_id) DO UPDATE SET approved_at=excluded.approved_at WHERE access_key_organizations.blocked=0", key.ID, org.ID, formatTime(s.config.now()))
+	result, err := s.auth.store.db.ExecContext(c.Request().Context(), "INSERT INTO access_key_organizations(key_id,organization_id,approved_at) VALUES(?,?,?) ON CONFLICT(key_id,organization_id) DO UPDATE SET approved_at=excluded.approved_at WHERE access_key_organizations.blocked = false", key.ID, org.ID, formatTime(s.config.now()))
 	if err != nil {
 		return keyError(c, err)
 	}

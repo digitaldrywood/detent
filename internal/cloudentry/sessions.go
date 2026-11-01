@@ -18,6 +18,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/cloudentry/platformstore"
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
 )
 
@@ -151,7 +152,10 @@ func (a *authStore) tokens(item authorization) (auth.HostedTokens, error) {
 	return auth.HostedTokens{AccessToken: access, RefreshToken: refresh}, nil
 }
 
-func (a *authStore) storeTokens(ctx context.Context, binding string, tokens auth.HostedTokens) error {
+func (a *authStore) storeTokens(ctx context.Context, binding string, tokens auth.HostedTokens, previous ...auth.HostedTokens) error {
+	if a.store.db.postgres != nil {
+		return a.postgresStoreTokens(ctx, binding, tokens, previous...)
+	}
 	access, err := a.sealToken("provider-access", binding, tokens.AccessToken)
 	if err != nil {
 		return err
@@ -216,6 +220,9 @@ func (r *refreshLocks) lock(key string) func() {
 }
 
 func (a *authStore) createSession(ctx context.Context, hash, csrfSecret string, identity auth.Identity) error {
+	if a.store.db.postgres != nil {
+		return a.store.db.postgres.CreateSession(ctx, platformstore.Session{Hash: hash, Subject: identity.Subject, Email: identity.Email, CSRFSecret: csrfSecret, Identity: *identity.Hosted})
+	}
 	encoded, err := json.Marshal(identity.Hosted)
 	if err != nil {
 		return err
@@ -234,6 +241,9 @@ func (a *authStore) session(ctx context.Context, hash string) (accountSession, e
 }
 
 func (a *authStore) storedSession(ctx context.Context, hash string) (accountSession, time.Time, error) {
+	if a.store.db.postgres != nil {
+		return a.postgresSession(ctx, hash)
+	}
 	var session accountSession
 	var encoded, expires string
 	var revoked sql.NullString
@@ -249,7 +259,10 @@ func (a *authStore) storedSession(ctx context.Context, hash string) (accountSess
 	return session, expiry, nil
 }
 
-func (a *authStore) authorize(ctx context.Context, session accountSession, organization string, identity auth.HostedIdentity, tokens auth.HostedTokens, effectiveEmail string) (authorization, []authorization, error) {
+func (a *authStore) authorize(ctx context.Context, session accountSession, organization string, identity auth.HostedIdentity, tokens auth.HostedTokens, effectiveEmail string) (_ authorization, _ []authorization, resultErr error) {
+	if a.store.db.postgres != nil {
+		return a.postgresAuthorize(ctx, session, organization, identity, tokens, effectiveEmail)
+	}
 	encoded, err := json.Marshal(identity)
 	if err != nil {
 		return authorization{}, nil, err
@@ -265,7 +278,7 @@ func (a *authStore) authorize(ctx context.Context, session accountSession, organ
 	if err != nil {
 		return authorization{}, nil, err
 	}
-	defer tx.Rollback()
+	defer tx.cleanup(&resultErr)
 	replaced, err := activeAuthorizations(ctx, tx, "session_hash = ? AND organization_id = ? AND revoked_at IS NULL", session.Hash, organization)
 	if err != nil {
 		return authorization{}, nil, err
@@ -288,15 +301,18 @@ func (a *authStore) authorize(ctx context.Context, session accountSession, organ
 }
 
 type queryer interface {
-	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+	QueryContext(context.Context, string, ...any) (entryRows, error)
 }
 
-func activeAuthorizations(ctx context.Context, query queryer, where string, args ...any) ([]authorization, error) {
+func activeAuthorizations(ctx context.Context, query queryer, where string, args ...any) (_ []authorization, resultErr error) {
+	if dialect, ok := query.(interface{ isPostgres() bool }); ok && dialect.isPostgres() {
+		return postgresAuthorizations(ctx, query, where, args...)
+	}
 	rows, err := query.QueryContext(ctx, "SELECT binding,organization_id,identity_json,expires_at,support,effective_email,access_token,refresh_token FROM authorizations WHERE "+where, args...)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer closeEntryRows(rows, &resultErr)
 	var result []authorization
 	for rows.Next() {
 		var item authorization
@@ -329,12 +345,15 @@ func (a *authStore) revokeAuthorization(ctx context.Context, binding string) err
 	return err
 }
 
-func (a *authStore) revokeSession(ctx context.Context, hash string) ([]authorization, error) {
+func (a *authStore) revokeSession(ctx context.Context, hash string) (_ []authorization, resultErr error) {
+	if a.store.db.postgres != nil {
+		return a.postgresRevokeSession(ctx, hash)
+	}
 	tx, err := a.store.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback()
+	defer tx.cleanup(&resultErr)
 	items, err := activeAuthorizations(ctx, tx, "session_hash = ? AND revoked_at IS NULL", hash)
 	if err != nil {
 		return nil, err
@@ -363,17 +382,23 @@ type loginTransaction struct {
 }
 
 func (a *authStore) createTransaction(ctx context.Context, hash string, transaction loginTransaction) error {
+	if a.store.db.postgres != nil {
+		return a.postgresLogin(ctx, hash, transaction)
+	}
 	_, err := a.store.db.ExecContext(ctx, "INSERT INTO transactions(token_hash,transaction_id,state,verifier,organization_id,return_path,invitation_token,invitation_organization,support_actor,support_session,support_reason,expires_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
 		hash, transaction.ID, transaction.State, transaction.Verifier, transaction.Organization, transaction.ReturnPath, transaction.InvitationToken, transaction.InvitationOrganization, transaction.SupportActor, transaction.SupportSession, transaction.SupportReason, formatTime(a.now().Add(10*time.Minute)))
 	return err
 }
 
-func (a *authStore) consumeTransaction(ctx context.Context, hash, id string) (loginTransaction, error) {
+func (a *authStore) consumeTransaction(ctx context.Context, hash, id string) (_ loginTransaction, resultErr error) {
+	if a.store.db.postgres != nil {
+		return a.postgresConsumeLogin(ctx, hash, id)
+	}
 	tx, err := a.store.db.BeginTx(ctx, nil)
 	if err != nil {
 		return loginTransaction{}, err
 	}
-	defer tx.Rollback()
+	defer tx.cleanup(&resultErr)
 	var result loginTransaction
 	var expires string
 	var consumed sql.NullString

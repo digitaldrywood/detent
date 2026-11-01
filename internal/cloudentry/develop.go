@@ -22,6 +22,9 @@ func prepareDevelopState(ctx context.Context, cfg Config) (Config, func() error,
 	if !strings.HasPrefix(cfg.Build.Version, "develop-") || cfg.PublicURL != "https://staging.cloud.detent.build" {
 		return cfg, nil, nil
 	}
+	if cfg.Storage.Backend == "postgres" {
+		return cfg, nil, errors.New("PostgreSQL entry storage requires an isolated staging database; SQLite staging snapshots are unavailable")
+	}
 	if cfg.Allocation == nil {
 		return cfg, nil, errors.New("develop staging requires managed tenant allocation for disposable state")
 	}

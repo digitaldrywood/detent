@@ -272,8 +272,28 @@ func TestOrganizationMappingChangesDenyAuthorization(t *testing.T) {
 			s := createSession(t, r, "first")
 			a := authorize(t, r, s, "org_first", "provider_session")
 			authorize(t, r, s, "org_second", "other")
-			if _, err := db.ExecContext(t.Context(), mutation.query); err != nil {
-				t.Fatal(err)
+			if mutation.name == "provider mapping changed" {
+				if _, err := db.ExecContext(t.Context(), mutation.query); err == nil {
+					t.Fatal("provider identity mutation bypassed the registry fence")
+				}
+				tx, err := db.BeginTx(t.Context(), nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer tx.Rollback()
+				if _, err := tx.ExecContext(t.Context(), "SET LOCAL session_replication_role = replica"); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := tx.ExecContext(t.Context(), mutation.query); err != nil {
+					t.Fatal(err)
+				}
+				if err := tx.Commit(); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				if _, err := db.ExecContext(t.Context(), mutation.query); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if _, err := r.Authorization(t.Context(), s.Hash, "org_first"); !errors.Is(err, ErrNoSession) {
 				t.Fatalf("changed tenant authorized: %v", err)

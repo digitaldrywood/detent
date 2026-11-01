@@ -2,17 +2,16 @@ package cloudentry
 
 import (
 	"context"
-	"database/sql"
 	"net/url"
 
 	"github.com/digitaldrywood/detent/internal/web/templates"
 )
 
 type organizationQuerier interface {
-	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+	QueryContext(context.Context, string, ...any) (entryRows, error)
 }
 
-func (s *Service) freeSlotUsed(ctx context.Context, q organizationQuerier, session accountSession) (bool, error) {
+func (s *Service) freeSlotUsed(ctx context.Context, q organizationQuerier, session accountSession) (_ bool, resultErr error) {
 	memberships, err := s.config.Provider.Memberships(ctx, session.Subject, "")
 	if err != nil {
 		return false, err
@@ -27,7 +26,7 @@ func (s *Service) freeSlotUsed(ctx context.Context, q organizationQuerier, sessi
 	if err != nil {
 		return false, err
 	}
-	defer rows.Close()
+	defer closeEntryRows(rows, &resultErr)
 	var organizations []Organization
 	for rows.Next() {
 		organization, err := scanOrganization(rows)

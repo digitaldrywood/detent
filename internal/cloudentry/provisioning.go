@@ -98,6 +98,7 @@ func (s *Service) startAllocator(parent context.Context) {
 		return
 	}
 	ctx, cancel := context.WithCancel(context.WithoutCancel(parent))
+	ctx = entryBackground(ctx)
 	s.stopAllocator = cancel
 	s.allocatorDone = make(chan struct{})
 	s.wake = make(chan struct{}, 1)
@@ -188,12 +189,12 @@ func (s *Service) provisionDue(ctx context.Context) {
 	}
 }
 
-func (s *Service) dueOrganizations(ctx context.Context) ([]Organization, error) {
-	rows, err := s.registry.store.db.QueryContext(ctx, organizationSelect+" WHERE managed = 1 AND state IN ('requested','allocating') ORDER BY created_at")
+func (s *Service) dueOrganizations(ctx context.Context) (_ []Organization, resultErr error) {
+	rows, err := s.registry.store.db.QueryContext(ctx, organizationSelect+" WHERE managed = true AND state IN ('requested','allocating') ORDER BY created_at")
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer closeEntryRows(rows, &resultErr)
 	var due []Organization
 	for rows.Next() {
 		organization, err := scanOrganization(rows)
@@ -224,7 +225,7 @@ func (s *Service) provision(ctx context.Context, organization Organization) {
 		if step == "publish" {
 			organization.State = "ready"
 		}
-		if _, err := s.registry.store.db.ExecContext(ctx, "UPDATE organizations SET state = ?, provider_id = ?, step = ?, attempts = 0, next_attempt_at = '', error_code = '', error_detail = '', updated_at = ? WHERE id = ?",
+		if _, err := s.registry.store.db.ExecContext(ctx, s.registry.store.db.choose("UPDATE organizations SET state = ?, provider_id = ?, step = ?, attempts = 0, next_attempt_at = '', error_code = '', error_detail = '', updated_at = ? WHERE id = ?", "UPDATE organizations SET state = ?, provider_id = ?, step = ?, attempts = 0, next_attempt_at = NULL, error_code = '', error_detail = '', updated_at = ? WHERE id = ?"),
 			organization.State, organization.ProviderID, step, formatTime(s.config.now()), organization.ID); err != nil {
 			return
 		}
@@ -248,7 +249,7 @@ func (s *Service) recordFailure(ctx context.Context, organization Organization, 
 	}
 	detail := failureDetail(cause)
 	s.config.Logger.Warn("organization provisioning step failed", "organization", organization.ID, "step", step, "attempt", attempts, "retry_limit", s.config.Allocation.RetryLimit, "state", state, "detail", detail)
-	if _, err := s.registry.store.db.ExecContext(ctx, "UPDATE organizations SET state = ?, attempts = ?, next_attempt_at = ?, error_code = ?, error_detail = ?, updated_at = ? WHERE id = ?",
+	if _, err := s.registry.store.db.ExecContext(ctx, s.registry.store.db.choose("UPDATE organizations SET state = ?, attempts = ?, next_attempt_at = ?, error_code = ?, error_detail = ?, updated_at = ? WHERE id = ?", "UPDATE organizations SET state = ?, attempts = ?, next_attempt_at = NULLIF(?, '')::timestamptz, error_code = ?, error_detail = ?, updated_at = ? WHERE id = ?"),
 		state, attempts, next, code, detail, formatTime(s.config.now()), organization.ID); err != nil {
 		s.config.Logger.Warn("organization provisioning state could not be recorded", "organization", organization.ID)
 	}
@@ -350,8 +351,8 @@ func (s *Service) runStep(ctx context.Context, organization *Organization, step 
 
 func (s *Service) admissionLoad(ctx context.Context, id string) (holding, allocating int, err error) {
 	err = s.registry.store.db.QueryRowContext(ctx, `SELECT
-  (SELECT count(*) FROM organizations WHERE managed = 1 AND id != ? AND (state IN ('allocating','ready','disabled','deleting') OR state = 'failed' AND step NOT IN ('', 'admission'))),
-  (SELECT count(*) FROM organizations WHERE managed = 1 AND id != ? AND state = 'allocating')`, id, id).Scan(&holding, &allocating)
+  (SELECT count(*) FROM organizations WHERE managed = true AND id != ? AND (state IN ('allocating','ready','disabled','deleting') OR state = 'failed' AND step NOT IN ('', 'admission'))),
+  (SELECT count(*) FROM organizations WHERE managed = true AND id != ? AND state = 'allocating')`, id, id).Scan(&holding, &allocating)
 	return holding, allocating, err
 }
 
@@ -471,7 +472,7 @@ var (
 	errPaidPlanRequired = errors.New("paid plan required")
 )
 
-func (s *Service) recordIntent(ctx context.Context, session accountSession, key, fingerprint, name, price string) (string, error) {
+func (s *Service) recordIntent(ctx context.Context, session accountSession, key, fingerprint, name, price string) (_ string, resultErr error) {
 	s.mutationMu.Lock()
 	defer s.mutationMu.Unlock()
 	bypass := s.entitlementAdministrator(ctx, session)
@@ -483,7 +484,7 @@ func (s *Service) recordIntent(ctx context.Context, session accountSession, key,
 	if err != nil {
 		return "", err
 	}
-	defer tx.Rollback()
+	defer tx.cleanup(&resultErr)
 	var existing, existingFingerprint string
 	err = tx.QueryRowContext(ctx, "SELECT organization_id, fingerprint FROM organization_intents WHERE subject = ? AND idempotency_key = ?", session.Subject, key).Scan(&existing, &existingFingerprint)
 	if err == nil {
@@ -510,7 +511,7 @@ func (s *Service) recordIntent(ctx context.Context, session accountSession, key,
 	}
 	id := "org_" + random[:20]
 	now := formatTime(s.config.now())
-	if _, err := tx.ExecContext(ctx, "INSERT INTO organizations(id,provider_id,name,state,endpoint,generation,managed,creator_subject,creator_email,checkout_price,created_at,updated_at) VALUES (?,'',?,'requested',?,1,1,?,?,?,?,?)",
+	if _, err := tx.ExecContext(ctx, "INSERT INTO organizations(id,provider_id,name,state,endpoint,generation,managed,creator_subject,creator_email,checkout_price,created_at,updated_at) VALUES (?,'',?,'requested',?,1,true,?,?,?,?,?)",
 		id, name, "unix:"+filepath.Join(s.config.Allocation.SocketRoot, id+".sock"), session.Subject, strings.ToLower(session.Email), price, now, now); err != nil {
 		return "", err
 	}
@@ -591,7 +592,7 @@ func (s *Service) resumeOrganization(ctx context.Context, organization Organizat
 	if organization.Step == "" {
 		state = "requested"
 	}
-	if _, err := s.registry.store.db.ExecContext(ctx, "UPDATE organizations SET state = ?, attempts = 0, next_attempt_at = '', error_code = '', error_detail = '', updated_at = ? WHERE id = ? AND state = 'failed'", state, formatTime(s.config.now()), organization.ID); err != nil {
+	if _, err := s.registry.store.db.ExecContext(ctx, s.registry.store.db.choose("UPDATE organizations SET state = ?, attempts = 0, next_attempt_at = '', error_code = '', error_detail = '', updated_at = ? WHERE id = ? AND state = 'failed'", "UPDATE organizations SET state = ?, attempts = 0, next_attempt_at = NULL, error_code = '', error_detail = '', updated_at = ? WHERE id = ? AND state = 'failed'"), state, formatTime(s.config.now()), organization.ID); err != nil {
 		return Organization{}, err
 	}
 	s.wakeAllocator()
@@ -670,12 +671,12 @@ func (s *Service) resumeProvisioning(c echo.Context) error {
 	return s.next(c, http.StatusOK, "/organizations/"+organization.ID+"/provisioning", nil)
 }
 
-func (s *Service) pendingOrganizations(ctx context.Context, subject string) ([]templates.HostedOrganizationChoice, error) {
-	rows, err := s.registry.store.db.QueryContext(ctx, organizationSelect+" WHERE managed = 1 AND creator_subject = ? AND state IN ('requested','allocating','failed') ORDER BY created_at", subject)
+func (s *Service) pendingOrganizations(ctx context.Context, subject string) (_ []templates.HostedOrganizationChoice, resultErr error) {
+	rows, err := s.registry.store.db.QueryContext(ctx, organizationSelect+" WHERE managed = true AND creator_subject = ? AND state IN ('requested','allocating','failed') ORDER BY created_at", subject)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer closeEntryRows(rows, &resultErr)
 	var result []templates.HostedOrganizationChoice
 	for rows.Next() {
 		organization, err := scanOrganization(rows)
@@ -751,12 +752,12 @@ func (s *Service) finishDeletion(ctx context.Context, id string) error {
 	return err
 }
 
-func (s *Service) deletingOrganizations(ctx context.Context) ([]string, error) {
-	rows, err := s.registry.store.db.QueryContext(ctx, "SELECT id FROM organizations WHERE managed = 1 AND state = 'deleting'")
+func (s *Service) deletingOrganizations(ctx context.Context) (_ []string, resultErr error) {
+	rows, err := s.registry.store.db.QueryContext(ctx, "SELECT id FROM organizations WHERE managed = true AND state = 'deleting'")
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer closeEntryRows(rows, &resultErr)
 	var ids []string
 	for rows.Next() {
 		var id string
@@ -780,12 +781,12 @@ func (s *Service) resumeDeletions(ctx context.Context) {
 	}
 }
 
-func (a *authStore) revokeOrganization(ctx context.Context, organization string) ([]authorization, error) {
+func (a *authStore) revokeOrganization(ctx context.Context, organization string) (_ []authorization, resultErr error) {
 	tx, err := a.store.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback()
+	defer tx.cleanup(&resultErr)
 	items, err := activeAuthorizations(ctx, tx, "organization_id = ? AND revoked_at IS NULL", organization)
 	if err != nil {
 		return nil, err

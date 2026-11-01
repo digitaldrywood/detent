@@ -46,7 +46,7 @@ VALUES ('example_subject','org_example','query','2026-01-02T03:04:05Z',NULL),
 			if _, err := s.db.ExecContext(t.Context(), fixture.seed); err != nil {
 				t.Fatal(err)
 			}
-			testenv.CheckSQLiteInventory(t, s.db, filepath.Join("testdata", fixture.name))
+			testenv.CheckSQLiteInventory(t, s.db.DB, filepath.Join("testdata", fixture.name))
 		})
 	}
 }

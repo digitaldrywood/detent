@@ -17,11 +17,15 @@ func TestLoginConsumption(t *testing.T) {
 		expire      time.Duration
 		wrongID     bool
 		wantSuccess int
+		support     bool
 	}{
-		{"one consumer", time.Minute, false, 1}, {"expired boundary", 0, false, 0}, {"past expiration", -time.Minute, false, 0}, {"wrong transaction", time.Minute, true, 0},
+		{"one consumer", time.Minute, false, 1, false}, {"expired boundary", 0, false, 0, false}, {"past expiration", -time.Minute, false, 0, false}, {"wrong transaction", time.Minute, true, 0, false}, {"support handoff", time.Minute, false, 1, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			item := LoginTransaction{Hash: tc.name, ID: "transaction_" + tc.name, State: "state", Verifier: "private-verifier", InvitationToken: "private-invitation", SupportActor: "support@example.com", SupportSession: "support_session", SupportReason: "example reason", ExpiresAt: first.now().Add(time.Minute)}
+			if tc.support {
+				item.State, item.Verifier, item.SupportReason = "", "", "customer-request"
+			}
 			if err := first.CreateLogin(t.Context(), item); err != nil {
 				t.Fatal(err)
 			}
@@ -32,7 +36,7 @@ func TestLoginConsumption(t *testing.T) {
 			if err := db.QueryRowContext(t.Context(), `SELECT verifier,invitation_token FROM platform.transactions WHERE token_hash=$1`, item.Hash).Scan(&verifier, &invitation); err != nil {
 				t.Fatal(err)
 			}
-			if verifier == item.Verifier || invitation == item.InvitationToken {
+			if item.Verifier != "" && verifier == item.Verifier || invitation == item.InvitationToken {
 				t.Fatal("login secret stored in plaintext")
 			}
 			if tc.wrongID {

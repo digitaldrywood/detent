@@ -13,7 +13,6 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -43,6 +42,7 @@ const (
 )
 
 type Config struct {
+	Storage                   StorageConfig
 	Build                     buildinfo.Info
 	PublicURL                 string
 	Issuer                    string
@@ -85,6 +85,12 @@ type Config struct {
 func ValidateConfig(c Config) error { return c.validate() }
 
 func (c Config) validate() error {
+	if err := c.Storage.validate(); err != nil {
+		return err
+	}
+	if c.Storage.Backend == "postgres" && c.Attachments == nil {
+		return errors.New("PostgreSQL entry storage requires immutable object storage")
+	}
 	u, err := url.Parse(c.PublicURL)
 	if err != nil || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
 		return errors.New("shared entry public URL must be an origin without a path")
@@ -196,20 +202,16 @@ func Open(ctx context.Context, cfg Config) (result *Service, resultErr error) {
 			cfg.Logger.Error("archive reads unavailable", "error", fmt.Errorf("configure archives: %w", err))
 		}
 	}
-	registry, err := OpenRegistry(ctx, filepath.Join(cfg.StateDir, "registry.db"))
+	registry, authStorage, err := openEntryStores(ctx, cfg, keys)
 	if err != nil {
 		return nil, err
 	}
 	registry.now = cfg.now
 	if err := registry.seedPlatformMembers(ctx, cfg); err != nil {
-		return nil, errors.Join(err, registry.Close())
+		return nil, errors.Join(err, authStorage.Close(), registry.Close())
 	}
 	if len(cfg.StaffEmails)+len(cfg.SupportActors)+len(cfg.EntitlementAdministrators) > 0 {
 		cfg.Logger.Warn("legacy platform email lists are deprecated and used only to seed an empty registry")
-	}
-	authStorage, err := openStore(ctx, filepath.Join(cfg.StateDir, "auth.db"), authApplicationID, "auth")
-	if err != nil {
-		return nil, errors.Join(err, registry.Close())
 	}
 	seal, err := newTokenSeal(cfg.SigningKey)
 	if err != nil {

@@ -15,11 +15,11 @@ reachable roles whose privileges are not inherited. It requires the critical
 platform tables and their DML grants. No credentials or databases are discovered
 from host state.
 
-Like the core PostgreSQL boundary, this package does not select the Cloud entry
-backend or import the existing SQLite files. The SQLite entry service continues
-to own its existing files until the shared-database runtime cutover. Backend
-selection must switch all entry owners together; do not combine PostgreSQL
-sessions with SQLite key, billing, provisioning or platform-administration owners.
+Cloud entry selects this repository for every global entry owner through one
+explicit storage backend. SQLite remains the default. Selecting PostgreSQL does
+not import existing files; import and cutover require their own fence and verified
+migration. Never combine PostgreSQL sessions with SQLite key, billing,
+provisioning or platform-administration owners.
 
 ## Records and authorization
 
@@ -96,3 +96,56 @@ Go test process deadline. Fixtures clone one migrated template, and concurrent
 owners share its two-connection budget. Their assertions cover registry mapping,
 login and PKCE exchange, permission scopes, secrets, replay, revocation, expiry,
 concurrent mutation and cross-tenant refusals.
+
+## Cloud entry backend selection
+
+The entry configuration accepts `storage.backend: sqlite` or `postgres`.
+PostgreSQL requires a platform-only DSN supplied through an environment variable,
+explicit fixed connection budgets and the existing immutable attachment storage:
+
+```yaml
+storage:
+  backend: postgres
+  postgres_dsn_env: DETENT_PLATFORM_DSN
+  max_connections: 4
+  serving_connections: 3
+  background_connections: 1
+```
+
+Keep the existing assertion signing key and retained Hub keyring versions. The
+runtime never opens the SQLite registry or auth file in this mode. Invalid roles,
+missing tables or incomplete storage configuration fail startup. The SQLite-only
+disposable staging snapshot is rejected for PostgreSQL; use an isolated staging
+database. Migration authority remains external to entry startup.
+
+Registry, sessions, provider bindings, API keys, OAuth, GitHub connections,
+provisioning, billing, notification queues, archive bindings and administration
+share the selected repository and its serving/background budgets. Entry SQL uses
+scoped read-committed transactions with a protected platform search path. Registry
+and auth notification queues retain separate table identities. Registry and auth
+reconciliation remain separate durable transactions; each existing atomic group
+keeps one commit. Object writes finish before administration receipt transactions.
+Structured output and support notes are compressed into immutable objects, and
+receipt rows store typed output fields and object references. Secret status reads
+through the service inspect the selected backend.
+
+Organization identity, monotonic generations, deletion fences, immutable billing
+mappings and retained administration/entitlement history preserve the SQLite
+contracts. Generated organization slugs allocate a suffix through one counter row
+per base. A preexisting custom alias uses a deterministic organization suffix;
+allocation does not scan an expanding collision history. Imported slug aliases
+remain authoritative.
+
+The pool count is constant at 10,000 organizations and 10,000 runners. Point
+operations use indexed identities and lock only the requested session, grant or
+organization. Slug allocation touches its base counter, organization and alias;
+receipt writes touch one receipt. Platform-member changes serialize only the
+small member registry, without provider or object calls under that database lock.
+The port retains the entry application's existing enumeration and reconciliation
+contracts and adds no fleet scan or per-organization pool. The invariant scope is
+INV-16, INV-18, INV-20, INV-21 and INV-22.
+
+The entry backend-parity journeys exercise SQLite and disposable PostgreSQL with
+isolated SQLite tenant Hubs: login and tenant routing, revoked keys, OAuth exchange
+and refresh replay/rollback, provisioning/deletion, billing, notification identity,
+receipt replay, selected-backend secret diagnostics and keyring-compatible restart.

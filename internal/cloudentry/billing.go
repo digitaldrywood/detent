@@ -175,12 +175,12 @@ func (s *Service) retryBillingEvents(ctx context.Context) {
 	}
 }
 
-func (s *Service) pendingBillingEvents(ctx context.Context) ([]string, error) {
+func (s *Service) pendingBillingEvents(ctx context.Context) (_ []string, resultErr error) {
 	rows, err := s.registry.store.db.QueryContext(ctx, "SELECT event_id FROM billing_events WHERE status = 'pending' ORDER BY received_at LIMIT 50")
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer closeEntryRows(rows, &resultErr)
 	var ids []string
 	for rows.Next() {
 		var id string
@@ -197,6 +197,7 @@ func (s *Service) startBillingWorker(parent context.Context) {
 		return
 	}
 	ctx, cancel := context.WithCancel(context.WithoutCancel(parent))
+	ctx = entryBackground(ctx)
 	s.stopBilling = cancel
 	s.billingDone = make(chan struct{})
 	go func() {

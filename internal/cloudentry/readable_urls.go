@@ -89,7 +89,7 @@ func readableNotFound(c echo.Context) error {
 	return c.JSON(http.StatusNotFound, map[string]string{"code": "not_found", "message": "The requested operation is unavailable"})
 }
 
-func (s *Service) organizationSlug(c echo.Context) error {
+func (s *Service) organizationSlug(c echo.Context) (resultErr error) {
 	ctx := c.Request().Context()
 	organization, err := s.readyOrganization(ctx, c.Param("organization"))
 	if err != nil || c.Request().Header.Get(echo.HeaderAuthorization) != "" {
@@ -122,7 +122,7 @@ func (s *Service) organizationSlug(c echo.Context) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer tx.cleanup(&resultErr)
 	var current, owner string
 	if err := tx.QueryRowContext(ctx, "SELECT slug FROM organizations WHERE id=?", organization.ID).Scan(&current); err != nil {
 		return err

@@ -86,6 +86,12 @@ func signedEvent(body string) (string, string) {
 }
 
 func TestSharedBillingJourney(t *testing.T) {
+	for _, backend := range []string{"sqlite", "postgres"} {
+		t.Run(backend, func(t *testing.T) { testSharedBillingJourney(t, entryBackendConfig(t, backend)) })
+	}
+}
+
+func testSharedBillingJourney(t *testing.T, configureStorage func(*Config)) {
 	if testing.Short() {
 		t.Skip("live service integration")
 	}
@@ -112,7 +118,7 @@ func TestSharedBillingJourney(t *testing.T) {
 				GraceSeconds: 3600, ReconcileSeconds: 60, Provider: stripe, Prices: []hubserver.HostedBillingPrice{{PriceID: "price_team", Label: "Team", Plan: hubserver.PlanReference{ID: "team", Version: 1}}}}
 		}
 		f.billing = &BillingConfig{Mode: "test", AccountID: "acct_fixture", WebhookSecret: []byte(testWebhookSecret), Provider: stripe}
-	})
+	}, configureStorage)
 	member := newBrowser(t, f.service.Handler())
 	member.login("/auth/oidc/start", "user_member:")
 	id := organizationFromLocation(t, f.create(t, member, "Delta").Header.Get("Location"))

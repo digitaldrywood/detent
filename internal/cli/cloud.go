@@ -26,11 +26,19 @@ import (
 	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/cloudentry"
+	"github.com/digitaldrywood/detent/internal/cloudentry/platformstore"
 	connectorgithub "github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 )
 
 type cloudFileConfig struct {
+	Storage struct {
+		Backend               string `yaml:"backend"`
+		PostgresDSNEnv        string `yaml:"postgres_dsn_env"`
+		MaxConnections        int    `yaml:"max_connections"`
+		ServingConnections    int    `yaml:"serving_connections"`
+		BackgroundConnections int    `yaml:"background_connections"`
+	} `yaml:"storage"`
 	PublicURL                 string                    `yaml:"public_url"`
 	Listen                    string                    `yaml:"listen"`
 	StateDirectory            string                    `yaml:"state_directory"`
@@ -273,7 +281,11 @@ func readCloudConfig(path string, lookupEnv func(string) string) (cloudentry.Con
 			config.Allocation.Billing.Mode = billing.ModeTest
 		}
 	}
+	if config.Storage.PostgresDSNEnv != "" && !validEnvName(config.Storage.PostgresDSNEnv) {
+		return cloudentry.Config{}, errors.New("entry PostgreSQL DSN environment variable name is invalid")
+	}
 	result := cloudentry.Config{
+		Storage:                cloudentry.StorageConfig{Backend: config.Storage.Backend, PostgresDSN: lookupEnv(config.Storage.PostgresDSNEnv), Pool: platformstore.PoolConfig{MaxConnections: config.Storage.MaxConnections, ServingConnections: config.Storage.ServingConnections, BackgroundConnections: config.Storage.BackgroundConnections}},
 		LookupEnv:              lookupEnv,
 		GitHubUserClientID:     lookupEnv("DETENT_HUB_GITHUB_APP_CLIENT_ID"),
 		GitHubUserClientSecret: lookupEnv("DETENT_HUB_GITHUB_APP_CLIENT_SECRET"),

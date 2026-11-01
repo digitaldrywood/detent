@@ -60,11 +60,11 @@ func New(ctx context.Context, pool *sql.DB, config Config) (*Repository, error) 
  AND (r.rolsuper OR r.rolbypassrls OR r.rolcreatedb OR r.rolcreaterole OR r.rolreplication))
  AND EXISTS (SELECT 1 FROM pg_namespace n WHERE n.nspname='platform' AND pg_get_userbyid(n.nspowner)='detent_migration')
  AND (SELECT count(*) FROM pg_class c WHERE c.relnamespace=(SELECT oid FROM pg_namespace WHERE nspname='platform')
- AND c.relname IN ('organizations','sessions','authorizations','transactions','access_keys','github_user_connections') AND c.relkind IN ('r','p')
+ AND c.relname IN ('organizations','organization_events','organization_intents','organization_slugs','organization_slug_counters','billing_customers','billing_events','entitlement_changes','platform_members','platform_member_changes','platform_notifications','archive_storage_bindings','archive_deletion_receipts','archive_deletion_failures','sessions','authorizations','transactions','audit','administration_receipts','access_keys','organization_key_policy','access_key_organizations','access_key_notifications','access_key_projects','access_key_blocked_projects','github_user_connections','oauth_clients','oauth_client_redirect_uris','oauth_grants','oauth_refresh_tokens','oauth_requests','oauth_spent_refresh_tokens','auth_notifications') AND c.relkind IN ('r','p')
  AND has_table_privilege(current_user,c.oid,'SELECT')
  AND has_table_privilege(current_user,c.oid,'INSERT')
  AND has_table_privilege(current_user,c.oid,'UPDATE')
- AND has_table_privilege(current_user,c.oid,'DELETE'))=6
+ AND has_table_privilege(current_user,c.oid,'DELETE'))=33
  AND NOT EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
  WHERE n.nspname='platform' AND pg_has_role(session_user,c.relowner,'MEMBER'))`).Scan(&allowed)
 	if err != nil {
@@ -81,30 +81,13 @@ func New(ctx context.Context, pool *sql.DB, config Config) (*Repository, error) 
 
 func (r *Repository) Close() error { return r.pool.Close() }
 
-func (r *Repository) transaction(ctx context.Context, workload corestore.Workload, readOnly bool, run func(*sql.Tx) error) error {
-	slots := r.serving
-	switch workload {
-	case corestore.Serving:
-	case corestore.Background:
-		slots = r.background
-	default:
-		return ErrInvalid
-	}
-	if err := ctx.Err(); err != nil {
+func (r *Repository) transaction(ctx context.Context, workload corestore.Workload, readOnly bool, run func(*sql.Tx) error) (resultErr error) {
+	tx, err := r.BeginEntry(ctx, workload, readOnly)
+	if err != nil {
 		return err
 	}
-	select {
-	case slots <- struct{}{}:
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-	defer func() { <-slots }()
-	tx, err := r.pool.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted, ReadOnly: readOnly})
-	if err != nil {
-		return mapError(ctx, err)
-	}
-	defer tx.Rollback()
-	if err := run(tx); err != nil {
+	defer tx.cleanup(&resultErr)
+	if err := run(tx.Tx); err != nil {
 		return mapError(ctx, err)
 	}
 	if err := ctx.Err(); err != nil {

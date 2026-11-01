@@ -111,12 +111,12 @@ func activeGrants(grants []entitlementGrant, now time.Time) []entitlementGrant {
 	return active
 }
 
-func (r *Registry) entitlementGranters(ctx context.Context, organization string) (map[string]string, error) {
+func (r *Registry) entitlementGranters(ctx context.Context, organization string) (_ map[string]string, resultErr error) {
 	rows, err := r.store.db.QueryContext(ctx, "SELECT grant_id,staff_email FROM entitlement_changes WHERE organization_id = ? AND action = 'grant'", organization)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer closeEntryRows(rows, &resultErr)
 	result := make(map[string]string)
 	for rows.Next() {
 		var grant, email string
@@ -327,7 +327,10 @@ func (s *Service) applyPlatformEntitlement(ctx context.Context, session accountS
 }
 
 func (r *Registry) recordEntitlementChange(ctx context.Context, organization string, session accountSession, command tenantPlanCommand, now time.Time) error {
-	expires := ""
+	var expires any = ""
+	if r.store.db.postgres != nil {
+		expires = nil
+	}
 	if command.ExpiresAt != nil {
 		expires = formatTime(*command.ExpiresAt)
 	}
