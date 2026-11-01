@@ -215,8 +215,12 @@ func TestExecLauncherJoinsTenantShutdown(t *testing.T) {
 			if err := listener.(*net.TCPListener).SetDeadline(time.Now().Add(20 * time.Second)); err != nil {
 				t.Fatal(err)
 			}
+			deadline, ok := t.Deadline()
+			if !ok {
+				t.Fatal("missing process deadline")
+			}
 			binary := filepath.Join(directory, "tenant-fixture")
-			script := "#!/bin/sh\nwhile [ \"$#\" -gt 0 ]; do\n  if [ \"$1\" = --database ]; then shift; export DETENT_TEST_LOCK=\"$1.lock\"; export GOCOVERDIR=\"$1.lock.coverage\"; fi\n  shift\ndone\nexec \"$DETENT_TEST_BINARY\" -test.run=^TestTenantShutdownHelperProcess$\n"
+			script := "#!/bin/sh\nwhile [ \"$#\" -gt 0 ]; do\n  if [ \"$1\" = --database ]; then shift; export DETENT_TEST_LOCK=\"$1.lock\"; export GOCOVERDIR=\"$1.lock.coverage\"; fi\n  shift\ndone\nexec \"$DETENT_TEST_BINARY\" -test.run=^TestTenantShutdownHelperProcess$ -test.timeout=" + time.Until(deadline).String() + "\n"
 			if err := os.WriteFile(binary, []byte(script), 0700); err != nil {
 				t.Fatal(err)
 			}

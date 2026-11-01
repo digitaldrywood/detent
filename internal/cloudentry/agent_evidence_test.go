@@ -157,11 +157,16 @@ func TestNativeAgentEvidence(t *testing.T) {
 				return runner.ValidationEvidence{Name: path, ContentType: media, Content: content}, err
 			})
 			tools, handler := execution.(runner.ToolExecution).AgentTools()
+			deadline, ok := t.Deadline()
+			if !ok {
+				t.Fatal("missing process deadline")
+			}
+			coverDir := t.TempDir()
 			backend, err := claudecode.NewAgentBackend(claudecode.Options{IsolationPolicy: func() (isolation.Policy, error) {
 				return isolation.Policy{Tier: test.tier}, nil
 			}, CommandFactoryWithArgs: func(ctx context.Context, args []string) *exec.Cmd {
-				cmd := exec.CommandContext(ctx, os.Args[0], append([]string{"-test.run=^TestClaudeEvidenceWorkerProcess$", "--"}, args...)...)
-				cmd.Env = append(os.Environ(), "DETENT_CLAUDE_EVIDENCE_HELPER=1")
+				cmd := exec.CommandContext(ctx, os.Args[0], append([]string{"-test.run=^TestClaudeEvidenceWorkerProcess$", "-test.timeout=" + time.Until(deadline).String(), "--"}, args...)...)
+				cmd.Env = append(os.Environ(), "DETENT_CLAUDE_EVIDENCE_HELPER=1", "GOCOVERDIR="+coverDir)
 				return cmd
 			}})
 			if err != nil {
