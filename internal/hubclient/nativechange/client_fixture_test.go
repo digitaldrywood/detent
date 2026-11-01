@@ -2,12 +2,8 @@ package nativechange
 
 import (
 	"context"
-	"encoding/json"
-	"io"
 	"net/http"
 	"net/url"
-	"slices"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -283,36 +279,6 @@ func schedulerFixturesValue(scheduler *Scheduler) SchedulerConfig {
 		panic("scheduler fixture is not registered")
 	}
 	return value.(*schedulerFixture).config
-}
-
-func fixtureWithoutFeature(t testing.TB, client *Client, feature string) {
-	t.Helper()
-	fixture := fixtureClient(client)
-	next := fixture.requests.Load()
-	fixture.requests.Store(executionRoundTrip(func(request *http.Request) (*http.Response, error) {
-		response, err := next.RoundTrip(request)
-		if err != nil || response == nil || !strings.HasSuffix(request.URL.Path, "/capabilities") {
-			return response, err
-		}
-		var capabilities nativeCapabilities
-		if err := json.NewDecoder(response.Body).Decode(&capabilities); err != nil {
-			return nil, err
-		}
-		if err := response.Body.Close(); err != nil {
-			return nil, err
-		}
-		capabilities.Features = slices.DeleteFunc(capabilities.Features, func(current string) bool {
-			return current == feature
-		})
-		encoded, err := json.Marshal(capabilities)
-		if err != nil {
-			return nil, err
-		}
-		response.Body = io.NopCloser(strings.NewReader(string(encoded)))
-		response.ContentLength = int64(len(encoded))
-		return response, nil
-	}))
-	fixture.offset.Add(int64(2 * time.Hour))
 }
 
 func fixtureDiagnostics(scheduler *Scheduler, source *NativeConnector) []runnerauth.DiagnosticAttempt {

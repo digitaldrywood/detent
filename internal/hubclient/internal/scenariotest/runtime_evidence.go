@@ -1,7 +1,9 @@
-package nativechange
+package scenariotest
 
 import (
 	"encoding/json"
+	"io"
+	"net/http"
 	"slices"
 	"strconv"
 	"strings"
@@ -9,133 +11,34 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
-	"github.com/digitaldrywood/detent/internal/runner"
+	executioncontract "github.com/digitaldrywood/detent/internal/hubclient/execution"
+	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
 
-func TestNativeAttemptTerminalActivityReceipts(t *testing.T) {
-	for _, tt := range []struct {
-		name, outcome string
-		duration      time.Duration
-		merge         bool
-		preProvider   bool
-		olderHub      bool
-		issueOwned    bool
-		unclassified  bool
-	}{
-		{name: "older Hub setup unavailable", outcome: "failed", preProvider: true, olderHub: true},
-		{name: "issue configuration before provider", outcome: "failed", preProvider: true, issueOwned: true},
-		{name: "unclassified before provider", outcome: "failed", preProvider: true, unclassified: true},
-		{name: "workspace setup", outcome: "failed", preProvider: true},
-		{name: "failed", outcome: "failed", duration: 20 * time.Second},
-		{name: "two seconds", outcome: "succeeded", duration: 2 * time.Second},
-		{name: "interrupted", outcome: "interrupted", duration: 3 * time.Second},
-		{name: "merge", outcome: "failed", duration: 20 * time.Second, merge: true},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			h := newNativeChangeHubTransport(t, "In Review", []tracker.NativeState{
-				{Name: "In Progress", Dispatchable: true, Transitions: []string{"Done"}},
-				{Name: "Done", Terminal: true},
-			}, true)
-			issue := h.createInProgress(t, tt.name)
-			h.claim(t, issue.ID)
-			execution := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
-			at := time.Now().UTC().Add(-time.Minute)
-			clock := at
-			fixtureSetNow(h.scheduler, clock)
-			if tt.preProvider {
-				before, err := h.admin.RuntimeEvidence(t.Context(), tracker.NativeWorkItemID(issue.ID), "")
-				if err != nil || before.Attempt != nil {
-					t.Fatalf("no-attempt evidence=%+v err=%v", before, err)
-				}
-				if err := execution.ObserveRuntime(t.Context(), tracker.NativeRuntimeObservation{LocalAttemptID: 42, Generation: 2, Phase: "completed", HeartbeatAt: clock}); err != nil {
-					t.Fatal(err)
-				}
-				failure := &tracker.NativeTerminalFailure{Error: "after_create exit status 127: script not found token=private-secret", ErrorClass: "workspace_hook", ObservedAt: clock}
-				if tt.issueOwned {
-					failure = &tracker.NativeTerminalFailure{Error: "agent override rejected: effort: unsupported value", ErrorClass: "issue_configuration", Decision: &tracker.FailureAttribution{Outcome: "issue", Reason: "typed issue configuration rejection"}, ObservedAt: clock}
-				}
-				if tt.unclassified {
-					failure = &tracker.NativeTerminalFailure{Error: "unclassified setup failure", ObservedAt: clock}
-				}
-				if err := execution.PrepareFinish(t.Context(), "failed", "", failure); err != nil {
-					t.Fatal(err)
-				}
-			} else if tt.merge {
-				if err := execution.StartLanding(t.Context(), 42, 2); err != nil {
-					t.Fatal(err)
-				}
-			} else if err := execution.Start(t.Context(), tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test"}); err != nil {
-				t.Fatal(err)
-			}
-			clock = at.Add(tt.duration)
-			fixtureSetNow(h.scheduler, clock)
-			if tt.olderHub {
-				client := execution.claim.source.NativeClient().Transport()
-				fixtureWithoutFeature(t, client, tracker.NativePreProviderFailureCapability)
-			}
-			if err := execution.Finish(t.Context(), tt.outcome); err != nil {
-				t.Fatal(err)
-			}
-			evidence, err := h.admin.RuntimeEvidence(t.Context(), tracker.NativeWorkItemID(issue.ID), "")
-			if tt.olderHub {
-				if err != nil || evidence.Attempt != nil || !slices.Contains(evidence.Unavailable, "native_attempt") {
-					t.Fatalf("older Hub fabricated setup history: %+v err=%v", evidence, err)
-				}
-				return
-			}
-			if tt.unclassified {
-				a := evidence.Attempt
-				if err != nil || a == nil || a.TerminalFailure == nil || a.TerminalFailure.Stage != "pre_provider" || a.TerminalFailure.Attribution != "" || !slices.Contains(a.TerminalFailure.Unavailable, "attribution") {
-					t.Fatalf("unclassified failure fabricated an owner: %+v err=%v", a, err)
-				}
-				return
-			}
-			if tt.issueOwned {
-				a := evidence.Attempt
-				if err != nil || a == nil || a.Identity != nil || a.TerminalFailure == nil || a.TerminalFailure.Stage != "pre_provider" || a.TerminalFailure.ErrorClass != "issue_configuration" || a.TerminalFailure.Attribution != "issue" {
-					t.Fatalf("issue configuration misattributed: %+v err=%v", a, err)
-				}
-				return
-			}
-			if tt.preProvider {
-				a := evidence.Attempt
-				if err != nil || a == nil || a.Status != "failed" || a.Identity != nil || a.Runtime == nil || a.Runtime.LocalAttemptID != 42 || a.Runtime.Generation != 2 || a.Runtime.Activity != nil || a.TerminalFailure == nil || a.TerminalFailure.Error != "after_create exit status 127: script not found [redacted]" {
-					t.Fatalf("setup receipt missing or fabricated: %+v err=%v", a, err)
-				}
-				return
-			}
-			if err != nil || evidence.Attempt == nil || evidence.Attempt.Runtime == nil || evidence.Attempt.Runtime.Activity == nil {
-				t.Fatalf("terminal receipt missing: evidence=%+v err=%v", evidence, err)
-			}
-			p := evidence.Attempt.Runtime.Activity
-			if p.Summary == nil || !p.StartedAt.Equal(at) || !p.FinishedAt.Equal(clock) || !p.Summary.Through.Equal(clock) || p.Breakdown().ElapsedSeconds != tt.duration.Seconds() {
-				t.Fatalf("terminal receipt does not cover attempt: %+v", p)
-			}
-			if tt.merge && p.Breakdown().ObservedSeconds != tt.duration.Seconds() {
-				t.Fatalf("programmatic merge time unobserved: %+v", p.Breakdown())
-			}
-		})
-	}
-}
-
-func TestNativeRuntimeCheckpointsDoNotGrowHistory(t *testing.T) {
+func RunNativeRuntimeCheckpointsDoNotGrowHistory(t *testing.T, factories Constructors) {
 	if testing.Short() {
 		t.Skip("durable SQLite integration")
 	}
 
 	t.Parallel()
-	h := newNativeChangeHubTransport(t, "In Review", []tracker.NativeState{
+	construct := factories.New
+	factories.New = func(host executioncontract.ExecutionHost, view executioncontract.ExecutionClaim) executioncontract.Execution {
+		view.Lease.RunDetailBatching = false
+		return construct(host, view)
+	}
+	h := newNativeChangeHubConfigured(t, "In Review", []tracker.NativeState{
 		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Done"}},
 		{Name: "Done", Terminal: true},
-	}, true)
+	}, true, false, hubserver.Config{DatabasePath: hubDatabasePath(t), InitialAdminToken: []byte(nativeChangeAdminToken)}, factories)
 	issue := h.createInProgress(t, "Activity checkpoints")
 	item := tracker.NativeWorkItemID(issue.ID)
 	h.claim(t, issue.ID)
-	execution := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
-	execution.claim.lease.RunDetailBatching = false
+	execution := h.scheduler.RunExecution(issue.ID).(*ownedExecution)
 	at := time.Now().UTC()
 	timing := (gate.CommandResult{Command: "make check-land", HeadSHA: strings.Repeat("a", 40), TreeSHA: strings.Repeat("b", 40), StartedAt: at, FinishedAt: at.Add(time.Second)}).PipelineTiming("worker_check_land")
 	execution.RecordPipelineTiming(timing)
@@ -277,7 +180,30 @@ func TestNativeRuntimeCheckpointsDoNotGrowHistory(t *testing.T) {
 	if err := execution.ObserveRuntime(t.Context(), observation); err != nil {
 		t.Fatal(err)
 	}
-	execution.change = &runner.NativeChange{Error: "recorded refusal: /private/source/main.go token=private-secret " + strings.Repeat("é", 4096) + "\nprivate source content"}
+	state := execution.CompletionSnapshot()
+	state.PreparedFinalization = &tracker.NativeFinalization{Error: "recorded refusal: /private/source/main.go token=private-secret " + strings.Repeat("é", 4096) + "\nprivate source content"}
+	view, ok := h.scheduler.ExecutionClaim(issue.ID)
+	if !ok {
+		t.Fatal("fixture lost runtime claim")
+	}
+	saved, ok := schedulerFixtures.Load(h.scheduler)
+	if !ok {
+		t.Fatal("fixture lost runtime scheduler")
+	}
+	replacementHost, err := newTestScheduler(h.scheduler.Transport(), saved.(*schedulerFixture).config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.scheduler = replacementHost
+	view.Source = h.scheduler.ExecutionSource("local")
+	recovered, err := factories.Recovered(h.scheduler, t.Context(), view, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	execution = wrap(recovered, view)
+	if err := h.scheduler.RegisterExecution(t.Context(), orchestrator.SchedulingRequest{ProjectID: "local", Policy: h.descriptor}, connector.Issue{ID: issue.ID}, view, execution); err != nil {
+		t.Fatal(err)
+	}
 	if err := execution.Finish(t.Context(), "failed"); err != nil {
 		t.Fatal(err)
 	}
@@ -303,4 +229,140 @@ func TestNativeRuntimeCheckpointsDoNotGrowHistory(t *testing.T) {
 			t.Fatalf("final immutable profile=%+v", event.Data.Run.Runtime.Activity)
 		}
 	}
+}
+
+func RunNativeAttemptTerminalActivityReceipts(t *testing.T, factories Constructors) {
+	for _, tt := range []struct {
+		name, outcome string
+		duration      time.Duration
+		merge         bool
+		preProvider   bool
+		olderHub      bool
+		issueOwned    bool
+		unclassified  bool
+	}{
+		{name: "older Hub setup unavailable", outcome: "failed", preProvider: true, olderHub: true},
+		{name: "issue configuration before provider", outcome: "failed", preProvider: true, issueOwned: true},
+		{name: "unclassified before provider", outcome: "failed", preProvider: true, unclassified: true},
+		{name: "workspace setup", outcome: "failed", preProvider: true},
+		{name: "failed", outcome: "failed", duration: 20 * time.Second},
+		{name: "two seconds", outcome: "succeeded", duration: 2 * time.Second},
+		{name: "interrupted", outcome: "interrupted", duration: 3 * time.Second},
+		{name: "merge", outcome: "failed", duration: 20 * time.Second, merge: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newNativeChangeHubConfigured(t, "In Review", []tracker.NativeState{
+				{Name: "In Progress", Dispatchable: true, Transitions: []string{"Done"}},
+				{Name: "Done", Terminal: true},
+			}, true, false, hubserver.Config{DatabasePath: hubDatabasePath(t), InitialAdminToken: []byte(nativeChangeAdminToken)}, factories)
+			issue := h.createInProgress(t, tt.name)
+			h.claim(t, issue.ID)
+			execution := h.scheduler.RunExecution(issue.ID).(*ownedExecution)
+			at := time.Now().UTC().Add(-time.Minute)
+			clock := at
+			SetSchedulerNow(h.scheduler, clock)
+			if tt.preProvider {
+				before, err := h.admin.RuntimeEvidence(t.Context(), tracker.NativeWorkItemID(issue.ID), "")
+				if err != nil || before.Attempt != nil {
+					t.Fatalf("no-attempt evidence=%+v err=%v", before, err)
+				}
+				if err := execution.ObserveRuntime(t.Context(), tracker.NativeRuntimeObservation{LocalAttemptID: 42, Generation: 2, Phase: "completed", HeartbeatAt: clock}); err != nil {
+					t.Fatal(err)
+				}
+				failure := &tracker.NativeTerminalFailure{Error: "after_create exit status 127: script not found token=private-secret", ErrorClass: "workspace_hook", ObservedAt: clock}
+				if tt.issueOwned {
+					failure = &tracker.NativeTerminalFailure{Error: "agent override rejected: effort: unsupported value", ErrorClass: "issue_configuration", Decision: &tracker.FailureAttribution{Outcome: "issue", Reason: "typed issue configuration rejection"}, ObservedAt: clock}
+				}
+				if tt.unclassified {
+					failure = &tracker.NativeTerminalFailure{Error: "unclassified setup failure", ObservedAt: clock}
+				}
+				if err := execution.PrepareFinish(t.Context(), "failed", "", failure); err != nil {
+					t.Fatal(err)
+				}
+			} else if tt.merge {
+				if err := execution.StartLanding(t.Context(), 42, 2); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := execution.Start(t.Context(), tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test"}); err != nil {
+				t.Fatal(err)
+			}
+			clock = at.Add(tt.duration)
+			SetSchedulerNow(h.scheduler, clock)
+			if tt.olderHub {
+				client := execution.claim.source.NativeClient().Transport()
+				fixtureWithoutFeature(t, client, tracker.NativePreProviderFailureCapability)
+			}
+			if err := execution.Finish(t.Context(), tt.outcome); err != nil {
+				t.Fatal(err)
+			}
+			evidence, err := h.admin.RuntimeEvidence(t.Context(), tracker.NativeWorkItemID(issue.ID), "")
+			if tt.olderHub {
+				if err != nil || evidence.Attempt != nil || !slices.Contains(evidence.Unavailable, "native_attempt") {
+					t.Fatalf("older Hub fabricated setup history: %+v err=%v", evidence, err)
+				}
+				return
+			}
+			if tt.unclassified {
+				a := evidence.Attempt
+				if err != nil || a == nil || a.TerminalFailure == nil || a.TerminalFailure.Stage != "pre_provider" || a.TerminalFailure.Attribution != "" || !slices.Contains(a.TerminalFailure.Unavailable, "attribution") {
+					t.Fatalf("unclassified failure fabricated an owner: %+v err=%v", a, err)
+				}
+				return
+			}
+			if tt.issueOwned {
+				a := evidence.Attempt
+				if err != nil || a == nil || a.Identity != nil || a.TerminalFailure == nil || a.TerminalFailure.Stage != "pre_provider" || a.TerminalFailure.ErrorClass != "issue_configuration" || a.TerminalFailure.Attribution != "issue" {
+					t.Fatalf("issue configuration misattributed: %+v err=%v", a, err)
+				}
+				return
+			}
+			if tt.preProvider {
+				a := evidence.Attempt
+				if err != nil || a == nil || a.Status != "failed" || a.Identity != nil || a.Runtime == nil || a.Runtime.LocalAttemptID != 42 || a.Runtime.Generation != 2 || a.Runtime.Activity != nil || a.TerminalFailure == nil || a.TerminalFailure.Error != "after_create exit status 127: script not found [redacted]" {
+					t.Fatalf("setup receipt missing or fabricated: %+v err=%v", a, err)
+				}
+				return
+			}
+			if err != nil || evidence.Attempt == nil || evidence.Attempt.Runtime == nil || evidence.Attempt.Runtime.Activity == nil {
+				t.Fatalf("terminal receipt missing: evidence=%+v err=%v", evidence, err)
+			}
+			p := evidence.Attempt.Runtime.Activity
+			if p.Summary == nil || !p.StartedAt.Equal(at) || !p.FinishedAt.Equal(clock) || !p.Summary.Through.Equal(clock) || p.Breakdown().ElapsedSeconds != tt.duration.Seconds() {
+				t.Fatalf("terminal receipt does not cover attempt: %+v", p)
+			}
+			if tt.merge && p.Breakdown().ObservedSeconds != tt.duration.Seconds() {
+				t.Fatalf("programmatic merge time unobserved: %+v", p.Breakdown())
+			}
+		})
+	}
+}
+
+func fixtureWithoutFeature(t testing.TB, client *Client, feature string) {
+	t.Helper()
+	fixture := fixtureClient(client)
+	next := fixture.requests.Load()
+	fixture.requests.Store(executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+		response, err := next.RoundTrip(request)
+		if err != nil || response == nil || !strings.HasSuffix(request.URL.Path, "/capabilities") {
+			return response, err
+		}
+		var capabilities nativeCapabilities
+		if err := json.NewDecoder(response.Body).Decode(&capabilities); err != nil {
+			return nil, err
+		}
+		if err := response.Body.Close(); err != nil {
+			return nil, err
+		}
+		capabilities.Features = slices.DeleteFunc(capabilities.Features, func(current string) bool {
+			return current == feature
+		})
+		encoded, err := json.Marshal(capabilities)
+		if err != nil {
+			return nil, err
+		}
+		response.Body = io.NopCloser(strings.NewReader(string(encoded)))
+		response.ContentLength = int64(len(encoded))
+		return response, nil
+	}))
+	fixture.offset.Add(int64(2 * time.Hour))
 }
