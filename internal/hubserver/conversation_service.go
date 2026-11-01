@@ -852,6 +852,9 @@ func (c *conversationService) loadConversation(ctx context.Context, query native
 	if err != nil {
 		return conversationRecord{}, err
 	}
+	if c.server.conversationRecordsSelected() {
+		return record, nil
+	}
 	if err := c.store.resolveConversationRecord(ctx, query, &record); err != nil {
 		return conversationRecord{}, translateConversationError(err)
 	}
@@ -861,6 +864,9 @@ func (c *conversationService) loadConversation(ctx context.Context, query native
 func (c *conversationService) loadConversationRow(ctx context.Context, query nativeQueryer, scope nativeScope, id string) (conversationRecord, error) {
 	if err := conversation.ValidateConversationID(id); err != nil {
 		return conversationRecord{}, nativeNotFound()
+	}
+	if c.server.conversationRecordsSelected() {
+		return c.server.readPGConversation(ctx, scope, id)
 	}
 	record, err := c.store.readConversationRow(ctx, query, scope.organization, scope.project, id)
 	if err != nil {

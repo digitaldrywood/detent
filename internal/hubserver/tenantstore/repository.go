@@ -6,6 +6,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
@@ -16,6 +17,7 @@ import (
 type Reader interface {
 	billingstore.Reader
 	accessstore.Reader
+	conversationstore.Reader
 	corestore.Reader
 	projectstore.Reader
 	eventstore.Reader
@@ -25,6 +27,7 @@ type Reader interface {
 type Writer interface {
 	billingstore.Writer
 	accessstore.Writer
+	conversationstore.Writer
 	corestore.Writer
 	projectstore.Writer
 	eventstore.Writer
@@ -46,4 +49,8 @@ type ProjectParticipants interface {
 	CreateProject(context.Context, Writer, ProjectActor, projectstore.Record) error
 	UpdateProject(context.Context, Writer, ProjectActor, projectstore.Record, projectstore.Record) error
 	RetireProject(context.Context, Writer, ProjectActor, projectstore.Record, time.Time) error
+}
+
+type DispatchRequests interface {
+	RequestDispatch(context.Context, Writer, tracker.ProjectID, string, leasestore.Fence, time.Time) error
 }

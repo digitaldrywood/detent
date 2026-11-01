@@ -268,6 +268,10 @@ func conversationWorkerError(err error) error {
 	return err
 }
 
+func conversationWorkerAuthorityUnavailable() error {
+	return &nativeError{Code: "unavailable", Message: "Worker identity authority is unavailable", status: http.StatusServiceUnavailable}
+}
+
 // requireWorkerOwner validates the owner tuple against the hub's ledger: the
 // credential is live, the lease belongs to the item and to the caller's
 // runner, the policy is approved and a running native attempt row binds the
@@ -731,6 +735,9 @@ func (r *conversationWorkerRouter) bind(e echo.Context) error {
 	if strings.TrimSpace(request.RunID) == "" {
 		return s.nativeAPIError(e, nativePublicInvalid("run_id is required"))
 	}
+	if s.conversationRecordsSelected() {
+		return r.bindPostgres(e, request)
+	}
 	ctx := e.Request().Context()
 	scope := nativeRequestScope(e)
 	item := e.Param("item")
@@ -870,6 +877,9 @@ func (r *conversationWorkerRouter) unbind(e echo.Context) error {
 	if !ok {
 		return s.nativeAPIError(e, nativePublicInvalid("outcome must be succeeded, failed, cancelled or interrupted"))
 	}
+	if s.conversationRecordsSelected() {
+		return r.unbindPostgres(e, request, status)
+	}
 	ctx := e.Request().Context()
 	scope := nativeRequestScope(e)
 	item := e.Param("item")
@@ -970,6 +980,9 @@ func (r *conversationWorkerRouter) controls(e echo.Context) error {
 	ctx := e.Request().Context()
 	scope := nativeRequestScope(e)
 	id := e.Param("conversation")
+	if s.conversationRecordsSelected() {
+		return r.controlsPostgres(e, id, identity, after, wait)
+	}
 	subscription, cancel := c.broker.subscribe(id)
 	defer cancel()
 	var deadline <-chan time.Time
@@ -1240,6 +1253,9 @@ func (r *conversationWorkerRouter) turnEvents(e echo.Context) error {
 	ctx := e.Request().Context()
 	scope := nativeRequestScope(e)
 	id := e.Param("conversation")
+	if s.conversationRecordsSelected() {
+		return r.turnEventsPostgres(e, id, request)
+	}
 	if err := c.authorizeWorkerContent(ctx, scope, id, "", request.conversationWorkerIdentity, false); err != nil {
 		return s.nativeAPIError(e, conversationStaleExecutionError("turn_events", id, err))
 	}

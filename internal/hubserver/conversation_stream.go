@@ -141,7 +141,12 @@ func (s *Service) streamConversationEvents(c echo.Context) error {
 			service.logger.Warn("conversation.stream_reauthorize_failed", "conversation_id", record.ID, "reason", reason, "error", err)
 			return stream.closed(reason)
 		}
-		if cursor, err = stream.replay(ctx, service.store, s.database.reader, record.ID, cursor, authorized.EventSeq); err != nil {
+		if s.conversationRecordsSelected() {
+			cursor, err = s.replayPGConversationEvents(ctx, scope, stream, record.ID, cursor, authorized.EventSeq)
+		} else {
+			cursor, err = stream.replay(ctx, service.store, s.database.reader, record.ID, cursor, authorized.EventSeq)
+		}
+		if err != nil {
 			if errors.Is(err, errConversationCursorExpired) {
 				return stream.closed(conversationClosedCursorExpired)
 			}

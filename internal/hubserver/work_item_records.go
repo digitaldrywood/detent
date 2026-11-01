@@ -672,6 +672,10 @@ func (s *Service) prepareWorkItemFields(ctx context.Context, organization tracke
 }
 
 func (s *Service) executeWorkItemRecordMutation(ctx context.Context, scope nativeScope, options nativeCommandOptions, command tracker.Mutation, input any, commentID string) (json.RawMessage, error) {
+	return s.executeWorkItemRecordMutationWithConversationLink(ctx, scope, options, command, input, commentID, nil)
+}
+
+func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.Context, scope nativeScope, options nativeCommandOptions, command tracker.Mutation, input any, commentID string, link *conversationLinkMutation) (json.RawMessage, error) {
 	if strings.TrimSpace(command.IdempotencyKey) == "" || len(command.IdempotencyKey) > 128 {
 		return nil, nativePublicInvalid("An idempotency key of at most 128 bytes is required")
 	}
@@ -718,6 +722,11 @@ func (s *Service) executeWorkItemRecordMutation(ctx context.Context, scope nativ
 		plan, err = s.planWorkItemRecord(ctx, scope, plan, input)
 		if err != nil {
 			return nil, err
+		}
+		if link != nil {
+			if err := link.prepare(ctx, plan); err != nil {
+				return nil, err
+			}
 		}
 		valueRaw, err := json.Marshal(plan.value())
 		if err != nil {
@@ -945,6 +954,11 @@ func (s *Service) executeWorkItemRecordMutation(ctx context.Context, scope nativ
 					return err
 				}
 				if _, err := w.AppendEvent(ctx, event); err != nil {
+					return err
+				}
+			}
+			if link != nil {
+				if err := link.write(ctx, w, plan); err != nil {
 					return err
 				}
 			}

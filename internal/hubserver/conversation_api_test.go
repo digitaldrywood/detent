@@ -3,6 +3,8 @@ package hubserver
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -13,6 +15,13 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 // conversationAPIFixture is a token-authenticated hub with the conversation
@@ -23,6 +32,12 @@ type conversationAPIFixture struct {
 	ownerID string
 	other   string
 	otherID string
+}
+
+type conversationDispatchRequestFunc func(context.Context, tenantstore.Writer, tracker.ProjectID, string, leasestore.Fence, time.Time) error
+
+func (f conversationDispatchRequestFunc) RequestDispatch(ctx context.Context, writer tenantstore.Writer, project tracker.ProjectID, item string, fence leasestore.Fence, at time.Time) error {
+	return f(ctx, writer, project, item, fence, at)
 }
 
 func newConversationAPIFixture(t *testing.T, cfg *ConversationConfig, clocks ...func() time.Time) conversationAPIFixture {
@@ -1017,6 +1032,229 @@ func TestConversationCreateIsIdempotent(t *testing.T) {
 	t.Run("a missing key is refused", func(t *testing.T) {
 		requireNativeError(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/conversations", f.token, map[string]any{"title": "No key"}), http.StatusUnprocessableEntity, "invalid_request")
 	})
+}
+
+func TestConversationPostgresAPIUsesTenantRecords(t *testing.T) {
+	f := newConversationAPIFixture(t, nil)
+	f.service.config.RunDetails = &memoryRunDetails{}
+	repository := projectRecordPostgres(t)
+	var credential accessstore.Credential
+	if err := f.service.database.db.QueryRowContext(t.Context(), `SELECT id,name,token_hash,token_fingerprint,scope,native_only FROM api_tokens WHERE id=?`, f.ownerID).Scan(&credential.ID, &credential.Name, &credential.Hash, &credential.Fingerprint, &credential.Scope, &credential.NativeOnly); err != nil {
+		t.Fatal(err)
+	}
+	credential.OrganizationID = f.project.OrganizationID
+	credential.ProjectAccess = "all"
+	credential.Kind = "personal"
+	credential.CreatedAt, credential.UpdatedAt = time.Now().UTC(), time.Now().UTC()
+	if err := repository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.CreateAccessCredential(t.Context(), credential); err != nil {
+			return err
+		}
+		_, err := w.CreateProjectRecord(t.Context(), projectstore.Record{
+			Core:     corestore.Project{OrganizationID: f.project.OrganizationID, ID: f.project.ID, Name: f.project.Name, Slug: f.project.Slug, Profile: f.project.Profile, RequireDependencies: f.project.RequireDependencies, CreatedAt: time.Now().UTC()},
+			Settings: projectstore.Settings{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID},
+			States:   f.project.States,
+		})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f.service.config.TenantRepository = repository
+
+	contents := f.service.conversations.store.contents.(*conversationContentFixture)
+	contents.setFail(true)
+	failed := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/conversations", f.token, map[string]any{"key": "pg-failed-create", "title": "Example"})
+	if failed.Code < http.StatusInternalServerError {
+		t.Fatalf("object publication failure status = %d, want server error", failed.Code)
+	}
+	contents.setFail(false)
+
+	body := map[string]any{"key": "pg-create", "title": "Example", "first_message": map[string]any{"key": "pg-first", "text": "hello from PostgreSQL"}}
+	apiCredentialValue, _, err := f.service.authenticateAPIToken(t.Context(), f.token, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.service.commandCreateConversation(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredentialValue}, conversationCreateRequest{Key: "pg-create", Title: "Example", FirstMessage: &conversationFirstMessage{Key: "pg-first", Text: "hello from PostgreSQL"}}); err != nil {
+		t.Fatalf("commandCreateConversation() error = %v", err)
+	}
+	created := f.create(t, f.token, body)
+	if created.Receipt == nil || created.Receipt.Key != "pg-first" {
+		t.Fatalf("create receipt = %+v", created.Receipt)
+	}
+	replay := f.create(t, f.token, body)
+	if replay.Conversation.ID != created.Conversation.ID {
+		t.Fatalf("create replay id = %q, want %q", replay.Conversation.ID, created.Conversation.ID)
+	}
+	second := f.command(t, f.token, created.Conversation.ID, conversation.Command{Key: "pg-second", Kind: conversation.CommandMessage, Text: "another message"})
+	requireNativeStatus(t, second, http.StatusOK)
+	commandReplay := f.command(t, f.token, created.Conversation.ID, conversation.Command{Key: "pg-second", Kind: conversation.CommandMessage, Text: "another message"})
+	requireNativeStatus(t, commandReplay, http.StatusOK)
+	conflict := f.command(t, f.token, created.Conversation.ID, conversation.Command{Key: "pg-second", Kind: conversation.CommandMessage, Text: "different message"})
+	requireNativeError(t, conflict, http.StatusConflict, "idempotency_conflict")
+	snapshot := f.snapshot(t, f.token, created.Conversation.ID)
+	if len(snapshot.Messages) != 2 || snapshot.Messages[0].Text != "hello from PostgreSQL" || snapshot.Messages[1].Text != "another message" {
+		t.Fatalf("PostgreSQL messages = %+v", snapshot.Messages)
+	}
+	patched := performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/conversations/"+created.Conversation.ID, f.token, map[string]any{"title": "Renamed in PostgreSQL"})
+	requireNativeStatus(t, patched, http.StatusOK)
+	var record conversationstore.Conversation
+	if err := repository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		record, err = r.Conversation(t.Context(), f.project.ID, created.Conversation.ID)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if record.Title != "Renamed in PostgreSQL" || record.Revision < 2 {
+		t.Fatalf("patched conversation = %+v", record)
+	}
+	unsupported := performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/conversations/"+created.Conversation.ID, f.token, map[string]any{"preferences": map[string]any{"reasoning_effort": "low"}})
+	requireNativeError(t, unsupported, http.StatusUnprocessableEntity, "unsupported_control")
+	linked := f.link(t, f.token, created.Conversation.ID, "pg-link", true, "Example linked issue")
+	requireNativeStatus(t, linked, http.StatusOK)
+	var linkResult conversationLinkResponse
+	decodeHubResponse(t, linked, &linkResult)
+	if linkResult.Conversation.Visibility != conversation.VisibilityShared || linkResult.Issue.ID == "" {
+		t.Fatalf("PostgreSQL link result = %+v, want shared conversation and linked issue", linkResult)
+	}
+	replayedLink := f.link(t, f.token, created.Conversation.ID, "pg-link", true, "Example linked issue")
+	requireNativeStatus(t, replayedLink, http.StatusOK)
+	var replayedLinkResult conversationLinkResponse
+	decodeHubResponse(t, replayedLink, &replayedLinkResult)
+	if replayedLinkResult.Issue.ID != linkResult.Issue.ID || replayedLinkResult.Conversation.ID != linkResult.Conversation.ID {
+		t.Fatalf("PostgreSQL link replay = %+v, want issue %q and conversation %q", replayedLinkResult, linkResult.Issue.ID, linkResult.Conversation.ID)
+	}
+	var linkedRecord conversationstore.Conversation
+	if err := repository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		linkedRecord, err = r.Conversation(t.Context(), f.project.ID, created.Conversation.ID)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if linkedRecord.WorkItemID != linkResult.Issue.ID || linkedRecord.Visibility != conversation.VisibilityShared {
+		t.Fatalf("stored PostgreSQL conversation link = %+v, want work item %q and shared visibility", linkedRecord, linkResult.Issue.ID)
+	}
+	if err := repository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		current, err := w.LockConversation(t.Context(), f.project.ID, created.Conversation.ID)
+		if err != nil {
+			return err
+		}
+		current.Execution = conversation.Execution{Status: conversation.ExecutionCompleted, Owner: conversation.Owner{AttemptID: "attempt-finished", RunID: "run-example", LeaseID: "lease-example", FencingToken: 7}}
+		if _, err := w.UpdateConversation(t.Context(), current, current.Revision); err != nil {
+			return err
+		}
+		return w.RecordStart(t.Context(), "attempt-finished", created.Conversation.ID, f.service.config.now())
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var beforeContinue conversationstore.Conversation
+	if err := repository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		beforeContinue, err = r.Conversation(t.Context(), f.project.ID, created.Conversation.ID)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	continueCommand := conversation.Command{Key: "pg-continue", Kind: conversation.CommandContinue, Text: "Continue the example issue", Expected: conversation.Expected{AttemptID: "attempt-finished"}}
+	missingExpected := f.command(t, f.token, created.Conversation.ID, conversation.Command{Key: "pg-continue-missing-attempt", Kind: conversation.CommandContinue, Text: "Continue the example issue"})
+	requireNativeError(t, missingExpected, http.StatusUnprocessableEntity, "invalid_request")
+	refused := f.command(t, f.token, created.Conversation.ID, continueCommand)
+	requireNativeError(t, refused, http.StatusServiceUnavailable, "unavailable")
+	if err := repository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		if _, found, err := r.Command(t.Context(), created.Conversation.ID, continueCommand.Key); err != nil || found {
+			return errors.Join(err, errors.New("continue command reservation survived missing dispatch participant"))
+		}
+		messages, err := r.Messages(t.Context(), created.Conversation.ID, 0, 20)
+		if err != nil {
+			return err
+		}
+		if int64(len(messages.Items)) != beforeContinue.MessageCount {
+			return errors.New("continue message survived missing dispatch participant")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var dispatches int
+	var dispatchFences []leasestore.Fence
+	f.service.config.ConversationDispatch = conversationDispatchRequestFunc(func(_ context.Context, _ tenantstore.Writer, project tracker.ProjectID, item string, fence leasestore.Fence, _ time.Time) error {
+		dispatches++
+		dispatchFences = append(dispatchFences, fence)
+		if project != f.project.ID || item != linkResult.Issue.ID {
+			t.Fatalf("dispatch target = %s/%s, want %s/%s", project, item, f.project.ID, linkResult.Issue.ID)
+		}
+		return nil
+	})
+	continued := f.command(t, f.token, created.Conversation.ID, continueCommand)
+	requireNativeStatus(t, continued, http.StatusOK)
+	replayedContinue := f.command(t, f.token, created.Conversation.ID, continueCommand)
+	requireNativeStatus(t, replayedContinue, http.StatusOK)
+	if dispatches != 1 {
+		t.Fatalf("dispatch participant calls = %d, want one across replay", dispatches)
+	}
+	if dispatchFences[0] != (leasestore.Fence{LeaseID: "lease-example", FencingToken: 7}) {
+		t.Fatalf("continue dispatch fence = %+v, want lease-example/7", dispatchFences[0])
+	}
+	var retryable conversationstore.Message
+	if err := repository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		commandRecord, found, err := r.Command(t.Context(), created.Conversation.ID, "pg-second")
+		if err != nil || !found {
+			return errors.Join(err, errors.New("retry fixture command is missing"))
+		}
+		retryable, err = r.Message(t.Context(), created.Conversation.ID, commandRecord.Receipt.MessageID)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		message, err := w.Message(t.Context(), created.Conversation.ID, retryable.ID)
+		if err != nil {
+			return err
+		}
+		message.Delivery, message.UpdatedAt = conversation.DeliveryFailed, f.service.config.now()
+		message, err = w.UpdateMessage(t.Context(), message, message.Revision)
+		if err != nil {
+			return err
+		}
+		if err := appendPGConversationEvent(t.Context(), w, f.project.OrganizationID, created.Conversation.ID, conversation.EventMessageUpdated, projectMessage(conversationMessageFromStore(message)), message.UpdatedAt); err != nil {
+			return err
+		}
+		commandRecord, found, err := w.Command(t.Context(), created.Conversation.ID, retryable.CommandKey)
+		if err != nil || !found {
+			return errors.Join(err, errors.New("retry fixture command receipt is missing"))
+		}
+		commandRecord.Receipt.Status, commandRecord.UpdatedAt = conversation.DeliveryFailed, message.UpdatedAt
+		return w.UpdateCommand(t.Context(), commandRecord)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	retryCommand := conversation.Command{Key: "pg-retry", Kind: conversation.CommandRetry, MessageID: retryable.ID}
+	retried := f.command(t, f.token, created.Conversation.ID, retryCommand)
+	requireNativeStatus(t, retried, http.StatusOK)
+	replayedRetry := f.command(t, f.token, created.Conversation.ID, retryCommand)
+	requireNativeStatus(t, replayedRetry, http.StatusOK)
+	if dispatches != 2 {
+		t.Fatalf("dispatch participant calls after retry replay = %d, want two total", dispatches)
+	}
+	if dispatchFences[1] != (leasestore.Fence{}) {
+		t.Fatalf("retry dispatch fence = %+v, want no current owner fence", dispatchFences[1])
+	}
+	if err := repository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		message, err := r.Message(t.Context(), created.Conversation.ID, retryable.ID)
+		if err != nil {
+			return err
+		}
+		if message.Delivery != conversation.DeliveryQueued {
+			return fmt.Errorf("retried delivery = %q, want queued", message.Delivery)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if created.Conversation.ID == "" {
+		t.Fatal("created conversation has no id")
+	}
 }
 
 // TestConversationContinueRequiresExpectedAttempt covers the attempt a

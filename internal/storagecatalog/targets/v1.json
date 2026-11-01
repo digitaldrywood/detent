@@ -24,6 +24,7 @@
     "internal/hubserver/postgres/migrations/20261101172130_expose_platform_schema_version.sql",
     "internal/hubserver/postgres/migrations/20261101173425_tenant_billing.sql",
     "internal/hubserver/postgres/migrations/20261101184348_work_item_relationships.sql",
+    "internal/hubserver/postgres/migrations/20261101192143_conversation_records.sql",
     "internal/hubserver/postgres/migrations/20261101195407_linked_issue_sources.sql"
   ],
   "tables": {
@@ -45,6 +46,26 @@
       },
       "contract": "Store immutable reason-object metadata beside the idempotent typed credit transaction; never retain reason text inline.",
       "family": "billing",
+      "organization": "organization-owned"
+    },
+    "public.conversation_content_objects": {
+      "columns": {
+        "binding_id": "text",
+        "codec": "text",
+        "compressed_size": "bigint",
+        "created_at": "timestamp with time zone",
+        "customer_owned": "boolean",
+        "id": "text",
+        "kind": "text",
+        "object_key": "text",
+        "organization_id": "text",
+        "retention": "text",
+        "schema_version": "integer",
+        "sha256": "text",
+        "uncompressed_size": "bigint"
+      },
+      "contract": "Retain verified immutable conversation archive references under the owning organization; keep object bytes outside PostgreSQL and publish metadata only after the object store verifies the hash.",
+      "family": "conversation",
       "organization": "organization-owned"
     },
     "public.hosted_complimentary_grant_scopes": {

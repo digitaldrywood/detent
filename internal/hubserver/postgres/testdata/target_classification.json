@@ -4,6 +4,11 @@
     "ownership": "organization-owned",
     "scope": "ai_credit_reason_references.organization_id; mode and source reference ai_credit_transactions"
   },
+  "public/conversation_content_objects": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "conversation_content_objects.organization_id; archive metadata references externally verified object bytes"
+  },
   "public/hosted_complimentary_grant_scopes": {
     "inline_payloads": [],
     "ownership": "organization-owned",

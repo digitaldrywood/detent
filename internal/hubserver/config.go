@@ -55,6 +55,8 @@ type Config struct {
 	BillingRepository              tenantstore.Repository
 	AccessRepository               tenantstore.Repository
 	ProjectParticipants            tenantstore.ProjectParticipants
+	ConversationDispatch           tenantstore.DispatchRequests
+	ConversationWorkerAuthority    ConversationWorkerAuthority
 	Clock                          func() time.Time
 	dashboardDelivery              *dashboardDeliveryConfig
 	ArchiveReader                  entryauthority.ArchiveReader

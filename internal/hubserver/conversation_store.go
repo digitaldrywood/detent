@@ -72,6 +72,8 @@ const (
 type conversationRecord struct {
 	ContentID         string
 	ID                string
+	CreationKey       string
+	CreationHash      string
 	ReadAudience      string
 	OrganizationID    tracker.OrganizationID
 	ProjectID         tracker.ProjectID
