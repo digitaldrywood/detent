@@ -99,7 +99,7 @@ func TestHeartbeatAndRenewWriterBudget(t *testing.T) {
 		{name: "heartbeat", statements: 12},
 		{name: "heartbeat admission", admission: true, statements: 30},
 		{name: "heartbeat hosted admission", admission: true, hosted: true, statements: 50},
-		{name: "heartbeat concurrent admission", admission: true, concurrent: true, statements: 30},
+		{name: "heartbeat concurrent admission", admission: true, concurrent: true, statements: 40},
 		{name: "renew", renew: true, statements: 12},
 		{name: "hosted renew", renew: true, hosted: true, statements: 20},
 	} {
@@ -166,6 +166,7 @@ func TestHeartbeatAndRenewWriterBudget(t *testing.T) {
 					diagnostics := *view.Diagnostics
 					diagnostics.Admissions = append([]runnerauth.DiagnosticAdmission{}, diagnostics.Admissions...)
 					diagnostics.Admissions[0].ObservedAt = now.Add(-time.Second)
+					diagnostics.Admissions[0].Predicate = "older_project_capacity_full"
 					view.Diagnostics = &diagnostics
 					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, runner.redemption.Credential, map[string]any{"capacity": 2, "version": "test", "backend_isolation": runner.redemption.BackendIsolation, "project_configuration": view}), http.StatusOK)
 				}
@@ -185,11 +186,8 @@ func TestHeartbeatAndRenewWriterBudget(t *testing.T) {
 			response := httptest.NewRecorder()
 			f.service.Handler().ServeHTTP(response, request.WithContext(withRequestTiming(request.Context(), timing)))
 			status := http.StatusOK
-			if test.concurrent {
-				status = http.StatusConflict
-				if !injected.Load() {
-					t.Fatal("concurrent admission was not injected")
-				}
+			if test.concurrent && !injected.Load() {
+				t.Fatal("concurrent admission was not injected")
 			}
 			requireNativeStatus(t, response, status)
 			if writer == nil {
@@ -211,6 +209,19 @@ func TestHeartbeatAndRenewWriterBudget(t *testing.T) {
 				}
 				if decisions != 1 {
 					t.Fatalf("admission decisions=%d, want 1", decisions)
+				}
+				if test.concurrent {
+					var raw string
+					if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT "+collaborationPayloadColumn("")+" FROM collaboration_events WHERE work_item_id=? AND type='scheduler.decision' ORDER BY sequence DESC LIMIT 1", item.WorkItemID).Scan(&raw); err != nil {
+						t.Fatal(err)
+					}
+					var data tracker.CollaborationData
+					if err := decodeRunHistory(f.service.runDetailContext(t.Context()), f.service.database.reader, raw, &data); err != nil {
+						t.Fatal(err)
+					}
+					if decision := data.Decision; decision == nil || decision.Reason != reason || decision.Outcome != "skipped" || decision.RunnerID != runner.binding.RunnerID || !decision.At.Equal(now) {
+						t.Fatalf("latest admission decision=%+v, want current outer observation for %q at %s", decision, reason, now)
+					}
 				}
 			}
 		})

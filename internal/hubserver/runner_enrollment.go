@@ -69,20 +69,9 @@ func (s *Service) runnerTransaction(c echo.Context, status int, operation func(c
 	c.SetRequest(c.Request().WithContext(ctx))
 	contentMutation(ctx, true)
 	defer contentMutation(ctx, false)
-	var err error
-	if strings.HasSuffix(c.Path(), "/heartbeat") {
-		contentWriting(ctx, true)
-		defer contentWriting(ctx, false)
-		err = s.commitRunnerTransaction(c, status, operation)
-		var hydration *claimHydration
-		if errors.As(err, &hydration) {
-			err = nativeExecutionConflict("Heartbeat evidence changed during preparation")
-		}
-	} else {
-		_, err = prepareContentMutation(ctx, s.database.reader, func() (struct{}, error) {
-			return struct{}{}, s.commitRunnerTransaction(c, status, operation)
-		})
-	}
+	_, err := prepareContentMutation(ctx, s.database.reader, func() (struct{}, error) {
+		return struct{}{}, s.commitRunnerTransaction(c, status, operation)
+	})
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -197,6 +186,20 @@ func (s *Service) commitRunnerTransaction(c echo.Context, status int, operation 
 func (s *Service) readCommittedRunnerResponse(c echo.Context, response runnerCommittedResponse) (any, error) {
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 	defer cancel()
+	ctx = s.freshRunDetailContext(ctx)
+	for {
+		value, err := s.readCommittedRunnerResponseOnce(c, ctx, response)
+		var hydration *claimHydration
+		if !errors.As(err, &hydration) {
+			return value, err
+		}
+		if err := hydration.run(ctx, s.database.reader); err != nil {
+			return nil, err
+		}
+	}
+}
+
+func (s *Service) readCommittedRunnerResponseOnce(c echo.Context, ctx context.Context, response runnerCommittedResponse) (any, error) {
 	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return nil, err
@@ -213,7 +216,6 @@ func (s *Service) readCommittedRunnerResponse(c echo.Context, response runnerCom
 	if err := requireCredentialAuthority(ctx, tx, scope.credential, now); err != nil {
 		return nil, err
 	}
-	ctx = s.freshRunDetailContext(ctx)
 	return response(ctx, tx, now)
 }
 
