@@ -112,13 +112,6 @@ func fixtureArtifactConfiguration(t testing.TB, scheduler *Scheduler, service st
 	fixture.config.ArtifactServiceID, fixture.config.ArtifactBytes = service, bytes
 }
 
-func fixtureToken(client *Client, source func() string) {
-	fixture := fixtureClient(client)
-	fixture.mu.Lock()
-	defer fixture.mu.Unlock()
-	fixture.config.TokenSource = source
-}
-
 func emptyProcessSource(context.Context, string) ([]int, error) { return nil, nil }
 
 const maxResponseBytes = 1 << 20

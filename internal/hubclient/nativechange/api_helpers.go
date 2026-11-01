@@ -8,9 +8,7 @@ import (
 
 func nativeMutationKey() tracker.Mutation                        { return api.NativeMutationKey() }
 func nativeItemPath(id tracker.NativeWorkItemID) (string, error) { return api.NativeItemPath(id) }
-func nativeAttemptDiffPath(attemptID string) (string, error) {
-	return api.NativeAttemptDiffPath(attemptID)
-}
+
 func hubErrorCode(err error) string { return api.HubErrorCode(err) }
 func claimLost(err error) bool      { return api.ClaimLost(err) }
 

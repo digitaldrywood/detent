@@ -1,4 +1,4 @@
-package nativechange
+package scenariotest
 
 import (
 	"errors"
@@ -15,12 +15,12 @@ import (
 
 // These are application effects persisted in native_commands, not a transport
 // dedup map. The lost response occurs after the real hub commits the resource.
-func TestNativeMutationRetryAfterResponseLoss(t *testing.T) {
+func RunNativeMutationRetryAfterResponseLoss(t *testing.T) {
 	if testing.Short() {
 		t.Skip("durable SQLite integration")
 	}
 
-	h := newNativeChangeHub(t)
+	h := newScenarioHub(t, Constructors{})
 	var drop atomic.Bool
 	original := fixtureClient(h.admin.Transport()).requests.Load()
 	if original == nil {
@@ -109,7 +109,10 @@ func TestNativeMutationRetryAfterResponseLoss(t *testing.T) {
 	}
 	// Revocation/grant checks still precede a durable replay.
 	ctx = mutation.WithContext(t.Context(), issueMetadata)
-	fixtureToken(h.admin.Transport(), func() string { return "revoked-credential-sentinel" })
+	adminFixture := fixtureClient(h.admin.Transport())
+	adminFixture.mu.Lock()
+	adminFixture.config.TokenSource = func() string { return "revoked-credential-sentinel" }
+	adminFixture.mu.Unlock()
 	if _, err := source.CreateIssue(ctx, draft); err == nil {
 		t.Fatal("replay ignored current authority")
 	} else if strings.Contains(err.Error(), "revoked-credential-sentinel") {

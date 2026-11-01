@@ -56,6 +56,7 @@ func TestNativeClaimLossReleasesStoppedWorker(t *testing.T) {
 		{name: "expired lease with unavailable settlement", controller: true, prepared: true, retained: true, expired: true, unavailable: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			h := newNativeChangeHub(t, true)
 			issue := h.createInProgress(t, "Claim cleanup")
 			h.claim(t, issue.ID)
@@ -470,6 +471,7 @@ func TestNativeLeaseRenewalRequiresActiveWork(t *testing.T) {
 		{name: "host finalization retains ownership", phase: "completed", age: 2 * time.Minute, pending: true, wantRenewed: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			h := newNativeChangeHubDependencies(t, "In Review", []tracker.NativeState{
 				{Name: "In Progress", Dispatchable: true, Transitions: []string{"Done", "Blocked", "Waiting", "Rework"}},
 				{Name: "Blocked", Transitions: []string{"In Progress"}},

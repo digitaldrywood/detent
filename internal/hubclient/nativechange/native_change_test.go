@@ -470,20 +470,6 @@ func (h *nativeChangeHub) changes(t *testing.T, issueID string) []tracker.Change
 
 const nativeChangeRepository = "https://github.com/example/native-change"
 
-// repolicy approves a changed repository policy, as an operator editing the
-// project's definition between attempts does; the seeded review policy
-// follows it, and versions published before it are stale.
-func (h *nativeChangeHub) repolicy(t *testing.T) {
-	t.Helper()
-	next := h.descriptor
-	next.ConfigDigest = policy.Digest([]byte("changed between attempts"))
-	next = next.WithID()
-	if _, err := h.admin.ApproveProjectPolicy(t.Context(), policy.Change{ExpectedID: h.descriptor.ID, Policy: next}); err != nil {
-		t.Fatal(err)
-	}
-	h.descriptor = next
-}
-
 // publish puts a version at the given head on the change as an operator
 // would, so a rework run finds a current version to compare its head with.
 func (h *nativeChangeHub) publish(t *testing.T, item tracker.NativeWorkItemID, changeID, head string, previous ...string) tracker.ChangeVersion {
@@ -1341,38 +1327,6 @@ func TestNativeConnectorChangeReviewed(t *testing.T) {
 	if _, err := h.connector.ReadChangeReview(t.Context(), issue.ID, "change_"+strings.Repeat("0", 32), second.ID, head); err == nil {
 		t.Fatal("an unknown change read as a review state")
 	}
-}
-
-func (h *nativeChangeHub) publicationCI(t *testing.T) *NativeClient {
-	t.Helper()
-	rules, err := h.admin.ChangeReviewPolicy(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	var token struct {
-		ID    string `json:"id"`
-		Token string `json:"token"`
-	}
-	if err := h.admin.Transport().Request(t.Context(), http.MethodPost, "/api/v1/tokens", map[string]string{"name": "publication-fixture-ci", "scope": "operator"}, &token); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.admin.Transport().Request(t.Context(), http.MethodPost, "/api/v2/tokens/"+token.ID+"/grants", map[string]any{"organization_id": h.organization, "project_id": h.project}, nil); err != nil {
-		t.Fatal(err)
-	}
-	client, err := newTestClient(t, Config{URL: fixtureClient(h.admin.Transport()).baseURL.String(), TokenSource: func() string { return token.Token }, HTTPClient: fixtureClient(h.admin.Transport()).httpClient})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ci, err := client.Native(h.organization, h.project)
-	if err != nil {
-		t.Fatal(err)
-	}
-	rules.PolicyID = h.descriptor.ID
-	rules.RequiredChecks = []tracker.ChangeCheckSpec{{Name: "full-ci", PrincipalID: token.ID, WorkflowID: "ci.yml", WorkflowSHA256: policy.Digest([]byte("trusted CI")), Source: "independent", MaxAgeSeconds: 3600}}
-	if _, err := h.admin.ApproveChangeReviewPolicy(t.Context(), tracker.ApproveChangeReviewPolicy{Mutation: nativeMutationKey(), ExpectedID: rules.ID, Policy: rules}); err != nil {
-		t.Fatal(err)
-	}
-	return ci
 }
 
 func TestHumanBlockedHoldOutranksRunnerLease(t *testing.T) {
