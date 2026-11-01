@@ -739,8 +739,8 @@ func TestLocalGitDiffStat(t *testing.T) {
 			t.Fatalf("diff is not pinned to captured head: %v", event.Argv)
 		}
 	}
-	if commands != 5 {
-		t.Fatalf("Git processes per nonempty refresh = %d, want 5", commands)
+	if commands != 4 {
+		t.Fatalf("Git processes per nonempty refresh = %d, want 4", commands)
 	}
 	originalFingerprint := got.Fingerprint
 
@@ -813,7 +813,7 @@ func TestLocalGitDiffStat(t *testing.T) {
 				t.Fatalf("path-only index=%q, %v; want %q", got, err, want)
 			}
 			index, err := gitIndexLookup(t.Context(), info.Path, true)
-			if err != nil || index.Path != want || index.HeadSHA != head || index.HeadObservedAt.IsZero() {
+			if err != nil || index.Path != want || index.HeadSHA != head || index.TreeSHA != committed.TreeSHA || index.HeadObservedAt.IsZero() {
 				t.Fatalf("index observation=%+v, %v", index, err)
 			}
 		})
@@ -934,13 +934,12 @@ func TestWorkspaceDiagnosticsPreserveSharedGitMetadata(t *testing.T) {
 			}
 		}},
 		{"recovery paths", func(t *testing.T, path string) {
-			tracked, err := gitTrackedPaths(t.Context(), path)
-			if err != nil || !slices.Equal(tracked, []string{".detent/notes.md", "README.md"}) {
-				t.Errorf("tracked paths = %v, %v", tracked, err)
+			observation, err := observeGitDiff(t.Context(), path, true)
+			if err != nil || !slices.Equal(observation.trackedPaths, []string{".detent/notes.md", "README.md"}) {
+				t.Errorf("tracked paths = %v, %v", observation.trackedPaths, err)
 			}
-			untracked, err := gitUntrackedPaths(t.Context(), path)
-			if err != nil || !slices.Equal(untracked, []string{".detent/lessons.md", "new file.txt"}) {
-				t.Errorf("untracked paths = %v, %v", untracked, err)
+			if err != nil || !slices.Equal(observation.untrackedPaths, []string{".detent/lessons.md", "new file.txt"}) {
+				t.Errorf("untracked paths = %v, %v", observation.untrackedPaths, err)
 			}
 		}},
 	}
@@ -1077,6 +1076,33 @@ func TestLocalGitRecoveryStateReportsUntrackedPaths(t *testing.T) {
 	}
 	if len(got.TrackedPaths) != 0 || !slices.Equal(got.UntrackedPaths, []string{"session-marker.ses"}) || len(got.CommitsNotInPullRequest) != 0 || !got.PullRequestComparisonAvailable {
 		t.Fatalf("RecoveryState() evidence = tracked %v untracked %v commits %v available=%t", got.TrackedPaths, got.UntrackedPaths, got.CommitsNotInPullRequest, got.PullRequestComparisonAvailable)
+	}
+	runGit(t, info.Path, "rm", "--cached", "README.md")
+	for _, intentToAdd := range []bool{false, true} {
+		t.Run(fmt.Sprintf("staged deletion with untracked replacement/intent=%t", intentToAdd), func(t *testing.T) {
+			tracked := []string{"README.md"}
+			untracked := []string{"README.md", "session-marker.ses"}
+			if intentToAdd {
+				runGit(t, info.Path, "add", "--intent-to-add", "session-marker.ses")
+				defer runGit(t, info.Path, "reset", "--quiet", "--", "session-marker.ses")
+				tracked = append(tracked, "session-marker.ses")
+				untracked = []string{"README.md"}
+			}
+			state, err := provider.RecoveryState(t.Context(), info, issue)
+			if err != nil || state.DiffStat.Files != 2 || state.HeadSHA != got.HeadSHA || !slices.Equal(state.TrackedPaths, tracked) || !slices.Equal(state.UntrackedPaths, untracked) {
+				t.Fatalf("replacement recovery state = %+v, %v; want tracked=%v untracked=%v", state, err, tracked, untracked)
+			}
+		})
+	}
+	if err := os.CopyFS(filepath.Join(info.Path, "nested"), os.DirFS(source)); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, info.Path, "add", "nested")
+	runGit(t, info.Path, "commit", "-m", "track nested repository")
+	runGit(t, info.Path, "rm", "--cached", "nested")
+	replacement, err := provider.RecoveryState(t.Context(), info, issue)
+	if err != nil || replacement.DiffStat.Files != 3 || !slices.Equal(replacement.TrackedPaths, []string{"nested"}) || !slices.Equal(replacement.UntrackedPaths, []string{"README.md", "nested/", "session-marker.ses"}) {
+		t.Fatalf("nested repository replacement = %+v, %v", replacement, err)
 	}
 }
 
