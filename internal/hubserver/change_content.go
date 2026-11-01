@@ -35,7 +35,6 @@ type changeContent struct {
 	call          entryauthority.ContentHandler
 	store         attachment.DetailStore
 	register      func(context.Context, string, attachment.ArchiveReference, bool) error
-	registrations map[string]contentRegistration
 	prepared      map[string]attachment.ArchiveReference
 	query         nativeQueryer
 	payloads      map[string][]byte
@@ -44,6 +43,7 @@ type changeContent struct {
 	idPositions   map[string]int
 	generatedAt   time.Time
 	organization  string
+	stableHistory bool
 	completion    bool
 	mutationDepth int
 	payloadBytes  int64
@@ -110,7 +110,7 @@ func prepareMeteredContent(ctx context.Context, organization string, data []byte
 		if !bytes.Equal(data, verified) {
 			return ref, artifact.ErrIntegrity
 		}
-		if err := registerContent(ctx, content, organization, ref, billable); err != nil {
+		if err := content.register(ctx, organization, ref, billable); err != nil {
 			return ref, err
 		}
 	} else {
@@ -119,7 +119,7 @@ func prepareMeteredContent(ctx context.Context, organization string, data []byte
 			return prepared, err
 		}
 		ref = prepared
-		if err := registerContent(ctx, content, organization, ref, billable); err != nil {
+		if err := content.register(ctx, organization, ref, billable); err != nil {
 			return ref, err
 		}
 		if _, err := content.call(ctx, entryauthority.ContentRequest{Organization: organization, Reference: ref, Data: compressed, Write: true}); err != nil {

@@ -337,15 +337,8 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	ctx := s.runDetailContext(c.Request().Context())
-	deferContentRegistration(ctx)
+	useStableRunHistoryIDs(ctx)
 	c.SetRequest(c.Request().WithContext(ctx))
-	var configuration preparedProjectConfiguration
-	if scope.credential.Runner.RunnerID != "" {
-		configuration, err = s.prepareProjectConfiguration(c.Request().Context(), scope, request.ProjectConfiguration, receivedAt)
-		if err != nil {
-			return s.nativeAPIError(c, err)
-		}
-	}
 	var hostSummaries []hostmetrics.Summary
 	var admission, isolationRaw, workspaceRaw, skillsRaw, capacityRaw, checksRaw string
 	if scope.credential.Runner.RunnerID != "" {
@@ -388,6 +381,28 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 			}
 			checksRaw = string(raw)
 		}
+		if request.SpriteName != "" {
+			if !validSpritesSlug(request.SpriteName) {
+				return s.nativeAPIError(c, nativePublicInvalid("Sprite name is invalid"))
+			}
+			var hostname string
+			if err := s.database.reader.QueryRowContext(ctx, "SELECT hostname FROM machines WHERE id=? AND organization_id=?", scope.credential.Runner.MachineID, scope.organization).Scan(&hostname); err != nil {
+				return s.nativeAPIError(c, err)
+			}
+			if hostname != request.SpriteName {
+				return s.nativeAPIError(c, nativePublicInvalid("Sprite name must match the runner hostname"))
+			}
+		}
+		if err := runnerauth.ValidateReportedProblems(request.Problems); err != nil {
+			return s.nativeAPIError(c, nativeInvalid(err.Error()))
+		}
+	}
+	var configuration preparedProjectConfiguration
+	if scope.credential.Runner.RunnerID != "" {
+		configuration, err = s.prepareProjectConfiguration(c.Request().Context(), scope, request.ProjectConfiguration, receivedAt)
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
 	}
 	configurationIssuer, err := s.prepareProjectConfigurationIssuer(c.Request().Context(), scope, request.ProjectConfiguration)
 	if err != nil {
@@ -402,9 +417,6 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 		step("sprite")
 		if scope.credential.Runner.RunnerID != "" {
 			if request.SpriteName != "" {
-				if !validSpritesSlug(request.SpriteName) {
-					return nil, nativePublicInvalid("Sprite name is invalid")
-				}
 				result, err := tx.ExecContext(ctx, "UPDATE machines SET sprite_name=? WHERE id=? AND organization_id=? AND hostname=?", request.SpriteName, scope.credential.Runner.MachineID, scope.organization, request.SpriteName)
 				if err != nil {
 					return nil, err

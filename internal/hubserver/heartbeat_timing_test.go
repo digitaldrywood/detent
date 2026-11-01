@@ -79,7 +79,12 @@ func TestHeartbeatTransactionTiming(t *testing.T) {
 			var txs int64
 			var commit time.Duration
 			for i := range 31 {
-				timing := &requestTiming{}
+				registrations := int64(0)
+				timing := &requestTiming{writerTrace: func(query string, _ []driver.NamedValue) {
+					if strings.HasPrefix(query, "INSERT INTO change_content_objects") {
+						registrations++
+					}
+				}}
 				last, previousDB := time.Now(), int64(0)
 				timing.trace = func(query string, _ []driver.NamedValue) {
 					current := time.Now()
@@ -100,8 +105,8 @@ func TestHeartbeatTransactionTiming(t *testing.T) {
 				if writer == nil {
 					t.Fatal("missing writer timing")
 				}
-				if writer.txs.Load() != 1 {
-					t.Fatalf("heartbeat writer_txs=%d, want 1", writer.txs.Load())
+				if writer.txs.Load() != 1+registrations {
+					t.Fatalf("heartbeat writer_txs=%d, want %d", writer.txs.Load(), 1+registrations)
 				}
 				if i > 0 {
 					for _, span := range timing.spans {
@@ -147,7 +152,8 @@ func TestHeartbeatTransactionTiming(t *testing.T) {
 }
 
 func TestHeartbeatPreparationBeforeWriter(t *testing.T) {
-	f := newNativeFixture(t, nil, "", "heartbeat-preparation")
+	objects := &changeObjectFixture{}
+	f := newDefaultNativeFixture(t, Config{Content: objects.call})
 	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
 	r.enroll(t)
 	path := f.base + "/machines/" + string(r.binding.MachineID) + "/heartbeat"
@@ -163,6 +169,11 @@ func TestHeartbeatPreparationBeforeWriter(t *testing.T) {
 	})
 	now := f.service.config.now()
 	valid := runnerauth.ProjectConfiguration{ProjectID: string(f.project.ID), Authority: "local_global_configuration", Source: "cloud_workflow", ObservedAt: now}
+	valid.Diagnostics = &runnerauth.ProjectDiagnostics{ObservedAt: now, Source: "runner_runtime_and_durable_attempt_owners"}
+	for i := range 20 {
+		item := f.create(t, fmt.Sprintf("Admission %d", i))
+		valid.Diagnostics.Admissions = append(valid.Diagnostics.Admissions, runnerauth.DiagnosticAdmission{IssueID: string(item.WorkItemID), WorkItemRevision: int64(item.Revision), ObservedAt: now, Result: "skipped", Predicate: fmt.Sprintf("project_capacity_full_%d", i)})
+	}
 	badPolicy := hubTestPolicy()
 	badPolicy.ID = "invalid"
 	for _, test := range []struct {
@@ -180,12 +191,24 @@ func TestHeartbeatPreparationBeforeWriter(t *testing.T) {
 		{"invalid capacity", "capacity_configuration", runnerauth.CapacityConfig{}},
 		{"invalid local checks", "local_checks", runnerauth.LocalChecks{}},
 		{"invalid skills", "skills", []skills.ProviderSkill{{Name: ""}}},
+		{"invalid sprite", "sprite_name", "invalid sprite"},
+		{"foreign sprite", "sprite_name", "other-runner"},
+		{"invalid problem", "problems", []runnerauth.Problem{{Code: "invalid"}}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			request := newHubAPIRequest(t, http.MethodPost, path, r.redemption.Credential, map[string]any{"capacity": 2, "version": "test", test.field: test.value})
+			objects.mu.Lock()
+			writesBefore := objects.writes
+			objects.mu.Unlock()
+			request := newHubAPIRequest(t, http.MethodPost, path, r.redemption.Credential, map[string]any{"capacity": 2, "version": "test", "project_configuration": valid, test.field: test.value})
 			response := httptest.NewRecorder()
 			f.service.Handler().ServeHTTP(response, request)
 			requireNativeStatus(t, response, http.StatusUnprocessableEntity)
+			objects.mu.Lock()
+			uploads := objects.writes - writesBefore
+			objects.mu.Unlock()
+			if uploads != 0 {
+				t.Errorf("invalid heartbeat uploaded %d objects", uploads)
+			}
 			if writer == nil || writer.txs.Load() != 0 {
 				t.Fatalf("invalid preparation acquired writer: %+v", writer)
 			}

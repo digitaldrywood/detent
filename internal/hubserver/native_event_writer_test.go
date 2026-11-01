@@ -26,7 +26,10 @@ func TestNativeEventWriterBudget(t *testing.T) {
 	for _, outcome := range []string{"succeeded", "failed", "cancelled"} {
 		t.Run(outcome, func(t *testing.T) {
 			now := time.Date(2026, 10, 31, 18, 0, 0, 0, time.UTC)
-			f := newDefaultNativeFixture(t, Config{RunDetails: &memoryRunDetails{}, now: func() time.Time { return now }})
+			store := &memoryRunDetails{}
+			var uploaded atomic.Int64
+			store.afterStore = func(attachment.ArchiveReference) { uploaded.Add(1) }
+			f := newDefaultNativeFixture(t, Config{RunDetails: store, now: func() time.Time { return now }})
 			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 			item := f.create(t, "Event writer budget")
 			dependency := f.create(t, "Event prerequisite")
@@ -97,6 +100,7 @@ func TestNativeEventWriterBudget(t *testing.T) {
 						event.IdempotencyKey = "finish-replayed"
 					}
 					f.service.tokenUseWork.Wait()
+					uploadsBefore := uploaded.Load()
 					statements := 0
 					timing := &requestTiming{writerTrace: func(_ string, _ []driver.NamedValue) { statements++ }}
 					request := newHubAPIRequest(t, http.MethodPost, path, worker, event)
@@ -123,8 +127,11 @@ func TestNativeEventWriterBudget(t *testing.T) {
 					if event.Data.Disposition != nil {
 						bound += 40 * len(event.Data.Disposition.BlockerEvidence)
 					}
-					if writer.txs.Load() != 1 || statements > bound {
-						t.Errorf("writer_txs=%d (want 1), writer_statements=%d (bound %d)", writer.txs.Load(), statements, bound)
+					uploads := uploaded.Load() - uploadsBefore
+					bound += 6 * int(uploads)
+					wantTransactions := 1 + uploads
+					if writer.txs.Load() != wantTransactions || statements > bound {
+						t.Errorf("writer_txs=%d (want %d for %d uploads), writer_statements=%d (bound %d)", writer.txs.Load(), wantTransactions, uploads, statements, bound)
 					}
 				})
 			}
@@ -149,7 +156,7 @@ func TestNativeEventChangedPayloadPreparesAfterRollback(t *testing.T) {
 			store := &memoryRunDetails{}
 			f := claimedAttemptDiffFixture(t, false, Config{RunDetails: store})
 			f.start(t)
-			var writing, rolledBack, reprepared atomic.Bool
+			var writing, registering, rolledBack, reprepared atomic.Bool
 			changed := false
 			store.afterStore = func(attachment.ArchiveReference) {
 				if writing.Load() {
@@ -165,9 +172,15 @@ func TestNativeEventChangedPayloadPreparesAfterRollback(t *testing.T) {
 					}
 				}
 			}
-			timing := &requestTiming{writerTransaction: func(active bool) {
+			timing := &requestTiming{writerTrace: func(query string, _ []driver.NamedValue) {
+				if strings.HasPrefix(query, "INSERT INTO change_content_objects") {
+					registering.Store(true)
+				}
+			}, writerTransaction: func(active bool) {
 				writing.Store(active)
-				if !active {
+				if active {
+					registering.Store(false)
+				} else if !registering.Load() {
 					rolledBack.Store(true)
 					if uploadFails {
 						store.mu.Lock()
@@ -251,12 +264,14 @@ func TestNativeEventConcurrentWriterBudget(t *testing.T) {
 			return err
 		}
 	})
+	var uploaded atomic.Int64
 	start := make(chan struct{})
 	preparing := make(chan struct{}, len(requests))
 	release := make(chan struct{})
 	var releaseOnce sync.Once
 	unblock := func() { releaseOnce.Do(func() { close(release) }) }
 	store.afterStore = func(attachment.ArchiveReference) {
+		uploaded.Add(1)
 		select {
 		case <-release:
 			return
@@ -271,6 +286,7 @@ func TestNativeEventConcurrentWriterBudget(t *testing.T) {
 	}
 	responses := make([]*httptest.ResponseRecorder, len(requests))
 	requestErrors := make([]error, len(requests))
+	registrations := make([]int64, len(requests))
 	completed := make(chan int, len(requests))
 	connectionClosed := false
 	var ready, finished sync.WaitGroup
@@ -291,7 +307,12 @@ func TestNativeEventConcurrentWriterBudget(t *testing.T) {
 			ctx, cancel := context.WithTimeout(request.Context(), 30*time.Second)
 			defer cancel()
 			responses[i] = httptest.NewRecorder()
-			f.service.Handler().ServeHTTP(responses[i], request.WithContext(ctx))
+			timing := &requestTiming{writerTrace: func(query string, _ []driver.NamedValue) {
+				if strings.HasPrefix(query, "INSERT INTO change_content_objects") {
+					registrations[i]++
+				}
+			}}
+			f.service.Handler().ServeHTTP(responses[i], request.WithContext(withRequestTiming(ctx, timing)))
 			requestErrors[i] = ctx.Err()
 			completed <- i
 		})
@@ -324,13 +345,14 @@ func TestNativeEventConcurrentWriterBudget(t *testing.T) {
 	}
 	var transactions int64
 	for _, writer := range writers {
-		if writer.txs.Load() != 1 {
-			t.Errorf("request writer_txs=%d, want 1", writer.txs.Load())
-		}
 		transactions += writer.txs.Load()
 	}
 	t.Logf("runners=%d writer_txs=%d", len(requests), transactions)
-	if transactions != int64(len(requests)) {
-		t.Fatalf("writer_txs=%d, want %d", transactions, len(requests))
+	wantTransactions := int64(len(requests))
+	for _, registered := range registrations {
+		wantTransactions += registered
+	}
+	if transactions != wantTransactions || transactions != int64(len(requests))+uploaded.Load() {
+		t.Fatalf("writer_txs=%d, want %d for %d requests and %d uploads", transactions, wantTransactions, len(requests), uploaded.Load())
 	}
 }

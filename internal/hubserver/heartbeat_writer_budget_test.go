@@ -1,8 +1,10 @@
 package hubserver
 
 import (
+	"context"
 	"database/sql/driver"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -13,9 +15,77 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+func TestHeartbeatContentAccounting(t *testing.T) {
+	for _, limited := range []bool{false, true} {
+		t.Run(fmt.Sprintf("limited=%t", limited), func(t *testing.T) {
+			objects := &changeObjectFixture{}
+			now := time.Date(2026, 10, 31, 18, 0, 0, 0, time.UTC)
+			f := newDefaultNativeFixture(t, Config{Content: objects.call, now: func() time.Time { return now }})
+			runner := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
+			runner.enroll(t)
+			view := runnerauth.ProjectConfiguration{ProjectID: string(f.project.ID), Authority: "local_global_configuration", Source: "cloud_workflow", ObservedAt: now,
+				Diagnostics: &runnerauth.ProjectDiagnostics{ObservedAt: now, Source: "runner_runtime_and_durable_attempt_owners"}}
+			for i := range 4 {
+				item := f.create(t, fmt.Sprintf("Accounting admission %d", i))
+				view.Diagnostics.Admissions = append(view.Diagnostics.Admissions, runnerauth.DiagnosticAdmission{IssueID: string(item.WorkItemID), WorkItemRevision: int64(item.Revision), ObservedAt: now, Result: "skipped", Predicate: fmt.Sprintf("project_capacity_full_%d", i)})
+			}
+			f.service.config.Hosted = &HostedConfig{OrganizationID: string(f.project.OrganizationID)}
+			f.service.database.hostedOrganization = f.project.OrganizationID
+			limits := map[string]int64{"registered_runners": 100, "connected_runners": 100}
+			var before int64
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT value FROM hosted_usage_counters WHERE name='collaboration_bytes'").Scan(&before); err != nil {
+				t.Fatal(err)
+			}
+			if limited {
+				limits["collaboration_bytes"] = before + 1
+			}
+			hostedTestPlans(t, f.service, limits)
+			var hostname string
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT hostname FROM machines WHERE id=?", runner.binding.MachineID).Scan(&hostname); err != nil {
+				t.Fatal(err)
+			}
+			uploaded := make(map[string]int64)
+			f.service.config.Content = func(ctx context.Context, request entryauthority.ContentRequest) ([]byte, error) {
+				raw, err := objects.call(ctx, request)
+				if err == nil && request.Write {
+					uploaded[request.Reference.Key] = request.Reference.CompressedSize
+					_, err = f.service.database.db.ExecContext(ctx, "UPDATE machines SET hostname='changed-runner' WHERE id=?", runner.binding.MachineID)
+				}
+				return raw, err
+			}
+			path := f.base + "/machines/" + string(runner.binding.MachineID) + "/heartbeat"
+			response := performHubAPIRequest(t, f.service, http.MethodPost, path, runner.redemption.Credential, map[string]any{"capacity": 2, "version": "test", "sprite_name": hostname, "project_configuration": view})
+			if limited {
+				if len(uploaded) != 0 {
+					t.Errorf("consumption refusal uploaded %d objects", len(uploaded))
+				}
+				requireNativeStatus(t, response, http.StatusTooManyRequests)
+				return
+			}
+			requireNativeStatus(t, response, http.StatusUnprocessableEntity)
+			if len(uploaded) < len(view.Diagnostics.Admissions) {
+				t.Fatalf("uploaded objects=%d, want at least %d", len(uploaded), len(view.Diagnostics.Admissions))
+			}
+			want := before
+			for key, size := range uploaded {
+				var registered int64
+				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT object_bytes FROM change_content_objects WHERE organization_id=? AND object_key=? AND billable=1", f.project.OrganizationID, key).Scan(&registered); err != nil || registered != size {
+					t.Errorf("uploaded object registered bytes=%d want=%d err=%v", registered, size, err)
+				}
+				want += size
+			}
+			var used int64
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT value FROM hosted_usage_counters WHERE name='collaboration_bytes'").Scan(&used); err != nil || used != want {
+				t.Fatalf("charged bytes=%d want=%d err=%v", used, want, err)
+			}
+		})
+	}
+}
 
 func TestHeartbeatAndRenewWriterBudget(t *testing.T) {
 	for _, test := range []struct {
@@ -126,8 +196,12 @@ func TestHeartbeatAndRenewWriterBudget(t *testing.T) {
 				t.Fatal("missing writer timing")
 			}
 			t.Logf("writer_txs=%d writer_statements=%d", writer.txs.Load(), statements)
-			if writer.txs.Load() != 1 || statements > test.statements {
-				t.Fatalf("writer_txs=%d (want 1), writer_statements=%d (bound %d)", writer.txs.Load(), statements, test.statements)
+			wantTransactions := int64(1)
+			if test.admission {
+				wantTransactions++
+			}
+			if writer.txs.Load() != wantTransactions || statements > test.statements {
+				t.Fatalf("writer_txs=%d (want %d), writer_statements=%d (bound %d)", writer.txs.Load(), wantTransactions, statements, test.statements)
 			}
 			if test.admission {
 				var decisions int
