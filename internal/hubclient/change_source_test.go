@@ -116,7 +116,7 @@ func TestNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T) {
 						}
 					}
 				}
-				runtimeStore, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "runtime.db")})
+				runtimeStore, err := store.Open(t.Context(), store.Config{Path: nativeRuntimeDatabasePath(t)})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -559,6 +559,7 @@ func TestNativeChangeSourceRecoversOnlyVerifiedOwner(t *testing.T) {
 		{name: "authorization denial cannot recapture", status: http.StatusForbidden, wantError: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			h := newNativeChangeHub(t)
 			issue := h.createInProgress(t, "Recover owner source")
 			h.claim(t, issue.ID)

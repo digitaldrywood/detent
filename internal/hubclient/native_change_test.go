@@ -50,6 +50,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
+var nativeChangeFixtureRoot string
+
 func TestMain(m *testing.M) {
 	if err := testenv.ClearGitEnvironment(); err != nil {
 		panic(err)
@@ -58,6 +60,7 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		panic(err)
 	}
+	nativeChangeFixtureRoot = scratch
 	for _, key := range []string{"TMPDIR", "TMP", "TEMP"} {
 		if err := os.Setenv(key, scratch); err != nil {
 			panic(err)
@@ -553,27 +556,7 @@ func nativeChangeSourceFixture(ctx context.Context, t *testing.T, base, head str
 		}
 	}
 	if directory == "" {
-		directory = nativeChangeTempDir(t)
-		if output, err := exec.CommandContext(ctx, "git", "-C", directory, "init", "--bare", "--object-format=sha1", "--template=").CombinedOutput(); err != nil {
-			t.Fatalf("initialize fixture repository: %v\n%s", err, output)
-		}
-		for _, object := range []struct{ kind, content string }{
-			{"tree", ""},
-			{"commit", nativeChangeFixtureCommit("a")},
-			{"commit", nativeChangeFixtureCommit("b")},
-			{"commit", nativeChangeFixtureCommit("c")},
-			{"commit", nativeChangeFixtureCommit("d")},
-			{"commit", nativeChangeFixtureCommit("e")},
-			{"commit", nativeChangeFixtureCommit("f")},
-			{"commit", nativeChangeFixtureCommit("g")},
-			{"commit", nativeChangeFixtureCommit("h")},
-		} {
-			command := exec.CommandContext(ctx, "git", "-C", directory, "hash-object", "-w", "-t", object.kind, "--stdin")
-			command.Stdin = strings.NewReader(object.content)
-			if output, err := command.CombinedOutput(); err != nil {
-				t.Fatalf("write fixture object: %v\n%s", err, output)
-			}
-		}
+		directory = nativeChangeBareRepo(t)
 	}
 	command := exec.CommandContext(ctx, "git", "-C", directory, "pack-objects", "--stdout", "--revs")
 	command.Stdin = strings.NewReader(head + "\n")
@@ -5640,23 +5623,72 @@ func TestNativeChangeGitIsolation(t *testing.T) {
 	}
 }
 
-func nativeChangeSourceRepo(t *testing.T) string {
-	t.Helper()
-	dir := nativeChangeTempDir(t)
+func nativeChangeRepositorySeed(name string, build func(context.Context, string) error) func(*testing.T) string {
+	seed := sync.OnceValues(func() (string, error) {
+		dir, err := os.MkdirTemp(nativeChangeFixtureRoot, name+"-seed-")
+		if err != nil {
+			return "", err
+		}
+		return dir, build(context.Background(), dir)
+	})
+	return func(t *testing.T) string {
+		t.Helper()
+		source, err := seed()
+		if err != nil {
+			t.Fatalf("build %s repository fixture: %v", name, err)
+		}
+		dir := nativeChangeTempDir(t)
+		if err := os.CopyFS(dir, os.DirFS(source)); err != nil {
+			t.Fatalf("copy %s repository fixture: %v", name, err)
+		}
+		return dir
+	}
+}
+
+func nativeChangeSeedGit(ctx context.Context, dir, input string, args ...string) error {
+	command := exec.CommandContext(ctx, "git", args...)
+	command.Dir = dir
+	command.Env = append(os.Environ(), "GIT_CEILING_DIRECTORIES="+dir)
+	command.Stdin = strings.NewReader(input)
+	if output, err := command.CombinedOutput(); err != nil {
+		return fmt.Errorf("git %s: %w\n%s", strings.Join(args, " "), err, output)
+	}
+	return nil
+}
+
+var nativeChangeBareRepo = nativeChangeRepositorySeed("bare", func(ctx context.Context, dir string) error {
+	if err := nativeChangeSeedGit(ctx, dir, "", "init", "--bare", "--object-format=sha1", "--template="); err != nil {
+		return err
+	}
+	if err := nativeChangeSeedGit(ctx, dir, "", "hash-object", "-w", "-t", "tree", "--stdin"); err != nil {
+		return err
+	}
+	for _, label := range []string{"a", "b", "c", "d", "e", "f", "g", "h"} {
+		if err := nativeChangeSeedGit(ctx, dir, nativeChangeFixtureCommit(label), "hash-object", "-w", "-t", "commit", "--stdin"); err != nil {
+			return err
+		}
+	}
+	return nil
+})
+
+var nativeChangeSourceRepo = nativeChangeRepositorySeed("source", func(ctx context.Context, dir string) error {
 	for _, args := range [][]string{
 		{"init", "-b", "main"}, {"config", "core.autocrlf", "false"},
 		{"config", "commit.gpgsign", "false"}, {"config", "core.hooksPath", os.DevNull},
 		{"config", "user.name", "Test User"}, {"config", "user.email", "test@example.com"},
 	} {
-		nativeChangeGit(t, dir, args...)
+		if err := nativeChangeSeedGit(ctx, dir, "", args...); err != nil {
+			return err
+		}
 	}
 	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("source repo\n"), 0o600); err != nil {
-		t.Fatal(err)
+		return err
 	}
-	nativeChangeGit(t, dir, "add", "README.md")
-	nativeChangeGit(t, dir, "commit", "-m", "initial")
-	return dir
-}
+	if err := nativeChangeSeedGit(ctx, dir, "", "add", "README.md"); err != nil {
+		return err
+	}
+	return nativeChangeSeedGit(ctx, dir, "", "commit", "-m", "initial")
+})
 
 func nativeChangeGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
