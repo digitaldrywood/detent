@@ -235,6 +235,9 @@ func readNativeProject(ctx context.Context, query nativeQueryer, scope nativeSco
 }
 
 func (s *Service) getNativeProject(c echo.Context) error {
+	if s.config.TenantRepository != nil {
+		return s.getProjectRecord(c)
+	}
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 	defer cancel()
 	project, err := readNativeProject(ctx, s.database.reader, nativeRequestScope(c))

@@ -93,6 +93,9 @@ func (s *Service) slugSettings(c echo.Context) error {
 	}
 	project := c.Param("project")
 	scope := nativeScope{organization: tracker.OrganizationID(s.appOrganizationID()), project: tracker.ProjectID(project), credential: credential}
+	if project != "" && s.config.TenantRepository != nil {
+		return s.projectRecordSlugSettings(c, scope)
+	}
 	if project != "" {
 		if err := s.requireHostedProject(ctx, s.database.reader, scope, false); err != nil {
 			return s.nativeAPIError(c, err)

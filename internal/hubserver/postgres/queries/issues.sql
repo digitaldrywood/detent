@@ -26,7 +26,8 @@ INSERT INTO issues (
     actor_principal_id,
     provenance_provider,
     provenance_external_id,
-    archived
+    archived,
+    workflow_state_name
 )
 VALUES (
     public.allocate_core_record_id('public.issues_id_seq'::regclass, sqlc.arg(imported_id)::bigint),
@@ -49,7 +50,8 @@ VALUES (
     sqlc.arg(actor_principal_id),
     sqlc.arg(provenance_provider),
     sqlc.arg(provenance_external_id),
-    sqlc.arg(archived)
+    sqlc.arg(archived),
+    sqlc.narg(workflow_state_name)
 ) RETURNING *;
 
 -- name: UpdateWorkItem :one
@@ -66,6 +68,7 @@ UPDATE issues SET
     provenance_provider=sqlc.arg(provenance_provider),
     provenance_external_id=sqlc.arg(provenance_external_id),
     archived=sqlc.arg(archived),
+    workflow_state_name=sqlc.narg(workflow_state_name),
     revision=revision+1,
     updated_at=CURRENT_TIMESTAMP,
     native_updated_at=CURRENT_TIMESTAMP

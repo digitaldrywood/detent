@@ -760,3 +760,53 @@ only the selected tenant's indexed time window and return the fixed result
 bounds above; their scan cost depends on that tenant's retained observations in
 the requested window. They perform no tenant/fleet enumeration, derived writes,
 external I/O or locks held across network calls.
+
+## Core project serving
+
+`Config.TenantRepository` selects the shared tenant unit of work for native
+project creation, lookup, rename, integration settings, content settings, model
+selection, slug settings and retirement. Without it, the existing SQLite owners
+serve those operations. Backend startup and access-store selection remain with
+their respective owners; this interface alone does not enable an entire tenant.
+
+`projectstore` describes the project record and its typed settings. Project,
+settings, ordered workflow states and transitions are read in one SQL statement,
+so a response cannot pair an old name with a newer settings revision. Integration,
+content and model revisions remain independent. Updates compare the appropriate
+revision after locking the live project. Workflow transitions use tenant/project
+foreign keys, and an issue's optional workflow-state relationship prevents
+removal of occupied states. Repository-owned workflows remain externally owned.
+
+Slug reservations are permanent, including aliases and reservations belonging to
+retired projects. Generated names use the ordinary slug when available, then a
+deterministic project-identity suffix on collision. Allocation uses a bounded
+number of indexed lookups; it never scans historical suffixes. Explicit slug
+changes compare the previous slug and retain its reservation.
+
+A project command prepares and verifies its object-backed result before opening
+its writer scope. Its project change and immutable native-command receipt commit
+in that same scope. Replays return the stored result, and a reused key with a
+different request conflicts. Creation derives a stable project identity from the
+tenant, actor and command key, preventing concurrent replays from creating two
+projects. Workflow Markdown and model overrides use typed object references,
+with object preparation and hydration outside database transactions.
+
+The access owner retains its existing authority transaction through the bounded
+tenant write, then releases it before any receipt hydration. Project retirement
+is a soft deletion: it disables repository integration and intake while retaining
+work items, history and slug reservations. Active leases and attempts prevent
+retirement. Claim acquisition and work-item insertion share-lock the live project
+row against retirement, and retirement never releases a lease or changes another
+tenant's claims. `Config.ProjectParticipants` supplies the database-only participants owned by
+access, billing, workspace, conversation, fleet and source storage. Hosted
+creation requires its grant/audit/plan participants; retirement requires its
+activity checks, secret audit and grant cleanup. Repository-bound integration
+changes require their source participant. Each callback receives the same scoped
+writer, authenticated actor and project record. Missing participants fail closed
+before a hosted project can be created or retired; those paths never fall back
+to SQLite. Their implementations remain with the corresponding family ports.
+
+At 10,000 tenants and runners, each request uses the shared fixed connection
+budget, indexed tenant/project lookups and rows bounded by the submitted workflow.
+No fleet walk, per-tenant pool, derived refresh, inline payload or SQL JSON
+operation is added (INV-16, INV-18, INV-20, INV-21).

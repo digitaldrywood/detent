@@ -428,7 +428,7 @@ func (q *Queries) LockActiveLease(ctx context.Context, arg LockActiveLeaseParams
 }
 
 const lockClaimIssue = `-- name: LockClaimIssue :one
-SELECT revision,archived FROM issues WHERE organization_id=$1 AND id=$2 FOR NO KEY UPDATE
+SELECT i.revision,i.archived FROM issues i JOIN projects p ON p.organization_id=i.organization_id AND p.id=i.project_id WHERE i.organization_id=$1 AND i.id=$2 AND p.deleted_at IS NULL FOR SHARE OF p FOR NO KEY UPDATE OF i
 `
 
 type LockClaimIssueParams struct {

@@ -100,6 +100,7 @@ type WorkItem struct {
 	UpdatedAt              time.Time
 	NativeCreatedAt        time.Time
 	NativeUpdatedAt        time.Time
+	WorkflowStateName      *string
 }
 
 type Comment struct {

@@ -668,6 +668,15 @@ func (s *Service) createHostedProjectJSON(c echo.Context) error {
 			return s.nativeAPIError(c, err)
 		}
 	}
+	if s.config.TenantRepository != nil {
+		states := request.States
+		if states == nil {
+			states = HostedProjectStates()
+		}
+		command := createNativeProjectRequest{Mutation: tracker.Mutation{IdempotencyKey: request.IdempotencyKey}, Name: name, States: states}
+		c.Set("native_scope", nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), credential: credential, requireHostedAdmin: true})
+		return s.nativeMutationStatus(c, http.StatusCreated, command.Mutation, command, s.createNativeProjectOperation(command))
+	}
 	project, err := s.createHostedProjectRecord(c.Request().Context(), credential, name, request.States)
 	if err != nil {
 		var application *nativeError

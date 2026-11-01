@@ -34,7 +34,8 @@ INSERT INTO issues (
     actor_principal_id,
     provenance_provider,
     provenance_external_id,
-    archived
+    archived,
+    workflow_state_name
 )
 VALUES (
     public.allocate_core_record_id('public.issues_id_seq'::regclass, $1::bigint),
@@ -57,8 +58,9 @@ VALUES (
     $18,
     $19,
     $20,
-    $21
-) RETURNING organization_id, id, native_id, project_id, number, revision, event_sequence, native_source_key, title, body_object_key, issue_contract_object_key, report_context_object_key, actor_kind, actor_principal_id, provenance_provider, provenance_external_id, archived, created_at, updated_at, native_created_at, native_updated_at
+    $21,
+    $22
+) RETURNING organization_id, id, native_id, project_id, number, revision, event_sequence, native_source_key, title, body_object_key, issue_contract_object_key, report_context_object_key, actor_kind, actor_principal_id, provenance_provider, provenance_external_id, archived, created_at, updated_at, native_created_at, native_updated_at, workflow_state_name
 `
 
 type CreateWorkItemParams struct {
@@ -83,6 +85,7 @@ type CreateWorkItemParams struct {
 	ProvenanceProvider     *string
 	ProvenanceExternalID   *string
 	Archived               bool
+	WorkflowStateName      *string
 }
 
 func (q *Queries) CreateWorkItem(ctx context.Context, arg CreateWorkItemParams) (Issue, error) {
@@ -108,6 +111,7 @@ func (q *Queries) CreateWorkItem(ctx context.Context, arg CreateWorkItemParams) 
 		arg.ProvenanceProvider,
 		arg.ProvenanceExternalID,
 		arg.Archived,
+		arg.WorkflowStateName,
 	)
 	var i Issue
 	err := row.Scan(
@@ -132,6 +136,7 @@ func (q *Queries) CreateWorkItem(ctx context.Context, arg CreateWorkItemParams) 
 		&i.UpdatedAt,
 		&i.NativeCreatedAt,
 		&i.NativeUpdatedAt,
+		&i.WorkflowStateName,
 	)
 	return i, err
 }
@@ -158,7 +163,7 @@ func (q *Queries) DeleteWorkItem(ctx context.Context, arg DeleteWorkItemParams) 
 }
 
 const getWorkItem = `-- name: GetWorkItem :one
-SELECT organization_id, id, native_id, project_id, number, revision, event_sequence, native_source_key, title, body_object_key, issue_contract_object_key, report_context_object_key, actor_kind, actor_principal_id, provenance_provider, provenance_external_id, archived, created_at, updated_at, native_created_at, native_updated_at FROM issues
+SELECT organization_id, id, native_id, project_id, number, revision, event_sequence, native_source_key, title, body_object_key, issue_contract_object_key, report_context_object_key, actor_kind, actor_principal_id, provenance_provider, provenance_external_id, archived, created_at, updated_at, native_created_at, native_updated_at, workflow_state_name FROM issues
 WHERE organization_id=$1
   AND project_id=$2
   AND native_id=$3
@@ -195,6 +200,7 @@ func (q *Queries) GetWorkItem(ctx context.Context, arg GetWorkItemParams) (Issue
 		&i.UpdatedAt,
 		&i.NativeCreatedAt,
 		&i.NativeUpdatedAt,
+		&i.WorkflowStateName,
 	)
 	return i, err
 }
@@ -225,7 +231,7 @@ func (q *Queries) GetWorkItemCursor(ctx context.Context, arg GetWorkItemCursorPa
 }
 
 const listLegacyWorkItems = `-- name: ListLegacyWorkItems :many
-SELECT organization_id, id, native_id, project_id, number, revision, event_sequence, native_source_key, title, body_object_key, issue_contract_object_key, report_context_object_key, actor_kind, actor_principal_id, provenance_provider, provenance_external_id, archived, created_at, updated_at, native_created_at, native_updated_at FROM issues
+SELECT organization_id, id, native_id, project_id, number, revision, event_sequence, native_source_key, title, body_object_key, issue_contract_object_key, report_context_object_key, actor_kind, actor_principal_id, provenance_provider, provenance_external_id, archived, created_at, updated_at, native_created_at, native_updated_at, workflow_state_name FROM issues
 WHERE organization_id=$1
   AND project_id=$2
   AND number>$3
@@ -275,6 +281,7 @@ func (q *Queries) ListLegacyWorkItems(ctx context.Context, arg ListLegacyWorkIte
 			&i.UpdatedAt,
 			&i.NativeCreatedAt,
 			&i.NativeUpdatedAt,
+			&i.WorkflowStateName,
 		); err != nil {
 			return nil, err
 		}
@@ -290,7 +297,7 @@ func (q *Queries) ListLegacyWorkItems(ctx context.Context, arg ListLegacyWorkIte
 }
 
 const pageWorkItems = `-- name: PageWorkItems :many
-SELECT organization_id, id, native_id, project_id, number, revision, event_sequence, native_source_key, title, body_object_key, issue_contract_object_key, report_context_object_key, actor_kind, actor_principal_id, provenance_provider, provenance_external_id, archived, created_at, updated_at, native_created_at, native_updated_at FROM issues
+SELECT organization_id, id, native_id, project_id, number, revision, event_sequence, native_source_key, title, body_object_key, issue_contract_object_key, report_context_object_key, actor_kind, actor_principal_id, provenance_provider, provenance_external_id, archived, created_at, updated_at, native_created_at, native_updated_at, workflow_state_name FROM issues
 WHERE organization_id=$1
   AND project_id=$2
   AND (created_at, id) > ($3::timestamptz, $4::bigint)
@@ -342,6 +349,7 @@ func (q *Queries) PageWorkItems(ctx context.Context, arg PageWorkItemsParams) ([
 			&i.UpdatedAt,
 			&i.NativeCreatedAt,
 			&i.NativeUpdatedAt,
+			&i.WorkflowStateName,
 		); err != nil {
 			return nil, err
 		}
@@ -357,7 +365,7 @@ func (q *Queries) PageWorkItems(ctx context.Context, arg PageWorkItemsParams) ([
 }
 
 const scanWorkItems = `-- name: ScanWorkItems :many
-SELECT organization_id, id, native_id, project_id, number, revision, event_sequence, native_source_key, title, body_object_key, issue_contract_object_key, report_context_object_key, actor_kind, actor_principal_id, provenance_provider, provenance_external_id, archived, created_at, updated_at, native_created_at, native_updated_at FROM issues
+SELECT organization_id, id, native_id, project_id, number, revision, event_sequence, native_source_key, title, body_object_key, issue_contract_object_key, report_context_object_key, actor_kind, actor_principal_id, provenance_provider, provenance_external_id, archived, created_at, updated_at, native_created_at, native_updated_at, workflow_state_name FROM issues
 WHERE organization_id=$1
   AND project_id=$2
   AND id>$3 AND id<=$4
@@ -409,6 +417,7 @@ func (q *Queries) ScanWorkItems(ctx context.Context, arg ScanWorkItemsParams) ([
 			&i.UpdatedAt,
 			&i.NativeCreatedAt,
 			&i.NativeUpdatedAt,
+			&i.WorkflowStateName,
 		); err != nil {
 			return nil, err
 		}
@@ -437,10 +446,11 @@ UPDATE issues SET
     provenance_provider=$10,
     provenance_external_id=$11,
     archived=$12,
+    workflow_state_name=$13,
     revision=revision+1,
     updated_at=CURRENT_TIMESTAMP,
     native_updated_at=CURRENT_TIMESTAMP
-WHERE organization_id=$13 AND project_id=$14 AND native_id=$15 AND revision=$16 RETURNING organization_id, id, native_id, project_id, number, revision, event_sequence, native_source_key, title, body_object_key, issue_contract_object_key, report_context_object_key, actor_kind, actor_principal_id, provenance_provider, provenance_external_id, archived, created_at, updated_at, native_created_at, native_updated_at
+WHERE organization_id=$14 AND project_id=$15 AND native_id=$16 AND revision=$17 RETURNING organization_id, id, native_id, project_id, number, revision, event_sequence, native_source_key, title, body_object_key, issue_contract_object_key, report_context_object_key, actor_kind, actor_principal_id, provenance_provider, provenance_external_id, archived, created_at, updated_at, native_created_at, native_updated_at, workflow_state_name
 `
 
 type UpdateWorkItemParams struct {
@@ -456,6 +466,7 @@ type UpdateWorkItemParams struct {
 	ProvenanceProvider     *string
 	ProvenanceExternalID   *string
 	Archived               bool
+	WorkflowStateName      *string
 	OrganizationID         tracker.OrganizationID
 	ProjectID              tracker.ProjectID
 	NativeID               tracker.NativeWorkItemID
@@ -476,6 +487,7 @@ func (q *Queries) UpdateWorkItem(ctx context.Context, arg UpdateWorkItemParams) 
 		arg.ProvenanceProvider,
 		arg.ProvenanceExternalID,
 		arg.Archived,
+		arg.WorkflowStateName,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.NativeID,
@@ -504,6 +516,7 @@ func (q *Queries) UpdateWorkItem(ctx context.Context, arg UpdateWorkItemParams) 
 		&i.UpdatedAt,
 		&i.NativeCreatedAt,
 		&i.NativeUpdatedAt,
+		&i.WorkflowStateName,
 	)
 	return i, err
 }

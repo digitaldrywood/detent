@@ -137,6 +137,7 @@ type Issue struct {
 	UpdatedAt              time.Time
 	NativeCreatedAt        time.Time
 	NativeUpdatedAt        time.Time
+	WorkflowStateName      *string
 }
 
 type Lease struct {
@@ -579,6 +580,55 @@ type Project struct {
 	ModelSelectionObjectKey *string
 	CreatedAt               time.Time
 	DeletedAt               *time.Time
+}
+
+type ProjectSetting struct {
+	OrganizationID            tracker.OrganizationID
+	ProjectID                 tracker.ProjectID
+	Revision                  int64
+	RequireVisualAttachments  bool
+	ModelRevision             int64
+	ModelKey                  string
+	ModelSha256               string
+	ModelBytes                int64
+	ModelContentBytes         int64
+	Intake                    string
+	Projection                string
+	RepositoryEnabled         bool
+	Repository                string
+	CheckoutRepository        string
+	AgingEnabled              bool
+	DuplicateChallenge        bool
+	ArchiveCompletedAfterDays sql.NullInt64
+	ArchiveCancelledAfterDays sql.NullInt64
+	WorkflowKey               string
+	WorkflowSha256            string
+	WorkflowBytes             int64
+	WorkflowContentBytes      int64
+}
+
+type ProjectSlug struct {
+	OrganizationID tracker.OrganizationID
+	Slug           string
+	ProjectID      tracker.ProjectID
+}
+
+type ProjectWorkflowState struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	Name           string
+	Terminal       bool
+	Dispatchable   bool
+	OperatorOnly   bool
+	BoardRank      int64
+}
+
+type ProjectWorkflowTransition struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	SourceName     string
+	TargetName     string
+	TransitionRank int64
 }
 
 type RequestDay struct {

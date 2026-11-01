@@ -48,7 +48,7 @@ func NewRuntime(ctx context.Context, reader, writer *sql.DB) (*Runtime, error) {
 			AND NOT EXISTS (
 				SELECT 1 FROM pg_class c
 				WHERE c.oid IN (
-				'public.projects'::regclass, 'public.issues'::regclass,
+				'public.projects'::regclass, 'public.project_settings'::regclass, 'public.project_workflow_states'::regclass, 'public.project_workflow_transitions'::regclass, 'public.project_slugs'::regclass, 'public.issues'::regclass,
 				'public.native_comments'::regclass,
 				'public.collaboration_events'::regclass,
 				'public.native_commands'::regclass,

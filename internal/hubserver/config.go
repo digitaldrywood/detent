@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/update"
 )
 
@@ -46,6 +47,8 @@ var (
 )
 
 type Config struct {
+	TenantRepository               tenantstore.Repository
+	ProjectParticipants            tenantstore.ProjectParticipants
 	dashboardDelivery              *dashboardDeliveryConfig
 	ArchiveReader                  entryauthority.ArchiveReader
 	Content                        entryauthority.ContentHandler

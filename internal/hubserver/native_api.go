@@ -382,11 +382,20 @@ func (s *Service) requireNativeScope(roles ...apiScope) echo.MiddlewareFunc {
 						return s.nativeAPIError(c, operatortool.ErrAccessDenied)
 					}
 				}
-				if err := s.requireHostedProject(readCtx, s.database.auth(), scope, write); err != nil {
-					return s.nativeAPIError(c, err)
-				}
-				if err := s.database.authorizeNativeProject(readCtx, scope); err != nil {
-					return s.nativeAPIError(c, err)
+				if s.config.TenantRepository != nil && projectRecordRoute(c.Path()) {
+					if err := s.authorizeProjectRecord(readCtx, scope, write); err != nil {
+						return s.nativeAPIError(c, err)
+					}
+					if _, err := s.readProjectRecord(readCtx, scope); err != nil {
+						return s.nativeAPIError(c, err)
+					}
+				} else {
+					if err := s.requireHostedProject(readCtx, s.database.auth(), scope, write); err != nil {
+						return s.nativeAPIError(c, err)
+					}
+					if err := s.database.authorizeNativeProject(readCtx, scope); err != nil {
+						return s.nativeAPIError(c, err)
+					}
 				}
 			}
 			if item := c.Param("item"); item != "" {
@@ -511,6 +520,9 @@ type nativeCommandOptions struct {
 // executeNativeMutation owns the shared transaction, current native authority,
 // hosted allowances, audit history and durable business replay for all callers.
 func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, options nativeCommandOptions, command tracker.Mutation, input any, operation func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error)) (result json.RawMessage, resultErr error) {
+	if s.config.TenantRepository != nil && (scope.project != "" || isProjectCreation(input)) && isProjectRecordCommand(input) {
+		return s.executeProjectRecordMutation(ctx, scope, options, command, input)
+	}
 	ctx = isolateContentContext(s.runDetailContext(s.linkedSourceContext(ctx)))
 	if content, ok := ctx.Value(changeContentKey{}).(*changeContent); ok {
 		content.mu.Lock()

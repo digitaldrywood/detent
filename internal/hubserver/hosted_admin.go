@@ -343,6 +343,9 @@ func (s *Service) createHostedProject(c echo.Context) error {
 }
 
 func (s *Service) createHostedProjectRecord(ctx context.Context, credential apiCredential, name string, states []tracker.NativeState) (project string, resultErr error) {
+	if s.config.TenantRepository != nil {
+		return s.createHostedTenantProject(ctx, credential, name, states)
+	}
 	tx, err := s.database.db.BeginTx(ctx, nil)
 	if err != nil {
 		return "", err

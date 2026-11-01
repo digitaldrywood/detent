@@ -22,6 +22,9 @@ func (s *session) CreateWorkItem(ctx context.Context, record corestore.WorkItem)
 	if err := s.checkOrganization(record.OrganizationID); err != nil {
 		return corestore.WorkItem{}, err
 	}
+	if _, err := s.queries.ShareActiveProject(ctx, pgquery.ShareActiveProjectParams{OrganizationID: s.organization, ID: record.ProjectID}); err != nil {
+		return corestore.WorkItem{}, mapError(ctx, err)
+	}
 	row, err := s.queries.CreateWorkItem(ctx, pgquery.CreateWorkItemParams{
 		ImportedID:             record.ID,
 		CreatedAt:              optionalTime(record.CreatedAt),
@@ -44,6 +47,7 @@ func (s *session) CreateWorkItem(ctx context.Context, record corestore.WorkItem)
 		ProvenanceProvider:     record.ProvenanceProvider,
 		ProvenanceExternalID:   record.ProvenanceExternalID,
 		Archived:               record.Archived,
+		WorkflowStateName:      record.WorkflowStateName,
 	})
 	return corestore.WorkItem(row), mapError(ctx, err)
 }
@@ -65,6 +69,7 @@ func (s *session) UpdateWorkItem(ctx context.Context, record corestore.WorkItem)
 		ProvenanceProvider:     record.ProvenanceProvider,
 		ProvenanceExternalID:   record.ProvenanceExternalID,
 		Archived:               record.Archived,
+		WorkflowStateName:      record.WorkflowStateName,
 		OrganizationID:         record.OrganizationID,
 		ProjectID:              record.ProjectID,
 		NativeID:               record.NativeID,

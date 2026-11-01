@@ -28,6 +28,17 @@ func readCloudModelSelection(ctx context.Context, query nativeQueryer, scope nat
 }
 
 func (s *Service) getCloudModelSelection(c echo.Context) error {
+	if s.config.TenantRepository != nil && nativeRequestScope(c).project != "" {
+		record, err := s.readProjectRecord(c.Request().Context(), nativeRequestScope(c))
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		value, err := s.projectRecordModel(c.Request().Context(), record)
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		return c.JSON(http.StatusOK, value)
+	}
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 	defer cancel()
 	result, err := readCloudModelSelection(ctx, s.database.reader, nativeRequestScope(c))

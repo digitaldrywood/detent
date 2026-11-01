@@ -22,6 +22,13 @@ func (s *Service) getCloudContentSettings(c echo.Context) error {
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 	defer cancel()
 	scope := nativeRequestScope(c)
+	if s.config.TenantRepository != nil {
+		record, err := s.readProjectRecord(ctx, scope)
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		return c.JSON(http.StatusOK, projectsettings.Content{Revision: tracker.Revision(record.Core.ContentSettingsRevision), RequireVisualAttachments: record.Settings.RequireVisualAttachments})
+	}
 	value, err := projectsettings.ReadContent(ctx, s.database.reader, scope.organization, scope.project)
 	if err != nil {
 		return s.nativeAPIError(c, err)
