@@ -63,39 +63,67 @@ type Change struct {
 	PayloadContentBytes int64
 }
 
+type ReviewPolicy struct {
+	OrganizationID      tracker.OrganizationID
+	ProjectID           tracker.ProjectID
+	PolicyRevisionID    string
+	ReviewPolicyID      string
+	Revision            int64
+	UpdatedBy           string
+	UpdatedAt           time.Time
+	PayloadObjectKey    string
+	PayloadSHA256       string
+	PayloadBytes        int64
+	PayloadContentBytes int64
+}
+
 type Link struct {
 	OrganizationID tracker.OrganizationID
 	ProjectID      tracker.ProjectID
 	WorkItemID     tracker.NativeWorkItemID
 	ChangeID       string
+	CreatedAt      time.Time
 }
 
 type Version struct {
-	OrganizationID       tracker.OrganizationID
-	ID                   string
-	ChangeID             string
-	Number               int64
-	HeadSHA              string
-	BaseSHA              string
-	MergeBaseSHA         string
-	Repository           string
-	PolicyRevisionID     string
-	AttemptID            string
-	ActorKind            string
-	ActorPrincipalID     string
-	ExternalProvider     string
-	ExternalID           string
-	ExternalURL          string
-	CreatedAt            time.Time
-	PayloadObjectKey     string
-	PayloadSHA256        string
-	PayloadBytes         int64
-	PayloadContentBytes  int64
-	PayloadFormatVersion int64
-	SourceObjectKey      string
-	SourceSHA256         string
-	SourceBytes          int64
-	SourceContentBytes   int64
+	OrganizationID        tracker.OrganizationID
+	ID                    string
+	ChangeID              string
+	Number                int64
+	HeadSHA               string
+	BaseSHA               string
+	MergeBaseSHA          string
+	Repository            string
+	PolicyRevisionID      string
+	AttemptID             string
+	ActorKind             string
+	ActorPrincipalID      string
+	ExternalProvider      string
+	ExternalID            string
+	ExternalURL           string
+	CreatedAt             time.Time
+	PayloadObjectKey      string
+	PayloadSHA256         string
+	PayloadBytes          int64
+	PayloadContentBytes   int64
+	PayloadFormatVersion  int64
+	SourceObjectKey       string
+	SourceSHA256          string
+	SourceBytes           int64
+	SourceContentBytes    int64
+	ImplementingSessionID int64
+	ImplementingMachineID string
+}
+
+type LandingReceipt struct {
+	OrganizationID      tracker.OrganizationID
+	AttemptID           string
+	VersionID           string
+	MergeSHA            string
+	PayloadObjectKey    string
+	PayloadSHA256       string
+	PayloadBytes        int64
+	PayloadContentBytes int64
 }
 
 type Evidence struct {
@@ -146,10 +174,13 @@ type Receipt struct {
 }
 
 type Reader interface {
+	ReviewPolicy(context.Context, tracker.ProjectID) (ReviewPolicy, error)
+	LandingReceipt(context.Context, string) (LandingReceipt, error)
 	Receipt(context.Context, string, string, string) (Receipt, error)
 	Events(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, int64, int) ([]Event, error)
 	CollaborationVersion(context.Context, string, int64) (CollaborationVersion, error)
 	Change(context.Context, string) (Change, error)
+	LatestChange(context.Context, tracker.ProjectID, tracker.NativeWorkItemID) (Change, error)
 	Changes(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, string, int) ([]Change, error)
 	Versions(context.Context, string, int64, int) ([]Version, error)
 	Version(context.Context, string, string) (Version, error)
@@ -162,6 +193,8 @@ type Reader interface {
 type Writer interface {
 	PutReceipt(context.Context, Receipt) (Receipt, error)
 	Reader
+	SetReviewPolicy(context.Context, ReviewPolicy, string) error
+	CreateLandingReceipt(context.Context, LandingReceipt) (LandingReceipt, error)
 	AppendEvent(context.Context, Event) (Event, error)
 	CreateCollaborationVersion(context.Context, CollaborationVersion) (CollaborationVersion, error)
 	CreateChange(context.Context, Change) (Change, error)

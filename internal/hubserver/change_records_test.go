@@ -14,8 +14,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -191,6 +193,152 @@ func TestChangeRecordReceiptRejectsChangedRequest(t *testing.T) {
 	}
 }
 
+func TestChangeReviewPolicyUsesSelectedTenantPolicyAndReceipt(t *testing.T) {
+	repository, f, owner := newChangePolicyPostgresFixture(t)
+	descriptor := hubTestPolicy()
+	path := f.base + "/change-review-policy"
+	response := f.request(t, owner, http.MethodGet, path, nil)
+	requireNativeStatus(t, response, http.StatusOK)
+	var current tracker.ChangeReviewPolicy
+	decodeHubResponse(t, response, &current)
+	if current.ID != defaultChangeReviewPolicy(descriptor).ID {
+		t.Fatalf("default policy = %+v, want %+v", current, defaultChangeReviewPolicy(descriptor))
+	}
+	updated := current
+	updated.RequireReview = true
+	request := tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "update-review-policy"}, ExpectedID: current.ID, Policy: updated}
+	response = f.request(t, owner, http.MethodPut, path, request)
+	requireNativeStatus(t, response, http.StatusOK)
+	var saved tracker.ChangeReviewPolicy
+	decodeHubResponse(t, response, &saved)
+	if saved.ID == current.ID || !saved.RequireReview || saved.PolicyID != descriptor.ID {
+		t.Fatalf("saved review policy = %+v", saved)
+	}
+	replay := f.request(t, owner, http.MethodPut, path, request)
+	requireNativeStatus(t, replay, http.StatusOK)
+	var replayed tracker.ChangeReviewPolicy
+	decodeHubResponse(t, replay, &replayed)
+	if replayed.ID != saved.ID || replayed.PolicyID != saved.PolicyID || replayed.RequireReview != saved.RequireReview {
+		t.Fatalf("policy replay changed value: %+v vs %+v", replayed, saved)
+	}
+	stale := request
+	stale.IdempotencyKey = "stale-review-policy"
+	stale.ExpectedID = current.ID
+	response = f.request(t, owner, http.MethodPut, path, stale)
+	requireNativeStatus(t, response, http.StatusConflict)
+	itemsPath := f.base + "/work-items"
+	response = f.request(t, owner, http.MethodPost, itemsPath, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "create-summary-item"}, Title: "Summary issue", Body: workItemRecordBody, State: "Todo"})
+	requireNativeStatus(t, response, http.StatusOK)
+	var item tracker.NativeIssue
+	decodeHubResponse(t, response, &item)
+	response = f.request(t, owner, http.MethodPost, itemsPath+"/"+string(item.WorkItemID)+"/changes", tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: "create-summary-change"}, Title: "Summary change", Body: "Example change"})
+	requireNativeStatus(t, response, http.StatusOK)
+	var change tracker.ChangeRequest
+	decodeHubResponse(t, response, &change)
+	var member accessstore.Member
+	if err := repository.ReadTenant(t.Context(), "org_security", corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		member, err = r.AccessMember(t.Context(), owner.identity.Subject)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	scope := nativeScope{organization: "org_security", project: f.project, credential: apiCredential{ID: member.PrincipalID, Scope: apiScopeOperator, Hosted: owner.identity.Hosted, HostedRole: "owner", HostedMembership: member.MembershipID, HostedPrincipal: member.PrincipalID, NativeOnly: true}}
+	reference, summary, found, err := f.service.selectedLatestChangeSummary(t.Context(), scope, string(item.WorkItemID), f.service.config.now())
+	if err != nil || !found || reference.ChangeID != change.ID || reference.VersionID != "" || summary.Status != "draft" {
+		t.Fatalf("latest selected Change = %+v, %+v, found=%v, err=%v", reference, summary, found, err)
+	}
+}
+
+func newChangePolicyPostgresFixture(t *testing.T) (tenantstore.Repository, hostedSecurityFixture, hostedSecurityUser) {
+	t.Helper()
+	repository := projectRecordPostgres(t)
+	f := newHostedSecurityFixture(t, func(cfg *Config) {
+		cfg.AccessRepository = repository
+		cfg.TenantRepository = repository
+		cfg.RunDetails = &memoryRunDetails{}
+	})
+	now := f.service.config.now()
+	descriptor := hubTestPolicy()
+	content := eventstore.NewContent(f.service.runDetailStore())
+	policyRevision, err := content.PrepareProjectPolicy(t.Context(), "org_security", descriptor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policyRevision.ProjectID = f.project
+	policyRevision.ApprovedBy = "example-owner"
+	policyRevision.ApprovedAt = now.UTC().Truncate(time.Microsecond)
+	if err := repository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: "org_security", Name: "Example organization", CreatedAt: now}); err != nil {
+			return err
+		}
+		if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: "org_security", ProviderID: "org_provider"}); err != nil {
+			return err
+		}
+		project := projectstore.Record{Core: corestore.Project{OrganizationID: "org_security", ID: f.project, Name: "Example project", Slug: "example-project", Profile: "native"}, States: nativeFixtureStates()}
+		if _, err := w.CreateProjectRecord(t.Context(), project); err != nil {
+			return err
+		}
+		return w.ApproveProjectPolicy(t.Context(), policyRevision, "")
+	}); err != nil {
+		t.Fatal(err)
+	}
+	owner := f.user(t, "review_admin", "owner", "review-admin@example.test", "", "")
+	if err := repository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+		member, err := w.AccessMember(t.Context(), owner.identity.Subject)
+		if err != nil {
+			return err
+		}
+		if err := w.SetAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: "org_security", UserID: member.UserID, ProjectID: f.project, CanWrite: true}); err != nil {
+			return err
+		}
+		return w.SetAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: "org_security", TokenID: member.PrincipalID, ProjectID: f.project})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return repository, f, owner
+}
+
+func TestChangeReviewPolicyRechecksDemotedAdminInTenantWriter(t *testing.T) {
+	repository, f, owner := newChangePolicyPostgresFixture(t)
+	now := f.service.config.now()
+	var member accessstore.Member
+	if err := repository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+		var err error
+		member, err = w.AccessMember(t.Context(), owner.identity.Subject)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rules := defaultChangeReviewPolicy(hubTestPolicy())
+	rules.RequireReview = true
+	request := tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "demoted-review-admin"}, ExpectedID: rules.ID, Policy: rules}
+	intercepted := &projectUpdateBeforeWriteRepository{Repository: repository}
+	intercepted.before = func() error {
+		return repository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+			current, err := w.AccessMember(t.Context(), member.UserID)
+			if err != nil {
+				return err
+			}
+			current.Role = "member"
+			current.UpdatedAt = now.Add(time.Second)
+			return w.UpdateAccessMember(t.Context(), current)
+		})
+	}
+	f.service.config.TenantRepository = intercepted
+	response := f.request(t, owner, http.MethodPut, f.base+"/change-review-policy", request)
+	requireNativeStatus(t, response, http.StatusForbidden)
+	if err := repository.ReadTenant(t.Context(), "org_security", corestore.Serving, func(r tenantstore.Reader) error {
+		_, err := r.ReviewPolicy(t.Context(), f.project)
+		if !errors.Is(err, corestore.ErrNotFound) {
+			t.Errorf("demoted admin review policy lookup error = %v, want not found", err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestChangeVersionRecordPublishesImmutableSourceAndRevisionAtomically(t *testing.T) {
 	repository := projectRecordPostgres(t)
 	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}, TenantRepository: repository})
@@ -215,6 +363,19 @@ func TestChangeVersionRecordPublishesImmutableSourceAndRevisionAtomically(t *tes
 	decodeHubResponse(t, response, &change)
 	changePath := changesPath + "/" + change.ID
 	policy := hubTestPolicy()
+	policyContent := eventstore.NewContent(service.runDetailStore())
+	policyRevision, err := policyContent.PrepareProjectPolicy(t.Context(), org.ID, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policyRevision.ProjectID = project.ID
+	policyRevision.ApprovedBy = "example-owner"
+	policyRevision.ApprovedAt = service.config.now().UTC().Truncate(time.Microsecond)
+	if err := repository.WriteTenant(t.Context(), org.ID, corestore.Serving, func(w tenantstore.Writer) error {
+		return w.ApproveProjectPolicy(t.Context(), policyRevision, "")
+	}); err != nil {
+		t.Fatal(err)
+	}
 	reviewPolicy := tracker.ChangeReviewPolicy{PolicyID: policy.ID, RequireReview: true}
 	reviewPolicy.ID = changerequest.PolicyID(reviewPolicy)
 	service.config.ChangeVersionAuthority = changeVersionAuthorityFixture{approval: ChangeVersionApproval{Policy: policy, ReviewPolicy: reviewPolicy}}
@@ -240,6 +401,7 @@ func TestChangeVersionRecordPublishesImmutableSourceAndRevisionAtomically(t *tes
 		requireNativeStatus(t, response, http.StatusUnprocessableEntity)
 	}
 	bundle := changeTestSource(t, &input)
+	input.Validation.HeadSHA = input.HeadSHA
 	request := tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "publish-version"}, ExpectedVersionID: "", ChangeVersionInput: input, SourceBundle: bundle}
 	service.config.TenantRepository = failingChangeEventRepository{Repository: repository}
 	failed := performHubAPIRequest(t, service, http.MethodPost, changePath+"/versions", testHubAdminToken, request)

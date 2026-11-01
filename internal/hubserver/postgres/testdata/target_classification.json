@@ -33,5 +33,10 @@
     "inline_payloads": [],
     "ownership": "organization-owned",
     "scope": "issue_labels.organization_id; project_id and work_item_id reference issues"
+  },
+  "public/change_review_policy_revisions": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "change_review_policy_revisions.organization_id; project_id and review_policy_id identify immutable approval history"
   }
 }

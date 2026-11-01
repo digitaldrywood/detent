@@ -141,6 +141,18 @@ type ChangeIssueLink struct {
 	ProjectID      tracker.ProjectID
 	WorkItemID     tracker.NativeWorkItemID
 	ChangeID       string
+	CreatedAt      time.Time
+}
+
+type ChangeLandingReceipt struct {
+	OrganizationID      tracker.OrganizationID
+	AttemptID           string
+	VersionID           string
+	MergeSha            string
+	PayloadObjectKey    string
+	PayloadSHA256       string
+	PayloadBytes        int64
+	PayloadContentBytes int64
 }
 
 type ChangeRequest struct {
@@ -160,32 +172,56 @@ type ChangeRequest struct {
 	PayloadContentBytes int64
 }
 
+type ChangeReviewPolicy struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	ReviewPolicyID string
+	PolicyID       string
+	Revision       int64
+}
+
+type ChangeReviewPolicyRevision struct {
+	OrganizationID      tracker.OrganizationID
+	ProjectID           tracker.ProjectID
+	ReviewPolicyID      string
+	PolicyID            string
+	Revision            int64
+	UpdatedBy           string
+	UpdatedAt           time.Time
+	PayloadObjectKey    string
+	PayloadSHA256       string
+	PayloadBytes        int64
+	PayloadContentBytes int64
+}
+
 type ChangeVersion struct {
-	OrganizationID       tracker.OrganizationID
-	ID                   string
-	ChangeID             string
-	Number               int64
-	HeadSHA              string
-	BaseSHA              string
-	MergeBaseSHA         string
-	Repository           string
-	PolicyRevisionID     string
-	AttemptID            string
-	ActorKind            string
-	ActorPrincipalID     string
-	ExternalProvider     string
-	ExternalID           string
-	ExternalURL          string
-	CreatedAt            time.Time
-	PayloadObjectKey     string
-	PayloadSHA256        string
-	PayloadBytes         int64
-	PayloadContentBytes  int64
-	PayloadFormatVersion int64
-	SourceObjectKey      *string
-	SourceSha256         *string
-	SourceBytes          sql.NullInt64
-	SourceContentBytes   sql.NullInt64
+	OrganizationID        tracker.OrganizationID
+	ID                    string
+	ChangeID              string
+	Number                int64
+	HeadSHA               string
+	BaseSHA               string
+	MergeBaseSHA          string
+	Repository            string
+	PolicyRevisionID      string
+	AttemptID             string
+	ActorKind             string
+	ActorPrincipalID      string
+	ExternalProvider      string
+	ExternalID            string
+	ExternalURL           string
+	CreatedAt             time.Time
+	PayloadObjectKey      string
+	PayloadSHA256         string
+	PayloadBytes          int64
+	PayloadContentBytes   int64
+	PayloadFormatVersion  int64
+	SourceObjectKey       *string
+	SourceSha256          *string
+	SourceBytes           sql.NullInt64
+	SourceContentBytes    sql.NullInt64
+	ImplementingSessionID int64
+	ImplementingMachineID string
 }
 
 type CollaborationEvent struct {
@@ -1130,6 +1166,18 @@ type PlatformTransaction struct {
 	SupportReason          string
 }
 
+type PolicyRevision struct {
+	OrganizationID      tracker.OrganizationID
+	ProjectID           tracker.ProjectID
+	PolicyID            string
+	ApprovedBy          string
+	ApprovedAt          time.Time
+	PayloadObjectKey    string
+	PayloadSHA256       string
+	PayloadBytes        int64
+	PayloadContentBytes int64
+}
+
 type Project struct {
 	OrganizationID          tracker.OrganizationID
 	ID                      tracker.ProjectID
@@ -1146,6 +1194,12 @@ type Project struct {
 	ModelSelectionObjectKey *string
 	CreatedAt               time.Time
 	DeletedAt               *time.Time
+}
+
+type ProjectPolicy struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	PolicyID       string
 }
 
 type ProjectSecret struct {

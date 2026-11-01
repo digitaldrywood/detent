@@ -274,8 +274,33 @@ func (q *Queries) RecordGetEvidenceSequence(ctx context.Context, arg RecordGetEv
 	return i, err
 }
 
+const recordGetLandingReceipt = `-- name: RecordGetLandingReceipt :one
+SELECT organization_id, attempt_id, version_id, merge_sha, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes FROM change_landing_receipts WHERE organization_id=$1 AND attempt_id=$2
+`
+
+type RecordGetLandingReceiptParams struct {
+	OrganizationID tracker.OrganizationID
+	AttemptID      string
+}
+
+func (q *Queries) RecordGetLandingReceipt(ctx context.Context, arg RecordGetLandingReceiptParams) (ChangeLandingReceipt, error) {
+	row := q.db.QueryRowContext(ctx, recordGetLandingReceipt, arg.OrganizationID, arg.AttemptID)
+	var i ChangeLandingReceipt
+	err := row.Scan(
+		&i.OrganizationID,
+		&i.AttemptID,
+		&i.VersionID,
+		&i.MergeSha,
+		&i.PayloadObjectKey,
+		&i.PayloadSHA256,
+		&i.PayloadBytes,
+		&i.PayloadContentBytes,
+	)
+	return i, err
+}
+
 const recordGetLink = `-- name: RecordGetLink :one
-SELECT organization_id, project_id, work_item_id, change_id FROM change_issue_links WHERE organization_id=$1 AND change_id=$2 AND work_item_id=$3
+SELECT organization_id, project_id, work_item_id, change_id, created_at FROM change_issue_links WHERE organization_id=$1 AND change_id=$2 AND work_item_id=$3
 `
 
 type RecordGetLinkParams struct {
@@ -292,6 +317,7 @@ func (q *Queries) RecordGetLink(ctx context.Context, arg RecordGetLinkParams) (C
 		&i.ProjectID,
 		&i.WorkItemID,
 		&i.ChangeID,
+		&i.CreatedAt,
 	)
 	return i, err
 }
@@ -391,7 +417,7 @@ func (q *Queries) RecordGetReceipt(ctx context.Context, arg RecordGetReceiptPara
 }
 
 const recordGetVersion = `-- name: RecordGetVersion :one
-SELECT organization_id, id, change_id, number, head_sha, base_sha, merge_base_sha, repository, policy_revision_id, attempt_id, actor_kind, actor_principal_id, external_provider, external_id, external_url, created_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, source_object_key, source_sha256, source_bytes, source_content_bytes FROM change_versions WHERE organization_id=$1 AND change_id=$2 AND id=$3
+SELECT organization_id, id, change_id, number, head_sha, base_sha, merge_base_sha, repository, policy_revision_id, attempt_id, actor_kind, actor_principal_id, external_provider, external_id, external_url, created_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, source_object_key, source_sha256, source_bytes, source_content_bytes, implementing_session_id, implementing_machine_id FROM change_versions WHERE organization_id=$1 AND change_id=$2 AND id=$3
 `
 
 type RecordGetVersionParams struct {
@@ -429,12 +455,30 @@ func (q *Queries) RecordGetVersion(ctx context.Context, arg RecordGetVersionPara
 		&i.SourceSha256,
 		&i.SourceBytes,
 		&i.SourceContentBytes,
+		&i.ImplementingSessionID,
+		&i.ImplementingMachineID,
 	)
 	return i, err
 }
 
+const recordGetVersionAttemptID = `-- name: RecordGetVersionAttemptID :one
+SELECT attempt_id FROM change_versions WHERE organization_id=$1 AND id=$2
+`
+
+type RecordGetVersionAttemptIDParams struct {
+	OrganizationID tracker.OrganizationID
+	ID             string
+}
+
+func (q *Queries) RecordGetVersionAttemptID(ctx context.Context, arg RecordGetVersionAttemptIDParams) (string, error) {
+	row := q.db.QueryRowContext(ctx, recordGetVersionAttemptID, arg.OrganizationID, arg.ID)
+	var attempt_id string
+	err := row.Scan(&attempt_id)
+	return attempt_id, err
+}
+
 const recordGetVersionByID = `-- name: RecordGetVersionByID :one
-SELECT organization_id, id, change_id, number, head_sha, base_sha, merge_base_sha, repository, policy_revision_id, attempt_id, actor_kind, actor_principal_id, external_provider, external_id, external_url, created_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, source_object_key, source_sha256, source_bytes, source_content_bytes FROM change_versions WHERE organization_id=$1 AND change_id=$2 AND id=$3
+SELECT organization_id, id, change_id, number, head_sha, base_sha, merge_base_sha, repository, policy_revision_id, attempt_id, actor_kind, actor_principal_id, external_provider, external_id, external_url, created_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, source_object_key, source_sha256, source_bytes, source_content_bytes, implementing_session_id, implementing_machine_id FROM change_versions WHERE organization_id=$1 AND change_id=$2 AND id=$3
 `
 
 type RecordGetVersionByIDParams struct {
@@ -472,6 +516,8 @@ func (q *Queries) RecordGetVersionByID(ctx context.Context, arg RecordGetVersion
 		&i.SourceSha256,
 		&i.SourceBytes,
 		&i.SourceContentBytes,
+		&i.ImplementingSessionID,
+		&i.ImplementingMachineID,
 	)
 	return i, err
 }
@@ -727,23 +773,66 @@ func (q *Queries) RecordInsertEvidence(ctx context.Context, arg RecordInsertEvid
 	return i, err
 }
 
+const recordInsertLandingReceipt = `-- name: RecordInsertLandingReceipt :one
+INSERT INTO change_landing_receipts (organization_id, attempt_id, version_id, merge_sha, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+ON CONFLICT (organization_id, attempt_id) DO NOTHING RETURNING organization_id, attempt_id, version_id, merge_sha, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes
+`
+
+type RecordInsertLandingReceiptParams struct {
+	OrganizationID      tracker.OrganizationID
+	AttemptID           string
+	VersionID           string
+	MergeSha            string
+	PayloadObjectKey    string
+	PayloadSHA256       string
+	PayloadBytes        int64
+	PayloadContentBytes int64
+}
+
+func (q *Queries) RecordInsertLandingReceipt(ctx context.Context, arg RecordInsertLandingReceiptParams) (ChangeLandingReceipt, error) {
+	row := q.db.QueryRowContext(ctx, recordInsertLandingReceipt,
+		arg.OrganizationID,
+		arg.AttemptID,
+		arg.VersionID,
+		arg.MergeSha,
+		arg.PayloadObjectKey,
+		arg.PayloadSHA256,
+		arg.PayloadBytes,
+		arg.PayloadContentBytes,
+	)
+	var i ChangeLandingReceipt
+	err := row.Scan(
+		&i.OrganizationID,
+		&i.AttemptID,
+		&i.VersionID,
+		&i.MergeSha,
+		&i.PayloadObjectKey,
+		&i.PayloadSHA256,
+		&i.PayloadBytes,
+		&i.PayloadContentBytes,
+	)
+	return i, err
+}
+
 const recordInsertLink = `-- name: RecordInsertLink :one
-INSERT INTO change_issue_links (organization_id, project_id, work_item_id, change_id)
-VALUES ($1, $2, $3, $4) RETURNING organization_id, project_id, work_item_id, change_id
+INSERT INTO change_issue_links (organization_id, project_id, work_item_id, change_id, created_at)
+SELECT c.organization_id,c.project_id,$1,c.id,c.created_at FROM change_requests c
+WHERE c.organization_id=$2 AND c.project_id=$3 AND c.id=$4 RETURNING organization_id, project_id, work_item_id, change_id, created_at
 `
 
 type RecordInsertLinkParams struct {
+	WorkItemID     tracker.NativeWorkItemID
 	OrganizationID tracker.OrganizationID
 	ProjectID      tracker.ProjectID
-	WorkItemID     tracker.NativeWorkItemID
 	ChangeID       string
 }
 
 func (q *Queries) RecordInsertLink(ctx context.Context, arg RecordInsertLinkParams) (ChangeIssueLink, error) {
 	row := q.db.QueryRowContext(ctx, recordInsertLink,
+		arg.WorkItemID,
 		arg.OrganizationID,
 		arg.ProjectID,
-		arg.WorkItemID,
 		arg.ChangeID,
 	)
 	var i ChangeIssueLink
@@ -752,6 +841,7 @@ func (q *Queries) RecordInsertLink(ctx context.Context, arg RecordInsertLinkPara
 		&i.ProjectID,
 		&i.WorkItemID,
 		&i.ChangeID,
+		&i.CreatedAt,
 	)
 	return i, err
 }
@@ -858,36 +948,38 @@ func (q *Queries) RecordInsertReceipt(ctx context.Context, arg RecordInsertRecei
 }
 
 const recordInsertVersion = `-- name: RecordInsertVersion :one
-INSERT INTO change_versions (organization_id, id, change_id, number, head_sha, base_sha, merge_base_sha, repository, policy_revision_id, attempt_id, actor_kind, actor_principal_id, external_provider, external_id, external_url, created_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, source_object_key, source_sha256, source_bytes, source_content_bytes)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25) RETURNING organization_id, id, change_id, number, head_sha, base_sha, merge_base_sha, repository, policy_revision_id, attempt_id, actor_kind, actor_principal_id, external_provider, external_id, external_url, created_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, source_object_key, source_sha256, source_bytes, source_content_bytes
+INSERT INTO change_versions (organization_id, id, change_id, number, head_sha, base_sha, merge_base_sha, repository, policy_revision_id, attempt_id, actor_kind, actor_principal_id, external_provider, external_id, external_url, created_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, source_object_key, source_sha256, source_bytes, source_content_bytes, implementing_session_id, implementing_machine_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27) RETURNING organization_id, id, change_id, number, head_sha, base_sha, merge_base_sha, repository, policy_revision_id, attempt_id, actor_kind, actor_principal_id, external_provider, external_id, external_url, created_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, source_object_key, source_sha256, source_bytes, source_content_bytes, implementing_session_id, implementing_machine_id
 `
 
 type RecordInsertVersionParams struct {
-	OrganizationID       tracker.OrganizationID
-	ID                   string
-	ChangeID             string
-	Number               int64
-	HeadSHA              string
-	BaseSHA              string
-	MergeBaseSHA         string
-	Repository           string
-	PolicyRevisionID     string
-	AttemptID            string
-	ActorKind            string
-	ActorPrincipalID     string
-	ExternalProvider     string
-	ExternalID           string
-	ExternalURL          string
-	CreatedAt            time.Time
-	PayloadObjectKey     string
-	PayloadSHA256        string
-	PayloadBytes         int64
-	PayloadContentBytes  int64
-	PayloadFormatVersion int64
-	SourceObjectKey      *string
-	SourceSha256         *string
-	SourceBytes          sql.NullInt64
-	SourceContentBytes   sql.NullInt64
+	OrganizationID        tracker.OrganizationID
+	ID                    string
+	ChangeID              string
+	Number                int64
+	HeadSHA               string
+	BaseSHA               string
+	MergeBaseSHA          string
+	Repository            string
+	PolicyRevisionID      string
+	AttemptID             string
+	ActorKind             string
+	ActorPrincipalID      string
+	ExternalProvider      string
+	ExternalID            string
+	ExternalURL           string
+	CreatedAt             time.Time
+	PayloadObjectKey      string
+	PayloadSHA256         string
+	PayloadBytes          int64
+	PayloadContentBytes   int64
+	PayloadFormatVersion  int64
+	SourceObjectKey       *string
+	SourceSha256          *string
+	SourceBytes           sql.NullInt64
+	SourceContentBytes    sql.NullInt64
+	ImplementingSessionID int64
+	ImplementingMachineID string
 }
 
 func (q *Queries) RecordInsertVersion(ctx context.Context, arg RecordInsertVersionParams) (ChangeVersion, error) {
@@ -917,6 +1009,8 @@ func (q *Queries) RecordInsertVersion(ctx context.Context, arg RecordInsertVersi
 		arg.SourceSha256,
 		arg.SourceBytes,
 		arg.SourceContentBytes,
+		arg.ImplementingSessionID,
+		arg.ImplementingMachineID,
 	)
 	var i ChangeVersion
 	err := row.Scan(
@@ -945,6 +1039,43 @@ func (q *Queries) RecordInsertVersion(ctx context.Context, arg RecordInsertVersi
 		&i.SourceSha256,
 		&i.SourceBytes,
 		&i.SourceContentBytes,
+		&i.ImplementingSessionID,
+		&i.ImplementingMachineID,
+	)
+	return i, err
+}
+
+const recordLatestChange = `-- name: RecordLatestChange :one
+SELECT c.organization_id, c.project_id, c.work_item_id, c.id, c.revision, c.title, c.current_version_id, c.evidence_sequence, c.created_at, c.updated_at, c.payload_object_key, c.payload_sha256, c.payload_bytes, c.payload_content_bytes FROM change_issue_links l
+JOIN change_requests c ON c.organization_id=l.organization_id AND c.project_id=l.project_id AND c.id=l.change_id
+WHERE l.organization_id=$1 AND l.project_id=$2 AND l.work_item_id=$3
+ORDER BY l.created_at DESC,l.change_id DESC LIMIT 1
+`
+
+type RecordLatestChangeParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	WorkItemID     tracker.NativeWorkItemID
+}
+
+func (q *Queries) RecordLatestChange(ctx context.Context, arg RecordLatestChangeParams) (ChangeRequest, error) {
+	row := q.db.QueryRowContext(ctx, recordLatestChange, arg.OrganizationID, arg.ProjectID, arg.WorkItemID)
+	var i ChangeRequest
+	err := row.Scan(
+		&i.OrganizationID,
+		&i.ProjectID,
+		&i.WorkItemID,
+		&i.ID,
+		&i.Revision,
+		&i.Title,
+		&i.CurrentVersionID,
+		&i.EvidenceSequence,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.PayloadObjectKey,
+		&i.PayloadSHA256,
+		&i.PayloadBytes,
+		&i.PayloadContentBytes,
 	)
 	return i, err
 }
@@ -1128,7 +1259,7 @@ func (q *Queries) RecordListEvidence(ctx context.Context, arg RecordListEvidence
 }
 
 const recordListLink = `-- name: RecordListLink :many
-SELECT organization_id, project_id, work_item_id, change_id FROM change_issue_links WHERE organization_id=$1 AND change_id=$2 AND work_item_id>$3 ORDER BY work_item_id LIMIT $4
+SELECT organization_id, project_id, work_item_id, change_id, created_at FROM change_issue_links WHERE organization_id=$1 AND change_id=$2 AND work_item_id>$3 ORDER BY work_item_id LIMIT $4
 `
 
 type RecordListLinkParams struct {
@@ -1157,6 +1288,7 @@ func (q *Queries) RecordListLink(ctx context.Context, arg RecordListLinkParams) 
 			&i.ProjectID,
 			&i.WorkItemID,
 			&i.ChangeID,
+			&i.CreatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1172,7 +1304,7 @@ func (q *Queries) RecordListLink(ctx context.Context, arg RecordListLinkParams) 
 }
 
 const recordListVersion = `-- name: RecordListVersion :many
-SELECT organization_id, id, change_id, number, head_sha, base_sha, merge_base_sha, repository, policy_revision_id, attempt_id, actor_kind, actor_principal_id, external_provider, external_id, external_url, created_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, source_object_key, source_sha256, source_bytes, source_content_bytes FROM change_versions WHERE organization_id=$1 AND change_id=$2 AND number>$3 ORDER BY number LIMIT $4
+SELECT organization_id, id, change_id, number, head_sha, base_sha, merge_base_sha, repository, policy_revision_id, attempt_id, actor_kind, actor_principal_id, external_provider, external_id, external_url, created_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, source_object_key, source_sha256, source_bytes, source_content_bytes, implementing_session_id, implementing_machine_id FROM change_versions WHERE organization_id=$1 AND change_id=$2 AND number>$3 ORDER BY number LIMIT $4
 `
 
 type RecordListVersionParams struct {
@@ -1222,6 +1354,8 @@ func (q *Queries) RecordListVersion(ctx context.Context, arg RecordListVersionPa
 			&i.SourceSha256,
 			&i.SourceBytes,
 			&i.SourceContentBytes,
+			&i.ImplementingSessionID,
+			&i.ImplementingMachineID,
 		); err != nil {
 			return nil, err
 		}

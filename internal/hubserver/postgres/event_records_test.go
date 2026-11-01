@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -18,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -127,6 +129,7 @@ func seedHistory(t *testing.T, r *postgres.Repository, org tracker.OrganizationI
 		t.Fatal(err)
 	}
 	f.link = eventstore.Link{OrganizationID: org, ProjectID: change.ProjectID, WorkItemID: "wi_first_2", ChangeID: change.ID}
+	f.link.CreatedAt = f.change.CreatedAt
 	if err := r.WriteRecords(t.Context(), org, corestore.Serving, func(w eventstore.Writer) error {
 		if f.event, err = w.AppendEvent(t.Context(), f.event); err != nil {
 			return err
@@ -342,6 +345,155 @@ func TestEventChangeReceipts(t *testing.T) {
 		return err
 	}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestLandingReceiptIsImmutableAndTenantScoped(t *testing.T) {
+	admin := template.Database(t)
+	r, pool := repositoryFor(t, admin, smallPool())
+	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
+		seedRepository(t, r, organization)
+	}
+	if err := r.WriteLeases(t.Context(), "org_first", corestore.Serving, func(w leasestore.Writer) error {
+		return w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: "org_first", ID: "machine_1", Hostname: "example", Capacity: 1, Version: "example"})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f := seedHistory(t, r, "org_first", "first")
+	lease := claimLease(t, r, "org_first", leaseClaim(1))
+	attempt := attemptEvent(lease)
+	attempt.ID = f.version.AttemptID
+	storedAttempt := recordLeaseAttempt(t, r, "org_first", attempt)
+	value := tracker.NativeLandingReceipt{VersionID: f.version.ID, MergeSHA: strings.Repeat("a", 40), Landed: true}
+	record, err := f.content.PrepareLandingReceipt(t.Context(), eventstore.LandingReceipt{OrganizationID: "org_first", AttemptID: storedAttempt.ID, VersionID: f.version.ID}, value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.WriteRecords(t.Context(), "org_first", corestore.Serving, func(w eventstore.Writer) error {
+		got, err := w.CreateLandingReceipt(t.Context(), record)
+		if err == nil && got != record {
+			t.Errorf("created landing receipt = %+v, want %+v", got, record)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runtime := runtimeFor(t, pool, pool)
+	for _, statement := range []string{"UPDATE change_landing_receipts SET merge_sha=merge_sha", "DELETE FROM change_landing_receipts"} {
+		tx := tenantTx(t, runtime, pool, "org_first")
+		if _, err := tx.ExecContext(t.Context(), statement); err == nil {
+			t.Fatalf("immutable landing receipt accepted %q", statement)
+		} else {
+			requireSQLState(t, err, "23514")
+		}
+		if err := tx.Rollback(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := r.WriteRecords(t.Context(), "org_first", corestore.Serving, func(w eventstore.Writer) error {
+		got, err := w.CreateLandingReceipt(t.Context(), record)
+		if err == nil && got != record {
+			t.Errorf("replayed landing receipt = %+v, want %+v", got, record)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	changed := record
+	changed.MergeSHA = strings.Repeat("b", 40)
+	if err := r.WriteRecords(t.Context(), "org_first", corestore.Serving, func(w eventstore.Writer) error {
+		_, err := w.CreateLandingReceipt(t.Context(), changed)
+		return err
+	}); !errors.Is(err, corestore.ErrRevisionConflict) {
+		t.Fatalf("changed receipt error = %v, want revision conflict", err)
+	}
+	wrongAttempt := record
+	wrongAttempt.AttemptID = "attempt_unrelated"
+	if err := r.WriteRecords(t.Context(), "org_first", corestore.Serving, func(w eventstore.Writer) error {
+		_, err := w.CreateLandingReceipt(t.Context(), wrongAttempt)
+		return err
+	}); !errors.Is(err, eventstore.ErrInvalidRecord) {
+		t.Fatalf("unrelated attempt receipt error = %v, want invalid record", err)
+	}
+	if err := r.ReadRecords(t.Context(), "org_second", corestore.Serving, func(reader eventstore.Reader) error {
+		_, err := reader.LandingReceipt(t.Context(), storedAttempt.ID)
+		return err
+	}); !errors.Is(err, corestore.ErrNotFound) {
+		t.Fatalf("cross-tenant receipt read error = %v, want not found", err)
+	}
+	var got eventstore.LandingReceipt
+	if err := r.ReadRecords(t.Context(), "org_first", corestore.Serving, func(reader eventstore.Reader) error {
+		var err error
+		got, err = reader.LandingReceipt(t.Context(), storedAttempt.ID)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	hydrated, err := f.content.LandingReceipt(t.Context(), got)
+	if err != nil || !reflect.DeepEqual(hydrated, value) {
+		t.Fatalf("landing payload = %+v, %v; want %+v", hydrated, err, value)
+	}
+}
+
+func TestLatestChangeUsesLinkCreationChronology(t *testing.T) {
+	r, _ := repositoryFor(t, template.Database(t), smallPool())
+	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
+		seedRepository(t, r, organization)
+		content := eventstore.NewContent(newHistoryObjects())
+		olderAt := historyAt()
+		entries := make([]struct {
+			id string
+			at time.Time
+		}, 0, 202)
+		entries = append(entries, struct {
+			id string
+			at time.Time
+		}{id: "z_oldest", at: olderAt})
+		for index := range 200 {
+			entries = append(entries, struct {
+				id string
+				at time.Time
+			}{id: fmt.Sprintf("m_%03d", index), at: olderAt.Add(time.Duration(index+1) * time.Second)})
+		}
+		newerAt := olderAt.Add(201 * time.Second)
+		entries = append(entries, struct {
+			id string
+			at time.Time
+		}{id: "a_newest", at: newerAt})
+		rows := make([]eventstore.Change, 0, len(entries))
+		for _, entry := range entries {
+			value := tracker.ChangeRequest{ID: entry.id, OrganizationID: organization, ProjectID: "prj_first", WorkItemID: "wi_first_1", LinkedIssues: []tracker.NativeWorkItemID{"wi_first_1"}, Title: entry.id, Body: "Example", Revision: 1, CreatedAt: entry.at, UpdatedAt: entry.at}
+			record, err := content.PrepareChange(t.Context(), organization, historyJSON(t, value))
+			if err != nil {
+				t.Fatal(err)
+			}
+			rows = append(rows, record)
+		}
+		if err := r.WriteRecords(t.Context(), organization, corestore.Serving, func(w eventstore.Writer) error {
+			for _, record := range rows {
+				_, err := w.CreateChange(t.Context(), record)
+				if err != nil {
+					return err
+				}
+				if err := w.LinkIssue(t.Context(), eventstore.Link{OrganizationID: organization, ProjectID: record.ProjectID, WorkItemID: record.WorkItemID, ChangeID: record.ID}); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		var latest eventstore.Change
+		if err := r.ReadRecords(t.Context(), organization, corestore.Serving, func(reader eventstore.Reader) error {
+			var err error
+			latest, err = reader.LatestChange(t.Context(), "prj_first", "wi_first_1")
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if latest.ID != "a_newest" || !latest.CreatedAt.Equal(newerAt) {
+			t.Fatalf("latest change = %+v, want newest timestamp despite lexically smaller ID and over 200 links", latest)
+		}
 	}
 }
 

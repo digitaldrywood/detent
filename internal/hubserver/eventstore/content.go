@@ -9,6 +9,8 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -50,6 +52,60 @@ func (c *Content) PrepareLinkedIssueSnapshot(ctx context.Context, organization t
 func (c *Content) LinkedIssueSnapshot(ctx context.Context, organization tracker.OrganizationID, ref attachment.ArchiveReference) (tracker.GitHubIssueSnapshot, error) {
 	var value tracker.GitHubIssueSnapshot
 	err := c.read(ctx, organization, ref, &value)
+	return value, err
+}
+
+func (c *Content) PrepareProjectPolicy(ctx context.Context, organization tracker.OrganizationID, value policy.Descriptor) (policystore.Revision, error) {
+	ref, err := c.prepare(ctx, organization, value)
+	return policystore.Revision{OrganizationID: organization, PolicyID: value.ID, PayloadObjectKey: ref.Key, PayloadSHA256: ref.SHA256, PayloadBytes: ref.CompressedSize, PayloadContentBytes: ref.UncompressedSize}, err
+}
+
+func (c *Content) ProjectPolicy(ctx context.Context, row policystore.Revision) (policy.Descriptor, error) {
+	var value policy.Descriptor
+	err := c.read(ctx, row.OrganizationID, Reference(row.PayloadObjectKey, row.PayloadSHA256, row.PayloadBytes, row.PayloadContentBytes), &value)
+	if err == nil && value.ID != row.PolicyID {
+		return policy.Descriptor{}, artifact.ErrIntegrity
+	}
+	return value, err
+}
+
+func (c *Content) PrepareReviewPolicy(ctx context.Context, row ReviewPolicy, value tracker.ChangeReviewPolicy) (ReviewPolicy, error) {
+	if value.ID == "" || value.PolicyID != row.PolicyRevisionID {
+		return ReviewPolicy{}, ErrInvalidRecord
+	}
+	ref, err := c.prepare(ctx, row.OrganizationID, value)
+	row.ReviewPolicyID = value.ID
+	row.PayloadObjectKey, row.PayloadSHA256 = ref.Key, ref.SHA256
+	row.PayloadBytes, row.PayloadContentBytes = ref.CompressedSize, ref.UncompressedSize
+	return row, err
+}
+
+func (c *Content) ReviewPolicy(ctx context.Context, row ReviewPolicy) (tracker.ChangeReviewPolicy, error) {
+	var value tracker.ChangeReviewPolicy
+	err := c.read(ctx, row.OrganizationID, Reference(row.PayloadObjectKey, row.PayloadSHA256, row.PayloadBytes, row.PayloadContentBytes), &value)
+	if err == nil && (value.ID != row.ReviewPolicyID || value.PolicyID != row.PolicyRevisionID) {
+		return tracker.ChangeReviewPolicy{}, artifact.ErrIntegrity
+	}
+	return value, err
+}
+
+func (c *Content) PrepareLandingReceipt(ctx context.Context, row LandingReceipt, value tracker.NativeLandingReceipt) (LandingReceipt, error) {
+	if row.OrganizationID == "" || row.AttemptID == "" || row.VersionID == "" || value.VersionID != row.VersionID || value.MergeSHA == "" {
+		return LandingReceipt{}, ErrInvalidRecord
+	}
+	ref, err := c.prepare(ctx, row.OrganizationID, value)
+	row.MergeSHA = value.MergeSHA
+	row.PayloadObjectKey, row.PayloadSHA256 = ref.Key, ref.SHA256
+	row.PayloadBytes, row.PayloadContentBytes = ref.CompressedSize, ref.UncompressedSize
+	return row, err
+}
+
+func (c *Content) LandingReceipt(ctx context.Context, row LandingReceipt) (tracker.NativeLandingReceipt, error) {
+	var value tracker.NativeLandingReceipt
+	err := c.read(ctx, row.OrganizationID, Reference(row.PayloadObjectKey, row.PayloadSHA256, row.PayloadBytes, row.PayloadContentBytes), &value)
+	if err == nil && (value.VersionID != row.VersionID || value.MergeSHA != row.MergeSHA) {
+		return tracker.NativeLandingReceipt{}, artifact.ErrIntegrity
+	}
 	return value, err
 }
 

@@ -15,7 +15,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
-	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -704,6 +703,7 @@ func (s *Service) selectedChangeDetail(ctx context.Context, scope nativeScope, i
 	}
 	var versions []eventstore.Version
 	var evidence []eventstore.Evidence
+	var policyRows currentChangePolicyRows
 	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
 		versions, err = r.Versions(ctx, change.ID, 0, corestore.MaxPageSize)
@@ -732,6 +732,7 @@ func (s *Service) selectedChangeDetail(ctx context.Context, scope nativeScope, i
 				return corestore.ErrInvalidPage
 			}
 		}
+		policyRows, err = readCurrentChangePolicyRows(ctx, r, scope)
 		return err
 	})
 	if err != nil {
@@ -782,12 +783,39 @@ func (s *Service) selectedChangeDetail(ctx context.Context, scope nativeScope, i
 			break
 		}
 	}
-	var approved policy.Descriptor
-	var rules tracker.ChangeReviewPolicy
-	if current != nil {
-		approved, rules = current.Policy, current.ReviewPolicy
+	currentApproval, err := hydrateCurrentChangeVersionApproval(ctx, content, scope, policyRows, "")
+	if err != nil {
+		return tracker.ChangeDetail{}, projectRecordError(err)
 	}
-	policyID, reviewPolicyID := changerequest.CurrentPolicyIdentities(current, approved, rules)
+	policyID, reviewPolicyID := changerequest.CurrentPolicyIdentities(current, currentApproval.Policy, currentApproval.ReviewPolicy)
 	result.Summary = changerequest.SummarizeCurrentVersion(result, policyID, reviewPolicyID, now, false)
 	return result, nil
+}
+
+func (s *Service) selectedLatestChangeSummary(ctx context.Context, scope nativeScope, item string, now time.Time) (tracker.NativeChangeReference, tracker.ChangeSummary, bool, error) {
+	var latest eventstore.Change
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		latest, err = r.LatestChange(ctx, scope.project, tracker.NativeWorkItemID(item))
+		return err
+	})
+	if errors.Is(err, corestore.ErrNotFound) {
+		return tracker.NativeChangeReference{}, tracker.ChangeSummary{}, false, nil
+	}
+	if err != nil {
+		return tracker.NativeChangeReference{}, tracker.ChangeSummary{}, false, projectRecordError(err)
+	}
+	detail, err := s.selectedChangeDetail(ctx, scope, item, latest.ID, now)
+	if err != nil {
+		return tracker.NativeChangeReference{}, tracker.ChangeSummary{}, false, err
+	}
+	reference := tracker.NativeChangeReference{ChangeID: latest.ID}
+	for _, version := range detail.Versions {
+		if version.ID == detail.Change.CurrentVersion {
+			reference.VersionID = version.ID
+			reference.HeadSHA = version.HeadSHA
+			break
+		}
+	}
+	return reference, detail.Summary, true, nil
 }

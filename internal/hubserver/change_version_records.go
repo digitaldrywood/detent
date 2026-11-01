@@ -156,10 +156,10 @@ func (s *Service) publishChangeVersionRecord(c echo.Context) error {
 			if current.Revision != int64(change.Revision) || current.CurrentVersionID != nil && *current.CurrentVersionID != change.CurrentVersion {
 				return corestore.ErrRevisionConflict
 			}
-			if err := authority.Authorize(ctx, w, scope, change, request, approval, now); err != nil {
+			if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
 				return err
 			}
-			if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
+			if err := authority.Authorize(ctx, w, scope, change, request, approval, now); err != nil {
 				return err
 			}
 			for _, item := range change.LinkedIssues {

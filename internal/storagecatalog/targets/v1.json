@@ -25,7 +25,8 @@
     "internal/hubserver/postgres/migrations/20261101173425_tenant_billing.sql",
     "internal/hubserver/postgres/migrations/20261101184348_work_item_relationships.sql",
     "internal/hubserver/postgres/migrations/20261101192143_conversation_records.sql",
-    "internal/hubserver/postgres/migrations/20261101195407_linked_issue_sources.sql"
+    "internal/hubserver/postgres/migrations/20261101195407_linked_issue_sources.sql",
+    "internal/hubserver/postgres/migrations/20261101204615_project_policy_authority.sql"
   ],
   "tables": {
     "public.ai_credit_reason_references": {
@@ -122,6 +123,24 @@
       },
       "contract": "Exact typed per-issue label membership; bounded indexed reads preserve organization and project isolation.",
       "family": "core",
+      "organization": "organization-owned"
+    },
+    "public.change_review_policy_revisions": {
+      "columns": {
+        "organization_id": "text",
+        "payload_bytes": "bigint",
+        "payload_content_bytes": "bigint",
+        "payload_object_key": "text",
+        "payload_sha256": "text",
+        "policy_id": "text",
+        "project_id": "text",
+        "revision": "bigint",
+        "review_policy_id": "text",
+        "updated_at": "timestamp with time zone",
+        "updated_by": "text"
+      },
+      "contract": "Retain immutable archived review-policy revisions with typed approval identity and time.",
+      "family": "source",
       "organization": "organization-owned"
     }
   },

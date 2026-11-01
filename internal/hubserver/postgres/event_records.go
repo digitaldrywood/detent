@@ -70,29 +70,67 @@ func (s *session) Version(ctx context.Context, change, id string) (eventstore.Ve
 	return versionRecord(row), mapError(ctx, err)
 }
 
+func (s *session) LandingReceipt(ctx context.Context, attemptID string) (eventstore.LandingReceipt, error) {
+	row, err := s.queries.RecordGetLandingReceipt(ctx, pgquery.RecordGetLandingReceiptParams{OrganizationID: s.organization, AttemptID: attemptID})
+	return landingReceiptRecord(row), mapError(ctx, err)
+}
+
+func (s *session) CreateLandingReceipt(ctx context.Context, record eventstore.LandingReceipt) (eventstore.LandingReceipt, error) {
+	if err := s.checkOrganization(record.OrganizationID); err != nil {
+		return eventstore.LandingReceipt{}, err
+	}
+	if record.AttemptID == "" || record.VersionID == "" || len(record.MergeSHA) != 40 && len(record.MergeSHA) != 64 || !artifact.ValidHash(record.MergeSHA, len(record.MergeSHA)) {
+		return eventstore.LandingReceipt{}, eventstore.ErrInvalidRecord
+	}
+	if err := validRecordPayload(record.OrganizationID, record.PayloadObjectKey, record.PayloadSHA256, record.PayloadBytes, record.PayloadContentBytes); err != nil {
+		return eventstore.LandingReceipt{}, err
+	}
+	versionAttempt, err := s.queries.RecordGetVersionAttemptID(ctx, pgquery.RecordGetVersionAttemptIDParams{OrganizationID: s.organization, ID: record.VersionID})
+	if err != nil {
+		return eventstore.LandingReceipt{}, mapError(ctx, err)
+	}
+	if versionAttempt != record.AttemptID {
+		return eventstore.LandingReceipt{}, eventstore.ErrInvalidRecord
+	}
+	row, err := s.queries.RecordInsertLandingReceipt(ctx, pgquery.RecordInsertLandingReceiptParams{OrganizationID: s.organization, AttemptID: record.AttemptID, VersionID: record.VersionID, MergeSha: record.MergeSHA, PayloadObjectKey: record.PayloadObjectKey, PayloadSHA256: record.PayloadSHA256, PayloadBytes: record.PayloadBytes, PayloadContentBytes: record.PayloadContentBytes})
+	if errors.Is(err, sql.ErrNoRows) {
+		row, err = s.queries.RecordGetLandingReceipt(ctx, pgquery.RecordGetLandingReceiptParams{OrganizationID: s.organization, AttemptID: record.AttemptID})
+		if err == nil && landingReceiptRecord(row) != record {
+			return eventstore.LandingReceipt{}, corestore.ErrRevisionConflict
+		}
+	}
+	return landingReceiptRecord(row), mapError(ctx, err)
+}
+
+func landingReceiptRecord(row pgquery.ChangeLandingReceipt) eventstore.LandingReceipt {
+	return eventstore.LandingReceipt{OrganizationID: row.OrganizationID, AttemptID: row.AttemptID, VersionID: row.VersionID, MergeSHA: row.MergeSha, PayloadObjectKey: row.PayloadObjectKey, PayloadSHA256: row.PayloadSHA256, PayloadBytes: row.PayloadBytes, PayloadContentBytes: row.PayloadContentBytes}
+}
+
 func versionRecord(row pgquery.ChangeVersion) eventstore.Version {
 	record := eventstore.Version{
-		OrganizationID:       row.OrganizationID,
-		ID:                   row.ID,
-		ChangeID:             row.ChangeID,
-		Number:               row.Number,
-		HeadSHA:              row.HeadSHA,
-		BaseSHA:              row.BaseSHA,
-		MergeBaseSHA:         row.MergeBaseSHA,
-		Repository:           row.Repository,
-		PolicyRevisionID:     row.PolicyRevisionID,
-		AttemptID:            row.AttemptID,
-		ActorKind:            row.ActorKind,
-		ActorPrincipalID:     row.ActorPrincipalID,
-		ExternalProvider:     row.ExternalProvider,
-		ExternalID:           row.ExternalID,
-		ExternalURL:          row.ExternalURL,
-		CreatedAt:            row.CreatedAt,
-		PayloadObjectKey:     row.PayloadObjectKey,
-		PayloadSHA256:        row.PayloadSHA256,
-		PayloadBytes:         row.PayloadBytes,
-		PayloadContentBytes:  row.PayloadContentBytes,
-		PayloadFormatVersion: row.PayloadFormatVersion,
+		OrganizationID:        row.OrganizationID,
+		ID:                    row.ID,
+		ChangeID:              row.ChangeID,
+		Number:                row.Number,
+		HeadSHA:               row.HeadSHA,
+		BaseSHA:               row.BaseSHA,
+		MergeBaseSHA:          row.MergeBaseSHA,
+		Repository:            row.Repository,
+		PolicyRevisionID:      row.PolicyRevisionID,
+		AttemptID:             row.AttemptID,
+		ActorKind:             row.ActorKind,
+		ActorPrincipalID:      row.ActorPrincipalID,
+		ExternalProvider:      row.ExternalProvider,
+		ExternalID:            row.ExternalID,
+		ExternalURL:           row.ExternalURL,
+		CreatedAt:             row.CreatedAt,
+		PayloadObjectKey:      row.PayloadObjectKey,
+		PayloadSHA256:         row.PayloadSHA256,
+		PayloadBytes:          row.PayloadBytes,
+		PayloadContentBytes:   row.PayloadContentBytes,
+		PayloadFormatVersion:  row.PayloadFormatVersion,
+		ImplementingSessionID: row.ImplementingSessionID,
+		ImplementingMachineID: row.ImplementingMachineID,
 	}
 	if row.SourceObjectKey != nil {
 		record.SourceObjectKey = *row.SourceObjectKey
@@ -142,6 +180,11 @@ func (s *session) Links(ctx context.Context, change string, after tracker.Native
 }
 func (s *session) Change(ctx context.Context, id string) (eventstore.Change, error) {
 	row, err := s.queries.RecordGetChange(ctx, pgquery.RecordGetChangeParams{OrganizationID: s.organization, ID: id})
+	return eventstore.Change(row), mapError(ctx, err)
+}
+
+func (s *session) LatestChange(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID) (eventstore.Change, error) {
+	row, err := s.queries.RecordLatestChange(ctx, pgquery.RecordLatestChangeParams{OrganizationID: s.organization, ProjectID: project, WorkItemID: item})
 	return eventstore.Change(row), mapError(ctx, err)
 }
 
@@ -427,7 +470,8 @@ func (s *session) LinkIssue(ctx context.Context, record eventstore.Link) error {
 	}
 	previous, err := s.queries.RecordGetLink(ctx, pgquery.RecordGetLinkParams{OrganizationID: s.organization, ChangeID: record.ChangeID, WorkItemID: record.WorkItemID})
 	if err == nil {
-		if eventstore.Link(previous) != record {
+		stored := eventstore.Link(previous)
+		if stored.OrganizationID != record.OrganizationID || stored.ProjectID != record.ProjectID || stored.WorkItemID != record.WorkItemID || stored.ChangeID != record.ChangeID {
 			return corestore.ErrRevisionConflict
 		}
 		return nil

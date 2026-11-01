@@ -131,7 +131,13 @@ func readChangePolicy(ctx context.Context, query nativeQueryer, scope nativeScop
 
 func (s *Service) getChangeReviewPolicy(c echo.Context) error {
 	if s.config.TenantRepository != nil {
-		return s.nativeAPIError(c, workItemStorageUnavailable())
+		ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+		defer cancel()
+		result, err := s.changeReviewPolicyRecord(ctx, nativeRequestScope(c))
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		return c.JSON(http.StatusOK, result)
 	}
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 	defer cancel()
@@ -143,12 +149,12 @@ func (s *Service) getChangeReviewPolicy(c echo.Context) error {
 }
 
 func (s *Service) approveChangeReviewPolicy(c echo.Context) error {
-	if s.config.TenantRepository != nil {
-		return s.nativeAPIError(c, workItemStorageUnavailable())
-	}
 	var request tracker.ApproveChangeReviewPolicy
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
+	}
+	if s.config.TenantRepository != nil {
+		return s.approveChangeReviewPolicyRecord(c, request)
 	}
 	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		return s.approveChangeReviewPolicyCommand(ctx, tx, scope, request)

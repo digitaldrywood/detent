@@ -18,6 +18,12 @@ VALUES (sqlc.arg(organization_id), sqlc.arg(project_id), sqlc.arg(work_item_id),
 -- name: RecordGetChange :one
 SELECT * FROM change_requests WHERE organization_id=sqlc.arg(organization_id) AND id=sqlc.arg(id);
 
+-- name: RecordLatestChange :one
+SELECT c.* FROM change_issue_links l
+JOIN change_requests c ON c.organization_id=l.organization_id AND c.project_id=l.project_id AND c.id=l.change_id
+WHERE l.organization_id=sqlc.arg(organization_id) AND l.project_id=sqlc.arg(project_id) AND l.work_item_id=sqlc.arg(work_item_id)
+ORDER BY l.created_at DESC,l.change_id DESC LIMIT 1;
+
 -- name: RecordInsertChange :one
 INSERT INTO change_requests (organization_id, project_id, work_item_id, id, revision, title, current_version_id, evidence_sequence, created_at, updated_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes)
 VALUES (sqlc.arg(organization_id), sqlc.arg(project_id), sqlc.arg(work_item_id), sqlc.arg(id), sqlc.arg(revision), sqlc.arg(title), sqlc.narg(current_version_id), sqlc.arg(evidence_sequence), sqlc.arg(created_at), sqlc.arg(updated_at), sqlc.arg(payload_object_key), sqlc.arg(payload_sha256), sqlc.arg(payload_bytes), sqlc.arg(payload_content_bytes)) RETURNING *;
@@ -31,21 +37,33 @@ ORDER BY c.id LIMIT sqlc.arg(page_limit);
 SELECT * FROM change_issue_links WHERE organization_id=sqlc.arg(organization_id) AND change_id=sqlc.arg(change_id) AND work_item_id=sqlc.arg(work_item_id);
 
 -- name: RecordInsertLink :one
-INSERT INTO change_issue_links (organization_id, project_id, work_item_id, change_id)
-VALUES (sqlc.arg(organization_id), sqlc.arg(project_id), sqlc.arg(work_item_id), sqlc.arg(change_id)) RETURNING *;
+INSERT INTO change_issue_links (organization_id, project_id, work_item_id, change_id, created_at)
+SELECT c.organization_id,c.project_id,sqlc.arg(work_item_id),c.id,c.created_at FROM change_requests c
+WHERE c.organization_id=sqlc.arg(organization_id) AND c.project_id=sqlc.arg(project_id) AND c.id=sqlc.arg(change_id) RETURNING *;
 
 -- name: RecordGetVersion :one
 SELECT * FROM change_versions WHERE organization_id=sqlc.arg(organization_id) AND change_id=sqlc.arg(change_id) AND id=sqlc.arg(id);
 
 -- name: RecordInsertVersion :one
-INSERT INTO change_versions (organization_id, id, change_id, number, head_sha, base_sha, merge_base_sha, repository, policy_revision_id, attempt_id, actor_kind, actor_principal_id, external_provider, external_id, external_url, created_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, source_object_key, source_sha256, source_bytes, source_content_bytes)
-VALUES (sqlc.arg(organization_id), sqlc.arg(id), sqlc.arg(change_id), sqlc.arg(number), sqlc.arg(head_sha), sqlc.arg(base_sha), sqlc.arg(merge_base_sha), sqlc.arg(repository), sqlc.arg(policy_revision_id), sqlc.arg(attempt_id), sqlc.arg(actor_kind), sqlc.arg(actor_principal_id), sqlc.arg(external_provider), sqlc.arg(external_id), sqlc.arg(external_url), sqlc.arg(created_at), sqlc.arg(payload_object_key), sqlc.arg(payload_sha256), sqlc.arg(payload_bytes), sqlc.arg(payload_content_bytes), sqlc.arg(payload_format_version), sqlc.narg(source_object_key), sqlc.narg(source_sha256), sqlc.narg(source_bytes), sqlc.narg(source_content_bytes)) RETURNING *;
+INSERT INTO change_versions (organization_id, id, change_id, number, head_sha, base_sha, merge_base_sha, repository, policy_revision_id, attempt_id, actor_kind, actor_principal_id, external_provider, external_id, external_url, created_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, source_object_key, source_sha256, source_bytes, source_content_bytes, implementing_session_id, implementing_machine_id)
+VALUES (sqlc.arg(organization_id), sqlc.arg(id), sqlc.arg(change_id), sqlc.arg(number), sqlc.arg(head_sha), sqlc.arg(base_sha), sqlc.arg(merge_base_sha), sqlc.arg(repository), sqlc.arg(policy_revision_id), sqlc.arg(attempt_id), sqlc.arg(actor_kind), sqlc.arg(actor_principal_id), sqlc.arg(external_provider), sqlc.arg(external_id), sqlc.arg(external_url), sqlc.arg(created_at), sqlc.arg(payload_object_key), sqlc.arg(payload_sha256), sqlc.arg(payload_bytes), sqlc.arg(payload_content_bytes), sqlc.arg(payload_format_version), sqlc.narg(source_object_key), sqlc.narg(source_sha256), sqlc.narg(source_bytes), sqlc.narg(source_content_bytes), sqlc.arg(implementing_session_id), sqlc.arg(implementing_machine_id)) RETURNING *;
 
 -- name: RecordListVersion :many
 SELECT * FROM change_versions WHERE organization_id=sqlc.arg(organization_id) AND change_id=sqlc.arg(change_id) AND number>sqlc.arg(after) ORDER BY number LIMIT sqlc.arg(page_limit);
 
 -- name: RecordGetVersionByID :one
 SELECT * FROM change_versions WHERE organization_id=sqlc.arg(organization_id) AND change_id=sqlc.arg(change_id) AND id=sqlc.arg(id);
+
+-- name: RecordGetVersionAttemptID :one
+SELECT attempt_id FROM change_versions WHERE organization_id=sqlc.arg(organization_id) AND id=sqlc.arg(id);
+
+-- name: RecordGetLandingReceipt :one
+SELECT * FROM change_landing_receipts WHERE organization_id=sqlc.arg(organization_id) AND attempt_id=sqlc.arg(attempt_id);
+
+-- name: RecordInsertLandingReceipt :one
+INSERT INTO change_landing_receipts (organization_id, attempt_id, version_id, merge_sha, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes)
+VALUES (sqlc.arg(organization_id), sqlc.arg(attempt_id), sqlc.arg(version_id), sqlc.arg(merge_sha), sqlc.arg(payload_object_key), sqlc.arg(payload_sha256), sqlc.arg(payload_bytes), sqlc.arg(payload_content_bytes))
+ON CONFLICT (organization_id, attempt_id) DO NOTHING RETURNING *;
 
 -- name: RecordGetEvidence :one
 SELECT * FROM change_evidence WHERE organization_id=sqlc.arg(organization_id) AND change_id=sqlc.arg(change_id) AND kind=sqlc.arg(kind) AND source_key=sqlc.arg(source_key);
