@@ -49,6 +49,7 @@ var (
 type Config struct {
 	TenantRepository               tenantstore.Repository
 	ProjectParticipants            tenantstore.ProjectParticipants
+	Clock                          func() time.Time
 	dashboardDelivery              *dashboardDeliveryConfig
 	ArchiveReader                  entryauthority.ArchiveReader
 	Content                        entryauthority.ContentHandler
@@ -179,7 +180,10 @@ func (c Config) normalized() Config {
 		c.listen = listenConfig.Listen
 	}
 	if c.now == nil {
-		c.now = time.Now
+		c.now = c.Clock
+		if c.now == nil {
+			c.now = time.Now
+		}
 	}
 	if c.jitter == nil {
 		c.jitter = randomJitter

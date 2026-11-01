@@ -65,7 +65,16 @@ func repositoryRoot(t *testing.T) string {
 // use the ledger. Keep this list file-specific, including method values.
 func laneWriterAllowed(file string) bool {
 	switch file {
-	case "internal/orchestrator/lane_ledger.go", "internal/testutil/fakehub/fakehub.go", "internal/hubclient/native_connector.go":
+	case "internal/orchestrator/lane_ledger.go", "internal/testutil/fakehub/fakehub.go", "internal/hubclient/api/native_connector.go":
+		return true
+	case "internal/hubclient/internal/scenariotest/delivery.go",
+		"internal/hubclient/internal/scenariotest/landing_flow.go",
+		"internal/hubclient/internal/scenariotest/landing_targets.go",
+		"internal/hubclient/internal/scenariotest/native_change.go",
+		"internal/hubclient/internal/scenariotest/native_implementation_review.go",
+		"internal/hubclient/internal/scenariotest/no_change.go",
+		"internal/hubclient/internal/scenariotest/provider_progress.go",
+		"internal/hubclient/internal/scenariotest/settlement.go":
 		return true
 	}
 	return false
