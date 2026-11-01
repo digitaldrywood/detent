@@ -388,9 +388,9 @@ func TestMonthlyBudgetHardStopAndRecovery(t *testing.T) {
 
 func TestMonthlyBudgetCorrectionsAndSettingsAuthority(t *testing.T) {
 	t.Parallel()
-	f := newDefaultNativeFixture(t, Config{})
+	now := time.Date(2026, time.April, 15, 12, 0, 0, 0, time.UTC)
+	f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
 	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-	now := f.service.config.now().UTC()
 	o := costTestObservation("cpu", now.Add(-time.Hour), now)
 	if _, err := recordTestCost(t, f.service.database.db, string(scope.organization), string(scope.project), o, now); err != nil {
 		t.Fatal(err)
