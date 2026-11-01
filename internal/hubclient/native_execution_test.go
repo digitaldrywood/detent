@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -244,6 +245,54 @@ func TestPreProviderCancellationRecordsReleaseReason(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestNativeCheckpointWithoutReadableDiff(t *testing.T) {
+	t.Parallel()
+	for _, state := range []string{"dirty", "clean", "unpushed"} {
+		for _, offline := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/offline=%t", state, offline), func(t *testing.T) {
+				t.Parallel()
+				h := newNativeChangeHub(t, true)
+				issue := h.createInProgress(t, "Recover the checkpoint")
+				h.claim(t, issue.ID)
+				execution := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+				if err := execution.Start(t.Context(), tracker.NativeExecutionIdentity{Role: runner.RoleRework, Backend: "codex", Model: "test"}); err != nil {
+					t.Fatal(err)
+				}
+				execution.SetDiffSource(func(context.Context) (tracker.AttemptDiffRequest, bool) {
+					return tracker.AttemptDiffRequest{}, false
+				})
+				transport := &executionTransport{next: h.native.client.httpClient.Transport}
+				h.native.client.httpClient.Transport = transport
+				transport.down.Store(offline)
+				checkpoint := tracker.NativeCheckpoint{Resume: "fresh_checkout", Availability: "available", Storage: "local_only", WorktreeState: state, HeadSHA: nativeChangeFixtureHead("c"), WorkspaceDigest: nativeChangeFixtureHead("d"), ExternalEffect: "none", EffectState: "none"}
+				if err := execution.Checkpoint(t.Context(), checkpoint); err != nil {
+					t.Fatal(err)
+				}
+				err := execution.Checkpoint(t.Context(), checkpoint)
+				if state == "dirty" {
+					if err != nil {
+						t.Fatalf("dirty recovery checkpoint requires a final diff: %v", err)
+					}
+				} else if err == nil || !strings.Contains(err.Error(), "final attempt diff is unavailable") {
+					t.Fatalf("final %s checkpoint accepted an unavailable diff: %v", state, err)
+				}
+				transport.down.Store(false)
+				execution.SetDiffSource(nativeChangeDiff(checkpoint.HeadSHA, "README.md"))
+				checkpoint.WorktreeState = "unpushed"
+				checkpoint.WorkspaceDigest = nativeChangeFixtureHead("e")
+				if err := execution.Checkpoint(t.Context(), checkpoint); err != nil {
+					t.Fatalf("publish recovered checkpoint: %v", err)
+				}
+				var stored tracker.AttemptDiff
+				err = h.admin.client.request(t.Context(), http.MethodGet, h.admin.base()+"/attempts/"+execution.data.AttemptID+"/diff", nil, &stored)
+				if err != nil || stored.HeadSHA != checkpoint.HeadSHA || len(stored.Files) != 1 || stored.Files[0].Path != "README.md" {
+					t.Fatalf("recovered final diff = %+v, error=%v", stored, err)
+				}
+			})
+		}
 	}
 }
 

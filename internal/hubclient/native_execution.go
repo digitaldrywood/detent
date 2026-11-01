@@ -493,7 +493,7 @@ func (e *nativeExecution) Checkpoint(ctx context.Context, checkpoint tracker.Nat
 	e.worktreeHead = checkpoint.HeadSHA
 	if err := e.flush(ctx); err != nil {
 		if nativeTransportUnavailable(err) {
-			if e.diffSource != nil {
+			if e.diffSource != nil && (e.worktreeState == "clean" || e.worktreeState == "unpushed") {
 				if captureErr := e.captureDiff(ctx); captureErr != nil {
 					return captureErr
 				}
@@ -512,7 +512,7 @@ func (e *nativeExecution) Checkpoint(ctx context.Context, checkpoint tracker.Nat
 		return err
 	}
 	if string(previous) == string(current) {
-		if e.diffSource != nil {
+		if e.diffSource != nil && (e.worktreeState == "clean" || e.worktreeState == "unpushed") {
 			return e.captureDiff(ctx)
 		}
 		return nil
