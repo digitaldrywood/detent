@@ -146,7 +146,7 @@ func TestTargetOnlyBillingSchemaMatchesContracts(t *testing.T) {
 		contract := contract
 		t.Run(table, func(t *testing.T) {
 			schema, name, _ := strings.Cut(table, ".")
-			rows, err := db.QueryContext(t.Context(), `SELECT column_name,data_type FROM information_schema.columns WHERE table_schema=$1 AND table_name=$2 ORDER BY ordinal_position`, schema, name)
+			rows, err := db.QueryContext(t.Context(), `SELECT a.attname,pg_catalog.format_type(a.atttypid,a.atttypmod) FROM pg_catalog.pg_attribute a JOIN pg_catalog.pg_class c ON c.oid=a.attrelid JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=$1 AND c.relname=$2 AND a.attnum>0 AND NOT a.attisdropped ORDER BY a.attnum`, schema, name)
 			if err != nil {
 				t.Fatal(err)
 			}

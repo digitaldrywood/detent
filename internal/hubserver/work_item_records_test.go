@@ -15,12 +15,14 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/issuecontract"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
@@ -954,11 +956,12 @@ func TestWorkItemRecordBodyEditClearsReturnedIssueAction(t *testing.T) {
 
 func TestWorkItemRecordCommentEditConflictAfterConcurrentWrite(t *testing.T) {
 	repository := projectRecordPostgres(t)
-	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}, TenantRepository: repository})
+	service := openPostgresHubTestService(t, repository, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}, TenantRepository: repository})
 	organization, err := service.createNativeOrganizationFor(t.Context(), "Example organization")
 	if err != nil {
 		t.Fatal(err)
 	}
+	seedPostgresHubAdmin(t, repository, service, organization)
 	projects := "/api/v2/organizations/" + string(organization.ID) + "/projects"
 	response := performHubAPIRequest(t, service, http.MethodPost, projects, testHubAdminToken, map[string]any{"idempotency_key": "project", "name": "Example project", "states": nativeFixtureStates()})
 	requireNativeStatus(t, response, http.StatusOK)
@@ -1141,22 +1144,29 @@ func (r rejectedWorkItemRepository) WriteTenant(ctx context.Context, org tracker
 
 func TestWorkItemRecordRollback(t *testing.T) {
 	repository := projectRecordPostgres(t)
-	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}, TenantRepository: repository})
+	service := openPostgresHubTestService(t, repository, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}, TenantRepository: repository})
 	org, err := service.createNativeOrganizationFor(t.Context(), "Example organization")
 	if err != nil {
 		t.Fatal(err)
 	}
+	seedPostgresHubAdmin(t, repository, service, org)
 	base := "/api/v2/organizations/" + string(org.ID) + "/projects"
 	created := performHubAPIRequest(t, service, http.MethodPost, base, testHubAdminToken, map[string]any{"idempotency_key": "project", "name": "Example project", "states": nativeFixtureStates()})
 	requireNativeStatus(t, created, http.StatusOK)
 	var project tracker.NativeProject
 	decodeHubResponse(t, created, &project)
 	base += "/" + string(project.ID) + "/work-items"
-	credential, _, err := service.authenticateAPIToken(t.Context(), testHubAdminToken, "", "")
+	credential, _, err := service.authenticateTenantAPIHash(t.Context(), org.ID, apikey.HashToken(testHubAdminToken), "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "rollback"}, Title: "Example issue", Body: workItemRecordBody}
+	service.config.AccessRepository = nil
+	_, err = service.executeWorkItemRecordMutation(t.Context(), nativeScope{organization: org.ID, project: project.ID, credential: credential}, nativeCommandOptions{}, request.Mutation, request, "")
+	if err == nil {
+		t.Fatal("PostgreSQL mutation accepted missing access authority")
+	}
+	service.config.AccessRepository = repository
 	for _, phase := range []string{"event", "receipt"} {
 		t.Run(phase, func(t *testing.T) {
 			var failedItem tracker.NativeWorkItemID
@@ -1164,6 +1174,15 @@ func TestWorkItemRecordRollback(t *testing.T) {
 			rejected := performHubAPIRequest(t, service, http.MethodPost, base, testHubAdminToken, request)
 			requireNativeStatus(t, rejected, http.StatusInternalServerError)
 			if err := repository.ReadTenant(t.Context(), org.ID, corestore.Serving, func(r tenantstore.Reader) error {
+				hits, err := r.Search(t.Context(), searchstore.Query{Kind: "work", ProjectID: project.ID, Text: "Example", Limit: 10})
+				if err != nil {
+					return err
+				}
+				for _, hit := range hits {
+					if hit.Document.ID != "" {
+						t.Errorf("search document survived rollback: %s", hit.Document.ID)
+					}
+				}
 				number, err := r.NextWorkItemNumber(t.Context(), project.ID)
 				if err != nil {
 					return err
@@ -1206,6 +1225,23 @@ func TestWorkItemRecordRollback(t *testing.T) {
 	decodeHubResponse(t, committed, &issue)
 	if issue.Number != 1 {
 		t.Fatalf("committed number=%d", issue.Number)
+	}
+	service.config.Hosted = &HostedConfig{OrganizationID: string(org.ID)}
+	service.searchRefresh = func(context.Context) (bool, error) {
+		t.Fatal("PostgreSQL search maintenance called SQLite")
+		return false, nil
+	}
+	for _, indexed := range []bool{false, true} {
+		if indexed {
+			service.maintainNativeSearch(t.Context())
+		}
+		page, err := searchstore.NewContent(service.runDetailStore()).Find(t.Context(), tenantSearchRepository{repository}, org.ID, searchstore.Query{Kind: "work", ProjectID: project.ID, Text: "Example", Limit: 10})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(page.Items) != 1 || page.Items[0].Document.WorkItemID != issue.WorkItemID {
+			t.Fatalf("committed search result indexed=%t: %+v", indexed, page.Items)
+		}
 	}
 }
 

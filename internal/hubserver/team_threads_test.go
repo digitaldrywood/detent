@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/testenv"
+	"github.com/digitaldrywood/detent/internal/testenv/searchtest"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -442,31 +443,16 @@ func TestTeamThreadPaginationAndReferences(t *testing.T) {
 	}
 	r := performHubAPIRequest(t, f.service, http.MethodPatch, threadBase(f)+"/"+last.ID, f.token, teamThreadInput{Status: "resolved"})
 	requireNativeStatus(t, r, 200)
-	for _, tc := range []struct {
-		name  string
-		query string
-		want  []string
-	}{
-		{"general scope", "scope=general", []string{first.ID}},
-		{"project scope", "scope=project", []string{middle.ID}},
-		{"project includes issue threads", "project_id=" + string(f.project.ID), []string{last.ID, middle.ID}},
-		{"issue", "issue_id=" + string(issue.WorkItemID), []string{last.ID}},
-		{"open status", "status=open", []string{middle.ID, first.ID}},
-		{"resolved status", "status=resolved", []string{last.ID}},
-		{"combined", "scope=issue&project_id=" + string(f.project.ID) + "&issue_id=" + string(issue.WorkItemID) + "&status=resolved&search=shared", []string{last.ID}},
-		{"conflicting filters", "scope=general&project_id=" + string(f.project.ID), nil},
-		{"bound project value", "project_id=anything%27%20OR%201=1--", nil},
-		{"bound issue value", "issue_id=anything%27%20OR%201=1--", nil},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			r := performHubAPIRequest(t, f.service, http.MethodGet, threadBase(f)+"?"+tc.query, f.token, nil)
+	for _, tc := range searchtest.ThreadFilters(string(f.project.ID), string(issue.WorkItemID), first.ID, middle.ID, last.ID) {
+		t.Run(tc.Name, func(t *testing.T) {
+			r := performHubAPIRequest(t, f.service, http.MethodGet, threadBase(f)+"?"+tc.Query, f.token, nil)
 			requireNativeStatus(t, r, 200)
 			var page teamThreadPage
 			decodeHubResponse(t, r, &page)
-			if len(page.Threads) != len(tc.want) {
-				t.Fatalf("filtered=%+v want %v", page, tc.want)
+			if len(page.Threads) != len(tc.Want) {
+				t.Fatalf("filtered=%+v want %v", page, tc.Want)
 			}
-			for i, want := range tc.want {
+			for i, want := range tc.Want {
 				if page.Threads[i].ID != want {
 					t.Fatalf("thread %d=%s want %s", i, page.Threads[i].ID, want)
 				}

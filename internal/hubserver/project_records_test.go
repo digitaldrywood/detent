@@ -90,6 +90,42 @@ func projectRecordPostgres(t *testing.T) *postgres.Repository {
 	return repository
 }
 
+func openPostgresHubTestService(t *testing.T, repository *postgres.Repository, config Config) *Service {
+	t.Helper()
+	config.TenantRepository = repository
+	service := openTestService(t, config)
+	service.config.AccessRepository = repository
+	return service
+}
+
+func seedPostgresHubAdmin(t *testing.T, repository tenantstore.Repository, service *Service, organization nativeOrganization) {
+	t.Helper()
+	now := service.config.now().UTC()
+	err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization.ID, Name: organization.Name, Slug: organization.Slug, Local: true, CreatedAt: now}); err != nil {
+			return err
+		}
+		if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: organization.ID, ProviderID: "provider_" + string(organization.ID)}); err != nil {
+			return err
+		}
+		return w.CreateAccessCredential(t.Context(), accessstore.Credential{
+			OrganizationID: organization.ID,
+			ID:             "test_hub_admin",
+			Name:           "Hub test administrator",
+			Hash:           apikey.HashToken(testHubAdminToken),
+			Scope:          "admin",
+			CreatedAt:      now,
+			UpdatedAt:      now,
+			KeyScope:       "admin",
+			ProjectAccess:  "all",
+			Kind:           "service",
+		})
+	})
+	if err != nil {
+		t.Fatalf("seed PostgreSQL Hub administrator: %v", err)
+	}
+}
+
 func TestProjectRecordBackendParity(t *testing.T) {
 	for _, backend := range []string{"sqlite", "postgres"} {
 		t.Run(backend, func(t *testing.T) {

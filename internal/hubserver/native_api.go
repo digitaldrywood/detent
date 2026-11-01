@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -113,6 +114,9 @@ func isNativeConflict(err error) bool {
 }
 
 func (s *Service) nativeAPIError(c echo.Context, err error, attributes ...any) error {
+	if errors.Is(err, searchstore.ErrIndexPending) {
+		return c.JSON(http.StatusServiceUnavailable, apiErrorResponse{Code: "not_ready", Message: "Search index refresh is pending"})
+	}
 	var archive *nativeArchiveError
 	if errors.As(err, &archive) {
 		return c.JSON(http.StatusServiceUnavailable, struct {

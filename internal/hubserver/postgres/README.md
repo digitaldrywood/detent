@@ -960,3 +960,149 @@ and receipt; it never walks history or rebuilds a projection. A comment read loa
 at most one page plus its boundary record and hydrates those versions after
 releasing the reader. Shared locks cover database work only. These contracts
 preserve INV-1, INV-16, INV-18 and INV-21 without changing orchestrator controls.
+## Scoped work and team-thread search
+
+`../searchstore` owns search records, content preparation, ranked work-item
+reads, thread reads and the existing one-item refresher. `ReadSearch` and
+`WriteSearch` share the core repository's tenant scope and connection budgets.
+Prepare the compressed content object before the owning source transaction;
+hydrate selected snippets after the read transaction returns.
+
+Work search indexes one document per work item. Its issue title, body, labels
+and visible comments share a 64 KiB UTF-8 byte budget. Title and numeric identity
+remain available even when the body fills the budget. The title retains its
+weight; comments contribute body text in binary source-ID order. Events and
+changes keep their existing searchable content in that same bounded aggregate.
+Thread search continues to index titles only. The tokenizer preserves SQLite
+Unicode61 classification, case folding, diacritic removal and Porter stemming.
+Existing Unicode and snippet fixtures compare the implementations.
+
+`search_documents` retains source identities, revisions, typed scope and object
+integrity metadata. Only issue aggregate documents and threads own searchable
+vectors, scoped postings and adjacency rows; comments are source inputs rather
+than competing search documents. Aggregates have separate compressed object
+receipts, so refreshing them never replaces an issue's original source content.
+Comment edits, source deletion and comment visibility changes invalidate the
+owning issue's aggregate through the existing refresh owner. A placeholder issue
+provides the same aggregate identity when only comment sources exist. A later
+issue source replaces that placeholder. Publication compares the source receipt,
+revision and generation, fencing concurrent changes and delete/reuse races.
+
+Each refresh reads at most 32 source objects. A typed generation and source cursor
+retain a verified partial aggregate receipt between ticks; a changed generation
+restarts from the current source. Only the completed aggregate publishes search
+postings. A pending query that needs more than one source page reports index
+refresh pending instead of reading an unbounded history or omitting its tail.
+
+Project-name and project-ID labels followed by `#number` preserve
+case-insensitive substring matching through tenant-qualified literal grams.
+Project renames enqueue the existing bounded parent refresh. Word lexemes retain
+tenant/project prefixes. Lexemes of 2 KiB or more including those prefixes are
+omitted from vectors; full bounded word statistics and literal grams publish to
+typed postings separately. Vector construction deduplicates lexemes, bounds
+positions and accounts for PostgreSQL's 1 MiB vector limit.
+
+Search pagination uses bounded examined-row windows for each term and scope.
+Each work-item document has one deterministic owning term/lexeme stream; its
+aggregate supplies coverage and ranking. There is no canonical source selection
+or emitted-work-item history in the cursor. Result pages replay a bounded batch
+until consumed, then advance each stream's document identity, impact, timestamp
+and exhaustion state. Cursors from the earlier per-source format are rejected.
+Visibility and text filtering advance the examined boundary
+even when a page is empty. Thread cursors keep time-and-ID pagination.
+
+Prefix expansion examines at most 128 lexemes per term and scope per window.
+The 2,000-candidate budget is divided among those lexemes. Each lexeme selects
+its candidates by impact, and the combined candidates receive coverage/BM25
+ranking. This is approximate even when a prefix expands to fewer than 128
+lexemes: a high-impact match beyond one lexeme's allocation can appear on a
+later page than a lower-impact match from another lexeme. Prefixes expanding
+beyond 128 lexemes also continue across lexeme windows. Continuation preserves
+reachability, but ranking across candidate and lexeme windows is not global.
+The beyond-budget test asserts complete, duplicate-free reachability rather
+than an exact first result.
+Each cursor retains at most 128 lexeme positions per term and scope; exhausted
+lexemes advance to the next window without discarding remaining matches.
+
+`search_postings` has tenant-leading indexes over scope, lexeme and either impact
+or thread time. Scope keys encode project, work-item, search kind, thread scope
+and status, archive selection and reporter identity. Each term window divides
+its 2,000-candidate budget among the expanded lexemes. Each lexeme seek includes
+one lookahead; work continuation uses separate bounded seeks for the current
+impact's remaining IDs and lower impacts. Rare terms keep independent windows
+when common terms overflow. A page can be empty and still carry a cursor.
+
+Ordinary nonempty searches check bounded candidate document markers through
+`search_documents_vector_idx`. Each GIN query uses at most 2,000 markers from
+one requested term and scope; it does not scan the unbounded posting list of a
+common text prefix. Scoped postings supply the text candidates, and typed
+statistics or bounded source objects verify each match. Markers are lookup
+hints; exact document IDs and current tenant/source authorization remain
+mandatory. Within the combined bounded candidate set, final work ordering
+preserves exact numeric lookup priority, then sorts by matched-term count
+(descending), a BM25 approximation over candidate statistics (ascending), issue
+number (descending) and binary document ID (ascending). Pagination uses that
+same ordering. Scores can differ from SQLite corpus BM25. Coverage and stable ties apply
+within each candidate window; pagination does not promise corpus-wide rank.
+
+Provision `roles.sql` before applying the search migrations. Its stable,
+read-only `search_index_candidates` helper belongs to `detent_platform`, fixes
+its search path to `pg_catalog` and denies public execution. It derives the
+tenant exclusively from the transaction-local setting. This avoids the runtime
+RLS barrier around PostgreSQL's non-leakproof text-search operator. The helper
+checks current project, issue and comment visibility after its bounded indexed
+lookups. Runtime fetches the returned IDs through forced RLS and checks those
+facts again. Startup verifies the helper's owner, security mode, search path
+and execution grant; runtime credentials gain no platform membership or pool.
+The separately provisioned functions persist across schema rollback, like roles.
+
+Issue and thread writes publish metadata-only pending/listing postings atomically.
+Comment visibility changes update one source row and invalidate its aggregate.
+Archive, reporter and project changes enqueue one parent cursor rather than
+rewriting history. `search_scope_documents` is a
+typed, trigger-maintained adjacency index with only a parent-leading primary key;
+it finds the next child without a competing chronological index scanning other
+parents. Issue and thread deletion removes their adjacency variants and postings.
+The same refresh owner selects either a pending document or one cursor child.
+Before object I/O it advances the attempt order. A cursor child transfers into
+the source pending index before its cursor advances, so a failed object cannot
+hold later children. Errors remain retryable through that owner. Publication
+compares the source revision, generation and object receipt in a short
+transaction, with object reads and tokenization outside database connections and locks (INV-3,
+INV-18). Current visibility remains authoritative while cursors catch up;
+bounded cursor reads supply candidates in the new scope before reindexing.
+
+At INV-21 scale, 10,000 tenants/runners share the same fixed pool and budgets.
+Candidate streams depend on at most 32 word terms, 32 literal grams and 101
+requested scope variants. Each stream contributes at most 2,000 candidates
+and intersects at most 2,000 document markers. Each indexed stream seek reads
+at most 2,001 postings; work continuation combines at most two such seeks.
+Prefix expansion visits at most 129 lexemes per term and scope, including one
+lookahead, and ranks postings from at most 128 lexemes in each window.
+Stream ownership examines only each candidate's bounded document postings,
+with one indexed frontier read per requested term. A work
+request has one project scope and at most 64 word/literal terms, for at most 128,000 posting
+candidates. A thread request has at most 32 terms and 101 scopes, for at most
+6,464,000 posting candidates. Ordinary single-scope, single-lexeme requests
+return at most 2,000 matching GIN entries; excluded history does not grow that
+candidate work. Prefix scans have no fixed vocabulary cutoff. Cursor fallback
+examines at most 1,000 parents and one indexed child per parent. Each helper
+returns the union of its bounded stream windows and the refresh candidates,
+plus one boundary per nonempty stream when another window remains. A search
+combines indexed and pending windows with one numeric match, then returns at
+most 200 deduplicated results. Structural work-item identity and deterministic
+stream ownership prevent duplicates without a growing set of emitted IDs in
+the cursor. Empty thread pages use the same scoped, time-ordered postings
+and binary-ID keysets. Every document publication is bounded by its 64 KiB
+content, finite scope variants and vector budget. Archive and project changes
+retain one parent cursor; source changes invalidate one issue. A refresh
+handles one work-item or thread document. Aggregate source reads use
+an indexed keyset in batches of at most 32 visible sources, release the read
+transaction before object I/O, and stop at the 64 KiB budget. Each consumed source
+uses at least one separator byte, bounding even empty-source walks by 65,535
+inputs independently of history or fleet size. Source visibility is indexed and
+maintained with the owning comment, so deleted history is not scanned.
+All derived fields are typed and SQL reads no stored JSON (INV-20).
+
+Backend selection, runtime wiring and whole-database cursor/import cutover
+remain with the shared PostgreSQL runtime cutover.

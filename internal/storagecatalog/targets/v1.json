@@ -21,6 +21,12 @@
     "internal/hubserver/postgres/migrations/20261101173526_access_import_checkpoint.sql": "b903abf0828fe30a2a7faf15a75bbf47cf5d3682b9d81a029dae6fd7a35101fa"
   },
   "migrations": [
+    "internal/hubserver/postgres/migrations/20261031235601_scoped_work_search.sql",
+    "internal/hubserver/postgres/migrations/20261101013339_bounded_search_candidates.sql",
+    "internal/hubserver/postgres/migrations/20261101024858_search_vector_candidate_identity.sql",
+    "internal/hubserver/postgres/migrations/20261101033812_search_metadata_literals.sql",
+    "internal/hubserver/postgres/migrations/20261101050746_search_canonical_sources.sql",
+    "internal/hubserver/postgres/migrations/20261101060929_search_work_item_documents.sql",
     "internal/hubserver/postgres/migrations/20261101172130_expose_platform_schema_version.sql",
     "internal/hubserver/postgres/migrations/20261101173425_tenant_billing.sql",
     "internal/hubserver/postgres/migrations/20261101184348_work_item_relationships.sql",
@@ -30,11 +36,12 @@
     "internal/hubserver/postgres/migrations/20261101204615_project_policy_authority.sql",
     "internal/hubserver/postgres/migrations/20261101215438_runner_identity_enrollment.sql",
     "internal/hubserver/postgres/migrations/20261101215802_organization_model_selection.sql",
-    "internal/hubserver/postgres/migrations/20261101224723_request_usage_retention.sql",
     "internal/hubserver/postgres/migrations/20261101224000_runner_project_observations.sql",
     "internal/hubserver/postgres/migrations/20261101224500_runner_routing_records.sql",
+    "internal/hubserver/postgres/migrations/20261101224723_request_usage_retention.sql",
     "internal/hubserver/postgres/migrations/20261101225000_runner_provider_reports.sql",
-    "internal/hubserver/postgres/migrations/20261101225500_runner_capacity_configuration.sql"
+    "internal/hubserver/postgres/migrations/20261101225500_runner_capacity_configuration.sql",
+    "internal/hubserver/postgres/migrations/20261101231201_search_refresh_progress.sql"
   ],
   "tables": {
     "public.ai_credit_reason_references": {
@@ -55,6 +62,24 @@
       },
       "contract": "Store immutable reason-object metadata beside the idempotent typed credit transaction; never retain reason text inline.",
       "family": "billing",
+      "organization": "organization-owned"
+    },
+    "public.change_review_policy_revisions": {
+      "columns": {
+        "organization_id": "text",
+        "payload_bytes": "bigint",
+        "payload_content_bytes": "bigint",
+        "payload_object_key": "text",
+        "payload_sha256": "text",
+        "policy_id": "text",
+        "project_id": "text",
+        "review_policy_id": "text",
+        "revision": "bigint",
+        "updated_at": "timestamp with time zone",
+        "updated_by": "text"
+      },
+      "contract": "Retain immutable archived review-policy revisions with typed approval identity and time.",
+      "family": "source",
       "organization": "organization-owned"
     },
     "public.conversation_content_objects": {
@@ -133,32 +158,14 @@
       "family": "core",
       "organization": "organization-owned"
     },
-    "public.change_review_policy_revisions": {
+    "public.runner_availability_window_slots": {
       "columns": {
+        "capacity": "integer",
         "organization_id": "text",
-        "payload_bytes": "bigint",
-        "payload_content_bytes": "bigint",
-        "payload_object_key": "text",
-        "payload_sha256": "text",
-        "policy_id": "text",
-        "project_id": "text",
-        "revision": "bigint",
-        "review_policy_id": "text",
-        "updated_at": "timestamp with time zone",
-        "updated_by": "text"
+        "runner_id": "text",
+        "slot_key": "text"
       },
-      "contract": "Retain immutable archived review-policy revisions with typed approval identity and time.",
-      "family": "source",
-      "organization": "organization-owned"
-    },
-    "public.runner_lease_assignments": {
-      "columns": {
-        "assigned_at": "timestamp with time zone",
-        "lease_id": "text",
-        "organization_id": "text",
-        "runner_id": "text"
-      },
-      "contract": "Retain the runner owner and assignment time for each tenant-scoped lease.",
+      "contract": "Retain typed per-window capacity slots for each tenant runner.",
       "family": "fleet",
       "organization": "organization-owned"
     },
@@ -173,32 +180,27 @@
       "family": "fleet",
       "organization": "organization-owned"
     },
-    "public.runner_availability_window_slots": {
+    "public.runner_lease_assignments": {
       "columns": {
-        "capacity": "integer",
+        "assigned_at": "timestamp with time zone",
+        "lease_id": "text",
         "organization_id": "text",
-        "runner_id": "text",
-        "slot_key": "text"
+        "runner_id": "text"
       },
-      "contract": "Retain typed per-window capacity slots for each tenant runner.",
+      "contract": "Retain the runner owner and assignment time for each tenant-scoped lease.",
       "family": "fleet",
       "organization": "organization-owned"
     },
-    "public.runner_provider_reports": {
+    "public.runner_provider_model_efforts": {
       "columns": {
-        "account_alias": "text",
-        "availability": "text",
         "backend": "text",
-        "billing": "text",
-        "max_concurrent": "integer",
-        "observed_at": "timestamp with time zone",
+        "effort": "text",
+        "model_id": "text",
         "organization_id": "text",
-        "provider": "text",
-        "reset_at": "timestamp with time zone",
-        "runner_id": "text",
-        "shared_account_alias": "text"
+        "position": "integer",
+        "runner_id": "text"
       },
-      "contract": "Retain the latest typed provider availability report for each tenant runner backend.",
+      "contract": "Retain typed reasoning efforts supported by each reported tenant runner model.",
       "family": "fleet",
       "organization": "organization-owned"
     },
@@ -220,17 +222,107 @@
       "family": "fleet",
       "organization": "organization-owned"
     },
-    "public.runner_provider_model_efforts": {
+    "public.runner_provider_reports": {
       "columns": {
+        "account_alias": "text",
+        "availability": "text",
         "backend": "text",
-        "effort": "text",
-        "model_id": "text",
+        "billing": "text",
+        "max_concurrent": "integer",
+        "observed_at": "timestamp with time zone",
         "organization_id": "text",
-        "position": "integer",
-        "runner_id": "text"
+        "provider": "text",
+        "reset_at": "timestamp with time zone",
+        "runner_id": "text",
+        "shared_account_alias": "text"
       },
-      "contract": "Retain typed reasoning efforts supported by each reported tenant runner model.",
+      "contract": "Retain the latest typed provider availability report for each tenant runner backend.",
       "family": "fleet",
+      "organization": "organization-owned"
+    },
+    "public.search_documents": {
+      "columns": {
+        "aggregate_bytes": "bigint",
+        "aggregate_content_bytes": "bigint",
+        "aggregate_object_key": "text",
+        "aggregate_sha256": "text",
+        "change_id": "text",
+        "comment_id": "text",
+        "event_id": "text",
+        "generation": "bigint",
+        "id": "text",
+        "indexed_revision": "bigint",
+        "kind": "text",
+        "organization_id": "text",
+        "payload_bytes": "bigint",
+        "payload_content_bytes": "bigint",
+        "payload_object_key": "text",
+        "payload_sha256": "text",
+        "placeholder": "boolean",
+        "progress_after_id": "text",
+        "progress_bytes": "bigint",
+        "progress_content_bytes": "bigint",
+        "progress_generation": "bigint",
+        "progress_object_key": "text",
+        "progress_sha256": "text",
+        "project_id": "text",
+        "refresh_order": "bigint",
+        "revision": "bigint",
+        "scope": "text",
+        "source_id": "text",
+        "source_vector": "tsvector",
+        "source_visible": "boolean",
+        "status": "text",
+        "term_frequencies": "bigint[]",
+        "terms": "text[]",
+        "title": "text",
+        "token_count": "bigint",
+        "updated_at": "timestamp with time zone",
+        "updated_at_submicrosecond": "bigint",
+        "vector": "tsvector",
+        "work_item_id": "text"
+      },
+      "contract": "Rebuild tenant-scoped approximate search from retained canonical source content with bounded candidate and refresh work.",
+      "family": "search",
+      "organization": "organization-owned"
+    },
+    "public.search_postings": {
+      "columns": {
+        "document_id": "text",
+        "impact": "double precision",
+        "organization_id": "text",
+        "scope": "text",
+        "term": "text",
+        "updated_at": "timestamp with time zone",
+        "updated_at_submicrosecond": "bigint"
+      },
+      "contract": "Rebuild tenant-scoped approximate search from retained canonical source content with bounded candidate and refresh work.",
+      "family": "search",
+      "organization": "organization-owned"
+    },
+    "public.search_scope_documents": {
+      "columns": {
+        "id": "text",
+        "organization_id": "text",
+        "project_id": "text",
+        "work_item_id": "text"
+      },
+      "contract": "Rebuild tenant-scoped approximate search from retained canonical source content with bounded candidate and refresh work.",
+      "family": "search",
+      "organization": "organization-owned"
+    },
+    "public.search_scope_refresh": {
+      "columns": {
+        "after_id": "text",
+        "archived": "boolean",
+        "organization_id": "text",
+        "principal_id": "text",
+        "project_id": "text",
+        "refresh_order": "bigint",
+        "work_item_id": "text"
+      },
+      "contract": "Rebuild tenant-scoped approximate search from retained canonical source content with bounded candidate and refresh work.",
+      "family": "search",
       "organization": "organization-owned"
     }
   },

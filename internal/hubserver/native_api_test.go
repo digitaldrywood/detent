@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -302,6 +303,7 @@ func TestNativeAPIError(t *testing.T) {
 		{"invalid claim", "invalid_request", "Request is invalid", "WARN", tracker.ErrInvalidClaimRequest, http.StatusUnprocessableEntity},
 		{"revision conflict", "revision_conflict", "Resource has changed", "WARN", nativeConflict(7), http.StatusConflict},
 		{"not found", "not_found", "Resource was not found", "", sql.ErrNoRows, http.StatusNotFound},
+		{"search refresh pending", "not_ready", "Search index refresh is pending", "", searchstore.ErrIndexPending, http.StatusServiceUnavailable},
 		{"internal error", "native_operation_failed", "Native operation could not be completed", "ERROR", errors.New("database unavailable"), http.StatusInternalServerError},
 	} {
 		t.Run(test.name, func(t *testing.T) {

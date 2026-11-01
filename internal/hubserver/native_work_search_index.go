@@ -13,6 +13,9 @@ import (
 
 	"modernc.org/sqlite"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -75,15 +78,27 @@ func requireNativeSearchIndex(ctx context.Context, q nativeQueryer, scope native
 	return nil
 }
 
+type tenantSearchRepository struct {
+	tenantstore.Repository
+}
+
+func (r tenantSearchRepository) ReadSearch(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, read func(searchstore.Reader) error) error {
+	return r.ReadTenant(ctx, organization, workload, func(reader tenantstore.Reader) error { return read(reader) })
+}
+
+func (r tenantSearchRepository) WriteSearch(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, write func(searchstore.Writer) error) error {
+	return r.WriteTenant(ctx, organization, workload, func(writer tenantstore.Writer) error { return write(writer) })
+}
+
 func (s *Service) maintainNativeSearch(ctx context.Context) {
-	for range nativeSearchRebuildBatch {
-		more, err := s.database.backfillNativeSearch(ctx)
-		if err != nil && !errors.Is(err, context.Canceled) {
-			s.config.Logger.ErrorContext(ctx, "rebuild scoped search index", "error", err)
-		}
-		if err != nil || !more {
-			return
-		}
+	var err error
+	if s.config.TenantRepository != nil {
+		_, err = searchstore.NewContent(s.runDetailStore()).RefreshOne(s.runDetailContext(ctx), tenantSearchRepository{s.config.TenantRepository}, s.accessOrganization())
+	} else {
+		_, err = s.searchRefresh(ctx)
+	}
+	if err != nil && !errors.Is(err, context.Canceled) {
+		s.config.Logger.ErrorContext(ctx, "rebuild scoped search index", "error", err)
 	}
 }
 

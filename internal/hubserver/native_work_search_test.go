@@ -24,7 +24,9 @@ import (
 	"modernc.org/libc"
 	sqlite3 "modernc.org/sqlite/lib"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/testenv/searchtest"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -1379,6 +1381,20 @@ UNION ALL SELECT term,col,offset FROM search_scoped_token_vocabulary WHERE doc=?
 			if err := pool.QueryRowContext(t.Context(), "SELECT native_search_lexemes(?),native_search_token_matches(native_search_lexemes(?),'')", test.content, test.content).Scan(&lexemes, &count); err != nil {
 				t.Fatal(err)
 			}
+			expected := make(map[string]int64)
+			for _, term := range original {
+				expected[term] += 5
+			}
+			statistics := searchstore.Describe(searchstore.Document{OrganizationID: "example", Kind: "thread"}, searchstore.Text{Title: test.content})
+			if statistics.Tokens != int64(len(original)) || len(statistics.Terms) != len(expected) {
+				t.Fatalf("PostgreSQL tokenizer counts=%+v want tokens=%d distinct=%d", statistics, len(original), len(expected))
+			}
+			for i, term := range statistics.Terms {
+				if statistics.Frequencies[i] != expected[term] {
+					t.Fatalf("PostgreSQL Unicode61/Porter term=%q frequency=%d want=%d", term, statistics.Frequencies[i], expected[term])
+				}
+			}
+
 			if lexemes != strings.Join(original, " ") || count != len(original) {
 				t.Fatalf("fallback lexemes=%q count=%d want=%v", lexemes, count, original)
 			}
@@ -1388,21 +1404,17 @@ UNION ALL SELECT term,col,offset FROM search_scoped_token_vocabulary WHERE doc=?
 
 func TestNativeWorkSearchSnippet(t *testing.T) {
 	pool := nativeSearchProbe(t)
-	for _, test := range []struct{ name, title, body, query, want string }{
-		{"stemming", "Relational runners", "", `"relation"*`, "[Relational] runners"},
-		{"diacritics", "Café résumé", "", `"cafe"*`, "[Café] résumé"},
-		{"body coverage", "Runner", "Runner checkout deadlocks", `"runner"* OR "checkout"*`, "[Runner] [checkout] deadlocks"},
-		{"Unicode offsets", strings.Repeat("é", 80) + " runners", "", `"runner"*`, strings.Repeat("é", 30) + " [runners]"},
-		{"embedded NUL", "prefix\x00runners", "", `"runner"*`, "prefix\x00[runners]"},
-		{"plain terms", "repository association", "", `"repository" OR "association"`, "[repository] [association]"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
+	for _, test := range searchtest.Snippets() {
+		t.Run(test.Name, func(t *testing.T) {
 			var snippet string
-			if err := pool.QueryRowContext(t.Context(), "SELECT native_search_snippet(?,?,?)", test.title, test.body, test.query).Scan(&snippet); err != nil {
+			if err := pool.QueryRowContext(t.Context(), "SELECT native_search_snippet(?,?,?)", test.Title, test.Body, test.Expression).Scan(&snippet); err != nil {
 				t.Fatal(err)
 			}
-			if snippet != test.want {
-				t.Fatalf("snippet=%q want=%q", snippet, test.want)
+			if got := searchstore.Snippet(searchstore.Text{Title: test.Title, Body: test.Body}, test.Query); got != test.Want {
+				t.Fatalf("PostgreSQL snippet=%q want=%q", got, test.Want)
+			}
+			if snippet != test.Want {
+				t.Fatalf("snippet=%q want=%q", snippet, test.Want)
 			}
 		})
 	}
@@ -1952,27 +1964,20 @@ func TestNativeSearchPostingPrefixes(t *testing.T) {
 	}
 	drainTestNativeSearch(t, f.service)
 	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-	for _, test := range []struct {
-		name, query string
-		plain       bool
-		want        tracker.NativeWorkItemID
-	}{
-		{"long prefix one", strings.Repeat("a", 64) + "o", false, first.WorkItemID},
-		{"long prefix two", strings.Repeat("a", 64) + "t", false, second.WorkItemID},
-		{"long exact", strings.Repeat("a", 64) + "one", true, first.WorkItemID},
-		{"unicode prefix", "café", false, first.WorkItemID},
-		{"exact excludes longer tokens", "tokenalpha", true, first.WorkItemID},
-		{"prefix excludes adjacent terms", "tokenb", false, first.WorkItemID},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			expressions := nativeSearchExpressions(test.query)
-			if test.plain {
+	for _, test := range searchtest.Prefixes() {
+		t.Run(test.Name, func(t *testing.T) {
+			want := second.WorkItemID
+			if test.First {
+				want = first.WorkItemID
+			}
+			expressions := nativeSearchExpressions(test.Query)
+			if test.Exact {
 				expressions[0] = strings.TrimSuffix(expressions[0], "*")
 			}
 			statement, args := nativeSearchHits(scope, "", expressions)
 			ids, err := nativePageIDs(t.Context(), f.service.database.reader, statement+"SELECT i.native_id FROM ranked r JOIN issues i ON i.id=r.issue_id WHERE hit=1", args...)
-			if err != nil || !slices.Equal(ids, []string{string(test.want)}) {
-				t.Fatalf("matches=%v want=%s err=%v", ids, test.want, err)
+			if err != nil || !slices.Equal(ids, []string{string(want)}) {
+				t.Fatalf("matches=%v want=%s err=%v", ids, want, err)
 			}
 		})
 	}

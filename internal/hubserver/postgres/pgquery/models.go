@@ -1547,6 +1547,20 @@ type RequestMinute struct {
 	Histogram      []int64
 }
 
+type RunnerAvailabilityWindow struct {
+	OrganizationID tracker.OrganizationID
+	RunnerID       string
+	Position       int32
+	WindowSpec     string
+}
+
+type RunnerAvailabilityWindowSlot struct {
+	OrganizationID tracker.OrganizationID
+	RunnerID       string
+	SlotKey        string
+	Capacity       int32
+}
+
 type RunnerEnrollment struct {
 	OrganizationID tracker.OrganizationID
 	ID             string
@@ -1570,22 +1584,37 @@ type RunnerEnrollmentProject struct {
 }
 
 type RunnerIdentity struct {
-	OrganizationID   tracker.OrganizationID
-	RunnerID         string
-	MachineID        string
-	TokenID          string
-	EnrollmentID     string
-	Scope            string
-	Operations       []string
-	DisplayName      string
-	CapacityLimit    int64
-	ReportedCapacity int64
-	Os               string
-	Architecture     string
-	CreatedAt        time.Time
-	ExpiresAt        time.Time
-	LastHeartbeatAt  time.Time
-	RemovedAt        *time.Time
+	OrganizationID             tracker.OrganizationID
+	RunnerID                   string
+	MachineID                  string
+	TokenID                    string
+	EnrollmentID               string
+	Scope                      string
+	Operations                 []string
+	DisplayName                string
+	CapacityLimit              int64
+	ReportedCapacity           int64
+	Os                         string
+	Architecture               string
+	CreatedAt                  time.Time
+	ExpiresAt                  time.Time
+	LastHeartbeatAt            time.Time
+	RemovedAt                  *time.Time
+	State                      string
+	Revision                   int64
+	Tags                       []string
+	MachineUse                 string
+	IsolationTier              string
+	HostServices               []string
+	AvailabilityTimezone       string
+	AvailabilityHardDeadline   string
+	CapacityConfigRevision     *string
+	CapacityConfigLocalLimit   sql.NullInt32
+	CapacityConfigClientLimit  sql.NullInt32
+	CapacityConfigRuntimeLimit sql.NullInt32
+	CapacityConfigManageable   sql.NullBool
+	CapacityConfigConstraint   *string
+	CapacityConfigObservedAt   *time.Time
 }
 
 type RunnerIdentityEvent struct {
@@ -1602,6 +1631,98 @@ type RunnerLeaseAssignment struct {
 	LeaseID        string
 	RunnerID       string
 	AssignedAt     time.Time
+}
+
+type RunnerProjectCapacityLimit struct {
+	OrganizationID tracker.OrganizationID
+	RunnerID       string
+	ProjectID      tracker.ProjectID
+	CapacityLimit  int32
+}
+
+type RunnerProjectDiagnosticAttempt struct {
+	OrganizationID      tracker.OrganizationID
+	RunnerID            string
+	ProjectID           tracker.ProjectID
+	Position            int32
+	RecordKey           string
+	IssueID             string
+	LocalAttemptID      int64
+	NativeAttemptID     string
+	Generation          int64
+	Fence               int64
+	Stage               string
+	Running             bool
+	NativeClaim         bool
+	ProviderCompletedAt *time.Time
+	HostOperation       string
+	OperationPending    bool
+	LeaseRenewedAt      *time.Time
+}
+
+type RunnerProjectObservation struct {
+	OrganizationID    tracker.OrganizationID
+	RunnerID          string
+	ProjectID         tracker.ProjectID
+	ObservedAt        time.Time
+	DiagnosticsAt     *time.Time
+	RuntimeObservedAt *time.Time
+	SnapshotDigest    string
+}
+
+type RunnerProjectRank struct {
+	OrganizationID tracker.OrganizationID
+	RunnerID       string
+	ProjectID      tracker.ProjectID
+	Rank           int32
+}
+
+type RunnerProviderModelEffort struct {
+	OrganizationID tracker.OrganizationID
+	RunnerID       string
+	Backend        string
+	ModelID        string
+	Position       int32
+	Effort         string
+}
+
+type RunnerProviderReport struct {
+	OrganizationID     tracker.OrganizationID
+	RunnerID           string
+	Backend            string
+	Provider           string
+	AccountAlias       string
+	SharedAccountAlias string
+	Billing            string
+	MaxConcurrent      int32
+	Availability       string
+	ObservedAt         time.Time
+	ResetAt            *time.Time
+}
+
+type RunnerProviderReportModel struct {
+	OrganizationID         tracker.OrganizationID
+	RunnerID               string
+	Backend                string
+	Position               int32
+	ModelID                string
+	HasDetail              bool
+	Label                  string
+	ModelProvider          string
+	IsDefault              bool
+	DefaultReasoningEffort string
+	Legacy                 bool
+}
+
+type RunnerProviderUsageWindow struct {
+	OrganizationID tracker.OrganizationID
+	RunnerID       string
+	Backend        string
+	Position       int32
+	Kind           string
+	PercentUsed    sql.NullFloat64
+	ResetAt        *time.Time
+	ObservedAt     *time.Time
 }
 
 type RunnerRepository struct {
@@ -1621,6 +1742,75 @@ type RunnerRepositoryList struct {
 	Pending        bool
 	Reason         string
 	ListedAt       *time.Time
+}
+
+type SearchDocument struct {
+	OrganizationID          tracker.OrganizationID
+	ID                      string
+	ProjectID               *tracker.ProjectID
+	WorkItemID              *string
+	Kind                    string
+	SourceID                string
+	CommentID               *string
+	EventID                 *string
+	ChangeID                *string
+	Revision                int64
+	IndexedRevision         int64
+	Title                   string
+	Scope                   string
+	Status                  string
+	UpdatedAt               time.Time
+	UpdatedAtSubmicrosecond int64
+	PayloadObjectKey        string
+	PayloadSHA256           string
+	PayloadBytes            int64
+	PayloadContentBytes     int64
+	Vector                  string
+	TokenCount              int64
+	Terms                   []string
+	TermFrequencies         []int64
+	RefreshOrder            int64
+	SourceVector            string
+	Generation              int64
+	SourceVisible           bool
+	Placeholder             bool
+	AggregateObjectKey      *string
+	AggregateSha256         *string
+	AggregateBytes          sql.NullInt64
+	AggregateContentBytes   sql.NullInt64
+	ProgressGeneration      sql.NullInt64
+	ProgressAfterID         *string
+	ProgressObjectKey       *string
+	ProgressSha256          *string
+	ProgressBytes           sql.NullInt64
+	ProgressContentBytes    sql.NullInt64
+}
+
+type SearchPosting struct {
+	OrganizationID          tracker.OrganizationID
+	Scope                   string
+	Term                    string
+	DocumentID              string
+	Impact                  float64
+	UpdatedAt               time.Time
+	UpdatedAtSubmicrosecond int64
+}
+
+type SearchScopeDocument struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	WorkItemID     string
+	ID             string
+}
+
+type SearchScopeRefresh struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	WorkItemID     string
+	Archived       bool
+	PrincipalID    string
+	AfterID        string
+	RefreshOrder   int64
 }
 
 type StorageConversionCursor struct {

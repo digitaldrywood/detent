@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/issuecontract"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
@@ -676,6 +677,9 @@ func (s *Service) executeWorkItemRecordMutation(ctx context.Context, scope nativ
 }
 
 func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.Context, scope nativeScope, options nativeCommandOptions, command tracker.Mutation, input any, commentID string, link *conversationLinkMutation) (json.RawMessage, error) {
+	if s.config.AccessRepository == nil {
+		return nil, workItemStorageUnavailable()
+	}
 	if strings.TrimSpace(command.IdempotencyKey) == "" || len(command.IdempotencyKey) > 128 {
 		return nil, nativePublicInvalid("An idempotency key of at most 128 bytes is required")
 	}
@@ -747,6 +751,8 @@ func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.
 		var version eventstore.CollaborationVersion
 		var event eventstore.Event
 		var fields workItemRecordFields
+		var searchDocument searchstore.Document
+		var searchRevision int64
 		if !plan.existing {
 			fields, err = s.prepareWorkItemFields(ctx, scope.organization, plan)
 			if err != nil {
@@ -759,6 +765,18 @@ func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.
 				id, revision, item, at = plan.comment.ID, int64(plan.comment.Revision), plan.comment.WorkItemID, plan.comment.UpdatedAt
 			}
 			version, err = content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: item, RecordID: id, Revision: revision}, valueRaw)
+			if err != nil {
+				return nil, err
+			}
+			searchDocument = searchstore.Document{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: item, ID: "issue:" + id, SourceID: id, Kind: "issue", Scope: "issue", Revision: revision, UpdatedAt: at}
+			searchText := searchstore.Text{Title: plan.issue.Title, Body: plan.issue.Body, Labels: plan.issue.Labels}
+			searchRevision = plan.current.Revision
+			if plan.comment.ID != "" {
+				searchDocument.ID, searchDocument.Kind = "comment:"+id, "comment"
+				searchText = searchstore.Text{Body: plan.comment.Body}
+				searchRevision = plan.commentRow.Revision
+			}
+			searchDocument, err = searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchDocument, searchText)
 			if err != nil {
 				return nil, err
 			}
@@ -949,6 +967,9 @@ func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.
 					} else if !errors.Is(err, corestore.ErrNotFound) {
 						return err
 					}
+				}
+				if err := w.PutSearch(ctx, searchDocument, searchRevision); err != nil {
+					return err
 				}
 				if _, err := w.CreateCollaborationVersion(ctx, version); err != nil {
 					return err

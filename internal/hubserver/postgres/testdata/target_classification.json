@@ -4,6 +4,11 @@
     "ownership": "organization-owned",
     "scope": "ai_credit_reason_references.organization_id; mode and source reference ai_credit_transactions"
   },
+  "public/change_review_policy_revisions": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "change_review_policy_revisions.organization_id; project_id and review_policy_id identify immutable approval history"
+  },
   "public/conversation_content_objects": {
     "inline_payloads": [],
     "ownership": "organization-owned",
@@ -34,39 +39,54 @@
     "ownership": "organization-owned",
     "scope": "issue_labels.organization_id; project_id and work_item_id reference issues"
   },
-  "public/change_review_policy_revisions": {
+  "public/runner_availability_window_slots": {
     "inline_payloads": [],
     "ownership": "organization-owned",
-    "scope": "change_review_policy_revisions.organization_id; project_id and review_policy_id identify immutable approval history"
-  },
-  "public/runner_lease_assignments": {
-    "inline_payloads": [],
-    "ownership": "organization-owned",
-    "scope": "runner_lease_assignments.organization_id; lease and runner owners are tenant-scoped"
+    "scope": "runner_availability_window_slots.organization_id; runner is tenant-scoped"
   },
   "public/runner_availability_windows": {
     "inline_payloads": [],
     "ownership": "organization-owned",
     "scope": "runner_availability_windows.organization_id; runner is tenant-scoped"
   },
-  "public/runner_availability_window_slots": {
+  "public/runner_lease_assignments": {
     "inline_payloads": [],
     "ownership": "organization-owned",
-    "scope": "runner_availability_window_slots.organization_id; runner is tenant-scoped"
+    "scope": "runner_lease_assignments.organization_id; lease and runner owners are tenant-scoped"
   },
-  "public/runner_provider_reports": {
+  "public/runner_provider_model_efforts": {
     "inline_payloads": [],
     "ownership": "organization-owned",
-    "scope": "runner_provider_reports.organization_id; runner report is tenant-scoped"
+    "scope": "runner_provider_model_efforts.organization_id; model effort is tenant-scoped"
   },
   "public/runner_provider_report_models": {
     "inline_payloads": [],
     "ownership": "organization-owned",
     "scope": "runner_provider_report_models.organization_id; model report is tenant-scoped"
   },
-  "public/runner_provider_model_efforts": {
+  "public/runner_provider_reports": {
     "inline_payloads": [],
     "ownership": "organization-owned",
-    "scope": "runner_provider_model_efforts.organization_id; model effort is tenant-scoped"
+    "scope": "runner_provider_reports.organization_id; runner report is tenant-scoped"
+  },
+  "public/search_documents": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "search_documents.organization_id; project and work item remain tenant scoped"
+  },
+  "public/search_postings": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "search_postings.organization_id; project and work item remain tenant scoped"
+  },
+  "public/search_scope_documents": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "search_scope_documents.organization_id; project and work item remain tenant scoped"
+  },
+  "public/search_scope_refresh": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "search_scope_refresh.organization_id; project and work item remain tenant scoped"
   }
 }

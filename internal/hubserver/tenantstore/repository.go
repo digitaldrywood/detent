@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -26,6 +27,7 @@ type Reader interface {
 	leasestore.Reader
 	policystore.Reader
 	runnerstore.Reader
+	searchstore.Reader
 }
 
 type Writer interface {
@@ -38,6 +40,7 @@ type Writer interface {
 	leasestore.Writer
 	policystore.Writer
 	runnerstore.Writer
+	searchstore.Writer
 }
 
 type Repository interface {
