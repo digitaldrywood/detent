@@ -108,6 +108,7 @@ func seedHistory(t *testing.T, r *postgres.Repository, org tracker.OrganizationI
 		t.Fatal(err)
 	}
 	version := tracker.ChangeVersion{ID: "version_" + suffix, ChangeID: change.ID, Number: 1, ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: "head", BaseSHA: "base", MergeBaseSHA: "merge-base", Repository: "owner/repository", PolicyID: "policy", AttemptID: "attempt", External: &tracker.ChangeExternalReference{Provider: "example", ID: "external", URL: "https://example.com/change"}}, Actor: historyActor(), CreatedAt: historyAt()}
+	version.Source = &tracker.ChangeSource{Format: "git-bundle", BaseSHA: "base", HeadSHA: "head", BundleSHA256: artifact.Digest([]byte(string(org) + suffix)), DiffSHA256: artifact.Digest([]byte("diff")), Bytes: 123}
 	f.version, err = f.content.PrepareVersion(t.Context(), org, historyJSON(t, version))
 	if err != nil {
 		t.Fatal(err)
@@ -239,6 +240,10 @@ func TestEventChangeTenantRoundTrip(t *testing.T) {
 				version, err := f.content.Version(t.Context(), versions[0])
 				if err != nil || version.External == nil || version.External.ID != "external" || version.AttemptID != "attempt" {
 					t.Fatalf("version payload=%+v error=%v", version, err)
+				}
+				wantSource := tracker.ChangeSource{Format: "git-bundle", BaseSHA: "base", HeadSHA: "head", BundleSHA256: artifact.Digest([]byte(string(org) + suffix)), DiffSHA256: artifact.Digest([]byte("diff")), Bytes: 123}
+				if version.Source == nil || *version.Source != wantSource {
+					t.Fatalf("portable source manifest=%+v want=%+v", version.Source, wantSource)
 				}
 				raw, err := f.content.Evidence(t.Context(), evidence[0])
 				var discussion tracker.ChangeDiscussion

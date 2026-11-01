@@ -354,6 +354,138 @@ func TestNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T) {
 	}
 }
 
+func TestNativeSourceResumesWithoutPreviousRuntime(t *testing.T) {
+	isolateNativeChangeGit(t)
+	for _, tc := range []struct {
+		name          string
+		loseWorkspace bool
+	}{
+		{name: "previous database missing"},
+		{name: "previous database and workspace missing", loseWorkspace: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newNativeChangeHub(t, true)
+			issue := h.createInProgress(t, "Resume published source")
+			h.claim(t, issue.ID)
+			firstMachine := h.scheduler.RunExecution(issue.ID).Recovery().Lease.MachineID
+			oldDatabase := nativeRuntimeDatabasePath(t)
+			firstStore, err := store.Open(t.Context(), store.Config{Path: oldDatabase})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := firstStore.Close(); err != nil {
+					t.Error(err)
+				}
+			})
+			attemptID, err := firstStore.StartWorkAttempt(t.Context(), store.WorkAttemptStart{ProjectID: "local", IssueID: issue.ID, WorkerType: "agent", StartedAt: time.Now()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			firstWorkspace := nativeChangeSourceRepo(t)
+			head := func(path string) string {
+				data, err := exec.CommandContext(t.Context(), "git", "-C", path, "rev-parse", "HEAD").Output()
+				if err != nil {
+					t.Fatal(err)
+				}
+				return strings.TrimSpace(string(data))
+			}
+			base := head(firstWorkspace)
+			remote := filepath.Join(t.TempDir(), "origin.git")
+			nativeChangeGit(t, firstWorkspace, "init", "--bare", "-b", "main", remote)
+			nativeChangeGit(t, firstWorkspace, "remote", "add", "origin", nativeChangeRepository)
+			nativeChangeGit(t, firstWorkspace, "config", "url."+remote+".insteadOf", nativeChangeRepository)
+			nativeChangeGit(t, firstWorkspace, "push", "-u", "origin", "main")
+			if err := os.WriteFile(filepath.Join(firstWorkspace, "CHANGE.md"), []byte("published work\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			nativeChangeGit(t, firstWorkspace, "add", "CHANGE.md")
+			nativeChangeGit(t, firstWorkspace, "commit", "-m", "retain work")
+			exactHead := head(firstWorkspace)
+			capture, err := workspace.CaptureChangeSource(t.Context(), firstWorkspace, base, exactHead)
+			if err != nil {
+				t.Fatal(err)
+			}
+			item := tracker.NativeWorkItemID(issue.ID)
+			change, err := h.admin.CreateChange(t.Context(), item, tracker.CreateChange{Mutation: nativeMutationKey(), Title: issue.Title})
+			if err != nil {
+				t.Fatal(err)
+			}
+			version, err := h.admin.PublishChangeVersion(t.Context(), item, change.ID, tracker.PublishChangeVersion{Mutation: nativeMutationKey(), SourceBundle: capture.Bundle, ChangeVersionInput: tracker.ChangeVersionInput{
+				BaseSHA: base, HeadSHA: exactHead, MergeBaseSHA: base, Repository: nativeChangeRepository, PolicyID: h.descriptor.ID, Source: &capture.Source,
+				Code: tracker.ChangeArtifact{Kind: "code", URI: nativeChangeRepository + "/commit/" + exactHead, SHA256: policy.Digest([]byte(exactHead)), Availability: "unverified"},
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "checkpointed"); err != nil {
+				t.Fatal(err)
+			}
+			if err := firstStore.Close(); err != nil {
+				t.Fatal(err)
+			}
+			missing := []string{oldDatabase}
+			if tc.loseWorkspace {
+				missing = append(missing, firstWorkspace)
+			}
+			for _, path := range missing {
+				if err := os.Rename(path, path+"-unavailable"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			secondStore, err := store.Open(t.Context(), store.Config{Path: nativeRuntimeDatabasePath(t)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := secondStore.Close(); err != nil {
+					t.Error(err)
+				}
+			})
+			if _, err := secondStore.WorkAttempt(t.Context(), attemptID); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("fresh runner inherited a local attempt: %v", err)
+			}
+			h.scheduler, err = NewScheduler(h.native.client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: Machine{ID: "machine-second", Hostname: "example", Capacity: 1, Version: "test"}, HeartbeatInterval: h.scheduler.heartbeatInterval, LeaseTTL: h.scheduler.leaseTTL})
+			if err != nil {
+				t.Fatal(err)
+			}
+			h.claim(t, issue.ID)
+			execution := h.scheduler.RunExecution(issue.ID)
+			if execution.Recovery().Lease.MachineID == firstMachine {
+				t.Fatal("second runner reused the first machine identity")
+			}
+			recovered, err := execution.(runner.ChangeSourceExecution).RecoverChangeSource(t.Context())
+			if err != nil || recovered.Version.ID != version.ID || recovered.Version.HeadSHA != exactHead {
+				t.Fatalf("fresh runner lost published source: %+v, %v", recovered.Version, err)
+			}
+			secondSource := filepath.Join(t.TempDir(), "source")
+			nativeChangeGit(t, remote, "clone", "--no-local", remote, secondSource)
+			nativeChangeGit(t, secondSource, "remote", "set-url", "origin", nativeChangeRepository)
+			nativeChangeGit(t, secondSource, "config", "url."+remote+".insteadOf", nativeChangeRepository)
+			if _, err := exec.CommandContext(t.Context(), "git", "-C", secondSource, "cat-file", "-e", exactHead+"^{commit}").Output(); err == nil {
+				t.Fatal("fresh checkout already contains unpublished work")
+			}
+			backend, err := workspace.NewLocalGit(workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: secondSource, AutoBranch: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			info, err := backend.Create(t.Context(), workspace.Issue{ProjectID: "local", ID: issue.ID, Identifier: issue.Identifier, Source: &recovered})
+			if err != nil || head(info.Path) != exactHead {
+				t.Fatalf("fresh workspace did not restore the published head: %v", err)
+			}
+			data, err := os.ReadFile(filepath.Join(info.Path, "CHANGE.md"))
+			if err != nil || string(data) != "published work\n" {
+				t.Fatalf("fresh workspace lost published bytes: %q, %v", data, err)
+			}
+			for _, path := range missing {
+				if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("recovery recreated old runner state: %v", err)
+				}
+			}
+		})
+	}
+}
+
 func TestNativeRecoveredSourceRequiresCurrentVersion(t *testing.T) {
 	for _, test := range []struct {
 		name      string
