@@ -769,8 +769,13 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 	if req.Execution == nil {
 		return !req.retainCheckpoint, nil
 	}
+	observeOperation := func(operation string) {
+		if diagnostics, ok := req.Execution.(HostDiagnosticsExecution); ok {
+			diagnostics.HostOperation(operation, r.now(), nil, true)
+		}
+	}
+	observeOperation("workspace.finalize_native_work")
 	if diagnostics, ok := req.Execution.(HostDiagnosticsExecution); ok {
-		diagnostics.HostOperation("workspace.finalize_native_work", r.now(), nil, true)
 		defer func() {
 			diagnostics.HostOperation("workspace.finalize_native_work", r.now(), resultErr, false)
 		}()
@@ -781,6 +786,7 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 			if err := req.Execution.Validate(ctx); err != nil {
 				finalizationErr = err
 			} else {
+				observeOperation("workspace.finalize_native_commit")
 				base, err := r.finalizeNativeCommit(ctx, req, backend, info, issue, finalizer)
 				if err != nil {
 					finalizationErr = nativeGitError("finalize native work", err)
@@ -803,16 +809,20 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 				commands, canRun := backend.(workspace.ReviewCommandRunner)
 				heads, canRead := backend.(workspace.HeadProvider)
 				tree, canVerify := backend.(workspace.ReviewTreeVerifier)
+				observeOperation("workspace.verify_review_tree")
 				if !canRun || !canRead {
 					finalizationErr = errors.New("workspace cannot validate the finalized native head")
 				} else if !canVerify || tree.VerifyReviewTree(ctx, info, issue) == nil {
+					observeOperation("workspace.read_validation_head")
 					head, err := heads.Head(ctx, info, issue)
 					if err == nil {
 						validationIssue := issue
 						validationIssue.PullRequestHeadSHA = strings.TrimSpace(head)
+						observeOperation("workspace.capture_validation_source")
 						binding, bindingErr := r.sourceStep(ctx, req, backend, info, issue, "validation")
 						var previous tracker.NativeStepReceipt
 						if bindingErr == nil {
+							observeOperation("workspace.load_validation_receipt")
 							previous, bindingErr = loadStep(ctx, req.Execution, binding)
 						}
 						var receipt gate.CommandResult
@@ -821,6 +831,7 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 							if previous.Step != "" && previous.Validation != nil && previous.Validation.Command == command && previous.Validation.ExitCode == 0 && previous.Validation.HeadSHA == head {
 								receipt = *previous.Validation
 							} else {
+								observeOperation("workspace.run_source_validation")
 								receipt, runErr = commands.RunReviewCommand(ctx, info, validationIssue, command)
 							}
 						}
@@ -831,15 +842,18 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 						if runErr != nil {
 							err = runErr
 						} else if receipt.ExitCode != 0 {
+							observeOperation("workspace.attribute_validation_failure")
 							attributeCommandFailure(ctx, commands, info, validationIssue, issue.BaseRef, &receipt)
 							receipt.Stage = gate.StageSourceFinalization
 							receipt = tracker.PublicGateResult(receipt)
 							err = &workspace.ValidationError{Stage: workspace.ValidationStageSourceFinalization, Result: receipt, Output: receipt.Output, Err: fmt.Errorf("exit status %d", receipt.ExitCode)}
+							observeOperation("workspace.record_source_validation")
 							if recordErr := recorder.RecordSourceValidation(ctx, receipt); recordErr != nil {
 								err = errors.Join(err, recordErr)
 							}
 						} else {
 							binding.Validation = &receipt
+							observeOperation("workspace.record_source_validation")
 							err = recordStep(ctx, req.Execution, binding)
 							if err == nil {
 								err = recorder.RecordSourceValidation(ctx, receipt)
@@ -853,8 +867,10 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 	}
 	finalizationErr = errors.Join(finalizationErr, executionCancellation(req))
 	deadlineExpired := availabilityStopped(req.Execution, context.Cause(ctx), time.Now())
+	observeOperation("workspace.finish_checkpoint_ref")
 	r.finishCheckpointRef(ctx, req.checkpointRefs, req)
 	recoveryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
+	observeOperation("workspace.capture_final_checkpoint")
 	state := r.workspaceRecoveryState(backend, recoveryCtx, info, issue, "native_checkpoint")
 	cancel()
 	checkpoint := executionCheckpointPreservingPublication(req.Execution, state)
@@ -883,6 +899,7 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 		}
 	}
 	if artifacts, ok := req.Execution.(ArtifactExecution); ok && finalizationErr == nil && artifactErr == nil && (checkpoint.WorktreeState == "clean" || checkpoint.WorktreeState == "unpushed") {
+		observeOperation("workspace.finalize_artifacts")
 		if err := artifacts.FinalizeArtifacts(artifactCtx, info.Path); err != nil {
 			artifactErr = err
 		}
@@ -893,6 +910,7 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 		if source == nil {
 			source = r.attemptDiffSource(ctx, info, issue)
 		}
+		observeOperation("workspace.capture_final_diff")
 		finalDiff, available := source(ctx)
 		if !available || checkpoint.HeadSHA == "" || finalDiff.HeadSHA != checkpoint.HeadSHA {
 			diffErr = failedStep("checkpoint_recovery", ErrNativeRecoveryRequired)
@@ -909,6 +927,7 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 
 	if completionErr != nil || checkpoint.WorktreeState != "clean" || ctx.Err() != nil {
 		preserveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
+		observeOperation("workspace.preserve_final_source")
 		_, err := r.PreserveWorkspace(preserveCtx, req.Issue)
 		cancel()
 		if err != nil && !errors.Is(err, workspace.ErrMissingWorkspace) {
@@ -921,6 +940,7 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 	if err := req.Execution.Validate(checkpointCtx); err != nil {
 		return false, errors.Join(completionErr, err)
 	}
+	observeOperation("workspace.record_final_checkpoint")
 	if err := recordCheckpointRef(checkpointCtx, req.checkpointRefs, req.Execution, checkpoint); err != nil {
 		return false, errors.Join(completionErr, failedStep("checkpoint_recovery", err))
 	}
