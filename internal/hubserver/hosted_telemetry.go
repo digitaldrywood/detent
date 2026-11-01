@@ -16,12 +16,26 @@ type hostedRequestUsage struct {
 	requests, duration, responseBytes, requestBytes, knownRequests int64
 }
 
+const hostedUsageAmountLimit = int64(1) << 50
+
+func saturatingUsageAmount(a, b int64) int64 {
+	return min(max(a, 0), hostedUsageAmountLimit) + min(max(b, 0), hostedUsageAmountLimit)
+}
+
 func (u *hostedRequestUsage) merge(other hostedRequestUsage) {
-	u.requests += other.requests
-	u.duration += other.duration
-	u.responseBytes += other.responseBytes
-	u.requestBytes += other.requestBytes
-	u.knownRequests += other.knownRequests
+	u.requests = min(saturatingUsageAmount(u.requests, other.requests), hostedUsageAmountLimit)
+	u.duration = min(saturatingUsageAmount(u.duration, other.duration), hostedUsageAmountLimit)
+	u.responseBytes = min(saturatingUsageAmount(u.responseBytes, other.responseBytes), hostedUsageAmountLimit)
+	u.requestBytes = min(saturatingUsageAmount(u.requestBytes, other.requestBytes), hostedUsageAmountLimit)
+	u.knownRequests = min(saturatingUsageAmount(u.knownRequests, other.knownRequests), hostedUsageAmountLimit)
+}
+
+func hostedRequestUsageFor(c echo.Context, elapsed time.Duration) hostedRequestUsage {
+	usage := hostedRequestUsage{requests: 1, duration: min(max(int64(0), elapsed.Microseconds()), hostedUsageAmountLimit), responseBytes: min(max(int64(0), c.Response().Size), hostedUsageAmountLimit)}
+	if c.Request().ContentLength >= 0 {
+		usage.requestBytes, usage.knownRequests = min(c.Request().ContentLength, hostedUsageAmountLimit), 1
+	}
+	return usage
 }
 
 func (s *Service) recordHostedRequest(c echo.Context, started time.Time) {
@@ -41,10 +55,7 @@ func (s *Service) recordHostedRequest(c echo.Context, started time.Time) {
 	}
 	now := s.config.now()
 	key := requestMetricKey{now.Unix() / 60 * 60, metricRoute(m.knownRoutes(s.echo), c.Request().Method, c.Path()), kind, caller, c.Response().Status / 100}
-	usage := hostedRequestUsage{requests: 1, duration: max(int64(0), time.Since(started).Microseconds()), responseBytes: max(int64(0), c.Response().Size)}
-	if c.Request().ContentLength >= 0 {
-		usage.requestBytes, usage.knownRequests = c.Request().ContentLength, 1
-	}
+	usage := hostedRequestUsageFor(c, time.Since(started))
 	m.mu.Lock()
 	m.usage = s.database
 	pending := m.pending[key]
