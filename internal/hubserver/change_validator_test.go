@@ -211,6 +211,14 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 		{"implementation review mixed result", func(r *tracker.ReviewChange) {
 			r.ImplementationReview = r.Validator
 		}, http.StatusUnprocessableEntity, "needs_evidence", nil},
+		{"security audit pending identity", func(_ *tracker.ReviewChange) {}, http.StatusOK, "reviewed", nil},
+		{"security audit negative identity with evidence", func(_ *tracker.ReviewChange) {}, http.StatusOK, "reviewed", nil},
+		{"security audit invalid identity", func(_ *tracker.ReviewChange) {}, http.StatusUnprocessableEntity, "needs_evidence", nil},
+		{"security audit unresolved identity", func(_ *tracker.ReviewChange) {}, http.StatusServiceUnavailable, "needs_evidence", nil},
+		{"security audit negative backfill", func(_ *tracker.ReviewChange) {}, http.StatusOK, "reviewed", nil},
+		{"security audit poison update backfill", func(_ *tracker.ReviewChange) {}, http.StatusOK, "reviewed", nil},
+		{"security audit poison backfill", func(_ *tracker.ReviewChange) {}, http.StatusOK, "reviewed", nil},
+		{"security audit activity-less reconnect", func(_ *tracker.ReviewChange) {}, http.StatusOK, "reviewed", nil},
 		{"separate session pass", func(_ *tracker.ReviewChange) {}, http.StatusOK, "reviewed", nil},
 		{"object-backed separate session pass", objectOutput, http.StatusOK, "reviewed", nil},
 		{"object-backed another head", func(r *tracker.ReviewChange) { objectOutput(r); r.Validator.HeadSHA = r.Validator.BaseSHA }, http.StatusUnprocessableEntity, "needs_evidence", nil},
@@ -455,6 +463,85 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 			}
 			if test.stages != nil && test.stages.gateKind != "" && version.Validation != nil {
 				t.Fatal("non-command fixture unexpectedly has a finalization receipt")
+			}
+			if strings.HasSuffix(test.name, " identity") || test.name == "security audit negative identity with evidence" || strings.Contains(test.name, "backfill") {
+				var trigger string
+				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT sql FROM sqlite_master WHERE name='change_versions_session_immutable'").Scan(&trigger); err != nil {
+					t.Fatal(err)
+				}
+				for _, statement := range []string{"DROP TRIGGER change_versions_session_immutable", "UPDATE change_versions SET implementing_session_id=NULL,implementing_machine_id=NULL", trigger} {
+					if _, err := f.service.database.db.ExecContext(t.Context(), statement); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if strings.Contains(test.name, "negative identity") || test.name == "security audit negative backfill" || test.name == "security audit invalid identity" {
+					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE change_versions SET implementing_session_id=-1 WHERE id=?", version.ID); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if test.name == "security audit negative identity with evidence" {
+					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET implementing_session_id=NULL WHERE id=?", version.AttemptID); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if test.name == "security audit invalid identity" || test.name == "security audit unresolved identity" {
+					erased := event.Data
+					erased.Runtime = nil
+					raw, err := json.Marshal(erased)
+					if err != nil {
+						t.Fatal(err)
+					}
+					ref, err := prepareChangeContent(f.service.runDetailContext(t.Context()), string(f.project.OrganizationID), raw)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET implementing_session_id=-1,payload_object_key=? WHERE id=?", ref.Key, version.AttemptID); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if strings.Contains(test.name, "backfill") {
+					if strings.Contains(test.name, "poison") {
+						payload := "missing-object"
+						if strings.Contains(test.name, "update") {
+							payload = ""
+						}
+						if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO change_versions(id,change_id,number,record_json,payload_object_key) VALUES('000-poison',?,999,'{}',?)", change.ID, payload); err != nil {
+							t.Fatal(err)
+						}
+						if _, err := f.service.database.db.ExecContext(t.Context(), "CREATE TRIGGER poison_session BEFORE UPDATE ON change_versions WHEN OLD.id='000-poison' BEGIN SELECT RAISE(ABORT,'poison'); END"); err != nil {
+							t.Fatal(err)
+						}
+					}
+					var session sql.NullInt64
+					for range changeColumnsPerTick {
+						_, _ = f.service.populateChangeSession(f.service.runDetailContext(t.Context()))
+						if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT implementing_session_id FROM change_versions WHERE id=?", version.ID).Scan(&session); err != nil {
+							t.Fatal(err)
+						}
+						if session.Valid {
+							break
+						}
+					}
+					if !session.Valid || session.Int64 != 41 {
+						t.Fatalf("poison starved valid version: %v", session)
+					}
+					if strings.Contains(test.name, "poison") {
+						for _, statement := range []string{"DROP TRIGGER poison_session", "DROP TRIGGER change_versions_no_delete", "DELETE FROM change_versions WHERE id='000-poison'"} {
+							if _, err := f.service.database.db.ExecContext(t.Context(), statement); err != nil {
+								t.Fatal(err)
+							}
+						}
+					}
+				}
+			}
+			if test.name == "security audit activity-less reconnect" {
+				observation := event
+				observation.Type, observation.IdempotencyKey, observation.Data.Sequence = "run.observed", "reconnect-no-activity", 2
+				observation.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation"}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", worker, observation), http.StatusOK)
+				observation.IdempotencyKey, observation.Data.Sequence = "contradictory-session", 3
+				observation.Data.Runtime.Activity = &workflowmetrics.ActivityProfile{Schema: 1, SessionID: 99}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", worker, observation), http.StatusConflict)
 			}
 			mutation.IdempotencyKey = "validator"
 			request := tracker.ReviewChange{Mutation: mutation, ExpectedVersionID: version.ID, Decision: "approved", Validator: &gate.ValidatorResult{SessionID: 42, VersionID: version.ID, Submitted: true, Verdict: "pass", Score: .95, Repository: version.Repository, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA, DiffDigest: policy.Digest([]byte("diff"))}}
@@ -808,6 +895,16 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 				}
 			}
 
+			if test.name == "security audit pending identity" || test.name == "security audit negative identity with evidence" || test.name == "security audit negative backfill" {
+				var session int64
+				var machine string
+				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT implementing_session_id,implementing_machine_id FROM change_versions WHERE id=?", version.ID).Scan(&session, &machine); err != nil || session != 41 || machine != string(lease.MachineID) {
+					t.Fatalf("recovered identity = %d/%s: %v", session, machine, err)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE change_versions SET implementing_session_id=99 WHERE id=?", version.ID); err == nil {
+					t.Fatal("proven positive identity changed")
+				}
+			}
 			rejectionField := map[string]string{
 				"oversized acceptance body":                              "body",
 				"missing session":                                        "validator.session_id",

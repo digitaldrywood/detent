@@ -66,10 +66,54 @@ func freezeChangeSession(ctx context.Context, tx *sql.Tx, version tracker.Change
 	return err
 }
 
+func recoverChangeSession(ctx context.Context, query nativeQueryer, version tracker.ChangeVersion) (changeSessionAuthority, error) {
+	authority, err := prepareChangeSession(ctx, query, version)
+	if err != nil {
+		return authority, err
+	}
+	var source tracker.NativeRunData
+	if version.AttemptID == "" {
+		return authority, nil
+	}
+	if err := decodeRunDetail(ctx, query, authority.raw, &source); err != nil {
+		return authority, err
+	}
+	if source.PolicyID != version.PolicyID || source.RunID != version.RunID || source.AttemptID != version.AttemptID || source.Identity == nil || source.Identity.Role != "code" && source.Identity.Role != "rework" || source.MachineID == "" {
+		authority.session = sql.NullInt64{Int64: -1, Valid: true}
+		return authority, nil
+	}
+	observed := nativeImplementingSession(source)
+	if authority.session.Valid && authority.session.Int64 > 0 {
+		if observed > 0 && observed != authority.session.Int64 {
+			authority.session = sql.NullInt64{Int64: -1, Valid: true}
+		}
+	} else if observed > 0 {
+		authority.session = sql.NullInt64{Int64: observed, Valid: true}
+	}
+	return authority, nil
+}
+
+func freezeRecoveredChangeSession(ctx context.Context, tx *sql.Tx, version tracker.ChangeVersion, authority changeSessionAuthority) error {
+	if _, err := tx.ExecContext(ctx, `UPDATE native_attempts SET implementing_session_id=? WHERE id=? AND COALESCE(NULLIF(payload_object_key,''),data_json)=? AND (implementing_session_id IS NULL OR implementing_session_id<=0)`, authority.session, version.AttemptID, authority.raw); err != nil {
+		return err
+	}
+	var session int64
+	if err := tx.QueryRowContext(ctx, "SELECT implementing_session_id FROM native_attempts WHERE id=?", version.AttemptID).Scan(&session); err != nil {
+		return err
+	}
+	if session != authority.session.Int64 {
+		return nativeExecutionConflict("Source session changed during recovery")
+	}
+	if err := freezeChangeSession(ctx, tx, version, authority); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (s *Service) populateChangeSession(ctx context.Context) (bool, error) {
 	var id, change, organization, project, item, machine string
 	var after, candidate, state int64
-	err := s.database.reader.QueryRowContext(ctx, `SELECT v.id,v.change_id,c.organization_id,c.project_id,c.work_item_id,v.session_history_sequence,v.session_history_candidate,v.session_history_state,v.session_history_machine_id FROM change_versions v JOIN change_requests c ON c.id=v.change_id WHERE v.implementing_session_id IS NULL AND v.id>? ORDER BY v.id LIMIT 1`, s.changeSessionAfter).Scan(&id, &change, &organization, &project, &item, &after, &candidate, &state, &machine)
+	err := s.database.reader.QueryRowContext(ctx, `SELECT v.id,v.change_id,c.organization_id,c.project_id,c.work_item_id,v.session_history_sequence,v.session_history_candidate,v.session_history_state,v.session_history_machine_id FROM change_versions v JOIN change_requests c ON c.id=v.change_id WHERE (v.implementing_session_id IS NULL OR v.implementing_session_id=-1) AND v.id>? ORDER BY v.id LIMIT 1`, s.changeSessionAfter).Scan(&id, &change, &organization, &project, &item, &after, &candidate, &state, &machine)
 	if errors.Is(err, sql.ErrNoRows) {
 		s.changeSessionAfter = ""
 		return false, nil
@@ -77,6 +121,7 @@ func (s *Service) populateChangeSession(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	defer func() { s.changeSessionAfter = id }()
 	version, err := readChangeVersionSnapshot(ctx, s.database.reader, change, id)
 	if errors.Is(err, sql.ErrNoRows) {
 		_, err = s.database.db.ExecContext(ctx, `UPDATE change_versions SET implementing_session_id=-1 WHERE id=? AND implementing_session_id IS NULL`, id)
@@ -85,6 +130,28 @@ func (s *Service) populateChangeSession(ctx context.Context) (bool, error) {
 	}
 	if err != nil {
 		return true, err
+	}
+	authority, recoveryErr := recoverChangeSession(ctx, s.database.reader, version)
+	if recoveryErr != nil {
+		return true, recoveryErr
+	}
+	if authority.session.Valid && authority.session.Int64 > 0 {
+		tx, err := s.database.db.BeginTx(ctx, nil)
+		if err != nil {
+			return true, err
+		}
+		defer tx.Rollback()
+		if err := freezeRecoveredChangeSession(ctx, tx, version, authority); err != nil {
+			return true, err
+		}
+		return true, s.database.commit(ctx, tx)
+	}
+	var frozen sql.NullInt64
+	if err := s.database.reader.QueryRowContext(ctx, "SELECT implementing_session_id FROM change_versions WHERE id=?", id).Scan(&frozen); err != nil {
+		return true, err
+	}
+	if frozen.Valid {
+		return true, nil
 	}
 	var sequence int64
 	var kind, eventRaw string

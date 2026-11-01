@@ -26,6 +26,7 @@ type changeMutationPreparation struct {
 	reviewRaw        string
 	reviewSlots      map[string][]attributionSlot
 	sessionMachineID tracker.MachineID
+	recoverySession  *changeSessionAuthority
 	snapshot         changeMutationSnapshot
 	sourceAttempt    string
 	lease            tracker.LeaseID
@@ -142,6 +143,21 @@ func (s *Service) prepareChangeMutation(ctx context.Context, scope nativeScope, 
 		prepared.version, err = readChangeVersion(readCtx, tx, options.ChangeID, options.VersionID)
 		if err != nil {
 			return ctx, err
+		}
+		if request.Validator != nil || request.SecurityAudit != nil || request.ImplementationReview != nil {
+			var session sql.NullInt64
+			if err := tx.QueryRowContext(readCtx, "SELECT implementing_session_id FROM change_versions WHERE id=?", prepared.version.ID).Scan(&session); err != nil {
+				return ctx, err
+			}
+			if !session.Valid || session.Int64 == -1 {
+				authority, err := recoverChangeSession(readCtx, tx, prepared.version)
+				if err != nil {
+					return ctx, err
+				}
+				if authority.session.Valid && authority.session.Int64 > 0 {
+					prepared.recoverySession = &authority
+				}
+			}
 		}
 		prepared.sourceAttempt = prepared.version.AttemptID
 		prepared.record = tracker.ChangeReview{SecurityAudit: request.SecurityAudit, SessionMachineID: prepared.sessionMachineID, ImplementationReview: request.ImplementationReview, Validator: request.Validator, ID: payloadNativeID(ctx, "review"), VersionID: options.VersionID, Decision: request.Decision, Body: request.Body, Actor: scope.actor(), CreatedAt: payloadTimestamp(ctx, now)}
