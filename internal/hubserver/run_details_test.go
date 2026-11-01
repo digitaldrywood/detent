@@ -657,6 +657,49 @@ func TestNativeRunDetailAdmission(t *testing.T) {
 	}
 }
 
+func TestNativeRunFirstFinishValidatesUsageBeforeUpload(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name   string
+		usage  []tracker.NativeUsage
+		status int
+	}{
+		{"reversed interval", []tracker.NativeUsage{{Provider: "openai", Model: "example-model", Input: 1, From: time.Date(2026, 10, 21, 11, 59, 0, 0, time.UTC), To: time.Date(2026, 10, 21, 11, 58, 0, 0, time.UTC)}}, http.StatusUnprocessableEntity},
+		{"valid interval", []tracker.NativeUsage{{Provider: "openai", Model: "example-model", Input: 1, From: time.Date(2026, 10, 21, 11, 58, 0, 0, time.UTC), To: time.Date(2026, 10, 21, 11, 59, 0, 0, time.UTC)}}, http.StatusOK},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store := &memoryRunDetails{}
+			now := time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
+			f := newDefaultNativeFixture(t, Config{RunDetails: store, now: func() time.Time { return now }})
+			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
+			issue := f.create(t, "work")
+			worker := f.worker(t, "worker")
+			lease := claimNativeAttempt(t, f, worker, "machine", "session", issue.WorkItemID)
+			event := nativeStartedEvent(lease)
+			event.Type, event.Data.Outcome, event.Data.Identity = "run.finished", "failed", nil
+			event.Data.TerminalFailure = &tracker.NativeTerminalFailure{ObservedAt: now, Decision: &tracker.FailureAttribution{Outcome: "instance", Reason: "recorded decision", Evidence: tracker.FailureEvidence{Step: "checkout"}}}
+			event.Data.Runtime = &tracker.NativeRuntimeObservation{LocalAttemptID: 1, Generation: 1, HeartbeatAt: now, Phase: "completed"}
+			event.Data.Usage = test.usage
+			path := f.base + "/work-items/" + string(issue.WorkItemID) + "/events"
+			repeats := 1
+			if test.status != http.StatusOK {
+				repeats = 3
+			}
+			initialUploads := store.uploads
+			for i := range repeats {
+				event.IdempotencyKey = fmt.Sprintf("first-finish-%d", i)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, event), test.status)
+			}
+			if test.status != http.StatusOK && store.uploads != initialUploads {
+				t.Fatalf("rejected first finish uploaded %d history objects", store.uploads-initialUploads)
+			}
+			if test.status == http.StatusOK && store.uploads == initialUploads {
+				t.Fatal("accepted first finish uploaded no history")
+			}
+		})
+	}
+}
+
 func TestNativeRunDetailIsolation(t *testing.T) {
 	t.Parallel()
 	store := &memoryRunDetails{}
