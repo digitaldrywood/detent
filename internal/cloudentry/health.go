@@ -43,6 +43,25 @@ func (s *Service) checkTenant(ctx context.Context, organization Organization) er
 	return err
 }
 
+func (s *Service) waitForTenantReadiness(ctx context.Context) error {
+	if s.config.Allocation == nil {
+		return nil
+	}
+	organizations, err := s.registry.List(ctx)
+	if err != nil {
+		return fmt.Errorf("list tenant Hubs for startup: %w", err)
+	}
+	for _, organization := range organizations {
+		if !organization.Managed || organization.State != "ready" {
+			continue
+		}
+		if err := s.config.Allocation.Launcher.WaitReady(ctx, organization.ID); err != nil {
+			return fmt.Errorf("wait for tenant Hub readiness: %w", err)
+		}
+	}
+	return nil
+}
+
 type platformTenantHealth struct {
 	migration     hubserver.MigrationHealth
 	schemaKnown   bool

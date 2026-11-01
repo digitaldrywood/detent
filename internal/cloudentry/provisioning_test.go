@@ -44,6 +44,7 @@ type processLauncher struct {
 	transports       map[string]*http.Transport
 	useUnix          bool
 	starts           int
+	checks           map[string]func(context.Context) error
 }
 
 func (l *processLauncher) Start(_ context.Context, spec TenantSpec) error {
@@ -77,6 +78,10 @@ func (l *processLauncher) Start(_ context.Context, spec TenantSpec) error {
 	}
 	id := spec.Organization.ID
 	delete(l.failures, id)
+	if l.checks == nil {
+		l.checks = make(map[string]func(context.Context) error)
+	}
+	l.checks[id] = spec.Check
 	if l.useUnix {
 		ctx, cancel := context.WithCancel(context.Background())
 		done := make(chan struct{})
@@ -127,6 +132,28 @@ func (l *processLauncher) transport(organization Organization) (http.RoundTrippe
 	return transport, nil
 }
 
+func (l *processLauncher) WaitReady(ctx context.Context, id string) error {
+	l.mu.Lock()
+	check := l.checks[id]
+	running := l.running[id] != nil
+	l.mu.Unlock()
+	if !running || check == nil {
+		return errors.New("tenant fixture is not running")
+	}
+	for {
+		if err := check(ctx); err == nil {
+			return nil
+		}
+		timer := time.NewTimer(tenantProbeInterval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
 func (l *processLauncher) Failure(id string) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -138,6 +165,7 @@ func (l *processLauncher) Stop(id string) error {
 	stop, ok := l.running[id]
 	delete(l.running, id)
 	delete(l.transports, id)
+	delete(l.checks, id)
 	l.mu.Unlock()
 	if ok {
 		stop()
