@@ -6,6 +6,7 @@ package pgquery
 
 import (
 	"database/sql"
+	"encoding/json"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -260,6 +261,198 @@ type CollaborationVersion struct {
 	PayloadSHA256       string
 	PayloadBytes        int64
 	PayloadContentBytes int64
+}
+
+type Conversation struct {
+	OrganizationID         tracker.OrganizationID
+	ID                     string
+	CreationKey            string
+	CreationHash           string
+	ProjectID              tracker.ProjectID
+	OwnerPrincipalID       string
+	OwnerSubject           string
+	Origin                 string
+	Title                  string
+	Visibility             string
+	Status                 string
+	SubjectWorkItemID      *string
+	WorkItemID             *string
+	LinkedAt               *time.Time
+	Revision               int64
+	ProviderThreadID       string
+	ProviderThreadRunnerID string
+	ProviderThreadOrigin   string
+	ExecutionJson          json.RawMessage
+	EventSeq               int64
+	PreferencesJson        json.RawMessage
+	QueryMetadataVersion   int32
+	ExecutionStatus        *string
+	ExecutionLeaseID       *string
+	ExecutionSettled       sql.NullBool
+	ReadAudience           string
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
+	LastMessageAt          *time.Time
+	SettledAt              *time.Time
+	Archived               bool
+	ContentAttachmentID    string
+	ConversionState        int16
+}
+
+type ConversationAudienceEvent struct {
+	OrganizationID   tracker.OrganizationID
+	ID               string
+	ConversationID   string
+	ActorPrincipalID string
+	FromVisibility   string
+	ToVisibility     string
+	CreatedAt        time.Time
+}
+
+type ConversationCommand struct {
+	OrganizationID       tracker.OrganizationID
+	ConversationID       string
+	Key                  string
+	Kind                 string
+	RequestHash          string
+	ReceiptJson          json.RawMessage
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
+	ContentAttachmentID  string
+	ConversionState      int16
+	QueryMetadataVersion int32
+	ReceiptStatus        *string
+}
+
+type ConversationContentObject struct {
+	OrganizationID   tracker.OrganizationID
+	ID               string
+	ObjectKey        string
+	Sha256           string
+	CompressedSize   int64
+	UncompressedSize int64
+	Codec            string
+	SchemaVersion    int32
+	Kind             string
+	Retention        string
+	BindingID        string
+	CustomerOwned    bool
+	CreatedAt        time.Time
+}
+
+type ConversationEvent struct {
+	OrganizationID            tracker.OrganizationID
+	ConversationID            string
+	Seq                       int64
+	Type                      string
+	BodyJson                  json.RawMessage
+	CreatedAt                 time.Time
+	ContentAttachmentID       string
+	ConversionState           int16
+	QueryMetadataVersion      int32
+	MessageID                 *string
+	ObjectID                  *string
+	MessageRole               *string
+	MessageKind               *string
+	AttemptID                 *string
+	ExecutionStatus           *string
+	ThreadID                  *string
+	TurnID                    *string
+	SnapshotTitle             *string
+	SnapshotVisibility        *string
+	SnapshotStatus            *string
+	SnapshotPreferencesKey    *string
+	SnapshotModel             *string
+	SnapshotEffort            *string
+	SnapshotAccess            *string
+	SnapshotSubjectWorkItemID *string
+	SnapshotWorkItemID        *string
+	SnapshotLinkedAt          *time.Time
+	DeltaOffset               sql.NullInt64
+	DeltaBytes                sql.NullInt64
+	MessageRevision           sql.NullInt64
+}
+
+type ConversationMessage struct {
+	OrganizationID       tracker.OrganizationID
+	ID                   string
+	ConversationID       string
+	Seq                  int64
+	Role                 string
+	Kind                 string
+	Text                 string
+	DataJson             json.RawMessage
+	Delivery             string
+	AttemptID            string
+	ThreadID             string
+	TurnID               string
+	ProviderItemID       string
+	ActorJson            json.RawMessage
+	CommandKey           string
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
+	ContentAttachmentID  string
+	Revision             int64
+	ActorKind            *string
+	ActorPrincipalID     *string
+	TextBytes            sql.NullInt64
+	StoredTextBytes      sql.NullInt64
+	ConversionState      int16
+	QueryMetadataVersion int32
+	ToolName             *string
+	ToolItemID           *string
+	ToolStatus           *string
+	OperatorActionID     *string
+	OperatorActionAgent  *string
+	OperatorActionResult *string
+}
+
+type ConversationQuestion struct {
+	OrganizationID      tracker.OrganizationID
+	ID                  string
+	ConversationID      string
+	MessageID           string
+	RequestID           string
+	AttemptID           string
+	ThreadID            string
+	TurnID              string
+	Status              string
+	PromptsJson         json.RawMessage
+	AnswersJson         json.RawMessage
+	AnsweredBy          string
+	ExpiresAt           *time.Time
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
+	ContentAttachmentID string
+	ConversionState     int16
+}
+
+type ConversationStart struct {
+	OrganizationID tracker.OrganizationID
+	AttemptID      string
+	ConversationID string
+	CreatedAt      time.Time
+}
+
+type ConversationToolRevision struct {
+	OrganizationID      tracker.OrganizationID
+	ConversationID      string
+	MessageID           string
+	Revision            int64
+	Text                string
+	Tool                string
+	ItemID              string
+	Status              string
+	ContentAttachmentID string
+	ConversionState     int16
+}
+
+type ConversationTurnBatch struct {
+	OrganizationID tracker.OrganizationID
+	AttemptID      string
+	BatchKey       string
+	EventSeq       int64
+	CreatedAt      time.Time
 }
 
 type HostedAudit struct {
@@ -675,6 +868,17 @@ type Machine struct {
 	LastHeartbeatAt time.Time
 	RegisteredAt    time.Time
 	UpdatedAt       time.Time
+}
+
+type MessageReference struct {
+	OrganizationID tracker.OrganizationID
+	MessageID      string
+	ConversationID string
+	Position       int64
+	TargetKind     string
+	TargetID       string
+	Label          string
+	CreatedAt      time.Time
 }
 
 type MonthlyBudgetAdmission struct {

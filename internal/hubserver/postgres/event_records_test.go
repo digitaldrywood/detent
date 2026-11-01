@@ -263,6 +263,45 @@ func TestEventChangeTenantRoundTrip(t *testing.T) {
 	}
 }
 
+func TestLatestRunEventUsesTypedAttemptIndex(t *testing.T) {
+	r, _ := repositoryFor(t, template.Database(t), smallPool())
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		seedRepository(t, r, org)
+		f := seedHistory(t, r, org, "latest-run-event")
+		content := eventstore.NewContent(f.objects)
+		appendRunEvent := func(id, attempt string) eventstore.Event {
+			t.Helper()
+			run := tracker.NativeRunData{AttemptID: attempt, RunID: "run_" + attempt, LeaseID: tracker.LeaseID("lease_" + attempt), FencingToken: 1, Sequence: 1}
+			value := tracker.CollaborationEvent{ID: id, OrganizationID: org, ProjectID: "prj_first", AggregateType: "issue", AggregateID: "wi_first_1", Type: "run.observed", SchemaVersion: 1, Actor: historyActor(), RecordedAt: historyAt(), Data: tracker.CollaborationData{Run: &run}}
+			record, err := content.PrepareEvent(t.Context(), org, historyJSON(t, value))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var stored eventstore.Event
+			if err := r.WriteRecords(t.Context(), org, corestore.Serving, func(w eventstore.Writer) error {
+				stored, err = w.AppendEvent(t.Context(), record)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			return stored
+		}
+		wanted := appendRunEvent("run_target", "attempt_target")
+		appendRunEvent("run_later", "attempt_other")
+		var got eventstore.Event
+		if err := r.ReadRecords(t.Context(), org, corestore.Serving, func(reader eventstore.Reader) error {
+			var err error
+			got, err = reader.LatestRunEvent(t.Context(), "prj_first", "attempt_target")
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if got.ID != wanted.ID || got.Sequence != wanted.Sequence || got.AttemptID != "attempt_target" {
+			t.Fatalf("latest run event = %+v, want %+v", got, wanted)
+		}
+	}
+}
+
 func TestEventChangeReceipts(t *testing.T) {
 	r, _ := repositoryFor(t, template.Database(t), smallPool())
 	seedRepository(t, r, "org_first")

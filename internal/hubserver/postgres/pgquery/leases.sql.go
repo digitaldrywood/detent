@@ -150,6 +150,37 @@ func (q *Queries) ExpireLease(ctx context.Context, arg ExpireLeaseParams) (Lease
 	return i, err
 }
 
+const getActiveIssueLease = `-- name: GetActiveIssueLease :one
+SELECT organization_id, lease_id, fencing_token, issue_id, machine_id, session_id, work_item_revision, landing_capacity, acquired_at, renewed_at, expires_at, released_at, release_reason FROM leases
+WHERE organization_id=$1 AND issue_id=$2 AND released_at IS NULL AND expires_at>clock_timestamp()
+`
+
+type GetActiveIssueLeaseParams struct {
+	OrganizationID tracker.OrganizationID
+	IssueID        int64
+}
+
+func (q *Queries) GetActiveIssueLease(ctx context.Context, arg GetActiveIssueLeaseParams) (Lease, error) {
+	row := q.db.QueryRowContext(ctx, getActiveIssueLease, arg.OrganizationID, arg.IssueID)
+	var i Lease
+	err := row.Scan(
+		&i.OrganizationID,
+		&i.LeaseID,
+		&i.FencingToken,
+		&i.IssueID,
+		&i.MachineID,
+		&i.SessionID,
+		&i.WorkItemRevision,
+		&i.LandingCapacity,
+		&i.AcquiredAt,
+		&i.RenewedAt,
+		&i.ExpiresAt,
+		&i.ReleasedAt,
+		&i.ReleaseReason,
+	)
+	return i, err
+}
+
 const getAttemptReceipt = `-- name: GetAttemptReceipt :one
 SELECT request_hash FROM native_attempt_events WHERE organization_id=$1 AND attempt_id=$2 AND sequence=$3
 `
@@ -165,6 +196,38 @@ func (q *Queries) GetAttemptReceipt(ctx context.Context, arg GetAttemptReceiptPa
 	var request_hash string
 	err := row.Scan(&request_hash)
 	return request_hash, err
+}
+
+const getLatestIssueAttempt = `-- name: GetLatestIssueAttempt :one
+SELECT organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at FROM native_attempts WHERE organization_id=$1 AND issue_id=$2 ORDER BY fencing_token DESC LIMIT 1
+`
+
+type GetLatestIssueAttemptParams struct {
+	OrganizationID tracker.OrganizationID
+	IssueID        int64
+}
+
+func (q *Queries) GetLatestIssueAttempt(ctx context.Context, arg GetLatestIssueAttemptParams) (NativeAttempt, error) {
+	row := q.db.QueryRowContext(ctx, getLatestIssueAttempt, arg.OrganizationID, arg.IssueID)
+	var i NativeAttempt
+	err := row.Scan(
+		&i.OrganizationID,
+		&i.ID,
+		&i.IssueID,
+		&i.LeaseID,
+		&i.FencingToken,
+		&i.RunID,
+		&i.Sequence,
+		&i.Status,
+		&i.WorkItemRevision,
+		&i.DispatchGeneration,
+		&i.PayloadObjectKey,
+		&i.CheckpointObjectKey,
+		&i.ArtifactsObjectKey,
+		&i.StartedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const getLease = `-- name: GetLease :one
@@ -478,6 +541,122 @@ func (q *Queries) LockLease(ctx context.Context, arg LockLeaseParams) (Lease, er
 	return i, err
 }
 
+const pageIssueAttempts = `-- name: PageIssueAttempts :many
+SELECT organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at FROM native_attempts
+WHERE organization_id=$1 AND issue_id=$2
+AND ($3::bigint=0 OR fencing_token<$3::bigint)
+ORDER BY fencing_token DESC LIMIT $4
+`
+
+type PageIssueAttemptsParams struct {
+	OrganizationID tracker.OrganizationID
+	IssueID        int64
+	BeforeFence    int64
+	PageLimit      int32
+}
+
+func (q *Queries) PageIssueAttempts(ctx context.Context, arg PageIssueAttemptsParams) ([]NativeAttempt, error) {
+	rows, err := q.db.QueryContext(ctx, pageIssueAttempts,
+		arg.OrganizationID,
+		arg.IssueID,
+		arg.BeforeFence,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []NativeAttempt{}
+	for rows.Next() {
+		var i NativeAttempt
+		if err := rows.Scan(
+			&i.OrganizationID,
+			&i.ID,
+			&i.IssueID,
+			&i.LeaseID,
+			&i.FencingToken,
+			&i.RunID,
+			&i.Sequence,
+			&i.Status,
+			&i.WorkItemRevision,
+			&i.DispatchGeneration,
+			&i.PayloadObjectKey,
+			&i.CheckpointObjectKey,
+			&i.ArtifactsObjectKey,
+			&i.StartedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const pageIssueAttemptsOldest = `-- name: PageIssueAttemptsOldest :many
+SELECT organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at FROM native_attempts
+WHERE organization_id=$1 AND issue_id=$2
+AND ($3::bigint=0 OR fencing_token>$3::bigint)
+ORDER BY fencing_token LIMIT $4
+`
+
+type PageIssueAttemptsOldestParams struct {
+	OrganizationID tracker.OrganizationID
+	IssueID        int64
+	AfterFence     int64
+	PageLimit      int32
+}
+
+func (q *Queries) PageIssueAttemptsOldest(ctx context.Context, arg PageIssueAttemptsOldestParams) ([]NativeAttempt, error) {
+	rows, err := q.db.QueryContext(ctx, pageIssueAttemptsOldest,
+		arg.OrganizationID,
+		arg.IssueID,
+		arg.AfterFence,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []NativeAttempt{}
+	for rows.Next() {
+		var i NativeAttempt
+		if err := rows.Scan(
+			&i.OrganizationID,
+			&i.ID,
+			&i.IssueID,
+			&i.LeaseID,
+			&i.FencingToken,
+			&i.RunID,
+			&i.Sequence,
+			&i.Status,
+			&i.WorkItemRevision,
+			&i.DispatchGeneration,
+			&i.PayloadObjectKey,
+			&i.CheckpointObjectKey,
+			&i.ArtifactsObjectKey,
+			&i.StartedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const registerLeaseMachine = `-- name: RegisterLeaseMachine :exec
 INSERT INTO machines (organization_id,id,hostname,display_name,capacity,version,last_heartbeat_at,registered_at,updated_at)
 VALUES ($1,$2,$3,$4,$5,$6,clock_timestamp(),clock_timestamp(),clock_timestamp())
@@ -548,24 +727,27 @@ func (q *Queries) ReleaseLease(ctx context.Context, arg ReleaseLeaseParams) (Lea
 }
 
 const renewLease = `-- name: RenewLease :one
-UPDATE leases SET renewed_at=$1,expires_at=$2
-WHERE organization_id=$3 AND lease_id=$4
-AND fencing_token=$5::bigint AND released_at IS NULL AND expires_at>$1
+UPDATE leases SET renewed_at=$1,expires_at=$2,
+landing_capacity=CASE WHEN $3::bigint>0 THEN $3::bigint ELSE landing_capacity END
+WHERE organization_id=$4 AND lease_id=$5
+AND fencing_token=$6::bigint AND released_at IS NULL AND expires_at>$1
 RETURNING organization_id, lease_id, fencing_token, issue_id, machine_id, session_id, work_item_revision, landing_capacity, acquired_at, renewed_at, expires_at, released_at, release_reason
 `
 
 type RenewLeaseParams struct {
-	Now            time.Time
-	ExpiresAt      time.Time
-	OrganizationID tracker.OrganizationID
-	LeaseID        string
-	FencingToken   int64
+	Now             time.Time
+	ExpiresAt       time.Time
+	LandingCapacity int64
+	OrganizationID  tracker.OrganizationID
+	LeaseID         string
+	FencingToken    int64
 }
 
 func (q *Queries) RenewLease(ctx context.Context, arg RenewLeaseParams) (Lease, error) {
 	row := q.db.QueryRowContext(ctx, renewLease,
 		arg.Now,
 		arg.ExpiresAt,
+		arg.LandingCapacity,
 		arg.OrganizationID,
 		arg.LeaseID,
 		arg.FencingToken,

@@ -1080,6 +1080,50 @@ func (q *Queries) RecordLatestChange(ctx context.Context, arg RecordLatestChange
 	return i, err
 }
 
+const recordLatestRunEvent = `-- name: RecordLatestRunEvent :one
+SELECT organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version FROM collaboration_events
+WHERE organization_id=$1 AND project_id=$2
+AND attempt_id=$3
+ORDER BY sequence DESC LIMIT 1
+`
+
+type RecordLatestRunEventParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	AttemptID      string
+}
+
+func (q *Queries) RecordLatestRunEvent(ctx context.Context, arg RecordLatestRunEventParams) (CollaborationEvent, error) {
+	row := q.db.QueryRowContext(ctx, recordLatestRunEvent, arg.OrganizationID, arg.ProjectID, arg.AttemptID)
+	var i CollaborationEvent
+	err := row.Scan(
+		&i.OrganizationID,
+		&i.ProjectID,
+		&i.WorkItemID,
+		&i.ID,
+		&i.Sequence,
+		&i.Type,
+		&i.SchemaVersion,
+		&i.ActorKind,
+		&i.ActorPrincipalID,
+		&i.EventRevision,
+		&i.ChangeID,
+		&i.VersionID,
+		&i.HeadSHA,
+		&i.RunID,
+		&i.AttemptID,
+		&i.FromState,
+		&i.ToState,
+		&i.RecordedAt,
+		&i.PayloadObjectKey,
+		&i.PayloadSHA256,
+		&i.PayloadBytes,
+		&i.PayloadContentBytes,
+		&i.PayloadFormatVersion,
+	)
+	return i, err
+}
+
 const recordListChange = `-- name: RecordListChange :many
 SELECT c.organization_id, c.project_id, c.work_item_id, c.id, c.revision, c.title, c.current_version_id, c.evidence_sequence, c.created_at, c.updated_at, c.payload_object_key, c.payload_sha256, c.payload_bytes, c.payload_content_bytes FROM change_requests c WHERE c.organization_id=$1 AND c.project_id=$2 AND c.id>$3
 AND EXISTS (SELECT 1 FROM change_issue_links l WHERE l.organization_id=c.organization_id AND l.project_id=c.project_id AND l.change_id=c.id AND l.work_item_id=$4)
@@ -1156,6 +1200,71 @@ func (q *Queries) RecordListEvent(ctx context.Context, arg RecordListEventParams
 		arg.ProjectID,
 		arg.WorkItemID,
 		arg.After,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []CollaborationEvent{}
+	for rows.Next() {
+		var i CollaborationEvent
+		if err := rows.Scan(
+			&i.OrganizationID,
+			&i.ProjectID,
+			&i.WorkItemID,
+			&i.ID,
+			&i.Sequence,
+			&i.Type,
+			&i.SchemaVersion,
+			&i.ActorKind,
+			&i.ActorPrincipalID,
+			&i.EventRevision,
+			&i.ChangeID,
+			&i.VersionID,
+			&i.HeadSHA,
+			&i.RunID,
+			&i.AttemptID,
+			&i.FromState,
+			&i.ToState,
+			&i.RecordedAt,
+			&i.PayloadObjectKey,
+			&i.PayloadSHA256,
+			&i.PayloadBytes,
+			&i.PayloadContentBytes,
+			&i.PayloadFormatVersion,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const recordListEventBefore = `-- name: RecordListEventBefore :many
+SELECT organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND sequence<$4 ORDER BY sequence DESC LIMIT $5
+`
+
+type RecordListEventBeforeParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	WorkItemID     tracker.NativeWorkItemID
+	Before         int64
+	PageLimit      int32
+}
+
+func (q *Queries) RecordListEventBefore(ctx context.Context, arg RecordListEventBeforeParams) ([]CollaborationEvent, error) {
+	rows, err := q.db.QueryContext(ctx, recordListEventBefore,
+		arg.OrganizationID,
+		arg.ProjectID,
+		arg.WorkItemID,
+		arg.Before,
 		arg.PageLimit,
 	)
 	if err != nil {

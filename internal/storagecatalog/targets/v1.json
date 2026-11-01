@@ -26,6 +26,7 @@
     "internal/hubserver/postgres/migrations/20261101184348_work_item_relationships.sql",
     "internal/hubserver/postgres/migrations/20261101192143_conversation_records.sql",
     "internal/hubserver/postgres/migrations/20261101195407_linked_issue_sources.sql",
+    "internal/hubserver/postgres/migrations/20261101203853_attempt_event_lookup.sql",
     "internal/hubserver/postgres/migrations/20261101204615_project_policy_authority.sql"
   ],
   "tables": {

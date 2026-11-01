@@ -18,6 +18,8 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -84,8 +86,8 @@ func (s *Service) readNativePageLimit(ctx context.Context, scope nativeScope, pa
 		fingerprint += " " + scope.credential.Hosted.SessionID
 	}
 	cursor := nativeCursor{Version: 2, Scope: fingerprint, Expires: s.config.now().Add(time.Hour).Unix()}
-	var key []byte
-	if err := s.database.reader.QueryRowContext(ctx, "SELECT cursor_key FROM hub_identity").Scan(&key); err != nil {
+	key, err := s.readNativeCursorKey(ctx, scope.organization)
+	if err != nil {
 		return 0, cursor, nil, err
 	}
 	value := requestedCursor
@@ -113,6 +115,28 @@ func (s *Service) readNativePageLimit(ctx context.Context, scope nativeScope, pa
 		return 0, cursor, nil, nativePublicInvalid("Cursor scope changed or expired; restart the query")
 	}
 	return limit, cursor, key, nil
+}
+
+func (s *Service) readNativeCursorKey(ctx context.Context, organization tracker.OrganizationID) ([]byte, error) {
+	if s.config.AccessRepository == nil {
+		return nil, nativeRunEventStorageUnavailable()
+	}
+	var secret accessstore.Secret
+	if err := s.accessRead(ctx, organization, func(r tenantstore.Reader) error {
+		var err error
+		secret, err = r.AccessSecret(ctx, "", accessstore.NativeCursorKeyKind)
+		return err
+	}); err != nil {
+		return nil, err
+	}
+	key, err := accessstore.OpenSecret(s.config.SecretKeys, secret)
+	if err != nil {
+		return nil, err
+	}
+	if len(key) != sha256.Size {
+		return nil, errors.New("native cursor key has invalid length")
+	}
+	return key, nil
 }
 
 func encodeNativeCursor(cursor nativeCursor, key []byte) (string, error) {
@@ -522,6 +546,9 @@ func (s *Service) listNativeHistory(c echo.Context) error {
 }
 
 func (s *Service) readHistory(ctx context.Context, scope nativeScope, item string, params url.Values) (tracker.Page[tracker.CollaborationEvent], error) {
+	if s.config.TenantRepository != nil {
+		return s.readHistoryTenant(ctx, scope, item, params)
+	}
 	ctx = s.runDetailContext(ctx)
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()

@@ -600,6 +600,22 @@ func nativeRuntimeHistoryChanged(previous, observation *tracker.NativeRuntimeObs
 }
 
 func (s *Service) listNativeAttempts(c echo.Context) error {
+	if s.config.TenantRepository != nil {
+		ctx := c.Request().Context()
+		scope := nativeRequestScope(c)
+		params, err := nativeReadQuery(c)
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		if params.Get("view") == "" && c.Request().Header.Get("X-Detent-Attempt-Detail") == "full" {
+			params.Set("view", "detail")
+		}
+		result, err := s.readNativeAttemptPageTenant(ctx, scope, c.Param("item"), params, json.Marshal)
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		return c.JSONBlob(http.StatusOK, result.encoded)
+	}
 	if handled, err := s.archiveView(c, c.Param("item"), "attempts", nil); handled {
 		return err
 	}
@@ -656,6 +672,9 @@ func (s *Service) readAttempts(ctx context.Context, scope nativeScope, item stri
 }
 
 func (s *Service) readNativeAttemptPage(ctx context.Context, scope nativeScope, item string, params url.Values, marshal func(any) ([]byte, error)) (nativeAttemptPage, error) {
+	if s.config.TenantRepository != nil {
+		return s.readNativeAttemptPageTenant(ctx, scope, item, params, marshal)
+	}
 	ctx = s.runDetailContext(ctx)
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
@@ -939,6 +958,16 @@ func (row nativeAttemptRow) hydrate(ctx context.Context, q nativeQueryer, now ti
 }
 
 func (s *Service) getNativeAttempt(c echo.Context) error {
+	if s.config.TenantRepository != nil {
+		if c.QueryParam("view") == "cleanup" {
+			return s.nativeAPIError(c, nativeRunEventStorageUnavailable())
+		}
+		result, err := s.readNativeAttemptTenant(c.Request().Context(), nativeRequestScope(c), c.Param("item"), c.Param("attempt"))
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		return nativeArchiveJSON(c, http.StatusOK, result)
+	}
 	if c.QueryParam("view") == "cleanup" {
 		result, err := s.readNativeCleanupAttempt(c.Request().Context(), nativeRequestScope(c), c.Param("item"), c.Param("attempt"))
 		if err != nil {
@@ -1015,6 +1044,12 @@ AND a.runner_id=? AND l.machine_id=? AND l.released_at IS NOT NULL AND a.worker_
 }
 
 func (s *Service) readNativeAttempt(ctx context.Context, scope nativeScope, item, id string) (tracker.NativeAttempt, error) {
+	if s.config.TenantRepository != nil {
+		ctx = s.runDetailContext(ctx)
+		ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+		defer cancel()
+		return s.readNativeAttemptTenant(ctx, scope, item, id)
+	}
 	ctx = s.runDetailContext(ctx)
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()

@@ -558,6 +558,9 @@ func readRunDetailSegment(ctx context.Context, q nativeQueryer, detail *runDetai
 			return err
 		}}
 	}
+	if q == nil {
+		return nil, errRunDetailStoreUnavailable
+	}
 
 	ref, err := scanAttachmentArchive(q.QueryRowContext(ctx, `SELECT object_key,sha256,size,uncompressed_size,codec,schema_version,kind,retention_class,storage_binding_id,customer_owned FROM attachments WHERE id=? AND organization_id=? AND kind='archive'`, detail.AttachmentID, detail.Organization))
 	if err != nil {

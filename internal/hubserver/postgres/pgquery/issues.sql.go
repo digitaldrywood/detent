@@ -211,6 +211,50 @@ func (q *Queries) GetWorkItem(ctx context.Context, arg GetWorkItemParams) (Issue
 	return i, err
 }
 
+const getWorkItemByID = `-- name: GetWorkItemByID :one
+SELECT organization_id, id, native_id, project_id, number, revision, event_sequence, native_source_key, title, body_object_key, issue_contract_object_key, report_context_object_key, actor_kind, actor_principal_id, provenance_provider, provenance_external_id, archived, created_at, updated_at, native_created_at, native_updated_at, workflow_state_name, last_activity_at FROM issues
+WHERE organization_id=$1
+  AND project_id=$2
+  AND id=$3
+`
+
+type GetWorkItemByIDParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	ID             int64
+}
+
+func (q *Queries) GetWorkItemByID(ctx context.Context, arg GetWorkItemByIDParams) (Issue, error) {
+	row := q.db.QueryRowContext(ctx, getWorkItemByID, arg.OrganizationID, arg.ProjectID, arg.ID)
+	var i Issue
+	err := row.Scan(
+		&i.OrganizationID,
+		&i.ID,
+		&i.NativeID,
+		&i.ProjectID,
+		&i.Number,
+		&i.Revision,
+		&i.EventSequence,
+		&i.NativeSourceKey,
+		&i.Title,
+		&i.BodyObjectKey,
+		&i.IssueContractObjectKey,
+		&i.ReportContextObjectKey,
+		&i.ActorKind,
+		&i.ActorPrincipalID,
+		&i.ProvenanceProvider,
+		&i.ProvenanceExternalID,
+		&i.Archived,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.NativeCreatedAt,
+		&i.NativeUpdatedAt,
+		&i.WorkflowStateName,
+		&i.LastActivityAt,
+	)
+	return i, err
+}
+
 const getWorkItemByNativeID = `-- name: GetWorkItemByNativeID :one
 SELECT organization_id, id, native_id, project_id, number, revision, event_sequence, native_source_key, title, body_object_key, issue_contract_object_key, report_context_object_key, actor_kind, actor_principal_id, provenance_provider, provenance_external_id, archived, created_at, updated_at, native_created_at, native_updated_at, workflow_state_name, last_activity_at FROM issues
 WHERE organization_id=$1

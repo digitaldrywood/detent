@@ -44,6 +44,7 @@ type Reader interface {
 	SelectComments(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, int64, bool, int) ([]Comment, error)
 	Project(context.Context, tracker.ProjectID) (Project, error)
 	WorkItem(context.Context, tracker.ProjectID, tracker.NativeWorkItemID) (WorkItem, error)
+	WorkItemByID(context.Context, tracker.ProjectID, int64) (WorkItem, error)
 	WorkItemByNativeID(context.Context, tracker.NativeWorkItemID) (WorkItem, error)
 	Comment(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, string) (Comment, error)
 	Projects(context.Context, tracker.ProjectID, int) ([]Project, error)

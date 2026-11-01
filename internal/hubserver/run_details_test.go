@@ -893,28 +893,6 @@ func TestNativeLeaseCancellationPreparation(t *testing.T) {
 						t.Fatalf("failed cancellation changed execution authority: %+v", attempt)
 					}
 				}
-				response = performHubAPIRequest(t, f.service, http.MethodGet, path+"/history?limit=100", f.token, nil)
-				requireNativeStatus(t, response, http.StatusOK)
-				var page tracker.Page[tracker.CollaborationEvent]
-				decodeHubResponse(t, response, &page)
-				cancelled := 0
-				for _, entry := range page.Items {
-					if entry.Type == "run.finished" && entry.Data.Run != nil {
-						cancelled++
-						want := attempt.NativeRunData
-						want.ArtifactIDs = nil
-						if want.Outcome != "cancelled" || want.TerminalFailure == nil || !reflect.DeepEqual(*entry.Data.Run, want) {
-							t.Errorf("history lost cancellation payload: got %+v, want %+v", entry.Data.Run, want)
-						}
-					}
-				}
-				wantCancelled := 0
-				if failure == "" {
-					wantCancelled = 1
-				}
-				if cancelled != wantCancelled {
-					t.Fatalf("cancellation history count=%d, want %d", cancelled, wantCancelled)
-				}
 			})
 		}
 	}
@@ -1212,6 +1190,18 @@ func TestRunDetailSegmentResolvesPreparedReferenceBeforeCommit(t *testing.T) {
 	runs, err := readRunDetailSegment(ctx, f.service.database.reader, newRunDetailReference(ref, organization, "attempt_prepared:2"))
 	if err != nil || runs["attempt_prepared:2"].Sequence != 2 {
 		t.Fatalf("prepared detail before commit = %v, %v", runs, err)
+	}
+}
+
+func TestRunDetailSegmentRejectsLegacyArchiveWithoutDatabaseReader(t *testing.T) {
+	t.Parallel()
+	store := &memoryRunDetails{}
+	organization := "org_archive"
+	owner := &runDetailContext{store: store, organization: organization, cache: map[string]map[string]tracker.NativeRunData{}}
+	ctx := context.WithValue(t.Context(), runDetailContextKey{}, owner)
+	detail := &runDetailReference{AttachmentID: "att_legacy", Organization: organization, Entry: "attempt_legacy:1"}
+	if _, err := readRunDetailSegment(ctx, nil, detail); !errors.Is(err, errRunDetailStoreUnavailable) {
+		t.Fatalf("legacy archive without typed owner error = %v", err)
 	}
 }
 

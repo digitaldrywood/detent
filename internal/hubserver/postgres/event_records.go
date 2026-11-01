@@ -51,6 +51,31 @@ func (s *session) Events(ctx context.Context, project tracker.ProjectID, item tr
 	}
 	return records, nil
 }
+
+func (s *session) EventsBefore(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID, before int64, limit int) ([]eventstore.Event, error) {
+	if err := checkPage(limit); err != nil {
+		return nil, err
+	}
+	rows, err := s.queries.RecordListEventBefore(ctx, pgquery.RecordListEventBeforeParams{OrganizationID: s.organization, ProjectID: project, WorkItemID: item, Before: before, PageLimit: int32(limit)})
+	if err != nil {
+		return nil, mapError(ctx, err)
+	}
+	records := make([]eventstore.Event, len(rows))
+	for i, row := range rows {
+		records[i] = eventstore.Event(row)
+	}
+	return records, nil
+}
+
+func (s *session) LatestRunEvent(ctx context.Context, project tracker.ProjectID, attempt string) (eventstore.Event, error) {
+	row, err := s.queries.RecordLatestRunEvent(ctx, pgquery.RecordLatestRunEventParams{
+		OrganizationID: s.organization,
+		ProjectID:      project,
+		AttemptID:      attempt,
+	})
+	return eventstore.Event(row), mapError(ctx, err)
+}
+
 func (s *session) Versions(ctx context.Context, change string, after int64, limit int) ([]eventstore.Version, error) {
 	if err := checkPage(limit); err != nil {
 		return nil, err

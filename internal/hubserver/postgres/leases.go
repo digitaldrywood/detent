@@ -35,9 +35,76 @@ func (s *session) Lease(ctx context.Context, id string) (leasestore.Lease, error
 	return leasestore.Lease(row), mapError(ctx, err)
 }
 
+func (s *session) ActiveLeaseForIssue(ctx context.Context, issueID int64) (leasestore.Lease, error) {
+	if issueID <= 0 {
+		return leasestore.Lease{}, tracker.ErrInvalidWorkItemID
+	}
+	row, err := s.queries.GetActiveIssueLease(ctx, pgquery.GetActiveIssueLeaseParams{OrganizationID: s.organization, IssueID: issueID})
+	return leasestore.Lease(row), mapError(ctx, err)
+}
+
 func (s *session) Attempt(ctx context.Context, id string) (leasestore.Attempt, error) {
 	row, err := s.queries.GetLeaseAttempt(ctx, pgquery.GetLeaseAttemptParams{OrganizationID: s.organization, ID: id})
 	return leasestore.Attempt(row), mapError(ctx, err)
+}
+
+func (s *session) LatestAttempt(ctx context.Context, issueID int64) (leasestore.Attempt, error) {
+	if issueID <= 0 {
+		return leasestore.Attempt{}, tracker.ErrInvalidWorkItemID
+	}
+	row, err := s.queries.GetLatestIssueAttempt(ctx, pgquery.GetLatestIssueAttemptParams{OrganizationID: s.organization, IssueID: issueID})
+	return leasestore.Attempt(row), mapError(ctx, err)
+}
+
+func (s *session) AttemptPage(ctx context.Context, issueID int64, cursor leasestore.AttemptCursor, limit int) (leasestore.AttemptPage, error) {
+	page := leasestore.AttemptPage{Items: []leasestore.Attempt{}}
+	if issueID <= 0 {
+		return page, tracker.ErrInvalidWorkItemID
+	}
+	if err := checkPage(limit); err != nil {
+		return page, err
+	}
+	if cursor != (leasestore.AttemptCursor{}) && (cursor.IssueID != issueID || cursor.Oldest && (cursor.AfterFence < 0 || cursor.BeforeFence != 0) || !cursor.Oldest && (cursor.BeforeFence <= 0 || cursor.AfterFence != 0)) {
+		return page, corestore.ErrInvalidCursor
+	}
+	if cursor.Oldest {
+		rows, err := s.queries.PageIssueAttemptsOldest(ctx, pgquery.PageIssueAttemptsOldestParams{
+			OrganizationID: s.organization,
+			IssueID:        issueID,
+			AfterFence:     cursor.AfterFence,
+			PageLimit:      int32(limit + 1),
+		})
+		if err != nil {
+			return page, mapError(ctx, err)
+		}
+		if len(rows) > limit {
+			rows = rows[:limit]
+			page.Next = leasestore.AttemptCursor{IssueID: issueID, AfterFence: rows[len(rows)-1].FencingToken, Oldest: true}
+		}
+		page.Items = make([]leasestore.Attempt, len(rows))
+		for i, row := range rows {
+			page.Items[i] = leasestore.Attempt(row)
+		}
+		return page, nil
+	}
+	rows, err := s.queries.PageIssueAttempts(ctx, pgquery.PageIssueAttemptsParams{
+		OrganizationID: s.organization,
+		IssueID:        issueID,
+		BeforeFence:    cursor.BeforeFence,
+		PageLimit:      int32(limit + 1),
+	})
+	if err != nil {
+		return page, mapError(ctx, err)
+	}
+	if len(rows) > limit {
+		rows = rows[:limit]
+		page.Next = leasestore.AttemptCursor{IssueID: issueID, BeforeFence: rows[len(rows)-1].FencingToken}
+	}
+	page.Items = make([]leasestore.Attempt, len(rows))
+	for i, row := range rows {
+		page.Items[i] = leasestore.Attempt(row)
+	}
+	return page, nil
 }
 
 func (s *session) Usage(ctx context.Context, machine string) (int64, error) {
@@ -110,7 +177,14 @@ func (s *session) lockFence(ctx context.Context, fence leasestore.Fence) (pgquer
 }
 
 func (s *session) Renew(ctx context.Context, fence leasestore.Fence, ttl time.Duration) (leasestore.Lease, error) {
+	return s.RenewWithLandingCapacity(ctx, fence, ttl, 0)
+}
+
+func (s *session) RenewWithLandingCapacity(ctx context.Context, fence leasestore.Fence, ttl time.Duration, landingCapacity int64) (leasestore.Lease, error) {
 	if ttl < time.Microsecond {
+		return leasestore.Lease{}, tracker.ErrInvalidLeaseRequest
+	}
+	if landingCapacity < 0 {
 		return leasestore.Lease{}, tracker.ErrInvalidLeaseRequest
 	}
 	_, now, err := s.lockFence(ctx, fence)
@@ -118,7 +192,7 @@ func (s *session) Renew(ctx context.Context, fence leasestore.Fence, ttl time.Du
 		return leasestore.Lease{}, err
 	}
 	row, err := s.queries.RenewLease(ctx, pgquery.RenewLeaseParams{
-		OrganizationID: s.organization, LeaseID: fence.LeaseID, FencingToken: fence.FencingToken, Now: now, ExpiresAt: now.Add(ttl),
+		OrganizationID: s.organization, LeaseID: fence.LeaseID, FencingToken: fence.FencingToken, Now: now, ExpiresAt: now.Add(ttl), LandingCapacity: landingCapacity,
 	})
 	if err != nil {
 		return leasestore.Lease{}, leaseMutationError(ctx, err)

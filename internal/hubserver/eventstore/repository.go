@@ -178,6 +178,8 @@ type Reader interface {
 	LandingReceipt(context.Context, string) (LandingReceipt, error)
 	Receipt(context.Context, string, string, string) (Receipt, error)
 	Events(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, int64, int) ([]Event, error)
+	EventsBefore(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, int64, int) ([]Event, error)
+	LatestRunEvent(context.Context, tracker.ProjectID, string) (Event, error)
 	CollaborationVersion(context.Context, string, int64) (CollaborationVersion, error)
 	Change(context.Context, string) (Change, error)
 	LatestChange(context.Context, tracker.ProjectID, tracker.NativeWorkItemID) (Change, error)

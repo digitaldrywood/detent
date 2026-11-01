@@ -73,6 +73,16 @@ func (s *Service) appendNativeRunEvent(c echo.Context) error {
 	if err := validateNativeRunEvent(request); err != nil {
 		return s.nativeRunEventError(c, request, err)
 	}
+	if s.config.TenantRepository != nil {
+		result, err := s.appendNativeRunEventTenant(c.Request().Context(), nativeRequestScope(c), c.Param("item"), request)
+		if err != nil {
+			return s.nativeRunEventError(c, request, err)
+		}
+		if request.Data.Handoff != nil && request.Data.Handoff.Publication != nil || request.Data.Finalization != nil && request.Data.Finalization.Publication != nil {
+			s.pullRequests.invalidate(pullRequestCacheKey(nativeRequestScope(c), c.Param("item")))
+		}
+		return c.JSONBlob(http.StatusOK, result)
+	}
 	err := s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		events := append(append([]tracker.NativeRunEvent{}, request.PriorEvents...), request)
 		for _, event := range events {

@@ -20,7 +20,8 @@ INSERT INTO leases (organization_id,lease_id,issue_id,machine_id,session_id,work
 VALUES ($1,$2,$3,$4,$5,$6,sqlc.arg(now),sqlc.arg(now),sqlc.arg(expires_at)) RETURNING *;
 
 -- name: RenewLease :one
-UPDATE leases SET renewed_at=sqlc.arg(now),expires_at=sqlc.arg(expires_at)
+UPDATE leases SET renewed_at=sqlc.arg(now),expires_at=sqlc.arg(expires_at),
+landing_capacity=CASE WHEN sqlc.arg(landing_capacity)::bigint>0 THEN sqlc.arg(landing_capacity)::bigint ELSE landing_capacity END
 WHERE organization_id=sqlc.arg(organization_id) AND lease_id=sqlc.arg(lease_id)
 AND fencing_token=sqlc.arg(fencing_token)::bigint AND released_at IS NULL AND expires_at>sqlc.arg(now)
 RETURNING *;
@@ -47,11 +48,30 @@ UPDATE machines SET last_heartbeat_at=greatest(last_heartbeat_at,$3),updated_at=
 -- name: GetLease :one
 SELECT * FROM leases WHERE organization_id=$1 AND lease_id=$2;
 
+-- name: GetActiveIssueLease :one
+SELECT * FROM leases
+WHERE organization_id=$1 AND issue_id=$2 AND released_at IS NULL AND expires_at>clock_timestamp();
+
 -- name: LeaseUsage :one
 SELECT count(*) FROM leases WHERE organization_id=$1 AND machine_id=$2 AND released_at IS NULL AND expires_at>sqlc.arg(now)::timestamptz;
 
 -- name: GetLeaseAttempt :one
 SELECT * FROM native_attempts WHERE organization_id=$1 AND id=$2;
+
+-- name: GetLatestIssueAttempt :one
+SELECT * FROM native_attempts WHERE organization_id=$1 AND issue_id=$2 ORDER BY fencing_token DESC LIMIT 1;
+
+-- name: PageIssueAttempts :many
+SELECT * FROM native_attempts
+WHERE organization_id=sqlc.arg(organization_id) AND issue_id=sqlc.arg(issue_id)
+AND (sqlc.arg(before_fence)::bigint=0 OR fencing_token<sqlc.arg(before_fence)::bigint)
+ORDER BY fencing_token DESC LIMIT sqlc.arg(page_limit);
+
+-- name: PageIssueAttemptsOldest :many
+SELECT * FROM native_attempts
+WHERE organization_id=sqlc.arg(organization_id) AND issue_id=sqlc.arg(issue_id)
+AND (sqlc.arg(after_fence)::bigint=0 OR fencing_token>sqlc.arg(after_fence)::bigint)
+ORDER BY fencing_token LIMIT sqlc.arg(page_limit);
 
 -- name: GetAttemptReceipt :one
 SELECT request_hash FROM native_attempt_events WHERE organization_id=$1 AND attempt_id=$2 AND sequence=$3;

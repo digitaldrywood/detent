@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -137,11 +138,11 @@ func TestLeaseAttemptLifecycle(t *testing.T) {
 				}
 				requireLeaseUsage(t, r, org, lease.MachineID, 1)
 				err := r.WriteLeases(t.Context(), org, corestore.Serving, func(w leasestore.Writer) error {
-					renewed, err := w.Renew(t.Context(), leaseFence(lease), 2*time.Hour)
+					renewed, err := w.RenewWithLandingCapacity(t.Context(), leaseFence(lease), 2*time.Hour, 3)
 					if err != nil {
 						return err
 					}
-					if renewed.FencingToken != lease.FencingToken || !renewed.ExpiresAt.After(lease.ExpiresAt) {
+					if renewed.FencingToken != lease.FencingToken || !renewed.ExpiresAt.After(lease.ExpiresAt) || renewed.LandingCapacity != 3 {
 						t.Errorf("renew changed owner or failed to extend expiry: %+v", renewed)
 					}
 					released, err := w.Release(t.Context(), leaseFence(lease), "finished")
@@ -165,6 +166,94 @@ func TestLeaseAttemptLifecycle(t *testing.T) {
 				recordLeaseAttempt(t, r, org, continued)
 			})
 		}
+	}
+}
+
+func TestLeaseIssueReadsReturnActiveLeaseAndBoundedAttemptPages(t *testing.T) {
+	r, _ := repositoryFor(t, template.Database(t), smallPool())
+	seedLeaseFamily(t, r, "org_first")
+	var attempts []leasestore.Attempt
+	for sequence := 1; sequence <= 3; sequence++ {
+		request := leaseClaim(1)
+		request.LeaseID = fmt.Sprintf("lease_page_%d", sequence)
+		request.SessionID = fmt.Sprintf("session_page_%d", sequence)
+		lease := claimLease(t, r, "org_first", request)
+		if sequence == 1 {
+			err := r.ReadTenant(t.Context(), "org_first", corestore.Serving, func(reader tenantstore.Reader) error {
+				active, err := reader.ActiveLeaseForIssue(t.Context(), 1)
+				if err == nil && active.LeaseID != lease.LeaseID {
+					t.Errorf("active lease = %s, want %s", active.LeaseID, lease.LeaseID)
+				}
+				return err
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		event := attemptEvent(lease)
+		event.ID = fmt.Sprintf("attempt_page_%d", sequence)
+		event.RunID = fmt.Sprintf("run_page_%d", sequence)
+		attempts = append(attempts, recordLeaseAttempt(t, r, "org_first", event))
+		if err := r.WriteLeases(t.Context(), "org_first", corestore.Serving, func(writer leasestore.Writer) error {
+			_, err := writer.Release(t.Context(), leaseFence(lease), "finished")
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	err := r.ReadTenant(t.Context(), "org_first", corestore.Serving, func(reader tenantstore.Reader) error {
+		if _, err := reader.ActiveLeaseForIssue(t.Context(), 1); !errors.Is(err, sql.ErrNoRows) {
+			t.Errorf("active lease after release = %v, want no rows", err)
+		}
+		latest, err := reader.LatestAttempt(t.Context(), 1)
+		if err != nil {
+			return err
+		}
+		if latest.ID != attempts[2].ID || latest.FencingToken != attempts[2].FencingToken {
+			t.Errorf("latest attempt = %+v, want %+v", latest, attempts[2])
+		}
+		first, err := reader.AttemptPage(t.Context(), 1, leasestore.AttemptCursor{}, 1)
+		if err != nil {
+			return err
+		}
+		if len(first.Items) != 1 || first.Items[0].ID != attempts[2].ID || first.Next.IssueID != 1 || first.Next.BeforeFence != attempts[2].FencingToken {
+			t.Fatalf("first attempt page = %+v", first)
+		}
+		second, err := reader.AttemptPage(t.Context(), 1, first.Next, 1)
+		if err != nil {
+			return err
+		}
+		if len(second.Items) != 1 || second.Items[0].ID != attempts[1].ID || second.Next.BeforeFence != attempts[1].FencingToken {
+			t.Fatalf("second attempt page = %+v", second)
+		}
+		third, err := reader.AttemptPage(t.Context(), 1, second.Next, 1)
+		if err != nil {
+			return err
+		}
+		if len(third.Items) != 1 || third.Items[0].ID != attempts[0].ID || third.Next != (leasestore.AttemptCursor{}) {
+			t.Fatalf("third attempt page = %+v", third)
+		}
+		if _, err := reader.AttemptPage(t.Context(), 2, first.Next, 1); !errors.Is(err, corestore.ErrInvalidCursor) {
+			t.Errorf("cross-issue attempt cursor error = %v, want invalid cursor", err)
+		}
+		oldestFirst, err := reader.AttemptPage(t.Context(), 1, leasestore.AttemptCursor{IssueID: 1, Oldest: true}, 1)
+		if err != nil {
+			return err
+		}
+		if len(oldestFirst.Items) != 1 || oldestFirst.Items[0].ID != attempts[0].ID || oldestFirst.Next.IssueID != 1 || !oldestFirst.Next.Oldest || oldestFirst.Next.AfterFence != attempts[0].FencingToken {
+			t.Fatalf("oldest first attempt page = %+v", oldestFirst)
+		}
+		oldestSecond, err := reader.AttemptPage(t.Context(), 1, oldestFirst.Next, 1)
+		if err != nil {
+			return err
+		}
+		if len(oldestSecond.Items) != 1 || oldestSecond.Items[0].ID != attempts[1].ID || oldestSecond.Next.AfterFence != attempts[1].FencingToken {
+			t.Fatalf("oldest second attempt page = %+v", oldestSecond)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 

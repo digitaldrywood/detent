@@ -119,6 +119,9 @@ func (s *Service) claimNativeIssue(c echo.Context) error {
 }
 
 func (s *Service) respondNativeLease(c echo.Context, scope nativeScope, lease tracker.Lease) error {
+	if s.config.TenantRepository != nil {
+		return s.respondNativeLeaseTenant(c, scope, string(lease.ID))
+	}
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 	defer cancel()
 	policyID, err := s.database.leasePolicyID(ctx, lease.ID)
@@ -159,6 +162,9 @@ func (s *Service) requireNativeLease(c echo.Context) error {
 }
 
 func (s *Service) renewNativeLease(c echo.Context) error {
+	if s.config.TenantRepository != nil {
+		return s.renewNativeLeaseTenant(c)
+	}
 	if err := s.requireNativeLease(c); err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -181,6 +187,9 @@ func (s *Service) renewNativeLease(c echo.Context) error {
 }
 
 func (s *Service) releaseNativeLease(c echo.Context) error {
+	if s.config.TenantRepository != nil {
+		return s.releaseNativeLeaseTenant(c)
+	}
 	if err := s.requireNativeLease(c); err != nil {
 		return s.nativeAPIError(c, err)
 	}

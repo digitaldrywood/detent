@@ -8,6 +8,15 @@ VALUES (sqlc.arg(organization_id), sqlc.arg(project_id), sqlc.arg(work_item_id),
 -- name: RecordListEvent :many
 SELECT * FROM collaboration_events WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_id) AND work_item_id=sqlc.arg(work_item_id) AND sequence>sqlc.arg(after) ORDER BY sequence LIMIT sqlc.arg(page_limit);
 
+-- name: RecordListEventBefore :many
+SELECT * FROM collaboration_events WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_id) AND work_item_id=sqlc.arg(work_item_id) AND sequence<sqlc.arg(before) ORDER BY sequence DESC LIMIT sqlc.arg(page_limit);
+
+-- name: RecordLatestRunEvent :one
+SELECT * FROM collaboration_events
+WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_id)
+AND attempt_id=sqlc.arg(attempt_id)
+ORDER BY sequence DESC LIMIT 1;
+
 -- name: RecordGetCollaborationVersion :one
 SELECT * FROM collaboration_versions WHERE organization_id=sqlc.arg(organization_id) AND record_id=sqlc.arg(record_id) AND revision=sqlc.arg(revision);
 

@@ -19,7 +19,10 @@ type Repository interface {
 
 type Reader interface {
 	Lease(context.Context, string) (Lease, error)
+	ActiveLeaseForIssue(context.Context, int64) (Lease, error)
 	Attempt(context.Context, string) (Attempt, error)
+	LatestAttempt(context.Context, int64) (Attempt, error)
+	AttemptPage(context.Context, int64, AttemptCursor, int) (AttemptPage, error)
 	Usage(context.Context, string) (int64, error)
 }
 
@@ -28,9 +31,11 @@ type Writer interface {
 	RegisterMachine(context.Context, Machine) error
 	Claim(context.Context, Claim) (Lease, error)
 	Renew(context.Context, Fence, time.Duration) (Lease, error)
+	RenewWithLandingCapacity(context.Context, Fence, time.Duration, int64) (Lease, error)
 	Release(context.Context, Fence, string) (Lease, error)
 	Expire(context.Context, Fence) (Lease, error)
 	RecordAttempt(context.Context, AttemptEvent) (Attempt, error)
+	RecordAttemptEvent(context.Context, AttemptEvent) (Attempt, bool, error)
 }
 
 type Machine struct {
@@ -88,6 +93,18 @@ type Attempt struct {
 	ArtifactsObjectKey  *string
 	StartedAt           time.Time
 	UpdatedAt           time.Time
+}
+
+type AttemptCursor struct {
+	IssueID     int64
+	BeforeFence int64
+	AfterFence  int64
+	Oldest      bool
+}
+
+type AttemptPage struct {
+	Items []Attempt
+	Next  AttemptCursor
 }
 
 type AttemptEvent struct {

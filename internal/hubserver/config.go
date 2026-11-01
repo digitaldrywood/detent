@@ -57,6 +57,7 @@ type Config struct {
 	ProjectParticipants            tenantstore.ProjectParticipants
 	ConversationDispatch           tenantstore.DispatchRequests
 	ConversationWorkerAuthority    ConversationWorkerAuthority
+	NativeRunEvents                NativeRunEventParticipant
 	Clock                          func() time.Time
 	dashboardDelivery              *dashboardDeliveryConfig
 	ArchiveReader                  entryauthority.ArchiveReader

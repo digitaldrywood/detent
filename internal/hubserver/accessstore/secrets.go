@@ -8,6 +8,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+const NativeCursorKeyKind = "native-cursor-key"
+
 func VerifySecret(keys *hubsecrets.Keyring, secret Secret) error {
 	return keys.Check(secret.Envelope, SecretAAD(secret.OrganizationID, secret.ProjectID, secret.Kind))
 }

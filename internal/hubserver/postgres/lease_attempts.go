@@ -15,48 +15,54 @@ import (
 )
 
 func (s *session) RecordAttempt(ctx context.Context, event leasestore.AttemptEvent) (leasestore.Attempt, error) {
+	attempt, _, err := s.RecordAttemptEvent(ctx, event)
+	return attempt, err
+}
+
+func (s *session) RecordAttemptEvent(ctx context.Context, event leasestore.AttemptEvent) (leasestore.Attempt, bool, error) {
 	if strings.TrimSpace(event.ID) == "" || strings.TrimSpace(event.RunID) == "" || strings.TrimSpace(event.PayloadObjectKey) == "" || event.Sequence < 1 || event.DispatchGeneration < 0 {
-		return leasestore.Attempt{}, leasestore.ErrAttemptConflict
+		return leasestore.Attempt{}, false, leasestore.ErrAttemptConflict
 	}
 	switch event.Status {
 	case "running", "succeeded", "failed", "cancelled", "interrupted":
 	default:
-		return leasestore.Attempt{}, leasestore.ErrAttemptConflict
+		return leasestore.Attempt{}, false, leasestore.ErrAttemptConflict
 	}
 	lease, err := s.queries.LockLease(ctx, pgquery.LockLeaseParams{OrganizationID: s.organization, LeaseID: event.Fence.LeaseID})
 	if err != nil {
-		return leasestore.Attempt{}, mapError(ctx, err)
+		return leasestore.Attempt{}, false, mapError(ctx, err)
 	}
 	if lease.FencingToken != event.Fence.FencingToken {
-		return leasestore.Attempt{}, tracker.ErrStaleFencingToken
+		return leasestore.Attempt{}, false, tracker.ErrStaleFencingToken
 	}
 	encoded, err := json.Marshal(event)
 	if err != nil {
-		return leasestore.Attempt{}, err
+		return leasestore.Attempt{}, false, err
 	}
 	hash := sha256.Sum256(encoded)
 	digest := hex.EncodeToString(hash[:])
 	previous, err := s.queries.GetAttemptReceipt(ctx, pgquery.GetAttemptReceiptParams{OrganizationID: s.organization, AttemptID: event.ID, Sequence: event.Sequence})
 	if err == nil {
 		if previous != digest {
-			return leasestore.Attempt{}, leasestore.ErrAttemptConflict
+			return leasestore.Attempt{}, false, leasestore.ErrAttemptConflict
 		}
-		return s.Attempt(ctx, event.ID)
+		attempt, err := s.Attempt(ctx, event.ID)
+		return attempt, err == nil, err
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
-		return leasestore.Attempt{}, mapError(ctx, err)
+		return leasestore.Attempt{}, false, mapError(ctx, err)
 	}
 	now, err := s.queries.LeaseTime(ctx)
 	if err != nil {
-		return leasestore.Attempt{}, mapError(ctx, err)
+		return leasestore.Attempt{}, false, mapError(ctx, err)
 	}
 	if lease.ReleasedAt != nil || !lease.ExpiresAt.After(now) {
-		return leasestore.Attempt{}, tracker.ErrStaleFencingToken
+		return leasestore.Attempt{}, false, tracker.ErrStaleFencingToken
 	}
 	var row pgquery.NativeAttempt
 	if event.Sequence == 1 {
 		if err := s.queries.BindAttemptRun(ctx, pgquery.BindAttemptRunParams{OrganizationID: s.organization, RunID: event.RunID, IssueID: lease.IssueID}); err != nil {
-			return leasestore.Attempt{}, mapError(ctx, err)
+			return leasestore.Attempt{}, false, mapError(ctx, err)
 		}
 		row, err = s.queries.InsertLeaseAttempt(ctx, pgquery.InsertLeaseAttemptParams{
 			OrganizationID: s.organization, ID: event.ID, IssueID: lease.IssueID, LeaseID: lease.LeaseID,
@@ -72,11 +78,11 @@ func (s *session) RecordAttempt(ctx context.Context, event leasestore.AttemptEve
 		})
 	}
 	if errors.Is(err, sql.ErrNoRows) {
-		return leasestore.Attempt{}, leasestore.ErrAttemptConflict
+		return leasestore.Attempt{}, false, leasestore.ErrAttemptConflict
 	}
 	if err != nil {
-		return leasestore.Attempt{}, mapError(ctx, err)
+		return leasestore.Attempt{}, false, mapError(ctx, err)
 	}
 	err = s.queries.InsertAttemptReceipt(ctx, pgquery.InsertAttemptReceiptParams{OrganizationID: s.organization, AttemptID: event.ID, Sequence: event.Sequence, RequestHash: digest})
-	return leasestore.Attempt(row), mapError(ctx, err)
+	return leasestore.Attempt(row), false, mapError(ctx, err)
 }

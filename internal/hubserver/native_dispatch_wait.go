@@ -103,6 +103,14 @@ func (s *Service) notifyNativeDispatch(ctx context.Context, scope nativeScope, i
 	}
 }
 
+func (s *Service) signalNativeDispatch(scope nativeScope) {
+	s.notifications.notify(dispatchNotificationKey(scope.organization))
+	select {
+	case s.boardRefresh <- struct{}{}:
+	default:
+	}
+}
+
 func (s *Service) waitNativeCandidates(c echo.Context) error {
 	wait := 30
 	if value := c.QueryParam("wait"); value != "" {
