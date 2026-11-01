@@ -346,6 +346,7 @@ type Writer interface {
 	SpendBillingIncludedCredit(context.Context, CreditPeriod, int64) (int64, error)
 	SetBillingMonthlyPolicy(context.Context, MonthlyPolicy, tracker.Revision) error
 	ApplyBillingUsage(context.Context, UsageReceipt, int64) (UsageResult, error)
+	PruneRequestBillingUsage(context.Context, time.Time, int) error
 	RecordBillingMonthlyAdmission(context.Context, MonthlyAdmission) error
 	RecordBillingMonthlyLease(context.Context, MonthlyLease) error
 }

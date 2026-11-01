@@ -29,7 +29,8 @@
     "internal/hubserver/postgres/migrations/20261101203853_attempt_event_lookup.sql",
     "internal/hubserver/postgres/migrations/20261101204615_project_policy_authority.sql",
     "internal/hubserver/postgres/migrations/20261101215438_runner_identity_enrollment.sql",
-    "internal/hubserver/postgres/migrations/20261101215802_organization_model_selection.sql"
+    "internal/hubserver/postgres/migrations/20261101215802_organization_model_selection.sql",
+    "internal/hubserver/postgres/migrations/20261101224723_request_usage_retention.sql"
   ],
   "tables": {
     "public.ai_credit_reason_references": {

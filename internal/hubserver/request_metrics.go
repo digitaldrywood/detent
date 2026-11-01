@@ -105,17 +105,18 @@ type runnerRequestWindow struct {
 }
 
 type tenantRequestMetrics struct {
-	usage        *database
-	db           *sql.DB
-	repository   metricsstore.Repository
-	organization tracker.OrganizationID
-	mu           sync.Mutex
-	flushMu      sync.Mutex
-	pending      map[requestMetricKey]requestLatency
-	runners      map[string]*runnerRequestWindow
-	routesOnce   sync.Once
-	routes       map[string]bool
-	ingested     atomic.Int64
+	usage          *database
+	billingPending *hostedRequestBillingBatch
+	db             *sql.DB
+	repository     metricsstore.Repository
+	organization   tracker.OrganizationID
+	mu             sync.Mutex
+	flushMu        sync.Mutex
+	pending        map[requestMetricKey]requestLatency
+	runners        map[string]*runnerRequestWindow
+	routesOnce     sync.Once
+	routes         map[string]bool
+	ingested       atomic.Int64
 }
 
 func openRequestMetrics(ctx context.Context, path string, organization tracker.OrganizationID) (*tenantRequestMetrics, error) {
@@ -159,6 +160,9 @@ func (m *tenantRequestMetrics) record(now time.Time, route, kind, caller string,
 func (m *tenantRequestMetrics) flush(ctx context.Context, now time.Time) error {
 	m.flushMu.Lock()
 	defer m.flushMu.Unlock()
+	if err := m.flushHostedBillingBatch(ctx, now); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	pending, owner := m.pending, m.usage
 	m.pending = make(map[requestMetricKey]requestLatency)
@@ -179,7 +183,7 @@ func (m *tenantRequestMetrics) flush(ctx context.Context, now time.Time) error {
 	}
 	if err == nil {
 		if owner != nil {
-			err = writeHostedRequestUsage(ctx, owner, now, usagePending)
+			err = m.writeHostedRequestUsage(ctx, owner, now, usagePending)
 		} else {
 			clear(usagePending)
 		}

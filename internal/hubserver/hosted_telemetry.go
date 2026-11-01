@@ -70,18 +70,7 @@ func writeHostedRequestUsage(ctx context.Context, owner *database, now time.Time
 		clear(pending)
 		return nil
 	}
-	windows := make(map[int64]hostedRequestUsage)
-	cutoff := now.Unix()/plans.WindowSeconds*plans.WindowSeconds - plans.RetentionWindows*plans.WindowSeconds
-	for key, value := range pending {
-		window := key.Minute / plans.WindowSeconds * plans.WindowSeconds
-		if window <= cutoff || value.http.requests == 0 {
-			delete(pending, key)
-			continue
-		}
-		usage := windows[window]
-		usage.merge(value.http)
-		windows[window] = usage
-	}
+	windows := hostedRequestUsageWindows(plans, now, pending)
 	ordered := slices.Sorted(maps.Keys(windows))
 	for _, window := range ordered[:min(4, len(ordered))] {
 		if err := writeHostedRequestWindow(ctx, owner, window, windows[window]); err != nil {
@@ -94,6 +83,22 @@ func writeHostedRequestUsage(ctx context.Context, owner *database, now time.Time
 		}
 	}
 	return nil
+}
+
+func hostedRequestUsageWindows(plans *HostedPlansConfig, now time.Time, pending map[requestMetricKey]requestLatency) map[int64]hostedRequestUsage {
+	windows := make(map[int64]hostedRequestUsage)
+	cutoff := now.Unix()/plans.WindowSeconds*plans.WindowSeconds - plans.RetentionWindows*plans.WindowSeconds
+	for key, value := range pending {
+		window := key.Minute / plans.WindowSeconds * plans.WindowSeconds
+		if window <= cutoff || value.http.requests == 0 {
+			delete(pending, key)
+			continue
+		}
+		usage := windows[window]
+		usage.merge(value.http)
+		windows[window] = usage
+	}
+	return windows
 }
 
 func writeHostedRequestWindow(ctx context.Context, owner *database, window int64, usage hostedRequestUsage) error {
