@@ -4674,8 +4674,13 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 					t.Fatalf("real Runner retry failed exact PR adoption: creates=%d publication=%v error=%v", forgeCreates, owner.publication != nil, err)
 				}
 				item := tracker.NativeWorkItemID(issue.ID)
-				oldEvidence, err := h.admin.RuntimeEvidence(t.Context(), item, oldAttempt)
-				if err != nil || oldEvidence.Attempt == nil || oldEvidence.Attempt.Checkpoint == nil || !reflect.DeepEqual(*oldEvidence.Attempt.Checkpoint, oldCheckpoint) {
+				path, err := nativeItemPath(item)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var oldRecord tracker.NativeAttempt
+				err = h.admin.client.request(t.Context(), http.MethodGet, h.admin.base()+path+"/attempts/"+oldAttempt, nil, &oldRecord)
+				if err != nil || oldRecord.AttemptID != oldAttempt || oldRecord.Checkpoint == nil || !reflect.DeepEqual(*oldRecord.Checkpoint, oldCheckpoint) {
 					t.Fatalf("retry changed old attempt checkpoint: %v", err)
 				}
 				detail, err := h.admin.Change(t.Context(), item, expected.Change.ID)
