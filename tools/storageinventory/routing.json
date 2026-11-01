@@ -476,7 +476,7 @@
     "internal/hubserver/change_analytics_columns.go": {"disposition": "serving", "families": ["event", "source"], "inventory": {"operations": {"analyticsChangeColumnsPending:QueryRowContext": 1, "analyticsChangeColumnsPending:SQL": 1, "legacyQualityEvidenceMatches:SQL": 1, "readUnconvertedAnalyticsLandings:SQL": 3}, "tables": ["hub/change_evidence", "hub/change_requests", "hub/change_versions", "hub/collaboration_events", "hub/quality_landings"]}},
     "internal/hubserver/change_attribution.go": {"disposition": "serving", "families": ["source"], "inventory": {"operations": {"readAttributionSlots:QueryContext": 1, "readAttributionSlots:SQL": 1, "storeAttributionSlots:ExecContext": 1, "storeAttributionSlots:SQL": 1}, "tables": ["hub/change_finding_attributions"]}},
     "internal/hubserver/change_columns.go": {"disposition": "serving", "families": ["core", "event", "lease", "source"], "inventory": {"operations": {"Service.populateChangeColumn:BeginTx": 1, "Service.populateChangeColumn:QueryRowContext": 3, "Service.populateChangeColumn:SQL": 3, "changeColumnUpdates:SQL": 10, "readChangeColumnIdentity:QueryRowContext": 1, "readChangeColumnIdentity:SQL": 1, "readPriorChangeApproval:QueryRowContext": 1, "readPriorChangeApproval:SQL": 2, "writeChangeColumns:ExecContext": 1}, "tables": ["hub/change_evidence", "hub/change_landing_receipts", "hub/change_requests", "hub/change_versions", "hub/collaboration_events", "hub/issues", "hub/native_attempts", "hub/native_comments", "hub/quality_landings"]}},
-    "internal/hubserver/change_content.go": {"disposition": "serving", "families": ["event", "policy"], "inventory": {"operations": {"hydrateChangeRecord:QueryContext": 1, "hydrateChangeRecord:QueryRowContext": 2, "hydrateChangeRecord:SQL": 3, "persistCommandOutput:ExecContext": 1, "persistCommandOutput:SQL": 1}, "tables": ["hub/change_command_outputs", "hub/change_requests", "hub/change_versions", "hub/policy_revisions"]}},
+    "internal/hubserver/change_content.go": {"disposition": "serving", "families": ["collaboration", "event", "policy"], "inventory": {"operations": {"hydrateChangeRecord:QueryContext": 1, "hydrateChangeRecord:QueryRowContext": 2, "hydrateChangeRecord:SQL": 3, "persistCommandOutput:ExecContext": 1, "persistCommandOutput:SQL": 1, "readChangeContentObject:QueryRowContext": 2}, "tables": ["hub/change_command_outputs", "hub/change_requests", "hub/change_versions", "hub/policy_revisions"]}},
     "internal/hubserver/change_evidence.go": {"disposition": "serving", "families": ["event"], "inventory": {"operations": {"Service.discussChangeCommand:QueryRowContext": 1, "Service.discussChangeCommand:SQL": 1, "Service.submitChangeCheck:QueryRowContext": 1, "Service.submitChangeCheck:SQL": 1, "insertChangeEvidenceRecord:ExecContext": 1, "insertChangeEvidenceRecord:QueryRowContext": 2, "insertChangeEvidenceRecord:SQL": 3}, "tables": ["hub/change_evidence", "hub/change_requests"]}},
     "internal/hubserver/change_files.go": {"disposition": "serving", "families": ["collaboration", "event"], "inventory": {"operations": {"Service.changeViewedFilesCommand:QueryContext": 1, "Service.changeViewedFilesCommand:SQL": 1, "Service.viewChangeFileCommand:ExecContext": 1, "Service.viewChangeFileCommand:QueryRowContext": 1, "Service.viewChangeFileCommand:SQL": 2, "validateReviewBundle:QueryRowContext": 1, "validateReviewBundle:SQL": 1}, "tables": ["hub/artifact_references", "hub/change_viewed_files"]}},
     "internal/hubserver/change_history_reads.go": {"disposition": "serving", "families": ["event"], "inventory": {"operations": {"queryChangeLegacyRows:QueryContext": 1, "queryLegacyPageRows:QueryContext": 1, "queryLegacyPageRows:SQL": 2, "readChangeLegacyPage:QueryContext": 1}, "tables": []}},
@@ -892,6 +892,7 @@
     "internal/hubserver/migrations/20261031214501_live_configuration_receipts.sql": {"disposition": "source-only", "families": ["core", "lifecycle"], "inventory": {"operations": {"SQL": 1}, "tables": ["hub/native_commands"]}},
     "internal/hubserver/migrations/20261031222239_native_search_refresh_scope.sql": {"disposition": "source-only", "families": ["core", "lifecycle", "search"], "inventory": {"operations": {"SQL": 1}, "tables": ["hub/issues", "hub/native_work_documents", "hub/native_work_scoped_fts", "hub/native_work_search_refresh"]}},
     "internal/hubserver/migrations/20261101000817_native_search_bounded_fts.sql": {"disposition": "source-only", "families": ["core", "lifecycle", "search"], "inventory": {"operations": {"SQL": 1}, "tables": ["hub/issues", "hub/native_comments", "hub/native_work_documents", "hub/native_work_fts", "hub/native_work_legacy_fts", "hub/native_work_search_content", "hub/native_work_search_rebuild"]}},
+    "internal/hubserver/migrations/20261101092759_pending_content_publication.sql": {"disposition": "source-only", "families": ["collaboration", "event", "lifecycle"], "inventory": {"operations": {"SQL": 1}, "tables": ["hub/attachments", "hub/change_content_objects"]}},
     "internal/hubserver/monthly_budget.go": {"disposition": "serving", "families": ["billing", "core", "lease", "policy"], "inventory": {"operations": {"checkMonthlyIssueBudget:QueryRowContext": 1, "checkMonthlyIssueBudget:SQL": 1, "checkMonthlyLease:QueryRowContext": 1, "checkMonthlyLease:SQL": 1, "liveOrganizationProjects:QueryContext": 1, "liveOrganizationProjects:SQL": 1, "monthlyBudgetRetainsRunner:QueryRowContext": 1, "monthlyBudgetRetainsRunner:SQL": 1, "monthlyClaimExposure:QueryRowContext": 1, "monthlyClaimExposure:SQL": 1, "monthlyIssueAdmitted:QueryRowContext": 1, "monthlyIssueAdmitted:SQL": 1, "readMonthlyBudgetSettings:QueryRowContext": 1, "readMonthlyBudgetSettings:SQL": 1, "recordMonthlyAdmission:ExecContext": 2, "recordMonthlyAdmission:SQL": 2}, "tables": ["hub/issues", "hub/leases", "hub/machines", "hub/monthly_budget_admissions", "hub/monthly_budget_leases", "hub/monthly_budget_policies", "hub/projects", "hub/workflow_states"]}},
     "internal/hubserver/monthly_budget_api.go": {"disposition": "serving", "families": ["billing"], "inventory": {"operations": {"updateMonthlyBudgetOperation:ExecContext": 1, "updateMonthlyBudgetOperation:SQL": 1}, "tables": ["hub/monthly_budget_policies"]}},
     "internal/hubserver/native_admission_read.go": {"disposition": "serving", "families": ["lease"], "inventory": {"operations": {"readNativeAdmission:QueryRowContext": 1, "readNativeAdmission:SQL": 1}, "tables": ["hub/machines"]}},
@@ -974,6 +975,7 @@
     "internal/hubserver/outbox.go": {"atomic_groups": ["outbox"], "disposition": "serving", "families": ["core", "event", "policy", "source"], "inventory": {"operations": {"Service.AppendWorkEvent:ExecContext": 1, "Service.AppendWorkEvent:QueryRowContext": 1, "Service.AppendWorkEvent:SQL": 2, "Service.ChangeWorkflowState:ExecContext": 1, "Service.ChangeWorkflowState:SQL": 1, "Service.OutboxHealth:QueryContext": 1, "Service.OutboxHealth:QueryRowContext": 1, "Service.OutboxHealth:SQL": 2, "Service.claimOutbox:BeginTx": 1, "Service.claimOutbox:ExecContext": 1, "Service.claimOutbox:QueryRowContext": 1, "Service.claimOutbox:SQL": 3, "Service.commitOutbox:BeginTx": 1, "Service.commitOutbox:ExecContext": 2, "Service.commitOutbox:SQL": 2, "Service.completeOutbox:ExecContext": 1, "Service.completeOutbox:SQL": 1, "Service.failOutbox:ExecContext": 2, "Service.failOutbox:SQL": 2, "Service.readOutboxStatusCounts:QueryContext": 1, "Service.readOutboxStatusCounts:SQL": 1, "findOutboxByKey:QueryRowContext": 1, "findOutboxByKey:SQL": 1}, "tables": ["hub/github_outbox", "hub/issues", "hub/projects", "hub/repositories", "hub/work_events", "hub/workflow_states"]}},
     "internal/hubserver/payload_conversion.go": {"disposition": "serving", "families": ["analytics", "conversion", "event", "lease", "source"], "inventory": {"operations": {"Service.applyObjectPayloadConversion:ExecContext": 11, "Service.applyObjectPayloadConversion:QueryRowContext": 5, "Service.applyObjectPayloadConversion:SQL": 19, "Service.convertObjectPayloadFamily:ExecContext": 1, "Service.convertObjectPayloadFamily:QueryContext": 2, "Service.convertObjectPayloadFamily:SQL": 3, "Service.convertObjectPayloadRow:BeginTx": 1, "Service.convertObjectPayloadRow:QueryRowContext": 4, "Service.convertObjectPayloadRow:SQL": 4, "analyticsPayloadPendingSQL:SQL": 1, "readObjectConversionPayload:QueryRowContext": 2, "readObjectConversionPayload:SQL": 2}, "tables": ["hub/analytics_hourly_rollups", "hub/attempt_diff_file_archives", "hub/attempt_diff_files", "hub/change_landing_receipts", "hub/change_sources", "hub/change_versions", "hub/native_attempts", "hub/storage_conversion_progress"]}},
     "internal/hubserver/payload_objects.go": {"disposition": "serving", "families": ["collaboration", "event"], "inventory": {"operations": {"readPayloadReference:QueryRowContext": 1, "readPayloadReference:SQL": 1}, "tables": ["hub/attachments", "hub/change_content_objects"]}},
+    "internal/hubserver/pending_content.go": {"disposition": "serving", "families": ["collaboration", "conversion", "event"], "inventory": {"operations": {"Service.convertPendingContent:SQL": 1, "Service.publishPendingContent:ExecContext": 2, "Service.publishPendingContent:QueryRowContext": 1, "Service.publishPendingContent:SQL": 2, "pendingContentMutation.stage:ExecContext": 1, "pendingContentMutation.stage:SQL": 1, "pendingContentSelection:SQL": 1}, "tables": ["hub/attachments", "hub/change_content_objects"]}, "atomic_groups": ["completion"]},
     "internal/hubserver/pending_landing_facts.go": {"disposition": "serving", "families": ["core", "event", "lease"], "inventory": {"operations": {"readPendingLandingFact:QueryRowContext": 4, "readPendingLandingFact:SQL": 4}, "tables": ["hub/change_requests", "hub/change_versions", "hub/issues", "hub/native_attempts"]}},
     "internal/hubserver/platform_credits.go": {"disposition": "serving", "families": ["billing"], "inventory": {"operations": {"Service.platformTenantAICreditBalance:QueryContext": 1, "Service.platformTenantAICreditBalance:QueryRowContext": 2, "Service.platformTenantAICreditBalance:SQL": 3, "database.adjustAICredits:BeginTx": 1, "database.adjustAICredits:ExecContext": 2, "database.adjustAICredits:QueryRowContext": 2, "database.adjustAICredits:SQL": 4}, "tables": ["hub/ai_credit_accounts", "hub/ai_credit_transactions"]}},
     "internal/hubserver/platform_tenant.go": {"disposition": "serving", "families": ["core", "fleet"], "inventory": {"operations": {"Service.platformTenantProjects:QueryContext": 1, "Service.platformTenantProjects:SQL": 1, "Service.platformTenantRunners:QueryContext": 1, "Service.platformTenantRunners:SQL": 1}, "tables": ["hub/projects", "hub/runner_identities"]}},
@@ -1349,11 +1351,12 @@
     },
     "completion": {
       "boundary": "internal/hubserver/native_api.go#Service.commitNativeMutation",
-      "contract": "Ordered run.finished and prior events use the native command transaction. Validate current run/session/fencing token and revision, update attempt and issue/dependency state, publication metadata, usage accounting, immutable history and command receipt together. Rejected/stale completion commits none; duplicate receipt does not charge or publish twice. External content must already be prepared and verified.",
+      "contract": "Ordered run.finished and prior events use the native command transaction. Validate current run/session/fencing token and revision, update attempt and issue/dependency state, publication metadata, usage accounting, immutable history and command receipt together. Rejected/stale completion commits none; duplicate receipt does not charge or publish twice. Run payload bytes and stable object references are staged in the same command transaction before external upload. Separate publication transactions recheck current lease authority and clear pending bytes only after verifying the published object; conversion can resume publication from the durable staged bytes.",
       "families": [
         "analytics",
         "billing",
         "claim",
+        "collaboration",
         "core",
         "event",
         "fleet",
@@ -1364,13 +1367,17 @@
         "internal/hubserver/native_events.go#Service.appendNativeRunEvent",
         "internal/hubserver/native_events.go#Service.recordNativeRunEvent",
         "internal/hubserver/native_attempts.go#recordNativeAttempt",
-        "internal/hubserver/native_usage.go#recordAttemptUsage"
+        "internal/hubserver/native_usage.go#recordAttemptUsage",
+        "internal/hubserver/pending_content.go#pendingContentMutation.stage",
+        "internal/hubserver/pending_content.go#Service.publishPendingContent"
       ],
       "parity_tests": [
         "internal/hubserver/native_worker_test.go#TestNativeClaimsEventsAndRestartWithoutGitHub",
         "internal/hubserver/run_details_test.go#TestNativeRunFirstFinishValidatesUsageBeforeUpload",
         "internal/hubserver/hosted_usage_test.go#TestNativeRunEventRecordsUsage",
-        "internal/hubserver/native_progress_api_test.go#TestNativeProgressRequestReplayAndFencing"
+        "internal/hubserver/native_progress_api_test.go#TestNativeProgressRequestReplayAndFencing",
+        "internal/hubserver/pending_content_test.go#TestNativeEventUploadsOnlyAfterCommit",
+        "internal/hubserver/pending_content_test.go#TestNativeEventPendingPublicationRecovery"
       ],
       "tables": [
         "hub/issues",
@@ -1393,7 +1400,9 @@
         "hub/monthly_budget_leases",
         "hub/native_pr_publications",
         "hub/change_requests",
-        "hub/change_versions"
+        "hub/change_versions",
+        "hub/attachments",
+        "hub/change_content_objects"
       ]
     },
     "conversation-command": {

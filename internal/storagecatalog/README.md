@@ -2,7 +2,7 @@
 
 `tools/storageinventory/mappings/v1.json` is the versioned column contract for
 Hub, request-metrics, entry-registry and entry-auth source snapshots. It contains
-all 305 tables and 2,669 columns in the P01 inventory. Each table keeps P01's
+all 305 tables and 2,671 columns in the P01 inventory. Each table keeps P01's
 family, disposition and atomicity contract. The atomic groups in
 `tools/storageinventory/routing.json` remain authoritative; a mapping never
 permits splitting their transaction boundaries.
@@ -28,7 +28,7 @@ these dispositions:
 | `retired` | Source engine/catalog bookkeeping only, according to P01. Retain snapshot provenance and recover identity allocation from imported keys. |
 
 The catalog currently has 383 scalar mappings, eight inline payload mappings,
-2,086 pending columns, 101 rebuild columns and 91 retired columns. Pending
+2,088 pending columns, 101 rebuild columns and 91 retired columns. Pending
 includes fields missing from otherwise landed families; family membership does
 not prove complete target coverage. Nested identity/provenance, organization
 selections, existing archive references, compressed payloads and other relational

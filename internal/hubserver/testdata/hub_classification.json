@@ -137,7 +137,9 @@
   "attachments": {
     "ownership": "organization-owned",
     "scope": "attachments.organization_id",
-    "inline_payloads": []
+    "inline_payloads": [
+      "pending_content"
+    ]
   },
   "attempt_diff_body_migration": {
     "ownership": "platform",
@@ -174,7 +176,9 @@
   "change_content_objects": {
     "ownership": "organization-owned",
     "scope": "change_content_objects.organization_id",
-    "inline_payloads": []
+    "inline_payloads": [
+      "pending_content"
+    ]
   },
   "change_evidence": {
     "ownership": "organization-owned",
