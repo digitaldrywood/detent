@@ -62,6 +62,7 @@ func NewRuntime(ctx context.Context, reader, writer *sql.DB) (*Runtime, error) {
 				'public.storage_conversion_cursors'::regclass,
 				'public.request_metric_windows'::regclass,
 				'public.request_metric_imports'::regclass,
+				'public.access_imports'::regclass,
 				'public.request_metric_callers'::regclass,
 				'public.request_minutes'::regclass,
 				'public.machines'::regclass, 'public.leases'::regclass,
@@ -75,7 +76,7 @@ func NewRuntime(ctx context.Context, reader, writer *sql.DB) (*Runtime, error) {
 					OR (c.oid <> 'public.storage_conversion_progress'::regclass
 						AND (NOT has_table_privilege(current_user, c.oid, 'INSERT')
 							OR NOT has_table_privilege(current_user, c.oid, 'UPDATE')))
-					OR (c.oid NOT IN ('public.storage_conversion_progress'::regclass, 'public.storage_conversion_cursors'::regclass, 'public.request_metric_imports'::regclass)
+					OR (c.oid NOT IN ('public.storage_conversion_progress'::regclass, 'public.storage_conversion_cursors'::regclass, 'public.request_metric_imports'::regclass, 'public.access_imports'::regclass)
 						AND NOT has_table_privilege(current_user, c.oid, 'DELETE')))
 			)
 			AND NOT EXISTS (

@@ -23,12 +23,13 @@ these dispositions:
 | --- | --- |
 | `column` | An explicit existing PostgreSQL table, column and type. Preserve the source scalar exactly, within its declared bounds and enum domain. |
 | `object` | Exact inline UTF-8 bytes to prepare and verify through the owning object store before publishing the listed metadata fields. JSON validation happens in Go without unmarshalling numbers into floating point. |
-| `pending` | Preserve the source; reject import until the owning family's target schema or relational extraction is mapped. Never invent a target, coerce to opaque SQL data or report this as imported. |
+| `transform` | A named table-level transformation into the listed typed targets. The owning importer validates and transforms the source value; scalar decoding cannot perform this operation. |
+| `pending` | Preserve the source and do not project this column. It remains pending until the owning family's target schema or relational extraction is mapped. Never invent a target, coerce to opaque SQL data or report this column as imported. |
 | `rebuild` | Retain the table's stated source contract; reconstruct the named projection or percentile from retained inputs. This is not permission to discard durable history or rollups. |
 | `retired` | Source engine/catalog bookkeeping only, according to P01. Retain snapshot provenance and recover identity allocation from imported keys. |
 
-The catalog currently has 383 scalar mappings, eight inline payload mappings,
-2,088 pending columns, 101 rebuild columns and 91 retired columns. Pending
+The catalog currently has 502 scalar mappings, eight inline payload mappings,
+five named transforms, 1,964 pending columns, 101 rebuild columns and 91 retired columns. Pending
 includes fields missing from otherwise landed families; family membership does
 not prove complete target coverage. Nested identity/provenance, organization
 selections, existing archive references, compressed payloads and other relational
@@ -48,13 +49,16 @@ version, the caller-supplied source snapshot schema definition and explicit sour
   rewrites, normalizes or generates an ID.
 
 `ValidateRow` checks all columns of one row, organization authority and decodable
-values. A pending column rejects the entire row. Retired/rebuild values have no
-ordinary scalar decoder. `Decode` returns a typed value or unchanged payload
-bytes for a single supported column; it grants no write authority and creates no
-object reference. A validated row still needs the owning importer's target
-constraints, foreign-key checks, object verification, uniqueness/reconciliation
-and atomic transaction. No import, object I/O, source discovery or SQL execution
-is implemented here. The later transform issues own those operations.
+values. A pending or transformed column rejects this complete-row path.
+`ValidateMappedRow` validates explicitly mapped scalar/object values and
+organization authority; it skips pending and transformed columns so an owning
+importer can retain source-only fields and execute its named transforms. That
+importer must keep pending fields unprojected and report their status separately.
+Retired/rebuild values have no ordinary scalar decoder. `Decode` returns a typed
+value or unchanged payload bytes for one scalar/object column; it grants no write
+authority and creates no object reference. A validated row still needs the
+owning importer's target constraints, foreign-key checks, object verification,
+uniqueness/reconciliation and atomic transaction.
 
 Non-NULL cells name their encoding explicitly. Text uses `utf8`; binary data
 uses `binary`, `hex`, canonical padded `base64`, or SQLite `X'hex'` with

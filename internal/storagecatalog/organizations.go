@@ -51,6 +51,14 @@ func (c Catalog) Bind(source Source, schema Schema) (*Binding, error) {
 }
 
 func (b *Binding) ValidateRow(tableName string, row map[string]Cell) (string, error) {
+	return b.validateRow(tableName, row, true)
+}
+
+func (b *Binding) ValidateMappedRow(tableName string, row map[string]Cell) (string, error) {
+	return b.validateRow(tableName, row, false)
+}
+
+func (b *Binding) validateRow(tableName string, row map[string]Cell, rejectPending bool) (string, error) {
 	table, ok := b.catalog.Tables[b.source.Store+"/"+tableName]
 	if !ok || len(row) != len(table.Columns) {
 		return "", ErrUnmapped
@@ -65,13 +73,21 @@ func (b *Binding) ValidateRow(tableName string, row map[string]Cell) (string, er
 	if b.source.Store == "registry" && tableName == "organizations" {
 		organizationColumn = "id"
 	}
+	providerOrganization := false
+	if column, ok := table.Columns[organizationColumn]; ok {
+		for _, target := range column.Targets {
+			if target.Column == "provider_organization_id" {
+				providerOrganization = true
+			}
+		}
+	}
 	if cell, ok := row[organizationColumn]; ok {
 		if cell.Null || cell.Encoding != "utf8" {
 			return "", ErrOrganization
 		}
 		fromRow := string(cell.Data)
 		if b.source.OrganizationID != "" {
-			if fromRow != b.source.OrganizationID {
+			if !providerOrganization && fromRow != b.source.OrganizationID {
 				return "", ErrOrganization
 			}
 		} else if fromRow != "" {
@@ -97,10 +113,10 @@ func (b *Binding) ValidateRow(tableName string, row map[string]Cell) (string, er
 				return "", ErrOrganization
 			}
 		}
-		if column.Disposition == "pending" {
+		if (column.Disposition == "pending" || column.Disposition == "transform") && rejectPending {
 			return "", ErrPending
 		}
-		if column.Disposition == "retired" || column.Disposition == "rebuild" {
+		if column.Disposition == "pending" || column.Disposition == "transform" || column.Disposition == "retired" || column.Disposition == "rebuild" {
 			continue
 		}
 		if _, err := decode(column, row[name]); err != nil {

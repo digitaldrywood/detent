@@ -111,6 +111,46 @@ func TestCatalogPreservesSafetyFields(t *testing.T) {
 	}
 }
 
+func TestBindingValidatesMappedRowsWithoutClaimingPendingFields(t *testing.T) {
+	t.Parallel()
+	catalog := repositoryCatalog(t)
+	schema := make(Schema)
+	for name, table := range catalog.Tables {
+		name, ok := strings.CutPrefix(name, "hub/")
+		if !ok {
+			continue
+		}
+		schema[name] = make(map[string]string, len(table.Columns))
+		for column, definition := range table.Columns {
+			schema[name][column] = definition.Source
+		}
+	}
+	binding, err := catalog.Bind(Source{Schema: "raw_example", Store: "hub", CatalogVersion: catalog.Version, OrganizationID: "org_example"}, schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := map[string]Cell{
+		"id":               {Encoding: "utf8", Data: []byte("invite_example")},
+		"organization_id":  {Encoding: "utf8", Data: []byte("org_example")},
+		"email":            {Encoding: "utf8", Data: []byte("user@example.test")},
+		"role":             {Encoding: "utf8", Data: []byte("viewer")},
+		"accepted_user_id": {Encoding: "utf8", Data: []byte("")},
+		"created_at":       {Encoding: "utf8", Data: []byte("2026-10-31T12:00:00Z")},
+		"expires_at":       {Encoding: "utf8", Data: []byte("2026-11-07T12:00:00Z")},
+		"grants_json":      {Encoding: "utf8", Data: []byte(`[{"project_id":"prj_example"}]`)},
+	}
+	if _, err := binding.ValidateRow("hosted_invitations", row); !errors.Is(err, ErrPending) {
+		t.Fatalf("complete row validation error = %v, want pending", err)
+	}
+	if organization, err := binding.ValidateMappedRow("hosted_invitations", row); err != nil || organization != "org_example" {
+		t.Fatalf("mapped row organization=%q error=%v", organization, err)
+	}
+	row["role"] = Cell{Encoding: "utf8", Data: []byte("unknown")}
+	if _, err := binding.ValidateMappedRow("hosted_invitations", row); !errors.Is(err, ErrValue) {
+		t.Fatalf("invalid mapped role error = %v, want invalid value", err)
+	}
+}
+
 func TestValueDecodingRejectsLossAndAmbiguity(t *testing.T) {
 	t.Parallel()
 	instant := time.Date(2026, 11, 1, 14, 0, 0, 123456000, time.UTC)

@@ -344,24 +344,24 @@
       "family": "access",
       "organization": "binding",
       "columns": {
-        "created_at": {"source":"[5,\"created_at\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "expires_at": {"source":"[11,\"expires_at\",\"TEXT\",0,null,0,0]","disposition":"pending","codec":"text","null":"preserve","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "hosted_membership_id": {"source":"[14,\"hosted_membership_id\",\"TEXT\",0,null,0,0]","disposition":"pending","codec":"text","null":"preserve","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "hosted_organization_id": {"source":"[13,\"hosted_organization_id\",\"TEXT\",0,null,0,0]","disposition":"pending","codec":"text","null":"preserve","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "hosted_user_id": {"source":"[12,\"hosted_user_id\",\"TEXT\",0,null,0,0]","disposition":"pending","codec":"text","null":"preserve","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "id": {"source":"[0,\"id\",\"TEXT\",0,null,1,0]","disposition":"pending","codec":"text","null":"preserve","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "key_kind": {"source":"[17,\"key_kind\",\"TEXT\",1,\"'service'\",0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "last_used_at": {"source":"[7,\"last_used_at\",\"TEXT\",0,null,0,0]","disposition":"pending","codec":"text","null":"preserve","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "name": {"source":"[1,\"name\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "native_only": {"source":"[10,\"native_only\",\"INTEGER\",1,\"0\",0,0]","disposition":"pending","codec":"int64","null":"reject","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "operator_key_scope": {"source":"[15,\"operator_key_scope\",\"TEXT\",0,null,0,0]","disposition":"pending","codec":"text","null":"preserve","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "operator_project_access": {"source":"[16,\"operator_project_access\",\"TEXT\",1,\"'selected'\",0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "revoked_at": {"source":"[9,\"revoked_at\",\"TEXT\",0,null,0,0]","disposition":"pending","codec":"text","null":"preserve","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "rotated_at": {"source":"[8,\"rotated_at\",\"TEXT\",0,null,0,0]","disposition":"pending","codec":"text","null":"preserve","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "scope": {"source":"[4,\"scope\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "token_fingerprint": {"source":"[3,\"token_fingerprint\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "token_hash": {"source":"[2,\"token_hash\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "updated_at": {"source":"[6,\"updated_at\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."}
+        "created_at": {"source":"[5,\"created_at\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"timestamp","null":"reject","empty":"reject","targets":[{"table":"public.api_tokens","column":"created_at","type":"timestamp with time zone"}]},
+        "expires_at": {"source":"[11,\"expires_at\",\"TEXT\",0,null,0,0]","disposition":"column","codec":"timestamp","null":"preserve","empty":"reject","targets":[{"table":"public.api_tokens","column":"expires_at","type":"timestamp with time zone"}]},
+        "hosted_membership_id": {"source":"[14,\"hosted_membership_id\",\"TEXT\",0,null,0,0]","disposition":"column","codec":"text","null":"preserve","empty":"preserve","targets":[{"table":"public.api_tokens","column":"hosted_membership_id","type":"text"}]},
+        "hosted_organization_id": {"source":"[13,\"hosted_organization_id\",\"TEXT\",0,null,0,0]","disposition":"transform","codec":"text","null":"preserve","empty":"preserve","transform":"provider-binding","targets":[{"table":"public.hosted_tenant","column":"provider_id","type":"text"}]},
+        "hosted_user_id": {"source":"[12,\"hosted_user_id\",\"TEXT\",0,null,0,0]","disposition":"column","codec":"text","null":"preserve","empty":"preserve","targets":[{"table":"public.api_tokens","column":"hosted_user_id","type":"text"}]},
+        "id": {"source":"[0,\"id\",\"TEXT\",0,null,1,0]","disposition":"column","codec":"text","null":"preserve","empty":"preserve","targets":[{"table":"public.api_tokens","column":"id","type":"text"}],"minimum":0},
+        "key_kind": {"source":"[17,\"key_kind\",\"TEXT\",1,\"'service'\",0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.api_tokens","column":"key_kind","type":"text"}],"allowed":["personal","service"]},
+        "last_used_at": {"source":"[7,\"last_used_at\",\"TEXT\",0,null,0,0]","disposition":"column","codec":"timestamp","null":"preserve","empty":"reject","targets":[{"table":"public.api_tokens","column":"last_used_at","type":"timestamp with time zone"}]},
+        "name": {"source":"[1,\"name\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.api_tokens","column":"name","type":"text"}]},
+        "native_only": {"source":"[10,\"native_only\",\"INTEGER\",1,\"0\",0,0]","disposition":"column","codec":"bool01","null":"reject","empty":"reject","targets":[{"table":"public.api_tokens","column":"native_only","type":"boolean"}]},
+        "operator_key_scope": {"source":"[15,\"operator_key_scope\",\"TEXT\",0,null,0,0]","disposition":"column","codec":"text","null":"preserve","empty":"preserve","targets":[{"table":"public.api_tokens","column":"operator_key_scope","type":"text"}]},
+        "operator_project_access": {"source":"[16,\"operator_project_access\",\"TEXT\",1,\"'selected'\",0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.api_tokens","column":"operator_project_access","type":"text"}],"allowed":["all","selected"]},
+        "revoked_at": {"source":"[9,\"revoked_at\",\"TEXT\",0,null,0,0]","disposition":"column","codec":"timestamp","null":"preserve","empty":"reject","targets":[{"table":"public.api_tokens","column":"revoked_at","type":"timestamp with time zone"}]},
+        "rotated_at": {"source":"[8,\"rotated_at\",\"TEXT\",0,null,0,0]","disposition":"column","codec":"timestamp","null":"preserve","empty":"reject","targets":[{"table":"public.api_tokens","column":"rotated_at","type":"timestamp with time zone"}]},
+        "scope": {"source":"[4,\"scope\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.api_tokens","column":"scope","type":"text"}],"allowed":["worker","operator","admin"]},
+        "token_fingerprint": {"source":"[3,\"token_fingerprint\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.api_tokens","column":"token_fingerprint","type":"text"}]},
+        "token_hash": {"source":"[2,\"token_hash\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.api_tokens","column":"token_hash","type":"text"}]},
+        "updated_at": {"source":"[6,\"updated_at\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"timestamp","null":"reject","empty":"reject","targets":[{"table":"public.api_tokens","column":"updated_at","type":"timestamp with time zone"}]}
       }
     },
     "hub/artifact_grants": {
@@ -1533,23 +1533,23 @@
       "family": "access",
       "organization": "row",
       "columns": {
-        "account_kind": {"source":"[15,\"account_kind\",\"TEXT\",0,null,0,0]","disposition":"pending","codec":"text","null":"preserve","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "account_retry": {"source":"[16,\"account_retry\",\"TEXT\",0,null,0,0]","disposition":"pending","codec":"text","null":"preserve","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "actual_actor": {"source":"[3,\"actual_actor\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "effective_user": {"source":"[4,\"effective_user\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "event": {"source":"[6,\"event\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "expires_at": {"source":"[11,\"expires_at\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "id": {"source":"[0,\"id\",\"INTEGER\",0,null,1,0]","disposition":"pending","codec":"int64","null":"preserve","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "mutation_json": {"source":"[13,\"mutation_json\",\"TEXT\",1,\"'{}'\",0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
+        "account_kind": {"source":"[15,\"account_kind\",\"TEXT\",0,null,0,0]","disposition":"column","codec":"text","null":"preserve","empty":"preserve","targets":[{"table":"public.hosted_audit","column":"account_kind","type":"text"}]},
+        "account_retry": {"source":"[16,\"account_retry\",\"TEXT\",0,null,0,0]","disposition":"column","codec":"text","null":"preserve","empty":"preserve","targets":[{"table":"public.hosted_audit","column":"account_retry","type":"text"}]},
+        "actual_actor": {"source":"[3,\"actual_actor\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.hosted_audit","column":"actual_actor","type":"text"}]},
+        "effective_user": {"source":"[4,\"effective_user\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.hosted_audit","column":"effective_user","type":"text"}]},
+        "event": {"source":"[6,\"event\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.hosted_audit","column":"event","type":"text"}]},
+        "expires_at": {"source":"[11,\"expires_at\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"timestamp","null":"reject","empty":"reject","targets":[{"table":"public.hosted_audit","column":"expires_at","type":"timestamp with time zone"}]},
+        "id": {"source":"[0,\"id\",\"INTEGER\",0,null,1,0]","disposition":"column","codec":"int64","null":"preserve","empty":"reject","targets":[{"table":"public.hosted_audit","column":"id","type":"bigint"}],"minimum":0},
+        "mutation_json": {"source":"[13,\"mutation_json\",\"TEXT\",1,\"'{}'\",0,0]","disposition":"transform","codec":"object-json","null":"reject","empty":"preserve","transform":"archive-json","targets":[{"table":"public.hosted_audit","column":"mutation_object_key","type":"text"},{"table":"public.hosted_audit","column":"mutation_sha256","type":"text"},{"table":"public.hosted_audit","column":"mutation_bytes","type":"bigint"},{"table":"public.hosted_audit","column":"mutation_content_bytes","type":"bigint"},{"table":"public.hosted_audit","column":"mutation_format_version","type":"integer"}]},
         "organization_id": {"source":"[1,\"organization_id\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "project_id": {"source":"[8,\"project_id\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "reason": {"source":"[5,\"reason\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "recorded_at": {"source":"[12,\"recorded_at\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "recorded_at_ns": {"source":"[14,\"recorded_at_ns\",\"INTEGER\",0,null,0,0]","disposition":"pending","codec":"int64","null":"preserve","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "route": {"source":"[7,\"route\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "session_id": {"source":"[2,\"session_id\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "started_at": {"source":"[10,\"started_at\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "status": {"source":"[9,\"status\",\"INTEGER\",1,null,0,0]","disposition":"pending","codec":"int64","null":"reject","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."}
+        "project_id": {"source":"[8,\"project_id\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.hosted_audit","column":"project_id","type":"text"}]},
+        "reason": {"source":"[5,\"reason\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.hosted_audit","column":"reason","type":"text"}]},
+        "recorded_at": {"source":"[12,\"recorded_at\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"timestamp","null":"reject","empty":"reject","targets":[{"table":"public.hosted_audit","column":"recorded_at","type":"timestamp with time zone"}]},
+        "recorded_at_ns": {"source":"[14,\"recorded_at_ns\",\"INTEGER\",0,null,0,0]","disposition":"column","codec":"int64","null":"reject","empty":"reject","targets":[{"table":"public.hosted_audit","column":"recorded_at_ns","type":"bigint"}],"minimum":0},
+        "route": {"source":"[7,\"route\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.hosted_audit","column":"route","type":"text"}]},
+        "session_id": {"source":"[2,\"session_id\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.hosted_audit","column":"session_id","type":"text"}]},
+        "started_at": {"source":"[10,\"started_at\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"timestamp","null":"reject","empty":"reject","targets":[{"table":"public.hosted_audit","column":"started_at","type":"timestamp with time zone"}]},
+        "status": {"source":"[9,\"status\",\"INTEGER\",1,null,0,0]","disposition":"column","codec":"int64","null":"reject","empty":"reject","targets":[{"table":"public.hosted_audit","column":"status","type":"bigint"}],"minimum":0}
       }
     },
     "hub/hosted_audit_times": {
@@ -1558,8 +1558,8 @@
       "family": "access",
       "organization": "binding",
       "columns": {
-        "audit_id": {"source":"[0,\"audit_id\",\"INTEGER\",0,null,1,0]","disposition":"pending","codec":"int64","null":"preserve","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "recorded_at_ns": {"source":"[1,\"recorded_at_ns\",\"INTEGER\",1,null,0,0]","disposition":"pending","codec":"int64","null":"reject","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."}
+        "audit_id": {"source":"[0,\"audit_id\",\"INTEGER\",0,null,1,0]","disposition":"column","codec":"int64","null":"reject","empty":"reject","targets":[{"table":"public.hosted_audit_times","column":"audit_id","type":"bigint"}],"minimum":0},
+        "recorded_at_ns": {"source":"[1,\"recorded_at_ns\",\"INTEGER\",1,null,0,0]","disposition":"column","codec":"int64","null":"reject","empty":"reject","targets":[{"table":"public.hosted_audit_times","column":"recorded_at_ns","type":"bigint"}],"minimum":0}
       }
     },
     "hub/hosted_billing_accounts": {
@@ -1653,15 +1653,15 @@
       "family": "access",
       "organization": "row",
       "columns": {
-        "applied": {"source":"[8,\"applied\",\"INTEGER\",1,\"0\",0,0]","disposition":"pending","codec":"int64","null":"reject","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "from_deployment": {"source":"[2,\"from_deployment\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "from_generation": {"source":"[4,\"from_generation\",\"INTEGER\",1,null,0,0]","disposition":"pending","codec":"int64","null":"reject","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "from_public_url": {"source":"[3,\"from_public_url\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "id": {"source":"[0,\"id\",\"INTEGER\",0,null,1,0]","disposition":"pending","codec":"int64","null":"preserve","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "migrated_at": {"source":"[7,\"migrated_at\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
+        "applied": {"source":"[8,\"applied\",\"INTEGER\",1,\"0\",0,0]","disposition":"column","codec":"bool01","null":"reject","empty":"reject","targets":[{"table":"public.hosted_binding_migrations","column":"applied","type":"boolean"}]},
+        "from_deployment": {"source":"[2,\"from_deployment\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.hosted_binding_migrations","column":"from_deployment","type":"text"}]},
+        "from_generation": {"source":"[4,\"from_generation\",\"INTEGER\",1,null,0,0]","disposition":"column","codec":"int64","null":"reject","empty":"reject","targets":[{"table":"public.hosted_binding_migrations","column":"from_generation","type":"bigint"}],"minimum":0},
+        "from_public_url": {"source":"[3,\"from_public_url\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.hosted_binding_migrations","column":"from_public_url","type":"text"}]},
+        "id": {"source":"[0,\"id\",\"INTEGER\",0,null,1,0]","disposition":"column","codec":"int64","null":"preserve","empty":"reject","targets":[{"table":"public.hosted_binding_migrations","column":"id","type":"bigint"}],"minimum":0},
+        "migrated_at": {"source":"[7,\"migrated_at\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"timestamp","null":"reject","empty":"reject","targets":[{"table":"public.hosted_binding_migrations","column":"migrated_at","type":"timestamp with time zone"}]},
         "organization_id": {"source":"[1,\"organization_id\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "to_generation": {"source":"[6,\"to_generation\",\"INTEGER\",1,null,0,0]","disposition":"pending","codec":"int64","null":"reject","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "to_public_url": {"source":"[5,\"to_public_url\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."}
+        "to_generation": {"source":"[6,\"to_generation\",\"INTEGER\",1,null,0,0]","disposition":"column","codec":"int64","null":"reject","empty":"reject","targets":[{"table":"public.hosted_binding_migrations","column":"to_generation","type":"bigint"}],"minimum":0},
+        "to_public_url": {"source":"[5,\"to_public_url\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.hosted_binding_migrations","column":"to_public_url","type":"text"}]}
       }
     },
     "hub/hosted_complimentary_grants": {
@@ -1680,14 +1680,14 @@
       "family": "access",
       "organization": "row",
       "columns": {
-        "accepted_user_id": {"source":"[4,\"accepted_user_id\",\"TEXT\",1,\"''\",0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "created_at": {"source":"[5,\"created_at\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "email": {"source":"[1,\"email\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "expires_at": {"source":"[6,\"expires_at\",\"TEXT\",1,\"''\",0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "grants_json": {"source":"[7,\"grants_json\",\"TEXT\",1,\"'[]'\",0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "id": {"source":"[0,\"id\",\"TEXT\",1,null,1,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
+        "accepted_user_id": {"source":"[4,\"accepted_user_id\",\"TEXT\",1,\"''\",0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.hosted_invitations","column":"accepted_user_id","type":"text"}]},
+        "created_at": {"source":"[5,\"created_at\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"timestamp","null":"reject","empty":"reject","targets":[{"table":"public.hosted_invitations","column":"created_at","type":"timestamp with time zone"}]},
+        "email": {"source":"[1,\"email\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.hosted_invitations","column":"email","type":"text"}]},
+        "expires_at": {"source":"[6,\"expires_at\",\"TEXT\",1,\"''\",0,0]","disposition":"column","codec":"timestamp","null":"reject","empty":"reject","targets":[{"table":"public.hosted_invitations","column":"expires_at","type":"timestamp with time zone"}]},
+        "grants_json": {"source":"[7,\"grants_json\",\"TEXT\",1,\"'[]'\",0,0]","disposition":"transform","codec":"object-json","null":"reject","empty":"preserve","transform":"invitation-grants","targets":[{"table":"public.hosted_invitation_grants","column":"project_id","type":"text"},{"table":"public.hosted_invitation_grants","column":"can_write","type":"boolean"},{"table":"public.hosted_invitation_grants","column":"manage_runner","type":"boolean"}]},
+        "id": {"source":"[0,\"id\",\"TEXT\",1,null,1,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.hosted_invitations","column":"id","type":"text"}],"minimum":0},
         "organization_id": {"source":"[2,\"organization_id\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "role": {"source":"[3,\"role\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."}
+        "role": {"source":"[3,\"role\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.hosted_invitations","column":"role","type":"text"}],"allowed":["owner","admin","member","reporter","viewer"]}
       }
     },
     "hub/hosted_member_reservations": {
@@ -1696,8 +1696,8 @@
       "family": "access",
       "organization": "binding",
       "columns": {
-        "email": {"source":"[0,\"email\",\"TEXT\",0,null,1,0]","disposition":"pending","codec":"text","null":"preserve","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "expires_at": {"source":"[1,\"expires_at\",\"INTEGER\",1,null,0,0]","disposition":"pending","codec":"int64","null":"reject","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."}
+        "email": {"source":"[0,\"email\",\"TEXT\",0,null,1,0]","disposition":"column","codec":"text","null":"preserve","empty":"preserve","targets":[{"table":"public.hosted_member_reservations","column":"email","type":"text"}]},
+        "expires_at": {"source":"[1,\"expires_at\",\"INTEGER\",1,null,0,0]","disposition":"column","codec":"unix-seconds","null":"reject","empty":"reject","targets":[{"table":"public.hosted_member_reservations","column":"expires_at","type":"timestamp with time zone"}]}
       }
     },
     "hub/hosted_members": {
@@ -1706,15 +1706,15 @@
       "family": "access",
       "organization": "binding",
       "columns": {
-        "active": {"source":"[4,\"active\",\"INTEGER\",1,\"1\",0,0]","disposition":"pending","codec":"int64","null":"reject","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "created_at": {"source":"[6,\"created_at\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "email": {"source":"[1,\"email\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "membership_id": {"source":"[2,\"membership_id\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "notify_issues": {"source":"[8,\"notify_issues\",\"INTEGER\",1,\"1\",0,0]","disposition":"pending","codec":"int64","null":"reject","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "principal_id": {"source":"[5,\"principal_id\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "role": {"source":"[3,\"role\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "updated_at": {"source":"[7,\"updated_at\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "user_id": {"source":"[0,\"user_id\",\"TEXT\",1,null,1,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."}
+        "active": {"source":"[4,\"active\",\"INTEGER\",1,\"1\",0,0]","disposition":"column","codec":"bool01","null":"reject","empty":"reject","targets":[{"table":"public.hosted_members","column":"active","type":"boolean"}]},
+        "created_at": {"source":"[6,\"created_at\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"timestamp","null":"reject","empty":"reject","targets":[{"table":"public.hosted_members","column":"created_at","type":"timestamp with time zone"}]},
+        "email": {"source":"[1,\"email\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.hosted_members","column":"email","type":"text"}]},
+        "membership_id": {"source":"[2,\"membership_id\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.hosted_members","column":"membership_id","type":"text"}]},
+        "notify_issues": {"source":"[8,\"notify_issues\",\"INTEGER\",1,\"1\",0,0]","disposition":"column","codec":"bool01","null":"reject","empty":"reject","targets":[{"table":"public.hosted_members","column":"notify_issues","type":"boolean"}]},
+        "principal_id": {"source":"[5,\"principal_id\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.hosted_members","column":"principal_id","type":"text"}]},
+        "role": {"source":"[3,\"role\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.hosted_members","column":"role","type":"text"}],"allowed":["owner","admin","member","reporter","viewer"]},
+        "updated_at": {"source":"[7,\"updated_at\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"timestamp","null":"reject","empty":"reject","targets":[{"table":"public.hosted_members","column":"updated_at","type":"timestamp with time zone"}]},
+        "user_id": {"source":"[0,\"user_id\",\"TEXT\",1,null,1,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.hosted_members","column":"user_id","type":"text"}]}
       }
     },
     "hub/hosted_plan_assignments": {
@@ -1767,11 +1767,11 @@
       "family": "access",
       "organization": "row",
       "columns": {
-        "can_write": {"source":"[3,\"can_write\",\"INTEGER\",1,\"0\",0,0]","disposition":"pending","codec":"int64","null":"reject","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "manage_runner": {"source":"[4,\"manage_runner\",\"INTEGER\",1,\"0\",0,0]","disposition":"pending","codec":"int64","null":"reject","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
+        "can_write": {"source":"[3,\"can_write\",\"INTEGER\",1,\"0\",0,0]","disposition":"column","codec":"bool01","null":"reject","empty":"reject","targets":[{"table":"public.hosted_project_grants","column":"can_write","type":"boolean"}]},
+        "manage_runner": {"source":"[4,\"manage_runner\",\"INTEGER\",1,\"0\",0,0]","disposition":"column","codec":"bool01","null":"reject","empty":"reject","targets":[{"table":"public.hosted_project_grants","column":"manage_runner","type":"boolean"}]},
         "organization_id": {"source":"[1,\"organization_id\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "project_id": {"source":"[2,\"project_id\",\"TEXT\",1,null,2,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "user_id": {"source":"[0,\"user_id\",\"TEXT\",1,null,1,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."}
+        "project_id": {"source":"[2,\"project_id\",\"TEXT\",1,null,2,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.hosted_project_grants","column":"project_id","type":"text"}]},
+        "user_id": {"source":"[0,\"user_id\",\"TEXT\",1,null,1,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.hosted_project_grants","column":"user_id","type":"text"}]}
       }
     },
     "hub/hosted_release_preferences": {
@@ -1792,13 +1792,13 @@
       "family": "access",
       "organization": "binding",
       "columns": {
-        "created_at": {"source":"[4,\"created_at\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "email": {"source":"[1,\"email\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "expires_at": {"source":"[3,\"expires_at\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "identity_json": {"source":"[2,\"identity_json\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "identity_subject": {"source":"[6,\"identity_subject\",\"TEXT\",0,null,0,0]","disposition":"pending","codec":"text","null":"preserve","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "revoked_at": {"source":"[5,\"revoked_at\",\"TEXT\",0,null,0,0]","disposition":"pending","codec":"text","null":"preserve","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "token_hash": {"source":"[0,\"token_hash\",\"TEXT\",1,null,1,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."}
+        "created_at": {"source":"[4,\"created_at\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"timestamp","null":"reject","empty":"reject","targets":[{"table":"public.hosted_sessions","column":"created_at","type":"timestamp with time zone"}]},
+        "email": {"source":"[1,\"email\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.hosted_sessions","column":"email","type":"text"}]},
+        "expires_at": {"source":"[3,\"expires_at\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"timestamp","null":"reject","empty":"reject","targets":[{"table":"public.hosted_sessions","column":"expires_at","type":"timestamp with time zone"}]},
+        "identity_json": {"source":"[2,\"identity_json\",\"TEXT\",1,null,0,0]","disposition":"transform","codec":"object-json","null":"reject","empty":"preserve","transform":"hosted-identity","targets":[{"table":"public.hosted_sessions","column":"identity_subject","type":"text"},{"table":"public.hosted_sessions","column":"provider_organization_id","type":"text"},{"table":"public.hosted_sessions","column":"session_id","type":"text"},{"table":"public.hosted_sessions","column":"identity_created_at","type":"timestamp with time zone"},{"table":"public.hosted_sessions","column":"identity_expires_at","type":"timestamp with time zone"},{"table":"public.hosted_sessions","column":"support_actor","type":"text"},{"table":"public.hosted_sessions","column":"support_reason","type":"text"}]},
+        "identity_subject": {"source":"[6,\"identity_subject\",\"TEXT\",0,null,0,0]","disposition":"column","codec":"text","null":"preserve","empty":"preserve","targets":[{"table":"public.hosted_sessions","column":"identity_subject","type":"text"}]},
+        "revoked_at": {"source":"[5,\"revoked_at\",\"TEXT\",0,null,0,0]","disposition":"column","codec":"timestamp","null":"preserve","empty":"reject","targets":[{"table":"public.hosted_sessions","column":"revoked_at","type":"timestamp with time zone"}]},
+        "token_hash": {"source":"[0,\"token_hash\",\"TEXT\",1,null,1,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.hosted_sessions","column":"token_hash","type":"text"}]}
       }
     },
     "hub/hosted_tenant": {
@@ -1807,13 +1807,13 @@
       "family": "access",
       "organization": "row",
       "columns": {
-        "allocation_generation": {"source":"[6,\"allocation_generation\",\"INTEGER\",1,\"0\",0,0]","disposition":"pending","codec":"int64","null":"reject","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "bootstrap_subject": {"source":"[3,\"bootstrap_subject\",\"TEXT\",1,\"''\",0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "deployment": {"source":"[5,\"deployment\",\"TEXT\",1,\"'origin'\",0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
+        "allocation_generation": {"source":"[6,\"allocation_generation\",\"INTEGER\",1,\"0\",0,0]","disposition":"column","codec":"int64","null":"reject","empty":"reject","targets":[{"table":"public.hosted_tenant","column":"allocation_generation","type":"bigint"}],"minimum":0},
+        "bootstrap_subject": {"source":"[3,\"bootstrap_subject\",\"TEXT\",1,\"''\",0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.hosted_tenant","column":"bootstrap_subject","type":"text"}]},
+        "deployment": {"source":"[5,\"deployment\",\"TEXT\",1,\"'origin'\",0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.hosted_tenant","column":"deployment","type":"text"}]},
         "organization_id": {"source":"[1,\"organization_id\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "provider_id": {"source":"[2,\"provider_id\",\"TEXT\",1,\"''\",0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "public_url": {"source":"[4,\"public_url\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "singleton": {"source":"[0,\"singleton\",\"INTEGER\",0,null,1,0]","disposition":"pending","codec":"int64","null":"preserve","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."}
+        "provider_id": {"source":"[2,\"provider_id\",\"TEXT\",1,\"''\",0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.hosted_tenant","column":"provider_id","type":"text"}]},
+        "public_url": {"source":"[4,\"public_url\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.hosted_tenant","column":"public_url","type":"text"}]},
+        "singleton": {"source":"[0,\"singleton\",\"INTEGER\",0,null,1,0]","disposition":"transform","codec":"int64","null":"preserve","empty":"reject","transform":"tenant-singleton","targets":[]}
       }
     },
     "hub/hosted_transactions": {
@@ -1822,15 +1822,15 @@
       "family": "access",
       "organization": "row",
       "columns": {
-        "consumed_at": {"source":"[8,\"consumed_at\",\"TEXT\",0,null,0,0]","disposition":"pending","codec":"text","null":"preserve","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "expires_at": {"source":"[7,\"expires_at\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "invitation_token": {"source":"[6,\"invitation_token\",\"TEXT\",1,\"''\",0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "organization_id": {"source":"[3,\"organization_id\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "state": {"source":"[1,\"state\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "support_actor": {"source":"[4,\"support_actor\",\"TEXT\",1,\"''\",0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "support_session": {"source":"[5,\"support_session\",\"TEXT\",1,\"''\",0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "token_hash": {"source":"[0,\"token_hash\",\"TEXT\",1,null,1,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "verifier": {"source":"[2,\"verifier\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."}
+        "consumed_at": {"source":"[8,\"consumed_at\",\"TEXT\",0,null,0,0]","disposition":"column","codec":"timestamp","null":"preserve","empty":"reject","targets":[{"table":"public.hosted_transactions","column":"consumed_at","type":"timestamp with time zone"}]},
+        "expires_at": {"source":"[7,\"expires_at\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"timestamp","null":"reject","empty":"reject","targets":[{"table":"public.hosted_transactions","column":"expires_at","type":"timestamp with time zone"}]},
+        "invitation_token": {"source":"[6,\"invitation_token\",\"TEXT\",1,\"''\",0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.hosted_transactions","column":"invitation_token","type":"text"}]},
+        "organization_id": {"source":"[3,\"organization_id\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.hosted_transactions","column":"provider_organization_id","type":"text"}]},
+        "state": {"source":"[1,\"state\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.hosted_transactions","column":"state","type":"text"}]},
+        "support_actor": {"source":"[4,\"support_actor\",\"TEXT\",1,\"''\",0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.hosted_transactions","column":"support_actor","type":"text"}]},
+        "support_session": {"source":"[5,\"support_session\",\"TEXT\",1,\"''\",0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.hosted_transactions","column":"support_session","type":"text"}]},
+        "token_hash": {"source":"[0,\"token_hash\",\"TEXT\",1,null,1,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.hosted_transactions","column":"token_hash","type":"text"}]},
+        "verifier": {"source":"[2,\"verifier\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.hosted_transactions","column":"verifier","type":"text"}]}
       }
     },
     "hub/hosted_usage_counters": {
@@ -3062,13 +3062,13 @@
       "family": "access",
       "organization": "row",
       "columns": {
-        "actor": {"source":"[2,\"actor\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "event": {"source":"[5,\"event\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "id": {"source":"[0,\"id\",\"INTEGER\",0,null,1,0]","disposition":"pending","codec":"int64","null":"preserve","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "key_version": {"source":"[4,\"key_version\",\"INTEGER\",1,null,0,0]","disposition":"pending","codec":"int64","null":"reject","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "kind": {"source":"[3,\"kind\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
+        "actor": {"source":"[2,\"actor\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.organization_secret_audit","column":"actor","type":"text"}]},
+        "event": {"source":"[5,\"event\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.organization_secret_audit","column":"event","type":"text"}]},
+        "id": {"source":"[0,\"id\",\"INTEGER\",0,null,1,0]","disposition":"column","codec":"int64","null":"preserve","empty":"reject","targets":[{"table":"public.organization_secret_audit","column":"id","type":"bigint"}],"minimum":0},
+        "key_version": {"source":"[4,\"key_version\",\"INTEGER\",1,null,0,0]","disposition":"column","codec":"int64","null":"reject","empty":"reject","targets":[{"table":"public.organization_secret_audit","column":"key_version","type":"bigint"}],"minimum":0},
+        "kind": {"source":"[3,\"kind\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.organization_secret_audit","column":"kind","type":"text"}]},
         "organization_id": {"source":"[1,\"organization_id\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "recorded_at": {"source":"[6,\"recorded_at\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."}
+        "recorded_at": {"source":"[6,\"recorded_at\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"timestamp","null":"reject","empty":"reject","targets":[{"table":"public.organization_secret_audit","column":"recorded_at","type":"timestamp with time zone"}]}
       }
     },
     "hub/organization_secrets": {
@@ -3077,14 +3077,14 @@
       "family": "access",
       "organization": "row",
       "columns": {
-        "ciphertext": {"source":"[2,\"ciphertext\",\"BLOB\",1,null,0,0]","disposition":"pending","codec":"bytes","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "kind": {"source":"[1,\"kind\",\"TEXT\",1,null,2,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "master_key_version": {"source":"[5,\"master_key_version\",\"INTEGER\",1,null,0,0]","disposition":"pending","codec":"int64","null":"reject","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "nonce": {"source":"[3,\"nonce\",\"BLOB\",1,null,0,0]","disposition":"pending","codec":"bytes","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
+        "ciphertext": {"source":"[2,\"ciphertext\",\"BLOB\",1,null,0,0]","disposition":"column","codec":"bytes","null":"reject","empty":"preserve","targets":[{"table":"public.organization_secrets","column":"ciphertext","type":"bytea"}]},
+        "kind": {"source":"[1,\"kind\",\"TEXT\",1,null,2,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.organization_secrets","column":"kind","type":"text"}]},
+        "master_key_version": {"source":"[5,\"master_key_version\",\"INTEGER\",1,null,0,0]","disposition":"column","codec":"int64","null":"reject","empty":"reject","targets":[{"table":"public.organization_secrets","column":"master_key_version","type":"bigint"}],"minimum":1},
+        "nonce": {"source":"[3,\"nonce\",\"BLOB\",1,null,0,0]","disposition":"column","codec":"bytes","null":"reject","empty":"preserve","targets":[{"table":"public.organization_secrets","column":"nonce","type":"bytea"}]},
         "organization_id": {"source":"[0,\"organization_id\",\"TEXT\",1,null,1,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "organization_slug": {"source":"[7,\"organization_slug\",\"TEXT\",1,\"''\",0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "updated_at": {"source":"[6,\"updated_at\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "wrapped_data_key": {"source":"[4,\"wrapped_data_key\",\"BLOB\",1,null,0,0]","disposition":"pending","codec":"bytes","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."}
+        "organization_slug": {"source":"[7,\"organization_slug\",\"TEXT\",1,\"''\",0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.organization_secrets","column":"organization_slug","type":"text"}]},
+        "updated_at": {"source":"[6,\"updated_at\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"timestamp","null":"reject","empty":"reject","targets":[{"table":"public.organization_secrets","column":"updated_at","type":"timestamp with time zone"}]},
+        "wrapped_data_key": {"source":"[4,\"wrapped_data_key\",\"BLOB\",1,null,0,0]","disposition":"column","codec":"bytes","null":"reject","empty":"preserve","targets":[{"table":"public.organization_secrets","column":"wrapped_data_key","type":"bytea"}]}
       }
     },
     "hub/organization_slugs": {
@@ -3140,18 +3140,18 @@
       "family": "access",
       "organization": "binding",
       "columns": {
-        "created_at": {"source":"[3,\"created_at\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "id": {"source":"[0,\"id\",\"TEXT\",0,null,1,0]","disposition":"pending","codec":"text","null":"preserve","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "local": {"source":"[2,\"local\",\"INTEGER\",1,\"0\",0,0]","disposition":"pending","codec":"int64","null":"reject","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "logo_image_key": {"source":"[9,\"logo_image_key\",\"TEXT\",0,null,0,0]","disposition":"pending","codec":"text","null":"preserve","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "logo_image_sha256": {"source":"[10,\"logo_image_sha256\",\"TEXT\",0,null,0,0]","disposition":"pending","codec":"text","null":"preserve","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "logo_revision": {"source":"[11,\"logo_revision\",\"INTEGER\",1,\"1\",0,0]","disposition":"pending","codec":"int64","null":"reject","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "model_selection_json": {"source":"[5,\"model_selection_json\",\"TEXT\",1,\"'{\\\"enabled\\\":true,\\\"normal_model\\\":\\\"gpt-6.1-sol\\\",\\\"complex_model\\\":\\\"gpt-6-astra\\\",\\\"backend_kinds\\\":[\\\"codex\\\"],\\\"default_level\\\":\\\"normal\\\",\\\"levels\\\":{\\\"normal\\\":{\\\"model\\\":\\\"normal\\\",\\\"effort\\\":\\\"high\\\"},\\\"complex\\\":{\\\"model\\\":\\\"normal\\\",\\\"effort\\\":\\\"high\\\"},\\\"very_complex\\\":{\\\"model\\\":\\\"complex\\\",\\\"effort\\\":\\\"medium\\\"}},\\\"stages\\\":{\\\"plan\\\":{\\\"issue_complexity\\\":false,\\\"model\\\":\\\"complex\\\",\\\"effort\\\":\\\"low\\\"},\\\"code\\\":{\\\"issue_complexity\\\":true},\\\"rework\\\":{\\\"issue_complexity\\\":true},\\\"merge\\\":{\\\"issue_complexity\\\":false},\\\"validator\\\":{\\\"issue_complexity\\\":false,\\\"model\\\":\\\"complex\\\",\\\"effort\\\":\\\"medium\\\"},\\\"routine\\\":{\\\"issue_complexity\\\":false},\\\"security_audit\\\":{\\\"issue_complexity\\\":false}},\\\"rules\\\":[{\\\"name\\\":\\\"very_complex\\\",\\\"level\\\":\\\"very_complex\\\",\\\"selector\\\":{\\\"labels\\\":{\\\"include\\\":[\\\"complexity:very-complex\\\"]}}},{\\\"name\\\":\\\"complex\\\",\\\"level\\\":\\\"complex\\\",\\\"selector\\\":{\\\"labels\\\":{\\\"include\\\":[\\\"complexity:complex\\\"]}}}],\\\"unavailable\\\":\\\"fallback\\\",\\\"fallback_order\\\":[\\\"normal\\\"]}'\",0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "model_selection_revision": {"source":"[6,\"model_selection_revision\",\"INTEGER\",1,\"1\",0,0]","disposition":"pending","codec":"int64","null":"reject","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "name": {"source":"[1,\"name\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "scheduling_revision": {"source":"[7,\"scheduling_revision\",\"INTEGER\",1,\"1\",0,0]","disposition":"pending","codec":"int64","null":"reject","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "slug": {"source":"[8,\"slug\",\"TEXT\",1,\"''\",0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "urgent_runner_update_json": {"source":"[4,\"urgent_runner_update_json\",\"TEXT\",1,\"'{\\\"revision\\\":0,\\\"request\\\":null}'\",0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."}
+        "created_at": {"source":"[3,\"created_at\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"timestamp","null":"reject","empty":"preserve","targets":[{"table":"public.organizations","column":"created_at","type":"timestamp with time zone"}]},
+        "id": {"source":"[0,\"id\",\"TEXT\",0,null,1,0]","disposition":"column","codec":"text","null":"preserve","empty":"preserve","targets":[{"table":"public.organizations","column":"organization_id","type":"text"}]},
+        "local": {"source":"[2,\"local\",\"INTEGER\",1,\"0\",0,0]","disposition":"column","codec":"bool01","null":"reject","empty":"reject","targets":[{"table":"public.organizations","column":"local","type":"boolean"}]},
+        "logo_image_key": {"source":"[9,\"logo_image_key\",\"TEXT\",0,null,0,0]","disposition":"pending","codec":"text","null":"preserve","empty":"preserve","reason":"Core organization import owns the typed identity and profile fields."},
+        "logo_image_sha256": {"source":"[10,\"logo_image_sha256\",\"TEXT\",0,null,0,0]","disposition":"pending","codec":"text","null":"preserve","empty":"preserve","reason":"Core organization import owns the typed identity and profile fields."},
+        "logo_revision": {"source":"[11,\"logo_revision\",\"INTEGER\",1,\"1\",0,0]","disposition":"pending","codec":"int64","null":"reject","empty":"reject","reason":"Core organization import owns the typed identity and profile fields."},
+        "model_selection_json": {"source":"[5,\"model_selection_json\",\"TEXT\",1,\"'{\\\"enabled\\\":true,\\\"normal_model\\\":\\\"gpt-6.1-sol\\\",\\\"complex_model\\\":\\\"gpt-6-astra\\\",\\\"backend_kinds\\\":[\\\"codex\\\"],\\\"default_level\\\":\\\"normal\\\",\\\"levels\\\":{\\\"normal\\\":{\\\"model\\\":\\\"normal\\\",\\\"effort\\\":\\\"high\\\"},\\\"complex\\\":{\\\"model\\\":\\\"normal\\\",\\\"effort\\\":\\\"high\\\"},\\\"very_complex\\\":{\\\"model\\\":\\\"complex\\\",\\\"effort\\\":\\\"medium\\\"}},\\\"stages\\\":{\\\"plan\\\":{\\\"issue_complexity\\\":false,\\\"model\\\":\\\"complex\\\",\\\"effort\\\":\\\"low\\\"},\\\"code\\\":{\\\"issue_complexity\\\":true},\\\"rework\\\":{\\\"issue_complexity\\\":true},\\\"merge\\\":{\\\"issue_complexity\\\":false},\\\"validator\\\":{\\\"issue_complexity\\\":false,\\\"model\\\":\\\"complex\\\",\\\"effort\\\":\\\"medium\\\"},\\\"routine\\\":{\\\"issue_complexity\\\":false},\\\"security_audit\\\":{\\\"issue_complexity\\\":false}},\\\"rules\\\":[{\\\"name\\\":\\\"very_complex\\\",\\\"level\\\":\\\"very_complex\\\",\\\"selector\\\":{\\\"labels\\\":{\\\"include\\\":[\\\"complexity:very-complex\\\"]}}},{\\\"name\\\":\\\"complex\\\",\\\"level\\\":\\\"complex\\\",\\\"selector\\\":{\\\"labels\\\":{\\\"include\\\":[\\\"complexity:complex\\\"]}}}],\\\"unavailable\\\":\\\"fallback\\\",\\\"fallback_order\\\":[\\\"normal\\\"]}'\",0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Core organization import owns the typed identity and profile fields."},
+        "model_selection_revision": {"source":"[6,\"model_selection_revision\",\"INTEGER\",1,\"1\",0,0]","disposition":"pending","codec":"int64","null":"reject","empty":"reject","reason":"Core organization import owns the typed identity and profile fields."},
+        "name": {"source":"[1,\"name\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.organizations","column":"name","type":"text"}]},
+        "scheduling_revision": {"source":"[7,\"scheduling_revision\",\"INTEGER\",1,\"1\",0,0]","disposition":"pending","codec":"int64","null":"reject","empty":"reject","reason":"Core organization import owns the typed identity and profile fields."},
+        "slug": {"source":"[8,\"slug\",\"TEXT\",1,\"''\",0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.organizations","column":"slug","type":"text"}]},
+        "urgent_runner_update_json": {"source":"[4,\"urgent_runner_update_json\",\"TEXT\",1,\"'{\\\"revision\\\":0,\\\"request\\\":null}'\",0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Core organization import owns the typed identity and profile fields."}
       }
     },
     "hub/policy_revisions": {
@@ -3263,14 +3263,14 @@
       "family": "access",
       "organization": "row",
       "columns": {
-        "actor": {"source":"[3,\"actor\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "event": {"source":"[6,\"event\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "id": {"source":"[0,\"id\",\"INTEGER\",0,null,1,0]","disposition":"pending","codec":"int64","null":"preserve","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "key_version": {"source":"[5,\"key_version\",\"INTEGER\",1,null,0,0]","disposition":"pending","codec":"int64","null":"reject","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "kind": {"source":"[4,\"kind\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
+        "actor": {"source":"[3,\"actor\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.project_secret_audit","column":"actor","type":"text"}]},
+        "event": {"source":"[6,\"event\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.project_secret_audit","column":"event","type":"text"}]},
+        "id": {"source":"[0,\"id\",\"INTEGER\",0,null,1,0]","disposition":"column","codec":"int64","null":"preserve","empty":"reject","targets":[{"table":"public.project_secret_audit","column":"id","type":"bigint"}],"minimum":0},
+        "key_version": {"source":"[5,\"key_version\",\"INTEGER\",1,null,0,0]","disposition":"column","codec":"int64","null":"reject","empty":"reject","targets":[{"table":"public.project_secret_audit","column":"key_version","type":"bigint"}],"minimum":0},
+        "kind": {"source":"[4,\"kind\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.project_secret_audit","column":"kind","type":"text"}]},
         "organization_id": {"source":"[1,\"organization_id\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "project_id": {"source":"[2,\"project_id\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "recorded_at": {"source":"[7,\"recorded_at\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."}
+        "project_id": {"source":"[2,\"project_id\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.project_secret_audit","column":"project_id","type":"text"}]},
+        "recorded_at": {"source":"[7,\"recorded_at\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"timestamp","null":"reject","empty":"reject","targets":[{"table":"public.project_secret_audit","column":"recorded_at","type":"timestamp with time zone"}]}
       }
     },
     "hub/project_secrets": {
@@ -3279,15 +3279,15 @@
       "family": "access",
       "organization": "row",
       "columns": {
-        "ciphertext": {"source":"[4,\"ciphertext\",\"BLOB\",1,null,0,0]","disposition":"pending","codec":"bytes","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "kind": {"source":"[2,\"kind\",\"TEXT\",1,null,3,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "master_key_version": {"source":"[7,\"master_key_version\",\"INTEGER\",1,null,0,0]","disposition":"pending","codec":"int64","null":"reject","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "nonce": {"source":"[5,\"nonce\",\"BLOB\",1,null,0,0]","disposition":"pending","codec":"bytes","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
+        "ciphertext": {"source":"[4,\"ciphertext\",\"BLOB\",1,null,0,0]","disposition":"column","codec":"bytes","null":"reject","empty":"preserve","targets":[{"table":"public.project_secrets","column":"ciphertext","type":"bytea"}]},
+        "kind": {"source":"[2,\"kind\",\"TEXT\",1,null,3,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.project_secrets","column":"kind","type":"text"}]},
+        "master_key_version": {"source":"[7,\"master_key_version\",\"INTEGER\",1,null,0,0]","disposition":"column","codec":"int64","null":"reject","empty":"reject","targets":[{"table":"public.project_secrets","column":"master_key_version","type":"bigint"}],"minimum":1},
+        "nonce": {"source":"[5,\"nonce\",\"BLOB\",1,null,0,0]","disposition":"column","codec":"bytes","null":"reject","empty":"preserve","targets":[{"table":"public.project_secrets","column":"nonce","type":"bytea"}]},
         "organization_id": {"source":"[0,\"organization_id\",\"TEXT\",1,null,1,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "organization_slug": {"source":"[3,\"organization_slug\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "project_id": {"source":"[1,\"project_id\",\"TEXT\",1,null,2,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "updated_at": {"source":"[8,\"updated_at\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "wrapped_data_key": {"source":"[6,\"wrapped_data_key\",\"BLOB\",1,null,0,0]","disposition":"pending","codec":"bytes","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."}
+        "organization_slug": {"source":"[3,\"organization_slug\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.project_secrets","column":"organization_slug","type":"text"}]},
+        "project_id": {"source":"[1,\"project_id\",\"TEXT\",1,null,2,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.project_secrets","column":"project_id","type":"text"}]},
+        "updated_at": {"source":"[8,\"updated_at\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"timestamp","null":"reject","empty":"reject","targets":[{"table":"public.project_secrets","column":"updated_at","type":"timestamp with time zone"}]},
+        "wrapped_data_key": {"source":"[6,\"wrapped_data_key\",\"BLOB\",1,null,0,0]","disposition":"column","codec":"bytes","null":"reject","empty":"preserve","targets":[{"table":"public.project_secrets","column":"wrapped_data_key","type":"bytea"}]}
       }
     },
     "hub/project_slugs": {
@@ -4306,8 +4306,8 @@
       "organization": "row",
       "columns": {
         "organization_id": {"source":"[1,\"organization_id\",\"TEXT\",1,null,2,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "project_id": {"source":"[2,\"project_id\",\"TEXT\",1,null,3,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "token_id": {"source":"[0,\"token_id\",\"TEXT\",1,null,1,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."}
+        "project_id": {"source":"[2,\"project_id\",\"TEXT\",1,null,3,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.token_grants","column":"project_id","type":"text"}]},
+        "token_id": {"source":"[0,\"token_id\",\"TEXT\",1,null,1,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.token_grants","column":"token_id","type":"text"}]}
       }
     },
     "hub/usage_cost_observations": {

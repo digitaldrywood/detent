@@ -44,7 +44,7 @@ func (c Catalog) Decode(tableName, columnName string, cell Cell) (Value, error) 
 		return Value{}, ErrUnmapped
 	}
 	switch column.Disposition {
-	case "pending":
+	case "pending", "transform":
 		return Value{}, ErrPending
 	case "rebuild", "retired":
 		return Value{}, ErrValue
