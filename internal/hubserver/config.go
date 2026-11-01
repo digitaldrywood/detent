@@ -195,6 +195,9 @@ func (c Config) normalized() Config {
 			c.now = time.Now
 		}
 	}
+	if c.TenantRepository != nil && c.ConversationWorkerAuthority == nil {
+		c.ConversationWorkerAuthority = tenantRunnerAuthority{now: c.now}
+	}
 	if c.jitter == nil {
 		c.jitter = randomJitter
 	}

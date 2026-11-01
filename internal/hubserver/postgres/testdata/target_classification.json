@@ -38,5 +38,10 @@
     "inline_payloads": [],
     "ownership": "organization-owned",
     "scope": "change_review_policy_revisions.organization_id; project_id and review_policy_id identify immutable approval history"
+  },
+  "public/runner_lease_assignments": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "runner_lease_assignments.organization_id; lease and runner owners are tenant-scoped"
   }
 }

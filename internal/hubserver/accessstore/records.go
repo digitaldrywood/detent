@@ -249,6 +249,7 @@ type Writer interface {
 	UpdateAccessMember(context.Context, Member) error
 	RevokeAccessMember(context.Context, string, time.Time) error
 	RotateAccessCredential(context.Context, string, string, string, time.Time) error
+	RenewAccessCredential(context.Context, string, string, string, time.Time, time.Time) error
 	RevokeAccessCredential(context.Context, string, time.Time) error
 	RevokeAccessSession(context.Context, string, time.Time) error
 	ConsumeAccessTransaction(context.Context, string, string, time.Time) (LoginTransaction, error)

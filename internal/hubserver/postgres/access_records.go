@@ -268,6 +268,15 @@ func (s *session) RotateAccessCredential(ctx context.Context, id, hash, fingerpr
 	return affected(ctx, n, err)
 }
 
+func (s *session) RenewAccessCredential(ctx context.Context, id, hash, fingerprint string, expires, at time.Time) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE api_tokens SET token_hash=$3,token_fingerprint=$4,expires_at=$5,rotated_at=$6,updated_at=$6 WHERE organization_id=$1 AND id=$2 AND revoked_at IS NULL`, s.organization, id, hash, fingerprint, expires, at)
+	if err != nil {
+		return mapError(ctx, err)
+	}
+	n, err := result.RowsAffected()
+	return affected(ctx, n, err)
+}
+
 func (s *session) RevokeAccessCredential(ctx context.Context, id string, at time.Time) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE api_tokens SET revoked_at=COALESCE(revoked_at,$3),updated_at=$3 WHERE organization_id=$1 AND id=$2`, s.organization, id, at)
 	return mapError(ctx, err)

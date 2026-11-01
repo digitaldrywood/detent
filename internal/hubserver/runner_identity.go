@@ -15,6 +15,9 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hostmetrics"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
@@ -109,6 +112,17 @@ func (s *Service) getRunnerIdentity(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
+	if s.config.TenantRepository != nil {
+		identity, err := s.readRunnerIdentityTenant(ctx, tracker.OrganizationID(c.Param("organization")), c.Param("runner"))
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		if identity.Binding != credential.Runner.Binding {
+			return s.nativeAPIError(c, nativeNotFound())
+		}
+		c.Response().Header().Set("Cache-Control", "no-store")
+		return c.JSON(http.StatusOK, identity)
+	}
 	credential.Runner.ProjectIDs, err = readRunnerProjects(ctx, s.database.reader, credential.ID)
 	if err != nil {
 		return s.nativeAPIError(c, err)
@@ -144,6 +158,14 @@ func (s *Service) changeRunnerCredential(c echo.Context, replacement string) err
 	if apikey.HashToken(replacement) == credential.Hash {
 		return s.nativeAPIError(c, nativePublicInvalid("Rotation requires a different credential"))
 	}
+	if s.config.TenantRepository != nil {
+		identity, err := s.changeRunnerCredentialTenant(c.Request().Context(), credential, replacement)
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		c.Response().Header().Set("Cache-Control", "no-store")
+		return c.JSON(http.StatusOK, identity)
+	}
 	return s.runnerTransaction(c, http.StatusOK, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
 		// runnerTransaction rechecks the current hash, revocation and time
 		// policy before this mutation; renewal alone permits elapsed expiry.
@@ -164,6 +186,65 @@ func (s *Service) changeRunnerCredential(c echo.Context, replacement string) err
 		credential.Runner.ProjectIDs, err = readRunnerProjects(ctx, tx, credential.ID)
 		return credential.Runner, err
 	})
+}
+
+func (s *Service) changeRunnerCredentialTenant(ctx context.Context, credential apiCredential, replacement string) (runnerauth.Identity, error) {
+	organization := credential.Runner.OrganizationID
+	if s.config.TenantRepository == nil || organization == "" || credential.ID == "" {
+		return runnerauth.Identity{}, runnerUnauthorized()
+	}
+	updated := runnerauth.Identity{}
+	err := s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
+		record, err := w.RunnerIdentity(ctx, credential.Runner.RunnerID)
+		if err != nil {
+			if errors.Is(err, corestore.ErrNotFound) {
+				return runnerUnauthorized()
+			}
+			return err
+		}
+		if record.RemovedAt != nil || record.TokenID != credential.ID || record.OrganizationID != organization || record.RunnerID != credential.Runner.RunnerID {
+			return runnerUnauthorized()
+		}
+		current, err := w.CredentialByHash(ctx, credential.Hash)
+		if err != nil {
+			if errors.Is(err, corestore.ErrNotFound) {
+				return runnerUnauthorized()
+			}
+			return err
+		}
+		now := s.config.now()
+		if current.ID != credential.ID || current.Scope != string(apiScopeWorker) || current.Kind != "service" || !validRunnerCredentialForRenewal(current, credential.Hash, now, replacement == "") || current.UserID != "" || current.MembershipID != "" {
+			return runnerUnauthorized()
+		}
+		if replacement != "" && !record.ExpiresAt.After(now) {
+			return runnerUnauthorized()
+		}
+		if record.MachineID != credential.Runner.MachineID || record.Scope != credential.Runner.Scope || !slices.Equal(record.Operations, credential.Runner.Operations) {
+			return runnerUnauthorized()
+		}
+		newHash := current.Hash
+		kind := "renewed"
+		if replacement != "" {
+			newHash, kind = apikey.HashToken(replacement), "rotated"
+		}
+		expires := now.Add(runnerauth.CredentialTTL)
+		if err := w.RenewAccessCredential(ctx, current.ID, newHash, tokenFingerprint(newHash), expires, now); err != nil {
+			return err
+		}
+		record.ExpiresAt = expires
+		if err := w.UpdateRunnerIdentity(ctx, record); err != nil {
+			return err
+		}
+		if err := w.RecordRunnerIdentityEvent(ctx, runnerstore.Event{OrganizationID: organization, RunnerID: record.RunnerID, ActorID: current.ID, Kind: kind, OccurredAt: now}); err != nil {
+			return err
+		}
+		updated, err = runnerIdentityRecord(ctx, w, record)
+		return err
+	})
+	if err != nil {
+		return runnerauth.Identity{}, err
+	}
+	return updated, nil
 }
 
 func (s *Service) revokeRunnerIdentity(c echo.Context) error {

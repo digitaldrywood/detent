@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type apiScope string
@@ -192,6 +193,19 @@ func (s *Service) authenticateAPIRequestContext(ctx context.Context, c echo.Cont
 	if c.Request().Method == http.MethodPost && c.Path() == runnerBase+"/:runner/renew" {
 		renewalRunner, renewalOrganization = c.Param("runner"), c.Param("organization")
 	}
+	organization := c.Param("organization")
+	if organization == "" && c.Path() == "/api/v2/capabilities" {
+		organization = strings.TrimSpace(c.Request().Header.Get("X-Detent-Organization"))
+		if organization == "" && s.config.Hosted != nil {
+			organization = s.config.Hosted.OrganizationID
+		}
+	}
+	if s.config.TenantRepository != nil && organization != "" {
+		if hinted := strings.TrimSpace(c.Request().Header.Get("X-Detent-Organization")); hinted != "" && hinted != organization {
+			return apiCredential{}, http.StatusUnauthorized, errors.New("organization scope does not match request")
+		}
+		return s.authenticateTenantAPIHash(ctx, tracker.OrganizationID(organization), apikey.HashToken(token), renewalRunner, renewalOrganization)
+	}
 	return s.authenticateAPIToken(ctx, token, renewalRunner, renewalOrganization)
 }
 
@@ -202,7 +216,7 @@ func (s *Service) authenticateAPIToken(ctx context.Context, token, renewalRunner
 
 func (s *Service) authenticateAPIHash(ctx context.Context, hash, renewalRunner, renewalOrganization string) (apiCredential, int, error) {
 	if s.config.AccessRepository != nil {
-		return s.authenticateAccessHash(ctx, hash)
+		return s.authenticateAccessHash(ctx, hash, renewalRunner, renewalOrganization)
 	}
 	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancelRead()

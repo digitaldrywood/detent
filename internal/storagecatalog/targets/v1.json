@@ -27,7 +27,8 @@
     "internal/hubserver/postgres/migrations/20261101192143_conversation_records.sql",
     "internal/hubserver/postgres/migrations/20261101195407_linked_issue_sources.sql",
     "internal/hubserver/postgres/migrations/20261101203853_attempt_event_lookup.sql",
-    "internal/hubserver/postgres/migrations/20261101204615_project_policy_authority.sql"
+    "internal/hubserver/postgres/migrations/20261101204615_project_policy_authority.sql",
+    "internal/hubserver/postgres/migrations/20261101215438_runner_identity_enrollment.sql"
   ],
   "tables": {
     "public.ai_credit_reason_references": {
@@ -142,6 +143,17 @@
       },
       "contract": "Retain immutable archived review-policy revisions with typed approval identity and time.",
       "family": "source",
+      "organization": "organization-owned"
+    },
+    "public.runner_lease_assignments": {
+      "columns": {
+        "assigned_at": "timestamp with time zone",
+        "lease_id": "text",
+        "organization_id": "text",
+        "runner_id": "text"
+      },
+      "contract": "Retain the runner owner and assignment time for each tenant-scoped lease.",
+      "family": "fleet",
       "organization": "organization-owned"
     }
   },
