@@ -178,6 +178,17 @@ func validateNativeValidatorReview(ctx context.Context, tx *sql.Tx, scope native
 	if err := tx.QueryRowContext(ctx, `SELECT implementing_session_id,implementing_machine_id FROM change_versions WHERE id=? AND change_id=?`, version.ID, change.ID).Scan(&sourceSession, &sourceMachine); err != nil {
 		return "", err
 	}
+	if !sourceSession.Valid || sourceSession.Int64 == -1 {
+		authority, err := recoverChangeSession(ctx, tx, version)
+		if err != nil {
+			return "", err
+		}
+		if authority.session.Valid && authority.session.Int64 > 0 {
+			sourceSession, sourceMachine = authority.session, sql.NullString{String: string(authority.machine), Valid: true}
+		} else if !sourceSession.Valid {
+			return "", &nativeError{Code: "unavailable", Message: "Implementing session recovery is pending", status: http.StatusServiceUnavailable}
+		}
+	}
 	if !sourceSession.Valid || sourceSession.Int64 < 0 || !sourceMachine.Valid || sourceMachine.String == "" {
 		if audit {
 			return "", auditInvalid("security audit requires the implementing session's recorded identity", "source.identity")

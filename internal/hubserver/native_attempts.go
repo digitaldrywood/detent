@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 	"net/http"
 	"net/url"
 	"reflect"
@@ -291,6 +292,9 @@ func prepareNativeAttempt(ctx context.Context, tx nativeQueryer, scope nativeSco
 	if prior != nil {
 		err = nil
 		sequence, status = prior.data.Sequence, prior.status
+		if err := tx.QueryRowContext(ctx, "SELECT implementing_session_id FROM native_attempts WHERE id=?", data.AttemptID).Scan(&recordedSession); err != nil {
+			return update, err
+		}
 	} else {
 		err = tx.QueryRowContext(ctx, "SELECT COALESCE(NULLIF(payload_object_key,''),data_json), sequence, status, implementing_session_id FROM native_attempts WHERE id = ?", data.AttemptID).Scan(&previousJSON, &sequence, &status, &recordedSession)
 	}
@@ -353,11 +357,23 @@ func prepareNativeAttempt(ctx context.Context, tx nativeQueryer, scope nativeSco
 			data.Runtime.RepairDependencies = previous.Runtime.RepairDependencies
 		}
 		data.Evidence = previous.Evidence
-		if nativeImplementingSession(previous) > 0 && nativeImplementingSession(data) <= 0 {
-			return update, nativeExecutionConflict("Implementing session identity cannot be cleared during an attempt")
+		authoritative := nativeImplementingSession(previous)
+		if recordedSession.Valid && recordedSession.Int64 > 0 {
+			authoritative = recordedSession.Int64
 		}
-		if recordedSession.Valid && recordedSession.Int64 > 0 && nativeImplementingSession(data) <= 0 {
-			return update, nativeExecutionConflict("Implementing session identity cannot be cleared during an attempt")
+		if authoritative > 0 {
+			if event.Type == "run.observed" && data.Runtime != nil && data.Runtime.Activity == nil {
+				if previous.Runtime != nil && previous.Runtime.Activity != nil {
+					activity := *previous.Runtime.Activity
+					activity.SessionID = authoritative
+					data.Runtime.Activity = &activity
+				} else {
+					data.Runtime.Activity = &workflowmetrics.ActivityProfile{Schema: 1, SessionID: authoritative}
+				}
+			}
+			if nativeImplementingSession(data) != authoritative {
+				return update, nativeExecutionConflict("Implementing session identity cannot change during an attempt")
+			}
 		}
 		reconnecting := (status == "running" || status == "interrupted") && event.Type == "run.observed" && data.Runtime != nil && data.Runtime.LocalAttemptID == 0 && data.Runtime.Generation == 0 && data.Outcome == ""
 		usageCorrection := status != "running" && event.Type == "run.finished" && nativeUsageCorrection(previous, data)
