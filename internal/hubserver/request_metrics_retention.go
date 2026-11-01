@@ -29,9 +29,11 @@ SELECT rowid FROM request_hours WHERE hour < ? ORDER BY hour,route,status_class 
 SELECT rowid FROM request_days WHERE day < ? ORDER BY day,route,caller_kind,status_class LIMIT ?)`, dayCutoff, requestRetentionBatch); err != nil {
 		return fmt.Errorf("expire request days: %w", err)
 	}
-	for range requestRetentionBatch {
+	ingested := m.ingested.Swap(0)
+	for compacted := range requestRetentionBatch + int(ingested) {
 		more, err := m.compactRequestMinute(ctx, minuteCutoff, dayCutoff)
 		if err != nil {
+			m.ingested.Add(max(0, ingested-int64(compacted)))
 			return fmt.Errorf("compact request minute: %w", err)
 		}
 		if !more {

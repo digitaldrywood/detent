@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -112,6 +113,7 @@ type tenantRequestMetrics struct {
 	runners      map[string]*runnerRequestWindow
 	routesOnce   sync.Once
 	routes       map[string]bool
+	ingested     atomic.Int64
 }
 
 func openRequestMetrics(ctx context.Context, path string, organization tracker.OrganizationID) (*tenantRequestMetrics, error) {
@@ -224,7 +226,11 @@ func (m *tenantRequestMetrics) write(ctx context.Context, now time.Time, pending
 	if err := writeRequestHours(ctx, tx, now, pending); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	m.ingested.Add(int64(len(pending)))
+	return nil
 }
 
 func (m *tenantRequestMetrics) report(ctx context.Context, now time.Time) (requestMetricsReport, error) {
