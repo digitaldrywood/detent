@@ -452,6 +452,7 @@ func TestHubWriterQueriesRequireAnOwnedReadReason(t *testing.T) {
 		"applyObservedDefaultBranchPolicy":          "Persists the observed default-branch policy and approval.",
 		"tenantRequestMetrics.write":                "Persists request metrics in their independent database.",
 		"tenantRequestMetrics.compactRequestMinute": "Compacts one bounded batch of expired request metrics in their independent database.",
+		"database.retireLegacyNativeSearch":         "Deletes one bounded batch of legacy full-text rows, or drops the empty legacy table, under the existing background search owner.",
 		"advanceGitHubBatch":                        "The import loop applies its next batch and reads back the update.",
 		"ensureHostedCustomer":                      "Billing customer creation reserves its intent and reads back that insertion.",
 		"bindHostedDatabase":                        "Startup installs and verifies the hosted binding on the writer.",
