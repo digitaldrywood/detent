@@ -102,6 +102,7 @@ type nativeSearchDocument struct {
 	scopes                           []string
 	batches                          []nativeSearchPostingBatch
 	ftsArgs                          []any
+	contentArgs                      []any
 }
 
 func (d *database) prepareNativeSearchDocument(ctx context.Context, id int64) (nativeSearchDocument, error) {
@@ -117,6 +118,7 @@ func (d *database) prepareNativeSearchDocument(ctx context.Context, id int64) (n
 	}
 	title := nativeSearchBytePrefix(document.title, nativeSearchDocumentBytes)
 	body := nativeSearchBytePrefix(document.body, nativeSearchDocumentBytes-len(title))
+	document.contentArgs = []any{document.id, title, body}
 	if err := d.reader.QueryRowContext(ctx, `SELECT native_search_tokens(?,'')+native_search_tokens(?,''),native_search_postings(?,?)`,
 		title, body, title, body).Scan(&document.tokens, &postings); err != nil {
 		return document, fmt.Errorf("tokenize bounded search content: %w", err)
@@ -195,6 +197,12 @@ func (d *database) publishNativeSearchDocument(ctx context.Context, tx *sql.Tx, 
 	if _, err := tx.ExecContext(ctx, `INSERT INTO native_work_scoped_fts(rowid,title,body,scope) VALUES(?,?,?,?),(?,?,?,?)`,
 		document.ftsArgs...); err != nil {
 		return false, fmt.Errorf("index search document: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM native_work_fts WHERE rowid=?`, document.id); err != nil {
+		return false, fmt.Errorf("remove stale unscoped search document: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO native_work_fts(rowid,title,body) VALUES(?,?,?)`, document.contentArgs...); err != nil {
+		return false, fmt.Errorf("index unscoped search document: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM native_work_search_refresh WHERE document_id=?`, document.id); err != nil {
 		return false, fmt.Errorf("complete search refresh: %w", err)
@@ -320,6 +328,7 @@ func (d *database) backfillNativeSearch(ctx context.Context) (bool, error) {
 			{`DELETE FROM native_work_search_lengths WHERE document_id=? AND NOT ` + nativeSearchDocumentSourceExists, []any{next, next}},
 			{`DELETE FROM native_work_search_refresh WHERE document_id=? AND NOT ` + nativeSearchDocumentSourceExists, []any{next, next}},
 			{`DELETE FROM native_work_scoped_fts WHERE rowid IN(?*2,?*2+1) AND NOT ` + nativeSearchDocumentSourceExists, []any{next, next, next}},
+			{`DELETE FROM native_work_fts WHERE rowid=? AND NOT ` + nativeSearchDocumentSourceExists, []any{next, next}},
 			{`DELETE FROM native_work_documents WHERE id=? AND NOT ` + nativeSearchDocumentSourceExists, []any{next, next}},
 		} {
 			if _, err := tx.ExecContext(ctx, batch.statement, batch.args...); err != nil {

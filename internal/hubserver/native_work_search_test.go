@@ -251,6 +251,7 @@ func TestNativeSearchDocumentByteBudget(t *testing.T) {
 		{"body", "Titlemarker", strings.Repeat("narwhal ", budget/4) + " tailmarker"},
 		{"unicode boundary", "Titlemarker", strings.Repeat("界 ", budget/2) + " tailmarker"},
 		{"title priority", "Titlemarker " + strings.Repeat("narwhal ", budget/4), "tailmarker"},
+		{"comment", "Titlemarker", "Titlemarker " + strings.Repeat("narwhal ", budget/4) + " tailmarker"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newDefaultNativeFixture(t, Config{})
@@ -258,10 +259,23 @@ func TestNativeSearchDocumentByteBudget(t *testing.T) {
 				t.Fatal(err)
 			}
 			item := f.create(t, "Budget fixture")
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET title=?,body=? WHERE native_id=?", test.title, test.body, item.WorkItemID); err != nil {
+			if test.name == "comment" {
+				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO native_comments(id,organization_id,project_id,work_item_id,revision,sequence,body,actor_json,created_at,updated_at)
+ SELECT 'budget-comment',organization_id,project_id,native_id,1,1,?,'{}',native_created_at,native_created_at FROM issues WHERE native_id=?`, test.body, item.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+			} else if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET title=?,body=? WHERE native_id=?", test.title, test.body, item.WorkItemID); err != nil {
 				t.Fatal(err)
 			}
+			var synchronous int
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM native_work_fts WHERE native_work_fts MATCH ?", `"tailmarker"*`).Scan(&synchronous); err != nil || synchronous != 0 {
+				t.Fatalf("synchronous tail matches=%d err=%v", synchronous, err)
+			}
 			drainTestNativeSearch(t, f.service)
+			var retained int
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM native_work_fts WHERE native_work_fts MATCH ?", `"Titlemarker"*`).Scan(&retained); err != nil || retained != 1 {
+				t.Fatalf("retained unscoped matches=%d want=1 err=%v", retained, err)
+			}
 			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
 			for _, query := range []string{"Titlemarker", "#" + strconv.Itoa(item.Number)} {
 				page, err := f.service.readIssues(t.Context(), scope, url.Values{"q": {query}})
@@ -270,6 +284,9 @@ func TestNativeSearchDocumentByteBudget(t *testing.T) {
 				}
 			}
 			var tail int
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM native_work_fts WHERE native_work_fts MATCH ?", `"tailmarker"*`).Scan(&tail); err != nil || tail != 0 {
+				t.Fatalf("unscoped indexed tail matches=%d err=%v", tail, err)
+			}
 			expression := nativeScopedExpression(nativeSearchScopes(scope, ""), []string{`"tailmarker"*`}, " OR ")
 			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM native_work_scoped_fts WHERE native_work_scoped_fts MATCH ?", expression).Scan(&tail); err != nil || tail != 0 {
 				t.Fatalf("indexed tail matches=%d err=%v", tail, err)
@@ -296,6 +313,64 @@ func TestNativeSearchDocumentByteBudget(t *testing.T) {
 				t.Fatalf("indexed tokens=%d err=%v", tokens, err)
 			}
 		})
+	}
+}
+
+func TestNativeSearchBoundedFTSMigration(t *testing.T) {
+	f := newDefaultNativeFixture(t, Config{})
+	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
+	first := f.create(t, "Retained narwhal")
+	second := f.create(t, "Second retained narwhal")
+	body := strings.Repeat("narwhal ", 20*1024) + " tailmarker"
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET body=? WHERE native_id IN(?,?)", body, first.WorkItemID, second.WorkItemID); err != nil {
+		t.Fatal(err)
+	}
+	drainTestNativeSearch(t, f.service)
+	migration, err := migrationFiles.ReadFile("migrations/20261101000817_native_search_bounded_fts.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	up, down, ok := strings.Cut(string(migration), "-- +goose Down")
+	if !ok {
+		t.Fatal("missing rollback section")
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), down); err != nil {
+		t.Fatal(err)
+	}
+	var legacy int
+	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM native_work_fts WHERE native_work_fts MATCH 'tailmarker'").Scan(&legacy); err != nil || legacy != 2 {
+		t.Fatalf("legacy tail matches=%d want=2 err=%v", legacy, err)
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), up); err != nil {
+		t.Fatal(err)
+	}
+	assertRetained := func() {
+		t.Helper()
+		scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+		page, err := f.service.readIssues(t.Context(), scope, url.Values{"q": {"retained"}})
+		if err != nil || len(page.Items) != 2 {
+			t.Fatalf("retained results=%d want=2 err=%v", len(page.Items), err)
+		}
+	}
+	assertRetained()
+	if _, err := f.service.database.backfillNativeSearch(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	var indexed int
+	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM native_work_fts").Scan(&indexed); err != nil || indexed != 1 {
+		t.Fatalf("one refresh indexed=%d want=1 err=%v", indexed, err)
+	}
+	drainTestNativeSearch(t, f.service)
+	assertRetained()
+	for _, test := range []struct {
+		term string
+		want int
+	}{{"retained", 2}, {"tailmarker", 0}} {
+		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM native_work_fts WHERE native_work_fts MATCH ?", test.term).Scan(&indexed); err != nil || indexed != test.want {
+			t.Fatalf("term=%s indexed=%d want=%d err=%v", test.term, indexed, test.want, err)
+		}
 	}
 }
 
@@ -1376,6 +1451,7 @@ func TestNativeWorkSearchIndexMaintenance(t *testing.T) {
 	decodeHubResponse(t, response, &comment)
 	matches := func(term string) int {
 		t.Helper()
+		drainTestNativeSearch(t, f.service)
 		var count int
 		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM native_work_fts WHERE native_work_fts MATCH ?", term).Scan(&count); err != nil {
 			t.Fatal(err)
@@ -1415,8 +1491,8 @@ func TestNativeWorkSearchIndexMaintenance(t *testing.T) {
 			if err := tx.QueryRowContext(t.Context(), "SELECT count(*) FROM native_work_fts WHERE native_work_fts MATCH ?", test.replacement).Scan(&count); err != nil {
 				t.Fatal(err)
 			}
-			if count != 1 {
-				t.Fatal("index did not update in write transaction")
+			if count != 0 {
+				t.Fatal("index updated before background refresh")
 			}
 			if err := tx.Rollback(); err != nil {
 				t.Fatal(err)
@@ -2184,7 +2260,7 @@ func TestNativeSearchCleanupMigration(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, file := range files {
-		if file.Name() == "20261031202051_native_search_revision_cleanup.sql" || file.Name() == "20261031211642_native_search_deferred_deletion.sql" || file.Name() == "20261031222239_native_search_refresh_scope.sql" {
+		if file.Name() == "20261031202051_native_search_revision_cleanup.sql" || file.Name() == "20261031211642_native_search_deferred_deletion.sql" || file.Name() == "20261031222239_native_search_refresh_scope.sql" || file.Name() == "20261101000817_native_search_bounded_fts.sql" {
 			continue
 		}
 		data, err := migrationFiles.ReadFile("migrations/" + file.Name())
