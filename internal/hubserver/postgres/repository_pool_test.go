@@ -11,6 +11,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -113,7 +114,7 @@ func TestRepositoryPoolBudgetsAndReuse(t *testing.T) {
 			hold := func(workload corestore.Workload, organization tracker.OrganizationID) *repositoryTask {
 				ready := make(chan struct{})
 				task := startRepositoryTask(t, func(ctx context.Context) error {
-					return repository.Read(ctx, organization, workload, func(r corestore.Reader) error {
+					return repository.ReadTenant(ctx, organization, workload, func(r tenantstore.Reader) error {
 						projects, err := r.Projects(ctx, "", 2)
 						if err != nil {
 							return err

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -69,7 +70,7 @@ func TestRepositoryDeadlockFailure(t *testing.T) {
 			if first == "prj_second" {
 				workload = corestore.Background
 			}
-			return repository.Write(ctx, "org_first", workload, func(w corestore.Writer) error {
+			return repository.WriteTenant(ctx, "org_first", workload, func(w tenantstore.Writer) error {
 				p, err := w.Project(ctx, tracker.ProjectID(first))
 				if err != nil {
 					return err

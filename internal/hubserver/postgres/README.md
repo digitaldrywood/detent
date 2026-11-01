@@ -552,3 +552,38 @@ source or target cannot exceed the existing 32 MiB archive limit. Each successfu
 conversion holds one history row and one aggregate progress row only during
 bounded database work. There are no fleet scans, history walks, per-tenant pools,
 unbounded transactions or SQL JSON operations (INV-18, INV-20, INV-21).
+
+## Shared tenant unit of work
+
+`tenantstore.Repository` exposes `ReadTenant` and `WriteTenant`. Their scoped
+reader and writer combine the core, event and lease family operations. Each
+callback uses one generated query binding, one tenant RLS context and one
+read-committed transaction. A write commits once after the callback succeeds;
+a callback, statement, commit or cancellation failure rolls back the whole unit.
+The family-specific callbacks remain available for independent transactions.
+Sequencing them does not provide cross-family atomicity.
+
+Prepare and verify payload objects before entering a write callback. Pass their
+typed references to the scoped operations, then hydrate returned references after
+the read callback ends. The scope exposes database operations only, with no
+object storage, transaction creation, nested callbacks or commit controls.
+Scope values are valid only within their callback. Keep all participants of a
+claim, completion or idempotent command in that callback; do not capture and call
+another repository to extend it.
+
+Shared scopes use the same fixed serving and background budgets as the existing
+family callbacks. They acquire one slot and one connection for the entire unit,
+not one per family. The transaction binds the authenticated organization locally,
+rejects mismatched writes and releases the binding when it ends. Read scopes
+remain read-only, and both modes explicitly use read-committed isolation even
+when the connection default differs. The callback executes once; retry ownership
+remains with the caller. Primary callback, statement and commit errors retain
+their domain classification and SQLSTATE through rollback, including serialization
+failures, deadlocks, revision conflicts and cancellation.
+
+At 10,000 tenants and runners, opening a scope performs one budget acquisition,
+one transaction begin and one tenant-context binding, independent of fleet and
+history size. Work and row locks inside the callback are bounded by the command's
+participants. No per-tenant pool, fleet scan, object I/O or derived refresh is
+introduced (INV-16, INV-18, INV-21). SQLite remains on its existing transaction
+implementation; this boundary does not enable unported serving paths.
