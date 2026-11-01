@@ -56,6 +56,7 @@ type claimCandidateQuery struct {
 	DispatchPriorityByLabel []string
 	PrioritizeUnblockers    bool
 	ProviderCandidates      []tracker.NativeCapacityCandidate
+	RequireProviderCapacity bool
 	PolicyID                string
 	RequirePolicy           bool
 	NativeScope             *nativeScope

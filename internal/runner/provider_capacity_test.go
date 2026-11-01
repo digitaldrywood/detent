@@ -18,7 +18,9 @@ func TestDispatchCapacityPreservesRouting(t *testing.T) {
 	for _, test := range []struct {
 		name, state, mode, body, modelOverride, routeModel, wantModel, wantRole string
 		catalogErr                                                              error
+		missing                                                                 bool
 	}{
+		{name: "absent backend", missing: true},
 		{name: "configured model", routeModel: "sol", wantModel: "sol", wantRole: RoleCode},
 		{name: "issue field", modelOverride: "astra", wantModel: "astra", wantRole: RoleCode},
 		{name: "route precedes field", modelOverride: "astra", routeModel: "sol", wantModel: "sol", wantRole: RoleCode},
@@ -40,7 +42,17 @@ func TestDispatchCapacityPreservesRouting(t *testing.T) {
 			}
 			r := &Runner{agentRuntime: agentRuntime{router: router, backends: map[string]AgentBackend{"code": backend, "plan": backend}, backendConfigs: map[string]config.AgentBackend{"code": {ID: "code"}, "plan": {ID: "plan"}}}}
 			issue := connector.Issue{State: test.state, Description: test.body, ModelOverride: test.modelOverride}
-			result, err := r.DispatchCapacity(t.Context(), RunRequest{Issue: issue, Mode: test.mode, SelectorContext: selector.Context{}, ProviderReports: []providercapacity.Report{{Backend: "code", Models: []string{"sol", "astra"}}, {Backend: "plan", Models: []string{"plan-model"}}}})
+			reports := []providercapacity.Report{{Backend: "code", Models: []string{"sol", "astra"}}, {Backend: "plan", Models: []string{"plan-model"}}}
+			if test.missing {
+				reports = nil
+			}
+			result, err := r.DispatchCapacity(t.Context(), RunRequest{Issue: issue, Mode: test.mode, SelectorContext: selector.Context{}, ProviderReports: reports})
+			if test.missing {
+				if err == nil {
+					t.Fatal("absent backend remained eligible")
+				}
+				return
+			}
 			if err != nil || result.Role != test.wantRole || result.Model != test.wantModel {
 				t.Fatalf("requirement = %+v, %v", result, err)
 			}
@@ -76,7 +88,7 @@ func TestDispatchCapacityDoesNotLaunchWorkspaceDependentBackend(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			req := RunRequest{Issue: connector.Issue{ID: "issue-2561", Identifier: "detent#2561", Description: test.body}}
+			req := RunRequest{Issue: connector.Issue{ID: "issue-2561", Identifier: "detent#2561", Description: test.body}, ProviderReports: []providercapacity.Report{{Backend: "codex", Models: []string{"gpt-5.6-sol"}}}}
 			result, err := r.DispatchCapacity(t.Context(), req)
 			if err != nil || result.Model != "gpt-5.6-sol" {
 				t.Fatalf("dispatch = %+v, %v", result, err)

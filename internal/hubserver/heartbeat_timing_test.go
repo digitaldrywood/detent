@@ -188,7 +188,7 @@ func TestHeartbeatPreparationBeforeWriter(t *testing.T) {
 			return view
 		}()},
 		{"invalid update", "update", runnerauth.UpdateObservation{}},
-		{"invalid provider reports", "provider_reports", []providercapacity.Report{}},
+		{"invalid provider reports", "provider_reports", []providercapacity.Report{{Backend: "invalid"}}},
 		{"invalid checkout", "checkout_repository", "invalid"},
 		{"invalid workspace isolation", "workspace_isolation", "invalid"},
 		{"invalid admission", "admission", tracker.NativeAdmissionObservation{}},

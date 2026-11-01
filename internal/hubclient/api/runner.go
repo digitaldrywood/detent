@@ -768,7 +768,7 @@ type MachineHeartbeatReport struct {
 	ProtocolMajor        int                                 `json:"protocol_major,omitempty"`
 	SettingsRejected     bool                                `json:"settings_rejected,omitempty"`
 	BackendIsolation     isolationpolicy.Report              `json:"backend_isolation"`
-	ProviderReports      []providercapacity.Report           `json:"provider_reports,omitempty"`
+	ProviderReports      []providercapacity.Report           `json:"provider_reports"`
 	DisplayName          string                              `json:"display_name"`
 	Capacity             int                                 `json:"capacity"`
 	Version              string                              `json:"version"`

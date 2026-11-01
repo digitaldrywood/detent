@@ -41,14 +41,8 @@ func validateProviderCandidates(candidates []tracker.NativeCapacityCandidate) er
 }
 
 func validateProviderReports(reports []providercapacity.Report) error {
-	if reports == nil {
-		return nil
-	}
 	if err := providercapacity.Validate(reports); err != nil {
 		return nativeInvalid(err.Error())
-	}
-	if len(reports) == 0 {
-		return nativePublicInvalid("An enabled provider reporter must retain at least one backend")
 	}
 	return nil
 }
@@ -58,7 +52,7 @@ func updateProviderReports(ctx context.Context, tx *sql.Tx, scope nativeScope, r
 		return err
 	}
 	if reports == nil {
-		return nil
+		reports = []providercapacity.Report{}
 	}
 	previous, err := readProviderReports(ctx, tx, scope.credential.Runner.RunnerID)
 	if err != nil {
@@ -346,7 +340,7 @@ func selectProviderCapacity(ctx context.Context, tx *sql.Tx, query claimCandidat
 	if err != nil {
 		return providercapacity.Reservation{}, false, err
 	}
-	if len(reports) == 0 && len(query.ProviderCandidates) == 0 {
+	if len(reports) == 0 && len(query.ProviderCandidates) == 0 && !query.RequireProviderCapacity {
 		return providercapacity.Reservation{}, false, nil
 	}
 	var native tracker.NativeWorkItemID

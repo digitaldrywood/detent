@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 )
 
@@ -30,11 +31,19 @@ func (r *Runner) DispatchCapacity(_ context.Context, req RunRequest) (providerca
 	override, _, overrideErr := selectionIssueOverride(req.Issue, role)
 	explicitModel, _ := override.ModelForRole(role)
 	var models []string
+	found := false
 	for _, report := range req.ProviderReports {
 		if report.Backend == selection.BackendID {
+			if report.LocalBackendIdentity != "" && config.ProviderIdentity(backendConfig) != report.LocalBackendIdentity {
+				return providercapacity.Requirement{}, errors.New("local provider backend identity conflicts across projects")
+			}
+			found = true
 			models = report.Models
 			break
 		}
+	}
+	if !found {
+		return providercapacity.Requirement{}, errors.New("selected provider backend is absent from the current runner report")
 	}
 	if !hasResumeIdentity(req) {
 		if automatic {

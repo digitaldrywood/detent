@@ -39,21 +39,32 @@ func runnerProviderReports(ctx context.Context, configuration func() globalconfi
 			if err != nil {
 				return nil, err
 			}
+			for i := range reports {
+				for _, backend := range backends {
+					if backend.ID == reports[i].Backend {
+						reports[i].LocalBackendIdentity = workflowconfig.ProviderIdentity(backend)
+						break
+					}
+				}
+			}
 			reports = withProviderBilling(ctx, reports, backends, billing, usage)
 			reports = withProviderUsage(reports, usage)
 			return reports, providercapacity.Validate(reports)
 		}
 		var reports []providercapacity.Report
 		var catalogErrors []error
+		var selected []workflowconfig.AgentBackend
 		for _, backend := range backends {
-			if slices.ContainsFunc(backends, func(other workflowconfig.AgentBackend) bool {
-				return other.ID == backend.ID && !runnerProviderCompatible(backend, other)
-			}) {
+			index := slices.IndexFunc(selected, func(other workflowconfig.AgentBackend) bool { return other.ID == backend.ID })
+			if index >= 0 && !runnerProviderCompatible(selected[index], backend) {
 				slog.Warn("Runner provider backend identity conflicts across projects", "backend", backend.ID)
 				continue
 			}
+			if index < 0 {
+				selected = append(selected, backend)
+			}
 			report := providercapacity.Report{Provider: runnerProviderName(backend), Backend: backend.ID, AccountAlias: account, Availability: "unknown"}
-			index := slices.IndexFunc(reports, func(existing providercapacity.Report) bool { return existing.Backend == backend.ID })
+			index = slices.IndexFunc(reports, func(existing providercapacity.Report) bool { return existing.Backend == backend.ID })
 			if index >= 0 {
 				report = reports[index]
 			}
@@ -77,6 +88,7 @@ func runnerProviderReports(ctx context.Context, configuration func() globalconfi
 			if !slices.Contains(report.Models, "provider_default") {
 				report.Models = append(report.Models, "provider_default")
 			}
+			report.LocalBackendIdentity = workflowconfig.ProviderIdentity(backend)
 			report.ObservedAt = now().UTC()
 			if index >= 0 {
 				reports[index] = report
@@ -94,57 +106,13 @@ func runnerProviderReports(ctx context.Context, configuration func() globalconfi
 }
 
 func runnerProviderName(backend workflowconfig.AgentBackend) string {
-	if backend.Provider != "" {
-		return backend.Provider
-	}
-	switch backend.Kind {
-	case workflowconfig.AgentBackendCodex:
-		if provider := backend.CodexOptions().ModelProvider; provider != "" {
-			return provider
-		}
-		return "openai"
-	case workflowconfig.AgentBackendClaudeCode:
-		return "anthropic"
-	default:
-		return backend.Kind
-	}
+	return workflowconfig.ProviderName(backend)
 }
-
 func runnerProviderCompatible(a, b workflowconfig.AgentBackend) bool {
-	if a.Kind != b.Kind || a.Protocol != b.Protocol || runnerProviderCommandIdentity(a) != runnerProviderCommandIdentity(b) || runnerProviderName(a) != runnerProviderName(b) {
-		return false
-	}
-	switch a.Kind {
-	case workflowconfig.AgentBackendCodex:
-		x, y := a.CodexOptions(), b.CodexOptions()
-		return x.Shell == y.Shell && x.ModelProvider == y.ModelProvider
-	case workflowconfig.AgentBackendClaudeCode:
-		x, y := a.ClaudeCodeOptions(), b.ClaudeCodeOptions()
-		return x.Shell == y.Shell && slices.Equal(x.ExtraArgs, y.ExtraArgs)
-	default:
-		return reflect.DeepEqual(a, b)
-	}
+	return workflowconfig.ProviderCompatible(a, b)
 }
-
 func runnerProviderCommandIdentity(backend workflowconfig.AgentBackend) string {
-	if backend.Kind != workflowconfig.AgentBackendCodex {
-		return backend.Command
-	}
-	args := strings.FieldsFunc(backend.Command, func(r rune) bool { return r == ' ' || r == '\t' })
-	if len(args) < 2 || args[0] != "codex" || args[len(args)-1] != "app-server" {
-		return backend.Command
-	}
-	for args = args[1 : len(args)-1]; len(args) > 0; args = args[2:] {
-		if len(args) < 2 || args[0] != "--config" && args[0] != "-c" {
-			return backend.Command
-		}
-		switch args[1] {
-		case "shell_environment_policy.inherit=all", "model_reasoning_effort=none", "model_reasoning_effort=minimal", "model_reasoning_effort=low", "model_reasoning_effort=medium", "model_reasoning_effort=high", "model_reasoning_effort=xhigh", "model_reasoning_effort=max":
-		default:
-			return backend.Command
-		}
-	}
-	return "codex app-server"
+	return workflowconfig.ProviderCommandIdentity(backend)
 }
 
 func runnerProviderConfigs(ctx context.Context, cfg globalconfig.Config) ([]workflowconfig.AgentBackend, []workflowconfig.AgentRoute) {
@@ -163,7 +131,8 @@ func runnerProviderConfigs(ctx context.Context, cfg globalconfig.Config) ([]work
 	var backends []workflowconfig.AgentBackend
 	var routes []workflowconfig.AgentRoute
 	for _, workflow := range workflows {
-		for _, backend := range workflow.AgentBackendConfigs() {
+		configured := workflow.AgentBackendConfigs()
+		for _, backend := range configured {
 			if backend.Disabled {
 				continue
 			}
@@ -171,7 +140,13 @@ func runnerProviderConfigs(ctx context.Context, cfg globalconfig.Config) ([]work
 				backends = append(backends, backend)
 			}
 		}
-		routes = append(routes, workflow.AgentRouteConfigs()...)
+		for _, route := range workflow.AgentRouteConfigs() {
+			local := slices.IndexFunc(configured, func(backend workflowconfig.AgentBackend) bool { return backend.ID == route.Backend })
+			canonical := slices.IndexFunc(backends, func(backend workflowconfig.AgentBackend) bool { return backend.ID == route.Backend })
+			if local >= 0 && canonical >= 0 && runnerProviderCompatible(configured[local], backends[canonical]) {
+				routes = append(routes, route)
+			}
+		}
 	}
 	return backends, routes
 }

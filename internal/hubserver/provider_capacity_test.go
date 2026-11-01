@@ -976,3 +976,36 @@ func TestProviderUsageHeartbeatRoundTrip(t *testing.T) {
 		t.Fatalf("stored runners = %d, want 2", count)
 	}
 }
+
+func TestProviderCapacityReportDisappearance(t *testing.T) {
+	t.Parallel()
+	for _, state := range []string{"empty", "omitted"} {
+		t.Run(state, func(t *testing.T) {
+			t.Parallel()
+			now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+			f := newNativeFixture(t, openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }}), "", "provider")
+			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
+			r.enroll(t)
+			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
+			issue := f.create(t, "work")
+			publishCapacity(t, f, r, capacityReport(now))
+			payload := map[string]any{"backend_isolation": r.redemption.BackendIsolation, "display_name": "runner", "capacity": 8, "version": "test"}
+			if state == "empty" {
+				payload["provider_reports"] = []providercapacity.Report{}
+			}
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, payload)
+			requireNativeStatus(t, response, http.StatusOK)
+			reports, err := readProviderReports(t.Context(), f.service.database.db, r.binding.RunnerID)
+			if err != nil || len(reports) != 0 {
+				t.Fatalf("reports after disappearance=%+v, err=%v", reports, err)
+			}
+			claim := providerClaim(r, issue, "empty")
+			response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim)
+			requireNativeStatus(t, response, http.StatusConflict)
+			claim.ProviderCandidates = nil
+			claim.Capabilities = append(claim.Capabilities, tracker.NativeProviderCapacityCapability)
+			response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim)
+			requireNativeStatus(t, response, http.StatusConflict)
+		})
+	}
+}

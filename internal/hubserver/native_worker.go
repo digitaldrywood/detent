@@ -105,7 +105,7 @@ func (s *Service) claimNativeIssue(c echo.Context) error {
 		LandingCapacity:      request.LandingCapacity,
 		LandingCapacityKnown: request.LandingCapacity > 0 || slices.Contains(request.Capabilities, tracker.NativeLandingCapacityCapability),
 		MinimumRunnerVersion: minimumRunnerVersion(s.config.Version),
-		PolicyID:             request.PolicyID, RequirePolicy: true, ProviderCandidates: request.ProviderCandidates,
+		PolicyID:             request.PolicyID, RequirePolicy: true, ProviderCandidates: request.ProviderCandidates, RequireProviderCapacity: slices.Contains(request.Capabilities, tracker.NativeProviderCapacityCapability),
 		DispatchPriorityByState: request.DispatchPriorityByState, DispatchPriorityByLabel: request.DispatchPriorityByLabel, PrioritizeUnblockers: request.PrioritizeUnblockers,
 		NativeScope: &scope, Scope: string(scope.project), WorkflowStates: request.WorkflowStates, Authors: request.Authors, Assignees: request.Assignees, LabelInclude: request.LabelInclude, LabelExclude: request.LabelExclude,
 		// Only a lane that declares the workspace capability is offered

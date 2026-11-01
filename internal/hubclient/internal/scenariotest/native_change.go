@@ -2933,7 +2933,7 @@ func (a *committingAgent) RunTurn(ctx context.Context, request runner.AgentTurnR
 
 func isolateNativeChangeGit(t *testing.T) {
 	t.Helper()
-	scratch := t.TempDir()
+	scratch := testenv.TempDir(t)
 	for _, key := range []string{"TMPDIR", "TMP", "TEMP"} {
 		t.Setenv(key, scratch)
 	}

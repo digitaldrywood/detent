@@ -118,7 +118,9 @@ func TestRunnerProviderReports(t *testing.T) {
 					t.Fatalf("usage changed during heartbeat: %+v", reports[0].UsageWindows)
 				}
 				if test.file {
-					if !reflect.DeepEqual(reports[0], explicit) {
+					public := reports[0]
+					public.LocalBackendIdentity = ""
+					if !reflect.DeepEqual(public, explicit) {
 						t.Fatalf("explicit report replaced: %+v", reports)
 					}
 				} else {
@@ -290,7 +292,7 @@ func TestRunnerProviderProjectReports(t *testing.T) {
 				check("haiku", "astra")
 			}
 			selected := slices.Clone(projects.cfg.Projects)
-			for _, command := range []string{incidentCommand, "codex -c model_reasoning_effort=high --config shell_environment_policy.inherit=all app-server"} {
+			for _, command := range []string{incidentCommand, "codex -c model_reasoning_effort=high --config shell_environment_policy.inherit=all app-server", "/usr/bin/env GOFLAGS=-p=6 GOMAXPROCS=6 codex --config shell_environment_policy.inherit=all app-server", "env /opt/example/bin/codex app-server"} {
 				otherCommand = command
 				if err := os.WriteFile(other.Workflow, []byte(strings.ReplaceAll(string(raw), incidentCommand, command)), 0o600); err != nil {
 					t.Fatal(err)
@@ -310,7 +312,7 @@ func TestRunnerProviderProjectReports(t *testing.T) {
 			other = &projects.cfg.Projects[2]
 			for _, conflict := range []struct{ name, from, to string }{
 				{"provider", "kind: codex", "kind: codex\n      provider: other-provider"},
-				{"account command", incidentCommand, "env CODEX_HOME=/example/other codex app-server"},
+				{"account command", incidentCommand, "env CODEX_HOME=" + t.TempDir() + " codex app-server"},
 				{"account config", incidentCommand, "codex --config forced_chatgpt_account_id=other app-server"},
 				{"provider config", incidentCommand, "codex --config model_provider=other app-server"},
 				{"profile", incidentCommand, "codex --profile other app-server"},
@@ -328,8 +330,25 @@ func TestRunnerProviderProjectReports(t *testing.T) {
 						t.Fatal(err)
 					}
 					reports, err := source()
-					if err != nil || len(reports) != 1 || reports[0].Backend != "claude-design" || reports[0].Provider != "anthropic" || !slices.Contains(reports[0].Models, "haiku") || reports[0].Availability != "unknown" {
+					if err != nil || len(reports) != 2 || reports[0].Backend != "codex-code" || reports[1].Backend != "claude-design" {
 						t.Fatalf("unrelated report after identity conflict=%+v, err=%v", reports, err)
+					}
+					if !catalog && slices.Contains(reports[0].Models, "astra") {
+						t.Fatal("conflicting project model leaked into healthy report")
+					}
+					for _, selected := range project.ManagerConfigFromGlobal(projects.providerConfiguration()).Projects {
+						workflow, err := project.LoadWorkflowContext(t.Context(), selected)
+						if err != nil {
+							t.Fatal(err)
+						}
+						execution, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Workflow: workflow, Workspace: workspaces, AgentBackendFactory: runner.AgentBackendFactoryFunc(buildAgentBackend)})
+						if err != nil {
+							t.Fatal(err)
+						}
+						_, err = execution.DispatchCapacity(t.Context(), runner.RunRequest{ProviderReports: reports})
+						if (err != nil) != (selected.ID == "other-code") {
+							t.Fatalf("project %s eligibility error=%v", selected.ID, err)
+						}
 					}
 					if err := providercapacity.Validate(reports); err != nil {
 						t.Fatal(err)
@@ -379,5 +398,29 @@ func TestAPIKeyReportSuppressesQuota(t *testing.T) {
 	reports := withProviderUsage([]providercapacity.Report{{Backend: "codex", UsageWindows: []providercapacity.UsageWindow{{Kind: "weekly"}}}}, []*runner.ProviderUsage{usage})
 	if reports[0].Billing != "api_key" || len(reports[0].UsageWindows) != 0 {
 		t.Fatalf("API report = %+v", reports[0])
+	}
+}
+
+func TestRunnerProviderCommandIdentity(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		command string
+		same    bool
+	}{
+		{"codex app-server", true},
+		{"/usr/bin/env GOFLAGS=-p=6 GOMAXPROCS=6 codex --config shell_environment_policy.inherit=all app-server", true},
+		{"env NAME=value /opt/example/bin/codex app-server", true},
+		{"/opt/example/bin/codex -c model_reasoning_effort=high app-server", true},
+		{"env CODEX_HOME=/example/account codex app-server", false},
+		{"env OPENAI_API_KEY=example codex app-server", false},
+		{"codex --config model_provider=other app-server", false},
+		{"other-codex app-server", false},
+	} {
+		t.Run(test.command, func(t *testing.T) {
+			got := runnerProviderCommandIdentity(workflowconfig.AgentBackend{Kind: workflowconfig.AgentBackendCodex, Command: test.command})
+			if (got == "codex app-server") != test.same {
+				t.Fatalf("identity = %q, equivalent=%t", got, test.same)
+			}
+		})
 	}
 }

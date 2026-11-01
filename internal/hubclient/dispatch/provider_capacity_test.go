@@ -213,7 +213,7 @@ func TestProviderSchedulerEndToEnd(t *testing.T) {
 	}
 
 	t.Parallel()
-	for _, unavailable := range []string{"intake off during admission", "fallback", "fail", "local wait", "bounded", "plain", "known waits", "six slots", "provider slots", "mixed providers", "provider hydration", "stage slots", "exhausted subscription", "revoked lease after quota reset"} {
+	for _, unavailable := range []string{"env-equivalent projects", "empty reports", "catalog failure", "intake off during admission", "fallback", "fail", "local wait", "bounded", "plain", "known waits", "six slots", "provider slots", "mixed providers", "provider hydration", "stage slots", "exhausted subscription", "revoked lease after quota reset"} {
 		t.Run(unavailable, func(t *testing.T) { t.Parallel(); testProviderSchedulerEndToEnd(t, unavailable) })
 	}
 }
@@ -299,7 +299,9 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 	if _, err := other.ApproveProjectPolicy(t.Context(), policy.Change{Policy: descriptor}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := other.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "other-unsupported"}, Title: "higher priority unsupported project", Body: "```detent-agent\nschema: 1\nmodel: astra\n```" + issueContractTestSections, State: "Todo", Priority: new(1)}); err != nil {
+	if unavailable == "env-equivalent projects" {
+		createIndependentNativeIssue(t, other, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "other-compatible"}, Title: "other project work", Body: issueContractTestSections, State: "Todo"})
+	} else if _, err := other.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "other-unsupported"}, Title: "higher priority unsupported project", Body: "```detent-agent\nschema: 1\nmodel: astra\n```" + issueContractTestSections, State: "Todo", Priority: new(1)}); err != nil {
 		t.Fatal(err)
 	}
 	if unavailable == "known waits" {
@@ -308,6 +310,9 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 		}
 	}
 	titles := []string{"unsupported model", "compatible model"}
+	if unavailable == "env-equivalent projects" {
+		titles = []string{"compatible model"}
+	}
 	if batch {
 		titles = []string{"rework-0", "rework-1", "rework-2", "independent-0", "independent-1", "independent-2", "independent-3", "independent-4"}
 	}
@@ -341,6 +346,12 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 		report.ResetAt = report.ObservedAt.Add(time.Hour)
 	}
 	providerReports := func() ([]providercapacity.Report, error) {
+		if unavailable == "empty reports" {
+			return nil, nil
+		}
+		if unavailable == "catalog failure" {
+			return nil, errors.New("catalog unavailable")
+		}
 		reports := []providercapacity.Report{report}
 		if unavailable == "mixed providers" {
 			reports = append(reports, providercapacity.Report{Provider: "anthropic", Backend: "claude", AccountAlias: "other", Models: []string{"sonnet"}, MaxConcurrent: 2, Availability: "available", ObservedAt: report.ObservedAt})
@@ -350,7 +361,11 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 	if unavailable == "plain" {
 		providerReports = nil
 	}
-	scheduler, err := newTestScheduler(client, SchedulerConfig{OrganizationID: organization, NativeProjects: map[string]tracker.ProjectID{"native": project.ID}, Machine: machine, HeartbeatInterval: 30 * time.Second, LeaseTTL: 90 * time.Second, ProviderReports: providerReports})
+	nativeProjects := map[string]tracker.ProjectID{"native": project.ID}
+	if unavailable == "env-equivalent projects" {
+		nativeProjects["other"] = otherProject.ID
+	}
+	scheduler, err := newTestScheduler(client, SchedulerConfig{OrganizationID: organization, NativeProjects: nativeProjects, Machine: machine, HeartbeatInterval: 30 * time.Second, LeaseTTL: 90 * time.Second, ProviderReports: providerReports})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -381,6 +396,108 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 			}
 			return localRunner.DispatchCapacity(ctx, runner.RunRequest{Issue: issue, ProviderReports: reports})
 		}}
+	if unavailable == "env-equivalent projects" {
+		commands := []string{"codex app-server", "/usr/bin/env GOFLAGS=-p=6 GOMAXPROCS=6 codex --config shell_environment_policy.inherit=all app-server"}
+		canonical := config.Default()
+		canonical.Codex.Command = commands[0]
+		report.LocalBackendIdentity = config.ProviderIdentity(canonical.AgentBackendConfigs()[0])
+		for i, selected := range []struct {
+			name   string
+			client *NativeClient
+		}{{"native", native}, {"other", other}} {
+			cfg := config.Default()
+			cfg.Codex.Command = commands[i]
+			cfg.Agents.Routes = []config.AgentRoute{{Name: "default", Backend: "codex", Model: "sol", Default: true}}
+			provider := backend
+			workspaces, err := workspace.NewFilesystem(workspace.FilesystemOptions{ProcessSource: emptyProcessSource, Root: t.TempDir()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			local, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: cfg}, Workspace: workspaces, AgentBackend: provider})
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := orchestrator.SchedulingRequest{ProjectID: selected.name, Policy: descriptor, WorkflowStates: []string{"Todo"}, ProviderRequirement: func(ctx context.Context, issue connector.Issue, reports []providercapacity.Report) (providercapacity.Requirement, error) {
+				return local.DispatchCapacity(ctx, runner.RunRequest{Issue: issue, ProviderReports: reports})
+			}}
+			candidates, err := scheduler.FetchCandidateIssues(t.Context(), request)
+			if err != nil || len(candidates) != 1 {
+				t.Fatalf("project %s claim: candidates=%v err=%v", selected.name, candidates, err)
+			}
+			issue := candidates[0]
+			if _, err := scheduler.AdoptClaim(t.Context(), issue, time.Now()); err != nil {
+				t.Fatal(err)
+			}
+			execution := scheduler.RunExecution(issue.ID)
+			if execution == nil {
+				t.Fatal("claim has no execution")
+			}
+			identity := tracker.NativeExecutionIdentity{Role: "code", Backend: "codex", Model: "sol"}
+			if err := execution.Start(t.Context(), identity); err != nil {
+				t.Fatalf("project %s start: %v", selected.name, err)
+			}
+			root := t.TempDir()
+			turn, err := provider.RunTurn(t.Context(), runner.AgentTurnRequest{Workspace: root, Model: "sol", Prompt: "Complete example work", Environment: procgroup.Environment{Variables: workspace.EnvironmentVariables(workspace.Info{Path: root}, workspace.Issue{ID: issue.ID, Identifier: issue.Identifier})}}, nil)
+			if err != nil || turn.ThreadID != "thread-example" || turn.TurnID != "turn-example" {
+				t.Fatalf("project %s turn=%+v error=%v", selected.name, turn, err)
+			}
+			attempt, err := selected.client.NativeAttempt(t.Context(), tracker.NativeWorkItemID(issue.ID), execution.(interface {
+				DiagnosticAttempt(runnerauth.DiagnosticAttempt) runnerauth.DiagnosticAttempt
+			}).DiagnosticAttempt(runnerauth.DiagnosticAttempt{}).NativeAttemptID)
+			if err != nil || attempt.Identity == nil || attempt.Identity.Backend != "codex" || attempt.Identity.Model != "sol" {
+				t.Fatalf("project %s durable start=%+v err=%v", selected.name, attempt, err)
+			}
+			if err := execution.Finish(t.Context(), "succeeded"); err != nil {
+				t.Fatal(err)
+			}
+			if err := scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); err != nil {
+				t.Fatal(err)
+			}
+			current, err := selected.client.Issue(t.Context(), tracker.NativeWorkItemID(issue.ID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := selected.client.SetArchived(t.Context(), current.WorkItemID, current.Revision, true, nativeMutationKey()); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if *launches != 2 {
+			t.Fatalf("provider turns=%d, want 2", *launches)
+		}
+		return
+	}
+	if unavailable == "empty reports" || unavailable == "catalog failure" {
+		transport := fixtureClient(client).requests.Load()
+		published := false
+		fixtureClient(client).requests.Store(executionRoundTrip(func(r *http.Request) (*http.Response, error) {
+			if r.Method == http.MethodPost && (strings.HasSuffix(r.URL.Path, "/heartbeat") || strings.HasSuffix(r.URL.Path, "/machines/register")) {
+				raw, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				_ = r.Body.Close()
+				r.Body = io.NopCloser(strings.NewReader(string(raw)))
+				var payload map[string]json.RawMessage
+				if err := json.Unmarshal(raw, &payload); err != nil {
+					t.Fatal(err)
+				}
+				value, present := payload["provider_reports"]
+				if !present || string(value) != "[]" {
+					t.Fatalf("empty provider report omitted: %s", raw)
+				}
+				published = true
+			}
+			return transport.RoundTrip(r)
+		}))
+		issues, err := scheduler.FetchCandidateIssues(t.Context(), request)
+		if len(issues) != 0 || len(scheduler.nativeClaims) != 0 || *launches != 0 || !published {
+			t.Fatalf("empty reporter: issues=%v claims=%d launches=%d published=%t err=%v", issues, len(scheduler.nativeClaims), *launches, published, err)
+		}
+		if unavailable == "catalog failure" && !errors.Is(err, orchestrator.ErrSchedulingUnavailable) {
+			t.Fatalf("catalog error=%v", err)
+		}
+		return
+	}
 	if unavailable == "intake off during admission" {
 		request.CandidateAdmission = func(connector.Issue) (func(), bool) { return nil, false }
 		issues, err := scheduler.FetchCandidateIssues(t.Context(), request)
@@ -679,7 +796,7 @@ func providerWorkspaceWrapper(t *testing.T) (*codex.AgentBackend, *int) {
 	factory, err := codex.NewLocalTransportFactory(func(ctx context.Context) *exec.Cmd {
 		(*launches)++
 		cmd := exec.CommandContext(ctx, executable, "-test.run=^TestProviderWorkspaceWrapperProcess$")
-		cmd.Env = append(os.Environ(), "DETENT_TEST_PROVIDER_WRAPPER=1")
+		cmd.Env = append(os.Environ(), "DETENT_TEST_PROVIDER_WRAPPER=1", "GOCOVERDIR="+t.TempDir())
 		return cmd
 	})
 	if err != nil {
@@ -714,6 +831,10 @@ func TestProviderWorkspaceWrapperProcess(t *testing.T) {
 		var request struct {
 			ID     *int   `json:"id"`
 			Method string `json:"method"`
+			Params struct {
+				Model string `json:"model"`
+				Cwd   string `json:"cwd"`
+			} `json:"params"`
 		}
 		if json.Unmarshal(scanner.Bytes(), &request) != nil {
 			os.Exit(13)
@@ -725,6 +846,13 @@ func TestProviderWorkspaceWrapperProcess(t *testing.T) {
 		switch request.Method {
 		case "initialize":
 			result = json.RawMessage(`{"userAgent":"workspace-wrapper"}`)
+		case "thread/start":
+			if request.Params.Model != "sol" || request.Params.Cwd != expected {
+				os.Exit(17)
+			}
+			result = json.RawMessage(`{"thread":{"id":"thread-example"},"model":"sol","modelProvider":"openai"}`)
+		case "turn/start":
+			result = json.RawMessage(`{"turn":{"id":"turn-example"}}`)
 		case "model/list":
 			result = json.RawMessage(`{"data":[{"id":"sol","model":"sol","supportedReasoningEfforts":[{"reasoningEffort":"medium"}]}]}`)
 		default:
@@ -735,6 +863,11 @@ func TestProviderWorkspaceWrapperProcess(t *testing.T) {
 			Result json.RawMessage `json:"result"`
 		}{*request.ID, result}) != nil {
 			os.Exit(15)
+		}
+		if request.Method == "turn/start" {
+			if encoder.Encode(map[string]any{"method": "turn/completed", "params": map[string]any{"threadId": "thread-example", "turn": map[string]any{"id": "turn-example", "status": "completed"}}}) != nil {
+				os.Exit(16)
+			}
 		}
 	}
 	os.Exit(0)

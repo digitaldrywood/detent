@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -51,6 +52,7 @@ func TestSelectionReloadAndResume(t *testing.T) {
 		{name: "resumed dispatch", req: resume, want: "gpt-5.6-sol"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
+			tt.req.ProviderReports = []providercapacity.Report{{Backend: "codex", Models: []string{"gpt-5.6-sol", "gpt-6-astra"}}}
 			capacity, err := runner.DispatchCapacity(context.Background(), tt.req)
 			if err != nil || capacity.Model != tt.want {
 				t.Fatalf("capacity=%+v error=%v", capacity, err)

@@ -253,6 +253,7 @@ func (s *nativeProgressRerouteScheduling) ReadmitRetryProgress(ctx context.Conte
 }
 
 func (r *nativeProgressRerouteRunner) Run(ctx context.Context, request runner.RunRequest) (runner.RunResult, error) {
+	request.ProviderReports = []providercapacity.Report{{Backend: "codex", Models: []string{"plan-model", "code-model"}}}
 	requirement, err := r.DispatchCapacity(ctx, request)
 	if err == nil {
 		err = request.Execution.Start(ctx, tracker.NativeExecutionIdentity{Role: requirement.Role, Backend: requirement.Backend, Model: requirement.Model})

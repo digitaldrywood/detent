@@ -180,14 +180,16 @@ func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeCo
 		}
 	}
 	var reports []providercapacity.Report
+	var reportErr error
 	if s.providerReports != nil {
 		var err error
 		reports, err = s.providerReports()
-		if err != nil {
-			return errors.Join(orchestrator.ErrSchedulingUnavailable, err)
+		if err == nil {
+			err = providercapacity.Validate(reports)
 		}
-		if err := providercapacity.Validate(reports); err != nil {
-			return errors.Join(orchestrator.ErrSchedulingUnavailable, err)
+		if err != nil {
+			reports = nil
+			reportErr = errors.Join(orchestrator.ErrSchedulingUnavailable, err)
 		}
 	}
 	var localChecks *runnerauth.LocalChecks
@@ -227,7 +229,7 @@ func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeCo
 		s.machine.Capacity = min(capacityConfig.RuntimeLimit, capacityConfig.ClientLimit, capacityConfig.LocalLimit)
 	}
 	if s.providerReports != nil {
-		s.machine.ProviderReports = reports
+		s.machine.ProviderReports = append([]providercapacity.Report{}, reports...)
 	}
 	if s.isolationReport != nil {
 		s.machine.BackendIsolation = report
@@ -264,6 +266,9 @@ func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeCo
 		return err
 	}
 
+	if reportErr != nil {
+		return reportErr
+	}
 	s.reconcileReleasedExecutions(ctx, source)
 	machine.HostMetrics = nil
 	s.mu.Lock()

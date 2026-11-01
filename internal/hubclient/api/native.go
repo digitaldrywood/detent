@@ -302,7 +302,7 @@ func (c *NativeClient) RegisterMachine(ctx context.Context, machine Machine) err
 	capabilities, isolation := machine.workspaceReport()
 	request := struct {
 		BackendIsolation isolationpolicy.Report    `json:"backend_isolation"`
-		ProviderReports  []providercapacity.Report `json:"provider_reports,omitempty"`
+		ProviderReports  []providercapacity.Report `json:"provider_reports"`
 		ID               tracker.MachineID         `json:"id"`
 		Hostname         string                    `json:"hostname"`
 		DisplayName      string                    `json:"display_name"`

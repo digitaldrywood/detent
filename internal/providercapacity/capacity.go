@@ -68,18 +68,19 @@ func ValidUsageKind(kind string) bool {
 }
 
 type Report struct {
-	Billing            string        `json:"billing,omitempty"`
-	UsageWindows       []UsageWindow `json:"usage_windows,omitempty"`
-	Provider           string        `json:"provider"`
-	Backend            string        `json:"backend"`
-	AccountAlias       string        `json:"account_alias"`
-	SharedAccountAlias string        `json:"shared_account_alias,omitempty"`
-	Models             []string      `json:"models"`
-	ModelDetails       []ModelDetail `json:"model_details,omitempty"`
-	MaxConcurrent      int           `json:"max_concurrent,omitempty"`
-	Availability       string        `json:"availability"`
-	ObservedAt         time.Time     `json:"observed_at"`
-	ResetAt            time.Time     `json:"reset_at,omitzero"`
+	LocalBackendIdentity string        `json:"-"`
+	Billing              string        `json:"billing,omitempty"`
+	UsageWindows         []UsageWindow `json:"usage_windows,omitempty"`
+	Provider             string        `json:"provider"`
+	Backend              string        `json:"backend"`
+	AccountAlias         string        `json:"account_alias"`
+	SharedAccountAlias   string        `json:"shared_account_alias,omitempty"`
+	Models               []string      `json:"models"`
+	ModelDetails         []ModelDetail `json:"model_details,omitempty"`
+	MaxConcurrent        int           `json:"max_concurrent,omitempty"`
+	Availability         string        `json:"availability"`
+	ObservedAt           time.Time     `json:"observed_at"`
+	ResetAt              time.Time     `json:"reset_at,omitzero"`
 }
 
 type Reservation struct {
