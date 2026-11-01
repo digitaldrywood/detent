@@ -199,7 +199,7 @@ func (l *LocalGit) RecoveryState(ctx context.Context, info Info, issue Issue) (R
 	if err != nil {
 		return RecoveryState{}, err
 	}
-	stat, err := gitDiffStat(ctx, normalized.Path, true)
+	observation, err := observeGitDiff(ctx, normalized.Path, true)
 	if err != nil {
 		return RecoveryState{}, err
 	}
@@ -211,19 +211,8 @@ func (l *LocalGit) RecoveryState(ctx context.Context, info Info, issue Issue) (R
 	if err != nil {
 		return RecoveryState{}, err
 	}
-	trackedPaths, err := gitTrackedPaths(ctx, normalized.Path)
-	if err != nil {
-		return RecoveryState{}, err
-	}
-	untrackedPaths, err := gitUntrackedPaths(ctx, normalized.Path)
-	if err != nil {
-		return RecoveryState{}, err
-	}
-	head, err := runGitAt(ctx, normalized.Path, "rev-parse", "--verify", "HEAD")
-	if err != nil {
-		return RecoveryState{}, fmt.Errorf("git resolve recovery head: %w", err)
-	}
-	head = strings.TrimSpace(head)
+	stat := observation.stat
+	head := stat.HeadSHA
 	commitsNotInPullRequest, comparisonAvailable, err := gitCommitsNotInPullRequest(
 		ctx,
 		normalized.Path,
@@ -241,8 +230,8 @@ func (l *LocalGit) RecoveryState(ctx context.Context, info Info, issue Issue) (R
 		WorkspaceFingerprint:           workspaceRecoveryFingerprint(head, stat.Fingerprint),
 		UnpushedCommits:                unpushedCommits,
 		UnpushedCommitRefs:             unpushedCommitRefs,
-		TrackedPaths:                   trackedPaths,
-		UntrackedPaths:                 untrackedPaths,
+		TrackedPaths:                   observation.trackedPaths,
+		UntrackedPaths:                 observation.untrackedPaths,
 		CommitsNotInPullRequest:        commitsNotInPullRequest,
 		PullRequestComparisonAvailable: comparisonAvailable,
 	}, nil
@@ -273,21 +262,28 @@ func GitDiffStat(ctx context.Context, workspacePath string) (DiffStat, error) {
 }
 
 func gitDiffStat(ctx context.Context, workspacePath string, includeIndex bool) (DiffStat, error) {
+	observation, err := observeGitDiff(ctx, workspacePath, includeIndex)
+	return observation.stat, err
+}
+
+type gitDiffObservation struct {
+	stat           DiffStat
+	trackedPaths   []string
+	untrackedPaths []string
+}
+
+func observeGitDiff(ctx context.Context, workspacePath string, includeIndex bool) (gitDiffObservation, error) {
 	if strings.TrimSpace(workspacePath) == "" {
-		return DiffStat{}, errors.New("workspace path is required")
+		return gitDiffObservation{}, errors.New("workspace path is required")
 	}
 	if _, err := os.Stat(workspacePath); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return DiffStat{}, fmt.Errorf("%w: %s: %w", ErrMissingWorkspace, workspacePath, err)
+			return gitDiffObservation{}, fmt.Errorf("%w: %s: %w", ErrMissingWorkspace, workspacePath, err)
 		}
-		return DiffStat{}, fmt.Errorf("stat workspace path: %w", err)
+		return gitDiffObservation{}, fmt.Errorf("stat workspace path: %w", err)
 	}
 
-	stat, err := gitDiffStatOutput(ctx, workspacePath, includeIndex)
-	if err != nil {
-		return DiffStat{}, err
-	}
-	return stat, nil
+	return gitDiffStatOutput(ctx, workspacePath, includeIndex)
 }
 
 func GitDiff(ctx context.Context, workspacePath string, maxBytes int) (Diff, error) {
@@ -345,51 +341,61 @@ func GitDiffFrom(ctx context.Context, workspacePath string, baseRef string, maxB
 	return Diff{Stat: stat, Patch: patch, Truncated: truncated}, nil
 }
 
-func gitDiffStatOutput(ctx context.Context, workspacePath string, includeIndex bool) (DiffStat, error) {
+func gitDiffStatOutput(ctx context.Context, workspacePath string, includeIndex bool) (gitDiffObservation, error) {
 	index, err := gitIndexLookup(ctx, workspacePath, true)
 	if err != nil {
-		return DiffStat{}, err
+		return gitDiffObservation{}, err
 	}
 	tempIndex, cleanup, err := copyGitIndex(index.Path)
 	if err != nil {
-		return DiffStat{}, err
+		return gitDiffObservation{}, err
 	}
 	defer cleanup()
 
 	env := []string{"GIT_INDEX_FILE=" + tempIndex}
 	addPaths := []string{"."}
 	addEnv := env
+	var observation gitDiffObservation
+	var trackedPaths []string
 	if includeIndex {
 		output, err := runGitAtWithEnv(ctx, workspacePath, env, gitDiagnosticArgs("ls-files", "--others", "--exclude-standard", "-z")...)
 		if err != nil {
-			return DiffStat{}, fmt.Errorf("git list untracked workspace changes: %w", err)
+			return gitDiffObservation{}, fmt.Errorf("git list untracked workspace changes: %w", err)
 		}
+		observation.untrackedPaths = boundedNULFields(output, recoveryEvidenceLimit, false)
 		addPaths = strings.Split(strings.TrimSuffix(output, "\x00"), "\x00")
 		if output == "" {
 			addPaths = nil
 		}
 		addEnv = append(slices.Clone(env), "GIT_LITERAL_PATHSPECS=1")
+		trackedPaths, err = gitDiffPaths(ctx, workspacePath, env, []string{"--cached", index.HeadSHA}, nil)
+		if err != nil {
+			return gitDiffObservation{}, err
+		}
+		observation.trackedPaths = trackedPaths[:min(len(trackedPaths), recoveryEvidenceLimit)]
 	}
 	if len(addPaths) != 0 {
 		args := append([]string{"add", "--intent-to-add", "--"}, addPaths...)
 		if _, err := runGitAtWithEnv(ctx, workspacePath, addEnv, args...); err != nil {
-			return DiffStat{}, fmt.Errorf("git add intent to add: %w", err)
+			return gitDiffObservation{}, fmt.Errorf("git add intent to add: %w", err)
 		}
 	}
 	var stat DiffStat
 	if includeIndex {
 		staged, err := gitDiffStatWithEnv(ctx, workspacePath, env, "--cached", index.HeadSHA)
 		if err != nil {
-			return DiffStat{}, err
+			return gitDiffObservation{}, err
 		}
 		working, err := gitDiffStatWithEnv(ctx, workspacePath, env)
 		if err != nil {
-			return DiffStat{}, err
+			return gitDiffObservation{}, err
 		}
-		paths, err := gitDiffPaths(ctx, workspacePath, env, []string{"--cached", index.HeadSHA}, nil)
-		if err != nil {
-			return DiffStat{}, err
+		paths := slices.Clone(trackedPaths)
+		for _, path := range addPaths {
+			paths = append(paths, strings.TrimSuffix(path, "/"))
 		}
+		slices.Sort(paths)
+		paths = slices.Compact(paths)
 		stat = DiffStat{Files: len(paths), Added: staged.Added + working.Added, Removed: staged.Removed + working.Removed}
 		if !stat.IsEmpty() {
 			stat.Fingerprint = workspaceRecoveryFingerprint("index", staged.Fingerprint, "worktree", working.Fingerprint)
@@ -397,17 +403,14 @@ func gitDiffStatOutput(ctx context.Context, workspacePath string, includeIndex b
 	} else {
 		stat, err = gitDiffStatWithEnv(ctx, workspacePath, env, index.HeadSHA)
 		if err != nil {
-			return DiffStat{}, err
+			return gitDiffObservation{}, err
 		}
 	}
-	tree, err := runGitAt(ctx, workspacePath, "rev-parse", index.HeadSHA+"^{tree}")
-	if err != nil {
-		return DiffStat{}, err
-	}
-	stat.TreeSHA = strings.TrimSpace(tree)
+	stat.TreeSHA = index.TreeSHA
 	stat.HeadSHA = index.HeadSHA
 	stat.HeadObservedAt = index.HeadObservedAt
-	return stat, nil
+	observation.stat = stat
+	return observation, nil
 }
 
 func gitUnpushedCommitEvidence(ctx context.Context, workspacePath string, base string) (int, []string, error) {
@@ -436,14 +439,6 @@ func gitUnpushedCommitEvidence(ctx context.Context, workspacePath string, base s
 	return count, refs, nil
 }
 
-func gitTrackedPaths(ctx context.Context, workspacePath string) ([]string, error) {
-	paths, err := gitDiffPaths(ctx, workspacePath, nil, []string{"--cached", "HEAD"}, nil)
-	if err != nil {
-		return nil, fmt.Errorf("git list tracked workspace changes: %w", err)
-	}
-	return paths[:min(len(paths), recoveryEvidenceLimit)], nil
-}
-
 func gitDiffPaths(ctx context.Context, workspacePath string, env []string, comparisons ...[]string) ([]string, error) {
 	var paths []string
 	for _, comparison := range comparisons {
@@ -460,14 +455,6 @@ func gitDiffPaths(ctx context.Context, workspacePath string, env []string, compa
 	}
 	slices.Sort(paths)
 	return slices.Compact(paths), nil
-}
-
-func gitUntrackedPaths(ctx context.Context, workspacePath string) ([]string, error) {
-	output, err := runGitAt(ctx, workspacePath, gitDiagnosticArgs("ls-files", "--others", "--exclude-standard", "-z")...)
-	if err != nil {
-		return nil, fmt.Errorf("git list untracked workspace changes: %w", err)
-	}
-	return boundedNULFields(output, recoveryEvidenceLimit, false), nil
 }
 
 func gitCommitsNotInPullRequest(
@@ -746,6 +733,7 @@ func gitDiagnosticArgs(args ...string) []string {
 type gitIndexObservation struct {
 	Path           string
 	HeadSHA        string
+	TreeSHA        string
 	HeadObservedAt time.Time
 }
 
@@ -761,7 +749,7 @@ func gitIndexLookup(ctx context.Context, workspacePath string, observeHead bool)
 	}
 	args := []string{"rev-parse", "--git-path", "index"}
 	if observeHead {
-		args = append(args, "--verify", "HEAD")
+		args = append(args, "HEAD", "HEAD^{tree}")
 	}
 	output, err := runGitAtWithEnv(ctx, workspacePath, []string{"GIT_CEILING_DIRECTORIES=" + filepath.Dir(path)}, args...)
 	if err != nil {
@@ -771,6 +759,12 @@ func gitIndexLookup(ctx context.Context, workspacePath string, observeHead bool)
 	indexPath := strings.TrimSuffix(output, "\n")
 	if observeHead {
 		separator := strings.LastIndexByte(indexPath, '\n')
+		if separator < 0 || separator == len(indexPath)-1 {
+			return gitIndexObservation{}, errors.New("git index tree is empty")
+		}
+		index.TreeSHA = indexPath[separator+1:]
+		indexPath = indexPath[:separator]
+		separator = strings.LastIndexByte(indexPath, '\n')
 		if separator < 0 || separator == len(indexPath)-1 {
 			return gitIndexObservation{}, errors.New("git index head is empty")
 		}
