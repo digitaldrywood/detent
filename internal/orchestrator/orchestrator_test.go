@@ -1371,53 +1371,70 @@ func TestStateReportsLiveAgentPoolCapacity(t *testing.T) {
 	}
 }
 
-func TestUpdateRuntimeSwapsConnectorBeforeNextTick(t *testing.T) {
+func TestUpdateRuntimeDispatchesWithoutWaitingForPoll(t *testing.T) {
 	t.Parallel()
-
-	issue := testIssue("issue-reload-connector", "digitaldrywood/detent#41", "Todo")
-	initialTracker := newFakeConnector()
-	reloadedTracker := newFakeConnector(issue)
-	runner := newBlockingRunner()
-
-	orch, err := orchestrator.New(orchestrator.Config{
-		PollInterval:        time.Hour,
-		MaxConcurrentAgents: 1,
-		ActiveStates:        []string{"Todo"},
-		TerminalStates:      []string{"Done"},
-	}, orchestrator.Dependencies{
-		Connector: initialTracker,
-		Runner:    runner,
-	})
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
+	for _, test := range []struct {
+		name             string
+		activeStates     []string
+		intakeDisabled   bool
+		replaceConnector bool
+	}{
+		{name: "replace connector", activeStates: []string{"Todo"}, replaceConnector: true},
+		{name: "enable active lane", activeStates: []string{"In Progress"}},
+		{name: "resume local intake", activeStates: []string{"Todo"}, intakeDisabled: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				issue := testIssue("issue-reload-connector", "example-org/example-project#41", "Todo")
+				initialTracker := newFakeConnector(issue)
+				if test.replaceConnector {
+					initialTracker = newFakeConnector()
+				}
+				runner := newBlockingRunner()
+				orch, err := orchestrator.New(orchestrator.Config{
+					PollInterval:        time.Hour,
+					MaxConcurrentAgents: 1,
+					ActiveStates:        test.activeStates,
+					TerminalStates:      []string{"Done"},
+					LocalIntakeDisabled: test.intakeDisabled,
+				}, orchestrator.Dependencies{Connector: initialTracker, Runner: runner})
+				if err != nil {
+					t.Fatal(err)
+				}
+				stop := runOrchestrator(t, orch)
+				defer stop()
+				synctest.Wait()
+				select {
+				case request := <-runner.started:
+					t.Fatalf("unexpected run before runtime update = %#v", request)
+				default:
+				}
+				update := orchestrator.RuntimeUpdate{Config: orchestrator.Config{
+					PollInterval:        time.Hour,
+					MaxConcurrentAgents: 1,
+					ActiveStates:        []string{"Todo"},
+					TerminalStates:      []string{"Done"},
+				}}
+				if test.replaceConnector {
+					update.Connector = newFakeConnector(issue)
+				}
+				if err := orch.UpdateRuntime(t.Context(), update); err != nil {
+					t.Fatal(err)
+				}
+				synctest.Wait()
+				select {
+				case request := <-runner.started:
+					if request.Issue.ID != issue.ID {
+						t.Fatalf("RunRequest.Issue.ID = %q, want %q", request.Issue.ID, issue.ID)
+					}
+				default:
+					t.Fatal("runtime update postponed dispatch until the next poll")
+				}
+				close(runner.release)
+			})
+		})
 	}
-	stop := runOrchestrator(t, orch)
-	defer stop()
-
-	select {
-	case request := <-runner.started:
-		t.Fatalf("unexpected run before connector update = %#v", request)
-	default:
-	}
-
-	if err := orch.UpdateRuntime(t.Context(), orchestrator.RuntimeUpdate{
-		Config: orchestrator.Config{
-			PollInterval:        5 * time.Millisecond,
-			MaxConcurrentAgents: 1,
-			ActiveStates:        []string{"Todo"},
-			TerminalStates:      []string{"Done"},
-		},
-		Connector: reloadedTracker,
-	}); err != nil {
-		t.Fatalf("UpdateRuntime() error = %v", err)
-	}
-
-	request := receiveRunRequest(t, runner.started)
-	if request.Issue.ID != issue.ID {
-		t.Fatalf("RunRequest.Issue.ID = %q, want %q", request.Issue.ID, issue.ID)
-	}
-
-	close(runner.release)
 }
 
 func TestUpdateRuntimeClearsAuthHealthWhenConnectorHasNoReport(t *testing.T) {

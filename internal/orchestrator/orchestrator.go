@@ -971,11 +971,8 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 		case update := <-o.configUpdates:
 			o.cancelPendingGlobalDispatches()
 			state.syncWorkerProgress()
-			previousCapacity := state.MaxConcurrentAgents
 			o.applyRuntimeUpdate(&state, update.update, ticker)
-			if state.MaxConcurrentAgents > previousCapacity {
-				o.refillProjectSlots(ctx, &state, o.clockNow())
-			}
+			o.refillProjectSlots(ctx, &state, o.clockNow())
 			o.finishTick(ctx, &state)
 			update.reply <- struct{}{}
 		}
