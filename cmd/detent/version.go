@@ -31,6 +31,7 @@ type versionInfo struct {
 	GoVersion                 string `json:"go_version"`
 	OS                        string `json:"os"`
 	Arch                      string `json:"arch"`
+	SocketActivationSupported bool   `json:"socket_activation_supported"`
 }
 
 func newVersionCommand() *cobra.Command {
@@ -79,12 +80,13 @@ func newVersionCommand() *cobra.Command {
 func currentVersionInfo() versionInfo {
 	build := currentBuildInfo()
 	return versionInfo{
-		Version:   build.Version,
-		Commit:    build.Commit,
-		Date:      build.Date,
-		GoVersion: runtime.Version(),
-		OS:        runtime.GOOS,
-		Arch:      runtime.GOARCH,
+		Version:                   build.Version,
+		Commit:                    build.Commit,
+		Date:                      build.Date,
+		GoVersion:                 runtime.Version(),
+		OS:                        runtime.GOOS,
+		Arch:                      runtime.GOARCH,
+		SocketActivationSupported: true,
 	}
 }
 

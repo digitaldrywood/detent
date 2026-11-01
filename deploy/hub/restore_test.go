@@ -170,7 +170,7 @@ func TestReleaseDeploysToLegacyReceiver(t *testing.T) {
 			if test.invalidIdentity {
 				reported = strings.Repeat("f", 40)
 			}
-			write("release-hub/detent", "#!/bin/sh\nprintf '%s\\n' '{\"version\":\"1.2.3\",\"commit\":\""+reported+"\"}'\n"+strings.Repeat("\n", 1000000))
+			write("release-hub/detent", "#!/bin/sh\nprintf '%s\\n' '{\"version\":\"1.2.3\",\"commit\":\""+reported+"\",\"socket_activation_supported\":true}'\n"+strings.Repeat("\n", 1000000))
 			write("restore-installed", "previous script")
 			rewritten := strings.NewReplacer(
 				"OPT=/opt/$NAME", "OPT=\"$WORK/opt\"",

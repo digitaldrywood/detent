@@ -213,28 +213,58 @@ func TestProductionDeployAcceptsBinaryWithoutReceiverUpgrade(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, test := range []struct {
-		name           string
-		wrongBinary    bool
-		socketInactive bool
+		name                   string
+		wrongBinary            bool
+		unsupportedSocket      bool
+		socketInactive         bool
+		existingInactive       bool
+		staging                bool
+		rollbackBootstrap      bool
+		bootstrapEnableFailure bool
+		bootstrapStopFailure   bool
+		bootstrapActiveFailure bool
 	}{
-		{name: "existing binary protocol"},
+		{name: "active socket deploy"},
 		{name: "wrong binary refuses deployment", wrongBinary: true},
+		{name: "binary without socket support refuses deployment", unsupportedSocket: true},
 		{name: "bootstrap deploy works before socket installation", socketInactive: true},
+		{name: "staging bootstrap preserves port", socketInactive: true, staging: true},
+		{name: "failed install preserves inactive existing socket files", socketInactive: true, existingInactive: true},
+		{name: "failed bootstrap restores direct service", socketInactive: true, rollbackBootstrap: true},
+		{name: "socket enable failure restores old binary without schema metadata", socketInactive: true, bootstrapEnableFailure: true},
+		{name: "unverified service stop does not use legacy rollback", socketInactive: true, bootstrapStopFailure: true},
+		{name: "unavailable inactive state does not start candidate", socketInactive: true, bootstrapActiveFailure: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			dir := t.TempDir()
-			for _, name := range []string{"bin", "opt/detent-hub/releases", "run/lock", "var/lib/detent-hub", "tmp"} {
+			serviceName, cloudUnit := "detent-hub", "detent-cloud"
+			if test.staging {
+				serviceName, cloudUnit = "detent-hub-staging", "detent-cloud-staging"
+			}
+			for _, name := range []string{"bin", "etc/systemd/system", "opt/" + serviceName + "/releases", "run/lock", "var/lib/" + serviceName, "tmp"} {
 				if err := os.MkdirAll(filepath.Join(dir, name), 0700); err != nil {
 					t.Fatal(err)
 				}
+			}
+			if err := os.WriteFile(filepath.Join(dir, "service-active"), []byte("true\n"), 0600); err != nil {
+				t.Fatal(err)
 			}
 			stubs := map[string]string{
 				"sudo": `shift
 if [ "$1" = -u ]; then shift 2; fi
 case "$1" in
-  install) exec /usr/bin/install -m "$3" "$8" "$9" ;;
-  readlink) exec readlink "$FIXTURE_ROOT/opt/detent-hub/detent" ;;
+  install)
+    shift
+    if [ "$1" = -m ]; then
+      mode=$2
+      shift 2
+      while [ "$1" = -o ] || [ "$1" = -g ]; do shift 2; done
+      exec /usr/bin/install -m "$mode" "$@"
+    fi
+    exec /usr/bin/install "$@"
+    ;;
+  readlink) exec readlink "$FIXTURE_ROOT/opt/$FIXTURE_NAME/detent" ;;
   *) exec "$@" ;;
 esac
 `,
@@ -242,11 +272,32 @@ esac
 				"flock": "exit 0\n",
 				"systemctl": `printf '%s\n' "$*" >> "$FIXTURE_ROOT/systemctl.log"
 case "$1" in
-  show) printf '1\n' ;;
+  stop)
+    if [ "$2" = "$FIXTURE_CLOUD" ]; then
+      if [ "$FIXTURE_FAIL_STOP" = true ]; then exit 1; fi
+      echo false > "$FIXTURE_ROOT/service-active"
+    fi
+    ;;
+  start)
+    if [ "$2" = "$FIXTURE_CLOUD" ]; then echo true > "$FIXTURE_ROOT/service-active"; fi
+    ;;
+  enable) [ "$FIXTURE_FAIL_ENABLE" != true ] ;;
+  show)
+    if [ "$2" = -p ] && [ "$3" = ActiveState ]; then
+      [ "$FIXTURE_FAIL_ACTIVE_STATE" != true ] || exit 1
+      if [ "$(cat "$FIXTURE_ROOT/service-active")" = true ]; then echo active; else echo inactive; fi
+      exit 0
+    fi
+    count=0
+    if [ -f "$FIXTURE_ROOT/show-count" ]; then count=$(cat "$FIXTURE_ROOT/show-count"); fi
+    count=$((count + 1))
+    printf '%s' "$count" > "$FIXTURE_ROOT/show-count"
+    if { [ "$FIXTURE_FAIL_CANDIDATE" = true ] || [ "$FIXTURE_FAIL_STOP" = true ] || [ "$FIXTURE_FAIL_ACTIVE_STATE" = true ]; } && [ "$count" = 2 ]; then printf '0\n'; else printf '1\n'; fi
+    ;;
   is-active)
     case "$3" in
-      detent-cloud) exit 0 ;;
-      detent-cloud.socket) [ "$FIXTURE_SOCKET_ACTIVE" = true ] ;;
+      "$FIXTURE_CLOUD") [ "$(cat "$FIXTURE_ROOT/service-active")" = true ] ;;
+      "$FIXTURE_CLOUD.socket") [ "$FIXTURE_SOCKET_ACTIVE" = true ] ;;
     esac
     ;;
 esac
@@ -264,19 +315,65 @@ esac
 			if test.wrongBinary {
 				reported = strings.Repeat("b", 40)
 			}
-			health := fmt.Sprintf(`{"status":"ok","commit":"%s","schema_version":1,"schema_fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","registry_schema_version":1,"registry_schema_fingerprint":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","auth_schema_version":1,"auth_schema_fingerprint":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","platform_schema_version":1,"platform_schema_fingerprint":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","hub_schema_applicable":true,"registry_schema_applicable":true,"auth_schema_applicable":true,"platform_schema_applicable":true,"schema_facts_complete":true,"migrations_running":false}`, commit[:9])
+			healthCommit := commit[:9]
+			if test.rollbackBootstrap || test.bootstrapEnableFailure || test.bootstrapStopFailure || test.bootstrapActiveFailure {
+				healthCommit = strings.Repeat("b", 9)
+			}
+			health := fmt.Sprintf(`{"status":"ok","commit":"%s","schema_version":1,"schema_fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","registry_schema_version":1,"registry_schema_fingerprint":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","auth_schema_version":1,"auth_schema_fingerprint":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","platform_schema_version":1,"platform_schema_fingerprint":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","hub_schema_applicable":true,"registry_schema_applicable":true,"auth_schema_applicable":true,"platform_schema_applicable":true,"schema_facts_complete":true,"migrations_running":false}`, healthCommit)
+			if test.bootstrapEnableFailure || test.bootstrapStopFailure || test.bootstrapActiveFailure {
+				health = fmt.Sprintf(`{"commit":"%s","status":"ok","version":"0.173.4"}`, strings.Repeat("b", 40))
+			}
 			if err := os.WriteFile(filepath.Join(dir, "health.json"), []byte(health), 0600); err != nil {
 				t.Fatal(err)
 			}
-			binary := "#!/bin/bash\nprintf '%s\\n' '{\"commit\":\"" + reported + "\"}'\nexit 0\n" + strings.Repeat(" ", 1000001)
+			socketSupported := !test.unsupportedSocket
+			versionJSON := fmt.Sprintf(`{"commit":"%s","socket_activation_supported":%t,"hub_schema_version":1,"hub_schema_fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","registry_schema_version":1,"registry_schema_fingerprint":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","auth_schema_version":1,"auth_schema_fingerprint":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","platform_schema_version":1,"platform_schema_fingerprint":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}`, reported, socketSupported)
+			binary := "#!/bin/bash\nprintf '%s\\n' '" + versionJSON + "'\nexit 0\n" + strings.Repeat(" ", 1000001)
 			isolated := string(script)
-			isolated = strings.NewReplacer(
-				"/opt/", filepath.ToSlash(dir)+"/opt/",
-				"/etc/", filepath.ToSlash(dir)+"/etc/",
-				"/run/lock/", filepath.ToSlash(dir)+"/run/lock/",
-				"/var/lib/", filepath.ToSlash(dir)+"/var/lib/",
-				"/tmp/", filepath.ToSlash(dir)+"/tmp/",
-			).Replace(isolated)
+			replacements := []string{
+				"/opt/", filepath.ToSlash(dir) + "/opt/",
+				"/etc/", filepath.ToSlash(dir) + "/etc/",
+				"/run/lock/", filepath.ToSlash(dir) + "/run/lock/",
+				"/var/lib/", filepath.ToSlash(dir) + "/var/lib/",
+				"/tmp/", filepath.ToSlash(dir) + "/tmp/",
+				"NAME=detent-hub", "NAME=" + serviceName,
+				"CLOUD=detent-cloud", "CLOUD=" + cloudUnit,
+			}
+			if test.staging {
+				replacements = append(replacements, "DOMAIN=cloud.detent.build", "DOMAIN=staging.cloud.detent.build")
+			}
+			if test.existingInactive {
+				if err := os.MkdirAll(filepath.Join(dir, "etc/systemd/system", cloudUnit+".service.d"), 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, "etc/systemd/system", cloudUnit+".socket"), []byte("existing socket config\n"), 0640); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, "etc/systemd/system", cloudUnit+".service.d/socket.conf"), []byte("existing drop-in config\n"), 0640); err != nil {
+					t.Fatal(err)
+				}
+			}
+			isolated = strings.NewReplacer(replacements...).Replace(isolated)
+			if test.rollbackBootstrap || test.bootstrapEnableFailure || test.bootstrapStopFailure || test.bootstrapActiveFailure {
+				previousRelease := filepath.Join(dir, "opt", serviceName, "releases", "detent-bbbbbbbbb")
+				previousVersion := `{"commit":"` + strings.Repeat("b", 40) + `"}`
+				if !test.bootstrapEnableFailure && !test.bootstrapStopFailure && !test.bootstrapActiveFailure {
+					previousVersion = `{"commit":"` + strings.Repeat("b", 40) + `","hub_schema_version":1,"hub_schema_fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","registry_schema_version":1,"registry_schema_fingerprint":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","auth_schema_version":1,"auth_schema_fingerprint":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","platform_schema_version":1,"platform_schema_fingerprint":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}`
+				}
+				previousBinary := "#!/bin/bash\nprintf '%s\\n' '" + previousVersion + "'\nexit 0\n"
+				if err := os.WriteFile(previousRelease, []byte(previousBinary), 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(previousRelease, filepath.Join(dir, "opt", serviceName, "detent")); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, "var/lib", serviceName, "DEPLOYED_SHA"), []byte(strings.Repeat("b", 40)+"\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, "var/lib", serviceName, "hub.db"), []byte("previous database state"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
 			isolatedPath := filepath.Join(dir, "deploy-from-ci.sh")
 			if err := os.WriteFile(isolatedPath, []byte(isolated), 0700); err != nil {
 				t.Fatal(err)
@@ -288,32 +385,147 @@ esac
 				"TMPDIR=" + dir,
 				"SSH_ORIGINAL_COMMAND=deploy " + commit,
 				"FIXTURE_SOCKET_ACTIVE=" + fmt.Sprint(!test.socketInactive),
+				"FIXTURE_FAIL_CANDIDATE=" + fmt.Sprint(test.rollbackBootstrap),
+				"FIXTURE_FAIL_ENABLE=" + fmt.Sprint(test.bootstrapEnableFailure),
+				"FIXTURE_FAIL_STOP=" + fmt.Sprint(test.bootstrapStopFailure),
+				"FIXTURE_FAIL_ACTIVE_STATE=" + fmt.Sprint(test.bootstrapActiveFailure),
+				"FIXTURE_NAME=" + serviceName,
+				"FIXTURE_CLOUD=" + cloudUnit,
 				"FIXTURE_ROOT=" + dir,
 			}
 			output, err := command.CombinedOutput()
-			refused := test.wrongBinary
+			refused := test.wrongBinary || test.unsupportedSocket || test.existingInactive || test.rollbackBootstrap || test.bootstrapEnableFailure || test.bootstrapStopFailure || test.bootstrapActiveFailure
 			if (err != nil) != refused {
 				t.Fatalf("deploy = %v, want refused %t: %s", err, refused, output)
 			}
 			calls, err := os.ReadFile(filepath.Join(dir, "systemctl.log"))
-			if test.wrongBinary {
+			if test.wrongBinary || test.unsupportedSocket {
 				if !os.IsNotExist(err) {
 					t.Fatalf("unverified deployment changed services: %s (%v)", calls, err)
+				}
+			} else if test.existingInactive {
+				if err != nil {
+					t.Fatal(err)
+				}
+				for path, want := range map[string]string{
+					cloudUnit + ".socket":                "existing socket config\n",
+					cloudUnit + ".service.d/socket.conf": "existing drop-in config\n",
+				} {
+					got, readErr := os.ReadFile(filepath.Join(dir, "etc/systemd/system", path))
+					if readErr != nil || string(got) != want {
+						t.Fatalf("existing systemd file %s = %q, want %q (%v)", path, got, want, readErr)
+					}
+				}
+				if strings.Contains(string(calls), "\nstop ") || strings.Contains(string(calls), "\nstart ") || strings.Contains(string(calls), "\nenable ") || strings.Contains(string(calls), "\ndisable ") {
+					t.Fatalf("refusal changed service state: %s", calls)
+				}
+			} else if test.bootstrapStopFailure || test.bootstrapActiveFailure {
+				if err != nil {
+					t.Fatal(err)
+				}
+				target, readErr := os.Readlink(filepath.Join(dir, "opt", serviceName, "detent"))
+				if readErr != nil || !strings.Contains(filepath.Base(target), "detent-ci-"+commit[:9]+"-") {
+					t.Fatalf("uncertain stop rolled back to %q, want candidate remain selected (%v)", target, readErr)
+				}
+				active, readErr := os.ReadFile(filepath.Join(dir, "service-active"))
+				wantActive := "true\n"
+				if test.bootstrapActiveFailure {
+					wantActive = "false\n"
+				}
+				if readErr != nil || string(active) != wantActive {
+					t.Fatalf("service active state = %q after unverified stop, want %q (%v)", active, wantActive, readErr)
+				}
+				log := string(calls)
+				if strings.Contains(log, "enable "+cloudUnit+".socket") || strings.Contains(log, "start "+cloudUnit+".socket") || strings.Contains(log, "start "+cloudUnit+"\n") {
+					t.Fatalf("failed stop proceeded to candidate or rollback start: %s", log)
+				}
+			} else if test.rollbackBootstrap || test.bootstrapEnableFailure {
+				if err != nil {
+					t.Fatal(err)
+				}
+				previousRelease := filepath.Join(dir, "opt", serviceName, "releases", "detent-bbbbbbbbb")
+				target, err := os.Readlink(filepath.Join(dir, "opt", serviceName, "detent"))
+				if err != nil || target != previousRelease {
+					t.Fatalf("failed bootstrap selected %q, want previous %q: %v", target, previousRelease, err)
+				}
+				receipt, err := os.ReadFile(filepath.Join(dir, "var/lib", serviceName, "DEPLOYED_SHA"))
+				if err != nil || string(receipt) != strings.Repeat("b", 40)+"\n" {
+					t.Fatalf("failed bootstrap changed deployment receipt: %q, %v", receipt, err)
+				}
+				database, err := os.ReadFile(filepath.Join(dir, "var/lib", serviceName, "hub.db"))
+				if err != nil || string(database) != "previous database state" {
+					t.Fatalf("failed bootstrap changed previous database state: %q, %v", database, err)
+				}
+				if _, err := os.Stat(filepath.Join(dir, "etc/systemd/system", cloudUnit+".socket")); !os.IsNotExist(err) {
+					t.Fatalf("failed bootstrap left socket unit installed: %v", err)
+				}
+				if _, err := os.Stat(filepath.Join(dir, "etc/systemd/system", cloudUnit+".service.d/socket.conf")); !os.IsNotExist(err) {
+					t.Fatalf("failed bootstrap left service socket drop-in installed: %v", err)
+				}
+				log := string(calls)
+				ordered := []string{"enable " + cloudUnit + ".socket", "stop " + cloudUnit + ".socket", "disable " + cloudUnit + ".socket", "start " + cloudUnit + "\n"}
+				if test.rollbackBootstrap {
+					ordered = []string{"start " + cloudUnit + ".socket", "start " + cloudUnit + "\n", "stop " + cloudUnit + "\n", "stop " + cloudUnit + ".socket", "disable " + cloudUnit + ".socket", "start " + cloudUnit + "\n"}
+				}
+				position := -1
+				for _, call := range ordered {
+					next := strings.Index(log[position+1:], call)
+					if next < 0 {
+						t.Fatalf("failed bootstrap control sequence missing %q: %s", call, log)
+					}
+					position += next + 1
+				}
+				if test.bootstrapEnableFailure && strings.Contains(string(calls), "start "+cloudUnit+".socket") {
+					t.Fatalf("failed socket enable started listener: %s", calls)
 				}
 			} else {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if !strings.Contains(string(calls), "start detent-cloud\n") || strings.Contains(string(calls), "litestream") {
+				if !strings.Contains(string(calls), "start "+cloudUnit+"\n") || strings.Contains(string(calls), "litestream") {
 					t.Fatalf("binary deployment changed replication or did not restart Hub: %s", calls)
 				}
-				deployed, err := os.ReadFile(filepath.Join(dir, "var/lib/detent-hub/DEPLOYED_SHA"))
+				deployed, err := os.ReadFile(filepath.Join(dir, "var/lib", serviceName, "DEPLOYED_SHA"))
 				if err != nil || strings.TrimSpace(string(deployed)) != commit {
 					t.Fatalf("deployment receipt = %q, %v", deployed, err)
 				}
-				installed, err := os.ReadFile(filepath.Join(dir, "opt/detent-hub/detent"))
+				installed, err := os.ReadFile(filepath.Join(dir, "opt", serviceName, "detent"))
 				if err != nil || string(installed) != binary {
 					t.Fatalf("installed binary differs from upload: %v", err)
+				}
+				calls, err := os.ReadFile(filepath.Join(dir, "systemctl.log"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if test.socketInactive {
+					address := "127.0.0.1:8017"
+					if test.staging {
+						address = "127.0.0.1:8018"
+					}
+					socketUnit := cloudUnit + ".socket"
+					socket, err := os.ReadFile(filepath.Join(dir, "etc/systemd/system", socketUnit))
+					if err != nil || !strings.Contains(string(socket), "ListenStream="+address+"\n") || !strings.Contains(string(socket), "Backlog=65535\n") {
+						t.Fatalf("rendered socket unit = %q, %v", socket, err)
+					}
+					dropin, err := os.ReadFile(filepath.Join(dir, "etc/systemd/system", cloudUnit+".service.d/socket.conf"))
+					if err != nil || !strings.Contains(string(dropin), "Requires="+socketUnit) || !strings.Contains(string(dropin), "Sockets="+socketUnit) {
+						t.Fatalf("rendered socket drop-in = %q, %v", dropin, err)
+					}
+					log := string(calls)
+					ordered := []string{"stop " + cloudUnit, "enable " + socketUnit, "start " + socketUnit, "start " + cloudUnit}
+					position := -1
+					for _, call := range ordered {
+						next := strings.Index(log[position+1:], call)
+						if next < 0 {
+							t.Fatalf("socket bootstrap control sequence missing %q: %s", call, log)
+						}
+						position += next + 1
+					}
+					if strings.Contains(log, "start "+serviceName+".socket") {
+						t.Fatalf("Cloud bootstrap started the unused Hub socket: %s", log)
+					}
+				} else if strings.Contains(string(calls), "start "+cloudUnit+".socket") || strings.Contains(string(calls), "enable "+cloudUnit+".socket") {
+					t.Fatalf("active socket deploy repeated bootstrap: %s", calls)
 				}
 			}
 			staged, err := filepath.Glob(filepath.Join(dir, "detent-hub-upload.*"))
