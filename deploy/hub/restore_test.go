@@ -190,7 +190,9 @@ exec bash "$WORK/owner.sh"
 			write("bin/flock", "#!/bin/sh\nexit 0\n")
 			write("bin/pgrep", "#!/bin/sh\nexit 1\n")
 			write("bin/sleep", "#!/bin/sh\nexit 1\n")
-			write("bin/curl", "#!/bin/sh\nprintf '200'\n")
+			write("bin/curl", `#!/bin/sh
+printf '{"status":"ok","commit":"%s","schema_version":1,"schema_fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","registry_schema_version":1,"registry_schema_fingerprint":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","auth_schema_version":1,"auth_schema_fingerprint":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","platform_schema_version":1,"platform_schema_fingerprint":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","hub_schema_applicable":true,"registry_schema_applicable":true,"auth_schema_applicable":true,"platform_schema_applicable":true,"schema_facts_complete":true,"migrations_running":false}' "$FIXTURE_COMMIT"
+`)
 			write("bin/systemctl", "#!/bin/sh\nif [ \"$1\" = show ]; then printf '42\\n'; fi\n")
 			write("bin/stat", "#!/bin/sh\nwc -c < \"$3\"\n")
 			write("bin/sudo", `#!/bin/bash
@@ -213,6 +215,7 @@ exec "$@"
 			cmd.Dir = "../.."
 			cmd.Env = []string{"PATH=" + filepath.Join(work, "bin") + ":" + os.Getenv("PATH"),
 				"TMPDIR=" + work, "WORK=" + work, "SSH_KEY=example-key", "KNOWN_HOSTS=example-host"}
+			cmd.Env = append(cmd.Env, "FIXTURE_COMMIT="+commit[:9])
 			output, err := cmd.CombinedOutput()
 			if (err != nil) != test.invalidIdentity {
 				t.Fatalf("deploy error = %v, output = %s", err, output)

@@ -243,11 +243,16 @@ esac
 				"systemctl": `printf '%s\n' "$*" >> "$FIXTURE_ROOT/systemctl.log"
 case "$1" in
   show) printf '1\n' ;;
-  is-active) if [ "$3" = detent-cloud.socket ]; then [ "$FIXTURE_SOCKET_ACTIVE" = true ]; fi ;;
+  is-active)
+    case "$3" in
+      detent-cloud) exit 0 ;;
+      detent-cloud.socket) [ "$FIXTURE_SOCKET_ACTIVE" = true ] ;;
+    esac
+    ;;
 esac
 `,
 				"pgrep": "exit 1\n",
-				"curl":  "printf '200'\n",
+				"curl":  "cat \"$FIXTURE_ROOT/health.json\"\n",
 			}
 			for name, body := range stubs {
 				if err := os.WriteFile(filepath.Join(dir, "bin", name), []byte("#!/bin/bash\nset -eu\n"+body), 0700); err != nil {
@@ -259,6 +264,10 @@ esac
 			if test.wrongBinary {
 				reported = strings.Repeat("b", 40)
 			}
+			health := fmt.Sprintf(`{"status":"ok","commit":"%s","schema_version":1,"schema_fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","registry_schema_version":1,"registry_schema_fingerprint":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","auth_schema_version":1,"auth_schema_fingerprint":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","platform_schema_version":1,"platform_schema_fingerprint":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","hub_schema_applicable":true,"registry_schema_applicable":true,"auth_schema_applicable":true,"platform_schema_applicable":true,"schema_facts_complete":true,"migrations_running":false}`, commit[:9])
+			if err := os.WriteFile(filepath.Join(dir, "health.json"), []byte(health), 0600); err != nil {
+				t.Fatal(err)
+			}
 			binary := "#!/bin/bash\nprintf '%s\\n' '{\"commit\":\"" + reported + "\"}'\nexit 0\n" + strings.Repeat(" ", 1000001)
 			isolated := string(script)
 			isolated = strings.NewReplacer(
@@ -268,7 +277,11 @@ esac
 				"/var/lib/", filepath.ToSlash(dir)+"/var/lib/",
 				"/tmp/", filepath.ToSlash(dir)+"/tmp/",
 			).Replace(isolated)
-			command := exec.CommandContext(t.Context(), "bash", "-c", isolated)
+			isolatedPath := filepath.Join(dir, "deploy-from-ci.sh")
+			if err := os.WriteFile(isolatedPath, []byte(isolated), 0700); err != nil {
+				t.Fatal(err)
+			}
+			command := exec.CommandContext(t.Context(), "bash", isolatedPath)
 			command.Stdin = strings.NewReader(binary)
 			command.Env = []string{
 				"PATH=" + filepath.Join(dir, "bin") + string(os.PathListSeparator) + "/usr/bin:/bin:/usr/sbin:/sbin",
