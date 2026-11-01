@@ -21,6 +21,7 @@
     "internal/hubserver/postgres/migrations/20261101173526_access_import_checkpoint.sql": "b903abf0828fe30a2a7faf15a75bbf47cf5d3682b9d81a029dae6fd7a35101fa"
   },
   "migrations": [
+    "internal/hubserver/postgres/migrations/20261101172130_expose_platform_schema_version.sql",
     "internal/hubserver/postgres/migrations/20261101173425_tenant_billing.sql"
   ],
   "tables": {
