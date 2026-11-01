@@ -225,6 +225,11 @@ func (s *Service) reviewChangeCommand(ctx context.Context, tx *sql.Tx, scope nat
 	var sessionMachineID tracker.MachineID
 	if prepared := preparedChangeMutation(ctx); prepared != nil {
 		change, sessionMachineID, request = prepared.change, prepared.sessionMachineID, prepared.review
+		if prepared.recoverySession != nil {
+			if err := freezeRecoveredChangeSession(ctx, tx, prepared.version, *prepared.recoverySession); err != nil {
+				return nil, err
+			}
+		}
 		fields = prepared.reviewFields
 		if request.Bundle != nil {
 			if err := validateReviewBundle(ctx, tx, scope, change, prepared.version, *request.Bundle, now); err != nil {
