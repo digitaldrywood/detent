@@ -35,7 +35,7 @@ func TestReleaseFinalizer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	signingHome, err := os.MkdirTemp("/tmp", "rt-")
+	signingHome, err := os.MkdirTemp(os.TempDir(), "rt-")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,6 +74,7 @@ func TestReleaseFinalizer(t *testing.T) {
 	const repository = "example-org/example-project"
 	for _, tt := range []struct {
 		name, requirements, auditState, creators, lateContext               string
+		requireAudit                                                        string
 		awaitsStatus, unset, missingAudit, missingSuite, wrongSHA           bool
 		superseded, suiteSuperseded, staleHead, newSeries                   bool
 		differentSeries, unchanged, releaseRun, oldProvenance               bool
@@ -85,6 +86,16 @@ func TestReleaseFinalizer(t *testing.T) {
 		gitEnvironment                                                      bool
 	}{
 		{name: "signed approval permits failed suite", override: "Owner directs release", suiteState: "failure"},
+		{name: "signed override alone", override: "Owner accepts missing validation", missingSuite: true, missingAudit: true, platform: "missing"},
+		{name: "signed override ignores failed audit by default", override: "Owner directs release", auditState: "failure"},
+		{name: "reuse override without audit", recordedOverride: "Owner accepts missing validation", missingSuite: true, missingAudit: true, unchanged: true},
+		{name: "false opt in ignores audit", requireAudit: "false", missingAudit: true},
+		{name: "only exact true opts in", requireAudit: "TRUE", missingAudit: true},
+		{name: "configured audit requires explicit opt in", requirements: `["release-security-audit"]`, missingAudit: true},
+		{name: "opt in green audit", requireAudit: "true"},
+		{name: "opt in unset requirements requires audit", requireAudit: "true", unset: true, missingAudit: true, awaitsStatus: true},
+		{name: "failed audit ignored by default", auditState: "failure"},
+		{name: "late audit failure ignored by default", failDuringCheck: true, lateContext: "release-security-audit"},
 		{name: "inherited Git environment cannot affect approval", override: "Owner directs release", suiteState: "failure", gitEnvironment: true},
 		{name: "unsigned approval fails", override: "Owner directs release", signatureType: "unsigned", rejectOverride: true},
 		{name: "unlisted approval fails", override: "Owner directs release", signatureType: "unlisted", rejectOverride: true},
@@ -96,7 +107,7 @@ func TestReleaseFinalizer(t *testing.T) {
 		{name: "forged arguments cannot authorize override", forgedArguments: true, rejectOverride: true},
 		{name: "recorded override without approval cannot redispatch", recordedOverride: "Owner previously approved", unchanged: true, missingApproval: true, rejectReuse: true},
 		{name: "reuse recorded override without ambient input", recordedOverride: "Owner previously accepted failed validation --> investigate", suiteState: "failure", unchanged: true},
-		{name: "reuse recorded override retains audit requirement", recordedOverride: "Owner previously accepted failed validation", auditState: "failure", unchanged: true, rejectReuse: true},
+		{requireAudit: "true", name: "reuse recorded override retains audit requirement", recordedOverride: "Owner previously accepted failed validation", auditState: "failure", unchanged: true, rejectReuse: true},
 		{name: "ambient override cannot retrofit ordinary tag", forgedEnvironment: true, suiteState: "failure", unchanged: true, rejectReuse: true},
 		{name: "override still requires configured checks", override: "Owner directs release", requirements: `["extra"]`, failedExtra: true, awaitsStatus: true},
 		{name: "blank override is rejected", override: " \t", badOverride: true},
@@ -105,10 +116,10 @@ func TestReleaseFinalizer(t *testing.T) {
 		{name: "override missing validation", override: "Owner accepts missing validation", missingSuite: true},
 		{name: "override stale validation", override: "Owner accepts stale validation", suiteState: "stale"},
 		{name: "override superseded validation", override: "Owner accepts superseded validation", suiteSuperseded: true},
-		{name: "override still requires audit", override: "Owner directs release", missingAudit: true, awaitsStatus: true},
-		{name: "override refuses failed audit", override: "Owner directs release", auditState: "failure", awaitsStatus: true},
-		{name: "override refuses late audit failure", override: "Owner directs release", failDuringCheck: true, lateContext: "release-security-audit", awaitsStatus: true},
-		{name: "override still requires platform", override: "Owner directs release", platform: "missing", awaitsStatus: true},
+		{requireAudit: "true", name: "override still requires audit", override: "Owner directs release", missingAudit: true, awaitsStatus: true},
+		{requireAudit: "true", name: "override refuses failed audit", override: "Owner directs release", auditState: "failure", awaitsStatus: true},
+		{requireAudit: "true", name: "override refuses late audit failure", override: "Owner directs release", failDuringCheck: true, lateContext: "release-security-audit", awaitsStatus: true},
+		{name: "signed override waives platform", override: "Owner directs release", platform: "missing"},
 		{name: "failed validation without override", suiteState: "failure", awaitsStatus: true},
 		{name: "green statuses tag and dispatch", requirements: `["scheduled-full-ci", "release-security-audit"]`},
 		{name: "platform missing", platform: "missing", awaitsStatus: true},
@@ -122,18 +133,18 @@ func TestReleaseFinalizer(t *testing.T) {
 		{name: "platform foreign creator refused", platform: "foreign", awaitsStatus: true},
 		{name: "reuse missing platform", platform: "missing", unchanged: true, rejectReuse: true},
 		{name: "configured extras recorded", requirements: `["extra"]`},
-		{name: "unset requirements still require audit", unset: true, missingAudit: true, awaitsStatus: true},
-		{name: "empty requirements still require audit", requirements: `[]`, missingAudit: true, awaitsStatus: true},
-		{name: "audit missing", missingAudit: true, awaitsStatus: true},
-		{name: "audit failed", auditState: "failure", awaitsStatus: true},
-		{name: "audit superseded by failure", superseded: true, awaitsStatus: true},
+		{name: "unset requirements do not require audit", unset: true, missingAudit: true},
+		{name: "empty requirements do not require audit", requirements: `[]`, missingAudit: true},
+		{requireAudit: "true", name: "audit missing", missingAudit: true, awaitsStatus: true},
+		{requireAudit: "true", name: "audit failed", auditState: "failure", awaitsStatus: true},
+		{requireAudit: "true", name: "audit superseded by failure", superseded: true, awaitsStatus: true},
 		{name: "local validation missing", missingSuite: true, awaitsStatus: true},
 		{name: "local validation superseded by failure", suiteSuperseded: true, awaitsStatus: true},
 		{name: "statuses on another SHA", wrongSHA: true, awaitsStatus: true},
 		{name: "moved release head does not tag", staleHead: true},
 		{name: "head advances between check and tag", moveDuringCheck: true},
 		{name: "new failure arrives between check and tag", failDuringCheck: true, awaitsStatus: true},
-		{name: "new audit failure arrives between check and tag", failDuringCheck: true, lateContext: "release-security-audit", awaitsStatus: true},
+		{requireAudit: "true", name: "new audit failure arrives between check and tag", failDuringCheck: true, lateContext: "release-security-audit", awaitsStatus: true},
 		{name: "missing creator allowlist refused", badAllowlist: true},
 		{name: "empty creator allowlist refused", creators: `[]`, badAllowlist: true},
 		{name: "malformed creator allowlist refused", creators: `{`, badAllowlist: true},
@@ -145,9 +156,9 @@ func TestReleaseFinalizer(t *testing.T) {
 		{name: "older series tag does not suppress new series", newSeries: true, unchanged: true, differentSeries: true},
 		{name: "missing release dispatch recovered without recreating tag", unchanged: true},
 		{name: "existing release workflow is not redispatched", unchanged: true, releaseRun: true},
-		{name: "reuse missing audit", unchanged: true, missingAudit: true, rejectReuse: true},
-		{name: "reuse old provenance", unchanged: true, oldProvenance: true, rejectReuse: true},
-		{name: "reuse failed audit", unchanged: true, auditState: "failure", rejectReuse: true},
+		{requireAudit: "true", name: "reuse missing audit", unchanged: true, missingAudit: true, rejectReuse: true},
+		{requireAudit: "true", name: "reuse old provenance", unchanged: true, oldProvenance: true, rejectReuse: true},
+		{requireAudit: "true", name: "reuse failed audit", unchanged: true, auditState: "failure", rejectReuse: true},
 		{name: "reuse superseded validation", unchanged: true, suiteSuperseded: true, rejectReuse: true},
 		{name: "reuse another SHA", unchanged: true, wrongSHA: true, rejectReuse: true},
 	} {
@@ -166,7 +177,7 @@ case "$*" in
     else
       cat "$FIXTURE_STATUSES"
     fi
-    if [ -f "$FIXTURE_HEAD_READ" ]; then touch "$FIXTURE_STATUS_READ"; fi
+    if [ -f "$FIXTURE_HEAD_READ" ] || [ "$FIXTURE_OVERRIDE" = true ]; then touch "$FIXTURE_STATUS_READ"; fi
     touch "$FIXTURE_HEAD_READ" ;;
   *'/commits/'*'/statuses?per_page=100')
     if [ "$FIXTURE_PLATFORM_MODE" = api-error ]; then exit 1; fi
@@ -409,7 +420,7 @@ esac
 			}
 			manifest := releaseprovenance.Manifest{Schema: 1, Repository: repository, Tag: "v1.2.3", Commit: sha,
 				Checks: []releaseprovenance.Check{{Name: "scheduled-full-ci", Status: "completed", Conclusion: "success", StatusID: 123}}}
-			if !tt.oldProvenance {
+			if tt.requireAudit == "true" && !tt.oldProvenance {
 				manifest.Checks = append(manifest.Checks, releaseprovenance.Check{Name: "release-security-audit", Status: "completed", Conclusion: "success", StatusID: 125})
 			}
 			if tt.recordedOverride != "" {
@@ -435,13 +446,13 @@ esac
 			command := exec.CommandContext(t.Context(), "bash", "scripts/release-finalize.sh")
 			command.Dir = root
 			command.Env = []string{"PATH=" + dir + string(os.PathListSeparator) + os.Getenv("PATH"), "HOME=" + dir, "TMPDIR=" + dir,
-				"FIXTURE_VERIFIER=" + verifier, "FIXTURE_GIT=" + realGit, "FIXTURE_REPO=" + repo,
+				"DETENT_RELEASE_REQUIRE_AUDIT=" + tt.requireAudit, "FIXTURE_VERIFIER=" + verifier, "FIXTURE_GIT=" + realGit, "FIXTURE_REPO=" + repo,
 				"FIXTURE_STATUS_READ=" + filepath.Join(dir, "status-read"), "FIXTURE_HEAD_READ=" + filepath.Join(dir, "head-read"),
 				"FIXTURE_LATE_STATUSES=" + filepath.Join(dir, "late-statuses"),
 				"FIXTURE_MOVE_DURING_CHECK=" + flag[tt.moveDuringCheck], "FIXTURE_FAIL_DURING_CHECK=" + flag[tt.failDuringCheck],
 				"GITHUB_REPOSITORY=" + repository, "CI_DEVELOP_SHA=" + sha, "CI_RELEASE_BRANCH=" + releaseBranch,
 				"FIXTURE_LOG=" + filepath.Join(dir, "calls"), "FIXTURE_HEAD=" + head, "FIXTURE_NEW_SERIES=" + flag[tt.newSeries],
-				"FIXTURE_UNCHANGED=" + flag[tt.unchanged], "FIXTURE_RELEASE_RUN=" + flag[tt.releaseRun],
+				"FIXTURE_OVERRIDE=" + flag[tt.override != "" || tt.recordedOverride != ""], "FIXTURE_UNCHANGED=" + flag[tt.unchanged], "FIXTURE_RELEASE_RUN=" + flag[tt.releaseRun],
 				"FIXTURE_PLATFORM_MODE=" + tt.platform, "FIXTURE_PLATFORM_SHA=" + platformSHA, "FIXTURE_PLATFORM=" + filepath.Join(dir, "platform"),
 				"FIXTURE_STATUSES=" + filepath.Join(dir, "statuses"), "FIXTURE_PROVENANCE=" + filepath.Join(dir, "provenance")}
 			creators := tt.creators
@@ -551,7 +562,18 @@ esac
 				} else if produced.ValidationOverride != nil {
 					t.Fatalf("ordinary release acquired an override: %s", message)
 				}
-				evidence := releaseprovenance.GitHubEvidence{RequiredChecks: []releaseprovenance.RepositoryRequirement{{Name: "scheduled-full-ci"}, {Name: "release-security-audit"}}}
+				evidence := releaseprovenance.GitHubEvidence{RequiredChecks: []releaseprovenance.RepositoryRequirement{{Name: "scheduled-full-ci"}}}
+				if tt.requireAudit == "true" {
+					evidence.RequiredChecks = append(evidence.RequiredChecks, releaseprovenance.RepositoryRequirement{Name: "release-security-audit"})
+				}
+				for _, check := range produced.Checks {
+					if check.Name == "release-security-audit" && tt.requireAudit != "true" {
+						t.Fatal("audit required without explicit opt in")
+					}
+				}
+				if tt.override != "" && tt.requirements == "" && tt.requireAudit != "true" && len(produced.Checks) != 0 {
+					t.Fatalf("override-only release acquired mandatory checks: %v", produced.Checks)
+				}
 				if tt.requirements == `["extra"]` {
 					evidence.RequiredChecks = append(evidence.RequiredChecks, releaseprovenance.RepositoryRequirement{Name: "extra"})
 				}

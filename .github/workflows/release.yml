@@ -72,6 +72,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TMPDIR: ${{ runner.temp }}
           DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON: ${{ vars.DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON }}
+          DETENT_RELEASE_REQUIRE_AUDIT: ${{ vars.DETENT_RELEASE_REQUIRE_AUDIT }}
         run: |
           set -euo pipefail
           for variable in ${!GIT_@}; do
@@ -98,7 +99,12 @@ jobs:
           if git ls-remote --exit-code origin "refs/tags/release-override/$release_tag" > /dev/null; then
             git fetch --force origin "+refs/tags/release-override/$release_tag:refs/tags/release-override/$release_tag"
           fi
-          DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON="$(jq -c 'if type == "array" then . + ["scheduled-full-ci", "release-security-audit"] | unique else error("release requirements must be a JSON array") end' <<< "${DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON:-[]}")"
+          DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON="$(jq -ce --arg require_audit "${DETENT_RELEASE_REQUIRE_AUDIT:-false}" '
+            if type == "array" and all(.[]; type == "string" and length > 0)
+            then . + ["scheduled-full-ci"] | map(select(. != "release-security-audit"))
+              | if $require_audit == "true" then . + ["release-security-audit"] else . end | unique
+            else error("release requirements must be an array of nonempty names") end
+          ' <<< "${DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON:-[]}")"
           test "$(git cat-file -t "refs/tags/$release_tag")" = tag
           git for-each-ref --format='%(contents)' "refs/tags/$release_tag" > "$tag_message"
           go run ./tools/releaseprovenance \

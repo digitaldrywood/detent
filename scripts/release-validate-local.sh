@@ -60,6 +60,10 @@ mkdir -p "$validator_home"
 toolchain_env=(PATH="$PATH" LANG="${LANG:-en_US.UTF-8}" TMPDIR="$build_tmp" GOCACHE="$GOCACHE" GOPATH="$gopath" GOMODCACHE="$gomodcache" GOTOOLCHAIN="${GOTOOLCHAIN:-auto}" npm_config_cache="$npm_cache" PLAYWRIGHT_BROWSERS_PATH="$browsers" TEST_PROCS="$procs")
 build_env=(env -i HOME="$build_home" "${toolchain_env[@]}")
 validator_env=(env -i HOME="$validator_home" "${toolchain_env[@]}")
+validation_command="make check-release TEST_PROCS=$procs"
+if [ "${DETENT_RELEASE_REQUIRE_AUDIT:-false}" = true ]; then
+  validation_command+=" DETENT_RELEASE_REQUIRE_AUDIT=true"
+fi
 started=$SECONDS
 if ! (cd "$worktree" && "${build_env[@]}" make app TEST_PROCS="$procs" && "${build_env[@]}" make build TEST_PROCS="$procs") >> "$log" 2>&1; then
   fail_setup "Local validation could not build ${sha:0:7} on $host"
@@ -68,7 +72,7 @@ if [ "$(shasum -a 256 "$validator" | cut -d' ' -f1)" != "$validator_digest" ]; t
   fail_setup "Local validation found the validator changed during the build on $host"
 fi
 state=success
-if ! "${validator_env[@]}" "$validator" validate ${config_args[@]+"${config_args[@]}"} --project "$project" --dir "$worktree" "make check-release TEST_PROCS=$procs" >> "$log" 2>&1; then
+if ! "${validator_env[@]}" "$validator" validate ${config_args[@]+"${config_args[@]}"} --project "$project" --dir "$worktree" "$validation_command" >> "$log" 2>&1; then
   state=failure
 fi
 source_changed=false

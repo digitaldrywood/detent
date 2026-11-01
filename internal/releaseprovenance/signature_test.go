@@ -83,8 +83,11 @@ func TestOverrideTagRequiresAllowlistedSignature(t *testing.T) {
 		gitAttack                                                                         string
 		missing, wrongCommit, tamper, wrongReason, forged, uncommitted, blank, missingKey bool
 		wantError                                                                         bool
+		auditEnabled, noRequirements                                                      bool
 	}{
 		{name: "listed primary key authorizes signing subkey", signer: 0},
+		{name: "signed override without mandatory checks", noRequirements: true},
+		{name: "signed override with opted in audit", auditEnabled: true},
 		{name: "unsigned annotation fails", signer: -1, wantError: true},
 		{name: "unlisted key in committed keyring fails", signer: 1, wantError: true},
 		{name: "replacement commit cannot authorize unlisted key", signer: 1, gitAttack: "replace", wantError: true},
@@ -130,8 +133,10 @@ func TestOverrideTagRequiresAllowlistedSignature(t *testing.T) {
 			commit := run("git", "rev-parse", "HEAD")
 			reason := "Owner accepts \"known\" failure --> investigate\nnext"
 			manifest := Manifest{Schema: Schema, Repository: "example-org/example-project", Tag: fmt.Sprintf("v1.2.%d", index), Commit: commit,
-				Checks:             []Check{{Name: "release-security-audit", Status: "completed", Conclusion: "success", StatusID: 10}},
 				ValidationOverride: &ValidationOverride{Reason: reason, Status: "failure", StatusID: 9}}
+			if test.auditEnabled {
+				manifest.Checks = []Check{{Name: "release-security-audit", Status: "completed", Conclusion: "success", StatusID: 10}}
+			}
 			target := commit
 			if test.wrongCommit {
 				run("git", "-c", "commit.gpgsign=false", "commit", "--quiet", "--allow-empty", "-m", "different source")
@@ -303,9 +308,16 @@ func TestOverrideTagRequiresAllowlistedSignature(t *testing.T) {
 				}
 				t.Fatalf("VerifyOverrideTag() = %v, want error %t", signatureErr, test.wantError)
 			}
-			evidence := GitHubEvidence{RequiredChecks: []RepositoryRequirement{{Name: "scheduled-full-ci"}, {Name: "release-security-audit"}},
-				Checks: []ObservedCheck{{Name: "scheduled-full-ci", Commit: commit, Status: "completed", Conclusion: "failure", StatusID: 9},
-					{Name: "release-security-audit", Commit: commit, Status: "completed", Conclusion: "success", StatusID: 10}}, OverrideSignature: signature}
+			evidence := GitHubEvidence{RequiredChecks: []RepositoryRequirement{{Name: "scheduled-full-ci"}},
+				Checks: []ObservedCheck{{Name: "scheduled-full-ci", Commit: commit, Status: "completed", Conclusion: "failure", StatusID: 9}}, OverrideSignature: signature}
+			if test.auditEnabled {
+				evidence.RequiredChecks = append(evidence.RequiredChecks, RepositoryRequirement{Name: "release-security-audit"})
+				evidence.Checks = append(evidence.Checks, ObservedCheck{Name: "release-security-audit", Commit: commit, Status: "completed", Conclusion: "success", StatusID: 10})
+			}
+			if test.noRequirements {
+				evidence.RequiredChecks = nil
+				evidence.Checks = nil
+			}
 			if err := VerifyGitHubEvidence(manifest, evidence); (err != nil) != test.wantError {
 				t.Fatalf("VerifyGitHubEvidence() = %v, want error %t", err, test.wantError)
 			}

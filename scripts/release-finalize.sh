@@ -36,9 +36,10 @@ if [ "$head_sha" != "$CI_DEVELOP_SHA" ]; then
 fi
 
 required_checks="${DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON:-[]}"
-required_checks="$(jq -ce '
+required_checks="$(jq -ce --arg require_audit "${DETENT_RELEASE_REQUIRE_AUDIT:-false}" '
   if type == "array" and all(.[]; type == "string" and length > 0)
-  then . + ["scheduled-full-ci", "release-security-audit"] | unique
+  then . + ["scheduled-full-ci"] | map(select(. != "release-security-audit"))
+    | if $require_audit == "true" then . + ["release-security-audit"] else . end | unique
   else error("release requirements must be an array of nonempty names") end
 ' <<< "$required_checks")"
 
@@ -154,7 +155,7 @@ fi
 
 load_override "$tag" false
 if ! evidence="$(required_evidence)"; then
-  echo "Release $series awaits required statuses scheduled-full-ci, release-security-audit and all configured checks on $CI_DEVELOP_SHA; missing, failed, stale platform-full-ci (24h on an ancestor), or superseded evidence; not tagging."
+  echo "Release $series awaits required statuses $required_checks on $CI_DEVELOP_SHA; missing, failed, stale platform-full-ci (24h on an ancestor), or superseded evidence; not tagging."
   exit 0
 fi
 

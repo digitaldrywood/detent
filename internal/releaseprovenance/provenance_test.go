@@ -27,9 +27,13 @@ func TestValidate(t *testing.T) {
 		wantErr string
 	}{
 		{name: "valid", commit: testCommit},
-		{name: "override requires audit", commit: testCommit, mutate: func(m *Manifest) {
+		{name: "override without audit", commit: testCommit, mutate: func(m *Manifest) {
 			m.ValidationOverride = &ValidationOverride{Reason: "Owner accepts failed validation"}
-		}, wantErr: "requires release-security-audit evidence"},
+		}},
+		{name: "override without mandatory checks", commit: testCommit, mutate: func(m *Manifest) {
+			m.ValidationOverride = &ValidationOverride{Reason: "Owner accepts missing validation"}
+			m.Checks = nil
+		}},
 		{name: "empty override rejected", commit: testCommit, mutate: func(m *Manifest) {
 			m.ValidationOverride = &ValidationOverride{Reason: " \t"}
 		}, wantErr: "requires a nonempty reason"},

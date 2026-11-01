@@ -29,11 +29,45 @@ func TestReleaseWorkflowAuthenticatesExactCommitProvenance(t *testing.T) {
 		"-github-statuses \"$statuses\"",
 		"-github-rulesets \"$rulesets\"",
 		"DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON: ${{ vars.DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON }}",
-		` . + ["scheduled-full-ci", "release-security-audit"]`,
+		"DETENT_RELEASE_REQUIRE_AUDIT: ${{ vars.DETENT_RELEASE_REQUIRE_AUDIT }}",
 		"-required-check-names-json \"$DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON\"",
 	} {
 		if !strings.Contains(workflow, marker) {
 			t.Fatalf("release workflow missing authenticated provenance marker %q", marker)
+		}
+	}
+
+	finalizerWorkflow := readNormalizedFile(t, ".github/workflows/release-finalize.yml")
+	if !strings.Contains(finalizerWorkflow, "DETENT_RELEASE_REQUIRE_AUDIT: ${{ vars.DETENT_RELEASE_REQUIRE_AUDIT }}") {
+		t.Fatal("finalizer workflow must pass the audit opt in")
+	}
+	finalizer := readNormalizedFile(t, "scripts/release-finalize.sh")
+	for _, source := range []struct {
+		name, script, start, end, variable string
+	}{
+		{"release", workflow, `          DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON="$(jq`, "\n          test ", "DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON"},
+		{"finalizer", finalizer, `required_checks="${DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON:-[]}"`, "\n\nplatform_status()", "required_checks"},
+	} {
+		for _, test := range []struct {
+			name, optIn, configured, want string
+		}{
+			{"default", "", `[]`, `["scheduled-full-ci"]`},
+			{"disabled", "false", `[]`, `["scheduled-full-ci"]`},
+			{"exact opt in required", "TRUE", `[]`, `["scheduled-full-ci"]`},
+			{"enabled", "true", `[]`, `["release-security-audit","scheduled-full-ci"]`},
+			{"configured audit without opt in", "", `["extra","release-security-audit"]`, `["extra","scheduled-full-ci"]`},
+			{"configured checks with opt in", "true", `["extra","release-security-audit"]`, `["extra","release-security-audit","scheduled-full-ci"]`},
+		} {
+			t.Run(source.name+" "+test.name, func(t *testing.T) {
+				t.Parallel()
+				script := workflowBetween(t, source.script, source.start, source.end)
+				command := exec.CommandContext(t.Context(), "bash", "-c", "set -euo pipefail\n"+script+"\nprintf '%s' \"$"+source.variable+"\"")
+				command.Env = []string{"PATH=" + os.Getenv("PATH"), "DETENT_RELEASE_REQUIRE_AUDIT=" + test.optIn, "DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON=" + test.configured}
+				output, err := command.CombinedOutput()
+				if err != nil || string(output) != test.want {
+					t.Fatalf("required checks = %s, %v; want %s", output, err, test.want)
+				}
+			})
 		}
 	}
 

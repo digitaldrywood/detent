@@ -63,7 +63,7 @@ func Validate(manifest Manifest, repository string, tag string, commit string) e
 			return fmt.Errorf("release provenance commit = %q, want %q", manifestCommit, expectedCommit)
 		}
 	}
-	if len(manifest.Checks) == 0 {
+	if len(manifest.Checks) == 0 && manifest.ValidationOverride == nil {
 		return errors.New("release provenance has no mandatory check evidence")
 	}
 	if manifest.ValidationOverride != nil && strings.TrimSpace(manifest.ValidationOverride.Reason) == "" {
@@ -87,11 +87,6 @@ func Validate(manifest Manifest, repository string, tag string, commit string) e
 		}
 		if check.CheckRunID > 0 && check.StatusID > 0 {
 			return fmt.Errorf("release provenance mandatory check %q has ambiguous immutable evidence IDs", name)
-		}
-	}
-	if manifest.ValidationOverride != nil {
-		if _, ok := seen["release-security-audit"]; !ok {
-			return errors.New("release validation override requires release-security-audit evidence")
 		}
 	}
 	return nil

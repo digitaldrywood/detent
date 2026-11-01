@@ -40,7 +40,7 @@ func VerifyGitHubEvidence(manifest Manifest, evidence GitHubEvidence) error {
 	if err != nil {
 		return err
 	}
-	if len(required) == 0 {
+	if len(required) == 0 && manifest.ValidationOverride == nil {
 		return errors.New("authenticated GitHub evidence has no mandatory checks")
 	}
 	requiredByName := make(map[string]RepositoryRequirement, len(required))

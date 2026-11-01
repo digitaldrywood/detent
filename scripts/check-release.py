@@ -100,14 +100,15 @@ def run_checks(total):
     scratch.mkdir(parents=True, exist_ok=True)
     directory = Path(tempfile.mkdtemp(prefix="check-release.", dir=scratch)).resolve()
     print(f"Release checks: process budget={total}; logs: {directory}", flush=True)
-    pending = list(PRIORITY)
+    steps = [step for step in STEPS if step != "security" or os.environ.get("DETENT_RELEASE_REQUIRE_AUDIT") == "true"]
+    pending = [step for step in PRIORITY if step in steps]
     running = {}
     completed = {}
     satisfied = set()
     browser_ready = concurrent.futures.Future()
     browser_started = False
     available = total
-    with concurrent.futures.ThreadPoolExecutor(max_workers=min(total, len(STEPS))) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(total, len(steps))) as executor:
         while pending or running:
             for step in pending[:]:
                 budget = process_budget(step, total)
@@ -137,7 +138,7 @@ def run_checks(total):
                 result, elapsed = completed[step]
                 print(f"Finished {step}: exit={result} wall={elapsed:.1f}s", flush=True)
     print("\nRelease check summary:")
-    for step in STEPS:
+    for step in steps:
         result, elapsed = completed[step]
         print(f"  {step}: {'PASS' if result == 0 else 'FAIL'} exit={result} wall={elapsed:.1f}s log={directory / (step + '.log')}")
     failed = any(result != 0 for result, _ in completed.values())

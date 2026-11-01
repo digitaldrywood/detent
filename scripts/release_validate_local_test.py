@@ -23,6 +23,7 @@ class ReleaseValidateLocalTest(unittest.TestCase):
         scratch = Path(os.environ.get("TMPDIR", tempfile.gettempdir()))
         cases = {
             "release success": ("release/v1.2", "pass", "scheduled-full-ci", "success", True),
+            "release success with audit": ("release/v1.2", "pass", "scheduled-full-ci", "success", True),
             "release failure": ("release/v1.2", "fail", "scheduled-full-ci", "failure", False),
             "develop success": ("develop", "pass", "develop-full-ci", "success", False),
             "build failure": ("release/v1.2", "build", "scheduled-full-ci", "failure", False),
@@ -33,7 +34,8 @@ class ReleaseValidateLocalTest(unittest.TestCase):
                 root = Path(directory)
                 repo = root / "repo"
                 repo.mkdir()
-                env = dict(os.environ, GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
+                env = dict(os.environ, GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull,
+                           DETENT_RELEASE_REQUIRE_AUDIT="true" if name == "release success with audit" else "false")
 
                 def git(*args):
                     result = subprocess.run(["git", *args], cwd=repo, env=env, text=True, capture_output=True, timeout=30)
@@ -102,6 +104,7 @@ class ReleaseValidateLocalTest(unittest.TestCase):
                     arguments = (root / "args").read_text()
                     self.assertIn(f"validate --config {root / 'config.yaml'} --project example-project --dir ", arguments)
                     self.assertIn("make check-release TEST_PROCS=2", arguments)
+                    self.assertEqual("DETENT_RELEASE_REQUIRE_AUDIT=true" in arguments, name == "release success with audit")
                 dispatches = [args for args in requests if args[:2] == ["workflow", "run"]]
                 self.assertEqual(dispatches, [["workflow", "run", "release-finalize.yml", "--repo", "example-org/example-project", "--ref", branch]] if dispatch else [])
                 self.assertEqual(git("worktree", "list", "--porcelain").count("worktree "), 1)
@@ -109,8 +112,8 @@ class ReleaseValidateLocalTest(unittest.TestCase):
     def test_release_checks_overlap_and_report_all_failures(self):
         scratch = ROOT / "tmp"
         scratch.mkdir(exist_ok=True)
-        for budget, failures in ((1, []), (2, ["generated", "lint"]), (4, []), (4, ["browser-build"]), (8, ["app", "full"])):
-            with self.subTest(budget=budget, failures=failures), tempfile.TemporaryDirectory(dir=scratch) as directory:
+        for budget, failures, require_audit in ((1, [], ""), (2, ["generated", "lint"], "false"), (4, [], "TRUE"), (4, ["browser-build"], ""), (8, ["app", "full"], ""), (4, [], "true"), (4, ["security"], "true")):
+            with self.subTest(budget=budget, failures=failures, require_audit=require_audit), tempfile.TemporaryDirectory(dir=scratch) as directory:
                 root = Path(directory)
                 (root / "scripts").mkdir()
                 for name in ("check-release.sh", "check-release.py", "check-evidence.sh", "check-browser.sh"):
@@ -186,6 +189,8 @@ sys.exit(7 if stage in json.loads(os.environ["FAILURES"]) else 0)
                 (playwright / "playwright").symlink_to(tool)
                 env = dict(os.environ, PATH=str(binaries) + os.pathsep + os.environ["PATH"],
                            REAL_PYTHON=sys.executable, PROBE_TOOL=str(tool), TMPDIR=str(root), FAILURES=json.dumps(failures))
+                env["DETENT_RELEASE_REQUIRE_AUDIT"] = require_audit
+                steps = [step for step in CHECK_RELEASE.STEPS if step != "security" or require_audit == "true"]
                 env.pop("BARRIER", None)
                 env.pop("BROWSER_BARRIER", None)
                 server = socket.socket(socket.AF_INET)
@@ -231,19 +236,19 @@ sys.exit(7 if stage in json.loads(os.environ["FAILURES"]) else 0)
                 self.assertEqual(result.returncode, int(bool(failures)), result.stdout + result.stderr)
                 evidence = [json.loads(line.removeprefix("detent-check-evidence: "))
                             for line in result.stdout.splitlines() if line.startswith("detent-check-evidence: ")]
-                self.assertEqual({row["scope"] for row in evidence}, set(CHECK_RELEASE.STEPS))
-                self.assertEqual(len(evidence), len(CHECK_RELEASE.STEPS))
+                self.assertEqual({row["scope"] for row in evidence}, set(steps))
+                self.assertEqual(len(evidence), len(steps))
                 failed_scopes = {"browser" if step == "browser-build" else step for step in failures}
                 self.assertEqual({row["scope"] for row in evidence if row["exit_code"]}, failed_scopes)
                 summary = result.stdout.split("Release check summary:\n")[1]
-                for step in CHECK_RELEASE.STEPS:
+                for step in steps:
                     status = "FAIL exit=7" if step in failed_scopes else "PASS exit=0"
                     self.assertRegex(summary, rf"  {step}: {status} wall=\d+\.\ds log=")
                 self.assertIn(f"check-release finished: exit={int(bool(failures))} wall=", summary)
                 self.assertEqual("Release checks passed." in summary, not failures)
                 logs = list(root.glob("check-release.*"))
                 self.assertEqual(len(logs), 1)
-                for step in CHECK_RELEASE.STEPS:
+                for step in steps:
                     log = (logs[0] / f"{step}.log").read_text()
                     self.assertIn(f'"scope":"{step}"', log)
                     self.assertEqual(log.count("detent-check-evidence: "), 1)
@@ -392,7 +397,7 @@ sys.exit(7 if stage in json.loads(os.environ["FAILURES"]) else 0)
             git("add", ".")
             git("commit", "-qm", "override candidate")
             provenance.update(tag="v1.0.2", commit=git("rev-parse", "HEAD"),
-                              checks=[{"name": "release-security-audit", "status": "completed", "conclusion": "success", "status_id": 2}],
+                              checks=[],
                               validation_override={"reason": "Owner accepts failed validation --> investigate", "status": "failure",
                                                    "status_id": 3, "status_url": "https://example.com/validation/3"})
             approve("v1.0.2", provenance["validation_override"]["reason"])

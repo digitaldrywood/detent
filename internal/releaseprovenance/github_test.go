@@ -27,6 +27,34 @@ func TestVerifyGitHubEvidence(t *testing.T) {
 		wantErr        string
 	}{
 		{name: "exact authenticated evidence"},
+		{name: "signed override alone waives suite without audit", mutateManifest: func(m *Manifest) {
+			m.ValidationOverride = &ValidationOverride{Reason: "Owner accepts missing validation", Status: "missing"}
+			m.Checks = nil
+		}, mutateEvidence: func(e *GitHubEvidence) {
+			e.RequiredChecks = []RepositoryRequirement{{Name: "scheduled-full-ci"}}
+			e.Checks = nil
+		}},
+		{name: "signed override with no mandatory checks", mutateManifest: func(m *Manifest) {
+			m.ValidationOverride = &ValidationOverride{Reason: "Owner accepts missing validation", Status: "missing"}
+			m.Checks = nil
+		}, mutateEvidence: func(e *GitHubEvidence) {
+			e.RequiredChecks = nil
+			e.Checks = nil
+		}},
+		{name: "unsigned override alone is rejected", mutateManifest: func(m *Manifest) {
+			m.ValidationOverride = &ValidationOverride{Reason: "Forged reason", Status: "missing"}
+			m.Checks = nil
+		}, mutateEvidence: func(e *GitHubEvidence) {
+			e.RequiredChecks = nil
+			e.Checks = nil
+		}, wantErr: "verified override tag signature"},
+		{name: "opted in audit cannot be waived by signed override alone", mutateManifest: func(m *Manifest) {
+			m.ValidationOverride = &ValidationOverride{Reason: "Owner accepts missing validation", Status: "missing"}
+			m.Checks = nil
+		}, mutateEvidence: func(e *GitHubEvidence) {
+			e.RequiredChecks = []RepositoryRequirement{{Name: "scheduled-full-ci"}, {Name: "release-security-audit"}}
+			e.Checks = nil
+		}, wantErr: "omits authenticated repository requirement"},
 		{name: "unsigned override annotation cannot waive failed suite", mutateManifest: func(m *Manifest) {
 			m.ValidationOverride = &ValidationOverride{Reason: "Forged owner reason", Status: "failure", StatusID: 9}
 			m.Checks[0].Name = "release-security-audit"

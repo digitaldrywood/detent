@@ -238,12 +238,16 @@ cherry-picks. Every release starts from a frozen develop snapshot on a release
 branch, fixes land on develop first and are cherry-picked with `-x` by
 `scripts/release-pick.sh` as direct signed pushes with no pull request, and no develop prerelease or source-gate-only deployment
 path exists. Stable tags are created only by `release-finalize.yml` in GitHub
-Actions, after the latest `scheduled-full-ci` and `release-security-audit`
-statuses on the current release head are successful (a human owner's recorded
+Actions, after the latest `scheduled-full-ci` status on the current release
+head is successful and, only when the repository variable
+`DETENT_RELEASE_REQUIRE_AUDIT=true`, its latest `release-security-audit`
+status is successful (a human owner's recorded
 `release-override/<version>` tag signed by a primary key listed at the exact
-release head may waive only `scheduled-full-ci`), and the latest
+release head may waive `scheduled-full-ci` and `platform-full-ci`), and the latest
 `platform-full-ci` status on the nearest validated ancestor (including the head)
-is successful and no older than 24 hours. Platform validation runs daily on
+is successful and no older than 24 hours unless waived by that signed owner
+override. When the audit is off, a verified owner override may be the only
+release evidence. Platform validation runs daily on
 local Colima, using the validated source and pinned toolchain. Release API calls belong
 to operators and GitHub Actions, never Detent runners. The release flow is
 specified in [the release workflow](../WORKFLOW.md#release).

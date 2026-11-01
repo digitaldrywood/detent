@@ -37,4 +37,5 @@ jobs:
           TMPDIR: ${{ runner.temp }}
           DETENT_RELEASE_STATUS_CREATORS_JSON: ${{ vars.DETENT_RELEASE_STATUS_CREATORS_JSON }}
           DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON: ${{ vars.DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON }}
+          DETENT_RELEASE_REQUIRE_AUDIT: ${{ vars.DETENT_RELEASE_REQUIRE_AUDIT }}
         run: bash scripts/release-finalize.sh
