@@ -47,6 +47,24 @@ func validateProviderReports(reports []providercapacity.Report) error {
 	return nil
 }
 
+func mergeRunnerProviderReports(previous, reports []providercapacity.Report, now time.Time) []providercapacity.Report {
+	merged := slices.Clone(reports)
+	if merged == nil {
+		merged = []providercapacity.Report{}
+	}
+	for i, report := range merged {
+		for _, prior := range previous {
+			if prior.Backend != report.Backend || prior.Provider != report.Provider || prior.AccountAlias != report.AccountAlias || prior.SharedAccountAlias != report.SharedAccountAlias || prior.ObservedAt.After(now) {
+				continue
+			}
+			if report.ObservedAt.After(now) || prior.ObservedAt.After(report.ObservedAt) || prior.ObservedAt.Equal(report.ObservedAt) && prior.Availability == "exhausted" && report.Availability != "exhausted" {
+				merged[i] = prior
+			}
+		}
+	}
+	return merged
+}
+
 func updateProviderReports(ctx context.Context, tx *sql.Tx, scope nativeScope, reports []providercapacity.Report, now time.Time) error {
 	if err := validateProviderReports(reports); err != nil {
 		return err

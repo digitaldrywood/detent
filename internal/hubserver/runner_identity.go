@@ -335,39 +335,38 @@ func recordRunnerEvent(ctx context.Context, tx *sql.Tx, runner, actor, kind stri
 	return err
 }
 
+type nativeMachineHeartbeatRequest struct {
+	HostMetrics           json.RawMessage                     `json:"host_metrics,omitempty"`
+	ChangeCursor          *string                             `json:"change_cursor,omitempty"`
+	Admission             *tracker.NativeAdmissionObservation `json:"admission,omitempty"`
+	SpriteName            string                              `json:"sprite_name,omitempty"`
+	Update                *runnerauth.UpdateObservation       `json:"update,omitempty"`
+	CapacityConfig        *runnerauth.CapacityConfig          `json:"capacity_configuration,omitempty"`
+	ProjectConfiguration  *runnerauth.ProjectConfiguration    `json:"project_configuration,omitempty"`
+	LocalChecks           *runnerauth.LocalChecks             `json:"local_checks,omitempty"`
+	Problems              []runnerauth.Problem                `json:"problems"`
+	ProtocolMajor         int                                 `json:"protocol_major,omitempty"`
+	SettingsRejected      bool                                `json:"settings_rejected,omitempty"`
+	BackendIsolation      isolation.Report                    `json:"backend_isolation,omitempty"`
+	ProviderReports       []providercapacity.Report           `json:"provider_reports,omitempty"`
+	DisplayName           string                              `json:"display_name"`
+	Capacity              int                                 `json:"capacity"`
+	Version               string                              `json:"version"`
+	OS                    string                              `json:"os,omitempty"`
+	Architecture          string                              `json:"architecture,omitempty"`
+	WorkspaceCapabilities *workspacesession.Capabilities      `json:"workspace_capabilities,omitempty"`
+	WorkspaceIsolation    string                              `json:"workspace_isolation,omitempty"`
+	Skills                *[]skills.ProviderSkill             `json:"skills,omitempty"`
+	CheckoutRepository    *string                             `json:"checkout_repository,omitempty"`
+}
+
 func (s *Service) heartbeatNativeMachine(c echo.Context) error {
-	var request struct {
-		HostMetrics          json.RawMessage                     `json:"host_metrics,omitempty"`
-		ChangeCursor         *string                             `json:"change_cursor,omitempty"`
-		Admission            *tracker.NativeAdmissionObservation `json:"admission,omitempty"`
-		SpriteName           string                              `json:"sprite_name,omitempty"`
-		Update               *runnerauth.UpdateObservation       `json:"update,omitempty"`
-		CapacityConfig       *runnerauth.CapacityConfig          `json:"capacity_configuration,omitempty"`
-		ProjectConfiguration *runnerauth.ProjectConfiguration    `json:"project_configuration,omitempty"`
-		LocalChecks          *runnerauth.LocalChecks             `json:"local_checks,omitempty"`
-		Problems             []runnerauth.Problem                `json:"problems"`
-		ProtocolMajor        int                                 `json:"protocol_major,omitempty"`
-		SettingsRejected     bool                                `json:"settings_rejected,omitempty"`
-		BackendIsolation     isolation.Report                    `json:"backend_isolation,omitempty"`
-		ProviderReports      []providercapacity.Report           `json:"provider_reports,omitempty"`
-		DisplayName          string                              `json:"display_name"`
-		Capacity             int                                 `json:"capacity"`
-		Version              string                              `json:"version"`
-		OS                   string                              `json:"os,omitempty"`
-		Architecture         string                              `json:"architecture,omitempty"`
-		// WorkspaceCapabilities and WorkspaceIsolation are what this runner
-		// can serve for a workspace session. They
-		// ride the heartbeat beside the provider reports because the claim
-		// gate asks one question -- can this runner serve this workspace, and
-		// was it saying so recently -- and freshness means nothing unless the
-		// answer and the heartbeat are the same row.
-		WorkspaceCapabilities *workspacesession.Capabilities `json:"workspace_capabilities,omitempty"`
-		WorkspaceIsolation    string                         `json:"workspace_isolation,omitempty"`
-		Skills                *[]skills.ProviderSkill        `json:"skills,omitempty"`
-		CheckoutRepository    *string                        `json:"checkout_repository,omitempty"`
-	}
+	var request nativeMachineHeartbeatRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
+	}
+	if s.config.TenantRepository != nil {
+		return s.heartbeatNativeMachineTenant(c, request)
 	}
 	if !workspacesession.ValidIsolation(request.WorkspaceIsolation) {
 		return s.nativeAPIError(c, nativePublicInvalid("Workspace isolation must be sandbox, container or user"))

@@ -30,7 +30,11 @@
     "internal/hubserver/postgres/migrations/20261101204615_project_policy_authority.sql",
     "internal/hubserver/postgres/migrations/20261101215438_runner_identity_enrollment.sql",
     "internal/hubserver/postgres/migrations/20261101215802_organization_model_selection.sql",
-    "internal/hubserver/postgres/migrations/20261101224723_request_usage_retention.sql"
+    "internal/hubserver/postgres/migrations/20261101224723_request_usage_retention.sql",
+    "internal/hubserver/postgres/migrations/20261101224000_runner_project_observations.sql",
+    "internal/hubserver/postgres/migrations/20261101224500_runner_routing_records.sql",
+    "internal/hubserver/postgres/migrations/20261101225000_runner_provider_reports.sql",
+    "internal/hubserver/postgres/migrations/20261101225500_runner_capacity_configuration.sql"
   ],
   "tables": {
     "public.ai_credit_reason_references": {
@@ -155,6 +159,77 @@
         "runner_id": "text"
       },
       "contract": "Retain the runner owner and assignment time for each tenant-scoped lease.",
+      "family": "fleet",
+      "organization": "organization-owned"
+    },
+    "public.runner_availability_windows": {
+      "columns": {
+        "organization_id": "text",
+        "position": "integer",
+        "runner_id": "text",
+        "window_spec": "text"
+      },
+      "contract": "Retain ordered availability windows for each tenant runner.",
+      "family": "fleet",
+      "organization": "organization-owned"
+    },
+    "public.runner_availability_window_slots": {
+      "columns": {
+        "capacity": "integer",
+        "organization_id": "text",
+        "runner_id": "text",
+        "slot_key": "text"
+      },
+      "contract": "Retain typed per-window capacity slots for each tenant runner.",
+      "family": "fleet",
+      "organization": "organization-owned"
+    },
+    "public.runner_provider_reports": {
+      "columns": {
+        "account_alias": "text",
+        "availability": "text",
+        "backend": "text",
+        "billing": "text",
+        "max_concurrent": "integer",
+        "observed_at": "timestamp with time zone",
+        "organization_id": "text",
+        "provider": "text",
+        "reset_at": "timestamp with time zone",
+        "runner_id": "text",
+        "shared_account_alias": "text"
+      },
+      "contract": "Retain the latest typed provider availability report for each tenant runner backend.",
+      "family": "fleet",
+      "organization": "organization-owned"
+    },
+    "public.runner_provider_report_models": {
+      "columns": {
+        "backend": "text",
+        "default_reasoning_effort": "text",
+        "has_detail": "boolean",
+        "is_default": "boolean",
+        "label": "text",
+        "legacy": "boolean",
+        "model_id": "text",
+        "model_provider": "text",
+        "organization_id": "text",
+        "position": "integer",
+        "runner_id": "text"
+      },
+      "contract": "Retain bounded model capability details reported for each tenant runner backend.",
+      "family": "fleet",
+      "organization": "organization-owned"
+    },
+    "public.runner_provider_model_efforts": {
+      "columns": {
+        "backend": "text",
+        "effort": "text",
+        "model_id": "text",
+        "organization_id": "text",
+        "position": "integer",
+        "runner_id": "text"
+      },
+      "contract": "Retain typed reasoning efforts supported by each reported tenant runner model.",
       "family": "fleet",
       "organization": "organization-owned"
     }

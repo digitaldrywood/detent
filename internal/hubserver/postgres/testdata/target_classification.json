@@ -43,5 +43,30 @@
     "inline_payloads": [],
     "ownership": "organization-owned",
     "scope": "runner_lease_assignments.organization_id; lease and runner owners are tenant-scoped"
+  },
+  "public/runner_availability_windows": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "runner_availability_windows.organization_id; runner is tenant-scoped"
+  },
+  "public/runner_availability_window_slots": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "runner_availability_window_slots.organization_id; runner is tenant-scoped"
+  },
+  "public/runner_provider_reports": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "runner_provider_reports.organization_id; runner report is tenant-scoped"
+  },
+  "public/runner_provider_report_models": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "runner_provider_report_models.organization_id; model report is tenant-scoped"
+  },
+  "public/runner_provider_model_efforts": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "runner_provider_model_efforts.organization_id; model effort is tenant-scoped"
   }
 }

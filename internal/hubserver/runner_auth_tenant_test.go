@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -21,6 +22,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/providercapacity"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -264,6 +267,127 @@ func TestRunnerCapabilitiesOrganizationHintScopesTenantAuthentication(t *testing
 	}
 	if renewed, err := service.changeRunnerCredentialTenant(t.Context(), currentCredential, ""); err != nil || !renewed.ExpiresAt.After(service.config.now()) {
 		t.Fatalf("expired identity renewal=(%+v,%v)", renewed, err)
+	}
+}
+
+func TestTenantRunnerHeartbeatPersistsIdentityAndReturnsCurrentRouting(t *testing.T) {
+	repository := projectRecordPostgres(t)
+	clock := &leaseTestClock{value: time.Date(2026, time.November, 1, 22, 0, 0, 0, time.UTC)}
+	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}, TenantRepository: repository, Clock: clock.Now})
+	service.config.AccessRepository = repository
+	organization, err := service.createNativeOrganizationFor(t.Context(), "Example organization")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := service.config.now()
+	secret := "example_runner_heartbeat_secret"
+	hash := apikey.HashToken(secret)
+	adminHash := apikey.HashToken(testHubAdminToken)
+	expires := now.Add(time.Hour)
+	if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization.ID, Name: organization.Name, Slug: organization.Slug, Local: true, CreatedAt: now}); err != nil {
+			return err
+		}
+		if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: organization.ID, ProviderID: "provider_example", AllocationGeneration: 1}); err != nil {
+			return err
+		}
+		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization.ID, ID: "admin", Name: "Example admin", Hash: adminHash, Fingerprint: tokenFingerprint(adminHash), Scope: "admin", KeyScope: "admin", ProjectAccess: "all", CreatedAt: now, UpdatedAt: now, Kind: "service"}); err != nil {
+			return err
+		}
+		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization.ID, ID: "credential_example", Name: "Example runner", Hash: hash, Fingerprint: tokenFingerprint(hash), Scope: "worker", CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires, ProjectAccess: "selected", Kind: "service"}); err != nil {
+			return err
+		}
+		if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: organization.ID, ID: "enrollment_example", RunnerID: "runner_example", MachineID: "machine_example", TokenHash: apikey.HashToken("example_enrollment_secret"), Scope: "organization", Operations: []string{runnerauth.Read, runnerauth.Heartbeat}, CreatedAt: now, ExpiresAt: expires, CreatedBy: "example-admin"}); err != nil {
+			return err
+		}
+		if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: organization.ID, ID: "machine_example", Hostname: "example-host", DisplayName: "Before heartbeat", Capacity: 1, Version: "before"}); err != nil {
+			return err
+		}
+		return w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: organization.ID, RunnerID: "runner_example", MachineID: "machine_example", TokenID: "credential_example", EnrollmentID: "enrollment_example", Scope: "organization", Operations: []string{runnerauth.Read, runnerauth.Heartbeat}, DisplayName: "Example runner", CapacityLimit: 4, ReportedCapacity: 1, OS: "darwin", Architecture: "arm64", CreatedAt: now, ExpiresAt: expires, LastHeartbeatAt: now})
+	}); err != nil {
+		var postgresError *pq.Error
+		if errors.As(err, &postgresError) {
+			t.Fatalf("seed runner records failed on constraint %q: %s", postgresError.Constraint, postgresError.Message)
+		}
+		t.Fatal(err)
+	}
+	createdProject := performHubAPIRequest(t, service, http.MethodPost, "/api/v2/organizations/"+string(organization.ID)+"/projects", testHubAdminToken, map[string]any{"idempotency_key": "create", "name": "Example project", "states": nativeFixtureStates()})
+	requireNativeStatus(t, createdProject, http.StatusOK)
+	var project tracker.NativeProject
+	decodeHubResponse(t, createdProject, &project)
+	path := "/api/v2/organizations/" + string(organization.ID) + "/projects/" + string(project.ID) + "/machines/machine_example/heartbeat"
+	clock.value = now.Add(time.Minute)
+	providerReport := providercapacity.Report{Provider: "openai", Backend: "native/codex", AccountAlias: "example", Billing: "subscription", Models: []string{"model-a"}, ModelDetails: []providercapacity.ModelDetail{{ID: "model-a", Label: "Model A", Provider: "openai", Default: true, ReasoningEfforts: []string{"low", "high"}, DefaultReasoningEffort: "high"}}, Availability: "available", ObservedAt: clock.value, UsageWindows: []providercapacity.UsageWindow{{Kind: "primary", ResetAt: clock.value.Add(time.Hour), ObservedAt: clock.value}}}
+	capacityConfiguration := &runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 4, ClientLimit: 3, RuntimeLimit: 3, Manageable: true, ObservedAt: clock.value}
+	response := performHubAPIRequest(t, service, http.MethodPost, path, secret, map[string]any{"display_name": "Example host", "capacity": 3, "version": "0.174.1", "os": "darwin", "architecture": "arm64", "protocol_major": 2, "provider_reports": []providercapacity.Report{providerReport}, "capacity_configuration": capacityConfiguration})
+	requireNativeStatus(t, response, http.StatusOK)
+	var snapshot runnerauth.RoutingSnapshot
+	decodeHubResponse(t, response, &snapshot)
+	if snapshot.RunnerID != "runner_example" || snapshot.Revision != 1 || snapshot.Routing.DisplayName != "Example runner" || snapshot.Routing.State != "active" || snapshot.Routing.Validate() != nil {
+		t.Fatalf("heartbeat routing snapshot = %+v", snapshot)
+	}
+	var persisted runnerstore.Identity
+	var machine leasestore.Machine
+	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		persisted, err = r.RunnerIdentity(t.Context(), "runner_example")
+		if err != nil {
+			return err
+		}
+		machine, err = r.Machine(t.Context(), "machine_example")
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if persisted.ReportedCapacity != 3 || persisted.OS != "darwin" || persisted.Architecture != "arm64" || !persisted.LastHeartbeatAt.Equal(clock.value) || persisted.CapacityConfig == nil || persisted.CapacityConfig.LocalLimit != 4 || !persisted.CapacityConfig.ObservedAt.Equal(clock.value) {
+		t.Fatalf("persisted heartbeat identity = %+v", persisted)
+	}
+	if machine.DisplayName != "Example host" || machine.Capacity != 3 || machine.Version != "0.174.1" {
+		t.Fatalf("persisted heartbeat machine = %+v", machine)
+	}
+	var providers []providercapacity.Report
+	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		providers, err = r.RunnerProviderReports(t.Context(), "runner_example")
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(providers) != 1 || providers[0].Provider != providerReport.Provider || providers[0].Backend != providerReport.Backend || providers[0].Models[0] != providerReport.Models[0] || len(providers[0].ModelDetails) != 1 || providers[0].ModelDetails[0].DefaultReasoningEffort != "high" || len(providers[0].UsageWindows) != 1 || providers[0].Billing != providerReport.Billing {
+		t.Fatalf("persisted provider reports = %+v", providers)
+	}
+	clock.value = now.Add(2 * time.Minute)
+	projectConfiguration := runnerauth.ProjectConfiguration{
+		ProjectID: string(project.ID), Authority: "local_global_configuration", Source: "cloud_workflow", ObservedAt: clock.value,
+		Diagnostics: &runnerauth.ProjectDiagnostics{ObservedAt: clock.value, RuntimeObservedAt: clock.value, Source: "runner_runtime_and_durable_attempt_owners", Counts: map[string]int{}, Unavailable: map[string]string{}, Records: []runnerauth.DiagnosticAttempt{{Key: "local:1", IssueID: "wi_example", LocalAttemptID: 1, Generation: 2, Fence: 3, Stage: "implementing", Membership: []string{"running"}}}},
+	}
+	observed := performHubAPIRequest(t, service, http.MethodPost, path, secret, map[string]any{"display_name": "Example host", "capacity": 3, "version": "0.174.1", "os": "darwin", "architecture": "arm64", "protocol_major": 2, "project_configuration": projectConfiguration})
+	requireNativeStatus(t, observed, http.StatusOK)
+	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
+		observation, attempts, err := r.RunnerProjectObservation(t.Context(), "runner_example", project.ID, "wi_example")
+		if err != nil {
+			return err
+		}
+		if !observation.DiagnosticsAt.Equal(clock.value) || !observation.RuntimeObservedAt.Equal(clock.value) || len(attempts) != 1 || attempts[0].LocalAttemptID != 1 || attempts[0].Generation != 2 || attempts[0].Fence != 3 || !attempts[0].Running {
+			t.Fatalf("persisted project diagnostics = %+v / %+v", observation, attempts)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	before := clock.value
+	clock.value = now.Add(3 * time.Minute)
+	unsupported := performHubAPIRequest(t, service, http.MethodPost, path, secret, map[string]any{"display_name": "Example host", "capacity": 3, "version": "0.174.1", "checkout_repository": "owner/repository"})
+	requireNativeStatus(t, unsupported, http.StatusServiceUnavailable)
+	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		persisted, err = r.RunnerIdentity(t.Context(), "runner_example")
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !persisted.LastHeartbeatAt.Equal(before) {
+		t.Fatalf("unsupported heartbeat partially changed timestamp: before=%s after=%s", before, persisted.LastHeartbeatAt)
 	}
 }
 

@@ -18,6 +18,7 @@ type Repository interface {
 }
 
 type Reader interface {
+	Machine(context.Context, string) (Machine, error)
 	Lease(context.Context, string) (Lease, error)
 	ActiveLeaseForIssue(context.Context, int64) (Lease, error)
 	Attempt(context.Context, string) (Attempt, error)
@@ -28,7 +29,9 @@ type Reader interface {
 
 type Writer interface {
 	Reader
+	LockMachine(context.Context, string) (Machine, error)
 	RegisterMachine(context.Context, Machine) error
+	HeartbeatMachine(context.Context, Machine, time.Time) error
 	Claim(context.Context, Claim) (Lease, error)
 	Renew(context.Context, Fence, time.Duration) (Lease, error)
 	RenewWithLandingCapacity(context.Context, Fence, time.Duration, int64) (Lease, error)

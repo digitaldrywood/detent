@@ -30,6 +30,26 @@ func (s *session) RegisterMachine(ctx context.Context, machine leasestore.Machin
 	return mapError(ctx, s.queries.RegisterLeaseMachine(ctx, pgquery.RegisterLeaseMachineParams(machine)))
 }
 
+func (s *session) HeartbeatMachine(ctx context.Context, machine leasestore.Machine, at time.Time) error {
+	if err := s.checkOrganization(machine.OrganizationID); err != nil {
+		return err
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE machines SET display_name=$3,capacity=$4,version=$5,last_heartbeat_at=greatest(last_heartbeat_at,$6),updated_at=greatest(updated_at,$6) WHERE organization_id=$1 AND id=$2`, machine.OrganizationID, machine.ID, machine.DisplayName, machine.Capacity, machine.Version, at)
+	return updateOwned(ctx, result, err)
+}
+
+func (s *session) Machine(ctx context.Context, id string) (leasestore.Machine, error) {
+	var machine leasestore.Machine
+	err := s.db.QueryRowContext(ctx, `SELECT organization_id,id,hostname,display_name,capacity,version FROM machines WHERE organization_id=$1 AND id=$2`, s.organization, id).Scan(&machine.OrganizationID, &machine.ID, &machine.Hostname, &machine.DisplayName, &machine.Capacity, &machine.Version)
+	return machine, mapError(ctx, err)
+}
+
+func (s *session) LockMachine(ctx context.Context, id string) (leasestore.Machine, error) {
+	var machine leasestore.Machine
+	err := s.db.QueryRowContext(ctx, `SELECT organization_id,id,hostname,display_name,capacity,version FROM machines WHERE organization_id=$1 AND id=$2 FOR UPDATE`, s.organization, id).Scan(&machine.OrganizationID, &machine.ID, &machine.Hostname, &machine.DisplayName, &machine.Capacity, &machine.Version)
+	return machine, mapError(ctx, err)
+}
+
 func (s *session) Lease(ctx context.Context, id string) (leasestore.Lease, error) {
 	row, err := s.queries.GetLease(ctx, pgquery.GetLeaseParams{OrganizationID: s.organization, LeaseID: id})
 	return leasestore.Lease(row), mapError(ctx, err)

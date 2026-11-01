@@ -2,9 +2,13 @@ package runnerstore
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/providercapacity"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -12,9 +16,12 @@ var (
 	ErrInvalidRecord     = errors.New("runner record is invalid")
 	ErrLimitExceeded     = errors.New("runner project list exceeds its response limit")
 	ErrIdentityCollision = errors.New("runner binding is already registered")
+	ErrStaleObservation  = errors.New("runner project observation is stale")
 )
 
 const MaxRunnerProjectList = 2000
+const MaxRunnerProjectRanks = 100
+const MaxProjectDiagnosticAttempts = 256
 
 type Enrollment struct {
 	OrganizationID tracker.OrganizationID
@@ -34,22 +41,74 @@ type Enrollment struct {
 }
 
 type Identity struct {
-	OrganizationID   tracker.OrganizationID
-	RunnerID         string
-	MachineID        tracker.MachineID
-	TokenID          string
-	EnrollmentID     string
-	Scope            string
-	Operations       []string
-	DisplayName      string
-	CapacityLimit    int64
-	ReportedCapacity int64
-	OS               string
-	Architecture     string
-	CreatedAt        time.Time
-	ExpiresAt        time.Time
-	LastHeartbeatAt  time.Time
-	RemovedAt        *time.Time
+	OrganizationID        tracker.OrganizationID
+	RunnerID              string
+	MachineID             tracker.MachineID
+	TokenID               string
+	EnrollmentID          string
+	Scope                 string
+	State                 string
+	Revision              int64
+	Tags                  []string
+	MachineUse            string
+	IsolationTier         string
+	HostServices          []string
+	Availability          Availability
+	Operations            []string
+	DisplayName           string
+	CapacityLimit         int64
+	ReportedCapacity      int64
+	CapacityConfig        *runnerauth.CapacityConfig
+	ProjectIDs            []tracker.ProjectID
+	ProjectCapacityLimits map[tracker.ProjectID]int
+	ProjectRanks          map[tracker.ProjectID]int
+	OS                    string
+	Architecture          string
+	CreatedAt             time.Time
+	ExpiresAt             time.Time
+	LastHeartbeatAt       time.Time
+	RemovedAt             *time.Time
+}
+
+type Availability struct {
+	Timezone     string
+	Windows      []string
+	WindowSlots  map[string]int
+	HardDeadline string
+}
+
+func (row Identity) Normalized() Identity {
+	if row.State == "" {
+		row.State = "active"
+	}
+	if row.MachineUse == "" {
+		row.MachineUse = "shared"
+	}
+	if row.IsolationTier == "" {
+		row.IsolationTier = "sandbox"
+	}
+	if row.Revision < 1 {
+		row.Revision = 1
+	}
+	if row.Tags == nil {
+		row.Tags = []string{}
+	}
+	if row.HostServices == nil {
+		row.HostServices = []string{}
+	}
+	if row.Availability.Windows == nil {
+		row.Availability.Windows = []string{}
+	}
+	if row.Availability.WindowSlots == nil {
+		row.Availability.WindowSlots = map[string]int{}
+	}
+	if row.ProjectCapacityLimits == nil {
+		row.ProjectCapacityLimits = map[tracker.ProjectID]int{}
+	}
+	if row.ProjectRanks == nil {
+		row.ProjectRanks = map[tracker.ProjectID]int{}
+	}
+	return row
 }
 
 type Event struct {
@@ -86,12 +145,56 @@ type LeaseAssignment struct {
 	AssignedAt     time.Time
 }
 
+type ProjectObservation struct {
+	OrganizationID    tracker.OrganizationID
+	RunnerID          string
+	ProjectID         tracker.ProjectID
+	ObservedAt        time.Time
+	DiagnosticsAt     *time.Time
+	RuntimeObservedAt *time.Time
+	SnapshotDigest    string
+}
+
+type ProjectDiagnosticAttempt struct {
+	Position            int
+	RecordKey           string
+	IssueID             string
+	LocalAttemptID      int64
+	NativeAttemptID     string
+	Generation          int64
+	Fence               uint64
+	Stage               string
+	Running             bool
+	NativeClaim         bool
+	ProviderCompletedAt *time.Time
+	HostOperation       string
+	OperationPending    bool
+	LeaseRenewedAt      *time.Time
+}
+
+func (row ProjectObservation) Validate(attempts []ProjectDiagnosticAttempt) error {
+	if row.OrganizationID == "" || row.RunnerID == "" || row.ProjectID == "" || row.ObservedAt.IsZero() || len(attempts) > MaxProjectDiagnosticAttempts {
+		return ErrInvalidRecord
+	}
+	digest, err := hex.DecodeString(row.SnapshotDigest)
+	if err != nil || len(digest) != 32 || len(row.SnapshotDigest) != 64 || hex.EncodeToString(digest) != row.SnapshotDigest {
+		return ErrInvalidRecord
+	}
+	for i, attempt := range attempts {
+		if attempt.Position != i || len(attempt.RecordKey) == 0 || len(attempt.RecordKey) > 256 || len(attempt.IssueID) == 0 || len(attempt.IssueID) > 256 || attempt.LocalAttemptID < 0 || attempt.Generation < 0 || attempt.Fence > 1<<63-1 || len(attempt.NativeAttemptID) > 256 || len(attempt.Stage) > 256 || len(attempt.HostOperation) > 256 {
+			return fmt.Errorf("%w: invalid project diagnostic attempt %d", ErrInvalidRecord, i)
+		}
+	}
+	return nil
+}
+
 type Reader interface {
 	RunnerEnrollmentByTokenHash(context.Context, string) (Enrollment, error)
 	RunnerEnrollment(context.Context, string) (Enrollment, error)
 	RunnerIdentity(context.Context, string) (Identity, error)
 	RunnerIdentityByCredential(context.Context, string) (Identity, error)
 	RunnerIdentityByMachine(context.Context, tracker.MachineID, int) ([]Identity, error)
+	RunnerIdentities(context.Context, int) ([]Identity, error)
 	RunnerForLease(context.Context, string) (Identity, error)
 	RunnerProjects(context.Context, string, int) ([]tracker.ProjectID, error)
 	RunnerProjectAuthorized(context.Context, string, tracker.ProjectID, time.Time) (bool, error)
@@ -99,6 +202,8 @@ type Reader interface {
 	RunnerBindingAvailable(context.Context, string, tracker.MachineID, bool) error
 	RunnerRepositoryList(context.Context, string) (RepositoryList, error)
 	RunnerRepositories(context.Context, string, int) ([]Repository, error)
+	RunnerProjectObservation(context.Context, string, tracker.ProjectID, string) (ProjectObservation, []ProjectDiagnosticAttempt, error)
+	RunnerProviderReports(context.Context, string) ([]providercapacity.Report, error)
 }
 
 type Writer interface {
@@ -109,8 +214,12 @@ type Writer interface {
 	CreateRunnerIdentity(context.Context, Identity) error
 	AssignRunnerLease(context.Context, LeaseAssignment) error
 	UpdateRunnerIdentity(context.Context, Identity) error
+	UpdateRunnerRouting(context.Context, int64, Identity) error
 	RemoveRunnerIdentity(context.Context, string, time.Time) error
 	RecordRunnerIdentityEvent(context.Context, Event) error
 	RequestRunnerRepositories(context.Context, string, string) error
 	ReplaceRunnerRepositories(context.Context, RepositoryList, []Repository) error
+	ReplaceRunnerProjectObservation(context.Context, ProjectObservation, []ProjectDiagnosticAttempt) error
+	ReplaceRunnerProviderReports(context.Context, string, []providercapacity.Report) error
+	UpdateRunnerCapacityConfig(context.Context, string, runnerauth.CapacityConfig) error
 }
