@@ -15,6 +15,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/smithy-go"
+	smithyhttp "github.com/aws/smithy-go/transport/http"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/conversation"
@@ -101,6 +102,14 @@ func (s *spaces) Put(ctx context.Context, key string, body io.ReadSeeker, size i
 func (s *spaces) Open(ctx context.Context, key string) (io.ReadCloser, error) {
 	result, err := s.client.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(s.config.Bucket), Key: aws.String(s.prefix + key)})
 	if err != nil {
+		var api smithy.APIError
+		var response *smithyhttp.ResponseError
+		if errors.As(err, &api) && (api.ErrorCode() == "NoSuchKey" || api.ErrorCode() == "NotFound") {
+			return nil, errors.Join(artifact.ErrMissing, err)
+		}
+		if errors.As(err, &response) && response.HTTPStatusCode() == http.StatusNotFound && (api == nil || api.ErrorCode() == "" || api.ErrorCode() == "404") {
+			return nil, errors.Join(artifact.ErrMissing, err)
+		}
 		return nil, err
 	}
 	return result.Body, nil

@@ -12,6 +12,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+
 	"github.com/digitaldrywood/detent/internal/artifact"
 )
 
@@ -21,6 +26,52 @@ func (f storageTransport) RoundTrip(r *http.Request) (*http.Response, error) { r
 
 func storageResponse(status int, body string) *http.Response {
 	return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}
+}
+
+func TestStorageOpenMissingClassification(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name    string
+		status  int
+		body    string
+		missing bool
+	}{
+		{"no such key", http.StatusNotFound, `<Error><Code>NoSuchKey</Code></Error>`, true},
+		{"not found", http.StatusNotFound, `<Error><Code>NotFound</Code></Error>`, true},
+		{"bare 404", http.StatusNotFound, "", true},
+		{"unstructured 404", http.StatusNotFound, "<html>not found</html>", true},
+		{"access denied", http.StatusForbidden, `<Error><Code>AccessDenied</Code></Error>`, false},
+		{"missing bucket", http.StatusNotFound, `<Error><Code>NoSuchBucket</Code></Error>`, false},
+		{"unavailable", http.StatusServiceUnavailable, `<Error><Code>ServiceUnavailable</Code></Error>`, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client := s3.NewFromConfig(aws.Config{
+				Region: "test", Credentials: credentials.NewStaticCredentialsProvider("fixture-access", "fixture-secret", ""),
+				HTTPClient: &http.Client{Transport: storageTransport(func(*http.Request) (*http.Response, error) {
+					return storageResponse(test.status, test.body), nil
+				})},
+				RetryMaxAttempts: 1,
+			}, func(options *s3.Options) {
+				options.BaseEndpoint = aws.String("https://objects.example.test")
+				options.UsePathStyle = true
+			})
+			store := &spaces{client: client, config: Config{Bucket: "private"}}
+			body, err := store.Open(t.Context(), "orgs/org_example/object")
+			if body != nil {
+				_ = body.Close()
+				t.Fatal("failed open returned a body")
+			}
+			if err == nil || errors.Is(err, artifact.ErrMissing) != test.missing {
+				t.Fatalf("open error=%v, want missing=%v", err, test.missing)
+			}
+			if test.name == "no such key" {
+				var missing *types.NoSuchKey
+				if !errors.As(err, &missing) {
+					t.Fatalf("lost S3 NoSuchKey cause: %v", err)
+				}
+			}
+		})
+	}
 }
 
 func TestStoragePrivacyProbe(t *testing.T) {

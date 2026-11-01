@@ -21,6 +21,8 @@ func contentFailure(request ContentRequest, started time.Time, message string, e
 		reason, code = context.DeadlineExceeded, "canceled"
 	case errors.Is(err, artifact.ErrIntegrity):
 		reason, code = artifact.ErrIntegrity, artifact.ErrIntegrity.Error()
+	case errors.Is(err, artifact.ErrMissing):
+		reason, code = artifact.ErrMissing, artifact.ErrMissing.Error()
 	}
 	bytesRead := int64(-1)
 	var readErr *attachment.ArchiveReadError
@@ -43,7 +45,7 @@ func contentClientError(err error) error {
 	if !errors.As(err, &remote) {
 		return err
 	}
-	for _, reason := range []error{context.Canceled, context.DeadlineExceeded, artifact.ErrStorage, artifact.ErrIntegrity} {
+	for _, reason := range []error{context.Canceled, context.DeadlineExceeded, artifact.ErrStorage, artifact.ErrIntegrity, artifact.ErrMissing} {
 		if string(remote) == reason.Error() {
 			return reason
 		}

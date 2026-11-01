@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -22,6 +24,118 @@ type pausedMissingRunDetails struct {
 	missing chan struct{}
 	resume  chan struct{}
 	once    sync.Once
+}
+
+func TestNativeEventPendingPublicationS3(t *testing.T) {
+	t.Parallel()
+	for _, recovery := range []bool{false, true} {
+		t.Run(map[bool]string{false: "request", true: "recovery"}[recovery], func(t *testing.T) {
+			var mu sync.Mutex
+			objects := make(map[string][]byte)
+			unavailable, uploads := false, 0
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				defer mu.Unlock()
+				if r.Header.Get("Authorization") == "" || unavailable && r.Method == http.MethodPut {
+					w.WriteHeader(http.StatusForbidden)
+					_, _ = io.WriteString(w, `<Error><Code>AccessDenied</Code></Error>`)
+					return
+				}
+				switch r.Method {
+				case http.MethodPut:
+					data, err := io.ReadAll(r.Body)
+					if err != nil {
+						http.Error(w, "read object", http.StatusBadRequest)
+						return
+					}
+					objects[r.URL.Path] = data
+					if !strings.Contains(r.URL.Path, "/probe/") {
+						uploads++
+					}
+				case http.MethodDelete:
+					delete(objects, r.URL.Path)
+				case http.MethodGet, http.MethodHead:
+					data, ok := objects[r.URL.Path]
+					if !ok {
+						if unavailable {
+							w.WriteHeader(http.StatusForbidden)
+							_, _ = io.WriteString(w, `<Error><Code>AccessDenied</Code></Error>`)
+							return
+						}
+						w.WriteHeader(http.StatusNotFound)
+						_, _ = io.WriteString(w, `<Error><Code>NoSuchKey</Code></Error>`)
+						return
+					}
+					if r.Method == http.MethodGet {
+						_, _ = w.Write(data)
+					}
+				default:
+					w.WriteHeader(http.StatusMethodNotAllowed)
+				}
+			}))
+			t.Cleanup(server.Close)
+			storage, err := attachment.NewStorage(t.Context(), attachment.Config{
+				Endpoint: server.URL, Region: "test", Bucket: "private",
+				AccessKeyID: "fixture-access", SecretAccessKey: "fixture-secret",
+			}, server.Client().Transport)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f := claimedAttemptDiffFixture(t, false, Config{Content: func(ctx context.Context, request entryauthority.ContentRequest) ([]byte, error) {
+				if request.Write {
+					return nil, attachment.StoreArchive(ctx, storage.(attachment.ArchiveStorage), request.Organization, request.Reference, request.Data)
+				}
+				return attachment.ReadArchiveObject(ctx, storage, request.Organization, request.Reference)
+			}})
+			f.start(t)
+			mu.Lock()
+			unavailable = recovery
+			beforeUploads := uploads
+			mu.Unlock()
+			event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "s3-finish"}, Type: "run.finished", SchemaVersion: 1,
+				Data: tracker.NativeRunData{Sequence: 2, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "gpt-6-astra"}, LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken, RunID: f.run, AttemptID: f.attempt, PolicyID: f.policy, Outcome: "succeeded"}}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/events", f.worker, event), http.StatusOK)
+			var pending int
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM attachments WHERE pending_content IS NOT NULL").Scan(&pending); err != nil {
+				t.Fatal(err)
+			}
+			wantPending := 0
+			if recovery {
+				wantPending = 2
+			}
+			if pending != wantPending {
+				t.Fatalf("pending=%d, want %d", pending, wantPending)
+			}
+			mu.Lock()
+			if recovery && uploads != beforeUploads {
+				t.Error("storage failure permitted an upload")
+			}
+			unavailable = false
+			mu.Unlock()
+			var chargedBytes int64
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT value FROM hosted_usage_counters WHERE name='collaboration_bytes'").Scan(&chargedBytes); err != nil || chargedBytes <= 0 {
+				t.Fatalf("committed payload not charged: bytes=%d error=%v", chargedBytes, err)
+			}
+			if err := f.service.convertStorageBatch(t.Context(), f.service.config.now()); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM attachments WHERE pending_content IS NOT NULL)+(SELECT count(*) FROM change_content_objects WHERE pending_content IS NOT NULL)").Scan(&pending); err != nil || pending != 0 {
+				t.Fatalf("publication left pending=%d: %v", pending, err)
+			}
+			mu.Lock()
+			if uploads != beforeUploads+2 {
+				t.Errorf("uploads=%d, want %d", uploads, beforeUploads+2)
+			}
+			mu.Unlock()
+			var afterBytes int64
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT value FROM hosted_usage_counters WHERE name='collaboration_bytes'").Scan(&afterBytes); err != nil || afterBytes != chargedBytes {
+				t.Fatalf("publication charged twice: before=%d after=%d error=%v", chargedBytes, afterBytes, err)
+			}
+			if got := readReferencedRun(t, f.service, f.attempt); got.Sequence != 2 || got.Outcome != "succeeded" {
+				t.Fatal("published payload lost committed run history")
+			}
+		})
+	}
 }
 
 func (s *pausedMissingRunDetails) ReadDetail(ctx context.Context, organization string, ref attachment.ArchiveReference) ([]byte, error) {

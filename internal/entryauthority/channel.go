@@ -363,12 +363,13 @@ func (s *authorityServer) StoreDetail(request DetailRequest, result *attachment.
 }
 
 func (s *authorityServer) ReadDetail(request DetailRequest, result *[]byte) error {
+	started := time.Now()
 	if s.readDetail == nil || request.Organization != s.binding.Organization || request.Reference.Validate(s.binding.Organization) != nil || request.Deadline.IsZero() {
 		return attachment.ErrInvalid
 	}
 	data, err := s.readDetail(request)
 	if err != nil {
-		return artifactDetailError()
+		return contentFailure(ContentRequest{Organization: request.Organization, Reference: request.Reference}, started, "run detail unavailable", err)
 	}
 	*result = data
 	return nil
@@ -393,5 +394,6 @@ func (c *Client) ReadDetail(ctx context.Context, organization string, ref attach
 	ctx, cancel := context.WithTimeout(ctx, c.budget)
 	defer cancel()
 	deadline, _ := ctx.Deadline()
-	return callAuthority[[]byte](ctx, c, "ReadDetail", DetailRequest{Organization: organization, Reference: ref, Deadline: deadline})
+	data, err := callAuthority[[]byte](ctx, c, "ReadDetail", DetailRequest{Organization: organization, Reference: ref, Deadline: deadline})
+	return data, contentClientError(err)
 }
