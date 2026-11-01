@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/hubclient/claim"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/procgroup"
@@ -543,55 +544,18 @@ func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrat
 	if nativeAdmissionCapacityFull(err) {
 		err = nil
 	}
-	release := func(leases []tracker.NativeLease, cause error) error {
-		for _, lease := range leases {
-			if reconnecting {
-				continue
-			}
-			releaseErr := source.NativeClient().Release(context.WithoutCancel(ctx), lease, "work_item_hydration_failed")
-			if releaseErr == nil || claimLost(releaseErr) {
-				source.NativeClient().Transport().ForgetLease(source.NativeClient().Scope(), lease)
-			}
-			cause = errors.Join(cause, releaseErr)
-		}
-		return schedulingError(cause)
+	hydrated, err := claim.Hydrate(ctx, nativeAdmissionSource{scheduler: s, source: source}, leases, reconnecting, err)
+	if err != nil {
+		return nil, err
 	}
-	if err != nil && (len(leases) == 0 || !nativeBatchIndependentFailure(ctx, err)) {
-		return nil, release(leases, err)
+	issues := make([]connector.Issue, 0, len(hydrated.Candidates))
+	claims := make([]nativeClaim, 0, len(hydrated.Candidates))
+	for _, candidate := range hydrated.Candidates {
+		issues = append(issues, candidate.Issue)
+		claims = append(claims, nativeClaim{landingCapacity: request.LandingCapacity, availabilityDeadline: availabilityDeadline, source: source, lease: candidate.Lease, recovery: candidate.Recovery, deadline: nativeLeaseDeadline(claimStarted, candidate.Lease)})
 	}
-	degraded := err
-	issues := make([]connector.Issue, 0, len(leases))
-	claims := make([]nativeClaim, 0, len(leases))
-	for i, lease := range leases {
-		recovery, err := source.NativeClient().Recovery(ctx, lease.WorkItemID)
-		if err == nil && recovery.Issue.LinkedSource != nil && recovery.Issue.LinkedSource.Status != "complete" {
-			err = s.intakeNativeSource(ctx, source, lease, recovery.Issue)
-			if err == nil {
-				recovery, err = source.NativeClient().Recovery(ctx, lease.WorkItemID)
-			}
-		}
-		if err != nil {
-			if len(claims) == 0 || !nativeBatchIndependentFailure(ctx, err) {
-				return nil, release(leases, errors.Join(degraded, err))
-			}
-			if releaseErr := release(leases[i:], nil); releaseErr != nil {
-				return nil, release(leases[:i], errors.Join(degraded, err, releaseErr))
-			}
-			leases = leases[:i]
-			degraded = errors.Join(degraded, err)
-			break
-		}
-		issue := issueFromNative(recovery.Issue)
-		issue.AssignedToWorker = true
-		issue.IsolationPolicy = lease.IsolationPolicy
-		issues = append(issues, issue)
-		claims = append(claims, nativeClaim{landingCapacity: request.LandingCapacity, availabilityDeadline: availabilityDeadline, source: source, lease: lease, recovery: recovery, deadline: nativeLeaseDeadline(claimStarted, lease)})
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, release(leases, errors.Join(degraded, err))
-	}
-	if degraded != nil {
-		slog.Default().Warn("native candidate fetch degraded", "project_id", source.NativeClient().ProjectID(), "retained", len(claims), "error", degraded)
+	if hydrated.Degraded != nil {
+		slog.Default().Warn("native candidate fetch degraded", "project_id", source.NativeClient().ProjectID(), "retained", len(claims), "error", hydrated.Degraded)
 	}
 	s.mu.Lock()
 	for _, claim := range claims {
@@ -603,17 +567,6 @@ func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrat
 	}
 	s.mu.Unlock()
 	return issues, nil
-}
-
-func nativeBatchIndependentFailure(ctx context.Context, err error) bool {
-	if ctx.Err() != nil || errors.Is(err, orchestrator.ErrSchedulingUnavailable) || routingDeferred(err) || claimLost(err) {
-		return false
-	}
-	var failure *APIError
-	if errors.As(err, &failure) && (failure.Status < http.StatusInternalServerError || failure.Code == "policy_mismatch") {
-		return false
-	}
-	return errors.Is(err, ErrUnavailable)
 }
 
 func (s *Scheduler) reconcileReleasedExecutions(ctx context.Context, source *NativeConnector) {

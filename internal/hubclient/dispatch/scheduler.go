@@ -18,6 +18,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/hostmetrics"
+	"github.com/digitaldrywood/detent/internal/hubclient/claim"
 	isolationpolicy "github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
@@ -591,25 +592,7 @@ func issueFromWorkItem(item WorkItem) connector.Issue {
 	return issue
 }
 
-func schedulingError(err error) error {
-	if err == nil || !errors.Is(err, ErrUnavailable) && !routingDeferred(err) {
-		return err
-	}
-	return errors.Join(orchestrator.ErrSchedulingUnavailable, err)
-}
-
-func routingDeferred(err error) bool {
-	var failure *APIError
-	if !errors.As(err, &failure) {
-		return false
-	}
-	switch failure.Code {
-	case "provider_capacity", "provider_incompatible", "provider_candidate_changed", "selector_no_match", "runner_disabled", "runner_draining", "runner_offline", "runner_capacity", "host_capacity", "plan_capacity", "project_access_denied", "claim_not_permitted":
-		return true
-	default:
-		return false
-	}
-}
+func schedulingError(err error) error { return claim.SchedulingError(err) }
 
 func randomSessionID() (string, error) {
 	value := make([]byte, 16)
