@@ -5790,7 +5790,7 @@ func TestNativePublicationFixtureKeepsLeaseUntilHandoff(t *testing.T) {
 		returned()
 		time.Sleep(2 * h.scheduler.leaseTTL)
 		if guarded.Err() != nil {
-			t.Fatalf("runner return stopped the publication guard: %v", context.Cause(guarded))
+			t.Errorf("runner return stopped the publication guard: %v", context.Cause(guarded))
 		}
 		stopGuard()
 		if !errors.Is(guarded.Err(), context.Canceled) {
