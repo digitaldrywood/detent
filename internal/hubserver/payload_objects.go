@@ -238,7 +238,7 @@ func prepareContentMutation[T any](ctx context.Context, q nativeQueryer, operati
 func isolateContentContext(ctx context.Context) context.Context {
 	if current, ok := ctx.Value(changeContentKey{}).(*changeContent); ok {
 		current.mu.Lock()
-		isolated := &changeContent{call: current.call, store: current.store, register: current.register, query: current.query, prepared: maps.Clone(current.prepared), payloads: maps.Clone(current.payloads), references: maps.Clone(current.references), payloadBytes: current.payloadBytes, organization: current.organization, stableHistory: current.stableHistory}
+		isolated := &changeContent{encoder: current.encoder, call: current.call, store: current.store, register: current.register, query: current.query, prepared: maps.Clone(current.prepared), payloads: maps.Clone(current.payloads), references: maps.Clone(current.references), payloadBytes: current.payloadBytes, organization: current.organization, stableHistory: current.stableHistory}
 		current.mu.Unlock()
 		ctx = context.WithValue(ctx, changeContentKey{}, isolated)
 	}

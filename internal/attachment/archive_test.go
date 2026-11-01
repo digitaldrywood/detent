@@ -18,21 +18,30 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/artifact"
 )
 
 func TestArchiveStorageLifecycle(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name                string
-		fail, corrupt, root bool
+		name                       string
+		fail, corrupt, root, reuse bool
 	}{
 		{name: "verified and deduplicated"},
+		{name: "reused compression", reuse: true},
 		{name: "issue root", root: true},
 		{name: "upload failure", fail: true},
 		{name: "verification failure", corrupt: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			var encoder ArchiveEncoder
+			prepare := PrepareArchive
+			if test.reuse {
+				prepare = encoder.Prepare
+			}
 			objects := map[string][]byte{}
 			puts := map[string]int{}
 			transport := storageTransport(func(r *http.Request) (*http.Response, error) {
@@ -84,11 +93,11 @@ func TestArchiveStorageLifecycle(t *testing.T) {
 			content := strings.Repeat("archived detail\n", 1000)
 			refs := make([]ArchiveReference, 0, 2)
 			for _, org := range []string{"org_alpha", "org_beta"} {
-				ref, data, err := PrepareArchive(org, 1, strings.NewReader(content))
+				ref, data, err := prepare(org, 1, strings.NewReader(content))
 				if err != nil {
 					t.Fatal(err)
 				}
-				other, repeated, err := PrepareArchive(org, 1, strings.NewReader(content))
+				other, repeated, err := prepare(org, 1, strings.NewReader(content))
 				if err != nil || ref != other || !bytes.Equal(data, repeated) {
 					t.Fatal("archive encoding is not deterministic")
 				}
@@ -622,6 +631,65 @@ func TestDecodeArchiveSection(t *testing.T) {
 			_, err = DecodeArchiveSection("org_example", ref, data)
 			if (err == nil) != test.valid {
 				t.Fatalf("decode error=%v valid=%v", err, test.valid)
+			}
+		})
+	}
+}
+
+func BenchmarkArchiveEncoder(b *testing.B) {
+	for _, size := range []int{1024, 16 << 10, 64 << 10} {
+		b.Run(strconv.Itoa(size), func(b *testing.B) {
+			data := bytes.Repeat([]byte("archive payload "), size/16)
+			var encoder ArchiveEncoder
+			b.ReportAllocs()
+			b.SetBytes(int64(len(data)))
+			for b.Loop() {
+				if _, _, err := encoder.Prepare("org_example", 1, bytes.NewReader(data)); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func TestArchiveEncoderPreservesIndependentPayloads(t *testing.T) {
+	t.Parallel()
+	var encoder ArchiveEncoder
+	for _, test := range []struct{ organization, first, second string }{
+		{"org_alpha", strings.Repeat("first payload\n", 80), "second payload"},
+		{"org_beta", "short payload", strings.Repeat("another payload 世界\n", 200)},
+	} {
+		t.Run(test.organization, func(t *testing.T) {
+			t.Parallel()
+			firstRef, first, err := encoder.Prepare(test.organization, 1, strings.NewReader(test.first))
+			if err != nil {
+				t.Fatal(err)
+			}
+			broken := io.MultiReader(strings.NewReader("incomplete payload"), iotest.ErrReader(io.ErrUnexpectedEOF))
+			if _, _, err := encoder.Prepare(test.organization, 1, broken); !errors.Is(err, artifact.ErrStorage) {
+				t.Fatalf("partial reader failure = %v", err)
+			}
+			secondRef, second, err := encoder.Prepare(test.organization, 1, strings.NewReader(test.second))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, payload := range []struct {
+				ref  ArchiveReference
+				data []byte
+				want string
+			}{{firstRef, first, test.first}, {secondRef, second, test.second}} {
+				if err := payload.ref.Validate(test.organization); err != nil {
+					t.Fatal(err)
+				}
+				reader, err := gzip.NewReader(bytes.NewReader(payload.data))
+				if err != nil {
+					t.Fatal(err)
+				}
+				decoded, err := io.ReadAll(reader)
+				closeErr := reader.Close()
+				if err != nil || closeErr != nil || string(decoded) != payload.want {
+					t.Fatalf("archive changed after reuse: decoded=%q read=%v close=%v", decoded, err, closeErr)
+				}
 			}
 		})
 	}

@@ -31,6 +31,7 @@ func immutableContentStorageError(err error) error {
 }
 
 type changeContent struct {
+	encoder       *attachment.ArchiveEncoder
 	mu            sync.Mutex
 	call          entryauthority.ContentHandler
 	store         attachment.DetailStore
@@ -59,7 +60,7 @@ func (s *Service) contentContext(ctx context.Context) context.Context {
 	if call == nil && store == nil {
 		return ctx
 	}
-	return context.WithValue(ctx, changeContentKey{}, &changeContent{call: call, store: store, register: s.registerChangeContent, query: s.database.reader})
+	return context.WithValue(ctx, changeContentKey{}, &changeContent{encoder: &s.archiveEncoder, call: call, store: store, register: s.registerChangeContent, query: s.database.reader})
 }
 
 func (s *Service) changeContentMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
@@ -114,7 +115,11 @@ func prepareMeteredContent(ctx context.Context, organization string, data []byte
 			return ref, err
 		}
 	} else {
-		prepared, compressed, err := attachment.PrepareArchive(organization, 1, bytes.NewReader(data))
+		encode := attachment.PrepareArchive
+		if content.encoder != nil {
+			encode = content.encoder.Prepare
+		}
+		prepared, compressed, err := encode(organization, 1, bytes.NewReader(data))
 		if err != nil {
 			return prepared, err
 		}

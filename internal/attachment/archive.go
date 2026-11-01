@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
@@ -89,14 +90,43 @@ func validIssueArchiveKey(organization string, ref ArchiveReference) bool {
 	return err == nil && key == ref.Key && ref.UncompressedSize <= MaxSectionBytes
 }
 
+type ArchiveEncoder struct {
+	writers sync.Pool
+}
+
+func (e *ArchiveEncoder) Prepare(organization string, schema int, reader io.Reader) (ArchiveReference, []byte, error) {
+	return prepareArchive(organization, schema, reader, &e.writers)
+}
+
 func PrepareArchive(organization string, schema int, reader io.Reader) (ArchiveReference, []byte, error) {
+	return prepareArchive(organization, schema, reader, nil)
+}
+
+func prepareArchive(organization string, schema int, reader io.Reader, writers *sync.Pool) (ArchiveReference, []byte, error) {
 	if !validOrganization(organization) || schema < 1 {
 		return ArchiveReference{}, nil, ErrInvalid
 	}
 	var compressed bytes.Buffer
-	writer, err := gzip.NewWriterLevel(&compressed, 6)
-	if err != nil {
-		return ArchiveReference{}, nil, ErrInvalid
+	var writer *gzip.Writer
+	if writers != nil {
+		if cached, ok := writers.Get().(*gzip.Writer); ok {
+			writer = cached
+		}
+	}
+	if writer == nil {
+		var err error
+		writer, err = gzip.NewWriterLevel(&compressed, 6)
+		if err != nil {
+			return ArchiveReference{}, nil, ErrInvalid
+		}
+	} else {
+		writer.Reset(&compressed)
+	}
+	if writers != nil {
+		defer func() {
+			writer.Reset(io.Discard)
+			writers.Put(writer)
+		}()
 	}
 	size, err := io.Copy(writer, io.LimitReader(reader, MaxArchiveBytes+1))
 	if err = errors.Join(err, writer.Close()); err != nil {

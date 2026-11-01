@@ -19,6 +19,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent"
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/mcp"
@@ -33,6 +34,7 @@ const (
 )
 
 type Service struct {
+	archiveEncoder          attachment.ArchiveEncoder
 	changeColumnFamily      int
 	changeColumnAfter       any
 	changeSessionAfter      string
