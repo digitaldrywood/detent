@@ -382,10 +382,11 @@ func (s *Service) hostedSharedBillingEvent(c echo.Context) error {
 }
 
 func (s *Service) hostedSharedHealth(c echo.Context) error {
+	response := MigrationHealth{SchemaVersion: s.database.schemaVersion}
 	if !s.ready.Load() || s.database.health(c.Request().Context()) != nil {
-		return c.JSON(http.StatusServiceUnavailable, apiErrorResponse{Code: "not_ready", Message: "Tenant is not ready"})
+		return c.JSON(http.StatusServiceUnavailable, response)
 	}
-	return c.NoContent(http.StatusNoContent)
+	return c.JSON(http.StatusOK, response)
 }
 
 type hostedSharedOwner struct {

@@ -706,7 +706,7 @@ func TestHostedSharedOwnerBootstrap(t *testing.T) {
 	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT o.name, m.role FROM organizations o, hosted_members m WHERE m.user_id = 'user_creator'").Scan(&name, &role); err != nil || name != "Created organization" || role != "owner" {
 		t.Fatalf("bootstrap result = %q %q %v", name, role, err)
 	}
-	if response := f.serve(t, hostedSharedRequest{kind: cloudassert.KindService, method: http.MethodPost, target: "/internal/v1/health", body: `{}`}); response.Code != http.StatusNoContent {
+	if response := f.serve(t, hostedSharedRequest{kind: cloudassert.KindService, method: http.MethodPost, target: "/internal/v1/health", body: `{}`}); response.Code != http.StatusOK {
 		t.Fatalf("health = %d", response.Code)
 	}
 }

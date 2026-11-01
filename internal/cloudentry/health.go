@@ -2,6 +2,8 @@ package cloudentry
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -9,17 +11,36 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
+
+	"github.com/digitaldrywood/detent/internal/hubserver"
 )
 
-func (s *Service) checkTenant(ctx context.Context, organization Organization) error {
-	status, err := s.serviceRequest(ctx, organization, "/internal/v1/health", map[string]string{}, nil)
+var errTenantMigrating = errors.New("tenant migrations are running")
+
+func (s *Service) tenantMigrationHealth(ctx context.Context, organization Organization) (hubserver.MigrationHealth, error) {
+	status, body, err := s.serviceCall(ctx, organization, "/internal/v1/health", map[string]string{}, nil)
+	var health hubserver.MigrationHealth
 	if err != nil {
-		return err
+		return health, err
 	}
-	if status != http.StatusNoContent {
-		return fmt.Errorf("tenant health returned HTTP %d", status)
+	if status == http.StatusNoContent {
+		return health, nil
 	}
-	return nil
+	if err := json.Unmarshal(body, &health); err != nil {
+		return health, fmt.Errorf("decode tenant health: %w", err)
+	}
+	if status == http.StatusServiceUnavailable && health.MigrationsRunning {
+		return health, errTenantMigrating
+	}
+	if status != http.StatusOK {
+		return health, fmt.Errorf("tenant health returned HTTP %d", status)
+	}
+	return health, nil
+}
+
+func (s *Service) checkTenant(ctx context.Context, organization Organization) error {
+	_, err := s.tenantMigrationHealth(ctx, organization)
+	return err
 }
 
 func (s *Service) servingTenants(ctx context.Context, organizations []Organization) (int, int) {
@@ -34,6 +55,7 @@ func (s *Service) servingTenants(ctx context.Context, organizations []Organizati
 }
 
 type platformTenantHealth struct {
+	migration     hubserver.MigrationHealth
 	ID            string `json:"id"`
 	Name          string `json:"name"`
 	Running       bool   `json:"running"`
@@ -53,7 +75,9 @@ func (s *Service) tenantHealth(ctx context.Context, organizations []Organization
 	}
 	s.eachReadyTenant(ctx, ids, func(call context.Context, index int, organization Organization) {
 		row := &rows[index]
-		row.Running = s.checkTenant(call, organization) == nil
+		var err error
+		row.migration, err = s.tenantMigrationHealth(call, organization)
+		row.Running = err == nil
 		if allocation := s.config.Allocation; allocation != nil && organization.Managed {
 			if reader, ok := allocation.Launcher.(interface {
 				Health(string, time.Time) (*int64, *int)
@@ -88,10 +112,25 @@ func (s *Service) health(c echo.Context) error {
 	ctx := c.Request().Context()
 	organizations, err := s.registry.List(ctx)
 	status, code := "unavailable", http.StatusServiceUnavailable
+	var migration hubserver.MigrationHealth
 	if err == nil && s.auth.store.db.PingContext(ctx) == nil {
-		if expected, running := s.servingTenants(ctx, organizations); expected == running {
+		rows := s.tenantHealth(ctx, organizations)
+		running := 0
+		for _, row := range rows {
+			if row.Running {
+				running++
+			}
+			migration.SchemaVersion = max(migration.SchemaVersion, row.migration.SchemaVersion)
+			migration.MigrationsRunning = migration.MigrationsRunning || row.migration.MigrationsRunning
+		}
+		if running == len(rows) {
 			status, code = "ok", http.StatusOK
 		}
 	}
-	return c.JSON(code, map[string]string{"status": status, "version": s.config.Build.Version, "commit": s.config.Build.Commit})
+	return c.JSON(code, struct {
+		hubserver.MigrationHealth
+		Status  string `json:"status"`
+		Version string `json:"version"`
+		Commit  string `json:"commit"`
+	}{migration, status, s.config.Build.Version, s.config.Build.Commit})
 }

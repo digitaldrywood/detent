@@ -117,6 +117,10 @@ func (s hubMigrationStore) Insert(ctx context.Context, db goosedb.DBTxConn, requ
 	return s.Store.Insert(ctx, db, request)
 }
 
+func LatestSchemaVersion() (int64, error) {
+	return latestHubSchemaVersion()
+}
+
 func latestHubSchemaVersion() (int64, error) {
 	files, err := migrationFiles.ReadDir("migrations")
 	if err != nil {
