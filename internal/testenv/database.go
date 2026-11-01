@@ -14,7 +14,7 @@ import (
 // test its own private copy. The opener must not seed test-specific identities.
 func DatabaseTemplate(open func(context.Context, string) (io.Closer, error)) func(testing.TB) string {
 	image := sync.OnceValues(func() (_ []byte, resultErr error) {
-		dir, err := os.MkdirTemp("", "detent-database-fixture-")
+		dir, err := os.MkdirTemp("", "db-")
 		if err != nil {
 			return nil, err
 		}
@@ -35,7 +35,7 @@ func DatabaseTemplate(open func(context.Context, string) (io.Closer, error)) fun
 		if err != nil {
 			t.Fatalf("build migrated database fixture: %v", err)
 		}
-		path := filepath.Join(t.TempDir(), "database.db")
+		path := filepath.Join(TempDir(t), "database.db")
 		if err := os.WriteFile(path, data, 0o600); err != nil {
 			t.Fatalf("write migrated database fixture: %v", err)
 		}
