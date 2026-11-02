@@ -3,6 +3,7 @@ package artifact
 import (
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -17,6 +18,7 @@ type HTTPServer struct {
 	service    *Service
 	authorizer Authorizer
 	echo       *echo.Echo
+	now        func() time.Time
 }
 
 func NewHTTPServer(service *Service, authorizer Authorizer) (*HTTPServer, error) {
@@ -48,7 +50,37 @@ func NewHTTPServer(service *Service, authorizer Authorizer) (*HTTPServer, error)
 	return h, nil
 }
 
-func (h *HTTPServer) ServeHTTP(w http.ResponseWriter, r *http.Request) { h.echo.ServeHTTP(w, r) }
+func (h *HTTPServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	controller := http.NewResponseController(w)
+	now := h.now
+	if now == nil {
+		now = time.Now
+	}
+	if r.Body != nil {
+		r.Body = &progressBody{ReadCloser: r.Body, controller: controller, now: now}
+	}
+	defer func() { _ = controller.SetReadDeadline(time.Now()) }()
+	h.echo.ServeHTTP(w, r)
+}
+
+type progressBody struct {
+	io.ReadCloser
+	controller *http.ResponseController
+	now        func() time.Time
+}
+
+func (b *progressBody) Read(p []byte) (int, error) {
+	if err := b.controller.SetReadDeadline(b.now().Add(30 * time.Second)); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		return 0, err
+	}
+	n, err := b.ReadCloser.Read(p)
+	if errors.Is(err, io.EOF) {
+		if deadlineErr := b.controller.SetReadDeadline(time.Time{}); deadlineErr != nil && !errors.Is(deadlineErr, http.ErrNotSupported) {
+			return n, deadlineErr
+		}
+	}
+	return n, err
+}
 
 func (h *HTTPServer) boundary(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c echo.Context) error {
@@ -202,6 +234,8 @@ func (h *HTTPServer) object(c echo.Context) error {
 }
 
 func (h *HTTPServer) failure(c echo.Context, err error) error {
+	c.Response().Header().Set("Connection", "close")
+	_ = http.NewResponseController(c.Response().Writer).SetReadDeadline(time.Now())
 	status, code := http.StatusServiceUnavailable, "storage_unreachable"
 	for _, failure := range []struct {
 		err    error
