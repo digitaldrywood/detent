@@ -17,6 +17,9 @@ type workViewPreference struct {
 }
 
 func (s *Service) workViewPreference(c echo.Context) error {
+	if s.config.TenantRepository != nil {
+		return s.workViewPreferenceRecord(c)
+	}
 	ctx := c.Request().Context()
 	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancelRead()

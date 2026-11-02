@@ -219,6 +219,11 @@ func (d *dashboardDelivery) changed() {
 }
 
 func (d *dashboardDelivery) recover(ctx context.Context, conn nativeQueryer) error {
+	if d.service.config.TenantRepository != nil {
+		d.authorization++
+		d.changed()
+		return nil
+	}
 	var version, head int64
 	if err := conn.QueryRowContext(ctx, "SELECT sequence FROM dashboard_delivery_authorization").Scan(&version); err != nil {
 		return fmt.Errorf("read dashboard authorization watermark: %w", err)
@@ -351,7 +356,7 @@ func (d *dashboardDelivery) deliver(ctx context.Context) {
 			continue
 		}
 		readCtx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-		if !sub.more && sub.authorization == d.authorization {
+		if d.service.config.TenantRepository == nil && !sub.more && sub.authorization == d.authorization {
 			key := string(sub.scope.organization) + "/" + string(sub.scope.project)
 			head, ok := d.watermarks[key]
 			if !ok {
@@ -464,6 +469,9 @@ func (s *Service) dashboardPage(ctx context.Context, d *dashboardDelivery, sub *
 	}
 	scope := sub.scope
 	scope.credential = credential
+	if s.config.TenantRepository != nil && sub.board {
+		return s.dashboardBoardRecordPage(ctx, d, sub, scope)
+	}
 	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return false, err

@@ -12,6 +12,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -59,10 +60,15 @@ func (s *Service) workBoard(c echo.Context) error {
 	if len(input.ProjectIDs) == 0 || !validSavedWorkView(input) {
 		return s.nativeAPIError(c, nativePublicInvalid("Invalid working set or display state"))
 	}
+	if s.config.TenantRepository == nil || s.config.AccessRepository == nil {
+		return s.nativeAPIError(c, workItemStorageUnavailable())
+	}
 	scopes := make([]nativeScope, len(input.ProjectIDs))
 	for i, id := range input.ProjectIDs {
 		scopes[i] = nativeScope{organization: tracker.OrganizationID(org), project: tracker.ProjectID(id), credential: credential}
-		if err := s.requireHostedProject(ctx, s.database.reader, scopes[i], false); err != nil {
+		if err := s.accessRead(ctx, scopes[i].organization, func(r tenantstore.Reader) error {
+			return s.authorizeAccessScope(ctx, r, scopes[i], false)
+		}); err != nil {
 			return s.nativeAPIError(c, err)
 		}
 	}
@@ -78,9 +84,16 @@ func (s *Service) workBoard(c echo.Context) error {
 }
 
 func (s *Service) readWorkBoardProject(ctx context.Context, scope nativeScope, state savedWorkState) (workBoardProject, error) {
-	project, err := readNativeProject(ctx, s.database.reader, scope)
+	record, err := s.readProjectRecord(ctx, scope)
 	if err != nil {
 		return workBoardProject{}, fmt.Errorf("read project: %w", err)
+	}
+	if record.Core.DeletedAt != nil {
+		return workBoardProject{}, nativeNotFound()
+	}
+	project, err := s.projectRecordNative(ctx, record)
+	if err != nil {
+		return workBoardProject{}, fmt.Errorf("read project content: %w", err)
 	}
 	result := workBoardProject{Project: project, Issues: []tracker.NativeIssue{}, Cards: []tracker.NativeBoardCard{}, PageCount: 1}
 	params := url.Values{"include": {"board"}, "limit": {"100"}, "completed_window": {state.CompletedWindow}, "type": state.Type, "label": state.Label, "assignee": state.Assignee, "priority": state.Priority}

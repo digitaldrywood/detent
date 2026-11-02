@@ -28,6 +28,11 @@ func (s *session) WorkItemByID(ctx context.Context, project tracker.ProjectID, i
 	return corestore.WorkItem(row), mapError(ctx, err)
 }
 
+func (s *session) WorkItemByNumber(ctx context.Context, project tracker.ProjectID, number int64) (corestore.WorkItem, error) {
+	row, err := s.queries.GetWorkItemByNumber(ctx, pgquery.GetWorkItemByNumberParams{OrganizationID: s.organization, ProjectID: project, Number: number})
+	return corestore.WorkItem(row), mapError(ctx, err)
+}
+
 func (s *session) CreateWorkItem(ctx context.Context, record corestore.WorkItem) (corestore.WorkItem, error) {
 	if err := s.checkOrganization(record.OrganizationID); err != nil {
 		return corestore.WorkItem{}, err

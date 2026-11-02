@@ -63,6 +63,9 @@ type savedWorkView struct {
 }
 
 func (s *Service) savedWorkViews(c echo.Context) error {
+	if s.config.TenantRepository != nil {
+		return s.savedWorkViewsRecord(c)
+	}
 	ctx := c.Request().Context()
 	readCtx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()

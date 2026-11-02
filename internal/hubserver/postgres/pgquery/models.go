@@ -922,6 +922,55 @@ type HostedUsageWindow struct {
 	Amount         int64
 }
 
+type HostedWorkView struct {
+	OrganizationID   tracker.OrganizationID
+	ID               string
+	OwnerID          string
+	Name             string
+	Scope            string
+	ProjectID        *tracker.ProjectID
+	Layout           string
+	Tab              string
+	Search           string
+	Sort             string
+	CompletedWindow  string
+	CompletedFrom    string
+	CompletedTo      string
+	Archived         bool
+	CreatedBy        string
+	AllLanes         bool
+	OwnerSlot        int32
+	OrganizationSlot int32
+}
+
+type HostedWorkViewFavorite struct {
+	OrganizationID tracker.OrganizationID
+	ViewID         string
+	UserID         string
+}
+
+type HostedWorkViewPreference struct {
+	OrganizationID tracker.OrganizationID
+	UserID         string
+	Scope          string
+	ViewQuery      string
+}
+
+type HostedWorkViewProject struct {
+	OrganizationID tracker.OrganizationID
+	ViewID         string
+	ProjectID      tracker.ProjectID
+	Position       int32
+}
+
+type HostedWorkViewValue struct {
+	OrganizationID tracker.OrganizationID
+	ViewID         string
+	Kind           string
+	Position       int32
+	Value          string
+}
+
 type Issue struct {
 	OrganizationID         tracker.OrganizationID
 	ID                     int64
@@ -1110,6 +1159,89 @@ type NativeAttemptRun struct {
 	IssueID        int64
 }
 
+type NativeBoardAccessRevision struct {
+	OrganizationID tracker.OrganizationID
+	SubjectKind    string
+	SubjectID      string
+	Revision       int64
+}
+
+type NativeBoardCount struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	Archived       bool
+	State          string
+	Total          int64
+}
+
+type NativeBoardDelta struct {
+	OrganizationID       tracker.OrganizationID
+	ProjectID            tracker.ProjectID
+	Sequence             int64
+	WorkItemID           string
+	PreviousObjectKey    *string
+	PreviousSha256       *string
+	PreviousBytes        sql.NullInt64
+	PreviousContentBytes sql.NullInt64
+	CurrentObjectKey     *string
+	CurrentSha256        *string
+	CurrentBytes         sql.NullInt64
+	CurrentContentBytes  sql.NullInt64
+}
+
+type NativeBoardDirty struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	WorkItemID     string
+}
+
+type NativeBoardFilterValue struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	WorkItemID     string
+	Kind           string
+	Value          string
+}
+
+type NativeBoardItem struct {
+	OrganizationID        tracker.OrganizationID
+	ProjectID             tracker.ProjectID
+	WorkItemID            string
+	SourceRevision        int64
+	SourceEventSequence   int64
+	SourceProjectRevision int64
+	State                 string
+	Archived              bool
+	Terminal              bool
+	Running               bool
+	Dispatchable          bool
+	LaneRank              int32
+	PriorityRank          int32
+	ActivityMissing       bool
+	ActivityAt            *time.Time
+	Identifier            string
+	ClosedAt              *time.Time
+	ExpiresAt             *time.Time
+	ExecutionFence        int64
+	ActorPrincipalID      string
+	IssueType             string
+	VerificationState     string
+	Priority              sql.NullInt32
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
+	PayloadObjectKey      string
+	PayloadSHA256         string
+	PayloadBytes          int64
+	PayloadContentBytes   int64
+}
+
+type NativeBoardSequence struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	Sequence       int64
+	ReplayFloor    int64
+}
+
 type NativeCommand struct {
 	OrganizationID      tracker.OrganizationID
 	ActorID             string
@@ -1176,6 +1308,11 @@ type OrganizationSecretAudit struct {
 	KeyVersion     int32
 	Event          string
 	RecordedAt     time.Time
+}
+
+type OrganizationSlug struct {
+	OrganizationID tracker.OrganizationID
+	Slug           string
 }
 
 type PlatformAccessKey struct {
@@ -2177,6 +2314,7 @@ type SearchPosting struct {
 	Impact                  float64
 	UpdatedAt               time.Time
 	UpdatedAtSubmicrosecond int64
+	LiteralPositions        []int64
 }
 
 type SearchScopeDocument struct {

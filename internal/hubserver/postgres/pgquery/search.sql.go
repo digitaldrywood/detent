@@ -378,16 +378,18 @@ func (q *Queries) SearchPublish(ctx context.Context, arg SearchPublishParams) (i
 }
 
 const searchPublishLiterals = `-- name: SearchPublishLiterals :exec
-INSERT INTO search_postings(organization_id,scope,term,document_id,impact,updated_at,updated_at_submicrosecond)
-SELECT d.organization_id,p.scope,l.term,d.id,0,d.updated_at,d.updated_at_submicrosecond
+INSERT INTO search_postings(organization_id,scope,term,document_id,impact,updated_at,updated_at_submicrosecond,literal_positions)
+SELECT d.organization_id,p.scope,l.term,d.id,0,d.updated_at,d.updated_at_submicrosecond,position.positions::bigint[]
 FROM search_documents d JOIN search_postings p ON p.organization_id=d.organization_id AND p.document_id=d.id AND p.term='~all'
-CROSS JOIN unnest($1::text[]) l(term)
-WHERE d.organization_id=$2 AND d.id=$3 AND d.revision=$4
-ON CONFLICT(organization_id,scope,term,document_id) DO NOTHING
+CROSS JOIN unnest($1::text[]) WITH ORDINALITY l(term,ordinality)
+CROSS JOIN LATERAL (SELECT ($2::text[])[l.ordinality] AS positions) position
+WHERE d.organization_id=$3 AND d.id=$4 AND d.revision=$5
+ON CONFLICT(organization_id,scope,term,document_id) DO UPDATE SET literal_positions=EXCLUDED.literal_positions
 `
 
 type SearchPublishLiteralsParams struct {
 	Literals       []string
+	Positions      []string
 	OrganizationID tracker.OrganizationID
 	ID             string
 	Revision       int64
@@ -396,6 +398,7 @@ type SearchPublishLiteralsParams struct {
 func (q *Queries) SearchPublishLiterals(ctx context.Context, arg SearchPublishLiteralsParams) error {
 	_, err := q.db.ExecContext(ctx, searchPublishLiterals,
 		pq.Array(arg.Literals),
+		pq.Array(arg.Positions),
 		arg.OrganizationID,
 		arg.ID,
 		arg.Revision,

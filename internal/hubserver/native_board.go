@@ -25,6 +25,12 @@ UNION ALL SELECT work_item_id,(running=1 AND execution_fence=0) OR (expires_at<>
 WHERE work_item_id>? ORDER BY work_item_id LIMIT 1)`
 
 func (s *Service) maintainNativeBoard(ctx context.Context) {
+	if s.config.TenantRepository != nil {
+		if err := s.maintainBoardRecords(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			s.config.Logger.ErrorContext(ctx, "refresh native board card", "error", err)
+		}
+		return
+	}
 	ctx = s.runDetailContext(ctx)
 	if err := s.maintainTeamUnread(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		s.config.Logger.ErrorContext(ctx, "refresh team unread summary", "error", err)

@@ -127,7 +127,7 @@ func (c *Content) RefreshOne(ctx context.Context, repository Repository, organiz
 	if err != nil {
 		return true, err
 	}
-	prepared := Prepared{Document: document, Vector: Vector(document, text), Literals: LiteralTerms(document, text), Statistics: Describe(document, text)}
+	prepared := Prepared{Document: document, Vector: Vector(document, text), Literals: LiteralPostings(document, text), Statistics: Describe(document, text)}
 	if aggregateNeeded {
 		aggregate, err := c.Prepare(ctx, document, text)
 		if err != nil {

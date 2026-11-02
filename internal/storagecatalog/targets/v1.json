@@ -31,7 +31,9 @@
     "internal/hubserver/postgres/migrations/20261101173425_tenant_billing.sql",
     "internal/hubserver/postgres/migrations/20261101184348_work_item_relationships.sql",
     "internal/hubserver/postgres/migrations/20261101192143_conversation_records.sql",
+    "internal/hubserver/postgres/migrations/20261101195354_work_views.sql",
     "internal/hubserver/postgres/migrations/20261101195407_linked_issue_sources.sql",
+    "internal/hubserver/postgres/migrations/20261101203120_work_board.sql",
     "internal/hubserver/postgres/migrations/20261101203853_attempt_event_lookup.sql",
     "internal/hubserver/postgres/migrations/20261101204615_project_policy_authority.sql",
     "internal/hubserver/postgres/migrations/20261101214755_change_viewed_files.sql",
@@ -40,6 +42,7 @@
     "internal/hubserver/postgres/migrations/20261101215802_organization_model_selection.sql",
     "internal/hubserver/postgres/migrations/20261101222016_workspace_claim_items.sql",
     "internal/hubserver/postgres/migrations/20261101222620_claim_dispatch_facts.sql",
+    "internal/hubserver/postgres/migrations/20261101222626_organization_slug_records.sql",
     "internal/hubserver/postgres/migrations/20261101223629_go_test_receipts.sql",
     "internal/hubserver/postgres/migrations/20261101224000_runner_project_observations.sql",
     "internal/hubserver/postgres/migrations/20261101224500_runner_routing_records.sql",
@@ -50,6 +53,7 @@
     "internal/hubserver/postgres/migrations/20261101231201_search_refresh_progress.sql",
     "internal/hubserver/postgres/migrations/20261101231559_provider_claim_reservations.sql",
     "internal/hubserver/postgres/migrations/20261101232125_runner_provider_account_lookup.sql",
+    "internal/hubserver/postgres/migrations/20261101234907_search_literal_positions.sql",
     "internal/hubserver/postgres/migrations/20261102000712_runner_usage_retention.sql",
     "internal/hubserver/postgres/migrations/20261102000716_cost_monthly_ledger.sql",
     "internal/hubserver/postgres/migrations/20261102000838_policy_landing_gate.sql",
@@ -247,6 +251,17 @@
       },
       "contract": "Exact typed per-issue label membership; bounded indexed reads preserve organization and project isolation.",
       "family": "core",
+      "organization": "organization-owned"
+    },
+    "public.native_board_access_revisions": {
+      "columns": {
+        "organization_id": "text",
+        "revision": "bigint",
+        "subject_id": "text",
+        "subject_kind": "text"
+      },
+      "contract": "Track transactional board access invalidation revisions by organization, credential and member without mutating authorization rows.",
+      "family": "board",
       "organization": "organization-owned"
     },
     "public.runner_native_admission_observations": {

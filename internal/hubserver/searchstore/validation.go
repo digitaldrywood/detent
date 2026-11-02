@@ -51,7 +51,7 @@ func (d Document) Validate() error {
 }
 
 func (q Query) Validate() error {
-	if q.Kind != "work" && q.Kind != "thread" || q.Kind == "work" && q.ProjectID == "" || len(q.ProjectIDs) > 100 || q.Reporter != nil && (*q.Reporter == "" || q.Kind == "thread") {
+	if q.Kind != "work" && q.Kind != "thread" || q.Kind == "work" && q.ProjectID == "" || len(q.ProjectIDs) > 100 || len(q.Text) > MaxQueryTextBytes || q.Reporter != nil && (*q.Reporter == "" || q.Kind == "thread") {
 		return ErrInvalid
 	}
 	switch q.Scope {

@@ -192,9 +192,13 @@ func Vector(document Document, text Text) string {
 			}
 		}
 	}
-	if document.Kind == "issue" {
+	if document.Kind == "issue" || document.Kind == "comment" {
 		for _, prefix := range prefixes {
-			for _, column := range append([]string{text.Title, text.Body}, text.Labels...) {
+			columns := []string{text.Title, text.Body}
+			if document.Kind == "issue" {
+				columns = append(columns, text.Labels...)
+			}
+			for _, column := range columns {
 				runes := []rune(column)
 				for size := 1; size <= 3; size++ {
 					for i := 0; i+size <= len(runes); i++ {
@@ -362,8 +366,8 @@ func CandidateTerms(organization tracker.OrganizationID, query Query) []string {
 	return result
 }
 
-func LiteralTerms(document Document, text Text) []string {
-	if document.Kind != "issue" {
+func LiteralPostings(document Document, text Text) []LiteralPosting {
+	if document.Kind != "issue" && document.Kind != "comment" {
 		return nil
 	}
 	text = boundedText(text)
@@ -371,22 +375,56 @@ func LiteralTerms(document Document, text Text) []string {
 	if document.ProjectID != "" {
 		prefixes = append(prefixes, Prefix(document.OrganizationID, document.ProjectID))
 	}
-	seen := make(map[string]bool)
-	var terms []string
-	for _, column := range append([]string{text.Title, text.Body}, text.Labels...) {
+	positions := make(map[string][]int64)
+	columns := []string{text.Title, text.Body}
+	if document.Kind == "issue" {
+		columns = append(columns, text.Labels...)
+	}
+	for field, column := range columns {
 		runes := []rune(lowerASCII(column))
 		for size := 1; size <= 3; size++ {
 			for i := 0; i+size <= len(runes); i++ {
 				gram := hex.EncodeToString([]byte(string(runes[i : i+size])))
-				for _, prefix := range prefixes {
+				for prefixIndex, prefix := range prefixes {
 					term := prefix + "g" + gram
-					if !seen[term] && len(term) < 2048 {
-						terms = append(terms, term)
-						seen[term] = true
+					if len(term) >= 2048 {
+						continue
+					}
+					if size == 3 && document.ProjectID != "" && prefixIndex == len(prefixes)-1 {
+						positions[term] = append(positions[term], int64(field)<<32|int64(i))
+					} else if _, ok := positions[term]; !ok {
+						positions[term] = nil
 					}
 				}
 			}
 		}
 	}
+	terms := make([]string, 0, len(positions))
+	for term := range positions {
+		terms = append(terms, term)
+	}
+	slices.Sort(terms)
+	postings := make([]LiteralPosting, len(terms))
+	for index, term := range terms {
+		postings[index] = LiteralPosting{Term: term, Positions: positions[term]}
+	}
+	return postings
+}
+
+func LiteralQueryTerms(organization tracker.OrganizationID, project tracker.ProjectID, query string) []string {
+	runes := []rune(lowerASCII(query))
+	size := min(3, len(runes))
+	if size == 0 {
+		return nil
+	}
+	prefix := Prefix(organization, project) + "g"
+	terms := make([]string, 0, len(runes)-size+1)
+	for index := 0; index+size <= len(runes); index++ {
+		terms = append(terms, prefix+hex.EncodeToString([]byte(string(runes[index:index+size]))))
+	}
 	return terms
+}
+
+func LiteralHex(value string) string {
+	return hex.EncodeToString([]byte(lowerASCII(value)))
 }

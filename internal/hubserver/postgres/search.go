@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"strconv"
 	"strings"
 	"time"
 
@@ -126,9 +127,31 @@ func (s *session) PublishSearch(ctx context.Context, value searchstore.Prepared)
 		return false, mapError(ctx, err)
 	}
 	if count > 0 && len(value.Literals) > 0 {
-		err = s.queries.SearchPublishLiterals(ctx, pgquery.SearchPublishLiteralsParams{OrganizationID: s.organization, ID: d.ID, Revision: d.Revision, Literals: value.Literals})
+		terms := make([]string, len(value.Literals))
+		positions := make([]string, len(value.Literals))
+		for index, posting := range value.Literals {
+			terms[index] = posting.Term
+			positions[index] = literalPositionsArray(posting.Positions)
+		}
+		err = s.queries.SearchPublishLiterals(ctx, pgquery.SearchPublishLiteralsParams{OrganizationID: s.organization, ID: d.ID, Revision: d.Revision, Literals: terms, Positions: positions})
 	}
 	return count > 0, mapError(ctx, err)
+}
+
+func literalPositionsArray(positions []int64) string {
+	if len(positions) == 0 {
+		return "{}"
+	}
+	var result strings.Builder
+	result.WriteByte('{')
+	for index, position := range positions {
+		if index > 0 {
+			result.WriteByte(',')
+		}
+		result.WriteString(strconv.FormatInt(position, 10))
+	}
+	result.WriteByte('}')
+	return result.String()
 }
 
 func (s *session) Search(ctx context.Context, query searchstore.Query) ([]searchstore.Hit, error) {

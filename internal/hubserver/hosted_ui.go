@@ -226,7 +226,11 @@ func (s *Service) hostedEvents(c echo.Context) error {
 	if err := s.requireHostedProject(c.Request().Context(), s.database.auth(), initialScope, false); err != nil {
 		return s.hostedJSONError(c, http.StatusForbidden, "Project access is required for events")
 	}
-	if err := requireDashboardProject(c.Request().Context(), s.database.reader, initialScope); err != nil {
+	if s.config.TenantRepository != nil {
+		if err := s.requireBoardRecordProject(c.Request().Context(), initialScope); err != nil {
+			return s.nativeAPIError(c, err)
+		}
+	} else if err := requireDashboardProject(c.Request().Context(), s.database.reader, initialScope); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	workspaceID := c.QueryParam("workspace")

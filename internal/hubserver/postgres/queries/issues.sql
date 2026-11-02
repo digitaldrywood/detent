@@ -1,3 +1,9 @@
+-- name: GetWorkItemByNumber :one
+SELECT * FROM issues
+WHERE organization_id=sqlc.arg(organization_id)
+  AND project_id=sqlc.arg(project_id)
+  AND number=sqlc.arg(number);
+
 -- name: GetWorkItem :one
 SELECT * FROM issues
 WHERE organization_id=sqlc.arg(organization_id)

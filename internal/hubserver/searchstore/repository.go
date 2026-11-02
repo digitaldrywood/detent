@@ -13,6 +13,7 @@ import (
 const CandidateLimit = 2000
 const TermLimit = 32
 const LexemeLimit = 128
+const MaxQueryTextBytes = 512
 
 var ErrInvalid = errors.New("invalid search record or query")
 var ErrIndexPending = errors.New("search index refresh is pending")
@@ -57,8 +58,13 @@ type Prepared struct {
 	Payload    attachment.ArchiveReference
 	Document   Document
 	Vector     string
-	Literals   []string
+	Literals   []LiteralPosting
 	Statistics Statistics
+}
+
+type LiteralPosting struct {
+	Term      string
+	Positions []int64
 }
 
 type Statistics struct {

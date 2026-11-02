@@ -266,7 +266,7 @@ func (s *Service) readIssues(ctx context.Context, scope nativeScope, params url.
 
 func (s *Service) readIssuesProjection(ctx context.Context, scope nativeScope, params url.Values, compact bool) (tracker.NativeIssuePage, error) {
 	if s.config.TenantRepository != nil {
-		return tracker.NativeIssuePage{}, workItemStorageUnavailable()
+		return s.readBoardRecords(ctx, scope, params)
 	}
 	ctx = s.runDetailContext(ctx)
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)

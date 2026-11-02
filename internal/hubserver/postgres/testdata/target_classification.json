@@ -59,6 +59,11 @@
     "ownership": "organization-owned",
     "scope": "issue_labels.organization_id; project_id and work_item_id reference issues"
   },
+  "public/native_board_access_revisions": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "native_board_access_revisions.organization_id; subject_kind and subject_id identify one tenant-local invalidation counter"
+  },
   "public/runner_native_admission_observations": {
     "inline_payloads": [],
     "ownership": "organization-owned",

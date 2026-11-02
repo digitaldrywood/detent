@@ -26,6 +26,11 @@ sql:
               import: "github.com/digitaldrywood/detent/internal/tracker"
               type: "ProjectID"
               pointer: true
+          - column: "hosted_work_views.project_id"
+            go_type:
+              import: "github.com/digitaldrywood/detent/internal/tracker"
+              type: "ProjectID"
+              pointer: true
           - db_type: "text"
             nullable: true
             go_type:

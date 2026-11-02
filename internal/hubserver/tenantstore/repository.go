@@ -17,10 +17,12 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type Reader interface {
+	viewstore.Reader
 	billingstore.Reader
 	claimstore.Reader
 	accessstore.Reader
@@ -37,6 +39,7 @@ type Reader interface {
 }
 
 type Writer interface {
+	viewstore.Writer
 	billingstore.Writer
 	claimstore.Writer
 	accessstore.Writer
@@ -55,6 +58,10 @@ type Writer interface {
 type Repository interface {
 	ReadTenant(context.Context, tracker.OrganizationID, corestore.Workload, func(Reader) error) error
 	WriteTenant(context.Context, tracker.OrganizationID, corestore.Workload, func(Writer) error) error
+}
+
+type SnapshotRepository interface {
+	ReadTenantSnapshot(context.Context, tracker.OrganizationID, corestore.Workload, func(Reader) error) error
 }
 
 type ProjectActor struct {

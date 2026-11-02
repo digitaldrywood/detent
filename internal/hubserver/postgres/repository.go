@@ -55,12 +55,16 @@ func (r *Repository) Write(ctx context.Context, organization tracker.Organizatio
 }
 
 func (r *Repository) transaction(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, readOnly bool, run func(*session) error) error {
+	return r.transactionIsolation(ctx, organization, workload, readOnly, sql.LevelReadCommitted, run)
+}
+
+func (r *Repository) transactionIsolation(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, readOnly bool, isolation sql.IsolationLevel, run func(*session) error) error {
 	release, err := r.acquire(ctx, workload)
 	if err != nil {
 		return err
 	}
 	defer release()
-	tx, err := r.runtime.Begin(ctx, organization, &sql.TxOptions{Isolation: sql.LevelReadCommitted, ReadOnly: readOnly})
+	tx, err := r.runtime.Begin(ctx, organization, &sql.TxOptions{Isolation: isolation, ReadOnly: readOnly})
 	if err != nil {
 		return mapError(ctx, err)
 	}

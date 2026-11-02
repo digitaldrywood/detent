@@ -62,12 +62,13 @@ WHERE organization_id = sqlc.arg(organization_id) AND id = sqlc.arg(id) AND revi
 ;
 
 -- name: SearchPublishLiterals :exec
-INSERT INTO search_postings(organization_id,scope,term,document_id,impact,updated_at,updated_at_submicrosecond)
-SELECT d.organization_id,p.scope,l.term,d.id,0,d.updated_at,d.updated_at_submicrosecond
+INSERT INTO search_postings(organization_id,scope,term,document_id,impact,updated_at,updated_at_submicrosecond,literal_positions)
+SELECT d.organization_id,p.scope,l.term,d.id,0,d.updated_at,d.updated_at_submicrosecond,position.positions::bigint[]
 FROM search_documents d JOIN search_postings p ON p.organization_id=d.organization_id AND p.document_id=d.id AND p.term='~all'
-CROSS JOIN unnest(sqlc.arg(literals)::text[]) l(term)
+CROSS JOIN unnest(sqlc.arg(literals)::text[]) WITH ORDINALITY l(term,ordinality)
+CROSS JOIN LATERAL (SELECT (sqlc.arg(positions)::text[])[l.ordinality] AS positions) position
 WHERE d.organization_id=sqlc.arg(organization_id) AND d.id=sqlc.arg(id) AND d.revision=sqlc.arg(revision)
-ON CONFLICT(organization_id,scope,term,document_id) DO NOTHING;
+ON CONFLICT(organization_id,scope,term,document_id) DO UPDATE SET literal_positions=EXCLUDED.literal_positions;
 
 -- name: SearchCandidates :many
 WITH scoped AS NOT MATERIALIZED (

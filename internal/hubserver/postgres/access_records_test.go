@@ -78,6 +78,15 @@ func TestAccessTenantSchemaEnforcesIsolation(t *testing.T) {
 	if _, err := platform.ExecContext(t.Context(), `SELECT * FROM api_tokens`); err == nil {
 		t.Fatal("platform authority read tenant credentials")
 	}
+	for _, table := range []string{"api_tokens", "organization_slugs", "hosted_work_view_preferences", "hosted_work_views", "hosted_work_view_values", "hosted_work_view_projects", "hosted_work_view_favorites", "native_board_items", "native_board_filter_values", "native_board_counts", "native_board_sequences", "native_board_deltas", "native_board_dirty", "native_board_access_revisions"} {
+		var allowed bool
+		if err := platform.QueryRowContext(t.Context(), `SELECT has_table_privilege(current_user,$1,'SELECT,INSERT,UPDATE,DELETE')`, table).Scan(&allowed); err != nil {
+			t.Fatal(err)
+		}
+		if allowed {
+			t.Errorf("platform authority can access tenant table %s", table)
+		}
+	}
 }
 
 func TestAccessCurrentAuthority(t *testing.T) {

@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +14,63 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+func TestLiteralPostingsPreserveExactUnicodeSubstringsWithoutTextCopies(t *testing.T) {
+	document := Document{OrganizationID: "org_example", ProjectID: "prj_example", Kind: "issue"}
+	text := Text{Title: "xAbC—東京", Body: "body\x00tail", Labels: []string{"short"}}
+	postings := LiteralPostings(document, text)
+	byTerm := make(map[string][]int64, len(postings))
+	for _, posting := range postings {
+		byTerm[posting.Term] = posting.Positions
+		if strings.Contains(posting.Term, "body") || strings.Contains(posting.Term, "東京") || strings.ContainsRune(posting.Term, '\x00') {
+			t.Fatalf("posting copied source text: %q", posting.Term)
+		}
+	}
+
+	query := "bc—東"
+	terms := LiteralQueryTerms(document.OrganizationID, document.ProjectID, query)
+	if len(terms) != 2 {
+		t.Fatalf("query grams=%v", terms)
+	}
+	for index, term := range terms {
+		positions, ok := byTerm[term]
+		want := int64(index + 2)
+		if !ok || !slices.Contains(positions, want) {
+			t.Fatalf("gram %q positions=%v want %d", term, positions, want)
+		}
+	}
+	globalTerms := LiteralQueryTerms(document.OrganizationID, "", query)
+	if len(globalTerms) != len(terms) || len(byTerm[globalTerms[0]]) != 0 {
+		t.Fatalf("organization-wide posting stored project-only positions: %v", byTerm[globalTerms[0]])
+	}
+
+	short := LiteralQueryTerms(document.OrganizationID, document.ProjectID, "東京")
+	if len(short) != 1 || len(byTerm[short[0]]) != 0 {
+		t.Fatalf("short-query membership=%v positions=%v", short, byTerm[short[0]])
+	}
+	if strings.ContainsRune(LiteralHex("\x00界"), '\x00') {
+		t.Fatal("hex query contains NUL")
+	}
+}
+
+func TestQueryRejectsUnboundedLiteralTermExpansion(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		text string
+		want error
+	}{
+		{name: "maximum accepted", text: strings.Repeat("x", MaxQueryTextBytes)},
+		{name: "over maximum", text: strings.Repeat("x", MaxQueryTextBytes+1), want: ErrInvalid},
+		{name: "multibyte over maximum", text: strings.Repeat("界", MaxQueryTextBytes/3+1), want: ErrInvalid},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := (Query{Kind: "work", ProjectID: "prj_example", Text: test.text, Limit: 1}).Validate()
+			if (err == nil) != (test.want == nil) {
+				t.Fatalf("Validate() error=%v want=%v", err, test.want)
+			}
+		})
+	}
+}
 
 type searchPopulation struct {
 	Repository

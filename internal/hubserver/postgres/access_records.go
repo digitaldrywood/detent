@@ -359,7 +359,7 @@ func (s *session) DeleteAccessInvitation(ctx context.Context, id string) (string
 }
 
 func (s *session) DeleteAccessProjectGrant(ctx context.Context, user string, project tracker.ProjectID) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM hosted_project_grants WHERE organization_id=$1 AND user_id=$2 AND project_id=$3`+s.accessLock(), s.organization, user, project)
+	_, err := s.db.ExecContext(ctx, `DELETE FROM hosted_project_grants WHERE organization_id=$1 AND user_id=$2 AND project_id=$3`, s.organization, user, project)
 	return mapError(ctx, err)
 }
 

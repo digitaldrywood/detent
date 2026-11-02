@@ -202,6 +202,7 @@ type Reader interface {
 	AccessProjectGrants(context.Context, string, tracker.ProjectID, int) ([]ProjectGrant, error)
 	AccessTokenGrants(context.Context, string, tracker.ProjectID, int) ([]TokenGrant, error)
 	AccessOrganization(context.Context) (Organization, error)
+	AccessOrganizationSlug(context.Context, string) (bool, error)
 	AccessTenant(context.Context) (Tenant, error)
 	AccessCredential(context.Context, string) (Credential, error)
 	AccessMember(context.Context, string) (Member, error)
@@ -233,6 +234,8 @@ type Writer interface {
 	SetAccessTokenGrant(context.Context, TokenGrant) error
 	Reader
 	CreateAccessOrganization(context.Context, Organization) error
+	AddAccessOrganizationSlug(context.Context, string) error
+	SetAccessOrganizationSlug(context.Context, *string, string) error
 	CreateAccessTenant(context.Context, Tenant) error
 	CreateAccessCredential(context.Context, Credential) error
 	CreateAccessMember(context.Context, Member) error
