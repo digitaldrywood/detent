@@ -96,7 +96,7 @@ func TestNativeReleasePickPublication(t *testing.T) {
 			case "native repository":
 				exec("UPDATE projects SET github_repository_enabled=0 WHERE id=?", f.project.ID)
 				want = http.StatusOK
-				connector, _, err := f.service.projectConnector(t.Context(), f.service.database.reader, nativeScope{organization: f.project.OrganizationID, project: f.project.ID})
+				connector, _, err := projectConnector(t.Context(), f.service.database.reader, nativeScope{organization: f.project.OrganizationID, project: f.project.ID})
 				if err != nil || connector != nil {
 					t.Fatalf("disabled repository connector=%+v error=%v", connector, err)
 				}

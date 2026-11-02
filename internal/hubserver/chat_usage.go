@@ -34,10 +34,15 @@ func chatUsageCost(price UsagePrice, tokens runner.AgentTokenCounts) float64 {
 }
 
 func (d *database) RecordConversationUsage(ctx context.Context, usage ConversationUsage) error {
-	if d.billingRepository == nil {
-		return errors.New("billing repository is unavailable")
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin conversation usage: %w", err)
 	}
-	return d.recordConversationUsagePostgres(ctx, usage)
+	defer func() { _ = tx.Rollback() }()
+	if err := d.recordConversationUsage(ctx, tx, usage); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (d *database) recordConversationUsage(ctx context.Context, tx *sql.Tx, usage ConversationUsage) error {
@@ -143,44 +148,50 @@ func chatBillingWindow(now time.Time, subscription billing.Snapshot) usageWindow
 }
 
 func (d *database) chatUsageSummary(ctx context.Context, organization tracker.OrganizationID, window usageWindow, projects []string) (chatUsageSummary, error) {
-	summary := chatUsageSummary{Range: window}
-	if d.billingRepository == nil {
-		return summary, errors.New("billing repository is unavailable")
-	}
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
-	err := d.billingRepository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
-		row, err := r.ConversationUsageSummary(ctx, window.From, window.To, projects)
+	summary := chatUsageSummary{Range: window}
+	query := `SELECT coalesce(sum(input),0),coalesce(sum(cached_input),0),coalesce(sum(output),0),coalesce(sum(reasoning_output),0),count(*),coalesce(sum(price_id IS NULL),0),coalesce(sum(cost_usd),0)
+ FROM conversation_usage WHERE organization_id=? AND occurred_at>=? AND occurred_at<?`
+	args := []any{organization, window.From.UnixMicro(), window.To.UnixMicro()}
+	if projects != nil {
+		encoded, err := sqlList(projects)
 		if err != nil {
-			return err
+			return summary, err
 		}
-		summary.Input, summary.CachedInput, summary.Output, summary.ReasoningOutput = row.Input, row.CachedInput, row.Output, row.ReasoningOutput
-		summary.Turns, summary.UnpricedTurns, summary.CostUSD = row.Turns, row.UnpricedTurns, row.CostUSD
-		summary.Tokens = row.Input + row.Output
-		return nil
-	})
+		query += " AND project_id IN (SELECT value FROM sql_rows(?))"
+		args = append(args, encoded)
+	}
+	err := queryRowSQL(ctx, d.reader, query, args...).Scan(&summary.Input, &summary.CachedInput, &summary.Output, &summary.ReasoningOutput, &summary.Turns, &summary.UnpricedTurns, &summary.CostUSD)
+	summary.Tokens = summary.Input + summary.Output
 	return summary, err
 }
 
 func (s *Service) chatUsageRows(ctx context.Context, window usageWindow, projects []string) ([]usageRow, error) {
-	if s.database.billingRepository == nil {
-		return nil, errors.New("billing repository is unavailable")
-	}
-	if len(projects) == 0 {
-		return []usageRow{}, nil
-	}
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
+	if len(projects) == 0 {
+		return nil, nil
+	}
+	encoded, err := sqlList(projects)
+	if err != nil {
+		return nil, err
+	}
+	result, err := querySQL(ctx, s.database.reader, `SELECT turn_id,occurred_at,provider,model,input,cached_input,output,coalesce(cost_usd,0),coalesce(cache_savings_usd,0) FROM conversation_usage WHERE organization_id=? AND occurred_at>=? AND occurred_at<? AND project_id IN (SELECT value FROM sql_rows(?)) ORDER BY occurred_at,turn_id`, s.config.Hosted.OrganizationID, window.From.UnixMicro(), window.To.UnixMicro(), encoded)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = result.Close() }()
 	var rows []usageRow
-	err := s.database.billingRepository.ReadTenant(ctx, tracker.OrganizationID(s.config.Hosted.OrganizationID), corestore.Serving, func(r tenantstore.Reader) error {
-		buckets, err := r.ConversationUsageBuckets(ctx, window.From, window.To, projects, window.Hourly)
-		if err != nil {
-			return err
+	for result.Next() {
+		row := usageRow{Currency: "USD", Chat: true}
+		var at int64
+		if err := result.Scan(&row.AttemptID, &at, &row.Provider, &row.Model, &row.Input, &row.CachedInput, &row.Output, &row.Cost, &row.CacheSavings); err != nil {
+			return nil, err
 		}
-		for _, bucket := range buckets {
-			rows = append(rows, usageRow{Chat: true, ChatSessions: bucket.Turns, Period: bucket.Period, Provider: bucket.Provider, Model: bucket.Model, Input: bucket.Input, CachedInput: bucket.CachedInput, Output: bucket.Output, Cost: bucket.CostUSD, CacheSavings: bucket.CacheSavingsUSD, Currency: "USD"})
-		}
-		return nil
-	})
-	return rows, err
+		row.AttemptID = "chat:" + row.AttemptID
+		row.Period = time.UnixMicro(at).UTC()
+		rows = append(rows, row)
+	}
+	return rows, errors.Join(result.Err(), result.Close())
 }

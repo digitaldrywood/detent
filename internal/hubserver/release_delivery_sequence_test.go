@@ -56,7 +56,7 @@ func TestNativeSequentialReleaseDeliveries(t *testing.T) {
 	git("checkout", "-b", "pick/second", frozen)
 	git("cherry-pick", "-x", secondSource)
 	secondPick := git("rev-parse", "HEAD")
-	connector, _, _, err := f.service.projectRepositoryBinding(t.Context(), f.service.database.reader, nativeScope{organization: f.project.OrganizationID, project: f.project.ID})
+	connector, _, _, err := projectRepositoryBinding(t.Context(), f.service.database.reader, nativeScope{organization: f.project.OrganizationID, project: f.project.ID})
 	if err != nil || connector == nil {
 		t.Fatalf("repository binding: %v", err)
 	}

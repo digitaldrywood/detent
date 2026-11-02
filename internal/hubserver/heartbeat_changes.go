@@ -8,70 +8,18 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
-	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type heartbeatPosition struct {
-	Version  int       `json:"cursor_version"`
 	Sequence int64     `json:"sequence"`
 	Observed time.Time `json:"observed_at"`
-}
-
-const (
-	sqliteHeartbeatCursorVersion   = 1
-	postgresHeartbeatCursorVersion = 2
-)
-
-func readHeartbeatChangesTenant(ctx context.Context, reader tenantstore.Reader, scope nativeScope, cursor nativeCursor, key []byte, reset bool, digest, policyID string, now time.Time) (*runnerauth.HeartbeatChanges, error) {
-	changes := &runnerauth.HeartbeatChanges{Reset: reset, CapabilitiesDigest: digest, PolicyID: policyID, Items: []runnerauth.HeartbeatItem{}}
-	var previous heartbeatPosition
-	if !reset && (json.Unmarshal([]byte(cursor.After), &previous) != nil || previous.Version != postgresHeartbeatCursorVersion || previous.Sequence < 0 || previous.Observed.IsZero() || previous.Observed.After(now)) {
-		changes.Reset = true
-	}
-	sequence, err := reader.ProjectEventSequence(ctx, scope.project)
-	if err != nil {
-		return nil, err
-	}
-	if !changes.Reset && (previous.Sequence > sequence || sequence-previous.Sequence > 200) {
-		changes.Reset = true
-	}
-	if !changes.Reset {
-		projectChanges, err := reader.ProjectChanges(ctx, scope.project, previous.Sequence, sequence, previous.Observed, 201)
-		if err != nil {
-			return nil, err
-		}
-		if len(projectChanges) > 200 {
-			changes.Reset = true
-		} else {
-			for _, projectChange := range projectChanges {
-				changes.Items = append(changes.Items, runnerauth.HeartbeatItem{ID: projectChange.WorkItemID, Revision: tracker.Revision(projectChange.Revision), LastActivityAt: projectChange.LastActivityAt})
-			}
-		}
-	}
-	if changes.Reset {
-		changes.Items = []runnerauth.HeartbeatItem{}
-	}
-	candidates, err := reader.CandidatePage(ctx, claimstore.CandidateQuery{ProjectID: scope.project, Scope: string(scope.project), RunnerSelection: true, AvailableAt: now, Limit: 1})
-	if err != nil {
-		return nil, err
-	}
-	changes.Claimable = len(candidates.Items) > 0
-	position, err := json.Marshal(heartbeatPosition{Version: postgresHeartbeatCursorVersion, Sequence: sequence, Observed: now})
-	if err != nil {
-		return nil, err
-	}
-	cursor.After, cursor.Expires = string(position), now.Add(time.Hour).Unix()
-	changes.Cursor, err = encodeNativeCursor(cursor, key)
-	return changes, err
 }
 
 func readHeartbeatChanges(ctx context.Context, tx *sql.Tx, scope nativeScope, cursor nativeCursor, key []byte, reset bool, digest, policyID string, now time.Time) (*runnerauth.HeartbeatChanges, error) {
 	changes := &runnerauth.HeartbeatChanges{Reset: reset, CapabilitiesDigest: digest, PolicyID: policyID, Items: []runnerauth.HeartbeatItem{}}
 	var previous heartbeatPosition
-	if !reset && (json.Unmarshal([]byte(cursor.After), &previous) != nil || previous.Version != sqliteHeartbeatCursorVersion || previous.Sequence < 0 || previous.Observed.IsZero() || previous.Observed.After(now)) {
+	if !reset && (json.Unmarshal([]byte(cursor.After), &previous) != nil || previous.Sequence < 0 || previous.Observed.IsZero() || previous.Observed.After(now)) {
 		changes.Reset = true
 	}
 	var sequence int64
@@ -121,7 +69,7 @@ WHERE organization_id=? AND project_id=? AND (native_id IN (
 		return nil, err
 	}
 	changes.Claimable = len(ids) > 0
-	position, err := json.Marshal(heartbeatPosition{Version: sqliteHeartbeatCursorVersion, Sequence: sequence, Observed: now})
+	position, err := json.Marshal(heartbeatPosition{Sequence: sequence, Observed: now})
 	if err != nil {
 		return nil, err
 	}

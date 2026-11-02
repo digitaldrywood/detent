@@ -85,16 +85,6 @@ func historyEvent(t *testing.T, c *eventstore.Content, org tracker.OrganizationI
 	return row
 }
 
-func historyEventForItem(t *testing.T, c *eventstore.Content, org tracker.OrganizationID, id string, item tracker.NativeWorkItemID) eventstore.Event {
-	t.Helper()
-	value := tracker.CollaborationEvent{ID: id, OrganizationID: org, ProjectID: "prj_first", AggregateType: "issue", AggregateID: item, Type: "issue.edited", SchemaVersion: 1, Actor: historyActor(), RecordedAt: historyAt(), Data: tracker.CollaborationData{Revision: 2, Fields: []string{"title"}, Reason: "Example reason"}}
-	row, err := c.PrepareEvent(t.Context(), org, historyJSON(t, value))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return row
-}
-
 type historyFixture struct {
 	content  *eventstore.Content
 	objects  *historyObjects
@@ -677,103 +667,6 @@ func TestEventChangeSequenceContention(t *testing.T) {
 				t.Fatal(err)
 			}
 		})
-	}
-}
-
-func TestProjectEventCursorSerializesDifferentIssuesWithoutReplayGaps(t *testing.T) {
-	admin := template.Database(t)
-	r, _ := repositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 3, BackgroundConnections: 1})
-	seedAccessTarget(t, admin, r, "org_first")
-	f := seedHistory(t, r, "org_first", "project_cursor")
-	firstEvent := historyEventForItem(t, f.content, "org_first", "project_cursor_first", "wi_first_1")
-	secondEvent := historyEventForItem(t, f.content, "org_first", "project_cursor_second", "wi_first_2")
-	firstSequence, secondSequence := int64(0), int64(0)
-	ready := make(chan struct{})
-	release := make(chan struct{})
-	var releaseOnce sync.Once
-	defer releaseOnce.Do(func() { close(release) })
-	first := startRepositoryTask(t, func(ctx context.Context) error {
-		return r.WriteRecords(ctx, "org_first", corestore.Serving, func(w eventstore.Writer) error {
-			stored, err := w.AppendEvent(ctx, firstEvent)
-			if err != nil {
-				return err
-			}
-			firstSequence = stored.ProjectSequence
-			close(ready)
-			select {
-			case <-release:
-				return nil
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-		})
-	})
-	waitRepositorySignal(t, ready)
-	second := startRepositoryTask(t, func(ctx context.Context) error {
-		return r.WriteRecords(ctx, "org_first", corestore.Serving, func(w eventstore.Writer) error {
-			stored, err := w.AppendEvent(ctx, secondEvent)
-			if err != nil {
-				return err
-			}
-			secondSequence = stored.ProjectSequence
-			return nil
-		})
-	})
-	testenv.WaitUntil(t, t.Context(), func() error {
-		var waiting bool
-		if err := admin.QueryRowContext(t.Context(), `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock')`).Scan(&waiting); err != nil {
-			return err
-		}
-		if !waiting {
-			return errors.New("second project event has not reached the cursor lock")
-		}
-		return nil
-	})
-	releaseOnce.Do(func() { close(release) })
-	if err := first.wait(t); err != nil {
-		t.Fatal(err)
-	}
-	if err := second.wait(t); err != nil {
-		t.Fatal(err)
-	}
-	if firstSequence != 2 || secondSequence != 3 {
-		t.Fatalf("project event sequences=(%d,%d), want=(2,3)", firstSequence, secondSequence)
-	}
-	var changes []eventstore.ProjectChange
-	var highwater int64
-	if err := r.ReadRecords(t.Context(), "org_first", corestore.Serving, func(reader eventstore.Reader) error {
-		var err error
-		highwater, err = reader.ProjectEventSequence(t.Context(), "prj_first")
-		if err != nil {
-			return err
-		}
-		changes, err = reader.ProjectChanges(t.Context(), "prj_first", 1, highwater, historyAt().Add(time.Hour), 201)
-		return err
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if highwater != 3 || len(changes) != 2 || changes[0].WorkItemID != "wi_first_1" || changes[1].WorkItemID != "wi_first_2" {
-		t.Fatalf("project change page highwater=%d changes=%+v", highwater, changes)
-	}
-	var replay eventstore.Event
-	if err := r.WriteRecords(t.Context(), "org_first", corestore.Serving, func(w eventstore.Writer) error {
-		var err error
-		replay, err = w.AppendEvent(t.Context(), firstEvent)
-		return err
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if replay.ProjectSequence != firstSequence {
-		t.Fatalf("event replay project sequence=%d, want=%d", replay.ProjectSequence, firstSequence)
-	}
-	if err := r.ReadRecords(t.Context(), "org_first", corestore.Serving, func(reader eventstore.Reader) error {
-		sequence, err := reader.ProjectEventSequence(t.Context(), "prj_first")
-		if err == nil && sequence != highwater {
-			t.Errorf("replay advanced project cursor to %d, want %d", sequence, highwater)
-		}
-		return err
-	}); err != nil {
-		t.Fatal(err)
 	}
 }
 

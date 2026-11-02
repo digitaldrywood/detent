@@ -14,9 +14,6 @@ import (
 
 	"github.com/labstack/echo/v4"
 
-	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
-	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -158,8 +155,8 @@ func pullRequestRefreshLimited() error {
 // projectConnector reads the project's GitHub connector binding. It answers a
 // nil connector for a project that has no repository bound or has the
 // repository disabled, which is the pull request contract's "projects without a GitHub connector".
-func (s *Service) projectConnector(ctx context.Context, query nativeQueryer, scope nativeScope) (*pullRequestConnector, int64, error) {
-	connector, repositoryID, enabled, err := s.projectRepositoryBinding(ctx, query, scope)
+func projectConnector(ctx context.Context, query nativeQueryer, scope nativeScope) (*pullRequestConnector, int64, error) {
+	connector, repositoryID, enabled, err := projectRepositoryBinding(ctx, query, scope)
 	if err != nil || !enabled || repositoryID == 0 {
 		return nil, 0, err
 	}
@@ -169,25 +166,7 @@ func (s *Service) projectConnector(ctx context.Context, query nativeQueryer, sco
 // projectRepositoryBinding reads the configured source repository independently
 // of whether its GitHub tracker integration is enabled. Explicit native release
 // delivery verifies this binding without enabling that integration.
-func (s *Service) projectRepositoryBinding(ctx context.Context, query nativeQueryer, scope nativeScope) (*pullRequestConnector, int64, bool, error) {
-	if s.config.TenantRepository != nil {
-		var project projectstore.Record
-		if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-			var err error
-			project, err = r.ProjectRecord(ctx, scope.project)
-			return err
-		}); err != nil {
-			return nil, 0, false, err
-		}
-		if project.Core.DeletedAt != nil || project.Core.Profile != "native" || !validCheckoutRepository(project.Settings.CheckoutRepository) {
-			return nil, 0, false, nil
-		}
-		verified, err := s.verifiedProjectCheckout(ctx, query, scope, project.Settings.CheckoutRepository, s.config.now().UTC())
-		if err != nil || !verified {
-			return nil, 0, false, err
-		}
-		return &pullRequestConnector{Provider: "github", Repository: project.Settings.CheckoutRepository}, 0, project.Settings.RepositoryEnabled, nil
-	}
+func projectRepositoryBinding(ctx context.Context, query nativeQueryer, scope nativeScope) (*pullRequestConnector, int64, bool, error) {
 	var enabled bool
 	var repositoryID sql.NullInt64
 	var owner, name sql.NullString
@@ -200,7 +179,7 @@ WHERE p.organization_id = ? AND p.id = ?`, scope.organization, scope.project).Sc
 	}
 	if !repositoryID.Valid || !owner.Valid || !name.Valid {
 		if profile == "native" && validCheckoutRepository(checkout) {
-			verified, err := s.verifiedProjectCheckout(ctx, query, scope, checkout, time.Now().UTC())
+			verified, err := verifiedProjectCheckout(ctx, query, scope, checkout, time.Now().UTC())
 			if err != nil {
 				return nil, 0, false, err
 			}
@@ -404,7 +383,7 @@ func (s *Service) readWorkItemPullRequests(ctx context.Context, scope nativeScop
 	} else if !s.pullRequests.allowRefresh(scope.organization, now) {
 		return nil, pullRequestRefreshLimited()
 	}
-	connector, repositoryID, err := s.projectConnector(readCtx, s.database.reader, scope)
+	connector, repositoryID, err := projectConnector(readCtx, s.database.reader, scope)
 	if err != nil {
 		return nil, err
 	}

@@ -218,7 +218,6 @@ type usageReport struct {
 // usageRow is one stored attempt_usage row joined with what the report needs
 // to attribute it: the runner that ran the attempt and how long it was busy.
 type usageRow struct {
-	ChatSessions int64
 	Chat         bool
 	CacheSavings float64
 	AttemptID    string
@@ -474,16 +473,9 @@ func buildUsageReport(window usageWindow, rows []usageRow, limits map[string]usa
 	runnerAttempts := map[string]map[string]bool{}
 	attempts := map[string]bool{}
 	busy := map[string]int64{}
-	var chatSessions int64
-	providerChatSessions := map[string]int64{}
 	for _, row := range rows {
 		tokens := row.tokens()
-		if row.Chat && row.ChatSessions > 0 {
-			chatSessions += row.ChatSessions
-			providerChatSessions[row.Provider] += row.ChatSessions
-		} else {
-			attempts[row.AttemptID] = true
-		}
+		attempts[row.AttemptID] = true
 		// A hub reports in one currency. A row stored under another (the
 		// table's currency changed since) still counts its tokens, but its
 		// cost cannot be added without a conversion the hub does not have.
@@ -513,9 +505,7 @@ func buildUsageReport(window usageWindow, rows []usageRow, limits map[string]usa
 		}
 		provider.Cost += row.Cost
 		provider.Tokens += tokens
-		if !row.Chat || row.ChatSessions == 0 {
-			servedAttempts[row.AttemptID] = true
-		}
+		servedAttempts[row.AttemptID] = true
 
 		modelKey := row.Provider + "\x00" + row.Model
 		model, known := models[modelKey]
@@ -559,13 +549,13 @@ func buildUsageReport(window usageWindow, rows []usageRow, limits map[string]usa
 			busy[row.RunnerID] += row.BusySeconds
 		}
 	}
-	report.Total.Sessions = int64(len(attempts)) + chatSessions
+	report.Total.Sessions = int64(len(attempts))
 	report.Total.Cost = usageRound(report.Total.Cost)
 	report.Totals.CacheSavings = usageRound(report.Totals.CacheSavings)
 	total := report.Total.Cost
 
 	for _, provider := range providers {
-		provider.Sessions = int64(len(providerAttempts[provider.ID])) + providerChatSessions[provider.ID]
+		provider.Sessions = int64(len(providerAttempts[provider.ID]))
 		provider.Cost = usageRound(provider.Cost)
 		provider.Share = usageShare(provider.Cost, total)
 		report.Providers = append(report.Providers, *provider)

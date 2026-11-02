@@ -29,11 +29,7 @@ type runnerUpdateChange struct {
 }
 
 func (r runnerUpdateChange) delivery(id string, at time.Time) runnerauth.UpdateRequest {
-	return runnerauth.UpdateRequest{RequestedAt: canonicalRunnerUpdateTime(at), ID: id, Service: r.Service, Version: r.Version, Release: r.Release, FromRelease: r.FromRelease, ExpectedBuildRevision: r.ExpectedBuildRevision}
-}
-
-func canonicalRunnerUpdateTime(at time.Time) time.Time {
-	return time.UnixMicro(at.UnixMicro()).UTC()
+	return runnerauth.UpdateRequest{RequestedAt: at, ID: id, Service: r.Service, Version: r.Version, Release: r.Release, FromRelease: r.FromRelease, ExpectedBuildRevision: r.ExpectedBuildRevision}
 }
 
 func runnerUpdateReady(r runnerauth.Runner, request runnerUpdateChange, now time.Time) error {
@@ -65,9 +61,6 @@ func runnerUpdateConflict(revision int64, message string) error {
 }
 
 func (s *Service) readRunnerUpdate(ctx context.Context, scope nativeScope, resource string) (any, error) {
-	if s.config.TenantRepository != nil {
-		return s.runnerUpdateViewTenant(ctx, scope, resource)
-	}
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
@@ -90,9 +83,6 @@ func (s *Service) readRunnerUpdate(ctx context.Context, scope nativeScope, resou
 }
 
 func (s *Service) applyRunnerUpdateCommand(ctx context.Context, scope nativeScope, resource string, request runnerUpdateChange) (any, error) {
-	if s.config.TenantRepository != nil {
-		return s.applyRunnerUpdateCommandTenant(ctx, scope, resource, request)
-	}
 	ctx = s.contentContext(ctx)
 	return prepareContentMutation(ctx, s.database.reader, func() (any, error) {
 		return s.persistRunnerUpdateCommand(ctx, scope, resource, request)
@@ -189,8 +179,8 @@ func (s *Service) storeRunnerUpdateObservation(ctx context.Context, tx *sql.Tx, 
 			return err
 		}
 		if report.Receipt != nil {
-			matches := runner.UpdateRequest != nil && report.Receipt.Request.Matches(*runner.UpdateRequest)
-			previous := runner.Update != nil && runner.Update.Receipt != nil && report.Receipt.Request.Matches(runner.Update.Receipt.Request)
+			matches := runner.UpdateRequest != nil && report.Receipt.Request == *runner.UpdateRequest
+			previous := runner.Update != nil && runner.Update.Receipt != nil && report.Receipt.Request == runner.Update.Receipt.Request
 			if !matches && !previous {
 				accepted, err := runnerUpdateReceiptMatches(ctx, tx, scope, report.Receipt.Request)
 				if err != nil {
@@ -236,7 +226,7 @@ func (s *Service) followHubRunnerUpdate(ctx context.Context, tx *sql.Tx, scope n
 		return err
 	}
 	if current := settings.UpdateRequest; current != nil {
-		staleRefusal := repair && current.ExpectedBuildRevision != report.Revision && report.Receipt != nil && report.Receipt.Request.Matches(*current) && report.Receipt.Status == "refused"
+		staleRefusal := repair && current.ExpectedBuildRevision != report.Revision && report.Receipt != nil && report.Receipt.Request == *current && report.Receipt.Status == "refused"
 		if current.FollowHub && current.Version == strings.TrimPrefix(version, "v") && !staleRefusal {
 			return nil
 		}
@@ -254,7 +244,7 @@ func (s *Service) followHubRunnerUpdate(ctx context.Context, tx *sql.Tx, scope n
 			return nil
 		}
 	}
-	settings.UpdateRequest = &runnerauth.UpdateRequest{ID: newNativeID("update"), RequestedAt: canonicalRunnerUpdateTime(now), Service: "detent", Version: strings.TrimPrefix(version, "v"), Release: true, FromRelease: true, FollowHub: true, ExpectedBuildRevision: report.Revision}
+	settings.UpdateRequest = &runnerauth.UpdateRequest{ID: newNativeID("update"), RequestedAt: now, Service: "detent", Version: strings.TrimPrefix(version, "v"), Release: true, FromRelease: true, FollowHub: true, ExpectedBuildRevision: report.Revision}
 	raw, err = marshalNative(settings)
 	if err != nil {
 		return err
@@ -297,7 +287,7 @@ func (s *Service) applyRunnerUpdate(c echo.Context) error {
 }
 
 func runnerUpdateSuperseded(current runnerauth.UpdateRequest, receipt *runnerauth.UpdateReceipt, target string) bool {
-	reported := receipt != nil && receipt.Request.Matches(current)
+	reported := receipt != nil && receipt.Request == current
 	completed := reported && (receipt.ExecutionReady() || receipt.Status == "applied" && receipt.Running != nil && receipt.Applied != nil && receipt.Running.Matches(*receipt.Applied))
 	if reported && !completed && !slices.Contains([]string{"running", "refused", "uncertain"}, receipt.Status) {
 		return false

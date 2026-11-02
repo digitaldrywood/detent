@@ -106,7 +106,7 @@ type releaseDeliveryFixture struct {
 func newReleaseDeliveryFixture(t *testing.T, github bool) *releaseDeliveryFixture {
 	t.Helper()
 	f := &releaseDeliveryFixture{pullRequestFixture: newPullRequestFixture(t, true)}
-	connector, _, err := f.service.projectConnector(t.Context(), f.service.database.reader, nativeScope{organization: f.project.OrganizationID, project: f.project.ID})
+	connector, _, err := projectConnector(t.Context(), f.service.database.reader, nativeScope{organization: f.project.OrganizationID, project: f.project.ID})
 	if err != nil || connector == nil {
 		t.Fatalf("repository binding: %v", err)
 	}
@@ -368,7 +368,7 @@ func TestNativeReleaseDeliveryAssociation(t *testing.T) {
 			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET github_repository_enabled = 0 WHERE id = ?", f.project.ID); err != nil {
 				t.Fatal(err)
 			}
-			connector, _, err := f.service.projectConnector(t.Context(), f.service.database.reader, nativeScope{organization: f.project.OrganizationID, project: f.project.ID})
+			connector, _, err := projectConnector(t.Context(), f.service.database.reader, nativeScope{organization: f.project.OrganizationID, project: f.project.ID})
 			if err != nil || connector != nil {
 				t.Fatalf("disabled tracker connector changed: %v, %v", connector, err)
 			}

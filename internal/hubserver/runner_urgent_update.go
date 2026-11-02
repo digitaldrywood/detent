@@ -11,8 +11,6 @@ import (
 
 	"github.com/labstack/echo/v4"
 
-	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
-	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/update"
@@ -57,7 +55,7 @@ func applyUrgentRunnerRouting(r *runnerauth.Runner, urgent urgentRunnerUpdate, v
 	}
 	comparison, err := update.CompareVersions(urgent.Request.Version, version)
 	if err != nil || comparison <= 0 {
-		if r.Update != nil && r.Update.Receipt != nil && r.Update.Receipt.Request.Matches(*urgent.Request) {
+		if r.Update != nil && r.Update.Receipt != nil && r.Update.Receipt.Request == *urgent.Request {
 			r.UpdateRequest = urgent.Request
 		}
 		return
@@ -70,7 +68,7 @@ func applyUrgentRunnerRouting(r *runnerauth.Runner, urgent urgentRunnerUpdate, v
 }
 
 func runnerUpdateRequestSettled(r *runnerauth.Runner, request runnerauth.UpdateRequest) bool {
-	if r.Update == nil || r.Update.Receipt == nil || !r.Update.Receipt.Request.Matches(request) {
+	if r.Update == nil || r.Update.Receipt == nil || r.Update.Receipt.Request != request {
 		return false
 	}
 	receipt := r.Update.Receipt
@@ -132,21 +130,6 @@ func (s *Service) getUrgentRunnerUpdate(c echo.Context) error {
 }
 
 func (s *Service) readUrgentRunnerUpdateCommand(ctx context.Context, scope nativeScope) (any, error) {
-	if s.config.TenantRepository != nil {
-		var value urgentRunnerUpdate
-		err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
-			if err := s.authorizeAccessScope(ctx, reader, scope, false); err != nil {
-				return err
-			}
-			row, err := reader.RunnerUrgentUpdate(ctx)
-			if err != nil {
-				return err
-			}
-			value = urgentRunnerUpdate{Revision: row.Revision, Request: row.Request}
-			return nil
-		})
-		return value, err
-	}
 	return s.runnerAdminTransaction(ctx, scope, false, func(ctx context.Context, tx *sql.Tx, _ time.Time) (any, error) {
 		return readUrgentRunnerUpdate(ctx, tx, scope.organization)
 	})
@@ -178,9 +161,6 @@ func (s *Service) markUrgentRunnerUpdateCommand(ctx context.Context, scope nativ
 	if !request.Confirm {
 		return nil, &nativeError{Code: "confirmation_required", Message: "Confirm updating all runners below the selected release", status: http.StatusPreconditionRequired, publicMessage: true}
 	}
-	if s.config.TenantRepository != nil {
-		return s.markUrgentRunnerUpdateTenant(ctx, scope, request)
-	}
 	return s.runnerAdminTransaction(ctx, scope, false, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
 		const operation = "urgent_runner_update"
 		hash, err := nativeCommandHash(request)
@@ -207,7 +187,7 @@ func (s *Service) markUrgentRunnerUpdateCommand(ctx context.Context, scope nativ
 				return nil, nativePublicInvalid("An urgent release cannot lower the existing update target")
 			}
 		}
-		value := urgentRunnerUpdate{Revision: current.Revision + 1, Request: &runnerauth.UpdateRequest{ID: payloadNativeID(ctx, "update"), RequestedAt: canonicalRunnerUpdateTime(now), Service: "detent", Version: request.Version, Release: true, Urgent: true}}
+		value := urgentRunnerUpdate{Revision: current.Revision + 1, Request: &runnerauth.UpdateRequest{ID: payloadNativeID(ctx, "update"), RequestedAt: now, Service: "detent", Version: request.Version, Release: true, Urgent: true}}
 		if current.Request != nil && current.Request.Version == request.Version {
 			value.Request = current.Request
 		}

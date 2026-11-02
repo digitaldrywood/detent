@@ -66,13 +66,7 @@
     "internal/hubserver/postgres/migrations/20261102005941_runner_problem_reports.sql",
     "internal/hubserver/postgres/migrations/20261102010343_cost_import_progress.sql",
     "internal/hubserver/postgres/migrations/20261102010400_runner_local_checks.sql",
-    "internal/hubserver/postgres/migrations/20261102010654_runner_workspace_reports.sql",
-    "internal/hubserver/postgres/migrations/20261102012847_runner_client_reports.sql",
-    "internal/hubserver/postgres/migrations/20261102014015_attempt_started_at_submicro.sql",
-    "internal/hubserver/postgres/migrations/20261102014157_project_event_cursors.sql",
-    "internal/hubserver/postgres/migrations/20261102015243_conversation_usage_records.sql",
-    "internal/hubserver/postgres/migrations/20261102021911_runner_update_state.sql",
-    "internal/hubserver/postgres/migrations/20261102023307_conversation_billing_import.sql"
+    "internal/hubserver/postgres/migrations/20261102010654_runner_workspace_reports.sql"
   ],
   "tables": {
     "public.ai_credit_reason_references": {
@@ -160,7 +154,6 @@
         "received_at": "text",
         "retention": "text",
         "revision": "bigint",
-        "sha256": "text",
         "source_key": "text"
       },
       "contract": "Retain immutable compressed evidence references for every accepted cost revision, scoped to tenant and source.",
@@ -423,16 +416,6 @@
       "family": "fleet",
       "organization": "organization-owned"
     },
-    "public.project_event_cursors": {
-      "columns": {
-        "organization_id": "text",
-        "project_id": "text",
-        "sequence": "bigint"
-      },
-      "contract": "Serialize immutable collaboration event sequence allocation per tenant project in the append transaction.",
-      "family": "event",
-      "organization": "organization-owned"
-    },
     "public.runner_lease_assignments": {
       "columns": {
         "assigned_at": "timestamp with time zone",
@@ -561,7 +544,6 @@
       "columns": {
         "document_id": "text",
         "impact": "double precision",
-        "literal_positions": "bigint[]",
         "organization_id": "text",
         "scope": "text",
         "term": "text",
@@ -686,122 +668,6 @@
         "terminal": "boolean"
       },
       "contract": "Retain the latest typed workspace capability and isolation report from each tenant runner.",
-      "family": "fleet",
-      "organization": "organization-owned"
-    },
-    "public.conversation_billing_imports": {
-      "columns": {
-        "organization_id": "text",
-        "source_schema": "text",
-        "snapshot_id": "text",
-        "catalog_digest": "text",
-        "completed": "boolean",
-        "price_rows": "bigint",
-        "usage_rows": "bigint"
-      },
-      "contract": "Retain the tenant source snapshot identity and verified conversation billing import counts; never mix source cuts on replay.",
-      "family": "billing",
-      "organization": "organization-owned"
-    },
-    "public.runner_update_requests": {
-      "columns": {
-        "expected_build_revision": "text",
-        "follow_hub": "boolean",
-        "from_release": "boolean",
-        "organization_id": "text",
-        "release": "boolean",
-        "request_id": "text",
-        "requested_at": "timestamp with time zone",
-        "runner_id": "text",
-        "service": "text",
-        "urgent": "boolean",
-        "version": "text"
-      },
-      "contract": "Retain immutable per-runner and organization urgent update requests with selected build fencing.",
-      "family": "fleet",
-      "organization": "organization-owned"
-    },
-    "public.runner_update_desired": {
-      "columns": {
-        "organization_id": "text",
-        "request_id": "text",
-        "runner_id": "text"
-      },
-      "contract": "Retain the current desired update request for each tenant runner.",
-      "family": "fleet",
-      "organization": "organization-owned"
-    },
-    "public.runner_update_observations": {
-      "columns": {
-        "available_observed_at": "timestamp with time zone",
-        "available_version": "text",
-        "discovery": "text",
-        "observed_at": "timestamp with time zone",
-        "organization_id": "text",
-        "pending": "boolean",
-        "protocol": "integer",
-        "received_at": "timestamp with time zone",
-        "revision": "text",
-        "runner_id": "text",
-        "running_architecture": "text",
-        "running_commit": "text",
-        "running_observed_at": "timestamp with time zone",
-        "running_os": "text",
-        "running_sha256": "text",
-        "running_source": "text",
-        "running_verified_release": "boolean",
-        "running_version": "text",
-        "service": "text",
-        "supported": "boolean"
-      },
-      "contract": "Retain latest typed update observations needed to resolve runner update state.",
-      "family": "fleet",
-      "organization": "organization-owned"
-    },
-    "public.runner_update_receipts": {
-      "columns": {
-        "drain_reason": "text",
-        "execution_artifact": "boolean",
-        "failure_reason": "text",
-        "observed_at": "timestamp with time zone",
-        "organization_id": "text",
-        "previous_failure_observed_at": "timestamp with time zone",
-        "previous_failure_reason": "text",
-        "previous_failure_request_id": "text",
-        "request_id": "text",
-        "runner_id": "text",
-        "status": "text"
-      },
-      "contract": "Retain the latest typed execution receipt and prior failure for each tenant runner.",
-      "family": "fleet",
-      "organization": "organization-owned"
-    },
-    "public.runner_update_build_evidence": {
-      "columns": {
-        "architecture": "text",
-        "commit_id": "text",
-        "evidence_role": "text",
-        "observed_at": "timestamp with time zone",
-        "organization_id": "text",
-        "os": "text",
-        "runner_id": "text",
-        "sha256": "text",
-        "source": "text",
-        "verified_release": "boolean",
-        "version": "text"
-      },
-      "contract": "Retain typed build identity evidence referenced by runner update receipts.",
-      "family": "fleet",
-      "organization": "organization-owned"
-    },
-    "public.runner_urgent_updates": {
-      "columns": {
-        "organization_id": "text",
-        "request_id": "text",
-        "revision": "bigint",
-        "updated_at": "timestamp with time zone"
-      },
-      "contract": "Retain the organization urgent update revision and current request.",
       "family": "fleet",
       "organization": "organization-owned"
     }

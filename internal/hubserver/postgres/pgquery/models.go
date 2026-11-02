@@ -287,7 +287,6 @@ type CollaborationEvent struct {
 	LandingChangeID      string
 	LandingVersionID     string
 	LandingHeadSHA       string
-	ProjectSequence      int64
 }
 
 type CollaborationVersion struct {
@@ -346,16 +345,6 @@ type ConversationAudienceEvent struct {
 	FromVisibility   string
 	ToVisibility     string
 	CreatedAt        time.Time
-}
-
-type ConversationBillingImport struct {
-	OrganizationID tracker.OrganizationID
-	SourceSchema   string
-	SnapshotID     string
-	CatalogDigest  string
-	Completed      bool
-	PriceRows      int64
-	UsageRows      int64
 }
 
 type ConversationCommand struct {
@@ -456,17 +445,6 @@ type ConversationMessage struct {
 	OperatorActionResult *string
 }
 
-type ConversationPrice struct {
-	OrganizationID tracker.OrganizationID
-	ID             int64
-	Provider       string
-	Model          string
-	EffectiveAt    int64
-	Input          float64
-	CachedInput    float64
-	Output         float64
-}
-
 type ConversationQuestion struct {
 	OrganizationID      tracker.OrganizationID
 	ID                  string
@@ -513,24 +491,6 @@ type ConversationTurnBatch struct {
 	BatchKey       string
 	EventSeq       int64
 	CreatedAt      time.Time
-}
-
-type ConversationUsage struct {
-	OrganizationID  tracker.OrganizationID
-	ProjectID       tracker.ProjectID
-	ConversationID  string
-	TurnID          string
-	Provider        string
-	Model           string
-	OccurredAt      int64
-	Input           int64
-	CachedInput     int64
-	Output          int64
-	ReasoningOutput int64
-	Outcome         string
-	PriceID         sql.NullInt64
-	CostUsd         sql.NullFloat64
-	CacheSavingsUsd sql.NullFloat64
 }
 
 type CostImport struct {
@@ -1753,12 +1713,6 @@ type Project struct {
 	DeletedAt               *time.Time
 }
 
-type ProjectEventCursor struct {
-	OrganizationID tracker.OrganizationID
-	ProjectID      tracker.ProjectID
-	Sequence       int64
-}
-
 type ProjectPolicy struct {
 	OrganizationID tracker.OrganizationID
 	ProjectID      tracker.ProjectID
@@ -1983,14 +1937,6 @@ type RunnerBackendIsolation struct {
 	Tiers          []string
 }
 
-type RunnerCheckoutRepository struct {
-	OrganizationID tracker.OrganizationID
-	RunnerID       string
-	ProjectID      tracker.ProjectID
-	Repository     string
-	ReportedAt     time.Time
-}
-
 type RunnerEnrollment struct {
 	OrganizationID tracker.OrganizationID
 	ID             string
@@ -2206,21 +2152,6 @@ type RunnerProjectRank struct {
 	Rank           int32
 }
 
-type RunnerProjectSkill struct {
-	OrganizationID tracker.OrganizationID
-	RunnerID       string
-	ProjectID      tracker.ProjectID
-	Position       int32
-	Name           string
-	Description    string
-	Path           string
-	Scope          string
-	Enabled        bool
-	UserInvocable  bool
-	Invocation     string
-	ReportedAt     time.Time
-}
-
 type RunnerProviderModelEffort struct {
 	OrganizationID tracker.OrganizationID
 	RunnerID       string
@@ -2319,84 +2250,6 @@ type RunnerSpriteMembership struct {
 	CreatedAt            time.Time
 	AllocationProjectID  string
 	AllocationRevision   int64
-}
-
-type RunnerUpdateBuildEvidence struct {
-	OrganizationID  tracker.OrganizationID
-	RunnerID        string
-	EvidenceRole    string
-	Version         string
-	CommitID        string
-	Source          string
-	Sha256          string
-	Os              string
-	Architecture    string
-	VerifiedRelease bool
-	ObservedAt      time.Time
-}
-
-type RunnerUpdateDesired struct {
-	OrganizationID tracker.OrganizationID
-	RunnerID       string
-	RequestID      string
-}
-
-type RunnerUpdateObservation struct {
-	OrganizationID         tracker.OrganizationID
-	RunnerID               string
-	Discovery              string
-	Protocol               int32
-	Service                string
-	Revision               string
-	Supported              bool
-	Pending                bool
-	AvailableObservedAt    *time.Time
-	AvailableVersion       string
-	ObservedAt             time.Time
-	ReceivedAt             time.Time
-	RunningVersion         string
-	RunningCommit          string
-	RunningSource          string
-	RunningSha256          string
-	RunningOs              string
-	RunningArchitecture    string
-	RunningVerifiedRelease bool
-	RunningObservedAt      time.Time
-}
-
-type RunnerUpdateReceipt struct {
-	OrganizationID            tracker.OrganizationID
-	RunnerID                  string
-	RequestID                 string
-	ExecutionArtifact         bool
-	DrainReason               string
-	FailureReason             string
-	Status                    string
-	ObservedAt                time.Time
-	PreviousFailureRequestID  *string
-	PreviousFailureReason     *string
-	PreviousFailureObservedAt *time.Time
-}
-
-type RunnerUpdateRequest struct {
-	OrganizationID        tracker.OrganizationID
-	RequestID             string
-	RunnerID              *string
-	RequestedAt           time.Time
-	Service               string
-	ExpectedBuildRevision string
-	Version               string
-	Release               bool
-	FromRelease           bool
-	Urgent                bool
-	FollowHub             bool
-}
-
-type RunnerUrgentUpdate struct {
-	OrganizationID tracker.OrganizationID
-	Revision       int64
-	RequestID      *string
-	UpdatedAt      time.Time
 }
 
 type RunnerWorkspaceReport struct {

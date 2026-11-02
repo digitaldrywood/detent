@@ -34,8 +34,8 @@ import (
 // project's connector binding, the item's latest change request joined with
 // the connector's projection when one mirrors it, and the work item revision
 // the recorded change covers.
-func (s *Service) readNativeIssueChange(ctx context.Context, query nativeQueryer, scope nativeScope, item string) (*tracker.NativeIssueChange, error) {
-	binding, repositoryID, err := s.projectConnector(ctx, query, scope)
+func readNativeIssueChange(ctx context.Context, query nativeQueryer, scope nativeScope, item string) (*tracker.NativeIssueChange, error) {
+	binding, repositoryID, err := projectConnector(ctx, query, scope)
 	if err != nil {
 		return nil, err
 	}

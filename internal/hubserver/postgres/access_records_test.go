@@ -20,11 +20,7 @@ func seedTenantAccess(t *testing.T, r tenantstore.Repository, org tracker.Organi
 	t.Helper()
 	now := historyAt()
 	err := r.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-		if _, err := w.AccessOrganization(t.Context()); errors.Is(err, corestore.ErrNotFound) {
-			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: string(org), CreatedAt: now}); err != nil {
-				return err
-			}
-		} else if err != nil {
+		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: string(org), CreatedAt: now}); err != nil {
 			return err
 		}
 		if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: org, ProviderID: "provider_" + string(org), AllocationGeneration: 1}); err != nil {

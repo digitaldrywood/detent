@@ -67,26 +67,6 @@ func (s *session) EventsBefore(ctx context.Context, project tracker.ProjectID, i
 	return records, nil
 }
 
-func (s *session) ProjectEventSequence(ctx context.Context, project tracker.ProjectID) (int64, error) {
-	sequence, err := s.queries.RecordProjectEventSequence(ctx, pgquery.RecordProjectEventSequenceParams{OrganizationID: s.organization, ProjectID: project})
-	return sequence, mapError(ctx, err)
-}
-
-func (s *session) ProjectChanges(ctx context.Context, project tracker.ProjectID, after, through int64, since time.Time, limit int) ([]eventstore.ProjectChange, error) {
-	if limit < 1 || limit > corestore.MaxPageSize+1 || project == "" || after < 0 || through < after || through-after > 200 || since.IsZero() {
-		return nil, corestore.ErrInvalidPage
-	}
-	rows, err := s.queries.RecordProjectChanges(ctx, pgquery.RecordProjectChangesParams{OrganizationID: s.organization, ProjectID: project, After: after, Through: through, Since: since, PageLimit: int32(limit)})
-	if err != nil {
-		return nil, mapError(ctx, err)
-	}
-	changes := make([]eventstore.ProjectChange, len(rows))
-	for index, row := range rows {
-		changes[index] = eventstore.ProjectChange{WorkItemID: row.NativeID, Revision: row.Revision, LastActivityAt: row.LastActivityAt}
-	}
-	return changes, nil
-}
-
 func (s *session) LatestRunEvent(ctx context.Context, project tracker.ProjectID, attempt string) (eventstore.Event, error) {
 	row, err := s.queries.RecordLatestRunEvent(ctx, pgquery.RecordLatestRunEventParams{
 		OrganizationID: s.organization,
@@ -287,7 +267,7 @@ func (s *session) CollaborationVersion(ctx context.Context, id string, revision 
 	return eventstore.CollaborationVersion(row), mapError(ctx, err)
 }
 func (s *session) insertRecordEvent(ctx context.Context, record eventstore.Event) (eventstore.Event, error) {
-	row, err := s.queries.RecordInsertEvent(ctx, pgquery.RecordInsertEventParams{OrganizationID: record.OrganizationID, ProjectID: record.ProjectID, WorkItemID: record.WorkItemID, ID: record.ID, Sequence: record.Sequence, ProjectSequence: record.ProjectSequence, Type: record.Type, SchemaVersion: record.SchemaVersion, ActorKind: record.ActorKind, ActorPrincipalID: record.ActorPrincipalID, EventRevision: record.EventRevision, ChangeID: record.ChangeID, VersionID: record.VersionID, HeadSHA: record.HeadSHA, LandingWaiting: record.LandingWaiting, LandingChangeID: record.LandingChangeID, LandingVersionID: record.LandingVersionID, LandingHeadSHA: record.LandingHeadSHA, RunID: record.RunID, AttemptID: record.AttemptID, FromState: record.FromState, ToState: record.ToState, RecordedAt: record.RecordedAt, PayloadObjectKey: record.PayloadObjectKey, PayloadSHA256: record.PayloadSHA256, PayloadBytes: record.PayloadBytes, PayloadContentBytes: record.PayloadContentBytes, PayloadFormatVersion: record.PayloadFormatVersion})
+	row, err := s.queries.RecordInsertEvent(ctx, pgquery.RecordInsertEventParams{OrganizationID: record.OrganizationID, ProjectID: record.ProjectID, WorkItemID: record.WorkItemID, ID: record.ID, Sequence: record.Sequence, Type: record.Type, SchemaVersion: record.SchemaVersion, ActorKind: record.ActorKind, ActorPrincipalID: record.ActorPrincipalID, EventRevision: record.EventRevision, ChangeID: record.ChangeID, VersionID: record.VersionID, HeadSHA: record.HeadSHA, LandingWaiting: record.LandingWaiting, LandingChangeID: record.LandingChangeID, LandingVersionID: record.LandingVersionID, LandingHeadSHA: record.LandingHeadSHA, RunID: record.RunID, AttemptID: record.AttemptID, FromState: record.FromState, ToState: record.ToState, RecordedAt: record.RecordedAt, PayloadObjectKey: record.PayloadObjectKey, PayloadSHA256: record.PayloadSHA256, PayloadBytes: record.PayloadBytes, PayloadContentBytes: record.PayloadContentBytes, PayloadFormatVersion: record.PayloadFormatVersion})
 	return eventstore.Event(row), mapError(ctx, err)
 }
 func (s *session) insertRecordCollaborationVersion(ctx context.Context, record eventstore.CollaborationVersion) (eventstore.CollaborationVersion, error) {
@@ -340,9 +320,6 @@ func (s *session) AppendEvent(ctx context.Context, record eventstore.Event) (eve
 		if requested.Sequence == 0 {
 			requested.Sequence = previous.Sequence
 		}
-		if requested.ProjectSequence == 0 {
-			requested.ProjectSequence = previous.ProjectSequence
-		}
 		if requested.RecordedAt.IsZero() || recordTime(requested.RecordedAt).Equal(previous.RecordedAt) {
 			requested.RecordedAt = previous.RecordedAt
 		}
@@ -360,10 +337,6 @@ func (s *session) AppendEvent(ctx context.Context, record eventstore.Event) (eve
 	}
 	if record.Sequence == 0 {
 		record.Sequence = sequence
-	}
-	record.ProjectSequence, err = s.queries.RecordAdvanceProjectEventSequence(ctx, pgquery.RecordAdvanceProjectEventSequenceParams{OrganizationID: s.organization, ProjectID: record.ProjectID})
-	if err != nil {
-		return eventstore.Event{}, mapError(ctx, err)
 	}
 	record.RecordedAt = recordTime(record.RecordedAt)
 	return s.insertRecordEvent(ctx, record)

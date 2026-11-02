@@ -114,11 +114,6 @@
     "ownership": "organization-owned",
     "scope": "runner_host_metric_segments.organization_id; metrics are tenant runner observations"
   },
-  "public/project_event_cursors": {
-    "inline_payloads": [],
-    "ownership": "organization-owned",
-    "scope": "project_event_cursors.organization_id; immutable event sequence is tenant project scoped"
-  },
   "public/runner_lease_assignments": {
     "inline_payloads": [],
     "ownership": "organization-owned",
@@ -148,36 +143,6 @@
     "inline_payloads": [],
     "ownership": "organization-owned",
     "scope": "runner_workspace_reports.organization_id; workspace capability facts belong to a tenant runner"
-  },
-  "public/runner_update_requests": {
-    "inline_payloads": [],
-    "ownership": "organization-owned",
-    "scope": "runner_update_requests.organization_id; immutable update requests are tenant-scoped"
-  },
-  "public/runner_update_desired": {
-    "inline_payloads": [],
-    "ownership": "organization-owned",
-    "scope": "runner_update_desired.organization_id; desired requests belong to a tenant runner"
-  },
-  "public/runner_update_observations": {
-    "inline_payloads": [],
-    "ownership": "organization-owned",
-    "scope": "runner_update_observations.organization_id; observed update facts belong to a tenant runner"
-  },
-  "public/runner_update_receipts": {
-    "inline_payloads": [],
-    "ownership": "organization-owned",
-    "scope": "runner_update_receipts.organization_id; receipt history belongs to a tenant runner"
-  },
-  "public/runner_update_build_evidence": {
-    "inline_payloads": [],
-    "ownership": "organization-owned",
-    "scope": "runner_update_build_evidence.organization_id; build evidence belongs to a tenant runner"
-  },
-  "public/runner_urgent_updates": {
-    "inline_payloads": [],
-    "ownership": "organization-owned",
-    "scope": "runner_urgent_updates.organization_id; urgent update state belongs to one tenant"
   },
   "public/runner_sprite_memberships": {
     "inline_payloads": [],
@@ -218,10 +183,5 @@
     "inline_payloads": [],
     "ownership": "organization-owned",
     "scope": "cost_imports.organization_id; snapshot import state and retained cost revision evidence"
-  },
-  "public/conversation_billing_imports": {
-    "inline_payloads": [],
-    "ownership": "organization-owned",
-    "scope": "conversation_billing_imports.organization_id; pinned source snapshot and verified import completion counts"
   }
 }

@@ -393,7 +393,7 @@ func (s *Service) getNativeIssue(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	if included {
-		if issue.Change, err = s.readNativeIssueChange(ctx, tx, scope, string(issue.WorkItemID)); err != nil {
+		if issue.Change, err = readNativeIssueChange(ctx, tx, scope, string(issue.WorkItemID)); err != nil {
 			return s.nativeAPIError(c, err)
 		}
 		if issue.Change.Number > 0 && issue.Change.URL != "" {

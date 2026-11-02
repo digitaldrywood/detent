@@ -134,7 +134,7 @@ func (s *Service) projectIntegration(ctx context.Context, query nativeQueryer, s
 		return result, err
 	}
 	if result.CheckoutRepository != "" {
-		result.CheckoutVerified, err = s.verifiedProjectCheckout(ctx, query, scope, result.CheckoutRepository, time.Now().UTC())
+		result.CheckoutVerified, err = verifiedProjectCheckout(ctx, query, scope, result.CheckoutRepository, time.Now().UTC())
 		if err != nil {
 			return result, err
 		}

@@ -36,13 +36,6 @@ type Event struct {
 	LandingChangeID      string
 	LandingVersionID     string
 	LandingHeadSHA       string
-	ProjectSequence      int64
-}
-
-type ProjectChange struct {
-	WorkItemID     tracker.NativeWorkItemID
-	Revision       int64
-	LastActivityAt time.Time
 }
 
 type CollaborationVersion struct {
@@ -203,8 +196,6 @@ type Reader interface {
 	Receipt(context.Context, string, string, string) (Receipt, error)
 	Events(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, int64, int) ([]Event, error)
 	EventsBefore(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, int64, int) ([]Event, error)
-	ProjectEventSequence(context.Context, tracker.ProjectID) (int64, error)
-	ProjectChanges(context.Context, tracker.ProjectID, int64, int64, time.Time, int) ([]ProjectChange, error)
 	LatestRunEvent(context.Context, tracker.ProjectID, string) (Event, error)
 	CollaborationVersion(context.Context, string, int64) (CollaborationVersion, error)
 	Change(context.Context, string) (Change, error)

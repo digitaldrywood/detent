@@ -10,11 +10,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/conversation"
-	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
-	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -26,7 +24,6 @@ func TestConversationRecordsAreTenantScopedAndTransactional(t *testing.T) {
 	now := time.Date(2026, 11, 1, 18, 0, 0, 0, time.UTC)
 	contentIDs := make(map[tracker.OrganizationID]string)
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
-		seedTenantAccess(t, repository, organization)
 		ref, _, err := attachment.PrepareArchive(string(organization), 1, bytes.NewReader([]byte(`{"example":true}`)))
 		if err != nil {
 			t.Fatal(err)
@@ -66,42 +63,6 @@ func TestConversationRecordsAreTenantScopedAndTransactional(t *testing.T) {
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
 		if err := repository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
 			conversationID := "conv_0123456789abcdef0123456789abcdef"
-			price := billingstore.ConversationPrice{OrganizationID: organization, ID: 1, Provider: "example-provider", Model: "example-model", EffectiveAt: now.Add(-time.Hour), Input: .1, CachedInput: .01, Output: .5}
-			if err := w.CreateConversationPrice(ctx, price); err != nil {
-				return err
-			}
-			if err := w.CreateConversationPrice(ctx, price); err != nil {
-				return err
-			}
-			for _, turn := range []string{"turn-first", "turn-second"} {
-				usage := billingstore.ConversationUsage{OrganizationID: organization, ProjectID: "prj_shared", ConversationID: conversationID, TurnID: turn, Provider: price.Provider, Model: price.Model, OccurredAt: now, Input: 100, CachedInput: 20, Output: 30, Outcome: "delivered", PriceID: new(int64(1)), CostUSD: new(.0000232), CacheSavingsUSD: new(.0000018)}
-				created, err := w.RecordConversationUsage(ctx, usage)
-				if err != nil {
-					return err
-				}
-				if !created {
-					t.Fatal("first usage insert replayed")
-				}
-				created, err = w.RecordConversationUsage(ctx, usage)
-				if err != nil {
-					return err
-				}
-				if created {
-					t.Fatal("usage replay inserted twice")
-				}
-				usage.Input++
-				if _, err := w.RecordConversationUsage(ctx, usage); !errors.Is(err, mutation.ErrConflict) {
-					t.Fatalf("changed usage replay error=%v", err)
-				}
-				stored, err := w.ConversationUsage(ctx, turn)
-				if err != nil {
-					return err
-				}
-				if stored.OrganizationID != organization || stored.Input != 100 || stored.TurnID != turn {
-					t.Fatalf("stored usage=%+v", stored)
-				}
-			}
-
 			message, err := w.CreateMessage(ctx, conversationstore.Message{
 				OrganizationID: organization,
 				ConversationID: conversationID,

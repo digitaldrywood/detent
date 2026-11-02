@@ -1,14 +1,11 @@
 package hubserver
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -31,7 +28,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
-	"github.com/digitaldrywood/detent/internal/skills"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
@@ -344,17 +340,6 @@ func TestTenantRunnerHeartbeatPersistsIdentityAndReturnsCurrentRouting(t *testin
 		}
 		t.Fatal(err)
 	}
-	service.config.SecretKeys = secretTestKeys(t, "1", "1")
-	cursorKey := []byte(strings.Repeat("k", 32))
-	cursorEnvelope, err := service.config.SecretKeys.Seal(cursorKey, accessstore.SecretAAD(organization.ID, "", accessstore.NativeCursorKeyKind))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
-		return w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: organization.ID, Kind: accessstore.NativeCursorKeyKind, Envelope: cursorEnvelope, UpdatedAt: now}, accessstore.SecretAudit{OrganizationID: organization.ID, Kind: accessstore.NativeCursorKeyKind, Actor: "migration", Event: "import", KeyVersion: cursorEnvelope.Version, RecordedAt: now})
-	}); err != nil {
-		t.Fatal(err)
-	}
 	createdProject := performHubAPIRequest(t, service, http.MethodPost, "/api/v2/organizations/"+string(organization.ID)+"/projects", testHubAdminToken, map[string]any{"idempotency_key": "create", "name": "Example project", "states": nativeFixtureStates()})
 	requireNativeStatus(t, createdProject, http.StatusOK)
 	var project tracker.NativeProject
@@ -467,7 +452,6 @@ func TestTenantRunnerHeartbeatPersistsIdentityAndReturnsCurrentRouting(t *testin
 	localChecks := runnerauth.LocalChecks{CommitName: "Example Runner", CommitEmail: "runner@example.invalid", CommitSigning: "ssh", Setup: "passed", Checkout: "passed", Configuration: "passed", Doctor: "warning", Provider: "passed", ProviderKinds: []string{"codex"}, CheckoutAt: clock.value, ConfigurationAt: clock.value, DoctorAt: clock.value, ProviderAt: clock.value}
 	localChecksObservedAt := clock.value
 	workspaceCapabilities := workspacesession.Capabilities{Terminal: true, Files: true, Diff: true, Exec: true, Git: true}
-	reportedSkills := []skills.ProviderSkill{{Name: "review", Description: "Review this project", Path: "/project/.agents/skills/review/SKILL.md", Scope: "project", Enabled: true, UserInvocable: true, Invocation: "$review"}}
 	hostSummary := testHostSummary(clock.value)
 	secondHostSummary := hostSummary
 	secondHostSummary.SegmentID = clock.value.Add(-30 * time.Second)
@@ -476,7 +460,7 @@ func TestTenantRunnerHeartbeatPersistsIdentityAndReturnsCurrentRouting(t *testin
 	problem.ProjectID = string(project.ID)
 	problem.Subject = "example-project/codex"
 	problem.Check = "backend probe"
-	response := performHubAPIRequest(t, service, http.MethodPost, path, secret, map[string]any{"display_name": "Example host", "capacity": 3, "version": "0.174.1", "os": "darwin", "architecture": "arm64", "protocol_major": 2, "provider_reports": []providercapacity.Report{providerReport}, "capacity_configuration": capacityConfiguration, "backend_isolation": backendIsolation, "sprite_name": "example-host", "host_metrics": []hostmetrics.Summary{hostSummary, secondHostSummary}, "admission": admission, "problems": []runnerauth.Problem{problem}, "local_checks": localChecks, "workspace_capabilities": workspaceCapabilities, "workspace_isolation": "sandbox", "skills": reportedSkills, "checkout_repository": "example-org/example-repo"})
+	response := performHubAPIRequest(t, service, http.MethodPost, path, secret, map[string]any{"display_name": "Example host", "capacity": 3, "version": "0.174.1", "os": "darwin", "architecture": "arm64", "protocol_major": 2, "provider_reports": []providercapacity.Report{providerReport}, "capacity_configuration": capacityConfiguration, "backend_isolation": backendIsolation, "sprite_name": "example-host", "host_metrics": []hostmetrics.Summary{hostSummary, secondHostSummary}, "admission": admission, "problems": []runnerauth.Problem{problem}, "local_checks": localChecks, "workspace_capabilities": workspaceCapabilities, "workspace_isolation": "sandbox"})
 	requireNativeStatus(t, response, http.StatusOK)
 	var snapshot runnerauth.RoutingSnapshot
 	decodeHubResponse(t, response, &snapshot)
@@ -492,8 +476,6 @@ func TestTenantRunnerHeartbeatPersistsIdentityAndReturnsCurrentRouting(t *testin
 	var storedLocalChecks runnerauth.LocalChecks
 	var storedWorkspaceCapabilities workspacesession.Capabilities
 	var storedWorkspaceIsolation string
-	var storedSkills []runnerstore.ProjectSkill
-	var checkoutVerified bool
 	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
 		persisted, err = r.RunnerIdentity(t.Context(), "runner_example")
@@ -531,14 +513,6 @@ func TestTenantRunnerHeartbeatPersistsIdentityAndReturnsCurrentRouting(t *testin
 		if err != nil {
 			return err
 		}
-		storedSkills, err = r.RunnerProjectSkills(t.Context(), project.ID, "runner_example", clock.value, runnerstore.MaxProjectSkills)
-		if err != nil {
-			return err
-		}
-		checkoutVerified, err = r.RunnerCheckoutVerified(t.Context(), project.ID, "example-org/example-repo", clock.value)
-		if err != nil {
-			return err
-		}
 		if _, _, err := r.RunnerWorkspaceReport(t.Context(), "runner_example_two"); !errors.Is(err, corestore.ErrNotFound) {
 			t.Fatalf("second runner workspace report = %v, want not found", err)
 		}
@@ -566,9 +540,6 @@ func TestTenantRunnerHeartbeatPersistsIdentityAndReturnsCurrentRouting(t *testin
 	}
 	if storedWorkspaceCapabilities != workspaceCapabilities || storedWorkspaceIsolation != "sandbox" {
 		t.Fatalf("persisted runner workspace report = %+v / %q", storedWorkspaceCapabilities, storedWorkspaceIsolation)
-	}
-	if len(storedSkills) != 1 || storedSkills[0].RunnerID != "runner_example" || storedSkills[0].Skill != reportedSkills[0] || !storedSkills[0].ReportedAt.Equal(clock.value) || !checkoutVerified {
-		t.Fatalf("persisted runner skills = %+v, checkout verified=%v", storedSkills, checkoutVerified)
 	}
 	hostHistory, err := service.readRunnerHostHistory(t.Context(), organization.ID, "runner_example", hostSummary.Hour, hostSummary.Hour.Add(time.Hour))
 	if err != nil || len(hostHistory) != 1 || hostHistory[0].SampleCount != hostSummary.SampleCount+secondHostSummary.SampleCount || hostHistory[0].CPUBusyAveragePercent == nil || *hostHistory[0].CPUBusyAveragePercent != hostSummary.CPUBusySumPercent/float64(hostSummary.CPUSampleCount) {
@@ -621,41 +592,6 @@ func TestTenantRunnerHeartbeatPersistsIdentityAndReturnsCurrentRouting(t *testin
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
-		reports, err := r.RunnerProjectSkills(t.Context(), project.ID, "runner_example", clock.value, runnerstore.MaxProjectSkills)
-		if err != nil {
-			return err
-		}
-		verified, err := r.RunnerCheckoutVerified(t.Context(), project.ID, "example-org/example-repo", clock.value)
-		if err != nil {
-			return err
-		}
-		if len(reports) != 1 || !verified {
-			t.Fatalf("omitted heartbeat reports changed stored values: skills=%+v checkout=%v", reports, verified)
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	clock.value = clock.value.Add(time.Second)
-	cleared := performHubAPIRequest(t, service, http.MethodPost, path, secret, map[string]any{"display_name": "Example host", "capacity": 3, "version": "0.174.1", "os": "darwin", "architecture": "arm64", "skills": []skills.ProviderSkill{}, "checkout_repository": ""})
-	requireNativeStatus(t, cleared, http.StatusOK)
-	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
-		reports, err := r.RunnerProjectSkills(t.Context(), project.ID, "runner_example", clock.value, runnerstore.MaxProjectSkills)
-		if err != nil {
-			return err
-		}
-		verified, err := r.RunnerCheckoutVerified(t.Context(), project.ID, "example-org/example-repo", clock.value)
-		if err != nil {
-			return err
-		}
-		if len(reports) != 0 || verified {
-			t.Fatalf("empty heartbeat reports did not clear values: skills=%+v checkout=%v", reports, verified)
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
 	for _, runner := range []struct {
 		runnerID  string
 		machineID string
@@ -680,17 +616,8 @@ func TestTenantRunnerHeartbeatPersistsIdentityAndReturnsCurrentRouting(t *testin
 			t.Fatalf("runner %s repository request replay changed ID: %q != %q", runner.runnerID, replayResult.RequestID, requestResult.RequestID)
 		}
 		heartbeatPayload := map[string]any{"display_name": "Example host", "capacity": 2, "version": "0.174.1", "os": "darwin", "architecture": "arm64", "protocol_major": 2}
-		var updateReport *runnerauth.UpdateObservation
-		updateClock := clock.value
 		if runner.runnerID == "runner_example" {
-			clock.value = updateClock.Add(123456100 * time.Nanosecond)
 			heartbeatPayload["provider_reports"] = []providercapacity.Report{providerReport}
-			service.config.Version = "v0.174.2"
-			service.runnerPublishedReleases.Store("v0.174.2/darwin/arm64", true)
-			build := runnerauth.BuildEvidence{Version: "0.174.1", Commit: strings.Repeat("a", 40), Source: "release", SHA256: strings.Repeat("b", 64), OS: "darwin", Architecture: "arm64", ObservedAt: clock.value}
-			updateReport = &runnerauth.UpdateObservation{Discovery: "available", Protocol: 1, Service: "detent", Supported: true, Pending: true, AvailableObservedAt: clock.value, AvailableVersion: "0.174.2", Running: build, ObservedAt: clock.value}
-			updateReport.Revision = updateReport.BuildRevision()
-			heartbeatPayload["update"] = updateReport
 		}
 		heartbeat := performHubAPIRequest(t, service, http.MethodPost, "/api/v2/organizations/"+string(organization.ID)+"/projects/"+string(project.ID)+"/machines/"+runner.machineID+"/heartbeat", runner.secret, heartbeatPayload)
 		requireNativeStatus(t, heartbeat, http.StatusOK)
@@ -699,116 +626,6 @@ func TestTenantRunnerHeartbeatPersistsIdentityAndReturnsCurrentRouting(t *testin
 		if routing.RepositoryListRequest != requestResult.RequestID {
 			t.Fatalf("runner %s heartbeat repository request=%q want=%q", runner.runnerID, routing.RepositoryListRequest, requestResult.RequestID)
 		}
-		if runner.runnerID == "runner_example" {
-			if routing.TargetRunnerVersion != "0.174.2" || routing.Routing.UpdateRequest == nil || !routing.Routing.UpdateRequest.FollowHub {
-				t.Fatalf("published Hub update was not delivered: %+v", routing)
-			}
-			runnerUpdatePath := "/api/v2/organizations/" + string(organization.ID) + "/runners/runner_example/update"
-			readUpdate := func() runnerauth.UpdateView {
-				t.Helper()
-				response := performHubAPIRequest(t, service, http.MethodGet, runnerUpdatePath, testHubAdminToken, nil)
-				requireNativeStatus(t, response, http.StatusOK)
-				var view runnerauth.UpdateView
-				decodeHubResponse(t, response, &view)
-				return view
-			}
-			view := readUpdate()
-			if view.Status != "requested" || view.Desired == nil || !view.Desired.FollowHub || view.Observation == nil || view.Observation.Revision != updateReport.Revision {
-				t.Fatalf("persisted follow-Hub update=%+v", view)
-			}
-			if !routing.Routing.UpdateRequest.RequestedAt.Equal(view.Desired.RequestedAt) {
-				t.Fatalf("follow-Hub response request time=%s, persisted=%s", routing.Routing.UpdateRequest.RequestedAt, view.Desired.RequestedAt)
-			}
-			target := runnerauth.BuildEvidence{Version: "0.174.2", Commit: strings.Repeat("c", 40), Source: "release", SHA256: strings.Repeat("d", 64), OS: "darwin", Architecture: "arm64", VerifiedRelease: true, ObservedAt: clock.value}
-			updateReport.Running = target
-			updateReport.AvailableVersion = "0.174.3"
-			updateReport.Revision = updateReport.BuildRevision()
-			updateReport.Receipt = &runnerauth.UpdateReceipt{Request: *view.Desired, Status: "running", Applied: &target, ObservedAt: clock.value}
-			service.config.Version = "v0.174.1"
-			settledPayload := map[string]any{"display_name": "Example host", "capacity": 2, "version": target.Version, "os": "darwin", "architecture": "arm64", "protocol_major": 2, "provider_reports": []providercapacity.Report{providerReport}, "update": updateReport}
-			settled := performHubAPIRequest(t, service, http.MethodPost, "/api/v2/organizations/"+string(organization.ID)+"/projects/"+string(project.ID)+"/machines/"+runner.machineID+"/heartbeat", runner.secret, settledPayload)
-			requireNativeStatus(t, settled, http.StatusOK)
-			var settledRouting runnerauth.RoutingSnapshot
-			decodeHubResponse(t, settled, &settledRouting)
-			view = readUpdate()
-			if view.Status != "running" || view.Desired == nil || view.Desired.ID != routing.Routing.UpdateRequest.ID {
-				t.Fatalf("settled follow-Hub update status=%s desired=%+v observation=%+v receipt=%+v", view.Status, view.Desired, view.Observation, view.Observation.Receipt)
-			}
-			manual := runnerUpdateChange{ExpectedRevision: view.Revision, ExpectedBuildRevision: updateReport.Revision, Service: "detent", Version: "0.174.3", Release: true, FromRelease: true, Confirm: true, IdempotencyKey: "pg-runner-update"}
-			applyPath := runnerUpdatePath + "/apply"
-			applied := performHubAPIRequest(t, service, http.MethodPost, applyPath, testHubAdminToken, manual)
-			requireNativeStatus(t, applied, http.StatusAccepted)
-			var appliedView runnerauth.UpdateView
-			decodeHubResponse(t, applied, &appliedView)
-			if appliedView.Status != "requested" || appliedView.Desired == nil || appliedView.Desired.Version != manual.Version || appliedView.Observation == nil {
-				t.Fatalf("selected runner update response=%+v", appliedView)
-			}
-			if persisted := readUpdate(); persisted.Desired == nil || !appliedView.Desired.RequestedAt.Equal(persisted.Desired.RequestedAt) {
-				t.Fatalf("selected runner update response request time=%s, persisted=%+v", appliedView.Desired.RequestedAt, persisted.Desired)
-			}
-			replay := performHubAPIRequest(t, service, http.MethodPost, applyPath, testHubAdminToken, manual)
-			requireNativeStatus(t, replay, http.StatusAccepted)
-			if !bytes.Equal(applied.Body.Bytes(), replay.Body.Bytes()) {
-				t.Fatal("selected runner update replay changed")
-			}
-			urgentPath := "/api/v2/organizations/" + string(organization.ID) + "/runner-update/urgent"
-			urgentRequest := urgentRunnerUpdateChange{ExpectedRevision: 0, Version: "0.174.4", Confirm: true, IdempotencyKey: "pg-urgent-runner-update"}
-			urgentResponse := performHubAPIRequest(t, service, http.MethodPut, urgentPath, testHubAdminToken, urgentRequest)
-			requireNativeStatus(t, urgentResponse, http.StatusAccepted)
-			var urgent urgentRunnerUpdate
-			decodeHubResponse(t, urgentResponse, &urgent)
-			if urgent.Revision != 1 || urgent.Request == nil || !urgent.Request.Urgent || urgent.Request.Version != urgentRequest.Version {
-				t.Fatalf("typed urgent update=%+v", urgent)
-			}
-			urgentRead := performHubAPIRequest(t, service, http.MethodGet, urgentPath, testHubAdminToken, nil)
-			requireNativeStatus(t, urgentRead, http.StatusOK)
-			var storedUrgent urgentRunnerUpdate
-			decodeHubResponse(t, urgentRead, &storedUrgent)
-			if storedUrgent.Revision != urgent.Revision || storedUrgent.Request == nil || !storedUrgent.Request.Matches(*urgent.Request) {
-				t.Fatalf("typed urgent update read=%+v want=%+v", storedUrgent, urgent)
-			}
-			if !urgent.Request.RequestedAt.Equal(storedUrgent.Request.RequestedAt) {
-				t.Fatalf("urgent response request time=%s, persisted=%s", urgent.Request.RequestedAt, storedUrgent.Request.RequestedAt)
-			}
-			urgentReplay := performHubAPIRequest(t, service, http.MethodPut, urgentPath, testHubAdminToken, urgentRequest)
-			requireNativeStatus(t, urgentReplay, http.StatusAccepted)
-			if !bytes.Equal(urgentResponse.Body.Bytes(), urgentReplay.Body.Bytes()) {
-				t.Fatal("urgent runner update replay changed")
-			}
-			startUrgentWrites := make(chan struct{})
-			urgentResponses := make(chan *httptest.ResponseRecorder, 2)
-			for index := 0; index < 2; index++ {
-				request := newHubAPIRequest(t, http.MethodPut, urgentPath, testHubAdminToken, urgentRunnerUpdateChange{ExpectedRevision: urgent.Revision, Version: urgentRequest.Version, Confirm: true, IdempotencyKey: fmt.Sprintf("pg-urgent-race-%d", index)})
-				go func() {
-					<-startUrgentWrites
-					response := httptest.NewRecorder()
-					service.Handler().ServeHTTP(response, request)
-					urgentResponses <- response
-				}()
-			}
-			close(startUrgentWrites)
-			accepted, conflicted := 0, 0
-			for range 2 {
-				response := <-urgentResponses
-				switch response.Code {
-				case http.StatusAccepted:
-					accepted++
-				case http.StatusConflict:
-					conflict := requireNativeError(t, response, http.StatusConflict, "revision_conflict")
-					if conflict.CurrentRevision != 2 {
-						t.Fatalf("concurrent urgent update conflict revision=%d want=2", conflict.CurrentRevision)
-					}
-					conflicted++
-				default:
-					t.Fatalf("concurrent urgent update status=%d body=%s", response.Code, response.Body.String())
-				}
-			}
-			if accepted != 1 || conflicted != 1 {
-				t.Fatalf("concurrent urgent update outcomes accepted=%d conflicted=%d want=1/1", accepted, conflicted)
-			}
-			service.config.Version = ""
-		}
-		clock.value = updateClock
 		report := map[string]any{"idempotency_key": requestResult.RequestID, "request_id": requestResult.RequestID, "repositories": []runnerauth.Repository{{Owner: "example-org", Name: runner.runnerID, Private: true}}}
 		response := performHubAPIRequest(t, service, http.MethodPost, "/api/v2/organizations/"+string(organization.ID)+"/projects/"+string(project.ID)+"/onboarding/repositories/report", runner.secret, report)
 		requireNativeStatus(t, response, http.StatusOK)
@@ -885,85 +702,10 @@ func TestTenantRunnerHeartbeatPersistsIdentityAndReturnsCurrentRouting(t *testin
 	}); err != nil {
 		t.Fatal(err)
 	}
-	baseline := performHubAPIRequest(t, service, http.MethodPost, path, secret, map[string]any{"display_name": "Example host", "capacity": 3, "version": "0.174.1", "os": "darwin", "architecture": "arm64", "change_cursor": ""})
-	requireNativeStatus(t, baseline, http.StatusOK)
-	var baselineSnapshot runnerauth.RoutingSnapshot
-	decodeHubResponse(t, baseline, &baselineSnapshot)
-	if baselineSnapshot.Routing.UpdateRequest == nil || !baselineSnapshot.Routing.UpdateRequest.Urgent || baselineSnapshot.Routing.UpdateRequest.Version != "0.174.4" {
-		t.Fatalf("urgent update was not included in runner routing: %+v", baselineSnapshot.Routing)
-	}
-	if baselineSnapshot.Changes == nil || !baselineSnapshot.Changes.Reset || baselineSnapshot.Changes.Cursor == "" {
-		t.Fatalf("initial heartbeat changes = %+v", baselineSnapshot.Changes)
-	}
-	issueResponse := performHubAPIRequest(t, service, http.MethodPost, "/api/v2/organizations/"+string(organization.ID)+"/projects/"+string(project.ID)+"/work-items", testHubAdminToken, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "heartbeat-change"}, Title: "Heartbeat change", Body: workItemRecordBody, State: "Todo"})
-	requireNativeStatus(t, issueResponse, http.StatusOK)
-	var heartbeatIssue tracker.NativeIssue
-	decodeHubResponse(t, issueResponse, &heartbeatIssue)
-	changed := performHubAPIRequest(t, service, http.MethodPost, path, secret, map[string]any{"display_name": "Example host", "capacity": 3, "version": "0.174.1", "os": "darwin", "architecture": "arm64", "change_cursor": baselineSnapshot.Changes.Cursor})
-	requireNativeStatus(t, changed, http.StatusOK)
-	var changedSnapshot runnerauth.RoutingSnapshot
-	decodeHubResponse(t, changed, &changedSnapshot)
-	if changedSnapshot.Changes == nil || changedSnapshot.Changes.Reset || len(changedSnapshot.Changes.Items) != 1 || changedSnapshot.Changes.Items[0].ID != heartbeatIssue.WorkItemID {
-		t.Fatalf("heartbeat event delta = %+v, issue=%s", changedSnapshot.Changes, heartbeatIssue.WorkItemID)
-	}
-	heartbeatCredential, status, err := service.authenticateTenantAPIHash(t.Context(), organization.ID, hash, "", "")
-	if err != nil || status != http.StatusOK {
-		t.Fatalf("authenticate heartbeat cursor credential: status=%d err=%v", status, err)
-	}
-	_, legacyCursor, cursorKey, err := service.readNativePage(t.Context(), nativeScope{organization: organization.ID, project: project.ID, credential: heartbeatCredential}, path+"/changes", url.Values{"cursor": {""}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	legacyPosition, err := json.Marshal(struct {
-		Sequence int64     `json:"sequence"`
-		Observed time.Time `json:"observed_at"`
-	}{Sequence: 1, Observed: clock.value})
-	if err != nil {
-		t.Fatal(err)
-	}
-	legacyCursor.After = string(legacyPosition)
-	legacyToken, err := encodeNativeCursor(legacyCursor, cursorKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	legacyResponse := performHubAPIRequest(t, service, http.MethodPost, path, secret, map[string]any{"display_name": "Example host", "capacity": 3, "version": "0.174.1", "os": "darwin", "architecture": "arm64", "change_cursor": legacyToken})
-	requireNativeStatus(t, legacyResponse, http.StatusOK)
-	var legacySnapshot runnerauth.RoutingSnapshot
-	decodeHubResponse(t, legacyResponse, &legacySnapshot)
-	if legacySnapshot.Changes == nil || !legacySnapshot.Changes.Reset || legacySnapshot.Changes.Cursor == "" {
-		t.Fatalf("legacy rowid cursor did not reset against matching PG sequence: %+v", legacySnapshot.Changes)
-	}
-	sqlitePosition, err := json.Marshal(heartbeatPosition{Version: sqliteHeartbeatCursorVersion, Sequence: 1, Observed: clock.value})
-	if err != nil {
-		t.Fatal(err)
-	}
-	legacyCursor.After = string(sqlitePosition)
-	sqliteToken, err := encodeNativeCursor(legacyCursor, cursorKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	sqliteResponse := performHubAPIRequest(t, service, http.MethodPost, path, secret, map[string]any{"display_name": "Example host", "capacity": 3, "version": "0.174.1", "os": "darwin", "architecture": "arm64", "change_cursor": sqliteToken})
-	requireNativeStatus(t, sqliteResponse, http.StatusOK)
-	var sqliteSnapshot runnerauth.RoutingSnapshot
-	decodeHubResponse(t, sqliteResponse, &sqliteSnapshot)
-	if sqliteSnapshot.Changes == nil || !sqliteSnapshot.Changes.Reset || sqliteSnapshot.Changes.Cursor == "" {
-		t.Fatalf("SQLite cursor version %d did not reset against matching PG sequence: %+v", sqliteHeartbeatCursorVersion, sqliteSnapshot.Changes)
-	}
-	secondIssueResponse := performHubAPIRequest(t, service, http.MethodPost, "/api/v2/organizations/"+string(organization.ID)+"/projects/"+string(project.ID)+"/work-items", testHubAdminToken, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "heartbeat-change-next"}, Title: "Heartbeat change next", Body: workItemRecordBody, State: "Todo"})
-	requireNativeStatus(t, secondIssueResponse, http.StatusOK)
-	var secondHeartbeatIssue tracker.NativeIssue
-	decodeHubResponse(t, secondIssueResponse, &secondHeartbeatIssue)
-	nextChanged := performHubAPIRequest(t, service, http.MethodPost, path, secret, map[string]any{"display_name": "Example host", "capacity": 3, "version": "0.174.1", "os": "darwin", "architecture": "arm64", "change_cursor": sqliteSnapshot.Changes.Cursor})
-	requireNativeStatus(t, nextChanged, http.StatusOK)
-	var nextChangedSnapshot runnerauth.RoutingSnapshot
-	decodeHubResponse(t, nextChanged, &nextChangedSnapshot)
-	if nextChangedSnapshot.Changes == nil || nextChangedSnapshot.Changes.Reset || len(nextChangedSnapshot.Changes.Items) != 1 || nextChangedSnapshot.Changes.Items[0].ID != secondHeartbeatIssue.WorkItemID {
-		t.Fatalf("versioned heartbeat event delta = %+v, issue=%s", nextChangedSnapshot.Changes, secondHeartbeatIssue.WorkItemID)
-	}
 	before := clock.value
 	clock.value = now.Add(3 * time.Minute)
-	checkoutHeartbeat := performHubAPIRequest(t, service, http.MethodPost, path, secret, map[string]any{"display_name": "Example host", "capacity": 3, "version": "0.174.1", "os": "darwin", "architecture": "arm64", "checkout_repository": "owner/repository"})
-	requireNativeStatus(t, checkoutHeartbeat, http.StatusOK)
+	unsupported := performHubAPIRequest(t, service, http.MethodPost, path, secret, map[string]any{"display_name": "Example host", "capacity": 3, "version": "0.174.1", "checkout_repository": "owner/repository"})
+	requireNativeStatus(t, unsupported, http.StatusServiceUnavailable)
 	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
 		persisted, err = r.RunnerIdentity(t.Context(), "runner_example")
@@ -971,57 +713,8 @@ func TestTenantRunnerHeartbeatPersistsIdentityAndReturnsCurrentRouting(t *testin
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if !persisted.LastHeartbeatAt.Equal(clock.value) || !persisted.LastHeartbeatAt.After(before) {
-		t.Fatalf("checkout heartbeat did not advance timestamp: before=%s after=%s", before, persisted.LastHeartbeatAt)
-	}
-	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
-		verified, err := r.RunnerCheckoutVerified(t.Context(), project.ID, "owner/repository", clock.value)
-		if err != nil {
-			return err
-		}
-		if !verified {
-			t.Fatal("accepted checkout report is not visible to its authorized project")
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
-		record, err := w.ProjectRecord(t.Context(), project.ID)
-		if err != nil {
-			return err
-		}
-		record.Settings.CheckoutRepository = "owner/repository"
-		_, err = w.UpdateProjectRecord(t.Context(), record)
-		return err
-	}); err != nil {
-		t.Fatal(err)
-	}
-	connector, repositoryID, enabled, err := service.projectRepositoryBinding(t.Context(), service.database.reader, nativeScope{organization: organization.ID, project: project.ID})
-	if err != nil || connector == nil || connector.Repository != "owner/repository" || repositoryID != 0 || enabled {
-		t.Fatalf("postgres checkout binding=%+v repository_id=%d enabled=%t error=%v", connector, repositoryID, enabled, err)
-	}
-	if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
-		identity, err := w.RunnerIdentity(t.Context(), "runner_example")
-		if err != nil {
-			return err
-		}
-		identity.ExpiresAt = clock.value.Add(-time.Second)
-		return w.UpdateRunnerIdentity(t.Context(), identity)
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
-		verified, err := r.RunnerCheckoutVerified(t.Context(), project.ID, "owner/repository", clock.value)
-		if err != nil {
-			return err
-		}
-		if verified {
-			t.Fatal("expired runner identity verified a fresh checkout report")
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
+	if !persisted.LastHeartbeatAt.Equal(before) {
+		t.Fatalf("unsupported heartbeat partially changed timestamp: before=%s after=%s", before, persisted.LastHeartbeatAt)
 	}
 	if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
 		record, err := w.ProjectRecord(t.Context(), project.ID)
@@ -1063,8 +756,8 @@ func TestTenantRunnerHeartbeatPersistsIdentityAndReturnsCurrentRouting(t *testin
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if mutations != 25 || heartbeats != 13 {
-		t.Fatalf("runner protocol usage api_mutations=%d heartbeats=%d want=25/13", mutations, heartbeats)
+	if mutations != 14 || heartbeats != 5 {
+		t.Fatalf("runner protocol usage api_mutations=%d heartbeats=%d want=14/5", mutations, heartbeats)
 	}
 }
 
