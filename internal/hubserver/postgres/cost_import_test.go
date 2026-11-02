@@ -5,18 +5,16 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/lib/pq"
-
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/storagecatalog"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/usagecost"
@@ -27,6 +25,21 @@ type costImportObjects struct {
 	fail bool
 }
 
+func schemaFromCatalogForTest(catalog storagecatalog.Catalog) storagecatalog.Schema {
+	schema := storagecatalog.Schema{}
+	for name, table := range catalog.Tables {
+		name, ok := strings.CutPrefix(name, "hub/")
+		if !ok {
+			continue
+		}
+		schema[name] = make(map[string]string, len(table.Columns))
+		for column, definition := range table.Columns {
+			schema[name][column] = definition.Source
+		}
+	}
+	return schema
+}
+
 func (s *costImportObjects) StoreDetail(ctx context.Context, organization string, raw []byte) (attachment.ArchiveReference, error) {
 	if s.fail {
 		return attachment.ArchiveReference{}, errors.New("archive unavailable")
@@ -34,53 +47,37 @@ func (s *costImportObjects) StoreDetail(ctx context.Context, organization string
 	return s.historyObjects.StoreDetail(ctx, organization, raw)
 }
 
-func costImportSourceFor(t *testing.T, db *sql.DB, organization tracker.OrganizationID, objects *costImportObjects) postgres.CostImportSource {
-	t.Helper()
-	catalog, err := storagecatalog.Read(os.DirFS("../../.."), "tools/storageinventory/mappings/v1.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	schema := storagecatalog.Schema{}
-	for name, table := range catalog.Tables {
-		if name, ok := strings.CutPrefix(name, "hub/"); ok {
-			schema[name] = map[string]string{}
-			for column, definition := range table.Columns {
-				schema[name][column] = definition.Source
-			}
-		}
-	}
-	source := postgres.CostImportSource{DB: db, Catalog: catalog, Schema: schema, SnapshotID: "frozen_example", Objects: objects, Source: storagecatalog.Source{Schema: string(organization), Store: "hub", CatalogVersion: catalog.Version, OrganizationID: string(organization)}}
-	if _, err := db.ExecContext(t.Context(), "CREATE SCHEMA "+pq.QuoteIdentifier(source.Source.Schema)); err != nil {
-		t.Fatal(err)
-	}
-	var columns []string
-	keys := make([]string, 7)
-	for name, definition := range catalog.Tables["hub/usage_cost_observations"].Columns {
-		columns = append(columns, pq.QuoteIdentifier(name)+` text COLLATE "C"`)
-		var metadata []json.RawMessage
-		if err := json.Unmarshal([]byte(definition.Source), &metadata); err != nil {
-			t.Fatal(err)
-		}
-		var position int
-		if err := json.Unmarshal(metadata[5], &position); err != nil {
-			t.Fatal(err)
-		}
-		if position > 0 {
-			keys[position-1] = pq.QuoteIdentifier(name)
-		}
-	}
-	statement := "CREATE TABLE " + pq.QuoteIdentifier(source.Source.Schema) + `.usage_cost_observations (` + strings.Join(columns, ",") + ", PRIMARY KEY (" + strings.Join(keys, ",") + "))"
-	if _, err := db.ExecContext(t.Context(), statement); err != nil {
-		t.Fatal(err)
-	}
-	return source
-}
-
 func TestCostImportResumesAndPreservesCurrentAndHistoricalCosts(t *testing.T) {
 	admin := template.Database(t)
 	repository, _ := repositoryFor(t, admin, smallPool())
 	admin.SetMaxOpenConns(6)
 	from := time.Date(2026, 1, 1, 0, 0, 0, 1, time.UTC)
+	catalog, err := storagecatalog.Read(os.DirFS("../../.."), "tools/storageinventory/mappings/v1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceCopy := newBillingImportCopy(t, catalog, "usage_cost_observations")
+	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
+		for _, sourceID := range []string{"active", "voided"} {
+			for _, revision := range []int64{9, 10} {
+				amount := revision * 10
+				o := usagecost.Observation{Provider: "example", ProviderAccount: "account", ResourceID: "same_resource", Bucket: "runner_api", Metric: "tokens", SourceID: sourceID, Revision: revision, From: from, To: from.Add(time.Nanosecond), AmountMicros: &amount, Currency: "USD", Unit: "token", Voided: sourceID == "voided" && revision == 10}
+				raw, err := json.Marshal(o)
+				if err != nil {
+					t.Fatal(err)
+				}
+				statement := `INSERT INTO usage_cost_observations (organization_id,project_id,provider,provider_account,resource_id,bucket,metric,source_id,period_start,period_end,revision,observation_json,received_at,voided) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+				voided := 0
+				if o.Voided {
+					voided = 1
+				}
+				if _, err := sourceCopy.db.ExecContext(t.Context(), statement, organization, "project_example", o.Provider, o.ProviderAccount, o.ResourceID, o.Bucket, o.Metric, sourceID, from.Format(time.RFC3339Nano), o.To.Format(time.RFC3339Nano), revision, string(raw), from.Add(time.Hour).Format(time.RFC3339Nano), voided); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+	}
+	copyPath := sourceCopy.seal(t)
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
 		seedTenantAccess(t, repository, organization)
 		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
@@ -90,59 +87,21 @@ func TestCostImportResumesAndPreservesCurrentAndHistoricalCosts(t *testing.T) {
 			t.Fatal(err)
 		}
 		objects := &costImportObjects{historyObjects: newHistoryObjects()}
-		source := costImportSourceFor(t, admin, organization, objects)
-		for _, sourceID := range []string{"active", "voided"} {
-			for _, revision := range []int64{9, 10} {
-				amount := revision * 10
-				o := usagecost.Observation{Provider: "example", ProviderAccount: "account", ResourceID: "same_resource", Bucket: "runner_api", Metric: "tokens", SourceID: sourceID, Revision: revision, From: from, To: from.Add(time.Nanosecond), AmountMicros: &amount, Currency: "USD", Unit: "token", Voided: sourceID == "voided" && revision == 10}
-				raw, err := json.Marshal(o)
-				if err != nil {
-					t.Fatal(err)
-				}
-				statement := "INSERT INTO " + pq.QuoteIdentifier(source.Source.Schema) + `.usage_cost_observations (organization_id,project_id,provider,provider_account,resource_id,bucket,metric,source_id,period_start,period_end,revision,observation_json,received_at,voided) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`
-				voided := "0"
-				if o.Voided {
-					voided = "1"
-				}
-				if _, err := admin.ExecContext(t.Context(), statement, organization, "project_example", o.Provider, o.ProviderAccount, o.ResourceID, o.Bucket, o.Metric, sourceID, from.Format(time.RFC3339Nano), o.To.Format(time.RFC3339Nano), fmt.Sprint(revision), string(raw), from.Add(time.Hour).Format(time.RFC3339Nano), voided); err != nil {
-					t.Fatal(err)
-				}
-			}
+		source := postgres.CostImportSource{CopyPath: copyPath, Catalog: catalog, Schema: schemaFromCatalogForTest(catalog), Objects: objects, Source: storagecatalog.Source{Schema: "hub_copy", Store: "hub", CatalogVersion: catalog.Version, OrganizationID: string(organization)}}
+		objects.fail = true
+		if _, err := repository.ImportCostCopy(t.Context(), source); err == nil {
+			t.Fatal("missing object storage accepted")
 		}
-		source.SnapshotID = exportCostTestSnapshot(t, admin)
-		var progress postgres.CostImportProgress
-		for step := 0; step < 20 && !progress.Done; step++ {
-			importer, err := repository.NewCostImporter(t.Context(), source)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if step == 1 {
-				if _, err := admin.ExecContext(t.Context(), "UPDATE "+pq.QuoteIdentifier(source.Source.Schema)+`.usage_cost_observations SET observation_json='{}'`); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if step == 2 {
-				objects.fail = true
-				failed, err := importer.Step(t.Context(), 1)
-				objects.fail = false
-				if err == nil || failed != progress {
-					t.Fatalf("failed archive advanced import: %+v %v", failed, err)
-				}
-			}
-			progress, err = importer.Step(t.Context(), 1)
-			if err != nil {
-				t.Fatalf("step %d: %v", step, err)
-			}
+		objects.fail = false
+		progress, err := repository.ImportCostCopy(t.Context(), source)
+		if err != nil {
+			t.Fatal(err)
 		}
 		want := postgres.CostImportProgress{SourceRows: 4, CurrentSources: 2, HistoryRows: 4, Done: true}
 		if progress != want {
 			t.Fatalf("progress=%+v want %+v", progress, want)
 		}
-		importer, err := repository.NewCostImporter(t.Context(), source)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if replay, err := importer.Step(t.Context(), 1); err != nil || replay != want {
+		if replay, err := repository.ImportCostCopy(t.Context(), source); err != nil || replay != want {
 			t.Fatalf("completed replay=%+v %v", replay, err)
 		}
 		func() {
@@ -166,13 +125,14 @@ func TestCostImportResumesAndPreservesCurrentAndHistoricalCosts(t *testing.T) {
 				t.Fatal(err)
 			}
 		}()
-		source.SnapshotID = exportCostTestSnapshot(t, admin)
-		other, err := repository.NewCostImporter(t.Context(), source)
-		if err != nil {
+		changedCopy := newBillingImportCopy(t, catalog, "usage_cost_observations")
+		if _, err := changedCopy.db.ExecContext(t.Context(), `INSERT INTO usage_cost_observations (organization_id,project_id,provider,provider_account,resource_id,bucket,metric,source_id,period_start,period_end,revision,observation_json,received_at,voided) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, organization, "project_example", "example", "account", "same_resource", "runner_api", "tokens", "new", from.Format(time.RFC3339Nano), from.Add(time.Nanosecond).Format(time.RFC3339Nano), 1, `{}`, from.Add(time.Hour).Format(time.RFC3339Nano), 0); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := other.Step(t.Context(), 1); !errors.Is(err, postgres.ErrCostImport) {
-			t.Fatalf("changed snapshot accepted: %v", err)
+		changed := source
+		changed.CopyPath = changedCopy.seal(t)
+		if _, err := repository.ImportCostCopy(t.Context(), changed); !errors.Is(err, mutation.ErrConflict) {
+			t.Fatalf("changed source copy accepted: %v", err)
 		}
 		if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
 			for _, project := range []tracker.ProjectID{"", "project_example"} {
@@ -189,18 +149,4 @@ func TestCostImportResumesAndPreservesCurrentAndHistoricalCosts(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-}
-
-func exportCostTestSnapshot(t *testing.T, db *sql.DB) string {
-	t.Helper()
-	tx, err := db.BeginTx(t.Context(), &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = tx.Rollback() })
-	var snapshot string
-	if err := tx.QueryRowContext(t.Context(), "SELECT pg_export_snapshot()").Scan(&snapshot); err != nil {
-		t.Fatal(err)
-	}
-	return snapshot
 }

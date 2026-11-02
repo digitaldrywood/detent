@@ -4,11 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strings"
 	"testing"
 	"time"
-
-	"github.com/lib/pq"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -27,15 +24,26 @@ func TestConversationBillingImportPreservesSnapshotWithoutRebilling(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	schema := storagecatalog.Schema{}
-	for name, table := range catalog.Tables {
-		if name, ok := strings.CutPrefix(name, "hub/"); ok {
-			schema[name] = map[string]string{}
-			for column, definition := range table.Columns {
-				schema[name][column] = definition.Source
+	copy := newBillingImportCopy(t, catalog, "conversation_prices", "conversation_usage")
+	if _, err := copy.db.ExecContext(t.Context(), "INSERT INTO conversation_prices(id,provider,model,effective_at,input,cached_input,output) VALUES(?,?,?,?,?,?,?)", 1, "example-provider", "example-model", 1767225600000000, 0.1, 0.01, 0.5); err != nil {
+		t.Fatal(err)
+	}
+	insertUsage := "INSERT INTO conversation_usage(organization_id,project_id,conversation_id,turn_id,provider,model,occurred_at,input,cached_input,output,reasoning_output,outcome,price_id,cost_usd,cache_savings_usd) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
+		for n := 0; n < 101; n++ {
+			conversation := "conversation"
+			if n == 100 {
+				conversation = "late-conversation"
+			}
+			if _, err := copy.db.ExecContext(t.Context(), insertUsage, organization, "prj_shared", conversation, fmt.Sprintf("turn-%03d", n), "example-provider", "example-model", int64(1767225600000001), 100, 20, 30, 5, "delivered", 1, 0.0000232, 0.0000018); err != nil {
+				t.Fatal(err)
 			}
 		}
+		if _, err := copy.db.ExecContext(t.Context(), "UPDATE conversation_usage SET price_id=NULL,cost_usd=NULL,cache_savings_usd=NULL WHERE organization_id=? AND turn_id='turn-050'", organization); err != nil {
+			t.Fatal(err)
+		}
 	}
+	copyPath := copy.seal(t)
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
 		seedTenantAccess(t, repository, organization)
 		for _, query := range []string{
@@ -46,49 +54,16 @@ func TestConversationBillingImportPreservesSnapshotWithoutRebilling(t *testing.T
 				t.Fatal(err)
 			}
 		}
-		sourceSchema := "billing_" + string(organization)
-		if _, err := admin.ExecContext(t.Context(), "CREATE SCHEMA "+pq.QuoteIdentifier(sourceSchema)); err != nil {
-			t.Fatal(err)
-		}
-		for _, table := range []string{"conversation_prices", "conversation_usage"} {
-			var columns []string
-			for column := range schema[table] {
-				columns = append(columns, pq.QuoteIdentifier(column)+` text COLLATE "C"`)
-			}
-			key := "id"
-			if table == "conversation_usage" {
-				key = "organization_id,turn_id"
-			}
-			if _, err := admin.ExecContext(t.Context(), "CREATE TABLE "+pq.QuoteIdentifier(sourceSchema)+"."+table+" ("+strings.Join(columns, ",")+",PRIMARY KEY ("+key+"))"); err != nil {
-				t.Fatal(err)
-			}
-		}
-		prices := pq.QuoteIdentifier(sourceSchema) + ".conversation_prices"
-		usage := pq.QuoteIdentifier(sourceSchema) + ".conversation_usage"
-		if _, err := admin.ExecContext(t.Context(), "INSERT INTO "+prices+"(id,provider,model,effective_at,input,cached_input,output) VALUES('1','openai','example','1767225600000000','0.1','0.01','0.5')"); err != nil {
-			t.Fatal(err)
-		}
-		insertUsage := "INSERT INTO " + usage + "(organization_id,project_id,conversation_id,turn_id,provider,model,occurred_at,input,cached_input,output,reasoning_output,outcome,price_id,cost_usd,cache_savings_usd) VALUES($1,'prj_shared','conversation',$2,'openai','example','1767225600000001','100','20','30','5','delivered','1','0.0000232','0.0000018')"
-		for n := 0; n < 101; n++ {
-			if _, err := admin.ExecContext(t.Context(), insertUsage, organization, fmt.Sprintf("turn-%03d", n)); err != nil {
-				t.Fatal(err)
-			}
-		}
-		if _, err := admin.ExecContext(t.Context(), "UPDATE "+usage+" SET price_id=NULL,cost_usd=NULL,cache_savings_usd=NULL WHERE turn_id='turn-050'"); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := admin.ExecContext(t.Context(), "UPDATE "+usage+" SET conversation_id='late-conversation' WHERE turn_id='turn-100'"); err != nil {
-			t.Fatal(err)
-		}
-		source := postgres.ConversationBillingImportSource{DB: admin, Catalog: catalog, Schema: schema, Source: storagecatalog.Source{Schema: sourceSchema, Store: "hub", CatalogVersion: catalog.Version, OrganizationID: string(organization)}, SnapshotID: exportCostTestSnapshot(t, admin)}
-		if _, err := admin.ExecContext(t.Context(), insertUsage, organization, "after-snapshot"); err != nil {
-			t.Fatal(err)
-		}
+		source := postgres.ConversationBillingImportSource{CopyPath: copyPath, Catalog: catalog, Schema: schemaFromCatalogForTest(catalog), Objects: &costImportObjects{historyObjects: newHistoryObjects()}, Source: storagecatalog.Source{Schema: "hub_copy", Store: "hub", CatalogVersion: catalog.Version, OrganizationID: string(organization)}}
 		if _, err := repository.ImportConversationBilling(t.Context(), source); err == nil {
 			t.Fatal("missing conversation accepted")
 		}
+		changedCopy := newBillingImportCopy(t, catalog, "conversation_prices", "conversation_usage")
+		if _, err := changedCopy.db.ExecContext(t.Context(), insertUsage, organization, "prj_shared", "conversation", "changed", "example-provider", "example-model", int64(1767225600000001), 1, 0, 1, 0, "delivered", nil, nil, nil); err != nil {
+			t.Fatal(err)
+		}
 		changed := source
-		changed.SnapshotID = exportCostTestSnapshot(t, admin)
+		changed.CopyPath = changedCopy.seal(t)
 		if _, err := repository.ImportConversationBilling(t.Context(), changed); !errors.Is(err, mutation.ErrConflict) {
 			t.Fatalf("partial import accepted changed snapshot: %v", err)
 		}
@@ -158,9 +133,8 @@ func TestConversationBillingImportPreservesSnapshotWithoutRebilling(t *testing.T
 		if !completed || priceRows != 1 || usageRows != 101 {
 			t.Fatalf("completion receipt completed=%v prices=%d usage=%d", completed, priceRows, usageRows)
 		}
-		source.SnapshotID = "expired-snapshot"
-		if _, err := repository.ImportConversationBilling(t.Context(), source); err == nil {
-			t.Fatal("invalid snapshot accepted")
+		if _, err := repository.ImportConversationBilling(t.Context(), changed); !errors.Is(err, mutation.ErrConflict) {
+			t.Fatalf("changed source copy accepted after completion: %v", err)
 		}
 	}
 }

@@ -7,13 +7,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"slices"
 	"strings"
 	"time"
 
-	"github.com/lib/pq"
-
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -23,11 +21,13 @@ import (
 )
 
 type ConversationBillingImportSource struct {
-	DB         *sql.DB
+	CopyPath   string
 	Catalog    storagecatalog.Catalog
 	Source     storagecatalog.Source
 	Schema     storagecatalog.Schema
-	SnapshotID string
+	Objects    attachment.DetailStore
+	copyTx     *sql.Tx
+	snapshotID string
 }
 
 type ConversationBillingImportResult struct {
@@ -37,9 +37,40 @@ type ConversationBillingImportResult struct {
 
 func (r *Repository) ImportConversationBilling(ctx context.Context, source ConversationBillingImportSource) (ConversationBillingImportResult, error) {
 	var result ConversationBillingImportResult
-	if source.DB == nil || source.Source.Store != "hub" || strings.TrimSpace(source.SnapshotID) == "" || len(source.SnapshotID) > 200 {
+	if source.CopyPath == "" || source.Objects == nil || source.Source.Store != "hub" || strings.TrimSpace(source.Source.OrganizationID) != source.Source.OrganizationID || source.Source.OrganizationID == "" {
 		return result, errors.New("invalid conversation billing import source")
 	}
+	if source.Schema == nil {
+		source.Schema = schemaFromCatalog(source.Catalog)
+	}
+	source.Source.Schema = "hub_copy"
+	if _, err := source.Catalog.Bind(source.Source, source.Schema); err != nil {
+		return result, err
+	}
+	organization := tracker.OrganizationID(source.Source.OrganizationID)
+	err := ReadCoreImportCopy(ctx, source.CopyPath, func(tx *sql.Tx, digest string) error {
+		for _, table := range []string{"conversation_prices", "conversation_usage"} {
+			keys := []string{"id"}
+			if table == "conversation_usage" {
+				keys = []string{"organization_id", "turn_id"}
+			}
+			if err := validateConversationBillingCopyTable(ctx, tx, source.Catalog, source.Schema, table, keys); err != nil {
+				return err
+			}
+		}
+		if err := r.PinCoreImportSource(ctx, organization, digest, source.Objects); err != nil {
+			return err
+		}
+		source.copyTx, source.snapshotID = tx, digest
+		imported, err := r.importConversationBillingCopy(ctx, source)
+		result = imported
+		return err
+	})
+	return result, err
+}
+
+func (r *Repository) importConversationBillingCopy(ctx context.Context, source ConversationBillingImportSource) (ConversationBillingImportResult, error) {
+	var result ConversationBillingImportResult
 	encoded, err := json.Marshal(struct {
 		Catalog storagecatalog.Catalog
 		Schema  storagecatalog.Schema
@@ -61,24 +92,16 @@ func (r *Repository) ImportConversationBilling(ctx context.Context, source Conve
 	if err != nil {
 		return result, err
 	}
-	tx, err := source.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
-	if err != nil {
-		return result, err
-	}
-	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx, "SET TRANSACTION SNAPSHOT "+pq.QuoteLiteral(source.SnapshotID)); err != nil {
-		return result, err
-	}
 	organization := tracker.OrganizationID(source.Source.OrganizationID)
 	if err := r.transaction(ctx, organization, corestore.Background, false, func(s *session) error {
-		if _, err := s.db.ExecContext(ctx, `INSERT INTO conversation_billing_imports(organization_id,source_schema,snapshot_id,catalog_digest) VALUES($1,$2,$3,$4) ON CONFLICT(organization_id) DO NOTHING`, organization, source.Source.Schema, source.SnapshotID, catalogDigest); err != nil {
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO conversation_billing_imports(organization_id,source_schema,snapshot_id,catalog_digest) VALUES($1,$2,$3,$4) ON CONFLICT(organization_id) DO NOTHING`, organization, source.Source.Schema, source.snapshotID, catalogDigest); err != nil {
 			return err
 		}
 		var sourceSchema, snapshot, catalog string
 		if err := s.db.QueryRowContext(ctx, `SELECT source_schema,snapshot_id,catalog_digest FROM conversation_billing_imports WHERE organization_id=$1`, organization).Scan(&sourceSchema, &snapshot, &catalog); err != nil {
 			return err
 		}
-		if sourceSchema != source.Source.Schema || snapshot != source.SnapshotID || catalog != catalogDigest {
+		if sourceSchema != source.Source.Schema || snapshot != source.snapshotID || catalog != catalogDigest {
 			return mutation.ErrConflict
 		}
 		return nil
@@ -107,29 +130,9 @@ func (r *Repository) ImportConversationBilling(ctx context.Context, source Conve
 		if len(columns) != len(table.codecs) || len(columns) != len(definition.Columns) {
 			return result, storagecatalog.ErrUnmapped
 		}
-		qualified := pq.QuoteIdentifier(source.Source.Schema) + "." + pq.QuoteIdentifier(table.name)
-		if err := validateConversationBillingSourceColumns(ctx, tx, qualified, columns); err != nil {
-			return result, err
-		}
-		var valid bool
-		err = tx.QueryRowContext(ctx, `SELECT EXISTS (
-SELECT 1 FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid JOIN pg_am am ON am.oid=c.relam
-WHERE i.indrelid=$1::regclass AND i.indisvalid AND i.indisprimary AND i.indpred IS NULL AND i.indexprs IS NULL
-AND am.amname='btree' AND i.indnkeyatts=cardinality($2::text[])
-AND NOT EXISTS (SELECT 1 FROM unnest(i.indoption) option WHERE option<>0)
-AND ARRAY(SELECT a.attname::text FROM unnest(i.indkey) WITH ORDINALITY k(attnum,n)
-JOIN pg_attribute a ON a.attrelid=i.indrelid AND a.attnum=k.attnum WHERE k.n<=i.indnkeyatts ORDER BY k.n)=$2::text[]
-AND NOT EXISTS (SELECT 1 FROM unnest(i.indcollation) WITH ORDINALITY k(coll,n)
-WHERE k.n<=i.indnkeyatts AND k.coll<>'"C"'::regcollation))`, qualified, pq.Array(table.keys)).Scan(&valid)
-		if err != nil {
-			return result, err
-		}
-		if !valid {
-			return result, errors.New("conversation billing source requires ordered primary key")
-		}
 		var after []any
 		for {
-			page, next, err := readConversationBillingPage(ctx, tx, source, binding, qualified, table.name, columns, table.keys, after)
+			page, next, err := readConversationBillingPage(ctx, source.copyTx, source, binding, table.name, columns, table.keys, after)
 			if err != nil {
 				return result, err
 			}
@@ -150,11 +153,8 @@ WHERE k.n<=i.indnkeyatts AND k.coll<>'"C"'::regcollation))`, qualified, pq.Array
 			*table.count += int64(len(page))
 		}
 	}
-	if err := tx.Commit(); err != nil {
-		return result, err
-	}
 	err = r.transaction(ctx, organization, corestore.Background, false, func(s *session) error {
-		written, err := s.db.ExecContext(ctx, `UPDATE conversation_billing_imports SET completed=true,price_rows=$5,usage_rows=$6 WHERE organization_id=$1 AND source_schema=$2 AND snapshot_id=$3 AND catalog_digest=$4 AND (NOT completed OR (price_rows=$5 AND usage_rows=$6))`, organization, source.Source.Schema, source.SnapshotID, catalogDigest, result.Prices, result.Usage)
+		written, err := s.db.ExecContext(ctx, `UPDATE conversation_billing_imports SET completed=true,price_rows=$5,usage_rows=$6 WHERE organization_id=$1 AND source_schema=$2 AND snapshot_id=$3 AND catalog_digest=$4 AND (NOT completed OR (price_rows=$5 AND usage_rows=$6))`, organization, source.Source.Schema, source.snapshotID, catalogDigest, result.Prices, result.Usage)
 		if err != nil {
 			return err
 		}
@@ -188,54 +188,87 @@ func importConversationBillingRow(ctx context.Context, w tenantstore.Writer, org
 	return err
 }
 
-func validateConversationBillingSourceColumns(ctx context.Context, tx *sql.Tx, qualified string, columns []string) error {
-	rows, err := tx.QueryContext(ctx, `SELECT attname,atttypid='text'::regtype FROM pg_attribute WHERE attrelid=$1::regclass AND attnum>0 AND NOT attisdropped`, qualified)
+func validateConversationBillingCopyTable(ctx context.Context, tx *sql.Tx, catalog storagecatalog.Catalog, schema storagecatalog.Schema, table string, keys []string) error {
+	if tx == nil || len(keys) == 0 {
+		return storagecatalog.ErrUnmapped
+	}
+	definition, ok := catalog.Tables["hub/"+table]
+	if !ok || len(definition.Columns) == 0 || len(schema[table]) != len(definition.Columns) {
+		return storagecatalog.ErrUnmapped
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT cid,name,type,"notnull",dflt_value,pk,hidden FROM pragma_table_xinfo(?) ORDER BY cid`, table)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
-	seen := 0
+	seen := make(map[string]bool, len(schema[table]))
+	primary := make([]string, len(keys))
 	for rows.Next() {
-		var name string
-		var textType bool
-		if err := rows.Scan(&name, &textType); err != nil {
+		var ordinal, notNull, primaryKey, hidden int
+		var name, columnType string
+		var defaultValue sql.NullString
+		if err := rows.Scan(&ordinal, &name, &columnType, &notNull, &defaultValue, &primaryKey, &hidden); err != nil {
 			return err
 		}
-		if !slices.Contains(columns, name) || !textType {
+		mapping, exists := definition.Columns[name]
+		if !exists || schema[table][name] != mapping.Source {
 			return storagecatalog.ErrUnmapped
 		}
-		seen++
+		var actualDefault any
+		if defaultValue.Valid {
+			actualDefault = defaultValue.String
+		}
+		actual, err := json.Marshal([]any{ordinal, name, columnType, notNull, actualDefault, primaryKey, hidden})
+		if err != nil || !sameSourceSignature(actual, mapping.Source) {
+			return storagecatalog.ErrUnmapped
+		}
+		if primaryKey > 0 {
+			if primaryKey > len(primary) {
+				return storagecatalog.ErrUnmapped
+			}
+			primary[primaryKey-1] = name
+		}
+		seen[name] = true
 	}
 	err = errors.Join(rows.Err(), rows.Close())
 	if err != nil {
 		return err
 	}
-	if seen != len(columns) {
+	if len(seen) != len(schema[table]) || !slices.Equal(primary, keys) {
 		return storagecatalog.ErrUnmapped
 	}
-
-	return nil
+	return validateImportCopyPrimaryIndex(ctx, tx, table, keys)
 }
 
-func readConversationBillingPage(ctx context.Context, tx *sql.Tx, source ConversationBillingImportSource, binding *storagecatalog.Binding, qualified, table string, columns, keys []string, after []any) ([]map[string]storagecatalog.Value, []any, error) {
+func readConversationBillingPage(ctx context.Context, tx *sql.Tx, source ConversationBillingImportSource, binding *storagecatalog.Binding, table string, columns, keys []string, after []any) ([]map[string]storagecatalog.Value, []any, error) {
 	quoted := make([]string, len(columns))
 	for n, name := range columns {
-		quoted[n] = pq.QuoteIdentifier(name)
+		quoted[n] = `CAST("` + strings.ReplaceAll(name, `"`, `""`) + `" AS TEXT)`
 	}
 	order := make([]string, len(keys))
 	for n, name := range keys {
-		order[n] = pq.QuoteIdentifier(name) + ` COLLATE "C"`
+		order[n] = `"` + strings.ReplaceAll(name, `"`, `""`) + `" COLLATE BINARY`
 	}
-	query := strings.Join([]string{"SELECT", strings.Join(quoted, ","), "FROM", qualified}, " ")
+	query := strings.Join([]string{"SELECT", strings.Join(quoted, ","), "FROM", `"` + strings.ReplaceAll(table, `"`, `""`) + `"`}, " ")
+	args := make([]any, 0, len(after)+1)
+	if table == "conversation_usage" {
+		query += " WHERE organization_id = ?"
+		args = append(args, source.Source.OrganizationID)
+	}
 	if len(after) > 0 {
 		placeholders := make([]string, len(after))
 		for n := range after {
-			placeholders[n] = fmt.Sprintf("$%d::text COLLATE \"C\"", n+1)
+			placeholders[n] = "?"
 		}
-		query += " WHERE (" + strings.Join(order, ",") + ") > (" + strings.Join(placeholders, ",") + ")"
+		clause := " WHERE "
+		if table == "conversation_usage" {
+			clause = " AND "
+		}
+		query += clause + "(" + strings.Join(order, ",") + ") > (" + strings.Join(placeholders, ",") + ")"
+		args = append(args, after...)
 	}
 	query += " ORDER BY " + strings.Join(order, ",") + " LIMIT 100"
-	rows, err := tx.QueryContext(ctx, query, after...)
+	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -272,7 +305,15 @@ func readConversationBillingPage(ctx context.Context, tx *sql.Tx, source Convers
 			if raw[key].Null {
 				return nil, nil, storagecatalog.ErrValue
 			}
-			after[n] = string(raw[key].Data)
+			value := values[key]
+			switch source.Catalog.Tables["hub/"+table].Columns[key].Codec {
+			case "int64":
+				after[n] = value.Integer
+			case "float64":
+				after[n] = value.Real
+			default:
+				after[n] = value.Text
+			}
 		}
 		page = append(page, values)
 	}

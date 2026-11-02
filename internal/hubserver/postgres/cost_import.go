@@ -6,10 +6,9 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
+	"reflect"
+	"slices"
 	"strings"
-
-	"github.com/lib/pq"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/storagecatalog"
@@ -17,15 +16,16 @@ import (
 )
 
 type CostImportSource struct {
-	DB         *sql.DB
+	CopyPath   string
 	Catalog    storagecatalog.Catalog
 	Source     storagecatalog.Source
 	Schema     storagecatalog.Schema
-	SnapshotID string
 	Objects    attachment.DetailStore
+	copyTx     *sql.Tx
+	snapshotID string
 }
 
-type CostImporter struct {
+type costImporter struct {
 	repository   *Repository
 	source       CostImportSource
 	binding      *storagecatalog.Binding
@@ -33,8 +33,8 @@ type CostImporter struct {
 	organization tracker.OrganizationID
 }
 
-func (r *Repository) NewCostImporter(ctx context.Context, source CostImportSource) (*CostImporter, error) {
-	if source.DB == nil || source.Objects == nil || source.Source.Store != "hub" || source.SnapshotID == "" || len(source.SnapshotID) > 200 || strings.TrimSpace(source.SnapshotID) != source.SnapshotID {
+func (r *Repository) newCostImporter(ctx context.Context, source CostImportSource) (*costImporter, error) {
+	if source.copyTx == nil || source.Objects == nil || source.Source.Store != "hub" || source.snapshotID == "" || len(source.snapshotID) > 200 || strings.TrimSpace(source.Source.OrganizationID) != source.Source.OrganizationID {
 		return nil, ErrCostImport
 	}
 	encoded, err := json.Marshal(struct {
@@ -57,40 +57,48 @@ func (r *Repository) NewCostImporter(ctx context.Context, source CostImportSourc
 		return nil, err
 	}
 	digest := sha256.Sum256(encoded)
-	importer := &CostImporter{repository: r, source: source, binding: binding, digest: hex.EncodeToString(digest[:]), organization: tracker.OrganizationID(source.Source.OrganizationID)}
+	importer := &costImporter{repository: r, source: source, binding: binding, digest: hex.EncodeToString(digest[:]), organization: tracker.OrganizationID(source.Source.OrganizationID)}
 	if err := importer.validateSource(ctx); err != nil {
 		return nil, err
 	}
 	return importer, nil
 }
 
-func (i *CostImporter) sourceTable() string {
-	return pq.QuoteIdentifier(i.source.Source.Schema) + `."usage_cost_observations"`
-}
-
-func (i *CostImporter) validateSource(ctx context.Context) error {
-	tx, err := i.sourceTransaction(ctx)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-	rows, err := tx.QueryContext(ctx, `SELECT attname,atttypid='text'::regtype FROM pg_attribute WHERE attrelid=$1::regclass AND attnum>0 AND NOT attisdropped ORDER BY attnum`, i.sourceTable())
+func (i *costImporter) validateSource(ctx context.Context) error {
+	rows, err := i.source.copyTx.QueryContext(ctx, `SELECT cid,name,type,"notnull",dflt_value,pk,hidden FROM pragma_table_xinfo(?) ORDER BY cid`, "usage_cost_observations")
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	definition := i.source.Catalog.Tables["hub/usage_cost_observations"]
 	count := 0
+	primary := make([]string, 7)
 	for rows.Next() {
 		var name string
-		var textType bool
-		if err := rows.Scan(&name, &textType); err != nil {
+		var ordinal, notNull, primaryKey, hidden int
+		var columnType string
+		var defaultValue sql.NullString
+		if err := rows.Scan(&ordinal, &name, &columnType, &notNull, &defaultValue, &primaryKey, &hidden); err != nil {
+			return err
+		}
+		var actualDefault any
+		if defaultValue.Valid {
+			actualDefault = defaultValue.String
+		}
+		actual, err := json.Marshal([]any{ordinal, name, columnType, notNull, actualDefault, primaryKey, hidden})
+		if err != nil {
 			return err
 		}
 		count++
 		mapping, ok := definition.Columns[name]
-		if !ok || i.source.Schema["usage_cost_observations"][name] != mapping.Source || !textType {
+		if !ok || i.source.Schema["usage_cost_observations"][name] != mapping.Source || !sameSourceSignature(actual, mapping.Source) {
 			return storagecatalog.ErrUnmapped
+		}
+		if primaryKey > 0 {
+			if primaryKey > len(primary) {
+				return ErrCostImport
+			}
+			primary[primaryKey-1] = name
 		}
 		if mapping.Disposition == "pending" {
 			return storagecatalog.ErrPending
@@ -102,38 +110,63 @@ func (i *CostImporter) validateSource(ctx context.Context) error {
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	if count != len(costImportColumns) {
-		return storagecatalog.ErrUnmapped
-	}
 	if err := rows.Close(); err != nil {
 		return err
 	}
-	var valid bool
-	err = tx.QueryRowContext(ctx, `SELECT EXISTS (
-SELECT 1 FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid JOIN pg_am am ON am.oid=c.relam
-WHERE i.indrelid=$1::regclass AND i.indisvalid AND i.indisprimary AND i.indpred IS NULL AND i.indexprs IS NULL
-AND am.amname='btree' AND i.indnkeyatts=cardinality($2::text[])
-AND NOT EXISTS (SELECT 1 FROM unnest(i.indoption) option WHERE option<>0)
-AND ARRAY(SELECT a.attname::text FROM unnest(i.indkey) WITH ORDINALITY k(attnum,n)
-JOIN pg_attribute a ON a.attrelid=i.indrelid AND a.attnum=k.attnum WHERE k.n<=i.indnkeyatts ORDER BY k.n)=$2::text[]
-AND NOT EXISTS (SELECT 1 FROM unnest(i.indcollation) WITH ORDINALITY k(coll,n)
-WHERE k.n<=i.indnkeyatts AND k.coll<>'"C"'::regcollation))`, i.sourceTable(), pq.Array(costImportColumns[:7])).Scan(&valid)
-	if err != nil {
-		return err
+	if count != len(costImportColumns) || !slices.Equal(primary, costImportColumns[:7]) {
+		return storagecatalog.ErrUnmapped
 	}
-	if !valid {
-		return ErrCostImport
-	}
-	return tx.Commit()
+	return validateImportCopyPrimaryIndex(ctx, i.source.copyTx, "usage_cost_observations", costImportColumns[:7])
 }
 
-func (i *CostImporter) sourceTransaction(ctx context.Context) (*sql.Tx, error) {
-	tx, err := i.source.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
-	if err != nil {
-		return nil, err
+func schemaFromCatalog(catalog storagecatalog.Catalog) storagecatalog.Schema {
+	schema := storagecatalog.Schema{}
+	for name, table := range catalog.Tables {
+		name, ok := strings.CutPrefix(name, "hub/")
+		if !ok {
+			continue
+		}
+		schema[name] = make(map[string]string, len(table.Columns))
+		for column, definition := range table.Columns {
+			schema[name][column] = definition.Source
+		}
 	}
-	if _, err := tx.ExecContext(ctx, "SET TRANSACTION SNAPSHOT "+pq.QuoteLiteral(i.source.SnapshotID)); err != nil {
-		return nil, errors.Join(ErrCostImport, err, tx.Rollback())
+	return schema
+}
+
+func sameSourceSignature(actual []byte, expected string) bool {
+	var left, right any
+	return json.Unmarshal(actual, &left) == nil && json.Unmarshal([]byte(expected), &right) == nil && reflect.DeepEqual(left, right)
+}
+
+func (r *Repository) ImportCostCopy(ctx context.Context, source CostImportSource) (CostImportProgress, error) {
+	var progress CostImportProgress
+	if source.CopyPath == "" || source.Objects == nil || source.Source.Store != "hub" || source.Source.OrganizationID == "" {
+		return progress, ErrCostImport
 	}
-	return tx, nil
+	if source.Schema == nil {
+		source.Schema = schemaFromCatalog(source.Catalog)
+	}
+	source.Source.Schema = "hub_copy"
+	if _, err := source.Catalog.Bind(source.Source, source.Schema); err != nil {
+		return progress, err
+	}
+	organization := tracker.OrganizationID(source.Source.OrganizationID)
+	err := ReadCoreImportCopy(ctx, source.CopyPath, func(tx *sql.Tx, digest string) error {
+		if err := r.PinCoreImportSource(ctx, organization, digest, source.Objects); err != nil {
+			return err
+		}
+		source.copyTx, source.snapshotID = tx, digest
+		importer, err := r.newCostImporter(ctx, source)
+		if err != nil {
+			return err
+		}
+		for {
+			progress, err = importer.step(ctx, costImportPageLimit)
+			if err != nil || progress.Done {
+				return err
+			}
+		}
+	})
+	return progress, err
 }

@@ -17,7 +17,7 @@ type preparedCostImportRow struct {
 	record       billingstore.CostObservation
 }
 
-func (i *CostImporter) Step(ctx context.Context, limit int) (CostImportProgress, error) {
+func (i *costImporter) step(ctx context.Context, limit int) (CostImportProgress, error) {
 	if limit < 1 || limit > costImportPageLimit {
 		return CostImportProgress{}, ErrCostImport
 	}
@@ -92,17 +92,9 @@ func (i *CostImporter) Step(ctx context.Context, limit int) (CostImportProgress,
 	return next.progress, nil
 }
 
-func (i *CostImporter) prepareSourcePage(ctx context.Context, checkpoint costImportCheckpoint, limit int) ([]preparedCostImportRow, error) {
-	tx, err := i.sourceTransaction(ctx)
+func (i *costImporter) prepareSourcePage(ctx context.Context, checkpoint costImportCheckpoint, limit int) ([]preparedCostImportRow, error) {
+	page, err := readCostImportPage(ctx, i.source.copyTx, i.source.Source.OrganizationID, i.source.Catalog, i.binding, checkpoint.after, checkpoint.hasAfter, limit)
 	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = tx.Rollback() }()
-	page, err := readCostImportPage(ctx, tx, i.source.Source.Schema, i.source.Catalog, i.binding, checkpoint.after, checkpoint.hasAfter, limit)
-	if err != nil {
-		return nil, err
-	}
-	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 	prepared := make([]preparedCostImportRow, 0, len(page))
@@ -127,7 +119,7 @@ func (i *CostImporter) prepareSourcePage(ctx context.Context, checkpoint costImp
 	return prepared, nil
 }
 
-func (i *CostImporter) retainRow(ctx context.Context, s *session, row preparedCostImportRow) error {
+func (i *costImporter) retainRow(ctx context.Context, s *session, row preparedCostImportRow) error {
 	if err := s.validateBillingCost(row.record); err != nil {
 		return err
 	}
@@ -145,7 +137,7 @@ func (i *CostImporter) retainRow(ctx context.Context, s *session, row preparedCo
 	return err
 }
 
-func (i *CostImporter) prepareRetainedPage(ctx context.Context, checkpoint costImportCheckpoint, limit int) ([]preparedCostImportRow, error) {
+func (i *costImporter) prepareRetainedPage(ctx context.Context, checkpoint costImportCheckpoint, limit int) ([]preparedCostImportRow, error) {
 	var prepared []preparedCostImportRow
 	err := i.repository.transaction(ctx, i.organization, corestore.Background, true, func(s *session) error {
 		projection := `SELECT r.source_key,r.revision,r.project_id,r.received_at,r.binding_id,r.customer_owned,r.object_key,r.sha256,r.compressed_bytes,r.content_bytes,r.codec,r.format_version,r.kind,r.retention FROM cost_import_rows r`

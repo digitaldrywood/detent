@@ -25,10 +25,10 @@ type costImportCheckpoint struct {
 	after         [7]string
 }
 
-func (i *CostImporter) start(ctx context.Context) (costImportCheckpoint, error) {
+func (i *costImporter) start(ctx context.Context) (costImportCheckpoint, error) {
 	var checkpoint costImportCheckpoint
 	err := i.repository.transaction(ctx, i.organization, corestore.Background, false, func(s *session) error {
-		_, err := s.db.ExecContext(ctx, `INSERT INTO cost_imports (organization_id,source_schema,snapshot_id,catalog_digest) VALUES ($1,$2,$3,$4) ON CONFLICT (organization_id) DO NOTHING`, i.organization, i.source.Source.Schema, i.source.SnapshotID, i.digest)
+		_, err := s.db.ExecContext(ctx, `INSERT INTO cost_imports (organization_id,source_schema,snapshot_id,catalog_digest) VALUES ($1,$2,$3,$4) ON CONFLICT (organization_id) DO NOTHING`, i.organization, i.source.Source.Schema, i.source.snapshotID, i.digest)
 		if err != nil {
 			return err
 		}
@@ -38,7 +38,7 @@ func (i *CostImporter) start(ctx context.Context) (costImportCheckpoint, error) 
 	if err != nil {
 		return checkpoint, err
 	}
-	if checkpoint.sourceSchema != i.source.Source.Schema || checkpoint.snapshotID != i.source.SnapshotID || checkpoint.catalogDigest != i.digest {
+	if checkpoint.sourceSchema != i.source.Source.Schema || checkpoint.snapshotID != i.source.snapshotID || checkpoint.catalogDigest != i.digest {
 		return checkpoint, ErrCostImport
 	}
 	return checkpoint, nil
