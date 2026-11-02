@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/skills"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
@@ -62,11 +64,53 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 			return s.nativeAPIError(c, nativeInvalid(err.Error()))
 		}
 	}
+	if request.Skills != nil {
+		if projectID == "" {
+			return s.nativeAPIError(c, nativeNotFound())
+		}
+		if len(*request.Skills) > runnerstore.MaxProjectSkills {
+			return s.nativeAPIError(c, nativePublicInvalid("Runner skill report exceeds its item limit"))
+		}
+		for _, skill := range *request.Skills {
+			if !skills.ValidProviderSkill(skill) {
+				return s.nativeAPIError(c, nativePublicInvalid("Invalid runner skill metadata"))
+			}
+		}
+	}
+	if err := validateRunnerCheckoutReport(nativeScope{credential: credential}, request.CheckoutRepository); err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	var changeCursor nativeCursor
+	var changeKey []byte
+	var changeReset bool
+	var changeDigest string
+	if request.ChangeCursor != nil {
+		params := url.Values{"cursor": {*request.ChangeCursor}}
+		var err error
+		_, changeCursor, changeKey, err = s.readNativePage(c.Request().Context(), nativeRequestScope(c), c.Request().URL.EscapedPath()+"/changes", params)
+		if err != nil {
+			params.Set("cursor", "")
+			_, changeCursor, changeKey, err = s.readNativePage(c.Request().Context(), nativeRequestScope(c), c.Request().URL.EscapedPath()+"/changes", params)
+		}
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		changeReset = *request.ChangeCursor == "" || changeCursor.After == ""
+		capabilities, err := s.readNativeCapabilities(c.Request().Context())
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		changeDigest, err = capabilitiesDigest(capabilities)
+		if err != nil {
+			return err
+		}
+	}
 	hostSummaries := prepareRunnerHostMetrics(request.HostMetrics)
 
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 	defer cancel()
 	var snapshot runnerauth.RoutingSnapshot
+	var heartbeatChanges *runnerauth.HeartbeatChanges
 	var acknowledgments []hostmetrics.Acknowledgment
 	err := s.config.TenantRepository.WriteTenant(ctx, credential.Runner.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 		identity, err := w.RunnerIdentityByCredential(ctx, credential.ID)
@@ -86,6 +130,18 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 		receivedAt := s.config.now().UTC()
 		if identity.OrganizationID != credential.Runner.OrganizationID || identity.RunnerID != credential.Runner.RunnerID || identity.MachineID != credential.Runner.MachineID || identity.RemovedAt != nil || identity.TokenID != credential.ID || !identity.ExpiresAt.After(receivedAt) || current.OrganizationID != identity.OrganizationID || current.Scope != string(apiScopeWorker) || current.Kind != "service" || !current.Valid(credential.Hash, receivedAt) || !slices.Contains(identity.Operations, runnerauth.Heartbeat) {
 			return runnerUnauthorized()
+		}
+		if request.Skills != nil || request.CheckoutRepository != nil {
+			if projectID == "" {
+				return nativeNotFound()
+			}
+			allowed, err := w.RunnerProjectAuthorized(ctx, identity.RunnerID, projectID, receivedAt)
+			if err != nil {
+				return err
+			}
+			if !allowed {
+				return nativeNotFound()
+			}
 		}
 		heartbeatAt := receivedAt
 		if identity.LastHeartbeatAt.After(heartbeatAt) {
@@ -184,6 +240,37 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 				return err
 			}
 		}
+		if request.Skills != nil {
+			if err := w.ReplaceRunnerProjectSkills(ctx, identity.RunnerID, projectID, *request.Skills, receivedAt); err != nil {
+				return err
+			}
+		}
+		if request.CheckoutRepository != nil {
+			if err := w.ReplaceRunnerCheckoutReport(ctx, runnerstore.CheckoutReport{OrganizationID: identity.OrganizationID, RunnerID: identity.RunnerID, ProjectID: projectID, Repository: *request.CheckoutRepository, ReportedAt: receivedAt}); err != nil {
+				return err
+			}
+		}
+		if request.ChangeCursor != nil {
+			allowed, err := w.RunnerProjectAuthorized(ctx, identity.RunnerID, projectID, receivedAt)
+			if err != nil {
+				return err
+			}
+			if !allowed {
+				return nativeNotFound()
+			}
+			policyID := ""
+			policy, err := w.ProjectPolicy(ctx, projectID)
+			if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+				return err
+			}
+			if err == nil {
+				policyID = policy.PolicyID
+			}
+			heartbeatChanges, err = readHeartbeatChangesTenant(ctx, w, nativeScope{organization: identity.OrganizationID, project: projectID, credential: credential}, changeCursor, changeKey, changeReset, changeDigest, policyID, receivedAt)
+			if err != nil {
+				return err
+			}
+		}
 		problems, err := w.RunnerProblems(ctx, identity.RunnerID)
 		if err != nil {
 			return err
@@ -214,6 +301,7 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 		}
 		snapshot = runnerauth.RoutingSnapshot{RunnerID: identity.RunnerID, Revision: identity.Revision, Routing: routing}
 		snapshot.HostMetricsAcknowledged = acknowledgments
+		snapshot.Changes = heartbeatChanges
 		if repositoryListErr == nil && repositoryList.Pending {
 			snapshot.RepositoryListRequest = repositoryList.RequestID
 		}
@@ -231,7 +319,7 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 }
 
 func validateTenantHeartbeatProjection(request nativeMachineHeartbeatRequest) error {
-	if request.ChangeCursor != nil || request.Update != nil || request.Skills != nil || request.CheckoutRepository != nil {
+	if request.Update != nil {
 		return nativeRunEventStorageUnavailable()
 	}
 	if request.ProjectConfiguration == nil {

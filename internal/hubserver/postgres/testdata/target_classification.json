@@ -114,6 +114,11 @@
     "ownership": "organization-owned",
     "scope": "runner_host_metric_segments.organization_id; metrics are tenant runner observations"
   },
+  "public/project_event_cursors": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "project_event_cursors.organization_id; immutable event sequence is tenant project scoped"
+  },
   "public/runner_lease_assignments": {
     "inline_payloads": [],
     "ownership": "organization-owned",

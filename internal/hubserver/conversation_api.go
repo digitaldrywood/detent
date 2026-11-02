@@ -1849,7 +1849,7 @@ func (s *Service) readConversationSnapshotDetails(ctx context.Context, scope nat
 			return nil, nil, err
 		}
 	}
-	reportedSkills, err := readConversationSkills(ctx, tx, record)
+	reportedSkills, err := s.readConversationSkills(ctx, tx, record)
 	if err != nil {
 		return nil, nil, err
 	}

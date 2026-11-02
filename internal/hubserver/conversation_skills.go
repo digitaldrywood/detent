@@ -7,6 +7,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/skills"
 )
 
@@ -79,4 +82,30 @@ func readConversationSkills(ctx context.Context, tx *sql.Tx, record conversation
 		}
 	}
 	return result, rows.Err()
+}
+
+func (s *Service) readConversationSkills(ctx context.Context, tx *sql.Tx, record conversationRecord) ([]skills.ProviderSkill, error) {
+	if s.config.TenantRepository == nil {
+		return readConversationSkills(ctx, tx, record)
+	}
+	var result []skills.ProviderSkill
+	err := s.config.TenantRepository.ReadTenant(ctx, record.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		now := s.config.now().UTC()
+		reports, err := r.RunnerProjectSkills(ctx, record.ProjectID, record.Execution.Owner.RunnerID, now, runnerstore.MaxProjectSkills)
+		if err != nil {
+			return err
+		}
+		result = make([]skills.ProviderSkill, 0, len(reports))
+		seen := make(map[string]bool)
+		for _, report := range reports {
+			name := strings.ToLower(report.Skill.Name)
+			if seen[name] {
+				continue
+			}
+			seen[name] = true
+			result = append(result, report.Skill)
+		}
+		return nil
+	})
+	return result, err
 }

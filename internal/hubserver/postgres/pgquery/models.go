@@ -287,6 +287,7 @@ type CollaborationEvent struct {
 	LandingChangeID      string
 	LandingVersionID     string
 	LandingHeadSHA       string
+	ProjectSequence      int64
 }
 
 type CollaborationVersion struct {
@@ -1713,6 +1714,12 @@ type Project struct {
 	DeletedAt               *time.Time
 }
 
+type ProjectEventCursor struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	Sequence       int64
+}
+
 type ProjectPolicy struct {
 	OrganizationID tracker.OrganizationID
 	ProjectID      tracker.ProjectID
@@ -1937,6 +1944,14 @@ type RunnerBackendIsolation struct {
 	Tiers          []string
 }
 
+type RunnerCheckoutRepository struct {
+	OrganizationID tracker.OrganizationID
+	RunnerID       string
+	ProjectID      tracker.ProjectID
+	Repository     string
+	ReportedAt     time.Time
+}
+
 type RunnerEnrollment struct {
 	OrganizationID tracker.OrganizationID
 	ID             string
@@ -2150,6 +2165,21 @@ type RunnerProjectRank struct {
 	RunnerID       string
 	ProjectID      tracker.ProjectID
 	Rank           int32
+}
+
+type RunnerProjectSkill struct {
+	OrganizationID tracker.OrganizationID
+	RunnerID       string
+	ProjectID      tracker.ProjectID
+	Position       int32
+	Name           string
+	Description    string
+	Path           string
+	Scope          string
+	Enabled        bool
+	UserInvocable  bool
+	Invocation     string
+	ReportedAt     time.Time
 }
 
 type RunnerProviderModelEffort struct {

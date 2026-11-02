@@ -5,12 +5,14 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hostmetrics"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/skills"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
@@ -26,6 +28,7 @@ const MaxRunnerProjectList = 2000
 const MaxRunnerProjectRanks = 100
 const MaxProjectDiagnosticAttempts = 256
 const MaxRunnerHostPruneBatch = 5000
+const MaxProjectSkills = 2000
 
 type Enrollment struct {
 	OrganizationID tracker.OrganizationID
@@ -142,6 +145,56 @@ type Repository struct {
 	ListedAt       time.Time
 }
 
+type ProjectSkill struct {
+	OrganizationID tracker.OrganizationID
+	RunnerID       string
+	ProjectID      tracker.ProjectID
+	Position       int
+	Skill          skills.ProviderSkill
+	ReportedAt     time.Time
+}
+
+type CheckoutReport struct {
+	OrganizationID tracker.OrganizationID
+	RunnerID       string
+	ProjectID      tracker.ProjectID
+	Repository     string
+	ReportedAt     time.Time
+}
+
+func (row ProjectSkill) Validate() error {
+	if row.OrganizationID == "" || row.RunnerID == "" || row.ProjectID == "" || row.Position < 0 || row.Position >= MaxProjectSkills || row.ReportedAt.IsZero() || !skills.ValidProviderSkill(row.Skill) {
+		return ErrInvalidRecord
+	}
+	return nil
+}
+
+func (row CheckoutReport) Validate() error {
+	if row.OrganizationID == "" || row.RunnerID == "" || row.ProjectID == "" || row.ReportedAt.IsZero() || row.Repository != "" && !ValidCheckoutRepository(row.Repository) {
+		return ErrInvalidRecord
+	}
+	return nil
+}
+
+func ValidCheckoutRepository(repository string) bool {
+	owner, name, ok := strings.Cut(repository, "/")
+	if !ok || owner == "" || name == "" || strings.Contains(name, "/") || len(repository) > 200 || strings.TrimSpace(repository) != repository {
+		return false
+	}
+	for _, part := range []string{owner, name} {
+		if part == "." || part == ".." {
+			return false
+		}
+		for _, char := range part {
+			if char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9' || char == '-' || char == '_' || char == '.' {
+				continue
+			}
+			return false
+		}
+	}
+	return true
+}
+
 type SpriteMembership struct {
 	OrganizationID       tracker.OrganizationID
 	Name                 string
@@ -251,6 +304,8 @@ type Reader interface {
 	RunnerProblems(context.Context, string) ([]runnerauth.Problem, error)
 	RunnerLocalChecks(context.Context, string, tracker.ProjectID) (runnerauth.LocalChecks, error)
 	RunnerWorkspaceReport(context.Context, string) (workspacesession.Capabilities, string, error)
+	RunnerProjectSkills(context.Context, tracker.ProjectID, string, time.Time, int) ([]ProjectSkill, error)
+	RunnerCheckoutVerified(context.Context, tracker.ProjectID, string, time.Time) (bool, error)
 }
 
 type Writer interface {
@@ -279,4 +334,6 @@ type Writer interface {
 	ReplaceRunnerProblems(context.Context, string, []runnerauth.Problem) error
 	ReplaceRunnerLocalChecks(context.Context, string, tracker.ProjectID, runnerauth.LocalChecks) error
 	ReplaceRunnerWorkspaceReport(context.Context, string, workspacesession.Capabilities, string) error
+	ReplaceRunnerProjectSkills(context.Context, string, tracker.ProjectID, []skills.ProviderSkill, time.Time) error
+	ReplaceRunnerCheckoutReport(context.Context, CheckoutReport) error
 }

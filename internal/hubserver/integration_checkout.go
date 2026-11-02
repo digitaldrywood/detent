@@ -9,31 +9,32 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 // A checkout report contains only the canonical repository name. The runner
 // derives it from its local origin; no remote URL or credentials reach the Hub.
 func validCheckoutRepository(repository string) bool {
-	owner, name, ok := splitRepositoryFullName(repository)
-	if !ok || len(repository) > 200 {
-		return false
-	}
-	for _, part := range []string{owner, name} {
-		if part == "." || part == ".." {
-			return false
-		}
-		for _, char := range part {
-			if char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9' || char == '-' || char == '_' || char == '.' {
-				continue
-			}
-			return false
-		}
-	}
-	return true
+	return runnerstore.ValidCheckoutRepository(repository)
 }
 
-func verifiedProjectCheckout(ctx context.Context, query nativeQueryer, scope nativeScope, repository string, now time.Time) (bool, error) {
+func (s *Service) verifiedProjectCheckout(ctx context.Context, query nativeQueryer, scope nativeScope, repository string, now time.Time) (bool, error) {
+	if s.config.TenantRepository != nil {
+		var verified bool
+		err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			var err error
+			verified, err = r.RunnerCheckoutVerified(ctx, scope.project, repository, now)
+			return err
+		})
+		return verified, err
+	}
+	return verifiedProjectCheckoutSQLite(ctx, query, scope, repository, now)
+}
+
+func verifiedProjectCheckoutSQLite(ctx context.Context, query nativeQueryer, scope nativeScope, repository string, now time.Time) (bool, error) {
 	var verified bool
 	err := query.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM runner_checkout_repositories cr
 JOIN runner_identities r ON r.id=cr.runner_id AND r.organization_id=?

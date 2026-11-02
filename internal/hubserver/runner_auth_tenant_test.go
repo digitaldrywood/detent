@@ -2,10 +2,12 @@ package hubserver
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -28,6 +30,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/skills"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
@@ -340,6 +343,17 @@ func TestTenantRunnerHeartbeatPersistsIdentityAndReturnsCurrentRouting(t *testin
 		}
 		t.Fatal(err)
 	}
+	service.config.SecretKeys = secretTestKeys(t, "1", "1")
+	cursorKey := []byte(strings.Repeat("k", 32))
+	cursorEnvelope, err := service.config.SecretKeys.Seal(cursorKey, accessstore.SecretAAD(organization.ID, "", accessstore.NativeCursorKeyKind))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+		return w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: organization.ID, Kind: accessstore.NativeCursorKeyKind, Envelope: cursorEnvelope, UpdatedAt: now}, accessstore.SecretAudit{OrganizationID: organization.ID, Kind: accessstore.NativeCursorKeyKind, Actor: "migration", Event: "import", KeyVersion: cursorEnvelope.Version, RecordedAt: now})
+	}); err != nil {
+		t.Fatal(err)
+	}
 	createdProject := performHubAPIRequest(t, service, http.MethodPost, "/api/v2/organizations/"+string(organization.ID)+"/projects", testHubAdminToken, map[string]any{"idempotency_key": "create", "name": "Example project", "states": nativeFixtureStates()})
 	requireNativeStatus(t, createdProject, http.StatusOK)
 	var project tracker.NativeProject
@@ -452,6 +466,7 @@ func TestTenantRunnerHeartbeatPersistsIdentityAndReturnsCurrentRouting(t *testin
 	localChecks := runnerauth.LocalChecks{CommitName: "Example Runner", CommitEmail: "runner@example.invalid", CommitSigning: "ssh", Setup: "passed", Checkout: "passed", Configuration: "passed", Doctor: "warning", Provider: "passed", ProviderKinds: []string{"codex"}, CheckoutAt: clock.value, ConfigurationAt: clock.value, DoctorAt: clock.value, ProviderAt: clock.value}
 	localChecksObservedAt := clock.value
 	workspaceCapabilities := workspacesession.Capabilities{Terminal: true, Files: true, Diff: true, Exec: true, Git: true}
+	reportedSkills := []skills.ProviderSkill{{Name: "review", Description: "Review this project", Path: "/project/.agents/skills/review/SKILL.md", Scope: "project", Enabled: true, UserInvocable: true, Invocation: "$review"}}
 	hostSummary := testHostSummary(clock.value)
 	secondHostSummary := hostSummary
 	secondHostSummary.SegmentID = clock.value.Add(-30 * time.Second)
@@ -460,7 +475,7 @@ func TestTenantRunnerHeartbeatPersistsIdentityAndReturnsCurrentRouting(t *testin
 	problem.ProjectID = string(project.ID)
 	problem.Subject = "example-project/codex"
 	problem.Check = "backend probe"
-	response := performHubAPIRequest(t, service, http.MethodPost, path, secret, map[string]any{"display_name": "Example host", "capacity": 3, "version": "0.174.1", "os": "darwin", "architecture": "arm64", "protocol_major": 2, "provider_reports": []providercapacity.Report{providerReport}, "capacity_configuration": capacityConfiguration, "backend_isolation": backendIsolation, "sprite_name": "example-host", "host_metrics": []hostmetrics.Summary{hostSummary, secondHostSummary}, "admission": admission, "problems": []runnerauth.Problem{problem}, "local_checks": localChecks, "workspace_capabilities": workspaceCapabilities, "workspace_isolation": "sandbox"})
+	response := performHubAPIRequest(t, service, http.MethodPost, path, secret, map[string]any{"display_name": "Example host", "capacity": 3, "version": "0.174.1", "os": "darwin", "architecture": "arm64", "protocol_major": 2, "provider_reports": []providercapacity.Report{providerReport}, "capacity_configuration": capacityConfiguration, "backend_isolation": backendIsolation, "sprite_name": "example-host", "host_metrics": []hostmetrics.Summary{hostSummary, secondHostSummary}, "admission": admission, "problems": []runnerauth.Problem{problem}, "local_checks": localChecks, "workspace_capabilities": workspaceCapabilities, "workspace_isolation": "sandbox", "skills": reportedSkills, "checkout_repository": "example-org/example-repo"})
 	requireNativeStatus(t, response, http.StatusOK)
 	var snapshot runnerauth.RoutingSnapshot
 	decodeHubResponse(t, response, &snapshot)
@@ -476,6 +491,8 @@ func TestTenantRunnerHeartbeatPersistsIdentityAndReturnsCurrentRouting(t *testin
 	var storedLocalChecks runnerauth.LocalChecks
 	var storedWorkspaceCapabilities workspacesession.Capabilities
 	var storedWorkspaceIsolation string
+	var storedSkills []runnerstore.ProjectSkill
+	var checkoutVerified bool
 	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
 		persisted, err = r.RunnerIdentity(t.Context(), "runner_example")
@@ -513,6 +530,14 @@ func TestTenantRunnerHeartbeatPersistsIdentityAndReturnsCurrentRouting(t *testin
 		if err != nil {
 			return err
 		}
+		storedSkills, err = r.RunnerProjectSkills(t.Context(), project.ID, "runner_example", clock.value, runnerstore.MaxProjectSkills)
+		if err != nil {
+			return err
+		}
+		checkoutVerified, err = r.RunnerCheckoutVerified(t.Context(), project.ID, "example-org/example-repo", clock.value)
+		if err != nil {
+			return err
+		}
 		if _, _, err := r.RunnerWorkspaceReport(t.Context(), "runner_example_two"); !errors.Is(err, corestore.ErrNotFound) {
 			t.Fatalf("second runner workspace report = %v, want not found", err)
 		}
@@ -540,6 +565,9 @@ func TestTenantRunnerHeartbeatPersistsIdentityAndReturnsCurrentRouting(t *testin
 	}
 	if storedWorkspaceCapabilities != workspaceCapabilities || storedWorkspaceIsolation != "sandbox" {
 		t.Fatalf("persisted runner workspace report = %+v / %q", storedWorkspaceCapabilities, storedWorkspaceIsolation)
+	}
+	if len(storedSkills) != 1 || storedSkills[0].RunnerID != "runner_example" || storedSkills[0].Skill != reportedSkills[0] || !storedSkills[0].ReportedAt.Equal(clock.value) || !checkoutVerified {
+		t.Fatalf("persisted runner skills = %+v, checkout verified=%v", storedSkills, checkoutVerified)
 	}
 	hostHistory, err := service.readRunnerHostHistory(t.Context(), organization.ID, "runner_example", hostSummary.Hour, hostSummary.Hour.Add(time.Hour))
 	if err != nil || len(hostHistory) != 1 || hostHistory[0].SampleCount != hostSummary.SampleCount+secondHostSummary.SampleCount || hostHistory[0].CPUBusyAveragePercent == nil || *hostHistory[0].CPUBusyAveragePercent != hostSummary.CPUBusySumPercent/float64(hostSummary.CPUSampleCount) {
@@ -587,6 +615,41 @@ func TestTenantRunnerHeartbeatPersistsIdentityAndReturnsCurrentRouting(t *testin
 		}
 		if len(problems) != 1 || problems[0].Code != "version_unsupported" {
 			t.Fatalf("unsupported protocol problem = %+v", problems)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
+		reports, err := r.RunnerProjectSkills(t.Context(), project.ID, "runner_example", clock.value, runnerstore.MaxProjectSkills)
+		if err != nil {
+			return err
+		}
+		verified, err := r.RunnerCheckoutVerified(t.Context(), project.ID, "example-org/example-repo", clock.value)
+		if err != nil {
+			return err
+		}
+		if len(reports) != 1 || !verified {
+			t.Fatalf("omitted heartbeat reports changed stored values: skills=%+v checkout=%v", reports, verified)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	clock.value = clock.value.Add(time.Second)
+	cleared := performHubAPIRequest(t, service, http.MethodPost, path, secret, map[string]any{"display_name": "Example host", "capacity": 3, "version": "0.174.1", "os": "darwin", "architecture": "arm64", "skills": []skills.ProviderSkill{}, "checkout_repository": ""})
+	requireNativeStatus(t, cleared, http.StatusOK)
+	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
+		reports, err := r.RunnerProjectSkills(t.Context(), project.ID, "runner_example", clock.value, runnerstore.MaxProjectSkills)
+		if err != nil {
+			return err
+		}
+		verified, err := r.RunnerCheckoutVerified(t.Context(), project.ID, "example-org/example-repo", clock.value)
+		if err != nil {
+			return err
+		}
+		if len(reports) != 0 || verified {
+			t.Fatalf("empty heartbeat reports did not clear values: skills=%+v checkout=%v", reports, verified)
 		}
 		return nil
 	}); err != nil {
@@ -702,10 +765,82 @@ func TestTenantRunnerHeartbeatPersistsIdentityAndReturnsCurrentRouting(t *testin
 	}); err != nil {
 		t.Fatal(err)
 	}
+	baseline := performHubAPIRequest(t, service, http.MethodPost, path, secret, map[string]any{"display_name": "Example host", "capacity": 3, "version": "0.174.1", "os": "darwin", "architecture": "arm64", "change_cursor": ""})
+	requireNativeStatus(t, baseline, http.StatusOK)
+	var baselineSnapshot runnerauth.RoutingSnapshot
+	decodeHubResponse(t, baseline, &baselineSnapshot)
+	if baselineSnapshot.Changes == nil || !baselineSnapshot.Changes.Reset || baselineSnapshot.Changes.Cursor == "" {
+		t.Fatalf("initial heartbeat changes = %+v", baselineSnapshot.Changes)
+	}
+	issueResponse := performHubAPIRequest(t, service, http.MethodPost, "/api/v2/organizations/"+string(organization.ID)+"/projects/"+string(project.ID)+"/work-items", testHubAdminToken, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "heartbeat-change"}, Title: "Heartbeat change", Body: workItemRecordBody, State: "Todo"})
+	requireNativeStatus(t, issueResponse, http.StatusOK)
+	var heartbeatIssue tracker.NativeIssue
+	decodeHubResponse(t, issueResponse, &heartbeatIssue)
+	changed := performHubAPIRequest(t, service, http.MethodPost, path, secret, map[string]any{"display_name": "Example host", "capacity": 3, "version": "0.174.1", "os": "darwin", "architecture": "arm64", "change_cursor": baselineSnapshot.Changes.Cursor})
+	requireNativeStatus(t, changed, http.StatusOK)
+	var changedSnapshot runnerauth.RoutingSnapshot
+	decodeHubResponse(t, changed, &changedSnapshot)
+	if changedSnapshot.Changes == nil || changedSnapshot.Changes.Reset || len(changedSnapshot.Changes.Items) != 1 || changedSnapshot.Changes.Items[0].ID != heartbeatIssue.WorkItemID {
+		t.Fatalf("heartbeat event delta = %+v, issue=%s", changedSnapshot.Changes, heartbeatIssue.WorkItemID)
+	}
+	heartbeatCredential, status, err := service.authenticateTenantAPIHash(t.Context(), organization.ID, hash, "", "")
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("authenticate heartbeat cursor credential: status=%d err=%v", status, err)
+	}
+	_, legacyCursor, cursorKey, err := service.readNativePage(t.Context(), nativeScope{organization: organization.ID, project: project.ID, credential: heartbeatCredential}, path+"/changes", url.Values{"cursor": {""}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyPosition, err := json.Marshal(struct {
+		Sequence int64     `json:"sequence"`
+		Observed time.Time `json:"observed_at"`
+	}{Sequence: 1, Observed: clock.value})
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyCursor.After = string(legacyPosition)
+	legacyToken, err := encodeNativeCursor(legacyCursor, cursorKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyResponse := performHubAPIRequest(t, service, http.MethodPost, path, secret, map[string]any{"display_name": "Example host", "capacity": 3, "version": "0.174.1", "os": "darwin", "architecture": "arm64", "change_cursor": legacyToken})
+	requireNativeStatus(t, legacyResponse, http.StatusOK)
+	var legacySnapshot runnerauth.RoutingSnapshot
+	decodeHubResponse(t, legacyResponse, &legacySnapshot)
+	if legacySnapshot.Changes == nil || !legacySnapshot.Changes.Reset || legacySnapshot.Changes.Cursor == "" {
+		t.Fatalf("legacy rowid cursor did not reset against matching PG sequence: %+v", legacySnapshot.Changes)
+	}
+	sqlitePosition, err := json.Marshal(heartbeatPosition{Version: sqliteHeartbeatCursorVersion, Sequence: 1, Observed: clock.value})
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyCursor.After = string(sqlitePosition)
+	sqliteToken, err := encodeNativeCursor(legacyCursor, cursorKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqliteResponse := performHubAPIRequest(t, service, http.MethodPost, path, secret, map[string]any{"display_name": "Example host", "capacity": 3, "version": "0.174.1", "os": "darwin", "architecture": "arm64", "change_cursor": sqliteToken})
+	requireNativeStatus(t, sqliteResponse, http.StatusOK)
+	var sqliteSnapshot runnerauth.RoutingSnapshot
+	decodeHubResponse(t, sqliteResponse, &sqliteSnapshot)
+	if sqliteSnapshot.Changes == nil || !sqliteSnapshot.Changes.Reset || sqliteSnapshot.Changes.Cursor == "" {
+		t.Fatalf("SQLite cursor version %d did not reset against matching PG sequence: %+v", sqliteHeartbeatCursorVersion, sqliteSnapshot.Changes)
+	}
+	secondIssueResponse := performHubAPIRequest(t, service, http.MethodPost, "/api/v2/organizations/"+string(organization.ID)+"/projects/"+string(project.ID)+"/work-items", testHubAdminToken, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "heartbeat-change-next"}, Title: "Heartbeat change next", Body: workItemRecordBody, State: "Todo"})
+	requireNativeStatus(t, secondIssueResponse, http.StatusOK)
+	var secondHeartbeatIssue tracker.NativeIssue
+	decodeHubResponse(t, secondIssueResponse, &secondHeartbeatIssue)
+	nextChanged := performHubAPIRequest(t, service, http.MethodPost, path, secret, map[string]any{"display_name": "Example host", "capacity": 3, "version": "0.174.1", "os": "darwin", "architecture": "arm64", "change_cursor": sqliteSnapshot.Changes.Cursor})
+	requireNativeStatus(t, nextChanged, http.StatusOK)
+	var nextChangedSnapshot runnerauth.RoutingSnapshot
+	decodeHubResponse(t, nextChanged, &nextChangedSnapshot)
+	if nextChangedSnapshot.Changes == nil || nextChangedSnapshot.Changes.Reset || len(nextChangedSnapshot.Changes.Items) != 1 || nextChangedSnapshot.Changes.Items[0].ID != secondHeartbeatIssue.WorkItemID {
+		t.Fatalf("versioned heartbeat event delta = %+v, issue=%s", nextChangedSnapshot.Changes, secondHeartbeatIssue.WorkItemID)
+	}
 	before := clock.value
 	clock.value = now.Add(3 * time.Minute)
-	unsupported := performHubAPIRequest(t, service, http.MethodPost, path, secret, map[string]any{"display_name": "Example host", "capacity": 3, "version": "0.174.1", "checkout_repository": "owner/repository"})
-	requireNativeStatus(t, unsupported, http.StatusServiceUnavailable)
+	checkoutHeartbeat := performHubAPIRequest(t, service, http.MethodPost, path, secret, map[string]any{"display_name": "Example host", "capacity": 3, "version": "0.174.1", "os": "darwin", "architecture": "arm64", "checkout_repository": "owner/repository"})
+	requireNativeStatus(t, checkoutHeartbeat, http.StatusOK)
 	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
 		persisted, err = r.RunnerIdentity(t.Context(), "runner_example")
@@ -713,8 +848,57 @@ func TestTenantRunnerHeartbeatPersistsIdentityAndReturnsCurrentRouting(t *testin
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if !persisted.LastHeartbeatAt.Equal(before) {
-		t.Fatalf("unsupported heartbeat partially changed timestamp: before=%s after=%s", before, persisted.LastHeartbeatAt)
+	if !persisted.LastHeartbeatAt.Equal(clock.value) || !persisted.LastHeartbeatAt.After(before) {
+		t.Fatalf("checkout heartbeat did not advance timestamp: before=%s after=%s", before, persisted.LastHeartbeatAt)
+	}
+	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
+		verified, err := r.RunnerCheckoutVerified(t.Context(), project.ID, "owner/repository", clock.value)
+		if err != nil {
+			return err
+		}
+		if !verified {
+			t.Fatal("accepted checkout report is not visible to its authorized project")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+		record, err := w.ProjectRecord(t.Context(), project.ID)
+		if err != nil {
+			return err
+		}
+		record.Settings.CheckoutRepository = "owner/repository"
+		_, err = w.UpdateProjectRecord(t.Context(), record)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	connector, repositoryID, enabled, err := service.projectRepositoryBinding(t.Context(), service.database.reader, nativeScope{organization: organization.ID, project: project.ID})
+	if err != nil || connector == nil || connector.Repository != "owner/repository" || repositoryID != 0 || enabled {
+		t.Fatalf("postgres checkout binding=%+v repository_id=%d enabled=%t error=%v", connector, repositoryID, enabled, err)
+	}
+	if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+		identity, err := w.RunnerIdentity(t.Context(), "runner_example")
+		if err != nil {
+			return err
+		}
+		identity.ExpiresAt = clock.value.Add(-time.Second)
+		return w.UpdateRunnerIdentity(t.Context(), identity)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
+		verified, err := r.RunnerCheckoutVerified(t.Context(), project.ID, "owner/repository", clock.value)
+		if err != nil {
+			return err
+		}
+		if verified {
+			t.Fatal("expired runner identity verified a fresh checkout report")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 	if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
 		record, err := w.ProjectRecord(t.Context(), project.ID)
@@ -756,8 +940,8 @@ func TestTenantRunnerHeartbeatPersistsIdentityAndReturnsCurrentRouting(t *testin
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if mutations != 14 || heartbeats != 5 {
-		t.Fatalf("runner protocol usage api_mutations=%d heartbeats=%d want=14/5", mutations, heartbeats)
+	if mutations != 21 || heartbeats != 12 {
+		t.Fatalf("runner protocol usage api_mutations=%d heartbeats=%d want=21/12", mutations, heartbeats)
 	}
 }
 

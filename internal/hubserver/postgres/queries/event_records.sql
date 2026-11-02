@@ -2,8 +2,44 @@
 SELECT * FROM collaboration_events WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_id) AND work_item_id=sqlc.arg(work_item_id) AND id=sqlc.arg(id);
 
 -- name: RecordInsertEvent :one
-INSERT INTO collaboration_events (organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, landing_waiting, landing_change_id, landing_version_id, landing_head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version)
-VALUES (sqlc.arg(organization_id), sqlc.arg(project_id), sqlc.arg(work_item_id), sqlc.arg(id), sqlc.arg(sequence), sqlc.arg(type), sqlc.arg(schema_version), sqlc.arg(actor_kind), sqlc.arg(actor_principal_id), sqlc.arg(event_revision), sqlc.arg(change_id), sqlc.arg(version_id), sqlc.arg(head_sha), sqlc.arg(landing_waiting), sqlc.arg(landing_change_id), sqlc.arg(landing_version_id), sqlc.arg(landing_head_sha), sqlc.arg(run_id), sqlc.arg(attempt_id), sqlc.arg(from_state), sqlc.arg(to_state), sqlc.arg(recorded_at), sqlc.arg(payload_object_key), sqlc.arg(payload_sha256), sqlc.arg(payload_bytes), sqlc.arg(payload_content_bytes), sqlc.arg(payload_format_version)) RETURNING *;
+INSERT INTO collaboration_events (organization_id, project_id, work_item_id, id, sequence, project_sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, landing_waiting, landing_change_id, landing_version_id, landing_head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version)
+VALUES (sqlc.arg(organization_id), sqlc.arg(project_id), sqlc.arg(work_item_id), sqlc.arg(id), sqlc.arg(sequence), sqlc.arg(project_sequence), sqlc.arg(type), sqlc.arg(schema_version), sqlc.arg(actor_kind), sqlc.arg(actor_principal_id), sqlc.arg(event_revision), sqlc.arg(change_id), sqlc.arg(version_id), sqlc.arg(head_sha), sqlc.arg(landing_waiting), sqlc.arg(landing_change_id), sqlc.arg(landing_version_id), sqlc.arg(landing_head_sha), sqlc.arg(run_id), sqlc.arg(attempt_id), sqlc.arg(from_state), sqlc.arg(to_state), sqlc.arg(recorded_at), sqlc.arg(payload_object_key), sqlc.arg(payload_sha256), sqlc.arg(payload_bytes), sqlc.arg(payload_content_bytes), sqlc.arg(payload_format_version)) RETURNING *;
+
+-- name: RecordAdvanceProjectEventSequence :one
+INSERT INTO project_event_cursors (organization_id, project_id, sequence)
+VALUES (sqlc.arg(organization_id), sqlc.arg(project_id), 1)
+ON CONFLICT (organization_id, project_id) DO UPDATE SET sequence=project_event_cursors.sequence+1
+RETURNING sequence;
+
+-- name: RecordProjectEventSequence :one
+SELECT COALESCE((SELECT sequence FROM project_event_cursors WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_id)),0)::bigint;
+
+-- name: RecordProjectChanges :many
+WITH changed AS (
+    SELECT work_item_id FROM (
+        SELECT work_item_id
+        FROM collaboration_events
+        WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_id)
+          AND project_sequence>sqlc.arg(after) AND project_sequence<=sqlc.arg(through)
+        ORDER BY project_sequence
+        LIMIT sqlc.arg(page_limit)
+    ) events
+    UNION
+    SELECT native_id FROM (
+        SELECT i.native_id
+        FROM issues i
+        WHERE i.organization_id=sqlc.arg(organization_id) AND i.project_id=sqlc.arg(project_id)
+          AND i.last_activity_at>sqlc.arg(since)
+        ORDER BY i.last_activity_at,i.native_id
+        LIMIT sqlc.arg(page_limit)
+    ) activity
+    ORDER BY work_item_id
+    LIMIT sqlc.arg(page_limit)
+)
+SELECT i.native_id, i.revision, i.last_activity_at
+FROM changed
+JOIN issues i ON i.organization_id=sqlc.arg(organization_id) AND i.project_id=sqlc.arg(project_id) AND i.native_id=changed.work_item_id
+ORDER BY i.native_id;
 
 -- name: RecordListEvent :many
 SELECT * FROM collaboration_events WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_id) AND work_item_id=sqlc.arg(work_item_id) AND sequence>sqlc.arg(after) ORDER BY sequence LIMIT sqlc.arg(page_limit);

@@ -66,7 +66,10 @@
     "internal/hubserver/postgres/migrations/20261102005941_runner_problem_reports.sql",
     "internal/hubserver/postgres/migrations/20261102010343_cost_import_progress.sql",
     "internal/hubserver/postgres/migrations/20261102010400_runner_local_checks.sql",
-    "internal/hubserver/postgres/migrations/20261102010654_runner_workspace_reports.sql"
+    "internal/hubserver/postgres/migrations/20261102010654_runner_workspace_reports.sql",
+    "internal/hubserver/postgres/migrations/20261102012847_runner_client_reports.sql",
+    "internal/hubserver/postgres/migrations/20261102014015_attempt_started_at_submicro.sql",
+    "internal/hubserver/postgres/migrations/20261102014157_project_event_cursors.sql"
   ],
   "tables": {
     "public.ai_credit_reason_references": {
@@ -414,6 +417,16 @@
       },
       "contract": "Retain bounded typed host metric segments for the owning runner and hour.",
       "family": "fleet",
+      "organization": "organization-owned"
+    },
+    "public.project_event_cursors": {
+      "columns": {
+        "organization_id": "text",
+        "project_id": "text",
+        "sequence": "bigint"
+      },
+      "contract": "Serialize immutable collaboration event sequence allocation per tenant project in the append transaction.",
+      "family": "event",
       "organization": "organization-owned"
     },
     "public.runner_lease_assignments": {

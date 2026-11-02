@@ -118,7 +118,7 @@ func (s *Service) prepareReleasePick(ctx context.Context, scope nativeScope, ite
 	if err := validateReleasePick(r); err != nil {
 		return err
 	}
-	connector, _, _, err := projectRepositoryBinding(ctx, s.database.reader, scope)
+	connector, _, _, err := s.projectRepositoryBinding(ctx, s.database.reader, scope)
 	if err != nil {
 		return err
 	}
@@ -209,7 +209,7 @@ func (s *Service) associateReleasePickCommand(ctx context.Context, tx *sql.Tx, s
 		}
 		return d, nil
 	}
-	_, repositoryID, _, err := projectRepositoryBinding(ctx, tx, scope)
+	_, repositoryID, _, err := s.projectRepositoryBinding(ctx, tx, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -358,7 +358,7 @@ func (s *Service) checkReleasePickDelivery(ctx context.Context, tx *sql.Tx, scop
 			return nativePublicInvalid("Source Change requires a passing immutable security audit")
 		}
 	}
-	connector, repositoryID, _, err := projectRepositoryBinding(ctx, tx, scope)
+	connector, repositoryID, _, err := s.projectRepositoryBinding(ctx, tx, scope)
 	if err != nil {
 		return err
 	}
