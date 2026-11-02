@@ -156,7 +156,9 @@ func platformSourceValues(t *testing.T, source ImportSource, cfg Config, name, s
 		}
 		switch column {
 		case "id":
-			if d.Codec == "int64" {
+			if name == "registry/archive_storage_bindings" {
+				value = ""
+			} else if d.Codec == "int64" {
 				value = strconv.Itoa(index)
 			} else {
 				value = "id_" + suffix
@@ -310,6 +312,10 @@ func TestPlatformImportRetainsAuthenticationAndEveryClassification(t *testing.T)
 				if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM platform."+name).Scan(&count); err != nil || count != 2 {
 					t.Fatalf("%s: count=%d err=%v", name, count, err)
 				}
+			}
+			var defaultBindings int
+			if err := db.QueryRowContext(t.Context(), `SELECT count(DISTINCT organization_id) FROM platform.archive_storage_bindings WHERE id=''`).Scan(&defaultBindings); err != nil || defaultBindings != 2 {
+				t.Fatalf("default archive bindings across tenants: count=%d err=%v", defaultBindings, err)
 			}
 			for _, suffix := range []string{"first", "second"} {
 				organization := tracker.OrganizationID("org_" + suffix)
