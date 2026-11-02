@@ -393,7 +393,11 @@ func (s *Service) requireNativeScope(roles ...apiScope) echo.MiddlewareFunc {
 						return s.nativeAPIError(c, operatortool.ErrAccessDenied)
 					}
 				}
-				if s.config.TenantRepository != nil && (projectRecordRoute(c.Path()) || workItemRecordRoute(c.Path()) || selectedChangeRecordRoute(c.Path()) || selectedGoTestReceiptRoute(c.Path()) || runnerRepositoryRoute(c.Path())) {
+				if s.config.TenantRepository != nil && runnerLeaseMutationRoute(c.Path()) {
+					if err := s.authorizeRunnerLeaseProject(readCtx, scope); err != nil {
+						return s.nativeAPIError(c, err)
+					}
+				} else if s.config.TenantRepository != nil && (projectRecordRoute(c.Path()) || workItemRecordRoute(c.Path()) || selectedChangeRecordRoute(c.Path()) || selectedGoTestReceiptRoute(c.Path()) || runnerRepositoryRoute(c.Path())) {
 					if runnerRepositoryReportRoute(c.Path()) && credential.Runner.RunnerID != "" {
 						if err := s.authorizeRunnerRepositoryProject(readCtx, scope); err != nil {
 							return s.nativeAPIError(c, err)

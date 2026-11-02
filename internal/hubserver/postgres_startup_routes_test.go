@@ -182,4 +182,32 @@ func TestPostgresOpenCreatesListsAndClaimsNativeIssue(t *testing.T) {
 	}); err != nil || storedLease.LeaseID != string(lease.ID) {
 		t.Fatalf("PostgreSQL claimed lease = %+v, error %v", storedLease, err)
 	}
+	validateResponse := performHubAPIRequest(t, service, http.MethodPost, "/api/v2/organizations/org_startup/projects/"+url.PathEscape(string(project.ID))+"/leases/"+url.PathEscape(string(lease.ID))+"/validate", workerToken, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken})
+	requireNativeStatus(t, validateResponse, http.StatusOK)
+	var validatedRunner runnerauth.Runner
+	decodeHubResponse(t, validateResponse, &validatedRunner)
+	if validatedRunner.RunnerID != "runner_example" || validatedRunner.MachineID != "machine_example" || validatedRunner.OrganizationID != "org_startup" {
+		t.Fatalf("PostgreSQL validated runner = %+v", validatedRunner)
+	}
+	leasePath := "/api/v2/organizations/org_startup/projects/" + url.PathEscape(string(project.ID)) + "/leases/" + url.PathEscape(string(lease.ID))
+	renewResponse := performHubAPIRequest(t, service, http.MethodPost, leasePath+"/renew", workerToken, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 300})
+	requireNativeStatus(t, renewResponse, http.StatusOK)
+	var renewedLease tracker.NativeLease
+	decodeHubResponse(t, renewResponse, &renewedLease)
+	if renewedLease.ID != lease.ID || renewedLease.FencingToken != lease.FencingToken {
+		t.Fatalf("PostgreSQL renewed lease = %+v", renewedLease)
+	}
+	releaseResponse := performHubAPIRequest(t, service, http.MethodPost, leasePath+"/release", workerToken, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "released"})
+	requireNativeStatus(t, releaseResponse, http.StatusNoContent)
+	var releasedLease leasestore.Lease
+	if err := service.config.TenantRepository.ReadTenant(t.Context(), "org_startup", corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		releasedLease, err = r.Lease(t.Context(), string(lease.ID))
+		return err
+	}); err != nil {
+		t.Fatalf("read PostgreSQL released lease: %v", err)
+	}
+	if releasedLease.ReleasedAt == nil || releasedLease.ReleaseReason != "released" {
+		t.Fatalf("PostgreSQL released lease = %+v", releasedLease)
+	}
 }
