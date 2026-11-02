@@ -263,5 +263,15 @@
     "inline_payloads": [],
     "ownership": "organization-owned",
     "scope": "conversation_history_imports.organization_id; sealed source snapshot and completion count are tenant scoped"
+  },
+  "public/credit_history_import_rows": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "credit_history_import_rows.organization_id; source row receipts are tenant scoped"
+  },
+  "public/credit_history_imports": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "credit_history_imports.organization_id; sealed source snapshot and completion counts are tenant scoped"
   }
 }

@@ -385,7 +385,9 @@
     "public/archive_objects": {"contract": "Retain verified immutable archive metadata while object bytes remain in the configured archive store.","disposition": "target-only","family": "conversation"},
     "public/archive_usage_counters": {"contract": "Retain tenant archive-byte accounting for shared archive objects.","disposition": "target-only","family": "conversation"},
     "public/conversation_history_imports": {"contract": "Retain the sealed source snapshot and bounded conversation-history import completion count.","disposition": "target-only","family": "conversation"},
-    "public/conversation_history_import_rows": {"contract": "Retain idempotent per-row conversation import receipts atomically with imported history records.","disposition": "target-only","family": "conversation"}
+    "public/conversation_history_import_rows": {"contract": "Retain idempotent per-row conversation import receipts atomically with imported history records.","disposition": "target-only","family": "conversation"},
+    "public/credit_history_imports": {"contract": "Retain the sealed source snapshot and verified account, pack, and credit transaction import counts.","disposition": "target-only","family": "billing"},
+    "public/credit_history_import_rows": {"contract": "Retain idempotent per-row billing import receipts atomically with source credit history.","disposition": "target-only","family": "billing"}
   },
   "owners": {
     "internal/cli/cloud_platform_import.go": {"disposition":"non-storage","families":["non-storage"],"inventory":{"operations":{"runCloudPlatformImport:Open":1},"tables":[]}},
@@ -1505,7 +1507,9 @@
     "internal/hubserver/postgres/conversation_import.go": {"disposition": "target-adapter","families": ["conversation"],"inventory": {"operations": {"session.importConversationRow:ExecContext": 2,"session.importConversationRow:QueryRowContext": 1,"session.importConversationRow:SQL": 3},"tables": []}},
     "internal/hubserver/postgres/migrations/20261102024441_conversation_attachments.sql": {"disposition": "target-schema","families": ["conversation"],"inventory": {"operations": {"SQL": 1},"tables": ["hub/conversation_attachments","hub/conversation_messages","hub/conversations"]}},
     "internal/hubserver/postgres/migrations/20261102025236_shared_archive_metadata.sql": {"disposition": "target-schema","families": ["conversation"],"inventory": {"operations": {"SQL": 1},"tables": ["public/archive_object_owners","public/archive_objects","public/archive_usage_counters"]}},
-    "internal/hubserver/postgres/migrations/20261102052440_conversation_history_import.sql": {"disposition": "target-schema","families": ["conversation"],"inventory": {"operations": {"SQL": 1},"tables": ["hub/organizations","public/conversation_history_import_rows","public/conversation_history_imports"]}}
+    "internal/hubserver/postgres/migrations/20261102052440_conversation_history_import.sql": {"disposition": "target-schema","families": ["conversation"],"inventory": {"operations": {"SQL": 1},"tables": ["hub/organizations","public/conversation_history_import_rows","public/conversation_history_imports"]}},
+    "internal/hubserver/postgres/credit_history_import.go": {"disposition":"target-adapter","families":["billing"],"inventory":{"operations":{"Repository.ImportCreditHistory:QueryRowContext":1,"Repository.ImportCreditHistory:SQL":1,"Repository.advanceCreditTransactionSequence:ExecContext":1,"Repository.advanceCreditTransactionSequence:SQL":1,"Repository.beginCreditHistoryImport:ExecContext":1,"Repository.beginCreditHistoryImport:QueryRowContext":1,"Repository.beginCreditHistoryImport:SQL":2,"Repository.completeCreditHistoryImport:ExecContext":1,"Repository.completeCreditHistoryImport:SQL":1,"Repository.importCreditHistoryRow:ExecContext":3,"Repository.importCreditHistoryRow:QueryRowContext":1,"Repository.importCreditHistoryRow:SQL":4,"readCreditHistoryPage:QueryContext":1,"readCreditHistoryPage:SQL":1},"tables":["hub/ai_credit_transactions"]}},
+    "internal/hubserver/postgres/migrations/20261102053822_credit_history_import.sql": {"disposition":"target-schema","families":["billing"],"inventory":{"operations":{"SQL":1},"tables":["hub/organizations","public/credit_history_import_rows","public/credit_history_imports"]}}
   },
   "atomic_groups": {
     "change-publication": {

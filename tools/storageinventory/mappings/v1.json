@@ -37,14 +37,14 @@
       "family": "billing",
       "organization": "row",
       "columns": {
-        "auto_enabled": {"source":"[3,\"auto_enabled\",\"INTEGER\",1,\"0\",0,0]","disposition":"pending","codec":"int64","null":"reject","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "balance_micros": {"source":"[2,\"balance_micros\",\"INTEGER\",1,\"0\",0,0]","disposition":"pending","codec":"int64","null":"reject","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "failure": {"source":"[7,\"failure\",\"TEXT\",1,\"''\",0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "mode": {"source":"[1,\"mode\",\"TEXT\",1,null,2,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "organization_id": {"source":"[0,\"organization_id\",\"TEXT\",1,null,1,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "payment_method": {"source":"[6,\"payment_method\",\"TEXT\",1,\"''\",0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "price_id": {"source":"[5,\"price_id\",\"TEXT\",1,\"''\",0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "threshold_cents": {"source":"[4,\"threshold_cents\",\"INTEGER\",1,\"0\",0,0]","disposition":"pending","codec":"int64","null":"reject","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."}
+        "auto_enabled": {"source":"[3,\"auto_enabled\",\"INTEGER\",1,\"0\",0,0]","disposition":"column","codec":"bool01","null":"reject","empty":"reject","targets":[{"table":"public.ai_credit_accounts","column":"auto_enabled","type":"boolean"}]},
+        "balance_micros": {"source":"[2,\"balance_micros\",\"INTEGER\",1,\"0\",0,0]","disposition":"column","codec":"int64","null":"reject","empty":"reject","targets":[{"table":"public.ai_credit_accounts","column":"balance_micros","type":"bigint"}]},
+        "failure": {"source":"[7,\"failure\",\"TEXT\",1,\"''\",0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.ai_credit_accounts","column":"failure","type":"text"}]},
+        "mode": {"source":"[1,\"mode\",\"TEXT\",1,null,2,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.ai_credit_accounts","column":"mode","type":"text"}]},
+        "organization_id": {"source":"[0,\"organization_id\",\"TEXT\",1,null,1,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.ai_credit_accounts","column":"organization_id","type":"text"}]},
+        "payment_method": {"source":"[6,\"payment_method\",\"TEXT\",1,\"''\",0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.ai_credit_accounts","column":"payment_method","type":"text"}]},
+        "price_id": {"source":"[5,\"price_id\",\"TEXT\",1,\"''\",0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.ai_credit_accounts","column":"price_id","type":"text"}]},
+        "threshold_cents": {"source":"[4,\"threshold_cents\",\"INTEGER\",1,\"0\",0,0]","disposition":"column","codec":"int64","null":"reject","empty":"reject","targets":[{"table":"public.ai_credit_accounts","column":"threshold_cents","type":"bigint"}]}
       }
     },
     "hub/ai_credit_packs": {
@@ -53,9 +53,9 @@
       "family": "billing",
       "organization": "binding",
       "columns": {
-        "mode": {"source":"[1,\"mode\",\"TEXT\",1,null,2,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "price_id": {"source":"[0,\"price_id\",\"TEXT\",1,null,1,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "usd_cents": {"source":"[2,\"usd_cents\",\"INTEGER\",1,null,0,0]","disposition":"pending","codec":"int64","null":"reject","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."}
+        "mode": {"source":"[1,\"mode\",\"TEXT\",1,null,2,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.ai_credit_packs","column":"mode","type":"text"}]},
+        "price_id": {"source":"[0,\"price_id\",\"TEXT\",1,null,1,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.ai_credit_packs","column":"price_id","type":"text"}]},
+        "usd_cents": {"source":"[2,\"usd_cents\",\"INTEGER\",1,null,0,0]","disposition":"column","codec":"int64","null":"reject","empty":"reject","targets":[{"table":"public.ai_credit_packs","column":"usd_cents","type":"bigint"}]}
       }
     },
     "hub/ai_credit_periods": {
@@ -97,16 +97,16 @@
       "family": "billing",
       "organization": "row",
       "columns": {
-        "actor": {"source":"[6,\"actor\",\"TEXT\",1,\"''\",0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "amount_micros": {"source":"[4,\"amount_micros\",\"INTEGER\",1,null,0,0]","disposition":"pending","codec":"int64","null":"reject","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "id": {"source":"[0,\"id\",\"INTEGER\",0,null,1,0]","disposition":"pending","codec":"int64","null":"preserve","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "included_amount_micros": {"source":"[9,\"included_amount_micros\",\"INTEGER\",1,\"0\",0,0]","disposition":"pending","codec":"int64","null":"reject","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "kind": {"source":"[5,\"kind\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "mode": {"source":"[2,\"mode\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "organization_id": {"source":"[1,\"organization_id\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "reason": {"source":"[7,\"reason\",\"TEXT\",1,\"''\",0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "recorded_at": {"source":"[8,\"recorded_at\",\"INTEGER\",1,null,0,0]","disposition":"pending","codec":"int64","null":"reject","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "source": {"source":"[3,\"source\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."}
+        "actor": {"source":"[6,\"actor\",\"TEXT\",1,\"''\",0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.ai_credit_transactions","column":"actor","type":"text"}]},
+        "amount_micros": {"source":"[4,\"amount_micros\",\"INTEGER\",1,null,0,0]","disposition":"column","codec":"int64","null":"reject","empty":"reject","targets":[{"table":"public.ai_credit_transactions","column":"amount_micros","type":"bigint"}]},
+        "id": {"source":"[0,\"id\",\"INTEGER\",0,null,1,0]","disposition":"column","codec":"int64","null":"preserve","empty":"reject","targets":[{"table":"public.ai_credit_transactions","column":"id","type":"bigint"}]},
+        "included_amount_micros": {"source":"[9,\"included_amount_micros\",\"INTEGER\",1,\"0\",0,0]","disposition":"column","codec":"int64","null":"reject","empty":"reject","targets":[{"table":"public.ai_credit_transactions","column":"included_amount_micros","type":"bigint"}]},
+        "kind": {"source":"[5,\"kind\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.ai_credit_transactions","column":"kind","type":"text"}]},
+        "mode": {"source":"[2,\"mode\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.ai_credit_transactions","column":"mode","type":"text"}]},
+        "organization_id": {"source":"[1,\"organization_id\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.ai_credit_transactions","column":"organization_id","type":"text"}]},
+        "reason": {"source":"[7,\"reason\",\"TEXT\",1,\"''\",0,0]","disposition":"transform","codec":"text","null":"reject","empty":"preserve","transform":"archive-json","targets":[{"table":"public.ai_credit_reason_references","column":"binding_id","type":"text"},{"table":"public.ai_credit_reason_references","column":"customer_owned","type":"boolean"},{"table":"public.ai_credit_reason_references","column":"object_key","type":"text"},{"table":"public.ai_credit_reason_references","column":"sha256","type":"text"},{"table":"public.ai_credit_reason_references","column":"compressed_bytes","type":"bigint"},{"table":"public.ai_credit_reason_references","column":"content_bytes","type":"bigint"},{"table":"public.ai_credit_reason_references","column":"codec","type":"text"},{"table":"public.ai_credit_reason_references","column":"format_version","type":"integer"},{"table":"public.ai_credit_reason_references","column":"kind","type":"text"},{"table":"public.ai_credit_reason_references","column":"retention","type":"text"}]},
+        "recorded_at": {"source":"[8,\"recorded_at\",\"INTEGER\",1,null,0,0]","disposition":"transform","codec":"int64","null":"reject","empty":"reject","transform":"credit-timestamp","targets":[{"table":"public.ai_credit_transactions","column":"recorded_at","type":"timestamp with time zone"}]},
+        "source": {"source":"[3,\"source\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.ai_credit_transactions","column":"source","type":"text"}]}
       }
     },
     "hub/analytics_attempt_usage": {

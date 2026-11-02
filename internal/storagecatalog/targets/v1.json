@@ -81,7 +81,8 @@
     "internal/hubserver/postgres/migrations/20261102043132_core_execution_import_history.sql",
     "internal/hubserver/postgres/migrations/20261102044334_core_work_event_import.sql",
     "internal/hubserver/postgres/migrations/20261102052209_change_publication_records.sql",
-    "internal/hubserver/postgres/migrations/20261102052440_conversation_history_import.sql"
+    "internal/hubserver/postgres/migrations/20261102052440_conversation_history_import.sql",
+    "internal/hubserver/postgres/migrations/20261102053822_credit_history_import.sql"
   ],
   "tables": {
     "public.ai_credit_reason_references": {
@@ -916,6 +917,19 @@
       "family": "conversation",
       "organization": "organization-owned"
     },
+    "public.credit_history_import_rows": {
+      "columns": {
+        "created_at": "timestamp with time zone",
+        "organization_id": "text",
+        "request_hash": "text",
+        "snapshot_id": "text",
+        "source_row_id": "bigint",
+        "source_table": "text"
+      },
+      "contract": "Retain idempotent per-row billing import receipts atomically with source credit history.",
+      "family": "billing",
+      "organization": "organization-owned"
+    },
     "public.conversation_history_imports": {
       "columns": {
         "catalog_digest": "text",
@@ -927,6 +941,21 @@
       },
       "contract": "Retain the sealed source snapshot and bounded conversation-history import completion count.",
       "family": "conversation",
+      "organization": "organization-owned"
+    },
+    "public.credit_history_imports": {
+      "columns": {
+        "account_rows": "bigint",
+        "catalog_digest": "text",
+        "completed": "boolean",
+        "organization_id": "text",
+        "pack_rows": "bigint",
+        "snapshot_id": "text",
+        "source_schema": "text",
+        "transaction_rows": "bigint"
+      },
+      "contract": "Retain the sealed source snapshot and verified account, pack, and credit transaction import counts.",
+      "family": "billing",
       "organization": "organization-owned"
     }
   }

@@ -33,7 +33,7 @@ func validateImportCopyPrimaryIndex(ctx context.Context, tx *sql.Tx, table strin
 		return err
 	}
 	if primary == "" {
-		if table == "conversation_prices" && slices.Equal(keys, []string{"id"}) {
+		if (table == "conversation_prices" || table == "ai_credit_transactions") && slices.Equal(keys, []string{"id"}) {
 			return nil
 		}
 		return storagecatalog.ErrUnmapped
