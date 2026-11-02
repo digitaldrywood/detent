@@ -38,9 +38,9 @@
     "internal/hubserver/postgres/migrations/20261101214936_artifact_references.sql",
     "internal/hubserver/postgres/migrations/20261101215438_runner_identity_enrollment.sql",
     "internal/hubserver/postgres/migrations/20261101215802_organization_model_selection.sql",
-    "internal/hubserver/postgres/migrations/20261101223629_go_test_receipts.sql",
     "internal/hubserver/postgres/migrations/20261101222016_workspace_claim_items.sql",
     "internal/hubserver/postgres/migrations/20261101222620_claim_dispatch_facts.sql",
+    "internal/hubserver/postgres/migrations/20261101223629_go_test_receipts.sql",
     "internal/hubserver/postgres/migrations/20261101224000_runner_project_observations.sql",
     "internal/hubserver/postgres/migrations/20261101224500_runner_routing_records.sql",
     "internal/hubserver/postgres/migrations/20261101224649_lease_policy_bindings.sql",
@@ -59,7 +59,10 @@
     "internal/hubserver/postgres/migrations/20261102003051_runner_heartbeat_observations.sql",
     "internal/hubserver/postgres/migrations/20261102004100_runner_selection_cursors.sql",
     "internal/hubserver/postgres/migrations/20261102005904_cost_receipt_precision.sql",
-    "internal/hubserver/postgres/migrations/20261102010343_cost_import_progress.sql"
+    "internal/hubserver/postgres/migrations/20261102005941_runner_problem_reports.sql",
+    "internal/hubserver/postgres/migrations/20261102010343_cost_import_progress.sql",
+    "internal/hubserver/postgres/migrations/20261102010400_runner_local_checks.sql",
+    "internal/hubserver/postgres/migrations/20261102010654_runner_workspace_reports.sql"
   ],
   "tables": {
     "public.ai_credit_reason_references": {
@@ -616,6 +619,41 @@
       },
       "contract": "Retain tenant-scoped frozen snapshot identity, bounded import cursors and immutable revision references until source and target history reconcile.",
       "family": "billing",
+      "organization": "organization-owned"
+    },
+    "public.runner_problem_reports": {
+      "columns": {
+        "check_name": "text",
+        "code": "text",
+        "error_output": "text",
+        "first_seen": "timestamp with time zone",
+        "fix_command": "text",
+        "fix_hint": "text",
+        "message": "text",
+        "organization_id": "text",
+        "project_id": "text",
+        "reported_at": "timestamp with time zone",
+        "runner_id": "text",
+        "subject": "text"
+      },
+      "contract": "Retain bounded typed problem observations reported by each tenant runner.",
+      "family": "fleet",
+      "organization": "organization-owned"
+    },
+    "public.runner_workspace_reports": {
+      "columns": {
+        "diff": "boolean",
+        "exec": "boolean",
+        "files": "boolean",
+        "git": "boolean",
+        "isolation": "text",
+        "organization_id": "text",
+        "preview": "boolean",
+        "runner_id": "text",
+        "terminal": "boolean"
+      },
+      "contract": "Retain the latest typed workspace capability and isolation report from each tenant runner.",
+      "family": "fleet",
       "organization": "organization-owned"
     }
   },

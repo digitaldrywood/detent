@@ -129,6 +129,16 @@
     "ownership": "organization-owned",
     "scope": "runner_provider_reports.organization_id; runner report is tenant-scoped"
   },
+  "public/runner_problem_reports": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "runner_problem_reports.organization_id; problem reports are tenant runner observations"
+  },
+  "public/runner_workspace_reports": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "runner_workspace_reports.organization_id; workspace capability facts belong to a tenant runner"
+  },
   "public/runner_sprite_memberships": {
     "inline_payloads": [],
     "ownership": "organization-owned",

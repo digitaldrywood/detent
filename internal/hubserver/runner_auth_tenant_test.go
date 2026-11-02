@@ -29,6 +29,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
 func TestRunnerCapabilitiesOrganizationHintScopesTenantAuthentication(t *testing.T) {
@@ -448,13 +449,22 @@ func TestTenantRunnerHeartbeatPersistsIdentityAndReturnsCurrentRouting(t *testin
 	providerReport := providercapacity.Report{Provider: "openai", Backend: "native/codex", AccountAlias: "example", Billing: "subscription", Models: []string{"model-a"}, ModelDetails: []providercapacity.ModelDetail{{ID: "model-a", Label: "Model A", Provider: "openai", Default: true, ReasoningEfforts: []string{"low", "high"}, DefaultReasoningEffort: "high"}}, Availability: "available", ObservedAt: clock.value, UsageWindows: []providercapacity.UsageWindow{{Kind: "primary", ResetAt: clock.value.Add(time.Hour), ObservedAt: clock.value}}}
 	capacityConfiguration := &runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 4, ClientLimit: 3, RuntimeLimit: 3, Manageable: true, ObservedAt: clock.value}
 	backendIsolation := isolation.Report{"example-project/codex": {isolation.Sandbox, isolation.NativeTrusted}}
+	localChecks := runnerauth.LocalChecks{CommitName: "Example Runner", CommitEmail: "runner@example.invalid", CommitSigning: "ssh", Setup: "passed", Checkout: "passed", Configuration: "passed", Doctor: "warning", Provider: "passed", ProviderKinds: []string{"codex"}, CheckoutAt: clock.value, ConfigurationAt: clock.value, DoctorAt: clock.value, ProviderAt: clock.value}
+	localChecksObservedAt := clock.value
+	workspaceCapabilities := workspacesession.Capabilities{Terminal: true, Files: true, Diff: true, Exec: true, Git: true}
 	hostSummary := testHostSummary(clock.value)
+	secondHostSummary := hostSummary
+	secondHostSummary.SegmentID = clock.value.Add(-30 * time.Second)
 	admission := tracker.NativeAdmissionObservation{RunnerRevision: 1, Context: tracker.NativeAdmissionContext{ObservedAt: clock.value, PolicyID: "policy_example", WorkflowStates: []string{"Todo"}}}
-	response := performHubAPIRequest(t, service, http.MethodPost, path, secret, map[string]any{"display_name": "Example host", "capacity": 3, "version": "0.174.1", "os": "darwin", "architecture": "arm64", "protocol_major": 2, "provider_reports": []providercapacity.Report{providerReport}, "capacity_configuration": capacityConfiguration, "backend_isolation": backendIsolation, "sprite_name": "example-host", "host_metrics": []hostmetrics.Summary{hostSummary}, "admission": admission})
+	problem := runnerauth.NewProblem("backend_missing")
+	problem.ProjectID = string(project.ID)
+	problem.Subject = "example-project/codex"
+	problem.Check = "backend probe"
+	response := performHubAPIRequest(t, service, http.MethodPost, path, secret, map[string]any{"display_name": "Example host", "capacity": 3, "version": "0.174.1", "os": "darwin", "architecture": "arm64", "protocol_major": 2, "provider_reports": []providercapacity.Report{providerReport}, "capacity_configuration": capacityConfiguration, "backend_isolation": backendIsolation, "sprite_name": "example-host", "host_metrics": []hostmetrics.Summary{hostSummary, secondHostSummary}, "admission": admission, "problems": []runnerauth.Problem{problem}, "local_checks": localChecks, "workspace_capabilities": workspaceCapabilities, "workspace_isolation": "sandbox"})
 	requireNativeStatus(t, response, http.StatusOK)
 	var snapshot runnerauth.RoutingSnapshot
 	decodeHubResponse(t, response, &snapshot)
-	if snapshot.RunnerID != "runner_example" || snapshot.Revision != 1 || snapshot.Routing.DisplayName != "Example runner" || snapshot.Routing.State != "active" || snapshot.Routing.Validate() != nil || len(snapshot.HostMetricsAcknowledged) != 1 || !snapshot.HostMetricsAcknowledged[0].Hour.Equal(hostSummary.Hour) || !snapshot.HostMetricsAcknowledged[0].SegmentID.Equal(hostSummary.SegmentID) {
+	if snapshot.RunnerID != "runner_example" || snapshot.Revision != 1 || snapshot.Routing.DisplayName != "Example runner" || snapshot.Routing.State != "active" || snapshot.Routing.Validate() != nil || len(snapshot.HostMetricsAcknowledged) != 2 || !snapshot.HostMetricsAcknowledged[0].Hour.Equal(hostSummary.Hour) || !snapshot.HostMetricsAcknowledged[0].SegmentID.Equal(hostSummary.SegmentID) || !snapshot.HostMetricsAcknowledged[1].SegmentID.Equal(secondHostSummary.SegmentID) {
 		t.Fatalf("heartbeat routing snapshot = %+v", snapshot)
 	}
 	var persisted runnerstore.Identity
@@ -462,6 +472,10 @@ func TestTenantRunnerHeartbeatPersistsIdentityAndReturnsCurrentRouting(t *testin
 	var isolationReport isolation.Report
 	var hostSegments []hostmetrics.Summary
 	var storedAdmission tracker.NativeAdmissionObservation
+	var storedProblems []runnerauth.Problem
+	var storedLocalChecks runnerauth.LocalChecks
+	var storedWorkspaceCapabilities workspacesession.Capabilities
+	var storedWorkspaceIsolation string
 	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
 		persisted, err = r.RunnerIdentity(t.Context(), "runner_example")
@@ -481,7 +495,28 @@ func TestTenantRunnerHeartbeatPersistsIdentityAndReturnsCurrentRouting(t *testin
 			return err
 		}
 		storedAdmission, err = r.RunnerAdmissionObservation(t.Context(), "runner_example", project.ID)
-		return err
+		if err != nil {
+			return err
+		}
+		storedProblems, err = r.RunnerProblems(t.Context(), "runner_example")
+		if err != nil {
+			return err
+		}
+		storedLocalChecks, err = r.RunnerLocalChecks(t.Context(), "runner_example", project.ID)
+		if err != nil {
+			return err
+		}
+		if _, err := r.RunnerLocalChecks(t.Context(), "runner_example_two", project.ID); !errors.Is(err, corestore.ErrNotFound) {
+			t.Fatalf("second runner local checks = %v, want not found", err)
+		}
+		storedWorkspaceCapabilities, storedWorkspaceIsolation, err = r.RunnerWorkspaceReport(t.Context(), "runner_example")
+		if err != nil {
+			return err
+		}
+		if _, _, err := r.RunnerWorkspaceReport(t.Context(), "runner_example_two"); !errors.Is(err, corestore.ErrNotFound) {
+			t.Fatalf("second runner workspace report = %v, want not found", err)
+		}
+		return nil
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -494,8 +529,43 @@ func TestTenantRunnerHeartbeatPersistsIdentityAndReturnsCurrentRouting(t *testin
 	if len(isolationReport) != 1 || !slices.Contains(isolationReport["example-project/codex"], isolation.NativeTrusted) {
 		t.Fatalf("persisted backend isolation = %+v", isolationReport)
 	}
-	if len(hostSegments) != 1 || !hostSegments[0].Hour.Equal(hostSummary.Hour) || !hostSegments[0].SegmentID.Equal(hostSummary.SegmentID) {
+	if len(hostSegments) != 2 || !hostSegments[0].Hour.Equal(hostSummary.Hour) || !hostSegments[0].SegmentID.Equal(hostSummary.SegmentID) || !hostSegments[1].SegmentID.Equal(secondHostSummary.SegmentID) {
 		t.Fatalf("persisted runner host segments = %+v", hostSegments)
+	}
+	if len(storedProblems) != 1 || storedProblems[0].Code != problem.Code || storedProblems[0].ProjectID != problem.ProjectID || storedProblems[0].FirstSeen.IsZero() || storedProblems[0].ReportedAt.IsZero() {
+		t.Fatalf("persisted runner problems = %+v", storedProblems)
+	}
+	if storedLocalChecks.CommitName != localChecks.CommitName || storedLocalChecks.CommitEmail != localChecks.CommitEmail || storedLocalChecks.CommitSigning != localChecks.CommitSigning || storedLocalChecks.Checkout != localChecks.Checkout || storedLocalChecks.Configuration != localChecks.Configuration || storedLocalChecks.Doctor != localChecks.Doctor || storedLocalChecks.Provider != localChecks.Provider || !slices.Equal(storedLocalChecks.ProviderKinds, localChecks.ProviderKinds) || !storedLocalChecks.ObservedAt.Equal(localChecksObservedAt) {
+		t.Fatalf("persisted runner local checks = %+v", storedLocalChecks)
+	}
+	if storedWorkspaceCapabilities != workspaceCapabilities || storedWorkspaceIsolation != "sandbox" {
+		t.Fatalf("persisted runner workspace report = %+v / %q", storedWorkspaceCapabilities, storedWorkspaceIsolation)
+	}
+	hostHistory, err := service.readRunnerHostHistory(t.Context(), organization.ID, "runner_example", hostSummary.Hour, hostSummary.Hour.Add(time.Hour))
+	if err != nil || len(hostHistory) != 1 || hostHistory[0].SampleCount != hostSummary.SampleCount+secondHostSummary.SampleCount || hostHistory[0].CPUBusyAveragePercent == nil || *hostHistory[0].CPUBusyAveragePercent != hostSummary.CPUBusySumPercent/float64(hostSummary.CPUSampleCount) {
+		t.Fatalf("typed runner host history = %+v, error=%v", hostHistory, err)
+	}
+	recommendationSegment := hostSummary
+	recommendationSegment.Hour = hostSummary.Hour.Add(-time.Hour)
+	recommendationSegment.SegmentID = recommendationSegment.Hour.Add(time.Minute)
+	if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+		_, err := w.AppendRunnerHostMetricSegments(t.Context(), "runner_example", []hostmetrics.Summary{recommendationSegment}, clock.value)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	recommendationRunner := runnerauth.Runner{Binding: runnerauth.Binding{RunnerID: "runner_example", MachineID: "machine_example"}, OrganizationID: organization.ID, Routing: runnerauth.Routing{MachineUse: "dedicated", Availability: runnerauth.Availability{Timezone: "UTC"}}}
+	recommendation, err := service.readRunnerRecommendation(t.Context(), service.database.reader, recommendationRunner, clock.value)
+	if err != nil {
+		t.Fatalf("read typed host metrics for recommendation: %v", err)
+	}
+	recommendationHours, err := recommendationHoursFromSegments([]hostmetrics.Summary{recommendationSegment})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedRecommendation, err := recommendRunner(recommendationRunner.Routing, recommendationHours, nil)
+	if err != nil || len(recommendation.Periods) != len(expectedRecommendation.Periods) || len(recommendation.Periods) == 0 || recommendation.Periods[0].HoursCovered != expectedRecommendation.Periods[0].HoursCovered || recommendation.Periods[0].MemoryReserveBytes != expectedRecommendation.Periods[0].MemoryReserveBytes || recommendation.Periods[0].DiskReserveBytes != expectedRecommendation.Periods[0].DiskReserveBytes {
+		t.Fatalf("typed runner recommendation = %+v, want host projection %+v, error=%v", recommendation, expectedRecommendation, err)
 	}
 	persistedSummary := hostSegments[0]
 	persistedSummary.Hour, persistedSummary.SegmentID = time.Time{}, time.Time{}
@@ -506,6 +576,21 @@ func TestTenantRunnerHeartbeatPersistsIdentityAndReturnsCurrentRouting(t *testin
 	}
 	if storedAdmission.RunnerRevision != admission.RunnerRevision || !storedAdmission.ReceivedAt.Equal(clock.value) || storedAdmission.Context.PolicyID != admission.Context.PolicyID || !slices.Equal(storedAdmission.Context.WorkflowStates, admission.Context.WorkflowStates) {
 		t.Fatalf("persisted runner admission = %+v", storedAdmission)
+	}
+	clock.value = clock.value.Add(time.Second)
+	unsupportedProtocol := performHubAPIRequest(t, service, http.MethodPost, path, secret, map[string]any{"display_name": "Example host", "capacity": 3, "version": "0.174.1", "os": "darwin", "architecture": "arm64", "protocol_major": 3})
+	requireNativeStatus(t, unsupportedProtocol, http.StatusOK)
+	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
+		problems, err := r.RunnerProblems(t.Context(), "runner_example")
+		if err != nil {
+			return err
+		}
+		if len(problems) != 1 || problems[0].Code != "version_unsupported" {
+			t.Fatalf("unsupported protocol problem = %+v", problems)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 	for _, runner := range []struct {
 		runnerID  string
@@ -671,8 +756,8 @@ func TestTenantRunnerHeartbeatPersistsIdentityAndReturnsCurrentRouting(t *testin
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if mutations != 13 || heartbeats != 4 {
-		t.Fatalf("runner protocol usage api_mutations=%d heartbeats=%d want=13/4", mutations, heartbeats)
+	if mutations != 14 || heartbeats != 5 {
+		t.Fatalf("runner protocol usage api_mutations=%d heartbeats=%d want=14/5", mutations, heartbeats)
 	}
 }
 

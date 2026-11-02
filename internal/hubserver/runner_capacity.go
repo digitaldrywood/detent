@@ -51,7 +51,7 @@ func (s *Service) readRunnerCapacity(ctx context.Context, scope nativeScope, res
 	if err != nil {
 		return nil, err
 	}
-	recommendation, err := readRunnerRecommendation(ctx, tx, r, now)
+	recommendation, err := s.readRunnerRecommendation(ctx, tx, r, now)
 	if err != nil {
 		return nil, err
 	}

@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
 var (
@@ -247,6 +248,9 @@ type Reader interface {
 	RunnerHostMetrics(context.Context, string, time.Time, time.Time) ([]hostmetrics.Summary, error)
 	RunnerAdmissionObservation(context.Context, string, tracker.ProjectID) (tracker.NativeAdmissionObservation, error)
 	RunnerProviderReports(context.Context, string) ([]providercapacity.Report, error)
+	RunnerProblems(context.Context, string) ([]runnerauth.Problem, error)
+	RunnerLocalChecks(context.Context, string, tracker.ProjectID) (runnerauth.LocalChecks, error)
+	RunnerWorkspaceReport(context.Context, string) (workspacesession.Capabilities, string, error)
 }
 
 type Writer interface {
@@ -272,4 +276,7 @@ type Writer interface {
 	ReplaceRunnerProviderReports(context.Context, string, []providercapacity.Report) error
 	LockRunnerProviderAccount(context.Context, ProviderAccountKey, time.Time) (ProviderAccountCapacity, error)
 	UpdateRunnerCapacityConfig(context.Context, string, runnerauth.CapacityConfig) error
+	ReplaceRunnerProblems(context.Context, string, []runnerauth.Problem) error
+	ReplaceRunnerLocalChecks(context.Context, string, tracker.ProjectID, runnerauth.LocalChecks) error
+	ReplaceRunnerWorkspaceReport(context.Context, string, workspacesession.Capabilities, string) error
 }

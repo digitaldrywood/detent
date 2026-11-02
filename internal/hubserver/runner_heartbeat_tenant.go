@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
 func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMachineHeartbeatRequest) error {
@@ -23,7 +24,7 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 	if !ok || credential.Runner.RunnerID == "" || credential.ID == "" || credential.Runner.OrganizationID != tracker.OrganizationID(c.Param("organization")) || credential.Runner.MachineID != tracker.MachineID(c.Param("machine")) {
 		return s.nativeAPIError(c, nativeNotFound())
 	}
-	if len(request.DisplayName) == 0 || len(request.DisplayName) > 200 || request.Capacity < 0 || request.Capacity > 10000 || strings.TrimSpace(request.Version) == "" || len(request.Version) > 100 || !validRunnerPlatform(request.OS, request.Architecture) || request.ProtocolMajor != 0 && request.ProtocolMajor != 2 {
+	if len(request.DisplayName) == 0 || len(request.DisplayName) > 200 || request.Capacity < 0 || request.Capacity > 10000 || strings.TrimSpace(request.Version) == "" || len(request.Version) > 100 || !validRunnerPlatform(request.OS, request.Architecture) {
 		return s.nativeAPIError(c, nativePublicInvalid("Display name, version and nonnegative capacity are required"))
 	}
 	projectID := tracker.ProjectID(c.Param("project"))
@@ -39,6 +40,9 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 	if request.SpriteName != "" && !validSpritesSlug(request.SpriteName) {
 		return s.nativeAPIError(c, nativePublicInvalid("Sprite name is invalid"))
 	}
+	if !workspacesession.ValidIsolation(request.WorkspaceIsolation) {
+		return s.nativeAPIError(c, nativePublicInvalid("Workspace isolation must be sandbox, container or user"))
+	}
 	if request.CapacityConfig != nil {
 		if err := request.CapacityConfig.Validate(); err != nil {
 			return s.nativeAPIError(c, nativeInvalid(err.Error()))
@@ -46,6 +50,17 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 	}
 	if request.Admission != nil && (request.Admission.RunnerRevision < 1 || !request.Admission.ReceivedAt.IsZero() || request.Admission.Context.Validate() != nil) {
 		return s.nativeAPIError(c, nativePublicInvalid("Admission observation is invalid"))
+	}
+	if err := runnerauth.ValidateReportedProblems(request.Problems); err != nil {
+		return s.nativeAPIError(c, nativeInvalid(err.Error()))
+	}
+	if request.LocalChecks != nil {
+		if projectID == "" {
+			return s.nativeAPIError(c, nativeNotFound())
+		}
+		if err := request.LocalChecks.Validate(); err != nil {
+			return s.nativeAPIError(c, nativeInvalid(err.Error()))
+		}
 	}
 	hostSummaries := prepareRunnerHostMetrics(request.HostMetrics)
 
@@ -99,6 +114,11 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 		if err := w.ReplaceRunnerBackendIsolation(ctx, identity.RunnerID, request.BackendIsolation); err != nil {
 			return err
 		}
+		if request.WorkspaceCapabilities != nil {
+			if err := w.ReplaceRunnerWorkspaceReport(ctx, identity.RunnerID, *request.WorkspaceCapabilities, request.WorkspaceIsolation); err != nil {
+				return err
+			}
+		}
 		acknowledgments, err = w.AppendRunnerHostMetricSegments(ctx, identity.RunnerID, hostSummaries, receivedAt)
 		if err != nil {
 			return err
@@ -150,6 +170,27 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 				return err
 			}
 		}
+		if request.LocalChecks != nil {
+			allowed, err := w.RunnerProjectAuthorized(ctx, identity.RunnerID, projectID, receivedAt)
+			if err != nil {
+				return err
+			}
+			if !allowed {
+				return nativeNotFound()
+			}
+			checks := *request.LocalChecks
+			checks.ObservedAt = receivedAt
+			if err := w.ReplaceRunnerLocalChecks(ctx, identity.RunnerID, projectID, checks); err != nil {
+				return err
+			}
+		}
+		problems, err := w.RunnerProblems(ctx, identity.RunnerID)
+		if err != nil {
+			return err
+		}
+		if err := w.ReplaceRunnerProblems(ctx, identity.RunnerID, mergeRunnerProblems(problems, request.Problems, request.ProtocolMajor, request.SettingsRejected, receivedAt)); err != nil {
+			return err
+		}
 		projects, err := w.RunnerProjects(ctx, identity.RunnerID, runnerstore.MaxRunnerProjectList)
 		if err != nil {
 			return err
@@ -190,7 +231,7 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 }
 
 func validateTenantHeartbeatProjection(request nativeMachineHeartbeatRequest) error {
-	if request.ChangeCursor != nil || request.Update != nil || request.LocalChecks != nil || len(request.Problems) != 0 || request.ProtocolMajor > 0 && request.ProtocolMajor != 2 || request.SettingsRejected || request.WorkspaceCapabilities != nil || request.WorkspaceIsolation != "" || request.Skills != nil || request.CheckoutRepository != nil {
+	if request.ChangeCursor != nil || request.Update != nil || request.Skills != nil || request.CheckoutRepository != nil {
 		return nativeRunEventStorageUnavailable()
 	}
 	if request.ProjectConfiguration == nil {

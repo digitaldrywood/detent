@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hostmetrics"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -215,6 +217,17 @@ func (s *Service) readRunnerHostHistory(ctx context.Context, organization tracke
 	}
 	from = from.UTC()
 	from = maxHostHistoryTime(from, now.Add(-719*time.Hour))
+	if s.config.TenantRepository != nil {
+		var segments []hostmetrics.Summary
+		if err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
+			var err error
+			segments, err = r.RunnerHostMetrics(ctx, runner, from, to.UTC())
+			return err
+		}); err != nil {
+			return nil, err
+		}
+		return aggregateRunnerHostHours(segments)
+	}
 	rows, err := s.database.reader.QueryContext(ctx, `SELECT summary_json FROM runner_host_hours WHERE organization_id=? AND runner_id=? AND hour>=? AND hour<? ORDER BY hour LIMIT 720`, organization, runner, formatHubTime(from), formatHubTime(to.UTC()))
 	if err != nil {
 		return nil, err
@@ -237,6 +250,30 @@ func (s *Service) readRunnerHostHistory(ctx context.Context, organization tracke
 		history = append(history, hour)
 	}
 	return history, rows.Err()
+}
+
+func aggregateRunnerHostHours(segments []hostmetrics.Summary) ([]runnerHostHour, error) {
+	history := make([]runnerHostHour, 0, len(segments))
+	for _, segment := range segments {
+		if len(history) == 0 || !history[len(history)-1].Hour.Equal(segment.Hour) {
+			history = append(history, runnerHostHour{Summary: segment})
+			continue
+		}
+		previous := history[len(history)-1].Summary
+		merged, ok := mergeHostSummary(previous, segment)
+		if !ok {
+			return nil, errors.New("host hour sum overflow")
+		}
+		history[len(history)-1].Summary = merged
+	}
+	for i := range history {
+		row := &history[i]
+		row.MemoryAvailableAverageBytes = hostMetricAverage(float64(row.MemoryAvailableSumBytes), row.MemorySampleCount)
+		row.PSISomeAvg10Average = hostMetricAverage(row.PSISomeAvg10Sum, row.PSISomeSampleCount)
+		row.PSIFullAvg10Average = hostMetricAverage(row.PSIFullAvg10Sum, row.PSIFullSampleCount)
+		row.CPUBusyAveragePercent = hostMetricAverage(row.CPUBusySumPercent, row.CPUSampleCount)
+	}
+	return history, nil
 }
 
 func maxHostHistoryTime(a, b time.Time) time.Time {

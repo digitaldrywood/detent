@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"math"
 	"slices"
@@ -10,6 +11,8 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/activehours"
 	"github.com/digitaldrywood/detent/internal/hostmetrics"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -346,10 +349,32 @@ func recommendPeriod(period string, hours []recommendationHour, peaks, cores []f
 	return out
 }
 
-func readRunnerRecommendation(ctx context.Context, q nativeQueryer, r runnerauth.Runner, now time.Time) (runnerRecommendation, error) {
+func (s *Service) readRunnerRecommendation(ctx context.Context, q nativeQueryer, r runnerauth.Runner, now time.Time) (runnerRecommendation, error) {
 	to := now.UTC().Truncate(time.Hour)
 	from := to.Add(-719 * time.Hour)
-	hours, err := readRecommendationHours(ctx, q, r, from, to)
+	var hostHours []recommendationHour
+	if s.config.TenantRepository != nil {
+		var segments []hostmetrics.Summary
+		if err := s.config.TenantRepository.ReadTenant(ctx, r.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
+			var err error
+			segments, err = reader.RunnerHostMetrics(ctx, r.RunnerID, from, to)
+			return err
+		}); err != nil {
+			return runnerRecommendation{}, err
+		}
+		var err error
+		hostHours, err = recommendationHoursFromSegments(segments)
+		if err != nil {
+			return runnerRecommendation{}, err
+		}
+	}
+	var hours []recommendationHour
+	var err error
+	if hostHours == nil {
+		hours, err = readRecommendationHours(ctx, q, r, from, to)
+	} else {
+		hours, err = readRecommendationUsageHours(ctx, q, r, from, to, hostHours)
+	}
 	if err != nil {
 		return runnerRecommendation{}, err
 	}
@@ -431,6 +456,10 @@ func readRecommendationHours(ctx context.Context, q nativeQueryer, r runnerauth.
 	if err != nil {
 		return nil, err
 	}
+	return readRecommendationUsageHours(ctx, q, r, from, to, hours)
+}
+
+func readRecommendationUsageHours(ctx context.Context, q nativeQueryer, r runnerauth.Runner, from, to time.Time, hours []recommendationHour) ([]recommendationHour, error) {
 	rows, err := q.QueryContext(ctx, `SELECT l.acquired_at,coalesce(l.released_at,l.expires_at),l.expires_at FROM leases l INDEXED BY runner_capacity_lease_window JOIN issues i ON i.id=l.issue_id JOIN lease_runners lr ON lr.lease_id=l.lease_id WHERE i.organization_id=? AND l.machine_id=? AND lr.runner_id=? AND julianday(l.acquired_at)<julianday(?) AND min(julianday(coalesce(l.released_at,l.expires_at)),julianday(l.expires_at))>julianday(?)`, r.OrganizationID, r.MachineID, r.RunnerID, formatHubTime(to), formatHubTime(from))
 	if err != nil {
 		return nil, err
@@ -465,4 +494,24 @@ func readRecommendationHours(ctx context.Context, q nativeQueryer, r runnerauth.
 		}
 	}
 	return hours, rows.Err()
+}
+
+func recommendationHoursFromSegments(segments []hostmetrics.Summary) ([]recommendationHour, error) {
+	hours := make([]recommendationHour, 0, len(segments))
+	for _, segment := range segments {
+		if len(hours) == 0 || !hours[len(hours)-1].Hour.Equal(segment.Hour) {
+			hours = append(hours, recommendationHour{Summary: segment})
+			continue
+		}
+		previous := hours[len(hours)-1].Summary
+		merged, ok := mergeHostSummary(previous, segment)
+		if !ok {
+			return nil, errors.New("aggregate runner recommendation host metrics: host hour sum overflow")
+		}
+		hours[len(hours)-1].Summary = merged
+	}
+	for i := 1; i < len(hours); i++ {
+		hours[i].OverCapacity = swapGrowing(hours[i], hours[i-1])
+	}
+	return hours, nil
 }
