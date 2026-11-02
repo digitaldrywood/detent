@@ -118,6 +118,9 @@ type Config struct {
 }
 
 func (c Config) normalized() Config {
+	if c.RunDetails == nil && c.Hosted != nil && c.Hosted.SharedEntry != nil {
+		c.RunDetails = c.Hosted.SharedEntry.RunDetails
+	}
 	if c.runnerReleaseSignatureVerifier == nil {
 		c.runnerReleaseSignatureVerifier = update.VerifyChecksumSignature
 	}

@@ -4,25 +4,75 @@ import (
 	"context"
 	"errors"
 	"math"
+	"reflect"
 	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/mutation"
 )
 
 func (d *database) recordConversationUsagePostgres(ctx context.Context, usage ConversationUsage) error {
+	prepared, err := d.prepareConversationUsagePostgres(ctx, usage)
+	if err != nil {
+		return err
+	}
 	return d.billingRepository.WriteTenant(ctx, usage.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-		return d.writeConversationUsagePostgres(ctx, w, usage)
+		return d.writeConversationUsagePostgres(ctx, w, prepared)
 	})
 }
 
-func (d *database) writeConversationUsagePostgres(ctx context.Context, w tenantstore.Writer, usage ConversationUsage) error {
-	at := usage.OccurredAt
-	previous, err := w.ConversationUsage(ctx, usage.TurnID)
-	if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+func (d *database) writeConversationUsagePostgres(ctx context.Context, w tenantstore.Writer, prepared preparedConversationUsage) error {
+	usage := prepared.usage
+	record, err := d.conversationUsageRecord(ctx, w, usage)
+	if err != nil {
 		return err
+	}
+	if !reflect.DeepEqual(record, prepared.record) {
+		return mutation.ErrConflict
+	}
+	created, err := w.RecordConversationUsage(ctx, record)
+	if err != nil {
+		return err
+	}
+	if _, err := w.RecordBillingCost(ctx, prepared.cost); err != nil {
+		return err
+	}
+	if !created {
+		return nil
+	}
+	if d.aiCreditMode == "" || usage.Provider != "openai" || record.CostUSD == nil {
+		return nil
+	}
+	amount := math.Ceil(*record.CostUSD * 1e6 * d.aiCreditCostMultiplier)
+	if math.IsNaN(amount) || math.IsInf(amount, 0) || amount < 0 || amount >= float64(math.MaxInt64) {
+		return billingstore.ErrInvalidAmount
+	}
+	if amount == 0 {
+		return nil
+	}
+	at := record.OccurredAt
+	included, err := d.includedAICreditsFromReader(ctx, w, at)
+	if err != nil {
+		return err
+	}
+	if included.PeriodStart.IsZero() {
+		included.PeriodStart = time.Date(at.Year(), at.Month(), 1, 0, 0, 0, 0, time.UTC)
+		included.PeriodEnd = included.PeriodStart.AddDate(0, 1, 0)
+	}
+	period := billingstore.CreditPeriod{OrganizationID: usage.OrganizationID, Mode: d.aiCreditMode, StartsAt: included.PeriodStart, EndsAt: included.PeriodEnd, AllowanceMicros: included.AllowanceMicros, UsedMicros: included.UsedMicros}
+	row := billingstore.CreditTransaction{OrganizationID: usage.OrganizationID, Mode: d.aiCreditMode, Source: "usage:" + usage.TurnID, AmountMicros: -int64(amount), Kind: "usage", RecordedAt: at}
+	_, err = w.PostBillingUsageCredit(ctx, period, row, int64(amount))
+	return err
+}
+
+func (d *database) conversationUsageRecord(ctx context.Context, r billingstore.Reader, usage ConversationUsage) (billingstore.ConversationUsage, error) {
+	at := usage.OccurredAt
+	previous, err := r.ConversationUsage(ctx, usage.TurnID)
+	if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+		return billingstore.ConversationUsage{}, err
 	}
 	if at.IsZero() {
 		if err == nil {
@@ -40,9 +90,9 @@ func (d *database) writeConversationUsagePostgres(ctx context.Context, w tenants
 	if err == nil {
 		record.PriceID, record.CostUSD, record.CacheSavingsUSD = previous.PriceID, previous.CostUSD, previous.CacheSavingsUSD
 	} else {
-		price, err := w.ConversationPrice(ctx, usage.Provider, model, at)
+		price, err := r.ConversationPrice(ctx, usage.Provider, model, at)
 		if err != nil && !errors.Is(err, corestore.ErrNotFound) {
-			return err
+			return billingstore.ConversationUsage{}, err
 		}
 		if err == nil {
 			cost := chatUsageCost(UsagePrice{Input: price.Input, CachedInput: price.CachedInput, Output: price.Output}, usage.Tokens)
@@ -50,30 +100,5 @@ func (d *database) writeConversationUsagePostgres(ctx context.Context, w tenants
 			record.PriceID, record.CostUSD, record.CacheSavingsUSD = &price.ID, &cost, &saving
 		}
 	}
-	created, err := w.RecordConversationUsage(ctx, record)
-	if err != nil || !created {
-		return err
-	}
-	if d.aiCreditMode == "" || usage.Provider != "openai" || record.CostUSD == nil {
-		return nil
-	}
-	amount := math.Ceil(*record.CostUSD * 1e6 * d.aiCreditCostMultiplier)
-	if math.IsNaN(amount) || math.IsInf(amount, 0) || amount < 0 || amount >= float64(math.MaxInt64) {
-		return billingstore.ErrInvalidAmount
-	}
-	if amount == 0 {
-		return nil
-	}
-	included, err := d.includedAICreditsFromReader(ctx, w, at)
-	if err != nil {
-		return err
-	}
-	if included.PeriodStart.IsZero() {
-		included.PeriodStart = time.Date(at.Year(), at.Month(), 1, 0, 0, 0, 0, time.UTC)
-		included.PeriodEnd = included.PeriodStart.AddDate(0, 1, 0)
-	}
-	period := billingstore.CreditPeriod{OrganizationID: usage.OrganizationID, Mode: d.aiCreditMode, StartsAt: included.PeriodStart, EndsAt: included.PeriodEnd, AllowanceMicros: included.AllowanceMicros, UsedMicros: included.UsedMicros}
-	row := billingstore.CreditTransaction{OrganizationID: usage.OrganizationID, Mode: d.aiCreditMode, Source: "usage:" + usage.TurnID, AmountMicros: -int64(amount), Kind: "usage", RecordedAt: at}
-	_, err = w.PostBillingUsageCredit(ctx, period, row, int64(amount))
-	return err
+	return record, nil
 }
