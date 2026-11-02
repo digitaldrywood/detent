@@ -22,6 +22,7 @@ func newHubPostgresImportCommand(lookupEnv func(string) string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:          "import-core-postgres",
 		Short:        "Import tenant core records from a sealed production copy",
+		Example:      "detent hub import-core-postgres --entry-config /etc/detent/cloud.yaml --database-copy /secure-copy/hub.db --organization org_example --repository-root /opt/detent/source",
 		Args:         NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {

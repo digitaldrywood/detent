@@ -16,6 +16,7 @@ func newHubPostgresMigrationCommand(lookupEnv func(string) string, migrate func(
 	cmd := &cobra.Command{
 		Use:          "migrate-postgres",
 		Short:        "Apply PostgreSQL schema migrations with a separate migration login",
+		Example:      "detent hub migrate-postgres --host postgres.example.com --port 5432 --database detent --user detent_migration_login --password-env DETENT_MIGRATION_PASSWORD --sslmode verify-full",
 		Args:         NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
