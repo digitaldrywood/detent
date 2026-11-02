@@ -69,7 +69,8 @@
     "internal/hubserver/postgres/migrations/20261102010654_runner_workspace_reports.sql",
     "internal/hubserver/postgres/migrations/20261102012847_runner_client_reports.sql",
     "internal/hubserver/postgres/migrations/20261102014015_attempt_started_at_submicro.sql",
-    "internal/hubserver/postgres/migrations/20261102014157_project_event_cursors.sql"
+    "internal/hubserver/postgres/migrations/20261102014157_project_event_cursors.sql",
+    "internal/hubserver/postgres/migrations/20261102015243_conversation_usage_records.sql"
   ],
   "tables": {
     "public.ai_credit_reason_references": {
@@ -157,6 +158,7 @@
         "received_at": "text",
         "retention": "text",
         "revision": "bigint",
+        "sha256": "text",
         "source_key": "text"
       },
       "contract": "Retain immutable compressed evidence references for every accepted cost revision, scoped to tenant and source.",
@@ -557,6 +559,7 @@
       "columns": {
         "document_id": "text",
         "impact": "double precision",
+        "literal_positions": "bigint[]",
         "organization_id": "text",
         "scope": "text",
         "term": "text",

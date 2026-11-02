@@ -279,6 +279,10 @@ func EvaluateMonthlyBudget(input MonthlyBudgetInput) (budget.MonthlyDecision, er
 }
 
 type Reader interface {
+	ConversationUsageBuckets(context.Context, time.Time, time.Time, []string, bool) ([]ConversationUsageBucket, error)
+	ConversationUsageSummary(context.Context, time.Time, time.Time, []string) (ConversationUsageSummary, error)
+	ConversationPrice(context.Context, string, string, time.Time) (ConversationPrice, error)
+	ConversationUsage(context.Context, string) (ConversationUsage, error)
 	BillingCostRevision(context.Context, CostSource) (CostRevision, error)
 	BillingMonthlySpend(context.Context, tracker.ProjectID, time.Time) (budget.MonthlySpend, error)
 	BillingPlan(context.Context, PlanReference) (Plan, error)
@@ -316,6 +320,8 @@ type Reader interface {
 }
 
 type Writer interface {
+	CreateConversationPrice(context.Context, ConversationPrice) error
+	RecordConversationUsage(context.Context, ConversationUsage) (bool, error)
 	Reader
 	RecordBillingCost(context.Context, CostObservation) (bool, error)
 	RecordBillingCosts(context.Context, []CostObservation) ([]bool, error)

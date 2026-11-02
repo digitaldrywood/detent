@@ -1030,13 +1030,13 @@
       "family": "conversation",
       "organization": "binding",
       "columns": {
-        "cached_input": {"source":"[5,\"cached_input\",\"REAL\",1,null,0,0]","disposition":"pending","codec":"float64","null":"reject","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "effective_at": {"source":"[3,\"effective_at\",\"INTEGER\",1,null,0,0]","disposition":"pending","codec":"int64","null":"reject","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "id": {"source":"[0,\"id\",\"INTEGER\",0,null,1,0]","disposition":"pending","codec":"int64","null":"preserve","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "input": {"source":"[4,\"input\",\"REAL\",1,null,0,0]","disposition":"pending","codec":"float64","null":"reject","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "model": {"source":"[2,\"model\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "output": {"source":"[6,\"output\",\"REAL\",1,null,0,0]","disposition":"pending","codec":"float64","null":"reject","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "provider": {"source":"[1,\"provider\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."}
+        "cached_input": {"source":"[5,\"cached_input\",\"REAL\",1,null,0,0]","disposition":"column","codec":"float64","null":"reject","empty":"reject","targets":[{"table":"public.conversation_prices","column":"cached_input","type":"double precision"}]},
+        "effective_at": {"source":"[3,\"effective_at\",\"INTEGER\",1,null,0,0]","disposition":"column","codec":"int64","null":"reject","empty":"reject","targets":[{"table":"public.conversation_prices","column":"effective_at","type":"bigint"}]},
+        "id": {"source":"[0,\"id\",\"INTEGER\",0,null,1,0]","disposition":"column","codec":"int64","null":"preserve","empty":"reject","targets":[{"table":"public.conversation_prices","column":"id","type":"bigint"}]},
+        "input": {"source":"[4,\"input\",\"REAL\",1,null,0,0]","disposition":"column","codec":"float64","null":"reject","empty":"reject","targets":[{"table":"public.conversation_prices","column":"input","type":"double precision"}]},
+        "model": {"source":"[2,\"model\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.conversation_prices","column":"model","type":"text"}]},
+        "output": {"source":"[6,\"output\",\"REAL\",1,null,0,0]","disposition":"column","codec":"float64","null":"reject","empty":"reject","targets":[{"table":"public.conversation_prices","column":"output","type":"double precision"}]},
+        "provider": {"source":"[1,\"provider\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.conversation_prices","column":"provider","type":"text"}]}
       }
     },
     "hub/conversation_questions": {
@@ -1109,21 +1109,21 @@
       "family": "conversation",
       "organization": "row",
       "columns": {
-        "cache_savings_usd": {"source":"[14,\"cache_savings_usd\",\"REAL\",0,null,0,0]","disposition":"pending","codec":"float64","null":"preserve","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "cached_input": {"source":"[8,\"cached_input\",\"INTEGER\",1,null,0,0]","disposition":"pending","codec":"int64","null":"reject","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "conversation_id": {"source":"[2,\"conversation_id\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "cost_usd": {"source":"[13,\"cost_usd\",\"REAL\",0,null,0,0]","disposition":"pending","codec":"float64","null":"preserve","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "input": {"source":"[7,\"input\",\"INTEGER\",1,null,0,0]","disposition":"pending","codec":"int64","null":"reject","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "model": {"source":"[5,\"model\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "occurred_at": {"source":"[6,\"occurred_at\",\"INTEGER\",1,null,0,0]","disposition":"pending","codec":"int64","null":"reject","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "organization_id": {"source":"[0,\"organization_id\",\"TEXT\",1,null,1,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "outcome": {"source":"[11,\"outcome\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "output": {"source":"[9,\"output\",\"INTEGER\",1,null,0,0]","disposition":"pending","codec":"int64","null":"reject","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "price_id": {"source":"[12,\"price_id\",\"INTEGER\",0,null,0,0]","disposition":"pending","codec":"int64","null":"preserve","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "project_id": {"source":"[1,\"project_id\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "provider": {"source":"[4,\"provider\",\"TEXT\",1,null,0,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "reasoning_output": {"source":"[10,\"reasoning_output\",\"INTEGER\",1,null,0,0]","disposition":"pending","codec":"int64","null":"reject","empty":"reject","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "turn_id": {"source":"[3,\"turn_id\",\"TEXT\",1,null,2,0]","disposition":"pending","codec":"text","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."}
+        "cache_savings_usd": {"source":"[14,\"cache_savings_usd\",\"REAL\",0,null,0,0]","disposition":"column","codec":"float64","null":"preserve","empty":"reject","targets":[{"table":"public.conversation_usage","column":"cache_savings_usd","type":"double precision"}]},
+        "cached_input": {"source":"[8,\"cached_input\",\"INTEGER\",1,null,0,0]","disposition":"column","codec":"int64","null":"reject","empty":"reject","targets":[{"table":"public.conversation_usage","column":"cached_input","type":"bigint"}]},
+        "conversation_id": {"source":"[2,\"conversation_id\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.conversation_usage","column":"conversation_id","type":"text"}]},
+        "cost_usd": {"source":"[13,\"cost_usd\",\"REAL\",0,null,0,0]","disposition":"column","codec":"float64","null":"preserve","empty":"reject","targets":[{"table":"public.conversation_usage","column":"cost_usd","type":"double precision"}]},
+        "input": {"source":"[7,\"input\",\"INTEGER\",1,null,0,0]","disposition":"column","codec":"int64","null":"reject","empty":"reject","targets":[{"table":"public.conversation_usage","column":"input","type":"bigint"}]},
+        "model": {"source":"[5,\"model\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.conversation_usage","column":"model","type":"text"}]},
+        "occurred_at": {"source":"[6,\"occurred_at\",\"INTEGER\",1,null,0,0]","disposition":"column","codec":"int64","null":"reject","empty":"reject","targets":[{"table":"public.conversation_usage","column":"occurred_at","type":"bigint"}]},
+        "organization_id": {"source":"[0,\"organization_id\",\"TEXT\",1,null,1,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.conversation_usage","column":"organization_id","type":"text"}]},
+        "outcome": {"source":"[11,\"outcome\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.conversation_usage","column":"outcome","type":"text"}]},
+        "output": {"source":"[9,\"output\",\"INTEGER\",1,null,0,0]","disposition":"column","codec":"int64","null":"reject","empty":"reject","targets":[{"table":"public.conversation_usage","column":"output","type":"bigint"}]},
+        "price_id": {"source":"[12,\"price_id\",\"INTEGER\",0,null,0,0]","disposition":"column","codec":"int64","null":"preserve","empty":"reject","targets":[{"table":"public.conversation_usage","column":"price_id","type":"bigint"}]},
+        "project_id": {"source":"[1,\"project_id\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.conversation_usage","column":"project_id","type":"text"}]},
+        "provider": {"source":"[4,\"provider\",\"TEXT\",1,null,0,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.conversation_usage","column":"provider","type":"text"}]},
+        "reasoning_output": {"source":"[10,\"reasoning_output\",\"INTEGER\",1,null,0,0]","disposition":"column","codec":"int64","null":"reject","empty":"reject","targets":[{"table":"public.conversation_usage","column":"reasoning_output","type":"bigint"}]},
+        "turn_id": {"source":"[3,\"turn_id\",\"TEXT\",1,null,2,0]","disposition":"column","codec":"text","null":"reject","empty":"preserve","targets":[{"table":"public.conversation_usage","column":"turn_id","type":"text"}]}
       }
     },
     "hub/conversations": {

@@ -446,6 +446,17 @@ type ConversationMessage struct {
 	OperatorActionResult *string
 }
 
+type ConversationPrice struct {
+	OrganizationID tracker.OrganizationID
+	ID             int64
+	Provider       string
+	Model          string
+	EffectiveAt    int64
+	Input          float64
+	CachedInput    float64
+	Output         float64
+}
+
 type ConversationQuestion struct {
 	OrganizationID      tracker.OrganizationID
 	ID                  string
@@ -492,6 +503,24 @@ type ConversationTurnBatch struct {
 	BatchKey       string
 	EventSeq       int64
 	CreatedAt      time.Time
+}
+
+type ConversationUsage struct {
+	OrganizationID  tracker.OrganizationID
+	ProjectID       tracker.ProjectID
+	ConversationID  string
+	TurnID          string
+	Provider        string
+	Model           string
+	OccurredAt      int64
+	Input           int64
+	CachedInput     int64
+	Output          int64
+	ReasoningOutput int64
+	Outcome         string
+	PriceID         sql.NullInt64
+	CostUsd         sql.NullFloat64
+	CacheSavingsUsd sql.NullFloat64
 }
 
 type CostImport struct {
