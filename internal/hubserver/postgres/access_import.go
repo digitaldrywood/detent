@@ -623,12 +623,9 @@ func (i *AccessImporter) importRow(ctx context.Context, s *session, table string
 		if columns["operator_key_scope"] == nil {
 			columns["operator_key_scope"] = ""
 		}
-		provider := string(row.raw["hosted_organization_id"].Data)
-		if provider != "" {
-			matches, err := i.providerMatches(ctx, s, provider)
-			if err != nil || !matches {
-				return errors.Join(ErrAccessImport, err)
-			}
+		hostedOrganization := row.raw["hosted_organization_id"]
+		if !hostedOrganization.Null && string(hostedOrganization.Data) != string(i.organization) {
+			return ErrAccessImport
 		}
 	case "hosted_sessions":
 		identity, err := decodeHostedImportIdentity(row.raw["identity_json"].Data)

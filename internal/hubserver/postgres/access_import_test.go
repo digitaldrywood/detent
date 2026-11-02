@@ -106,7 +106,7 @@ func accessImportSourceFor(t *testing.T, db *sql.DB, schema string, organization
 	rows := map[string]map[string]any{
 		"organizations":              {"id": string(organization), "name": "Example organization", "slug": "example", "local": "0", "created_at": stamp},
 		"hosted_tenant":              {"organization_id": string(organization), "singleton": "1", "provider_id": "provider_first", "bootstrap_subject": "bootstrap_first", "deployment": "example-deployment", "public_url": "https://example.test", "allocation_generation": "1"},
-		"api_tokens":                 {"id": "token_first", "name": "Example credential", "token_hash": "hash_first", "token_fingerprint": "fingerprint_first", "scope": "operator", "native_only": "0", "created_at": stamp, "updated_at": stamp, "hosted_user_id": "user_first", "hosted_membership_id": "membership_first", "operator_key_scope": "project", "operator_project_access": "selected", "key_kind": "personal"},
+		"api_tokens":                 {"id": "token_first", "name": "Example credential", "token_hash": "hash_first", "token_fingerprint": "fingerprint_first", "scope": "operator", "native_only": "0", "created_at": stamp, "updated_at": stamp, "hosted_user_id": "user_first", "hosted_organization_id": string(organization), "hosted_membership_id": "membership_first", "operator_key_scope": "project", "operator_project_access": "selected", "key_kind": "personal"},
 		"hosted_members":             {"user_id": "user_first", "email": "user@example.test", "membership_id": "membership_first", "role": "member", "active": "1", "principal_id": "token_first", "notify_issues": "1", "created_at": stamp, "updated_at": stamp},
 		"hosted_project_grants":      {"organization_id": string(organization), "user_id": "user_first", "project_id": "prj_first", "can_write": "1", "manage_runner": "0"},
 		"token_grants":               {"organization_id": string(organization), "token_id": "token_first", "project_id": "prj_first"},
@@ -325,6 +325,40 @@ func TestAccessImportMissingProjectReferenceDoesNotAdvanceCheckpoint(t *testing.
 	var grants int
 	if err := db.QueryRowContext(t.Context(), `SELECT count(*) FROM token_grants WHERE organization_id=$1`, organization).Scan(&grants); err != nil || grants != 0 {
 		t.Fatalf("missing project token grants=%d, err=%v", grants, err)
+	}
+}
+
+func TestAccessImportRejectsCredentialBoundToAnotherOrganization(t *testing.T) {
+	db := template.Database(t)
+	r, _ := repositoryFor(t, db, smallPool())
+	organization := tracker.OrganizationID("org_access_binding")
+	seedAccessTarget(t, db, r, organization)
+	source, _ := accessImportSourceFor(t, db, "raw_access_binding", organization, false)
+	if _, err := db.ExecContext(t.Context(), `UPDATE raw_access_binding.api_tokens SET hosted_organization_id='org_other'`); err != nil {
+		t.Fatal(err)
+	}
+	importer, err := r.NewAccessImporter(t.Context(), source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if _, err := importer.Step(t.Context(), postgres.AccessImportLimit); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := importer.Step(t.Context(), postgres.AccessImportLimit); !errors.Is(err, postgres.ErrAccessImport) {
+		t.Fatalf("cross-organization credential import error = %v", err)
+	}
+	var stage, processed int64
+	if err := db.QueryRowContext(t.Context(), `SELECT stage,processed FROM access_imports WHERE organization_id=$1`, organization).Scan(&stage, &processed); err != nil {
+		t.Fatal(err)
+	}
+	if stage != 2 || processed != 2 {
+		t.Fatalf("cross-organization credential advanced checkpoint: stage=%d processed=%d", stage, processed)
+	}
+	var credentials int
+	if err := db.QueryRowContext(t.Context(), `SELECT count(*) FROM api_tokens WHERE organization_id=$1`, organization).Scan(&credentials); err != nil || credentials != 0 {
+		t.Fatalf("cross-organization credentials imported=%d, err=%v", credentials, err)
 	}
 }
 
