@@ -7,8 +7,8 @@ WHERE p.organization_id=sqlc.arg(organization_id) AND p.project_id=sqlc.arg(proj
 SELECT * FROM policy_revisions WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_id) AND policy_id=sqlc.arg(policy_id);
 
 -- name: PolicyInsertProjectRevision :one
-INSERT INTO policy_revisions (organization_id,project_id,policy_id,approved_by,approved_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes)
-VALUES (sqlc.arg(organization_id),sqlc.arg(project_id),sqlc.arg(policy_id),sqlc.arg(approved_by),sqlc.arg(approved_at),sqlc.arg(payload_object_key),sqlc.arg(payload_sha256),sqlc.arg(payload_bytes),sqlc.arg(payload_content_bytes))
+INSERT INTO policy_revisions (organization_id,project_id,policy_id,gate_github_pull_request,approved_by,approved_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes)
+VALUES (sqlc.arg(organization_id),sqlc.arg(project_id),sqlc.arg(policy_id),sqlc.narg(gate_github_pull_request),sqlc.arg(approved_by),sqlc.arg(approved_at),sqlc.arg(payload_object_key),sqlc.arg(payload_sha256),sqlc.arg(payload_bytes),sqlc.arg(payload_content_bytes))
 ON CONFLICT (organization_id,project_id,policy_id) DO NOTHING RETURNING *;
 
 -- name: PolicySetProjectCurrent :execrows

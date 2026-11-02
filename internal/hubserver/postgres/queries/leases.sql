@@ -16,8 +16,14 @@ SELECT * FROM leases WHERE organization_id=$1 AND lease_id=$2 FOR UPDATE;
 SELECT clock_timestamp()::timestamptz AS now;
 
 -- name: InsertLease :one
-INSERT INTO leases (organization_id,lease_id,issue_id,machine_id,session_id,work_item_revision,acquired_at,renewed_at,expires_at)
-VALUES ($1,$2,$3,$4,$5,$6,sqlc.arg(now),sqlc.arg(now),sqlc.arg(expires_at)) RETURNING *;
+INSERT INTO leases (organization_id,lease_id,issue_id,machine_id,session_id,work_item_revision,landing_capacity,acquired_at,renewed_at,expires_at)
+VALUES ($1,$2,$3,$4,$5,$6,sqlc.arg(landing_capacity),sqlc.arg(now),sqlc.arg(now),sqlc.arg(expires_at)) RETURNING *;
+
+-- name: UpdateLeaseLandingCapacity :one
+UPDATE leases SET landing_capacity=GREATEST(landing_capacity,sqlc.arg(landing_capacity)::bigint)
+WHERE organization_id=sqlc.arg(organization_id) AND lease_id=sqlc.arg(lease_id)
+AND fencing_token=sqlc.arg(fencing_token)::bigint AND released_at IS NULL
+RETURNING *;
 
 -- name: RenewLease :one
 UPDATE leases SET renewed_at=sqlc.arg(now),expires_at=sqlc.arg(expires_at),

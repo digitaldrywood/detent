@@ -7,13 +7,14 @@ package pgquery
 
 import (
 	"context"
+	"database/sql"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 const policyGetProjectCurrent = `-- name: PolicyGetProjectCurrent :one
-SELECT r.organization_id, r.project_id, r.policy_id, r.approved_by, r.approved_at, r.payload_object_key, r.payload_sha256, r.payload_bytes, r.payload_content_bytes FROM project_policies p JOIN policy_revisions r
+SELECT r.organization_id, r.project_id, r.policy_id, r.approved_by, r.approved_at, r.payload_object_key, r.payload_sha256, r.payload_bytes, r.payload_content_bytes, r.gate_github_pull_request FROM project_policies p JOIN policy_revisions r
   ON r.organization_id=p.organization_id AND r.project_id=p.project_id AND r.policy_id=p.policy_id
 WHERE p.organization_id=$1 AND p.project_id=$2
 `
@@ -36,12 +37,13 @@ func (q *Queries) PolicyGetProjectCurrent(ctx context.Context, arg PolicyGetProj
 		&i.PayloadSHA256,
 		&i.PayloadBytes,
 		&i.PayloadContentBytes,
+		&i.GateGithubPullRequest,
 	)
 	return i, err
 }
 
 const policyGetProjectRevision = `-- name: PolicyGetProjectRevision :one
-SELECT organization_id, project_id, policy_id, approved_by, approved_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes FROM policy_revisions WHERE organization_id=$1 AND project_id=$2 AND policy_id=$3
+SELECT organization_id, project_id, policy_id, approved_by, approved_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, gate_github_pull_request FROM policy_revisions WHERE organization_id=$1 AND project_id=$2 AND policy_id=$3
 `
 
 type PolicyGetProjectRevisionParams struct {
@@ -63,6 +65,7 @@ func (q *Queries) PolicyGetProjectRevision(ctx context.Context, arg PolicyGetPro
 		&i.PayloadSHA256,
 		&i.PayloadBytes,
 		&i.PayloadContentBytes,
+		&i.GateGithubPullRequest,
 	)
 	return i, err
 }
@@ -127,21 +130,22 @@ func (q *Queries) PolicyGetReviewRevision(ctx context.Context, arg PolicyGetRevi
 }
 
 const policyInsertProjectRevision = `-- name: PolicyInsertProjectRevision :one
-INSERT INTO policy_revisions (organization_id,project_id,policy_id,approved_by,approved_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-ON CONFLICT (organization_id,project_id,policy_id) DO NOTHING RETURNING organization_id, project_id, policy_id, approved_by, approved_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes
+INSERT INTO policy_revisions (organization_id,project_id,policy_id,gate_github_pull_request,approved_by,approved_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+ON CONFLICT (organization_id,project_id,policy_id) DO NOTHING RETURNING organization_id, project_id, policy_id, approved_by, approved_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, gate_github_pull_request
 `
 
 type PolicyInsertProjectRevisionParams struct {
-	OrganizationID      tracker.OrganizationID
-	ProjectID           tracker.ProjectID
-	PolicyID            string
-	ApprovedBy          string
-	ApprovedAt          time.Time
-	PayloadObjectKey    string
-	PayloadSHA256       string
-	PayloadBytes        int64
-	PayloadContentBytes int64
+	OrganizationID        tracker.OrganizationID
+	ProjectID             tracker.ProjectID
+	PolicyID              string
+	GateGithubPullRequest sql.NullBool
+	ApprovedBy            string
+	ApprovedAt            time.Time
+	PayloadObjectKey      string
+	PayloadSHA256         string
+	PayloadBytes          int64
+	PayloadContentBytes   int64
 }
 
 func (q *Queries) PolicyInsertProjectRevision(ctx context.Context, arg PolicyInsertProjectRevisionParams) (PolicyRevision, error) {
@@ -149,6 +153,7 @@ func (q *Queries) PolicyInsertProjectRevision(ctx context.Context, arg PolicyIns
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.PolicyID,
+		arg.GateGithubPullRequest,
 		arg.ApprovedBy,
 		arg.ApprovedAt,
 		arg.PayloadObjectKey,
@@ -167,6 +172,7 @@ func (q *Queries) PolicyInsertProjectRevision(ctx context.Context, arg PolicyIns
 		&i.PayloadSHA256,
 		&i.PayloadBytes,
 		&i.PayloadContentBytes,
+		&i.GateGithubPullRequest,
 	)
 	return i, err
 }

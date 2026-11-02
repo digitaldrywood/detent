@@ -49,6 +49,11 @@
     "ownership": "organization-owned",
     "scope": "hosted_usage_receipts.organization_id; receipt_id is unique within the organization"
   },
+  "public/issue_claim_facts": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "issue_claim_facts.organization_id; project_id and work_item_id reference issues"
+  },
   "public/issue_labels": {
     "inline_payloads": [],
     "ownership": "organization-owned",
@@ -68,6 +73,26 @@
     "inline_payloads": [],
     "ownership": "organization-owned",
     "scope": "runner_backend_isolations.organization_id; runner backend capabilities are tenant-scoped"
+  },
+  "public/lease_policy_bindings": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "lease_policy_bindings.organization_id; project and policy bind the lease to its approved revision"
+  },
+  "public/provider_reservation_model_efforts": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "provider_reservation_model_efforts.organization_id; model effort is tenant-scoped"
+  },
+  "public/provider_reservation_models": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "provider_reservation_models.organization_id; model snapshots belong to a tenant lease"
+  },
+  "public/provider_reservation_usage_windows": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "provider_reservation_usage_windows.organization_id; usage snapshots belong to a tenant lease"
   },
   "public/runner_availability_window_slots": {
     "inline_payloads": [],

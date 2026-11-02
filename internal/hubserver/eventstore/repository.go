@@ -32,6 +32,10 @@ type Event struct {
 	PayloadBytes         int64
 	PayloadContentBytes  int64
 	PayloadFormatVersion int64
+	LandingWaiting       bool
+	LandingChangeID      string
+	LandingVersionID     string
+	LandingHeadSHA       string
 }
 
 type CollaborationVersion struct {

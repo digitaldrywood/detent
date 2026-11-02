@@ -15,6 +15,7 @@ sql:
           base_sha: "BaseSHA"
           merge_base_sha: "MergeBaseSHA"
           external_url: "ExternalURL"
+          landing_head_sha: "LandingHeadSHA"
         overrides:
           - db_type: "tsvector"
             go_type: "string"

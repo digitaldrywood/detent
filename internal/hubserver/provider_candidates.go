@@ -3,10 +3,15 @@ package hubserver
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"net/http"
 	"time"
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -20,6 +25,14 @@ func (s *Service) previewProviderCandidates(c echo.Context) error {
 	}
 	if request.LandingCapacity < 0 {
 		return s.nativeAPIError(c, nativePublicInvalid("Landing capacity must be non-negative"))
+	}
+	if s.config.TenantRepository != nil {
+		page, err := s.previewProviderCandidatesTenant(c.Request().Context(), nativeRequestScope(c), request, s.config.now().UTC())
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		c.Response().Header().Set("Cache-Control", "no-store")
+		return c.JSON(http.StatusOK, page)
 	}
 	return s.runnerReadTransaction(c, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
 		scope := nativeRequestScope(c)
@@ -85,4 +98,112 @@ func (s *Service) previewProviderCandidates(c echo.Context) error {
 		}
 		return page, nil
 	})
+}
+
+func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope nativeScope, request tracker.NativeCapacityPreview, now time.Time) (tracker.NativeCapacityPage, error) {
+	limit := request.Limit
+	if limit == 0 {
+		limit = 100
+	}
+	var candidates []claimstore.Candidate
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
+			return err
+		}
+		identity, err := r.RunnerIdentityByCredential(ctx, scope.credential.ID)
+		if err != nil {
+			return err
+		}
+		if !runnerIdentityCanClaim(identity, scope, request.MachineID, now) {
+			return tracker.ErrMachineNotFound
+		}
+		allowed, err := r.RunnerProjectAuthorized(ctx, identity.RunnerID, scope.project, now)
+		if err != nil {
+			return err
+		}
+		if !allowed {
+			return tracker.ErrMachineNotFound
+		}
+		project, err := r.ProjectRecord(ctx, scope.project)
+		if err != nil {
+			return err
+		}
+		if project.Core.Profile != "native" || project.Core.DeletedAt != nil {
+			return ErrNoClaimableWork
+		}
+		projectPolicy, err := r.ProjectPolicy(ctx, scope.project)
+		if err != nil {
+			return err
+		}
+		if projectPolicy.PolicyID != request.PolicyID {
+			return policyMismatch("Claim configuration changed; load the current project policy before previewing candidates")
+		}
+		query := nativeTenantCandidateQuery(scope, request.NativeClaim, "", now)
+		query.Limit = limit
+		if request.After > 0 {
+			anchor, err := r.WorkItemByID(ctx, scope.project, int64(request.After))
+			if err != nil {
+				return corestore.ErrInvalidCursor
+			}
+			query.AfterWorkItemID = anchor.NativeID
+		}
+		page, err := r.CandidatePage(ctx, query)
+		if err != nil {
+			return err
+		}
+		candidates = page.Items
+		return nil
+	})
+	if err != nil {
+		return tracker.NativeCapacityPage{}, err
+	}
+	page := tracker.NativeCapacityPage{Items: []tracker.NativeIssue{}}
+	for _, candidate := range candidates {
+		claim := request.NativeClaim
+		claim.WorkItemID = candidate.WorkItemID
+		plan, err := s.readNativeClaimPlan(ctx, scope, claim, now)
+		if errors.Is(err, ErrNoClaimableWork) {
+			continue
+		}
+		if err != nil {
+			return tracker.NativeCapacityPage{}, err
+		}
+		if !nativeClaimIssueContractAllowed(plan) || stringsEqualFold(plan.candidate.State, "Merging") && !plan.changeReady {
+			continue
+		}
+		if plan.landingPending && !plan.changeReady {
+			continue
+		}
+		if plan.landingRequired || request.LandingCapacity > 0 {
+			allowed, err := s.nativeClaimLandingCapacityAvailable(ctx, scope.organization, scope.project, request.LandingCapacity, now)
+			if err != nil {
+				return tracker.NativeCapacityPage{}, err
+			}
+			if !allowed {
+				continue
+			}
+		}
+		page.Items = append(page.Items, s.nativeIssueResponse(plan.issue))
+	}
+	if len(candidates) == limit {
+		page.Next = tracker.WorkItemID(candidates[len(candidates)-1].ID)
+	}
+	return page, nil
+}
+
+func (s *Service) nativeClaimLandingCapacityAvailable(ctx context.Context, organization tracker.OrganizationID, project tracker.ProjectID, requested int, now time.Time) (bool, error) {
+	allowed := false
+	err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
+		usage, err := r.LandingCapacityUsage(ctx, project, now)
+		if err != nil {
+			return err
+		}
+		capacity := int64(requested)
+		if usage.Limit > 0 && (capacity <= 0 || usage.Limit < capacity) {
+			capacity = usage.Limit
+		}
+		allowed = !usage.Unknown && (capacity <= 0 || usage.Active < capacity)
+		return nil
+	})
+	return allowed, err
 }

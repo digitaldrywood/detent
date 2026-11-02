@@ -283,6 +283,10 @@ type CollaborationEvent struct {
 	PayloadBytes         int64
 	PayloadContentBytes  int64
 	PayloadFormatVersion int64
+	LandingWaiting       bool
+	LandingChangeID      string
+	LandingVersionID     string
+	LandingHeadSHA       string
 }
 
 type CollaborationVersion struct {
@@ -854,6 +858,16 @@ type Issue struct {
 	LastActivityAt         time.Time
 }
 
+type IssueClaimFact struct {
+	OrganizationID    tracker.OrganizationID
+	ProjectID         tracker.ProjectID
+	WorkItemID        string
+	AuthorLogin       string
+	Repository        string
+	Assignees         []string
+	DispatchWaitSince *time.Time
+}
+
 type IssueDependency struct {
 	OrganizationID     tracker.OrganizationID
 	DependentProjectID string
@@ -897,6 +911,14 @@ type Lease struct {
 	ExpiresAt        time.Time
 	ReleasedAt       *time.Time
 	ReleaseReason    string
+}
+
+type LeasePolicyBinding struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	LeaseID        string
+	PolicyID       string
+	BoundAt        time.Time
 }
 
 type LinkedIssueSource struct {
@@ -1433,15 +1455,16 @@ type PlatformTransaction struct {
 }
 
 type PolicyRevision struct {
-	OrganizationID      tracker.OrganizationID
-	ProjectID           tracker.ProjectID
-	PolicyID            string
-	ApprovedBy          string
-	ApprovedAt          time.Time
-	PayloadObjectKey    string
-	PayloadSHA256       string
-	PayloadBytes        int64
-	PayloadContentBytes int64
+	OrganizationID        tracker.OrganizationID
+	ProjectID             tracker.ProjectID
+	PolicyID              string
+	ApprovedBy            string
+	ApprovedAt            time.Time
+	PayloadObjectKey      string
+	PayloadSHA256         string
+	PayloadBytes          int64
+	PayloadContentBytes   int64
+	GateGithubPullRequest sql.NullBool
 }
 
 type Project struct {
@@ -1538,6 +1561,67 @@ type ProjectWorkflowTransition struct {
 	SourceName     string
 	TargetName     string
 	TransitionRank int64
+}
+
+type ProviderReservation struct {
+	OrganizationID     tracker.OrganizationID
+	LeaseID            string
+	RequirementRole    string
+	RequirementBackend string
+	RequirementModel   string
+	Provider           string
+	Backend            string
+	AccountAlias       string
+	SharedAccountAlias string
+	Billing            string
+	MaxConcurrent      int32
+	Availability       string
+	ObservedAt         time.Time
+	ResetAt            *time.Time
+	Reason             string
+}
+
+type ProviderReservationModel struct {
+	OrganizationID         tracker.OrganizationID
+	LeaseID                string
+	Position               int32
+	ModelID                string
+	HasDetail              bool
+	Label                  string
+	ModelProvider          string
+	IsDefault              bool
+	DefaultReasoningEffort string
+	Legacy                 bool
+}
+
+type ProviderReservationModelEffort struct {
+	OrganizationID tracker.OrganizationID
+	LeaseID        string
+	ModelID        string
+	Position       int32
+	Effort         string
+}
+
+type ProviderReservationUsageWindow struct {
+	OrganizationID tracker.OrganizationID
+	LeaseID        string
+	Position       int32
+	Kind           string
+	PercentUsed    sql.NullFloat64
+	ResetAt        *time.Time
+	ObservedAt     *time.Time
+}
+
+type QueueEntry struct {
+	OrganizationID   tracker.OrganizationID
+	ProjectID        tracker.ProjectID
+	WorkItemID       string
+	Scope            string
+	State            string
+	Rank             string
+	PriorityOverride sql.NullInt32
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }
 
 type RequestDay struct {
@@ -1919,4 +2003,13 @@ type TokenGrant struct {
 	OrganizationID tracker.OrganizationID
 	TokenID        string
 	ProjectID      tracker.ProjectID
+}
+
+type WorkspaceItem struct {
+	OrganizationID tracker.OrganizationID
+	WorkItemID     string
+	WorkspaceID    string
+	ProjectID      tracker.ProjectID
+	CreatedAt      time.Time
+	ClosedAt       *time.Time
 }

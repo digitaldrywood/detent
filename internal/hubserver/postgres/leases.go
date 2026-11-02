@@ -55,6 +55,26 @@ func (s *session) Lease(ctx context.Context, id string) (leasestore.Lease, error
 	return leasestore.Lease(row), mapError(ctx, err)
 }
 
+func (s *session) LeaseBySession(ctx context.Context, sessionID string) (leasestore.Lease, error) {
+	if strings.TrimSpace(sessionID) == "" {
+		return leasestore.Lease{}, tracker.ErrInvalidClaimRequest
+	}
+	statement := `SELECT organization_id,lease_id,fencing_token,issue_id,machine_id,session_id,work_item_revision,landing_capacity,acquired_at,renewed_at,expires_at,released_at,release_reason
+ FROM leases WHERE organization_id=$1 AND session_id=$2`
+	if !s.readOnly {
+		statement += ` FOR UPDATE`
+	}
+	var row leasestore.Lease
+	err := s.db.QueryRowContext(ctx, statement, s.organization, sessionID).Scan(
+		&row.OrganizationID, &row.LeaseID, &row.FencingToken, &row.IssueID, &row.MachineID, &row.SessionID,
+		&row.WorkItemRevision, &row.LandingCapacity, &row.AcquiredAt, &row.RenewedAt, &row.ExpiresAt, &row.ReleasedAt, &row.ReleaseReason,
+	)
+	if err != nil {
+		return leasestore.Lease{}, mapError(ctx, err)
+	}
+	return row, nil
+}
+
 func (s *session) ActiveLeaseForIssue(ctx context.Context, issueID int64) (leasestore.Lease, error) {
 	if issueID <= 0 {
 		return leasestore.Lease{}, tracker.ErrInvalidWorkItemID
@@ -137,7 +157,7 @@ func (s *session) Usage(ctx context.Context, machine string) (int64, error) {
 }
 
 func (s *session) Claim(ctx context.Context, request leasestore.Claim) (leasestore.Lease, error) {
-	if request.IssueID <= 0 || request.ExpectedRevision <= 0 || strings.TrimSpace(request.LeaseID) == "" || strings.TrimSpace(request.MachineID) == "" || strings.TrimSpace(request.SessionID) == "" || request.TTL < time.Microsecond {
+	if request.IssueID <= 0 || request.ExpectedRevision <= 0 || strings.TrimSpace(request.LeaseID) == "" || strings.TrimSpace(request.MachineID) == "" || strings.TrimSpace(request.SessionID) == "" || request.TTL < time.Microsecond || request.LandingCapacity < 0 {
 		return leasestore.Lease{}, tracker.ErrInvalidClaimRequest
 	}
 	issue, err := s.queries.LockClaimIssue(ctx, pgquery.LockClaimIssueParams{OrganizationID: s.organization, ID: request.IssueID})
@@ -155,6 +175,12 @@ func (s *session) Claim(ctx context.Context, request leasestore.Claim) (leasesto
 	}
 	if found && current.ExpiresAt.After(now) {
 		if current.MachineID == request.MachineID && current.SessionID == request.SessionID {
+			if request.LandingCapacity > current.LandingCapacity {
+				current, err = s.queries.UpdateLeaseLandingCapacity(ctx, pgquery.UpdateLeaseLandingCapacityParams{OrganizationID: s.organization, LeaseID: current.LeaseID, FencingToken: current.FencingToken, LandingCapacity: request.LandingCapacity})
+				if err != nil {
+					return leasestore.Lease{}, mapError(ctx, err)
+				}
+			}
 			return leasestore.Lease(current), nil
 		}
 		return leasestore.Lease{}, tracker.ErrLeaseConflict
@@ -170,7 +196,7 @@ func (s *session) Claim(ctx context.Context, request leasestore.Claim) (leasesto
 	row, err := s.queries.InsertLease(ctx, pgquery.InsertLeaseParams{
 		OrganizationID: s.organization, LeaseID: request.LeaseID, IssueID: request.IssueID,
 		MachineID: request.MachineID, SessionID: request.SessionID, WorkItemRevision: issue.Revision,
-		Now: now, ExpiresAt: now.Add(request.TTL),
+		LandingCapacity: request.LandingCapacity, Now: now, ExpiresAt: now.Add(request.TTL),
 	})
 	if err != nil {
 		return leasestore.Lease{}, mapError(ctx, err)

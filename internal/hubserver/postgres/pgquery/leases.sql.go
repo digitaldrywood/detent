@@ -329,8 +329,8 @@ func (q *Queries) InsertAttemptReceipt(ctx context.Context, arg InsertAttemptRec
 }
 
 const insertLease = `-- name: InsertLease :one
-INSERT INTO leases (organization_id,lease_id,issue_id,machine_id,session_id,work_item_revision,acquired_at,renewed_at,expires_at)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$7,$8) RETURNING organization_id, lease_id, fencing_token, issue_id, machine_id, session_id, work_item_revision, landing_capacity, acquired_at, renewed_at, expires_at, released_at, release_reason
+INSERT INTO leases (organization_id,lease_id,issue_id,machine_id,session_id,work_item_revision,landing_capacity,acquired_at,renewed_at,expires_at)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8,$9) RETURNING organization_id, lease_id, fencing_token, issue_id, machine_id, session_id, work_item_revision, landing_capacity, acquired_at, renewed_at, expires_at, released_at, release_reason
 `
 
 type InsertLeaseParams struct {
@@ -340,6 +340,7 @@ type InsertLeaseParams struct {
 	MachineID        string
 	SessionID        string
 	WorkItemRevision int64
+	LandingCapacity  int64
 	Now              time.Time
 	ExpiresAt        time.Time
 }
@@ -352,6 +353,7 @@ func (q *Queries) InsertLease(ctx context.Context, arg InsertLeaseParams) (Lease
 		arg.MachineID,
 		arg.SessionID,
 		arg.WorkItemRevision,
+		arg.LandingCapacity,
 		arg.Now,
 		arg.ExpiresAt,
 	)
@@ -749,6 +751,46 @@ func (q *Queries) RenewLease(ctx context.Context, arg RenewLeaseParams) (Lease, 
 	row := q.db.QueryRowContext(ctx, renewLease,
 		arg.Now,
 		arg.ExpiresAt,
+		arg.LandingCapacity,
+		arg.OrganizationID,
+		arg.LeaseID,
+		arg.FencingToken,
+	)
+	var i Lease
+	err := row.Scan(
+		&i.OrganizationID,
+		&i.LeaseID,
+		&i.FencingToken,
+		&i.IssueID,
+		&i.MachineID,
+		&i.SessionID,
+		&i.WorkItemRevision,
+		&i.LandingCapacity,
+		&i.AcquiredAt,
+		&i.RenewedAt,
+		&i.ExpiresAt,
+		&i.ReleasedAt,
+		&i.ReleaseReason,
+	)
+	return i, err
+}
+
+const updateLeaseLandingCapacity = `-- name: UpdateLeaseLandingCapacity :one
+UPDATE leases SET landing_capacity=GREATEST(landing_capacity,$1::bigint)
+WHERE organization_id=$2 AND lease_id=$3
+AND fencing_token=$4::bigint AND released_at IS NULL
+RETURNING organization_id, lease_id, fencing_token, issue_id, machine_id, session_id, work_item_revision, landing_capacity, acquired_at, renewed_at, expires_at, released_at, release_reason
+`
+
+type UpdateLeaseLandingCapacityParams struct {
+	LandingCapacity int64
+	OrganizationID  tracker.OrganizationID
+	LeaseID         string
+	FencingToken    int64
+}
+
+func (q *Queries) UpdateLeaseLandingCapacity(ctx context.Context, arg UpdateLeaseLandingCapacityParams) (Lease, error) {
+	row := q.db.QueryRowContext(ctx, updateLeaseLandingCapacity,
 		arg.LandingCapacity,
 		arg.OrganizationID,
 		arg.LeaseID,

@@ -272,6 +272,9 @@ func TestLatestRunEventUsesTypedAttemptIndex(t *testing.T) {
 		appendRunEvent := func(id, attempt string) eventstore.Event {
 			t.Helper()
 			run := tracker.NativeRunData{AttemptID: attempt, RunID: "run_" + attempt, LeaseID: tracker.LeaseID("lease_" + attempt), FencingToken: 1, Sequence: 1}
+			if attempt == "attempt_target" {
+				run.Runtime = &tracker.NativeRuntimeObservation{Landing: &tracker.NativeLandingReceipt{Waiting: true, ChangeID: "change_target", VersionID: "version_target", HeadSHA: "head_target"}}
+			}
 			value := tracker.CollaborationEvent{ID: id, OrganizationID: org, ProjectID: "prj_first", AggregateType: "issue", AggregateID: "wi_first_1", Type: "run.observed", SchemaVersion: 1, Actor: historyActor(), RecordedAt: historyAt(), Data: tracker.CollaborationData{Run: &run}}
 			record, err := content.PrepareEvent(t.Context(), org, historyJSON(t, value))
 			if err != nil {
@@ -296,8 +299,12 @@ func TestLatestRunEventUsesTypedAttemptIndex(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		if got.ID != wanted.ID || got.Sequence != wanted.Sequence || got.AttemptID != "attempt_target" {
+		if got.ID != wanted.ID || got.Sequence != wanted.Sequence || got.AttemptID != "attempt_target" || !got.LandingWaiting || got.LandingChangeID != "change_target" || got.LandingVersionID != "version_target" || got.LandingHeadSHA != "head_target" {
 			t.Fatalf("latest run event = %+v, want %+v", got, wanted)
+		}
+		hydrated, err := content.Event(t.Context(), got)
+		if err != nil || hydrated.Data.Run == nil || hydrated.Data.Run.Runtime == nil || hydrated.Data.Run.Runtime.Landing == nil || !hydrated.Data.Run.Runtime.Landing.Waiting {
+			t.Fatalf("hydrated latest run event = %+v, error %v", hydrated, err)
 		}
 	}
 }

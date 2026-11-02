@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -1072,6 +1073,15 @@ func writeWorkItemRecord(ctx context.Context, w tenantstore.Writer, plan workIte
 	}
 	issue := plan.issue
 	row := plan.current
+	var previousFacts claimstore.WorkItemFacts
+	previousWasDispatchable := !plan.create && dispatchableProjectState(plan.project, stringValue(plan.current.WorkflowStateName))
+	if previousWasDispatchable {
+		var err error
+		previousFacts, err = w.WorkItemFacts(ctx, plan.current.ProjectID, plan.current.NativeID)
+		if err != nil {
+			return err
+		}
+	}
 	if plan.create {
 		number, err := w.NextWorkItemNumber(ctx, issue.ProjectID)
 		if err != nil {
@@ -1101,6 +1111,9 @@ func writeWorkItemRecord(ctx context.Context, w tenantstore.Writer, plan workIte
 			return err
 		}
 		if err := w.SetWorkItemLabels(ctx, row.ProjectID, row.NativeID, issue.Labels); err != nil {
+			return err
+		}
+		if err := writeClaimFactsAndQueue(ctx, w, plan, nil); err != nil {
 			return err
 		}
 		if plan.linkedSource != nil {
@@ -1133,7 +1146,62 @@ func writeWorkItemRecord(ctx context.Context, w tenantstore.Writer, plan workIte
 		return err
 	}
 	if slices.Contains(plan.fields, "labels") {
-		return w.SetWorkItemLabels(ctx, row.ProjectID, row.NativeID, issue.Labels)
+		if err := w.SetWorkItemLabels(ctx, row.ProjectID, row.NativeID, issue.Labels); err != nil {
+			return err
+		}
 	}
-	return nil
+	var prior *claimstore.WorkItemFacts
+	if previousWasDispatchable {
+		prior = &previousFacts
+	}
+	return writeClaimFactsAndQueue(ctx, w, plan, prior)
+}
+
+func dispatchableProjectState(project projectstore.Record, state string) bool {
+	for _, candidate := range project.States {
+		if candidate.Name == state {
+			return candidate.Dispatchable && !candidate.Terminal && !candidate.OperatorOnly
+		}
+	}
+	return false
+}
+
+func writeClaimFactsAndQueue(ctx context.Context, w tenantstore.Writer, plan workItemRecordPlan, previous *claimstore.WorkItemFacts) error {
+	issue := plan.issue
+	author := issue.Actor.PrincipalID
+	if issue.Provenance != nil {
+		author = issue.Provenance.AuthorID
+	}
+	var dispatchWaitSince *time.Time
+	if dispatchableProjectState(plan.project, issue.State) {
+		if previous != nil && dispatchableProjectState(plan.project, stringValue(plan.current.WorkflowStateName)) {
+			dispatchWaitSince = previous.DispatchWaitSince
+		} else {
+			entered := issue.UpdatedAt
+			if plan.create {
+				entered = issue.CreatedAt
+			}
+			dispatchWaitSince = &entered
+		}
+	}
+	facts := claimstore.WorkItemFacts{OrganizationID: issue.OrganizationID, ProjectID: issue.ProjectID, WorkItemID: issue.WorkItemID, Author: author, Repository: plan.project.Settings.Repository, Assignees: issue.Assignees, DispatchWaitSince: dispatchWaitSince}
+	if err := w.PutWorkItemFacts(ctx, facts); err != nil {
+		return err
+	}
+	scope := string(issue.ProjectID)
+	entry, err := w.QueueEntry(ctx, issue.ProjectID, issue.WorkItemID, scope)
+	if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+		return err
+	}
+	if errors.Is(err, corestore.ErrNotFound) {
+		entry = claimstore.QueueEntry{OrganizationID: issue.OrganizationID, ProjectID: issue.ProjectID, WorkItemID: issue.WorkItemID, Scope: scope, Rank: string(issue.WorkItemID), CreatedAt: issue.CreatedAt}
+	}
+	entry.OrganizationID, entry.ProjectID, entry.WorkItemID = issue.OrganizationID, issue.ProjectID, issue.WorkItemID
+	entry.Scope, entry.State, entry.UpdatedAt = scope, issue.State, issue.UpdatedAt
+	entry.Priority = nil
+	if issue.Priority != nil {
+		priority := int64(*issue.Priority)
+		entry.Priority = &priority
+	}
+	return w.PutQueueEntry(ctx, entry)
 }

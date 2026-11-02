@@ -7,6 +7,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -21,6 +22,7 @@ import (
 
 type Reader interface {
 	billingstore.Reader
+	claimstore.Reader
 	accessstore.Reader
 	artifactstore.Reader
 	conversationstore.Reader
@@ -36,6 +38,7 @@ type Reader interface {
 
 type Writer interface {
 	billingstore.Writer
+	claimstore.Writer
 	accessstore.Writer
 	artifactstore.Writer
 	conversationstore.Writer

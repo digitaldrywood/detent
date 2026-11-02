@@ -20,6 +20,7 @@ type Repository interface {
 type Reader interface {
 	Machine(context.Context, string) (Machine, error)
 	Lease(context.Context, string) (Lease, error)
+	LeaseBySession(context.Context, string) (Lease, error)
 	ActiveLeaseForIssue(context.Context, int64) (Lease, error)
 	Attempt(context.Context, string) (Attempt, error)
 	LatestAttempt(context.Context, int64) (Attempt, error)
@@ -63,6 +64,7 @@ type Claim struct {
 	SessionID        string
 	LeaseID          string
 	TTL              time.Duration
+	LandingCapacity  int64
 }
 
 type Lease struct {

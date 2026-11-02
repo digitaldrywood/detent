@@ -476,3 +476,26 @@ func TestLeaseClaimEligibility(t *testing.T) {
 		t.Fatal("error contains customer content")
 	}
 }
+
+func TestLeaseClaimReplayOnlyRaisesLandingCapacity(t *testing.T) {
+	r, _ := repositoryFor(t, template.Database(t), smallPool())
+	seedLeaseFamily(t, r, "org_first")
+	firstRequest := leaseClaim(1)
+	firstRequest.LandingCapacity = 2
+	first := claimLease(t, r, "org_first", firstRequest)
+
+	replayRequest := firstRequest
+	replayRequest.LeaseID = "lease_replay"
+	replayRequest.LandingCapacity = 4
+	replay := claimLease(t, r, "org_first", replayRequest)
+	if replay.LeaseID != first.LeaseID || replay.FencingToken != first.FencingToken || replay.LandingCapacity != 4 {
+		t.Fatalf("raised-capacity replay=%+v original=%+v", replay, first)
+	}
+
+	replayRequest.LeaseID = "lease_replay_lower"
+	replayRequest.LandingCapacity = 1
+	lowered := claimLease(t, r, "org_first", replayRequest)
+	if lowered.LeaseID != first.LeaseID || lowered.FencingToken != first.FencingToken || lowered.LandingCapacity != 4 {
+		t.Fatalf("lower-capacity replay=%+v original=%+v", lowered, first)
+	}
+}

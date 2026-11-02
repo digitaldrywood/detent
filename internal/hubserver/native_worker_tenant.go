@@ -258,7 +258,18 @@ func (s *Service) respondNativeLeaseTenant(c echo.Context, scope nativeScope, le
 			return err
 		}
 		details, err = s.config.NativeRunEvents.NativeLeaseResponse(c.Request().Context(), r, scope, lease)
-		return err
+		if err != nil {
+			return err
+		}
+		details.ProviderReservation = nil
+		reservation, foundReservation, err := readTenantProviderReservation(c.Request().Context(), r, tracker.LeaseID(lease.LeaseID))
+		if err != nil {
+			return err
+		}
+		if foundReservation {
+			details.ProviderReservation = &reservation.Reservation
+		}
+		return nil
 	})
 	if err != nil {
 		return s.nativeAPIError(c, err)

@@ -57,7 +57,7 @@ func (c *Content) LinkedIssueSnapshot(ctx context.Context, organization tracker.
 
 func (c *Content) PrepareProjectPolicy(ctx context.Context, organization tracker.OrganizationID, value policy.Descriptor) (policystore.Revision, error) {
 	ref, err := c.prepare(ctx, organization, value)
-	return policystore.Revision{OrganizationID: organization, PolicyID: value.ID, PayloadObjectKey: ref.Key, PayloadSHA256: ref.SHA256, PayloadBytes: ref.CompressedSize, PayloadContentBytes: ref.UncompressedSize}, err
+	return policystore.Revision{OrganizationID: organization, PolicyID: value.ID, GitHubPullRequest: new(value.Gates.GitHubPullRequest), PayloadObjectKey: ref.Key, PayloadSHA256: ref.SHA256, PayloadBytes: ref.CompressedSize, PayloadContentBytes: ref.UncompressedSize}, err
 }
 
 func (c *Content) ProjectPolicy(ctx context.Context, row policystore.Revision) (policy.Descriptor, error) {
@@ -148,6 +148,13 @@ func (c *Content) PrepareEvent(ctx context.Context, organization tracker.Organiz
 	if value.Data.Run != nil {
 		row.RunID = value.Data.Run.RunID
 		row.AttemptID = value.Data.Run.AttemptID
+		if value.Data.Run.Runtime != nil && value.Data.Run.Runtime.Landing != nil {
+			landing := value.Data.Run.Runtime.Landing
+			row.LandingWaiting = landing.Waiting
+			row.LandingChangeID = landing.ChangeID
+			row.LandingVersionID = landing.VersionID
+			row.LandingHeadSHA = landing.HeadSHA
+		}
 	}
 	row.PayloadObjectKey, row.PayloadSHA256, row.PayloadBytes, row.PayloadContentBytes = ref.Key, ref.SHA256, ref.CompressedSize, ref.UncompressedSize
 	return row, err
@@ -156,8 +163,17 @@ func (c *Content) PrepareEvent(ctx context.Context, organization tracker.Organiz
 func (c *Content) Event(ctx context.Context, row Event) (tracker.CollaborationEvent, error) {
 	var value tracker.CollaborationEvent
 	err := c.read(ctx, row.OrganizationID, Reference(row.PayloadObjectKey, row.PayloadSHA256, row.PayloadBytes, row.PayloadContentBytes), &value)
-	if err == nil && (value.ID != row.ID || value.OrganizationID != row.OrganizationID || value.ProjectID != row.ProjectID || value.AggregateID != row.WorkItemID || value.Type != row.Type || value.Actor.Kind != row.ActorKind || value.Actor.PrincipalID != row.ActorPrincipalID) {
-		return value, artifact.ErrIntegrity
+	if err == nil {
+		if value.ID != row.ID || value.OrganizationID != row.OrganizationID || value.ProjectID != row.ProjectID || value.AggregateID != row.WorkItemID || value.Type != row.Type || value.Actor.Kind != row.ActorKind || value.Actor.PrincipalID != row.ActorPrincipalID {
+			return value, artifact.ErrIntegrity
+		}
+		var landing tracker.NativeLandingReceipt
+		if value.Data.Run != nil && value.Data.Run.Runtime != nil && value.Data.Run.Runtime.Landing != nil {
+			landing = *value.Data.Run.Runtime.Landing
+		}
+		if row.LandingWaiting != landing.Waiting || row.LandingChangeID != landing.ChangeID || row.LandingVersionID != landing.VersionID || row.LandingHeadSHA != landing.HeadSHA {
+			return value, artifact.ErrIntegrity
+		}
 	}
 	value.AggregateSequence, value.RecordedAt = row.Sequence, row.RecordedAt
 	return value, err

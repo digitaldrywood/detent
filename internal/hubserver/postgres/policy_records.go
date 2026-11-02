@@ -13,7 +13,7 @@ import (
 )
 
 func projectPolicyRecord(row pgquery.PolicyRevision) policystore.Revision {
-	return policystore.Revision{
+	record := policystore.Revision{
 		OrganizationID:      row.OrganizationID,
 		ProjectID:           row.ProjectID,
 		PolicyID:            row.PolicyID,
@@ -24,6 +24,10 @@ func projectPolicyRecord(row pgquery.PolicyRevision) policystore.Revision {
 		PayloadBytes:        row.PayloadBytes,
 		PayloadContentBytes: row.PayloadContentBytes,
 	}
+	if row.GateGithubPullRequest.Valid {
+		record.GitHubPullRequest = new(row.GateGithubPullRequest.Bool)
+	}
+	return record
 }
 
 func (s *session) ProjectPolicy(ctx context.Context, project tracker.ProjectID) (policystore.Revision, error) {
@@ -34,8 +38,51 @@ func (s *session) ProjectPolicy(ctx context.Context, project tracker.ProjectID) 
 	return projectPolicyRecord(row), nil
 }
 
+func (s *session) ProjectPolicyRevision(ctx context.Context, project tracker.ProjectID, policyID string) (policystore.Revision, error) {
+	row, err := s.queries.PolicyGetProjectRevision(ctx, pgquery.PolicyGetProjectRevisionParams{OrganizationID: s.organization, ProjectID: project, PolicyID: policyID})
+	if err != nil {
+		return policystore.Revision{}, mapError(ctx, err)
+	}
+	return projectPolicyRecord(row), nil
+}
+
+func (s *session) LeasePolicy(ctx context.Context, lease tracker.LeaseID) (policystore.LeasePolicy, error) {
+	var row policystore.LeasePolicy
+	err := s.db.QueryRowContext(ctx, `SELECT organization_id,project_id,lease_id,policy_id,bound_at
+ FROM lease_policy_bindings WHERE organization_id=$1 AND lease_id=$2`, s.organization, lease).
+		Scan(&row.OrganizationID, &row.ProjectID, &row.LeaseID, &row.PolicyID, &row.BoundAt)
+	if err != nil {
+		return policystore.LeasePolicy{}, mapError(ctx, err)
+	}
+	return row, nil
+}
+
+func (s *session) BindLeasePolicy(ctx context.Context, row policystore.LeasePolicy) error {
+	if row.OrganizationID != s.organization {
+		return corestore.ErrTenantMismatch
+	}
+	if row.ProjectID == "" || row.LeaseID == "" || row.PolicyID == "" || row.BoundAt.IsZero() {
+		return eventstore.ErrInvalidRecord
+	}
+	row.BoundAt = recordTime(row.BoundAt)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO lease_policy_bindings (organization_id,project_id,lease_id,policy_id,bound_at)
+ VALUES ($1,$2,$3,$4,$5) ON CONFLICT (organization_id,lease_id) DO NOTHING`,
+		row.OrganizationID, row.ProjectID, row.LeaseID, row.PolicyID, row.BoundAt)
+	if err != nil {
+		return mapError(ctx, err)
+	}
+	current, err := s.LeasePolicy(ctx, row.LeaseID)
+	if err != nil {
+		return err
+	}
+	if current.OrganizationID != row.OrganizationID || current.ProjectID != row.ProjectID || current.LeaseID != row.LeaseID || current.PolicyID != row.PolicyID || !current.BoundAt.Equal(row.BoundAt) {
+		return corestore.ErrRevisionConflict
+	}
+	return nil
+}
+
 func (s *session) ApproveProjectPolicy(ctx context.Context, row policystore.Revision, expected string) error {
-	if row.OrganizationID != s.organization || row.ProjectID == "" || row.PolicyID == "" || row.ApprovedBy == "" || row.ApprovedAt.IsZero() {
+	if row.OrganizationID != s.organization || row.ProjectID == "" || row.PolicyID == "" || row.GitHubPullRequest == nil || row.ApprovedBy == "" || row.ApprovedAt.IsZero() {
 		return eventstore.ErrInvalidRecord
 	}
 	if err := s.LockWorkItemProject(ctx, row.ProjectID); err != nil {
@@ -46,15 +93,16 @@ func (s *session) ApproveProjectPolicy(ctx context.Context, row policystore.Revi
 	}
 	row.ApprovedAt = recordTime(row.ApprovedAt)
 	inserted, err := s.queries.PolicyInsertProjectRevision(ctx, pgquery.PolicyInsertProjectRevisionParams{
-		OrganizationID:      row.OrganizationID,
-		ProjectID:           row.ProjectID,
-		PolicyID:            row.PolicyID,
-		ApprovedBy:          row.ApprovedBy,
-		ApprovedAt:          recordTime(row.ApprovedAt),
-		PayloadObjectKey:    row.PayloadObjectKey,
-		PayloadSHA256:       row.PayloadSHA256,
-		PayloadBytes:        row.PayloadBytes,
-		PayloadContentBytes: row.PayloadContentBytes,
+		OrganizationID:        row.OrganizationID,
+		ProjectID:             row.ProjectID,
+		PolicyID:              row.PolicyID,
+		GateGithubPullRequest: sql.NullBool{Bool: *row.GitHubPullRequest, Valid: true},
+		ApprovedBy:            row.ApprovedBy,
+		ApprovedAt:            recordTime(row.ApprovedAt),
+		PayloadObjectKey:      row.PayloadObjectKey,
+		PayloadSHA256:         row.PayloadSHA256,
+		PayloadBytes:          row.PayloadBytes,
+		PayloadContentBytes:   row.PayloadContentBytes,
 	})
 	if errors.Is(err, sql.ErrNoRows) {
 		current, readErr := s.queries.PolicyGetProjectRevision(ctx, pgquery.PolicyGetProjectRevisionParams{OrganizationID: row.OrganizationID, ProjectID: row.ProjectID, PolicyID: row.PolicyID})
@@ -160,7 +208,14 @@ func (s *session) SetReviewPolicy(ctx context.Context, row eventstore.ReviewPoli
 }
 
 func sameProjectPolicy(left, right policystore.Revision) bool {
-	return left.OrganizationID == right.OrganizationID && left.ProjectID == right.ProjectID && left.PolicyID == right.PolicyID && left.ApprovedBy == right.ApprovedBy && left.ApprovedAt.Equal(right.ApprovedAt) && left.PayloadObjectKey == right.PayloadObjectKey && left.PayloadSHA256 == right.PayloadSHA256 && left.PayloadBytes == right.PayloadBytes && left.PayloadContentBytes == right.PayloadContentBytes
+	return left.OrganizationID == right.OrganizationID && left.ProjectID == right.ProjectID && left.PolicyID == right.PolicyID && sameOptionalBool(left.GitHubPullRequest, right.GitHubPullRequest) && left.ApprovedBy == right.ApprovedBy && left.ApprovedAt.Equal(right.ApprovedAt) && left.PayloadObjectKey == right.PayloadObjectKey && left.PayloadSHA256 == right.PayloadSHA256 && left.PayloadBytes == right.PayloadBytes && left.PayloadContentBytes == right.PayloadContentBytes
+}
+
+func sameOptionalBool(left, right *bool) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
 }
 
 func sameReviewPolicy(left, right eventstore.ReviewPolicy) bool {

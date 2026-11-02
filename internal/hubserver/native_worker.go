@@ -94,6 +94,13 @@ func (s *Service) claimNativeIssue(c echo.Context) error {
 	if request.WorkItemID == "" && len(request.ProviderCandidates) == 1 {
 		request.WorkItemID = request.ProviderCandidates[0].WorkItemID
 	}
+	if s.config.TenantRepository != nil {
+		lease, err := s.claimNativeIssueTenant(ctx, scope, request, ttl)
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		return s.respondNativeLeaseTenant(c, scope, lease.LeaseID)
+	}
 	var id tracker.WorkItemID
 	if request.WorkItemID != "" {
 		_, id, err = readNativeIssue(readCtx, s.database.reader, scope, string(request.WorkItemID))

@@ -39,18 +39,25 @@
     "internal/hubserver/postgres/migrations/20261101215438_runner_identity_enrollment.sql",
     "internal/hubserver/postgres/migrations/20261101215802_organization_model_selection.sql",
     "internal/hubserver/postgres/migrations/20261101223629_go_test_receipts.sql",
+    "internal/hubserver/postgres/migrations/20261101222016_workspace_claim_items.sql",
+    "internal/hubserver/postgres/migrations/20261101222620_claim_dispatch_facts.sql",
     "internal/hubserver/postgres/migrations/20261101224000_runner_project_observations.sql",
     "internal/hubserver/postgres/migrations/20261101224500_runner_routing_records.sql",
+    "internal/hubserver/postgres/migrations/20261101224649_lease_policy_bindings.sql",
     "internal/hubserver/postgres/migrations/20261101224723_request_usage_retention.sql",
     "internal/hubserver/postgres/migrations/20261101225000_runner_provider_reports.sql",
     "internal/hubserver/postgres/migrations/20261101225500_runner_capacity_configuration.sql",
     "internal/hubserver/postgres/migrations/20261101231201_search_refresh_progress.sql",
+    "internal/hubserver/postgres/migrations/20261101231559_provider_claim_reservations.sql",
     "internal/hubserver/postgres/migrations/20261101232125_runner_provider_account_lookup.sql",
     "internal/hubserver/postgres/migrations/20261102000712_runner_usage_retention.sql",
     "internal/hubserver/postgres/migrations/20261102000716_cost_monthly_ledger.sql",
+    "internal/hubserver/postgres/migrations/20261102000838_policy_landing_gate.sql",
+    "internal/hubserver/postgres/migrations/20261102000839_claim_landing_facts.sql",
     "internal/hubserver/postgres/migrations/20261102001107_runner_backend_isolation.sql",
     "internal/hubserver/postgres/migrations/20261102001229_runner_sprite_membership.sql",
-    "internal/hubserver/postgres/migrations/20261102003051_runner_heartbeat_observations.sql"
+    "internal/hubserver/postgres/migrations/20261102003051_runner_heartbeat_observations.sql",
+    "internal/hubserver/postgres/migrations/20261102004100_runner_selection_cursors.sql"
   ],
   "tables": {
     "public.ai_credit_reason_references": {
@@ -212,6 +219,20 @@
       "family": "billing",
       "organization": "organization-owned"
     },
+    "public.issue_claim_facts": {
+      "columns": {
+        "assignees": "text[]",
+        "author_login": "text",
+        "dispatch_wait_since": "timestamp with time zone",
+        "organization_id": "text",
+        "project_id": "text",
+        "repository": "text",
+        "work_item_id": "text"
+      },
+      "contract": "Require typed claim filters and dispatch-age facts to be imported with the core issue in one tenant transaction.",
+      "family": "claim",
+      "organization": "organization-owned"
+    },
     "public.issue_labels": {
       "columns": {
         "label": "text",
@@ -261,6 +282,61 @@
       },
       "contract": "Retain each tenant runner backend isolation report as a bounded typed capability record.",
       "family": "fleet",
+      "organization": "organization-owned"
+    },
+    "public.lease_policy_bindings": {
+      "columns": {
+        "bound_at": "timestamp with time zone",
+        "lease_id": "text",
+        "organization_id": "text",
+        "policy_id": "text",
+        "project_id": "text"
+      },
+      "contract": "Pin each tenant lease to the exact approved project policy revision used for claim admission.",
+      "family": "lease",
+      "organization": "organization-owned"
+    },
+    "public.provider_reservation_model_efforts": {
+      "columns": {
+        "effort": "text",
+        "lease_id": "text",
+        "model_id": "text",
+        "organization_id": "text",
+        "position": "integer"
+      },
+      "contract": "Retain ordered reasoning efforts for a selected provider model snapshot.",
+      "family": "claim",
+      "organization": "organization-owned"
+    },
+    "public.provider_reservation_models": {
+      "columns": {
+        "default_reasoning_effort": "text",
+        "has_detail": "boolean",
+        "is_default": "boolean",
+        "label": "text",
+        "lease_id": "text",
+        "legacy": "boolean",
+        "model_id": "text",
+        "model_provider": "text",
+        "organization_id": "text",
+        "position": "integer"
+      },
+      "contract": "Retain the bounded typed model snapshot advertised by the account selected for a lease.",
+      "family": "claim",
+      "organization": "organization-owned"
+    },
+    "public.provider_reservation_usage_windows": {
+      "columns": {
+        "kind": "text",
+        "lease_id": "text",
+        "observed_at": "timestamp with time zone",
+        "organization_id": "text",
+        "percent_used": "double precision",
+        "position": "integer",
+        "reset_at": "timestamp with time zone"
+      },
+      "contract": "Retain bounded typed usage-window evidence from the provider report pinned to a lease.",
+      "family": "claim",
       "organization": "organization-owned"
     },
     "public.runner_availability_window_slots": {

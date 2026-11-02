@@ -117,7 +117,7 @@ func (q *Queries) RecordGetCollaborationVersion(ctx context.Context, arg RecordG
 }
 
 const recordGetEvent = `-- name: RecordGetEvent :one
-SELECT organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND id=$4
+SELECT organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, landing_waiting, landing_change_id, landing_version_id, landing_head_sha FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND id=$4
 `
 
 type RecordGetEventParams struct {
@@ -159,6 +159,10 @@ func (q *Queries) RecordGetEvent(ctx context.Context, arg RecordGetEventParams) 
 		&i.PayloadBytes,
 		&i.PayloadContentBytes,
 		&i.PayloadFormatVersion,
+		&i.LandingWaiting,
+		&i.LandingChangeID,
+		&i.LandingVersionID,
+		&i.LandingHeadSHA,
 	)
 	return i, err
 }
@@ -626,8 +630,8 @@ func (q *Queries) RecordInsertCollaborationVersion(ctx context.Context, arg Reco
 }
 
 const recordInsertEvent = `-- name: RecordInsertEvent :one
-INSERT INTO collaboration_events (organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23) RETURNING organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version
+INSERT INTO collaboration_events (organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, landing_waiting, landing_change_id, landing_version_id, landing_head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27) RETURNING organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, landing_waiting, landing_change_id, landing_version_id, landing_head_sha
 `
 
 type RecordInsertEventParams struct {
@@ -644,6 +648,10 @@ type RecordInsertEventParams struct {
 	ChangeID             string
 	VersionID            string
 	HeadSHA              string
+	LandingWaiting       bool
+	LandingChangeID      string
+	LandingVersionID     string
+	LandingHeadSHA       string
 	RunID                string
 	AttemptID            string
 	FromState            string
@@ -671,6 +679,10 @@ func (q *Queries) RecordInsertEvent(ctx context.Context, arg RecordInsertEventPa
 		arg.ChangeID,
 		arg.VersionID,
 		arg.HeadSHA,
+		arg.LandingWaiting,
+		arg.LandingChangeID,
+		arg.LandingVersionID,
+		arg.LandingHeadSHA,
 		arg.RunID,
 		arg.AttemptID,
 		arg.FromState,
@@ -707,6 +719,10 @@ func (q *Queries) RecordInsertEvent(ctx context.Context, arg RecordInsertEventPa
 		&i.PayloadBytes,
 		&i.PayloadContentBytes,
 		&i.PayloadFormatVersion,
+		&i.LandingWaiting,
+		&i.LandingChangeID,
+		&i.LandingVersionID,
+		&i.LandingHeadSHA,
 	)
 	return i, err
 }
@@ -1081,7 +1097,7 @@ func (q *Queries) RecordLatestChange(ctx context.Context, arg RecordLatestChange
 }
 
 const recordLatestRunEvent = `-- name: RecordLatestRunEvent :one
-SELECT organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version FROM collaboration_events
+SELECT organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, landing_waiting, landing_change_id, landing_version_id, landing_head_sha FROM collaboration_events
 WHERE organization_id=$1 AND project_id=$2
 AND attempt_id=$3
 ORDER BY sequence DESC LIMIT 1
@@ -1120,6 +1136,10 @@ func (q *Queries) RecordLatestRunEvent(ctx context.Context, arg RecordLatestRunE
 		&i.PayloadBytes,
 		&i.PayloadContentBytes,
 		&i.PayloadFormatVersion,
+		&i.LandingWaiting,
+		&i.LandingChangeID,
+		&i.LandingVersionID,
+		&i.LandingHeadSHA,
 	)
 	return i, err
 }
@@ -1183,7 +1203,7 @@ func (q *Queries) RecordListChange(ctx context.Context, arg RecordListChangePara
 }
 
 const recordListEvent = `-- name: RecordListEvent :many
-SELECT organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND sequence>$4 ORDER BY sequence LIMIT $5
+SELECT organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, landing_waiting, landing_change_id, landing_version_id, landing_head_sha FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND sequence>$4 ORDER BY sequence LIMIT $5
 `
 
 type RecordListEventParams struct {
@@ -1233,6 +1253,10 @@ func (q *Queries) RecordListEvent(ctx context.Context, arg RecordListEventParams
 			&i.PayloadBytes,
 			&i.PayloadContentBytes,
 			&i.PayloadFormatVersion,
+			&i.LandingWaiting,
+			&i.LandingChangeID,
+			&i.LandingVersionID,
+			&i.LandingHeadSHA,
 		); err != nil {
 			return nil, err
 		}
@@ -1248,7 +1272,7 @@ func (q *Queries) RecordListEvent(ctx context.Context, arg RecordListEventParams
 }
 
 const recordListEventBefore = `-- name: RecordListEventBefore :many
-SELECT organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND sequence<$4 ORDER BY sequence DESC LIMIT $5
+SELECT organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, landing_waiting, landing_change_id, landing_version_id, landing_head_sha FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND sequence<$4 ORDER BY sequence DESC LIMIT $5
 `
 
 type RecordListEventBeforeParams struct {
@@ -1298,6 +1322,10 @@ func (q *Queries) RecordListEventBefore(ctx context.Context, arg RecordListEvent
 			&i.PayloadBytes,
 			&i.PayloadContentBytes,
 			&i.PayloadFormatVersion,
+			&i.LandingWaiting,
+			&i.LandingChangeID,
+			&i.LandingVersionID,
+			&i.LandingHeadSHA,
 		); err != nil {
 			return nil, err
 		}

@@ -12,6 +12,8 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -126,6 +128,29 @@ func (s *Service) waitNativeCandidates(c echo.Context) error {
 	authorize := func() error {
 		ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 		defer cancel()
+		if s.config.TenantRepository != nil {
+			now := s.config.now().UTC()
+			return s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+				if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
+					return err
+				}
+				identity, err := r.RunnerIdentityByCredential(ctx, scope.credential.ID)
+				if err != nil {
+					return err
+				}
+				if !runnerIdentityCanClaim(identity, scope, scope.credential.Runner.MachineID, now) {
+					return tracker.ErrMachineNotFound
+				}
+				allowed, err := r.RunnerProjectAuthorized(ctx, identity.RunnerID, scope.project, now)
+				if err != nil {
+					return err
+				}
+				if !allowed {
+					return tracker.ErrMachineNotFound
+				}
+				return nil
+			})
+		}
 		tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 		if err != nil {
 			return err
