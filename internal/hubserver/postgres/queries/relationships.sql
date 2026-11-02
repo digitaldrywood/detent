@@ -51,6 +51,15 @@ INSERT INTO issue_dependencies (organization_id,dependent_project_id,dependent_i
 VALUES (sqlc.arg(organization_id),sqlc.arg(dependent_project_id),sqlc.arg(dependent_issue_id),sqlc.arg(blocker_project_id),sqlc.arg(blocker_issue_id),sqlc.arg(provenance),sqlc.arg(created_at),sqlc.arg(updated_at))
 ON CONFLICT DO NOTHING;
 
+-- name: ImportDependency :exec
+INSERT INTO issue_dependencies (organization_id,dependent_project_id,dependent_issue_id,blocker_project_id,blocker_issue_id,provenance,source_version,created_at,updated_at)
+VALUES (sqlc.arg(organization_id),sqlc.arg(dependent_project_id),sqlc.arg(dependent_issue_id),sqlc.arg(blocker_project_id),sqlc.arg(blocker_issue_id),sqlc.arg(provenance),sqlc.narg(source_version),sqlc.arg(created_at),sqlc.arg(updated_at))
+ON CONFLICT DO NOTHING;
+
+-- name: GetDependency :one
+SELECT provenance,source_version,created_at,updated_at FROM issue_dependencies
+WHERE organization_id=sqlc.arg(organization_id) AND dependent_project_id=sqlc.arg(dependent_project_id) AND dependent_issue_id=sqlc.arg(dependent_issue_id) AND blocker_project_id=sqlc.arg(blocker_project_id) AND blocker_issue_id=sqlc.arg(blocker_issue_id);
+
 -- name: DeleteDependency :execrows
 DELETE FROM issue_dependencies
 WHERE organization_id=sqlc.arg(organization_id) AND dependent_project_id=sqlc.arg(dependent_project_id) AND dependent_issue_id=sqlc.arg(dependent_issue_id) AND blocker_project_id=sqlc.arg(blocker_project_id) AND blocker_issue_id=sqlc.arg(blocker_issue_id);

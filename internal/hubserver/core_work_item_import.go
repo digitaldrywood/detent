@@ -30,6 +30,26 @@ type CoreWorkItemImportSource struct {
 	Objects        attachment.DetailStore
 }
 
+type CoreDependencyImportSource struct {
+	CopyPath       string
+	OrganizationID tracker.OrganizationID
+	Objects        attachment.DetailStore
+}
+
+type coreDependencyImportRow struct {
+	DependentID         int64
+	BlockerID           int64
+	DependentProjectID  tracker.ProjectID
+	DependentWorkItem   tracker.NativeWorkItemID
+	BlockerProjectID    tracker.ProjectID
+	BlockerWorkItem     tracker.NativeWorkItemID
+	BlockerOrganization sql.NullString
+	Provenance          string
+	SourceVersion       sql.NullString
+	CreatedAt           string
+	UpdatedAt           string
+}
+
 type coreWorkItemImportRow struct {
 	Item                 corestore.WorkItem
 	Body                 string
@@ -84,6 +104,118 @@ func ImportCoreWorkItems(ctx context.Context, target *postgres.Repository, sourc
 		}
 	})
 	return imported, err
+}
+
+func ImportCoreIssueDependencies(ctx context.Context, target *postgres.Repository, source CoreDependencyImportSource) (int64, error) {
+	if target == nil || source.CopyPath == "" || source.OrganizationID == "" || source.Objects == nil {
+		return 0, errors.New("invalid core dependency import source")
+	}
+	objects := eventstore.NewContent(source.Objects)
+	var imported int64
+	err := postgres.ReadCoreImportCopy(ctx, source.CopyPath, func(tx *sql.Tx, copyHash string) error {
+		if err := target.PinCoreImportSource(ctx, source.OrganizationID, copyHash, source.Objects); err != nil {
+			return err
+		}
+		var afterDependent, afterBlocker int64
+		for {
+			rows, err := readCoreDependencyImportPage(ctx, tx, source.OrganizationID, afterDependent, afterBlocker)
+			if err != nil {
+				return err
+			}
+			if len(rows) == 0 {
+				return nil
+			}
+			for _, row := range rows {
+				record, err := prepareCoreDependencyImport(ctx, objects, source, copyHash, row)
+				if err != nil {
+					return fmt.Errorf("prepare core dependency %d/%d: %w", row.DependentID, row.BlockerID, err)
+				}
+				if err := target.ImportCoreDependency(ctx, record); err != nil {
+					return fmt.Errorf("import core dependency %d/%d: %w", row.DependentID, row.BlockerID, err)
+				}
+				afterDependent, afterBlocker = row.DependentID, row.BlockerID
+				imported++
+			}
+		}
+	})
+	return imported, err
+}
+
+func readCoreDependencyImportPage(ctx context.Context, tx *sql.Tx, organization tracker.OrganizationID, afterDependent, afterBlocker int64) ([]coreDependencyImportRow, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT d.dependent_issue_id,d.blocker_issue_id,dependent.project_id,dependent.native_id,blocker.project_id,blocker.native_id,blocker.organization_id,d.provenance,d.source_version,d.created_at,d.updated_at
+FROM issue_dependencies d
+JOIN issues dependent ON dependent.id=d.dependent_issue_id
+LEFT JOIN issues blocker ON blocker.id=d.blocker_issue_id
+WHERE dependent.organization_id=?
+AND (d.dependent_issue_id>? OR (d.dependent_issue_id=? AND d.blocker_issue_id>?))
+ORDER BY d.dependent_issue_id,d.blocker_issue_id LIMIT 100`, organization, afterDependent, afterDependent, afterBlocker)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]coreDependencyImportRow, 0, 100)
+	for rows.Next() {
+		var row coreDependencyImportRow
+		if err := rows.Scan(&row.DependentID, &row.BlockerID, &row.DependentProjectID, &row.DependentWorkItem, &row.BlockerProjectID, &row.BlockerWorkItem, &row.BlockerOrganization, &row.Provenance, &row.SourceVersion, &row.CreatedAt, &row.UpdatedAt); err != nil {
+			return nil, err
+		}
+		if row.DependentID < 1 || row.BlockerID < 1 || row.DependentID == row.BlockerID || row.DependentProjectID == "" || row.DependentWorkItem == "" || row.BlockerProjectID == "" || row.BlockerWorkItem == "" || !row.BlockerOrganization.Valid || row.BlockerOrganization.String != string(organization) || row.Provenance == "" {
+			return nil, corestore.ErrInvalidRelationship
+		}
+		result = append(result, row)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func prepareCoreDependencyImport(ctx context.Context, objects *eventstore.Content, source CoreDependencyImportSource, copyHash string, row coreDependencyImportRow) (postgres.CoreDependencyImport, error) {
+	created, err := time.Parse(time.RFC3339Nano, row.CreatedAt)
+	if err != nil {
+		return postgres.CoreDependencyImport{}, errors.New("invalid dependency creation timestamp")
+	}
+	updated, err := time.Parse(time.RFC3339Nano, row.UpdatedAt)
+	if err != nil {
+		return postgres.CoreDependencyImport{}, errors.New("invalid dependency update timestamp")
+	}
+	request := struct {
+		CopyHash          string                   `json:"copy_hash"`
+		DependentID       int64                    `json:"dependent_id"`
+		BlockerID         int64                    `json:"blocker_id"`
+		DependentProject  tracker.ProjectID        `json:"dependent_project"`
+		DependentWorkItem tracker.NativeWorkItemID `json:"dependent_work_item"`
+		BlockerProject    tracker.ProjectID        `json:"blocker_project"`
+		BlockerWorkItem   tracker.NativeWorkItemID `json:"blocker_work_item"`
+		Provenance        string                   `json:"provenance"`
+		SourceVersion     *string                  `json:"source_version"`
+		CreatedAt         string                   `json:"created_at"`
+		UpdatedAt         string                   `json:"updated_at"`
+	}{copyHash, row.DependentID, row.BlockerID, row.DependentProjectID, row.DependentWorkItem, row.BlockerProjectID, row.BlockerWorkItem, row.Provenance, nullStringPointer(row.SourceVersion), row.CreatedAt, row.UpdatedAt}
+	requestBytes, err := json.Marshal(request)
+	if err != nil {
+		return postgres.CoreDependencyImport{}, err
+	}
+	digest := sha256.Sum256(requestBytes)
+	key := strconv.FormatInt(row.DependentID, 10) + ":" + strconv.FormatInt(row.BlockerID, 10)
+	receipt, err := objects.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: source.OrganizationID, ActorID: "production-import", Operation: "core-dependency", CommandKey: key, RequestHash: hex.EncodeToString(digest[:])}, requestBytes)
+	if err != nil {
+		return postgres.CoreDependencyImport{}, err
+	}
+	return postgres.CoreDependencyImport{
+		OrganizationID:     source.OrganizationID,
+		DependentID:        row.DependentID,
+		DependentProjectID: row.DependentProjectID,
+		DependentWorkItem:  row.DependentWorkItem,
+		BlockerID:          row.BlockerID,
+		BlockerProjectID:   row.BlockerProjectID,
+		BlockerWorkItem:    row.BlockerWorkItem,
+		Provenance:         row.Provenance,
+		SourceVersion:      nullStringPointer(row.SourceVersion),
+		CreatedAt:          created,
+		UpdatedAt:          updated,
+		Receipt:            receipt,
+	}, nil
 }
 
 func readCoreWorkItemImportPage(ctx context.Context, tx *sql.Tx, source CoreWorkItemImportSource, after int64) ([]coreWorkItemImportRow, error) {

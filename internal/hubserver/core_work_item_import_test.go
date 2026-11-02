@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -197,6 +198,93 @@ func TestCoreWorkItemImportRejectsChangedCopyWhenAllIssuesWereDeleted(t *testing
 	}
 }
 
+func TestCoreIssueDependencyImportWaitsForCrossProjectIssuesAndReplays(t *testing.T) {
+	repository, admin := projectRecordPostgresWithAdmin(t, 2)
+	objects := &memoryRunDetails{}
+	org := tracker.OrganizationID("org_import_dependency")
+	dependentProject := tracker.ProjectID("prj_import_dependency_a")
+	blockerProject := tracker.ProjectID("prj_import_dependency_b")
+	if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: "Example organization", Slug: "example-dependency", CreatedAt: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)}); err != nil {
+			return fmt.Errorf("create access organization: %w", err)
+		}
+		if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: org, ProviderID: "provider_" + string(org)}); err != nil {
+			return fmt.Errorf("create access tenant: %w", err)
+		}
+		for index, project := range []tracker.ProjectID{dependentProject, blockerProject} {
+			slug := "example-dependent"
+			if index == 1 {
+				slug = "example-blocker"
+			}
+			_, err := w.CreateProjectRecord(t.Context(), projectstore.Record{
+				Core:     corestore.Project{OrganizationID: org, ID: project, Name: "Example project " + string(project), Slug: slug, Profile: "native", RequireDependencies: true},
+				Settings: projectstore.Settings{OrganizationID: org, ProjectID: project},
+				States:   nativeFixtureStates(),
+			})
+			if err != nil {
+				return fmt.Errorf("create project %s: %w", project, err)
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	copyPath := coreDependencySourceCopy(t, org, dependentProject, blockerProject)
+	if count, err := ImportCoreWorkItems(t.Context(), repository, CoreWorkItemImportSource{CopyPath: copyPath, OrganizationID: org, ProjectID: dependentProject, Objects: objects}); err != nil || count != 1 {
+		t.Fatalf("dependent issue import count=%d error=%v", count, err)
+	}
+	dependencySource := CoreDependencyImportSource{CopyPath: copyPath, OrganizationID: org, Objects: objects}
+	if _, err := ImportCoreIssueDependencies(t.Context(), repository, dependencySource); !errors.Is(err, corestore.ErrNotFound) {
+		t.Fatalf("dependency import before blocker exists error=%v", err)
+	}
+	if count, err := ImportCoreWorkItems(t.Context(), repository, CoreWorkItemImportSource{CopyPath: copyPath, OrganizationID: org, ProjectID: blockerProject, Objects: objects}); err != nil || count != 1 {
+		t.Fatalf("blocker issue import count=%d error=%v", count, err)
+	}
+	for range 2 {
+		if count, err := ImportCoreIssueDependencies(t.Context(), repository, dependencySource); err != nil || count != 1 {
+			t.Fatalf("dependency import count=%d error=%v", count, err)
+		}
+	}
+	if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+		page, err := r.Relationships(t.Context(), dependentProject, "wi_core_import", corestore.RelationshipCursor{}, 10)
+		if err != nil {
+			return err
+		}
+		if len(page.Items) != 1 || page.Items[0].Type != "dependency" || page.Items[0].Direction != "blocked_by" || page.Items[0].RelatedProjectID != blockerProject || page.Items[0].RelatedWorkItemID != "wi_core_blocker" || !page.Items[0].CreatedAt.Equal(parseTestTime(t, "2026-10-02T03:04:05.123456Z")) {
+			return errors.New("cross-project dependency did not preserve its typed relationship and creation time")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var provenance string
+	var sourceVersion sql.NullString
+	var createdAt, updatedAt time.Time
+	err := admin.QueryRowContext(t.Context(), `SELECT provenance,source_version,created_at,updated_at FROM issue_dependencies WHERE organization_id=$1 AND dependent_project_id=$2 AND dependent_issue_id=41 AND blocker_project_id=$3 AND blocker_issue_id=42`, org, dependentProject, blockerProject).Scan(&provenance, &sourceVersion, &createdAt, &updatedAt)
+	if err != nil || provenance != "github" || !sourceVersion.Valid || sourceVersion.String != "source-v17" || !createdAt.Equal(parseTestTime(t, "2026-10-02T03:04:05.123456Z")) || !updatedAt.Equal(parseTestTime(t, "2026-10-03T04:05:06.987654Z")) {
+		t.Fatalf("dependency metadata provenance=%q source_version=%v created=%s updated=%s error=%v", provenance, sourceVersion, createdAt, updatedAt, err)
+	}
+	var receipt eventstore.Receipt
+	if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		receipt, err = r.Receipt(t.Context(), "production-import", "core-dependency", "41:42")
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	request, err := eventstore.NewContent(objects).Receipt(t.Context(), receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sourceTimes struct {
+		CreatedAt string `json:"created_at"`
+		UpdatedAt string `json:"updated_at"`
+	}
+	if err := json.Unmarshal(request, &sourceTimes); err != nil || sourceTimes.CreatedAt != "2026-10-02T03:04:05.123456789Z" || sourceTimes.UpdatedAt != "2026-10-03T04:05:06.987654321Z" {
+		t.Fatalf("dependency receipt did not retain source timestamps: %+v error=%v", sourceTimes, err)
+	}
+}
+
 func TestCoreWorkItemImportRollsBackMalformedQueue(t *testing.T) {
 	repository := projectRecordPostgres(t)
 	objects := &memoryRunDetails{}
@@ -335,6 +423,56 @@ func coreWorkItemSourceCopy(t *testing.T, org tracker.OrganizationID, project tr
 		}
 	}
 	if _, err := db.ExecContext(t.Context(), `INSERT INTO issues VALUES(41,'wi_core_import',?,1,2,2,NULL,'Updated title',?,NULL,NULL,?,NULL,0,?,?,?, ?,?,1,'["needs-review"]','["example-assignee"]','example-author',1,NULL,?)`, project, coreImportBody(), string(actorJSON), created, updated, created, updated, updated, org); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0400); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func coreDependencySourceCopy(t *testing.T, org tracker.OrganizationID, dependentProject, blockerProject tracker.ProjectID) string {
+	t.Helper()
+	path := coreWorkItemSourceCopy(t, org, dependentProject, false)
+	if err := os.Chmod(path, 0600); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actor := tracker.Actor{Kind: "human", PrincipalID: "example-owner"}
+	actorJSON, err := json.Marshal(actor)
+	if err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	const created = "2026-10-01T00:00:00Z"
+	const updated = "2026-10-02T00:00:00Z"
+	if _, err := db.ExecContext(t.Context(), `INSERT INTO issues(id,native_id,project_id,number,revision,event_sequence,native_source_key,title,body,issue_contract_json,report_context_json,actor_json,provenance_json,archived,created_at,updated_at,native_created_at,native_updated_at,last_activity_at,workflow_state_id,labels_json,assignees_json,author_login,repository_id,dispatch_wait_since,organization_id)
+VALUES(42,'wi_core_blocker',?,2,1,1,NULL,'Blocker title','Blocker body',NULL,NULL,?,NULL,0,?,?,?,?,?,1,'[]','[]','example-author',1,NULL,?)`, blockerProject, string(actorJSON), created, updated, created, updated, updated, org); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	blocker := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: blockerProject, WorkItemID: "wi_core_blocker", Number: 2, Revision: 1, Profile: "native"}, Title: "Blocker title", Body: "Blocker body", State: "Todo", Actor: actor, CreatedAt: parseTestTime(t, created), UpdatedAt: parseTestTime(t, updated), LastActivityAt: parseTestTime(t, updated)}
+	blockerRaw, err := json.Marshal(blocker)
+	if err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(t.Context(), `INSERT INTO collaboration_versions VALUES(?,?,?,?,?,?,?)`, org, blockerProject, blocker.WorkItemID, blocker.WorkItemID, blocker.Revision, "snapshot", string(blockerRaw)); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(t.Context(), `CREATE TABLE issue_dependencies(blocker_issue_id INTEGER,dependent_issue_id INTEGER,provenance TEXT,source_version TEXT,created_at TEXT,updated_at TEXT)`); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(t.Context(), `INSERT INTO issue_dependencies VALUES(42,41,'github','source-v17','2026-10-02T03:04:05.123456789Z','2026-10-03T04:05:06.987654321Z')`); err != nil {
+		_ = db.Close()
 		t.Fatal(err)
 	}
 	if err := db.Close(); err != nil {

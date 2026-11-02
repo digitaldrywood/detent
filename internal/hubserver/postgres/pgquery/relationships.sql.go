@@ -81,6 +81,77 @@ func (q *Queries) DeleteWorkItemLabels(ctx context.Context, arg DeleteWorkItemLa
 	return err
 }
 
+const getDependency = `-- name: GetDependency :one
+SELECT provenance,source_version,created_at,updated_at FROM issue_dependencies
+WHERE organization_id=$1 AND dependent_project_id=$2 AND dependent_issue_id=$3 AND blocker_project_id=$4 AND blocker_issue_id=$5
+`
+
+type GetDependencyParams struct {
+	OrganizationID     tracker.OrganizationID
+	DependentProjectID string
+	DependentIssueID   int64
+	BlockerProjectID   string
+	BlockerIssueID     int64
+}
+
+type GetDependencyRow struct {
+	Provenance    string
+	SourceVersion *string
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+}
+
+func (q *Queries) GetDependency(ctx context.Context, arg GetDependencyParams) (GetDependencyRow, error) {
+	row := q.db.QueryRowContext(ctx, getDependency,
+		arg.OrganizationID,
+		arg.DependentProjectID,
+		arg.DependentIssueID,
+		arg.BlockerProjectID,
+		arg.BlockerIssueID,
+	)
+	var i GetDependencyRow
+	err := row.Scan(
+		&i.Provenance,
+		&i.SourceVersion,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const importDependency = `-- name: ImportDependency :exec
+INSERT INTO issue_dependencies (organization_id,dependent_project_id,dependent_issue_id,blocker_project_id,blocker_issue_id,provenance,source_version,created_at,updated_at)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+ON CONFLICT DO NOTHING
+`
+
+type ImportDependencyParams struct {
+	OrganizationID     tracker.OrganizationID
+	DependentProjectID string
+	DependentIssueID   int64
+	BlockerProjectID   string
+	BlockerIssueID     int64
+	Provenance         string
+	SourceVersion      *string
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+}
+
+func (q *Queries) ImportDependency(ctx context.Context, arg ImportDependencyParams) error {
+	_, err := q.db.ExecContext(ctx, importDependency,
+		arg.OrganizationID,
+		arg.DependentProjectID,
+		arg.DependentIssueID,
+		arg.BlockerProjectID,
+		arg.BlockerIssueID,
+		arg.Provenance,
+		arg.SourceVersion,
+		arg.CreatedAt,
+		arg.UpdatedAt,
+	)
+	return err
+}
+
 const insertDependency = `-- name: InsertDependency :exec
 INSERT INTO issue_dependencies (organization_id,dependent_project_id,dependent_issue_id,blocker_project_id,blocker_issue_id,provenance,created_at,updated_at)
 VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
