@@ -88,7 +88,7 @@ func (c Catalog) Validate() error {
 			if column.Minimum != nil && column.Maximum != nil && *column.Minimum > *column.Maximum {
 				return ErrCatalog
 			}
-			if !identifier(name) || column.Source == "" || !slices.Contains([]string{"preserve", "reject"}, column.Null) || !slices.Contains([]string{"preserve", "null", "reject"}, column.Empty) {
+			if !identifier(name) || column.Source == "" || !slices.Contains([]string{"preserve", "reject"}, column.Null) || !slices.Contains([]string{"preserve", "null", "reject", "max-timestamp"}, column.Empty) || column.Empty == "max-timestamp" && column.Codec != "timestamp" {
 				return ErrCatalog
 			}
 			if !slices.Contains([]string{"text", "int32", "int64", "float64", "bool01", "timestamp", "unix-seconds", "bytes", "object-text", "object-json", "json", "histogram"}, column.Codec) {

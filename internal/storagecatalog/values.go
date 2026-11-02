@@ -87,6 +87,8 @@ func decode(column Column, cell Cell) (Value, error) {
 			return Value{}, ErrValue
 		case "null":
 			return Value{Null: true}, nil
+		case "max-timestamp":
+			return Value{Time: time.Date(9999, time.December, 31, 23, 59, 59, 999999000, time.UTC)}, nil
 		}
 	}
 	switch column.Codec {
