@@ -18,7 +18,7 @@ jobs:
   deploy:
     name: Deploy and smoke production
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: ${{ inputs.postgres_cutover && 360 || 20 }}
     environment:
       name: production
       url: https://cloud.detent.build

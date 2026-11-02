@@ -23,6 +23,9 @@ func TestPostgresCutoverFencesCopiesAndSelectsPostgresRelease(t *testing.T) {
 		{name: "import failure restores SQLite", importFailure: true},
 		{name: "health failure retains PostgreSQL fence", healthFailure: true, wantPostgres: true},
 		{name: "remaining child prevents copy and restart", childRemains: true},
+		{name: "checkpointed WAL source preserves committed data", checkpointedWALSource: true, wantPostgres: true},
+		{name: "empty WAL metadata change preserves committed data", checkpointedWALSource: true, existingEmptyWALSource: true, wantPostgres: true},
+		{name: "changed WAL bytes refuse a sealed copy", sourceWALMutation: true},
 		{name: "inactive service clears its control group", emptyControlGroupAfterStop: true, wantPostgres: true},
 		{name: "empty control group does not hide a remaining child", childRemains: true, emptyControlGroupAfterStop: true},
 		{name: "marker created while waiting for lock", lockConflict: "marker"},
@@ -39,6 +42,9 @@ type cutoverCase struct {
 	importFailure              bool
 	healthFailure              bool
 	childRemains               bool
+	checkpointedWALSource      bool
+	existingEmptyWALSource     bool
+	sourceWALMutation          bool
 	emptyControlGroupAfterStop bool
 	lockConflict               string
 	wantPostgres               bool
@@ -109,16 +115,56 @@ func cutoverFixture(t *testing.T, test cutoverCase) {
 	registryPath := filepath.Join(root, "source-state/registry.db")
 	startRegistryWriter(t, registryPath)
 	for _, path := range []string{
-		filepath.Join(root, "source-state/auth.db"),
-		filepath.Join(root, "tenant-root/org_example/hub.db"),
 		filepath.Join(root, "tenant-root/org_example/hub.db.metrics.sqlite"),
 	} {
 		createSQLiteFile(t, path)
 	}
+	tenantDatabase := filepath.Join(root, "tenant-root/org_example/hub.db")
+	if test.checkpointedWALSource || test.existingEmptyWALSource {
+		createCheckpointedWALSQLiteFile(t, tenantDatabase)
+		if _, err := os.Lstat(tenantDatabase + "-wal"); !os.IsNotExist(err) {
+			t.Fatalf("checkpointed tenant source WAL sidecar exists before cutover: %v", err)
+		}
+		if test.existingEmptyWALSource {
+			if err := os.WriteFile(tenantDatabase+"-wal", nil, 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	} else {
+		createSQLiteFile(t, tenantDatabase)
+	}
+	createSQLiteFile(t, filepath.Join(root, "source-state/auth.db"))
 
 	script, err := os.ReadFile("cutover-postgres.sh")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if test.sourceWALMutation {
+		destination := filepath.Join(root, "sealed-mutated-wal.db")
+		if err := runSealedCopy(t, string(script), registryPath, destination, true); err == nil {
+			t.Fatal("sealed copy accepted changed WAL bytes")
+		}
+		if _, err := os.Stat(destination); !os.IsNotExist(err) {
+			t.Fatalf("changed-WAL destination exists after refusal: %v", err)
+		}
+		return
+	}
+	if test.checkpointedWALSource || test.existingEmptyWALSource {
+		directCopy := filepath.Join(root, "sealed-checkpointed-wal.db")
+		if err := runSealedCopy(t, string(script), tenantDatabase, directCopy, false); err != nil {
+			t.Fatal(err)
+		}
+		if info, err := os.Stat(directCopy); err != nil || !info.Mode().IsRegular() {
+			t.Fatalf("sealed tenant copy file = %v, %v", info, err)
+		}
+		verify := exec.Command("python3", "-c", `import pathlib,sqlite3,sys; db=sqlite3.connect(pathlib.Path(sys.argv[1]).resolve().as_uri()+"?mode=ro&immutable=1",uri=True); assert db.execute("SELECT value FROM fixture").fetchone()[0]=='committed-through-wal'`, directCopy)
+		if result, err := verify.CombinedOutput(); err != nil {
+			t.Fatalf("sealed tenant copy omitted committed WAL data: %v: %s", err, result)
+		}
+		sourceWAL, err := os.Stat(tenantDatabase + "-wal")
+		if err != nil || sourceWAL.Size() != 0 {
+			t.Fatalf("read-only source WAL sidecar = %v, %v; want newly created empty sidecar", sourceWAL, err)
+		}
 	}
 	isolated := strings.NewReplacer(
 		"/opt/detent-hub", filepath.ToSlash(filepath.Join(root, "opt/detent-hub")),
@@ -459,6 +505,17 @@ exec "$@"
 			if result, err := verify.CombinedOutput(); err != nil {
 				t.Fatalf("sealed registry omitted committed WAL row: %v: %s", err, result)
 			}
+			if test.checkpointedWALSource {
+				tenantCopy := filepath.Join(backupRoot, "tenants/org_example/hub.db")
+				verify = exec.Command("python3", "-c", `import sqlite3,sys; db=sqlite3.connect("file:"+sys.argv[1]+"?mode=ro&immutable=1",uri=True); assert db.execute("SELECT value FROM fixture").fetchone()[0]=='committed-through-wal'`, tenantCopy)
+				if result, err := verify.CombinedOutput(); err != nil {
+					t.Fatalf("sealed tenant copy omitted committed WAL data: %v: %s", err, result)
+				}
+				sourceWAL, err := os.Stat(tenantDatabase + "-wal")
+				if err != nil || sourceWAL.Size() != 0 {
+					t.Fatalf("read-only source WAL sidecar = %v, %v; want newly created empty sidecar", sourceWAL, err)
+				}
+			}
 			if _, err := os.Stat(filepath.Join(backupRoot, "tenants/org_example/hub.db.metrics.sqlite")); err != nil {
 				t.Fatalf("tenant metrics source was not retained: %v", err)
 			}
@@ -553,6 +610,83 @@ func createSQLiteFile(t *testing.T, path string) {
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("create SQLite fixture %s: %v: %s", path, err, output)
 	}
+}
+
+func createCheckpointedWALSQLiteFile(t *testing.T, path string) {
+	t.Helper()
+	program := `import sqlite3,sys
+db=sqlite3.connect(sys.argv[1])
+db.execute("PRAGMA journal_mode=WAL")
+db.execute("PRAGMA wal_autocheckpoint=0")
+db.execute("CREATE TABLE fixture(value TEXT)")
+db.execute("INSERT INTO fixture VALUES('committed-through-wal')")
+db.commit()
+db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+db.close()
+`
+	command := exec.Command("python3", "-c", program, path)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("create checkpointed WAL SQLite fixture %s: %v: %s", path, err, output)
+	}
+}
+
+func runSealedCopy(t *testing.T, sourceScript, source, destination string, mutateWAL bool) error {
+	t.Helper()
+	start := strings.Index(sourceScript, "copy_sealed() {")
+	if start < 0 {
+		return fmt.Errorf("copy_sealed function is unavailable")
+	}
+	end := strings.Index(sourceScript[start:], "\n}\n\ncheck_copy_space() {")
+	if end < 0 {
+		return fmt.Errorf("copy_sealed function is unavailable")
+	}
+	copyFunction := sourceScript[start : start+end+2]
+	if mutateWAL {
+		mutation := `wal_path = pathlib.Path(str(source_path) + "-wal")
+wal_info = wal_path.stat()
+with wal_path.open("r+b") as sidecar:
+    first = sidecar.read(1)
+    if not first:
+        raise SystemExit(1)
+    sidecar.seek(0)
+    sidecar.write(bytes([first[0] ^ 1]))
+    sidecar.flush()
+    os.fsync(sidecar.fileno())
+os.utime(wal_path, ns=(wal_info.st_atime_ns, wal_info.st_mtime_ns))
+`
+		originalFunction := copyFunction
+		copyFunction = strings.Replace(copyFunction, "reader.close()\nafter = os.lstat(source_path)", "reader.close()\n"+mutation+"after = os.lstat(source_path)", 1)
+		if copyFunction == originalFunction {
+			return fmt.Errorf("copy_sealed WAL validation point is unavailable")
+		}
+	}
+	currentUser, err := user.Current()
+	if err != nil {
+		return err
+	}
+	currentGroup, err := user.LookupGroupId(currentUser.Gid)
+	if err != nil {
+		return err
+	}
+	program := `#!/bin/bash
+set -Eeuo pipefail
+SERVICE_USER=$FIXTURE_SERVICE_USER
+SERVICE_GROUP=$FIXTURE_SERVICE_GROUP
+sudo() { if [ "${1:-}" = -n ]; then shift; fi; "$@"; }
+` + copyFunction + `
+copy_sealed "$1" "$2"
+`
+	path := filepath.Join(t.TempDir(), "copy-sealed.sh")
+	if err := os.WriteFile(path, []byte(program), 0700); err != nil {
+		return err
+	}
+	command := exec.Command("bash", path, source, destination)
+	command.Env = append(os.Environ(), "FIXTURE_SERVICE_USER="+currentUser.Username, "FIXTURE_SERVICE_GROUP="+currentGroup.Name)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("copy sealed SQLite fixture: %w: %s", err, output)
+	}
+	return nil
 }
 
 func processStat(pid, start string) []byte {
