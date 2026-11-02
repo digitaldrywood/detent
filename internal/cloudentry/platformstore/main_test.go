@@ -18,6 +18,7 @@ import (
 	"github.com/pressly/goose/v3"
 
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -32,10 +33,10 @@ var template = pgtest.NewTemplate(func(ctx context.Context, db *sql.DB) error {
 		return err
 	}
 	db.SetMaxOpenConns(1)
-	if _, err := db.ExecContext(ctx, `SET ROLE detent_migration`); err != nil {
+	if _, err := db.ExecContext(ctx, `SET ROLE `+postgres.MigrationRoleName); err != nil {
 		return err
 	}
-	provider, err := goose.NewProvider(goose.DialectPostgres, db, os.DirFS("../../hubserver/postgres/migrations"), goose.WithDisableGlobalRegistry(true), goose.WithSlog(slog.New(slog.DiscardHandler)))
+	provider, err := goose.NewProvider(goose.DialectPostgres, db, postgres.RoleMigrations(os.DirFS("../../hubserver/postgres/migrations")), goose.WithDisableGlobalRegistry(true), goose.WithSlog(slog.New(slog.DiscardHandler)))
 	if err != nil {
 		return err
 	}
@@ -110,7 +111,7 @@ func testConfig(t *testing.T) Config {
 
 func repository(t *testing.T, db *sql.DB, config Config) *Repository {
 	t.Helper()
-	r, err := New(t.Context(), rolePool(t, db, "detent_platform", ""), config)
+	r, err := New(t.Context(), rolePool(t, db, postgres.PlatformRoleName, ""), config)
 	if err != nil {
 		t.Fatal(err)
 	}

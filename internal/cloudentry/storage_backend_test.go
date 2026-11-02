@@ -40,10 +40,10 @@ var entryPostgresTemplate = pgtest.NewTemplate(func(ctx context.Context, db *sql
 		return err
 	}
 	db.SetMaxOpenConns(1)
-	if _, err := db.ExecContext(ctx, "SET ROLE detent_migration"); err != nil {
+	if _, err := db.ExecContext(ctx, "SET ROLE "+postgres.MigrationRoleName); err != nil {
 		return err
 	}
-	provider, err := goose.NewProvider(goose.DialectPostgres, db, os.DirFS("../hubserver/postgres/migrations"), goose.WithDisableGlobalRegistry(true), goose.WithSlog(slog.New(slog.DiscardHandler)))
+	provider, err := goose.NewProvider(goose.DialectPostgres, db, postgres.RoleMigrations(os.DirFS("../hubserver/postgres/migrations")), goose.WithDisableGlobalRegistry(true), goose.WithSlog(slog.New(slog.DiscardHandler)))
 	if err != nil {
 		return err
 	}
@@ -57,7 +57,7 @@ func entryPostgresConfig(t *testing.T) func(*Config) {
 	name := "example_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 	password := uuid.NewString()
 	quoted := pq.QuoteIdentifier(name)
-	if _, err := admin.ExecContext(t.Context(), "CREATE ROLE "+quoted+" LOGIN PASSWORD "+pq.QuoteLiteral(password)+" IN ROLE detent_platform"); err != nil {
+	if _, err := admin.ExecContext(t.Context(), "CREATE ROLE "+quoted+" LOGIN PASSWORD "+pq.QuoteLiteral(password)+" IN ROLE "+postgres.PlatformRoleName); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
@@ -98,7 +98,7 @@ func newPostgresTenantEntryFixture(t *testing.T) entryFixture {
 		admin := entryPostgresTemplate.Database(t)
 		name, password := "example_"+strings.ReplaceAll(uuid.NewString(), "-", ""), uuid.NewString()
 		quoted := pq.QuoteIdentifier(name)
-		if _, err := admin.ExecContext(t.Context(), "CREATE ROLE "+quoted+" LOGIN PASSWORD "+pq.QuoteLiteral(password)+" IN ROLE detent_runtime"); err != nil {
+		if _, err := admin.ExecContext(t.Context(), "CREATE ROLE "+quoted+" LOGIN PASSWORD "+pq.QuoteLiteral(password)+" IN ROLE "+postgres.RuntimeRoleName); err != nil {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() {

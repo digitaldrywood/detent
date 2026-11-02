@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudentry/platformstore"
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatoradmin"
 	"github.com/digitaldrywood/detent/internal/storagecatalog"
@@ -151,7 +152,7 @@ func platformSQLiteImport(t *testing.T, s *Service, mode string) (*platformstore
 	name := "example_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 	password := uuid.NewString()
 	quoted := pq.QuoteIdentifier(name)
-	if _, err := admin.ExecContext(t.Context(), "CREATE ROLE "+quoted+" LOGIN PASSWORD "+pq.QuoteLiteral(password)+" IN ROLE detent_platform"); err != nil {
+	if _, err := admin.ExecContext(t.Context(), "CREATE ROLE "+quoted+" LOGIN PASSWORD "+pq.QuoteLiteral(password)+" IN ROLE "+postgres.PlatformRoleName); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {

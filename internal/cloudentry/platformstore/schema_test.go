@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/schemafingerprint"
 )
 
@@ -42,7 +43,7 @@ func TestPlatformInventoryAndRoleSeparation(t *testing.T) {
 	if err := db.QueryRowContext(t.Context(), `SELECT count(*) FROM information_schema.columns WHERE table_schema='platform' AND (data_type IN ('json','jsonb') OR column_name LIKE '%\_json' ESCAPE '\')`).Scan(&untyped); err != nil || untyped != 0 {
 		t.Fatalf("untyped columns=%d err=%v", untyped, err)
 	}
-	for _, group := range []string{"detent_runtime", "detent_platform", "detent_migration"} {
+	for _, group := range []string{postgres.RuntimeRoleName, postgres.PlatformRoleName, postgres.MigrationRoleName} {
 		t.Run(group, func(t *testing.T) {
 			pool := rolePool(t, db, group, "")
 			for table := range tables {
@@ -51,12 +52,12 @@ func TestPlatformInventoryAndRoleSeparation(t *testing.T) {
 					if err := db.QueryRowContext(t.Context(), `SELECT pg_get_userbyid(relowner) FROM pg_class WHERE oid=$1::regclass`, "platform."+table).Scan(&owner); err != nil {
 						t.Fatal(err)
 					}
-					if owner != "detent_migration" {
+					if owner != postgres.MigrationRoleName {
 						t.Fatalf("table owner=%s", owner)
 					}
 					var count int
 					err := pool.QueryRowContext(t.Context(), `SELECT count(*) FROM platform.`+table).Scan(&count)
-					if group == "detent_runtime" {
+					if group == postgres.RuntimeRoleName {
 						requireState(t, err, "42501")
 					} else if err != nil {
 						t.Fatal(err)
@@ -71,11 +72,11 @@ func TestPlatformInventoryAndRoleSeparation(t *testing.T) {
 						}
 						_, err = tx.ExecContext(t.Context(), statement)
 						tx.Rollback()
-						if group == "detent_runtime" {
+						if group == postgres.RuntimeRoleName {
 							requireState(t, err, "42501")
 						}
 					}
-					if group == "detent_platform" {
+					if group == postgres.PlatformRoleName {
 						tx, err := pool.BeginTx(t.Context(), nil)
 						if err != nil {
 							t.Fatal(err)
@@ -135,9 +136,9 @@ func TestPlatformConstructorRejectsCombinedAuthority(t *testing.T) {
 		name, group, attributes string
 		want                    error
 	}{
-		{"platform", "detent_platform", "", nil}, {"runtime", "detent_runtime", "", ErrPlatformRole}, {"migration", "detent_migration", "", ErrPlatformRole}, {"no membership", "", "", ErrPlatformRole},
-		{"runtime membership", "detent_platform,detent_runtime", "", ErrPlatformRole}, {"migration membership", "detent_platform,detent_migration", "", ErrPlatformRole},
-		{"superuser", "detent_platform", "SUPERUSER", ErrPlatformRole}, {"bypass RLS", "detent_platform", "BYPASSRLS", ErrPlatformRole}, {"role administrator", "detent_platform", "CREATEROLE", ErrPlatformRole},
+		{"platform", postgres.PlatformRoleName, "", nil}, {"runtime", postgres.RuntimeRoleName, "", ErrPlatformRole}, {"migration", postgres.MigrationRoleName, "", ErrPlatformRole}, {"no membership", "", "", ErrPlatformRole},
+		{"runtime membership", postgres.PlatformRoleName + "," + postgres.RuntimeRoleName, "", ErrPlatformRole}, {"migration membership", postgres.PlatformRoleName + "," + postgres.MigrationRoleName, "", ErrPlatformRole},
+		{"superuser", postgres.PlatformRoleName, "SUPERUSER", ErrPlatformRole}, {"bypass RLS", postgres.PlatformRoleName, "BYPASSRLS", ErrPlatformRole}, {"role administrator", postgres.PlatformRoleName, "CREATEROLE", ErrPlatformRole},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			db := template.Database(t)
