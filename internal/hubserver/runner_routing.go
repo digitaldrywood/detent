@@ -741,6 +741,14 @@ func (s *Service) validateRunnerLease(c echo.Context) error {
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
+	if s.config.TenantRepository != nil {
+		runner, err := s.validateRunnerLeaseTenant(c.Request().Context(), nativeRequestScope(c), tracker.LeaseID(c.Param("lease")), request.FencingToken)
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		c.Response().Header().Set("Cache-Control", "no-store")
+		return c.JSON(http.StatusOK, runner)
+	}
 	return s.runnerReadTransaction(c, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
 		return validateRunnerLeaseTx(ctx, tx, nativeRequestScope(c), tracker.LeaseID(c.Param("lease")), request.FencingToken, now)
 	})
