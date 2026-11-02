@@ -54,8 +54,11 @@ func RunNativeRetryProgressSharedOutagePersistsOneDefect(t *testing.T, factories
 	for index := range 6 {
 		issue := h.createInProgress(t, fmt.Sprintf("Backend outage issue %d", index))
 		h.claim(t, issue.ID)
-		failed := h.scheduler.RunExecution(issue.ID)
+		failed := h.scheduler.RunExecution(issue.ID).(*ownedExecution)
 		if err := failed.Start(t.Context(), tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := failed.PrepareFinish(t.Context(), "failed", "", &tracker.NativeTerminalFailure{Error: "backend protocol unavailable", ErrorClass: "protocol", Stage: "implementation", ObservedAt: time.Now()}); err != nil {
 			t.Fatal(err)
 		}
 		if err := failed.Finish(t.Context(), "failed"); err != nil {
