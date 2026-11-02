@@ -18,7 +18,7 @@ func TestRequestBillingRetentionIsBoundedAndTenantScoped(t *testing.T) {
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		seedTenantAccess(t, repository, org)
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-			for i, metric := range []string{"http_requests", "http_response_bytes", "ai_calls", "http_requests"} {
+			for i, metric := range []string{"http_requests", "http_response_bytes", "ai_calls", "http_requests", "api_mutations", "heartbeats", "ingested_events"} {
 				at := cutoff
 				if i == 3 {
 					at = at.Add(time.Minute)
@@ -32,14 +32,14 @@ func TestRequestBillingRetentionIsBoundedAndTenantScoped(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, test := range []struct{ limit, remaining int }{{1, 3}, {128, 2}} {
+	for _, test := range []struct{ limit, remaining int }{{1, 6}, {128, 2}} {
 		if err := repository.WriteTenant(t.Context(), "org_first", corestore.Background, func(w tenantstore.Writer) error { return w.PruneRequestBillingUsage(t.Context(), cutoff, test.limit) }); err != nil {
 			t.Fatal(err)
 		}
 		for _, org := range []string{"org_first", "org_second"} {
 			want := test.remaining
 			if org == "org_second" {
-				want = 4
+				want = 7
 			}
 			for _, query := range []string{`SELECT count(*) FROM hosted_usage_receipts WHERE organization_id=$1`, `SELECT count(*) FROM hosted_usage_windows WHERE organization_id=$1`} {
 				var got int

@@ -31,6 +31,12 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 	if err := validateProviderReports(request.ProviderReports); err != nil {
 		return s.nativeAPIError(c, err)
 	}
+	if err := request.BackendIsolation.Validate(); err != nil {
+		return s.nativeAPIError(c, nativeInvalid(err.Error()))
+	}
+	if request.SpriteName != "" && !validSpritesSlug(request.SpriteName) {
+		return s.nativeAPIError(c, nativePublicInvalid("Sprite name is invalid"))
+	}
 	if request.CapacityConfig != nil {
 		if err := request.CapacityConfig.Validate(); err != nil {
 			return s.nativeAPIError(c, nativeInvalid(err.Error()))
@@ -70,7 +76,20 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 		if err := w.UpdateRunnerIdentity(ctx, identity); err != nil {
 			return err
 		}
-		if err := w.HeartbeatMachine(ctx, leasestore.Machine{OrganizationID: identity.OrganizationID, ID: string(identity.MachineID), DisplayName: request.DisplayName, Capacity: int64(request.Capacity), Version: request.Version}, receivedAt); err != nil {
+		machineUpdate := leasestore.Machine{OrganizationID: identity.OrganizationID, ID: string(identity.MachineID), DisplayName: request.DisplayName, Capacity: int64(request.Capacity), Version: request.Version, SpriteName: request.SpriteName}
+		if request.SpriteName != "" {
+			machine, err := w.Machine(ctx, machineUpdate.ID)
+			if err != nil {
+				return err
+			}
+			if machine.Hostname != request.SpriteName {
+				return nativePublicInvalid("Sprite name must match the runner hostname")
+			}
+		}
+		if err := w.HeartbeatMachine(ctx, machineUpdate, receivedAt); err != nil {
+			return err
+		}
+		if err := w.ReplaceRunnerBackendIsolation(ctx, identity.RunnerID, request.BackendIsolation); err != nil {
 			return err
 		}
 		previousReports, err := w.RunnerProviderReports(ctx, identity.RunnerID)
@@ -107,6 +126,10 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 		if err != nil {
 			return err
 		}
+		repositoryList, repositoryListErr := w.RunnerRepositoryList(ctx, identity.RunnerID)
+		if repositoryListErr != nil && !errors.Is(repositoryListErr, corestore.ErrNotFound) {
+			return repositoryListErr
+		}
 		if identity.Scope == "organization" {
 			projects = []tracker.ProjectID{}
 		}
@@ -121,7 +144,14 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 			return nativeRunEventStorageUnavailable()
 		}
 		snapshot = runnerauth.RoutingSnapshot{RunnerID: identity.RunnerID, Revision: identity.Revision, Routing: routing}
-		return nil
+		if repositoryListErr == nil && repositoryList.Pending {
+			snapshot.RepositoryListRequest = repositoryList.RequestID
+		}
+		activeLeases, err := w.RunnerActiveLeaseIDs(ctx, identity.RunnerID, receivedAt, 1)
+		if err != nil {
+			return err
+		}
+		return s.applyRunnerTenantUsage(ctx, w, receivedAt, newNativeID("runner_heartbeat"), len(activeLeases) > 0, true)
 	})
 	if err != nil {
 		return s.nativeAPIError(c, err)
@@ -134,7 +164,7 @@ func validateTenantHeartbeatProjection(request nativeMachineHeartbeatRequest) er
 	if len(request.HostMetrics) != 0 && string(request.HostMetrics) != "null" && string(request.HostMetrics) != "[]" {
 		return nativeRunEventStorageUnavailable()
 	}
-	if request.ChangeCursor != nil || request.Admission != nil || request.SpriteName != "" || request.Update != nil || request.LocalChecks != nil || len(request.Problems) != 0 || request.ProtocolMajor > 0 && request.ProtocolMajor != 2 || request.SettingsRejected || len(request.BackendIsolation) != 0 || request.WorkspaceCapabilities != nil || request.WorkspaceIsolation != "" || request.Skills != nil || request.CheckoutRepository != nil {
+	if request.ChangeCursor != nil || request.Admission != nil || request.Update != nil || request.LocalChecks != nil || len(request.Problems) != 0 || request.ProtocolMajor > 0 && request.ProtocolMajor != 2 || request.SettingsRejected || request.WorkspaceCapabilities != nil || request.WorkspaceIsolation != "" || request.Skills != nil || request.CheckoutRepository != nil {
 		return nativeRunEventStorageUnavailable()
 	}
 	if request.ProjectConfiguration == nil {

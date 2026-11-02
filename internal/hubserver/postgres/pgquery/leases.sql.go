@@ -658,9 +658,9 @@ func (q *Queries) PageIssueAttemptsOldest(ctx context.Context, arg PageIssueAtte
 }
 
 const registerLeaseMachine = `-- name: RegisterLeaseMachine :exec
-INSERT INTO machines (organization_id,id,hostname,display_name,capacity,version,last_heartbeat_at,registered_at,updated_at)
-VALUES ($1,$2,$3,$4,$5,$6,clock_timestamp(),clock_timestamp(),clock_timestamp())
-ON CONFLICT (organization_id,id) DO UPDATE SET hostname=EXCLUDED.hostname,display_name=EXCLUDED.display_name,capacity=EXCLUDED.capacity,version=EXCLUDED.version,updated_at=clock_timestamp()
+INSERT INTO machines (organization_id,id,hostname,display_name,capacity,version,sprite_name,last_heartbeat_at,registered_at,updated_at)
+VALUES ($1,$2,$3,$4,$5,$6,$7,clock_timestamp(),clock_timestamp(),clock_timestamp())
+ON CONFLICT (organization_id,id) DO UPDATE SET hostname=EXCLUDED.hostname,display_name=EXCLUDED.display_name,capacity=EXCLUDED.capacity,version=EXCLUDED.version,sprite_name=EXCLUDED.sprite_name,updated_at=clock_timestamp()
 `
 
 type RegisterLeaseMachineParams struct {
@@ -670,6 +670,7 @@ type RegisterLeaseMachineParams struct {
 	DisplayName    string
 	Capacity       int64
 	Version        string
+	SpriteName     string
 }
 
 func (q *Queries) RegisterLeaseMachine(ctx context.Context, arg RegisterLeaseMachineParams) error {
@@ -680,6 +681,7 @@ func (q *Queries) RegisterLeaseMachine(ctx context.Context, arg RegisterLeaseMac
 		arg.DisplayName,
 		arg.Capacity,
 		arg.Version,
+		arg.SpriteName,
 	)
 	return err
 }

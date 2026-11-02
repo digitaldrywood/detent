@@ -924,6 +924,7 @@ type Machine struct {
 	LastHeartbeatAt time.Time
 	RegisteredAt    time.Time
 	UpdatedAt       time.Time
+	SpriteName      string
 }
 
 type MessageReference struct {
@@ -1617,6 +1618,13 @@ type RunnerAvailabilityWindowSlot struct {
 	Capacity       int32
 }
 
+type RunnerBackendIsolation struct {
+	OrganizationID tracker.OrganizationID
+	RunnerID       string
+	Backend        string
+	Tiers          []string
+}
+
 type RunnerEnrollment struct {
 	OrganizationID tracker.OrganizationID
 	ID             string
@@ -1798,6 +1806,20 @@ type RunnerRepositoryList struct {
 	Pending        bool
 	Reason         string
 	ListedAt       *time.Time
+}
+
+type RunnerSpriteMembership struct {
+	OrganizationID       tracker.OrganizationID
+	Name                 string
+	ProviderOrganization string
+	TokenProjectID       string
+	EnrollmentID         string
+	State                string
+	BootstrapLog         string
+	IdleSince            time.Time
+	CreatedAt            time.Time
+	AllocationProjectID  string
+	AllocationRevision   int64
 }
 
 type SearchDocument struct {

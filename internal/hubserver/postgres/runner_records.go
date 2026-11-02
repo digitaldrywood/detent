@@ -12,6 +12,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -919,6 +920,87 @@ func (s *session) ReplaceRunnerRepositories(ctx context.Context, list runnerstor
 		}
 	}
 	return nil
+}
+
+func (s *session) RunnerBackendIsolation(ctx context.Context, runnerID string) (isolation.Report, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT backend,tiers FROM runner_backend_isolations WHERE organization_id=$1 AND runner_id=$2 ORDER BY backend`, s.organization, runnerID)
+	if err != nil {
+		return nil, mapError(ctx, err)
+	}
+	defer rows.Close()
+	report := isolation.Report{}
+	for rows.Next() {
+		var backend string
+		var tiers pq.StringArray
+		if err := rows.Scan(&backend, &tiers); err != nil {
+			return nil, mapError(ctx, err)
+		}
+		report[backend] = append([]string(nil), tiers...)
+	}
+	if err := mapError(ctx, rows.Err()); err != nil {
+		return nil, err
+	}
+	return report, nil
+}
+
+func (s *session) ReplaceRunnerBackendIsolation(ctx context.Context, runnerID string, report isolation.Report) error {
+	if err := s.checkOrganization(s.organization); err != nil {
+		return err
+	}
+	if err := report.Validate(); err != nil {
+		return runnerstore.ErrInvalidRecord
+	}
+	if _, err := s.RunnerIdentity(ctx, runnerID); err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM runner_backend_isolations WHERE organization_id=$1 AND runner_id=$2`, s.organization, runnerID); err != nil {
+		return mapError(ctx, err)
+	}
+	backends := make([]string, 0, len(report))
+	for backend := range report {
+		backends = append(backends, backend)
+	}
+	sort.Strings(backends)
+	for _, backend := range backends {
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO runner_backend_isolations (organization_id,runner_id,backend,tiers) VALUES ($1,$2,$3,$4)`, s.organization, runnerID, backend, pq.Array(report[backend])); err != nil {
+			return mapError(ctx, err)
+		}
+	}
+	return nil
+}
+
+func (s *session) RunnerSpriteMembershipByEnrollment(ctx context.Context, enrollmentID string) (runnerstore.SpriteMembership, error) {
+	var row runnerstore.SpriteMembership
+	var tokenProject, allocationProject string
+	err := s.db.QueryRowContext(ctx, `SELECT organization_id,name,provider_organization,token_project_id,enrollment_id,state,bootstrap_log,idle_since,created_at,allocation_project_id,allocation_revision FROM runner_sprite_memberships WHERE organization_id=$1 AND enrollment_id=$2`, s.organization, enrollmentID).Scan(&row.OrganizationID, &row.Name, &row.ProviderOrganization, &tokenProject, &row.EnrollmentID, &row.State, &row.BootstrapLog, &row.IdleSince, &row.CreatedAt, &allocationProject, &row.AllocationRevision)
+	if err != nil {
+		return runnerstore.SpriteMembership{}, mapError(ctx, err)
+	}
+	row.TokenProjectID = tracker.ProjectID(tokenProject)
+	row.AllocationProjectID = tracker.ProjectID(allocationProject)
+	return row, nil
+}
+
+func (s *session) CreateRunnerSpriteMembership(ctx context.Context, row runnerstore.SpriteMembership) error {
+	if err := s.checkOrganization(row.OrganizationID); err != nil {
+		return err
+	}
+	if err := row.Validate(); err != nil {
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO runner_sprite_memberships (organization_id,name,provider_organization,token_project_id,enrollment_id,state,bootstrap_log,idle_since,created_at,allocation_project_id,allocation_revision) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`, row.OrganizationID, row.Name, row.ProviderOrganization, row.TokenProjectID, row.EnrollmentID, row.State, row.BootstrapLog, row.IdleSince, row.CreatedAt, row.AllocationProjectID, row.AllocationRevision)
+	return mapError(ctx, err)
+}
+
+func (s *session) UpdateRunnerSpriteMembership(ctx context.Context, row runnerstore.SpriteMembership) error {
+	if err := s.checkOrganization(row.OrganizationID); err != nil {
+		return err
+	}
+	if err := row.Validate(); err != nil {
+		return err
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE runner_sprite_memberships SET provider_organization=$3,token_project_id=$4,enrollment_id=$5,state=$6,bootstrap_log=$7,idle_since=$8,created_at=$9,allocation_project_id=$10,allocation_revision=$11 WHERE organization_id=$1 AND name=$2`, row.OrganizationID, row.Name, row.ProviderOrganization, row.TokenProjectID, row.EnrollmentID, row.State, row.BootstrapLog, row.IdleSince, row.CreatedAt, row.AllocationProjectID, row.AllocationRevision)
+	return updateOwned(ctx, result, err)
 }
 
 func updateOwned(ctx context.Context, result sql.Result, err error) error {

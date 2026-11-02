@@ -45,7 +45,10 @@
     "internal/hubserver/postgres/migrations/20261101225000_runner_provider_reports.sql",
     "internal/hubserver/postgres/migrations/20261101225500_runner_capacity_configuration.sql",
     "internal/hubserver/postgres/migrations/20261101231201_search_refresh_progress.sql",
-    "internal/hubserver/postgres/migrations/20261101232125_runner_provider_account_lookup.sql"
+    "internal/hubserver/postgres/migrations/20261101232125_runner_provider_account_lookup.sql",
+    "internal/hubserver/postgres/migrations/20261102000712_runner_usage_retention.sql",
+    "internal/hubserver/postgres/migrations/20261102001107_runner_backend_isolation.sql",
+    "internal/hubserver/postgres/migrations/20261102001229_runner_sprite_membership.sql"
   ],
   "tables": {
     "public.ai_credit_reason_references": {
@@ -162,6 +165,17 @@
       "family": "core",
       "organization": "organization-owned"
     },
+    "public.runner_backend_isolations": {
+      "columns": {
+        "backend": "text",
+        "organization_id": "text",
+        "runner_id": "text",
+        "tiers": "text[]"
+      },
+      "contract": "Retain each tenant runner backend isolation report as a bounded typed capability record.",
+      "family": "fleet",
+      "organization": "organization-owned"
+    },
     "public.runner_availability_window_slots": {
       "columns": {
         "capacity": "integer",
@@ -241,6 +255,24 @@
         "shared_account_alias": "text"
       },
       "contract": "Retain the latest typed provider availability report for each tenant runner backend.",
+      "family": "fleet",
+      "organization": "organization-owned"
+    },
+    "public.runner_sprite_memberships": {
+      "columns": {
+        "allocation_project_id": "text",
+        "allocation_revision": "bigint",
+        "bootstrap_log": "text",
+        "created_at": "timestamp with time zone",
+        "enrollment_id": "text",
+        "idle_since": "timestamp with time zone",
+        "name": "text",
+        "organization_id": "text",
+        "provider_organization": "text",
+        "state": "text",
+        "token_project_id": "text"
+      },
+      "contract": "Retain organization-scoped Sprite membership and allocation facts linked to runner enrollment.",
       "family": "fleet",
       "organization": "organization-owned"
     },

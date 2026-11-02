@@ -13,6 +13,9 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -301,6 +304,47 @@ func (s *Service) createRunnerEnrollmentCommand(ctx context.Context, scope nativ
 	if !request.Valid() && !request.Unbound() || !runnerauth.ValidOperations(request.Operations) || request.Scope != "" && request.Scope != "projects" && request.Scope != "organization" || request.Scope == "organization" && len(request.ProjectIDs) > 0 || request.Scope != "organization" && len(request.ProjectIDs) == 0 || len(request.ProjectIDs) > 100 || request.TTLSeconds <= 0 || request.TTLSeconds > int64(runnerauth.MaxEnrollmentTTL/time.Second) {
 		return nil, &nativeError{Code: "invalid_request", Message: "Enrollment requires valid or omitted host IDs, a project or organization scope and operations, and a TTL of 1 to 900 seconds", status: http.StatusUnprocessableEntity, publicMessage: true}
 	}
+	if s.config.TenantRepository != nil {
+		if request.Scope == "" {
+			request.Scope = "projects"
+		}
+		token, err := s.config.generateToken()
+		if err != nil {
+			return nil, err
+		}
+		var enrollment runnerauth.Enrollment
+		err = s.runnerEnrollmentWriteTenant(ctx, scope, func(ctx context.Context, w tenantstore.Writer, now time.Time) error {
+			for i, project := range request.ProjectIDs {
+				record, err := w.ProjectRecord(ctx, project)
+				if err != nil {
+					if errors.Is(err, corestore.ErrNotFound) {
+						return nativePublicInvalid("Enrollment projects must be unique and belong to the organization")
+					}
+					return err
+				}
+				if record.Core.DeletedAt != nil || slices.Contains(request.ProjectIDs[:i], project) {
+					return nativePublicInvalid("Enrollment projects must be unique and belong to the organization")
+				}
+			}
+			if !request.Unbound() {
+				if err := w.RunnerBindingAvailable(ctx, request.RunnerID, request.MachineID, request.SharedMachine); err != nil {
+					if errors.Is(err, runnerstore.ErrIdentityCollision) {
+						return runnerCollision()
+					}
+					return err
+				}
+			}
+			enrollment = runnerauth.Enrollment{ID: newNativeID("enrollment"), Token: token, ExpiresAt: now.Add(time.Duration(request.TTLSeconds) * time.Second)}
+			if err := w.CreateRunnerEnrollment(ctx, runnerstore.Enrollment{OrganizationID: scope.organization, ID: enrollment.ID, RunnerID: request.RunnerID, MachineID: request.MachineID, TokenHash: apikey.HashToken(token), Scope: request.Scope, SharedMachine: request.SharedMachine, Operations: slices.Clone(request.Operations), ProjectIDs: slices.Clone(request.ProjectIDs), CreatedAt: now, ExpiresAt: enrollment.ExpiresAt, CreatedBy: scope.credential.ID}); err != nil {
+				return err
+			}
+			return s.applyRunnerTenantUsage(ctx, w, now, enrollment.ID, false, false)
+		})
+		if err != nil {
+			return nil, err
+		}
+		return enrollment, nil
+	}
 	return s.runnerAdminTransaction(ctx, scope, false, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
 		return s.createRunnerEnrollmentInTx(ctx, tx, scope, request, now)
 	})
@@ -386,9 +430,39 @@ func (s *Service) revokeRunnerEnrollment(c echo.Context) error {
 }
 
 func (s *Service) revokeRunnerEnrollmentCommand(ctx context.Context, scope nativeScope, resource string) (any, error) {
+	if s.config.TenantRepository != nil {
+		if err := s.runnerEnrollmentWriteTenant(ctx, scope, func(ctx context.Context, w tenantstore.Writer, now time.Time) error {
+			if err := w.RevokeRunnerEnrollment(ctx, resource, now); errors.Is(err, corestore.ErrRevisionConflict) {
+				return nativeNotFound()
+			} else {
+				if err != nil {
+					return err
+				}
+			}
+			return s.applyRunnerTenantUsage(ctx, w, now, resource, true, false)
+		}); err != nil {
+			return nil, err
+		}
+		return struct{}{}, nil
+	}
 	return s.runnerAdminTransaction(ctx, scope, true, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
 		result, err := tx.ExecContext(ctx, "UPDATE runner_enrollments SET revoked_at = ? WHERE id = ? AND organization_id = ? AND redeemed_at IS NULL AND revoked_at IS NULL", formatHubTime(now), resource, string(scope.organization))
 		return struct{}{}, requireRunnerUpdate(result, err)
+	})
+}
+
+func (s *Service) runnerEnrollmentWriteTenant(ctx context.Context, scope nativeScope, write func(context.Context, tenantstore.Writer, time.Time) error) error {
+	if scope.organization == "" {
+		return nativeNotFound()
+	}
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	scope.requireHostedAdmin = true
+	return s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
+			return err
+		}
+		return write(ctx, w, s.config.now().UTC())
 	})
 }
 
@@ -432,6 +506,14 @@ func (s *Service) redeemRunnerEnrollment(c echo.Context) error {
 	}
 	if request.IsolationTier != isolation.Sandbox && request.IsolationTier != isolation.NativeTrusted {
 		return s.nativeAPIError(c, nativePublicInvalid("Isolation tier must be sandbox or native-trusted"))
+	}
+	if s.config.TenantRepository != nil {
+		identity, err := s.redeemRunnerEnrollmentTenant(c.Request().Context(), tracker.OrganizationID(c.Param("organization")), token, request)
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		c.Response().Header().Set("Cache-Control", "no-store")
+		return c.JSON(http.StatusCreated, identity)
 	}
 	return s.runnerTransaction(c, http.StatusCreated, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
 		var id, operations, created, expires, actor, enrollmentScope string

@@ -389,12 +389,18 @@ func (s *Service) requireNativeScope(roles ...apiScope) echo.MiddlewareFunc {
 						return s.nativeAPIError(c, operatortool.ErrAccessDenied)
 					}
 				}
-				if s.config.TenantRepository != nil && (projectRecordRoute(c.Path()) || workItemRecordRoute(c.Path()) || selectedChangeRecordRoute(c.Path()) || selectedGoTestReceiptRoute(c.Path())) {
-					if err := s.authorizeProjectRecord(readCtx, scope, write); err != nil {
-						return s.nativeAPIError(c, err)
-					}
-					if _, err := s.readProjectRecord(readCtx, scope); err != nil {
-						return s.nativeAPIError(c, err)
+				if s.config.TenantRepository != nil && (projectRecordRoute(c.Path()) || workItemRecordRoute(c.Path()) || selectedChangeRecordRoute(c.Path()) || selectedGoTestReceiptRoute(c.Path()) || runnerRepositoryRoute(c.Path())) {
+					if runnerRepositoryReportRoute(c.Path()) && credential.Runner.RunnerID != "" {
+						if err := s.authorizeRunnerRepositoryProject(readCtx, scope); err != nil {
+							return s.nativeAPIError(c, err)
+						}
+					} else {
+						if err := s.authorizeProjectRecord(readCtx, scope, write); err != nil {
+							return s.nativeAPIError(c, err)
+						}
+						if _, err := s.readProjectRecord(readCtx, scope); err != nil {
+							return s.nativeAPIError(c, err)
+						}
 					}
 				} else {
 					if err := s.requireHostedProject(readCtx, s.database.auth(), scope, write); err != nil {

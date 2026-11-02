@@ -48,6 +48,7 @@ type Machine struct {
 	DisplayName    string
 	Capacity       int64
 	Version        string
+	SpriteName     string
 }
 
 type Fence struct {

@@ -39,6 +39,11 @@
     "ownership": "organization-owned",
     "scope": "issue_labels.organization_id; project_id and work_item_id reference issues"
   },
+  "public/runner_backend_isolations": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "runner_backend_isolations.organization_id; runner backend capabilities are tenant-scoped"
+  },
   "public/runner_availability_window_slots": {
     "inline_payloads": [],
     "ownership": "organization-owned",
@@ -68,6 +73,11 @@
     "inline_payloads": [],
     "ownership": "organization-owned",
     "scope": "runner_provider_reports.organization_id; runner report is tenant-scoped"
+  },
+  "public/runner_sprite_memberships": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "runner_sprite_memberships.organization_id; enrollment and allocation facts are tenant-scoped"
   },
   "public/search_documents": {
     "inline_payloads": [],

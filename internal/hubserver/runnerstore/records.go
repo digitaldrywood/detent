@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -138,6 +139,27 @@ type Repository struct {
 	ListedAt       time.Time
 }
 
+type SpriteMembership struct {
+	OrganizationID       tracker.OrganizationID
+	Name                 string
+	ProviderOrganization string
+	TokenProjectID       tracker.ProjectID
+	EnrollmentID         string
+	State                string
+	BootstrapLog         string
+	IdleSince            time.Time
+	CreatedAt            time.Time
+	AllocationProjectID  tracker.ProjectID
+	AllocationRevision   int64
+}
+
+func (row SpriteMembership) Validate() error {
+	if row.OrganizationID == "" || row.Name == "" || len(row.Name) > 200 || row.EnrollmentID == "" || row.ProviderOrganization == "" || row.CreatedAt.IsZero() || row.IdleSince.IsZero() || row.AllocationRevision < 0 || row.State != "bootstrapping" && row.State != "enrolled" && row.State != "deleting" && row.State != "deleted" {
+		return ErrInvalidRecord
+	}
+	return nil
+}
+
 type LeaseAssignment struct {
 	OrganizationID tracker.OrganizationID
 	LeaseID        string
@@ -217,6 +239,8 @@ type Reader interface {
 	RunnerBindingAvailable(context.Context, string, tracker.MachineID, bool) error
 	RunnerRepositoryList(context.Context, string) (RepositoryList, error)
 	RunnerRepositories(context.Context, string, int) ([]Repository, error)
+	RunnerBackendIsolation(context.Context, string) (isolation.Report, error)
+	RunnerSpriteMembershipByEnrollment(context.Context, string) (SpriteMembership, error)
 	RunnerProjectObservation(context.Context, string, tracker.ProjectID, string) (ProjectObservation, []ProjectDiagnosticAttempt, error)
 	RunnerProviderReports(context.Context, string) ([]providercapacity.Report, error)
 }
@@ -234,6 +258,9 @@ type Writer interface {
 	RecordRunnerIdentityEvent(context.Context, Event) error
 	RequestRunnerRepositories(context.Context, string, string) error
 	ReplaceRunnerRepositories(context.Context, RepositoryList, []Repository) error
+	ReplaceRunnerBackendIsolation(context.Context, string, isolation.Report) error
+	CreateRunnerSpriteMembership(context.Context, SpriteMembership) error
+	UpdateRunnerSpriteMembership(context.Context, SpriteMembership) error
 	ReplaceRunnerProjectObservation(context.Context, ProjectObservation, []ProjectDiagnosticAttempt) error
 	ReplaceRunnerProviderReports(context.Context, string, []providercapacity.Report) error
 	LockRunnerProviderAccount(context.Context, ProviderAccountKey, time.Time) (ProviderAccountCapacity, error)

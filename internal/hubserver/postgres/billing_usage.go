@@ -66,9 +66,9 @@ func (s *session) PruneRequestBillingUsage(ctx context.Context, cutoff time.Time
 	if cutoff.IsZero() || limit < 1 || limit > 128 {
 		return corestore.ErrInvalidPage
 	}
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM hosted_usage_receipts WHERE organization_id=$1 AND receipt_id IN (SELECT receipt_id FROM hosted_usage_receipts WHERE organization_id=$1 AND window_start <= $2 AND metric IN ('http_requests','http_duration_microseconds','http_response_bytes','http_request_bytes','http_request_bytes_known') ORDER BY window_start,receipt_id LIMIT $3)`, s.organization, cutoff, limit); err != nil {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM hosted_usage_receipts WHERE organization_id=$1 AND receipt_id IN (SELECT receipt_id FROM hosted_usage_receipts WHERE organization_id=$1 AND window_start <= $2 AND metric IN ('http_requests','http_duration_microseconds','http_response_bytes','http_request_bytes','http_request_bytes_known','api_mutations','heartbeats','ingested_events') ORDER BY window_start,receipt_id LIMIT $3)`, s.organization, cutoff, limit); err != nil {
 		return mapError(ctx, err)
 	}
-	_, err := s.db.ExecContext(ctx, `DELETE FROM hosted_usage_windows WHERE organization_id=$1 AND (window_start,metric) IN (SELECT window_start,metric FROM hosted_usage_windows WHERE organization_id=$1 AND window_start <= $2 AND metric IN ('http_requests','http_duration_microseconds','http_response_bytes','http_request_bytes','http_request_bytes_known') ORDER BY window_start,metric LIMIT $3)`, s.organization, cutoff, limit)
+	_, err := s.db.ExecContext(ctx, `DELETE FROM hosted_usage_windows WHERE organization_id=$1 AND (window_start,metric) IN (SELECT window_start,metric FROM hosted_usage_windows WHERE organization_id=$1 AND window_start <= $2 AND metric IN ('http_requests','http_duration_microseconds','http_response_bytes','http_request_bytes','http_request_bytes_known','api_mutations','heartbeats','ingested_events') ORDER BY window_start,metric LIMIT $3)`, s.organization, cutoff, limit)
 	return mapError(ctx, err)
 }
