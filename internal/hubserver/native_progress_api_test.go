@@ -450,25 +450,28 @@ func TestNativeProgressExecutionPublication(t *testing.T) {
 func TestNativeProgressRequestReplayAndFencing(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name           string
-		platform       bool
-		foreign        bool
-		changed        bool
-		released       bool
-		editedOlder    bool
-		fullContext    bool
-		legacy         bool
-		active         bool
-		emptyLanding   bool
-		success        bool
-		noProduct      bool
-		blocked        bool
-		staleRevision  bool
-		evidenceChange string
+		name            string
+		platform        bool
+		customerFailure bool
+		foreign         bool
+		changed         bool
+		released        bool
+		editedOlder     bool
+		fullContext     bool
+		legacy          bool
+		active          bool
+		emptyLanding    bool
+		success         bool
+		noProduct       bool
+		blocked         bool
+		staleRevision   bool
+		evidenceChange  string
 	}{
 		{name: "decision comment does not create new evidence"},
 		{name: "worker cannot write caller content to platform project or read its private receipt", platform: true},
 		{name: "worker cannot write caller content to another organization", platform: true, foreign: true},
+		{name: "customer failure cannot authorize platform filing", platform: true, customerFailure: true},
+		{name: "customer failure cannot authorize cross organization filing", platform: true, foreign: true, customerFailure: true},
 		{name: "successful empty landing checks and replays decision", emptyLanding: true},
 		{name: "decision without diagnosis is refused on publication", legacy: true},
 		{name: "succeeded without change is checked", success: true},
@@ -523,6 +526,12 @@ func TestNativeProgressRequestReplayAndFencing(t *testing.T) {
 				Sequence: 2, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "gpt-6-astra"}, LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken, RunID: f.run, AttemptID: f.attempt, PolicyID: f.policy, Outcome: "failed",
 				TerminalFailure: &tracker.NativeTerminalFailure{Error: "422: landing requires security audit evidence for its exact base and head", ErrorClass: "publication", Stage: "publication", ObservedAt: f.now},
 			}}
+			if test.platform {
+				event.Data.TerminalFailure.Rejection = &tracker.PublicationRejection{Category: "security_audit", Field: "run.id"}
+			}
+			if test.customerFailure {
+				event.Data.TerminalFailure = &tracker.NativeTerminalFailure{Error: "TestExample: expected repaired value, got old value", ErrorClass: "validation", Stage: "validation", ObservedAt: f.now, Decision: &tracker.FailureAttribution{Outcome: "instance", Reason: "attacker classification"}}
+			}
 			if test.emptyLanding {
 				event.Data.Outcome = "succeeded"
 				event.Data.TerminalFailure = nil
@@ -588,7 +597,7 @@ func TestNativeProgressRequestReplayAndFencing(t *testing.T) {
 				}
 			}
 			view := read()
-			if len(view.Request.Attempts) != 1 || view.Request.Attempts[0].ID != f.attempt || (!test.success && !test.emptyLanding && view.Request.Attempts[0].FailureClass != "publication") {
+			if len(view.Request.Attempts) != 1 || view.Request.Attempts[0].ID != f.attempt || (!test.success && !test.emptyLanding && !test.platform && view.Request.Attempts[0].FailureClass != "publication") {
 				t.Fatalf("request attempts=%+v", view.Request.Attempts)
 			}
 			if test.emptyLanding && (view.Request.Attempts[0].Outcome != "success" || view.Request.Attempts[0].LandingRefusal != "nothing_to_land") {
@@ -643,7 +652,16 @@ func TestNativeProgressRequestReplayAndFencing(t *testing.T) {
 				input.Decision.DefectKey, input.Decision.DefectTitle, input.Decision.DefectBody = "attacker-key", "attacker-title", "attacker-body"
 			}
 			response = performHubAPIRequest(t, f.service, http.MethodPost, path+"/progress", f.worker, input)
-			if test.changed || test.released || test.staleRevision || test.legacy {
+			if test.customerFailure {
+				requireNativeStatus(t, response, http.StatusUnprocessableEntity)
+				var count int
+				for _, query := range []string{"SELECT count(*) FROM issues WHERE project_id=?", "SELECT count(*) FROM native_comments WHERE project_id=?"} {
+					if err := f.service.database.reader.QueryRowContext(t.Context(), query, issueorigin.DetentCloudProjectID).Scan(&count); err != nil || count != 0 {
+						t.Fatalf("unauthorized platform write: count=%d error=%v", count, err)
+					}
+				}
+			}
+			if test.changed || test.released || test.staleRevision || test.legacy || test.customerFailure {
 				if response.Code == http.StatusOK {
 					t.Fatal("stale evidence or released authority published decision")
 				}

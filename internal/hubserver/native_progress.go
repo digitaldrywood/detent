@@ -129,6 +129,25 @@ func (o nativeProgressOwner) publishPrepared(ctx context.Context, record progres
 	var defectScope nativeScope
 	var defectRequest tracker.CreateIssue
 	if record.Decision.Outcome == progresscheck.SystemDefect {
+		if o.scope.credential.Scope != apiScopeAdmin {
+			attributed := false
+			for _, attempt := range o.request.Attempts {
+				if !slices.Contains(record.Decision.Evidence, attempt.ID) || !progresscheck.Failed(attempt.Outcome) {
+					continue
+				}
+				retained, err := readNativeAttemptRecord(ctx, o.service.database.reader, o.scope, record.IssueID, attempt.ID, o.service.config.now())
+				if err != nil {
+					return progresscheck.Record{}, fmt.Errorf("read platform attribution evidence: %w", err)
+				}
+				if failure := retained.TerminalFailure; failure != nil && failure.InfrastructureDecision() != nil {
+					attributed = true
+					break
+				}
+			}
+			if !attributed {
+				return progresscheck.Record{}, nativePublicInvalid("Platform filing requires a cited retained infrastructure failure; report missing diagnostics on the originating item")
+			}
+		}
 		defectScope = nativeScope{credential: apiCredential{Scope: apiScopeAdmin}, project: tracker.ProjectID(issueorigin.DetentCloudProjectID), sourceActor: &tracker.Actor{Kind: "machine", PrincipalID: "hub-progress-check", Agent: "progress-check"}}
 		err := o.service.database.reader.QueryRowContext(ctx, "SELECT organization_id FROM projects WHERE id=? AND deleted_at IS NULL", defectScope.project).Scan(&defectScope.organization)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
