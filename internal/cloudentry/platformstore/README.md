@@ -90,7 +90,7 @@ contains at most 200 organizations and 200 projects per organization; scope read
 have fixed row limits. No history scan, network call under a lock, tenant pool
 registry or periodic fleet work is introduced.
 
-Run the package and shared-schema tests with PostgreSQL 17 binaries on PATH,
+Run the package and shared-schema tests with PostgreSQL 17 or 18 binaries on PATH,
 `DETENT_TEST_POSTGRES=binary`, a worktree-local `TMPDIR`, `-race` and an explicit
 Go test process deadline. Fixtures clone one migrated template, and concurrent
 owners share its two-connection budget. Their assertions cover registry mapping,

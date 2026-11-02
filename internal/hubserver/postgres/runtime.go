@@ -25,7 +25,7 @@ func NewRuntime(ctx context.Context, reader, writer *sql.DB) (*Runtime, error) {
 		}
 		var allowed bool
 		err := pool.QueryRowContext(ctx, `
-			SELECT current_setting('server_version_num')::integer / 10000 = 17
+			SELECT current_setting('server_version_num')::integer / 10000 IN (17, 18)
 			AND current_setting('row_security') = 'on'
 			AND COALESCE(current_setting('detent.organization_id', true), '') = ''
 			AND current_schemas(false) IN (ARRAY['public']::name[], ARRAY['public', 'pg_catalog']::name[])

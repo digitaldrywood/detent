@@ -27,7 +27,7 @@ const Environment = "DETENT_TEST_POSTGRES"
 const fixtureLimit = 4
 const connectionLimit = 2
 
-var errNotConfigured = errors.New("PostgreSQL 17 fixtures require DETENT_TEST_POSTGRES=binary or a disposable local postgres:// URL")
+var errNotConfigured = errors.New("PostgreSQL 17 or 18 fixtures require DETENT_TEST_POSTGRES=binary or a disposable local postgres:// URL")
 
 type Template struct {
 	once    sync.Once
@@ -396,9 +396,10 @@ func openServer(ctx context.Context, selection string) (_ *server, resultErr err
 		s.admin.Close()
 		return nil, errors.New("connect to configured local PostgreSQL fixture server failed")
 	}
-	if version/10000 != 17 {
+	major := version / 10000
+	if major != 17 && major != 18 {
 		s.admin.Close()
-		return nil, fmt.Errorf("PostgreSQL fixture requires version 17, got %d", version/10000)
+		return nil, fmt.Errorf("PostgreSQL fixture requires version 17 or 18, got %d", major)
 	}
 	return s, nil
 }

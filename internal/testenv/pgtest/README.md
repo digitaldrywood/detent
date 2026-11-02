@@ -20,11 +20,11 @@ before the fixture database is dropped.
 
 Select the server explicitly with `DETENT_TEST_POSTGRES`:
 
-- `binary`: run `initdb` and `postgres` from PATH. Use PostgreSQL 17 binaries.
+- `binary`: run `initdb` and `postgres` from PATH. Use PostgreSQL 17 or 18 binaries.
   The cluster lives under `TMPDIR`, listens only on a unique Unix socket, and is
   stopped and removed by `template.Close`. This mode requires Unix socket support.
 - `postgres://example:fake@127.0.0.1:55432/postgres`: attach to a disposable local
-  PostgreSQL 17, including a container published on a loopback port. Supply an
+  PostgreSQL 17 or 18, including a container published on a loopback port. Supply an
   explicit port and a role permitted to create databases. IPv6 loopback and
   `localhost` are supported. For a Unix socket, add `?host=/absolute/socket/path`.
   The helper leaves the attached server running.
@@ -39,7 +39,7 @@ from the explicit test selection. Attachment URLs accept only loopback addresses
 and the optional Unix socket parameter. Error messages do not print URLs or
 passwords. Never point this helper at a production server.
 
-For example, from a linked worktree with PostgreSQL 17 on PATH:
+For example, from a linked worktree with PostgreSQL 17 or 18 on PATH:
 
 ```sh
 mkdir -p "$PWD/tmp"

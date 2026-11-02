@@ -4,7 +4,7 @@ This directory owns the PostgreSQL schema and transaction boundary for the
 core records, request metrics and platform registry/authentication families.
 Provision `roles.sql` as a database administrator, then apply `migrations/`
 with the Goose PostgreSQL dialect as
-`detent_migration_v2` on an empty PostgreSQL 17 database. Existing installations
+`detent_migration_v2` on an empty PostgreSQL 17 or 18 database. Existing installations
 apply only the new timestamp migration after provisioning the roles. The
 SQLite migration chain and runtime remain separate; this package does not
 switch the Hub database backend or import tenant data.
@@ -191,7 +191,7 @@ object keys are references, never encoded inline payloads.
    Do not modify the SQLite chain or edit a previously landed migration. Supply
    reverse dependency order in Goose Down migrations.
 6. Use one `pgtest.NewTemplate` per test process. Migrate its empty database and
-   clone isolated databases for focused table-driven tests on PostgreSQL 17.
+   clone isolated databases for focused table-driven tests on PostgreSQL 17 or 18.
    Test reused identifiers in two tenants, multiple entities within each tenant,
    same-tenant uniqueness, missing tenant keys, and cross-tenant inserts and
    updates. Keep deadlines derived from the test process and temporary files
@@ -652,14 +652,14 @@ dispatch work, allocate a lease, run SQLite maintenance or open a SQLite file.
 At 10,000 tenants and runners, one fixed pool and serving/background budgets
 cover all tenant callbacks. Startup checks build-sized schema metadata and
 role catalogs once, with no tenant enumeration, periodic work, derived writes
-or per-tenant pools (INV-18, INV-21). Isolated PostgreSQL 17 fixtures cover
+or per-tenant pools (INV-18, INV-21). Isolated PostgreSQL 17 and 18 fixtures cover
 backend/configuration rejection, role authority, schema drift, cancellation,
 connection release, separate migrations and refusal to start unported workers;
 they use only private fixture endpoints and generated credentials (INV-22).
 
 ## Deployment capability contract (P27)
 
-A deployment must pass this contract on a disposable PostgreSQL 17 environment
+A deployment must pass this contract on a disposable PostgreSQL 17 or 18 environment
 with the same role permissions, connection path and pooling mode intended for
 the Hub. A local binary pass establishes upstream PostgreSQL compatibility only;
 it does not establish a managed provider's compatibility. A provider that cannot
@@ -678,7 +678,7 @@ Never substitute an owner, administrator, platform or RLS-bypassing runtime logi
 | Unsupported role grants, session defaults and schema drift refuse startup, release connections and expose no service capable of claiming work. | `TestDeploymentRejectsUnsupportedRuntimeCapabilities`, `TestPostgresStartupRejectsUnsafeRoles`, `TestPostgresStartupRejectsSessionDefaults`, `TestPostgresStartupRejectsSchemaDrift`, `TestPostgresStartupOwnsPoolWithoutSQLiteOrWorkers` |
 
 `NewRuntime` checks both supplied pools before returning a transaction boundary.
-It requires PostgreSQL major version 17, `row_security=on`, an empty session
+It requires PostgreSQL major version 17 or 18, `row_security=on`, an empty session
 tenant binding and an effective application search path of `public` or
 `public, pg_catalog`. It verifies required tenant SELECT/INSERT/UPDATE/DELETE
 grants, preserving the read-only conversion-progress and non-deletable cursor
