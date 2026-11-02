@@ -137,14 +137,14 @@ func decode(column Column, cell Cell) (Value, error) {
 		}
 		return Value{Real: value}, nil
 	case "timestamp":
-		if fraction := timestampFraction.FindStringSubmatch(text); len(fraction) != 0 && len(fraction[1]) > 6 && strings.Trim(fraction[1][6:], "0") != "" {
+		if fraction := timestampFraction.FindStringSubmatch(text); len(fraction) != 0 && len(fraction[1]) > 9 && strings.Trim(fraction[1][9:], "0") != "" {
 			return Value{}, ErrValue
 		}
 		value, err := time.Parse(time.RFC3339Nano, text)
-		if err != nil || value.Year() < 1 || value.Year() > 9999 || value.Nanosecond()%1000 != 0 {
+		if err != nil || value.Year() < 1 || value.Year() > 9999 {
 			return Value{}, ErrValue
 		}
-		return Value{Time: value.UTC()}, nil
+		return Value{Time: value.UTC().Truncate(time.Microsecond)}, nil
 	case "histogram":
 		var entries []json.RawMessage
 		if json.Unmarshal(cell.Data, &entries) != nil || len(entries) != 64 {
