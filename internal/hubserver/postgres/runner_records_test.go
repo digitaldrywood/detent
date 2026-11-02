@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -279,6 +280,52 @@ func seedRunnerIdentity(t *testing.T, repository *postgres.Repository, organizat
 		return w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: organization, RunnerID: runnerID, MachineID: tracker.MachineID(machineID), TokenID: runnerID, EnrollmentID: enrollment.ID, Scope: "organization", Operations: enrollment.Operations, CapacityLimit: 1, ReportedCapacity: 1, CreatedAt: now, ExpiresAt: now.Add(time.Hour), LastHeartbeatAt: now})
 	})
 	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSetRunnerUrgentUpdateRejectsNonzeroRevisionWithoutCurrentRow(t *testing.T) {
+	repository, _ := repositoryFor(t, template.Database(t), smallPool())
+	organization := tracker.OrganizationID("org_urgent_cas")
+	now := historyAt()
+	seedTenantAccess(t, repository, organization)
+	seedRunnerIdentity(t, repository, organization, "runner_urgent_cas", "machine_urgent_cas", now, true)
+	request := runnerauth.UpdateRequest{ID: "urgent_request", RequestedAt: now, Service: "detent", Version: "1.2.3", Release: true, Urgent: true}
+	if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+		return w.CreateRunnerUpdateRequest(t.Context(), runnerstore.UpdateRequestRecord{OrganizationID: organization, Request: request})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	noncanonical := request
+	noncanonical.ID = "urgent_submicro"
+	noncanonical.RequestedAt = now.Add(time.Nanosecond)
+	if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+		return w.CreateRunnerUpdateRequest(t.Context(), runnerstore.UpdateRequestRecord{OrganizationID: organization, Request: noncanonical})
+	}); !errors.Is(err, runnerstore.ErrInvalidRecord) {
+		t.Fatalf("create update request with sub-microsecond time: %v", err)
+	}
+	err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+		return w.SetRunnerUrgentUpdate(t.Context(), 1, request.ID, now)
+	})
+	if !errors.Is(err, corestore.ErrRevisionConflict) {
+		t.Fatalf("set missing urgent revision with expected revision 1: %v", err)
+	}
+	if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+		current, err := r.RunnerUrgentUpdate(t.Context())
+		if err != nil {
+			return err
+		}
+		if current.Revision != 0 || current.Request != nil {
+			t.Fatalf("missing-row conflict created urgent state: %+v", current)
+		}
+		if _, err := r.RunnerUpdateRequest(t.Context(), request.ID); err != nil {
+			return err
+		}
+		if _, err := r.RunnerUpdateRequest(t.Context(), noncanonical.ID); !errors.Is(err, corestore.ErrNotFound) {
+			t.Fatalf("sub-microsecond request was stored: %v", err)
+		}
+		return nil
+	}); err != nil {
 		t.Fatal(err)
 	}
 }

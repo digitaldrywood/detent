@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -679,8 +680,17 @@ func TestTenantRunnerHeartbeatPersistsIdentityAndReturnsCurrentRouting(t *testin
 			t.Fatalf("runner %s repository request replay changed ID: %q != %q", runner.runnerID, replayResult.RequestID, requestResult.RequestID)
 		}
 		heartbeatPayload := map[string]any{"display_name": "Example host", "capacity": 2, "version": "0.174.1", "os": "darwin", "architecture": "arm64", "protocol_major": 2}
+		var updateReport *runnerauth.UpdateObservation
+		updateClock := clock.value
 		if runner.runnerID == "runner_example" {
+			clock.value = updateClock.Add(123456100 * time.Nanosecond)
 			heartbeatPayload["provider_reports"] = []providercapacity.Report{providerReport}
+			service.config.Version = "v0.174.2"
+			service.runnerPublishedReleases.Store("v0.174.2/darwin/arm64", true)
+			build := runnerauth.BuildEvidence{Version: "0.174.1", Commit: strings.Repeat("a", 40), Source: "release", SHA256: strings.Repeat("b", 64), OS: "darwin", Architecture: "arm64", ObservedAt: clock.value}
+			updateReport = &runnerauth.UpdateObservation{Discovery: "available", Protocol: 1, Service: "detent", Supported: true, Pending: true, AvailableObservedAt: clock.value, AvailableVersion: "0.174.2", Running: build, ObservedAt: clock.value}
+			updateReport.Revision = updateReport.BuildRevision()
+			heartbeatPayload["update"] = updateReport
 		}
 		heartbeat := performHubAPIRequest(t, service, http.MethodPost, "/api/v2/organizations/"+string(organization.ID)+"/projects/"+string(project.ID)+"/machines/"+runner.machineID+"/heartbeat", runner.secret, heartbeatPayload)
 		requireNativeStatus(t, heartbeat, http.StatusOK)
@@ -689,6 +699,116 @@ func TestTenantRunnerHeartbeatPersistsIdentityAndReturnsCurrentRouting(t *testin
 		if routing.RepositoryListRequest != requestResult.RequestID {
 			t.Fatalf("runner %s heartbeat repository request=%q want=%q", runner.runnerID, routing.RepositoryListRequest, requestResult.RequestID)
 		}
+		if runner.runnerID == "runner_example" {
+			if routing.TargetRunnerVersion != "0.174.2" || routing.Routing.UpdateRequest == nil || !routing.Routing.UpdateRequest.FollowHub {
+				t.Fatalf("published Hub update was not delivered: %+v", routing)
+			}
+			runnerUpdatePath := "/api/v2/organizations/" + string(organization.ID) + "/runners/runner_example/update"
+			readUpdate := func() runnerauth.UpdateView {
+				t.Helper()
+				response := performHubAPIRequest(t, service, http.MethodGet, runnerUpdatePath, testHubAdminToken, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				var view runnerauth.UpdateView
+				decodeHubResponse(t, response, &view)
+				return view
+			}
+			view := readUpdate()
+			if view.Status != "requested" || view.Desired == nil || !view.Desired.FollowHub || view.Observation == nil || view.Observation.Revision != updateReport.Revision {
+				t.Fatalf("persisted follow-Hub update=%+v", view)
+			}
+			if !routing.Routing.UpdateRequest.RequestedAt.Equal(view.Desired.RequestedAt) {
+				t.Fatalf("follow-Hub response request time=%s, persisted=%s", routing.Routing.UpdateRequest.RequestedAt, view.Desired.RequestedAt)
+			}
+			target := runnerauth.BuildEvidence{Version: "0.174.2", Commit: strings.Repeat("c", 40), Source: "release", SHA256: strings.Repeat("d", 64), OS: "darwin", Architecture: "arm64", VerifiedRelease: true, ObservedAt: clock.value}
+			updateReport.Running = target
+			updateReport.AvailableVersion = "0.174.3"
+			updateReport.Revision = updateReport.BuildRevision()
+			updateReport.Receipt = &runnerauth.UpdateReceipt{Request: *view.Desired, Status: "running", Applied: &target, ObservedAt: clock.value}
+			service.config.Version = "v0.174.1"
+			settledPayload := map[string]any{"display_name": "Example host", "capacity": 2, "version": target.Version, "os": "darwin", "architecture": "arm64", "protocol_major": 2, "provider_reports": []providercapacity.Report{providerReport}, "update": updateReport}
+			settled := performHubAPIRequest(t, service, http.MethodPost, "/api/v2/organizations/"+string(organization.ID)+"/projects/"+string(project.ID)+"/machines/"+runner.machineID+"/heartbeat", runner.secret, settledPayload)
+			requireNativeStatus(t, settled, http.StatusOK)
+			var settledRouting runnerauth.RoutingSnapshot
+			decodeHubResponse(t, settled, &settledRouting)
+			view = readUpdate()
+			if view.Status != "running" || view.Desired == nil || view.Desired.ID != routing.Routing.UpdateRequest.ID {
+				t.Fatalf("settled follow-Hub update status=%s desired=%+v observation=%+v receipt=%+v", view.Status, view.Desired, view.Observation, view.Observation.Receipt)
+			}
+			manual := runnerUpdateChange{ExpectedRevision: view.Revision, ExpectedBuildRevision: updateReport.Revision, Service: "detent", Version: "0.174.3", Release: true, FromRelease: true, Confirm: true, IdempotencyKey: "pg-runner-update"}
+			applyPath := runnerUpdatePath + "/apply"
+			applied := performHubAPIRequest(t, service, http.MethodPost, applyPath, testHubAdminToken, manual)
+			requireNativeStatus(t, applied, http.StatusAccepted)
+			var appliedView runnerauth.UpdateView
+			decodeHubResponse(t, applied, &appliedView)
+			if appliedView.Status != "requested" || appliedView.Desired == nil || appliedView.Desired.Version != manual.Version || appliedView.Observation == nil {
+				t.Fatalf("selected runner update response=%+v", appliedView)
+			}
+			if persisted := readUpdate(); persisted.Desired == nil || !appliedView.Desired.RequestedAt.Equal(persisted.Desired.RequestedAt) {
+				t.Fatalf("selected runner update response request time=%s, persisted=%+v", appliedView.Desired.RequestedAt, persisted.Desired)
+			}
+			replay := performHubAPIRequest(t, service, http.MethodPost, applyPath, testHubAdminToken, manual)
+			requireNativeStatus(t, replay, http.StatusAccepted)
+			if !bytes.Equal(applied.Body.Bytes(), replay.Body.Bytes()) {
+				t.Fatal("selected runner update replay changed")
+			}
+			urgentPath := "/api/v2/organizations/" + string(organization.ID) + "/runner-update/urgent"
+			urgentRequest := urgentRunnerUpdateChange{ExpectedRevision: 0, Version: "0.174.4", Confirm: true, IdempotencyKey: "pg-urgent-runner-update"}
+			urgentResponse := performHubAPIRequest(t, service, http.MethodPut, urgentPath, testHubAdminToken, urgentRequest)
+			requireNativeStatus(t, urgentResponse, http.StatusAccepted)
+			var urgent urgentRunnerUpdate
+			decodeHubResponse(t, urgentResponse, &urgent)
+			if urgent.Revision != 1 || urgent.Request == nil || !urgent.Request.Urgent || urgent.Request.Version != urgentRequest.Version {
+				t.Fatalf("typed urgent update=%+v", urgent)
+			}
+			urgentRead := performHubAPIRequest(t, service, http.MethodGet, urgentPath, testHubAdminToken, nil)
+			requireNativeStatus(t, urgentRead, http.StatusOK)
+			var storedUrgent urgentRunnerUpdate
+			decodeHubResponse(t, urgentRead, &storedUrgent)
+			if storedUrgent.Revision != urgent.Revision || storedUrgent.Request == nil || !storedUrgent.Request.Matches(*urgent.Request) {
+				t.Fatalf("typed urgent update read=%+v want=%+v", storedUrgent, urgent)
+			}
+			if !urgent.Request.RequestedAt.Equal(storedUrgent.Request.RequestedAt) {
+				t.Fatalf("urgent response request time=%s, persisted=%s", urgent.Request.RequestedAt, storedUrgent.Request.RequestedAt)
+			}
+			urgentReplay := performHubAPIRequest(t, service, http.MethodPut, urgentPath, testHubAdminToken, urgentRequest)
+			requireNativeStatus(t, urgentReplay, http.StatusAccepted)
+			if !bytes.Equal(urgentResponse.Body.Bytes(), urgentReplay.Body.Bytes()) {
+				t.Fatal("urgent runner update replay changed")
+			}
+			startUrgentWrites := make(chan struct{})
+			urgentResponses := make(chan *httptest.ResponseRecorder, 2)
+			for index := 0; index < 2; index++ {
+				request := newHubAPIRequest(t, http.MethodPut, urgentPath, testHubAdminToken, urgentRunnerUpdateChange{ExpectedRevision: urgent.Revision, Version: urgentRequest.Version, Confirm: true, IdempotencyKey: fmt.Sprintf("pg-urgent-race-%d", index)})
+				go func() {
+					<-startUrgentWrites
+					response := httptest.NewRecorder()
+					service.Handler().ServeHTTP(response, request)
+					urgentResponses <- response
+				}()
+			}
+			close(startUrgentWrites)
+			accepted, conflicted := 0, 0
+			for range 2 {
+				response := <-urgentResponses
+				switch response.Code {
+				case http.StatusAccepted:
+					accepted++
+				case http.StatusConflict:
+					conflict := requireNativeError(t, response, http.StatusConflict, "revision_conflict")
+					if conflict.CurrentRevision != 2 {
+						t.Fatalf("concurrent urgent update conflict revision=%d want=2", conflict.CurrentRevision)
+					}
+					conflicted++
+				default:
+					t.Fatalf("concurrent urgent update status=%d body=%s", response.Code, response.Body.String())
+				}
+			}
+			if accepted != 1 || conflicted != 1 {
+				t.Fatalf("concurrent urgent update outcomes accepted=%d conflicted=%d want=1/1", accepted, conflicted)
+			}
+			service.config.Version = ""
+		}
+		clock.value = updateClock
 		report := map[string]any{"idempotency_key": requestResult.RequestID, "request_id": requestResult.RequestID, "repositories": []runnerauth.Repository{{Owner: "example-org", Name: runner.runnerID, Private: true}}}
 		response := performHubAPIRequest(t, service, http.MethodPost, "/api/v2/organizations/"+string(organization.ID)+"/projects/"+string(project.ID)+"/onboarding/repositories/report", runner.secret, report)
 		requireNativeStatus(t, response, http.StatusOK)
@@ -769,6 +889,9 @@ func TestTenantRunnerHeartbeatPersistsIdentityAndReturnsCurrentRouting(t *testin
 	requireNativeStatus(t, baseline, http.StatusOK)
 	var baselineSnapshot runnerauth.RoutingSnapshot
 	decodeHubResponse(t, baseline, &baselineSnapshot)
+	if baselineSnapshot.Routing.UpdateRequest == nil || !baselineSnapshot.Routing.UpdateRequest.Urgent || baselineSnapshot.Routing.UpdateRequest.Version != "0.174.4" {
+		t.Fatalf("urgent update was not included in runner routing: %+v", baselineSnapshot.Routing)
+	}
 	if baselineSnapshot.Changes == nil || !baselineSnapshot.Changes.Reset || baselineSnapshot.Changes.Cursor == "" {
 		t.Fatalf("initial heartbeat changes = %+v", baselineSnapshot.Changes)
 	}
@@ -940,8 +1063,8 @@ func TestTenantRunnerHeartbeatPersistsIdentityAndReturnsCurrentRouting(t *testin
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if mutations != 21 || heartbeats != 12 {
-		t.Fatalf("runner protocol usage api_mutations=%d heartbeats=%d want=21/12", mutations, heartbeats)
+	if mutations != 25 || heartbeats != 13 {
+		t.Fatalf("runner protocol usage api_mutations=%d heartbeats=%d want=25/13", mutations, heartbeats)
 	}
 }
 

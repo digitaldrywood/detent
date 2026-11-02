@@ -306,6 +306,9 @@ type Reader interface {
 	RunnerWorkspaceReport(context.Context, string) (workspacesession.Capabilities, string, error)
 	RunnerProjectSkills(context.Context, tracker.ProjectID, string, time.Time, int) ([]ProjectSkill, error)
 	RunnerCheckoutVerified(context.Context, tracker.ProjectID, string, time.Time) (bool, error)
+	RunnerUpdateState(context.Context, string) (UpdateState, error)
+	RunnerUpdateRequest(context.Context, string) (UpdateRequestRecord, error)
+	RunnerUrgentUpdate(context.Context) (UrgentUpdate, error)
 }
 
 type Writer interface {
@@ -336,4 +339,8 @@ type Writer interface {
 	ReplaceRunnerWorkspaceReport(context.Context, string, workspacesession.Capabilities, string) error
 	ReplaceRunnerProjectSkills(context.Context, string, tracker.ProjectID, []skills.ProviderSkill, time.Time) error
 	ReplaceRunnerCheckoutReport(context.Context, CheckoutReport) error
+	CreateRunnerUpdateRequest(context.Context, UpdateRequestRecord) error
+	SetRunnerUpdateDesired(context.Context, string, int64, string) error
+	ReplaceRunnerUpdateObservation(context.Context, string, *runnerauth.UpdateObservation) error
+	SetRunnerUrgentUpdate(context.Context, int64, string, time.Time) error
 }

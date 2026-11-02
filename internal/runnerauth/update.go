@@ -59,6 +59,10 @@ type UpdateRequest struct {
 	FollowHub             bool      `json:"follow_hub,omitempty"`
 }
 
+func (r UpdateRequest) Matches(other UpdateRequest) bool {
+	return r.RequestedAt.Equal(other.RequestedAt) && r.ID == other.ID && r.Service == other.Service && r.ExpectedBuildRevision == other.ExpectedBuildRevision && r.Version == other.Version && r.Release == other.Release && r.FromRelease == other.FromRelease && r.Urgent == other.Urgent && r.FollowHub == other.FollowHub
+}
+
 func (r UpdateRequest) Validate() error {
 	if !updateIdentifier.MatchString(r.ID) || r.Service != "detent" || r.RequestedAt.IsZero() || !r.Urgent && !updateDigest(r.ExpectedBuildRevision) || r.Urgent && (!r.Release || r.ExpectedBuildRevision != "") || r.FollowHub && (!r.Release || r.Urgent) || !updateIdentifier.MatchString(r.Version) || r.FromRelease && !r.Release {
 		return errors.New("update requires the selected detent service, observed build revision and release version")
@@ -203,7 +207,7 @@ func (r Runner) UpdateView(now time.Time) UpdateView {
 	view.Status = "ready"
 	if r.UpdateRequest != nil {
 		view.Status = "requested"
-		if r.Update.Receipt != nil && r.Update.Receipt.Request == *r.UpdateRequest {
+		if r.Update.Receipt != nil && r.Update.Receipt.Request.Matches(*r.UpdateRequest) {
 			view.Status = r.Update.Receipt.Status
 			if view.Status == "refused" && r.Update.Running.VerifiedRelease && strings.TrimPrefix(r.Update.Running.Version, "v") == strings.TrimPrefix(r.UpdateRequest.Version, "v") {
 				view.Status = "running"

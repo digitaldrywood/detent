@@ -2321,6 +2321,84 @@ type RunnerSpriteMembership struct {
 	AllocationRevision   int64
 }
 
+type RunnerUpdateBuildEvidence struct {
+	OrganizationID  tracker.OrganizationID
+	RunnerID        string
+	EvidenceRole    string
+	Version         string
+	CommitID        string
+	Source          string
+	Sha256          string
+	Os              string
+	Architecture    string
+	VerifiedRelease bool
+	ObservedAt      time.Time
+}
+
+type RunnerUpdateDesired struct {
+	OrganizationID tracker.OrganizationID
+	RunnerID       string
+	RequestID      string
+}
+
+type RunnerUpdateObservation struct {
+	OrganizationID         tracker.OrganizationID
+	RunnerID               string
+	Discovery              string
+	Protocol               int32
+	Service                string
+	Revision               string
+	Supported              bool
+	Pending                bool
+	AvailableObservedAt    *time.Time
+	AvailableVersion       string
+	ObservedAt             time.Time
+	ReceivedAt             time.Time
+	RunningVersion         string
+	RunningCommit          string
+	RunningSource          string
+	RunningSha256          string
+	RunningOs              string
+	RunningArchitecture    string
+	RunningVerifiedRelease bool
+	RunningObservedAt      time.Time
+}
+
+type RunnerUpdateReceipt struct {
+	OrganizationID            tracker.OrganizationID
+	RunnerID                  string
+	RequestID                 string
+	ExecutionArtifact         bool
+	DrainReason               string
+	FailureReason             string
+	Status                    string
+	ObservedAt                time.Time
+	PreviousFailureRequestID  *string
+	PreviousFailureReason     *string
+	PreviousFailureObservedAt *time.Time
+}
+
+type RunnerUpdateRequest struct {
+	OrganizationID        tracker.OrganizationID
+	RequestID             string
+	RunnerID              *string
+	RequestedAt           time.Time
+	Service               string
+	ExpectedBuildRevision string
+	Version               string
+	Release               bool
+	FromRelease           bool
+	Urgent                bool
+	FollowHub             bool
+}
+
+type RunnerUrgentUpdate struct {
+	OrganizationID tracker.OrganizationID
+	Revision       int64
+	RequestID      *string
+	UpdatedAt      time.Time
+}
+
 type RunnerWorkspaceReport struct {
 	OrganizationID tracker.OrganizationID
 	RunnerID       string

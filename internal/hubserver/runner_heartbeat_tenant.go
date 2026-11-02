@@ -39,6 +39,9 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 	if err := request.BackendIsolation.Validate(); err != nil {
 		return s.nativeAPIError(c, nativeInvalid(err.Error()))
 	}
+	if err := validateRunnerUpdateObservation(request.Update, request.ProtocolMajor, request.Version, request.OS, request.Architecture); err != nil {
+		return s.nativeAPIError(c, err)
+	}
 	if request.SpriteName != "" && !validSpritesSlug(request.SpriteName) {
 		return s.nativeAPIError(c, nativePublicInvalid("Sprite name is invalid"))
 	}
@@ -80,6 +83,8 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 	if err := validateRunnerCheckoutReport(nativeScope{credential: credential}, request.CheckoutRepository); err != nil {
 		return s.nativeAPIError(c, err)
 	}
+	updateTarget := runnerUpdateTarget(s.config.Version)
+	updateReleasePublished := request.Update != nil && request.Update.Supported && updateTarget != "" && s.runnerReleasePublished(c.Request().Context(), updateTarget, request.OS, request.Architecture)
 	var changeCursor nativeCursor
 	var changeKey []byte
 	var changeReset bool
@@ -210,6 +215,9 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 				return err
 			}
 		}
+		if err := s.storeRunnerUpdateObservationTenant(ctx, w, identity, request.Update, request.ProtocolMajor, request.Version, request.OS, request.Architecture, receivedAt, updateReleasePublished); err != nil {
+			return err
+		}
 		if request.ProjectConfiguration != nil {
 			view := *request.ProjectConfiguration
 			if view.RunnerID != "" && view.RunnerID != identity.RunnerID || view.RunnerRevision != 0 && view.RunnerRevision != identity.Revision {
@@ -278,6 +286,10 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 		if err := w.ReplaceRunnerProblems(ctx, identity.RunnerID, mergeRunnerProblems(problems, request.Problems, request.ProtocolMajor, request.SettingsRejected, receivedAt)); err != nil {
 			return err
 		}
+		identity, err = w.RunnerIdentity(ctx, identity.RunnerID)
+		if err != nil {
+			return err
+		}
 		projects, err := w.RunnerProjects(ctx, identity.RunnerID, runnerstore.MaxRunnerProjectList)
 		if err != nil {
 			return err
@@ -295,6 +307,17 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 			ProjectRanks: identity.ProjectRanks, ProjectIDs: projects, IsolationTier: identity.IsolationTier, HostServices: slices.Clone(identity.HostServices),
 			Availability: runnerauth.Availability{Timezone: identity.Availability.Timezone, Windows: slices.Clone(identity.Availability.Windows), WindowSlots: identity.Availability.WindowSlots, HardDeadline: identity.Availability.HardDeadline},
 		}
+		updateState, err := w.RunnerUpdateState(ctx, identity.RunnerID)
+		if err != nil {
+			return err
+		}
+		updateRunner := runnerauth.Runner{Routing: runnerauth.Routing{UpdateRequest: updateState.Desired}, Update: updateState.Observation}
+		urgentUpdate, err := w.RunnerUrgentUpdate(ctx)
+		if err != nil {
+			return err
+		}
+		applyUrgentRunnerRouting(&updateRunner, urgentRunnerUpdate{Revision: urgentUpdate.Revision, Request: urgentUpdate.Request}, request.Version)
+		routing.UpdateRequest = updateRunner.UpdateRequest
 		routing = routing.Normalized()
 		if err := routing.Validate(); err != nil {
 			return nativeRunEventStorageUnavailable()
@@ -302,6 +325,9 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 		snapshot = runnerauth.RoutingSnapshot{RunnerID: identity.RunnerID, Revision: identity.Revision, Routing: routing}
 		snapshot.HostMetricsAcknowledged = acknowledgments
 		snapshot.Changes = heartbeatChanges
+		if updateReleasePublished {
+			snapshot.TargetRunnerVersion = strings.TrimPrefix(updateTarget, "v")
+		}
 		if repositoryListErr == nil && repositoryList.Pending {
 			snapshot.RepositoryListRequest = repositoryList.RequestID
 		}
@@ -319,9 +345,6 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 }
 
 func validateTenantHeartbeatProjection(request nativeMachineHeartbeatRequest) error {
-	if request.Update != nil {
-		return nativeRunEventStorageUnavailable()
-	}
 	if request.ProjectConfiguration == nil {
 		return nil
 	}
