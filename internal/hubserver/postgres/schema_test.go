@@ -192,6 +192,9 @@ func TestTargetOnlyBillingSchemaMatchesContracts(t *testing.T) {
 func seedCore(t *testing.T, db *sql.DB) {
 	t.Helper()
 	for _, org := range []string{"org_first", "org_second"} {
+		if _, err := db.ExecContext(t.Context(), `INSERT INTO organizations(organization_id,name,local,created_at) VALUES($1,$1,false,$2) ON CONFLICT(organization_id) DO NOTHING`, org, historyAt()); err != nil {
+			t.Fatal(err)
+		}
 		for _, suffix := range []string{"shared", "other"} {
 			for _, statement := range []string{
 				`INSERT INTO projects (organization_id,id,name,slug,profile) VALUES ($1,'prj_' || $2,$2,$2,'native')`,
