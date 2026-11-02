@@ -322,10 +322,11 @@ func progressDefectRequest(request progresscheck.Request) tracker.CreateIssue {
 		}
 	}
 	fingerprint := issueorigin.Fingerprint("progress-check:" + material)
-	body := "The Hub recorded unsuccessful execution while checking progress. Retained attempts identify the observation; the diagnosis remains on the originating item."
+	var body strings.Builder
+	body.WriteString("The Hub recorded unsuccessful execution while checking progress. Retained attempts identify the observation; the diagnosis remains on the originating item.")
 	for _, attempt := range request.Attempts {
-		body += "\n\nRecorded attempt: `" + attempt.ID + "`"
+		body.WriteString("\n\nRecorded attempt: `" + attempt.ID + "`")
 	}
-	body = issueorigin.Stamp(body, issueorigin.Origin{Kind: "worker", Instance: "progress-check", Source: request.ProjectID + "/" + request.IssueID, Fingerprint: fingerprint})
-	return tracker.CreateIssue{Title: "Platform progress failure " + fingerprint[:12], Body: body, State: "Backlog"}
+	stamped := issueorigin.Stamp(body.String(), issueorigin.Origin{Kind: "worker", Instance: "progress-check", Source: request.ProjectID + "/" + request.IssueID, Fingerprint: fingerprint})
+	return tracker.CreateIssue{Title: "Platform progress failure " + fingerprint[:12], Body: stamped, State: "Backlog"}
 }
