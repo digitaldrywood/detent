@@ -13,6 +13,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	chatpkg "github.com/digitaldrywood/detent/internal/chat"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -639,6 +642,50 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 		}
 		if r.Input.ObservedPolicyID == "" && workflowconfig.ValidateSharedPolicy(r.Input.Policy) != nil {
 			return nil, &operatortool.RequestError{Code: "invalid_request", Message: "Policy configuration is invalid or its digest does not match the descriptor"}
+		}
+		if s.config.TenantRepository != nil {
+			scope.project = tracker.ProjectID(r.ProjectID)
+			if mode == projectCommandPreview {
+				return nil, nil
+			}
+			change := policy.Change{ExpectedID: r.Input.ExpectedID, ObservedPolicyID: r.Input.ObservedPolicyID, Policy: r.Input.Policy}
+			hash, err := nativeCommandHash(struct {
+				Change           policy.Change
+				RepositoryPolicy bool
+			}{change, r.Input.RepositoryPolicy})
+			if err != nil {
+				return nil, err
+			}
+			operation := projectOperationID(scope, "PUT", "/policy")
+			raw, found, err := s.authorizedChangeRecordReceipt(ctx, scope, operation, r.RequestID, hash)
+			if err != nil || found {
+				return raw, err
+			}
+			if mode == projectCommandReplay {
+				return nil, nil
+			}
+			if r.Input.RepositoryPolicy {
+				var record projectstore.Record
+				err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+					if err := s.authorizeAccessScope(ctx, reader, scope, false); err != nil {
+						return err
+					}
+					var err error
+					record, err = reader.ProjectRecord(ctx, scope.project)
+					return err
+				})
+				if err != nil {
+					return nil, err
+				}
+				if record.Core.Profile != "native" || record.Settings.CheckoutRepository == "" {
+					return nil, &operatortool.RequestError{Code: "invalid_request", Message: "Project has no linked repository policy; use repository_policy:false for its project policy"}
+				}
+			}
+			approval, err := s.approveTenantProjectPolicyWithReceipt(ctx, scope, scope.credential.ID, change, &tenantPolicyCommandReceipt{Operation: operation, Key: r.RequestID, Hash: hash})
+			if err != nil {
+				return nil, err
+			}
+			return json.Marshal(approval)
 		}
 		input = r.Input
 		operation = func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {

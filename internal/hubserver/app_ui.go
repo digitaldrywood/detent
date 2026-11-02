@@ -21,6 +21,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/projecticon"
 	"github.com/digitaldrywood/detent/internal/readableurl"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -696,6 +700,9 @@ func (s *Service) hostedReadableProjects(ctx context.Context, credential apiCred
 	if s.config.Hosted == nil {
 		return s.localAppProjects(ctx, credential)
 	}
+	if s.config.TenantRepository != nil {
+		return s.hostedReadableProjectsPostgres(ctx, credential)
+	}
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	projects := []appBootstrapProject{}
@@ -782,11 +789,73 @@ ORDER BY p.name,p.id`, kind, owner, kind, owner, s.config.Hosted.OrganizationID,
 	return projects, nil
 }
 
+func (s *Service) hostedReadableProjectsPostgres(ctx context.Context, credential apiCredential) ([]appBootstrapProject, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	const pageSize = 200
+	projects := []appBootstrapProject{}
+	after := tracker.ProjectID("")
+	for {
+		filter := projectAccessFilter(credential, "", after, pageSize)
+		var rows []accessstore.ProjectAccess
+		var records []projectstore.Record
+		err := s.config.TenantRepository.ReadTenant(ctx, tracker.OrganizationID(s.config.Hosted.OrganizationID), corestore.Serving, func(reader tenantstore.Reader) error {
+			pageReader, ok := reader.(accessstore.ProjectAccessPageReader)
+			if !ok {
+				return ErrProjectParticipants
+			}
+			var err error
+			rows, err = pageReader.ProjectAccessPage(ctx, filter)
+			if err != nil {
+				return err
+			}
+			count := len(rows)
+			if count > pageSize {
+				count = pageSize
+			}
+			records = make([]projectstore.Record, 0, count)
+			for _, row := range rows[:count] {
+				record, err := reader.ProjectRecord(ctx, row.ProjectID)
+				if err != nil {
+					return err
+				}
+				records = append(records, record)
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, fmt.Errorf("list hosted projects from tenant: %w", err)
+		}
+		count := len(rows)
+		if count > pageSize {
+			count = pageSize
+		}
+		for i, record := range records {
+			project := appBootstrapProject{ID: string(record.Core.ID), Name: record.Core.Name, Slug: record.Core.Slug, Profile: record.Core.Profile, States: record.States, CanWrite: rows[i].CanWrite, CanManageRunners: rows[i].ManageRunner}
+			viewer := credential.HostedRole == "viewer"
+			if credential.EntryKey != nil {
+				project.CanWrite = project.CanWrite && hostedKeyAllows(credential.HostedKeyScope, apikey.ScopeWrite)
+				project.CanManageRunners = project.CanManageRunners && hostedKeyAllows(credential.HostedKeyScope, apikey.ScopeAdmin)
+			}
+			project.CanWrite = project.CanWrite && !viewer
+			project.CanManageRunners = project.CanManageRunners && !viewer
+			projects = append(projects, project)
+		}
+		if count < pageSize || count == 0 {
+			return projects, nil
+		}
+		after = rows[count-1].ProjectID
+	}
+}
+
 func (s *Service) hostedWorkspaceCapabilities(ctx context.Context, credential apiCredential, project appBootstrapProject) (workspacesession.Capabilities, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	result := workspacesession.Capabilities{}
 	if s.workspaces == nil || !project.CanWrite || credential.Hosted == nil || credential.HostedRole == "viewer" {
+		return result, nil
+	}
+	if s.config.TenantRepository != nil {
 		return result, nil
 	}
 	rows, err := s.database.reader.QueryContext(ctx, `SELECT r.id FROM runner_identities r

@@ -699,6 +699,32 @@ func (s *Service) changeRecordReceipt(ctx context.Context, scope nativeScope, op
 	return value, true, err
 }
 
+func (s *Service) authorizedChangeRecordReceipt(ctx context.Context, scope nativeScope, operation, key, hash string) (json.RawMessage, bool, error) {
+	if s.config.AccessRepository == nil {
+		return nil, false, nativeNotFound()
+	}
+	var receipt eventstore.Receipt
+	err := s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
+			return err
+		}
+		var err error
+		receipt, err = w.Receipt(ctx, scope.credential.ID, operation, key)
+		return err
+	})
+	if errors.Is(err, corestore.ErrNotFound) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, projectRecordError(err)
+	}
+	if receipt.RequestHash != hash {
+		return nil, false, nativeConflict(0)
+	}
+	value, err := eventstore.NewContent(s.runDetailStore()).Receipt(ctx, receipt)
+	return value, true, err
+}
+
 func (s *Service) selectedChangeDetail(ctx context.Context, scope nativeScope, item, id string, now time.Time) (tracker.ChangeDetail, error) {
 	change, err := s.readChangeRecord(ctx, scope, item, id)
 	if err != nil {

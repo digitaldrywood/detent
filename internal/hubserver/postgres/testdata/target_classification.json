@@ -9,10 +9,30 @@
     "ownership": "organization-owned",
     "scope": "change_review_policy_revisions.organization_id; project_id and review_policy_id identify immutable approval history"
   },
+  "public/conversation_billing_imports": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "conversation_billing_imports.organization_id; pinned source snapshot and verified import completion counts"
+  },
   "public/conversation_content_objects": {
     "inline_payloads": [],
     "ownership": "organization-owned",
     "scope": "conversation_content_objects.organization_id; archive metadata references externally verified object bytes"
+  },
+  "public/cost_import_heads": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "cost_import_heads.organization_id; snapshot import state and retained cost revision evidence"
+  },
+  "public/cost_import_rows": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "cost_import_rows.organization_id; snapshot import state and retained cost revision evidence"
+  },
+  "public/cost_imports": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "cost_imports.organization_id; snapshot import state and retained cost revision evidence"
   },
   "public/cost_monthly_totals": {
     "inline_payloads": [],
@@ -59,30 +79,30 @@
     "ownership": "organization-owned",
     "scope": "issue_labels.organization_id; project_id and work_item_id reference issues"
   },
+  "public/lease_policy_bindings": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "lease_policy_bindings.organization_id; project and policy bind the lease to its approved revision"
+  },
   "public/native_board_access_revisions": {
     "inline_payloads": [],
     "ownership": "organization-owned",
     "scope": "native_board_access_revisions.organization_id; subject_kind and subject_id identify one tenant-local invalidation counter"
   },
-  "public/runner_native_admission_observations": {
+  "public/policy_revision_approvals": {
     "inline_payloads": [],
     "ownership": "organization-owned",
-    "scope": "runner_native_admission_observations.organization_id; runner and project admission evidence are tenant-scoped"
+    "scope": "policy_revision_approvals.organization_id; immutable approval attribution is project policy revision scoped"
   },
-  "public/runner_native_admission_selectors": {
+  "public/project_event_cursors": {
     "inline_payloads": [],
     "ownership": "organization-owned",
-    "scope": "runner_native_admission_selectors.organization_id; selectors belong to a tenant runner project observation"
+    "scope": "project_event_cursors.organization_id; immutable event sequence is tenant project scoped"
   },
-  "public/runner_backend_isolations": {
+  "public/project_policy_observations": {
     "inline_payloads": [],
     "ownership": "organization-owned",
-    "scope": "runner_backend_isolations.organization_id; runner backend capabilities are tenant-scoped"
-  },
-  "public/lease_policy_bindings": {
-    "inline_payloads": [],
-    "ownership": "organization-owned",
-    "scope": "lease_policy_bindings.organization_id; project and policy bind the lease to its approved revision"
+    "scope": "project_policy_observations.organization_id; current runner policy and source reports are project scoped"
   },
   "public/provider_reservation_model_efforts": {
     "inline_payloads": [],
@@ -109,20 +129,35 @@
     "ownership": "organization-owned",
     "scope": "runner_availability_windows.organization_id; runner is tenant-scoped"
   },
+  "public/runner_backend_isolations": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "runner_backend_isolations.organization_id; runner backend capabilities are tenant-scoped"
+  },
   "public/runner_host_metric_segments": {
     "inline_payloads": [],
     "ownership": "organization-owned",
     "scope": "runner_host_metric_segments.organization_id; metrics are tenant runner observations"
   },
-  "public/project_event_cursors": {
-    "inline_payloads": [],
-    "ownership": "organization-owned",
-    "scope": "project_event_cursors.organization_id; immutable event sequence is tenant project scoped"
-  },
   "public/runner_lease_assignments": {
     "inline_payloads": [],
     "ownership": "organization-owned",
     "scope": "runner_lease_assignments.organization_id; lease and runner owners are tenant-scoped"
+  },
+  "public/runner_native_admission_observations": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "runner_native_admission_observations.organization_id; runner and project admission evidence are tenant-scoped"
+  },
+  "public/runner_native_admission_selectors": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "runner_native_admission_selectors.organization_id; selectors belong to a tenant runner project observation"
+  },
+  "public/runner_problem_reports": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "runner_problem_reports.organization_id; problem reports are tenant runner observations"
   },
   "public/runner_provider_model_efforts": {
     "inline_payloads": [],
@@ -139,20 +174,15 @@
     "ownership": "organization-owned",
     "scope": "runner_provider_reports.organization_id; runner report is tenant-scoped"
   },
-  "public/runner_problem_reports": {
+  "public/runner_sprite_memberships": {
     "inline_payloads": [],
     "ownership": "organization-owned",
-    "scope": "runner_problem_reports.organization_id; problem reports are tenant runner observations"
+    "scope": "runner_sprite_memberships.organization_id; enrollment and allocation facts are tenant-scoped"
   },
-  "public/runner_workspace_reports": {
+  "public/runner_update_build_evidence": {
     "inline_payloads": [],
     "ownership": "organization-owned",
-    "scope": "runner_workspace_reports.organization_id; workspace capability facts belong to a tenant runner"
-  },
-  "public/runner_update_requests": {
-    "inline_payloads": [],
-    "ownership": "organization-owned",
-    "scope": "runner_update_requests.organization_id; immutable update requests are tenant-scoped"
+    "scope": "runner_update_build_evidence.organization_id; build evidence belongs to a tenant runner"
   },
   "public/runner_update_desired": {
     "inline_payloads": [],
@@ -169,20 +199,20 @@
     "ownership": "organization-owned",
     "scope": "runner_update_receipts.organization_id; receipt history belongs to a tenant runner"
   },
-  "public/runner_update_build_evidence": {
+  "public/runner_update_requests": {
     "inline_payloads": [],
     "ownership": "organization-owned",
-    "scope": "runner_update_build_evidence.organization_id; build evidence belongs to a tenant runner"
+    "scope": "runner_update_requests.organization_id; immutable update requests are tenant-scoped"
   },
   "public/runner_urgent_updates": {
     "inline_payloads": [],
     "ownership": "organization-owned",
     "scope": "runner_urgent_updates.organization_id; urgent update state belongs to one tenant"
   },
-  "public/runner_sprite_memberships": {
+  "public/runner_workspace_reports": {
     "inline_payloads": [],
     "ownership": "organization-owned",
-    "scope": "runner_sprite_memberships.organization_id; enrollment and allocation facts are tenant-scoped"
+    "scope": "runner_workspace_reports.organization_id; workspace capability facts belong to a tenant runner"
   },
   "public/search_documents": {
     "inline_payloads": [],
@@ -203,25 +233,5 @@
     "inline_payloads": [],
     "ownership": "organization-owned",
     "scope": "search_scope_refresh.organization_id; project and work item remain tenant scoped"
-  },
-  "public/cost_import_heads": {
-    "inline_payloads": [],
-    "ownership": "organization-owned",
-    "scope": "cost_import_heads.organization_id; snapshot import state and retained cost revision evidence"
-  },
-  "public/cost_import_rows": {
-    "inline_payloads": [],
-    "ownership": "organization-owned",
-    "scope": "cost_import_rows.organization_id; snapshot import state and retained cost revision evidence"
-  },
-  "public/cost_imports": {
-    "inline_payloads": [],
-    "ownership": "organization-owned",
-    "scope": "cost_imports.organization_id; snapshot import state and retained cost revision evidence"
-  },
-  "public/conversation_billing_imports": {
-    "inline_payloads": [],
-    "ownership": "organization-owned",
-    "scope": "conversation_billing_imports.organization_id; pinned source snapshot and verified import completion counts"
   }
 }

@@ -176,6 +176,8 @@ type ChangeLandingReceipt struct {
 	PayloadSHA256       string
 	PayloadBytes        int64
 	PayloadContentBytes int64
+	Repository          string
+	BaseRef             string
 }
 
 type ChangeRequest struct {
@@ -1735,6 +1737,14 @@ type PolicyRevision struct {
 	GateGithubPullRequest sql.NullBool
 }
 
+type PolicyRevisionApproval struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	PolicyID       string
+	ApprovedBy     string
+	ApprovedAt     time.Time
+}
+
 type Project struct {
 	OrganizationID          tracker.OrganizationID
 	ID                      tracker.ProjectID
@@ -1763,6 +1773,20 @@ type ProjectPolicy struct {
 	OrganizationID tracker.OrganizationID
 	ProjectID      tracker.ProjectID
 	PolicyID       string
+}
+
+type ProjectPolicyObservation struct {
+	OrganizationID               tracker.OrganizationID
+	ProjectID                    tracker.ProjectID
+	RunnerID                     string
+	PolicyID                     string
+	ObservedAt                   time.Time
+	SourcePresent                bool
+	SourceRepository             string
+	SourceCommit                 string
+	SourceDefaultBranch          string
+	SourceDefaultBranchHead      string
+	SourceDefaultBranchReachable bool
 }
 
 type ProjectSecret struct {
@@ -1817,6 +1841,23 @@ type ProjectSlug struct {
 	OrganizationID tracker.OrganizationID
 	Slug           string
 	ProjectID      tracker.ProjectID
+}
+
+type ProjectWorkflowApply struct {
+	OrganizationID           tracker.OrganizationID
+	ProjectID                tracker.ProjectID
+	ID                       int64
+	PolicyID                 string
+	PreviousPolicyID         string
+	Repository               string
+	SourceCommit             string
+	PreviousDefinitionDigest string
+	DefinitionDigest         string
+	RunnerID                 string
+	AppliedBy                string
+	AppliedAt                time.Time
+	ChangeID                 string
+	PullRequestUrl           string
 }
 
 type ProjectWorkflowState struct {

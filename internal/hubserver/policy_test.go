@@ -17,13 +17,682 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+func TestPostgresPolicyObservationsKeepCurrentReportProvenanceAndApproveByID(t *testing.T) {
+	repository, _ := projectRecordPostgresWithAdmin(t, 3)
+	service := openPostgresHubTestService(t, repository, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}})
+	organization, err := service.createNativeOrganizationFor(t.Context(), "Example organization")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedPostgresHubAdmin(t, repository, service, organization)
+	projectsPath := "/api/v2/organizations/" + string(organization.ID) + "/projects"
+	response := performHubAPIRequest(t, service, http.MethodPost, projectsPath, testHubAdminToken, map[string]any{"idempotency_key": "project", "name": "Example project", "states": nativeFixtureStates()})
+	requireNativeStatus(t, response, http.StatusOK)
+	var project tracker.NativeProject
+	decodeHubResponse(t, response, &project)
+	if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+		record, err := w.ProjectRecord(t.Context(), project.ID)
+		if err != nil {
+			return err
+		}
+		record.Settings.Repository = "example-org/example-project"
+		record.Settings.CheckoutRepository = "example-org/example-project"
+		_, err = w.UpdateProjectRecord(t.Context(), record)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	now := service.config.now().UTC()
+	type runnerCredential struct{ token, runnerID string }
+	runners := []runnerCredential{{"example_runner_token_a", "runner_example_a"}, {"example_runner_token_b", "runner_example_b"}}
+	for index, runner := range runners {
+		tokenID := fmt.Sprintf("credential_example_%c", 'a'+index)
+		machineID := tracker.MachineID("machine_example_" + string(rune('a'+index)))
+		enrollmentID := fmt.Sprintf("enrollment_example_%c", 'a'+index)
+		expires := now.Add(time.Hour)
+		err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+			hash := apikey.HashToken(runner.token)
+			if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization.ID, ID: tokenID, Name: runner.runnerID, Hash: hash, Fingerprint: tokenFingerprint(hash), Scope: "worker", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires, ProjectAccess: "selected", Kind: "service"}); err != nil {
+				return err
+			}
+			if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: organization.ID, TokenID: tokenID, ProjectID: project.ID}); err != nil {
+				return err
+			}
+			if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: organization.ID, ID: enrollmentID, RunnerID: runner.runnerID, MachineID: machineID, TokenHash: apikey.HashToken("example_enrollment_" + runner.runnerID), Scope: "projects", ProjectIDs: []tracker.ProjectID{project.ID}, Operations: []string{runnerauth.Read, runnerauth.Heartbeat}, CreatedAt: now, ExpiresAt: expires, CreatedBy: "example-admin"}); err != nil {
+				return err
+			}
+			if err := w.RedeemRunnerEnrollment(t.Context(), enrollmentID, runner.runnerID, machineID, now); err != nil {
+				return err
+			}
+			if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: organization.ID, ID: string(machineID), Hostname: runner.runnerID, Capacity: 1, Version: "example"}); err != nil {
+				return err
+			}
+			return w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: organization.ID, RunnerID: runner.runnerID, MachineID: machineID, TokenID: tokenID, EnrollmentID: enrollmentID, Scope: "projects", State: "active", Operations: []string{runnerauth.Read, runnerauth.Heartbeat}, CapacityLimit: 1, ReportedCapacity: 1, ProjectIDs: []tracker.ProjectID{project.ID}, CreatedAt: now, ExpiresAt: expires, LastHeartbeatAt: now})
+		})
+		if err != nil {
+			t.Fatalf("seed runner %s: %v", runner.runnerID, err)
+		}
+		if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(reader tenantstore.Reader) error {
+			identity, err := reader.RunnerIdentityByCredential(t.Context(), tokenID)
+			if err != nil {
+				return err
+			}
+			allowed, err := reader.RunnerProjectAuthorized(t.Context(), identity.RunnerID, project.ID, now)
+			if err != nil || !allowed {
+				return fmt.Errorf("runner project authorization allowed=%t: %w", allowed, err)
+			}
+			credential, err := reader.AccessCredential(t.Context(), tokenID)
+			if err != nil {
+				return err
+			}
+			return service.authorizeAccessScope(t.Context(), reader, nativeScope{organization: organization.ID, project: project.ID, credential: apiCredential{ID: credential.ID, Hash: credential.Hash, Scope: apiScopeWorker, Runner: runnerauth.Identity{Binding: runnerauth.Binding{RunnerID: identity.RunnerID}, OrganizationID: identity.OrganizationID}}}, true)
+		}); err != nil {
+			t.Fatalf("authorize seeded runner %s: %v", runner.runnerID, err)
+		}
+	}
+	base := projectsPath + "/" + string(project.ID)
+	descriptorA := hubTestPolicy()
+	descriptorA.Workflow = &policy.Workflow{Source: "WORKFLOW.md", Revision: strings.Repeat("a", 40), States: nativeFixtureStates()}
+	descriptorA = descriptorA.WithID()
+	descriptorB := descriptorA
+	descriptorB.ConfigDigest = policy.Digest([]byte("other configuration"))
+	descriptorB.Workflow = &policy.Workflow{Source: "WORKFLOW.md", Revision: strings.Repeat("b", 40), States: nativeFixtureStates()}
+	descriptorB = descriptorB.WithID()
+	sourceA := &policy.RepositorySource{Repository: "example-org/example-project", Commit: strings.Repeat("a", 40), DefaultBranch: "main", DefaultBranchHead: strings.Repeat("a", 40)}
+	sourceB := &policy.RepositorySource{Repository: "example-org/example-project", Commit: strings.Repeat("b", 40), DefaultBranch: "main", DefaultBranchHead: strings.Repeat("b", 40)}
+	report := func(runner runnerCredential, descriptor policy.Descriptor, source *policy.RepositorySource) {
+		t.Helper()
+		body := policy.Observation{Descriptor: descriptor, Source: source}
+		requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, base+"/policy/observed", runner.token, body), http.StatusNoContent)
+	}
+	read := func() projectPolicyRead {
+		t.Helper()
+		response := performHubAPIRequest(t, service, http.MethodGet, base+"/policy", testHubAdminToken, nil)
+		requireNativeStatus(t, response, http.StatusOK)
+		var view projectPolicyRead
+		decodeHubResponse(t, response, &view)
+		return view
+	}
+	report(runners[0], descriptorA, sourceA)
+	report(runners[0], descriptorA, nil)
+	report(runners[1], descriptorB, sourceB)
+	view := read()
+	if len(view.ObservedPolicies) != 2 || !view.ObservedPolicies[0].Conflict || !view.ObservedPolicies[1].Conflict {
+		t.Fatalf("competing current observations = %+v", view.ObservedPolicies)
+	}
+	var observedA policy.ObservedPolicy
+	for _, candidate := range view.ObservedPolicies {
+		if candidate.Policy.ID == descriptorA.ID {
+			observedA = candidate
+		}
+	}
+	if observedA.Policy.ID == "" || observedA.Source == nil || *observedA.Source != *sourceA || !reflect.DeepEqual(observedA.RunnerIDs, []string{runners[0].runnerID}) {
+		t.Fatalf("same-policy report lost source or runner identity: %+v", observedA)
+	}
+	var runnerAExpiry time.Time
+	if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+		identity, err := w.RunnerIdentity(t.Context(), runners[0].runnerID)
+		if err != nil {
+			return err
+		}
+		runnerAExpiry = identity.ExpiresAt
+		identity.ExpiresAt = now.Add(-time.Second)
+		return w.UpdateRunnerIdentity(t.Context(), identity)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(reader tenantstore.Reader) error {
+		current, err := reader.CurrentProjectPolicyObservation(t.Context(), project.ID, descriptorA.ID, now)
+		if err != nil {
+			return err
+		}
+		if current {
+			t.Fatal("expired runner identity remained eligible through a live worker token")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+		identity, err := w.RunnerIdentity(t.Context(), runners[0].runnerID)
+		if err != nil {
+			return err
+		}
+		identity.ExpiresAt = runnerAExpiry
+		return w.UpdateRunnerIdentity(t.Context(), identity)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	response = performHubAPIRequest(t, service, http.MethodPut, base+"/policy", testHubAdminToken, policy.Change{ObservedPolicyID: descriptorA.ID})
+	requireNativeStatus(t, response, http.StatusOK)
+	view = read()
+	if view.Policy == nil || view.Policy.ID != descriptorA.ID || view.ApprovedBy != "test_hub_admin" || len(view.ObservedPolicies) != 1 || view.ObservedPolicies[0].Policy.ID != descriptorB.ID || !view.ObservedPolicies[0].Conflict {
+		t.Fatalf("observed policy approval or conflict state = %+v", view)
+	}
+	if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+		return w.RevokeAccessCredential(t.Context(), "credential_example_a", now)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	view = read()
+	if len(view.ObservedPolicies) != 1 || view.ObservedPolicies[0].Policy.ID != descriptorB.ID || view.ObservedPolicies[0].Conflict {
+		t.Fatalf("revoked reporter remained in current policy conflict: %+v", view.ObservedPolicies)
+	}
+	response = performHubAPIRequest(t, service, http.MethodPut, base+"/policy", testHubAdminToken, policy.Change{ExpectedID: descriptorA.ID, ObservedPolicyID: descriptorB.ID})
+	requireNativeStatus(t, response, http.StatusOK)
+	view = read()
+	if view.Policy == nil || view.Policy.ID != descriptorB.ID {
+		t.Fatalf("second observed policy was not approved: %+v", view.Policy)
+	}
+	descriptorC := descriptorB
+	descriptorC.ConfigDigest = policy.Digest([]byte("third configuration"))
+	descriptorC.Workflow = &policy.Workflow{Source: "WORKFLOW.md", Revision: strings.Repeat("c", 40), States: nativeFixtureStates()}
+	descriptorC = descriptorC.WithID()
+	sourceC := &policy.RepositorySource{Repository: "example-org/example-project", Commit: strings.Repeat("c", 40), DefaultBranch: "main", DefaultBranchHead: strings.Repeat("d", 40), DefaultBranchReachable: true}
+	report(runners[1], descriptorC, sourceC)
+	view = read()
+	if view.Policy == nil || view.Policy.ID != descriptorC.ID || view.ApprovedBy != "repository-default-branch" || len(view.History) == 0 || view.History[0].AppliedBy != "repository-default-branch" || view.History[0].Definition == nil || view.History[0].Definition.ID != descriptorC.ID || view.History[0].PreviousDefinition == nil || view.History[0].PreviousDefinition.ID != descriptorB.ID {
+		t.Fatalf("reachable default-branch policy was not applied with history: %+v", view)
+	}
+	response = performHubAPIRequest(t, service, http.MethodGet, base+"/policy?limit=2", testHubAdminToken, nil)
+	requireNativeStatus(t, response, http.StatusOK)
+	var historyPage projectPolicyRead
+	decodeHubResponse(t, response, &historyPage)
+	if len(historyPage.History) != 2 || historyPage.HistoryNext == "" {
+		t.Fatalf("first workflow history page = %+v", historyPage.History)
+	}
+	response = performHubAPIRequest(t, service, http.MethodGet, base+"/policy?limit=2&after="+historyPage.HistoryNext, testHubAdminToken, nil)
+	requireNativeStatus(t, response, http.StatusOK)
+	var secondHistoryPage projectPolicyRead
+	decodeHubResponse(t, response, &secondHistoryPage)
+	if len(secondHistoryPage.History) != 1 || secondHistoryPage.HistoryNext != "" {
+		t.Fatalf("second workflow history page = %+v", secondHistoryPage.History)
+	}
+	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(reader tenantstore.Reader) error {
+		record, err := reader.ProjectRecord(t.Context(), project.ID)
+		if err != nil {
+			return err
+		}
+		if record.Core.WorkflowSourceRevision != strings.Repeat("c", 40) {
+			t.Fatalf("applied project workflow revision = %q", record.Core.WorkflowSourceRevision)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	captured := make(chan context.Context, 1)
+	service.echo.GET("/api/v2/organizations/:organization/policy-operator-test", func(c echo.Context) error {
+		captured <- c.Request().Context()
+		return c.NoContent(http.StatusOK)
+	}, service.operatorAuthority)
+	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, "/api/v2/organizations/"+string(organization.ID)+"/policy-operator-test", testHubAdminToken, nil), http.StatusOK)
+	operatorContext := operatortool.BindConnection(context.WithoutCancel(<-captured), "policy-operator", "policy fixture")
+	executor := hubProjectExecutor{service}
+	if err := executor.OpenConnection(operatorContext); err != nil {
+		t.Fatal(err)
+	}
+	operatorArguments, err := json.Marshal(map[string]string{"project_id": string(project.ID)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	operatorRead, err := executor.read(operatorContext, operatortool.Call{Name: "get_project_policy", Arguments: operatorArguments})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var operatorPage struct {
+		Data projectPolicyRead `json:"data"`
+	}
+	if err := json.Unmarshal(operatorRead.Content, &operatorPage); err != nil || operatorPage.Data.Policy == nil || operatorPage.Data.Policy.ID != descriptorC.ID || operatorPage.Data.ApprovedBy != "repository-default-branch" {
+		t.Fatalf("selected PostgreSQL operator policy read = %+v, %v", operatorPage.Data, err)
+	}
+	descriptorD := descriptorC
+	descriptorD.ConfigDigest = policy.Digest([]byte("operator-approved configuration"))
+	descriptorD.Workflow = &policy.Workflow{Source: "WORKFLOW.md", Revision: strings.Repeat("e", 40), States: nativeFixtureStates()}
+	descriptorD = descriptorD.WithID()
+	sourceD := &policy.RepositorySource{Repository: "example-org/example-project", Commit: strings.Repeat("e", 40), DefaultBranch: "main", DefaultBranchHead: strings.Repeat("f", 40)}
+	report(runners[1], descriptorD, sourceD)
+	descriptorE := descriptorD
+	descriptorE.ConfigDigest = policy.Digest([]byte("later administrator policy"))
+	descriptorE.Workflow = &policy.Workflow{Source: "WORKFLOW.md", Revision: strings.Repeat("f", 40), States: nativeFixtureStates()}
+	descriptorE = descriptorE.WithID()
+	sourceE := &policy.RepositorySource{Repository: "example-org/example-project", Commit: strings.Repeat("f", 40), DefaultBranch: "main", DefaultBranchHead: strings.Repeat("1", 40)}
+	assertPostgresPolicyApprovalLockOrdering(t, service, repository, organization.ID, project.ID, "credential_example_b", runners[1].runnerID, descriptorC.ID, descriptorD, descriptorE, sourceE)
+	approvalCall := projectCall(t, "approve_project_policy", string(project.ID), "operator-policy-approval", operatortool.PolicyApprovalInput{ExpectedID: descriptorC.ID, ObservedPolicyID: descriptorD.ID})
+	firstApproval, err := executor.command(operatorContext, approvalCall, projectCommandExecute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response = performHubAPIRequest(t, service, http.MethodPut, base+"/policy", testHubAdminToken, policy.Change{ExpectedID: descriptorD.ID, Policy: descriptorE})
+	requireNativeStatus(t, response, http.StatusOK)
+	assertPostgresPolicyObservationOrdering(t, service, repository, organization.ID, project.ID, "credential_example_b", runners[1].runnerID, descriptorD, sourceD)
+	if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+		return w.RevokeAccessCredential(t.Context(), "credential_example_b", now)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	executeReplay, err := executor.command(operatorContext, approvalCall, projectCommandExecute)
+	if err != nil || string(executeReplay) != string(firstApproval) {
+		t.Fatalf("operator execute receipt replay after observation removal = %s, %v; first %s", executeReplay, err, firstApproval)
+	}
+	replayApproval, err := executor.command(operatorContext, approvalCall, projectCommandReplay)
+	if err != nil || string(replayApproval) != string(firstApproval) {
+		t.Fatalf("operator policy receipt replay = %s, %v; first %s", replayApproval, err, firstApproval)
+	}
+	changedApproval := projectCall(t, "approve_project_policy", string(project.ID), "operator-policy-approval", operatortool.PolicyApprovalInput{ExpectedID: descriptorC.ID, ObservedPolicyID: descriptorC.ID})
+	if _, err := executor.command(operatorContext, changedApproval, projectCommandExecute); err == nil {
+		t.Fatal("same operator request key accepted different policy input")
+	}
+	revoke := performHubAPIRequest(t, service, http.MethodDelete, base+"/policy", testHubAdminToken, policy.Change{ExpectedID: descriptorE.ID})
+	requireNativeStatus(t, revoke, http.StatusGone)
+	if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+		return w.RevokeAccessCredential(t.Context(), "test_hub_admin", now)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := executor.command(operatorContext, approvalCall, projectCommandExecute); err == nil {
+		t.Fatal("revoked operator credential replayed a policy receipt")
+	}
+}
+
+func TestSelectedPostgresPolicyApprovalFailsClosedWithoutAccessRepository(t *testing.T) {
+	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}})
+	service.config.TenantRepository = selectedPostgresWithoutAccess{}
+	service.config.AccessRepository = nil
+	if err := service.database.db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	scope := nativeScope{organization: "org_example", project: "prj_example", credential: apiCredential{ID: "credential_example", Hash: apikey.HashToken(testHubAdminToken), Scope: apiScopeAdmin}}
+	for name, operation := range map[string]func() error{
+		"route authorization": func() error { return service.authorizeProjectRecord(t.Context(), scope, true) },
+		"mutation authority": func() error {
+			_, err := service.beginProjectRecordAuthority(t.Context(), scope)
+			return err
+		},
+		"mutation recheck": func() error { return service.recheckProjectRecordMutation(t.Context(), scope) },
+		"policy approval": func() error {
+			_, err := service.approveTenantProjectPolicy(t.Context(), scope, scope.credential.ID, policy.Change{Policy: hubTestPolicy()})
+			return err
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := operation()
+			var native *nativeError
+			if !errors.As(err, &native) || native.status != http.StatusNotFound {
+				t.Fatalf("selected PostgreSQL authority error = %v, want not found", err)
+			}
+		})
+	}
+}
+
+type selectedPostgresWithoutAccess struct{ tenantstore.Repository }
+
+func TestPostgresProjectPolicyApprovalRejectsDemotedHostedAdmin(t *testing.T) {
+	repository := projectRecordPostgres(t)
+	service := openPostgresHubTestService(t, repository, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}})
+	organization, err := service.createNativeOrganizationFor(t.Context(), "Example organization")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedPostgresHubAdmin(t, repository, service, organization)
+	response := performHubAPIRequest(t, service, http.MethodPost, "/api/v2/organizations/"+string(organization.ID)+"/projects", testHubAdminToken, map[string]any{"idempotency_key": "project", "name": "Example project", "states": nativeFixtureStates()})
+	requireNativeStatus(t, response, http.StatusOK)
+	var project tracker.NativeProject
+	decodeHubResponse(t, response, &project)
+	now := service.config.now().UTC()
+	const userID, memberID, credentialID, sessionHash = "user_example", "membership_example", "credential_example_owner", "session_example_owner"
+	credentialHash := apikey.HashToken("example_owner_token")
+	if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization.ID, ID: credentialID, Name: "Example owner", Hash: credentialHash, Fingerprint: tokenFingerprint(credentialHash), Scope: "operator", NativeOnly: true, CreatedAt: now, UpdatedAt: now, UserID: userID, MembershipID: memberID, KeyScope: "admin", ProjectAccess: "selected", Kind: "personal"}); err != nil {
+			return err
+		}
+		if err := w.CreateAccessMember(t.Context(), accessstore.Member{OrganizationID: organization.ID, UserID: userID, Email: "owner@example.test", MembershipID: memberID, Role: "owner", Active: true, PrincipalID: credentialID, CreatedAt: now, UpdatedAt: now}); err != nil {
+			return err
+		}
+		if err := w.CreateAccessSession(t.Context(), accessstore.Session{OrganizationID: organization.ID, Hash: sessionHash, Email: "owner@example.test", Subject: userID, ProviderOrganizationID: "provider_example", SessionID: "session_example", IdentityCreatedAt: now, IdentityExpiresAt: now.Add(time.Hour), CreatedAt: now, ExpiresAt: now.Add(time.Hour)}); err != nil {
+			return err
+		}
+		if err := w.CreateAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: organization.ID, UserID: userID, ProjectID: project.ID, CanWrite: true}); err != nil {
+			return err
+		}
+		return w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: organization.ID, TokenID: credentialID, ProjectID: project.ID})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	service.config.Hosted = &HostedConfig{OrganizationID: string(organization.ID)}
+	identity := &auth.HostedIdentity{Subject: userID, OrganizationID: "provider_example", SessionID: "session_example", CreatedAt: now, ExpiresAt: now.Add(time.Hour)}
+	actor := apiCredential{ID: credentialID, Hash: credentialHash, Scope: apiScopeOperator, NativeOnly: true, Hosted: identity, SessionHash: sessionHash, HostedRole: "owner", HostedMembership: memberID, HostedKeyScope: apikey.ScopeAdmin}
+	scope := nativeScope{organization: organization.ID, project: project.ID, credential: actor, requireHostedAdmin: true}
+	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
+		return service.authorizeAccessScope(t.Context(), r, scope, true)
+	}); err != nil {
+		t.Fatalf("authorize current owner before demotion: %v", err)
+	}
+	if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+		member, err := w.AccessMember(t.Context(), userID)
+		if err != nil {
+			return err
+		}
+		member.Role = "member"
+		member.UpdatedAt = now.Add(time.Second)
+		return w.UpdateAccessMember(t.Context(), member)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	memberScope := scope
+	memberScope.requireHostedAdmin = false
+	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
+		return service.authorizeAccessScope(t.Context(), r, memberScope, true)
+	}); err != nil {
+		t.Fatalf("demoted member lost retained project write grant: %v", err)
+	}
+	_, err = service.approveTenantProjectPolicy(t.Context(), scope, credentialID, policy.Change{Policy: hubTestPolicy()})
+	if !errors.Is(err, accessstore.ErrDenied) {
+		t.Fatalf("approval after admin demotion error = %v, want access denial", err)
+	}
+}
+
+type postgresPolicyObservationGateKey struct{}
+
+type postgresPolicyObservationGate struct {
+	reached chan struct{}
+	release chan struct{}
+}
+
+type policyLockWriteKindKey struct{}
+
+type policyApprovalLockGate struct {
+	approvalChecked chan struct{}
+	approvalRelease chan struct{}
+	replacementLock chan struct{}
+	approvalLocked  atomic.Bool
+	replacementHeld atomic.Bool
+	lockedAtCheck   atomic.Bool
+	recordReadLock  atomic.Bool
+}
+
+type policyApprovalLockRepository struct {
+	tenantstore.Repository
+	gate *policyApprovalLockGate
+}
+
+func (r policyApprovalLockRepository) WriteTenant(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, write func(tenantstore.Writer) error) error {
+	kind, _ := ctx.Value(policyLockWriteKindKey{}).(string)
+	err := r.Repository.WriteTenant(ctx, organization, workload, func(writer tenantstore.Writer) error {
+		return write(policyApprovalLockWriter{Writer: writer, kind: kind, gate: r.gate})
+	})
+	return err
+}
+
+type policyApprovalLockWriter struct {
+	tenantstore.Writer
+	kind string
+	gate *policyApprovalLockGate
+}
+
+func (w policyApprovalLockWriter) LockWorkItemProject(ctx context.Context, project tracker.ProjectID) error {
+	if w.kind == "replacement" {
+		select {
+		case <-w.gate.replacementLock:
+		default:
+			close(w.gate.replacementLock)
+		}
+	}
+	if err := w.Writer.LockWorkItemProject(ctx, project); err != nil {
+		return err
+	}
+	switch w.kind {
+	case "approval":
+		w.gate.approvalLocked.Store(true)
+	case "replacement":
+		w.gate.replacementHeld.Store(true)
+	}
+	return nil
+}
+
+func (w policyApprovalLockWriter) CurrentProjectPolicyObservation(ctx context.Context, project tracker.ProjectID, policyID string, now time.Time) (bool, error) {
+	current, err := w.Writer.CurrentProjectPolicyObservation(ctx, project, policyID, now)
+	if w.kind == "approval" {
+		w.gate.lockedAtCheck.Store(w.gate.approvalLocked.Load())
+		close(w.gate.approvalChecked)
+		select {
+		case <-w.gate.approvalRelease:
+		case <-ctx.Done():
+			return false, ctx.Err()
+		}
+	}
+	return current, err
+}
+
+func (w policyApprovalLockWriter) ProjectRecord(ctx context.Context, project tracker.ProjectID) (projectstore.Record, error) {
+	if w.kind == "replacement" {
+		w.gate.recordReadLock.Store(w.gate.replacementHeld.Load())
+	}
+	return w.Writer.ProjectRecord(ctx, project)
+}
+
+func assertPostgresPolicyApprovalLockOrdering(t *testing.T, service *Service, repository tenantstore.Repository, organization tracker.OrganizationID, project tracker.ProjectID, credentialID, runnerID, expectedID string, approved, replacement policy.Descriptor, replacementSource *policy.RepositorySource) {
+	t.Helper()
+	var credential apiCredential
+	if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		token, err := reader.AccessCredential(t.Context(), credentialID)
+		if err != nil {
+			return err
+		}
+		identity, err := reader.RunnerIdentityByCredential(t.Context(), credentialID)
+		if err != nil {
+			return err
+		}
+		credential = apiCredential{ID: token.ID, Hash: token.Hash, Scope: apiScopeWorker, Runner: runnerauth.Identity{Binding: runnerauth.Binding{RunnerID: identity.RunnerID}, OrganizationID: identity.OrganizationID}}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	gate := &policyApprovalLockGate{
+		approvalChecked: make(chan struct{}),
+		approvalRelease: make(chan struct{}),
+		replacementLock: make(chan struct{}),
+	}
+	originalRepository := service.config.TenantRepository
+	service.config.TenantRepository = policyApprovalLockRepository{Repository: repository, gate: gate}
+	var releaseOnce sync.Once
+	releaseApproval := func() { releaseOnce.Do(func() { close(gate.approvalRelease) }) }
+	var approvalStarted, replacementStarted, approvalJoined, replacementJoined bool
+	approvalDone := make(chan error, 1)
+	replacementDone := make(chan error, 1)
+	t.Cleanup(func() {
+		releaseApproval()
+		if approvalStarted && !approvalJoined {
+			<-approvalDone
+		}
+		if replacementStarted && !replacementJoined {
+			<-replacementDone
+		}
+		service.config.TenantRepository = originalRepository
+	})
+	approvalCtx := context.WithValue(t.Context(), policyLockWriteKindKey{}, "approval")
+	approvalStarted = true
+	go func() {
+		_, err := service.approveTenantProjectPolicy(approvalCtx, nativeScope{organization: organization, project: project, credential: apiCredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: apiScopeAdmin}}, "test_hub_admin", policy.Change{ExpectedID: expectedID, ObservedPolicyID: approved.ID})
+		approvalDone <- err
+	}()
+	select {
+	case <-gate.approvalChecked:
+	case err := <-approvalDone:
+		approvalJoined = true
+		t.Fatalf("approval did not reach the observation lock barrier: %v", err)
+	case <-t.Context().Done():
+		t.Fatal(t.Context().Err())
+	}
+	replacementCtx := context.WithValue(t.Context(), policyLockWriteKindKey{}, "replacement")
+	replacementStarted = true
+	go func() {
+		replacementDone <- service.observeTenantProjectPolicy(replacementCtx, nativeScope{organization: organization, project: project, credential: credential}, credential, runnerID, policy.Observation{Descriptor: replacement, Source: replacementSource})
+	}()
+	select {
+	case <-gate.replacementLock:
+	case err := <-replacementDone:
+		replacementJoined = true
+		t.Fatalf("replacement report did not reach the project lock: %v", err)
+	case <-t.Context().Done():
+		t.Fatal(t.Context().Err())
+	}
+	if !gate.lockedAtCheck.Load() {
+		select {
+		case err := <-replacementDone:
+			replacementJoined = true
+			if err != nil {
+				t.Fatalf("replacement report before approval: %v", err)
+			}
+		case <-t.Context().Done():
+			t.Fatal(t.Context().Err())
+		}
+	}
+	releaseApproval()
+	if err := <-approvalDone; err != nil {
+		approvalJoined = true
+		t.Fatalf("approve current report: %v", err)
+	}
+	approvalJoined = true
+	if err := <-replacementDone; err != nil {
+		replacementJoined = true
+		t.Fatalf("replace report after approval: %v", err)
+	}
+	replacementJoined = true
+	service.config.TenantRepository = originalRepository
+	if !gate.lockedAtCheck.Load() {
+		t.Fatal("approval validated the report before locking the project")
+	}
+	if !gate.recordReadLock.Load() {
+		t.Fatal("default-branch observation read project settings before locking the project")
+	}
+	if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		current, err := reader.CurrentProjectPolicyObservation(t.Context(), project, replacement.ID, service.config.now())
+		if err != nil {
+			return err
+		}
+		if !current {
+			t.Fatal("replacement report did not become current after approval committed")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type postgresPolicyObservationRepository struct {
+	tenantstore.Repository
+	gate *postgresPolicyObservationGate
+}
+
+func (r postgresPolicyObservationRepository) WriteTenant(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, write func(tenantstore.Writer) error) error {
+	if blocked, _ := ctx.Value(postgresPolicyObservationGateKey{}).(bool); blocked {
+		close(r.gate.reached)
+		select {
+		case <-r.gate.release:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return r.Repository.WriteTenant(ctx, organization, workload, write)
+}
+
+func assertPostgresPolicyObservationOrdering(t *testing.T, service *Service, repository tenantstore.Repository, organization tracker.OrganizationID, project tracker.ProjectID, credentialID, runnerID string, descriptor policy.Descriptor, source *policy.RepositorySource) {
+	t.Helper()
+	var credential apiCredential
+	if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		row, err := reader.AccessCredential(t.Context(), credentialID)
+		if err != nil {
+			return err
+		}
+		identity, err := reader.RunnerIdentityByCredential(t.Context(), credentialID)
+		if err != nil {
+			return err
+		}
+		credential = apiCredential{ID: row.ID, Hash: row.Hash, Scope: apiScopeWorker, Runner: runnerauth.Identity{Binding: runnerauth.Binding{RunnerID: identity.RunnerID}, OrganizationID: identity.OrganizationID}}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	gate := &postgresPolicyObservationGate{reached: make(chan struct{}), release: make(chan struct{})}
+	originalRepository := service.config.TenantRepository
+	originalClock := service.config.now
+	service.config.TenantRepository = postgresPolicyObservationRepository{Repository: repository, gate: gate}
+	var releaseOnce sync.Once
+	releaseOlder := func() { releaseOnce.Do(func() { close(gate.release) }) }
+	olderJoined := false
+	olderStarted := false
+	olderDone := make(chan error, 1)
+	t.Cleanup(func() {
+		releaseOlder()
+		if olderStarted && !olderJoined {
+			<-olderDone
+		}
+		service.config.TenantRepository = originalRepository
+		service.config.now = originalClock
+	})
+	olderAt := originalClock().UTC().Add(time.Second)
+	newerAt := olderAt.Add(time.Second)
+	service.config.now = func() time.Time { return olderAt }
+	olderContext := context.WithValue(t.Context(), postgresPolicyObservationGateKey{}, true)
+	olderStarted = true
+	go func() {
+		olderSource := *source
+		olderSource.DefaultBranchHead = strings.Repeat("a", 40)
+		olderDone <- service.observeTenantProjectPolicy(olderContext, nativeScope{organization: organization, project: project, credential: credential}, credential, runnerID, policy.Observation{Descriptor: descriptor, Source: &olderSource})
+	}()
+	select {
+	case <-gate.reached:
+	case err := <-olderDone:
+		olderJoined = true
+		t.Fatalf("older observation did not reach the write barrier: %v", err)
+	}
+	service.config.now = func() time.Time { return newerAt }
+	newerSource := *source
+	newerSource.DefaultBranchHead = strings.Repeat("b", 40)
+	if err := service.observeTenantProjectPolicy(t.Context(), nativeScope{organization: organization, project: project, credential: credential}, credential, runnerID, policy.Observation{Descriptor: descriptor, Source: &newerSource}); err != nil {
+		t.Fatalf("write newer observation: %v", err)
+	}
+	releaseOlder()
+	if err := <-olderDone; err != nil {
+		olderJoined = true
+		t.Fatalf("finish older observation: %v", err)
+	}
+	olderJoined = true
+	service.config.now = originalClock
+	if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		rows, _, err := reader.ProjectPolicyObservations(t.Context(), project, "", descriptor.ID, originalClock(), 10)
+		if err != nil {
+			return err
+		}
+		for _, row := range rows {
+			if row.RunnerID == runnerID {
+				if !row.ObservedAt.Equal(newerAt) || row.Source == nil || row.Source.DefaultBranchHead != newerSource.DefaultBranchHead {
+					t.Fatalf("older report replaced newer report: %+v", row.Observation)
+				}
+				return nil
+			}
+		}
+		return fmt.Errorf("newer runner observation is missing")
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestCompatibilityPolicyUpgradeAndRevocation(t *testing.T) {
 	t.Parallel()

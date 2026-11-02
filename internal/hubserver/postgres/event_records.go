@@ -137,7 +137,10 @@ func (s *session) CreateLandingReceipt(ctx context.Context, record eventstore.La
 	if versionAttempt != record.AttemptID {
 		return eventstore.LandingReceipt{}, eventstore.ErrInvalidRecord
 	}
-	row, err := s.queries.RecordInsertLandingReceipt(ctx, pgquery.RecordInsertLandingReceiptParams{OrganizationID: s.organization, AttemptID: record.AttemptID, VersionID: record.VersionID, MergeSha: record.MergeSHA, PayloadObjectKey: record.PayloadObjectKey, PayloadSHA256: record.PayloadSHA256, PayloadBytes: record.PayloadBytes, PayloadContentBytes: record.PayloadContentBytes})
+	if (record.Repository == "") != (record.BaseRef == "") {
+		return eventstore.LandingReceipt{}, eventstore.ErrInvalidRecord
+	}
+	row, err := s.queries.RecordInsertLandingReceipt(ctx, pgquery.RecordInsertLandingReceiptParams{OrganizationID: s.organization, AttemptID: record.AttemptID, VersionID: record.VersionID, MergeSha: record.MergeSHA, Repository: record.Repository, BaseRef: record.BaseRef, PayloadObjectKey: record.PayloadObjectKey, PayloadSHA256: record.PayloadSHA256, PayloadBytes: record.PayloadBytes, PayloadContentBytes: record.PayloadContentBytes})
 	if errors.Is(err, sql.ErrNoRows) {
 		row, err = s.queries.RecordGetLandingReceipt(ctx, pgquery.RecordGetLandingReceiptParams{OrganizationID: s.organization, AttemptID: record.AttemptID})
 		if err == nil && landingReceiptRecord(row) != record {
@@ -148,7 +151,18 @@ func (s *session) CreateLandingReceipt(ctx context.Context, record eventstore.La
 }
 
 func landingReceiptRecord(row pgquery.ChangeLandingReceipt) eventstore.LandingReceipt {
-	return eventstore.LandingReceipt{OrganizationID: row.OrganizationID, AttemptID: row.AttemptID, VersionID: row.VersionID, MergeSHA: row.MergeSha, PayloadObjectKey: row.PayloadObjectKey, PayloadSHA256: row.PayloadSHA256, PayloadBytes: row.PayloadBytes, PayloadContentBytes: row.PayloadContentBytes}
+	return eventstore.LandingReceipt{OrganizationID: row.OrganizationID, AttemptID: row.AttemptID, VersionID: row.VersionID, MergeSHA: row.MergeSha, Repository: row.Repository, BaseRef: row.BaseRef, PayloadObjectKey: row.PayloadObjectKey, PayloadSHA256: row.PayloadSHA256, PayloadBytes: row.PayloadBytes, PayloadContentBytes: row.PayloadContentBytes}
+}
+
+func (s *session) ProjectPolicyLanding(ctx context.Context, project tracker.ProjectID, repository, mergeSHA, baseRef string) (eventstore.PolicyLanding, error) {
+	if project == "" || repository == "" || mergeSHA == "" || baseRef == "" {
+		return eventstore.PolicyLanding{}, eventstore.ErrInvalidRecord
+	}
+	row, err := s.queries.RecordProjectPolicyLanding(ctx, pgquery.RecordProjectPolicyLandingParams{OrganizationID: s.organization, ProjectID: project, Repository: repository, MergeSha: mergeSHA, BaseRef: baseRef})
+	if err != nil {
+		return eventstore.PolicyLanding{}, mapError(ctx, err)
+	}
+	return eventstore.PolicyLanding{ChangeID: row.ChangeID, PullRequestURL: row.ExternalURL, Actor: row.ActorPrincipalID}, nil
 }
 
 func (s *session) ViewedFiles(ctx context.Context, versionID, principalID string, limit int) ([]eventstore.ViewedFile, error) {

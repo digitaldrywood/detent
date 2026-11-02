@@ -156,6 +156,7 @@ type ObservedPolicy struct {
 	Policy             Descriptor        `json:"policy"`
 	RunnerID           string            `json:"runner_id"`
 	RunnerIDs          []string          `json:"runner_ids,omitempty"`
+	RunnerIDsOmitted   int               `json:"runner_ids_omitted,omitempty"`
 	ObservedAt         string            `json:"observed_at"`
 	Conflict           bool              `json:"conflict"`
 	PreviouslyApproved bool              `json:"previously_approved"`

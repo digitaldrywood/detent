@@ -561,12 +561,22 @@ func (s *Service) nativeWorkComments(ctx context.Context, scope nativeScope, ite
 }
 
 func (s *Service) operatorCreateNativeWork(ctx context.Context, scope nativeScope, request tracker.CreateIssue) (json.RawMessage, error) {
-	project, err := readNativeProject(ctx, s.database.reader, scope)
-	if err != nil {
-		return nil, err
+	var states []tracker.NativeState
+	if s.config.TenantRepository != nil {
+		project, err := s.readProjectRecord(ctx, scope)
+		if err != nil {
+			return nil, err
+		}
+		states = project.States
+	} else {
+		project, err := readNativeProject(ctx, s.database.reader, scope)
+		if err != nil {
+			return nil, err
+		}
+		states = project.States
 	}
 	if request.State == "" && request.GitHubIssueURL == "" {
-		request.State = defaultNativeIssueState(project.States)
+		request.State = defaultNativeIssueState(states)
 	}
 	return s.createNativeIssueCommand(ctx, scope, request)
 }

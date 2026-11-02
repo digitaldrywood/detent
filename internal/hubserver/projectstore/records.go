@@ -48,6 +48,7 @@ type Record struct {
 }
 
 type Reader interface {
+	ProjectAllowanceUsage(context.Context, int64) (int64, error)
 	ProjectRecord(context.Context, tracker.ProjectID) (Record, error)
 	ProjectBySlug(context.Context, string) (Record, error)
 	ProjectSlugOwner(context.Context, string) (tracker.ProjectID, error)
@@ -55,6 +56,7 @@ type Reader interface {
 
 type Writer interface {
 	Reader
+	InitializeProjectAccess(context.Context, tracker.ProjectID, string) error
 	CreateProjectRecord(context.Context, Record) (Record, error)
 	UpdateProjectRecord(context.Context, Record) (Record, error)
 	RetireProject(context.Context, tracker.ProjectID, int64, time.Time) error

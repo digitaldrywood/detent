@@ -83,7 +83,7 @@ func (s *Service) landChangeRecord(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	if request.Receipt != nil && (request.Receipt.VersionID != version.ID || request.Receipt.HeadSHA != version.HeadSHA || request.Receipt.MergeSHA != request.MergeSHA) {
+	if request.Receipt != nil && (request.Receipt.VersionID != version.ID || request.Receipt.HeadSHA != version.HeadSHA || request.Receipt.MergeSHA != request.MergeSHA || request.Receipt.BaseRef != request.BaseRef) {
 		return s.nativeAPIError(c, nativePublicInvalid("Landing receipt identities differ from the reviewed version"))
 	}
 	if change.CurrentVersion != version.ID {
@@ -159,7 +159,7 @@ func (s *Service) landChangeRecord(c echo.Context) error {
 		if version.AttemptID == "" {
 			return s.nativeAPIError(c, nativePublicInvalid("Landing receipts require the source attempt bound by the immutable version"))
 		}
-		record, err := content.PrepareLandingReceipt(ctx, eventstore.LandingReceipt{OrganizationID: scope.organization, AttemptID: version.AttemptID, VersionID: version.ID}, *request.Receipt)
+		record, err := content.PrepareLandingReceipt(ctx, eventstore.LandingReceipt{OrganizationID: scope.organization, AttemptID: version.AttemptID, VersionID: version.ID, Repository: version.Repository, BaseRef: request.BaseRef}, *request.Receipt)
 		if err != nil {
 			return s.nativeAPIError(c, err)
 		}

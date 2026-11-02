@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type operatorChatIdentity struct {
@@ -75,7 +76,11 @@ func (s *Service) resolveOperatorChatAuthority(ctx context.Context, identity ope
 		}
 		credential, err = s.currentEntryOriginCredential(ctx, origin)
 	} else if identity.SessionID == "" {
-		credential, _, err = s.authenticateAPIHash(ctx, identity.CredentialID, "", "")
+		if s.config.TenantRepository != nil {
+			credential, _, err = s.authenticateTenantAPIHash(ctx, tracker.OrganizationID(identity.OrganizationID), identity.CredentialID, "", "")
+		} else {
+			credential, _, err = s.authenticateAPIHash(ctx, identity.CredentialID, "", "")
+		}
 	} else if s.config.Hosted != nil && strings.HasPrefix(identity.PrincipalID, "account:") {
 		credential, err = s.hostedAccountCredential(ctx, identity.SessionID)
 	} else if s.config.Hosted != nil {

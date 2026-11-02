@@ -90,7 +90,7 @@ func (c *Content) ReviewPolicy(ctx context.Context, row ReviewPolicy) (tracker.C
 }
 
 func (c *Content) PrepareLandingReceipt(ctx context.Context, row LandingReceipt, value tracker.NativeLandingReceipt) (LandingReceipt, error) {
-	if row.OrganizationID == "" || row.AttemptID == "" || row.VersionID == "" || value.VersionID != row.VersionID || value.MergeSHA == "" {
+	if row.OrganizationID == "" || row.AttemptID == "" || row.VersionID == "" || row.Repository == "" || row.BaseRef == "" || value.VersionID != row.VersionID || value.MergeSHA == "" || value.BaseRef != row.BaseRef {
 		return LandingReceipt{}, ErrInvalidRecord
 	}
 	ref, err := c.prepare(ctx, row.OrganizationID, value)
@@ -103,7 +103,7 @@ func (c *Content) PrepareLandingReceipt(ctx context.Context, row LandingReceipt,
 func (c *Content) LandingReceipt(ctx context.Context, row LandingReceipt) (tracker.NativeLandingReceipt, error) {
 	var value tracker.NativeLandingReceipt
 	err := c.read(ctx, row.OrganizationID, Reference(row.PayloadObjectKey, row.PayloadSHA256, row.PayloadBytes, row.PayloadContentBytes), &value)
-	if err == nil && (value.VersionID != row.VersionID || value.MergeSHA != row.MergeSHA) {
+	if err == nil && (value.VersionID != row.VersionID || value.MergeSHA != row.MergeSHA || row.BaseRef != "" && value.BaseRef != row.BaseRef) {
 		return tracker.NativeLandingReceipt{}, artifact.ErrIntegrity
 	}
 	return value, err

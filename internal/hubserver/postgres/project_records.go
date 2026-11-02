@@ -89,6 +89,9 @@ func (s *session) CreateProjectRecord(ctx context.Context, record projectstore.R
 	if record.Settings.ProjectID != "" && record.Settings.ProjectID != record.Core.ID {
 		return projectstore.Record{}, corestore.ErrTenantMismatch
 	}
+	if err := s.lockHostedOrganization(ctx); err != nil {
+		return projectstore.Record{}, err
+	}
 	base := record.Core.Slug
 	if base == "" {
 		base = projectstore.Slug(record.Core.Name)

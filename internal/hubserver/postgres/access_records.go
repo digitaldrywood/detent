@@ -61,6 +61,9 @@ func (s *session) CreateAccessMember(ctx context.Context, row accessstore.Member
 	if err := s.checkOrganization(row.OrganizationID); err != nil {
 		return err
 	}
+	if err := s.lockHostedOrganization(ctx); err != nil {
+		return err
+	}
 	_, err := s.db.ExecContext(ctx, `INSERT INTO hosted_members (organization_id,user_id,email,membership_id,role,active,principal_id,notify_issues,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, row.OrganizationID, row.UserID, row.Email, row.MembershipID, row.Role, row.Active, row.PrincipalID, row.NotifyIssues, row.CreatedAt, row.UpdatedAt)
 	return mapError(ctx, err)
 }
@@ -246,6 +249,9 @@ func (s *session) UpdateAccessMember(ctx context.Context, row accessstore.Member
 	if err := s.checkOrganization(row.OrganizationID); err != nil {
 		return err
 	}
+	if err := s.lockHostedOrganization(ctx); err != nil {
+		return err
+	}
 	result, err := s.db.ExecContext(ctx, `UPDATE hosted_members SET email=$3,membership_id=$4,role=$5,active=$6,notify_issues=$7,updated_at=$8 WHERE organization_id=$1 AND user_id=$2 AND principal_id=$9`, s.organization, row.UserID, row.Email, row.MembershipID, row.Role, row.Active, row.NotifyIssues, row.UpdatedAt, row.PrincipalID)
 	if err != nil {
 		return mapError(ctx, err)
@@ -255,8 +261,14 @@ func (s *session) UpdateAccessMember(ctx context.Context, row accessstore.Member
 }
 
 func (s *session) RevokeAccessMember(ctx context.Context, user string, at time.Time) error {
+	if err := s.lockHostedOrganization(ctx); err != nil {
+		return err
+	}
 	_, err := s.db.ExecContext(ctx, `UPDATE hosted_members SET active=false,updated_at=$3 WHERE organization_id=$1 AND user_id=$2`, s.organization, user, at)
-	return mapError(ctx, err)
+	if err != nil {
+		return mapError(ctx, err)
+	}
+	return s.ClearAccessMemberGrants(ctx, user)
 }
 
 func (s *session) RotateAccessCredential(ctx context.Context, id, hash, fingerprint string, at time.Time) error {
@@ -453,6 +465,9 @@ func (s *session) EnsureAccessSession(ctx context.Context, row accessstore.Sessi
 }
 
 func (s *session) ClearAccessMemberGrants(ctx context.Context, user string) error {
+	if err := s.lockHostedOrganization(ctx); err != nil {
+		return err
+	}
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM token_grants WHERE organization_id=$1 AND token_id=(SELECT principal_id FROM hosted_members WHERE organization_id=$1 AND user_id=$2)`, s.organization, user); err != nil {
 		return mapError(ctx, err)
 	}

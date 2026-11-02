@@ -191,6 +191,34 @@ type Authority struct {
 	Admin        bool
 }
 
+type ProjectAccessFilter struct {
+	UserID                 string
+	PrincipalID            string
+	CredentialID           string
+	KeyKind                string
+	ProjectAccess          string
+	RequireCredentialGrant bool
+	Projects               []tracker.ProjectID
+	BlockedProjects        []tracker.ProjectID
+	After                  tracker.ProjectID
+	Only                   tracker.ProjectID
+	Limit                  int
+}
+
+type ProjectAccess struct {
+	ProjectID    tracker.ProjectID
+	CanWrite     bool
+	ManageRunner bool
+}
+
+type ProjectAccessPageReader interface {
+	ProjectAccessPage(context.Context, ProjectAccessFilter) ([]ProjectAccess, error)
+}
+
+type ProjectAccessCleaner interface {
+	DeleteAccessProjectGrants(context.Context, tracker.ProjectID) error
+}
+
 type Reader interface {
 	AccessMemberCredentials(context.Context, string, string, int) ([]Credential, error)
 	AccessAudit(context.Context, int64) (Audit, error)
@@ -223,6 +251,7 @@ type Reader interface {
 
 type Writer interface {
 	UpdateAccessKeyAudit(context.Context, int64, string, string, tracker.ProjectID, string, int) error
+	SyncHostedAdministratorProjectAccess(context.Context, string, string) error
 	RecordAccessAudit(context.Context, Audit) (int64, error)
 	EnsureAccessCredential(context.Context, Credential) error
 	SetAccessTransactionInvitation(context.Context, string, string) error

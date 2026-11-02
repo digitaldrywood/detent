@@ -453,7 +453,7 @@ func TestAccessKeyOrganizationControls(t *testing.T) {
 }
 
 func TestAccessKeyScopeAndServiceLifetime(t *testing.T) {
-	f := newEntryFixture(t)
+	f := newPostgresTenantEntryFixture(t)
 	owner := newBrowser(t, f.service.Handler())
 	owner.login("/organizations", "user_alice:")
 	global := createTestAccessKey(t, owner, "global", nil, "")

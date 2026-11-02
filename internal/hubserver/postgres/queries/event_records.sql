@@ -106,9 +106,20 @@ SELECT attempt_id FROM change_versions WHERE organization_id=sqlc.arg(organizati
 SELECT * FROM change_landing_receipts WHERE organization_id=sqlc.arg(organization_id) AND attempt_id=sqlc.arg(attempt_id);
 
 -- name: RecordInsertLandingReceipt :one
-INSERT INTO change_landing_receipts (organization_id, attempt_id, version_id, merge_sha, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes)
-VALUES (sqlc.arg(organization_id), sqlc.arg(attempt_id), sqlc.arg(version_id), sqlc.arg(merge_sha), sqlc.arg(payload_object_key), sqlc.arg(payload_sha256), sqlc.arg(payload_bytes), sqlc.arg(payload_content_bytes))
+INSERT INTO change_landing_receipts (organization_id, attempt_id, version_id, merge_sha, repository, base_ref, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes)
+VALUES (sqlc.arg(organization_id), sqlc.arg(attempt_id), sqlc.arg(version_id), sqlc.arg(merge_sha), sqlc.arg(repository), sqlc.arg(base_ref), sqlc.arg(payload_object_key), sqlc.arg(payload_sha256), sqlc.arg(payload_bytes), sqlc.arg(payload_content_bytes))
 ON CONFLICT (organization_id, attempt_id) DO NOTHING RETURNING *;
+
+-- name: RecordProjectPolicyLanding :one
+SELECT v.change_id,v.external_url,v.actor_principal_id
+FROM change_landing_receipts l
+JOIN change_versions v ON v.organization_id=l.organization_id AND v.id=l.version_id
+JOIN change_requests c ON c.organization_id=v.organization_id AND c.id=v.change_id
+WHERE l.organization_id=sqlc.arg(organization_id) AND c.project_id=sqlc.arg(project_id)
+  AND l.merge_sha=sqlc.arg(merge_sha) AND lower(l.repository)=lower(sqlc.arg(repository))
+  AND l.base_ref=sqlc.arg(base_ref)
+ORDER BY c.id,v.number DESC
+LIMIT 1;
 
 -- name: RecordListViewedFiles :many
 SELECT * FROM change_viewed_files

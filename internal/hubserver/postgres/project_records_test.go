@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -163,6 +164,89 @@ func TestProjectRecordsKeepTenantRevisionsAndClaims(t *testing.T) {
 			t.Fatalf("other claim changed=%+v", got)
 		}
 		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestProjectAccessPageFiltersSelectedAndBlockedProjectsBeforeLimit(t *testing.T) {
+	admin := template.Database(t)
+	repository, _ := repositoryFor(t, admin, smallPool())
+	ctx := t.Context()
+	seedTenantAccess(t, repository, "org_first")
+	ids := []tracker.ProjectID{"project_a", "project_b", "project_c"}
+	if err := repository.WriteTenant(ctx, "org_first", corestore.Serving, func(w tenantstore.Writer) error {
+		for _, id := range ids {
+			if _, err := w.CreateProjectRecord(ctx, projectstore.Record{Core: corestore.Project{OrganizationID: "org_first", ID: id, Name: string(id), Profile: "native"}, States: []tracker.NativeState{{Name: "Todo"}}}); err != nil {
+				return err
+			}
+			if err := w.InitializeProjectAccess(ctx, id, "first"); err != nil {
+				return err
+			}
+		}
+		now := historyAt()
+		if err := w.CreateAccessCredential(ctx, accessstore.Credential{OrganizationID: "org_first", ID: "selected_key", Name: "Selected key", Hash: "selected_hash", Scope: "operator", NativeOnly: true, UserID: "first", MembershipID: "membership_first", KeyScope: "read", ProjectAccess: "selected", Kind: "personal", CreatedAt: now, UpdatedAt: now}); err != nil {
+			return err
+		}
+		for _, id := range ids[1:] {
+			if err := w.SetAccessTokenGrant(ctx, accessstore.TokenGrant{OrganizationID: "org_first", TokenID: "selected_key", ProjectID: id}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	selected := accessstore.ProjectAccessFilter{UserID: "first", PrincipalID: "first", CredentialID: "selected_key", ProjectAccess: "selected", RequireCredentialGrant: true, Limit: 1}
+	var selectedFirst, selectedNext []accessstore.ProjectAccess
+	if err := repository.ReadTenant(ctx, "org_first", corestore.Serving, func(r tenantstore.Reader) error {
+		reader, ok := r.(accessstore.ProjectAccessPageReader)
+		if !ok {
+			t.Fatal("tenant reader does not expose typed project access pages")
+		}
+		var err error
+		selectedFirst, err = reader.ProjectAccessPage(ctx, selected)
+		if err != nil {
+			return err
+		}
+		selected.After = selectedFirst[0].ProjectID
+		selectedNext, err = reader.ProjectAccessPage(ctx, selected)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(selectedFirst) != 2 || selectedFirst[0].ProjectID != "project_b" || len(selectedNext) != 1 || selectedNext[0].ProjectID != "project_c" {
+		t.Fatalf("selected pages = %+v then %+v", selectedFirst, selectedNext)
+	}
+	blocked := accessstore.ProjectAccessFilter{UserID: "first", PrincipalID: "first", KeyKind: "personal", ProjectAccess: "selected", Projects: ids, BlockedProjects: []tracker.ProjectID{"project_b"}, Limit: 1}
+	var blockedFirst, blockedNext []accessstore.ProjectAccess
+	if err := repository.ReadTenant(ctx, "org_first", corestore.Serving, func(r tenantstore.Reader) error {
+		reader := r.(accessstore.ProjectAccessPageReader)
+		var err error
+		blockedFirst, err = reader.ProjectAccessPage(ctx, blocked)
+		if err != nil {
+			return err
+		}
+		blocked.After = blockedFirst[0].ProjectID
+		blockedNext, err = reader.ProjectAccessPage(ctx, blocked)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(blockedFirst) != 2 || blockedFirst[0].ProjectID != "project_a" || len(blockedNext) != 1 || blockedNext[0].ProjectID != "project_c" {
+		t.Fatalf("blocked pages = %+v then %+v", blockedFirst, blockedNext)
+	}
+	only := blocked
+	only.After, only.Only, only.Limit = "", "project_b", 1
+	if err := repository.ReadTenant(ctx, "org_first", corestore.Serving, func(r tenantstore.Reader) error {
+		rows, err := r.(accessstore.ProjectAccessPageReader).ProjectAccessPage(ctx, only)
+		if err != nil {
+			return err
+		}
+		if len(rows) != 0 {
+			t.Fatalf("blocked exact project appeared: %+v", rows)
+		}
+		return nil
 	}); err != nil {
 		t.Fatal(err)
 	}

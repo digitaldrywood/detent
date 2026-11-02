@@ -110,7 +110,11 @@ func (s *Service) operatorAuthority(next echo.HandlerFunc) echo.HandlerFunc {
 				}
 			} else if token != "" {
 				var err error
-				current, _, err = s.authenticateAPIToken(ctx, token, "", "")
+				if s.config.TenantRepository != nil {
+					current, _, err = s.authenticateTenantAPIHash(ctx, tracker.OrganizationID(organization), apikey.HashToken(token), "", "")
+				} else {
+					current, _, err = s.authenticateAPIToken(ctx, token, "", "")
+				}
 				if err != nil {
 					return apiCredential{}, operatorAuthorizationError(err)
 				}
@@ -269,17 +273,29 @@ func (s *Service) operatorCurrentAuthority(ctx context.Context, credential apiCr
 		checkScope.action = requirement.Action
 		if requirement.ProjectID != "" {
 			checkScope.project = tracker.ProjectID(requirement.ProjectID)
-			if err := s.requireHostedProject(ctx, query, checkScope, requirement.Scope != apikey.ScopeRead); err != nil {
-				return err
-			}
-			if err := s.database.authorizeNativeProject(ctx, checkScope); err != nil {
-				return err
+			if s.config.TenantRepository != nil && s.config.AccessRepository != nil {
+				if err := s.authorizeProjectRecord(ctx, checkScope, requirement.Scope != apikey.ScopeRead); err != nil {
+					return err
+				}
+				if _, err := s.readProjectRecord(ctx, checkScope); err != nil {
+					return err
+				}
+			} else {
+				if err := s.requireHostedProject(ctx, query, checkScope, requirement.Scope != apikey.ScopeRead); err != nil {
+					return err
+				}
+				if err := s.database.authorizeNativeProject(ctx, checkScope); err != nil {
+					return err
+				}
 			}
 		}
 		if requirement.Scope != apikey.ScopeRead {
 			if credential.Hosted != nil {
 				if !hostedRoleAllows(credential.HostedRole, requirement.Scope, requirement.Action) {
 					return operatortool.ErrAccessDenied
+				}
+				if s.config.TenantRepository != nil && s.config.AccessRepository != nil && requirement.ProjectID != "" {
+					return s.checkOperatorResource(ctx, query, checkScope, requirement)
 				}
 				checkScope.requireHostedAdmin = requirement.Scope == apikey.ScopeAdmin
 				tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})

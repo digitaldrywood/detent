@@ -131,10 +131,18 @@ type LandingReceipt struct {
 	AttemptID           string
 	VersionID           string
 	MergeSHA            string
+	Repository          string
+	BaseRef             string
 	PayloadObjectKey    string
 	PayloadSHA256       string
 	PayloadBytes        int64
 	PayloadContentBytes int64
+}
+
+type PolicyLanding struct {
+	ChangeID       string
+	PullRequestURL string
+	Actor          string
 }
 
 type ViewedFile struct {
@@ -209,6 +217,7 @@ type Reader interface {
 	CollaborationVersion(context.Context, string, int64) (CollaborationVersion, error)
 	Change(context.Context, string) (Change, error)
 	LatestChange(context.Context, tracker.ProjectID, tracker.NativeWorkItemID) (Change, error)
+	ProjectPolicyLanding(context.Context, tracker.ProjectID, string, string, string) (PolicyLanding, error)
 	Changes(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, string, int) ([]Change, error)
 	Versions(context.Context, string, int64, int) ([]Version, error)
 	Version(context.Context, string, string) (Version, error)

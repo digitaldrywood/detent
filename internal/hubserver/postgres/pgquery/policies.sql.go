@@ -13,9 +13,49 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+const policyCurrentProjectObservation = `-- name: PolicyCurrentProjectObservation :one
+SELECT EXISTS (
+  SELECT 1 FROM project_policy_observations o
+  JOIN runner_identities i ON i.organization_id=o.organization_id AND i.runner_id=o.runner_id
+  JOIN api_tokens t ON t.organization_id=i.organization_id AND t.id=i.token_id
+  JOIN projects p ON p.organization_id=o.organization_id AND p.id=o.project_id AND p.deleted_at IS NULL
+  WHERE o.organization_id=$1 AND o.project_id=$2 AND o.policy_id=$3
+    AND i.removed_at IS NULL AND i.expires_at>$4
+    AND t.scope='worker' AND t.key_kind='service' AND t.created_at<=$4
+    AND t.revoked_at IS NULL AND (t.expires_at IS NULL OR t.expires_at>$4)
+    AND (i.scope='organization' OR EXISTS (
+      SELECT 1 FROM token_grants g
+      WHERE g.organization_id=t.organization_id AND g.token_id=t.id AND g.project_id=o.project_id
+    ))
+)
+`
+
+type PolicyCurrentProjectObservationParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	PolicyID       string
+	Now            time.Time
+}
+
+func (q *Queries) PolicyCurrentProjectObservation(ctx context.Context, arg PolicyCurrentProjectObservationParams) (bool, error) {
+	row := q.db.QueryRowContext(ctx, policyCurrentProjectObservation,
+		arg.OrganizationID,
+		arg.ProjectID,
+		arg.PolicyID,
+		arg.Now,
+	)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const policyGetProjectCurrent = `-- name: PolicyGetProjectCurrent :one
-SELECT r.organization_id, r.project_id, r.policy_id, r.approved_by, r.approved_at, r.payload_object_key, r.payload_sha256, r.payload_bytes, r.payload_content_bytes, r.gate_github_pull_request FROM project_policies p JOIN policy_revisions r
+SELECT r.organization_id,r.project_id,r.policy_id,COALESCE(a.approved_by,r.approved_by) AS approved_by,
+  COALESCE(a.approved_at,r.approved_at) AS approved_at,r.payload_object_key,r.payload_sha256,r.payload_bytes,
+  r.payload_content_bytes,r.gate_github_pull_request
+FROM project_policies p JOIN policy_revisions r
   ON r.organization_id=p.organization_id AND r.project_id=p.project_id AND r.policy_id=p.policy_id
+LEFT JOIN policy_revision_approvals a ON a.organization_id=r.organization_id AND a.project_id=r.project_id AND a.policy_id=r.policy_id
 WHERE p.organization_id=$1 AND p.project_id=$2
 `
 
@@ -24,9 +64,22 @@ type PolicyGetProjectCurrentParams struct {
 	ProjectID      tracker.ProjectID
 }
 
-func (q *Queries) PolicyGetProjectCurrent(ctx context.Context, arg PolicyGetProjectCurrentParams) (PolicyRevision, error) {
+type PolicyGetProjectCurrentRow struct {
+	OrganizationID        tracker.OrganizationID
+	ProjectID             tracker.ProjectID
+	PolicyID              string
+	ApprovedBy            string
+	ApprovedAt            time.Time
+	PayloadObjectKey      string
+	PayloadSHA256         string
+	PayloadBytes          int64
+	PayloadContentBytes   int64
+	GateGithubPullRequest sql.NullBool
+}
+
+func (q *Queries) PolicyGetProjectCurrent(ctx context.Context, arg PolicyGetProjectCurrentParams) (PolicyGetProjectCurrentRow, error) {
 	row := q.db.QueryRowContext(ctx, policyGetProjectCurrent, arg.OrganizationID, arg.ProjectID)
-	var i PolicyRevision
+	var i PolicyGetProjectCurrentRow
 	err := row.Scan(
 		&i.OrganizationID,
 		&i.ProjectID,
@@ -43,7 +96,12 @@ func (q *Queries) PolicyGetProjectCurrent(ctx context.Context, arg PolicyGetProj
 }
 
 const policyGetProjectRevision = `-- name: PolicyGetProjectRevision :one
-SELECT organization_id, project_id, policy_id, approved_by, approved_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, gate_github_pull_request FROM policy_revisions WHERE organization_id=$1 AND project_id=$2 AND policy_id=$3
+SELECT r.organization_id,r.project_id,r.policy_id,COALESCE(a.approved_by,r.approved_by) AS approved_by,
+  COALESCE(a.approved_at,r.approved_at) AS approved_at,r.payload_object_key,r.payload_sha256,r.payload_bytes,
+  r.payload_content_bytes,r.gate_github_pull_request
+FROM policy_revisions r LEFT JOIN policy_revision_approvals a
+  ON a.organization_id=r.organization_id AND a.project_id=r.project_id AND a.policy_id=r.policy_id
+WHERE r.organization_id=$1 AND r.project_id=$2 AND r.policy_id=$3
 `
 
 type PolicyGetProjectRevisionParams struct {
@@ -52,9 +110,22 @@ type PolicyGetProjectRevisionParams struct {
 	PolicyID       string
 }
 
-func (q *Queries) PolicyGetProjectRevision(ctx context.Context, arg PolicyGetProjectRevisionParams) (PolicyRevision, error) {
+type PolicyGetProjectRevisionRow struct {
+	OrganizationID        tracker.OrganizationID
+	ProjectID             tracker.ProjectID
+	PolicyID              string
+	ApprovedBy            string
+	ApprovedAt            time.Time
+	PayloadObjectKey      string
+	PayloadSHA256         string
+	PayloadBytes          int64
+	PayloadContentBytes   int64
+	GateGithubPullRequest sql.NullBool
+}
+
+func (q *Queries) PolicyGetProjectRevision(ctx context.Context, arg PolicyGetProjectRevisionParams) (PolicyGetProjectRevisionRow, error) {
 	row := q.db.QueryRowContext(ctx, policyGetProjectRevision, arg.OrganizationID, arg.ProjectID, arg.PolicyID)
-	var i PolicyRevision
+	var i PolicyGetProjectRevisionRow
 	err := row.Scan(
 		&i.OrganizationID,
 		&i.ProjectID,
@@ -226,6 +297,349 @@ func (q *Queries) PolicyInsertReviewRevision(ctx context.Context, arg PolicyInse
 		&i.PayloadContentBytes,
 	)
 	return i, err
+}
+
+const policyInsertRevisionApproval = `-- name: PolicyInsertRevisionApproval :exec
+INSERT INTO policy_revision_approvals (organization_id,project_id,policy_id,approved_by,approved_at)
+VALUES ($1,$2,$3,$4,$5)
+ON CONFLICT (organization_id,project_id,policy_id) DO NOTHING
+`
+
+type PolicyInsertRevisionApprovalParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	PolicyID       string
+	ApprovedBy     string
+	ApprovedAt     time.Time
+}
+
+func (q *Queries) PolicyInsertRevisionApproval(ctx context.Context, arg PolicyInsertRevisionApprovalParams) error {
+	_, err := q.db.ExecContext(ctx, policyInsertRevisionApproval,
+		arg.OrganizationID,
+		arg.ProjectID,
+		arg.PolicyID,
+		arg.ApprovedBy,
+		arg.ApprovedAt,
+	)
+	return err
+}
+
+const policyInsertWorkflowApply = `-- name: PolicyInsertWorkflowApply :one
+INSERT INTO project_workflow_applies (
+  organization_id,project_id,policy_id,previous_policy_id,repository,source_commit,
+  previous_definition_digest,definition_digest,runner_id,applied_by,applied_at,change_id,pull_request_url
+)
+VALUES (
+  $1,$2,$3,$4,
+  $5,$6,$7,$8,
+  $9,$10,$11,$12,$13
+)
+RETURNING organization_id, project_id, id, policy_id, previous_policy_id, repository, source_commit, previous_definition_digest, definition_digest, runner_id, applied_by, applied_at, change_id, pull_request_url
+`
+
+type PolicyInsertWorkflowApplyParams struct {
+	OrganizationID           tracker.OrganizationID
+	ProjectID                tracker.ProjectID
+	PolicyID                 string
+	PreviousPolicyID         string
+	Repository               string
+	SourceCommit             string
+	PreviousDefinitionDigest string
+	DefinitionDigest         string
+	RunnerID                 string
+	AppliedBy                string
+	AppliedAt                time.Time
+	ChangeID                 string
+	PullRequestUrl           string
+}
+
+func (q *Queries) PolicyInsertWorkflowApply(ctx context.Context, arg PolicyInsertWorkflowApplyParams) (ProjectWorkflowApply, error) {
+	row := q.db.QueryRowContext(ctx, policyInsertWorkflowApply,
+		arg.OrganizationID,
+		arg.ProjectID,
+		arg.PolicyID,
+		arg.PreviousPolicyID,
+		arg.Repository,
+		arg.SourceCommit,
+		arg.PreviousDefinitionDigest,
+		arg.DefinitionDigest,
+		arg.RunnerID,
+		arg.AppliedBy,
+		arg.AppliedAt,
+		arg.ChangeID,
+		arg.PullRequestUrl,
+	)
+	var i ProjectWorkflowApply
+	err := row.Scan(
+		&i.OrganizationID,
+		&i.ProjectID,
+		&i.ID,
+		&i.PolicyID,
+		&i.PreviousPolicyID,
+		&i.Repository,
+		&i.SourceCommit,
+		&i.PreviousDefinitionDigest,
+		&i.DefinitionDigest,
+		&i.RunnerID,
+		&i.AppliedBy,
+		&i.AppliedAt,
+		&i.ChangeID,
+		&i.PullRequestUrl,
+	)
+	return i, err
+}
+
+const policyProjectPolicyObservations = `-- name: PolicyProjectPolicyObservations :many
+WITH current_reports AS (
+  SELECT o.organization_id, o.project_id, o.runner_id, o.policy_id, o.observed_at, o.source_present, o.source_repository, o.source_commit, o.source_default_branch, o.source_default_branch_head, o.source_default_branch_reachable, r.approved_by AS revision_approved_by, r.payload_object_key, r.payload_sha256, r.payload_bytes,
+    r.payload_content_bytes, r.gate_github_pull_request,
+    EXISTS (SELECT 1 FROM policy_revision_approvals a WHERE a.organization_id=o.organization_id AND a.project_id=o.project_id AND a.policy_id=o.policy_id) AS previously_approved
+  FROM project_policy_observations o
+  JOIN policy_revisions r ON r.organization_id=o.organization_id AND r.project_id=o.project_id AND r.policy_id=o.policy_id
+  JOIN runner_identities i ON i.organization_id=o.organization_id AND i.runner_id=o.runner_id
+  JOIN api_tokens t ON t.organization_id=i.organization_id AND t.id=i.token_id
+  JOIN projects p ON p.organization_id=o.organization_id AND p.id=o.project_id AND p.deleted_at IS NULL
+  WHERE o.organization_id=$3 AND o.project_id=$4
+    AND i.removed_at IS NULL AND i.expires_at>$5
+    AND t.scope='worker' AND t.key_kind='service' AND t.created_at<=$5
+    AND t.revoked_at IS NULL AND (t.expires_at IS NULL OR t.expires_at>$5)
+    AND (i.scope='organization' OR EXISTS (
+      SELECT 1 FROM token_grants g
+      WHERE g.organization_id=t.organization_id AND g.token_id=t.id AND g.project_id=o.project_id
+    ))
+), eligible AS (
+  SELECT organization_id, project_id, runner_id, policy_id, observed_at, source_present, source_repository, source_commit, source_default_branch, source_default_branch_head, source_default_branch_reachable, revision_approved_by, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, gate_github_pull_request, previously_approved FROM current_reports
+  WHERE ($6::text IS NULL OR policy_id=$6::text)
+    AND ($1::text IS NULL OR policy_id<>$1::text)
+), totals AS (
+  SELECT count(DISTINCT policy_id)::bigint AS distinct_policy_count,
+    (count(DISTINCT policy_id) FILTER (WHERE $1::text IS NULL OR policy_id<>$1::text))::bigint AS policy_count
+  FROM current_reports
+), grouped AS (
+  SELECT eligible.organization_id, eligible.project_id, eligible.runner_id, eligible.policy_id, eligible.observed_at, eligible.source_present, eligible.source_repository, eligible.source_commit, eligible.source_default_branch, eligible.source_default_branch_head, eligible.source_default_branch_reachable, eligible.revision_approved_by, eligible.payload_object_key, eligible.payload_sha256, eligible.payload_bytes, eligible.payload_content_bytes, eligible.gate_github_pull_request, eligible.previously_approved, count(*) OVER (PARTITION BY policy_id)::bigint AS runner_count FROM eligible
+)
+SELECT grouped.organization_id, grouped.project_id, grouped.runner_id, grouped.policy_id, grouped.observed_at,
+  grouped.source_present, grouped.source_repository, grouped.source_commit, grouped.source_default_branch,
+  grouped.source_default_branch_head, grouped.source_default_branch_reachable,
+  grouped.revision_approved_by, grouped.payload_object_key, grouped.payload_sha256, grouped.payload_bytes,
+  grouped.payload_content_bytes, grouped.gate_github_pull_request, grouped.previously_approved,
+  grouped.runner_count, totals.distinct_policy_count, totals.policy_count,
+  EXISTS (SELECT 1 FROM policy_revision_approvals a WHERE a.organization_id=grouped.organization_id AND a.project_id=grouped.project_id AND a.policy_id=$1::text AND a.approved_by='repository-default-branch') AS repository_approved
+FROM grouped CROSS JOIN totals
+ORDER BY grouped.observed_at DESC, grouped.runner_id
+LIMIT $2
+`
+
+type PolicyProjectPolicyObservationsParams struct {
+	ApprovedPolicyID *string
+	PageSize         int32
+	OrganizationID   tracker.OrganizationID
+	ProjectID        tracker.ProjectID
+	Now              time.Time
+	PolicyID         *string
+}
+
+type PolicyProjectPolicyObservationsRow struct {
+	OrganizationID               tracker.OrganizationID
+	ProjectID                    tracker.ProjectID
+	RunnerID                     string
+	PolicyID                     string
+	ObservedAt                   time.Time
+	SourcePresent                bool
+	SourceRepository             string
+	SourceCommit                 string
+	SourceDefaultBranch          string
+	SourceDefaultBranchHead      string
+	SourceDefaultBranchReachable bool
+	RevisionApprovedBy           string
+	PayloadObjectKey             string
+	PayloadSHA256                string
+	PayloadBytes                 int64
+	PayloadContentBytes          int64
+	GateGithubPullRequest        sql.NullBool
+	PreviouslyApproved           bool
+	RunnerCount                  int64
+	DistinctPolicyCount          int64
+	PolicyCount                  int64
+	RepositoryApproved           bool
+}
+
+func (q *Queries) PolicyProjectPolicyObservations(ctx context.Context, arg PolicyProjectPolicyObservationsParams) ([]PolicyProjectPolicyObservationsRow, error) {
+	rows, err := q.db.QueryContext(ctx, policyProjectPolicyObservations,
+		arg.ApprovedPolicyID,
+		arg.PageSize,
+		arg.OrganizationID,
+		arg.ProjectID,
+		arg.Now,
+		arg.PolicyID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []PolicyProjectPolicyObservationsRow{}
+	for rows.Next() {
+		var i PolicyProjectPolicyObservationsRow
+		if err := rows.Scan(
+			&i.OrganizationID,
+			&i.ProjectID,
+			&i.RunnerID,
+			&i.PolicyID,
+			&i.ObservedAt,
+			&i.SourcePresent,
+			&i.SourceRepository,
+			&i.SourceCommit,
+			&i.SourceDefaultBranch,
+			&i.SourceDefaultBranchHead,
+			&i.SourceDefaultBranchReachable,
+			&i.RevisionApprovedBy,
+			&i.PayloadObjectKey,
+			&i.PayloadSHA256,
+			&i.PayloadBytes,
+			&i.PayloadContentBytes,
+			&i.GateGithubPullRequest,
+			&i.PreviouslyApproved,
+			&i.RunnerCount,
+			&i.DistinctPolicyCount,
+			&i.PolicyCount,
+			&i.RepositoryApproved,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const policyProjectWorkflowApplies = `-- name: PolicyProjectWorkflowApplies :many
+SELECT organization_id,project_id,id,policy_id,previous_policy_id,repository,source_commit,
+  previous_definition_digest,definition_digest,runner_id,applied_by,applied_at,change_id,pull_request_url
+FROM project_workflow_applies
+WHERE organization_id=$1 AND project_id=$2
+  AND ($3::bigint=0 OR id<$3)
+ORDER BY id DESC
+LIMIT $4
+`
+
+type PolicyProjectWorkflowAppliesParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	BeforeID       int64
+	PageSize       int32
+}
+
+func (q *Queries) PolicyProjectWorkflowApplies(ctx context.Context, arg PolicyProjectWorkflowAppliesParams) ([]ProjectWorkflowApply, error) {
+	rows, err := q.db.QueryContext(ctx, policyProjectWorkflowApplies,
+		arg.OrganizationID,
+		arg.ProjectID,
+		arg.BeforeID,
+		arg.PageSize,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ProjectWorkflowApply{}
+	for rows.Next() {
+		var i ProjectWorkflowApply
+		if err := rows.Scan(
+			&i.OrganizationID,
+			&i.ProjectID,
+			&i.ID,
+			&i.PolicyID,
+			&i.PreviousPolicyID,
+			&i.Repository,
+			&i.SourceCommit,
+			&i.PreviousDefinitionDigest,
+			&i.DefinitionDigest,
+			&i.RunnerID,
+			&i.AppliedBy,
+			&i.AppliedAt,
+			&i.ChangeID,
+			&i.PullRequestUrl,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const policyRecordProjectObservation = `-- name: PolicyRecordProjectObservation :execrows
+INSERT INTO project_policy_observations (
+  organization_id,project_id,runner_id,policy_id,observed_at,source_present,source_repository,source_commit,
+  source_default_branch,source_default_branch_head,source_default_branch_reachable
+)
+VALUES (
+  $1,$2,$3,$4,$5,
+  $6,$7,$8,$9,
+  $10,$11
+)
+ON CONFLICT (organization_id,project_id,runner_id) DO UPDATE SET
+  policy_id=excluded.policy_id,
+  observed_at=excluded.observed_at,
+  source_present=CASE WHEN NOT excluded.source_present AND project_policy_observations.policy_id=excluded.policy_id THEN project_policy_observations.source_present ELSE excluded.source_present END,
+  source_repository=CASE WHEN NOT excluded.source_present AND project_policy_observations.policy_id=excluded.policy_id THEN project_policy_observations.source_repository ELSE excluded.source_repository END,
+  source_commit=CASE WHEN NOT excluded.source_present AND project_policy_observations.policy_id=excluded.policy_id THEN project_policy_observations.source_commit ELSE excluded.source_commit END,
+  source_default_branch=CASE WHEN NOT excluded.source_present AND project_policy_observations.policy_id=excluded.policy_id THEN project_policy_observations.source_default_branch ELSE excluded.source_default_branch END,
+  source_default_branch_head=CASE WHEN NOT excluded.source_present AND project_policy_observations.policy_id=excluded.policy_id THEN project_policy_observations.source_default_branch_head ELSE excluded.source_default_branch_head END,
+  source_default_branch_reachable=CASE WHEN NOT excluded.source_present AND project_policy_observations.policy_id=excluded.policy_id THEN project_policy_observations.source_default_branch_reachable ELSE excluded.source_default_branch_reachable END
+WHERE project_policy_observations.observed_at<excluded.observed_at OR (
+  project_policy_observations.observed_at=excluded.observed_at
+  AND project_policy_observations.policy_id=excluded.policy_id
+  AND project_policy_observations.source_present=excluded.source_present
+  AND project_policy_observations.source_repository=excluded.source_repository
+  AND project_policy_observations.source_commit=excluded.source_commit
+  AND project_policy_observations.source_default_branch=excluded.source_default_branch
+  AND project_policy_observations.source_default_branch_head=excluded.source_default_branch_head
+  AND project_policy_observations.source_default_branch_reachable=excluded.source_default_branch_reachable
+)
+`
+
+type PolicyRecordProjectObservationParams struct {
+	OrganizationID               tracker.OrganizationID
+	ProjectID                    tracker.ProjectID
+	RunnerID                     string
+	PolicyID                     string
+	ObservedAt                   time.Time
+	SourcePresent                bool
+	SourceRepository             string
+	SourceCommit                 string
+	SourceDefaultBranch          string
+	SourceDefaultBranchHead      string
+	SourceDefaultBranchReachable bool
+}
+
+func (q *Queries) PolicyRecordProjectObservation(ctx context.Context, arg PolicyRecordProjectObservationParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, policyRecordProjectObservation,
+		arg.OrganizationID,
+		arg.ProjectID,
+		arg.RunnerID,
+		arg.PolicyID,
+		arg.ObservedAt,
+		arg.SourcePresent,
+		arg.SourceRepository,
+		arg.SourceCommit,
+		arg.SourceDefaultBranch,
+		arg.SourceDefaultBranchHead,
+		arg.SourceDefaultBranchReachable,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const policySetProjectCurrent = `-- name: PolicySetProjectCurrent :execrows

@@ -1,4 +1,5 @@
 {
+  "version": "1",
   "legacy_migrations": {
     "internal/hubserver/postgres/migrations/20261031220442_core_tenant_schema.sql": "55cf981a2476db53ed891a5619dee975ac91cb7ad42b7c612c440de9c13e22f3",
     "internal/hubserver/postgres/migrations/20261031221613_tenant_context.sql": "43fd6c40d2e7663860c702eb78409763ba5030a4c3c9d6710ca04a8fbd8945bd",
@@ -71,6 +72,8 @@
     "internal/hubserver/postgres/migrations/20261102014015_attempt_started_at_submicro.sql",
     "internal/hubserver/postgres/migrations/20261102014157_project_event_cursors.sql",
     "internal/hubserver/postgres/migrations/20261102015243_conversation_usage_records.sql",
+    "internal/hubserver/postgres/migrations/20261102021008_project_policy_observations.sql",
+    "internal/hubserver/postgres/migrations/20261102021900_policy_workflow_applications.sql",
     "internal/hubserver/postgres/migrations/20261102021911_runner_update_state.sql",
     "internal/hubserver/postgres/migrations/20261102023307_conversation_billing_import.sql"
   ],
@@ -804,7 +807,36 @@
       "contract": "Retain the organization urgent update revision and current request.",
       "family": "fleet",
       "organization": "organization-owned"
+    },
+    "public.policy_revision_approvals": {
+      "columns": {
+        "approved_at": "timestamp with time zone",
+        "approved_by": "text",
+        "organization_id": "text",
+        "policy_id": "text",
+        "project_id": "text"
+      },
+      "contract": "Retain immutable approval provenance for each tenant project policy revision.",
+      "family": "policy",
+      "organization": "organization-owned"
+    },
+    "public.project_policy_observations": {
+      "columns": {
+        "observed_at": "timestamp with time zone",
+        "organization_id": "text",
+        "policy_id": "text",
+        "project_id": "text",
+        "runner_id": "text",
+        "source_commit": "text",
+        "source_default_branch": "text",
+        "source_default_branch_head": "text",
+        "source_default_branch_reachable": "boolean",
+        "source_present": "boolean",
+        "source_repository": "text"
+      },
+      "contract": "Retain each current authorized runner policy and repository source report under its tenant project.",
+      "family": "policy",
+      "organization": "organization-owned"
     }
-  },
-  "version": "1"
+  }
 }

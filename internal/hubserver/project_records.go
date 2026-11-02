@@ -29,6 +29,9 @@ func isProjectRecordCommand(input any) bool {
 }
 
 func (s *Service) authorizeProjectRecord(ctx context.Context, scope nativeScope, write bool) error {
+	if s.config.TenantRepository != nil && s.config.AccessRepository == nil {
+		return nativeNotFound()
+	}
 	if s.config.AccessRepository != nil {
 		return s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error { return s.authorizeAccessScope(ctx, r, scope, write) })
 	}
@@ -77,6 +80,9 @@ type projectAccessAuthority struct{}
 func (projectAccessAuthority) Rollback() error { return nil }
 
 func (s *Service) beginProjectRecordAuthority(ctx context.Context, scope nativeScope) (interface{ Rollback() error }, error) {
+	if s.config.TenantRepository != nil && s.config.AccessRepository == nil {
+		return nil, nativeNotFound()
+	}
 	if s.config.AccessRepository != nil {
 		if scope.credential.Hosted != nil {
 			if _, _, err := s.hostedMutationIdentity(ctx, scope.credential); err != nil {
@@ -114,6 +120,9 @@ func (s *Service) beginProjectRecordAuthority(ctx context.Context, scope nativeS
 }
 
 func (s *Service) recheckProjectRecordMutation(ctx context.Context, scope nativeScope) error {
+	if s.config.TenantRepository != nil && s.config.AccessRepository == nil {
+		return nativeNotFound()
+	}
 	if s.config.AccessRepository != nil {
 		if scope.credential.Hosted != nil {
 			_, membership, err := s.hostedMutationIdentity(ctx, scope.credential)
@@ -224,9 +233,6 @@ func (s *Service) projectRecordNative(ctx context.Context, record projectstore.R
 }
 
 func (s *Service) executeProjectRecordMutation(ctx context.Context, scope nativeScope, options nativeCommandOptions, command tracker.Mutation, input any) (json.RawMessage, error) {
-	if _, ok := input.(cloudModelSelectionRequest); ok && s.config.AccessRepository == nil {
-		return nil, nativeNotFound()
-	}
 	if strings.TrimSpace(command.IdempotencyKey) == "" || len(command.IdempotencyKey) > 128 {
 		return nil, nativePublicInvalid("An idempotency key of at most 128 bytes is required")
 	}
@@ -235,6 +241,9 @@ func (s *Service) executeProjectRecordMutation(ctx context.Context, scope native
 		case createNativeProjectRequest, deleteCloudProjectRequest:
 			return nil, projectRecordError(ErrProjectParticipants)
 		}
+	}
+	if s.config.AccessRepository == nil {
+		return nil, nativeNotFound()
 	}
 	if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
 		return nil, err
@@ -247,7 +256,10 @@ func (s *Service) executeProjectRecordMutation(ctx context.Context, scope native
 	var organizationModelRevision int64
 	var receipt eventstore.Receipt
 	var replay bool
-	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Writer) error {
+		if err := s.authorizeAccessScope(ctx, r, scope, true); err != nil {
+			return err
+		}
 		var err error
 		receipt, err = r.Receipt(ctx, scope.credential.ID, options.OperationID, command.IdempotencyKey)
 		if err == nil {
@@ -299,10 +311,8 @@ func (s *Service) executeProjectRecordMutation(ctx context.Context, scope native
 	defer s.releaseProjectRecordAuthority(ctx, authority)
 	var existing *eventstore.Receipt
 	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-		if s.config.AccessRepository != nil {
-			if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
-				return err
-			}
+		if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
+			return err
 		}
 		previous, err := w.Receipt(ctx, scope.credential.ID, options.OperationID, command.IdempotencyKey)
 		if err == nil {
@@ -509,7 +519,7 @@ func isProjectCreation(input any) bool { _, ok := input.(createNativeProjectRequ
 
 func projectRecordRoute(path string) bool {
 	switch path {
-	case nativeBase, nativeBase + "/integration", nativeBase + "/model-selection", nativeBase + "/content-settings", nativeBase + "/usage/sprites", nativeBase + "/claims", nativeBase + "/claims/preview", nativeBase + "/claims/wait":
+	case nativeBase, nativeBase + "/integration", nativeBase + "/model-selection", nativeBase + "/content-settings", nativeBase + "/usage/sprites", nativeBase + "/claims", nativeBase + "/claims/preview", nativeBase + "/claims/wait", nativeBase + "/policy", nativeBase + "/policy/observed":
 		return true
 	}
 	return false

@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -20,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/projectsettings"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -316,11 +318,20 @@ func (p *projectRecordParticipantFixture) RetireProject(context.Context, tenants
 }
 
 func verifyProjectRecordParticipants(t *testing.T, repository tenantstore.Repository) {
-	t.Helper()
 	fixture := newHostedSecurityFixture(t)
-	owner := fixture.user(t, "owner", "owner", "owner@example.test", "write", "")
 	fixture.service.config.TenantRepository = repository
+	fixture.service.config.AccessRepository = repository
 	fixture.service.config.RunDetails = &memoryRunDetails{}
+	now := fixture.service.config.now().UTC()
+	if err := repository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: "org_security", Name: "Example organization", Slug: "example-organization", CreatedAt: now}); err != nil {
+			return err
+		}
+		return w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: "org_security", ProviderID: "org_provider"})
+	}); err != nil {
+		t.Fatalf("seed PostgreSQL hosted access organization: %v", err)
+	}
+	owner := fixture.user(t, "owner", "owner", "owner@example.test", "", "")
 	endpoint := "/api/v2/organizations/org_security/projects"
 	request := map[string]any{"idempotency_key": "hosted-create", "name": "Hosted project", "grant_access": true}
 	requireNativeStatus(t, fixture.request(t, owner, http.MethodPost, endpoint, request), http.StatusServiceUnavailable)
@@ -363,5 +374,175 @@ func verifyProjectRecordParticipants(t *testing.T, repository tenantstore.Reposi
 	}
 	if count != 0 {
 		t.Fatal("hosted creation fell back to SQLite")
+	}
+}
+
+func TestPostgresProjectParticipantsAuditLifecycleAndRevokeGrants(t *testing.T) {
+	repository, admin := projectRecordPostgresWithAdmin(t, 3)
+	service := openPostgresHubTestService(t, repository, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}})
+	org := nativeOrganization{ID: "org_project_lifecycle", Name: "Project lifecycle", Slug: "project-lifecycle"}
+	seedPostgresHubAdmin(t, repository, service, org)
+	now := service.config.now().UTC()
+	actor := tenantstore.ProjectActor{CredentialID: "test_hub_admin", PrincipalID: "test_hub_admin", HostedSubject: "user_owner", Audit: accessstore.Audit{OrganizationID: org.ID, SessionID: "session_project_lifecycle", ActualActor: "user_owner", EffectiveUser: "user_owner", StartedAt: now, ExpiresAt: now.Add(time.Hour)}}
+	participants := tenantProjectParticipants{service: service}
+	var record projectstore.Record
+	if err := repository.WriteTenant(t.Context(), org.ID, corestore.Serving, func(w tenantstore.Writer) error {
+		var err error
+		record, err = w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: org.ID, ID: "project_lifecycle", Name: "Lifecycle", Profile: "native"}, States: []tracker.NativeState{{Name: "Todo"}}})
+		if err != nil {
+			return err
+		}
+		return participants.CreateProject(t.Context(), w, actor, record)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	record.Core.Name = "Lifecycle updated"
+	record.Core.Slug = "lifecycle-updated"
+	if err := repository.WriteTenant(t.Context(), org.ID, corestore.Serving, func(w tenantstore.Writer) error {
+		updated, err := w.UpdateProjectRecord(t.Context(), record)
+		if err != nil {
+			return err
+		}
+		return participants.UpdateProject(t.Context(), w, actor, record, updated)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.WriteTenant(t.Context(), org.ID, corestore.Serving, func(w tenantstore.Writer) error {
+		current, err := w.ProjectRecord(t.Context(), record.Core.ID)
+		if err != nil {
+			return err
+		}
+		if err := participants.RetireProject(t.Context(), w, actor, current, service.config.now()); err != nil {
+			return err
+		}
+		return w.RetireProject(t.Context(), record.Core.ID, current.Settings.Revision, service.config.now())
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var created, updated, retired, grants int
+	if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FILTER (WHERE event='project_created'),count(*) FILTER (WHERE event='project_updated'),count(*) FILTER (WHERE event='project_retired') FROM hosted_audit WHERE organization_id=$1 AND project_id=$2`, org.ID, record.Core.ID).Scan(&created, &updated, &retired); err != nil {
+		t.Fatal(err)
+	}
+	if created != 1 || updated != 1 || retired != 1 {
+		t.Fatalf("project lifecycle audits = %d created, %d updated, %d retired", created, updated, retired)
+	}
+	if err := admin.QueryRowContext(t.Context(), `SELECT (SELECT count(*) FROM hosted_project_grants WHERE organization_id=$1 AND project_id=$2)+(SELECT count(*) FROM token_grants WHERE organization_id=$1 AND project_id=$2)`, org.ID, record.Core.ID).Scan(&grants); err != nil {
+		t.Fatal(err)
+	}
+	if grants != 0 {
+		t.Fatalf("retired project retained %d access grants", grants)
+	}
+}
+
+func TestPostgresProjectCreationSerializesWithAdministratorPromotion(t *testing.T) {
+	repository, admin := projectRecordPostgresWithAdmin(t, 4)
+	service := openPostgresHubTestService(t, repository, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db")})
+	organization, err := service.createNativeOrganizationFor(t.Context(), "Example organization")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedPostgresHubAdmin(t, repository, service, organization)
+	now := service.config.now().UTC()
+	principal := "credential_example_member"
+	user := "user_example_member"
+	err = repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization.ID, ID: principal, Name: "Example member", Hash: apikey.HashToken("example-member-token"), Scope: "operator", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ProjectAccess: "selected", Kind: "personal"}); err != nil {
+			return err
+		}
+		return w.CreateAccessMember(t.Context(), accessstore.Member{OrganizationID: organization.ID, UserID: user, Email: "member@example.test", MembershipID: "membership_example_member", Role: "member", Active: true, PrincipalID: principal, CreatedAt: now, UpdatedAt: now})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.ExecContext(t.Context(), "RESET ROLE"); err != nil {
+		t.Fatal(err)
+	}
+	projectID := tracker.ProjectID(newNativeID("project"))
+	createReady := make(chan struct{})
+	releaseCreate := make(chan struct{})
+	createDone := make(chan error, 1)
+	promoteDone := make(chan error, 1)
+	createJoined := false
+	promoteStarted := false
+	promoteJoined := false
+	go func() {
+		createDone <- repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+			if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization.ID, ID: projectID, Name: "Example project", Profile: "native"}, States: nativeFixtureStates()}); err != nil {
+				return err
+			}
+			if err := w.InitializeProjectAccess(t.Context(), projectID, "test_hub_admin"); err != nil {
+				return err
+			}
+			close(createReady)
+			<-releaseCreate
+			return nil
+		})
+	}()
+	t.Cleanup(func() {
+		select {
+		case <-releaseCreate:
+		default:
+			close(releaseCreate)
+		}
+		if !createJoined {
+			<-createDone
+		}
+		if promoteStarted && !promoteJoined {
+			<-promoteDone
+		}
+	})
+	select {
+	case <-createReady:
+	case err := <-createDone:
+		createJoined = true
+		t.Fatalf("create project before race barrier: %v", err)
+	}
+	promoteStarted = true
+	go func() {
+		promoteDone <- repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
+			member, err := w.AccessMember(t.Context(), user)
+			if err != nil {
+				return err
+			}
+			member.Role, member.UpdatedAt = "admin", service.config.now().UTC()
+			if err := w.UpdateAccessMember(t.Context(), member); err != nil {
+				return err
+			}
+			return w.SyncHostedAdministratorProjectAccess(t.Context(), user, principal)
+		})
+	}()
+	testenv.WaitUntil(t, t.Context(), func() error {
+		var waiting bool
+		if err := admin.QueryRowContext(t.Context(), `SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%FOR NO KEY UPDATE%')`).Scan(&waiting); err != nil {
+			return err
+		}
+		if !waiting {
+			return errors.New("administrator promotion has not reached the organization lock")
+		}
+		return nil
+	})
+	close(releaseCreate)
+	if err := <-createDone; err != nil {
+		t.Fatal(err)
+	}
+	createJoined = true
+	if err := <-promoteDone; err != nil {
+		t.Fatal(err)
+	}
+	promoteJoined = true
+	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
+		grant, err := r.AccessProjectGrant(t.Context(), user, projectID)
+		if err != nil {
+			return err
+		}
+		if !grant.CanWrite || !grant.ManageRunner {
+			return errors.New("promoted administrator lacks the new project grant")
+		}
+		if _, err := r.AccessTokenGrant(t.Context(), principal, projectID); err != nil {
+			return err
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 }

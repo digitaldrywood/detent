@@ -68,6 +68,7 @@ type ProjectActor struct {
 	CredentialID  string
 	PrincipalID   string
 	HostedSubject string
+	Audit         accessstore.Audit
 }
 
 type ProjectParticipants interface {

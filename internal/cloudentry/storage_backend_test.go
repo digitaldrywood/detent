@@ -1,6 +1,7 @@
 package cloudentry
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -15,11 +16,19 @@ import (
 	"github.com/lib/pq"
 	"github.com/pressly/goose/v3"
 
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudentry/platformstore"
+	"github.com/digitaldrywood/detent/internal/hubsecrets"
+	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatoradmin"
 	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 var entryPostgresTemplate = pgtest.NewTemplate(func(ctx context.Context, db *sql.DB) error {
@@ -76,6 +85,78 @@ func entryPostgresConfig(t *testing.T) func(*Config) {
 			cfg.Attachments, cfg.attachmentTransport = &config, objects.transport
 		}
 	}
+}
+
+func newPostgresTenantEntryFixture(t *testing.T) entryFixture {
+	t.Helper()
+	return newEntryFixtureWithConfig(t, slog.New(slog.DiscardHandler), nil, func(cfg *hubserver.Config) {
+		keys, err := hubsecrets.FromEnvironment(entrySecretEnvironment(1, 1))
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg.SecretKeys = keys
+		admin := entryPostgresTemplate.Database(t)
+		name, password := "example_"+strings.ReplaceAll(uuid.NewString(), "-", ""), uuid.NewString()
+		quoted := pq.QuoteIdentifier(name)
+		if _, err := admin.ExecContext(t.Context(), "CREATE ROLE "+quoted+" LOGIN PASSWORD "+pq.QuoteLiteral(password)+" IN ROLE detent_runtime"); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			deadline, _ := t.Deadline()
+			ctx, cancel := context.WithDeadline(context.WithoutCancel(t.Context()), deadline)
+			defer cancel()
+			if _, err := admin.ExecContext(ctx, "DROP OWNED BY "+quoted); err != nil {
+				t.Error(err)
+			}
+			if _, err := admin.ExecContext(ctx, "DROP ROLE "+quoted); err != nil {
+				t.Error(err)
+			}
+		})
+		pool := entryPostgresTemplate.OpenRole(t, admin, name, password)
+		repository, err := postgres.NewRepository(t.Context(), pool, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 3, BackgroundConnections: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if err := repository.Close(); err != nil {
+				t.Error(err)
+			}
+		})
+		organization := tracker.OrganizationID(cfg.Hosted.OrganizationID)
+		now := time.Now().UTC()
+		cursorEnvelope, err := keys.Seal(bytes.Repeat([]byte{1}, 32), accessstore.SecretAAD(organization, "", accessstore.NativeCursorKeyKind))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: string(organization), CreatedAt: now}); err != nil {
+				return err
+			}
+			if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: organization, ProviderID: cfg.Hosted.WorkOSOrganizationID, AllocationGeneration: 1}); err != nil {
+				return err
+			}
+			if err := w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: organization, Kind: accessstore.NativeCursorKeyKind, Envelope: cursorEnvelope, UpdatedAt: now}, accessstore.SecretAudit{OrganizationID: organization, Kind: accessstore.NativeCursorKeyKind, Actor: "migration", Event: "import", KeyVersion: cursorEnvelope.Version, RecordedAt: now}); err != nil {
+				return err
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		cfg.TenantRepository, cfg.AccessRepository, cfg.BillingRepository = repository, repository, repository
+		cfg.RunDetails = tenantDetailFixture{&conversationArchiveFixture{}}
+	})
+}
+
+type tenantDetailFixture struct {
+	*conversationArchiveFixture
+}
+
+func (f tenantDetailFixture) StoreDetail(ctx context.Context, organization string, content []byte) (attachment.ArchiveReference, error) {
+	return f.PublishContent(ctx, organization, content)
+}
+
+func (f tenantDetailFixture) ReadDetail(ctx context.Context, organization string, ref attachment.ArchiveReference) ([]byte, error) {
+	return f.ReadContent(ctx, organization, ref)
 }
 
 func TestEntryBackendPlatformOwners(t *testing.T) {

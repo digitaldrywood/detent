@@ -206,6 +206,9 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	if service.config.NativeRunEvents == nil && service.config.TenantRepository != nil {
 		service.config.NativeRunEvents = tenantNativeRunEventParticipant{service: service}
 	}
+	if service.config.ProjectParticipants == nil && service.config.TenantRepository != nil && service.config.AccessRepository != nil {
+		service.config.ProjectParticipants = tenantProjectParticipants{service: service}
+	}
 	if cfg.Hosted == nil {
 		if err := database.reader.QueryRowContext(ctx, "SELECT id FROM organizations WHERE local=1").Scan(&service.localOrganization); err != nil {
 			workerCancel()

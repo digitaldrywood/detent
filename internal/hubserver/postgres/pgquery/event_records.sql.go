@@ -299,7 +299,7 @@ func (q *Queries) RecordGetEvidenceSequence(ctx context.Context, arg RecordGetEv
 }
 
 const recordGetLandingReceipt = `-- name: RecordGetLandingReceipt :one
-SELECT organization_id, attempt_id, version_id, merge_sha, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes FROM change_landing_receipts WHERE organization_id=$1 AND attempt_id=$2
+SELECT organization_id, attempt_id, version_id, merge_sha, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, repository, base_ref FROM change_landing_receipts WHERE organization_id=$1 AND attempt_id=$2
 `
 
 type RecordGetLandingReceiptParams struct {
@@ -319,6 +319,8 @@ func (q *Queries) RecordGetLandingReceipt(ctx context.Context, arg RecordGetLand
 		&i.PayloadSHA256,
 		&i.PayloadBytes,
 		&i.PayloadContentBytes,
+		&i.Repository,
+		&i.BaseRef,
 	)
 	return i, err
 }
@@ -813,9 +815,9 @@ func (q *Queries) RecordInsertEvidence(ctx context.Context, arg RecordInsertEvid
 }
 
 const recordInsertLandingReceipt = `-- name: RecordInsertLandingReceipt :one
-INSERT INTO change_landing_receipts (organization_id, attempt_id, version_id, merge_sha, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-ON CONFLICT (organization_id, attempt_id) DO NOTHING RETURNING organization_id, attempt_id, version_id, merge_sha, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes
+INSERT INTO change_landing_receipts (organization_id, attempt_id, version_id, merge_sha, repository, base_ref, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+ON CONFLICT (organization_id, attempt_id) DO NOTHING RETURNING organization_id, attempt_id, version_id, merge_sha, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, repository, base_ref
 `
 
 type RecordInsertLandingReceiptParams struct {
@@ -823,6 +825,8 @@ type RecordInsertLandingReceiptParams struct {
 	AttemptID           string
 	VersionID           string
 	MergeSha            string
+	Repository          string
+	BaseRef             string
 	PayloadObjectKey    string
 	PayloadSHA256       string
 	PayloadBytes        int64
@@ -835,6 +839,8 @@ func (q *Queries) RecordInsertLandingReceipt(ctx context.Context, arg RecordInse
 		arg.AttemptID,
 		arg.VersionID,
 		arg.MergeSha,
+		arg.Repository,
+		arg.BaseRef,
 		arg.PayloadObjectKey,
 		arg.PayloadSHA256,
 		arg.PayloadBytes,
@@ -850,6 +856,8 @@ func (q *Queries) RecordInsertLandingReceipt(ctx context.Context, arg RecordInse
 		&i.PayloadSHA256,
 		&i.PayloadBytes,
 		&i.PayloadContentBytes,
+		&i.Repository,
+		&i.BaseRef,
 	)
 	return i, err
 }
@@ -1719,6 +1727,45 @@ func (q *Queries) RecordProjectEventSequence(ctx context.Context, arg RecordProj
 	var column_1 int64
 	err := row.Scan(&column_1)
 	return column_1, err
+}
+
+const recordProjectPolicyLanding = `-- name: RecordProjectPolicyLanding :one
+SELECT v.change_id,v.external_url,v.actor_principal_id
+FROM change_landing_receipts l
+JOIN change_versions v ON v.organization_id=l.organization_id AND v.id=l.version_id
+JOIN change_requests c ON c.organization_id=v.organization_id AND c.id=v.change_id
+WHERE l.organization_id=$1 AND c.project_id=$2
+  AND l.merge_sha=$3 AND lower(l.repository)=lower($4)
+  AND l.base_ref=$5
+ORDER BY c.id,v.number DESC
+LIMIT 1
+`
+
+type RecordProjectPolicyLandingParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	MergeSha       string
+	Repository     string
+	BaseRef        string
+}
+
+type RecordProjectPolicyLandingRow struct {
+	ChangeID         string
+	ExternalURL      string
+	ActorPrincipalID string
+}
+
+func (q *Queries) RecordProjectPolicyLanding(ctx context.Context, arg RecordProjectPolicyLandingParams) (RecordProjectPolicyLandingRow, error) {
+	row := q.db.QueryRowContext(ctx, recordProjectPolicyLanding,
+		arg.OrganizationID,
+		arg.ProjectID,
+		arg.MergeSha,
+		arg.Repository,
+		arg.BaseRef,
+	)
+	var i RecordProjectPolicyLandingRow
+	err := row.Scan(&i.ChangeID, &i.ExternalURL, &i.ActorPrincipalID)
+	return i, err
 }
 
 const recordSetViewedFile = `-- name: RecordSetViewedFile :one

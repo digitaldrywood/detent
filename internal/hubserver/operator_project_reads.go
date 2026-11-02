@@ -11,6 +11,10 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -44,7 +48,15 @@ func (e hubProjectExecutor) read(ctx context.Context, call operatortool.Call) (o
 	case "list_projects":
 		value, err = s.operatorProjectList(ctx, scope, r)
 	case "get_native_project":
-		value, err = readNativeProject(ctx, s.database.reader, scope)
+		if s.config.TenantRepository != nil {
+			var record projectstore.Record
+			record, err = s.readHostedProjectRecord(ctx, scope)
+			if err == nil {
+				value, err = s.projectRecordNative(ctx, record)
+			}
+		} else {
+			value, err = readNativeProject(ctx, s.database.reader, scope)
+		}
 	case operatortool.GetSpritePool:
 		value, err = s.spritePoolResponse(ctx, scope)
 	case operatortool.GetProjectSpriteAllocation:
@@ -79,13 +91,28 @@ func (e hubProjectExecutor) read(ctx context.Context, call operatortool.Call) (o
 	case "list_git_hub_import_records":
 		value, err = s.readProjectImportRecords(ctx, scope, r)
 	case "get_project_policy":
-		var policyScope string
-		policyScope, err = operatorPolicyScope(ctx, s.database.reader, scope, r.RepositoryPolicy)
-		if err == nil {
-			var approval policy.Approval
-			approval, err = readProjectPolicyHistory(ctx, s.database.reader, policyScope, r.Limit, r.After, false)
+		if s.config.TenantRepository != nil {
+			var record projectstore.Record
+			record, err = s.readHostedProjectRecord(ctx, scope)
+			if err == nil && r.RepositoryPolicy && (record.Core.Profile != "native" || record.Settings.CheckoutRepository == "") {
+				err = &operatortool.RequestError{Code: "invalid_request", Message: "Project has no linked repository policy; use repository_policy:false for its project policy"}
+			}
 			if err == nil {
-				value, err = s.projectPolicyRead(ctx, s.database.reader, policyScope, approval, true)
+				var approval policy.Approval
+				approval, err = s.readTenantProjectPolicy(ctx, scope.organization, scope.project)
+				if err == nil {
+					value, err = s.tenantProjectPolicyRead(ctx, scope.organization, scope.project, approval, r.Limit, r.After)
+				}
+			}
+		} else {
+			var policyScope string
+			policyScope, err = operatorPolicyScope(ctx, s.database.reader, scope, r.RepositoryPolicy)
+			if err == nil {
+				var approval policy.Approval
+				approval, err = readProjectPolicyHistory(ctx, s.database.reader, policyScope, r.Limit, r.After, false)
+				if err == nil {
+					value, err = s.projectPolicyRead(ctx, s.database.reader, policyScope, approval, true)
+				}
 			}
 		}
 	case "project_secret_metadata":
@@ -297,6 +324,9 @@ func boundedProjectBatch(view githubBatchView, request operatortool.ProjectReadR
 func (s *Service) operatorProjectList(ctx context.Context, scope nativeScope, r operatortool.ProjectReadRequest) (operatorProjectPage, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
+	if s.config.TenantRepository != nil {
+		return s.operatorProjectListHosted(ctx, scope, r)
+	}
 	ids := []string{}
 	if s.config.Hosted != nil {
 		projects, err := s.hostedReadableProjects(ctx, scope.credential)
@@ -353,6 +383,119 @@ func (s *Service) operatorProjectList(ctx context.Context, scope nativeScope, r 
 	}
 	return page, nil
 }
+
+func projectAccessFilter(credential apiCredential, project tracker.ProjectID, after tracker.ProjectID, limit int) accessstore.ProjectAccessFilter {
+	filter := accessstore.ProjectAccessFilter{
+		UserID:        hostedSubject(credential),
+		PrincipalID:   credential.HostedPrincipal,
+		CredentialID:  credential.ID,
+		KeyKind:       credential.HostedKeyKind,
+		ProjectAccess: string(credential.HostedProjectAccess),
+		After:         after,
+		Only:          project,
+		Limit:         limit,
+	}
+	if credential.EntryKey != nil {
+		filter.KeyKind = credential.EntryKey.Kind
+		filter.ProjectAccess = credential.EntryKey.Access
+		filter.Projects = make([]tracker.ProjectID, len(credential.EntryKey.Projects))
+		for i, id := range credential.EntryKey.Projects {
+			filter.Projects[i] = tracker.ProjectID(id)
+		}
+		filter.BlockedProjects = make([]tracker.ProjectID, len(credential.EntryKey.BlockedProjects))
+		for i, id := range credential.EntryKey.BlockedProjects {
+			filter.BlockedProjects[i] = tracker.ProjectID(id)
+		}
+		filter.RequireCredentialGrant = false
+	} else {
+		filter.RequireCredentialGrant = credential.HostedProjectAccess == hostedProjectsSelected
+	}
+	return filter
+}
+
+func hostedSubject(credential apiCredential) string {
+	if credential.Hosted == nil || credential.EntryKey != nil && credential.EntryKey.Kind == "service" {
+		return ""
+	}
+	return credential.Hosted.Subject
+}
+
+func (s *Service) operatorProjectListHosted(ctx context.Context, scope nativeScope, request operatortool.ProjectReadRequest) (operatorProjectPage, error) {
+	limit := request.Limit
+	if limit == 0 {
+		limit = 100
+	}
+	if limit < 1 || limit > 1000 {
+		return operatorProjectPage{}, corestore.ErrInvalidPage
+	}
+	filter := projectAccessFilter(scope.credential, "", tracker.ProjectID(request.After), limit)
+	if request.ProjectID != "" {
+		filter.Only = tracker.ProjectID(request.ProjectID)
+	}
+	var rows []accessstore.ProjectAccess
+	var records []projectstore.Record
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		pageReader, ok := reader.(accessstore.ProjectAccessPageReader)
+		if !ok {
+			return ErrProjectParticipants
+		}
+		var err error
+		rows, err = pageReader.ProjectAccessPage(ctx, filter)
+		if err != nil {
+			return err
+		}
+		count := len(rows)
+		if count > limit {
+			count = limit
+		}
+		records = make([]projectstore.Record, 0, count)
+		for _, row := range rows[:count] {
+			record, err := reader.ProjectRecord(ctx, row.ProjectID)
+			if err != nil {
+				return err
+			}
+			records = append(records, record)
+		}
+		return nil
+	})
+	if err != nil {
+		return operatorProjectPage{}, err
+	}
+	page := operatorProjectPage{Projects: make([]tracker.NativeProject, 0, len(records))}
+	for _, record := range records {
+		project, err := s.projectRecordNative(ctx, record)
+		if err != nil {
+			return operatorProjectPage{}, err
+		}
+		page.Projects = append(page.Projects, project)
+	}
+	if len(rows) > limit && len(page.Projects) > 0 {
+		page.NextCursor = string(page.Projects[len(page.Projects)-1].ID)
+	}
+	return page, nil
+}
+
+func (s *Service) readHostedProjectRecord(ctx context.Context, scope nativeScope) (projectstore.Record, error) {
+	filter := projectAccessFilter(scope.credential, scope.project, "", 1)
+	var record projectstore.Record
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		pageReader, ok := reader.(accessstore.ProjectAccessPageReader)
+		if !ok {
+			return ErrProjectParticipants
+		}
+		rows, err := pageReader.ProjectAccessPage(ctx, filter)
+		if err != nil {
+			return err
+		}
+		if len(rows) == 0 {
+			return corestore.ErrNotFound
+		}
+		record, err = reader.ProjectRecord(ctx, scope.project)
+		return err
+	})
+	return record, projectRecordError(err)
+}
+
 func (s *Service) readCutoverReceipt(ctx context.Context, scope nativeScope) (CutoverReceipt, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
