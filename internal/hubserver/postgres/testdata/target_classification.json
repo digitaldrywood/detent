@@ -153,5 +153,20 @@
     "inline_payloads": [],
     "ownership": "organization-owned",
     "scope": "search_scope_refresh.organization_id; project and work item remain tenant scoped"
+  },
+  "public/cost_import_heads": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "cost_import_heads.organization_id; snapshot import state and retained cost revision evidence"
+  },
+  "public/cost_import_rows": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "cost_import_rows.organization_id; snapshot import state and retained cost revision evidence"
+  },
+  "public/cost_imports": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "cost_imports.organization_id; snapshot import state and retained cost revision evidence"
   }
 }

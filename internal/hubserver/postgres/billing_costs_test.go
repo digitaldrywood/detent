@@ -31,7 +31,7 @@ func TestBillingCostsCorrectMonthlySpendWithoutDoubleCounting(t *testing.T) {
 			}
 		}
 		amount := int64(101)
-		base := billingstore.CostObservation{OrganizationID: org, ProjectID: "project_first", ReceivedAt: boundary.Add(time.Hour), Observation: usagecost.Observation{Provider: "example", ProviderAccount: "account", ResourceID: "resource", SourceID: "source", Bucket: "runner_api", Metric: "tokens", Currency: "USD", Unit: "tokens", Revision: 1, From: boundary.Add(-time.Nanosecond), To: boundary.Add(time.Nanosecond), AmountMicros: &amount}}
+		base := billingstore.CostObservation{OrganizationID: org, ProjectID: "project_first", ReceivedAt: boundary.Add(time.Hour + time.Nanosecond), Observation: usagecost.Observation{Provider: "example", ProviderAccount: "account", ResourceID: "resource", SourceID: "source", Bucket: "runner_api", Metric: "tokens", Currency: "USD", Unit: "tokens", Revision: 1, From: boundary.Add(-time.Nanosecond), To: boundary.Add(time.Nanosecond), AmountMicros: &amount}}
 		historyImport := false
 		write := func(record billingstore.CostObservation, applied bool, wantErr error, rollback bool) {
 			t.Helper()
@@ -142,7 +142,7 @@ func TestBillingCostsCorrectMonthlySpendWithoutDoubleCounting(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			if latest.Revision != 3 || latest.ProjectID != "project_first" || latest.Reference.ArchiveReference().Validate(string(org)) != nil {
+			if !latest.ReceivedAt.Equal(base.ReceivedAt) || latest.Revision != 3 || latest.ProjectID != "project_first" || latest.Reference.ArchiveReference().Validate(string(org)) != nil {
 				t.Errorf("latest revision lost correction or tenant evidence: %+v", latest)
 			}
 			return nil

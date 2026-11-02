@@ -57,7 +57,9 @@
     "internal/hubserver/postgres/migrations/20261102001107_runner_backend_isolation.sql",
     "internal/hubserver/postgres/migrations/20261102001229_runner_sprite_membership.sql",
     "internal/hubserver/postgres/migrations/20261102003051_runner_heartbeat_observations.sql",
-    "internal/hubserver/postgres/migrations/20261102004100_runner_selection_cursors.sql"
+    "internal/hubserver/postgres/migrations/20261102004100_runner_selection_cursors.sql",
+    "internal/hubserver/postgres/migrations/20261102005904_cost_receipt_precision.sql",
+    "internal/hubserver/postgres/migrations/20261102010343_cost_import_progress.sql"
   ],
   "tables": {
     "public.ai_credit_reason_references": {
@@ -142,7 +144,7 @@
         "kind": "text",
         "object_key": "text",
         "organization_id": "text",
-        "received_at": "timestamp with time zone",
+        "received_at": "text",
         "retention": "text",
         "revision": "bigint",
         "source_key": "text"
@@ -557,6 +559,63 @@
       },
       "contract": "Rebuild tenant-scoped approximate search from retained canonical source content with bounded candidate and refresh work.",
       "family": "search",
+      "organization": "organization-owned"
+    },
+    "public.cost_import_heads": {
+      "columns": {
+        "organization_id": "text",
+        "revision": "bigint",
+        "source_key": "text"
+      },
+      "contract": "Retain tenant-scoped frozen snapshot identity, bounded import cursors and immutable revision references until source and target history reconcile.",
+      "family": "billing",
+      "organization": "organization-owned"
+    },
+    "public.cost_import_rows": {
+      "columns": {
+        "binding_id": "text",
+        "codec": "text",
+        "compressed_bytes": "bigint",
+        "content_bytes": "bigint",
+        "customer_owned": "boolean",
+        "format_version": "integer",
+        "kind": "text",
+        "object_key": "text",
+        "organization_id": "text",
+        "project_id": "text",
+        "received_at": "text",
+        "retention": "text",
+        "revision": "bigint",
+        "sha256": "text",
+        "source_key": "text",
+        "source_voided": "boolean"
+      },
+      "contract": "Retain tenant-scoped frozen snapshot identity, bounded import cursors and immutable revision references until source and target history reconcile.",
+      "family": "billing",
+      "organization": "organization-owned"
+    },
+    "public.cost_imports": {
+      "columns": {
+        "after_key_1": "text",
+        "after_key_2": "text",
+        "after_key_3": "text",
+        "after_key_4": "text",
+        "after_key_5": "text",
+        "after_key_6": "text",
+        "after_key_7": "text",
+        "catalog_digest": "text",
+        "current_sources": "bigint",
+        "has_after": "boolean",
+        "history_rows": "bigint",
+        "organization_id": "text",
+        "phase": "integer",
+        "revision": "bigint",
+        "snapshot_id": "text",
+        "source_rows": "bigint",
+        "source_schema": "text"
+      },
+      "contract": "Retain tenant-scoped frozen snapshot identity, bounded import cursors and immutable revision references until source and target history reconcile.",
+      "family": "billing",
       "organization": "organization-owned"
     }
   },

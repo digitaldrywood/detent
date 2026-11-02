@@ -37,9 +37,14 @@ func costIdentity(values ...string) string {
 func (s *session) BillingCostRevision(ctx context.Context, source billingstore.CostSource) (billingstore.CostRevision, error) {
 	key := costIdentity(source.Provider, source.ProviderAccount, source.SourceID, source.From.UTC().Format(costPeriodLayout), source.To.UTC().Format(costPeriodLayout))
 	var result billingstore.CostRevision
+	var received string
 	r := &result.Reference
-	err := s.db.QueryRowContext(ctx, `SELECT s.project_id,s.revision,r.binding_id,r.customer_owned,r.object_key,r.sha256,r.compressed_bytes,r.content_bytes,r.codec,r.format_version,r.kind,r.retention FROM cost_sources s JOIN cost_observation_revisions r ON r.organization_id=s.organization_id AND r.source_key=s.source_key AND r.revision=s.revision WHERE s.organization_id=$1 AND s.source_key=$2`, s.organization, key).Scan(&result.ProjectID, &result.Revision, &r.BindingID, &r.CustomerOwned, &r.Key, &r.SHA256, &r.CompressedBytes, &r.ContentBytes, &r.Codec, &r.FormatVersion, &r.Kind, &r.Retention)
-	return result, mapError(ctx, err)
+	err := s.db.QueryRowContext(ctx, `SELECT s.project_id,s.revision,r.received_at,r.binding_id,r.customer_owned,r.object_key,r.sha256,r.compressed_bytes,r.content_bytes,r.codec,r.format_version,r.kind,r.retention FROM cost_sources s JOIN cost_observation_revisions r ON r.organization_id=s.organization_id AND r.source_key=s.source_key AND r.revision=s.revision WHERE s.organization_id=$1 AND s.source_key=$2`, s.organization, key).Scan(&result.ProjectID, &result.Revision, &received, &r.BindingID, &r.CustomerOwned, &r.Key, &r.SHA256, &r.CompressedBytes, &r.ContentBytes, &r.Codec, &r.FormatVersion, &r.Kind, &r.Retention)
+	if err != nil {
+		return result, mapError(ctx, err)
+	}
+	result.ReceivedAt, err = time.Parse(costPeriodLayout, received)
+	return result, err
 }
 
 func (s *session) BillingMonthlySpend(ctx context.Context, project tracker.ProjectID, month time.Time) (budget.MonthlySpend, error) {
@@ -206,7 +211,7 @@ func (s *session) recordBillingCost(ctx context.Context, record billingstore.Cos
 		return false, nil, mapError(ctx, err)
 	}
 	r := record.Reference
-	_, err = s.db.ExecContext(ctx, `INSERT INTO cost_observation_revisions (organization_id,source_key,revision,received_at,binding_id,customer_owned,object_key,sha256,compressed_bytes,content_bytes,codec,format_version,kind,retention) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`, s.organization, key, o.Revision, record.ReceivedAt, r.BindingID, r.CustomerOwned, r.Key, r.SHA256, r.CompressedBytes, r.ContentBytes, r.Codec, r.FormatVersion, r.Kind, r.Retention)
+	_, err = s.db.ExecContext(ctx, `INSERT INTO cost_observation_revisions (organization_id,source_key,revision,received_at,binding_id,customer_owned,object_key,sha256,compressed_bytes,content_bytes,codec,format_version,kind,retention) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`, s.organization, key, o.Revision, record.ReceivedAt.UTC().Format(costPeriodLayout), r.BindingID, r.CustomerOwned, r.Key, r.SHA256, r.CompressedBytes, r.ContentBytes, r.Codec, r.FormatVersion, r.Kind, r.Retention)
 	if err != nil {
 		return false, nil, mapError(ctx, err)
 	}
@@ -259,6 +264,6 @@ func (s *session) ImportBillingCostRevision(ctx context.Context, record billings
 		return false, mapError(ctx, err)
 	}
 	r := record.Reference
-	_, err = s.db.ExecContext(ctx, `INSERT INTO cost_observation_revisions (organization_id,source_key,revision,received_at,binding_id,customer_owned,object_key,sha256,compressed_bytes,content_bytes,codec,format_version,kind,retention) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`, s.organization, key, o.Revision, record.ReceivedAt, r.BindingID, r.CustomerOwned, r.Key, r.SHA256, r.CompressedBytes, r.ContentBytes, r.Codec, r.FormatVersion, r.Kind, r.Retention)
+	_, err = s.db.ExecContext(ctx, `INSERT INTO cost_observation_revisions (organization_id,source_key,revision,received_at,binding_id,customer_owned,object_key,sha256,compressed_bytes,content_bytes,codec,format_version,kind,retention) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`, s.organization, key, o.Revision, record.ReceivedAt.UTC().Format(costPeriodLayout), r.BindingID, r.CustomerOwned, r.Key, r.SHA256, r.CompressedBytes, r.ContentBytes, r.Codec, r.FormatVersion, r.Kind, r.Retention)
 	return err == nil, mapError(ctx, err)
 }

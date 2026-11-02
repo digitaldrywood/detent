@@ -130,7 +130,7 @@ func (c Catalog) Validate() error {
 }
 
 func validTransform(value string) bool {
-	return slices.Contains([]string{"archive-json", "hosted-identity", "invitation-grants", "provider-binding", "tenant-singleton"}, value)
+	return slices.Contains([]string{"archive-json", "cost-observation", "hosted-identity", "invitation-grants", "provider-binding", "tenant-singleton"}, value)
 }
 
 func scalarTargetMatches(column Column) bool {

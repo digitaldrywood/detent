@@ -24,7 +24,8 @@ type CostSource struct {
 }
 
 type CostRevision struct {
-	ProjectID tracker.ProjectID
-	Revision  int64
-	Reference AuditReference
+	ReceivedAt time.Time
+	ProjectID  tracker.ProjectID
+	Revision   int64
+	Reference  AuditReference
 }
