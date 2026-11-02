@@ -50,7 +50,7 @@ func newHubPostgresImportCommand(lookupEnv func(string) string) *cobra.Command {
 				return err
 			}
 			return output.Write(func(writer io.Writer) error {
-				_, err := fmt.Fprintf(writer, "Imported tenant core records: projects=%d access_rows=%d policy_revisions=%d current_policies=%d review_policies=%d monthly_policies=%d work_items=%d dependencies=%d\n", result.Projects, result.AccessRows, result.PolicyRevisions, result.CurrentPolicies, result.ReviewPolicies, result.MonthlyPolicies, result.WorkItems, result.Dependencies)
+				_, err := fmt.Fprintf(writer, "Imported tenant core records: projects=%d access_rows=%d policy_revisions=%d current_policies=%d review_policies=%d monthly_policies=%d work_items=%d dependencies=%d cost_source_rows=%d cost_current_sources=%d cost_history_rows=%d execution_rows=%d monthly_admissions=%d monthly_leases=%d\n", result.Projects, result.AccessRows, result.PolicyRevisions, result.CurrentPolicies, result.ReviewPolicies, result.MonthlyPolicies, result.WorkItems, result.Dependencies, result.CostSourceRows, result.CostCurrentSources, result.CostHistoryRows, result.ExecutionRows, result.MonthlyAdmissions, result.MonthlyLeases)
 				return err
 			}, result)
 		},

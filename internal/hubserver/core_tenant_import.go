@@ -21,14 +21,20 @@ type TenantCoreImportSource struct {
 }
 
 type TenantCoreImportResult struct {
-	Projects        int64 `json:"projects"`
-	AccessRows      int64 `json:"access_rows"`
-	WorkItems       int64 `json:"work_items"`
-	Dependencies    int64 `json:"dependencies"`
-	PolicyRevisions int64 `json:"policy_revisions"`
-	CurrentPolicies int64 `json:"current_policies"`
-	ReviewPolicies  int64 `json:"review_policies"`
-	MonthlyPolicies int64 `json:"monthly_policies"`
+	Projects           int64 `json:"projects"`
+	AccessRows         int64 `json:"access_rows"`
+	WorkItems          int64 `json:"work_items"`
+	Dependencies       int64 `json:"dependencies"`
+	PolicyRevisions    int64 `json:"policy_revisions"`
+	CurrentPolicies    int64 `json:"current_policies"`
+	ReviewPolicies     int64 `json:"review_policies"`
+	MonthlyPolicies    int64 `json:"monthly_policies"`
+	CostSourceRows     int64 `json:"cost_source_rows"`
+	CostCurrentSources int64 `json:"cost_current_sources"`
+	CostHistoryRows    int64 `json:"cost_history_rows"`
+	ExecutionRows      int64 `json:"execution_rows"`
+	MonthlyAdmissions  int64 `json:"monthly_admissions"`
+	MonthlyLeases      int64 `json:"monthly_leases"`
 }
 
 func ImportTenantCoreCopy(ctx context.Context, config postgres.Config, source TenantCoreImportSource) (result TenantCoreImportResult, resultErr error) {
@@ -90,5 +96,30 @@ func ImportTenantCoreCopy(ctx context.Context, config postgres.Config, source Te
 	if err != nil {
 		return result, fmt.Errorf("import tenant dependencies: %w", err)
 	}
+	result.ExecutionRows, err = ImportCoreExecution(ctx, repository, CoreExecutionImportSource{CopyPath: source.CopyPath, OrganizationID: source.OrganizationID, SourceObjects: source.Objects, Objects: source.Objects})
+	if err != nil {
+		return result, fmt.Errorf("import tenant execution: %w", err)
+	}
+	monthly, err := repository.ImportCoreMonthlyBudgetFacts(ctx, postgres.CorePolicyImportSource{CopyPath: source.CopyPath, OrganizationID: source.OrganizationID, Objects: source.Objects})
+	if err != nil {
+		return result, fmt.Errorf("import tenant monthly budget facts: %w", err)
+	}
+	result.MonthlyAdmissions = monthly.Admissions
+	result.MonthlyLeases = monthly.Leases
+	costs, err := repository.ImportCostCopy(ctx, postgres.CostImportSource{
+		CopyPath: source.CopyPath,
+		Catalog:  source.Catalog,
+		Source:   storagecatalog.Source{Store: "hub", CatalogVersion: source.Catalog.Version, OrganizationID: string(source.OrganizationID)},
+		Objects:  source.Objects,
+	})
+	if err != nil {
+		return result, fmt.Errorf("import tenant costs: %w", err)
+	}
+	if !costs.Done {
+		return result, errors.New("tenant cost import did not finish")
+	}
+	result.CostSourceRows = costs.SourceRows
+	result.CostCurrentSources = costs.CurrentSources
+	result.CostHistoryRows = costs.HistoryRows
 	return result, nil
 }
