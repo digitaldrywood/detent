@@ -136,7 +136,12 @@ func schemaFromCatalog(catalog storagecatalog.Catalog) storagecatalog.Schema {
 
 func sameSourceSignature(actual []byte, expected string) bool {
 	var left, right any
-	return json.Unmarshal(actual, &left) == nil && json.Unmarshal([]byte(expected), &right) == nil && reflect.DeepEqual(left, right)
+	if json.Unmarshal(actual, &left) != nil || json.Unmarshal([]byte(expected), &right) != nil {
+		return false
+	}
+	actualFields, actualOK := left.([]any)
+	expectedFields, expectedOK := right.([]any)
+	return actualOK && expectedOK && len(actualFields) == 7 && len(expectedFields) == 7 && reflect.DeepEqual(actualFields[1:], expectedFields[1:])
 }
 
 func (r *Repository) ImportCostCopy(ctx context.Context, source CostImportSource) (CostImportProgress, error) {

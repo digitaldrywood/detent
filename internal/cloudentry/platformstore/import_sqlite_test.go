@@ -50,6 +50,47 @@ func TestSQLiteCopySourceValidatesSealedCatalogCopies(t *testing.T) {
 	}
 }
 
+func TestSQLiteCopySourceAcceptsColumnReorderingAndOptionalLitestreamTables(t *testing.T) {
+	t.Parallel()
+	catalog := platformImportCatalog(t)
+	registryPath := createSQLiteCopyFixtureWithLayout(t, catalog, "registry", RegistryCopyApplicationID, true, true)
+	authPath := createSQLiteCopyFixture(t, catalog, "auth", AuthCopyApplicationID, false)
+	dropSQLiteTables(t, registryPath, "_litestream_lock", "_litestream_seq")
+	source, err := OpenSQLiteCopySource(t.Context(), registryPath, authPath, catalog)
+	if err != nil {
+		t.Fatalf("open source with production column order and absent optional Litestream tables: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := source.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	importer := Importer{source: source.ImportSource(), organizations: map[string]bool{"org_example": true}}
+	page, err := importer.readPage(t.Context(), importCheckpoint{}, 2)
+	if err != nil || len(page) != 1 {
+		t.Fatalf("read reordered organization: page=%+v error=%v", page, err)
+	}
+	if page[0].values["slug"] != "example" || page[0].values["checkout_price"] != "checkout_price_example" {
+		t.Fatalf("organization values were assigned by physical order: slug=%v checkout_price=%v", page[0].values["slug"], page[0].values["checkout_price"])
+	}
+}
+
+func TestSQLiteCopySourceKeepsColumnSignaturesStrictWhenOrderDiffers(t *testing.T) {
+	t.Parallel()
+	catalog := platformImportCatalog(t)
+	registryPath := createSQLiteCopyFixtureWithLayout(t, catalog, "registry", RegistryCopyApplicationID, true, true)
+	authPath := createSQLiteCopyFixture(t, catalog, "auth", AuthCopyApplicationID, false)
+	column := catalog.Tables["registry/organizations"].Columns["slug"]
+	column.Source = `[16,"slug","BLOB",1,"''",0,0]`
+	catalog.Tables["registry/organizations"].Columns["slug"] = column
+	if source, err := OpenSQLiteCopySource(t.Context(), registryPath, authPath, catalog); err == nil {
+		if closeErr := source.Close(); closeErr != nil {
+			t.Error(closeErr)
+		}
+		t.Fatal("accepted a reordered source with a changed column type")
+	}
+}
+
 func TestSQLiteCopySourceRejectsChangedCopyBeforeCompletion(t *testing.T) {
 	t.Parallel()
 	catalog := platformImportCatalog(t)
@@ -90,12 +131,14 @@ func TestSQLiteCopySourceRejectsWritableFilesAndSidecars(t *testing.T) {
 	t.Parallel()
 	catalog := platformImportCatalog(t)
 	for _, test := range []struct {
-		name     string
-		writable bool
-		sidecar  bool
+		name                string
+		writable            bool
+		sidecar             bool
+		malformedLitestream bool
 	}{
 		{name: "writable copy", writable: true},
 		{name: "wal sidecar", sidecar: true},
+		{name: "malformed Litestream table", malformedLitestream: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			registryPath := createSQLiteCopyFixture(t, catalog, "registry", RegistryCopyApplicationID, true)
@@ -107,6 +150,27 @@ func TestSQLiteCopySourceRejectsWritableFilesAndSidecars(t *testing.T) {
 			}
 			if test.sidecar {
 				if err := os.WriteFile(registryPath+"-wal", []byte("pending"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.malformedLitestream {
+				if err := os.Chmod(registryPath, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				db, err := sql.Open("sqlite", registryPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := db.ExecContext(t.Context(), `DROP TABLE "_litestream_seq"`); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := db.ExecContext(t.Context(), `CREATE TABLE "_litestream_seq" (id TEXT PRIMARY KEY, seq INTEGER)`); err != nil {
+					t.Fatal(err)
+				}
+				if err := db.Close(); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(registryPath, 0o400); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -130,6 +194,10 @@ func platformImportCatalog(t *testing.T) storagecatalog.Catalog {
 }
 
 func createSQLiteCopyFixture(t *testing.T, catalog storagecatalog.Catalog, store string, applicationID int64, includeOrganization bool) string {
+	return createSQLiteCopyFixtureWithLayout(t, catalog, store, applicationID, includeOrganization, false)
+}
+
+func createSQLiteCopyFixtureWithLayout(t *testing.T, catalog storagecatalog.Catalog, store string, applicationID int64, includeOrganization, productionOrganizationOrder bool) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), store+".db")
 	db, err := sql.Open("sqlite", path)
@@ -165,6 +233,14 @@ func createSQLiteCopyFixture(t *testing.T, catalog storagecatalog.Catalog, store
 			if json.Unmarshal(definition[0], &ordinal) != nil || json.Unmarshal(definition[1], &sourceName) != nil || json.Unmarshal(definition[2], &kind) != nil || json.Unmarshal(definition[3], &notNull) != nil || json.Unmarshal(definition[5], &primary) != nil || sourceName != name {
 				t.Fatalf("invalid source column definition for %s/%s", tableName, name)
 			}
+			if productionOrganizationOrder && store == "registry" && tableName == "organizations" {
+				switch name {
+				case "checkout_price":
+					ordinal--
+				case "slug":
+					ordinal++
+				}
+			}
 			item := `"` + name + `" ` + kind
 			if notNull != 0 {
 				item += " NOT NULL"
@@ -199,6 +275,9 @@ func createSQLiteCopyFixture(t *testing.T, catalog storagecatalog.Catalog, store
 			t.Fatalf("create source table %s: %v", tableName, err)
 		}
 	}
+	if _, err := db.ExecContext(t.Context(), `CREATE TABLE "_litestream_lock" (id INTEGER); CREATE TABLE "_litestream_seq" (id INTEGER PRIMARY KEY, seq INTEGER); INSERT INTO "_litestream_seq" (id,seq) VALUES (1,1)`); err != nil {
+		t.Fatal(err)
+	}
 	if includeOrganization {
 		source := ImportSource{Catalog: catalog}
 		values := platformSourceValues(t, source, testConfig(t), "registry/organizations", "example", 1)
@@ -223,4 +302,26 @@ func createSQLiteCopyFixture(t *testing.T, catalog storagecatalog.Catalog, store
 		t.Fatal(err)
 	}
 	return path
+}
+
+func dropSQLiteTables(t *testing.T, path string, names ...string) {
+	t.Helper()
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range names {
+		if _, err := db.ExecContext(t.Context(), `DROP TABLE "`+name+`"`); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o400); err != nil {
+		t.Fatal(err)
+	}
 }
