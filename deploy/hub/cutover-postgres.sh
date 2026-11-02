@@ -263,8 +263,8 @@ main_pid=$(systemctl show -p MainPID --value "$UNIT") || fail "the stopped Cloud
 control_group=$(systemctl show -p ControlGroup --value "$UNIT") || fail "the stopped Cloud control group is unavailable"
 [ "$active_state" = inactive ] && [ "$socket_state" = inactive ] && [ "$main_pid" = 0 ] || fail "the Cloud socket or service remains active"
 service_stopped=true
-[ "$control_group" = "/system.slice/$UNIT.service" ] || fail "the Cloud service control group is unexpected"
-group_path="/sys/fs/cgroup$control_group"
+if [ -n "$control_group" ] && [ "$control_group" != "$pre_stop_group" ]; then fail "the Cloud service control group is unexpected"; fi
+group_path="/sys/fs/cgroup$pre_stop_group"
 if sudo -n test -d "$group_path"; then
 	processes=$(read_cgroup_processes "$group_path") || fail "the Cloud control group process list is unavailable"
 else

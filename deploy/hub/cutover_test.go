@@ -23,6 +23,8 @@ func TestPostgresCutoverFencesCopiesAndSelectsPostgresRelease(t *testing.T) {
 		{name: "import failure restores SQLite", importFailure: true},
 		{name: "health failure retains PostgreSQL fence", healthFailure: true, wantPostgres: true},
 		{name: "remaining child prevents copy and restart", childRemains: true},
+		{name: "inactive service clears its control group", emptyControlGroupAfterStop: true, wantPostgres: true},
+		{name: "empty control group does not hide a remaining child", childRemains: true, emptyControlGroupAfterStop: true},
 		{name: "marker created while waiting for lock", lockConflict: "marker"},
 		{name: "backup destination created while waiting for lock", lockConflict: "backup"},
 	} {
@@ -33,12 +35,13 @@ func TestPostgresCutoverFencesCopiesAndSelectsPostgresRelease(t *testing.T) {
 }
 
 type cutoverCase struct {
-	name          string
-	importFailure bool
-	healthFailure bool
-	childRemains  bool
-	lockConflict  string
-	wantPostgres  bool
+	name                       string
+	importFailure              bool
+	healthFailure              bool
+	childRemains               bool
+	emptyControlGroupAfterStop bool
+	lockConflict               string
+	wantPostgres               bool
 }
 
 func cutoverFixture(t *testing.T, test cutoverCase) {
@@ -272,7 +275,10 @@ case "$unit" in
         if [ "$(cat "$FIXTURE_ROOT/$statefile")" = true ]; then echo active; else echo inactive; fi
         ;;
       MainPID) cat "$FIXTURE_ROOT/main-pid" ;;
-      ControlGroup) echo /system.slice/detent-cloud.service ;;
+      ControlGroup)
+        if [ "$(cat "$FIXTURE_ROOT/service-active")" = false ] && [ "$FIXTURE_EMPTY_CONTROL_GROUP_AFTER_STOP" = true ]; then exit 0; fi
+        echo /system.slice/detent-cloud.service
+        ;;
       KillMode) echo control-group ;;
       EnvironmentFiles) printf '%s (ignore_errors=no) %s (ignore_errors=no)\n' "$FIXTURE_CLOUD_ENV" "$FIXTURE_ATTACHMENTS_ENV" ;;
       *) exit 2 ;;
@@ -394,6 +400,7 @@ exec "$@"
 		fmt.Sprintf("FIXTURE_IMPORT_FAILURE=%t", test.importFailure),
 		fmt.Sprintf("FIXTURE_HEALTH_FAILURE=%t", test.healthFailure),
 		fmt.Sprintf("FIXTURE_CHILD_REMAINS=%t", test.childRemains),
+		fmt.Sprintf("FIXTURE_EMPTY_CONTROL_GROUP_AFTER_STOP=%t", test.emptyControlGroupAfterStop),
 		"FIXTURE_LOCK_CONFLICT="+test.lockConflict,
 		"FIXTURE_SERVICE_USER="+serviceUser.Username,
 		"FIXTURE_SERVICE_UID="+serviceUser.Uid,
