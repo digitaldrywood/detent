@@ -282,6 +282,7 @@ func validateSQLiteStore(ctx context.Context, db *sql.DB, catalog storagecatalog
 		return err
 	}
 	defer rows.Close()
+	var litestreamTables []string
 	for rows.Next() {
 		var name, kind string
 		if err := rows.Scan(&name, &kind); err != nil {
@@ -291,6 +292,10 @@ func validateSQLiteStore(ctx context.Context, db *sql.DB, catalog storagecatalog
 			return storagecatalog.ErrUnmapped
 		}
 		if _, ok := wantTables[name]; !ok {
+			if optionalLitestreamTable(name) {
+				litestreamTables = append(litestreamTables, name)
+				continue
+			}
 			return storagecatalog.ErrUnmapped
 		}
 		delete(wantTables, name)
@@ -300,6 +305,11 @@ func validateSQLiteStore(ctx context.Context, db *sql.DB, catalog storagecatalog
 	}
 	if err := rows.Close(); err != nil {
 		return err
+	}
+	for _, name := range litestreamTables {
+		if err := validateLitestreamTable(ctx, db, name); err != nil {
+			return fmt.Errorf("validate Litestream metadata table %s: %w", name, err)
+		}
 	}
 	if len(wantTables) != 0 {
 		return storagecatalog.ErrUnmapped
@@ -313,6 +323,21 @@ func validateSQLiteStore(ctx context.Context, db *sql.DB, catalog storagecatalog
 		}
 	}
 	return nil
+}
+
+func optionalLitestreamTable(name string) bool {
+	return name == "_litestream_lock" || name == "_litestream_seq"
+}
+
+func validateLitestreamTable(ctx context.Context, db *sql.DB, name string) error {
+	columns := map[string]storagecatalog.Column{
+		"id": {Source: `[0,"id","INTEGER",0,null,0,0]`},
+	}
+	if name == "_litestream_seq" {
+		columns["id"] = storagecatalog.Column{Source: `[0,"id","INTEGER",0,null,1,0]`}
+		columns["seq"] = storagecatalog.Column{Source: `[1,"seq","INTEGER",0,null,0,0]`}
+	}
+	return validateSQLiteTable(ctx, db, storagecatalog.Table{Columns: columns}, name)
 }
 
 type sqliteColumnDefinition struct {
@@ -365,6 +390,12 @@ func validateSQLiteTable(ctx context.Context, db *sql.DB, table storagecatalog.T
 		var expectedValue, actualValue any
 		if json.Unmarshal(expectedFieldsBytes(expectedFields), &expectedValue) != nil || json.Unmarshal(actualFields, &actualValue) != nil {
 			return storagecatalog.ErrUnmapped
+		}
+		expectedDefinition, expectedOK := expectedValue.([]any)
+		actualDefinition, actualOK := actualValue.([]any)
+		if expectedOK && actualOK && len(expectedDefinition) == 7 && len(actualDefinition) == 7 {
+			expectedValue = expectedDefinition[1:]
+			actualValue = actualDefinition[1:]
 		}
 		if !sameJSONValue(expectedValue, actualValue) {
 			return fmt.Errorf("%w: source SQLite definition differs for column %s: catalog=%s actual=%s", storagecatalog.ErrUnmapped, name, expectedFieldsBytes(expectedFields), actualFields)
