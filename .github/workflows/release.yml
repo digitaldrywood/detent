@@ -5,6 +5,11 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      postgres_cutover:
+        description: Run the explicitly authorized production PostgreSQL cutover
+        required: true
+        type: boolean
 
 permissions:
   checks: read
@@ -251,6 +256,7 @@ jobs:
 
   staging:
     needs: prepare
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.postgres_cutover != true }}
     uses: ./.github/workflows/deploy-staging.yml
     with:
       version: ${{ needs.prepare.outputs.version }}
@@ -258,7 +264,9 @@ jobs:
 
   production:
     needs: [prepare, staging]
+    if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && needs.prepare.result == 'success' && (inputs.postgres_cutover == true || needs.staging.result == 'success') }}
     uses: ./.github/workflows/deploy-production.yml
     with:
       version: ${{ needs.prepare.outputs.version }}
+      postgres_cutover: ${{ inputs.postgres_cutover == true }}
     secrets: inherit

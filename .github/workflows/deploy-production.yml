@@ -6,6 +6,10 @@ on:
       version:
         required: true
         type: string
+      postgres_cutover:
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -41,9 +45,14 @@ jobs:
           KNOWN_HOSTS: ${{ secrets.PRODUCTION_SSH_KNOWN_HOSTS }}
           RELEASE_VERSION: ${{ inputs.version }}
           RELEASE_COMMIT: ${{ steps.source.outputs.commit }}
+          POSTGRES_CUTOVER: ${{ inputs.postgres_cutover }}
         run: |
           set -euo pipefail
-          bash scripts/deploy-release.sh production "$RELEASE_COMMIT" "$RELEASE_VERSION" 2>&1 | tee "$RUNNER_TEMP/release-production.log"
+          if [ "$POSTGRES_CUTOVER" = true ]; then
+            bash scripts/deploy-release.sh production "$RELEASE_COMMIT" "$RELEASE_VERSION" postgres-cutover 2>&1 | tee "$RUNNER_TEMP/release-production.log"
+          else
+            bash scripts/deploy-release.sh production "$RELEASE_COMMIT" "$RELEASE_VERSION" 2>&1 | tee "$RUNNER_TEMP/release-production.log"
+          fi
       - name: Smoke deployed release
         id: smoke
         env:

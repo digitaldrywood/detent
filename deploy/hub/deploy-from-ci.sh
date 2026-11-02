@@ -455,8 +455,8 @@ DOMAIN=cloud.detent.build
 OPT=/opt/$NAME
 STATE=/var/lib/$NAME
 read -r verb sha extra <<<"${SSH_ORIGINAL_COMMAND:-}"
-if [ "${verb:-}" != deploy ] || [ -n "${extra:-}" ] || ! [[ "${sha:-}" =~ ^[0-9a-f]{40}$ ]]; then
-  echo "usage: deploy <40-hex commit sha> < binary" >&2
+if { [ "${verb:-}" != deploy ] && [ "${verb:-}" != cutover-postgres ]; } || [ -n "${extra:-}" ] || ! [[ "${sha:-}" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "usage: deploy|cutover-postgres <40-hex commit sha> < upload" >&2
   exit 2
 fi
 short=${sha:0:9}
@@ -464,7 +464,116 @@ exec 9>/run/lock/$NAME-deploy.lock
 flock -w 600 9 || { echo "another production deploy holds the lock" >&2; exit 1; }
 staged=$(mktemp "${TMPDIR:-/tmp}/$NAME-upload.XXXXXX")
 socket_file= dropin_file= legacy_dropin_file= socket_dropin_stage=
-trap 'rm -f "$staged" "${socket_file:-}" "${dropin_file:-}" "${legacy_dropin_file:-}"; if [ -n "${socket_dropin_stage:-}" ]; then sudo -n rm -f "$socket_dropin_stage" || true; fi' EXIT
+cutover_stage=
+cutover_source_stage=
+trap 'rm -f "$staged" "${socket_file:-}" "${dropin_file:-}" "${legacy_dropin_file:-}"; if [ -n "${socket_dropin_stage:-}" ]; then sudo -n rm -f "$socket_dropin_stage" || true; fi; if [ -n "${cutover_source_stage:-}" ]; then sudo -n rm -rf "$cutover_source_stage" || true; fi; if [ -n "${cutover_stage:-}" ]; then rm -rf "$cutover_stage"; fi' EXIT
+if [ "$verb" = cutover-postgres ]; then
+	max_payload=786432000
+	head -c "$((max_payload + 1))" > "$staged"
+	size=$(stat -c %s "$staged")
+	[ "$size" -gt 1000000 ] && [ "$size" -le "$max_payload" ] || { echo "cutover bundle size is invalid" >&2; exit 1; }
+	cutover_stage=$(mktemp -d "/tmp/$NAME-cutover.XXXXXX")
+	python3 - "$staged" "$cutover_stage" <<'PY' || { echo "cutover bundle is invalid" >&2; exit 1; }
+import pathlib
+import shutil
+import sys
+import tarfile
+
+bundle = pathlib.Path(sys.argv[1])
+destination = pathlib.Path(sys.argv[2])
+expected = {"detent", "cutover-postgres.sh", "source.bundle"}
+with tarfile.open(bundle, "r:*") as archive:
+    members = archive.getmembers()
+    if len(members) != len(expected) or {member.name for member in members} != expected:
+        raise SystemExit(1)
+    for member in members:
+        maximum = {"detent": 314572800, "cutover-postgres.sh": 1048576, "source.bundle": 419430400}[member.name]
+        if not member.isfile() or member.mode & 0o7000 or member.size < 1 or member.size > maximum:
+            raise SystemExit(1)
+        source = archive.extractfile(member)
+        if source is None:
+            raise SystemExit(1)
+        with source, (destination / member.name).open("xb") as output:
+            shutil.copyfileobj(source, output, 1 << 20)
+        if (destination / member.name).stat().st_size != member.size:
+            raise SystemExit(1)
+        mode = 0o755 if member.name == "detent" else 0o644
+        (destination / member.name).chmod(mode)
+destination.chmod(0o755)
+PY
+	cutover_source="$OPT/sources/$sha"
+	cutover_source_stage=
+	sudo -n install -d -o root -g "$NAME" -m 0750 "$OPT/sources"
+	verify_cutover_source() {
+		sudo -n test -d "$1" && ! sudo -n test -L "$1" || return 1
+		[ "$(sudo -n -u "$NAME" env GIT_OPTIONAL_LOCKS=0 git -c safe.directory="$1" -C "$1" rev-parse --verify 'HEAD^{commit}')" = "$sha" ] || return 1
+		[ -z "$(sudo -n -u "$NAME" env GIT_OPTIONAL_LOCKS=0 git -c safe.directory="$1" -C "$1" status --porcelain --untracked-files=all)" ] || return 1
+	}
+	if sudo -n test -e "$cutover_source" || sudo -n test -L "$cutover_source"; then
+		verify_cutover_source "$cutover_source" || { echo "the existing frozen source checkout differs or is dirty" >&2; exit 1; }
+	else
+		cutover_source_stage="$OPT/sources/.cutover-$sha-$$"
+		if sudo -n test -e "$cutover_source_stage" || sudo -n test -L "$cutover_source_stage"; then
+			echo "the temporary source checkout path already exists" >&2
+			exit 1
+		fi
+		sudo -n install -d -o "$NAME" -g "$NAME" -m 0700 "$cutover_source_stage"
+		sudo -n -u "$NAME" git clone --quiet --no-checkout "$cutover_stage/source.bundle" "$cutover_source_stage" || { echo "the frozen source checkout could not be created" >&2; exit 1; }
+		source_heads=$(sudo -n -u "$NAME" git -C "$cutover_source_stage" bundle list-heads "$cutover_stage/source.bundle") || { echo "the frozen source bundle references are unavailable" >&2; exit 1; }
+		[ "$source_heads" = "$sha HEAD" ] || { echo "the frozen source bundle is not bound to the candidate commit" >&2; exit 1; }
+		sudo -n -u "$NAME" git -C "$cutover_source_stage" bundle verify "$cutover_stage/source.bundle" >/dev/null || { echo "the frozen source bundle is invalid" >&2; exit 1; }
+		printf '%s\n' "$sha" | sudo -n -u "$NAME" tee "$cutover_source_stage/.git/shallow" >/dev/null
+		sudo -n -u "$NAME" git -C "$cutover_source_stage" checkout --quiet --detach "$sha" || { echo "the frozen source commit could not be checked out" >&2; exit 1; }
+		verify_cutover_source "$cutover_source_stage" || { echo "the received source checkout is not exact and clean" >&2; exit 1; }
+		sudo -n -u "$NAME" cmp -s "$cutover_stage/cutover-postgres.sh" "$cutover_source_stage/deploy/hub/cutover-postgres.sh" || { echo "the uploaded receiver does not match its frozen source" >&2; exit 1; }
+		sudo -n chown -R "root:$NAME" "$cutover_source_stage"
+		sudo -n chmod -R u=rwX,go=rX "$cutover_source_stage"
+		sudo -n mv -T -- "$cutover_source_stage" "$cutover_source"
+		cutover_source_stage=
+	fi
+	cutover_source=$(sudo -n readlink -f "$cutover_source") || { echo "the frozen release source cannot be resolved" >&2; exit 1; }
+	[ "$cutover_source" = "$OPT/sources/$sha" ] || { echo "the frozen release source path is not canonical" >&2; exit 1; }
+	verify_cutover_source "$cutover_source" || { echo "the frozen source checkout does not match the candidate" >&2; exit 1; }
+	sudo -n cmp -s "$cutover_stage/cutover-postgres.sh" "$cutover_source/deploy/hub/cutover-postgres.sh" || { echo "the uploaded receiver does not match the frozen release source" >&2; exit 1; }
+	cutover_metadata=$(sudo -n -u "$NAME" "$cutover_stage/detent" version --format json 2>/dev/null) || { echo "the cutover candidate version is unavailable" >&2; exit 1; }
+	printf '%s' "$cutover_metadata" | python3 -c 'import json,sys; data=json.load(sys.stdin); sys.exit(0 if data.get("commit")==sys.argv[1] and data.get("postgres_storage_supported") is True and data.get("socket_activation_supported") is True else 1)' "$sha" || { echo "the cutover candidate does not match the exact PostgreSQL-capable release" >&2; exit 1; }
+	for command in "cloud import-platform-postgres" "hub import-core-postgres"; do
+		read -r group name <<<"$command"
+		sudo -n -u "$NAME" "$cutover_stage/detent" "$group" "$name" --help >/dev/null || { echo "the cutover candidate lacks a required importer" >&2; exit 1; }
+	done
+	for path in /etc/detent-hub/cloud.postgres.yaml /etc/detent-hub/cloud.yaml /etc/detent-hub/cloud.env /etc/detent-hub/attachments.env; do
+		if ! sudo -n test -f "$path" || sudo -n test -L "$path"; then
+			echo "a provisioned cutover configuration is unavailable" >&2
+			exit 1
+		fi
+	done
+	timestamp=$(date -u +%Y%m%dT%H%M%SZ)
+	candidate_release="$OPT/releases/detent-ci-$sha-$timestamp"
+	receiver_release="$OPT/releases/detent-cutover-$sha-$timestamp.sh"
+	if ! sudo -n test ! -e "$candidate_release" || ! sudo -n test ! -L "$candidate_release"; then
+		echo "the immutable cutover candidate path already exists" >&2
+		exit 1
+	fi
+	if ! sudo -n test ! -e "$receiver_release" || ! sudo -n test ! -L "$receiver_release"; then
+		echo "the immutable cutover receiver path already exists" >&2
+		exit 1
+	fi
+	sudo -n install -m 0755 -o root -g root "$cutover_stage/detent" "$candidate_release"
+	sudo -n install -m 0555 -o root -g root "$cutover_stage/cutover-postgres.sh" "$receiver_release"
+	sudo -n install -d -o root -g "$NAME" -m 0750 "$STATE/cutover"
+	sudo -n env DETENT_DEPLOY_LOCK_HELD=true "$receiver_release" \
+		--binary "$candidate_release" \
+		--entry-config /etc/detent-hub/cloud.postgres.yaml \
+		--sqlite-config /etc/detent-hub/cloud.yaml \
+		--repository-root "$cutover_source" \
+		--cloud-env /etc/detent-hub/cloud.env \
+		--attachments-env /etc/detent-hub/attachments.env \
+		--source-state "$STATE/cloud" \
+		--tenant-root "$STATE/tenants" \
+		--backup-root "$STATE/cutover/$sha" \
+		--health-url https://cloud.detent.build/health
+	exit $?
+fi
 head -c 314572800 > "$staged"
 size=$(stat -c %s "$staged")
 [ "$size" -gt 1000000 ] || { echo "upload too small ($size bytes)" >&2; exit 1; }

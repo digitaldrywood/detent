@@ -8,6 +8,7 @@ STATE=/var/lib/detent-hub
 LOCK=/run/lock/detent-hub-deploy.lock
 SERVICE_USER=detent-hub
 SERVICE_GROUP=detent-hub
+SETPRIV=/usr/bin/setpriv
 
 usage() {
 	cat >&2 <<'EOF'
@@ -64,15 +65,38 @@ for source in sources:
         raise SystemExit(1)
 PY
 
-exec 9>"$LOCK"
-flock -w 600 9 || fail "another production deployment owns the shared lock"
+if [ "${DETENT_DEPLOY_LOCK_HELD:-}" = true ]; then
+	:
+else
+	exec 9>"$LOCK"
+	flock -w 600 9 || fail "another production deployment owns the shared lock"
+fi
 [ ! -e "$backup_root" ] || fail "the sealed-copy destination already exists"
 [ ! -e "$STATE/POSTGRES_CUTOVER" ] || fail "the PostgreSQL cutover has already been attempted"
 if ! sudo -n test -d "$STATE" || sudo -n test -L "$STATE"; then fail "the Cloud state directory is unavailable"; fi
 
-run_service() {
-	sudo -n -u "$SERVICE_USER" /bin/bash -c 'set -a; . "$1"; . "$2"; shift 2; exec "$@"' cutover-env "$cloud_env" "$attachments_env" "$@"
-}
+run_service() (
+	[ -x "$SETPRIV" ] || fail "the service identity launcher is unavailable"
+	local service_uid service_gid service_home
+	service_uid=$(id -u "$SERVICE_USER") || fail "the service account is unavailable"
+	service_gid=$(id -g "$SERVICE_USER") || fail "the service group is unavailable"
+	service_home=$(getent passwd "$SERVICE_USER" | cut -d: -f6)
+	[ -n "$service_home" ] || fail "the service account home is unavailable"
+	/bin/bash -c '
+		set -Eeuo pipefail
+		set -a
+		. "$1"
+		. "$2"
+		shift 2
+		service_uid=$1
+		service_gid=$2
+		service_home=$3
+		service_user=$4
+		shift 4
+		export HOME="$service_home" USER="$service_user" LOGNAME="$service_user"
+		exec /usr/bin/setpriv --reuid="$service_uid" --regid="$service_gid" --init-groups -- "$@"
+	' cutover-env "$cloud_env" "$attachments_env" "$service_uid" "$service_gid" "$service_home" "$SERVICE_USER" "$@"
+)
 
 check_health() {
 	run_service python3 - "$health_url" "${1:-}" <<'PY'
@@ -94,6 +118,11 @@ version_json=$(run_service "$binary" version --format json) || fail "the selecte
 read -r commit postgres_supported socket_supported <<<"$(printf '%s' "$version_json" | python3 -c 'import json,sys; v=json.load(sys.stdin); c=v.get("commit"); p=v.get("postgres_storage_supported"); s=v.get("socket_activation_supported"); sys.exit(1) if not isinstance(c,str) or len(c)!=40 or any(x not in "0123456789abcdef" for x in c) or type(p) is not bool or type(s) is not bool else print(c,str(p).lower(),str(s).lower())')" || fail "the selected binary lacks required deployment capability metadata"
 [ "$postgres_supported" = true ] || fail "the selected release does not support PostgreSQL storage"
 [ "$socket_supported" = true ] || fail "the selected release does not support the active socket receiver"
+source_commit=$(GIT_OPTIONAL_LOCKS=0 git -c safe.directory="$repository_root" -C "$repository_root" rev-parse --verify 'HEAD^{commit}') || fail "the selected source checkout is unavailable"
+[ "$source_commit" = "$commit" ] || fail "the selected source checkout does not match the binary"
+source_changes=$(GIT_OPTIONAL_LOCKS=0 git -c safe.directory="$repository_root" -C "$repository_root" status --porcelain --untracked-files=all) || fail "the selected source checkout cannot be verified"
+[ -z "$source_changes" ] || fail "the selected source checkout is not clean"
+cmp -s "$0" "$repository_root/deploy/hub/cutover-postgres.sh" || fail "the installed receiver differs from the exact source commit"
 run_service "$binary" cloud import-platform-postgres --help >/dev/null || fail "the selected binary lacks the platform importer"
 run_service "$binary" hub import-core-postgres --help >/dev/null || fail "the selected binary lacks the complete tenant importer"
 

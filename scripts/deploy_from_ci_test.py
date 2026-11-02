@@ -10,7 +10,7 @@ SCRIPT = Path(__file__).resolve().parents[1] / 'deploy/hub/deploy-from-ci.sh'
 class DeployHealthTest(unittest.TestCase):
     def shell(self, code):
         result = subprocess.run(
-            ['bash', '-euo', 'pipefail', '-c', 'source "$1"\nrelease=${release:-candidate}\nunit=detent-cloud\nsystemctl() { echo 1; }\nsudo() { [ "$2" = readlink ] && echo "$release"; }\n' + code, 'test', str(SCRIPT)],
+            ['bash', '-euo', 'pipefail', '-c', 'NAME=detent-hub STATE=/var/lib/detent-hub\nsource "$1"\nrelease=${release:-candidate}\nunit=detent-cloud\nsystemctl() { echo 1; }\nsudo() { [ "$2" = readlink ] && echo "$release"; }\n' + code, 'test', str(SCRIPT)],
             text=True, capture_output=True, timeout=20,
             env={'PATH': os.environ['PATH'], 'TMPDIR': os.environ['TMPDIR']})
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

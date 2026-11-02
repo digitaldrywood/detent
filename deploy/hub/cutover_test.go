@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -55,7 +56,18 @@ func cutoverFixture(t *testing.T, test cutoverCase) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	currentGroup, err := user.LookupGroupId(currentUser.Gid)
+	serviceUser := currentUser
+	serviceGroupID := currentUser.Gid
+	realSetpriv, setprivErr := exec.LookPath("setpriv")
+	realPrivdrop := os.Geteuid() == 0 && setprivErr == nil
+	if realPrivdrop {
+		serviceUser, err = user.Lookup("nobody")
+		if err != nil {
+			t.Skip("a separate unprivileged service identity is unavailable")
+		}
+		serviceGroupID = serviceUser.Gid
+	}
+	currentGroup, err := user.LookupGroupId(serviceGroupID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,6 +86,23 @@ func cutoverFixture(t *testing.T, test cutoverCase) {
 			t.Fatal(err)
 		}
 	}
+	if realPrivdrop {
+		serviceGID, err := strconv.Atoi(serviceGroupID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chown(root, 0, serviceGID); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(root, 0770); err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range []string{"opt", "opt/detent-hub", "opt/detent-hub/releases"} {
+			if err := os.Chmod(filepath.Join(root, name), 0755); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
 	registryPath := filepath.Join(root, "source-state/registry.db")
 	startRegistryWriter(t, registryPath)
 	for _, path := range []string{
@@ -84,7 +113,50 @@ func cutoverFixture(t *testing.T, test cutoverCase) {
 		createSQLiteFile(t, path)
 	}
 
-	commit := strings.Repeat("a", 40)
+	script, err := os.ReadFile("cutover-postgres.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	isolated := strings.NewReplacer(
+		"/opt/detent-hub", filepath.ToSlash(filepath.Join(root, "opt/detent-hub")),
+		"/var/lib/detent-hub", filepath.ToSlash(filepath.Join(root, "var/lib/detent-hub")),
+		"/usr/bin/setpriv", filepath.ToSlash(filepath.Join(root, "bin/setpriv")),
+		"/run/lock/detent-hub-deploy.lock", filepath.ToSlash(filepath.Join(root, "run/lock/detent-hub-deploy.lock")),
+		"/sys/fs/cgroup", filepath.ToSlash(filepath.Join(root, "sys/fs/cgroup")),
+		"/proc/", filepath.ToSlash(filepath.Join(root, "proc"))+"/",
+		"SERVICE_USER=detent-hub", "SERVICE_USER="+serviceUser.Username,
+		"SERVICE_GROUP=detent-hub", "SERVICE_GROUP="+currentGroup.Name,
+		"os.chown(temporary, 0, group)", "os.chown(temporary, os.getuid(), group)",
+	).Replace(string(script))
+	fixtureSource := filepath.Join(root, "source-repo")
+	if err := os.MkdirAll(filepath.Join(fixtureSource, "deploy/hub"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fixtureSource, "README.md"), []byte("frozen source\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fixtureSource, "deploy/hub/cutover-postgres.sh"), []byte(isolated), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if output, err := exec.Command("git", "init", "-q", fixtureSource).CombinedOutput(); err != nil {
+		t.Fatalf("git init source = %v: %s", err, output)
+	}
+	runSourceGit := func(arguments ...string) string {
+		t.Helper()
+		command := exec.Command("git", append([]string{"-C", fixtureSource}, arguments...)...)
+		output, err := command.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v = %v: %s", arguments, err, output)
+		}
+		return strings.TrimSpace(string(output))
+	}
+	runSourceGit("config", "user.name", "Example Operator")
+	runSourceGit("config", "user.email", "operator@example.test")
+	runSourceGit("add", "README.md")
+	runSourceGit("commit", "-qm", "frozen source base")
+	runSourceGit("add", "deploy/hub/cutover-postgres.sh")
+	runSourceGit("commit", "-qm", "frozen cutover source")
+	commit := runSourceGit("rev-parse", "HEAD")
 	candidate := filepath.Join(root, "opt/detent-hub/releases/detent-candidate")
 	previous := filepath.Join(root, "opt/detent-hub/releases/detent-previous")
 	currentLink := filepath.Join(root, "opt/detent-hub/detent")
@@ -93,6 +165,11 @@ func cutoverFixture(t *testing.T, test cutoverCase) {
 	}
 	binary := fmt.Sprintf(`#!/bin/bash
 set -eu
+if [ "$FIXTURE_CHECK_SERVICE_IDENTITY" = true ]; then
+  [ "$(id -un)" = "$FIXTURE_SERVICE_USER" ]
+  [ "$DETENT_CLOUD_ENV_PRESENT" = 1 ]
+  [ "$DETENT_ATTACHMENTS_ACCESS_KEY_ID" = cutover-test-key ]
+fi
 if [ "$1" = version ]; then
   printf '%%s\n' '{"commit":"%s","postgres_storage_supported":true,"socket_activation_supported":true}'
 elif [ "$1" = cloud ] && [ "$2" = import-platform-postgres ] && [ "${3:-}" = --help ]; then
@@ -114,7 +191,11 @@ fi
 		candidate: []byte(binary),
 		previous:  []byte("#!/bin/bash\nexit 0\n"),
 	} {
-		if err := os.WriteFile(path, contents, 0700); err != nil {
+		mode := os.FileMode(0700)
+		if realPrivdrop {
+			mode = 0755
+		}
+		if err := os.WriteFile(path, contents, mode); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -259,6 +340,19 @@ exec "$FIXTURE_REAL_FLOCK" "$@"
 `,
 		"systemctl": serviceUnit,
 		"seq":       "#!/bin/bash\necho 1\n",
+		"getent": `#!/bin/bash
+set -eu
+[ "$1" = passwd ] || exit 2
+printf '%s:x:%s:%s::%s:/bin/bash\n' "$FIXTURE_SERVICE_USER" "$FIXTURE_SERVICE_UID" "$FIXTURE_SERVICE_GID" "$FIXTURE_SERVICE_HOME"
+`,
+		"setpriv": `#!/bin/bash
+set -eu
+if [ "$FIXTURE_REAL_PRIVDROP" = true ]; then exec "$FIXTURE_REAL_SETPRIV" "$@"; fi
+while [ "$#" -gt 0 ] && [ "$1" != -- ]; do shift; done
+[ "$1" = -- ] || exit 2
+shift
+exec "$@"
+`,
 	}
 	binDir := filepath.Join(root, "bin")
 	for name, contents := range stubs {
@@ -266,20 +360,6 @@ exec "$FIXTURE_REAL_FLOCK" "$@"
 			t.Fatal(err)
 		}
 	}
-	script, err := os.ReadFile("cutover-postgres.sh")
-	if err != nil {
-		t.Fatal(err)
-	}
-	isolated := strings.NewReplacer(
-		"/opt/detent-hub", filepath.ToSlash(filepath.Join(root, "opt/detent-hub")),
-		"/var/lib/detent-hub", filepath.ToSlash(state),
-		"/run/lock/detent-hub-deploy.lock", filepath.ToSlash(filepath.Join(root, "run/lock/detent-hub-deploy.lock")),
-		"/sys/fs/cgroup", filepath.ToSlash(filepath.Join(root, "sys/fs/cgroup")),
-		"/proc/", filepath.ToSlash(filepath.Join(root, "proc"))+"/",
-		"SERVICE_USER=detent-hub", "SERVICE_USER="+currentUser.Username,
-		"SERVICE_GROUP=detent-hub", "SERVICE_GROUP="+currentGroup.Name,
-		"os.chown(temporary, 0, group)", "os.chown(temporary, os.getuid(), group)",
-	).Replace(string(script))
 	scriptPath := filepath.Join(root, "cutover-postgres.sh")
 	if err := os.WriteFile(scriptPath, []byte(isolated), 0700); err != nil {
 		t.Fatal(err)
@@ -315,6 +395,13 @@ exec "$FIXTURE_REAL_FLOCK" "$@"
 		fmt.Sprintf("FIXTURE_HEALTH_FAILURE=%t", test.healthFailure),
 		fmt.Sprintf("FIXTURE_CHILD_REMAINS=%t", test.childRemains),
 		"FIXTURE_LOCK_CONFLICT="+test.lockConflict,
+		"FIXTURE_SERVICE_USER="+serviceUser.Username,
+		"FIXTURE_SERVICE_UID="+serviceUser.Uid,
+		"FIXTURE_SERVICE_GID="+serviceGroupID,
+		"FIXTURE_SERVICE_HOME="+serviceUser.HomeDir,
+		"FIXTURE_CHECK_SERVICE_IDENTITY=true",
+		fmt.Sprintf("FIXTURE_REAL_PRIVDROP=%t", realPrivdrop),
+		"FIXTURE_REAL_SETPRIV="+realSetpriv,
 	)
 	output, runErr := command.CombinedOutput()
 	if test.wantPostgres {

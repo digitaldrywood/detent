@@ -1,14 +1,318 @@
 package hub
 
 import (
+	"archive/tar"
 	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
+
+func TestPostgresCutoverReceiverInstallsAndInvokesExactPayload(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	serviceUser := ""
+	serviceUID := ""
+	serviceGID := ""
+	realSetpriv, setprivErr := exec.LookPath("setpriv")
+	realPrivdrop := os.Geteuid() == 0 && setprivErr == nil
+	if realPrivdrop {
+		identity, err := user.Lookup("nobody")
+		if err != nil {
+			t.Skip("a separate unprivileged service identity is unavailable")
+		}
+		serviceUser, serviceUID, serviceGID = identity.Username, identity.Uid, identity.Gid
+	} else {
+		identity, err := user.Current()
+		if err != nil {
+			t.Fatal(err)
+		}
+		serviceUser, serviceUID, serviceGID = identity.Username, identity.Uid, identity.Gid
+	}
+	for _, name := range []string{
+		"bin", "etc/detent-hub", "opt/detent-hub/releases", "opt/detent-hub/sources", "run/lock", "var/lib/detent-hub/cutover", "tmp",
+	} {
+		if err := os.MkdirAll(filepath.Join(root, name), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if realPrivdrop {
+		gid, err := strconv.Atoi(serviceGID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chown(root, 0, gid); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(root, 0750); err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range []string{"opt", "opt/detent-hub", "opt/detent-hub/releases"} {
+			path := filepath.Join(root, name)
+			if err := os.Chown(path, 0, gid); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(path, 0750); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := os.Chmod(filepath.Join(root, "tmp"), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	commit := ""
+	for _, name := range []string{"cloud.postgres.yaml", "cloud.yaml", "cloud.env", "attachments.env"} {
+		if err := os.WriteFile(filepath.Join(root, "etc/detent-hub", name), []byte("configured\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fixtureSource := filepath.Join(root, "frozen-source")
+	if err := os.MkdirAll(filepath.Join(fixtureSource, "deploy/hub"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fixtureSource, "README.md"), []byte("frozen source\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	receiver := []byte("#!/bin/bash\nset -eu\n[ \"$DETENT_DEPLOY_LOCK_HELD\" = true ]\n[ -f \"$FIXTURE_ROOT/deploy-lock-acquired\" ]\nprintf '%s\\n' \"$DETENT_DEPLOY_LOCK_HELD\" > \"$FIXTURE_ROOT/lock-held\"\nprintf '%s\\n' \"$@\" > \"$FIXTURE_ROOT/cutover-args\"\n")
+	if err := os.WriteFile(filepath.Join(fixtureSource, "deploy/hub/cutover-postgres.sh"), receiver, 0700); err != nil {
+		t.Fatal(err)
+	}
+	runGit := func(arguments ...string) string {
+		t.Helper()
+		command := exec.Command("git", append([]string{"-C", fixtureSource}, arguments...)...)
+		output, err := command.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v = %v: %s", arguments, err, output)
+		}
+		return strings.TrimSpace(string(output))
+	}
+	if output, err := exec.Command("git", "init", "-q", fixtureSource).CombinedOutput(); err != nil {
+		t.Fatalf("git init = %v: %s", err, output)
+	}
+	runGit("config", "user.name", "Example Operator")
+	runGit("config", "user.email", "operator@example.test")
+	runGit("add", "README.md")
+	runGit("commit", "-qm", "frozen source base")
+	runGit("add", "deploy/hub/cutover-postgres.sh")
+	runGit("commit", "-qm", "frozen cutover source")
+	commit = runGit("rev-parse", "HEAD")
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	shallowSource := filepath.Join(root, "shallow-source")
+	if err := os.MkdirAll(shallowSource, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if output, err := exec.Command(realGit, "-C", shallowSource, "init", "-q").CombinedOutput(); err != nil {
+		t.Fatalf("git init shallow source = %v: %s", err, output)
+	}
+	shallowGit := func(arguments ...string) string {
+		t.Helper()
+		command := exec.Command(realGit, append([]string{"-C", shallowSource}, arguments...)...)
+		output, err := command.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v = %v: %s", arguments, err, output)
+		}
+		return strings.TrimSpace(string(output))
+	}
+	shallowGit("fetch", "--no-tags", "--depth=1", fixtureSource, commit)
+	shallowGit("checkout", "--quiet", "--detach", "FETCH_HEAD")
+	sourceBundle := filepath.Join(root, "source.bundle")
+	shallowGit("bundle", "create", sourceBundle, "HEAD")
+	sourceData, err := os.ReadFile(sourceBundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	versionJSON := fmt.Sprintf(`{"commit":%q,"postgres_storage_supported":true,"socket_activation_supported":true}`, commit)
+	candidate := append([]byte("#!/bin/bash\nset -eu\nif [ \"$FIXTURE_REAL_PRIVDROP\" = true ]; then [ \"$(id -un)\" = \"$FIXTURE_SERVICE_USER\" ]; fi\nif [ \"${1:-}\" = version ]; then printf '%s\\n' '"+versionJSON+"'; else exit 0; fi\n"), bytes.Repeat([]byte(" "), 1000001)...)
+	payloadPath := filepath.Join(root, "cutover.tar")
+	payload, err := os.Create(payloadPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive := tar.NewWriter(payload)
+	for name, data := range map[string][]byte{"detent": candidate, "cutover-postgres.sh": receiver, "source.bundle": sourceData} {
+		if err := archive.WriteHeader(&tar.Header{Name: name, Mode: 0755, Size: int64(len(data)), Typeflag: tar.TypeReg}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := archive.Write(data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := archive.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := payload.Close(); err != nil {
+		t.Fatal(err)
+	}
+	script, err := os.ReadFile("deploy-from-ci.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	isolated := strings.NewReplacer(
+		"/opt/", filepath.ToSlash(root)+"/opt/",
+		"/etc/", filepath.ToSlash(root)+"/etc/",
+		"/run/lock/", filepath.ToSlash(root)+"/run/lock/",
+		"/var/lib/", filepath.ToSlash(root)+"/var/lib/",
+		"/tmp/", filepath.ToSlash(root)+"/tmp/",
+	).Replace(string(script))
+	isolatedPath := filepath.Join(root, "deploy-from-ci.sh")
+	if err := os.WriteFile(isolatedPath, []byte(isolated), 0700); err != nil {
+		t.Fatal(err)
+	}
+	stubs := map[string]string{
+		"sudo": `#!/bin/bash
+set -eu
+shift
+if [ "${1:-}" = -u ]; then
+  shift
+  target=$1
+  shift
+  if [ "$FIXTURE_REAL_PRIVDROP" = true ] && [ "$target" = detent-hub ]; then
+    exec "$FIXTURE_REAL_SETPRIV" --reuid="$FIXTURE_SERVICE_UID" --regid="$FIXTURE_SERVICE_GID" --init-groups -- "$@"
+  fi
+fi
+case "${1:-}" in
+  test|readlink|cmp) printf '%s\n' "$*" >> "$FIXTURE_ROOT/privileged-path-ops" ;;
+esac
+if [ "${1:-}" = chown ]; then
+  [ "$FIXTURE_REAL_PRIVDROP" = true ] || exit 0
+  shift
+  recursive=
+  if [ "${1:-}" = -R ]; then recursive=-R; shift; fi
+  owner_group=${1/detent-hub/$FIXTURE_SERVICE_GID}
+  shift
+  exec chown $recursive "$owner_group" "$@"
+fi
+if [ "${1:-}" = install ]; then
+  shift
+  owner=root
+  group=root
+  args=()
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      -o) owner=$2; shift 2 ;;
+      -g) group=$2; shift 2 ;;
+      *) args+=("$1"); shift ;;
+    esac
+  done
+  if [ "$FIXTURE_REAL_PRIVDROP" != true ]; then exec /usr/bin/install "${args[@]}"; fi
+  [ "$owner" != detent-hub ] || owner=$FIXTURE_SERVICE_USER
+  [ "$group" != detent-hub ] || group=$FIXTURE_SERVICE_GID
+  /usr/bin/install "${args[@]}"
+  chown "$owner:$group" "${args[${#args[@]}-1]}"
+  exit 0
+fi
+if [ "${1:-}" = mv ] && [ "${2:-}" = -T ]; then
+  shift 2
+  [ "${1:-}" = -- ] && shift
+  [ ! -e "$2" ] || exit 1
+  exec mv "$1" "$2"
+fi
+exec "$@"
+`,
+		"flock": "#!/bin/bash\n: > \"$FIXTURE_ROOT/deploy-lock-acquired\"\n",
+		"stat":  "#!/bin/bash\n[ \"$1\" = -c ] && [ \"$2\" = %s ] || exit 2\nwc -c < \"$3\"\n",
+		"git":   "#!/bin/bash\nexec \"$REAL_GIT\" \"$@\"\n",
+	}
+	for name, body := range stubs {
+		if err := os.WriteFile(filepath.Join(root, "bin", name), []byte(body), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	command := exec.CommandContext(t.Context(), "bash", isolatedPath)
+	input, err := os.Open(payloadPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer input.Close()
+	command.Stdin = input
+	command.Env = []string{
+		"PATH=" + filepath.Join(root, "bin") + string(os.PathListSeparator) + "/usr/bin:/bin:/usr/sbin:/sbin",
+		"TMPDIR=" + filepath.Join(root, "tmp"),
+		"SSH_ORIGINAL_COMMAND=cutover-postgres " + commit,
+		"FIXTURE_ROOT=" + root,
+		"REAL_GIT=" + realGit,
+		fmt.Sprintf("FIXTURE_REAL_PRIVDROP=%t", realPrivdrop),
+		"FIXTURE_REAL_SETPRIV=" + realSetpriv,
+		"FIXTURE_SERVICE_USER=" + serviceUser,
+		"FIXTURE_SERVICE_UID=" + serviceUID,
+		"FIXTURE_SERVICE_GID=" + serviceGID,
+	}
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("cutover install = %v: %s", err, output)
+	}
+	cutoverArgs, err := os.ReadFile(filepath.Join(root, "cutover-args"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := strings.Fields(string(cutoverArgs))
+	if len(args) != 20 {
+		t.Fatalf("cutover argument count = %d, want 20: %v", len(args), args)
+	}
+	arguments := make(map[string]string, len(args)/2)
+	for index := 0; index < len(args); index += 2 {
+		arguments[args[index]] = args[index+1]
+	}
+	wants := map[string]string{
+		"--entry-config":    filepath.Join(root, "etc/detent-hub/cloud.postgres.yaml"),
+		"--sqlite-config":   filepath.Join(root, "etc/detent-hub/cloud.yaml"),
+		"--repository-root": filepath.Join(root, "opt/detent-hub/sources", commit),
+		"--cloud-env":       filepath.Join(root, "etc/detent-hub/cloud.env"),
+		"--attachments-env": filepath.Join(root, "etc/detent-hub/attachments.env"),
+		"--source-state":    filepath.Join(root, "var/lib/detent-hub/cloud"),
+		"--tenant-root":     filepath.Join(root, "var/lib/detent-hub/tenants"),
+		"--backup-root":     filepath.Join(root, "var/lib/detent-hub/cutover", commit),
+		"--health-url":      "https://cloud.detent.build/health",
+	}
+	for flag, want := range wants {
+		if got := arguments[flag]; got != want {
+			t.Fatalf("cutover %s = %q, want %q", flag, got, want)
+		}
+	}
+	sourceRoot := arguments["--repository-root"]
+	if got, err := exec.Command("git", "-c", "safe.directory="+sourceRoot, "-C", sourceRoot, "rev-parse", "HEAD").CombinedOutput(); err != nil || strings.TrimSpace(string(got)) != commit {
+		t.Fatalf("installed source commit = %q (%v), want %q", got, err, commit)
+	}
+	if got, err := exec.Command("git", "-c", "safe.directory="+sourceRoot, "-C", sourceRoot, "status", "--porcelain", "--untracked-files=all").CombinedOutput(); err != nil || len(got) != 0 {
+		t.Fatalf("installed source checkout is not clean: %q (%v)", got, err)
+	}
+	binary := arguments["--binary"]
+	if !strings.HasPrefix(filepath.Base(binary), "detent-ci-"+commit+"-") {
+		t.Fatalf("cutover binary path = %q, want exact immutable commit path", binary)
+	}
+	if _, err := os.Stat(binary); err != nil {
+		t.Fatalf("cutover candidate binary was not installed: %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(root, "lock-held")); err != nil || string(got) != "true\n" {
+		t.Fatalf("deployment lock ownership = %q (%v)", got, err)
+	}
+	privilegedOps, err := os.ReadFile(filepath.Join(root, "privileged-path-ops"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		"test -d " + sourceRoot,
+		"test -L " + sourceRoot,
+		"readlink -f " + sourceRoot,
+		"cmp -s " + filepath.Join(root, "tmp"),
+	} {
+		if !strings.Contains(string(privilegedOps), expected) {
+			t.Fatalf("privileged source path operation %q was not delegated: %s", expected, privilegedOps)
+		}
+	}
+	entries, err := os.ReadDir(filepath.Join(root, "opt/detent-hub/releases"))
+	if err != nil || len(entries) != 2 {
+		t.Fatalf("immutable candidate and receiver entries = %v (%v)", entries, err)
+	}
+}
 
 func TestLitestreamInstallerPreservesWorkingConfiguration(t *testing.T) {
 	t.Parallel()

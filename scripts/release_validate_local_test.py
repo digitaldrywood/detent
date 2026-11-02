@@ -106,7 +106,7 @@ class ReleaseValidateLocalTest(unittest.TestCase):
                     self.assertIn("make check-release TEST_PROCS=2", arguments)
                     self.assertEqual("DETENT_RELEASE_REQUIRE_AUDIT=true" in arguments, name == "release success with audit")
                 dispatches = [args for args in requests if args[:2] == ["workflow", "run"]]
-                self.assertEqual(dispatches, [["workflow", "run", "release-finalize.yml", "--repo", "example-org/example-project", "--ref", branch]] if dispatch else [])
+                self.assertEqual(dispatches, [["workflow", "run", "release-finalize.yml", "--repo", "example-org/example-project", "--ref", branch, "--field", "postgres_cutover=false"]] if dispatch else [])
                 self.assertEqual(git("worktree", "list", "--porcelain").count("worktree "), 1)
 
     def test_release_checks_overlap_and_report_all_failures(self):
