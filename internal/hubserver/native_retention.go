@@ -8,6 +8,9 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -70,6 +73,18 @@ func (s *Service) runNativeRetentionStages(ctx context.Context, stages []nativeR
 }
 
 func (s *Service) expireNativeRecords(ctx context.Context, now time.Time) error {
+	if s.config.TenantRepository != nil {
+		organization := tracker.OrganizationID(s.appOrganizationID())
+		if organization == "" {
+			return errors.New("runner host metric retention requires an organization")
+		}
+		cutoff := now.UTC().Truncate(time.Hour).Add(-720 * time.Hour)
+		if err := s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
+			return w.PruneRunnerHostMetrics(ctx, cutoff, runnerstore.MaxRunnerHostPruneBatch)
+		}); err != nil {
+			return fmt.Errorf("expire PostgreSQL runner host metrics: %w", err)
+		}
+	}
 	if _, err := s.database.db.ExecContext(ctx, `DELETE FROM hosted_audit WHERE rowid IN (SELECT rowid FROM hosted_audit
 WHERE route LIKE 'GET %' AND status<400 AND actual_actor=effective_user AND reason=''
 AND event IN ('action','administration','key_call','billing_viewed','billing_exported') ORDER BY id LIMIT ?)`, commandReceiptPruneBatch); err != nil {

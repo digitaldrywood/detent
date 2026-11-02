@@ -26,6 +26,11 @@ func validHostSummary(s hostmetrics.Summary) bool {
 			return false
 		}
 	}
+	for _, count := range []uint64{s.SampleCount, s.MemoryTotalBytes, s.MemoryAvailableMinBytes, s.MemoryAvailableSumBytes, s.MemorySampleCount, s.SwapUsedMaxBytes, s.SwapSampleCount, s.PSISomeSampleCount, s.PSIFullSampleCount, s.PressureWarnCount, s.PressureCriticalCount, s.PressureSampleCount, s.CPUSampleCount, s.LoadSampleCount, s.DiskFreeMinBytes, s.DiskTotalMinBytes, s.DiskSampleCount} {
+		if count > math.MaxInt64 {
+			return false
+		}
+	}
 	if s.PressureWarnCount > s.PressureSampleCount || s.PressureCriticalCount > s.PressureSampleCount-s.PressureWarnCount {
 		return false
 	}

@@ -11,6 +11,7 @@ import (
 	"github.com/lib/pq"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hostmetrics"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
@@ -601,5 +602,133 @@ func TestRunnerProjectObservationIsTenantScopedAndRejectsStaleSnapshots(t *testi
 		return nil
 	}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRunnerHeartbeatObservationsAreTenantScoped(t *testing.T) {
+	repository, _ := repositoryFor(t, template.Database(t), smallPool())
+	ctx := t.Context()
+	now := historyAt()
+	hour := now.UTC().Truncate(time.Hour)
+	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
+		seedRunnerIdentity(t, repository, organization, "runner_shared", "machine_shared", now, true)
+		if err := repository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
+			if _, err := w.CreateProjectRecord(ctx, projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: "project_shared", Name: "Example", Profile: "native"}, States: []tracker.NativeState{{Name: "Todo", Dispatchable: true}}}); err != nil {
+				return err
+			}
+			cpuBusy := float64(len(organization))
+			metric := hostmetrics.Summary{Hour: hour, SegmentID: now.Add(-time.Minute), SampleCount: 1, LogicalCores: 2, CPUSampleCount: 1, CPUBusySumPercent: cpuBusy, CPUBusyMaxPercent: cpuBusy}
+			if _, err := w.AppendRunnerHostMetricSegments(ctx, "runner_shared", []hostmetrics.Summary{metric}, now); err != nil {
+				return err
+			}
+			return w.ReplaceRunnerAdmissionObservation(ctx, "runner_shared", "project_shared", tracker.NativeAdmissionObservation{
+				RunnerRevision: 1,
+				ReceivedAt:     now,
+				Context: tracker.NativeAdmissionContext{
+					ObservedAt: now, PolicyID: "policy_" + string(organization), LastRefreshAt: now,
+					RefreshDuration: time.Second, WorkflowStates: []string{"Todo"},
+				},
+			})
+		}); err != nil {
+			t.Fatalf("write observations for %s: %v", organization, err)
+		}
+	}
+	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
+		if err := repository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
+			metrics, err := r.RunnerHostMetrics(ctx, "runner_shared", hour, hour.Add(time.Hour))
+			if err != nil {
+				return err
+			}
+			admission, err := r.RunnerAdmissionObservation(ctx, "runner_shared", "project_shared")
+			if err != nil {
+				return err
+			}
+			if len(metrics) != 1 || metrics[0].CPUBusySumPercent != float64(len(organization)) || admission.Context.PolicyID != "policy_"+string(organization) || len(admission.Context.WorkflowStates) != 1 || admission.Context.WorkflowStates[0] != "Todo" {
+				t.Errorf("organization %s metrics=%+v admission=%+v", organization, metrics, admission)
+			}
+			return nil
+		}); err != nil {
+			t.Fatalf("read observations for %s: %v", organization, err)
+		}
+	}
+}
+
+func TestRunnerHostMetricRetentionUsesBoundedTenantBatch(t *testing.T) {
+	admin := template.Database(t)
+	repository, _ := repositoryFor(t, admin, smallPool())
+	ctx := t.Context()
+	now := historyAt()
+	firstHour := now.UTC().Truncate(time.Hour).Add(-2 * time.Hour)
+	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
+		seedRunnerIdentity(t, repository, organization, "runner_shared", "machine_shared", now, true)
+		segments := make([]hostmetrics.Summary, 0, 3)
+		for offset := range 3 {
+			hour := firstHour.Add(time.Duration(offset) * time.Hour)
+			segments = append(segments, hostmetrics.Summary{Hour: hour, SegmentID: hour.Add(-time.Minute), SampleCount: 1, LogicalCores: 2})
+		}
+		if err := repository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
+			_, err := w.AppendRunnerHostMetricSegments(ctx, "runner_shared", segments, now)
+			return err
+		}); err != nil {
+			t.Fatalf("seed host metrics for %s: %v", organization, err)
+		}
+	}
+	connection, err := admin.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	if _, err := connection.ExecContext(ctx, `SET enable_seqscan=off`); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := connection.QueryContext(ctx, `EXPLAIN (COSTS OFF) SELECT ctid FROM runner_host_metric_segments WHERE organization_id=$1 AND hour <= $2 ORDER BY hour,runner_id,segment_id LIMIT $3`, "org_first", firstHour.Add(time.Hour), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var planLines []string
+	for plan.Next() {
+		var line string
+		if err := plan.Scan(&line); err != nil {
+			plan.Close()
+			t.Fatal(err)
+		}
+		planLines = append(planLines, line)
+	}
+	if err := errors.Join(plan.Err(), plan.Close()); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(planLines, "\n"), "runner_host_metric_segments_retention_idx") {
+		t.Fatalf("bounded retention query plan does not use its indexed cursor: %v", planLines)
+	}
+	cutoff := firstHour.Add(time.Hour)
+	if err := repository.WriteTenant(ctx, "org_first", corestore.Background, func(w tenantstore.Writer) error {
+		return w.PruneRunnerHostMetrics(ctx, cutoff, 1)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, check := range []struct {
+		organization tracker.OrganizationID
+		want         int
+	}{
+		{organization: "org_first", want: 2},
+		{organization: "org_second", want: 3},
+	} {
+		if err := repository.ReadTenant(ctx, check.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			metrics, err := r.RunnerHostMetrics(ctx, "runner_shared", firstHour.Add(-time.Hour), firstHour.Add(4*time.Hour))
+			if err != nil {
+				return err
+			}
+			if len(metrics) != check.want {
+				t.Errorf("organization %s retained %d segments, want %d", check.organization, len(metrics), check.want)
+			}
+			return nil
+		}); err != nil {
+			t.Fatalf("read retained host metrics for %s: %v", check.organization, err)
+		}
+	}
+	if err := repository.WriteTenant(ctx, "org_first", corestore.Background, func(w tenantstore.Writer) error {
+		return w.PruneRunnerHostMetrics(ctx, cutoff, runnerstore.MaxRunnerHostPruneBatch+1)
+	}); !errors.Is(err, corestore.ErrInvalidPage) {
+		t.Fatalf("oversized host metric prune batch error=%v", err)
 	}
 }

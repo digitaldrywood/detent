@@ -18,6 +18,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/hostmetrics"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -447,16 +448,20 @@ func TestTenantRunnerHeartbeatPersistsIdentityAndReturnsCurrentRouting(t *testin
 	providerReport := providercapacity.Report{Provider: "openai", Backend: "native/codex", AccountAlias: "example", Billing: "subscription", Models: []string{"model-a"}, ModelDetails: []providercapacity.ModelDetail{{ID: "model-a", Label: "Model A", Provider: "openai", Default: true, ReasoningEfforts: []string{"low", "high"}, DefaultReasoningEffort: "high"}}, Availability: "available", ObservedAt: clock.value, UsageWindows: []providercapacity.UsageWindow{{Kind: "primary", ResetAt: clock.value.Add(time.Hour), ObservedAt: clock.value}}}
 	capacityConfiguration := &runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 4, ClientLimit: 3, RuntimeLimit: 3, Manageable: true, ObservedAt: clock.value}
 	backendIsolation := isolation.Report{"example-project/codex": {isolation.Sandbox, isolation.NativeTrusted}}
-	response := performHubAPIRequest(t, service, http.MethodPost, path, secret, map[string]any{"display_name": "Example host", "capacity": 3, "version": "0.174.1", "os": "darwin", "architecture": "arm64", "protocol_major": 2, "provider_reports": []providercapacity.Report{providerReport}, "capacity_configuration": capacityConfiguration, "backend_isolation": backendIsolation, "sprite_name": "example-host"})
+	hostSummary := testHostSummary(clock.value)
+	admission := tracker.NativeAdmissionObservation{RunnerRevision: 1, Context: tracker.NativeAdmissionContext{ObservedAt: clock.value, PolicyID: "policy_example", WorkflowStates: []string{"Todo"}}}
+	response := performHubAPIRequest(t, service, http.MethodPost, path, secret, map[string]any{"display_name": "Example host", "capacity": 3, "version": "0.174.1", "os": "darwin", "architecture": "arm64", "protocol_major": 2, "provider_reports": []providercapacity.Report{providerReport}, "capacity_configuration": capacityConfiguration, "backend_isolation": backendIsolation, "sprite_name": "example-host", "host_metrics": []hostmetrics.Summary{hostSummary}, "admission": admission})
 	requireNativeStatus(t, response, http.StatusOK)
 	var snapshot runnerauth.RoutingSnapshot
 	decodeHubResponse(t, response, &snapshot)
-	if snapshot.RunnerID != "runner_example" || snapshot.Revision != 1 || snapshot.Routing.DisplayName != "Example runner" || snapshot.Routing.State != "active" || snapshot.Routing.Validate() != nil {
+	if snapshot.RunnerID != "runner_example" || snapshot.Revision != 1 || snapshot.Routing.DisplayName != "Example runner" || snapshot.Routing.State != "active" || snapshot.Routing.Validate() != nil || len(snapshot.HostMetricsAcknowledged) != 1 || !snapshot.HostMetricsAcknowledged[0].Hour.Equal(hostSummary.Hour) || !snapshot.HostMetricsAcknowledged[0].SegmentID.Equal(hostSummary.SegmentID) {
 		t.Fatalf("heartbeat routing snapshot = %+v", snapshot)
 	}
 	var persisted runnerstore.Identity
 	var machine leasestore.Machine
 	var isolationReport isolation.Report
+	var hostSegments []hostmetrics.Summary
+	var storedAdmission tracker.NativeAdmissionObservation
 	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
 		persisted, err = r.RunnerIdentity(t.Context(), "runner_example")
@@ -468,6 +473,14 @@ func TestTenantRunnerHeartbeatPersistsIdentityAndReturnsCurrentRouting(t *testin
 			return err
 		}
 		isolationReport, err = r.RunnerBackendIsolation(t.Context(), "runner_example")
+		if err != nil {
+			return err
+		}
+		hostSegments, err = r.RunnerHostMetrics(t.Context(), "runner_example", clock.value.Add(-time.Hour), clock.value.Add(time.Hour))
+		if err != nil {
+			return err
+		}
+		storedAdmission, err = r.RunnerAdmissionObservation(t.Context(), "runner_example", project.ID)
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -480,6 +493,19 @@ func TestTenantRunnerHeartbeatPersistsIdentityAndReturnsCurrentRouting(t *testin
 	}
 	if len(isolationReport) != 1 || !slices.Contains(isolationReport["example-project/codex"], isolation.NativeTrusted) {
 		t.Fatalf("persisted backend isolation = %+v", isolationReport)
+	}
+	if len(hostSegments) != 1 || !hostSegments[0].Hour.Equal(hostSummary.Hour) || !hostSegments[0].SegmentID.Equal(hostSummary.SegmentID) {
+		t.Fatalf("persisted runner host segments = %+v", hostSegments)
+	}
+	persistedSummary := hostSegments[0]
+	persistedSummary.Hour, persistedSummary.SegmentID = time.Time{}, time.Time{}
+	expectedSummary := hostSummary
+	expectedSummary.Hour, expectedSummary.SegmentID = time.Time{}, time.Time{}
+	if persistedSummary != expectedSummary {
+		t.Fatalf("persisted runner host metric values = %+v, want %+v", persistedSummary, expectedSummary)
+	}
+	if storedAdmission.RunnerRevision != admission.RunnerRevision || !storedAdmission.ReceivedAt.Equal(clock.value) || storedAdmission.Context.PolicyID != admission.Context.PolicyID || !slices.Equal(storedAdmission.Context.WorkflowStates, admission.Context.WorkflowStates) {
+		t.Fatalf("persisted runner admission = %+v", storedAdmission)
 	}
 	for _, runner := range []struct {
 		runnerID  string

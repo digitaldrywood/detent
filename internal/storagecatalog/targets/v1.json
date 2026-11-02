@@ -48,7 +48,8 @@
     "internal/hubserver/postgres/migrations/20261101232125_runner_provider_account_lookup.sql",
     "internal/hubserver/postgres/migrations/20261102000712_runner_usage_retention.sql",
     "internal/hubserver/postgres/migrations/20261102001107_runner_backend_isolation.sql",
-    "internal/hubserver/postgres/migrations/20261102001229_runner_sprite_membership.sql"
+    "internal/hubserver/postgres/migrations/20261102001229_runner_sprite_membership.sql",
+    "internal/hubserver/postgres/migrations/20261102003051_runner_heartbeat_observations.sql"
   ],
   "tables": {
     "public.ai_credit_reason_references": {
@@ -165,6 +166,35 @@
       "family": "core",
       "organization": "organization-owned"
     },
+    "public.runner_native_admission_observations": {
+      "columns": {
+        "last_refresh_at": "timestamp with time zone",
+        "observed_at": "timestamp with time zone",
+        "organization_id": "text",
+        "policy_id": "text",
+        "project_id": "text",
+        "received_at": "timestamp with time zone",
+        "refresh_duration": "bigint",
+        "runner_id": "text",
+        "runner_revision": "bigint"
+      },
+      "contract": "Retain the latest typed native admission observation for an authorized runner project.",
+      "family": "fleet",
+      "organization": "organization-owned"
+    },
+    "public.runner_native_admission_selectors": {
+      "columns": {
+        "kind": "text",
+        "organization_id": "text",
+        "position": "integer",
+        "project_id": "text",
+        "runner_id": "text",
+        "value": "text"
+      },
+      "contract": "Retain ordered typed admission selector values beneath their runner and project observation.",
+      "family": "fleet",
+      "organization": "organization-owned"
+    },
     "public.runner_backend_isolations": {
       "columns": {
         "backend": "text",
@@ -195,6 +225,41 @@
         "window_spec": "text"
       },
       "contract": "Retain ordered availability windows for each tenant runner.",
+      "family": "fleet",
+      "organization": "organization-owned"
+    },
+    "public.runner_host_metric_segments": {
+      "columns": {
+        "cpu_busy_max_percent": "double precision",
+        "cpu_busy_sum_percent": "double precision",
+        "cpu_sample_count": "bigint",
+        "disk_free_min_bytes": "bigint",
+        "disk_sample_count": "bigint",
+        "disk_total_min_bytes": "bigint",
+        "hour": "timestamp with time zone",
+        "load1_max": "double precision",
+        "load_sample_count": "bigint",
+        "logical_cores": "integer",
+        "memory_available_min_bytes": "bigint",
+        "memory_available_sum_bytes": "bigint",
+        "memory_sample_count": "bigint",
+        "memory_total_bytes": "bigint",
+        "organization_id": "text",
+        "partial": "boolean",
+        "pressure_critical_count": "bigint",
+        "pressure_sample_count": "bigint",
+        "pressure_warn_count": "bigint",
+        "psi_full_avg10_sum": "double precision",
+        "psi_full_sample_count": "bigint",
+        "psi_some_avg10_sum": "double precision",
+        "psi_some_sample_count": "bigint",
+        "runner_id": "text",
+        "sample_count": "bigint",
+        "segment_id": "timestamp with time zone",
+        "swap_sample_count": "bigint",
+        "swap_used_max_bytes": "bigint"
+      },
+      "contract": "Retain bounded typed host metric segments for the owning runner and hour.",
       "family": "fleet",
       "organization": "organization-owned"
     },

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hostmetrics"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -23,6 +24,7 @@ var (
 const MaxRunnerProjectList = 2000
 const MaxRunnerProjectRanks = 100
 const MaxProjectDiagnosticAttempts = 256
+const MaxRunnerHostPruneBatch = 5000
 
 type Enrollment struct {
 	OrganizationID tracker.OrganizationID
@@ -242,6 +244,8 @@ type Reader interface {
 	RunnerBackendIsolation(context.Context, string) (isolation.Report, error)
 	RunnerSpriteMembershipByEnrollment(context.Context, string) (SpriteMembership, error)
 	RunnerProjectObservation(context.Context, string, tracker.ProjectID, string) (ProjectObservation, []ProjectDiagnosticAttempt, error)
+	RunnerHostMetrics(context.Context, string, time.Time, time.Time) ([]hostmetrics.Summary, error)
+	RunnerAdmissionObservation(context.Context, string, tracker.ProjectID) (tracker.NativeAdmissionObservation, error)
 	RunnerProviderReports(context.Context, string) ([]providercapacity.Report, error)
 }
 
@@ -262,6 +266,9 @@ type Writer interface {
 	CreateRunnerSpriteMembership(context.Context, SpriteMembership) error
 	UpdateRunnerSpriteMembership(context.Context, SpriteMembership) error
 	ReplaceRunnerProjectObservation(context.Context, ProjectObservation, []ProjectDiagnosticAttempt) error
+	AppendRunnerHostMetricSegments(context.Context, string, []hostmetrics.Summary, time.Time) ([]hostmetrics.Acknowledgment, error)
+	ReplaceRunnerAdmissionObservation(context.Context, string, tracker.ProjectID, tracker.NativeAdmissionObservation) error
+	PruneRunnerHostMetrics(context.Context, time.Time, int) error
 	ReplaceRunnerProviderReports(context.Context, string, []providercapacity.Report) error
 	LockRunnerProviderAccount(context.Context, ProviderAccountKey, time.Time) (ProviderAccountCapacity, error)
 	UpdateRunnerCapacityConfig(context.Context, string, runnerauth.CapacityConfig) error
