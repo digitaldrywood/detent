@@ -216,6 +216,9 @@ func TestProductionDeployAcceptsBinaryWithoutReceiverUpgrade(t *testing.T) {
 		name                   string
 		wrongBinary            bool
 		unsupportedSocket      bool
+		cutoverMarker          bool
+		postgresSupported      bool
+		previousPostgres       bool
 		socketInactive         bool
 		socketUnitUnknown      bool
 		existingInactive       bool
@@ -237,6 +240,7 @@ func TestProductionDeployAcceptsBinaryWithoutReceiverUpgrade(t *testing.T) {
 		{name: "active socket reload failure preserves legacy drop-in", activeDropinReloadFail: true},
 		{name: "wrong binary refuses deployment", wrongBinary: true},
 		{name: "binary without socket support refuses deployment", unsupportedSocket: true},
+		{name: "PostgreSQL marker refuses SQLite-only candidate", cutoverMarker: true},
 		{name: "bootstrap deploy works before socket installation", socketInactive: true},
 		{name: "bootstrap deploy accepts unknown socket unit with no files", socketInactive: true, socketUnitUnknown: true},
 		{name: "staging bootstrap preserves port", socketInactive: true, staging: true},
@@ -247,6 +251,8 @@ func TestProductionDeployAcceptsBinaryWithoutReceiverUpgrade(t *testing.T) {
 		{name: "unverified service stop does not use legacy rollback", socketInactive: true, bootstrapStopFailure: true},
 		{name: "unavailable inactive state does not start candidate", socketInactive: true, bootstrapActiveFailure: true},
 		{name: "exec failure rolls back only to compatible previous release", execFailure: true},
+		{name: "PostgreSQL cutover permits compatible PostgreSQL rollback", execFailure: true, cutoverMarker: true, postgresSupported: true, previousPostgres: true},
+		{name: "PostgreSQL cutover refuses SQLite-only rollback", execFailure: true, cutoverMarker: true, postgresSupported: true},
 		{name: "wrong running executable is not accepted", wrongProcessImage: true},
 		{name: "exec starts before health facts finish loading", healthyAfterExec: true},
 	} {
@@ -264,6 +270,11 @@ func TestProductionDeployAcceptsBinaryWithoutReceiverUpgrade(t *testing.T) {
 			}
 			if err := os.WriteFile(filepath.Join(dir, "service-active"), []byte("true\n"), 0600); err != nil {
 				t.Fatal(err)
+			}
+			if test.cutoverMarker {
+				if err := os.WriteFile(filepath.Join(dir, "var/lib", serviceName, "POSTGRES_CUTOVER"), []byte("{\"backend\":\"postgres\"}\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
 			}
 			stubs := map[string]string{
 				"sudo": `shift
@@ -379,7 +390,7 @@ fi
 				t.Fatal(err)
 			}
 			socketSupported := !test.unsupportedSocket
-			versionJSON := fmt.Sprintf(`{"commit":"%s","socket_activation_supported":%t,"hub_schema_version":1,"hub_schema_fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","registry_schema_version":1,"registry_schema_fingerprint":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","auth_schema_version":1,"auth_schema_fingerprint":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","platform_schema_version":1,"platform_schema_fingerprint":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}`, reported, socketSupported)
+			versionJSON := fmt.Sprintf(`{"commit":"%s","socket_activation_supported":%t,"postgres_storage_supported":%t,"hub_schema_version":1,"hub_schema_fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","registry_schema_version":1,"registry_schema_fingerprint":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","auth_schema_version":1,"auth_schema_fingerprint":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","platform_schema_version":1,"platform_schema_fingerprint":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}`, reported, socketSupported, test.postgresSupported)
 			binary := "#!/bin/bash\nprintf '%s\\n' '" + versionJSON + "'\nexit 0\n" + strings.Repeat(" ", 1000001)
 			isolated := string(script)
 			replacements := []string{
@@ -433,7 +444,7 @@ fi
 				previousRelease := filepath.Join(dir, "opt", serviceName, "releases", "detent-bbbbbbbbb")
 				previousVersion := `{"commit":"` + strings.Repeat("b", 40) + `"}`
 				if !test.bootstrapEnableFailure && !test.bootstrapStopFailure && !test.bootstrapActiveFailure {
-					previousVersion = `{"commit":"` + strings.Repeat("b", 40) + `","hub_schema_version":1,"hub_schema_fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","registry_schema_version":1,"registry_schema_fingerprint":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","auth_schema_version":1,"auth_schema_fingerprint":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","platform_schema_version":1,"platform_schema_fingerprint":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}`
+					previousVersion = fmt.Sprintf(`{"commit":"%s","postgres_storage_supported":%t,"hub_schema_version":1,"hub_schema_fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","registry_schema_version":1,"registry_schema_fingerprint":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","auth_schema_version":1,"auth_schema_fingerprint":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","platform_schema_version":1,"platform_schema_fingerprint":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}`, strings.Repeat("b", 40), test.previousPostgres)
 				}
 				previousBinary := "#!/bin/bash\nprintf '%s\\n' '" + previousVersion + "'\nexit 0\n"
 				if err := os.WriteFile(previousRelease, []byte(previousBinary), 0700); err != nil {
@@ -474,12 +485,12 @@ fi
 				"FIXTURE_ROOT=" + dir,
 			}
 			output, err := command.CombinedOutput()
-			refused := test.wrongBinary || test.unsupportedSocket || test.existingInactive || test.customActiveDropin || test.activeDropinReloadFail || test.rollbackBootstrap || test.bootstrapEnableFailure || test.bootstrapStopFailure || test.bootstrapActiveFailure || test.execFailure || test.wrongProcessImage
+			refused := test.wrongBinary || test.unsupportedSocket || test.cutoverMarker && !test.postgresSupported || test.existingInactive || test.customActiveDropin || test.activeDropinReloadFail || test.rollbackBootstrap || test.bootstrapEnableFailure || test.bootstrapStopFailure || test.bootstrapActiveFailure || test.execFailure || test.wrongProcessImage
 			if (err != nil) != refused {
 				t.Fatalf("deploy = %v, want refused %t: %s", err, refused, output)
 			}
 			calls, err := os.ReadFile(filepath.Join(dir, "systemctl.log"))
-			if test.wrongBinary || test.unsupportedSocket {
+			if test.wrongBinary || test.unsupportedSocket || test.cutoverMarker && !test.postgresSupported {
 				if !os.IsNotExist(err) {
 					t.Fatalf("unverified deployment changed services: %s (%v)", calls, err)
 				}
@@ -536,6 +547,17 @@ fi
 				log := string(calls)
 				if strings.Contains(log, "enable "+cloudUnit+".socket") || strings.Contains(log, "start "+cloudUnit+".socket") || strings.Contains(log, "start "+cloudUnit+"\n") {
 					t.Fatalf("failed stop proceeded to candidate or rollback start: %s", log)
+				}
+			} else if test.execFailure && test.cutoverMarker && !test.previousPostgres {
+				if err != nil {
+					t.Fatal(err)
+				}
+				target, readErr := os.Readlink(filepath.Join(dir, "opt", serviceName, "detent"))
+				if readErr != nil || !strings.Contains(filepath.Base(target), "detent-ci-"+commit[:9]+"-") {
+					t.Fatalf("incompatible rollback selected %q, want candidate retained (%v)", target, readErr)
+				}
+				if _, readErr := os.Stat(filepath.Join(dir, "var/lib", serviceName, "POSTGRES_CUTOVER")); readErr != nil {
+					t.Fatalf("incompatible rollback removed the PostgreSQL marker: %v", readErr)
 				}
 			} else if test.execFailure {
 				if err != nil {

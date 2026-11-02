@@ -32,6 +32,7 @@ type versionInfo struct {
 	OS                        string `json:"os"`
 	Arch                      string `json:"arch"`
 	SocketActivationSupported bool   `json:"socket_activation_supported"`
+	PostgresStorageSupported  bool   `json:"postgres_storage_supported"`
 }
 
 func newVersionCommand() *cobra.Command {
@@ -87,6 +88,7 @@ func currentVersionInfo() versionInfo {
 		OS:                        runtime.GOOS,
 		Arch:                      runtime.GOARCH,
 		SocketActivationSupported: true,
+		PostgresStorageSupported:  true,
 	}
 }
 

@@ -112,6 +112,7 @@ func TestVersionCommandDefaultsJSONForNonTTY(t *testing.T) {
 		OS                    string `json:"os"`
 		Arch                  string `json:"arch"`
 		SocketActivation      bool   `json:"socket_activation_supported"`
+		PostgresStorage       bool   `json:"postgres_storage_supported"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
 		t.Fatalf("version output is not JSON: %v\n%s", err, stdout.String())
@@ -131,6 +132,9 @@ func TestVersionCommandDefaultsJSONForNonTTY(t *testing.T) {
 	}
 	if !got.SocketActivation {
 		t.Fatal("socket activation support = false, want true")
+	}
+	if !got.PostgresStorage {
+		t.Fatal("PostgreSQL storage support = false, want true")
 	}
 	if got.RegistrySchemaVersion < 1 || got.AuthSchemaVersion < 1 || got.PlatformSchemaVersion < 1 {
 		t.Fatalf("entry schema versions = %d/%d/%d, want positive versions", got.RegistrySchemaVersion, got.AuthSchemaVersion, got.PlatformSchemaVersion)

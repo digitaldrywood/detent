@@ -10,22 +10,32 @@ import json, sys
 schema = json.load(sys.stdin)
 values = [schema.get(key) for key in ("hub_schema_version", "registry_schema_version", "auth_schema_version", "platform_schema_version")]
 fingerprints = [schema.get(key) for key in ("hub_schema_fingerprint", "registry_schema_fingerprint", "auth_schema_fingerprint", "platform_schema_fingerprint")]
-if any(type(value) is not int or value < 1 for value in values) or any(type(value) is not str or len(value) != 64 or any(c not in "0123456789abcdef" for c in value) for value in fingerprints):
+postgres_supported = schema.get("postgres_storage_supported", False)
+if any(type(value) is not int or value < 1 for value in values) or any(type(value) is not str or len(value) != 64 or any(c not in "0123456789abcdef" for c in value) for value in fingerprints) or type(postgres_supported) is not bool:
     sys.exit(1)
-print(" ".join(map(str, values + fingerprints)))'
+print(" ".join(map(str, values + fingerprints + [str(postgres_supported).lower()])))'
+}
+
+postgres_cutover_active() {
+	sudo -n test -f "$STATE/POSTGRES_CUTOVER"
+}
+
+binary_postgres_supported() {
+	sudo -n -u "$NAME" "$1" version --format json 2>/dev/null | python3 -c 'import json,sys; v=json.load(sys.stdin); sys.exit(0 if v.get("postgres_storage_supported") is True else 1)'
 }
 
 rollback_compatible() {
-	local candidate_supported supported candidate_hub candidate_registry candidate_auth candidate_platform candidate_hub_fingerprint candidate_registry_fingerprint candidate_auth_fingerprint candidate_platform_fingerprint hub registry auth platform hub_fingerprint registry_fingerprint auth_fingerprint platform_fingerprint
+	local candidate_supported supported candidate_hub candidate_registry candidate_auth candidate_platform candidate_hub_fingerprint candidate_registry_fingerprint candidate_auth_fingerprint candidate_platform_fingerprint candidate_postgres_supported postgres_supported hub registry auth platform hub_fingerprint registry_fingerprint auth_fingerprint platform_fingerprint
   [ -n "$previous" ] || return 1
 	[ "${rollback_schema_known:-false}" = true ] || return 1
 	[ "${applied_conflict:-false}" = false ] || return 1
 	candidate_supported=$(binary_schema "$release") || return 1
   supported=$(binary_schema "$previous") || return 1
-	read -r candidate_hub candidate_registry candidate_auth candidate_platform candidate_hub_fingerprint candidate_registry_fingerprint candidate_auth_fingerprint candidate_platform_fingerprint <<<"$candidate_supported"
-	read -r hub registry auth platform hub_fingerprint registry_fingerprint auth_fingerprint platform_fingerprint <<<"$supported"
+	read -r candidate_hub candidate_registry candidate_auth candidate_platform candidate_hub_fingerprint candidate_registry_fingerprint candidate_auth_fingerprint candidate_platform_fingerprint candidate_postgres_supported <<<"$candidate_supported"
+	read -r hub registry auth platform hub_fingerprint registry_fingerprint auth_fingerprint platform_fingerprint postgres_supported <<<"$supported"
 	[[ "$candidate_hub" =~ ^[0-9]+$ && "$candidate_registry" =~ ^[0-9]+$ && "$candidate_auth" =~ ^[0-9]+$ && "$candidate_platform" =~ ^[0-9]+$ && "$hub" =~ ^[0-9]+$ && "$registry" =~ ^[0-9]+$ && "$auth" =~ ^[0-9]+$ && "$platform" =~ ^[0-9]+$ ]] || return 1
 	[[ "$candidate_hub" = "$hub" && "$candidate_registry" = "$registry" && "$candidate_auth" = "$auth" && "$candidate_platform" = "$platform" && "$candidate_hub_fingerprint" = "$hub_fingerprint" && "$candidate_registry_fingerprint" = "$registry_fingerprint" && "$candidate_auth_fingerprint" = "$auth_fingerprint" && "$candidate_platform_fingerprint" = "$platform_fingerprint" ]] || return 1
+	if postgres_cutover_active; then [ "$candidate_postgres_supported" = true ] && [ "$postgres_supported" = true ] || return 1; fi
 	if [ "$rollback_hub_applicable" = true ]; then [[ "$rollback_schema_version" =~ ^[1-9][0-9]*$ && "$rollback_schema_version" = "$candidate_hub" && "$candidate_hub" = "$hub" && "$rollback_schema_fingerprint" = "$candidate_hub_fingerprint" && "$candidate_hub_fingerprint" = "$hub_fingerprint" ]] || return 1; fi
 	if [ "$rollback_registry_applicable" = true ]; then [[ "$rollback_registry_schema_version" =~ ^[1-9][0-9]*$ && "$rollback_registry_schema_version" = "$candidate_registry" && "$candidate_registry" = "$registry" && "$rollback_registry_schema_fingerprint" = "$candidate_registry_fingerprint" && "$candidate_registry_fingerprint" = "$registry_fingerprint" ]] || return 1; fi
 	if [ "$rollback_auth_applicable" = true ]; then [[ "$rollback_auth_schema_version" =~ ^[1-9][0-9]*$ && "$rollback_auth_schema_version" = "$candidate_auth" && "$candidate_auth" = "$auth" && "$rollback_auth_schema_fingerprint" = "$candidate_auth_fingerprint" && "$candidate_auth_fingerprint" = "$auth_fingerprint" ]] || return 1; fi
@@ -204,6 +214,10 @@ restore_previous_before_candidate() {
 	[ -n "$previous" ] || return 1
 	short=$(release_commit "$previous")
 	[ -n "$short" ] || return 1
+	if postgres_cutover_active && ! rollback_compatible; then
+		echo "previous release is not proven compatible with the PostgreSQL cutover; recovery required" >&2
+		return 1
+	fi
 	if ! stop_unit; then
 		echo "candidate service could not be stopped before restoration" >&2
 		return 1
@@ -459,6 +473,10 @@ reported=$(sudo -n -u $NAME "$staged" version --format json 2>/dev/null | python
 [[ "$reported" == "$short"* ]] || { echo "binary reports commit '$reported', want $short" >&2; exit 1; }
 socket_activation_supported=$(sudo -n -u "$NAME" "$staged" version --format json 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin).get("socket_activation_supported") is True)')
 [ "$socket_activation_supported" = True ] || { echo "candidate binary does not declare socket activation support" >&2; exit 1; }
+if postgres_cutover_active && ! binary_postgres_supported "$staged"; then
+	echo "candidate binary does not declare PostgreSQL storage support after cutover" >&2
+	exit 1
+fi
 release=$OPT/releases/detent-ci-$short-$(date -u +%Y%m%dT%H%M%SZ)
 sudo -n install -m 0755 -o root -g root "$staged" "$release"
 candidate_release=$release
