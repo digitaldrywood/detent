@@ -14,13 +14,14 @@ import (
 
 	"github.com/pressly/goose/v3"
 
+	"github.com/digitaldrywood/detent/internal/cloudentry/platformstore"
 	"github.com/digitaldrywood/detent/internal/instancelock"
 	"github.com/digitaldrywood/detent/internal/schemafingerprint"
 )
 
 const (
-	registryApplicationID = 0x44545247
-	authApplicationID     = 0x44544155
+	registryApplicationID = platformstore.RegistryCopyApplicationID
+	authApplicationID     = platformstore.AuthCopyApplicationID
 )
 
 //go:embed migrations/registry/*.sql migrations/auth/*.sql

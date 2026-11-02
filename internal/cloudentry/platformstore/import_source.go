@@ -44,11 +44,25 @@ func importTargetTables() []string {
 
 func (i *Importer) sourceTable(name string) string {
 	store, table, _ := strings.Cut(name, "/")
+	if i.source.RegistryDB != nil {
+		return pq.QuoteIdentifier(table)
+	}
 	schema := i.source.Registry.Schema
 	if store == "auth" {
 		schema = i.source.Auth.Schema
 	}
 	return pq.QuoteIdentifier(schema) + "." + pq.QuoteIdentifier(table)
+}
+
+func (i *Importer) sourceDB(name string) *sql.DB {
+	if i.source.RegistryDB != nil {
+		store, _, _ := strings.Cut(name, "/")
+		if store == "auth" {
+			return i.source.AuthDB
+		}
+		return i.source.RegistryDB
+	}
+	return i.source.DB
 }
 
 func (i *Importer) sourceKeys(name string) ([]string, error) {
@@ -93,6 +107,10 @@ func (i *Importer) validateSource(ctx context.Context) error {
 }
 
 func (i *Importer) validateSourceTable(ctx context.Context, name string) error {
+	if i.source.RegistryDB != nil {
+		_, tableName, _ := strings.Cut(name, "/")
+		return validateSQLiteTable(ctx, i.sourceDB(name), i.source.Catalog.Tables[name], tableName)
+	}
 	var query strings.Builder
 	query.WriteString("SELECT * FROM ")
 	query.WriteString(i.sourceTable(name))
@@ -159,8 +177,14 @@ func (i *Importer) readPage(ctx context.Context, checkpoint importCheckpoint, li
 	order, placeholders := make([]string, len(keys)), make([]string, len(keys))
 	var args []any
 	for n, key := range keys {
-		order[n] = pq.QuoteIdentifier(key) + ` COLLATE "C"`
-		placeholders[n] = fmt.Sprintf("$%d::text", n+1)
+		collation := ` COLLATE "C"`
+		if i.source.RegistryDB != nil {
+			collation = ` COLLATE BINARY`
+			placeholders[n] = "?"
+		} else {
+			placeholders[n] = fmt.Sprintf("$%d::text", n+1)
+		}
+		order[n] = pq.QuoteIdentifier(key) + collation
 		if checkpoint.started {
 			args = append(args, checkpoint.after[n])
 		}
@@ -178,8 +202,12 @@ func (i *Importer) readPage(ctx context.Context, checkpoint importCheckpoint, li
 	query.WriteString(predicate)
 	query.WriteString(" ORDER BY ")
 	query.WriteString(strings.Join(order, ","))
-	fmt.Fprintf(&query, " LIMIT $%d", len(args))
-	rows, err := i.source.DB.QueryContext(ctx, query.String(), args...)
+	if i.source.RegistryDB != nil {
+		query.WriteString(" LIMIT ?")
+	} else {
+		fmt.Fprintf(&query, " LIMIT $%d", len(args))
+	}
+	rows, err := i.sourceDB(name).QueryContext(ctx, query.String(), args...)
 	if err != nil {
 		return nil, err
 	}

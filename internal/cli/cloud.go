@@ -436,7 +436,7 @@ func newCloudCommand(opts options) *cobra.Command {
 		Long:    "Opt-in operator-hosted functionality: one shared public origin for sign-in, organization selection and authenticated routing to dedicated tenant Hubs. Self-hosted Detent never needs it.",
 		Args:    NoArgs,
 	}
-	cmd.AddCommand(newCloudServeCommand(lookupEnv, opts.build), newCloudRegistryCommand(), newCloudAssertionKeyCommand(lookupEnv))
+	cmd.AddCommand(newCloudServeCommand(lookupEnv, opts.build), newCloudRegistryCommand(), newCloudAssertionKeyCommand(lookupEnv), newCloudPlatformImportCommand(lookupEnv))
 	return cmd
 }
 

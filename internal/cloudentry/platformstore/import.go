@@ -28,6 +28,9 @@ type ImportObjects interface {
 
 type ImportSource struct {
 	DB             *sql.DB
+	RegistryDB     *sql.DB
+	AuthDB         *sql.DB
+	copyVerifier   importCopyVerifier
 	Catalog        storagecatalog.Catalog
 	Registry       storagecatalog.Source
 	Auth           storagecatalog.Source
@@ -69,7 +72,14 @@ var importTables = [...]string{
 }
 
 func (r *Repository) NewImporter(ctx context.Context, source ImportSource) (*Importer, error) {
-	if source.DB == nil || source.DB.Stats().MaxOpenConnections < 1 || source.Objects == nil || source.SnapshotID == "" || len(source.SnapshotID) > 200 || source.Registry.Store != "registry" || source.Auth.Store != "auth" || source.Registry.Schema == source.Auth.Schema || !bytes.Equal(source.SigningKey, r.secrets.signingKey) {
+	sqliteCopies := source.RegistryDB != nil || source.AuthDB != nil
+	if sqliteCopies && (source.DB != nil || source.RegistryDB == nil || source.AuthDB == nil || source.RegistryDB.Stats().MaxOpenConnections < 1 || source.AuthDB.Stats().MaxOpenConnections < 1 || source.copyVerifier == nil) {
+		return nil, ErrImport
+	}
+	if !sqliteCopies && (source.DB == nil || source.DB.Stats().MaxOpenConnections < 1 || source.copyVerifier != nil) {
+		return nil, ErrImport
+	}
+	if source.Objects == nil || source.SnapshotID == "" || len(source.SnapshotID) > 200 || source.Registry.Store != "registry" || source.Auth.Store != "auth" || source.Registry.Schema == source.Auth.Schema || !bytes.Equal(source.SigningKey, r.secrets.signingKey) {
 		return nil, ErrImport
 	}
 	encoded, err := json.Marshal(struct {
@@ -120,7 +130,13 @@ func (r *Repository) NewImporter(ctx context.Context, source ImportSource) (*Imp
 	}
 	digest := sha256.Sum256(encoded)
 	i := &Importer{repository: r, source: source, digest: hex.EncodeToString(digest[:]), organizations: organizations}
+	if err := i.verifySource(ctx, false); err != nil {
+		return nil, mapError(ctx, err)
+	}
 	if err := i.validateSource(ctx); err != nil {
+		return nil, mapError(ctx, err)
+	}
+	if err := i.verifySource(ctx, true); err != nil {
 		return nil, mapError(ctx, err)
 	}
 	return i, nil
@@ -147,6 +163,9 @@ func (i *Importer) Step(ctx context.Context, limit int) (ImportProgress, error) 
 	if limit < 1 || limit > ImportLimit {
 		return ImportProgress{}, ErrImport
 	}
+	if err := i.verifySource(ctx, false); err != nil {
+		return ImportProgress{}, mapError(ctx, err)
+	}
 	var checkpoint importCheckpoint
 	err := i.repository.transaction(ctx, corestore.Background, false, func(tx *sql.Tx) error {
 		result, err := tx.ExecContext(ctx, `INSERT INTO platform.import_checkpoint(singleton,snapshot_id,catalog_digest) VALUES(true,$1,$2) ON CONFLICT DO NOTHING`, i.source.SnapshotID, i.digest)
@@ -166,12 +185,27 @@ func (i *Importer) Step(ctx context.Context, limit int) (ImportProgress, error) 
 		return err
 	})
 	progress := ImportProgress{Processed: checkpoint.processed, Done: checkpoint.stage == int64(len(importTables))}
-	if err != nil || progress.Done {
+	if err != nil {
 		return progress, err
+	}
+	if progress.Done {
+		if err := i.verifySource(ctx, true); err != nil {
+			return progress, mapError(ctx, err)
+		}
+		return progress, nil
 	}
 	page, err := i.readPage(ctx, checkpoint, limit)
 	if err != nil {
 		return progress, mapError(ctx, err)
+	}
+	if err := i.verifySource(ctx, false); err != nil {
+		return progress, mapError(ctx, err)
+	}
+	finalPage := checkpoint.stage == int64(len(importTables)-1) && len(page) < limit
+	if finalPage {
+		if err := i.verifySource(ctx, true); err != nil {
+			return progress, mapError(ctx, err)
+		}
 	}
 	err = i.repository.transaction(ctx, corestore.Background, false, func(tx *sql.Tx) error {
 		current, err := i.checkpoint(ctx, tx, true)
@@ -197,7 +231,21 @@ func (i *Importer) Step(ctx context.Context, limit int) (ImportProgress, error) 
 	if err != nil {
 		return progress, err
 	}
-	return ImportProgress{Processed: progress.Processed + int64(len(page)), Done: checkpoint.stage == int64(len(importTables))}, nil
+	progress = ImportProgress{Processed: progress.Processed + int64(len(page)), Done: checkpoint.stage == int64(len(importTables))}
+	if progress.Done {
+		if err := i.verifySource(ctx, true); err != nil {
+			progress.Done = false
+			return progress, mapError(ctx, err)
+		}
+	}
+	return progress, nil
+}
+
+func (i *Importer) verifySource(ctx context.Context, complete bool) error {
+	if i.source.copyVerifier == nil {
+		return nil
+	}
+	return i.source.copyVerifier.Verify(ctx, complete)
 }
 
 func (i *Importer) requireEmptyTarget(ctx context.Context, tx *sql.Tx) error {

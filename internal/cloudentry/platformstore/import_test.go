@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -12,6 +13,7 @@ import (
 	"io"
 	"maps"
 	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strconv"
@@ -531,6 +533,91 @@ func TestPlatformImportRejectsChangedAuthorityAndUnsafeRows(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPlatformImportRejectsSourceChangedAfterFinalCheck(t *testing.T) {
+	db := template.Database(t)
+	cfg := testConfig(t)
+	r := repository(t, db, cfg)
+	source := importFixture(t, db, cfg)
+	seedPlatformSource(t, source, cfg)
+	i, err := r.NewImporter(t.Context(), source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		var stage int64
+		if err := db.QueryRowContext(t.Context(), `SELECT stage FROM platform.import_checkpoint WHERE singleton`).Scan(&stage); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			t.Fatal(err)
+		}
+		if stage == int64(len(importTables)-1) {
+			break
+		}
+		if _, err := i.Step(t.Context(), ImportLimit); err != nil {
+			t.Fatal(err)
+		}
+	}
+	i.source.copyVerifier = changedAfterFinalCheckVerifier(t)
+	progress, err := i.Step(t.Context(), ImportLimit)
+	if !errors.Is(err, ErrImport) || progress.Done {
+		t.Fatalf("final import accepted a changed source: progress=%+v error=%v", progress, err)
+	}
+	var stage, processed int64
+	if err := db.QueryRowContext(t.Context(), `SELECT stage,processed FROM platform.import_checkpoint WHERE singleton`).Scan(&stage, &processed); err != nil {
+		t.Fatal(err)
+	}
+	if stage != int64(len(importTables)) || processed != int64(2*len(importTables)) {
+		t.Fatalf("final source check changed committed checkpoint unexpectedly: stage=%d processed=%d", stage, processed)
+	}
+}
+
+type changedAfterFinalCheck struct {
+	verifier sqliteCopyVerifier
+	path     string
+	changed  bool
+}
+
+func (v *changedAfterFinalCheck) Verify(ctx context.Context, complete bool) error {
+	if err := v.verifier.Verify(ctx, complete); err != nil {
+		return err
+	}
+	if complete && !v.changed {
+		if err := os.Chmod(v.path, 0o600); err != nil {
+			return err
+		}
+		if err := os.WriteFile(v.path, []byte("source-v2"), 0o600); err != nil {
+			return err
+		}
+		if err := os.Chmod(v.path, 0o400); err != nil {
+			return err
+		}
+		v.changed = true
+	}
+	return nil
+}
+
+func changedAfterFinalCheckVerifier(t *testing.T) importCopyVerifier {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "source.db")
+	data := []byte("source-v1")
+	if err := os.WriteFile(path, data, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := file.Stat()
+	if err != nil {
+		t.Fatal(errors.Join(err, file.Close()))
+	}
+	t.Cleanup(func() {
+		if err := file.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	copy := &sealedSQLiteCopy{path: path, file: file, info: info, digest: sha256.Sum256(data)}
+	return &changedAfterFinalCheck{verifier: sqliteCopyVerifier{copies: []*sealedSQLiteCopy{copy}}, path: path}
 }
 
 func TestPlatformImportConcurrentCheckpoint(t *testing.T) {

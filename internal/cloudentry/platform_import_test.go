@@ -6,10 +6,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"maps"
 	"os"
-	"slices"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -193,86 +191,31 @@ func platformSQLiteImport(t *testing.T, s *Service, mode string) (*platformstore
 	if err != nil {
 		t.Fatal(err)
 	}
-	source := platformstore.ImportSource{DB: admin, Catalog: catalog, Registry: storagecatalog.Source{Schema: "example_registry", Store: "registry", CatalogVersion: catalog.Version, Organizations: []string{"org_alpha", "org_beta"}}, Auth: storagecatalog.Source{Schema: "example_auth", Store: "auth", CatalogVersion: catalog.Version, Organizations: []string{"org_alpha", "org_beta"}}, RegistrySchema: storagecatalog.Schema{}, AuthSchema: storagecatalog.Schema{}, SnapshotID: "example-sqlite-fence", SigningKey: s.config.SigningKey.Public().(ed25519.PublicKey), KeyVersions: s.auth.keys.Versions(), Objects: s.attachments}
-	for _, store := range []string{"registry", "auth"} {
-		schema, db, manifest := source.Registry.Schema, s.registry.store.reader, source.RegistrySchema
-		if store == "auth" {
-			schema, db, manifest = source.Auth.Schema, s.auth.store.reader, source.AuthSchema
-		}
-		if _, err := admin.ExecContext(t.Context(), "CREATE SCHEMA "+pq.QuoteIdentifier(schema)); err != nil {
+	registryCopy := filepath.Join(t.TempDir(), "registry.db")
+	authCopy := filepath.Join(t.TempDir(), "auth.db")
+	for _, copy := range []struct {
+		db   *sql.DB
+		path string
+	}{{s.registry.store.db.DB, registryCopy}, {s.auth.store.db.DB, authCopy}} {
+		if _, err := copy.db.ExecContext(t.Context(), "VACUUM INTO ?", copy.path); err != nil {
 			t.Fatal(err)
 		}
-		for table, definition := range catalog.Tables {
-			name, ok := strings.CutPrefix(table, store+"/")
-			if !ok {
-				continue
-			}
-			manifest[name] = map[string]string{}
-			for column, d := range definition.Columns {
-				manifest[name][column] = d.Source
-			}
-			if definition.Disposition != "target" {
-				continue
-			}
-			stageSQLitePlatformTable(t, admin, db, source, table)
+		if err := os.Chmod(copy.path, 0o400); err != nil {
+			t.Fatal(err)
 		}
 	}
-	return r, source
-}
-
-func stageSQLitePlatformTable(t *testing.T, target *sql.DB, source *entryDatabase, importSource platformstore.ImportSource, name string) {
-	t.Helper()
-	columns := slices.Sorted(maps.Keys(importSource.Catalog.Tables[name].Columns))
-	quoted, definitions := make([]string, len(columns)), make([]string, len(columns))
-	var keys [3]string
-	count := 0
-	for n, column := range columns {
-		quoted[n] = pq.QuoteIdentifier(column)
-		definitions[n] = quoted[n] + ` text COLLATE "C"`
-		var fields []json.RawMessage
-		var position int
-		if json.Unmarshal([]byte(importSource.Catalog.Tables[name].Columns[column].Source), &fields) != nil || json.Unmarshal(fields[5], &position) != nil {
-			t.Fatal("invalid source definition")
-		}
-		if position > 0 {
-			keys[position-1] = quoted[n]
-			count++
-		}
-	}
-	store, table, _ := strings.Cut(name, "/")
-	schema := importSource.Registry.Schema
-	if store == "auth" {
-		schema = importSource.Auth.Schema
-	}
-	qualified := pq.QuoteIdentifier(schema) + "." + pq.QuoteIdentifier(table)
-	if _, err := target.ExecContext(t.Context(), "CREATE TABLE "+qualified+"("+strings.Join(definitions, ",")+",PRIMARY KEY("+strings.Join(keys[:count], ",")+"))"); err != nil {
-		t.Fatal(err)
-	}
-	rows, err := source.QueryContext(t.Context(), "SELECT "+strings.Join(quoted, ",")+" FROM "+pq.QuoteIdentifier(table))
+	copies, err := platformstore.OpenSQLiteCopySource(t.Context(), registryCopy, authCopy, catalog)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rows.Close()
-	for rows.Next() {
-		values := make([]sql.NullString, len(columns))
-		dest, args, placeholders := make([]any, len(columns)), make([]any, len(columns)), make([]string, len(columns))
-		for n := range values {
-			dest[n] = &values[n]
+	t.Cleanup(func() {
+		if err := copies.Close(); err != nil {
+			t.Error(err)
 		}
-		if err := rows.Scan(dest...); err != nil {
-			t.Fatal(err)
-		}
-		for n, v := range values {
-			if v.Valid {
-				args[n] = v.String
-			}
-			placeholders[n] = fmt.Sprintf("$%d", n+1)
-		}
-		if _, err := target.ExecContext(t.Context(), "INSERT INTO "+qualified+"("+strings.Join(quoted, ",")+") VALUES("+strings.Join(placeholders, ",")+")", args...); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatal(err)
-	}
+	})
+	source := copies.ImportSource()
+	source.SigningKey = s.config.SigningKey.Public().(ed25519.PublicKey)
+	source.KeyVersions = s.auth.keys.Versions()
+	source.Objects = s.attachments
+	return r, source
 }
