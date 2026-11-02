@@ -70,7 +70,8 @@
     "internal/hubserver/postgres/migrations/20261102012847_runner_client_reports.sql",
     "internal/hubserver/postgres/migrations/20261102014015_attempt_started_at_submicro.sql",
     "internal/hubserver/postgres/migrations/20261102014157_project_event_cursors.sql",
-    "internal/hubserver/postgres/migrations/20261102015243_conversation_usage_records.sql"
+    "internal/hubserver/postgres/migrations/20261102015243_conversation_usage_records.sql",
+    "internal/hubserver/postgres/migrations/20261102023307_conversation_billing_import.sql"
   ],
   "tables": {
     "public.ai_credit_reason_references": {
@@ -685,6 +686,20 @@
       },
       "contract": "Retain the latest typed workspace capability and isolation report from each tenant runner.",
       "family": "fleet",
+      "organization": "organization-owned"
+    },
+    "public.conversation_billing_imports": {
+      "columns": {
+        "organization_id": "text",
+        "source_schema": "text",
+        "snapshot_id": "text",
+        "catalog_digest": "text",
+        "completed": "boolean",
+        "price_rows": "bigint",
+        "usage_rows": "bigint"
+      },
+      "contract": "Retain the tenant source snapshot identity and verified conversation billing import counts; never mix source cuts on replay.",
+      "family": "billing",
       "organization": "organization-owned"
     }
   },

@@ -188,5 +188,10 @@
     "inline_payloads": [],
     "ownership": "organization-owned",
     "scope": "cost_imports.organization_id; snapshot import state and retained cost revision evidence"
+  },
+  "public/conversation_billing_imports": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "conversation_billing_imports.organization_id; pinned source snapshot and verified import completion counts"
   }
 }

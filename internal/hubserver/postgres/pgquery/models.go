@@ -348,6 +348,16 @@ type ConversationAudienceEvent struct {
 	CreatedAt        time.Time
 }
 
+type ConversationBillingImport struct {
+	OrganizationID tracker.OrganizationID
+	SourceSchema   string
+	SnapshotID     string
+	CatalogDigest  string
+	Completed      bool
+	PriceRows      int64
+	UsageRows      int64
+}
+
 type ConversationCommand struct {
 	OrganizationID       tracker.OrganizationID
 	ConversationID       string
