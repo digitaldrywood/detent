@@ -176,7 +176,7 @@ type TargetClassification struct {
 }
 
 func slicesContainsTargetType(kind string) bool {
-	for _, allowed := range []string{"text", "integer", "bigint", "boolean", "timestamp with time zone", "double precision", "tsvector", "text[]", "bigint[]"} {
+	for _, allowed := range []string{"text", "integer", "bigint", "boolean", "timestamp with time zone", "double precision", "tsvector", "text[]", "bigint[]", "bytea"} {
 		if kind == allowed {
 			return true
 		}

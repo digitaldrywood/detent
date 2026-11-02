@@ -1926,13 +1926,13 @@
       }
     },
     "hub/hub_identity": {
-      "contract": "Bind source identity and schema/version provenance to the migration receipt; startup selects a single backend authority.",
+      "contract": "Preserve each tenant source Hub server identity and paging cursor key through direct-copy import.",
       "disposition": "target",
       "family": "lifecycle",
       "organization": "binding",
       "columns": {
-        "cursor_key": {"source":"[1,\"cursor_key\",\"BLOB\",1,null,0,0]","disposition":"pending","codec":"bytes","null":"reject","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."},
-        "id": {"source":"[0,\"id\",\"TEXT\",0,null,1,0]","disposition":"pending","codec":"text","null":"preserve","empty":"preserve","reason":"Target family schema or explicit extraction is not yet mapped; retain the source and reject import."}
+        "cursor_key": {"source":"[1,\"cursor_key\",\"BLOB\",1,null,0,0]","disposition":"column","codec":"bytes","null":"reject","empty":"reject","targets":[{"table":"public.hub_server_identities","column":"cursor_key","type":"bytea"}]},
+        "id": {"source":"[0,\"id\",\"TEXT\",0,null,1,0]","disposition":"column","codec":"text","null":"reject","empty":"reject","targets":[{"table":"public.hub_server_identities","column":"server_id","type":"text"}]}
       }
     },
     "hub/hub_schema_version": {

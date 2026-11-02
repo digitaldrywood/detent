@@ -25,6 +25,7 @@ type TenantCoreImportResult struct {
 	CreditAccounts     int64 `json:"credit_accounts"`
 	CreditPacks        int64 `json:"credit_packs"`
 	CreditTransactions int64 `json:"credit_transactions"`
+	HubIdentityRows    int64 `json:"hub_identity_rows"`
 	Projects           int64 `json:"projects"`
 	AccessRows         int64 `json:"access_rows"`
 	WorkItems          int64 `json:"work_items"`
@@ -69,6 +70,10 @@ func ImportTenantCoreCopy(ctx context.Context, config postgres.Config, source Te
 	accessSource := postgres.AccessCopyImportSource{CopyPath: source.CopyPath, OrganizationID: source.OrganizationID, Catalog: source.Catalog, Objects: source.Objects}
 	if err := repository.InitializeAccessCopyOrganization(ctx, accessSource); err != nil {
 		return result, fmt.Errorf("initialize tenant organization: %w", err)
+	}
+	result.HubIdentityRows, err = repository.ImportCoreHubIdentity(ctx, postgres.CoreHubIdentityImportSource{CopyPath: source.CopyPath, OrganizationID: source.OrganizationID, Objects: source.Objects})
+	if err != nil {
+		return result, fmt.Errorf("import tenant Hub identity: %w", err)
 	}
 	result.Projects, err = repository.ImportCoreProjects(ctx, postgres.CoreProjectImportSource{CopyPath: source.CopyPath, OrganizationID: source.OrganizationID, Objects: source.Objects})
 	if err != nil {
