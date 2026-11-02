@@ -341,6 +341,104 @@ func (s *session) ApproveProjectPolicy(ctx context.Context, row policystore.Revi
 	return nil
 }
 
+func (s *session) ImportProjectPolicyRevision(ctx context.Context, row policystore.Revision, approved bool) error {
+	if row.OrganizationID != s.organization || row.ProjectID == "" || row.PolicyID == "" || row.GitHubPullRequest == nil || row.ApprovedBy == "" || row.ApprovedAt.IsZero() {
+		return eventstore.ErrInvalidRecord
+	}
+	if err := s.LockWorkItemProject(ctx, row.ProjectID); err != nil {
+		return err
+	}
+	if err := validRecordPayload(row.OrganizationID, row.PayloadObjectKey, row.PayloadSHA256, row.PayloadBytes, row.PayloadContentBytes); err != nil {
+		return err
+	}
+	row.ApprovedAt = recordTime(row.ApprovedAt)
+	inserted, err := s.queries.PolicyInsertProjectRevision(ctx, pgquery.PolicyInsertProjectRevisionParams{
+		OrganizationID:        row.OrganizationID,
+		ProjectID:             row.ProjectID,
+		PolicyID:              row.PolicyID,
+		GateGithubPullRequest: sql.NullBool{Bool: *row.GitHubPullRequest, Valid: true},
+		ApprovedBy:            row.ApprovedBy,
+		ApprovedAt:            row.ApprovedAt,
+		PayloadObjectKey:      row.PayloadObjectKey,
+		PayloadSHA256:         row.PayloadSHA256,
+		PayloadBytes:          row.PayloadBytes,
+		PayloadContentBytes:   row.PayloadContentBytes,
+	})
+	if errors.Is(err, sql.ErrNoRows) {
+		current, readErr := s.queries.PolicyGetProjectRevision(ctx, pgquery.PolicyGetProjectRevisionParams{OrganizationID: row.OrganizationID, ProjectID: row.ProjectID, PolicyID: row.PolicyID})
+		if readErr != nil {
+			return mapError(ctx, readErr)
+		}
+		if !sameProjectPolicyContent(projectPolicyRevisionRecord(current), row) {
+			return corestore.ErrUniqueViolation
+		}
+		var approvedBy string
+		var approvedAt time.Time
+		if readErr := s.db.QueryRowContext(ctx, `SELECT approved_by,approved_at FROM policy_revisions WHERE organization_id=$1 AND project_id=$2 AND policy_id=$3`, row.OrganizationID, row.ProjectID, row.PolicyID).Scan(&approvedBy, &approvedAt); readErr != nil {
+			return mapError(ctx, readErr)
+		}
+		if approvedBy != row.ApprovedBy || !approvedAt.Equal(row.ApprovedAt) {
+			return corestore.ErrUniqueViolation
+		}
+	} else if err != nil {
+		return mapError(ctx, err)
+	} else if !sameProjectPolicyContent(projectPolicyRecord(inserted), row) {
+		return corestore.ErrTenantMismatch
+	}
+	var approvedBy string
+	var approvedAt time.Time
+	err = s.db.QueryRowContext(ctx, `SELECT approved_by,approved_at FROM policy_revision_approvals WHERE organization_id=$1 AND project_id=$2 AND policy_id=$3`, row.OrganizationID, row.ProjectID, row.PolicyID).Scan(&approvedBy, &approvedAt)
+	if !approved {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return mapError(ctx, err)
+		}
+		return corestore.ErrUniqueViolation
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		if err := s.queries.PolicyInsertRevisionApproval(ctx, pgquery.PolicyInsertRevisionApprovalParams{
+			OrganizationID: row.OrganizationID,
+			ProjectID:      row.ProjectID,
+			PolicyID:       row.PolicyID,
+			ApprovedBy:     row.ApprovedBy,
+			ApprovedAt:     row.ApprovedAt,
+		}); err != nil {
+			return mapError(ctx, err)
+		}
+		approvedBy, approvedAt = row.ApprovedBy, row.ApprovedAt
+	} else if err != nil {
+		return mapError(ctx, err)
+	}
+	if approvedBy != row.ApprovedBy || !approvedAt.Equal(row.ApprovedAt) {
+		return corestore.ErrUniqueViolation
+	}
+	return nil
+}
+
+func (s *session) ImportProjectPolicyCurrent(ctx context.Context, project tracker.ProjectID, policyID string) error {
+	if project == "" || policyID == "" {
+		return eventstore.ErrInvalidRecord
+	}
+	if err := s.LockWorkItemProject(ctx, project); err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO project_policies (organization_id,project_id,policy_id)
+SELECT $1,$2,$3 WHERE EXISTS (SELECT 1 FROM policy_revisions WHERE organization_id=$1 AND project_id=$2 AND policy_id=$3)
+ON CONFLICT (organization_id,project_id) DO NOTHING`, s.organization, project, policyID); err != nil {
+		return mapError(ctx, err)
+	}
+	var current string
+	if err := s.db.QueryRowContext(ctx, `SELECT policy_id FROM project_policies WHERE organization_id=$1 AND project_id=$2`, s.organization, project).Scan(&current); err != nil {
+		return mapError(ctx, err)
+	}
+	if current != policyID {
+		return corestore.ErrRevisionConflict
+	}
+	return nil
+}
+
 func reviewPolicyRecord(row pgquery.ChangeReviewPolicyRevision) eventstore.ReviewPolicy {
 	return eventstore.ReviewPolicy{
 		OrganizationID:      row.OrganizationID,

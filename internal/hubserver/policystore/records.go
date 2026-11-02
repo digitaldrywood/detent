@@ -79,6 +79,8 @@ type Writer interface {
 	Reader
 	BindLeasePolicy(context.Context, LeasePolicy) error
 	ApproveProjectPolicy(context.Context, Revision, string) error
+	ImportProjectPolicyRevision(context.Context, Revision, bool) error
+	ImportProjectPolicyCurrent(context.Context, tracker.ProjectID, string) error
 	RecordProjectPolicyObservation(context.Context, Observation) (bool, error)
 	CreateProjectWorkflowApply(context.Context, WorkflowApply) (WorkflowApply, error)
 }

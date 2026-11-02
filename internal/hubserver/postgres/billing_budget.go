@@ -38,6 +38,51 @@ func (s *session) SetBillingMonthlyPolicy(ctx context.Context, row billingstore.
 	return mapError(ctx, err)
 }
 
+func (s *session) ImportBillingMonthlyPolicy(ctx context.Context, row billingstore.MonthlyPolicy) error {
+	if err := s.checkOrganization(row.OrganizationID); err != nil {
+		return err
+	}
+	if row.Revision < 1 || row.UpdatedAt.IsZero() {
+		return billingstore.ErrInvalidBudgetFact
+	}
+	if err := row.Policy.Validate(); err != nil {
+		return err
+	}
+	if row.ProjectID != "" {
+		if _, err := s.Project(ctx, row.ProjectID); err != nil {
+			return err
+		}
+	}
+	row.Policy.Mode = row.Policy.EffectiveMode()
+	row.UpdatedAt = recordTime(row.UpdatedAt)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO monthly_budget_policies(organization_id,project_id,revision,enabled,mode,luna_micros,runner_micros,sprite_micros,total_micros,actor_id,updated_at)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (organization_id,project_id,revision) DO NOTHING`, s.organization, row.ProjectID, row.Revision, row.Policy.Enabled, row.Policy.Mode, row.Policy.LunaMicros, row.Policy.RunnerMicros, row.Policy.SpriteMicros, row.Policy.TotalMicros, row.Actor, row.UpdatedAt)
+	if err != nil {
+		return mapError(ctx, err)
+	}
+	var current billingstore.MonthlyPolicy
+	if err := s.db.QueryRowContext(ctx, `SELECT organization_id,project_id,revision,enabled,mode,luna_micros,runner_micros,sprite_micros,total_micros,actor_id,updated_at
+FROM monthly_budget_policies WHERE organization_id=$1 AND project_id=$2 AND revision=$3`, s.organization, row.ProjectID, row.Revision).Scan(&current.OrganizationID, &current.ProjectID, &current.Revision, &current.Policy.Enabled, &current.Policy.Mode, &current.Policy.LunaMicros, &current.Policy.RunnerMicros, &current.Policy.SpriteMicros, &current.Policy.TotalMicros, &current.Actor, &current.UpdatedAt); err != nil {
+		return mapError(ctx, err)
+	}
+	if !sameImportedMonthlyPolicy(current, row) {
+		return corestore.ErrRevisionConflict
+	}
+	return nil
+}
+
+func sameImportedMonthlyPolicy(left, right billingstore.MonthlyPolicy) bool {
+	return left.OrganizationID == right.OrganizationID && left.ProjectID == right.ProjectID && left.Revision == right.Revision &&
+		left.Policy.Enabled == right.Policy.Enabled && left.Policy.EffectiveMode() == right.Policy.EffectiveMode() &&
+		sameOptionalMicros(left.Policy.LunaMicros, right.Policy.LunaMicros) && sameOptionalMicros(left.Policy.RunnerMicros, right.Policy.RunnerMicros) &&
+		sameOptionalMicros(left.Policy.SpriteMicros, right.Policy.SpriteMicros) && sameOptionalMicros(left.Policy.TotalMicros, right.Policy.TotalMicros) &&
+		left.Actor == right.Actor && left.UpdatedAt.Equal(right.UpdatedAt)
+}
+
+func sameOptionalMicros(left, right *int64) bool {
+	return left == nil && right == nil || left != nil && right != nil && *left == *right
+}
+
 func (s *session) BillingMonthlyAdmission(ctx context.Context, issueID tracker.WorkItemID) (billingstore.MonthlyAdmission, error) {
 	row, err := s.queries.BillingMonthlyAdmission(ctx, pgquery.BillingMonthlyAdmissionParams{OrganizationID: s.organization, IssueID: int64(issueID)})
 	return billingstore.MonthlyAdmission{OrganizationID: row.OrganizationID, IssueID: tracker.WorkItemID(row.IssueID), AdmittedAt: row.AdmittedAt}, mapError(ctx, err)
@@ -50,9 +95,20 @@ func (s *session) RecordBillingMonthlyAdmission(ctx context.Context, row billing
 	if row.IssueID <= 0 || row.AdmittedAt.IsZero() {
 		return billingstore.ErrInvalidBudgetFact
 	}
-	n, err := s.queries.RecordBillingMonthlyAdmission(ctx, pgquery.RecordBillingMonthlyAdmissionParams{OrganizationID: s.organization, IssueID: int64(row.IssueID), AdmittedAt: row.AdmittedAt})
-	if err != nil || n != 0 {
-		return mapError(ctx, err)
+	_, err := s.queries.RecordBillingMonthlyAdmission(ctx, pgquery.RecordBillingMonthlyAdmissionParams{OrganizationID: s.organization, IssueID: int64(row.IssueID), AdmittedAt: row.AdmittedAt})
+	return mapError(ctx, err)
+}
+
+func (s *session) ImportBillingMonthlyAdmission(ctx context.Context, row billingstore.MonthlyAdmission) error {
+	if err := s.RecordBillingMonthlyAdmission(ctx, row); err != nil {
+		return err
+	}
+	current, err := s.BillingMonthlyAdmission(ctx, row.IssueID)
+	if err != nil {
+		return err
+	}
+	if !current.AdmittedAt.Equal(recordTime(row.AdmittedAt)) {
+		return corestore.ErrRevisionConflict
 	}
 	return nil
 }
