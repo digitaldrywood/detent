@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
@@ -61,20 +62,31 @@ func (s *session) RecordAttemptEvent(ctx context.Context, event leasestore.Attem
 	}
 	var row pgquery.NativeAttempt
 	if event.Sequence == 1 {
+		if event.UsageCorrection {
+			return leasestore.Attempt{}, false, leasestore.ErrAttemptConflict
+		}
 		if err := s.queries.BindAttemptRun(ctx, pgquery.BindAttemptRunParams{OrganizationID: s.organization, RunID: event.RunID, IssueID: lease.IssueID}); err != nil {
 			return leasestore.Attempt{}, false, mapError(ctx, err)
 		}
+		startedAt := event.StartedAt
+		if startedAt.IsZero() {
+			startedAt = now
+		}
+		startedAtSubmicro := startedAt.Nanosecond() % 1000
+		startedAt = startedAt.Truncate(time.Microsecond)
 		row, err = s.queries.InsertLeaseAttempt(ctx, pgquery.InsertLeaseAttemptParams{
 			OrganizationID: s.organization, ID: event.ID, IssueID: lease.IssueID, LeaseID: lease.LeaseID,
 			FencingToken: lease.FencingToken, RunID: event.RunID, Status: event.Status, WorkItemRevision: lease.WorkItemRevision,
 			DispatchGeneration: event.DispatchGeneration, PayloadObjectKey: event.PayloadObjectKey,
-			CheckpointObjectKey: event.CheckpointObjectKey, ArtifactsObjectKey: event.ArtifactsObjectKey, Now: now,
+			CheckpointObjectKey: event.CheckpointObjectKey, ArtifactsObjectKey: event.ArtifactsObjectKey,
+			StartedAt: startedAt, StartedAtSubmicroNs: int16(startedAtSubmicro), Now: now,
 		})
 	} else {
 		row, err = s.queries.AdvanceLeaseAttempt(ctx, pgquery.AdvanceLeaseAttemptParams{
 			OrganizationID: s.organization, ID: event.ID, LeaseID: lease.LeaseID, FencingToken: lease.FencingToken,
 			RunID: event.RunID, NextSequence: event.Sequence, Status: event.Status, DispatchGeneration: event.DispatchGeneration,
-			PayloadObjectKey: event.PayloadObjectKey, CheckpointObjectKey: event.CheckpointObjectKey, ArtifactsObjectKey: event.ArtifactsObjectKey, Now: now,
+			PayloadObjectKey: event.PayloadObjectKey, CheckpointObjectKey: event.CheckpointObjectKey, ArtifactsObjectKey: event.ArtifactsObjectKey,
+			UsageCorrection: event.UsageCorrection, Now: now,
 		})
 	}
 	if errors.Is(err, sql.ErrNoRows) {
@@ -84,5 +96,5 @@ func (s *session) RecordAttemptEvent(ctx context.Context, event leasestore.Attem
 		return leasestore.Attempt{}, false, mapError(ctx, err)
 	}
 	err = s.queries.InsertAttemptReceipt(ctx, pgquery.InsertAttemptReceiptParams{OrganizationID: s.organization, AttemptID: event.ID, Sequence: event.Sequence, RequestHash: digest})
-	return leasestore.Attempt(row), false, mapError(ctx, err)
+	return attemptFromPG(row), false, mapError(ctx, err)
 }

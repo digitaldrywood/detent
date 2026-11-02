@@ -203,6 +203,9 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 		clientBuild:        conversationClientIdentity(conversationClientFS, cfg.Version, cfg.now()),
 		pullRequests:       newPullRequestCache(),
 	}
+	if service.config.NativeRunEvents == nil && service.config.TenantRepository != nil {
+		service.config.NativeRunEvents = tenantNativeRunEventParticipant{service: service}
+	}
 	if cfg.Hosted == nil {
 		if err := database.reader.QueryRowContext(ctx, "SELECT id FROM organizations WHERE local=1").Scan(&service.localOrganization); err != nil {
 			workerCancel()

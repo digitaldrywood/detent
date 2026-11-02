@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
@@ -86,9 +87,9 @@ func TestNativeRunEventTenantMutationStoresAttemptEventAndReceiptAtomically(t *t
 	repository := projectRecordPostgres(t)
 	participant := &nativeRunEventParticipantFixture{}
 	keys := secretTestKeys(t, "1", "1")
-	service := openTestService(t, Config{
+	service := openPostgresHubTestService(t, repository, Config{
 		DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{},
-		TenantRepository: repository, NativeRunEvents: participant, SecretKeys: keys,
+		NativeRunEvents: participant, SecretKeys: keys,
 	})
 	organization, err := service.createNativeOrganizationFor(t.Context(), "Example organization")
 	if err != nil {
@@ -100,17 +101,12 @@ func TestNativeRunEventTenantMutationStoresAttemptEventAndReceiptAtomically(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
+	seedPostgresHubAdmin(t, repository, service, organization)
 	if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
-		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization.ID, Name: organization.Name, Slug: organization.Slug, Local: true, CreatedAt: now}); err != nil {
-			return err
-		}
 		if err := w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: organization.ID, Kind: accessstore.NativeCursorKeyKind, Envelope: cursorEnvelope, UpdatedAt: now}, accessstore.SecretAudit{OrganizationID: organization.ID, Kind: accessstore.NativeCursorKeyKind, Actor: "migration", Event: "import", KeyVersion: cursorEnvelope.Version, RecordedAt: now}); err != nil {
 			return err
 		}
-		return w.CreateAccessCredential(t.Context(), accessstore.Credential{
-			OrganizationID: organization.ID, ID: "tenant-admin", Name: "Tenant admin", Hash: "tenant-hash",
-			Scope: "admin", ProjectAccess: "all", Kind: "service", CreatedAt: now, UpdatedAt: now,
-		})
+		return nil
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +138,7 @@ func TestNativeRunEventTenantMutationStoresAttemptEventAndReceiptAtomically(t *t
 	}); err != nil {
 		t.Fatal(err)
 	}
-	scope := nativeScope{organization: organization.ID, project: project.ID, credential: apiCredential{ID: "tenant-admin", Hash: "tenant-hash", Scope: apiScopeAdmin}}
+	scope := nativeScope{organization: organization.ID, project: project.ID, credential: apiCredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: apiScopeAdmin}}
 	relatedEvents := []tracker.CollaborationEvent{{Data: tracker.CollaborationData{RelatedWorkItemID: issue.WorkItemID}}}
 	if err := service.hydrateTenantHistoryRelatedIssues(t.Context(), scope, relatedEvents); err != nil {
 		t.Fatal(err)
@@ -155,6 +151,21 @@ func TestNativeRunEventTenantMutationStoresAttemptEventAndReceiptAtomically(t *t
 		Data: tracker.NativeRunData{AttemptID: newNativeID("attempt"), RunID: newNativeID("run"), LeaseID: tracker.LeaseID(lease.LeaseID),
 			FencingToken: tracker.FencingToken(lease.FencingToken), PolicyID: "policy_" + strings.Repeat("a", 64), Sequence: 1,
 			Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "example-model"}},
+	}
+	for _, field := range []string{"machine", "session", "runner"} {
+		invalid := start
+		invalid.IdempotencyKey = "wrong-" + field
+		switch field {
+		case "machine":
+			invalid.Data.MachineID = "other-machine"
+		case "session":
+			invalid.Data.SessionID = "other-session"
+		case "runner":
+			invalid.Data.RunnerID = "other-runner"
+		}
+		if _, err := service.appendNativeRunEventTenant(t.Context(), scope, string(issue.WorkItemID), invalid); err == nil || !strings.Contains(err.Error(), "Execution identity must match") {
+			t.Fatalf("mismatched %s identity error=%v", field, err)
+		}
 	}
 	result, err := service.appendNativeRunEventTenant(t.Context(), scope, string(issue.WorkItemID), start)
 	if err != nil || string(result) != `{"accepted":true}` {
@@ -206,7 +217,7 @@ func TestNativeRunEventTenantMutationStoresAttemptEventAndReceiptAtomically(t *t
 		if runEvents != 1 {
 			t.Errorf("history after rejected completion=%+v", events)
 		}
-		if _, err := r.Receipt(t.Context(), "tenant-admin", "POST /api/v2/organizations/"+string(organization.ID)+"/projects/"+string(project.ID)+"/work-items/"+string(issue.WorkItemID)+"/events", "finish"); !errors.Is(err, corestore.ErrNotFound) {
+		if _, err := r.Receipt(t.Context(), "test_hub_admin", "POST /api/v2/organizations/"+string(organization.ID)+"/projects/"+string(project.ID)+"/work-items/"+string(issue.WorkItemID)+"/events", "finish"); !errors.Is(err, corestore.ErrNotFound) {
 			t.Errorf("rejected completion receipt=%v", err)
 		}
 		return nil
@@ -246,7 +257,7 @@ func TestNativeRunEventTenantMutationStoresAttemptEventAndReceiptAtomically(t *t
 		if runEvents != 2 {
 			t.Errorf("history events=%+v", events)
 		}
-		if _, err := r.Receipt(t.Context(), "tenant-admin", "POST /api/v2/organizations/"+string(organization.ID)+"/projects/"+string(project.ID)+"/work-items/"+string(issue.WorkItemID)+"/events", "stale"); !errors.Is(err, corestore.ErrNotFound) {
+		if _, err := r.Receipt(t.Context(), "test_hub_admin", "POST /api/v2/organizations/"+string(organization.ID)+"/projects/"+string(project.ID)+"/work-items/"+string(issue.WorkItemID)+"/events", "stale"); !errors.Is(err, corestore.ErrNotFound) {
 			t.Errorf("stale event receipt=%v", err)
 		}
 		return nil
@@ -479,7 +490,7 @@ func TestNativeRunEventTenantMutationStoresAttemptEventAndReceiptAtomically(t *t
 	if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
 		_, err := w.CreateConversation(t.Context(), conversationstore.Conversation{
 			OrganizationID: organization.ID, ID: conversationID, ProjectID: project.ID,
-			OwnerPrincipalID: "tenant-admin", Origin: conversationOriginWorker, Title: "Example worker issue",
+			OwnerPrincipalID: "test_hub_admin", Origin: conversationOriginWorker, Title: "Example worker issue",
 			Visibility: conversation.VisibilityShared, Status: conversation.StatusActive, WorkItemID: string(thirdIssue.WorkItemID),
 			LinkedAt: &conversationNow, Revision: 1,
 			Execution: conversation.Execution{Status: conversation.ExecutionRunning, Owner: conversation.Owner{
@@ -676,7 +687,7 @@ func TestNativeRunEventTenantMutationStoresAttemptEventAndReceiptAtomically(t *t
 		if runEvents != 4 {
 			t.Errorf("second issue history events=%+v", events)
 		}
-		if _, err := r.Receipt(t.Context(), "tenant-admin", "POST /api/v2/organizations/"+string(organization.ID)+"/projects/"+string(project.ID)+"/work-items/"+string(secondIssue.WorkItemID)+"/events", "nested-batch"); !errors.Is(err, corestore.ErrNotFound) {
+		if _, err := r.Receipt(t.Context(), "test_hub_admin", "POST /api/v2/organizations/"+string(organization.ID)+"/projects/"+string(project.ID)+"/work-items/"+string(secondIssue.WorkItemID)+"/events", "nested-batch"); !errors.Is(err, corestore.ErrNotFound) {
 			t.Errorf("nested batch receipt=%v", err)
 		}
 		return nil

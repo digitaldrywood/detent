@@ -1,8 +1,10 @@
 package hubserver
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -11,6 +13,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -24,12 +27,18 @@ import (
 )
 
 func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *testing.T) {
+	var logs bytes.Buffer
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Log(logs.String())
+		}
+	})
 	repository := projectRecordPostgres(t)
-	clock := &leaseTestClock{value: time.Date(2026, time.November, 1, 22, 0, 0, 0, time.UTC)}
+	clock := &leaseTestClock{value: time.Now().UTC()}
 	participant := &nativeRunEventParticipantFixture{}
 	service := openPostgresHubTestService(t, repository, Config{
 		DatabasePath: filepath.Join(t.TempDir(), "hub.db"), RunDetails: &memoryRunDetails{}, Clock: clock.Now,
-		NativeRunEvents: participant,
+		NativeRunEvents: participant, Logger: slog.New(slog.NewTextHandler(&logs, nil)),
 	})
 	organization, err := service.createNativeOrganizationFor(t.Context(), "Example organization")
 	if err != nil {
@@ -76,7 +85,7 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 		if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: organization.ID, TokenID: "credential_runner", ProjectID: project.ID}); err != nil {
 			return err
 		}
-		if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: organization.ID, ID: "enrollment_runner", RunnerID: "runner_example", MachineID: "machine_example", TokenHash: apikey.HashToken("example_enrollment_secret"), Scope: "projects", ProjectIDs: []tracker.ProjectID{project.ID}, Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat}, CreatedAt: now, ExpiresAt: expires, CreatedBy: "example-admin"}); err != nil {
+		if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: organization.ID, ID: "enrollment_runner", RunnerID: "runner_example", MachineID: "machine_example", TokenHash: apikey.HashToken("example_enrollment_secret"), Scope: "projects", ProjectIDs: []tracker.ProjectID{project.ID}, Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events}, CreatedAt: now, ExpiresAt: expires, CreatedBy: "example-admin"}); err != nil {
 			return err
 		}
 		if err := w.RedeemRunnerEnrollment(t.Context(), "enrollment_runner", "runner_example", "machine_example", now); err != nil {
@@ -85,7 +94,7 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 		if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: organization.ID, ID: "machine_example", Hostname: "example-host", Capacity: 2, Version: "example"}); err != nil {
 			return err
 		}
-		if err := w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: organization.ID, RunnerID: "runner_example", MachineID: "machine_example", TokenID: "credential_runner", EnrollmentID: "enrollment_runner", Scope: "projects", State: "active", Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat}, CapacityLimit: 2, ReportedCapacity: 2, ProjectIDs: []tracker.ProjectID{project.ID}, Availability: runnerstore.Availability{Timezone: "UTC", Windows: []string{"Mon-Sun 00:00-24:00"}}, CreatedAt: now, ExpiresAt: expires, LastHeartbeatAt: now}); err != nil {
+		if err := w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: organization.ID, RunnerID: "runner_example", MachineID: "machine_example", TokenID: "credential_runner", EnrollmentID: "enrollment_runner", Scope: "projects", State: "active", Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events}, CapacityLimit: 2, ReportedCapacity: 2, ProjectIDs: []tracker.ProjectID{project.ID}, Availability: runnerstore.Availability{Timezone: "UTC", Windows: []string{"Mon-Sun 00:00-24:00"}}, CreatedAt: now, ExpiresAt: expires, LastHeartbeatAt: now}); err != nil {
 			return err
 		}
 		if err := w.UpdateRunnerCapacityConfig(t.Context(), "runner_example", runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 2, ClientLimit: 2, RuntimeLimit: 2, Manageable: true, ObservedAt: now}); err != nil {
@@ -144,6 +153,71 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 	decodeHubResponse(t, replay, &replayed)
 	if replayed.ID != lease.ID || replayed.ProviderReservation == nil || replayed.ProviderReservation.Requirement != lease.ProviderReservation.Requirement || replayed.ProviderReservation.Report.AccountAlias != lease.ProviderReservation.Report.AccountAlias || replayed.ProviderReservation.Report.SharedAccountAlias != lease.ProviderReservation.Report.SharedAccountAlias {
 		t.Fatalf("claim replay changed lease/reservation: first=%+v replay=%+v", lease, replayed)
+	}
+	service.config.NativeRunEvents = tenantNativeRunEventParticipant{service: service}
+	eventPath := base + "/work-items/" + string(items[0].WorkItemID) + "/events"
+	started := tracker.NativeRunEvent{
+		Mutation: tracker.Mutation{IdempotencyKey: "native-run-start"}, Type: "run.started", SchemaVersion: 1,
+		Data: tracker.NativeRunData{AttemptID: newNativeID("attempt"), RunID: newNativeID("run"), LeaseID: lease.ID, FencingToken: lease.FencingToken, PolicyID: descriptor.ID, Sequence: 1,
+			Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: report.Backend, Model: report.Models[0]}},
+	}
+	startedAt := clock.value.Truncate(time.Second).Add(123456789 * time.Nanosecond)
+	started.OccurredAt = startedAt
+	clock.value = startedAt.Add(2 * time.Second)
+	finishedAt := clock.value
+	finished := started
+	finished.IdempotencyKey = "native-run-finish"
+	finished.Type = "run.finished"
+	finished.OccurredAt = time.Time{}
+	finished.Data.Sequence = 2
+	finished.Data.Outcome = "succeeded"
+	finished.Data.Usage = []tracker.NativeUsage{{Provider: "codex", Model: "example-model", Input: 10, Output: 3, BillingMode: "metered", CostEstimate: 0.01}}
+	finished.PriorEvents = []tracker.NativeRunEvent{started}
+	finishResponse := performHubAPIRequest(t, service, http.MethodPost, eventPath, secret, finished)
+	requireNativeStatus(t, finishResponse, http.StatusOK)
+	var startedAttempt leasestore.Attempt
+	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		startedAttempt, err = r.Attempt(t.Context(), string(started.Data.AttemptID))
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var terminalAttempt leasestore.Attempt
+	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		terminalAttempt, err = r.Attempt(t.Context(), string(started.Data.AttemptID))
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if terminalAttempt.Status != "succeeded" || terminalAttempt.Sequence != 2 || !terminalAttempt.StartedAt.Equal(startedAt) || !startedAttempt.StartedAt.Equal(startedAt) {
+		t.Fatalf("finished attempt = %+v, started %+v", terminalAttempt, startedAttempt)
+	}
+	corrected := finished
+	corrected.IdempotencyKey = "native-run-usage-correction"
+	corrected.Data.Sequence = 3
+	corrected.Data.Usage = append([]tracker.NativeUsage(nil), finished.Data.Usage...)
+	corrected.Data.Usage[0].Input = 14
+	corrected.PriorEvents = nil
+	clock.value = finishedAt.Add(time.Minute)
+	correctionResponse := performHubAPIRequest(t, service, http.MethodPost, eventPath, secret, corrected)
+	requireNativeStatus(t, correctionResponse, http.StatusOK)
+	var correctedAttempt leasestore.Attempt
+	var costRevision billingstore.CostRevision
+	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		correctedAttempt, err = r.Attempt(t.Context(), string(started.Data.AttemptID))
+		if err != nil {
+			return err
+		}
+		costRevision, err = r.BillingCostRevision(t.Context(), billingstore.CostSource{Provider: "codex", ProviderAccount: "runner", SourceID: string(started.Data.AttemptID) + ":example-model", From: terminalAttempt.StartedAt, To: finishedAt})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if correctedAttempt.Status != "succeeded" || correctedAttempt.Sequence != 3 || !correctedAttempt.UpdatedAt.Equal(terminalAttempt.UpdatedAt) || correctedAttempt.PayloadObjectKey == terminalAttempt.PayloadObjectKey || costRevision.Revision != 3 {
+		t.Fatalf("usage correction changed attempt lifecycle or missed cost receipt: before=%+v after=%+v cost=%+v", terminalAttempt, correctedAttempt, costRevision)
 	}
 	blockedResponse := performHubAPIRequest(t, service, http.MethodPost, itemsPath, testHubAdminToken, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "issue-blocked"}, Title: "Example ineligible issue", Body: "detent:no-dispatch", State: "Todo"})
 	requireNativeStatus(t, blockedResponse, http.StatusOK)

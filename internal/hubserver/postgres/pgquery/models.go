@@ -493,6 +493,96 @@ type ConversationTurnBatch struct {
 	CreatedAt      time.Time
 }
 
+type CostImport struct {
+	OrganizationID tracker.OrganizationID
+	SourceSchema   string
+	SnapshotID     string
+	CatalogDigest  string
+	Phase          int32
+	Revision       int64
+	SourceRows     int64
+	CurrentSources int64
+	HistoryRows    int64
+	HasAfter       bool
+	AfterKey1      string
+	AfterKey2      string
+	AfterKey3      string
+	AfterKey4      string
+	AfterKey5      string
+	AfterKey6      string
+	AfterKey7      string
+}
+
+type CostImportHead struct {
+	OrganizationID tracker.OrganizationID
+	SourceKey      string
+	Revision       int64
+}
+
+type CostImportRow struct {
+	OrganizationID  tracker.OrganizationID
+	SourceKey       string
+	Revision        int64
+	ProjectID       tracker.ProjectID
+	ReceivedAt      string
+	SourceVoided    sql.NullBool
+	BindingID       string
+	CustomerOwned   bool
+	ObjectKey       string
+	Sha256          string
+	CompressedBytes int64
+	ContentBytes    int64
+	Codec           string
+	FormatVersion   int32
+	Kind            string
+	Retention       string
+}
+
+type CostMonthlyTotal struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	Month          time.Time
+	Bucket         string
+	Currency       string
+	AmountMicros   int64
+}
+
+type CostObservationRevision struct {
+	OrganizationID  tracker.OrganizationID
+	SourceKey       string
+	Revision        int64
+	ReceivedAt      string
+	BindingID       string
+	CustomerOwned   bool
+	ObjectKey       string
+	Sha256          string
+	CompressedBytes int64
+	ContentBytes    int64
+	Codec           string
+	FormatVersion   int32
+	Kind            string
+	Retention       string
+}
+
+type CostSource struct {
+	OrganizationID  tracker.OrganizationID
+	SourceKey       string
+	ProjectID       tracker.ProjectID
+	Provider        string
+	ProviderAccount string
+	ResourceID      string
+	Bucket          string
+	Metric          string
+	PeriodStart     string
+	PeriodEnd       string
+	Revision        int64
+	AttributionHash string
+	PayloadHash     string
+	AmountMicros    sql.NullInt64
+	Currency        string
+	Voided          bool
+}
+
 type GoTestReceipt struct {
 	OrganizationID tracker.OrganizationID
 	ProjectID      tracker.ProjectID
@@ -1004,6 +1094,7 @@ type NativeAttempt struct {
 	ArtifactsObjectKey  *string
 	StartedAt           time.Time
 	UpdatedAt           time.Time
+	StartedAtSubmicroNs int16
 }
 
 type NativeAttemptEvent struct {
@@ -1731,6 +1822,37 @@ type RunnerEnrollmentProject struct {
 	ProjectID      tracker.ProjectID
 }
 
+type RunnerHostMetricSegment struct {
+	OrganizationID          tracker.OrganizationID
+	RunnerID                string
+	Hour                    time.Time
+	SegmentID               time.Time
+	Partial                 bool
+	SampleCount             int64
+	LogicalCores            int32
+	MemoryTotalBytes        int64
+	MemoryAvailableMinBytes int64
+	MemoryAvailableSumBytes int64
+	MemorySampleCount       int64
+	SwapUsedMaxBytes        int64
+	SwapSampleCount         int64
+	PsiSomeAvg10Sum         float64
+	PsiSomeSampleCount      int64
+	PsiFullAvg10Sum         float64
+	PsiFullSampleCount      int64
+	PressureWarnCount       int64
+	PressureCriticalCount   int64
+	PressureSampleCount     int64
+	CpuBusySumPercent       float64
+	CpuBusyMaxPercent       float64
+	CpuSampleCount          int64
+	Load1Max                float64
+	LoadSampleCount         int64
+	DiskFreeMinBytes        int64
+	DiskTotalMinBytes       int64
+	DiskSampleCount         int64
+}
+
 type RunnerIdentity struct {
 	OrganizationID             tracker.OrganizationID
 	RunnerID                   string
@@ -1779,6 +1901,74 @@ type RunnerLeaseAssignment struct {
 	LeaseID        string
 	RunnerID       string
 	AssignedAt     time.Time
+}
+
+type RunnerLocalCheck struct {
+	OrganizationID       tracker.OrganizationID
+	RunnerID             string
+	ProjectID            tracker.ProjectID
+	CommitName           string
+	CommitEmail          string
+	CommitSigning        string
+	CheckoutMessage      string
+	CheckoutFix          string
+	RunnerSetupDeclared  sql.NullBool
+	Setup                string
+	Checkout             string
+	ConfigurationMessage string
+	ConfigurationFix     string
+	Configuration        string
+	CheckoutAt           *time.Time
+	ConfigurationAt      *time.Time
+	DoctorAt             *time.Time
+	ProviderAt           *time.Time
+	Doctor               string
+	Provider             string
+	ObservedAt           time.Time
+}
+
+type RunnerLocalCheckProvider struct {
+	OrganizationID tracker.OrganizationID
+	RunnerID       string
+	ProjectID      tracker.ProjectID
+	Position       int32
+	Kind           string
+}
+
+type RunnerNativeAdmissionObservation struct {
+	OrganizationID  tracker.OrganizationID
+	RunnerID        string
+	ProjectID       tracker.ProjectID
+	RunnerRevision  int64
+	ReceivedAt      time.Time
+	ObservedAt      time.Time
+	PolicyID        string
+	LastRefreshAt   time.Time
+	RefreshDuration int64
+}
+
+type RunnerNativeAdmissionSelector struct {
+	OrganizationID tracker.OrganizationID
+	RunnerID       string
+	ProjectID      tracker.ProjectID
+	Kind           string
+	Position       int32
+	Value          string
+}
+
+type RunnerProblemReport struct {
+	OrganizationID tracker.OrganizationID
+	RunnerID       string
+	Code           string
+	ProjectID      tracker.ProjectID
+	Subject        string
+	CheckName      string
+	ErrorOutput    string
+	FixCommand     string
+	Message        string
+	FixHint        string
+	ReportedAt     time.Time
+	FirstSeen      time.Time
 }
 
 type RunnerProjectCapacityLimit struct {
@@ -1892,6 +2082,25 @@ type RunnerRepositoryList struct {
 	ListedAt       *time.Time
 }
 
+type RunnerSelectionCursor struct {
+	OrganizationID       tracker.OrganizationID
+	RunnerID             string
+	ProjectID            tracker.ProjectID
+	SourceRevision       string
+	Priority             int64
+	StateRank            int64
+	LabelRank            int64
+	AgingBoost           int64
+	LandingRank          int64
+	LaneRank             int64
+	UnblockerRank        int64
+	Rank                 string
+	CreatedAt            time.Time
+	WorkItemID           string
+	CursorSourceRevision int64
+	Revision             int64
+}
+
 type RunnerSpriteMembership struct {
 	OrganizationID       tracker.OrganizationID
 	Name                 string
@@ -1904,6 +2113,18 @@ type RunnerSpriteMembership struct {
 	CreatedAt            time.Time
 	AllocationProjectID  string
 	AllocationRevision   int64
+}
+
+type RunnerWorkspaceReport struct {
+	OrganizationID tracker.OrganizationID
+	RunnerID       string
+	Terminal       bool
+	Files          bool
+	Diff           bool
+	Preview        bool
+	Exec           bool
+	Git            bool
+	Isolation      string
 }
 
 type SearchDocument struct {

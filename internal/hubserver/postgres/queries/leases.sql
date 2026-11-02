@@ -83,16 +83,20 @@ ORDER BY fencing_token LIMIT sqlc.arg(page_limit);
 SELECT request_hash FROM native_attempt_events WHERE organization_id=$1 AND attempt_id=$2 AND sequence=$3;
 
 -- name: InsertLeaseAttempt :one
-INSERT INTO native_attempts (organization_id,id,issue_id,lease_id,fencing_token,run_id,sequence,status,work_item_revision,dispatch_generation,payload_object_key,checkpoint_object_key,artifacts_object_key,started_at,updated_at)
-VALUES ($1,$2,$3,$4,$5,$6,1,$7,$8,$9,$10,$11,$12,sqlc.arg(now),sqlc.arg(now)) RETURNING *;
+INSERT INTO native_attempts (organization_id,id,issue_id,lease_id,fencing_token,run_id,sequence,status,work_item_revision,dispatch_generation,payload_object_key,checkpoint_object_key,artifacts_object_key,started_at,started_at_submicro_ns,updated_at)
+VALUES ($1,$2,$3,$4,$5,$6,1,$7,$8,$9,$10,$11,$12,sqlc.arg(started_at),sqlc.arg(started_at_submicro_ns),sqlc.arg(now)) RETURNING *;
 
 -- name: AdvanceLeaseAttempt :one
-UPDATE native_attempts SET sequence=sqlc.arg(next_sequence),status=sqlc.arg(status),payload_object_key=sqlc.arg(payload_object_key),
+UPDATE native_attempts SET sequence=sqlc.arg(next_sequence),
+status=CASE WHEN sqlc.arg(usage_correction)::boolean THEN status ELSE sqlc.arg(status) END,
+payload_object_key=sqlc.arg(payload_object_key),
 checkpoint_object_key=COALESCE(sqlc.narg(checkpoint_object_key),checkpoint_object_key),
-artifacts_object_key=COALESCE(sqlc.narg(artifacts_object_key),artifacts_object_key),updated_at=sqlc.arg(now)
+artifacts_object_key=COALESCE(sqlc.narg(artifacts_object_key),artifacts_object_key),
+updated_at=CASE WHEN sqlc.arg(usage_correction)::boolean THEN updated_at ELSE sqlc.arg(now) END
 WHERE organization_id=sqlc.arg(organization_id) AND id=sqlc.arg(id) AND lease_id=sqlc.arg(lease_id)
 AND fencing_token=sqlc.arg(fencing_token)::bigint AND run_id=sqlc.arg(run_id)
-AND dispatch_generation=sqlc.arg(dispatch_generation) AND sequence=sqlc.arg(next_sequence)-1 AND status='running'
+AND dispatch_generation=sqlc.arg(dispatch_generation) AND sequence=sqlc.arg(next_sequence)-1
+AND (status='running' OR sqlc.arg(usage_correction)::boolean AND status=sqlc.arg(status))
 RETURNING *;
 
 -- name: InsertAttemptReceipt :exec

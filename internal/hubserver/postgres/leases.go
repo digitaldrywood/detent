@@ -85,7 +85,18 @@ func (s *session) ActiveLeaseForIssue(ctx context.Context, issueID int64) (lease
 
 func (s *session) Attempt(ctx context.Context, id string) (leasestore.Attempt, error) {
 	row, err := s.queries.GetLeaseAttempt(ctx, pgquery.GetLeaseAttemptParams{OrganizationID: s.organization, ID: id})
-	return leasestore.Attempt(row), mapError(ctx, err)
+	return attemptFromPG(row), mapError(ctx, err)
+}
+
+func attemptFromPG(row pgquery.NativeAttempt) leasestore.Attempt {
+	return leasestore.Attempt{
+		OrganizationID: row.OrganizationID, ID: row.ID, IssueID: row.IssueID, LeaseID: row.LeaseID,
+		FencingToken: row.FencingToken, RunID: row.RunID, Sequence: row.Sequence, Status: row.Status,
+		WorkItemRevision: row.WorkItemRevision, DispatchGeneration: row.DispatchGeneration,
+		PayloadObjectKey: row.PayloadObjectKey, CheckpointObjectKey: row.CheckpointObjectKey,
+		ArtifactsObjectKey: row.ArtifactsObjectKey,
+		StartedAt:          row.StartedAt.Add(time.Duration(row.StartedAtSubmicroNs)), UpdatedAt: row.UpdatedAt,
+	}
 }
 
 func (s *session) LatestAttempt(ctx context.Context, issueID int64) (leasestore.Attempt, error) {
@@ -93,7 +104,7 @@ func (s *session) LatestAttempt(ctx context.Context, issueID int64) (leasestore.
 		return leasestore.Attempt{}, tracker.ErrInvalidWorkItemID
 	}
 	row, err := s.queries.GetLatestIssueAttempt(ctx, pgquery.GetLatestIssueAttemptParams{OrganizationID: s.organization, IssueID: issueID})
-	return leasestore.Attempt(row), mapError(ctx, err)
+	return attemptFromPG(row), mapError(ctx, err)
 }
 
 func (s *session) AttemptPage(ctx context.Context, issueID int64, cursor leasestore.AttemptCursor, limit int) (leasestore.AttemptPage, error) {
@@ -123,7 +134,7 @@ func (s *session) AttemptPage(ctx context.Context, issueID int64, cursor leasest
 		}
 		page.Items = make([]leasestore.Attempt, len(rows))
 		for i, row := range rows {
-			page.Items[i] = leasestore.Attempt(row)
+			page.Items[i] = attemptFromPG(row)
 		}
 		return page, nil
 	}
@@ -142,7 +153,7 @@ func (s *session) AttemptPage(ctx context.Context, issueID int64, cursor leasest
 	}
 	page.Items = make([]leasestore.Attempt, len(rows))
 	for i, row := range rows {
-		page.Items[i] = leasestore.Attempt(row)
+		page.Items[i] = attemptFromPG(row)
 	}
 	return page, nil
 }

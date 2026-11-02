@@ -179,6 +179,9 @@ func (s *Service) prepareRunnerCostRecords(ctx context.Context, scope nativeScop
 		if err != nil {
 			return nil, err
 		}
+		if err := validateNativeDetailReference(ctx, s.runDetailStore(), scope.organization, ref, raw); err != nil {
+			return nil, err
+		}
 		records = append(records, billingstore.CostObservation{OrganizationID: scope.organization, ProjectID: scope.project, Observation: *observation, Reference: billingstore.AuditReferenceFromArchive(ref), ReceivedAt: now})
 	}
 	return records, nil

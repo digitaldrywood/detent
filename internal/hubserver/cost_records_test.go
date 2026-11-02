@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -137,6 +138,26 @@ func TestRunnerCostPreparationPreservesArchivedEvidence(t *testing.T) {
 	objects.fail = true
 	if _, err := service.prepareRunnerCostRecords(t.Context(), scope, request, facts, now); err == nil {
 		t.Fatal("unavailable archive accepted")
+	}
+	objects.fail = false
+	for _, test := range []struct {
+		name   string
+		mutate func(map[string][]byte, string)
+	}{
+		{name: "missing", mutate: func(data map[string][]byte, key string) { delete(data, key) }},
+		{name: "corrupt", mutate: func(data map[string][]byte, key string) { data[key] = []byte("corrupt") }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			objects.afterStore = func(ref attachment.ArchiveReference) {
+				objects.mu.Lock()
+				defer objects.mu.Unlock()
+				test.mutate(objects.data, ref.Key)
+			}
+			if _, err := service.prepareRunnerCostRecords(t.Context(), scope, request, facts, now); err == nil {
+				t.Fatal("invalid archived evidence accepted")
+			}
+			objects.afterStore = nil
+		})
 	}
 	request.Type = "run.observed"
 	if records, err := service.prepareRunnerCostRecords(t.Context(), scope, request, facts, now); err != nil || len(records) != 0 {

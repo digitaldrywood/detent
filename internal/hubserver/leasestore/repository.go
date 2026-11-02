@@ -120,7 +120,9 @@ type AttemptEvent struct {
 	Sequence            int64
 	Status              string
 	DispatchGeneration  int64
+	StartedAt           time.Time
 	PayloadObjectKey    string
 	CheckpointObjectKey *string
 	ArtifactsObjectKey  *string
+	UsageCorrection     bool
 }

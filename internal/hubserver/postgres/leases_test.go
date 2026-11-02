@@ -355,6 +355,27 @@ func TestLeaseAttemptRejectsConflictingSequences(t *testing.T) {
 	}
 }
 
+func TestLeaseAttemptUsageCorrectionPreservesTerminalLifecycle(t *testing.T) {
+	r, _ := repositoryFor(t, template.Database(t), smallPool())
+	seedLeaseFamily(t, r, "org_first")
+	lease := claimLease(t, r, "org_first", leaseClaim(1))
+	started := attemptEvent(lease)
+	recordLeaseAttempt(t, r, "org_first", started)
+	finished := started
+	finished.Sequence = 2
+	finished.Status = "succeeded"
+	finished.PayloadObjectKey = "example/finish"
+	terminal := recordLeaseAttempt(t, r, "org_first", finished)
+	corrected := finished
+	corrected.Sequence = 3
+	corrected.PayloadObjectKey = "example/finish-corrected"
+	corrected.UsageCorrection = true
+	updated := recordLeaseAttempt(t, r, "org_first", corrected)
+	if updated.Sequence != 3 || updated.Status != terminal.Status || !updated.UpdatedAt.Equal(terminal.UpdatedAt) || updated.PayloadObjectKey != corrected.PayloadObjectKey {
+		t.Fatalf("usage correction changed terminal attempt lifecycle: before=%+v after=%+v", terminal, updated)
+	}
+}
+
 func waitLeaseLock(t *testing.T, admin *sql.DB, count int, tasks ...*repositoryTask) {
 	t.Helper()
 	testenv.WaitUntil(t, t.Context(), func() error {
