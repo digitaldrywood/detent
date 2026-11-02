@@ -139,6 +139,28 @@ type LandingReceipt struct {
 	PayloadContentBytes int64
 }
 
+type NativePRPublication struct {
+	OrganizationID    tracker.OrganizationID
+	VersionID         string
+	ChangeID          string
+	Repository        string
+	BaseRef           string
+	Branch            string
+	HeadSHA           string
+	PolicyID          string
+	SourceAttemptID   string
+	RecorderAttemptID string
+	External          tracker.ChangeExternalReference
+}
+
+type ReleaseDelivery struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	WorkItemID     tracker.NativeWorkItemID
+	RepositoryID   *int64
+	tracker.ReleaseDelivery
+}
+
 type PolicyLanding struct {
 	ChangeID       string
 	PullRequestURL string

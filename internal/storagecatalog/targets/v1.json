@@ -77,7 +77,8 @@
     "internal/hubserver/postgres/migrations/20261102021911_runner_update_state.sql",
     "internal/hubserver/postgres/migrations/20261102023307_conversation_billing_import.sql",
     "internal/hubserver/postgres/migrations/20261102043132_core_execution_import_history.sql",
-    "internal/hubserver/postgres/migrations/20261102044334_core_work_event_import.sql"
+    "internal/hubserver/postgres/migrations/20261102044334_core_work_event_import.sql",
+    "internal/hubserver/postgres/migrations/20261102052209_change_publication_records.sql"
   ],
   "tables": {
     "public.ai_credit_reason_references": {
