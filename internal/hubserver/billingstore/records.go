@@ -279,6 +279,8 @@ func EvaluateMonthlyBudget(input MonthlyBudgetInput) (budget.MonthlyDecision, er
 }
 
 type Reader interface {
+	BillingCostRevision(context.Context, CostSource) (CostRevision, error)
+	BillingMonthlySpend(context.Context, tracker.ProjectID, time.Time) (budget.MonthlySpend, error)
 	BillingPlan(context.Context, PlanReference) (Plan, error)
 	BillingPlans(context.Context, PlanReference, int) ([]Plan, error)
 	BillingAssignment(context.Context) (Assignment, error)
@@ -315,6 +317,9 @@ type Reader interface {
 
 type Writer interface {
 	Reader
+	RecordBillingCost(context.Context, CostObservation) (bool, error)
+	RecordBillingCosts(context.Context, []CostObservation) ([]bool, error)
+	ImportBillingCostRevision(context.Context, CostObservation) (bool, error)
 	CreateBillingPlan(context.Context, Plan) error
 	SetBillingPlanRuntime(context.Context, PlanReference, string) error
 	SetBillingAssignment(context.Context, Assignment, int64) error

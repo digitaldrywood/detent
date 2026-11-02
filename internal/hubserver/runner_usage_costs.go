@@ -123,22 +123,37 @@ func runnerUsageObservations(ctx context.Context, q nativeQueryer, scope nativeS
 	if err != nil {
 		return "", "", nil, err
 	}
+	to, err := parseTimeValue(ended)
+	if err != nil {
+		return "", "", nil, err
+	}
+	observations, err := buildRunnerUsageObservations(request, prices, runnerUsageFacts{WorkItemID: item, RunnerID: runnerID, MachineID: machineID, Placement: placement, StartedAt: from, EndedAt: to})
+	return organization, project, observations, err
+}
+
+type runnerUsageFacts struct {
+	WorkItemID string
+	RunnerID   string
+	MachineID  string
+	Placement  string
+	StartedAt  time.Time
+	EndedAt    time.Time
+}
+
+func buildRunnerUsageObservations(request tracker.NativeRunEvent, prices UsageConfig, facts runnerUsageFacts) ([]runnerUsageObservation, error) {
 	var observations []runnerUsageObservation
 	for _, entry := range request.Data.Usage {
 		if err := validateRunnerCostUsage(entry); err != nil {
-			return "", "", nil, err
+			return nil, err
 		}
 		start, end := entry.From, entry.To
 		if start.IsZero() {
-			start = from
+			start = facts.StartedAt
 		}
 		if end.IsZero() {
 			end = request.OccurredAt
 			if end.IsZero() {
-				end, err = parseTimeValue(ended)
-				if err != nil {
-					return "", "", nil, err
-				}
+				end = facts.EndedAt
 			}
 		}
 		observed := entry.ReportedAt
@@ -167,7 +182,7 @@ func runnerUsageObservations(ctx context.Context, q nativeQueryer, scope nativeS
 			source += ":" + entry.SourceID
 		}
 		quantity := float64(entry.Input) + float64(entry.Output)
-		o := costObservation{ReportedCostSource: entry.CostSource, RunnerID: runnerID, MachineID: machineID, Placement: placement, Provider: provider, ProviderAccount: "runner", ResourceID: request.Data.AttemptID, AttemptID: request.Data.AttemptID, WorkItemID: item, Model: model, BillingMode: mode, UsageKind: kind, Input: entry.Input, CachedInput: entry.CachedInput, Output: entry.Output, Bucket: runnerCostBucket, Metric: model, SourceID: source, Revision: revision, From: start, To: end, Quantity: &quantity, Unit: "token", QuantityBasis: "provider_reported", Currency: currency, Basis: "unknown", EvidenceSource: "runner_finish", ObservedAt: observed, FreshUntil: observed, Coverage: "complete", ReportedAmountMicros: entry.ReportedCostMicros}
+		o := costObservation{ReportedCostSource: entry.CostSource, RunnerID: facts.RunnerID, MachineID: facts.MachineID, Placement: facts.Placement, Provider: provider, ProviderAccount: "runner", ResourceID: request.Data.AttemptID, AttemptID: request.Data.AttemptID, WorkItemID: facts.WorkItemID, Model: model, BillingMode: mode, UsageKind: kind, Input: entry.Input, CachedInput: entry.CachedInput, Output: entry.Output, Bucket: runnerCostBucket, Metric: model, SourceID: source, Revision: revision, From: start, To: end, Quantity: &quantity, Unit: "token", QuantityBasis: "provider_reported", Currency: currency, Basis: "unknown", EvidenceSource: "runner_finish", ObservedAt: observed, FreshUntil: observed, Coverage: "complete", ReportedAmountMicros: entry.ReportedCostMicros}
 		if entry.CostEstimate > 0 {
 			amount := int64(math.Round(entry.CostEstimate * 1e6))
 			o.EstimatedAmountMicros, o.EstimateSource = &amount, "runner_token_pricing"
@@ -187,7 +202,7 @@ func runnerUsageObservations(ctx context.Context, q nativeQueryer, scope nativeS
 		}
 		observations = append(observations, runnerUsageObservation{kind: kind, observation: o})
 	}
-	return organization, project, observations, nil
+	return observations, nil
 }
 
 func recordRunnerUsageCosts(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.NativeRunEvent, prices UsageConfig, now time.Time) error {

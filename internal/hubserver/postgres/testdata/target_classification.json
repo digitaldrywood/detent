@@ -14,6 +14,21 @@
     "ownership": "organization-owned",
     "scope": "conversation_content_objects.organization_id; archive metadata references externally verified object bytes"
   },
+  "public/cost_monthly_totals": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "cost_monthly_totals.organization_id; cost source identities and totals are scoped to the organization"
+  },
+  "public/cost_observation_revisions": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "cost_observation_revisions.organization_id; cost source identities and totals are scoped to the organization"
+  },
+  "public/cost_sources": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "cost_sources.organization_id; cost source identities and totals are scoped to the organization"
+  },
   "public/hosted_complimentary_grant_scopes": {
     "inline_payloads": [],
     "ownership": "organization-owned",

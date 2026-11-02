@@ -47,6 +47,7 @@
     "internal/hubserver/postgres/migrations/20261101231201_search_refresh_progress.sql",
     "internal/hubserver/postgres/migrations/20261101232125_runner_provider_account_lookup.sql",
     "internal/hubserver/postgres/migrations/20261102000712_runner_usage_retention.sql",
+    "internal/hubserver/postgres/migrations/20261102000716_cost_monthly_ledger.sql",
     "internal/hubserver/postgres/migrations/20261102001107_runner_backend_isolation.sql",
     "internal/hubserver/postgres/migrations/20261102001229_runner_sprite_membership.sql",
     "internal/hubserver/postgres/migrations/20261102003051_runner_heartbeat_observations.sql"
@@ -108,6 +109,62 @@
       },
       "contract": "Retain verified immutable conversation archive references under the owning organization; keep object bytes outside PostgreSQL and publish metadata only after the object store verifies the hash.",
       "family": "conversation",
+      "organization": "organization-owned"
+    },
+    "public.cost_monthly_totals": {
+      "columns": {
+        "amount_micros": "bigint",
+        "bucket": "text",
+        "currency": "text",
+        "month": "timestamp with time zone",
+        "organization_id": "text",
+        "project_id": "text"
+      },
+      "contract": "Apply exact monthly source correction deltas atomically; read organization and project totals without scanning observation history.",
+      "family": "billing",
+      "organization": "organization-owned"
+    },
+    "public.cost_observation_revisions": {
+      "columns": {
+        "binding_id": "text",
+        "codec": "text",
+        "compressed_bytes": "bigint",
+        "content_bytes": "bigint",
+        "customer_owned": "boolean",
+        "format_version": "integer",
+        "kind": "text",
+        "object_key": "text",
+        "organization_id": "text",
+        "received_at": "timestamp with time zone",
+        "retention": "text",
+        "revision": "bigint",
+        "source_key": "text"
+      },
+      "contract": "Retain immutable compressed evidence references for every accepted cost revision, scoped to tenant and source.",
+      "family": "billing",
+      "organization": "organization-owned"
+    },
+    "public.cost_sources": {
+      "columns": {
+        "amount_micros": "bigint",
+        "attribution_hash": "text",
+        "bucket": "text",
+        "currency": "text",
+        "metric": "text",
+        "organization_id": "text",
+        "payload_hash": "text",
+        "period_end": "text",
+        "period_start": "text",
+        "project_id": "text",
+        "provider": "text",
+        "provider_account": "text",
+        "resource_id": "text",
+        "revision": "bigint",
+        "source_key": "text",
+        "voided": "boolean"
+      },
+      "contract": "Keep latest typed cost identity, immutable attribution, revision, amount and archived payload digest; serialize corrections and overlapping sources.",
+      "family": "billing",
       "organization": "organization-owned"
     },
     "public.hosted_complimentary_grant_scopes": {
