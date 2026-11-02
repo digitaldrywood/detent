@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
@@ -35,6 +36,7 @@ type HostedConfig struct {
 	PlanID                   string
 	StorageQuotaBytes        int64
 	EventQuota               int64
+	Postgres                 *postgres.Config
 }
 
 func ValidateHostedConfig(c *HostedConfig) error {

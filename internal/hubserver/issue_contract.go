@@ -12,7 +12,11 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -131,6 +135,60 @@ func requireNativeIssueContractAtFiling(ctx context.Context, q nativeQueryer, sc
 	}
 	if len(evaluation.Missing) > 0 {
 		return nativeWorkflowInvalid(evaluation.Reason + ". File into Backlog/Triage to draft it first.")
+	}
+	return nil
+}
+
+func (s *Service) validateWorkItemRecordFilingTenant(ctx context.Context, reader tenantstore.Reader, scope nativeScope, plan workItemRecordPlan) error {
+	if plan.issue.LinkedSource != nil && plan.issue.LinkedSource.Status != "complete" || strings.EqualFold(plan.issue.State, "Triage") || plan.issue.IssueContract != nil && plan.issue.IssueContract.Exempt || strings.Contains(strings.ToLower(plan.issue.Body), "detent:no-dispatch") {
+		return nil
+	}
+	revision, err := reader.ProjectPolicy(ctx, scope.project)
+	if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+		return err
+	}
+	descriptor := policy.Descriptor{}
+	if err == nil {
+		descriptor, err = eventstore.NewContent(s.runDetailStore()).ProjectPolicy(ctx, revision)
+		if err != nil {
+			return err
+		}
+	}
+	workflow := config.Workflow{Config: config.Default()}
+	if descriptor.ID != "" {
+		workflow, err = config.ApplyNativePolicy(workflow, descriptor)
+		if err != nil {
+			return policyMismatch(err.Error())
+		}
+	}
+	target := workflow.Config.BacklogAdmission.TargetState
+	if target == "" {
+		target = "Todo"
+	}
+	if !strings.EqualFold(plan.issue.State, target) {
+		return nil
+	}
+	contract, err := config.ResolvePolicyIssueContract(descriptor)
+	if err != nil {
+		return err
+	}
+	if plan.issue.IssueContract != nil && plan.issue.IssueContract.ReleaseDelivery != nil {
+		return workItemStorageUnavailable()
+	}
+	evaluation := contract.Evaluate(nativeContractIssue(plan.issue))
+	if scope.credential.HostedRole == "reporter" && plan.create {
+		reporterContracts, err := config.ResolveReporterContracts(contract.Context)
+		if err != nil {
+			return err
+		}
+		reporterContract := config.IssueContract{Sections: reporterContracts[plan.issue.Type]}
+		missing := reporterSectionsMissing(reporterContract.Evaluate(nativeContractIssue(plan.issue)).Missing, plan.issue.ReportContext)
+		if len(missing) > 0 {
+			return nativePublicInvalid("Add or complete these required Reporter sections: " + strings.Join(missing, ", "))
+		}
+	}
+	if len(evaluation.Missing) > 0 {
+		return nativeWorkflowInvalid(strings.Join([]string{"Add or complete these required issue sections", strings.Join(evaluation.Missing, ", ")}, ": ") + ". File into Backlog/Triage to draft it first.")
 	}
 	return nil
 }

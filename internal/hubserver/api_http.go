@@ -14,7 +14,9 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/staticasset"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
@@ -42,6 +44,10 @@ func (s *Service) registerRoutes(e *echo.Echo) {
 	e.Pre(s.timeWriterUse)
 	e.Pre(s.serverTiming)
 	e.JSONSerializer = timedJSONSerializer{}
+	if s.database.postgres != nil {
+		s.registerPostgresRoutes(e)
+		return
+	}
 	if s.config.CredentialMaintenance {
 		s.registerCredentialMaintenanceRoutes(e)
 		return
@@ -94,6 +100,31 @@ func (s *Service) registerRoutes(e *echo.Echo) {
 	e.POST("/api/v1/tokens/:id/rotate", s.rotateAPIToken, admin)
 	e.DELETE("/api/v1/tokens/:id", s.revokeAPIToken, admin)
 	e.POST("/api/v1/webhooks/github", s.githubWebhook)
+}
+
+func (s *Service) registerPostgresRoutes(e *echo.Echo) {
+	if s.config.Hosted != nil {
+		if s.config.Hosted.SharedEntry != nil {
+			e.Pre(s.hostedSharedEntry)
+		}
+		e.Use(s.hostedBoundary)
+	}
+	e.GET("/health", s.health, s.requireAPIScope(apiScopeWorker, apiScopeOperator, apiScopeAdmin))
+	e.GET("/static/*", echo.WrapHandler(http.StripPrefix("/static/", staticasset.New(detent.StaticFS()))))
+	s.registerNativeRoutes(e)
+	s.registerProjectSecretRoutes(e)
+	s.registerRunnerRoutes(e)
+	s.registerCostUsageRoutes(e)
+	s.registerConversationRoutes(e)
+	if s.config.Hosted != nil && s.config.Hosted.SharedEntry != nil {
+		e.POST("/internal/v1/health", s.hostedSharedHealth)
+		e.POST("/internal/v1/owner/bootstrap", s.bootstrapHostedSharedOwner)
+	}
+	e.Any("/*", s.postgresFeatureUnavailable)
+}
+
+func (s *Service) postgresFeatureUnavailable(c echo.Context) error {
+	return c.JSON(http.StatusServiceUnavailable, apiErrorResponse{Code: "storage_owner_unavailable", Message: "This Hub feature is unavailable with PostgreSQL storage"})
 }
 
 func decodeAPIJSON(c echo.Context, target any) error {

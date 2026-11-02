@@ -28,12 +28,14 @@ import (
 func TestExecLauncherWritesPrivateFilesAndStops(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name        string
-		environment []string
-		want        string
+		name           string
+		environment    []string
+		want           string
+		tenantPostgres bool
 	}{
 		{name: "without App credentials", want: "\n\n\n"},
 		{name: "product App credentials", environment: []string{"DETENT_HUB_GITHUB_APP_ID=123", "DETENT_HUB_GITHUB_APP_PRIVATE_KEY=private-key", "DETENT_HUB_GITHUB_WEBHOOK_SECRET=webhook-secret"}, want: "123\nprivate-key\nwebhook-secret\n"},
+		{name: "PostgreSQL tenant", want: "\n\n\n", tenantPostgres: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -47,7 +49,7 @@ func TestExecLauncherWritesPrivateFilesAndStops(t *testing.T) {
 				return []byte("organization_id: " + spec.Organization.ID + "\n"), nil
 			}}
 			t.Cleanup(func() { _ = launcher.Close() })
-			spec := TenantSpec{Organization: Organization{ID: "org_exec"}, Directory: directory, Socket: filepath.Join(directory, "t.sock")}
+			spec := TenantSpec{Organization: Organization{ID: "org_exec"}, Directory: directory, Socket: filepath.Join(directory, "t.sock"), TenantPostgres: test.tenantPostgres}
 			if err := launcher.Start(t.Context(), spec); err != nil {
 				t.Fatal(err)
 			}
@@ -59,6 +61,9 @@ func TestExecLauncherWritesPrivateFilesAndStops(t *testing.T) {
 			arguments, err := os.ReadFile(filepath.Join(directory, "args"))
 			if err != nil || strings.Contains(string(arguments), "--github-disabled") {
 				t.Fatalf("tenant arguments = %s: %v", arguments, err)
+			}
+			if test.tenantPostgres == strings.Contains(string(arguments), "--database") {
+				t.Fatalf("tenant PostgreSQL selection = %v but args are %s", test.tenantPostgres, arguments)
 			}
 			environment, err := os.ReadFile(filepath.Join(directory, "env"))
 			if err != nil || string(environment) != test.want {

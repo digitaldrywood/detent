@@ -750,6 +750,9 @@ func randomJitter() float64 {
 }
 
 func (s *Service) OutboxHealth(ctx context.Context) (OutboxHealth, error) {
+	if s.database.postgres != nil {
+		return OutboxHealth{}, ErrOutboxDisabled
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}

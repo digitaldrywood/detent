@@ -291,21 +291,23 @@ func (s *Service) registerNativeRoutes(e *echo.Echo) {
 	e.POST(nativeBase+"/work-items/:item/release-pick", s.associateReleasePick, write)
 	e.GET(nativeBase+"/work-items/:item/release-pick", s.getReleaseDeliveryStatus, read)
 	e.POST(nativeBase+"/work-items/:item/release-pick/publication", s.publishReleasePick, write)
-	// Workspace sessions. The reads follow the
-	// issue's read rule; the writes need write on the project, and a
-	// terminal in requires needs the grant's runners flag on top.
-	e.POST(nativeBase+"/workspaces", s.createWorkspace, write)
-	e.GET(nativeBase+"/workspaces", s.listWorkspaces, read)
-	e.GET(nativeBase+"/workspaces/:workspace", s.getWorkspace, read)
-	e.DELETE(nativeBase+"/workspaces/:workspace", s.deleteWorkspace, write)
-	e.GET(nativeBase+"/work-items/:item/workspace", s.workspaceForWorkItem, worker)
-	e.POST(nativeBase+"/workspaces/:workspace/relay-tickets", s.mintWorkspaceRelayTicket, read)
-	e.GET(nativeBase+"/workspaces/:workspace/relay", s.openWorkspaceRelay, read)
-	e.GET(nativeBase+"/workspaces/:workspace/worker/relay", s.openWorkspaceWorkerRelay, worker)
-	e.POST(nativeBase+"/workspaces/:workspace/worker/bind", s.bindWorkspaceWorker, worker)
-	e.POST(nativeBase+"/workspaces/:workspace/worker/heartbeat", s.heartbeatWorkspaceWorker, worker)
-	e.POST(nativeBase+"/workspaces/:workspace/worker/unbind", s.unbindWorkspaceWorker, worker)
-	e.POST(nativeBase+"/workspaces/:workspace/worker/action-runs", s.reportWorkspaceActionRun, worker)
+	if s.database.postgres == nil {
+		// Workspace sessions. The reads follow the
+		// issue's read rule; the writes need write on the project, and a
+		// terminal in requires needs the grant's runners flag on top.
+		e.POST(nativeBase+"/workspaces", s.createWorkspace, write)
+		e.GET(nativeBase+"/workspaces", s.listWorkspaces, read)
+		e.GET(nativeBase+"/workspaces/:workspace", s.getWorkspace, read)
+		e.DELETE(nativeBase+"/workspaces/:workspace", s.deleteWorkspace, write)
+		e.GET(nativeBase+"/work-items/:item/workspace", s.workspaceForWorkItem, worker)
+		e.POST(nativeBase+"/workspaces/:workspace/relay-tickets", s.mintWorkspaceRelayTicket, read)
+		e.GET(nativeBase+"/workspaces/:workspace/relay", s.openWorkspaceRelay, read)
+		e.GET(nativeBase+"/workspaces/:workspace/worker/relay", s.openWorkspaceWorkerRelay, worker)
+		e.POST(nativeBase+"/workspaces/:workspace/worker/bind", s.bindWorkspaceWorker, worker)
+		e.POST(nativeBase+"/workspaces/:workspace/worker/heartbeat", s.heartbeatWorkspaceWorker, worker)
+		e.POST(nativeBase+"/workspaces/:workspace/worker/unbind", s.unbindWorkspaceWorker, worker)
+		e.POST(nativeBase+"/workspaces/:workspace/worker/action-runs", s.reportWorkspaceActionRun, worker)
+	}
 	e.GET(nativeBase+"/actions", s.listProjectActions, read)
 	e.POST(nativeBase+"/actions", s.createProjectAction, write)
 	e.PATCH(nativeBase+"/actions/:action", s.patchProjectAction, write)
@@ -319,8 +321,10 @@ func (s *Service) registerNativeRoutes(e *echo.Echo) {
 	// handler: a recording's audience is the person who ran it plus owners and
 	// admins, and a user-isolation recording's is owners alone, which is
 	// narrower than any scope the router can express.
-	e.GET(nativeBase+"/workspaces/:workspace/terminal-recordings", s.listWorkspaceTerminalRecordings, read)
-	e.GET(nativeBase+"/workspaces/:workspace/terminal-recordings/:recording", s.getWorkspaceTerminalRecording, read)
+	if s.database.postgres == nil {
+		e.GET(nativeBase+"/workspaces/:workspace/terminal-recordings", s.listWorkspaceTerminalRecordings, read)
+		e.GET(nativeBase+"/workspaces/:workspace/terminal-recordings/:recording", s.getWorkspaceTerminalRecording, read)
+	}
 }
 
 func (s *Service) requireInstanceAdmin() echo.MiddlewareFunc {

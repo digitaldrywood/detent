@@ -20,11 +20,15 @@ import (
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/readableurl"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 const hostedSharedClaimsKey = "hosted_shared_claims"
+
+var errHostedOwnerAlreadyBootstrapped = errors.New("hosted organization already has an owner")
 
 type HostedSharedEntry struct {
 	Issuer          string
@@ -423,6 +427,49 @@ func (s *Service) bootstrapHostedSharedOwner(c echo.Context) error {
 		return s.invalidAPIRequest(c, errors.New("invalid owner bootstrap"))
 	}
 	ctx := c.Request().Context()
+	if s.database.postgres != nil {
+		provider, err := s.hostedProviderOrganization(ctx)
+		if err != nil || provider == "" {
+			return s.refusedAPIError(c, http.StatusConflict, "unallocated", "The tenant has no provider organization", apiErrorResponse{Code: "unallocated", Message: "The tenant has no provider organization"})
+		}
+		membership, err := s.hostedMembership(ctx, &auth.HostedIdentity{Subject: claims.Subject, OrganizationID: provider})
+		if err != nil || membership.Role.Slug != "owner" {
+			return s.refusedAPIError(c, http.StatusForbidden, "owner_unverified", "The provider does not report this identity as an owner", apiErrorResponse{Code: "owner_unverified", Message: "The provider does not report this identity as an owner"})
+		}
+		if s.config.TenantRepository == nil {
+			return s.internalAPIError(c, "bootstrap_unavailable", "Owner bootstrap is unavailable", nativeRunEventStorageUnavailable())
+		}
+		err = s.config.TenantRepository.WriteTenant(ctx, tracker.OrganizationID(s.config.Hosted.OrganizationID), corestore.Serving, func(w tenantstore.Writer) error {
+			if err := w.LockAccessOrganization(ctx); err != nil {
+				return err
+			}
+			members, err := w.AccessMembers(ctx, "", 2)
+			if err != nil {
+				return err
+			}
+			if len(members) > 0 {
+				if len(members) == 1 && members[0].UserID == claims.Subject && members[0].Role == "owner" && members[0].Active {
+					return nil
+				}
+				return errHostedOwnerAlreadyBootstrapped
+			}
+			identity := auth.Identity{Subject: claims.Subject, Email: claims.Email, EmailVerified: true}
+			if err := s.storeAccessMember(ctx, w, identity, membership); err != nil {
+				return err
+			}
+			if err := w.DeleteAccessMemberReservation(ctx, strings.ToLower(claims.Email)); err != nil {
+				return err
+			}
+			return w.UpdateAccessOrganizationName(ctx, name)
+		})
+		if errors.Is(err, errHostedOwnerAlreadyBootstrapped) {
+			return s.refusedAPIError(c, http.StatusConflict, "already_bootstrapped", "This organization already has members", apiErrorResponse{Code: "already_bootstrapped", Message: "This organization already has members"})
+		}
+		if err != nil {
+			return s.internalAPIError(c, "bootstrap_unavailable", "Owner bootstrap is unavailable", err)
+		}
+		return c.NoContent(http.StatusNoContent)
+	}
 	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancelRead()
 	s.hostedMutationMu.Lock()

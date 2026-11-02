@@ -208,7 +208,7 @@ func (s *Service) applyHostedRuntime(ctx context.Context, update *HostedRuntimeU
 }
 
 func (d *database) configureRuntimePublication(cfg Config) {
-	if cfg.Hosted != nil && cfg.Hosted.SharedEntry != nil {
+	if d.postgres == nil && cfg.Hosted != nil && cfg.Hosted.SharedEntry != nil {
 		d.runtimeFile = filepath.Join(filepath.Dir(d.path), HostedRuntimeFilename)
 		d.runtimeBilling = cfg.Hosted.Billing
 	}

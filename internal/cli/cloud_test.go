@@ -47,6 +47,41 @@ func TestTenantEnvironmentPassesOpenAIKeyOnlyWhenPresent(t *testing.T) {
 	}
 }
 
+func TestCloudTenantConfigurationSelectsPostgresRuntime(t *testing.T) {
+	t.Parallel()
+	config := cloudFileConfig{Allocation: &cloudAllocationFileConfig{}, TenantPostgres: &hubPostgresFileConfig{
+		Host: "db.example.test", Port: 5432, Database: "detent", User: "detent_runtime", PasswordEnv: "TENANT_DATABASE_PASSWORD", SSLMode: "verify-full",
+		MaxConnections: 8, ServingConnections: 4, BackgroundConnections: 2,
+	}}
+	config.PublicURL = "https://hub.example.test"
+	config.WorkOS.APIKeyEnv = "WORKOS_API_KEY"
+	config.WorkOS.ClientID = "client_example"
+	config.Assertion.Issuer = "detent-cloud"
+	config.Storage.Backend = "postgres"
+	spec := cloudentry.TenantSpec{
+		Organization: cloudentry.Organization{ID: "org_example", ProviderID: "provider_example", Generation: 1},
+		PublicURL:    config.PublicURL, Issuer: config.Assertion.Issuer, PublicKey: "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=",
+	}
+	raw, err := tenantConfiguration(config)(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "private-database-password") || !strings.Contains(string(raw), "password_env: TENANT_DATABASE_PASSWORD") {
+		t.Fatalf("generated hosted configuration contains an invalid secret reference: %s", raw)
+	}
+	values := map[string]string{"WORKOS_API_KEY": "workos-fixture", "TENANT_DATABASE_PASSWORD": "private-database-password"}
+	hosted, err := parseHostedConfig(bytes.NewReader(raw), func(name string) string { return values[name] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := hubserver.ValidateHostedConfig(hosted); err != nil {
+		t.Fatal(err)
+	}
+	if hosted.Postgres == nil || hosted.Postgres.Connection.Database != "detent" || hosted.Postgres.Connection.Password != values["TENANT_DATABASE_PASSWORD"] {
+		t.Fatalf("generated tenant PostgreSQL runtime = %+v", hosted.Postgres)
+	}
+}
+
 func TestTenantEnvironmentPassesCredentialsOnlyWhenPresent(t *testing.T) {
 	config := cloudFileConfig{Allocation: &cloudAllocationFileConfig{}}
 	config.WorkOS.APIKeyEnv = "WORKOS_API_KEY"

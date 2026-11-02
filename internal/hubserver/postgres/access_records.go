@@ -23,6 +23,23 @@ func (s *session) CreateAccessOrganization(ctx context.Context, row accessstore.
 	return mapError(ctx, err)
 }
 
+func (s *session) LockAccessOrganization(ctx context.Context) error {
+	var organization tracker.OrganizationID
+	if err := s.db.QueryRowContext(ctx, `SELECT organization_id FROM organizations WHERE organization_id=$1 FOR UPDATE`, s.organization).Scan(&organization); err != nil {
+		return mapError(ctx, err)
+	}
+	return nil
+}
+
+func (s *session) UpdateAccessOrganizationName(ctx context.Context, name string) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE organizations SET name=$2 WHERE organization_id=$1`, s.organization, name)
+	var rows int64
+	if err == nil {
+		rows, err = result.RowsAffected()
+	}
+	return affected(ctx, rows, err)
+}
+
 func (s *session) AccessTenant(ctx context.Context) (accessstore.Tenant, error) {
 	var row accessstore.Tenant
 	err := s.db.QueryRowContext(ctx, `SELECT organization_id,provider_id,bootstrap_subject,deployment,public_url,allocation_generation FROM hosted_tenant WHERE organization_id=$1`+s.accessLock(), s.organization).Scan(&row.OrganizationID, &row.ProviderID, &row.BootstrapSubject, &row.Deployment, &row.PublicURL, &row.AllocationGeneration)

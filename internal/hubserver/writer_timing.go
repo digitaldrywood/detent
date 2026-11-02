@@ -426,6 +426,15 @@ func (s *Service) logWriterWaits() {
 	if now-last < int64(time.Minute) || !s.writerStatsAt.CompareAndSwap(last, now) {
 		return
 	}
+	if s.database.postgres != nil {
+		stats := s.database.postgres.Stats()
+		waits, waited := stats.WaitCount-s.writerWaits.Swap(stats.WaitCount), stats.WaitDuration-time.Duration(s.writerWaited.Swap(int64(stats.WaitDuration)))
+		if last == 0 {
+			return
+		}
+		s.config.Logger.Info("hub PostgreSQL pool waits", "waits", waits, "wait_ms", waited.Milliseconds(), "in_use", stats.InUse, "max_open", stats.MaxOpenConnections, "interval_s", (now-last)/int64(time.Second))
+		return
+	}
 	stats := s.database.db.Stats()
 	waits, waited := stats.WaitCount-s.writerWaits.Swap(stats.WaitCount), stats.WaitDuration-time.Duration(s.writerWaited.Swap(int64(stats.WaitDuration)))
 	reader := s.database.reader.Stats()

@@ -2,19 +2,27 @@ package hubserver
 
 import (
 	"context"
+	"crypto/ed25519"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/lib/pq"
 	"github.com/pressly/goose/v3"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -99,7 +107,42 @@ func startupConfig(connection pq.Config) Config {
 	return Config{DatabaseBackend: DatabasePostgres, Postgres: &postgres.Config{
 		Connection: connection,
 		Pool:       postgres.PoolConfig{MaxConnections: 2, ServingConnections: 1, BackgroundConnections: 1},
-	}}
+	}, Hosted: &HostedConfig{
+		OrganizationID:       "org_startup",
+		WorkOSOrganizationID: "provider_startup",
+		PublicURL:            "https://hub.example.test",
+		Provider:             newHostedSecurityProvider(),
+	}, RunDetails: &memoryRunDetails{}}
+}
+
+func seedStartupOrganization(t *testing.T, repository tenantstore.Repository, organization tracker.OrganizationID) {
+	t.Helper()
+	now := time.Now().UTC()
+	if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: "Example", Slug: "example-" + strings.TrimPrefix(string(organization), "org_"), CreatedAt: now}); err != nil {
+			return err
+		}
+		if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: organization, ProviderID: "provider_" + string(organization), AllocationGeneration: 1}); err != nil {
+			return err
+		}
+		if organization != "org_startup" {
+			return nil
+		}
+		return w.CreateAccessCredential(t.Context(), accessstore.Credential{
+			OrganizationID: organization,
+			ID:             "test_hub_admin",
+			Name:           "Example administrator",
+			Hash:           apikey.HashToken(testHubAdminToken),
+			Scope:          "admin",
+			CreatedAt:      now,
+			UpdatedAt:      now,
+			KeyScope:       "admin",
+			ProjectAccess:  "all",
+			Kind:           "service",
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func assertStartupDisconnected(t *testing.T, admin *sql.DB, connection pq.Config) {
@@ -126,6 +169,7 @@ func TestDatabaseBackendRejectsAmbiguousConfiguration(t *testing.T) {
 		{"implicit postgres", Config{Postgres: &postgres.Config{}}},
 		{"sqlite with postgres", Config{DatabaseBackend: DatabaseSQLite, Postgres: &postgres.Config{}}},
 		{"two authorities", Config{DatabaseBackend: DatabasePostgres, Postgres: &postgres.Config{}, DatabasePath: "example.db"}},
+		{"missing hosted tenant", Config{DatabaseBackend: DatabasePostgres, Postgres: &postgres.Config{}}},
 		{"sqlite maintenance", Config{DatabaseBackend: DatabasePostgres, Postgres: &postgres.Config{}, CredentialMaintenance: true}},
 		{"sqlite binding migration", Config{DatabaseBackend: DatabasePostgres, Postgres: &postgres.Config{}, hostedBindingMigration: true}},
 	} {
@@ -217,6 +261,7 @@ func TestPostgresStartupOwnsPoolWithoutSQLiteOrWorkers(t *testing.T) {
 		t.Fatal("PostgreSQL startup created SQLite resources")
 	}
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
+		seedStartupOrganization(t, store.postgres, organization)
 		err := store.postgres.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 			_, err := w.CreateProject(t.Context(), corestore.Project{OrganizationID: organization, ID: "example", Name: "Example", Slug: "example", Profile: "native", WorkflowSource: "example"})
 			return err
@@ -225,6 +270,7 @@ func TestPostgresStartupOwnsPoolWithoutSQLiteOrWorkers(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	seedStartupOrganization(t, store.postgres, "org_startup")
 	for range 2 {
 		if err := store.Close(); err != nil {
 			t.Fatal(err)
@@ -232,13 +278,127 @@ func TestPostgresStartupOwnsPoolWithoutSQLiteOrWorkers(t *testing.T) {
 	}
 	assertStartupDisconnected(t, admin, connection)
 	service, err := Open(t.Context(), cfg)
-	if service != nil || !errors.Is(err, ErrPostgresServingUnavailable) {
-		t.Fatalf("unported service = %v, %v", service, err)
+	if err != nil {
+		t.Fatalf("open PostgreSQL Hub = %v", err)
 	}
-	assertStartupDisconnected(t, admin, connection)
+	t.Cleanup(func() {
+		if err := service.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	if service.database.db != nil || service.database.reader != nil || service.config.TenantRepository != service.database.postgres || service.config.AccessRepository != service.database.postgres || service.config.BillingRepository != service.database.postgres {
+		t.Fatal("PostgreSQL service did not bind all selected storage owners or created SQLite resources")
+	}
+	if response, status := service.readInstanceHealth(t.Context()); status != 200 || !response.SchemaFactsComplete || response.SchemaVersion == 0 || response.SchemaFingerprint == "" {
+		t.Fatalf("PostgreSQL health = %+v, %d", response, status)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/health", nil)
+	request.Header.Set("Authorization", "Bearer "+testHubAdminToken)
+	response := httptest.NewRecorder()
+	service.echo.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("authenticated PostgreSQL health status = %d body=%s", response.Code, response.Body.String())
+	}
+	legacy := httptest.NewRecorder()
+	service.echo.ServeHTTP(legacy, httptest.NewRequest(http.MethodGet, "/api/v1/work-items", nil))
+	if legacy.Code != http.StatusServiceUnavailable {
+		t.Fatalf("legacy SQLite route status = %d, want explicit unavailable response", legacy.Code)
+	}
 	var leases, attempts int
 	if err := admin.QueryRowContext(t.Context(), `SELECT (SELECT count(*) FROM leases), (SELECT count(*) FROM native_attempts)`).Scan(&leases, &attempts); err != nil || leases != 0 || attempts != 0 {
 		t.Fatalf("failed startup dispatched: leases=%d attempts=%d error=%v", leases, attempts, err)
+	}
+}
+
+func TestPostgresSharedEntryHealthAndOwnerBootstrap(t *testing.T) {
+	admin := postgresStartupTemplate.Database(t)
+	connection := startupConnection(t, admin, "detent_runtime", "")
+	provider := newHostedSecurityProvider()
+	key := hostedSharedKey(61)
+	cfg := startupConfig(connection)
+	cfg.Hosted.Provider = provider
+	cfg.Hosted.SharedEntry = &HostedSharedEntry{Issuer: "entry", PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Generation: 1}
+	store, err := openDatabase(t.Context(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedStartupOrganization(t, store.postgres, "org_startup")
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.CreateMembership(t.Context(), "user_owner", "provider_org_startup", "owner"); err != nil {
+		t.Fatal(err)
+	}
+	service, err := Open(t.Context(), cfg)
+	if err != nil {
+		t.Fatalf("open PostgreSQL shared-entry Hub = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := service.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	signedCall := func(path, body, subject, email string) *httptest.ResponseRecorder {
+		t.Helper()
+		id, err := cloudassert.NewID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		now := time.Now().UTC()
+		claims := cloudassert.Claims{Issuer: "entry", Audience: "org_startup", Generation: 1, Kind: cloudassert.KindService, Method: http.MethodPost, Path: path, BodyDigest: cloudassert.BodyDigest([]byte(body)), IssuedAt: now, ExpiresAt: now.Add(30 * time.Second), ID: id, Subject: subject, Email: email}
+		assertion, err := cloudassert.Sign(key, claims)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+		request.Header.Set(cloudassert.Header, assertion)
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		service.echo.ServeHTTP(response, request)
+		return response
+	}
+	health := signedCall("/internal/v1/health", "{}", "", "")
+	var healthResponse MigrationHealth
+	if err := json.NewDecoder(health.Body).Decode(&healthResponse); err != nil {
+		t.Fatal(err)
+	}
+	if health.Code != http.StatusOK || !healthResponse.SchemaFactsComplete || healthResponse.SchemaVersion == 0 || healthResponse.SchemaFingerprint == "" {
+		t.Fatalf("signed PostgreSQL shared health = %d %+v", health.Code, healthResponse)
+	}
+	bootstrapBody := `{"organization_name":"Example owner organization"}`
+	bootstrap := signedCall("/internal/v1/owner/bootstrap", bootstrapBody, "user_owner", "owner@example.test")
+	if bootstrap.Code != http.StatusNoContent {
+		t.Fatalf("signed PostgreSQL owner bootstrap = %d %s", bootstrap.Code, bootstrap.Body.String())
+	}
+	replay := signedCall("/internal/v1/owner/bootstrap", bootstrapBody, "user_owner", "owner@example.test")
+	if replay.Code != http.StatusNoContent {
+		t.Fatalf("signed PostgreSQL owner bootstrap replay = %d %s", replay.Code, replay.Body.String())
+	}
+	var member accessstore.Member
+	err = service.config.TenantRepository.ReadTenant(t.Context(), "org_startup", corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		member, err = r.AccessMember(t.Context(), "user_owner")
+		if err != nil {
+			return err
+		}
+		organization, err := r.AccessOrganization(t.Context())
+		if err != nil {
+			return err
+		}
+		if organization.Name != "Example owner organization" {
+			return fmt.Errorf("organization name = %q", organization.Name)
+		}
+		return nil
+	})
+	if err != nil || !member.Active || member.Role != "owner" || member.MembershipID != "membership_user_owner" {
+		t.Fatalf("PostgreSQL owner member = %+v, error = %v", member, err)
+	}
+	if _, err := provider.CreateMembership(t.Context(), "user_member", "provider_org_startup", "member"); err != nil {
+		t.Fatal(err)
+	}
+	denied := signedCall("/internal/v1/owner/bootstrap", bootstrapBody, "user_member", "member@example.test")
+	if denied.Code != http.StatusForbidden {
+		t.Fatalf("non-owner PostgreSQL bootstrap = %d %s", denied.Code, denied.Body.String())
 	}
 }
 

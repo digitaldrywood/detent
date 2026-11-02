@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/profiling"
 )
 
@@ -36,6 +37,7 @@ type hostedFileConfig struct {
 	Conversation             *hostedConversationFileConfig `yaml:"conversation"`
 	Usage                    *hostedUsageFileConfig        `yaml:"usage"`
 	Workspaces               *hostedWorkspaceFileConfig    `yaml:"workspaces"`
+	Postgres                 *hubPostgresFileConfig        `yaml:"postgres"`
 	WorkOS                   struct {
 		ClientID  string `yaml:"client_id"`
 		APIKeyEnv string `yaml:"api_key_env"`
@@ -202,6 +204,13 @@ func parseHostedConfig(reader io.Reader, lookupEnv func(string) string) (*hubser
 			return nil, err
 		}
 	}
+	var pg *postgres.Config
+	if config.Postgres != nil {
+		pg, err = config.Postgres.runtime(lookupEnv)
+		if err != nil {
+			return nil, err
+		}
+	}
 	return &hubserver.HostedConfig{
 		EmailSender:              sender,
 		Billing:                  billingConfig,
@@ -211,5 +220,6 @@ func parseHostedConfig(reader io.Reader, lookupEnv func(string) string) (*hubser
 		BootstrapSubject: config.BootstrapSubject, PublicURL: config.PublicURL,
 		StaffEmails: config.StaffEmails, SupportActors: config.SupportActors, Directory: config.Directory, SharedEntry: sharedEntry, Provider: provider,
 		PlanID: config.PlanID, StorageQuotaBytes: config.StorageQuotaBytes, EventQuota: config.EventQuota,
+		Postgres: pg,
 	}, nil
 }

@@ -39,6 +39,7 @@ type cloudFileConfig struct {
 		ServingConnections    int    `yaml:"serving_connections"`
 		BackgroundConnections int    `yaml:"background_connections"`
 	} `yaml:"storage"`
+	TenantPostgres            *hubPostgresFileConfig    `yaml:"tenant_postgres"`
 	PublicURL                 string                    `yaml:"public_url"`
 	Listen                    string                    `yaml:"listen"`
 	StateDirectory            string                    `yaml:"state_directory"`
@@ -99,6 +100,9 @@ type cloudAllocationFileConfig struct {
 
 func tenantEnvironment(config cloudFileConfig, lookupEnv func(string) string) []string {
 	names := []string{config.WorkOS.APIKeyEnv}
+	if config.TenantPostgres != nil {
+		names = append(names, config.TenantPostgres.PasswordEnv)
+	}
 	for _, name := range []string{"DETENT_HUB_GITHUB_APP_ID", "DETENT_HUB_GITHUB_APP_PRIVATE_KEY", "DETENT_HUB_GITHUB_WEBHOOK_SECRET"} {
 		if lookupEnv(name) != "" {
 			names = append(names, name)
@@ -143,6 +147,7 @@ func tenantConfiguration(config cloudFileConfig) func(cloudentry.TenantSpec) ([]
 			Workspaces:               preserved.Workspaces,
 			EntitlementAdministrator: config.Allocation.EntitlementAdministrator, EntitlementAdminTokenEnv: config.Allocation.EntitlementAdminTokenEnv,
 			SharedEntry: &hostedSharedEntryFileConfig{Issuer: spec.Issuer, PublicKeys: []string{spec.PublicKey}, AllocationGeneration: spec.Organization.Generation},
+			Postgres:    config.TenantPostgres,
 		}
 		if spec.Organization.CheckoutPrice != "" {
 			tenant.Plans = hubserver.CheckoutHostedPlans(tenant.Plans)
@@ -284,6 +289,17 @@ func readCloudConfig(path string, lookupEnv func(string) string) (cloudentry.Con
 	if config.Storage.PostgresDSNEnv != "" && !validEnvName(config.Storage.PostgresDSNEnv) {
 		return cloudentry.Config{}, errors.New("entry PostgreSQL DSN environment variable name is invalid")
 	}
+	if config.TenantPostgres != nil && config.Storage.Backend != "postgres" {
+		return cloudentry.Config{}, errors.New("tenant PostgreSQL requires PostgreSQL platform storage")
+	}
+	if config.Allocation != nil && config.Storage.Backend == "postgres" && config.TenantPostgres == nil {
+		return cloudentry.Config{}, errors.New("PostgreSQL tenant runtime is required when allocating PostgreSQL tenants")
+	}
+	if config.TenantPostgres != nil {
+		if _, err := config.TenantPostgres.runtime(lookupEnv); err != nil {
+			return cloudentry.Config{}, err
+		}
+	}
 	result := cloudentry.Config{
 		Storage:                cloudentry.StorageConfig{Backend: config.Storage.Backend, PostgresDSN: lookupEnv(config.Storage.PostgresDSNEnv), Pool: platformstore.PoolConfig{MaxConnections: config.Storage.MaxConnections, ServingConnections: config.Storage.ServingConnections, BackgroundConnections: config.Storage.BackgroundConnections}},
 		LookupEnv:              lookupEnv,
@@ -327,7 +343,8 @@ func readCloudConfig(path string, lookupEnv func(string) string) (cloudentry.Con
 		}
 		result.Allocation = &cloudentry.AllocationConfig{
 			TenantRoot: allocation.TenantRoot, SocketRoot: allocation.SocketRoot, MaxTenants: allocation.MaxTenants, MaxConcurrent: allocation.MaxConcurrentProvisions,
-			RetryLimit: allocation.RetryLimit, MinFreeDiskBytes: allocation.MinFreeDiskBytes, MinAvailableMemoryBytes: allocation.MinAvailableMemoryBytes,
+			TenantPostgres: config.TenantPostgres != nil,
+			RetryLimit:     allocation.RetryLimit, MinFreeDiskBytes: allocation.MinFreeDiskBytes, MinAvailableMemoryBytes: allocation.MinAvailableMemoryBytes,
 			AllowedEmails: allocation.AllowedEmails, AllowedDomains: allocation.AllowedDomains,
 			Launcher: &cloudentry.ExecLauncher{Binary: binary, Environment: tenantEnvironment(config, lookupEnv), Configure: tenantConfiguration(config), Logger: slog.Default(), RestartLimit: allocation.RetryLimit},
 		}

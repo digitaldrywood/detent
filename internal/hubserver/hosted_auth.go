@@ -345,7 +345,13 @@ func (s *Service) hostedBoundary(next echo.HandlerFunc) echo.HandlerFunc {
 		if organization := c.Param("organization"); organization != "" && organization != s.config.Hosted.OrganizationID {
 			return s.nativeAPIError(c, nativeNotFound())
 		}
-		if strings.HasPrefix(c.Path(), "/api/v1/") || c.Path() == "/health" {
+		if strings.HasPrefix(c.Path(), "/api/v1/") {
+			if s.database.postgres != nil {
+				return s.postgresFeatureUnavailable(c)
+			}
+			return s.nativeAPIError(c, nativeNotFound())
+		}
+		if c.Path() == "/health" && s.database.postgres == nil {
 			return s.nativeAPIError(c, nativeNotFound())
 		}
 		if c.Path() == "/webhooks/stripe" && c.Request().Method == http.MethodPost {

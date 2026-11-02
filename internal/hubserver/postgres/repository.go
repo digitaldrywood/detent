@@ -46,6 +46,14 @@ func (r *Repository) Close() error {
 	return r.pool.Close()
 }
 
+func (r *Repository) Ping(ctx context.Context) error {
+	return r.pool.PingContext(ctx)
+}
+
+func (r *Repository) Stats() sql.DBStats {
+	return r.pool.Stats()
+}
+
 func (r *Repository) Read(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, read func(corestore.Reader) error) error {
 	return r.transaction(ctx, organization, workload, true, func(session *session) error { return read(session) })
 }

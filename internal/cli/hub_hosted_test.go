@@ -73,6 +73,40 @@ func TestReadHostedConfig(t *testing.T) {
 	}
 }
 
+func TestReadHostedPostgresRuntime(t *testing.T) {
+	t.Parallel()
+	body := "organization_id: org_customer\nbootstrap_subject: user_customer\npublic_url: https://tenant.example.test\nworkos:\n  client_id: client_example\npostgres:\n  host: db.example.test\n  port: 5432\n  database: detent\n  user: detent_runtime\n  password_env: TENANT_DATABASE_PASSWORD\n  sslmode: verify-full\n  max_connections: 8\n  serving_connections: 4\n  background_connections: 2\n"
+	path := filepath.Join(t.TempDir(), "hosted.yaml")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config, ok, err := readHostedConfig(path, func(name string) string {
+		switch name {
+		case "WORKOS_API_KEY":
+			return "workos-fixture"
+		case "TENANT_DATABASE_PASSWORD":
+			return "private-database-password"
+		default:
+			t.Errorf("unexpected environment lookup %q", name)
+			return ""
+		}
+	})
+	if err != nil || !ok || config.Postgres == nil {
+		t.Fatalf("hosted PostgreSQL config = %+v, %v, %v", config, ok, err)
+	}
+	if config.Postgres.Connection.Host != "db.example.test" || config.Postgres.Connection.Port != 5432 || config.Postgres.Connection.User != "detent_runtime" || config.Postgres.Connection.Database != "detent" || config.Postgres.Connection.Password != "private-database-password" || config.Postgres.Pool.MaxConnections != 8 || config.Postgres.Pool.ServingConnections != 4 || config.Postgres.Pool.BackgroundConnections != 2 {
+		t.Fatalf("parsed PostgreSQL runtime = %+v", config.Postgres)
+	}
+	if _, ok, err := readHostedConfig(path, func(name string) string {
+		if name == "WORKOS_API_KEY" {
+			return "workos-fixture"
+		}
+		return ""
+	}); err == nil || ok || strings.Contains(err.Error(), "private-database-password") {
+		t.Fatalf("missing tenant password accepted or exposed: enabled=%v error=%v", ok, err)
+	}
+}
+
 func TestReadHostedEntitlementConfig(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {

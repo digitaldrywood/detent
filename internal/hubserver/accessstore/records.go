@@ -263,6 +263,8 @@ type Writer interface {
 	SetAccessTokenGrant(context.Context, TokenGrant) error
 	Reader
 	CreateAccessOrganization(context.Context, Organization) error
+	LockAccessOrganization(context.Context) error
+	UpdateAccessOrganizationName(context.Context, string) error
 	AddAccessOrganizationSlug(context.Context, string) error
 	SetAccessOrganizationSlug(context.Context, *string, string) error
 	CreateAccessTenant(context.Context, Tenant) error

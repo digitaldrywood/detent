@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubgithub"
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
 	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	servicepkg "github.com/digitaldrywood/detent/internal/service"
 )
 
@@ -146,19 +147,8 @@ func newHubServeCommand(version, commit string, lookupEnv func(string) string, r
 			if err != nil {
 				return err
 			}
-			if strings.TrimSpace(databasePath) == "" {
-				return NewValidationError("hub database path is required", "Run detent hub serve --database /path/to/hub.db.", nil)
-			}
 			if strings.TrimSpace(listenAddress) == "" {
 				return NewValidationError("hub listen address is required", "Use --listen 127.0.0.1:7777 or another explicit address.", nil)
-			}
-			adminTokenEnv = strings.TrimSpace(adminTokenEnv)
-			if !validEnvName(adminTokenEnv) {
-				return NewValidationError("Hub administrator token environment variable name is invalid", "Use an environment variable name such as DETENT_HUB_ADMIN_TOKEN.", nil)
-			}
-			adminToken := strings.TrimSpace(lookupEnv(adminTokenEnv))
-			if adminToken == "" {
-				return NewValidationError("Hub administrator token is required", "Set "+adminTokenEnv+" to a high-entropy API token.", nil)
 			}
 			githubWebhookSecretEnv = strings.TrimSpace(githubWebhookSecretEnv)
 			if githubWebhookSecretEnv != "" && !validEnvName(githubWebhookSecretEnv) {
@@ -171,6 +161,29 @@ func newHubServeCommand(version, commit string, lookupEnv func(string) string, r
 			hosted, _, err := readHostedConfig(hostedConfigPath, lookupEnv)
 			if err != nil {
 				return err
+			}
+			databaseBackend := hubserver.DatabaseSQLite
+			var postgresConfig = (*postgres.Config)(nil)
+			if hosted != nil && hosted.Postgres != nil {
+				databaseBackend = hubserver.DatabasePostgres
+				postgresConfig = hosted.Postgres
+			}
+			if databaseBackend == hubserver.DatabasePostgres && strings.TrimSpace(databasePath) != "" {
+				return NewValidationError("PostgreSQL Hub cannot use a SQLite database path", "Remove --database when the hosted configuration selects PostgreSQL.", nil)
+			}
+			if databaseBackend == hubserver.DatabaseSQLite && strings.TrimSpace(databasePath) == "" {
+				return NewValidationError("hub database path is required", "Run detent hub serve --database /path/to/hub.db.", nil)
+			}
+			var adminToken string
+			if databaseBackend == hubserver.DatabaseSQLite {
+				adminTokenEnv = strings.TrimSpace(adminTokenEnv)
+				if !validEnvName(adminTokenEnv) {
+					return NewValidationError("Hub administrator token environment variable name is invalid", "Use an environment variable name such as DETENT_HUB_ADMIN_TOKEN.", nil)
+				}
+				adminToken = strings.TrimSpace(lookupEnv(adminTokenEnv))
+				if adminToken == "" {
+					return NewValidationError("Hub administrator token is required", "Set "+adminTokenEnv+" to a high-entropy API token.", nil)
+				}
 			}
 			marker := os.Getenv(entryauthority.BootstrapEnvironment)
 			if marker != "" {
@@ -207,6 +220,9 @@ func newHubServeCommand(version, commit string, lookupEnv func(string) string, r
 				}
 				if conversation != nil && conversation.Backend != nil {
 					for _, path := range []string{databasePath, hostedConfigPath} {
+						if path == "" {
+							continue
+						}
 						if workspaceHoldsPath(conversation.Workspace, path) {
 							return NewValidationError("Conversation workspace contains Hub state", "Point conversation.workspace at a dedicated directory that holds no Hub database or configuration.", nil)
 						}
@@ -252,6 +268,8 @@ func newHubServeCommand(version, commit string, lookupEnv func(string) string, r
 				BusyTimeout:                busyTimeout,
 				ShutdownTimeout:            shutdownTimeout,
 				GitHubWebhookSecret:        []byte(strings.TrimSpace(lookupEnv(githubWebhookSecretEnv))),
+				DatabaseBackend:            databaseBackend,
+				Postgres:                   postgresConfig,
 				WebhookPayloadRetention:    webhookPayloadRetention,
 				WebhookMaintenanceInterval: webhookMaintenanceInterval,
 				ReconcileInterval:          reconcileInterval,

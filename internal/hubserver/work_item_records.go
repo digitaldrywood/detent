@@ -580,7 +580,7 @@ func (s *Service) planWorkItemRecord(ctx context.Context, scope nativeScope, pla
 	if plan.project.Core.WorkflowSource != "" {
 		return plan, workItemStorageUnavailable()
 	}
-	if plan.requiresIssueContract() {
+	if plan.requiresIssueContract() && s.config.TenantRepository == nil {
 		if err := validateWorkItemRecordFiling(ctx, s.database.reader, scope, plan); err != nil {
 			return plan, err
 		}
@@ -711,7 +711,7 @@ func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.
 		if found {
 			return content.Receipt(ctx, receipt)
 		}
-		if options.Feature != "" && !options.Completion {
+		if options.Feature != "" && !options.Completion && s.database.billingRepository == nil {
 			now, err := s.database.currentTime()
 			if err != nil {
 				return nil, err
@@ -804,7 +804,7 @@ func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.
 		}
 		var policyTx *sql.Tx
 		authorityQuery, ok := any(authority).(nativeQueryer)
-		if !ok {
+		if !ok && s.config.TenantRepository == nil {
 			policyTx, err = s.database.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 			if err != nil {
 				return nil, errors.Join(err, releaseWorkItemAuthority(authority, nil))
@@ -820,7 +820,7 @@ func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.
 				return nil, errors.Join(err, releaseWorkItemAuthority(authority, policyTx))
 			}
 		}
-		if plan.requiresIssueContract() && !plan.existing {
+		if plan.requiresIssueContract() && !plan.existing && authorityQuery != nil {
 			if err := validateWorkItemRecordFiling(ctx, authorityQuery, scope, plan); err != nil {
 				return nil, errors.Join(err, releaseWorkItemAuthority(authority, policyTx))
 			}
@@ -904,6 +904,11 @@ func (s *Service) executeWorkItemRecordMutationWithConversationLink(ctx context.
 			}
 			if !sameWorkItemProjectPlan(plan.project, project) {
 				return corestore.ErrSerializationFailure
+			}
+			if plan.requiresIssueContract() && !plan.existing {
+				if err := s.validateWorkItemRecordFilingTenant(ctx, w, scope, plan); err != nil {
+					return err
+				}
 			}
 			if plan.linkedSource != nil {
 				hasTriage := slices.ContainsFunc(project.States, func(state tracker.NativeState) bool { return state.Name == "Triage" })

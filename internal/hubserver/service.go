@@ -23,7 +23,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/chat"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mcp"
 	"github.com/digitaldrywood/detent/internal/operatoradmin"
 	"github.com/digitaldrywood/detent/internal/releasenotes"
@@ -147,11 +150,28 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
+	database.now = cfg.now
+	database.newLeaseID = cfg.newLeaseID
 	if database.postgres != nil {
-		return nil, errors.Join(ErrPostgresServingUnavailable, database.Close())
+		cfg.TenantRepository = database.postgres
+		cfg.AccessRepository = database.postgres
+		cfg.BillingRepository = database.postgres
+		database.billingRepository = database.postgres
+		database.hostedOrganization = tracker.OrganizationID(cfg.Hosted.OrganizationID)
+		database.linkedSourceBase = cfg.Hosted.PublicURL
+		if cfg.Hosted.SharedEntry != nil {
+			database.linkedSourceBase += "/organizations/" + cfg.Hosted.OrganizationID
+		}
+		database.runtimeBilling = cfg.Hosted.Billing
+		cfg = cfg.normalized()
+		if cfg.Hosted.EmailSender != nil {
+			return nil, errors.Join(ErrPostgresFeatureUnavailable, database.Close())
+		}
 	}
 	ctx = database.policyContext(ctx)
-	database.configureRuntimePublication(cfg)
+	if database.postgres == nil {
+		database.configureRuntimePublication(cfg)
+	}
 	var secretKeysErr error
 	if cfg.AccessRepository != nil {
 		if cfg.Hosted == nil {
@@ -164,15 +184,26 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	if err := secretKeysErr; err != nil {
 		return nil, errors.Join(err, database.Close())
 	}
-	if !cfg.CredentialMaintenance {
+	if database.postgres != nil {
+		if err := database.configureHostedPlans(ctx, cfg.Hosted); err != nil {
+			return nil, errors.Join(err, database.Close())
+		}
+		if err := database.configureHostedBilling(ctx, cfg.Hosted); err != nil {
+			return nil, errors.Join(err, database.Close())
+		}
+	}
+	if !cfg.CredentialMaintenance && database.postgres == nil {
 		if err := database.ensureInitialAdminToken(ctx, cfg.InitialAdminToken); err != nil {
 			return nil, errors.Join(err, database.Close())
 		}
 	}
 	cfg.InitialAdminToken = nil
-	workTracker, err := tracker.NewStore(database)
-	if err != nil {
-		return nil, errors.Join(err, database.Close())
+	var workTracker tracker.Tracker
+	if database.postgres == nil {
+		workTracker, err = tracker.NewStore(database)
+		if err != nil {
+			return nil, errors.Join(err, database.Close())
+		}
 	}
 
 	e := echo.New()
@@ -225,7 +256,9 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	service.startSpritePoolForQueue = func(scope nativeScope) {
 		service.scheduleSpritePoolForQueue(workerContext, scope)
 	}
-	service.outbox = newOutboxWorker(service)
+	if database.postgres == nil {
+		service.outbox = newOutboxWorker(service)
+	}
 	if cfg.Hosted != nil {
 		service.hostedSessions, err = auth.NewSessionService(auth.SessionConfig{SessionTTL: 30 * 24 * time.Hour, PublicURL: cfg.Hosted.PublicURL}, service)
 		if err != nil {
@@ -237,7 +270,7 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	if cfg.Conversation != nil && cfg.Conversation.Enabled && !cfg.CredentialMaintenance {
 		service.conversations = newConversationService(service, cfg.Conversation.normalized())
 	}
-	if cfg.Workspace != nil && cfg.Workspace.Enabled && !cfg.CredentialMaintenance {
+	if cfg.Workspace != nil && cfg.Workspace.Enabled && database.postgres == nil && !cfg.CredentialMaintenance {
 		if err := cfg.Workspace.validate(); err != nil {
 			workerCancel()
 			reconcileCancel()
@@ -290,18 +323,27 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 		service.ready.Store(true)
 		return service, nil
 	}
-	service.maintainGitHubWebhooks(ctx)
-	go service.runGitHubWebhookMaintenance(service.runDetailContext(workerContext))
-	go service.runGitHubReconciliation(service.runDetailContext(reconcileContext))
+	if database.postgres != nil {
+		close(service.reconcileDone)
+		go service.runPostgresMaintenance(service.runDetailContext(workerContext))
+	} else {
+		service.maintainGitHubWebhooks(ctx)
+		go service.runGitHubWebhookMaintenance(service.runDetailContext(workerContext))
+		go service.runGitHubReconciliation(service.runDetailContext(reconcileContext))
+	}
 	service.ready.Store(true)
 	if service.outbox != nil {
 		service.outbox.start(ctx)
 	}
 	service.startHostedBilling()
-	service.startHealthDetector()
+	if database.postgres == nil {
+		service.startHealthDetector()
+	}
 	service.startIssueMailer()
-	service.dashboard = newDashboardDelivery(service)
-	service.dashboard.start()
+	if database.postgres == nil {
+		service.dashboard = newDashboardDelivery(service)
+		service.dashboard.start()
+	}
 	return service, nil
 }
 
@@ -507,7 +549,9 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	}
 	s.ready.Store(false)
 	s.notifications.closeAll()
-	s.dashboard.stop()
+	if s.dashboard != nil {
+		s.dashboard.stop()
+	}
 	if s.conversations != nil {
 		s.conversations.stop()
 	}
@@ -546,7 +590,9 @@ func (s *Service) CloseContext(ctx context.Context) error {
 	s.closeOnce.Do(func() {
 		s.ready.Store(false)
 		s.notifications.closeAll()
-		s.dashboard.stop()
+		if s.dashboard != nil {
+			s.dashboard.stop()
+		}
 		var mcpErr error
 		if s.mcpHTTP != nil {
 			mcpErr = s.mcpHTTP.Shutdown(ctx)
@@ -623,6 +669,55 @@ func (s *Service) runGitHubWebhookMaintenance(ctx context.Context) {
 	}
 }
 
+func (s *Service) runPostgresMaintenance(ctx context.Context) {
+	defer close(s.workerDone)
+	s.maintainNativeBoard(ctx)
+	s.maintainNativeSearch(ctx)
+	ticker := time.NewTicker(s.config.WebhookMaintenanceInterval)
+	defer ticker.Stop()
+	lastCleanup := s.config.now()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-s.boardRefresh:
+			s.maintainNativeBoard(ctx)
+		case <-ticker.C:
+			s.maintainNativeBoard(ctx)
+			s.maintainNativeSearch(ctx)
+			now := s.config.now()
+			if err := s.expireGoTestReceipts(ctx, now, s.config.now); err != nil && !errors.Is(err, context.Canceled) {
+				s.config.Logger.Warn("expire PostgreSQL Go test receipts", "error", err)
+			}
+			if err := s.expireRequestMetrics(ctx, now); err != nil && !errors.Is(err, context.Canceled) {
+				s.config.Logger.Warn("expire PostgreSQL request metrics", "error", err)
+			}
+			if s.requestMetrics != nil {
+				if err := s.requestMetrics.flush(ctx, s.config.now()); err != nil && !errors.Is(err, context.Canceled) {
+					s.config.Logger.WarnContext(ctx, "flush tenant request metrics", "error", err)
+				}
+			}
+			if now.Sub(lastCleanup) >= nativeCleanupInterval {
+				if err := s.prunePostgresRunnerMetrics(ctx, now); err != nil && !errors.Is(err, context.Canceled) {
+					s.config.Logger.WarnContext(ctx, "expire PostgreSQL runner host metrics", "error", err)
+				}
+				lastCleanup = now
+			}
+		}
+	}
+}
+
+func (s *Service) prunePostgresRunnerMetrics(ctx context.Context, now time.Time) error {
+	organization := tracker.OrganizationID(s.appOrganizationID())
+	if organization == "" || s.config.TenantRepository == nil {
+		return errors.New("PostgreSQL runner host metric retention requires an organization")
+	}
+	cutoff := now.UTC().Truncate(time.Hour).Add(-720 * time.Hour)
+	return s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
+		return w.PruneRunnerHostMetrics(ctx, cutoff, runnerstore.MaxRunnerHostPruneBatch)
+	})
+}
+
 func (s *Service) maintainGitHubWebhooks(ctx context.Context) {
 	now := s.config.now().UTC()
 	if err := s.processPendingWebhooks(ctx, now); err != nil && !errors.Is(err, context.Canceled) {
@@ -664,6 +759,17 @@ func (s *Service) health(c echo.Context) error {
 func (s *Service) readInstanceHealth(ctx context.Context) (healthResponse, int) {
 	if !s.ready.Load() || s.database.health(ctx) != nil {
 		return healthResponse{Status: "unavailable"}, http.StatusServiceUnavailable
+	}
+	if s.database.postgres != nil {
+		return healthResponse{
+			Status:              "ok",
+			SchemaVersion:       s.database.schemaVersion,
+			SchemaFingerprint:   s.database.schemaFingerprint,
+			HubSchemaApplicable: true,
+			SchemaFactsComplete: true,
+			Version:             s.config.Version,
+			Commit:              s.config.Commit,
+		}, http.StatusOK
 	}
 	outbox, err := s.OutboxHealth(ctx)
 	if err != nil {

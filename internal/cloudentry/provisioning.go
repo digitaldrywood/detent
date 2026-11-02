@@ -25,6 +25,7 @@ import (
 type AllocationConfig struct {
 	TenantRoot              string
 	SocketRoot              string
+	TenantPostgres          bool
 	MaxTenants              int
 	MaxConcurrent           int
 	Prices                  []hubserver.HostedBillingPrice
@@ -153,10 +154,11 @@ func (s *Service) wakeAllocator() {
 }
 
 func (s *Service) tenantSpec(organization Organization) TenantSpec {
+	tenantPostgres := s.config.Allocation != nil && s.config.Allocation.TenantPostgres
 	return TenantSpec{
 		Icons:           tenantIconStore{service: s, allocation: organization},
 		ArchiveContents: attachment.ArchiveContents{Storage: archiveStorage(s.attachments)},
-		Organization:    organization, Directory: filepath.Join(s.config.Allocation.TenantRoot, organization.ID),
+		Organization:    organization, Directory: filepath.Join(s.config.Allocation.TenantRoot, organization.ID), TenantPostgres: tenantPostgres,
 		Socket: strings.TrimPrefix(organization.Endpoint, "unix:"), PublicURL: s.config.PublicURL, Issuer: s.config.Issuer,
 		PublicKey: cloudassert.PublicKeyOf(s.config.SigningKey),
 		Content: func(ctx context.Context, request entryauthority.ContentRequest) ([]byte, error) {

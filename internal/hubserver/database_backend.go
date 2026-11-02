@@ -27,7 +27,7 @@ func validateDatabaseBackend(cfg Config) error {
 			return ErrDatabaseBackend
 		}
 	case DatabasePostgres:
-		if cfg.Postgres == nil || cfg.DatabasePath != "" || cfg.CredentialMaintenance || cfg.hostedBindingMigration {
+		if cfg.Postgres == nil || cfg.DatabasePath != "" || cfg.Hosted == nil || cfg.CredentialMaintenance || cfg.hostedBindingMigration {
 			return ErrDatabaseBackend
 		}
 	default:
@@ -45,7 +45,15 @@ func openPostgresDatabase(ctx context.Context, cfg postgres.Config) (*database, 
 	if err != nil {
 		return nil, err
 	}
-	return &database{postgres: repository}, nil
+	version, err := postgres.LatestSchemaVersion()
+	if err != nil {
+		return nil, errors.Join(err, repository.Close())
+	}
+	fingerprint, err := postgres.LatestSchemaFingerprint()
+	if err != nil {
+		return nil, errors.Join(err, repository.Close())
+	}
+	return &database{postgres: repository, schemaVersion: version, schemaFingerprint: fingerprint}, nil
 }
 
 func MigratePostgres(ctx context.Context, connection pq.Config) error {

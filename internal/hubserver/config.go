@@ -36,15 +36,16 @@ const (
 )
 
 var (
-	ErrBackupSource            = errors.New("hub backup destination matches the source database")
-	ErrDatabaseIdentity        = errors.New("database is not a Detent Hub database")
-	ErrInvalidClock            = errors.New("hub clock returned a zero time")
-	ErrInsecureListener        = errors.New("non-loopback hub listener requires TLS or a trusted reverse proxy")
-	ErrNetworkFilesystem       = errors.New("hub database requires a local filesystem")
-	ErrNotReady                = errors.New("hub service is not ready")
-	ErrOutboxDisabled          = errors.New("hub github outbox is disabled")
-	ErrUnsupportedSchema       = errors.New("hub database schema is newer than this Detent version")
-	ErrWebhookDeliveryConflict = errors.New("github webhook delivery ID has conflicting content")
+	ErrBackupSource               = errors.New("hub backup destination matches the source database")
+	ErrDatabaseIdentity           = errors.New("database is not a Detent Hub database")
+	ErrInvalidClock               = errors.New("hub clock returned a zero time")
+	ErrInsecureListener           = errors.New("non-loopback hub listener requires TLS or a trusted reverse proxy")
+	ErrNetworkFilesystem          = errors.New("hub database requires a local filesystem")
+	ErrNotReady                   = errors.New("hub service is not ready")
+	ErrOutboxDisabled             = errors.New("hub github outbox is disabled")
+	ErrUnsupportedSchema          = errors.New("hub database schema is newer than this Detent version")
+	ErrWebhookDeliveryConflict    = errors.New("github webhook delivery ID has conflicting content")
+	ErrPostgresFeatureUnavailable = errors.New("configured Hub feature is unavailable with PostgreSQL storage")
 )
 
 type Config struct {
@@ -136,6 +137,9 @@ func (c Config) normalized() Config {
 		c.Workspace = &normalized
 	}
 	if c.CredentialMaintenance {
+		c.GitHubDisabled = true
+	}
+	if c.DatabaseBackend == DatabasePostgres {
 		c.GitHubDisabled = true
 	}
 	if c.GitHubDisabled {

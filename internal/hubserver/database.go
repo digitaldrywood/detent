@@ -512,6 +512,12 @@ func (d *database) verifyIdentity(ctx context.Context) error {
 func (d *database) health(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
+	if d.postgres != nil {
+		if err := d.postgres.Ping(ctx); err != nil {
+			return fmt.Errorf("ping hub PostgreSQL: %w", err)
+		}
+		return nil
+	}
 	if err := d.reader.PingContext(ctx); err != nil {
 		return fmt.Errorf("ping hub database: %w", err)
 	}

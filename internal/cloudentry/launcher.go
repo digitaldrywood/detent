@@ -19,6 +19,7 @@ import (
 type TenantSpec struct {
 	Organization    Organization
 	Directory       string
+	TenantPostgres  bool
 	Socket          string
 	PublicURL       string
 	Issuer          string
@@ -219,8 +220,12 @@ func (l *ExecLauncher) supervise(ctx context.Context, spec TenantSpec, token str
 	for ctx.Err() == nil {
 		started := time.Now()
 		attempt, cancel := context.WithCancel(ctx)
-		cmd := exec.CommandContext(attempt, l.Binary, "hub", "serve", "--hosted-config", filepath.Join(spec.Directory, "tenant.yaml"),
-			"--database", filepath.Join(spec.Directory, "hub.db"), "--listen", "unix:"+spec.Socket) // #nosec G204 -- the operator-configured Detent binary runs with fixed arguments and no shell.
+		args := []string{"hub", "serve", "--hosted-config", filepath.Join(spec.Directory, "tenant.yaml")}
+		if !spec.TenantPostgres {
+			args = append(args, "--database", filepath.Join(spec.Directory, "hub.db"))
+		}
+		args = append(args, "--listen", "unix:"+spec.Socket)
+		cmd := exec.CommandContext(attempt, l.Binary, args...) // #nosec G204 -- the operator-configured Detent binary runs with fixed arguments and no shell.
 		cmd.Env = append(append(baseEnvironment(), l.Environment...), "DETENT_HUB_ADMIN_TOKEN="+token)
 		cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
 		cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
