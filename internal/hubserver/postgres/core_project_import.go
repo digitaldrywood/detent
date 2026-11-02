@@ -16,6 +16,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
+	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -51,23 +52,37 @@ func (r *Repository) ImportCoreProjects(ctx context.Context, source CoreProjectI
 	if source.CopyPath == "" || source.OrganizationID == "" || source.Objects == nil {
 		return 0, errors.New("invalid core project import source")
 	}
-	db, copyHash, err := openCoreImportCopy(ctx, source.CopyPath)
-	if err != nil {
-		return 0, err
+	var count int64
+	err := ReadCoreImportCopy(ctx, source.CopyPath, func(tx *sql.Tx, copyHash string) error {
+		if err := r.PinCoreImportSource(ctx, source.OrganizationID, copyHash, source.Objects); err != nil {
+			return err
+		}
+		var err error
+		count, err = r.importCoreProjects(ctx, source, tx, copyHash)
+		return err
+	})
+	return count, err
+}
+
+func (r *Repository) PinCoreImportSource(ctx context.Context, organization tracker.OrganizationID, copyHash string, objects attachment.DetailStore) error {
+	if organization == "" || !artifact.ValidHash(copyHash, 64) || objects == nil {
+		return errors.New("invalid core import source pin")
 	}
-	defer db.Close()
-	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	pin, err := eventstore.NewContent(objects).PrepareReceipt(ctx, eventstore.Receipt{
+		OrganizationID: organization,
+		ActorID:        "production-import",
+		Operation:      "core-project-source",
+		CommandKey:     "source",
+		RequestHash:    copyHash,
+	}, json.RawMessage(`{}`))
 	if err != nil {
-		return 0, err
+		return err
 	}
-	defer func() { _ = tx.Rollback() }()
-	content := eventstore.NewContent(source.Objects)
-	pin, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: source.OrganizationID, ActorID: "production-import", Operation: "core-project-source", CommandKey: "source", RequestHash: copyHash}, json.RawMessage(`{}`))
-	if err != nil {
-		return 0, err
-	}
-	if err := r.transaction(ctx, source.OrganizationID, corestore.Background, false, func(s *session) error {
+	return r.transaction(ctx, organization, corestore.Background, false, func(s *session) error {
 		previous, err := s.PutReceipt(ctx, pin)
+		if errors.Is(err, corestore.ErrRevisionConflict) {
+			return mutation.ErrConflict
+		}
 		if err != nil {
 			return err
 		}
@@ -75,9 +90,11 @@ func (r *Repository) ImportCoreProjects(ctx context.Context, source CoreProjectI
 			return mutation.ErrConflict
 		}
 		return nil
-	}); err != nil {
-		return 0, err
-	}
+	})
+}
+
+func (r *Repository) importCoreProjects(ctx context.Context, source CoreProjectImportSource, tx *sql.Tx, copyHash string) (int64, error) {
+	content := eventstore.NewContent(source.Objects)
 	var count int64
 	var after string
 	for {
@@ -86,18 +103,9 @@ func (r *Repository) ImportCoreProjects(ctx context.Context, source CoreProjectI
 			return count, err
 		}
 		if len(rows) == 0 {
-			verified, finalHash, err := openCoreImportCopy(ctx, source.CopyPath)
-			if err != nil {
-				return count, err
-			}
-			if err := verified.Close(); err != nil {
-				return count, err
-			}
-			if finalHash != copyHash {
-				return count, mutation.ErrConflict
-			}
 			return count, nil
 		}
+
 		for _, row := range rows {
 			record, receipt, err := prepareCoreProjectImport(ctx, content, source, row)
 			if err != nil {
@@ -294,4 +302,39 @@ func openCoreImportCopy(ctx context.Context, path string) (database *sql.DB, dig
 		return nil, "", errors.Join(errors.New("import copy changed while opening"), db.Close())
 	}
 	return db, hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func ReadCoreImportCopy(ctx context.Context, path string, read func(*sql.Tx, string) error) (resultErr error) {
+	if read == nil {
+		return errors.New("missing core import reader")
+	}
+	db, hash, err := openCoreImportCopy(ctx, path)
+	if err != nil {
+		return err
+	}
+	defer func() { resultErr = errors.Join(resultErr, db.Close()) }()
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return err
+	}
+	defer func() {
+		err := tx.Rollback()
+		if err != nil && !errors.Is(err, sql.ErrTxDone) {
+			resultErr = errors.Join(resultErr, err)
+		}
+	}()
+	if err := read(tx, hash); err != nil {
+		return err
+	}
+	verified, finalHash, err := openCoreImportCopy(ctx, path)
+	if err != nil {
+		return err
+	}
+	if err := verified.Close(); err != nil {
+		return err
+	}
+	if hash != finalHash {
+		return mutation.ErrConflict
+	}
+	return nil
 }

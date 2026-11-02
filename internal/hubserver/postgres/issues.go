@@ -40,6 +40,10 @@ func (s *session) CreateWorkItem(ctx context.Context, record corestore.WorkItem)
 	if _, err := s.queries.ShareActiveProject(ctx, pgquery.ShareActiveProjectParams{OrganizationID: s.organization, ID: record.ProjectID}); err != nil {
 		return corestore.WorkItem{}, mapError(ctx, err)
 	}
+	return s.createWorkItem(ctx, record)
+}
+
+func (s *session) createWorkItem(ctx context.Context, record corestore.WorkItem) (corestore.WorkItem, error) {
 	row, err := s.queries.CreateWorkItem(ctx, pgquery.CreateWorkItemParams{
 		LastActivityAt:         optionalTime(record.LastActivityAt),
 		ImportedID:             record.ID,
