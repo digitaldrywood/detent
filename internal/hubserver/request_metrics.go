@@ -18,7 +18,9 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/metricsstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -326,7 +328,28 @@ func (s *Service) admitRunnerRequest(c echo.Context, credential apiCredential) e
 		return nil
 	}
 	var capacity int
-	if err := s.database.reader.QueryRowContext(ctx, "SELECT min(r.capacity_limit,m.capacity) FROM runner_identities r JOIN machines m ON m.id=r.machine_id WHERE r.id=? AND r.organization_id=?", credential.Runner.RunnerID, m.organization).Scan(&capacity); err != nil {
+	if s.database.postgres != nil {
+		if s.config.TenantRepository == nil || m.organization == "" {
+			return s.nativeAPIError(c, ErrHostedDatabaseBinding)
+		}
+		var runnerCapacity int64
+		err := s.config.TenantRepository.ReadTenant(ctx, m.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+			identity, err := reader.RunnerIdentity(ctx, credential.Runner.RunnerID)
+			if err != nil {
+				return err
+			}
+			machine, err := reader.Machine(ctx, string(identity.MachineID))
+			if err != nil {
+				return err
+			}
+			runnerCapacity = min(identity.CapacityLimit, machine.Capacity)
+			return nil
+		})
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		capacity = int(runnerCapacity)
+	} else if err := s.database.reader.QueryRowContext(ctx, "SELECT min(r.capacity_limit,m.capacity) FROM runner_identities r JOIN machines m ON m.id=r.machine_id WHERE r.id=? AND r.organization_id=?", credential.Runner.RunnerID, m.organization).Scan(&capacity); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	projects := make([]string, 0, len(credential.Runner.ProjectIDs))

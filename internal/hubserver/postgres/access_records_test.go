@@ -48,8 +48,14 @@ func seedTenantAccess(t *testing.T, r tenantstore.Repository, org tracker.Organi
 func TestAccessTenantSchemaEnforcesIsolation(t *testing.T) {
 	admin := template.Database(t)
 	repository, pool := repositoryFor(t, admin, smallPool())
-	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+	for i, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		seedTenantAccess(t, repository, org)
+		serverID := fmt.Sprintf("hub_%032x", i+1)
+		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+			return w.CreateHubIdentity(t.Context(), accessstore.HubIdentity{OrganizationID: org, ID: serverID, CursorKey: bytes.Repeat([]byte{byte(i + 1)}, 32)})
+		}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	var count int
 	if err := pool.QueryRowContext(t.Context(), `SELECT count(*) FROM hosted_members`).Scan(&count); err != nil || count != 0 {
@@ -57,6 +63,13 @@ func TestAccessTenantSchemaEnforcesIsolation(t *testing.T) {
 	}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+			identity, err := r.HubIdentity(t.Context())
+			if err != nil {
+				return err
+			}
+			if identity.OrganizationID != org || len(identity.CursorKey) != 32 {
+				t.Fatalf("Hub identity escaped tenant")
+			}
 			for _, id := range []string{"first", "second"} {
 				member, err := r.AccessMember(t.Context(), id)
 				if err != nil {
@@ -82,7 +95,7 @@ func TestAccessTenantSchemaEnforcesIsolation(t *testing.T) {
 	if _, err := platform.ExecContext(t.Context(), `SELECT * FROM api_tokens`); err == nil {
 		t.Fatal("platform authority read tenant credentials")
 	}
-	for _, table := range []string{"api_tokens", "organization_slugs", "hosted_work_view_preferences", "hosted_work_views", "hosted_work_view_values", "hosted_work_view_projects", "hosted_work_view_favorites", "native_board_items", "native_board_filter_values", "native_board_counts", "native_board_sequences", "native_board_deltas", "native_board_dirty", "native_board_access_revisions"} {
+	for _, table := range []string{"api_tokens", "hub_server_identities", "organization_slugs", "hosted_work_view_preferences", "hosted_work_views", "hosted_work_view_values", "hosted_work_view_projects", "hosted_work_view_favorites", "native_board_items", "native_board_filter_values", "native_board_counts", "native_board_sequences", "native_board_deltas", "native_board_dirty", "native_board_access_revisions"} {
 		var allowed bool
 		if err := platform.QueryRowContext(t.Context(), `SELECT has_table_privilege(current_user,$1,'SELECT,INSERT,UPDATE,DELETE')`, table).Scan(&allowed); err != nil {
 			t.Fatal(err)

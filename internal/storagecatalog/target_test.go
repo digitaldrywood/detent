@@ -55,3 +55,20 @@ func TestNewSchemaQualifiedMigrationNeedsTargetContract(t *testing.T) {
 		t.Fatalf("unrecognized table declaration error = %v", err)
 	}
 }
+
+func TestTargetCatalogAcceptsBinaryColumns(t *testing.T) {
+	catalog := TargetCatalog{
+		Version:          "1",
+		LegacyMigrations: map[string]string{},
+		Migrations:       []string{"internal/hubserver/postgres/migrations/20990101000000_future.sql"},
+		Tables: map[string]TargetTable{
+			"public.hub_server_identities": {
+				Family: "access", Contract: "Preserve binary tenant identity keys.", Organization: "organization-owned",
+				Columns: map[string]string{"organization_id": "text", "cursor_key": "bytea"},
+			},
+		},
+	}
+	if err := catalog.Validate(); err != nil {
+		t.Fatalf("binary target schema: %v", err)
+	}
+}

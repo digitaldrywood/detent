@@ -25,6 +25,12 @@ type Organization struct {
 	CreatedAt      time.Time
 }
 
+type HubIdentity struct {
+	OrganizationID tracker.OrganizationID
+	ID             string
+	CursorKey      []byte
+}
+
 type Tenant struct {
 	OrganizationID       tracker.OrganizationID
 	ProviderID           string
@@ -220,6 +226,7 @@ type ProjectAccessCleaner interface {
 }
 
 type Reader interface {
+	HubIdentity(context.Context) (HubIdentity, error)
 	AccessMemberCredentials(context.Context, string, string, int) ([]Credential, error)
 	AccessAudit(context.Context, int64) (Audit, error)
 	AccessMembers(context.Context, string, int) ([]Member, error)
@@ -250,6 +257,7 @@ type Reader interface {
 }
 
 type Writer interface {
+	CreateHubIdentity(context.Context, HubIdentity) error
 	UpdateAccessKeyAudit(context.Context, int64, string, string, tracker.ProjectID, string, int) error
 	SyncHostedAdministratorProjectAccess(context.Context, string, string) error
 	RecordAccessAudit(context.Context, Audit) (int64, error)

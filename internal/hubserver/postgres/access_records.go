@@ -9,6 +9,20 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+func (s *session) HubIdentity(ctx context.Context) (accessstore.HubIdentity, error) {
+	var row accessstore.HubIdentity
+	err := s.db.QueryRowContext(ctx, `SELECT organization_id,server_id,cursor_key FROM hub_server_identities WHERE organization_id=$1`, s.organization).Scan(&row.OrganizationID, &row.ID, &row.CursorKey)
+	return row, mapError(ctx, err)
+}
+
+func (s *session) CreateHubIdentity(ctx context.Context, row accessstore.HubIdentity) error {
+	if err := s.checkOrganization(row.OrganizationID); err != nil {
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO hub_server_identities (organization_id,server_id,cursor_key) VALUES ($1,$2,$3)`, row.OrganizationID, row.ID, row.CursorKey)
+	return mapError(ctx, err)
+}
+
 func (s *session) AccessOrganization(ctx context.Context) (accessstore.Organization, error) {
 	var row accessstore.Organization
 	err := s.db.QueryRowContext(ctx, `SELECT organization_id,name,slug,local,created_at FROM organizations WHERE organization_id=$1`+s.accessLock(), s.organization).Scan(&row.OrganizationID, &row.Name, &row.Slug, &row.Local, &row.CreatedAt)

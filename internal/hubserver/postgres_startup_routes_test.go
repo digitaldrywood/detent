@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -40,11 +41,15 @@ func TestPostgresOpenCreatesListsAndClaimsNativeIssue(t *testing.T) {
 	ownerHash := apikey.HashToken(ownerToken)
 	now := time.Now().UTC()
 	cursorKey := bytes.Repeat([]byte{0x5a}, 32)
+	serverID := "hub_" + strings.Repeat("a", 32)
 	cursorEnvelope, err := cfg.SecretKeys.Seal(cursorKey, accessstore.SecretAAD("org_startup", "", accessstore.NativeCursorKeyKind))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := store.postgres.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.CreateHubIdentity(t.Context(), accessstore.HubIdentity{OrganizationID: "org_startup", ID: serverID, CursorKey: cursorKey}); err != nil {
+			return err
+		}
 		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: "org_startup", ID: "credential_owner", Name: "Example owner", Hash: ownerHash, Scope: "operator", NativeOnly: true, CreatedAt: now, UpdatedAt: now, UserID: "user_owner", MembershipID: "membership_user_owner", KeyScope: "admin", ProjectAccess: "all", Kind: "personal"}); err != nil {
 			return err
 		}
@@ -153,6 +158,13 @@ func TestPostgresOpenCreatesListsAndClaimsNativeIssue(t *testing.T) {
 		return w.ReplaceRunnerProviderReports(t.Context(), "runner_example", []providercapacity.Report{capacity})
 	}); err != nil {
 		t.Fatal(err)
+	}
+	capabilitiesRequest := performHubAPIRequest(t, service, http.MethodGet, "/api/v2/capabilities", workerToken, nil)
+	requireNativeStatus(t, capabilitiesRequest, http.StatusOK)
+	var capabilities nativeCapabilitiesResponse
+	decodeHubResponse(t, capabilitiesRequest, &capabilities)
+	if capabilities.ServerID != serverID || capabilities.Version != service.config.Version || !slices.Contains(capabilities.ProtocolMajors, 2) {
+		t.Fatalf("PostgreSQL capabilities = %+v", capabilities)
 	}
 	claim := tracker.NativeClaim{LandingCapacity: 1, PolicyID: policy.ID, WorkItemID: issue.WorkItemID, MachineID: "machine_example", SessionID: "session_example", TTLSeconds: 300, ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability, tracker.NativeProviderCapacityCapability}, ProviderCandidates: []tracker.NativeCapacityCandidate{{WorkItemID: issue.WorkItemID, Revision: issue.Revision, Requirement: providercapacity.Requirement{Role: "code", Backend: capacity.Backend, Model: capacity.Models[0]}}}}
 	claimResponse := performHubAPIRequest(t, service, http.MethodPost, "/api/v2/organizations/org_startup/projects/"+url.PathEscape(string(project.ID))+"/claims", workerToken, claim)

@@ -12,6 +12,8 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -48,7 +50,21 @@ func (s *Service) readNativeCapabilities(ctx context.Context) (nativeCapabilitie
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	var serverID string
-	if err := s.database.reader.QueryRowContext(ctx, "SELECT id FROM hub_identity").Scan(&serverID); err != nil {
+	if s.database.postgres != nil {
+		organization := s.database.hostedOrganization
+		if organization == "" || s.config.AccessRepository == nil {
+			return nativeCapabilitiesResponse{}, ErrHostedDatabaseBinding
+		}
+		if err := s.config.AccessRepository.ReadTenant(ctx, organization, corestore.Serving, func(reader tenantstore.Reader) error {
+			identity, err := reader.HubIdentity(ctx)
+			if err == nil {
+				serverID = identity.ID
+			}
+			return err
+		}); err != nil {
+			return nativeCapabilitiesResponse{}, err
+		}
+	} else if err := s.database.reader.QueryRowContext(ctx, "SELECT id FROM hub_identity").Scan(&serverID); err != nil {
 		return nativeCapabilitiesResponse{}, err
 	}
 	features := []string{progresscheck.InvestigationCapability, progresscheck.RetrievedEvidenceCapability, "native_issues", "scoped_collaboration", "revision_conflicts", "idempotent_mutations", "scoped_runner_identity", "repository_policy", "change_requests", tracker.NativeExecutionCapability, tracker.NativeRuntimeEvidenceCapability, tracker.NativePreProviderFailureCapability, tracker.NativeAdmissionEvidenceCapability, tracker.NativeAdmissionObservationCapability, tracker.NativeProviderCapacityCapability, tracker.NativeCheckoutRepositoryCapability, tracker.NativeRunnerSkillsCapability, tracker.NativeLocalChecksCapability, tracker.NativeRunnerCapacityCapability, tracker.NativeProjectConfigurationCapability, tracker.NativeProjectDiagnosticsCapability, tracker.NativeRunnerUpdateCapability}

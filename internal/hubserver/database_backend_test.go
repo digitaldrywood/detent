@@ -10,8 +10,10 @@ import (
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -64,14 +66,40 @@ func startupConnection(t *testing.T, admin *sql.DB, group, attributes string) pq
 	t.Helper()
 	connection := pq.Config{Host: "127.0.0.1", SSLMode: pq.SSLModeDisable,
 		User: "example_" + strings.ReplaceAll(uuid.NewString(), "-", ""), Password: uuid.NewString()}
-	var dataDirectory string
+	var externalPort uint16
+	externalHost := ""
+	selection := os.Getenv(pgtest.Environment)
+	if selection != "" && selection != "binary" {
+		parsed, err := url.Parse(selection)
+		if err != nil {
+			t.Fatal("invalid PostgreSQL test fixture selection")
+		}
+		port, err := strconv.ParseUint(parsed.Port(), 10, 16)
+		if err != nil {
+			t.Fatal("invalid PostgreSQL test fixture port")
+		}
+		externalPort = uint16(port)
+		externalHost = parsed.Hostname()
+		if externalHost == "localhost" {
+			externalHost = "127.0.0.1"
+		}
+		if socket := parsed.Query().Get("host"); socket != "" {
+			externalHost = socket
+		}
+	}
+	var serverAddress, dataDirectory string
 	if err := admin.QueryRowContext(t.Context(), `SELECT current_database(), current_setting('port')::integer,
 		COALESCE(inet_server_addr()::text, current_setting('unix_socket_directories')),
-		current_setting('data_directory')`).Scan(&connection.Database, &connection.Port, &connection.Host, &dataDirectory); err != nil {
+		current_setting('data_directory')`).Scan(&connection.Database, &connection.Port, &serverAddress, &dataDirectory); err != nil {
 		t.Fatal(err)
 	}
-	if connection.Host == "." {
+	if externalPort != 0 {
+		connection.Host = externalHost
+		connection.Port = externalPort
+	} else if serverAddress == "." {
 		connection.Host = dataDirectory
+	} else {
+		connection.Host = serverAddress
 	}
 	if _, err := admin.ExecContext(t.Context(), "ALTER DATABASE "+pq.QuoteIdentifier(connection.Database)+" CONNECTION LIMIT 6"); err != nil {
 		t.Fatal(err)

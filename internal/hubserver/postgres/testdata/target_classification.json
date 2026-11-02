@@ -74,6 +74,11 @@
     "ownership": "organization-owned",
     "scope": "hosted_usage_receipts.organization_id; receipt_id is unique within the organization"
   },
+  "public/hub_server_identities": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "hub_server_identities.organization_id; preserves source Hub identity and paging cursor key"
+  },
   "public/issue_claim_facts": {
     "inline_payloads": [],
     "ownership": "organization-owned",

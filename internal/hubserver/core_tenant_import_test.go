@@ -1,12 +1,14 @@
 package hubserver
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -43,7 +45,7 @@ func TestImportTenantCoreCopyCompletesAllStagesAndScopesTenants(t *testing.T) {
 			if err != nil {
 				t.Fatalf("organization %s import replay %d: %v", organization, replay, err)
 			}
-			if !result.CoreImportComplete || result.Projects != 1 || result.WorkItems != 1 || result.ConversationRows < 2 || result.CreditAccounts != 1 || result.CreditTransactions != 1 {
+			if !result.CoreImportComplete || result.HubIdentityRows != 1 || result.Projects != 1 || result.WorkItems != 1 || result.ConversationRows < 2 || result.CreditAccounts != 1 || result.CreditTransactions != 1 {
 				t.Fatalf("organization %s import replay %d incomplete: %+v", organization, replay, result)
 			}
 			if replay == 0 {
@@ -57,7 +59,7 @@ func TestImportTenantCoreCopyCompletesAllStagesAndScopesTenants(t *testing.T) {
 	failedCopy := coreTenantAggregateSourceCopy(t, "org_aggregate_failure", true)
 	failedSource := TenantCoreImportSource{CopyPath: failedCopy, OrganizationID: "org_aggregate_failure", Catalog: catalog, Objects: objects}
 	failed, err := ImportTenantCoreCopy(t.Context(), config, failedSource)
-	if err == nil || failed.CoreImportComplete || failed.Projects != 1 || failed.WorkItems != 1 || failed.ConversationRows < 2 || failed.CreditTransactions != 0 {
+	if err == nil || failed.CoreImportComplete || failed.HubIdentityRows != 1 || failed.Projects != 1 || failed.WorkItems != 1 || failed.ConversationRows < 2 || failed.CreditTransactions != 0 {
 		t.Fatalf("late credit-stage refusal result=%+v error=%v", failed, err)
 	}
 
@@ -77,6 +79,13 @@ func TestImportTenantCoreCopyCompletesAllStagesAndScopesTenants(t *testing.T) {
 			otherSuffix = "b"
 		}
 		if err := store.postgres.ReadTenant(t.Context(), organization, corestore.Serving, func(reader tenantstore.Reader) error {
+			identity, err := reader.HubIdentity(t.Context())
+			if err != nil {
+				return fmt.Errorf("read imported Hub identity: %w", err)
+			}
+			if identity.OrganizationID != organization || identity.ID != "hub_"+strings.Repeat(suffix[:1], 32) || !bytes.Equal(identity.CursorKey, bytes.Repeat([]byte{suffix[0]}, 32)) {
+				return fmt.Errorf("Hub identity not preserved: %+v", identity)
+			}
 			projectID := tracker.ProjectID("prj_aggregate_" + suffix)
 			project, err := reader.ProjectRecord(t.Context(), projectID)
 			if err != nil || project.Core.OrganizationID != organization {
@@ -151,6 +160,10 @@ func coreTenantAggregateSourceCopy(t *testing.T, organization tracker.Organizati
 	}
 	suffix := string(organization[len("org_aggregate_"):])
 	if _, err := db.ExecContext(t.Context(), `UPDATE organizations SET id=?,name=?,slug=? WHERE local=1`, organization, "Example organization "+suffix, "example-org-"+suffix); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(t.Context(), `UPDATE hub_identity SET id=?,cursor_key=?`, "hub_"+strings.Repeat(suffix[:1], 32), bytes.Repeat([]byte{suffix[0]}, 32)); err != nil {
 		_ = db.Close()
 		t.Fatal(err)
 	}

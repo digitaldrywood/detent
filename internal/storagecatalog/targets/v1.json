@@ -82,9 +82,20 @@
     "internal/hubserver/postgres/migrations/20261102044334_core_work_event_import.sql",
     "internal/hubserver/postgres/migrations/20261102052209_change_publication_records.sql",
     "internal/hubserver/postgres/migrations/20261102052440_conversation_history_import.sql",
-    "internal/hubserver/postgres/migrations/20261102053822_credit_history_import.sql"
+    "internal/hubserver/postgres/migrations/20261102053822_credit_history_import.sql",
+    "internal/hubserver/postgres/migrations/20261102060700_hub_server_identities.sql"
   ],
   "tables": {
+    "public.hub_server_identities": {
+      "columns": {
+        "cursor_key": "bytea",
+        "organization_id": "text",
+        "server_id": "text"
+      },
+      "contract": "Preserve each tenant's source Hub server identity and cursor key across cutover.",
+      "family": "access",
+      "organization": "organization-owned"
+    },
     "public.ai_credit_reason_references": {
       "columns": {
         "binding_id": "text",
