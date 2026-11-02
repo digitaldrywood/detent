@@ -19,6 +19,11 @@
     "ownership": "organization-owned",
     "scope": "conversation_content_objects.organization_id; archive metadata references externally verified object bytes"
   },
+  "public/core_work_events": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "core_work_events.organization_id; issue, lease fence, machine and session identities remain tenant-scoped"
+  },
   "public/cost_import_heads": {
     "inline_payloads": [],
     "ownership": "organization-owned",

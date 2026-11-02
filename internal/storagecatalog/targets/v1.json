@@ -75,7 +75,9 @@
     "internal/hubserver/postgres/migrations/20261102021008_project_policy_observations.sql",
     "internal/hubserver/postgres/migrations/20261102021900_policy_workflow_applications.sql",
     "internal/hubserver/postgres/migrations/20261102021911_runner_update_state.sql",
-    "internal/hubserver/postgres/migrations/20261102023307_conversation_billing_import.sql"
+    "internal/hubserver/postgres/migrations/20261102023307_conversation_billing_import.sql",
+    "internal/hubserver/postgres/migrations/20261102043132_core_execution_import_history.sql",
+    "internal/hubserver/postgres/migrations/20261102044334_core_work_event_import.sql"
   ],
   "tables": {
     "public.ai_credit_reason_references": {
@@ -134,6 +136,24 @@
       },
       "contract": "Retain verified immutable conversation archive references under the owning organization; keep object bytes outside PostgreSQL and publish metadata only after the object store verifies the hash.",
       "family": "conversation",
+      "organization": "organization-owned"
+    },
+    "public.core_work_events": {
+      "columns": {
+        "fencing_token": "bigint",
+        "issue_id": "bigint",
+        "kind": "text",
+        "machine_id": "text",
+        "occurred_at": "timestamp with time zone",
+        "organization_id": "text",
+        "payload_json": "text",
+        "recorded_at": "timestamp with time zone",
+        "run_id": "text",
+        "session_id": "text",
+        "source_id": "bigint"
+      },
+      "contract": "Preserve immutable legacy work-event identities and payloads for historical recovery.",
+      "family": "event",
       "organization": "organization-owned"
     },
     "public.cost_monthly_totals": {
