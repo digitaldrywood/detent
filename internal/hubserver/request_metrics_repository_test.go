@@ -19,7 +19,7 @@ func TestRequestMetricsBackendParity(t *testing.T) {
 			var store *database
 			if backend == DatabasePostgres {
 				admin := postgresStartupTemplate.Database(t)
-				connection := startupConnection(t, admin, "detent_runtime", "")
+				connection := startupConnection(t, admin, "detent_runtime_v2", "")
 				var err error
 				store, err = openDatabase(t.Context(), startupConfig(connection))
 				if err != nil {

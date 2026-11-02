@@ -42,10 +42,10 @@ func projectRecordPostgresWithAdmin(t *testing.T, maxConnections int) (*postgres
 			return err
 		}
 		db.SetMaxOpenConns(1)
-		if _, err := db.ExecContext(ctx, "SET ROLE detent_migration"); err != nil {
+		if _, err := db.ExecContext(ctx, "SET ROLE detent_migration_v2"); err != nil {
 			return err
 		}
-		provider, err := goose.NewProvider(goose.DialectPostgres, db, os.DirFS("postgres/migrations"), goose.WithDisableGlobalRegistry(true))
+		provider, err := goose.NewProvider(goose.DialectPostgres, db, postgres.RoleMigrations(os.DirFS("postgres/migrations")), goose.WithDisableGlobalRegistry(true))
 		if err != nil {
 			return err
 		}
@@ -81,7 +81,7 @@ func projectRecordPostgresWithAdmin(t *testing.T, maxConnections int) (*postgres
 			t.Error(err)
 		}
 	})
-	if _, err := admin.ExecContext(t.Context(), "GRANT detent_runtime TO "+quoted); err != nil {
+	if _, err := admin.ExecContext(t.Context(), "GRANT detent_runtime_v2 TO "+quoted); err != nil {
 		t.Fatal(err)
 	}
 	pool := template.OpenRole(t, admin, name, password)

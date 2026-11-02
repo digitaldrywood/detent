@@ -26,7 +26,7 @@ func repositoryFor(t *testing.T, admin *sql.DB, config postgres.PoolConfig) (*po
 	if _, err := admin.ExecContext(t.Context(), "ALTER DATABASE "+pq.QuoteIdentifier(database)+fmt.Sprintf(" CONNECTION LIMIT %d", config.MaxConnections+1)); err != nil {
 		t.Fatal(err)
 	}
-	pool := rolePool(t, admin, "detent_runtime", "")
+	pool := rolePool(t, admin, "detent_runtime_v2", "")
 	repository, err := postgres.NewRepository(t.Context(), pool, config)
 	if err != nil {
 		t.Fatal(err)

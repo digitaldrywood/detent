@@ -29,7 +29,7 @@ func NewRuntime(ctx context.Context, reader, writer *sql.DB) (*Runtime, error) {
 			AND current_setting('row_security') = 'on'
 			AND COALESCE(current_setting('detent.organization_id', true), '') = ''
 			AND current_schemas(false) IN (ARRAY['public']::name[], ARRAY['public', 'pg_catalog']::name[])
-			AND pg_has_role(current_user, 'detent_runtime', 'USAGE')
+			AND pg_has_role(current_user, 'detent_runtime_v2', 'USAGE')
 			AND has_schema_privilege(current_user, 'public', 'USAGE')
 			AND NOT has_schema_privilege(current_user, 'public', 'CREATE')
 			AND NOT has_schema_privilege(current_user, 'pg_catalog', 'CREATE')
@@ -43,12 +43,12 @@ func NewRuntime(ctx context.Context, reader, writer *sql.DB) (*Runtime, error) {
 				WHERE (r.rolname = current_user OR pg_has_role(session_user, r.oid, 'MEMBER'))
 				AND (r.rolsuper OR r.rolbypassrls OR r.rolcreaterole OR r.rolcreatedb OR r.rolreplication)
 			)
-			AND NOT pg_has_role(session_user, 'detent_platform', 'MEMBER')
-			AND NOT pg_has_role(session_user, 'detent_migration', 'MEMBER')
+			AND NOT pg_has_role(session_user, 'detent_platform_v2', 'MEMBER')
+			AND NOT pg_has_role(session_user, 'detent_migration_v2', 'MEMBER')
 			AND EXISTS (
 				SELECT 1 FROM pg_proc p
 				WHERE p.oid = 'public.search_index_candidates(tsquery,text,text[],boolean,text,text,text,text,text,boolean,text,timestamptz,text,bigint,text[],boolean,text[],text[],double precision[],text[],bigint[],boolean[])'::regprocedure
-				AND p.proowner = 'detent_platform'::regrole AND p.prosecdef AND p.provolatile = 's'
+				AND p.proowner = 'detent_platform_v2'::regrole AND p.prosecdef AND p.provolatile = 's'
 				AND p.proconfig = ARRAY['search_path=pg_catalog']
 				AND has_function_privilege(current_user, p.oid, 'EXECUTE')
 				AND NOT EXISTS (SELECT 1 FROM aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) a

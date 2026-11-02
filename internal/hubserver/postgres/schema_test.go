@@ -17,6 +17,7 @@ import (
 	"github.com/lib/pq"
 	"github.com/pressly/goose/v3"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/storagecatalog"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
@@ -31,7 +32,7 @@ var template = pgtest.NewTemplate(func(ctx context.Context, db *sql.DB) error {
 		return fmt.Errorf("provision PostgreSQL test roles: %w", err)
 	}
 	db.SetMaxOpenConns(1)
-	if _, err := db.ExecContext(ctx, `SET ROLE detent_migration`); err != nil {
+	if _, err := db.ExecContext(ctx, `SET ROLE detent_migration_v2`); err != nil {
 		return err
 	}
 	provider, err := migrationProvider(db)
@@ -45,7 +46,7 @@ var template = pgtest.NewTemplate(func(ctx context.Context, db *sql.DB) error {
 })
 
 func migrationProvider(db *sql.DB) (*goose.Provider, error) {
-	return goose.NewProvider(goose.DialectPostgres, db, os.DirFS("migrations"),
+	return goose.NewProvider(goose.DialectPostgres, db, postgres.RoleMigrations(os.DirFS("migrations")),
 		goose.WithDisableGlobalRegistry(true), goose.WithSlog(slog.New(slog.DiscardHandler)))
 }
 

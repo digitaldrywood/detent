@@ -42,7 +42,7 @@ var postgresStartupTemplate = pgtest.NewTemplate(func(ctx context.Context, db *s
 		return err
 	}
 	db.SetMaxOpenConns(1)
-	if _, err := db.ExecContext(ctx, `SET ROLE detent_migration`); err != nil {
+	if _, err := db.ExecContext(ctx, `SET ROLE detent_migration_v2`); err != nil {
 		return err
 	}
 	provider, err := startupMigrationProvider(db)
@@ -58,7 +58,7 @@ func startupMigrationProvider(pool *sql.DB) (*goose.Provider, error) {
 	if err != nil {
 		return nil, err
 	}
-	return goose.NewProvider(goose.DialectPostgres, pool, migrations,
+	return goose.NewProvider(goose.DialectPostgres, pool, postgres.RoleMigrations(migrations),
 		goose.WithDisableGlobalRegistry(true), goose.WithSlog(discardLogger()))
 }
 
@@ -231,9 +231,9 @@ func TestPostgresStartupRejectsImplicitConnectionSettings(t *testing.T) {
 		{"passfile", func(c *pq.Config) { c.Passfile = "example" }},
 		{"service", func(c *pq.Config) { c.Service = "example" }},
 		{"service file", func(c *pq.Config) { c.ServiceFile = "example" }},
-		{"options", func(c *pq.Config) { c.Options = "-c role=detent_migration" }},
+		{"options", func(c *pq.Config) { c.Options = "-c role=detent_migration_v2" }},
 		{"tenant setting", func(c *pq.Config) { c.Runtime = map[string]string{"detent.organization_id": "example"} }},
-		{"role setting", func(c *pq.Config) { c.Runtime = map[string]string{"role": "detent_platform"} }},
+		{"role setting", func(c *pq.Config) { c.Runtime = map[string]string{"role": "detent_platform_v2"} }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			connection := base.Clone()
@@ -252,13 +252,13 @@ func TestPostgresStartupRejectsUnsafeRoles(t *testing.T) {
 		group      string
 		attributes string
 	}{
-		{"migration", "detent_migration", ""},
-		{"platform", "detent_platform", ""},
+		{"migration", "detent_migration_v2", ""},
+		{"platform", "detent_platform_v2", ""},
 		{"ungranted", "", ""},
-		{"superuser", "detent_runtime", "SUPERUSER"},
-		{"bypass RLS", "detent_runtime", "BYPASSRLS"},
-		{"database administrator", "detent_runtime", "CREATEDB"},
-		{"replication", "detent_runtime", "REPLICATION"},
+		{"superuser", "detent_runtime_v2", "SUPERUSER"},
+		{"bypass RLS", "detent_runtime_v2", "BYPASSRLS"},
+		{"database administrator", "detent_runtime_v2", "CREATEDB"},
+		{"replication", "detent_runtime_v2", "REPLICATION"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			admin := postgresStartupTemplate.Database(t)
@@ -274,7 +274,7 @@ func TestPostgresStartupRejectsUnsafeRoles(t *testing.T) {
 
 func TestPostgresStartupOwnsPoolWithoutSQLiteOrWorkers(t *testing.T) {
 	admin := postgresStartupTemplate.Database(t)
-	connection := startupConnection(t, admin, "detent_runtime", "")
+	connection := startupConnection(t, admin, "detent_runtime_v2", "")
 	cfg := startupConfig(connection)
 	store, err := openDatabase(t.Context(), cfg)
 	if err != nil {
@@ -340,7 +340,7 @@ func TestPostgresStartupOwnsPoolWithoutSQLiteOrWorkers(t *testing.T) {
 
 func TestPostgresSharedEntryHealthAndOwnerBootstrap(t *testing.T) {
 	admin := postgresStartupTemplate.Database(t)
-	connection := startupConnection(t, admin, "detent_runtime", "")
+	connection := startupConnection(t, admin, "detent_runtime_v2", "")
 	provider := newHostedSecurityProvider()
 	key := hostedSharedKey(61)
 	cfg := startupConfig(connection)
@@ -439,12 +439,12 @@ func TestPostgresStartupRejectsSchemaDrift(t *testing.T) {
 		{"newer schema", `INSERT INTO public.goose_db_version(version_id, is_applied) VALUES (99999999999999, true)`},
 		{"disabled RLS", `ALTER TABLE public.projects DISABLE ROW LEVEL SECURITY`},
 		{"unforced RLS", `ALTER TABLE public.projects NO FORCE ROW LEVEL SECURITY`},
-		{"missing runtime grant", `REVOKE SELECT ON public.projects FROM detent_runtime`},
-		{"schema creation", `GRANT CREATE ON SCHEMA public TO detent_runtime`},
+		{"missing runtime grant", `REVOKE SELECT ON public.projects FROM detent_runtime_v2`},
+		{"schema creation", `GRANT CREATE ON SCHEMA public TO detent_runtime_v2`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			admin := postgresStartupTemplate.Database(t)
-			connection := startupConnection(t, admin, "detent_runtime", "")
+			connection := startupConnection(t, admin, "detent_runtime_v2", "")
 			if _, err := admin.ExecContext(t.Context(), test.statement); err != nil {
 				t.Fatal(err)
 			}
@@ -464,7 +464,7 @@ func TestPostgresStartupRejectsSessionDefaults(t *testing.T) {
 	} {
 		t.Run(setting, func(t *testing.T) {
 			admin := postgresStartupTemplate.Database(t)
-			connection := startupConnection(t, admin, "detent_runtime", "")
+			connection := startupConnection(t, admin, "detent_runtime_v2", "")
 			if _, err := admin.ExecContext(t.Context(), "ALTER ROLE "+pq.QuoteIdentifier(connection.User)+" SET "+setting); err != nil {
 				t.Fatal(err)
 			}
@@ -493,8 +493,8 @@ func TestDatabaseStartupCancellation(t *testing.T) {
 
 func TestPostgresMigrationAuthorityIsSeparate(t *testing.T) {
 	admin := postgresStartupTemplate.Database(t)
-	runtime := startupConnection(t, admin, "detent_runtime", "")
-	migration := startupConnection(t, admin, "detent_migration", "")
+	runtime := startupConnection(t, admin, "detent_runtime_v2", "")
+	migration := startupConnection(t, admin, "detent_migration_v2", "")
 	provider, err := startupMigrationProvider(admin)
 	if err != nil {
 		t.Fatal(err)
@@ -509,13 +509,13 @@ func TestPostgresMigrationAuthorityIsSeparate(t *testing.T) {
 	if err := MigratePostgres(t.Context(), runtime); err == nil {
 		t.Fatal("runtime migrated schema")
 	}
-	if _, err := admin.ExecContext(t.Context(), "GRANT detent_runtime TO "+pq.QuoteIdentifier(migration.User)); err != nil {
+	if _, err := admin.ExecContext(t.Context(), "GRANT detent_runtime_v2 TO "+pq.QuoteIdentifier(migration.User)); err != nil {
 		t.Fatal(err)
 	}
 	if err := MigratePostgres(t.Context(), migration); !errors.Is(err, postgres.ErrMigrationRole) {
 		t.Fatalf("combined migration authority = %v", err)
 	}
-	if _, err := admin.ExecContext(t.Context(), "REVOKE detent_runtime FROM "+pq.QuoteIdentifier(migration.User)); err != nil {
+	if _, err := admin.ExecContext(t.Context(), "REVOKE detent_runtime_v2 FROM "+pq.QuoteIdentifier(migration.User)); err != nil {
 		t.Fatal(err)
 	}
 	if err := MigratePostgres(t.Context(), migration); err != nil {
@@ -537,7 +537,7 @@ func TestPostgresMigrationAuthorityIsSeparate(t *testing.T) {
 
 func TestPostgresStartupCancelsSchemaWait(t *testing.T) {
 	admin := postgresStartupTemplate.Database(t)
-	connection := startupConnection(t, admin, "detent_runtime", "")
+	connection := startupConnection(t, admin, "detent_runtime_v2", "")
 	observer := postgresStartupTemplate.OpenRole(t, admin, connection.User, connection.Password)
 	lock, err := admin.BeginTx(t.Context(), nil)
 	if err != nil {

@@ -28,7 +28,7 @@ import (
 
 func TestValidateRunnerLeaseUsesPostgresTenantRecords(t *testing.T) {
 	admin := postgresStartupTemplate.Database(t)
-	connection := startupConnection(t, admin, "detent_runtime", "")
+	connection := startupConnection(t, admin, "detent_runtime_v2", "")
 	if !filepath.IsAbs(connection.Host) {
 		connection.Host = "127.0.0.1"
 	}

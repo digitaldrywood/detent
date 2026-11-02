@@ -4,11 +4,37 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/lib/pq"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 )
 
 func TestDatabaseRolesHaveSeparateAuthority(t *testing.T) {
-	for _, group := range []string{"detent_runtime", "detent_platform", "detent_migration"} {
+	db := template.Database(t)
+	var versionedRoles, legacyRoles int
+	if err := db.QueryRowContext(t.Context(), `SELECT count(*) FROM pg_roles
+		WHERE rolname = ANY($1)`, pq.Array([]string{postgres.MigrationRoleName, postgres.RuntimeRoleName, postgres.PlatformRoleName})).Scan(&versionedRoles); err != nil {
+		t.Fatal(err)
+	}
+	if versionedRoles != 3 {
+		t.Fatalf("versioned role count = %d, want 3", versionedRoles)
+	}
+	if err := db.QueryRowContext(t.Context(), `SELECT count(*) FROM pg_roles
+		WHERE rolname = ANY($1)`, pq.Array([]string{"detent_migration", "detent_runtime", "detent_platform"})).Scan(&legacyRoles); err != nil {
+		t.Fatal(err)
+	}
+	if legacyRoles != 0 {
+		t.Fatalf("legacy role count = %d, want 0", legacyRoles)
+	}
+	var ledgerOwner string
+	if err := db.QueryRowContext(t.Context(), `SELECT pg_get_userbyid(relowner) FROM pg_class WHERE oid='public.goose_db_version'::regclass`).Scan(&ledgerOwner); err != nil {
+		t.Fatal(err)
+	}
+	if ledgerOwner != postgres.MigrationRoleName {
+		t.Fatalf("migration ledger owner = %q", ledgerOwner)
+	}
+
+	for _, group := range []string{"detent_runtime_v2", "detent_platform_v2", "detent_migration_v2"} {
 		t.Run(group, func(t *testing.T) {
 			admin := template.Database(t)
 			seedCore(t, admin)
@@ -20,7 +46,7 @@ func TestDatabaseRolesHaveSeparateAuthority(t *testing.T) {
 						t.Fatal(err)
 					}
 					want := 0
-					if group == "detent_platform" {
+					if group == "detent_platform_v2" {
 						want = 4
 					}
 					if count != want {
@@ -31,12 +57,12 @@ func TestDatabaseRolesHaveSeparateAuthority(t *testing.T) {
 					if err := admin.QueryRowContext(t.Context(), `SELECT pg_get_userbyid(relowner),relrowsecurity,relforcerowsecurity FROM pg_class WHERE oid=$1::regclass`, "public."+table).Scan(&owner, &enabled, &forced); err != nil {
 						t.Fatal(err)
 					}
-					if owner != "detent_migration" || !enabled || !forced {
+					if owner != "detent_migration_v2" || !enabled || !forced {
 						t.Fatalf("owner=%s enabled=%v forced=%v", owner, enabled, forced)
 					}
 				})
 			}
-			for _, target := range []string{"detent_runtime", "detent_platform", "detent_migration"} {
+			for _, target := range []string{"detent_runtime_v2", "detent_platform_v2", "detent_migration_v2"} {
 				if target == group {
 					continue
 				}
@@ -63,7 +89,7 @@ func TestDatabaseRolesHaveSeparateAuthority(t *testing.T) {
 					}
 					defer tx.Rollback()
 					_, err = tx.ExecContext(t.Context(), statement)
-					if group == "detent_migration" {
+					if group == "detent_migration_v2" {
 						if err != nil {
 							t.Fatal(err)
 						}
@@ -76,11 +102,11 @@ func TestDatabaseRolesHaveSeparateAuthority(t *testing.T) {
 				_, err := pool.ExecContext(t.Context(), `SELECT public.allocate_core_record_id('public.projects'::regclass, 100)`)
 				requireSQLState(t, err, "42501")
 			})
-			if group == "detent_runtime" {
+			if group == "detent_runtime_v2" {
 				for _, statement := range []string{
 					`TRUNCATE native_comments`,
-					`SET SESSION AUTHORIZATION detent_platform`,
-					`ALTER ROLE detent_runtime BYPASSRLS`,
+					`SET SESSION AUTHORIZATION detent_platform_v2`,
+					`ALTER ROLE detent_runtime_v2 BYPASSRLS`,
 				} {
 					t.Run(statement, func(t *testing.T) {
 						_, err := pool.ExecContext(t.Context(), statement)
@@ -93,10 +119,10 @@ func TestDatabaseRolesHaveSeparateAuthority(t *testing.T) {
 }
 
 func TestRuntimeRejectsCombinedAuthority(t *testing.T) {
-	for _, group := range []string{"detent_platform", "detent_migration"} {
+	for _, group := range []string{"detent_platform_v2", "detent_migration_v2"} {
 		t.Run(group, func(t *testing.T) {
 			admin := template.Database(t)
-			pool := rolePool(t, admin, "detent_runtime", "")
+			pool := rolePool(t, admin, "detent_runtime_v2", "")
 			var login string
 			if err := pool.QueryRowContext(t.Context(), `SELECT session_user`).Scan(&login); err != nil {
 				t.Fatal(err)
@@ -114,7 +140,7 @@ func TestRuntimeRejectsCombinedAuthority(t *testing.T) {
 func TestTenantBindingFailureReleasesConnection(t *testing.T) {
 	admin := template.Database(t)
 	seedCore(t, admin)
-	pool := rolePool(t, admin, "detent_runtime", "")
+	pool := rolePool(t, admin, "detent_runtime_v2", "")
 	runtime := runtimeFor(t, pool, pool)
 	tx, err := runtime.Begin(t.Context(), "org_\x00invalid", nil)
 	if tx != nil || err == nil {

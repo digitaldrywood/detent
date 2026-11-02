@@ -63,7 +63,7 @@ func migrationProvider(pool *sql.DB, migrations fs.FS) (*goose.Provider, error) 
 	if migrations == nil {
 		return nil, ErrSchema
 	}
-	return goose.NewProvider(goose.DialectPostgres, pool, migrations,
+	return goose.NewProvider(goose.DialectPostgres, pool, RoleMigrations(migrations),
 		goose.WithDisableGlobalRegistry(true), goose.WithSlog(slog.New(slog.DiscardHandler)))
 }
 
@@ -77,7 +77,7 @@ func validateSchema(ctx context.Context, pool *sql.DB, migrations fs.FS) error {
 		return ErrSchema
 	}
 	var owned bool
-	if err := pool.QueryRowContext(ctx, `SELECT pg_get_userbyid(relowner) = 'detent_migration'
+	if err := pool.QueryRowContext(ctx, `SELECT pg_get_userbyid(relowner) = 'detent_migration_v2'
 		FROM pg_class WHERE oid = 'public.goose_db_version'::regclass`).Scan(&owned); err != nil {
 		return err
 	}
@@ -120,7 +120,7 @@ func Migrate(ctx context.Context, connection pq.Config, migrations fs.FS) (resul
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	pool, err := openPool(connection, "detent_migration")
+	pool, err := openPool(connection, MigrationRoleName)
 	if err != nil {
 		return err
 	}
@@ -128,12 +128,12 @@ func Migrate(ctx context.Context, connection pq.Config, migrations fs.FS) (resul
 	pool.SetMaxOpenConns(1)
 	pool.SetMaxIdleConns(1)
 	var allowed bool
-	err = pool.QueryRowContext(ctx, `SELECT pg_has_role(session_user, 'detent_migration', 'MEMBER')
-		AND NOT pg_has_role(session_user, 'detent_runtime', 'MEMBER')
-		AND NOT pg_has_role(session_user, 'detent_platform', 'MEMBER')
+	err = pool.QueryRowContext(ctx, `SELECT pg_has_role(session_user, $1, 'MEMBER')
+		AND NOT pg_has_role(session_user, $2, 'MEMBER')
+		AND NOT pg_has_role(session_user, $3, 'MEMBER')
 		AND NOT EXISTS (SELECT 1 FROM pg_roles r
 			WHERE (r.rolname = session_user OR pg_has_role(session_user, r.oid, 'MEMBER'))
-			AND (r.rolsuper OR r.rolbypassrls OR r.rolcreaterole OR r.rolcreatedb OR r.rolreplication))`).Scan(&allowed)
+			AND (r.rolsuper OR r.rolbypassrls OR r.rolcreaterole OR r.rolcreatedb OR r.rolreplication))`, MigrationRoleName, RuntimeRoleName, PlatformRoleName).Scan(&allowed)
 	if err != nil {
 		return mapError(ctx, err)
 	}

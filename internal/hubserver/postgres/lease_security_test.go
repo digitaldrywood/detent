@@ -67,7 +67,7 @@ func TestLeaseFamilyRowSecurity(t *testing.T) {
 				})
 			}
 			var owner string
-			if err := admin.QueryRowContext(t.Context(), `SELECT pg_get_userbyid(relowner) FROM pg_class WHERE oid=$1::regclass`, tc.table).Scan(&owner); err != nil || owner != "detent_migration" {
+			if err := admin.QueryRowContext(t.Context(), `SELECT pg_get_userbyid(relowner) FROM pg_class WHERE oid=$1::regclass`, tc.table).Scan(&owner); err != nil || owner != "detent_migration_v2" {
 				t.Fatalf("owner=%s error=%v", owner, err)
 			}
 			if _, err := admin.ExecContext(t.Context(), "ALTER TABLE "+tc.table+" NO FORCE ROW LEVEL SECURITY"); err != nil {

@@ -85,7 +85,7 @@ func tenantTx(t *testing.T, runtime *postgres.Runtime, pool *sql.DB, organizatio
 func TestCoreRowSecurity(t *testing.T) {
 	admin := template.Database(t)
 	seedCore(t, admin)
-	pool := rolePool(t, admin, "detent_runtime", "")
+	pool := rolePool(t, admin, "detent_runtime_v2", "")
 	for _, scope := range []struct {
 		name         string
 		organization string
@@ -150,7 +150,7 @@ func TestCoreRowSecurity(t *testing.T) {
 func TestCoreRowSecurityRejectsCrossTenantWrites(t *testing.T) {
 	admin := template.Database(t)
 	seedCore(t, admin)
-	pool := rolePool(t, admin, "detent_runtime", "")
+	pool := rolePool(t, admin, "detent_runtime_v2", "")
 	runtime := runtimeFor(t, pool, pool)
 	for _, tc := range []struct {
 		table  string
@@ -231,8 +231,8 @@ func TestTenantTransactionsDoNotLeakContext(t *testing.T) {
 			t.Run(fmt.Sprintf("readOnly=%v/%s", readOnly, completion), func(t *testing.T) {
 				admin := template.Database(t)
 				seedCore(t, admin)
-				writer := rolePool(t, admin, "detent_runtime", "")
-				reader := rolePool(t, admin, "detent_runtime", "")
+				writer := rolePool(t, admin, "detent_runtime_v2", "")
+				reader := rolePool(t, admin, "detent_runtime_v2", "")
 				runtime := runtimeFor(t, reader, writer)
 				pool := writer
 				if readOnly {
@@ -304,15 +304,15 @@ func TestTenantTransactionsDoNotLeakContext(t *testing.T) {
 
 func TestRuntimeRejectsPrivilegedPools(t *testing.T) {
 	admin := template.Database(t)
-	valid := rolePool(t, admin, "detent_runtime", "")
+	valid := rolePool(t, admin, "detent_runtime_v2", "")
 	for _, tc := range []struct{ name, group, attributes string }{
-		{"migration", "detent_migration", ""},
-		{"platform", "detent_platform", ""},
+		{"migration", "detent_migration_v2", ""},
+		{"platform", "detent_platform_v2", ""},
 		{"ungranted", "", ""},
-		{"bypass RLS", "detent_runtime", "BYPASSRLS"},
-		{"superuser", "detent_runtime", "SUPERUSER"},
-		{"role administrator", "detent_runtime", "CREATEROLE"},
-		{"table owner", "detent_runtime", ""},
+		{"bypass RLS", "detent_runtime_v2", "BYPASSRLS"},
+		{"superuser", "detent_runtime_v2", "SUPERUSER"},
+		{"role administrator", "detent_runtime_v2", "CREATEROLE"},
+		{"table owner", "detent_runtime_v2", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := rolePool(t, admin, tc.group, tc.attributes)
@@ -332,7 +332,7 @@ func TestRuntimeRejectsPrivilegedPools(t *testing.T) {
 					}
 					ctx, cancel := context.WithDeadline(context.WithoutCancel(t.Context()), deadline)
 					defer cancel()
-					if _, err := admin.ExecContext(ctx, `ALTER TABLE projects OWNER TO detent_migration`); err != nil {
+					if _, err := admin.ExecContext(ctx, `ALTER TABLE projects OWNER TO detent_migration_v2`); err != nil {
 						t.Error(err)
 					}
 				})

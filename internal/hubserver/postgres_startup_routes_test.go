@@ -24,7 +24,7 @@ import (
 
 func TestPostgresOpenCreatesListsAndClaimsNativeIssue(t *testing.T) {
 	admin := postgresStartupTemplate.Database(t)
-	connection := startupConnection(t, admin, "detent_runtime", "")
+	connection := startupConnection(t, admin, "detent_runtime_v2", "")
 	cfg := startupConfig(connection)
 	cfg.SecretKeys = secretTestKeys(t, "1", "1")
 	cfg.Workspace = &WorkspaceConfig{Enabled: true}

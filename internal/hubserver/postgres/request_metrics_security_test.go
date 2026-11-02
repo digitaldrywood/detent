@@ -164,7 +164,7 @@ func TestRequestMetricsRuntimeRejectsUnsafeTables(t *testing.T) {
 	for _, table := range []string{"request_metric_windows", "request_metric_callers", "request_minutes", "request_hours", "request_days", "request_metric_imports"} {
 		t.Run(table, func(t *testing.T) {
 			admin := template.Database(t)
-			pool := rolePool(t, admin, "detent_runtime", "")
+			pool := rolePool(t, admin, "detent_runtime_v2", "")
 			if _, err := admin.ExecContext(t.Context(), "ALTER TABLE "+table+" NO FORCE ROW LEVEL SECURITY"); err != nil {
 				t.Fatal(err)
 			}

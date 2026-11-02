@@ -375,7 +375,7 @@ func TestSearchAggregateMigrationRebuildsEveryTenant(t *testing.T) {
 	if _, err := f.admin.ExecContext(t.Context(), `UPDATE search_documents SET vector=source_vector WHERE kind='comment'`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.admin.ExecContext(t.Context(), `SET ROLE detent_migration`); err != nil {
+	if _, err := f.admin.ExecContext(t.Context(), `SET ROLE detent_migration_v2`); err != nil {
 		t.Fatal(err)
 	}
 	_, migrationErr := provider.Up(t.Context())

@@ -192,7 +192,7 @@ func TestRepositoryPoolBudgetsAndReuse(t *testing.T) {
 }
 
 func TestRepositoryPoolConfiguration(t *testing.T) {
-	pool := rolePool(t, template.Database(t), "detent_runtime", "")
+	pool := rolePool(t, template.Database(t), "detent_runtime_v2", "")
 	for _, tc := range []struct {
 		name   string
 		config postgres.PoolConfig

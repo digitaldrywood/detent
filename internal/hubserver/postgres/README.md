@@ -4,7 +4,7 @@ This directory owns the PostgreSQL schema and transaction boundary for the
 core records, request metrics and platform registry/authentication families.
 Provision `roles.sql` as a database administrator, then apply `migrations/`
 with the Goose PostgreSQL dialect as
-`detent_migration` on an empty PostgreSQL 17 database. Existing installations
+`detent_migration_v2` on an empty PostgreSQL 17 database. Existing installations
 apply only the new timestamp migration after provisioning the roles. The
 SQLite migration chain and runtime remain separate; this package does not
 switch the Hub database backend or import tenant data.
@@ -63,11 +63,16 @@ The schema grants apply only to the selected database. Re-running provisioning
 preserves existing roles and requires a database administrator; Goose migrations
 never create or drop cluster-wide roles.
 
+The versioned names isolate this authority family from roles left by prior
+installations. `postgres.RoleMigrations` renders the historical migration SQL
+with exact legacy role identifiers mapped to these names when Goose reads it;
+the checked-in migration files remain unchanged.
+
 | Group | Authorized access |
 | --- | --- |
-| `detent_runtime` | Tenant-scoped SELECT, INSERT, UPDATE and DELETE, plus issue identity sequence usage; no table ownership, schema creation or TRUNCATE. |
-| `detent_platform` | Explicitly authorized cross-organization core data access through its own RLS policies; no schema migration authority. |
-| `detent_migration` | Core table ownership and schema creation; forced RLS still denies unscoped data access until an authorized migration deliberately changes policy. |
+| `detent_runtime_v2` | Tenant-scoped SELECT, INSERT, UPDATE and DELETE, plus issue identity sequence usage; no table ownership, schema creation or TRUNCATE. |
+| `detent_platform_v2` | Explicitly authorized cross-organization core data access through its own RLS policies; no schema migration authority. |
+| `detent_migration_v2` | Core table ownership and schema creation; forced RLS still denies unscoped data access until an authorized migration deliberately changes policy. |
 
 An administrator provisions separate application, platform and migration login
 credentials and explicitly grants each login only its corresponding group.
@@ -78,16 +83,16 @@ membership are installation inputs, never discovered from host state. For
 example, after creating the three logins through the credential owner:
 
 ```sql
-GRANT detent_runtime TO example_runtime;
-GRANT detent_platform TO example_platform;
-GRANT detent_migration TO example_migration;
+GRANT detent_runtime_v2 TO example_runtime;
+GRANT detent_platform_v2 TO example_platform;
+GRANT detent_migration_v2 TO example_migration;
 ```
 
-Migration connections use `SET ROLE detent_migration` before Goose runs, so new
+Migration connections use `SET ROLE detent_migration_v2` before Goose runs, so new
 tables and the migration ledger have the migration owner. For an existing
 baseline created under a different owner, the administrator first transfers
 `projects`, `issues`, `native_comments` and the Goose ledger `goose_db_version`
-to `detent_migration` before running the new migration as that role. Migrations run
+to `detent_migration_v2` before running the new migration as that role. Migrations run
 through a dedicated connection, with no runtime or platform role membership.
 The migration login needs no superuser or `BYPASSRLS` attribute.
 
@@ -225,7 +230,7 @@ Minute, hour and day cursors use the last returned record's complete grain key.
 The authenticated organization is an explicit argument to every operation,
 and all five metrics tables enable and force RLS. Runtime construction validates
 these tables alongside the core family. The migration installs under
-`detent_migration`; platform access remains restricted to `detent_platform`.
+`detent_migration_v2`; platform access remains restricted to `detent_platform_v2`.
 This family boundary follows the core port: backend selection and legacy SQLite
 import remain separate integration work.
 
@@ -294,7 +299,7 @@ queue, retry owner or derived writes (INV-18), and all new columns remain typed
 ## Platform registry and authentication
 
 The platform family lives under the `platform` schema, provisioned by `roles.sql`
-with `detent_migration` ownership and only `detent_platform` usage. Its migration
+with `detent_migration_v2` ownership and only `detent_platform_v2` usage. Its migration
 shares this directory and Goose ledger with the tenant families. Tenant runtime
 roles receive no platform access. The `roles.sql` schema definition is also an
 input to sqlc; generated platform models stay in `pgquery`.
@@ -633,7 +638,7 @@ Runtime has read access to that ledger, never migration authority. Startup
 does not apply migrations or provision roles. `hubserver.MigratePostgres` is a
 separate installation operation with its own explicit connection configuration,
 one connection and a migration-only login. Every migration connection assumes
-`detent_migration`, including reconnections; runtime, platform, combined and
+`detent_migration_v2`, including reconnections; runtime, platform, combined and
 elevated identities are rejected. Provision `roles.sql` separately before this
 operation. Migration connections never enter serving or background owners.
 
@@ -1046,7 +1051,7 @@ same ordering. Scores can differ from SQLite corpus BM25. Coverage and stable ti
 within each candidate window; pagination does not promise corpus-wide rank.
 
 Provision `roles.sql` before applying the search migrations. Its stable,
-read-only `search_index_candidates` helper belongs to `detent_platform`, fixes
+read-only `search_index_candidates` helper belongs to `detent_platform_v2`, fixes
 its search path to `pg_catalog` and denies public execution. It derives the
 tenant exclusively from the transaction-local setting. This avoids the runtime
 RLS barrier around PostgreSQL's non-leakproof text-search operator. The helper

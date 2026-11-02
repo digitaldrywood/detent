@@ -25,7 +25,7 @@ func TestSearchRLSAndSourceRelationships(t *testing.T) {
 	f := newSearchFixture(t)
 	for _, table := range []string{"search_documents", "search_postings", "search_scope_documents", "search_scope_refresh"} {
 		var readable, writable bool
-		if err := f.admin.QueryRowContext(t.Context(), `SELECT has_table_privilege('detent_platform',$1,'SELECT'), has_table_privilege('detent_platform',$1,'INSERT,UPDATE,DELETE,TRUNCATE')`, table).Scan(&readable, &writable); err != nil {
+		if err := f.admin.QueryRowContext(t.Context(), `SELECT has_table_privilege('detent_platform_v2',$1,'SELECT'), has_table_privilege('detent_platform_v2',$1,'INSERT,UPDATE,DELETE,TRUNCATE')`, table).Scan(&readable, &writable); err != nil {
 			t.Fatal(err)
 		}
 		if !readable || writable {
@@ -33,7 +33,7 @@ func TestSearchRLSAndSourceRelationships(t *testing.T) {
 		}
 	}
 	var sequenceAccess bool
-	if err := f.admin.QueryRowContext(t.Context(), `SELECT has_sequence_privilege('detent_platform','search_refresh_order','USAGE,UPDATE')`).Scan(&sequenceAccess); err != nil {
+	if err := f.admin.QueryRowContext(t.Context(), `SELECT has_sequence_privilege('detent_platform_v2','search_refresh_order','USAGE,UPDATE')`).Scan(&sequenceAccess); err != nil {
 		t.Fatal(err)
 	}
 	if sequenceAccess {
@@ -284,7 +284,7 @@ func TestSearchIndexedQueryPlan(t *testing.T) {
 					t.Fatal(err)
 				}
 				defer planTx.Rollback()
-				if _, err := planTx.ExecContext(t.Context(), `SET LOCAL ROLE detent_platform; SELECT set_config('detent.organization_id', 'org_first', true)`); err != nil {
+				if _, err := planTx.ExecContext(t.Context(), `SET LOCAL ROLE detent_platform_v2; SELECT set_config('detent.organization_id', 'org_first', true)`); err != nil {
 					t.Fatal(err)
 				}
 				var raw []byte
@@ -379,7 +379,7 @@ func TestSearchExcludedHistoryDoesNotGrowCandidateWork(t *testing.T) {
 					t.Fatal(err)
 				}
 				defer tx.Rollback()
-				if _, err := tx.ExecContext(t.Context(), `SET LOCAL ROLE detent_platform; SELECT set_config('detent.organization_id','org_first',true)`); err != nil {
+				if _, err := tx.ExecContext(t.Context(), `SET LOCAL ROLE detent_platform_v2; SELECT set_config('detent.organization_id','org_first',true)`); err != nil {
 					t.Fatal(err)
 				}
 				for _, cursor := range []string{"", "before-history"} {

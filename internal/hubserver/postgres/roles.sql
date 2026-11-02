@@ -1,39 +1,39 @@
 DO $roles$
 BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'detent_migration') THEN
-        CREATE ROLE detent_migration NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'detent_migration_v2') THEN
+        CREATE ROLE detent_migration_v2 NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
     END IF;
-    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'detent_runtime') THEN
-        CREATE ROLE detent_runtime NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'detent_runtime_v2') THEN
+        CREATE ROLE detent_runtime_v2 NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
     END IF;
-    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'detent_platform') THEN
-        CREATE ROLE detent_platform NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'detent_platform_v2') THEN
+        CREATE ROLE detent_platform_v2 NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
     END IF;
     IF EXISTS (
         SELECT 1 FROM pg_roles
-        WHERE rolname IN ('detent_migration', 'detent_runtime', 'detent_platform')
+        WHERE rolname IN ('detent_migration_v2', 'detent_runtime_v2', 'detent_platform_v2')
         AND (rolcanlogin OR rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication OR rolbypassrls)
     ) THEN
         RAISE EXCEPTION 'Detent group roles must be unprivileged and unable to log in';
     END IF;
-    IF pg_has_role('detent_runtime', 'detent_platform', 'MEMBER')
-        OR pg_has_role('detent_runtime', 'detent_migration', 'MEMBER')
-        OR pg_has_role('detent_platform', 'detent_migration', 'MEMBER')
-        OR pg_has_role('detent_platform', 'detent_runtime', 'MEMBER')
-        OR pg_has_role('detent_migration', 'detent_runtime', 'MEMBER')
-        OR pg_has_role('detent_migration', 'detent_platform', 'MEMBER') THEN
+    IF pg_has_role('detent_runtime_v2', 'detent_platform_v2', 'MEMBER')
+        OR pg_has_role('detent_runtime_v2', 'detent_migration_v2', 'MEMBER')
+        OR pg_has_role('detent_platform_v2', 'detent_migration_v2', 'MEMBER')
+        OR pg_has_role('detent_platform_v2', 'detent_runtime_v2', 'MEMBER')
+        OR pg_has_role('detent_migration_v2', 'detent_runtime_v2', 'MEMBER')
+        OR pg_has_role('detent_migration_v2', 'detent_platform_v2', 'MEMBER') THEN
         RAISE EXCEPTION 'Detent database roles must have separate authority';
     END IF;
 END
 $roles$;
 
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
-GRANT USAGE, CREATE ON SCHEMA public TO detent_migration;
-GRANT USAGE ON SCHEMA public TO detent_runtime, detent_platform;
+GRANT USAGE, CREATE ON SCHEMA public TO detent_migration_v2;
+GRANT USAGE ON SCHEMA public TO detent_runtime_v2, detent_platform_v2;
 
-CREATE SCHEMA IF NOT EXISTS platform AUTHORIZATION detent_migration;
-REVOKE ALL ON SCHEMA platform FROM PUBLIC, detent_runtime;
-GRANT USAGE ON SCHEMA platform TO detent_platform;
+CREATE SCHEMA IF NOT EXISTS platform AUTHORIZATION detent_migration_v2;
+REVOKE ALL ON SCHEMA platform FROM PUBLIC, detent_runtime_v2;
+GRANT USAGE ON SCHEMA platform TO detent_platform_v2;
 
 CREATE OR REPLACE FUNCTION public.search_scope_key(project_id text,work_item_id text,kind text,scope text,status text,archived text,principal_id text)
 RETURNS text LANGUAGE sql IMMUTABLE SET search_path=pg_catalog AS $key$
@@ -246,6 +246,6 @@ BEGIN
  UNION ALL SELECT b.document_id,true,b.key||':'||b.term||chr(9)||b.lexeme||CASE WHEN b.exhausted AND b.more_lexemes THEN chr(9)||'advance' ELSE '' END,b.impact,b.exhausted AND NOT b.more_lexemes FROM stream_boundaries b;
 END
 $search$;
-ALTER FUNCTION public.search_index_candidates(tsquery,text,text[],boolean,text,text,text,text,text,boolean,text,timestamptz,text,bigint,text[],boolean,text[],text[],double precision[],text[],bigint[],boolean[]) OWNER TO detent_platform;
+ALTER FUNCTION public.search_index_candidates(tsquery,text,text[],boolean,text,text,text,text,text,boolean,text,timestamptz,text,bigint,text[],boolean,text[],text[],double precision[],text[],bigint[],boolean[]) OWNER TO detent_platform_v2;
 REVOKE ALL ON FUNCTION public.search_index_candidates(tsquery,text,text[],boolean,text,text,text,text,text,boolean,text,timestamptz,text,bigint,text[],boolean,text[],text[],double precision[],text[],bigint[],boolean[]) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.search_index_candidates(tsquery,text,text[],boolean,text,text,text,text,text,boolean,text,timestamptz,text,bigint,text[],boolean,text[],text[],double precision[],text[],bigint[],boolean[]) TO detent_runtime;
+GRANT EXECUTE ON FUNCTION public.search_index_candidates(tsquery,text,text[],boolean,text,text,text,text,text,boolean,text,timestamptz,text,bigint,text[],boolean,text[],text[],double precision[],text[],bigint[],boolean[]) TO detent_runtime_v2;

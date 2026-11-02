@@ -353,7 +353,7 @@ func TestProjectRecordMigrationKeepsExistingTenants(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := admin.ExecContext(t.Context(), "SET ROLE detent_migration"); err != nil {
+	if _, err := admin.ExecContext(t.Context(), "SET ROLE detent_migration_v2"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := provider.Up(t.Context()); err != nil {

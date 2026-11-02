@@ -112,7 +112,7 @@ func TestEventChangeRowSecurity(t *testing.T) {
 			if err := admin.QueryRowContext(t.Context(), `SELECT pg_get_userbyid(relowner),relrowsecurity,relforcerowsecurity FROM pg_class WHERE oid=$1::regclass`, table).Scan(&owner, &enabled, &forced); err != nil {
 				t.Fatal(err)
 			}
-			if owner != "detent_migration" || !forced || !enabled {
+			if owner != "detent_migration_v2" || !forced || !enabled {
 				t.Fatalf("owner=%s forced=%v enabled=%v", owner, forced, enabled)
 			}
 		})

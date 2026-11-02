@@ -90,7 +90,7 @@ func TestAccessTenantSchemaEnforcesIsolation(t *testing.T) {
 	if !errors.Is(err, corestore.ErrTenantMismatch) {
 		t.Fatalf("cross-tenant write=%v", err)
 	}
-	platform := rolePool(t, admin, "detent_platform", "")
+	platform := rolePool(t, admin, "detent_platform_v2", "")
 	defer platform.Close()
 	if _, err := platform.ExecContext(t.Context(), `SELECT * FROM api_tokens`); err == nil {
 		t.Fatal("platform authority read tenant credentials")
