@@ -111,6 +111,7 @@ func newHubCommandWithRun(version string, lookupEnv func(string) string, run hub
 	cmd.AddCommand(newHubRecoveryCommands(lookupEnv)...)
 	cmd.AddCommand(newHubSharedMigrationCommand(lookupEnv))
 	cmd.AddCommand(newHubPostgresMigrationCommand(lookupEnv, hubserver.MigratePostgres))
+	cmd.AddCommand(newHubPostgresImportCommand(lookupEnv))
 	cmd.AddCommand(newHubSecretsCommand(lookupEnv))
 	return cmd
 }

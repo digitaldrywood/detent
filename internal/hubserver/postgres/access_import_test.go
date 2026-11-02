@@ -184,12 +184,15 @@ func TestAccessImportRetainsTenantAccessAndSecretParity(t *testing.T) {
 	sources := make([]postgres.AccessImportSource, len(organizations))
 	objects := make([]*historyObjects, len(organizations))
 	for n, organization := range organizations {
-		seedAccessTarget(t, db, r, organization)
 		sources[n], objects[n] = accessImportSourceFor(t, db, fmt.Sprintf("raw_access_%d", n), organization, false)
 	}
 	for n, source := range sources {
 		organization := organizations[n]
 		copySource := postgres.AccessCopyImportSource{CopyPath: accessSQLiteCopy(t, source), OrganizationID: organization, Catalog: source.Catalog, Objects: source.Objects}
+		if err := r.InitializeAccessCopyOrganization(t.Context(), copySource); err != nil {
+			t.Fatalf("initialize tenant organization: %v", err)
+		}
+		seedRepository(t, r, organization)
 		processed, err := r.ImportAccessCopy(t.Context(), copySource)
 		if err != nil || processed != int64(len(accessFixtureTables)) {
 			t.Fatalf("tenant %s import = %d, %v", organizations[n], processed, err)
@@ -197,6 +200,11 @@ func TestAccessImportRetainsTenantAccessAndSecretParity(t *testing.T) {
 		replay, err := r.ImportAccessCopy(t.Context(), copySource)
 		if err != nil || replay != processed {
 			t.Fatalf("tenant %s replay = %+v, %v", organizations[n], replay, err)
+		}
+		var importedName, importedSlug string
+		var importedLocal bool
+		if err := db.QueryRowContext(t.Context(), `SELECT name,slug,local FROM organizations WHERE organization_id=$1`, organization).Scan(&importedName, &importedSlug, &importedLocal); err != nil || importedName != "Example organization" || importedSlug != "example" || importedLocal {
+			t.Fatalf("tenant organization import name=%q slug=%q local=%v error=%v", importedName, importedSlug, importedLocal, err)
 		}
 		var tokenHash, scope, hostedUser, hostedMembership, keyKind string
 		var nativeOnly bool
