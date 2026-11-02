@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/storagecatalog"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -185,6 +186,11 @@ func TestAccessImportRetainsTenantAccessAndSecretParity(t *testing.T) {
 	objects := make([]*historyObjects, len(organizations))
 	for n, organization := range organizations {
 		sources[n], objects[n] = accessImportSourceFor(t, db, fmt.Sprintf("raw_access_%d", n), organization, false)
+		if n == 0 {
+			if _, err := db.ExecContext(t.Context(), `UPDATE "raw_access_0".hosted_invitations SET expires_at='' WHERE id='invitation_first'`); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
 	for n, source := range sources {
 		organization := organizations[n]
@@ -196,6 +202,24 @@ func TestAccessImportRetainsTenantAccessAndSecretParity(t *testing.T) {
 		processed, err := r.ImportAccessCopy(t.Context(), copySource)
 		if err != nil || processed != int64(len(accessFixtureTables)) {
 			t.Fatalf("tenant %s import = %d, %v", organizations[n], processed, err)
+		}
+		var invitationExpiry time.Time
+		if err := db.QueryRowContext(t.Context(), `SELECT expires_at FROM hosted_invitations WHERE organization_id=$1 AND id='invitation_first'`, organization).Scan(&invitationExpiry); err != nil {
+			t.Fatal(err)
+		}
+		wantExpiry := time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
+		if n == 0 {
+			wantExpiry = time.Date(9999, time.December, 31, 23, 59, 59, 999999000, time.UTC)
+		}
+		if !invitationExpiry.Equal(wantExpiry) {
+			t.Fatalf("tenant %s invitation expiry=%v, want %v", organization, invitationExpiry, wantExpiry)
+		}
+		acceptAt := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
+		acceptErr := r.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+			return w.AcceptAccessInvitation(t.Context(), "invitation_first", "invite@example.test", "user_accept", acceptAt)
+		})
+		if n == 0 && acceptErr != nil || n == 1 && !errors.Is(acceptErr, corestore.ErrNotFound) {
+			t.Fatalf("tenant %s invitation acceptance after original finite-expiry horizon: %v", organization, acceptErr)
 		}
 		replay, err := r.ImportAccessCopy(t.Context(), copySource)
 		if err != nil || replay != processed {

@@ -177,6 +177,7 @@ func TestValueDecodingRejectsLossAndAmbiguity(t *testing.T) {
 		{name: "trailing zero precision", codec: "timestamp", input: "2026-11-01T14:00:00.1234560000Z", want: Value{Time: instant}},
 		{name: "nanosecond truncates to target precision", codec: "timestamp", input: "2026-11-01T14:00:00.123456789Z", want: Value{Time: instant}},
 		{name: "offset timestamp truncates after UTC conversion", codec: "timestamp", input: "2026-11-01T09:00:00.123456789-05:00", want: Value{Time: instant}},
+		{name: "empty no-expiry timestamp maps to finite maximum", codec: "timestamp", empty: "max-timestamp", want: Value{Time: time.Date(9999, time.December, 31, 23, 59, 59, 999999000, time.UTC)}},
 		{name: "parser truncation loss", codec: "timestamp", input: "2026-11-01T14:00:00.1234560001Z", fail: true},
 		{name: "timestamp timezone missing", codec: "timestamp", input: "2026-11-01 14:00:00", fail: true},
 		{name: "bad timestamp", codec: "timestamp", input: "private-malformed-value", fail: true},
