@@ -166,8 +166,8 @@ func corePolicyCopy(t *testing.T, organization tracker.OrganizationID, now time.
 		`CREATE TABLE policy_revisions(scope TEXT,policy_id TEXT,metadata_json TEXT,approved_by TEXT,approved_at TEXT,gate_github_pull_request INTEGER,PRIMARY KEY(scope,policy_id))`,
 		`CREATE TABLE project_policies(scope TEXT PRIMARY KEY,policy_id TEXT)`,
 		`CREATE TABLE monthly_budget_policies(organization_id TEXT,project_id TEXT,revision INTEGER,policy_json TEXT,actor_id TEXT,updated_at TEXT,PRIMARY KEY(organization_id,project_id,revision))`,
-		`CREATE TABLE issues(id INTEGER,organization_id TEXT,PRIMARY KEY(organization_id,id))`,
-		`CREATE TABLE leases(lease_id TEXT,organization_id TEXT,PRIMARY KEY(organization_id,lease_id))`,
+		`CREATE TABLE issues(id INTEGER PRIMARY KEY,organization_id TEXT NOT NULL)`,
+		`CREATE TABLE leases(lease_id TEXT PRIMARY KEY,issue_id INTEGER NOT NULL REFERENCES issues(id))`,
 		`CREATE TABLE monthly_budget_admissions(issue_id INTEGER PRIMARY KEY,admitted_at TEXT)`,
 		`CREATE TABLE monthly_budget_leases(lease_id TEXT PRIMARY KEY,exposure_json TEXT)`,
 		`CREATE TABLE change_review_policies(organization_id TEXT,project_id TEXT,policy_json TEXT,PRIMARY KEY(organization_id,project_id))`,
@@ -219,7 +219,7 @@ func corePolicyCopy(t *testing.T, organization tracker.OrganizationID, now time.
 	if _, err := db.ExecContext(t.Context(), `INSERT INTO issues(id,organization_id) VALUES(1,?),(2,?)`, organization, organization); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.ExecContext(t.Context(), `INSERT INTO leases(lease_id,organization_id) VALUES('lease_1',?)`, organization); err != nil {
+	if _, err := db.ExecContext(t.Context(), `INSERT INTO leases(lease_id,issue_id) VALUES('lease_1',1)`); err != nil {
 		t.Fatal(err)
 	}
 	exposure, _ := json.Marshal(budget.CostExposure{LunaAPI: true, SpriteInfrastructure: true})

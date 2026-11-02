@@ -431,7 +431,8 @@ func (r *Repository) importMonthlyBudgetLeases(ctx context.Context, tx *sql.Tx, 
 	var after string
 	for {
 		rows, err := tx.QueryContext(ctx, `SELECT b.lease_id,b.exposure_json FROM monthly_budget_leases b
-JOIN leases l ON l.lease_id=b.lease_id WHERE l.organization_id=? AND b.lease_id>? ORDER BY b.lease_id LIMIT 100`, source.OrganizationID, after)
+JOIN leases l ON l.lease_id=b.lease_id JOIN issues i ON i.id=l.issue_id
+WHERE i.organization_id=? AND b.lease_id>? ORDER BY b.lease_id LIMIT 100`, source.OrganizationID, after)
 		if err != nil {
 			return count, err
 		}
