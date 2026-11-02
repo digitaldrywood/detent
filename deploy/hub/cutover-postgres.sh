@@ -298,6 +298,7 @@ copy_sealed() {
 	if ! sudo -n test -f "$source" || sudo -n test -L "$source"; then fail "a registered SQLite source is not a regular file"; fi
 	sudo -n python3 - "$source" "$destination" "$SERVICE_USER" "$SERVICE_GROUP" <<'PY'
 import grp
+import hashlib
 import os
 import pathlib
 import pwd
@@ -316,7 +317,18 @@ def source_identity(path):
         return None
     if not os.path.isfile(path) or os.path.islink(path):
         raise SystemExit(1)
-    return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
+    identity = lambda value: (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
+    digest = hashlib.sha256()
+    with open(path, "rb") as sidecar:
+        opened = os.fstat(sidecar.fileno())
+        if identity(info) != identity(opened):
+            raise SystemExit(1)
+        for chunk in iter(lambda: sidecar.read(1024 * 1024), b""):
+            digest.update(chunk)
+        after_read = os.fstat(sidecar.fileno())
+    if identity(opened) != identity(after_read):
+        raise SystemExit(1)
+    return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, digest.hexdigest()
 source_sidecars = {suffix: source_identity(str(source_path) + suffix) for suffix in ("-wal", "-journal")}
 reader = sqlite3.connect(source_path.resolve().as_uri() + "?mode=ro", uri=True)
 writer = sqlite3.connect(destination_path)
@@ -329,7 +341,12 @@ finally:
 after = os.lstat(source_path)
 identity = lambda info: (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
 destination_sidecars = (str(destination_path) + "-wal", str(destination_path) + "-journal")
-if identity(source_info) != identity(after) or source_sidecars != {suffix: source_identity(str(source_path) + suffix) for suffix in ("-wal", "-journal")} or any(os.path.lexists(sidecar) and os.path.getsize(sidecar) != 0 for sidecar in destination_sidecars):
+current_sidecars = {suffix: source_identity(str(source_path) + suffix) for suffix in ("-wal", "-journal")}
+previous_wal = source_sidecars["-wal"]
+current_wal = current_sidecars["-wal"]
+new_empty_wal = previous_wal is None and current_wal is not None and current_wal[2] == 0
+source_sidecars_unchanged = source_sidecars["-journal"] == current_sidecars["-journal"] and (new_empty_wal or previous_wal == current_wal)
+if identity(source_info) != identity(after) or not source_sidecars_unchanged or any(os.path.lexists(sidecar) and os.path.getsize(sidecar) != 0 for sidecar in destination_sidecars):
     os.unlink(destination_path)
     raise SystemExit(1)
 for sidecar in destination_sidecars:
@@ -383,8 +400,8 @@ PY
 registry_copy="$backup_root/platform/registry.db"
 auth_copy="$backup_root/platform/auth.db"
 check_copy_space "$source_state/registry.db" "$source_state/auth.db" || fail "the platform SQLite copies exceed available sealed-copy space"
-copy_sealed "$source_state/registry.db" "$registry_copy"
-copy_sealed "$source_state/auth.db" "$auth_copy"
+copy_sealed "$source_state/registry.db" "$registry_copy" || fail "the platform registry database could not be sealed"
+copy_sealed "$source_state/auth.db" "$auth_copy" || fail "the platform authentication database could not be sealed"
 
 organization_output=$(run_service python3 - "$registry_copy" <<'PY'
 import re
@@ -458,11 +475,11 @@ shopt -u nullglob
 check_copy_space "${source_databases[@]}" "${source_metrics_databases[@]}" || fail "the tenant SQLite copies exceed available sealed-copy space"
 for database in "${source_databases[@]}"; do
 	organization=$(basename "$(dirname "$database")")
-	copy_sealed "$database" "$backup_root/tenants/$organization/hub.db"
+	copy_sealed "$database" "$backup_root/tenants/$organization/hub.db" || fail "a tenant database could not be sealed"
 done
 for database in "${source_metrics_databases[@]}"; do
 	organization=$(basename "$(dirname "$database")")
-	copy_sealed "$database" "$backup_root/tenants/$organization/hub.db.metrics.sqlite"
+	copy_sealed "$database" "$backup_root/tenants/$organization/hub.db.metrics.sqlite" || fail "a tenant metrics database could not be sealed"
 	metrics_database_count=$((metrics_database_count + 1))
 done
 
