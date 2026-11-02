@@ -44,6 +44,9 @@ func ImportTenantCoreCopy(ctx context.Context, config postgres.Config, source Te
 	if err := source.Catalog.Validate(); err != nil {
 		return result, err
 	}
+	if err := postgres.VerifyCoreCutoverCopy(ctx, source.CopyPath); err != nil {
+		return result, err
+	}
 	database, err := openPostgresDatabase(ctx, config)
 	if err != nil {
 		return result, err
