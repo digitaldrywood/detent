@@ -189,16 +189,13 @@ func TestAccessImportRetainsTenantAccessAndSecretParity(t *testing.T) {
 	}
 	for n, source := range sources {
 		organization := organizations[n]
-		progress := finishAccessImport(t, r, source)
-		if !progress.Done || progress.Processed != int64(len(accessFixtureTables)) {
-			t.Fatalf("tenant %s import = %+v", organizations[n], progress)
+		copySource := postgres.AccessCopyImportSource{CopyPath: accessSQLiteCopy(t, source), OrganizationID: organization, Catalog: source.Catalog, Objects: source.Objects}
+		processed, err := r.ImportAccessCopy(t.Context(), copySource)
+		if err != nil || processed != int64(len(accessFixtureTables)) {
+			t.Fatalf("tenant %s import = %d, %v", organizations[n], processed, err)
 		}
-		importer, err := r.NewAccessImporter(t.Context(), source)
-		if err != nil {
-			t.Fatal(err)
-		}
-		replay, err := importer.Step(t.Context(), 2)
-		if err != nil || !replay.Done || replay.Processed != progress.Processed {
+		replay, err := r.ImportAccessCopy(t.Context(), copySource)
+		if err != nil || replay != processed {
 			t.Fatalf("tenant %s replay = %+v, %v", organizations[n], replay, err)
 		}
 		var tokenHash, scope, hostedUser, hostedMembership, keyKind string

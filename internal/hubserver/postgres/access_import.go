@@ -29,6 +29,7 @@ const AccessImportLimit = 100
 
 type AccessImportSource struct {
 	DB         *sql.DB
+	copyTx     *sql.Tx
 	Catalog    storagecatalog.Catalog
 	Source     storagecatalog.Source
 	Schema     storagecatalog.Schema
@@ -120,7 +121,7 @@ var accessImportTransforms = map[string]map[string]accessImportTransform{
 }
 
 func (r *Repository) NewAccessImporter(ctx context.Context, source AccessImportSource) (*AccessImporter, error) {
-	if source.DB == nil || source.Source.Store != "hub" || source.SnapshotID == "" || len(source.SnapshotID) > 200 || strings.TrimSpace(source.SnapshotID) != source.SnapshotID || strings.TrimSpace(source.Source.OrganizationID) != source.Source.OrganizationID {
+	if (source.DB == nil) == (source.copyTx == nil) || source.Source.Store != "hub" || source.SnapshotID == "" || len(source.SnapshotID) > 200 || strings.TrimSpace(source.SnapshotID) != source.SnapshotID || strings.TrimSpace(source.Source.OrganizationID) != source.Source.OrganizationID {
 		return nil, ErrAccessImport
 	}
 	encoded, err := json.Marshal(struct {
@@ -322,8 +323,8 @@ func (i *AccessImporter) validateSource(ctx context.Context) error {
 		}
 		i.tables = append(i.tables, accessImportTable{name: name, keys: keys})
 	}
-	statement := strings.Join([]string{"SELECT id FROM", i.sourceTable("organizations"), `ORDER BY id COLLATE "C" LIMIT 2`}, " ")
-	rows, err := i.source.DB.QueryContext(ctx, statement)
+	statement := strings.Join([]string{"SELECT id FROM", i.sourceTable("organizations"), "ORDER BY id COLLATE " + i.sourceCollation() + " LIMIT 2"}, " ")
+	rows, err := i.querySource(ctx, statement)
 	if err != nil {
 		return err
 	}
@@ -376,10 +377,16 @@ func accessSourceKeys(table storagecatalog.Table) ([]string, error) {
 }
 
 func (i *AccessImporter) sourceTable(table string) string {
+	if i.source.copyTx != nil {
+		return pq.QuoteIdentifier(table)
+	}
 	return pq.QuoteIdentifier(i.source.Source.Schema) + "." + pq.QuoteIdentifier(table)
 }
 
 func (i *AccessImporter) validateSourceTable(ctx context.Context, table string) error {
+	if i.source.copyTx != nil {
+		return i.validateCopyTable(ctx, table)
+	}
 	statement := strings.Join([]string{"SELECT * FROM", i.sourceTable(table), "LIMIT 0"}, " ")
 	rows, err := i.source.DB.QueryContext(ctx, statement)
 	if err != nil {
@@ -416,6 +423,9 @@ func (i *AccessImporter) validateSourceTable(ctx context.Context, table string) 
 }
 
 func (i *AccessImporter) validateSourceIndex(ctx context.Context, table string, keys []string) error {
+	if i.source.copyTx != nil {
+		return nil
+	}
 	var valid bool
 	err := i.source.DB.QueryRowContext(ctx, `SELECT EXISTS (
 SELECT 1 FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid JOIN pg_am am ON am.oid=c.relam
@@ -448,7 +458,7 @@ func (i *AccessImporter) readPage(ctx context.Context, table accessImportTable, 
 	order := make([]string, len(table.keys))
 	args := make([]any, 0, len(table.keys)+1)
 	for n, key := range table.keys {
-		order[n] = pq.QuoteIdentifier(key) + ` COLLATE "C"`
+		order[n] = pq.QuoteIdentifier(key) + " COLLATE " + i.sourceCollation()
 	}
 	queryParts := []string{"SELECT", strings.Join(quoted, ","), "FROM", i.sourceTable(table.name)}
 	if checkpoint.hasAfter {
@@ -456,15 +466,22 @@ func (i *AccessImporter) readPage(ctx context.Context, table accessImportTable, 
 		placeholders := make([]string, len(table.keys))
 		for n := range table.keys {
 			placeholders[n] = fmt.Sprintf("$%d::text COLLATE \"C\"", n+1)
+			if i.source.copyTx != nil {
+				placeholders[n] = "?"
+			}
 			args = append(args, checkpoint.after[n])
 		}
 		predicate += strings.Join(placeholders, ",") + ")"
 		queryParts = append(queryParts, "WHERE", predicate)
 	}
-	queryParts = append(queryParts, "ORDER BY", strings.Join(order, ","), fmt.Sprintf("LIMIT $%d::integer", len(args)+1))
+	limitClause := fmt.Sprintf("LIMIT $%d::integer", len(args)+1)
+	if i.source.copyTx != nil {
+		limitClause = "LIMIT ?"
+	}
+	queryParts = append(queryParts, "ORDER BY", strings.Join(order, ","), limitClause)
 	args = append(args, limit)
 	query := strings.Join(queryParts, " ")
-	rows, err := i.source.DB.QueryContext(ctx, query, args...)
+	rows, err := i.querySource(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("execute access source page for %s: %w", table.name, mapError(ctx, err))
 	}
