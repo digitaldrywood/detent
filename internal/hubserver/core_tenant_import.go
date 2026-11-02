@@ -21,6 +21,10 @@ type TenantCoreImportSource struct {
 }
 
 type TenantCoreImportResult struct {
+	CoreImportComplete bool  `json:"core_import_complete"`
+	CreditAccounts     int64 `json:"credit_accounts"`
+	CreditPacks        int64 `json:"credit_packs"`
+	CreditTransactions int64 `json:"credit_transactions"`
 	Projects           int64 `json:"projects"`
 	AccessRows         int64 `json:"access_rows"`
 	WorkItems          int64 `json:"work_items"`
@@ -35,6 +39,10 @@ type TenantCoreImportResult struct {
 	ExecutionRows      int64 `json:"execution_rows"`
 	MonthlyAdmissions  int64 `json:"monthly_admissions"`
 	MonthlyLeases      int64 `json:"monthly_leases"`
+	Changes            int64 `json:"changes"`
+	ConversationRows   int64 `json:"conversation_rows"`
+	ConversationPrices int64 `json:"conversation_prices"`
+	ConversationUsage  int64 `json:"conversation_usage"`
 }
 
 func ImportTenantCoreCopy(ctx context.Context, config postgres.Config, source TenantCoreImportSource) (result TenantCoreImportResult, resultErr error) {
@@ -51,7 +59,12 @@ func ImportTenantCoreCopy(ctx context.Context, config postgres.Config, source Te
 	if err != nil {
 		return result, err
 	}
-	defer func() { resultErr = errors.Join(resultErr, database.Close()) }()
+	defer func() {
+		resultErr = errors.Join(resultErr, database.Close())
+		if resultErr != nil {
+			result.CoreImportComplete = false
+		}
+	}()
 	repository := database.postgres
 	accessSource := postgres.AccessCopyImportSource{CopyPath: source.CopyPath, OrganizationID: source.OrganizationID, Catalog: source.Catalog, Objects: source.Objects}
 	if err := repository.InitializeAccessCopyOrganization(ctx, accessSource); err != nil {
@@ -103,6 +116,10 @@ func ImportTenantCoreCopy(ctx context.Context, config postgres.Config, source Te
 	if err != nil {
 		return result, fmt.Errorf("import tenant execution: %w", err)
 	}
+	result.Changes, err = ImportCoreChanges(ctx, repository, CoreChangeImportSource{CopyPath: source.CopyPath, OrganizationID: source.OrganizationID, SourceObjects: source.Objects, Objects: source.Objects})
+	if err != nil {
+		return result, fmt.Errorf("import tenant changes: %w", err)
+	}
 	monthly, err := repository.ImportCoreMonthlyBudgetFacts(ctx, postgres.CorePolicyImportSource{CopyPath: source.CopyPath, OrganizationID: source.OrganizationID, Objects: source.Objects})
 	if err != nil {
 		return result, fmt.Errorf("import tenant monthly budget facts: %w", err)
@@ -124,5 +141,39 @@ func ImportTenantCoreCopy(ctx context.Context, config postgres.Config, source Te
 	result.CostSourceRows = costs.SourceRows
 	result.CostCurrentSources = costs.CurrentSources
 	result.CostHistoryRows = costs.HistoryRows
+	conversations, err := repository.ImportConversationHistory(ctx, postgres.ConversationHistoryImportSource{
+		CopyPath: source.CopyPath,
+		Catalog:  source.Catalog,
+		Source:   storagecatalog.Source{Store: "hub", CatalogVersion: source.Catalog.Version, OrganizationID: string(source.OrganizationID)},
+		Objects:  source.Objects,
+	})
+	if err != nil {
+		return result, fmt.Errorf("import tenant conversation history: %w", err)
+	}
+	result.ConversationRows = conversations.Rows
+	billing, err := repository.ImportConversationBilling(ctx, postgres.ConversationBillingImportSource{
+		CopyPath: source.CopyPath,
+		Catalog:  source.Catalog,
+		Source:   storagecatalog.Source{Store: "hub", CatalogVersion: source.Catalog.Version, OrganizationID: string(source.OrganizationID)},
+		Objects:  source.Objects,
+	})
+	if err != nil {
+		return result, fmt.Errorf("import tenant conversation usage: %w", err)
+	}
+	result.ConversationPrices = billing.Prices
+	result.ConversationUsage = billing.Usage
+	credits, err := repository.ImportCreditHistory(ctx, postgres.CreditHistoryImportSource{
+		CopyPath: source.CopyPath,
+		Catalog:  source.Catalog,
+		Source:   storagecatalog.Source{Store: "hub", CatalogVersion: source.Catalog.Version, OrganizationID: string(source.OrganizationID)},
+		Objects:  source.Objects,
+	})
+	if err != nil {
+		return result, fmt.Errorf("import tenant credit history: %w", err)
+	}
+	result.CreditAccounts = credits.Accounts
+	result.CreditPacks = credits.Packs
+	result.CreditTransactions = credits.Transactions
+	result.CoreImportComplete = true
 	return result, nil
 }
