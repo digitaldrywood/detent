@@ -91,7 +91,7 @@ func (c Catalog) Validate() error {
 			if !identifier(name) || column.Source == "" || !slices.Contains([]string{"preserve", "reject"}, column.Null) || !slices.Contains([]string{"preserve", "null", "reject"}, column.Empty) {
 				return ErrCatalog
 			}
-			if !slices.Contains([]string{"text", "int64", "float64", "bool01", "timestamp", "unix-seconds", "bytes", "object-text", "object-json", "histogram"}, column.Codec) {
+			if !slices.Contains([]string{"text", "int32", "int64", "float64", "bool01", "timestamp", "unix-seconds", "bytes", "object-text", "object-json", "json", "histogram"}, column.Codec) {
 				return ErrCatalog
 			}
 			if !slices.Contains([]string{"column", "object", "transform", "pending", "rebuild", "retired"}, column.Disposition) {
@@ -120,7 +120,7 @@ func (c Catalog) Validate() error {
 			}
 			for _, target := range column.Targets {
 				schema, name, ok := strings.Cut(target.Table, ".")
-				if !ok || !slices.Contains([]string{"public", "platform"}, schema) || !identifier(name) || !identifier(target.Column) || !slices.Contains([]string{"text", "integer", "bigint", "boolean", "timestamp with time zone", "double precision", "bytea", "ARRAY", "numeric"}, target.Type) {
+				if !ok || !slices.Contains([]string{"public", "platform"}, schema) || !identifier(name) || !identifier(target.Column) || !slices.Contains([]string{"text", "integer", "bigint", "boolean", "timestamp with time zone", "double precision", "bytea", "jsonb", "ARRAY", "numeric"}, target.Type) {
 					return ErrCatalog
 				}
 			}
@@ -130,7 +130,7 @@ func (c Catalog) Validate() error {
 }
 
 func validTransform(value string) bool {
-	return slices.Contains([]string{"archive-json", "cost-observation", "hosted-identity", "invitation-grants", "provider-binding", "tenant-singleton"}, value)
+	return slices.Contains([]string{"archive-json", "conversation-attachment", "cost-observation", "hosted-identity", "invitation-grants", "provider-binding", "tenant-singleton"}, value)
 }
 
 func scalarTargetMatches(column Column) bool {
@@ -143,8 +143,12 @@ func scalarTargetMatches(column Column) bool {
 		expected = "text"
 	case "int64":
 		expected = "bigint"
+	case "int32":
+		expected = "integer"
 	case "float64":
 		expected = "double precision"
+	case "json":
+		expected = "jsonb"
 	case "bool01":
 		expected = "boolean"
 	case "timestamp", "unix-seconds":

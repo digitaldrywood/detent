@@ -238,5 +238,30 @@
     "inline_payloads": [],
     "ownership": "organization-owned",
     "scope": "search_scope_refresh.organization_id; project and work item remain tenant scoped"
+  },
+  "public/archive_object_owners": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "archive_object_owners.organization_id; owner identity is tenant scoped"
+  },
+  "public/archive_objects": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "archive_objects.organization_id; immutable archive metadata points to externally verified bytes"
+  },
+  "public/archive_usage_counters": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "archive_usage_counters.organization_id; retained archive bytes are tenant scoped"
+  },
+  "public/conversation_history_import_rows": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "conversation_history_import_rows.organization_id; source row receipts are tenant scoped"
+  },
+  "public/conversation_history_imports": {
+    "inline_payloads": [],
+    "ownership": "organization-owned",
+    "scope": "conversation_history_imports.organization_id; sealed source snapshot and completion count are tenant scoped"
   }
 }

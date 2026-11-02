@@ -186,6 +186,8 @@ func TestValueDecodingRejectsLossAndAmbiguity(t *testing.T) {
 		{name: "nul text", codec: "text", input: "private\x00content", fail: true},
 		{name: "invalid utf8", codec: "text", input: "\xff", fail: true},
 		{name: "json exact bytes", codec: "object-json", input: ` {"n":9007199254740993} `, want: Value{Bytes: []byte(` {"n":9007199254740993} `)}},
+		{name: "jsonb exact bytes", codec: "json", input: ` {"n":9007199254740993} `, want: Value{Bytes: []byte(` {"n":9007199254740993} `)}},
+		{name: "malformed jsonb", codec: "json", input: `{"private":`, fail: true},
 		{name: "malformed payload", codec: "object-json", input: `{"private":`, fail: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {

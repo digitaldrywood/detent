@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -662,8 +663,8 @@ func (s *session) PendingUserMessages(ctx context.Context, conversationID string
 func (s *session) ConversationContent(ctx context.Context, id string) (conversationstore.ContentObject, error) {
 	var object conversationstore.ContentObject
 	var ref attachment.ArchiveReference
-	err := s.db.QueryRowContext(ctx, `SELECT organization_id,id,object_key,sha256,compressed_size,uncompressed_size,codec,schema_version,kind,retention,binding_id,customer_owned,created_at FROM conversation_content_objects WHERE organization_id=$1 AND id=$2`, s.organization, id).Scan(
-		&object.OrganizationID, &object.ID, &ref.Key, &ref.SHA256, &ref.CompressedSize, &ref.UncompressedSize, &ref.Codec, &ref.SchemaVersion, &ref.Kind, &ref.Retention, &ref.BindingID, &ref.CustomerOwned, &object.CreatedAt)
+	err := s.db.QueryRowContext(ctx, `SELECT organization_id,id,archive_id,object_key,sha256,compressed_size,uncompressed_size,codec,schema_version,kind,retention,binding_id,customer_owned,created_at FROM conversation_content_objects WHERE organization_id=$1 AND id=$2`, s.organization, id).Scan(
+		&object.OrganizationID, &object.ID, &object.ArchiveID, &ref.Key, &ref.SHA256, &ref.CompressedSize, &ref.UncompressedSize, &ref.Codec, &ref.SchemaVersion, &ref.Kind, &ref.Retention, &ref.BindingID, &ref.CustomerOwned, &object.CreatedAt)
 	if err != nil {
 		return object, mapError(ctx, err)
 	}
@@ -682,15 +683,23 @@ func (s *session) PutConversationContent(ctx context.Context, object conversatio
 		return corestore.ErrInvalidPage
 	}
 	ref := object.Reference
-	_, err := s.db.ExecContext(ctx, `INSERT INTO conversation_content_objects (organization_id,id,object_key,sha256,compressed_size,uncompressed_size,codec,schema_version,kind,retention,binding_id,customer_owned,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT (organization_id,id) DO NOTHING`, object.OrganizationID, object.ID, ref.Key, ref.SHA256, ref.CompressedSize, ref.UncompressedSize, ref.Codec, ref.SchemaVersion, ref.Kind, ref.Retention, ref.BindingID, ref.CustomerOwned, object.CreatedAt)
+	archiveObject, err := s.RegisterArchiveObject(ctx, artifactstore.ArchiveObject{OrganizationID: object.OrganizationID, ID: object.ID, Reference: ref, CreatedAt: object.CreatedAt})
+	if err != nil {
+		return err
+	}
+	object.ArchiveID = archiveObject.ID
+	_, err = s.db.ExecContext(ctx, `INSERT INTO conversation_content_objects (organization_id,id,archive_id,object_key,sha256,compressed_size,uncompressed_size,codec,schema_version,kind,retention,binding_id,customer_owned,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) ON CONFLICT (organization_id,id) DO NOTHING`, object.OrganizationID, object.ID, object.ArchiveID, ref.Key, ref.SHA256, ref.CompressedSize, ref.UncompressedSize, ref.Codec, ref.SchemaVersion, ref.Kind, ref.Retention, ref.BindingID, ref.CustomerOwned, object.CreatedAt)
 	if err != nil {
 		return mapError(ctx, err)
+	}
+	if err := s.AddArchiveOwner(ctx, artifactstore.ArchiveOwner{OrganizationID: object.OrganizationID, ArchiveID: object.ArchiveID, Kind: "conversation-content", ID: object.ID, CreatedAt: object.CreatedAt}); err != nil {
+		return err
 	}
 	stored, err := s.ConversationContent(ctx, object.ID)
 	if err != nil {
 		return err
 	}
-	if stored.Reference != ref {
+	if stored.Reference != ref || stored.ArchiveID != object.ArchiveID {
 		return corestore.ErrUniqueViolation
 	}
 	return nil

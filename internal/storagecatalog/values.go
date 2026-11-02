@@ -92,12 +92,17 @@ func decode(column Column, cell Cell) (Value, error) {
 	switch column.Codec {
 	case "text", "object-text":
 		return Value{Text: text, Bytes: bytes.Clone(cell.Data)}, nil
+	case "json":
+		if !json.Valid(cell.Data) {
+			return Value{}, ErrValue
+		}
+		return Value{Bytes: bytes.Clone(cell.Data)}, nil
 	case "object-json":
 		if !json.Valid(cell.Data) {
 			return Value{}, ErrValue
 		}
 		return Value{Bytes: bytes.Clone(cell.Data)}, nil
-	case "int64", "bool01", "unix-seconds":
+	case "int32", "int64", "bool01", "unix-seconds":
 		if !decimalInteger(text) {
 			return Value{}, ErrValue
 		}
