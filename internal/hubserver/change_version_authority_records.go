@@ -3,13 +3,54 @@ package hubserver
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+type tenantChangeVersionAuthority struct {
+	repository tenantstore.Repository
+	content    *eventstore.Content
+}
+
+func (a tenantChangeVersionAuthority) Prepare(ctx context.Context, scope nativeScope, change tracker.ChangeRequest, request tracker.PublishChangeVersion, _ time.Time) (ChangeVersionApproval, error) {
+	var rows currentChangePolicyRows
+	err := a.repository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		rows, err = readCurrentChangePolicyRows(ctx, r, scope)
+		return err
+	})
+	if err != nil {
+		return ChangeVersionApproval{}, projectRecordError(err)
+	}
+	result, err := hydrateCurrentChangeVersionApproval(ctx, a.content, scope, rows, request.PolicyID)
+	if err != nil {
+		return ChangeVersionApproval{}, projectRecordError(err)
+	}
+	if change.OrganizationID != scope.organization || change.ProjectID != scope.project || result.Policy.ID != request.PolicyID {
+		return ChangeVersionApproval{}, policyMismatch("Current approved policy changed; read the current policy and retry")
+	}
+	return result, nil
+}
+
+func (a tenantChangeVersionAuthority) Authorize(ctx context.Context, w tenantstore.Writer, scope nativeScope, change tracker.ChangeRequest, request tracker.PublishChangeVersion, prepared ChangeVersionApproval, _ time.Time) error {
+	rows, err := readCurrentChangePolicyRows(ctx, w, scope)
+	if err != nil {
+		return err
+	}
+	if rows.Project.PolicyID != prepared.Policy.ID || rows.hasReview && rows.Review.ReviewPolicyID != prepared.ReviewPolicy.ID || !rows.hasReview && defaultChangeReviewPolicy(prepared.Policy).ID != prepared.ReviewPolicy.ID {
+		return policyMismatch("Current approved Change policy changed during publication")
+	}
+	if change.OrganizationID != scope.organization || change.ProjectID != scope.project || change.WorkItemID == "" || request.PolicyID != prepared.Policy.ID {
+		return corestore.ErrTenantMismatch
+	}
+	return nil
+}
 
 type currentChangePolicyRows struct {
 	Project   policystore.Revision

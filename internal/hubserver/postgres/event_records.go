@@ -131,6 +131,36 @@ func landingReceiptRecord(row pgquery.ChangeLandingReceipt) eventstore.LandingRe
 	return eventstore.LandingReceipt{OrganizationID: row.OrganizationID, AttemptID: row.AttemptID, VersionID: row.VersionID, MergeSHA: row.MergeSha, PayloadObjectKey: row.PayloadObjectKey, PayloadSHA256: row.PayloadSHA256, PayloadBytes: row.PayloadBytes, PayloadContentBytes: row.PayloadContentBytes}
 }
 
+func (s *session) ViewedFiles(ctx context.Context, versionID, principalID string, limit int) ([]eventstore.ViewedFile, error) {
+	if limit < 1 || limit > 4097 || versionID == "" || principalID == "" {
+		return nil, corestore.ErrInvalidPage
+	}
+	rows, err := s.queries.RecordListViewedFiles(ctx, pgquery.RecordListViewedFilesParams{OrganizationID: s.organization, VersionID: versionID, PrincipalID: principalID, PageLimit: int32(limit)})
+	if err != nil {
+		return nil, mapError(ctx, err)
+	}
+	result := make([]eventstore.ViewedFile, 0, len(rows))
+	for _, row := range rows {
+		result = append(result, viewedFileRecord(row))
+	}
+	return result, nil
+}
+
+func (s *session) SetViewedFile(ctx context.Context, record eventstore.ViewedFile) (eventstore.ViewedFile, error) {
+	if err := s.checkOrganization(record.OrganizationID); err != nil {
+		return eventstore.ViewedFile{}, err
+	}
+	if record.ProjectID == "" || record.ChangeID == "" || record.VersionID == "" || record.PrincipalID == "" || !artifact.ValidHash(record.ManifestSHA256, 64) || !artifact.ValidHash(record.FileSHA256, 64) || record.UpdatedAt.IsZero() {
+		return eventstore.ViewedFile{}, eventstore.ErrInvalidRecord
+	}
+	row, err := s.queries.RecordSetViewedFile(ctx, pgquery.RecordSetViewedFileParams{OrganizationID: s.organization, ProjectID: record.ProjectID, ChangeID: record.ChangeID, VersionID: record.VersionID, PrincipalID: record.PrincipalID, ManifestSha256: record.ManifestSHA256, FileSha256: record.FileSHA256, Viewed: record.Viewed, UpdatedAt: recordTime(record.UpdatedAt)})
+	return viewedFileRecord(row), mapError(ctx, err)
+}
+
+func viewedFileRecord(row pgquery.ChangeViewedFile) eventstore.ViewedFile {
+	return eventstore.ViewedFile{OrganizationID: row.OrganizationID, ProjectID: row.ProjectID, ChangeID: row.ChangeID, VersionID: row.VersionID, PrincipalID: row.PrincipalID, ManifestSHA256: row.ManifestSha256, FileSHA256: row.FileSha256, Viewed: row.Viewed, UpdatedAt: row.UpdatedAt}
+}
+
 func versionRecord(row pgquery.ChangeVersion) eventstore.Version {
 	record := eventstore.Version{
 		OrganizationID:        row.OrganizationID,
@@ -257,7 +287,7 @@ func (s *session) insertRecordVersion(ctx context.Context, record eventstore.Ver
 		sourceBytes = sql.NullInt64{Int64: record.SourceBytes, Valid: true}
 		sourceContentBytes = sql.NullInt64{Int64: record.SourceContentBytes, Valid: true}
 	}
-	row, err := s.queries.RecordInsertVersion(ctx, pgquery.RecordInsertVersionParams{OrganizationID: record.OrganizationID, ID: record.ID, ChangeID: record.ChangeID, Number: record.Number, HeadSHA: record.HeadSHA, BaseSHA: record.BaseSHA, MergeBaseSHA: record.MergeBaseSHA, Repository: record.Repository, PolicyRevisionID: record.PolicyRevisionID, AttemptID: record.AttemptID, ActorKind: record.ActorKind, ActorPrincipalID: record.ActorPrincipalID, ExternalProvider: record.ExternalProvider, ExternalID: record.ExternalID, ExternalURL: record.ExternalURL, CreatedAt: record.CreatedAt, PayloadObjectKey: record.PayloadObjectKey, PayloadSHA256: record.PayloadSHA256, PayloadBytes: record.PayloadBytes, PayloadContentBytes: record.PayloadContentBytes, PayloadFormatVersion: record.PayloadFormatVersion, SourceObjectKey: sourceKey, SourceSha256: sourceDigest, SourceBytes: sourceBytes, SourceContentBytes: sourceContentBytes})
+	row, err := s.queries.RecordInsertVersion(ctx, pgquery.RecordInsertVersionParams{OrganizationID: record.OrganizationID, ID: record.ID, ChangeID: record.ChangeID, Number: record.Number, HeadSHA: record.HeadSHA, BaseSHA: record.BaseSHA, MergeBaseSHA: record.MergeBaseSHA, Repository: record.Repository, PolicyRevisionID: record.PolicyRevisionID, AttemptID: record.AttemptID, ActorKind: record.ActorKind, ActorPrincipalID: record.ActorPrincipalID, ExternalProvider: record.ExternalProvider, ExternalID: record.ExternalID, ExternalURL: record.ExternalURL, CreatedAt: record.CreatedAt, PayloadObjectKey: record.PayloadObjectKey, PayloadSHA256: record.PayloadSHA256, PayloadBytes: record.PayloadBytes, PayloadContentBytes: record.PayloadContentBytes, PayloadFormatVersion: record.PayloadFormatVersion, SourceObjectKey: sourceKey, SourceSha256: sourceDigest, SourceBytes: sourceBytes, SourceContentBytes: sourceContentBytes, ImplementingSessionID: record.ImplementingSessionID, ImplementingMachineID: record.ImplementingMachineID})
 	return versionRecord(row), mapError(ctx, err)
 }
 func (s *session) insertRecordEvidence(ctx context.Context, record eventstore.Evidence) (eventstore.Evidence, error) {

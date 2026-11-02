@@ -249,7 +249,7 @@ func reviewInstructions(change tracker.ChangeRequest, review tracker.ChangeRevie
 
 func (s *Service) landChange(c echo.Context) error {
 	if s.config.TenantRepository != nil {
-		return s.nativeAPIError(c, workItemStorageUnavailable())
+		return s.landChangeRecord(c)
 	}
 	var request tracker.LandChangeVersion
 	if err := decodeAPIJSON(c, &request); err != nil {

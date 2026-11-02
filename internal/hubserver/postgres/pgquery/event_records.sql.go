@@ -1479,6 +1479,57 @@ func (q *Queries) RecordListVersion(ctx context.Context, arg RecordListVersionPa
 	return items, nil
 }
 
+const recordListViewedFiles = `-- name: RecordListViewedFiles :many
+SELECT organization_id, project_id, change_id, version_id, principal_id, manifest_sha256, file_sha256, viewed, updated_at FROM change_viewed_files
+WHERE organization_id=$1 AND version_id=$2 AND principal_id=$3
+ORDER BY manifest_sha256,file_sha256 LIMIT $4
+`
+
+type RecordListViewedFilesParams struct {
+	OrganizationID tracker.OrganizationID
+	VersionID      string
+	PrincipalID    string
+	PageLimit      int32
+}
+
+func (q *Queries) RecordListViewedFiles(ctx context.Context, arg RecordListViewedFilesParams) ([]ChangeViewedFile, error) {
+	rows, err := q.db.QueryContext(ctx, recordListViewedFiles,
+		arg.OrganizationID,
+		arg.VersionID,
+		arg.PrincipalID,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ChangeViewedFile{}
+	for rows.Next() {
+		var i ChangeViewedFile
+		if err := rows.Scan(
+			&i.OrganizationID,
+			&i.ProjectID,
+			&i.ChangeID,
+			&i.VersionID,
+			&i.PrincipalID,
+			&i.ManifestSha256,
+			&i.FileSha256,
+			&i.Viewed,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const recordLockChange = `-- name: RecordLockChange :one
 SELECT organization_id, project_id, work_item_id, id, revision, title, current_version_id, evidence_sequence, created_at, updated_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes FROM change_requests WHERE organization_id=$1 AND id=$2 FOR UPDATE
 `
@@ -1525,6 +1576,53 @@ func (q *Queries) RecordLockIssue(ctx context.Context, arg RecordLockIssueParams
 	var event_sequence int64
 	err := row.Scan(&event_sequence)
 	return event_sequence, err
+}
+
+const recordSetViewedFile = `-- name: RecordSetViewedFile :one
+INSERT INTO change_viewed_files (organization_id, project_id, change_id, version_id, principal_id, manifest_sha256, file_sha256, viewed, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+ON CONFLICT (organization_id, version_id, principal_id, manifest_sha256, file_sha256)
+DO UPDATE SET viewed=EXCLUDED.viewed, updated_at=EXCLUDED.updated_at
+RETURNING organization_id, project_id, change_id, version_id, principal_id, manifest_sha256, file_sha256, viewed, updated_at
+`
+
+type RecordSetViewedFileParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	ChangeID       string
+	VersionID      string
+	PrincipalID    string
+	ManifestSha256 string
+	FileSha256     string
+	Viewed         bool
+	UpdatedAt      time.Time
+}
+
+func (q *Queries) RecordSetViewedFile(ctx context.Context, arg RecordSetViewedFileParams) (ChangeViewedFile, error) {
+	row := q.db.QueryRowContext(ctx, recordSetViewedFile,
+		arg.OrganizationID,
+		arg.ProjectID,
+		arg.ChangeID,
+		arg.VersionID,
+		arg.PrincipalID,
+		arg.ManifestSha256,
+		arg.FileSha256,
+		arg.Viewed,
+		arg.UpdatedAt,
+	)
+	var i ChangeViewedFile
+	err := row.Scan(
+		&i.OrganizationID,
+		&i.ProjectID,
+		&i.ChangeID,
+		&i.VersionID,
+		&i.PrincipalID,
+		&i.ManifestSha256,
+		&i.FileSha256,
+		&i.Viewed,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const recordUpdateChange = `-- name: RecordUpdateChange :one

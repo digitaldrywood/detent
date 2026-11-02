@@ -250,7 +250,7 @@ func (s *Service) registerNativeRoutes(e *echo.Echo) {
 	e.PATCH(nativeBase+"/work-items/:item", s.updateNativeIssue, write)
 	e.POST(nativeBase+"/work-items/:item/archive", s.archiveNativeIssue, write)
 	e.POST(nativeBase+"/work-items/:item/restore", s.restoreNativeIssue, write)
-	e.POST(nativeBase+"/work-items/:item/source-intake", s.intakeLinkedIssue, worker)
+	e.POST(nativeBase+"/work-items/:item/source-intake", s.intakeLinkedIssue, write)
 	e.POST(nativeBase+"/work-items/:item/workflow", s.transitionNativeIssue, write)
 	e.POST(nativeBase+"/work-items/:item/verification", s.verifyNativeIssue, write)
 	e.POST(nativeBase+"/work-items/:item/dependencies", s.changeNativeDependency, write)
@@ -389,7 +389,7 @@ func (s *Service) requireNativeScope(roles ...apiScope) echo.MiddlewareFunc {
 						return s.nativeAPIError(c, operatortool.ErrAccessDenied)
 					}
 				}
-				if s.config.TenantRepository != nil && (projectRecordRoute(c.Path()) || workItemRecordRoute(c.Path()) || selectedChangeRecordRoute(c.Path())) {
+				if s.config.TenantRepository != nil && (projectRecordRoute(c.Path()) || workItemRecordRoute(c.Path()) || selectedChangeRecordRoute(c.Path()) || selectedGoTestReceiptRoute(c.Path())) {
 					if err := s.authorizeProjectRecord(readCtx, scope, write); err != nil {
 						return s.nativeAPIError(c, err)
 					}

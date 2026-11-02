@@ -25,6 +25,11 @@ import (
 )
 
 func projectRecordPostgres(t *testing.T) *postgres.Repository {
+	repository, _ := projectRecordPostgresWithAdmin(t, 2)
+	return repository
+}
+
+func projectRecordPostgresWithAdmin(t *testing.T, maxConnections int) (*postgres.Repository, *sql.DB) {
 	t.Helper()
 	template := pgtest.NewTemplate(func(ctx context.Context, db *sql.DB) error {
 		roles, err := os.ReadFile("postgres/roles.sql")
@@ -78,7 +83,7 @@ func projectRecordPostgres(t *testing.T) *postgres.Repository {
 		t.Fatal(err)
 	}
 	pool := template.OpenRole(t, admin, name, password)
-	repository, err := postgres.NewRepository(t.Context(), pool, postgres.PoolConfig{MaxConnections: 2, ServingConnections: 1, BackgroundConnections: 1})
+	repository, err := postgres.NewRepository(t.Context(), pool, postgres.PoolConfig{MaxConnections: maxConnections, ServingConnections: maxConnections - 1, BackgroundConnections: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +92,7 @@ func projectRecordPostgres(t *testing.T) *postgres.Repository {
 			t.Error(err)
 		}
 	})
-	return repository
+	return repository, admin
 }
 
 func openPostgresHubTestService(t *testing.T, repository *postgres.Repository, config Config) *Service {

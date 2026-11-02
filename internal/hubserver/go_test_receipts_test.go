@@ -13,8 +13,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/gotestreceipt"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func attestGoTestReceipts(t *testing.T, service *Service, base, token string) gotestreceipt.Attestation {
@@ -148,6 +156,99 @@ func TestGoTestReceiptsRequireALiveAttestationOwnedByTheRecorder(t *testing.T) {
 	var receipts, attestations int
 	if err := service.database.db.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM go_test_receipts), (SELECT count(*) FROM go_test_receipt_attestations)").Scan(&receipts, &attestations); err != nil || receipts != 0 || attestations != 0 {
 		t.Fatalf("after pruning receipts = %d, attestations = %d (%v), want 0", receipts, attestations, err)
+	}
+}
+
+func TestGoTestReceiptRoutesUseSelectedTenantStoreWithoutSQLite(t *testing.T) {
+	repository := projectRecordPostgres(t)
+	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), SecretKeys: secretTestKeys(t, "1", "1")})
+	service.config.TenantRepository = repository
+	service.config.AccessRepository = repository
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	service.config.now = func() time.Time { return now }
+	service.database.now = service.config.now
+	var credentials = map[tracker.OrganizationID]string{}
+	var projects = map[tracker.OrganizationID]tracker.ProjectID{}
+	for _, organization := range []tracker.OrganizationID{"org_receipt_first", "org_receipt_second"} {
+		project := tracker.ProjectID("prj_" + string(organization))
+		binding := runnerauth.NewBinding()
+		machineID := binding.MachineID
+		runnerID := binding.RunnerID
+		enrollmentID := "enrollment_" + string(organization)
+		token, err := apikey.GenerateToken()
+		if err != nil {
+			t.Fatal(err)
+		}
+		tokenHash := apikey.HashToken(token)
+		expires := now.Add(time.Hour)
+		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: string(organization), CreatedAt: now}); err != nil {
+				return err
+			}
+			if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: organization, ProviderID: "provider_" + string(organization)}); err != nil {
+				return err
+			}
+			if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: project, Name: "Example", Slug: "example", Profile: "native"}, States: nativeFixtureStates()}); err != nil {
+				return err
+			}
+			if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: "worker", Name: "Example runner", Hash: tokenHash, Scope: string(apiScopeWorker), Kind: "service", ProjectAccess: "selected", CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires}); err != nil {
+				return err
+			}
+			if err := w.SetAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: organization, TokenID: "worker", ProjectID: project}); err != nil {
+				return err
+			}
+			if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: organization, ID: string(machineID), Hostname: "example-host", Capacity: 1}); err != nil {
+				return err
+			}
+			if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: organization, ID: enrollmentID, RunnerID: runnerID, MachineID: machineID, TokenHash: apikey.HashToken("example_enrollment_token"), Scope: "projects", Operations: []string{runnerauth.Read, runnerauth.Events}, ProjectIDs: []tracker.ProjectID{project}, CreatedAt: now, ExpiresAt: expires, CreatedBy: "example_admin", RedeemedAt: &now}); err != nil {
+				return err
+			}
+			return w.CreateRunnerIdentity(t.Context(), runnerstore.Identity{OrganizationID: organization, RunnerID: runnerID, MachineID: machineID, TokenID: "worker", EnrollmentID: enrollmentID, Scope: "projects", Operations: []string{runnerauth.Read, runnerauth.Events}, DisplayName: "Example runner", CapacityLimit: 1, CreatedAt: now, ExpiresAt: expires, LastHeartbeatAt: now})
+		}); err != nil {
+			t.Fatalf("seed organization %s: %v", organization, err)
+		}
+		credentials[organization] = token
+		projects[organization] = project
+		credential, status, err := service.authenticateTenantAPIHash(t.Context(), organization, tokenHash, "", "")
+		if err != nil || status != http.StatusOK {
+			t.Fatalf("authenticate organization %s: status=%d err=%v", organization, status, err)
+		}
+		scope := nativeScope{organization: organization, project: project, credential: credential}
+		if err := service.authorizeProjectRecord(t.Context(), scope, true); err != nil {
+			t.Fatalf("authorize organization %s: %v", organization, err)
+		}
+		if _, err := service.readProjectRecord(t.Context(), scope); err != nil {
+			t.Fatalf("read project %s: %v", project, err)
+		}
+	}
+	metrics := service.requestMetrics
+	service.requestMetrics = nil
+	t.Cleanup(func() {
+		if metrics != nil {
+			if err := metrics.close(); err != nil {
+				t.Errorf("close request metrics: %v", err)
+			}
+		}
+	})
+	closedDB := service.database.db
+	t.Cleanup(func() {
+		if service.database.db == closedDB {
+			service.database.db = service.database.reader
+		}
+	})
+	if err := closedDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	key := strings.Repeat("a", 64)
+	for organization, token := range credentials {
+		base := "/api/v2/organizations/" + string(organization) + "/projects/" + string(projects[organization])
+		attestation := attestGoTestReceipts(t, service, base, token)
+		receipt := gotestreceipt.Receipt{Attestation: attestation.ID, Key: key, Package: "internal/example", Inputs: []string{"env\tHOME"}, Digest: strings.Repeat("b", 64)}
+		requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, base+"/go-test-receipts", token, receipt), http.StatusNoContent)
+		candidates := lookupGoTestReceipts(t, service, base, token, key)
+		if len(candidates) != 1 || candidates[0].Digest != receipt.Digest || !slices.Equal(candidates[0].Inputs, receipt.Inputs) {
+			t.Fatalf("organization %s selected receipt candidates = %+v", organization, candidates)
+		}
 	}
 }
 

@@ -606,7 +606,7 @@ func (s *Service) runGitHubWebhookMaintenance(ctx context.Context) {
 			if err := s.convertLegacyStorage(ctx, now); err != nil && !errors.Is(err, context.Canceled) {
 				s.config.Logger.Warn("convert legacy storage", "error", err)
 			}
-			if err := s.database.expireGoTestReceipts(ctx, now, s.config.now); err != nil && !errors.Is(err, context.Canceled) {
+			if err := s.expireGoTestReceipts(ctx, now, s.config.now); err != nil && !errors.Is(err, context.Canceled) {
 				s.config.Logger.Warn("expire go test receipts", "error", err)
 			}
 			s.maintainGitHubWebhooks(ctx)

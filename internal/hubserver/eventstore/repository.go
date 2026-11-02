@@ -126,6 +126,18 @@ type LandingReceipt struct {
 	PayloadContentBytes int64
 }
 
+type ViewedFile struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	ChangeID       string
+	VersionID      string
+	PrincipalID    string
+	ManifestSHA256 string
+	FileSHA256     string
+	Viewed         bool
+	UpdatedAt      time.Time
+}
+
 type Evidence struct {
 	OrganizationID       tracker.OrganizationID
 	ChangeID             string
@@ -176,6 +188,7 @@ type Receipt struct {
 type Reader interface {
 	ReviewPolicy(context.Context, tracker.ProjectID) (ReviewPolicy, error)
 	LandingReceipt(context.Context, string) (LandingReceipt, error)
+	ViewedFiles(context.Context, string, string, int) ([]ViewedFile, error)
 	Receipt(context.Context, string, string, string) (Receipt, error)
 	Events(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, int64, int) ([]Event, error)
 	EventsBefore(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, int64, int) ([]Event, error)
@@ -198,6 +211,7 @@ type Writer interface {
 	LockChange(context.Context, string) (Change, error)
 	SetReviewPolicy(context.Context, ReviewPolicy, string) error
 	CreateLandingReceipt(context.Context, LandingReceipt) (LandingReceipt, error)
+	SetViewedFile(context.Context, ViewedFile) (ViewedFile, error)
 	AppendEvent(context.Context, Event) (Event, error)
 	CreateCollaborationVersion(context.Context, CollaborationVersion) (CollaborationVersion, error)
 	CreateChange(context.Context, Change) (Change, error)

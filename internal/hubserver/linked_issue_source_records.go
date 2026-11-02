@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -78,11 +77,17 @@ func (s *Service) intakeLinkedIssueRecord(c echo.Context, request tracker.GitHub
 	ctx := isolateContentContext(s.runDetailContext(c.Request().Context()))
 	scope := nativeRequestScope(c)
 	itemID := tracker.NativeWorkItemID(c.Param("item"))
-	if scope.credential.Scope != apiScopeWorker && scope.credential.Scope != apiScopeAdmin {
+	if scope.credential.Scope != apiScopeWorker && scope.credential.Scope != apiScopeAdmin && scope.credential.Scope != apiScopeOperator {
 		return s.nativeAPIError(c, nativeNotFound())
 	}
 	if scope.credential.Scope == apiScopeWorker && s.config.TenantRepository != nil {
 		return s.nativeAPIError(c, workItemStorageUnavailable())
+	}
+	if s.config.AccessRepository == nil {
+		return s.nativeAPIError(c, workItemStorageUnavailable())
+	}
+	if scope.credential.Scope != apiScopeWorker {
+		scope.requireHostedAdmin = true
 	}
 	if strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 {
 		return s.nativeAPIError(c, nativePublicInvalid("An idempotency key of at most 128 bytes is required"))
@@ -287,41 +292,15 @@ func (s *Service) intakeLinkedIssueRecord(c echo.Context, request tracker.GitHub
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
+	if s.database.plans() != nil && s.database.billingRepository == nil {
+		return s.nativeAPIError(c, workItemStorageUnavailable())
+	}
 	if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	options := nativeCommandOptions{Feature: "collaboration"}
-	authority, err := s.beginProjectRecordAuthority(ctx, scope)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	var policyTx *sql.Tx
-	authorityQuery, ok := any(authority).(nativeQueryer)
-	if !ok && s.database.billingRepository == nil {
-		policyTx, err = s.database.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
-		if err != nil {
-			return s.nativeAPIError(c, errors.Join(err, releaseWorkItemAuthority(authority, nil)))
-		}
-		authorityQuery = policyTx
-	}
-	nowAuthority, err := s.database.currentTime()
-	if err == nil && scope.credential.Scope == apiScopeWorker && authorityQuery == nil {
-		err = workItemStorageUnavailable()
-	}
-	if err == nil && scope.credential.Scope == apiScopeWorker {
-		err = requireNativeMutationLease(ctx, authorityQuery, scope, string(itemID), request.Mutation, nowAuthority)
-	}
-	if err == nil && s.database.billingRepository == nil {
-		err = s.database.requireHostedFeature(ctx, authorityQuery, options.Feature, nowAuthority)
-	}
-	if err != nil {
-		return s.nativeAPIError(c, errors.Join(err, releaseWorkItemAuthority(authority, policyTx)))
-	}
 	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-		if s.config.AccessRepository != nil {
-			if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
-				return err
-			}
+		if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
+			return err
 		}
 		prior, err := w.Receipt(ctx, scope.credential.ID, operation, request.IdempotencyKey)
 		if err == nil {
@@ -336,12 +315,12 @@ func (s *Service) intakeLinkedIssueRecord(c echo.Context, request tracker.GitHub
 		if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
 			return err
 		}
-		if options.Feature != "" && s.database.billingRepository != nil {
+		if s.database.plans() != nil {
 			now, err := s.database.currentTime()
 			if err != nil {
 				return err
 			}
-			if err := s.database.requireHostedFeatureRecord(ctx, w, options.Feature, now); err != nil {
+			if err := s.database.requireHostedFeatureRecord(ctx, w, "collaboration", now); err != nil {
 				return err
 			}
 		}
@@ -404,7 +383,6 @@ func (s *Service) intakeLinkedIssueRecord(c echo.Context, request tracker.GitHub
 		_, err = w.PutReceipt(ctx, receipt)
 		return err
 	})
-	err = errors.Join(err, releaseWorkItemAuthority(authority, policyTx))
 	if err != nil {
 		return s.nativeAPIError(c, projectRecordError(err))
 	}

@@ -154,6 +154,9 @@ func (s *Service) readChangeRecord(ctx context.Context, scope nativeScope, item,
 }
 
 func (s *Service) changeRecordEvidenceMutation(c echo.Context, kind, versionID, sourceKey string, value any) error {
+	if review, ok := value.(tracker.ReviewChange); ok && review.Decision != "commented" {
+		return s.changeReviewRecordMutation(c, review)
+	}
 	ctx := isolateContentContext(s.runDetailContext(c.Request().Context()))
 	scope := nativeRequestScope(c)
 	item, changeID := c.Param("item"), c.Param("change")
@@ -277,10 +280,11 @@ func (s *Service) changeRecordEvidenceMutation(c echo.Context, kind, versionID, 
 	}
 	for {
 		err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-			if s.config.AccessRepository != nil {
-				if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
-					return err
-				}
+			if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
+				return err
+			}
+			if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
+				return err
 			}
 			if prior, err := w.Receipt(ctx, scope.credential.ID, operation, command.IdempotencyKey); err == nil {
 				if prior.RequestHash != hash {
@@ -461,10 +465,11 @@ func (s *Service) changeCheckRecordMutation(c echo.Context, request tracker.Subm
 	}
 	for {
 		err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-			if s.config.AccessRepository != nil {
-				if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
-					return err
-				}
+			if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
+				return err
+			}
+			if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
+				return err
 			}
 			if prior, err := w.Receipt(ctx, scope.credential.ID, operation, request.IdempotencyKey); err == nil {
 				if prior.RequestHash != hash {
@@ -617,10 +622,8 @@ func (s *Service) createChangeRecord(c echo.Context, request tracker.CreateChang
 	}
 	for {
 		err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-			if s.config.AccessRepository != nil {
-				if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
-					return err
-				}
+			if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
+				return err
 			}
 			if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
 				return err

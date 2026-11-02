@@ -20,7 +20,10 @@ func (s *Service) publishChangeVersionRecord(c echo.Context) error {
 	scope := nativeRequestScope(c)
 	authority := s.config.ChangeVersionAuthority
 	if authority == nil {
-		return s.nativeAPIError(c, workItemStorageUnavailable())
+		if s.config.TenantRepository == nil {
+			return s.nativeAPIError(c, workItemStorageUnavailable())
+		}
+		authority = tenantChangeVersionAuthority{repository: s.config.TenantRepository, content: eventstore.NewContent(s.runDetailStore())}
 	}
 	var request tracker.PublishChangeVersion
 	if err := decodeAPIJSON(c, &request); err != nil {
@@ -67,6 +70,13 @@ func (s *Service) publishChangeVersionRecord(c echo.Context) error {
 	if change.CurrentVersion != request.ExpectedVersionID {
 		return s.nativeAPIError(c, nativeConflict(change.Revision))
 	}
+	sourceRun, err := s.prepareChangeVersionRun(ctx, scope, change, request)
+	if errors.Is(err, errNoChangeVersionRun) {
+		sourceRun, err = nil, nil
+	}
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
 	now, err := s.database.currentTime()
 	if err != nil {
 		return s.nativeAPIError(c, err)
@@ -94,6 +104,11 @@ func (s *Service) publishChangeVersionRecord(c echo.Context) error {
 	versionRecord, err := content.PrepareVersion(ctx, scope.organization, versionRaw)
 	if err != nil {
 		return s.nativeAPIError(c, err)
+	}
+	versionRecord.ImplementingSessionID = -1
+	if sourceRun != nil {
+		versionRecord.ImplementingSessionID = sourceRun.sessionID
+		versionRecord.ImplementingMachineID = sourceRun.machineID
 	}
 	if request.Source != nil {
 		sourceRef, err := content.PrepareSourceBundle(ctx, scope.organization, request.SourceBundle)
@@ -136,10 +151,11 @@ func (s *Service) publishChangeVersionRecord(c echo.Context) error {
 	}
 	for {
 		err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-			if s.config.AccessRepository != nil {
-				if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
-					return err
-				}
+			if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
+				return err
+			}
+			if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
+				return err
 			}
 			if prior, err := w.Receipt(ctx, scope.credential.ID, operation, request.IdempotencyKey); err == nil {
 				if prior.RequestHash != hash {
@@ -156,10 +172,10 @@ func (s *Service) publishChangeVersionRecord(c echo.Context) error {
 			if current.Revision != int64(change.Revision) || current.CurrentVersionID != nil && *current.CurrentVersionID != change.CurrentVersion {
 				return corestore.ErrRevisionConflict
 			}
-			if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
+			if err := authority.Authorize(ctx, w, scope, change, request, approval, now); err != nil {
 				return err
 			}
-			if err := authority.Authorize(ctx, w, scope, change, request, approval, now); err != nil {
+			if err := s.recheckChangeVersionRun(ctx, w, sourceRun); err != nil {
 				return err
 			}
 			for _, item := range change.LinkedIssues {

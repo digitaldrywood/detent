@@ -119,6 +119,28 @@ type ApiToken struct {
 	KeyKind               string
 }
 
+type ArtifactReference struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	WorkItemID     string
+	ServiceID      string
+	ArtifactID     string
+	Revision       int64
+	ManifestID     string
+	SchemaVersion  int16
+	RunID          string
+	AttemptID      string
+	VersionID      string
+	Sha256         string
+	Kind           string
+	State          string
+	Availability   string
+	Bytes          int64
+	Objects        int32
+	ExpiresAt      time.Time
+	ObservedAt     time.Time
+}
+
 type ChangeEvidence struct {
 	OrganizationID       tracker.OrganizationID
 	ChangeID             string
@@ -223,6 +245,18 @@ type ChangeVersion struct {
 	SourceContentBytes    sql.NullInt64
 	ImplementingSessionID int64
 	ImplementingMachineID string
+}
+
+type ChangeViewedFile struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	ChangeID       string
+	VersionID      string
+	PrincipalID    string
+	ManifestSha256 string
+	FileSha256     string
+	Viewed         bool
+	UpdatedAt      time.Time
 }
 
 type CollaborationEvent struct {
@@ -453,6 +487,28 @@ type ConversationTurnBatch struct {
 	BatchKey       string
 	EventSeq       int64
 	CreatedAt      time.Time
+}
+
+type GoTestReceipt struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	BinaryKey      string
+	InputsDigest   string
+	Inputs         string
+	Package        string
+	RunnerID       string
+	RecordedAt     time.Time
+	AttestationID  string
+}
+
+type GoTestReceiptAttestation struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	ID             string
+	CredentialID   string
+	RunnerID       string
+	CreatedAt      time.Time
+	ExpiresAt      time.Time
 }
 
 type HostedAudit struct {

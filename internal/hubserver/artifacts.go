@@ -14,6 +14,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -189,6 +191,30 @@ func (s *Service) artifactReferences(c echo.Context) error {
 func (s *Service) readArtifactReferences(ctx context.Context, scope nativeScope, item string) ([]artifact.Reference, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
+	if s.config.TenantRepository != nil {
+		row, _, err := s.readWorkItemRecord(ctx, scope, item)
+		if err != nil {
+			return nil, err
+		}
+		if !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(row.ActorPrincipalID)}) {
+			return nil, nativeNotFound()
+		}
+		var refs []artifact.Reference
+		err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			var err error
+			refs, err = r.ArtifactReferences(ctx, scope.project, tracker.NativeWorkItemID(item), 64)
+			return err
+		})
+		if err != nil {
+			return nil, projectRecordError(err)
+		}
+		for i := range refs {
+			if !s.config.now().Before(refs[i].ExpiresAt) {
+				refs[i].Availability = "expired"
+			}
+		}
+		return refs, nil
+	}
 	if _, _, err := readNativeIssue(ctx, s.database.reader, scope, item); err != nil {
 		return nil, err
 	}
@@ -448,6 +474,27 @@ func (s *Service) getArtifactReference(c echo.Context) error {
 }
 func (s *Service) artifactReferenceCommand(ctx context.Context, query nativeQueryer, scope nativeScope, item, id string, revision int64, now time.Time) (artifact.Reference, error) {
 	var result artifact.Reference
+	if s.config.TenantRepository != nil {
+		row, _, err := s.readWorkItemRecord(ctx, scope, item)
+		if err != nil {
+			return result, err
+		}
+		if !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(row.ActorPrincipalID)}) {
+			return result, nativeNotFound()
+		}
+		err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			var err error
+			result, err = r.ArtifactReference(ctx, scope.project, tracker.NativeWorkItemID(item), id, revision)
+			return err
+		})
+		if err != nil {
+			return artifact.Reference{}, projectRecordError(err)
+		}
+		if !now.Before(result.ExpiresAt) {
+			result.Availability = "expired"
+		}
+		return result, nil
+	}
 	var raw []byte
 	if _, _, err := readNativeIssue(ctx, query, scope, item); err != nil {
 		return result, err

@@ -74,6 +74,18 @@ INSERT INTO change_landing_receipts (organization_id, attempt_id, version_id, me
 VALUES (sqlc.arg(organization_id), sqlc.arg(attempt_id), sqlc.arg(version_id), sqlc.arg(merge_sha), sqlc.arg(payload_object_key), sqlc.arg(payload_sha256), sqlc.arg(payload_bytes), sqlc.arg(payload_content_bytes))
 ON CONFLICT (organization_id, attempt_id) DO NOTHING RETURNING *;
 
+-- name: RecordListViewedFiles :many
+SELECT * FROM change_viewed_files
+WHERE organization_id=sqlc.arg(organization_id) AND version_id=sqlc.arg(version_id) AND principal_id=sqlc.arg(principal_id)
+ORDER BY manifest_sha256,file_sha256 LIMIT sqlc.arg(page_limit);
+
+-- name: RecordSetViewedFile :one
+INSERT INTO change_viewed_files (organization_id, project_id, change_id, version_id, principal_id, manifest_sha256, file_sha256, viewed, updated_at)
+VALUES (sqlc.arg(organization_id), sqlc.arg(project_id), sqlc.arg(change_id), sqlc.arg(version_id), sqlc.arg(principal_id), sqlc.arg(manifest_sha256), sqlc.arg(file_sha256), sqlc.arg(viewed), sqlc.arg(updated_at))
+ON CONFLICT (organization_id, version_id, principal_id, manifest_sha256, file_sha256)
+DO UPDATE SET viewed=EXCLUDED.viewed, updated_at=EXCLUDED.updated_at
+RETURNING *;
+
 -- name: RecordGetEvidence :one
 SELECT * FROM change_evidence WHERE organization_id=sqlc.arg(organization_id) AND change_id=sqlc.arg(change_id) AND kind=sqlc.arg(kind) AND source_key=sqlc.arg(source_key);
 
