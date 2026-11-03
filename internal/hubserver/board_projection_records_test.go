@@ -34,7 +34,7 @@ func TestBoardProjectionMaintenanceIsBoundedAndTenantScoped(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		for index := range 33 {
+		for index := range 34 {
 			id := tracker.NativeWorkItemID(fmt.Sprintf("wi_%02d", index))
 			issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: "example", WorkItemID: id, Number: index + 1, Revision: 1}, Title: fmt.Sprintf("Example %d", index), State: "Todo", Actor: tracker.Actor{Kind: "human", PrincipalID: "example"}, CreatedAt: now, UpdatedAt: now}
 			raw, err := json.Marshal(issue)
@@ -88,12 +88,58 @@ func TestBoardProjectionMaintenanceIsBoundedAndTenantScoped(t *testing.T) {
 	if err := service.maintainBoardRecords(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	sequence := assertPage("org_first", 33)
+	sequence := assertPage("org_first", 34)
 	if err := service.maintainBoardRecords(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if got := assertPage("org_first", 33); got != sequence {
+	if got := assertPage("org_first", 34); got != sequence {
 		t.Fatalf("unchanged refresh advanced sequence %d to %d", sequence, got)
+	}
+	for _, test := range []struct {
+		name   string
+		index  int
+		cursor string
+	}{{"late dirty after cold start", 33, ""}, {"dirty before cursor", 0, "wi_99"}} {
+		t.Run(test.name, func(t *testing.T) {
+			id := tracker.NativeWorkItemID(fmt.Sprintf("wi_%02d", test.index))
+			issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: "org_first", ProjectID: "example", WorkItemID: id, Number: test.index + 1, Revision: 2}, Title: fmt.Sprintf("Example %d", test.index), State: "Done", Terminal: true, Actor: tracker.Actor{Kind: "human", PrincipalID: "example"}, CreatedAt: now, UpdatedAt: now.Add(time.Second)}
+			raw, err := json.Marshal(issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			version, err := eventstore.NewContent(service.runDetailStore()).PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: "org_first", ProjectID: "example", WorkItemID: id, RecordID: string(id), Revision: 2}, raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := repository.WriteTenant(t.Context(), "org_first", corestore.Serving, func(w tenantstore.Writer) error {
+				row, err := w.WorkItem(t.Context(), "example", id)
+				if err != nil {
+					return err
+				}
+				row.WorkflowStateName = new("Done")
+				if _, err := w.UpdateWorkItem(t.Context(), row); err != nil {
+					return err
+				}
+				_, err = w.CreateCollaborationVersion(t.Context(), version)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			service.boardRefreshCursor = test.cursor
+			if err := service.maintainBoardRecords(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			if err := repository.ReadTenant(t.Context(), "org_first", corestore.Serving, func(r tenantstore.Reader) error {
+				row, err := r.BoardItem(t.Context(), "example", id)
+				if err == nil && (row.SourceRevision != 2 || row.Position.State != "Done") {
+					t.Fatalf("dirty card stayed stale after one bounded pass: revision=%d state=%s", row.SourceRevision, row.Position.State)
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			assertPage("org_second", 0)
+		})
 	}
 	service.localOrganization, service.boardRefreshCursor = "org_second", ""
 	if err := service.maintainBoardRecords(t.Context()); err != nil {
@@ -107,7 +153,7 @@ func TestBoardProjectionMaintenanceIsBoundedAndTenantScoped(t *testing.T) {
 	if err := service.maintainBoardRecords(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	assertPage("org_first", 1)
+	assertPage("org_first", 2)
 	if err := service.maintainBoardRecords(t.Context()); err != nil {
 		t.Fatal(err)
 	}

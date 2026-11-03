@@ -37,11 +37,14 @@ func scanBoard(row interface{ Scan(...any) error }, extra ...any) (viewstore.Boa
 
 func (s *session) NextBoardCandidate(ctx context.Context, after tracker.NativeWorkItemID) (viewstore.BoardCandidate, error) {
 	var candidate viewstore.BoardCandidate
-	err := s.db.QueryRowContext(ctx, `SELECT project_id,work_item_id FROM (
- (SELECT project_id,work_item_id FROM native_board_dirty WHERE organization_id=$1 AND work_item_id>$2 ORDER BY work_item_id LIMIT 1)
- UNION ALL (SELECT project_id,native_id FROM issues WHERE organization_id=$1 AND native_id>$2 ORDER BY native_id LIMIT 1)
- UNION ALL (SELECT project_id,work_item_id FROM native_board_items WHERE organization_id=$1 AND work_item_id>$2 ORDER BY work_item_id LIMIT 1)
- ) candidates ORDER BY work_item_id LIMIT 1`, s.organization, after).Scan(&candidate.ProjectID, &candidate.WorkItemID)
+	err := s.db.QueryRowContext(ctx, `WITH dirty AS MATERIALIZED (
+ (SELECT project_id,work_item_id,0 AS priority FROM native_board_dirty WHERE organization_id=$1 AND work_item_id>$2 ORDER BY work_item_id LIMIT 1)
+ UNION ALL (SELECT project_id,work_item_id,1 AS priority FROM native_board_dirty WHERE organization_id=$1 AND work_item_id<=$2 ORDER BY work_item_id LIMIT 1)
+ ) SELECT project_id,work_item_id FROM (
+ SELECT project_id,work_item_id,priority FROM dirty
+ UNION ALL (SELECT project_id,native_id,2 AS priority FROM issues WHERE organization_id=$1 AND native_id>$2 AND NOT EXISTS(SELECT 1 FROM dirty) ORDER BY native_id LIMIT 1)
+ UNION ALL (SELECT project_id,work_item_id,2 AS priority FROM native_board_items WHERE organization_id=$1 AND work_item_id>$2 AND NOT EXISTS(SELECT 1 FROM dirty) ORDER BY work_item_id LIMIT 1)
+ ) candidates ORDER BY priority,work_item_id LIMIT 1`, s.organization, after).Scan(&candidate.ProjectID, &candidate.WorkItemID)
 	return candidate, mapError(ctx, err)
 }
 
