@@ -86,9 +86,24 @@
     "internal/hubserver/postgres/migrations/20261102060700_hub_server_identities.sql",
     "internal/hubserver/postgres/migrations/20261103090154_ordinary_attachment_records.sql",
     "internal/hubserver/postgres/migrations/20261103144625_hosted_diagnostic_windows.sql",
-    "internal/hubserver/postgres/migrations/20261103151137_project_onboarding_progress.sql"
+    "internal/hubserver/postgres/migrations/20261103151137_project_onboarding_progress.sql",
+    "internal/hubserver/postgres/migrations/20261103154233_dependency_reason_records.sql"
   ],
   "tables": {
+    "public.issue_dependency_reasons": {
+      "columns": {
+        "organization_id": "text",
+        "project_id": "text",
+        "work_item_id": "text",
+        "kind": "text",
+        "reason": "text",
+        "basis": "text",
+        "revision": "bigint"
+      },
+      "contract": "Preserve current dependency summaries and graph-basis compare-and-swap revisions without changing issue authority.",
+      "family": "core",
+      "organization": "organization-owned"
+    },
     "public.attachment_item_references": {
       "columns": {
         "attachment_id": "text",

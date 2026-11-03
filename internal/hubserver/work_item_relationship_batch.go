@@ -39,6 +39,9 @@ func (s *Service) hydrateWorkItemRelationshipFactsPage(ctx context.Context, scop
 	}
 	batchUnavailable := false
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := loadDependencyReasonRecords(ctx, r, scope.project, issues); err != nil {
+			return err
+		}
 		if batch, ok := r.(tenantstore.WorkItemRelationshipBatchReader); ok {
 			for start := 0; start < len(workItems); start += corestore.MaxPageSize {
 				end := min(start+corestore.MaxPageSize, len(workItems))
