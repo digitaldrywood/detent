@@ -53,7 +53,7 @@ func (s *Service) maintainBoardRecords(ctx context.Context) error {
 	return nil
 }
 
-func (s *Service) boardProjectionSnapshot(ctx context.Context, organization tracker.OrganizationID, candidate viewstore.BoardCandidate) (boardProjectionSnapshot, error) {
+func (s *Service) boardProjectionSnapshot(ctx context.Context, organization tracker.OrganizationID, candidate viewstore.BoardCandidate, now time.Time) (boardProjectionSnapshot, error) {
 	var snapshot boardProjectionSnapshot
 	err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(r tenantstore.Reader) error {
 		var err error
@@ -88,9 +88,11 @@ func (s *Service) boardProjectionSnapshot(ctx context.Context, organization trac
 			if err != nil {
 				return err
 			}
-			value.event, err = r.LatestRunEvent(ctx, candidate.ProjectID, attempt.ID)
-			if err != nil {
-				return err
+			if boardAttemptCurrent(value, now) {
+				value.event, err = r.LatestRunEvent(ctx, candidate.ProjectID, attempt.ID)
+				if err != nil {
+					return err
+				}
 			}
 			snapshot.attempt = &value
 			snapshot.attemptCount, err = r.BoardAttemptCount(ctx, snapshot.item.ID)
@@ -125,7 +127,7 @@ func (s *Service) boardProjectionSnapshot(ctx context.Context, organization trac
 }
 
 func (s *Service) refreshBoardRecord(ctx context.Context, organization tracker.OrganizationID, candidate viewstore.BoardCandidate, now time.Time) error {
-	snapshot, err := s.boardProjectionSnapshot(ctx, organization, candidate)
+	snapshot, err := s.boardProjectionSnapshot(ctx, organization, candidate, now)
 	if err != nil {
 		return err
 	}
@@ -137,20 +139,28 @@ func (s *Service) refreshBoardRecord(ctx context.Context, organization tracker.O
 		}
 		card := tracker.NativeBoardCard{Issue: issue}
 		var latest *tracker.NativeAttempt
-		if snapshot.attempt != nil {
-			attempt, err := s.hydrateNativeAttemptTenant(ctx, *snapshot.attempt, now)
+		if historical := snapshot.attempt; historical != nil {
+			attempt, err := s.boardAttemptDetails(ctx, *historical, now)
 			if err != nil {
 				return err
 			}
-			latest = &attempt
-			card.Attempt = &tracker.NativeBoardAttempt{Count: int(snapshot.attemptCount), ID: attempt.AttemptID, Status: attempt.Status, RunnerID: attempt.RunnerID, MachineID: string(attempt.MachineID), Identity: nativeAttemptDisplayIdentity(attempt), StartedAt: attempt.StartedAt, ExpiresAt: attempt.LeaseExpiresAt}
+			if attempt != nil {
+				latest = attempt
+				card.Attempt = &tracker.NativeBoardAttempt{Count: int(snapshot.attemptCount), ID: attempt.AttemptID, Status: attempt.Status, RunnerID: attempt.RunnerID, MachineID: string(attempt.MachineID), Identity: nativeAttemptDisplayIdentity(*attempt), StartedAt: attempt.StartedAt, ExpiresAt: attempt.LeaseExpiresAt}
+			} else {
+				status := historical.attempt.Status
+				if status == "running" {
+					status = "interrupted"
+				}
+				card.Attempt = &tracker.NativeBoardAttempt{Count: int(snapshot.attemptCount), ID: historical.attempt.ID, Status: status, MachineID: historical.lease.MachineID, StartedAt: historical.attempt.StartedAt, ExpiresAt: historical.lease.ExpiresAt}
+			}
 		}
 		if lease := snapshot.lease; lease != nil && lease.ReleasedAt == nil && !now.Before(lease.RenewedAt) && now.Before(lease.ExpiresAt) {
 			card.Execution = &tracker.NativeBoardExecution{ID: lease.LeaseID, ExpiresAt: lease.ExpiresAt}
-			if latest != nil && string(latest.LeaseID) == lease.LeaseID {
-				card.Execution.ID, card.Execution.Running = latest.AttemptID, latest.Status == "running"
-				card.Execution.RunnerID, card.Execution.Identity, card.Execution.StartedAt = latest.RunnerID, nativeAttemptDisplayIdentity(*latest), &latest.StartedAt
-				if latest.Runtime != nil && card.Execution.Running {
+			if card.Attempt != nil && snapshot.attempt.lease.LeaseID == lease.LeaseID {
+				card.Execution.ID, card.Execution.Running = card.Attempt.ID, card.Attempt.Status == "running"
+				card.Execution.RunnerID, card.Execution.Identity, card.Execution.StartedAt = card.Attempt.RunnerID, card.Attempt.Identity, &card.Attempt.StartedAt
+				if latest != nil && latest.Runtime != nil && card.Execution.Running {
 					card.Execution.Stage = latest.Runtime.Phase
 					if card.Execution.Stage == "completed" {
 						card.Execution.Running, card.Execution.Stage = false, ""
@@ -174,6 +184,24 @@ func (s *Service) refreshBoardRecord(ctx context.Context, organization tracker.O
 		update.Current = &record
 	}
 	return s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error { return w.ReplaceBoardItem(ctx, update) })
+}
+
+func boardAttemptCurrent(snapshot tenantAttemptSnapshot, now time.Time) bool {
+	return snapshot.attempt.Status == "running" && snapshot.lease.ReleasedAt == nil && now.Before(snapshot.lease.ExpiresAt)
+}
+
+func (s *Service) boardAttemptDetails(ctx context.Context, snapshot tenantAttemptSnapshot, now time.Time) (*tracker.NativeAttempt, error) {
+	if !boardAttemptCurrent(snapshot, now) {
+		return nil, nil
+	}
+	if snapshot.event.ID == "" {
+		return nil, corestore.ErrNotFound
+	}
+	attempt, err := s.hydrateNativeAttemptTenant(ctx, snapshot, now)
+	if err != nil {
+		return nil, err
+	}
+	return &attempt, nil
 }
 
 func boardProjectionRecord(snapshot boardProjectionSnapshot, card tracker.NativeBoardCard) viewstore.BoardRecord {
