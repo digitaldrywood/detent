@@ -69,6 +69,18 @@ JOIN change_requests c ON c.organization_id=l.organization_id AND c.project_id=l
 WHERE l.organization_id=sqlc.arg(organization_id) AND l.project_id=sqlc.arg(project_id) AND l.work_item_id=sqlc.arg(work_item_id)
 ORDER BY l.created_at DESC,l.change_id DESC LIMIT 1;
 
+-- name: RecordLatestChangesByWorkItems :many
+SELECT requested.work_item_id::text AS linked_work_item_id, c.*
+FROM unnest(sqlc.arg(work_item_ids)::text[]) AS requested(work_item_id)
+CROSS JOIN LATERAL (
+  SELECT c.* FROM change_issue_links l
+  JOIN change_requests c ON c.organization_id=l.organization_id AND c.project_id=l.project_id AND c.id=l.change_id
+  WHERE l.organization_id=sqlc.arg(organization_id) AND l.project_id=sqlc.arg(project_id)
+    AND l.work_item_id=requested.work_item_id
+  ORDER BY l.created_at DESC,l.change_id DESC
+  LIMIT 1
+) c;
+
 -- name: RecordInsertChange :one
 INSERT INTO change_requests (organization_id, project_id, work_item_id, id, revision, title, current_version_id, evidence_sequence, created_at, updated_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes)
 VALUES (sqlc.arg(organization_id), sqlc.arg(project_id), sqlc.arg(work_item_id), sqlc.arg(id), sqlc.arg(revision), sqlc.arg(title), sqlc.narg(current_version_id), sqlc.arg(evidence_sequence), sqlc.arg(created_at), sqlc.arg(updated_at), sqlc.arg(payload_object_key), sqlc.arg(payload_sha256), sqlc.arg(payload_bytes), sqlc.arg(payload_content_bytes)) RETURNING *;
@@ -184,6 +196,22 @@ ON CONFLICT (organization_id,actor_id,operation,command_key) DO NOTHING RETURNIN
 
 -- name: RecordGetLinkedIssueSource :one
 SELECT * FROM linked_issue_sources WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_id) AND work_item_id=sqlc.arg(work_item_id);
+
+-- name: RecordGetLinkedIssueSourcesByWorkItems :many
+SELECT * FROM linked_issue_sources
+WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_id)
+  AND work_item_id=ANY(sqlc.arg(work_item_ids)::text[]);
+
+-- name: RecordLatestRunEventsByAttempts :many
+SELECT latest.*
+FROM unnest(sqlc.arg(attempt_ids)::text[]) AS requested(attempt_id)
+CROSS JOIN LATERAL (
+  SELECT * FROM collaboration_events
+  WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_id)
+    AND attempt_id=requested.attempt_id
+  ORDER BY sequence DESC
+  LIMIT 1
+) latest;
 
 -- name: RecordGetLinkedIssueSourceByURL :one
 SELECT * FROM linked_issue_sources WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_id) AND source_url=sqlc.arg(source_url);

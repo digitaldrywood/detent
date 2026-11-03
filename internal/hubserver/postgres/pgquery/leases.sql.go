@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/lib/pq"
 )
 
 const advanceLeaseAttempt = `-- name: AdvanceLeaseAttempt :one
@@ -236,6 +237,62 @@ func (q *Queries) GetLatestIssueAttempt(ctx context.Context, arg GetLatestIssueA
 		&i.StartedAtSubmicroNs,
 	)
 	return i, err
+}
+
+const getLatestIssueAttemptsByIssues = `-- name: GetLatestIssueAttemptsByIssues :many
+SELECT latest.organization_id, latest.id, latest.issue_id, latest.lease_id, latest.fencing_token, latest.run_id, latest.sequence, latest.status, latest.work_item_revision, latest.dispatch_generation, latest.payload_object_key, latest.checkpoint_object_key, latest.artifacts_object_key, latest.started_at, latest.updated_at, latest.started_at_submicro_ns
+FROM unnest($1::bigint[]) AS requested(issue_id)
+CROSS JOIN LATERAL (
+  SELECT organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns FROM native_attempts
+  WHERE organization_id=$2 AND issue_id=requested.issue_id
+  ORDER BY fencing_token DESC
+  LIMIT 1
+) latest
+`
+
+type GetLatestIssueAttemptsByIssuesParams struct {
+	IssueIds       []int64
+	OrganizationID tracker.OrganizationID
+}
+
+func (q *Queries) GetLatestIssueAttemptsByIssues(ctx context.Context, arg GetLatestIssueAttemptsByIssuesParams) ([]NativeAttempt, error) {
+	rows, err := q.db.QueryContext(ctx, getLatestIssueAttemptsByIssues, pq.Array(arg.IssueIds), arg.OrganizationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []NativeAttempt{}
+	for rows.Next() {
+		var i NativeAttempt
+		if err := rows.Scan(
+			&i.OrganizationID,
+			&i.ID,
+			&i.IssueID,
+			&i.LeaseID,
+			&i.FencingToken,
+			&i.RunID,
+			&i.Sequence,
+			&i.Status,
+			&i.WorkItemRevision,
+			&i.DispatchGeneration,
+			&i.PayloadObjectKey,
+			&i.CheckpointObjectKey,
+			&i.ArtifactsObjectKey,
+			&i.StartedAt,
+			&i.UpdatedAt,
+			&i.StartedAtSubmicroNs,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const getLease = `-- name: GetLease :one

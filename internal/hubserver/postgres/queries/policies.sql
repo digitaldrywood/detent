@@ -15,6 +15,15 @@ FROM policy_revisions r LEFT JOIN policy_revision_approvals a
   ON a.organization_id=r.organization_id AND a.project_id=r.project_id AND a.policy_id=r.policy_id
 WHERE r.organization_id=sqlc.arg(organization_id) AND r.project_id=sqlc.arg(project_id) AND r.policy_id=sqlc.arg(policy_id);
 
+-- name: PolicyGetProjectRevisions :many
+SELECT r.organization_id,r.project_id,r.policy_id,COALESCE(a.approved_by,r.approved_by) AS approved_by,
+  COALESCE(a.approved_at,r.approved_at) AS approved_at,r.payload_object_key,r.payload_sha256,r.payload_bytes,
+  r.payload_content_bytes,r.gate_github_pull_request
+FROM policy_revisions r LEFT JOIN policy_revision_approvals a
+  ON a.organization_id=r.organization_id AND a.project_id=r.project_id AND a.policy_id=r.policy_id
+WHERE r.organization_id=sqlc.arg(organization_id) AND r.project_id=sqlc.arg(project_id)
+  AND r.policy_id=ANY(sqlc.arg(policy_ids)::text[]);
+
 -- name: PolicyInsertProjectRevision :one
 INSERT INTO policy_revisions (organization_id,project_id,policy_id,gate_github_pull_request,approved_by,approved_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes)
 VALUES (sqlc.arg(organization_id),sqlc.arg(project_id),sqlc.arg(policy_id),sqlc.narg(gate_github_pull_request),sqlc.arg(approved_by),sqlc.arg(approved_at),sqlc.arg(payload_object_key),sqlc.arg(payload_sha256),sqlc.arg(payload_bytes),sqlc.arg(payload_content_bytes))
