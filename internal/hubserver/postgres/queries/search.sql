@@ -53,13 +53,6 @@ SELECT d.* FROM candidate c JOIN search_documents d ON d.organization_id=$1 AND 
 UPDATE search_documents SET refresh_order=nextval('search_refresh_order'),indexed_revision=0,vector=''::tsvector
 WHERE organization_id=$1 AND id=$2 AND revision=$3;
 
--- name: SearchDeletePublicationPostings :exec
-DELETE FROM search_postings p
-WHERE p.organization_id=sqlc.arg(organization_id) AND p.document_id=sqlc.arg(id) AND p.term NOT IN ('~all','~pending')
- AND EXISTS(SELECT 1 FROM search_documents d WHERE d.organization_id=p.organization_id AND d.id=p.document_id
-  AND d.revision=sqlc.arg(revision) AND d.payload_object_key=sqlc.arg(payload_object_key)
-  AND d.payload_sha256=sqlc.arg(payload_sha256) AND d.generation=sqlc.arg(generation) AND d.kind IN ('issue','thread'));
-
 -- name: SearchPreparePublicationPostings :one
 WITH document AS MATERIALIZED (
  SELECT d.*,coalesce(p.deleted_at IS NOT NULL,false) AS project_hidden,
@@ -80,6 +73,21 @@ WITH document AS MATERIALIZED (
  SELECT term,coalesce(w.impact,0) AS impact FROM (
   SELECT unnest(tsvector_to_array(sqlc.arg(vector)::tsvector || CASE WHEN d.kind='issue' THEN public.search_metadata_vector(d.organization_id,d.project_id,d.metadata_labels) ELSE ''::tsvector END)) AS term FROM document d UNION SELECT lexeme FROM words
  ) terms LEFT JOIN words w ON w.lexeme=term
+), visibility AS MATERIALIZED (
+ SELECT d.organization_id,d.id,key FROM document d
+ CROSS JOIN LATERAL public.search_scope_keys(d.project_id,d.work_item_id,d.kind,d.scope,d.status,d.parent_archived,d.parent_principal) key
+ WHERE d.kind IN ('issue','thread') AND NOT d.project_hidden
+), literal_terms AS MATERIALIZED (
+ SELECT unnest(sqlc.arg(literals)::text[]) AS term
+), current_terms AS MATERIALIZED (
+ SELECT term FROM lexemes UNION SELECT term FROM literal_terms
+), removed AS (
+ DELETE FROM search_postings p USING document d
+ WHERE p.organization_id=d.organization_id AND p.document_id=d.id AND p.term NOT IN ('~all','~pending')
+  AND d.kind IN ('issue','thread')
+  AND (NOT EXISTS(SELECT 1 FROM visibility v WHERE v.key=p.scope)
+   OR NOT EXISTS(SELECT 1 FROM current_terms t WHERE t.term=p.term))
+ RETURNING 1
 ), inserted AS (
  INSERT INTO search_postings(organization_id,scope,term,document_id,impact,updated_at,updated_at_submicrosecond)
  SELECT d.organization_id,key,l.term,d.id,l.impact,d.updated_at,d.updated_at_submicrosecond
@@ -88,9 +96,11 @@ WITH document AS MATERIALIZED (
  CROSS JOIN lexemes l
  WHERE d.kind IN ('issue','thread') AND NOT d.project_hidden
  ON CONFLICT(organization_id,scope,term,document_id) DO UPDATE
- SET impact=EXCLUDED.impact,updated_at=EXCLUDED.updated_at,updated_at_submicrosecond=EXCLUDED.updated_at_submicrosecond
- WHERE (search_postings.impact,search_postings.updated_at,search_postings.updated_at_submicrosecond)
-  IS DISTINCT FROM (EXCLUDED.impact,EXCLUDED.updated_at,EXCLUDED.updated_at_submicrosecond)
+ SET impact=EXCLUDED.impact,updated_at=EXCLUDED.updated_at,updated_at_submicrosecond=EXCLUDED.updated_at_submicrosecond,
+  literal_positions=CASE WHEN search_postings.term IN (SELECT term FROM literal_terms) THEN search_postings.literal_positions ELSE ARRAY[]::bigint[] END
+ WHERE (search_postings.impact,search_postings.updated_at,search_postings.updated_at_submicrosecond,search_postings.literal_positions)
+  IS DISTINCT FROM (EXCLUDED.impact,EXCLUDED.updated_at,EXCLUDED.updated_at_submicrosecond,
+   CASE WHEN search_postings.term IN (SELECT term FROM literal_terms) THEN search_postings.literal_positions ELSE ARRAY[]::bigint[] END)
  RETURNING 1
 )
 SELECT d.project_hidden::boolean AS project_hidden,d.parent_archived,d.parent_principal,d.project_name,d.parent_number,d.parent_project,
@@ -125,11 +135,14 @@ CROSS JOIN LATERAL (
     SELECT unnest(sqlc.arg(scopes)::text[]) AS scope
     EXCEPT
     SELECT previous.scope FROM search_postings previous
-    WHERE previous.organization_id=d.organization_id AND previous.document_id=d.id AND previous.term=l.term AND previous.literal_positions=l.positions
+ WHERE previous.organization_id=d.organization_id AND previous.document_id=d.id AND previous.term=l.term AND previous.literal_positions=l.positions
+  AND previous.updated_at=d.updated_at AND previous.updated_at_submicrosecond=d.updated_at_submicrosecond
 ) p
 WHERE d.organization_id=sqlc.arg(organization_id) AND d.id=sqlc.arg(id) AND d.revision=sqlc.arg(revision)
-ON CONFLICT(organization_id,scope,term,document_id) DO UPDATE SET literal_positions=EXCLUDED.literal_positions
-WHERE search_postings.literal_positions IS DISTINCT FROM EXCLUDED.literal_positions;
+ON CONFLICT(organization_id,scope,term,document_id) DO UPDATE SET literal_positions=EXCLUDED.literal_positions,
+ updated_at=EXCLUDED.updated_at,updated_at_submicrosecond=EXCLUDED.updated_at_submicrosecond
+WHERE (search_postings.literal_positions,search_postings.updated_at,search_postings.updated_at_submicrosecond)
+ IS DISTINCT FROM (EXCLUDED.literal_positions,EXCLUDED.updated_at,EXCLUDED.updated_at_submicrosecond);
 
 -- name: SearchPublish :execrows
 UPDATE search_documents SET vector = sqlc.arg(vector)::tsvector, source_vector=sqlc.arg(vector)::tsvector, indexed_revision = revision,

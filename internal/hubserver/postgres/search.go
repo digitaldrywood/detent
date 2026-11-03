@@ -141,10 +141,7 @@ func (s *session) PublishSearch(ctx context.Context, value searchstore.Prepared)
 		_, err := s.db.ExecContext(cleanup, "RELEASE SAVEPOINT search_publication")
 		return false, mapError(cleanup, err)
 	}
-	if err := s.queries.SearchDeletePublicationPostings(ctx, pgquery.SearchDeletePublicationPostingsParams{OrganizationID: s.organization, ID: d.ID, Revision: d.Revision, PayloadObjectKey: d.Payload.Key, PayloadSHA256: d.Payload.SHA256, Generation: d.Generation}); err != nil {
-		return false, mapError(ctx, err)
-	}
-	captured, err := s.queries.SearchPreparePublicationPostings(ctx, pgquery.SearchPreparePublicationPostingsParams{OrganizationID: s.organization, ID: d.ID, Revision: d.Revision, PayloadObjectKey: d.Payload.Key, PayloadSHA256: d.Payload.SHA256, Generation: d.Generation, Vector: value.Vector, TokenCount: value.Statistics.Tokens, Terms: value.Statistics.Terms, TermFrequencies: value.Statistics.Frequencies})
+	captured, err := s.queries.SearchPreparePublicationPostings(ctx, pgquery.SearchPreparePublicationPostingsParams{OrganizationID: s.organization, ID: d.ID, Revision: d.Revision, PayloadObjectKey: d.Payload.Key, PayloadSHA256: d.Payload.SHA256, Generation: d.Generation, Vector: value.Vector, TokenCount: value.Statistics.Tokens, Terms: value.Statistics.Terms, TermFrequencies: value.Statistics.Frequencies, Literals: terms})
 	if errors.Is(err, sql.ErrNoRows) {
 		return discard()
 	}

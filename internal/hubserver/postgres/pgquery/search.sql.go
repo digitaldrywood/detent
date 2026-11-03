@@ -263,35 +263,6 @@ func (q *Queries) SearchDelete(ctx context.Context, arg SearchDeleteParams) (int
 	return result.RowsAffected()
 }
 
-const searchDeletePublicationPostings = `-- name: SearchDeletePublicationPostings :exec
-DELETE FROM search_postings p
-WHERE p.organization_id=$1 AND p.document_id=$2 AND p.term NOT IN ('~all','~pending')
- AND EXISTS(SELECT 1 FROM search_documents d WHERE d.organization_id=p.organization_id AND d.id=p.document_id
-  AND d.revision=$3 AND d.payload_object_key=$4
-  AND d.payload_sha256=$5 AND d.generation=$6 AND d.kind IN ('issue','thread'))
-`
-
-type SearchDeletePublicationPostingsParams struct {
-	OrganizationID   tracker.OrganizationID
-	ID               string
-	Revision         int64
-	PayloadObjectKey string
-	PayloadSHA256    string
-	Generation       int64
-}
-
-func (q *Queries) SearchDeletePublicationPostings(ctx context.Context, arg SearchDeletePublicationPostingsParams) error {
-	_, err := q.db.ExecContext(ctx, searchDeletePublicationPostings,
-		arg.OrganizationID,
-		arg.ID,
-		arg.Revision,
-		arg.PayloadObjectKey,
-		arg.PayloadSHA256,
-		arg.Generation,
-	)
-	return err
-}
-
 const searchPending = `-- name: SearchPending :one
 WITH task AS MATERIALIZED (
  SELECT organization_id, project_id, work_item_id, archived, principal_id, after_id, refresh_order FROM search_scope_refresh WHERE organization_id=$1 ORDER BY refresh_order LIMIT 1
@@ -378,6 +349,21 @@ WITH document AS MATERIALIZED (
  SELECT term,coalesce(w.impact,0) AS impact FROM (
   SELECT unnest(tsvector_to_array($10::tsvector || CASE WHEN d.kind='issue' THEN public.search_metadata_vector(d.organization_id,d.project_id,d.metadata_labels) ELSE ''::tsvector END)) AS term FROM document d UNION SELECT lexeme FROM words
  ) terms LEFT JOIN words w ON w.lexeme=term
+), visibility AS MATERIALIZED (
+ SELECT d.organization_id,d.id,key FROM document d
+ CROSS JOIN LATERAL public.search_scope_keys(d.project_id,d.work_item_id,d.kind,d.scope,d.status,d.parent_archived,d.parent_principal) key
+ WHERE d.kind IN ('issue','thread') AND NOT d.project_hidden
+), literal_terms AS MATERIALIZED (
+ SELECT unnest($11::text[]) AS term
+), current_terms AS MATERIALIZED (
+ SELECT term FROM lexemes UNION SELECT term FROM literal_terms
+), removed AS (
+ DELETE FROM search_postings p USING document d
+ WHERE p.organization_id=d.organization_id AND p.document_id=d.id AND p.term NOT IN ('~all','~pending')
+  AND d.kind IN ('issue','thread')
+  AND (NOT EXISTS(SELECT 1 FROM visibility v WHERE v.key=p.scope)
+   OR NOT EXISTS(SELECT 1 FROM current_terms t WHERE t.term=p.term))
+ RETURNING 1
 ), inserted AS (
  INSERT INTO search_postings(organization_id,scope,term,document_id,impact,updated_at,updated_at_submicrosecond)
  SELECT d.organization_id,key,l.term,d.id,l.impact,d.updated_at,d.updated_at_submicrosecond
@@ -386,9 +372,11 @@ WITH document AS MATERIALIZED (
  CROSS JOIN lexemes l
  WHERE d.kind IN ('issue','thread') AND NOT d.project_hidden
  ON CONFLICT(organization_id,scope,term,document_id) DO UPDATE
- SET impact=EXCLUDED.impact,updated_at=EXCLUDED.updated_at,updated_at_submicrosecond=EXCLUDED.updated_at_submicrosecond
- WHERE (search_postings.impact,search_postings.updated_at,search_postings.updated_at_submicrosecond)
-  IS DISTINCT FROM (EXCLUDED.impact,EXCLUDED.updated_at,EXCLUDED.updated_at_submicrosecond)
+ SET impact=EXCLUDED.impact,updated_at=EXCLUDED.updated_at,updated_at_submicrosecond=EXCLUDED.updated_at_submicrosecond,
+  literal_positions=CASE WHEN search_postings.term IN (SELECT term FROM literal_terms) THEN search_postings.literal_positions ELSE ARRAY[]::bigint[] END
+ WHERE (search_postings.impact,search_postings.updated_at,search_postings.updated_at_submicrosecond,search_postings.literal_positions)
+  IS DISTINCT FROM (EXCLUDED.impact,EXCLUDED.updated_at,EXCLUDED.updated_at_submicrosecond,
+   CASE WHEN search_postings.term IN (SELECT term FROM literal_terms) THEN search_postings.literal_positions ELSE ARRAY[]::bigint[] END)
  RETURNING 1
 )
 SELECT d.project_hidden::boolean AS project_hidden,d.parent_archived,d.parent_principal,d.project_name,d.parent_number,d.parent_project,
@@ -408,6 +396,7 @@ type SearchPreparePublicationPostingsParams struct {
 	Terms            []string
 	TermFrequencies  []int64
 	Vector           string
+	Literals         []string
 }
 
 type SearchPreparePublicationPostingsRow struct {
@@ -432,6 +421,7 @@ func (q *Queries) SearchPreparePublicationPostings(ctx context.Context, arg Sear
 		pq.Array(arg.Terms),
 		pq.Array(arg.TermFrequencies),
 		arg.Vector,
+		pq.Array(arg.Literals),
 	)
 	var i SearchPreparePublicationPostingsRow
 	err := row.Scan(
@@ -550,11 +540,14 @@ CROSS JOIN LATERAL (
     SELECT unnest($1::text[]) AS scope
     EXCEPT
     SELECT previous.scope FROM search_postings previous
-    WHERE previous.organization_id=d.organization_id AND previous.document_id=d.id AND previous.term=l.term AND previous.literal_positions=l.positions
+ WHERE previous.organization_id=d.organization_id AND previous.document_id=d.id AND previous.term=l.term AND previous.literal_positions=l.positions
+  AND previous.updated_at=d.updated_at AND previous.updated_at_submicrosecond=d.updated_at_submicrosecond
 ) p
 WHERE d.organization_id=$2 AND d.id=$3 AND d.revision=$4
-ON CONFLICT(organization_id,scope,term,document_id) DO UPDATE SET literal_positions=EXCLUDED.literal_positions
-WHERE search_postings.literal_positions IS DISTINCT FROM EXCLUDED.literal_positions
+ON CONFLICT(organization_id,scope,term,document_id) DO UPDATE SET literal_positions=EXCLUDED.literal_positions,
+ updated_at=EXCLUDED.updated_at,updated_at_submicrosecond=EXCLUDED.updated_at_submicrosecond
+WHERE (search_postings.literal_positions,search_postings.updated_at,search_postings.updated_at_submicrosecond)
+ IS DISTINCT FROM (EXCLUDED.literal_positions,EXCLUDED.updated_at,EXCLUDED.updated_at_submicrosecond)
 `
 
 type SearchPublishLiteralsParams struct {
