@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/lib/pq"
 
@@ -456,12 +457,23 @@ func TestRepositoryDomainErrors(t *testing.T) {
 }
 
 func TestRepositoryRollsBackFailedCallbacks(t *testing.T) {
-	repository, _ := repositoryFor(t, template.Database(t), smallPool())
+	admin := template.Database(t)
+	if _, err := admin.ExecContext(t.Context(), `INSERT INTO organizations(organization_id,name,local,created_at) VALUES($1,$1,false,$2)`, "org_first", historyAt()); err != nil {
+		t.Fatal(err)
+	}
+	repository, _ := repositoryFor(t, admin, smallPool())
 	failure := errors.New("example callback failure")
 	for _, mode := range []string{"error", "panic", "cancellation"} {
 		t.Run(mode, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
+			var phases []string
+			ctx = postgres.WithTransactionTiming(ctx, func(name string, started time.Time) {
+				if started.IsZero() {
+					t.Error("transaction phase has no start time")
+				}
+				phases = append(phases, name)
+			})
 			var got error
 			func() {
 				defer func() {
@@ -492,9 +504,21 @@ func TestRepositoryRollsBackFailedCallbacks(t *testing.T) {
 			if mode == "cancellation" && !errors.Is(got, context.Canceled) {
 				t.Errorf("cancellation error = %v", got)
 			}
-			err := repository.Read(t.Context(), "org_first", corestore.Serving, func(r corestore.Reader) error { _, err := r.Project(t.Context(), "prj_rollback"); return err })
+			if got := strings.Join(phases, ","); got != "pg_admission,pg_begin,pg_callback" {
+				t.Errorf("failed transaction phases = %s", got)
+			}
+			phases = nil
+			readCtx := postgres.WithTransactionTiming(t.Context(), func(name string, _ time.Time) { phases = append(phases, name) })
+			err := repository.Read(readCtx, "org_first", corestore.Serving, func(r corestore.Reader) error { _, err := r.Project(t.Context(), "prj_rollback"); return err })
 			if !errors.Is(err, corestore.ErrNotFound) {
 				t.Fatalf("rolled-back row survived: %v", err)
+			}
+			phases = nil
+			if err := repository.Read(readCtx, "org_first", corestore.Serving, func(corestore.Reader) error { return nil }); err != nil {
+				t.Fatal(err)
+			}
+			if got := strings.Join(phases, ","); got != "pg_admission,pg_begin,pg_callback,pg_commit" {
+				t.Errorf("successful transaction phases = %s", got)
 			}
 		})
 	}
