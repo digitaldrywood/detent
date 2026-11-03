@@ -398,10 +398,7 @@ func (d *database) openReader(ctx context.Context, busyTimeout time.Duration) er
 
 // auth returns the pool reserved for credential and scope lookups.
 func (d *database) auth() *sql.DB {
-	if d.authReader != nil {
-		return d.authReader
-	}
-	return d.reader
+	return d.db
 }
 
 func isWindowsDrivePath(path string) bool {
