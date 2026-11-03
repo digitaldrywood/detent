@@ -853,9 +853,17 @@ WHERE i.organization_id = ? AND i.project_id = ? `
 		return "", nil, nativePublicInvalid("open must be true or false")
 	}
 	if value := strings.TrimSpace(params.Get("fingerprint")); value != "" {
-		query += " AND (instr(i.body, ?) > 0 OR EXISTS (SELECT 1 FROM native_comments c WHERE c.work_item_id = i.native_id AND instr(c.body, ?) > 0))"
-		marker := "\nfingerprint: " + value + "\n"
-		args = append(args, marker, marker)
+		if !validNativeFingerprint(value) {
+			return "", nil, nativePublicInvalid("fingerprint has an invalid format")
+		}
+		var alternatives []string
+		for _, searchScope := range nativeSearchScopes(scope, params.Get("archived")) {
+			alternatives = append(alternatives, `i.id IN (SELECT d.issue_id FROM (
+SELECT document_id FROM native_work_fingerprints WHERE scope=? AND fingerprint=? ORDER BY document_id DESC LIMIT 100
+) f JOIN native_work_documents d ON d.id=f.document_id)`)
+			args = append(args, searchScope, value)
+		}
+		query += " AND (" + strings.Join(alternatives, " OR ") + ")"
 	}
 	if !includeWorkspace {
 		// Workspace items hold a worktree open for a person's surfaces, not
