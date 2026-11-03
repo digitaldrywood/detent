@@ -160,7 +160,7 @@ func TestOfflineCLIUpdateReportsVerifiedController(t *testing.T) {
 	}
 	sum := sha256.Sum256(payload)
 	if heartbeat.Validate() != nil || !heartbeat.Running.VerifiedRelease || heartbeat.Running.Source != "release" || heartbeat.Running.Version != offlineUpdateVersion || heartbeat.Running.Commit != offlineUpdateCommit || heartbeat.Running.SHA256 != hex.EncodeToString(sum[:]) {
-		t.Fatalf("offline evidence did not reach fresh heartbeat: %+v", heartbeat)
+		t.Fatalf("offline evidence did not reach fresh heartbeat: %s", raw)
 	}
 	t.Run("busy slots converge to the applied controller", func(t *testing.T) {
 		testOfflineBusyControllerConvergence(t, configPath, binary, serviceConfig, options)
@@ -263,7 +263,8 @@ func testOfflineBusyControllerConvergence(t *testing.T, configPath, binary strin
 	}
 	applied := scheduler.EnrolledUpdate(ctx, scheduler.RunningBuild(), &runnerauth.UpdateRequest{ID: "busy-update", Service: "detent", Version: offlineUpdateVersion, Release: true, FromRelease: true, FollowHub: true, ExpectedBuildRevision: before.Revision, RequestedAt: time.Now().UTC()})
 	if applied == nil || applied.Receipt == nil || applied.Receipt.Applied == nil || !applied.Receipt.Applied.VerifiedRelease || applied.Receipt.Status != "restart_requested" || !applied.Receipt.ExecutionArtifact || applied.Running.Version != "1.2.2" || applied.Receipt.Applied.Version != offlineUpdateVersion {
-		t.Fatalf("busy update did not apply the release: %+v", applied)
+		raw, err := json.Marshal(applied)
+		t.Fatalf("busy update did not apply the release: %s (marshal error: %v)", raw, err)
 	}
 	if restart.Binary() != "" || !controller.updateRestart.Load() {
 		t.Fatal("controller replacement did not retain the old attempt owner")
@@ -312,7 +313,7 @@ func testOfflineBusyControllerConvergence(t *testing.T, configPath, binary strin
 		t.Fatal(err)
 	}
 	if running.Validate() != nil || !running.Running.VerifiedRelease || !running.Running.Matches(*applied.Receipt.Applied) || running.Receipt == nil || running.Receipt.Status != "running" || running.Receipt.Running == nil {
-		t.Fatalf("replacement controller did not converge to the applied release: %+v", running)
+		t.Fatalf("replacement controller did not converge to the applied release: %s", raw)
 	}
 	select {
 	case <-runner.canceled:
