@@ -23,8 +23,8 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
-	"github.com/digitaldrywood/detent/internal/toolcache"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -1584,6 +1584,9 @@ func (l *LocalGit) unreferencedDetachedHead(ctx context.Context, path string, cu
 }
 
 func (l *LocalGit) removeCleanWorktree(ctx context.Context, path string) error {
+	if _, err := ReapProcesses(WithProcessSource(ctx, l.processSource), path, procgroup.DefaultTerminationGrace); err != nil {
+		return fmt.Errorf("stop stale workspace processes: %w", err)
+	}
 	_, err := l.runGit(ctx, "worktree", "remove", path)
 	if err == nil {
 		return nil
@@ -1610,6 +1613,9 @@ func (l *LocalGit) quarantineWorktree(ctx context.Context, path string) (string,
 	}
 	if metadata.commonDir != sourceCommon {
 		return "", fmt.Errorf("refusing to quarantine worktree not managed by source: %s", path)
+	}
+	if _, err := ReapProcesses(WithProcessSource(ctx, l.processSource), path, procgroup.DefaultTerminationGrace); err != nil {
+		return "", fmt.Errorf("stop quarantined workspace processes: %w", err)
 	}
 	quarantinePath, err := l.nextQuarantinePath(path)
 	if err != nil {
@@ -1704,6 +1710,9 @@ func (l *LocalGit) quarantineFailedWorkspace(ctx context.Context, path string) (
 	path, err = validateWorkspacePath(l.root, path)
 	if err != nil {
 		return "", false, err
+	}
+	if _, err := ReapProcesses(WithProcessSource(ctx, l.processSource), path, procgroup.DefaultTerminationGrace); err != nil {
+		return "", false, fmt.Errorf("stop failed workspace processes: %w", err)
 	}
 	quarantinePath, err := l.nextQuarantinePath(path)
 	if err != nil {
@@ -2035,6 +2044,9 @@ func (l *LocalGit) removePath(ctx context.Context, path string) error {
 	}
 	if !exists {
 		return nil
+	}
+	if _, err := ReapProcesses(WithProcessSource(ctx, l.processSource), path, procgroup.DefaultTerminationGrace); err != nil {
+		return fmt.Errorf("stop removed workspace processes: %w", err)
 	}
 
 	sourceWorktree := l.isSourceWorktree(ctx, path)
@@ -2452,18 +2464,8 @@ func (l *LocalGit) executeHook(ctx context.Context, name string, command string,
 		slog.String("command", command),
 	)
 
-	var output []byte
-	var err error
+	output, err := runHookCommand(hookCtx, command, l.hooks, info, issue, l.logger)
 	exitCode := -1
-	if toolcache.ManagedBuildFromContext(hookCtx) != "" {
-		result, runErr := l.runValidationCommand(hookCtx, info, issue, command)
-		output, err, exitCode = []byte(result.Output), runErr, result.ExitCode
-		if err == nil && exitCode != 0 {
-			err = fmt.Errorf("hook exited with status %d", exitCode)
-		}
-	} else {
-		output, err = runHookCommand(hookCtx, command, l.hooks, info, issue)
-	}
 	if err == nil {
 		return nil
 	}

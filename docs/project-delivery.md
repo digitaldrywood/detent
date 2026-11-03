@@ -16,6 +16,17 @@ Project setup runs from repository files:
 
 See [hooks and workspace configuration](config.md#operations-budgets-and-observability).
 
+On Linux, workspace hooks run under a procgroup subreaper. It retains ownership
+of orphaned descendants even after they call `setsid`, clear their environment
+and leave the workspace. Teardown stops the owner and waits for its descendants
+before removing or quarantining the workspace. This requires Linux pidfd
+support (kernel 5.3 or newer); an unavailable subreaper or pidfd fails hook
+startup. Ownership lives in the running process, with no persistent registry.
+On macOS, cleanup is best effort through process groups, environment markers
+and working directories. A daemon that escapes all three cannot be recovered;
+hooks must retain one of those associations or stop the daemon themselves.
+Windows continues to use the existing process job owner.
+
 ## Dispatch
 
 The Hub offers dispatchable work (`Todo`, `In Progress`, `Merging` in the default workflow) to runners with project access and free capacity. Enrolled runners receive ready work ordered by project rank, then issue priority, aging boost and landing preference, then creation time, identifier and ID; other claims order by priority first ([claim order](hub-api.md#organization-runner-scope-and-claim-order)). Hub dependency relations hold a `Todo` item until its blockers are terminal ([dependency workflows](dependency-workflows.md)), and the project's issue contract holds items missing required sections ([admission criteria](admission.md)). Model, backend and effort come from the Cloud organization and project model selection; a per-issue `detent-agent` block can set `effort`, clamped to each stage's ceiling.
