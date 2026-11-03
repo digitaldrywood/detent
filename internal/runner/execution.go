@@ -897,12 +897,24 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 		if !available || checkpoint.HeadSHA == "" || finalDiff.HeadSHA != checkpoint.HeadSHA {
 			diffErr = failedStep("checkpoint_recovery", ErrNativeRecoveryRequired)
 		} else {
-			diffs.SetDiffSource(func(ctx context.Context) (tracker.AttemptDiffRequest, bool) {
-				if current, available := source(ctx); available {
-					return current, true
+			if capture, ok := req.Execution.(ChangeSourceExecution); ok && finalDiff.BaseSHA != finalDiff.HeadSHA {
+				retained, err := workspace.CaptureChangeSource(ctx, info.Path, finalDiff.BaseSHA, finalDiff.HeadSHA)
+				if err != nil {
+					diffErr = failedStep("checkpoint_recovery", errors.Join(ErrNativeRecoveryRequired, err))
+				} else {
+					capture.SetChangeSource(func(ctx context.Context, base, head string) (tracker.ChangeSourceCapture, error) {
+						if base != retained.Source.BaseSHA || head != retained.Source.HeadSHA {
+							return tracker.ChangeSourceCapture{}, errors.New("change source capture differs from the finalized head")
+						}
+						return retained, ctx.Err()
+					})
 				}
-				return finalDiff, true
-			})
+			}
+			if diffErr == nil {
+				diffs.SetDiffSource(func(ctx context.Context) (tracker.AttemptDiffRequest, bool) {
+					return finalDiff, ctx.Err() == nil
+				})
+			}
 		}
 	}
 	completionErr := errors.Join(finalizationErr, artifactErr, diffErr, executionCancellation(req))
@@ -1081,10 +1093,7 @@ func nativeRecoveryAction(recovery tracker.NativeRecovery, local *workspace.Reco
 		return "manual_recovery", "local_checkpoint_changed"
 	}
 	if !localAvailable && checkpoint.WorktreeState != "clean" {
-		if nativeInterruptedResumeAttempt(recovery) != nil && !operatorFresh {
-			return "manual_recovery", "checkpoint_unavailable"
-		}
-		return "fresh_checkout", "checkpoint_unavailable"
+		return "manual_recovery", "checkpoint_unavailable"
 	}
 	if checkpoint.Availability == "missing" || checkpoint.Availability == "inaccessible" || checkpoint.Storage == "customer_store" {
 		if checkpoint.WorktreeState != "clean" || nativeInterruptedResumeAttempt(recovery) != nil {
