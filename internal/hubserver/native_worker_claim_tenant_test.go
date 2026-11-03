@@ -2,11 +2,13 @@ package hubserver
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -25,6 +28,51 @@ import (
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+type nativePreviewReadCounts struct {
+	readTenant          int
+	projectRecord       int
+	projectPolicy       int
+	candidatePage       int
+	landingCapacityRead int
+}
+
+type nativePreviewCountingRepository struct {
+	tenantstore.Repository
+	counts *nativePreviewReadCounts
+}
+
+func (r nativePreviewCountingRepository) ReadTenant(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
+	r.counts.readTenant++
+	return r.Repository.ReadTenant(ctx, organization, workload, func(reader tenantstore.Reader) error {
+		return read(nativePreviewCountingReader{Reader: reader, counts: r.counts})
+	})
+}
+
+type nativePreviewCountingReader struct {
+	tenantstore.Reader
+	counts *nativePreviewReadCounts
+}
+
+func (r nativePreviewCountingReader) ProjectRecord(ctx context.Context, project tracker.ProjectID) (projectstore.Record, error) {
+	r.counts.projectRecord++
+	return r.Reader.ProjectRecord(ctx, project)
+}
+
+func (r nativePreviewCountingReader) ProjectPolicy(ctx context.Context, project tracker.ProjectID) (policystore.Revision, error) {
+	r.counts.projectPolicy++
+	return r.Reader.ProjectPolicy(ctx, project)
+}
+
+func (r nativePreviewCountingReader) CandidatePage(ctx context.Context, query claimstore.CandidateQuery) (claimstore.CandidatePage, error) {
+	r.counts.candidatePage++
+	return r.Reader.CandidatePage(ctx, query)
+}
+
+func (r nativePreviewCountingReader) LandingCapacityUsage(ctx context.Context, project tracker.ProjectID, now time.Time) (claimstore.LandingCapacityUsage, error) {
+	r.counts.landingCapacityRead++
+	return r.Reader.LandingCapacityUsage(ctx, project, now)
+}
 
 func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *testing.T) {
 	var logs bytes.Buffer
@@ -113,6 +161,32 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 		t.Fatalf("read claim plan = %+v, error %v", plan, err)
 	}
 	claimPath := base + "/claims"
+	counts := &nativePreviewReadCounts{}
+	service.config.TenantRepository = nativePreviewCountingRepository{Repository: repository, counts: counts}
+	previewClaim := request
+	previewClaim.WorkItemID = ""
+	previewClaim.SessionID = ""
+	previewClaim.ProviderCandidates = nil
+	sharedPreviewResponse := performHubAPIRequest(t, service, http.MethodPost, claimPath+"/preview", secret, tracker.NativeCapacityPreview{NativeClaim: previewClaim, Limit: 2})
+	requireNativeStatus(t, sharedPreviewResponse, http.StatusOK)
+	var sharedPreview tracker.NativeCapacityPage
+	decodeHubResponse(t, sharedPreviewResponse, &sharedPreview)
+	if len(sharedPreview.Items) != 2 || !slices.Contains([]tracker.NativeWorkItemID{items[0].WorkItemID, items[1].WorkItemID}, sharedPreview.Items[0].WorkItemID) || !slices.Contains([]tracker.NativeWorkItemID{items[0].WorkItemID, items[1].WorkItemID}, sharedPreview.Items[1].WorkItemID) || sharedPreview.Items[0].WorkItemID == sharedPreview.Items[1].WorkItemID {
+		t.Fatalf("two-candidate preview order = %+v", sharedPreview.Items)
+	}
+	twoCandidateCounts := *counts
+	*counts = nativePreviewReadCounts{}
+	sharedPreviewResponse = performHubAPIRequest(t, service, http.MethodPost, claimPath+"/preview", secret, tracker.NativeCapacityPreview{NativeClaim: previewClaim, Limit: 1})
+	requireNativeStatus(t, sharedPreviewResponse, http.StatusOK)
+	var singlePreview tracker.NativeCapacityPage
+	decodeHubResponse(t, sharedPreviewResponse, &singlePreview)
+	if len(singlePreview.Items) != 1 || singlePreview.Items[0].WorkItemID != sharedPreview.Items[0].WorkItemID {
+		t.Fatalf("single-candidate preview changed first result: one=%+v two=%+v", singlePreview.Items, sharedPreview.Items)
+	}
+	if twoCandidateCounts != *counts {
+		t.Fatalf("preview shared read counts changed with candidate count: two=%+v one=%+v", twoCandidateCounts, *counts)
+	}
+	service.config.TenantRepository = repository
 	previewResponse := performHubAPIRequest(t, service, http.MethodPost, claimPath+"/preview", secret, tracker.NativeCapacityPreview{NativeClaim: request, Limit: 1})
 	requireNativeStatus(t, previewResponse, http.StatusOK)
 	var preview tracker.NativeCapacityPage

@@ -11,7 +11,10 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -106,6 +109,8 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope nat
 		limit = 100
 	}
 	var candidates []claimstore.Candidate
+	var plans []nativeClaimPlan
+	var projectPolicy policystore.Revision
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
@@ -131,7 +136,7 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope nat
 		if project.Core.Profile != "native" || project.Core.DeletedAt != nil {
 			return ErrNoClaimableWork
 		}
-		projectPolicy, err := r.ProjectPolicy(ctx, scope.project)
+		projectPolicy, err = r.ProjectPolicy(ctx, scope.project)
 		if err != nil {
 			return err
 		}
@@ -152,21 +157,51 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope nat
 			return err
 		}
 		candidates = page.Items
+		shared := nativeClaimPlan{project: project, policy: projectPolicy}
+		for _, candidate := range candidates {
+			claim := request.NativeClaim
+			claim.WorkItemID = candidate.WorkItemID
+			plan, err := s.readNativeClaimPlanRows(ctx, scope, claim, now, r, &candidate, shared)
+			if errors.Is(err, ErrNoClaimableWork) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			plans = append(plans, plan)
+		}
 		return nil
 	})
 	if err != nil {
 		return tracker.NativeCapacityPage{}, err
 	}
-	page := tracker.NativeCapacityPage{Items: []tracker.NativeIssue{}}
-	for _, candidate := range candidates {
+	var descriptor *policy.Descriptor
+	if len(plans) > 0 {
+		loaded, err := eventstore.NewContent(s.runDetailStore()).ProjectPolicy(ctx, projectPolicy)
+		if err != nil {
+			return tracker.NativeCapacityPage{}, err
+		}
+		descriptor = &loaded
+	}
+	for index := range plans {
 		claim := request.NativeClaim
-		claim.WorkItemID = candidate.WorkItemID
-		plan, err := s.readNativeClaimPlan(ctx, scope, claim, now)
+		claim.WorkItemID = plans[index].candidate.WorkItemID
+		plan, err := s.hydrateNativeClaimPlan(ctx, scope, claim, now, plans[index], descriptor)
 		if errors.Is(err, ErrNoClaimableWork) {
+			plans[index] = nativeClaimPlan{}
 			continue
 		}
 		if err != nil {
 			return tracker.NativeCapacityPage{}, err
+		}
+		plans[index] = plan
+	}
+	landingCapacityChecked := false
+	landingCapacityAvailable := false
+	page := tracker.NativeCapacityPage{Items: []tracker.NativeIssue{}}
+	for _, plan := range plans {
+		if plan.candidate.WorkItemID == "" {
+			continue
 		}
 		if !nativeClaimIssueContractAllowed(plan) || stringsEqualFold(plan.candidate.State, "Merging") && !plan.changeReady {
 			continue
@@ -175,11 +210,14 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope nat
 			continue
 		}
 		if plan.landingRequired || request.LandingCapacity > 0 {
-			allowed, err := s.nativeClaimLandingCapacityAvailable(ctx, scope.organization, scope.project, request.LandingCapacity, now)
-			if err != nil {
-				return tracker.NativeCapacityPage{}, err
+			if !landingCapacityChecked {
+				landingCapacityAvailable, err = s.nativeClaimLandingCapacityAvailable(ctx, scope.organization, scope.project, request.LandingCapacity, now)
+				if err != nil {
+					return tracker.NativeCapacityPage{}, err
+				}
+				landingCapacityChecked = true
 			}
-			if !allowed {
+			if !landingCapacityChecked || !landingCapacityAvailable {
 				continue
 			}
 		}
