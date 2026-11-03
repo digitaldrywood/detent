@@ -1928,6 +1928,17 @@ type ProjectEventCursor struct {
 	Sequence       int64
 }
 
+type ProjectOnboarding struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	Revision       int64
+	Repository     string
+	Doctor         bool
+	Provider       bool
+	Artifacts      string
+	UpdatedAt      string
+}
+
 type ProjectPolicy struct {
 	OrganizationID tracker.OrganizationID
 	ProjectID      tracker.ProjectID

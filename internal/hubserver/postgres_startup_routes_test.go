@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/onboarding"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -167,9 +168,29 @@ func TestPostgresOpenCreatesListsAndClaimsNativeIssue(t *testing.T) {
 		if err := w.UpdateRunnerCapacityConfig(t.Context(), "runner_example", runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 1, ClientLimit: 1, RuntimeLimit: 1, Manageable: true, ObservedAt: now}); err != nil {
 			return err
 		}
-		return w.ReplaceRunnerProviderReports(t.Context(), "runner_example", []providercapacity.Report{capacity})
+		if err := w.ReplaceRunnerProviderReports(t.Context(), "runner_example", []providercapacity.Report{capacity}); err != nil {
+			return err
+		}
+		if err := w.ReplaceRunnerLocalChecks(t.Context(), "runner_example", project.ID, runnerauth.LocalChecks{Checkout: "passed", Configuration: "passed", Doctor: "passed", Provider: "passed", ProviderKinds: []string{"codex"}, ObservedAt: now, CheckoutAt: now, ConfigurationAt: now, DoctorAt: now, ProviderAt: now}); err != nil {
+			return err
+		}
+		return w.SaveProjectOnboardingProgress(t.Context(), project.ID, onboarding.Progress{Revision: 1, Repository: "existing", Doctor: true, Provider: true, Artifacts: "local", UpdatedAt: formatHubTime(now)}, 0)
 	}); err != nil {
 		t.Fatal(err)
+	}
+	setupResponse := performHubAPIRequest(t, service, http.MethodGet, "/api/v2/organizations/org_startup/projects/"+url.PathEscape(string(project.ID))+"/onboarding", workerToken, nil)
+	requireNativeStatus(t, setupResponse, http.StatusOK)
+	var setup onboarding.Project
+	decodeHubResponse(t, setupResponse, &setup)
+	if setup.Progress.Revision != 1 || setup.Progress.Repository != "existing" || !setup.Progress.Doctor || !setup.Progress.Provider || setup.Progress.Artifacts != "local" || setup.Progress.UpdatedAt == "" {
+		t.Fatalf("PostgreSQL worker onboarding progress = %+v", setup.Progress)
+	}
+	browserSetupResponse := performHubAPIRequest(t, service, http.MethodGet, "/api/v2/organizations/org_startup/projects/"+url.PathEscape(string(project.ID))+"/onboarding", ownerToken, nil)
+	requireNativeStatus(t, browserSetupResponse, http.StatusOK)
+	var browserSetup onboarding.Project
+	decodeHubResponse(t, browserSetupResponse, &browserSetup)
+	if len(browserSetup.Runners) != 1 || browserSetup.Runners[0].Runner.RunnerID != "runner_example" || browserSetup.Runners[0].Runner.ConnectionHealth != "online" || browserSetup.Runners[0].LocalChecks == nil || !browserSetup.Runners[0].LocalChecks.Passed() || !slices.Equal(browserSetup.Runners[0].LocalChecks.ProviderKinds, []string{"codex"}) || browserSetup.Policy == nil || browserSetup.Policy.Policy.ID != policy.ID {
+		t.Fatalf("typed browser onboarding lost live runner/policy proofs: %+v", browserSetup)
 	}
 	capabilitiesRequest := performHubAPIRequest(t, service, http.MethodGet, "/api/v2/capabilities", workerToken, nil)
 	requireNativeStatus(t, capabilitiesRequest, http.StatusOK)

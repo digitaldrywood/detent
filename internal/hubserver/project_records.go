@@ -519,7 +519,7 @@ func isProjectCreation(input any) bool { _, ok := input.(createNativeProjectRequ
 
 func projectRecordRoute(path string) bool {
 	switch path {
-	case nativeBase, nativeBase + "/integration", nativeBase + "/model-selection", nativeBase + "/content-settings", nativeBase + "/usage/sprites", nativeBase + "/claims", nativeBase + "/claims/preview", nativeBase + "/claims/wait", nativeBase + "/policy", nativeBase + "/policy/observed":
+	case nativeBase, nativeBase + "/integration", nativeBase + "/model-selection", nativeBase + "/content-settings", nativeBase + "/usage/sprites", nativeBase + "/claims", nativeBase + "/claims/preview", nativeBase + "/claims/wait", nativeBase + "/policy", nativeBase + "/policy/observed", nativeBase + "/onboarding":
 		return true
 	}
 	return false
