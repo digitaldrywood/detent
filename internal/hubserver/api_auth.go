@@ -159,7 +159,7 @@ func (s *Service) requireAPIScope(allowed ...apiScope) echo.MiddlewareFunc {
 					if err := s.admitRunnerRequest(c, credential); err != nil || c.Response().Committed {
 						return err
 					}
-					return next(c)
+					return s.admitRequestBody(c, credential, next)
 				}
 			}
 			return s.refusedAPIError(c, http.StatusForbidden, "insufficient_scope", "API token scope does not permit this operation", apiErrorResponse{Code: "insufficient_scope", Message: "API token scope does not permit this operation"})
