@@ -37,6 +37,7 @@ const hostedOrganizationBase = "/api/v2/organizations/:organization"
 func (s *Service) registerHostedOrganizationRoutes(e *echo.Echo) {
 	session := s.hostedSessionOnly
 	s.registerHostedAccountPreferenceRoutes(e)
+	s.registerHostedMemberAndSecretRoutes(e)
 	administration := s.hostedAdministrationSession
 	e.GET(hostedOrganizationBase+"/name", s.hostedOrganizationName, session)
 	e.PUT(hostedOrganizationBase+"/name", s.renameHostedOrganization, session)
@@ -44,9 +45,6 @@ func (s *Service) registerHostedOrganizationRoutes(e *echo.Echo) {
 	e.PUT(hostedOrganizationBase+"/logo", s.setOrganizationLogo, administration)
 	e.GET(hostedOrganizationBase+"/attachment-metadata/:attachment", s.getOrganizationLogoAttachment, session)
 	e.GET(hostedOrganizationBase+"/logo-metadata", s.getCurrentOrganizationLogoAttachment, session)
-	e.GET(hostedOrganizationBase+"/secrets/:kind", s.organizationSpritesScope(s.projectSecretMetadata), session)
-	e.PUT(hostedOrganizationBase+"/secrets/:kind", s.organizationSpritesScope(s.setProjectSecret), administration)
-	e.DELETE(hostedOrganizationBase+"/secrets/:kind", s.organizationSpritesScope(s.removeProjectSecret), administration)
 	e.GET(hostedOrganizationBase+"/sprite-pool", s.organizationSpritesScope(s.getSpritePool), session)
 	e.PUT(hostedOrganizationBase+"/sprite-pool", s.organizationSpritesScope(s.setSpritePool), administration)
 
@@ -57,7 +55,6 @@ func (s *Service) registerHostedOrganizationRoutes(e *echo.Echo) {
 	e.POST(hostedOrganizationBase+"/integrations/slack/test", s.testSlackIntegration, administration)
 	e.GET(hostedOrganizationBase+"/monthly-budget", s.organizationMonthlyBudgetScope, session)
 	e.PUT(hostedOrganizationBase+"/monthly-budget", s.organizationMonthlyBudgetScope, administration)
-	e.GET(hostedOrganizationBase+"/members", s.listHostedMembers, session)
 	e.POST(hostedOrganizationBase+"/members/invitations", s.inviteHostedMemberJSON, administration)
 	e.PUT(hostedOrganizationBase+"/members/invitations/:invitation", s.editHostedInvitationJSON, administration)
 	e.DELETE(hostedOrganizationBase+"/members/invitations/:invitation", s.revokeHostedInvitationJSON, administration)
@@ -73,6 +70,13 @@ func (s *Service) registerHostedOrganizationRoutes(e *echo.Echo) {
 	e.POST(hostedOrganizationBase+"/switch", s.switchHostedOrganizationJSON, session)
 	e.POST(hostedOrganizationBase+"/invitations/accept", s.acceptHostedInvitationJSON, session)
 	e.POST(hostedOrganizationBase+"/support/start", s.startHostedSupportJSON, session)
+}
+
+func (s *Service) registerHostedMemberAndSecretRoutes(e *echo.Echo) {
+	e.GET(hostedOrganizationBase+"/members", s.listHostedMembers, s.hostedSessionOnly)
+	e.GET(hostedOrganizationBase+"/secrets/:kind", s.organizationSpritesScope(s.projectSecretMetadata), s.hostedSessionOnly)
+	e.PUT(hostedOrganizationBase+"/secrets/:kind", s.organizationSpritesScope(s.setProjectSecret), s.hostedAdministrationSession)
+	e.DELETE(hostedOrganizationBase+"/secrets/:kind", s.organizationSpritesScope(s.removeProjectSecret), s.hostedAdministrationSession)
 }
 
 func (s *Service) registerHostedAccountPreferenceRoutes(e *echo.Echo) {
