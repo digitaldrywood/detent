@@ -74,9 +74,23 @@ func validateNativeRuntime(r *tracker.NativeRuntimeObservation) error {
 	if !slices.Contains([]string{"implementation", "rework", "planning", "merging", "validation", "completed", "waiting_cache_admission", "waiting_cache_consumers"}, r.Phase) || r.LocalAttemptID < 0 || len(r.Phases) > 128 || r.PhasesDropped < 0 {
 		return nativeRejection(nativePublicInvalid("Runtime observations require bounded phase and attempt identity"), "runtime_validation", "data.runtime")
 	}
-	for _, p := range r.Phases {
-		if !slices.Contains([]string{"implementation", "rework", "planning", "merging", "validation", "completed", "waiting_cache_admission", "waiting_cache_consumers"}, p.Name) || p.StartedAt.IsZero() || !p.FinishedAt.IsZero() && p.FinishedAt.Before(p.StartedAt) {
-			return nativeRejection(nativePublicInvalid("Invalid runtime phase interval"), "runtime_validation", "data.runtime.phases")
+	for i, p := range r.Phases {
+		failureReason := ""
+		switch {
+		case !slices.Contains([]string{"implementation", "rework", "planning", "merging", "validation", "completed", "waiting_cache_admission", "waiting_cache_consumers"}, p.Name):
+			failureReason = "invalid_name"
+		case p.StartedAt.IsZero():
+			failureReason = "missing_start"
+		case !p.FinishedAt.IsZero() && p.FinishedAt.Before(p.StartedAt):
+			failureReason = "finish_before_start"
+		}
+		if failureReason != "" {
+			err := nativeRejection(nativePublicInvalid("Invalid runtime phase interval"), "runtime_validation", "data.runtime.phases")
+			var failure *nativeError
+			if errors.As(err, &failure) {
+				failure.logAttributes = append(failure.logAttributes, "phase_index", i, "phase_failure", failureReason)
+			}
+			return err
 		}
 	}
 	for _, v := range []string{r.Identity.BackendID, r.Identity.BackendKind, r.Identity.Role, r.Identity.Provider.Value, r.Identity.RequestedModel.Value, r.Identity.ResolvedModel.Value, r.Identity.ReasoningEffort.Value, r.Identity.ServiceTier.Value} {
