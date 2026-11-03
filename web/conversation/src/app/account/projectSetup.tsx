@@ -38,12 +38,14 @@ function ProjectSetupResources({ projectId, children }: { readonly projectId: st
       || (!onboarding.value?.policy && (onboarding.value?.observed_policies?.length ?? 0) === 0)
     ));
   React.useEffect(() => {
-    if (!waiting) return;
-    const timer = window.setInterval(() => {
-      void onboarding.refresh();
-      void integration.refresh();
-    }, 5_000);
-    return () => window.clearInterval(timer);
-  }, [waiting, onboarding.refresh, integration.refresh]);
+    if (!waiting || onboarding.loading || integration.loading) return;
+    let active = true;
+    const refresh = async () => {
+      await Promise.all([onboarding.refresh(), integration.refresh()]);
+      if (active) timer = window.setTimeout(() => void refresh(), 5_000);
+    };
+    let timer = window.setTimeout(() => void refresh(), 5_000);
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [waiting, onboarding.loading, integration.loading, onboarding.refresh, integration.refresh]);
   return <ProjectSetupContext.Provider value={{ projectId, onboarding, integration }}>{children}</ProjectSetupContext.Provider>;
 }

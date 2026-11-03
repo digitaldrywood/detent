@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useContext } from "react";
 import { createBrowserHistory, createMemoryHistory, createRootRoute, createRouter, Outlet, RouterProvider } from "@tanstack/react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -14,6 +15,7 @@ import { accountRoutes } from "../../src/app/routes.account.tsx";
 import { ClientContext } from "../../src/app/client.ts";
 import type { ConversationClient } from "../../src/runtime/bootstrap.ts";
 import { AccountError } from "../../src/app/account/api.ts";
+import { ProjectSetupContext, ProjectSetupProvider } from "../../src/app/account/projectSetup.tsx";
 import { projectSettingsSearchItems, searchSettings } from "../../src/components/settings/settingsSearch.ts";
 import accountFixture from "../../src/contracts/fixtures/account-bootstrap.json";
 import integration from "../../src/contracts/fixtures/account-integration.json";
@@ -423,5 +425,65 @@ describe("organization logo picker", () => {
     render(<OrganizationLogoPickerRow name="Example organization" logo={{ url: "/logo", revision: "2" }} canManage={false} onSave={vi.fn()} />);
     expect(screen.getByRole("img", { name: "Example organization logo" })).toBeTruthy();
     expect(screen.queryByRole("button")).toBeNull();
+  });
+});
+
+
+function SetupPollingStatus() {
+  const setup = useContext(ProjectSetupContext);
+  return <p role="status">{setup?.onboarding.value?.ready ? "Ready" : "Pending"}</p>;
+}
+
+describe("project setup polling waits for current reads", () => {
+  const releases: Array<() => void> = [];
+  afterEach(async () => {
+    cleanup();
+    await act(async () => { for (const release of releases.splice(0)) release(); });
+    vi.useRealTimers();
+  });
+
+  it("does not supersede a slow initial onboarding read after integration starts waiting", async () => {
+    vi.useFakeTimers();
+    let release!: () => void;
+    const pending = new Promise<typeof onboarding>((resolve) => { release = () => resolve({ ...onboarding, ready: true }); });
+    releases.push(release);
+    api.onboarding.mockImplementation(() => pending);
+    api.integration.mockResolvedValue({ ...integration, checkout_repository: "owner/repository", checkout_verified: false });
+    await act(async () => { render(<ProjectSetupProvider projectId="project_first"><SetupPollingStatus /></ProjectSetupProvider>); });
+    expect(api.onboarding).toHaveBeenCalledTimes(1);
+    expect(api.integration).toHaveBeenCalledTimes(1);
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    expect(api.onboarding).toHaveBeenCalledTimes(1);
+    expect(api.integration).toHaveBeenCalledTimes(1);
+    await act(async () => { release(); });
+    expect(screen.getByRole("status").textContent).toBe("Ready");
+    await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+    expect(api.onboarding).toHaveBeenCalledTimes(2);
+    await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+    expect(api.onboarding).toHaveBeenCalledTimes(3);
+  });
+
+  it("keeps one polling pair in flight and accepts its ready response before scheduling another", async () => {
+    vi.useFakeTimers();
+    let releaseOnboarding!: () => void;
+    let releaseIntegration!: () => void;
+    const pendingOnboarding = new Promise<typeof onboarding>((resolve) => { releaseOnboarding = () => resolve({ ...onboarding, ready: true }); });
+    const pendingIntegration = new Promise<typeof integration & { checkout_repository: string }>((resolve) => { releaseIntegration = () => resolve({ ...integration, checkout_repository: "" }); });
+    releases.push(releaseOnboarding, releaseIntegration);
+    api.onboarding.mockResolvedValueOnce({ ...onboarding, ready: false }).mockImplementation(() => pendingOnboarding);
+    api.integration.mockResolvedValueOnce({ ...integration, checkout_repository: "" }).mockImplementation(() => pendingIntegration);
+    await act(async () => { render(<ProjectSetupProvider projectId="project_second"><SetupPollingStatus /></ProjectSetupProvider>); });
+    expect(screen.getByRole("status").textContent).toBe("Pending");
+    await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+    expect(api.onboarding).toHaveBeenCalledTimes(2);
+    expect(api.integration).toHaveBeenCalledTimes(2);
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    expect(api.onboarding).toHaveBeenCalledTimes(2);
+    expect(api.integration).toHaveBeenCalledTimes(2);
+    await act(async () => { releaseOnboarding(); releaseIntegration(); });
+    expect(screen.getByRole("status").textContent).toBe("Ready");
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+    expect(api.onboarding).toHaveBeenCalledTimes(2);
+    expect(api.integration).toHaveBeenCalledTimes(2);
   });
 });
