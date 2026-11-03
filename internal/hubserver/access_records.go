@@ -133,7 +133,7 @@ func (s *Service) accessMemberCredential(ctx context.Context, session auth.Sessi
 		if principal.RevokedAt != nil {
 			return auth.ErrHostedIdentity
 		}
-		credential.ID, credential.Hash = principal.ID, principal.Hash
+		credential.ID, credential.Hash, credential.HostedPrincipal = principal.ID, principal.Hash, principal.ID
 		credential.HostedRole = lesserHostedRole(credential.HostedRole, member.Role)
 		return nil
 	})

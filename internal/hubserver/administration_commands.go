@@ -138,13 +138,7 @@ func (s *Service) changeHostedRoleFor(ctx context.Context, credential apiCredent
 	if err != nil {
 		return hostedMemberView{}, err
 	}
-	if err := s.config.Hosted.Provider.SetMembershipRole(ctx, member.ID, role); err != nil {
-		return hostedMemberView{}, err
-	}
-	if _, err := s.database.db.ExecContext(ctx, "UPDATE hosted_members SET role=?,updated_at=? WHERE user_id=?", role, formatHubTime(s.config.now()), member.UserID); err != nil {
-		return hostedMemberView{}, err
-	}
-	return s.hostedMemberResponse(ctx, member)
+	return s.changeAccessRole(ctx, credential, member, role)
 }
 
 func (s *Service) changeHostedGrantFor(ctx context.Context, credential apiCredential, id, project string, write, runner, revoke bool) (hostedMemberView, error) {
