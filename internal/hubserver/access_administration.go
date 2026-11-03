@@ -8,6 +8,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -165,4 +166,96 @@ func (s *Service) accessLocalMember(ctx context.Context, user string) (bool, str
 		return false, "", nil
 	}
 	return member.Active, member.Role, err
+}
+
+func (s *Service) changeAccessRole(ctx context.Context, credential apiCredential, membership auth.Membership, role string) (hostedMemberView, error) {
+	if s.config.AccessRepository == nil || credential.Hosted == nil {
+		return hostedMemberView{}, workItemStorageUnavailable()
+	}
+	scope := nativeScope{organization: s.accessOrganization(), credential: credential, requireHostedAdmin: true}
+	currentMember := func(ctx context.Context, r tenantstore.Reader) (accessstore.Member, error) {
+		if err := s.authorizeAccessScope(ctx, r, scope, true); err != nil {
+			return accessstore.Member{}, err
+		}
+		target, err := r.AccessMember(ctx, membership.UserID)
+		if err != nil {
+			return target, err
+		}
+		if !target.Active || target.MembershipID != membership.ID {
+			return target, auth.ErrHostedIdentity
+		}
+		if role == "owner" || target.Role == "owner" {
+			actor, err := r.AccessMember(ctx, credential.Hosted.Subject)
+			if err != nil || !actor.Active || lesserHostedRole(actor.Role, credential.HostedRole) != "owner" {
+				return target, auth.ErrHostedIdentity
+			}
+		}
+		return target, nil
+	}
+	if err := s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error {
+		_, err := currentMember(ctx, r)
+		return err
+	}); err != nil {
+		return hostedMemberView{}, err
+	}
+	if err := s.config.Hosted.Provider.SetMembershipRole(ctx, membership.ID, role); err != nil {
+		return hostedMemberView{}, errors.Join(mutation.ErrUncertain, err)
+	}
+	persist, cancel := context.WithTimeout(context.WithoutCancel(ctx), hubReadTimeout)
+	defer cancel()
+	if err := s.accessWrite(persist, scope.organization, func(w tenantstore.Writer) error {
+		if err := w.LockAccessOrganization(persist); err != nil {
+			return err
+		}
+		target, err := currentMember(persist, w)
+		if err != nil {
+			return err
+		}
+		target.Role, target.UpdatedAt = role, s.config.now()
+		return w.UpdateAccessMember(persist, target)
+	}); err != nil {
+		return hostedMemberView{}, errors.Join(mutation.ErrUncertain, err)
+	}
+	view, err := s.hostedMemberResponse(persist, membership)
+	if err != nil {
+		return view, errors.Join(mutation.ErrUncertain, err)
+	}
+	return view, nil
+}
+
+func (s *Service) accessMemberResponse(ctx context.Context, membership auth.Membership) (hostedMemberView, error) {
+	var member accessstore.Member
+	if err := s.accessRead(ctx, s.accessOrganization(), func(r tenantstore.Reader) error {
+		var err error
+		member, err = r.AccessMember(ctx, membership.UserID)
+		return err
+	}); err != nil {
+		return hostedMemberView{}, err
+	}
+	if !member.Active || member.MembershipID != membership.ID {
+		return hostedMemberView{}, auth.ErrHostedIdentity
+	}
+	membership.Role.Slug = lesserHostedRole(membership.Role.Slug, member.Role)
+	view, err := s.hostedMemberIdentity(ctx, membership, map[string]string{member.UserID: member.Email})
+	if err != nil {
+		return view, err
+	}
+	var after tracker.ProjectID
+	for {
+		var page []accessstore.ProjectGrant
+		if err := s.accessRead(ctx, s.accessOrganization(), func(r tenantstore.Reader) error {
+			var err error
+			page, err = r.AccessProjectGrants(ctx, member.UserID, after, 200)
+			return err
+		}); err != nil {
+			return view, err
+		}
+		for _, grant := range page {
+			view.Grants = append(view.Grants, hostedMemberGrant{ProjectID: string(grant.ProjectID), Write: grant.CanWrite, Runner: grant.ManageRunner})
+		}
+		if len(page) < 200 {
+			return view, nil
+		}
+		after = page[len(page)-1].ProjectID
+	}
 }

@@ -56,13 +56,6 @@ func (s *Service) registerHostedOrganizationRoutes(e *echo.Echo) {
 	e.POST(hostedOrganizationBase+"/integrations/slack/test", s.testSlackIntegration, administration)
 	e.GET(hostedOrganizationBase+"/monthly-budget", s.organizationMonthlyBudgetScope, session)
 	e.PUT(hostedOrganizationBase+"/monthly-budget", s.organizationMonthlyBudgetScope, administration)
-	e.POST(hostedOrganizationBase+"/members/invitations", s.inviteHostedMemberJSON, administration)
-	e.PUT(hostedOrganizationBase+"/members/invitations/:invitation", s.editHostedInvitationJSON, administration)
-	e.DELETE(hostedOrganizationBase+"/members/invitations/:invitation", s.revokeHostedInvitationJSON, administration)
-	e.POST(hostedOrganizationBase+"/members/invitations/:invitation/resend", s.resendHostedInvitationJSON, administration)
-	e.DELETE(hostedOrganizationBase+"/members/:member", s.revokeHostedMemberJSON, administration)
-	e.PUT(hostedOrganizationBase+"/members/:member/role", s.changeHostedRoleJSON, administration)
-	e.PUT(hostedOrganizationBase+"/members/:member/grants", s.changeHostedGrantJSON, administration)
 	e.GET(hostedOrganizationBase+"/projects", s.listHostedProjects, session)
 	e.GET(hostedOrganizationBase+"/project-rank", s.hostedProjectRank, session)
 	e.PUT(hostedOrganizationBase+"/project-rank", s.updateHostedProjectRank, administration)
@@ -74,6 +67,14 @@ func (s *Service) registerHostedOrganizationRoutes(e *echo.Echo) {
 }
 
 func (s *Service) registerHostedMemberAndSecretRoutes(e *echo.Echo) {
+	administration := s.hostedAdministrationSession
+	e.POST(hostedOrganizationBase+"/members/invitations", s.inviteHostedMemberJSON, administration)
+	e.PUT(hostedOrganizationBase+"/members/invitations/:invitation", s.editHostedInvitationJSON, administration)
+	e.DELETE(hostedOrganizationBase+"/members/invitations/:invitation", s.revokeHostedInvitationJSON, administration)
+	e.POST(hostedOrganizationBase+"/members/invitations/:invitation/resend", s.resendHostedInvitationJSON, administration)
+	e.DELETE(hostedOrganizationBase+"/members/:member", s.revokeHostedMemberJSON, administration)
+	e.PUT(hostedOrganizationBase+"/members/:member/role", s.changeHostedRoleJSON, administration)
+	e.PUT(hostedOrganizationBase+"/members/:member/grants", s.changeHostedGrantJSON, administration)
 	e.GET(hostedOrganizationBase+"/members", s.listHostedMembers, s.hostedSessionOnly)
 	e.GET(hostedOrganizationBase+"/secrets/:kind", s.organizationSpritesScope(s.projectSecretMetadata), s.hostedSessionOnly)
 	e.PUT(hostedOrganizationBase+"/secrets/:kind", s.organizationSpritesScope(s.setProjectSecret), s.hostedAdministrationSession)
@@ -355,6 +356,9 @@ func (s *Service) hostedMemberResponse(ctx context.Context, member auth.Membersh
 			member = current
 		}
 	}
+	if s.config.AccessRepository != nil {
+		return s.accessMemberResponse(ctx, member)
+	}
 	emails, err := s.hostedMemberEmails(ctx)
 	if err != nil {
 		return view, err
@@ -522,6 +526,9 @@ func (s *Service) changeHostedRoleJSON(c echo.Context) error {
 		return s.hostedJSONError(c, http.StatusForbidden, "You cannot assign this organization role")
 	}
 	view, err := s.changeHostedRoleFor(c.Request().Context(), credential, c.Param("member"), request.Role)
+	if errors.Is(err, mutation.ErrUncertain) {
+		return s.nativeAPIError(c, err)
+	}
 	if err != nil {
 		return s.hostedJSONError(c, http.StatusForbidden, "This role could not be changed")
 	}
