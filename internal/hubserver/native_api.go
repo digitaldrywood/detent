@@ -217,15 +217,26 @@ func (s *Service) registerNativeRoutes(e *echo.Echo) {
 	s.registerIntegrationRoutes(e)
 	s.registerChangeRoutes(e)
 	read := s.requireNativeScope(apiScopeWorker, apiScopeOperator)
+	e.GET(nativeBase+"/runner-spend", s.getRunnerSpend, read)
+	e.POST(nativeBase+"/work-items/:item/attempts/:attempt/token-accounting", s.accountRunnerUsage, s.requireNativeScope(apiScopeOperator))
+	e.GET(nativeBase+"/security-audits/evidence", s.getAuditEvidence, read)
+	e.GET(nativeBase+"/security-audits/:session/dispositions", s.getAuditDispositions, read)
+	e.GET(nativeBase+"/runner-model-quantiles", s.getRunnerModelQuantiles, read)
 	e.GET(nativeBase+"/health/findings", s.getHealthFindings, read)
 	e.GET(nativeBase+"/runner-diagnostics", s.getRunnerProjectDiagnostics, read)
 	write := s.requireNativeScope(apiScopeWorker, apiScopeOperator)
+	e.POST(nativeBase+"/security-audits/dispositions", s.postAuditDisposition, write)
 	admin := s.requireInstanceAdmin()
 	policyAdmin := admin
 	if s.config.Hosted != nil {
 		policyAdmin = s.requireOnboardingAdmin()
 	}
 	worker := s.requireNativeScope(apiScopeWorker)
+	e.GET(nativeBase+"/runner-sessions/:session", s.getRunnerSession, read)
+	e.GET(nativeBase+"/runner-sessions/:session/history/:revision", s.getRunnerSessionHistory, read)
+	e.GET(nativeBase+"/runner-processes", s.getRunnerSessionProcesses, worker)
+	e.POST(nativeBase+"/runner-sessions/find", s.findRunnerSession, read)
+	e.POST(nativeBase+"/runner-sessions", s.mutateRunnerSession, worker)
 	e.GET(nativeBase+"/policy", s.getProjectPolicy, s.requireNativeScope(apiScopeWorker, apiScopeOperator, apiScopeAdmin))
 	e.PUT(nativeBase+"/policy", s.approveProjectPolicy, policyAdmin)
 	e.DELETE(nativeBase+"/policy", s.revokeProjectPolicy, policyAdmin)
@@ -387,7 +398,7 @@ func (s *Service) requireNativeScope(roles ...apiScope) echo.MiddlewareFunc {
 					return s.nativeAPIError(c, nativeNotFound())
 				}
 			} else {
-				write := !hostedReadRequest(c) && !artifactReadGrantRequest(c) && !relayTicketRequest(c)
+				write := !hostedReadRequest(c) && !artifactReadGrantRequest(c) && !relayTicketRequest(c) && c.Path() != nativeBase+"/runner-sessions/find"
 				if write && c.Request().Method == http.MethodPost && c.Path() == nativeBase+"/work-items/:item/workflow" {
 					scope.action = operatortool.MoveItem
 				}

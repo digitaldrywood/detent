@@ -44,6 +44,7 @@ type AutoStatus struct {
 }
 
 type SchedulerConfig struct {
+	ReceiptStore       ReceiptStore
 	WorkerArtifacts    *WorkerArtifacts
 	WorkerPreflight    BinaryPreflight
 	RunningBuild       runnerauth.BuildEvidence
@@ -122,6 +123,15 @@ func NewScheduler(cfg SchedulerConfig) (*Scheduler, error) {
 		cfg.MaxDeferral = defaultMaxDeferral
 	}
 	loadedState, stateFound, err := loadSchedulerState(cfg.StatePath)
+	if cfg.ReceiptStore != nil {
+		if strings.TrimSpace(cfg.StatePath) != "" {
+			return nil, errors.New("Hub update receipts cannot use a local state path")
+		}
+		loadedState.EnrolledReceipt, err = cfg.ReceiptStore.Load()
+		if err != nil {
+			return nil, fmt.Errorf("load Hub update receipt: %w", err)
+		}
+	}
 	if err != nil {
 		cfg.Logger.Warn("load automatic update state failed", "path", cfg.StatePath, "error", err)
 	}
@@ -136,7 +146,10 @@ func NewScheduler(cfg SchedulerConfig) (*Scheduler, error) {
 		if receipt.FailureReason != "" {
 			receipt.Status = "uncertain"
 			receipt.ObservedAt = cfg.Now().UTC()
-			if saveErr := saveSchedulerState(cfg.StatePath, loadedState); saveErr != nil {
+			if saveErr := persistSchedulerState(cfg, loadedState); saveErr != nil {
+				if cfg.ReceiptStore != nil {
+					return nil, fmt.Errorf("persist interrupted Hub update receipt: %w", saveErr)
+				}
 				cfg.Logger.Warn("persist interrupted update receipt failed", "error", saveErr)
 			}
 		}
@@ -751,7 +764,7 @@ func (s *Scheduler) persistLastCheck(checkedAt time.Time) error {
 		state.PendingSince = &pendingSince
 		state.Critical = status.Critical
 	}
-	if err := saveSchedulerState(s.cfg.StatePath, state); err != nil {
+	if err := persistSchedulerState(s.cfg, state); err != nil {
 		wrapped := fmt.Errorf("persist automatic update state: %w", err)
 		s.updateStatus(func(status *AutoStatus) {
 			status.LastError = wrapped.Error()

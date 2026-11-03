@@ -99,9 +99,9 @@ func (r *Runner) generateTextTurn(ctx context.Context, backend AgentBackend, req
 	})
 	usage.ReportedCostMicros, usage.CostSource = result.ReportedCostMicros, result.CostSource
 	usageCtx, cancelUsage := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-	reportTurnUsage(usageCtx, execution, usage, request.Model, backendKind, r.usageCostUSD, r.logger)
+	usageErr := reportTurnUsage(usageCtx, execution, usage, request.Model, backendKind, r.usageCostUSD, r.logger)
 	cancelUsage()
-	if err := errors.Join(err, cleanupErr); err != nil {
+	if err := errors.Join(err, cleanupErr, usageErr); err != nil {
 		return "", err
 	}
 	return strings.TrimSpace(text.String()), nil

@@ -2,22 +2,16 @@ package runner
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"reflect"
 	"strings"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-// Per-turn usage reporting. The runner already
-// prices a whole session for its own store; the hub wants the same numbers
-// per turn so the usage report can group them by day, provider and model.
-// The execution accumulates the attempt total, so the runner only has to
-// say what this turn cost.
-
-// UsageExecution is an Execution that records what a turn spent. An
-// execution without it simply reports no usage, which is what a runner
-// working against a hub that predates the report does.
 type UsageExecution interface {
 	RecordUsage(context.Context, tracker.NativeUsage) error
 }
@@ -65,43 +59,56 @@ func turnUsageEntry(result RunResult, sessionModel, backendKind string, price us
 	return entry, true
 }
 
-// reportTurnUsage hands one turn's usage to the execution. Usage is
-// bookkeeping: a hub that cannot take it must not fail the turn, so a
-// refusal is logged rather than returned.
-func reportTurnUsage(ctx context.Context, execution Execution, result RunResult, sessionModel, backendKind string, price usagePricer, logger *slog.Logger) {
+func reportTurnUsage(ctx context.Context, execution Execution, result RunResult, sessionModel, backendKind string, price usagePricer, logger *slog.Logger) error {
 	recorder, ok := execution.(UsageExecution)
 	if !ok || recorder == nil {
-		return
+		return nil
 	}
 	entry, reportable := turnUsageEntry(result, sessionModel, backendKind, price)
 	if !reportable {
-		return
+		return nil
 	}
-	if err := recorder.RecordUsage(ctx, entry); err != nil && logger != nil {
-		logger.Warn("runner.usage_report_failed", "model", entry.Model, "provider", entry.Provider, "error", err)
+	if err := recorder.RecordUsage(ctx, entry); err != nil {
+		return fmt.Errorf("publish Hub usage: %w", err)
 	}
+	return nil
 }
 
 type turnUsageReporter struct {
-	tokens TokenTotals
+	baseline  TokenTotals
+	sourceID  string
+	revision  int64
+	startedAt time.Time
+	published *tracker.NativeUsage
 }
 
-func (u *turnUsageReporter) report(ctx context.Context, execution Execution, result RunResult, model, backend string, price usagePricer, logger *slog.Logger) {
+func (u *turnUsageReporter) report(ctx context.Context, execution Execution, result RunResult, model, backend string, price usagePricer, logger *slog.Logger) error {
 	recorder, ok := execution.(UsageExecution)
 	if !ok {
-		return
+		return nil
 	}
-	tokens := result.Tokens
-	result.Tokens.InputTokens = max(0, tokens.InputTokens-u.tokens.InputTokens)
-	result.Tokens.CachedInputTokens = max(0, tokens.CachedInputTokens-u.tokens.CachedInputTokens)
-	result.Tokens.OutputTokens = max(0, tokens.OutputTokens-u.tokens.OutputTokens)
+	result.Tokens.InputTokens = max(0, result.Tokens.InputTokens-u.baseline.InputTokens)
+	result.Tokens.CachedInputTokens = max(0, result.Tokens.CachedInputTokens-u.baseline.CachedInputTokens)
+	result.Tokens.OutputTokens = max(0, result.Tokens.OutputTokens-u.baseline.OutputTokens)
 	entry, reportable := turnUsageEntry(result, model, backend, price)
 	if !reportable {
-		return
+		return nil
 	}
+	if u.sourceID == "" {
+		return fmt.Errorf("publish Hub usage: session identity is required")
+	}
+	if u.published != nil {
+		previous := *u.published
+		previous.SourceID, previous.UsageKind, previous.Revision, previous.From = "", "", 0, time.Time{}
+		if reflect.DeepEqual(previous, entry) {
+			return nil
+		}
+	}
+	u.revision++
+	entry.SourceID, entry.UsageKind, entry.Revision, entry.From = u.sourceID, "incremental", u.revision, u.startedAt
 	if err := recorder.RecordUsage(ctx, entry); err != nil {
-		logger.Warn("runner.usage_report_failed", "model", entry.Model, "provider", entry.Provider, "error", err)
-		return
+		return fmt.Errorf("publish Hub usage: %w", err)
 	}
-	u.tokens = tokens
+	u.published = &entry
+	return nil
 }

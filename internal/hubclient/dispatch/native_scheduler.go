@@ -630,6 +630,15 @@ func (s *Scheduler) reconcileReleasedExecution(ctx context.Context, source *Nati
 	if !stopped {
 		return nil
 	}
+	if s.hubProcessReceipts {
+		stopped, err := source.NativeClient().ReleasedProvidersStopped(ctx, attempt.AttemptID)
+		if err != nil {
+			return fmt.Errorf("observe Hub provider processes: %w", err)
+		}
+		if !stopped {
+			return nil
+		}
+	}
 	if err := cancelNativeReleasedAttempt(ctx, source.NativeClient(), reference.WorkItemID, attempt); err != nil {
 		return fmt.Errorf("acknowledge released attempt: %w", err)
 	}

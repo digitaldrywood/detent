@@ -1287,7 +1287,7 @@ func (r *Runner) runAgentTurn(
 	turnRequest.reserveScratch = r.reserveSessionWorkerScratch(detentSessionID, info.Path, "")
 	providerResume := turnRequest.Resume
 	usage := newSessionTokenUsage(!agentResumeEmpty(providerResume))
-	usageReport := &turnUsageReporter{}
+	usageReport := &turnUsageReporter{startedAt: r.now(), sourceID: "session_" + strconv.FormatInt(detentSessionID, 10)}
 	activityProfile := runRequest.activityProfile
 	stopCompute := r.meterCompute(runRequest.WorkerHost)
 	turnResult, cleanupScratch, turnErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(ctx, backend, turnRequest, runRequest.AgentTools, runRequest.AgentToolHandler, conversation.wrapUpdates(func(updateCtx context.Context, update AgentUpdate) error {
@@ -1333,7 +1333,9 @@ func (r *Runner) runAgentTurn(
 		previousIdentity := result.RuntimeIdentity
 		applyAgentUpdate(&result, update)
 		if update.Type == AgentUpdateTokenUsage {
-			usageReport.report(updateCtx, runRequest.Execution, result, sessionModel, backendKind, r.usageCostUSD, r.logger)
+			if err := usageReport.report(updateCtx, runRequest.Execution, result, sessionModel, backendKind, r.usageCostUSD, r.logger); err != nil {
+				return err
+			}
 		}
 		if !previousIdentity.MateriallyEqual(result.RuntimeIdentity) {
 			if err := r.persistSessionIdentity(updateCtx, detentSessionID, result.RuntimeIdentity); err != nil {
@@ -1425,7 +1427,7 @@ func (r *Runner) runAgentTurn(
 	result.TurnStartRefused = !turnStarted && turnResult.TurnID == "" && failure != nil && failure.Provider == "codex" && failure.Operation == "turn/start" && failure.RPCCode != nil
 	result.ReportedCostMicros, result.CostSource = turnResult.ReportedCostMicros, turnResult.CostSource
 	usageCtx, usageCancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
-	usageReport.report(usageCtx, runRequest.Execution, result, sessionModel, backendKind, r.usageCostUSD, r.logger)
+	turnErr = errors.Join(turnErr, usageReport.report(usageCtx, runRequest.Execution, result, sessionModel, backendKind, r.usageCostUSD, r.logger))
 	usageCancel()
 	return agentTurnExecution{
 		turnResult:  turnResult,
@@ -1548,8 +1550,13 @@ func (r *Runner) runRequestResumeState(
 		if agentResumeStateEmpty(req.ResumeState) {
 			return store.AgentResumeState{}, errors.New("resume retry requested without resume state")
 		}
-		if req.ResumeState.Orphaned && (req.WorkAttemptID <= 0 || req.Generation == 0) {
-			return store.AgentResumeState{}, errors.New("orphaned session resume requires completion attempt and generation")
+		if req.ResumeState.Orphaned {
+			if req.Execution == nil {
+				return store.AgentResumeState{}, fmt.Errorf("%w: orphaned session resume requires a fenced execution", ErrExecutionAuthorityUnavailable)
+			}
+			if err := req.Execution.Validate(ctx); err != nil {
+				return store.AgentResumeState{}, err
+			}
 		}
 		return req.ResumeState, nil
 	default:
@@ -4012,7 +4019,7 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 	}
 	var output strings.Builder
 	usage := newSessionTokenUsage(false)
-	usageReport := &turnUsageReporter{}
+	usageReport := &turnUsageReporter{startedAt: r.now(), sourceID: "session_" + strconv.FormatInt(sessionID, 10)}
 	workerProcessObserved := false
 	modelProvider, serviceTier, effort := agentTurnIdentityOptions(backendConfig)
 	if resolvedSelection.Effort != "" {
@@ -4067,7 +4074,9 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 		previousIdentity := runResult.RuntimeIdentity
 		applyAgentUpdate(&runResult, update)
 		if update.Type == AgentUpdateTokenUsage {
-			usageReport.report(updateCtx, req.usageExecution, runResult, sessionModel, backendConfig.Kind, r.usageCostUSD, r.logger)
+			if err := usageReport.report(updateCtx, req.usageExecution, runResult, sessionModel, backendConfig.Kind, r.usageCostUSD, r.logger); err != nil {
+				return err
+			}
 		}
 		if !previousIdentity.MateriallyEqual(runResult.RuntimeIdentity) {
 			if err := r.persistSessionIdentity(updateCtx, sessionID, runResult.RuntimeIdentity); err != nil {
@@ -4092,7 +4101,7 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 	runResult.Compute = stopCompute()
 	runResult.ReportedCostMicros, runResult.CostSource = turnResult.ReportedCostMicros, turnResult.CostSource
 	usageCtx, usageCancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
-	usageReport.report(usageCtx, req.usageExecution, runResult, sessionModel, backendConfig.Kind, r.usageCostUSD, r.logger)
+	turnErr = errors.Join(turnErr, usageReport.report(usageCtx, req.usageExecution, runResult, sessionModel, backendConfig.Kind, r.usageCostUSD, r.logger))
 	usageCancel()
 	workerReapErr := r.reapSessionWorkerProcessWithWorkspace(
 		sessionCtx,
@@ -4496,8 +4505,16 @@ func (r *Runner) startSession(
 	if r.store == nil {
 		return 0, false, nil
 	}
+	var prNumber int64
+	var prHead, prBase string
+	if req.Issue.PullRequest != nil {
+		prNumber = int64(req.Issue.PullRequest.Number)
+		prHead = req.Issue.PullRequest.HeadSHA
+		prBase = req.Issue.PullRequest.BaseSHA
+	}
 
 	sessionID, err := r.store.StartSession(ctx, store.SessionStart{
+		PRNumber: prNumber, PRHeadSHA: prHead, PRBaseSHA: prBase,
 		ProjectID:                    r.projectID,
 		IssueID:                      req.Issue.ID,
 		Identifier:                   req.Issue.Identifier,

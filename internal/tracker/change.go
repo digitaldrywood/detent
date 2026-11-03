@@ -275,6 +275,7 @@ type ChangePublicationPush struct {
 }
 
 type ChangeSummary struct {
+	SecurityAudit  string   `json:"security_audit,omitempty"`
 	NativeReview   string   `json:"native_review"`
 	ExternalReview string   `json:"external_review"`
 	Checks         string   `json:"checks"`

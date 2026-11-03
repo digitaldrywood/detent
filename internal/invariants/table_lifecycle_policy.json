@@ -1,5 +1,11 @@
 {
   "tables": {
+	"runner_attempt_token_usage": {"class": "hot_state"},
+	"runner_project_daily_tokens": {"class": "hot_state"},
+	"runner_issue_tokens": {"class": "hot_state"},
+	"runner_sessions": {"class": "hot_state"},
+	"runner_session_history": {"class": "immutable_payload"},
+	"runner_audit_dispositions": {"class": "immutable_payload"},
     "activity_attempt_durations": {"class": "derived_with_retention", "retention": "source attempt lifetime; replace projected attempt facts"},
     "activity_attempt_phases": {"class": "derived_with_retention", "retention": "source attempt lifetime; replace projected attempt facts"},
     "ai_credit_accounts": {"class": "hot_state"},

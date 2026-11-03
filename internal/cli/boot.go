@@ -173,6 +173,9 @@ func defaultBoot(ctx context.Context, cfg BootConfig) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if cfg.Mode == BootModeRunning {
+		return startRunning(ctx, cfg)
+	}
 	if supervisesControllers(cfg) {
 		return superviseControllers(ctx, cfg)
 	}
@@ -242,10 +245,22 @@ type startRunningDependencies struct {
 }
 
 func startRunning(ctx context.Context, cfg BootConfig) error {
+	if err := validateRunnerHubStartup(cfg); err != nil {
+		return err
+	}
+	if cfg.Global.Client.Configured() {
+		return startRemoteRunner(ctx, cfg)
+	}
 	return startRunningWithDependencies(ctx, cfg, startRunningDependencies{})
 }
 
 func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps startRunningDependencies) error {
+	if err := validateRunnerHubStartup(cfg); err != nil {
+		return err
+	}
+	if cfg.Global.Client.Configured() {
+		return startRemoteRunner(ctx, cfg)
+	}
 	startedAt := time.Now().UTC()
 	providerUsage := &runnerpkg.ProviderUsage{}
 	if ctx == nil {

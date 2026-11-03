@@ -13,14 +13,15 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/runnersession"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func (s *Service) changeReviewRecordMutation(c echo.Context, request tracker.ReviewChange) error {
 	ctx := isolateContentContext(s.runDetailContext(c.Request().Context()))
 	scope := nativeRequestScope(c)
-	if scope.credential.Scope == apiScopeWorker || request.Decision != "approved" && request.Decision != "changes_requested" || request.Validator != nil || request.ImplementationReview != nil || request.SecurityAudit != nil || request.Bundle != nil {
-		return s.nativeAPIError(c, workItemStorageUnavailable())
+	if request.Decision != "approved" && request.Decision != "changes_requested" && request.Decision != "commented" {
+		return s.nativeAPIError(c, nativePublicInvalid("review decision is invalid"))
 	}
 	if strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 || len(request.Body) > 64<<10 {
 		return s.nativeAPIError(c, nativePublicInvalid("An idempotency key of at most 128 bytes and a review body up to 64 KiB are required"))
@@ -53,18 +54,28 @@ func (s *Service) changeReviewRecordMutation(c echo.Context, request tracker.Rev
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
+	prepared, sessionMachine, err := s.prepareValidatorReviewRecord(ctx, scope, change, version, versionRow, request)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+
 	now, err := s.database.currentTime()
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	review := tracker.ChangeReview{ID: payloadNativeID(ctx, "review"), VersionID: versionID, Decision: request.Decision, Body: request.Body, Actor: scope.actor(), CreatedAt: payloadTimestamp(ctx, now)}
+	if request.Bundle != nil {
+		if err := s.validateReviewBundleRecord(ctx, scope, change, version, *request.Bundle, now); err != nil {
+			return s.nativeAPIError(c, err)
+		}
+	}
+	review := tracker.ChangeReview{SessionMachineID: sessionMachine, ImplementationReview: request.ImplementationReview, Validator: request.Validator, SecurityAudit: request.SecurityAudit, ID: payloadNativeID(ctx, "review"), VersionID: versionID, Decision: request.Decision, Body: request.Body, Actor: scope.actor(), CreatedAt: payloadTimestamp(ctx, now)}
 	raw, err := json.Marshal(review)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	content := eventstore.NewContent(s.runDetailStore())
 	var approvedPolicyRows currentChangePolicyRows
-	if request.Decision == "approved" {
+	if request.Decision == "approved" || prepared != nil {
 		if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 			var err error
 			approvedPolicyRows, err = readCurrentChangePolicyRows(ctx, r, scope)
@@ -192,13 +203,33 @@ func (s *Service) changeReviewRecordMutation(c echo.Context, request tracker.Rev
 			if !reflect.DeepEqual(currentVersion, versionRow) {
 				return corestore.ErrRevisionConflict
 			}
-			if request.Decision == "approved" {
+			if request.Decision == "approved" || prepared != nil {
 				rows, err := readCurrentChangePolicyRows(ctx, w, scope)
 				if err != nil {
 					return err
 				}
 				if !reflect.DeepEqual(rows, approvedPolicyRows) {
 					return policyMismatch("Current policy changed; the reviewed version must be republished")
+				}
+			}
+			if err := s.lockValidatorReviewRecord(ctx, w, scope, change, request, prepared); err != nil {
+				return err
+			}
+			if request.Bundle != nil {
+				ref, err := w.ArtifactReference(ctx, scope.project, change.WorkItemID, request.Bundle.ArtifactID, request.Bundle.Revision)
+				if err != nil {
+					return err
+				}
+				clock, ok := w.(runnersession.Reader)
+				if !ok {
+					return nativeRunEventStorageUnavailable()
+				}
+				at, err := clock.RunnerSessionTime(ctx)
+				if err != nil {
+					return err
+				}
+				if ref.SHA256 != request.Bundle.SHA256 || !changerequest.ReviewBundleMatches(version, ref) || !at.Before(ref.ExpiresAt) || ref.Availability != "available" {
+					return nativePublicInvalid("review bundle is unavailable")
 				}
 			}
 			if _, err := w.AppendEvidence(ctx, evidence); err != nil {

@@ -67,7 +67,7 @@ func PrepareVersion(ctx context.Context, reader VersionReader, host VersionAutho
 			}
 
 		} else if stage == "security_audit" {
-			if !version.Policy.Gates.SecurityAudit {
+			if !version.Policy.Gates.SecurityAudit || detail.Summary.SecurityAudit == "passed" && detail.Summary.Status != "stale_policy" {
 				return runner.NativeValidation{}, nil
 			}
 			for _, review := range detail.Reviews {

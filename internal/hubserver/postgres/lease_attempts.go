@@ -95,6 +95,9 @@ func (s *session) RecordAttemptEvent(ctx context.Context, event leasestore.Attem
 	if err != nil {
 		return leasestore.Attempt{}, false, mapError(ctx, err)
 	}
+	if err := s.recordRunnerTokenUsage(ctx, attemptFromPG(row), event.Usage); err != nil {
+		return leasestore.Attempt{}, false, err
+	}
 	err = s.queries.InsertAttemptReceipt(ctx, pgquery.InsertAttemptReceiptParams{OrganizationID: s.organization, AttemptID: event.ID, Sequence: event.Sequence, RequestHash: digest})
 	return attemptFromPG(row), false, mapError(ctx, err)
 }

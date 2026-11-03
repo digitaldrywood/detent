@@ -27,6 +27,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gobudget"
 	"github.com/digitaldrywood/detent/internal/gotestreceipt"
 	"github.com/digitaldrywood/detent/internal/hub"
+	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/observability"
 	"github.com/digitaldrywood/detent/internal/opencode"
@@ -136,6 +137,18 @@ func withRunnerFactoryWithProjectTokens(
 	}
 	var hostCache atomic.Pointer[toolcache.Report]
 	return func(cfg globalconfig.Project) (*project.Project, error) {
+		projectSessionStore := sessionStore
+		if projectSessionStore == nil {
+			if source, ok := deps.Scheduling.(interface {
+				NativeClient(string) (*api.NativeClient, bool)
+			}); ok {
+				client, found := source.NativeClient(cfg.ID)
+				if !found {
+					return nil, errors.New("Hub session owner is unavailable for the runner project")
+				}
+				projectSessionStore = api.NewRunnerSessions(client)
+			}
+		}
 		if preparation, ok := deps.Scheduling.(interface {
 			PrepareProject(context.Context, string) error
 		}); ok {
@@ -174,7 +187,7 @@ func withRunnerFactoryWithProjectTokens(
 			}); ok {
 				identity = reporter.CommitIdentity()
 			}
-			run, err = buildRunnerWithIdentity(ctx, workflow, cfg.ID, cfg.Workdir, cfg.EffectiveMemory(), hostGoBudget(cfg.GlobalCPU.GoBuildBudget), sessionStore, deps.Logger, projectServiceConnection, identity, deps.HostBuildCache, providerUsage, projectGoTestReceipts(deps.Scheduling, cfg.ID, deps.Logger), isolationPolicy)
+			run, err = buildRunnerWithIdentity(ctx, workflow, cfg.ID, cfg.Workdir, cfg.EffectiveMemory(), hostGoBudget(cfg.GlobalCPU.GoBuildBudget), projectSessionStore, deps.Logger, projectServiceConnection, identity, deps.HostBuildCache, providerUsage, projectGoTestReceipts(deps.Scheduling, cfg.ID, deps.Logger), isolationPolicy)
 			if local, ok := run.(*sshRunner); ok {
 				local.artifacts = artifacts
 			}

@@ -24,6 +24,10 @@ func TestMergeNativeUsage(t *testing.T) {
 	paidTotal.Input, paidTotal.CachedInput, paidTotal.Output, paidTotal.CostEstimate, paidTotal.ReportedCostMicros = 200, 120, 40, 0.02, &doubled
 	incomplete := paidTotal
 	incomplete.BillingMode, incomplete.ReportedCostMicros, incomplete.CostSource, incomplete.CostCoverage = "unknown", &paid, "runner_report", "partial"
+	observed := codex
+	observed.SourceID, observed.UsageKind, observed.Revision = "session_42", "incremental", 1
+	grown := observed
+	grown.Input, grown.Output, grown.Revision = 150, 30, 2
 	cases := []struct {
 		name     string
 		existing []tracker.NativeUsage
@@ -31,6 +35,9 @@ func TestMergeNativeUsage(t *testing.T) {
 		want     []tracker.NativeUsage
 	}{
 
+		{name: "stable observation replay never doubles tokens", existing: []tracker.NativeUsage{observed}, entry: observed, want: []tracker.NativeUsage{observed}},
+		{name: "later observation replaces cumulative totals", existing: []tracker.NativeUsage{observed}, entry: grown, want: []tracker.NativeUsage{grown}},
+		{name: "older observation cannot lose accepted totals", existing: []tracker.NativeUsage{grown}, entry: observed, want: []tracker.NativeUsage{grown}},
 		{name: "reported turn costs accumulate separately", existing: []tracker.NativeUsage{paidEntry}, entry: paidEntry, want: []tracker.NativeUsage{paidTotal}},
 		{name: "missing mode and partial cost cannot claim a paid attempt total", existing: []tracker.NativeUsage{paidEntry}, entry: codex, want: []tracker.NativeUsage{incomplete}},
 		{name: "first entry", entry: codex, want: []tracker.NativeUsage{codex}},

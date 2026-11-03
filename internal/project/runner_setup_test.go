@@ -185,3 +185,27 @@ func TestRunnerSetupLifecycle(t *testing.T) {
 		})
 	}
 }
+
+func TestRunnerSetupWithoutLocalStoreRunsEachPreparation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fixture uses a POSIX shell")
+	}
+	root := t.TempDir()
+	cfg := globalconfig.Project{ID: "example", Workdir: root, Workflow: filepath.Join(root, "WORKFLOW.md")}
+	if err := os.WriteFile(cfg.Workflow, []byte("---\ntracker:\n  kind: hub_native\nhooks:\n  runner_setup: setup.sh\n  shell: sh\n---\nRun work.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "setup.sh"), []byte("printf 'run\\n' >> trace\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	setup := NewRunnerSetup("runner-example", nil, nil)
+	for range 2 {
+		if err := setup.Prepare(t.Context(), cfg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	trace, err := os.ReadFile(filepath.Join(root, "trace"))
+	if err != nil || string(trace) != "run\nrun\n" {
+		t.Fatalf("setup runs = %q, error = %v", trace, err)
+	}
+}

@@ -96,13 +96,13 @@ UNION SELECT previous_failure_request_id FROM runner_update_receipts WHERE organ
 			return mapError(ctx, err)
 		}
 		request, ok := requests[requestID]
-		if !ok || request.RunnerID != id || request.Request.Urgent {
+		if !ok || !runnerReceiptRequestOwned(request, id) {
 			return corestore.ErrInvalidPage
 		}
 		receipt.Request = request.Request
 		if previousID.Valid {
 			previous, ok := requests[previousID.String]
-			if !ok || previous.RunnerID != id || previous.Request.Urgent {
+			if !ok || !runnerReceiptRequestOwned(previous, id) {
 				return corestore.ErrInvalidPage
 			}
 			receipt.PreviousFailure = &runnerauth.UpdateFailure{Request: previous.Request, FailureReason: previousReason.String, ObservedAt: previousAt.Time}

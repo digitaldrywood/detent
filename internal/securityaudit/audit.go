@@ -126,6 +126,19 @@ type Disposition struct {
 	RecordedAt      time.Time `json:"recorded_at"`
 }
 
+type DispositionCommand struct {
+	RequestID string `json:"request_id"`
+	Key       Key    `json:"key"`
+	FindingID string `json:"finding_id"`
+	Evidence  string `json:"evidence"`
+	Confirm   bool   `json:"confirm"`
+}
+
+type Evidence struct {
+	Run          Run           `json:"run"`
+	Dispositions []Disposition `json:"dispositions"`
+}
+
 type Evaluation struct {
 	AllFindings  []Finding
 	Running      bool

@@ -265,6 +265,11 @@ type ChangeEvidence struct {
 	PayloadBytes         int64
 	PayloadContentBytes  int64
 	PayloadFormatVersion int64
+	ReviewKind           string
+	ReviewLanding        bool
+	ReviewSessionKnown   bool
+	ReviewSessionID      int64
+	ReviewSessionMachine string
 }
 
 type ChangeIssueLink struct {
@@ -403,6 +408,12 @@ type CollaborationEvent struct {
 	LandingVersionID     string
 	LandingHeadSHA       string
 	ProjectSequence      int64
+	PushKnown            bool
+	PushChangeID         string
+	PushVersionID        string
+	PushHeadSha          string
+	PushExternalEffect   string
+	PushEffectState      string
 }
 
 type CollaborationVersion struct {
@@ -1399,22 +1410,23 @@ type MonthlyBudgetPolicy struct {
 }
 
 type NativeAttempt struct {
-	OrganizationID      tracker.OrganizationID
-	ID                  string
-	IssueID             int64
-	LeaseID             string
-	FencingToken        int64
-	RunID               string
-	Sequence            int64
-	Status              string
-	WorkItemRevision    int64
-	DispatchGeneration  int64
-	PayloadObjectKey    string
-	CheckpointObjectKey *string
-	ArtifactsObjectKey  *string
-	StartedAt           time.Time
-	UpdatedAt           time.Time
-	StartedAtSubmicroNs int16
+	OrganizationID       tracker.OrganizationID
+	ID                   string
+	IssueID              int64
+	LeaseID              string
+	FencingToken         int64
+	RunID                string
+	Sequence             int64
+	Status               string
+	WorkItemRevision     int64
+	DispatchGeneration   int64
+	PayloadObjectKey     string
+	CheckpointObjectKey  *string
+	ArtifactsObjectKey   *string
+	StartedAt            time.Time
+	UpdatedAt            time.Time
+	StartedAtSubmicroNs  int16
+	RunnerTokensRecorded bool
 }
 
 type NativeAttemptEvent struct {
@@ -2361,6 +2373,38 @@ type RequestMinute struct {
 	Histogram      []int64
 }
 
+type RunnerAttemptTokenUsage struct {
+	OrganizationID    tracker.OrganizationID
+	AttemptID         string
+	Model             string
+	ProjectID         tracker.ProjectID
+	IssueID           int64
+	UsageDay          time.Time
+	ObservedAt        time.Time
+	InputTokens       int64
+	CachedInputTokens int64
+	OutputTokens      int64
+}
+
+type RunnerAuditDisposition struct {
+	OrganizationID      tracker.OrganizationID
+	ID                  int64
+	ProjectID           tracker.ProjectID
+	ChangeID            string
+	ReviewSequence      int64
+	AuditSessionID      int64
+	FindingID           string
+	Status              string
+	ActorID             string
+	RequestKey          string
+	RequestHash         string
+	RecordedAt          time.Time
+	PayloadObjectKey    string
+	PayloadSHA256       string
+	PayloadBytes        int64
+	PayloadContentBytes int64
+}
+
 type RunnerAvailabilityWindow struct {
 	OrganizationID tracker.OrganizationID
 	RunnerID       string
@@ -2487,6 +2531,17 @@ type RunnerIdentityEvent struct {
 	ImportSourceID sql.NullInt64
 }
 
+type RunnerIssueToken struct {
+	OrganizationID    tracker.OrganizationID
+	ProjectID         tracker.ProjectID
+	IssueID           int64
+	Model             string
+	InputTokens       int64
+	CachedInputTokens int64
+	OutputTokens      int64
+	Sessions          int64
+}
+
 type RunnerLeaseAssignment struct {
 	OrganizationID tracker.OrganizationID
 	LeaseID        string
@@ -2567,6 +2622,17 @@ type RunnerProjectCapacityLimit struct {
 	RunnerID       string
 	ProjectID      tracker.ProjectID
 	CapacityLimit  int32
+}
+
+type RunnerProjectDailyToken struct {
+	OrganizationID    tracker.OrganizationID
+	ProjectID         tracker.ProjectID
+	UsageDay          time.Time
+	Model             string
+	InputTokens       int64
+	CachedInputTokens int64
+	OutputTokens      int64
+	Sessions          int64
 }
 
 type RunnerProjectDiagnosticAdmission struct {
@@ -2760,6 +2826,49 @@ type RunnerSelectionCursor struct {
 	WorkItemID           string
 	CursorSourceRevision int64
 	Revision             int64
+}
+
+type RunnerSession struct {
+	OrganizationID      tracker.OrganizationID
+	ID                  int64
+	ProjectID           tracker.ProjectID
+	IssueID             string
+	AttemptID           string
+	Revision            int64
+	StartKey            string
+	StartedAt           time.Time
+	CompletedAt         *time.Time
+	BackendID           string
+	BackendKind         string
+	Role                string
+	Model               string
+	PolicyID            string
+	ProviderThreadID    string
+	ProviderSessionID   string
+	PrNumber            int64
+	PrHeadSha           string
+	PrBaseSha           string
+	FinalState          string
+	WorkerPid           int32
+	WorkerGroupID       int32
+	WorkerStartedAt     *time.Time
+	WorkerReapedAt      *time.Time
+	PayloadObjectKey    string
+	PayloadSHA256       string
+	PayloadBytes        int64
+	PayloadContentBytes int64
+}
+
+type RunnerSessionHistory struct {
+	OrganizationID      tracker.OrganizationID
+	ID                  sql.NullInt64
+	SessionID           int64
+	Revision            int64
+	MutationKey         string
+	PayloadObjectKey    string
+	PayloadSHA256       string
+	PayloadBytes        int64
+	PayloadContentBytes int64
 }
 
 type RunnerSpriteMembership struct {

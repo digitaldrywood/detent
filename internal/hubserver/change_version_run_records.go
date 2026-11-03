@@ -110,7 +110,11 @@ func (s *Service) recheckChangeVersionRun(ctx context.Context, w tenantstore.Wri
 	if !reflect.DeepEqual(attempt, prepared.attempt) || workItem.ID != prepared.workItem.ID || workItem.Revision != prepared.workItem.Revision {
 		return corestore.ErrRevisionConflict
 	}
-	lease, err := w.Lease(ctx, prepared.lease.LeaseID)
+	locker, ok := w.(leasestore.FencedLeaseLocker)
+	if !ok {
+		return nativeRunEventStorageUnavailable()
+	}
+	lease, err := locker.LockLease(ctx, prepared.lease.LeaseID)
 	if err != nil {
 		return err
 	}
@@ -126,5 +130,5 @@ func (s *Service) recheckChangeVersionRun(ctx context.Context, w tenantstore.Wri
 	}
 	authority := prepared.authority
 	authority.WorkItem, authority.Lease = workItem, lease
-	return s.config.NativeRunEvents.ValidateNativeRunEvent(ctx, w, &authority)
+	return (tenantNativeRunEventParticipant{service: s}).validateNativeRunEventOwner(ctx, w, &authority)
 }

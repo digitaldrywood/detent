@@ -28,15 +28,17 @@ import (
 )
 
 type hubSchedulingOptions struct {
-	workspaceSupport func() workspacerunner.Support
-	processStore     releasedExecutionProcessStore
-	providerUsage    *runner.ProviderUsage
-	applyProjects    func(context.Context, globalconfig.Config) error
-	setupStore       store.ProjectRunnerSetupStore
-	logger           *slog.Logger
-	runtimeConfig    func() globalconfig.Config
-	intakeToken      githubconnector.TokenSource
-	problems         func() []runnerauth.Problem
+	hubProcessReceipts bool
+	workspaceSupport   func() workspacerunner.Support
+	processStore       releasedExecutionProcessStore
+	releasedStopped    func(context.Context, tracker.NativeWorkItemID, tracker.NativeAttempt) (bool, error)
+	providerUsage      *runner.ProviderUsage
+	applyProjects      func(context.Context, globalconfig.Config) error
+	setupStore         store.ProjectRunnerSetupStore
+	logger             *slog.Logger
+	runtimeConfig      func() globalconfig.Config
+	intakeToken        githubconnector.TokenSource
+	problems           func() []runnerauth.Problem
 }
 
 func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version string, options ...hubSchedulingOptions) (orchestrator.SchedulingSource, error) {
@@ -151,10 +153,15 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 	if len(options) > 0 {
 		reportProblems = options[0].problems
 	}
-	return hubclient.NewScheduler(client, hubclient.SchedulerConfig{
-		ReleasedStopped: func(ctx context.Context, item tracker.NativeWorkItemID, attempt tracker.NativeAttempt) (bool, error) {
+	releasedStopped := setupOptions.releasedStopped
+	if releasedStopped == nil && setupOptions.processStore != nil {
+		releasedStopped = func(ctx context.Context, item tracker.NativeWorkItemID, attempt tracker.NativeAttempt) (bool, error) {
 			return releasedExecutionWorkersStopped(ctx, setupOptions.processStore, item, attempt)
-		},
+		}
+	}
+	return hubclient.NewScheduler(client, hubclient.SchedulerConfig{
+		HubProcessReceipts:  setupOptions.hubProcessReceipts,
+		ReleasedStopped:     releasedStopped,
 		PrepareProject:      prepareProject,
 		RefreshProjects:     projects.refresh,
 		RunnerSetupDeclared: projects.runnerSetupDeclared,

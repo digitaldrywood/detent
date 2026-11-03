@@ -990,28 +990,25 @@ func (r *Runner) nativeSessionResumeState(ctx context.Context, req RunRequest, r
 	if previous == nil || previous.Checkpoint == nil || previous.Checkpoint.Resume != "resume_session" || previous.Status == "running" && nativeInterruptedResumeAttempt(recovery) == nil {
 		return store.AgentResumeState{}, nil
 	}
-	if previous.MachineID != recovery.Lease.MachineID {
-		return store.AgentResumeState{}, nil
-	}
 	state, err := r.lookupNativeResumeState(ctx, req, runtime, previous)
-	if err != nil && (previous.Checkpoint.GitRef() || cleanLocalCheckpoint(previous.Checkpoint) || nativeInterruptedResumeAttempt(recovery) == nil) {
-		r.logWorkerEvent(req.Issue, "worker_native_session_unavailable", "error", err)
-		return store.AgentResumeState{}, nil
-	}
 	return state, err
 }
 
 func (r *Runner) lookupNativeResumeState(ctx context.Context, req RunRequest, runtime agentRuntime, previous *tracker.NativeAttempt) (store.AgentResumeState, error) {
 	resumeStore, ok := r.store.(store.AgentResumeStore)
-	if !ok || previous.Runtime == nil || previous.Runtime.LocalAttemptID <= 0 || previous.Identity == nil {
+	if !ok || previous.Identity == nil {
 		return store.AgentResumeState{}, ErrNativeRecoveryRequired
 	}
 	identity := previous.Identity
+	model := identity.Model
+	if previous.Runtime != nil {
+		model = effectiveModel(previous.Runtime.Identity.RequestedModel.Value, previous.Runtime.Identity.ResolvedModel.Value, model)
+	}
 	state, err := resumeStore.LatestAgentResumeState(ctx, store.AgentResumeLookup{
-		WorkAttemptID:    previous.Runtime.LocalAttemptID,
+		NativeAttemptID:  previous.AttemptID,
 		ProjectID:        r.projectID,
 		IssueID:          req.Issue.ID,
-		RequestedModel:   effectiveModel("", previous.Runtime.Identity.RequestedModel.Value, previous.Runtime.Identity.ResolvedModel.Value),
+		RequestedModel:   model,
 		AgentBackendID:   identity.Backend,
 		AgentBackendKind: runtime.backendConfigs[identity.Backend].Kind,
 		AgentRole:        identity.Role,

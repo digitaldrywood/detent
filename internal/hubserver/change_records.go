@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -14,7 +15,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/runnersession"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -154,7 +157,7 @@ func (s *Service) readChangeRecord(ctx context.Context, scope nativeScope, item,
 }
 
 func (s *Service) changeRecordEvidenceMutation(c echo.Context, kind, versionID, sourceKey string, value any) error {
-	if review, ok := value.(tracker.ReviewChange); ok && review.Decision != "commented" {
+	if review, ok := value.(tracker.ReviewChange); ok && (review.Decision != "commented" || review.Validator != nil || review.ImplementationReview != nil || review.SecurityAudit != nil) {
 		return s.changeReviewRecordMutation(c, review)
 	}
 	ctx := isolateContentContext(s.runDetailContext(c.Request().Context()))
@@ -553,9 +556,6 @@ func (s *Service) createChangeRecord(c echo.Context, request tracker.CreateChang
 	if strings.TrimSpace(request.Title) == "" || len(request.Title) > 512 || len(request.Body) > 64<<10 || len(request.LinkedIssues) > 32 {
 		return s.nativeAPIError(c, nativePublicInvalid("Change requires a title up to 512 bytes, discussion up to 64 KiB, and at most 32 linked issues"))
 	}
-	if scope.credential.Scope == apiScopeWorker {
-		return s.nativeAPIError(c, nativePublicInvalid("Worker changes require the fenced publication owner"))
-	}
 	if strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 {
 		return s.nativeAPIError(c, nativePublicInvalid("An idempotency key of at most 128 bytes is required"))
 	}
@@ -574,6 +574,19 @@ func (s *Service) createChangeRecord(c echo.Context, request tracker.CreateChang
 	}
 	if _, _, err := s.readWorkItemRecord(ctx, scope, string(item)); err != nil {
 		return s.nativeAPIError(c, err)
+	}
+	var workerAttempt *leasestore.Attempt
+	if scope.credential.Scope == apiScopeWorker {
+		if len(request.LinkedIssues) != 0 {
+			return s.nativeAPIError(c, nativePublicInvalid("Worker changes may only link their leased work item"))
+		}
+		if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			attempt, _, err := s.runnerSessionFence(ctx, r, scope, runnersession.Mutation{LeaseID: request.LeaseID, FencingToken: request.FencingToken}, string(item), false)
+			workerAttempt = &attempt
+			return err
+		}); err != nil {
+			return s.nativeAPIError(c, err)
+		}
 	}
 	linked := append([]tracker.NativeWorkItemID{item}, request.LinkedIssues...)
 	slices.Sort(linked)
@@ -640,6 +653,15 @@ func (s *Service) createChangeRecord(c echo.Context, request tracker.CreateChang
 				return corestore.ErrSerializationFailure
 			} else if !errors.Is(err, corestore.ErrNotFound) {
 				return err
+			}
+			if workerAttempt != nil {
+				attempt, _, err := s.runnerSessionFence(ctx, w, scope, runnersession.Mutation{LeaseID: request.LeaseID, FencingToken: request.FencingToken}, string(item), true)
+				if err != nil {
+					return err
+				}
+				if !reflect.DeepEqual(attempt, *workerAttempt) {
+					return corestore.ErrRevisionConflict
+				}
 			}
 			if _, err := w.CreateChange(ctx, changeRecord); err != nil {
 				return err
@@ -817,8 +839,8 @@ func (s *Service) selectedChangeDetail(ctx context.Context, scope nativeScope, i
 		return tracker.ChangeDetail{}, projectRecordError(err)
 	}
 	policyID, reviewPolicyID := changerequest.CurrentPolicyIdentities(current, currentApproval.Policy, currentApproval.ReviewPolicy)
-	result.Summary = changerequest.SummarizeCurrentVersion(result, policyID, reviewPolicyID, now, false)
-	return result, nil
+	result.Summary, err = s.summarizeChangeWithAuditDispositions(ctx, scope, result, policyID, reviewPolicyID, now, false)
+	return result, err
 }
 
 func (s *Service) nativeClaimCurrentChangeDetail(ctx context.Context, scope nativeScope, plan nativeClaimPlan, now time.Time) (tracker.ChangeDetail, error) {
@@ -975,8 +997,8 @@ func (s *Service) hydrateCurrentChangeDetailWithFacts(ctx context.Context, scope
 		return tracker.ChangeDetail{}, projectRecordError(err)
 	}
 	policyID, reviewPolicyID := changerequest.CurrentPolicyIdentities(&detail.Versions[0], currentApproval.Policy, currentApproval.ReviewPolicy)
-	detail.Summary = changerequest.SummarizeCurrentVersion(detail, policyID, reviewPolicyID, now, priorApproval)
-	return detail, nil
+	detail.Summary, err = s.summarizeChangeWithAuditDispositions(ctx, scope, detail, policyID, reviewPolicyID, now, priorApproval)
+	return detail, err
 }
 
 func sameTypedEvidenceTime(payload, typed time.Time) bool {

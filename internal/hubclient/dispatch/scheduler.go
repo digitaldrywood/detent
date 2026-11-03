@@ -31,6 +31,7 @@ import (
 const hubWorkItemField = "detent_hub_work_item_id"
 
 type SchedulerConfig struct {
+	HubProcessReceipts bool
 	ExecutionFactory   ExecutionFactory
 	CompletionRestorer CompletionRestorer
 	ReleasedStopped    func(context.Context, tracker.NativeWorkItemID, tracker.NativeAttempt) (bool, error)
@@ -65,6 +66,7 @@ type SchedulerConfig struct {
 }
 
 type Scheduler struct {
+	hubProcessReceipts bool
 	executionFactory   ExecutionFactory
 	completionRestorer CompletionRestorer
 	controlMu          sync.RWMutex
@@ -151,8 +153,9 @@ func NewScheduler(client *Client, config SchedulerConfig) (*Scheduler, error) {
 		sessionID = randomSessionID
 	}
 	scheduler := &Scheduler{executionFactory: config.ExecutionFactory, completionRestorer: config.CompletionRestorer,
-		releasedStopped:   config.ReleasedStopped,
-		availableCapacity: config.AvailableCapacity,
+		releasedStopped:    config.ReleasedStopped,
+		hubProcessReceipts: config.HubProcessReceipts,
+		availableCapacity:  config.AvailableCapacity,
 
 		storageConstraint: config.StorageConstraint,
 

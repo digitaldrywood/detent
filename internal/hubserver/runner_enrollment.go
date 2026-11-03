@@ -31,6 +31,8 @@ func (s *Service) registerRunnerRoutes(e *echo.Echo) {
 	e.DELETE(enrollmentBase+"/:enrollment", s.revokeRunnerEnrollment, admin)
 	e.POST(enrollmentBase+"/redeem", s.redeemRunnerEnrollment)
 	e.GET(runnerBase+"/:runner", s.getRunnerIdentity, worker)
+	e.GET(runnerBase+"/:runner/update/receipt", s.getRunnerUpdateReceipt, worker)
+	e.PUT(runnerBase+"/:runner/update/receipt", s.putRunnerUpdateReceipt, worker)
 	e.POST(runnerBase+"/:runner/renew", s.renewRunnerIdentity, worker)
 	e.POST(runnerBase+"/:runner/rotate", s.rotateRunnerIdentity, worker)
 	e.DELETE(runnerBase+"/:runner", s.revokeRunnerIdentity, admin)
