@@ -109,9 +109,9 @@ func TestNativeSearchRevisionRowsStayBounded(t *testing.T) {
 			}
 			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
 			for _, query := range []string{"narwhal", "quasar", "revision20"} {
-				page, err := f.service.readIssues(t.Context(), scope, url.Values{"q": {query}})
-				if err != nil || len(page.Items) != 1 {
-					t.Fatalf("query=%s items=%d err=%v", query, len(page.Items), err)
+				ids := nativeSearchTestIDs(t, f.service.database, scope, url.Values{"q": {query}})
+				if len(ids) != 1 {
+					t.Fatalf("query=%s items=%d", query, len(ids))
 				}
 			}
 			if _, err := db.db.ExecContext(t.Context(), "DELETE FROM native_work_documents WHERE issue_id=(SELECT id FROM issues WHERE native_id=?)", first.WorkItemID); err != nil {
@@ -237,9 +237,9 @@ func TestNativeSearchLegacyDeletionPrunedInBoundedBatches(t *testing.T) {
 			if got, want := count("SELECT sum(documents) FROM native_work_search_frequencies"), count("SELECT count(*) FROM native_work_search_postings"); got != want {
 				t.Fatalf("frequency total=%d want=%d", got, want)
 			}
-			page, err := f.service.readIssues(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, url.Values{"q": {"quasar"}})
-			if err != nil || len(page.Items) != 1 || page.Items[0].WorkItemID != retained.WorkItemID {
-				t.Fatalf("retained search items=%v err=%v", page.Items, err)
+			ids := nativeSearchTestIDs(t, f.service.database, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, url.Values{"q": {"quasar"}})
+			if !slices.Equal(ids, []tracker.NativeWorkItemID{retained.WorkItemID}) {
+				t.Fatalf("retained search items=%v", ids)
 			}
 		})
 	}
@@ -280,9 +280,9 @@ func TestNativeSearchDocumentByteBudget(t *testing.T) {
 			}
 			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
 			for _, query := range []string{"Titlemarker", "#" + strconv.Itoa(item.Number)} {
-				page, err := f.service.readIssues(t.Context(), scope, url.Values{"q": {query}})
-				if err != nil || len(page.Items) != 1 {
-					t.Fatalf("query=%s items=%d want=1 err=%v", query, len(page.Items), err)
+				ids := nativeSearchTestIDs(t, f.service.database, scope, url.Values{"q": {query}})
+				if len(ids) != 1 {
+					t.Fatalf("query=%s items=%d want=1", query, len(ids))
 				}
 			}
 			var tail int
@@ -559,14 +559,7 @@ func TestNativeSearchLegacyRowsPrunedInBoundedBatches(t *testing.T) {
 					{"true", []tracker.NativeWorkItemID{archived.WorkItemID}},
 					{"all", []tracker.NativeWorkItemID{active.WorkItemID, archived.WorkItemID}},
 				} {
-					page, err := f.service.readIssues(t.Context(), scope, url.Values{"q": {"narwhal"}, "archived": {test.archived}})
-					if err != nil {
-						t.Fatal(err)
-					}
-					var got []tracker.NativeWorkItemID
-					for _, item := range page.Items {
-						got = append(got, item.WorkItemID)
-					}
+					got := nativeSearchTestIDs(t, f.service.database, scope, url.Values{"q": {"narwhal"}, "archived": {test.archived}})
 					slices.Sort(got)
 					slices.Sort(test.want)
 					if !slices.Equal(got, test.want) {
@@ -581,9 +574,9 @@ func TestNativeSearchLegacyRowsPrunedInBoundedBatches(t *testing.T) {
 					{otherTenant, otherTenantItem},
 				} {
 					project := isolated.fixture.project
-					page, err := f.service.readIssues(t.Context(), nativeScope{organization: project.OrganizationID, project: project.ID}, url.Values{"q": {"narwhal"}})
-					if err != nil || len(page.Items) != 1 || page.Items[0].WorkItemID != isolated.item.WorkItemID {
-						t.Fatalf("isolated project=%s items=%v err=%v", project.ID, page.Items, err)
+					ids := nativeSearchTestIDs(t, f.service.database, nativeScope{organization: project.OrganizationID, project: project.ID}, url.Values{"q": {"narwhal"}})
+					if !slices.Equal(ids, []tracker.NativeWorkItemID{isolated.item.WorkItemID}) {
+						t.Fatalf("isolated project=%s items=%v", project.ID, ids)
 					}
 				}
 			}
@@ -767,12 +760,29 @@ func TestNativeSearchPrunePreservesPublishedRevision(t *testing.T) {
 			if err := db.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM native_work_search_postings WHERE document_id=? AND term='ereplac'", id).Scan(&replacement); err != nil || replacement != 2 {
 				t.Fatalf("current replacement postings=%d want=2 err=%v", replacement, err)
 			}
-			page, err := f.service.readIssues(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, url.Values{"q": {"quasar"}})
-			if err != nil || len(page.Items) != 1 || page.Items[0].WorkItemID != second.WorkItemID {
-				t.Fatalf("retained issue items=%v err=%v", page.Items, err)
+			ids := nativeSearchTestIDs(t, f.service.database, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, url.Values{"q": {"quasar"}})
+			if !slices.Equal(ids, []tracker.NativeWorkItemID{second.WorkItemID}) {
+				t.Fatalf("retained issue items=%v", ids)
 			}
 		})
 	}
+}
+
+func nativeSearchTestIDs(t *testing.T, db *database, scope nativeScope, params url.Values) []tracker.NativeWorkItemID {
+	t.Helper()
+	query, args, err := nativeIssueSelection(scope, params, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids, err := nativePageIDs(t.Context(), db.reader, query, args...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := make([]tracker.NativeWorkItemID, len(ids))
+	for index, id := range ids {
+		items[index] = tracker.NativeWorkItemID(id)
+	}
+	return items
 }
 
 func TestNativeWorkSearch(t *testing.T) {
