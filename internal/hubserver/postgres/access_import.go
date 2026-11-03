@@ -82,7 +82,7 @@ type accessImportObject struct {
 }
 
 var accessImportTableNames = [...]string{
-	"organizations", "hosted_tenant", "api_tokens", "hosted_members", "hosted_project_grants", "token_grants",
+	"organizations", "hosted_tenant", "api_tokens", "hosted_members", "hosted_release_preferences", "daily_summary_preferences", "daily_summary_receipts", "hosted_project_grants", "token_grants",
 	"hosted_sessions", "hosted_transactions", "hosted_invitations", "hosted_member_reservations",
 	"hosted_binding_migrations", "organization_secrets", "organization_secret_audit", "project_secrets",
 	"project_secret_audit", "hosted_audit", "hosted_audit_times",
@@ -93,6 +93,9 @@ var accessImportTargets = map[string]map[string]string{
 	"hosted_tenant":              {"provider_id": "provider_id", "bootstrap_subject": "bootstrap_subject", "deployment": "deployment", "public_url": "public_url", "allocation_generation": "allocation_generation"},
 	"api_tokens":                 {"id": "id", "name": "name", "token_hash": "token_hash", "token_fingerprint": "token_fingerprint", "scope": "scope", "native_only": "native_only", "created_at": "created_at", "updated_at": "updated_at", "rotated_at": "rotated_at", "revoked_at": "revoked_at", "expires_at": "expires_at", "last_used_at": "last_used_at", "hosted_user_id": "hosted_user_id", "hosted_membership_id": "hosted_membership_id", "operator_key_scope": "operator_key_scope", "operator_project_access": "operator_project_access", "key_kind": "key_kind"},
 	"hosted_members":             {"user_id": "user_id", "email": "email", "membership_id": "membership_id", "role": "role", "active": "active", "principal_id": "principal_id", "notify_issues": "notify_issues", "created_at": "created_at", "updated_at": "updated_at"},
+	"hosted_release_preferences": {"user_id": "user_id", "version": "version", "build_time": "build_time"},
+	"daily_summary_preferences":  {"user_id": "user_id", "enabled": "enabled", "send_minute": "send_minute", "time_zone": "time_zone", "weekdays": "weekdays", "token": "token", "window_end": "window_end", "due_at": "due_at"},
+	"daily_summary_receipts":     {"user_id": "user_id", "window_end": "window_end", "status": "status", "attempts": "attempts", "recorded_at": "recorded_at"},
 	"hosted_project_grants":      {"user_id": "user_id", "project_id": "project_id", "can_write": "can_write", "manage_runner": "manage_runner"},
 	"token_grants":               {"token_id": "token_id", "project_id": "project_id"},
 	"hosted_sessions":            {"token_hash": "token_hash", "email": "email", "identity_subject": "identity_subject", "created_at": "created_at", "expires_at": "expires_at", "revoked_at": "revoked_at"},
@@ -161,7 +164,8 @@ func validateAccessImportCatalog(catalog storagecatalog.Catalog) error {
 	}
 	for tableName, expected := range accessImportTargets {
 		table, ok := catalog.Tables["hub/"+tableName]
-		if !ok || table.Family != "access" || table.Disposition != "target" {
+		familyOK := table.Family == "access" || table.Family == "delivery" && (tableName == "hosted_release_preferences" || tableName == "daily_summary_preferences" || tableName == "daily_summary_receipts")
+		if !ok || !familyOK || table.Disposition != "target" {
 			return ErrAccessImport
 		}
 		expectedTargets := make(map[string]string, len(expected))
@@ -595,7 +599,7 @@ func (i *AccessImporter) importRow(ctx context.Context, s *session, table string
 		switch column.Codec {
 		case "text":
 			columns[targetName] = value.Text
-		case "int64":
+		case "int32", "int64":
 			columns[targetName] = value.Integer
 		case "bool01":
 			columns[targetName] = value.Boolean
