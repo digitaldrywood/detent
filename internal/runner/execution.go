@@ -778,6 +778,7 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 	finalizationErr := executionCancellation(req)
 	if req.finalizeNativeWork && !req.reviewOnly && finalizationErr == nil && ctx.Err() == nil && !req.retainCheckpoint {
 		if finalizer, ok := backend.(workspace.NativeWorkFinalizer); ok {
+			r.observeNativeStage(ctx, req, "finalization")
 			if err := req.Execution.Validate(ctx); err != nil {
 				finalizationErr = err
 			} else {
@@ -825,6 +826,7 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 							}
 						}
 						if !receipt.StartedAt.IsZero() {
+							r.observeNativeStage(ctx, req, "finalization")
 							receipt.TimingStage = "finalization"
 						}
 						r.recordPipeline(req, receipt.PipelineTiming("finalization"))
@@ -1291,7 +1293,7 @@ func (r *Runner) validateNativeChange(ctx context.Context, req RunRequest) (err 
 	if routeErr != nil {
 		return routeErr
 	}
-	request := ValidatorRequest{usageExecution: req.Execution, workspacePrepared: req.workspacePrepared, SecurityAudit: input.SecurityAudit, Issue: noChangeReviewIssue(req.Issue, input.NoChange), NativeVersion: input.Version, Diff: input.Diff, Evidence: input.Evidence, Commands: input.Commands, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate}
+	request := ValidatorRequest{usageExecution: req.Execution, workAttemptID: req.WorkAttemptID, generation: req.Generation, workspacePrepared: req.workspacePrepared, SecurityAudit: input.SecurityAudit, Issue: noChangeReviewIssue(req.Issue, input.NoChange), NativeVersion: input.Version, Diff: input.Diff, Evidence: input.Evidence, Commands: input.Commands, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate}
 	if source, ok := req.Execution.(ChangeSourceExecution); ok {
 		request.source = source
 	}
@@ -1353,7 +1355,7 @@ func (r *Runner) reviewNativeChange(ctx context.Context, req RunRequest) (approv
 	if routeErr != nil {
 		return false, routeErr
 	}
-	request := ValidatorRequest{usageExecution: req.Execution, workspacePrepared: req.workspacePrepared, implementationReview: true, Discussion: input.Discussion, Issue: noChangeReviewIssue(req.Issue, input.NoChange), NativeVersion: input.Version, Diff: input.Diff, Evidence: input.Evidence, Commands: input.Commands, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate}
+	request := ValidatorRequest{usageExecution: req.Execution, workAttemptID: req.WorkAttemptID, generation: req.Generation, workspacePrepared: req.workspacePrepared, implementationReview: true, Discussion: input.Discussion, Issue: noChangeReviewIssue(req.Issue, input.NoChange), NativeVersion: input.Version, Diff: input.Diff, Evidence: input.Evidence, Commands: input.Commands, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate}
 	if source, ok := req.Execution.(ChangeSourceExecution); ok {
 		request.source = source
 	}
@@ -1392,6 +1394,18 @@ func (r *Runner) reviewNativeChange(ctx context.Context, req RunRequest) (approv
 		return false, failedStep("review_publication", err)
 	}
 	return result.Verdict == gate.ValidatorVerdictPass, nil
+}
+
+func (r *Runner) observeNativeStage(ctx context.Context, req RunRequest, stage string) {
+	if runtime, ok := req.Execution.(RuntimeExecution); ok {
+		at := time.Now()
+		if r.now != nil {
+			at = r.now()
+		}
+		if err := runtime.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{LocalAttemptID: req.WorkAttemptID, Generation: req.Generation, Phase: stage, HeartbeatAt: at}); err != nil && r.logger != nil {
+			r.logger.Warn("native stage observation unavailable", "stage", stage, "error", err)
+		}
+	}
 }
 
 func (r *Runner) recordPipeline(req RunRequest, timing gate.PipelineTiming) {

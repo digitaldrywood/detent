@@ -491,6 +491,14 @@ func TestRunnerExpiredRuntimeProblems(t *testing.T) {
 		{name: "fresh completion", phase: "completed", age: 89 * time.Second},
 		{name: "expired completion", phase: "completed", age: 90 * time.Second, want: true},
 		{name: "hours of renewal", phase: "completed", age: 3 * time.Hour, want: true},
+		{name: "fresh review", phase: "review", age: 89 * time.Second},
+		{name: "quiet review", phase: "review", age: 90 * time.Second, want: true},
+		{name: "fresh audit", phase: "security_audit", age: 89 * time.Second},
+		{name: "quiet audit", phase: "security_audit", age: 90 * time.Second, want: true},
+		{name: "fresh validator", phase: "validation", age: 89 * time.Second},
+		{name: "quiet validator", phase: "validation", age: 90 * time.Second, want: true},
+		{name: "fresh finalization", phase: "finalization", age: 89 * time.Second},
+		{name: "quiet finalization", phase: "finalization", age: 90 * time.Second, want: true},
 		{name: "expired implementation", phase: "implementation", age: 90 * time.Second, want: true},
 		{name: "released attempt", phase: "completed", age: 3 * time.Hour, released: true},
 		{name: "expired lease", phase: "completed", age: 3 * time.Hour, expired: true},
@@ -512,6 +520,15 @@ func TestRunnerExpiredRuntimeProblems(t *testing.T) {
 			decodeHubResponse(t, response, &lease)
 			event := nativeStartedEvent(lease)
 			event.Data.Runtime = &tracker.NativeRuntimeObservation{LocalAttemptID: 42, Generation: 1, Phase: test.phase, HeartbeatAt: now.Add(-test.age)}
+			if test.phase != "implementation" && test.phase != "completed" {
+				event.Data.Runtime.Phase = "implementation"
+				event.Data.Runtime.HeartbeatAt = now.Add(-3 * time.Hour)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", r.redemption.Credential, event), http.StatusOK)
+				event.Type, event.IdempotencyKey, event.Data.Sequence = "run.observed", "finalization-activity", 2
+				event.Data.Runtime.Phase = test.phase
+				event.Data.Runtime.HeartbeatAt = now.Add(-test.age)
+			}
+
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", r.redemption.Credential, event), http.StatusOK)
 			expires := now.Add(90 * time.Second)
 			if test.expired {
@@ -562,7 +579,7 @@ func TestRunnerExpiredRuntimeProblems(t *testing.T) {
 				if problem.Code != "runtime_expired" || problem.ProjectID != string(f.project.ID) || problem.Subject != event.Data.AttemptID || problem.FirstSeen.IsZero() || !problem.ReportedAt.Equal(now) {
 					t.Fatalf("missing attempt attribution: %+v", problem)
 				}
-				event.Type, event.IdempotencyKey, event.Data.Sequence = "run.observed", "fresh-runtime", 2
+				event.Type, event.IdempotencyKey, event.Data.Sequence = "run.observed", "fresh-runtime", 3
 				event.Data.Runtime.HeartbeatAt = now
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", r.redemption.Credential, event), http.StatusOK)
 				if fresh := read(r); len(fresh.Problems) != 0 || fresh.Health != "online" {
