@@ -78,6 +78,11 @@ func (s *Service) runnerTransaction(c echo.Context, status int, operation func(c
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
+	if pending, ok := ctx.Value(pendingContentKey{}).(*pendingContentMutation); ok {
+		if _, err := s.uploadPendingContent(ctx, pending.objects); err != nil {
+			panic(err)
+		}
+	}
 	return nil
 }
 
@@ -90,6 +95,10 @@ func (s *Service) commitRunnerTransaction(c echo.Context, status int, operation 
 		return err
 	}
 	defer tx.Rollback()
+	if pending, ok := ctx.Value(pendingContentKey{}).(*pendingContentMutation); ok {
+		pending.tx, pending.objects = tx, nil
+		defer func() { pending.tx = nil }()
+	}
 	step := func(string) {}
 	if heartbeat {
 		step = heartbeatWriterSteps(ctx)
