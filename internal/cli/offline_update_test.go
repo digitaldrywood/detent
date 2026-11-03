@@ -263,7 +263,8 @@ func testOfflineBusyControllerConvergence(t *testing.T, configPath, binary strin
 	}
 	applied := scheduler.EnrolledUpdate(ctx, scheduler.RunningBuild(), &runnerauth.UpdateRequest{ID: "busy-update", Service: "detent", Version: offlineUpdateVersion, Release: true, FromRelease: true, FollowHub: true, ExpectedBuildRevision: before.Revision, RequestedAt: time.Now().UTC()})
 	if applied == nil || applied.Receipt == nil || applied.Receipt.Applied == nil || !applied.Receipt.Applied.VerifiedRelease || applied.Receipt.Status != "restart_requested" || !applied.Receipt.ExecutionArtifact || applied.Running.Version != "1.2.2" || applied.Receipt.Applied.Version != offlineUpdateVersion {
-		t.Fatalf("busy update did not apply the release: %+v", applied)
+		raw, err := json.Marshal(applied)
+		t.Fatalf("busy update did not apply the release: %s (marshal error: %v)", raw, err)
 	}
 	if restart.Binary() != "" || !controller.updateRestart.Load() {
 		t.Fatal("controller replacement did not retain the old attempt owner")
