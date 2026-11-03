@@ -168,6 +168,66 @@ func (q *Queries) DeleteWorkItem(ctx context.Context, arg DeleteWorkItemParams) 
 	return result.RowsAffected()
 }
 
+const getNativeWorkItemsByIDs = `-- name: GetNativeWorkItemsByIDs :many
+SELECT organization_id, id, native_id, project_id, number, revision, event_sequence, native_source_key, title, body_object_key, issue_contract_object_key, report_context_object_key, actor_kind, actor_principal_id, provenance_provider, provenance_external_id, archived, created_at, updated_at, native_created_at, native_updated_at, workflow_state_name, last_activity_at FROM issues
+WHERE organization_id=$1
+  AND project_id=$2
+  AND native_id=ANY($3::text[])
+`
+
+type GetNativeWorkItemsByIDsParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	NativeIds      []string
+}
+
+func (q *Queries) GetNativeWorkItemsByIDs(ctx context.Context, arg GetNativeWorkItemsByIDsParams) ([]Issue, error) {
+	rows, err := q.db.QueryContext(ctx, getNativeWorkItemsByIDs, arg.OrganizationID, arg.ProjectID, pq.Array(arg.NativeIds))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Issue{}
+	for rows.Next() {
+		var i Issue
+		if err := rows.Scan(
+			&i.OrganizationID,
+			&i.ID,
+			&i.NativeID,
+			&i.ProjectID,
+			&i.Number,
+			&i.Revision,
+			&i.EventSequence,
+			&i.NativeSourceKey,
+			&i.Title,
+			&i.BodyObjectKey,
+			&i.IssueContractObjectKey,
+			&i.ReportContextObjectKey,
+			&i.ActorKind,
+			&i.ActorPrincipalID,
+			&i.ProvenanceProvider,
+			&i.ProvenanceExternalID,
+			&i.Archived,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.NativeCreatedAt,
+			&i.NativeUpdatedAt,
+			&i.WorkflowStateName,
+			&i.LastActivityAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getWorkItem = `-- name: GetWorkItem :one
 SELECT organization_id, id, native_id, project_id, number, revision, event_sequence, native_source_key, title, body_object_key, issue_contract_object_key, report_context_object_key, actor_kind, actor_principal_id, provenance_provider, provenance_external_id, archived, created_at, updated_at, native_created_at, native_updated_at, workflow_state_name, last_activity_at FROM issues
 WHERE organization_id=$1

@@ -38,6 +38,9 @@ func TestPostgresOpenCreatesListsAndClaimsNativeIssue(t *testing.T) {
 	if _, err := provider.CreateMembership(t.Context(), "user_owner", "provider_org_startup", "owner"); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := provider.CreateMembership(t.Context(), "user_reporter", "provider_org_startup", "reporter"); err != nil {
+		t.Fatal(err)
+	}
 	store, err := openDatabase(t.Context(), cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -45,6 +48,8 @@ func TestPostgresOpenCreatesListsAndClaimsNativeIssue(t *testing.T) {
 	seedStartupOrganization(t, store.postgres, "org_startup")
 	const ownerToken = "example_owner_token"
 	ownerHash := apikey.HashToken(ownerToken)
+	const reporterToken = "example_reporter_token"
+	reporterHash := apikey.HashToken(reporterToken)
 	now := time.Now().UTC()
 	cursorKey := bytes.Repeat([]byte{0x5a}, 32)
 	serverID := "hub_" + strings.Repeat("a", 32)
@@ -63,13 +68,26 @@ func TestPostgresOpenCreatesListsAndClaimsNativeIssue(t *testing.T) {
 			return err
 		}
 		projectID := tracker.ProjectID("project_example")
-		if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: "org_startup", ID: projectID, Name: "Example project", Slug: "example-project", Profile: "native"}, States: nativeFixtureStates()}); err != nil {
+		states := append(nativeFixtureStates(), tracker.NativeState{Name: "Triage", Transitions: []string{"Todo"}})
+		if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: "org_startup", ID: projectID, Name: "Example project", Slug: "example-project", Profile: "native"}, States: states}); err != nil {
 			return err
 		}
 		if err := w.CreateAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: "org_startup", UserID: "user_owner", ProjectID: projectID, CanWrite: true, ManageRunner: true}); err != nil {
 			return err
 		}
 		if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: "org_startup", TokenID: "credential_owner", ProjectID: projectID}); err != nil {
+			return err
+		}
+		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: "org_startup", ID: "credential_reporter", Name: "Example reporter", Hash: reporterHash, Scope: "operator", NativeOnly: true, CreatedAt: now, UpdatedAt: now, UserID: "user_reporter", MembershipID: "membership_user_reporter", KeyScope: "write", ProjectAccess: "selected", Kind: "personal"}); err != nil {
+			return err
+		}
+		if err := w.CreateAccessMember(t.Context(), accessstore.Member{OrganizationID: "org_startup", UserID: "user_reporter", Email: "reporter@example.test", MembershipID: "membership_user_reporter", Role: "reporter", Active: true, PrincipalID: "credential_reporter", CreatedAt: now, UpdatedAt: now}); err != nil {
+			return err
+		}
+		if err := w.CreateAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: "org_startup", UserID: "user_reporter", ProjectID: projectID, CanWrite: true}); err != nil {
+			return err
+		}
+		if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: "org_startup", TokenID: "credential_reporter", ProjectID: projectID}); err != nil {
 			return err
 		}
 		return w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: "org_startup", Kind: accessstore.NativeCursorKeyKind, Envelope: cursorEnvelope, UpdatedAt: now}, accessstore.SecretAudit{OrganizationID: "org_startup", Kind: accessstore.NativeCursorKeyKind, Actor: "migration", Event: "import", KeyVersion: cursorEnvelope.Version, RecordedAt: now})
@@ -94,6 +112,10 @@ func TestPostgresOpenCreatesListsAndClaimsNativeIssue(t *testing.T) {
 	ownerCredential, ownerStatus, ownerErr := service.authenticateAccessHash(t.Context(), ownerHash, "", "")
 	if ownerErr != nil || ownerStatus != http.StatusOK || ownerCredential.HostedRole != "owner" || ownerCredential.Hosted == nil {
 		t.Fatalf("authenticate seeded owner = status %d, role %q, error %v", ownerStatus, ownerCredential.HostedRole, ownerErr)
+	}
+	reporterCredential, reporterStatus, reporterErr := service.authenticateAccessHash(t.Context(), reporterHash, "", "")
+	if reporterErr != nil || reporterStatus != http.StatusOK || reporterCredential.HostedRole != "reporter" || reporterCredential.Hosted == nil {
+		t.Fatalf("authenticate seeded reporter = status %d, role %q, error %v", reporterStatus, reporterCredential.HostedRole, reporterErr)
 	}
 
 	project := tracker.NativeProject{ID: "project_example", OrganizationID: "org_startup"}
@@ -133,6 +155,10 @@ func TestPostgresOpenCreatesListsAndClaimsNativeIssue(t *testing.T) {
 	if len(page.Items) != 1 || page.Items[0].WorkItemID != issue.WorkItemID {
 		t.Fatalf("PostgreSQL issue list = %+v, created %+v", page.Items, issue)
 	}
+	reporterCreateResponse := performHubAPIRequest(t, service, http.MethodPost, itemsPath, reporterToken, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "reporter-issue-create"}, Title: "Reporter issue", Body: "## Acceptance criteria\nThe report can be read.\n## Must not break\nKeep issue ownership scoped.\n## How we know it worked\nThe reporter sees only their record.", Type: "bug", State: "Triage"})
+	requireNativeStatus(t, reporterCreateResponse, http.StatusOK)
+	var reporterIssue tracker.NativeIssue
+	decodeHubResponse(t, reporterCreateResponse, &reporterIssue)
 	workspacePath := "/api/v2/organizations/org_startup/projects/" + url.PathEscape(string(project.ID)) + "/workspaces"
 	workspaceResponse := performHubAPIRequest(t, service, http.MethodPost, workspacePath, ownerToken, map[string]any{})
 	requireNativeStatus(t, workspaceResponse, http.StatusServiceUnavailable)
@@ -237,6 +263,67 @@ func TestPostgresOpenCreatesListsAndClaimsNativeIssue(t *testing.T) {
 	if validatedRunner.RunnerID != "runner_example" || validatedRunner.MachineID != "machine_example" || validatedRunner.OrganizationID != "org_startup" {
 		t.Fatalf("PostgreSQL validated runner = %+v", validatedRunner)
 	}
+	workerCredential, status, err := service.authenticateAccessHash(t.Context(), workerHash, "", "")
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("authenticate diagnostic runner: status=%d error=%v", status, err)
+	}
+	diagnosticAt := now.Add(time.Second)
+	diagnosticView := runnerauth.ProjectConfiguration{ProjectID: string(project.ID), ObservedAt: diagnosticAt, Diagnostics: &runnerauth.ProjectDiagnostics{
+		ObservedAt: diagnosticAt, RuntimeObservedAt: diagnosticAt, Source: "runner_runtime_and_durable_attempt_owners", Truncated: true,
+		RunningBuild: &runnerauth.BuildEvidence{Version: "v0.177.4", Commit: "abcdef1234567", Source: "development", OS: "darwin", Architecture: "arm64", ObservedAt: diagnosticAt},
+		Records:      []runnerauth.DiagnosticAttempt{{Key: "local:17", IssueID: string(issue.WorkItemID), LocalAttemptID: 17, NativeAttemptID: "attempt_example", Generation: 2, Fence: 3, Stage: "implementing", Membership: []string{"running", "native_claim", "durable_active"}, HostOperation: "append.run.observed", OperationPending: true, OperationStartedAt: diagnosticAt.Add(-time.Second), OperationObservedAt: diagnosticAt, LatestErrorCode: "invalid_request", LatestError: "private_customer_payload", DeferredAt: diagnosticAt.Add(-2 * time.Second), RetryAt: diagnosticAt.Add(time.Second), RetryAttempt: 2, RecoveryOwner: "orchestrator.deferred_completion", LeaseRenewedAt: diagnosticAt, LeaseExpiresAt: diagnosticAt.Add(time.Minute), Unavailable: map[string]string{"native_attempt_id": "unrecorded"}}},
+		Admissions:   []runnerauth.DiagnosticAdmission{{IssueID: string(issue.WorkItemID), WorkItemRevision: int64(issue.Revision), ObservedAt: diagnosticAt, Result: "skipped", Predicate: "project_capacity_full", RepositoryReservations: []string{"repository_example"}, HostLandingOccupancy: 1, ProviderRequirement: &providercapacity.Requirement{Role: "code", Backend: capacity.Backend, Model: capacity.Models[0]}, Unavailable: map[string]string{}}},
+		Counts:       map[string]int{"running": 1, "native_claim": 1}, Unavailable: map[string]string{"running_build": "unavailable"},
+	}}
+	if err := service.config.TenantRepository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
+		writer, ok := w.(runnerstore.Writer)
+		if !ok {
+			return fmt.Errorf("runner diagnostic writer unavailable")
+		}
+		return storeRunnerProjectObservationTenant(t.Context(), nativeScope{organization: "org_startup", project: project.ID, credential: workerCredential}, diagnosticView, diagnosticAt.Add(time.Second), writer)
+	}); err != nil {
+		t.Fatalf("store typed PostgreSQL runner diagnostics: %v", err)
+	}
+	diagnosticsPath := "/api/v2/organizations/org_startup/projects/" + url.PathEscape(string(project.ID)) + "/runner-diagnostics?runner_id=runner_example&limit=1"
+	diagnosticsResponse := performHubAPIRequest(t, service, http.MethodGet, diagnosticsPath, workerToken, nil)
+	requireNativeStatus(t, diagnosticsResponse, http.StatusOK)
+	var diagnosticsPage runnerauth.DiagnosticPage
+	decodeHubResponse(t, diagnosticsResponse, &diagnosticsPage)
+	if diagnosticsPage.Status != "available" || diagnosticsPage.ReceivedAt != diagnosticAt.Add(time.Second) || diagnosticsPage.RunningBuild == nil || diagnosticsPage.RunningBuild.Commit != "abcdef1234567" || diagnosticsPage.Counts["running"] != 1 || !diagnosticsPage.Truncated || len(diagnosticsPage.Admissions) != 1 || diagnosticsPage.Admissions[0].ProviderRequirement == nil || diagnosticsPage.Admissions[0].ProviderRequirement.Model != capacity.Models[0] || diagnosticsPage.NextCursor == "" {
+		t.Fatalf("PostgreSQL typed diagnostic page = %+v", diagnosticsPage)
+	}
+	secondDiagnosticsPath := diagnosticsPath + "&cursor=" + url.QueryEscape(diagnosticsPage.NextCursor)
+	secondDiagnosticsResponse := performHubAPIRequest(t, service, http.MethodGet, secondDiagnosticsPath, workerToken, nil)
+	requireNativeStatus(t, secondDiagnosticsResponse, http.StatusOK)
+	decodeHubResponse(t, secondDiagnosticsResponse, &diagnosticsPage)
+	if len(diagnosticsPage.Records) != 1 || diagnosticsPage.Records[0].OperationStartedAt != diagnosticAt.Add(-time.Second) || diagnosticsPage.Records[0].OperationObservedAt != diagnosticAt || diagnosticsPage.Records[0].LatestError != "[private error text omitted]" || diagnosticsPage.Records[0].RetryAttempt != 2 || diagnosticsPage.Records[0].LeaseExpiresAt != diagnosticAt.Add(time.Minute) || diagnosticsPage.Records[0].Unavailable["native_attempt_id"] != "unrecorded" {
+		t.Fatalf("PostgreSQL typed diagnostic attempt page = %+v", diagnosticsPage)
+	}
+	updatedDiagnosticAt := diagnosticAt.Add(2 * time.Second)
+	diagnosticView.ObservedAt = updatedDiagnosticAt
+	diagnosticView.Diagnostics.ObservedAt = updatedDiagnosticAt
+	diagnosticView.Diagnostics.RuntimeObservedAt = updatedDiagnosticAt
+	diagnosticView.Diagnostics.Records = append(diagnosticView.Diagnostics.Records, runnerauth.DiagnosticAttempt{Key: "local:18", IssueID: string(reporterIssue.WorkItemID), LocalAttemptID: 18, NativeAttemptID: "attempt_reporter", Generation: 1, Fence: 1, Stage: "implementing", Membership: []string{"running"}, LatestErrorCode: "invalid_request", LatestError: "reporter_private_payload"})
+	diagnosticView.Diagnostics.Admissions = append(diagnosticView.Diagnostics.Admissions, runnerauth.DiagnosticAdmission{IssueID: string(reporterIssue.WorkItemID), WorkItemRevision: int64(reporterIssue.Revision), ObservedAt: updatedDiagnosticAt, Result: "skipped", Predicate: "project_capacity_full", RepositoryReservations: []string{"reporter_repository"}, HostLandingOccupancy: 1, Unavailable: map[string]string{}})
+	if err := service.config.TenantRepository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
+		writer, ok := w.(runnerstore.Writer)
+		if !ok {
+			return fmt.Errorf("runner diagnostic writer unavailable")
+		}
+		return storeRunnerProjectObservationTenant(t.Context(), nativeScope{organization: "org_startup", project: project.ID, credential: workerCredential}, diagnosticView, updatedDiagnosticAt.Add(time.Second), writer)
+	}); err != nil {
+		t.Fatalf("store reporter PostgreSQL runner diagnostics: %v", err)
+	}
+	reporterDiagnosticsPath := "/api/v2/organizations/org_startup/projects/" + url.PathEscape(string(project.ID)) + "/runner-diagnostics?runner_id=runner_example&limit=10"
+	reporterDiagnosticsResponse := performHubAPIRequest(t, service, http.MethodGet, reporterDiagnosticsPath, reporterToken, nil)
+	requireNativeStatus(t, reporterDiagnosticsResponse, http.StatusOK)
+	diagnosticsPage = runnerauth.DiagnosticPage{}
+	decodeHubResponse(t, reporterDiagnosticsResponse, &diagnosticsPage)
+	if diagnosticsPage.Counts != nil || len(diagnosticsPage.Records) != 1 || diagnosticsPage.Records[0].IssueID != string(reporterIssue.WorkItemID) || diagnosticsPage.Records[0].LatestError != "[private error text omitted]" || len(diagnosticsPage.Admissions) != 1 || diagnosticsPage.Admissions[0].IssueID != string(reporterIssue.WorkItemID) || len(diagnosticsPage.Admissions[0].RepositoryReservations) != 0 {
+		t.Fatalf("PostgreSQL reporter diagnostic page exposed another issue or private fields: %+v", diagnosticsPage)
+	}
+	hiddenReporterResponse := performHubAPIRequest(t, service, http.MethodGet, reporterDiagnosticsPath+"&issue_id="+url.QueryEscape(string(issue.WorkItemID)), reporterToken, nil)
+	requireNativeCode(t, hiddenReporterResponse, http.StatusNotFound, "not_found")
 	leasePath := "/api/v2/organizations/org_startup/projects/" + url.PathEscape(string(project.ID)) + "/leases/" + url.PathEscape(string(lease.ID))
 	renewResponse := performHubAPIRequest(t, service, http.MethodPost, leasePath+"/renew", workerToken, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 300})
 	requireNativeStatus(t, renewResponse, http.StatusOK)

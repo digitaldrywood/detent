@@ -245,6 +245,7 @@ type ProjectObservation struct {
 	DiagnosticsAt     *time.Time
 	RuntimeObservedAt *time.Time
 	SnapshotDigest    string
+	Diagnostics       *runnerauth.ProjectDiagnostics
 }
 
 type ProjectDiagnosticAttempt struct {
@@ -261,7 +262,18 @@ type ProjectDiagnosticAttempt struct {
 	ProviderCompletedAt *time.Time
 	HostOperation       string
 	OperationPending    bool
+	OperationStartedAt  *time.Time
+	OperationObservedAt *time.Time
+	LatestErrorCode     string
+	LatestError         string
+	DeferredAt          *time.Time
+	RetryAt             *time.Time
+	RetryAttempt        int
+	RecoveryOwner       string
 	LeaseRenewedAt      *time.Time
+	LeaseExpiresAt      *time.Time
+	Membership          []string
+	Unavailable         map[string]string
 }
 
 func (row ProjectObservation) Validate(attempts []ProjectDiagnosticAttempt) error {
@@ -273,8 +285,13 @@ func (row ProjectObservation) Validate(attempts []ProjectDiagnosticAttempt) erro
 		return ErrInvalidRecord
 	}
 	for i, attempt := range attempts {
-		if attempt.Position != i || len(attempt.RecordKey) == 0 || len(attempt.RecordKey) > 256 || len(attempt.IssueID) == 0 || len(attempt.IssueID) > 256 || attempt.LocalAttemptID < 0 || attempt.Generation < 0 || attempt.Fence > 1<<63-1 || len(attempt.NativeAttemptID) > 256 || len(attempt.Stage) > 256 || len(attempt.HostOperation) > 256 {
+		if attempt.Position != i || len(attempt.RecordKey) == 0 || len(attempt.RecordKey) > 256 || len(attempt.IssueID) == 0 || len(attempt.IssueID) > 256 || attempt.LocalAttemptID < 0 || attempt.Generation < 0 || attempt.Fence > 1<<63-1 || len(attempt.NativeAttemptID) > 256 || len(attempt.Stage) > 256 || len(attempt.HostOperation) > 256 || attempt.RetryAttempt < 0 || len(attempt.LatestError) > 256 {
 			return fmt.Errorf("%w: invalid project diagnostic attempt %d", ErrInvalidRecord, i)
+		}
+	}
+	if row.Diagnostics != nil {
+		if err := row.Diagnostics.Validate(); err != nil || row.DiagnosticsAt == nil || !row.Diagnostics.ObservedAt.Equal(*row.DiagnosticsAt) || len(row.Diagnostics.Records) != len(attempts) {
+			return ErrInvalidRecord
 		}
 	}
 	return nil
@@ -310,6 +327,10 @@ type Reader interface {
 	RunnerUpdateState(context.Context, string) (UpdateState, error)
 	RunnerUpdateRequest(context.Context, string) (UpdateRequestRecord, error)
 	RunnerUrgentUpdate(context.Context) (UrgentUpdate, error)
+}
+
+type ProjectObservationRunnerPageReader interface {
+	RunnerProjectObservationRunners(context.Context, tracker.ProjectID, time.Time, int) ([]string, bool, error)
 }
 
 type UpdateProjection struct {

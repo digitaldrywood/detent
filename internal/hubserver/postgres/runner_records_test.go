@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -558,6 +559,9 @@ func TestRunnerProjectObservationIsTenantScopedAndRejectsStaleSnapshots(t *testi
 	now := historyAt()
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
 		if err := repository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
+			if err := w.CreateAccessOrganization(ctx, accessstore.Organization{OrganizationID: organization, Name: "Example organization", Slug: string(organization), Local: true, CreatedAt: now}); err != nil {
+				return err
+			}
 			if _, err := w.CreateProjectRecord(ctx, projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: "project_shared", Name: "Example", Profile: "native"}, States: []tracker.NativeState{{Name: "Todo", Dispatchable: true}}}); err != nil {
 				return err
 			}
@@ -593,7 +597,10 @@ func TestRunnerProjectObservationIsTenantScopedAndRejectsStaleSnapshots(t *testi
 				localAttempt = 6
 			}
 			observedAt, diagnosticsAt, runtimeAt := now.Add(2*time.Minute), now.Add(time.Minute), now.Add(90*time.Second)
-			return w.ReplaceRunnerProjectObservation(ctx, runnerstore.ProjectObservation{OrganizationID: organization, RunnerID: "runner_shared", ProjectID: "project_shared", ObservedAt: observedAt, DiagnosticsAt: &diagnosticsAt, RuntimeObservedAt: &runtimeAt, SnapshotDigest: strings.Repeat("a", 64)}, []runnerstore.ProjectDiagnosticAttempt{{Position: 0, RecordKey: fmt.Sprintf("local:%d", localAttempt), IssueID: "wi_shared", LocalAttemptID: localAttempt, NativeAttemptID: "attempt_shared", Generation: 3, Fence: 4, Stage: "implementing", Running: true, NativeClaim: true, HostOperation: "workspace.finalize_native_work", OperationPending: true, LeaseRenewedAt: &runtimeAt}})
+			record := runnerauth.DiagnosticAttempt{Key: fmt.Sprintf("local:%d", localAttempt), IssueID: "wi_shared", LocalAttemptID: localAttempt, NativeAttemptID: "attempt_shared", Generation: 3, Fence: 4, Stage: "implementing", Membership: []string{"running", "native_claim", "durable_active"}, ProviderCompletedAt: now, HostOperation: "workspace.finalize_native_work", OperationPending: true, OperationStartedAt: now.Add(-time.Second), OperationObservedAt: now, LatestErrorCode: "invalid_request", LatestError: "context deadline exceeded [private error text omitted]", DeferredAt: now.Add(-2 * time.Second), RetryAt: now.Add(time.Second), RetryAttempt: 2, RecoveryOwner: "orchestrator.deferred_completion", LeaseRenewedAt: runtimeAt, LeaseExpiresAt: now.Add(time.Minute), Unavailable: map[string]string{"native_attempt_id": "unrecorded"}}
+			diagnostics := &runnerauth.ProjectDiagnostics{RuntimeObservedAt: runtimeAt, ObservedAt: diagnosticsAt, Source: "runner_runtime_and_durable_attempt_owners", RunningBuild: &runnerauth.BuildEvidence{Version: "v0.177.4", Commit: "abcdef1234567", Source: "development", OS: "darwin", Architecture: "arm64", ObservedAt: now}, Records: []runnerauth.DiagnosticAttempt{record}, Admissions: []runnerauth.DiagnosticAdmission{{IssueID: "wi_shared", WorkItemRevision: 7, ObservedAt: now, Result: "skipped", Predicate: "project_capacity_full", RepositoryReservations: []string{"repository_example"}, HostLandingOccupancy: 3, ProviderRequirement: &providercapacity.Requirement{Role: "implementer", Backend: "codex", Model: "example-model"}, Unavailable: map[string]string{"local_attempt_id": "unrecorded"}}}, Counts: map[string]int{"running": 1, "native_claim": 1}, Truncated: true, Unavailable: map[string]string{"running_build": "unavailable"}}
+			attempt := runnerstore.ProjectDiagnosticAttempt{Position: 0, RecordKey: record.Key, IssueID: record.IssueID, LocalAttemptID: record.LocalAttemptID, NativeAttemptID: record.NativeAttemptID, Generation: int64(record.Generation), Fence: record.Fence, Stage: record.Stage, Running: true, NativeClaim: true, ProviderCompletedAt: &record.ProviderCompletedAt, HostOperation: record.HostOperation, OperationPending: true, OperationStartedAt: &record.OperationStartedAt, OperationObservedAt: &record.OperationObservedAt, LatestErrorCode: record.LatestErrorCode, LatestError: record.LatestError, DeferredAt: &record.DeferredAt, RetryAt: &record.RetryAt, RetryAttempt: record.RetryAttempt, RecoveryOwner: record.RecoveryOwner, LeaseRenewedAt: &record.LeaseRenewedAt, LeaseExpiresAt: &record.LeaseExpiresAt, Membership: record.Membership, Unavailable: record.Unavailable}
+			return w.ReplaceRunnerProjectObservation(ctx, runnerstore.ProjectObservation{OrganizationID: organization, RunnerID: "runner_shared", ProjectID: "project_shared", ObservedAt: observedAt, DiagnosticsAt: &diagnosticsAt, RuntimeObservedAt: &runtimeAt, SnapshotDigest: strings.Repeat("a", 64), Diagnostics: diagnostics}, []runnerstore.ProjectDiagnosticAttempt{attempt})
 		}); err != nil {
 			t.Fatalf("seed observation for %s: %v", organization, err)
 		}
@@ -616,6 +623,13 @@ func TestRunnerProjectObservationIsTenantScopedAndRejectsStaleSnapshots(t *testi
 			}
 			if observation.OrganizationID != organization || observation.SnapshotDigest != strings.Repeat("a", 64) || observation.RuntimeObservedAt == nil || !observation.RuntimeObservedAt.Equal(now.Add(90*time.Second)) || len(attempts) != 1 || attempts[0].LocalAttemptID != wantLocalAttempt || attempts[0].NativeAttemptID != "attempt_shared" || attempts[0].Fence != 4 || !attempts[0].Running || !attempts[0].OperationPending {
 				t.Fatalf("organization %s observation=%+v attempts=%+v", organization, observation, attempts)
+			}
+			if observation.Diagnostics == nil || observation.Diagnostics.Source != "runner_runtime_and_durable_attempt_owners" || !observation.Diagnostics.Truncated || observation.Diagnostics.Counts["running"] != 1 || observation.Diagnostics.Unavailable["running_build"] != "unavailable" || observation.Diagnostics.RunningBuild == nil || observation.Diagnostics.RunningBuild.Commit != "abcdef1234567" || len(observation.Diagnostics.Admissions) != 1 || observation.Diagnostics.Admissions[0].ProviderRequirement == nil || observation.Diagnostics.Admissions[0].ProviderRequirement.Model != "example-model" {
+				t.Fatalf("organization %s diagnostics metadata=%+v", organization, observation.Diagnostics)
+			}
+			record := observation.Diagnostics.Records[0]
+			if !slices.Equal(record.Membership, []string{"running", "native_claim", "durable_active"}) || record.OperationStartedAt.IsZero() || record.OperationObservedAt.IsZero() || record.LatestErrorCode != "invalid_request" || record.LatestError != "context deadline exceeded [private error text omitted]" || record.DeferredAt.IsZero() || record.RetryAt.IsZero() || record.RetryAttempt != 2 || record.RecoveryOwner != "orchestrator.deferred_completion" || record.LeaseExpiresAt.IsZero() || record.Unavailable["native_attempt_id"] != "unrecorded" || observation.Diagnostics.Admissions[0].Unavailable["local_attempt_id"] != "unrecorded" {
+				t.Fatalf("organization %s diagnostic details=%+v admissions=%+v", organization, record, observation.Diagnostics.Admissions)
 			}
 			identity, err := r.RunnerIdentity(ctx, "runner_shared")
 			if err != nil {
@@ -739,6 +753,21 @@ func TestRunnerProjectObservationIsTenantScopedAndRejectsStaleSnapshots(t *testi
 		}
 		if !observation.ObservedAt.Equal(newerAt) || observation.SnapshotDigest != strings.Repeat("c", 64) {
 			t.Fatalf("concurrent first-insert result = %+v, want newer observation", observation)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.ExecContext(ctx, `UPDATE runner_project_observations SET diagnostics_source='' WHERE organization_id='org_second' AND runner_id='runner_shared' AND project_id='project_shared'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.ReadTenant(ctx, "org_second", corestore.Serving, func(r tenantstore.Reader) error {
+		observation, attempts, err := r.RunnerProjectObservation(ctx, "runner_shared", "project_shared", "wi_shared")
+		if err != nil {
+			return err
+		}
+		if observation.Diagnostics != nil || len(attempts) != 0 {
+			t.Fatalf("legacy sparse diagnostics were promoted to a complete snapshot: observation=%+v attempts=%+v", observation, attempts)
 		}
 		return nil
 	}); err != nil {
