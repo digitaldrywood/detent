@@ -109,9 +109,45 @@ func TestPostgresPolicyObservationsKeepCurrentReportProvenanceAndApproveByID(t *
 		}
 	}
 	base := projectsPath + "/" + string(project.ID)
-	descriptorA := hubTestPolicy()
-	descriptorA.Workflow = &policy.Workflow{Source: "WORKFLOW.md", Revision: strings.Repeat("a", 40), States: nativeFixtureStates()}
-	descriptorA = descriptorA.WithID()
+	authoredDescriptor := func(contents, revision string) policy.Descriptor {
+		t.Helper()
+		workflow, err := config.ParseProjectDefinition(config.ProjectDefinitionSources{
+			ConfigPath:   "detent.yaml",
+			HasConfig:    true,
+			Config:       []byte("schema: 1\ntracker:\n  kind: hub_native\n  repository: example-org/example-project\ngate:\n  run: true\n  required_status_checks: []\n"),
+			WorkflowPath: "WORKFLOW.md",
+			Workflow:     []byte(contents),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		descriptor, err := config.ResolvePolicy(workflow)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if descriptor.Workflow == nil {
+			t.Fatal("authored fixture did not resolve repository workflow metadata")
+		}
+		workflowDescriptor := *descriptor.Workflow
+		workflowDescriptor.Revision = revision
+		descriptor.Workflow = &workflowDescriptor
+		return descriptor.WithID()
+	}
+	descriptorA := authoredDescriptor("Implement the assigned issue.\n", strings.Repeat("a", 40))
+	descriptorObservationA := authoredDescriptor("Implement the assigned issue.\n", strings.Repeat("b", 40))
+	if descriptorA.ID != descriptorObservationA.ID || !sameTenantProjectPolicyDescriptorContent(descriptorA, descriptorObservationA) {
+		t.Fatal("same authored policy with new workflow provenance did not match")
+	}
+	gateMismatch := descriptorObservationA
+	gateMismatch.Gates.GitHubPullRequest = !gateMismatch.Gates.GitHubPullRequest
+	if sameTenantProjectPolicyDescriptorContent(descriptorA, gateMismatch) {
+		t.Fatal("policy descriptor comparison accepted a gate mismatch")
+	}
+	metadataMismatch := descriptorObservationA
+	metadataMismatch.Requirements.RequiredTags = []string{"linux"}
+	if sameTenantProjectPolicyDescriptorContent(descriptorA, metadataMismatch) {
+		t.Fatal("policy descriptor comparison accepted a requirements mismatch")
+	}
 	legacyPayload, err := json.MarshalIndent(descriptorA, "", "  ")
 	if err != nil {
 		t.Fatal(err)
@@ -137,10 +173,7 @@ func TestPostgresPolicyObservationsKeepCurrentReportProvenanceAndApproveByID(t *
 	}); err != nil {
 		t.Fatal(err)
 	}
-	descriptorB := descriptorA
-	descriptorB.ConfigDigest = policy.Digest([]byte("other configuration"))
-	descriptorB.Workflow = &policy.Workflow{Source: "WORKFLOW.md", Revision: strings.Repeat("b", 40), States: nativeFixtureStates()}
-	descriptorB = descriptorB.WithID()
+	descriptorB := authoredDescriptor("Implement a different assigned issue.\n", strings.Repeat("b", 40))
 	sourceA := &policy.RepositorySource{Repository: "example-org/example-project", Commit: strings.Repeat("a", 40), DefaultBranch: "main", DefaultBranchHead: strings.Repeat("a", 40)}
 	sourceB := &policy.RepositorySource{Repository: "example-org/example-project", Commit: strings.Repeat("b", 40), DefaultBranch: "main", DefaultBranchHead: strings.Repeat("b", 40)}
 	report := func(runner runnerCredential, descriptor policy.Descriptor, source *policy.RepositorySource) {
@@ -156,8 +189,8 @@ func TestPostgresPolicyObservationsKeepCurrentReportProvenanceAndApproveByID(t *
 		decodeHubResponse(t, response, &view)
 		return view
 	}
-	report(runners[0], descriptorA, sourceA)
-	report(runners[0], descriptorA, nil)
+	report(runners[0], descriptorObservationA, sourceA)
+	report(runners[0], descriptorObservationA, nil)
 	report(runners[1], descriptorB, sourceB)
 	view := read()
 	if len(view.ObservedPolicies) != 2 || !view.ObservedPolicies[0].Conflict || !view.ObservedPolicies[1].Conflict {
@@ -228,9 +261,7 @@ func TestPostgresPolicyObservationsKeepCurrentReportProvenanceAndApproveByID(t *
 		t.Fatalf("second observed policy was not approved: %+v", view.Policy)
 	}
 	descriptorC := descriptorB
-	descriptorC.ConfigDigest = policy.Digest([]byte("third configuration"))
-	descriptorC.Workflow = &policy.Workflow{Source: "WORKFLOW.md", Revision: strings.Repeat("c", 40), States: nativeFixtureStates()}
-	descriptorC = descriptorC.WithID()
+	descriptorC = authoredDescriptor("Implement a third assigned issue.\n", strings.Repeat("c", 40))
 	sourceC := &policy.RepositorySource{Repository: "example-org/example-project", Commit: strings.Repeat("c", 40), DefaultBranch: "main", DefaultBranchHead: strings.Repeat("d", 40), DefaultBranchReachable: true}
 	report(runners[1], descriptorC, sourceC)
 	view = read()
@@ -288,16 +319,10 @@ func TestPostgresPolicyObservationsKeepCurrentReportProvenanceAndApproveByID(t *
 	if err := json.Unmarshal(operatorRead.Content, &operatorPage); err != nil || operatorPage.Data.Policy == nil || operatorPage.Data.Policy.ID != descriptorC.ID || operatorPage.Data.ApprovedBy != "repository-default-branch" {
 		t.Fatalf("selected PostgreSQL operator policy read = %+v, %v", operatorPage.Data, err)
 	}
-	descriptorD := descriptorC
-	descriptorD.ConfigDigest = policy.Digest([]byte("operator-approved configuration"))
-	descriptorD.Workflow = &policy.Workflow{Source: "WORKFLOW.md", Revision: strings.Repeat("e", 40), States: nativeFixtureStates()}
-	descriptorD = descriptorD.WithID()
+	descriptorD := authoredDescriptor("Operator-approved workflow content.\n", strings.Repeat("e", 40))
 	sourceD := &policy.RepositorySource{Repository: "example-org/example-project", Commit: strings.Repeat("e", 40), DefaultBranch: "main", DefaultBranchHead: strings.Repeat("f", 40)}
 	report(runners[1], descriptorD, sourceD)
-	descriptorE := descriptorD
-	descriptorE.ConfigDigest = policy.Digest([]byte("later administrator policy"))
-	descriptorE.Workflow = &policy.Workflow{Source: "WORKFLOW.md", Revision: strings.Repeat("f", 40), States: nativeFixtureStates()}
-	descriptorE = descriptorE.WithID()
+	descriptorE := authoredDescriptor("Later administrator workflow content.\n", strings.Repeat("f", 40))
 	sourceE := &policy.RepositorySource{Repository: "example-org/example-project", Commit: strings.Repeat("f", 40), DefaultBranch: "main", DefaultBranchHead: strings.Repeat("1", 40)}
 	assertPostgresPolicyApprovalLockOrdering(t, service, repository, organization.ID, project.ID, "credential_example_b", runners[1].runnerID, descriptorC.ID, descriptorD, descriptorE, sourceE)
 	approvalCall := projectCall(t, "approve_project_policy", string(project.ID), "operator-policy-approval", operatortool.PolicyApprovalInput{ExpectedID: descriptorC.ID, ObservedPolicyID: descriptorD.ID})

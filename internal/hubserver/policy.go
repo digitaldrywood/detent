@@ -842,10 +842,29 @@ func sameTenantProjectPolicyDescriptor(ctx context.Context, content *eventstore.
 	if err != nil {
 		return err
 	}
-	if !reflect.DeepEqual(resolved, descriptor) {
+	if !sameTenantProjectPolicyDescriptorContent(resolved, descriptor) {
 		return corestore.ErrUniqueViolation
 	}
 	return nil
+}
+
+func sameTenantProjectPolicyDescriptorContent(stored, incoming policy.Descriptor) bool {
+	if stored.Validate() != nil || incoming.Validate() != nil {
+		return false
+	}
+	if reflect.DeepEqual(stored, incoming) {
+		return true
+	}
+	if stored.ID != incoming.ID || !stored.SameAuthoredInputs(incoming) || stored.Match(incoming) != nil || stored.Workflow == nil || incoming.Workflow == nil {
+		return false
+	}
+	storedWorkflow := *stored.Workflow
+	incomingWorkflow := *incoming.Workflow
+	storedWorkflow.Revision = ""
+	incomingWorkflow.Revision = ""
+	stored.Workflow = &storedWorkflow
+	incoming.Workflow = &incomingWorkflow
+	return reflect.DeepEqual(stored, incoming)
 }
 
 func sameTenantProjectPolicyRevisionContent(left, right policystore.Revision) bool {
