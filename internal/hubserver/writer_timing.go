@@ -15,6 +15,7 @@ import (
 	"github.com/labstack/echo/v4"
 	"modernc.org/sqlite"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/sqlstmt"
 )
 
@@ -402,6 +403,7 @@ func (s *Service) timeWriterUse(next echo.HandlerFunc) echo.HandlerFunc {
 			request = &requestTiming{}
 			ctx = withRequestTiming(ctx, request)
 		}
+		ctx = postgres.WithTransactionTiming(ctx, request.span)
 		ctx, timing := withWriterTiming(ctx)
 		timing.route = c.Path()
 		c.SetRequest(c.Request().WithContext(ctx))

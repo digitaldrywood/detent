@@ -35,7 +35,9 @@ func TestPostgresActivityReadsLiveOutcomesAndIssueClocksWithoutSQLite(t *testing
 	member := auth.Membership{ID: "member", UserID: "user", OrganizationID: "provider_org_first", Status: "active"}
 	member.Role.Slug = "owner"
 	provider.members["user"] = member
-	service := &Service{echo: echo.New(), secretRewrapReady: make(chan struct{}), database: &database{}, config: Config{Logger: discardLogger(), TenantRepository: repository, AccessRepository: repository, RunDetails: details, now: func() time.Time { return observed }, Hosted: &HostedConfig{OrganizationID: "org_first", Provider: provider}}}
+	service := &Service{echo: echo.New(), secretRewrapReady: make(chan struct{}), database: &database{postgres: repository}, config: Config{Logger: discardLogger(), TenantRepository: repository, AccessRepository: repository, RunDetails: details, now: func() time.Time { return observed }, Hosted: &HostedConfig{OrganizationID: "org_first", Provider: provider}}}
+	service.echo.Pre(service.timeWriterUse)
+	service.echo.Pre(service.serverTiming)
 	service.registerPostgresAppRoutes(service.echo)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
@@ -168,6 +170,11 @@ func TestPostgresActivityReadsLiveOutcomesAndIssueClocksWithoutSQLite(t *testing
 	}
 	response := performHubAPIRequest(t, service, http.MethodGet, "/api/v2/organizations/org_first/activity", "org_first_owner", nil)
 	requireNativeStatus(t, response, http.StatusOK)
+	for _, phase := range []string{"pg_admission", "pg_begin", "pg_callback", "pg_commit"} {
+		if !strings.Contains(response.Header().Get("Server-Timing"), phase+";dur=") {
+			t.Errorf("Activity HTTP timing omitted %s: %s", phase, response.Header().Get("Server-Timing"))
+		}
+	}
 	var delivered operatortool.ActivityReport
 	decodeHubResponse(t, response, &delivered)
 	if len(delivered.RunningIssues) != 2 || len(delivered.FinishedIssues) != 2 {

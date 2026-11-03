@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
@@ -66,24 +67,51 @@ func (r *Repository) transaction(ctx context.Context, organization tracker.Organ
 	return r.transactionIsolation(ctx, organization, workload, readOnly, sql.LevelReadCommitted, run)
 }
 
+type transactionTimingKey struct{}
+
+func WithTransactionTiming(ctx context.Context, observe func(string, time.Time)) context.Context {
+	return context.WithValue(ctx, transactionTimingKey{}, observe)
+}
+
+func transactionSpan(ctx context.Context, name string) func() {
+	observe, _ := ctx.Value(transactionTimingKey{}).(func(string, time.Time))
+	if observe == nil {
+		return func() {}
+	}
+	started := time.Now()
+	return func() { observe(name, started) }
+}
+
 func (r *Repository) transactionIsolation(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, readOnly bool, isolation sql.IsolationLevel, run func(*session) error) error {
+	finishAdmission := transactionSpan(ctx, "pg_admission")
 	release, err := r.acquire(ctx, workload)
+	finishAdmission()
 	if err != nil {
 		return err
 	}
 	defer release()
+	finishBegin := transactionSpan(ctx, "pg_begin")
 	tx, err := r.runtime.Begin(ctx, organization, &sql.TxOptions{Isolation: isolation, ReadOnly: readOnly})
+	finishBegin()
 	if err != nil {
 		return mapError(ctx, err)
 	}
 	defer tx.Rollback()
-	if err := run(&session{organization: organization, queries: pgquery.New(tx), db: tx, readOnly: readOnly}); err != nil {
+	finishCallback := transactionSpan(ctx, "pg_callback")
+	err = func() error {
+		defer finishCallback()
+		return run(&session{organization: organization, queries: pgquery.New(tx), db: tx, readOnly: readOnly})
+	}()
+	if err != nil {
 		return mapError(ctx, err)
 	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return mapError(ctx, tx.Commit())
+	finishCommit := transactionSpan(ctx, "pg_commit")
+	err = tx.Commit()
+	finishCommit()
+	return mapError(ctx, err)
 }
 
 func (r *Repository) acquire(ctx context.Context, workload corestore.Workload) (func(), error) {
