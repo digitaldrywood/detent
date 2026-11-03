@@ -378,30 +378,40 @@ func (q *Queries) SearchPublish(ctx context.Context, arg SearchPublishParams) (i
 }
 
 const searchPublishLiterals = `-- name: SearchPublishLiterals :exec
+WITH literals AS MATERIALIZED (
+    SELECT l.term,l.positions::bigint[] AS positions
+    FROM ROWS FROM(unnest($4::text[]),unnest($5::text[])) l(term,positions)
+)
 INSERT INTO search_postings(organization_id,scope,term,document_id,impact,updated_at,updated_at_submicrosecond,literal_positions)
-SELECT d.organization_id,p.scope,l.term,d.id,0,d.updated_at,d.updated_at_submicrosecond,position.positions::bigint[]
-FROM search_documents d JOIN search_postings p ON p.organization_id=d.organization_id AND p.document_id=d.id AND p.term='~all'
-CROSS JOIN unnest($1::text[]) WITH ORDINALITY l(term,ordinality)
-CROSS JOIN LATERAL (SELECT ($2::text[])[l.ordinality] AS positions) position
-WHERE d.organization_id=$3 AND d.id=$4 AND d.revision=$5
+SELECT d.organization_id,p.scope,l.term,d.id,0,d.updated_at,d.updated_at_submicrosecond,l.positions
+FROM search_documents d CROSS JOIN literals l
+CROSS JOIN LATERAL (
+    SELECT p.scope FROM search_postings p
+    WHERE p.organization_id=d.organization_id AND p.document_id=d.id AND p.term='~all'
+    EXCEPT
+    SELECT previous.scope FROM search_postings previous
+    WHERE previous.organization_id=d.organization_id AND previous.document_id=d.id AND previous.term=l.term AND previous.literal_positions=l.positions
+) p
+WHERE d.organization_id=$1 AND d.id=$2 AND d.revision=$3
 ON CONFLICT(organization_id,scope,term,document_id) DO UPDATE SET literal_positions=EXCLUDED.literal_positions
+WHERE search_postings.literal_positions IS DISTINCT FROM EXCLUDED.literal_positions
 `
 
 type SearchPublishLiteralsParams struct {
-	Literals       []string
-	Positions      []string
 	OrganizationID tracker.OrganizationID
 	ID             string
 	Revision       int64
+	Literals       []string
+	Positions      []string
 }
 
 func (q *Queries) SearchPublishLiterals(ctx context.Context, arg SearchPublishLiteralsParams) error {
 	_, err := q.db.ExecContext(ctx, searchPublishLiterals,
-		pq.Array(arg.Literals),
-		pq.Array(arg.Positions),
 		arg.OrganizationID,
 		arg.ID,
 		arg.Revision,
+		pq.Array(arg.Literals),
+		pq.Array(arg.Positions),
 	)
 	return err
 }

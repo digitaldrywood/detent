@@ -36,6 +36,9 @@ func newSearchFixture(t *testing.T) searchFixture {
 	objects := newHistoryObjects()
 	f := searchFixture{repository, searchstore.NewContent(objects), objects, admin, pool}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		if _, err := admin.ExecContext(t.Context(), `INSERT INTO organizations(organization_id,name,local,created_at) VALUES($1,$1,false,$2)`, org, historyAt()); err != nil {
+			t.Fatal(err)
+		}
 		seedRepository(t, repository, org)
 	}
 	return f
