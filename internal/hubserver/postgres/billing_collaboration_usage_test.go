@@ -140,7 +140,7 @@ func TestCollaborationBytesAdjustsExistingTenantCounterAtomically(t *testing.T) 
 
 func TestNewOrganizationsOwnCollaborationCounters(t *testing.T) {
 	admin := template.Database(t)
-	repository, _ := repositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 3, ServingConnections: 2, BackgroundConnections: 1})
+	repository, _ := repositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 1})
 	for _, org := range []tracker.OrganizationID{"org_new_first", "org_new_second"} {
 		seedTenantAccess(t, repository, org)
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
