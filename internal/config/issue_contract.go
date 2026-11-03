@@ -122,6 +122,25 @@ func (c IssueContract) ScheduledImportBody() string {
 
 var scheduledImportWorkflow = regexp.MustCompile("^New verified GitHub Actions CI repair reports from `(\\.github/workflows/[A-Za-z0-9_-][A-Za-z0-9_.-]*\\.ya?ml)` on `(release/v\\*|[A-Za-z0-9_][A-Za-z0-9_./-]*)` enter Todo with (Urgent|High) priority\\.$")
 
+var scheduledTrustedSource = regexp.MustCompile("^Trusted-source CI verification override: authors `([A-Za-z0-9_\\[\\]-]+(?:, [A-Za-z0-9_\\[\\]-]+)*)`; label `([^`\\r\\n]+)`\\.$")
+
+func (c IssueContract) ScheduledTrustedSource() ([]string, string) {
+	_, template, err := resolveAdmissionSection(c.Context, "Scheduled CI repair contract", "scheduled repair", BacklogAdmissionEffortFileWorkflow)
+	if err != nil {
+		return nil, ""
+	}
+	preamble, _, _ := strings.Cut(template, "### ")
+	lines := strings.Split(strings.TrimSpace(preamble), "\n")
+	if len(lines) != 2 {
+		return nil, ""
+	}
+	match := scheduledTrustedSource.FindStringSubmatch(strings.TrimSpace(lines[1]))
+	if len(match) == 0 {
+		return nil, ""
+	}
+	return strings.Split(match[1], ", "), match[2]
+}
+
 func (c IssueContract) ScheduledRepairWorkflow() (string, string, int, bool) {
 	if c.ScheduledRepairBody() == "" {
 		return "", "", 0, false
@@ -140,6 +159,9 @@ func (c IssueContract) scheduledWorkflow(allowLegacy bool) (string, string, int,
 	}
 	preamble, _, _ := strings.Cut(template, "### ")
 	preamble = strings.TrimSpace(preamble)
+	if authors, _ := c.ScheduledTrustedSource(); len(authors) > 0 {
+		preamble, _, _ = strings.Cut(preamble, "\n")
+	}
 	if preamble == "New verified GitHub Actions CI repair reports enter Todo with Urgent priority." || allowLegacy && preamble == "" {
 		return ".github/workflows/ci.yml", "", 0, true
 	}

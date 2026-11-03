@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -106,7 +107,13 @@ AND (native_source_key = ? OR (repository_id = ? AND github_number = ?))`, scope
 					return issue, err
 				}
 				body := fmt.Sprintf("Verified CI report: %s\nRun: %s\nJob: %s\nTested commit: %s\n", canonical, verified.evidence.RunURL, verified.evidence.JobURL, verified.evidence.HeadSHA) + verified.evidence.Stamp()
+				if verified.sourceAuthor != "" {
+					body = "CI report: " + canonical + "\n" + verified.admissionBasis()
+				}
 				provenance := tracker.Provenance{Provider: "github", ExternalID: "scheduled:" + verified.evidence.OccurrenceKey, AuthorID: "github-actions[bot]", CreatedAt: now, UpdatedAt: now, ObservedAt: now}
+				if verified.sourceAuthor != "" {
+					provenance.AuthorID = verified.sourceAuthor
+				}
 				if err := importGitHubComment(ctx, tx, scope, string(issue.WorkItemID), GitHubImportRecord{Body: body, Provenance: provenance}, now); err != nil {
 					return issue, err
 				}
@@ -194,6 +201,16 @@ func intakeLinkedIssueTx(ctx context.Context, tx *sql.Tx, scope nativeScope, id 
 	if !bodyOwned && !stale {
 		issue.Body = snapshot.Body
 	}
+	fmt.Printf("DEBUG verified=%+v stale=%v completed=%v state=%s owned=%v/%v labels=%v\n", scope.scheduledRepair, stale, completed, issue.State,titleOwned,bodyOwned,issue.Labels)
+	if verified := scope.scheduledRepair; verified != nil && verified.sourceAuthor != "" && verified.importReason == "" && !stale && completed && issue.State == "Triage" && !issue.Terminal && !titleOwned && !bodyOwned && !slices.Contains(issue.Labels, "requires-human-review") && !slices.Contains(issue.Labels, "detent:no-dispatch") {
+		var lastIntent, lastReason string
+		intentErr := tx.QueryRowContext(ctx, "SELECT type FROM collaboration_events WHERE work_item_id=? AND type!='github.imported' ORDER BY sequence DESC LIMIT 1", issue.WorkItemID).Scan(&lastIntent)
+		reasonErr := tx.QueryRowContext(ctx, "SELECT coalesce(transition_reason,'') FROM collaboration_events WHERE work_item_id=? AND type='github.imported' ORDER BY sequence DESC LIMIT 1", issue.WorkItemID).Scan(&lastReason)
+		fmt.Printf("DEBUG intent=%s err=%v reason=%s err=%v\n",lastIntent,intentErr,lastReason,reasonErr)
+  if intentErr == nil && reasonErr == nil && lastIntent == "issue.created" && strings.Contains(lastReason, ": Scheduled CI import requires") && snapshot.Provenance.AuthorID == verified.sourceAuthor && slices.Contains(snapshot.Labels, verified.sourceLabel) {
+			applyScheduledRepairContract(ctx, tx, scope, &issue, now)
+		}
+	}
 	for _, comment := range snapshot.Comments {
 		if err := importGitHubComment(ctx, tx, scope, string(issue.WorkItemID), GitHubImportRecord{Body: comment.Body, Provenance: comment.Provenance}, now); err != nil {
 			return nil, err
@@ -221,6 +238,9 @@ func intakeLinkedIssueTx(ctx context.Context, tx *sql.Tx, scope nativeScope, id 
 	}
 	issue.LinkedSource.Status = "complete"
 	reason := canonical
+	if verified := scope.scheduledRepair; verified != nil && verified.sourceAuthor != "" && issue.State == "Todo" && verified.importReason == "" {
+		reason += ": " + verified.admissionBasis()
+	}
 	if verified := scope.scheduledRepair; verified != nil && verified.importURL == canonical && verified.importReason != "" {
 		reason += ": " + verified.importReason
 	}

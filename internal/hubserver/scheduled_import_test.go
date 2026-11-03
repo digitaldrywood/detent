@@ -27,11 +27,23 @@ func TestScheduledGitHubImportAdmission(t *testing.T) {
 	for _, test := range []struct {
 		name                                                    string
 		existingState                                           string
+		override                                                bool
+		labelAdd                                                bool
 		duplicate                                               bool
 		authorized, webhook                                     bool
 		change                                                  func(*tracker.GitHubIssueSnapshot)
 		noDelegation, unavailable, stalePolicy, staleRepository bool
 	}{
+		{name: "override without Actions", override: true, unavailable: true, authorized: true},
+		{name: "override webhook without Actions", override: true, webhook: true, unavailable: true, authorized: true},
+		{name: "label added to import hold", override: true, webhook: true, labelAdd: true, unavailable: true, authorized: true},
+		{name: "override wrong author", override: true, unavailable: true, change: func(s *tracker.GitHubIssueSnapshot) { s.Provenance.AuthorID = "outside-reporter" }},
+		{name: "override missing author", override: true, unavailable: true, change: func(s *tracker.GitHubIssueSnapshot) { s.Provenance.AuthorID = "" }},
+		{name: "override wrong label", override: true, unavailable: true, change: func(s *tracker.GitHubIssueSnapshot) { s.Labels = []string{"other"} }},
+		{name: "override no label", override: true, unavailable: true, change: func(s *tracker.GitHubIssueSnapshot) { s.Labels = nil }},
+		{name: "override human review", override: true, unavailable: true, change: func(s *tracker.GitHubIssueSnapshot) { s.Labels = append(s.Labels, "requires-human-review") }},
+		{name: "override no dispatch", override: true, unavailable: true, change: func(s *tracker.GitHubIssueSnapshot) { s.Body += "\n<!-- detent:no-dispatch -->" }},
+
 		{name: "trusted complete", authorized: true},
 		{name: "trusted webhook", authorized: true, webhook: true},
 		{name: "held webhook remains held", authorized: true, webhook: true, existingState: "Blocked"},
@@ -64,6 +76,9 @@ func TestScheduledGitHubImportAdmission(t *testing.T) {
 			prompt := definition + "## Scheduled CI repair contract\n"
 			if !test.noDelegation {
 				prompt += delegation + "\n"
+				if test.override {
+					prompt += "Trusted-source CI verification override: authors `github-actions[bot], repair-bot`; label `detent:auto-fix`.\n"
+				}
 			}
 			prompt += strings.ReplaceAll(criteria, "## ", "### ")
 			workflow, err := config.ParseProjectDefinition(config.ProjectDefinitionSources{Workflow: []byte(prompt), Config: []byte("schema: 1\ntracker:\n  kind: hub_native\n  repository: " + repository + "\n  lanes:\n    - {name: Todo, role: active}\n    - {name: Backlog, role: holding}\n    - {name: Blocked, role: holding}\n    - {name: Done, role: terminal}\n"), HasConfig: true, ConfigPath: "detent.yaml"})
@@ -91,6 +106,9 @@ func TestScheduledGitHubImportAdmission(t *testing.T) {
 				evidence.JobURL = "https://github.com/" + repository + "/actions/jobs/" + evidence.JobID
 				origin := issueorigin.Origin{Kind: "doctor", Instance: "github-actions", Source: evidence.RunURL, Fingerprint: fmt.Sprintf("scheduled-job-%d", number)}
 				snapshot := tracker.GitHubIssueSnapshot{URL: fmt.Sprintf("https://github.com/%s/issues/%d", repository, number), Title: "Scheduled Verify failure", Body: issueorigin.Stamp(criteria+"\n\n## Diagnostic evidence\nAssertion: expected healthy worker.", origin) + evidence.Stamp(), Provenance: tracker.Provenance{Provider: "github", ExternalID: fmt.Sprintf("I_%d", number), AuthorID: "github-actions[bot]", CreatedAt: time.Now().Add(-time.Hour), UpdatedAt: time.Now(), ObservedAt: time.Now()}}
+				if test.override {
+					snapshot.Labels = []string{"detent:auto-fix"}
+				}
 				if test.change != nil {
 					test.change(&snapshot)
 				}
@@ -100,6 +118,9 @@ func TestScheduledGitHubImportAdmission(t *testing.T) {
 					}
 					if request.Repository != repository || request.Scheduled == nil || request.Scheduled.JobID != evidence.JobID {
 						t.Fatalf("verification request = %+v", request)
+					}
+					if test.override && test.authorized && (!test.labelAdd || len(snapshot.Labels) > 0) {
+						t.Fatal("trusted override called Actions verifier")
 					}
 					if test.unavailable {
 						return GitHubImportPage{}, errors.New("run verification refused")
@@ -127,10 +148,18 @@ func TestScheduledGitHubImportAdmission(t *testing.T) {
 						decodeHubResponse(t, response, &issue)
 						return issue
 					}
+					action := "opened"
+					if test.labelAdd && strings.Contains(key, "label") {
+						action = "labeled"
+					}
+					labels := make([]map[string]string, 0, len(snapshot.Labels))
+					for _, label := range snapshot.Labels {
+						labels = append(labels, map[string]string{"name": label})
+					}
 					payload, err := json.Marshal(map[string]any{
-						"action":     "opened",
+						"action":     action,
 						"repository": map[string]any{"node_id": "R_example", "name": "example-project", "full_name": repository, "owner": map[string]string{"login": "example-org"}},
-						"issue":      map[string]any{"node_id": snapshot.Provenance.ExternalID, "number": number, "title": snapshot.Title, "body": snapshot.Body, "html_url": snapshot.URL, "state": "open", "user": map[string]string{"login": snapshot.Provenance.AuthorID}, "labels": []map[string]string{{"name": "detent:todo"}, {"name": "hotfix"}}, "assignees": []string{}, "created_at": snapshot.Provenance.CreatedAt, "updated_at": snapshot.Provenance.UpdatedAt},
+						"issue":      map[string]any{"node_id": snapshot.Provenance.ExternalID, "number": number, "title": snapshot.Title, "body": snapshot.Body, "html_url": snapshot.URL, "state": "open", "user": map[string]string{"login": snapshot.Provenance.AuthorID}, "labels": labels, "assignees": []string{}, "created_at": snapshot.Provenance.CreatedAt, "updated_at": snapshot.Provenance.UpdatedAt},
 					})
 					if err != nil {
 						t.Fatal(err)
@@ -147,7 +176,35 @@ func TestScheduledGitHubImportAdmission(t *testing.T) {
 					}
 					return issue
 				}
-				issue := importReport(strconv.Itoa(number))
+				if test.labelAdd {
+					snapshot.Labels = nil
+					held := importReport(strconv.Itoa(number) + "-initial")
+					if held.State != "Triage" {
+						t.Fatalf("initial import state = %s", held.State)
+					}
+					snapshot.Labels = []string{"detent:auto-fix"}
+					snapshot.Provenance.UpdatedAt = snapshot.Provenance.UpdatedAt.Add(time.Second)
+				}
+				key := strconv.Itoa(number)
+				if test.labelAdd {
+					key += "-label"
+				}
+				issue := importReport(key)
+				if test.override && test.authorized {
+					if !strings.Contains(issue.Body, "Trusted-source CI verification override") || strings.Contains(issue.Body, "## Verified CI occurrence") {
+						rows, err := f.service.database.reader.QueryContext(t.Context(), "SELECT type, coalesce(transition_reason,'') FROM collaboration_events WHERE work_item_id=? ORDER BY sequence", issue.WorkItemID)
+                        if err != nil { t.Fatal(err) }; defer rows.Close()
+                        for rows.Next() { var kind, reason string; rows.Scan(&kind,&reason); t.Logf("event %s reason %s",kind,reason) }
+                        t.Fatalf("override evidence = %s", issue.Body)
+					}
+					var reason string
+					if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT transition_reason FROM collaboration_events WHERE work_item_id=? AND type='github.imported' ORDER BY sequence DESC LIMIT 1", issue.WorkItemID).Scan(&reason); err != nil {
+						t.Fatal(err)
+					}
+					if !strings.Contains(reason, "authenticated GitHub source author: github-actions[bot]; source label: detent:auto-fix; independent Actions verification bypassed") || !strings.Contains(reason, descriptor.ID) {
+						t.Fatalf("override history = %s", reason)
+					}
+				}
 				if test.authorized {
 					if issue.State != "Todo" || issue.Priority == nil || *issue.Priority != 0 || len(issue.IssueContract.ConfirmedSections) != 5 {
 						t.Fatalf("admission = %+v", issue)
