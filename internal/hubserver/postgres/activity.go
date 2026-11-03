@@ -210,7 +210,7 @@ func (s *session) ActivitySnapshot(ctx context.Context, filter activitystore.Fil
 			return out, mapError(ctx, err)
 		}
 		for _, row := range events {
-			byAttempt[row.AttemptID] = eventstore.Event(row)
+			byAttempt[row.AttemptID] = eventRecord(row)
 		}
 	}
 	links, err := s.queries.ActivityIssueLinks(ctx, pgquery.ActivityIssueLinksParams{OrganizationID: s.organization, IssueIds: ids})
