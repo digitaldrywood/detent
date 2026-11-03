@@ -38,14 +38,8 @@ func (d tenantDetailStore) StoreDetail(ctx context.Context, organization string,
 	if err != nil {
 		return attachment.ArchiveReference{}, err
 	}
-	exists, err := d.service.attachmentObjectExists(ctx, d.allocation, "/internal/v1/attachments/exists", map[string]string{"key": ref.Key})
-	if err != nil {
+	if err := storage.PutArchive(ctx, ref, compressed); err != nil {
 		return attachment.ArchiveReference{}, err
-	}
-	if !exists {
-		if err := storage.PutArchive(ctx, ref, compressed); err != nil {
-			return attachment.ArchiveReference{}, err
-		}
 	}
 	if err := attachment.StoreArchive(ctx, storage, organization, ref, compressed); err != nil {
 		return attachment.ArchiveReference{}, err
