@@ -416,7 +416,7 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	ctx := s.runDetailContext(c.Request().Context())
+	ctx := context.WithValue(s.runDetailContext(c.Request().Context()), pendingContentKey{}, &pendingContentMutation{})
 	useStableRunHistoryIDs(ctx)
 	c.SetRequest(c.Request().WithContext(ctx))
 	var hostSummaries []hostmetrics.Summary
