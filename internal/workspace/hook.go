@@ -10,6 +10,8 @@ import (
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
 )
 
+type hookCommandKey struct{}
+
 func runHookCommand(ctx context.Context, command string, hooks Hooks, info Info, issue Issue) ([]byte, error) {
 	cmd := commandshell.Command(ctx, command, hooks.Shell)
 	cmd.Dir = info.Path
@@ -20,16 +22,12 @@ func runHookCommand(ctx context.Context, command string, hooks Hooks, info Info,
 	var output bytes.Buffer
 	cmd.Stdout = &output
 	cmd.Stderr = &output
-	if err := procgroup.Start(cmd); err != nil {
-		return output.Bytes(), errors.Join(ctx.Err(), err)
-	}
-	groupID := procgroup.GroupID(cmd)
-	err := procgroup.Wait(cmd)
+	err := procgroup.RunHook(ctx, cmd, nil)
 	if errors.Is(err, exec.ErrWaitDelay) && ctx.Err() == nil {
 		err = nil
 	}
 	if ctx.Err() != nil || err != nil {
-		err = errors.Join(ctx.Err(), err, procgroup.Cleanup(groupID))
+		err = errors.Join(ctx.Err(), err, procgroup.Cleanup(procgroup.GroupID(cmd)))
 	}
 	return output.Bytes(), err
 }

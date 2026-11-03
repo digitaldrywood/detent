@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 )
 
@@ -62,7 +63,13 @@ func ReapProcesses(ctx context.Context, path string, grace time.Duration) (int, 
 	if source, ok := ctx.Value(processSourceKey{}).(ProcessSource); ok && source != nil {
 		scan = workspaceProcessScanner(source)
 	}
-	return reapProcesses(ctx, path, grace, scan, syscall.Kill)
+	return reapProcesses(ctx, path, grace, scan, func(pid int, sig syscall.Signal) error {
+		owned, err := procgroup.TerminateHookOwner(ctx, pid, path)
+		if owned || err != nil {
+			return err
+		}
+		return syscall.Kill(pid, sig)
+	})
 }
 
 var reapProcessScanner workspaceProcessScanner = workspaceProcessIDs
